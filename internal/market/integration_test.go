@@ -57,11 +57,16 @@ func TestPostgresMarketplaceFlow(t *testing.T) {
 	id := strings.TrimPrefix(location, "/order?id=")
 	check(do("POST", "/disputes", buyer, url.Values{"order_id": {id}, "reason": {"This is an unfunded draft, so a dispute must not open."}}), 409)
 	check(do("POST", "/messages", buyer, url.Values{"recipient": {"admin_user"}, "body": {"plaintext must not be sent"}}), 400)
-	body := "-----BEGIN PGP MESSAGE-----\nSample encrypted armor for the storage boundary test only.\n-----END PGP MESSAGE-----"
+	check(do("POST", "/messages", buyer, url.Values{"recipient": {"admin_user"}, "body": {"-----BEGIN PGP MESSAGE-----\nSample encrypted armor for the storage boundary test only.\n-----END PGP MESSAGE-----"}}), 400)
+	msgKey, _ := testPGPKey(t, "recipient")
+	body, err := encryptTo(msgKey, "storage boundary test")
+	if err != nil {
+		t.Fatal(err)
+	}
 	check(do("POST", "/messages", buyer, url.Values{"recipient": {"admin_user"}, "body": {body}}), 303)
 	w = do("GET", "/messages", other, nil)
 	check(w, 200)
-	if strings.Contains(w.Body.String(), "Sample encrypted armor") {
+	if strings.Contains(w.Body.String(), strings.Split(body, "\n")[2]) {
 		t.Fatal("message leaked to unrelated account")
 	}
 	check(do("POST", "/admin", buyer, url.Values{"action": {"role"}, "role": {"admin"}}), 403)

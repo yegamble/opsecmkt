@@ -21,9 +21,14 @@ func messageAction(c *actionCtx) (actionResult, error) {
 	if err != nil {
 		return actionResult{}, fail(400, "Recipient not found")
 	}
-	_, err = tx.ExecContext(ctx, "INSERT INTO messages(id,sender_id,recipient_id,body) VALUES($1,$2,$3,$4)", randomToken(), u.ID, recipient, body)
+	// P2: packet inspection rejects anything that is not OpenPGP-encrypted and records the recipient-key match.
+	match, err := inspectMessage(c, body, recipient)
+	if err != nil {
+		return actionResult{}, err
+	}
+	_, err = tx.ExecContext(ctx, "INSERT INTO messages(id,sender_id,recipient_id,body,encrypted,recipient_match) VALUES($1,$2,$3,$4,true,$5)", randomToken(), u.ID, recipient, body, match)
 	if err == nil {
 		_, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), recipient, "New message from "+u.Handle)
 	}
-	return actionResult{Redirect: "/messages?saved=1", Audit: "Sent armored message (contents not verified)"}, err
+	return actionResult{Redirect: "/messages?saved=1", Audit: "Sent OpenPGP-encrypted message (recipient key match: " + match + ")"}, err
 }
