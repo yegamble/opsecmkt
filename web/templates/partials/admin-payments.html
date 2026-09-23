@@ -40,7 +40,7 @@
 </table>
 </div>
 <h3 id="payouts">Payouts</h3>
-<p role="status">{{if eq .PayoutsAttention 0}}No payouts need attention.{{else}}<strong>{{.PayoutsAttention}} {{if eq .PayoutsAttention 1}}payout needs{{else}}payouts need{{end}} attention</strong>, listed first, oldest first.{{end}}{{if .PayoutHistoryLimit}} Showing every payout that needs attention and the {{.PayoutHistoryLimit}} most recent other payouts; older payouts that need no attention are not listed.{{end}}</p>
+<p>{{if eq .PayoutsAttention 0}}No payouts need attention.{{else}}<strong>{{.PayoutsAttention}} {{if eq .PayoutsAttention 1}}payout needs{{else}}payouts need{{end}} attention</strong>, listed first, oldest first.{{end}}{{if .PayoutHistoryLimit}} Showing every payout that needs attention and the {{.PayoutHistoryLimit}} most recent other payouts; older payouts that need no attention are not listed.{{end}}</p>
 <p>Each payout is attempted once. Failed or stuck payouts are never retried automatically: check the wallet before paying anything manually. A payout for which the wallet reported a pre-broadcast error was not broadcast; one whose outcome is unknown (the wallet call timed out or its reply was lost) or that is stuck in sending may have been. After checking the wallet you can release a held payout, requeue a payout that was not broadcast (confirming that explicitly when the outcome was unknown), or record one the wallet shows as sent. Each action needs your password and is audited.</p>
 <div class="table-wrap">
 <table>

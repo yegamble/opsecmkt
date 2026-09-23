@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { FIXTURE_LISTING, uniqueHandle } from './db-fixtures';
+import { submitAndLoad } from './db-helpers';
 
 // The db-account journey (register, unfunded draft, profile persistence, sign-out) at desktop width. The
 // database project's default viewport is 390 px; a second database project would run every db spec twice
@@ -41,7 +42,7 @@ test('desktop: register, draft, profile persistence and sign-out', async ({ page
 
   await page.goto('/account');
   await page.getByLabel('XMPP address').fill(`${handle}@example.test`);
-  await page.getByRole('button', { name: 'Save profile' }).click();
+  await submitAndLoad(page, page.getByRole('button', { name: 'Save profile' }));
   await page.reload();
   await expect(page.getByLabel('XMPP address')).toHaveValue(`${handle}@example.test`);
   await fits(page);

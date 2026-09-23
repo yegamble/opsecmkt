@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { FIXTURE_LISTING, uniqueHandle } from './db-fixtures';
+import { submitAndLoad } from './db-helpers';
 
 // Uses the listing published by db-setup.spec.ts and registers its own buyer.
 test('register, draft, profile persistence and session boundaries', async ({ page, browser, baseURL }) => {
@@ -21,7 +22,7 @@ test('register, draft, profile persistence and session boundaries', async ({ pag
   expect((await page.goto('/admin'))?.status()).toBe(403);
   await page.goto('/account');
   await page.getByLabel('XMPP address').fill(`${handle}@example.test`);
-  await page.getByRole('button', { name: 'Save profile' }).click();
+  await submitAndLoad(page, page.getByRole('button', { name: 'Save profile' }));
   await page.reload();
   await expect(page.getByLabel('XMPP address')).toHaveValue(`${handle}@example.test`);
   await page.getByRole('button', { name: 'Sign out', exact: true }).click();

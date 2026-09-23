@@ -1,7 +1,7 @@
 import { createHmac } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { expect, type Browser, type Page } from '@playwright/test';
+import { expect, type Browser, type Locator, type Page } from '@playwright/test';
 
 // Shared helpers for the database specs that submit real forms with JavaScript disabled.
 
@@ -52,6 +52,12 @@ export async function submitStatus(page: Page, click: () => Promise<void>): Prom
     click(),
   ]);
   return response.status();
+}
+
+// Submits a form and waits for the resulting page to load, so a following reload cannot race the in-flight
+// POST and its redirect ("Not attached to an active page").
+export async function submitAndLoad(page: Page, button: Locator): Promise<void> {
+  await Promise.all([page.waitForEvent('load'), button.click()]);
 }
 
 // RFC 6238 (SHA-1, 30 s, 6 digits) code for a displayed base32 secret at a given 30-second step.
