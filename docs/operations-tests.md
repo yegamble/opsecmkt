@@ -1,4 +1,4 @@
-# Backup and restore regression tests
+# Installer, backup, and restore regression tests
 
 Run the URL/credential tests without any external service or third-party Python package:
 
@@ -6,7 +6,9 @@ Run the URL/credential tests without any external service or third-party Python 
 python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 
-These tests mock process execution and check decoded credentials, IPv6 hosts, ports, supported TLS/query settings, rejected target overrides and null bytes, removal of inherited libpq settings, and errors that do not expose connection secrets. They also verify that PostgreSQL client arguments contain no URL or password.
+The installer tests run the real installation script in temporary repositories with Docker and OpenSSL stubs. They cover internal/external databases, clearnet/Tor exposure, direct-egress overlays, local node profiles, protected configuration permissions, existing-file preservation, input rejection, and Compose validation failures that must not start services. They never read the user’s `.env`, invoke real Docker, or provision infrastructure.
+
+The connection tests mock process execution and check decoded credentials, IPv6 hosts, ports, supported TLS/query settings, rejected target overrides and null bytes, removal of inherited libpq settings, and errors that do not expose connection secrets. They also verify that PostgreSQL client arguments contain no URL or password.
 
 Run the encrypted round-trip integration test against a **disposable PostgreSQL server**, using a role with `CREATEDB` permission:
 

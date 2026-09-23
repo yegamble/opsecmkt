@@ -4,10 +4,11 @@ Every branch push and pull request runs `.github/workflows/ci.yaml`. The stable 
 
 The suite covers:
 
-- Go formatting, module integrity, vet, race detection, coverage and the real PostgreSQL marketplace integration flow.
+- Workflow linting, Go formatting, module integrity, vet, race detection, coverage and the real PostgreSQL marketplace integration flow.
 - Reachable Go vulnerabilities with a pinned govulncheck version, plus high/critical npm dependency vulnerabilities. Node and Playwright are development tools only; the delivered application remains Go with server-rendered HTML/CSS.
-- Shell syntax and Python PostgreSQL helper regressions; encrypted backup and restore against disposable PostgreSQL 17 databases.
+- Shell syntax, installer selection/secret-file regressions and Python PostgreSQL helper regressions; encrypted backup and restore against disposable PostgreSQL 17 databases.
 - Six supported Compose configurations spanning clearnet/Tor, internal/external PostgreSQL and Tor mirror enabled/disabled. Optional node profiles are parsed, not connected to real cryptocurrency networks.
+- Tor image build and offline configuration validation with networking disabled.
 - Production Docker image startup with internal and external PostgreSQL; health, first-admin bootstrap, authenticated admin access and setup lockdown. External mode verifies the application Compose project did not start a database service.
 - Playwright browser regressions against both the preview and a separate disposable PostgreSQL application. The browser suite checks mobile/tablet/desktop geometry, style, behavior and reviewed ARIA snapshots across Chromium, Firefox and WebKit.
 

@@ -17,3 +17,11 @@
 - No payment/escrow or cryptocurrency funds were handled. See implementation-status.md for the unavailable application capabilities.
 - Browser checks are not a complete WCAG AAA audit. Screen-reader interoperability, every color pairing, and exhaustive keyboard interaction remain release checks.
 - PostgreSQL 17 integration runs are configured in CI but were not executed on GitHub during this session.
+
+## CI/CD follow-up
+
+The repository is now private on GitHub at https://github.com/yegamble/opsecmkt. Automated pipelines replace the earlier manual-only checks. PostgreSQL 17 integration, both production-container database modes, deployment matrices, and encrypted restore have passed on GitHub runners. The Tor image builds and validates its configuration locally without networking. Seventeen Python regression tests pass locally.
+
+The JavaScript-disabled mobile browser journey exposed a real form-submission issue: `Referrer-Policy: no-referrer` caused Chromium to submit `Origin: null`. The header now uses `same-origin`; cross-origin checks and session-bound CSRF validation remain enforced. The complete setup/listing/buyer/order/profile/login journey passed after the fix.
+
+Playwright contains 126 preview cases across Chromium/Firefox/WebKit plus one database-backed mobile journey. CI uploads failure traces/screenshots and HTML reports. The release workflow reruns the complete suite before creating private draft OCI image artifacts, checksums and provenance/SBOM metadata. It never deploys to a live host.
