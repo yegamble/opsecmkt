@@ -96,6 +96,9 @@ jobs:
         run: bash scripts/test-backup-restore.sh
         env:
           TEST_DATABASE_URL: postgres://test:test-ci-only@127.0.0.1:5432/postgres?sslmode=disable
+      # The default deployment: its db service publishes no port, so backup and restore run inside it.
+      - name: Encrypted backup and restore through the internal-db Compose service
+        run: bash scripts/test-internal-db-restore.sh
   compose:
     name: Compose (${{ matrix.mode }}, ${{ matrix.database }}, mirror=${{ matrix.mirror }})
     runs-on: ubuntu-24.04
