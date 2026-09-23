@@ -2,6 +2,7 @@ import { defineConfig } from '@playwright/test';
 
 const previewURL = 'http://127.0.0.1:18080';
 const databaseURL = process.env.E2E_DATABASE_URL;
+const databaseUse = { browserName: 'chromium' as const, baseURL: 'http://127.0.0.1:18081', viewport: { width: 390, height: 844 } };
 if (process.env.CI && !databaseURL) {
   throw new Error('CI requires E2E_DATABASE_URL pointing to a fresh, dedicated test database');
 }
@@ -29,14 +30,27 @@ export default defineConfig({
       { name: 'webkit-mobile', browserName: 'webkit' as const, width: 390 },
     ].map(({ name, browserName, width }) => ({
       name,
-      testMatch: 'preview.spec.ts',
+      testMatch: /(^|\/)preview[^/]*\.spec\.ts$/,
       use: { browserName, viewport: { width, height: 900 } },
     })),
+    // db-setup initializes the fresh database exactly once; every other db-*.spec.ts depends on it and
+    // creates its own uniquely named users/listings (tests/e2e/db-fixtures.ts). The db files still share one
+    // admin account, the global CAPTCHA setting and the per-handle login limit, so each database project runs
+    // on a single worker (per-project workers, Playwright >= 1.52); preview projects keep the global pool.
     ...(databaseURL ? [{
+      name: 'db-setup',
+      retries: 0,
+      workers: 1,
+      testMatch: /(^|\/)db-setup\.spec\.ts$/,
+      use: databaseUse,
+    }, {
       name: 'database-chromium',
-      retries: 0, // This journey initializes its fresh database exactly once.
-      testMatch: 'account.spec.ts',
-      use: { browserName: 'chromium' as const, baseURL: 'http://127.0.0.1:18081', viewport: { width: 390, height: 844 } },
+      retries: 0,
+      workers: 1,
+      fullyParallel: false,
+      dependencies: ['db-setup'],
+      testMatch: /(^|\/)db-(?!setup)[^/]*\.spec\.ts$/,
+      use: databaseUse,
     }] : []),
   ],
   webServer: [

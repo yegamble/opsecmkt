@@ -1,0 +1,26 @@
+{{define "page:catalog"}}{{template "header" .}}
+<div class="page-head">
+<div>
+<div class="eyebrow">Independent by design</div>
+<h1>The marketplace<span class="accent">.</span>
+</h1>
+<p>Tools, knowledge, and services for a more private digital life.</p>
+</div>
+</div>
+<form class="mobile-search" action="/" method="get" role="search">
+<label class="sr-only" for="mobile-query">Search listings</label>
+<input id="mobile-query" name="q" value="{{.Query}}" placeholder="Search listings…">
+<button type="submit">Search</button>
+</form>
+{{template "payment-status:catalog" .}}
+<div class="catalog-tools">
+<p>
+<span class="accent">{{len .Products}}</span> listings {{if .Query}}matching “{{.Query}}”{{else}}in the marketplace{{end}}{{if .Category}} / {{.Category}}{{end}}</p>
+<span class="eyebrow">Purpose-built for privacy</span>
+</div>{{template "products" .}}{{if not .Products}}<div class="empty">
+<span class="empty-icon">∅</span>
+<h2>No listings found</h2>
+<p>Try another search term or remove a filter.</p>
+<a class="button" href="/">Clear filters</a>
+</div>{{end}}
+{{template "footer" .}}{{end}}

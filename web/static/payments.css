@@ -1,0 +1,54 @@
+/* payments styles. Owned by P5 Payments; style.css is frozen. */
+.badge.testnet {
+  color:#a9dcff;
+  background:#10202b;
+  border-color:#2f5a75
+}
+.testnet-notice {
+  border-color:#2f5a75
+}
+.payment-address {
+  margin:0 0 16px;
+  padding:14px;
+  border:1px solid #2f5a75;
+  background:#0d171e
+}
+.payment-address p {
+  margin:10px 0 0;
+  color:var(--text);
+  font-size:14px;
+  overflow-wrap:anywhere;
+  word-break:break-all
+}
+.payment-figures dd {
+  overflow-wrap:anywhere;
+  min-width:0
+}
+.payment-figures dd .badge,.payment-deposits .badge {
+  margin-left:6px
+}
+.payment-deposits td.mono,.admin-payments td.mono {
+  overflow-wrap:anywhere;
+  word-break:break-all
+}
+.payout-panel form {
+  margin-bottom:16px
+}
+.payout-panel label .badge {
+  margin-left:6px
+}
+.payout-attention td {
+  color:#ffdc9e
+}
+.payout-actions {
+  min-width:240px
+}
+.payout-actions summary {
+  cursor:pointer;
+  min-height:44px;
+  display:flex;
+  align-items:center
+}
+.payout-actions form {
+  margin-top:12px
+}

@@ -1,0 +1,36 @@
+{{/* P3 Orders owns. vendor-orders:stat tile; vendor-orders: orders placed on the viewer's own listings */}}
+{{define "vendor-orders:stat"}}<div class="stat">
+<div class="eyebrow">To fulfil</div>
+<strong>{{.NeedsAction}}</strong>
+<span>Paid orders awaiting shipment or delivery</span>
+</div>{{end}}
+{{define "vendor-orders"}}<h2 class="section-title">Incoming orders</h2>{{if .IncomingOrders}}<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th scope="col">Order / listing</th>
+<th scope="col">Buyer</th>
+<th scope="col">Amount</th>
+<th scope="col">Status</th>
+<th scope="col">Last change</th>
+</tr>
+</thead>
+<tbody>{{range .IncomingOrders}}<tr>
+<td>
+<a href="/order?id={{.ID}}">{{.Title}}</a>
+<br>
+<small class="muted mono">{{.ID}}</small>
+</td>
+<td>{{.Buyer}}</td>
+<td class="mono">{{.Amount}} {{.Currency}}</td>
+<td>
+<span class="badge {{template "order-badge-class" .State}}">{{.Status}}</span>
+</td>
+<td>{{.Updated}}</td>
+</tr>{{end}}</tbody>
+</table>
+</div>{{else}}<div class="empty">
+<span class="empty-icon">[ 0 ]</span>
+<h2>No orders on your listings yet</h2>
+<p>Orders buyers place on your listings appear here, including unfunded drafts.</p>
+</div>{{end}}{{end}}

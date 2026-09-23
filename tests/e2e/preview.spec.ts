@@ -11,6 +11,7 @@ const routes = [
   ['/moderator', 'Moderation desk.'], ['/admin', 'Control room.'],
   ['/canary', 'Trust is verifiable.'], ['/setup', 'Initialize your market.'],
   ['/login', 'Welcome back.'], ['/register', 'Create an account.'],
+  ['/challenge', 'Verify your sign-in.'],
 ];
 
 async function openFilters(page: Page) {
@@ -110,6 +111,7 @@ test('navigation accessibility structure stays stable', async ({ page }) => {
       - link "⌘ Marketplace"
       - link "Orders"
       - link "Messages"
+      - link "Notifications (1 unread)"
       - link "Disputes"
       - link "Account"
       - link "◇ Transparency"

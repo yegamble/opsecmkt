@@ -1,0 +1,18 @@
+{{define "page:setup"}}{{template "header" .}}
+<div class="form-narrow">
+<div class="panel">
+<div class="eyebrow">Operator configuration</div>
+<h1>Initialize your market<span class="accent">.</span></h1>
+<p>Create the first administrator using the deployment setup token.</p>
+<form class="stack" method="post" action="/setup">
+<input type="hidden" name="csrf" value="{{.CSRF}}"><label>Setup token<input name="token" type="password" required autocomplete="off">
+</label>
+<label>Marketplace name<input name="site_name" required maxlength="80" value="OPSEC Market">
+</label><label>Handle<input name="handle" required minlength="3" maxlength="32" autocomplete="username" spellcheck="false" autocapitalize="none" placeholder="your_handle">
+</label>
+<label>Password<input type="password" name="password" required minlength="12" autocomplete="new-password">
+</label><span class="help">Use at least 12 characters and at most 72 UTF-8 bytes. No email address is required.</span><button class="primary" type="submit">Initialize marketplace ↗</button>
+</form></div>
+<p class="muted help">Keep your account credentials private. An account is not an anonymity guarantee.</p>
+</div>
+{{template "footer" .}}{{end}}

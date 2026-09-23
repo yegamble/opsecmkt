@@ -1,0 +1,48 @@
+/* pgp styles. Owned by P2 PGP identity; style.css is frozen. */
+.pgp-fingerprint {
+  font-family:var(--mono);
+  overflow-wrap:anywhere;
+  min-width:0
+}
+.key-values dd.pgp-fingerprint {
+  max-width:70%
+}
+.pgp-summary {
+  margin-top:-6px
+}
+.badge.pgp-danger {
+  color:#ffc6b7;
+  background:#271512;
+  border-color:#935749
+}
+.pgp-armor {
+  max-height:320px;
+  overflow:auto;
+  margin:0
+}
+.pgp-challenge {
+  margin-top:20px
+}
+.pgp-challenge code,.pgp-factor code {
+  font-family:var(--mono);
+  overflow-wrap:anywhere
+}
+.pgp-factor {
+  display:grid;
+  gap:14px;
+  margin-top:20px;
+  padding-top:20px;
+  border-top:1px solid var(--line)
+}
+.pgp-factor h2 {
+  margin:0
+}
+.pgp-inline-form {
+  margin:0
+}
+.pgp-message-status {
+  margin:10px 0
+}
+.pgp-status-note {
+  margin-top:16px
+}

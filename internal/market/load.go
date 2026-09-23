@@ -6,6 +6,7 @@ import (
 	"strings"
 )
 
+// load fills generic page data, then runs registered loaders (routes.go).
 func (a *App) load(r *http.Request, d *PageData) error {
 	ctx := r.Context()
 	rows, err := a.db.QueryContext(ctx, "SELECT key,value FROM settings")
@@ -26,7 +27,7 @@ func (a *App) load(r *http.Request, d *PageData) error {
 		return err
 	}
 	if d.Page == "catalog" || d.Page == "product" || d.Page == "vendor" || d.Page == "checkout" || d.Page == "vendor-dashboard" {
-		query := `SELECT p.id,p.title,p.description,p.category,p.region,p.kind,u.handle,p.vendor_id,p.btc,p.xmr,p.stock FROM products p JOIN users u ON u.id=p.vendor_id WHERE true`
+		query := `SELECT p.id,p.title,p.description,p.category,p.region,p.kind,u.handle,p.vendor_id,p.btc,p.xmr,p.stock,p.archived FROM products p JOIN users u ON u.id=p.vendor_id WHERE true`
 		args := []any{}
 		switch d.Page {
 		case "product", "checkout":
@@ -42,6 +43,9 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			query += ` AND ($1='' OR p.title ILIKE '%'||$1||'%' OR p.description ILIKE '%'||$1||'%') AND ($2='' OR p.category=$2) AND ($3='' OR p.region=$3 OR p.region='Worldwide')`
 			args = append(args, d.Query, d.Category, d.Region)
 		}
+		if d.Page != "vendor-dashboard" {
+			query += " AND NOT p.archived"
+		}
 		query += " ORDER BY p.created DESC LIMIT 100"
 		rows, err = a.db.QueryContext(ctx, query, args...)
 		if err != nil {
@@ -50,7 +54,7 @@ func (a *App) load(r *http.Request, d *PageData) error {
 		for rows.Next() {
 			var p Product
 			var btc, xmr int64
-			if err = rows.Scan(&p.ID, &p.Title, &p.Description, &p.Category, &p.Region, &p.Kind, &p.Vendor, &p.VendorID, &btc, &xmr, &p.Stock); err != nil {
+			if err = rows.Scan(&p.ID, &p.Title, &p.Description, &p.Category, &p.Region, &p.Kind, &p.Vendor, &p.VendorID, &btc, &xmr, &p.Stock, &p.Archived); err != nil {
 				rows.Close()
 				return err
 			}
@@ -81,15 +85,16 @@ func (a *App) load(r *http.Request, d *PageData) error {
 	if d.User != nil {
 		switch d.Page {
 		case "orders", "order", "vendor-dashboard", "admin", "disputes":
-			query := `SELECT o.id,p.id,p.title,b.handle,v.handle,o.currency,o.amount,o.status,to_char(o.created,'YYYY-MM-DD HH24:MI') FROM orders o JOIN products p ON p.id=o.product_id JOIN users b ON b.id=o.buyer_id JOIN users v ON v.id=p.vendor_id WHERE (o.buyer_id=$1 OR p.vendor_id=$1)`
+			query := orderQuery + " WHERE (o.buyer_id=$1 OR p.vendor_id=$1)"
 			args := []any{d.User.ID}
 			if d.Page == "admin" {
-				query = `SELECT o.id,p.id,p.title,b.handle,v.handle,o.currency,o.amount,o.status,to_char(o.created,'YYYY-MM-DD HH24:MI') FROM orders o JOIN products p ON p.id=o.product_id JOIN users b ON b.id=o.buyer_id JOIN users v ON v.id=p.vendor_id WHERE true`
+				query = orderQuery + " WHERE true"
 				args = nil
 			}
 			if d.Page == "order" {
-				query += " AND o.id=$2"
-				args = append(args, r.URL.Query().Get("id"))
+				// Moderators and administrators may also open disputed or resolved orders, read-only (orders_load.go).
+				query = orderQuery + " WHERE (o.buyer_id=$1 OR p.vendor_id=$1 OR ($3 IN ('moderator','admin') AND o.state IN ('disputed','resolved'))) AND o.id=$2"
+				args = append(args, r.URL.Query().Get("id"), d.User.Role)
 			}
 			query += " ORDER BY o.created DESC LIMIT 100"
 			rows, err = a.db.QueryContext(ctx, query, args...)
@@ -97,17 +102,11 @@ func (a *App) load(r *http.Request, d *PageData) error {
 				return err
 			}
 			for rows.Next() {
-				var o Order
-				var n int64
-				if err = rows.Scan(&o.ID, &o.ProductID, &o.Title, &o.Buyer, &o.Vendor, &o.Currency, &n, &o.Status, &o.Created); err != nil {
+				o, err := scanOrder(rows)
+				if err != nil {
 					rows.Close()
 					return err
 				}
-				dec := 8
-				if o.Currency == "XMR" {
-					dec = 12
-				}
-				o.Amount = amount(n, dec)
 				d.Orders = append(d.Orders, o)
 			}
 			err = rows.Err()
@@ -199,7 +198,12 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			}
 		}
 		if d.Page == "account" || d.Page == "admin" {
-			rows, err = a.db.QueryContext(ctx, `SELECT action,to_char(created,'YYYY-MM-DD HH24:MI') FROM audit_events WHERE user_id=$1 OR $2='admin' ORDER BY created DESC LIMIT 100`, d.User.ID, d.User.Role)
+			// The admin audit trail lists every user's events; the account page shows only the viewer's recent ones.
+			all, limit := d.Page == "admin" && d.User.Role == "admin", 100
+			if d.Page == "account" {
+				limit = 15
+			}
+			rows, err = a.db.QueryContext(ctx, `SELECT action,to_char(created,'YYYY-MM-DD HH24:MI') FROM audit_events WHERE user_id=$1 OR $2 ORDER BY created DESC LIMIT $3`, d.User.ID, all, limit)
 			if err != nil {
 				return err
 			}
@@ -218,7 +222,7 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			}
 		}
 	}
-	return nil
+	return runLoaders(ctx, a, r, d)
 }
 
 func previewData(page string) PageData {
@@ -240,6 +244,6 @@ func previewData(page string) PageData {
 	if page == "vendor-dashboard" {
 		u.Role = "vendor"
 	}
-	o := Order{ID: "sample-draft", ProductID: p[0].ID, Title: p[0].Title, Buyer: u.Handle, Vendor: p[0].Vendor, Currency: "BTC", Amount: p[0].PriceBTC, Status: "Draft — payment unavailable", Created: "Sample order"}
-	return PageData{Page: page, Title: strings.ReplaceAll(strings.Title(page), "-", " "), Preview: true, User: u, Products: p, Product: &p[0], Orders: []Order{o}, Order: &o, Currency: "BTC", Settings: map[string]string{"site_name": "OPSMKT", "bitcoin_mode": "disabled", "monero_mode": "disabled"}, Users: []User{{ID: "ghost", Handle: "ghost_circuit", Role: "vendor"}}, Events: []Event{{Action: "Preview only — no real activity", Created: "—"}}}
+	o := Order{ID: "sample-draft", ProductID: p[0].ID, Title: p[0].Title, Buyer: u.Handle, Vendor: p[0].Vendor, Currency: "BTC", Amount: p[0].PriceBTC, State: stateDraft, Status: stateLabel(stateDraft), Kind: p[0].Kind, BuyerID: u.ID, VendorID: p[0].VendorID, Created: "Sample order", Updated: "Sample order"}
+	return PageData{Page: page, Title: strings.ReplaceAll(strings.Title(page), "-", " "), Preview: true, User: u, Products: p, Product: &p[0], Orders: []Order{o}, Order: &o, Currency: "BTC", Settings: map[string]string{"site_name": "OPSMKT"}, Users: []User{{ID: "ghost", Handle: "ghost_circuit", Role: "vendor"}}, Events: []Event{{Action: "Preview only — no real activity", Created: "—"}}}
 }

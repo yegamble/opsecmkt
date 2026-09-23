@@ -1,0 +1,63 @@
+/* auth styles. Owned by P1 Authentication; style.css is frozen. */
+.captcha {
+  margin:0;
+  padding:12px;
+  border:1px solid var(--line);
+  display:grid;
+  gap:9px;
+  min-width:0
+}
+.captcha legend {
+  padding:0 6px;
+  color:var(--muted)
+}
+.captcha-image {
+  display:block;
+  max-width:100%;
+  height:auto;
+  border:1px solid var(--line);
+  image-rendering:pixelated
+}
+.totp-secret {
+  overflow-wrap:anywhere;
+  word-break:break-all;
+  color:var(--amber)
+}
+.totp-uri {
+  font-family:var(--mono);
+  word-break:break-all
+}
+.recovery-reveal {
+  border-color:var(--amber);
+  margin-bottom:18px
+}
+.recovery-codes {
+  display:grid;
+  grid-template-columns:repeat(auto-fill,minmax(190px,1fr));
+  gap:6px 24px;
+  margin:0;
+  padding-left:28px
+}
+.admin-auth,
+.factor-totp {
+  margin-top:18px
+}
+.factor-totp h2 {
+  font-size:16px
+}
+.recovery-entry {
+  margin-top:14px
+}
+.recovery-entry summary {
+  cursor:pointer;
+  min-height:44px;
+  display:flex;
+  align-items:center;
+  color:var(--muted)
+}
+.recovery-entry summary:hover {
+  color:var(--amber)
+}
+.session-revoke {
+  margin-top:17px
+}

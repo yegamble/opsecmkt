@@ -1,0 +1,24 @@
+{{define "page:notifications"}}{{template "header" .}}
+<div class="page-head">
+<div>
+<div class="eyebrow">Your activity</div>
+<h1>Notifications<span class="accent">.</span>
+</h1>
+<p>Updates about your orders and account.</p>
+</div>
+</div>
+<div class="messages-list">{{range .Notifications}}<article class="message">
+<div class="message-meta">
+<time>{{.Created}}</time>
+<span>{{if .Read}}Read{{else}}Unread{{end}}</span>
+</div>
+<p>{{.Body}}</p>{{if not .Read}}<form method="post" action="/notifications">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="id" value="{{.ID}}">
+<button type="submit">Mark as read</button>
+</form>{{end}}</article>{{else}}<div class="empty">
+<span class="empty-icon">◌</span>
+<h2>You’re all caught up</h2>
+<p>New account and order updates will appear here.</p>
+</div>{{end}}</div>
+{{template "footer" .}}{{end}}

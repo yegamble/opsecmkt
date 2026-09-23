@@ -1,0 +1,35 @@
+{{define "page:canary"}}{{template "header" .}}
+<div class="page-head">
+<div>
+<div class="eyebrow">Transparency</div>
+<h1>Trust is verifiable<span class="accent">.</span>
+</h1>
+<p>Clear boundaries. No invented security guarantees.</p>
+</div>
+</div>
+<div class="legal-copy">
+{{template "canary-statement" .}}
+<section class="panel audit-key" aria-labelledby="audit-key-title">
+<h2 id="audit-key-title">Audit export signing key</h2>
+{{with .AuditExport}}{{if .Available}}<p><span class="badge green">Signed exports enabled</span></p>
+<p>Administrators can download the audit log as newline-delimited JSON with an Ed25519 signature over the exact file bytes. Pin this public key and check exports with <span class="mono">verify-audit -pub &lt;key&gt; export.jsonl export.sig</span>.</p>
+<p class="fingerprint mono">{{.PublicKey}}</p>
+<p class="help">A valid signature proves an export was produced with this server's key. Anyone who controls the server also controls that key and can sign an altered history; the signature is not proof that past events were never changed.</p>{{else}}<p><span class="badge neutral">Signed exports unavailable</span></p>
+<p>{{.Error}}</p>{{end}}{{else}}<p><span class="badge neutral">Signed exports unavailable</span></p>{{end}}
+</section>
+<section class="panel">
+<h2>What this application currently does</h2>
+<ul>
+<li>Renders HTML and CSS on the server without requiring client-side JavaScript.</li>
+<li>Supports account sessions with optional TOTP or PGP second factors, marketplace listings, and orders that move only through a server-enforced state machine.</li>
+<li>Accepts only OpenPGP-encrypted messages and shows whether each was encrypted to the recipient's saved key. It does not encrypt or decrypt messages.</li>
+<li>Marks a PGP key verified only after its holder signs or decrypts a server challenge.</li>
+<li>When the operator configures a test-network wallet, accepts TESTNET Bitcoin or Monero payments into the operator's pooled test wallet and pays releases and refunds from it. No real funds; this is custodial holding, not escrow.</li>
+<li>Shows a warrant canary only as the operator's PGP-clearsigned text, re-verified against the configured operator key on every page view; it never writes or edits canary text.</li>
+</ul>
+<h2>What remains unavailable</h2>
+<p>Mainnet payments (refused by design), multisig escrow, commission or fee accounting, XMPP delivery, automatic mirror orchestration, QR-code TOTP enrollment, and an audio CAPTCHA alternative are not available.</p>
+</section>
+<a class="button" href="/">Return to marketplace ↗</a>
+</div>
+{{template "footer" .}}{{end}}

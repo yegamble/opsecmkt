@@ -1,6 +1,6 @@
 # OPSEC Market
 
-A Go and PostgreSQL marketplace with server-rendered HTML and CSS. No React, Node.js frontend, JavaScript bundle, or third-party browser assets are required. The Figma reference informs the dark marketplace layout; templates remain ordinary HTML.
+A Go and PostgreSQL marketplace with server-rendered HTML and CSS. No React, Node.js frontend, JavaScript bundle, or third-party browser assets are required. The Figma reference informs the dark marketplace layout; templates remain ordinary HTML. Payments, when configured, run on Bitcoin and Monero **test networks only**; see [implementation status](docs/implementation-status.md).
 
 ## Run locally
 
@@ -12,7 +12,7 @@ Install Docker Engine/Desktop with Compose v2 and OpenSSL, then run:
 
 Choose `clearnet` and answer `yes` to local HTTP development. Open `http://127.0.0.1:8080/setup`. Read `SETUP_TOKEN` from the generated, permission-restricted `.env` to bootstrap the first administrator. Keep this file private. The installer refuses to overwrite an existing configuration. For later runs use `docker compose up -d --build`; inspect with `docker compose logs app` and stop with `docker compose down`. Do not add `--volumes` unless intentionally destroying persisted data.
 
-The installer generates independent random database, bootstrap, and optional Bitcoin RPC secrets. Leave the external PostgreSQL URL blank to create the private database container. The internal-database overlay waits for the database health check before starting the app. Supplying an external URL omits that service and the health dependency; provision the database and its restricted application account beforehand, and require TLS for remote connections (`sslmode=verify-full` with appropriate trust configuration). Percent-encode special characters in URL credentials. The app applies its schema during startup, so its initial database account needs migration permissions.
+The installer generates independent random database, bootstrap, audit-signing, and optional Bitcoin RPC secrets. Leave the external PostgreSQL URL blank to create the private database container. The internal-database overlay waits for the database health check before starting the app. Supplying an external URL omits that service and the health dependency; provision the database and its restricted application account beforehand, and require TLS for remote connections (`sslmode=verify-full` with appropriate trust configuration). Percent-encode special characters in URL credentials. The app applies its schema during startup, so its initial database account needs migration permissions.
 
 To run without Docker, install Go 1.26 and PostgreSQL 17+, set `DATABASE_URL`, `SETUP_TOKEN`, `COOKIE_SECURE=false` for local HTTP, and run `go run ./cmd/server` from the repository root. The runtime reads templates and assets from `web/`.
 
@@ -51,11 +51,80 @@ Publish both addresses in an operator-signed verification document distributed t
 
 ## Optional cryptocurrency nodes
 
-Nodes default to disabled. The installer accepts an external RPC URL or a local full-node container for each currency. Local nodes require an **operator-supplied reviewed image**, ideally pinned by digest. Bitcoin's image must provide `bitcoind` on PATH and support a writable `/data`; Monero's must provide `monerod` with the same data-directory support. No arbitrary third-party image is silently trusted. Fetch and verify binaries from [Bitcoin Core](https://bitcoincore.org/en/download/) and [Monero](https://www.getmonero.org/downloads/) if building your own images. Verify upstream signatures as well as hashes. Container defaults and architecture must be reviewed against the selected image.
+Nodes default to disabled. The installer accepts an external RPC URL or a local full-node container for each currency. Local nodes require an **operator-supplied reviewed image**, ideally pinned by digest. Bitcoin's image must provide `bitcoind` on PATH and support a writable `/data`; Monero's must provide `monerod` with the same data-directory support, plus `monero-wallet-rpc` for the `monero-wallet` service the installer enables alongside a local Monero node. Local nodes run on test networks only (`BITCOIN_CHAIN`, default `testnet4`, which needs Bitcoin Core 28 or newer; `MONERO_NETWORK`, default `stagenet`). No arbitrary third-party image is silently trusted. Fetch and verify binaries from [Bitcoin Core](https://bitcoincore.org/en/download/) and [Monero](https://www.getmonero.org/downloads/) if building your own images. Verify upstream signatures as well as hashes. Container defaults and architecture must be reviewed against the selected image.
 
 Both nodes store their blockchain in dedicated volumes and publish no ports. They can require substantial disk space and synchronization time. Bitcoin RPC is password protected; its allowlist covers common private Docker subnets and must be adjusted for custom networking. Monero exposes restricted daemon RPC only inside the deployment network. A Monero daemon is **not** a wallet RPC service. Full-node availability alone does not provide payment processing.
 
-**Payment execution, deposit monitoring, escrow custody, withdrawals and cryptographic multisignature settlement are not implemented.** Do not send real funds to demonstration addresses or treat displayed balances/statuses as chain-confirmed. RPC environment variables and admin connection settings are configuration placeholders until a tested integration is implemented. Saving settings in the web application never installs software, launches containers or executes Docker. Operators apply deployment changes in `.env` and Compose themselves; the web container has no Docker socket.
+**Payments are implemented for test networks only; mainnet is refused at startup.** With a wallet RPC configured (see [Payments](#payments)), the app issues deposit addresses, watches confirmations and sends single-attempt releases and refunds from the operator's pooled test-network wallet. That is custodial holding, not multisig escrow, and there is no fee accounting. Never send mainnet coins. Providers are enabled by environment variables and a restart. Saving settings in the web application never installs software, launches containers or executes Docker. Operators apply deployment changes in `.env` and Compose themselves; the web container has no Docker socket.
+
+## Migrations
+
+`internal/market/schema.sql` is the frozen baseline. Startup applies it, then every `internal/market/migrations/NNN_name.sql` not yet listed in `schema_migrations`, in numeric order, inside one transaction under an advisory lock, so concurrent app starts are safe and a failed migration changes nothing. A version missing from the table is applied even when higher versions already are. Never edit a merged migration; add a new file. Reserved blocks: 001–009 Foundation, 010–019 authentication, 020–029 PGP, 030–039 orders, 040–049 inventory, 050–059 payments, 060–069 transparency. Take an encrypted backup before upgrading; there are no automatic down-migrations.
+
+Migration 001 replaces the free-text order status with a checked `state` column (existing unfunded drafts become `draft`) and limits each buyer to one open draft per listing and currency.
+
+## Feature configuration
+
+All keys below are listed in `.env.example` and passed by `compose.yaml`. Blank or absent values keep a feature disabled.
+
+### Authentication
+
+No environment keys. Second-factor secrets are encrypted with a key derived from `SETUP_TOKEN`; rotating `SETUP_TOKEN` makes existing TOTP enrollments unreadable, so affected users must sign in with a recovery code, turn TOTP off and enroll again.
+
+- **TOTP** is optional per account: *Account → Manage TOTP* (`/totp`). Users type the shown secret (or paste the `otpauth://` URI) into an authenticator app; no QR code is generated. TOTP turns on only after a correct code, and 10 one-time recovery codes are shown once. Server clocks must be accurate (NTP); codes are accepted within ±30 seconds.
+- **CAPTCHA** on sign-in and registration is on by default for new and upgraded installations. Administrators turn it off or on under *Admin → Sign-in protection*; the change is audited. It is an image only, with no audio alternative, so turning it off may be needed for users who cannot read it. First-run setup never shows it.
+
+### PGP identity
+
+No configuration. Users paste an ASCII-armored public key on `/account`; the fingerprint is shown and ownership is proven on `/pgp` by signing a server text or decrypting a message encrypted to the key (for example `gpg --clearsign`, `gpg --decrypt`). A verified key can be used as a sign-in second factor. Changing the key clears verification and PGP sign-in. `/messages` accepts only OpenPGP-encrypted messages and labels each by whether its recipient key IDs match the recipient's saved key; the server never decrypts or holds private keys. Losing the private key locks PGP sign-in unless another second factor is enrolled. Vendor pages and order pages show the other party's armored public key, fingerprint and whether ownership is verified, and "Message vendor"/"Contact vendor" links open `/messages?to=<handle>` with the recipient filled in; without a saved key, the page says messages cannot be sent until one is added.
+
+### Orders
+
+No configuration. Requesting payment on an order requires a test-network wallet provider for its currency (see Payments); without one the step is shown as unavailable. Migration 030 adds `deliveries`, `reviews` and `disputes.outcome`. Digital delivery content is stored unencrypted in the database and shown only to the order's buyer and vendor, and read-only to moderators and administrators once the order is disputed; vendors should encrypt sensitive content to the buyer's PGP key before delivering it.
+
+**Shipping addresses are never stored, by design.** There is no address field. For a paid physical order the order page asks the buyer to encrypt their address to the vendor's PGP key in their own PGP application and send it through `/messages`, which accepts only OpenPGP-encrypted messages; the server keeps only that ciphertext. A vendor without a saved key cannot receive addresses until they add one.
+
+Moderators and administrators open the order page of a disputed (or resolved) order they are not party to, read-only, from the moderation desk; buyer and vendor actions stay unavailable to them. Changing a vendor's role to buyer or moderator archives their active listings in the same audited transaction and blocks new drafts and payment requests on them; existing orders continue.
+
+### Inventory
+
+No configuration. Vendors manage listings from the vendor desk (Edit / Archive / Restore). Automatic delivery content for digital listings is stored unencrypted in the database — include it in your threat model and backups — and is only released after a payment provider confirms payment; with payments disabled it is never released automatically.
+
+### Payments
+
+**Test networks only. These payments move no real funds.** The application refuses to start if a node or wallet is on mainnet or disagrees with `BITCOIN_CHAIN`/`MONERO_NETWORK` (blank accepts whichever test network the node reports). A node that is unreachable, still syncing or has no wallet loaded does **not** stop the site: that currency shows as unavailable on the admin page, payment requests for it are refused, and every watcher pass checks it again (reloading the Bitcoin wallet or reopening the Monero wallet after a node restart). A node that reports mainnet after startup disables its currency until the app is restarted. A currency with a blank URL stays disabled, and the site then says "Payments disabled". Step-by-step setup, wallet creation and payout recovery: [docs/testnet-runbook.md](docs/testnet-runbook.md). Upgrading from v0.1.0-alpha.1: [UPGRADING.md](UPGRADING.md).
+
+- Bitcoin: `BITCOIN_RPC_URL` is a wallet-enabled Bitcoin Core RPC. Credentials go in the URL userinfo (`http://marketplace:PASSWORD@bitcoin:8332`); they are sent as HTTP Basic auth and never logged. `BITCOIN_WALLET` (default `opsecmkt`) must exist; the app loads it if needed. Create it once as shown in the [runbook](docs/testnet-runbook.md#2-create-the-bitcoin-wallet) (inside the compose container `bitcoin-cli` needs `-rpcport=8332 -rpcuser=marketplace`). `BITCOIN_CHAIN` (blank, `testnet4`, `signet` or `regtest`) must match the node when set; the local node service runs `testnet4` when it is blank. `PAYMENT_CONFIRMATIONS_BTC` defaults to 3; use 1 for regtest.
+- Monero: `MONERO_WALLET_RPC_URL` is monero-wallet-rpc with its `--rpc-login` credentials as userinfo (for example `http://marketplace:PASSWORD@monero-wallet:18083`), sent as HTTP Digest auth. The local `monero-wallet` service requires `MONERO_WALLET_RPC_PASSWORD` (the installer generates it) and no longer runs with `--disable-rpc-login`. The app uses account 0 and opens a wallet file named `opsecmkt` (empty password) if none is open. Create it first with the `create_wallet` RPC ([runbook](docs/testnet-runbook.md#3-create-the-monero-wallet)). `MONERO_RPC_URL` (the daemon) is optional; when set, its network and sync state are checked too. `MONERO_NETWORK` (blank, `stagenet` or `testnet`) must match when set. `PAYMENT_CONFIRMATIONS_XMR` defaults to 10.
+- `PAYMENT_POLL_INTERVAL` (default `30s`, from 1s to 1h) sets how often the single background watcher polls wallets and sends queued payouts. Several app instances can share a database; only one polls at a time.
+- `PAYMENT_EXPIRY` (Go duration, default `24h`, from 10m to 720h) is the payment window. An order still awaiting payment that long after its address was issued, with no deposit seen, is cancelled by the watcher and its reserved stock is returned. An order with a deposit still confirming stays open. A buyer can hold at most 3 orders awaiting payment at once. Requesting payment records the listing's current price.
+
+Operational limits to accept before enabling payments:
+
+- Deposits for all orders sit in **one pooled custodial wallet** per currency. This is not multisig escrow. Whoever controls the node wallet controls the funds.
+- There is **no commission or fee accounting**. Bitcoin payouts deduct the network fee from the amount sent (`subtractfeefromamount`). Monero payout fees are paid by the pooled wallet on top of the payout, so keep a small test-coin buffer in it.
+- Payouts are **single-attempt**. A failed or interrupted wallet call is shown on the admin page and never retried automatically, because the transaction may already have been broadcast. After checking the wallet, an administrator can release a held payout, requeue a failed or stuck one, or record one as sent with its transaction ID (password-confirmed and audited). A shutdown or redeploy lets an in-flight wallet send finish (bounded to 30 seconds; the app's stop grace period is 60 seconds).
+- The watcher never cancels an order for non-payment unless it read that order's deposit address from the wallet in the same pass, and it skips a currency entirely while its node is still syncing (Bitcoin `initialblockdownload`; Monero daemon `target_height` above `height`, when `MONERO_RPC_URL` is set).
+- A credited deposit that later conflicts is flagged to moderators and holds the order's unsent payout. A credited deposit that drops below the confirmation threshold (a reorg) also holds the payout, which resumes automatically once it confirms again. The order state is never reverted automatically.
+- Late deposits: closed orders stay watched while their address is less than **30 days** old and a deposit is still confirming or unhandled. Funds that confirm after a cancellation that refunded nothing are refunded to the buyer (blocked until the buyer saves an address). Extra funds on completed or resolved orders, or after a refund was already queued, are flagged to moderators, not paid out. Deposits to older addresses are not seen by the watcher; handle them by hand from the wallet.
+- Monero transfers with a non-zero `unlock_time` (locked transfers) are recorded and shown, but never counted toward payment or paid out. The order history notes "locked transfer ignored" once and moderators and the buyer are notified.
+- Recipients must save a payout address on their account page. Payouts wait ("blocked") until they do. Saving or removing a payout address needs the current password, plus an authenticator code when TOTP is enrolled.
+
+`scripts/regtest-smoke.sh` is a manual check against a local `bitcoind -regtest` (`BITCOIN_REGTEST_RPC_URL=http://user:pass@127.0.0.1:18443`); see the [runbook](docs/testnet-runbook.md#7-manual-regtest-check-bitcoin). It is not part of CI.
+
+### Transparency
+
+`AUDIT_SIGNING_KEY` (64 hex characters, an Ed25519 seed generated by the installer with `openssl rand -hex 32`) enables signed audit exports. It is read only from the environment, never stored in the database; blank or malformed values leave the export visibly unavailable. Changing it changes the public key, so treat it like any long-lived signing key: back it up with `.env` and announce rotations.
+
+**Pin the audit public key.** The admin page and `/canary` show the hex Ed25519 public key. Record it once through a channel you trust (for example in the operator-signed canary text) and verify every export against that pinned value, not against the key printed in the `.sig` file:
+
+```sh
+go run ./cmd/verify-audit -pub <pinned-hex-key> audit-events-upto-N.jsonl audit-events-upto-N.sig
+```
+
+The export for a given `upto` is byte-for-byte reproducible, so two downloads can be compared. **A server compromise can produce validly signed exports**: whoever controls the server or `AUDIT_SIGNING_KEY` can sign an altered history. The signature proves origin from the configured key, not that the log is complete or untampered.
+
+**Warrant canary.** In the admin page, paste the operator's OpenPGP public key, then paste a statement the operator wrote and signed offline (`gpg --clearsign canary.txt`). The application stores it as pasted only if it verifies, re-verifies it on every view of `/canary`, and shows INVALID with the reason if the key changes or the stored text is altered. Keep the operator's private key off the server; the application never writes or signs canary text.
 
 ## Backups and recovery
 
@@ -65,7 +134,7 @@ Install [age](https://age-encryption.org/) and generate an identity offline (`ag
 AGE_RECIPIENT=age1YOUR_PUBLIC_RECIPIENT ./scripts/backup.sh backups/market.dump.age
 ```
 
-For external databases also set `BACKUP_DATABASE_URL`, install Python 3 and PostgreSQL client tools matching or newer than the server. The script streams a custom-format dump directly into encryption, uses restrictive file permissions, refuses overwrite and fails if either command fails. Back up `.env`, deployment settings and the Tor identity separately in encrypted storage. Database dumps do not include onion keys or blockchain volumes. Maintain offline copies and rehearse recovery.
+For external databases also set `BACKUP_DATABASE_URL`, install Python 3 and PostgreSQL client tools matching or newer than the server. The script streams a custom-format dump directly into encryption, uses restrictive file permissions, refuses overwrite and fails if either command fails. Back up `.env`, deployment settings and the Tor identity separately in encrypted storage. Database dumps do not include onion keys or blockchain volumes, and in particular **not the custodial payment wallets** (the `bitcoin_data` and `monero_wallet` volumes, or your external wallets): back those up on their own (see the [runbook](docs/testnet-runbook.md#6-back-up-the-wallets)). Maintain offline copies and rehearse recovery.
 
 Restore into an explicitly provisioned **empty** destination, with Python 3 and compatible PostgreSQL client tools:
 
@@ -74,7 +143,7 @@ RESTORE_DATABASE_URL='postgres://user:password@localhost/recovery?sslmode=verify
   AGE_IDENTITY=/secure/backup-key.txt ./scripts/restore.sh backups/market.dump.age
 ```
 
-The restore requires typing `RESTORE`, runs transactionally, and does not drop existing tables. Validate recovered accounts, listings, orders and settings before pointing the application at it. Shut down writes or restore into a separate instance during recovery. Never test a restore against your live database.
+The restore requires typing `RESTORE`, runs transactionally, and does not drop existing tables. Because a dump can predate payouts that were sent afterwards, the script then holds every payout the dump shows as queued or sending (one transaction, error "Restored from backup: verify in the wallet before releasing"), so the restored site never resends one on its own; an administrator releases, requeues or marks each as sent from the admin page after checking the wallet. Validate recovered accounts, listings, orders and settings before pointing the application at it. Shut down writes or restore into a separate instance during recovery. Never test a restore against your live database.
 
 ## Verification and maintenance
 
@@ -114,6 +183,6 @@ npx playwright install chromium firefox webkit
 npm run test:e2e
 ```
 
-For the real account/order browser journey, also set `E2E_DATABASE_URL` to a **fresh, disposable** PostgreSQL database. CI requires it. Never use a production database. Test servers use loopback ports 18080 and 18081 and do not reuse your existing preview.
+For the real account/order browser journeys, also set `E2E_DATABASE_URL` to a **fresh, disposable** PostgreSQL database. The `db-setup` project initializes it once; every other `tests/e2e/db-*.spec.ts` depends on it and creates its own uniquely named accounts. CI requires it. Never use a production database. Test servers use loopback ports 18080 and 18081 and do not reuse your existing preview.
 
 Version tags produce CI-gated **private draft release artifacts**, not a live deployment. See [CI and release instructions](docs/ci-cd.md) and [operations test instructions](docs/operations-tests.md).

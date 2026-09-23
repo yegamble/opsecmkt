@@ -1,0 +1,16 @@
+{{define "page:login"}}{{template "header" .}}
+<div class="form-narrow">
+<div class="panel">
+<div class="eyebrow">Your independent marketplace</div>
+<h1>Welcome back<span class="accent">.</span></h1>
+<p>Sign in to your marketplace account.</p>
+<form class="stack" method="post" action="/login">
+<input type="hidden" name="csrf" value="{{.CSRF}}"><label>Handle<input name="handle" required minlength="3" maxlength="32" autocomplete="username" spellcheck="false" autocapitalize="none" placeholder="your_handle">
+</label>
+<label>Password<input type="password" name="password" required autocomplete="current-password">
+</label>{{template "auth-captcha" .}}<button class="primary" type="submit">Sign in ↗</button>
+</form><p class="form-footer">New here? <a href="/register">Create an account</a>
+</p></div>
+<p class="muted help">Keep your account credentials private. An account is not an anonymity guarantee.</p>
+</div>
+{{template "footer" .}}{{end}}
