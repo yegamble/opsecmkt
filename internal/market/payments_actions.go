@@ -76,7 +76,7 @@ func paymentsGlobalLoader(_ context.Context, a *App, _ *http.Request, d *PageDat
 }
 
 // paymentsOrderLoader builds PaymentView only from payment_addresses and the payments ledger.
-// load.go has already restricted the order to its buyer and vendor.
+// load.go has already restricted the order to its buyer, its vendor and staff reviewers (staffReviewer).
 func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 	if d.Order == nil {
 		return nil
@@ -280,15 +280,15 @@ func paymentsAdminLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 	}
 	// One statement, so now() (and so the attention flag) is the same for both halves: every payout needing
 	// attention (oldest first; its resolve form is only on this page), then the most recent others up to
-	// payoutHistoryLimit. OrderLink: the order page opens for this administrator (a party, or a disputed
-	// or resolved order read as a reviewer; see disputeReviewer).
+	// payoutHistoryLimit. OrderLink: the order page opens for this administrator (a party, or a disputed,
+	// resolved or payment-flagged order read as a reviewer; see staffReviewer).
 	uid := ""
 	if d.User != nil {
 		uid = d.User.ID
 	}
 	rows, err = a.db.QueryContext(ctx, `WITH v AS (SELECT p.id,p.order_id,p.kind,u.handle,p.currency,p.amount,p.address,p.state,p.txid,p.error,to_char(p.updated,'YYYY-MM-DD HH24:MI') AS updated,
 		(p.state IN ('blocked','held','failed') OR (p.state='sending' AND p.updated < now()-interval '5 minutes')) AS attention,p.send_ambiguous,
-		(o.buyer_id=$1 OR pr.vendor_id=$1 OR o.state IN ('disputed','resolved')) AS order_link
+		(o.buyer_id=$1 OR pr.vendor_id=$1 OR o.state IN ('disputed','resolved') OR EXISTS(SELECT 1 FROM payments pm WHERE pm.order_id=o.id AND pm.flagged)) AS order_link
 		FROM payouts p JOIN users u ON u.id=p.user_id JOIN orders o ON o.id=p.order_id JOIN products pr ON pr.id=o.product_id)
 		SELECT * FROM (SELECT * FROM v WHERE attention UNION ALL (SELECT * FROM v WHERE NOT attention ORDER BY id DESC LIMIT $2)) s
 		ORDER BY attention DESC, CASE WHEN attention THEN id END, id DESC`, uid, payoutHistoryLimit+1)

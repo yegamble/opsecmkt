@@ -552,6 +552,15 @@ func TestAdminPayoutsAttentionNeverHidden(t *testing.T) {
 	// The link is correct: the administrator can open the linked order and not the unlinked one.
 	p.check(p.do("GET", "/order?id="+failedOrder, p.adminSess, nil), 200)
 	p.check(p.do("GET", "/order?id="+stuckOrder, p.adminSess, nil), 404)
+	// A payment flagged for review opens the order to staff (A-24), so its payout links to it too.
+	if _, err := p.DB.Exec(`INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,flagged)
+		VALUES($1,'BTC','flagged-tx',0,'fake-testnet-deposit',1000,-1,true)`, stuckOrder); err != nil {
+		t.Fatal(err)
+	}
+	if admin = html.UnescapeString(p.page("/admin", p.adminSess)); !strings.Contains(admin, `href="/order?id=`+stuckOrder+`"`) {
+		t.Fatal("a payout whose order has a flagged payment is not linked")
+	}
+	p.check(p.do("GET", "/order?id="+stuckOrder, p.adminSess, nil), 200)
 
 	// Nothing needing attention and few payouts: no alarm and no truncation notice.
 	if _, err := p.DB.Exec("DELETE FROM payouts WHERE state='sent' OR id IN ($1::bigint,$2::bigint)", failedID, stuckID); err != nil {
