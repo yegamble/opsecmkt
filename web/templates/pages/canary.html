@@ -21,12 +21,14 @@
 <h2>What this application currently does</h2>
 <ul>
 <li>Renders HTML and CSS on the server without requiring client-side JavaScript.</li>
-<li>Supports account sessions, marketplace listings, and unfunded order drafts.</li>
-<li>Accepts externally encrypted PGP text for messages. It does not perform browser-side encryption.</li>
+<li>Supports account sessions with optional TOTP or PGP second factors, marketplace listings, and orders that move only through a server-enforced state machine.</li>
+<li>Accepts only OpenPGP-encrypted messages and shows whether each was encrypted to the recipient's saved key. It does not encrypt or decrypt messages.</li>
+<li>Marks a PGP key verified only after its holder signs or decrypts a server challenge.</li>
+<li>When the operator configures a test-network wallet, accepts TESTNET Bitcoin or Monero payments into the operator's pooled test wallet and pays releases and refunds from it. No real funds; this is custodial holding, not escrow.</li>
 <li>Shows a warrant canary only as the operator's PGP-clearsigned text, re-verified against the configured operator key on every page view; it never writes or edits canary text.</li>
 </ul>
 <h2>What remains unavailable</h2>
-<p>Bitcoin and Monero funding, wallet balances, multisig escrow, automatic settlement, TOTP, and verified PGP ownership are not active.</p>
+<p>Mainnet payments (refused by design), multisig escrow, commission or fee accounting, XMPP delivery, automatic mirror orchestration, QR-code TOTP enrollment, and an audio CAPTCHA alternative are not available.</p>
 </section>
 <a class="button" href="/">Return to marketplace ↗</a>
 </div>

@@ -8,11 +8,11 @@ The Figma reference is adapted to Go-rendered HTML and CSS. The browser loads no
 - Buyer registration, bcrypt password hashing, rotating hashed sessions, session revocation, CSRF validation, bounded forms and authentication concurrency.
 - Server-enforced buyer, vendor, moderator, and administrator roles.
 - PostgreSQL-backed listing creation, catalog search/category/region filters, product and vendor pages.
-- Atomic-unit BTC/XMR price storage; idempotent **unfunded draft** creation and owner-only order access. Draft creation does not reserve stock or collect payment.
-- Orders carry a canonical state (`draft`, `awaiting_payment`, `paid`, `shipped`, `delivered`, `completed`, `disputed`, `resolved`, `cancelled`). A server-side transition table, row locks and compare-and-set updates guard every change and log it in `order_events`. Only drafts can be created today; no user-facing transition beyond the draft exists yet.
+- Atomic-unit BTC/XMR price storage; idempotent **unfunded draft** creation and owner-only order access. Draft creation does not reserve stock or collect payment; requesting payment from the order page does (see P3, P5).
+- Orders carry a canonical state (`draft`, `awaiting_payment`, `paid`, `shipped`, `delivered`, `completed`, `disputed`, `resolved`, `cancelled`). A server-side transition table, row locks and compare-and-set updates guard every change and log it in `order_events`. Buyers, vendors, moderators and the payment watcher move orders only through it (see P3 Orders and P5 Payments).
 - Versioned, idempotent schema migrations applied at startup under an advisory lock (see README "Migrations").
-- Storage and delivery of locally encrypted armored messages, recipient notifications, and account audit history. Armor is format-checked, not cryptographically authenticated.
-- Moderator dispute decisions can be recorded for eligible funded states; this version cannot create funded states or transfer funds.
+- Storage of messages the sender encrypted with OpenPGP beforehand (packets are inspected and plaintext is rejected; see P2), in-app recipient notifications, and account audit history. The server cannot decrypt messages.
+- Moderators resolve disputes on paid, shipped or delivered orders with a release or refund outcome; the payment system then queues the matching test-network payout from the operator's wallet (see P3, P5).
 - Desired node settings are saved for operator review. Deployment remains operator-controlled.
 - Docker internal/external database selection, separate clearnet/Tor exposure, optional operator-supplied full-node containers, encrypted database backup and transactional restore scripts.
 
@@ -41,7 +41,7 @@ Each package updates only its own subsection when it lands.
 Implemented on the Foundation state machine; every action goes through the server-side transition table, row lock and compare-and-set, so a forbidden move returns 403, a stale or repeated one 409, and nothing reports success without a recorded state change.
 
 - **Payment request** (`/orders/pay`, buyer, draft → awaiting payment): refused with 409 "Payment unavailable for BTC/XMR" unless a test-network wallet provider is configured for that currency; the order page shows the step as unavailable instead of a button. On success one unit of stock is reserved and the live provider's address is stored. No address is ever invented by the application.
-- **Cancellation** (`/orders/cancel`): buyer cancels a draft; buyer or vendor cancels an order awaiting payment; vendor cancels a paid order. Reserved stock is returned. Refunds of received funds are not performed by this action.
+- **Cancellation** (`/orders/cancel`): buyer cancels a draft; buyer or vendor cancels an order awaiting payment; vendor cancels a paid order. Reserved stock is returned. When confirmed deposits exist, the payment package queues a refund to the buyer (see P5).
 - **Shipping** (vendor, physical, paid → shipped) with an optional note; **digital delivery** (vendor, digital, paid → delivered) with 1–32000 characters of content; **completion** (buyer, shipped/delivered → completed).
 - **Automatic delivery**: when the payment watcher marks a digital order paid and the listing has delivery content, the content is recorded and the order moves to delivered as the system actor in the same transaction.
 - Delivery content is stored **unencrypted** in PostgreSQL, is written only in the same transaction as the delivered transition, and is shown only to the order's buyer and vendor.
@@ -70,7 +70,7 @@ Implemented, **test networks only** (disabled unless configured; see README "Fea
 - A credited deposit that later conflicts or disappears from the wallet is flagged in the order history and to moderators. The order is never reverted automatically, and unsent payouts are held. Deposits that confirm after settlement are flagged, not paid out.
 - Payouts: completing an order queues a release to the vendor. Cancelling a funded order queues a refund to the buyer. Resolving a dispute queues a release or refund according to its recorded outcome. Each payout is a single wallet call: failed or stuck payouts are shown to administrators and never retried. A payout waits ("blocked") until the recipient saves a payout address, which is validated against the provider's test network.
 - Order pages show the deposit address, amounts and confirmations only when they come from a live provider and the ledger, each labelled `TESTNET <network>`. Footer, catalog, checkout, product and vendor pages state "Payments disabled" or "TESTNET payments (<networks>) — no real funds". The admin page lists each provider's network, status, last poll and last error, plus recent payouts.
-- The payment step and the other order actions (`/orders/pay`, ship, complete, cancel, dispute outcomes) belong to the Orders package. Without them, orders cannot reach `awaiting_payment` in this build.
+- The payment step and the other order actions (`/orders/pay`, ship, complete, cancel, dispute outcomes) are provided by the Orders package; `lifecycle_integration_test.go` drives listing → payment → delivery → completion → payout and dispute → refund end to end against the fake wallet.
 
 Not implemented: multisig escrow, marketplace commission or fee accounting, automatic payout retries, and mainnet payments (by design). Funds sit in one pooled custodial wallet per currency. Bitcoin payouts deduct the network fee from the amount sent. Monero payout fees are paid from the pooled wallet. The regtest smoke test (`scripts/regtest-smoke.sh`) is manual and has not been run in this environment.
 
@@ -84,8 +84,8 @@ Not implemented: multisig escrow, marketplace commission or fee accounting, auto
 
 ## Not yet implemented
 
-Payment addresses, wallet custody, deposit monitoring, escrow, refunds, withdrawals, automated digital delivery, actual node/API connectivity, TOTP enrollment/challenge, recovery codes, CAPTCHA, PGP signature/key verification, XMPP delivery, signed canary publication, signed audit export, verified reviews, inventory editing/archiving, and automatic mirror orchestration are not implemented. Related interface states are explicitly unavailable; no mock balances or deposit addresses are presented as real.
+XMPP delivery (the XMPP address is stored as a profile field only), automatic mirror orchestration, multisig escrow, marketplace fee or commission accounting, mainnet payments (refused at startup by design), QR-code TOTP enrollment and an audio CAPTCHA alternative are not implemented. Narrower gaps are listed under each package above (for example, no order auto-completion timers and no automatic payout retries). Payments work only on test networks, and deposits are held in the operator's pooled test-network wallet, not in escrow. Unavailable interface states say so; no mock balances or deposit addresses are presented as real.
 
 Tor deployment isolates inbound exposure. Local full nodes use direct peer-network egress. Selecting external database/RPC services explicitly permits application egress; this is not an all-traffic-through-Tor configuration. Read README before deployment.
 
-This is a functional application foundation and interface, not a completed production cryptocurrency exchange or escrow service.
+This is a functional test-network marketplace, not a production cryptocurrency exchange or escrow service.

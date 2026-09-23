@@ -1,6 +1,6 @@
 # OPSEC Market
 
-A Go and PostgreSQL marketplace with server-rendered HTML and CSS. No React, Node.js frontend, JavaScript bundle, or third-party browser assets are required. The Figma reference informs the dark marketplace layout; templates remain ordinary HTML.
+A Go and PostgreSQL marketplace with server-rendered HTML and CSS. No React, Node.js frontend, JavaScript bundle, or third-party browser assets are required. The Figma reference informs the dark marketplace layout; templates remain ordinary HTML. Payments, when configured, run on Bitcoin and Monero **test networks only**; see [implementation status](docs/implementation-status.md).
 
 ## Run locally
 
@@ -12,7 +12,7 @@ Install Docker Engine/Desktop with Compose v2 and OpenSSL, then run:
 
 Choose `clearnet` and answer `yes` to local HTTP development. Open `http://127.0.0.1:8080/setup`. Read `SETUP_TOKEN` from the generated, permission-restricted `.env` to bootstrap the first administrator. Keep this file private. The installer refuses to overwrite an existing configuration. For later runs use `docker compose up -d --build`; inspect with `docker compose logs app` and stop with `docker compose down`. Do not add `--volumes` unless intentionally destroying persisted data.
 
-The installer generates independent random database, bootstrap, and optional Bitcoin RPC secrets. Leave the external PostgreSQL URL blank to create the private database container. The internal-database overlay waits for the database health check before starting the app. Supplying an external URL omits that service and the health dependency; provision the database and its restricted application account beforehand, and require TLS for remote connections (`sslmode=verify-full` with appropriate trust configuration). Percent-encode special characters in URL credentials. The app applies its schema during startup, so its initial database account needs migration permissions.
+The installer generates independent random database, bootstrap, audit-signing, and optional Bitcoin RPC secrets. Leave the external PostgreSQL URL blank to create the private database container. The internal-database overlay waits for the database health check before starting the app. Supplying an external URL omits that service and the health dependency; provision the database and its restricted application account beforehand, and require TLS for remote connections (`sslmode=verify-full` with appropriate trust configuration). Percent-encode special characters in URL credentials. The app applies its schema during startup, so its initial database account needs migration permissions.
 
 To run without Docker, install Go 1.26 and PostgreSQL 17+, set `DATABASE_URL`, `SETUP_TOKEN`, `COOKIE_SECURE=false` for local HTTP, and run `go run ./cmd/server` from the repository root. The runtime reads templates and assets from `web/`.
 
@@ -55,7 +55,7 @@ Nodes default to disabled. The installer accepts an external RPC URL or a local 
 
 Both nodes store their blockchain in dedicated volumes and publish no ports. They can require substantial disk space and synchronization time. Bitcoin RPC is password protected; its allowlist covers common private Docker subnets and must be adjusted for custom networking. Monero exposes restricted daemon RPC only inside the deployment network. A Monero daemon is **not** a wallet RPC service. Full-node availability alone does not provide payment processing.
 
-**Payment execution, deposit monitoring, escrow custody, withdrawals and cryptographic multisignature settlement are not implemented.** Do not send real funds to demonstration addresses or treat displayed balances/statuses as chain-confirmed. RPC environment variables and admin connection settings are configuration placeholders until a tested integration is implemented. Saving settings in the web application never installs software, launches containers or executes Docker. Operators apply deployment changes in `.env` and Compose themselves; the web container has no Docker socket.
+**Payments are implemented for test networks only; mainnet is refused at startup.** With a wallet RPC configured (see [Payments](#payments)), the app issues deposit addresses, watches confirmations and sends single-attempt releases and refunds from the operator's pooled test-network wallet. That is custodial holding, not multisig escrow, and there is no fee accounting. Never send mainnet coins. The admin page's node-mode fields only record a desired configuration; providers are enabled by environment variables and a restart. Saving settings in the web application never installs software, launches containers or executes Docker. Operators apply deployment changes in `.env` and Compose themselves; the web container has no Docker socket.
 
 ## Migrations
 
