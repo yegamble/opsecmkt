@@ -17,7 +17,8 @@ test('seeded categories expose one current link and matching listings after ever
   await page.goto('/');
   for (const [category, count] of [['All listings', 6], ['Hardware', 2], ['Digital', 3], ['Services', 1], ['All listings', 6]] as const) {
     let panel = await filters(page);
-    await panel.getByRole('link', { name: category, exact: true }).click();
+    // Wait for the new document; otherwise filters() can inspect the page mid-navigation and pick the hidden panel.
+    await Promise.all([page.waitForEvent('load'), panel.getByRole('link', { name: category, exact: true }).click()]);
     panel = await filters(page);
     const current = panel.locator('.category-links [aria-current="page"]');
     await expect(current).toHaveCount(1);
