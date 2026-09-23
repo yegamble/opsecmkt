@@ -30,7 +30,18 @@ Not implemented: key parsing and fingerprints, ownership proof, PGP second facto
 
 ### P3 Orders
 
-Not implemented: payment request, cancellation, shipping, delivery, completion, dispute outcomes and verified reviews. The state machine exists; users can only create drafts.
+Implemented on the Foundation state machine; every action goes through the server-side transition table, row lock and compare-and-set, so a forbidden move returns 403, a stale or repeated one 409, and nothing reports success without a recorded state change.
+
+- **Payment request** (`/orders/pay`, buyer, draft → awaiting payment): refused with 409 "Payment unavailable for BTC/XMR" unless a test-network wallet provider is configured for that currency; the order page shows the step as unavailable instead of a button. On success one unit of stock is reserved and the live provider's address is stored. No address is ever invented by the application.
+- **Cancellation** (`/orders/cancel`): buyer cancels a draft; buyer or vendor cancels an order awaiting payment; vendor cancels a paid order. Reserved stock is returned. Refunds of received funds are not performed by this action.
+- **Shipping** (vendor, physical, paid → shipped) with an optional note; **digital delivery** (vendor, digital, paid → delivered) with 1–32000 characters of content; **completion** (buyer, shipped/delivered → completed).
+- **Automatic delivery**: when the payment watcher marks a digital order paid and the listing has delivery content, the content is recorded and the order moves to delivered as the system actor in the same transaction.
+- Delivery content is stored **unencrypted** in PostgreSQL, is written only in the same transaction as the delivered transition, and is shown only to the order's buyer and vendor.
+- **Disputes** move a paid, shipped or delivered order to disputed. **Resolution** requires an outcome (release to vendor or refund to buyer) and a written decision, and is refused to a moderator or administrator who is party to the order. The outcome is recorded before the resolved transition so payment hooks can act on it; the moderation desk itself moves no funds.
+- **Verified reviews**: one per completed order, by its buyer, rating 1–5 and up to 2000 characters. Product and vendor pages label them "Verified purchase" because each is keyed to a completed order; reviewer handles and order ids are not shown publicly and dates are shown by month.
+- Order pages show the full transition history (actor and time), the moves available to the viewer, and the delivery and review panels. Orders, vendor desk and moderator desk list the relevant orders with their state.
+
+Limits: service listings have no ship/deliver step, so a paid service order can only be cancelled by the vendor or disputed. There are no auto-completion timers, and a moderator cannot open the order page of an order they are not party to (the desk shows an order summary instead).
 
 ### P4 Inventory
 

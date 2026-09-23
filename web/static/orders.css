@@ -1,1 +1,105 @@
 /* orders styles. Owned by P3 Orders; style.css is frozen. */
+.order-timeline {
+  list-style:none;
+  margin:0 0 12px;
+  padding:0;
+  border-left:1px solid var(--line)
+}
+.order-timeline li {
+  position:relative;
+  display:grid;
+  gap:2px;
+  padding:0 0 16px 18px;
+  font-size:12px;
+  overflow-wrap:anywhere
+}
+.order-timeline li::before {
+  content:"";
+  position:absolute;
+  left:-4px;
+  top:6px;
+  width:7px;
+  height:7px;
+  background:var(--amber)
+}
+.order-when {
+  font:10px var(--mono);
+  color:var(--muted)
+}
+.order-note {
+  white-space:pre-wrap
+}
+.order-action {
+  margin-bottom:18px;
+  padding-bottom:18px;
+  border-bottom:1px solid var(--line)
+}
+.order-action summary {
+  cursor:pointer;
+  min-height:44px;
+  display:flex;
+  align-items:center
+}
+.order-action form {
+  margin-top:12px
+}
+.order-unavailable {
+  padding:12px 14px;
+  border:1px dashed #594322;
+  background:#171209;
+  color:var(--text);
+  font-size:12px
+}
+.order-unavailable strong {
+  color:var(--amber)
+}
+.order-delivery {
+  max-height:420px;
+  overflow:auto;
+  color:var(--text)
+}
+.order-reviews {
+  margin-top:28px
+}
+.order-reviews-head {
+  display:flex;
+  flex-wrap:wrap;
+  align-items:baseline;
+  justify-content:space-between;
+  gap:8px 16px
+}
+.review-summary {
+  margin:0;
+  font:12px var(--mono);
+  color:var(--muted)
+}
+.review-summary strong {
+  font-size:20px;
+  color:var(--amber)
+}
+.review-rating {
+  margin:8px 0 4px;
+  font-size:16px;
+  letter-spacing:.12em;
+  color:var(--amber)
+}
+.review + .stack {
+  margin-top:18px
+}
+.dispute-order {
+  font-size:12px;
+  overflow-wrap:anywhere
+}
+.dispute-outcome {
+  margin:0;
+  padding:12px 14px;
+  border:1px solid var(--line);
+  display:grid;
+  gap:10px
+}
+.dispute-outcome legend {
+  padding:0 6px;
+  font:10px var(--mono);
+  color:var(--muted);
+  text-transform:uppercase
+}

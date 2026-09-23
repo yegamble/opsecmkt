@@ -59,6 +59,11 @@ type PageData struct {
 	Reviews       []Review
 	ReviewSummary *ReviewSummary
 	CanReview     bool
+	// IncomingOrders: vendor-dashboard orders on the viewer's own listings; NeedsAction counts paid ones.
+	IncomingOrders []Order
+	NeedsAction    int
+	// DisputeOrders: order summary per dispute (disputes and moderator pages), keyed by order id.
+	DisputeOrders map[string]Order
 
 	// P4 Inventory (uses Product.Archived)
 
@@ -95,12 +100,13 @@ type PGPView struct {
 
 // P3 Orders
 type OrderEvent struct{ From, To, Actor, Note, Created string }
-type Transition struct{ To, Label, Action string }
+type Transition struct{ To, Label, Action string } // Action "" = shown as unavailable with Label as the reason
 type DeliveryView struct{ Content, Created string }
 type Review struct {
 	ID, OrderID, Buyer string
 	Rating             int
 	Body, Created      string
+	Product            string // listing title, vendor page only
 }
 type ReviewSummary struct {
 	Count   int

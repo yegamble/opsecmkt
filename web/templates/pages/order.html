@@ -3,13 +3,14 @@
 <a href="/orders">Orders</a> / {{.ID}}</div>
 <div class="page-head">
 <div>
-<div class="eyebrow">Order record</div>
+<div class="eyebrow">Order record · {{if eq .BuyerID $.User.ID}}you are the buyer{{else}}you are the vendor{{end}}</div>
 <h1>{{.Title}}</h1>
 <p class="mono">{{.ID}}</p>
 </div>
-<span class="badge">{{.Status}}</span>
+<span class="badge {{template "order-badge-class" .State}}">{{.Status}}</span>
 </div>
 <div class="grid-two">
+<div>
 <section class="panel">
 <h2>Order details</h2>
 <dl class="key-values">
@@ -18,12 +19,20 @@
 <dd>{{.Created}}</dd>
 </div>
 <div>
+<dt>Last change</dt>
+<dd>{{.Updated}}</dd>
+</div>
+<div>
 <dt>Buyer</dt>
 <dd>{{.Buyer}}</dd>
 </div>
 <div>
 <dt>Vendor</dt>
 <dd>{{.Vendor}}</dd>
+</div>
+<div>
+<dt>Fulfillment</dt>
+<dd>{{.Kind}}</dd>
 </div>
 <div>
 <dt>Status</dt>
@@ -35,12 +44,80 @@
 </div>
 </dl>
 </section>
-<section class="panel">{{template "order-payment" $}}
-<div class="actions">
-<a class="button" href="/messages">Message vendor</a>
-<a class="button" href="/disputes">Open a dispute</a>
-</div>
+<section class="panel" aria-labelledby="order-history">
+<h2 id="order-history">History</h2>
+<ol class="order-timeline">
+<li>
+<span class="order-when">{{.Created}}</span>
+<span>Draft created by {{.Buyer}} (buyer)</span>
+</li>{{range $.OrderEvents}}<li>
+<span class="order-when">{{.Created}}</span>
+<span>
+<strong>{{.From}} → {{.To}}</strong> by {{.Actor}}</span>{{if .Note}}<span class="muted order-note">{{.Note}}</span>{{end}}</li>{{end}}</ol>
+<p class="help">Every state change is recorded server-side with its actor and time.</p>
 </section>
+</div>
+<div>
+<section class="panel">{{template "order-payment" $}}</section>
+<section class="panel" aria-labelledby="order-next">
+<h2 id="order-next">Next steps</h2>{{$o := .}}{{range $.Transitions}}{{if not .Action}}<p class="order-unavailable" role="note">
+<strong>Unavailable.</strong> {{.Label}}</p>{{else if eq .To "delivered"}}<form class="stack order-action" method="post" action="{{.Action}}">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="order_id" value="{{$o.ID}}">
+<label>Delivery content<textarea name="content" required maxlength="32000" placeholder="Download link, licence key, or an armored PGP message to the buyer">
+</textarea>
+</label>
+<span class="help">Stored unencrypted on this server and shown only to the buyer and you. Encrypt sensitive content to the buyer's PGP key before pasting it. Delivering is final.</span>
+<button class="primary" type="submit">{{.Label}}</button>
+</form>{{else if eq .To "disputed"}}<details class="order-action">
+<summary class="accent mono">{{.Label}}</summary>
+<form class="stack" method="post" action="{{.Action}}">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="order_id" value="{{$o.ID}}">
+<label>Describe the issue<textarea name="reason" required minlength="20" maxlength="5000">
+</textarea>
+</label>
+<span class="help">A moderator who is not party to this order reviews it and records a release or refund outcome. Do not include passwords, private keys, or recovery phrases.</span>
+<button type="submit">Submit dispute</button>
+</form>
+</details>{{else}}<form class="stack order-action" method="post" action="{{.Action}}">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="order_id" value="{{$o.ID}}">{{if eq .To "cancelled"}}<input type="hidden" name="from" value="{{$o.State}}">{{end}}{{if or (eq .To "cancelled") (eq .To "shipped")}}<label>{{if eq .To "shipped"}}Shipping note for the buyer (optional){{else}}Reason (optional){{end}}<input name="note" maxlength="500">
+</label>{{end}}{{if eq .To "awaiting_payment"}}<span class="help">Reserves one unit of stock and asks this server's {{$o.Currency}} test-network wallet for a fresh address. No real funds.</span>{{else if eq .To "completed"}}<span class="help">Confirms you received the order. This is final: completed orders cannot be disputed.</span>{{else if and (eq .To "cancelled") (eq $o.State "paid")}}<span class="help">Returns one unit of stock. Any refund of received funds is handled by the payment system, not by this button.</span>{{end}}
+<button {{if or (eq .To "awaiting_payment") (eq .To "shipped") (eq .To "completed")}}class="primary" {{end}}type="submit">{{.Label}}</button>
+</form>{{end}}{{else}}<p class="muted">{{if or (eq .State "completed") (eq .State "resolved") (eq .State "cancelled")}}This order is closed. No further changes are possible.{{else if eq .State "awaiting_payment"}}Waiting for payment. The order becomes Paid only when the payment watcher sees enough test-network confirmations.{{else if eq .State "disputed"}}A moderator will review the dispute and record an outcome.{{else if eq .State "paid"}}Waiting for the vendor to fulfil this order.{{else}}Waiting for the buyer to confirm receipt.{{end}}</p>{{end}}
+<div class="actions">
+<a class="button" href="/messages">Message {{if eq .BuyerID $.User.ID}}vendor{{else}}buyer{{end}}</a>
+</div>
+</section>{{if eq .Kind "digital"}}<section class="panel" aria-labelledby="order-delivery">
+<h2 id="order-delivery">Digital delivery</h2>{{with $.Delivery}}<p class="help">Released {{.Created}} by the delivered step. Stored unencrypted on this server; visible only to the buyer and vendor.</p>
+<pre class="code-block order-delivery">{{.Content}}</pre>{{else}}<p class="muted">Nothing has been delivered. Content appears here only when the order moves to Delivered.</p>{{end}}</section>{{end}}{{if or $.CanReview $.Reviews}}<section class="panel" aria-labelledby="order-review">
+<h2 id="order-review">Review</h2>{{range $.Reviews}}<div class="review">
+<div class="message-meta">
+<span class="badge green">Verified purchase</span>
+<span>{{.Created}}</span>
+</div>
+<p class="review-rating">
+<span aria-hidden="true">{{.Stars}}</span>
+<span class="sr-only">Rated {{.Rating}} out of 5</span>
+</p>{{if .Body}}<p>{{.Body}}</p>{{end}}</div>{{end}}{{if $.CanReview}}<form class="stack" method="post" action="/reviews">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="order_id" value="{{.ID}}">
+<label>Rating<select name="rating" required>
+<option value="5">5 — excellent</option>
+<option value="4">4 — good</option>
+<option value="3">3 — acceptable</option>
+<option value="2">2 — poor</option>
+<option value="1">1 — bad</option>
+</select>
+</label>
+<label>Review (optional)<textarea name="body" maxlength="2000">
+</textarea>
+</label>
+<span class="help">Published on the listing and vendor pages as a verified purchase, without your handle or this order ID. One review per completed order.</span>
+<button class="primary" type="submit">Publish review</button>
+</form>{{end}}</section>{{end}}
+</div>
 </div>{{else}}<div class="empty">
 <h1>Order unavailable</h1>
 </div>{{end}}
