@@ -22,8 +22,9 @@ services:
       PAYMENT_POLL_INTERVAL: ${PAYMENT_POLL_INTERVAL:-30s}
       PAYMENT_EXPIRY: ${PAYMENT_EXPIRY:-24h}
       AUDIT_SIGNING_KEY: ${AUDIT_SIGNING_KEY:-}
-    # Shutdown waits for in-flight requests (10 s) and then for an in-flight payout send (at most 30 s
-    # plus recording); keep this above both so a redeploy never kills a broadcast half-way.
+    # Shutdown waits for in-flight requests (10 s) and then for an in-flight payout send (at most 30 s,
+    # payoutSendTimeout, plus 10 s to record it); keep this above their sum so a redeploy never kills a
+    # broadcast half-way.
     stop_grace_period: 60s
     read_only: true
     tmpfs: [/tmp]

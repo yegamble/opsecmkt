@@ -115,13 +115,19 @@ func (p *payEnv) str(query string, args ...any) string {
 	return s
 }
 
-// failedPayout asserts the order's payout was recorded failed with wallet error msg, never sent, and shown.
-func (p *payEnv) failedPayout(order, msg string) {
+// failedPayout asserts the order's payout was recorded failed with wallet error msg, never sent, and shown,
+// and whether the failure was recorded as ambiguous (may have been broadcast) or a definite rejection.
+func (p *payEnv) failedPayout(order, msg string, ambiguous bool) {
 	p.t.Helper()
 	st, txid, _, _ := p.payout(order)
 	errText := p.str("SELECT error FROM payouts WHERE order_id=$1", order)
-	if st != "failed" || txid != "" || !strings.Contains(errText, msg) || !strings.Contains(errText, "may or may not have been broadcast") {
-		p.t.Fatalf("payout for %s: state=%s txid=%q error=%q", order[:8], st, txid, errText)
+	recorded := p.str("SELECT send_ambiguous::text FROM payouts WHERE order_id=$1", order) == "true"
+	wording := "The wallet rejected the send; nothing was broadcast."
+	if ambiguous {
+		wording = "may or may not have been broadcast"
+	}
+	if st != "failed" || txid != "" || !strings.Contains(errText, msg) || !strings.Contains(errText, wording) || recorded != ambiguous {
+		p.t.Fatalf("payout for %s: state=%s txid=%q error=%q ambiguous=%v", order[:8], st, txid, errText, recorded)
 	}
 	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE '%failed and will not be retried%'", order); n != 1 {
 		p.t.Fatalf("failure events: %d", n)
@@ -157,7 +163,7 @@ func TestGapWalletSendFailuresRecordFailedPayouts(t *testing.T) {
 		if bnode.called("sendtoaddress") != before+1 {
 			t.Fatalf("sendtoaddress calls %d, want exactly one more than %d", bnode.called("sendtoaddress"), before)
 		}
-		p.failedPayout(order, f.msg)
+		p.failedPayout(order, f.msg, false) // a JSON-RPC error: nothing was broadcast
 		// payment_status carries the pass error and the admin provider table shows it.
 		if last := p.str("SELECT last_error FROM payment_status WHERE currency='BTC'"); !strings.Contains(last, f.msg) {
 			t.Fatalf("payment_status.last_error %q", last)
@@ -200,7 +206,8 @@ func TestGapWalletSendFailuresRecordFailedPayouts(t *testing.T) {
 		if g.s.called("transfer") != before+1 {
 			t.Fatalf("transfer calls %d, want %d", g.s.called("transfer"), before+1)
 		}
-		p.failedPayout(order, f.msg)
+		// A JSON-RPC error is a definite rejection; a success reply without a transaction hash is ambiguous.
+		p.failedPayout(order, f.msg, f.code == 0)
 		if last := p.str("SELECT last_error FROM payment_status WHERE currency='XMR'"); !strings.Contains(last, f.msg) {
 			t.Fatalf("XMR payment_status.last_error %q", last)
 		}
@@ -215,7 +222,7 @@ func TestGapWalletSendFailuresRecordFailedPayouts(t *testing.T) {
 func TestGapRPCErrorsMidPassNeverExpireOrChangeState(t *testing.T) {
 	p := newPayEnv(t)
 	ctx := context.Background()
-	core, bov, _, bp := gapBTC(t, p, 2)
+	core, bov, _, _ := gapBTC(t, p, 2)
 	expired := p.gapOrder("BTC", "tb1qgapexpiredorder000000000000000000")
 	p.expireAddress(expired)
 	funded := p.gapOrder("BTC", "tb1qgapfundedorder0000000000000000000")
@@ -258,10 +265,11 @@ func TestGapRPCErrorsMidPassNeverExpireOrChangeState(t *testing.T) {
 	bov.clear()
 	// A node that accepts the request and never answers: the client timeout ends the read.
 	bov.stall("listreceivedbyaddress", true)
-	bp.rpc.http.Timeout = 300 * time.Millisecond
+	defer func(d time.Duration) { rpcTimeout = d }(rpcTimeout)
+	rpcTimeout = 300 * time.Millisecond
 	pass("timeout", "bitcoin RPC unreachable")
 	bov.stall("listreceivedbyaddress", false)
-	bp.rpc.http.Timeout = rpcTimeout
+	rpcTimeout = 10 * time.Second
 
 	p.poll()
 	if s := p.state(expired); s != stateCancelled {

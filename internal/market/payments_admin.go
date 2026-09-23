@@ -12,7 +12,9 @@ import (
 // Administrator recovery actions for payouts the watcher will not touch on its own: release a held payout,
 // requeue a failed (or stuck sending) payout, or record one as sent after reconciling it with the wallet.
 // Each needs the administrator's password (and authenticator code when enrolled), is audited, and changes
-// the payout with a compare-and-set on its state, so repeated or concurrent submissions act once.
+// the payout with a compare-and-set on its state, so repeated or concurrent submissions act once. Requeueing
+// a payout whose last send may have been broadcast (an ambiguous failure or a stuck send) also needs an
+// explicit confirmation that the wallet shows no such transaction.
 
 func init() {
 	registerAction("/admin/payout", actionSpec{Roles: []string{"admin"}, OwnTx: true, Run: adminPayoutAction})
@@ -53,8 +55,11 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 	ctx, tx := c.Ctx(), c.Tx
 	var orderID, recipient, cur, state, orderState string
 	var amt int64
-	err := tx.QueryRowContext(ctx, `SELECT p.order_id,p.user_id,p.currency,p.amount,p.state,o.state FROM payouts p JOIN orders o ON o.id=p.order_id
-		WHERE p.id=$1 FOR UPDATE OF p`, id).Scan(&orderID, &recipient, &cur, &amt, &state, &orderState)
+	var ambiguous, stuck bool
+	// stuck repeats stuckSending with the payout alias (orders also has state and updated).
+	err := tx.QueryRowContext(ctx, `SELECT p.order_id,p.user_id,p.currency,p.amount,p.state,o.state,p.send_ambiguous,
+		(p.state='sending' AND p.updated < now()-interval '5 minutes') FROM payouts p JOIN orders o ON o.id=p.order_id
+		WHERE p.id=$1 FOR UPDATE OF p`, id).Scan(&orderID, &recipient, &cur, &amt, &state, &orderState, &ambiguous, &stuck)
 	if err == sql.ErrNoRows {
 		return actionResult{}, fail(404, "Payout not found")
 	}
@@ -85,12 +90,22 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 		note = "Administrator released the held TESTNET payout of " + label + "; it is queued for a single send."
 		audit = "Released held payout " + strconv.FormatInt(id, 10) + " (" + label + ") for order " + short
 	case "requeue":
-		res, err = tx.ExecContext(ctx, `UPDATE payouts SET state=CASE WHEN address='' THEN 'blocked' ELSE 'pending' END,error='',txid='',updated=now()
+		// A send with no definite answer may be on the network: sending again without checking could pay twice.
+		// A definite wallet rejection (nothing broadcast) needs no extra confirmation.
+		unknown := (state == "failed" && ambiguous) || stuck
+		if unknown && c.Form.Get("not_broadcast") != "confirmed" {
+			return actionResult{}, fail(400, "This payout's last send had no definite answer from the wallet and may have been broadcast. Check the wallet, then confirm that no transaction was broadcast to requeue it, or mark it sent with the wallet's transaction ID.")
+		}
+		res, err = tx.ExecContext(ctx, `UPDATE payouts SET state=CASE WHEN address='' THEN 'blocked' ELSE 'pending' END,error='',txid='',send_ambiguous=false,updated=now()
 			WHERE id=$1 AND (state='failed' OR `+stuckSending+`)`, id)
 		note = "Administrator requeued the TESTNET payout of " + label + " after checking the wallet; it will be sent once more."
 		audit = "Requeued payout " + strconv.FormatInt(id, 10) + " (" + label + ", was " + state + ") for order " + short
+		if unknown {
+			note = "Administrator confirmed the wallet shows no broadcast transaction for the TESTNET payout of " + label + " (last send outcome unknown) and requeued it; it will be sent once more."
+			audit += "; last send outcome unknown, administrator confirmed the wallet shows no broadcast transaction"
+		}
 	case "sent":
-		res, err = tx.ExecContext(ctx, `UPDATE payouts SET state='sent',txid=$2,error='',updated=now()
+		res, err = tx.ExecContext(ctx, `UPDATE payouts SET state='sent',txid=$2,error='',send_ambiguous=false,updated=now()
 			WHERE id=$1 AND (state IN ('failed','held') OR `+stuckSending+`)`, id, txid)
 		note = "TESTNET payout of " + label + " recorded as sent by an administrator after wallet reconciliation: " + txid
 		audit = "Marked payout " + strconv.FormatInt(id, 10) + " (" + label + ", was " + state + ") sent with transaction " + txid + " for order " + short

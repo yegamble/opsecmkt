@@ -161,8 +161,10 @@ func TestRPCBasicAuthNumbersAndErrors(t *testing.T) {
 		t.Fatalf("credentials kept in endpoint %q", c.endpoint)
 	}
 	tr, ok := c.http.Transport.(*http.Transport)
-	if !ok || tr.Proxy != nil || c.http.Timeout != rpcTimeout || rpcTimeout.Seconds() != 10 {
-		t.Fatal("RPC client must use a 10 s timeout and no proxy")
+	// Calls are bounded by their context (rpcTimeout, or payoutSendTimeout for a send); a client or transport
+	// timeout would cut a slow payout send short after it was broadcast.
+	if !ok || tr.Proxy != nil || c.http.Timeout != 0 || tr.ResponseHeaderTimeout != 0 || rpcTimeout.Seconds() != 10 || payoutSendTimeout.Seconds() != 30 {
+		t.Fatal("RPC client must use no proxy and no client/transport timeout; calls default to 10 s and sends to 30 s")
 	}
 	var out struct{ N, I json.Number }
 	if err = c.call(context.Background(), "", "big", nil, &out); err != nil {

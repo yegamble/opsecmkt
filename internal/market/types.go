@@ -2,7 +2,10 @@ package market
 
 // Shared view types. Each feature package appends fields only inside its own commented block.
 
-type User struct{ ID, Handle, Role, PGP, XMPP string }
+type User struct {
+	ID, Handle, Role, PGP, XMPP string
+	Factors                     string // P1, PageData.FactorAccounts only: enrolled second factors, e.g. "TOTP and PGP sign-in"
+}
 type Product struct {
 	ID, Title, Description, Category, Region, Kind, Vendor, VendorID, PriceBTC, PriceXMR string
 	Stock                                                                                int
@@ -25,7 +28,7 @@ type Notification struct {
 	Read              bool
 }
 type Dispute struct{ ID, OrderID, Reason, Status, Resolution, Created string }
-type Event struct{ Action, Created string }
+type Event struct{ Handle, Action, Created string } // Handle: account the audit row is recorded on ("" = system)
 
 type PageData struct {
 	Page, Title, CSRF, Error, Notice, Query, Category, Region, Currency, Mode string
@@ -48,6 +51,8 @@ type PageData struct {
 	// P1 Authentication
 	Security *SecurityView
 	Captcha  *CaptchaView
+	// FactorAccounts: admin page, non-administrator accounts with a second factor (User.Factors names them).
+	FactorAccounts []User
 
 	// P2 PGP
 	PGP *PGPView
@@ -187,6 +192,9 @@ type PayoutRow struct {
 	OrderID, Kind, Recipient, Currency, Amount       string
 	Address, State, StateLabel, TxID, Error, Updated string
 	Attention                                        bool
+	// Ambiguous: the last send may have been broadcast (failed without a definite wallet answer, or stuck in
+	// sending); requeueing needs an explicit confirmation.
+	Ambiguous bool
 }
 
 // P6 Transparency

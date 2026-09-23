@@ -32,6 +32,27 @@ The script creates four uniquely named `opsecmkt_ops_*` databases, generates tem
 
 Only the newly generated database names are used as backup/restore targets. The server runs on a free loopback port with an empty environment apart from the scratch database URL. An exit trap stops it, drops every scratch database and removes temporary keys, dumps, and logs. Use a dedicated local/CI server: the test role necessarily has database-creation permissions, and terminating the script with `SIGKILL` can prevent cleanup. The original database named in `TEST_DATABASE_URL` is used only as a connection for creating and dropping the scratch databases.
 
+## Backup and restore through the internal-db Compose service
+
+```sh
+./scripts/test-internal-db-restore.sh
+```
+
+Requires Docker with Compose v2, `age`, `age-keygen` and Python 3; no host PostgreSQL tools or published
+database port. The script copies `compose.yaml`, `compose.internal-db.yaml` and the backup/restore scripts
+into a temporary directory with its own `.env` and a uniquely named Compose project, starts only the
+`postgres:17-alpine` `db` service, checks that it publishes no port, and verifies:
+
+- `scripts/backup.sh` without `BACKUP_DATABASE_URL` writes an age-encrypted `0600` dump through `docker compose exec -T db`.
+- `scripts/restore.sh` refuses two destinations, no destination, an unsafe `RESTORE_INTERNAL_DATABASE` name and a wrong confirmation without creating a database; a wrong identity restores no tables.
+- A side-by-side restore (`RESTORE_INTERNAL_DATABASE=opsecmkt_restored`) creates the new database, round-trips Unicode, holds `pending`, `sending`, `blocked` and `held` payouts, sets `payments_recovery_required=true`, and leaves the live `opsecmkt` database unchanged.
+- Restoring over the populated live database fails and rolls back completely, without applying the gate.
+- After `docker compose down --volumes`, a fresh volume's empty `opsecmkt` database is restored into directly with the same gate and holds.
+- With the `db` service stopped, the restore says how to start it.
+
+The exit trap runs `docker compose down --volumes --remove-orphans` for the test project and removes the
+temporary directory, keys and dumps. It never reads the checkout's `.env` or touches other projects.
+
 ## Real local installation and setup wizard
 
 ```sh

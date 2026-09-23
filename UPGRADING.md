@@ -3,18 +3,22 @@
 This release adds test-network payments, signed audit exports and several database migrations. Read this
 whole page before pulling the new code onto a running v0.1.0-alpha.1 deployment.
 
-## 1. Take a backup and keep the old image
+## 1. Take a backup and record what you run
 
-Migrations are **one-way**. There are no down-migrations, and the alpha.1 image cannot run against a
+Migrations are **one-way**. There are no down-migrations, and the alpha.1 code cannot run against a
 migrated database (for example, migration 001 replaces `orders.status` with `orders.state` and drops the old
-unique constraint). Before upgrading:
+unique constraint). `compose.yaml` builds the app from the checkout (`build: .`), so there is no saved image
+to switch back to: rolling back means restoring this backup and rebuilding the old revision. Before
+upgrading, from the directory you deploy from:
 
 ```sh
 AGE_RECIPIENT=age1YOUR_PUBLIC_RECIPIENT ./scripts/backup.sh backups/pre-upgrade.dump.age
-docker image tag opsecmkt-app opsecmkt-app:v0.1.0-alpha.1   # or note the image ID you run today
+cp -p .env .env.pre-upgrade   # the configuration the old revision runs with (keep it private)
+git describe --tags --always  # note the revision you run today, e.g. v0.1.0-alpha.1
 ```
 
-Keep both until you have run the new version for a while. See [Rolling back](#5-rolling-back).
+Keep the backup, `.env.pre-upgrade` and the revision until you have run the new version for a while. See
+[Rolling back](#5-rolling-back).
 
 ## 2. Add the new keys to your existing `.env`
 
@@ -35,6 +39,47 @@ off.
 
 For a local Monero node, also add `monero-wallet` to `COMPOSE_PROFILES` (for example
 `COMPOSE_PROFILES='internal-db,monero,monero-wallet'`).
+
+### Replace a placeholder `SETUP_TOKEN`
+
+This release refuses to start when `SETUP_TOKEN` is not a random value: the old `.env.example` placeholder
+(`REPLACE_WITH_AT_LEAST_32_RANDOM_CHARACTERS`), anything containing `REPLACE`, `CHANGEME`, `CHANGE_ME` or
+`PLACEHOLDER`, fewer than 32 characters, fewer than 8 distinct characters, or a short pattern repeated. The
+log then says `SETUP_TOKEN is still a placeholder value` or `SETUP_TOKEN is not random`. `scripts/install.sh`
+always generated a random 64-character hex token, so only hand-written `.env` files are affected.
+
+The placeholder is public, and `SETUP_TOKEN` authorizes `/setup` and derives the CSRF/CAPTCHA key and the key
+that encrypts TOTP secrets. An instance that ran with it must rotate it: put the output of
+`openssl rand -hex 32` in `.env` as `SETUP_TOKEN='...'` and start the app again. What rotation does:
+
+- Sessions stay signed in (they are stored as hashes in the database). A form or CAPTCHA that was open during
+  the restart is refused once; reload it.
+- **alpha.1 has no TOTP**, so an alpha.1 instance that rotates at this upgrade loses nothing else.
+- On an instance that already ran this release with the placeholder, every stored TOTP secret, pending
+  enrolment and not-yet-shown recovery-code list was encrypted under the old token and can no longer be read.
+  There is no re-encryption tool, and those secrets must be treated as exposed anyway (the key was public,
+  including in backups taken meanwhile). Affected users sign in with a recovery code (recovery codes are
+  stored as plain hashes and keep working), turn TOTP off on `/totp` with their password and a recovery
+  code, and enrol again. For a non-administrator with no recovery code left, confirm who they are out of
+  band, then use *Admin → Reset a user's second factors*, which also ends their sessions and is audited.
+  The administrator's own account, or an instance where no administrator can sign in, needs the operator
+  reset in the database (internal-db shown; replace `THE_HANDLE`):
+
+  ```sh
+  docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -v handle=THE_HANDLE -U opsecmkt -d opsecmkt <<'SQL'
+  BEGIN;
+  UPDATE users SET totp_enabled=false,totp_secret='',totp_pending='',totp_last_step=0,recovery_reveal='',recovery_reveal_until=NULL
+    WHERE handle=:'handle';
+  DELETE FROM recovery_codes WHERE user_id=(SELECT id FROM users WHERE handle=:'handle');
+  INSERT INTO audit_events(user_id,action) SELECT id,'TOTP reset by the operator after SETUP_TOKEN rotation' FROM users WHERE handle=:'handle';
+  COMMIT;
+  SQL
+  ```
+
+  Check that the `UPDATE` reports one row; the user then signs in with the password alone and enrols again.
+
+A restored database needs the `SETUP_TOKEN` that was in use when its backup was taken for its TOTP secrets
+to be readable. Keep the rotated value, not the placeholder, in any `.env` you restore later.
 
 ## 3. `BITCOIN_RPC_URL` now turns payments on
 
@@ -76,14 +121,47 @@ error; retried every poll), Refused (not a test network) or Disabled. The contai
 
 ## 5. Rolling back
 
-Rolling back is **not** an image swap. Because migrations are one-way, the old image fails against the
-upgraded database. To roll back:
+Rolling back is **not** an image swap. Because migrations are one-way, the old code fails against the
+upgraded database, and Compose rebuilds the app from whatever revision is checked out. Everything written
+after the upgrade is lost from the rolled-back site. Run the first two steps from the **upgraded** checkout:
+its `scripts/restore.sh` can restore into the internal database; the older one cannot.
 
-1. Stop the app: `docker compose stop app`.
-2. Restore the pre-upgrade backup into a new, empty database with `scripts/restore.sh` (see [backups and recovery](docs/operator-guide.md#backups-and-recovery)).
-   Everything written after the upgrade is lost.
-3. Point `DATABASE_URL` at the restored database, check out `v0.1.0-alpha.1` (its compose files and code)
-   and run `docker compose up -d --build`, or run the image you tagged in step 1.
+1. Stop the app and keep the database running:
+
+   ```sh
+   docker compose stop app
+   ```
+
+2. Restore the pre-upgrade backup into a new database next to the upgraded one (type `RESTORE` when asked).
+   The upgraded `opsecmkt` database is left untouched in case you want to roll forward again.
+
+   ```sh
+   AGE_IDENTITY=/secure/backup-key.txt RESTORE_INTERNAL_DATABASE=opsecmkt_rollback \
+     ./scripts/restore.sh backups/pre-upgrade.dump.age
+   ```
+
+   With an external database, create an empty database on that server and restore with
+   `RESTORE_DATABASE_URL` instead (see [backups and recovery](docs/operator-guide.md#backups-and-recovery)).
+   The restore pauses payouts and holds queued ones (see step 6); alpha.1 has no payment processing.
+
+3. Put back the old configuration and point it at the restored database:
+
+   ```sh
+   cp -p .env.pre-upgrade .env
+   ```
+
+   Edit `DATABASE_URL` in `.env` so the database name after the port is the restored one, for example
+   `postgres://opsecmkt:PASSWORD@db:5432/opsecmkt_rollback?sslmode=disable` (keep the password as it is).
+   If you rotated `SETUP_TOKEN` during the upgrade, keep the new value rather than the placeholder.
+
+4. Check out the revision you noted in step 1 and rebuild it:
+
+   ```sh
+   git checkout v0.1.0-alpha.1
+   docker compose config --quiet
+   docker compose up -d --build
+   docker compose logs -f app
+   ```
 
 ## 6. Backups now need the wallets too
 

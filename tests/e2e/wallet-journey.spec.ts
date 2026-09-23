@@ -7,6 +7,11 @@ const password = 'wallet-browser-admin-password-123';
 const rpc = 'http://127.0.0.1:18083';
 // The dispute extends the marketplace and accounts initialized by the first journey.
 test.describe.configure({ mode: 'serial' });
+// Submit a form and wait for the response page, so a following reload (of this or another page) cannot
+// race the in-flight POST and its navigation.
+async function submit(page: Page, button: ReturnType<Page['getByRole']>) {
+  await Promise.all([page.waitForEvent('load'), button.click()]);
+}
 async function reloadUntil(page: Page, assertion: () => Promise<void>) {
   await expect(async () => { await page.reload(); await assertion(); }).toPass({ timeout: 20_000, intervals: [300, 500, 1000] });
 }
@@ -82,8 +87,8 @@ test('BTC and XMR: partial payment, intake pause, confirmation, fulfillment and 
     await admin.goto(orderURL);
     if (digital) {
       await admin.getByLabel('Delivery content', { exact: true }).fill('Fixture digital delivery token');
-      await admin.getByRole('button', { name: 'Deliver digital content', exact: true }).click();
-    } else await admin.getByRole('button', { name: 'Mark as shipped' }).click();
+      await submit(admin, admin.getByRole('button', { name: 'Deliver digital content', exact: true }));
+    } else await submit(admin, admin.getByRole('button', { name: 'Mark as shipped' }));
     await buyer.reload();
     if (digital) await expect(buyer.getByRole('region', { name: 'Digital delivery' })).toContainText('Fixture digital delivery token');
     await buyer.getByRole('button', { name: 'Confirm receipt and complete' }).click();
@@ -98,7 +103,7 @@ test('BTC and XMR: partial payment, intake pause, confirmation, fulfillment and 
     expect(((await (await request.get(`${rpc}/test/state`)).json()).payouts as any[]).filter(p => p.currency === currency)).toHaveLength(1);
     await buyer.getByRole('combobox', { name: 'Rating', exact: true }).selectOption('4');
     await buyer.getByLabel('Review (optional)').fill(`Verified ${currency} fixture purchase arrived as described.`);
-    await buyer.getByRole('button', { name: 'Publish review' }).click();
+    await submit(buyer, buyer.getByRole('button', { name: 'Publish review' }));
     await buyer.reload();
     await expect(buyer.getByRole('button', { name: 'Publish review' })).toHaveCount(0);
     const publicContext = await browser.newContext({ baseURL, javaScriptEnabled: false });
@@ -194,7 +199,7 @@ test('vendor cancels a paid physical order, refunds once and restores stock', as
     await expect(buyer.getByRole('button', { name: 'Cancel order', exact: true })).toHaveCount(0);
     await vendor.goto(orderURL);
     await vendor.getByLabel('Reason (optional)').fill('Fixture vendor unable to fulfill this paid order.');
-    await vendor.getByRole('button', { name: 'Cancel order', exact: true }).click();
+    await submit(vendor, vendor.getByRole('button', { name: 'Cancel order', exact: true }));
     await buyer.reload();
     await expect(buyer.locator('.page-head .badge')).toHaveText('Cancelled');
     await reloadUntil(buyer, async () => { await expect(buyer.locator('.payment-figures div', { has: buyer.getByText('Payout status', { exact: true }) })).toContainText('Sent', { timeout: 500 }); });

@@ -75,8 +75,8 @@ func New(ctx context.Context, preview bool) (*App, error) {
 		a.key = []byte(randomToken())
 		return a, nil
 	}
-	if len(a.setupToken) < 32 {
-		return nil, errors.New("SETUP_TOKEN must contain at least 32 random characters")
+	if err := checkSetupToken(a.setupToken); err != nil {
+		return nil, err
 	}
 	sum := sha256.Sum256([]byte("csrf:" + a.setupToken))
 	a.key = sum[:]

@@ -159,7 +159,8 @@ func TestSensitiveChangesNeedPassword(t *testing.T) {
 	if c := payout("password", testPassword); c != 401 {
 		t.Fatalf("payout without TOTP code while enrolled: %d", c)
 	}
-	if body := p.page("/account", p.buyerSess); !strings.Contains(body, `name="password" required`) || !strings.Contains(body, "Authenticator code") {
+	// Scoped to the payout panel: the password-change form on the same page has these fields too.
+	if _, body, ok := strings.Cut(p.page("/account", p.buyerSess), `id="payout"`); !ok || !strings.Contains(body, `name="password" required`) || !strings.Contains(body, "Authenticator code") {
 		t.Fatal("payout form lacks the password and code fields")
 	}
 	code, _ := p.totpCodeFor(p.buyer.ID, 0)

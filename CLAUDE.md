@@ -10,3 +10,6 @@ a green unit suite alone is not evidence that a complete user workflow works.
 @.claude/review-loop.md
 
 For Ralph runs, also read .ralph/PROMPT.md, .ralph/AGENT.md and .ralph/fix_plan.md.
+
+War room (multi-seat review and fix loop): see .claude/agents/README.md; run
+`/war-room <scope>` or `/war-room-loop`. Its backlog is .claude/war-room/ledger.md.

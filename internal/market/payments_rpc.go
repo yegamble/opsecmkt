@@ -18,7 +18,9 @@ import (
 
 // rpcClient is a minimal JSON-RPC client for Bitcoin Core (1.0, HTTP Basic auth) and monero-wallet-rpc /
 // monerod (2.0, HTTP Digest MD5 qop=auth). Credentials come from the URL userinfo and are removed from the
-// endpoint, so they never appear in errors or logs. No proxy, no redirects, 10 s timeout per call.
+// endpoint, so they never appear in errors or logs. No proxy, no redirects. Each call is bounded by its
+// context only: rpcTimeout for ordinary calls, payoutSendTimeout for a payout send (callWithin). There is
+// deliberately no client or transport timeout, which would cut a slow send short after it was broadcast.
 type rpcClient struct {
 	name       string // "bitcoin", "monero wallet", "monero daemon" (for errors)
 	endpoint   string // scheme://host[:port][/path] without userinfo
@@ -34,7 +36,10 @@ type rpcClient struct {
 	nc         int
 }
 
-const rpcTimeout = 10 * time.Second
+// rpcTimeout bounds one ordinary wallet or node call (reads, address issuance, checks). A variable only so
+// tests can shorten it.
+var rpcTimeout = 10 * time.Second
+
 const rpcMaxBody = 16 << 20
 
 type rpcError struct {
@@ -62,16 +67,22 @@ func newRPCClient(name, raw, version string, digest bool) (*rpcClient, error) {
 	u.RawQuery, u.Fragment = "", ""
 	c.endpoint = strings.TrimRight(u.String(), "/")
 	c.http = &http.Client{
-		Timeout:       rpcTimeout,
-		Transport:     &http.Transport{Proxy: nil, MaxIdleConnsPerHost: 2, IdleConnTimeout: 90 * time.Second, ResponseHeaderTimeout: rpcTimeout},
+		Transport:     &http.Transport{Proxy: nil, MaxIdleConnsPerHost: 2, IdleConnTimeout: 90 * time.Second},
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 	return c, nil
 }
 
-// call posts one request to endpoint+path and decodes "result" into out (numbers as json.Number).
+// call posts one request to endpoint+path and decodes "result" into out (numbers as json.Number), within
+// rpcTimeout (or the caller's earlier deadline).
 func (c *rpcClient) call(ctx context.Context, path, method string, params, out any) error {
-	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+	return c.callWithin(ctx, rpcTimeout, path, method, params, out)
+}
+
+// callWithin is call bounded by timeout instead of rpcTimeout (or the caller's earlier deadline). Payout
+// sends use payoutSendTimeout: a wallet that broadcasts after rpcTimeout must still be recorded as sent.
+func (c *rpcClient) callWithin(ctx context.Context, timeout time.Duration, path, method string, params, out any) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	if c.digest {
 		// Serialize the complete exchange so one connection and its nonce counter

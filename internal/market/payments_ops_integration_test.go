@@ -219,6 +219,13 @@ func (p *payEnv) payoutAction(session, id, op, txid, password string) (int, stri
 	return w.Code, w.Body.String()
 }
 
+// payoutActionConfirmed submits op with the explicit "no transaction was broadcast" confirmation.
+func (p *payEnv) payoutActionConfirmed(session, id, op, password string) (int, string) {
+	p.t.Helper()
+	w := p.do("POST", "/admin/payout", session, url.Values{"payout_id": {id}, "op": {op}, "password": {password}, "not_broadcast": {"confirmed"}})
+	return w.Code, w.Body.String()
+}
+
 func TestAdminPayoutActions(t *testing.T) {
 	p := newPayEnv(t)
 	p.setPayoutAddress(p.vendor, "fake-testnet-vendor")
@@ -257,9 +264,10 @@ func TestAdminPayoutActions(t *testing.T) {
 		t.Fatalf("released payout: %s sends=%d", st, len(p.fake.Sends()))
 	}
 
-	// Failed: requeued after checking the wallet, then sent once more.
+	// Failed with a definite wallet rejection (nothing broadcast): requeued after checking the wallet, with
+	// no extra confirmation, then sent once more.
 	failed := p.completedWithPayout("tx-failed")
-	p.fake.sendErr = errors.New("insufficient funds")
+	p.fake.sendErr = &rpcError{Method: "fake RPC send", Code: -6, Message: "insufficient funds"}
 	p.A.pollOnce(context.Background())
 	p.fake.sendErr = nil
 	failedID := p.payoutID(failed)
@@ -271,7 +279,8 @@ func TestAdminPayoutActions(t *testing.T) {
 		t.Fatalf("requeued payout: %s sends=%d", st, len(p.fake.Sends()))
 	}
 
-	// Failed but the wallet shows it was broadcast: recorded as sent with the wallet's txid, never re-sent.
+	// Failed ambiguously but the wallet shows it was broadcast: recorded as sent with the wallet's txid,
+	// never re-sent. Mark sent needs no broadcast confirmation (it pays nothing).
 	broadcast := p.completedWithPayout("tx-broadcast")
 	p.fake.sendErr = errors.New("timed out")
 	p.A.pollOnce(context.Background())
@@ -291,15 +300,18 @@ func TestAdminPayoutActions(t *testing.T) {
 		t.Fatalf("recipient notifications: %d", n)
 	}
 
-	// A stuck send can be requeued only once it is clearly stuck; a live one cannot.
+	// A stuck send can be requeued only once it is clearly stuck, and (since it may have been broadcast)
+	// only with the explicit not-broadcast confirmation; a live one cannot.
 	stuck := p.completedWithPayout("tx-stuck")
 	p.DB.Exec("UPDATE payouts SET state='sending',updated=now() WHERE order_id=$1", stuck)
 	stuckID := p.payoutID(stuck)
-	if code, _ := p.payoutAction(p.adminSess, stuckID, "requeue", "", testPassword); code != 409 {
+	if code, _ := p.payoutActionConfirmed(p.adminSess, stuckID, "requeue", testPassword); code != 409 {
 		t.Fatalf("requeue of a live send: %d", code)
 	}
 	p.DB.Exec("UPDATE payouts SET updated=now()-interval '1 hour' WHERE order_id=$1", stuck)
-	if code, _ := p.payoutAction(p.adminSess, stuckID, "requeue", "", testPassword); code != 303 {
+	// (Refusal without the confirmation: TestPayoutSentButNotRecordedStaysSendingAndNeedsConfirmation; this
+	// test already uses all ten password confirmations the rate limit allows.)
+	if code, _ := p.payoutActionConfirmed(p.adminSess, stuckID, "requeue", testPassword); code != 303 {
 		t.Fatalf("requeue of a stuck send: %d", code)
 	}
 	if code, _ := p.payoutAction(p.adminSess, stuckID, "sent", txid, testPassword); code != 409 {
@@ -325,7 +337,8 @@ func TestAdminPayoutActions(t *testing.T) {
 		audits = append(audits, a)
 	}
 	rows.Close()
-	if len(audits) != 4 || !strings.HasPrefix(audits[0], "Released held payout "+heldID) || !strings.Contains(audits[2], "sent with transaction "+txid) || !strings.Contains(audits[0], "(confirmed with password)") {
+	if len(audits) != 4 || !strings.HasPrefix(audits[0], "Released held payout "+heldID) || !strings.Contains(audits[2], "sent with transaction "+txid) || !strings.Contains(audits[0], "(confirmed with password)") ||
+		strings.Contains(audits[1], "outcome unknown") || !strings.Contains(audits[3], "was sending") || !strings.Contains(audits[3], "administrator confirmed the wallet shows no broadcast transaction") {
 		t.Fatalf("audit trail %q", audits)
 	}
 	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE 'Administrator released%'", held); n != 1 {
@@ -337,7 +350,7 @@ func TestAdminPayoutActionsAreSingleUseUnderConcurrency(t *testing.T) {
 	p := newPayEnv(t)
 	p.setPayoutAddress(p.vendor, "fake-testnet-vendor")
 	failed := p.completedWithPayout("tx-cf")
-	p.fake.sendErr = errors.New("wallet locked")
+	p.fake.sendErr = &rpcError{Method: "fake RPC send", Code: -13, Message: "wallet locked"}
 	p.A.pollOnce(context.Background())
 	p.fake.sendErr = nil
 	held := p.completedWithPayout("tx-ch")

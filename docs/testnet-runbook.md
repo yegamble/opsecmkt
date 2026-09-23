@@ -125,10 +125,19 @@ coins; the order moves to *Paid* once the deposit reaches the confirmation thres
 
 Each payout is sent once. The **Payouts** table on the admin page marks rows that need attention:
 
-- **Failed — not retried**: the wallet call failed; the transaction may or may not have been broadcast.
-- **Stuck in sending**: claimed more than 5 minutes ago with no recorded outcome (crash or database error).
+- **Failed — not retried; rejected by the wallet, nothing broadcast**: the wallet answered the send with an
+  error (for example insufficient or locked funds), so no transaction exists.
+- **Failed — not retried; outcome unknown, may have been broadcast**: the wallet call ended without a
+  definite answer (no reply within 30 s, a dropped connection or an unreadable reply after the request was
+  sent). The wallet may still have broadcast the transaction. Failures recorded before this distinction
+  existed are shown this way too.
+- **Stuck in sending**: claimed more than 5 minutes ago with no recorded outcome (crash or database error
+  after the wallet call); it may have been broadcast.
 - **Held**: a credited deposit is conflicted or re-confirming (the watcher releases these itself once the
   deposit is confirmed again), or the payout was restored from a backup (never released automatically).
+
+Ordinary wallet reads time out after 10 s; a payout send is allowed 30 s, so a slow wallet that broadcasts
+after 10 s is still recorded as sent.
 
 First check the wallet for a transaction to the payout's address and amount:
 
@@ -144,7 +153,10 @@ the state you saw, so a double click or a second administrator cannot queue it t
 - **Mark sent** (failed, held or stuck): the wallet shows the transaction. Paste its 64-character
   transaction ID. The recipient is notified; nothing is sent.
 - **Requeue payout** (failed or stuck): the wallet shows **no** such transaction. The payout goes back to
-  the queue and the next pass sends it once.
+  the queue and the next pass sends it once. For an *outcome unknown* failure or a stuck send the form also
+  asks you to tick "I checked the wallet ... no transaction ... was broadcast"; the server refuses the
+  requeue without it and records the confirmation in the audit trail. Include pending and pool transfers in
+  that check, and if the wallet shows the transaction use **Mark sent** instead.
 - **Release held payout** (held): after a restore, once you have confirmed it was not sent. Refused while a
   credited deposit for the order is still conflicted or below the threshold.
 
