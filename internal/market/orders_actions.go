@@ -81,8 +81,13 @@ func payAction(c *actionCtx) (actionResult, error) {
 	}
 	if o.BuyerID == c.User.ID {
 		var open int
-		// The buyer row lock serialises concurrent requests so the cap cannot be raced.
-		if err = c.Tx.QueryRowContext(ctx, "SELECT (SELECT count(*) FROM orders WHERE buyer_id=u.id AND state='awaiting_payment') FROM users u WHERE u.id=$1 FOR UPDATE", c.User.ID).Scan(&open); err != nil {
+		// The buyer row lock serialises concurrent requests so the cap cannot be raced. The count must be a
+		// separate statement: under READ COMMITTED it then takes its snapshot after the lock is held and sees
+		// the orders a concurrent request committed while this one waited.
+		if _, err = c.Tx.ExecContext(ctx, "SELECT 1 FROM users WHERE id=$1 FOR UPDATE", c.User.ID); err != nil {
+			return actionResult{}, err
+		}
+		if err = c.Tx.QueryRowContext(ctx, "SELECT count(*) FROM orders WHERE buyer_id=$1 AND state='awaiting_payment'", c.User.ID).Scan(&open); err != nil {
 			return actionResult{}, err
 		}
 		if open >= maxAwaitingPayment {
