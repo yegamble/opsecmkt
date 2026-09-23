@@ -3,6 +3,8 @@ package market
 import (
 	"context"
 	"database/sql"
+	"os"
+	"strings"
 	"testing"
 	"testing/fstest"
 )
@@ -145,4 +147,43 @@ func TestUpgradeFromBaselineSchema(t *testing.T) {
 		t.Fatal("unknown state accepted")
 	}
 	runInTx(t, db, func(tx *sql.Tx) error { return migrate(ctx, tx) })
+}
+
+// A-30: on a database upgraded by a newer release (a migration recorded that this binary does not embed) the
+// server refuses to start, names every unknown version and changes nothing, instead of serving a schema it
+// does not know.
+func TestStartupRefusesUnknownAppliedMigration(t *testing.T) {
+	e := newTestApp(t)
+	list, _ := loadMigrations(migrationFiles)
+	last := list[len(list)-1]
+	// Also forget the newest embedded migration: a refused start must not apply it.
+	if _, err := e.DB.Exec("DELETE FROM schema_migrations WHERE version=$1", last.Version); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.DB.Exec("INSERT INTO schema_migrations(version,name) VALUES (998,'future_one'),(999,'future_two')"); err != nil {
+		t.Fatal(err)
+	}
+	e.A.Close()
+	a, err := New(context.Background(), false)
+	if err == nil {
+		a.Close()
+		t.Fatal("server started on a database with migrations it does not include")
+	}
+	for _, want := range []string{"998_future_one", "999_future_two", "UPGRADING.md", "Rolling back"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
+	}
+	db, err := sql.Open("pgx", os.Getenv("DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var got string
+	if err = db.QueryRow("SELECT string_agg(version::text, ',' ORDER BY version) FROM schema_migrations WHERE version=$1 OR version>=998", last.Version).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != "998,999" {
+		t.Fatalf("refused start changed schema_migrations: %q", got)
+	}
 }
