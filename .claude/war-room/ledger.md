@@ -15,6 +15,7 @@ Evidence tier as in `repo-map.md`.
 | 0 | 2026-09-23 | Whole-codebase audit (pre-war-room: 5 area auditors + Fable ranking) | identity, commerce, payments, tests, ops auditors | Seeded this ledger; 5 fix-now items dispatched |
 | 1 | 2026-09-23 | Fix-now wave A-1…A-5 (3 worktree implementers) | payments, ops, identity implementers | A-1…A-5 fixed on war-room/integration; full local gate green; A-21 added |
 | 2 | 2026-09-23 | QA verification of A-1…A-5 | opsec-qa-release | A-1…A-5 VERIFIED (CI 35896554121); QA-1 concurrent password change on revoked session (SHOULD, reproduced) fixed + regression test; QA-2/QA-3 doc and restore-name NITs fixed; A-22 added |
+| 3 | 2026-09-23 | Wave A-6/A-7/A-21 + whole-product completeness & evidence sweep (Rounds 0–D, B+C combined) | product-completeness, qa-release, devils-advocate, staff; 3 implementers | A-6, A-7, A-21 fixed on war-room/integration; QA ran chain-journey (BTC+XMR) + regtest-smoke on 509356d (pass); new P0 A-23, P1 A-24…A-30, P2 A-31…A-41, P3 A-42…A-45; A-14/A-19 declined; A-12 → P2 |
 
 ## P0 — release blockers
 
@@ -22,6 +23,7 @@ Evidence tier as in `repo-map.md`.
 |---|---|---|---|---|
 | A-1 | Payout wallet calls clamped to 10 s (`payments_rpc.go:37,64-74`) under the 30 s send bound; ambiguous send recorded failed, admin requeue can double-pay | payments | code read, verified | verified (PR #6; opsec-qa-release; fix/payout-timeout 12b3e71) |
 | A-2 | No working restore/rollback for the default internal-db deployment; `UPGRADING.md` rollback impossible with `build: .` | ops | code read, verified | verified (PR #6; opsec-qa-release; fix/ops-restore-setup-token 868d94f) |
+| A-23 | Monero payout send classifies every JSON-RPC error as "nothing broadcast" (`walletRejected`, `payments_watcher.go:547`); monero-wallet-rpc v0.18.5.1 returns -38 (no daemon connection) when `sendrawtransaction` times out after the daemon may have relayed, and -4 from post-submit checks → requeue skips the wallet confirmation → possible double pay (DA-1) | payments | source trace (DA), code read (chair) | open |
 | A-3 | `.env.example` placeholder `SETUP_TOKEN` passes the length-only check (`app.go:78`); token also derives CSRF and TOTP sealing keys | ops/identity | code read, verified | verified (PR #6; opsec-qa-release; fix/ops-restore-setup-token 868d94f) |
 
 ## P1 — required for a coherent product
@@ -30,21 +32,58 @@ Evidence tier as in `repo-map.md`.
 |---|---|---|---|---|
 | A-4 | Role-change audit row lacks target/role (`actions_admin.go:32`); admin audit view lacks actor (`load.go:206`) | identity | code read, verified | verified (PR #6; opsec-qa-release; fix/identity-audit-credentials 351d6b9) |
 | A-5 | No password change; no admin reset of a user's second factors (lost TOTP + spent codes = SQL-only) | identity | code read, verified | verified (PR #6; opsec-qa-release; fix/identity-audit-credentials 351d6b9) |
-| A-6 | Moderator desk mixes open+resolved disputes `ORDER BY created DESC LIMIT 100` (`load.go:163`); old open disputes vanish; same cap feeds NeedsAction on orders/vendor desks | commerce | code read, verified | open |
-| A-7 | Watcher re-polls funded non-terminal orders only if updated in 24 h (`payments_watcher.go:147-151`); extra/duplicate deposits on paid/shipped orders are silently included in the vendor release (`payments_hooks.go:71-73`) | payments | auditor + Fable read | open |
+| A-6 | Moderator desk mixes open+resolved disputes `ORDER BY created DESC LIMIT 100` (`load.go:163`); old open disputes vanish; same cap feeds NeedsAction on orders/vendor desks | commerce | code read, verified | fixed (war-room/integration; fix/a6-open-disputes-first 9b145fa) |
+| A-7 | Watcher re-polls funded non-terminal orders only if updated in 24 h (`payments_watcher.go:147-151`); extra/duplicate deposits on paid/shipped orders are silently included in the vendor release (`payments_hooks.go:71-73`) | payments | auditor + Fable read | fixed (war-room/integration; fix/a7-watch-funded-orders fffc2a8) |
 | A-8 | Moderators/admins not notified when a dispute opens; a dispute can have no eligible resolver (sole admin is the vendor) yet is accepted | commerce | auditor read | open |
 | A-9 | One 15 s startup context covers ping, advisory lock, all migrations and payment init (`app.go:95-115`); a slow migration crash-loops | ops | auditor read | open |
 | A-10 | Sealed plaintext recovery codes linger in `users.recovery_reveal` unless `/totp` is viewed within 10 min; docs claim only hashes are stored | identity | auditor + Fable read | open |
 | A-11 | Rate-limit entry created before CAPTCHA check + evict-oldest lets junk requests reset victims' counters (`actions_auth.go:128-131`, `app.go:148`) | identity | auditor read | open |
-| A-12 | Test infra: no fail-on-skip mode for DB tests; shared Playwright admin near its sign-in budget; TOTP 30 s boundary unguarded (`db-auth.spec.ts:61,82`) | tests | auditor read | open |
-| A-21 | After a restore, in-flight payouts become `held`; admin **release** of a held payout needs no "wallet shows no broadcast" confirmation, unlike requeue of an ambiguous failure (reported by the A-1 implementer) | payments | implementer read | open |
+| A-21 | After a restore, in-flight payouts become `held`; admin **release** of a held payout needs no "wallet shows no broadcast" confirmation, unlike requeue of an ambiguous failure (reported by the A-1 implementer) | payments | implementer read | fixed (war-room/integration; fix/a21-restore-held-release 62a3871) |
 | A-13 | Docs drift: acceptance.md ops/P5 unticked despite evidence; implementation-status says regtest smoke never ran; `.ralph/fix_plan.md` ticks a non-existent `.env` recovery doc; PREVIEW_ADDR undocumented; APP_MODE is a no-op; Caddy example hardcodes :8080 | ops | auditor read | open |
+| A-24 | Payment-review flags lead nowhere: staff notified by `flagOrder` get 404 on the order (`disputeReviewer` allows only disputed/resolved) and /moderator lists only disputes (PM-1, MOD-1, DA-4, QA3-1 — reproduced by QA) | payments/staff | Go DB probe (QA, scratch) | open |
+| A-25 | Admin payouts panel `ORDER BY p.id DESC LIMIT 50` (`payments_actions.go:279`): an older failed/held/stuck payout and its only recovery form drop off the page (MOD-3) | payments/staff | code read | open |
+| A-26 | Role form is a `<select>` over the 100 newest users (`load.go:182`): older vendors/moderators cannot be demoted without SQL; ~100 sign-ups push them out (DA-3, MOD-5) | identity/staff | code read | open |
+| A-27 | No way to contain a compromised or abusive account: admins can end another user's sessions only via factor reset (409 without a factor); nothing blocks sign-in (PM-2, MOD-9) | identity/staff | code read | open |
+| A-28 | Administrator password break-glass is not executable: operator-guide says "a new bcrypt hash written with SQL" with no tool or command (PM-3) | ops | code/doc read | open |
+| A-29 | Restore reconciliation asks the operator to reconstruct payouts sent after the backup with no statements, and contradicts itself (stop the app vs use the admin page) (PM-4) | ops/payments | doc read | open |
+| A-30 | No downgrade guard: an older binary starts silently on a database with an unknown applied migration, contradicting `UPGRADING.md:124` (QA3-2 — reproduced) | ops | real server + PostgreSQL (QA) | open |
+
+### Iteration 3 rulings (chair) — acceptance criteria
+
+- **A-6 (ACCEPT)**: every open dispute visible to the viewer is always listed, open first, then recent resolved up to a cap with a truncation notice; vendor NeedsAction equals the true count of the vendor's `paid` orders and those orders are never hidden by the 100-row cap; no authorization change. Test: DB integration with one old open dispute + >100 newer resolved; vendor with >100 newer orders + an old paid order.
+- **A-7 (MODIFY)**: keep one payout per order and today's payout sum. Watch every funded non-terminal order regardless of `updated` age; a deposit first recorded after funding writes one order event and notifies buyer and vendor (idempotent); funding-deposit conflict on an order older than 24 h is detected; implementation-status updated. Dissent recorded: re-routing post-funding extras to the buyer was rejected because it needs a second payout per order (breaks invariant 4). Test: DB integration via newPayEnv, orders with `updated` 48 h ago.
+- **A-21 (ACCEPT)**: releasing a payout held by a restore (`error` prefixed `Restored from backup:`) requires `not_broadcast=confirmed`, like the ambiguous requeue; note and audit record the confirmation; watcher-held release unchanged; admin UI shows the checkbox only for restored-held payouts; docs updated. Test: DB integration mirroring the ambiguous-requeue tests.
+
+**Round D (iteration 3 council). No majority vote; dissent kept.**
+
+- **A-23 (MODIFY → P0)**. WHY: DA traced monero-wallet-rpc v0.18.5.1 (`wallet2::commit_tx` → `sendrawtransaction` timeout → `no_connection_to_daemon` → -38; post-submit checks → -4); chair confirmed `walletRejected` treats any `*rpcError` as definite. DISSENT: QA (Bitcoin Core commits the tx before relay, so a BTC JSON-RPC error means nothing was committed; an allowlist would train reflexive box-ticking) — accepted for BTC, so the change is Monero-only; DA wanted BTC allowlisted too. ACCEPTANCE: a Monero `transfer` error is definite ("nothing broadcast") only for codes raised before submission, verified against the v0.18.5.1 source and listed in one Go table with a comment citing it (expected: -2 wrong address, -16 tx not possible, -17 not enough money, -18 tx too large, -19 not enough outs, -20 zero destination, -37 not enough unlocked money — confirm each); every other code (incl. -38, -4, -1) stores `send_ambiguous=true` and requeue then needs `not_broadcast=confirmed`; BTC classification unchanged but documented with its reason; admin copy says "the wallet reported a pre-broadcast error". TEST: httptest JSON-RPC table cases in `payments_payout_timeout_test.go` for XMR allowlisted vs -38/-4/-1 and BTC unchanged; extend `TestAmbiguousFailedPayoutRequeueNeedsBroadcastConfirmation` with XMR -38. EXPERIMENT (A-45) settles the live behaviour.
+- **A-24 (ACCEPT, minimal shape; disposition action deferred to A-31)**. USER IMPACT: moderators/admins can finally see what they were told to review. ACCEPTANCE: a non-party moderator or admin gets 200 read-only on `/order` for any order with a flagged payment (`payments.flagged`), with order history, deposit txids and flag notes visible, no buyer/vendor forms, and no digital delivery content unless the order is disputed; an unflagged, undisputed order still 404s for staff; /moderator gets a "Payment review" list driven by `payments.flagged` (order link, full order ID, currency, amount, full txid, flag time), newest first, capped with a truncation notice; runbook section on handling flags, including recording a manual refund as a written note (no payout row: `payouts.order_id` is unique — DA MISSED). TEST: Go DB `TestFlaggedOrderReadableByNotifiedStaff` (newPayEnv, conflict after paid; moderator+admin 200, party moderator unchanged, unflagged 404), desk listing assertion; update `gaps_integration_test.go` 404 pins only for flagged orders.
+- **A-25 (ACCEPT)**. ACCEPTANCE: every payout needing attention (blocked, held, failed, stuck sending) is always listed with its resolve form, oldest first, then recent settled payouts up to 50 with a truncation notice; "N payouts need attention" shown; order IDs in the payout table link to the order (admin read access follows A-24 rules — link only where the admin can open it). TEST: Go DB `TestAdminPayoutsAttentionNeverHidden` (one failed + one stuck, then 60 newer sent).
+- **A-26 (ACCEPT; merges DA-3 and MOD-5 role part)**. ACCEPTANCE: the role form takes a handle (text input, handle pattern) looked up server-side; with >100 newer users the oldest vendor can be demoted; unknown handle → 404 with the form re-rendered and input kept; admin role assignment still refused; A-4 audit rows unchanged. TEST: Go DB (vendor + 101 buyers); `db-admin.spec.ts` updated with fresh accounts.
+- **A-27 (MODIFY)**: one admin action "Suspend / restore account". DISSENT: DA (suspension state is over-engineered; demotion + end-sessions suffice) — rejected because ending sessions without blocking sign-in does not contain a known password, and the check points are only sign-in and session load (sessions and pending logins are deleted). ACCEPTANCE: password(+TOTP)-confirmed, admin-only, refused for administrators; suspend ends all sessions and pending sign-ins and blocks new sign-in with a specific message; restore re-enables sign-in; both accounts audited naming the other; user notified; open orders continue for the counterparty; listings unchanged (demotion already archives). New numbered migration. TEST: Go DB `TestAdminSuspendsAccount`; `db-admin.spec.ts` with fresh accounts.
+- **A-28 (MODIFY — host-only tool, no web path)**. ACCEPTANCE: `opsecmkt -reset-admin-password <handle>` (or equivalent flag on the server binary) reads the new password from stdin, applies the registration rule, hashes at the app's bcrypt cost, ends that admin's sessions and pending sign-ins and writes an audit row; refuses non-admin handles; operator-guide gives the exact `docker compose run` command and no hand-written SQL. TEST: Go DB test of the CLI path; `bash -n`; ops doc validated.
+- **A-29 (MODIFY — runbook + tested SQL, no web action)**. DISSENT: PM originally proposed a web "record external payout"; withdrawn under MOD's hijack argument. ACCEPTANCE: `testnet-runbook.md` reconcile section becomes one ordered procedure (isolate the instance, reconcile, stop, clear gate, restart) with no contradiction; it provides the SQL to record a payout sent after the backup (sent payout row + order event + audit, inside one transaction, with a check query) and the order-state reconstruction; `scripts/test-backup-restore.sh` gains a case where a restored order with no payout row is reconstructed with that SQL and completing it queues no second payout. TEST: that script case in CI's operations job.
+- **A-30 (ACCEPT; required before the next tag)**. ACCEPTANCE: startup refuses (non-zero exit, error names the version, nothing migrated or served) when `schema_migrations` holds a version the binary does not embed; normal start and the alpha.1 upgrade unchanged; `UPGRADING.md` rollback text matches. TEST: Go DB `TestStartupRefusesUnknownAppliedMigration`; `scripts/test-upgrade.sh` rollback rehearsal step.
+- **A-13 (AMENDED by DA-2, QA3-3, PM-5)**: add an evidence table to `docs/verification.md` (check, tier, commit SHA, CI run or log path, date); record QA's 509356d real-chain run; tick `acceptance.md` lines only against a row (CI-backed lines: the green CI run at that SHA; manual tiers: their own row); remove the contradictory "not run"/"passed" sentences; the original A-13 drift items stay. A chain-journey rerun is required after watcher/adapter changes (A-7, A-23) before any release (QA MISSED).
+- **A-12 → P2** (DA-9): CI already sets `TEST_DATABASE_URL` and an unreachable URL fails; keep the shared-admin sign-in budget, the TOTP boundary and QA3-7's click-then-reload races.
+- **A-14, A-19 → Declined** (DA-8, DA-10). **PM-5** (publish a prerelease tag) → owner action after P0/P1 close (A-46, blocked on owner; listed under P3 for tracking).
 
 ## P2 — high-value improvements
 
 | ID | Item | Area | Status |
 |---|---|---|---|
-| A-14 | No auto-completion / abandonment timers for shipped/delivered/paid orders (documented limitation; needs policy) | commerce | open |
+| A-12 | Test infra: no fail-on-skip mode for DB tests; shared Playwright admin near its sign-in budget; TOTP 30 s boundary unguarded (`db-auth.spec.ts:61,82`); click-then-reload races in `db-account.spec.ts:24-25`, `db-desktop.spec.ts:44-45` (QA3-7). Fail-on-skip dropped (D-8) | tests | open |
+| A-31 | Payment-review disposition: moderator/admin records "no action / refunded manually (txid) / escalated" as an order event + audit row (never a payout row) and the flag leaves the review list (MOD-1 remainder) | payments/staff | open |
+| A-32 | Password step-up for `/resolve` (a hijacked or mis-clicking moderator queues a payout sent ~30 s later), role change, CAPTCHA toggle, operator key and canary; settings audit names old→new values (MOD-6, MOD MISSED) | identity/staff | open |
+| A-33 | Display-only wallet evidence next to payout recovery forms (outgoing transfers to the address), labelled "may be incomplete after a rescan"; never gates requeue or mark-sent (MOD-2 revised; DA/PM/QA challenges) | payments | open |
+| A-34 | `op=hold` for pending/blocked payouts with a required note (MOD-4 revised) | payments/staff | open |
+| A-35 | Staff "needs attention" counts in navigation and at the top of /admin and /moderator (MOD-7) | ui/staff | open |
+| A-36 | Provider diagnostics: Syncing / Check failing states, last poll age with stale warning, optional wallet balance vs queued payouts (MOD-8) | payments/ops | open |
+| A-37 | Notifications link to their order (nullable `notifications.order_id`); vendor onboarding line on /account and operator-guide section (PM-6, PM-7) | ui | open |
+| A-38 | Compose CI asserts effective config (no published ports except clearnet app on 127.0.0.1, no docker.sock) and a regtest node-profile smoke; runbook wallet dir matches compose (QA3-4, DA-5) | ops | open |
+| A-39 | Browser proof of a release-to-vendor dispute with vendor and moderator pages checked after reload (QA3-5) | tests | open |
+| A-40 | "Verified purchase" badge relabelled "Completed order (test network)" in UI and docs (DA-6) | commerce | open |
+| A-41 | Upgrade test from an intermediate migrated commit; first tag's release notes list migrations since alpha.1 (PM MISSED) | ops | open |
 | A-15 | A never-confirming 0-conf deposit blocks expiry forever and keeps stock reserved | payments | open |
 | A-16 | 100/50-row caps without paging: admin user picker, payouts panel, messages, notifications, catalog | commerce/ui | open |
 | A-22 | No browser test drives the ambiguous-requeue confirmation (Go tests only); wallet journey covers only a definite rejection | tests | open |
@@ -55,8 +94,12 @@ Evidence tier as in `repo-map.md`.
 
 | ID | Item | Status |
 |---|---|---|
-| A-19 | Canary freshness indicator | open |
+| A-42 | Restore-reconciliation and staff-recovery drill on real local chains, counting shell/SQL steps per incident (PM-8, MOD-10) | open |
+| A-43 | Tor-Browser-like Firefox (resistFingerprinting, XOriginPolicy=2) run of db-setup/db-auth/db-orders to measure the write path (DA-7) | open |
+| A-44 | Compose bitcoind `rpcallowip` vs a 10.x Docker address pool; watcher pass time with ~200 funded orders on regtest (QA3-6, QA MISSED) | open |
+| A-45 | Kill monerod mid-`transfer` on the offline stagenet fork; record the wallet-rpc error code and whether the tx reached the daemon (settles A-23 live) | open |
 | A-20 | Legacy `service` listings still orderable; editing silently converts to physical | open |
+| A-46 | Publish a prerelease tag once P0/P1 close; UPGRADING retitled from→to; verification.md cites the tag's CI run (PM-5) | blocked (owner: release decision) |
 
 ## Declined
 
@@ -64,6 +107,12 @@ Evidence tier as in `repo-map.md`.
 |---|---|---|
 | D-1 | Admin "mark sent" being the only exit for some held payouts | conservative by design (Fable ruling) |
 | D-2 | Tor onion reachability as a roadmap item | environment evidence, not code; track under ops verification |
+| D-3 | A-14 auto-completion/abandonment timers | first unattended payout trigger, against the human-confirmed payout posture; abandonment already has a vendor-dispute path (`orders_state.go`) (DA-8, iteration 3) |
+| D-4 | A-19 canary freshness indicator | page already shows signature and posted dates; freshness needs an operator policy (DA-10) |
+| D-5 | Web unlock of `payments_recovery_required` | clearing it is an operator assertion after reconciliation; a button makes a false claim cheap (DA-11, QA3, MOD) |
+| D-6 | Web "record an external payout" and mark-sent refusing unknown txids | a hijacked admin session could suppress a real payout (unique `payouts.order_id`); wallets restored from seed do not know later txids (PM-4 original, MOD-2 original; iteration 3) |
+| D-7 | Global web payout pause | duplicates the restore gate and stopping the app; `op=hold` (A-34) covers the real case (MOD-4 revised) |
+| D-8 | Admin password reset for users; fail-on-skip mode for DB tests | reset is a takeover path with no email; CI already fails on an unreachable DB URL (PM NOT WORTH, DA-9) |
 
 ## Closed
 
