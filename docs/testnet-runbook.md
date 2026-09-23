@@ -125,12 +125,18 @@ coins; the order moves to *Paid* once the deposit reaches the confirmation thres
 
 Each payout is sent once. The **Payouts** table on the admin page marks rows that need attention:
 
-- **Failed — not retried; rejected by the wallet, nothing broadcast**: the wallet answered the send with an
-  error (for example insufficient or locked funds), so no transaction exists.
+- **Failed — not retried; rejected by the wallet, nothing broadcast**: the wallet reported a pre-broadcast
+  error (for example insufficient or locked funds), so no transaction exists. For Bitcoin this is any
+  `sendtoaddress` error: Bitcoin Core stores the transaction before relaying it, and a failed relay is not
+  returned as an error. For Monero it is only a `transfer` error raised before the wallet submits to the
+  daemon: -2 (wrong address), -16 (transaction not possible), -17 (not enough money), -18 (transaction too
+  large), -19 (not enough outputs to mix), -20 (no destination) or -37 (not enough unlocked money).
 - **Failed — not retried; outcome unknown, may have been broadcast**: the wallet call ended without a
   definite answer (no reply within 30 s, a dropped connection or an unreadable reply after the request was
-  sent). The wallet may still have broadcast the transaction. Failures recorded before this distinction
-  existed are shown this way too.
+  sent), or monero-wallet-rpc returned any other error code. In particular -38 (no connection to daemon)
+  is also returned when `sendrawtransaction` timed out after monerod may already have relayed the
+  transaction, and -4 or -1 can follow a submission. The wallet may still have broadcast the transaction.
+  Failures recorded before this distinction existed are shown this way too.
 - **Stuck in sending**: claimed more than 5 minutes ago with no recorded outcome (crash or database error
   after the wallet call); it may have been broadcast.
 - **Held**: a credited deposit is conflicted or re-confirming (the watcher releases these itself once the
