@@ -169,6 +169,59 @@ the state you saw, so a double click or a second administrator cannot queue it t
   broadcast"; the server refuses the release without it and records the confirmation in the audit trail
   and the order history. If the wallet shows the transaction use **Mark sent** instead.
 
+### Handle a payment-review flag
+
+The watcher flags a deposit once (`payments.flagged`): it writes a system note ending "Moderator review
+required." to the order history and notifies every moderator and administrator ("Payment review needed for
+order <first 8 characters of the order ID>"). Open **Moderation desk → Payment review**
+(`/moderator#payment-review`): it lists flagged deposits newest first (the 100 most recent, with a notice when
+older ones are cut) with the full order ID linking to the order, amount, full transaction ID, reason and
+flag time. A moderator or administrator who is not party to the order can open its page read-only: history
+with the flag note, the deposit ledger (while the currency's wallet is configured) and any payout. No buyer or
+vendor action is offered, the order actions refuse staff, and digital delivery content stays hidden unless
+the order is disputed.
+
+| Reason on the desk | What happened | What the application already did |
+| --- | --- | --- |
+| Credited deposit conflicted or missing | A deposit counted toward payment was double-spent, replaced, reorganised away or is no longer in the wallet. | Order state unchanged. Any unsent payout for the order is held (one queued later starts held). If the deposit confirms again the watcher lifts its own hold. |
+| Locked transfer (unlock time) | A Monero transfer with a non-zero `unlock_time`. | Never counted toward payment or paid out. The buyer was told to send an ordinary transfer. |
+| Deposit confirmed after settlement, not paid out | Extra funds confirmed after the order's single release or refund was queued (completed or resolved orders, or a cancellation that already queued a refund). | Not paid out: an order has exactly one payout. |
+
+What staff can do:
+
+1. Look the transaction up in the wallet (the `btc` and `xmr` helpers from steps 2 and 3; for incoming funds use
+   `btc -rpcwallet=opsecmkt gettransaction <txid>` or
+   `xmr get_transfer_by_txid '{"txid":"<txid>"}'`).
+2. A conflicted deposit that confirms again needs nothing. One that is gone for good means the order was
+   never fully funded: leave its held payout held (*Release held payout* is refused while the deposit is
+   conflicted) and talk to both parties through Messages. If either party opens a dispute, the moderator
+   resolves it on the desk as usual; the resulting payout is held too.
+3. Locked transfers and extra funds after settlement sit in the pooled wallet. They normally belong to the
+   buyer. Agree a return address with the buyer through Messages (ideally signed with their verified PGP key),
+   send the funds back **by hand from the wallet** (`sendtoaddress` / `transfer`), and record it.
+
+There is no web action to dismiss a flag or pay out a flagged deposit, and a flag stays on the desk. A
+manual refund is recorded as a **written note** (an order-history event plus an audit row), **never as a
+payout row**: `payouts.order_id` is unique, so the order's single release or refund owns that row; do not
+insert a payout and do not use *Mark sent* on the order's payout for a manual transfer. Record the note with
+`psql` (internal-db shown; replace the order ID, your staff handle and the note text):
+
+```sh
+docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -v order_id=FULL_ORDER_ID -v handle=YOUR_HANDLE \
+  -v note='Manual TESTNET refund: returned 0.0005 BTC from deposit <txid>:<n> to the buyer by hand in <refund txid>.' \
+  -U opsecmkt -d opsecmkt <<'SQL'
+WITH ev AS (
+  INSERT INTO order_events(order_id,from_state,to_state,actor_id,note)
+  SELECT o.id,o.state,o.state,u.id,:'note' FROM orders o JOIN users u ON u.handle=:'handle' AND u.role IN ('moderator','admin')
+  WHERE o.id=:'order_id' RETURNING order_id,actor_id)
+INSERT INTO audit_events(user_id,action) SELECT actor_id,'Order '||order_id||': '||:'note' FROM ev;
+SQL
+```
+
+It must report `INSERT 0 1`; `INSERT 0 0` means the order ID or staff handle was wrong and nothing was
+written. The note appears in the order history, which the buyer and vendor also read, so keep addresses and
+anything private out of it.
+
 ## 6. Back up the wallets
 
 Database dumps (`scripts/backup.sh`) do not contain the wallets. Back them up separately and encrypt the

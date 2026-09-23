@@ -28,6 +28,12 @@ type Notification struct {
 	Read              bool
 }
 type Dispute struct{ ID, OrderID, Reason, Status, Resolution, Created string }
+
+// PaymentReview is one deposit the payment watcher flagged for staff review (payments.flagged).
+type PaymentReview struct {
+	OrderID, OrderState, Currency, Amount, TxID, Reason, Flagged string
+	Index                                                        int64
+}
 type Event struct{ Handle, Action, Created string } // Handle: account the audit row is recorded on ("" = system)
 
 type PageData struct {
@@ -75,6 +81,12 @@ type PageData struct {
 	// HistoryLimit: non-zero when closed history (resolved disputes, or incoming orders not paid) was
 	// cut to this many most recent rows.
 	HistoryLimit int
+	// DeliveryWithheld: order page viewed by a reviewer of a payment flag on an order never disputed.
+	DeliveryWithheld bool
+	// PaymentReviews: moderator desk, payments flagged for review, newest flag first; PaymentReviewLimit is
+	// non-zero when the list was cut to that many rows.
+	PaymentReviews     []PaymentReview
+	PaymentReviewLimit int
 
 	// P4 Inventory (uses Product.Archived)
 	Listing   *ListingView

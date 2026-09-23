@@ -92,8 +92,9 @@ func (a *App) load(r *http.Request, d *PageData) error {
 				args = nil
 			}
 			if d.Page == "order" {
-				// Moderators and administrators may also open disputed or resolved orders, read-only (orders_load.go).
-				query = orderQuery + " WHERE (o.buyer_id=$1 OR p.vendor_id=$1 OR ($3 IN ('moderator','admin') AND o.state IN ('disputed','resolved'))) AND o.id=$2"
+				// Moderators and administrators may also open disputed or resolved orders, and orders with a payment
+				// flagged for review, read-only (orders_load.go).
+				query = orderQuery + " WHERE (o.buyer_id=$1 OR p.vendor_id=$1 OR ($3 IN ('moderator','admin') AND (o.state IN ('disputed','resolved') OR EXISTS(SELECT 1 FROM payments pm WHERE pm.order_id=o.id AND pm.flagged)))) AND o.id=$2"
 				args = append(args, r.URL.Query().Get("id"), d.User.Role)
 			}
 			if d.Page == "disputes" {
