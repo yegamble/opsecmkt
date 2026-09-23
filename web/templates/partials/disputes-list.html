@@ -1,5 +1,7 @@
-{{/* P3 Orders owns. Dispute list used by disputes and moderator; resolve form for moderators who are not party to the order */}}
-{{define "disputes-list"}}<div class="messages-list">{{range .Disputes}}{{$o := index $.DisputeOrders .OrderID}}{{$party := and $.User $o.ID (or (eq $o.BuyerID $.User.ID) (eq $o.VendorID $.User.ID))}}<article class="message">
+{{/* P3 Orders owns. Dispute list used by disputes and moderator; resolve form for moderators who are not party to the order.
+Disputes holds every open dispute first (OpenDisputes of them, oldest first), then the most recent resolved ones. */}}
+{{define "disputes-list"}}{{if .Disputes}}<h2 class="section-title">Open disputes</h2>{{if .OpenDisputes}}<div class="messages-list">{{else}}<p class="help">No open disputes. Every open dispute is listed here, oldest first.</p>{{end}}{{range $i, $d := .Disputes}}{{if eq $i $.OpenDisputes}}{{if $i}}</div>{{end}}
+<h2 class="section-title">Resolved disputes</h2>{{if $.HistoryLimit}}<p class="help" role="note">Showing the {{$.HistoryLimit}} most recent resolved disputes; older resolved disputes are not listed.</p>{{end}}<div class="messages-list">{{end}}{{$o := index $.DisputeOrders .OrderID}}{{$party := and $.User $o.ID (or (eq $o.BuyerID $.User.ID) (eq $o.VendorID $.User.ID))}}<article class="message">
 <div class="message-meta">{{if or $party (and $.User $o.ID (or (eq $.User.Role "moderator") (eq $.User.Role "admin")))}}<a class="text-link" href="/order?id={{.OrderID}}">Order {{.OrderID}}</a>{{else}}<span class="mono">Order {{.OrderID}}</span>{{end}}
 <span class="badge">{{.Status}}</span>
 </div>{{if $o.ID}}<p class="dispute-order">
@@ -25,8 +27,8 @@
 </label>
 <span class="help">Resolving closes the order and records the outcome. This form moves no funds; any payout or refund is handled by the payment system.</span>
 <button type="submit">Resolve dispute</button>
-</form>{{end}}{{end}}{{end}}{{end}}</article>{{else}}<div class="empty">
+</form>{{end}}{{end}}{{end}}{{end}}</article>{{end}}</div>{{else}}<div class="empty">
 <span class="empty-icon">◇</span>
 <h2>No disputes to display</h2>
 <p>Any submitted disputes will appear here for review.</p>
-</div>{{end}}</div>{{end}}
+</div>{{end}}{{end}}
