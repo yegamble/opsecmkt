@@ -206,9 +206,10 @@ func (p *moneroProvider) minorIndex(ctx context.Context, addr string) (int64, bo
 	}
 	if err := p.wallet.call(ctx, "/json_rpc", "get_address_index", map[string]any{"address": addr}, &r); err != nil {
 		var re *rpcError
-		if errors.As(err, &re) {
+		if errors.As(err, &re) && re.Code == -2 { // WALLET_RPC_ERROR_CODE_WRONG_ADDRESS
 			return 0, false, nil // not an address of this wallet
 		}
+		// Any other error (no wallet open, busy) is a failed read: the caller must not treat the address as empty.
 		return 0, false, err
 	}
 	major, _ := r.Index.Major.Int64()
