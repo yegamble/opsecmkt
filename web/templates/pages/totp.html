@@ -71,7 +71,9 @@
 <form class="stack" method="post" action="/totp/activate">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <label>6-digit code from your app<input name="code" required inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" autocomplete="one-time-code">
-</label>
+</label>{{if and $.PGP $.PGP.TwoFactor}}
+{{template "confirm-fields" false}}
+<span class="help">PGP sign-in verification is on, so adding TOTP needs your current password.</span>{{end}}
 <button class="primary" type="submit">Verify and turn on <span class="action-icon">↗</span></button>
 </form>
 <p class="help">TOTP stays off until a correct code is confirmed. You then receive 10 one-time recovery codes.</p>

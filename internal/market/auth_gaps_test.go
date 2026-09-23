@@ -703,3 +703,127 @@ func TestPGPVerifyRejectsChangedKey(t *testing.T) {
 	}
 	agExpect(e, "/pgp/verify", s, url.Values{"signature": {proof}}, 409, "No open challenge")
 }
+
+// --- A-47: adding a second factor needs re-authentication once one is enrolled ---
+
+// A session holder who knows the password but not the TOTP code (e.g. a phished password plus a stolen
+// session) must not swap in their own PGP key or turn PGP sign-in on: otherwise the password alone plus
+// their key completes sign-in after /revoke-sessions, although the victim's TOTP is still enrolled.
+func TestStolenSessionCannotAddPGPFactorToTOTPAccount(t *testing.T) {
+	e := newTestApp(t)
+	uid, stolen := e.user("victim_totp", "vendor")
+	agEnableTOTP(e, uid)
+	mallory, malloryPub := testPGPKey(t, "mallory")
+
+	// Saving a key needs the password and a current authenticator code while TOTP is enrolled.
+	agExpect(e, "/account", stolen, url.Values{"pgp": {malloryPub}}, 400, "Enter your current password")
+	agExpect(e, "/account", stolen, url.Values{"pgp": {malloryPub}, "password": {testPassword}}, 401, "")
+	if agStr(e, "SELECT pgp FROM users WHERE id=$1", uid) != "" {
+		t.Fatal("key saved on a TOTP account without full confirmation")
+	}
+	// Other profile fields still save without confirmation when the key is unchanged.
+	e.check(e.do("POST", "/account", stolen, url.Values{"xmpp": {"v@example.org"}}), 303)
+
+	// Even with a proven key already on file (as if saved earlier), turning PGP sign-in on needs both.
+	_, fp, _ := parsePublicKey(malloryPub)
+	agExec(e, "UPDATE users SET pgp=$2,pgp_fingerprint=$3,pgp_verified_at=now(),pgp_2fa=false WHERE id=$1", uid, malloryPub, fp)
+	agExpect(e, "/pgp/2fa", stolen, url.Values{"enable": {"1"}}, 400, "Enter your current password")
+	agExpect(e, "/pgp/2fa", stolen, url.Values{"enable": {"1"}, "password": {testPassword}}, 401, "")
+	if agStr(e, "SELECT pgp_2fa::text FROM users WHERE id=$1", uid) != "false" {
+		t.Fatal("PGP sign-in turned on for a TOTP account without full confirmation")
+	}
+	body := e.body("GET", "/pgp", stolen, nil, 200)
+	if !strings.Contains(body, `name="password"`) || !strings.Contains(body, `name="code"`) {
+		t.Fatal("/pgp does not ask for the password and authenticator code before turning PGP sign-in on")
+	}
+
+	// With the stolen session gone, the password plus mallory's key does not complete sign-in.
+	e.check(e.do("POST", "/revoke-sessions", stolen, nil), 303)
+	anon, pc := e.passwordLogin("victim_totp")
+	e.do("POST", "/challenge/pgp", anon, nil, pc)
+	answer := "guess"
+	if armored := agStr(e, "SELECT COALESCE(pgp_challenge,'') FROM pending_logins WHERE token_hash=$1", digest(pc.Value)); armored != "" {
+		answer = testDecrypt(t, mallory, armored)
+	}
+	w := e.do("POST", "/challenge", anon, url.Values{"method": {"pgp"}, "pgp_code": {answer}}, pc)
+	if w.Code == 303 && e.cookie(w, "session") != "" {
+		t.Fatal("signed in to a TOTP-protected account without a TOTP code")
+	}
+
+	// The owner, with the password and a current code, can do both; the audit says how it was confirmed.
+	owner := agSession(e, uid)
+	_, ownerPub := testPGPKey(t, "owner")
+	code, _ := e.totpCodeFor(uid, 0)
+	e.check(e.do("POST", "/account", owner, url.Values{"pgp": {ownerPub}, "password": {testPassword}, "code": {code}}), 303)
+	if agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action LIKE 'Updated PGP key (fingerprint %(confirmed with password and authenticator code)'", uid) != 1 {
+		t.Fatal("confirmed key change not audited with its confirmation")
+	}
+	agExec(e, "UPDATE users SET pgp_verified_at=now() WHERE id=$1", uid)
+	next, _ := e.totpCodeFor(uid, 1)
+	e.check(e.do("POST", "/pgp/2fa", owner, url.Values{"enable": {"1"}, "password": {testPassword}, "code": {next}}), 303)
+	if agStr(e, "SELECT pgp_2fa::text FROM users WHERE id=$1", uid) != "true" || agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action LIKE 'Turned on PGP sign-in verification%(confirmed with password and authenticator code)'", uid) != 1 {
+		t.Fatal("confirmed PGP sign-in enable not applied or not audited with its confirmation")
+	}
+}
+
+// The mirror case: TOTP cannot be activated on a PGP-sign-in account from a session without the password.
+func TestStolenSessionCannotEnrollTOTPOnPGPAccount(t *testing.T) {
+	e := newTestApp(t)
+	uid, stolen := e.user("victim_pgp", "vendor")
+	_, pub := testPGPKey(t, "victim")
+	agEnablePGP(e, uid, pub)
+
+	// Starting enrollment only stores an inactive secret; activation is the gate.
+	e.check(e.do("POST", "/totp/enroll", stolen, nil), 303)
+	if !strings.Contains(e.body("GET", "/totp", stolen, nil, 200), `name="password"`) {
+		t.Fatal("/totp does not ask for the password before activation on a PGP-sign-in account")
+	}
+	code, _ := e.totpCodeFor(uid, 0)
+	agExpect(e, "/totp/activate", stolen, url.Values{"code": {code}}, 400, "Enter your current password")
+	agExpect(e, "/totp/activate", stolen, url.Values{"code": {code}, "password": {"wrong password!"}}, 401, "Password incorrect")
+	if agStr(e, "SELECT totp_enabled::text FROM users WHERE id=$1", uid) != "false" || agInt(e, "SELECT count(*) FROM recovery_codes WHERE user_id=$1", uid) != 0 {
+		t.Fatal("TOTP activated on a PGP-sign-in account without the password")
+	}
+
+	e.check(e.do("POST", "/revoke-sessions", stolen, nil), 303)
+	anon, pc := e.passwordLogin("victim_pgp")
+	next, _ := e.totpCodeFor(uid, 1)
+	w := e.do("POST", "/challenge", anon, url.Values{"method": {"totp"}, "code": {next}}, pc)
+	if w.Code == 303 && e.cookie(w, "session") != "" {
+		t.Fatal("signed in to a PGP-sign-in account with an authenticator added from a session")
+	}
+
+	// The owner activates with the password; the audit records it.
+	owner := agSession(e, uid)
+	e.check(e.do("POST", "/totp/activate", owner, url.Values{"code": {code}, "password": {testPassword}}), 303)
+	if agStr(e, "SELECT totp_enabled::text FROM users WHERE id=$1", uid) != "true" || !e.auditHas(uid, "Enabled TOTP two-factor authentication; issued 10 recovery codes (confirmed with password)") {
+		t.Fatal("confirmed TOTP activation not applied or not audited with its confirmation")
+	}
+}
+
+// An account with no second factor keeps the session-only flow for its first factor and for key changes.
+func TestFirstFactorNeedsNoConfirmation(t *testing.T) {
+	e := newTestApp(t)
+	uid, s := e.user("first_factor", "buyer")
+	_, pub := testPGPKey(t, "first")
+	e.check(e.do("POST", "/account", s, url.Values{"pgp": {pub}}), 303)
+	agExec(e, "UPDATE users SET pgp_verified_at=now() WHERE id=$1", uid)
+	if strings.Contains(e.body("GET", "/pgp", s, nil, 200), `name="password"`) {
+		t.Fatal("/pgp asks for a password before the first factor")
+	}
+	e.check(e.do("POST", "/pgp/2fa", s, url.Values{"enable": {"1"}}), 303)
+	if !e.auditHas(uid, "Turned on PGP sign-in verification") || e.auditHas(uid, "confirmed with") {
+		t.Fatal("first-factor PGP enable not applied as before")
+	}
+
+	id2, s2 := e.user("first_totp", "buyer")
+	e.check(e.do("POST", "/totp/enroll", s2, nil), 303)
+	if strings.Contains(e.body("GET", "/totp", s2, nil, 200), `name="password"`) {
+		t.Fatal("/totp asks for a password before the first factor")
+	}
+	code, _ := e.totpCodeFor(id2, 0)
+	e.check(e.do("POST", "/totp/activate", s2, url.Values{"code": {code}}), 303)
+	if agStr(e, "SELECT totp_enabled::text FROM users WHERE id=$1", id2) != "true" || e.auditHas(id2, "confirmed with") {
+		t.Fatal("first-factor TOTP activation not applied as before")
+	}
+}
