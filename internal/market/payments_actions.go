@@ -275,7 +275,7 @@ func paymentsAdminLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		d.Providers = append(d.Providers, s)
 	}
 	rows, err = a.db.QueryContext(ctx, `SELECT p.id,p.order_id,p.kind,u.handle,p.currency,p.amount,p.address,p.state,p.txid,p.error,to_char(p.updated,'YYYY-MM-DD HH24:MI'),
-		(p.state IN ('blocked','held','failed') OR (p.state='sending' AND p.updated < now()-interval '5 minutes'))
+		(p.state IN ('blocked','held','failed') OR (p.state='sending' AND p.updated < now()-interval '5 minutes')),p.send_ambiguous
 		FROM payouts p JOIN users u ON u.id=p.user_id ORDER BY p.id DESC LIMIT 50`)
 	if err != nil {
 		return err
@@ -284,12 +284,18 @@ func paymentsAdminLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 	for rows.Next() {
 		var r PayoutRow
 		var amt int64
-		if err = rows.Scan(&r.ID, &r.OrderID, &r.Kind, &r.Recipient, &r.Currency, &amt, &r.Address, &r.State, &r.TxID, &r.Error, &r.Updated, &r.Attention); err != nil {
+		var sendAmbiguous bool
+		if err = rows.Scan(&r.ID, &r.OrderID, &r.Kind, &r.Recipient, &r.Currency, &amt, &r.Address, &r.State, &r.TxID, &r.Error, &r.Updated, &r.Attention, &sendAmbiguous); err != nil {
 			return err
 		}
 		r.Amount, r.StateLabel = amount(amt, currencyDecimals(r.Currency)), payoutStateLabel(r.State)
-		if r.State == "sending" && r.Attention {
-			r.StateLabel = "Stuck in sending — never retried; check the wallet"
+		switch {
+		case r.State == "sending" && r.Attention:
+			r.StateLabel, r.Ambiguous = "Stuck in sending — never retried; may have been broadcast, check the wallet", true
+		case r.State == "failed" && sendAmbiguous:
+			r.StateLabel, r.Ambiguous = r.StateLabel+"; outcome unknown, may have been broadcast", true
+		case r.State == "failed":
+			r.StateLabel += "; rejected by the wallet, nothing broadcast"
 		}
 		d.Payouts = append(d.Payouts, r)
 	}

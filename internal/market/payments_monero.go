@@ -292,7 +292,7 @@ func (p *moneroProvider) Send(ctx context.Context, to string, amt int64) (string
 	var r struct {
 		TxHash string `json:"tx_hash"`
 	}
-	err := p.wallet.call(ctx, "/json_rpc", "transfer", map[string]any{"destinations": []map[string]any{{"amount": amt, "address": to}}, "account_index": 0, "priority": 0}, &r)
+	err := p.wallet.callWithin(ctx, payoutSendTimeout, "/json_rpc", "transfer", map[string]any{"destinations": []map[string]any{{"amount": amt, "address": to}}, "account_index": 0, "priority": 0}, &r)
 	if err == nil && r.TxHash == "" {
 		err = errors.New("monero transfer returned no transaction hash")
 	}
