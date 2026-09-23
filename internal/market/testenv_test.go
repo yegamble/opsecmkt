@@ -25,7 +25,7 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-const testSetupToken = "testtesttesttesttesttesttesttesttesttesttesttesttesttesttesttest"
+const testSetupToken = "integration-test-setup-token-5f2c9e7a1b4d8036cafe0123456789abcdef"
 
 // testPassword is the password of users created by testEnv.user (hashed at bcrypt.MinCost for speed).
 const testPassword = "a-long-test-password"
