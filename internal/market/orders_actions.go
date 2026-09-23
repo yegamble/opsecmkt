@@ -36,6 +36,16 @@ func partyOrder(c *actionCtx, id string) (Order, error) {
 	return o, err
 }
 
+// sellerIsVendor reports whether a listing's owner is currently a vendor or administrator. Listings of a
+// demoted vendor accept no new drafts, payment requests or restores; existing orders continue.
+func sellerIsVendor(c *actionCtx, productID string) (bool, error) {
+	var ok bool
+	err := c.Tx.QueryRowContext(c.Ctx(), "SELECT u.role IN ('vendor','admin') FROM products p JOIN users u ON u.id=p.vendor_id WHERE p.id=$1", productID).Scan(&ok)
+	return ok, err
+}
+
+const sellerNotVendor = "The seller of this listing is no longer a vendor, so it accepts no new orders."
+
 func shortID(id string) string { return id[:min(8, len(id))] }
 
 func orderPage(id string) string { return "/order?id=" + id + "&saved=1" }
@@ -63,6 +73,11 @@ func payAction(c *actionCtx) (actionResult, error) {
 	o, err := partyOrder(c, c.Form.Get("order_id"))
 	if err != nil {
 		return actionResult{}, err
+	}
+	if ok, err := sellerIsVendor(c, o.ProductID); err != nil {
+		return actionResult{}, err
+	} else if !ok && o.State == stateDraft {
+		return actionResult{}, fail(409, sellerNotVendor+" Cancel this draft.")
 	}
 	if o.BuyerID == c.User.ID {
 		var open int

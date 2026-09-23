@@ -102,9 +102,25 @@ func eventActor(handle string, system bool, actorID string, o *Order) string {
 	return handle + " (moderator)"
 }
 
+// disputeReviewer: a moderator or administrator who is not party to the order may read it (never act on it
+// from the order page) once it is disputed, and keep reading it after resolution.
+func disputeReviewer(o *Order, u *User) bool {
+	return u != nil && u.ID != o.BuyerID && u.ID != o.VendorID && (u.Role == "moderator" || u.Role == "admin") &&
+		(o.State == stateDisputed || o.State == stateResolved)
+}
+
 func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) error {
 	o, u := d.Order, d.User
-	if o == nil || u == nil || (u.ID != o.BuyerID && u.ID != o.VendorID) {
+	switch {
+	case o == nil || u == nil:
+		return sql.ErrNoRows
+	case u.ID == o.BuyerID:
+		d.OrderViewer = roleBuyer
+	case u.ID == o.VendorID:
+		d.OrderViewer = roleVendor
+	case disputeReviewer(o, u):
+		d.OrderViewer = roleModerator
+	default:
 		return sql.ErrNoRows
 	}
 	rows, err := a.db.QueryContext(ctx, `SELECT e.from_state,e.to_state,COALESCE(u.handle,''),e.actor_id IS NULL,COALESCE(e.actor_id,''),e.note,to_char(e.created,'YYYY-MM-DD HH24:MI') FROM order_events e LEFT JOIN users u ON u.id=e.actor_id WHERE e.order_id=$1 ORDER BY e.id`, o.ID)
@@ -141,9 +157,19 @@ func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) 
 	} else if err != sql.ErrNoRows {
 		return err
 	}
+	var disp Dispute
+	err = a.db.QueryRowContext(ctx, "SELECT id,order_id,reason,status,resolution,to_char(created,'YYYY-MM-DD HH24:MI') FROM disputes WHERE order_id=$1", o.ID).Scan(&disp.ID, &disp.OrderID, &disp.Reason, &disp.Status, &disp.Resolution, &disp.Created)
+	if err == nil {
+		d.Disputes = []Dispute{disp}
+	} else if err != sql.ErrNoRows {
+		return err
+	}
 	d.CanReview = u.ID == o.BuyerID && o.State == stateCompleted && len(d.Reviews) == 0
-	d.Transitions = viewerTransitions(a.payments, o, u)
-	return nil
+	if d.OrderViewer != roleModerator { // reviewers resolve on the moderation desk; the order page is read-only for them
+		d.Transitions = viewerTransitions(a.payments, o, u)
+	}
+	d.Contacts, err = orderContacts(ctx, a, o, d.OrderViewer)
+	return err
 }
 
 // loadPublicReviews fills public reviews. Only reviews keyed to completed orders count; reviewer handles

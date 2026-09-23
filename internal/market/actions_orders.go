@@ -28,6 +28,12 @@ func orderDraftAction(c *actionCtx) (actionResult, error) {
 	if archived {
 		return actionResult{}, fail(400, "This listing is archived and accepts no new orders.")
 	}
+	if ok, err := sellerIsVendor(c, f.Get("product_id")); err != nil || !ok {
+		if err == nil {
+			err = fail(400, sellerNotVendor)
+		}
+		return actionResult{}, err
+	}
 	if vendor == c.User.ID {
 		return actionResult{}, fail(400, "You cannot order your own listing")
 	}

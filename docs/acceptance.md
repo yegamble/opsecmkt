@@ -77,7 +77,10 @@ Each package records its own acceptance checks here and edits only its subsectio
 - [ ] Without a payment provider for the currency, requesting payment returns 409 "Payment unavailable for BTC/XMR", changes nothing, and the order page shows the step as unavailable; no address is shown.
 - [ ] Requesting payment reserves one unit of stock (409 when none is left or the listing is archived); cancelling from awaiting payment or paid returns it; drafts never hold stock.
 - [ ] Resubmitting checkout and requesting payment both record the listing's current price (`TestDraftRepricedOnResubmitAndPay`); a fourth order awaiting payment is refused with 409 (`TestPayCapsOpenAwaitingPaymentOrders`).
-- [ ] Digital content is released only by the delivered transition (vendor action, or automatic after the watcher marks a digital order paid), is labelled as stored unencrypted, and is invisible to third parties and moderators.
+- [ ] Digital content is released only by the delivered transition (vendor action, or automatic after the watcher marks a digital order paid), is labelled as stored unencrypted, and is invisible to third parties; moderators and administrators see it only once the order is disputed (or resolved).
+- [ ] Moderators and administrators who are not party to an order open its page read-only only when it is disputed or resolved (summary, history, dispute reason and decision, delivery record); other orders return 404, no buyer/vendor action forms render, and the actions return 404. The moderation desk links each dispute to its order (`TestModeratorViewsDisputedOrderReadOnly`).
+- [ ] Vendor and order pages show the counterparty's armored public key, grouped fingerprint and "Ownership verified" only when the proof matches the saved key; a missing key says messages cannot be sent until one is added. Contact links open `/messages?to=<handle>` with the recipient filled in (invalid handles ignored). A paid physical order tells the buyer to send the shipping address encrypted to the vendor's key; the server stores no addresses (`TestCounterpartyKeysAndMessagePrefill`).
+- [ ] Signed-in users see "Notifications" in the main navigation at every width, with the unread count as text (`TestUnreadNotificationCountInNavigation`).
 - [ ] Concurrent completion of one order yields exactly one success and one event row.
 - [ ] Resolution requires a release/refund outcome, is refused to a moderator who is party to the order, and records the outcome before the resolved transition.
 - [ ] Reviews require a completed order and its buyer; a second review returns 409; public pages label them "Verified purchase" without reviewer handles.
@@ -89,6 +92,7 @@ Each package records its own acceptance checks here and edits only its subsectio
 - [ ] Fulfillment type cannot change under open orders; stale stock edits are refused instead of overwriting reservations.
 - [ ] Automatic delivery content is labelled as stored unencrypted, never rendered on public pages, and shown as "Automatic delivery requires a payment provider" when none is configured.
 - [ ] Edits, archives and restores are recorded in the audit log.
+- [ ] Changing a vendor's role to buyer or moderator archives their active listings in the same transaction (audited for the administrator and the account); new drafts, payment requests and restores on listings whose owner is not a vendor or administrator are refused, while existing orders continue (`TestVendorDemotionArchivesListingsAndRefusesNewOrders`).
 
 ### P5 Payments
 
