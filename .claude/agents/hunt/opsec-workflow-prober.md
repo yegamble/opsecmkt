@@ -33,6 +33,8 @@ chair gives you, and `README.md` for how to run the server.
   chair gives you) with uniquely named binaries; never `pkill` by a shared
   path — other probers run beside you. The wallet simulator's port is fixed in
   the fixture: run a copy on a port in your reserved range.
+- When you restart your server, find its PID by its listening port (`lsof -tiTCP:<port> -sTCP:LISTEN`),
+  not from `$!` after `cd … && …` (that is the subshell's PID).
 - Never touch a real deployment, `.env`, mainnet or a public network.
 
 ## How to drive it
