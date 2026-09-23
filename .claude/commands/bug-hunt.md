@@ -32,7 +32,8 @@ Dispatch `opsec-codegraph` for `HEAD`. It writes (or reuses)
   starting from the codegraph's hot spots and thin-coverage lists. Skip if
   `probe-only`.
 
-Give each the scope, the codegraph path, the rules file and the ledger IDs to
+Give each the commit SHA to hunt (worktrees start from `main`, so hunters must
+check it out), the scope, the codegraph path, the rules file and the ledger IDs to
 skip. Nothing else, so their results stay independent.
 
 ## 3. Verify

@@ -20,6 +20,8 @@ re-report them).
 
 ## Method
 
+0. Worktrees start from `main`. If your HEAD is not the commit the chair
+   names, run `git checkout --detach <sha>` before reading any code.
 1. Start from the hot spots and the thin-coverage list in the codegraph for
    your area; then every handler in the area.
 2. For each handler ask, with the code open:
