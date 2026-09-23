@@ -1,0 +1,93 @@
+{{define "page:totp"}}{{template "header" .}}
+<div class="page-head">
+<div>
+<div class="eyebrow">Account security</div>
+<h1>Two-factor authentication<span class="accent">.</span>
+</h1>
+<p>Time-based one-time codes (TOTP) from an authenticator app you control.</p>
+</div>{{with .Security}}{{if .TOTPEnabled}}<span class="badge green">Enabled</span>{{else}}<span class="badge neutral">Not enrolled</span>{{end}}{{end}}</div>{{with .Security}}{{if .Error}}
+<div class="alert error" role="alert">{{.Error}}</div>{{end}}{{if .RecoveryCodes}}
+<section class="panel recovery-reveal" aria-labelledby="recovery-heading">
+<h2 id="recovery-heading">Your recovery codes</h2>
+<p><strong>Shown once.</strong> Store them offline now. Each code signs you in one time if you lose your authenticator. Reloading this page will not show them again.</p>
+<ol class="recovery-codes mono">{{range .RecoveryCodes}}<li>{{.}}</li>{{end}}</ol>
+</section>{{end}}{{if .TOTPEnabled}}
+<div class="grid-two">
+<section class="panel">
+<h2>Status</h2>
+<dl class="key-values">
+<div>
+<dt>TOTP</dt>
+<dd>Enabled</dd>
+</div>
+<div>
+<dt>Unused recovery codes</dt>
+<dd>{{.RecoveryRemaining}} of 10</dd>
+</div>
+</dl>
+<p>After your password, every sign-in asks for a code from your authenticator or a recovery code.</p>
+<h2>Replace recovery codes</h2>
+<form class="stack" method="post" action="/totp/recovery">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<label>Current authenticator code<input name="code" required inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" autocomplete="one-time-code">
+</label>
+<span class="help">All previous recovery codes stop working immediately.</span>
+<button type="submit">Replace recovery codes</button>
+</form>
+</section>
+<section class="panel">
+<h2>Turn off TOTP</h2>
+<form class="stack" method="post" action="/totp/disable">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<label>Password<input type="password" name="password" required autocomplete="current-password">
+</label>
+<label>Authenticator code or recovery code<input name="code" required maxlength="40" autocomplete="one-time-code" spellcheck="false">
+</label>
+<span class="help">Your recovery codes are deleted and sign-in returns to password only.</span>
+<button type="submit">Turn off TOTP</button>
+</form>
+</section>
+</div>{{else if .PendingSecret}}
+<div class="grid-two">
+<section class="panel">
+<h2>1. Add this key to your authenticator</h2>
+<p>No QR code is shown. Type the secret key, or paste the setup URI into an app that accepts one.</p>
+<dl class="key-values">
+<div>
+<dt>Secret key</dt>
+<dd class="mono totp-secret">{{.PendingSecret}}</dd>
+</div>
+<div>
+<dt>Type</dt>
+<dd>Time-based, SHA-1, 6 digits, 30 seconds</dd>
+</div>
+</dl>
+<p class="help">Setup URI</p>
+<p class="code-block totp-uri">{{.OTPAuthURI}}</p>
+<p class="help">Anyone who sees this key can generate your codes. The server stores it encrypted with a key derived from its setup token.</p>
+</section>
+<section class="panel">
+<h2>2. Confirm a code</h2>
+<form class="stack" method="post" action="/totp/activate">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<label>6-digit code from your app<input name="code" required inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" autocomplete="one-time-code">
+</label>
+<button class="primary" type="submit">Verify and turn on ↗</button>
+</form>
+<p class="help">TOTP stays off until a correct code is confirmed. You then receive 10 one-time recovery codes.</p>
+<form method="post" action="/totp/enroll">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<button type="submit">Generate a different key</button>
+</form>
+</section>
+</div>{{else}}
+<section class="panel">
+<h2>Not enrolled</h2>
+<p>Sign-in currently uses your password only. Enrolling generates a secret key for an authenticator app; TOTP turns on only after you confirm a code from it.</p>
+<form method="post" action="/totp/enroll">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<button class="primary" type="submit">Start enrollment ↗</button>
+</form>
+</section>{{end}}{{end}}
+<p><a class="text-link" href="/account">← Back to account</a></p>
+{{template "footer" .}}{{end}}

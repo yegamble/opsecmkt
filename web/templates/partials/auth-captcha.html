@@ -1,2 +1,10 @@
 {{/* P1 Authentication owns. Fields inside the login and register forms, before the submit button */}}
-{{define "auth-captcha"}}{{end}}
+{{define "auth-captcha"}}{{with .Captcha}}<fieldset class="captcha">
+<legend>Human check</legend>{{if .ID}}
+<img class="captcha-image" src="/captcha?id={{.ID}}" width="200" height="70" alt="CAPTCHA image of six letters and digits. No audio alternative is available.">
+<input type="hidden" name="captcha_id" value="{{.ID}}">
+<label>Characters in the image<input name="captcha" required minlength="6" maxlength="6" autocomplete="off" autocapitalize="characters" spellcheck="false">
+</label>
+<span class="help">Not case-sensitive. Each image works once and expires after 10 minutes; reload the page for a new one. There is no audio alternative.</span>{{else}}
+<p class="alert error" role="alert">{{.Error}}</p>{{end}}
+</fieldset>{{end}}{{end}}

@@ -69,7 +69,10 @@ All keys below are listed in `.env.example` and passed by `compose.yaml`. Blank 
 
 ### Authentication
 
-No configuration. Second-factor secrets are encrypted with a key derived from `SETUP_TOKEN`; rotating `SETUP_TOKEN` invalidates them.
+No environment keys. Second-factor secrets are encrypted with a key derived from `SETUP_TOKEN`; rotating `SETUP_TOKEN` makes existing TOTP enrollments unreadable, so affected users must sign in with a recovery code, turn TOTP off and enroll again.
+
+- **TOTP** is optional per account: *Account → Manage TOTP* (`/totp`). Users type the shown secret (or paste the `otpauth://` URI) into an authenticator app; no QR code is generated. TOTP turns on only after a correct code, and 10 one-time recovery codes are shown once. Server clocks must be accurate (NTP); codes are accepted within ±30 seconds.
+- **CAPTCHA** on sign-in and registration is on by default for new and upgraded installations. Administrators turn it off or on under *Admin → Sign-in protection*; the change is audited. It is an image only, with no audio alternative, so turning it off may be needed for users who cannot read it. First-run setup never shows it.
 
 ### PGP identity
 

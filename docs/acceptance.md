@@ -51,6 +51,13 @@ Each package records its own acceptance checks here and edits only its subsectio
 - [ ] TOTP cannot activate without a valid code; recovery codes are hashed and single-use.
 - [ ] Sign-in for an enrolled account always passes through `/challenge`.
 - [ ] CAPTCHA is a same-origin PNG, needs no JavaScript, is single-use, expires, and is rate-limited. No audio alternative or QR code is claimed.
+- [ ] RFC 6238 SHA-1 test vectors pass; codes outside ±1 step, and any code for an already accepted step, are rejected — including when the same code is submitted concurrently (`totp_test.go`, `TestTOTPConcurrentReplay`).
+- [ ] The TOTP secret is stored sealed, never in plaintext; recovery codes appear exactly once and are stored only as SHA-256 hashes (`TestTOTPEnrollmentChallengeAndRecovery`).
+- [ ] Replacing recovery codes needs a current code and invalidates old ones; turning TOTP off needs the password and a code, deletes all recovery codes, and is audited.
+- [ ] The account page says "Enabled" only while TOTP is active, "Not enrolled (setup not confirmed)" for an unconfirmed secret, otherwise "Not enrolled".
+- [ ] CAPTCHA: missing, wrong, reused, expired or other-session answers return 400 before any password hashing; the image is served only to the issuing session with `Cache-Control: no-store`; the 31st challenge in ten minutes shows a visible error instead of an image; setup never requires it (`TestCaptchaOnRegisterAndLogin`, `TestSetupSkipsCaptcha`).
+- [ ] Turning the CAPTCHA off or on is administrator-only and recorded in the audit trail.
+- [ ] Browser: `db-setup.spec.ts` rejects registration with a wrong CAPTCHA, then turns it off; `db-auth.spec.ts` enrolls TOTP with a code computed from the displayed secret, signs in through the challenge and spends a recovery code once; `preview-auth.spec.ts` checks the pages at every viewport without scripts.
 
 ### P2 PGP identity
 
