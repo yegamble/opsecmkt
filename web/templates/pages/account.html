@@ -1,0 +1,49 @@
+{{define "page:account"}}{{template "header" .}}
+<div class="page-head">
+<div>
+<div class="eyebrow">Identity &amp; preferences</div>
+<h1>Your account<span class="accent">.</span>
+</h1>
+<p>Manage your public key and contact information.</p>
+</div>{{if .User}}<span class="badge neutral">{{.User.Role}}</span>{{end}}</div>{{with .User}}<div class="grid-two">
+<section class="panel">
+<h2>Public profile</h2>
+<form class="stack" method="post" action="/account">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<label>Handle<input value="{{.Handle}}" readonly>
+</label>
+<label>PGP public key<textarea name="pgp" maxlength="32768" rows="8" spellcheck="false" placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----">{{.PGP}}</textarea>
+</label>
+<span class="help">Only your public key belongs here. Key ownership is not verified by this application.</span>
+<label>XMPP address<input name="xmpp" value="{{.XMPP}}" maxlength="254" placeholder="handle@example.org">
+</label>
+<button class="primary" type="submit">Save profile</button>
+</form>
+</section>
+<section>
+<div class="panel">
+<h2>Security status</h2>
+<dl class="key-values">
+<div>
+<dt>Login method</dt>
+<dd>Password</dd>
+</div>
+{{template "account-security" $}}
+<div>
+<dt>PGP login challenge</dt>
+<dd>Not available</dd>
+</div>
+{{template "account-payout" $}}
+</dl>
+<p>Use a unique password. Never share private keys or recovery phrases.</p>
+</div>{{template "account-security:panel" $}}{{template "account-payout:panel" $}}
+<div class="panel">
+<h2>End your session</h2>
+<form method="post" action="/logout">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<button type="submit">Sign out</button>
+</form>
+</div>
+</section>
+</div>{{end}}
+{{template "footer" .}}{{end}}

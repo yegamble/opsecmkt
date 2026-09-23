@@ -1,0 +1,32 @@
+{{/* P3 Orders owns. Order list used by orders and vendor-orders */}}
+{{define "orders-table"}}{{if .Orders}}<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th scope="col">Order / listing</th>
+<th scope="col">Vendor</th>
+<th scope="col">Amount</th>
+<th scope="col">Status</th>
+<th scope="col">Created</th>
+</tr>
+</thead>
+<tbody>{{range .Orders}}<tr>
+<td>
+<a href="/order?id={{.ID}}">{{.Title}}</a>
+<br>
+<small class="muted mono">{{.ID}}</small>
+</td>
+<td>{{.Vendor}}</td>
+<td class="mono">{{.Amount}} {{.Currency}}</td>
+<td>
+<span class="badge">{{.Status}}</span>
+</td>
+<td>{{.Created}}</td>
+</tr>{{end}}</tbody>
+</table>
+</div>{{else}}<div class="empty">
+<span class="empty-icon">[ 0 ]</span>
+<h2>No orders yet</h2>
+<p>Find a listing in the marketplace and create an unfunded draft to see it here.</p>
+<a class="button primary" href="/">Explore the marketplace ↗</a>
+</div>{{end}}{{end}}

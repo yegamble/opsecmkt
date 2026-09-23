@@ -1,0 +1,27 @@
+{{define "page:disputes"}}{{template "header" .}}
+<div class="page-head">
+<div>
+<div class="eyebrow">Resolution center</div>
+<h1>Disputes<span class="accent">.</span>
+</h1>
+<p>Raise an issue with an order for moderator review.</p>
+</div>
+</div>
+<div class="grid-two">
+<section class="panel">
+<h2>Open a dispute</h2>
+<form class="stack" method="post" action="/disputes">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<label>Order ID<input name="order_id" required maxlength="80" placeholder="Your order ID">
+</label>
+<label>Describe the issue<textarea name="reason" required minlength="20" maxlength="5000" placeholder="Provide the details a moderator needs to review your issue.">
+</textarea>
+</label>
+<span class="help">Do not include passwords, private keys, or payment recovery phrases.</span>
+<button class="primary" type="submit">Submit dispute ↗</button>
+</form>
+</section>
+<section>
+<h2 class="section-title">Your disputes</h2>{{template "disputes-list" .}}</section>
+</div>
+{{template "footer" .}}{{end}}

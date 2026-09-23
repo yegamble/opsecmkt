@@ -1,0 +1,44 @@
+{{define "page:messages"}}{{template "header" .}}
+<div class="page-head">
+<div>
+<div class="eyebrow">Private correspondence</div>
+<h1>Messages<span class="accent">.</span>
+</h1>
+<p>Exchange text encrypted in your own trusted PGP application.</p>
+</div>
+<span class="badge neutral">Client encryption required</span>
+</div>
+<div class="notice">
+<p>
+<strong>ENCRYPT BEFORE SENDING.</strong> This page does not encrypt messages. Paste only an ASCII-armored PGP encrypted message. Sender, recipient, and timestamps remain visible to the server.</p>
+</div>
+<div class="grid-two">
+<section class="panel">
+<h2>Compose a message</h2>
+<form class="stack" method="post" action="/messages">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<label>Recipient handle<input name="recipient" required maxlength="32" autocomplete="off" placeholder="vendor_handle">
+</label>
+<label>PGP encrypted message<textarea name="body" required maxlength="65536" rows="9" spellcheck="false" placeholder="-----BEGIN PGP MESSAGE-----">
+</textarea>
+</label>
+<span class="help">Confirm the recipient’s key fingerprint through a trusted channel before encrypting.</span>
+<button class="primary" type="submit">Send encrypted text ↗</button>
+</form>
+</section>
+<section>
+<h2 class="section-title">Correspondence</h2>
+<div class="messages-list">{{range .Messages}}<article class="message">
+<div class="message-meta">
+<span>{{.Sender}} → {{.Recipient}}</span>
+<time>{{.Created}}</time>
+</div>
+<pre class="code-block">{{.Body}}</pre>
+</article>{{else}}<div class="empty">
+<span class="empty-icon">[ ]</span>
+<h2>No messages yet</h2>
+<p>Your sent and received encrypted messages will appear here.</p>
+</div>{{end}}</div>
+</section>
+</div>
+{{template "footer" .}}{{end}}

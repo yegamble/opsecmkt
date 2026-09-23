@@ -11,6 +11,7 @@ const routes = [
   ['/moderator', 'Moderation desk.'], ['/admin', 'Control room.'],
   ['/canary', 'Trust is verifiable.'], ['/setup', 'Initialize your market.'],
   ['/login', 'Welcome back.'], ['/register', 'Create an account.'],
+  ['/challenge', 'Verify your sign-in.'],
 ];
 
 async function openFilters(page: Page) {

@@ -93,6 +93,12 @@ print('a1' * int(sys.argv[3]))
         self.assertEqual(len(config['POSTGRES_PASSWORD']), 48)
         self.assertEqual(len(config['SETUP_TOKEN']), 64)
         self.assertNotIn(config['SETUP_TOKEN'], result.stdout + result.stderr)
+        self.assertEqual(len(config['AUDIT_SIGNING_KEY']), 64)
+        self.assertNotIn(config['AUDIT_SIGNING_KEY'], result.stdout + result.stderr)
+        self.assertEqual(config['BITCOIN_CHAIN'], 'testnet4')
+        self.assertEqual(config['MONERO_NETWORK'], 'stagenet')
+        self.assertNotIn('BITCOIN_RPC_URL', config)
+        self.assertNotIn('MONERO_WALLET_RPC_URL', config)
 
     def test_external_clearnet_local_http(self):
         url = 'postgresql://test:local-only@database:5432/scratch?sslmode=require'
@@ -137,12 +143,24 @@ print('a1' * int(sys.argv[3]))
         ])
         self.assert_started(result)
         config = self.config()
-        self.assertEqual(config['COMPOSE_PROFILES'], 'internal-db,bitcoin,monero')
+        self.assertEqual(config['COMPOSE_PROFILES'], 'internal-db,bitcoin,monero,monero-wallet')
         self.assertEqual(config['BITCOIN_IMAGE'], 'reviewed-bitcoin:test')
         self.assertEqual(config['MONERO_IMAGE'], 'reviewed-monero:test')
         self.assertIn('@bitcoin:8332', config['BITCOIN_RPC_URL'])
         self.assertEqual(config['MONERO_RPC_URL'], 'http://monero:18081')
+        self.assertEqual(config['MONERO_WALLET_RPC_URL'], 'http://monero-wallet:18083')
         self.assertNotIn('compose.external-egress.yaml', config['COMPOSE_FILE'])
+
+    def test_external_monero_wallet_rpc(self):
+        daemon, wallet = 'https://monerod.example.test', 'http://user:pass@wallet.example.test:18083'
+        result = self.run_installer(['tor', '', '', 'external', daemon, wallet])
+        self.assert_started(result)
+        config = self.config()
+        self.assertEqual(config['MONERO_RPC_URL'], daemon)
+        self.assertEqual(config['MONERO_WALLET_RPC_URL'], wallet)
+        self.assertEqual(config['COMPOSE_PROFILES'], 'internal-db')
+        self.assertIn('compose.external-egress.yaml', config['COMPOSE_FILE'])
+        self.assertNotIn(wallet, result.stdout + result.stderr)
 
     def test_existing_env_is_never_changed(self):
         path = self.root / '.env'
@@ -165,6 +183,7 @@ print('a1' * int(sys.argv[3]))
             ['tor', 'https://not-postgres'],
             ['tor', '', 'invalid-node'],
             ['tor', '', 'external', 'ftp://invalid-rpc'],
+            ['tor', '', '', 'external', 'https://monerod.example.test', 'ftp://invalid-wallet'],
             ['tor', '', 'local', ''],
             ['tor', "postgres://test:quote'@database/scratch", '', ''],
         ]

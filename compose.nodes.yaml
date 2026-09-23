@@ -1,5 +1,7 @@
 # Operator-supplied, reviewed images must contain these binaries on PATH.
-# No RPC or peer ports are published to the host.
+# No RPC or peer ports are published to the host. Test networks only: BITCOIN_CHAIN (testnet4, signet,
+# regtest) and MONERO_NETWORK (stagenet, testnet); the app refuses mainnet. RPC ports are pinned so the
+# installer's URLs do not depend on the chain.
 services:
   bitcoin:
     image: ${BITCOIN_IMAGE:-scratch}
@@ -9,9 +11,11 @@ services:
     entrypoint: [bitcoind]
     command:
       - -datadir=/data
+      - -chain=${BITCOIN_CHAIN:-testnet4}
       - -server=1
       - -printtoconsole=1
       - -rpcbind=0.0.0.0
+      - -rpcport=8332
       - -rpcallowip=172.16.0.0/12
       - -rpcallowip=192.168.0.0/16
       - -rpcuser=marketplace
@@ -23,11 +27,21 @@ services:
     restart: unless-stopped
     networks: [backend, node_egress]
     entrypoint: [monerod]
-    command: [--data-dir, /data, --non-interactive, --restricted-rpc, --rpc-bind-ip, 0.0.0.0, --confirm-external-bind]
+    command: ['--${MONERO_NETWORK:-stagenet}', --data-dir, /data, --non-interactive, --restricted-rpc, --rpc-bind-ip, 0.0.0.0, --rpc-bind-port, '18081', --confirm-external-bind]
     volumes: [monero_data:/data]
+  monero-wallet:
+    # The same reviewed Monero image must also provide monero-wallet-rpc. Reachable only on the backend network.
+    image: ${MONERO_IMAGE:-scratch}
+    profiles: [monero-wallet]
+    restart: unless-stopped
+    networks: [backend]
+    entrypoint: [monero-wallet-rpc]
+    command: ['--${MONERO_NETWORK:-stagenet}', --daemon-address, 'monero:18081', --trusted-daemon, --wallet-dir, /wallet, --rpc-bind-ip, 0.0.0.0, --rpc-bind-port, '18083', --confirm-external-bind, --disable-rpc-login]
+    volumes: [monero_wallet:/wallet]
 volumes:
   bitcoin_data:
   monero_data:
+  monero_wallet:
 
 networks:
   node_egress:

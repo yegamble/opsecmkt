@@ -1,0 +1,21 @@
+{{/* P5 Payments owns. Slots: payment-status (footer), :catalog, :product, :checkout, :vendor-dashboard (stat tiles) */}}
+{{define "payment-status"}}<span class="accent">Payments disabled</span>{{end}}
+{{define "payment-status:catalog"}}<div class="notice">
+<p>
+<strong>Order drafts only.</strong> Payments and escrow are not active.</p>
+</div>{{end}}
+{{define "payment-status:product"}}<p>Payments and escrow are not active. No protection or verification claim is implied by a listing.</p>{{end}}
+{{define "payment-status:checkout"}}<div class="notice">
+<p>
+<strong>UNFUNDED DRAFT ONLY.</strong> Bitcoin, Monero, multisig escrow, shipping addresses, and settlement are not configured. Do not send funds.</p>
+</div>{{end}}
+{{define "payment-status:vendor-dashboard"}}<div class="stat">
+<div class="eyebrow">Payments</div>
+<strong>OFF</strong>
+<span>Provider not configured</span>
+</div>
+<div class="stat">
+<div class="eyebrow">Escrow</div>
+<strong>OFF</strong>
+<span>No funds are held</span>
+</div>{{end}}

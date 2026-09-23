@@ -11,13 +11,12 @@ import (
 	_ "embed"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	_ "github.com/jackc/pgx/v5/stdlib"
-	"golang.org/x/crypto/bcrypt"
 	"html/template"
 	"net/http"
 	"net/url"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,34 +26,6 @@ import (
 //go:embed schema.sql
 var schema string
 
-type User struct{ ID, Handle, Role, PGP, XMPP string }
-type Product struct {
-	ID, Title, Description, Category, Region, Kind, Vendor, VendorID, PriceBTC, PriceXMR string
-	Stock                                                                                int
-}
-type Order struct{ ID, ProductID, Title, Buyer, Vendor, Currency, Amount, Status, Created string }
-type Message struct{ ID, Sender, Recipient, Body, Created string }
-type Notification struct {
-	ID, Body, Created string
-	Read              bool
-}
-type Dispute struct{ ID, OrderID, Reason, Status, Resolution, Created string }
-type Event struct{ Action, Created string }
-type PageData struct {
-	Page, Title, CSRF, Error, Notice, Query, Category, Region, Currency, Mode string
-	User                                                                      *User
-	Products                                                                  []Product
-	Product                                                                   *Product
-	Orders                                                                    []Order
-	Order                                                                     *Order
-	Messages                                                                  []Message
-	Notifications                                                             []Notification
-	Disputes                                                                  []Dispute
-	Users                                                                     []User
-	Events                                                                    []Event
-	Settings                                                                  map[string]string
-	Preview                                                                   bool
-}
 type bucket struct {
 	Count int
 	Until time.Time
@@ -67,14 +38,29 @@ type App struct {
 	key              []byte
 	mu               sync.Mutex
 	limits           map[string]bucket
+	payments         map[string]PaymentProvider // currency -> provider; empty = payments disabled
+	stop             context.CancelFunc
+	background       sync.WaitGroup
+}
+
+// parseTemplates loads layout (web/templates/*.html), pages/<page>.html ("page:<page>") and partials/<hook>.html.
+func parseTemplates() (*template.Template, error) {
+	t := template.New("")
+	for _, pattern := range []string{"web/templates/*.html", "web/templates/pages/*.html", "web/templates/partials/*.html"} {
+		var err error
+		if t, err = t.ParseGlob(pattern); err != nil {
+			return nil, err
+		}
+	}
+	return t, nil
 }
 
 func New(ctx context.Context, preview bool) (*App, error) {
-	t, err := template.ParseFiles("web/templates/pages.html")
+	t, err := parseTemplates()
 	if err != nil {
 		return nil, err
 	}
-	a := &App{templates: t, preview: preview, secure: os.Getenv("COOKIE_SECURE") != "false", mode: os.Getenv("APP_MODE"), setupToken: os.Getenv("SETUP_TOKEN"), limits: make(map[string]bucket)}
+	a := &App{templates: t, preview: preview, secure: os.Getenv("COOKIE_SECURE") != "false", mode: os.Getenv("APP_MODE"), setupToken: os.Getenv("SETUP_TOKEN"), limits: make(map[string]bucket), payments: map[string]PaymentProvider{}}
 	if a.mode == "" {
 		a.mode = "clearnet"
 	}
@@ -117,18 +103,17 @@ func New(ctx context.Context, preview bool) (*App, error) {
 	if _, err = tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(782493)"); err != nil {
 		return nil, err
 	}
-	if _, err = tx.ExecContext(ctx, schema); err != nil {
-		return nil, errors.New("database migration failed")
+	if err = migrate(ctx, tx); err != nil {
+		return nil, fmt.Errorf("database migration failed: %w", err)
 	}
 	if err = tx.Commit(); err != nil {
 		return nil, err
 	}
-	return a, nil
-}
-func (a *App) Close() {
-	if a.db != nil {
-		a.db.Close()
+	if err = a.initPayments(ctx); err != nil {
+		db.Close()
+		return nil, err
 	}
+	return a, nil
 }
 func randomToken() string {
 	b := make([]byte, 32)
@@ -218,6 +203,8 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		token = randomToken()
 		a.cookie(w, "session", token, 86400)
 	}
+	r = r.WithContext(context.WithValue(ctx, sessionKey{}, token))
+	ctx = r.Context()
 	if r.Method == "POST" {
 		if a.preview {
 			http.Error(w, "Read-only preview. Start with PostgreSQL to save changes.", 403)
@@ -242,12 +229,15 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		a.post(w, r, user, token)
 		return
 	}
+	if h, ok := raws[r.URL.Path]; ok {
+		h(a, w, r, user)
+		return
+	}
 	page := strings.TrimPrefix(r.URL.Path, "/")
 	if page == "" {
 		page = "catalog"
 	}
-	allowed := map[string]bool{"catalog": true, "product": true, "vendor": true, "checkout": true, "orders": true, "order": true, "messages": true, "notifications": true, "disputes": true, "account": true, "vendor-dashboard": true, "moderator": true, "admin": true, "canary": true, "setup": true, "login": true, "register": true}
-	if !allowed[page] {
+	if _, ok := pages[page]; !ok {
 		http.NotFound(w, r)
 		return
 	}
@@ -291,6 +281,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		d.CSRF = a.csrf(token)
 		d.Mode = a.mode
+		applyPreviews(&d)
 		a.render(w, d)
 		return
 	}
@@ -323,8 +314,11 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		d.Notice = "Changes saved."
 	}
 	if err := a.load(r, &d); err != nil {
+		var he *httpError
 		if err == sql.ErrNoRows {
 			http.NotFound(w, r)
+		} else if errors.As(err, &he) {
+			http.Error(w, he.Msg, he.Code)
 		} else {
 			http.Error(w, "Unable to load this page", 500)
 		}
@@ -332,37 +326,15 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	a.render(w, d)
 }
-func protected(page string) bool {
-	switch page {
-	case "checkout", "orders", "order", "messages", "notifications", "disputes", "account", "vendor-dashboard", "moderator", "admin":
-		return true
-	}
-	return false
-}
-func authorized(page string, u *User) bool {
-	switch page {
-	case "admin":
-		return u != nil && u.Role == "admin"
-	case "moderator":
-		return u != nil && (u.Role == "admin" || u.Role == "moderator")
-	case "vendor-dashboard":
-		return u != nil && (u.Role == "admin" || u.Role == "vendor")
-	}
-	return true
-}
 func (a *App) render(w http.ResponseWriter, d PageData) {
 	var b bytes.Buffer
-	if err := a.templates.ExecuteTemplate(&b, "page", d); err != nil {
+	if err := a.templates.ExecuteTemplate(&b, "page:"+d.Page, d); err != nil {
 		http.Error(w, "Unable to render page", 500)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write(b.Bytes())
 }
-
-var passwordWork = make(chan struct{}, 4)
-
-var handlePattern = regexp.MustCompile(`^[a-zA-Z0-9_]{3,32}$`)
 
 func parseAmount(s string, decimals int) (int64, error) {
 	if s == "" || strings.TrimSpace(s) != s {
@@ -400,348 +372,4 @@ func amount(n int64, d int) string {
 		s = "0" + s
 	}
 	return strings.TrimRight(strings.TrimRight(s[:len(s)-d]+"."+s[len(s)-d:], "0"), ".")
-}
-func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string) {
-	ctx := r.Context()
-	f := r.PostForm
-	path := r.URL.Path
-	fail := func(s string, code int) { http.Error(w, s, code) }
-	if path == "/setup" || path == "/login" || path == "/register" {
-		select {
-		case passwordWork <- struct{}{}:
-			defer func() { <-passwordWork }()
-		default:
-			fail("Authentication is busy. Try again shortly.", 503)
-			return
-		}
-		handle := strings.TrimSpace(f.Get("handle"))
-		password := f.Get("password")
-		if !a.allow("auth:"+strings.ToLower(handle), 10) {
-			fail("Too many attempts. Try again in ten minutes.", 429)
-			return
-		}
-		if !handlePattern.MatchString(handle) || len(password) < 12 || len(password) > 72 {
-			fail("Use a 3–32 character handle (letters, digits, underscores) and a password of 12–72 bytes.", 400)
-			return
-		}
-		var installed bool
-		if err := a.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM settings WHERE key='installed')").Scan(&installed); err != nil {
-			fail("Service unavailable", 503)
-			return
-		}
-		if path == "/login" {
-			var id, hash string
-			err := a.db.QueryRowContext(ctx, "SELECT id,password_hash FROM users WHERE handle=$1", handle).Scan(&id, &hash)
-			if err != nil {
-				hash = "$2a$12$R9h/cIPz0gi.URNNX3kh2OPST9/PgBkqquzi.Ss7KIUgO2t0jWMUW"
-			}
-			check := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
-			if err != nil || check != nil {
-				fail("Invalid handle or password", 401)
-				return
-			}
-			if err = a.login(ctx, w, id, token); err != nil {
-				fail("Unable to sign in", 500)
-				return
-			}
-			http.Redirect(w, r, "/", 303)
-			return
-		}
-		if path == "/setup" && (installed || subtle.ConstantTimeCompare([]byte(f.Get("token")), []byte(a.setupToken)) != 1) {
-			fail("Setup unavailable or token incorrect", 403)
-			return
-		}
-		if path == "/register" && !installed {
-			fail("Complete installation first", 403)
-			return
-		}
-		hash, err := bcrypt.GenerateFromPassword([]byte(password), 12)
-		if err != nil {
-			fail("Unable to create account", 500)
-			return
-		}
-		tx, err := a.db.BeginTx(ctx, nil)
-		if err != nil {
-			fail("Service unavailable", 503)
-			return
-		}
-		defer tx.Rollback()
-		if _, err = tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(782493)"); err != nil {
-			fail("Service unavailable", 503)
-			return
-		}
-		if path == "/setup" {
-			if err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM settings WHERE key='installed')").Scan(&installed); err != nil || installed {
-				fail("Setup already complete", 403)
-				return
-			}
-		}
-		role := "buyer"
-		if path == "/setup" {
-			role = "admin"
-		}
-		id := randomToken()
-		if _, err = tx.ExecContext(ctx, "INSERT INTO users(id,handle,password_hash,role) VALUES($1,$2,$3,$4)", id, handle, string(hash), role); err != nil {
-			fail("Handle unavailable", 400)
-			return
-		}
-		if path == "/setup" {
-			name := strings.TrimSpace(f.Get("site_name"))
-			if name == "" {
-				name = "OPSMKT"
-			}
-			if len(name) > 80 {
-				fail("Site name too long", 400)
-				return
-			}
-			if _, err = tx.ExecContext(ctx, "INSERT INTO settings(key,value) VALUES('installed','true'),('site_name',$1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", name); err != nil {
-				fail("Setup failed", 500)
-				return
-			}
-		}
-		if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", id, "Account created: "+role); err != nil {
-			fail("Audit failed", 500)
-			return
-		}
-		if err = tx.Commit(); err != nil {
-			fail("Unable to save account", 500)
-			return
-		}
-		if err = a.login(ctx, w, id, token); err != nil {
-			fail("Account created; sign in to continue", 500)
-			return
-		}
-		http.Redirect(w, r, "/", 303)
-		return
-	}
-	if u == nil {
-		fail("Sign in required", 401)
-		return
-	}
-	if !a.allow("write:"+u.ID, 100) {
-		fail("Too many changes. Try again later.", 429)
-		return
-	}
-	tx, err := a.db.BeginTx(ctx, nil)
-	if err != nil {
-		fail("Service unavailable", 503)
-		return
-	}
-	defer tx.Rollback()
-	redirect := "/"
-	action := ""
-	switch path {
-	case "/logout":
-		_, err = tx.ExecContext(ctx, "DELETE FROM sessions WHERE token_hash=$1", digest(token))
-		a.cookie(w, "session", "", -1)
-		redirect = "/login"
-		action = "Signed out"
-	case "/revoke-sessions":
-		_, err = tx.ExecContext(ctx, "DELETE FROM sessions WHERE user_id=$1", u.ID)
-		a.cookie(w, "session", "", -1)
-		redirect = "/login"
-		action = "Revoked all sessions"
-	case "/account":
-		pgp, xmpp := strings.TrimSpace(f.Get("pgp")), strings.TrimSpace(f.Get("xmpp"))
-		if len(pgp) > 16384 || len(xmpp) > 254 {
-			fail("Profile fields too long", 400)
-			return
-		}
-		if pgp != "" && (!strings.HasPrefix(pgp, "-----BEGIN PGP PUBLIC KEY BLOCK-----") || !strings.HasSuffix(pgp, "-----END PGP PUBLIC KEY BLOCK-----")) {
-			fail("Paste an armored public key only. Never upload your private key.", 400)
-			return
-		}
-		_, err = tx.ExecContext(ctx, "UPDATE users SET pgp=$1,xmpp=$2 WHERE id=$3", pgp, xmpp, u.ID)
-		redirect = "/account?saved=1"
-		action = "Updated profile (key not cryptographically verified)"
-	case "/orders":
-		currency := f.Get("currency")
-		if currency != "BTC" && currency != "XMR" {
-			fail("Choose BTC or XMR", 400)
-			return
-		}
-		var btc, xmr int64
-		var vendor string
-		var stock int
-		err = tx.QueryRowContext(ctx, "SELECT btc,xmr,vendor_id,stock FROM products WHERE id=$1", f.Get("product_id")).Scan(&btc, &xmr, &vendor, &stock)
-		if err != nil || stock < 1 {
-			fail("Product unavailable", 400)
-			return
-		}
-		if vendor == u.ID {
-			fail("You cannot order your own listing", 400)
-			return
-		}
-		total := btc
-		if currency == "XMR" {
-			total = xmr
-		}
-		id := randomToken()
-		err = tx.QueryRowContext(ctx, `INSERT INTO orders(id,buyer_id,product_id,currency,amount) VALUES($1,$2,$3,$4,$5) ON CONFLICT(buyer_id,product_id,currency) DO UPDATE SET buyer_id=excluded.buyer_id RETURNING id`, id, u.ID, f.Get("product_id"), currency, total).Scan(&id)
-		redirect = "/order?id=" + id
-		action = "Saved unfunded order draft"
-	case "/messages":
-		body := strings.TrimSpace(f.Get("body"))
-		if len(body) < 60 || len(body) > 20000 || !strings.HasPrefix(body, "-----BEGIN PGP MESSAGE-----") || !strings.HasSuffix(body, "-----END PGP MESSAGE-----") {
-			fail("Encrypt the message locally and paste the complete armored PGP message (up to 20 KB).", 400)
-			return
-		}
-		var recipient string
-		err = tx.QueryRowContext(ctx, "SELECT id FROM users WHERE handle=$1", f.Get("recipient")).Scan(&recipient)
-		if err != nil {
-			fail("Recipient not found", 400)
-			return
-		}
-		_, err = tx.ExecContext(ctx, "INSERT INTO messages(id,sender_id,recipient_id,body) VALUES($1,$2,$3,$4)", randomToken(), u.ID, recipient, body)
-		if err == nil {
-			_, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), recipient, "New message from "+u.Handle)
-		}
-		redirect = "/messages?saved=1"
-		action = "Sent armored message (contents not verified)"
-	case "/notifications":
-		_, err = tx.ExecContext(ctx, "UPDATE notifications SET is_read=true WHERE id=$1 AND user_id=$2", f.Get("id"), u.ID)
-		redirect = "/notifications"
-		action = "Marked notification read"
-	case "/listings":
-		if u.Role != "vendor" && u.Role != "admin" {
-			fail("Vendor access required", 403)
-			return
-		}
-		btc, e1 := parseAmount(f.Get("price_btc"), 8)
-		xmr, e2 := parseAmount(f.Get("price_xmr"), 12)
-		stock, e3 := strconv.Atoi(f.Get("stock"))
-		kind := f.Get("kind")
-		title := strings.TrimSpace(f.Get("title"))
-		desc := strings.TrimSpace(f.Get("description"))
-		cat := f.Get("category")
-		region := f.Get("region")
-		if e1 != nil || e2 != nil || e3 != nil || stock < 0 || stock > 1000000 || len(title) < 3 || len(title) > 140 || len(desc) > 10000 || (kind != "digital" && kind != "physical") || (cat != "Hardware" && cat != "Digital" && cat != "Services") || len(region) < 2 || len(region) > 80 {
-			fail("Invalid listing. Check price precision, stock, category, and required fields.", 400)
-			return
-		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, randomToken(), u.ID, title, desc, cat, region, kind, btc, xmr, stock)
-		redirect = "/vendor-dashboard?saved=1"
-		action = "Created listing"
-	case "/disputes":
-		reason := strings.TrimSpace(f.Get("reason"))
-		if len(reason) < 20 || len(reason) > 5000 {
-			fail("Describe the issue in 20–5000 characters", 400)
-			return
-		}
-		var status string
-		err = tx.QueryRowContext(ctx, `SELECT o.status FROM orders o JOIN products p ON p.id=o.product_id WHERE o.id=$1 AND (o.buyer_id=$2 OR p.vendor_id=$2)`, f.Get("order_id"), u.ID).Scan(&status)
-		if err != nil {
-			fail("Order not found", 404)
-			return
-		}
-		if status != "In escrow" && status != "Shipped" && status != "Delivered" {
-			fail("Only funded orders in escrow, shipped, or delivered can be disputed. Draft orders contain no funds.", 409)
-			return
-		}
-		_, err = tx.ExecContext(ctx, "INSERT INTO disputes(id,order_id,reason) VALUES($1,$2,$3)", randomToken(), f.Get("order_id"), reason)
-		redirect = "/disputes?saved=1"
-		action = "Opened dispute"
-	case "/resolve":
-		if u.Role != "moderator" && u.Role != "admin" {
-			fail("Moderator access required", 403)
-			return
-		}
-		resolution := strings.TrimSpace(f.Get("resolution"))
-		if len(resolution) < 20 || len(resolution) > 5000 {
-			fail("Provide a decision of 20–5000 characters", 400)
-			return
-		}
-		var result sql.Result
-		result, err = tx.ExecContext(ctx, "UPDATE disputes SET resolution=$1,status='Decision recorded — settlement pending' WHERE id=$2 AND status='Open'", resolution, f.Get("id"))
-		if err == nil {
-			if n, _ := result.RowsAffected(); n != 1 {
-				fail("Open dispute not found", 409)
-				return
-			}
-		}
-		redirect = "/moderator?saved=1"
-		action = "Recorded dispute decision; no fund transfer"
-	case "/admin":
-		if u.Role != "admin" {
-			fail("Administrator access required", 403)
-			return
-		}
-		switch f.Get("action") {
-		case "role":
-			role := f.Get("role")
-			if role != "buyer" && role != "vendor" && role != "moderator" {
-				fail("Choose buyer, vendor, or moderator", 400)
-				return
-			}
-			if f.Get("user_id") == u.ID {
-				fail("Cannot change your own administrator role", 400)
-				return
-			}
-			var result sql.Result
-			result, err = tx.ExecContext(ctx, "UPDATE users SET role=$1 WHERE id=$2 AND role<>'admin'", role, f.Get("user_id"))
-			if err == nil {
-				if n, _ := result.RowsAffected(); n != 1 {
-					fail("Eligible user not found", 404)
-					return
-				}
-			}
-			action = "Changed user role"
-		case "settings":
-			name := strings.TrimSpace(f.Get("site_name"))
-			btc, xmr := f.Get("bitcoin_mode"), f.Get("monero_mode")
-			valid := func(s string) bool { return s == "disabled" || s == "local" || s == "external" }
-			if name == "" || len(name) > 80 || !valid(btc) || !valid(xmr) {
-				fail("Invalid settings", 400)
-				return
-			}
-			for k, v := range map[string]string{"site_name": name, "bitcoin_mode": btc, "monero_mode": xmr} {
-				if _, err = tx.ExecContext(ctx, "INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", k, v); err != nil {
-					break
-				}
-			}
-			action = "Saved desired node configuration; operator apply required"
-		default:
-			fail("Unknown action", 400)
-			return
-		}
-		redirect = "/admin?saved=1"
-	default:
-		fail("Unknown action", 404)
-		return
-	}
-	if err != nil {
-		fail("Unable to save changes", 500)
-		return
-	}
-	if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", u.ID, action); err != nil {
-		fail("Unable to record change", 500)
-		return
-	}
-	if err = tx.Commit(); err != nil {
-		fail("Unable to save changes", 500)
-		return
-	}
-	http.Redirect(w, r, redirect, 303)
-}
-func (a *App) login(ctx context.Context, w http.ResponseWriter, id, old string) error {
-	tx, err := a.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	token := randomToken()
-	if _, err = tx.ExecContext(ctx, "DELETE FROM sessions WHERE token_hash=$1 OR expires<now()", digest(old)); err != nil {
-		return err
-	}
-	if _, err = tx.ExecContext(ctx, "INSERT INTO sessions(token_hash,user_id,expires) VALUES($1,$2,now()+interval '12 hours')", digest(token), id); err != nil {
-		return err
-	}
-	if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,'Signed in')", id); err != nil {
-		return err
-	}
-	if err = tx.Commit(); err != nil {
-		return err
-	}
-	a.cookie(w, "session", token, 43200)
-	return nil
 }

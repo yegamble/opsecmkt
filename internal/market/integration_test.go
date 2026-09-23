@@ -1,87 +1,19 @@
 package market
 
 import (
-	"context"
-	"database/sql"
-	"net/http"
-	"net/http/httptest"
 	"net/url"
-	"os"
 	"strings"
 	"testing"
 )
 
-// This test creates an isolated schema; TEST_DATABASE_URL must be a disposable test database.
 func TestPostgresMarketplaceFlow(t *testing.T) {
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set TEST_DATABASE_URL for isolated PostgreSQL integration tests")
-	}
-	db, err := sql.Open("pgx", dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	name := "test_" + randomToken()[:16]
-	if _, err = db.Exec("CREATE SCHEMA " + name); err != nil {
-		t.Fatal(err)
-	}
-	defer db.Exec("DROP SCHEMA " + name + " CASCADE")
-	parsed, err := url.Parse(dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	q := parsed.Query()
-	q.Set("search_path", name)
-	parsed.RawQuery = q.Encode()
-	t.Setenv("DATABASE_URL", parsed.String())
-	t.Setenv("SETUP_TOKEN", strings.Repeat("test", 16))
-	t.Setenv("COOKIE_SECURE", "false")
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = os.Chdir("../.."); err != nil {
-		t.Fatal(err)
-	}
-	defer os.Chdir(cwd)
-	a, err := New(context.Background(), false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer a.Close()
-	do := func(method, path, token string, form url.Values) *httptest.ResponseRecorder {
-		if form == nil {
-			form = url.Values{}
-		}
-		if method == "POST" {
-			form.Set("csrf", a.csrf(token))
-		}
-		r := httptest.NewRequest(method, path, strings.NewReader(form.Encode()))
-		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		r.AddCookie(&http.Cookie{Name: "session", Value: token})
-		w := httptest.NewRecorder()
-		a.ServeHTTP(w, r)
-		return w
-	}
-	check := func(w *httptest.ResponseRecorder, want int) {
-		t.Helper()
-		if w.Code != want {
-			t.Fatalf("status=%d want=%d body=%s", w.Code, want, w.Body.String())
-		}
-	}
-	session := func(w *httptest.ResponseRecorder) string {
-		for _, c := range w.Result().Cookies() {
-			if c.Name == "session" {
-				return c.Value
-			}
-		}
-		t.Fatal("no session")
-		return ""
-	}
+	e := newTestApp(t)
+	do, check, session := e.do, e.check, e.session
+	a := e.A
+	var err error
 	anon := randomToken()
 	check(do("GET", "/", anon, nil), 303)
-	setup := url.Values{"token": {strings.Repeat("test", 16)}, "handle": {"admin_user"}, "password": {"a-long-test-password"}, "site_name": {"Integration Market"}}
+	setup := url.Values{"token": {testSetupToken}, "handle": {"admin_user"}, "password": {"a-long-test-password"}, "site_name": {"Integration Market"}}
 	w := do("POST", "/setup", anon, setup)
 	check(w, 303)
 	admin := session(w)
@@ -118,6 +50,9 @@ func TestPostgresMarketplaceFlow(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "&lt;script&gt;") {
 		t.Fatal("expected escaped listing title")
 	}
+	if !strings.Contains(w.Body.String(), "Draft — unfunded") {
+		t.Fatal("expected order state label")
+	}
 	check(do("GET", location, other, nil), 404)
 	id := strings.TrimPrefix(location, "/order?id=")
 	check(do("POST", "/disputes", buyer, url.Values{"order_id": {id}, "reason": {"This is an unfunded draft, so a dispute must not open."}}), 409)
@@ -131,19 +66,14 @@ func TestPostgresMarketplaceFlow(t *testing.T) {
 	}
 	check(do("POST", "/admin", buyer, url.Values{"action": {"role"}, "role": {"admin"}}), 403)
 	check(do("POST", "/admin", admin, url.Values{"action": {"role"}, "user_id": {"missing"}, "role": {"vendor"}}), 404)
-	for _, path := range []string{"/", "/product?id=" + product, "/vendor-dashboard", "/messages", "/notifications", "/account", "/moderator", "/admin", "/canary"} {
+	for _, path := range []string{"/", "/product?id=" + product, "/checkout?id=" + product, "/orders", "/disputes", "/vendor-dashboard", "/messages", "/notifications", "/account", "/moderator", "/admin", "/canary", "/challenge"} {
 		t.Run(path, func(t *testing.T) { check(do("GET", path, admin, nil), 200) })
 	}
 	check(do("POST", "/revoke-sessions", buyer, nil), 303)
 	check(do("GET", "/account", buyer, nil), 303)
-	a.Close()
-	a, err = New(context.Background(), false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer a.Close()
+	e.restart()
 	var n int
-	if err = a.db.QueryRow("SELECT count(*) FROM orders").Scan(&n); err != nil || n != 1 {
+	if err = e.DB.QueryRow("SELECT count(*) FROM orders").Scan(&n); err != nil || n != 1 {
 		t.Fatalf("restart persistence: %d %v", n, err)
 	}
 }

@@ -1,0 +1,13 @@
+{{define "page:moderator"}}{{template "header" .}}
+<div class="page-head">
+<div>
+<div class="eyebrow">Marketplace operations</div>
+<h1>Moderation desk<span class="accent">.</span>
+</h1>
+<p>Review disputes and record a resolution.</p>
+</div>
+</div>
+<div class="notice">
+<p>Resolution records do not transfer funds. Payment and escrow providers are disabled.</p>
+</div>{{template "disputes-list" .}}
+{{template "footer" .}}{{end}}

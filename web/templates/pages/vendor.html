@@ -1,0 +1,21 @@
+{{define "page:vendor"}}{{template "header" .}}
+<div class="breadcrumbs">
+<a href="/">Marketplace</a> / Vendor</div>
+<div class="page-head">
+<div class="vendor-heading">
+<div class="vendor-avatar" aria-hidden="true">V/</div>
+<div>
+<div class="eyebrow">Vendor profile</div>
+<h1>{{range .Users}}{{.Handle}}{{else}}{{.Title}}{{end}}</h1>
+<p>Explore this vendor’s current listings.</p>
+</div>
+</div>
+<a class="button" href="/messages">Send encrypted message ↗</a>
+</div>
+<div class="notice">
+<p>Vendor identity and reputation have not been independently verified by this application.</p>
+</div>{{template "products" .}}{{if not .Products}}<div class="empty">
+<h2>No active listings</h2>
+<p>This vendor has not published any listings yet.</p>
+</div>{{end}}{{template "product-reviews" .}}
+{{template "footer" .}}{{end}}

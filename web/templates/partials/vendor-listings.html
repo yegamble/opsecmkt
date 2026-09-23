@@ -1,0 +1,46 @@
+{{/* P4 Inventory owns. vendor-listings:stat tile; vendor-listings: publish form and listing grid */}}
+{{define "vendor-listings:stat"}}<div class="stat">
+<div class="eyebrow">Listings</div>
+<strong>{{len .Products}}</strong>
+<span>Your visible inventory</span>
+</div>{{end}}
+{{define "vendor-listings"}}<details class="panel">
+<summary class="accent mono">+ Publish a new listing</summary>
+<form class="stack" method="post" action="/listings">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<label>Listing title<input name="title" required maxlength="160">
+</label>
+<label>Description<textarea name="description" required maxlength="10000">
+</textarea>
+</label>
+<div class="grid-two">
+<label>Category<select name="category">
+<option>Hardware</option>
+<option>Digital</option>
+<option>Services</option>
+</select>
+</label>
+<label>Region<select name="region">
+<option>Worldwide</option>
+<option>United States</option>
+<option>Europe</option>
+<option>Digital</option>
+</select>
+</label>
+<label>Fulfillment type<select name="kind">
+<option value="physical">Physical</option>
+<option value="digital">Digital</option>
+<option value="service">Service</option>
+</select>
+</label>
+<label>Stock<input type="number" name="stock" required min="0" max="1000000" value="1">
+</label>
+<label>Bitcoin reference price<input name="price_btc" required inputmode="decimal" placeholder="0.00100000">
+</label>
+<label>Monero reference price<input name="price_xmr" required inputmode="decimal" placeholder="0.500000000000">
+</label>
+</div>
+<button class="primary" type="submit">Publish listing ↗</button>
+</form>
+</details>
+<h2 class="section-title">Your listings</h2>{{template "products" .}}{{end}}

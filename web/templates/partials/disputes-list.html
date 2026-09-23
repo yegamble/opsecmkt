@@ -1,0 +1,20 @@
+{{/* P3 Orders owns. Dispute list used by disputes and moderator */}}
+{{define "disputes-list"}}<div class="messages-list">{{range .Disputes}}<article class="message">
+<div class="message-meta">
+<a class="text-link" href="/order?id={{.OrderID}}">Order {{.OrderID}}</a>
+<span class="badge">{{.Status}}</span>
+</div>
+<p>{{.Reason}}</p>
+<p class="help">Opened {{.Created}}</p>{{if .Resolution}}<p>
+<strong>Resolution:</strong> {{.Resolution}}</p>{{else}}{{if $.User}}{{if or (eq $.User.Role "moderator") (eq $.User.Role "admin")}}<form class="stack" method="post" action="/resolve">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="id" value="{{.ID}}">
+<label>Resolution<textarea name="resolution" required minlength="20" maxlength="5000">
+</textarea>
+</label>
+<button type="submit">Record resolution</button>
+</form>{{end}}{{end}}{{end}}</article>{{else}}<div class="empty">
+<span class="empty-icon">◇</span>
+<h2>No disputes to display</h2>
+<p>Any submitted disputes will appear here for review.</p>
+</div>{{end}}</div>{{end}}

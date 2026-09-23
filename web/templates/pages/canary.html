@@ -1,0 +1,24 @@
+{{define "page:canary"}}{{template "header" .}}
+<div class="page-head">
+<div>
+<div class="eyebrow">Transparency</div>
+<h1>Trust is verifiable<span class="accent">.</span>
+</h1>
+<p>Clear boundaries. No invented security guarantees.</p>
+</div>
+</div>
+<div class="legal-copy">
+{{template "canary-statement" .}}
+<section class="panel">
+<h2>What this application currently does</h2>
+<ul>
+<li>Renders HTML and CSS on the server without requiring client-side JavaScript.</li>
+<li>Supports account sessions, marketplace listings, and unfunded order drafts.</li>
+<li>Accepts externally encrypted PGP text for messages. It does not perform browser-side encryption.</li>
+</ul>
+<h2>What remains unavailable</h2>
+<p>Bitcoin and Monero funding, wallet balances, multisig escrow, automatic settlement, TOTP, verified PGP ownership, and signed canary publication are not active.</p>
+</section>
+<a class="button" href="/">Return to marketplace ↗</a>
+</div>
+{{template "footer" .}}{{end}}

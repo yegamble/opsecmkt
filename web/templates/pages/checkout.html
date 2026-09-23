@@ -1,0 +1,46 @@
+{{define "page:checkout"}}{{template "header" .}}
+<div class="breadcrumbs">
+<a href="/">Marketplace</a> / Review order</div>
+<div class="page-head">
+<div>
+<div class="eyebrow">01 / Review your selection</div>
+<h1>Create an order draft<span class="accent">.</span>
+</h1>
+<p>No funds are collected at this step.</p>
+</div>
+</div>{{with .Product}}<div class="detail-layout">
+<section class="panel">
+<h2>{{.Title}}</h2>
+<p>{{.Description}}</p>
+<dl class="key-values">
+<div>
+<dt>Vendor</dt>
+<dd>{{.Vendor}}</dd>
+</div>
+<div>
+<dt>Region</dt>
+<dd>{{.Region}}</dd>
+</div>
+<div>
+<dt>Quantity</dt>
+<dd>1</dd>
+</div>
+</dl>
+{{template "payment-status:checkout" $}}
+</section>
+<section class="panel">
+<h2>Order summary</h2>
+<form class="stack" method="post" action="/orders">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="product_id" value="{{.ID}}">
+<label>Reference currency<select name="currency">
+<option value="BTC">{{.PriceBTC}} BTC</option>
+<option value="XMR">{{.PriceXMR}} XMR</option>
+</select>
+</label>
+<p class="help">The listed price is recorded in your draft. There is no payment address or deposit request.</p>
+<button class="primary" type="submit">Create unfunded draft ↗</button>
+</form>
+</section>
+</div>{{end}}
+{{template "footer" .}}{{end}}

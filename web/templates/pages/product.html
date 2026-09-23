@@ -1,0 +1,60 @@
+{{define "page:product"}}{{template "header" .}}
+{{with .Product}}<div class="breadcrumbs">
+<a href="/">Marketplace</a> / {{.Category}} / Listing</div>
+<div class="detail-layout">
+<section class="product-card">
+<div class="product-art detail-art" aria-label="Illustrative product graphic">
+<div class="device" aria-hidden="true">
+</div>
+<span class="art-label">{{.Category}} / ILLUSTRATION</span>
+<span class="art-badge">{{.Kind}}</span>
+</div>
+<div class="detail-copy">
+<div class="eyebrow">{{.Category}} / {{.Region}}</div>
+<h1>{{.Title}}</h1>
+<p class="muted">{{.Description}}</p>
+<h2 class="section-title">Listing details</h2>
+<dl class="key-values">
+<div>
+<dt>Vendor</dt>
+<dd>
+<a class="text-link" href="/vendor?id={{.VendorID}}">{{.Vendor}}</a>
+</dd>
+</div>
+<div>
+<dt>Fulfillment</dt>
+<dd>{{.Kind}}</dd>
+</div>
+<div>
+<dt>Available stock</dt>
+<dd>{{.Stock}}</dd>
+</div>
+<div>
+<dt>Region</dt>
+<dd>{{.Region}}</dd>
+</div>
+</dl>
+</div>
+</section>
+<aside>
+<section class="panel">
+<div class="eyebrow">Listed price</div>
+<p class="price">{{.PriceBTC}} <small>BTC</small>
+</p>
+<p class="mono">{{.PriceXMR}} XMR</p>
+<hr class="divider">
+<p>Review the listing and create an unfunded order draft. No payment will be requested.</p>
+<a class="button primary full" href="/checkout?id={{.ID}}">Review order draft ↗</a>
+</section>
+<section class="panel">
+<h2>Know before you order</h2>
+<p>Product illustrations are decorative. Confirm specifications and availability with the vendor.</p>
+{{template "payment-status:product" $}}
+<a class="text-link" href="/messages">Contact vendor →</a>
+</section>
+</aside>
+</div>{{template "product-reviews" $}}{{else}}<div class="empty">
+<h1>Listing unavailable</h1>
+<a class="button" href="/">Back to marketplace</a>
+</div>{{end}}
+{{template "footer" .}}{{end}}

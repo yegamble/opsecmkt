@@ -42,6 +42,10 @@ put POSTGRES_PASSWORD "$password"
 put SETUP_TOKEN "$(openssl rand -hex 32)"
 put APP_MODE "$mode"
 put COOKIE_SECURE "$secure"
+# Ed25519 seed for signed audit exports; payment networks default to test networks (mainnet is refused).
+put AUDIT_SIGNING_KEY "$(openssl rand -hex 32)"
+put BITCOIN_CHAIN testnet4
+put MONERO_NETWORK stagenet
 for coin in BITCOIN MONERO; do
   read -r -p "$coin node (disabled/external/local) [disabled]: " choice
   case ${choice:-disabled} in
@@ -51,6 +55,13 @@ for coin in BITCOIN MONERO; do
       [[ $rpc == http://* || $rpc == https://* ]] || { echo 'Use an http:// or https:// RPC URL'; exit 1; }
       external_egress=true
       put "${coin}_RPC_URL" "$rpc"
+      if [[ $coin == MONERO ]]; then
+        read -r -s -p 'MONERO wallet RPC URL (monero-wallet-rpc; blank for none): ' wallet_rpc; printf '\n'
+        if [[ -n $wallet_rpc ]]; then
+          [[ $wallet_rpc == http://* || $wallet_rpc == https://* ]] || { echo 'Use an http:// or https:// RPC URL'; exit 1; }
+          put MONERO_WALLET_RPC_URL "$wallet_rpc"
+        fi
+      fi
       ;;
     local)
       read -r -p "$coin reviewed Docker image (prefer @sha256 digest): " node_image
@@ -63,7 +74,8 @@ for coin in BITCOIN MONERO; do
         profiles="${profiles:+$profiles,}bitcoin"
       else
         put MONERO_RPC_URL 'http://monero:18081'
-        profiles="${profiles:+$profiles,}monero"
+        put MONERO_WALLET_RPC_URL 'http://monero-wallet:18083'
+        profiles="${profiles:+$profiles,}monero,monero-wallet"
       fi
       ;;
     *) echo 'Invalid node choice'; exit 1 ;;

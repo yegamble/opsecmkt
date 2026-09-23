@@ -42,6 +42,40 @@ Saving a PGP public key is not proof of ownership and does not encrypt a message
 
 A canary is operator-authored content. The application must not invent signatures or assertions about legal orders. Tor support and security controls are deployment properties to verify; neither guarantees anonymity or establishes production readiness.
 
+## Feature packages
+
+Each package records its own acceptance checks here and edits only its subsection.
+
+### P1 Authentication
+
+- [ ] TOTP cannot activate without a valid code; recovery codes are hashed and single-use.
+- [ ] Sign-in for an enrolled account always passes through `/challenge`.
+- [ ] CAPTCHA is a same-origin PNG, needs no JavaScript, is single-use, expires, and is rate-limited. No audio alternative or QR code is claimed.
+
+### P2 PGP identity
+
+- [ ] "Verified" appears only after a successful cryptographic proof; PGP second factor requires verification.
+- [ ] Message status reflects packet inspection and never labels plaintext as encrypted.
+
+### P3 Orders
+
+- [ ] Every transition matches the state table; forbidden moves return 403, stale or repeated moves 409.
+- [ ] Digital content is released only by the delivered transition; reviews require a completed order.
+
+### P4 Inventory
+
+- [ ] Only the owner or an administrator can edit; archived listings accept no new drafts and existing orders are unaffected.
+
+### P5 Payments
+
+- [ ] Mainnet chains/addresses stop startup with a clear error; no address is shown unless returned by a live test-network provider.
+- [ ] Ledger entries are unique per `(currency, txid, output)`; state changes happen only through transitions.
+
+### P6 Transparency
+
+- [ ] `/canary` shows exactly one of: no statement, verified (fingerprint and dates), or invalid with a reason.
+- [ ] Audit exports and signatures are byte-stable for a given range and verify with the published Ed25519 key.
+
 ## Accessibility and visual verification
 
 - [ ] All surfaces work at 320px and desktop widths without page-level horizontal overflow. Long identifiers wrap or have local scrolling.

@@ -1,0 +1,47 @@
+{{define "page:order"}}{{template "header" .}}
+{{with .Order}}<div class="breadcrumbs">
+<a href="/orders">Orders</a> / {{.ID}}</div>
+<div class="page-head">
+<div>
+<div class="eyebrow">Order record</div>
+<h1>{{.Title}}</h1>
+<p class="mono">{{.ID}}</p>
+</div>
+<span class="badge">{{.Status}}</span>
+</div>
+<div class="grid-two">
+<section class="panel">
+<h2>Order details</h2>
+<dl class="key-values">
+<div>
+<dt>Created</dt>
+<dd>{{.Created}}</dd>
+</div>
+<div>
+<dt>Buyer</dt>
+<dd>{{.Buyer}}</dd>
+</div>
+<div>
+<dt>Vendor</dt>
+<dd>{{.Vendor}}</dd>
+</div>
+<div>
+<dt>Status</dt>
+<dd>{{.Status}}</dd>
+</div>
+<div class="total">
+<dt>Reference amount</dt>
+<dd>{{.Amount}} {{.Currency}}</dd>
+</div>
+</dl>
+</section>
+<section class="panel">{{template "order-payment" $}}
+<div class="actions">
+<a class="button" href="/messages">Message vendor</a>
+<a class="button" href="/disputes">Open a dispute</a>
+</div>
+</section>
+</div>{{else}}<div class="empty">
+<h1>Order unavailable</h1>
+</div>{{end}}
+{{template "footer" .}}{{end}}

@@ -1,0 +1,60 @@
+{{define "page:admin"}}{{template "header" .}}
+<div class="page-head">
+<div>
+<div class="eyebrow">System administration</div>
+<h1>Control room<span class="accent">.</span>
+</h1>
+<p>Marketplace configuration, role management, and audit history.</p>
+</div>
+<span class="badge">Administrator</span>
+</div>
+<div class="grid-two">
+<section class="panel">
+<h2>Marketplace settings</h2>
+<form class="stack" method="post" action="/admin">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="action" value="settings">
+<label>Site name<input name="site_name" value="{{index .Settings "site_name"}}" required maxlength="80">
+</label>
+{{template "admin-payments:settings" .}}
+<button class="primary" type="submit">Save settings</button>
+</form>
+</section>
+<section class="panel">
+<h2>Assign an account role</h2>
+<form class="stack" method="post" action="/admin">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="action" value="role">
+<label>Account<select name="user_id" required>
+<option value="">Select an account</option>{{range .Users}}<option value="{{.ID}}">{{.Handle}} · {{.Role}}</option>{{end}}</select>
+</label>
+<label>Role<select name="role">
+<option value="buyer">Buyer</option>
+<option value="vendor">Vendor</option>
+<option value="moderator">Moderator</option>
+<option value="admin">Administrator</option>
+</select>
+</label>
+<p class="help">Administrator access includes configuration and role management. Assign it only to trusted operators.</p>
+<button type="submit">Update role</button>
+</form>
+</section>
+</div>{{template "admin-auth" .}}{{template "admin-payments" .}}{{template "admin-transparency" .}}
+<h2 class="section-title">Audit trail</h2>
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th scope="col">Event</th>
+<th scope="col">Time</th>
+</tr>
+</thead>
+<tbody>{{range .Events}}<tr>
+<td>{{.Action}}</td>
+<td>{{.Created}}</td>
+</tr>{{else}}<tr>
+<td colspan="2">No audit events recorded.</td>
+</tr>{{end}}</tbody>
+</table>
+</div>
+{{template "footer" .}}{{end}}

@@ -1,0 +1,16 @@
+{{define "page:vendor-dashboard"}}{{template "header" .}}
+<div class="page-head">
+<div>
+<div class="eyebrow">Vendor workspace</div>
+<h1>Vendor desk<span class="accent">.</span>
+</h1>
+<p>Publish listings and review incoming order drafts.</p>
+</div>
+</div>
+<div class="stats">
+{{template "vendor-listings:stat" .}}
+{{template "vendor-orders:stat" .}}
+{{template "payment-status:vendor-dashboard" .}}
+</div>
+{{template "vendor-listings" .}}{{template "vendor-orders" .}}
+{{template "footer" .}}{{end}}

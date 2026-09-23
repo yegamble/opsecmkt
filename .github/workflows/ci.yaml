@@ -118,7 +118,7 @@ jobs:
           SETUP_TOKEN: ci-validation-only-not-a-real-bootstrap-secret
         run: |
           files=(-f compose.yaml -f "compose.$MODE.yaml" -f compose.nodes.yaml)
-          profiles=(--profile bitcoin --profile monero)
+          profiles=(--profile bitcoin --profile monero --profile monero-wallet)
           if [ "$DATABASE" = internal ]; then
             files+=(-f compose.internal-db.yaml)
             profiles+=(--profile internal-db)

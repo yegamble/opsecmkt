@@ -1,0 +1,24 @@
+{{/* P4 Inventory owns. Listing grid used by catalog, vendor and vendor-dashboard */}}
+{{define "products"}}<div class="listings-grid">{{range $i,$p := .Products}}<article class="product-card">
+<a class="product-art " href="/product?id={{.ID}}" aria-label="View {{.Title}}">
+<div class="device" aria-hidden="true">
+</div>
+<span class="art-label">{{.Category}} / ILLUSTRATION</span>
+<span class="art-badge">{{.Kind}}</span>
+</a>
+<div class="product-body">
+<div class="vendor-line">
+<span aria-hidden="true">◇</span>
+<a href="/vendor?id={{.VendorID}}">{{.Vendor}}</a>
+<span> / {{.Region}}</span>
+</div>
+<h2>
+<a href="/product?id={{.ID}}">{{.Title}}</a>
+</h2>
+<p class="product-description">{{.Description}}</p>
+<div class="product-bottom">
+<span class="price">{{if eq $.Currency "XMR"}}{{.PriceXMR}}<small>XMR</small>{{else}}{{.PriceBTC}}<small>BTC</small>{{end}}</span>
+<span class="stock">{{.Stock}} AVAILABLE</span>
+</div>
+</div>
+</article>{{end}}</div>{{end}}
