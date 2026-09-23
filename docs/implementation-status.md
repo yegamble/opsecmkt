@@ -30,7 +30,11 @@ Each package updates only its own subsection when it lands.
 
 ### P2 PGP identity
 
-Not implemented: key parsing and fingerprints, ownership proof, PGP second factor, message encryption inspection. Saved keys and messages are format-checked only.
+- Profile keys are parsed with OpenPGP (`internal/market/pgp.go`); garbage, private keys, revoked keys and multi-key blocks are rejected. The account page shows the fingerprint.
+- Ownership is marked **Verified** (with UTC date) only after the user signs a server nonce (clearsigned or armored detached signature) or decrypts a nonce the server encrypted to the key, on `/pgp`. Decrypt challenges store only the nonce's SHA-256. Changing or removing the key clears verification, PGP sign-in and any open challenge; every change is audited with the fingerprint.
+- Optional PGP sign-in verification (second factor), available only for a verified key that can receive encrypted messages. After the password, the user requests a one-time code (POST `/challenge/pgp`), decrypts it locally and submits it on `/challenge`; only its SHA-256 is stored and it is deleted with the pending sign-in.
+- `/messages` rejects anything that is not an OpenPGP-encrypted message (plaintext, signed-only, malformed or fake armor). Each message shows "Encrypted (to recipient’s key)", "Encrypted (NOT to recipient’s key)" or "Encrypted (recipient unknown)", derived from the recipient key IDs in its packets compared with the recipient's saved key at send time. Messages stored before this check are inspected when displayed; their recipient match is reported as unknown.
+- Limits: the server cannot decrypt messages, so a key-ID match does not prove the contents; hidden-recipient and passphrase-only messages are "recipient unknown". Losing or letting the key expire locks PGP sign-in unless another factor is enrolled; there is no administrator reset. Other users' key fingerprints and verification status are not yet shown on vendor pages.
 
 ### P3 Orders
 

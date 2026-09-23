@@ -102,6 +102,9 @@ type PGPView struct {
 	Verified                                  bool
 	VerifiedAt, Challenge, EncryptedChallenge string
 	TwoFactor                                 bool
+	HasKey                                    bool   // a public key is saved on the profile
+	KeyError                                  string // the saved key no longer parses (legacy or revoked)
+	ChallengeExpires                          string // open ownership challenge expiry (UTC)
 }
 
 // P3 Orders

@@ -1,2 +1,22 @@
 {{/* P2 PGP owns. Challenge form for method=pgp; rendered only when .Auth.PGPEnrolled */}}
-{{define "factor-pgp"}}{{end}}
+{{define "factor-pgp"}}<section class="pgp-factor" aria-labelledby="factor-pgp-title">
+<h2 id="factor-pgp-title">PGP key</h2>{{with .PGP}}{{if .EncryptedChallenge}}
+<p>Decrypt this message with your private key, then paste the code it contains. It was encrypted to the verified public key on your account.</p>
+<pre class="code-block pgp-armor" tabindex="0" aria-label="Encrypted sign-in code">{{.EncryptedChallenge}}</pre>
+<form class="stack" method="post" action="/challenge">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="method" value="pgp">
+<label>Decrypted code<input name="pgp_code" required maxlength="128" autocomplete="one-time-code" spellcheck="false" autocapitalize="off"></label>
+<button class="primary" type="submit">Verify with PGP</button>
+</form>
+<form class="pgp-inline-form" method="post" action="/challenge/pgp">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<button type="submit">Encrypt a new code</button>
+</form>{{else}}{{template "factor-pgp:request" $}}{{end}}{{else}}{{template "factor-pgp:request" $}}{{end}}
+</section>{{end}}
+{{define "factor-pgp:request"}}
+<p>Request a one-time code encrypted to the verified public key on your account. Decrypt it locally; your private key never leaves your device.</p>
+<form method="post" action="/challenge/pgp">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<button class="primary" type="submit">Create encrypted code</button>
+</form>{{end}}

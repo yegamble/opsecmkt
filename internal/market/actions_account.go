@@ -25,9 +25,11 @@ func accountAction(c *actionCtx) (actionResult, error) {
 	if len(pgp) > 16384 || len(xmpp) > 254 {
 		return actionResult{}, fail(400, "Profile fields too long")
 	}
-	if pgp != "" && (!strings.HasPrefix(pgp, "-----BEGIN PGP PUBLIC KEY BLOCK-----") || !strings.HasSuffix(pgp, "-----END PGP PUBLIC KEY BLOCK-----")) {
-		return actionResult{}, fail(400, "Paste an armored public key only. Never upload your private key.")
+	// P2: parse the key, store its fingerprint and reset ownership proof / PGP sign-in when it changes.
+	audit, err := saveProfileKey(c, pgp)
+	if err != nil {
+		return actionResult{}, err
 	}
-	_, err := c.Tx.ExecContext(c.Ctx(), "UPDATE users SET pgp=$1,xmpp=$2 WHERE id=$3", pgp, xmpp, c.User.ID)
-	return actionResult{Redirect: "/account?saved=1", Audit: "Updated profile (key not cryptographically verified)"}, err
+	_, err = c.Tx.ExecContext(c.Ctx(), "UPDATE users SET xmpp=$1 WHERE id=$2", xmpp, c.User.ID)
+	return actionResult{Redirect: "/account?saved=1", Audit: audit}, err
 }

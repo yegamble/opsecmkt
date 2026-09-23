@@ -1,0 +1,83 @@
+{{/* P2 PGP owns. Key ownership proof and PGP sign-in verification. */}}
+{{define "page:pgp"}}{{template "header" .}}
+<div class="page-head">
+<div>
+<div class="eyebrow">Key ownership</div>
+<h1>PGP verification<span class="accent">.</span></h1>
+<p>Prove that you hold the private key for the public key on your profile. The server only ever receives your public key, signatures and decrypted challenge text.</p>
+</div>{{with .PGP}}{{if .Verified}}<span class="badge green">Verified</span>{{else}}<span class="badge neutral">Not verified</span>{{end}}{{end}}</div>
+{{with .PGP}}{{if not .HasKey}}<div class="panel">
+<h2>No public key saved</h2>
+<p>Add your ASCII-armored public key on the account page, then return here to prove you own it.</p>
+<a class="button primary" href="/account">Add a public key</a>
+</div>{{else if .KeyError}}<div class="alert error" role="alert">{{.KeyError}}</div>
+<a class="button" href="/account">Update your key</a>{{else}}<div class="grid-two">
+<section class="panel">
+<h2>Your key</h2>
+<dl class="key-values">
+<div>
+<dt>Fingerprint</dt>
+<dd class="pgp-fingerprint">{{.Fingerprint}}</dd>
+</div>
+<div>
+<dt>Ownership</dt>
+<dd>{{if .Verified}}Verified {{.VerifiedAt}}{{else}}Not verified{{end}}</dd>
+</div>
+<div>
+<dt>PGP sign-in verification</dt>
+<dd>{{if .TwoFactor}}On{{else}}Off{{end}}</dd>
+</div>
+</dl>
+<p class="help">Compare this fingerprint with the one your own PGP software shows before relying on it. Saving a different key on the account page clears verification and turns PGP sign-in off.</p>
+</section>
+<section class="panel">
+<h2>{{if .Verified}}Prove ownership again{{else}}Prove ownership{{end}}</h2>
+<form class="stack" method="post" action="/pgp/challenge">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<fieldset>
+<legend>Challenge type</legend>
+<label class="check"><input type="radio" name="kind" value="sign" checked> Sign a text with your private key</label>
+<label class="check"><input type="radio" name="kind" value="decrypt"> Decrypt a message encrypted to your key</label>
+</fieldset>
+<button class="primary" type="submit">Start challenge</button>
+</form>
+<p class="help">A new challenge replaces any open one. Challenges expire after 30 minutes.</p>
+</section>
+</div>{{if .Challenge}}<section class="panel pgp-challenge">
+<h2>Sign exactly this text</h2>
+<pre class="code-block" tabindex="0" aria-label="Text to sign">{{.Challenge}}</pre>
+<p class="help">For example save it to a file and run <code>gpg --clearsign challenge.txt</code> (or <code>gpg --armor --detach-sign</code>). Expires {{.ChallengeExpires}}.</p>
+<form class="stack" method="post" action="/pgp/verify">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<label>Clearsigned message or armored detached signature<textarea name="signature" required maxlength="32768" rows="9" spellcheck="false" placeholder="-----BEGIN PGP SIGNED MESSAGE-----"></textarea></label>
+<button class="primary" type="submit">Verify signature</button>
+</form>
+</section>{{else if .EncryptedChallenge}}<section class="panel pgp-challenge">
+<h2>Decrypt this message</h2>
+<pre class="code-block pgp-armor" tabindex="0" aria-label="Encrypted challenge">{{.EncryptedChallenge}}</pre>
+<p class="help">For example save it to a file and run <code>gpg --decrypt challenge.asc</code>. Expires {{.ChallengeExpires}}.</p>
+<form class="stack" method="post" action="/pgp/verify">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<label>Decrypted text<input name="response" required maxlength="128" autocomplete="off" spellcheck="false" autocapitalize="off"></label>
+<button class="primary" type="submit">Verify decryption</button>
+</form>
+</section>{{end}}<section class="panel pgp-challenge">
+<h2>PGP sign-in verification</h2>{{if .TwoFactor}}
+<p>On. After your password, sign-in asks you to decrypt a one-time code encrypted to this key.</p>
+<form method="post" action="/pgp/2fa">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="enable" value="0">
+<button type="submit">Turn off PGP sign-in verification</button>
+</form>{{else if .Verified}}
+<p>Off. When on, sign-in asks you to decrypt a one-time code encrypted to this key after your password. If the key expires or you lose it, you cannot sign in unless another verification method is enrolled.</p>
+<form method="post" action="/pgp/2fa">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="enable" value="1">
+<button class="primary" type="submit">Turn on PGP sign-in verification</button>
+</form>{{else}}
+<p>Unavailable until ownership of this key is verified.</p>{{end}}
+</section>{{end}}{{else}}<div class="panel">
+<h2>PGP verification unavailable</h2>
+<p>Key details could not be loaded.</p>
+</div>{{end}}
+{{template "footer" .}}{{end}}

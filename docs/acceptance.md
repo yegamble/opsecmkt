@@ -61,8 +61,12 @@ Each package records its own acceptance checks here and edits only its subsectio
 
 ### P2 PGP identity
 
-- [ ] "Verified" appears only after a successful cryptographic proof; PGP second factor requires verification.
-- [ ] Message status reflects packet inspection and never labels plaintext as encrypted.
+- [ ] Saving a key rejects garbage, private keys, revoked keys and multiple keys; the account page shows the fingerprint and "Not verified" until a proof succeeds.
+- [ ] "Verified" (with date) appears only after a signature over the current challenge verifies with the saved key, or the decrypted challenge nonce matches; a wrong key, wrong text or stale challenge is rejected.
+- [ ] Changing or removing the key clears verification, PGP sign-in and open challenges, and is audited with the fingerprint.
+- [ ] PGP sign-in cannot be turned on without a verified key; once on, sign-in always passes through `/challenge` and needs the decrypted one-time code, which works once.
+- [ ] Challenge nonces and sign-in codes are stored only as SHA-256; GET requests never create them.
+- [ ] Message status reflects packet inspection: plaintext, signed-only and fake armor are rejected at send; stored messages show "to recipient’s key", "NOT to recipient’s key" or "recipient unknown", never "Encrypted" for plaintext.
 
 ### P3 Orders
 
