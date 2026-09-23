@@ -53,3 +53,34 @@ test('account and admin state TOTP and CAPTCHA status truthfully', async ({ page
   await expect(page.locator('.admin-auth')).toContainText('no audio alternative');
   await noScriptsNoOverflow(page);
 });
+
+test('password change and second-factor reset are plain POST forms and the preview refuses them', async ({ page }) => {
+  await page.goto('/account');
+  const password = page.locator('form[action="/account/password"]');
+  await expect(password).toHaveAttribute('method', 'post');
+  await expect(password.locator('input[name="csrf"]')).toHaveCount(1);
+  for (const label of ['Current password', 'New password', 'Repeat new password']) {
+    await expect(password.getByLabel(label, { exact: true })).toBeVisible();
+  }
+  // TOTP is off in the preview, so no code is asked for.
+  await expect(password.getByLabel('Authenticator code or recovery code')).toHaveCount(0);
+  await noScriptsNoOverflow(page);
+  await password.getByLabel('Current password', { exact: true }).fill('preview-password-123');
+  await password.getByLabel('New password', { exact: true }).fill('preview-new-password');
+  await password.getByLabel('Repeat new password').fill('preview-new-password');
+  await password.getByRole('button', { name: 'Change password' }).click();
+  await expect(page.locator('body')).toHaveText('Read-only preview. Start with PostgreSQL to save changes.');
+
+  await page.goto('/admin');
+  const reset = page.getByRole('region', { name: "Reset a user's second factors" });
+  await expect(reset).toContainText('Administrator accounts cannot be reset here');
+  const form = reset.locator('form[action="/admin/reset-factors"]');
+  await expect(form).toHaveAttribute('method', 'post');
+  await expect(form.getByLabel('Account with second factors').locator('option', { hasText: 'ghost_circuit · TOTP' })).toHaveCount(1);
+  await expect(page.locator('table').last().locator('thead')).toContainText('Account');
+  await noScriptsNoOverflow(page);
+  await form.getByLabel('Account with second factors').selectOption({ label: 'ghost_circuit · TOTP' });
+  await form.getByLabel('Current password').fill('preview-password-123');
+  await form.getByRole('button', { name: 'Reset second factors' }).click();
+  await expect(page.locator('body')).toHaveText('Read-only preview. Start with PostgreSQL to save changes.');
+});

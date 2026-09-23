@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, type Browser, type Page } from '@playwright/test';
@@ -51,4 +52,35 @@ export async function submitStatus(page: Page, click: () => Promise<void>): Prom
     click(),
   ]);
   return response.status();
+}
+
+// RFC 6238 (SHA-1, 30 s, 6 digits) code for a displayed base32 secret at a given 30-second step.
+export function totp(secret: string, step: number): string {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  let bits = 0, value = 0;
+  const key: number[] = [];
+  for (const ch of secret.toUpperCase().replace(/[\s=]/g, '')) {
+    value = (value << 5) | alphabet.indexOf(ch);
+    bits += 5;
+    if (bits >= 8) {
+      key.push((value >>> (bits - 8)) & 0xff);
+      bits -= 8;
+    }
+  }
+  const counter = Buffer.alloc(8);
+  counter.writeBigUInt64BE(BigInt(step));
+  const mac = createHmac('sha1', Buffer.from(key)).update(counter).digest();
+  const offset = mac[mac.length - 1] & 0x0f;
+  return ((mac.readUInt32BE(offset) & 0x7fffffff) % 1_000_000).toString().padStart(6, '0');
+}
+
+// Enrolls TOTP on /totp for the signed-in page with the current step's code and returns the secret.
+export async function enrollTOTP(page: Page): Promise<string> {
+  await page.goto('/totp');
+  await page.getByRole('button', { name: 'Start enrollment ↗' }).click();
+  const secret = (await page.locator('.totp-secret').innerText()).replace(/\s+/g, '');
+  await page.getByLabel('6-digit code from your app').fill(totp(secret, Math.floor(Date.now() / 30_000)));
+  await page.getByRole('button', { name: 'Verify and turn on ↗' }).click();
+  await expect(page.locator('.page-head .badge')).toHaveText('Enabled');
+  return secret;
 }

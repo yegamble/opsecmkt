@@ -1,7 +1,6 @@
-import { createHmac } from 'node:crypto';
 import { expect, test, type Page } from '@playwright/test';
 import { uniqueHandle } from './db-fixtures';
-import { signedIn, submitStatus } from './db-helpers';
+import { signedIn, submitStatus, totp } from './db-helpers';
 
 // TOTP management after enrollment: replacing recovery codes invalidates the old set, and turning TOTP off
 // needs the password plus a current code. Codes are computed in the test runner (RFC 6238, SHA-1, 30 s).
@@ -9,29 +8,6 @@ import { signedIn, submitStatus } from './db-helpers';
 // The server accepts steps now-1..now+1 and only steps above the last one used (replay guard). The test
 // therefore spends three increasing steps from one window: activation uses step-1, the replacement uses
 // step, and turning off uses step+1, which stays acceptable until the window after next (>= 30 s later).
-
-function base32Decode(input: string): Buffer {
-  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
-  let bits = 0, value = 0;
-  const out: number[] = [];
-  for (const ch of input.toUpperCase().replace(/[\s=]/g, '')) {
-    value = (value << 5) | alphabet.indexOf(ch);
-    bits += 5;
-    if (bits >= 8) {
-      out.push((value >>> (bits - 8)) & 0xff);
-      bits -= 8;
-    }
-  }
-  return Buffer.from(out);
-}
-
-function totp(secret: string, step: number): string {
-  const counter = Buffer.alloc(8);
-  counter.writeBigUInt64BE(BigInt(step));
-  const mac = createHmac('sha1', base32Decode(secret)).update(counter).digest();
-  const offset = mac[mac.length - 1] & 0x0f;
-  return ((mac.readUInt32BE(offset) & 0x7fffffff) % 1_000_000).toString().padStart(6, '0');
-}
 
 async function signOutAndChallenge(page: Page, handle: string, password: string) {
   await page.goto('/account');

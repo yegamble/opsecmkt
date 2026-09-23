@@ -11,4 +11,20 @@
 <p>Every sign-in requires a code from your authenticator app or a one-time recovery code.{{if lt .RecoveryRemaining 3}} <strong>Few recovery codes remain; replace them.</strong>{{end}}</p>{{else}}
 <p>Sign-in uses your password only. Add time-based one-time codes (TOTP) from an authenticator app you control.</p>{{end}}{{end}}
 <a class="button" href="/totp">Manage TOTP <span class="action-icon">↗</span></a>
-</div>{{end}}
+</div>{{$totp := and .Security .Security.TOTPEnabled}}
+<section class="panel" id="password" aria-labelledby="password-heading">
+<h2 id="password-heading">Change password</h2>
+<form class="stack" method="post" action="/account/password">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<label>Current password<input type="password" name="password" required maxlength="72" autocomplete="current-password">
+</label>{{if $totp}}
+<label>Authenticator code or recovery code<input name="code" required maxlength="40" autocomplete="one-time-code" spellcheck="false" autocapitalize="none">
+</label>{{end}}
+<label>New password<input type="password" name="new_password" required minlength="12" autocomplete="new-password" aria-describedby="password-help">
+</label>
+<label>Repeat new password<input type="password" name="new_password_confirm" required minlength="12" autocomplete="new-password">
+</label>
+<span class="help" id="password-help">Use at least 12 characters and at most 72 UTF-8 bytes. Every other session and pending sign-in for your account ends; this browser stays signed in.</span>
+<button type="submit">Change password</button>
+</form>
+</section>{{end}}

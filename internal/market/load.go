@@ -203,13 +203,14 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			if d.Page == "account" {
 				limit = 15
 			}
-			rows, err = a.db.QueryContext(ctx, `SELECT action,to_char(created,'YYYY-MM-DD HH24:MI') FROM audit_events WHERE user_id=$1 OR $2 ORDER BY created DESC LIMIT $3`, d.User.ID, all, limit)
+			rows, err = a.db.QueryContext(ctx, `SELECT COALESCE(u.handle,''),e.action,to_char(e.created,'YYYY-MM-DD HH24:MI') FROM audit_events e LEFT JOIN users u ON u.id=e.user_id
+				WHERE e.user_id=$1 OR $2 ORDER BY e.created DESC,e.id DESC LIMIT $3`, d.User.ID, all, limit)
 			if err != nil {
 				return err
 			}
 			for rows.Next() {
 				var e Event
-				if err = rows.Scan(&e.Action, &e.Created); err != nil {
+				if err = rows.Scan(&e.Handle, &e.Action, &e.Created); err != nil {
 					rows.Close()
 					return err
 				}
@@ -245,5 +246,5 @@ func previewData(page string) PageData {
 		u.Role = "vendor"
 	}
 	o := Order{ID: "sample-draft", ProductID: p[0].ID, Title: p[0].Title, Buyer: u.Handle, Vendor: p[0].Vendor, Currency: "BTC", Amount: p[0].PriceBTC, State: stateDraft, Status: stateLabel(stateDraft), Kind: p[0].Kind, BuyerID: u.ID, VendorID: p[0].VendorID, Created: "Sample order", Updated: "Sample order"}
-	return PageData{Page: page, Title: strings.ReplaceAll(strings.Title(page), "-", " "), Preview: true, User: u, Products: p, Product: &p[0], Orders: []Order{o}, Order: &o, Currency: "BTC", Settings: map[string]string{"site_name": "OPSMKT"}, Users: []User{{ID: "ghost", Handle: "ghost_circuit", Role: "vendor"}}, Events: []Event{{Action: "Preview only — no real activity", Created: "—"}}}
+	return PageData{Page: page, Title: strings.ReplaceAll(strings.Title(page), "-", " "), Preview: true, User: u, Products: p, Product: &p[0], Orders: []Order{o}, Order: &o, Currency: "BTC", Settings: map[string]string{"site_name": "OPSMKT"}, Users: []User{{ID: "ghost", Handle: "ghost_circuit", Role: "vendor"}}, Events: []Event{{Handle: u.Handle, Action: "Preview only — no real activity", Created: "—"}}}
 }
