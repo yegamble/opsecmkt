@@ -71,6 +71,15 @@ jobs:
       - name: Install PostgreSQL 17 client and encryption tools
         run: |
           sudo apt-get update
+          sudo apt-get install -y curl ca-certificates gnupg
+          sudo install -d /usr/share/postgresql-common/pgdg
+          curl --fail --show-error --silent --location https://www.postgresql.org/media/keys/ACCC4CF8.asc -o "$RUNNER_TEMP/pgdg.asc"
+          fingerprint=$(gpg --show-keys --with-colons "$RUNNER_TEMP/pgdg.asc" | awk -F: '$1 == "fpr" { print $10; exit }')
+          test "$fingerprint" = B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8
+          sudo install -m 0644 "$RUNNER_TEMP/pgdg.asc" /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+          # Hosted ubuntu-24.04 uses noble; scope trust to this repository only.
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt noble-pgdg main" | sudo tee /etc/apt/sources.list.d/opsecmkt-pgdg.list
+          sudo apt-get update
           sudo apt-get install -y postgresql-client-17 age
           echo /usr/lib/postgresql/17/bin >> "$GITHUB_PATH"
       - name: Shell syntax and Python helper regressions

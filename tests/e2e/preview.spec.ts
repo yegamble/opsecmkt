@@ -69,7 +69,7 @@ test('search, empty state, filter and reset work without client scripts', async 
   await page.getByRole('link', { name: 'Clear filters' }).click();
   await expect(page.locator('.listings-grid .product-card')).toHaveCount(6);
   const filters = await openFilters(page);
-  await filters.getByLabel('Category', { exact: true }).selectOption('Hardware');
+  await filters.getByRole('combobox', { name: 'Category', exact: true }).selectOption('Hardware');
   await filters.getByLabel('Ships to / region').selectOption('United States');
   await filters.getByLabel('Display currency').selectOption('XMR');
   await filters.getByRole('button', { name: 'Apply filters' }).click();

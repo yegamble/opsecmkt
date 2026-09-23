@@ -2,9 +2,9 @@ import { expect, test } from '@playwright/test';
 
 // One stateful journey, one fresh CI database. Never point E2E_DATABASE_URL at production.
 // Contexts stay separate so an administrator's session cannot mask buyer authorization bugs.
-test('setup, publish, register, draft, profile persistence and session boundaries', async ({ browser, baseURL }) => {
-  const admin = await browser.newContext({ baseURL, javaScriptEnabled: false });
-  const buyer = await browser.newContext({ baseURL, javaScriptEnabled: false });
+test('setup, publish, register, draft, profile persistence and session boundaries', async ({ browser, baseURL, viewport }) => {
+  const admin = await browser.newContext({ baseURL, viewport: viewport ?? undefined, javaScriptEnabled: false });
+  const buyer = await browser.newContext({ baseURL, viewport: viewport ?? undefined, javaScriptEnabled: false });
   const operatorPage = await admin.newPage();
   const buyerPage = await buyer.newPage();
   try {

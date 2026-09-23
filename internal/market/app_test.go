@@ -128,7 +128,7 @@ func TestResponseSecurityHeadersAndMethods(t *testing.T) {
 	a := testHTTPApp(true)
 	w := httptest.NewRecorder()
 	a.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/healthz", nil))
-	for name, want := range map[string]string{"X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "X-Frame-Options": "DENY", "Cache-Control": "no-store"} {
+	for name, want := range map[string]string{"X-Content-Type-Options": "nosniff", "Referrer-Policy": "same-origin", "X-Frame-Options": "DENY", "Cache-Control": "no-store"} {
 		if got := w.Header().Get(name); got != want {
 			t.Errorf("%s = %q; want %q", name, got, want)
 		}

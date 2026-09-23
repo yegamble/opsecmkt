@@ -103,3 +103,17 @@ go run ./cmd/server -preview
 Open `http://127.0.0.1:8080`. This preview uses labeled sample data, binds only to loopback, and rejects all form writes. A normal installation starts with an empty real catalog; the administrator can publish listings or grant a registered buyer the vendor role.
 
 See [implementation status](docs/implementation-status.md) for the exact working and unavailable features, and [acceptance checks](docs/acceptance.md) for remaining release gates. Use Go **1.26.8 or newer**; the earlier local 1.26.2 standard library produced known vulnerability findings. The Docker build pins 1.26.8 and CI tracks the current 1.26 patch release.
+
+## CI/CD and browser regression tests
+
+The private [GitHub repository](https://github.com/yegamble/opsecmkt) runs [CI](https://github.com/yegamble/opsecmkt/actions/workflows/ci.yaml) on every branch push and pull request. Tests cover Go/PostgreSQL, container installation with both database modes, deployment configurations, encrypted restore, and Playwright across Chromium, Firefox and WebKit. JavaScript is disabled in browser tests. Node is needed only for development tests, not the application image.
+
+```sh
+npm ci
+npx playwright install chromium firefox webkit
+npm run test:e2e
+```
+
+For the real account/order browser journey, also set `E2E_DATABASE_URL` to a **fresh, disposable** PostgreSQL database. CI requires it. Never use a production database. Test servers use loopback ports 18080 and 18081 and do not reuse your existing preview.
+
+Version tags produce CI-gated **private draft release artifacts**, not a live deployment. See [CI and release instructions](docs/ci-cd.md) and [operations test instructions](docs/operations-tests.md).
