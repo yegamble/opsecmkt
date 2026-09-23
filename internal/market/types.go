@@ -86,7 +86,11 @@ type PageData struct {
 	Payout          *PayoutView
 	PaymentsEnabled bool
 	PaymentNetworks string
-	Payouts         []PayoutRow // admin: recent payouts, newest first
+	Payouts         []PayoutRow // admin: every payout needing attention (oldest first), then recent others (newest first)
+	// PayoutsAttention counts the leading Payouts that need attention; PayoutHistoryLimit is non-zero when
+	// the other payouts were cut to this many most recent rows.
+	PayoutsAttention   int
+	PayoutHistoryLimit int
 
 	// P6 Transparency
 	Canary      *CanaryView
@@ -198,6 +202,7 @@ type PayoutRow struct {
 	OrderID, Kind, Recipient, Currency, Amount       string
 	Address, State, StateLabel, TxID, Error, Updated string
 	Attention                                        bool
+	OrderLink                                        bool // the viewing administrator can open /order for it
 	// Ambiguous: the payout may already have been broadcast (failed without a definite wallet answer, stuck
 	// in sending, or held by a restore from backup); requeueing or releasing needs an explicit confirmation.
 	Ambiguous bool

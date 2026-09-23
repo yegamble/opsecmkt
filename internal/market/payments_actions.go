@@ -235,6 +235,10 @@ func paymentsAccountLoader(ctx context.Context, a *App, _ *http.Request, d *Page
 	return nil
 }
 
+// payoutHistoryLimit caps the payouts on /admin that need no attention. Payouts needing attention are
+// never capped: their resolve forms exist only there.
+const payoutHistoryLimit = 50
+
 func paymentsAdminLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 	status := map[string]ProviderStatus{}
 	rows, err := a.db.QueryContext(ctx, "SELECT currency,network,COALESCE(to_char(last_poll,'YYYY-MM-DD HH24:MI:SS'),''),last_error FROM payment_status")
@@ -274,19 +278,37 @@ func paymentsAdminLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		}
 		d.Providers = append(d.Providers, s)
 	}
-	rows, err = a.db.QueryContext(ctx, `SELECT p.id,p.order_id,p.kind,u.handle,p.currency,p.amount,p.address,p.state,p.txid,p.error,to_char(p.updated,'YYYY-MM-DD HH24:MI'),
-		(p.state IN ('blocked','held','failed') OR (p.state='sending' AND p.updated < now()-interval '5 minutes')),p.send_ambiguous
-		FROM payouts p JOIN users u ON u.id=p.user_id ORDER BY p.id DESC LIMIT 50`)
+	// One statement, so now() (and so the attention flag) is the same for both halves: every payout needing
+	// attention (oldest first; its resolve form is only on this page), then the most recent others up to
+	// payoutHistoryLimit. OrderLink: the order page opens for this administrator (a party, or a disputed
+	// or resolved order read as a reviewer; see disputeReviewer).
+	uid := ""
+	if d.User != nil {
+		uid = d.User.ID
+	}
+	rows, err = a.db.QueryContext(ctx, `WITH v AS (SELECT p.id,p.order_id,p.kind,u.handle,p.currency,p.amount,p.address,p.state,p.txid,p.error,to_char(p.updated,'YYYY-MM-DD HH24:MI') AS updated,
+		(p.state IN ('blocked','held','failed') OR (p.state='sending' AND p.updated < now()-interval '5 minutes')) AS attention,p.send_ambiguous,
+		(o.buyer_id=$1 OR pr.vendor_id=$1 OR o.state IN ('disputed','resolved')) AS order_link
+		FROM payouts p JOIN users u ON u.id=p.user_id JOIN orders o ON o.id=p.order_id JOIN products pr ON pr.id=o.product_id)
+		SELECT * FROM (SELECT * FROM v WHERE attention UNION ALL (SELECT * FROM v WHERE NOT attention ORDER BY id DESC LIMIT $2)) s
+		ORDER BY attention DESC, CASE WHEN attention THEN id END, id DESC`, uid, payoutHistoryLimit+1)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
+	others := 0
 	for rows.Next() {
 		var r PayoutRow
 		var amt int64
 		var sendAmbiguous bool
-		if err = rows.Scan(&r.ID, &r.OrderID, &r.Kind, &r.Recipient, &r.Currency, &amt, &r.Address, &r.State, &r.TxID, &r.Error, &r.Updated, &r.Attention, &sendAmbiguous); err != nil {
+		if err = rows.Scan(&r.ID, &r.OrderID, &r.Kind, &r.Recipient, &r.Currency, &amt, &r.Address, &r.State, &r.TxID, &r.Error, &r.Updated, &r.Attention, &sendAmbiguous, &r.OrderLink); err != nil {
 			return err
+		}
+		if r.Attention {
+			d.PayoutsAttention++
+		} else if others++; others > payoutHistoryLimit {
+			d.PayoutHistoryLimit = payoutHistoryLimit
+			continue
 		}
 		r.Amount, r.StateLabel = amount(amt, currencyDecimals(r.Currency)), payoutStateLabel(r.State)
 		switch {
@@ -295,7 +317,7 @@ func paymentsAdminLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		case r.State == "failed" && sendAmbiguous:
 			r.StateLabel, r.Ambiguous = r.StateLabel+"; outcome unknown, may have been broadcast", true
 		case r.State == "failed":
-			r.StateLabel += "; rejected by the wallet, nothing broadcast"
+			r.StateLabel += "; the wallet reported a pre-broadcast error, nothing broadcast"
 		case r.State == "held" && strings.HasPrefix(r.Error, restoredHoldPrefix):
 			r.StateLabel, r.Ambiguous = "Held after a restore from backup — may already have been sent, check the wallet", true
 		}
