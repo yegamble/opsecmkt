@@ -130,10 +130,11 @@ resolved order); otherwise it is plain text.
 
 - **Failed — not retried; the wallet reported a pre-broadcast error, nothing broadcast**: the wallet
   answered the send with a pre-broadcast error (for example insufficient or locked funds), so no
-  transaction exists. For Bitcoin this is any `sendtoaddress` error: Bitcoin Core stores the transaction before relaying it, and a failed relay is not
-  returned as an error. For Monero it is only a `transfer` error raised before the wallet submits to the
-  daemon: -2 (wrong address), -16 (transaction not possible), -17 (not enough money), -18 (transaction too
-  large), -19 (not enough outputs to mix), -20 (no destination) or -37 (not enough unlocked money).
+  transaction exists. For Bitcoin this is any `sendtoaddress` error: Bitcoin Core stores the transaction
+  before relaying it, and a failed relay is not returned as an error. For Monero it is only a `transfer`
+  error raised before the wallet submits to the daemon: -2 (wrong address), -16 (transaction not
+  possible), -17 (not enough money), -18 (transaction too large), -19 (not enough outputs to mix), -20 (no
+  destination) or -37 (not enough unlocked money).
 - **Failed — not retried; outcome unknown, may have been broadcast**: the wallet call ended without a
   definite answer (no reply within 30 s, a dropped connection or an unreadable reply after the request was
   sent), or monero-wallet-rpc returned any other error code. In particular -38 (no connection to daemon)
