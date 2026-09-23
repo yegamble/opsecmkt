@@ -4,7 +4,7 @@ set -euo pipefail
 umask 077
 cd "$(dirname "$0")/.."
 : "${TEST_DATABASE_URL:?Set an explicit PostgreSQL test URL; its role must have CREATEDB}"
-for dependency in python3 psql pg_dump pg_restore age age-keygen; do
+for dependency in python3 psql pg_dump pg_restore age age-keygen go; do
   command -v "$dependency" >/dev/null || { echo "Missing dependency: $dependency" >&2; exit 1; }
 done
 work=$(mktemp -d "${TMPDIR:-/tmp}/opsecmkt-ops.XXXXXX")
@@ -12,6 +12,10 @@ export OPS_TEST_ROOT="$PWD"
 suffix=$(python3 -c 'import secrets; print(secrets.token_hex(8))')
 source_db="opsecmkt_ops_${suffix}_source"
 target_db="opsecmkt_ops_${suffix}_target"
+# The real application schema: migrated by the server itself, then backed up and restored.
+app_source_db="opsecmkt_ops_${suffix}_app_source"
+app_target_db="opsecmkt_ops_${suffix}_app_target"
+server_pid=''
 
 # Reuse the production URL parser, substituting psql only after validation.
 # The database URL and password never appear in process arguments.
@@ -43,17 +47,29 @@ except (KeyError, ValueError):
     raise SystemExit('Invalid TEST_DATABASE_URL configuration')
 PY
 }
+stop_app() {
+  if [[ -n $server_pid ]]; then
+    kill -TERM "$server_pid" 2>/dev/null || true
+    wait "$server_pid" 2>/dev/null || true
+    server_pid=''
+  fi
+}
 cleanup() {
   local status=$?
   trap - EXIT
-  pg '' -q -c "DROP DATABASE IF EXISTS $source_db" >/dev/null 2>&1 || true
-  pg '' -q -c "DROP DATABASE IF EXISTS $target_db" >/dev/null 2>&1 || true
+  stop_app
+  if ((status)) && [[ -f $work/app.log ]]; then echo '--- application log ---' >&2; cat "$work/app.log" >&2; fi
+  for database in "$source_db" "$target_db" "$app_source_db" "$app_target_db"; do
+    pg '' -q -c "DROP DATABASE IF EXISTS $database" >/dev/null 2>&1 || true
+  done
   rm -rf "$work"
   exit "$status"
 }
 trap cleanup EXIT
 pg '' -q -c "CREATE DATABASE $source_db"
 pg '' -q -c "CREATE DATABASE $target_db"
+pg '' -q -c "CREATE DATABASE $app_source_db"
+pg '' -q -c "CREATE DATABASE $app_target_db"
 pg "$source_db" -q -c "CREATE TABLE a_first (id integer PRIMARY KEY, note text NOT NULL); INSERT INTO a_first VALUES (1, 'Crème brûlée — 東京 🔒'); CREATE TABLE z_conflict (id integer PRIMARY KEY); INSERT INTO z_conflict VALUES (42);"
 # The payouts shape restore.sh relies on (state, error, updated); one row per state.
 pg "$source_db" -q -c "CREATE TABLE payouts (id integer PRIMARY KEY, state text NOT NULL, error text NOT NULL DEFAULT '', updated timestamptz NOT NULL DEFAULT now()); INSERT INTO payouts(id,state) VALUES (1,'pending'),(2,'sending'),(3,'sent'),(4,'failed'),(5,'blocked'),(6,'held');"
@@ -120,4 +136,58 @@ if scripts/restore.sh "$backup" <<< 'RESTORE' > "$work/conflict.log" 2>&1; then
 fi
 [[ $(pg "$target_db" -Atq -c "SELECT to_regclass('public.a_first') IS NULL") == t ]]
 [[ $(pg "$target_db" -Atq -c 'SELECT id FROM z_conflict') == 99 ]]
-echo 'Encrypted backup/restore regressions passed (Unicode, overwrite refusal, wrong key, transaction rollback, payout hold).'
+
+# The same round trip on the real application schema. The server migrates an empty database itself; a
+# release payout is queued (pending) and another already sent; the dump is restored into an empty database.
+# The restore must hold the queued payout, and the server must then start on the restored database as-is.
+# start_app DATABASE: runs the server from this checkout with a clean environment and waits for /healthz.
+CGO_ENABLED=0 go build -trimpath -o "$work/server" ./cmd/server
+app_port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+start_app() {
+  (exec env -i PATH="$PATH" DATABASE_URL="$(connection_url "$1")" SETUP_TOKEN='ops-restore-test-bootstrap-token-0123456789' \
+    COOKIE_SECURE=false ADDR="127.0.0.1:$app_port" "$work/server") >> "$work/app.log" 2>&1 &
+  server_pid=$!
+  python3 - "http://127.0.0.1:$app_port/healthz" "$server_pid" <<'PY'
+import os, sys, time, urllib.request
+url, pid = sys.argv[1], int(sys.argv[2])
+for _ in range(120):
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        raise SystemExit('The application exited before becoming healthy')
+    try:
+        with urllib.request.urlopen(url, timeout=2) as response:
+            if response.status == 200 and response.read() == b'ok':
+                raise SystemExit(0)
+    except OSError:
+        pass
+    time.sleep(0.5)
+raise SystemExit('The application did not become healthy')
+PY
+}
+start_app "$app_source_db"
+stop_app
+migrations=$(pg "$app_source_db" -Atq -c "SELECT string_agg(version || ':' || name || '@' || applied, ',' ORDER BY version) FROM schema_migrations")
+[[ $(pg "$app_source_db" -Atq -c 'SELECT count(*) FROM schema_migrations') == $(find internal/market/migrations -name '*.sql' | wc -l | tr -d ' ') ]]
+pg "$app_source_db" -q -c "
+INSERT INTO users(id,handle,password_hash,role) VALUES ('ops-vendor','ops_vendor','not-a-login','vendor'),('ops-buyer','ops_buyer','not-a-login','buyer');
+INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock) VALUES ('ops-product','ops-vendor','Restore drill kit','','Hardware','Worldwide','physical',150000,250000000000,3);
+INSERT INTO orders(id,buyer_id,product_id,currency,amount,state) VALUES
+ ('ops-order-queued','ops-buyer','ops-product','BTC',150000,'completed'),('ops-order-sent','ops-buyer','ops-product','XMR',250000000000,'resolved');
+INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state) VALUES ('ops-order-queued','release','ops-vendor','BTC',150000,'tb1qopsrestorequeuedpayout','pending');
+INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state,txid) VALUES ('ops-order-sent','refund','ops-buyer','XMR',250000000000,'ops-restore-sent-address','sent',repeat('ab',32));"
+app_backup="$work/app.dump.age"
+BACKUP_DATABASE_URL=$(connection_url "$app_source_db") scripts/backup.sh "$app_backup"
+RESTORE_DATABASE_URL=$(connection_url "$app_target_db") scripts/restore.sh "$app_backup" <<< 'RESTORE' > "$work/app-restore.log"
+grep -q 'Held 1 restored payout(s)' "$work/app-restore.log"
+payouts="SELECT string_agg(order_id || ':' || state || ':' || (error LIKE 'Restored from backup:%') || ':' || txid, ',' ORDER BY order_id) FROM payouts"
+held="ops-order-queued:held:true:,ops-order-sent:sent:false:$(printf 'ab%.0s' {1..32})"
+[[ $(pg "$app_target_db" -Atq -c "$payouts") == "$held" ]]
+[[ $(pg "$app_source_db" -Atq -c "SELECT state FROM payouts WHERE order_id='ops-order-queued'") == pending ]]
+[[ $(pg "$app_target_db" -Atq -c "SELECT string_agg(version || ':' || name || '@' || applied, ',' ORDER BY version) FROM schema_migrations") == "$migrations" ]]
+# The server starts on the restored database, applies nothing again and leaves the held payout alone.
+start_app "$app_target_db"
+stop_app
+[[ $(pg "$app_target_db" -Atq -c "SELECT string_agg(version || ':' || name || '@' || applied, ',' ORDER BY version) FROM schema_migrations") == "$migrations" ]]
+[[ $(pg "$app_target_db" -Atq -c "$payouts") == "$held" ]]
+echo 'Encrypted backup/restore regressions passed (Unicode, overwrite refusal, wrong key, transaction rollback, payout hold, application schema restore and restart).'

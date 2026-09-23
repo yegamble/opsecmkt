@@ -36,6 +36,25 @@ jobs:
           provenance: mode=max
           sbom: true
           cache-from: type=gha,scope=app
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          # Release binaries are built without restoring any Actions cache.
+          cache: false
+      - name: Build the offline audit export verifier
+        run: |
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            goos=${target%/*}
+            goarch=${target#*/}
+            suffix=''
+            if [ "$goos" = windows ]; then suffix=.exe; fi
+            CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go build -trimpath -buildvcs=false -ldflags='-s -w -buildid=' \
+              -o "verify-audit-$goos-$goarch$suffix" ./cmd/verify-audit
+          done
+          # The runner's own build must run and refuse a call without an export and signature.
+          if ./verify-audit-linux-amd64 2> usage.txt; then exit 1; fi
+          grep -q 'usage: verify-audit -pub' usage.txt
+          rm usage.txt
       - name: Package checksums and build record
         env:
           RELEASE_TAG: ${{ github.ref_name }}
@@ -44,10 +63,10 @@ jobs:
           python3 - <<'PY'
           import json, os
           with open('build.json', 'w') as output:
-              json.dump({'repository': os.environ['GITHUB_REPOSITORY'], 'commit': os.environ['GITHUB_SHA'], 'tag': os.environ['RELEASE_TAG'], 'run': os.environ['GITHUB_SERVER_URL'] + '/' + os.environ['GITHUB_REPOSITORY'] + '/actions/runs/' + os.environ['GITHUB_RUN_ID'], 'platform': 'linux/amd64', 'format': 'OCI image archive; embedded BuildKit SBOM and provenance'}, output, indent=2)
+              json.dump({'repository': os.environ['GITHUB_REPOSITORY'], 'commit': os.environ['GITHUB_SHA'], 'tag': os.environ['RELEASE_TAG'], 'run': os.environ['GITHUB_SERVER_URL'] + '/' + os.environ['GITHUB_REPOSITORY'] + '/actions/runs/' + os.environ['GITHUB_RUN_ID'], 'platform': 'linux/amd64', 'format': 'OCI image archive; embedded BuildKit SBOM and provenance', 'verify_audit': sorted(name for name in os.listdir('.') if name.startswith('verify-audit-'))}, output, indent=2)
               output.write('\n')
           PY
-          sha256sum opsecmkt.oci.tar.gz build.json > SHA256SUMS
+          sha256sum opsecmkt.oci.tar.gz build.json verify-audit-* > SHA256SUMS
       - name: Create private draft release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -55,6 +74,8 @@ jobs:
         run: |
           cat > release-notes.md <<'NOTES'
           Tested Linux amd64 OCI image archive. Verify SHA256SUMS before importing with an OCI-aware tool such as Skopeo. The archive embeds BuildKit provenance and an SBOM. These are build metadata, not a cryptographic signature. See docs/ci-cd.md for import and rollback instructions. No production deployment is performed.
+
+          verify-audit-OS-ARCH are standalone builds of cmd/verify-audit for checking a signed audit export offline: verify-audit -pub <key from /canary> export.jsonl export.sig (exit 0 = valid). They are listed in SHA256SUMS.
           NOTES
-          gh release create "$RELEASE_TAG" opsecmkt.oci.tar.gz SHA256SUMS build.json \
+          gh release create "$RELEASE_TAG" opsecmkt.oci.tar.gz SHA256SUMS build.json verify-audit-* \
             --verify-tag --draft --title "$RELEASE_TAG" --notes-file release-notes.md
