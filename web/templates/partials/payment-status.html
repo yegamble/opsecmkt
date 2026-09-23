@@ -1,15 +1,31 @@
 {{/* P5 Payments owns. Slots: payment-status (footer), :catalog, :product, :checkout, :vendor-dashboard (stat tiles) */}}
-{{define "payment-status"}}<span class="accent">Payments disabled</span>{{end}}
-{{define "payment-status:catalog"}}<div class="notice">
+{{define "payment-status"}}{{if .PaymentsEnabled}}<span class="badge testnet">TESTNET payments ({{.PaymentNetworks}}) — no real funds</span>{{else}}<span class="accent">Payments disabled</span>{{end}}{{end}}
+{{define "payment-status:catalog"}}{{if .PaymentsEnabled}}<div class="notice testnet-notice">
+<p>
+<strong>TESTNET payments ({{.PaymentNetworks}}) — no real funds.</strong> Deposits go to the market's pooled test-network wallet and are released to the vendor on completion or refunded on cancellation. This is custodial holding, not multisig escrow.</p>
+</div>{{else}}<div class="notice">
 <p>
 <strong>Order drafts only.</strong> Payments and escrow are not active.</p>
-</div>{{end}}
-{{define "payment-status:product"}}<p>Payments and escrow are not active. No protection or verification claim is implied by a listing.</p>{{end}}
-{{define "payment-status:checkout"}}<div class="notice">
+</div>{{end}}{{end}}
+{{define "payment-status:product"}}{{if .PaymentsEnabled}}<p>
+<span class="badge testnet">TESTNET payments ({{.PaymentNetworks}}) — no real funds</span> Only test-network coins are accepted. No protection or verification claim is implied by a listing.</p>{{else}}<p>Payments and escrow are not active. No protection or verification claim is implied by a listing.</p>{{end}}{{end}}
+{{define "payment-status:checkout"}}{{if .PaymentsEnabled}}<div class="notice testnet-notice">
+<p>
+<strong>TESTNET payments ({{.PaymentNetworks}}) — no real funds.</strong> Creating a draft collects nothing. Request payment on the order page to receive a test-network deposit address; a currency without a configured provider stays an unfunded draft. Never send mainnet coins.</p>
+</div>{{else}}<div class="notice">
 <p>
 <strong>UNFUNDED DRAFT ONLY.</strong> Bitcoin, Monero, multisig escrow, shipping addresses, and settlement are not configured. Do not send funds.</p>
-</div>{{end}}
-{{define "payment-status:vendor-dashboard"}}<div class="stat">
+</div>{{end}}{{end}}
+{{define "payment-status:vendor-dashboard"}}{{if .PaymentsEnabled}}<div class="stat">
+<div class="eyebrow">Payments</div>
+<strong>TESTNET</strong>
+<span>{{.PaymentNetworks}} — no real funds</span>
+</div>
+<div class="stat">
+<div class="eyebrow">Funds holding</div>
+<strong>POOLED</strong>
+<span>Custodial test wallet; no multisig escrow</span>
+</div>{{else}}<div class="stat">
 <div class="eyebrow">Payments</div>
 <strong>OFF</strong>
 <span>Provider not configured</span>
@@ -18,4 +34,4 @@
 <div class="eyebrow">Escrow</div>
 <strong>OFF</strong>
 <span>No funds are held</span>
-</div>{{end}}
+</div>{{end}}{{end}}

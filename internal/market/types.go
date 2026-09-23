@@ -68,6 +68,7 @@ type PageData struct {
 	Payout          *PayoutView
 	PaymentsEnabled bool
 	PaymentNetworks string
+	Payouts         []PayoutRow // admin: recent payouts, newest first
 
 	// P6 Transparency
 	Canary      *CanaryView
@@ -114,13 +115,39 @@ type PaymentView struct {
 	Required, Received, Unconfirmed string
 	Confirmations, Threshold        int
 	Status                          string
+	Currency                        string
+	Available                       bool // a live provider serves this order's currency
+	Issued                          bool // the provider returned a deposit address for this order
+	Monitored                       bool // Issued and the provider is still configured
+	Open                            bool // Monitored and the order still awaits payment (address shown)
+	Deposits                        []PaymentDeposit
+	Payout                          *PayoutRow
+}
+type PaymentDeposit struct {
+	TxID          string
+	Index         int64
+	Amount        string
+	Confirmations int64
+	State         string
 }
 type ProviderStatus struct {
 	Currency, Network string
 	Enabled           bool
 	Error             string
+	Confirmations     int
+	LastPoll          string
 }
-type PayoutView struct{ BTC, XMR string }
+type PayoutView struct {
+	BTC, XMR               string
+	BTCNetwork, XMRNetwork string // empty = no provider for that currency
+	Blocked                int    // payouts waiting for this user's address
+}
+type PayoutRow struct {
+	ID                                               int64
+	OrderID, Kind, Recipient, Currency, Amount       string
+	Address, State, StateLabel, TxID, Error, Updated string
+	Attention                                        bool
+}
 
 // P6 Transparency
 type CanaryView struct {

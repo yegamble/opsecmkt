@@ -85,7 +85,21 @@ No configuration.
 
 ### Payments
 
-Reserved, not yet active: `BITCOIN_RPC_URL`, `BITCOIN_WALLET` (default `opsecmkt`), `BITCOIN_CHAIN` (default `testnet4`), `PAYMENT_CONFIRMATIONS_BTC` (default 3), `MONERO_RPC_URL`, `MONERO_WALLET_RPC_URL`, `MONERO_NETWORK` (default `stagenet`), `PAYMENT_CONFIRMATIONS_XMR` (default 10), `PAYMENT_POLL_INTERVAL` (default `30s`). Only test networks are supported; the application refuses to start against mainnet.
+**Test networks only. These payments move no real funds.** The application refuses to start if a node or wallet is on mainnet, if it disagrees with `BITCOIN_CHAIN`/`MONERO_NETWORK`, or if a configured wallet cannot be reached. A currency with a blank URL stays disabled, and the site then says "Payments disabled".
+
+- Bitcoin: `BITCOIN_RPC_URL` is a wallet-enabled Bitcoin Core RPC. Credentials go in the URL userinfo (`http://marketplace:PASSWORD@bitcoin:8332`); they are sent as HTTP Basic auth and never logged. `BITCOIN_WALLET` (default `opsecmkt`) must exist; the app loads it if needed. Create it once with `bitcoin-cli -chain=testnet4 createwallet opsecmkt`. `BITCOIN_CHAIN` (default `testnet4`; also `signet`, `regtest`) must match the node. `PAYMENT_CONFIRMATIONS_BTC` defaults to 3; use 1 for regtest.
+- Monero: `MONERO_WALLET_RPC_URL` is monero-wallet-rpc (for example `http://monero-wallet:18083`; optional userinfo is sent as HTTP Digest auth). The app uses account 0 and opens a wallet file named `opsecmkt` (empty password) if none is open. Create it first with the `create_wallet` RPC. `MONERO_RPC_URL` (the daemon) is optional; when set, its network is checked too. `MONERO_NETWORK` (default `stagenet`; also `testnet`) must match. `PAYMENT_CONFIRMATIONS_XMR` defaults to 10.
+- `PAYMENT_POLL_INTERVAL` (default `30s`, from 1s to 1h) sets how often the single background watcher polls wallets and sends queued payouts. Several app instances can share a database; only one polls at a time.
+
+Operational limits to accept before enabling payments:
+
+- Deposits for all orders sit in **one pooled custodial wallet** per currency. This is not multisig escrow. Whoever controls the node wallet controls the funds.
+- There is **no commission or fee accounting**. Bitcoin payouts deduct the network fee from the amount sent (`subtractfeefromamount`). Monero payout fees are paid by the pooled wallet on top of the payout, so keep a small test-coin buffer in it.
+- Payouts are **single-attempt**. A failed or interrupted wallet call is shown on the admin page and never retried, because the transaction may already have been broadcast. Check the wallet before paying anything by hand.
+- A credited deposit that later conflicts is flagged to moderators and holds the order's unsent payout. The order state is never reverted automatically. Deposits arriving after settlement are flagged, not paid out.
+- Recipients must save a payout address on their account page. Payouts wait ("blocked") until they do.
+
+`scripts/regtest-smoke.sh` is a manual check against a local `bitcoind -regtest` (`BITCOIN_REGTEST_RPC_URL=http://user:pass@127.0.0.1:18443`). It is not part of CI.
 
 ### Transparency
 

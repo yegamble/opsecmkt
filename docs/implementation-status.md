@@ -38,7 +38,16 @@ Not implemented: listing editing, archiving/restoring and automatic delivery con
 
 ### P5 Payments
 
-Not implemented: test-network wallet adapters, deposit monitoring and payouts. Payments are disabled; no address or balance is shown.
+Implemented, **test networks only** (disabled unless configured; see README "Feature configuration"):
+
+- Bitcoin Core adapter (testnet3, testnet4, signet, regtest) over wallet JSON-RPC with Basic auth, and a monero-wallet-rpc adapter (stagenet, testnet) with HTTP Digest auth. Startup exits with an error when a node or wallet reports mainnet, when `BITCOIN_CHAIN`/`MONERO_NETWORK` disagree with the node, or when a configured wallet is unreachable. Wallet-returned addresses with a mainnet prefix are refused.
+- One background watcher per deployment (PostgreSQL advisory lock) polls every `PAYMENT_POLL_INTERVAL`. Deposits are recorded in an idempotent ledger keyed by `(currency, txid, output)`. An order moves from `awaiting_payment` to `paid` only through the state machine, once confirmed deposits reach the order amount at the configured confirmation threshold.
+- A credited deposit that later conflicts or disappears from the wallet is flagged in the order history and to moderators. The order is never reverted automatically, and unsent payouts are held. Deposits that confirm after settlement are flagged, not paid out.
+- Payouts: completing an order queues a release to the vendor. Cancelling a funded order queues a refund to the buyer. Resolving a dispute queues a release or refund according to its recorded outcome. Each payout is a single wallet call: failed or stuck payouts are shown to administrators and never retried. A payout waits ("blocked") until the recipient saves a payout address, which is validated against the provider's test network.
+- Order pages show the deposit address, amounts and confirmations only when they come from a live provider and the ledger, each labelled `TESTNET <network>`. Footer, catalog, checkout, product and vendor pages state "Payments disabled" or "TESTNET payments (<networks>) — no real funds". The admin page lists each provider's network, status, last poll and last error, plus recent payouts.
+- The payment step and the other order actions (`/orders/pay`, ship, complete, cancel, dispute outcomes) belong to the Orders package. Without them, orders cannot reach `awaiting_payment` in this build.
+
+Not implemented: multisig escrow, marketplace commission or fee accounting, automatic payout retries, and mainnet payments (by design). Funds sit in one pooled custodial wallet per currency. Bitcoin payouts deduct the network fee from the amount sent. Monero payout fees are paid from the pooled wallet. The regtest smoke test (`scripts/regtest-smoke.sh`) is manual and has not been run in this environment.
 
 ### P6 Transparency
 

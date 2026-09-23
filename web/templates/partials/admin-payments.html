@@ -6,5 +6,61 @@
 <label>Monero mode<select name="monero_mode">
 <option value="disabled">Disabled — no provider configured</option>
 </select>
-</label>{{end}}
-{{define "admin-payments"}}{{end}}
+</label>
+<p class="help">These fields record a desired node mode only. Payment providers are enabled by environment variables (BITCOIN_RPC_URL, MONERO_WALLET_RPC_URL) and a restart; the Payment providers panel shows what is actually running.</p>{{end}}
+{{define "admin-payments"}}<section class="panel admin-payments">
+<h2>Payment providers</h2>
+<p>Test networks only; the server refuses to start against mainnet. Deposits sit in one pooled wallet per currency. There is no commission or fee accounting.</p>
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th scope="col">Currency</th>
+<th scope="col">Network</th>
+<th scope="col">Status</th>
+<th scope="col">Confirmations</th>
+<th scope="col">Last poll</th>
+<th scope="col">Last error</th>
+</tr>
+</thead>
+<tbody>{{range .Providers}}<tr>
+<td>{{.Currency}}</td>
+<td>{{if .Enabled}}<span class="badge testnet">TESTNET {{.Network}}</span>{{else}}—{{end}}</td>
+<td>{{if .Enabled}}Enabled{{else}}Disabled{{end}}</td>
+<td>{{if .Enabled}}{{.Confirmations}}{{else}}—{{end}}</td>
+<td>{{if .Enabled}}{{.LastPoll}}{{else}}—{{end}}</td>
+<td>{{if .Error}}{{.Error}}{{else}}None{{end}}</td>
+</tr>{{else}}<tr>
+<td colspan="6">Provider status is unavailable here. No provider is running.</td>
+</tr>{{end}}</tbody>
+</table>
+</div>
+<h3>Payouts</h3>
+<p>Each payout is attempted once. Failed or stuck payouts are never retried automatically: check the wallet before paying anything manually.</p>
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th scope="col">Order</th>
+<th scope="col">Type</th>
+<th scope="col">Recipient</th>
+<th scope="col">Amount</th>
+<th scope="col">Status</th>
+<th scope="col">Transaction or error</th>
+<th scope="col">Updated</th>
+</tr>
+</thead>
+<tbody>{{range .Payouts}}<tr{{if .Attention}} class="payout-attention"{{end}}>
+<td class="mono">{{.OrderID}}</td>
+<td>{{if eq .Kind "release"}}Release{{else}}Refund{{end}}</td>
+<td>{{.Recipient}}</td>
+<td>{{.Amount}} {{.Currency}} <span class="badge testnet">TESTNET</span></td>
+<td>{{if .Attention}}<strong>Needs attention:</strong> {{end}}{{.StateLabel}}</td>
+<td class="mono">{{if .TxID}}{{.TxID}}{{else}}{{.Error}}{{end}}</td>
+<td>{{.Updated}}</td>
+</tr>{{else}}<tr>
+<td colspan="7">No payouts recorded.</td>
+</tr>{{end}}</tbody>
+</table>
+</div>
+</section>{{end}}
