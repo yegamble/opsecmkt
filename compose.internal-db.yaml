@@ -1,0 +1,6 @@
+# Include only when COMPOSE_PROFILES includes internal-db.
+services:
+  app:
+    depends_on:
+      db:
+        condition: service_healthy

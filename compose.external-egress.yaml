@@ -1,0 +1,7 @@
+# Explicit exception for Tor deployments using remote PostgreSQL or node RPC.
+# This permits direct application egress; it does not route requests over Tor.
+services:
+  app:
+    networks: [backend, external_egress]
+networks:
+  external_egress:

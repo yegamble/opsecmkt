@@ -1,0 +1,16 @@
+.env
+.env.*
+!.env.example
+backups/
+artifacts/
+/server
+*.dump
+*.age
+.DS_Store
+
+node_modules/
+playwright-report/
+test-results/
+coverage.out
+*.test
+__pycache__/

@@ -1,0 +1,33 @@
+# Operator-supplied, reviewed images must contain these binaries on PATH.
+# No RPC or peer ports are published to the host.
+services:
+  bitcoin:
+    image: ${BITCOIN_IMAGE:-scratch}
+    profiles: [bitcoin]
+    restart: unless-stopped
+    networks: [backend, node_egress]
+    entrypoint: [bitcoind]
+    command:
+      - -datadir=/data
+      - -server=1
+      - -printtoconsole=1
+      - -rpcbind=0.0.0.0
+      - -rpcallowip=172.16.0.0/12
+      - -rpcallowip=192.168.0.0/16
+      - -rpcuser=marketplace
+      - -rpcpassword=${BITCOIN_RPC_PASSWORD:-disabled}
+    volumes: [bitcoin_data:/data]
+  monero:
+    image: ${MONERO_IMAGE:-scratch}
+    profiles: [monero]
+    restart: unless-stopped
+    networks: [backend, node_egress]
+    entrypoint: [monerod]
+    command: [--data-dir, /data, --non-interactive, --restricted-rpc, --rpc-bind-ip, 0.0.0.0, --confirm-external-bind]
+    volumes: [monero_data:/data]
+volumes:
+  bitcoin_data:
+  monero_data:
+
+networks:
+  node_egress:

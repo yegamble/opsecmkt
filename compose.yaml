@@ -1,0 +1,38 @@
+name: opsecmkt
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    networks: [backend]
+    environment:
+      ADDR: ':8080'
+      DATABASE_URL: ${DATABASE_URL:?Run scripts/install.sh first}
+      SETUP_TOKEN: ${SETUP_TOKEN:?Run scripts/install.sh first}
+      APP_MODE: ${APP_MODE:-clearnet}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      BITCOIN_RPC_URL: ${BITCOIN_RPC_URL:-}
+      MONERO_RPC_URL: ${MONERO_RPC_URL:-}
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+  db:
+    image: postgres:17-alpine
+    profiles: [internal-db]
+    restart: unless-stopped
+    networks: [backend]
+    environment:
+      POSTGRES_DB: opsecmkt
+      POSTGRES_USER: opsecmkt
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-unused-external-db}
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U opsecmkt -d opsecmkt']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+volumes:
+  postgres_data:
+
+networks:
+  backend:

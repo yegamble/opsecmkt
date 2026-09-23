@@ -1,0 +1,6 @@
+DataDirectory /var/lib/tor
+SocksPort 0
+Log notice stdout
+HiddenServiceDir /var/lib/tor/marketplace
+HiddenServiceVersion 3
+HiddenServicePort 80 app:8080

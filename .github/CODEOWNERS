@@ -1,0 +1,6 @@
+# Repository owner reviews CI and deployment configuration changes.
+/.github/ @yegamble
+/Dockerfile @yegamble
+/compose*.yaml @yegamble
+/deploy/ @yegamble
+/scripts/ @yegamble

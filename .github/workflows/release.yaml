@@ -1,0 +1,60 @@
+name: Private release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+jobs:
+  verify:
+    uses: ./.github/workflows/ci.yaml
+  package:
+    name: Draft private image release
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Require a private repository and version tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
+          test "$(gh api "repos/$GITHUB_REPOSITORY" --jq .private)" = true
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build OCI archive with provenance and SBOM
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: linux/amd64
+          tags: opsecmkt:${{ github.ref_name }}
+          outputs: type=oci,dest=opsecmkt.oci.tar
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=app
+      - name: Package checksums and build record
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gzip -n opsecmkt.oci.tar
+          python3 - <<'PY'
+          import json, os
+          with open('build.json', 'w') as output:
+              json.dump({'repository': os.environ['GITHUB_REPOSITORY'], 'commit': os.environ['GITHUB_SHA'], 'tag': os.environ['RELEASE_TAG'], 'run': os.environ['GITHUB_SERVER_URL'] + '/' + os.environ['GITHUB_REPOSITORY'] + '/actions/runs/' + os.environ['GITHUB_RUN_ID'], 'platform': 'linux/amd64', 'format': 'OCI image archive; embedded BuildKit SBOM and provenance'}, output, indent=2)
+              output.write('\n')
+          PY
+          sha256sum opsecmkt.oci.tar.gz build.json > SHA256SUMS
+      - name: Create private draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          cat > release-notes.md <<'NOTES'
+          Tested Linux amd64 OCI image archive. Verify SHA256SUMS before importing with an OCI-aware tool such as Skopeo. The archive embeds BuildKit provenance and an SBOM. These are build metadata, not a cryptographic signature. See docs/ci-cd.md for import and rollback instructions. No production deployment is performed.
+          NOTES
+          gh release create "$RELEASE_TAG" opsecmkt.oci.tar.gz SHA256SUMS build.json \
+            --verify-tag --draft --title "$RELEASE_TAG" --notes-file release-notes.md

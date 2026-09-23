@@ -1,0 +1,30 @@
+services:
+  tor:
+    build:
+      context: deploy
+      dockerfile: Dockerfile.tor
+    restart: unless-stopped
+    depends_on: [app]
+    networks: [backend, tor_egress]
+    volumes: [tor_identity:/var/lib/tor]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+  tor-mirror:
+    profiles: [mirror]
+    build:
+      context: deploy
+      dockerfile: Dockerfile.tor
+    restart: unless-stopped
+    depends_on: [app]
+    networks: [backend, tor_egress]
+    volumes: [tor_mirror_identity:/var/lib/tor]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+volumes:
+  tor_mirror_identity:
+  tor_identity:
+
+networks:
+  backend:
+    internal: true
+  tor_egress:

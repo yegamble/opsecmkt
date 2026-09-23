@@ -1,0 +1,55 @@
+# Acceptance checklist and capability boundaries
+
+This is a verification plan, not a declaration that every check has passed. Record actual results separately. The application uses Go server-rendered HTML and CSS with PostgreSQL; React is not required.
+
+## Installation and deployment
+
+- [ ] A fresh install with no external database starts the PostgreSQL Compose service, waits for readiness, and applies migrations.
+- [ ] External database configuration starts no PostgreSQL container; connection failures stop setup with a useful, secret-free error.
+- [ ] The setup wizard requires the operator's installation secret, creates one administrator atomically, and rejects further setup attempts after completion, including concurrent requests and after restart.
+- [ ] Internal database ports and blockchain RPC ports are not published publicly. The app cannot access the Docker socket.
+- [ ] Clearnet deployment documents its HTTPS termination boundary and corresponding secure-cookie configuration.
+- [ ] Tor-only deployment publishes no application host port and loads no third-party fonts, scripts, analytics, or images. Confirm the effective Compose configuration, not only individual YAML files.
+- [ ] Mirror documentation distinguishes a shared database deployment from independent instances; it does not imply replicated balances or safe simultaneous spending.
+- [ ] Persistent data survives container replacement. Backup and restore instructions cover database records, deployment secrets, and any onion identity keys; a restore rehearsal is recorded.
+
+## Authentication and request security
+
+- [ ] Passwords use adaptive hashing; password and username bounds are enforced before expensive work. No production default credentials exist.
+- [ ] Sessions use cryptographic randomness, expire server-side, rotate on authentication, and are revoked on logout. Cookies are HttpOnly, have an explicit SameSite policy, and use Secure when the configured browser-facing origin is HTTPS.
+- [ ] Login, registration, setup, and authenticated mutations reject missing or invalid CSRF tokens. Cross-origin browser submissions are rejected. GET requests cannot change state.
+- [ ] Sensitive endpoints have bounded request bodies, server timeouts, and rate limits. Forwarded IP or scheme headers are not trusted without an explicit proxy boundary.
+- [ ] Each order, conversation, notification, dispute, and administration endpoint enforces authorization in SQL or application logic, including guessed resource identifiers and forged form parameters.
+- [ ] Database queries bind values as parameters. User content renders through `html/template` without casts to trusted HTML, JavaScript, or URLs.
+- [ ] Secrets, session tokens, full database URLs, message contents, and private keys are absent from application logs and committed files.
+- [ ] CSP, frame protection, no-sniff, and referrer restrictions are verified on actual responses. No debugging or profiling endpoint is publicly exposed.
+
+Go's [HTML template documentation](https://pkg.go.dev/html/template) describes contextual escaping and the assumption that template authors are trusted. [The HTTP package documentation](https://pkg.go.dev/net/http) documents server limits, cookie attributes, and `CrossOriginProtection`. These are implementation references, not a substitute for application-level authorization and tests.
+
+## Marketplace behavior
+
+- [ ] Catalog filters, product detail, account routes, and every navigation link render valid pages, including empty and not-found states.
+- [ ] Order creation persists the selected product, quantity, currency, and a server-calculated price snapshot. Client-supplied prices and roles are ignored.
+- [ ] Currency values use integer atomic units or exact decimal arithmetic. Unsupported currencies and invalid quantities fail safely.
+- [ ] State transitions reject unauthorized or repeated actions; concurrent requests cannot duplicate financial or delivery effects.
+- [ ] User-facing errors preserve safe input, identify the problem, and do not report success after failed database writes.
+
+## Explicit capability boundaries
+
+Starting Bitcoin or Monero nodes only provides node infrastructure. It does **not** implement wallet custody, receiving-address assignment, payment attribution, chain-reorganization handling, escrow settlement, refunds, or transaction signing. External blockchain APIs likewise require authenticated, tested adapters and reconciliation. Until those exist, checkout must remain explicitly non-payable: no live-looking deposit address, no pretend confirmation counter, and no claim that funds are held in escrow.
+
+Saving a PGP public key is not proof of ownership and does not encrypt a message. An encryption or signature indicator requires actual cryptographic verification. Plaintext messaging must be described as plaintext. TOTP enrollment must verify a code before activation, and recovery codes need real one-time semantics. Unimplemented TOTP, CAPTCHA, XMPP, evidence upload, and digital-delivery actions must be visibly unavailable rather than return cosmetic success.
+
+A canary is operator-authored content. The application must not invent signatures or assertions about legal orders. Tor support and security controls are deployment properties to verify; neither guarantees anonymity or establishes production readiness.
+
+## Accessibility and visual verification
+
+- [ ] All surfaces work at 320px and desktop widths without page-level horizontal overflow. Long identifiers wrap or have local scrolling.
+- [ ] The first focusable element is a skip link. Navigation, forms, tabs, dialogs, and actionable cards have logical keyboard behavior and visible focus.
+- [ ] Inputs have associated labels; errors and asynchronous statuses have appropriate accessible announcements. Status does not depend on color alone.
+- [ ] Text contrast is measured for every foreground/background pairing: target 7:1 for normal text, at least 4.5:1 where the requested design explicitly permits AA. Record exceptions instead of claiming universal AAA.
+- [ ] Reduced-motion preferences are respected, and disabled controls explain unavailable capabilities.
+
+## Release evidence
+
+Record `go test ./...`, relevant race tests, fresh-install and persistence results, internal/external database checks, setup lockout/CSRF/authorization negative tests, backup-restore results, and browser checks. Mark deployment or payment checks unverified when they were not exercised. A passing build alone is not evidence of secure deployment or payment functionality.
