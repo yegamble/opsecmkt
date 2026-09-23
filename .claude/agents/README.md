@@ -1,7 +1,7 @@
 # The OPSEC Market war room
 
-Thirteen read-only review seats and one implementer, checked into this repo,
-that scrutinise OPSEC Market from genuinely different positions and loop until
+Thirteen read-only review seats, one implementer and a five-agent bug-hunt
+group (below), checked into this repo, that scrutinise OPSEC Market from genuinely different positions and loop until
 it is a complete, releasable test-network product. Adapted from the Vidra
 council (`~/github/vidra/.claude/agents`) for a single Go/PostgreSQL repository
 with no browser JavaScript and test-network-only payments.
