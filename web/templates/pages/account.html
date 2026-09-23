@@ -1,0 +1,80 @@
+{{define "page:account"}}{{template "header" .}}
+<div class="page-head">
+<div>
+<div class="eyebrow">Identity &amp; preferences</div>
+<h1>Your account<span class="accent">.</span>
+</h1>
+<p>Manage your public key and contact information.</p>
+</div>{{if .User}}<span class="badge neutral">{{.User.Role}}</span>{{end}}</div>{{with .User}}<div class="grid-two">
+<section class="panel">
+<h2>Public profile</h2>
+<form class="stack" method="post" action="/account">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<label>Handle<input value="{{.Handle}}" readonly>
+</label>
+<label>PGP public key<textarea name="pgp" maxlength="32768" rows="8" spellcheck="false" placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----">{{.PGP}}</textarea>
+</label>
+<span class="help">Only your public key belongs here. Saving a different key clears ownership verification and PGP sign-in.</span>{{if and $.PGP $.PGP.TwoFactor}}
+<label>Current password<input type="password" name="password" maxlength="72" autocomplete="current-password" aria-describedby="pgp-confirm-help">
+</label>{{if and $.Security $.Security.TOTPEnabled}}
+<label>Authenticator code<input name="code" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" autocomplete="one-time-code" aria-describedby="pgp-confirm-help">
+</label>{{end}}
+<span class="help" id="pgp-confirm-help">PGP sign-in verification is on: changing or removing the key needs your current password{{if and $.Security $.Security.TOTPEnabled}} and an authenticator code{{end}}. Leave blank to save other fields.</span>{{end}}{{with $.PGP}}{{if .HasKey}}<dl class="key-values pgp-summary">
+<div>
+<dt>Fingerprint</dt>
+<dd class="pgp-fingerprint">{{if .Fingerprint}}{{.Fingerprint}}{{else}}Unreadable — paste your key again{{end}}</dd>
+</div>
+<div>
+<dt>Ownership</dt>
+<dd>{{if .Verified}}<span class="badge green">Verified {{.VerifiedAt}}</span>{{else}}<span class="badge neutral">Not verified</span>{{end}}</dd>
+</div>
+</dl>
+<a class="text-link" href="/pgp">{{if .Verified}}Manage PGP verification{{else}}Prove key ownership{{end}}</a>{{end}}{{end}}
+<label>XMPP address<input name="xmpp" value="{{.XMPP}}" maxlength="254" placeholder="handle@example.org" aria-describedby="xmpp-help">
+</label>
+<p class="help" id="xmpp-help">Saved on your profile only. This market does not send XMPP messages.</p>
+<button class="primary" type="submit">Save profile</button>
+</form>
+</section>
+<section>
+<div class="panel">
+<h2>Security status</h2>
+<dl class="key-values">
+<div>
+<dt>Login method</dt>
+<dd>Password</dd>
+</div>
+{{template "account-security" $}}
+<div>
+<dt>PGP sign-in verification</dt>
+<dd>{{with $.PGP}}{{if .TwoFactor}}Enabled{{else if .Verified}}Off{{else if .HasKey}}Requires a verified key{{else}}No key saved{{end}}{{else}}Not available{{end}}</dd>
+</div>
+{{template "account-payout" $}}
+</dl>
+<p>Use a unique password. Never share private keys or recovery phrases.</p>
+</div>{{template "account-security:panel" $}}{{template "account-payout:panel" $}}
+<section class="panel" aria-labelledby="account-activity">
+<h2 id="account-activity">Recent activity</h2>
+<ol class="order-timeline">{{range $.Events}}<li>
+<span class="order-when">{{.Created}}</span>
+<span>{{.Action}}</span>
+</li>{{else}}<li>
+<span>No activity recorded yet.</span>
+</li>{{end}}</ol>
+<p class="help">Your latest sign-ins and account changes, as recorded in the server-side audit log.</p>
+</section>
+<div class="panel">
+<h2>Sessions</h2>
+<form method="post" action="/logout">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<button type="submit">Sign out</button>
+</form>
+<form class="stack session-revoke" method="post" action="/revoke-sessions">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<p class="help">Signing out everywhere ends every session for your account, on all devices, including this one.</p>
+<button type="submit">Sign out everywhere</button>
+</form>
+</div>
+</section>
+</div>{{end}}
+{{template "footer" .}}{{end}}

@@ -1,0 +1,18 @@
+{{/* P3 Orders owns. Verified reviews on product and vendor pages; only reviews keyed to completed orders */}}
+{{define "product-reviews"}}<section class="order-reviews" aria-labelledby="reviews-title">
+<div class="order-reviews-head">
+<h2 class="section-title" id="reviews-title">{{if eq .Page "vendor"}}Verified reviews for this vendor{{else}}Verified reviews{{end}}</h2>{{with .ReviewSummary}}{{if .Count}}<p class="review-summary">
+<strong>{{.Average}}</strong> / 5 · {{.Count}} review{{if ne .Count 1}}s{{end}}</p>{{end}}{{end}}</div>{{if .Reviews}}<p class="help">Only the buyer of a completed order can review it, once. Reviewer handles are not shown and dates are shown by month.</p>
+<div class="messages-list">{{range .Reviews}}<article class="message review">
+<div class="message-meta">
+<span class="badge green">Verified purchase</span>
+<span>{{.Created}}</span>
+</div>
+<p class="review-rating">
+<span aria-hidden="true">{{.Stars}}</span>
+<span class="sr-only">Rated {{.Rating}} out of 5</span>
+</p>{{if .Product}}<p class="muted">{{.Product}}</p>{{end}}{{if .Body}}<p>{{.Body}}</p>{{end}}</article>{{end}}</div>{{else}}<div class="empty">
+<span class="empty-icon">☆</span>
+<h2>No verified reviews yet</h2>
+<p>Reviews appear only after a buyer completes an order{{if eq .Page "vendor"}} with this vendor{{end}}.</p>
+</div>{{end}}</section>{{end}}

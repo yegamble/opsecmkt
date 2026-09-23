@@ -1,0 +1,33 @@
+{{/* P4 Inventory owns. Listing grid used by catalog, vendor and vendor-dashboard. Public pages never receive
+archived listings (load.go); on vendor-dashboard each card carries edit and archive/restore controls. */}}
+{{define "products"}}<div class="listings-grid">{{range $i,$p := .Products}}<article class="product-card{{if .Archived}} is-archived{{end}}">
+<a class="product-art " href="{{if .Archived}}/listing-edit?id={{.ID}}{{else}}/product?id={{.ID}}{{end}}" aria-label="{{if .Archived}}Edit{{else}}View{{end}} {{.Title}}">
+<div class="device" aria-hidden="true">
+</div>
+<span class="art-label">{{.Category}} / ILLUSTRATION</span>
+<span class="art-badge">{{.Kind}}</span>
+</a>
+<div class="product-body">
+<div class="vendor-line">
+<span aria-hidden="true">◇</span>
+<a href="/vendor?id={{.VendorID}}">{{.Vendor}}</a>
+<span> / {{.Region}}</span>
+</div>
+<h2>
+<a href="{{if .Archived}}/listing-edit?id={{.ID}}{{else}}/product?id={{.ID}}{{end}}">{{.Title}}</a>
+</h2>{{if .Archived}}<p class="inventory-state"><span class="badge neutral">Archived</span> Hidden from the marketplace; no new orders.</p>{{end}}
+<p class="product-description">{{.Description}}</p>
+<div class="product-bottom">
+<span class="price">{{if eq $.Currency "XMR"}}{{.PriceXMR}}<small>XMR</small>{{else}}{{.PriceBTC}}<small>BTC</small>{{end}}</span>
+<span class="stock">{{if lt .Stock 1}}OUT OF STOCK{{else}}{{.Stock}} AVAILABLE{{end}}</span>
+</div>{{if eq $.Page "vendor-dashboard"}}
+<div class="inventory-actions">
+<a class="button" href="/listing-edit?id={{.ID}}" aria-label="Edit {{.Title}}">Edit</a>
+<form method="post" action="{{if .Archived}}/listings/restore{{else}}/listings/archive{{end}}">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="id" value="{{.ID}}">
+<button type="submit" aria-label="{{if .Archived}}Restore{{else}}Archive{{end}} {{.Title}}">{{if .Archived}}Restore{{else}}Archive{{end}}</button>
+</form>
+</div>{{end}}
+</div>
+</article>{{end}}</div>{{end}}

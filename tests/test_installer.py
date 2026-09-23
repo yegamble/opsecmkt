@@ -38,8 +38,15 @@ if args == ['compose', 'up', '-d', '--build']:
 sys.exit('Unexpected docker command')
 ''')
         self.stub('openssl', '''
+import os
+from pathlib import Path
 import sys
 assert sys.argv[1:3] == ['rand', '-hex']
+counter = Path(os.environ['INSTALLER_TEST_LOG'] + '.openssl')
+call = int(counter.read_text()) + 1 if counter.exists() else 1
+counter.write_text(str(call))
+if str(call) == os.environ.get('INSTALLER_TEST_OPENSSL_EMPTY_CALL'):
+    sys.exit(1)  # generation failure: no output
 print('a1' * int(sys.argv[3]))
 ''')
 
@@ -48,7 +55,7 @@ print('a1' * int(sys.argv[3]))
         path.write_text(f'#!{sys.executable}\n' + body)
         path.chmod(0o700)
 
-    def run_installer(self, answers, bad_config=False):
+    def run_installer(self, answers, bad_config=False, openssl_empty_call=None):
         # Do not source or copy the user's environment file. Compose is a stub;
         # all writes and generated credentials stay inside this temporary repo.
         env = {
@@ -56,7 +63,9 @@ print('a1' * int(sys.argv[3]))
             'HOME': str(self.root),
             'INSTALLER_TEST_LOG': str(self.log),
             'INSTALLER_TEST_BAD_CONFIG': '1' if bad_config else '0',
+            'INSTALLER_TEST_OPENSSL_EMPTY_CALL': str(openssl_empty_call or ''),
         }
+        Path(str(self.log) + '.openssl').unlink(missing_ok=True)
         return subprocess.run(
             ['/bin/bash', str(self.root / 'scripts' / 'install.sh')],
             input='\n'.join(answers) + '\n', cwd=self.root,
@@ -93,6 +102,14 @@ print('a1' * int(sys.argv[3]))
         self.assertEqual(len(config['POSTGRES_PASSWORD']), 48)
         self.assertEqual(len(config['SETUP_TOKEN']), 64)
         self.assertNotIn(config['SETUP_TOKEN'], result.stdout + result.stderr)
+        self.assertEqual(len(config['AUDIT_SIGNING_KEY']), 64)
+        self.assertNotIn(config['AUDIT_SIGNING_KEY'], result.stdout + result.stderr)
+        # No node chosen: nothing forces a chain, so a node added later may use any test network.
+        self.assertEqual(config['BITCOIN_CHAIN'], '')
+        self.assertEqual(config['MONERO_NETWORK'], '')
+        self.assertNotIn('BITCOIN_RPC_URL', config)
+        self.assertNotIn('MONERO_WALLET_RPC_URL', config)
+        self.assertNotIn('docs/testnet-runbook.md', result.stdout)
 
     def test_external_clearnet_local_http(self):
         url = 'postgresql://test:local-only@database:5432/scratch?sslmode=require'
@@ -128,8 +145,11 @@ print('a1' * int(sys.argv[3]))
         self.assert_started(result)
         config = self.config()
         self.assertEqual(config['BITCOIN_RPC_URL'], 'https://rpc.example.test')
+        # External nodes are not forced onto one chain; the app accepts any test chain the node reports.
+        self.assertEqual(config['BITCOIN_CHAIN'], '')
         self.assertEqual(config['COMPOSE_PROFILES'], 'internal-db')
         self.assertIn('compose.external-egress.yaml', config['COMPOSE_FILE'])
+        self.assertIn('docs/testnet-runbook.md', result.stdout)
 
     def test_local_node_profiles_and_images(self):
         result = self.run_installer([
@@ -137,12 +157,62 @@ print('a1' * int(sys.argv[3]))
         ])
         self.assert_started(result)
         config = self.config()
-        self.assertEqual(config['COMPOSE_PROFILES'], 'internal-db,bitcoin,monero')
+        self.assertEqual(config['COMPOSE_PROFILES'], 'internal-db,bitcoin,monero,monero-wallet')
         self.assertEqual(config['BITCOIN_IMAGE'], 'reviewed-bitcoin:test')
         self.assertEqual(config['MONERO_IMAGE'], 'reviewed-monero:test')
-        self.assertIn('@bitcoin:8332', config['BITCOIN_RPC_URL'])
+        self.assertEqual(len(config['BITCOIN_RPC_PASSWORD']), 48)
+        self.assertEqual(config['BITCOIN_RPC_URL'],
+                         'http://marketplace:' + config['BITCOIN_RPC_PASSWORD'] + '@bitcoin:8332')
+        self.assertEqual(config['BITCOIN_CHAIN'], 'testnet4')
+        self.assertEqual(config['MONERO_NETWORK'], 'stagenet')
         self.assertEqual(config['MONERO_RPC_URL'], 'http://monero:18081')
+        # monero-wallet-rpc runs with --rpc-login; the app authenticates with the same generated password.
+        self.assertEqual(len(config['MONERO_WALLET_RPC_PASSWORD']), 48)
+        self.assertEqual(config['MONERO_WALLET_RPC_URL'],
+                         'http://marketplace:' + config['MONERO_WALLET_RPC_PASSWORD'] + '@monero-wallet:18083')
+        self.assertNotIn(config['MONERO_WALLET_RPC_PASSWORD'], result.stdout + result.stderr)
         self.assertNotIn('compose.external-egress.yaml', config['COMPOSE_FILE'])
+
+    def test_external_monero_wallet_rpc(self):
+        daemon, wallet = 'https://monerod.example.test', 'http://user:pass@wallet.example.test:18083'
+        result = self.run_installer(['tor', '', '', 'external', daemon, wallet])
+        self.assert_started(result)
+        config = self.config()
+        self.assertEqual(config['MONERO_RPC_URL'], daemon)
+        self.assertEqual(config['MONERO_WALLET_RPC_URL'], wallet)
+        self.assertEqual(config['MONERO_NETWORK'], '')
+        self.assertNotIn('MONERO_WALLET_RPC_PASSWORD', config)
+        self.assertNotIn('WARNING', result.stderr)
+        self.assertEqual(config['COMPOSE_PROFILES'], 'internal-db')
+        self.assertIn('compose.external-egress.yaml', config['COMPOSE_FILE'])
+        self.assertNotIn(wallet, result.stdout + result.stderr)
+
+    def test_external_monero_daemon_without_wallet_warns(self):
+        result = self.run_installer(['tor', '', '', 'external', 'https://monerod.example.test', ''])
+        self.assert_started(result)
+        config = self.config()
+        self.assertNotIn('MONERO_WALLET_RPC_URL', config)
+        self.assertIn('Monero payments stay disabled', result.stderr)
+        # Nothing in the app would use the daemon, so Tor mode opens no direct egress for it.
+        self.assertNotIn('compose.external-egress.yaml', config['COMPOSE_FILE'])
+
+    def test_secret_generation_failure_starts_nothing(self):
+        # openssl calls: 1 database password, 2 setup token, 3 audit key, then one per local node.
+        scenarios = [
+            (1, ['clearnet', '', '', '', '']),
+            (4, ['tor', '', 'local', 'reviewed-bitcoin:test', '']),
+            (4, ['tor', '', '', 'local', 'reviewed-monero:test']),
+            (5, ['tor', '', 'local', 'reviewed-bitcoin:test', 'local', 'reviewed-monero:test']),
+        ]
+        for call, answers in scenarios:
+            with self.subTest(call=call, answers=answers):
+                self.log.unlink(missing_ok=True)
+                result = self.run_installer(answers, openssl_empty_call=call)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('Could not generate a random secret', result.stderr)
+                self.assertEqual(self.calls(), ['compose version'])
+                self.assertFalse((self.root / '.env').exists())
+                self.assertEqual(list(self.root.glob('.env.install.*')), [])
 
     def test_existing_env_is_never_changed(self):
         path = self.root / '.env'
@@ -165,6 +235,7 @@ print('a1' * int(sys.argv[3]))
             ['tor', 'https://not-postgres'],
             ['tor', '', 'invalid-node'],
             ['tor', '', 'external', 'ftp://invalid-rpc'],
+            ['tor', '', '', 'external', 'https://monerod.example.test', 'ftp://invalid-wallet'],
             ['tor', '', 'local', ''],
             ['tor', "postgres://test:quote'@database/scratch", '', ''],
         ]

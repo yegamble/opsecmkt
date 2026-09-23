@@ -1,0 +1,12 @@
+{{define "page:challenge"}}{{template "header" .}}
+<div class="form-narrow">
+<div class="panel">
+<div class="eyebrow">Second factor</div>
+<h1>Verify your sign-in<span class="accent">.</span></h1>{{with .Auth}}
+<p>Your password was accepted. Complete one verification method below to finish signing in.</p>{{if .TOTPEnrolled}}{{template "factor-totp" $}}{{end}}{{if .PGPEnrolled}}{{template "factor-pgp" $}}{{end}}{{else}}
+<p>No sign-in verification is pending. Pending sign-ins expire after ten minutes.</p>
+<a class="button" href="/login">Sign in</a>{{end}}
+</div>
+<p class="muted help">Never enter a verification code on a page you reached from an untrusted link.</p>
+</div>
+{{template "footer" .}}{{end}}

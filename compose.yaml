@@ -11,7 +11,20 @@ services:
       APP_MODE: ${APP_MODE:-clearnet}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
       BITCOIN_RPC_URL: ${BITCOIN_RPC_URL:-}
+      BITCOIN_WALLET: ${BITCOIN_WALLET:-opsecmkt}
+      # Blank chain/network: accept whichever test network the node reports (mainnet is always refused).
+      BITCOIN_CHAIN: ${BITCOIN_CHAIN:-}
+      PAYMENT_CONFIRMATIONS_BTC: ${PAYMENT_CONFIRMATIONS_BTC:-3}
       MONERO_RPC_URL: ${MONERO_RPC_URL:-}
+      MONERO_WALLET_RPC_URL: ${MONERO_WALLET_RPC_URL:-}
+      MONERO_NETWORK: ${MONERO_NETWORK:-}
+      PAYMENT_CONFIRMATIONS_XMR: ${PAYMENT_CONFIRMATIONS_XMR:-10}
+      PAYMENT_POLL_INTERVAL: ${PAYMENT_POLL_INTERVAL:-30s}
+      PAYMENT_EXPIRY: ${PAYMENT_EXPIRY:-24h}
+      AUDIT_SIGNING_KEY: ${AUDIT_SIGNING_KEY:-}
+    # Shutdown waits for in-flight requests (10 s) and then for an in-flight payout send (at most 30 s
+    # plus recording); keep this above both so a redeploy never kills a broadcast half-way.
+    stop_grace_period: 60s
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]

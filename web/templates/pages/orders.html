@@ -1,0 +1,11 @@
+{{define "page:orders"}}{{template "header" .}}
+<div class="page-head">
+<div>
+<div class="eyebrow">Your activity</div>
+<h1>Orders<span class="accent">.</span>
+</h1>
+<p>Orders you are buying and selling, with their current state.</p>
+</div>
+<a class="button" href="/">Browse marketplace ↗</a>
+</div>{{template "orders-table" .}}
+{{template "footer" .}}{{end}}

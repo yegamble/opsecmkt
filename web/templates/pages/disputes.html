@@ -1,0 +1,26 @@
+{{define "page:disputes"}}{{template "header" .}}
+<div class="page-head">
+<div>
+<div class="eyebrow">Resolution center</div>
+<h1>Disputes<span class="accent">.</span>
+</h1>
+<p>Raise an issue with a paid, shipped, or delivered order for moderator review.</p>
+</div>
+</div>
+<div class="grid-two">
+<section class="panel">
+<h2>Open a dispute</h2>{{$eligible := false}}{{range .Orders}}{{if or (eq .State "paid") (eq .State "shipped") (eq .State "delivered")}}{{$eligible = true}}{{end}}{{end}}{{if $eligible}}<form class="stack" method="post" action="/disputes">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<label>Order<select name="order_id" required>{{range .Orders}}{{if or (eq .State "paid") (eq .State "shipped") (eq .State "delivered")}}<option value="{{.ID}}">{{.Title}} · {{.Status}} · {{.ID}}</option>{{end}}{{end}}</select>
+</label>
+<label>Describe the issue<textarea name="reason" required minlength="20" maxlength="5000" placeholder="Provide the details a moderator needs to review your issue.">
+</textarea>
+</label>
+<span class="help">Opening a dispute moves the order to Disputed and stops shipping, delivery and completion until a moderator records an outcome. Do not include passwords, private keys, or payment recovery phrases.</span>
+<button class="primary" type="submit">Submit dispute ↗</button>
+</form>{{else}}<p class="order-unavailable" role="note">
+<strong>Unavailable.</strong> None of your orders can be disputed. Only paid, shipped, or delivered orders qualify; drafts and orders awaiting payment hold no confirmed funds.</p>{{end}}</section>
+<section>
+<h2 class="section-title">Your disputes</h2>{{template "disputes-list" .}}</section>
+</div>
+{{template "footer" .}}{{end}}

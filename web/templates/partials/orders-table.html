@@ -1,0 +1,35 @@
+{{/* P3 Orders owns. orders-table: the viewer's orders (buying and selling); order-badge-class: badge colour for a state */}}
+{{define "order-badge-class"}}{{if eq . "completed"}}green{{else if or (eq . "cancelled") (eq . "resolved")}}neutral{{end}}{{end}}
+{{define "orders-table"}}{{if .Orders}}<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th scope="col">Order / listing</th>
+<th scope="col">Your role</th>
+<th scope="col">Counterparty</th>
+<th scope="col">Amount</th>
+<th scope="col">Status</th>
+<th scope="col">Last change</th>
+</tr>
+</thead>
+<tbody>{{range .Orders}}<tr>
+<td>
+<a href="/order?id={{.ID}}">{{.Title}}</a>
+<br>
+<small class="muted mono">{{.ID}}</small>
+</td>
+<td>{{if eq .BuyerID $.User.ID}}Buying{{else}}Selling{{end}}</td>
+<td>{{if eq .BuyerID $.User.ID}}{{.Vendor}}{{else}}{{.Buyer}}{{end}}</td>
+<td class="mono">{{.Amount}} {{.Currency}}</td>
+<td>
+<span class="badge {{template "order-badge-class" .State}}">{{.Status}}</span>
+</td>
+<td>{{.Updated}}</td>
+</tr>{{end}}</tbody>
+</table>
+</div>{{else}}<div class="empty">
+<span class="empty-icon">[ 0 ]</span>
+<h2>No orders yet</h2>
+<p>Find a listing in the marketplace and create an unfunded draft to see it here.</p>
+<a class="button primary" href="/">Explore the marketplace ↗</a>
+</div>{{end}}{{end}}

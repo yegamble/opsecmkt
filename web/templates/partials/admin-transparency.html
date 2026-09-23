@@ -1,0 +1,45 @@
+{{/* P6 Transparency owns. Operator key, canary and audit export panels */}}
+{{define "admin-transparency"}}<h2 class="section-title" id="transparency">Transparency</h2>
+<div class="grid-two transparency-admin">
+<section class="panel" aria-labelledby="operator-key-title">
+<h2 id="operator-key-title">Operator PGP key</h2>
+{{with .Canary}}{{if .KeyError}}<p><span class="badge danger">Key unusable</span></p>
+<p>{{.KeyError}}</p>{{else if .Fingerprint}}<p><span class="badge green">Configured</span></p>
+<p>Fingerprint <span class="fingerprint mono">{{.Fingerprint}}</span></p>{{else}}<p><span class="badge neutral">Not configured</span></p>{{end}}{{else}}<p><span class="badge neutral">Not configured</span></p>{{end}}
+<form class="stack" method="post" action="/admin/operator-key">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<label>Armored public key<textarea name="operator_key" rows="6" required spellcheck="false" placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----">{{with .Canary}}{{.OperatorKey}}{{end}}</textarea>
+</label>
+<p class="help">Public key only; the private key stays offline with the operator. Replacing the key makes any canary signed by the previous key show as invalid until a new one is posted.</p>
+<button type="submit">Save operator key</button>
+</form>
+</section>
+<section class="panel" aria-labelledby="canary-admin-title">
+<h2 id="canary-admin-title">Warrant canary</h2>
+{{with .Canary}}{{if .Verified}}<p><span class="badge green">Signature verified</span> Signed {{.SignedAt}}, posted {{.Posted}}.</p>{{else if .Error}}<p><span class="badge danger">INVALID</span> {{.Error}}</p>{{else}}<p><span class="badge neutral">No signed canary published</span></p>{{end}}{{end}}
+{{if and .Canary .Canary.Fingerprint}}<form class="stack" method="post" action="/admin/canary">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<label>Clearsigned statement<textarea name="canary" rows="8" required spellcheck="false" placeholder="-----BEGIN PGP SIGNED MESSAGE-----"></textarea>
+</label>
+<p class="help">Write and sign the statement offline, for example with <span class="mono">gpg --clearsign canary.txt</span>, and paste the whole output. It is stored exactly as pasted (surrounding blank lines removed) and rejected with the reason if it does not verify against the operator key.</p>
+<button type="submit">Publish canary</button>
+</form>{{else}}<p class="help">Unavailable: save a usable operator PGP key first. This application never writes or signs canary text itself.</p>{{end}}
+<p><a class="text-link" href="/canary">View the public canary page ↗</a></p>
+</section>
+</div>
+<section class="panel" aria-labelledby="audit-export-title">
+<h2 id="audit-export-title">Signed audit export</h2>
+{{with .AuditExport}}{{if .Available}}<p><span class="badge green">Available</span></p>
+<p>Ed25519 public key (also published on <a class="text-link" href="/canary">/canary</a>): <span class="fingerprint mono">{{.PublicKey}}</span></p>
+{{if .UpTo}}<form class="stack" method="get" action="/admin/audit-export">
+<label>Include events up to id<input name="upto" type="number" min="1" max="{{.UpTo}}" value="{{.UpTo}}" required>
+</label>
+<p class="help">The same range always produces byte-identical export and signature files. Verify offline with <span class="mono">verify-audit -pub {{.PublicKey}} export.jsonl export.sig</span>. The signature proves origin from this server's key only; whoever controls the server can also sign an altered history. Limited to 10 downloads per 10 minutes.</p>
+<div class="actions">
+<button type="submit">Download export (.jsonl)</button>
+<button type="submit" name="sig" value="1">Download signature (.sig)</button>
+</div>
+</form>{{else}}<p>No audit events recorded yet.</p>{{end}}{{else}}<p><span class="badge neutral">Unavailable</span></p>
+<p>{{.Error}}</p>
+<p class="help">Set AUDIT_SIGNING_KEY to 64 hexadecimal characters (for example <span class="mono">openssl rand -hex 32</span>) and restart the application.</p>{{end}}{{end}}
+</section>{{end}}

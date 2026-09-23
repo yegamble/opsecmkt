@@ -70,6 +70,10 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
       - name: Install PostgreSQL 17 client and encryption tools
         run: |
           sudo apt-get update
@@ -118,7 +122,7 @@ jobs:
           SETUP_TOKEN: ci-validation-only-not-a-real-bootstrap-secret
         run: |
           files=(-f compose.yaml -f "compose.$MODE.yaml" -f compose.nodes.yaml)
-          profiles=(--profile bitcoin --profile monero)
+          profiles=(--profile bitcoin --profile monero --profile monero-wallet)
           if [ "$DATABASE" = internal ]; then
             files+=(-f compose.internal-db.yaml)
             profiles+=(--profile internal-db)
@@ -141,6 +145,10 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
@@ -151,6 +159,22 @@ jobs:
           cache-to: type=gha,mode=max,scope=app
       - name: Bootstrap production image with a real database
         run: bash scripts/ci-smoke.sh "${{ matrix.database }}"
+  upgrade:
+    name: Upgrade from v0.1.0-alpha.1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          # Full history and tags: the test builds and runs the v0.1.0-alpha.1 server from its tag.
+          fetch-depth: 0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Migrate a populated alpha.1 database on PostgreSQL 17 with the current server
+        run: bash scripts/test-upgrade.sh
   tor-image:
     name: Tor image and offline configuration
     runs-on: ubuntu-24.04
@@ -215,7 +239,7 @@ jobs:
   required:
     name: CI passed
     if: always()
-    needs: [go, operations, compose, container, tor-image, browser]
+    needs: [go, operations, upgrade, compose, container, tor-image, browser]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
