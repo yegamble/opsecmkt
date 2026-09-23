@@ -64,11 +64,17 @@ type PageData struct {
 	Reviews       []Review
 	ReviewSummary *ReviewSummary
 	CanReview     bool
-	// IncomingOrders: vendor-dashboard orders on the viewer's own listings; NeedsAction counts paid ones.
+	// IncomingOrders: vendor-dashboard orders on the viewer's own listings, every paid one first;
+	// NeedsAction counts all paid ones.
 	IncomingOrders []Order
 	NeedsAction    int
 	// DisputeOrders: order summary per dispute (disputes and moderator pages), keyed by order id.
+	// OpenDisputes: how many leading entries of Disputes are open (the rest are resolved).
 	DisputeOrders map[string]Order
+	OpenDisputes  int
+	// HistoryLimit: non-zero when closed history (resolved disputes, or incoming orders not paid) was
+	// cut to this many most recent rows.
+	HistoryLimit int
 
 	// P4 Inventory (uses Product.Archived)
 	Listing   *ListingView

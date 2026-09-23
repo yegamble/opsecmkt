@@ -19,12 +19,9 @@ func init() {
 	registerLoader("vendor", func(ctx context.Context, a *App, r *http.Request, d *PageData) error {
 		return loadPublicReviews(ctx, a, d, "p.vendor_id=$1", r.URL.Query().Get("id"))
 	})
-	registerLoader("vendor-dashboard", func(_ context.Context, _ *App, _ *http.Request, d *PageData) error {
-		fillIncomingOrders(d)
-		return nil
-	})
-	registerLoader("disputes", loadDisputeOrders)
-	registerLoader("moderator", loadDisputeOrders)
+	registerLoader("vendor-dashboard", loadIncomingOrders)
+	registerLoader("disputes", loadDisputes)
+	registerLoader("moderator", loadDisputes)
 
 	registerPreview("order", previewOrder)
 	registerPreview("product", previewReviews)
@@ -207,25 +204,86 @@ func (r Review) Stars() string {
 	return strings.Repeat("★", n) + strings.Repeat("☆", 5-n)
 }
 
-func fillIncomingOrders(d *PageData) {
-	if d.User == nil {
-		return
+// historyLimit caps closed history (resolved disputes, orders needing no vendor action) on the dispute and
+// vendor desks. Open work is never capped: every open dispute and every paid order is always listed.
+const historyLimit = 100
+
+func queryOrders(ctx context.Context, a *App, query string, args ...any) ([]Order, error) {
+	rows, err := a.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
 	}
-	for _, o := range d.Orders {
-		if o.VendorID != d.User.ID {
-			continue
+	defer rows.Close()
+	var out []Order
+	for rows.Next() {
+		o, err := scanOrder(rows)
+		if err != nil {
+			return nil, err
 		}
-		d.IncomingOrders = append(d.IncomingOrders, o)
-		if o.State == statePaid {
-			d.NeedsAction++
-		}
+		out = append(out, o)
 	}
+	return out, rows.Err()
 }
 
-// loadDisputeOrders attaches an order summary to each dispute already loaded by load.go (which limits
-// disputes to the viewer's own orders, or all of them for moderators and administrators).
-func loadDisputeOrders(ctx context.Context, a *App, r *http.Request, d *PageData) error {
+// loadIncomingOrders lists orders on the viewer's own listings: every paid order first (the work queue,
+// oldest first; NeedsAction counts them), then the most recent other orders up to historyLimit.
+func loadIncomingOrders(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
+	if d.User == nil {
+		return nil
+	}
+	paid, err := queryOrders(ctx, a, orderQuery+" WHERE p.vendor_id=$1 AND o.state=$2 ORDER BY o.created,o.id", d.User.ID, statePaid)
+	if err != nil {
+		return err
+	}
+	rest, err := queryOrders(ctx, a, orderQuery+" WHERE p.vendor_id=$1 AND o.state<>$2 ORDER BY o.created DESC,o.id DESC LIMIT $3", d.User.ID, statePaid, historyLimit+1)
+	if err != nil {
+		return err
+	}
+	if len(rest) > historyLimit {
+		rest, d.HistoryLimit = rest[:historyLimit], historyLimit
+	}
+	d.IncomingOrders, d.NeedsAction = append(paid, rest...), len(paid)
+	return nil
+}
+
+func queryDisputes(ctx context.Context, a *App, query string, args ...any) ([]Dispute, error) {
+	rows, err := a.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Dispute
+	for rows.Next() {
+		var v Dispute
+		if err = rows.Scan(&v.ID, &v.OrderID, &v.Reason, &v.Status, &v.Resolution, &v.Created); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+// loadDisputes lists the viewer's disputes (on their own orders, or all of them for moderators and
+// administrators): every open dispute first, oldest first, then the most recent resolved ones up to
+// historyLimit. Each dispute gets its order summary.
+func loadDisputes(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 	d.DisputeOrders = map[string]Order{}
+	if d.User == nil {
+		return nil
+	}
+	const scope = `SELECT d.id,d.order_id,d.reason,d.status,d.resolution,to_char(d.created,'YYYY-MM-DD HH24:MI') FROM disputes d JOIN orders o ON o.id=d.order_id JOIN products p ON p.id=o.product_id WHERE (o.buyer_id=$1 OR p.vendor_id=$1 OR $2 IN ('admin','moderator'))`
+	open, err := queryDisputes(ctx, a, scope+" AND d.status='Open' ORDER BY d.created,d.id", d.User.ID, d.User.Role)
+	if err != nil {
+		return err
+	}
+	resolved, err := queryDisputes(ctx, a, scope+" AND d.status<>'Open' ORDER BY d.created DESC,d.id DESC LIMIT $3", d.User.ID, d.User.Role, historyLimit+1)
+	if err != nil {
+		return err
+	}
+	if len(resolved) > historyLimit {
+		resolved, d.HistoryLimit = resolved[:historyLimit], historyLimit
+	}
+	d.Disputes, d.OpenDisputes = append(open, resolved...), len(open)
 	if len(d.Disputes) == 0 {
 		return nil
 	}
@@ -233,19 +291,11 @@ func loadDisputeOrders(ctx context.Context, a *App, r *http.Request, d *PageData
 	for _, v := range d.Disputes {
 		ids = append(ids, v.OrderID)
 	}
-	rows, err := a.db.QueryContext(ctx, orderQuery+" WHERE o.id = ANY($1)", ids)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		o, err := scanOrder(rows)
-		if err != nil {
-			return err
-		}
+	orders, err := queryOrders(ctx, a, orderQuery+" WHERE o.id = ANY($1)", ids)
+	for _, o := range orders {
 		d.DisputeOrders[o.ID] = o
 	}
-	return rows.Err()
+	return err
 }
 
 func previewOrder(d *PageData) {
@@ -280,6 +330,6 @@ func previewDisputes(d *PageData) {
 	o := d.Orders[0]
 	o.ID, o.State, o.Status = "sample-disputed", stateDisputed, stateLabel(stateDisputed)
 	o.BuyerID, o.Buyer, o.VendorID = "sample-buyer", "sample_buyer", "sample-vendor"
-	d.Disputes = []Dispute{{ID: "sample-dispute", OrderID: o.ID, Reason: "Sample dispute for the read-only preview. No order or funds exist.", Status: "Open", Created: "Sample"}}
+	d.Disputes, d.OpenDisputes = []Dispute{{ID: "sample-dispute", OrderID: o.ID, Reason: "Sample dispute for the read-only preview. No order or funds exist.", Status: "Open", Created: "Sample"}}, 1
 	d.DisputeOrders = map[string]Order{o.ID: o}
 }

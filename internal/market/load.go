@@ -84,7 +84,7 @@ func (a *App) load(r *http.Request, d *PageData) error {
 	}
 	if d.User != nil {
 		switch d.Page {
-		case "orders", "order", "vendor-dashboard", "admin", "disputes":
+		case "orders", "order", "admin", "disputes":
 			query := orderQuery + " WHERE (o.buyer_id=$1 OR p.vendor_id=$1)"
 			args := []any{d.User.ID}
 			if d.Page == "admin" {
@@ -96,7 +96,12 @@ func (a *App) load(r *http.Request, d *PageData) error {
 				query = orderQuery + " WHERE (o.buyer_id=$1 OR p.vendor_id=$1 OR ($3 IN ('moderator','admin') AND o.state IN ('disputed','resolved'))) AND o.id=$2"
 				args = append(args, r.URL.Query().Get("id"), d.User.Role)
 			}
-			query += " ORDER BY o.created DESC LIMIT 100"
+			if d.Page == "disputes" {
+				// Only disputable orders, and every one of them: an old shipped order must stay selectable.
+				query += " AND o.state IN ('paid','shipped','delivered') ORDER BY o.created DESC"
+			} else {
+				query += " ORDER BY o.created DESC LIMIT 100"
+			}
 			rows, err = a.db.QueryContext(ctx, query, args...)
 			if err != nil {
 				return err
@@ -152,25 +157,6 @@ func (a *App) load(r *http.Request, d *PageData) error {
 					return err
 				}
 				d.Notifications = append(d.Notifications, n)
-			}
-			err = rows.Err()
-			rows.Close()
-			if err != nil {
-				return err
-			}
-		}
-		if d.Page == "disputes" || d.Page == "moderator" {
-			rows, err = a.db.QueryContext(ctx, `SELECT d.id,d.order_id,d.reason,d.status,d.resolution,to_char(d.created,'YYYY-MM-DD HH24:MI') FROM disputes d JOIN orders o ON o.id=d.order_id JOIN products p ON p.id=o.product_id WHERE o.buyer_id=$1 OR p.vendor_id=$1 OR $2 IN ('admin','moderator') ORDER BY d.created DESC LIMIT 100`, d.User.ID, d.User.Role)
-			if err != nil {
-				return err
-			}
-			for rows.Next() {
-				var v Dispute
-				if err = rows.Scan(&v.ID, &v.OrderID, &v.Reason, &v.Status, &v.Resolution, &v.Created); err != nil {
-					rows.Close()
-					return err
-				}
-				d.Disputes = append(d.Disputes, v)
 			}
 			err = rows.Err()
 			rows.Close()
