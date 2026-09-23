@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { uniqueHandle } from './db-fixtures';
-import { pgpFixture, RECIPIENT_FINGERPRINT, signedIn, submitStatus } from './db-helpers';
+import { enrollTOTP, pgpFixture, RECIPIENT_FINGERPRINT, signedIn, submitStatus, totp } from './db-helpers';
 
 // PGP identity, encrypted messages and message notifications against a real database, JavaScript disabled.
 // Each test registers its own accounts; keys and messages come from committed fixtures (see db-helpers.ts).
@@ -82,6 +82,28 @@ test('save a PGP key, see its fingerprint unverified, and fail ownership proofs 
   await page.goto('/account');
   await expect(page.locator('.pgp-summary .badge')).toHaveText('Not verified');
   await expect(page.getByRole('region', { name: 'Recent activity' })).not.toContainText('Verified PGP key ownership');
+  await page.context().close();
+});
+
+test('with TOTP on, saving a PGP key needs the password and an authenticator code', async ({ browser, baseURL }) => {
+  const handle = uniqueHandle('pgptotp');
+  const password = 'browser-pgp-totp-password-123';
+  const page = await signedIn(browser, baseURL, handle, password, true);
+  const secret = await enrollTOTP(page);
+  const step = Math.floor(Date.now() / 30_000);
+
+  // A session alone cannot swap in a key that could later become a second sign-in factor.
+  expect(await saveKey(page, pgpFixture('recipient.pub.asc'))).toBe(400);
+  await expect(page.locator('body')).toContainText('Enter your current password');
+  await page.goto('/account');
+  await expect(pgpRow(page)).toHaveText('No key saved');
+
+  const form = page.locator('form', { has: page.getByRole('button', { name: 'Save profile' }) });
+  await form.getByLabel('PGP public key').fill(pgpFixture('recipient.pub.asc'));
+  await form.getByLabel('Current password').fill(password);
+  await form.getByLabel('Authenticator code').fill(totp(secret, step + 1));
+  expect(await submitStatus(page, () => form.getByRole('button', { name: 'Save profile' }).click())).toBe(303);
+  await expect(page.getByRole('region', { name: 'Recent activity' })).toContainText('ownership unverified) (confirmed with password and authenticator code)');
   await page.context().close();
 });
 

@@ -12,9 +12,10 @@ func init() {
 	registerPage("totp", pageSpec{Protected: true})
 	registerLoader("totp", totpLoader)
 	registerLoader("account", accountSecurityLoader)
-	registerLoader("pgp", accountSecurityLoader) // TOTPEnabled decides whether turning PGP sign-in off asks for a code
+	registerLoader("pgp", accountSecurityLoader) // TOTPEnabled decides whether PGP sign-in changes ask for a code
+	registerLoader("totp", pgpLoader)            // PGP sign-in decides whether activation asks for the password
 	registerAction("/totp/enroll", actionSpec{Run: totpEnroll})
-	registerAction("/totp/activate", actionSpec{Run: totpActivate})
+	registerAction("/totp/activate", actionSpec{OwnTx: true, Run: totpActivate})
 	registerAction("/totp/recovery", actionSpec{Run: totpRegenerate})
 	registerAction("/totp/disable", actionSpec{OwnTx: true, Run: totpDisable})
 	registerPreview("totp", func(d *PageData) {
@@ -56,10 +57,20 @@ func totpEnroll(c *actionCtx) (actionResult, error) {
 	return actionResult{Redirect: "/totp", Audit: "Started TOTP enrollment (inactive until a code is confirmed)"}, err
 }
 
+// totpActivate turns a pending secret on. While PGP sign-in is on this adds a second factor, so it needs the
+// current password (A-47); an account with no factor activates with the session and the new code alone.
 func totpActivate(c *actionCtx) (actionResult, error) {
 	if err := totpLimit(c); err != nil {
 		return actionResult{}, err
 	}
+	p, err := loadPGPAccount(c.Ctx(), c.A.db, c.User.ID, false)
+	if err != nil {
+		return actionResult{}, err
+	}
+	return confirmedTx(c, p.TwoFactor, func(c *actionCtx) (actionResult, error) { return activateTOTP(c, p.TwoFactor) })
+}
+
+func activateTOTP(c *actionCtx, confirmed bool) (actionResult, error) {
 	ctx := c.Ctx()
 	var pending string
 	var enabled bool
@@ -68,6 +79,14 @@ func totpActivate(c *actionCtx) (actionResult, error) {
 	}
 	if enabled {
 		return actionResult{}, fail(409, "TOTP is already enabled")
+	}
+	// PGP sign-in may have been turned on since the unlocked read in totpActivate; the row is locked now.
+	p, err := loadPGPAccount(ctx, c.Tx, c.User.ID, false)
+	if err != nil {
+		return actionResult{}, err
+	}
+	if p.TwoFactor && !confirmed {
+		return actionResult{}, fail(400, "Enter your current password to add TOTP while PGP sign-in verification is on.")
 	}
 	if pending == "" {
 		return actionResult{}, fail(409, "Start TOTP enrollment first")

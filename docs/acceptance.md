@@ -49,6 +49,7 @@ Each package records its own acceptance checks here and edits only its subsectio
 ### P1 Authentication
 
 - [ ] TOTP cannot activate without a valid code; recovery codes are hashed and single-use.
+- [ ] Once a second factor is enrolled, adding another needs re-authentication: activating TOTP while PGP sign-in is on needs the current password, and changing the PGP key or turning PGP sign-in on while TOTP is enrolled needs the password and a current code; a session alone is refused and the factor it tried to add cannot complete sign-in after "Sign out everywhere". Accounts with no factor keep the session-only flow (`TestStolenSessionCannotAddPGPFactorToTOTPAccount`, `TestStolenSessionCannotEnrollTOTPOnPGPAccount`, `TestFirstFactorNeedsNoConfirmation`).
 - [ ] Sign-in for an enrolled account always passes through `/challenge`.
 - [ ] CAPTCHA is a same-origin PNG, needs no JavaScript, is single-use, expires, and is rate-limited. No audio alternative or QR code is claimed.
 - [ ] RFC 6238 SHA-1 test vectors pass; codes outside ±1 step, and any code for an already accepted step, are rejected — including when the same code is submitted concurrently (`totp_test.go`, `TestTOTPConcurrentReplay`).
@@ -69,7 +70,7 @@ Each package records its own acceptance checks here and edits only its subsectio
 - [ ] "Verified" (with date) appears only after a signature over the current challenge verifies with the saved key, or the decrypted challenge nonce matches; a wrong key, wrong text or stale challenge is rejected.
 - [ ] Changing or removing the key clears verification, PGP sign-in and open challenges, and is audited with the fingerprint.
 - [ ] PGP sign-in cannot be turned on without a verified key; once on, sign-in always passes through `/challenge` and needs the decrypted one-time code, which works once.
-- [ ] While PGP sign-in is on, turning it off and changing or removing the key need the current password (and an authenticator code when TOTP is enrolled); a session alone gets 400/401 (`TestSensitiveChangesNeedPassword`).
+- [ ] While PGP sign-in is on, turning it off and changing or removing the key need the current password (and an authenticator code when TOTP is enrolled); a session alone gets 400/401 (`TestSensitiveChangesNeedPassword`). While TOTP is enrolled, changing or removing the key and turning PGP sign-in on need the password and a current code as well (`TestStolenSessionCannotAddPGPFactorToTOTPAccount`).
 - [ ] Saving the profile with an unchanged stored key that no longer parses succeeds (`TestLegacyUnparseableKeySavesUnchanged`).
 - [ ] Challenge nonces and sign-in codes are stored only as SHA-256; GET requests never create them.
 - [ ] Message status reflects packet inspection: plaintext, signed-only and fake armor are rejected at send; stored messages show "to recipient’s key", "NOT to recipient’s key" or "recipient unknown", never "Encrypted" for plaintext.
