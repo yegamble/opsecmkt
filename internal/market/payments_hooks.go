@@ -55,6 +55,12 @@ func (a *App) enqueuePayout(ctx context.Context, tx *sql.Tx, o *Order) error {
 	default:
 		return nil
 	}
+	// One payout per order: once queued, later deposits are never credited here (settleOrder flags those that
+	// confirm as not paid out).
+	var queued bool
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM payouts WHERE order_id=$1)", o.ID).Scan(&queued); err != nil || queued {
+		return err
+	}
 	threshold := int64(math.MaxInt64) // provider removed: only deposits already credited count
 	holdBelow := int64(0)             // credited deposits below this hold the payout (conflicted; with a provider, re-confirming)
 	if p := a.provider(o.Currency); p != nil {
@@ -62,10 +68,26 @@ func (a *App) enqueuePayout(ctx context.Context, tx *sql.Tx, o *Order) error {
 		holdBelow = threshold
 	}
 	// Credited deposits count even if now conflicted (the payout is then held, not dropped); others need the
-	// threshold. Locked (unlock_time) transfers never count.
-	const settled = "order_id=$1 AND NOT locked AND (credited OR confirmations>=$2)"
+	// threshold. Locked (unlock_time) transfers never count. The watcher's recordIncoming writes the ledger
+	// without the order lock, so the counted rows are locked here: the payout is exactly the rows credited
+	// below, and none of them can change (turn conflicted) until this transaction ends. recordIncoming's
+	// single-row autocommit statements wait for these locks without holding any other, so there is no cycle.
+	rows, err := tx.QueryContext(ctx, "SELECT id,amount FROM payments WHERE order_id=$1 AND NOT locked AND (credited OR confirmations>=$2) FOR UPDATE", o.ID, threshold)
+	if err != nil {
+		return err
+	}
+	var ids []int64
 	var sum int64
-	if err := tx.QueryRowContext(ctx, "SELECT COALESCE(sum(amount),0) FROM payments WHERE "+settled, o.ID, threshold).Scan(&sum); err != nil || sum == 0 {
+	for rows.Next() {
+		var id, amt int64
+		if err = rows.Scan(&id, &amt); err != nil {
+			rows.Close()
+			return err
+		}
+		ids, sum = append(ids, id), sum+amt
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil || sum == 0 {
 		return err
 	}
 	column := "payout_btc"
@@ -73,11 +95,12 @@ func (a *App) enqueuePayout(ctx context.Context, tx *sql.Tx, o *Order) error {
 		column = "payout_xmr"
 	}
 	var address string
-	if err := tx.QueryRowContext(ctx, "SELECT "+column+" FROM users WHERE id=$1", recipient).Scan(&address); err != nil {
+	if err = tx.QueryRowContext(ctx, "SELECT "+column+" FROM users WHERE id=$1", recipient).Scan(&address); err != nil {
 		return err
 	}
+	// Every credited deposit counted above is row-locked, so this sees the confirmations it was counted with.
 	var held bool
-	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM payments WHERE order_id=$1 AND credited AND confirmations<$2)", o.ID, holdBelow).Scan(&held); err != nil {
+	if err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM payments WHERE order_id=$1 AND credited AND confirmations<$2)", o.ID, holdBelow).Scan(&held); err != nil {
 		return err
 	}
 	state, errText := "pending", ""
@@ -88,7 +111,7 @@ func (a *App) enqueuePayout(ctx context.Context, tx *sql.Tx, o *Order) error {
 		state = "blocked"
 	}
 	var id int64
-	err := tx.QueryRowContext(ctx, `INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state,error) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+	err = tx.QueryRowContext(ctx, `INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state,error) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
 		ON CONFLICT (order_id) DO NOTHING RETURNING id`, o.ID, kind, recipient, o.Currency, sum, address, state, errText).Scan(&id)
 	if err == sql.ErrNoRows {
 		return nil // already queued
@@ -96,7 +119,7 @@ func (a *App) enqueuePayout(ctx context.Context, tx *sql.Tx, o *Order) error {
 	if err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, "UPDATE payments SET credited=true WHERE "+settled, o.ID, threshold); err != nil {
+	if _, err = tx.ExecContext(ctx, "UPDATE payments SET credited=true WHERE id=ANY($1)", ids); err != nil {
 		return err
 	}
 	label := amount(sum, currencyDecimals(o.Currency)) + " " + o.Currency
