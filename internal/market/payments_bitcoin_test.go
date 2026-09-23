@@ -17,6 +17,8 @@ type payCore struct {
 	chain        string
 	newAddr      string
 	walletLoaded bool
+	walletGone   bool // loadwallet fails: the wallet was never created
+	ibd          bool // getblockchaininfo initialblockdownload
 	received     []map[string]any
 	txs          map[string]map[string]any
 	invalid      map[string]bool
@@ -34,11 +36,11 @@ func (c *payCore) handle(path, method string, params json.RawMessage) (any, int,
 	}
 	switch method {
 	case "getblockchaininfo":
-		return map[string]any{"chain": c.chain, "blocks": 100}, 0, ""
+		return map[string]any{"chain": c.chain, "blocks": 100, "initialblockdownload": c.ibd}, 0, ""
 	case "loadwallet":
 		var p []string
 		json.Unmarshal(params, &p)
-		if len(p) != 1 || p[0] != "opsecmkt" {
+		if len(p) != 1 || p[0] != "opsecmkt" || c.walletGone {
 			return nil, -18, "Wallet file verification failed. Failed to load database path. Path does not exist."
 		}
 		c.walletLoaded = true
@@ -75,20 +77,20 @@ func TestBitcoinRefusesMainnetAndMismatches(t *testing.T) {
 	ctx := context.Background()
 	_, main := newPayCore(t, "main")
 	_, err := newBitcoinProvider(ctx, main.url(""), "opsecmkt", "", 3)
-	if err == nil || !strings.Contains(err.Error(), `refusing to start: bitcoin chain "main"`) {
+	if err == nil || !isRefusal(err) || !strings.Contains(err.Error(), `bitcoin chain "main" is not a test network`) {
 		t.Fatalf("mainnet node accepted: %v", err)
 	}
 	if strings.Contains(err.Error(), "rpc-secret") {
 		t.Fatal("error leaks the RPC password")
 	}
 	_, signet := newPayCore(t, "signet")
-	if _, err = newBitcoinProvider(ctx, signet.url(""), "opsecmkt", "testnet4", 3); err == nil || !strings.Contains(err.Error(), `reports chain "signet" but BITCOIN_CHAIN is "testnet4"`) {
+	if _, err = newBitcoinProvider(ctx, signet.url(""), "opsecmkt", "testnet4", 3); err == nil || !isRefusal(err) || !strings.Contains(err.Error(), `reports chain "signet" but BITCOIN_CHAIN is "testnet4"`) {
 		t.Fatalf("chain mismatch accepted: %v", err)
 	}
 	if _, err = newBitcoinProvider(ctx, signet.url(""), "opsecmkt", "main", 3); err == nil || !strings.Contains(err.Error(), "refusing to start") || signet.called("getblockchaininfo") != 1 {
 		t.Fatalf("BITCOIN_CHAIN=main must fail before connecting: %v", err)
 	}
-	if _, err = newBitcoinProvider(ctx, signet.url(""), "otherwallet", "", 3); err == nil || !strings.Contains(err.Error(), "createwallet") {
+	if _, err = newBitcoinProvider(ctx, signet.url(""), "otherwallet", "", 3); err == nil || isRefusal(err) || !strings.Contains(err.Error(), "createwallet") {
 		t.Fatalf("missing wallet: %v", err)
 	}
 }

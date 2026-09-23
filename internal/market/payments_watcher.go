@@ -18,10 +18,14 @@ import (
 
 const paymentWatcherLock = 782494
 
+// payoutSendTimeout bounds one wallet send. It is detached from shutdown, so keep the container stop grace
+// period (compose.yaml stop_grace_period) above this plus the HTTP shutdown time.
+const payoutSendTimeout = 30 * time.Second
+
 func init() { registerBackground(paymentWatcher) }
 
 func paymentWatcher(ctx context.Context, a *App) {
-	if len(a.payments) == 0 {
+	if !a.paymentsConfigured() {
 		return
 	}
 	interval, err := pollInterval()
@@ -59,10 +63,17 @@ func sortedCurrencies(m map[string]PaymentProvider) []string {
 	return out
 }
 
-// pollOnce runs one watcher pass unless another process holds the watcher lock. Safe to call concurrently.
+// pollOnce checks every configured provider (in every process), then runs one watcher pass unless another
+// process holds the watcher lock. A currency whose check failed, whose node is syncing or whose provider is
+// disabled is not polled: no deposits are read, nothing expires and no payout is sent. Safe to call
+// concurrently.
 func (a *App) pollOnce(ctx context.Context) error {
-	if a.db == nil || len(a.payments) == 0 {
+	if a.db == nil || !a.paymentsConfigured() {
 		return nil
+	}
+	skip := a.refreshProviders(ctx)
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
 	conn, err := a.db.Conn(ctx)
 	if err != nil {
@@ -84,8 +95,25 @@ func (a *App) pollOnce(ctx context.Context) error {
 		}
 	}()
 	var errs []error
-	for _, cur := range sortedCurrencies(a.payments) {
-		p := a.payments[cur]
+	ready := a.providers()
+	for cur, reason := range skip {
+		network := ""
+		if p := ready[cur]; p != nil {
+			network = p.Network()
+		}
+		if _, err := a.db.ExecContext(ctx, `INSERT INTO payment_status(currency,network,last_poll,last_error) VALUES($1,$2,NULL,$3)
+			ON CONFLICT(currency) DO UPDATE SET last_error=excluded.last_error`, cur, network, reason); err != nil {
+			errs = append(errs, err)
+		}
+		if reason != syncingReason {
+			errs = append(errs, fmt.Errorf("%s: %s", cur, reason))
+		}
+	}
+	for _, cur := range sortedCurrencies(ready) {
+		if _, skipped := skip[cur]; skipped {
+			continue
+		}
+		p := ready[cur]
 		err := a.pollCurrency(ctx, p)
 		if ctx.Err() == nil {
 			msg := ""
@@ -139,13 +167,18 @@ func (a *App) pollCurrency(ctx context.Context, p PaymentProvider) error {
 		return err
 	}
 	var errs []error
+	// Orders whose addresses could not be read from the wallet this pass never expire in this pass.
+	unread := map[string]bool{}
 	for chunk := range slices.Chunk(addresses, 200) {
 		if err = a.recordIncoming(ctx, p, chunk, orderOf); err != nil {
 			errs = append(errs, err)
+			for _, addr := range chunk {
+				unread[orderOf[addr]] = true
+			}
 		}
 	}
 	for _, id := range orders {
-		if err = a.settleOrder(ctx, p, id); err != nil {
+		if err = a.settleOrder(ctx, p, id, !unread[id]); err != nil {
 			errs = append(errs, fmt.Errorf("order %s: %w", id[:min(8, len(id))], err))
 		}
 	}
@@ -208,8 +241,9 @@ func isTerminal(state string) bool {
 	return state == stateCompleted || state == stateResolved || state == stateCancelled
 }
 
-// settleOrder applies the ledger to one order in its own transaction.
-func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string) error {
+// settleOrder applies the ledger to one order in its own transaction. walletRead reports whether the wallet
+// was queried successfully for this order's address in the same pass; without it the order never expires.
+func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string, walletRead bool) error {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -245,7 +279,7 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 	}
 	// Unpaid past PAYMENT_EXPIRY with no deposit seen (a conflicted or locked one does not count): cancel as the
 	// system actor; the stock hook returns the reserved unit. A deposit still confirming keeps the order open.
-	if o.State == stateAwaitingPayment {
+	if o.State == stateAwaitingPayment && walletRead {
 		expiry, err := paymentExpiry()
 		if err != nil {
 			expiry = 24 * time.Hour // validated at startup by the provider factories
@@ -304,7 +338,9 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 	if held {
 		_, err = tx.ExecContext(ctx, "UPDATE payouts SET state='held',error=$2,updated=now() WHERE order_id=$1 AND state IN ('pending','blocked')", orderID, heldReason)
 	} else {
-		_, err = tx.ExecContext(ctx, "UPDATE payouts SET state=CASE WHEN address='' THEN 'blocked' ELSE 'pending' END,error='',updated=now() WHERE order_id=$1 AND state='held'", orderID)
+		// Only the watcher's own hold is lifted automatically; other holds (restored from a backup, for
+		// example) wait for an administrator.
+		_, err = tx.ExecContext(ctx, "UPDATE payouts SET state=CASE WHEN address='' THEN 'blocked' ELSE 'pending' END,error='',updated=now() WHERE order_id=$1 AND state='held' AND error=$2", orderID, heldReason)
 	}
 	if err != nil {
 		return err
@@ -418,8 +454,11 @@ func (a *App) sendPayouts(ctx context.Context, p PaymentProvider) error {
 		if err != nil {
 			return err
 		}
-		txid, serr := p.Send(ctx, to, amt)
-		// Record the outcome even if shutdown cancelled ctx during the wallet call.
+		// The wallet call is detached from shutdown (a redeploy must not abort a broadcast mid-flight) but
+		// bounded; Close waits for it. The outcome is recorded on a fresh bounded context for the same reason.
+		sctx, scancel := context.WithTimeout(context.WithoutCancel(ctx), payoutSendTimeout)
+		txid, serr := p.Send(sctx, to, amt)
+		scancel()
 		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		label := amount(amt, currencyDecimals(cur)) + " " + cur
 		if serr != nil {

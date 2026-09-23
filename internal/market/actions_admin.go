@@ -30,6 +30,16 @@ func adminAction(c *actionCtx) (actionResult, error) {
 			}
 		}
 		action = "Changed user role"
+		if err == nil && role != "vendor" {
+			// A user who is no longer a vendor cannot manage listings, so their active listings are archived in
+			// this transaction (audited for both accounts). Existing orders are unaffected.
+			n := "0"
+			err = tx.QueryRowContext(ctx, "WITH a AS (UPDATE products SET archived=true,archived_at=now(),updated=now() WHERE vendor_id=$1 AND NOT archived RETURNING 1) SELECT count(*)::text FROM a", f.Get("user_id")).Scan(&n)
+			if err == nil && n != "0" {
+				action = "Changed user role to " + role + "; archived " + n + " active listing(s)"
+				_, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", f.Get("user_id"), "Archived "+n+" active listing(s): role changed to "+role+" by an administrator")
+			}
+		}
 	case "settings":
 		name := strings.TrimSpace(f.Get("site_name"))
 		if name == "" || len(name) > 80 {

@@ -80,6 +80,12 @@ type PageData struct {
 	// P6 Transparency
 	Canary      *CanaryView
 	AuditExport *AuditExportView
+
+	// Contacts (contacts.go): counterparty PGP keys, message recipient prefill, unread notifications
+	Contacts            []ContactKey // vendor page: the vendor; order page: the other party (both for a reviewer); messages: the ?to recipient
+	MessageTo           string       // messages page: validated ?to handle for the recipient field
+	OrderViewer         string       // order page: "buyer", "vendor" or "moderator" (read-only dispute review)
+	UnreadNotifications int          // signed-in users, every page
 }
 
 // Foundation
@@ -146,6 +152,7 @@ type PaymentView struct {
 	Status                          string
 	Currency                        string
 	Available                       bool // a live provider serves this order's currency
+	Degraded                        bool // the currency is configured but its wallet is failing its checks
 	Issued                          bool // the provider returned a deposit address for this order
 	Monitored                       bool // Issued and the provider is still configured
 	Open                            bool // Monitored and the order still awaits payment (address shown)
@@ -162,6 +169,7 @@ type PaymentDeposit struct {
 type ProviderStatus struct {
 	Currency, Network string
 	Enabled           bool
+	Status            string // Enabled, Unavailable (retried), Refused, Disabled
 	Error             string
 	Confirmations     int
 	LastPoll          string
@@ -191,4 +199,15 @@ type AuditExportView struct {
 	PublicKey string
 	UpTo      int64
 	Error     string // why the signed export is unavailable
+}
+
+// Contacts
+// ContactKey is another user's saved PGP public key as shown to people who need to encrypt to them.
+// Fingerprint is empty when no usable key is saved; Verified only when the ownership proof matches this key.
+type ContactKey struct {
+	Handle, Relation     string // Relation: "vendor", "buyer" or "" (message recipient)
+	Armored, Fingerprint string
+	Verified             bool
+	VerifiedAt           string
+	Unreadable           bool // a key is saved but no longer parses (legacy or revoked)
 }

@@ -36,6 +36,16 @@ func partyOrder(c *actionCtx, id string) (Order, error) {
 	return o, err
 }
 
+// sellerIsVendor reports whether a listing's owner is currently a vendor or administrator. Listings of a
+// demoted vendor accept no new drafts, payment requests or restores; existing orders continue.
+func sellerIsVendor(c *actionCtx, productID string) (bool, error) {
+	var ok bool
+	err := c.Tx.QueryRowContext(c.Ctx(), "SELECT u.role IN ('vendor','admin') FROM products p JOIN users u ON u.id=p.vendor_id WHERE p.id=$1", productID).Scan(&ok)
+	return ok, err
+}
+
+const sellerNotVendor = "The seller of this listing is no longer a vendor, so it accepts no new orders."
+
 func shortID(id string) string { return id[:min(8, len(id))] }
 
 func orderPage(id string) string { return "/order?id=" + id + "&saved=1" }
@@ -64,10 +74,20 @@ func payAction(c *actionCtx) (actionResult, error) {
 	if err != nil {
 		return actionResult{}, err
 	}
+	if ok, err := sellerIsVendor(c, o.ProductID); err != nil {
+		return actionResult{}, err
+	} else if !ok && o.State == stateDraft {
+		return actionResult{}, fail(409, sellerNotVendor+" Cancel this draft.")
+	}
 	if o.BuyerID == c.User.ID {
 		var open int
-		// The buyer row lock serialises concurrent requests so the cap cannot be raced.
-		if err = c.Tx.QueryRowContext(ctx, "SELECT (SELECT count(*) FROM orders WHERE buyer_id=u.id AND state='awaiting_payment') FROM users u WHERE u.id=$1 FOR UPDATE", c.User.ID).Scan(&open); err != nil {
+		// The buyer row lock serialises concurrent requests so the cap cannot be raced. The count must be a
+		// separate statement: under READ COMMITTED it then takes its snapshot after the lock is held and sees
+		// the orders a concurrent request committed while this one waited.
+		if _, err = c.Tx.ExecContext(ctx, "SELECT 1 FROM users WHERE id=$1 FOR UPDATE", c.User.ID); err != nil {
+			return actionResult{}, err
+		}
+		if err = c.Tx.QueryRowContext(ctx, "SELECT count(*) FROM orders WHERE buyer_id=$1 AND state='awaiting_payment'", c.User.ID).Scan(&open); err != nil {
 			return actionResult{}, err
 		}
 		if open >= maxAwaitingPayment {
@@ -80,7 +100,7 @@ func payAction(c *actionCtx) (actionResult, error) {
 	if _, err = c.A.transition(ctx, c.Tx, o.ID, stateDraft, stateAwaitingPayment, c.User, "Payment address requested"); err != nil {
 		return actionResult{}, err
 	}
-	p := c.A.payments[o.Currency]
+	p := c.A.provider(o.Currency)
 	addr, err := p.NewAddress(ctx, o.ID)
 	if err != nil || addr == "" || !p.ValidAddress(addr) {
 		return actionResult{}, fail(503, "The "+o.Currency+" test-network wallet did not return a usable address. Nothing was changed; try again later.")

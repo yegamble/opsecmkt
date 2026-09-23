@@ -1,0 +1,16 @@
+{{/* Contacts owns. One user's PGP public key for encrypting messages to them (input: ContactKey). */}}
+{{define "contact-key"}}<div class="contact-key">{{if .Fingerprint}}<dl class="key-values">
+<div>
+<dt>{{.Handle}}{{if .Relation}} ({{.Relation}}){{end}} · fingerprint</dt>
+<dd class="pgp-fingerprint">{{.Fingerprint}}</dd>
+</div>
+<div>
+<dt>Key ownership</dt>
+<dd>{{if .Verified}}<span class="badge green">Ownership verified {{.VerifiedAt}}</span>{{else}}<span class="badge neutral">Ownership not verified</span>{{end}}</dd>
+</div>
+</dl>
+<label>{{.Handle}}’s public key (select and copy into your PGP application)<textarea readonly rows="6" spellcheck="false">{{.Armored}}</textarea>
+</label>
+<p class="help">{{if .Verified}}{{.Handle}} proved they hold the private key for this fingerprint.{{else}}{{.Handle}} has not proved they hold the private key for this key; the server only checked that it is a valid public key.{{end}} Confirm the fingerprint through a channel you trust before encrypting.</p>{{else if .Unreadable}}<p class="contact-key-missing" role="note">
+<strong>No usable key.</strong> {{.Handle}}’s saved PGP key can no longer be read. You cannot send them an encrypted message until they save a valid public key.</p>{{else}}<p class="contact-key-missing" role="note">
+<strong>No key.</strong> {{.Handle}} has not added a PGP public key. You cannot send them an encrypted message until they add one.</p>{{end}}</div>{{end}}

@@ -58,10 +58,10 @@
 </div>{{end}}
 </dl>{{end}}
 {{else if .Issued}}<h2>Payment is not monitored</h2>
-<div class="alert error" role="status">{{.Currency}} payments are not configured on this server, so deposits for this order are not being watched. Do not send funds.</div>
+{{if .Degraded}}<div class="alert error" role="status">The {{.Currency}} test-network wallet is temporarily unavailable, so deposits for this order are not being read right now. Deposits already sent are recorded once it reconnects. Do not send funds until the deposit address is shown again.</div>{{else}}<div class="alert error" role="status">{{.Currency}} payments are not configured on this server, so deposits for this order are not being watched. Do not send funds.</div>{{end}}
 {{else if eq $.Order.State "draft"}}{{if .Available}}<h2>Payment not requested yet</h2>
 <p>This record is an unfunded draft. Requesting payment returns a <strong>TESTNET {{.Network}}</strong> deposit address from the market's test wallet. No real funds are accepted.</p>{{else}}<h2>Payment is unavailable</h2>
-<p>This record is an unfunded draft. {{.Currency}} payments are not configured on this market, so no payment or settlement can take place. No funds are held.</p>{{end}}
+{{if .Degraded}}<p>This record is an unfunded draft. The {{.Currency}} test-network wallet is temporarily unavailable, so payment cannot be requested right now. Try again later. No funds are held.</p>{{else}}<p>This record is an unfunded draft. {{.Currency}} payments are not configured on this market, so no payment or settlement can take place. No funds are held.</p>{{end}}{{end}}
 {{else}}<h2>No payment record</h2>
 <p>No deposit address was issued for this order, and no funds are held for it.</p>{{end}}{{else}}<h2>Payment is unavailable</h2>
 <p>This record is an unfunded draft. No funds are held, and no payment or settlement can take place.</p>{{end}}{{end}}

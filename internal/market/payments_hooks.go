@@ -57,7 +57,7 @@ func (a *App) enqueuePayout(ctx context.Context, tx *sql.Tx, o *Order) error {
 	}
 	threshold := int64(math.MaxInt64) // provider removed: only deposits already credited count
 	holdBelow := int64(0)             // credited deposits below this hold the payout (conflicted; with a provider, re-confirming)
-	if p := a.payments[o.Currency]; p != nil {
+	if p := a.provider(o.Currency); p != nil {
 		threshold = int64(p.Confirmations())
 		holdBelow = threshold
 	}

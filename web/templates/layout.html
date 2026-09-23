@@ -14,6 +14,7 @@
 <link rel="stylesheet" href="/static/inventory.css">
 <link rel="stylesheet" href="/static/payments.css">
 <link rel="stylesheet" href="/static/transparency.css">
+<link rel="stylesheet" href="/static/contacts.css">
 </head>
 <body>
 <a class="skip-link" href="#main">Skip to main content</a>
@@ -27,15 +28,15 @@
 <input id="header-search" name="q" value="{{.Query}}" placeholder="Search the marketplace…">
 <button type="submit" aria-label="Search marketplace">↗</button>
 </form>
-<div class="header-actions">{{if .User}}<a class="hide-mobile" href="/notifications">Notifications</a>
-<a class="account-name" href="/account">{{.User.Handle}}</a>{{else}}<a href="/login">Sign in</a>
+<div class="header-actions">{{if .User}}<a class="account-name" href="/account">{{.User.Handle}}</a>{{else}}<a href="/login">Sign in</a>
 <a class="button primary" href="/register">Join market</a>{{end}}</div>
 </div>
 <nav class="nav" aria-label="Main navigation">
 <a href="/" {{if eq .Page "catalog"}}aria-current="page"{{end}}>⌘ Marketplace</a>
 <a href="/orders" {{if eq .Page "orders"}}aria-current="page"{{end}}>Orders</a>
 <a href="/messages" {{if eq .Page "messages"}}aria-current="page"{{end}}>Messages</a>
-<a href="/disputes" {{if eq .Page "disputes"}}aria-current="page"{{end}}>Disputes</a>
+{{if .User}}<a href="/notifications" {{if eq .Page "notifications"}}aria-current="page"{{end}}>Notifications{{if .UnreadNotifications}} <span class="nav-count">({{.UnreadNotifications}} unread)</span>{{end}}</a>
+{{end}}<a href="/disputes" {{if eq .Page "disputes"}}aria-current="page"{{end}}>Disputes</a>
 <a href="/account" {{if eq .Page "account"}}aria-current="page"{{end}}>Account</a>{{if .User}}{{if or (eq .User.Role "vendor") (eq .User.Role "admin")}}<a href="/vendor-dashboard">Vendor desk</a>{{end}}{{if or (eq .User.Role "moderator") (eq .User.Role "admin")}}<a href="/moderator">Moderation</a>{{end}}{{if eq .User.Role "admin"}}<a href="/admin">Admin</a>{{end}}{{end}}<a class="nav-end" href="/canary">◇ Transparency</a>
 </nav>
 </header>
