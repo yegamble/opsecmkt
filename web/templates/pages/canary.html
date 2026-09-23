@@ -9,15 +9,24 @@
 </div>
 <div class="legal-copy">
 {{template "canary-statement" .}}
+<section class="panel audit-key" aria-labelledby="audit-key-title">
+<h2 id="audit-key-title">Audit export signing key</h2>
+{{with .AuditExport}}{{if .Available}}<p><span class="badge green">Signed exports enabled</span></p>
+<p>Administrators can download the audit log as newline-delimited JSON with an Ed25519 signature over the exact file bytes. Pin this public key and check exports with <span class="mono">verify-audit -pub &lt;key&gt; export.jsonl export.sig</span>.</p>
+<p class="fingerprint mono">{{.PublicKey}}</p>
+<p class="help">A valid signature proves an export was produced with this server's key. Anyone who controls the server also controls that key and can sign an altered history; the signature is not proof that past events were never changed.</p>{{else}}<p><span class="badge neutral">Signed exports unavailable</span></p>
+<p>{{.Error}}</p>{{end}}{{else}}<p><span class="badge neutral">Signed exports unavailable</span></p>{{end}}
+</section>
 <section class="panel">
 <h2>What this application currently does</h2>
 <ul>
 <li>Renders HTML and CSS on the server without requiring client-side JavaScript.</li>
 <li>Supports account sessions, marketplace listings, and unfunded order drafts.</li>
 <li>Accepts externally encrypted PGP text for messages. It does not perform browser-side encryption.</li>
+<li>Shows a warrant canary only as the operator's PGP-clearsigned text, re-verified against the configured operator key on every page view; it never writes or edits canary text.</li>
 </ul>
 <h2>What remains unavailable</h2>
-<p>Bitcoin and Monero funding, wallet balances, multisig escrow, automatic settlement, TOTP, verified PGP ownership, and signed canary publication are not active.</p>
+<p>Bitcoin and Monero funding, wallet balances, multisig escrow, automatic settlement, TOTP, and verified PGP ownership are not active.</p>
 </section>
 <a class="button" href="/">Return to marketplace ↗</a>
 </div>

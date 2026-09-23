@@ -1,6 +1,54 @@
-{{/* P6 Transparency owns. Warrant canary status panel */}}
-{{define "canary-statement"}}<section class="panel">
-<h2>Warrant canary unavailable</h2>
-<span class="badge neutral">No signed statement published</span>
-<p>This application does not publish a cryptographically signed warrant canary. The absence of a statement is not a claim about legal requests or operational security.</p>
+{{/* P6 Transparency owns. Warrant canary status panel: exactly one of no statement / verified / invalid */}}
+{{define "canary-statement"}}{{with .Canary}}{{if .Verified}}<section class="panel canary canary-verified" aria-labelledby="canary-title">
+<h2 id="canary-title">Warrant canary</h2>
+<p><span class="badge green">Signature verified</span></p>
+<p>This server checked the signature below against the operator key configured by the administrator when this page was generated. A verified signature shows that the holder of that key signed this exact text. It is not a statement by this software about legal requests, and it cannot tell you whether the key holder is acting freely.</p>
+<div class="code-block canary-text">{{.Statement}}</div>
+<dl class="key-values transparency-facts">
+<div>
+<dt>Operator key fingerprint</dt>
+<dd class="fingerprint">{{.Fingerprint}}</dd>
+</div>
+<div>
+<dt>Signature created</dt>
+<dd>{{.SignedAt}}</dd>
+</div>
+<div>
+<dt>Posted to this site</dt>
+<dd>{{.Posted}}</dd>
+</div>
+</dl>
+<p class="help">Check the signature yourself: compare the fingerprint with one obtained through a channel you trust, import the key below, and run <span class="mono">gpg --verify</span> on the signed message. If the statement is not renewed when it says it will be, draw your own conclusions.</p>
+<details class="transparency-details">
+<summary>Signed message as posted</summary>
+<pre class="code-block">{{.Clearsigned}}</pre>
+</details>
+<details class="transparency-details">
+<summary>Operator public key</summary>
+<pre class="code-block">{{.OperatorKey}}</pre>
+</details>
+</section>{{else if .Error}}<section class="panel canary canary-invalid" aria-labelledby="canary-title">
+<h2 id="canary-title">Warrant canary</h2>
+<p><span class="badge danger">INVALID — signature not verified</span></p>
+<p>The posted canary does not verify against the configured operator key, so it must not be relied upon.</p>
+<p class="canary-reason"><strong>Reason:</strong> {{.Error}}</p>
+<dl class="key-values transparency-facts">
+{{if .Fingerprint}}<div>
+<dt>Configured operator key fingerprint</dt>
+<dd class="fingerprint">{{.Fingerprint}}</dd>
+</div>
+{{end}}<div>
+<dt>Posted to this site</dt>
+<dd>{{.Posted}}</dd>
+</div>
+</dl>
+<details class="transparency-details">
+<summary>Unverified submission (do not trust)</summary>
+<pre class="code-block">{{.Clearsigned}}</pre>
+</details>
+</section>{{else}}{{template "canary-statement:none" .}}{{end}}{{else}}{{template "canary-statement:none" .}}{{end}}{{end}}
+{{define "canary-statement:none"}}<section class="panel canary canary-none" aria-labelledby="canary-title">
+<h2 id="canary-title">Warrant canary</h2>
+<p><span class="badge neutral">No signed canary published</span></p>
+<p>The operator has not published a warrant canary signed with a configured operator key. The absence of a statement is not a claim about legal requests or operational security.</p>
 </section>{{end}}

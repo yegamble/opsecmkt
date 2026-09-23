@@ -42,7 +42,11 @@ Not implemented: test-network wallet adapters, deposit monitoring and payouts. P
 
 ### P6 Transparency
 
-Not implemented: signed warrant canary verification and signed audit export.
+- **Operator key.** An administrator saves the operator's armored OpenPGP public key (`/admin/operator-key`); it is parsed (single, unrevoked public key; private keys rejected) and its fingerprint recorded in the audit log.
+- **Warrant canary.** The administrator pastes a statement the operator clearsigned offline (`/admin/canary`). It is rejected with the reason unless it is exactly one clearsigned message, with nothing before or after it, that verifies against the operator key. Accepted text is stored as pasted in a single-row `canary` table (migration 060). `/canary` re-verifies it on every view and shows exactly one of: "No signed canary published", "Signature verified" (statement, grouped fingerprint, signature date, posted date, the signed message and public key for independent `gpg --verify`), or "INVALID" with the reason (for example after a key change or database tampering). The application never writes, edits or signs canary text.
+- **Signed audit export.** Administrators download `/admin/audit-export?upto=N` as NDJSON (`id`, `user_id`, `handle`, `action`, `created` in RFC 3339 UTC, ordered by id) and `&sig=1` as a text file with the Ed25519 public key, SHA-256 and signature over the exact export bytes. The key is read only from `AUDIT_SIGNING_KEY`; when it is unset or malformed the export returns 409 and the admin and `/canary` pages say it is unavailable. `upto` must not exceed the latest settled event (a brief `SHARE` lock waits for in-flight audit writers), so the same `upto` always yields byte-identical files. Rate limit: 10 downloads per 10 minutes per administrator. The public key is published on `/canary`.
+- **Verifier.** `go run ./cmd/verify-audit -pub <hex> export.jsonl export.sig` (standard library only) checks the signature with the pinned key, not the key named in the `.sig` file, and that events are well formed with ascending ids; exit status 0 or 1.
+- **Limits.** The signature proves origin from the server-held key only. Anyone controlling the server (or `AUDIT_SIGNING_KEY`) can sign an altered history; exports are not a tamper-proof log. Canary verification proves which key signed the text, not that its author acts freely or that the statement is true.
 
 ## Not yet implemented
 
