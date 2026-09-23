@@ -134,7 +134,10 @@ Each payout is sent once. The **Payouts** table on the admin page marks rows tha
 - **Stuck in sending**: claimed more than 5 minutes ago with no recorded outcome (crash or database error
   after the wallet call); it may have been broadcast.
 - **Held**: a credited deposit is conflicted or re-confirming (the watcher releases these itself once the
-  deposit is confirmed again), or the payout was restored from a backup (never released automatically).
+  deposit is confirmed again).
+- **Held after a restore from backup — may already have been sent**: the payout was pending, sending,
+  blocked or held in a restored dump (its error starts `Restored from backup:`). It is never released
+  automatically, and it may have been broadcast after the backup was taken.
 
 Ordinary wallet reads time out after 10 s; a payout send is allowed 30 s, so a slow wallet that broadcasts
 after 10 s is still recorded as sent.
@@ -157,8 +160,11 @@ the state you saw, so a double click or a second administrator cannot queue it t
   asks you to tick "I checked the wallet ... no transaction ... was broadcast"; the server refuses the
   requeue without it and records the confirmation in the audit trail. Include pending and pool transfers in
   that check, and if the wallet shows the transaction use **Mark sent** instead.
-- **Release held payout** (held): after a restore, once you have confirmed it was not sent. Refused while a
-  credited deposit for the order is still conflicted or below the threshold.
+- **Release held payout** (held): the payout goes back to the queue and the next pass sends it once.
+  Refused while a credited deposit for the order is still conflicted or below the threshold. For a payout
+  held by a restore the form also asks you to tick "I checked the wallet ... no transaction ... was
+  broadcast"; the server refuses the release without it and records the confirmation in the audit trail
+  and the order history. If the wallet shows the transaction use **Mark sent** instead.
 
 ## 6. Back up the wallets
 

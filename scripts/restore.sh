@@ -57,7 +57,9 @@ fi
 age -d -i "$AGE_IDENTITY" "$1" | client pg_restore --single-transaction --exit-on-error --no-owner --no-acl
 # The dump can predate a payout's creation as well as its broadcast. Pause ALL outbound payouts until
 # reconciliation, and replace automatic holds with manual recovery holds. Older app dumps have settings
-# even if payments migrations have not run; table-only test dumps can lack either table.
+# even if payments migrations have not run; table-only test dumps can lack either table. The application
+# matches the "Restored from backup:" error prefix (restoredHoldPrefix in internal/market/payments_admin.go)
+# and asks for a "wallet shows no broadcast" confirmation before an administrator releases such a hold.
 # The same SQL runs in the same way for both destinations.
 if ! held=$(client psql -X -q -A -t -v ON_ERROR_STOP=1 --single-transaction <<'SQL'
 SELECT to_regclass('settings') IS NOT NULL AS has_settings \gset

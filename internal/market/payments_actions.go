@@ -296,6 +296,8 @@ func paymentsAdminLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 			r.StateLabel, r.Ambiguous = r.StateLabel+"; outcome unknown, may have been broadcast", true
 		case r.State == "failed":
 			r.StateLabel += "; rejected by the wallet, nothing broadcast"
+		case r.State == "held" && strings.HasPrefix(r.Error, restoredHoldPrefix):
+			r.StateLabel, r.Ambiguous = "Held after a restore from backup — may already have been sent, check the wallet", true
 		}
 		d.Payouts = append(d.Payouts, r)
 	}
