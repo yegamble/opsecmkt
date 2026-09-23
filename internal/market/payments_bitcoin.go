@@ -223,7 +223,7 @@ func (p *bitcoinProvider) Send(ctx context.Context, to string, amt int64) (strin
 		return "", errors.New("bitcoin payout address is not valid for " + p.chain)
 	}
 	var txid string
-	err := p.rpc.call(ctx, p.wallet, "sendtoaddress", []any{to, json.Number(amount(amt, 8)), "", "", true}, &txid)
+	err := p.rpc.callWithin(ctx, payoutSendTimeout, p.wallet, "sendtoaddress", []any{to, json.Number(amount(amt, 8)), "", "", true}, &txid)
 	return txid, err
 }
 

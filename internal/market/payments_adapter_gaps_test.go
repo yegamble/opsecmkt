@@ -311,8 +311,9 @@ func TestGapRPCTimeouts(t *testing.T) {
 	if in != nil || err == nil || !strings.Contains(err.Error(), "bitcoin RPC unreachable: timed out") || time.Since(start) > 5*time.Second {
 		t.Fatalf("stalled node with caller deadline: %v after %s", err, time.Since(start))
 	}
-	// The client's own timeout (a node that accepts the connection and never answers) is also an error.
-	bp.rpc.http.Timeout = 200 * time.Millisecond
+	// The per-call timeout (a node that accepts the connection and never answers) is also an error.
+	defer func(d time.Duration) { rpcTimeout = d }(rpcTimeout)
+	rpcTimeout = 200 * time.Millisecond
 	start = time.Now()
 	in, err = bp.Incoming(context.Background(), []string{"tb1qdepositaddress0000000000000000000"})
 	if in != nil || err == nil || !strings.Contains(err.Error(), "bitcoin RPC unreachable") || strings.Contains(err.Error(), "rpc-secret") || time.Since(start) > 5*time.Second {

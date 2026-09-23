@@ -18,9 +18,14 @@ import (
 
 const paymentWatcherLock = 782494
 
-// payoutSendTimeout bounds one wallet send. It is detached from shutdown, so keep the container stop grace
-// period (compose.yaml stop_grace_period) above this plus the HTTP shutdown time.
-const payoutSendTimeout = 30 * time.Second
+// payoutSendTimeout bounds one wallet send (the RPC client applies it instead of its shorter rpcTimeout), and
+// payoutRecordTimeout bounds recording its outcome. Both are detached from shutdown, so keep the container
+// stop grace period (compose.yaml stop_grace_period, 60 s) above their sum plus the HTTP shutdown time (10 s).
+// Variables only so tests can shorten them.
+var (
+	payoutSendTimeout   = 30 * time.Second
+	payoutRecordTimeout = 10 * time.Second
+)
 
 func init() { registerBackground(paymentWatcher) }
 
@@ -472,14 +477,18 @@ func (a *App) sendPayouts(ctx context.Context, p PaymentProvider) error {
 		sctx, scancel := context.WithTimeout(context.WithoutCancel(ctx), payoutSendTimeout)
 		txid, serr := p.Send(sctx, to, amt)
 		scancel()
-		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), payoutRecordTimeout)
 		label := amount(amt, currencyDecimals(cur)) + " " + cur
 		if serr != nil {
-			msg := "Wallet call failed; the transaction may or may not have been broadcast. Check the wallet before any manual payment. " + truncate(serr.Error(), 200)
-			err = a.recordPayout(rctx, id, order, recipient, "failed", "", msg, "TESTNET payout of "+label+" failed and will not be retried automatically.")
+			ambiguous := !walletRejected(serr)
+			msg := "The wallet rejected the send; nothing was broadcast. "
+			if ambiguous {
+				msg = "Wallet call failed without a definite answer; the transaction may or may not have been broadcast. Check the wallet before requeueing or paying manually. "
+			}
+			err = a.recordPayout(rctx, id, order, recipient, "failed", "", msg+truncate(serr.Error(), 200), ambiguous, "TESTNET payout of "+label+" failed and will not be retried automatically.")
 			errs = append(errs, fmt.Errorf("payout %d: %w", id, serr))
 		} else {
-			err = a.recordPayout(rctx, id, order, recipient, "sent", txid, "", "TESTNET payout of "+label+" sent: "+txid)
+			err = a.recordPayout(rctx, id, order, recipient, "sent", txid, "", false, "TESTNET payout of "+label+" sent: "+txid)
 		}
 		cancel()
 		if err != nil {
@@ -489,14 +498,24 @@ func (a *App) sendPayouts(ctx context.Context, p PaymentProvider) error {
 	return errors.Join(errs...)
 }
 
-func (a *App) recordPayout(ctx context.Context, id int64, orderID, recipient, state, txid, msg, note string) error {
+// walletRejected reports a definite refusal: the wallet answered the send with a JSON-RPC error, so nothing
+// was broadcast. Any other failure (timeout, reset connection, unreadable or incomplete reply after the
+// request was sent) leaves the outcome unknown.
+func walletRejected(err error) bool {
+	var re *rpcError
+	return errors.As(err, &re)
+}
+
+// recordPayout moves a claimed payout from sending to state. ambiguous marks a failure whose broadcast is
+// unknown: requeueing it then needs the administrator's explicit confirmation (payments_admin.go).
+func (a *App) recordPayout(ctx context.Context, id int64, orderID, recipient, state, txid, msg string, ambiguous bool, note string) error {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 	var orderState string
-	if err = tx.QueryRowContext(ctx, "UPDATE payouts p SET state=$2,txid=$3,error=$4,updated=now() FROM orders o WHERE p.id=$1 AND p.state='sending' AND o.id=p.order_id RETURNING o.state", id, state, txid, msg).Scan(&orderState); err != nil {
+	if err = tx.QueryRowContext(ctx, "UPDATE payouts p SET state=$2,txid=$3,error=$4,send_ambiguous=$5,updated=now() FROM orders o WHERE p.id=$1 AND p.state='sending' AND o.id=p.order_id RETURNING o.state", id, state, txid, msg, ambiguous).Scan(&orderState); err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", orderID, orderState, note); err != nil {

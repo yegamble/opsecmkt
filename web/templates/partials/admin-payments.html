@@ -40,7 +40,7 @@
 </table>
 </div>
 <h3 id="payouts">Payouts</h3>
-<p>Each payout is attempted once. Failed or stuck payouts are never retried automatically: check the wallet before paying anything manually. After checking the wallet you can release a held payout, requeue a payout that was not broadcast, or record one the wallet shows as sent. Each action needs your password and is audited.</p>
+<p>Each payout is attempted once. Failed or stuck payouts are never retried automatically: check the wallet before paying anything manually. A payout the wallet rejected was not broadcast; one whose outcome is unknown (the wallet call timed out or its reply was lost) or that is stuck in sending may have been. After checking the wallet you can release a held payout, requeue a payout that was not broadcast (confirming that explicitly when the outcome was unknown), or record one the wallet shows as sent. Each action needs your password and is audited.</p>
 <div class="table-wrap">
 <table>
 <thead>
@@ -77,7 +77,8 @@
 <input type="hidden" name="payout_id" value="{{.ID}}">
 <input type="hidden" name="op" value="requeue">
 <p class="help">Requeue only if the wallet shows no transaction to {{.Address}} for this amount; it will be sent once more.</p>
-{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
+{{if .Ambiguous}}<label class="check"><input type="checkbox" name="not_broadcast" value="confirmed" required> I checked the wallet (including pending and pool transfers): no transaction to this address for this amount was broadcast</label>
+{{end}}{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button type="submit">Requeue payout</button>
 </form>{{end}}
 <form class="stack" method="post" action="/admin/payout">
