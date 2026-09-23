@@ -171,7 +171,7 @@ func TestAmbiguousFailedPayoutRequeueNeedsBroadcastConfirmation(t *testing.T) {
 		t.Fatalf("definite error text %q", e)
 	}
 	admin := html.UnescapeString(p.page("/admin", p.adminSess))
-	if strings.Count(admin, `name="not_broadcast"`) != 1 || !strings.Contains(admin, "outcome unknown, may have been broadcast") || !strings.Contains(admin, "rejected by the wallet, nothing broadcast") {
+	if strings.Count(admin, `name="not_broadcast"`) != 1 || !strings.Contains(admin, "outcome unknown, may have been broadcast") || !strings.Contains(admin, "the wallet reported a pre-broadcast error, nothing broadcast") {
 		t.Fatal("admin page does not distinguish the ambiguous failure or ask for the confirmation once")
 	}
 

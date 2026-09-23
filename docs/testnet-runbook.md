@@ -123,10 +123,13 @@ coins; the order moves to *Paid* once the deposit reaches the confirmation thres
 
 ## 5. Recover a held or failed payout
 
-Each payout is sent once. The **Payouts** table on the admin page marks rows that need attention:
+Each payout is sent once. The **Payouts** table on the admin page marks rows that need attention and lists
+every one of them first, oldest first, under a count ("N payouts need attention"); other payouts are limited
+to the 50 most recent. An order ID links to the order page where an administrator can open it (a disputed or
+resolved order); otherwise it is plain text.
 
-- **Failed — not retried; rejected by the wallet, nothing broadcast**: the wallet answered the send with an
-  error (for example insufficient or locked funds), so no transaction exists.
+- **Failed — not retried; the wallet reported a pre-broadcast error, nothing broadcast**: the wallet
+  answered the send with an error (for example insufficient or locked funds), so no transaction exists.
 - **Failed — not retried; outcome unknown, may have been broadcast**: the wallet call ended without a
   definite answer (no reply within 30 s, a dropped connection or an unreadable reply after the request was
   sent). The wallet may still have broadcast the transaction. Failures recorded before this distinction

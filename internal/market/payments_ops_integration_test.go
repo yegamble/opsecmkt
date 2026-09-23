@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"html"
 	"net/url"
 	"os"
@@ -495,5 +496,70 @@ func TestRestoredHoldMarkerMatchesRestoreScripts(t *testing.T) {
 		if !strings.Contains(string(b), "error='"+restoredHold+"'") {
 			t.Fatalf("%s does not write the restored-hold marker %q", f, restoredHold)
 		}
+	}
+}
+
+// A payout needing attention and its only resolve form are never pushed off /admin by newer payouts: every
+// blocked, held, failed or stuck-sending payout is listed first (oldest first) under a count, then the most
+// recent others up to a cap with a truncation notice. An order ID links to the order only where the
+// administrator can open it (a disputed or resolved order, read as a non-party reviewer).
+func TestAdminPayoutsAttentionNeverHidden(t *testing.T) {
+	p := newPayEnv(t)
+	insert := func(state, orderState, kind, txid, age string) (order, id string) {
+		t.Helper()
+		order = p.testEnv.order(p.buyer.ID, p.productID, "BTC", orderState)
+		if err := p.DB.QueryRow(`INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state,txid,updated)
+			VALUES($1,$2,$3,'BTC',100000,'fake-testnet-addr',$4,$5,now()-$6::interval) RETURNING id::text`,
+			order, kind, p.vendor.ID, state, txid, age).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return order, id
+	}
+	failedOrder, failedID := insert("failed", stateResolved, "refund", "", "1 hour")
+	stuckOrder, stuckID := insert("sending", stateCompleted, "release", "", "10 minutes")
+	var sent []string // txids, oldest first
+	for i := range 60 {
+		txid := fmt.Sprintf("sent-txid-%02d", i)
+		insert("sent", stateCompleted, "release", txid, "0 seconds")
+		sent = append(sent, txid)
+	}
+	admin := html.UnescapeString(p.page("/admin", p.adminSess))
+	for _, want := range []string{
+		"2 payouts need attention",
+		"Showing every payout that needs attention and the 50 most recent other payouts",
+		"Resolve payout " + failedID + "<", "Resolve payout " + stuckID + "<",
+		`href="/order?id=` + failedOrder + `"`,
+	} {
+		if !strings.Contains(admin, want) {
+			t.Fatalf("admin page missing %q", want)
+		}
+	}
+	if strings.Index(admin, "Resolve payout "+failedID+"<") > strings.Index(admin, "Resolve payout "+stuckID+"<") {
+		t.Fatal("payouts needing attention are not listed oldest first")
+	}
+	if strings.Contains(admin, `href="/order?id=`+stuckOrder+`"`) || !strings.Contains(admin, stuckOrder) {
+		t.Fatal("an order the administrator cannot open is linked, or its ID is missing")
+	}
+	if n := strings.Count(admin, `<tr class="payout-attention">`); n != 2 {
+		t.Fatalf("attention rows: %d", n)
+	}
+	// The fifty newest sent payouts are listed; the ten oldest fall past the cap.
+	for i, txid := range sent {
+		if listed := strings.Contains(admin, txid+"<"); listed != (i >= 10) {
+			t.Fatalf("sent payout %d listed=%v", i, listed)
+		}
+	}
+	// The link is correct: the administrator can open the linked order and not the unlinked one.
+	p.check(p.do("GET", "/order?id="+failedOrder, p.adminSess, nil), 200)
+	p.check(p.do("GET", "/order?id="+stuckOrder, p.adminSess, nil), 404)
+
+	// Nothing needing attention and few payouts: no alarm and no truncation notice.
+	if _, err := p.DB.Exec("DELETE FROM payouts WHERE state='sent' OR id IN ($1::bigint,$2::bigint)", failedID, stuckID); err != nil {
+		t.Fatal(err)
+	}
+	insert("sent", stateCompleted, "release", "sent-txid-last", "0 seconds")
+	admin = html.UnescapeString(p.page("/admin", p.adminSess))
+	if !strings.Contains(admin, "No payouts need attention.") || strings.Contains(admin, "most recent other payouts") || !strings.Contains(admin, "sent-txid-last<") {
+		t.Fatal("empty attention state, spurious truncation notice or missing payout")
 	}
 }
