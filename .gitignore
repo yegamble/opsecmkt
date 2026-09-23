@@ -14,3 +14,13 @@ test-results/
 coverage.out
 *.test
 __pycache__/
+
+# Local Claude worktrees and Ralph runtime state (keep instructions tracked).
+.claude/worktrees/
+.ralph/*
+!.ralph/PROMPT.md
+!.ralph/AGENT.md
+!.ralph/fix_plan.md
+
+playwright-wallet-report/
+test-results-wallet/

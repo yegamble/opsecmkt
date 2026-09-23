@@ -50,9 +50,11 @@ for (const [path, heading] of routes) {
   });
 }
 
-test('keyboard skip link focuses main content with a visible focus indicator', async ({ page }) => {
+test('keyboard skip link focuses main content with a visible focus indicator', async ({ page, browserName }) => {
   await page.goto('/');
-  await page.keyboard.press('Tab');
+  // macOS WebKit uses Option-Tab to include links in keyboard navigation.
+  // Keep this a real keyboard traversal so missing/unreachable skip links fail.
+  await page.keyboard.press(browserName === 'webkit' && process.platform === 'darwin' ? 'Alt+Tab' : 'Tab');
   const skip = page.getByRole('link', { name: 'Skip to main content' });
   await expect(skip).toBeFocused();
   await expect(skip).toBeInViewport();

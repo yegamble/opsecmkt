@@ -57,7 +57,7 @@ test('vendor contact, unread notifications and demotion archive', async ({ brows
   await buyer.getByRole('link', { name: 'Send encrypted message' }).click();
   await expect(buyer).toHaveURL(new RegExp(`/messages\\?to=${vendorHandle}$`));
   await expect(buyer.getByLabel('Recipient handle')).toHaveValue(vendorHandle);
-  await expect(buyer.locator('main')).toContainText('You cannot send them an encrypted message until they add one.');
+  await expect(buyer.locator('main')).toContainText('Ask them to add a public key, or obtain and confirm their key through a trusted channel before encrypting.');
 
   // A cancelled draft notifies the vendor, who sees the count in the navigation at 320px.
   await buyer.goto(productURL);

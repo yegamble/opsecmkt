@@ -23,14 +23,9 @@ test('promoting a buyer to vendor opens the vendor desk; the listing form shows 
   await admin.reload();
   await expect(admin.locator('option', { hasText: `${vendorHandle} ·` })).toHaveText(`${vendorHandle} · vendor`);
   await expect(admin.locator('table').last()).toContainText('Changed user role');
-  // An administrator cannot be assigned from this form; the server refuses it with a reason.
-  const form = admin.locator('form', { has: admin.getByRole('button', { name: 'Update role' }) });
-  await form.getByLabel('Account').selectOption(await form.locator('option', { hasText: `${vendorHandle} ·` }).getAttribute('value'));
-  await form.getByLabel('Role').selectOption('admin');
-  expect(await submitStatus(admin, () => form.getByRole('button', { name: 'Update role' }).click())).toBe(400);
-  await expect(admin.locator('body')).toHaveText('Choose buyer, vendor, or moderator');
-  await admin.goto('/admin');
-  await expect(admin.locator('option', { hasText: `${vendorHandle} ·` })).toHaveText(`${vendorHandle} · vendor`);
+  // Only roles the server can assign are offered; administrator remains setup-only.
+  const roleForm = admin.locator('form', { has: admin.getByRole('button', { name: 'Update role' }) });
+  await expect(roleForm.getByLabel('Role').locator('option[value="admin"]')).toHaveCount(0);
   await admin.context().close();
 
   // The promotion takes effect on the vendor's existing session.

@@ -94,6 +94,9 @@ func payAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, fail(409, "You already have "+strconv.Itoa(maxAwaitingPayment)+" orders awaiting payment. Pay or cancel one before requesting another payment address.")
 		}
 	}
+	if err = lockPaymentIntake(c, o.Currency); err != nil {
+		return actionResult{}, err
+	}
 	if _, err = c.Tx.ExecContext(ctx, "UPDATE orders o SET amount=CASE WHEN o.currency='XMR' THEN p.xmr ELSE p.btc END FROM products p WHERE o.id=$1 AND o.state='draft' AND p.id=o.product_id", o.ID); err != nil {
 		return actionResult{}, err
 	}
@@ -101,6 +104,11 @@ func payAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, err
 	}
 	p := c.A.provider(o.Currency)
+	// The watcher may disable a provider while transition's stock reservation
+	// waits for a row lock. Recheck before calling it and roll back that reservation.
+	if p == nil {
+		return actionResult{}, fail(409, "Payment unavailable for "+o.Currency)
+	}
 	addr, err := p.NewAddress(ctx, o.ID)
 	if err != nil || addr == "" || !p.ValidAddress(addr) {
 		return actionResult{}, fail(503, "The "+o.Currency+" test-network wallet did not return a usable address. Nothing was changed; try again later.")

@@ -41,7 +41,7 @@ test('vendor page shows the vendor key and links to a prefilled message', async 
 test('order page names the counterparty key state and message link', async ({ page }) => {
   await page.goto('/order?id=sample-draft');
   const keys = page.getByRole('region', { name: 'Vendor’s PGP key' });
-  await expect(keys).toContainText('ghost_circuit has not added a PGP public key. You cannot send them an encrypted message until they add one.');
+  await expect(keys).toContainText('ghost_circuit has not added a PGP public key. Ask them to add a public key, or obtain and confirm their key through a trusted channel before encrypting.');
   await expect(page.getByRole('link', { name: 'Message vendor' })).toHaveAttribute('href', '/messages?to=ghost_circuit');
   await expect(page.getByRole('link', { name: 'Message buyer' })).toHaveCount(0);
   await fits(page);

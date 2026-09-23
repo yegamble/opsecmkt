@@ -78,26 +78,27 @@ func saveProfileKey(c *actionCtx, armored string, confirmed bool) (string, error
 }
 
 type pgpAccount struct {
-	Key         *openpgp.Entity
-	Armored     string
-	Fingerprint string // parsed from the saved key
-	Stored      string // users.pgp_fingerprint (set on save and on verification)
-	Verified    bool   // proof recorded for exactly this key
-	VerifiedAt  string
-	TwoFactor   bool
+	Key          *openpgp.Entity
+	Armored      string
+	Fingerprint  string // parsed from the saved key
+	Stored       string // users.pgp_fingerprint (set on save and on verification)
+	Verified     bool   // proof recorded for exactly this key
+	VerifiedAt   string
+	ProofVersion string // exact ownership-proof timestamp used to bind pending sign-in codes
+	TwoFactor    bool
 }
 
 // loadPGPAccount reads the saved key; q is a *sql.Tx (lock with forUpdate) or *sql.DB.
 func loadPGPAccount(ctx context.Context, q interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }, uid string, forUpdate bool) (*pgpAccount, error) {
-	query := `SELECT pgp,pgp_fingerprint,pgp_verified_at IS NOT NULL,COALESCE(to_char(pgp_verified_at AT TIME ZONE 'UTC','YYYY-MM-DD HH24:MI "UTC"'),''),pgp_2fa FROM users WHERE id=$1`
+	query := `SELECT pgp,pgp_fingerprint,pgp_verified_at IS NOT NULL,COALESCE(to_char(pgp_verified_at AT TIME ZONE 'UTC','YYYY-MM-DD HH24:MI "UTC"'),''),pgp_2fa,COALESCE(extract(epoch FROM pgp_verified_at)::text,'') FROM users WHERE id=$1`
 	if forUpdate {
 		query += " FOR UPDATE"
 	}
 	p := &pgpAccount{}
 	var verified bool
-	if err := q.QueryRowContext(ctx, query, uid).Scan(&p.Armored, &p.Stored, &verified, &p.VerifiedAt, &p.TwoFactor); err != nil {
+	if err := q.QueryRowContext(ctx, query, uid).Scan(&p.Armored, &p.Stored, &verified, &p.VerifiedAt, &p.TwoFactor, &p.ProofVersion); err != nil {
 		return nil, err
 	}
 	if p.Armored != "" {

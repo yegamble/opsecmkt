@@ -16,7 +16,7 @@
 .payment-address p {
   margin:10px 0 0;
   color:var(--text);
-  font-size:14px;
+  font-size:0.875rem;
   overflow-wrap:anywhere;
   word-break:break-all
 }

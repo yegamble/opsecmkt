@@ -1,181 +1,215 @@
 # OPSEC Market
 
-A Go and PostgreSQL marketplace with server-rendered HTML and CSS. No React, Node.js frontend, JavaScript bundle, or third-party browser assets are required. The Figma reference informs the dark marketplace layout; templates remain ordinary HTML. Payments, when configured, run on Bitcoin and Monero **test networks only**; see [implementation status](docs/implementation-status.md).
-
-## Run locally
-
-Install Docker Engine/Desktop with Compose v2 and OpenSSL, then run:
-
-```sh
-./scripts/install.sh
-```
-
-Choose `clearnet` and answer `yes` to local HTTP development. Open `http://127.0.0.1:8080/setup`. Read `SETUP_TOKEN` from the generated, permission-restricted `.env` to bootstrap the first administrator. Keep this file private. The installer refuses to overwrite an existing configuration. For later runs use `docker compose up -d --build`; inspect with `docker compose logs app` and stop with `docker compose down`. Do not add `--volumes` unless intentionally destroying persisted data.
-
-The installer generates independent random database, bootstrap, audit-signing, and optional Bitcoin RPC secrets. Leave the external PostgreSQL URL blank to create the private database container. The internal-database overlay waits for the database health check before starting the app. Supplying an external URL omits that service and the health dependency; provision the database and its restricted application account beforehand, and require TLS for remote connections (`sslmode=verify-full` with appropriate trust configuration). Percent-encode special characters in URL credentials. The app applies its schema during startup, so its initial database account needs migration permissions.
-
-To run without Docker, install Go 1.26 and PostgreSQL 17+, set `DATABASE_URL`, `SETUP_TOKEN`, `COOKIE_SECURE=false` for local HTTP, and run `go run ./cmd/server` from the repository root. The runtime reads templates and assets from `web/`.
-
-## Clearnet and onion deployment
-
-For clearnet production, keep `COOKIE_SECURE=true` and terminate HTTPS with a reverse proxy on the same host. The container binds only `127.0.0.1:8080`. A minimal host-installed Caddy configuration is:
-
-```caddyfile
-market.example.com {
-    reverse_proxy 127.0.0.1:8080
-}
-```
-
-Configure DNS, firewall and the certificate issuer for your domain. A proxy in another container needs a private shared network instead of this host-loopback configuration. Never expose the database or node RPC ports.
-
-For onion service deployment choose `tor` in the installer. The base and Tor Compose files publish **no host ports**; Tor connects to `app:8080` on the private Docker network. After initialization, obtain the address with:
-
-```sh
-docker compose exec tor cat /var/lib/tor/marketplace/hostname
-```
-
-The persistent `tor_identity` volume contains the onion private keys. Preserve it to retain the address; encrypt any offline copy. The setup uses HTTP inside the authenticated onion circuit and sets `COOKIE_SECURE=false` for that endpoint. The application and database share an internal Docker network with no direct Internet egress. Only the Tor gateway has a separate egress network. Selecting external database or RPC endpoints adds `compose.external-egress.yaml`, which explicitly permits direct application egress; that configuration provides onion-only inbound exposure, not Tor-routed outbound traffic. Local full nodes have their own direct egress network to synchronize with peers. Docker network isolation does not protect against host administrators or a compromised container runtime. Use the dedicated Tor Compose file without the clearnet overlay. If changing an existing clearnet deployment, stop it before changing `COMPOSE_FILE` and recreate containers and the backend network so published ports are removed and the network becomes internal. Remove only the unused network, not persistent volumes. Never run both overlays together.
-
-## Optional onion mirror
-
-In a Tor deployment, create a second onion address with its own persistent identity:
-
-```sh
-docker compose --profile mirror up -d tor-mirror
-docker compose exec tor-mirror cat /var/lib/tor/marketplace/hostname
-```
-
-Wait for the mirror's Tor process to initialize before reading its hostname. This optional profile publishes no host ports and reaches the same application/database over the private backend network. The second address is a same-host alternate URL; it does not provide independence from host, application or database failures. Preserve and encrypt the separate `tor_mirror_identity` volume to retain its address. Add `mirror` to `COMPOSE_PROFILES` in `.env` when you want ordinary deployment commands to include it.
-
-Publish both addresses in an operator-signed verification document distributed through a trusted channel. Users should verify that signature with a previously trusted operator key; merely displaying an address or a “canonical” label on a page does not authenticate a mirror. Signing and distribution remain operator tasks.
-
-## Optional cryptocurrency nodes
-
-Nodes default to disabled. The installer accepts an external RPC URL or a local full-node container for each currency. Local nodes require an **operator-supplied reviewed image**, ideally pinned by digest. Bitcoin's image must provide `bitcoind` on PATH and support a writable `/data`; Monero's must provide `monerod` with the same data-directory support, plus `monero-wallet-rpc` for the `monero-wallet` service the installer enables alongside a local Monero node. Local nodes run on test networks only (`BITCOIN_CHAIN`, default `testnet4`, which needs Bitcoin Core 28 or newer; `MONERO_NETWORK`, default `stagenet`). No arbitrary third-party image is silently trusted. Fetch and verify binaries from [Bitcoin Core](https://bitcoincore.org/en/download/) and [Monero](https://www.getmonero.org/downloads/) if building your own images. Verify upstream signatures as well as hashes. Container defaults and architecture must be reviewed against the selected image.
-
-Both nodes store their blockchain in dedicated volumes and publish no ports. They can require substantial disk space and synchronization time. Bitcoin RPC is password protected; its allowlist covers common private Docker subnets and must be adjusted for custom networking. Monero exposes restricted daemon RPC only inside the deployment network. A Monero daemon is **not** a wallet RPC service. Full-node availability alone does not provide payment processing.
-
-**Payments are implemented for test networks only; mainnet is refused at startup.** With a wallet RPC configured (see [Payments](#payments)), the app issues deposit addresses, watches confirmations and sends single-attempt releases and refunds from the operator's pooled test-network wallet. That is custodial holding, not multisig escrow, and there is no fee accounting. Never send mainnet coins. Providers are enabled by environment variables and a restart. Saving settings in the web application never installs software, launches containers or executes Docker. Operators apply deployment changes in `.env` and Compose themselves; the web container has no Docker socket.
-
-## Migrations
-
-`internal/market/schema.sql` is the frozen baseline. Startup applies it, then every `internal/market/migrations/NNN_name.sql` not yet listed in `schema_migrations`, in numeric order, inside one transaction under an advisory lock, so concurrent app starts are safe and a failed migration changes nothing. A version missing from the table is applied even when higher versions already are. Never edit a merged migration; add a new file. Reserved blocks: 001–009 Foundation, 010–019 authentication, 020–029 PGP, 030–039 orders, 040–049 inventory, 050–059 payments, 060–069 transparency. Take an encrypted backup before upgrading; there are no automatic down-migrations.
-
-Migration 001 replaces the free-text order status with a checked `state` column (existing unfunded drafts become `draft`) and limits each buyer to one open draft per listing and currency.
-
-## Feature configuration
-
-All keys below are listed in `.env.example` and passed by `compose.yaml`. Blank or absent values keep a feature disabled.
-
-### Authentication
-
-No environment keys. Second-factor secrets are encrypted with a key derived from `SETUP_TOKEN`; rotating `SETUP_TOKEN` makes existing TOTP enrollments unreadable, so affected users must sign in with a recovery code, turn TOTP off and enroll again.
-
-- **TOTP** is optional per account: *Account → Manage TOTP* (`/totp`). Users type the shown secret (or paste the `otpauth://` URI) into an authenticator app; no QR code is generated. TOTP turns on only after a correct code, and 10 one-time recovery codes are shown once. Server clocks must be accurate (NTP); codes are accepted within ±30 seconds.
-- **CAPTCHA** on sign-in and registration is on by default for new and upgraded installations. Administrators turn it off or on under *Admin → Sign-in protection*; the change is audited. It is an image only, with no audio alternative, so turning it off may be needed for users who cannot read it. First-run setup never shows it.
-
-### PGP identity
-
-No configuration. Users paste an ASCII-armored public key on `/account`; the fingerprint is shown and ownership is proven on `/pgp` by signing a server text or decrypting a message encrypted to the key (for example `gpg --clearsign`, `gpg --decrypt`). A verified key can be used as a sign-in second factor. Changing the key clears verification and PGP sign-in. `/messages` accepts only OpenPGP-encrypted messages and labels each by whether its recipient key IDs match the recipient's saved key; the server never decrypts or holds private keys. Losing the private key locks PGP sign-in unless another second factor is enrolled. Vendor pages and order pages show the other party's armored public key, fingerprint and whether ownership is verified, and "Message vendor"/"Contact vendor" links open `/messages?to=<handle>` with the recipient filled in; without a saved key, the page says messages cannot be sent until one is added.
-
-### Orders
-
-No configuration. Requesting payment on an order requires a test-network wallet provider for its currency (see Payments); without one the step is shown as unavailable. Migration 030 adds `deliveries`, `reviews` and `disputes.outcome`. Digital delivery content is stored unencrypted in the database and shown only to the order's buyer and vendor, and read-only to moderators and administrators once the order is disputed; vendors should encrypt sensitive content to the buyer's PGP key before delivering it.
-
-**Shipping addresses are never stored, by design.** There is no address field. For a paid physical order the order page asks the buyer to encrypt their address to the vendor's PGP key in their own PGP application and send it through `/messages`, which accepts only OpenPGP-encrypted messages; the server keeps only that ciphertext. A vendor without a saved key cannot receive addresses until they add one.
-
-Moderators and administrators open the order page of a disputed (or resolved) order they are not party to, read-only, from the moderation desk; buyer and vendor actions stay unavailable to them. Changing a vendor's role to buyer or moderator archives their active listings in the same audited transaction and blocks new drafts and payment requests on them; existing orders continue.
-
-### Inventory
-
-No configuration. Vendors manage listings from the vendor desk (Edit / Archive / Restore). Automatic delivery content for digital listings is stored unencrypted in the database — include it in your threat model and backups — and is only released after a payment provider confirms payment; with payments disabled it is never released automatically.
-
-### Payments
-
-**Test networks only. These payments move no real funds.** The application refuses to start if a node or wallet is on mainnet or disagrees with `BITCOIN_CHAIN`/`MONERO_NETWORK` (blank accepts whichever test network the node reports). A node that is unreachable, still syncing or has no wallet loaded does **not** stop the site: that currency shows as unavailable on the admin page, payment requests for it are refused, and every watcher pass checks it again (reloading the Bitcoin wallet or reopening the Monero wallet after a node restart). A node that reports mainnet after startup disables its currency until the app is restarted. A currency with a blank URL stays disabled, and the site then says "Payments disabled". Step-by-step setup, wallet creation and payout recovery: [docs/testnet-runbook.md](docs/testnet-runbook.md). Upgrading from v0.1.0-alpha.1: [UPGRADING.md](UPGRADING.md).
-
-- Bitcoin: `BITCOIN_RPC_URL` is a wallet-enabled Bitcoin Core RPC. Credentials go in the URL userinfo (`http://marketplace:PASSWORD@bitcoin:8332`); they are sent as HTTP Basic auth and never logged. `BITCOIN_WALLET` (default `opsecmkt`) must exist; the app loads it if needed. Create it once as shown in the [runbook](docs/testnet-runbook.md#2-create-the-bitcoin-wallet) (inside the compose container `bitcoin-cli` needs `-rpcport=8332 -rpcuser=marketplace`). `BITCOIN_CHAIN` (blank, `testnet4`, `signet` or `regtest`) must match the node when set; the local node service runs `testnet4` when it is blank. `PAYMENT_CONFIRMATIONS_BTC` defaults to 3; use 1 for regtest.
-- Monero: `MONERO_WALLET_RPC_URL` is monero-wallet-rpc with its `--rpc-login` credentials as userinfo (for example `http://marketplace:PASSWORD@monero-wallet:18083`), sent as HTTP Digest auth. The local `monero-wallet` service requires `MONERO_WALLET_RPC_PASSWORD` (the installer generates it) and no longer runs with `--disable-rpc-login`. The app uses account 0 and opens a wallet file named `opsecmkt` (empty password) if none is open. Create it first with the `create_wallet` RPC ([runbook](docs/testnet-runbook.md#3-create-the-monero-wallet)). `MONERO_RPC_URL` (the daemon) is optional; when set, its network and sync state are checked too. `MONERO_NETWORK` (blank, `stagenet` or `testnet`) must match when set. `PAYMENT_CONFIRMATIONS_XMR` defaults to 10.
-- `PAYMENT_POLL_INTERVAL` (default `30s`, from 1s to 1h) sets how often the single background watcher polls wallets and sends queued payouts. Several app instances can share a database; only one polls at a time.
-- `PAYMENT_EXPIRY` (Go duration, default `24h`, from 10m to 720h) is the payment window. An order still awaiting payment that long after its address was issued, with no deposit seen, is cancelled by the watcher and its reserved stock is returned. An order with a deposit still confirming stays open. A buyer can hold at most 3 orders awaiting payment at once. Requesting payment records the listing's current price.
-
-Operational limits to accept before enabling payments:
-
-- Deposits for all orders sit in **one pooled custodial wallet** per currency. This is not multisig escrow. Whoever controls the node wallet controls the funds.
-- There is **no commission or fee accounting**. Bitcoin payouts deduct the network fee from the amount sent (`subtractfeefromamount`). Monero payout fees are paid by the pooled wallet on top of the payout, so keep a small test-coin buffer in it.
-- Payouts are **single-attempt**. A failed or interrupted wallet call is shown on the admin page and never retried automatically, because the transaction may already have been broadcast. After checking the wallet, an administrator can release a held payout, requeue a failed or stuck one, or record one as sent with its transaction ID (password-confirmed and audited). A shutdown or redeploy lets an in-flight wallet send finish (bounded to 30 seconds; the app's stop grace period is 60 seconds).
-- The watcher never cancels an order for non-payment unless it read that order's deposit address from the wallet in the same pass, and it skips a currency entirely while its node is still syncing (Bitcoin `initialblockdownload`; Monero daemon `target_height` above `height`, when `MONERO_RPC_URL` is set).
-- A credited deposit that later conflicts is flagged to moderators and holds the order's unsent payout. A credited deposit that drops below the confirmation threshold (a reorg) also holds the payout, which resumes automatically once it confirms again. The order state is never reverted automatically.
-- Late deposits: closed orders stay watched while their address is less than **30 days** old and a deposit is still confirming or unhandled. Funds that confirm after a cancellation that refunded nothing are refunded to the buyer (blocked until the buyer saves an address). Extra funds on completed or resolved orders, or after a refund was already queued, are flagged to moderators, not paid out. Deposits to older addresses are not seen by the watcher; handle them by hand from the wallet.
-- Monero transfers with a non-zero `unlock_time` (locked transfers) are recorded and shown, but never counted toward payment or paid out. The order history notes "locked transfer ignored" once and moderators and the buyer are notified.
-- Recipients must save a payout address on their account page. Payouts wait ("blocked") until they do. Saving or removing a payout address needs the current password, plus an authenticator code when TOTP is enrolled.
-
-`scripts/regtest-smoke.sh` is a manual check against a local `bitcoind -regtest` (`BITCOIN_REGTEST_RPC_URL=http://user:pass@127.0.0.1:18443`); see the [runbook](docs/testnet-runbook.md#7-manual-regtest-check-bitcoin). It is not part of CI.
-
-### Transparency
-
-`AUDIT_SIGNING_KEY` (64 hex characters, an Ed25519 seed generated by the installer with `openssl rand -hex 32`) enables signed audit exports. It is read only from the environment, never stored in the database; blank or malformed values leave the export visibly unavailable. Changing it changes the public key, so treat it like any long-lived signing key: back it up with `.env` and announce rotations.
-
-**Pin the audit public key.** The admin page and `/canary` show the hex Ed25519 public key. Record it once through a channel you trust (for example in the operator-signed canary text) and verify every export against that pinned value, not against the key printed in the `.sig` file:
-
-```sh
-go run ./cmd/verify-audit -pub <pinned-hex-key> audit-events-upto-N.jsonl audit-events-upto-N.sig
-```
-
-The export for a given `upto` is byte-for-byte reproducible, so two downloads can be compared. **A server compromise can produce validly signed exports**: whoever controls the server or `AUDIT_SIGNING_KEY` can sign an altered history. The signature proves origin from the configured key, not that the log is complete or untampered.
-
-**Warrant canary.** In the admin page, paste the operator's OpenPGP public key, then paste a statement the operator wrote and signed offline (`gpg --clearsign canary.txt`). The application stores it as pasted only if it verifies, re-verifies it on every view of `/canary`, and shows INVALID with the reason if the key changes or the stored text is altered. Keep the operator's private key off the server; the application never writes or signs canary text.
-
-## Backups and recovery
-
-Install [age](https://age-encryption.org/) and generate an identity offline (`age-keygen -o backup-key.txt`). Store the private key separately from backups and use its public recipient for encryption:
-
-```sh
-AGE_RECIPIENT=age1YOUR_PUBLIC_RECIPIENT ./scripts/backup.sh backups/market.dump.age
-```
-
-For external databases also set `BACKUP_DATABASE_URL`, install Python 3 and PostgreSQL client tools matching or newer than the server. The script streams a custom-format dump directly into encryption, uses restrictive file permissions, refuses overwrite and fails if either command fails. Back up `.env`, deployment settings and the Tor identity separately in encrypted storage. Database dumps do not include onion keys or blockchain volumes, and in particular **not the custodial payment wallets** (the `bitcoin_data` and `monero_wallet` volumes, or your external wallets): back those up on their own (see the [runbook](docs/testnet-runbook.md#6-back-up-the-wallets)). Maintain offline copies and rehearse recovery.
-
-Restore into an explicitly provisioned **empty** destination, with Python 3 and compatible PostgreSQL client tools:
-
-```sh
-RESTORE_DATABASE_URL='postgres://user:password@localhost/recovery?sslmode=verify-full' \
-  AGE_IDENTITY=/secure/backup-key.txt ./scripts/restore.sh backups/market.dump.age
-```
-
-The restore requires typing `RESTORE`, runs transactionally, and does not drop existing tables. Because a dump can predate payouts that were sent afterwards, the script then holds every payout the dump shows as queued or sending (one transaction, error "Restored from backup: verify in the wallet before releasing"), so the restored site never resends one on its own; an administrator releases, requeues or marks each as sent from the admin page after checking the wallet. Validate recovered accounts, listings, orders and settings before pointing the application at it. Shut down writes or restore into a separate instance during recovery. Never test a restore against your live database.
-
-## Verification and maintenance
-
-```sh
-go test -race ./...
-go vet ./...
-go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
-bash -n scripts/install.sh scripts/backup.sh scripts/restore.sh
-docker compose config --quiet
-```
-
-`docker compose config` requires `.env` or equivalent environment variables. Startup logs show database connection/migration errors. Review dependencies and rebuild periodically. The Compose examples use official [Go](https://hub.docker.com/_/golang) and [PostgreSQL](https://hub.docker.com/_/postgres) image families; production operators should pin reviewed image digests and plan PostgreSQL major-version upgrades explicitly. Tor is installed from Debian's package repositories; the onion-service configuration follows the [Tor Project setup guide](https://community.torproject.org/onion-services/setup/).
-
-GitHub Actions repeats the race tests, vet, dependency verification, govulncheck and Compose validation using the latest Go 1.26 patch release. CI supplies PostgreSQL 17 to the integration tests, which use an isolated schema. Locally set `TEST_DATABASE_URL` to a dedicated test database to include those tests. These checks do not substitute for a live Docker/Tor deployment test.
-
-Backup/restore URLs require an explicit host and database. The helper decodes credentials into libpq environment variables so they are not included in process arguments. Standard TLS options are supported; unsupported query options fail closed. Environment variables remain visible to privileged host processes.
-
-The encrypted backup/restore scripts were exercised against an isolated PostgreSQL 16.15 test cluster with age 1.3.2: two rows including Unicode round-tripped, encrypted output had mode 0600, existing backups were refused, a wrong identity failed without creating tables, and restoring into an occupied target rolled back without changing its rows. Both scratch databases and temporary keys/dumps were removed afterward. The Docker PostgreSQL 17 deployment still needs its own live rehearsal.
-
-## Read-only design preview
+**A self-hosted marketplace that works without browser JavaScript.**
+
+Give buyers a searchable catalog, vendors a place to manage physical and digital
+listings, and moderators the tools to handle disputes. OPSEC Market combines
+server-rendered pages, PGP identity and encrypted messaging, optional two-factor
+sign-in, and an operator-controlled Go/PostgreSQL deployment.
+
+- **Buy and sell:** catalog filters, vendor profiles, inventory, order history,
+  digital delivery and verified-purchase reviews.
+- **Control your instance:** account roles, moderation, signed audit exports and
+  operator-signed canaries, with clearnet or onion-service deployment options.
+- **Keep the browser simple:** HTML and CSS, no frontend build step, no required
+  JavaScript bundle or third-party browser assets.
+- **Exercise payment flows:** optional Bitcoin and Monero test-network wallets,
+  confirmation tracking, releases and refunds.
+
+**This is a test-network marketplace. Mainnet payments are refused.** Deposits
+use pooled custodial wallets; multisig escrow and marketplace fee accounting are
+not implemented. See [implementation status](docs/implementation-status.md) for
+working features and limits, and [acceptance checks](docs/acceptance.md) for the
+verification checklist. Tor deployment does not guarantee anonymity.
+
+[Try the preview](#try-the-preview) · [Run locally](#run-locally) ·
+[Seed local data](#seed-local-data) · [Run tests](#run-tests) ·
+[Operator guide](docs/operator-guide.md)
+
+## Try the preview
+
+Install **Go 1.26.8 or newer**, then run from the repository root:
 
 ```sh
 go run ./cmd/server -preview
 ```
 
-Open `http://127.0.0.1:8080`. This preview uses labeled sample data, binds only to loopback, and rejects all form writes. A normal installation starts with an empty real catalog; the administrator can publish listings or grant a registered buyer the vendor role.
+Open <http://127.0.0.1:8080>. The preview includes labeled sample data, binds only
+to loopback and rejects form writes. It needs no database, wallet or Node.js.
+Stop it with Ctrl-C before starting the writable app on the same port.
 
-See [implementation status](docs/implementation-status.md) for the exact working and unavailable features, and [acceptance checks](docs/acceptance.md) for remaining release gates. Use Go **1.26.8 or newer**; the earlier local 1.26.2 standard library produced known vulnerability findings. The Docker build pins 1.26.8 and CI tracks the current 1.26 patch release.
+## Run locally
 
-## CI/CD and browser regression tests
+### Docker installation
 
-The private [GitHub repository](https://github.com/yegamble/opsecmkt) runs [CI](https://github.com/yegamble/opsecmkt/actions/workflows/ci.yaml) on every branch push and pull request. Tests cover Go/PostgreSQL, container installation with both database modes, deployment configurations, encrypted restore, and Playwright across Chromium, Firefox and WebKit. JavaScript is disabled in browser tests. Node is needed only for development tests, not the application image.
+Install Docker Engine/Desktop with Compose v2, OpenSSL and curl. Start a local
+marketplace with one command:
+
+```sh
+./scripts/install.sh --local
+```
+
+This creates a private configuration, starts PostgreSQL and the app, and waits
+until the app is healthy. Open the printed link (normally
+<http://127.0.0.1:8080/setup>), read `SETUP_TOKEN` from the generated private `.env`,
+and enter it in the browser wizard. Choose your marketplace name and administrator
+credentials, then follow the admin getting-started steps to publish your first
+listing. No cryptocurrency wallet is required. Keep `.env` private and retain it
+across restarts. The installer refuses to overwrite an existing configuration.
+
+Use `APP_PORT=8081 ./scripts/install.sh --local` if port 8080 is occupied. The
+chosen port is saved in `.env`. The shortcut is for local HTTP development only;
+for production HTTPS, Tor, external databases or optional test-network nodes, use
+the interactive installer instead:
+
+```sh
+./scripts/install.sh
+```
+
+The interactive clearnet path keeps secure cookies on by default; finish setup
+through your HTTPS reverse proxy. See the [operator guide](docs/operator-guide.md)
+for deployment choices. Both paths keep the database and optional node RPC ports
+private.
+
+```sh
+docker compose up -d --build  # rebuild/start subsequent runs
+docker compose logs app      # inspect startup and migration errors
+docker compose down          # stop; preserves database volumes
+```
+
+Do not add `--volumes` unless you intend to destroy persisted data.
+
+### Develop with Go and a local database
+
+Requirements: **Go 1.26.8+**, **PostgreSQL 17+**, and OpenSSL. The example below
+uses Docker for PostgreSQL only; an existing local PostgreSQL server works too.
+This dedicated container uses throwaway local credentials and a loopback port.
+
+```sh
+docker run -d --name opsecmkt-dev-db \
+  -e POSTGRES_USER=opsecmkt -e POSTGRES_PASSWORD=local-dev-only \
+  -e POSTGRES_DB=opsecmkt_dev \
+  -p 127.0.0.1:55432:5432 postgres:17-alpine
+
+# Wait until this reports "accepting connections" before continuing:
+docker exec opsecmkt-dev-db pg_isready -U opsecmkt -d opsecmkt_dev
+
+export DATABASE_URL='postgres://opsecmkt:local-dev-only@127.0.0.1:55432/opsecmkt_dev?sslmode=disable'
+export SETUP_TOKEN="$(openssl rand -hex 32)"
+export ADDR='127.0.0.1:8080'
+export COOKIE_SECURE=false
+export APP_MODE=clearnet
+# Keep local development independent of any configured wallets:
+unset BITCOIN_RPC_URL MONERO_RPC_URL MONERO_WALLET_RPC_URL
+
+go run ./cmd/server
+```
+
+Open <http://127.0.0.1:8080/setup> and use the generated `SETUP_TOKEN` to bootstrap
+your administrator. Save that token privately and reuse it across restarts:
+TOTP secrets are encrypted with a key derived from it. The server reads environment
+variables directly; it does **not** automatically load `.env`. Run from the repo
+root so it can find `web/` templates and assets. Schema and migrations apply on
+startup; the database user needs permission to create them.
+
+Stop/start this database with `docker stop opsecmkt-dev-db` and
+`docker start opsecmkt-dev-db`. Keep it while you need its data; it is a development
+container, not a backup strategy.
+
+## Seed local data
+
+A normal installation starts with an **empty catalog**. There is no standalone
+`seed` command. Choose the path that matches what you need:
+
+| Purpose | Data source | Persistence |
+| --- | --- | --- |
+| Browse the design | `go run ./cmd/server -preview` | Read-only sample data; no PostgreSQL writes |
+| Manually test real workflows | Bootstrap accounts and publish listings through the UI | Your development database |
+| Repeatable Go integration tests | `internal/market/testenv_test.go` fixtures | Isolated schemas, removed on cleanup |
+| Repeatable browser tests | Playwright `db-setup` and per-test fixtures | Disposable database; recreate before rerunning |
+
+### Populate a writable development catalog
+
+1. Complete `/setup` on your local instance to create an administrator.
+2. Open `/vendor-dashboard`, choose **+ Publish a new listing**, and add a physical
+   listing with stock, a description and reference prices (for example `0.001`
+   BTC and `0.5` XMR). Add a digital listing to exercise its editor too.
+3. In separate browser profiles, register a buyer and a prospective vendor at
+   `/register`. As administrator, use **Assign an account role** on `/admin` to
+   give the vendor account its role. Publish another listing as that vendor.
+4. Sign in as the buyer, browse a listing and create an order draft. Check the
+   buyer and vendor views, edit/archive/restore listings, and reload to verify
+   persistence. With wallets disabled, requesting payment stays unavailable.
+
+Use invented accounts and content. Paid delivery, completion and refund flows
+need a test-network wallet or the fake-wallet integration suite; manually setting
+orders to paid in SQL bypasses the behavior you want to test. Follow the
+[test-network runbook](docs/testnet-runbook.md) for real wallet testing.
+
+### Seed an automated browser fixture for inspection
+
+After setting up the development PostgreSQL container above, install the browser
+test dependencies from the next section and create a separate fresh database:
+
+```sh
+docker exec opsecmkt-dev-db createdb -U opsecmkt opsecmkt_e2e
+export E2E_DATABASE_URL='postgres://opsecmkt:local-dev-only@127.0.0.1:55432/opsecmkt_e2e?sslmode=disable'
+unset BITCOIN_RPC_URL MONERO_RPC_URL MONERO_WALLET_RPC_URL
+npx playwright test --project=db-setup
+```
+
+This runs the real setup and listing forms, creates `browser_admin` with password
+`browser-admin-password-123`, publishes **Browser regression test hardware**, and
+turns CAPTCHA off after testing its rejection path. These are public test-only
+credentials. To inspect the seeded database after Playwright stops its server:
+
+```sh
+DATABASE_URL="$E2E_DATABASE_URL" \
+  SETUP_TOKEN='e2e-local-only-setup-token-at-least-32-characters' \
+  ADDR=127.0.0.1:18081 COOKIE_SECURE=false APP_MODE=clearnet \
+  go run ./cmd/server
+```
+
+Open <http://127.0.0.1:18081/login>. The fixture seed is **not idempotent**: setup
+can only run once. Stop the inspection server and recreate only this disposable
+database before another seed or full browser run:
+
+```sh
+docker exec opsecmkt-dev-db dropdb -U opsecmkt opsecmkt_e2e
+docker exec opsecmkt-dev-db createdb -U opsecmkt opsecmkt_e2e
+```
+
+## Run tests
+
+### Go and PostgreSQL
+
+Fast checks run without a database, but database integration tests will **skip**:
+
+```sh
+go mod verify
+go vet ./...
+go test -race -count=1 ./...
+```
+
+To include real PostgreSQL coverage, create a dedicated test database in the local
+container. Run `createdb` once, then reuse this database across Go test runs:
+
+```sh
+docker exec opsecmkt-dev-db createdb -U opsecmkt opsecmkt_test
+export TEST_DATABASE_URL='postgres://opsecmkt:local-dev-only@127.0.0.1:55432/opsecmkt_test?sslmode=disable'
+go test -race -count=1 ./...
+```
+
+Tests create isolated schemas, apply migrations, create their own fixture users,
+listings and orders, then remove their schemas. Use a dedicated database even
+though schemas are isolated. Use different databases for simultaneous Go test
+processes: the watcher uses a database-wide advisory lock. Fake RPC tests cover payment behavior; they do not
+prove live node integration. The manual Bitcoin check is
+[`scripts/regtest-smoke.sh`](scripts/regtest-smoke.sh).
+
+### Browser regression tests
+
+Install **Node.js 22+** for development tests only:
 
 ```sh
 npm ci
@@ -183,6 +217,97 @@ npx playwright install chromium firefox webkit
 npm run test:e2e
 ```
 
-For the real account/order browser journeys, also set `E2E_DATABASE_URL` to a **fresh, disposable** PostgreSQL database. The `db-setup` project initializes it once; every other `tests/e2e/db-*.spec.ts` depends on it and creates its own uniquely named accounts. CI requires it. Never use a production database. Test servers use loopback ports 18080 and 18081 and do not reuse your existing preview.
+On Linux, use `npx playwright install --with-deps chromium firefox webkit` if
+browser OS dependencies are missing. With `E2E_DATABASE_URL` unset, this runs only
+the preview suite across Chromium, Firefox and WebKit, from mobile to desktop.
+All browser tests disable JavaScript.
 
-Version tags produce CI-gated **private draft release artifacts**, not a live deployment. See [CI and release instructions](docs/ci-cd.md) and [operations test instructions](docs/operations-tests.md).
+For real account, inventory and order journeys, point `E2E_DATABASE_URL` at a
+**fresh disposable database**, as shown in the seed section, then run:
+
+```sh
+unset BITCOIN_RPC_URL MONERO_RPC_URL MONERO_WALLET_RPC_URL
+npm run test:e2e
+npm run test:e2e:report
+```
+
+The `db-setup` project seeds once before `database-chromium`; each subsequent test
+creates its own accounts and listings. Recreate the E2E database before every full
+run, including after a setup-only seed. Playwright starts its own servers on
+loopback ports **18080** and **18081**, and refuses to reuse existing servers.
+Never set either test database URL to a deployed instance.
+
+### Payment journeys with browser automation
+
+A separate suite exercises both Bitcoin and Monero through the production RPC
+adapters, with a local simulated wallet and real PostgreSQL. It covers browser
+setup, partial deposits, top-ups, confirmation waiting, pausing new payment
+requests, manual and automatic fulfillment, verified reviews, dispute refunds,
+paid-order cancellation and password-confirmed administrator payout recovery.
+It checks single payouts and never connects to a real chain.
+
+```sh
+docker exec opsecmkt-dev-db createdb -U opsecmkt opsecmkt_wallet_e2e
+export E2E_WALLET_DATABASE_URL='postgres://opsecmkt:local-dev-only@127.0.0.1:55432/opsecmkt_wallet_e2e?sslmode=disable'
+npm run test:e2e:wallet
+```
+
+Use a fresh database for every run. This suite owns loopback ports 18082 and
+18083 and writes separate `playwright-wallet-report/` and `test-results-wallet/`
+artifacts. Real-wallet network validation remains a separate runbook step.
+
+For actual local Bitcoin Core and Monero nodes, mined test coins and real wallet
+transactions, follow [isolated real-chain browser testing](docs/local-chain-testing.md)
+and run `npm run test:e2e:chain`. This uses Bitcoin regtest and an offline Monero
+stagenet fork; it does not claim public-testnet validation.
+
+### Scripts, operations and CI
+
+```sh
+python3 -m unittest discover -s tests -p 'test_*.py' -v
+for script in scripts/*.sh; do bash -n "$script"; done
+go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+```
+
+[CI](.github/workflows/ci.yaml) also validates Compose profiles, container startup,
+upgrades, encrypted backup/restore, dependencies and browser regressions with
+PostgreSQL. See [operations tests](docs/operations-tests.md) for local rehearsals
+and [CI/release instructions](docs/ci-cd.md). Version tags produce CI-gated private
+draft release artifacts; they do not deploy a live instance.
+
+## Find your way around
+
+| Path | Responsibility |
+| --- | --- |
+| `cmd/server/` | HTTP server and read-only preview entry point |
+| `internal/market/` | Marketplace behavior, database access and Go tests |
+| `internal/market/migrations/` | Ordered SQL migrations; add new files, never rewrite merged ones |
+| `web/` | Server-rendered templates and static assets |
+| `tests/e2e/` | Playwright preview and database-backed journeys |
+| `scripts/` | Installer, backup/restore and operations checks |
+| `docs/` | Capability status, acceptance criteria and operator runbooks |
+
+## Claude review loops
+
+Claude reads [CLAUDE.md](CLAUDE.md) and the
+[completion scrutiny loop](.claude/review-loop.md). The Stop and SubagentStop hooks
+request an extra review before finishing and use a recursion guard to keep that
+reminder bounded, following the [Claude hook protocol](https://code.claude.com/docs/en/hooks#stop-decision-control). Python 3 is required. Use `/scrutinise <scope>` for a focused
+review in Claude Code. Hooks prompt review; they do not certify test results.
+
+For the same external Ralph runner used by Vidra, set the current task and its
+acceptance criteria in [.ralph/fix_plan.md](.ralph/fix_plan.md), then run `ralph`
+from this directory. Ralph and the Claude CLI must already be installed and
+configured. [.ralphrc](.ralphrc) sets the budget and circuit breakers;
+[the prompt](.ralph/PROMPT.md) requires a separate final scrutiny iteration before
+signalling completion. Keep one writing loop per checkout. No loop is started by
+installing these files.
+
+## Deployment and further reading
+
+- [Operator guide](docs/operator-guide.md): HTTPS/Tor, mirrors, configuration,
+  migrations, backups and recovery.
+- [Test-network payments](docs/testnet-runbook.md): wallet setup and payout recovery.
+- [Upgrade guide](UPGRADING.md): compatibility and migration instructions.
+- [Implementation status](docs/implementation-status.md): what works and what is missing.
+- [Acceptance checks](docs/acceptance.md): evidence required to verify behavior.

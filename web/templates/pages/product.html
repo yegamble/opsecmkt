@@ -44,14 +44,14 @@
 <p class="mono">{{.PriceXMR}} XMR</p>
 <hr class="divider">
 {{if lt .Stock 1}}<p><strong>Out of stock.</strong> New orders are refused until the vendor adds stock.</p>{{else}}<p>Review the listing and create an unfunded order draft. A draft requests no payment; any payment step happens later on the order page.</p>
-<a class="button primary full" href="/checkout?id={{.ID}}">Review order draft ↗</a>{{end}}{{if $.User}}{{if or (eq $.User.ID .VendorID) (eq $.User.Role "admin")}}
-<a class="text-link" href="/listing-edit?id={{.ID}}">Edit this listing →</a>{{end}}{{end}}
+<a class="button primary full" href="/checkout?id={{.ID}}">Review order draft <span class="action-icon">↗</span></a>{{end}}{{if $.User}}{{if or (eq $.User.ID .VendorID) (eq $.User.Role "admin")}}
+<a class="text-link" href="/listing-edit?id={{.ID}}">Edit this listing <span class="action-icon">→</span></a>{{end}}{{end}}
 </section>
 <section class="panel">
 <h2>Know before you order</h2>
 <p>Product illustrations are decorative. Confirm specifications and availability with the vendor.</p>
 {{template "payment-status:product" $}}
-<a class="text-link" href="/messages?to={{.Vendor}}">Contact vendor →</a>
+<a class="text-link" href="/messages?to={{.Vendor}}">Contact vendor <span class="action-icon">→</span></a>
 </section>
 </aside>
 </div>{{template "product-reviews" $}}{{else}}<div class="empty">

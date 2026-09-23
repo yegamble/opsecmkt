@@ -141,11 +141,14 @@ func (a *App) pollCurrency(ctx context.Context, p PaymentProvider) error {
 	cur := p.Currency()
 	// Orders awaiting payment, plus recently changed funded/terminal orders (late confirmations, conflicts, refunds),
 	// plus closed orders whose address was issued within 30 days and that still have a deposit below the threshold
-	// or a confirmed deposit neither credited (paid out / counted) nor flagged. Older addresses are not polled.
+	// or a confirmed deposit neither credited (paid out / counted) nor flagged. Credited deposits below
+	// threshold remain watched even after a conflict was flagged, so held payouts can recover. Older
+	// addresses are not polled by this recovery path.
 	rows, err := a.db.QueryContext(ctx, `SELECT pa.address,pa.order_id FROM payment_addresses pa JOIN orders o ON o.id=pa.order_id
 		WHERE pa.currency=$1 AND (o.state='awaiting_payment' OR (o.state<>'draft' AND o.updated > now()-interval '24 hours')
 			OR (o.state IN ('cancelled','resolved','completed') AND pa.created > now()-interval '30 days' AND EXISTS (SELECT 1 FROM payments pm
-				WHERE pm.order_id=o.id AND NOT pm.flagged AND (pm.confirmations BETWEEN 0 AND $2-1 OR (pm.confirmations>=$2 AND NOT pm.credited)))))
+				WHERE pm.order_id=o.id AND ((pm.credited AND pm.confirmations<$2)
+					OR (NOT pm.flagged AND (pm.confirmations BETWEEN 0 AND $2-1 OR (pm.confirmations>=$2 AND NOT pm.credited)))))))
 		ORDER BY o.updated`, cur, int64(p.Confirmations()))
 	if err != nil {
 		return err
@@ -420,6 +423,15 @@ func (a *App) flagOrder(ctx context.Context, tx *sql.Tx, o *Order, note string) 
 // sendPayouts claims each pending payout (committed pending -> sending) before a single wallet call, then
 // records sent+txid or failed+error. Payouts left in sending (crash, database error) are never retried.
 func (a *App) sendPayouts(ctx context.Context, p PaymentProvider) error {
+	// Read the restore gate directly, rather than cached page settings. Monitoring
+	// may continue during recovery, but no payout may leave the restored wallet.
+	var recoveryRequired bool
+	if err := a.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM settings WHERE key='payments_recovery_required' AND value='true')").Scan(&recoveryRequired); err != nil {
+		return err
+	}
+	if recoveryRequired {
+		return nil
+	}
 	cur := p.Currency()
 	rows, err := a.db.QueryContext(ctx, "SELECT id FROM payouts WHERE state='pending' AND currency=$1 ORDER BY id LIMIT 50", cur)
 	if err != nil {
@@ -446,6 +458,7 @@ func (a *App) sendPayouts(ctx context.Context, p PaymentProvider) error {
 		var to, order, recipient string
 		var amt int64
 		err = a.db.QueryRowContext(ctx, `UPDATE payouts SET state='sending',updated=now() WHERE id=$1 AND state='pending' AND address<>''
+			AND NOT EXISTS (SELECT 1 FROM settings WHERE key='payments_recovery_required' AND value='true')
 			AND NOT EXISTS (SELECT 1 FROM payments pm WHERE pm.order_id=payouts.order_id AND pm.credited AND pm.confirmations<$2)
 			RETURNING address,amount,order_id,user_id`, id, int64(p.Confirmations())).Scan(&to, &amt, &order, &recipient)
 		if err == sql.ErrNoRows {

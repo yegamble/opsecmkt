@@ -3,7 +3,9 @@
 <div class="panel">
 <div class="eyebrow">Operator configuration</div>
 <h1>Initialize your market<span class="accent">.</span></h1>
-<p>Create the first administrator using the deployment setup token.</p>
+<p>Your application and database are ready. Finish installation by naming your marketplace and creating its administrator.</p>
+<ol><li>Copy the setup token from your private deployment configuration.</li><li>Choose the marketplace name and your administrator credentials below.</li><li>Continue to the control room to configure payments, publish listings and invite users.</li></ol>
+<p class="help">Installation runs once. The setup token proves you control this deployment; it is not your account password. Payments stay unavailable until a test-network wallet is configured.</p>
 <form class="stack" method="post" action="/setup">
 <input type="hidden" name="csrf" value="{{.CSRF}}"><label>Setup token<input name="token" type="password" required autocomplete="off">
 </label>
@@ -11,7 +13,7 @@
 </label><label>Handle<input name="handle" required minlength="3" maxlength="32" autocomplete="username" spellcheck="false" autocapitalize="none" placeholder="your_handle">
 </label>
 <label>Password<input type="password" name="password" required minlength="12" autocomplete="new-password">
-</label><span class="help">Use at least 12 characters and at most 72 UTF-8 bytes. No email address is required.</span><button class="primary" type="submit">Initialize marketplace ↗</button>
+</label><span class="help">Use at least 12 characters and at most 72 UTF-8 bytes. No email address is required.</span><button class="primary" type="submit">Initialize marketplace <span class="action-icon">↗</span></button>
 </form></div>
 <p class="muted help">Keep your account credentials private. An account is not an anonymity guarantee.</p>
 </div>

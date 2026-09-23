@@ -23,6 +23,7 @@ func init() {
 		return err
 	})
 	registerLoader("messages", messageRecipientLoader)
+	registerLoader("order", disputeStaffLoader)
 
 	registerPreview("*", func(d *PageData) {
 		if d.User != nil {
@@ -47,6 +48,42 @@ func init() {
 		d.MessageTo = "ghost_circuit"
 		d.Contacts = []ContactKey{previewContactKey("ghost_circuit", "")}
 	})
+}
+
+// Only order parties need a directory of independent staff to contact about a dispute.
+// Staff roles and saved keys are read live; role labels never imply key ownership verification.
+func disputeStaffLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
+	o, u := d.Order, d.User
+	if o == nil || u == nil || (o.State != stateDisputed && o.State != stateResolved) ||
+		(u.ID != o.BuyerID && u.ID != o.VendorID) {
+		return nil
+	}
+	rows, err := a.db.QueryContext(ctx, `SELECT id,handle,role FROM users WHERE role IN ('moderator','admin') AND id<>$1 AND id<>$2 ORDER BY handle`, o.BuyerID, o.VendorID)
+	if err != nil {
+		return err
+	}
+	var staff [][3]string
+	for rows.Next() {
+		var person [3]string
+		if err := rows.Scan(&person[0], &person[1], &person[2]); err != nil {
+			rows.Close()
+			return err
+		}
+		staff = append(staff, person)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, person := range staff {
+		key, err := contactKey(ctx, a.db, person[0], person[1], person[2])
+		if err != nil {
+			return err
+		}
+		d.StaffContacts = append(d.StaffContacts, key)
+	}
+	return nil
 }
 
 func previewContactKey(handle, relation string) ContactKey {

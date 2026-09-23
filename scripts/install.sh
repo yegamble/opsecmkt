@@ -2,6 +2,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 umask 077
+local_mode=false
+case ${1:-} in
+  --local) [[ $# -eq 1 ]] || { echo 'Usage: scripts/install.sh [--local]' >&2; exit 2; }; local_mode=true ;;
+  '') ;;
+  *) echo 'Usage: scripts/install.sh [--local]' >&2; exit 2 ;;
+esac
 command -v docker >/dev/null || { echo 'Install Docker with Compose v2 first.' >&2; exit 1; }
 docker compose version >/dev/null || { echo 'Docker Compose v2 is required.' >&2; exit 1; }
 command -v openssl >/dev/null || { echo 'OpenSSL is required to generate secrets.' >&2; exit 1; }
@@ -13,11 +19,25 @@ secret() {
   [[ $value =~ ^[0-9a-f]+$ && ${#value} -eq $(($1 * 2)) ]] || { echo 'Could not generate a random secret with openssl; nothing was started.' >&2; exit 1; }
   printf '%s' "$value"
 }
-read -r -p 'Exposure (clearnet/tor) [clearnet]: ' mode
+if [[ $local_mode == true ]]; then
+  mode=clearnet
+  database=''
+  # The quick start always creates its own local database and disables external wallet connections.
+  unset DATABASE_URL POSTGRES_PASSWORD SETUP_TOKEN AUDIT_SIGNING_KEY APP_MODE COOKIE_SECURE
+  unset COMPOSE_FILE COMPOSE_PROFILES BITCOIN_RPC_URL MONERO_RPC_URL MONERO_WALLET_RPC_URL
+else
+  read -r -p 'Exposure (clearnet/tor) [clearnet]: ' mode
+fi
 mode=${mode:-clearnet}
 [[ $mode == clearnet || $mode == tor ]] || { echo 'Invalid mode'; exit 1; }
-read -r -s -p 'External PostgreSQL URL (blank creates internal database): ' database
-printf '\n'
+if [[ $local_mode == false ]]; then
+  read -r -s -p 'External PostgreSQL URL (blank creates internal database): ' database
+  printf '\n'
+fi
+if [[ $mode == clearnet ]]; then
+  command -v curl >/dev/null || { echo 'curl is required to verify application readiness.' >&2; exit 1; }
+  [[ ${APP_PORT:-8080} =~ ^[0-9]{1,5}$ ]] && ((10#${APP_PORT:-8080} > 0 && 10#${APP_PORT:-8080} <= 65535)) || { echo 'APP_PORT must be between 1 and 65535.' >&2; exit 1; }
+fi
 profiles=''
 compose_files="compose.yaml:compose.${mode}.yaml:compose.nodes.yaml"
 external_egress=false
@@ -31,7 +51,7 @@ else
   external_egress=true
 fi
 secure=true
-if [[ $mode == tor ]]; then
+if [[ $mode == tor || $local_mode == true ]]; then
   secure=false
 else
   read -r -p 'Local HTTP development only? (yes/no) [no]: ' local_http
@@ -50,6 +70,12 @@ setup_token=$(secret 32) || exit 1
 put SETUP_TOKEN "$setup_token"
 put APP_MODE "$mode"
 put COOKIE_SECURE "$secure"
+put APP_PORT "${APP_PORT:-8080}"
+if [[ $local_mode == true ]]; then
+  put BITCOIN_RPC_URL ''
+  put MONERO_RPC_URL ''
+  put MONERO_WALLET_RPC_URL ''
+fi
 # Ed25519 seed for signed audit exports.
 audit_key=$(secret 32) || exit 1
 put AUDIT_SIGNING_KEY "$audit_key"
@@ -58,7 +84,11 @@ put AUDIT_SIGNING_KEY "$audit_key"
 bitcoin_chain=''
 monero_network=''
 for coin in BITCOIN MONERO; do
-  read -r -p "$coin node (disabled/external/local) [disabled]: " choice
+  if [[ $local_mode == true ]]; then
+    choice=disabled
+  else
+    read -r -p "$coin node (disabled/external/local) [disabled]: " choice
+  fi
   case ${choice:-disabled} in
     disabled) ;;
     external)
@@ -79,22 +109,50 @@ for coin in BITCOIN MONERO; do
       fi
       ;;
     local)
-      read -r -p "$coin reviewed Docker image (prefer @sha256 digest): " node_image
-      [[ -n $node_image ]] || { echo 'A reviewed image is required'; exit 1; }
+      case $coin in
+        BITCOIN) default_image='bitcoin/bitcoin:latest' ;;
+        MONERO) default_image='ghcr.io/sethforprivacy/simple-monerod:latest' ;;
+      esac
+      read -r -p "$coin Docker image [$default_image; blank uses this default]: " node_image
+      node_image=${node_image:-$default_image}
+      image_name=$node_image
+      if [[ $node_image == *@* ]]; then
+        image_name=${node_image%@*}
+        image_digest=${node_image##*@}
+        [[ $image_digest =~ ^sha256:[0-9a-f]{64}$ ]] || {
+          echo 'Invalid image digest; use a complete @sha256: followed by 64 lowercase hexadecimal characters.' >&2
+          exit 1
+        }
+      fi
+      [[ $image_name =~ ^[[:alnum:]][[:alnum:]./:_-]*$ && $image_name != */ && $image_name != *: ]] || {
+        echo 'Invalid Docker image reference; include a repository name and optional tag or complete SHA-256 digest.' >&2
+        exit 1
+      }
       put "${coin}_IMAGE" "$node_image"
       # A local node never runs without a generated RPC password (secret exits otherwise).
       if [[ $coin == BITCOIN ]]; then
         rpc_password=$(secret 24) || exit 1
         put BITCOIN_RPC_PASSWORD "$rpc_password"
         put BITCOIN_RPC_URL "http://marketplace:${rpc_password}@bitcoin:8332"
-        bitcoin_chain=testnet4
+        read -r -p 'BITCOIN network (testnet4/signet/live) [testnet4]: ' bitcoin_network
+        case ${bitcoin_network:-testnet4} in
+          testnet4|signet) bitcoin_chain=${bitcoin_network:-testnet4} ;;
+          live) echo 'Live Bitcoin payments are disabled: this application refuses mainnet wallets and addresses.' >&2; exit 1 ;;
+          *) echo 'Choose testnet4, signet, or live.' >&2; exit 1 ;;
+        esac
         profiles="${profiles:+$profiles,}bitcoin"
       else
+        read -r -p 'MONERO network (stagenet/testnet/live) [stagenet]: ' monero_network_choice
+        case ${monero_network_choice:-stagenet} in
+          stagenet|testnet) monero_network=${monero_network_choice:-stagenet} ;;
+          live) echo 'Live Monero payments are disabled: this application refuses mainnet wallets and addresses.' >&2; exit 1 ;;
+          *) echo 'Choose stagenet, testnet, or live.' >&2; exit 1 ;;
+        esac
         wallet_password=$(secret 24) || exit 1
         put MONERO_RPC_URL 'http://monero:18081'
         put MONERO_WALLET_RPC_PASSWORD "$wallet_password"
         put MONERO_WALLET_RPC_URL "http://marketplace:${wallet_password}@monero-wallet:18083"
-        monero_network=stagenet
+        put MONERO_WALLET_IMAGE "${MONERO_WALLET_IMAGE:-ghcr.io/sethforprivacy/simple-monero-wallet-rpc:latest}"
         profiles="${profiles:+$profiles,}monero,monero-wallet"
       fi
       ;;
@@ -116,12 +174,28 @@ mv "$config" .env
 # Validate before starting. The internal database overlay waits for database health.
 docker compose config --quiet
 docker compose up -d --build
-printf 'Started. Read SETUP_TOKEN from the protected .env and open /setup to create the first admin.\n'
-if grep -q -e '^BITCOIN_RPC_URL=' -e '^MONERO_WALLET_RPC_URL=' .env; then
+if [[ $mode == clearnet ]]; then
+  endpoint="http://127.0.0.1:${APP_PORT:-8080}"
+  ready=false
+  for attempt in {1..60}; do
+    if [[ $(curl --noproxy '*' --silent --fail --max-time 2 "$endpoint/healthz" 2>/dev/null) == ok ]]; then
+      ready=true
+      break
+    fi
+    sleep 1
+  done
+  [[ $ready == true ]] || { echo 'Application did not become healthy. Inspect docker compose logs app; configuration and data were preserved.' >&2; exit 1; }
+fi
+printf 'Read SETUP_TOKEN from the protected .env to authorize the browser setup wizard. Keep this file private.\n'
+if grep -q -E "^(BITCOIN_RPC_URL|MONERO_WALLET_RPC_URL)='[^']+'$" .env; then
   printf 'Payment wallets must exist before test-network payments work; until then the admin page shows the provider as unavailable. Follow docs/testnet-runbook.md.\n'
 fi
 if [[ $mode == tor ]]; then
   printf 'Onion address (after Tor initializes): docker compose exec tor cat /var/lib/tor/marketplace/hostname\n'
 else
-  printf 'Local endpoint: http://127.0.0.1:8080 (production requires a TLS reverse proxy).\n'
+  if [[ $secure == false ]]; then
+    printf 'Ready. Open %s/setup to name your marketplace and create its administrator.\n' "$endpoint"
+  else
+    printf 'Application healthy at %s. Configure your HTTPS reverse proxy, then open https://YOUR-DOMAIN/setup. Secure cookies require HTTPS.\n' "$endpoint"
+  fi
 fi

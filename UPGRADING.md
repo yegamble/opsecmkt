@@ -80,7 +80,7 @@ Rolling back is **not** an image swap. Because migrations are one-way, the old i
 upgraded database. To roll back:
 
 1. Stop the app: `docker compose stop app`.
-2. Restore the pre-upgrade backup into a new, empty database with `scripts/restore.sh` (see the README).
+2. Restore the pre-upgrade backup into a new, empty database with `scripts/restore.sh` (see [backups and recovery](docs/operator-guide.md#backups-and-recovery)).
    Everything written after the upgrade is lost.
 3. Point `DATABASE_URL` at the restored database, check out `v0.1.0-alpha.1` (its compose files and code)
    and run `docker compose up -d --build`, or run the image you tagged in step 1.
@@ -89,14 +89,24 @@ upgraded database. To roll back:
 
 Once payments are on, the marketplace is custodial for test coins: the Bitcoin wallet lives in the
 `bitcoin_data` volume and the Monero wallet in `monero_wallet`. **Database dumps do not include them.** Back
-them up separately (see the runbook). `scripts/restore.sh` now holds every payout that the dump shows as
-queued or sending, with the error "Restored from backup: verify in the wallet before releasing"; nothing is
-re-sent until an administrator checks the wallet and releases, requeues or marks each one on the admin page.
-If the script reports that it could not hold them, do not start the application on that database until you
-have run the same update by hand:
+them up separately (see the runbook). `scripts/restore.sh` now pauses all outbound payouts with a persistent recovery gate and holds every
+pending, sending, blocked or held payout. Follow the [reconciliation procedure](docs/testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts),
+including orders whose payout did not yet exist in the backup, before explicitly clearing the gate. The
+application must be stopped during restore and reconciliation; do not allow user writes until complete.
+If the script reports recovery protection failed, do not start the application. Apply both protections to
+the restored application database in one transaction first (older databases without a `payouts` table need
+only the settings update):
 
 ```sql
+BEGIN;
+INSERT INTO settings(key,value) VALUES ('payments_recovery_required','true')
+ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
 UPDATE payouts SET state='held', updated=now(),
   error='Restored from backup: verify in the wallet before releasing; this payout may already have been sent.'
-WHERE state IN ('pending','sending');
+WHERE state IN ('pending','sending','blocked','held');
+COMMIT;
 ```
+
+The payout gate is enforced by this release. An older application image may not understand it; keep wallet
+RPC configuration disabled when inspecting a restored database with older code. Alpha.1 has no payment
+processing, but any other older release requires its own recovery review.

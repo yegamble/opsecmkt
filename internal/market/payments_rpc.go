@@ -28,9 +28,10 @@ type rpcClient struct {
 	version    string // "1.0" or "2.0"
 	http       *http.Client
 
-	mu        sync.Mutex
-	challenge map[string]string // last Digest challenge
-	nc        int
+	mu         sync.Mutex
+	digestGate chan struct{}     // Monero digest nonces/counters belong to one TCP session.
+	challenge  map[string]string // last Digest challenge
+	nc         int
 }
 
 const rpcTimeout = 10 * time.Second
@@ -51,7 +52,7 @@ func newRPCClient(name, raw, version string, digest bool) (*rpcClient, error) {
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return nil, fmt.Errorf("%s RPC URL must be http(s)://[user:password@]host:port", name)
 	}
-	c := &rpcClient{name: name, version: version, digest: digest}
+	c := &rpcClient{name: name, version: version, digest: digest, digestGate: make(chan struct{}, 1)}
 	if u.User != nil {
 		c.user = u.User.Username()
 		c.pass, _ = u.User.Password()
@@ -70,6 +71,18 @@ func newRPCClient(name, raw, version string, digest bool) (*rpcClient, error) {
 
 // call posts one request to endpoint+path and decodes "result" into out (numbers as json.Number).
 func (c *rpcClient) call(ctx context.Context, path, method string, params, out any) error {
+	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+	defer cancel()
+	if c.digest {
+		// Serialize the complete exchange so one connection and its nonce counter
+		// cannot be raced by the watcher and an HTTP handler using the same wallet.
+		select {
+		case c.digestGate <- struct{}{}:
+			defer func() { <-c.digestGate }()
+		case <-ctx.Done():
+			return fmt.Errorf("%s RPC unreachable: timed out waiting for authentication session", c.name)
+		}
+	}
 	req := map[string]any{"jsonrpc": c.version, "id": "opsecmkt", "method": method}
 	if params != nil {
 		req["params"] = params
@@ -80,15 +93,22 @@ func (c *rpcClient) call(ctx context.Context, path, method string, params, out a
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
-	defer cancel()
 	resp, err := c.send(ctx, path, body)
 	if err != nil {
 		return err
 	}
 	if resp.StatusCode == http.StatusUnauthorized && c.digest {
 		challenge := parseDigestChallenge(resp.Header.Values("WWW-Authenticate"))
+		// Monero binds the challenge to the connection. Closing an unread 401
+		// discards that connection, making even correct credentials fail on retry.
+		n, readErr := io.Copy(io.Discard, io.LimitReader(resp.Body, rpcMaxBody+1))
 		resp.Body.Close()
+		if readErr != nil {
+			return fmt.Errorf("%s RPC %s: reading authentication response failed", c.name, method)
+		}
+		if n > rpcMaxBody {
+			return fmt.Errorf("%s RPC %s: authentication response too large", c.name, method)
+		}
 		if challenge == nil {
 			return fmt.Errorf("%s RPC %s: authentication required", c.name, method)
 		}

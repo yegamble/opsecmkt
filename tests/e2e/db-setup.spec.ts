@@ -8,6 +8,8 @@ test('initialize the market and publish the fixture listing', async ({ page, bro
   await page.getByLabel('Handle', { exact: true }).fill(ADMIN.handle);
   await page.getByLabel('Password', { exact: true }).fill(ADMIN.password);
   await page.getByRole('button', { name: 'Initialize marketplace' }).click();
+  await expect(page).toHaveURL(/\/admin\?welcome=1$/);
+  await expect(page.getByRole('heading', { name: 'Get your marketplace ready' })).toBeVisible();
   await expect(page.locator('.account-name')).toHaveText(ADMIN.handle);
   await page.goto('/vendor-dashboard');
   await page.getByText('+ Publish a new listing', { exact: true }).click();

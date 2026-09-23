@@ -62,7 +62,7 @@
 <input type="hidden" name="id" value="{{.ID}}">
 <button type="submit">Restore listing</button>
 </form>{{else}}<p>Visible in the marketplace. Archiving hides it and refuses new orders; existing orders continue unchanged.</p>
-<a class="text-link" href="/product?id={{.ID}}">View public listing →</a>
+<a class="text-link" href="/product?id={{.ID}}">View public listing <span class="action-icon">→</span></a>
 <form method="post" action="/listings/archive">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="id" value="{{.ID}}">

@@ -34,12 +34,13 @@
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="product_id" value="{{.ID}}">
 <label>Reference currency<select name="currency">
-<option value="BTC">{{.PriceBTC}} BTC</option>
-<option value="XMR">{{.PriceXMR}} XMR</option>
+<option value="BTC">{{.PriceBTC}} BTC{{if eq (index $.Settings "payment_intake_BTC") "false"}} — new payments paused{{end}}</option>
+<option value="XMR">{{.PriceXMR}} XMR{{if eq (index $.Settings "payment_intake_XMR") "false"}} — new payments paused{{end}}</option>
 </select>
 </label>
 <p class="help">The listed price is recorded in your draft and refreshed from the listing when you request payment. A draft reserves no stock and requests no payment. From the order page you can then request a payment address, which works only when this server has a test-network wallet for that currency.</p>
-<button class="primary" type="submit">Create unfunded draft ↗</button>
+{{if or (eq (index $.Settings "payment_intake_BTC") "false") (eq (index $.Settings "payment_intake_XMR") "false")}}<p class="help">Currencies marked paused can still be saved as unfunded drafts. New payment addresses are unavailable until the administrator enables them; existing deposits and payouts continue.</p>{{end}}
+<button class="primary" type="submit">Create unfunded draft <span class="action-icon">↗</span></button>
 </form>
 </section>
 </div>{{end}}

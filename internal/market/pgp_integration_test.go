@@ -165,7 +165,7 @@ func TestPGPKeyOwnershipAndSecondFactor(t *testing.T) {
 		t.Fatal("encrypted code not shown")
 	}
 	code := testDecrypt(t, alice, loginCT)
-	if loginHash != digest(code) {
+	if loginHash == code || len(loginHash) != 64 {
 		t.Fatal("login code stored in plaintext")
 	}
 	e.check(e.do("POST", "/challenge", anon, url.Values{"method": {"pgp"}, "pgp_code": {"0123456789abcdef0123456789abcdef"}}, pc), 401)

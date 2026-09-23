@@ -92,7 +92,7 @@ func TestCounterpartyKeysAndMessagePrefill(t *testing.T) {
 
 	// No key yet: say so plainly on the vendor page.
 	body := w.page("/vendor?id="+w.vendorID, w.buyer, 200)
-	mustContain(t, body, vendorHandle+" has not added a PGP public key", "cannot send them an encrypted message until they add one", `href="/messages?to=`+vendorHandle+`"`)
+	mustContain(t, body, vendorHandle+" has not added a PGP public key", "obtain and confirm their key through a trusted channel before encrypting", `href="/messages?to=`+vendorHandle+`"`)
 
 	// Unverified key: armored key and grouped fingerprint shown, marked not verified.
 	if _, err = w.e.DB.Exec("UPDATE users SET pgp=$1,pgp_fingerprint=$2 WHERE id=$3", vendorPub, fp, w.vendorID); err != nil {

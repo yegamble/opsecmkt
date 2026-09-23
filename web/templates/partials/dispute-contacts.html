@@ -1,0 +1,9 @@
+{{define "dispute-contacts"}}{{if and .Order (or (eq .Order.State "disputed") (eq .Order.State "resolved")) (or (eq .OrderViewer "buyer") (eq .OrderViewer "vendor"))}}
+<section class="panel" aria-labelledby="dispute-contacts">
+<h2 id="dispute-contacts">Contact dispute staff</h2>
+<p>Send sensitive evidence as an encrypted message to an independent moderator or administrator. Include order {{.Order.ID}} inside the encrypted message. Messages are private to their sender and recipient; other staff cannot read them.</p>
+{{range .StaffContacts}}<details><summary>{{.Handle}} · {{.Relation}}</summary>
+{{template "contact-key" .}}
+{{if .Fingerprint}}<a class="button" href="/messages?to={{.Handle}}">Message {{.Handle}}</a>{{end}}
+</details>{{else}}<p class="help">No independent moderator or administrator is available to contact.</p>{{end}}
+</section>{{end}}{{end}}

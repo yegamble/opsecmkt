@@ -87,7 +87,7 @@ func confirmedTx(c *actionCtx, confirm bool, run func(c *actionCtx) (actionResul
 	how := "password"
 	if confirm {
 		var totp bool
-		if err = tx.QueryRowContext(ctx, "SELECT totp_enabled FROM users WHERE id=$1", uid).Scan(&totp); err != nil {
+		if err = tx.QueryRowContext(ctx, "SELECT totp_enabled FROM users WHERE id=$1 FOR NO KEY UPDATE", uid).Scan(&totp); err != nil {
 			return actionResult{}, err
 		}
 		if totp {
@@ -214,6 +214,9 @@ func authAction(c *actionCtx) (actionResult, error) {
 	}
 	if err = a.login(ctx, w, id, c.Token); err != nil {
 		return actionResult{}, fail(500, "Account created; sign in to continue")
+	}
+	if path == "/setup" {
+		return actionResult{Redirect: "/admin?welcome=1"}, nil
 	}
 	return actionResult{Redirect: "/"}, nil
 }

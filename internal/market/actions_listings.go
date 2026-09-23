@@ -48,6 +48,16 @@ func listingAction(c *actionCtx) (actionResult, error) {
 	if err != nil {
 		return actionResult{}, err
 	}
+	// The request's role snapshot can predate a concurrent demotion. Keep this
+	// share lock through creation so demotion either wins first or archives the
+	// newly committed listing in its subsequent archive statement.
+	var role string
+	if err = c.Tx.QueryRowContext(c.Ctx(), "SELECT role FROM users WHERE id=$1 FOR SHARE", c.User.ID).Scan(&role); err != nil {
+		return actionResult{}, err
+	}
+	if role != "vendor" && role != "admin" {
+		return actionResult{}, fail(403, "Vendor access required")
+	}
 	_, err = c.Tx.ExecContext(c.Ctx(), `INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock,delivery_content) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, randomToken(), c.User.ID, in.Title, in.Description, in.Category, in.Region, in.Kind, in.BTC, in.XMR, in.Stock, in.DeliveryContent)
 	return actionResult{Redirect: "/vendor-dashboard?saved=1", Audit: "Created listing"}, err
 }

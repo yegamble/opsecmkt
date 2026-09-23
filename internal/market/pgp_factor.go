@@ -41,9 +41,22 @@ func (pgpFactor) Enrolled(ctx context.Context, db *sql.DB, userID string) (bool,
 	return p.TwoFactor, nil
 }
 
+// Bind the code to the exact key ownership proof. Replacing and re-verifying a
+// key invalidates old codes, including when the same key is later restored.
+func pgpLoginDigest(code string, p *pgpAccount) string {
+	return digest(code + "\x00" + p.Fingerprint + "\x00" + p.ProofVersion)
+}
+
 func (pgpFactor) Verify(c *actionCtx, userID string) error {
+	p, err := loadPGPAccount(c.Ctx(), c.Tx, userID, true)
+	if err != nil {
+		return err
+	}
+	if !p.TwoFactor {
+		return fail(401, "PGP sign-in verification is no longer enabled. Sign in again.")
+	}
 	var hash sql.NullString
-	err := c.Tx.QueryRowContext(c.Ctx(), "SELECT pgp_nonce FROM pending_logins WHERE token_hash=$1 AND user_id=$2", digest(pendingCookie(c.R)), userID).Scan(&hash)
+	err = c.Tx.QueryRowContext(c.Ctx(), "SELECT pgp_nonce FROM pending_logins WHERE token_hash=$1 AND user_id=$2", digest(pendingCookie(c.R)), userID).Scan(&hash)
 	if err != nil && err != sql.ErrNoRows {
 		return err
 	}
@@ -51,7 +64,7 @@ func (pgpFactor) Verify(c *actionCtx, userID string) error {
 		return fail(401, "Create an encrypted sign-in code first, then paste the code it contains.")
 	}
 	answer := strings.ToLower(strings.TrimSpace(c.Form.Get("pgp_code")))
-	if answer == "" || subtle.ConstantTimeCompare([]byte(digest(answer)), []byte(hash.String)) != 1 {
+	if answer == "" || subtle.ConstantTimeCompare([]byte(pgpLoginDigest(answer, p)), []byte(hash.String)) != 1 {
 		return fail(401, "The decrypted code does not match.")
 	}
 	return nil
@@ -75,7 +88,7 @@ func pgpLoginCodeAction(c *actionCtx) (actionResult, error) {
 	if !c.A.allow("pgp-login:"+digest(pending), 10) { // only after the pending login exists
 		return actionResult{}, fail(429, "Too many codes requested. Try again in ten minutes.")
 	}
-	p, err := loadPGPAccount(ctx, tx, userID, false)
+	p, err := loadPGPAccount(ctx, tx, userID, true)
 	if err != nil {
 		return actionResult{}, err
 	}
@@ -87,7 +100,7 @@ func pgpLoginCodeAction(c *actionCtx) (actionResult, error) {
 	if err != nil {
 		return actionResult{}, fail(409, "A sign-in code cannot be encrypted to your key (expired or sign-only). Use another verification method.")
 	}
-	_, err = tx.ExecContext(ctx, "UPDATE pending_logins SET pgp_nonce=$1,pgp_challenge=$2 WHERE token_hash=$3", digest(code), armored, digest(pending))
+	_, err = tx.ExecContext(ctx, "UPDATE pending_logins SET pgp_nonce=$1,pgp_challenge=$2 WHERE token_hash=$3", pgpLoginDigest(code, p), armored, digest(pending))
 	return actionResult{Redirect: "/challenge"}, err
 }
 

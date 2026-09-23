@@ -159,6 +159,24 @@ jobs:
           cache-to: type=gha,mode=max,scope=app
       - name: Bootstrap production image with a real database
         run: bash scripts/ci-smoke.sh "${{ matrix.database }}"
+  installer:
+    name: Local installer and browser setup wizard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Install, bootstrap and restart an isolated real deployment
+        run: python3 scripts/test-install.py
+      - name: Preserve installer evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: installer-results
+          path: artifacts/install-test/
+          if-no-files-found: ignore
+          retention-days: 14
   upgrade:
     name: Upgrade from v0.1.0-alpha.1
     runs-on: ubuntu-24.04
@@ -226,6 +244,13 @@ jobs:
       - run: npm run test:e2e
         env:
           E2E_DATABASE_URL: postgres://test:test-ci-only@127.0.0.1:5432/e2e?sslmode=disable
+      - name: Wallet-backed browser journeys (simulated RPC, real application)
+        env:
+          E2E_WALLET_DATABASE_URL: postgres://test:test-ci-only@127.0.0.1:5432/e2e_wallet?sslmode=disable
+          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+        run: |
+          docker exec "$POSTGRES_CONTAINER" createdb -U test e2e_wallet
+          npm run test:e2e:wallet
       - name: Preserve browser report and failure traces
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -234,12 +259,14 @@ jobs:
           path: |
             playwright-report/
             test-results/
+            playwright-wallet-report/
+            test-results-wallet/
           if-no-files-found: ignore
           retention-days: 14
   required:
     name: CI passed
     if: always()
-    needs: [go, operations, upgrade, compose, container, tor-image, browser]
+    needs: [go, operations, installer, upgrade, compose, container, tor-image, browser]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:

@@ -10,5 +10,5 @@
 <h2>Two-factor authentication</h2>{{with .Security}}{{if .TOTPEnabled}}
 <p>Every sign-in requires a code from your authenticator app or a one-time recovery code.{{if lt .RecoveryRemaining 3}} <strong>Few recovery codes remain; replace them.</strong>{{end}}</p>{{else}}
 <p>Sign-in uses your password only. Add time-based one-time codes (TOTP) from an authenticator app you control.</p>{{end}}{{end}}
-<a class="button" href="/totp">Manage TOTP ↗</a>
+<a class="button" href="/totp">Manage TOTP <span class="action-icon">↗</span></a>
 </div>{{end}}

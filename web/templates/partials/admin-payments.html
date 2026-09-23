@@ -1,7 +1,20 @@
 {{/* P5 Payments owns. admin-payments: provider panels */}}
 {{define "admin-payments"}}<section class="panel admin-payments">
-<h2>Payment providers</h2>
+<h2 id="payment-providers">Payment providers</h2>
+{{if eq (index .Settings "payments_recovery_required") "true"}}<div class="alert" role="status"><strong>Outbound payments paused for restore reconciliation.</strong> All payouts, including newly queued ones, stay unsent until the operator reconciles restored orders and payments with the wallets and clears the recovery lock. See the recovery runbook; releasing an individual payout does not clear this lock.</div>{{end}}
 <p>Test networks only; the server refuses to start against mainnet and disables a provider whose node later reports mainnet. An unreachable node or a wallet that is not loaded does not stop the site: that currency shows as unavailable, payment requests for it are refused, and the check is retried every poll. Deposits sit in one pooled wallet per currency. There is no commission or fee accounting.</p>
+<h3 id="payment-intake">New payment addresses</h3>
+<p>Enable or pause Bitcoin and Monero separately. Pausing prevents new payment addresses; existing deposit addresses, payment confirmation, refunds and payouts continue. Wallet RPC connections must be provisioned on the server first. Changes require your password and are audited.</p>
+{{range .Providers}}<div class="order-action">
+<h4>{{.Currency}} intake: {{if eq (index $.Settings (printf "payment_intake_%s" .Currency)) "false"}}Paused{{else}}Enabled when wallet is available{{end}}</h4>
+{{if or .Enabled (eq .Status "Unavailable — retried every poll") (eq .Status "Refused — not a test network")}}<form class="stack" method="post" action="/admin/payment-intake">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="currency" value="{{.Currency}}">
+<input type="hidden" name="enabled" value="{{if eq (index $.Settings (printf "payment_intake_%s" .Currency)) "false"}}true{{else}}false{{end}}">
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
+<button type="submit">{{if eq (index $.Settings (printf "payment_intake_%s" .Currency)) "false"}}Enable{{else}}Pause{{end}} new {{.Currency}} payments</button>
+</form>{{else}}<p class="help">Configure the {{.Currency}} test-network wallet RPC on the server to enable payments.</p>{{end}}
+</div>{{end}}
 <div class="table-wrap">
 <table>
 <thead>

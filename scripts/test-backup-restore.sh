@@ -122,10 +122,10 @@ fi
 scripts/restore.sh "$backup" <<< 'RESTORE' > "$work/restore.log"
 [[ $(pg "$target_db" -Atq -c 'SELECT note FROM a_first WHERE id = 1') == 'Crème brûlée — 東京 🔒' ]]
 [[ $(pg "$target_db" -Atq -c 'SELECT id FROM z_conflict') == 42 ]]
-# Queued and in-flight payouts are held after a restore so they are never sent twice; others are untouched.
-[[ $(pg "$target_db" -Atq -c "SELECT string_agg(id || ':' || state || ':' || (error LIKE 'Restored from backup:%'), ',' ORDER BY id) FROM payouts") == '1:held:true,2:held:true,3:sent:false,4:failed:false,5:blocked:false,6:held:false' ]]
+# Blocked and automatically held payouts must also require reconciliation after restoration.
+[[ $(pg "$target_db" -Atq -c "SELECT string_agg(id || ':' || state || ':' || (error LIKE 'Restored from backup:%'), ',' ORDER BY id) FROM payouts") == '1:held:true,2:held:true,3:sent:false,4:failed:false,5:held:true,6:held:true' ]]
 [[ $(pg "$source_db" -Atq -c "SELECT count(*) FROM payouts WHERE state = 'held'") == 1 ]]
-grep -q 'Held 2 restored payout(s)' "$work/restore.log"
+grep -q 'Held 4 restored payout(s)' "$work/restore.log"
 grep -q 'do not contain the custodial wallets' "$work/restore.log"
 
 # Restore creates a_first before colliding with z_conflict. A failure must roll
@@ -136,6 +136,17 @@ if scripts/restore.sh "$backup" <<< 'RESTORE' > "$work/conflict.log" 2>&1; then
 fi
 [[ $(pg "$target_db" -Atq -c "SELECT to_regclass('public.a_first') IS NULL") == t ]]
 [[ $(pg "$target_db" -Atq -c 'SELECT id FROM z_conflict') == 99 ]]
+
+# An old application backup with settings but no payments schema still needs the persistent gate:
+# subsequent migrations must not turn payments on without reconciliation.
+pg "$source_db" -q -c "DROP TABLE a_first, z_conflict, payouts; CREATE TABLE settings (key text PRIMARY KEY, value text NOT NULL); INSERT INTO settings VALUES ('payments_recovery_required','false');"
+pg "$target_db" -q -c 'DROP TABLE z_conflict, payouts;'
+legacy_backup="$work/legacy.dump.age"
+scripts/backup.sh "$legacy_backup"
+scripts/restore.sh "$legacy_backup" <<< 'RESTORE' > "$work/legacy-restore.log"
+[[ $(pg "$target_db" -Atq -c "SELECT value FROM settings WHERE key='payments_recovery_required'") == true ]]
+[[ $(pg "$target_db" -Atq -c "SELECT to_regclass('payouts') IS NULL") == t ]]
+grep -q 'Held 0 restored payout(s)' "$work/legacy-restore.log"
 
 # The same round trip on the real application schema. The server migrates an empty database itself; a
 # release payout is queued (pending) and another already sent; the dump is restored into an empty database.
@@ -180,6 +191,8 @@ app_backup="$work/app.dump.age"
 BACKUP_DATABASE_URL=$(connection_url "$app_source_db") scripts/backup.sh "$app_backup"
 RESTORE_DATABASE_URL=$(connection_url "$app_target_db") scripts/restore.sh "$app_backup" <<< 'RESTORE' > "$work/app-restore.log"
 grep -q 'Held 1 restored payout(s)' "$work/app-restore.log"
+[[ $(pg "$app_target_db" -Atq -c "SELECT value FROM settings WHERE key='payments_recovery_required'") == true ]]
+[[ $(pg "$app_source_db" -Atq -c "SELECT count(*) FROM settings WHERE key='payments_recovery_required'") == 0 ]]
 payouts="SELECT string_agg(order_id || ':' || state || ':' || (error LIKE 'Restored from backup:%') || ':' || txid, ',' ORDER BY order_id) FROM payouts"
 held="ops-order-queued:held:true:,ops-order-sent:sent:false:$(printf 'ab%.0s' {1..32})"
 [[ $(pg "$app_target_db" -Atq -c "$payouts") == "$held" ]]
@@ -188,6 +201,7 @@ held="ops-order-queued:held:true:,ops-order-sent:sent:false:$(printf 'ab%.0s' {1
 # The server starts on the restored database, applies nothing again and leaves the held payout alone.
 start_app "$app_target_db"
 stop_app
+[[ $(pg "$app_target_db" -Atq -c "SELECT value FROM settings WHERE key='payments_recovery_required'") == true ]]
 [[ $(pg "$app_target_db" -Atq -c "SELECT string_agg(version || ':' || name || '@' || applied, ',' ORDER BY version) FROM schema_migrations") == "$migrations" ]]
 [[ $(pg "$app_target_db" -Atq -c "$payouts") == "$held" ]]
 echo 'Encrypted backup/restore regressions passed (Unicode, overwrite refusal, wrong key, transaction rollback, payout hold, application schema restore and restart).'

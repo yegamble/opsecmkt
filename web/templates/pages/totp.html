@@ -72,7 +72,7 @@
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <label>6-digit code from your app<input name="code" required inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" autocomplete="one-time-code">
 </label>
-<button class="primary" type="submit">Verify and turn on ↗</button>
+<button class="primary" type="submit">Verify and turn on <span class="action-icon">↗</span></button>
 </form>
 <p class="help">TOTP stays off until a correct code is confirmed. You then receive 10 one-time recovery codes.</p>
 <form method="post" action="/totp/enroll">
@@ -86,7 +86,7 @@
 <p>Sign-in currently uses your password only. Enrolling generates a secret key for an authenticator app; TOTP turns on only after you confirm a code from it.</p>
 <form method="post" action="/totp/enroll">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
-<button class="primary" type="submit">Start enrollment ↗</button>
+<button class="primary" type="submit">Start enrollment <span class="action-icon">↗</span></button>
 </form>
 </section>{{end}}{{end}}
 <p><a class="text-link" href="/account">← Back to account</a></p>

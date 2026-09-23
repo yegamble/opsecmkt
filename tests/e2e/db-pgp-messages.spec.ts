@@ -159,3 +159,35 @@ test('only OpenPGP-encrypted messages are accepted; status badges and the unread
 
   for (const p of [s, r, o, n]) await p.context().close();
 });
+
+test('find a moderator key and exchange encrypted dispute evidence without scripts', async ({ browser, baseURL }) => {
+  const { ADMIN } = await import('./db-fixtures');
+  const handle = uniqueHandle('staffkey');
+  const staff = await signedIn(browser, baseURL, handle, 'browser-staff-password-123', true);
+  const buyer = await signedIn(browser, baseURL, uniqueHandle('evidence'), 'browser-evidence-password-123', true);
+  const admin = await signedIn(browser, baseURL, ADMIN.handle, ADMIN.password, false);
+  expect(await saveKey(staff, pgpFixture('recipient.pub.asc'))).toBe(303);
+  await admin.goto('/admin');
+  const roles = admin.locator('form', { has: admin.getByRole('button', { name: 'Update role' }) });
+  const account = roles.locator('option', { hasText: `${handle} ·` });
+  await roles.getByLabel('Account').selectOption((await account.getAttribute('value'))!);
+  await roles.getByLabel('Role').selectOption('moderator');
+  await roles.getByRole('button', { name: 'Update role' }).click();
+  await expect(admin).toHaveURL(/\/admin\?saved=1$/);
+  await buyer.goto('/messages');
+  await buyer.getByLabel('Find a recipient', { exact: true }).fill(handle);
+  await buyer.getByRole('button', { name: 'Load recipient’s public key' }).click();
+  await expect(buyer.getByLabel('Recipient handle', { exact: true })).toHaveValue(handle);
+  await expect(buyer.locator('.contact-key .pgp-fingerprint')).toHaveText(RECIPIENT_FINGERPRINT);
+  await expect(buyer.locator('.contact-key')).toContainText('Ownership not verified');
+  await buyer.getByLabel('PGP encrypted message').fill(pgpFixture('message-to-recipient.asc'));
+  expect(await submitStatus(buyer, () => buyer.getByRole('button', { name: 'Send encrypted text ↗' }).click())).toBe(303);
+  await staff.goto('/messages');
+  await expect(staff.locator('article.message pre')).toHaveText(pgpFixture('message-to-recipient.asc').trim());
+  await expect(staff.locator('.pgp-message-status')).toHaveText('Encrypted (to recipient’s key)');
+  await buyer.goto('/messages');
+  await buyer.getByLabel('Find a recipient', { exact: true }).fill('no_such_staff_handle');
+  await buyer.getByRole('button', { name: 'Load recipient’s public key' }).click();
+  await expect(buyer.getByRole('status')).toContainText('No other account found');
+  for (const page of [staff, buyer, admin]) await page.context().close();
+});

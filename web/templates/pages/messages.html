@@ -15,6 +15,12 @@
 <div class="grid-two">
 <section class="panel">
 <h2>Compose a message</h2>
+<form class="stack" method="get" action="/messages" aria-label="Find recipient key">
+<label>Find a recipient<input name="to" value="{{.MessageTo}}" required minlength="3" maxlength="32" pattern="[a-zA-Z0-9_]{3,32}" autocomplete="off" placeholder="vendor_or_staff_handle"></label>
+<button type="submit">Load recipient’s public key</button>
+</form>
+<p class="help">First load the recipient’s key, confirm its fingerprint, then encrypt in your trusted PGP application. Loading a key reloads this page; do it before composing.</p>
+{{if and .MessageTo (not .Contacts)}}<p role="status">No other account found for this handle. Check the recipient’s handle and try again.</p>{{end}}
 <form class="stack" method="post" action="/messages">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
 <label>Recipient handle<input name="recipient" value="{{.MessageTo}}" required maxlength="32" autocomplete="off" placeholder="vendor_handle">
@@ -23,7 +29,7 @@
 </textarea>
 </label>
 <span class="help">Confirm the recipient’s key fingerprint through a trusted channel before encrypting. After sending, each message shows whether it was encrypted to the key saved on the recipient’s profile.</span>
-<button class="primary" type="submit">Send encrypted text ↗</button>
+<button class="primary" type="submit">Send encrypted text <span class="action-icon">↗</span></button>
 </form>
 </section>
 <section>

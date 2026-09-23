@@ -5,10 +5,14 @@
   "scripts": {
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
-    "test:e2e:report": "playwright show-report"
+    "test:e2e:report": "playwright show-report",
+    "test:e2e:wallet": "playwright test --config=playwright.wallet.config.ts",
+    "test:e2e:chain": "playwright test --config=playwright.chain.config.ts"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0"
   },
-  "engines": { "node": ">=22" }
+  "engines": {
+    "node": ">=22"
+  }
 }

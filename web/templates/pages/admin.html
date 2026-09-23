@@ -8,6 +8,18 @@
 </div>
 <span class="badge">Administrator</span>
 </div>
+<section class="panel" aria-labelledby="getting-started">
+<h2 id="getting-started">Get your marketplace ready</h2>
+<ol>
+<li><a class="text-link" href="/totp">Protect your administrator account with two-factor sign-in</a>.</li>
+<li><a class="text-link" href="/account">Add your public PGP key</a>, then <a class="text-link" href="/pgp">verify ownership</a> so users can contact you securely.</li>
+<li><a class="text-link" href="#payment-providers">Check Bitcoin and Monero wallet status</a> and choose which currencies accept new payments. Only test networks are supported.</li>
+<li><a class="text-link" href="/vendor-dashboard">Publish your first listing</a>, or invite a user to register and assign them the vendor role below.</li>
+<li>Assign a trusted moderator below and ask them to add and verify their PGP key for dispute messages.</li>
+<li><a class="text-link" href="/">Open the marketplace</a> in another browser profile to test the buyer journey.</li>
+</ol>
+<p class="help">Wallet connections and encrypted backups are configured on the server. This control room does not install nodes or expose their RPC credentials.</p>
+</section>
 <div class="grid-two">
 <section class="panel">
 <h2>Marketplace settings</h2>
@@ -31,10 +43,9 @@
 <option value="buyer">Buyer</option>
 <option value="vendor">Vendor</option>
 <option value="moderator">Moderator</option>
-<option value="admin">Administrator</option>
 </select>
 </label>
-<p class="help">Administrator access includes configuration and role management. Assign it only to trusted operators.</p>
+<p class="help">Choose buyer, vendor or moderator. The first administrator is created during installation; administrator roles cannot be assigned here.</p>
 <button type="submit">Update role</button>
 </form>
 </section>

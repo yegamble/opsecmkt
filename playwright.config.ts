@@ -67,6 +67,8 @@ export default defineConfig({
         ADDR: '127.0.0.1:18081', DATABASE_URL: databaseURL,
         COOKIE_SECURE: 'false', APP_MODE: 'clearnet',
         SETUP_TOKEN: 'e2e-local-only-setup-token-at-least-32-characters',
+        // Never connect disposable browser fixtures to wallets inherited from the developer's shell.
+        BITCOIN_RPC_URL: '', MONERO_RPC_URL: '', MONERO_WALLET_RPC_URL: '',
       },
       url: 'http://127.0.0.1:18081/healthz',
       reuseExistingServer: false,

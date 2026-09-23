@@ -120,6 +120,11 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 	}
 	defer rows.Close()
 	var received, pending int64
+	required, err := parseAmount(o.Amount, dec)
+	if err != nil {
+		return err
+	}
+	remaining := required
 	minConfs := int64(-1)
 	conflicted := false
 	for rows.Next() {
@@ -128,6 +133,9 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		var credited, locked bool
 		if err = rows.Scan(&dep.TxID, &dep.Index, &amt, &dep.Confirmations, &credited, &locked); err != nil {
 			return err
+		}
+		if !locked && dep.Confirmations >= 0 {
+			remaining -= min(remaining, amt)
 		}
 		dep.Amount = amount(amt, dec)
 		switch {
@@ -152,6 +160,10 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		return err
 	}
 	pv.Received, pv.Unconfirmed = amount(received, dec), amount(pending, dec)
+	pv.Remaining, pv.NeedsTopUp = amount(remaining, dec), remaining > 0
+	if remaining == 0 {
+		pv.Remaining = "0"
+	}
 	if received == 0 {
 		pv.Received = "0"
 	}

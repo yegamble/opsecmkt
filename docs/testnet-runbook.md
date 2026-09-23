@@ -159,8 +159,35 @@ docker compose cp bitcoin:/data/opsecmkt-wallet.bak ./opsecmkt-wallet.bak
 xmr query_key '{"key_type":"mnemonic"}'   # write the seed down offline; or copy the /wallet volume while stopped
 ```
 
-After restoring a database dump, `scripts/restore.sh` holds every payout that was queued or sending in the
-dump; resolve each with step 5 before relying on the restored site.
+### Reconcile a restored database before enabling payouts
+
+Stop the application before restoring and during direct SQL reconciliation. Keep the recovered instance
+isolated from users until wallet history is reconciled. `scripts/restore.sh` sets `payments_recovery_required=true` in application settings. This
+persistent gate pauses **all outbound payouts**, including payouts created after restoration. It also
+converts pending, sending, blocked and held payouts to manual recovery holds; reconfirming a deposit or
+saving an address cannot release these holds automatically. Deposits can still be monitored if the app is
+started for operator-only inspection or the admin recovery actions below; do not admit other user writes
+until reconciliation is complete.
+
+Reconcile **every restored order and deposit** against wallet transactions since the backup, not just the
+held payouts. An order may have been paid out after the backup even though its restored snapshot has no
+payout row at all. Reconstruct those settled orders and their sent payout records with the original
+transaction IDs before allowing their lifecycle to resume. If you cannot establish the complete settlement
+history, keep the gate enabled and recover a newer database or obtain operator assistance. Resolve known
+held/failed payouts using step 5; releasing an individual hold does not bypass the global gate.
+
+Only after reconciliation, with the app stopped and a backup of the reconciled database, explicitly clear
+the gate in that database using `psql` (there is no automatic timeout or web unlock):
+
+```sql
+BEGIN;
+UPDATE settings SET value='false' WHERE key='payments_recovery_required';
+COMMIT;
+```
+
+Check that the update affected one row, then restart the app. Clearing the gate is an operator assertion
+that reconciliation is complete; it does not discover missing settlements or release individual holds.
+Keep the reconciliation record and wallet transaction IDs with your recovery evidence.
 
 ## 7. Manual regtest check (Bitcoin)
 
@@ -182,3 +209,11 @@ against the same node, start the app with `BITCOIN_RPC_URL=http://smoke:smoke-pa
 while the app runs makes each pass skip BTC with "Wallet check failed" as the last error; starting it again
 resumes without a restart. Starting the app while `bitcoind` is down shows BTC as *Unavailable* until it is
 reachable.
+
+## 8. Isolated real-chain browser testing
+
+For a reproducible local Bitcoin regtest and offline Monero stagenet environment,
+see [real isolated-chain browser tests](local-chain-testing.md). The maintained
+setup script starts verified native nodes, mines disposable coins and funds the
+market wallets. The browser suite uses real RPC adapters and wallet transactions;
+it is separate from the simulated-wallet suite and from public testnet validation.

@@ -10,7 +10,7 @@
   display:grid;
   gap:2px;
   padding:0 0 16px 18px;
-  font-size:12px;
+  font-size:0.875rem;
   overflow-wrap:anywhere
 }
 .order-timeline li::before {
@@ -23,7 +23,7 @@
   background:var(--amber)
 }
 .order-when {
-  font:10px var(--mono);
+  font:0.875rem var(--mono);
   color:var(--muted)
 }
 .order-note {
@@ -48,7 +48,7 @@
   border:1px dashed #594322;
   background:#171209;
   color:var(--text);
-  font-size:12px
+  font-size:0.875rem
 }
 .order-unavailable strong {
   color:var(--amber)
@@ -70,16 +70,16 @@
 }
 .review-summary {
   margin:0;
-  font:12px var(--mono);
+  font:0.875rem var(--mono);
   color:var(--muted)
 }
 .review-summary strong {
-  font-size:20px;
+  font-size:1.25rem;
   color:var(--amber)
 }
 .review-rating {
   margin:8px 0 4px;
-  font-size:16px;
+  font-size:1rem;
   letter-spacing:.12em;
   color:var(--amber)
 }
@@ -87,7 +87,7 @@
   margin-top:18px
 }
 .dispute-order {
-  font-size:12px;
+  font-size:0.875rem;
   overflow-wrap:anywhere
 }
 .dispute-outcome {
@@ -99,7 +99,7 @@
 }
 .dispute-outcome legend {
   padding:0 6px;
-  font:10px var(--mono);
+  font:0.875rem var(--mono);
   color:var(--muted);
   text-transform:uppercase
 }

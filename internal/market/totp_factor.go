@@ -46,7 +46,7 @@ func (a *App) checkTOTP(ctx context.Context, tx *sql.Tx, userID, code string) er
 	var sealed string
 	var enabled bool
 	var last int64
-	err := tx.QueryRowContext(ctx, "SELECT totp_secret,totp_enabled,totp_last_step FROM users WHERE id=$1 FOR UPDATE", userID).Scan(&sealed, &enabled, &last)
+	err := tx.QueryRowContext(ctx, "SELECT totp_secret,totp_enabled,totp_last_step FROM users WHERE id=$1 FOR NO KEY UPDATE", userID).Scan(&sealed, &enabled, &last)
 	if err != nil {
 		return err
 	}

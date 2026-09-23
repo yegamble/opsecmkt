@@ -1,0 +1,17 @@
+# Adapted from ~/github/vidra for one Go/PostgreSQL project.
+PROJECT_NAME="opsecmkt"
+PROJECT_TYPE="generic"
+CLAUDE_CODE_CMD="claude"
+MAX_CALLS_PER_HOUR=100
+MAX_TOKENS_PER_HOUR=2000000
+CLAUDE_TIMEOUT_MINUTES=15
+CLAUDE_OUTPUT_FORMAT="json"
+SESSION_CONTINUITY=true
+SESSION_EXPIRY_HOURS=24
+TASK_SOURCES="local"
+OPTIONAL_SECTIONS="Optional / Deferred / Non-Blocking,Optional,Future,Nice to Have"
+CB_NO_PROGRESS_THRESHOLD=3
+CB_SAME_ERROR_THRESHOLD=5
+CB_OUTPUT_DECLINE_THRESHOLD=70
+# Use the operator's configured model; no project-specific model pin needed.
+ALLOWED_TOOLS="Read,Write,Edit,Glob,Grep,Monitor,TaskOutput,TaskStop,Bash(git status *),Bash(git status),Bash(git diff *),Bash(git log *),Bash(git show *),Bash(rg *),Bash(go *),Bash(gofmt *),Bash(npm *),Bash(npx playwright *),Bash(python3 -m unittest *),Bash(bash -n *)"

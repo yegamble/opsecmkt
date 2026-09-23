@@ -1,6 +1,6 @@
 {{/* P5 Payments owns. Payment panel heading and body on the order page. Addresses, amounts and confirmations come only from a live provider and the payments ledger. */}}
 {{define "order-payment"}}{{with .Payment}}{{if .Monitored}}<h2>Payment <span class="badge testnet">TESTNET {{.Network}}</span></h2>
-{{if .Open}}<p class="help">Send exactly the required amount of <strong>{{.Network}} test {{.Currency}}</strong> to this address. Test coins only: mainnet coins sent here are lost. Funds are held in the market's pooled test wallet (custodial, not multisig escrow) until the order completes, is cancelled, or a dispute is resolved.</p>
+{{if .Open}}<p class="help">{{if .NeedsTopUp}}Send <strong>{{.Remaining}} {{.Network}} test {{.Currency}}</strong> to this address. If you already made a partial payment, top up only this remaining amount using the same address.{{else}}The full required amount has been seen. Do not send another payment; wait for confirmation.{{end}} Only send a top-up after any recent payment appears below; wallet updates can take time. Test coins only: mainnet coins sent here are lost. Funds are held in the market's pooled test wallet (custodial, not multisig escrow) until the order completes, is cancelled, or a dispute is resolved.</p>
 <div class="payment-address">
 <span class="badge testnet">TESTNET {{.Network}} deposit address</span>
 <p class="mono">{{.Address}}</p>
@@ -18,6 +18,10 @@
 <dt>Unconfirmed</dt>
 <dd>{{.Unconfirmed}} {{.Currency}} <span class="badge testnet">TESTNET {{.Network}}</span></dd>
 </div>
+{{if .Open}}<div>
+<dt>Remaining to send</dt>
+<dd>{{.Remaining}} {{.Currency}} <span class="badge testnet">TESTNET {{.Network}}</span></dd>
+</div>{{end}}
 <div>
 <dt>Payment status</dt>
 <dd>{{.Status}}</dd>
@@ -43,6 +47,7 @@
 </table>
 </div>{{end}}
 {{with .Payout}}<h3>Payout</h3>
+{{if eq .Currency "BTC"}}<p class="help">The Bitcoin network fee is deducted from this payout. The destination receives the amount below minus the network fee.</p>{{else}}<p class="help">The market wallet pays the Monero network fee separately. The destination receives the amount below.</p>{{end}}
 <dl class="key-values payment-figures">
 <div>
 <dt>{{if eq .Kind "release"}}Release to vendor{{else}}Refund to buyer{{end}}</dt>
@@ -59,8 +64,9 @@
 </dl>{{end}}
 {{else if .Issued}}<h2>Payment is not monitored</h2>
 {{if .Degraded}}<div class="alert error" role="status">The {{.Currency}} test-network wallet is temporarily unavailable, so deposits for this order are not being read right now. Deposits already sent are recorded once it reconnects. Do not send funds until the deposit address is shown again.</div>{{else}}<div class="alert error" role="status">{{.Currency}} payments are not configured on this server, so deposits for this order are not being watched. Do not send funds.</div>{{end}}
-{{else if eq $.Order.State "draft"}}{{if .Available}}<h2>Payment not requested yet</h2>
-<p>This record is an unfunded draft. Requesting payment returns a <strong>TESTNET {{.Network}}</strong> deposit address from the market's test wallet. No real funds are accepted.</p>{{else}}<h2>Payment is unavailable</h2>
+{{else if eq $.Order.State "draft"}}{{if eq (index $.Settings (printf "payment_intake_%s" .Currency)) "false"}}<h2>New payments paused</h2><p>The administrator has paused new {{.Currency}} payment addresses. This draft remains unfunded. Existing deposit addresses and payouts continue to be monitored.</p>{{else if .Available}}<h2>Payment not requested yet</h2>
+<p>This record is an unfunded draft. Requesting payment returns a <strong>TESTNET {{.Network}}</strong> deposit address from the market's test wallet. No real funds are accepted.</p>
+<p class="help">{{if eq .Currency "BTC"}}Bitcoin network fees are deducted from vendor payouts and buyer refunds.{{else}}The market wallet pays Monero network fees separately from vendor payouts and buyer refunds.{{end}}</p>{{else}}<h2>Payment is unavailable</h2>
 {{if .Degraded}}<p>This record is an unfunded draft. The {{.Currency}} test-network wallet is temporarily unavailable, so payment cannot be requested right now. Try again later. No funds are held.</p>{{else}}<p>This record is an unfunded draft. {{.Currency}} payments are not configured on this market, so no payment or settlement can take place. No funds are held.</p>{{end}}{{end}}
 {{else}}<h2>No payment record</h2>
 <p>No deposit address was issued for this order, and no funds are held for it.</p>{{end}}{{else}}<h2>Payment is unavailable</h2>

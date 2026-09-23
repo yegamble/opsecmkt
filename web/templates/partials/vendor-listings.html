@@ -46,7 +46,7 @@
 <label>Automatic delivery content<textarea name="delivery_content" maxlength="32000" rows="4" spellcheck="false" aria-describedby="delivery-help"></textarea>
 </label>
 {{if .Inventory}}{{template "vendor-listings:delivery-help" .Inventory.AutoDelivery}}{{else}}{{template "vendor-listings:delivery-help" ""}}{{end}}
-<button class="primary" type="submit">Publish listing ↗</button>
+<button class="primary" type="submit">Publish listing <span class="action-icon">↗</span></button>
 </form>
 </details>
 <h2 class="section-title">Your listings</h2>

@@ -6,7 +6,7 @@ Run the URL/credential tests without any external service or third-party Python 
 python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 
-The installer tests run the real installation script in temporary repositories with Docker and OpenSSL stubs. They cover internal/external databases, clearnet/Tor exposure, direct-egress overlays, local node profiles, protected configuration permissions, existing-file preservation, input rejection, and Compose validation failures that must not start services. They never read the user’s `.env`, invoke real Docker, or provision infrastructure.
+The installer tests cover the noninteractive `--local` shortcut, inherited-wallet isolation, persisted custom ports, readiness failure, HTTPS handoff, and existing-file preservation. They run the real installation script in temporary repositories with Docker and OpenSSL stubs. They cover internal/external databases, clearnet/Tor exposure, direct-egress overlays, local node profiles, protected configuration permissions, existing-file preservation, input rejection, and Compose validation failures that must not start services. They never read the user’s `.env`, invoke real Docker, or provision infrastructure.
 
 The connection tests mock process execution and check decoded credentials, IPv6 hosts, ports, supported TLS/query settings, rejected target overrides and null bytes, removal of inherited libpq settings, and errors that do not expose connection secrets. They also verify that PostgreSQL client arguments contain no URL or password.
 
@@ -26,10 +26,36 @@ The script creates four uniquely named `opsecmkt_ops_*` databases, generates tem
 - Refusal to overwrite an existing backup, with its contents unchanged.
 - A wrong decryption identity fails without creating tables.
 - A schema collision rolls back the entire restore, including a preceding successful table creation, while preserving existing rows.
-- After a restore, payouts that were `pending` or `sending` in the dump are `held` with a "Restored from backup" error; other payout states are untouched.
-- The real application schema: the server built from this checkout migrates an empty database, a `pending` release payout and a `sent` refund payout are added, and the encrypted dump is restored into another empty database. The restored payout is `held` (the sent one and the source database are unchanged), `schema_migrations` is identical, and the server then starts on the restored database, answers `/healthz`, applies no migration again and leaves the held payout alone.
+- After a restore, payouts that were `pending`, `sending`, `blocked` or `held` in the dump receive manual recovery holds with a "Restored from backup" error; sent and failed payout states are untouched.
+- A legacy settings-only dump (no payouts table) receives the recovery gate even when its saved value was false.
+- The real application schema: the server built from this checkout migrates an empty database, a `pending` release payout and a `sent` refund payout are added, and the encrypted dump is restored into another empty database. The restored payout is `held` and `payments_recovery_required=true` pauses all outbound payouts (the sent one and the source database are unchanged), `schema_migrations` is identical, and the server then starts on the restored database, answers `/healthz`, applies no migration again and leaves the held payout alone.
 
 Only the newly generated database names are used as backup/restore targets. The server runs on a free loopback port with an empty environment apart from the scratch database URL. An exit trap stops it, drops every scratch database and removes temporary keys, dumps, and logs. Use a dedicated local/CI server: the test role necessarily has database-creation permissions, and terminating the script with `SIGKILL` can prevent cleanup. The original database named in `TEST_DATABASE_URL` is used only as a connection for creating and dropping the scratch databases.
+
+## Real local installation and setup wizard
+
+```sh
+python3 scripts/test-install.py
+```
+
+Requires Docker Engine/Desktop with Compose v2, Python 3, Bash, OpenSSL and curl.
+The script copies only deployment/build inputs into a temporary directory, runs
+`./scripts/install.sh --local` with no answers, and starts a uniquely named real
+Compose project with PostgreSQL 17 on a free loopback application port. It uses
+HTTP form submissions and a cookie jar to verify the browser wizard: wrong-token
+rejection, administrator creation, redirect to the branded admin onboarding,
+setup lockdown, refusal to replace an existing `.env`, and authenticated admin
+access after restarting the app. Browser rendering is covered separately by
+Playwright.
+
+The user's configuration and database are never used. Generated credentials stay
+inside the protected temporary directory; logs do not print the setup token.
+Commands have deadlines, and timeout/interruption cleanup stops process groups,
+removes the test project's containers and volumes, and deletes its application
+image and temporary files. Forced termination (`SIGKILL`) or an unavailable Docker
+daemon can prevent cleanup; the unique project name is in the reported log path.
+Evidence is written to `artifacts/install-test/<project>/`. CI runs this same
+script as a required job and retains its logs and result for 14 days.
 
 ## Upgrade from v0.1.0-alpha.1
 
@@ -47,3 +73,11 @@ Requires Docker, Go, Git with the `v0.1.0-alpha.1` tag present (`git fetch origi
 Servers run with an empty environment apart from their database URL, setup token and loopback address, so local payment or signing settings cannot leak in. On failure, the server logs are printed. The container and temporary directory are always removed.
 
 This automates database recovery and upgrade checks; it does not test backup scheduling, off-host storage retention, Tor identity recovery, or a full production disaster-recovery procedure.
+
+## Real Bitcoin and Monero local chains
+
+[Local-chain testing](local-chain-testing.md) documents signature verification,
+`scripts/setup-local-chains.py`, real wallet funding and
+`npm run test:e2e:chain`. These require operator-provided verified binaries and
+are not part of the default CI simulator run. No production/mainnet wallet or
+public-chain faucet is used.
