@@ -1,1 +1,45 @@
 /* transparency styles. Owned by P6 Transparency; style.css is frozen. */
+.badge.danger {
+  color:#ffc6b7;
+  background:#271512;
+  border-color:#935749
+}
+.fingerprint {
+  font-family:var(--mono);
+  overflow-wrap:anywhere;
+  word-break:break-all;
+  color:var(--text)
+}
+.canary-text {
+  color:var(--text);
+  margin:0 0 16px
+}
+.canary-reason {
+  overflow-wrap:anywhere
+}
+.transparency-facts {
+  margin-bottom:16px
+}
+.transparency-details {
+  margin-top:12px
+}
+.transparency-details>summary {
+  cursor:pointer;
+  font:600 12px/1.6 var(--mono);
+  color:var(--amber);
+  min-height:44px;
+  display:flex;
+  align-items:center
+}
+.transparency-details pre.code-block {
+  margin:8px 0 0;
+  max-height:420px;
+  overflow:auto
+}
+.panel .help .mono,.audit-key .mono {
+  overflow-wrap:anywhere;
+  word-break:break-all
+}
+.transparency-admin textarea {
+  font:12px/1.5 var(--mono)
+}

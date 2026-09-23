@@ -182,9 +182,13 @@ type PayoutRow struct {
 type CanaryView struct {
 	Statement, Fingerprint, SignedAt, Posted, Error string
 	Verified                                        bool
+	// Clearsigned is the stored submission exactly as posted; OperatorKey is the configured armored public key
+	// (both published so readers can verify independently). KeyError explains an unusable configured key.
+	Clearsigned, OperatorKey, KeyError string
 }
 type AuditExportView struct {
 	Available bool
 	PublicKey string
 	UpTo      int64
+	Error     string // why the signed export is unavailable
 }

@@ -99,7 +99,11 @@ Each package records its own acceptance checks here and edits only its subsectio
 ### P6 Transparency
 
 - [ ] `/canary` shows exactly one of: no statement, verified (fingerprint and dates), or invalid with a reason.
+- [ ] The canary is re-verified on every render: changing the operator key or editing the stored text shows INVALID; the application never writes, edits or signs canary text.
+- [ ] Publishing a canary without an operator key returns 409; unverifiable, tampered, other-key, or padded submissions return 400 with the reason and store nothing. Only administrators can set the key or publish.
 - [ ] Audit exports and signatures are byte-stable for a given range and verify with the published Ed25519 key.
+- [ ] `verify-audit -pub <pinned key>` exits 0 for a genuine export and 1 for tampered files, other keys, or malformed input.
+- [ ] Without a valid `AUDIT_SIGNING_KEY` the export returns 409 and the admin and `/canary` pages show it as unavailable; non-administrators receive 403 and exports are rate-limited.
 
 ## Accessibility and visual verification
 
