@@ -60,8 +60,10 @@ that encrypts TOTP secrets. An instance that ran with it must rotate it: put the
   There is no re-encryption tool, and those secrets must be treated as exposed anyway (the key was public,
   including in backups taken meanwhile). Affected users sign in with a recovery code (recovery codes are
   stored as plain hashes and keep working), turn TOTP off on `/totp` with their password and a recovery
-  code, and enrol again. A user with no recovery code left cannot sign in; after confirming who they are
-  out of band, clear their TOTP in the database (internal-db shown; replace `THE_HANDLE`):
+  code, and enrol again. For a non-administrator with no recovery code left, confirm who they are out of
+  band, then use *Admin → Reset a user's second factors*, which also ends their sessions and is audited.
+  The administrator's own account, or an instance where no administrator can sign in, needs the operator
+  reset in the database (internal-db shown; replace `THE_HANDLE`):
 
   ```sh
   docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -v handle=THE_HANDLE -U opsecmkt -d opsecmkt <<'SQL'

@@ -92,6 +92,12 @@ if RESTORE_INTERNAL_DATABASE='x"; DROP DATABASE opsecmkt; --' restore "$work/bac
   echo 'Restore accepted an unsafe database name' >&2; exit 1
 fi
 grep -q 'lower-case PostgreSQL identifier' "$work/name.log"
+for system in postgres template0 template1; do
+  if RESTORE_INTERNAL_DATABASE=$system restore "$work/backup.dump.age" <<< RESTORE > "$work/system.log" 2>&1; then
+    echo "Restore accepted the system database $system" >&2; exit 1
+  fi
+  grep -q "cannot be the system database $system" "$work/system.log"
+done
 if RESTORE_INTERNAL_DATABASE=opsecmkt_restored restore "$work/backup.dump.age" <<< restore > "$work/cancel.log" 2>&1; then
   echo 'Restore ran without the typed confirmation' >&2; exit 1
 fi

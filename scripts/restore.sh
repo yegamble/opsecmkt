@@ -19,6 +19,8 @@ elif [[ -n ${RESTORE_INTERNAL_DATABASE:-} ]]; then
   # The internal-db Compose profile publishes no port: client tools run inside the db container, as backup.sh does.
   database=$RESTORE_INTERNAL_DATABASE
   [[ $database =~ ^[a-z_][a-z0-9_]{0,62}$ ]] || { echo 'RESTORE_INTERNAL_DATABASE must be a lower-case PostgreSQL identifier (letters, digits, underscore).' >&2; exit 1; }
+  # System databases would receive the application schema (template1 would copy it into every new database).
+  [[ $database != postgres && $database != template0 && $database != template1 ]] || { echo "RESTORE_INTERNAL_DATABASE cannot be the system database $database." >&2; exit 1; }
   command -v docker >/dev/null || { echo 'Docker with Compose v2 is required for the internal database.' >&2; exit 1; }
   # </dev/null: `exec -T` forwards stdin, which would otherwise swallow the typed confirmation.
   (cd "$root_dir" && docker compose exec -T db pg_isready -q -U opsecmkt -d postgres </dev/null) || {

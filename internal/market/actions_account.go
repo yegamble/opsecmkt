@@ -77,8 +77,14 @@ func passwordChangeAction(c *actionCtx) (actionResult, error) {
 		}
 		// Rotate this browser's session: the old token stops working and the new cookie is set after commit.
 		token = randomToken()
-		if _, err = tx.ExecContext(ctx, "DELETE FROM sessions WHERE token_hash=$1", digest(c.Token)); err != nil {
+		// confirmedTxWith locks the account row, so concurrent changes run one at a time; one that committed
+		// first has ended this session, and this change must not proceed on a revoked session.
+		own, err := tx.ExecContext(ctx, "DELETE FROM sessions WHERE token_hash=$1", digest(c.Token))
+		if err != nil {
 			return actionResult{}, err
+		}
+		if gone, _ := own.RowsAffected(); gone != 1 {
+			return actionResult{}, fail(401, "Your session ended while changing the password. Sign in again.")
 		}
 		if _, err = tx.ExecContext(ctx, "INSERT INTO sessions(token_hash,user_id,expires) VALUES($1,$2,now()+interval '12 hours')", digest(token), uid); err != nil {
 			return actionResult{}, err
