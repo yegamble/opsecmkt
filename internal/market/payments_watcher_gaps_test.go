@@ -122,7 +122,7 @@ func (p *payEnv) failedPayout(order, msg string, ambiguous bool) {
 	st, txid, _, _ := p.payout(order)
 	errText := p.str("SELECT error FROM payouts WHERE order_id=$1", order)
 	recorded := p.str("SELECT send_ambiguous::text FROM payouts WHERE order_id=$1", order) == "true"
-	wording := "The wallet rejected the send; nothing was broadcast."
+	wording := "The wallet reported a pre-broadcast error; nothing was broadcast."
 	if ambiguous {
 		wording = "may or may not have been broadcast"
 	}

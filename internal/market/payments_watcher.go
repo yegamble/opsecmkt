@@ -523,8 +523,8 @@ func (a *App) sendPayouts(ctx context.Context, p PaymentProvider) error {
 		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), payoutRecordTimeout)
 		label := amount(amt, currencyDecimals(cur)) + " " + cur
 		if serr != nil {
-			ambiguous := !walletRejected(serr)
-			msg := "The wallet rejected the send; nothing was broadcast. "
+			ambiguous := !walletRejected(cur, serr)
+			msg := "The wallet reported a pre-broadcast error; nothing was broadcast. "
 			if ambiguous {
 				msg = "Wallet call failed without a definite answer; the transaction may or may not have been broadcast. Check the wallet before requeueing or paying manually. "
 			}
@@ -541,12 +541,37 @@ func (a *App) sendPayouts(ctx context.Context, p PaymentProvider) error {
 	return errors.Join(errs...)
 }
 
-// walletRejected reports a definite refusal: the wallet answered the send with a JSON-RPC error, so nothing
-// was broadcast. Any other failure (timeout, reset connection, unreadable or incomplete reply after the
-// request was sent) leaves the outcome unknown.
-func walletRejected(err error) bool {
+// walletRejected reports a definite refusal: the wallet answered the send with a JSON-RPC error raised before
+// anything was broadcast. Any other failure (timeout, reset connection, unreadable or incomplete reply after
+// the request was sent), and any error from a wallet not classified here, leaves the outcome unknown.
+//
+// Bitcoin: every sendtoaddress JSON-RPC error is definite. Bitcoin Core (v31.1 src/wallet/rpc/spend.cpp:185-190,
+// src/wallet/wallet.cpp:2314-2351) builds the transaction, stores it in the wallet and only then submits it to
+// the mempool; a failed submission is logged, not returned, so the RPC answers with the txid.
+//
+// Monero: monero-wallet-rpc's transfer submits through wallet2::commit_tx, whose /sendrawtransaction call can
+// fail after the daemon relayed the transaction (-38 on a timeout, -3/-4 from the daemon's reply, -1 when
+// saving the tx info after commit), so only the codes in moneroPreSubmitCodes are definite.
+func walletRejected(cur string, err error) bool {
 	var re *rpcError
-	return errors.As(err, &re)
+	if !errors.As(err, &re) {
+		return false
+	}
+	return cur == "BTC" || (cur == "XMR" && moneroPreSubmitCodes[re.Code])
+}
+
+// moneroPreSubmitCodes are the monero-wallet-rpc transfer error codes raised only before wallet2::commit_tx
+// submits anything (monero v0.18.5.1: codes from src/wallet/wallet_rpc_server_error_codes.h; raised by
+// validate_transfer, on_transfer before fill_response and by handle_rpc_exception for exceptions that
+// create_transactions_2 throws; commit_tx, src/wallet/wallet2.cpp:7560-7644, throws none of them).
+var moneroPreSubmitCodes = map[int64]bool{
+	-2:  true, // WRONG_ADDRESS: validate_transfer, wallet_rpc_server.cpp:1064
+	-16: true, // TX_NOT_POSSIBLE: no transaction created (:1270) or tx_not_possible (:3809)
+	-17: true, // NOT_ENOUGH_MONEY: not_enough_money (:3799)
+	-18: true, // TX_TOO_LARGE: more than one transaction needed (:1278)
+	-19: true, // NOT_ENOUGH_OUTS_TO_MIX: not_enough_outs_to_mix (:3819)
+	-20: true, // ZERO_DESTINATION: validate_transfer (:1099) or zero_destination (:3794)
+	-37: true, // NOT_ENOUGH_UNLOCKED_MONEY: not_enough_unlocked_money (:3804)
 }
 
 // recordPayout moves a claimed payout from sending to state. ambiguous marks a failure whose broadcast is
