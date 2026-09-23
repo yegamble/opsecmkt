@@ -29,6 +29,10 @@ chair gives you, and `README.md` for how to run the server.
   `SETUP_TOKEN`. For payments, start `python3 tests/e2e/fixtures/wallet-rpc.py`
   and copy the env from `playwright.wallet.config.ts` (simulated RPC — label
   that evidence "simulated wallet RPC", never chain evidence).
+- Work only in your own scratch subdirectory (named after the prober ID the
+  chair gives you) with uniquely named binaries; never `pkill` by a shared
+  path — other probers run beside you. The wallet simulator's port is fixed in
+  the fixture: run a copy on a port in your reserved range.
 - Never touch a real deployment, `.env`, mainnet or a public network.
 
 ## How to drive it
