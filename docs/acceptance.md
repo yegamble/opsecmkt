@@ -17,6 +17,7 @@ This is a verification plan, not a declaration that every check has passed. Reco
 
 - [ ] Passwords use adaptive hashing; password and username bounds are enforced before expensive work. No production default credentials exist.
 - [ ] Sessions use cryptographic randomness, expire server-side, rotate on authentication, and are revoked on logout. Cookies are HttpOnly, have an explicit SameSite policy, and use Secure when the configured browser-facing origin is HTTPS.
+- [ ] The SameSite=Strict `session` cookie is set only at sign-in; pre-login CSRF/CAPTCHA state lives in a separate Strict `anon` cookie. Following a link from another site never overwrites `session`: a direct reload of `/account` afterwards is still signed in, and the sign-in form rendered on that cookieless landing page still submits, served anonymously (`TestCrossSiteLinkClobbersSessionCookie`, `TestAnonymousLandingFormPostsWhileSignedIn`, `TestPreLoginCookieSeparateFromSession`, `db-identity.spec.ts` cross-site link case).
 - [ ] Login, registration, setup, and authenticated mutations reject missing or invalid CSRF tokens. Cross-origin browser submissions are rejected. GET requests cannot change state.
 - [ ] Sensitive endpoints have bounded request bodies, server timeouts, and rate limits. Forwarded IP or scheme headers are not trusted without an explicit proxy boundary.
 - [ ] Each order, conversation, notification, dispute, and administration endpoint enforces authorization in SQL or application logic, including guessed resource identifiers and forged form parameters.

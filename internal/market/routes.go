@@ -57,7 +57,7 @@ type actionCtx struct {
 	R     *http.Request
 	Tx    *sql.Tx // nil when the action uses OwnTx
 	User  *User   // nil for anonymous Public actions
-	Token string  // raw session cookie value (also sessionToken(R))
+	Token string  // raw request token: session, or pre-login anon when anonymous (also sessionToken(R))
 	Form  url.Values
 }
 
@@ -155,8 +155,14 @@ func factorByName(name string) factorProvider {
 
 type sessionKey struct{}
 
-// sessionToken returns the raw session cookie value for this request, including one issued by this response.
+type anonKey struct{}
+
+// sessionToken returns this request's token: the `session` cookie value, or else the pre-login `anon`
+// cookie value (including one issued by this response). CSRF and CAPTCHA are bound to it.
 func sessionToken(r *http.Request) string { s, _ := r.Context().Value(sessionKey{}).(string); return s }
+
+// anonToken returns the pre-login `anon` cookie value ("" when the request sent none and needed none).
+func anonToken(r *http.Request) string { s, _ := r.Context().Value(anonKey{}).(string); return s }
 
 func roleRequired(roles []string) string {
 	for _, r := range roles {
