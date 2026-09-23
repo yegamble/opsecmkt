@@ -12,6 +12,7 @@ type Incoming struct {
 	Index         int64 // vout or subaddress minor index
 	Amount        int64 // atomic units
 	Confirmations int64 // <0 = conflicted/reorged
+	Locked        bool  // Monero unlock_time != 0: recorded and reported, never credited
 }
 
 // PaymentProvider is a test-network wallet adapter. Implementations never accept mainnet.

@@ -64,9 +64,6 @@ func pgpLoginCodeAction(c *actionCtx) (actionResult, error) {
 	if pending == "" {
 		return actionResult{}, fail(401, "Sign-in verification expired. Sign in again.")
 	}
-	if !c.A.allow("pgp-login:"+digest(pending), 10) {
-		return actionResult{}, fail(429, "Too many codes requested. Try again in ten minutes.")
-	}
 	var userID string
 	err := tx.QueryRowContext(ctx, "SELECT user_id FROM pending_logins WHERE token_hash=$1 AND expires>now() FOR UPDATE", digest(pending)).Scan(&userID)
 	if err == sql.ErrNoRows {
@@ -74,6 +71,9 @@ func pgpLoginCodeAction(c *actionCtx) (actionResult, error) {
 	}
 	if err != nil {
 		return actionResult{}, err
+	}
+	if !c.A.allow("pgp-login:"+digest(pending), 10) { // only after the pending login exists
+		return actionResult{}, fail(429, "Too many codes requested. Try again in ten minutes.")
 	}
 	p, err := loadPGPAccount(ctx, tx, userID, false)
 	if err != nil {

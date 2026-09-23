@@ -23,7 +23,7 @@ func init() {
 	registerLoader("account", pgpLoader)
 	registerAction("/pgp/challenge", actionSpec{Run: pgpChallengeAction})
 	registerAction("/pgp/verify", actionSpec{Run: pgpVerifyAction})
-	registerAction("/pgp/2fa", actionSpec{Run: pgpTwoFactorAction})
+	registerAction("/pgp/2fa", actionSpec{OwnTx: true, Run: pgpTwoFactorAction})
 	registerPreview("pgp", previewPGP)
 	registerPreview("account", func(d *PageData) { d.PGP = &PGPView{} })
 }
@@ -40,11 +40,23 @@ func formatFingerprint(fp string) string {
 	return b.String()
 }
 
-// saveProfileKey is called by the /account action (inside its tx). It rejects keys that do not parse,
-// and when the key changes it stores the new fingerprint, clears ownership proof, PGP sign-in and any
-// open challenge. It returns the audit text for the profile update.
-func saveProfileKey(c *actionCtx, armored string) (string, error) {
+// saveProfileKey is called by the /account action (inside its tx). An unchanged key is not re-parsed (a
+// legacy key that no longer parses must not block the profile form). A changed key must parse, and needs
+// the password confirmation (confirmed) while PGP sign-in is on; it stores the new fingerprint, clears
+// ownership proof, PGP sign-in and any open challenge. It returns the audit text for the profile update.
+func saveProfileKey(c *actionCtx, armored string, confirmed bool) (string, error) {
 	ctx, tx, uid := c.Ctx(), c.Tx, c.User.ID
+	var old string
+	var twoFA bool
+	if err := tx.QueryRowContext(ctx, "SELECT pgp,pgp_2fa FROM users WHERE id=$1 FOR UPDATE", uid).Scan(&old, &twoFA); err != nil {
+		return "", err
+	}
+	if old == armored {
+		return "Updated profile", nil
+	}
+	if twoFA && !confirmed {
+		return "", fail(400, "Enter your current password to change or remove your key while PGP sign-in verification is on.")
+	}
 	fp := ""
 	if armored != "" {
 		_, parsed, err := parsePublicKey(armored)
@@ -52,13 +64,6 @@ func saveProfileKey(c *actionCtx, armored string) (string, error) {
 			return "", fail(400, "PGP key rejected: "+err.Error()+".")
 		}
 		fp = parsed
-	}
-	var old string
-	if err := tx.QueryRowContext(ctx, "SELECT pgp FROM users WHERE id=$1 FOR UPDATE", uid).Scan(&old); err != nil {
-		return "", err
-	}
-	if old == armored {
-		return "Updated profile", nil
 	}
 	if _, err := tx.ExecContext(ctx, "UPDATE users SET pgp=$1,pgp_fingerprint=$2,pgp_verified_at=NULL,pgp_2fa=false WHERE id=$3", armored, fp, uid); err != nil {
 		return "", err
@@ -242,12 +247,17 @@ func pgpVerifyAction(c *actionCtx) (actionResult, error) {
 	return actionResult{Redirect: "/pgp?saved=1", Audit: "Verified PGP key ownership (fingerprint " + p.Fingerprint + ", " + kind + " challenge)"}, nil
 }
 
+// pgpTwoFactorAction turns PGP sign-in on (verified key) or off (current password, plus a TOTP code if enrolled).
 func pgpTwoFactorAction(c *actionCtx) (actionResult, error) {
-	ctx, tx, u := c.Ctx(), c.Tx, c.User
 	enable := c.Form.Get("enable")
 	if enable != "1" && enable != "0" {
 		return actionResult{}, fail(400, "Choose to turn PGP sign-in verification on or off")
 	}
+	return confirmedTx(c, enable == "0", func(c *actionCtx) (actionResult, error) { return pgpTwoFactor(c, enable) })
+}
+
+func pgpTwoFactor(c *actionCtx, enable string) (actionResult, error) {
+	ctx, tx, u := c.Ctx(), c.Tx, c.User
 	p, err := loadPGPAccount(ctx, tx, u.ID, true)
 	if err != nil {
 		return actionResult{}, err

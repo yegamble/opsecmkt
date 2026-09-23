@@ -28,7 +28,7 @@
 <dd>{{if .TwoFactor}}On{{else}}Off{{end}}</dd>
 </div>
 </dl>
-<p class="help">Compare this fingerprint with the one your own PGP software shows before relying on it. Saving a different key on the account page clears verification and turns PGP sign-in off.</p>
+<p class="help">Compare this fingerprint with the one your own PGP software shows before relying on it. Saving a different key on the account page clears verification and turns PGP sign-in off; while PGP sign-in is on, that needs your current password.</p>
 </section>
 <section class="panel">
 <h2>{{if .Verified}}Prove ownership again{{else}}Prove ownership{{end}}</h2>
@@ -64,9 +64,10 @@
 </section>{{end}}<section class="panel pgp-challenge">
 <h2>PGP sign-in verification</h2>{{if .TwoFactor}}
 <p>On. After your password, sign-in asks you to decrypt a one-time code encrypted to this key.</p>
-<form method="post" action="/pgp/2fa">
+<form class="stack" method="post" action="/pgp/2fa">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="enable" value="0">
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button type="submit">Turn off PGP sign-in verification</button>
 </form>{{else if .Verified}}
 <p>Off. When on, sign-in asks you to decrypt a one-time code encrypted to this key after your password. If the key expires or you lose it, you cannot sign in unless another verification method is enrolled.</p>

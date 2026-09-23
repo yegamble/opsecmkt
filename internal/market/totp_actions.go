@@ -6,14 +6,13 @@ import (
 	"net/http"
 	"strings"
 	"time"
-
-	"golang.org/x/crypto/bcrypt"
 )
 
 func init() {
 	registerPage("totp", pageSpec{Protected: true})
 	registerLoader("totp", totpLoader)
 	registerLoader("account", accountSecurityLoader)
+	registerLoader("pgp", accountSecurityLoader) // TOTPEnabled decides whether turning PGP sign-in off asks for a code
 	registerAction("/totp/enroll", actionSpec{Run: totpEnroll})
 	registerAction("/totp/activate", actionSpec{Run: totpActivate})
 	registerAction("/totp/recovery", actionSpec{Run: totpRegenerate})
@@ -118,19 +117,8 @@ func totpDisable(c *actionCtx) (actionResult, error) {
 	if len(password) > 72 || code == "" {
 		return actionResult{}, fail(400, "Enter your password and a current code or recovery code")
 	}
-	select {
-	case passwordWork <- struct{}{}:
-	default:
-		return actionResult{}, fail(503, "Authentication is busy. Try again shortly.")
-	}
-	var hash string
-	err := a.db.QueryRowContext(ctx, "SELECT password_hash FROM users WHERE id=$1", uid).Scan(&hash)
-	if err == nil {
-		err = bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
-	}
-	<-passwordWork
-	if err != nil {
-		return actionResult{}, fail(401, "Password incorrect")
+	if err := a.confirmPassword(ctx, uid, password); err != nil {
+		return actionResult{}, err
 	}
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {

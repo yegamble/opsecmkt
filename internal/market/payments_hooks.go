@@ -13,6 +13,8 @@ import (
 
 func init() { registerTransitionHook(paymentsTransitionHook) }
 
+const heldReason = "A credited deposit is conflicted or below the confirmation threshold; payout held until it confirms again or a moderator reviews it."
+
 func paymentsTransitionHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, to string) error {
 	if !isTerminal(to) {
 		return nil
@@ -54,11 +56,14 @@ func (a *App) enqueuePayout(ctx context.Context, tx *sql.Tx, o *Order) error {
 		return nil
 	}
 	threshold := int64(math.MaxInt64) // provider removed: only deposits already credited count
+	holdBelow := int64(0)             // credited deposits below this hold the payout (conflicted; with a provider, re-confirming)
 	if p := a.payments[o.Currency]; p != nil {
 		threshold = int64(p.Confirmations())
+		holdBelow = threshold
 	}
-	// Credited deposits count even if now conflicted (the payout is then held, not dropped); others need the threshold.
-	const settled = "order_id=$1 AND (credited OR confirmations>=$2)"
+	// Credited deposits count even if now conflicted (the payout is then held, not dropped); others need the
+	// threshold. Locked (unlock_time) transfers never count.
+	const settled = "order_id=$1 AND NOT locked AND (credited OR confirmations>=$2)"
 	var sum int64
 	if err := tx.QueryRowContext(ctx, "SELECT COALESCE(sum(amount),0) FROM payments WHERE "+settled, o.ID, threshold).Scan(&sum); err != nil || sum == 0 {
 		return err
@@ -72,13 +77,13 @@ func (a *App) enqueuePayout(ctx context.Context, tx *sql.Tx, o *Order) error {
 		return err
 	}
 	var held bool
-	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM payments WHERE order_id=$1 AND credited AND confirmations<0)", o.ID).Scan(&held); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM payments WHERE order_id=$1 AND credited AND confirmations<$2)", o.ID, holdBelow).Scan(&held); err != nil {
 		return err
 	}
 	state, errText := "pending", ""
 	switch {
 	case held:
-		state, errText = "held", "A credited deposit is conflicted; payout held for review."
+		state, errText = "held", heldReason
 	case address == "":
 		state = "blocked"
 	}
@@ -100,7 +105,7 @@ func (a *App) enqueuePayout(ctx context.Context, tx *sql.Tx, o *Order) error {
 	case "blocked":
 		note = "TESTNET " + kind + " of " + label + " to the " + who + " is blocked until the " + who + " saves a " + o.Currency + " payout address."
 	case "held":
-		note = "TESTNET " + kind + " of " + label + " to the " + who + " is held: a credited deposit is conflicted."
+		note = "TESTNET " + kind + " of " + label + " to the " + who + " is held: a credited deposit is conflicted or re-confirming."
 	}
 	if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, o.State, note); err != nil {
 		return err

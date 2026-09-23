@@ -1,5 +1,20 @@
 # Verification
 
+## Review fixes — 2026-09-23
+
+A fresh-eyes review of the merged packages found eight defects. Each was reproduced by a failing test first (`internal/market/review_fixes_integration_test.go`), then fixed:
+
+1. Stale draft price: resubmitting checkout now updates the draft's amount, and requesting payment reprices the draft from the listing in the same transaction (`TestDraftRepricedOnResubmitAndPay`).
+2. Rate-limiter lockout: a full limiter table evicts the entry that expires first; `/challenge` and `/challenge/pgp` look up the pending login, and sign-in validates the handle, before creating a limiter key (`TestLimiterFloodDoesNotLockOutUsers`).
+3. Unbounded unpaid reservations: at most 3 orders awaiting payment per buyer (409), and the watcher cancels orders unpaid after `PAYMENT_EXPIRY` (default 24h) with no deposit seen, returning their stock (`TestPayCapsOpenAwaitingPaymentOrders`, `TestWatcherExpiresUnpaidOrders`).
+4. Session-only takeover: payout-address changes, turning PGP sign-in off, and changing or removing the key while it is on need the current password, plus an authenticator code when TOTP is enrolled (`TestSensitiveChangesNeedPassword`).
+5. Late deposits after close: closed orders stay watched for 30 days after address issue while a deposit is confirming or unhandled; funds confirming after a cancellation are refunded, extra funds on settled orders flagged (`TestLateDepositAfterCloseIsHandled`).
+6. Reorg to 0 confirmations: payouts are held while any credited deposit is below the threshold and resume when it re-confirms (`TestPayoutHeldWhileCreditedDepositReconfirms`).
+7. Monero locked transfers: `unlock_time` ≠ 0 is recorded as locked, never credited, reported once (`TestMoneroLockedTransfersAreNotCredited`; migration 051).
+8. Legacy PGP key: an unchanged stored key is not re-parsed on profile save (`TestLegacyUnparseableKeySavesUnchanged`).
+
+Results after the fixes: `gofmt -l` clean; `go vet ./...` clean; `go test -count=1 ./...` passes on a fresh database (the new tests plus the lifecycle and payment tests also pass with `-race`); Playwright 263 of 264 (only the known WebKit mobile skip-link failure); Python tests 18 pass; `govulncheck` v1.1.4 reports no called vulnerabilities.
+
 ## Feature completion — 2026-09-23
 
 Scope: the Foundation refactor and packages P1–P6 (authentication, PGP, orders, inventory, test-network payments, transparency) merged on `finish-codebase`, plus the cross-package lifecycle test. Results are from a local macOS machine with PostgreSQL 16 unless stated.

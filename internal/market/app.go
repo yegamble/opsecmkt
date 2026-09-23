@@ -142,8 +142,14 @@ func (a *App) allow(key string, n int) bool {
 	}
 	b := a.limits[key]
 	if b.Count == 0 {
-		if len(a.limits) >= 4096 {
-			return false
+		if len(a.limits) >= 4096 { // full: evict the entry that expires first rather than refusing new keys
+			oldest := ""
+			for k, v := range a.limits {
+				if oldest == "" || v.Until.Before(a.limits[oldest].Until) {
+					oldest = k
+				}
+			}
+			delete(a.limits, oldest)
 		}
 		b.Until = now.Add(10 * time.Minute)
 	}

@@ -52,13 +52,29 @@ func formNote(c *actionCtx, fallback string) (string, error) {
 	return note, nil
 }
 
-// payAction: buyer moves draft -> awaiting_payment. transition() refuses when no provider serves the
-// currency (409) and the stock hook reserves one unit (409 when none is left). Only then is the live
-// test-network wallet asked for an address, so refused requests never create wallet addresses.
+// maxAwaitingPayment bounds the stock one buyer can hold in unpaid orders (the watcher also expires them).
+const maxAwaitingPayment = 3
+
+// payAction: buyer moves draft -> awaiting_payment at the current listing price. transition() refuses when
+// no provider serves the currency (409) and the stock hook reserves one unit (409 when none is left). Only
+// then is the live test-network wallet asked for an address, so refused requests never create wallet addresses.
 func payAction(c *actionCtx) (actionResult, error) {
 	ctx := c.Ctx()
 	o, err := partyOrder(c, c.Form.Get("order_id"))
 	if err != nil {
+		return actionResult{}, err
+	}
+	if o.BuyerID == c.User.ID {
+		var open int
+		// The buyer row lock serialises concurrent requests so the cap cannot be raced.
+		if err = c.Tx.QueryRowContext(ctx, "SELECT (SELECT count(*) FROM orders WHERE buyer_id=u.id AND state='awaiting_payment') FROM users u WHERE u.id=$1 FOR UPDATE", c.User.ID).Scan(&open); err != nil {
+			return actionResult{}, err
+		}
+		if open >= maxAwaitingPayment {
+			return actionResult{}, fail(409, "You already have "+strconv.Itoa(maxAwaitingPayment)+" orders awaiting payment. Pay or cancel one before requesting another payment address.")
+		}
+	}
+	if _, err = c.Tx.ExecContext(ctx, "UPDATE orders o SET amount=CASE WHEN o.currency='XMR' THEN p.xmr ELSE p.btc END FROM products p WHERE o.id=$1 AND o.state='draft' AND p.id=o.product_id", o.ID); err != nil {
 		return actionResult{}, err
 	}
 	if _, err = c.A.transition(ctx, c.Tx, o.ID, stateDraft, stateAwaitingPayment, c.User, "Payment address requested"); err != nil {

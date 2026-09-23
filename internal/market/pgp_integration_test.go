@@ -176,7 +176,8 @@ func TestPGPKeyOwnershipAndSecondFactor(t *testing.T) {
 
 	// Changing the key resets verification and 2FA; a challenge for the old key is discarded.
 	e.check(e.do("POST", "/pgp/challenge", s, url.Values{"kind": {"sign"}}), 303)
-	e.check(e.do("POST", "/account", s, url.Values{"pgp": {bobPub}}), 303)
+	e.check(e.do("POST", "/account", s, url.Values{"pgp": {bobPub}}), 400) // PGP sign-in on: current password required
+	e.check(e.do("POST", "/account", s, url.Values{"pgp": {bobPub}, "password": {testPassword}}), 303)
 	if fp, verified, twoFA := status(); fp != bobFP || verified || twoFA {
 		t.Fatalf("key change kept proof: fp=%s verified=%v 2fa=%v", fp, verified, twoFA)
 	}

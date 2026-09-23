@@ -6,17 +6,19 @@
 {{define "account-payout:panel"}}{{with .Payout}}<div class="panel payout-panel" id="payout">
 <h2>Payout addresses</h2>
 {{if .Blocked}}<div class="alert" role="status">{{.Blocked}} payout(s) are waiting for a payout address.</div>{{end}}
-<p class="help">Used for releases (vendors) and refunds (buyers). Test-network addresses only; mainnet addresses are rejected. The address is copied onto a payout when it is queued. Save an empty field to remove an address.</p>
+<p class="help">Used for releases (vendors) and refunds (buyers). Test-network addresses only; mainnet addresses are rejected. The address is copied onto a payout when it is queued. Save an empty field to remove an address. Every change needs your current password{{if and $.Security $.Security.TOTPEnabled}} and an authenticator code{{end}}.</p>
 {{if .BTCNetwork}}<form class="stack" method="post" action="/account/payout">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="currency" value="BTC">
 <label>Bitcoin payout address <span class="badge testnet">TESTNET {{.BTCNetwork}}</span><input name="address" value="{{.BTC}}" maxlength="128" spellcheck="false" autocomplete="off">
 </label>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button type="submit">Save BTC address</button>
-</form>{{else}}<p>Bitcoin payouts are unavailable: no BTC provider is configured.{{if .BTC}} A previously saved address is kept but unused.{{end}}</p>{{if .BTC}}<form method="post" action="/account/payout">
+</form>{{else}}<p>Bitcoin payouts are unavailable: no BTC provider is configured.{{if .BTC}} A previously saved address is kept but unused.{{end}}</p>{{if .BTC}}<form class="stack" method="post" action="/account/payout">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="currency" value="BTC">
 <input type="hidden" name="address" value="">
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button type="submit">Remove saved BTC address</button>
 </form>{{end}}{{end}}
 {{if .XMRNetwork}}<form class="stack" method="post" action="/account/payout">
@@ -24,11 +26,13 @@
 <input type="hidden" name="currency" value="XMR">
 <label>Monero payout address <span class="badge testnet">TESTNET {{.XMRNetwork}}</span><input name="address" value="{{.XMR}}" maxlength="128" spellcheck="false" autocomplete="off">
 </label>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button type="submit">Save XMR address</button>
-</form>{{else}}<p>Monero payouts are unavailable: no XMR provider is configured.{{if .XMR}} A previously saved address is kept but unused.{{end}}</p>{{if .XMR}}<form method="post" action="/account/payout">
+</form>{{else}}<p>Monero payouts are unavailable: no XMR provider is configured.{{if .XMR}} A previously saved address is kept but unused.{{end}}</p>{{if .XMR}}<form class="stack" method="post" action="/account/payout">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="currency" value="XMR">
 <input type="hidden" name="address" value="">
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button type="submit">Remove saved XMR address</button>
 </form>{{end}}{{end}}
 </div>{{end}}{{end}}

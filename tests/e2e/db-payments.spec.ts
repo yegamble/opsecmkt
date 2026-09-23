@@ -28,7 +28,8 @@ test('payments are visibly disabled without a provider', async ({ page }) => {
   await expect(page.locator('main')).toContainText('Unavailable — payments disabled');
   await expect(page.getByLabel('Bitcoin payout address')).toHaveCount(0);
   const csrf = await page.locator('form[action="/logout"] input[name="csrf"]').getAttribute('value');
-  const refused = await page.request.post('/account/payout', { form: { csrf: csrf!, currency: 'BTC', address: 'tb1qexampleaddress000000000000000000000' } });
+  // Payout changes need the current password; with no provider the request is refused before that check.
+  const refused = await page.request.post('/account/payout', { form: { csrf: csrf!, currency: 'BTC', address: 'tb1qexampleaddress000000000000000000000', password: 'browser-payments-password-123' } });
   expect(refused.status()).toBe(409);
   expect(await refused.text()).toContain('BTC payments are not configured');
   await page.getByRole('button', { name: 'Sign out', exact: true }).click();

@@ -12,8 +12,9 @@ import (
 )
 
 // One background watcher per deployment (PostgreSQL advisory lock): it records deposits in the idempotent
-// payments ledger, moves fully confirmed orders awaiting_payment -> paid through transition(), flags
-// conflicted or unexpected deposits for moderators, queues missing payouts and sends pending payouts once.
+// payments ledger, moves fully confirmed orders awaiting_payment -> paid through transition(), cancels orders
+// left unpaid past PAYMENT_EXPIRY, flags conflicted, locked or unexpected deposits for moderators, refunds
+// deposits that confirm after a cancellation, queues missing payouts and sends pending payouts once.
 
 const paymentWatcherLock = 782494
 
@@ -110,9 +111,14 @@ type ledgerKey struct {
 
 func (a *App) pollCurrency(ctx context.Context, p PaymentProvider) error {
 	cur := p.Currency()
-	// Orders awaiting payment, plus recently changed funded/terminal orders (late confirmations, conflicts, refunds).
+	// Orders awaiting payment, plus recently changed funded/terminal orders (late confirmations, conflicts, refunds),
+	// plus closed orders whose address was issued within 30 days and that still have a deposit below the threshold
+	// or a confirmed deposit neither credited (paid out / counted) nor flagged. Older addresses are not polled.
 	rows, err := a.db.QueryContext(ctx, `SELECT pa.address,pa.order_id FROM payment_addresses pa JOIN orders o ON o.id=pa.order_id
-		WHERE pa.currency=$1 AND (o.state='awaiting_payment' OR (o.state<>'draft' AND o.updated > now()-interval '24 hours')) ORDER BY o.updated`, cur)
+		WHERE pa.currency=$1 AND (o.state='awaiting_payment' OR (o.state<>'draft' AND o.updated > now()-interval '24 hours')
+			OR (o.state IN ('cancelled','resolved','completed') AND pa.created > now()-interval '30 days' AND EXISTS (SELECT 1 FROM payments pm
+				WHERE pm.order_id=o.id AND NOT pm.flagged AND (pm.confirmations BETWEEN 0 AND $2-1 OR (pm.confirmations>=$2 AND NOT pm.credited)))))
+		ORDER BY o.updated`, cur, int64(p.Confirmations()))
 	if err != nil {
 		return err
 	}
@@ -164,9 +170,9 @@ func (a *App) recordIncoming(ctx context.Context, p PaymentProvider, addresses [
 			continue
 		}
 		seen[ledgerKey{in.TxID, in.Index}] = true
-		if _, err = a.db.ExecContext(ctx, `INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations) VALUES($1,$2,$3,$4,$5,$6,$7)
-			ON CONFLICT (currency,txid,idx) DO UPDATE SET confirmations=excluded.confirmations, updated=now()
-			WHERE payments.confirmations IS DISTINCT FROM excluded.confirmations`, order, cur, in.TxID, in.Index, in.Address, in.Amount, in.Confirmations); err != nil {
+		if _, err = a.db.ExecContext(ctx, `INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,locked) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+			ON CONFLICT (currency,txid,idx) DO UPDATE SET confirmations=excluded.confirmations, locked=excluded.locked, updated=now()
+			WHERE (payments.confirmations,payments.locked) IS DISTINCT FROM (excluded.confirmations,excluded.locked)`, order, cur, in.TxID, in.Index, in.Address, in.Amount, in.Confirmations, in.Locked); err != nil {
 			return err
 		}
 	}
@@ -222,11 +228,11 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 	if o.State == stateAwaitingPayment {
 		var sum int64
 		var n int
-		if err = tx.QueryRowContext(ctx, "SELECT COALESCE(sum(amount),0),count(*) FROM payments WHERE order_id=$1 AND confirmations>=$2", orderID, threshold).Scan(&sum, &n); err != nil {
+		if err = tx.QueryRowContext(ctx, "SELECT COALESCE(sum(amount),0),count(*) FROM payments WHERE order_id=$1 AND confirmations>=$2 AND NOT locked", orderID, threshold).Scan(&sum, &n); err != nil {
 			return err
 		}
 		if n > 0 && sum >= total {
-			if _, err = tx.ExecContext(ctx, "UPDATE payments SET credited=true WHERE order_id=$1 AND confirmations>=$2", orderID, threshold); err != nil {
+			if _, err = tx.ExecContext(ctx, "UPDATE payments SET credited=true WHERE order_id=$1 AND confirmations>=$2 AND NOT locked", orderID, threshold); err != nil {
 				return err
 			}
 			note := fmt.Sprintf("TESTNET %s payment confirmed: %s %s in %d output(s) with at least %d confirmations", p.Network(), amount(sum, dec), o.Currency, n, threshold)
@@ -235,6 +241,44 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 				return err
 			}
 			o = *next
+		}
+	}
+	// Unpaid past PAYMENT_EXPIRY with no deposit seen (a conflicted or locked one does not count): cancel as the
+	// system actor; the stock hook returns the reserved unit. A deposit still confirming keeps the order open.
+	if o.State == stateAwaitingPayment {
+		expiry, err := paymentExpiry()
+		if err != nil {
+			expiry = 24 * time.Hour // validated at startup by the provider factories
+		}
+		var expired bool
+		if err = tx.QueryRowContext(ctx, `SELECT created < now()-make_interval(secs => $2) AND NOT EXISTS (SELECT 1 FROM payments WHERE order_id=$1 AND confirmations>=0 AND NOT locked)
+			FROM payment_addresses WHERE order_id=$1`, orderID, expiry.Seconds()).Scan(&expired); err != nil {
+			return err
+		}
+		if expired {
+			next, err := a.transition(ctx, tx, orderID, stateAwaitingPayment, stateCancelled, nil, "payment window expired")
+			if err != nil {
+				return err
+			}
+			o = *next
+		}
+	}
+	// A Monero transfer with an unlock time is never credited: report it once to moderators and the buyer.
+	locked, err := collectStrings(ctx, tx, "SELECT txid FROM payments WHERE order_id=$1 AND locked AND NOT flagged", orderID)
+	if err != nil {
+		return err
+	}
+	for _, txid := range locked {
+		if _, err = tx.ExecContext(ctx, "UPDATE payments SET flagged=true WHERE order_id=$1 AND txid=$2 AND locked", orderID, txid); err != nil {
+			return err
+		}
+		note := fmt.Sprintf("TESTNET deposit %s has an unlock time; locked transfer ignored: it is not counted toward payment and is never paid out automatically. Moderator review required.", truncate(txid, 20))
+		if err = a.flagOrder(ctx, tx, &o, note); err != nil {
+			return err
+		}
+		body := "Order " + orderID[:min(8, len(orderID))] + ": locked transfer ignored. Deposit " + truncate(txid, 20) + " has an unlock time and does not count toward payment; send an ordinary transfer (TESTNET)."
+		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, body); err != nil {
+			return err
 		}
 	}
 	// A credited deposit that is now conflicted or gone: report once, hold unsent payouts, never revert state.
@@ -251,12 +295,14 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 			return err
 		}
 	}
+	// Unsent payouts wait while any credited deposit is conflicted or back below the threshold (reorg), and
+	// resume automatically once every credited deposit is confirmed again.
 	var held bool
-	if err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM payments WHERE order_id=$1 AND credited AND confirmations<0)", orderID).Scan(&held); err != nil {
+	if err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM payments WHERE order_id=$1 AND credited AND confirmations<$2)", orderID, threshold).Scan(&held); err != nil {
 		return err
 	}
 	if held {
-		_, err = tx.ExecContext(ctx, "UPDATE payouts SET state='held',error='A credited deposit is conflicted; payout held for review.',updated=now() WHERE order_id=$1 AND state IN ('pending','blocked')", orderID)
+		_, err = tx.ExecContext(ctx, "UPDATE payouts SET state='held',error=$2,updated=now() WHERE order_id=$1 AND state IN ('pending','blocked')", orderID, heldReason)
 	} else {
 		_, err = tx.ExecContext(ctx, "UPDATE payouts SET state=CASE WHEN address='' THEN 'blocked' ELSE 'pending' END,error='',updated=now() WHERE order_id=$1 AND state='held'", orderID)
 	}
@@ -264,12 +310,22 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 		return err
 	}
 	if isTerminal(o.State) {
+		var queued, paidOut bool
+		if err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM payouts WHERE order_id=$1)", orderID).Scan(&queued); err != nil {
+			return err
+		}
 		if err = a.enqueuePayout(ctx, tx, &o); err != nil {
 			return err
 		}
-		var paidOut bool
 		if err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM payouts WHERE order_id=$1)", orderID).Scan(&paidOut); err != nil {
 			return err
+		}
+		if !queued && paidOut && o.State == stateCancelled {
+			// The cancellation found nothing to refund, so these funds confirmed afterwards.
+			body := "Order " + orderID[:min(8, len(orderID))] + ": a TESTNET deposit confirmed after this order was cancelled and is being refunded to you (blocked until you save a " + o.Currency + " payout address, if you have none)."
+			if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, body); err != nil {
+				return err
+			}
 		}
 		if paidOut {
 			late, err := collectStrings(ctx, tx, "SELECT txid FROM payments WHERE order_id=$1 AND NOT credited AND NOT flagged AND confirmations>=$2", orderID, threshold)
@@ -354,8 +410,8 @@ func (a *App) sendPayouts(ctx context.Context, p PaymentProvider) error {
 		var to, order, recipient string
 		var amt int64
 		err = a.db.QueryRowContext(ctx, `UPDATE payouts SET state='sending',updated=now() WHERE id=$1 AND state='pending' AND address<>''
-			AND NOT EXISTS (SELECT 1 FROM payments pm WHERE pm.order_id=payouts.order_id AND pm.credited AND pm.confirmations<0)
-			RETURNING address,amount,order_id,user_id`, id).Scan(&to, &amt, &order, &recipient)
+			AND NOT EXISTS (SELECT 1 FROM payments pm WHERE pm.order_id=payouts.order_id AND pm.credited AND pm.confirmations<$2)
+			RETURNING address,amount,order_id,user_id`, id, int64(p.Confirmations())).Scan(&to, &amt, &order, &recipient)
 		if err == sql.ErrNoRows {
 			continue
 		}

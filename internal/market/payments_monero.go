@@ -37,6 +37,9 @@ func moneroFromEnv(ctx context.Context) (PaymentProvider, error) {
 	if _, err := pollInterval(); err != nil {
 		return nil, err
 	}
+	if _, err := paymentExpiry(); err != nil {
+		return nil, err
+	}
 	confs, err := envConfirmations("PAYMENT_CONFIRMATIONS_XMR", 10)
 	if err != nil {
 		return nil, err
@@ -177,7 +180,8 @@ func (p *moneroProvider) minorIndex(ctx context.Context, addr string) (int64, bo
 	return minor, true, nil
 }
 
-// Incoming uses get_transfers (in + pool) for the subaddresses; double_spend_seen reports -1 confirmations.
+// Incoming uses get_transfers (in + pool) for the subaddresses; double_spend_seen reports -1 confirmations and
+// a non-zero unlock_time marks the transfer Locked.
 func (p *moneroProvider) Incoming(ctx context.Context, addresses []string) ([]Incoming, error) {
 	byIndex := map[int64]string{}
 	var indices []int64
@@ -199,6 +203,7 @@ func (p *moneroProvider) Incoming(ctx context.Context, addresses []string) ([]In
 		Amount          json.Number `json:"amount"`
 		Confirmations   json.Number `json:"confirmations"`
 		DoubleSpendSeen bool        `json:"double_spend_seen"`
+		UnlockTime      json.Number `json:"unlock_time"`
 		SubaddrIndex    struct {
 			Major json.Number `json:"major"`
 			Minor json.Number `json:"minor"`
@@ -232,7 +237,8 @@ func (p *moneroProvider) Incoming(ctx context.Context, addresses []string) ([]In
 			if t.DoubleSpendSeen {
 				confs = -1
 			}
-			out = append(out, Incoming{Address: addr, TxID: t.TxID, Index: minor, Amount: amt, Confirmations: confs})
+			locked := t.UnlockTime != "" && t.UnlockTime != "0" // spendable only later: reported, never credited
+			out = append(out, Incoming{Address: addr, TxID: t.TxID, Index: minor, Amount: amt, Confirmations: confs, Locked: locked})
 		}
 	}
 	return out, nil

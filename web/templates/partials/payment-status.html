@@ -2,7 +2,7 @@
 {{define "payment-status"}}{{if .PaymentsEnabled}}<span class="badge testnet">TESTNET payments ({{.PaymentNetworks}}) — no real funds</span>{{else}}<span class="accent">Payments disabled</span>{{end}}{{end}}
 {{define "payment-status:catalog"}}{{if .PaymentsEnabled}}<div class="notice testnet-notice">
 <p>
-<strong>TESTNET payments ({{.PaymentNetworks}}) — no real funds.</strong> Deposits go to the market's pooled test-network wallet and are released to the vendor on completion or refunded on cancellation. This is custodial holding, not multisig escrow.</p>
+<strong>TESTNET payments ({{.PaymentNetworks}}) — no real funds.</strong> Deposits go to the market's pooled test-network wallet and are released to the vendor on completion or refunded on cancellation, including a deposit that confirms after the order was cancelled (watched for 30 days after the address is issued). Orders left unpaid past the payment window are cancelled. This is custodial holding, not multisig escrow.</p>
 </div>{{else}}<div class="notice">
 <p>
 <strong>Order drafts only.</strong> Payments and escrow are not active.</p>

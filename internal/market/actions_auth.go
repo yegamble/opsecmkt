@@ -24,6 +24,79 @@ var passwordWork = make(chan struct{}, 4)
 
 var handlePattern = regexp.MustCompile(`^[a-zA-Z0-9_]{3,32}$`)
 
+// confirmPassword checks the signed-in user's current password for a sensitive change (per-user attempt
+// limit, bounded bcrypt concurrency). Call it before opening a transaction.
+func (a *App) confirmPassword(ctx context.Context, userID, password string) error {
+	if password == "" || len(password) > 72 {
+		return fail(400, "Enter your current password to confirm this change.")
+	}
+	if !a.allow("confirm:"+userID, 10) {
+		return fail(429, "Too many attempts. Try again in ten minutes.")
+	}
+	select {
+	case passwordWork <- struct{}{}:
+	default:
+		return fail(503, "Authentication is busy. Try again shortly.")
+	}
+	var hash string
+	err := a.db.QueryRowContext(ctx, "SELECT password_hash FROM users WHERE id=$1", userID).Scan(&hash)
+	if err == nil {
+		err = bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
+	}
+	<-passwordWork
+	if err != nil {
+		return fail(401, "Password incorrect")
+	}
+	return nil
+}
+
+// confirmedTx runs a sensitive change (an OwnTx action) in its own transaction. With confirm set, the current
+// password is checked first (bcrypt outside any transaction) and, when TOTP is enrolled, a current
+// authenticator code ("code") inside the transaction. run uses c.Tx; its Audit is written in the same
+// transaction and notes how the change was confirmed.
+func confirmedTx(c *actionCtx, confirm bool, run func(c *actionCtx) (actionResult, error)) (actionResult, error) {
+	a, ctx, uid := c.A, c.Ctx(), c.User.ID
+	if confirm {
+		if err := a.confirmPassword(ctx, uid, c.Form.Get("password")); err != nil {
+			return actionResult{}, err
+		}
+	}
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return actionResult{}, fail(503, "Service unavailable")
+	}
+	defer tx.Rollback()
+	c.Tx = tx
+	defer func() { c.Tx = nil }()
+	how := "password"
+	if confirm {
+		var totp bool
+		if err = tx.QueryRowContext(ctx, "SELECT totp_enabled FROM users WHERE id=$1", uid).Scan(&totp); err != nil {
+			return actionResult{}, err
+		}
+		if totp {
+			if err = a.checkTOTP(ctx, tx, uid, c.Form.Get("code")); err != nil {
+				return actionResult{}, err
+			}
+			how = "password and authenticator code"
+		}
+	}
+	res, err := run(c)
+	if err != nil {
+		return actionResult{}, err
+	}
+	if res.Audit != "" {
+		if confirm {
+			res.Audit += " (confirmed with " + how + ")"
+		}
+		if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", uid, res.Audit); err != nil {
+			return actionResult{}, err
+		}
+		res.Audit = ""
+	}
+	return res, tx.Commit()
+}
+
 // authGate admits one password-bearing request: bounded bcrypt concurrency, per-handle rate limit and
 // input bounds, all before any expensive work. On success the caller must defer release().
 func authGate(c *actionCtx) (handle, password string, release func(), err error) {
@@ -34,10 +107,11 @@ func authGate(c *actionCtx) (handle, password string, release func(), err error)
 	}
 	release = func() { <-passwordWork }
 	handle, password = strings.TrimSpace(c.Form.Get("handle")), c.Form.Get("password")
-	if !c.A.allow("auth:"+strings.ToLower(handle), 10) {
-		err = fail(429, "Too many attempts. Try again in ten minutes.")
-	} else if !handlePattern.MatchString(handle) || len(password) < 12 || len(password) > 72 {
+	// Validate before the rate limit so malformed handles never create limiter entries.
+	if !handlePattern.MatchString(handle) || len(password) < 12 || len(password) > 72 {
 		err = fail(400, "Use a 3–32 character handle (letters, digits, underscores) and a password of 12–72 bytes.")
+	} else if !c.A.allow("auth:"+strings.ToLower(handle), 10) {
+		err = fail(429, "Too many attempts. Try again in ten minutes.")
 	} else if c.R.URL.Path != "/setup" {
 		err = c.A.checkCaptcha(c) // P1: single-use image CAPTCHA unless an administrator turned it off
 	}
@@ -177,9 +251,7 @@ func challengeAction(c *actionCtx) (actionResult, error) {
 	if pending == "" {
 		return actionResult{}, fail(401, "Sign-in verification expired. Sign in again.")
 	}
-	if !a.allow("challenge:"+digest(pending), 10) {
-		return actionResult{}, fail(429, "Too many attempts. Try again in ten minutes.")
-	}
+	// The pending login must exist before a limiter entry is created, so random cookies cost nothing.
 	var userID string
 	err := c.Tx.QueryRowContext(ctx, "SELECT user_id FROM pending_logins WHERE token_hash=$1 AND expires>now() FOR UPDATE", digest(pending)).Scan(&userID)
 	if err == sql.ErrNoRows {
@@ -187,6 +259,9 @@ func challengeAction(c *actionCtx) (actionResult, error) {
 	}
 	if err != nil {
 		return actionResult{}, err
+	}
+	if !a.allow("challenge:"+digest(pending), 10) {
+		return actionResult{}, fail(429, "Too many attempts. Try again in ten minutes.")
 	}
 	p := factorByName(c.Form.Get("method"))
 	if p == nil {

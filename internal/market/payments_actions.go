@@ -9,7 +9,7 @@ import (
 )
 
 func init() {
-	registerAction("/account/payout", actionSpec{Run: payoutAddressAction})
+	registerAction("/account/payout", actionSpec{OwnTx: true, Run: payoutAddressAction})
 	registerLoader("*", paymentsGlobalLoader)
 	registerLoader("order", paymentsOrderLoader)
 	registerLoader("account", paymentsAccountLoader)
@@ -18,6 +18,7 @@ func init() {
 
 // payoutAddressAction saves (or clears) the user's payout address for one currency. Saving requires a live
 // provider and an address valid for its test network; blocked payouts for that currency are then released.
+// Every change needs the current password (and a TOTP code when enrolled), checked after the cheap validation.
 func payoutAddressAction(c *actionCtx) (actionResult, error) {
 	cur := c.Form.Get("currency")
 	if cur != "BTC" && cur != "XMR" {
@@ -33,6 +34,10 @@ func payoutAddressAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, fail(400, "Enter a valid "+cur+" address for the "+p.Network()+" test network. Mainnet addresses are rejected.")
 		}
 	}
+	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) { return savePayoutAddress(c, cur, addr, p) })
+}
+
+func savePayoutAddress(c *actionCtx, cur, addr string, p PaymentProvider) (actionResult, error) {
 	column := "payout_btc"
 	if cur == "XMR" {
 		column = "payout_xmr"
@@ -101,7 +106,7 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		pv.Address = addr
 	}
 	dec := currencyDecimals(o.Currency)
-	rows, err := a.db.QueryContext(ctx, "SELECT txid,idx,amount,confirmations,credited FROM payments WHERE order_id=$1 ORDER BY created,id", o.ID)
+	rows, err := a.db.QueryContext(ctx, "SELECT txid,idx,amount,confirmations,credited,locked FROM payments WHERE order_id=$1 ORDER BY created,id", o.ID)
 	if err != nil {
 		return err
 	}
@@ -112,12 +117,14 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 	for rows.Next() {
 		var dep PaymentDeposit
 		var amt int64
-		var credited bool
-		if err = rows.Scan(&dep.TxID, &dep.Index, &amt, &dep.Confirmations, &credited); err != nil {
+		var credited, locked bool
+		if err = rows.Scan(&dep.TxID, &dep.Index, &amt, &dep.Confirmations, &credited, &locked); err != nil {
 			return err
 		}
 		dep.Amount = amount(amt, dec)
 		switch {
+		case locked:
+			dep.State = "Locked transfer — not counted"
 		case dep.Confirmations < 0:
 			dep.State = "Conflicted or missing — not counted"
 			conflicted = conflicted || credited
@@ -128,7 +135,7 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 			dep.State = "Waiting for confirmations"
 			pending += amt
 		}
-		if dep.Confirmations >= 0 && (minConfs < 0 || dep.Confirmations < minConfs) {
+		if !locked && dep.Confirmations >= 0 && (minConfs < 0 || dep.Confirmations < minConfs) {
 			minConfs = dep.Confirmations
 		}
 		pv.Deposits = append(pv.Deposits, dep)
@@ -177,7 +184,7 @@ func payoutStateLabel(s string) string {
 	case "blocked":
 		return "Blocked — recipient has no payout address"
 	case "held":
-		return "Held — conflicted deposit under review"
+		return "Held — deposit conflicted or re-confirming"
 	case "pending":
 		return "Queued"
 	case "sending":

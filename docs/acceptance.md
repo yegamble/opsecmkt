@@ -57,6 +57,7 @@ Each package records its own acceptance checks here and edits only its subsectio
 - [ ] The account page says "Enabled" only while TOTP is active, "Not enrolled (setup not confirmed)" for an unconfirmed secret, otherwise "Not enrolled".
 - [ ] CAPTCHA: missing, wrong, reused, expired or other-session answers return 400 before any password hashing; the image is served only to the issuing session with `Cache-Control: no-store`; the 31st challenge in ten minutes shows a visible error instead of an image; setup never requires it (`TestCaptchaOnRegisterAndLogin`, `TestSetupSkipsCaptcha`).
 - [ ] Turning the CAPTCHA off or on is administrator-only and recorded in the audit trail.
+- [ ] Random pending-login cookies and malformed handles create no rate-limiter entries, and a full limiter table evicts the oldest entry instead of refusing new keys: a flood of junk requests leaves real sign-ins and writes working (`TestLimiterFloodDoesNotLockOutUsers`).
 - [ ] Browser: `db-setup.spec.ts` rejects registration with a wrong CAPTCHA, then turns it off; `db-auth.spec.ts` enrolls TOTP with a code computed from the displayed secret, signs in through the challenge and spends a recovery code once; `preview-auth.spec.ts` checks the pages at every viewport without scripts.
 
 ### P2 PGP identity
@@ -65,6 +66,8 @@ Each package records its own acceptance checks here and edits only its subsectio
 - [ ] "Verified" (with date) appears only after a signature over the current challenge verifies with the saved key, or the decrypted challenge nonce matches; a wrong key, wrong text or stale challenge is rejected.
 - [ ] Changing or removing the key clears verification, PGP sign-in and open challenges, and is audited with the fingerprint.
 - [ ] PGP sign-in cannot be turned on without a verified key; once on, sign-in always passes through `/challenge` and needs the decrypted one-time code, which works once.
+- [ ] While PGP sign-in is on, turning it off and changing or removing the key need the current password (and an authenticator code when TOTP is enrolled); a session alone gets 400/401 (`TestSensitiveChangesNeedPassword`).
+- [ ] Saving the profile with an unchanged stored key that no longer parses succeeds (`TestLegacyUnparseableKeySavesUnchanged`).
 - [ ] Challenge nonces and sign-in codes are stored only as SHA-256; GET requests never create them.
 - [ ] Message status reflects packet inspection: plaintext, signed-only and fake armor are rejected at send; stored messages show "to recipient’s key", "NOT to recipient’s key" or "recipient unknown", never "Encrypted" for plaintext.
 
@@ -73,6 +76,7 @@ Each package records its own acceptance checks here and edits only its subsectio
 - [ ] Every transition matches the state table; forbidden moves return 403, stale or repeated moves 409. Users who are not party to an order get 404 from order actions, as from the order page.
 - [ ] Without a payment provider for the currency, requesting payment returns 409 "Payment unavailable for BTC/XMR", changes nothing, and the order page shows the step as unavailable; no address is shown.
 - [ ] Requesting payment reserves one unit of stock (409 when none is left or the listing is archived); cancelling from awaiting payment or paid returns it; drafts never hold stock.
+- [ ] Resubmitting checkout and requesting payment both record the listing's current price (`TestDraftRepricedOnResubmitAndPay`); a fourth order awaiting payment is refused with 409 (`TestPayCapsOpenAwaitingPaymentOrders`).
 - [ ] Digital content is released only by the delivered transition (vendor action, or automatic after the watcher marks a digital order paid), is labelled as stored unencrypted, and is invisible to third parties and moderators.
 - [ ] Concurrent completion of one order yields exactly one success and one event row.
 - [ ] Resolution requires a release/refund outcome, is refused to a moderator who is party to the order, and records the outcome before the resolved transition.
@@ -91,7 +95,11 @@ Each package records its own acceptance checks here and edits only its subsectio
 - [ ] Mainnet chains/addresses stop startup with a clear error; no address is shown unless returned by a live test-network provider.
 - [ ] Ledger entries are unique per `(currency, txid, output)`; state changes happen only through transitions.
 - [ ] An order becomes `paid` exactly once, only after confirmed deposits reach its amount, even with concurrent watchers.
-- [ ] A conflicted credited deposit is flagged to moderators without reverting the order, and its unsent payouts are held.
+- [ ] A conflicted credited deposit is flagged to moderators without reverting the order, and its unsent payouts are held. A credited deposit back below the threshold holds the payout until it re-confirms (`TestPayoutHeldWhileCreditedDepositReconfirms`).
+- [ ] Orders awaiting payment past `PAYMENT_EXPIRY` with no deposit seen are cancelled by the system and their stock returned; orders with a deposit still confirming stay open (`TestWatcherExpiresUnpaidOrders`).
+- [ ] A deposit that confirms after a cancellation (within the 30-day watch window) is refunded to the buyer, who is notified; extra funds on completed orders are flagged, not paid; older addresses are not polled (`TestLateDepositAfterCloseIsHandled`).
+- [ ] Monero transfers with a non-zero `unlock_time` are shown but never credited or paid out, with one "locked transfer ignored" note (`TestMoneroLockedTransfersAreNotCredited`).
+- [ ] Saving or removing a payout address needs the current password, plus an authenticator code when TOTP is enrolled.
 - [ ] Each payout is sent at most once. Failed and stuck (`sending`) payouts are shown to administrators and never retried. Payouts wait for a valid test-network payout address.
 - [ ] Every address, amount and confirmation count carries a `TESTNET <network>` label. Pages say "Payments disabled" when no provider is configured.
 - [ ] Manual: `scripts/regtest-smoke.sh` passes against a real `bitcoind -regtest` (not exercised in CI).

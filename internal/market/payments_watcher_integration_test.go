@@ -292,19 +292,19 @@ func TestPayoutBlockedUntilAddressSaved(t *testing.T) {
 	}
 	p.check(p.do("POST", "/account/payout", p.vendorSess, url.Values{"currency": {"XMR"}, "address": {"fake-testnet-x"}}), 409)
 	p.check(p.do("POST", "/account/payout", p.vendorSess, url.Values{"currency": {"DOGE"}, "address": {"x"}}), 400)
-	p.check(p.do("POST", "/account/payout", p.vendorSess, url.Values{"currency": {"BTC"}, "address": {" fake-testnet-vend "}}), 303)
+	p.check(p.do("POST", "/account/payout", p.vendorSess, url.Values{"currency": {"BTC"}, "address": {" fake-testnet-vend "}, "password": {testPassword}}), 303)
 	st, _, addr, _ := p.payout(p.order)
 	if st != "pending" || addr != "fake-testnet-vend" {
 		t.Fatalf("unblocked payout %s %q", st, addr)
 	}
-	if n := p.count("SELECT count(*) FROM audit_events WHERE user_id=$1 AND action='Saved BTC payout address (TESTNET fake); 1 waiting payout(s) now use it'", p.vendor.ID); n != 1 {
+	if n := p.count("SELECT count(*) FROM audit_events WHERE user_id=$1 AND action='Saved BTC payout address (TESTNET fake); 1 waiting payout(s) now use it (confirmed with password)'", p.vendor.ID); n != 1 {
 		t.Fatalf("audit rows: %d", n)
 	}
 	p.poll()
 	if st, _, _, _ := p.payout(p.order); st != "sent" {
 		t.Fatalf("payout after address: %s", st)
 	}
-	p.check(p.do("POST", "/account/payout", p.vendorSess, url.Values{"currency": {"BTC"}, "address": {""}}), 303)
+	p.check(p.do("POST", "/account/payout", p.vendorSess, url.Values{"currency": {"BTC"}, "address": {""}, "password": {testPassword}}), 303)
 	if n := p.count("SELECT count(*) FROM users WHERE id=$1 AND payout_btc=''", p.vendor.ID); n != 1 {
 		t.Fatal("payout address not removed")
 	}

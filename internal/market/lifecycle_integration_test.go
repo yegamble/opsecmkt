@@ -103,7 +103,8 @@ func TestLifecycleDigitalAndDisputedPhysical(t *testing.T) {
 
 	// Vendor lists a digital item with automatic delivery content and saves a payout address.
 	digital := l.listing(vendorID, vendor, "Lifecycle digital item", "digital", "Digital", secret)
-	l.post("/account/payout", vendor, form("currency", "BTC", "address", vendorAddr), 303)
+	l.post("/account/payout", vendor, form("currency", "BTC", "address", vendorAddr), 400) // current password required
+	l.post("/account/payout", vendor, form("currency", "BTC", "address", vendorAddr, "password", testPassword), 303)
 	if strings.Contains(l.get("/product?id="+digital, other, 200), secret) {
 		t.Fatal("delivery content rendered on the public product page")
 	}
@@ -173,7 +174,7 @@ func TestLifecycleDigitalAndDisputedPhysical(t *testing.T) {
 
 	// Physical item: paid, disputed by the buyer, resolved by a moderator with a refund to the buyer.
 	physical := l.listing(vendorID, vendor, "Lifecycle physical item", "physical", "Hardware", "")
-	l.post("/account/payout", buyer, form("currency", "BTC", "address", buyerAddr), 303)
+	l.post("/account/payout", buyer, form("currency", "BTC", "address", buyerAddr, "password", testPassword), 303)
 	order2, addr2 := l.draftAndPay(buyer, physical)
 	l.fake.Deposit(addr2, "tx-physical", 1, 100000, 3)
 	l.poll()

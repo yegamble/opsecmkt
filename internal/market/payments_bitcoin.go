@@ -34,6 +34,9 @@ func bitcoinFromEnv(ctx context.Context) (PaymentProvider, error) {
 	if _, err := pollInterval(); err != nil {
 		return nil, err
 	}
+	if _, err := paymentExpiry(); err != nil {
+		return nil, err
+	}
 	confs, err := envConfirmations("PAYMENT_CONFIRMATIONS_BTC", 3)
 	if err != nil {
 		return nil, err
@@ -215,6 +218,20 @@ func envConfirmations(key string, def int) (int, error) {
 		return 0, fmt.Errorf("%s must be a whole number from 1 to 1000", key)
 	}
 	return n, nil
+}
+
+// paymentExpiry reads PAYMENT_EXPIRY (Go duration, 10m to 720h; default 24h): how long an order may await
+// payment with no deposit seen before the watcher cancels it and its reserved stock is returned.
+func paymentExpiry() (time.Duration, error) {
+	s := strings.TrimSpace(os.Getenv("PAYMENT_EXPIRY"))
+	if s == "" {
+		return 24 * time.Hour, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil || d < 10*time.Minute || d > 720*time.Hour {
+		return 0, errors.New("PAYMENT_EXPIRY must be a duration from 10m to 720h, e.g. 24h")
+	}
+	return d, nil
 }
 
 // pollInterval reads PAYMENT_POLL_INTERVAL (Go duration, 1s to 1h; default 30s).
