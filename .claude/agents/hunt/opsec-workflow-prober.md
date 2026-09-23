@@ -21,7 +21,10 @@ chair gives you, and `README.md` for how to run the server.
 
 - PostgreSQL: a container or database with a name and port unique to you;
   readiness with `pg_isready -h 127.0.0.1` (never the Unix socket).
-- Server: `go run ./cmd/server` with `ADDR=127.0.0.1:<free port>`,
+- Code: serve an exported snapshot of the commit the chair names
+  (`git archive <sha> | tar -x -C <scratch dir>`), never the live checkout —
+  the chair merges while you run, and templates are read from disk.
+- Server: `go run ./cmd/server` (from the snapshot) with `ADDR=127.0.0.1:<free port>`,
   `DATABASE_URL=<yours>`, `COOKIE_SECURE=false`, a 32+ character random
   `SETUP_TOKEN`. For payments, start `python3 tests/e2e/fixtures/wallet-rpc.py`
   and copy the env from `playwright.wallet.config.ts` (simulated RPC — label
