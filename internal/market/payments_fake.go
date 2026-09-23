@@ -20,6 +20,12 @@ type fakeProvider struct {
 	sendErr error
 	// sendHook, when set, runs inside Send before recording (tests use it to observe concurrency).
 	sendHook func()
+	// sendCtxErrs records ctx.Err() as Send saw it after sendHook (shutdown must not cancel a send).
+	sendCtxErrs []error
+	// incomingErr fails Incoming (wallet outage); checkErr and syncing drive Check.
+	incomingErr, checkErr error
+	syncing               bool
+	checks                int
 }
 
 type fakeSend struct {
@@ -71,9 +77,27 @@ func (f *fakeProvider) Drop(txid string) {
 	f.outputs = kept
 }
 
+// Check reports the scripted wallet state (see providerChecker).
+func (f *fakeProvider) Check(context.Context) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.checks++
+	return f.syncing, f.checkErr
+}
+
+// SetWallet scripts the wallet: an Incoming error, a Check error and the syncing flag.
+func (f *fakeProvider) SetWallet(incomingErr, checkErr error, syncing bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.incomingErr, f.checkErr, f.syncing = incomingErr, checkErr, syncing
+}
+
 func (f *fakeProvider) Incoming(_ context.Context, addresses []string) ([]Incoming, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.incomingErr != nil {
+		return nil, f.incomingErr
+	}
 	want := map[string]bool{}
 	for _, a := range addresses {
 		want[a] = true
@@ -87,12 +111,13 @@ func (f *fakeProvider) Incoming(_ context.Context, addresses []string) ([]Incomi
 	return out, nil
 }
 
-func (f *fakeProvider) Send(_ context.Context, to string, amount int64) (string, error) {
+func (f *fakeProvider) Send(ctx context.Context, to string, amount int64) (string, error) {
 	if f.sendHook != nil {
 		f.sendHook()
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.sendCtxErrs = append(f.sendCtxErrs, ctx.Err())
 	if f.sendErr != nil {
 		return "", f.sendErr
 	}

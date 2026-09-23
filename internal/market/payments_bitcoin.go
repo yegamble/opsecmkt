@@ -20,8 +20,10 @@ var bitcoinTestChains = map[string]string{"test": "tb1", "testnet4": "tb1", "sig
 
 type bitcoinProvider struct {
 	rpc          *rpcClient
+	walletName   string
 	wallet       string // "/wallet/<name>"
-	chain        string // as reported by getblockchaininfo
+	wantChain    string // BITCOIN_CHAIN ("" = any test chain the node reports)
+	chain        string // as reported by getblockchaininfo; set by the first successful Check, never changed
 	prefix       string // bech32 HRP prefix for this chain
 	confirmation int
 }
@@ -45,11 +47,11 @@ func bitcoinFromEnv(ctx context.Context) (PaymentProvider, error) {
 	if wallet == "" {
 		wallet = "opsecmkt"
 	}
-	return newBitcoinProvider(ctx, raw, wallet, strings.TrimSpace(os.Getenv("BITCOIN_CHAIN")), confs)
+	return buildBitcoinProvider(raw, wallet, strings.TrimSpace(os.Getenv("BITCOIN_CHAIN")), confs)
 }
 
-// newBitcoinProvider connects, refuses non-test chains and checks the wallet is loaded (loading it once if needed).
-func newBitcoinProvider(ctx context.Context, rawURL, wallet, wantChain string, confs int) (*bitcoinProvider, error) {
+// buildBitcoinProvider validates configuration without contacting the node.
+func buildBitcoinProvider(rawURL, wallet, wantChain string, confs int) (*bitcoinProvider, error) {
 	if wantChain != "" {
 		if _, ok := bitcoinTestChains[wantChain]; !ok {
 			return nil, fmt.Errorf("refusing to start: BITCOIN_CHAIN %q is not a test network (use testnet4, signet or regtest)", wantChain)
@@ -59,43 +61,72 @@ func newBitcoinProvider(ctx context.Context, rawURL, wallet, wantChain string, c
 	if err != nil {
 		return nil, err
 	}
-	var info struct {
-		Chain string `json:"chain"`
-	}
-	if err = c.call(ctx, "", "getblockchaininfo", nil, &info); err != nil {
-		return nil, fmt.Errorf("bitcoin payments configured but the node check failed: %w", err)
-	}
-	prefix, ok := bitcoinTestChains[info.Chain]
-	if !ok {
-		return nil, fmt.Errorf("refusing to start: bitcoin chain %q", info.Chain)
-	}
-	if wantChain != "" && wantChain != info.Chain {
-		return nil, fmt.Errorf("refusing to start: bitcoin node reports chain %q but BITCOIN_CHAIN is %q", info.Chain, wantChain)
-	}
-	p := &bitcoinProvider{rpc: c, wallet: "/wallet/" + url.PathEscape(wallet), chain: info.Chain, prefix: prefix, confirmation: confs}
-	var winfo struct {
-		WalletName string `json:"walletname"`
-	}
-	err = c.call(ctx, p.wallet, "getwalletinfo", nil, &winfo)
-	var re *rpcError
-	if errors.As(err, &re) && re.Code == -18 {
-		if lerr := c.call(ctx, "", "loadwallet", []any{wallet}, nil); lerr != nil {
-			return nil, fmt.Errorf("bitcoin wallet %q is not loaded and could not be loaded (create it with: bitcoin-cli -chain=%s createwallet %s): %w", wallet, info.Chain, wallet, lerr)
-		}
-		err = c.call(ctx, p.wallet, "getwalletinfo", nil, &winfo)
-	}
+	return &bitcoinProvider{rpc: c, walletName: wallet, wallet: "/wallet/" + url.PathEscape(wallet), wantChain: wantChain, confirmation: confs}, nil
+}
+
+// newBitcoinProvider builds the provider and checks it once (node reachable, test chain, wallet loaded).
+func newBitcoinProvider(ctx context.Context, rawURL, wallet, wantChain string, confs int) (*bitcoinProvider, error) {
+	p, err := buildBitcoinProvider(rawURL, wallet, wantChain, confs)
 	if err != nil {
-		return nil, fmt.Errorf("bitcoin wallet %q unavailable: %w", wallet, err)
+		return nil, err
+	}
+	if _, err = p.Check(ctx); err != nil {
+		return nil, err
 	}
 	return p, nil
 }
 
+// Check refuses non-test chains (and a chain that differs from BITCOIN_CHAIN or from the chain seen before),
+// loads the wallet when the node reports it is not loaded (after a node restart, for example) and reports
+// initialblockdownload as syncing.
+func (p *bitcoinProvider) Check(ctx context.Context) (bool, error) {
+	var info struct {
+		Chain string `json:"chain"`
+		IBD   bool   `json:"initialblockdownload"`
+	}
+	if err := p.rpc.call(ctx, "", "getblockchaininfo", nil, &info); err != nil {
+		return false, fmt.Errorf("bitcoin node check failed: %w", err)
+	}
+	prefix, ok := bitcoinTestChains[info.Chain]
+	if !ok {
+		return false, refusef("bitcoin chain %q is not a test network (allowed: testnet3 \"test\", testnet4, signet, regtest)", info.Chain)
+	}
+	if p.wantChain != "" && p.wantChain != info.Chain {
+		return false, refusef("bitcoin node reports chain %q but BITCOIN_CHAIN is %q", info.Chain, p.wantChain)
+	}
+	if p.chain != "" && p.chain != info.Chain {
+		return false, refusef("bitcoin node now reports chain %q; it was %q", info.Chain, p.chain)
+	}
+	var winfo struct {
+		WalletName string `json:"walletname"`
+	}
+	err := p.rpc.call(ctx, p.wallet, "getwalletinfo", nil, &winfo)
+	var re *rpcError
+	if errors.As(err, &re) && re.Code == -18 {
+		if lerr := p.rpc.call(ctx, "", "loadwallet", []any{p.walletName}, nil); lerr != nil {
+			return false, fmt.Errorf("bitcoin wallet %q is not loaded and could not be loaded (create it once with the createwallet RPC; see docs/testnet-runbook.md): %w", p.walletName, lerr)
+		}
+		err = p.rpc.call(ctx, p.wallet, "getwalletinfo", nil, &winfo)
+	}
+	if err != nil {
+		return false, fmt.Errorf("bitcoin wallet %q unavailable: %w", p.walletName, err)
+	}
+	if p.chain == "" { // first success, before the provider is published to request handlers
+		p.chain, p.prefix = info.Chain, prefix
+	}
+	return info.IBD, nil
+}
+
 func (p *bitcoinProvider) Currency() string { return "BTC" }
 func (p *bitcoinProvider) Network() string {
-	if p.chain == "test" {
+	chain := p.chain
+	if chain == "" {
+		chain = p.wantChain // before the first successful check
+	}
+	if chain == "test" {
 		return "testnet3"
 	}
-	return p.chain
+	return chain
 }
 func (p *bitcoinProvider) Confirmations() int { return p.confirmation }
 

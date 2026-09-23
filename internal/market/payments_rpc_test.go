@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -18,6 +19,7 @@ type payRPCServer struct {
 	user, pass string
 	digest     bool
 	handle     func(path, method string, params json.RawMessage) (result any, code int, msg string)
+	down       atomic.Bool // drop every connection, as an unreachable or restarting node does
 
 	mu         sync.Mutex
 	nonce      string
@@ -87,6 +89,12 @@ func (s *payRPCServer) authorized(r *http.Request) bool {
 }
 
 func (s *payRPCServer) serve(w http.ResponseWriter, r *http.Request) {
+	if s.down.Load() {
+		if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+			conn.Close()
+		}
+		return
+	}
 	if !s.authorized(r) {
 		s.mu.Lock()
 		s.challenges++

@@ -2,6 +2,10 @@
 # No RPC or peer ports are published to the host. Test networks only: BITCOIN_CHAIN (testnet4, signet,
 # regtest) and MONERO_NETWORK (stagenet, testnet); the app refuses mainnet. RPC ports are pinned so the
 # installer's URLs do not depend on the chain.
+# RPC credentials come from .env (the installer generates them). Without BITCOIN_RPC_PASSWORD bitcoind falls
+# back to cookie authentication, so nothing on the network (including the app) can use its RPC. Without
+# MONERO_WALLET_RPC_PASSWORD monero-wallet-rpc gets --rpc-login ':' (empty user name), which it rejects at
+# startup instead of running without authentication. Neither falls back to a guessable password.
 services:
   bitcoin:
     image: ${BITCOIN_IMAGE:-scratch}
@@ -19,7 +23,10 @@ services:
       - -rpcallowip=172.16.0.0/12
       - -rpcallowip=192.168.0.0/16
       - -rpcuser=marketplace
-      - -rpcpassword=${BITCOIN_RPC_PASSWORD:-disabled}
+      - -rpcpassword=${BITCOIN_RPC_PASSWORD:-}
+      # Test networks often have too little fee data for estimation; without a fallback fee every payout
+      # would fail. 0.0002 tBTC/kvB (20 sat/vB) is deliberately generous so test payouts confirm.
+      - -fallbackfee=0.0002
     volumes: [bitcoin_data:/data]
   monero:
     image: ${MONERO_IMAGE:-scratch}
@@ -36,7 +43,7 @@ services:
     restart: unless-stopped
     networks: [backend]
     entrypoint: [monero-wallet-rpc]
-    command: ['--${MONERO_NETWORK:-stagenet}', --daemon-address, 'monero:18081', --trusted-daemon, --wallet-dir, /wallet, --rpc-bind-ip, 0.0.0.0, --rpc-bind-port, '18083', --confirm-external-bind, --disable-rpc-login]
+    command: ['--${MONERO_NETWORK:-stagenet}', --daemon-address, 'monero:18081', --trusted-daemon, --wallet-dir, /wallet, --rpc-bind-ip, 0.0.0.0, --rpc-bind-port, '18083', --confirm-external-bind, --rpc-login, '${MONERO_WALLET_RPC_PASSWORD:+marketplace}:${MONERO_WALLET_RPC_PASSWORD:-}']
     volumes: [monero_wallet:/wallet]
 volumes:
   bitcoin_data:

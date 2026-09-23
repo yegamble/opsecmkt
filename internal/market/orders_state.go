@@ -130,7 +130,7 @@ func (a *App) transition(ctx context.Context, tx *sql.Tx, orderID, from, to stri
 	if kind, ok := transitionKind[[2]string{from, to}]; ok && o.Kind != kind {
 		return nil, fail(403, "This step is only available for "+kind+" orders.")
 	}
-	if from == stateDraft && to == stateAwaitingPayment && a.payments[o.Currency] == nil {
+	if from == stateDraft && to == stateAwaitingPayment && a.provider(o.Currency) == nil {
 		return nil, fail(409, "Payment unavailable for "+o.Currency)
 	}
 	res, err := tx.ExecContext(ctx, "UPDATE orders SET state=$2,updated=now() WHERE id=$1 AND state=$3", orderID, to, from)

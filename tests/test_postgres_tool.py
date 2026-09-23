@@ -84,6 +84,14 @@ class PostgresToolTests(unittest.TestCase):
             with self.subTest(url=url), self.assertRaises(ValueError):
                 self.invoke(url)
 
+    def test_psql_for_restore_hold(self):
+        executable, argv, env = self.invoke('postgres://u:pw@db/market', command='psql',
+                                            arguments=['-X', '--single-transaction'])
+        self.assertEqual(executable, 'psql')
+        self.assertEqual(argv, ['psql', '-X', '--single-transaction'])
+        self.assertEqual(env['PGPASSWORD'], 'pw')
+        self.assertNotIn('pw', repr(argv))
+
     def test_arbitrary_executables_are_rejected(self):
         with self.assertRaises(ValueError):
             self.invoke('postgres://db/market', command='sh')

@@ -38,7 +38,7 @@ skopeo copy oci-archive:opsecmkt.oci.tar docker-daemon:opsecmkt:v0.1.0
 
 The OCI archive is intended for an OCI-aware importer; do not assume every Docker version can load it directly. Review embedded metadata in the archive before import; copying to a Docker daemon can discard attestations. The checksums detect corruption and BuildKit metadata records the build; neither is an independent cryptographic signature. GitHub signed artifact attestations for private repositories require Enterprise Cloud and are not assumed here.
 
-A future deployment workflow needs an explicitly selected target, environment protection, deployment credentials, backup policy, and rollback decision. For rollback, keep the previously tested private image release and a verified encrypted database backup. Do not restore a database simply to revert application code without reviewing schema compatibility and data loss implications.
+A future deployment workflow needs an explicitly selected target, environment protection, deployment credentials, backup policy, and rollback decision. Database migrations are one-way (there are no down-migrations, and migration 001 drops `orders.status`), so an older image cannot simply be redeployed against a migrated database: rolling back means restoring the encrypted backup taken before the upgrade into a fresh database and running the previous image against it, losing everything written since. Keep the previously tested private image release and that verified pre-upgrade backup until the new release is trusted. See [UPGRADING.md](../UPGRADING.md).
 
 ## Workflow maintenance
 

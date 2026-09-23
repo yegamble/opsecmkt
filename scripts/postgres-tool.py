@@ -6,8 +6,9 @@ from urllib.parse import parse_qsl, unquote, urlsplit
 
 
 def main():
-    if len(sys.argv) < 3 or sys.argv[2] not in {'pg_dump', 'pg_restore'}:
-        raise ValueError('Expected URL environment variable and pg_dump or pg_restore')
+    # psql is used only by restore.sh to hold restored payouts in the restored database.
+    if len(sys.argv) < 3 or sys.argv[2] not in {'pg_dump', 'pg_restore', 'psql'}:
+        raise ValueError('Expected URL environment variable and pg_dump, pg_restore or psql')
     parsed = urlsplit(os.environ[sys.argv[1]])
     if parsed.scheme not in {'postgres', 'postgresql'} or not parsed.hostname or not parsed.path.strip('/'):
         raise ValueError('Use a PostgreSQL URL containing an explicit host and database name')

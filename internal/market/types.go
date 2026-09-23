@@ -152,6 +152,7 @@ type PaymentView struct {
 	Status                          string
 	Currency                        string
 	Available                       bool // a live provider serves this order's currency
+	Degraded                        bool // the currency is configured but its wallet is failing its checks
 	Issued                          bool // the provider returned a deposit address for this order
 	Monitored                       bool // Issued and the provider is still configured
 	Open                            bool // Monitored and the order still awaits payment (address shown)
@@ -168,6 +169,7 @@ type PaymentDeposit struct {
 type ProviderStatus struct {
 	Currency, Network string
 	Enabled           bool
+	Status            string // Enabled, Unavailable (retried), Refused, Disabled
 	Error             string
 	Confirmations     int
 	LastPoll          string
