@@ -258,7 +258,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			token, user = anon, nil
-			r = r.WithContext(context.WithValue(ctx, sessionKey{}, token))
+			r = r.WithContext(context.WithValue(r.Context(), sessionKey{}, token)) // keeps anonKey
 		}
 		a.post(w, r, user, token)
 		return

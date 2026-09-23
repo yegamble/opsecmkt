@@ -125,8 +125,8 @@ coins; the order moves to *Paid* once the deposit reaches the confirmation thres
 
 Each payout is sent once. The **Payouts** table on the admin page marks rows that need attention and lists
 every one of them first, oldest first, under a count ("N payouts need attention"); other payouts are limited
-to the 50 most recent. An order ID links to the order page where an administrator can open it (a disputed or
-resolved order); otherwise it is plain text.
+to the 50 most recent. An order ID links to the order page where the administrator can open it (an order they are party to, a
+disputed or resolved order, or one with a payment flagged for review); otherwise it is plain text.
 
 - **Failed — not retried; the wallet reported a pre-broadcast error, nothing broadcast**: the wallet
   answered the send with a pre-broadcast error (for example insufficient or locked funds), so no
