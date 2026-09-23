@@ -77,7 +77,7 @@ No configuration.
 
 ### Orders
 
-No configuration.
+No configuration. Requesting payment on an order requires a test-network wallet provider for its currency (see Payments); without one the step is shown as unavailable. Migration 030 adds `deliveries`, `reviews` and `disputes.outcome`. Digital delivery content is stored unencrypted in the database and shown only to the order's buyer and vendor; vendors should encrypt sensitive content to the buyer's PGP key before delivering it.
 
 ### Inventory
 

@@ -59,8 +59,13 @@ Each package records its own acceptance checks here and edits only its subsectio
 
 ### P3 Orders
 
-- [ ] Every transition matches the state table; forbidden moves return 403, stale or repeated moves 409.
-- [ ] Digital content is released only by the delivered transition; reviews require a completed order.
+- [ ] Every transition matches the state table; forbidden moves return 403, stale or repeated moves 409. Users who are not party to an order get 404 from order actions, as from the order page.
+- [ ] Without a payment provider for the currency, requesting payment returns 409 "Payment unavailable for BTC/XMR", changes nothing, and the order page shows the step as unavailable; no address is shown.
+- [ ] Requesting payment reserves one unit of stock (409 when none is left or the listing is archived); cancelling from awaiting payment or paid returns it; drafts never hold stock.
+- [ ] Digital content is released only by the delivered transition (vendor action, or automatic after the watcher marks a digital order paid), is labelled as stored unencrypted, and is invisible to third parties and moderators.
+- [ ] Concurrent completion of one order yields exactly one success and one event row.
+- [ ] Resolution requires a release/refund outcome, is refused to a moderator who is party to the order, and records the outcome before the resolved transition.
+- [ ] Reviews require a completed order and its buyer; a second review returns 409; public pages label them "Verified purchase" without reviewer handles.
 
 ### P4 Inventory
 

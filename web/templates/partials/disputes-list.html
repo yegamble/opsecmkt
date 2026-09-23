@@ -1,19 +1,31 @@
-{{/* P3 Orders owns. Dispute list used by disputes and moderator */}}
-{{define "disputes-list"}}<div class="messages-list">{{range .Disputes}}<article class="message">
-<div class="message-meta">
-<a class="text-link" href="/order?id={{.OrderID}}">Order {{.OrderID}}</a>
+{{/* P3 Orders owns. Dispute list used by disputes and moderator; resolve form for moderators who are not party to the order */}}
+{{define "disputes-list"}}<div class="messages-list">{{range .Disputes}}{{$o := index $.DisputeOrders .OrderID}}{{$party := and $.User $o.ID (or (eq $o.BuyerID $.User.ID) (eq $o.VendorID $.User.ID))}}<article class="message">
+<div class="message-meta">{{if $party}}<a class="text-link" href="/order?id={{.OrderID}}">Order {{.OrderID}}</a>{{else}}<span class="mono">Order {{.OrderID}}</span>{{end}}
 <span class="badge">{{.Status}}</span>
-</div>
+</div>{{if $o.ID}}<p class="dispute-order">
+<strong>{{$o.Title}}</strong> · {{$o.Amount}} {{$o.Currency}} · {{$o.Kind}}<br>
+<span class="muted">Buyer {{$o.Buyer}} · vendor {{$o.Vendor}} · order state</span> <span class="badge {{template "order-badge-class" $o.State}}">{{$o.Status}}</span>
+</p>{{end}}
 <p>{{.Reason}}</p>
 <p class="help">Opened {{.Created}}</p>{{if .Resolution}}<p>
-<strong>Resolution:</strong> {{.Resolution}}</p>{{else}}{{if $.User}}{{if or (eq $.User.Role "moderator") (eq $.User.Role "admin")}}<form class="stack" method="post" action="/resolve">
+<strong>Resolution:</strong> {{.Resolution}}</p>{{else}}{{if $.User}}{{if or (eq $.User.Role "moderator") (eq $.User.Role "admin")}}{{if $party}}<p class="order-unavailable" role="note">
+<strong>Unavailable.</strong> You are a party to this order; another moderator must resolve it.</p>{{else if ne $o.State "disputed"}}<p class="order-unavailable" role="note">
+<strong>Unavailable.</strong> This order is not in the Disputed state, so no outcome can be recorded.</p>{{else}}<form class="stack" method="post" action="/resolve">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="id" value="{{.ID}}">
-<label>Resolution<textarea name="resolution" required minlength="20" maxlength="5000">
+<fieldset class="dispute-outcome">
+<legend>Outcome</legend>
+<label class="check">
+<input type="radio" name="outcome" value="release" required> Release to vendor</label>
+<label class="check">
+<input type="radio" name="outcome" value="refund" required> Refund to buyer</label>
+</fieldset>
+<label>Decision<textarea name="resolution" required minlength="20" maxlength="5000">
 </textarea>
 </label>
-<button type="submit">Record resolution</button>
-</form>{{end}}{{end}}{{end}}</article>{{else}}<div class="empty">
+<span class="help">Resolving closes the order and records the outcome. This form moves no funds; any payout or refund is handled by the payment system.</span>
+<button type="submit">Resolve dispute</button>
+</form>{{end}}{{end}}{{end}}{{end}}</article>{{else}}<div class="empty">
 <span class="empty-icon">◇</span>
 <h2>No disputes to display</h2>
 <p>Any submitted disputes will appear here for review.</p>

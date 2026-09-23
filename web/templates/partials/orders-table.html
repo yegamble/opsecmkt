@@ -1,13 +1,15 @@
-{{/* P3 Orders owns. Order list used by orders and vendor-orders */}}
+{{/* P3 Orders owns. orders-table: the viewer's orders (buying and selling); order-badge-class: badge colour for a state */}}
+{{define "order-badge-class"}}{{if eq . "completed"}}green{{else if or (eq . "cancelled") (eq . "resolved")}}neutral{{end}}{{end}}
 {{define "orders-table"}}{{if .Orders}}<div class="table-wrap">
 <table>
 <thead>
 <tr>
 <th scope="col">Order / listing</th>
-<th scope="col">Vendor</th>
+<th scope="col">Your role</th>
+<th scope="col">Counterparty</th>
 <th scope="col">Amount</th>
 <th scope="col">Status</th>
-<th scope="col">Created</th>
+<th scope="col">Last change</th>
 </tr>
 </thead>
 <tbody>{{range .Orders}}<tr>
@@ -16,12 +18,13 @@
 <br>
 <small class="muted mono">{{.ID}}</small>
 </td>
-<td>{{.Vendor}}</td>
+<td>{{if eq .BuyerID $.User.ID}}Buying{{else}}Selling{{end}}</td>
+<td>{{if eq .BuyerID $.User.ID}}{{.Vendor}}{{else}}{{.Buyer}}{{end}}</td>
 <td class="mono">{{.Amount}} {{.Currency}}</td>
 <td>
-<span class="badge">{{.Status}}</span>
+<span class="badge {{template "order-badge-class" .State}}">{{.Status}}</span>
 </td>
-<td>{{.Created}}</td>
+<td>{{.Updated}}</td>
 </tr>{{end}}</tbody>
 </table>
 </div>{{else}}<div class="empty">
