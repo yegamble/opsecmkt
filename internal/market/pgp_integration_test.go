@@ -12,7 +12,7 @@ import (
 	"github.com/ProtonMail/go-crypto/openpgp/armor"
 )
 
-func (e *testEnv) auditHas(userID, action string) bool {
+func (e *testEnv) auditExact(userID, action string) bool {
 	e.t.Helper()
 	var n int
 	if err := e.DB.QueryRow("SELECT count(*) FROM audit_events WHERE user_id=$1 AND action=$2", userID, action).Scan(&n); err != nil {
@@ -66,7 +66,7 @@ func TestPGPKeyOwnershipAndSecondFactor(t *testing.T) {
 	if fp, verified, _ := status(); fp != aliceFP || verified {
 		t.Fatalf("fp=%s verified=%v", fp, verified)
 	}
-	if !e.auditHas(uid, "Updated PGP key (fingerprint "+aliceFP+"; ownership unverified)") {
+	if !e.auditExact(uid, "Updated PGP key (fingerprint "+aliceFP+"; ownership unverified)") {
 		t.Fatal("key change not audited")
 	}
 	page := e.body("GET", "/account", s, nil, 200)
@@ -105,7 +105,7 @@ func TestPGPKeyOwnershipAndSecondFactor(t *testing.T) {
 	if _, verified, _ := status(); !verified {
 		t.Fatal("valid signature not recorded")
 	}
-	if !e.auditHas(uid, "Verified PGP key ownership (fingerprint "+aliceFP+", sign challenge)") {
+	if !e.auditExact(uid, "Verified PGP key ownership (fingerprint "+aliceFP+", sign challenge)") {
 		t.Fatal("verification not audited")
 	}
 	e.check(e.do("POST", "/pgp/verify", s, url.Values{"signature": {testClearsign(t, alice, challenge)}}), 409) // challenge consumed
@@ -131,7 +131,7 @@ func TestPGPKeyOwnershipAndSecondFactor(t *testing.T) {
 	}
 	e.check(e.do("POST", "/pgp/verify", s, url.Values{"response": {"0123456789abcdef0123456789abcdef"}}), 400)
 	e.check(e.do("POST", "/pgp/verify", s, url.Values{"response": {" " + nonce + "\n"}}), 303)
-	if !e.auditHas(uid, "Verified PGP key ownership (fingerprint "+aliceFP+", decrypt challenge)") {
+	if !e.auditExact(uid, "Verified PGP key ownership (fingerprint "+aliceFP+", decrypt challenge)") {
 		t.Fatal("decrypt verification not audited")
 	}
 
@@ -286,7 +286,7 @@ func TestMessageEncryptionStatus(t *testing.T) {
 	if got["msg_alice/yes"] != 1 || got["msg_alice/no"] != 1 || got["msg_nokey/unknown"] != 1 || len(got) != 3 {
 		t.Fatalf("stored statuses %v", got)
 	}
-	if !e.auditHas(senderID, "Sent OpenPGP-encrypted message (recipient key match: no)") {
+	if !e.auditExact(senderID, "Sent OpenPGP-encrypted message (recipient key match: no)") {
 		t.Fatal("audit")
 	}
 
