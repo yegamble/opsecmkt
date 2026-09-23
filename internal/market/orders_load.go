@@ -83,7 +83,7 @@ func viewerTransitions(payments map[string]PaymentProvider, o *Order, u *User) [
 		t := Transition{To: to, Label: transitionLabel(o.State, to), Action: action}
 		if to == stateAwaitingPayment && payments[o.Currency] == nil {
 			t.Action = ""
-			t.Label = "Payment unavailable for " + o.Currency + ": no " + o.Currency + " test-network wallet is configured on this server."
+			t.Label = "Payment unavailable for " + o.Currency + ": no " + o.Currency + " test-network wallet is available on this server (not configured, or temporarily unreachable)."
 		}
 		out = append(out, t)
 	}
@@ -142,7 +142,7 @@ func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) 
 		return err
 	}
 	d.CanReview = u.ID == o.BuyerID && o.State == stateCompleted && len(d.Reviews) == 0
-	d.Transitions = viewerTransitions(a.payments, o, u)
+	d.Transitions = viewerTransitions(a.providers(), o, u)
 	return nil
 }
 

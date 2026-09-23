@@ -80,7 +80,7 @@ func payAction(c *actionCtx) (actionResult, error) {
 	if _, err = c.A.transition(ctx, c.Tx, o.ID, stateDraft, stateAwaitingPayment, c.User, "Payment address requested"); err != nil {
 		return actionResult{}, err
 	}
-	p := c.A.payments[o.Currency]
+	p := c.A.provider(o.Currency)
 	addr, err := p.NewAddress(ctx, o.ID)
 	if err != nil || addr == "" || !p.ValidAddress(addr) {
 		return actionResult{}, fail(503, "The "+o.Currency+" test-network wallet did not return a usable address. Nothing was changed; try again later.")

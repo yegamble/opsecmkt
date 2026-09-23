@@ -22,6 +22,8 @@ type payMoneroWallet struct {
 	sub       string
 	open      bool
 	nettype   string // daemon get_info
+	height    int64  // daemon get_info height / target_height (target > height = syncing)
+	target    int64
 	transfers map[string]any
 	nextIndex int64
 	valid     map[string]string // address -> nettype
@@ -38,7 +40,7 @@ func (m *payMoneroWallet) handle(path, method string, params json.RawMessage) (a
 	}
 	switch method {
 	case "get_info":
-		return map[string]any{"nettype": m.nettype, "mainnet": m.nettype == "mainnet", "stagenet": m.nettype == "stagenet"}, 0, ""
+		return map[string]any{"nettype": m.nettype, "mainnet": m.nettype == "mainnet", "stagenet": m.nettype == "stagenet", "height": m.height, "target_height": m.target}, 0, ""
 	case "open_wallet":
 		var p struct{ Filename string }
 		json.Unmarshal(params, &p)
@@ -81,7 +83,7 @@ func TestMoneroRefusesMainnet(t *testing.T) {
 	ctx := context.Background()
 	_, main := newPayMonero(t, payMainnetPrimary, payStagenetSub)
 	_, err := newMoneroProvider(ctx, main.url(""), "", "", 10)
-	if err == nil || !strings.Contains(err.Error(), "refusing to start") || !strings.Contains(err.Error(), "mainnet") {
+	if err == nil || !isRefusal(err) || !strings.Contains(err.Error(), "mainnet address") {
 		t.Fatalf("mainnet wallet accepted: %v", err)
 	}
 	if strings.Contains(err.Error(), "wallet-secret") || strings.Contains(err.Error(), payMainnetPrimary) {

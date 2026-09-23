@@ -40,3 +40,15 @@
 .payout-attention td {
   color:#ffdc9e
 }
+.payout-actions {
+  min-width:240px
+}
+.payout-actions summary {
+  cursor:pointer;
+  min-height:44px;
+  display:flex;
+  align-items:center
+}
+.payout-actions form {
+  margin-top:12px
+}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"log"
 	"net"
@@ -20,7 +21,6 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer app.Close()
 	addr := os.Getenv("ADDR")
 	if addr == "" {
 		addr = ":8080"
@@ -33,6 +33,7 @@ func main() {
 		host, _, parseErr := net.SplitHostPort(addr)
 		ip := net.ParseIP(host)
 		if parseErr != nil || ip == nil || !ip.IsLoopback() {
+			app.Close()
 			log.Fatal("PREVIEW_ADDR must be a loopback IP address and port")
 		}
 	}
@@ -40,14 +41,33 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	app.Start(ctx)
-	go func() {
-		<-ctx.Done()
-		c, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(c)
-	}()
 	log.Printf("OPSMKT listening on %s (preview=%v)", addr, *preview)
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	err = serve(ctx, srv, srv.ListenAndServe, 10*time.Second)
+	// Only after in-flight requests have finished: stop the payment watcher (Close waits for an in-flight
+	// payout, which runs on its own bounded context) and close the database.
+	app.Close()
+	if err != nil {
 		log.Fatal(err)
 	}
+}
+
+// serve runs listen until ctx is cancelled, then shuts srv down gracefully. It returns only after Shutdown
+// has finished (in-flight requests completed or grace elapsed), so the caller can then release what the
+// handlers use. A listen error other than http.ErrServerClosed is returned at once.
+func serve(ctx context.Context, srv *http.Server, listen func() error, grace time.Duration) error {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		<-ctx.Done()
+		c, cancel := context.WithTimeout(context.Background(), grace)
+		defer cancel()
+		if err := srv.Shutdown(c); err != nil {
+			log.Printf("shutdown: %v", err)
+		}
+	}()
+	if err := listen(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	<-done
+	return nil
 }

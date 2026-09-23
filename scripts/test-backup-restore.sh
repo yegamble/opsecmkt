@@ -55,6 +55,8 @@ trap cleanup EXIT
 pg '' -q -c "CREATE DATABASE $source_db"
 pg '' -q -c "CREATE DATABASE $target_db"
 pg "$source_db" -q -c "CREATE TABLE a_first (id integer PRIMARY KEY, note text NOT NULL); INSERT INTO a_first VALUES (1, 'Crème brûlée — 東京 🔒'); CREATE TABLE z_conflict (id integer PRIMARY KEY); INSERT INTO z_conflict VALUES (42);"
+# The payouts shape restore.sh relies on (state, error, updated); one row per state.
+pg "$source_db" -q -c "CREATE TABLE payouts (id integer PRIMARY KEY, state text NOT NULL, error text NOT NULL DEFAULT '', updated timestamptz NOT NULL DEFAULT now()); INSERT INTO payouts(id,state) VALUES (1,'pending'),(2,'sending'),(3,'sent'),(4,'failed'),(5,'blocked'),(6,'held');"
 
 # Only the generated scratch database names replace the supplied URL path.
 connection_url() {
@@ -101,9 +103,14 @@ if AGE_IDENTITY="$work/wrong-identity" scripts/restore.sh "$backup" <<< 'RESTORE
 fi
 [[ $(pg "$target_db" -Atq -c "SELECT count(*) FROM pg_tables WHERE schemaname = 'public'") == 0 ]]
 
-scripts/restore.sh "$backup" <<< 'RESTORE'
+scripts/restore.sh "$backup" <<< 'RESTORE' > "$work/restore.log"
 [[ $(pg "$target_db" -Atq -c 'SELECT note FROM a_first WHERE id = 1') == 'Crème brûlée — 東京 🔒' ]]
 [[ $(pg "$target_db" -Atq -c 'SELECT id FROM z_conflict') == 42 ]]
+# Queued and in-flight payouts are held after a restore so they are never sent twice; others are untouched.
+[[ $(pg "$target_db" -Atq -c "SELECT string_agg(id || ':' || state || ':' || (error LIKE 'Restored from backup:%'), ',' ORDER BY id) FROM payouts") == '1:held:true,2:held:true,3:sent:false,4:failed:false,5:blocked:false,6:held:false' ]]
+[[ $(pg "$source_db" -Atq -c "SELECT count(*) FROM payouts WHERE state = 'held'") == 1 ]]
+grep -q 'Held 2 restored payout(s)' "$work/restore.log"
+grep -q 'do not contain the custodial wallets' "$work/restore.log"
 
 # Restore creates a_first before colliding with z_conflict. A failure must roll
 # the entire transaction back, including that earlier successful CREATE TABLE.
@@ -113,4 +120,4 @@ if scripts/restore.sh "$backup" <<< 'RESTORE' > "$work/conflict.log" 2>&1; then
 fi
 [[ $(pg "$target_db" -Atq -c "SELECT to_regclass('public.a_first') IS NULL") == t ]]
 [[ $(pg "$target_db" -Atq -c 'SELECT id FROM z_conflict') == 99 ]]
-echo 'Encrypted backup/restore regressions passed (Unicode, overwrite refusal, wrong key, transaction rollback).'
+echo 'Encrypted backup/restore regressions passed (Unicode, overwrite refusal, wrong key, transaction rollback, payout hold).'

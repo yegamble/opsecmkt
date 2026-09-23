@@ -26,6 +26,7 @@ The script creates two uniquely named `opsecmkt_ops_*` databases, generates temp
 - Refusal to overwrite an existing backup, with its contents unchanged.
 - A wrong decryption identity fails without creating tables.
 - A schema collision rolls back the entire restore, including a preceding successful table creation, while preserving existing rows.
+- After a restore, payouts that were `pending` or `sending` in the dump are `held` with a "Restored from backup" error; other payout states are untouched.
 
 Only the newly generated database names are used as backup/restore targets. An exit trap drops both scratch databases and removes temporary keys, dumps, and logs. Use a dedicated local/CI server: the test role necessarily has database-creation permissions, and terminating the script with `SIGKILL` can prevent cleanup. The original database named in `TEST_DATABASE_URL` is used only as a connection for creating and dropping the scratch databases.
 

@@ -25,7 +25,7 @@ func payoutAddressAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, fail(400, "Choose BTC or XMR")
 	}
 	addr := strings.TrimSpace(c.Form.Get("address"))
-	p := c.A.payments[cur]
+	p := c.A.provider(cur)
 	if addr != "" {
 		if p == nil {
 			return actionResult{}, fail(409, cur+" payments are not configured on this market, so a payout address cannot be saved.")
@@ -66,8 +66,9 @@ func savePayoutAddress(c *actionCtx, cur, addr string, p PaymentProvider) (actio
 
 func paymentsGlobalLoader(_ context.Context, a *App, _ *http.Request, d *PageData) error {
 	var nets []string
-	for _, cur := range sortedCurrencies(a.payments) {
-		nets = append(nets, cur+" "+a.payments[cur].Network())
+	ready := a.providers()
+	for _, cur := range sortedCurrencies(ready) {
+		nets = append(nets, cur+" "+ready[cur].Network())
 	}
 	d.PaymentsEnabled = len(nets) > 0
 	d.PaymentNetworks = strings.Join(nets, ", ")
@@ -81,8 +82,12 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		return nil
 	}
 	o := d.Order
-	p := a.payments[o.Currency]
+	p := a.provider(o.Currency)
 	pv := &PaymentView{Currency: o.Currency, Required: o.Amount, Testnet: true, Available: p != nil}
+	if p == nil {
+		msg, _ := a.unavailableError(o.Currency)
+		pv.Degraded = msg != ""
+	}
 	d.Payment = pv
 	if p != nil {
 		pv.Network, pv.Threshold = p.Network(), p.Confirmations()
@@ -99,6 +104,9 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 	pv.Monitored = p != nil
 	if !pv.Monitored {
 		pv.Status = "Not monitored: " + o.Currency + " payments are not configured on this server."
+		if pv.Degraded {
+			pv.Status = "Not monitored right now: the " + o.Currency + " test-network wallet is unavailable."
+		}
 		return nil
 	}
 	pv.Open = o.State == stateAwaitingPayment
@@ -202,10 +210,10 @@ func paymentsAccountLoader(ctx context.Context, a *App, _ *http.Request, d *Page
 		return nil
 	}
 	v := &PayoutView{}
-	if p := a.payments["BTC"]; p != nil {
+	if p := a.provider("BTC"); p != nil {
 		v.BTCNetwork = p.Network()
 	}
-	if p := a.payments["XMR"]; p != nil {
+	if p := a.provider("XMR"); p != nil {
 		v.XMRNetwork = p.Network()
 	}
 	if err := a.db.QueryRowContext(ctx, "SELECT payout_btc,payout_xmr,(SELECT count(*) FROM payouts WHERE user_id=$1 AND state='blocked') FROM users WHERE id=$1", d.User.ID).Scan(&v.BTC, &v.XMR, &v.Blocked); err != nil {
@@ -235,13 +243,19 @@ func paymentsAdminLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 	}
 	env := map[string]string{"BTC": "BITCOIN_RPC_URL", "XMR": "MONERO_WALLET_RPC_URL"}
 	for _, cur := range []string{"BTC", "XMR"} {
-		s := ProviderStatus{Currency: cur}
-		if p := a.payments[cur]; p != nil {
+		s := ProviderStatus{Currency: cur, Status: "Disabled"}
+		if p := a.provider(cur); p != nil {
 			last := status[cur]
-			s.Enabled, s.Network, s.Confirmations = true, p.Network(), p.Confirmations()
+			s.Enabled, s.Status, s.Network, s.Confirmations = true, "Enabled", p.Network(), p.Confirmations()
 			s.LastPoll, s.Error = last.LastPoll, last.Error
 			if s.LastPoll == "" {
 				s.LastPoll = "Not polled yet"
+			}
+		} else if msg, disabled := a.unavailableError(cur); msg != "" {
+			// Configured but failing its checks in this process: payment requests are refused.
+			s.Status, s.Error = "Unavailable — retried every poll", msg
+			if disabled {
+				s.Status = "Refused — not a test network"
 			}
 		} else {
 			s.Error = "Not configured (" + env[cur] + " is blank)"

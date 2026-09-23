@@ -30,7 +30,7 @@ func init() {
 // automatic delivery only happens when a payment is confirmed.
 func (a *App) autoDeliveryCurrencies() string {
 	var list []string
-	for currency, p := range a.payments {
+	for currency, p := range a.providers() {
 		if p != nil {
 			list = append(list, currency)
 		}

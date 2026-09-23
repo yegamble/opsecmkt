@@ -38,7 +38,10 @@ type App struct {
 	key              []byte
 	mu               sync.Mutex
 	limits           map[string]bucket
-	payments         map[string]PaymentProvider // currency -> provider; empty = payments disabled
+	payMu            sync.RWMutex                    // guards payments and unavailable once Start has run
+	checkMu          sync.Mutex                      // serialises provider checks (refreshProviders)
+	payments         map[string]PaymentProvider      // currency -> working provider; empty = payments disabled
+	unavailable      map[string]*unavailableProvider // configured but failing its checks (retried each watcher pass)
 	stop             context.CancelFunc
 	background       sync.WaitGroup
 }
@@ -60,7 +63,7 @@ func New(ctx context.Context, preview bool) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	a := &App{templates: t, preview: preview, secure: os.Getenv("COOKIE_SECURE") != "false", mode: os.Getenv("APP_MODE"), setupToken: os.Getenv("SETUP_TOKEN"), limits: make(map[string]bucket), payments: map[string]PaymentProvider{}}
+	a := &App{templates: t, preview: preview, secure: os.Getenv("COOKIE_SECURE") != "false", mode: os.Getenv("APP_MODE"), setupToken: os.Getenv("SETUP_TOKEN"), limits: make(map[string]bucket), payments: map[string]PaymentProvider{}, unavailable: map[string]*unavailableProvider{}}
 	if a.mode == "" {
 		a.mode = "clearnet"
 	}
