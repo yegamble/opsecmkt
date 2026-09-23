@@ -93,6 +93,14 @@ func listingArchiveAction(c *actionCtx, archive bool) (actionResult, error) {
 		}
 		return actionResult{}, fail(409, "This listing is not archived.")
 	}
+	if !archive {
+		if ok, err := sellerIsVendor(c, l.ID); err != nil || !ok {
+			if err == nil {
+				err = fail(409, "This listing's owner is no longer a vendor, so it cannot be restored.")
+			}
+			return actionResult{}, err
+		}
+	}
 	if _, err = c.Tx.ExecContext(c.Ctx(), `UPDATE products SET archived=$2,archived_at=CASE WHEN $2 THEN now() END,updated=now() WHERE id=$1`, l.ID, archive); err != nil {
 		return actionResult{}, err
 	}

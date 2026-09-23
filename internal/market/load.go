@@ -92,8 +92,9 @@ func (a *App) load(r *http.Request, d *PageData) error {
 				args = nil
 			}
 			if d.Page == "order" {
-				query += " AND o.id=$2"
-				args = append(args, r.URL.Query().Get("id"))
+				// Moderators and administrators may also open disputed or resolved orders, read-only (orders_load.go).
+				query = orderQuery + " WHERE (o.buyer_id=$1 OR p.vendor_id=$1 OR ($3 IN ('moderator','admin') AND o.state IN ('disputed','resolved'))) AND o.id=$2"
+				args = append(args, r.URL.Query().Get("id"), d.User.Role)
 			}
 			query += " ORDER BY o.created DESC LIMIT 100"
 			rows, err = a.db.QueryContext(ctx, query, args...)

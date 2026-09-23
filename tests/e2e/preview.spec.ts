@@ -111,6 +111,7 @@ test('navigation accessibility structure stays stable', async ({ page }) => {
       - link "⌘ Marketplace"
       - link "Orders"
       - link "Messages"
+      - link "Notifications (1 unread)"
       - link "Disputes"
       - link "Account"
       - link "◇ Transparency"
