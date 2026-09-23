@@ -266,7 +266,7 @@ stagenet fork; it does not claim public-testnet validation.
 ```sh
 python3 -m unittest discover -s tests -p 'test_*.py' -v
 for script in scripts/*.sh; do bash -n "$script"; done
-go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 ```
 
 [CI](.github/workflows/ci.yaml) also validates Compose profiles, container startup,
