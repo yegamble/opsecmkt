@@ -38,6 +38,8 @@ func authGate(c *actionCtx) (handle, password string, release func(), err error)
 		err = fail(429, "Too many attempts. Try again in ten minutes.")
 	} else if !handlePattern.MatchString(handle) || len(password) < 12 || len(password) > 72 {
 		err = fail(400, "Use a 3–32 character handle (letters, digits, underscores) and a password of 12–72 bytes.")
+	} else if c.R.URL.Path != "/setup" {
+		err = c.A.checkCaptcha(c) // P1: single-use image CAPTCHA unless an administrator turned it off
 	}
 	if err != nil {
 		release()

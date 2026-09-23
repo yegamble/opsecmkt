@@ -87,9 +87,14 @@ type AuthView struct{ TOTPEnrolled, PGPEnrolled bool }
 type SecurityView struct {
 	TOTPEnabled               bool
 	PendingSecret, OTPAuthURI string
-	RecoveryCodes             []string
+	RecoveryCodes             []string // plaintext, only on the single view right after issuing
+	Pending                   bool     // enrollment started, not yet confirmed with a code
+	RecoveryRemaining         int
+	Error                     string
 }
-type CaptchaView struct{ ID string }
+
+// CaptchaView is set on login/register while the CAPTCHA is required; ID is empty when none could be issued (Error says why).
+type CaptchaView struct{ ID, Error string }
 
 // P2 PGP
 type PGPView struct {

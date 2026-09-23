@@ -22,7 +22,11 @@ Each package updates only its own subsection when it lands.
 
 ### P1 Authentication
 
-Not implemented: TOTP enrollment and challenge, recovery codes, CAPTCHA. A second-factor challenge step (`/challenge`) exists but no factor can be enrolled yet, so sign-in is password-only.
+- **TOTP second factor** (`/totp`): RFC 6238 (HMAC-SHA-1, 30-second steps, 6 digits, one step of clock skew either way) implemented with the Go standard library. Enrollment generates a random 160-bit secret, stored encrypted (AES-256-GCM, key derived from `SETUP_TOKEN`) and inactive until the user confirms a correct code. Every accepted code advances a per-account step counter, so a code cannot be used twice, including by concurrent requests. Turning TOTP off requires the password and a current code or recovery code.
+- **Sign-in challenge**: after a correct password, an account with TOTP enabled always receives a 10-minute pending login and must complete `/challenge`; no session is issued before that. Code guesses are limited to 10 per pending login and 10 per account per ten minutes (in-memory limits, per application instance).
+- **Recovery codes**: 10 codes of 80 random bits each, issued on activation and on replacement (which requires a current code and invalidates all earlier codes). Only SHA-256 hashes are stored; each code is marked used in the same transaction that signs in. The plaintext codes are displayed once, on the first `/totp` view within 10 minutes of issue.
+- **Image CAPTCHA** on `/login` and `/register` (not on first-run setup): six characters from a 30-character alphabet, drawn server-side as a same-origin PNG from a built-in 5×7 bitmap font with jitter, shear, wave and noise. Each challenge is bound to the browser session, single-use (a wrong answer consumes it), expires after 10 minutes, and at most 30 are issued per session per ten minutes. Only a hash of the answer is stored. It is on for new and upgraded installations; administrators can turn it off or on from `/admin`, and each change is audited.
+- Not provided: QR codes for enrollment (the secret and `otpauth://` URI are shown as text), an audio or other non-visual CAPTCHA alternative, WebAuthn/security keys, and administrator-forced TOTP. A CAPTCHA only slows automated sign-ups; it does not stop a determined attacker or a solving service.
 
 ### P2 PGP identity
 

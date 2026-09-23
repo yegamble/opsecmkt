@@ -1,2 +1,22 @@
 {{/* P1 Authentication owns. Challenge form for method=totp; rendered only when .Auth.TOTPEnrolled */}}
-{{define "factor-totp"}}{{end}}
+{{define "factor-totp"}}<section class="factor-totp">
+<h2>Authenticator code</h2>
+<form class="stack" method="post" action="/challenge">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="method" value="totp">
+<label>6-digit code<input name="code" required inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" autocomplete="one-time-code" spellcheck="false">
+</label>
+<button class="primary" type="submit">Verify code ↗</button>
+</form>
+<details class="recovery-entry">
+<summary>Use a recovery code instead</summary>
+<form class="stack" method="post" action="/challenge">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="method" value="totp">
+<label>Recovery code<input name="recovery" required maxlength="40" autocomplete="off" spellcheck="false" autocapitalize="none" placeholder="xxxx-xxxx-xxxx-xxxx">
+</label>
+<span class="help">Each recovery code works once and is then spent.</span>
+<button type="submit">Use recovery code</button>
+</form>
+</details>
+</section>{{end}}

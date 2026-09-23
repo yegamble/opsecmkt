@@ -1,2 +1,22 @@
 {{/* P1 Authentication owns. Admin panels after the settings grid */}}
-{{define "admin-auth"}}{{end}}
+{{define "admin-auth"}}{{$off := eq (index .Settings "captcha_required") "false"}}<section class="panel admin-auth">
+<h2>Sign-in protection</h2>
+<dl class="key-values">
+<div>
+<dt>CAPTCHA on sign-in and registration</dt>
+<dd>{{if $off}}Off{{else}}On{{end}}</dd>
+</div>
+<div>
+<dt>TOTP second factor</dt>
+<dd>Optional for each account</dd>
+</div>
+</dl>
+<form method="post" action="/admin/captcha">
+<input type="hidden" name="csrf" value="{{.CSRF}}">{{if $off}}
+<input type="hidden" name="captcha_required" value="true">
+<button type="submit">Turn CAPTCHA on</button>{{else}}
+<input type="hidden" name="captcha_required" value="false">
+<button type="submit">Turn CAPTCHA off</button>{{end}}
+</form>
+<p class="help">The CAPTCHA is an image only, with no audio alternative; first-run setup never asks for it. Changes are recorded in the audit trail.</p>
+</section>{{end}}

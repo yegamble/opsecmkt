@@ -71,6 +71,10 @@ func newTestApp(t *testing.T) *testEnv {
 	e := &testEnv{t: t}
 	e.restart()
 	t.Cleanup(func() { e.A.Close() })
+	// P1: fresh installs require the image CAPTCHA on /login and /register; tests opt back in explicitly.
+	if _, err := e.DB.Exec("UPDATE settings SET value='false' WHERE key='captcha_required'"); err != nil {
+		t.Fatal(err)
+	}
 	return e
 }
 
