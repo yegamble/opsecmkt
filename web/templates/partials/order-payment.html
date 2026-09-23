@@ -1,3 +1,67 @@
-{{/* P5 Payments owns. Payment panel heading and body on the order page */}}
-{{define "order-payment"}}<h2>Payment is unavailable</h2>
-<p>This record is an unfunded draft. No funds are held in escrow, and no payment or settlement can take place.</p>{{end}}
+{{/* P5 Payments owns. Payment panel heading and body on the order page. Addresses, amounts and confirmations come only from a live provider and the payments ledger. */}}
+{{define "order-payment"}}{{with .Payment}}{{if .Monitored}}<h2>Payment <span class="badge testnet">TESTNET {{.Network}}</span></h2>
+{{if .Open}}<p class="help">Send exactly the required amount of <strong>{{.Network}} test {{.Currency}}</strong> to this address. Test coins only: mainnet coins sent here are lost. Funds are held in the market's pooled test wallet (custodial, not multisig escrow) until the order completes, is cancelled, or a dispute is resolved.</p>
+<div class="payment-address">
+<span class="badge testnet">TESTNET {{.Network}} deposit address</span>
+<p class="mono">{{.Address}}</p>
+</div>{{end}}
+<dl class="key-values payment-figures">
+<div>
+<dt>Required</dt>
+<dd>{{.Required}} {{.Currency}} <span class="badge testnet">TESTNET {{.Network}}</span></dd>
+</div>
+<div>
+<dt>Confirmed (at least {{.Threshold}} confirmations)</dt>
+<dd>{{.Received}} {{.Currency}} <span class="badge testnet">TESTNET {{.Network}}</span></dd>
+</div>
+<div>
+<dt>Unconfirmed</dt>
+<dd>{{.Unconfirmed}} {{.Currency}} <span class="badge testnet">TESTNET {{.Network}}</span></dd>
+</div>
+<div>
+<dt>Payment status</dt>
+<dd>{{.Status}}</dd>
+</div>
+</dl>
+{{if .Deposits}}<h3>Deposits seen by the wallet</h3>
+<div class="table-wrap payment-deposits">
+<table>
+<thead>
+<tr>
+<th scope="col">Transaction</th>
+<th scope="col">Amount</th>
+<th scope="col">Confirmations</th>
+<th scope="col">Counted</th>
+</tr>
+</thead>
+<tbody>{{range .Deposits}}<tr>
+<td class="mono">{{.TxID}}:{{.Index}}</td>
+<td>{{.Amount}} {{$.Payment.Currency}} <span class="badge testnet">TESTNET {{$.Payment.Network}}</span></td>
+<td>{{if lt .Confirmations 0}}Conflicted{{else}}{{.Confirmations}}{{end}} <span class="badge testnet">TESTNET {{$.Payment.Network}}</span></td>
+<td>{{.State}}</td>
+</tr>{{end}}</tbody>
+</table>
+</div>{{end}}
+{{with .Payout}}<h3>Payout</h3>
+<dl class="key-values payment-figures">
+<div>
+<dt>{{if eq .Kind "release"}}Release to vendor{{else}}Refund to buyer{{end}}</dt>
+<dd>{{.Amount}} {{.Currency}} <span class="badge testnet">TESTNET {{$.Payment.Network}}</span></dd>
+</div>
+<div>
+<dt>Payout status</dt>
+<dd>{{.StateLabel}}</dd>
+</div>{{if .TxID}}
+<div>
+<dt>Payout transaction</dt>
+<dd class="mono">{{.TxID}}</dd>
+</div>{{end}}
+</dl>{{end}}
+{{else if .Issued}}<h2>Payment is not monitored</h2>
+<div class="alert error" role="status">{{.Currency}} payments are not configured on this server, so deposits for this order are not being watched. Do not send funds.</div>
+{{else if eq $.Order.State "draft"}}{{if .Available}}<h2>Payment not requested yet</h2>
+<p>This record is an unfunded draft. Requesting payment returns a <strong>TESTNET {{.Network}}</strong> deposit address from the market's test wallet. No real funds are accepted.</p>{{else}}<h2>Payment is unavailable</h2>
+<p>This record is an unfunded draft. {{.Currency}} payments are not configured on this market, so no payment or settlement can take place. No funds are held.</p>{{end}}
+{{else}}<h2>No payment record</h2>
+<p>No deposit address was issued for this order, and no funds are held for it.</p>{{end}}{{else}}<h2>Payment is unavailable</h2>
+<p>This record is an unfunded draft. No funds are held, and no payment or settlement can take place.</p>{{end}}{{end}}

@@ -75,6 +75,11 @@ Each package records its own acceptance checks here and edits only its subsectio
 
 - [ ] Mainnet chains/addresses stop startup with a clear error; no address is shown unless returned by a live test-network provider.
 - [ ] Ledger entries are unique per `(currency, txid, output)`; state changes happen only through transitions.
+- [ ] An order becomes `paid` exactly once, only after confirmed deposits reach its amount, even with concurrent watchers.
+- [ ] A conflicted credited deposit is flagged to moderators without reverting the order, and its unsent payouts are held.
+- [ ] Each payout is sent at most once. Failed and stuck (`sending`) payouts are shown to administrators and never retried. Payouts wait for a valid test-network payout address.
+- [ ] Every address, amount and confirmation count carries a `TESTNET <network>` label. Pages say "Payments disabled" when no provider is configured.
+- [ ] Manual: `scripts/regtest-smoke.sh` passes against a real `bitcoind -regtest` (not exercised in CI).
 
 ### P6 Transparency
 
