@@ -13,7 +13,6 @@ The Figma reference is adapted to Go-rendered HTML and CSS. The browser loads no
 - Versioned, idempotent schema migrations applied at startup under an advisory lock (see README "Migrations").
 - Storage of messages the sender encrypted with OpenPGP beforehand (packets are inspected and plaintext is rejected; see P2), in-app recipient notifications, and account audit history. The server cannot decrypt messages.
 - Moderators resolve disputes on paid, shipped or delivered orders with a release or refund outcome; the payment system then queues the matching test-network payout from the operator's wallet (see P3, P5).
-- Desired node settings are saved for operator review. Deployment remains operator-controlled.
 - Docker internal/external database selection, separate clearnet/Tor exposure, optional operator-supplied full-node containers, encrypted database backup and transactional restore scripts.
 
 ## Feature packages

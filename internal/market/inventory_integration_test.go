@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// P4 Inventory integration tests (TEST_DATABASE_URL). Fixtures use e.user/e.product (fast, no bcrypt-12 setup).
+// P4 Inventory integration tests (TEST_DATABASE_URL). Fixtures use e.user/e.product (fast, no /setup flow).
 
 func inventoryForm(id string, overrides map[string]string) url.Values {
 	f := url.Values{"id": {id}, "title": {"Edited listing"}, "description": {"Edited description"}, "category": {"Digital"}, "region": {"Europe"}, "kind": {"physical"}, "price_btc": {"0.002"}, "price_xmr": {"0.75"}, "stock": {"5"}, "stock_seen": {"5"}}

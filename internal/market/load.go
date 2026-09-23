@@ -197,7 +197,12 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			}
 		}
 		if d.Page == "account" || d.Page == "admin" {
-			rows, err = a.db.QueryContext(ctx, `SELECT action,to_char(created,'YYYY-MM-DD HH24:MI') FROM audit_events WHERE user_id=$1 OR $2='admin' ORDER BY created DESC LIMIT 100`, d.User.ID, d.User.Role)
+			// The admin audit trail lists every user's events; the account page shows only the viewer's recent ones.
+			all, limit := d.Page == "admin" && d.User.Role == "admin", 100
+			if d.Page == "account" {
+				limit = 15
+			}
+			rows, err = a.db.QueryContext(ctx, `SELECT action,to_char(created,'YYYY-MM-DD HH24:MI') FROM audit_events WHERE user_id=$1 OR $2 ORDER BY created DESC LIMIT $3`, d.User.ID, all, limit)
 			if err != nil {
 				return err
 			}
@@ -239,5 +244,5 @@ func previewData(page string) PageData {
 		u.Role = "vendor"
 	}
 	o := Order{ID: "sample-draft", ProductID: p[0].ID, Title: p[0].Title, Buyer: u.Handle, Vendor: p[0].Vendor, Currency: "BTC", Amount: p[0].PriceBTC, State: stateDraft, Status: stateLabel(stateDraft), Kind: p[0].Kind, BuyerID: u.ID, VendorID: p[0].VendorID, Created: "Sample order", Updated: "Sample order"}
-	return PageData{Page: page, Title: strings.ReplaceAll(strings.Title(page), "-", " "), Preview: true, User: u, Products: p, Product: &p[0], Orders: []Order{o}, Order: &o, Currency: "BTC", Settings: map[string]string{"site_name": "OPSMKT", "bitcoin_mode": "disabled", "monero_mode": "disabled"}, Users: []User{{ID: "ghost", Handle: "ghost_circuit", Role: "vendor"}}, Events: []Event{{Action: "Preview only — no real activity", Created: "—"}}}
+	return PageData{Page: page, Title: strings.ReplaceAll(strings.Title(page), "-", " "), Preview: true, User: u, Products: p, Product: &p[0], Orders: []Order{o}, Order: &o, Currency: "BTC", Settings: map[string]string{"site_name": "OPSMKT"}, Users: []User{{ID: "ghost", Handle: "ghost_circuit", Role: "vendor"}}, Events: []Event{{Action: "Preview only — no real activity", Created: "—"}}}
 }

@@ -34,15 +34,19 @@ export default defineConfig({
       use: { browserName, viewport: { width, height: 900 } },
     })),
     // db-setup initializes the fresh database exactly once; every other db-*.spec.ts depends on it and
-    // creates its own uniquely named users/listings (tests/e2e/db-fixtures.ts).
+    // creates its own uniquely named users/listings (tests/e2e/db-fixtures.ts). The db files still share one
+    // admin account, the global CAPTCHA setting and the per-handle login limit, so each database project runs
+    // on a single worker (per-project workers, Playwright >= 1.52); preview projects keep the global pool.
     ...(databaseURL ? [{
       name: 'db-setup',
       retries: 0,
+      workers: 1,
       testMatch: /(^|\/)db-setup\.spec\.ts$/,
       use: databaseUse,
     }, {
       name: 'database-chromium',
       retries: 0,
+      workers: 1,
       fullyParallel: false,
       dependencies: ['db-setup'],
       testMatch: /(^|\/)db-(?!setup)[^/]*\.spec\.ts$/,

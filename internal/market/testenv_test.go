@@ -18,6 +18,7 @@ import (
 // DB-backed tests call newTestApp(t); each gets its own PostgreSQL schema and must not use t.Parallel.
 
 func TestMain(m *testing.M) {
+	bcryptCost = bcrypt.MinCost // production cost 12 exceeds the request timeout under -race
 	if err := os.Chdir("../.."); err != nil {
 		panic(err)
 	}
@@ -136,7 +137,7 @@ func (e *testEnv) session(w *httptest.ResponseRecorder) string {
 	return s
 }
 
-// setup runs the real /setup flow (bcrypt cost 12) and returns the admin session.
+// setup runs the real /setup flow (at the lowered test bcryptCost) and returns the admin session.
 func (e *testEnv) setup() string {
 	e.t.Helper()
 	w := e.do("POST", "/setup", randomToken(), url.Values{"token": {testSetupToken}, "handle": {"admin_user"}, "password": {"a-long-test-password"}, "site_name": {"Integration Market"}})

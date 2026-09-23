@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -21,6 +22,21 @@ func init() {
 }
 
 var passwordWork = make(chan struct{}, 4)
+
+// bcryptCost is the work factor for new password hashes. Tests lower it to bcrypt.MinCost (TestMain) so
+// the -race suite stays within the request timeout; production keeps 12.
+var bcryptCost = 12
+
+// dummyHash is compared against when a login handle does not exist, so unknown and known handles cost the
+// same bcrypt work. It is generated lazily at bcryptCost (after TestMain can lower it) from a random
+// password, so it never matches any input.
+var dummyHash = sync.OnceValue(func() []byte {
+	h, err := bcrypt.GenerateFromPassword([]byte(randomToken()), bcryptCost)
+	if err != nil {
+		panic(err)
+	}
+	return h
+})
 
 var handlePattern = regexp.MustCompile(`^[a-zA-Z0-9_]{3,32}$`)
 
@@ -135,12 +151,13 @@ func authAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, fail(503, "Service unavailable")
 	}
 	if path == "/login" {
-		var id, hash string
-		err := a.db.QueryRowContext(ctx, "SELECT id,password_hash FROM users WHERE handle=$1", handle).Scan(&id, &hash)
+		var id, stored string
+		err := a.db.QueryRowContext(ctx, "SELECT id,password_hash FROM users WHERE handle=$1", handle).Scan(&id, &stored)
+		hash := []byte(stored)
 		if err != nil {
-			hash = "$2a$12$R9h/cIPz0gi.URNNX3kh2OPST9/PgBkqquzi.Ss7KIUgO2t0jWMUW"
+			hash = dummyHash()
 		}
-		check := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
+		check := bcrypt.CompareHashAndPassword(hash, []byte(password))
 		if err != nil || check != nil {
 			return actionResult{}, fail(401, "Invalid handle or password")
 		}
@@ -152,7 +169,7 @@ func authAction(c *actionCtx) (actionResult, error) {
 	if path == "/register" && !installed {
 		return actionResult{}, fail(403, "Complete installation first")
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), 12)
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcryptCost)
 	if err != nil {
 		return actionResult{}, fail(500, "Unable to create account")
 	}

@@ -53,11 +53,26 @@
 </dl>
 <p>Use a unique password. Never share private keys or recovery phrases.</p>
 </div>{{template "account-security:panel" $}}{{template "account-payout:panel" $}}
+<section class="panel" aria-labelledby="account-activity">
+<h2 id="account-activity">Recent activity</h2>
+<ol class="order-timeline">{{range $.Events}}<li>
+<span class="order-when">{{.Created}}</span>
+<span>{{.Action}}</span>
+</li>{{else}}<li>
+<span>No activity recorded yet.</span>
+</li>{{end}}</ol>
+<p class="help">Your latest sign-ins and account changes, as recorded in the server-side audit log.</p>
+</section>
 <div class="panel">
-<h2>End your session</h2>
+<h2>Sessions</h2>
 <form method="post" action="/logout">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <button type="submit">Sign out</button>
+</form>
+<form class="stack session-revoke" method="post" action="/revoke-sessions">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<p class="help">Signing out everywhere ends every session for your account, on all devices, including this one.</p>
+<button type="submit">Sign out everywhere</button>
 </form>
 </div>
 </section>

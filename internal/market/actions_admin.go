@@ -32,17 +32,11 @@ func adminAction(c *actionCtx) (actionResult, error) {
 		action = "Changed user role"
 	case "settings":
 		name := strings.TrimSpace(f.Get("site_name"))
-		btc, xmr := f.Get("bitcoin_mode"), f.Get("monero_mode")
-		valid := func(s string) bool { return s == "disabled" || s == "local" || s == "external" }
-		if name == "" || len(name) > 80 || !valid(btc) || !valid(xmr) {
+		if name == "" || len(name) > 80 {
 			return actionResult{}, fail(400, "Invalid settings")
 		}
-		for k, v := range map[string]string{"site_name": name, "bitcoin_mode": btc, "monero_mode": xmr} {
-			if _, err = tx.ExecContext(ctx, "INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", k, v); err != nil {
-				break
-			}
-		}
-		action = "Saved desired node configuration; operator apply required"
+		_, err = tx.ExecContext(ctx, "INSERT INTO settings(key,value) VALUES('site_name',$1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", name)
+		action = "Saved marketplace settings"
 	default:
 		return actionResult{}, fail(400, "Unknown action")
 	}

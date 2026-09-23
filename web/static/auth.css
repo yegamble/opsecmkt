@@ -58,3 +58,6 @@
 .recovery-entry summary:hover {
   color:var(--amber)
 }
+.session-revoke {
+  margin-top:17px
+}

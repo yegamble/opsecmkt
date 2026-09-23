@@ -16,7 +16,6 @@
 <input type="hidden" name="action" value="settings">
 <label>Site name<input name="site_name" value="{{index .Settings "site_name"}}" required maxlength="80">
 </label>
-{{template "admin-payments:settings" .}}
 <button class="primary" type="submit">Save settings</button>
 </form>
 </section>

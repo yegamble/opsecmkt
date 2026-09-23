@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import { FIXTURE_LISTING, uniqueHandle } from './db-fixtures';
 
 // Uses the listing published by db-setup.spec.ts and registers its own buyer.
-test('register, draft, profile persistence and session boundaries', async ({ page }) => {
+test('register, draft, profile persistence and session boundaries', async ({ page, browser, baseURL }) => {
   const handle = uniqueHandle('buyer');
   const password = 'browser-buyer-password-123';
   await page.goto('/register');
@@ -37,4 +37,25 @@ test('register, draft, profile persistence and session boundaries', async ({ pag
   await page.getByRole('button', { name: 'Sign in' }).click();
   await page.goto('/account');
   await expect(page.getByLabel('XMPP address')).toHaveValue(`${handle}@example.test`);
+  const activity = page.getByRole('region', { name: 'Recent activity' });
+  await expect(activity).toContainText('Signed in');
+  await expect(activity).toContainText('Updated profile');
+  await expect(activity).toContainText('Account created: buyer');
+
+  // "Sign out everywhere" ends this session and one opened in a separate browser context.
+  const other = await browser.newContext({ baseURL, javaScriptEnabled: false });
+  const otherPage = await other.newPage();
+  await otherPage.goto('/login');
+  await otherPage.getByLabel('Handle', { exact: true }).fill(handle);
+  await otherPage.getByLabel('Password', { exact: true }).fill(password);
+  await otherPage.getByRole('button', { name: 'Sign in' }).click();
+  await otherPage.goto('/account');
+  await expect(otherPage).toHaveURL(/\/account$/);
+  await page.getByRole('button', { name: 'Sign out everywhere' }).click();
+  await expect(page).toHaveURL(/\/login$/);
+  await page.goto('/account');
+  await expect(page).toHaveURL(/\/login$/);
+  await otherPage.goto('/account');
+  await expect(otherPage).toHaveURL(/\/login$/);
+  await other.close();
 });

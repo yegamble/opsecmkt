@@ -29,7 +29,7 @@ Go's [HTML template documentation](https://pkg.go.dev/html/template) describes c
 ## Marketplace behavior
 
 - [ ] Catalog filters, product detail, account routes, and every navigation link render valid pages, including empty and not-found states.
-- [ ] Order creation persists the selected product, quantity, currency, and a server-calculated price snapshot. Client-supplied prices and roles are ignored.
+- [ ] Order creation persists the selected product, currency, and a server-calculated price snapshot; quantity is fixed at one unit per order (there is no quantity field). Client-supplied prices and roles are ignored.
 - [ ] Currency values use integer atomic units or exact decimal arithmetic. Unsupported currencies and invalid quantities fail safely.
 - [ ] State transitions reject unauthorized or repeated actions; concurrent requests cannot duplicate financial or delivery effects.
 - [ ] User-facing errors preserve safe input, identify the problem, and do not report success after failed database writes.

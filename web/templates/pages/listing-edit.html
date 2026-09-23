@@ -47,7 +47,7 @@
 </label>
 </div>
 <p class="help" id="stock-help">Payment requests reserve stock. If stock changes while you edit, saving a new stock value is refused so no reservation is overwritten.</p>
-{{with $.Listing}}<p class="help" id="kind-help">{{if .OpenOrders}}{{.OpenOrders}} open order(s) depend on this listing, so the fulfillment type cannot change until they finish.{{else}}No open orders; the fulfillment type can change.{{end}} Price changes never alter existing orders, which keep the amount recorded when they were created.</p>
+{{with $.Listing}}<p class="help" id="kind-help">{{if .OpenOrders}}{{.OpenOrders}} open order(s) depend on this listing, so the fulfillment type cannot change until they finish.{{else}}No open orders; the fulfillment type can change.{{end}} Orders that have requested payment keep their recorded amount; open drafts use the current price.</p>
 <label>Automatic delivery content<textarea name="delivery_content" maxlength="32000" rows="6" spellcheck="false" aria-describedby="delivery-help">{{.DeliveryContent}}</textarea>
 </label>
 {{template "vendor-listings:delivery-help" .AutoDelivery}}{{end}}
