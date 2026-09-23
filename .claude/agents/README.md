@@ -13,6 +13,10 @@ with no browser JavaScript and test-network-only payments.
 /war-room-loop [scope|resume] [max-iterations=N] [merge=owner|delegated]
                              # review → rule → implement → integrate → verify, repeated
 /scrutinise <claim>          # existing single-task completion check
+/bug-hunt [all|<area>|since=<ref>] [probe-only|static-only]
+                             # proactive: index → live probes + static hunters → verify → ledger
+/pr-review <PR|branch> [post]
+                             # codebase-aware review of one diff
 ```
 
 Run the chair as an **Opus session with `/advisor fable`** (see
@@ -37,6 +41,24 @@ never all thirteen.
 | `opsec-staff` | moderator/admin advocate | Can staff run and recover the market without SSH or SQL? |
 | `opsec-devils-advocate` | adversarial reviewer | What are we fooling ourselves about? |
 | `opsec-implementer` | implementation engineer | One ruled ledger item, test-first, in its own worktree. |
+
+### Bug hunt (`agents/hunt/`, `/bug-hunt`, `/pr-review`)
+
+A proactive, Greptile-style group that goes looking for broken workflows and
+bugs instead of waiting for a scope. It finds and proves; the war room rules
+and `opsec-implementer` fixes.
+
+| Agent | Role | Primary question |
+|---|---|---|
+| `opsec-codegraph` | indexer (Sonnet) | What calls what, writes which table, is reached by which form and proved by which test? Commit-pinned map in `artifacts/bug-hunt/<sha>/`. |
+| `opsec-workflow-prober` | live tester | Does the workflow actually finish when a script-free client drives the real server (curl + cookie jar) — including denied, bad, repeated and concurrent requests? |
+| `opsec-bug-hunter` | static hunter (worktree) | Where does the code break an invariant or a documented claim — proved by a failing test? |
+| `opsec-bug-verifier` | adversarial verifier | Can this finding be disproved? Rejects become rules. |
+| `opsec-pr-reviewer` | diff reviewer | What does this change break in code the diff did not touch? |
+
+`.claude/bug-hunt/rules.md` holds house rules and known false positives; the
+verifier's rejections are appended to it, so each hunt reports less noise
+than the last. Surviving findings enter the ledger as `open (bug-hunt, unruled)`.
 
 ## Shared contracts
 
