@@ -61,10 +61,25 @@ No environment keys. Second-factor secrets are encrypted with a key derived from
 
 - **TOTP** is optional per account: *Account → Manage TOTP* (`/totp`). Users type the shown secret (or paste the `otpauth://` URI) into an authenticator app; no QR code is generated. TOTP turns on only after a correct code, and 10 one-time recovery codes are shown once. Server clocks must be accurate (NTP); codes are accepted within ±30 seconds.
 - **CAPTCHA** on sign-in and registration is on by default for new and upgraded installations. Administrators turn it off or on under *Admin → Sign-in protection*; the change is audited. It is an image only, with no audio alternative, so turning it off may be needed for users who cannot read it. First-run setup never shows it.
+- **Password change**: users change their own password on *Account → Change password* with the current password (plus an authenticator code or an unused recovery code when TOTP is on). Every other session and pending sign-in of that account ends. There is no email or administrator password reset: a user who forgets their password cannot be recovered through the application.
+- **Second-factor reset**: an administrator can turn off TOTP (deleting its secret and recovery codes) and PGP sign-in for a non-administrator account under *Admin → Reset a user's second factors*, confirmed with the administrator's own password (and authenticator code when enrolled). The account's PGP key and verification stay; its sessions and pending sign-ins end, both accounts get an audit row and the user is notified. Anyone who knows that account's password can then sign in, so confirm the request really comes from its owner (for example with a message signed by their verified PGP key) before resetting.
+- **Administrator lockout** is not recoverable in the application: the reset refuses the administrator's own account and other administrators. Keep the administrator's recovery codes offline. If they are lost, an operator with database access runs, in `psql` against the application database (replace `ADMIN_HANDLE`):
+
+  ```sql
+  BEGIN;
+  UPDATE users SET totp_enabled=false,totp_secret='',totp_pending='',totp_last_step=0,recovery_reveal='',recovery_reveal_until=NULL,pgp_2fa=false WHERE handle='ADMIN_HANDLE' AND role='admin';
+  DELETE FROM recovery_codes WHERE user_id=(SELECT id FROM users WHERE handle='ADMIN_HANDLE' AND role='admin');
+  DELETE FROM sessions WHERE user_id=(SELECT id FROM users WHERE handle='ADMIN_HANDLE' AND role='admin');
+  DELETE FROM pending_logins WHERE user_id=(SELECT id FROM users WHERE handle='ADMIN_HANDLE' AND role='admin');
+  INSERT INTO audit_events(user_id,action) SELECT id,'Second factors reset by the operator in the database' FROM users WHERE handle='ADMIN_HANDLE' AND role='admin';
+  COMMIT;
+  ```
+
+  Check that the `UPDATE` affected one row, then sign in with the password and enroll TOTP again. A forgotten administrator password is likewise an operator task (a new bcrypt hash written with SQL); the application has no administrator password reset.
 
 ### PGP identity
 
-No configuration. Users paste an ASCII-armored public key on `/account`; the fingerprint is shown and ownership is proven on `/pgp` by signing a server text or decrypting a message encrypted to the key (for example `gpg --clearsign`, `gpg --decrypt`). A verified key can be used as a sign-in second factor. Changing the key clears verification and PGP sign-in. `/messages` accepts only OpenPGP-encrypted messages and labels each by whether its recipient key IDs match the recipient's saved key; the server never decrypts or holds private keys. Losing the private key locks PGP sign-in unless another second factor is enrolled. Vendor pages and order pages show the other party's armored public key, fingerprint and whether ownership is verified, and "Message vendor"/"Contact vendor" links open `/messages?to=<handle>` with the recipient filled in; without a saved key, the page says messages cannot be sent until one is added.
+No configuration. Users paste an ASCII-armored public key on `/account`; the fingerprint is shown and ownership is proven on `/pgp` by signing a server text or decrypting a message encrypted to the key (for example `gpg --clearsign`, `gpg --decrypt`). A verified key can be used as a sign-in second factor. Changing the key clears verification and PGP sign-in. `/messages` accepts only OpenPGP-encrypted messages and labels each by whether its recipient key IDs match the recipient's saved key; the server never decrypts or holds private keys. Losing the private key locks PGP sign-in unless another second factor is enrolled or an administrator resets the account's second factors (see Authentication). Vendor pages and order pages show the other party's armored public key, fingerprint and whether ownership is verified, and "Message vendor"/"Contact vendor" links open `/messages?to=<handle>` with the recipient filled in; without a saved key, the page says messages cannot be sent until one is added.
 
 ### Orders
 

@@ -51,19 +51,22 @@
 </section>
 </div>{{template "admin-auth" .}}{{template "admin-payments" .}}{{template "admin-transparency" .}}
 <h2 class="section-title">Audit trail</h2>
+<p class="help">Account is the account each event is recorded on. A change an administrator makes to another account is recorded on both: the administrator's row names the account, and the account's row says an administrator made it.</p>
 <div class="table-wrap">
 <table>
 <thead>
 <tr>
+<th scope="col">Account</th>
 <th scope="col">Event</th>
 <th scope="col">Time</th>
 </tr>
 </thead>
 <tbody>{{range .Events}}<tr>
+<td>{{if .Handle}}{{.Handle}}{{else}}System{{end}}</td>
 <td>{{.Action}}</td>
 <td>{{.Created}}</td>
 </tr>{{else}}<tr>
-<td colspan="2">No audit events recorded.</td>
+<td colspan="3">No audit events recorded.</td>
 </tr>{{end}}</tbody>
 </table>
 </div>

@@ -2,7 +2,7 @@ import { createPublicKey, verify } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { expect, test } from '@playwright/test';
 import { ADMIN, uniqueHandle } from './db-fixtures';
-import { pgpFixture, RECIPIENT_FINGERPRINT, setRole, signedIn, submitStatus } from './db-helpers';
+import { enrollTOTP, pgpFixture, RECIPIENT_FINGERPRINT, setRole, signedIn, submitStatus } from './db-helpers';
 
 // Administrator forms submitted against a real database with JavaScript disabled. Each test signs the shared
 // administrator in once (the per-handle sign-in limit is 10 per 10 minutes across all db specs).
@@ -14,6 +14,11 @@ test('promoting a buyer to vendor opens the vendor desk; the listing form shows 
   const vendorNav = vendor.getByRole('navigation', { name: 'Main navigation' });
   expect((await vendor.goto('/vendor-dashboard'))?.status()).toBe(403);
   await expect(vendorNav.getByRole('link', { name: 'Vendor desk' })).toHaveCount(0);
+  // A fresh account that has TOTP on, for the second-factor reset below (it reuses this test's admin sign-in).
+  const lockedHandle = uniqueHandle('lostfactor');
+  const lockedPassword = 'browser-lost-factor-123';
+  const locked = await signedIn(browser, baseURL, lockedHandle, lockedPassword, true);
+  await enrollTOTP(locked);
 
   const admin = await signedIn(browser, baseURL, ADMIN.handle, ADMIN.password, false);
   await admin.goto('/admin');
@@ -22,11 +27,54 @@ test('promoting a buyer to vendor opens the vendor desk; the listing form shows 
   await expect(admin.getByRole('status')).toHaveText('Changes saved.');
   await admin.reload();
   await expect(admin.locator('option', { hasText: `${vendorHandle} ·` })).toHaveText(`${vendorHandle} · vendor`);
-  await expect(admin.locator('table').last()).toContainText('Changed user role');
+  // The administrator's row names the account and both roles; the account gets its own row, and the
+  // Account column shows whose row each is.
+  const auditRows = admin.locator('table').last().locator('tbody tr');
+  await expect(auditRows.filter({ hasText: `Changed role of ${vendorHandle} from buyer to vendor` }).locator('td').first()).toHaveText(ADMIN.handle);
+  await expect(auditRows.filter({ hasText: 'Role changed from buyer to vendor by an administrator' }).filter({ hasText: vendorHandle }).locator('td').first()).toHaveText(vendorHandle);
   // Only roles the server can assign are offered; administrator remains setup-only.
   const roleForm = admin.locator('form', { has: admin.getByRole('button', { name: 'Update role' }) });
   await expect(roleForm.getByLabel('Role').locator('option[value="admin"]')).toHaveCount(0);
+
+  // Second-factor reset: offered only for accounts with a factor, never the administrator; needs the
+  // administrator's own password; ends the account's sessions and records the reset on both accounts.
+  const reset = admin.getByRole('region', { name: "Reset a user's second factors" });
+  const resetAccount = reset.getByLabel('Account with second factors');
+  await expect(resetAccount.locator('option', { hasText: `${lockedHandle} ·` })).toHaveText(`${lockedHandle} · TOTP`);
+  await expect(resetAccount.locator('option', { hasText: `${vendorHandle} ·` })).toHaveCount(0);
+  await expect(resetAccount.locator('option', { hasText: `${ADMIN.handle} ·` })).toHaveCount(0);
+  const submitReset = async (password: string) => {
+    await admin.goto('/admin');
+    await resetAccount.selectOption({ label: `${lockedHandle} · TOTP` });
+    await reset.getByLabel('Current password').fill(password);
+    return submitStatus(admin, () => reset.getByRole('button', { name: 'Reset second factors' }).click());
+  };
+  expect(await submitReset('not-the-admin-password')).toBe(401);
+  await expect(admin.locator('body')).toHaveText('Password incorrect');
+  await locked.goto('/account');
+  await expect(locked.locator('.key-values div', { hasText: 'TOTP authentication' }).locator('dd')).toHaveText('Enabled');
+  expect(await submitReset(ADMIN.password)).toBe(303);
+  await expect(admin).toHaveURL(/\/admin\?saved=1#reset-factors$/);
+  await expect(resetAccount.locator('option', { hasText: `${lockedHandle} ·` })).toHaveCount(0);
+  const resetRows = admin.locator('table').last().locator('tbody tr');
+  await expect(resetRows.filter({ hasText: `Reset second factors of ${lockedHandle}: TOTP and recovery codes turned off; ended 1 session(s) (confirmed with password)` }).locator('td').first()).toHaveText(ADMIN.handle);
+  await expect(resetRows.filter({ hasText: `Second factors reset by administrator ${ADMIN.handle}: TOTP and recovery codes turned off; ended 1 session(s)` }).locator('td').first()).toHaveText(lockedHandle);
+  expect(await admin.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(admin.viewportSize()!.width);
   await admin.context().close();
+
+  // The account was signed out, signs in with the password alone and is told what happened.
+  await locked.goto('/account');
+  await expect(locked).toHaveURL(/\/login$/);
+  await locked.getByLabel('Handle', { exact: true }).fill(lockedHandle);
+  await locked.getByLabel('Password', { exact: true }).fill(lockedPassword);
+  await locked.getByRole('button', { name: 'Sign in' }).click();
+  await expect(locked.locator('.account-name')).toHaveText(lockedHandle);
+  await expect(locked).not.toHaveURL(/\/challenge$/);
+  await locked.goto('/notifications');
+  await expect(locked.locator('main')).toContainText('An administrator reset your two-factor sign-in (TOTP and recovery codes turned off)');
+  await locked.goto('/account');
+  await expect(locked.locator('.key-values div', { hasText: 'TOTP authentication' }).locator('dd')).toHaveText('Not enrolled');
+  await locked.context().close();
 
   // The promotion takes effect on the vendor's existing session.
   await vendor.goto('/account');

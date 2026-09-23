@@ -206,7 +206,7 @@ func TestVendorDemotionArchivesListingsAndRefusesNewOrders(t *testing.T) {
 	if !w.e.auditExact(w.vendorID, "Archived 2 active listing(s): role changed to buyer by an administrator") {
 		t.Fatal("demoted user's audit event missing")
 	}
-	if w.count("SELECT count(*) FROM audit_events WHERE action='Changed user role to buyer; archived 2 active listing(s)'") != 1 {
+	if w.count("SELECT count(*) FROM audit_events e JOIN users u ON u.id=e.user_id AND u.role='admin' WHERE e.action='Changed role of '||(SELECT handle FROM users WHERE id=$1)||' from vendor to buyer; archived 2 active listing(s)'", w.vendorID) != 1 {
 		t.Fatal("administrator audit event missing")
 	}
 

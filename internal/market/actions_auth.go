@@ -66,15 +66,54 @@ func (a *App) confirmPassword(ctx context.Context, userID, password string) erro
 	return nil
 }
 
+// validPassword is the password rule for registration, setup and password changes: 12–72 bytes (bcrypt
+// ignores anything beyond 72).
+func validPassword(p string) bool { return len(p) >= 12 && len(p) <= 72 }
+
+// hashPassword hashes a new password at bcryptCost within the bounded bcrypt concurrency. Call it before
+// opening a transaction.
+func hashPassword(p string) (string, error) {
+	select {
+	case passwordWork <- struct{}{}:
+	default:
+		return "", fail(503, "Authentication is busy. Try again shortly.")
+	}
+	defer func() { <-passwordWork }()
+	h, err := bcrypt.GenerateFromPassword([]byte(p), bcryptCost)
+	return string(h), err
+}
+
+// confirmation selects extra behaviour for confirmedTxWith.
+type confirmation struct {
+	// Recovery also accepts one unused recovery code in "code" when TOTP is enrolled (and consumes it).
+	Recovery bool
+	// AfterPassword runs after a correct password and before the transaction opens (e.g. hashing a new password).
+	AfterPassword func() error
+}
+
 // confirmedTx runs a sensitive change (an OwnTx action) in its own transaction. With confirm set, the current
 // password is checked first (bcrypt outside any transaction) and, when TOTP is enrolled, a current
 // authenticator code ("code") inside the transaction. run uses c.Tx; its Audit is written in the same
 // transaction and notes how the change was confirmed.
 func confirmedTx(c *actionCtx, confirm bool, run func(c *actionCtx) (actionResult, error)) (actionResult, error) {
+	if !confirm {
+		return confirmedTxWith(c, nil, run)
+	}
+	return confirmedTxWith(c, &confirmation{}, run)
+}
+
+// confirmedTxWith is confirmedTx with options; opts nil means no confirmation.
+func confirmedTxWith(c *actionCtx, opts *confirmation, run func(c *actionCtx) (actionResult, error)) (actionResult, error) {
 	a, ctx, uid := c.A, c.Ctx(), c.User.ID
+	confirm := opts != nil
 	if confirm {
 		if err := a.confirmPassword(ctx, uid, c.Form.Get("password")); err != nil {
 			return actionResult{}, err
+		}
+		if opts.AfterPassword != nil {
+			if err := opts.AfterPassword(); err != nil {
+				return actionResult{}, err
+			}
 		}
 	}
 	tx, err := a.db.BeginTx(ctx, nil)
@@ -91,10 +130,17 @@ func confirmedTx(c *actionCtx, confirm bool, run func(c *actionCtx) (actionResul
 			return actionResult{}, err
 		}
 		if totp {
-			if err = a.checkTOTP(ctx, tx, uid, c.Form.Get("code")); err != nil {
+			code := c.Form.Get("code")
+			if opts.Recovery && normalizeRecoveryCode(code) != "" {
+				_, err = a.useRecoveryCode(ctx, tx, uid, code)
+				how = "password and recovery code"
+			} else {
+				err = a.checkTOTP(ctx, tx, uid, code)
+				how = "password and authenticator code"
+			}
+			if err != nil {
 				return actionResult{}, err
 			}
-			how = "password and authenticator code"
 		}
 	}
 	res, err := run(c)
@@ -124,7 +170,7 @@ func authGate(c *actionCtx) (handle, password string, release func(), err error)
 	release = func() { <-passwordWork }
 	handle, password = strings.TrimSpace(c.Form.Get("handle")), c.Form.Get("password")
 	// Validate before the rate limit so malformed handles never create limiter entries.
-	if !handlePattern.MatchString(handle) || len(password) < 12 || len(password) > 72 {
+	if !handlePattern.MatchString(handle) || !validPassword(password) {
 		err = fail(400, "Use a 3–32 character handle (letters, digits, underscores) and a password of 12–72 bytes.")
 	} else if !c.A.allow("auth:"+strings.ToLower(handle), 10) {
 		err = fail(429, "Too many attempts. Try again in ten minutes.")

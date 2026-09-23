@@ -79,7 +79,7 @@ test('vendor contact, unread notifications and demotion archive', async ({ brows
 
   // Demoting the vendor archives the listing: it leaves the catalog and the product page is gone.
   await setRole(admin, vendorHandle, 'buyer');
-  await expect(admin.locator('main')).toContainText('Changed user role to buyer; archived 1 active listing(s)');
+  await expect(admin.locator('main')).toContainText(`Changed role of ${vendorHandle} from vendor to buyer; archived 1 active listing(s)`);
   await buyer.goto(`/?q=${encodeURIComponent(title)}`);
   await expect(buyer.getByRole('heading', { name: 'No listings found' })).toBeVisible();
   expect((await buyer.goto(productURL))?.status()).toBe(404);
