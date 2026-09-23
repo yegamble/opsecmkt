@@ -1,6 +1,6 @@
-# CI and private release delivery
+# CI and release delivery
 
-Every branch push and pull request runs `.github/workflows/ci.yaml`. The stable **CI passed** check succeeds only when every mandatory job succeeds, including all matrix entries. Configure that check as required on the default branch; do not accept a skipped or cancelled suite as a pass.
+Every pull request and every push to `main` runs `.github/workflows/ci.yaml`; other branches are tested through their pull request, or on demand with **Run workflow** (`workflow_dispatch`). The stable **CI passed** check succeeds only when every mandatory job succeeds, including all matrix entries. Branch protection on `main` requires that check; do not accept a skipped or cancelled suite as a pass.
 
 The suite covers:
 
@@ -19,16 +19,16 @@ GitHub retains coverage and browser reports/traces for 14 days. Inspect failed A
 
 ## Release a tested version
 
-Push a version tag, for example `v0.1.0`, on the intended reviewed commit. The private release workflow reruns the entire CI workflow against that tag before building any release output. It requires the repository to be private and the tag to use `vMAJOR.MINOR.PATCH` (an optional prerelease suffix is supported).
+Push a version tag, for example `v0.1.0`, on the intended reviewed commit. The release workflow reruns the entire CI workflow against that tag before building any release output. It requires the tag to use `vMAJOR.MINOR.PATCH` (an optional prerelease suffix is supported). The image is built without any Actions cache.
 
-The pipeline creates a **draft private GitHub release** with:
+The pipeline creates a **draft GitHub release** with:
 
 - `opsecmkt.oci.tar.gz`: Linux amd64 OCI image archive, with embedded BuildKit provenance and SBOM.
 - `build.json`: exact source commit, tag, platform and Actions run URL.
 - `verify-audit-linux-amd64`, `verify-audit-linux-arm64`, `verify-audit-darwin-amd64`, `verify-audit-darwin-arm64`, `verify-audit-windows-amd64.exe`: static builds of `cmd/verify-audit`, the offline checker for signed audit exports (standard library only, no network access).
 - `SHA256SUMS`: checksums for the archive, build record and every verifier binary.
 
-It does not publish a registry package, contact a production host, or deploy. There are no deployment credentials to configure. Review the draft and its green checks before publishing it to repository readers. A pre-existing release makes a rerun fail instead of silently replacing release assets; delete an unwanted draft explicitly before retrying packaging.
+It does not publish a registry package, contact a production host, or deploy. There are no deployment credentials to configure. A draft is visible only to people with write access to the repository. The repository is public, so publishing a release makes its assets available to anyone: review the draft and its green checks first. A pre-existing release makes a rerun fail instead of silently replacing release assets; delete an unwanted draft explicitly before retrying packaging.
 
 To retrieve and inspect a release on an authorized workstation:
 
@@ -49,9 +49,9 @@ chmod +x verify-audit-linux-amd64
 
 It exits 0 only when the signature over the exact export bytes verifies with that key and every line is a well-formed event in ascending id order; otherwise it prints the reason and exits 1. From a source checkout, `go run ./cmd/verify-audit` is equivalent. A valid signature proves the export came from the holder of the signing key; it does not prove the history was never altered on the server before export.
 
-The OCI archive is intended for an OCI-aware importer; do not assume every Docker version can load it directly. Review embedded metadata in the archive before import; copying to a Docker daemon can discard attestations. The checksums detect corruption and BuildKit metadata records the build; neither is an independent cryptographic signature. GitHub signed artifact attestations for private repositories require Enterprise Cloud and are not assumed here.
+The OCI archive is intended for an OCI-aware importer; do not assume every Docker version can load it directly. Review embedded metadata in the archive before import; copying to a Docker daemon can discard attestations. The checksums detect corruption and BuildKit metadata records the build; neither is an independent cryptographic signature. The workflow does not create GitHub artifact attestations (available to public repositories via `actions/attest-build-provenance`).
 
-A future deployment workflow needs an explicitly selected target, environment protection, deployment credentials, backup policy, and rollback decision. Database migrations are one-way (there are no down-migrations, and migration 001 drops `orders.status`), so an older image cannot simply be redeployed against a migrated database: rolling back means restoring the encrypted backup taken before the upgrade into a fresh database and running the previous image against it, losing everything written since. Keep the previously tested private image release and that verified pre-upgrade backup until the new release is trusted. See [UPGRADING.md](../UPGRADING.md).
+A future deployment workflow needs an explicitly selected target, environment protection, deployment credentials, backup policy, and rollback decision. Database migrations are one-way (there are no down-migrations, and migration 001 drops `orders.status`), so an older image cannot simply be redeployed against a migrated database: rolling back means restoring the encrypted backup taken before the upgrade into a fresh database and running the previous image against it, losing everything written since. Keep the previously tested image release and that verified pre-upgrade backup until the new release is trusted. See [UPGRADING.md](../UPGRADING.md).
 
 ## Workflow maintenance
 
@@ -59,4 +59,4 @@ Actions are pinned to verified full commit SHAs, permissions default to read-onl
 
 CI uses disposable PostgreSQL credentials that are intentionally committed test fixtures. Never substitute production URLs or credentials in these jobs. Do not commit local environment files, backups, browser authentication state, or private test traces. Browser artifacts can contain the generated fixture records used in CI.
 
-Sources: [GitHub secure-use reference](https://docs.github.com/en/actions/reference/security/secure-use), [private artifact attestation requirements](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations), and [Docker build attestations](https://docs.docker.com/build/metadata/attestations/).
+Sources: [GitHub secure-use reference](https://docs.github.com/en/actions/reference/security/secure-use), [artifact attestations](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations), and [Docker build attestations](https://docs.docker.com/build/metadata/attestations/).

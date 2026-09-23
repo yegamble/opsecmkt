@@ -266,13 +266,13 @@ stagenet fork; it does not claim public-testnet validation.
 ```sh
 python3 -m unittest discover -s tests -p 'test_*.py' -v
 for script in scripts/*.sh; do bash -n "$script"; done
-go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 ```
 
 [CI](.github/workflows/ci.yaml) also validates Compose profiles, container startup,
 upgrades, encrypted backup/restore, dependencies and browser regressions with
 PostgreSQL. See [operations tests](docs/operations-tests.md) for local rehearsals
-and [CI/release instructions](docs/ci-cd.md). Version tags produce CI-gated private
+and [CI/release instructions](docs/ci-cd.md). Version tags produce CI-gated
 draft release artifacts; they do not deploy a live instance.
 
 ## Find your way around
