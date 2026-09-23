@@ -34,7 +34,13 @@ Not implemented: payment request, cancellation, shipping, delivery, completion, 
 
 ### P4 Inventory
 
-Not implemented: listing editing, archiving/restoring and automatic delivery content.
+- Vendors edit their own listings at `/listing-edit?id=` (title, description, category, region, fulfillment type, stock, BTC/XMR reference prices, optional automatic delivery content). Administrators may edit any listing; the audit log records "as administrator". Other vendors get 404.
+- Create and edit share one validator. Only `physical` and `digital` fulfillment are accepted: the order state machine has no fulfillment step for a `service` kind, so the form no longer offers it.
+- Archive/restore (`/listings/archive`, `/listings/restore`): archived listings disappear from the catalog, search, product, checkout and vendor pages, and new order drafts are refused (400). The owner still sees them on the vendor desk with an "Archived" badge. Existing orders are not changed.
+- The fulfillment type cannot change while the listing has open orders (409), because orders read it from the listing. Orders keep the price recorded at creation.
+- Stock edits are refused (409) when stock changed after the form was opened (payment requests reserve stock); saving other fields keeps the current stock.
+- Automatic delivery content is digital-only, at most 32000 characters, **stored unencrypted in PostgreSQL**, and never loaded on public pages. It is released only by the order package's confirmed-payment step, so the editor says "Automatic delivery requires a payment provider" whenever no provider is configured.
+- Migration `040_inventory.sql` adds `products.updated` and `products.archived_at`.
 
 ### P5 Payments
 

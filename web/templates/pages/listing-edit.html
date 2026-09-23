@@ -1,0 +1,94 @@
+{{define "page:listing-edit"}}{{template "header" .}}
+{{with .Product}}<div class="breadcrumbs">
+<a href="/vendor-dashboard">Vendor desk</a> / Edit listing</div>
+<div class="page-head">
+<div>
+<div class="eyebrow">Inventory</div>
+<h1>Edit listing<span class="accent">.</span>
+</h1>
+<p class="mono inventory-id">{{.ID}}</p>
+</div>{{if .Archived}}<span class="badge neutral">Archived</span>{{else}}<span class="badge green">Active</span>{{end}}</div>
+<div class="detail-layout">
+<section class="panel">
+<h2>Listing details</h2>
+<form class="stack" method="post" action="/listings/update">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="id" value="{{.ID}}">
+<input type="hidden" name="stock_seen" value="{{.Stock}}">
+<label>Listing title<input name="title" required minlength="3" maxlength="140" value="{{.Title}}">
+</label>
+<label>Description<textarea name="description" required maxlength="10000" rows="6">{{.Description}}</textarea>
+</label>
+<div class="grid-two">
+<label>Category<select name="category">
+<option {{if eq .Category "Hardware"}}selected{{end}}>Hardware</option>
+<option {{if eq .Category "Digital"}}selected{{end}}>Digital</option>
+<option {{if eq .Category "Services"}}selected{{end}}>Services</option>
+</select>
+</label>
+<label>Region<select name="region">
+<option {{if eq .Region "Worldwide"}}selected{{end}}>Worldwide</option>
+<option {{if eq .Region "United States"}}selected{{end}}>United States</option>
+<option {{if eq .Region "Europe"}}selected{{end}}>Europe</option>
+<option {{if eq .Region "Digital"}}selected{{end}}>Digital</option>{{if not (or (eq .Region "Worldwide") (eq .Region "United States") (eq .Region "Europe") (eq .Region "Digital"))}}
+<option selected>{{.Region}}</option>{{end}}
+</select>
+</label>
+<label>Fulfillment type<select name="kind" aria-describedby="kind-help">
+<option value="physical" {{if eq .Kind "physical"}}selected{{end}}>Physical (shipped)</option>
+<option value="digital" {{if eq .Kind "digital"}}selected{{end}}>Digital (delivered online)</option>
+</select>
+</label>
+<label>Stock<input type="number" name="stock" required min="0" max="1000000" value="{{.Stock}}" aria-describedby="stock-help">
+</label>
+<label>Bitcoin reference price<input name="price_btc" required inputmode="decimal" value="{{.PriceBTC}}">
+</label>
+<label>Monero reference price<input name="price_xmr" required inputmode="decimal" value="{{.PriceXMR}}">
+</label>
+</div>
+<p class="help" id="stock-help">Payment requests reserve stock. If stock changes while you edit, saving a new stock value is refused so no reservation is overwritten.</p>
+{{with $.Listing}}<p class="help" id="kind-help">{{if .OpenOrders}}{{.OpenOrders}} open order(s) depend on this listing, so the fulfillment type cannot change until they finish.{{else}}No open orders; the fulfillment type can change.{{end}} Price changes never alter existing orders, which keep the amount recorded when they were created.</p>
+<label>Automatic delivery content<textarea name="delivery_content" maxlength="32000" rows="6" spellcheck="false" aria-describedby="delivery-help">{{.DeliveryContent}}</textarea>
+</label>
+{{template "vendor-listings:delivery-help" .AutoDelivery}}{{end}}
+<button class="primary" type="submit">Save changes</button>
+</form>
+</section>
+<aside>
+<section class="panel">
+<h2>Visibility</h2>{{if .Archived}}<p>Archived{{with $.Listing}}{{if .ArchivedAt}} since {{.ArchivedAt}}{{end}}{{end}}. Hidden from the marketplace, your vendor page and search; new orders are refused. Existing orders continue unchanged.</p>
+<form method="post" action="/listings/restore">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="id" value="{{.ID}}">
+<button type="submit">Restore listing</button>
+</form>{{else}}<p>Visible in the marketplace. Archiving hides it and refuses new orders; existing orders continue unchanged.</p>
+<a class="text-link" href="/product?id={{.ID}}">View public listing →</a>
+<form method="post" action="/listings/archive">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="id" value="{{.ID}}">
+<button type="submit">Archive listing</button>
+</form>{{end}}
+</section>
+<section class="panel">
+<h2>Record</h2>
+<dl class="key-values">
+<div>
+<dt>Vendor</dt>
+<dd>{{.Vendor}}</dd>
+</div>{{with $.Listing}}
+<div>
+<dt>Last edited</dt>
+<dd>{{.Updated}}</dd>
+</div>
+<div>
+<dt>Open orders</dt>
+<dd>{{.OpenOrders}}</dd>
+</div>{{end}}
+</dl>
+</section>
+</aside>
+</div>{{else}}<div class="empty">
+<h1>Listing unavailable</h1>
+<a class="button" href="/vendor-dashboard">Back to vendor desk</a>
+</div>{{end}}
+{{template "footer" .}}{{end}}

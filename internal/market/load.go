@@ -43,6 +43,9 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			query += ` AND ($1='' OR p.title ILIKE '%'||$1||'%' OR p.description ILIKE '%'||$1||'%') AND ($2='' OR p.category=$2) AND ($3='' OR p.region=$3 OR p.region='Worldwide')`
 			args = append(args, d.Query, d.Category, d.Region)
 		}
+		if d.Page != "vendor-dashboard" {
+			query += " AND NOT p.archived"
+		}
 		query += " ORDER BY p.created DESC LIMIT 100"
 		rows, err = a.db.QueryContext(ctx, query, args...)
 		if err != nil {
