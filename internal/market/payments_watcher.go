@@ -13,8 +13,9 @@ import (
 
 // One background watcher per deployment (PostgreSQL advisory lock): it records deposits in the idempotent
 // payments ledger, moves fully confirmed orders awaiting_payment -> paid through transition(), cancels orders
-// left unpaid past PAYMENT_EXPIRY, flags conflicted, locked or unexpected deposits for moderators, refunds
-// deposits that confirm after a cancellation, queues missing payouts and sends pending payouts once.
+// left unpaid past PAYMENT_EXPIRY, announces deposits received after funding to the buyer and vendor, flags
+// conflicted, locked or unexpected deposits for moderators, refunds deposits that confirm after a
+// cancellation, queues missing payouts and sends pending payouts once.
 
 const paymentWatcherLock = 782494
 
@@ -137,6 +138,10 @@ func (a *App) pollOnce(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+// fundedOpenStates lists, for SQL, the funded states that are not terminal: an order in one of them keeps its
+// deposit address watched, and a deposit first recorded there is announced once (payments.late_notice).
+const fundedOpenStates = "'paid','shipped','delivered','disputed'"
+
 type ledgerKey struct {
 	txid string
 	idx  int64
@@ -144,13 +149,14 @@ type ledgerKey struct {
 
 func (a *App) pollCurrency(ctx context.Context, p PaymentProvider) error {
 	cur := p.Currency()
-	// Orders awaiting payment, plus recently changed funded/terminal orders (late confirmations, conflicts, refunds),
-	// plus closed orders whose address was issued within 30 days and that still have a deposit below the threshold
-	// or a confirmed deposit neither credited (paid out / counted) nor flagged. Credited deposits below
-	// threshold remain watched even after a conflict was flagged, so held payouts can recover. Older
-	// addresses are not polled by this recovery path.
+	// Orders awaiting payment and every funded non-terminal order whatever its age (extra deposits, conflicts,
+	// reorgs), plus recently changed terminal orders (late confirmations, refunds), plus closed orders whose
+	// address was issued within 30 days and that still have a deposit below the threshold or a confirmed deposit
+	// neither credited (paid out / counted) nor flagged. Credited deposits below threshold remain watched even
+	// after a conflict was flagged, so held payouts can recover. Older addresses of closed orders are not polled
+	// by this recovery path.
 	rows, err := a.db.QueryContext(ctx, `SELECT pa.address,pa.order_id FROM payment_addresses pa JOIN orders o ON o.id=pa.order_id
-		WHERE pa.currency=$1 AND (o.state='awaiting_payment' OR (o.state<>'draft' AND o.updated > now()-interval '24 hours')
+		WHERE pa.currency=$1 AND (o.state IN ('awaiting_payment',`+fundedOpenStates+`) OR (o.state<>'draft' AND o.updated > now()-interval '24 hours')
 			OR (o.state IN ('cancelled','resolved','completed') AND pa.created > now()-interval '30 days' AND EXISTS (SELECT 1 FROM payments pm
 				WHERE pm.order_id=o.id AND ((pm.credited AND pm.confirmations<$2)
 					OR (NOT pm.flagged AND (pm.confirmations BETWEEN 0 AND $2-1 OR (pm.confirmations>=$2 AND NOT pm.credited)))))))
@@ -197,7 +203,8 @@ func (a *App) pollCurrency(ctx context.Context, p PaymentProvider) error {
 }
 
 // recordIncoming upserts what the wallet reports for addresses; ledger rows the wallet no longer reports
-// (replaced, conflicted or evicted transactions) are marked -1 confirmations.
+// (replaced, conflicted or evicted transactions) are marked -1 confirmations. A new row on a funded,
+// non-terminal order is marked late_notice for settleOrder to announce.
 func (a *App) recordIncoming(ctx context.Context, p PaymentProvider, addresses []string, orderOf map[string]string) error {
 	incoming, err := p.Incoming(ctx, addresses)
 	if err != nil {
@@ -211,7 +218,8 @@ func (a *App) recordIncoming(ctx context.Context, p PaymentProvider, addresses [
 			continue
 		}
 		seen[ledgerKey{in.TxID, in.Index}] = true
-		if _, err = a.db.ExecContext(ctx, `INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,locked) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+		if _, err = a.db.ExecContext(ctx, `INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,locked,late_notice)
+			VALUES($1,$2,$3,$4,$5,$6,$7,$8,EXISTS(SELECT 1 FROM orders WHERE id=$1 AND state IN (`+fundedOpenStates+`)))
 			ON CONFLICT (currency,txid,idx) DO UPDATE SET confirmations=excluded.confirmations, locked=excluded.locked, updated=now()
 			WHERE (payments.confirmations,payments.locked) IS DISTINCT FROM (excluded.confirmations,excluded.locked)`, order, cur, in.TxID, in.Index, in.Address, in.Amount, in.Confirmations, in.Locked); err != nil {
 			return err
@@ -321,6 +329,41 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 		body := "Order " + orderID[:min(8, len(orderID))] + ": locked transfer ignored. Deposit " + truncate(txid, 20) + " has an unlock time and does not count toward payment; send an ordinary transfer (TESTNET)."
 		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, body); err != nil {
 			return err
+		}
+	}
+	// A deposit first recorded after funding is announced once to the order history, the buyer and the vendor. It
+	// counts toward the order's single release or refund only if it has reached the threshold by then
+	// (enqueuePayout); one that confirms after the payout is queued is flagged to moderators below, while the
+	// order is still watched.
+	if o.State != stateAwaitingPayment && !isTerminal(o.State) {
+		rows, err := tx.QueryContext(ctx, "UPDATE payments SET late_notice=false WHERE order_id=$1 AND late_notice AND NOT locked AND confirmations>=0 RETURNING txid,idx,amount", orderID)
+		if err != nil {
+			return err
+		}
+		var notes []string
+		for rows.Next() {
+			var txid string
+			var idx, amt int64
+			if err = rows.Scan(&txid, &idx, &amt); err != nil {
+				rows.Close()
+				return err
+			}
+			notes = append(notes, fmt.Sprintf("TESTNET %s deposit %s:%d of %s %s received after this order was funded. If it has %d confirmations when the order is completed, cancelled or resolved, it is included in the order's single release or refund; otherwise it is not paid out automatically.",
+				p.Network(), truncate(txid, 20), idx, amount(amt, dec), o.Currency, threshold))
+		}
+		rows.Close()
+		if err = rows.Err(); err != nil {
+			return err
+		}
+		for _, note := range notes {
+			if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", orderID, o.State, note); err != nil {
+				return err
+			}
+			for _, uid := range []string{o.BuyerID, o.VendorID} {
+				if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), uid, "Order "+orderID[:min(8, len(orderID))]+": "+note); err != nil {
+					return err
+				}
+			}
 		}
 	}
 	// A credited deposit that is now conflicted or gone: report once, hold unsent payouts, never revert state.
