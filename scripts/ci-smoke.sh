@@ -53,10 +53,10 @@ if [[ "$mode" == external ]]; then
     -e POSTGRES_USER=opsecmkt -e POSTGRES_DB=opsecmkt -e POSTGRES_PASSWORD \
     postgres:17-alpine >/dev/null
   for attempt in {1..60}; do
-    if docker exec "${project}-db" pg_isready -U opsecmkt -d opsecmkt; then break; fi
+    if docker exec "${project}-db" pg_isready -h 127.0.0.1 -U opsecmkt -d opsecmkt; then break; fi
     sleep 1
   done
-  docker exec "${project}-db" pg_isready -U opsecmkt -d opsecmkt
+  docker exec "${project}-db" pg_isready -h 127.0.0.1 -U opsecmkt -d opsecmkt
 fi
 "${compose[@]}" up -d --no-build
 if [[ "$mode" == external ]]; then

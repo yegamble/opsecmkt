@@ -40,7 +40,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-unused-external-db}
     volumes: [postgres_data:/var/lib/postgresql/data]
     healthcheck:
-      test: [CMD-SHELL, 'pg_isready -U opsecmkt -d opsecmkt']
+      test: [CMD-SHELL, 'pg_isready -h 127.0.0.1 -U opsecmkt -d opsecmkt']
       interval: 5s
       timeout: 5s
       retries: 20

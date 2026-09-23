@@ -2,6 +2,8 @@ module opsecmkt
 
 go 1.26.8
 
+toolchain go1.27.1
+
 require (
 	github.com/ProtonMail/go-crypto v1.4.1
 	github.com/jackc/pgx/v5 v5.11.0
