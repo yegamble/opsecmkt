@@ -13,21 +13,22 @@ Evidence tier as in `repo-map.md`.
 | # | Date | Scope | Seats | Outcome |
 |---|---|---|---|---|
 | 0 | 2026-09-23 | Whole-codebase audit (pre-war-room: 5 area auditors + Fable ranking) | identity, commerce, payments, tests, ops auditors | Seeded this ledger; 5 fix-now items dispatched |
+| 1 | 2026-09-23 | Fix-now wave A-1…A-5 (3 worktree implementers) | payments, ops, identity implementers | A-1…A-5 fixed on war-room/integration; full local gate green; A-21 added; QA verification pending |
 
 ## P0 — release blockers
 
 | ID | Item | Area | Evidence | Status |
 |---|---|---|---|---|
-| A-1 | Payout wallet calls clamped to 10 s (`payments_rpc.go:37,64-74`) under the 30 s send bound; ambiguous send recorded failed, admin requeue can double-pay | payments | code read, verified | in-progress (fix/payout-timeout) |
-| A-2 | No working restore/rollback for the default internal-db deployment; `UPGRADING.md` rollback impossible with `build: .` | ops | code read, verified | in-progress (fix/ops-restore-setup-token) |
-| A-3 | `.env.example` placeholder `SETUP_TOKEN` passes the length-only check (`app.go:78`); token also derives CSRF and TOTP sealing keys | ops/identity | code read, verified | in-progress (fix/ops-restore-setup-token) |
+| A-1 | Payout wallet calls clamped to 10 s (`payments_rpc.go:37,64-74`) under the 30 s send bound; ambiguous send recorded failed, admin requeue can double-pay | payments | code read, verified | fixed (fix/payout-timeout 12b3e71, war-room/integration) |
+| A-2 | No working restore/rollback for the default internal-db deployment; `UPGRADING.md` rollback impossible with `build: .` | ops | code read, verified | fixed (fix/ops-restore-setup-token 868d94f, war-room/integration) |
+| A-3 | `.env.example` placeholder `SETUP_TOKEN` passes the length-only check (`app.go:78`); token also derives CSRF and TOTP sealing keys | ops/identity | code read, verified | fixed (fix/ops-restore-setup-token 868d94f, war-room/integration) |
 
 ## P1 — required for a coherent product
 
 | ID | Item | Area | Evidence | Status |
 |---|---|---|---|---|
-| A-4 | Role-change audit row lacks target/role (`actions_admin.go:32`); admin audit view lacks actor (`load.go:206`) | identity | code read, verified | in-progress (fix/identity-audit-credentials) |
-| A-5 | No password change; no admin reset of a user's second factors (lost TOTP + spent codes = SQL-only) | identity | code read, verified | in-progress (fix/identity-audit-credentials) |
+| A-4 | Role-change audit row lacks target/role (`actions_admin.go:32`); admin audit view lacks actor (`load.go:206`) | identity | code read, verified | fixed (fix/identity-audit-credentials 351d6b9, war-room/integration) |
+| A-5 | No password change; no admin reset of a user's second factors (lost TOTP + spent codes = SQL-only) | identity | code read, verified | fixed (fix/identity-audit-credentials 351d6b9, war-room/integration) |
 | A-6 | Moderator desk mixes open+resolved disputes `ORDER BY created DESC LIMIT 100` (`load.go:163`); old open disputes vanish; same cap feeds NeedsAction on orders/vendor desks | commerce | code read, verified | open |
 | A-7 | Watcher re-polls funded non-terminal orders only if updated in 24 h (`payments_watcher.go:147-151`); extra/duplicate deposits on paid/shipped orders are silently included in the vendor release (`payments_hooks.go:71-73`) | payments | auditor + Fable read | open |
 | A-8 | Moderators/admins not notified when a dispute opens; a dispute can have no eligible resolver (sole admin is the vendor) yet is accepted | commerce | auditor read | open |
@@ -35,6 +36,7 @@ Evidence tier as in `repo-map.md`.
 | A-10 | Sealed plaintext recovery codes linger in `users.recovery_reveal` unless `/totp` is viewed within 10 min; docs claim only hashes are stored | identity | auditor + Fable read | open |
 | A-11 | Rate-limit entry created before CAPTCHA check + evict-oldest lets junk requests reset victims' counters (`actions_auth.go:128-131`, `app.go:148`) | identity | auditor read | open |
 | A-12 | Test infra: no fail-on-skip mode for DB tests; shared Playwright admin near its sign-in budget; TOTP 30 s boundary unguarded (`db-auth.spec.ts:61,82`) | tests | auditor read | open |
+| A-21 | After a restore, in-flight payouts become `held`; admin **release** of a held payout needs no "wallet shows no broadcast" confirmation, unlike requeue of an ambiguous failure (reported by the A-1 implementer) | payments | implementer read | open |
 | A-13 | Docs drift: acceptance.md ops/P5 unticked despite evidence; implementation-status says regtest smoke never ran; `.ralph/fix_plan.md` ticks a non-existent `.env` recovery doc; PREVIEW_ADDR undocumented; APP_MODE is a no-op; Caddy example hardcodes :8080 | ops | auditor read | open |
 
 ## P2 — high-value improvements
