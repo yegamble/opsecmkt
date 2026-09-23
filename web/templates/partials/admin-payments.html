@@ -69,8 +69,10 @@
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="payout_id" value="{{.ID}}">
 <input type="hidden" name="op" value="release">
-<p class="help">Release only after checking the wallet: this payout was never sent from this database's point of view, and it will be sent once.</p>
-{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
+{{if .Ambiguous}}<p class="help">This payout was restored from a backup and may already have been sent. Release only if the wallet shows no transaction {{if .Address}}to {{.Address}} {{end}}for this amount; otherwise mark it sent with the wallet's transaction ID. It will be sent once.</p>
+<label class="check"><input type="checkbox" name="not_broadcast" value="confirmed" required> I checked the wallet (including pending and pool transfers): no transaction to this address for this amount was broadcast</label>
+{{else}}<p class="help">Release only after checking the wallet: this payout was never sent from this database's point of view, and it will be sent once.</p>
+{{end}}{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button type="submit">Release held payout</button>
 </form>{{else}}<form class="stack" method="post" action="/admin/payout">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">

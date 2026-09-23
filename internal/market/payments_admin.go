@@ -13,8 +13,8 @@ import (
 // requeue a failed (or stuck sending) payout, or record one as sent after reconciling it with the wallet.
 // Each needs the administrator's password (and authenticator code when enrolled), is audited, and changes
 // the payout with a compare-and-set on its state, so repeated or concurrent submissions act once. Requeueing
-// a payout whose last send may have been broadcast (an ambiguous failure or a stuck send) also needs an
-// explicit confirmation that the wallet shows no such transaction.
+// a payout whose last send may have been broadcast (an ambiguous failure or a stuck send), or releasing one
+// held by a restore, also needs an explicit confirmation that the wallet shows no such transaction.
 
 func init() {
 	registerAction("/admin/payout", actionSpec{Roles: []string{"admin"}, OwnTx: true, Run: adminPayoutAction})
@@ -32,6 +32,11 @@ func adminConfirmLoader(ctx context.Context, a *App, r *http.Request, d *PageDat
 // stuckSending matches a payout claimed for sending that never recorded an outcome (crash or database error
 // after the wallet call). A live send finishes within payoutSendTimeout, far below this age.
 const stuckSending = "(state='sending' AND updated < now()-interval '5 minutes')"
+
+// restoredHoldPrefix starts the error scripts/restore.sh (and the manual SQL in UPGRADING.md) writes on every
+// payout it holds. Such a payout may have been sent after the backup was taken, so releasing it needs the
+// same explicit "wallet shows no broadcast" confirmation as requeueing an ambiguous send.
+const restoredHoldPrefix = "Restored from backup:"
 
 var txidPattern = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
 
@@ -53,13 +58,13 @@ func adminPayoutAction(c *actionCtx) (actionResult, error) {
 
 func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error) {
 	ctx, tx := c.Ctx(), c.Tx
-	var orderID, recipient, cur, state, orderState string
+	var orderID, recipient, cur, state, orderState, payoutErr string
 	var amt int64
 	var ambiguous, stuck bool
 	// stuck repeats stuckSending with the payout alias (orders also has state and updated).
 	err := tx.QueryRowContext(ctx, `SELECT p.order_id,p.user_id,p.currency,p.amount,p.state,o.state,p.send_ambiguous,
-		(p.state='sending' AND p.updated < now()-interval '5 minutes') FROM payouts p JOIN orders o ON o.id=p.order_id
-		WHERE p.id=$1 FOR UPDATE OF p`, id).Scan(&orderID, &recipient, &cur, &amt, &state, &orderState, &ambiguous, &stuck)
+		(p.state='sending' AND p.updated < now()-interval '5 minutes'),p.error FROM payouts p JOIN orders o ON o.id=p.order_id
+		WHERE p.id=$1 FOR UPDATE OF p`, id).Scan(&orderID, &recipient, &cur, &amt, &state, &orderState, &ambiguous, &stuck, &payoutErr)
 	if err == sql.ErrNoRows {
 		return actionResult{}, fail(404, "Payout not found")
 	}
@@ -72,6 +77,12 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 	var note, audit string
 	switch op {
 	case "release":
+		// A payout held by a restore may have been sent after the backup was taken: releasing it without checking
+		// the wallet could pay twice.
+		restored := state == "held" && strings.HasPrefix(payoutErr, restoredHoldPrefix)
+		if restored && c.Form.Get("not_broadcast") != "confirmed" {
+			return actionResult{}, fail(400, "This payout was held by a restore from backup and may already have been sent. Check the wallet, then confirm that no transaction was broadcast to release it, or mark it sent with the wallet's transaction ID.")
+		}
 		// A payout the watcher itself holds (credited deposit conflicted or re-confirming) stays held while
 		// that is still true: sendPayouts would refuse it anyway.
 		threshold := int64(0)
@@ -89,6 +100,10 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 			WHERE id=$1 AND state='held'`, id)
 		note = "Administrator released the held TESTNET payout of " + label + "; it is queued for a single send."
 		audit = "Released held payout " + strconv.FormatInt(id, 10) + " (" + label + ") for order " + short
+		if restored {
+			note = "Administrator confirmed the wallet shows no broadcast transaction for the TESTNET payout of " + label + " (held after being restored from backup) and released it; it is queued for a single send."
+			audit += "; restored from backup, administrator confirmed the wallet shows no broadcast transaction"
+		}
 	case "requeue":
 		// A send with no definite answer may be on the network: sending again without checking could pay twice.
 		// A definite wallet rejection (nothing broadcast) needs no extra confirmation.

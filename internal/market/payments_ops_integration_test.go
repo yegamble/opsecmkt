@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"html"
 	"net/url"
 	"os"
 	"strings"
@@ -250,7 +251,8 @@ func TestAdminPayoutActions(t *testing.T) {
 	if code, body := p.payoutAction(p.adminSess, heldID, "requeue", "", testPassword); code != 409 || !strings.Contains(body, "does not apply") {
 		t.Fatalf("requeue of a held payout: %d", code)
 	}
-	if code, body := p.payoutAction(p.adminSess, heldID, "release", "", testPassword); code != 303 {
+	// (Refusal without the "no broadcast" confirmation: TestReleaseRestoredHeldPayoutRequiresConfirmation.)
+	if code, body := p.payoutActionConfirmed(p.adminSess, heldID, "release", testPassword); code != 303 {
 		t.Fatalf("release: %d %s", code, body)
 	}
 	if st, _, _, _ := p.payout(held); st != "pending" {
@@ -341,7 +343,7 @@ func TestAdminPayoutActions(t *testing.T) {
 		strings.Contains(audits[1], "outcome unknown") || !strings.Contains(audits[3], "was sending") || !strings.Contains(audits[3], "administrator confirmed the wallet shows no broadcast transaction") {
 		t.Fatalf("audit trail %q", audits)
 	}
-	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE 'Administrator released%'", held); n != 1 {
+	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE 'Administrator confirmed the wallet shows no broadcast%released it%'", held); n != 1 {
 		t.Fatalf("order history for the release: %d", n)
 	}
 }
@@ -363,7 +365,13 @@ func TestAdminPayoutActionsAreSingleUseUnderConcurrency(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				code, _ := p.payoutAction(p.adminSess, id, tc.op, "", testPassword)
+				// The restored hold needs the "no broadcast" confirmation; the definite failure does not.
+				var code int
+				if tc.op == "release" {
+					code, _ = p.payoutActionConfirmed(p.adminSess, id, tc.op, testPassword)
+				} else {
+					code, _ = p.payoutAction(p.adminSess, id, tc.op, "", testPassword)
+				}
 				codes <- code
 			}()
 		}
@@ -384,5 +392,108 @@ func TestAdminPayoutActionsAreSingleUseUnderConcurrency(t *testing.T) {
 	}
 	if n := p.count("SELECT count(*) FROM audit_events WHERE action LIKE 'Requeued payout%' OR action LIKE 'Released held payout%'"); n != 2 {
 		t.Fatalf("audit rows: %d", n)
+	}
+}
+
+// resolveSection returns the admin page's resolve controls for one payout.
+func resolveSection(t *testing.T, admin, id string) string {
+	t.Helper()
+	_, s, ok := strings.Cut(admin, "Resolve payout "+id+"<")
+	if !ok {
+		t.Fatalf("admin page has no controls for payout %s", id)
+	}
+	s, _, _ = strings.Cut(s, "</details>")
+	return s
+}
+
+// A payout held by a restore may already have been broadcast (a restored "sending" payout is indistinguishable
+// from one that never left), so releasing it needs the same explicit wallet confirmation as requeueing an
+// ambiguous failure. A payout the watcher holds for a conflicted deposit was never sent and needs none.
+func TestReleaseRestoredHeldPayoutRequiresConfirmation(t *testing.T) {
+	p := newPayEnv(t)
+	p.setPayoutAddress(p.vendor, "fake-testnet-vendor")
+	restored := p.completedWithPayout("tx-restored-release")
+	p.DB.Exec("UPDATE payouts SET state='held',error=$2 WHERE order_id=$1", restored, restoredHold)
+	conflict := p.completedWithPayout("tx-conflict-release")
+	p.DB.Exec("UPDATE payouts SET state='held',error=$2 WHERE order_id=$1", conflict, heldReason)
+	p.DB.Exec("UPDATE payments SET confirmations=-1 WHERE order_id=$1", conflict)
+	rID, cID := p.payoutID(restored), p.payoutID(conflict)
+
+	admin := html.UnescapeString(p.page("/admin", p.adminSess))
+	if s := resolveSection(t, admin, rID); !strings.Contains(s, `name="not_broadcast" value="confirmed" required`) || !strings.Contains(s, "Release held payout") {
+		t.Fatalf("restored hold offered without the broadcast confirmation: %s", s)
+	}
+	if !strings.Contains(admin, "Held after a restore from backup — may already have been sent") {
+		t.Fatal("restored hold not labelled as possibly sent")
+	}
+	if s := resolveSection(t, admin, cID); strings.Contains(s, "not_broadcast") {
+		t.Fatalf("watcher hold asks for a broadcast confirmation: %s", s)
+	}
+
+	// Without the confirmation: refused, still held, nothing recorded.
+	code, body := p.payoutAction(p.adminSess, rID, "release", "", testPassword)
+	if code != 400 || !strings.Contains(body, "Check the wallet") || !strings.Contains(body, "mark it sent with the wallet") {
+		t.Fatalf("unconfirmed release of a restored hold: %d %s", code, body)
+	}
+	if st, _, _, _ := p.payout(restored); st != "held" {
+		t.Fatalf("restored hold is %s after a refused release", st)
+	}
+	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE 'Administrator%'", restored); n != 0 {
+		t.Fatalf("refused release recorded %d order events", n)
+	}
+	if n := p.count("SELECT count(*) FROM audit_events WHERE action LIKE 'Released held payout%'"); n != 0 {
+		t.Fatalf("refused release audited %d times", n)
+	}
+
+	// With it: released once, and the confirmation is on the record.
+	if code, body := p.payoutActionConfirmed(p.adminSess, rID, "release", testPassword); code != 303 {
+		t.Fatalf("confirmed release: %d %s", code, body)
+	}
+	if st, _, _, _ := p.payout(restored); st != "pending" {
+		t.Fatalf("released restored hold is %s", st)
+	}
+	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE 'Administrator confirmed the wallet shows no broadcast transaction%restored from backup%'", restored); n != 1 {
+		t.Fatalf("order history for the confirmed release: %d", n)
+	}
+	if n := p.count("SELECT count(*) FROM audit_events WHERE action LIKE $1", "Released held payout "+rID+" %restored from backup, administrator confirmed the wallet shows no broadcast transaction%"); n != 1 {
+		t.Fatalf("audit for the confirmed release: %d", n)
+	}
+
+	// A watcher hold: still refused while the deposit is unsettled, then released with the password alone.
+	// (Checked before polling: a poll re-reads the fake wallet's confirmations and would settle it itself.)
+	if code, body := p.payoutAction(p.adminSess, cID, "release", "", testPassword); code != 409 || !strings.Contains(body, "still conflicted") {
+		t.Fatalf("release while conflicted: %d %s", code, body)
+	}
+	p.DB.Exec("UPDATE payments SET confirmations=100 WHERE order_id=$1", conflict)
+	if code, body := p.payoutAction(p.adminSess, cID, "release", "", testPassword); code != 303 {
+		t.Fatalf("release of a settled watcher hold: %d %s", code, body)
+	}
+	if n := p.count("SELECT count(*) FROM audit_events WHERE action LIKE $1 AND action NOT LIKE '%restored from backup%'", "Released held payout "+cID+" %"); n != 1 {
+		t.Fatalf("audit for the watcher-hold release: %d", n)
+	}
+	p.poll()
+	for _, o := range []string{restored, conflict} {
+		if st, _, _, _ := p.payout(o); st != "sent" {
+			t.Fatalf("released payout %s is %s", o[:8], st)
+		}
+	}
+	if n := len(p.fake.Sends()); n != 2 {
+		t.Fatalf("sends after both releases: %d", n)
+	}
+}
+
+// The restore script and the manual SQL in UPGRADING.md write the marker the release check matches.
+func TestRestoredHoldMarkerMatchesRestoreScripts(t *testing.T) {
+	if !strings.HasPrefix(restoredHold, restoredHoldPrefix) {
+		t.Fatalf("restoredHold %q lacks prefix %q", restoredHold, restoredHoldPrefix)
+	}
+	for _, f := range []string{"scripts/restore.sh", "UPGRADING.md"} {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(b), "error='"+restoredHold+"'") {
+			t.Fatalf("%s does not write the restored-hold marker %q", f, restoredHold)
+		}
 	}
 }

@@ -192,8 +192,8 @@ type PayoutRow struct {
 	OrderID, Kind, Recipient, Currency, Amount       string
 	Address, State, StateLabel, TxID, Error, Updated string
 	Attention                                        bool
-	// Ambiguous: the last send may have been broadcast (failed without a definite wallet answer, or stuck in
-	// sending); requeueing needs an explicit confirmation.
+	// Ambiguous: the payout may already have been broadcast (failed without a definite wallet answer, stuck
+	// in sending, or held by a restore from backup); requeueing or releasing needs an explicit confirmation.
 	Ambiguous bool
 }
 
