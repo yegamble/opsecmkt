@@ -54,7 +54,7 @@ func bitcoinFromEnv(ctx context.Context) (PaymentProvider, error) {
 func buildBitcoinProvider(rawURL, wallet, wantChain string, confs int) (*bitcoinProvider, error) {
 	if wantChain != "" {
 		if _, ok := bitcoinTestChains[wantChain]; !ok {
-			return nil, fmt.Errorf("refusing to start: BITCOIN_CHAIN %q is not a test network (use testnet4, signet or regtest)", wantChain)
+			return nil, fmt.Errorf("refusing to start: BITCOIN_CHAIN %q is not a test network (use test for testnet3, testnet4, signet or regtest)", wantChain)
 		}
 	}
 	c, err := newRPCClient("bitcoin", rawURL, "1.0", false)
