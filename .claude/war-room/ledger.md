@@ -99,6 +99,10 @@ Evidence tier as in `repo-map.md`.
 | A-51 | Vendor view of a buyer's draft says "Waiting for the buyer to confirm receipt." (HUNT-C-4, NIT, verified) | ui | open |
 | A-55 | Locked-transfer notice tells the buyer of an already funded order to "send an ordinary transfer" (a second payment folded into the release under A-7); only for awaiting_payment (HUNT-E-4) | payments | open |
 | A-56 | Payout address saved during completion leaves the payout blocked until saved again; read the recipient row `FOR SHARE` in `enqueuePayout` (HUNT-E-5, NIT) | payments | open |
+| A-57 | NUL byte or invalid UTF-8 in any query or form value → 500 instead of 400/404, anonymous on catalog/product/vendor GETs (PA-1, bug hunt #1, verified) | ui | open |
+| A-58 | Order and dispute pages show the listing's live title, so a vendor editing a listing during an open dispute rewrites what the buyer's order and the moderator desk say was bought; audit row has no old/new values (PA-4, verified) | commerce | open |
+| A-59 | Validation errors are bare text/plain pages; the listing error covers ~14 conditions; in Firefox (Tor Browser's engine) Back restores an empty form, losing typed title/description (PA-6, verified with Playwright chromium/firefox/webkit) | ui | open |
+| A-60 | NITs from bug hunt #1: catalog search treats `%`/`_` as wildcards (PA-8); dispute resubmit on a disputed order says "Draft orders contain no funds" (PA-9); mark-read of a foreign/unknown notification audits success (B-1); stale pending sign-in shows an empty challenge panel (B-4); 503-busy refusals charge the confirmation budget (B-2 remainder) | ui/identity | open |
 | A-15 | A never-confirming 0-conf deposit blocks expiry forever and keeps stock reserved | payments | open |
 | A-16 | 100/50-row caps without paging: admin user picker, messages, notifications, catalog, **/orders page and admin order list** (an old shipped/awaiting order drops off /orders — HUNT-C-1, duplicate) | commerce/ui | open |
 | A-22 | No browser test drives the ambiguous-requeue confirmation (Go tests only); wallet journey covers only a definite rejection | tests | open |
@@ -114,6 +118,7 @@ Evidence tier as in `repo-map.md`.
 | A-44 | Compose bitcoind `rpcallowip` vs a 10.x Docker address pool; watcher pass time with ~200 funded orders on regtest (QA3-6, QA MISSED) | open |
 | A-45 | Kill monerod mid-`transfer` on the offline stagenet fork; record the wallet-rpc error code and whether the tx reached the daemon (settles A-23 live) | open |
 | A-20 | Legacy `service` listings still orderable; editing silently converts to physical | open |
+| A-61 | Test the TOTP `otpauth://` URI (issuer encoded `+`, label `%20`) in Aegis / Google Authenticator with a spaced site name (B-5, PLAUSIBLE) | open |
 | A-46 | Publish a prerelease tag once P0/P1 close; UPGRADING retitled from→to; verification.md cites the tag's CI run (PM-5) | blocked (owner: release decision) |
 
 ## Declined
