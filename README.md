@@ -84,7 +84,7 @@ No configuration. Requesting payment on an order requires a test-network wallet 
 
 ### Inventory
 
-No configuration.
+No configuration. Vendors manage listings from the vendor desk (Edit / Archive / Restore). Automatic delivery content for digital listings is stored unencrypted in the database — include it in your threat model and backups — and is only released after a payment provider confirms payment; with payments disabled it is never released automatically.
 
 ### Payments
 

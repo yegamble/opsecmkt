@@ -43,8 +43,9 @@
 </p>
 <p class="mono">{{.PriceXMR}} XMR</p>
 <hr class="divider">
-<p>Review the listing and create an unfunded order draft. No payment will be requested.</p>
-<a class="button primary full" href="/checkout?id={{.ID}}">Review order draft ↗</a>
+{{if lt .Stock 1}}<p><strong>Out of stock.</strong> New orders are refused until the vendor adds stock.</p>{{else}}<p>Review the listing and create an unfunded order draft. No payment will be requested.</p>
+<a class="button primary full" href="/checkout?id={{.ID}}">Review order draft ↗</a>{{end}}{{if $.User}}{{if or (eq $.User.ID .VendorID) (eq $.User.Role "admin")}}
+<a class="text-link" href="/listing-edit?id={{.ID}}">Edit this listing →</a>{{end}}{{end}}
 </section>
 <section class="panel">
 <h2>Know before you order</h2>

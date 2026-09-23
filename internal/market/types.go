@@ -66,6 +66,8 @@ type PageData struct {
 	DisputeOrders map[string]Order
 
 	// P4 Inventory (uses Product.Archived)
+	Listing   *ListingView
+	Inventory *InventoryView
 
 	// P5 Payments
 	Payment         *PaymentView
@@ -120,6 +122,19 @@ type Review struct {
 type ReviewSummary struct {
 	Count   int
 	Average string
+}
+
+// P4 Inventory
+// ListingView is the owner/admin-only edit view of one listing (d.Product holds the public fields).
+type ListingView struct {
+	DeliveryContent     string // stored unencrypted; never loaded for public pages
+	Updated, ArchivedAt string
+	OpenOrders          int    // orders not completed, resolved or cancelled
+	AutoDelivery        string // currencies with a configured payment provider, e.g. "BTC, XMR"; "" = none
+}
+type InventoryView struct {
+	Active, Archived int
+	AutoDelivery     string
 }
 
 // P5 Payments

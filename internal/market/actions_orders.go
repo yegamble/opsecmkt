@@ -20,9 +20,13 @@ func orderDraftAction(c *actionCtx) (actionResult, error) {
 	var btc, xmr int64
 	var vendor string
 	var stock int
-	err := tx.QueryRowContext(ctx, "SELECT btc,xmr,vendor_id,stock FROM products WHERE id=$1", f.Get("product_id")).Scan(&btc, &xmr, &vendor, &stock)
+	var archived bool
+	err := tx.QueryRowContext(ctx, "SELECT btc,xmr,vendor_id,stock,archived FROM products WHERE id=$1", f.Get("product_id")).Scan(&btc, &xmr, &vendor, &stock, &archived)
 	if err != nil || stock < 1 {
 		return actionResult{}, fail(400, "Product unavailable")
+	}
+	if archived {
+		return actionResult{}, fail(400, "This listing is archived and accepts no new orders.")
 	}
 	if vendor == c.User.ID {
 		return actionResult{}, fail(400, "You cannot order your own listing")

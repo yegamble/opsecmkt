@@ -80,7 +80,11 @@ Each package records its own acceptance checks here and edits only its subsectio
 
 ### P4 Inventory
 
-- [ ] Only the owner or an administrator can edit; archived listings accept no new drafts and existing orders are unaffected.
+- [ ] Only the owner or an administrator can edit, archive or restore; other vendors get 404, buyers and moderators 403 (`inventory_integration_test.go`).
+- [ ] Archived listings are absent from catalog, search, product, checkout and vendor pages, accept no new drafts (400), stay visible to the owner with a badge, and existing orders are unaffected; restore reverses it (`TestArchiveHidesListingAndRefusesDrafts`, `db-inventory.spec.ts`).
+- [ ] Fulfillment type cannot change under open orders; stale stock edits are refused instead of overwriting reservations.
+- [ ] Automatic delivery content is labelled as stored unencrypted, never rendered on public pages, and shown as "Automatic delivery requires a payment provider" when none is configured.
+- [ ] Edits, archives and restores are recorded in the audit log.
 
 ### P5 Payments
 
