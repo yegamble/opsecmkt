@@ -159,15 +159,15 @@ func TestPhysicalOrderTransitionsEnforceRoles(t *testing.T) {
 	w.expect("/orders/ship", w.buyer, id, 403, "")
 	w.expect("/orders/ship", w.other, id, 404, "")
 	w.expect("/orders/deliver", w.vendor, form("order_id", order, "content", "physical goods have no content"), 403, "only available for digital orders")
-	w.expect("/orders/cancel", w.buyer, form("order_id", order, "from", statePaid), 403, "")
-	w.expect("/orders/complete", w.buyer, id, 409, "")
+	w.expect("/orders/cancel", w.buyer, payoutConfirmed(form("order_id", order, "from", statePaid), 0), 403, "")
+	w.expect("/orders/complete", w.buyer, payoutConfirmed(form("order_id", order), 0), 409, "")
 	w.expect("/orders/ship", w.vendor, form("order_id", order, "note", "Tracking: TEST-123"), 303, "")
 	w.expect("/orders/ship", w.vendor, id, 409, "")
-	w.expect("/orders/complete", w.vendor, id, 403, "")
-	w.expect("/orders/complete", w.other, id, 404, "")
-	w.expect("/orders/cancel", w.vendor, form("order_id", order, "from", statePaid), 409, "")
-	w.expect("/orders/complete", w.buyer, id, 303, "")
-	w.expect("/orders/complete", w.buyer, id, 409, "")
+	w.expect("/orders/complete", w.vendor, payoutConfirmed(form("order_id", order), 0), 403, "")
+	w.expect("/orders/complete", w.other, payoutConfirmed(form("order_id", order), 0), 404, "")
+	w.expect("/orders/cancel", w.vendor, payoutConfirmed(form("order_id", order, "from", statePaid), 0), 409, "")
+	w.expect("/orders/complete", w.buyer, payoutConfirmed(form("order_id", order), 0), 303, "")
+	w.expect("/orders/complete", w.buyer, payoutConfirmed(form("order_id", order), 0), 409, "")
 	w.expect("/disputes", w.buyer, form("order_id", order, "reason", "Completed orders are final and cannot be disputed."), 409, "")
 	if w.state(order) != stateCompleted {
 		t.Fatal(w.state(order))
@@ -189,7 +189,7 @@ func TestPhysicalOrderTransitionsEnforceRoles(t *testing.T) {
 
 	// A vendor may cancel a paid order; its reserved unit returns.
 	paid := w.e.order(w.buyerID, product, "BTC", statePaid)
-	w.expect("/orders/cancel", w.vendor, form("order_id", paid, "from", statePaid), 303, "")
+	w.expect("/orders/cancel", w.vendor, payoutConfirmed(form("order_id", paid, "from", statePaid), 0), 303, "")
 	if w.stock(product) != 6 || w.state(paid) != stateCancelled {
 		t.Fatalf("vendor cancel: stock=%d state=%s", w.stock(product), w.state(paid))
 	}
@@ -293,7 +293,7 @@ func TestConcurrentCompletionSucceedsOnce(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			codes <- w.post("/orders/complete", w.buyer, form("order_id", order)).Code
+			codes <- w.post("/orders/complete", w.buyer, payoutConfirmed(form("order_id", order), 0)).Code
 		}()
 	}
 	wg.Wait()
@@ -412,7 +412,7 @@ func TestDisputeOpensAndModeratorResolves(t *testing.T) {
 	}
 	w.expect("/disputes", w.buyer, form("order_id", order, "reason", reason), 303, "")
 	w.expect("/disputes", w.vendor, form("order_id", order, "reason", reason), 409, "")
-	w.expect("/orders/complete", w.buyer, form("order_id", order), 409, "")
+	w.expect("/orders/complete", w.buyer, payoutConfirmed(form("order_id", order), 0), 409, "")
 	if w.state(order) != stateDisputed || w.count("SELECT count(*) FROM disputes WHERE order_id=$1", order) != 1 {
 		t.Fatal("dispute not opened")
 	}
@@ -437,8 +437,8 @@ func TestDisputeOpensAndModeratorResolves(t *testing.T) {
 		return nil
 	})
 	t.Cleanup(func() { transitionHooks = transitionHooks[:len(transitionHooks)-1] })
-	w.expect("/resolve", w.mod, form("id", disputeID, "outcome", "refund", "resolution", decision), 303, "")
-	w.expect("/resolve", w.mod, form("id", disputeID, "outcome", "release", "resolution", decision), 409, "")
+	w.expect("/resolve", w.mod, payoutConfirmed(form("id", disputeID, "outcome", "refund", "resolution", decision), 0), 303, "")
+	w.expect("/resolve", w.mod, payoutConfirmed(form("id", disputeID, "outcome", "release", "resolution", decision), 0), 409, "")
 	var outcome, status string
 	w.e.DB.QueryRow("SELECT outcome,status FROM disputes WHERE id=$1", disputeID).Scan(&outcome, &status)
 	if seen != "refund" || outcome != "refund" || status != "Resolved — refund to buyer" || w.state(order) != stateResolved {
@@ -457,7 +457,7 @@ func TestDisputeOpensAndModeratorResolves(t *testing.T) {
 	if !strings.Contains(w.page("/moderator", admin, 200), "You are a party to this order") {
 		t.Fatal("moderator desk offers a conflicted resolution")
 	}
-	w.expect("/resolve", admin, form("id", ownDispute, "outcome", "release", "resolution", decision), 403, "")
+	w.expect("/resolve", admin, payoutConfirmed(form("id", ownDispute, "outcome", "release", "resolution", decision), 0), 403, "")
 	w.e.DB.QueryRow("SELECT outcome,status FROM disputes WHERE id=$1", ownDispute).Scan(&outcome, &status)
 	if outcome != "" || status != "Open" || w.state(own) != stateDisputed {
 		t.Fatal("refused resolution was partially written")

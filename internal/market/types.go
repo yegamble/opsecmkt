@@ -92,6 +92,11 @@ type PageData struct {
 	// OpenDisputes: how many leading entries of Disputes are open (the rest are resolved).
 	DisputeOrders map[string]Order
 	OpenDisputes  int
+	// DisputePayouts: resolve form per open dispute the viewer may resolve, keyed by dispute id.
+	DisputePayouts map[string]PayoutPreview
+	// Overpaid: order page for its buyer or vendor, a paid, shipped or delivered order whose counted deposits
+	// exceed the price by this much ("0.009 BTC"); "" otherwise.
+	Overpaid string
 	// HistoryLimit: non-zero when closed history (resolved disputes, or incoming orders not paid) was
 	// cut to this many most recent rows.
 	HistoryLimit int
@@ -164,7 +169,19 @@ type PGPView struct {
 
 // P3 Orders
 type OrderEvent struct{ From, To, Actor, Note, Created string }
-type Transition struct{ To, Label, Action string } // Action "" = shown as unavailable with Label as the reason
+type Transition struct {
+	To, Label, Action string         // Action "" = shown as unavailable with Label as the reason
+	Payout            *PayoutPreview // complete, and cancel of a paid order: the payout it queues
+}
+
+// PayoutPreview states what a form that queues a payout (complete, a vendor's cancel of a paid order, resolve)
+// pays now, by payoutBasis (A-161, A-122). Seen is that amount in atomic units, sent back as amount_seen;
+// Confirm labels the required confirmation checkbox. Resolve form only: Release and Refund state each outcome
+// (amount, recipient, difference from the price, the recipient's payout state).
+type PayoutPreview struct {
+	Seen                     int64
+	Confirm, Release, Refund string
+}
 type DeliveryView struct{ Content, Created string }
 type Review struct {
 	ID, OrderID, Buyer string

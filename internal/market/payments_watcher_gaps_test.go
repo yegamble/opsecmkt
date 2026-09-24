@@ -353,7 +353,7 @@ func TestGapConcurrentCompletionWithProviderSendsOnce(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			codes <- p.do("POST", "/orders/complete", p.buyerSess, url.Values{"order_id": {p.order}}).Code
+			codes <- p.do("POST", "/orders/complete", p.buyerSess, payoutConfirmed(url.Values{"order_id": {p.order}}, 100000)).Code
 		}()
 	}
 	wg.Wait()
@@ -578,7 +578,7 @@ func TestEnqueuePayoutCreditsOnlyWhatItPays(t *testing.T) {
 	// The vendor cancels the paid order: transition -> enqueuePayout (refund) fixes the amount, then pauses.
 	cancelled := make(chan int, 1)
 	go func() {
-		cancelled <- p.do("POST", "/orders/cancel", p.vendorSess, url.Values{"order_id": {p.order}, "from": {statePaid}}).Code
+		cancelled <- p.do("POST", "/orders/cancel", p.vendorSess, payoutConfirmed(url.Values{"order_id": {p.order}, "from": {statePaid}}, 100000)).Code
 	}()
 	waitFor(t, func() bool {
 		return p.count("SELECT count(*) FROM pg_stat_activity WHERE query LIKE 'INSERT INTO payouts%' AND wait_event_type='Lock'") == 1

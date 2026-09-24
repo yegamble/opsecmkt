@@ -13,7 +13,7 @@ func TestCompletedDigitalDeliverySurvivesListingKindChange(t *testing.T) {
 	product := e.product(vendor, "digital")
 	order := e.order(buyer, product, "BTC", statePaid)
 	e.check(e.do("POST", "/orders/deliver", vendorSession, form("order_id", order, "content", "persistent-licence-123")), 303)
-	e.check(e.do("POST", "/orders/complete", buyerSession, form("order_id", order)), 303)
+	e.check(e.do("POST", "/orders/complete", buyerSession, payoutConfirmed(form("order_id", order), 0)), 303)
 	e.check(e.do("POST", "/listings/update", vendorSession, inventoryForm(product, map[string]string{"kind": "physical"})), 303)
 	for _, session := range []string{buyerSession, vendorSession} {
 		page := e.do("GET", "/order?id="+order, session, nil)

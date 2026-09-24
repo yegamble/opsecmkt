@@ -185,9 +185,106 @@ func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) 
 	d.CanReview = u.ID == o.BuyerID && o.State == stateCompleted && len(d.Reviews) == 0
 	if d.OrderViewer != roleModerator { // reviewers resolve on the moderation desk; the order page is read-only for them
 		d.Transitions = viewerTransitions(a.providers(), o, u)
+		if err = a.orderPayouts(ctx, d); err != nil {
+			return err
+		}
 	}
 	d.Contacts, err = orderContacts(ctx, a, o, d.OrderViewer)
 	return err
+}
+
+// orderPayouts (A-122): on a paid, shipped or delivered order the complete and paid-cancel forms state the
+// payout they queue (payoutBasis), and counted deposits above the price set Overpaid.
+func (a *App) orderPayouts(ctx context.Context, d *PageData) error {
+	o := d.Order
+	if o.State != statePaid && o.State != stateShipped && o.State != stateDelivered {
+		return nil
+	}
+	_, sum, _, err := a.payoutBasis(ctx, a.db, o, false)
+	if err != nil {
+		return err
+	}
+	dec := currencyDecimals(o.Currency)
+	if required, _ := parseAmount(o.Amount, dec); sum > required {
+		d.Overpaid = amount(sum-required, dec) + " " + o.Currency
+	}
+	for i, t := range d.Transitions {
+		switch {
+		case t.To == stateCompleted:
+			d.Transitions[i].Payout = &PayoutPreview{Seen: sum, Confirm: payoutStatement("release", o.Vendor, "the vendor", o, sum) + ". This is final."}
+		case t.To == stateCancelled && o.State == statePaid:
+			d.Transitions[i].Payout = &PayoutPreview{Seen: sum, Confirm: payoutStatement("refund", o.Buyer, "the buyer", o, sum) + ". This is final."}
+		}
+	}
+	return nil
+}
+
+// payoutStatement states a payout of sum (payoutBasis) for o: "Release 0.01 BTC (test network) to vendor_x —
+// 0.009 BTC more than the price". With nothing counted, later deposits go to later (the recipient's role, or
+// "the chosen party" on the resolve form).
+func payoutStatement(kind, recipient, later string, o *Order, sum int64) string {
+	verb := "Release"
+	if kind == "refund" {
+		verb = "Refund"
+	}
+	if sum == 0 {
+		return verb + " (test network) to " + recipient + " — nothing counted yet; deposits confirming later go to " + later
+	}
+	dec := currencyDecimals(o.Currency)
+	required, _ := parseAmount(o.Amount, dec)
+	return verb + " " + amount(sum, dec) + " " + o.Currency + " (test network) to " + recipient + " — " + priceDifference(sum, required, o.Currency)
+}
+
+const resolveConfirm = "I checked the amount and who receives it for the outcome I chose. Resolving is final."
+
+// resolvePayouts (A-161) fills the resolve form of every open dispute on a disputed order the staff viewer is not
+// party to: each outcome's payout (payoutBasis) and the recipient's payout state.
+func (a *App) resolvePayouts(ctx context.Context, d *PageData) error {
+	d.DisputePayouts = map[string]PayoutPreview{}
+	if d.User == nil || (d.User.Role != "moderator" && d.User.Role != "admin") {
+		return nil
+	}
+	for _, v := range d.Disputes[:d.OpenDisputes] {
+		o, ok := d.DisputeOrders[v.OrderID]
+		if !ok || o.State != stateDisputed || d.User.ID == o.BuyerID || d.User.ID == o.VendorID {
+			continue
+		}
+		_, sum, _, err := a.payoutBasis(ctx, a.db, &o, false)
+		if err != nil {
+			return err
+		}
+		column := "payout_btc"
+		if o.Currency == "XMR" {
+			column = "payout_xmr"
+		}
+		state := map[string]string{}
+		rows, err := a.db.QueryContext(ctx, "SELECT id,"+column+"='',suspended_at IS NOT NULL FROM users WHERE id=$1 OR id=$2", o.BuyerID, o.VendorID)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var id string
+			var noAddress, suspended bool
+			if err = rows.Scan(&id, &noAddress, &suspended); err != nil {
+				rows.Close()
+				return err
+			}
+			switch {
+			case suspended:
+				state[id] = "; account suspended: an administrator must check the address"
+			case noAddress:
+				state[id] = "; no payout address: the payout waits for one"
+			}
+		}
+		rows.Close()
+		if err = rows.Err(); err != nil {
+			return err
+		}
+		d.DisputePayouts[v.ID] = PayoutPreview{Seen: sum, Confirm: resolveConfirm,
+			Release: payoutStatement("release", o.Vendor, "the chosen party", &o, sum) + state[o.VendorID],
+			Refund:  payoutStatement("refund", o.Buyer, "the chosen party", &o, sum) + state[o.BuyerID]}
+	}
+	return nil
 }
 
 // loadPublicReviews fills public reviews. Only reviews keyed to completed orders count; reviewer handles
@@ -314,10 +411,13 @@ func loadDisputes(ctx context.Context, a *App, _ *http.Request, d *PageData) err
 		ids = append(ids, v.OrderID)
 	}
 	orders, err := queryOrders(ctx, a, orderQuery+" WHERE o.id = ANY($1)", ids)
+	if err != nil {
+		return err
+	}
 	for _, o := range orders {
 		d.DisputeOrders[o.ID] = o
 	}
-	return err
+	return a.resolvePayouts(ctx, d)
 }
 
 // Preview order IDs and txids have the real 64-hex shape so the read-only preview exercises the same layout
@@ -382,6 +482,11 @@ func previewDisputes(d *PageData) {
 	o.BuyerID, o.Buyer, o.VendorID = "sample-buyer", "sample_buyer", "sample-vendor"
 	d.Disputes, d.OpenDisputes = []Dispute{{ID: "sample-dispute", OrderID: o.ID, Reason: "Sample dispute for the read-only preview. No order or funds exist.", Status: "Open", Created: "Sample"}}, 1
 	d.DisputeOrders = map[string]Order{o.ID: o}
+	// A sample counted amount equal to the price; the sample buyer has no payout address.
+	sum, _ := parseAmount(o.Amount, currencyDecimals(o.Currency))
+	d.DisputePayouts = map[string]PayoutPreview{"sample-dispute": {Seen: sum, Confirm: resolveConfirm,
+		Release: payoutStatement("release", o.Vendor, "the chosen party", &o, sum),
+		Refund:  payoutStatement("refund", o.Buyer, "the chosen party", &o, sum) + "; no payout address: the payout waits for one"}}
 }
 
 // paymentReviewLimit caps the other (not open) flags on the moderation desk's payment-review list.

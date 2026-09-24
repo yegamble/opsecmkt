@@ -146,8 +146,13 @@ func TestLifecycleDigitalAndDisputedPhysical(t *testing.T) {
 	l.get("/order?id="+order, mod, 404)
 
 	// Completion queues exactly one release to the vendor's address; repeated passes never resend.
-	l.post("/orders/complete", buyer, form("order_id", order), 303)
-	l.post("/orders/complete", buyer, form("order_id", order), 409)
+	// The form states the counted amount and sends it back as amount_seen (A-122).
+	seen := amountSeen(t, l.get("/order?id="+order, buyer, 200))
+	if len(seen) != 1 || seen[0] != 100000 {
+		t.Fatalf("complete form amount_seen %v", seen)
+	}
+	l.post("/orders/complete", buyer, payoutConfirmed(form("order_id", order), seen[0]), 303)
+	l.post("/orders/complete", buyer, payoutConfirmed(form("order_id", order), seen[0]), 409)
 	l.poll()
 	l.poll()
 	sends := l.fake.Sends()
@@ -189,7 +194,11 @@ func TestLifecycleDigitalAndDisputedPhysical(t *testing.T) {
 	if err := e.DB.QueryRow("SELECT id FROM disputes WHERE order_id=$1", order2).Scan(&disputeID); err != nil {
 		t.Fatal(err)
 	}
-	l.post("/resolve", mod, form("id", disputeID, "outcome", "refund", "resolution", "No proof of shipment; refund the buyer in full."), 303)
+	seen = amountSeen(t, l.get("/moderator", mod, 200))
+	if len(seen) != 1 || seen[0] != 100000 {
+		t.Fatalf("resolve form amount_seen %v", seen)
+	}
+	l.post("/resolve", mod, payoutConfirmed(form("id", disputeID, "outcome", "refund", "resolution", "No proof of shipment; refund the buyer in full."), seen[0]), 303)
 	if s := l.state(order2); s != stateResolved {
 		t.Fatalf("after resolution: %s", s)
 	}
