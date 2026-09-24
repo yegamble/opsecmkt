@@ -234,6 +234,7 @@ type PayoutRow struct {
 	ID                                               int64
 	OrderID, Kind, Recipient, Currency, Amount       string
 	Address, State, StateLabel, TxID, Error, Updated string
+	OrderShort                                       string // shortID(OrderID), named in the resolve summary
 	Attention                                        bool
 	OrderLink                                        bool // the viewing administrator can open /order for it
 	// Ambiguous: the payout may already have been broadcast (failed without a definite wallet answer, stuck

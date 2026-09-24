@@ -1103,7 +1103,7 @@ func TestCreditedDepositRegressionAnnouncedPerEpisode(t *testing.T) {
 			if closed {
 				id := p.payoutID(p.order)
 				admin := html.UnescapeString(p.page("/admin", p.adminSess))
-				i := strings.Index(admin, "Resolve payout "+id+"<")
+				i := strings.Index(admin, "Resolve payout "+id+":")
 				if i < 0 {
 					t.Fatal("watcher-held payout not listed for attention")
 				}
