@@ -55,15 +55,17 @@ start_db() {
 }
 restore() { (cd "$root" && scripts/restore.sh "$@"); }
 backup() { (cd "$root" && scripts/backup.sh "$@"); }
-payouts="SELECT string_agg(id || ':' || state || ':' || (error LIKE 'Restored from backup:%'), ',' ORDER BY id) FROM payouts"
+# id:state:restore marker:send_ambiguous. A failed payout may have been requeued and sent after the backup,
+# so the restore marks it possibly sent.
+payouts="SELECT string_agg(id || ':' || state || ':' || (error LIKE 'Restored from backup:%') || ':' || send_ambiguous, ',' ORDER BY id) FROM payouts"
 gate="SELECT value FROM settings WHERE key='payments_recovery_required'"
-restored_payouts='1:held:true,2:held:true,3:sent:false,4:failed:false,5:held:true,6:held:true'
-source_payouts='1:pending:false,2:sending:false,3:sent:false,4:failed:false,5:blocked:false,6:held:false'
+restored_payouts='1:held:true:false,2:held:true:false,3:sent:false:false,4:failed:true:true,5:held:true:false,6:held:true:false'
+source_payouts='1:pending:false:false,2:sending:false:false,3:sent:false:false,4:failed:false:false,5:blocked:false:false,6:held:false:false'
 
 start_db
 sql opsecmkt "CREATE TABLE notes (id integer PRIMARY KEY, note text NOT NULL); INSERT INTO notes VALUES (1, 'Crème brûlée — 東京 🔒');
 CREATE TABLE settings (key text PRIMARY KEY, value text NOT NULL); INSERT INTO settings VALUES ('payments_recovery_required','false');
-CREATE TABLE payouts (id integer PRIMARY KEY, state text NOT NULL, error text NOT NULL DEFAULT '', updated timestamptz NOT NULL DEFAULT now());
+CREATE TABLE payouts (id integer PRIMARY KEY, state text NOT NULL, error text NOT NULL DEFAULT '', updated timestamptz NOT NULL DEFAULT now(), send_ambiguous boolean NOT NULL DEFAULT false);
 INSERT INTO payouts(id,state) VALUES (1,'pending'),(2,'sending'),(3,'sent'),(4,'failed'),(5,'blocked'),(6,'held');" >/dev/null
 
 age-keygen -o "$work/identity" 2> "$work/keygen.log"
@@ -119,6 +121,7 @@ fi
 RESTORE_INTERNAL_DATABASE=opsecmkt_restored restore "$work/backup.dump.age" <<< RESTORE > "$work/restore.log"
 grep -q 'Created empty database opsecmkt_restored' "$work/restore.log"
 grep -q 'Held 4 restored payout(s)' "$work/restore.log"
+grep -q 'Marked 1 restored failed payout(s) as possibly sent' "$work/restore.log"
 grep -q 'do not contain the custodial wallets' "$work/restore.log"
 [[ $(sql opsecmkt_restored 'SELECT note FROM notes WHERE id = 1') == 'Crème brûlée — 東京 🔒' ]]
 [[ $(sql opsecmkt_restored "$payouts") == "$restored_payouts" ]]
@@ -205,6 +208,7 @@ start_db
 RESTORE_INTERNAL_DATABASE=opsecmkt restore "$work/backup.dump.age" <<< RESTORE > "$work/fresh-restore.log"
 if grep -q 'Created empty database' "$work/fresh-restore.log"; then echo 'Existing database was recreated' >&2; exit 1; fi
 grep -q 'Held 4 restored payout(s)' "$work/fresh-restore.log"
+grep -q 'Marked 1 restored failed payout(s) as possibly sent' "$work/fresh-restore.log"
 [[ $(sql opsecmkt 'SELECT note FROM notes WHERE id = 1') == 'Crème brûlée — 東京 🔒' ]]
 [[ $(sql opsecmkt "$payouts") == "$restored_payouts" ]]
 [[ $(sql opsecmkt "$gate") == true ]]
@@ -215,4 +219,4 @@ if RESTORE_INTERNAL_DATABASE=opsecmkt_other restore "$work/backup.dump.age" <<< 
   echo 'Restore succeeded without a running database service' >&2; exit 1
 fi
 grep -q 'docker compose up -d --wait db' "$work/stopped.log"
-echo 'Internal-db Compose backup/restore regressions passed (no published port, typed confirmation, wrong key, side-by-side and fresh-volume restores, backups following DATABASE_URL after a switch, conflict rollback, payout recovery gate and holds).'
+echo 'Internal-db Compose backup/restore regressions passed (no published port, typed confirmation, wrong key, side-by-side and fresh-volume restores, backups following DATABASE_URL after a switch, conflict rollback, payout recovery gate, holds and failed payouts marked possibly sent).'

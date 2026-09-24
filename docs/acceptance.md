@@ -113,7 +113,7 @@ Each package records its own acceptance checks here and edits only its subsectio
 - [ ] Monero transfers with a non-zero `unlock_time` are shown but never credited or paid out, with one "locked transfer ignored" note (`TestMoneroLockedTransfersAreNotCredited`).
 - [ ] Saving or removing a payout address needs the current password, plus an authenticator code when TOTP is enrolled.
 - [ ] Each payout is sent at most once. Failed and stuck (`sending`) payouts are shown to administrators and never retried. Payouts wait for a valid test-network payout address.
-- [ ] A payout send may take up to 30 s (reads 10 s) and is recorded as sent (`TestSlowWalletSendIsRecordedSentByTheWatcher`). A failed send is recorded as a definite rejection or as ambiguous; requeueing an ambiguous failure or a stuck send is refused without the audited "not broadcast" confirmation (`TestAmbiguousFailedPayoutRequeueNeedsBroadcastConfirmation`).
+- [ ] A payout send may take up to 30 s (reads 10 s) and is recorded as sent (`TestSlowWalletSendIsRecordedSentByTheWatcher`). A failed send is recorded as a definite rejection or as ambiguous; requeueing an ambiguous failure or a stuck send is refused without the audited "not broadcast" confirmation (`TestAmbiguousFailedPayoutRequeueNeedsBroadcastConfirmation`). So is requeueing a failure restored from backup, which the restore marks possibly sent (`TestRestoredDefiniteFailureRequeuesOnlyAfterWalletCheck`).
 - [ ] Every address, amount and confirmation count carries a `TESTNET <network>` label. Pages say "Payments disabled" when no provider is configured.
 - [ ] Manual: `scripts/regtest-smoke.sh` passes against a real `bitcoind -regtest` (not exercised in CI).
 

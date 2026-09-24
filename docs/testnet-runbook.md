@@ -148,6 +148,10 @@ disputed or resolved order, or one with a payment flagged for review); otherwise
 - **Held after a restore from backup — may already have been sent**: the payout was pending, sending,
   blocked or held in a restored dump (its error starts `Restored from backup:`). It is never released
   automatically, and it may have been broadcast after the backup was taken.
+- **Failed after a restore from backup — may have been requeued and sent after the backup**: the payout
+  was failed in a restored dump. Even a definite wallet rejection may have been requeued and sent after the
+  backup was taken, so the restore marks it as possibly sent (its error starts `Restored from backup:`,
+  followed by the failure recorded before the backup).
 
 Ordinary wallet reads time out after 10 s; a payout send is allowed 30 s, so a slow wallet that broadcasts
 after 10 s is still recorded as sent.
@@ -166,10 +170,11 @@ the state you saw, so a double click or a second administrator cannot queue it t
 - **Mark sent** (failed, held or stuck): the wallet shows the transaction. Paste its 64-character
   transaction ID. The recipient is notified; nothing is sent.
 - **Requeue payout** (failed or stuck): the wallet shows **no** such transaction. The payout goes back to
-  the queue and the next pass sends it once. For an *outcome unknown* failure or a stuck send the form also
-  asks you to tick "I checked the wallet ... no transaction ... was broadcast"; the server refuses the
-  requeue without it and records the confirmation in the audit trail. Include pending and pool transfers in
-  that check, and if the wallet shows the transaction use **Mark sent** instead.
+  the queue and the next pass sends it once. For an *outcome unknown* failure, a failure restored from
+  backup or a stuck send the form also asks you to tick "I checked the wallet ... no transaction ... was
+  broadcast"; the server refuses the requeue without it and records the confirmation in the audit trail.
+  Include pending and pool transfers in that check, and if the wallet shows the transaction use **Mark
+  sent** instead.
 - **Release held payout** (held): the payout goes back to the queue and the next pass sends it once.
   Refused while a credited deposit for the order is still conflicted or below the threshold. For a payout
   held by a restore the form also asks you to tick "I checked the wallet ... no transaction ... was
@@ -246,7 +251,10 @@ Stop the application before restoring and during direct SQL reconciliation. Keep
 isolated from users until wallet history is reconciled. `scripts/restore.sh` sets `payments_recovery_required=true` in application settings. This
 persistent gate pauses **all outbound payouts**, including payouts created after restoration. It also
 converts pending, sending, blocked and held payouts to manual recovery holds; reconfirming a deposit or
-saving an address cannot release these holds automatically. Deposits can still be monitored if the app is
+saving an address cannot release these holds automatically. Failed payouts stay failed but are marked as
+possibly sent (`send_ambiguous`, error prefixed `Restored from backup:`): one the wallet had rejected before
+the backup may have been requeued and sent after it, so requeueing it also needs the wallet confirmation.
+The script prints how many payouts it held and how many failed payouts it marked. Deposits can still be monitored if the app is
 started for operator-only inspection or the admin recovery actions below; do not admit other user writes
 until reconciliation is complete.
 

@@ -188,13 +188,15 @@ the **upgraded** checkout: its `scripts/restore.sh` can restore into the interna
 
 Once payments are on, the marketplace is custodial for test coins: the Bitcoin wallet lives in the
 `bitcoin_data` volume and the Monero wallet in `monero_wallet`. **Database dumps do not include them.** Back
-them up separately (see the runbook). `scripts/restore.sh` now pauses all outbound payouts with a persistent recovery gate and holds every
-pending, sending, blocked or held payout. Follow the [reconciliation procedure](docs/testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts),
+them up separately (see the runbook). `scripts/restore.sh` now pauses all outbound payouts with a persistent recovery gate, holds every
+pending, sending, blocked or held payout, and marks every failed payout as possibly sent after the backup (it
+may have been requeued and sent since). Follow the [reconciliation procedure](docs/testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts),
 including orders whose payout did not yet exist in the backup, before explicitly clearing the gate. The
 application must be stopped during restore and reconciliation; do not allow user writes until complete.
-If the script reports recovery protection failed, do not start the application. Apply both protections to
+If the script reports recovery protection failed, do not start the application. Apply the protections to
 the restored application database in one transaction first (older databases without a `payouts` table need
-only the settings update):
+only the settings update; omit the `send_ambiguous` line if their `payouts` table has no such column, as
+migration 053 then marks their failed payouts ambiguous itself):
 
 ```sql
 BEGIN;
@@ -203,6 +205,10 @@ ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
 UPDATE payouts SET state='held', updated=now(),
   error='Restored from backup: verify in the wallet before releasing; this payout may already have been sent.'
 WHERE state IN ('pending','sending','blocked','held');
+UPDATE payouts SET send_ambiguous=true WHERE state='failed';
+UPDATE payouts SET updated=now(),
+  error='Restored from backup: verify in the wallet before requeueing; this payout may have been requeued and sent after the backup. Last error: ' || error
+WHERE state='failed';
 COMMIT;
 ```
 

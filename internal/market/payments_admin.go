@@ -34,8 +34,9 @@ func adminConfirmLoader(ctx context.Context, a *App, r *http.Request, d *PageDat
 const stuckSending = "(state='sending' AND updated < now()-interval '5 minutes')"
 
 // restoredHoldPrefix starts the error scripts/restore.sh (and the manual SQL in UPGRADING.md) writes on every
-// payout it holds. Such a payout may have been sent after the backup was taken, so releasing it needs the
-// same explicit "wallet shows no broadcast" confirmation as requeueing an ambiguous send.
+// payout it holds, and on every failed payout it marks as possibly sent. Such a payout may have been sent (or
+// requeued and sent) after the backup was taken, so releasing or requeueing it needs the same explicit
+// "wallet shows no broadcast" confirmation as requeueing an ambiguous send.
 const restoredHoldPrefix = "Restored from backup:"
 
 var txidPattern = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
@@ -106,8 +107,13 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 		}
 	case "requeue":
 		// A send with no definite answer may be on the network: sending again without checking could pay twice.
-		// A definite wallet rejection (nothing broadcast) needs no extra confirmation.
-		unknown := (state == "failed" && ambiguous) || stuck
+		// So may a failure restored from backup, requeued and sent after the backup was taken (the restore also
+		// marks it ambiguous). A definite wallet rejection (nothing broadcast) needs no extra confirmation.
+		restored := state == "failed" && strings.HasPrefix(payoutErr, restoredHoldPrefix)
+		unknown := (state == "failed" && (ambiguous || restored)) || stuck
+		if restored && c.Form.Get("not_broadcast") != "confirmed" {
+			return actionResult{}, fail(400, "This failed payout was restored from backup and may have been requeued and sent after the backup was taken. Check the wallet, then confirm that no transaction was broadcast to requeue it, or mark it sent with the wallet's transaction ID.")
+		}
 		if unknown && c.Form.Get("not_broadcast") != "confirmed" {
 			return actionResult{}, fail(400, "This payout's last send had no definite answer from the wallet and may have been broadcast. Check the wallet, then confirm that no transaction was broadcast to requeue it, or mark it sent with the wallet's transaction ID.")
 		}
@@ -115,7 +121,10 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 			WHERE id=$1 AND (state='failed' OR `+stuckSending+`)`, id)
 		note = "Administrator requeued the TESTNET payout of " + label + " after checking the wallet; it will be sent once more."
 		audit = "Requeued payout " + strconv.FormatInt(id, 10) + " (" + label + ", was " + state + ") for order " + short
-		if unknown {
+		if restored {
+			note = "Administrator confirmed the wallet shows no broadcast transaction for the TESTNET payout of " + label + " (failed, restored from backup) and requeued it; it will be sent once more."
+			audit += "; restored from backup, administrator confirmed the wallet shows no broadcast transaction"
+		} else if unknown {
 			note = "Administrator confirmed the wallet shows no broadcast transaction for the TESTNET payout of " + label + " (last send outcome unknown) and requeued it; it will be sent once more."
 			audit += "; last send outcome unknown, administrator confirmed the wallet shows no broadcast transaction"
 		}
