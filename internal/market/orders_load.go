@@ -356,51 +356,74 @@ func previewDisputes(d *PageData) {
 	d.DisputeOrders = map[string]Order{o.ID: o}
 }
 
-// paymentReviewLimit caps the payment-review list on the moderation desk.
+// paymentReviewLimit caps the other (not open) flags on the moderation desk's payment-review list.
 const paymentReviewLimit = 100
 
-// loadPaymentReviews lists deposits the payment watcher flagged for staff review (payments.flagged), newest
-// flag first, up to paymentReviewLimit. The flag time is the watcher's flag event in order_events: flagOrder
-// writes a system note naming the deposit (truncate(txid, 20)) and ending "Moderator review required.".
+// loadPaymentReviews lists deposits the payment watcher flagged for staff review (payments.flagged): every open
+// flag, oldest first and never capped, then the paymentReviewLimit most recently flagged others, with their
+// count. A flag is open while it has no settling event: a locked transfer or a late deposit (no disposition
+// action exists yet), or a credited deposit whose regression was announced and has not confirmed again
+// (payments.regress_notice). The reason comes from the deposit's current confirmations. The flag time is the
+// latest watcher flag event for the deposit in order_events: flagOrder writes a system note naming it
+// (truncate(txid, 20)) and ending "Moderator review required.".
 func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 	if d.User == nil || (d.User.Role != "moderator" && d.User.Role != "admin") {
 		return nil
 	}
-	rows, err := a.db.QueryContext(ctx, `SELECT pm.order_id,o.state,pm.currency,pm.amount,pm.txid,pm.idx,pm.credited,pm.locked,COALESCE(to_char(f.at,'YYYY-MM-DD HH24:MI "UTC"'),'')
+	rows, err := a.db.QueryContext(ctx, `WITH v AS (SELECT pm.id,pm.order_id,o.state,pm.currency,pm.amount,pm.txid,pm.idx,pm.credited,pm.locked,pm.confirmations,
+			pm.regress_notice,(pm.locked OR NOT pm.credited OR pm.regress_notice) AS open,f.at
 		FROM payments pm JOIN orders o ON o.id=pm.order_id
-		LEFT JOIN LATERAL (SELECT min(e.created) AS at FROM order_events e WHERE e.order_id=pm.order_id AND e.actor_id IS NULL
+		LEFT JOIN LATERAL (SELECT max(e.created) AS at FROM order_events e WHERE e.order_id=pm.order_id AND e.actor_id IS NULL
 			AND e.note LIKE '%Moderator review required.%'
 			AND strpos(e.note, ' '||CASE WHEN length(pm.txid)<=20 THEN pm.txid ELSE left(pm.txid,20)||'…' END||' ')>0) f ON true
-		WHERE pm.flagged ORDER BY f.at DESC NULLS LAST,pm.id DESC LIMIT $1`, paymentReviewLimit+1)
+		WHERE pm.flagged)
+		SELECT order_id,state,currency,amount,txid,idx,credited,locked,confirmations,regress_notice,open,COALESCE(to_char(at,'YYYY-MM-DD HH24:MI "UTC"'),''),
+			(SELECT count(*) FROM v WHERE NOT open)
+		FROM (SELECT * FROM v WHERE open UNION ALL (SELECT * FROM v WHERE NOT open ORDER BY at DESC NULLS LAST,id DESC LIMIT $1)) s
+		ORDER BY open DESC,CASE WHEN open THEN at END ASC NULLS FIRST,CASE WHEN open THEN id END,at DESC NULLS LAST,id DESC`, paymentReviewLimit)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var v PaymentReview
-		var amt int64
-		var credited, locked bool
-		if err = rows.Scan(&v.OrderID, &v.OrderState, &v.Currency, &amt, &v.TxID, &v.Index, &credited, &locked, &v.Flagged); err != nil {
+		var amt, confs int64
+		var credited, locked, regressed bool
+		if err = rows.Scan(&v.OrderID, &v.OrderState, &v.Currency, &amt, &v.TxID, &v.Index, &credited, &locked, &confs, &regressed, &v.Open, &v.Flagged, &d.PaymentReviewOthers); err != nil {
 			return err
 		}
 		v.Amount, v.OrderState = amount(amt, currencyDecimals(v.Currency)), stateLabel(v.OrderState)
+		threshold := a.confirmationThreshold(v.Currency)
 		switch {
 		case locked:
 			v.Reason = "Locked transfer (unlock time), not counted or paid out"
-		case credited:
-			v.Reason = "Credited deposit conflicted or missing"
-		default:
+		case !credited:
 			v.Reason = "Deposit confirmed after settlement, not paid out"
+			if confs < 0 {
+				v.Reason += "; now conflicted or missing"
+			}
+		case confs < 0:
+			v.Reason = "Credited deposit conflicted or missing"
+		case threshold > 0 && confs < threshold:
+			v.Reason = fmt.Sprintf("Credited deposit below threshold (%d of %d confirmations)", confs, threshold)
+		case threshold == 0 && regressed:
+			v.Reason = fmt.Sprintf("Credited deposit below threshold (%d confirmations)", confs)
+		default:
+			v.Reason = fmt.Sprintf("Credited deposit confirmed again (%d confirmations)", confs)
+		}
+		if v.Open {
+			d.PaymentReviewsOpen++
 		}
 		d.PaymentReviews = append(d.PaymentReviews, v)
 	}
-	if len(d.PaymentReviews) > paymentReviewLimit {
-		d.PaymentReviews, d.PaymentReviewLimit = d.PaymentReviews[:paymentReviewLimit], paymentReviewLimit
+	if d.PaymentReviewOthers > paymentReviewLimit {
+		d.PaymentReviewLimit = paymentReviewLimit
 	}
 	return rows.Err()
 }
 
 func previewPaymentReviews(d *PageData) {
 	d.PaymentReviews = []PaymentReview{{OrderID: "sample-flagged", OrderState: stateLabel(statePaid), Currency: "BTC", Amount: "0.001",
-		TxID: "sample-txid-preview-only", Reason: "Credited deposit conflicted or missing", Flagged: "Sample"}}
+		TxID: "sample-txid-preview-only", Reason: "Credited deposit conflicted or missing", Flagged: "Sample", Open: true}}
+	d.PaymentReviewsOpen = 1
 }

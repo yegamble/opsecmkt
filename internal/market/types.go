@@ -33,10 +33,13 @@ type Dispute struct {
 	NoResolver                                       bool // open, and every moderator and administrator is a party
 }
 
-// PaymentReview is one deposit the payment watcher flagged for staff review (payments.flagged).
+// PaymentReview is one deposit the payment watcher flagged for staff review (payments.flagged). Open: not yet
+// settled by events (a locked transfer or a late deposit, which have no disposition action yet, or a credited
+// deposit in an announced regression that has not confirmed again).
 type PaymentReview struct {
 	OrderID, OrderState, Currency, Amount, TxID, Reason, Flagged string
 	Index                                                        int64
+	Open                                                         bool
 }
 type Event struct{ Handle, Action, Created string } // Handle: account the audit row is recorded on ("" = system)
 
@@ -94,10 +97,13 @@ type PageData struct {
 	HistoryLimit int
 	// DeliveryWithheld: order page viewed by a reviewer of a payment flag on an order never disputed.
 	DeliveryWithheld bool
-	// PaymentReviews: moderator desk, payments flagged for review, newest flag first; PaymentReviewLimit is
-	// non-zero when the list was cut to that many rows.
-	PaymentReviews     []PaymentReview
-	PaymentReviewLimit int
+	// PaymentReviews: moderator desk, payments flagged for review: every open flag (PaymentReviewsOpen of them,
+	// oldest first), then the most recent other flags (PaymentReviewOthers in all); PaymentReviewLimit is
+	// non-zero when the other flags were cut to that many rows.
+	PaymentReviews      []PaymentReview
+	PaymentReviewsOpen  int
+	PaymentReviewOthers int
+	PaymentReviewLimit  int
 
 	// P4 Inventory (uses Product.Archived)
 	Listing   *ListingView
@@ -236,6 +242,16 @@ type PayoutRow struct {
 	// AddressCheck: held for an account suspension (suspendedHoldPrefix); releasing needs an explicit
 	// confirmation that the payout address was checked.
 	AddressCheck bool
+	// Waiting: held by the watcher (heldReason) while these credited deposits are below Threshold confirmations;
+	// no release is offered until they confirm again.
+	Waiting   []HeldDeposit
+	Threshold int64
+}
+
+// HeldDeposit is a credited deposit, at its deposit address, that holds its order's payout.
+type HeldDeposit struct {
+	TxID, Address        string
+	Index, Confirmations int64
 }
 
 // P6 Transparency

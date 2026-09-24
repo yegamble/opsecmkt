@@ -124,7 +124,7 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		pv.Address = addr
 	}
 	dec := currencyDecimals(o.Currency)
-	rows, err := a.db.QueryContext(ctx, "SELECT txid,idx,amount,confirmations,credited,locked FROM payments WHERE order_id=$1 ORDER BY created,id", o.ID)
+	rows, err := a.db.QueryContext(ctx, "SELECT txid,idx,amount,confirmations,credited,locked,regress_notice FROM payments WHERE order_id=$1 ORDER BY created,id", o.ID)
 	if err != nil {
 		return err
 	}
@@ -136,12 +136,14 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 	}
 	remaining := required
 	minConfs := int64(-1)
-	conflicted := false
+	// conflicted/regressed: a credited deposit is conflicted, or back below the threshold; notified: that
+	// regression was announced to the parties and staff (settleOrder).
+	conflicted, regressed, notified := false, false, false
 	for rows.Next() {
 		var dep PaymentDeposit
 		var amt int64
-		var credited, locked bool
-		if err = rows.Scan(&dep.TxID, &dep.Index, &amt, &dep.Confirmations, &credited, &locked); err != nil {
+		var credited, locked, notice bool
+		if err = rows.Scan(&dep.TxID, &dep.Index, &amt, &dep.Confirmations, &credited, &locked, &notice); err != nil {
 			return err
 		}
 		if !locked && dep.Confirmations >= 0 {
@@ -154,12 +156,15 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		case dep.Confirmations < 0:
 			dep.State = "Conflicted or missing — not counted"
 			conflicted = conflicted || credited
+			notified = notified || (credited && notice)
 		case dep.Confirmations >= int64(pv.Threshold):
 			dep.State = "Confirmed"
 			received += amt
 		default:
 			dep.State = "Waiting for confirmations"
 			pending += amt
+			regressed = regressed || credited
+			notified = notified || (credited && notice)
 		}
 		if !locked && dep.Confirmations >= 0 && (minConfs < 0 || dep.Confirmations < minConfs) {
 			minConfs = dep.Confirmations
@@ -184,8 +189,14 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		pv.Confirmations = int(minConfs)
 	}
 	switch {
-	case conflicted:
-		pv.Status = "A credited deposit is conflicted; moderators have been notified"
+	case conflicted || regressed:
+		pv.Status = "A credited deposit is back below " + strconv.Itoa(pv.Threshold) + " confirmations; unsent payouts wait until it confirms again"
+		if conflicted {
+			pv.Status = "A credited deposit is conflicted or missing; unsent payouts wait until it confirms again"
+		}
+		if notified {
+			pv.Status += "; market staff have been notified"
+		}
 	case o.State == stateAwaitingPayment && len(pv.Deposits) == 0:
 		pv.Status = "Waiting for a deposit"
 	case o.State == stateAwaitingPayment && pending > 0:
@@ -338,5 +349,34 @@ func paymentsAdminLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		}
 		d.Payouts = append(d.Payouts, r)
 	}
-	return rows.Err()
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+	// A payout the watcher holds offers no release while a credited deposit of its order is still below the
+	// threshold (the release would be refused): the row names the deposits instead.
+	for i := range d.Payouts {
+		r := &d.Payouts[i]
+		if r.State != "held" || r.Error != heldReason {
+			continue
+		}
+		r.Threshold = a.confirmationThreshold(r.Currency)
+		deps, err := a.db.QueryContext(ctx, "SELECT txid,idx,confirmations,address FROM payments WHERE order_id=$1 AND credited AND confirmations<$2 ORDER BY id", r.OrderID, r.Threshold)
+		if err != nil {
+			return err
+		}
+		for deps.Next() {
+			var h HeldDeposit
+			if err = deps.Scan(&h.TxID, &h.Index, &h.Confirmations, &h.Address); err != nil {
+				deps.Close()
+				return err
+			}
+			r.Waiting = append(r.Waiting, h)
+		}
+		deps.Close()
+		if err = deps.Err(); err != nil {
+			return err
+		}
+	}
+	return nil
 }

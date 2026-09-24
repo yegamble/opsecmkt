@@ -13,7 +13,9 @@ import (
 
 func init() { registerTransitionHook(paymentsTransitionHook) }
 
-const heldReason = "A credited deposit is conflicted or below the confirmation threshold; payout held until it confirms again or a moderator reviews it."
+// heldReason is the error on a payout the watcher holds; the watcher recognises (and lifts) only holds with this
+// exact text, and migration 056 rewrote the earlier wording to it.
+const heldReason = "A credited deposit is conflicted or below the confirmation threshold; the payment watcher holds this payout and releases it by itself once the deposit confirms again."
 
 // suspendedHoldPrefix starts the error on a payout held because its recipient's account is suspended (A-102):
 // someone with the account's password may have changed its payout address. Suspending an account holds its

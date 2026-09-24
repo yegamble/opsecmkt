@@ -95,17 +95,13 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 			return actionResult{}, fail(409, "This payout was held when the recipient's account was suspended, and its payout address may have been changed by someone else. Check the payout address with the account owner, then confirm that you checked it to release the payout. Nothing was changed.")
 		}
 		// A payout the watcher itself holds (credited deposit conflicted or re-confirming) stays held while
-		// that is still true: sendPayouts would refuse it anyway.
-		threshold := int64(0)
-		if p := c.A.provider(cur); p != nil {
-			threshold = int64(p.Confirmations())
-		}
+		// that is still true: sendPayouts would refuse it anyway, and the watcher releases it once it re-confirms.
 		var unsettled bool
-		if err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM payments WHERE order_id=$1 AND credited AND confirmations<$2)", orderID, threshold).Scan(&unsettled); err != nil {
+		if err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM payments WHERE order_id=$1 AND credited AND confirmations<$2)", orderID, c.A.confirmationThreshold(cur)).Scan(&unsettled); err != nil {
 			return actionResult{}, err
 		}
 		if unsettled && state == "held" {
-			return actionResult{}, fail(409, "A credited deposit for this order is still conflicted or below the confirmation threshold. Review it with a moderator; the payout stays held.")
+			return actionResult{}, fail(409, "A credited deposit for this order is still conflicted or below the confirmation threshold, so this payout stays held; the payment watcher releases it by itself once the deposit confirms again. Nothing was changed.")
 		}
 		res, err = tx.ExecContext(ctx, `UPDATE payouts SET state=CASE WHEN address='' THEN 'blocked' ELSE 'pending' END,error='',updated=now()
 			WHERE id=$1 AND state='held'`, id)
