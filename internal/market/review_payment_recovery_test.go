@@ -52,12 +52,7 @@ func TestReviewFlaggedCreditedDepositRecoveryAfterOneDay(t *testing.T) {
 			p.fake.Deposit(p.addr, "tx-recovery", 0, 100000, 3)
 			p.poll()
 			st, _, _, _ := p.payout(p.order)
-			if age == "31 days" {
-				if st != "held" || len(p.fake.Sends()) != 0 {
-					t.Fatal("address older than 30 days was automatically recovered")
-				}
-				return
-			}
+			// A-97: a payout the watcher held keeps its order watched, so it resumes whatever the address's age.
 			p.poll()
 			if st != "sent" || len(p.fake.Sends()) != 1 {
 				t.Fatalf("reconfirmed deposit did not release exactly once: state=%s sends=%d", st, len(p.fake.Sends()))
