@@ -46,7 +46,7 @@ Read this once, before you form any opinion. Then read `CLAUDE.md`,
 | Go | `"$(go env GOROOT)/bin/gofmt" -l cmd internal` empty · `go mod verify` · `go vet ./...` · `TEST_DATABASE_URL=<dedicated db> go test -race -count=1 ./...` · `go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...` |
 | Templates/CSS/journeys | `npx playwright test` (preview projects) and `E2E_DATABASE_URL=<fresh db> npm run test:e2e` |
 | Payments UI journeys | `E2E_WALLET_DATABASE_URL=<fresh db> npm run test:e2e:wallet` |
-| Shell/installer/ops | `bash -n scripts/*.sh`, `python3 -m unittest discover -s tests -p 'test_*.py'`, the matching `scripts/test-*.sh` |
+| Shell/installer/ops | `for f in scripts/*.sh; do bash -n "$f"; done` (a single `bash -n a b` checks only `a`), `python3 -m unittest discover -s tests -p 'test_*.py'`, the matching `scripts/test-*.sh` |
 | Workflows | `go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12` |
 | Everything | GitHub Actions **CI passed** (required on `main`) |
 
@@ -75,4 +75,6 @@ are **not** live-chain evidence. Merged is not released is not deployed.
   unloaded; navigation races (click → re-query before load) have caused flakes.
 - `chain-journey` and `regtest-smoke.sh` never run in CI; their evidence is
   local logs under `artifacts/real-chain/` (gitignored).
+- **macOS `/bin/bash` is 3.2**: a failing `[[ ]]` does not stop a `set -e` script, so
+  `scripts/test-*.sh` can pass falsely there. Run them with bash 5 (Homebrew) or rely on CI (Ubuntu).
 - Merging to `main` requires the owner; CI's **CI passed** check is required.
