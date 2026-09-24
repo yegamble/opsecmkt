@@ -266,7 +266,8 @@ and no web action that clears the gate or records a lost payout.
    and before starting it on the restored database make sure only you can reach it:
    - Clearnet: stop the HTTPS reverse proxy (for the host Caddy from the operator guide,
      `sudo systemctl stop caddy`). The app itself publishes only `127.0.0.1:${APP_PORT:-8080}` on the host;
-     reach it from your workstation through an SSH tunnel, `ssh -N -L 8080:127.0.0.1:8080 you@your-host`, and
+     reach it from your workstation through an SSH tunnel, `ssh -N -L 8080:127.0.0.1:8080 you@your-host`
+     (the second 8080 is the host's `APP_PORT`; change it if you chose another port), and
      open `http://127.0.0.1:8080` in a browser that keeps secure cookies on `127.0.0.1` (Chromium-based
      browsers do).
    - Tor: stop the mirror if you run one (`docker compose stop tor-mirror`) and restrict the main onion

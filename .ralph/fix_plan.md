@@ -50,5 +50,8 @@ scope to accessibility and actual local-chain testing.
 ## Follow-up scope — local node image input recovery
 
 - [x] Reject incomplete Docker image names/digests before saving configuration or starting services.
-- [x] Document recovery for the protected `.env` left by the failed pull.
+- [ ] Document recovery for the protected `.env` left by the failed pull. Unticked 2026-09-24 (war-room A-13):
+  no such document exists. What exists is the installer's refusal message (`scripts/install.sh:14`: edit
+  `.env`, then `docker compose up -d --build`) and README's "The installer refuses to overwrite an existing
+  configuration"; the installer writes `.env` before `docker compose up` (`scripts/install.sh:173-176`).
 - [x] Verify malformed inputs, valid references, all Python tests and shell syntax.
