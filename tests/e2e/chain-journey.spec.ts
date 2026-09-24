@@ -59,6 +59,7 @@ test('isolated real chains: seeded buyer/vendor partial deposits, confirmation, 
     await vendor.getByRole('button', { name: 'Publish listing' }).click();
     await buyer.goto(`/?q=${encodeURIComponent(title)}`);
     await buyer.getByRole('link', { name: title, exact: true }).click();
+    await buyer.waitForURL(/\/product\?id=/);
     const productURL = buyer.url();
     const makeOrder = async () => {
       await buyer.goto(productURL);

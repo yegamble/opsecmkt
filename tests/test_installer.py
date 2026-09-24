@@ -255,6 +255,17 @@ time.sleep(60)
         self.assertEqual(config['BITCOIN_CHAIN'], 'signet')
         self.assertEqual(config['MONERO_NETWORK'], 'testnet')
         self.assertEqual(result.stdout.count('Full node'), 2)
+        # Compose reads an unquoted blank followed by a comment ("MONERO_PRUNE_FLAGS= # x") as the value "# x"
+        # (A-149): every line the installer writes is a single-quoted value with nothing after it.
+        for line in (self.root / '.env').read_text().splitlines():
+            self.assertRegex(line, r"^[A-Z0-9_]+='[^'\n]*'$")
+        self.assertIn("\nMONERO_PRUNE_FLAGS=''\n", (self.root / '.env').read_text())
+
+    def test_env_example_value_lines_have_no_inline_comments(self):
+        # Same Compose rule for the template operators copy and hand-edit (A-149).
+        for line in (REPOSITORY / '.env.example').read_text().splitlines():
+            if line and not line.startswith('#'):
+                self.assertRegex(line, r'^[A-Z0-9_]+=[^#]*$')
 
     def test_local_node_prune_answer_yes_is_pruned(self):
         result = self.run_installer(['tor', '', 'local', '', '', 'yes', 'local', '', '', 'yes'])

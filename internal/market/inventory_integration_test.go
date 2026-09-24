@@ -128,6 +128,10 @@ func TestListingUpdateValidation(t *testing.T) {
 		t.Fatal("owner edit page does not show escaped delivery content")
 	}
 	_, buyerS := e.user("inv_valid_buyer", "buyer")
+	// Search only for text that cannot occur by chance: bare digits such as "7731" also occur in random hex
+	// IDs and CSRF tokens (A-149). "LICENSE-KEY" matches any excerpt that includes the start of the content
+	// whether raw or HTML-, URL- or JS-escaped; the raw and escaped tails match an excerpt without it.
+	leaks := []string{secret, html.EscapeString(secret), "LICENSE-KEY", "<b>7731</b>", html.EscapeString("<b>7731</b>")}
 	for _, path := range []string{"/", "/product?id=" + p, "/checkout?id=" + p, "/vendor?id=" + owner, "/vendor-dashboard"} {
 		sess := buyerS
 		if path == "/vendor-dashboard" {
@@ -135,8 +139,10 @@ func TestListingUpdateValidation(t *testing.T) {
 		}
 		w := e.do("GET", path, sess, nil)
 		e.check(w, 200)
-		if strings.Contains(w.Body.String(), "7731") {
-			t.Fatalf("delivery content leaked on %s", path)
+		for _, leak := range leaks {
+			if strings.Contains(w.Body.String(), leak) {
+				t.Fatalf("delivery content leaked on %s: page contains %q", path, leak)
+			}
 		}
 	}
 	// Whitespace-only content is stored as empty (no automatic delivery).
