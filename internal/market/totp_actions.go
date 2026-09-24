@@ -3,6 +3,7 @@ package market
 import (
 	"context"
 	"database/sql"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -18,6 +19,7 @@ func init() {
 	registerAction("/totp/activate", actionSpec{OwnTx: true, Run: totpActivate})
 	registerAction("/totp/recovery", actionSpec{Run: totpRegenerate})
 	registerAction("/totp/disable", actionSpec{OwnTx: true, Run: totpDisable})
+	registerBackground(recoveryRevealSweeper)
 	registerPreview("totp", func(d *PageData) {
 		secret := "PREVIEWSAMPLESECRETNOTREAL234567"
 		d.Title = "Two-factor authentication"
@@ -170,7 +172,7 @@ func totpDisable(c *actionCtx) (actionResult, error) {
 }
 
 // issueRecoveryCodes replaces all of the user's recovery codes and keeps the plaintext, sealed, for one
-// display on the next /totp view (at most 10 minutes).
+// display on the next /totp view (at most 10 minutes; recoveryRevealSweeper clears it afterwards).
 func (a *App) issueRecoveryCodes(ctx context.Context, tx *sql.Tx, userID string) error {
 	if _, err := tx.ExecContext(ctx, "DELETE FROM recovery_codes WHERE user_id=$1", userID); err != nil {
 		return err
@@ -190,12 +192,49 @@ func (a *App) issueRecoveryCodes(ctx context.Context, tx *sql.Tx, userID string)
 	return err
 }
 
+// revealExpired matches users whose sealed recovery codes are past their display window.
+const revealExpired = "recovery_reveal<>'' AND (recovery_reveal_until IS NULL OR recovery_reveal_until<=now())"
+
+// recoveryRevealSweepInterval is how often every running process clears expired reveals, so sealed plaintext
+// codes outlive their 10-minute window by at most this long while the app runs (and until its next start
+// otherwise). A variable only so tests can shorten it.
+var recoveryRevealSweepInterval = time.Minute
+
+func recoveryRevealSweeper(ctx context.Context, a *App) {
+	t := time.NewTimer(0)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		if err := a.sweepRecoveryReveals(ctx); err != nil && ctx.Err() == nil {
+			log.Printf("recovery code reveal sweep: %v", err)
+		}
+		t.Reset(recoveryRevealSweepInterval)
+	}
+}
+
+// sweepRecoveryReveals clears every expired reveal; a reveal still within its window is untouched.
+func (a *App) sweepRecoveryReveals(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	_, err := a.db.ExecContext(ctx, "UPDATE users SET recovery_reveal='',recovery_reveal_until=NULL WHERE "+revealExpired)
+	return err
+}
+
+// securityView also clears the account's reveal once it has expired (on /account, /pgp, /admin and /totp).
 func (a *App) securityView(ctx context.Context, userID string) (*SecurityView, string, string, error) {
 	s := &SecurityView{}
 	var pending, reveal string
-	err := a.db.QueryRowContext(ctx, `SELECT totp_enabled,totp_pending,CASE WHEN recovery_reveal_until>now() THEN recovery_reveal ELSE '' END,
-		(SELECT count(*) FROM recovery_codes r WHERE r.user_id=u.id AND r.used_at IS NULL) FROM users u WHERE id=$1`, userID).Scan(&s.TOTPEnabled, &pending, &reveal, &s.RecoveryRemaining)
+	var expired bool
+	err := a.db.QueryRowContext(ctx, `SELECT totp_enabled,totp_pending,CASE WHEN recovery_reveal_until>now() THEN recovery_reveal ELSE '' END,`+revealExpired+`,
+		(SELECT count(*) FROM recovery_codes r WHERE r.user_id=u.id AND r.used_at IS NULL) FROM users u WHERE id=$1`, userID).Scan(&s.TOTPEnabled, &pending, &reveal, &expired, &s.RecoveryRemaining)
 	s.Pending = !s.TOTPEnabled && pending != ""
+	if err == nil && expired {
+		_, err = a.db.ExecContext(ctx, "UPDATE users SET recovery_reveal='',recovery_reveal_until=NULL WHERE id=$1 AND "+revealExpired, userID)
+	}
 	return s, pending, reveal, err
 }
 
