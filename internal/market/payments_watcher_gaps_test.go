@@ -3,6 +3,7 @@ package market
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"html"
 	"net/url"
 	"strings"
@@ -392,7 +393,7 @@ func TestGapConcurrentCompletionWithProviderSendsOnce(t *testing.T) {
 	if err := p.A.pollOnce(context.Background()); err != nil {
 		t.Fatalf("second pass: %v", err)
 	}
-	if err := p.A.sendPayouts(context.Background(), p.fake); err != nil {
+	if err := p.A.sendPayouts(context.Background(), p.fake, []string{p.order}); err != nil {
 		t.Fatalf("second sender: %v", err)
 	}
 	close(release)
@@ -437,14 +438,14 @@ func TestGapPayoutClaimLostToAnotherSender(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	// Sender 1 lists [A, B], claims A and blocks in the wallet call for A.
-	go func() { done <- p.A.sendPayouts(context.Background(), p.fake) }()
+	go func() { done <- p.A.sendPayouts(context.Background(), p.fake, []string{first, second}) }()
 	select {
 	case <-entered:
 	case <-time.After(10 * time.Second):
 		t.Fatal("sender 1 never reached the wallet")
 	}
 	// Sender 2 lists [B] (A is claimed), claims and sends B.
-	if err := p.A.sendPayouts(context.Background(), p.fake); err != nil {
+	if err := p.A.sendPayouts(context.Background(), p.fake, []string{first, second}); err != nil {
 		t.Fatal(err)
 	}
 	if st, _, _, _ := p.payout(second); st != "sent" {
@@ -738,5 +739,249 @@ func waitFor(t *testing.T, cond func() bool) {
 			t.Fatal("timed out waiting for condition")
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// A-97 (PAY9-1, QA9 probe): an unsent payout on a completed order last changed 48 hours ago is released after
+// the wallet dropped its credited deposit (a blocked release whose vendor then saves an address, or a pending
+// one sent after an outage). The pass that would send it must read the deposit address first: the deposit is
+// flagged, the payout held and nothing is sent. The fresh order is the control.
+func TestStaleLedgerPayoutNotSentAfterDepositDropped(t *testing.T) {
+	for _, c := range []struct {
+		name          string
+		aged, blocked bool
+	}{{"fresh-blocked", false, true}, {"aged-blocked", true, true}, {"aged-pending", true, false}} {
+		t.Run(c.name, func(t *testing.T) {
+			p := newPayEnv(t)
+			if !c.blocked {
+				p.setPayoutAddress(p.vendor, "fake-testnet-vendor")
+			}
+			order, addr := p.newOrder(stateAwaitingPayment)
+			p.paidByWatcher(order, addr, "tx-stale")
+			p.complete(order)
+			want := "pending"
+			if c.blocked {
+				want = "blocked"
+			}
+			if st, _, _, _ := p.payout(order); st != want {
+				t.Fatalf("payout after completion: %s, want %s", st, want)
+			}
+			if c.aged {
+				if _, err := p.DB.Exec("UPDATE orders SET updated=now()-interval '48 hours' WHERE id=$1", order); err != nil {
+					t.Fatal(err)
+				}
+			}
+			p.fake.Drop("tx-stale")
+			if c.blocked {
+				p.poll()
+				p.check(p.do("POST", "/account/payout", p.vendorSess, url.Values{"currency": {"BTC"}, "address": {"fake-testnet-vendor"}, "password": {testPassword}}), 303)
+			}
+			p.poll()
+			p.poll()
+			st, _, to, _ := p.payout(order)
+			if st != "held" || to != "fake-testnet-vendor" || len(p.fake.Sends()) != 0 {
+				t.Fatalf("payout %s to %q, sends %d: sent on a stale ledger", st, to, len(p.fake.Sends()))
+			}
+			if n := p.count("SELECT count(*) FROM payments WHERE order_id=$1 AND flagged AND confirmations=-1", order); n != 1 {
+				t.Fatalf("dropped deposit flagged: %d", n)
+			}
+			if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE '%is now conflicted or missing from the wallet%'", order); n != 1 {
+				t.Fatalf("conflict notes: %d", n)
+			}
+		})
+	}
+}
+
+// A-97: a pending payout whose order's address could not be read from the wallet in this pass is not sent;
+// it is sent on the next pass that reads it.
+func TestPendingPayoutNotSentWhenAddressUnread(t *testing.T) {
+	p := newPayEnv(t)
+	p.setPayoutAddress(p.vendor, "fake-testnet-vendor")
+	order := p.completedWithPayout("tx-unread")
+	if st, _, _, _ := p.payout(order); st != "pending" {
+		t.Fatalf("payout after completion: %s", st)
+	}
+	p.fake.SetWallet(errors.New("wallet RPC timed out"), nil, false)
+	if err := p.A.pollOnce(context.Background()); err == nil || !strings.Contains(err.Error(), "wallet RPC timed out") {
+		t.Fatalf("wallet read failure not reported: %v", err)
+	}
+	if st, _, _, _ := p.payout(order); st != "pending" || len(p.fake.Sends()) != 0 {
+		t.Fatalf("payout %s, sends %d: sent without reading its deposit address", st, len(p.fake.Sends()))
+	}
+	p.fake.SetWallet(nil, nil, false)
+	p.poll()
+	if st, _, _, _ := p.payout(order); st != "sent" || len(p.fake.Sends()) != 1 {
+		t.Fatalf("payout after the wallet recovered: %s sends %d", st, len(p.fake.Sends()))
+	}
+}
+
+// A-97: a pending payout whose order failed to settle in this pass (here a test trigger fails flagging a late
+// deposit) is not sent; another order's payout in the same pass is.
+func TestSendSkipsOrderWhoseSettleFailed(t *testing.T) {
+	p := newPayEnv(t)
+	p.setPayoutAddress(p.vendor, "fake-testnet-vendor")
+	bad, badAddr := p.newOrder(stateAwaitingPayment)
+	good, goodAddr := p.newOrder(stateAwaitingPayment)
+	p.fake.Deposit(badAddr, "tx-settle-bad", 0, 100000, 3)
+	p.fake.Deposit(goodAddr, "tx-settle-good", 0, 120000, 3)
+	p.poll()
+	p.complete(bad)
+	p.complete(good)
+	for _, q := range []string{
+		`CREATE FUNCTION a97_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'a97 forced settle failure'; END $$`,
+		`CREATE TRIGGER a97_fail BEFORE UPDATE OF flagged ON payments FOR EACH ROW WHEN (NEW.txid='tx-settle-late' AND NEW.flagged) EXECUTE FUNCTION a97_fail()`,
+	} {
+		if _, err := p.DB.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p.fake.Deposit(badAddr, "tx-settle-late", 0, 5000, 3)
+	if err := p.A.pollOnce(context.Background()); err == nil || !strings.Contains(err.Error(), "a97 forced settle failure") {
+		t.Fatalf("settle failure not reported: %v", err)
+	}
+	sends := p.fake.Sends()
+	if st, _, _, _ := p.payout(bad); st != "pending" || len(sends) != 1 || sends[0].Amount != 120000 {
+		t.Fatalf("order whose settle failed: payout %s, sends %+v", st, sends)
+	}
+	if st, _, _, _ := p.payout(good); st != "sent" {
+		t.Fatalf("other order's payout: %s", st)
+	}
+	if _, err := p.DB.Exec("DROP TRIGGER a97_fail ON payments"); err != nil {
+		t.Fatal(err)
+	}
+	p.poll()
+	if st, _, _, amt := p.payout(bad); st != "sent" || amt != 100000 || len(p.fake.Sends()) != 2 {
+		t.Fatalf("after settling: payout %s %d, sends %d", st, amt, len(p.fake.Sends()))
+	}
+	if n := p.count("SELECT count(*) FROM payments WHERE txid='tx-settle-late' AND flagged AND NOT credited"); n != 1 {
+		t.Fatalf("late deposit flagged: %d", n)
+	}
+}
+
+// A-97: a payout the watcher held (credited deposit back below the threshold) resumes once the deposit
+// re-confirms, whatever the age of the order and its address.
+func TestOldHeldPayoutResumesAfterReconfirm(t *testing.T) {
+	p := newPayEnv(t)
+	p.setPayoutAddress(p.vendor, "fake-testnet-vendor")
+	order := p.completedWithPayout("tx-old-held")
+	p.fake.SetConfirmations("tx-old-held", 1)
+	p.poll()
+	if st, _, _, _ := p.payout(order); st != "held" || p.str("SELECT error FROM payouts WHERE order_id=$1", order) != heldReason {
+		t.Fatalf("payout during reorg: %s", st)
+	}
+	for _, q := range []string{
+		"UPDATE orders SET updated=now()-interval '40 days' WHERE id=$1",
+		"UPDATE payment_addresses SET created=now()-interval '40 days' WHERE order_id=$1",
+	} {
+		if _, err := p.DB.Exec(q, order); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p.poll()
+	if st, _, _, _ := p.payout(order); st != "held" || len(p.fake.Sends()) != 0 {
+		t.Fatalf("payout below threshold: %s sends %d", st, len(p.fake.Sends()))
+	}
+	p.fake.SetConfirmations("tx-old-held", 3)
+	p.poll()
+	if st, _, _, _ := p.payout(order); st != "sent" || len(p.fake.Sends()) != 1 {
+		t.Fatalf("payout after re-confirmation: %s sends %d", st, len(p.fake.Sends()))
+	}
+}
+
+// A-97: a payout that becomes pending in the middle of a pass (here the vendor saves an address while the
+// wallet is read) waits for the next pass, which reads its order's address and sends it.
+func TestPayoutPendingMidPassWaitsForNextPass(t *testing.T) {
+	p := newPayEnv(t)
+	order := p.completedWithPayout("tx-midpass")
+	if _, err := p.DB.Exec("UPDATE orders SET updated=now()-interval '48 hours' WHERE id=$1", order); err != nil {
+		t.Fatal(err)
+	}
+	p.fake.incomingHook = func() {
+		p.fake.incomingHook = nil
+		p.check(p.do("POST", "/account/payout", p.vendorSess, url.Values{"currency": {"BTC"}, "address": {"fake-testnet-vendor"}, "password": {testPassword}}), 303)
+	}
+	p.poll()
+	if st, _, _, _ := p.payout(order); st != "pending" || len(p.fake.Sends()) != 0 {
+		t.Fatalf("payout released mid-pass: %s sends %d", st, len(p.fake.Sends()))
+	}
+	p.poll()
+	if st, _, _, _ := p.payout(order); st != "sent" || len(p.fake.Sends()) != 1 {
+		t.Fatalf("payout on the next pass: %s sends %d", st, len(p.fake.Sends()))
+	}
+}
+
+// A-97 pin: the send claim re-checks the ledger. A failed payout the administrator requeues after this pass
+// settled its order, while a credited deposit is below the threshold, is not claimed; the next pass holds it.
+func TestSendClaimRechecksCreditedDeposits(t *testing.T) {
+	p := newPayEnv(t)
+	p.setPayoutAddress(p.vendor, "fake-testnet-vendor")
+	order := p.completedWithPayout("tx-recheck")
+	p.fake.sendErr = errors.New("wallet connection reset")
+	if err := p.A.pollOnce(context.Background()); err == nil {
+		t.Fatal("send failure not reported")
+	}
+	p.fake.sendErr = nil
+	p.fake.SetConfirmations("tx-recheck", 1)
+	p.poll()
+	if st, _, _, _ := p.payout(order); st != "failed" {
+		t.Fatalf("payout after the failed send: %s", st)
+	}
+	if code, body := p.payoutActionConfirmed(p.adminSess, p.payoutID(order), "requeue", testPassword); code != 303 {
+		t.Fatalf("requeue: %d %s", code, body)
+	}
+	if err := p.A.sendPayouts(context.Background(), p.fake, []string{order}); err != nil {
+		t.Fatal(err)
+	}
+	if st, _, _, _ := p.payout(order); st != "pending" || len(p.fake.Sends()) != 0 {
+		t.Fatalf("payout %s sends %d: claimed while a credited deposit is below the threshold", st, len(p.fake.Sends()))
+	}
+	p.poll()
+	if st, _, _, _ := p.payout(order); st != "held" || len(p.fake.Sends()) != 0 {
+		t.Fatalf("next pass: payout %s sends %d", st, len(p.fake.Sends()))
+	}
+}
+
+// A-97 pin: recording a send's outcome is a compare-and-set on state 'sending'. An administrator who marks a
+// stuck send as sent (with the wallet's transaction ID) while the wallet call is still running keeps that
+// record; the late outcome does not overwrite it.
+func TestLateRecordDoesNotOverwriteAdminResolution(t *testing.T) {
+	p := newPayEnv(t)
+	p.setPayoutAddress(p.vendor, "fake-testnet-vendor")
+	order := p.completedWithPayout("tx-late-record")
+	entered, release := make(chan struct{}), make(chan struct{})
+	p.fake.sendHook = func() {
+		close(entered)
+		<-release
+	}
+	done := make(chan error, 1)
+	go func() { done <- p.A.pollOnce(context.Background()) }()
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the pass never reached the wallet send")
+	}
+	if _, err := p.DB.Exec("UPDATE payouts SET updated=now()-interval '6 minutes' WHERE order_id=$1", order); err != nil {
+		close(release)
+		t.Fatal(err)
+	}
+	adminTxid := strings.Repeat("ab", 32)
+	code, body := p.payoutAction(p.adminSess, p.payoutID(order), "sent", adminTxid, testPassword)
+	close(release)
+	if code != 303 {
+		t.Fatalf("mark sent: %d %s", code, body)
+	}
+	if err := <-done; err == nil || !strings.Contains(err.Error(), "recorded as sending only") {
+		t.Fatalf("late record: %v", err)
+	}
+	p.fake.sendHook = nil
+	if st, txid, _, _ := p.payout(order); st != "sent" || txid != adminTxid || len(p.fake.Sends()) != 1 {
+		t.Fatalf("payout %s %s sends %d: the late outcome overwrote the administrator's record", st, txid, len(p.fake.Sends()))
+	}
+	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE '%sent: fake-payout-%'", order); n != 0 {
+		t.Fatalf("late send events: %d", n)
+	}
+	p.poll()
+	if len(p.fake.Sends()) != 1 {
+		t.Fatalf("sends after another pass: %d", len(p.fake.Sends()))
 	}
 }

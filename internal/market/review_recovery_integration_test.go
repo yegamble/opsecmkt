@@ -50,7 +50,7 @@ func TestReviewRestoreGateActivatedDuringPayoutPass(t *testing.T) {
 	p.fake.sendHook = func() {
 		agExec(p.testEnv, "INSERT INTO settings(key,value) VALUES('payments_recovery_required','true')")
 	}
-	if err := p.A.sendPayouts(context.Background(), p.fake); err != nil {
+	if err := p.A.sendPayouts(context.Background(), p.fake, []string{first, second}); err != nil {
 		t.Fatal(err)
 	}
 	p.fake.sendHook = nil

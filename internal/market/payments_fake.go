@@ -22,6 +22,8 @@ type fakeProvider struct {
 	sendHook func()
 	// sendCtxErrs records ctx.Err() as Send saw it after sendHook (shutdown must not cancel a send).
 	sendCtxErrs []error
+	// incomingHook, when set, runs at the start of Incoming (tests use it to act in the middle of a pass).
+	incomingHook func()
 	// incomingErr fails Incoming (wallet outage); checkErr and syncing drive Check.
 	incomingErr, checkErr error
 	syncing               bool
@@ -93,6 +95,9 @@ func (f *fakeProvider) SetWallet(incomingErr, checkErr error, syncing bool) {
 }
 
 func (f *fakeProvider) Incoming(_ context.Context, addresses []string) ([]Incoming, error) {
+	if f.incomingHook != nil {
+		f.incomingHook()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.incomingErr != nil {

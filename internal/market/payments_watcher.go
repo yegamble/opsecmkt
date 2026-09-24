@@ -153,14 +153,16 @@ func (a *App) pollCurrency(ctx context.Context, p PaymentProvider) error {
 	// reorgs), plus recently changed terminal orders (late confirmations, refunds), plus closed orders whose
 	// address was issued within 30 days and that still have a deposit below the threshold or a confirmed deposit
 	// neither credited (paid out / counted) nor flagged. Credited deposits below threshold remain watched even
-	// after a conflict was flagged, so held payouts can recover. Older addresses of closed orders are not polled
-	// by this recovery path.
+	// after a conflict was flagged. Whatever their age, orders with a payout pending (sendPayouts sends only
+	// payouts of orders read and settled in this pass) or held by the watcher (so it resumes once the deposit
+	// re-confirms) are watched too. Other older addresses of closed orders are not polled.
 	rows, err := a.db.QueryContext(ctx, `SELECT pa.address,pa.order_id FROM payment_addresses pa JOIN orders o ON o.id=pa.order_id
 		WHERE pa.currency=$1 AND (o.state IN ('awaiting_payment',`+fundedOpenStates+`) OR (o.state<>'draft' AND o.updated > now()-interval '24 hours')
 			OR (o.state IN ('cancelled','resolved','completed') AND pa.created > now()-interval '30 days' AND EXISTS (SELECT 1 FROM payments pm
 				WHERE pm.order_id=o.id AND ((pm.credited AND pm.confirmations<$2)
-					OR (NOT pm.flagged AND (pm.confirmations BETWEEN 0 AND $2-1 OR (pm.confirmations>=$2 AND NOT pm.credited)))))))
-		ORDER BY o.updated`, cur, int64(p.Confirmations()))
+					OR (NOT pm.flagged AND (pm.confirmations BETWEEN 0 AND $2-1 OR (pm.confirmations>=$2 AND NOT pm.credited))))))
+			OR EXISTS (SELECT 1 FROM payouts po WHERE po.order_id=o.id AND (po.state='pending' OR (po.state='held' AND po.error=$3))))
+		ORDER BY o.updated`, cur, int64(p.Confirmations()), heldReason)
 	if err != nil {
 		return err
 	}
@@ -191,12 +193,18 @@ func (a *App) pollCurrency(ctx context.Context, p PaymentProvider) error {
 			}
 		}
 	}
+	// Only payouts of orders whose address was read and whose ledger was applied in this pass are sent. A payout
+	// that becomes pending while the pass runs (address saved, administrator release or requeue) for an order not
+	// read in it waits for the next pass, which watches it.
+	var settled []string
 	for _, id := range orders {
 		if err = a.settleOrder(ctx, p, id, !unread[id]); err != nil {
 			errs = append(errs, fmt.Errorf("order %s: %w", id[:min(8, len(id))], err))
+		} else if !unread[id] {
+			settled = append(settled, id)
 		}
 	}
-	if err = a.sendPayouts(ctx, p); err != nil {
+	if err = a.sendPayouts(ctx, p, settled); err != nil {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
@@ -468,9 +476,10 @@ func (a *App) flagOrder(ctx context.Context, tx *sql.Tx, o *Order, note string) 
 	return nil
 }
 
-// sendPayouts claims each pending payout (committed pending -> sending) before a single wallet call, then
-// records sent+txid or failed+error. Payouts left in sending (crash, database error) are never retried.
-func (a *App) sendPayouts(ctx context.Context, p PaymentProvider) error {
+// sendPayouts claims each pending payout of the given orders (committed pending -> sending) before a single
+// wallet call, then records sent+txid or failed+error. Payouts left in sending (crash, database error) are
+// never retried. orders are those whose deposit address was read and whose ledger was applied in this pass.
+func (a *App) sendPayouts(ctx context.Context, p PaymentProvider, orders []string) error {
 	// Read the restore gate directly, rather than cached page settings. Monitoring
 	// may continue during recovery, but no payout may leave the restored wallet.
 	var recoveryRequired bool
@@ -481,7 +490,7 @@ func (a *App) sendPayouts(ctx context.Context, p PaymentProvider) error {
 		return nil
 	}
 	cur := p.Currency()
-	rows, err := a.db.QueryContext(ctx, "SELECT id FROM payouts WHERE state='pending' AND currency=$1 ORDER BY id LIMIT 50", cur)
+	rows, err := a.db.QueryContext(ctx, "SELECT id FROM payouts WHERE state='pending' AND currency=$1 AND order_id=ANY($2) ORDER BY id LIMIT 50", cur, orders)
 	if err != nil {
 		return err
 	}
