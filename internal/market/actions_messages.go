@@ -21,8 +21,9 @@ func messageAction(c *actionCtx) (actionResult, error) {
 	if err != nil {
 		return actionResult{}, fail(400, "Recipient not found")
 	}
-	// P2: packet inspection rejects anything that is not OpenPGP-encrypted and records the recipient-key match.
-	match, err := inspectMessage(c, body, recipient)
+	// P2: packet inspection rejects anything that is not OpenPGP-encrypted and records the recipient-key
+	// match; only the canonical re-armor of the packets is stored (A-67).
+	body, match, err := inspectMessage(c, body, recipient)
 	if err != nil {
 		return actionResult{}, err
 	}

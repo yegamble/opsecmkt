@@ -74,7 +74,7 @@ Each package records its own acceptance checks here and edits only its subsectio
 - [ ] While PGP sign-in is on, turning it off and changing or removing the key need the current password (and an authenticator code when TOTP is enrolled); a session alone gets 400/401 (`TestSensitiveChangesNeedPassword`). While TOTP is enrolled, changing or removing the key and turning PGP sign-in on need the password and a current code as well (`TestStolenSessionCannotAddPGPFactorToTOTPAccount`).
 - [ ] Saving the profile with an unchanged stored key that no longer parses succeeds (`TestLegacyUnparseableKeySavesUnchanged`).
 - [ ] Challenge nonces and sign-in codes are stored only as SHA-256; GET requests never create them.
-- [ ] Message status reflects packet inspection: plaintext, signed-only and fake armor are rejected at send; stored messages show "to recipient’s key", "NOT to recipient’s key" or "recipient unknown", never "Encrypted" for plaintext.
+- [ ] Message status reflects packet inspection: plaintext, signed-only and fake armor, and text before, inside or after the single armored block, are rejected at send; only a canonical re-armor of the packets is stored (armor headers dropped); stored messages show "to recipient’s key", "NOT to recipient’s key" or "recipient unknown", never "Encrypted" for plaintext (`TestMessagePlaintextInsideArmorRejected`, `TestMessageArmorCanonicalised`).
 
 ### P3 Orders
 
