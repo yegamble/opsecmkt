@@ -131,6 +131,40 @@ func TestFlaggedOrderReadableByNotifiedStaff(t *testing.T) {
 	}
 }
 
+// A-118: a suspended moderator is not sent payment-review notifications; once restored it is again.
+func TestFlagNotificationSkipsSuspendedStaff(t *testing.T) {
+	p := newPayEnv(t)
+	reviews := func(uid, order string) int {
+		return p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE 'Payment review needed for order '||$2||'%'", uid, order[:8])
+	}
+	var adminID string
+	if err := p.DB.QueryRow("SELECT id FROM users WHERE handle LIKE 'padmin%'").Scan(&adminID); err != nil {
+		t.Fatal(err)
+	}
+	p.check(p.do("POST", "/admin/suspend", p.adminSess, suspendForm("suspend", p.mod.Handle)), 303)
+
+	txid := longTxid("ee")
+	p.paidByWatcher(p.order, p.addr, txid)
+	p.fake.SetConfirmations(txid, -1)
+	p.poll()
+	if p.count("SELECT count(*) FROM payments WHERE order_id=$1 AND flagged", p.order) != 1 {
+		t.Fatal("conflicted deposit not flagged")
+	}
+	if a, m := reviews(adminID, p.order), reviews(p.mod.ID, p.order); a != 1 || m != 0 {
+		t.Fatalf("review notifications with the moderator suspended: admin %d, moderator %d", a, m)
+	}
+
+	p.check(p.do("POST", "/admin/suspend", p.adminSess, suspendForm("restore", p.mod.Handle)), 303)
+	order, addr := p.newOrder(stateAwaitingPayment)
+	txid = longTxid("ef")
+	p.paidByWatcher(order, addr, txid)
+	p.fake.SetConfirmations(txid, -1)
+	p.poll()
+	if a, m := reviews(adminID, order), reviews(p.mod.ID, order); a != 1 || m != 1 {
+		t.Fatalf("review notifications after restore: admin %d, moderator %d", a, m)
+	}
+}
+
 func TestModeratorDeskListsPaymentReviews(t *testing.T) {
 	p := newPayEnv(t)
 	_, modSess := p.user("dmod_"+randomToken()[:6], "moderator")
