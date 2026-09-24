@@ -21,7 +21,7 @@ Evidence tier as in `repo-map.md`.
 | 5 | 2026-09-24 | Resume after owner merged PR #7 (main 4c360d2); no council needed (ready P0/P1 ≥ 3); rule A-66/A-67/A-72; wave 4 | chair; implementers ×3, qa-release | A-66/A-67/A-72 fixed; full local gate + CI 35952354841 green on 766c87f (PR #8); QA pending; bash -n gate text fixed; A-73 added |
 | 6 | 2026-09-24 | Wave 5 (A-53, A-54, A-26 + A-71), started beside iteration-5 QA; A-74 follow-up | implementers ×4, qa-release | A-66/A-67/A-72 VERIFIED; wave 5 fixed, full local gate + CI 35954364843 green on bf1ddc9, QA pending; A-74 fixed |
 | 7 | 2026-09-24 | Wave 6 (A-8, A-10, A-11) with rulings written for A-8…A-11 | chair; implementers ×3, qa-release | all fixed and integrated (A-10/A-11 doc conflict resolved by the chair); CI 35956392431 green on 30be215; A-75 added; QA pending |
-| 8 | 2026-09-24 | Wave 7 (A-9, A-28, A-29) | implementers ×3, qa-release | all VERIFIED on 0a1b75d (CI 35958151032; local gate incl. Playwright 336/336); A-76, A-77, A-78 added. Iterations 5–8 of this run: 16 items VERIFIED, 0 reopened; max iterations reached |
+| 8 | 2026-09-24 | Wave 7 (A-9, A-28, A-29) | implementers ×3, qa-release | all VERIFIED on 0a1b75d (CI 35958151032; local gate incl. Playwright 336/336); A-76, A-77, A-78 added. Iterations 5–8 of this run: 14 items VERIFIED (A-66, A-67, A-72, A-53, A-54, A-26, A-71, A-74, A-8, A-10, A-11, A-9, A-28, A-29), 0 reopened; max iterations reached |
 
 ## P0 — release blockers
 
