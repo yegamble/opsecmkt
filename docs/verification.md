@@ -45,9 +45,11 @@ printed `service "app" depends on undefined service "db": invalid compose projec
 `docker compose --dry-run up -d` gave 1 or 2 spurious failures (`app is missing dependency db`), and an
 earlier dry-run version of the check failed 3 of 8 runs (that error, or a plan missing the `tor-mirror` lines).
 `scripts/test-mirror-commands.sh` therefore resolves commands with `config --services`; it passed for all
-four installer configurations in 10 of 10 runs, and failed with the message above when the guide's `up -d`
-line was temporarily replaced by the old command. CI runs it in the Tor rows with the mirror on; no CI run of
-it exists yet.
+four installer configurations, and failed with the message above when the guide's `up -d`
+line was temporarily replaced by the old command. CI runs it in the Tor rows with the mirror on (first green in
+run 36034975984). QA then found one check flaky: it piped `config --services` into `grep -q` under `pipefail`,
+so Compose sometimes hit a broken pipe after the first match (4/10 full-script runs under load on macOS, 2/200 of
+the pipeline on `ubuntu:24.04`); the list is now read in full before matching.
 
 ## Tor restarts with the app (war-room A-134) — 2026-09-24
 

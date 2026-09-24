@@ -128,7 +128,10 @@ for install in "${installs[@]}"; do
   # The guide's first step: add mirror to COMPOSE_PROFILES, keeping the installer's profiles.
   write_env "${profiles:+$profiles,}mirror"
   if [[ $database == internal ]]; then
-    (cd "$work" && docker compose config --services) | grep -qx db || fail "$label + mirror: the database was dropped"
+    # Read the whole list first: grep -q in a pipe exits at the first match, and under pipefail Compose's
+    # next write then fails with a broken pipe (A-140 QA: 2/200 on Ubuntu, 4/10 under load on macOS).
+    services=$(cd "$work" && docker compose config --services)
+    grep -qx db <<< "$services" || fail "$label + mirror: the database was dropped"
   fi
   while IFS= read -r command; do
     [[ -n $command ]] || continue
