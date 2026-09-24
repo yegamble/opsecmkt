@@ -46,8 +46,8 @@ anything else stops the preview at startup. `ADDR` is ignored in preview mode.
 
 ### Docker installation
 
-Install Docker Engine/Desktop with Compose v2, OpenSSL and curl. Start a local
-marketplace with one command:
+Install Docker Engine/Desktop with Compose v2.17 or later, OpenSSL and curl.
+Start a local marketplace with one command:
 
 ```sh
 ./scripts/install.sh --local
