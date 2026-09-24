@@ -52,13 +52,13 @@ func TestUnreachableBitcoinNodeIsUnavailableNotFatal(t *testing.T) {
 	if !strings.Contains(msg, "bitcoin RPC unreachable") || disabled || strings.Contains(msg, "rpc-secret") {
 		t.Fatalf("unavailable error %q disabled=%v", msg, disabled)
 	}
-	if skip := a.refreshProviders(ctx); !strings.Contains(skip["BTC"], "unreachable") {
+	if skip, _ := a.refreshProviders(ctx); !strings.Contains(skip["BTC"], "unreachable") {
 		t.Fatalf("pass not skipped while the node is down: %v", skip)
 	}
 	// The node comes back after a restart without the wallet loaded: the next pass loads it.
 	s.down.Store(false)
 	core.set(func(c *payCore) { c.walletLoaded = false })
-	if skip := a.refreshProviders(ctx); len(skip) != 0 {
+	if skip, _ := a.refreshProviders(ctx); len(skip) != 0 {
 		t.Fatalf("recovered node still skipped: %v", skip)
 	}
 	p := a.provider("BTC")
@@ -83,7 +83,7 @@ func TestMissingBitcoinWalletIsUnavailableUntilCreated(t *testing.T) {
 		t.Fatalf("missing wallet: %q", msg)
 	}
 	core.set(func(c *payCore) { c.walletGone = false })
-	if skip := a.refreshProviders(ctx); len(skip) != 0 || a.provider("BTC") == nil {
+	if skip, _ := a.refreshProviders(ctx); len(skip) != 0 || a.provider("BTC") == nil {
 		t.Fatalf("created wallet not picked up: %v", skip)
 	}
 }
@@ -98,13 +98,13 @@ func TestNodeReportingMainnetAfterStartupStaysDisabled(t *testing.T) {
 		t.Fatalf("unreachable node stopped startup: %v", err)
 	}
 	s.down.Store(false)
-	skip := a.refreshProviders(ctx)
+	skip, _ := a.refreshProviders(ctx)
 	msg, disabled := a.unavailableError("BTC")
 	if a.provider("BTC") != nil || !disabled || !strings.Contains(msg, `bitcoin chain "main" is not a test network`) || skip["BTC"] != msg {
 		t.Fatalf("mainnet node after startup: provider=%v disabled=%v msg=%q skip=%v", a.provider("BTC"), disabled, msg, skip)
 	}
 	calls := s.called("getblockchaininfo")
-	if skip = a.refreshProviders(ctx); skip["BTC"] != msg || s.called("getblockchaininfo") != calls {
+	if skip, _ = a.refreshProviders(ctx); skip["BTC"] != msg || s.called("getblockchaininfo") != calls {
 		t.Fatal("a refused provider was checked again or its reason dropped")
 	}
 }
@@ -137,21 +137,21 @@ func TestRunningBitcoinProviderRecoversWalletAndSkipsWhileSyncing(t *testing.T) 
 		t.Fatalf("startup: %v", err)
 	}
 	core.set(func(c *payCore) { c.walletLoaded = false }) // bitcoind restarted without load_on_startup
-	if skip := a.refreshProviders(ctx); len(skip) != 0 || s.called("loadwallet") != 1 {
+	if skip, _ := a.refreshProviders(ctx); len(skip) != 0 || s.called("loadwallet") != 1 {
 		t.Fatalf("wallet not reloaded: %v loadwallet=%d", skip, s.called("loadwallet"))
 	}
 	core.set(func(c *payCore) { c.ibd = true })
-	if skip := a.refreshProviders(ctx); skip["BTC"] != syncingReason || a.provider("BTC") == nil {
+	if skip, _ := a.refreshProviders(ctx); skip["BTC"] != syncingReason || a.provider("BTC") == nil {
 		t.Fatalf("initial block download not skipped: %v", skip)
 	}
 	core.set(func(c *payCore) { c.ibd = false })
 	s.down.Store(true)
-	if skip := a.refreshProviders(ctx); !strings.Contains(skip["BTC"], "Wallet check failed") || a.provider("BTC") == nil {
+	if skip, _ := a.refreshProviders(ctx); !strings.Contains(skip["BTC"], "Wallet check failed") || a.provider("BTC") == nil {
 		t.Fatalf("outage must skip the pass but keep the provider: %v", skip)
 	}
 	s.down.Store(false)
 	core.set(func(c *payCore) { c.chain = "main" })
-	skip := a.refreshProviders(ctx)
+	skip, _ := a.refreshProviders(ctx)
 	if msg, disabled := a.unavailableError("BTC"); a.provider("BTC") != nil || !disabled || skip["BTC"] != msg || !strings.Contains(msg, "not a test network") {
 		t.Fatalf("mainnet after startup kept the provider: %v %q", skip, msg)
 	}
@@ -171,19 +171,19 @@ func TestMoneroWalletReopenedAndDaemonSyncState(t *testing.T) {
 		t.Fatalf("unavailable wallet: %q", msg)
 	}
 	s.down.Store(false)
-	if skip := a.refreshProviders(ctx); len(skip) != 0 || a.provider("XMR") == nil || a.provider("XMR").Network() != "stagenet" || s.called("open_wallet") != 1 {
+	if skip, _ := a.refreshProviders(ctx); len(skip) != 0 || a.provider("XMR") == nil || a.provider("XMR").Network() != "stagenet" || s.called("open_wallet") != 1 {
 		t.Fatalf("wallet not opened and promoted: %v", skip)
 	}
 	w.set(func(m *payMoneroWallet) { m.open = false }) // monero-wallet-rpc restarted with no wallet open
-	if skip := a.refreshProviders(ctx); len(skip) != 0 || s.called("open_wallet") != 2 {
+	if skip, _ := a.refreshProviders(ctx); len(skip) != 0 || s.called("open_wallet") != 2 {
 		t.Fatalf("wallet not reopened: %v open_wallet=%d", skip, s.called("open_wallet"))
 	}
 	w.set(func(m *payMoneroWallet) { m.height, m.target = 100, 500 })
-	if skip := a.refreshProviders(ctx); skip["XMR"] != syncingReason {
+	if skip, _ := a.refreshProviders(ctx); skip["XMR"] != syncingReason {
 		t.Fatalf("syncing daemon not skipped: %v", skip)
 	}
 	w.set(func(m *payMoneroWallet) { m.target = 0 }) // monerod reports 0 once synchronized
-	if skip := a.refreshProviders(ctx); len(skip) != 0 {
+	if skip, _ := a.refreshProviders(ctx); len(skip) != 0 {
 		t.Fatalf("synced daemon skipped: %v", skip)
 	}
 	w.set(func(m *payMoneroWallet) { m.nettype = "mainnet" })

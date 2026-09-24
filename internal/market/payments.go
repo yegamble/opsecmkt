@@ -33,7 +33,13 @@ type PaymentProvider interface {
 // and at the start of every watcher pass, so a restarted node or wallet service is picked up again.
 // An error for which isRefusal is true means the node is not (or no longer) on an allowed test network.
 type providerChecker interface {
-	Check(ctx context.Context) (syncing bool, err error)
+	Check(ctx context.Context) (nodeStatus, error)
+}
+
+// nodeStatus is what a provider's Check reports about its node and wallet.
+type nodeStatus struct {
+	Syncing bool
+	Tip     int64
 }
 
 // refusalError marks a node or wallet that is not on an allowed test network. At startup it is fatal; once
@@ -66,18 +72,18 @@ type unavailableProvider struct {
 }
 
 // checkProvider runs the provider's own Check (when it has one) and then the generic network guard.
-func checkProvider(ctx context.Context, p PaymentProvider) (bool, error) {
-	var syncing bool
+func checkProvider(ctx context.Context, p PaymentProvider) (nodeStatus, error) {
+	var st nodeStatus
 	if c, ok := p.(providerChecker); ok {
 		var err error
-		if syncing, err = c.Check(ctx); err != nil {
-			return false, err
+		if st, err = c.Check(ctx); err != nil {
+			return nodeStatus{}, err
 		}
 	}
 	if n := strings.ToLower(p.Network()); n == "main" || n == "mainnet" || n == "" {
-		return false, refusef("%s provider network %q is not a test network", p.Currency(), p.Network())
+		return nodeStatus{}, refusef("%s provider network %q is not a test network", p.Currency(), p.Network())
 	}
-	return syncing, nil
+	return st, nil
 }
 
 // initPayments builds the providers from registered factories during New() (not in preview). A node that
@@ -127,6 +133,20 @@ func (a *App) providers() map[string]PaymentProvider {
 	return out
 }
 
+// confirmationThreshold returns the confirmation threshold of currency's provider, working or configured but
+// unavailable in this process (not disabled); 0 when there is none, so only conflicted deposits are below it.
+func (a *App) confirmationThreshold(currency string) int64 {
+	a.payMu.RLock()
+	defer a.payMu.RUnlock()
+	if p := a.payments[currency]; p != nil {
+		return int64(p.Confirmations())
+	}
+	if u := a.unavailable[currency]; u != nil && !u.disabled {
+		return int64(u.p.Confirmations())
+	}
+	return 0
+}
+
 // unavailableError returns the last check error for a configured currency that is not working ("" otherwise).
 func (a *App) unavailableError(currency string) (msg string, disabled bool) {
 	a.payMu.RLock()
@@ -146,8 +166,9 @@ func (a *App) paymentsConfigured() bool {
 // refreshProviders runs at the start of every watcher pass, in every process. Unavailable providers are
 // checked again and promoted once they pass the test-network guard; working providers are checked so a
 // restarted wallet is loaded or opened again. The result maps each currency that must not be polled this
-// pass to the reason (check failed, node syncing, provider disabled).
-func (a *App) refreshProviders(ctx context.Context) map[string]string {
+// pass to the reason (check failed, node syncing, provider disabled); tips maps each other checked currency
+// whose node reported a height to that tip (pollOnce compares it with the highest tip recorded).
+func (a *App) refreshProviders(ctx context.Context) (skip map[string]string, tips map[string]int64) {
 	a.checkMu.Lock() // a provider's first successful Check records its network; never run two at once
 	defer a.checkMu.Unlock()
 	a.payMu.RLock()
@@ -160,7 +181,7 @@ func (a *App) refreshProviders(ctx context.Context) map[string]string {
 		waiting[c] = u
 	}
 	a.payMu.RUnlock()
-	skip := map[string]string{}
+	skip, tips = map[string]string{}, map[string]int64{}
 	for cur, u := range waiting {
 		a.payMu.RLock()
 		disabled, last := u.disabled, u.err
@@ -169,9 +190,9 @@ func (a *App) refreshProviders(ctx context.Context) map[string]string {
 			skip[cur] = last
 			continue
 		}
-		syncing, err := checkProvider(ctx, u.p)
+		st, err := checkProvider(ctx, u.p)
 		if ctx.Err() != nil {
-			return skip
+			return skip, tips
 		}
 		a.payMu.Lock()
 		switch {
@@ -187,8 +208,10 @@ func (a *App) refreshProviders(ctx context.Context) map[string]string {
 		}
 		if err != nil {
 			skip[cur] = u.err
-		} else if syncing {
+		} else if st.Syncing {
 			skip[cur] = syncingReason
+		} else if st.Tip > 0 {
+			tips[cur] = st.Tip
 		}
 		a.payMu.Unlock()
 	}
@@ -196,9 +219,9 @@ func (a *App) refreshProviders(ctx context.Context) map[string]string {
 		if _, ok := p.(providerChecker); !ok {
 			continue
 		}
-		syncing, err := checkProvider(ctx, p)
+		st, err := checkProvider(ctx, p)
 		if ctx.Err() != nil {
-			return skip
+			return skip, tips
 		}
 		switch {
 		case isRefusal(err):
@@ -211,14 +234,20 @@ func (a *App) refreshProviders(ctx context.Context) map[string]string {
 			skip[cur] = msg
 		case err != nil:
 			skip[cur] = "Wallet check failed; watcher pass skipped (no deposits read, no expiry, no payouts): " + truncate(err.Error(), 300)
-		case syncing:
+		case st.Syncing:
 			skip[cur] = syncingReason
+		case st.Tip > 0:
+			tips[cur] = st.Tip
 		}
 	}
-	return skip
+	return skip, tips
 }
 
 const syncingReason = "Node is still syncing; watcher pass skipped (no deposits read, no expiry, no payouts) until it catches up."
+
+// tipBehindPrefix starts the reason a pass is skipped because the node's tip is below the highest tip recorded
+// for the currency (payment_status.tip_height); like syncing, it is not reported as an error.
+const tipBehindPrefix = "Node is behind the highest tip recorded"
 
 var backgroundTasks []func(ctx context.Context, a *App)
 

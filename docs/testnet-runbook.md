@@ -144,7 +144,9 @@ disputed or resolved order, or one with a payment flagged for review); otherwise
 - **Stuck in sending**: claimed more than 5 minutes ago with no recorded outcome (crash or database error
   after the wallet call); it may have been broadcast.
 - **Held**: a credited deposit is conflicted or re-confirming (the watcher releases these itself once the
-  deposit is confirmed again).
+  deposit is confirmed again). While the deposit is still below the threshold the row offers no *Release*
+  form; it names the deposit (transaction ID and output), its deposit address and its confirmations and links
+  to the order. Only *Mark sent* is offered, for a payout you already sent by hand.
 - **Held after a restore from backup — may already have been sent**: the payout was pending, sending,
   blocked or held in a restored dump (its error starts `Restored from backup:`). It is never released
   automatically, and it may have been broadcast after the backup was taken.
@@ -205,7 +207,10 @@ the state you saw, so a double click or a second administrator cannot queue it t
   Include pending and pool transfers in that check, and if the wallet shows the transaction use **Mark
   sent** instead.
 - **Release held payout** (held): the payout goes back to the queue and the next pass sends it once.
-  Refused while a credited deposit for the order is still conflicted or below the threshold. For a payout
+  Refused (409, nothing changed) while a credited deposit for the order is still conflicted or below the
+  threshold. The watcher releases its own hold once the deposit confirms again; a hold from a restore or a
+  suspension stays until you release it, which works once the deposit has confirmed again (the watcher keeps
+  reading that order's deposits while the payout is held, whatever its age). For a payout
   held by a restore the form also asks you to tick "I checked the wallet ... no transaction ... was
   broadcast"; the server refuses the release without it and records the confirmation in the audit trail
   and the order history. If the wallet shows the transaction use **Mark sent** instead. A payout that was
@@ -217,19 +222,28 @@ Each of these forms repeats the wallet check above in one line next to the check
 
 ### Handle a payment-review flag
 
-The watcher flags a deposit once (`payments.flagged`): it writes a system note ending "Moderator review
+The watcher flags a deposit (`payments.flagged`): it writes a system note ending "Moderator review
 required." to the order history and notifies every moderator and administrator ("Payment review needed for
-order <first 8 characters of the order ID>"). Open **Moderation desk → Payment review**
-(`/moderator#payment-review`): it lists flagged deposits newest first (the 100 most recent, with a notice when
-older ones are cut) with the full order ID linking to the order, amount, full transaction ID, reason and
-flag time. A moderator or administrator who is not party to the order can open its page read-only: history
-with the flag note, the deposit ledger (while the currency's wallet is configured) and any payout. No buyer or
+order <first 8 characters of the order ID>"). A locked transfer or a deposit after settlement is flagged once.
+A credited deposit that falls back below the threshold (conflicted, missing, or at a lower depth after a
+reorg) is announced once per episode while the order is open or its payout unsent: the buyer and the vendor
+are notified too (staff who are party to the order get that notification instead of the review one), and if
+it confirms again and later regresses again it is announced again. Nothing is announced while the node is
+behind the highest tip recorded (a restarted node catching up). Open **Moderation desk → Payment review**
+(`/moderator#payment-review`): it lists every open flag first, oldest first and never cut, then the 100 most
+recently flagged others with their count, each with the full order ID linking to the order, amount, full
+transaction ID, reason and flag time (the latest flag note for that deposit). A flag is open while its deposit
+is a locked transfer or a deposit after settlement, or while a credited deposit's regression has not confirmed
+again; the reason is read from the deposit's current confirmations. A moderator or administrator who is not
+party to the order can open its page read-only: history with the flag note, the deposit ledger (while the currency's wallet is configured) and any payout. No buyer or
 vendor action is offered, the order actions refuse staff, and digital delivery content stays hidden unless
 the order is disputed.
 
 | Reason on the desk | What happened | What the application already did |
 | --- | --- | --- |
 | Credited deposit conflicted or missing | A deposit counted toward payment was double-spent, replaced, reorganised away or is no longer in the wallet. | Order state unchanged. Any unsent payout for the order is held (one queued later starts held). If the deposit confirms again the watcher lifts its own hold. |
+| Credited deposit below threshold (N of T confirmations) | A deposit counted toward payment is back at a lower depth, usually a chain reorganisation (it may sit at 0 confirmations in the mempool). | As above: order unchanged, unsent payout held until it reaches the threshold again. |
+| Credited deposit confirmed again (N confirmations) | The flagged regression ended: the deposit reached the threshold again. Listed after the open flags. | The watcher lifted its own hold; a pending payout is sent on the next pass that reads the order. Nothing to do. |
 | Locked transfer (unlock time) | A Monero transfer with a non-zero `unlock_time`. | Never counted toward payment or paid out. The buyer was told to send an ordinary transfer. |
 | Deposit confirmed after settlement, not paid out | Extra funds confirmed after the order's single release or refund was queued (completed or resolved orders, or a cancellation that already queued a refund). | Not paid out: an order has exactly one payout. |
 
@@ -238,15 +252,16 @@ What staff can do:
 1. Look the transaction up in the wallet (the `btc` and `xmr` helpers from steps 2 and 3; for incoming funds use
    `btc -rpcwallet=opsecmkt gettransaction <txid>` or
    `xmr get_transfer_by_txid '{"txid":"<txid>"}'`).
-2. A conflicted deposit that confirms again needs nothing. One that is gone for good means the order was
-   never fully funded: leave its held payout held (*Release held payout* is refused while the deposit is
-   conflicted) and talk to both parties through Messages. If either party opens a dispute, the moderator
-   resolves it on the desk as usual; the resulting payout is held too.
+2. A conflicted or below-threshold deposit that confirms again needs nothing. One that is gone for good
+   means the order was never fully funded: leave its held payout held (/admin offers no *Release* while the
+   deposit is below the threshold, and the server refuses one) and talk to both parties through Messages. If
+   either party opens a dispute, the moderator resolves it on the desk as usual; the resulting payout is held
+   too.
 3. Locked transfers and extra funds after settlement sit in the pooled wallet. They normally belong to the
    buyer. Agree a return address with the buyer through Messages (ideally signed with their verified PGP key),
    send the funds back **by hand from the wallet** (`sendtoaddress` / `transfer`), and record it.
 
-There is no web action to dismiss a flag or pay out a flagged deposit, and a flag stays on the desk. A
+There is no web action to dismiss a flag or pay out a flagged deposit, and an open flag stays on the desk. A
 manual refund is recorded as a **written note** (an order-history event plus an audit row), **never as a
 payout row**: `payouts.order_id` is unique, so the order's single release or refund owns that row; do not
 insert a payout and do not use *Mark sent* on the order's payout for a manual transfer. Record the note with
