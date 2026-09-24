@@ -1172,6 +1172,65 @@ func TestCreditedDepositRegressionAnnouncedPerEpisode(t *testing.T) {
 	}
 }
 
+// QA10V-1: a watcher hold that a suspension (A-102) or a restore from backup converts into its own hold keeps
+// its order watched, however old the order and its address, so the ledger sees the deposit confirm again and an
+// administrator's release is accepted. Nothing is sent before that release, and the send follows it once.
+func TestConvertedWatcherHoldReleasableAfterReconfirm(t *testing.T) {
+	for _, via := range []string{"suspension", "restore"} {
+		t.Run(via, func(t *testing.T) {
+			p := newPayEnv(t)
+			p.setPayoutAddress(p.vendor, "fake-testnet-vendor")
+			tx := "tx-converted-" + via
+			order := p.completedWithPayout(tx)
+			p.fake.SetConfirmations(tx, 1)
+			p.poll()
+			if st, e := p.payoutError(order); st != "held" || e != heldReason {
+				t.Fatalf("watcher hold: %s %q", st, e)
+			}
+			for _, q := range []string{
+				"UPDATE orders SET updated=now()-interval '40 days' WHERE id=$1",
+				"UPDATE payment_addresses SET created=now()-interval '40 days' WHERE order_id=$1",
+			} {
+				if _, err := p.DB.Exec(q, order); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if via == "suspension" {
+				p.check(p.do("POST", "/admin/suspend", p.adminSess, suspendForm("suspend", p.vendor.Handle)), 303)
+				p.suspendedHeld("after suspension", order)
+			} else if _, err := p.DB.Exec("UPDATE payouts SET state='held',error=$2 WHERE order_id=$1", order, restoredHold); err != nil {
+				t.Fatal(err)
+			}
+			p.fake.SetConfirmations(tx, 6)
+			p.poll()
+			p.poll()
+			if n := p.count("SELECT confirmations FROM payments WHERE txid=$1", tx); n != 6 {
+				t.Fatalf("ledger not refreshed for the converted hold: %d confirmations", n)
+			}
+			if st, e := p.payoutError(order); st != "held" || e == heldReason || len(p.fake.Sends()) != 0 {
+				t.Fatalf("converted hold lifted by the watcher: %s %q sends %d", st, e, len(p.fake.Sends()))
+			}
+			var code int
+			var body string
+			if via == "suspension" {
+				p.check(p.do("POST", "/admin/suspend", p.adminSess, suspendForm("restore", p.vendor.Handle)), 303)
+				p.poll()
+				w := p.do("POST", "/admin/payout", p.adminSess, url.Values{"payout_id": {p.payoutID(order)}, "op": {"release"}, "password": {testPassword}, "address_checked": {"confirmed"}})
+				code, body = w.Code, w.Body.String()
+			} else {
+				code, body = p.payoutActionConfirmed(p.adminSess, p.payoutID(order), "release", testPassword)
+			}
+			if code != 303 || len(p.fake.Sends()) != 0 {
+				t.Fatalf("release after re-confirmation: %d sends %d %s", code, len(p.fake.Sends()), body)
+			}
+			p.poll()
+			if st, _, _, _ := p.payout(order); st != "sent" || len(p.fake.Sends()) != 1 {
+				t.Fatalf("after release: payout %s sends %d", st, len(p.fake.Sends()))
+			}
+		})
+	}
+}
+
 // A-98 upgrade: migration 056 rewrites the watcher's earlier hold text to heldReason (the watcher recognises its
 // holds by that exact text) and marks credited deposits already reported as conflicted as an announced
 // episode, so an upgrade neither strands a held payout nor announces an old conflict again.

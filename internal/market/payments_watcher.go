@@ -172,15 +172,17 @@ func (a *App) pollCurrency(ctx context.Context, p PaymentProvider) error {
 	// address was issued within 30 days and that still have a deposit below the threshold or a confirmed deposit
 	// neither credited (paid out / counted) nor flagged. Credited deposits below threshold remain watched even
 	// after a conflict was flagged. Whatever their age, orders with a payout pending (sendPayouts sends only
-	// payouts of orders read and settled in this pass) or held by the watcher (so it resumes once the deposit
-	// re-confirms) are watched too. Other older addresses of closed orders are not polled.
+	// payouts of orders read and settled in this pass) or held are watched too: the watcher's own hold resumes
+	// once the deposit re-confirms, and the ledger of a hold an administrator must release (a watcher hold
+	// converted by a suspension or a restore from backup) stays current, so the release is not refused on stale
+	// confirmations. Other older addresses of closed orders are not polled.
 	rows, err := a.db.QueryContext(ctx, `SELECT pa.address,pa.order_id FROM payment_addresses pa JOIN orders o ON o.id=pa.order_id
 		WHERE pa.currency=$1 AND (o.state IN ('awaiting_payment',`+fundedOpenStates+`) OR (o.state<>'draft' AND o.updated > now()-interval '24 hours')
 			OR (o.state IN ('cancelled','resolved','completed') AND pa.created > now()-interval '30 days' AND EXISTS (SELECT 1 FROM payments pm
 				WHERE pm.order_id=o.id AND ((pm.credited AND pm.confirmations<$2)
 					OR (NOT pm.flagged AND (pm.confirmations BETWEEN 0 AND $2-1 OR (pm.confirmations>=$2 AND NOT pm.credited))))))
-			OR EXISTS (SELECT 1 FROM payouts po WHERE po.order_id=o.id AND (po.state='pending' OR (po.state='held' AND po.error=$3))))
-		ORDER BY o.updated`, cur, int64(p.Confirmations()), heldReason)
+			OR EXISTS (SELECT 1 FROM payouts po WHERE po.order_id=o.id AND po.state IN ('pending','held')))
+		ORDER BY o.updated`, cur, int64(p.Confirmations()))
 	if err != nil {
 		return err
 	}
