@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -62,9 +61,9 @@ func hideUntilDone(in *os.File) (func(), error) {
 
 // resetWithDSN opens the application database, resets the password and reports success on out.
 func resetWithDSN(ctx context.Context, dsn, handle, password string, out io.Writer) error {
-	db, err := sql.Open("pgx", dsn)
+	db, err := market.OpenDB(dsn)
 	if err != nil {
-		return errors.New("database configuration invalid")
+		return err
 	}
 	defer db.Close()
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)

@@ -114,6 +114,10 @@ func TestRegistriesHaveTemplatesAndHooks(t *testing.T) {
 		if strings.Contains(strings.ToLower(string(b)), "<script") {
 			t.Errorf("%s contains a script tag", f)
 		}
+		// A-81: the UI states what the server keeps (/canary#records) instead of a privacy slogan.
+		if strings.Contains(strings.ToUpper(string(b)), "YOUR CHOICE") {
+			t.Errorf("%s contains the \"YOUR CHOICE\" slogan", f)
+		}
 	}
 	var walk func(n parse.Node)
 	walk = func(n parse.Node) {
@@ -163,6 +167,43 @@ func TestPreviewRendersEveryPage(t *testing.T) {
 		if w.Code != 200 || strings.Contains(w.Body.String(), "<script") || !strings.Contains(w.Body.String(), "READ-ONLY PREVIEW") {
 			t.Errorf("preview %s: %d", path, w.Code)
 		}
+	}
+}
+
+// A-115: the preview draft and the paid sample carry real-shaped 64-hex IDs; only the paid sample shows a
+// deposit row, and its status says no wallet is connected.
+func TestPreviewOrderSamplesUseRealIDShapes(t *testing.T) {
+	tmpl, err := parseTemplates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := testHTTPApp(true)
+	a.templates = tmpl
+	get := func(id string) string {
+		w := httptest.NewRecorder()
+		a.ServeHTTP(w, httptest.NewRequest("GET", "/order?id="+id, nil))
+		if w.Code != 200 {
+			t.Fatalf("preview order %s: %d", id, w.Code)
+		}
+		return w.Body.String()
+	}
+	for _, id := range []string{previewDraftID, previewPaidID, previewIncomingID, previewDisputedID, previewFlaggedID} {
+		if len(id) != 64 || strings.Trim(id, "0123456789abcdef") != "" {
+			t.Errorf("preview ID %q is not 64 lowercase hex", id)
+		}
+	}
+	if body := get(previewDraftID); !strings.Contains(body, previewDraftID) || strings.Contains(body, "Deposits seen by the wallet") {
+		t.Error("preview draft: want its 64-hex ID and no deposit table")
+	}
+	body := get(previewPaidID)
+	for _, want := range []string{previewPaidID, "Deposits seen by the wallet", "926bb57bc9bcbc21ddd00aa2e6f70f9d445378bcbaf4e55b6bfa53010ba85ddb:0",
+		"Preview sample: no wallet is connected and no funds exist", ">Paid<"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("preview paid sample: missing %q", want)
+		}
+	}
+	if strings.Contains(body, `class="payment-address"`) {
+		t.Error("preview paid sample shows a deposit address")
 	}
 }
 

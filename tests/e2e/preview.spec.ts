@@ -1,18 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-
-const routes = [
-  ['/', 'The marketplace.'],
-  ['/product?id=encrypted-drive', 'Encrypted USB Drive — 256GB'],
-  ['/vendor?id=ghost', 'ghost_circuit'],
-  ['/checkout?id=encrypted-drive', 'Create an order draft.'],
-  ['/orders', 'Orders.'], ['/order?id=sample-draft', 'Encrypted USB Drive — 256GB'],
-  ['/messages', 'Messages.'], ['/notifications', 'Notifications.'], ['/disputes', 'Disputes.'],
-  ['/account', 'Your account.'], ['/vendor-dashboard', 'Vendor desk.'],
-  ['/moderator', 'Moderation desk.'], ['/admin', 'Control room.'],
-  ['/canary', 'Trust is verifiable.'], ['/setup', 'Initialize your market.'],
-  ['/login', 'Welcome back.'], ['/register', 'Create an account.'],
-  ['/challenge', 'Verify your sign-in.'],
-];
+import { previewRoutes as routes } from './preview-routes';
 
 async function openFilters(page: Page) {
   const mobile = page.locator('.filter-details');

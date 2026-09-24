@@ -16,11 +16,22 @@ test('draft cannot be paid without a wallet, cancellation is recorded, vendor se
   await page.getByRole('button', { name: 'Create unfunded draft' }).click();
   await expect(page).toHaveURL(/\/order\?id=/);
   const orderURL = page.url();
+  // A-115: the 64-hex order ID in the page head and breadcrumb wraps instead of widening the page.
+  const viewport = page.viewportSize()!;
+  for (const width of [390, 320]) {
+    await page.setViewportSize({ width, height: viewport.height });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth), `draft at ${width}px`).toBeLessThanOrEqual(width);
+  }
+  await page.setViewportSize(viewport);
 
   // No provider: the payment step is visibly unavailable and there is no button for it.
   await expect(page.locator('.order-unavailable')).toContainText('Payment unavailable for BTC');
   await expect(page.getByRole('button', { name: 'Request payment address' })).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'History' })).toBeVisible();
+  // A-82: times are UTC and say so, whatever the database server's zone.
+  const created = page.locator('.key-values > div', { has: page.getByText('Created', { exact: true }) }).locator('dd');
+  await expect(created).toHaveText(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC$/);
+  await expect(page.locator('.order-timeline .order-when').first()).toHaveText(/ UTC$/);
 
   // Disputes need a paid, shipped or delivered order.
   await page.goto('/disputes');

@@ -1318,7 +1318,7 @@ td a {
   scale:1
 }
 .grid-two,.detail-layout {
-  grid-template-columns:1fr
+  grid-template-columns:minmax(0,1fr)
 }
 .page-head {
   flex-wrap:wrap
@@ -1502,7 +1502,7 @@ summary {
     margin-left:auto
   }
   .grid-two {
-    grid-template-columns:1fr 1fr
+    grid-template-columns:repeat(2,minmax(0,1fr))
   }
   .detail-layout {
     grid-template-columns:minmax(0,1fr) 310px
@@ -1559,6 +1559,17 @@ summary {
     display:block
   }
 }
+/* One records line after the filters, rendered once and outside the collapsed mobile panel. */
+.sidebar>.sidebar-note {
+  margin:0;
+  padding:0 16px 8px
+}
+@media(min-width:641px) {
+  .sidebar>.sidebar-note {
+    margin-top:25px;
+    padding:0
+  }
+}
 /* Original bracketed OPSECMKT identity. */
 .brand {
   font-weight:600;
@@ -1582,6 +1593,11 @@ summary {
   flex-wrap:wrap
 }
 .product-body,.panel,.stat,.detail-copy {
+  overflow-wrap:anywhere
+}
+/* 64-hex order IDs, 32-character handles and monospace headings at 200% text wrap instead of widening the
+   page; grid tracks above use minmax(0,1fr) so a wide table scrolls inside its .table-wrap. */
+.page-head h1,.page-head p,.breadcrumbs,.account-name,.message-meta {
   overflow-wrap:anywhere
 }
 input,select,textarea,.stack,.stack fieldset {

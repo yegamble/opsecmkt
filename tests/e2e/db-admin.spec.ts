@@ -149,7 +149,11 @@ test('promoting a buyer to vendor opens the vendor desk; the listing form shows 
   await vendor.context().close();
 });
 
-test('site settings, operator key, canary signature checks and audit export', async ({ browser, baseURL }) => {
+test('site settings, account suspension, operator key, canary signature checks and audit export', async ({ browser, baseURL }) => {
+  // A fresh account to suspend and restore (it reuses this test's administrator sign-in).
+  const suspectHandle = uniqueHandle('suspect');
+  const suspectPassword = 'browser-suspect-password-123';
+  const suspect = await signedIn(browser, baseURL, suspectHandle, suspectPassword, true);
   const admin = await signedIn(browser, baseURL, ADMIN.handle, ADMIN.password, false);
   await admin.goto('/admin');
   const siteName = admin.getByLabel('Site name');
@@ -171,6 +175,63 @@ test('site settings, operator key, canary signature checks and audit export', as
   await siteName.fill(original);
   expect(await submitStatus(admin, saveSettings)).toBe(303);
   await expect(siteName).toHaveValue(original);
+
+  // Suspension by handle: an unknown handle answers 404 with the page again (handle and choice kept); it needs
+  // the administrator's password; it signs the account out, blocks sign-in with the reason (only after a
+  // correct password), lists the account for restoring and records the change on both accounts.
+  const suspension = admin.getByRole('region', { name: 'Suspend or restore an account' });
+  const submitSuspension = async (handle: string, action: 'Suspend' | 'Restore', password: string) => {
+    await admin.goto('/admin');
+    await suspension.getByLabel('Account handle').fill(handle);
+    await suspension.getByRole('radio', { name: new RegExp(`^${action}:`) }).check();
+    await suspension.getByLabel('Current password').fill(password);
+    return submitStatus(admin, () => suspension.getByRole('button', { name: 'Suspend or restore' }).click());
+  };
+  const suspended = suspension.locator('.account-list li', { hasText: `${suspectHandle} ·` });
+  await admin.goto('/admin');
+  await expect(suspended).toHaveCount(0);
+  const nobody = uniqueHandle('nobody');
+  expect(await submitSuspension(nobody, 'Suspend', ADMIN.password)).toBe(404);
+  await expect(admin.getByRole('alert')).toHaveText(`No account has the handle "${nobody}". Check the spelling: handles are case-sensitive.`);
+  await expect(suspension.getByLabel('Account handle')).toHaveValue(nobody);
+  await expect(suspension.getByRole('radio', { name: /^Suspend:/ })).toBeChecked();
+  expect(await submitSuspension(suspectHandle, 'Suspend', 'not-the-admin-password')).toBe(401);
+  await expect(admin.locator('body')).toHaveText('Password incorrect');
+  await suspect.goto('/account');
+  await expect(suspect.locator('.account-name')).toHaveText(suspectHandle);
+  expect(await submitSuspension(suspectHandle, 'Suspend', ADMIN.password)).toBe(303);
+  await expect(admin).toHaveURL(/\/admin\?saved=1#suspend$/);
+  await expect(suspended).toHaveText(new RegExp(`^${suspectHandle} · buyer · suspended \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2} UTC$`));
+  const suspendRows = admin.locator('table').last().locator('tbody tr');
+  await expect(suspendRows.filter({ hasText: `Suspended account ${suspectHandle}; ended 1 session(s) and any pending sign-ins (confirmed with password)` }).locator('td').first()).toHaveText(ADMIN.handle);
+  await expect(suspendRows.filter({ hasText: `Account suspended by administrator ${ADMIN.handle}; ended 1 session(s)` }).locator('td').first()).toHaveText(suspectHandle);
+  expect(await admin.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(admin.viewportSize()!.width);
+
+  // The suspended account's open page is signed out; a wrong password is answered as for any account, the
+  // right one with the reason.
+  await suspect.goto('/account');
+  await expect(suspect).toHaveURL(/\/login$/);
+  const suspectSignIn = async (password: string) => {
+    await suspect.goto('/login');
+    await suspect.getByLabel('Handle', { exact: true }).fill(suspectHandle);
+    await suspect.getByLabel('Password', { exact: true }).fill(password);
+    return submitStatus(suspect, () => suspect.getByRole('button', { name: 'Sign in' }).click());
+  };
+  expect(await suspectSignIn('wrong-suspect-password-1')).toBe(401);
+  await expect(suspect.locator('body')).toHaveText('Invalid handle or password');
+  expect(await suspectSignIn(suspectPassword)).toBe(403);
+  await expect(suspect.locator('body')).toHaveText('This account is suspended. Contact the market staff.');
+
+  // Restoring allows sign-in again; the account was told about both changes.
+  expect(await submitSuspension(suspectHandle, 'Restore', ADMIN.password)).toBe(303);
+  await expect(suspended).toHaveCount(0);
+  await expect(suspendRows.filter({ hasText: `Restored account ${suspectHandle} (confirmed with password)` }).locator('td').first()).toHaveText(ADMIN.handle);
+  expect(await suspectSignIn(suspectPassword)).toBe(303);
+  await expect(suspect.locator('.account-name')).toHaveText(suspectHandle);
+  await suspect.goto('/notifications');
+  await expect(suspect.locator('main')).toContainText('An administrator suspended your account and signed you out everywhere.');
+  await expect(suspect.locator('main')).toContainText('An administrator restored your account. You can sign in again.');
+  await suspect.context().close();
 
   // Operator key: a malformed key is refused; the fixture key is stored and its fingerprint shown.
   const keyPanel = admin.getByRole('region', { name: 'Operator PGP key' });

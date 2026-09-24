@@ -5,6 +5,7 @@ package market
 type User struct {
 	ID, Handle, Role, PGP, XMPP string
 	Factors                     string // P1, PageData.FactorAccounts only: enrolled second factors, e.g. "TOTP and PGP sign-in"
+	Suspended                   string // P1, PageData.SuspendedAccounts only: when the account was suspended
 }
 type Product struct {
 	ID, Title, Description, Category, Region, Kind, Vendor, VendorID, PriceBTC, PriceXMR string
@@ -63,9 +64,12 @@ type PageData struct {
 	// FactorAccounts: admin page, up to 100 non-administrator accounts with a second factor, by handle
 	// (User.Factors names them); the reset form itself takes any handle.
 	FactorAccounts []User
-	// RoleHandle, RoleChoice and ResetHandle: admin page re-rendered after a handle matched no account,
-	// keeping what was typed into the role or second-factor reset form.
-	RoleHandle, RoleChoice, ResetHandle string
+	// SuspendedAccounts: admin page, up to 100 suspended accounts, most recently suspended first
+	// (User.Suspended says when); the suspend/restore form itself takes any handle.
+	SuspendedAccounts []User
+	// RoleHandle, RoleChoice, ResetHandle, SuspendHandle and SuspendChoice: admin page re-rendered after a
+	// handle matched no account, keeping what was typed into the role, second-factor reset or suspension form.
+	RoleHandle, RoleChoice, ResetHandle, SuspendHandle, SuspendChoice string
 
 	// P2 PGP
 	PGP *PGPView
@@ -145,9 +149,11 @@ type PGPView struct {
 	Verified                                  bool
 	VerifiedAt, Challenge, EncryptedChallenge string
 	TwoFactor                                 bool
-	HasKey                                    bool   // a public key is saved on the profile
-	KeyError                                  string // the saved key no longer parses (legacy or revoked)
-	ChallengeExpires                          string // open ownership challenge expiry (UTC)
+	HasKey                                    bool     // a public key is saved on the profile
+	Armored                                   string   // the saved key for the owner's form: canonical when it parses, else as stored
+	UserIDs                                   []string // user IDs of the saved key, shown to the owner (A-79)
+	KeyError                                  string   // the saved key no longer parses (legacy or revoked)
+	ChallengeExpires                          string   // open ownership challenge expiry (UTC)
 }
 
 // P3 Orders
@@ -227,6 +233,9 @@ type PayoutRow struct {
 	// Ambiguous: the payout may already have been broadcast (failed without a definite wallet answer, stuck
 	// in sending, or held by a restore from backup); requeueing or releasing needs an explicit confirmation.
 	Ambiguous bool
+	// AddressCheck: held for an account suspension (suspendedHoldPrefix); releasing needs an explicit
+	// confirmation that the payout address was checked.
+	AddressCheck bool
 }
 
 // P6 Transparency
@@ -251,6 +260,6 @@ type ContactKey struct {
 	Handle, Relation     string // Relation: "vendor", "buyer" or "" (message recipient)
 	Armored, Fingerprint string
 	Verified             bool
-	VerifiedAt           string
-	Unreadable           bool // a key is saved but no longer parses (legacy or revoked)
+	VerifiedAt           string // UTC date of the ownership proof (date only for other users, A-79)
+	Unreadable           bool   // a key is saved but no longer parses (legacy or revoked)
 }

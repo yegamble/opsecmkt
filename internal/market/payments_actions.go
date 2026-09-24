@@ -18,7 +18,8 @@ func init() {
 
 // payoutAddressAction saves (or clears) the user's payout address for one currency. Saving requires a live
 // provider and an address valid for its test network; blocked payouts for that currency are then released.
-// Every change needs the current password (and a TOTP code when enrolled), checked after the cheap validation.
+// Every change needs the current password (and a TOTP code when enrolled), checked after the cheap validation,
+// and notifies the account.
 func payoutAddressAction(c *actionCtx) (actionResult, error) {
 	cur := c.Form.Get("currency")
 	if cur != "BTC" && cur != "XMR" {
@@ -47,6 +48,7 @@ func savePayoutAddress(c *actionCtx, cur, addr string, p PaymentProvider) (actio
 		return actionResult{}, err
 	}
 	audit := "Removed " + cur + " payout address"
+	note := "Your " + cur + " payout address was removed"
 	if addr != "" {
 		// Blocked payouts become pending; held payouts that had no address keep their hold but gain the address.
 		res, err := c.Tx.ExecContext(ctx, `UPDATE payouts SET address=$1,state=CASE WHEN state='blocked' THEN 'pending' ELSE state END,
@@ -57,9 +59,17 @@ func savePayoutAddress(c *actionCtx, cur, addr string, p PaymentProvider) (actio
 		}
 		n, _ := res.RowsAffected()
 		audit = "Saved " + cur + " payout address (TESTNET " + p.Network() + ")"
+		note = "Your " + cur + " payout address was changed"
 		if n > 0 {
 			audit += "; " + strconv.FormatInt(n, 10) + " waiting payout(s) now use it"
+			note += "; " + strconv.FormatInt(n, 10) + " waiting payout(s) now use it"
 		}
+	}
+	// The owner hears of every change, so one made by someone who knows the password does not go unseen (A-102).
+	// The address itself is not repeated.
+	note += ". If you did not make this change, someone else may know your password: change it and contact the market staff."
+	if _, err := c.Tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), c.User.ID, note); err != nil {
+		return actionResult{}, err
 	}
 	return actionResult{Redirect: "/account?saved=1", Audit: audit}, nil
 }
@@ -241,7 +251,7 @@ const payoutHistoryLimit = 50
 
 func paymentsAdminLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 	status := map[string]ProviderStatus{}
-	rows, err := a.db.QueryContext(ctx, "SELECT currency,network,COALESCE(to_char(last_poll,'YYYY-MM-DD HH24:MI:SS'),''),last_error FROM payment_status")
+	rows, err := a.db.QueryContext(ctx, "SELECT currency,network,COALESCE(to_char(last_poll,'YYYY-MM-DD HH24:MI:SS \"UTC\"'),''),last_error FROM payment_status")
 	if err != nil {
 		return err
 	}
@@ -286,7 +296,7 @@ func paymentsAdminLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 	if d.User != nil {
 		uid = d.User.ID
 	}
-	rows, err = a.db.QueryContext(ctx, `WITH v AS (SELECT p.id,p.order_id,p.kind,u.handle,p.currency,p.amount,p.address,p.state,p.txid,p.error,to_char(p.updated,'YYYY-MM-DD HH24:MI') AS updated,
+	rows, err = a.db.QueryContext(ctx, `WITH v AS (SELECT p.id,p.order_id,p.kind,u.handle,p.currency,p.amount,p.address,p.state,p.txid,p.error,to_char(p.updated,'YYYY-MM-DD HH24:MI "UTC"') AS updated,
 		(p.state IN ('blocked','held','failed') OR (p.state='sending' AND p.updated < now()-interval '5 minutes')) AS attention,p.send_ambiguous,
 		(o.buyer_id=$1 OR pr.vendor_id=$1 OR o.state IN ('disputed','resolved') OR EXISTS(SELECT 1 FROM payments pm WHERE pm.order_id=o.id AND pm.flagged)) AS order_link
 		FROM payouts p JOIN users u ON u.id=p.user_id JOIN orders o ON o.id=p.order_id JOIN products pr ON pr.id=o.product_id)
@@ -322,6 +332,9 @@ func paymentsAdminLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 			r.StateLabel += "; the wallet reported a pre-broadcast error, nothing broadcast"
 		case r.State == "held" && strings.HasPrefix(r.Error, restoredHoldPrefix):
 			r.StateLabel, r.Ambiguous = "Held after a restore from backup — may already have been sent, check the wallet", true
+		}
+		if r.State == "held" && strings.HasPrefix(r.Error, suspendedHoldPrefix) {
+			r.StateLabel, r.AddressCheck = "Held: account suspended — check the payout address before releasing", true
 		}
 		d.Payouts = append(d.Payouts, r)
 	}

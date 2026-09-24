@@ -34,7 +34,7 @@ func accountAction(c *actionCtx) (actionResult, error) {
 	if err := c.A.db.QueryRowContext(c.Ctx(), "SELECT pgp,pgp_2fa,totp_enabled FROM users WHERE id=$1", c.User.ID).Scan(&old, &twoFA, &totp); err != nil {
 		return actionResult{}, err
 	}
-	confirm := (twoFA || totp) && old != pgp
+	confirm := (twoFA || totp) && !sameProfileKey(old, pgp)
 	return confirmedTx(c, confirm, func(c *actionCtx) (actionResult, error) {
 		// P2: parse the key, store its fingerprint and reset ownership proof / PGP sign-in when it changes.
 		audit, err := saveProfileKey(c, pgp, confirm)

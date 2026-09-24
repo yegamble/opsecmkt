@@ -10,8 +10,8 @@
 <input type="hidden" name="csrf" value="{{.CSRF}}"><label>Setup token<input name="token" type="password" required autocomplete="off">
 </label>
 <label>Marketplace name<input name="site_name" required maxlength="80" value="OPSEC Market">
-</label><label>Handle<input name="handle" required minlength="3" maxlength="32" autocomplete="username" spellcheck="false" autocapitalize="none" placeholder="your_handle">
-</label>
+</label><label>Handle<input name="handle" required minlength="3" maxlength="32" autocomplete="username" spellcheck="false" autocapitalize="none" placeholder="your_handle" aria-describedby="handle-help">
+</label><span class="help" id="handle-help">Your handle cannot be changed later. It is shown to your trading partners and market staff. Do not reuse a name you use anywhere else.</span>
 <label>Password<input type="password" name="password" required minlength="12" autocomplete="new-password">
 </label><span class="help">Use at least 12 characters and at most 72 UTF-8 bytes. No email address is required.</span><button class="primary" type="submit">Initialize marketplace <span class="action-icon">↗</span></button>
 </form></div>

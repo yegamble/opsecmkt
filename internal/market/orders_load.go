@@ -137,7 +137,7 @@ func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) 
 	default:
 		return sql.ErrNoRows
 	}
-	rows, err := a.db.QueryContext(ctx, `SELECT e.from_state,e.to_state,COALESCE(u.handle,''),e.actor_id IS NULL,COALESCE(e.actor_id,''),e.note,to_char(e.created,'YYYY-MM-DD HH24:MI') FROM order_events e LEFT JOIN users u ON u.id=e.actor_id WHERE e.order_id=$1 ORDER BY e.id`, o.ID)
+	rows, err := a.db.QueryContext(ctx, `SELECT e.from_state,e.to_state,COALESCE(u.handle,''),e.actor_id IS NULL,COALESCE(e.actor_id,''),e.note,to_char(e.created,'YYYY-MM-DD HH24:MI "UTC"') FROM order_events e LEFT JOIN users u ON u.id=e.actor_id WHERE e.order_id=$1 ORDER BY e.id`, o.ID)
 	if err != nil {
 		return err
 	}
@@ -161,7 +161,7 @@ func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) 
 	d.DeliveryWithheld = d.OrderViewer == roleModerator && !disputeVisible(o)
 	var dv DeliveryView
 	if !d.DeliveryWithheld {
-		err = a.db.QueryRowContext(ctx, "SELECT content,to_char(created,'YYYY-MM-DD HH24:MI') FROM deliveries WHERE order_id=$1", o.ID).Scan(&dv.Content, &dv.Created)
+		err = a.db.QueryRowContext(ctx, "SELECT content,to_char(created,'YYYY-MM-DD HH24:MI \"UTC\"') FROM deliveries WHERE order_id=$1", o.ID).Scan(&dv.Content, &dv.Created)
 		if err == nil {
 			d.Delivery = &dv
 		} else if err != sql.ErrNoRows {
@@ -176,7 +176,7 @@ func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) 
 		return err
 	}
 	var disp Dispute
-	err = a.db.QueryRowContext(ctx, "SELECT id,order_id,reason,status,resolution,to_char(created,'YYYY-MM-DD HH24:MI') FROM disputes WHERE order_id=$1", o.ID).Scan(&disp.ID, &disp.OrderID, &disp.Reason, &disp.Status, &disp.Resolution, &disp.Created)
+	err = a.db.QueryRowContext(ctx, "SELECT id,order_id,reason,status,resolution,to_char(created,'YYYY-MM-DD HH24:MI \"UTC\"') FROM disputes WHERE order_id=$1", o.ID).Scan(&disp.ID, &disp.OrderID, &disp.Reason, &disp.Status, &disp.Resolution, &disp.Created)
 	if err == nil {
 		d.Disputes = []Dispute{disp}
 	} else if err != sql.ErrNoRows {
@@ -293,7 +293,7 @@ func loadDisputes(ctx context.Context, a *App, _ *http.Request, d *PageData) err
 	if d.User == nil {
 		return nil
 	}
-	const scope = `SELECT d.id,d.order_id,d.reason,d.status,d.resolution,to_char(d.created,'YYYY-MM-DD HH24:MI'),d.status='Open' AND NOT EXISTS(SELECT 1 FROM users s WHERE s.role IN ('moderator','admin') AND s.id<>o.buyer_id AND s.id<>p.vendor_id) FROM disputes d JOIN orders o ON o.id=d.order_id JOIN products p ON p.id=o.product_id WHERE (o.buyer_id=$1 OR p.vendor_id=$1 OR $2 IN ('admin','moderator'))`
+	const scope = `SELECT d.id,d.order_id,d.reason,d.status,d.resolution,to_char(d.created,'YYYY-MM-DD HH24:MI "UTC"'),d.status='Open' AND NOT EXISTS(SELECT 1 FROM users s WHERE s.role IN ('moderator','admin') AND s.id<>o.buyer_id AND s.id<>p.vendor_id) FROM disputes d JOIN orders o ON o.id=d.order_id JOIN products p ON p.id=o.product_id WHERE (o.buyer_id=$1 OR p.vendor_id=$1 OR $2 IN ('admin','moderator'))`
 	open, err := queryDisputes(ctx, a, scope+" AND d.status='Open' ORDER BY d.created,d.id", d.User.ID, d.User.Role)
 	if err != nil {
 		return err
@@ -320,6 +320,34 @@ func loadDisputes(ctx context.Context, a *App, _ *http.Request, d *PageData) err
 	return err
 }
 
+// Preview order IDs and txids have the real 64-hex shape so the read-only preview exercises the same layout
+// (page head, breadcrumbs, tables) as real orders. They are sha256 digests of fixed labels; no order exists.
+const (
+	previewDraftID    = "171abe22fd1a69af6d19320aa8548d251d0d8c4e9bb7cebfa4619778e6df0b54" // preview-draft
+	previewPaidID     = "8cf1aaf1bfa545a92504cdfe264306ee5f9d9ac801736734b173d8631a891cd9" // preview-paid
+	previewIncomingID = "c0005ef3175f03034f45675fd03f35f35582e643cbfc75e4f3a8b53a1562f54b" // preview-incoming
+	previewDisputedID = "8c4ed43bdc4d7d6925e39713751066e19e4b37833545946bbeaa14d5dced7df2" // preview-disputed
+	previewFlaggedID  = "fa3d78b76018852580157c02a484def10cc4354335961a0c9e835e9563a3fc1e" // preview-flagged
+)
+
+// previewPaidOrder replaces the preview draft with a paid sample order that has one confirmed sample deposit, so
+// the preview shows the deposits table. No wallet is connected; the status says the deposit is a sample.
+func previewPaidOrder(d *PageData) {
+	if d.Order == nil {
+		return
+	}
+	o := d.Order
+	o.ID, o.State, o.Status = previewPaidID, statePaid, stateLabel(statePaid)
+	d.OrderEvents = []OrderEvent{
+		{From: stateLabel(stateDraft), To: stateLabel(stateAwaitingPayment), Actor: o.Buyer + " (buyer)", Created: "Sample order"},
+		{From: stateLabel(stateAwaitingPayment), To: stateLabel(statePaid), Actor: "System", Created: "Sample order"},
+	}
+	d.Payment = &PaymentView{Network: "sample", Testnet: true, Currency: o.Currency, Required: o.Amount, Received: o.Amount,
+		Unconfirmed: "0", Confirmations: 3, Threshold: 3, Issued: true, Monitored: true,
+		Status:   "Preview sample: no wallet is connected and no funds exist",
+		Deposits: []PaymentDeposit{{TxID: "926bb57bc9bcbc21ddd00aa2e6f70f9d445378bcbaf4e55b6bfa53010ba85ddb", Amount: o.Amount, Confirmations: 3, State: "Confirmed"}}}
+}
+
 func previewOrder(d *PageData) {
 	if d.Order == nil || d.User == nil {
 		return
@@ -340,7 +368,7 @@ func previewVendorOrders(d *PageData) {
 		return
 	}
 	o := d.Orders[0]
-	o.ID, o.Buyer, o.BuyerID, o.Vendor, o.VendorID = "sample-paid", "sample_buyer", "sample-buyer", d.User.Handle, d.User.ID
+	o.ID, o.Buyer, o.BuyerID, o.Vendor, o.VendorID = previewIncomingID, "sample_buyer", "sample-buyer", d.User.Handle, d.User.ID
 	o.State, o.Status = statePaid, stateLabel(statePaid)
 	d.IncomingOrders, d.NeedsAction = []Order{o}, 1
 }
@@ -350,7 +378,7 @@ func previewDisputes(d *PageData) {
 		return
 	}
 	o := d.Orders[0]
-	o.ID, o.State, o.Status = "sample-disputed", stateDisputed, stateLabel(stateDisputed)
+	o.ID, o.State, o.Status = previewDisputedID, stateDisputed, stateLabel(stateDisputed)
 	o.BuyerID, o.Buyer, o.VendorID = "sample-buyer", "sample_buyer", "sample-vendor"
 	d.Disputes, d.OpenDisputes = []Dispute{{ID: "sample-dispute", OrderID: o.ID, Reason: "Sample dispute for the read-only preview. No order or funds exist.", Status: "Open", Created: "Sample"}}, 1
 	d.DisputeOrders = map[string]Order{o.ID: o}
@@ -366,7 +394,7 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 	if d.User == nil || (d.User.Role != "moderator" && d.User.Role != "admin") {
 		return nil
 	}
-	rows, err := a.db.QueryContext(ctx, `SELECT pm.order_id,o.state,pm.currency,pm.amount,pm.txid,pm.idx,pm.credited,pm.locked,COALESCE(to_char(f.at,'YYYY-MM-DD HH24:MI'),'')
+	rows, err := a.db.QueryContext(ctx, `SELECT pm.order_id,o.state,pm.currency,pm.amount,pm.txid,pm.idx,pm.credited,pm.locked,COALESCE(to_char(f.at,'YYYY-MM-DD HH24:MI "UTC"'),'')
 		FROM payments pm JOIN orders o ON o.id=pm.order_id
 		LEFT JOIN LATERAL (SELECT min(e.created) AS at FROM order_events e WHERE e.order_id=pm.order_id AND e.actor_id IS NULL
 			AND e.note LIKE '%Moderator review required.%'
@@ -401,6 +429,6 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 }
 
 func previewPaymentReviews(d *PageData) {
-	d.PaymentReviews = []PaymentReview{{OrderID: "sample-flagged", OrderState: stateLabel(statePaid), Currency: "BTC", Amount: "0.001",
-		TxID: "sample-txid-preview-only", Reason: "Credited deposit conflicted or missing", Flagged: "Sample"}}
+	d.PaymentReviews = []PaymentReview{{OrderID: previewFlaggedID, OrderState: stateLabel(statePaid), Currency: "BTC", Amount: "0.001",
+		TxID: "a6fca84477376ef06de0fa66091d6435fbd7be1abe70d867cdcc06529fbc952b", Reason: "Credited deposit conflicted or missing", Flagged: "Sample"}}
 }

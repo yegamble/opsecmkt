@@ -15,6 +15,15 @@ func init() { registerTransitionHook(paymentsTransitionHook) }
 
 const heldReason = "A credited deposit is conflicted or below the confirmation threshold; payout held until it confirms again or a moderator reviews it."
 
+// suspendedHoldPrefix starts the error on a payout held because its recipient's account is suspended (A-102):
+// someone with the account's password may have changed its payout address. Suspending an account holds its
+// unsent payouts with suspendedHold, and payouts queued for a suspended recipient start held with it. Only an
+// administrator who confirms the payout address was checked releases it (payments_admin.go); restoring the
+// account does not, and the watcher lifts only its own hold (heldReason).
+const suspendedHoldPrefix = "Suspended account:"
+
+const suspendedHold = suspendedHoldPrefix + " payout held when the recipient's account was suspended; an administrator must check the payout address before releasing it."
+
 func paymentsTransitionHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, to string) error {
 	if !isTerminal(to) {
 		return nil
@@ -103,8 +112,11 @@ func (a *App) enqueuePayout(ctx context.Context, tx *sql.Tx, o *Order) error {
 	if o.Currency == "XMR" {
 		column = "payout_xmr"
 	}
+	// FOR SHARE waits for a suspension of the recipient in progress (it locks the account row and then holds
+	// the account's payouts), so a payout queued meanwhile is either seen and held by it or queued held here.
 	var address string
-	if err = tx.QueryRowContext(ctx, "SELECT "+column+" FROM users WHERE id=$1", recipient).Scan(&address); err != nil {
+	var suspended bool
+	if err = tx.QueryRowContext(ctx, "SELECT "+column+",suspended_at IS NOT NULL FROM users WHERE id=$1 FOR SHARE", recipient).Scan(&address, &suspended); err != nil {
 		return err
 	}
 	// Every credited deposit counted above is row-locked, so this sees the confirmations it was counted with.
@@ -114,6 +126,8 @@ func (a *App) enqueuePayout(ctx context.Context, tx *sql.Tx, o *Order) error {
 	}
 	state, errText := "pending", ""
 	switch {
+	case suspended:
+		state, errText = "held", suspendedHold
 	case held:
 		state, errText = "held", heldReason
 	case address == "":
@@ -138,6 +152,9 @@ func (a *App) enqueuePayout(ctx context.Context, tx *sql.Tx, o *Order) error {
 		note = "TESTNET " + kind + " of " + label + " to the " + who + " is blocked until the " + who + " saves a " + o.Currency + " payout address."
 	case "held":
 		note = "TESTNET " + kind + " of " + label + " to the " + who + " is held: a credited deposit is conflicted or re-confirming."
+		if suspended {
+			note = "TESTNET " + kind + " of " + label + " to the " + who + " is held until an administrator checks the payout address."
+		}
 	}
 	if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, o.State, note); err != nil {
 		return err

@@ -532,3 +532,83 @@ func TestMessageArmorCanonicalised(t *testing.T) {
 		t.Fatal("sender page badges or header text wrong")
 	}
 }
+
+// A-79: a pasted profile key is stored as a canonical re-armor of its packets - text around the block and
+// armor headers (tool/OS fingerprints) are dropped - and legacy rows are shown canonically. Others see the
+// ownership proof date only; the owner sees the minute, the key's user IDs and who can see the key.
+func TestProfileKeyStoredCanonically(t *testing.T) {
+	e := newTestApp(t)
+	key, _ := testPGPKey(t, "canon_key")
+	var buf bytes.Buffer
+	w, _ := armor.Encode(&buf, openpgp.PublicKeyType, map[string]string{"Version": "GnuPG v9 (LeakyOS)", "Comment": "Home: 3 Leak Street"})
+	if err := key.Serialize(w); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	pasted := "Leading note: my real name\n" + buf.String() + "\nTrailing note: my town\n"
+	_, fp, err := parsePublicKey(pasted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaks := []string{"Leading note", "Trailing note", "LeakyOS", "Leak Street", "Version:", "Comment:"}
+	const proof = "2026-03-04 05:06:00+00"
+
+	vendorID, vendor := e.user("canon_vendor", "vendor")
+	legacyID, legacy := e.user("canon_legacy", "vendor")
+	_, other := e.user("canon_other", "buyer")
+	e.check(e.do("POST", "/account", vendor, url.Values{"pgp": {pasted}}), 303)
+	var stored, storedFP string
+	if err = e.DB.QueryRow("SELECT pgp,pgp_fingerprint FROM users WHERE id=$1", vendorID).Scan(&stored, &storedFP); err != nil {
+		t.Fatal(err)
+	}
+	mustNotContain(t, stored, leaks...)
+	if storedFP != fp || !strings.HasPrefix(stored, "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\n") || !strings.HasSuffix(stored, "-----END PGP PUBLIC KEY BLOCK-----") {
+		t.Fatalf("stored fp=%s key=%q", storedFP, stored)
+	}
+	if armorPackets(t, stored) != armorPackets(t, pasted) {
+		t.Fatal("stored key packets differ from the pasted key")
+	}
+
+	// A legacy row saved before A-79 keeps the pasted text; PGP sign-in is on for it.
+	if _, err = e.DB.Exec("UPDATE users SET pgp=$1,pgp_fingerprint=$2,pgp_verified_at=$3,pgp_2fa=true WHERE id=$4", pasted, fp, proof, legacyID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = e.DB.Exec("UPDATE users SET pgp_verified_at=$1 WHERE id=$2", proof, vendorID); err != nil {
+		t.Fatal(err)
+	}
+	for _, u := range []struct{ id, handle, session string }{{vendorID, "canon_vendor", vendor}, {legacyID, "canon_legacy", legacy}} {
+		for _, page := range []string{e.body("GET", "/vendor?id="+u.id, "", nil, 200), e.body("GET", "/messages?to="+u.handle, other, nil, 200)} {
+			mustContain(t, page, "BEGIN PGP PUBLIC KEY BLOCK", formatFingerprint(fp), "Ownership verified 2026-03-04<")
+			mustNotContain(t, page, append(leaks, "05:06")...)
+		}
+		page := e.body("GET", "/account", u.session, nil, 200)
+		mustContain(t, page, "canon_key &lt;canon_key@example.test&gt;", "Shown to every signed-in account that looks up your handle",
+			"Use a key made only for this market.", "Verified 2026-03-04 05:06 UTC")
+		mustNotContain(t, page, leaks...)
+		mustContain(t, e.body("GET", "/pgp", u.session, nil, 200), "Verified 2026-03-04 05:06 UTC")
+	}
+
+	// Re-saving the same key - as pasted, or as the canonical text the account form shows (a browser submits
+	// the textarea with CRLF) - keeps the ownership proof and PGP sign-in, needs no confirmation, and stores
+	// the canonical form.
+	e.check(e.do("POST", "/account", vendor, url.Values{"pgp": {pasted}}), 303)
+	e.check(e.do("POST", "/account", legacy, url.Values{"pgp": {strings.ReplaceAll(stored, "\n", "\r\n")}, "xmpp": {"legacy@example.test"}}), 303)
+	e.check(e.do("POST", "/account", vendor, url.Values{"pgp": {strings.ReplaceAll(stored, "\n", "\r\n")}}), 303)
+	for _, id := range []string{vendorID, legacyID} {
+		var pgp string
+		var verified bool
+		if err = e.DB.QueryRow("SELECT pgp,pgp_verified_at=$2 FROM users WHERE id=$1", id, proof).Scan(&pgp, &verified); err != nil {
+			t.Fatal(err)
+		}
+		if pgp != stored || !verified {
+			t.Fatalf("%s: re-saving the same key changed it or reset its proof (verified=%v)", id, verified)
+		}
+	}
+	var twoFA bool
+	if err = e.DB.QueryRow("SELECT pgp_2fa FROM users WHERE id=$1", legacyID).Scan(&twoFA); err != nil || !twoFA {
+		t.Fatalf("re-saving the same key turned PGP sign-in off (%v)", err)
+	}
+	// A different key still needs the confirmation while PGP sign-in is on.
+	_, otherPub := testPGPKey(t, "canon_other_key")
+	e.check(e.do("POST", "/account", legacy, url.Values{"pgp": {otherPub}}), 400)
+}

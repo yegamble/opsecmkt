@@ -36,7 +36,11 @@ go run ./cmd/server -preview
 
 Open <http://127.0.0.1:8080>. The preview includes labeled sample data, binds only
 to loopback and rejects form writes. It needs no database, wallet or Node.js.
-Stop it with Ctrl-C before starting the writable app on the same port.
+Stop it with Ctrl-C before starting the writable app on the same port. To use
+another port, set `PREVIEW_ADDR` (default `127.0.0.1:8080`), for example
+`PREVIEW_ADDR=127.0.0.1:18080 go run ./cmd/server -preview`. It must be a
+loopback IP address and port (`127.0.0.1:…` or `[::1]:…`, not `localhost`);
+anything else stops the preview at startup. `ADDR` is ignored in preview mode.
 
 ## Run locally
 
@@ -98,6 +102,7 @@ export DATABASE_URL='postgres://opsecmkt:local-dev-only@127.0.0.1:55432/opsecmkt
 export SETUP_TOKEN="$(openssl rand -hex 32)"
 export ADDR='127.0.0.1:8080'
 export COOKIE_SECURE=false
+# Optional: must be clearnet (default) or tor, otherwise startup stops; it changes no behaviour.
 export APP_MODE=clearnet
 # Keep local development independent of any configured wallets:
 unset BITCOIN_RPC_URL MONERO_RPC_URL MONERO_WALLET_RPC_URL

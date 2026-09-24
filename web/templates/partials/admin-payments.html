@@ -66,11 +66,14 @@
 <td>{{.Updated}}</td>
 <td>{{if or (eq .State "held") (eq .State "failed") (and (eq .State "sending") .Attention)}}<details class="payout-actions">
 <summary>Resolve payout {{.ID}}</summary>
-{{if eq .State "held"}}<form class="stack" method="post" action="/admin/payout">
+{{if and .AddressCheck (not .Address)}}<p class="help">This payout was held when the recipient's account was suspended and has no payout address. It can be released after the recipient saves one (once the account is restored); check that address with them first.</p>
+{{else if eq .State "held"}}<form class="stack" method="post" action="/admin/payout">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="payout_id" value="{{.ID}}">
 <input type="hidden" name="op" value="release">
-{{if .Ambiguous}}<p class="help">This payout was restored from a backup and may already have been sent. Release only if the wallet shows no transaction {{if .Address}}to {{.Address}} {{end}}for this amount; otherwise mark it sent with the wallet's transaction ID. It will be sent once.</p>
+{{if .AddressCheck}}<p class="help">This payout was held when the recipient's account was suspended: someone with the account's password may have changed its payout address. Payout address: <span class="mono">{{.Address}}</span>. Release only after checking this address with the account owner through a channel you trust. It will be sent once.</p>
+<label class="check"><input type="checkbox" name="address_checked" value="confirmed" required> Payout address checked: the account owner confirmed this address is theirs</label>
+{{else if .Ambiguous}}<p class="help">This payout was restored from a backup and may already have been sent. Release only if the wallet shows no transaction {{if .Address}}to {{.Address}} {{end}}for this amount; otherwise mark it sent with the wallet's transaction ID. It will be sent once.</p>
 <label class="check"><input type="checkbox" name="not_broadcast" value="confirmed" required> I checked the wallet (including pending and pool transfers): no transaction to this address for this amount was broadcast</label>
 {{else}}<p class="help">Release only after checking the wallet: this payout was never sent from this database's point of view, and it will be sent once.</p>
 {{end}}{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}

@@ -3,10 +3,10 @@
 <div class="panel">
 <div class="eyebrow">Your independent marketplace</div>
 <h1>Create an account<span class="accent">.</span></h1>
-<p>Choose a handle and a unique password to get started.</p>
+<p>Choose a handle and a unique password to get started. Nothing you create here can be deleted: <a class="text-link" href="/canary#records">What this server keeps</a>.</p>
 <form class="stack" method="post" action="/register">
-<input type="hidden" name="csrf" value="{{.CSRF}}"><label>Handle<input name="handle" required minlength="3" maxlength="32" autocomplete="username" spellcheck="false" autocapitalize="none" placeholder="your_handle">
-</label>
+<input type="hidden" name="csrf" value="{{.CSRF}}"><label>Handle<input name="handle" required minlength="3" maxlength="32" autocomplete="username" spellcheck="false" autocapitalize="none" placeholder="your_handle" aria-describedby="handle-help">
+</label><span class="help" id="handle-help">Your handle cannot be changed later. It is shown to your trading partners and market staff, and publicly if you sell. Do not reuse a name you use anywhere else.</span>
 <label>Password<input type="password" name="password" required minlength="12" autocomplete="new-password">
 </label><span class="help">Use at least 12 characters and at most 72 UTF-8 bytes. No email address is required.</span>{{template "auth-captcha" .}}<button class="primary" type="submit">Create account <span class="action-icon">↗</span></button>
 </form><p class="form-footer">Already a member? <a href="/login">Sign in</a>

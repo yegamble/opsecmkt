@@ -94,7 +94,7 @@ func actorRoles(o *Order, u *User) []string {
 }
 
 // orderQuery selects the columns scanOrder reads; append WHERE/ORDER clauses.
-const orderQuery = `SELECT o.id,p.id,p.title,b.handle,v.handle,o.currency,o.amount,o.state,to_char(o.created,'YYYY-MM-DD HH24:MI'),p.kind,o.buyer_id,p.vendor_id,to_char(o.updated,'YYYY-MM-DD HH24:MI') FROM orders o JOIN products p ON p.id=o.product_id JOIN users b ON b.id=o.buyer_id JOIN users v ON v.id=p.vendor_id`
+const orderQuery = `SELECT o.id,p.id,p.title,b.handle,v.handle,o.currency,o.amount,o.state,to_char(o.created,'YYYY-MM-DD HH24:MI "UTC"'),p.kind,o.buyer_id,p.vendor_id,to_char(o.updated,'YYYY-MM-DD HH24:MI "UTC"') FROM orders o JOIN products p ON p.id=o.product_id JOIN users b ON b.id=o.buyer_id JOIN users v ON v.id=p.vendor_id`
 
 func scanOrder(s interface{ Scan(...any) error }) (Order, error) {
 	var o Order

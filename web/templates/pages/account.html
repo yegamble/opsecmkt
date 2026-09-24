@@ -4,7 +4,7 @@
 <div class="eyebrow">Identity &amp; preferences</div>
 <h1>Your account<span class="accent">.</span>
 </h1>
-<p>Manage your public key and contact information.</p>
+<p>Manage your public key and contact information. <a class="text-link" href="/canary#records">What this server keeps</a></p>
 </div>{{if .User}}<span class="badge neutral">{{.User.Role}}</span>{{end}}</div>{{with .User}}<div class="grid-two">
 <section class="panel">
 <h2>Public profile</h2>
@@ -12,7 +12,8 @@
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <label>Handle<input value="{{.Handle}}" readonly>
 </label>
-<label>PGP public key<textarea name="pgp" maxlength="32768" rows="8" spellcheck="false" placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----">{{.PGP}}</textarea>
+<p class="help" id="pgp-visibility">Shown to every signed-in account that looks up your handle, to every vendor or buyer you trade with, and publicly on your vendor page if you sell — with its user IDs and creation date. Use a key made only for this market.</p>
+<label>PGP public key<textarea name="pgp" maxlength="32768" rows="8" spellcheck="false" placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----" aria-describedby="pgp-visibility">{{with $.PGP}}{{.Armored}}{{end}}</textarea>
 </label>
 <span class="help">Only your public key belongs here. Saving a different key clears ownership verification and PGP sign-in.</span>{{$totp := and $.Security $.Security.TOTPEnabled}}{{if or (and $.PGP $.PGP.TwoFactor) $totp}}
 <label>Current password<input type="password" name="password" maxlength="72" autocomplete="current-password" aria-describedby="pgp-confirm-help">
@@ -23,7 +24,15 @@
 <div>
 <dt>Fingerprint</dt>
 <dd class="pgp-fingerprint">{{if .Fingerprint}}{{.Fingerprint}}{{else}}Unreadable — paste your key again{{end}}</dd>
-</div>
+</div>{{if .UserIDs}}
+<div>
+<dt>User IDs</dt>
+<dd class="pgp-user-ids">
+<ul>{{range .UserIDs}}
+<li>{{.}}</li>{{end}}
+</ul>
+</dd>
+</div>{{end}}
 <div>
 <dt>Ownership</dt>
 <dd>{{if .Verified}}<span class="badge green">Verified {{.VerifiedAt}}</span>{{else}}<span class="badge neutral">Not verified</span>{{end}}</dd>

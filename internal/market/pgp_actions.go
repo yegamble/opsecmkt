@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
@@ -41,11 +42,26 @@ func formatFingerprint(fp string) string {
 	return b.String()
 }
 
+// sameProfileKey reports whether pasted is the stored key: the same text, or the same key packets once both
+// are canonicalised (A-79), e.g. a legacy row with armor headers re-saved as the canonical text /account shows.
+func sameProfileKey(stored, pasted string) bool {
+	if stored == pasted {
+		return true
+	}
+	_, _, a, err := parseCanonicalPublicKey(stored)
+	if err != nil {
+		return false
+	}
+	_, _, b, err := parseCanonicalPublicKey(pasted)
+	return err == nil && a == b
+}
+
 // saveProfileKey is called by the /account action (inside its tx). An unchanged key is not re-parsed (a
-// legacy key that no longer parses must not block the profile form). A changed key must parse, and needs
-// the confirmation (confirmed: password, plus a TOTP code if enrolled) while PGP sign-in or TOTP is on; it
-// stores the new fingerprint, clears ownership proof, PGP sign-in and any open challenge. It returns the
-// audit text for the profile update.
+// legacy key that no longer parses must not block the profile form). The same key re-saved (sameProfileKey)
+// is stored in its canonical form and keeps its ownership proof and PGP sign-in. A changed key must parse, and
+// needs the confirmation (confirmed: password, plus a TOTP code if enrolled) while PGP sign-in or TOTP is on; it
+// stores the canonical form and new fingerprint, clears ownership proof, PGP sign-in and any open challenge. It
+// returns the audit text for the profile update.
 func saveProfileKey(c *actionCtx, armored string, confirmed bool) (string, error) {
 	ctx, tx, uid := c.Ctx(), c.Tx, c.User.ID
 	var old string
@@ -56,18 +72,23 @@ func saveProfileKey(c *actionCtx, armored string, confirmed bool) (string, error
 	if old == armored {
 		return "Updated profile", nil
 	}
+	if armored != "" && sameProfileKey(old, armored) {
+		_, _, canonical, _ := parseCanonicalPublicKey(armored)
+		_, err := tx.ExecContext(ctx, "UPDATE users SET pgp=$1 WHERE id=$2", canonical, uid)
+		return "Updated profile", err
+	}
 	if (twoFA || totp) && !confirmed {
 		return "", fail(400, "Enter your current password to change or remove your key while sign-in verification is on.")
 	}
-	fp := ""
+	fp, canonical := "", ""
 	if armored != "" {
-		_, parsed, err := parsePublicKey(armored)
+		_, parsed, text, err := parseCanonicalPublicKey(armored)
 		if err != nil {
 			return "", fail(400, "PGP key rejected: "+err.Error()+".")
 		}
-		fp = parsed
+		fp, canonical = parsed, text
 	}
-	if _, err := tx.ExecContext(ctx, "UPDATE users SET pgp=$1,pgp_fingerprint=$2,pgp_verified_at=NULL,pgp_2fa=false WHERE id=$3", armored, fp, uid); err != nil {
+	if _, err := tx.ExecContext(ctx, "UPDATE users SET pgp=$1,pgp_fingerprint=$2,pgp_verified_at=NULL,pgp_2fa=false WHERE id=$3", canonical, fp, uid); err != nil {
 		return "", err
 	}
 	if _, err := tx.ExecContext(ctx, "DELETE FROM pgp_challenges WHERE user_id=$1", uid); err != nil {
@@ -81,7 +102,8 @@ func saveProfileKey(c *actionCtx, armored string, confirmed bool) (string, error
 
 type pgpAccount struct {
 	Key          *openpgp.Entity
-	Armored      string
+	Armored      string // users.pgp as stored
+	Canonical    string // the parsed key re-armored without headers or surrounding text, shown to users (A-79)
 	Fingerprint  string // parsed from the saved key
 	Stored       string // users.pgp_fingerprint (set on save and on verification)
 	Verified     bool   // proof recorded for exactly this key
@@ -104,8 +126,8 @@ func loadPGPAccount(ctx context.Context, q interface {
 		return nil, err
 	}
 	if p.Armored != "" {
-		if key, fp, err := parsePublicKey(p.Armored); err == nil {
-			p.Key, p.Fingerprint = key, fp
+		if key, fp, canonical, err := parseCanonicalPublicKey(p.Armored); err == nil {
+			p.Key, p.Fingerprint, p.Canonical = key, fp, canonical
 		}
 	}
 	p.Verified = verified && p.Key != nil && p.Stored == p.Fingerprint
@@ -127,7 +149,7 @@ func pgpLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error 
 	if err != nil {
 		return err
 	}
-	v := &PGPView{HasKey: p.Armored != "", Verified: p.Verified, VerifiedAt: p.VerifiedAt, TwoFactor: p.TwoFactor}
+	v := &PGPView{HasKey: p.Armored != "", Armored: p.Armored, Verified: p.Verified, VerifiedAt: p.VerifiedAt, TwoFactor: p.TwoFactor}
 	d.PGP = v
 	if p.Key == nil {
 		if v.HasKey {
@@ -136,7 +158,11 @@ func pgpLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error 
 		}
 		return nil
 	}
-	v.Fingerprint = formatFingerprint(p.Fingerprint)
+	v.Fingerprint, v.Armored = formatFingerprint(p.Fingerprint), p.Canonical
+	for id := range p.Key.Identities {
+		v.UserIDs = append(v.UserIDs, id)
+	}
+	slices.Sort(v.UserIDs)
 	if d.Page != "pgp" {
 		return nil
 	}

@@ -1,5 +1,38 @@
 # Verification
 
+## Evidence table
+
+Updated 2026-09-24. Each row is evidence that can be cited: a GitHub Actions run (its commit and conclusion confirmed with `gh run view <id>`) or a local log. Ticks in [acceptance.md](acceptance.md) point here. Evidence tiers are those of the war room: unit, DB integration, browser preview, browser DB, simulated wallet RPC, real local chain, public test network, deployed instance. A simulated wallet RPC or the in-process fake provider is not chain evidence. Merged is not released and released is not deployed.
+
+Every CI row is the `CI` workflow ([`.github/workflows/ci.yaml`](../.github/workflows/ci.yaml)) with all 15 jobs green, including the required **CI passed** job. Its tiers are: unit and DB integration (`go test -race -count=1 ./...` with `TEST_DATABASE_URL` on PostgreSQL 17); browser preview and browser DB (Playwright `npm run test:e2e`: preview projects in Chromium, Firefox and WebKit, database projects in Chromium); simulated wallet RPC (`npm run test:e2e:wallet`); and operations (encrypted backup/restore, restore through the internal-db Compose service, upgrade from `v0.1.0-alpha.1`, the local installer followed by the setup wizard over HTTP and an app restart (`scripts/test-install.py`), the production image with internal and external PostgreSQL, the Compose configuration matrix and the offline Tor image check). The DB test helper skips only when `TEST_DATABASE_URL` is unset ([`testenv_test.go`](../internal/market/testenv_test.go)), and CI sets it, so the database tests ran. `go test` prints individual test names only on failure, so a named test counts as passed because its package reported `ok` in that run.
+
+| Check | Evidence tier | Commit | CI run or log | Date (UTC) |
+|---|---|---|---|---|
+| CI, PR #9 (A-13, A-27, A-82) | CI tiers above | `08a9437` | [36000605614](https://github.com/yegamble/opsecmkt/actions/runs/36000605614) | 2026-09-24 |
+| CI, push to `main` (merge of PR #8) | CI tiers above | `ab7cd9f` | [35994268519](https://github.com/yegamble/opsecmkt/actions/runs/35994268519) | 2026-09-24 |
+| CI, PR #8 (A-9, A-28, A-29) | CI tiers above | `0a1b75d` | [35958151032](https://github.com/yegamble/opsecmkt/actions/runs/35958151032) | 2026-09-24 |
+| CI, PR #8 (A-8, A-10, A-11, A-74) | CI tiers above | `30be215` | [35956392431](https://github.com/yegamble/opsecmkt/actions/runs/35956392431) | 2026-09-24 |
+| CI, PR #8 (A-53, A-54, A-26, A-71) | CI tiers above | `bf1ddc9` | [35954364843](https://github.com/yegamble/opsecmkt/actions/runs/35954364843) | 2026-09-24 |
+| CI, PR #8 (A-66, A-67, A-72) | CI tiers above | `766c87f` | [35952354841](https://github.com/yegamble/opsecmkt/actions/runs/35952354841) | 2026-09-24 |
+| CI, push to `main` (merge of PR #7) | CI tiers above | `4c360d2` | [35951223304](https://github.com/yegamble/opsecmkt/actions/runs/35951223304) | 2026-09-24 |
+| CI, PR #7 (A-30, A-47, A-48, A-52) | CI tiers above | `cdb69f2` | [35913448670](https://github.com/yegamble/opsecmkt/actions/runs/35913448670) | 2026-09-23 |
+| CI, PR #7 (A-23, A-24, A-25) | CI tiers above | `f66ab6b` | [35908986249](https://github.com/yegamble/opsecmkt/actions/runs/35908986249) | 2026-09-23 |
+| CI, PR #7 (A-6, A-7, A-21) | CI tiers above | `699ea45` | [35905170138](https://github.com/yegamble/opsecmkt/actions/runs/35905170138) | 2026-09-23 |
+| CI, push to `main` (merge of PR #6) | CI tiers above | `509356d` | [35899168645](https://github.com/yegamble/opsecmkt/actions/runs/35899168645) | 2026-09-23 |
+| CI, PR #6 (A-1 to A-5) | CI tiers above | `2771d6b` | [35896554121](https://github.com/yegamble/opsecmkt/actions/runs/35896554121) | 2026-09-23 |
+| `chain-journey.spec.ts` 1/1 (4 real payouts, none ambiguous) and `scripts/regtest-smoke.sh` PASS; bitcoind 31.1 regtest and monerod 0.18.5.1 offline stagenet fork | real local chain; **UNVERIFIED** here | `cdb69f2` | QA report in `.claude/war-room/ledger.md` (A-13 ruling, A-52 row); a local run, not CI; the log is not kept under `artifacts/real-chain/` in this checkout | 2026-09-23 |
+| Same chain journey 1/1 (BTC and XMR) and regtest smoke PASS | real local chain; **UNVERIFIED** here | `699ea45` | QA report in `.claude/war-room/ledger.md` (A-7 row, A-13 ruling); local run, log not retained | 2026-09-23 |
+| Same chain journey 1/1 (BTC and XMR) and regtest smoke PASS | real local chain; **UNVERIFIED** here | `509356d` | QA report in `.claude/war-room/ledger.md` (iteration 3 log); local run, log not retained | 2026-09-23 |
+| `chain-journey.spec.ts` 1/1 (BTC and XMR: partial deposits, release and moderator refund, 4 real payouts sent, none ambiguous); bitcoind v31.1.0 regtest and monerod/monero-wallet-rpc v0.18.5.1 offline stagenet fork; `TestRegtestSmoke` was skipped in that session | real local chain | `ab7cd9f` (a `git archive` of it plus one unbuilt probe test file; the log itself names no commit) | local logs (gitignored, not CI) with SHA-256 sums: `artifacts/real-chain/ab7cd9f/` (`chain-journey.log`, `SHA256SUMS`); the payout-row summary was read from a database since deleted | 2026-09-24 |
+| `TestRegtestSmoke` PASS through `scripts/regtest-smoke.sh`; chain journey BTC 1/1 (18.5 s) and XMR 1/1 (1.7 min) | real local chain | uncommitted tree before `f38dade`; no pinned commit | local logs (gitignored, not CI): `artifacts/real-chain/bitcoin-regtest-smoke.log`, `artifacts/real-chain/btc-browser.log`, `artifacts/real-chain/xmr-browser-final.log`; see [project review](project-review.md#real-isolated-chain-verification) | 2026-09-23, 15:15–15:27 |
+
+Reading the real-chain rows:
+
+- The three QA rows are reported in the war-room ledger only. Their SHA-pinned logs were not found on this machine when this table was written, so they are marked UNVERIFIED and the manual regtest line in acceptance.md stays unticked. The last row has logs, but it predates the payout-timeout change (`12b3e71`) to `payments_rpc.go`, `payments_bitcoin.go` and `payments_monero.go`, so it does not cover the current adapters.
+- The Bitcoin and Monero adapters (`payments_bitcoin.go`, `payments_monero.go`, `payments_rpc.go`) are unchanged from `cdb69f2` to `ab7cd9f`. After `cdb69f2`, payout queueing in the watcher and hooks changed (A-54, `c40a224`) and so did the admin payout actions (A-53, `ae6a49a`); both are in `bf1ddc9`. The `ab7cd9f` chain-journey row covers the adapters and the watcher's normal path with that code, but not the specific A-53/A-54 branches (a restore marking failed payouts, an unavailable provider). A rerun with a manifest pinned to the release commit is still needed before a release (war-room A-103).
+
+No row exists, so nothing is claimed, for: a public test network (testnet4, signet, stagenet or testnet), a deployed instance, Tor onion reachability, or a release. The only tag is `v0.1.0-alpha.1`, still a draft GitHub release. Monero behaviour when the daemon is killed mid-send is untested (war-room A-45).
+
 ## Review fixes — 2026-09-23
 
 A fresh-eyes review of the merged packages found eight defects. Each was reproduced by a failing test first (`internal/market/review_fixes_integration_test.go`), then fixed:
@@ -17,6 +50,8 @@ Results after the fixes: `gofmt -l` clean; `go vet ./...` clean; `go test -count
 
 ## Feature completion — 2026-09-23
 
+Historical record, true when written. Where a later run changed a statement, a dated note says so; current evidence is in the [evidence table](#evidence-table).
+
 Scope: the Foundation refactor and packages P1–P6 (authentication, PGP, orders, inventory, test-network payments, transparency) merged on `finish-codebase`, plus the cross-package lifecycle test. Results are from a local macOS machine with PostgreSQL 16 unless stated.
 
 ### Passed
@@ -31,14 +66,16 @@ Scope: the Foundation refactor and packages P1–P6 (authentication, PGP, orders
 
 ### Not verified
 
-- Live Docker image builds, container startup and Tor/onion reachability were not exercised in this effort.
-- Live Bitcoin regtest/testnet run: the Bitcoin Core adapter is tested only against local HTTP fakes. `scripts/regtest-smoke.sh` is provided for the operator to run against `bitcoind -regtest`; it was not run here.
-- Monero stagenet live run: the monero-wallet-rpc adapter is tested only against local HTTP fakes.
+- Live Docker image builds, container startup and Tor/onion reachability were not exercised in this effort. *Superseded in part, 2026-09-24:* every CI row in the evidence table builds the production image and starts it with internal and external PostgreSQL. Tor/onion reachability is still unverified.
+- Live Bitcoin regtest/testnet run: the Bitcoin Core adapter is tested only against local HTTP fakes. `scripts/regtest-smoke.sh` is provided for the operator to run against `bitcoind -regtest`; it was not run here. *Superseded, 2026-09-24:* the smoke test and real local-chain browser journeys were run later on 2026-09-23; see the real-chain rows of the evidence table. No public testnet run is recorded.
+- Monero stagenet live run: the monero-wallet-rpc adapter is tested only against local HTTP fakes. *Superseded in part, 2026-09-24:* real local-chain journeys on an offline stagenet fork are in the evidence table. The public stagenet has not been used.
 - Mainnet payments: unsupported by design. Startup refusal of mainnet chains and addresses is tested against fakes.
-- The GitHub Actions run for this branch (including the full `-race` suite on PostgreSQL 17) is not recorded here.
+- The GitHub Actions run for this branch (including the full `-race` suite on PostgreSQL 17) is not recorded here. *Superseded, 2026-09-24:* later CI runs, with commits, are in the evidence table.
 - Browser checks are not a complete WCAG AAA audit.
 
 ## Earlier baseline (before the feature packages)
+
+Historical record, superseded by the [evidence table](#evidence-table) where they differ (CI now runs PostgreSQL 17 integration and starts the production image).
 
 ### Passed
 

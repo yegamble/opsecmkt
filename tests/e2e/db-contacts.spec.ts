@@ -6,6 +6,10 @@ import { setRole } from './db-helpers';
 // vendor, a buyer contacts it through a prefilled message form, the vendor sees an unread notification
 // in the main navigation at phone width, and demoting the vendor archives its listing.
 
+async function fits(page: Page, label: string) {
+  expect(await page.evaluate(() => document.documentElement.scrollWidth), label).toBeLessThanOrEqual(page.viewportSize()!.width);
+}
+
 async function signedIn(browser: Browser, baseURL: string | undefined, handle: string, password: string, register: boolean): Promise<Page> {
   const context = await browser.newContext({ baseURL, javaScriptEnabled: false, viewport: { width: 320, height: 800 } });
   const page = await context.newPage();
@@ -18,7 +22,9 @@ async function signedIn(browser: Browser, baseURL: string | undefined, handle: s
 }
 
 test('vendor contact, unread notifications and demotion archive', async ({ browser, baseURL }) => {
-  const vendorHandle = uniqueHandle('contactv');
+  // A-115: the longest allowed handle (32 characters) in the header and the vendor page's monospace h1.
+  const vendorHandle = uniqueHandle('contactv').padEnd(32, 'x');
+  expect(vendorHandle).toHaveLength(32);
   const buyerHandle = uniqueHandle('contactb');
   const title = `Contacts ${uniqueHandle('item')}`;
   const vendor = await signedIn(browser, baseURL, vendorHandle, 'browser-contact-vendor-123', true);
@@ -45,6 +51,14 @@ test('vendor contact, unread notifications and demotion archive', async ({ brows
   const productURL = buyer.url();
   await buyer.getByRole('link', { name: vendorHandle, exact: true }).click();
   await expect(buyer.getByRole('region', { name: 'PGP public key' })).toContainText(`${vendorHandle} has not added a PGP public key`);
+  const vendorURL = buyer.url();
+  for (const [page, url] of [[buyer, vendorURL], [vendor, vendorURL], [vendor, '/vendor-dashboard']] as const) {
+    await page.goto(url);
+    await fits(page, `${url} at 100% text`);
+    await page.locator('html').evaluate(element => { element.style.fontSize = '200%'; });
+    await fits(page, `${url} at 200% text`);
+  }
+  await buyer.goto(vendorURL);
   await buyer.getByRole('link', { name: 'Send encrypted message' }).click();
   await expect(buyer).toHaveURL(new RegExp(`/messages\\?to=${vendorHandle}$`));
   await expect(buyer.getByLabel('Recipient handle')).toHaveValue(vendorHandle);

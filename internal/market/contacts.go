@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"net/http"
+	"strings"
 )
 
 // Contacts: the PGP keys people need to encrypt to each other (vendor page, order page, messages), the
@@ -101,7 +102,9 @@ func contactKey(ctx context.Context, db *sql.DB, userID, handle, relation string
 	k := ContactKey{Handle: handle, Relation: relation}
 	switch {
 	case p.Key != nil:
-		k.Armored, k.Fingerprint, k.Verified, k.VerifiedAt = p.Armored, formatFingerprint(p.Fingerprint), p.Verified, p.VerifiedAt
+		// Others see the canonical key (A-79) and the proof date only; the owner's pages keep the minute.
+		verifiedOn, _, _ := strings.Cut(p.VerifiedAt, " ")
+		k.Armored, k.Fingerprint, k.Verified, k.VerifiedAt = p.Canonical, formatFingerprint(p.Fingerprint), p.Verified, verifiedOn
 	case p.Armored != "":
 		k.Unreadable = true
 	}

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -349,6 +350,53 @@ func TestReviewsRequireACompletedOrder(t *testing.T) {
 	if !strings.Contains(w.page("/product?id="+other, randomToken(), 200), "No verified reviews yet") {
 		t.Fatal("empty review state missing")
 	}
+	// A-80: the review help says the vendor sees the review with the buyer's handle on the order page.
+	if body := w.page("/order?id="+done, w.vendor, 200); !strings.Contains(body, "Arrived as described. &lt;b&gt;not bold&lt;/b&gt;") || !strings.Contains(body, "<dd>"+buyerHandle+"</dd>") {
+		t.Fatal("the vendor's order page does not show the review beside the buyer's handle")
+	}
+}
+
+// A-80: every plaintext field a party fills in on an order says it is stored unencrypted, who can read it and
+// to send addresses, real names and tracking numbers encrypted instead; each warning describes its own field.
+func TestPlaintextOrderFieldsWarnAgainstAddresses(t *testing.T) {
+	w := newOrderWorld(t)
+	product := w.e.product(w.vendorID, "physical")
+	const never = "Never include an address, real name or tracking number"
+	help := func(body, field, id string, want ...string) {
+		t.Helper()
+		if !regexp.MustCompile(`name="` + field + `"[^>]*aria-describedby="` + id + `"`).MatchString(body) {
+			t.Fatalf("field %q is not described by %q", field, id)
+		}
+		if n := strings.Count(body, `id="`+id+`"`); n != 1 {
+			t.Fatalf("id %q appears %d times", id, n)
+		}
+		_, text, _ := strings.Cut(body, `id="`+id+`">`)
+		text, _, _ = strings.Cut(text, "</span>")
+		for _, s := range append(want, never, `<a class="text-link" href="/canary#records">Stored unencrypted.</a>`) {
+			if !strings.Contains(text, s) {
+				t.Errorf("help %q lacks %q: %s", id, s, text)
+			}
+		}
+	}
+	staff := "moderators and administrators if the order is disputed or a payment on it is flagged, and the operator and anyone with a backup"
+
+	paid := w.e.order(w.buyerID, product, "BTC", statePaid)
+	vendor := w.page("/order?id="+paid, w.vendor, 200)
+	if !strings.Contains(vendor, "Note to the buyer (optional)") || strings.Contains(vendor, "Shipping note") {
+		t.Fatal("the shipping note is not labelled as a note to the buyer")
+	}
+	help(vendor, "note", "note-help-shipped", "The buyer reads it", staff, "send those encrypted with Message buyer")
+	help(vendor, "note", "note-help-cancelled", "The buyer reads it", staff, "send those encrypted with Message buyer")
+	help(vendor, "reason", "dispute-help", "The buyer reads it", "every moderator and administrator", "Contact dispute staff")
+	buyer := w.page("/order?id="+paid, w.buyer, 200)
+	help(buyer, "reason", "dispute-help", "The vendor reads it", "every moderator and administrator", "Contact dispute staff")
+	help(w.page("/disputes", w.buyer, 200), "reason", "dispute-reason-help", "The other party reads it", "every moderator and administrator", "Contact dispute staff")
+
+	draft := w.e.order(w.buyerID, product, "BTC", stateDraft)
+	help(w.page("/order?id="+draft, w.buyer, 200), "note", "note-help-cancelled", "The vendor reads it", staff, "send those encrypted with Message vendor")
+
+	done := w.e.order(w.buyerID, product, "BTC", stateCompleted)
+	help(w.page("/order?id="+done, w.buyer, 200), "body", "review-help", "The vendor sees your review, with your handle, on this order.", "without your handle or this order ID")
 }
 
 func TestDisputeOpensAndModeratorResolves(t *testing.T) {
