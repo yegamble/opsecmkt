@@ -17,8 +17,8 @@ Evidence tier as in `repo-map.md`.
 | 2 | 2026-09-23 | QA verification of A-1…A-5 | opsec-qa-release | A-1…A-5 VERIFIED (CI 35896554121); QA-1 concurrent password change on revoked session (SHOULD, reproduced) fixed + regression test; QA-2/QA-3 doc and restore-name NITs fixed; A-22 added |
 | 3 | 2026-09-23 | Wave A-6/A-7/A-21 + whole-product completeness & evidence sweep (Rounds 0–D, B+C combined) | product-completeness, qa-release, devils-advocate, staff; 3 implementers | A-6, A-7, A-21 fixed on war-room/integration; QA ran chain-journey (BTC+XMR) + regtest-smoke on 509356d (pass); new P0 A-23, P1 A-24…A-30, P2 A-31…A-41, P3 A-42…A-45; A-14/A-19 declined; A-12 → P2 |
 | 3b | 2026-09-23 | Bug hunt #1 (new `/bug-hunt` group: codegraph, 2 live probers, 3 static hunters, 3 verifier batches) + wave 2 (A-23, A-24, A-25) | codegraph, workflow-prober ×2, bug-hunter ×3, bug-verifier ×3, implementers ×3, qa-release | 39 raw findings → 1 P0 (A-52), 4 P1 (A-47, A-48, A-53, A-54), 13 P2/P3 rows, 1 duplicate, 7 rejected → rules learned; A-23/A-24/A-25 VERIFIED (CI 35908986249); hunt tooling fixed 3× from its own run |
-| 5 | 2026-09-24 | Resume after owner merged PR #7 (main 4c360d2); no council needed (ready P0/P1 ≥ 3); rule A-66/A-67/A-72; wave 4 | chair; implementers ×3 | in progress |
 | 4 | 2026-09-23 | Wave 3 (A-30, A-47, A-48, A-52 — P0 dispatched as a 4th implementer, deviation noted) | implementers ×4, qa-release | all four VERIFIED on cdb69f2 (CI 35913448670; full Playwright 336/336; real-chain rerun PASS); A-64, A-65 NITs added; bug hunt #2 started |
+| 5 | 2026-09-24 | Resume after owner merged PR #7 (main 4c360d2); no council needed (ready P0/P1 ≥ 3); rule A-66/A-67/A-72; wave 4 | chair; implementers ×3 | in progress |
 
 ## P0 — release blockers
 
