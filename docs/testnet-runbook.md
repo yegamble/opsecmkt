@@ -179,7 +179,9 @@ the state you saw, so a double click or a second administrator cannot queue it t
   sent** instead.
 - **Release held payout** (held): the payout goes back to the queue and the next pass sends it once.
   Refused (409, nothing changed) while a credited deposit for the order is still conflicted or below the
-  threshold: the watcher releases that payout itself once the deposit confirms again. For a payout
+  threshold. The watcher releases its own hold once the deposit confirms again; a hold from a restore or a
+  suspension stays until you release it, which works once the deposit has confirmed again (the watcher keeps
+  reading that order's deposits while the payout is held, whatever its age). For a payout
   held by a restore the form also asks you to tick "I checked the wallet ... no transaction ... was
   broadcast"; the server refuses the release without it and records the confirmation in the audit trail
   and the order history. If the wallet shows the transaction use **Mark sent** instead.

@@ -101,7 +101,11 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 			return actionResult{}, err
 		}
 		if unsettled && state == "held" {
-			return actionResult{}, fail(409, "A credited deposit for this order is still conflicted or below the confirmation threshold, so this payout stays held; the payment watcher releases it by itself once the deposit confirms again. Nothing was changed.")
+			if payoutErr == heldReason {
+				return actionResult{}, fail(409, "A credited deposit for this order is still conflicted or below the confirmation threshold, so this payout stays held; the payment watcher releases it by itself once the deposit confirms again. Nothing was changed.")
+			}
+			// A hold only an administrator lifts (restore, suspension): the watcher keeps its ledger current.
+			return actionResult{}, fail(409, "A credited deposit for this order is still conflicted or below the confirmation threshold, so this payout stays held. Release it after the deposit confirms again (the order page shows its confirmations). Nothing was changed.")
 		}
 		res, err = tx.ExecContext(ctx, `UPDATE payouts SET state=CASE WHEN address='' THEN 'blocked' ELSE 'pending' END,error='',updated=now()
 			WHERE id=$1 AND state='held'`, id)

@@ -1201,6 +1201,17 @@ func TestConvertedWatcherHoldReleasableAfterReconfirm(t *testing.T) {
 			} else if _, err := p.DB.Exec("UPDATE payouts SET state='held',error=$2 WHERE order_id=$1", order, restoredHold); err != nil {
 				t.Fatal(err)
 			}
+			release := func() (int, string) {
+				if via == "suspension" {
+					w := p.do("POST", "/admin/payout", p.adminSess, url.Values{"payout_id": {p.payoutID(order)}, "op": {"release"}, "password": {testPassword}, "address_checked": {"confirmed"}})
+					return w.Code, w.Body.String()
+				}
+				return p.payoutActionConfirmed(p.adminSess, p.payoutID(order), "release", testPassword)
+			}
+			// Still below the threshold: refused, and the refusal does not promise a release by the watcher.
+			if code, body := release(); code != 409 || !strings.Contains(body, "Release it after the deposit confirms again") || strings.Contains(body, "by itself") {
+				t.Fatalf("release below the threshold: %d %s", code, body)
+			}
 			p.fake.SetConfirmations(tx, 6)
 			p.poll()
 			p.poll()
@@ -1210,16 +1221,11 @@ func TestConvertedWatcherHoldReleasableAfterReconfirm(t *testing.T) {
 			if st, e := p.payoutError(order); st != "held" || e == heldReason || len(p.fake.Sends()) != 0 {
 				t.Fatalf("converted hold lifted by the watcher: %s %q sends %d", st, e, len(p.fake.Sends()))
 			}
-			var code int
-			var body string
 			if via == "suspension" {
 				p.check(p.do("POST", "/admin/suspend", p.adminSess, suspendForm("restore", p.vendor.Handle)), 303)
 				p.poll()
-				w := p.do("POST", "/admin/payout", p.adminSess, url.Values{"payout_id": {p.payoutID(order)}, "op": {"release"}, "password": {testPassword}, "address_checked": {"confirmed"}})
-				code, body = w.Code, w.Body.String()
-			} else {
-				code, body = p.payoutActionConfirmed(p.adminSess, p.payoutID(order), "release", testPassword)
 			}
+			code, body := release()
 			if code != 303 || len(p.fake.Sends()) != 0 {
 				t.Fatalf("release after re-confirmation: %d sends %d %s", code, len(p.fake.Sends()), body)
 			}
