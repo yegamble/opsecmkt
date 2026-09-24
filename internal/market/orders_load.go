@@ -276,7 +276,7 @@ func queryDisputes(ctx context.Context, a *App, query string, args ...any) ([]Di
 	var out []Dispute
 	for rows.Next() {
 		var v Dispute
-		if err = rows.Scan(&v.ID, &v.OrderID, &v.Reason, &v.Status, &v.Resolution, &v.Created); err != nil {
+		if err = rows.Scan(&v.ID, &v.OrderID, &v.Reason, &v.Status, &v.Resolution, &v.Created, &v.NoResolver); err != nil {
 			return nil, err
 		}
 		out = append(out, v)
@@ -286,13 +286,14 @@ func queryDisputes(ctx context.Context, a *App, query string, args ...any) ([]Di
 
 // loadDisputes lists the viewer's disputes (on their own orders, or all of them for moderators and
 // administrators): every open dispute first, oldest first, then the most recent resolved ones up to
-// historyLimit. Each dispute gets its order summary.
+// historyLimit. Each dispute gets its order summary; an open one is marked NoResolver while every
+// moderator and administrator is a party to its order.
 func loadDisputes(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 	d.DisputeOrders = map[string]Order{}
 	if d.User == nil {
 		return nil
 	}
-	const scope = `SELECT d.id,d.order_id,d.reason,d.status,d.resolution,to_char(d.created,'YYYY-MM-DD HH24:MI') FROM disputes d JOIN orders o ON o.id=d.order_id JOIN products p ON p.id=o.product_id WHERE (o.buyer_id=$1 OR p.vendor_id=$1 OR $2 IN ('admin','moderator'))`
+	const scope = `SELECT d.id,d.order_id,d.reason,d.status,d.resolution,to_char(d.created,'YYYY-MM-DD HH24:MI'),d.status='Open' AND NOT EXISTS(SELECT 1 FROM users s WHERE s.role IN ('moderator','admin') AND s.id<>o.buyer_id AND s.id<>p.vendor_id) FROM disputes d JOIN orders o ON o.id=d.order_id JOIN products p ON p.id=o.product_id WHERE (o.buyer_id=$1 OR p.vendor_id=$1 OR $2 IN ('admin','moderator'))`
 	open, err := queryDisputes(ctx, a, scope+" AND d.status='Open' ORDER BY d.created,d.id", d.User.ID, d.User.Role)
 	if err != nil {
 		return err

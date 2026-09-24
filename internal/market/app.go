@@ -28,6 +28,7 @@ var schema string
 
 type bucket struct {
 	Count int
+	Limit int // requests admitted per window; an entry with Count >= Limit is blocking and is never evicted
 	Until time.Time
 }
 type App struct {
@@ -84,6 +85,10 @@ func New(ctx context.Context, preview bool) (*App, error) {
 	if dsn == "" {
 		return nil, errors.New("DATABASE_URL required; use -preview for read-only sample UI")
 	}
+	timeouts, err := startupTimeoutsFromEnv()
+	if err != nil {
+		return nil, err
+	}
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return nil, errors.New("database configuration invalid")
@@ -92,28 +97,17 @@ func New(ctx context.Context, preview bool) (*App, error) {
 	db.SetMaxOpenConns(12)
 	db.SetMaxIdleConns(4)
 	db.SetConnMaxLifetime(30 * time.Minute)
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	if err = prepareDatabase(ctx, db, timeouts); err != nil {
+		db.Close()
+		return nil, err
+	}
+	payCtx, cancel := context.WithTimeout(ctx, paymentStartupTimeout)
 	defer cancel()
-	if err = db.PingContext(ctx); err != nil {
+	if err = a.initPayments(payCtx); err != nil {
 		db.Close()
-		return nil, errors.New("database connection failed; check DATABASE_URL and service health")
-	}
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(782493)"); err != nil {
-		return nil, err
-	}
-	if err = migrate(ctx, tx); err != nil {
-		return nil, fmt.Errorf("database migration failed: %w", err)
-	}
-	if err = tx.Commit(); err != nil {
-		return nil, err
-	}
-	if err = a.initPayments(ctx); err != nil {
-		db.Close()
+		if timedOut(ctx, payCtx) {
+			return nil, fmt.Errorf("payment provider startup timed out after %s; check the wallet and node RPC services: %w", paymentStartupTimeout, err)
+		}
 		return nil, err
 	}
 	return a, nil
@@ -134,6 +128,10 @@ func (a *App) csrf(token string) string {
 func (a *App) cookie(w http.ResponseWriter, name, value string, age int) {
 	http.SetCookie(w, &http.Cookie{Name: name, Value: value, Path: "/", HttpOnly: true, Secure: a.secure, SameSite: http.SameSiteStrictMode, MaxAge: age})
 }
+
+// allow counts one request against key's budget of n per ten minutes. When the table is full it evicts
+// the non-blocking entry with the lowest count (earliest expiry breaks ties); if every entry is blocking
+// it refuses the new key instead, so junk keys can never reset a counter that is refusing requests.
 func (a *App) allow(key string, n int) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -145,18 +143,25 @@ func (a *App) allow(key string, n int) bool {
 	}
 	b := a.limits[key]
 	if b.Count == 0 {
-		if len(a.limits) >= 4096 { // full: evict the entry that expires first rather than refusing new keys
-			oldest := ""
+		if len(a.limits) >= 4096 {
+			victim, found := "", false
 			for k, v := range a.limits {
-				if oldest == "" || v.Until.Before(a.limits[oldest].Until) {
-					oldest = k
+				if v.Count >= v.Limit {
+					continue
+				}
+				if w := a.limits[victim]; !found || v.Count < w.Count || (v.Count == w.Count && v.Until.Before(w.Until)) {
+					victim, found = k, true
 				}
 			}
-			delete(a.limits, oldest)
+			if !found {
+				return false
+			}
+			delete(a.limits, victim)
 		}
 		b.Until = now.Add(10 * time.Minute)
 	}
 	b.Count++
+	b.Limit = n
 	a.limits[key] = b
 	return b.Count <= n
 }
@@ -340,10 +345,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "You do not have access to this page", 403)
 		return
 	}
-	d := PageData{Page: page, Title: strings.ReplaceAll(strings.Title(page), "-", " "), CSRF: a.csrf(token), User: user, Mode: a.mode, Query: r.URL.Query().Get("q"), Category: r.URL.Query().Get("category"), Region: r.URL.Query().Get("region"), Currency: r.URL.Query().Get("currency"), Settings: map[string]string{}}
-	if d.Currency != "XMR" {
-		d.Currency = "BTC"
-	}
+	d := a.pageData(r, page, token, user)
 	if r.URL.Query().Get("saved") == "1" {
 		d.Notice = "Changes saved."
 	}
@@ -360,13 +362,26 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	a.render(w, d)
 }
-func (a *App) render(w http.ResponseWriter, d PageData) {
+
+// pageData is the state a page render starts from, before a.load fills it.
+func (a *App) pageData(r *http.Request, page, token string, user *User) PageData {
+	d := PageData{Page: page, Title: strings.ReplaceAll(strings.Title(page), "-", " "), CSRF: a.csrf(token), User: user, Mode: a.mode, Query: r.URL.Query().Get("q"), Category: r.URL.Query().Get("category"), Region: r.URL.Query().Get("region"), Currency: r.URL.Query().Get("currency"), Settings: map[string]string{}}
+	if d.Currency != "XMR" {
+		d.Currency = "BTC"
+	}
+	return d
+}
+
+func (a *App) render(w http.ResponseWriter, d PageData) { a.renderStatus(w, d, http.StatusOK) }
+
+func (a *App) renderStatus(w http.ResponseWriter, d PageData, code int) {
 	var b bytes.Buffer
 	if err := a.templates.ExecuteTemplate(&b, "page:"+d.Page, d); err != nil {
 		http.Error(w, "Unable to render page", 500)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(code)
 	w.Write(b.Bytes())
 }
 

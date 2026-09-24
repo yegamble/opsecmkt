@@ -22,16 +22,22 @@
 </section>
 <section class="panel admin-reset-factors" id="reset-factors" aria-labelledby="reset-factors-heading">
 <h2 id="reset-factors-heading">Reset a user's second factors</h2>
-<p>For a user who lost their authenticator and recovery codes, or their PGP private key. This turns off TOTP (deleting its secret and recovery codes) and PGP sign-in verification; their saved PGP key and its verification stay. They are signed out everywhere, notified, and sign in next with their password only.</p>{{if .FactorAccounts}}
+<p>For a user who lost their authenticator and recovery codes, or their PGP private key. This turns off TOTP (deleting its secret and recovery codes) and PGP sign-in verification; their saved PGP key and its verification stay. They are signed out everywhere, notified, and sign in next with their password only.</p>
 <form class="stack" method="post" action="/admin/reset-factors">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
-<label>Account with second factors<select name="user_id" required>
-<option value="">Select an account</option>{{range .FactorAccounts}}<option value="{{.ID}}">{{.Handle}} · {{.Factors}}</option>{{end}}</select>
+<label>Account handle<input name="handle" value="{{.ResetHandle}}" required minlength="3" maxlength="32" pattern="[a-zA-Z0-9_]{3,32}" autocomplete="off" autocapitalize="none" spellcheck="false"{{if .ResetHandle}} aria-invalid="true"{{end}}>
 </label>
 {{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
-<span class="help">Confirm with your own password{{if and $.Security $.Security.TOTPEnabled}} and authenticator code{{end}}. Check the request really comes from the account holder first: anyone who knows their password can then sign in.</span>
+<span class="help">Enter the handle exactly (it is case-sensitive). Confirm with your own password{{if and $.Security $.Security.TOTPEnabled}} and authenticator code{{end}}. Check the request really comes from the account holder first: anyone who knows their password can then sign in.</span>
 <button type="submit">Reset second factors</button>
-</form>{{else}}
+</form>{{if .FactorAccounts}}
+<details class="account-list">
+<summary>Accounts with a second factor</summary>
+<p class="help">Up to 100 accounts, sorted by handle; any other account is reset the same way by entering its handle above.</p>
+<ul>{{range .FactorAccounts}}
+<li>{{.Handle}} · {{.Factors}}</li>{{end}}
+</ul>
+</details>{{else}}
 <p class="help">No other account has a second factor enrolled.</p>{{end}}
 <p class="help">Administrator accounts cannot be reset here, including your own. Keep your recovery codes offline; an administrator lockout is recovered by the server operator (see the operator guide).</p>
 </section>{{end}}

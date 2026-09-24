@@ -31,23 +31,29 @@
 <button class="primary" type="submit">Save settings</button>
 </form>
 </section>
-<section class="panel">
-<h2>Assign an account role</h2>
+<section class="panel" id="assign-role" aria-labelledby="assign-role-heading">
+<h2 id="assign-role-heading">Assign an account role</h2>
 <form class="stack" method="post" action="/admin">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
 <input type="hidden" name="action" value="role">
-<label>Account<select name="user_id" required>
-<option value="">Select an account</option>{{range .Users}}<option value="{{.ID}}">{{.Handle}} · {{.Role}}</option>{{end}}</select>
+<label>Account handle<input name="handle" value="{{.RoleHandle}}" required minlength="3" maxlength="32" pattern="[a-zA-Z0-9_]{3,32}" autocomplete="off" autocapitalize="none" spellcheck="false"{{if .RoleHandle}} aria-invalid="true"{{end}}>
 </label>
 <label>Role<select name="role">
 <option value="buyer">Buyer</option>
-<option value="vendor">Vendor</option>
-<option value="moderator">Moderator</option>
+<option value="vendor"{{if eq .RoleChoice "vendor"}} selected{{end}}>Vendor</option>
+<option value="moderator"{{if eq .RoleChoice "moderator"}} selected{{end}}>Moderator</option>
 </select>
 </label>
-<p class="help">Choose buyer, vendor or moderator. The first administrator is created during installation; administrator roles cannot be assigned here.</p>
+<p class="help">Enter the handle exactly (it is case-sensitive) and choose buyer, vendor or moderator. The first administrator is created during installation; administrator roles cannot be assigned or changed here.</p>
 <button type="submit">Update role</button>
-</form>
+</form>{{if .Users}}
+<details class="account-list">
+<summary>Newest accounts</summary>
+<p class="help">Shows at most the 100 newest accounts, newest first. Any other account can be changed by entering its handle above.</p>
+<ul>{{range .Users}}
+<li>{{.Handle}} · {{.Role}}</li>{{end}}
+</ul>
+</details>{{end}}
 </section>
 </div>{{template "admin-auth" .}}{{template "admin-payments" .}}{{template "admin-transparency" .}}
 <h2 class="section-title">Audit trail</h2>

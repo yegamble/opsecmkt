@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -16,7 +17,17 @@ import (
 
 func main() {
 	preview := flag.Bool("preview", false, "read-only UI preview with sample data, binds loopback only")
+	resetAdmin := flag.String("reset-admin-password", "", "host-only break-glass: read a new password for this administrator handle from stdin, end its sessions and exit (starts no server)")
 	flag.Parse()
+	reset := false
+	flag.Visit(func(f *flag.Flag) { reset = reset || f.Name == "reset-admin-password" })
+	if reset {
+		if err := resetAdminPassword(context.Background(), *resetAdmin, *preview, flag.Args(), os.Stdin, os.Stdout, os.Stderr); err != nil {
+			fmt.Fprintln(os.Stderr, "reset-admin-password:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	app, err := market.New(context.Background(), *preview)
 	if err != nil {
 		log.Fatal(err)

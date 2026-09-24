@@ -61,9 +61,18 @@ func (a *App) enqueuePayout(ctx context.Context, tx *sql.Tx, o *Order) error {
 	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM payouts WHERE order_id=$1)", o.ID).Scan(&queued); err != nil || queued {
 		return err
 	}
-	threshold := int64(math.MaxInt64) // provider removed: only deposits already credited count
-	holdBelow := int64(0)             // credited deposits below this hold the payout (conflicted; with a provider, re-confirming)
-	if p := a.provider(o.Currency); p != nil {
+	// A configured provider that is only unavailable in this process (node down, e.g. after a restart) keeps its
+	// threshold, applied to the confirmations last recorded by the watcher, as the post-funding notice promises.
+	// With no provider, or a disabled one (refused as not a test network), only deposits already credited count.
+	threshold := int64(math.MaxInt64)
+	holdBelow := int64(0) // credited deposits below this hold the payout (conflicted; with a provider, re-confirming)
+	a.payMu.RLock()
+	p := a.payments[o.Currency]
+	if u := a.unavailable[o.Currency]; p == nil && u != nil && !u.disabled {
+		p = u.p
+	}
+	a.payMu.RUnlock()
+	if p != nil {
 		threshold = int64(p.Confirmations())
 		holdBelow = threshold
 	}

@@ -36,6 +36,7 @@ off.
 | `MONERO_WALLET_RPC_PASSWORD` | For the local `monero-wallet` service only: `openssl rand -hex 24` output, the same value as the password in `MONERO_WALLET_RPC_URL`. The service refuses to start without it. |
 | `PAYMENT_CONFIRMATIONS_BTC` / `PAYMENT_CONFIRMATIONS_XMR` | Defaults 3 and 10. |
 | `PAYMENT_POLL_INTERVAL` / `PAYMENT_EXPIRY` | Defaults `30s` and `24h`. |
+| `DATABASE_CONNECT_TIMEOUT` / `MIGRATION_LOCK_TIMEOUT` / `MIGRATION_TIMEOUT` | Optional; leave blank for `15s`, `10m` and `10m`. Raise `MIGRATION_TIMEOUT` if your database is large; see [Migrations](docs/operator-guide.md#migrations). |
 
 For a local Monero node, also add `monero-wallet` to `COMPOSE_PROFILES` (for example
 `COMPOSE_PROFILES='internal-db,monero,monero-wallet'`).
@@ -156,8 +157,11 @@ the **upgraded** checkout: its `scripts/restore.sh` can restore into the interna
    ```
 
    Edit `DATABASE_URL` in `.env` so the database name after the port is the restored one, for example
-   `postgres://opsecmkt:PASSWORD@db:5432/opsecmkt_rollback?sslmode=disable` (keep the password as it is).
+   `postgres://opsecmkt:PASSWORD@db:5432/opsecmkt_rollback?sslmode=disable` (keep the password as it is);
+   `scripts/restore.sh` prints this line for the database it restored into.
    If you rotated `SETUP_TOKEN` during the upgrade, keep the new value rather than the placeholder.
+   With an external database, point `BACKUP_DATABASE_URL` in your backup job at the restored database too:
+   external backups follow `BACKUP_DATABASE_URL`, not `DATABASE_URL`.
 
 4. Check out the revision you noted in step 1 and rebuild it:
 
@@ -168,17 +172,33 @@ the **upgraded** checkout: its `scripts/restore.sh` can restore into the interna
    docker compose logs -f app
    ```
 
+5. Keep backing up the database you now run. This release's `scripts/backup.sh` dumps the internal
+   database named in `DATABASE_URL`, so it follows the switch and its success line names `opsecmkt_rollback`.
+   The alpha.1 `scripts/backup.sh` you just checked out always dumps `opsecmkt`, which is now the abandoned
+   upgraded database. While you run alpha.1 on the internal database, back up the rolled-back one directly:
+
+   ```sh
+   (set -o pipefail; umask 077
+    docker compose exec -T db pg_dump -U opsecmkt -d opsecmkt_rollback --format=custom --no-owner --no-acl \
+      | age -r age1YOUR_PUBLIC_RECIPIENT > backups/rollback.dump.age) || echo 'Backup FAILED'
+   ```
+
+   Use a new file name each time, as `scripts/backup.sh` does, and delete the file if the command failed.
+
 ## 6. Backups now need the wallets too
 
 Once payments are on, the marketplace is custodial for test coins: the Bitcoin wallet lives in the
 `bitcoin_data` volume and the Monero wallet in `monero_wallet`. **Database dumps do not include them.** Back
-them up separately (see the runbook). `scripts/restore.sh` now pauses all outbound payouts with a persistent recovery gate and holds every
-pending, sending, blocked or held payout. Follow the [reconciliation procedure](docs/testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts),
-including orders whose payout did not yet exist in the backup, before explicitly clearing the gate. The
-application must be stopped during restore and reconciliation; do not allow user writes until complete.
-If the script reports recovery protection failed, do not start the application. Apply both protections to
+them up separately (see the runbook). `scripts/restore.sh` now pauses all outbound payouts with a persistent recovery gate, holds every
+pending, sending, blocked or held payout, and marks every failed payout as possibly sent after the backup (it
+may have been requeued and sent since). Follow the [reconciliation procedure](docs/testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts),
+including orders paid out after the backup that have no payout row in it, before explicitly clearing the
+gate. Restore with the application stopped and keep the site cut off from users until reconciliation is
+complete; the procedure says when the app runs for you alone and when it must be stopped.
+If the script reports recovery protection failed, do not start the application. Apply the protections to
 the restored application database in one transaction first (older databases without a `payouts` table need
-only the settings update):
+only the settings update; omit the `send_ambiguous` line if their `payouts` table has no such column, as
+migration 053 then marks their failed payouts ambiguous itself):
 
 ```sql
 BEGIN;
@@ -187,6 +207,10 @@ ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
 UPDATE payouts SET state='held', updated=now(),
   error='Restored from backup: verify in the wallet before releasing; this payout may already have been sent.'
 WHERE state IN ('pending','sending','blocked','held');
+UPDATE payouts SET send_ambiguous=true WHERE state='failed';
+UPDATE payouts SET updated=now(),
+  error='Restored from backup: verify in the wallet before requeueing; this payout may have been requeued and sent after the backup. Last error: ' || error
+WHERE state='failed';
 COMMIT;
 ```
 

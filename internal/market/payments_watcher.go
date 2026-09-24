@@ -348,7 +348,7 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 				rows.Close()
 				return err
 			}
-			notes = append(notes, fmt.Sprintf("TESTNET %s deposit %s:%d of %s %s received after this order was funded. If it has %d confirmations when the order is completed, cancelled or resolved, it is included in the order's single release or refund; otherwise it is not paid out automatically.",
+			notes = append(notes, fmt.Sprintf("TESTNET %s deposit %s:%d of %s %s received after this order was funded. If it has %d confirmations, as last recorded by the market, when the order is completed, cancelled or resolved, it is included in the order's single release or refund; otherwise it is not paid out automatically.",
 				p.Network(), truncate(txid, 20), idx, amount(amt, dec), o.Currency, threshold))
 		}
 		rows.Close()

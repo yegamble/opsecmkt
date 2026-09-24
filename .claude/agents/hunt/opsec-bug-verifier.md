@@ -19,6 +19,8 @@ were handed and the code they cite.
    you start and remove (the repro test source is in the finding; put it in a
    scratch copy under `artifacts/bug-hunt/<sha>/verify/` or `$TMPDIR`, never
    in the tracked tree). A repro you did not run is not evidence.
+   Anything you keep under `artifacts/` is inside the Go module: save Go sources
+   there as `*.go.txt`, never `*.go`, or `go vet ./...` and `go test ./...` break.
 2. Check the premise: is the "expected" behaviour actually documented
    (`docs/implementation-status.md`, `docs/acceptance.md`) or required by an
    invariant — or is it the hunter's preference? Is it a deliberate design

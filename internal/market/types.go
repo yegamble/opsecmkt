@@ -27,7 +27,10 @@ type Notification struct {
 	ID, Body, Created string
 	Read              bool
 }
-type Dispute struct{ ID, OrderID, Reason, Status, Resolution, Created string }
+type Dispute struct {
+	ID, OrderID, Reason, Status, Resolution, Created string
+	NoResolver                                       bool // open, and every moderator and administrator is a party
+}
 
 // PaymentReview is one deposit the payment watcher flagged for staff review (payments.flagged).
 type PaymentReview struct {
@@ -57,8 +60,12 @@ type PageData struct {
 	// P1 Authentication
 	Security *SecurityView
 	Captcha  *CaptchaView
-	// FactorAccounts: admin page, non-administrator accounts with a second factor (User.Factors names them).
+	// FactorAccounts: admin page, up to 100 non-administrator accounts with a second factor, by handle
+	// (User.Factors names them); the reset form itself takes any handle.
 	FactorAccounts []User
+	// RoleHandle, RoleChoice and ResetHandle: admin page re-rendered after a handle matched no account,
+	// keeping what was typed into the role or second-factor reset form.
+	RoleHandle, RoleChoice, ResetHandle string
 
 	// P2 PGP
 	PGP *PGPView
@@ -161,7 +168,9 @@ type ReviewSummary struct {
 // P4 Inventory
 // ListingView is the owner/admin-only edit view of one listing (d.Product holds the public fields).
 type ListingView struct {
-	DeliveryContent     string // stored unencrypted; never loaded for public pages
+	DeliveryContent     string // stored unencrypted; loaded only for the listing's own vendor
+	VendorEditor        bool   // the editor is the listing's vendor (not an administrator editing another vendor's listing)
+	HasDeliveryContent  bool   // automatic delivery content is stored (shown to other editors instead of the content)
 	Updated, ArchivedAt string
 	OpenOrders          int    // orders not completed, resolved or cancelled
 	AutoDelivery        string // currencies with a configured payment provider, e.g. "BTC, XMR"; "" = none

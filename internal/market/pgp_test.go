@@ -145,6 +145,46 @@ func TestEncryptAndInspect(t *testing.T) {
 	}
 }
 
+// A-67: the packet stream must be key packets then exactly one encrypted-data packet, read to its end.
+func TestInspectEncryptedPacketSequence(t *testing.T) {
+	alice, _ := testPGPKey(t, "alice")
+	msg, err := encryptTo(alice, "challenge-nonce")
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, _ := armor.Decode(strings.NewReader(msg))
+	data, _ := io.ReadAll(block.Body)
+	r := bytes.NewReader(data)
+	if _, err = packet.Read(r); err != nil {
+		t.Fatal(err)
+	}
+	seipd := data[len(data)-r.Len():]
+	pkesk := data[:len(data)-r.Len()]
+	// Tag 9 (SymmetricallyEncrypted without integrity protection, as `gpg --rfc2440` may emit): a
+	// new-format header 0xC9, a one-octet length and opaque ciphertext. Only SEIPD/AEAD count (QA5-2).
+	tag9 := append(append([]byte{}, pkesk...), append([]byte{0xC9, 32}, bytes.Repeat([]byte{0xA5}, 32)...)...)
+	rearmor := func(b []byte) string {
+		var buf bytes.Buffer
+		w, _ := armor.Encode(&buf, "PGP MESSAGE", nil)
+		w.Write(b)
+		w.Close()
+		return buf.String()
+	}
+	if _, encrypted, err := inspectEncrypted(rearmor(data)); err != nil || !encrypted {
+		t.Fatalf("re-armored message: encrypted=%v err=%v", encrypted, err)
+	}
+	for name, b := range map[string][]byte{
+		"trailing packets":        append(append([]byte{}, data...), data...),
+		"truncated":               data[:len(data)-5],
+		"no session key packets":  seipd,
+		"no integrity protection": tag9,
+	} {
+		if _, encrypted, err := inspectEncrypted(rearmor(b)); err == nil || encrypted {
+			t.Errorf("%s: encrypted=%v err=%v", name, encrypted, err)
+		}
+	}
+}
+
 func TestSealOpen(t *testing.T) {
 	a := &App{setupToken: testSetupToken}
 	ct, err := a.seal("totp", "JBSWY3DPEHPK3PXP")

@@ -65,21 +65,26 @@ func messageStatus(body, recipientKey string) (encrypted bool, match string) {
 }
 
 // inspectMessage is called by the /messages action before storing: it rejects bodies that are not
-// OpenPGP-encrypted and returns the recipient-key match to store with the message.
-func inspectMessage(c *actionCtx, body, recipientID string) (string, error) {
+// OpenPGP-encrypted and returns the body to store - a canonical re-armor of the pasted packets, without
+// armor headers or anything around the block - and the recipient-key match computed from that body.
+func inspectMessage(c *actionCtx, body, recipientID string) (stored, match string, err error) {
 	var key string
-	if err := c.Tx.QueryRowContext(c.Ctx(), "SELECT pgp FROM users WHERE id=$1", recipientID).Scan(&key); err != nil {
-		return "", err
+	if err = c.Tx.QueryRowContext(c.Ctx(), "SELECT pgp FROM users WHERE id=$1", recipientID).Scan(&key); err != nil {
+		return "", "", err
 	}
-	if _, encrypted, err := inspectEncrypted(body); err != nil || !encrypted {
-		return "", fail(400, "This is not an OpenPGP-encrypted message (plaintext, signed-only and malformed armor are rejected). Encrypt it locally to the recipient's public key, then paste the armored result.")
+	encrypted := false
+	if stored, err = canonicalMessage(body); err == nil {
+		encrypted, match = messageStatus(stored, key)
 	}
-	_, match := messageStatus(body, key)
-	return match, nil
+	if !encrypted {
+		return "", "", fail(400, "This is not an OpenPGP-encrypted message (plaintext, signed-only and malformed armor are rejected). Encrypt it locally to the recipient's public key, then paste the armored result.")
+	}
+	return stored, match, nil
 }
 
 // messageStatusLoader adds the stored inspection result to each listed message. Messages stored before
 // inspection existed (encrypted IS NULL) are inspected now; their recipient match is reported as unknown.
+// An encrypted message is displayed as its canonical re-armor, never with the stored armor headers.
 func messageStatusLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error {
 	if len(d.Messages) == 0 {
 		return nil
@@ -115,10 +120,18 @@ func messageStatusLoader(ctx context.Context, a *App, r *http.Request, d *PageDa
 		switch {
 		case ok && s.encrypted.Valid:
 			m.Encrypted, m.RecipientMatch = s.encrypted.Bool, s.match
+			// Rows stored before the strict armor check (A-67) may hold text around or inside the armor.
+			if m.Encrypted {
+				_, strict, err := inspectEncrypted(m.Body)
+				m.Encrypted = err == nil && strict
+			}
 		default:
 			m.Encrypted, m.RecipientMatch = messageStatus(m.Body, "")
 		}
-		if !m.Encrypted {
+		if m.Encrypted {
+			// Show only the packets: a pre-A-67 row may carry plaintext in an armor header (A-74).
+			m.Body, _ = canonicalMessage(m.Body)
+		} else {
 			m.RecipientMatch = ""
 		}
 	}

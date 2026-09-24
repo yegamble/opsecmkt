@@ -5,7 +5,8 @@ import (
 	"strconv"
 )
 
-// P4 Inventory: vendors edit, archive and restore their own listings; administrators may manage any listing.
+// P4 Inventory: vendors edit, archive and restore their own listings; administrators may manage any listing
+// except its automatic delivery content, which only the listing's vendor can read or change.
 
 func init() {
 	managers := []string{"vendor", "admin"}
@@ -56,6 +57,16 @@ func listingUpdateAction(c *actionCtx) (actionResult, error) {
 	l, err := lockListing(c, c.Form.Get("id"))
 	if err != nil {
 		return actionResult{}, err
+	}
+	if l.VendorID != c.User.ID {
+		// Automatic delivery content is what every buyer receives in the vendor's name. Other editors
+		// (administrators) never see it, so their saves keep the stored content whatever the form sends.
+		if err = c.Tx.QueryRowContext(ctx, `SELECT delivery_content FROM products WHERE id=$1`, l.ID).Scan(&in.DeliveryContent); err != nil {
+			return actionResult{}, err
+		}
+		if in.DeliveryContent != "" && in.Kind != "digital" {
+			return actionResult{}, fail(400, "This listing has automatic delivery content that only its vendor can remove, so it must stay digital.")
+		}
 	}
 	if in.Kind != l.Kind {
 		// Orders read the fulfillment type from the listing; changing it would change their shipping/delivery path.

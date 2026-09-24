@@ -3,8 +3,11 @@ package market
 import (
 	"bytes"
 	"database/sql"
+	"html"
+	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -314,5 +317,218 @@ func TestMessageEncryptionStatus(t *testing.T) {
 	// The recipient sees the same stored statuses.
 	if !strings.Contains(e.body("GET", "/messages", aliceSession, nil, 200), "Encrypted (NOT to recipient’s key)") {
 		t.Fatal("recipient view")
+	}
+}
+
+// A-67: plaintext pasted in or around the armor (a leading fake block, lines inside the base64, text
+// after the checksum or after the END line) is refused; an armor header is dropped, never stored.
+func TestMessagePlaintextInsideArmorRejected(t *testing.T) {
+	e := newTestApp(t)
+	alice, alicePub := testPGPKey(t, "alice")
+	senderID, sender := e.user("armor_buyer", "buyer")
+	_, aliceSession := e.user("armor_vendor", "vendor")
+	e.check(e.do("POST", "/account", aliceSession, url.Values{"pgp": {alicePub}}), 303)
+
+	ct, err := encryptTo(alice, strings.Repeat("order notes ", 300))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const address = "SHIP TO 12 Elm Street Springfield"
+	const begin, end = "-----BEGIN PGP MESSAGE-----\n", "-----END PGP MESSAGE-----"
+	block := strings.TrimSpace(ct)
+	lines := strings.Split(block, "\n")
+	withLine := func(at int, line string) string {
+		return strings.Join(append(append(append([]string{}, lines[:at]...), line), lines[at:]...), "\n")
+	}
+	for name, body := range map[string]string{
+		// A fake leading block whose first line has no colon: a lenient decoder skips to the next BEGIN.
+		"leading fake block": begin + address + "\n" + ct,
+		// Plaintext lines in the middle of the ciphertext, after the encrypted-data packet header.
+		"inside base64": withLine(len(lines)/2, address),
+		// Text between the checksum and END lines, which a lenient decoder never reads.
+		"after checksum": withLine(len(lines)-1, address),
+		// Sandwiches: a valid block, plaintext, then another block or a bare END line.
+		"block text block": block + "\n\n" + address + "\n\n" + block,
+		"block text END":   block + "\n" + address + "\n" + end,
+	} {
+		b := e.body("POST", "/messages", sender, url.Values{"recipient": {"armor_vendor"}, "body": {body}}, 400)
+		if !strings.Contains(b, "not an OpenPGP-encrypted message") {
+			t.Errorf("%s: %s", name, b)
+		}
+	}
+	var n int
+	if err = e.DB.QueryRow("SELECT count(*) FROM messages WHERE sender_id=$1", senderID).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("stored %d messages (%v)", n, err)
+	}
+
+	// An armor header carrying plaintext: the ciphertext is accepted, the header is not stored.
+	e.check(e.do("POST", "/messages", sender, url.Values{"recipient": {"armor_vendor"}, "body": {strings.Replace(ct, begin, begin+"Comment: "+address+"\n", 1)}}), 303)
+	var stored string
+	if err = e.DB.QueryRow("SELECT body FROM messages WHERE sender_id=$1 AND encrypted AND recipient_match='yes'", senderID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != block {
+		t.Fatalf("stored body is not the canonical armor:\n%s", stored)
+	}
+	page := e.body("GET", "/messages", aliceSession, nil, 200)
+	if strings.Contains(page, address) || strings.Count(page, "Encrypted (to recipient’s key)") != 1 {
+		t.Fatal("recipient page shows the header text or wrong badges")
+	}
+
+	// A sandwich stored as encrypted before this check is re-inspected and no longer badged Encrypted.
+	var aliceID string
+	if err = e.DB.QueryRow("SELECT id FROM users WHERE handle='armor_vendor'").Scan(&aliceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = e.DB.Exec("INSERT INTO messages(id,sender_id,recipient_id,body,encrypted,recipient_match) VALUES($1,$2,$3,$4,true,'yes')", randomToken(), senderID, aliceID, block+"\n"+address+"\n"+end); err != nil {
+		t.Fatal(err)
+	}
+	page = e.body("GET", "/messages", aliceSession, nil, 200)
+	if strings.Count(page, "Encrypted (to recipient’s key)") != 1 || strings.Count(page, "Not encrypted (plaintext or invalid OpenPGP)") != 1 {
+		t.Fatal("stored sandwich still badged encrypted")
+	}
+
+	// A-74: a row stored before this check with plaintext in an armor header keeps its badge but is shown
+	// as the canonical re-armor of the same packets, without the header.
+	const legacy = "Ship to: 9 Legacy Lane"
+	if _, err = e.DB.Exec("INSERT INTO messages(id,sender_id,recipient_id,body,encrypted,recipient_match) VALUES($1,$2,$3,$4,true,'yes')", randomToken(), senderID, aliceID, strings.Replace(ct, begin, begin+"Comment: "+legacy+"\n", 1)); err != nil {
+		t.Fatal(err)
+	}
+	page = e.body("GET", "/messages", aliceSession, nil, 200)
+	if strings.Contains(page, "Legacy Lane") || strings.Contains(page, "Comment:") {
+		t.Fatal("recipient page shows a legacy armor header")
+	}
+	if strings.Count(page, "Encrypted (to recipient’s key)") != 2 || strings.Count(page, "Not encrypted (plaintext or invalid OpenPGP)") != 1 {
+		t.Fatal("legacy header row lost its badge")
+	}
+	want := armorPackets(t, ct)
+	shown := 0
+	for _, m := range regexp.MustCompile(`(?s)<pre class="code-block">(.*?)</pre>`).FindAllStringSubmatch(page, -1) {
+		if body := html.UnescapeString(m[1]); body == block {
+			if armorPackets(t, body) != want {
+				t.Fatal("displayed armor decodes to other packets")
+			}
+			shown++
+		}
+	}
+	if shown != 2 {
+		t.Fatalf("canonical armor shown %d times, want 2", shown)
+	}
+}
+
+// armorPackets returns the decoded packet bytes of an armored message.
+func armorPackets(t *testing.T, armored string) string {
+	t.Helper()
+	b, err := armor.Decode(strings.NewReader(armored))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(b.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+// gpgFixtureKey and gpgFixtureMessage were produced by GnuPG 2.2.41: an ed25519/cv25519 key for
+// carol@example.test, and `gpg --armor --comment "Ship to: 1 Header Lane" -r carol -R dave --encrypt`
+// (carol named, a second recipient hidden).
+const gpgFixtureKey = `-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mDMEarSZCRYJKwYBBAHaRw8BAQdAtbkMhniQPBoMvoGlEhN3Gl6KJR5bcKgBjOzw
+lJY5BO60IkNhcm9sIEZpeHR1cmUgPGNhcm9sQGV4YW1wbGUudGVzdD6IkAQTFggA
+OBYhBAYHYy1wLSUM8uPU9CvzJcRIvKzlBQJqtJkJAhsDBQsJCAcCBhUKCQgLAgQW
+AgMBAh4BAheAAAoJECvzJcRIvKzl80cA/jp5XpR2irExB9VYeDlW4asr2r4V9YQ/
+nihF9Xt3QZKiAQCue+Li0SUHtSEl/TAJF0bfWGy/Inz9wOz6G/Z7DsjlBLg4BGq0
+mQoSCisGAQQBl1UBBQEBB0CLNHSysMR5/MMjIHk7yB6lvhI+B4W8R0vlL5A3Ox3m
+cAMBCAeIeAQYFggAIBYhBAYHYy1wLSUM8uPU9CvzJcRIvKzlBQJqtJkKAhsMAAoJ
+ECvzJcRIvKzldEAA/2zy/idAkEDpxqvvlAh3Lks/iVdnGRZs2oxJTk3fOobeAQCZ
+mg7g8j1HtPw6z6mXGRwi8jEIge0uzx/1lz+hrcBPBw==
+=wtYQ
+-----END PGP PUBLIC KEY BLOCK-----
+`
+
+const gpgFixtureMessage = `-----BEGIN PGP MESSAGE-----
+Comment: Ship to: 1 Header Lane
+
+hF4DYHOX22HHAIgSAQdAuGk3nVvYKuvzZDifAyf/J3MHxJE67K7JqIi/lHGdMTYw
+WYrBA2dZcgObB8Hd0L8IRnkZZU38V1gl9HVwEpWyVZLvOa4cNzqI1KMiJ552TF2u
+hF4DAAAAAAAAAAASAQdAzEveOC/SCAE+woHUhw031Jpm9DAV5785uxrl0Ub4oTgw
+9xlWdD41jLxPxvbYCRlTw2DDTkBH9dbFcYJhiE0/H3MakEOpsBXWuCLXZ1IC2+lo
+0nQB1psnjtHfGwWx90306oiOZGyi4hD6uB9MGFEW8sWA6SW48+TeVLGgnYV29eMp
+TG/+P0tCYKMB+sD4B9LCY8X6eH774kSpV2786A0Vw5rqxeMnNyg7p0CyQC/pU/BO
+Ln7p/Gjem7sonpCykqmKanSeoIi9Gw==
+=cYPA
+-----END PGP MESSAGE-----
+`
+
+// A-67: real OpenPGP output is still accepted - Version/Comment headers, CRLF line endings, several
+// and hidden recipients - and stored as a canonical re-armor of the same packets, without headers.
+func TestMessageArmorCanonicalised(t *testing.T) {
+	e := newTestApp(t)
+	alice, alicePub := testPGPKey(t, "alice")
+	bob, _ := testPGPKey(t, "bob")
+	senderID, sender := e.user("canon_buyer", "buyer")
+	_, aliceSession := e.user("canon_alice", "vendor")
+	_, carolSession := e.user("canon_carol", "vendor")
+	e.check(e.do("POST", "/account", aliceSession, url.Values{"pgp": {alicePub}}), 303)
+	e.check(e.do("POST", "/account", carolSession, url.Values{"pgp": {gpgFixtureKey}}), 303)
+
+	var buf bytes.Buffer
+	w, _ := armor.Encode(&buf, "PGP MESSAGE", map[string]string{"Version": "GnuPG v2", "Comment": "Ship to: 2 Header Road"})
+	pt, err := openpgp.Encrypt(w, []*openpgp.Entity{bob, alice}, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.WriteString(pt, "two recipients")
+	pt.Close()
+	w.Close()
+	crlf := strings.ReplaceAll(buf.String(), "\n", "\r\n")
+	packets := func(armored string) string {
+		t.Helper()
+		b, err := armor.Decode(strings.NewReader(armored))
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := io.ReadAll(b.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	sent := map[string]string{} // recipient/match -> packets of the pasted message
+	for _, m := range []struct{ to, body, match string }{
+		{"canon_alice", crlf, "yes"},                  // CRLF, Version and Comment headers, two recipients
+		{"canon_carol", gpgFixtureMessage, "yes"},     // gpg output naming carol
+		{"canon_alice", gpgFixtureMessage, "unknown"}, // only a hidden recipient could be alice
+	} {
+		e.check(e.do("POST", "/messages", sender, url.Values{"recipient": {m.to}, "body": {m.body}}), 303)
+		sent[m.to+"/"+m.match] = packets(m.body)
+	}
+	rows, err := e.DB.Query("SELECT u.handle,m.body,m.recipient_match FROM messages m JOIN users u ON u.id=m.recipient_id WHERE m.sender_id=$1 AND m.encrypted", senderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	n := 0
+	for rows.Next() {
+		var to, body, match string
+		if err = rows.Scan(&to, &body, &match); err != nil {
+			t.Fatal(err)
+		}
+		n++
+		if strings.Contains(body, "Header") || strings.Contains(body, "Version") || strings.Contains(body, "\r") || !strings.HasPrefix(body, "-----BEGIN PGP MESSAGE-----\n\n") {
+			t.Errorf("%s: stored body keeps headers or line endings:\n%q", to, body)
+		}
+		if want, ok := sent[to+"/"+match]; !ok || packets(body) != want {
+			t.Errorf("%s/%s: stored packets differ from the sent message (known=%v)", to, match, ok)
+		}
+	}
+	if err = rows.Err(); err != nil || n != 3 {
+		t.Fatalf("stored %d encrypted messages (%v)", n, err)
+	}
+	page := e.body("GET", "/messages", sender, nil, 200)
+	if strings.Count(page, "Encrypted (to recipient’s key)") != 2 || strings.Count(page, "Encrypted (recipient unknown)") != 1 || strings.Contains(page, "Header") {
+		t.Fatal("sender page badges or header text wrong")
 	}
 }
