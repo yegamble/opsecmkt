@@ -88,7 +88,11 @@ test('BTC and XMR: partial payment, intake pause, confirmation, fulfillment and 
     if (digital) {
       await admin.getByLabel('Delivery content', { exact: true }).fill('Fixture digital delivery token');
       await submit(admin, admin.getByRole('button', { name: 'Deliver digital content', exact: true }));
-    } else await submit(admin, admin.getByRole('button', { name: 'Mark as shipped' }));
+    } else {
+      // A-80: the note to the buyer warns against addresses and tracking numbers in plain text.
+      await expect(admin.getByLabel('Note to the buyer (optional)')).toHaveAccessibleDescription(/^Stored unencrypted\..*Never include an address, real name or tracking number/);
+      await submit(admin, admin.getByRole('button', { name: 'Mark as shipped' }));
+    }
     await buyer.reload();
     if (digital) await expect(buyer.getByRole('region', { name: 'Digital delivery' })).toContainText('Fixture digital delivery token');
     await buyer.getByRole('button', { name: 'Confirm receipt and complete' }).click();
@@ -102,6 +106,7 @@ test('BTC and XMR: partial payment, intake pause, confirmation, fulfillment and 
     await expect.poll(async () => (await (await request.get(`${rpc}/test/state`)).json()).checks).toBeGreaterThan(checks + 2);
     expect(((await (await request.get(`${rpc}/test/state`)).json()).payouts as any[]).filter(p => p.currency === currency)).toHaveLength(1);
     await buyer.getByRole('combobox', { name: 'Rating', exact: true }).selectOption('4');
+    await expect(buyer.getByLabel('Review (optional)')).toHaveAccessibleDescription(/The vendor sees your review, with your handle, on this order\..*Never include an address, real name or tracking number/);
     await buyer.getByLabel('Review (optional)').fill(`Verified ${currency} fixture purchase arrived as described.`);
     await submit(buyer, buyer.getByRole('button', { name: 'Publish review' }));
     await buyer.reload();
@@ -144,7 +149,12 @@ test('funded dispute: encrypted moderator evidence, independent resolution and o
   expect((await request.post(`${rpc}/test/deposit`, { data: { address, amount: 100_000 } })).ok()).toBeTruthy();
   expect((await request.post(`${rpc}/test/confirm`, { data: { address } })).ok()).toBeTruthy();
   await reloadUntil(buyer, async () => { await expect(buyer.locator('.page-head .badge')).toHaveText('Paid', { timeout: 500 }); });
+  // A-80: both dispute forms warn that the reason is plain text and point to the encrypted staff contacts.
+  await buyer.goto('/disputes');
+  await expect(buyer.getByLabel('Describe the issue')).toHaveAccessibleDescription(/^Stored unencrypted\..*Never include an address, real name or tracking number.*Contact dispute staff/);
+  await buyer.goto(orderURL);
   await buyer.getByText('Open a dispute', { exact: true }).click();
+  await expect(buyer.getByLabel('Describe the issue')).toHaveAccessibleDescription(/^Stored unencrypted\..*Never include an address, real name or tracking number.*Contact dispute staff/);
   await buyer.getByLabel('Describe the issue').fill('Please review the encrypted evidence sent to the independent moderator.');
   await buyer.getByRole('button', { name: 'Submit dispute' }).click();
   await buyer.goto(orderURL);
@@ -198,6 +208,7 @@ test('vendor cancels a paid physical order, refunds once and restores stock', as
     await reloadUntil(buyer, async () => { await expect(buyer.locator('.page-head .badge')).toHaveText('Paid', { timeout: 500 }); });
     await expect(buyer.getByRole('button', { name: 'Cancel order', exact: true })).toHaveCount(0);
     await vendor.goto(orderURL);
+    await expect(vendor.getByLabel('Reason (optional)')).toHaveAccessibleDescription(/^Stored unencrypted\..*Never include an address, real name or tracking number/);
     await vendor.getByLabel('Reason (optional)').fill('Fixture vendor unable to fulfill this paid order.');
     await submit(vendor, vendor.getByRole('button', { name: 'Cancel order', exact: true }));
     await buyer.reload();
