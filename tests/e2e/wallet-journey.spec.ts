@@ -48,11 +48,13 @@ test('BTC and XMR: partial payment, intake pause, confirmation, fulfillment and 
     await admin.getByRole('button', { name: 'Publish listing' }).click();
     await buyer.goto(`/?q=${encodeURIComponent(title)}`);
     await buyer.getByRole('link', { name: title, exact: true }).click();
+    await buyer.waitForURL(/\/product\?id=/);
     const productURL = buyer.url();
     await buyer.getByRole('link', { name: 'Review order draft' }).click();
     await buyer.getByLabel('Reference currency').selectOption(currency);
     await buyer.getByRole('button', { name: 'Create unfunded draft' }).click();
     await buyer.getByRole('button', { name: 'Request payment address' }).click();
+    await buyer.waitForURL(/&saved=1$/);
     const orderURL = buyer.url();
     await expect(buyer.locator('.page-head .badge')).toHaveText('Awaiting payment');
     const address = (await buyer.locator('.payment-address .mono').innerText()).trim();
@@ -81,7 +83,7 @@ test('BTC and XMR: partial payment, intake pause, confirmation, fulfillment and 
     // Existing addresses were monitored while intake was paused; now resume new requests.
     const resume = admin.locator('form', { has: admin.getByRole('button', { name: `Enable new ${currency} payments` }) });
     await resume.getByLabel('Current password', { exact: true }).fill(password);
-    await resume.getByRole('button').click();
+    await submit(admin, resume.getByRole('button'));
     await second.reload();
     await expect(second.getByRole('button', { name: 'Request payment address' })).toBeVisible();
     await admin.goto(orderURL);
@@ -144,6 +146,7 @@ test('funded dispute: encrypted moderator evidence, independent resolution and o
   await buyer.getByRole('link', { name: 'Review order draft' }).click();
   await buyer.getByRole('button', { name: 'Create unfunded draft' }).click();
   await buyer.getByRole('button', { name: 'Request payment address' }).click();
+  await buyer.waitForURL(/&saved=1$/);
   const orderURL = buyer.url();
   const address = (await buyer.locator('.payment-address .mono').innerText()).trim();
   expect((await request.post(`${rpc}/test/deposit`, { data: { address, amount: 100_000 } })).ok()).toBeTruthy();
@@ -194,12 +197,14 @@ test('vendor cancels a paid physical order, refunds once and restores stock', as
   try {
     await buyer.goto('/?q=Wallet%20BTC%20journey');
     await buyer.getByRole('link', { name: 'Wallet BTC journey', exact: true }).click();
+    await buyer.waitForURL(/\/product\?id=/);
     const productURL = buyer.url();
     const stock = buyer.locator('.key-values div', { has: buyer.getByText('Available stock', { exact: true }) });
     const before = Number(await stock.locator('dd').innerText());
     await buyer.getByRole('link', { name: 'Review order draft' }).click();
     await buyer.getByRole('button', { name: 'Create unfunded draft' }).click();
     await buyer.getByRole('button', { name: 'Request payment address' }).click();
+    await buyer.waitForURL(/&saved=1$/);
     const orderURL = buyer.url();
     const address = (await buyer.locator('.payment-address .mono').innerText()).trim();
     const beforePayouts = (await (await request.get(`${rpc}/test/state`)).json()).payouts.length;
@@ -242,6 +247,7 @@ test('automatic digital delivery and administrator recovery of a rejected payout
     await buyer.getByLabel('Reference currency').selectOption('XMR');
     await buyer.getByRole('button', { name: 'Create unfunded draft' }).click();
     await buyer.getByRole('button', { name: 'Request payment address' }).click();
+    await buyer.waitForURL(/&saved=1$/);
     const orderURL = buyer.url();
     const orderID = new URL(orderURL).searchParams.get('id')!;
     await expect(buyer.locator('main')).not.toContainText(content);
@@ -270,7 +276,7 @@ test('automatic digital delivery and administrator recovery of a rejected payout
     await payout.locator('summary').click();
     requeue = payout.locator('form', { has: admin.getByRole('button', { name: 'Requeue payout', exact: true }) });
     await requeue.getByLabel('Current password', { exact: true }).fill(password);
-    await requeue.getByRole('button').click();
+    await submit(admin, requeue.getByRole('button'));
     await reloadUntil(buyer, async () => { await expect(buyer.locator('.payment-figures div', { has: buyer.getByText('Payout status', { exact: true }) })).toContainText('Sent', { timeout: 500 }); });
     expect((await (await request.get(`${rpc}/test/state`)).json()).payouts).toHaveLength(before + 1);
     await admin.reload();

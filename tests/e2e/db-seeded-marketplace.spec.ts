@@ -74,12 +74,17 @@ test('seeded catalog discovery, role boundaries and persistent unfunded orders',
     await expect(buyer.locator('.listings-grid')).toContainText(digital);
     await expect(buyer.locator('.listings-grid')).not.toContainText(archived);
     await buyer.getByRole('link', { name: hardware, exact: true }).click();
+    // A click returns once its navigation commits, before the new page has loaded: wait for the load before reading
+    // the URL or reloading (a reload straight after the commit fails with "Not attached to an active page").
     await buyer.getByRole('link', { name: 'Review order draft' }).click();
+    await buyer.waitForURL(/\/checkout\?id=/);
     const checkoutURL = buyer.url();
     await buyer.getByRole('button', { name: 'Create unfunded draft' }).click();
+    await buyer.waitForURL(/\/order\?id=/);
     const orderURL = buyer.url();
     await buyer.goto(checkoutURL);
     await buyer.getByRole('button', { name: 'Create unfunded draft' }).click();
+    await buyer.waitForURL(orderURL);
     expect(buyer.url()).toBe(orderURL);
     await buyer.reload();
     await expect(buyer.locator('.page-head .badge')).toHaveText('Draft — unfunded');
@@ -94,6 +99,7 @@ test('seeded catalog discovery, role boundaries and persistent unfunded orders',
     await expect(vendor.getByRole('button', { name: 'Cancel draft' })).toHaveCount(0);
     await buyer.goto(orderURL);
     await buyer.getByRole('button', { name: 'Cancel draft' }).click();
+    await buyer.waitForURL(/&saved=1$/);
     await vendor.reload();
     await expect(vendor.locator('.page-head .badge')).toHaveText('Cancelled');
   } finally {

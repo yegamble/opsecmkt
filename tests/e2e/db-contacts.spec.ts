@@ -42,6 +42,7 @@ test('vendor contact, unread notifications and demotion archive', async ({ brows
   // The buyer contacts the vendor: the recipient is prefilled and the missing key is stated plainly.
   await buyer.goto(`/?q=${encodeURIComponent(title)}`);
   await buyer.getByRole('link', { name: title, exact: true }).click();
+  await buyer.waitForURL(/\/product\?id=/);
   const productURL = buyer.url();
   await buyer.getByRole('link', { name: vendorHandle, exact: true }).click();
   await expect(buyer.getByRole('region', { name: 'PGP public key' })).toContainText(`${vendorHandle} has not added a PGP public key`);
