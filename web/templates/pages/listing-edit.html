@@ -48,9 +48,9 @@
 </div>
 <p class="help" id="stock-help">Payment requests reserve stock. If stock changes while you edit, saving a new stock value is refused so no reservation is overwritten.</p>
 {{with $.Listing}}<p class="help" id="kind-help">{{if .OpenOrders}}{{.OpenOrders}} open order(s) depend on this listing, so the fulfillment type cannot change until they finish.{{else}}No open orders; the fulfillment type can change.{{end}} Orders that have requested payment keep their recorded amount; open drafts use the current price.</p>
-<label>Automatic delivery content<textarea name="delivery_content" maxlength="32000" rows="6" spellcheck="false" aria-describedby="delivery-help">{{.DeliveryContent}}</textarea>
+{{if .VendorEditor}}<label>Automatic delivery content<textarea name="delivery_content" maxlength="32000" rows="6" spellcheck="false" aria-describedby="delivery-help">{{.DeliveryContent}}</textarea>
 </label>
-{{template "vendor-listings:delivery-help" .AutoDelivery}}{{end}}
+{{template "vendor-listings:delivery-help" .AutoDelivery}}{{else}}<p class="help">{{if .HasDeliveryContent}}Automatic delivery content is set; only the vendor can view or change it.{{else}}Automatic delivery content is not set; only the vendor can add it.{{end}}</p>{{end}}{{end}}
 <button class="primary" type="submit">Save changes</button>
 </form>
 </section>

@@ -97,6 +97,7 @@ Each package records its own acceptance checks here and edits only its subsectio
 - [ ] Archived listings are absent from catalog, search, product, checkout and vendor pages, accept no new drafts (400), stay visible to the owner with a badge, and existing orders are unaffected; restore reverses it (`TestArchiveHidesListingAndRefusesDrafts`, `db-inventory.spec.ts`).
 - [ ] Fulfillment type cannot change under open orders; stale stock edits are refused instead of overwriting reservations.
 - [ ] Automatic delivery content is labelled as stored unencrypted, never rendered on public pages, and shown as "Automatic delivery requires a payment provider" when none is configured.
+- [ ] An administrator editing another vendor's listing never sees its automatic delivery content (only "set" or "not set"), cannot change it by saving (whatever the form sends), and cannot make the listing physical while content is stored; the vendor still reads and edits it (`TestAdminListingEditKeepsDeliveryContentHidden`).
 - [ ] Edits, archives and restores are recorded in the audit log.
 - [ ] Changing a vendor's role to buyer or moderator archives their active listings in the same transaction (audited for the administrator and the account); new drafts, payment requests and restores on listings whose owner is not a vendor or administrator are refused, while existing orders continue (`TestVendorDemotionArchivesListingsAndRefusesNewOrders`).
 

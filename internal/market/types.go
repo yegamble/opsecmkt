@@ -161,7 +161,9 @@ type ReviewSummary struct {
 // P4 Inventory
 // ListingView is the owner/admin-only edit view of one listing (d.Product holds the public fields).
 type ListingView struct {
-	DeliveryContent     string // stored unencrypted; never loaded for public pages
+	DeliveryContent     string // stored unencrypted; loaded only for the listing's own vendor
+	VendorEditor        bool   // the editor is the listing's vendor (not an administrator editing another vendor's listing)
+	HasDeliveryContent  bool   // automatic delivery content is stored (shown to other editors instead of the content)
 	Updated, ArchivedAt string
 	OpenOrders          int    // orders not completed, resolved or cancelled
 	AutoDelivery        string // currencies with a configured payment provider, e.g. "BTC, XMR"; "" = none
