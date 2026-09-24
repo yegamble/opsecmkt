@@ -156,12 +156,41 @@ disputed or resolved order, or one with a payment flagged for review); otherwise
 Ordinary wallet reads time out after 10 s; a payout send is allowed 30 s, so a slow wallet that broadcasts
 after 10 s is still recorded as sent.
 
-First check the wallet for a transaction to the payout's address and amount:
+First check the wallet for a transaction to the payout's address and amount, covering everything since
+**before** the failed send (for a payout held or marked by a restore, since before the backup was taken).
+Nothing short of that is a check: `listtransactions "*" 50` shows only the newest 50 wallet entries (every
+deposit and send counts), so a payout followed by more entries is missing from it.
+
+Bitcoin: list every wallet transaction since a block mined before the failure. Pick a height safely earlier
+(testnet4 and signet mine about 144 blocks a day; a larger margin only lengthens the list):
 
 ```sh
-btc -rpcwallet=opsecmkt listtransactions "*" 50       # Bitcoin: look for "send" to the address
-xmr get_transfers '{"out":true,"pending":true,"pool":true}'   # Monero
+btc getblockcount                                         # the current height
+from=$(btc getblockhash HEIGHT_BEFORE)                    # a height mined before the failure or the backup
+btc -rpcwallet=opsecmkt listsinceblock "$from"            # look for "category": "send" to the payout address
+btc -rpcwallet=opsecmkt listtransactions "*" 100000       # the alternative: effectively the whole wallet
 ```
+
+`listsinceblock` also lists unconfirmed sends and, under `removed`, transactions a reorganisation took out.
+
+Monero: `get_transfers` builds its `pending` list before it updates the transaction pool, and the wallet
+refreshes by itself only every 20 s, so a single call can miss a send that has just reached the pool. Refresh,
+list, wait at least 20 s and do both again:
+
+```sh
+xmr refresh '{}'
+xmr get_transfers '{"out":true,"pending":true,"pool":true}'
+sleep 30
+xmr refresh '{}'
+xmr get_transfers '{"out":true,"pending":true,"pool":true}'
+```
+
+Look for the payout's address and amount in `destinations` of the `out`, `pending` and `pool` entries. A send
+the daemon relayed but the wallet reported as an error is recorded from the pool **without `destinations`**,
+with `amount` the total it spent less change (the payout plus the fee). Treat any `pending` or `out` transfer
+created after the failure (its `timestamp`) that has no destinations as **this payout** until you have proven
+otherwise, for example by matching it to another payout's transaction ID; never requeue or release while one
+is unexplained.
 
 Then open *Resolve payout N* on that row. Every action asks for your password (and authenticator code when
 enrolled), is recorded in the audit trail and the order history, and applies only if the payout is still in
@@ -179,7 +208,12 @@ the state you saw, so a double click or a second administrator cannot queue it t
   Refused while a credited deposit for the order is still conflicted or below the threshold. For a payout
   held by a restore the form also asks you to tick "I checked the wallet ... no transaction ... was
   broadcast"; the server refuses the release without it and records the confirmation in the audit trail
-  and the order history. If the wallet shows the transaction use **Mark sent** instead.
+  and the order history. If the wallet shows the transaction use **Mark sent** instead. A payout that was
+  held for an account suspension when the backup was taken keeps that hold behind the restore marker
+  (*Held after a restore from backup and for an account suspension*): releasing it needs both the wallet
+  confirmation and "Payout address checked".
+
+Each of these forms repeats the wallet check above in one line next to the checkbox.
 
 ### Handle a payment-review flag
 
@@ -253,8 +287,17 @@ deposits and moves funded orders to *Paid*. The script also converts pending, se
 to manual recovery holds; reconfirming a deposit or saving an address cannot release these holds
 automatically. Failed payouts stay failed but are marked as possibly sent (`send_ambiguous`, error prefixed
 `Restored from backup:`): one the wallet had rejected before the backup may have been requeued and sent after
-it, so requeueing it also needs the wallet confirmation. The script prints how many payouts it held and how
-many failed payouts it marked.
+it, so requeueing it also needs the wallet confirmation. A payout held for an account suspension keeps that
+text behind the restore marker, so releasing it still needs the payout address check. The script prints how
+many payouts it held and how many failed payouts it marked, and adds one audit row recording the gate and those
+counts.
+
+**Only `scripts/restore.sh` applies this protection.** A host or volume snapshot, a managed-database
+point-in-time recovery or a manual `pg_restore` brings payouts back as `pending` with no gate, and the
+application sends them as soon as it starts, even those already paid after that point in time. After any such
+restore, keep the application stopped and apply the protection SQL in
+[UPGRADING.md, section 6](../UPGRADING.md#6-backups-now-need-the-wallets-too) to the restored database
+**before starting the application**, then follow the steps below.
 
 The restored database knows nothing that happened after the backup. An order that was completed, cancelled or
 resolved **and paid out** after the backup comes back in its earlier state with **no payout row**. If its buyer
@@ -289,11 +332,14 @@ and no web action that clears the gate or records a lost payout.
 3. **Resolve the payouts the restore held or marked** on the admin page, with the wallet checks in
    [section 5](#5-recover-a-held-or-failed-payout) (*Mark sent*, *Release held payout*, *Requeue payout*).
    Nothing is sent while the gate is set.
-4. **List every wallet send since the backup was taken** and match each to a payout by transaction ID:
+4. **List every wallet send since the backup was taken** and match each to a payout by transaction ID, with the
+   complete checks from [section 5](#5-recover-a-held-or-failed-payout) (`from` is a block mined before the
+   backup; the Monero listing runs twice, 20 s or more apart, after a `refresh`):
 
    ```sh
-   btc -rpcwallet=opsecmkt listtransactions "*" 1000                  # "send" entries after the backup time
-   xmr get_transfers '{"out":true,"pending":true,"pool":true}'       # "out", "pending" and "pool" transfers
+   btc -rpcwallet=opsecmkt listsinceblock "$from"                       # "send" entries after the backup time
+   xmr refresh '{}'
+   xmr get_transfers '{"out":true,"pending":true,"pool":true}'         # "out", "pending" and "pool" transfers
    docker compose exec -T db psql -X -U opsecmkt -d opsecmkt_restored \
      -c "SELECT currency, txid, order_id, state FROM payouts WHERE txid <> '' ORDER BY currency, txid"
    ```
@@ -302,6 +348,8 @@ and no web action that clears the gate or records a lost payout.
    a written note (see "Handle a payment-review flag"; leave it alone) or a **payout the restore lost**. Find
    the order of each lost payout from the amount sent (Bitcoin amounts ×100 000 000 in satoshi, Monero
    destination amounts are already in atomic units; fees are separate) and the address it went to, in step 6.
+   A Monero `pending` or `out` transfer after the backup with no `destinations` is an unmatched send too (its
+   `amount` includes the fee): it counts as a lost payout until you prove otherwise.
    If a send cannot be matched to exactly one order, an order settled after the backup is missing from the
    restored database, or the order already has a `pending` payout queued since the restore, keep the gate set:
    restore a newer backup or get operator assistance.
@@ -311,7 +359,8 @@ and no web action that clears the gate or records a lost payout.
    (`AGE_RECIPIENT=age1YOUR_PUBLIC_RECIPIENT ./scripts/backup.sh backups/reconciled-YYYYMMDD.dump.age`, with
    `DATABASE_URL` in `.env` already naming the restored database) and keep it with the wallet transaction IDs
    and this reconciliation record.
-8. **Clear the gate**, with the app still stopped, as below. It must report `UPDATE 1`.
+8. **Clear the gate**, with the app still stopped, as below. It must end "Cleared the payout recovery gate;
+   committed."
 9. **Restart and let users back in**:
    - Clearnet: `docker compose up -d`, then start the reverse proxy again (`sudo systemctl start caddy`).
    - Tor: remove the client authorization
@@ -462,25 +511,46 @@ the check in one transaction and ends "Recorded the payout as sent; committed." 
 - one new audit row ("Recorded payout N ... sent after the backup"). Existing audit rows are never changed.
 
 The recipient is not notified; tell them through Messages if needed. The SQL refuses to run once the gate is
-cleared: if you find a lost payout later, stop the app and set the gate again first (the settings statement in
-[UPGRADING.md](../UPGRADING.md#6-backups-now-need-the-wallets-too)).
+cleared: if you find a lost payout later, stop the app and set the gate again first (the `settings` and
+`audit_events` statements in [UPGRADING.md](../UPGRADING.md#6-backups-now-need-the-wallets-too), between its
+`BEGIN` and `COMMIT`).
 
 #### Clear the gate (step 8)
 
 Only after every step above, with the app stopped and the reconciled database backed up. Clearing the gate is
 your assertion that reconciliation is complete; it does not discover missing settlements or release individual
-holds.
+holds. Give your administrator handle: the SQL clears the gate and adds one audit row naming you ("Payout
+recovery gate cleared by ...") in one transaction, and changes nothing for a handle that is not an
+administrator or when the gate is not set.
 
 <!-- runbook-sql: clear-gate -->
 ```sh
-db_sql <<'SQL'
+db_sql -v handle=YOUR_ADMIN_HANDLE <<'SQL'
 BEGIN;
-UPDATE settings SET value='false' WHERE key='payments_recovery_required';
+SELECT c.problem, c.problem = 'none' AS ready FROM (SELECT CASE
+  WHEN NOT EXISTS (SELECT 1 FROM users WHERE handle=:'handle' AND role='admin') THEN 'no administrator with that handle'
+  WHEN NOT EXISTS (SELECT 1 FROM settings WHERE key='payments_recovery_required' AND value='true') THEN 'the recovery gate is not set'
+  ELSE 'none' END AS problem) AS c
+\gset c_
+\if :c_ready
+WITH cleared AS (
+  UPDATE settings SET value='false' FROM users u
+  WHERE settings.key='payments_recovery_required' AND settings.value='true' AND u.handle=:'handle' AND u.role='admin'
+  RETURNING u.id, u.handle)
+INSERT INTO audit_events(user_id,action)
+SELECT id, 'Payout recovery gate cleared by ' || handle || ' after reconciling the restored database with the wallets' FROM cleared;
 COMMIT;
+\echo 'Cleared the payout recovery gate; committed.'
+\else
+ROLLBACK;
+\echo 'Refused; nothing was changed:' :c_problem
+\endif
 SQL
 ```
 
-It must print `UPDATE 1`; then go on with step 9.
+It must print `INSERT 0 1` and end "Cleared the payout recovery gate; committed."; then go on with step 9.
+"Refused; nothing was changed:" gives the reason (a mistyped or non-administrator handle, or a gate already
+cleared) and rolls back.
 
 ## 7. Manual regtest check (Bitcoin)
 

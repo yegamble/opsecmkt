@@ -333,8 +333,11 @@ func paymentsAdminLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		case r.State == "held" && strings.HasPrefix(r.Error, restoredHoldPrefix):
 			r.StateLabel, r.Ambiguous = "Held after a restore from backup — may already have been sent, check the wallet", true
 		}
-		if r.State == "held" && strings.HasPrefix(r.Error, suspendedHoldPrefix) {
+		if heldForSuspension(r.State, r.Error) {
 			r.StateLabel, r.AddressCheck = "Held: account suspended — check the payout address before releasing", true
+			if r.Ambiguous {
+				r.StateLabel = "Held after a restore from backup and for an account suspension — may already have been sent; check the wallet and the payout address before releasing"
+			}
 		}
 		d.Payouts = append(d.Payouts, r)
 	}

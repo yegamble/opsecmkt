@@ -62,8 +62,10 @@ age -d -i "$AGE_IDENTITY" "$1" | client pg_restore --single-transaction --exit-o
 # their error is prefixed with the same marker. Older app dumps have settings even if payments migrations have
 # not run; table-only test dumps can lack either table. The application matches the "Restored from backup:"
 # error prefix (restoredHoldPrefix in internal/market/payments_admin.go) and asks for a "wallet shows no
-# broadcast" confirmation before an administrator releases or requeues such a payout.
-# The same SQL runs in the same way for both destinations.
+# broadcast" confirmation before an administrator releases or requeues such a payout. A payout held for an
+# account suspension keeps that text after the restore prefix, so its payout address check is not lost
+# (heldForSuspension in payments_admin.go). One new audit row (no user) records the gate and the counts; existing
+# audit rows are never changed. The same SQL runs in the same way for both destinations.
 if ! counts=$(client psql -X -q -A -t -v ON_ERROR_STOP=1 --single-transaction <<'SQL'
 SELECT to_regclass('settings') IS NOT NULL AS has_settings \gset
 \if :has_settings
@@ -79,18 +81,25 @@ UPDATE payouts SET send_ambiguous=true WHERE state='failed';
 WITH held AS (
   UPDATE payouts SET state='held', updated=now(),
     error='Restored from backup: verify in the wallet before releasing; this payout may already have been sent.'
+      || coalesce(' ' || substring(error from 'Suspended account:.*'), '')
   WHERE state IN ('pending','sending','blocked','held') RETURNING 1),
 failed AS (
   UPDATE payouts SET updated=now(),
     error='Restored from backup: verify in the wallet before requeueing; this payout may have been requeued and sent after the backup. Last error: ' || error
   WHERE state='failed' RETURNING 1)
-SELECT (SELECT count(*) FROM held) || ' ' || (SELECT count(*) FROM failed);
+SELECT (SELECT count(*) FROM held) AS held, (SELECT count(*) FROM failed) AS failed \gset
 \else
-SELECT '0 0';
+SELECT 0 AS held, 0 AS failed \gset
 \endif
+SELECT :'has_settings'::boolean AND to_regclass('audit_events') IS NOT NULL AS has_audit \gset
+\if :has_audit
+INSERT INTO audit_events(user_id,action) VALUES (NULL, 'Payout recovery gate set by scripts/restore.sh: held ' || :'held'
+  || ' restored payout(s) and marked ' || :'failed' || ' restored failed payout(s) as possibly sent; all outbound payouts paused until an administrator clears the gate');
+\endif
+SELECT :'held' || ' ' || :'failed';
 SQL
 ); then
-  echo 'The database was restored, but payout recovery protection FAILED. Do not start the application on it; apply the recovery gate and holds by hand first (see UPGRADING.md).' >&2
+  echo 'The database was restored, but payout recovery protection FAILED. Do not start the application on it; apply the recovery gate and holds by hand first (UPGRADING.md, section 6).' >&2
   exit 1
 fi
 read -r held failed <<< "$counts"

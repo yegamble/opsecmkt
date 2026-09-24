@@ -40,6 +40,14 @@ const stuckSending = "(state='sending' AND updated < now()-interval '5 minutes')
 // "wallet shows no broadcast" confirmation as requeueing an ambiguous send.
 const restoredHoldPrefix = "Restored from backup:"
 
+// heldForSuspension reports a payout held for an account suspension (suspendedHoldPrefix), including one a
+// restore from backup held again: the restore keeps the suspension text after its own prefix (A-112), so the
+// payout address check is not lost.
+func heldForSuspension(state, payoutErr string) bool {
+	return state == "held" && (strings.HasPrefix(payoutErr, suspendedHoldPrefix) ||
+		strings.HasPrefix(payoutErr, restoredHoldPrefix) && strings.Contains(payoutErr, " "+suspendedHoldPrefix))
+}
+
 var txidPattern = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
 
 func adminPayoutAction(c *actionCtx) (actionResult, error) {
@@ -87,7 +95,7 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 		}
 		// A payout held for an account suspension may be going to an address someone else saved with the
 		// account's password.
-		suspendedHeld := state == "held" && strings.HasPrefix(payoutErr, suspendedHoldPrefix)
+		suspendedHeld := heldForSuspension(state, payoutErr)
 		if suspendedHeld && address == "" {
 			return actionResult{}, fail(409, "This payout was held when the recipient's account was suspended and has no payout address to check. It can be released after the recipient saves one. Nothing was changed.")
 		}
@@ -117,6 +125,9 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 		}
 		if suspendedHeld {
 			note = "Administrator checked the payout address and released the held TESTNET payout of " + label + "; it is queued for a single send."
+			if restored {
+				note = "Administrator confirmed the wallet shows no broadcast transaction for the TESTNET payout of " + label + " (held after being restored from backup) and checked the payout address (held for an account suspension), and released it; it is queued for a single send."
+			}
 			audit += "; held for an account suspension, administrator checked the payout address " + address
 		}
 	case "requeue":

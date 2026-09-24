@@ -205,10 +205,12 @@ Set exactly one of the two destinations. Either way the restore requires typing 
 
 The script sets a persistent recovery gate that pauses all outbound payouts,
 including payouts created after restoration, and converts pending, sending, blocked and held payouts into
-manual recovery holds (error text starting `Restored from backup:`); releasing one on the admin page requires confirming that the wallet shows no broadcast transaction for it. Failed payouts are marked as possibly sent (same error prefix): one the wallet rejected before the backup may have been requeued and sent after it, so requeueing it needs the same confirmation. The script prints how many payouts it held and how many failed payouts it marked. A database backup may predate an already-sent payout's creation, so reviewing only
+manual recovery holds (error text starting `Restored from backup:`); releasing one on the admin page requires confirming that the wallet shows no broadcast transaction for it. Failed payouts are marked as possibly sent (same error prefix): one the wallet rejected before the backup may have been requeued and sent after it, so requeueing it needs the same confirmation. A payout held for an account suspension keeps that hold behind the restore marker, so releasing it also needs the payout address check. The script prints how many payouts it held and how many failed payouts it marked, and adds one audit row recording the gate and those counts. A database backup may predate an already-sent payout's creation, so reviewing only
 existing payout rows is insufficient. Follow the [complete reconciliation and explicit unlock procedure](testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts)
 before allowing user writes or restarting payment sends. Validate recovered accounts, listings, orders and
 settings before switching traffic. Never test a restore against your live database.
+
+**Any restore not done by `scripts/restore.sh` skips this payout protection.** A host or volume snapshot (including a copy of the `postgres_data` volume), a managed-database point-in-time recovery or a manual `pg_restore` brings payouts back as `pending` with no recovery gate, and the application sends them as soon as it starts, even those already paid after that point in time. After such a restore keep the application stopped and apply the protection SQL in [UPGRADING.md, section 6](../UPGRADING.md#6-backups-now-need-the-wallets-too) to the restored database before starting it, then follow the same reconciliation procedure.
 
 ## Verification and maintenance
 

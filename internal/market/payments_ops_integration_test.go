@@ -17,7 +17,8 @@ import (
 // Operational safety: wallet outages never expire orders, unavailable nodes do not stop the site, shutdown
 // does not abort a payout, restored payouts stay held, and administrators can recover held or failed payouts.
 
-// restoredHold is the error scripts/restore.sh writes on payouts that were pending or sending in a dump.
+// restoredHold is the error scripts/restore.sh writes on payouts that were pending, sending, blocked or held in a
+// dump; a payout held for an account suspension keeps that text after it (A-112).
 const restoredHold = "Restored from backup: verify in the wallet before releasing; this payout may already have been sent."
 
 // restoredFailed starts the error scripts/restore.sh writes on payouts that were failed in a dump, followed by
@@ -27,7 +28,7 @@ const restoredFailed = "Restored from backup: verify in the wallet before requeu
 // restorePayoutSQL is the payout protection scripts/restore.sh and the manual SQL in UPGRADING.md apply to a
 // restored dump (TestRestoredHoldMarkerMatchesRestoreScripts keeps them identical, whitespace aside).
 var restorePayoutSQL = []string{
-	"UPDATE payouts SET state='held', updated=now(), error='" + restoredHold + "' WHERE state IN ('pending','sending','blocked','held')",
+	"UPDATE payouts SET state='held', updated=now(), error='" + restoredHold + "' || coalesce(' ' || substring(error from 'Suspended account:.*'), '') WHERE state IN ('pending','sending','blocked','held')",
 	"UPDATE payouts SET send_ambiguous=true WHERE state='failed'",
 	"UPDATE payouts SET updated=now(), error='" + restoredFailed + "' || error WHERE state='failed'",
 }
