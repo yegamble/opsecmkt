@@ -149,9 +149,11 @@ type PGPView struct {
 	Verified                                  bool
 	VerifiedAt, Challenge, EncryptedChallenge string
 	TwoFactor                                 bool
-	HasKey                                    bool   // a public key is saved on the profile
-	KeyError                                  string // the saved key no longer parses (legacy or revoked)
-	ChallengeExpires                          string // open ownership challenge expiry (UTC)
+	HasKey                                    bool     // a public key is saved on the profile
+	Armored                                   string   // the saved key for the owner's form: canonical when it parses, else as stored
+	UserIDs                                   []string // user IDs of the saved key, shown to the owner (A-79)
+	KeyError                                  string   // the saved key no longer parses (legacy or revoked)
+	ChallengeExpires                          string   // open ownership challenge expiry (UTC)
 }
 
 // P3 Orders
@@ -255,6 +257,6 @@ type ContactKey struct {
 	Handle, Relation     string // Relation: "vendor", "buyer" or "" (message recipient)
 	Armored, Fingerprint string
 	Verified             bool
-	VerifiedAt           string
-	Unreadable           bool // a key is saved but no longer parses (legacy or revoked)
+	VerifiedAt           string // UTC date of the ownership proof (date only for other users, A-79)
+	Unreadable           bool   // a key is saved but no longer parses (legacy or revoked)
 }

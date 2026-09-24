@@ -7,6 +7,16 @@
 .key-values dd.pgp-fingerprint {
   max-width:70%
 }
+.key-values dd.pgp-user-ids {
+  max-width:70%;
+  min-width:0;
+  overflow-wrap:anywhere
+}
+.pgp-user-ids ul {
+  list-style:none;
+  margin:0;
+  padding:0
+}
 .pgp-summary {
   margin-top:-6px
 }
