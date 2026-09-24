@@ -330,6 +330,37 @@ time.sleep(60)
         self.assertTrue(config['COMPOSE_FILE'].endswith(':compose.external-egress.yaml'))
         self.assertIn('direct network egress is enabled', result.stdout)
 
+    def test_tor_profiles_match_the_mirror_command_check(self):
+        # A-140: scripts/test-mirror-commands.sh (run by CI) checks the guide's onion-mirror commands against .env
+        # files holding COMPOSE_FILE and COMPOSE_PROFILES exactly as the installer writes them for Tor. If either
+        # side drifts, this fails.
+        script = (REPOSITORY / 'scripts' / 'test-mirror-commands.sh').read_text()
+        external = 'postgres://test@database/scratch'
+        cases = [
+            ('internal', ['tor', ''] + [''] * 8, 'internal-db,bitcoin,monero,monero-wallet'),
+            ('internal', ['tor', '', 'disabled', 'disabled'], 'internal-db'),
+            ('external', ['tor', external] + [''] * 8, 'bitcoin,monero,monero-wallet'),
+            ('external', ['tor', external, 'disabled', 'disabled'], ''),
+        ]
+        for database, answers, profiles in cases:
+            with self.subTest(database=database, profiles=profiles):
+                (self.root / '.env').unlink(missing_ok=True)
+                self.log.unlink(missing_ok=True)
+                self.assert_started(self.run_installer(answers))
+                config = self.config()
+                self.assertEqual(config['COMPOSE_PROFILES'], profiles)
+                self.assertIn(f"'{database}|{config['COMPOSE_FILE']}|{profiles}'", script)
+
+    def test_documented_mirror_commands_keep_the_installers_profiles(self):
+        # `docker compose --profile X` replaces COMPOSE_PROFILES for that command instead of adding to it, so on
+        # an internal-db install it drops the database ("app depends on undefined service db"). The documents
+        # add `mirror` to COMPOSE_PROFILES in .env instead, and CI runs the marked guide block.
+        for name in ('README.md', 'UPGRADING.md', '.env.example', 'docs/operator-guide.md', 'docs/testnet-runbook.md'):
+            self.assertNotIn('docker compose --profile', (REPOSITORY / name).read_text(), name)
+        guide = (REPOSITORY / 'docs' / 'operator-guide.md').read_text()
+        self.assertEqual(guide.count('<!-- ops-cmd: onion-mirror -->'), 1)
+        self.assertIn("COMPOSE_PROFILES='internal-db,bitcoin,monero,monero-wallet,mirror'", guide)
+
     def test_external_rpc_also_enables_tor_egress(self):
         result = self.run_installer(['tor', '', 'external', 'https://rpc.example.test', 'disabled'])
         self.assert_started(result)

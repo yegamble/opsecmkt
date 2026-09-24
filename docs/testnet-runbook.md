@@ -397,9 +397,11 @@ and no web action that clears the gate or records a lost payout.
 9. **Restart and let users back in**:
    - Clearnet: `docker compose up -d`, then start the reverse proxy again (`sudo systemctl start caddy`).
    - Tor: remove the client authorization
-     (`docker compose exec -T tor rm /var/lib/tor/marketplace/authorized_clients/operator.auth`), run
-     `docker compose up -d` (which also starts the mirror if you run one) and `docker compose restart tor`, and
-     delete `operator-auth.pem`.
+     (`docker compose exec -T tor rm /var/lib/tor/marketplace/authorized_clients/operator.auth`),
+     run `docker compose up -d` and `docker compose restart tor`, and delete `operator-auth.pem`. If you run the
+     onion mirror, `up -d` starts it again only when `mirror` is in `COMPOSE_PROFILES` in `.env`; add it first if
+     it is missing (see [Optional onion mirror](operator-guide.md#optional-onion-mirror)), and check that
+     `docker compose ps tor-mirror` shows it running.
 
 #### Record a payout sent after the backup (step 6)
 
