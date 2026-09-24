@@ -75,7 +75,14 @@ No environment keys. Second-factor secrets are encrypted with a key derived from
   COMMIT;
   ```
 
-  Check that the `UPDATE` affected one row, then sign in with the password and enroll TOTP again. A forgotten administrator password is likewise an operator task (a new bcrypt hash written with SQL); the application has no administrator password reset.
+  Check that the `UPDATE` affected one row, then sign in with the password and enroll TOTP again.
+- **Forgotten administrator password**: the application has no web password reset. An operator on the host, in the deployment directory (with its `.env`), runs (replace `ADMIN_HANDLE`, exact and case-sensitive):
+
+  ```sh
+  docker compose run --rm app -reset-admin-password ADMIN_HANDLE
+  ```
+
+  It connects with `DATABASE_URL`, starts no web server, prompts twice for the new password without showing it (12–72 bytes, the registration rule) and, in one transaction, stores its hash, ends every session and pending sign-in of that account and writes the audit row "Password reset by the operator on the host". It refuses an account that is not an administrator, an unknown handle, and a database upgraded by a newer release (as startup does); nothing changes then. Arguments go after the service name because the image's entrypoint is the server itself (do not repeat `/app/server`). Without a terminal, for example from a script, add `-T` and pipe the password as a single line on standard input; it is never accepted as an argument. The site can keep running. Second factors are unchanged: if they are lost too, also run the SQL above.
 
 ### PGP identity
 

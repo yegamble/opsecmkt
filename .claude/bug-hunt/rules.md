@@ -30,7 +30,8 @@ design it records changes.
   exists by design.
 - **No password reset for users, and no in-app administrator lockout
   recovery.** With no email channel, a reset path is a takeover path; the
-  operator break-glass SQL in `docs/operator-guide.md` is deliberate.
+  operator break-glass in `docs/operator-guide.md` (second-factor SQL and the
+  host-only `-reset-admin-password` server flag) is deliberate.
 - **Disputes have exactly two outcomes** (release to vendor, refund to buyer):
   `payouts.order_id` is unique, so split outcomes would need a second payout.
 - **Preview mode refuses every POST** and shows labelled sample data.
