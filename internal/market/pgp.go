@@ -22,31 +22,53 @@ import (
 
 // parsePublicKey accepts exactly one armored, unrevoked public key and returns it with its uppercase hex fingerprint.
 func parsePublicKey(armored string) (*openpgp.Entity, string, error) {
+	e, fp, _, err := parseCanonicalPublicKey(armored)
+	return e, fp, err
+}
+
+// parseCanonicalPublicKey is parsePublicKey that also returns the canonical form of the key (A-79): its
+// decoded packets re-armored unchanged, without armor headers (Version:, Comment: ...), CRLF line endings
+// or any text around the block. The same key always has the same canonical form.
+func parseCanonicalPublicKey(armored string) (*openpgp.Entity, string, string, error) {
 	if strings.Count(armored, "-----BEGIN PGP") != 1 {
-		return nil, "", errors.New("paste exactly one armored public key block")
+		return nil, "", "", errors.New("paste exactly one armored public key block")
 	}
 	block, err := armor.Decode(strings.NewReader(strings.TrimSpace(armored)))
 	if err != nil {
-		return nil, "", errors.New("not an ASCII-armored OpenPGP key")
+		return nil, "", "", errors.New("not an ASCII-armored OpenPGP key")
 	}
 	if block.Type != openpgp.PublicKeyType {
-		return nil, "", errors.New("paste an armored public key block only; never upload a private key")
+		return nil, "", "", errors.New("paste an armored public key block only; never upload a private key")
 	}
-	list, err := openpgp.ReadKeyRing(block.Body)
+	data, err := io.ReadAll(block.Body)
 	if err != nil {
-		return nil, "", errors.New("the public key could not be parsed")
+		return nil, "", "", errors.New("the public key could not be parsed")
+	}
+	list, err := openpgp.ReadKeyRing(bytes.NewReader(data))
+	if err != nil {
+		return nil, "", "", errors.New("the public key could not be parsed")
 	}
 	if len(list) != 1 {
-		return nil, "", errors.New("paste exactly one public key")
+		return nil, "", "", errors.New("paste exactly one public key")
 	}
 	e := list[0]
 	if e.PrivateKey != nil {
-		return nil, "", errors.New("private key material rejected; paste only your public key")
+		return nil, "", "", errors.New("private key material rejected; paste only your public key")
 	}
 	if e.Revoked(time.Now()) {
-		return nil, "", errors.New("this key is revoked")
+		return nil, "", "", errors.New("this key is revoked")
 	}
-	return e, strings.ToUpper(hex.EncodeToString(e.PrimaryKey.Fingerprint)), nil
+	var buf bytes.Buffer
+	w, err := armor.Encode(&buf, openpgp.PublicKeyType, nil)
+	if err == nil {
+		if _, err = w.Write(data); err == nil {
+			err = w.Close()
+		}
+	}
+	if err != nil {
+		return nil, "", "", err
+	}
+	return e, strings.ToUpper(hex.EncodeToString(e.PrimaryKey.Fingerprint)), strings.TrimSpace(buf.String()), nil
 }
 
 // entityKeyIDs lists the primary and subkey IDs, for matching encrypted-message recipients.

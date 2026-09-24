@@ -24,12 +24,20 @@ test('save a PGP key, see its fingerprint unverified, and fail ownership proofs 
   await expect(pgpRow(page)).toHaveText('No key saved');
   await expect(page.locator('.pgp-summary')).toHaveCount(0);
 
-  expect(await saveKey(page, pgpFixture('recipient.pub.asc'))).toBe(303);
+  // The note above the key field says who can see it. Text around the block and armor headers are not kept.
+  await expect(page.locator('#pgp-visibility')).toHaveText('Shown to every signed-in account that looks up your handle, to every vendor or buyer you trade with, and publicly on your vendor page if you sell — with its user IDs and creation date. Use a key made only for this market.');
+  const withHeaders = 'Leading note\n' + pgpFixture('recipient.pub.asc').replace('-----BEGIN PGP PUBLIC KEY BLOCK-----\n', '-----BEGIN PGP PUBLIC KEY BLOCK-----\nComment: e2e header\n');
+  expect(await saveKey(page, withHeaders)).toBe(303);
   await expect(page).toHaveURL(/\/account\?saved=1$/);
   await expect(page.getByRole('status')).toHaveText('Changes saved.');
   await page.reload();
-  await expect(page.getByLabel('PGP public key')).toHaveValue(/^-----BEGIN PGP PUBLIC KEY BLOCK-----/);
+  await expect(page.getByLabel('PGP public key')).toHaveValue(/^-----BEGIN PGP PUBLIC KEY BLOCK-----\n\n/);
+  await expect(page.getByLabel('PGP public key')).not.toHaveValue(/Leading note|Comment|e2e header/);
   await expect(page.locator('.pgp-summary .pgp-fingerprint')).toHaveText(RECIPIENT_FINGERPRINT);
+  await expect(page.locator('.pgp-summary .pgp-user-ids li')).toHaveText(['E2E Fixture Recipient (browser tests only) <recipient@e2e.invalid>']);
+  // Saving the form again submits the same key: it is not recorded as a key change.
+  expect(await submitStatus(page, () => page.getByRole('button', { name: 'Save profile' }).click())).toBe(303);
+  await expect(page.getByRole('region', { name: 'Recent activity' }).getByText(/Updated PGP key/)).toHaveCount(1);
   await expect(page.locator('.pgp-summary .badge')).toHaveText('Not verified');
   await expect(pgpRow(page)).toHaveText('Requires a verified key');
   await expect(page.getByRole('region', { name: 'Recent activity' })).toContainText(`Updated PGP key (fingerprint ${RECIPIENT_FINGERPRINT.replace(/ /g, '')}; ownership unverified)`);
