@@ -84,4 +84,24 @@ test('password change and second-factor reset are plain POST forms and the previ
   await form.getByLabel('Current password').fill('preview-password-123');
   await form.getByRole('button', { name: 'Reset second factors' }).click();
   await expect(page.locator('body')).toHaveText('Read-only preview. Start with PostgreSQL to save changes.');
+
+  // Suspend / restore: a handle, a required suspend-or-restore choice and the administrator's password; the
+  // suspended accounts are listed so they can be restored.
+  await page.goto('/admin');
+  const suspension = page.getByRole('region', { name: 'Suspend or restore an account' });
+  const suspend = suspension.locator('form[action="/admin/suspend"]');
+  await expect(suspend).toHaveAttribute('method', 'post');
+  await expect(suspend.locator('input[name="csrf"]')).toHaveCount(1);
+  await expect(suspend.getByLabel('Account handle')).toHaveAttribute('pattern', '[a-zA-Z0-9_]{3,32}');
+  await expect(suspend.getByRole('group', { name: 'Action' }).getByRole('radio')).toHaveCount(2);
+  await expect(suspend.getByRole('radio', { name: /^Suspend:/ })).not.toBeChecked();
+  await expect(suspend.getByRole('radio', { name: /^Restore:/ })).not.toBeChecked();
+  await expect(suspend.getByLabel('Authenticator code')).toHaveCount(0);
+  await expect(suspension.locator('.account-list li')).toHaveText(['held_account · buyer · suspended 2026-01-01 00:00']);
+  await noScriptsNoOverflow(page);
+  await suspend.getByLabel('Account handle').fill('held_account');
+  await suspend.getByRole('radio', { name: /^Restore:/ }).check();
+  await suspend.getByLabel('Current password').fill('preview-password-123');
+  await suspend.getByRole('button', { name: 'Suspend or restore' }).click();
+  await expect(page.locator('body')).toHaveText('Read-only preview. Start with PostgreSQL to save changes.');
 });

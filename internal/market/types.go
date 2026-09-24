@@ -5,6 +5,7 @@ package market
 type User struct {
 	ID, Handle, Role, PGP, XMPP string
 	Factors                     string // P1, PageData.FactorAccounts only: enrolled second factors, e.g. "TOTP and PGP sign-in"
+	Suspended                   string // P1, PageData.SuspendedAccounts only: when the account was suspended
 }
 type Product struct {
 	ID, Title, Description, Category, Region, Kind, Vendor, VendorID, PriceBTC, PriceXMR string
@@ -63,9 +64,12 @@ type PageData struct {
 	// FactorAccounts: admin page, up to 100 non-administrator accounts with a second factor, by handle
 	// (User.Factors names them); the reset form itself takes any handle.
 	FactorAccounts []User
-	// RoleHandle, RoleChoice and ResetHandle: admin page re-rendered after a handle matched no account,
-	// keeping what was typed into the role or second-factor reset form.
-	RoleHandle, RoleChoice, ResetHandle string
+	// SuspendedAccounts: admin page, up to 100 suspended accounts, most recently suspended first
+	// (User.Suspended says when); the suspend/restore form itself takes any handle.
+	SuspendedAccounts []User
+	// RoleHandle, RoleChoice, ResetHandle, SuspendHandle and SuspendChoice: admin page re-rendered after a
+	// handle matched no account, keeping what was typed into the role, second-factor reset or suspension form.
+	RoleHandle, RoleChoice, ResetHandle, SuspendHandle, SuspendChoice string
 
 	// P2 PGP
 	PGP *PGPView
