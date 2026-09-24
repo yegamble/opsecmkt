@@ -16,6 +16,28 @@ The Figma reference is adapted to Go-rendered HTML and CSS. The browser loads no
 - Moderators resolve disputes on paid, shipped or delivered orders with a release or refund outcome; the payment system then queues the matching test-network payout from the operator's wallet (see P3, P5).
 - Docker internal/external database selection, separate clearnet/Tor exposure, optional operator-supplied full-node containers, encrypted database backup and transactional restore scripts.
 
+## What the server keeps
+
+`/canary#records` tells users the same thing, and `/register`, `/account` and the `/messages` notice link to it. Everything below is kept in PostgreSQL (and in every backup) until the operator removes it: there is no account, message or order deletion. The operator, anyone else who controls the server or database, and anyone holding a decrypted backup can read all of it; the list says who else can read it through the application. Checked against `internal/market/schema.sql` and `internal/market/migrations/` (001–060).
+
+- **Handle and role** (`users.handle`, `role`, `created`; `suspended_at`, migration 011). The handle cannot be changed (`/register` and `/setup` say so). Shown to trading and messaging partners, moderators and administrators, and publicly with a vendor's listings and vendor page. Administrators see every handle and role and the suspended accounts with their time.
+- **Password** (`users.password_hash`, bcrypt).
+- **Second factors** (migrations 010, 020): TOTP secret and pending secret sealed with AES-256-GCM under a key derived from `SETUP_TOKEN` (so the database plus `SETUP_TOKEN` opens them); recovery codes as SHA-256 hashes, with newly issued codes sealed in `users.recovery_reveal` for at most about 11 minutes; `pgp_2fa`. The account and administrators (second-factor reset list) see which factors are on.
+- **PGP public key** (`users.pgp`, stored canonically; `pgp_fingerprint`, `pgp_verified_at`, migration 020). Shown to any signed-in account that looks up the handle, to trading partners, and publicly on a vendor page (see P2).
+- **XMPP address** (`users.xmpp`). Rendered only on the owner's `/account`.
+- **Messages** (`messages`: sender, recipient, canonical ciphertext, `created`, `encrypted`, `recipient_match`). The server cannot decrypt them. Sender and recipient see them; moderators and administrators have no message view.
+- **Notifications** (`notifications`): plain text such as "New message from <handle>", short order IDs with the new state, payment notes and payout transaction IDs; read state. Only the account sees them.
+- **Orders and drafts**, including unpaid drafts and cancelled orders (`orders`; `order_events` with actor, time and notes such as the shipping note and cancellation reason). The buyer and vendor, and moderators and administrators while the order is disputed or resolved or a payment on it is flagged (see P3).
+- **Disputes** (`disputes`: reason, resolution, outcome, plain text). The parties, moderators and administrators.
+- **Reviews** (`reviews`, migration 030): rating and text; public on product and vendor pages by month without the reviewer's handle; the vendor sees the review with the buyer's handle on the order page.
+- **Digital deliveries and listings** (`deliveries`, migration 030; `products` including `delivery_content`): delivered content is unencrypted and shown to the buyer and vendor, and to moderators and administrators once disputed; listings are public; automatic delivery content is shown only to the vendor.
+- **Payments** (`payment_addresses`, `payments`: addresses, amounts, transaction IDs, confirmations). The parties, moderators and administrators on disputed, resolved or flagged orders, administrators on payouts; transactions are also public on the test network.
+- **Payout addresses** (`users.payout_btc`/`payout_xmr`, copied onto `payouts.address` with the payout `txid`, migration 050). The account; administrators on payouts that need attention; both parties see the payout transaction ID on the order.
+- **Activity log** (`audit_events`: action text naming handles, key fingerprints, short order IDs and transaction IDs, with time), including every sign-in and sign-out. The account sees its latest 15 on `/account`; administrators see every account's on `/admin` and in the signed audit export (see P6).
+- **Temporary sign-in records**: hashed session tokens (`sessions`, 12 hours), pending sign-ins (10 minutes), CAPTCHA answer hashes (10 minutes) and PGP ownership challenges (30 minutes). Expired sessions, pending sign-ins and CAPTCHAs are deleted opportunistically, not by a timed sweep; an expired PGP challenge stays until the account starts another, proves ownership or changes its key.
+- **Not recorded**: no IP address, user agent or other browser details and no access log (no table has such a column and no handler reads them), and no email address. A reverse proxy, the Tor service or the hosting provider in front of the application may log connections. The only application log line that can carry a network address is Go's `http: panic serving <address>` if a handler panics; behind the bundled deployments that address is the proxy's or Tor's, not the visitor's.
+- **Signed audit export**: it names every account's activity, so it is private operator evidence, never to be published; `/canary` publishes only its public key so the operator can prove an export they hold came from this server.
+
 ## Feature packages
 
 Each package updates only its own subsection when it lands.

@@ -29,8 +29,9 @@
 </div>
 <section class="panel" aria-labelledby="audit-export-title">
 <h2 id="audit-export-title">Signed audit export</h2>
+<p class="help">An export names every account’s handle and activity (sign-ins, account changes, orders, key fingerprints, transaction IDs). It is private operator evidence: store it like a database backup and never publish it. The key is shown on <a class="text-link" href="/canary">/canary</a> only so that you can prove an export you hold came from this server.</p>
 {{with .AuditExport}}{{if .Available}}<p><span class="badge green">Available</span></p>
-<p>Ed25519 public key (also published on <a class="text-link" href="/canary">/canary</a>): <span class="fingerprint mono">{{.PublicKey}}</span></p>
+<p>Ed25519 public key (also published on /canary): <span class="fingerprint mono">{{.PublicKey}}</span></p>
 {{if .UpTo}}<form class="stack" method="get" action="/admin/audit-export">
 <label>Include events up to id<input name="upto" type="number" min="1" max="{{.UpTo}}" value="{{.UpTo}}" required>
 </label>

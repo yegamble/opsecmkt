@@ -1559,6 +1559,17 @@ summary {
     display:block
   }
 }
+/* One records line after the filters, rendered once and outside the collapsed mobile panel. */
+.sidebar>.sidebar-note {
+  margin:0;
+  padding:0 16px 8px
+}
+@media(min-width:641px) {
+  .sidebar>.sidebar-note {
+    margin-top:25px;
+    padding:0
+  }
+}
 /* Original bracketed OPSECMKT identity. */
 .brand {
   font-weight:600;

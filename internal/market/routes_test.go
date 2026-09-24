@@ -114,6 +114,10 @@ func TestRegistriesHaveTemplatesAndHooks(t *testing.T) {
 		if strings.Contains(strings.ToLower(string(b)), "<script") {
 			t.Errorf("%s contains a script tag", f)
 		}
+		// A-81: the UI states what the server keeps (/canary#records) instead of a privacy slogan.
+		if strings.Contains(strings.ToUpper(string(b)), "YOUR CHOICE") {
+			t.Errorf("%s contains the \"YOUR CHOICE\" slogan", f)
+		}
 	}
 	var walk func(n parse.Node)
 	walk = func(n parse.Node) {

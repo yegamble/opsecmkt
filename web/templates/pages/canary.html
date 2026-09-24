@@ -9,13 +9,37 @@
 </div>
 <div class="legal-copy">
 {{template "canary-statement" .}}
+<section class="panel records" id="records" aria-labelledby="records-title">
+<h2 id="records-title">What this server keeps</h2>
+<p>Everything you create here is stored in this market’s database and in the operator’s backups. It is <strong>kept until the operator removes it; there is no account or message deletion.</strong> The operator, anyone else who controls the server or database, and anyone holding a decrypted backup can read all of it. Each item below also says who can read it through the market.</p>
+<ul class="records-list">
+<li><strong>Handle and role.</strong> Chosen at registration and cannot be changed. Shown to everyone you trade or message with, to moderators and administrators, and publicly with your listings and vendor page if you sell. Administrators see every account’s handle and role, and whether and when an account was suspended.</li>
+<li><strong>Password.</strong> Stored only as a bcrypt hash; nobody can read the password through the market.</li>
+<li><strong>Second factors.</strong> The authenticator (TOTP) secret, encrypted with a key derived from the server’s setup token, so the operator can open it; recovery codes as hashes (newly issued codes are kept encrypted for about ten minutes until shown once); whether PGP sign-in is on. You and administrators see which factors are on.</li>
+<li><strong>PGP public key</strong>, its fingerprint and the date you proved you own it. Shown to every signed-in account that looks up your handle, to everyone you trade with, and publicly on your vendor page if you sell.</li>
+<li><strong>XMPP address.</strong> Shown only on your own account page.</li>
+<li><strong>Messages.</strong> The encrypted message (the server cannot decrypt it), who sent it to whom and when, and whether it was encrypted to the recipient’s key. The sender and recipient see it in Messages; moderators and administrators do not see messages through the market.</li>
+<li><strong>Notifications.</strong> Plain text such as “New message from” a handle, short order IDs with their new state, payment notes and payout transaction IDs. Only you see them.</li>
+<li><strong>Orders and drafts</strong>, including unpaid drafts and cancelled orders: listing, buyer, vendor, price and every state change with who made it and when, plus order notes such as the shipping note and cancellation reason. Seen by the buyer and vendor, and by moderators and administrators while the order is disputed or resolved or a payment on it is flagged for review.</li>
+<li><strong>Disputes.</strong> The reason, the decision and the outcome, in plain text. Seen by the buyer, the vendor, moderators and administrators.</li>
+<li><strong>Reviews.</strong> Rating and text. Public on product and vendor pages, dated by month, without your handle; the vendor sees it with your handle on the order.</li>
+<li><strong>Digital deliveries and listings.</strong> Delivered content is stored unencrypted and seen by the buyer and vendor, and by moderators and administrators once the order is disputed. Listings are public; their automatic delivery content is seen only by the vendor.</li>
+<li><strong>Payments.</strong> Deposit addresses, amounts, transaction IDs and confirmations. Seen by the buyer and vendor, by moderators and administrators while the order is disputed or resolved or a payment on it is flagged, and by administrators on payouts; transactions are also public on the test network.</li>
+<li><strong>Payout addresses.</strong> Saved on your account and copied onto each payout with its transaction ID. You see your addresses; administrators see them on payouts that need attention; both parties see the payout transaction ID on the order.</li>
+<li><strong>Activity log.</strong> Every sign-in, sign-out, account change and order action with its time, naming handles, key fingerprints, order IDs and transaction IDs. You see your latest entries on your account page; administrators see every account’s.</li>
+</ul>
+<p>Temporary sign-in records (hashed session tokens, pending sign-ins, CAPTCHA answers and PGP challenges) expire within 12 hours. No email address is asked for.</p>
+<p>The application records no IP address or browser details and keeps no access log. A reverse proxy, Tor service or hosting provider in front of it may log connections; ask the operator.</p>
+<p>The signed audit export contains the activity log of every account, with handles. It is private operator evidence, never to be published (see the signing key below).</p>
+</section>
 <section class="panel audit-key" aria-labelledby="audit-key-title">
 <h2 id="audit-key-title">Audit export signing key</h2>
 {{with .AuditExport}}{{if .Available}}<p><span class="badge green">Signed exports enabled</span></p>
-<p>Administrators can download the audit log as newline-delimited JSON with an Ed25519 signature over the exact file bytes. Pin this public key and check exports with <span class="mono">verify-audit -pub &lt;key&gt; export.jsonl export.sig</span>.</p>
+<p>Administrators can download the audit log as newline-delimited JSON with an Ed25519 signature over the exact file bytes. This public key is published so that the operator can prove an export they hold came from this server, with <span class="mono">verify-audit -pub &lt;key&gt; export.jsonl export.sig</span>.</p>
 <p class="fingerprint mono">{{.PublicKey}}</p>
 <p class="help">A valid signature proves an export was produced with this server's key. Anyone who controls the server also controls that key and can sign an altered history; the signature is not proof that past events were never changed.</p>{{else}}<p><span class="badge neutral">Signed exports unavailable</span></p>
 <p>{{.Error}}</p>{{end}}{{else}}<p><span class="badge neutral">Signed exports unavailable</span></p>{{end}}
+<p class="help">An export names every account and its activity, so it is private operator evidence: it is never published and visitors do not receive it.</p>
 </section>
 <section class="panel">
 <h2>What this application currently does</h2>

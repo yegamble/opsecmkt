@@ -43,3 +43,6 @@
 .transparency-admin textarea {
   font:1rem/1.5 var(--mono)
 }
+.records-list {
+  padding-left:1.25rem
+}
