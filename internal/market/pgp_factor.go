@@ -30,8 +30,8 @@ func init() {
 func (pgpFactor) Name() string { return "pgp" }
 
 // Enrolled requires PGP sign-in to be on and ownership of the currently saved key to be proven.
-func (pgpFactor) Enrolled(ctx context.Context, db *sql.DB, userID string) (bool, error) {
-	p, err := loadPGPAccount(ctx, db, userID, false)
+func (pgpFactor) Enrolled(ctx context.Context, q rowQuerier, userID string) (bool, error) {
+	p, err := loadPGPAccount(ctx, q, userID, false)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}

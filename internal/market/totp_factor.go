@@ -14,9 +14,9 @@ type totpFactor struct{}
 
 func (totpFactor) Name() string { return "totp" }
 
-func (totpFactor) Enrolled(ctx context.Context, db *sql.DB, userID string) (bool, error) {
+func (totpFactor) Enrolled(ctx context.Context, q rowQuerier, userID string) (bool, error) {
 	var on bool
-	err := db.QueryRowContext(ctx, "SELECT totp_enabled FROM users WHERE id=$1", userID).Scan(&on)
+	err := q.QueryRowContext(ctx, "SELECT totp_enabled FROM users WHERE id=$1", userID).Scan(&on)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}

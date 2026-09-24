@@ -132,9 +132,16 @@ var transitionHooks []transitionHook
 // Returning an error aborts the whole action. Hooks may call a.transition again for the same order.
 func registerTransitionHook(f transitionHook) { transitionHooks = append(transitionHooks, f) }
 
+// rowQuerier is a *sql.Tx or *sql.DB. Code that runs while a transaction is open reads through that
+// transaction: a second pool connection there can wait on the pool while holding one (A-150).
+type rowQuerier interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
 type factorProvider interface {
 	Name() string // "totp", "pgp"
-	Enrolled(ctx context.Context, db *sql.DB, userID string) (bool, error)
+	// Enrolled reports whether userID has this factor on. /challenge passes its transaction (c.Tx).
+	Enrolled(ctx context.Context, q rowQuerier, userID string) (bool, error)
 	Verify(c *actionCtx, userID string) error // return fail(401, ...) on a wrong answer; c.Tx is the /challenge tx
 }
 

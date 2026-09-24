@@ -113,9 +113,7 @@ type pgpAccount struct {
 }
 
 // loadPGPAccount reads the saved key; q is a *sql.Tx (lock with forUpdate) or *sql.DB.
-func loadPGPAccount(ctx context.Context, q interface {
-	QueryRowContext(context.Context, string, ...any) *sql.Row
-}, uid string, forUpdate bool) (*pgpAccount, error) {
+func loadPGPAccount(ctx context.Context, q rowQuerier, uid string, forUpdate bool) (*pgpAccount, error) {
 	query := `SELECT pgp,pgp_fingerprint,pgp_verified_at IS NOT NULL,COALESCE(to_char(pgp_verified_at AT TIME ZONE 'UTC','YYYY-MM-DD HH24:MI "UTC"'),''),pgp_2fa,COALESCE(extract(epoch FROM pgp_verified_at)::text,'') FROM users WHERE id=$1`
 	if forUpdate {
 		query += " FOR UPDATE"

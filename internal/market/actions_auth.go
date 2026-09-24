@@ -345,7 +345,11 @@ func challengeAction(c *actionCtx) (actionResult, error) {
 	if p == nil {
 		return actionResult{}, fail(400, "Choose a verification method")
 	}
-	if ok, err := p.Enrolled(ctx, a.db, userID); err != nil || !ok {
+	// Through c.Tx: this transaction holds a connection and the pending row's lock, so a pool read here could
+	// wait for a connection that requests queued on the same lock hold (A-150).
+	if ok, err := p.Enrolled(ctx, c.Tx, userID); err != nil {
+		return actionResult{}, err
+	} else if !ok {
 		return actionResult{}, fail(400, "Choose a verification method")
 	}
 	if err = p.Verify(c, userID); err != nil {
