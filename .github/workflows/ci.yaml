@@ -176,6 +176,13 @@ jobs:
           }
           check_nodes pruned
           BITCOIN_PRUNE_MB=0 MONERO_PRUNE_FLAGS='' check_nodes full
+      # The step above passes explicit --profile flags, which hides a documented command that drops the profiles
+      # an installed .env lists. This one writes COMPOSE_FILE and COMPOSE_PROFILES as scripts/install.sh does.
+      - name: Documented mirror commands with the installer's .env
+        if: matrix.mode == 'tor' && matrix.mirror == 'on'
+        env:
+          DATABASE: ${{ matrix.database }}
+        run: bash scripts/test-mirror-commands.sh "$DATABASE"
   container:
     name: Container runtime (${{ matrix.database }})
     runs-on: ubuntu-24.04

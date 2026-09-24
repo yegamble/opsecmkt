@@ -33,6 +33,22 @@ Reading the real-chain rows:
 
 No row exists, so nothing is claimed, for: a public test network (testnet4, signet, stagenet or testnet), a deployed instance, Tor onion reachability, or a release. The only tag is `v0.1.0-alpha.1`, still a draft GitHub release. Monero behaviour when the daemon is killed mid-send is untested (war-room A-45).
 
+## Onion-mirror commands with the installer's `.env` (war-room A-140) — 2026-09-24
+
+Local Compose configuration check, not a running stack: Docker 29.8.0, Compose 5.5.1, a scratch `.env` in the
+installer's format for Tor with the internal database (`COMPOSE_FILE='compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.internal-db.yaml'`).
+With `COMPOSE_PROFILES='internal-db'`, the old guide command failed both ways:
+`docker compose --profile mirror config --quiet` and `docker compose --profile mirror up -d --dry-run tor-mirror`
+printed `service "app" depends on undefined service "db": invalid compose project`. With
+`COMPOSE_PROFILES='internal-db,mirror'`, `docker compose --dry-run up -d` planned `db`, `app`, `tor` and
+`tor-mirror` and `config --services` listed all four. Dry runs were not reliable enough for CI: 20 repeats of
+`docker compose --dry-run up -d` gave 1 or 2 spurious failures (`app is missing dependency db`), and an
+earlier dry-run version of the check failed 3 of 8 runs (that error, or a plan missing the `tor-mirror` lines).
+`scripts/test-mirror-commands.sh` therefore resolves commands with `config --services`; it passed for all
+four installer configurations in 10 of 10 runs, and failed with the message above when the guide's `up -d`
+line was temporarily replaced by the old command. CI runs it in the Tor rows with the mirror on; no CI run of
+it exists yet.
+
 ## Tor restarts with the app (war-room A-134) — 2026-09-24
 
 Local Compose check with stand-in containers, not onion traffic: Docker 29.8.0, Compose 5.5.1, project `a134churn`, a scratch copy of `compose.yaml` and `compose.tor.yaml` with an override that replaces the app and Tor images by `alpine:3.20` running `sleep` (nothing built or pulled). Sequence: `up -d app tor`; then `up -d` with a changed app setting and one added service on the backend network (standing in for UPGRADING's node profiles); then `docker compose restart app`; then `down -v`.

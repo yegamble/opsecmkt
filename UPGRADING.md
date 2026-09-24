@@ -41,7 +41,11 @@ off.
 | `DATABASE_CONNECT_TIMEOUT` / `MIGRATION_LOCK_TIMEOUT` / `MIGRATION_TIMEOUT` | Optional; leave blank for `15s`, `10m` and `10m`. Raise `MIGRATION_TIMEOUT` if your database is large; see [Migrations](docs/operator-guide.md#migrations). |
 
 For a local Monero node, also add `monero-wallet` to `COMPOSE_PROFILES` (for example
-`COMPOSE_PROFILES='internal-db,monero,monero-wallet'`).
+`COMPOSE_PROFILES='internal-db,monero,monero-wallet'`). If you run the Tor onion mirror, add `mirror` there too
+(for example `COMPOSE_PROFILES='internal-db,mirror'`) instead of starting it with a `--profile mirror` option,
+which drops the other profiles for that command; without it in `.env`, `docker compose up -d` leaves the mirror
+out and Compose does not restart its Tor with the app. See
+[Optional onion mirror](docs/operator-guide.md#optional-onion-mirror).
 
 ### Replace a placeholder `SETUP_TOKEN`
 
@@ -125,7 +129,8 @@ docker compose logs -f app      # migrations run at startup under an advisory lo
 services from steps 2 and 3 can move the recreated app to a different address; Tor then forwards to the old
 one and the onion stops answering. This release restarts Tor whenever Compose recreates or restarts the app,
 which needs **Docker Compose 2.17 or later** (`docker compose version`); the mirror is included only when
-`mirror` is in `COMPOSE_PROFILES`. That does not repair a Tor that is already forwarding to an old address.
+`mirror` is in `COMPOSE_PROFILES` (step 2). That does not repair a Tor that is already forwarding to an old
+address.
 After `up -d`, run once:
 
 ```sh
