@@ -116,6 +116,22 @@ docker compose up -d --build
 docker compose logs -f app      # migrations run at startup under an advisory lock
 ```
 
+**Tor installs: recreate Tor once.** Tor looks up the app's address only when it starts, and the node
+services from steps 2 and 3 can move the recreated app to a different address; Tor then forwards to the old
+one and the onion stops answering. This release restarts Tor whenever Compose recreates or restarts the app,
+which needs **Docker Compose 2.17 or later** (`docker compose version`); the mirror is included only when
+`mirror` is in `COMPOSE_PROFILES`. That does not repair a Tor that is already forwarding to an old address.
+After `up -d`, run once:
+
+```sh
+docker compose up -d --force-recreate tor              # without the onion mirror
+docker compose up -d --force-recreate tor tor-mirror   # with the onion mirror (naming it starts it)
+```
+
+If the onion does not answer after any later change, recreate Tor the same way. The onion address is kept in
+the `tor_identity` volume (`tor_mirror_identity` for the mirror) and does not change. See
+[Clearnet and onion deployment](docs/operator-guide.md#clearnet-and-onion-deployment).
+
 Then open the admin page. **Payment providers** shows each currency as Enabled, Unavailable (with the
 error; retried every poll), Refused (not a test network) or Disabled. The container stop grace period is now
 60 seconds so a redeploy does not interrupt a payout that is being broadcast.

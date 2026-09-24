@@ -136,6 +136,19 @@ jobs:
             profiles+=(--profile mirror)
           fi
           docker compose "${files[@]}" "${profiles[@]}" config --quiet
+          # torrc resolves app:8080 once at startup, so Tor must restart whenever the app is recreated.
+          if [ "$MODE" = tor ]; then
+            docker compose "${files[@]}" "${profiles[@]}" config --format json | python3 -c '
+          import json, sys
+          services = json.load(sys.stdin)["services"]
+          names = ["tor"] + (["tor-mirror"] if sys.argv[1] == "on" else [])
+          for name in names:
+              app = services.get(name, {}).get("depends_on", {}).get("app", {})
+              if app.get("condition") != "service_started" or app.get("restart") is not True:
+                  sys.exit(f"{name} must depend on app with condition service_started and restart: true, got {app!r}")
+          print("restart with app:", ", ".join(names))
+          ' "$MIRROR"
+          fi
   container:
     name: Container runtime (${{ matrix.database }})
     runs-on: ubuntu-24.04
