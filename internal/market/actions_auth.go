@@ -159,8 +159,8 @@ func confirmedTxWith(c *actionCtx, opts *confirmation, run func(c *actionCtx) (a
 	return res, tx.Commit()
 }
 
-// authGate admits one password-bearing request: bounded bcrypt concurrency, per-handle rate limit and
-// input bounds, all before any expensive work. On success the caller must defer release().
+// authGate admits one password-bearing request: bounded bcrypt concurrency, input bounds, CAPTCHA and
+// per-handle rate limit, all before any expensive work. On success the caller must defer release().
 func authGate(c *actionCtx) (handle, password string, release func(), err error) {
 	select {
 	case passwordWork <- struct{}{}:
@@ -169,13 +169,15 @@ func authGate(c *actionCtx) (handle, password string, release func(), err error)
 	}
 	release = func() { <-passwordWork }
 	handle, password = strings.TrimSpace(c.Form.Get("handle")), c.Form.Get("password")
-	// Validate before the rate limit so malformed handles never create limiter entries.
+	// Validate the input and the CAPTCHA before the rate limit, so malformed handles and failed CAPTCHAs
+	// never create or increment a limiter entry (and cannot spend a real user's sign-in budget).
 	if !handlePattern.MatchString(handle) || !validPassword(password) {
 		err = fail(400, "Use a 3–32 character handle (letters, digits, underscores) and a password of 12–72 bytes.")
-	} else if !c.A.allow("auth:"+strings.ToLower(handle), 10) {
-		err = fail(429, "Too many attempts. Try again in ten minutes.")
 	} else if c.R.URL.Path != "/setup" {
 		err = c.A.checkCaptcha(c) // P1: single-use image CAPTCHA unless an administrator turned it off
+	}
+	if err == nil && !c.A.allow("auth:"+strings.ToLower(handle), 10) {
+		err = fail(429, "Too many attempts. Try again in ten minutes.")
 	}
 	if err != nil {
 		release()
