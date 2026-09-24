@@ -84,6 +84,7 @@ func inspectMessage(c *actionCtx, body, recipientID string) (stored, match strin
 
 // messageStatusLoader adds the stored inspection result to each listed message. Messages stored before
 // inspection existed (encrypted IS NULL) are inspected now; their recipient match is reported as unknown.
+// An encrypted message is displayed as its canonical re-armor, never with the stored armor headers.
 func messageStatusLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error {
 	if len(d.Messages) == 0 {
 		return nil
@@ -127,7 +128,10 @@ func messageStatusLoader(ctx context.Context, a *App, r *http.Request, d *PageDa
 		default:
 			m.Encrypted, m.RecipientMatch = messageStatus(m.Body, "")
 		}
-		if !m.Encrypted {
+		if m.Encrypted {
+			// Show only the packets: a pre-A-67 row may carry plaintext in an armor header (A-74).
+			m.Body, _ = canonicalMessage(m.Body)
+		} else {
 			m.RecipientMatch = ""
 		}
 	}

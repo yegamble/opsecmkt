@@ -159,6 +159,10 @@ func TestInspectEncryptedPacketSequence(t *testing.T) {
 		t.Fatal(err)
 	}
 	seipd := data[len(data)-r.Len():]
+	pkesk := data[:len(data)-r.Len()]
+	// Tag 9 (SymmetricallyEncrypted without integrity protection, as `gpg --rfc2440` may emit): a
+	// new-format header 0xC9, a one-octet length and opaque ciphertext. Only SEIPD/AEAD count (QA5-2).
+	tag9 := append(append([]byte{}, pkesk...), append([]byte{0xC9, 32}, bytes.Repeat([]byte{0xA5}, 32)...)...)
 	rearmor := func(b []byte) string {
 		var buf bytes.Buffer
 		w, _ := armor.Encode(&buf, "PGP MESSAGE", nil)
@@ -170,9 +174,10 @@ func TestInspectEncryptedPacketSequence(t *testing.T) {
 		t.Fatalf("re-armored message: encrypted=%v err=%v", encrypted, err)
 	}
 	for name, b := range map[string][]byte{
-		"trailing packets":       append(append([]byte{}, data...), data...),
-		"truncated":              data[:len(data)-5],
-		"no session key packets": seipd,
+		"trailing packets":        append(append([]byte{}, data...), data...),
+		"truncated":               data[:len(data)-5],
+		"no session key packets":  seipd,
+		"no integrity protection": tag9,
 	} {
 		if _, encrypted, err := inspectEncrypted(rearmor(b)); err == nil || encrypted {
 			t.Errorf("%s: encrypted=%v err=%v", name, encrypted, err)
