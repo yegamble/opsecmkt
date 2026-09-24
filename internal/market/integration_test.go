@@ -70,7 +70,7 @@ func TestPostgresMarketplaceFlow(t *testing.T) {
 		t.Fatal("message leaked to unrelated account")
 	}
 	check(do("POST", "/admin", buyer, url.Values{"action": {"role"}, "role": {"admin"}}), 403)
-	check(do("POST", "/admin", admin, url.Values{"action": {"role"}, "user_id": {"missing"}, "role": {"vendor"}}), 404)
+	check(do("POST", "/admin", admin, url.Values{"action": {"role"}, "handle": {"missing"}, "role": {"vendor"}}), 404)
 	for _, path := range []string{"/", "/product?id=" + product, "/checkout?id=" + product, "/orders", "/disputes", "/vendor-dashboard", "/messages", "/notifications", "/account", "/moderator", "/admin", "/canary", "/challenge"} {
 		t.Run(path, func(t *testing.T) { check(do("GET", path, admin, nil), 200) })
 	}

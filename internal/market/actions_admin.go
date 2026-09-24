@@ -17,11 +17,11 @@ func init() {
 	})
 }
 
-// factorAccountsLoader lists every non-administrator account with a second factor for the reset form
-// (independent of the admin page's 100 most recent accounts, so older accounts can be recovered too).
+// factorAccountsLoader lists up to 100 non-administrator accounts with a second factor, by handle, as a
+// reminder beside the reset form; the form takes any handle, so accounts past the list are reset the same way.
 func factorAccountsLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error {
 	rows, err := a.db.QueryContext(ctx, `SELECT id,handle,role,concat_ws(' and ',CASE WHEN totp_enabled THEN 'TOTP' END,CASE WHEN pgp_2fa THEN 'PGP sign-in' END)
-		FROM users WHERE role<>'admin' AND (totp_enabled OR pgp_2fa) ORDER BY handle LIMIT 1000`)
+		FROM users WHERE role<>'admin' AND (totp_enabled OR pgp_2fa) ORDER BY handle LIMIT 100`)
 	if err != nil {
 		return err
 	}
@@ -43,20 +43,30 @@ func factorAccountsLoader(ctx context.Context, a *App, r *http.Request, d *PageD
 // available for the administrator's own account or another administrator; administrator lockout is an
 // operator procedure (docs/operator-guide.md).
 func adminResetFactorsAction(c *actionCtx) (actionResult, error) {
-	target := c.Form.Get("user_id")
-	if target == "" {
-		return actionResult{}, fail(400, "Choose an account")
+	handle := strings.TrimSpace(c.Form.Get("handle"))
+	if handle == "" {
+		return actionResult{}, fail(400, "Enter an account handle")
 	}
-	if target == c.User.ID {
+	if handle == c.User.Handle {
 		return actionResult{}, fail(400, "You cannot reset your own second factors here. Use your recovery codes, or follow the operator procedure for administrator lockout.")
+	}
+	// The handle is looked up before the password is checked, so a typo does not use a confirmation attempt.
+	notFound := adminHandleError(c, "No account has the handle \""+handle+"\". Check the spelling: handles are case-sensitive.", func(d *PageData) { d.ResetHandle = handle })
+	var target string
+	err := c.A.db.QueryRowContext(c.Ctx(), "SELECT id FROM users WHERE handle=$1", handle).Scan(&target)
+	if err == sql.ErrNoRows {
+		return actionResult{}, notFound
+	}
+	if err != nil {
+		return actionResult{}, err
 	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
 		ctx, tx := c.Ctx(), c.Tx
-		var handle, role string
+		var role string
 		var totp, pgp bool
-		err := tx.QueryRowContext(ctx, "SELECT handle,role,totp_enabled,pgp_2fa FROM users WHERE id=$1 FOR UPDATE", target).Scan(&handle, &role, &totp, &pgp)
+		err := tx.QueryRowContext(ctx, "SELECT role,totp_enabled,pgp_2fa FROM users WHERE id=$1 FOR UPDATE", target).Scan(&role, &totp, &pgp)
 		if err == sql.ErrNoRows {
-			return actionResult{}, fail(404, "Account not found")
+			return actionResult{}, notFound
 		}
 		if err != nil {
 			return actionResult{}, err
@@ -101,6 +111,22 @@ func adminResetFactorsAction(c *actionCtx) (actionResult, error) {
 	})
 }
 
+// adminHandleError answers an admin form whose handle matched no eligible account with 404 and the admin
+// page again: msg in its error alert and what was typed kept in the form (set by keep).
+func adminHandleError(c *actionCtx, msg string, keep func(d *PageData)) error {
+	return &httpError{Code: 404, Msg: msg, Render: func(w http.ResponseWriter) {
+		a := c.A
+		d := a.pageData(c.R, "admin", c.Token, c.User)
+		if err := a.load(c.R, &d); err != nil {
+			http.Error(w, msg, 404)
+			return
+		}
+		d.Error = msg
+		keep(&d)
+		a.renderStatus(w, d, 404)
+	}}
+}
+
 func adminAction(c *actionCtx) (actionResult, error) {
 	ctx, f, tx, u := c.Ctx(), c.Form, c.Tx, c.User
 	var err error
@@ -111,13 +137,19 @@ func adminAction(c *actionCtx) (actionResult, error) {
 		if role != "buyer" && role != "vendor" && role != "moderator" {
 			return actionResult{}, fail(400, "Choose buyer, vendor, or moderator")
 		}
-		if f.Get("user_id") == u.ID {
+		handle := strings.TrimSpace(f.Get("handle"))
+		if handle == "" {
+			return actionResult{}, fail(400, "Enter an account handle")
+		}
+		if handle == u.Handle {
 			return actionResult{}, fail(400, "Cannot change your own administrator role")
 		}
-		var handle, old string
-		err = tx.QueryRowContext(ctx, "SELECT handle,role FROM users WHERE id=$1 AND role<>'admin' FOR UPDATE", f.Get("user_id")).Scan(&handle, &old)
+		var target, old string
+		err = tx.QueryRowContext(ctx, "SELECT id,role FROM users WHERE handle=$1 AND role<>'admin' FOR UPDATE", handle).Scan(&target, &old)
 		if err == sql.ErrNoRows {
-			return actionResult{}, fail(404, "Eligible user not found")
+			return actionResult{}, adminHandleError(c, "No buyer, vendor or moderator has the handle \""+handle+"\". Check the spelling: handles are case-sensitive, and administrator roles cannot be changed here.", func(d *PageData) {
+				d.RoleHandle, d.RoleChoice = handle, role
+			})
 		}
 		if err != nil {
 			return actionResult{}, err
@@ -126,19 +158,19 @@ func adminAction(c *actionCtx) (actionResult, error) {
 		action = "Role of " + handle + " unchanged (already " + role + ")"
 		if old != role {
 			action = "Changed role of " + handle + " from " + old + " to " + role
-			if _, err = tx.ExecContext(ctx, "UPDATE users SET role=$1 WHERE id=$2", role, f.Get("user_id")); err != nil {
+			if _, err = tx.ExecContext(ctx, "UPDATE users SET role=$1 WHERE id=$2", role, target); err != nil {
 				return actionResult{}, err
 			}
-			_, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", f.Get("user_id"), "Role changed from "+old+" to "+role+" by an administrator")
+			_, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", target, "Role changed from "+old+" to "+role+" by an administrator")
 		}
 		if err == nil && role != "vendor" {
 			// A user who is no longer a vendor cannot manage listings, so their active listings are archived in
 			// this transaction (audited for both accounts). Existing orders are unaffected.
 			n := "0"
-			err = tx.QueryRowContext(ctx, "WITH a AS (UPDATE products SET archived=true,archived_at=now(),updated=now() WHERE vendor_id=$1 AND NOT archived RETURNING 1) SELECT count(*)::text FROM a", f.Get("user_id")).Scan(&n)
+			err = tx.QueryRowContext(ctx, "WITH a AS (UPDATE products SET archived=true,archived_at=now(),updated=now() WHERE vendor_id=$1 AND NOT archived RETURNING 1) SELECT count(*)::text FROM a", target).Scan(&n)
 			if err == nil && n != "0" {
 				action += "; archived " + n + " active listing(s)"
-				_, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", f.Get("user_id"), "Archived "+n+" active listing(s): role changed to "+role+" by an administrator")
+				_, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", target, "Archived "+n+" active listing(s): role changed to "+role+" by an administrator")
 			}
 		}
 	case "settings":

@@ -90,12 +90,15 @@ func registerAction(path string, s actionSpec) {
 type httpError struct {
 	Code int
 	Msg  string
+	// Render, when set on an action's error, writes the response (status Code) instead of the plain-text Msg,
+	// after the action's transaction is rolled back.
+	Render func(w http.ResponseWriter)
 }
 
 func (e *httpError) Error() string { return e.Msg }
 
 // fail returns an error that post() and page loaders send as an HTTP status with a plain-text message.
-func fail(code int, msg string) error { return &httpError{code, msg} }
+func fail(code int, msg string) error { return &httpError{Code: code, Msg: msg} }
 
 type rawHandler func(a *App, w http.ResponseWriter, r *http.Request, u *User)
 
@@ -207,6 +210,13 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 	res, err := spec.Run(c)
 	var he *httpError
 	if errors.As(err, &he) {
+		if he.Render != nil {
+			if c.Tx != nil {
+				c.Tx.Rollback()
+			}
+			he.Render(w)
+			return
+		}
 		http.Error(w, he.Msg, he.Code)
 		return
 	}

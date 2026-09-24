@@ -33,12 +33,11 @@ export async function signedIn(browser: Browser, baseURL: string | undefined, ha
   return page;
 }
 
-// Submits the admin "Assign an account role" form for handle.
+// Submits the admin "Assign an account role" form for handle (a text input looked up on the server).
 export async function setRole(admin: Page, handle: string, role: string) {
   await admin.goto('/admin');
   const form = admin.locator('form', { has: admin.getByRole('button', { name: 'Update role' }) });
-  const option = form.locator('option', { hasText: `${handle} ·` });
-  await form.getByLabel('Account').selectOption(await option.getAttribute('value'));
+  await form.getByLabel('Account handle').fill(handle);
   await form.getByLabel('Role').selectOption(role);
   await form.getByRole('button', { name: 'Update role' }).click();
   await expect(admin).toHaveURL(/\/admin\?saved=1$/);
