@@ -3,9 +3,11 @@ package market
 import (
 	"bytes"
 	"database/sql"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -385,6 +387,47 @@ func TestMessagePlaintextInsideArmorRejected(t *testing.T) {
 	if strings.Count(page, "Encrypted (to recipient’s key)") != 1 || strings.Count(page, "Not encrypted (plaintext or invalid OpenPGP)") != 1 {
 		t.Fatal("stored sandwich still badged encrypted")
 	}
+
+	// A-74: a row stored before this check with plaintext in an armor header keeps its badge but is shown
+	// as the canonical re-armor of the same packets, without the header.
+	const legacy = "Ship to: 9 Legacy Lane"
+	if _, err = e.DB.Exec("INSERT INTO messages(id,sender_id,recipient_id,body,encrypted,recipient_match) VALUES($1,$2,$3,$4,true,'yes')", randomToken(), senderID, aliceID, strings.Replace(ct, begin, begin+"Comment: "+legacy+"\n", 1)); err != nil {
+		t.Fatal(err)
+	}
+	page = e.body("GET", "/messages", aliceSession, nil, 200)
+	if strings.Contains(page, "Legacy Lane") || strings.Contains(page, "Comment:") {
+		t.Fatal("recipient page shows a legacy armor header")
+	}
+	if strings.Count(page, "Encrypted (to recipient’s key)") != 2 || strings.Count(page, "Not encrypted (plaintext or invalid OpenPGP)") != 1 {
+		t.Fatal("legacy header row lost its badge")
+	}
+	want := armorPackets(t, ct)
+	shown := 0
+	for _, m := range regexp.MustCompile(`(?s)<pre class="code-block">(.*?)</pre>`).FindAllStringSubmatch(page, -1) {
+		if body := html.UnescapeString(m[1]); body == block {
+			if armorPackets(t, body) != want {
+				t.Fatal("displayed armor decodes to other packets")
+			}
+			shown++
+		}
+	}
+	if shown != 2 {
+		t.Fatalf("canonical armor shown %d times, want 2", shown)
+	}
+}
+
+// armorPackets returns the decoded packet bytes of an armored message.
+func armorPackets(t *testing.T, armored string) string {
+	t.Helper()
+	b, err := armor.Decode(strings.NewReader(armored))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(b.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }
 
 // gpgFixtureKey and gpgFixtureMessage were produced by GnuPG 2.2.41: an ed25519/cv25519 key for

@@ -3,6 +3,7 @@ package market
 import (
 	"context"
 	"html"
+	"net/http/httptest"
 	"net/url"
 	"regexp"
 	"strings"
@@ -389,6 +390,18 @@ func TestAdminListingEditKeepsDeliveryContentHidden(t *testing.T) {
 	}
 	if !strings.Contains(edit, "Automatic delivery content is set; only the vendor can view or change it.") {
 		t.Fatal("administrator /listing-edit does not say that delivery content is set")
+	}
+	// The loader itself never selects the content for an editor who is not the vendor (QA5-3).
+	var adminID string
+	if err := p.DB.QueryRow(`SELECT id FROM users WHERE role='admin' AND handle LIKE 'padmin\_%'`).Scan(&adminID); err != nil {
+		t.Fatal(err)
+	}
+	d := &PageData{User: &User{ID: adminID, Role: "admin"}}
+	if err := loadListingEdit(context.Background(), p.A, httptest.NewRequest("GET", "/listing-edit?id="+digital, nil), d); err != nil {
+		t.Fatal(err)
+	}
+	if d.Listing.DeliveryContent != "" || !d.Listing.HasDeliveryContent || d.Listing.VendorEditor {
+		t.Fatalf("administrator ListingView: content=%q set=%v vendor=%v", d.Listing.DeliveryContent, d.Listing.HasDeliveryContent, d.Listing.VendorEditor)
 	}
 	if empty := p.page("/listing-edit?id="+p.product(p.vendor.ID, "digital"), p.adminSess); !strings.Contains(empty, "Automatic delivery content is not set; only the vendor can add it.") {
 		t.Fatal("administrator /listing-edit does not say that delivery content is not set")
