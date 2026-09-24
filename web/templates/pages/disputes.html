@@ -13,10 +13,10 @@
 <input type="hidden" name="csrf" value="{{.CSRF}}">
 <label>Order<select name="order_id" required>{{range .Orders}}{{if or (eq .State "paid") (eq .State "shipped") (eq .State "delivered")}}<option value="{{.ID}}">{{.Title}} · {{.Status}} · {{.ID}}</option>{{end}}{{end}}</select>
 </label>
-<label>Describe the issue<textarea name="reason" required minlength="20" maxlength="5000" placeholder="Provide the details a moderator needs to review your issue.">
+<label>Describe the issue<textarea name="reason" required minlength="20" maxlength="5000" placeholder="Provide the details a moderator needs to review your issue." aria-describedby="dispute-reason-help">
 </textarea>
 </label>
-<span class="help">Opening a dispute moves the order to Disputed and stops shipping, delivery and completion until a moderator records an outcome. Do not include passwords, private keys, or payment recovery phrases.</span>
+<span class="help" id="dispute-reason-help"><a class="text-link" href="/canary#records">Stored unencrypted.</a> The other party reads it on the order page, as does every moderator and administrator, and the operator and anyone with a backup. Never include an address, real name or tracking number: send those encrypted to an independent moderator or administrator listed under Contact dispute staff, which the order page shows once the dispute is open. Opening a dispute moves the order to Disputed and stops shipping, delivery and completion until a moderator records an outcome. Do not include passwords, private keys, or payment recovery phrases.</span>
 <button class="primary" type="submit">Submit dispute <span class="action-icon">↗</span></button>
 </form>{{else}}<p class="order-unavailable" role="note">
 <strong>Unavailable.</strong> None of your orders can be disputed. Only paid, shipped, or delivered orders qualify; drafts and orders awaiting payment hold no confirmed funds.</p>{{end}}</section>
