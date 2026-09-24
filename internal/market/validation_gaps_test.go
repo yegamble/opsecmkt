@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -233,7 +234,7 @@ func TestHealthzReportsDatabase(t *testing.T) {
 	a.db = db
 	w := httptest.NewRecorder()
 	a.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/healthz", nil))
-	if w.Code != 503 || strings.TrimSpace(w.Body.String()) != "unavailable" {
+	if w.Code != 503 || !regexp.MustCompile(`^unavailable\nReference: [0-9a-f]{8}\n$`).MatchString(w.Body.String()) {
 		t.Fatalf("healthz with the database down: %d %q", w.Code, w.Body.String())
 	}
 }

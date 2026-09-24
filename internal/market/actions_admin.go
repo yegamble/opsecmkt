@@ -251,7 +251,7 @@ func adminHandleError(c *actionCtx, msg string, keep func(d *PageData)) error {
 		}
 		d.Error = msg
 		keep(&d)
-		a.renderStatus(w, d, 404)
+		a.renderStatus(w, c.R, d, 404)
 	}}
 }
 

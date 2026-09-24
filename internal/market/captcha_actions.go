@@ -70,7 +70,7 @@ func captchaPNG(a *App, w http.ResponseWriter, r *http.Request, _ *User) {
 		}
 		err := a.db.QueryRowContext(r.Context(), "SELECT EXISTS(SELECT 1 FROM captchas WHERE id=$1 AND session_hash IN ($2,$3) AND NOT used AND expires>now())", id, digest(sessionToken(r)), digest(anon)).Scan(&ok)
 		if err != nil {
-			http.Error(w, "Service unavailable", 503)
+			serverError(w, r, 503, "Service unavailable", errorCause(err))
 			return
 		}
 		if !ok {
@@ -80,7 +80,7 @@ func captchaPNG(a *App, w http.ResponseWriter, r *http.Request, _ *User) {
 	}
 	var b bytes.Buffer
 	if err := png.Encode(&b, a.captchaImage(id)); err != nil {
-		http.Error(w, "Unable to render image", 500)
+		serverError(w, r, 500, "Unable to render image", errorCause(err))
 		return
 	}
 	w.Header().Set("Content-Type", "image/png")

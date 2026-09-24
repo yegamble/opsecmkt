@@ -5,9 +5,13 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"strings"
+	"syscall"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Startup runs in separately bounded phases so a slow migration on a large database does not share (and
@@ -55,6 +59,31 @@ func timedOut(parent, phase context.Context) bool {
 	return parent.Err() == nil && errors.Is(phase.Err(), context.DeadlineExceeded)
 }
 
+// connectErrorClass says why the startup connection failed, for the operator to act on, without the driver's
+// error text: pgx's names the user, database and host from DATABASE_URL (A-141).
+func connectErrorClass(err error) string {
+	var pe *pgconn.PgError
+	var dns *net.DNSError
+	var ne net.Error
+	switch {
+	case errors.As(err, &pe) && pe.Code == "28000" && strings.HasSuffix(pe.Message, "no encryption"):
+		return "TLS required: the server accepts only encrypted connections (SQLSTATE 28000); set sslmode=require or verify-full in DATABASE_URL"
+	case errors.As(err, &pe) && (pe.Code == "28P01" || pe.Code == "28000"):
+		return "authentication failed (SQLSTATE " + pe.Code + "); check the user and password in DATABASE_URL and the server's pg_hba.conf"
+	case errors.As(err, &pe) && pe.Code == "3D000":
+		return "database missing (SQLSTATE 3D000); check the database name in DATABASE_URL"
+	case errors.As(err, &pe):
+		return "refused by the server (SQLSTATE " + pe.Code + ")"
+	case errors.As(err, &dns) && !dns.IsTimeout:
+		return "host not found; check the host name in DATABASE_URL"
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return "connection refused; check the host and port in DATABASE_URL and that PostgreSQL is running"
+	case errors.Is(err, context.DeadlineExceeded) || errors.As(err, &ne) && ne.Timeout():
+		return "timed out; check the host and port in DATABASE_URL and the network path to PostgreSQL"
+	}
+	return "check DATABASE_URL and service health"
+}
+
 // prepareDatabase checks the connection, then applies the baseline and migrations in one transaction under
 // the startup advisory lock (shared with first-run setup). A failure or timeout leaves nothing applied.
 func prepareDatabase(ctx context.Context, db *sql.DB, t startupTimeouts) error {
@@ -64,12 +93,12 @@ func prepareDatabase(ctx context.Context, db *sql.DB, t startupTimeouts) error {
 		if timedOut(ctx, connectCtx) {
 			return fmt.Errorf("database connection timed out after %s; check DATABASE_URL and service health, or raise DATABASE_CONNECT_TIMEOUT", t.connect)
 		}
-		return errors.New("database connection failed; check DATABASE_URL and service health")
+		return errors.New("database connection failed: " + connectErrorClass(err))
 	}
 	// The transaction outlives each phase context, so it is bound to ctx; the phases bound its statements.
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return errors.New("database connection failed: " + connectErrorClass(err))
 	}
 	defer tx.Rollback()
 	// On a timeout the driver cancels the statement from a background goroutine, which a process exiting
