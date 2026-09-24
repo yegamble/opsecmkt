@@ -2,11 +2,14 @@ package market
 
 import (
 	"bytes"
+	"context"
+	"database/sql"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -949,5 +952,95 @@ func TestPreLoginCookieSeparateFromSession(t *testing.T) {
 	e.check(w, 303)
 	if s2 := e.session(w); s2 == legacy {
 		t.Fatal("legacy anonymous token became the session")
+	}
+}
+
+// A-150: /challenge holds its transaction (and the pending login's row lock) while it checks the factor is
+// enrolled. That check must read through the transaction: on a second pool connection, a burst on one pending
+// cookie filled the pool (MaxOpenConns 12) with requests queued on the row lock while the lock holder waited
+// for a connection, freezing every page until the 12 s request timeout.
+func TestChallengeBurstDoesNotExhaustPool(t *testing.T) {
+	e := newTestApp(t)
+	id, _ := e.user("burst_owner", "buyer")
+	agEnableTOTP(e, id)
+	_, bystander := e.user("burst_bystander", "buyer")
+	pc := agPending(e, id)
+	anon, wrong := randomToken(), e.wrongTOTP(id)
+	const n = 20
+	start := make(chan struct{})
+	codes := make(chan int, n)
+	var wg sync.WaitGroup
+	for range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			codes <- e.do("POST", "/challenge", anon, url.Values{"method": {"totp"}, "code": {wrong}}, pc).Code
+		}()
+	}
+	var byCode int
+	var byTook time.Duration
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-start
+		time.Sleep(20 * time.Millisecond) // let the burst take the pool first
+		s := time.Now()
+		byCode = e.do("GET", "/account", bystander, nil).Code
+		byTook = time.Since(s)
+	}()
+	began := time.Now()
+	close(start)
+	wg.Wait()
+	took := time.Since(began)
+	close(codes)
+	seen := map[int]int{}
+	for c := range codes {
+		seen[c]++
+	}
+	if took >= time.Second || byTook >= time.Second {
+		t.Fatalf("%d concurrent POST /challenge on one pending login took %v (bystander GET /account %v); want both < 1s; responses %v", n, took, byTook, seen)
+	}
+	if byCode != 200 {
+		t.Fatalf("bystander GET /account: %d", byCode)
+	}
+	// Wrong codes are refused until a limiter trips; nothing is a timeout or a misleading 400.
+	if seen[401]+seen[429] != n || seen[401] == 0 {
+		t.Fatalf("challenge burst responses: %v", seen)
+	}
+	if agUserSessions(e, id) != 1 || agInt(e, "SELECT count(*) FROM pending_logins WHERE token_hash=$1", digest(pc.Value)) != 1 {
+		t.Fatal("wrong codes signed in or consumed the pending login")
+	}
+}
+
+// failingFactor's enrolment check fails in the database, through whatever querier /challenge hands it.
+type failingFactor struct{ tx bool }
+
+func (*failingFactor) Name() string { return "test-failing" }
+func (f *failingFactor) Enrolled(ctx context.Context, q rowQuerier, _ string) (bool, error) {
+	_, f.tx = q.(*sql.Tx)
+	var n int
+	return true, q.QueryRowContext(ctx, "SELECT 1/0").Scan(&n)
+}
+func (*failingFactor) Verify(*actionCtx, string) error { return nil }
+
+// A-150: a database error while checking the factor is a server error, not "Choose a verification method",
+// and the check runs in /challenge's transaction.
+func TestChallengeEnrolledErrorIsServerError(t *testing.T) {
+	e := newTestApp(t)
+	id, _ := e.user("enrolled_err", "buyer")
+	f := &failingFactor{}
+	factors = append(factors, f)
+	t.Cleanup(func() { factors = factors[:len(factors)-1] })
+	pc := agPending(e, id)
+	w := e.do("POST", "/challenge", randomToken(), url.Values{"method": {"test-failing"}}, pc)
+	if w.Code != 500 || strings.Contains(w.Body.String(), "Choose a verification method") {
+		t.Fatalf("Enrolled database error answered %d %q; want 500", w.Code, strings.TrimSpace(w.Body.String()))
+	}
+	if !f.tx {
+		t.Fatal("/challenge checked enrolment outside its transaction")
+	}
+	if agUserSessions(e, id) != 1 || agInt(e, "SELECT count(*) FROM pending_logins WHERE token_hash=$1", digest(pc.Value)) != 1 {
+		t.Fatal("failed enrolment check signed in or consumed the pending login")
 	}
 }
