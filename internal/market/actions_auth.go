@@ -50,20 +50,21 @@ func (a *App) confirmPassword(ctx context.Context, userID, password string) erro
 	if password == "" || len(password) > 72 {
 		return fail(400, "Enter your current password to confirm this change.")
 	}
-	if !a.allow("confirm:"+userID, 10) {
-		return fail(429, "Too many attempts. Try again in ten minutes.")
-	}
+	// The slot is taken before the attempt is counted, so a busy refusal spends none of the user's budget.
 	select {
 	case passwordWork <- struct{}{}:
 	default:
 		return fail(503, "Authentication is busy. Try again shortly.")
+	}
+	defer func() { <-passwordWork }()
+	if !a.allow("confirm:"+userID, 10) {
+		return fail(429, "Too many attempts. Try again in ten minutes.")
 	}
 	var hash string
 	err := a.db.QueryRowContext(ctx, "SELECT password_hash FROM users WHERE id=$1", userID).Scan(&hash)
 	if err == nil {
 		err = bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
 	}
-	<-passwordWork
 	if err != nil {
 		return fail(401, "Password incorrect")
 	}
@@ -163,29 +164,47 @@ func confirmedTxWith(c *actionCtx, opts *confirmation, run func(c *actionCtx) (a
 	return res, tx.Commit()
 }
 
-// authGate admits one password-bearing request: bounded bcrypt concurrency, input bounds, CAPTCHA and
-// per-handle rate limit, all before any expensive work. On success the caller must defer release().
+// authGate admits one password-bearing request: input bounds, CAPTCHA, a free handle for /register and the
+// per-handle rate limit, then bounded bcrypt concurrency, all before any expensive work. On success the
+// caller must defer release().
 func authGate(c *actionCtx) (handle, password string, release func(), err error) {
+	a, path := c.A, c.R.URL.Path
+	handle, password = strings.TrimSpace(c.Form.Get("handle")), c.Form.Get("password")
+	// Validate the input and the CAPTCHA before the rate limit, so malformed handles and failed CAPTCHAs
+	// never create or increment a limiter entry (and cannot spend a real user's sign-in budget).
+	if !handlePattern.MatchString(handle) || !validPassword(password) {
+		err = fail(400, "Use a 3–32 character handle (letters, digits, underscores) and a password of 12–72 bytes.")
+	} else if path != "/setup" {
+		err = a.checkCaptcha(c) // P1: single-use image CAPTCHA unless an administrator turned it off
+	}
+	if err == nil && path == "/register" {
+		// A taken handle is refused before any bcrypt, slot or budget. The INSERT's unique key still
+		// refuses a handle registered concurrently after this check.
+		var taken bool
+		if qerr := a.db.QueryRowContext(c.Ctx(), "SELECT EXISTS(SELECT 1 FROM users WHERE handle=$1)", handle).Scan(&taken); qerr != nil {
+			err = fail(503, "Service unavailable")
+		} else if taken {
+			err = fail(400, "Handle unavailable")
+		}
+	}
+	key := "auth:" + strings.ToLower(handle)
+	if err == nil && a.limited(key, 10) {
+		err = fail(429, "Too many attempts. Try again in ten minutes.")
+	}
+	if err != nil {
+		return "", "", nil, err
+	}
+	// A password-check slot is taken only now, so requests refused above never hold one while real
+	// sign-ins wait. The attempt is counted after the slot, so a busy refusal spends no budget.
 	select {
 	case passwordWork <- struct{}{}:
 	default:
 		return "", "", nil, fail(503, "Authentication is busy. Try again shortly.")
 	}
 	release = func() { <-passwordWork }
-	handle, password = strings.TrimSpace(c.Form.Get("handle")), c.Form.Get("password")
-	// Validate the input and the CAPTCHA before the rate limit, so malformed handles and failed CAPTCHAs
-	// never create or increment a limiter entry (and cannot spend a real user's sign-in budget).
-	if !handlePattern.MatchString(handle) || !validPassword(password) {
-		err = fail(400, "Use a 3–32 character handle (letters, digits, underscores) and a password of 12–72 bytes.")
-	} else if c.R.URL.Path != "/setup" {
-		err = c.A.checkCaptcha(c) // P1: single-use image CAPTCHA unless an administrator turned it off
-	}
-	if err == nil && !c.A.allow("auth:"+strings.ToLower(handle), 10) {
-		err = fail(429, "Too many attempts. Try again in ten minutes.")
-	}
-	if err != nil {
+	if !a.allow(key, 10) {
 		release()
-		return "", "", nil, err
+		return "", "", nil, fail(429, "Too many attempts. Try again in ten minutes.")
 	}
 	return handle, password, release, nil
 }

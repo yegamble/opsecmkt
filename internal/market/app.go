@@ -183,6 +183,14 @@ func (a *App) allow(key string, n int) bool {
 	a.limits[key] = b
 	return b.Count <= n
 }
+
+// limited reports whether key has already spent its budget of n, without counting a request.
+func (a *App) limited(key string, n int) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	b, ok := a.limits[key]
+	return ok && !time.Now().After(b.Until) && b.Count >= n
+}
 func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; img-src 'self'; font-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
