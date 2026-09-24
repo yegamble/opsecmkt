@@ -233,6 +233,9 @@ type PayoutRow struct {
 	// Ambiguous: the payout may already have been broadcast (failed without a definite wallet answer, stuck
 	// in sending, or held by a restore from backup); requeueing or releasing needs an explicit confirmation.
 	Ambiguous bool
+	// AddressCheck: held for an account suspension (suspendedHoldPrefix); releasing needs an explicit
+	// confirmation that the payout address was checked.
+	AddressCheck bool
 }
 
 // P6 Transparency

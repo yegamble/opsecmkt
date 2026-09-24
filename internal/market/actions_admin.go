@@ -41,8 +41,9 @@ func suspendedAccountsLoader(ctx context.Context, a *App, r *http.Request, d *Pa
 
 // adminSuspendAction suspends or restores a non-administrator account, looked up by handle. Suspending ends
 // the account's sessions and pending sign-ins and blocks sign-in (checked at the password step, when a
-// session starts and whenever a session loads); restoring allows sign-in again. Nothing else changes: role,
-// listings and orders stay as they are, so counterparties can continue open orders. Both accounts are
+// session starts and whenever a session loads) and holds the account's unsent payouts for an administrator's
+// payout address check; restoring allows sign-in again and leaves those holds. Role, listings and orders stay
+// as they are, so counterparties can continue open orders. Both accounts are
 // audited and the account is notified. The administrator confirms with their own password (and
 // authenticator code when enrolled). Not available for the administrator's own account or another
 // administrator.
@@ -78,9 +79,13 @@ func adminSuspendAction(c *actionCtx) (actionResult, error) {
 		if _, err := tx.ExecContext(ctx, "DELETE FROM pending_logins WHERE user_id=$1", target); err != nil {
 			return actionResult{}, err
 		}
+		// FOR NO KEY UPDATE, not FOR UPDATE: it still excludes session starts and payout queueing (both take FOR
+		// SHARE), but not the key-share locks of inserts referencing the account (notifications, order events).
+		// The watcher can hold one of this account's payouts and then insert such a row; with FOR UPDATE, the
+		// payout update below would deadlock with it.
 		var role string
 		var suspended bool
-		err := tx.QueryRowContext(ctx, "SELECT role,suspended_at IS NOT NULL FROM users WHERE id=$1 FOR UPDATE", target).Scan(&role, &suspended)
+		err := tx.QueryRowContext(ctx, "SELECT role,suspended_at IS NOT NULL FROM users WHERE id=$1 FOR NO KEY UPDATE", target).Scan(&role, &suspended)
 		if err == sql.ErrNoRows {
 			return actionResult{}, notFound
 		}
@@ -117,6 +122,17 @@ func adminSuspendAction(c *actionCtx) (actionResult, error) {
 		}
 		n, _ := ended.RowsAffected()
 		sessions := strconv.FormatInt(n, 10) + " session(s) and any pending sign-ins"
+		// Unsent payouts to the account are held until an administrator checks their payout address: whoever
+		// the account was suspended for may have changed it (A-102). The watcher's own hold is replaced, since the
+		// watcher lifts that one by itself. Payouts queued later start held (enqueuePayout).
+		heldRes, err := tx.ExecContext(ctx, `UPDATE payouts SET state='held',error=$2,updated=now()
+			WHERE user_id=$1 AND (state IN ('pending','blocked') OR (state='held' AND error=$3))`, target, suspendedHold, heldReason)
+		if err != nil {
+			return actionResult{}, err
+		}
+		if h, _ := heldRes.RowsAffected(); h > 0 {
+			sessions += "; held " + strconv.FormatInt(h, 10) + " unsent payout(s)"
+		}
 		if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", target, "Account suspended by administrator "+c.User.Handle+"; ended "+sessions); err != nil {
 			return actionResult{}, err
 		}

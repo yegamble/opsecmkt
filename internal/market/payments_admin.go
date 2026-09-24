@@ -14,7 +14,8 @@ import (
 // Each needs the administrator's password (and authenticator code when enrolled), is audited, and changes
 // the payout with a compare-and-set on its state, so repeated or concurrent submissions act once. Requeueing
 // a payout whose last send may have been broadcast (an ambiguous failure or a stuck send), or releasing one
-// held by a restore, also needs an explicit confirmation that the wallet shows no such transaction.
+// held by a restore, also needs an explicit confirmation that the wallet shows no such transaction. Releasing
+// one held for an account suspension needs an explicit confirmation that its payout address was checked.
 
 func init() {
 	registerAction("/admin/payout", actionSpec{Roles: []string{"admin"}, OwnTx: true, Run: adminPayoutAction})
@@ -59,13 +60,13 @@ func adminPayoutAction(c *actionCtx) (actionResult, error) {
 
 func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error) {
 	ctx, tx := c.Ctx(), c.Tx
-	var orderID, recipient, cur, state, orderState, payoutErr string
+	var orderID, recipient, cur, state, orderState, payoutErr, address string
 	var amt int64
 	var ambiguous, stuck bool
 	// stuck repeats stuckSending with the payout alias (orders also has state and updated).
 	err := tx.QueryRowContext(ctx, `SELECT p.order_id,p.user_id,p.currency,p.amount,p.state,o.state,p.send_ambiguous,
-		(p.state='sending' AND p.updated < now()-interval '5 minutes'),p.error FROM payouts p JOIN orders o ON o.id=p.order_id
-		WHERE p.id=$1 FOR UPDATE OF p`, id).Scan(&orderID, &recipient, &cur, &amt, &state, &orderState, &ambiguous, &stuck, &payoutErr)
+		(p.state='sending' AND p.updated < now()-interval '5 minutes'),p.error,p.address FROM payouts p JOIN orders o ON o.id=p.order_id
+		WHERE p.id=$1 FOR UPDATE OF p`, id).Scan(&orderID, &recipient, &cur, &amt, &state, &orderState, &ambiguous, &stuck, &payoutErr, &address)
 	if err == sql.ErrNoRows {
 		return actionResult{}, fail(404, "Payout not found")
 	}
@@ -83,6 +84,15 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 		restored := state == "held" && strings.HasPrefix(payoutErr, restoredHoldPrefix)
 		if restored && c.Form.Get("not_broadcast") != "confirmed" {
 			return actionResult{}, fail(400, "This payout was held by a restore from backup and may already have been sent. Check the wallet, then confirm that no transaction was broadcast to release it, or mark it sent with the wallet's transaction ID.")
+		}
+		// A payout held for an account suspension may be going to an address someone else saved with the
+		// account's password.
+		suspendedHeld := state == "held" && strings.HasPrefix(payoutErr, suspendedHoldPrefix)
+		if suspendedHeld && address == "" {
+			return actionResult{}, fail(409, "This payout was held when the recipient's account was suspended and has no payout address to check. It can be released after the recipient saves one. Nothing was changed.")
+		}
+		if suspendedHeld && c.Form.Get("address_checked") != "confirmed" {
+			return actionResult{}, fail(409, "This payout was held when the recipient's account was suspended, and its payout address may have been changed by someone else. Check the payout address with the account owner, then confirm that you checked it to release the payout. Nothing was changed.")
 		}
 		// A payout the watcher itself holds (credited deposit conflicted or re-confirming) stays held while
 		// that is still true: sendPayouts would refuse it anyway.
@@ -104,6 +114,10 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 		if restored {
 			note = "Administrator confirmed the wallet shows no broadcast transaction for the TESTNET payout of " + label + " (held after being restored from backup) and released it; it is queued for a single send."
 			audit += "; restored from backup, administrator confirmed the wallet shows no broadcast transaction"
+		}
+		if suspendedHeld {
+			note = "Administrator checked the payout address and released the held TESTNET payout of " + label + "; it is queued for a single send."
+			audit += "; held for an account suspension, administrator checked the payout address " + address
 		}
 	case "requeue":
 		// A send with no definite answer may be on the network: sending again without checking could pay twice.
