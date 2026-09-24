@@ -6,13 +6,15 @@ below run from the repository root.
 
 ## Clearnet and onion deployment
 
-For clearnet production, keep `COOKIE_SECURE=true` and terminate HTTPS with a reverse proxy on the same host. The container binds only `127.0.0.1:8080`. A minimal host-installed Caddy configuration is:
+For clearnet production, keep `COOKIE_SECURE=true` and terminate HTTPS with a reverse proxy on the same host. The app is published only on host loopback, at `127.0.0.1:${APP_PORT}` (`APP_PORT` in `.env`, default `8080`; inside its container the app always listens on 8080). A minimal host-installed Caddy configuration for the default port is below. If you chose another `APP_PORT`, use that port instead of 8080:
 
 ```caddyfile
 market.example.com {
     reverse_proxy 127.0.0.1:8080
 }
 ```
+
+`APP_MODE` in `.env` (`clearnet` or `tor`, set by the installer) is only checked at startup: any other value stops the server, but it changes no behaviour. The Compose overlay in `COMPOSE_FILE` decides exposure, and `COOKIE_SECURE` decides whether cookies are marked Secure.
 
 Configure DNS, firewall and the certificate issuer for your domain. A proxy in another container needs a private shared network instead of this host-loopback configuration. Never expose the database or node RPC ports.
 
