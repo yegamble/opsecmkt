@@ -27,7 +27,10 @@ type Notification struct {
 	ID, Body, Created string
 	Read              bool
 }
-type Dispute struct{ ID, OrderID, Reason, Status, Resolution, Created string }
+type Dispute struct {
+	ID, OrderID, Reason, Status, Resolution, Created string
+	NoResolver                                       bool // open, and every moderator and administrator is a party
+}
 
 // PaymentReview is one deposit the payment watcher flagged for staff review (payments.flagged).
 type PaymentReview struct {

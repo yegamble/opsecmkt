@@ -1,4 +1,5 @@
-{{/* P3 Orders owns. Dispute list used by disputes and moderator; resolve form for moderators who are not party to the order.
+{{/* P3 Orders owns. Dispute list used by disputes and moderator; resolve form for moderators who are not party to the order;
+administrators see a "No eligible resolver" note on an open dispute whose order has every staff account as a party.
 Disputes holds every open dispute first (OpenDisputes of them, oldest first), then the most recent resolved ones. */}}
 {{define "disputes-list"}}{{if .Disputes}}<h2 class="section-title">Open disputes</h2>{{if .OpenDisputes}}<div class="messages-list">{{else}}<p class="help">No open disputes. Every open dispute is listed here, oldest first.</p>{{end}}{{range $i, $d := .Disputes}}{{if eq $i $.OpenDisputes}}{{if $i}}</div>{{end}}
 <h2 class="section-title">Resolved disputes</h2>{{if $.HistoryLimit}}<p class="help" role="note">Showing the {{$.HistoryLimit}} most recent resolved disputes; older resolved disputes are not listed.</p>{{end}}<div class="messages-list">{{end}}{{$o := index $.DisputeOrders .OrderID}}{{$party := and $.User $o.ID (or (eq $o.BuyerID $.User.ID) (eq $o.VendorID $.User.ID))}}<article class="message">
@@ -10,7 +11,8 @@ Disputes holds every open dispute first (OpenDisputes of them, oldest first), th
 </p>{{end}}
 <p>{{.Reason}}</p>
 <p class="help">Opened {{.Created}}</p>{{if .Resolution}}<p>
-<strong>Resolution:</strong> {{.Resolution}}</p>{{else}}{{if $.User}}{{if or (eq $.User.Role "moderator") (eq $.User.Role "admin")}}{{if $party}}<p class="order-unavailable" role="note">
+<strong>Resolution:</strong> {{.Resolution}}</p>{{else}}{{if $.User}}{{if or (eq $.User.Role "moderator") (eq $.User.Role "admin")}}{{if and .NoResolver (eq $.User.Role "admin")}}<p class="order-unavailable" role="note">
+<strong>No eligible resolver.</strong> Every moderator and administrator is a party to this order. Assign a moderator who is not a party on the administration page so this dispute can be resolved.</p>{{end}}{{if $party}}<p class="order-unavailable" role="note">
 <strong>Unavailable.</strong> You are a party to this order; another moderator must resolve it.</p>{{else if ne $o.State "disputed"}}<p class="order-unavailable" role="note">
 <strong>Unavailable.</strong> This order is not in the Disputed state, so no outcome can be recorded.</p>{{else}}<form class="stack" method="post" action="/resolve">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
