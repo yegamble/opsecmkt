@@ -192,8 +192,9 @@ Once payments are on, the marketplace is custodial for test coins: the Bitcoin w
 them up separately (see the runbook). `scripts/restore.sh` now pauses all outbound payouts with a persistent recovery gate, holds every
 pending, sending, blocked or held payout, and marks every failed payout as possibly sent after the backup (it
 may have been requeued and sent since). Follow the [reconciliation procedure](docs/testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts),
-including orders whose payout did not yet exist in the backup, before explicitly clearing the gate. The
-application must be stopped during restore and reconciliation; do not allow user writes until complete.
+including orders paid out after the backup that have no payout row in it, before explicitly clearing the
+gate. Restore with the application stopped and keep the site cut off from users until reconciliation is
+complete; the procedure says when the app runs for you alone and when it must be stopped.
 If the script reports recovery protection failed, do not start the application. Apply the protections to
 the restored application database in one transaction first (older databases without a `payouts` table need
 only the settings update; omit the `send_ambiguous` line if their `payouts` table has no such column, as
