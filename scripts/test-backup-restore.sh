@@ -94,7 +94,10 @@ export AGE_RECIPIENT AGE_IDENTITY
 AGE_RECIPIENT=$(age-keygen -y "$work/identity")
 AGE_IDENTITY="$work/identity"
 backup="$work/backup.dump.age"
-scripts/backup.sh "$backup"
+scripts/backup.sh "$backup" > "$work/backup.log"
+# The success line names the database dumped, never the URL or its password.
+grep -q "of database $source_db (BACKUP_DATABASE_URL) saved to" "$work/backup.log"
+if grep -q -e '://' "$work/backup.log"; then echo 'backup.sh printed the connection URL' >&2; exit 1; fi
 [[ -s $backup ]] || { echo 'Backup is empty' >&2; exit 1; }
 python3 - "$backup" <<'PY_CHECK'
 from pathlib import Path
@@ -127,6 +130,7 @@ scripts/restore.sh "$backup" <<< 'RESTORE' > "$work/restore.log"
 [[ $(pg "$source_db" -Atq -c "SELECT count(*) FROM payouts WHERE state = 'held'") == 1 ]]
 grep -q 'Held 4 restored payout(s)' "$work/restore.log"
 grep -q 'do not contain the custodial wallets' "$work/restore.log"
+grep -q 'point BACKUP_DATABASE_URL at the same database' "$work/restore.log"
 
 # Restore creates a_first before colliding with z_conflict. A failure must roll
 # the entire transaction back, including that earlier successful CREATE TABLE.

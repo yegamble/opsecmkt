@@ -156,8 +156,11 @@ the **upgraded** checkout: its `scripts/restore.sh` can restore into the interna
    ```
 
    Edit `DATABASE_URL` in `.env` so the database name after the port is the restored one, for example
-   `postgres://opsecmkt:PASSWORD@db:5432/opsecmkt_rollback?sslmode=disable` (keep the password as it is).
+   `postgres://opsecmkt:PASSWORD@db:5432/opsecmkt_rollback?sslmode=disable` (keep the password as it is);
+   `scripts/restore.sh` prints this line for the database it restored into.
    If you rotated `SETUP_TOKEN` during the upgrade, keep the new value rather than the placeholder.
+   With an external database, point `BACKUP_DATABASE_URL` in your backup job at the restored database too:
+   external backups follow `BACKUP_DATABASE_URL`, not `DATABASE_URL`.
 
 4. Check out the revision you noted in step 1 and rebuild it:
 
@@ -167,6 +170,19 @@ the **upgraded** checkout: its `scripts/restore.sh` can restore into the interna
    docker compose up -d --build
    docker compose logs -f app
    ```
+
+5. Keep backing up the database you now run. This release's `scripts/backup.sh` dumps the internal
+   database named in `DATABASE_URL`, so it follows the switch and its success line names `opsecmkt_rollback`.
+   The alpha.1 `scripts/backup.sh` you just checked out always dumps `opsecmkt`, which is now the abandoned
+   upgraded database. While you run alpha.1 on the internal database, back up the rolled-back one directly:
+
+   ```sh
+   (set -o pipefail; umask 077
+    docker compose exec -T db pg_dump -U opsecmkt -d opsecmkt_rollback --format=custom --no-owner --no-acl \
+      | age -r age1YOUR_PUBLIC_RECIPIENT > backups/rollback.dump.age) || echo 'Backup FAILED'
+   ```
+
+   Use a new file name each time, as `scripts/backup.sh` does, and delete the file if the command failed.
 
 ## 6. Backups now need the wallets too
 

@@ -21,7 +21,7 @@ Required executables are Bash, Python 3, Go (to build the server from this check
 
 The script creates four uniquely named `opsecmkt_ops_*` databases, generates temporary encryption identities, and verifies:
 
-- Actual encrypted dump and restore with Unicode text and primary keys preserved.
+- Actual encrypted dump and restore with Unicode text and primary keys preserved; the backup's success line names the `BACKUP_DATABASE_URL` database without printing the URL, and the restore says to point `BACKUP_DATABASE_URL` at the restored database.
 - An age-encrypted output file with mode `0600`.
 - Refusal to overwrite an existing backup, with its contents unchanged.
 - A wrong decryption identity fails without creating tables.
@@ -46,6 +46,8 @@ into a temporary directory with its own `.env` and a uniquely named Compose proj
 - `scripts/backup.sh` without `BACKUP_DATABASE_URL` writes an age-encrypted `0600` dump through `docker compose exec -T db`.
 - `scripts/restore.sh` refuses two destinations, no destination, an unsafe `RESTORE_INTERNAL_DATABASE` name and a wrong confirmation without creating a database; a wrong identity restores no tables.
 - A side-by-side restore (`RESTORE_INTERNAL_DATABASE=opsecmkt_restored`) creates the new database, round-trips Unicode, holds `pending`, `sending`, `blocked` and `held` payouts, sets `payments_recovery_required=true`, and leaves the live `opsecmkt` database unchanged.
+- The side-by-side restore prints the database it restored into and the exact `DATABASE_URL` line for `.env`. After `DATABASE_URL` is switched to `opsecmkt_restored` and a row is written there, `scripts/backup.sh` names and dumps `opsecmkt_restored`; restoring that backup into a check database contains the row. Double-quoted, `export`-prefixed, unquoted-with-comment, percent-encoded-password, CRLF and repeated `DATABASE_URL` lines select the same database, which the test confirms is the one `docker compose config` resolves for the app; the URL and password are never printed.
+- `scripts/backup.sh` refuses a `BACKUP_INTERNAL_DATABASE` that differs from the database in `DATABASE_URL`, and one set together with `BACKUP_DATABASE_URL`, without leaving a file; a matching one is accepted; when the name comes from Compose interpolation the script refuses to guess and uses `BACKUP_INTERNAL_DATABASE`.
 - Restoring over the populated live database fails and rolls back completely, without applying the gate.
 - After `docker compose down --volumes`, a fresh volume's empty `opsecmkt` database is restored into directly with the same gate and holds.
 - With the `db` service stopped, the restore says how to start it.
