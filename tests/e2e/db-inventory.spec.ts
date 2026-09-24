@@ -71,6 +71,7 @@ test('edit, archive and restore a listing without client scripts', async ({ page
   await vendor.getByLabel('Automatic delivery content').fill(secret);
   await vendor.getByRole('button', { name: 'Publish listing' }).click();
   await vendor.getByRole('link', { name: `Edit ${vendorTitle}` }).click();
+  await vendor.waitForURL(/\/listing-edit\?id=/);
   const editURL = vendor.url();
 
   await page.goto(editURL);

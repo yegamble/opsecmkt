@@ -70,6 +70,7 @@ test('enroll TOTP, sign in through the challenge and spend a recovery code once'
   await expect(page.locator('.page-head .badge')).toHaveText('Enabled');
   const codes = await page.locator('.recovery-codes li').allInnerTexts();
   expect(codes).toHaveLength(10);
+  await page.waitForLoadState();
   await page.reload();
   await expect(page.locator('.recovery-codes')).toHaveCount(0);
   await page.goto('/account');

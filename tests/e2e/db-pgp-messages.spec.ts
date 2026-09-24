@@ -30,6 +30,7 @@ test('save a PGP key, see its fingerprint unverified, and fail ownership proofs 
   expect(await saveKey(page, withHeaders)).toBe(303);
   await expect(page).toHaveURL(/\/account\?saved=1$/);
   await expect(page.getByRole('status')).toHaveText('Changes saved.');
+  await page.waitForLoadState();
   await page.reload();
   await expect(page.getByLabel('PGP public key')).toHaveValue(/^-----BEGIN PGP PUBLIC KEY BLOCK-----\n\n/);
   await expect(page.getByLabel('PGP public key')).not.toHaveValue(/Leading note|Comment|e2e header/);
@@ -163,6 +164,7 @@ test('only OpenPGP-encrypted messages are accepted; status badges and the unread
     expect(await submitStatus(s, send)).toBe(303);
     await expect(s).toHaveURL(/\/messages\?saved=1$/);
   }
+  await s.waitForLoadState();
   await s.reload();
   const sent = (to: string) => s.locator('article.message', { hasText: `${sender} → ${to}` }).locator('.pgp-message-status .badge');
   await expect(sent(withKey)).toHaveText('Encrypted (to recipient’s key)');
@@ -182,6 +184,7 @@ test('only OpenPGP-encrypted messages are accepted; status badges and the unread
   await note.getByRole('button', { name: 'Mark as read' }).click();
   await expect(r).toHaveURL(/\/notifications$/);
   await expect(rNav.getByRole('link', { name: 'Notifications', exact: true })).toBeVisible();
+  await r.waitForLoadState();
   await r.reload();
   await expect(note.locator('.message-meta span')).toHaveText('Read');
   await expect(note.getByRole('button', { name: 'Mark as read' })).toHaveCount(0);

@@ -41,6 +41,7 @@ test('promoting a buyer to vendor opens the vendor desk; the listing form shows 
   await expect(admin.locator('body')).toHaveText('Cannot change your own administrator role');
   await setRole(admin, vendorHandle, 'vendor');
   await expect(admin.getByRole('status')).toHaveText('Changes saved.');
+  await admin.waitForLoadState();
   await admin.reload();
   await expect(newest).toHaveText(`${vendorHandle} · vendor`);
   // The administrator's row names the account and both roles; the account gets its own row, and the
@@ -130,6 +131,7 @@ test('promoting a buyer to vendor opens the vendor desk; the listing form shows 
 
   // Editing with a stale stock value is refused rather than overwriting a change made meanwhile.
   await vendor.getByRole('link', { name: `Edit ${title}` }).click();
+  await vendor.waitForURL(/\/listing-edit\?id=/);
   const editURL = vendor.url();
   const second = await vendor.context().newPage();
   await second.goto(editURL);
@@ -164,6 +166,7 @@ test('site settings, account suspension, operator key, canary signature checks a
   await siteName.fill(renamed);
   expect(await submitStatus(admin, saveSettings)).toBe(303);
   await expect(admin).toHaveURL(/\/admin\?saved=1$/);
+  await admin.waitForLoadState();
   await admin.reload();
   await expect(siteName).toHaveValue(renamed);
   await expect(admin.locator('table').last()).toContainText('Saved marketplace settings');
@@ -244,6 +247,7 @@ test('site settings, account suspension, operator key, canary signature checks a
   await keyPanel.getByLabel('Armored public key').fill(pgpFixture('recipient.pub.asc'));
   expect(await submitStatus(admin, () => keyPanel.getByRole('button', { name: 'Save operator key' }).click())).toBe(303);
   await expect(admin).toHaveURL(/\/admin\?saved=1#transparency$/);
+  await admin.waitForLoadState();
   await admin.reload();
   await expect(keyPanel.locator('.badge')).toHaveText('Configured');
   await expect(keyPanel.locator('.fingerprint')).toHaveText(RECIPIENT_FINGERPRINT);

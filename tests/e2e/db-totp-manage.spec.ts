@@ -36,6 +36,7 @@ test('replacing recovery codes invalidates the old ones; TOTP turns off with pas
   await expect(page.locator('.page-head .badge')).toHaveText('Enabled');
   const oldCodes = await page.locator('.recovery-codes li').allInnerTexts();
   expect(oldCodes).toHaveLength(10);
+  await page.waitForLoadState();
   await page.reload();
   await expect(page.locator('.key-values div', { hasText: 'Unused recovery codes' }).locator('dd')).toHaveText('10 of 10');
 
