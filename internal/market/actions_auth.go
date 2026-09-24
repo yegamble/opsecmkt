@@ -40,6 +40,10 @@ var dummyHash = sync.OnceValue(func() []byte {
 
 var handlePattern = regexp.MustCompile(`^[a-zA-Z0-9_]{3,32}$`)
 
+// errSuspended refuses sign-in to an account an administrator suspended. It is only returned once the
+// password is correct, so it reveals nothing to someone who does not know it.
+var errSuspended = fail(403, "This account is suspended. Contact the market staff.")
+
 // confirmPassword checks the signed-in user's current password for a sensitive change (per-user attempt
 // limit, bounded bcrypt concurrency). Call it before opening a transaction.
 func (a *App) confirmPassword(ctx context.Context, userID, password string) error {
@@ -200,7 +204,8 @@ func authAction(c *actionCtx) (actionResult, error) {
 	}
 	if path == "/login" {
 		var id, stored string
-		err := a.db.QueryRowContext(ctx, "SELECT id,password_hash FROM users WHERE handle=$1", handle).Scan(&id, &stored)
+		var suspended bool
+		err := a.db.QueryRowContext(ctx, "SELECT id,password_hash,suspended_at IS NOT NULL FROM users WHERE handle=$1", handle).Scan(&id, &stored, &suspended)
 		hash := []byte(stored)
 		if err != nil {
 			hash = dummyHash()
@@ -208,6 +213,9 @@ func authAction(c *actionCtx) (actionResult, error) {
 		check := bcrypt.CompareHashAndPassword(hash, []byte(password))
 		if err != nil || check != nil {
 			return actionResult{}, fail(401, "Invalid handle or password")
+		}
+		if suspended {
+			return actionResult{}, errSuspended
 		}
 		return a.secondFactor(c, id)
 	}
@@ -293,7 +301,9 @@ func (a *App) secondFactor(c *actionCtx, userID string) (actionResult, error) {
 		return actionResult{}, fail(503, "Service unavailable")
 	}
 	if len(names) == 0 {
-		if err = a.login(ctx, c.W, userID, c.Token); err != nil {
+		if err = a.login(ctx, c.W, userID, c.Token); err == errSuspended {
+			return actionResult{}, err
+		} else if err != nil {
 			return actionResult{}, fail(500, "Unable to sign in")
 		}
 		return actionResult{Redirect: "/"}, nil
@@ -381,7 +391,16 @@ func challengeLoader(ctx context.Context, a *App, r *http.Request, d *PageData) 
 }
 
 // startSession rotates the caller's session inside tx and records the sign-in; the caller sets the cookie after commit.
+// It refuses a suspended account with errSuspended. The account row is share-locked, so a suspension committing
+// concurrently either is seen here or runs after this commit and deletes the new session.
 func (a *App) startSession(ctx context.Context, tx *sql.Tx, id, old string) (string, error) {
+	var suspended bool
+	if err := tx.QueryRowContext(ctx, "SELECT suspended_at IS NOT NULL FROM users WHERE id=$1 FOR SHARE", id).Scan(&suspended); err != nil {
+		return "", err
+	}
+	if suspended {
+		return "", errSuspended
+	}
 	token := randomToken()
 	if _, err := tx.ExecContext(ctx, "DELETE FROM sessions WHERE token_hash=$1 OR expires<now()", digest(old)); err != nil {
 		return "", err
