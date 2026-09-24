@@ -16,14 +16,14 @@ func init() {
 	registerLoader("admin", suspendedAccountsLoader)
 	registerPreview("admin", func(d *PageData) {
 		d.FactorAccounts = []User{{ID: "ghost", Handle: "ghost_circuit", Role: "vendor", Factors: "TOTP"}}
-		d.SuspendedAccounts = []User{{ID: "held", Handle: "held_account", Role: "buyer", Suspended: "2026-01-01 00:00"}}
+		d.SuspendedAccounts = []User{{ID: "held", Handle: "held_account", Role: "buyer", Suspended: "2026-01-01 00:00 UTC"}}
 	})
 }
 
 // suspendedAccountsLoader lists up to 100 suspended accounts, most recently suspended first, so they can be
 // restored without remembering the handle; the form takes any handle, so accounts past the list work the same.
 func suspendedAccountsLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error {
-	rows, err := a.db.QueryContext(ctx, `SELECT id,handle,role,to_char(suspended_at,'YYYY-MM-DD HH24:MI') FROM users
+	rows, err := a.db.QueryContext(ctx, `SELECT id,handle,role,to_char(suspended_at,'YYYY-MM-DD HH24:MI "UTC"') FROM users
 		WHERE suspended_at IS NOT NULL ORDER BY suspended_at DESC, handle LIMIT 100`)
 	if err != nil {
 		return err

@@ -97,7 +97,7 @@ test('password change and second-factor reset are plain POST forms and the previ
   await expect(suspend.getByRole('radio', { name: /^Suspend:/ })).not.toBeChecked();
   await expect(suspend.getByRole('radio', { name: /^Restore:/ })).not.toBeChecked();
   await expect(suspend.getByLabel('Authenticator code')).toHaveCount(0);
-  await expect(suspension.locator('.account-list li')).toHaveText(['held_account · buyer · suspended 2026-01-01 00:00']);
+  await expect(suspension.locator('.account-list li')).toHaveText(['held_account · buyer · suspended 2026-01-01 00:00 UTC']);
   await noScriptsNoOverflow(page);
   await suspend.getByLabel('Account handle').fill('held_account');
   await suspend.getByRole('radio', { name: /^Restore:/ }).check();

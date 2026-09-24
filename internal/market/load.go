@@ -128,7 +128,7 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			}
 		}
 		if d.Page == "messages" {
-			rows, err = a.db.QueryContext(ctx, `SELECT m.id,s.handle,t.handle,m.body,to_char(m.created,'YYYY-MM-DD HH24:MI') FROM messages m JOIN users s ON s.id=m.sender_id JOIN users t ON t.id=m.recipient_id WHERE m.sender_id=$1 OR m.recipient_id=$1 ORDER BY m.created DESC LIMIT 100`, d.User.ID)
+			rows, err = a.db.QueryContext(ctx, `SELECT m.id,s.handle,t.handle,m.body,to_char(m.created,'YYYY-MM-DD HH24:MI "UTC"') FROM messages m JOIN users s ON s.id=m.sender_id JOIN users t ON t.id=m.recipient_id WHERE m.sender_id=$1 OR m.recipient_id=$1 ORDER BY m.created DESC LIMIT 100`, d.User.ID)
 			if err != nil {
 				return err
 			}
@@ -147,7 +147,7 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			}
 		}
 		if d.Page == "notifications" {
-			rows, err = a.db.QueryContext(ctx, `SELECT id,body,to_char(created,'YYYY-MM-DD HH24:MI'),is_read FROM notifications WHERE user_id=$1 ORDER BY created DESC LIMIT 100`, d.User.ID)
+			rows, err = a.db.QueryContext(ctx, `SELECT id,body,to_char(created,'YYYY-MM-DD HH24:MI "UTC"'),is_read FROM notifications WHERE user_id=$1 ORDER BY created DESC LIMIT 100`, d.User.ID)
 			if err != nil {
 				return err
 			}
@@ -190,7 +190,7 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			if d.Page == "account" {
 				limit = 15
 			}
-			rows, err = a.db.QueryContext(ctx, `SELECT COALESCE(u.handle,''),e.action,to_char(e.created,'YYYY-MM-DD HH24:MI') FROM audit_events e LEFT JOIN users u ON u.id=e.user_id
+			rows, err = a.db.QueryContext(ctx, `SELECT COALESCE(u.handle,''),e.action,to_char(e.created,'YYYY-MM-DD HH24:MI "UTC"') FROM audit_events e LEFT JOIN users u ON u.id=e.user_id
 				WHERE e.user_id=$1 OR $2 ORDER BY e.created DESC,e.id DESC LIMIT $3`, d.User.ID, all, limit)
 			if err != nil {
 				return err
