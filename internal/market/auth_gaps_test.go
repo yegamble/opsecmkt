@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -151,19 +153,28 @@ func TestRateLimitLoginAndRegisterPerHandle(t *testing.T) {
 	if n := agUserSessions(e, id); n != 1 {
 		t.Fatalf("limited login created a session: %d", n)
 	}
-	// /register shares the per-handle key: the exhausted handle is refused without creating anything.
-	agExpect(e, "/register", randomToken(), url.Values{"handle": {"rl_login"}, "password": {"a-new-long-password"}}, 429, "Too many attempts")
 	// A different handle is unaffected.
 	w = e.do("POST", "/login", randomToken(), url.Values{"handle": {"rl_other"}, "password": {testPassword}})
 	e.check(w, 303)
 	e.session(w)
 
-	// Register on its own: ten attempts for a taken handle, then 429; no account is ever created.
+	// /register shares the per-handle key: a free handle whose budget wrong sign-ins spent is refused
+	// without creating anything.
+	for i := range 10 {
+		agExpect(e, "/login", randomToken(), url.Values{"handle": {"rl_free"}, "password": {"wrong-password-" + string(rune('a'+i))}}, 401, "Invalid handle or password")
+	}
+	agExpect(e, "/register", randomToken(), url.Values{"handle": {"rl_free"}, "password": {"a-new-long-password"}}, 429, "Too many attempts")
+
+	// A taken handle is refused before the limiter (A-151): it never spends the handle's budget, however
+	// often it is tried, and no account is ever created.
+	agExpect(e, "/register", randomToken(), url.Values{"handle": {"rl_login"}, "password": {"a-new-long-password"}}, 400, "Handle unavailable")
 	e.user("rl_taken", "buyer")
-	for range 10 {
+	for range 11 {
 		agExpect(e, "/register", randomToken(), url.Values{"handle": {"rl_taken"}, "password": {"a-new-long-password"}}, 400, "Handle unavailable")
 	}
-	agExpect(e, "/register", randomToken(), url.Values{"handle": {"rl_taken"}, "password": {"a-new-long-password"}}, 429, "Too many attempts")
+	if agLimited(e, "auth:rl_taken") {
+		t.Fatal("taken-handle registration spent the sign-in budget")
+	}
 	if n := agInt(e, "SELECT count(*) FROM users"); n != 3 {
 		t.Fatalf("users=%d", n)
 	}
@@ -410,6 +421,169 @@ func TestPasswordWorkBusyReturns503(t *testing.T) {
 	w := e.do("POST", "/login", randomToken(), creds)
 	e.check(w, 303)
 	e.session(w)
+}
+
+// --- A-151: password-check slots are taken only by requests that will run bcrypt ---
+
+// agHoldPasswordWork takes every password-check slot (as concurrent bcrypt work would) and returns an
+// idempotent release, also run at cleanup. bcrypt only ever runs while its caller holds a slot.
+func agHoldPasswordWork(t *testing.T) (release func()) {
+	t.Helper()
+	if len(passwordWork) != 0 {
+		t.Fatal("password work slots already taken")
+	}
+	for range cap(passwordWork) {
+		passwordWork <- struct{}{}
+	}
+	var once sync.Once
+	release = func() {
+		once.Do(func() {
+			for range cap(passwordWork) {
+				<-passwordWork
+			}
+		})
+	}
+	t.Cleanup(release)
+	return release
+}
+
+// agJunkCaptchaFlood runs loops anonymous clients posting /login with unknown handles and unsolved
+// CAPTCHAs until stop is called; stop returns their status counts. It returns once the flood is running.
+func agJunkCaptchaFlood(e *testEnv, loops int) (stop func() map[int]int) {
+	e.t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	var mu sync.Mutex
+	codes := map[int]int{}
+	var sent atomic.Int64
+	var wg sync.WaitGroup
+	for range loops {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for ctx.Err() == nil {
+				w := e.do("POST", "/login", randomToken(), url.Values{"handle": {"u" + randomToken()[:12]}, "password": {"guess-guess-guess"}, "captcha_id": {randomToken()}, "captcha": {"XXXXXX"}})
+				sent.Add(1)
+				mu.Lock()
+				codes[w.Code]++
+				mu.Unlock()
+			}
+		}()
+	}
+	stop = func() map[int]int {
+		cancel()
+		wg.Wait()
+		mu.Lock()
+		defer mu.Unlock()
+		return codes
+	}
+	for deadline := time.Now().Add(60 * time.Second); sent.Load() < int64(2*loops); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			stop()
+			e.t.Fatalf("junk flood sent only %d requests in 60s", sent.Load())
+		}
+	}
+	return stop
+}
+
+// A flood of unsolved CAPTCHAs is refused before it takes a password-check slot, so real sign-ins and an
+// administrator's confirmation keep working while it runs (acceptance.md: junk leaves sign-ins working).
+func TestJunkCaptchaFloodLeavesSignInAndConfirmWorking(t *testing.T) {
+	e := newTestApp(t)
+	agExec(e, "UPDATE settings SET value='true' WHERE key='captcha_required'")
+	const signIns = 12
+	for i := range signIns {
+		e.user(fmt.Sprintf("real_user_%d", i), "buyer")
+	}
+	_, admin := e.user("flood_admin", "admin")
+	e.user("bad_vendor", "vendor")
+	stop := agJunkCaptchaFlood(e, 32)
+	defer stop()
+	for i := range signIns {
+		anon := randomToken()
+		id := e.captcha("/login", anon)
+		w := e.do("POST", "/login", anon, url.Values{"handle": {fmt.Sprintf("real_user_%d", i)}, "password": {testPassword}, "captcha_id": {id}, "captcha": {e.A.captchaAnswer(id)}})
+		if w.Code != 303 {
+			t.Fatalf("real sign-in %d during the junk flood: status=%d body=%q", i, w.Code, strings.TrimSpace(w.Body.String()))
+		}
+		e.session(w)
+	}
+	w := e.do("POST", "/admin/suspend", admin, url.Values{"handle": {"bad_vendor"}, "action": {"suspend"}, "password": {testPassword}})
+	if w.Code != 303 {
+		t.Fatalf("admin suspend during the junk flood: status=%d body=%q", w.Code, strings.TrimSpace(w.Body.String()))
+	}
+	codes := stop()
+	if agInt(e, "SELECT count(*) FROM users WHERE handle='bad_vendor' AND suspended_at IS NOT NULL") != 1 {
+		t.Fatal("suspension not recorded")
+	}
+	if codes[400] == 0 || len(codes) != 1 {
+		t.Fatalf("junk requests: %v, want only 400", codes)
+	}
+}
+
+// A busy refusal of a confirmation spends nothing, and an exhausted sign-in budget is refused (429) without
+// needing a slot.
+func TestPasswordBusyRefusalsSpendNoBudget(t *testing.T) {
+	e := newTestApp(t)
+	adminID, admin := e.user("busy_admin", "admin")
+	e.user("busy_vendor", "vendor")
+	e.user("spent_user", "buyer")
+	for i := range 10 {
+		agExpect(e, "/login", randomToken(), url.Values{"handle": {"spent_user"}, "password": {"wrong-password-" + string(rune('a'+i))}}, 401, "Invalid handle or password")
+	}
+	release := agHoldPasswordWork(t)
+	suspend := url.Values{"handle": {"busy_vendor"}, "action": {"suspend"}, "password": {testPassword}}
+	for range 12 {
+		agExpect(e, "/admin/suspend", admin, suspend, 503, "Authentication is busy")
+	}
+	if agLimited(e, "confirm:"+adminID) {
+		t.Fatal("busy confirmation refusals spent the confirm budget")
+	}
+	agExpect(e, "/login", randomToken(), url.Values{"handle": {"spent_user"}, "password": {testPassword}}, 429, "Too many attempts")
+	release()
+	agExpect(e, "/admin/suspend", admin, suspend, 303, "")
+	if agInt(e, "SELECT count(*) FROM users WHERE handle='busy_vendor' AND suspended_at IS NOT NULL") != 1 {
+		t.Fatal("suspension not recorded after the busy refusals")
+	}
+}
+
+// Registering a taken handle is refused before bcrypt, a password-check slot or the sign-in budget: with
+// every slot held (so bcrypt cannot run) it still answers "Handle unavailable", after the CAPTCHA.
+func TestRegisterTakenHandleSkipsPasswordWork(t *testing.T) {
+	e := newTestApp(t)
+	agExec(e, "UPDATE settings SET value='true' WHERE key='captcha_required'")
+	e.user("taken_name", "buyer")
+	release := agHoldPasswordWork(t)
+	register := func(handle string, solve bool) *httptest.ResponseRecorder {
+		anon := randomToken()
+		id := e.captcha("/register", anon)
+		answer := e.A.captchaAnswer(id)
+		if !solve {
+			answer = "WRONG1"
+		}
+		return e.do("POST", "/register", anon, url.Values{"handle": {handle}, "password": {"a-new-long-password"}, "captcha_id": {id}, "captcha": {answer}})
+	}
+	// The CAPTCHA still comes first: an unsolved one never learns whether the handle is taken.
+	if w := register("taken_name", false); w.Code != 400 || !strings.Contains(w.Body.String(), "CAPTCHA answer incorrect") {
+		t.Fatalf("unsolved CAPTCHA on a taken handle: status=%d body=%q", w.Code, w.Body.String())
+	}
+	for range 12 {
+		if w := register("taken_name", true); w.Code != 400 || !strings.Contains(w.Body.String(), "Handle unavailable") {
+			t.Fatalf("taken handle with every slot held: status=%d body=%q", w.Code, w.Body.String())
+		}
+	}
+	if agLimited(e, "auth:taken_name") {
+		t.Fatal("taken-handle registration spent the sign-in budget")
+	}
+	if w := register("fresh_name", true); w.Code != 503 {
+		t.Fatalf("free handle with every slot held: status=%d, want 503", w.Code)
+	}
+	release()
+	w := register("fresh_name", true)
+	e.check(w, 303)
+	e.session(w)
+	if agInt(e, "SELECT count(*) FROM users") != 2 {
+		t.Fatal("registration did not create exactly one account")
+	}
 }
 
 // --- B9: sessions and pending logins ---
