@@ -101,7 +101,7 @@ echo 'Restore completed. Validate the new database before switching application 
 if [[ -n ${RESTORE_INTERNAL_DATABASE:-} ]]; then
   printf 'Restored into database %s in the internal-db Compose service. To switch the application to it, change only the database name after the port in DATABASE_URL in .env (no change if it already names %s), keeping your password:\n' "$database" "$database"
   printf "  DATABASE_URL='postgres://opsecmkt:YOUR_POSTGRES_PASSWORD@db:5432/%s?sslmode=disable'\n" "$database"
-  echo "then run: docker compose up -d. This revision's scripts/backup.sh dumps the database named in DATABASE_URL, so later backups follow DATABASE_URL (after a rollback to an older revision, see UPGRADING.md)."
+  echo "then start it: with payments configured, cut it off from users first and reconcile it as docs/testnet-runbook.md describes (Reconcile a restored database before enabling payouts). This revision's scripts/backup.sh dumps the database named in DATABASE_URL, so later backups follow DATABASE_URL (after a rollback to an older revision, see UPGRADING.md)."
 else
   echo 'Restored into the database named in RESTORE_DATABASE_URL. To switch the application to it, set DATABASE_URL in .env to that database, and point BACKUP_DATABASE_URL at the same database: external backups follow BACKUP_DATABASE_URL, not DATABASE_URL.'
 fi

@@ -247,36 +247,239 @@ xmr query_key '{"key_type":"mnemonic"}'   # write the seed down offline; or copy
 
 ### Reconcile a restored database before enabling payouts
 
-Stop the application before restoring and during direct SQL reconciliation. Keep the recovered instance
-isolated from users until wallet history is reconciled. `scripts/restore.sh` sets `payments_recovery_required=true` in application settings. This
-persistent gate pauses **all outbound payouts**, including payouts created after restoration. It also
-converts pending, sending, blocked and held payouts to manual recovery holds; reconfirming a deposit or
-saving an address cannot release these holds automatically. Failed payouts stay failed but are marked as
-possibly sent (`send_ambiguous`, error prefixed `Restored from backup:`): one the wallet had rejected before
-the backup may have been requeued and sent after it, so requeueing it also needs the wallet confirmation.
-The script prints how many payouts it held and how many failed payouts it marked. Deposits can still be monitored if the app is
-started for operator-only inspection or the admin recovery actions below; do not admit other user writes
-until reconciliation is complete.
+`scripts/restore.sh` sets `payments_recovery_required=true` in application settings. This persistent gate
+pauses **all outbound payouts**, including payouts created after restoration; the watcher still records
+deposits and moves funded orders to *Paid*. The script also converts pending, sending, blocked and held payouts
+to manual recovery holds; reconfirming a deposit or saving an address cannot release these holds
+automatically. Failed payouts stay failed but are marked as possibly sent (`send_ambiguous`, error prefixed
+`Restored from backup:`): one the wallet had rejected before the backup may have been requeued and sent after
+it, so requeueing it also needs the wallet confirmation. The script prints how many payouts it held and how
+many failed payouts it marked.
 
-Reconcile **every restored order and deposit** against wallet transactions since the backup, not just the
-held payouts. An order may have been paid out after the backup even though its restored snapshot has no
-payout row at all. Reconstruct those settled orders and their sent payout records with the original
-transaction IDs before allowing their lifecycle to resume. If you cannot establish the complete settlement
-history, keep the gate enabled and recover a newer database or obtain operator assistance. Resolve known
-held/failed payouts using step 5; releasing an individual hold does not bypass the global gate.
+The restored database knows nothing that happened after the backup. An order that was completed, cancelled or
+resolved **and paid out** after the backup comes back in its earlier state with **no payout row**. If its buyer
+completes it again (or a moderator resolves it again) once the gate is cleared, the application queues and sends
+a second payout. Follow these steps in order and keep the gate set until step 8. There is no automatic timeout
+and no web action that clears the gate or records a lost payout.
 
-Only after reconciliation, with the app stopped and a backup of the reconciled database, explicitly clear
-the gate in that database using `psql` (there is no automatic timeout or web unlock):
+1. **Keep the application stopped and cut users off.** Restore with the app stopped (`docker compose stop app`),
+   and before starting it on the restored database make sure only you can reach it:
+   - Clearnet: stop the HTTPS reverse proxy (for the host Caddy from the operator guide,
+     `sudo systemctl stop caddy`). The app itself publishes only `127.0.0.1:${APP_PORT:-8080}` on the host;
+     reach it from your workstation through an SSH tunnel, `ssh -N -L 8080:127.0.0.1:8080 you@your-host`, and
+     open `http://127.0.0.1:8080` in a browser that keeps secure cookies on `127.0.0.1` (Chromium-based
+     browsers do).
+   - Tor: stop the mirror if you run one (`docker compose stop tor-mirror`) and restrict the main onion
+     service to your own Tor Browser with client authorization, which keeps the onion address:
 
-```sql
+     ```sh
+     openssl genpkey -algorithm x25519 -out operator-auth.pem   # private key; delete it in step 9
+     pub=$(openssl pkey -in operator-auth.pem -pubout -outform DER | tail -c 32 | base32 | tr -d '=')
+     printf 'descriptor:x25519:%s\n' "$pub" | docker compose exec -T tor sh -c \
+       'mkdir -p -m 700 /var/lib/tor/marketplace/authorized_clients && cat > /var/lib/tor/marketplace/authorized_clients/operator.auth'
+     docker compose restart tor
+     openssl pkey -in operator-auth.pem -outform DER | tail -c 32 | base32 | tr -d '='   # the key Tor Browser asks for
+     ```
+
+     Tor Browser asks for this key when you open the onion address; visitors without it cannot connect.
+2. **Start the app for yourself only** (`docker compose up -d app`) and let the watcher catch up: wait until
+   *Last poll* on **Admin → Payment providers** is later than the start for every configured currency, so
+   deposits made after the backup are in the ledger.
+3. **Resolve the payouts the restore held or marked** on the admin page, with the wallet checks in
+   [section 5](#5-recover-a-held-or-failed-payout) (*Mark sent*, *Release held payout*, *Requeue payout*).
+   Nothing is sent while the gate is set.
+4. **List every wallet send since the backup was taken** and match each to a payout by transaction ID:
+
+   ```sh
+   btc -rpcwallet=opsecmkt listtransactions "*" 1000                  # "send" entries after the backup time
+   xmr get_transfers '{"out":true,"pending":true,"pool":true}'       # "out", "pending" and "pool" transfers
+   docker compose exec -T db psql -X -U opsecmkt -d opsecmkt_restored \
+     -c "SELECT currency, txid, order_id, state FROM payouts WHERE txid <> '' ORDER BY currency, txid"
+   ```
+
+   (`-d` names the database in `DATABASE_URL`.) A send with no payout row is either a manual refund recorded as
+   a written note (see "Handle a payment-review flag"; leave it alone) or a **payout the restore lost**. Find
+   the order of each lost payout from the amount sent (Bitcoin amounts ×100 000 000 in satoshi, Monero
+   destination amounts are already in atomic units; fees are separate) and the address it went to, in step 6.
+   If a send cannot be matched to exactly one order, an order settled after the backup is missing from the
+   restored database, or the order already has a `pending` payout queued since the restore, keep the gate set:
+   restore a newer backup or get operator assistance.
+5. **Stop the app** (`docker compose stop app`) and keep users cut off.
+6. **Record each payout the restore lost**, as below.
+7. **Back up the reconciled database**
+   (`AGE_RECIPIENT=age1YOUR_PUBLIC_RECIPIENT ./scripts/backup.sh backups/reconciled-YYYYMMDD.dump.age`, with
+   `DATABASE_URL` in `.env` already naming the restored database) and keep it with the wallet transaction IDs
+   and this reconciliation record.
+8. **Clear the gate**, with the app still stopped, as below. It must report `UPDATE 1`.
+9. **Restart and let users back in**:
+   - Clearnet: `docker compose up -d`, then start the reverse proxy again (`sudo systemctl start caddy`).
+   - Tor: remove the client authorization
+     (`docker compose exec -T tor rm /var/lib/tor/marketplace/authorized_clients/operator.auth`), run
+     `docker compose up -d` (which also starts the mirror if you run one) and `docker compose restart tor`, and
+     delete `operator-auth.pem`.
+
+#### Record a payout sent after the backup (step 6)
+
+Run these with `psql` against the restored database while the app is stopped. The internal-db service is
+shown; replace `opsecmkt_restored` with the database name in `DATABASE_URL`. With an external database, make
+`db_sql` run your own `psql -X -v ON_ERROR_STOP=1` connected to the restored database (for example
+`psql service=recovery` with the password in `~/.pgpass`), never with the password in its arguments.
+
+```sh
+db_sql() { docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d opsecmkt_restored "$@"; }
+```
+
+Find the order from a lost send: the orders in that currency with no payout whose counted deposits add up to
+the amount sent, with the vendor's and the buyer's current payout addresses. Match the address the wallet sent
+to (a recipient may have changed their address after the backup, in which case use the order history and
+messages, and ask for help when unsure):
+
+<!-- runbook-sql: find-order -->
+```sh
+db_sql -v currency=BTC -v amount=150000 <<'SQL'
+SELECT o.id AS order_id, o.state, sum(pm.amount) AS deposits,
+  CASE o.currency WHEN 'BTC' THEN v.payout_btc ELSE v.payout_xmr END AS vendor_address,
+  CASE o.currency WHEN 'BTC' THEN b.payout_btc ELSE b.payout_xmr END AS buyer_address
+FROM orders o JOIN products p ON p.id=o.product_id JOIN users v ON v.id=p.vendor_id JOIN users b ON b.id=o.buyer_id
+JOIN payments pm ON pm.order_id=o.id AND NOT pm.locked AND (pm.credited OR pm.confirmations>=0)
+WHERE o.currency=:'currency' AND NOT EXISTS (SELECT 1 FROM payouts WHERE payouts.order_id=o.id)
+GROUP BY o.id, o.state, v.payout_btc, v.payout_xmr, b.payout_btc, b.payout_xmr
+HAVING sum(pm.amount)=:'amount'::bigint ORDER BY o.id;
+SQL
+```
+
+Then save the recording SQL once and run it for each lost payout, first as a check (`no`) and then to record
+it (`yes`). Set the variables in `record_payout` for that payout: the full order ID; `kind` and `state` as
+`release` and `completed` (the buyer completed it), `refund` and `cancelled` (cancelled after payment) or
+`release`/`refund` and `resolved` (a dispute resolved that way); the amount in satoshi or piconero; the address
+and the 64-character transaction ID from the wallet; and your administrator handle.
+
+<!-- runbook-sql: record-payout -->
+```sh
+cat > record-payout.sql <<'SQL'
+BEGIN;
+SELECT c.*, c.problem = 'none' AS ready FROM (
+  SELECT o.id AS order_id, o.state AS restored_state, :'state' AS final_state, :'kind' AS kind, o.currency,
+    CASE :'kind' WHEN 'release' THEN v.handle ELSE b.handle END AS recipient, :'amount'::bigint AS amount,
+    (SELECT coalesce(sum(amount),0) FROM payments WHERE order_id=o.id AND NOT locked AND (credited OR confirmations>=0)) AS deposits,
+    (SELECT count(*) FROM payouts WHERE order_id=o.id) AS payouts,
+    CASE
+      WHEN o.id IS NULL THEN 'no such order'
+      WHEN NOT EXISTS (SELECT 1 FROM users WHERE handle=:'handle' AND role='admin') THEN 'no administrator with that handle'
+      WHEN NOT EXISTS (SELECT 1 FROM settings WHERE key='payments_recovery_required' AND value='true') THEN 'the recovery gate is not set'
+      WHEN EXISTS (SELECT 1 FROM payouts WHERE order_id=o.id) THEN 'the order already has a payout; resolve it on the admin page'
+      WHEN (:'state',:'kind') NOT IN (('completed','release'),('cancelled','refund'),('resolved','release'),('resolved','refund'))
+        THEN 'kind does not match the final state'
+      WHEN o.state <> :'state' AND (:'state',o.state) NOT IN (('completed','awaiting_payment'),('completed','paid'),('completed','shipped'),
+        ('completed','delivered'),('cancelled','awaiting_payment'),('cancelled','paid'),('resolved','disputed'))
+        THEN 'the order cannot have reached that final state'
+      WHEN :'state'='resolved' AND NOT EXISTS (SELECT 1 FROM disputes WHERE order_id=o.id AND ((status='Open' AND outcome='') OR outcome=:'kind'))
+        THEN 'the dispute has another outcome'
+      WHEN NOT EXISTS (SELECT 1 FROM payment_addresses WHERE order_id=o.id) THEN 'no payment address was issued for the order'
+      WHEN :'amount'::bigint <= 0 THEN 'amount must be positive'
+      WHEN :'amount'::bigint <> (SELECT coalesce(sum(amount),0) FROM payments WHERE order_id=o.id AND NOT locked AND (credited OR confirmations>=0))
+        THEN 'counted deposits do not add up to the amount'
+      WHEN :'address' = '' THEN 'address is blank'
+      WHEN :'txid' !~ '^[0-9a-f]{64}$' THEN 'transaction ID must be 64 lower-case hexadecimal characters'
+      WHEN EXISTS (SELECT 1 FROM payouts WHERE txid=:'txid') THEN 'that transaction ID is already recorded on another payout'
+      ELSE 'none' END AS problem
+  FROM (SELECT 1) AS one LEFT JOIN orders o ON o.id=:'order_id' LEFT JOIN products p ON p.id=o.product_id
+    LEFT JOIN users v ON v.id=p.vendor_id LEFT JOIN users b ON b.id=o.buyer_id) AS c;
+\gset c_
+\if :c_ready
+\if :record
+WITH ord AS (
+  SELECT o.id, o.state, o.currency, o.buyer_id, o.product_id, p.vendor_id,
+    (SELECT id FROM users WHERE handle=:'handle' AND role='admin') AS admin_id,
+    trim_scale(:'amount'::bigint / CASE o.currency WHEN 'BTC' THEN 1e8 ELSE 1e12 END) || ' ' || o.currency AS label
+  FROM orders o JOIN products p ON p.id=o.product_id WHERE o.id=:'order_id'),
+pay AS (
+  INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state,txid)
+  SELECT id, :'kind', CASE :'kind' WHEN 'release' THEN vendor_id ELSE buyer_id END, currency, :'amount'::bigint, :'address', 'sent', :'txid'
+  FROM ord ON CONFLICT (order_id) DO NOTHING RETURNING id, order_id),
+note AS (
+  SELECT 'Reconciled after a restore from backup: the TESTNET ' || :'kind' || ' of ' || label || ' to the '
+    || CASE :'kind' WHEN 'release' THEN 'vendor' ELSE 'buyer' END || ' was sent after the backup was taken, in transaction '
+    || :'txid' || '. Recorded by an administrator from the wallet; nothing was sent now.' AS body FROM ord),
+moved AS (UPDATE orders SET state=:'state', updated=now() FROM pay WHERE orders.id=pay.order_id RETURNING 1),
+closed AS (
+  UPDATE disputes SET outcome=:'kind', resolution=note.body,
+    status=CASE :'kind' WHEN 'release' THEN 'Resolved — release to vendor' ELSE 'Resolved — refund to buyer' END
+  FROM pay, note WHERE disputes.order_id=pay.order_id AND disputes.status='Open' AND disputes.outcome='' AND :'state'='resolved' RETURNING 1),
+restocked AS (
+  UPDATE products SET stock=stock+1 FROM ord, pay
+  WHERE products.id=ord.product_id AND :'state'='cancelled' AND ord.state IN ('awaiting_payment','paid') RETURNING 1),
+credited AS (
+  UPDATE payments SET credited=true FROM pay
+  WHERE payments.order_id=pay.order_id AND NOT payments.locked AND (payments.credited OR payments.confirmations>=0) RETURNING 1),
+event AS (
+  INSERT INTO order_events(order_id,from_state,to_state,actor_id,note)
+  SELECT ord.id, ord.state, :'state', ord.admin_id, note.body FROM ord, pay, note RETURNING 1),
+audit AS (
+  INSERT INTO audit_events(user_id,action)
+  SELECT ord.admin_id, 'Recorded payout ' || pay.id || ' (' || ord.label || ', ' || :'kind' || ') sent after the backup with transaction '
+    || :'txid' || ' for order ' || left(ord.id, 8) || '; restored from backup, order ' || ord.state || ' -> ' || :'state'
+  FROM ord, pay RETURNING 1)
+SELECT count(*) = 1 AS recorded FROM audit
+\gset c_
+\if :c_recorded
+COMMIT;
+\echo 'Recorded the payout as sent; committed.'
+\else
+ROLLBACK;
+\echo 'Nothing was recorded; rolled back.'
+\endif
+\else
+ROLLBACK;
+\echo 'Check passed; nothing was written. Run it again with -v record=yes to record this payout.'
+\endif
+\else
+ROLLBACK;
+\echo 'Refused; nothing was written:' :c_problem
+\endif
+SQL
+record_payout() {  # record_payout no (check) | yes (record)
+  db_sql -v record="$1" -v order_id=FULL_ORDER_ID -v kind=release -v state=completed -v amount=150000 \
+    -v address=RECIPIENT_ADDRESS -v txid=WALLET_TRANSACTION_ID -v handle=YOUR_ADMIN_HANDLE < record-payout.sql
+}
+record_payout no
+```
+
+The check prints exactly one row: the order, its restored and final state, the kind, currency, recipient
+handle, your amount, the counted deposits (unlocked, not missing), existing payouts, `problem` and `ready`. Go on
+only when `problem` is `none`, `ready` is `t`, `payouts` is `0` and `deposits` equals `amount`, and it ends
+"Check passed; nothing was written". Otherwise it ends "Refused; nothing was written:" with the reason (an order
+that already has a payout is resolved on the admin page, step 3). Then run `record_payout yes`: it repeats
+the check in one transaction and ends "Recorded the payout as sent; committed." after writing, together:
+
+- a `sent` payout row with the wallet's transaction ID (`payouts.order_id` is unique, so this refuses an order
+  that already has one, and a transaction ID already recorded is refused too);
+- the order moved to its final state if the restored snapshot was behind, with an order-history entry by your
+  account ("Reconciled after a restore from backup: ..."); a resolved dispute gets that outcome, and a
+  cancellation returns the reserved unit to stock as the application would;
+- the counted deposits marked credited, so the watcher does not flag them as arriving after settlement;
+- one new audit row ("Recorded payout N ... sent after the backup"). Existing audit rows are never changed.
+
+The recipient is not notified; tell them through Messages if needed. The SQL refuses to run once the gate is
+cleared: if you find a lost payout later, stop the app and set the gate again first (the settings statement in
+[UPGRADING.md](../UPGRADING.md#6-backups-now-need-the-wallets-too)).
+
+#### Clear the gate (step 8)
+
+Only after every step above, with the app stopped and the reconciled database backed up. Clearing the gate is
+your assertion that reconciliation is complete; it does not discover missing settlements or release individual
+holds.
+
+<!-- runbook-sql: clear-gate -->
+```sh
+db_sql <<'SQL'
 BEGIN;
 UPDATE settings SET value='false' WHERE key='payments_recovery_required';
 COMMIT;
+SQL
 ```
 
-Check that the update affected one row, then restart the app. Clearing the gate is an operator assertion
-that reconciliation is complete; it does not discover missing settlements or release individual holds.
-Keep the reconciliation record and wallet transaction IDs with your recovery evidence.
+It must print `UPDATE 1`; then go on with step 9.
 
 ## 7. Manual regtest check (Bitcoin)
 
