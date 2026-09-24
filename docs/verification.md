@@ -8,6 +8,7 @@ Every CI row is the `CI` workflow ([`.github/workflows/ci.yaml`](../.github/work
 
 | Check | Evidence tier | Commit | CI run or log | Date (UTC) |
 |---|---|---|---|---|
+| CI, PR #9 (A-13, A-27, A-82) | CI tiers above | `08a9437` | [36000605614](https://github.com/yegamble/opsecmkt/actions/runs/36000605614) | 2026-09-24 |
 | CI, push to `main` (merge of PR #8) | CI tiers above | `ab7cd9f` | [35994268519](https://github.com/yegamble/opsecmkt/actions/runs/35994268519) | 2026-09-24 |
 | CI, PR #8 (A-9, A-28, A-29) | CI tiers above | `0a1b75d` | [35958151032](https://github.com/yegamble/opsecmkt/actions/runs/35958151032) | 2026-09-24 |
 | CI, PR #8 (A-8, A-10, A-11, A-74) | CI tiers above | `30be215` | [35956392431](https://github.com/yegamble/opsecmkt/actions/runs/35956392431) | 2026-09-24 |
@@ -22,12 +23,13 @@ Every CI row is the `CI` workflow ([`.github/workflows/ci.yaml`](../.github/work
 | `chain-journey.spec.ts` 1/1 (4 real payouts, none ambiguous) and `scripts/regtest-smoke.sh` PASS; bitcoind 31.1 regtest and monerod 0.18.5.1 offline stagenet fork | real local chain; **UNVERIFIED** here | `cdb69f2` | QA report in `.claude/war-room/ledger.md` (A-13 ruling, A-52 row); a local run, not CI; the log is not kept under `artifacts/real-chain/` in this checkout | 2026-09-23 |
 | Same chain journey 1/1 (BTC and XMR) and regtest smoke PASS | real local chain; **UNVERIFIED** here | `699ea45` | QA report in `.claude/war-room/ledger.md` (A-7 row, A-13 ruling); local run, log not retained | 2026-09-23 |
 | Same chain journey 1/1 (BTC and XMR) and regtest smoke PASS | real local chain; **UNVERIFIED** here | `509356d` | QA report in `.claude/war-room/ledger.md` (iteration 3 log); local run, log not retained | 2026-09-23 |
+| `chain-journey.spec.ts` 1/1 (BTC and XMR: partial deposits, release and moderator refund, 4 real payouts sent, none ambiguous); bitcoind v31.1.0 regtest and monerod/monero-wallet-rpc v0.18.5.1 offline stagenet fork; `TestRegtestSmoke` was skipped in that session | real local chain | `ab7cd9f` (a `git archive` of it plus one unbuilt probe test file; the log itself names no commit) | local logs (gitignored, not CI) with SHA-256 sums: `artifacts/real-chain/ab7cd9f/` (`chain-journey.log`, `SHA256SUMS`); the payout-row summary was read from a database since deleted | 2026-09-24 |
 | `TestRegtestSmoke` PASS through `scripts/regtest-smoke.sh`; chain journey BTC 1/1 (18.5 s) and XMR 1/1 (1.7 min) | real local chain | uncommitted tree before `f38dade`; no pinned commit | local logs (gitignored, not CI): `artifacts/real-chain/bitcoin-regtest-smoke.log`, `artifacts/real-chain/btc-browser.log`, `artifacts/real-chain/xmr-browser-final.log`; see [project review](project-review.md#real-isolated-chain-verification) | 2026-09-23, 15:15–15:27 |
 
 Reading the real-chain rows:
 
 - The three QA rows are reported in the war-room ledger only. Their SHA-pinned logs were not found on this machine when this table was written, so they are marked UNVERIFIED and the manual regtest line in acceptance.md stays unticked. The last row has logs, but it predates the payout-timeout change (`12b3e71`) to `payments_rpc.go`, `payments_bitcoin.go` and `payments_monero.go`, so it does not cover the current adapters.
-- The Bitcoin and Monero adapters (`payments_bitcoin.go`, `payments_monero.go`, `payments_rpc.go`) are unchanged from `cdb69f2` to `ab7cd9f`. After `cdb69f2`, payout queueing in the watcher and hooks changed (A-54, `c40a224`) and so did the admin payout actions (A-53, `ae6a49a`); both are in `bf1ddc9`. No real-chain journey covers that code yet. A rerun pinned to a commit is needed before a release.
+- The Bitcoin and Monero adapters (`payments_bitcoin.go`, `payments_monero.go`, `payments_rpc.go`) are unchanged from `cdb69f2` to `ab7cd9f`. After `cdb69f2`, payout queueing in the watcher and hooks changed (A-54, `c40a224`) and so did the admin payout actions (A-53, `ae6a49a`); both are in `bf1ddc9`. The `ab7cd9f` chain-journey row covers the adapters and the watcher's normal path with that code, but not the specific A-53/A-54 branches (a restore marking failed payouts, an unavailable provider). A rerun with a manifest pinned to the release commit is still needed before a release (war-room A-103).
 
 No row exists, so nothing is claimed, for: a public test network (testnet4, signet, stagenet or testnet), a deployed instance, Tor onion reachability, or a release. The only tag is `v0.1.0-alpha.1`, still a draft GitHub release. Monero behaviour when the daemon is killed mid-send is untested (war-room A-45).
 
