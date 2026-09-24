@@ -10,6 +10,10 @@ services:
       SETUP_TOKEN: ${SETUP_TOKEN:?Run scripts/install.sh first}
       APP_MODE: ${APP_MODE:-clearnet}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      # Startup phase bounds; blank uses the app defaults (15s, 10m, 10m). See docs/operator-guide.md#migrations.
+      DATABASE_CONNECT_TIMEOUT: ${DATABASE_CONNECT_TIMEOUT:-}
+      MIGRATION_LOCK_TIMEOUT: ${MIGRATION_LOCK_TIMEOUT:-}
+      MIGRATION_TIMEOUT: ${MIGRATION_TIMEOUT:-}
       BITCOIN_RPC_URL: ${BITCOIN_RPC_URL:-}
       BITCOIN_WALLET: ${BITCOIN_WALLET:-opsecmkt}
       # Blank chain/network: accept whichever test network the node reports (mainnet is always refused).

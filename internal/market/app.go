@@ -85,6 +85,10 @@ func New(ctx context.Context, preview bool) (*App, error) {
 	if dsn == "" {
 		return nil, errors.New("DATABASE_URL required; use -preview for read-only sample UI")
 	}
+	timeouts, err := startupTimeoutsFromEnv()
+	if err != nil {
+		return nil, err
+	}
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return nil, errors.New("database configuration invalid")
@@ -93,28 +97,17 @@ func New(ctx context.Context, preview bool) (*App, error) {
 	db.SetMaxOpenConns(12)
 	db.SetMaxIdleConns(4)
 	db.SetConnMaxLifetime(30 * time.Minute)
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	if err = prepareDatabase(ctx, db, timeouts); err != nil {
+		db.Close()
+		return nil, err
+	}
+	payCtx, cancel := context.WithTimeout(ctx, paymentStartupTimeout)
 	defer cancel()
-	if err = db.PingContext(ctx); err != nil {
+	if err = a.initPayments(payCtx); err != nil {
 		db.Close()
-		return nil, errors.New("database connection failed; check DATABASE_URL and service health")
-	}
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(782493)"); err != nil {
-		return nil, err
-	}
-	if err = migrate(ctx, tx); err != nil {
-		return nil, fmt.Errorf("database migration failed: %w", err)
-	}
-	if err = tx.Commit(); err != nil {
-		return nil, err
-	}
-	if err = a.initPayments(ctx); err != nil {
-		db.Close()
+		if timedOut(ctx, payCtx) {
+			return nil, fmt.Errorf("payment provider startup timed out after %s; check the wallet and node RPC services: %w", paymentStartupTimeout, err)
+		}
 		return nil, err
 	}
 	return a, nil
