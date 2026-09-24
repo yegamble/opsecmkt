@@ -79,6 +79,119 @@ func TestLimiterFloodDoesNotLockOutUsers(t *testing.T) {
 	e.check(e.do("POST", "/account", sess, url.Values{"xmpp": {"victim@example.test"}}), 303)
 }
 
+// A-11: limiterFill fills the table with keys prefix0..prefix(n-1), each holding count requests against limit.
+func limiterFill(a *App, prefix string, n, count, limit int) {
+	for i := range n {
+		k := prefix + strconv.Itoa(i)
+		a.allow(k, limit)
+		b := a.limits[k]
+		b.Count = count
+		a.limits[k] = b
+	}
+}
+
+// A-11: a full table of blocking entries refuses a new key instead of evicting a blocked one.
+func TestLimiterFullOfBlockingEntriesRefusesNewKey(t *testing.T) {
+	a := &App{limits: map[string]bucket{}}
+	limiterFill(a, "auth:blocked", 4096, 10, 10)
+	if a.allow("auth:fresh", 10) {
+		t.Fatal("full table of blocking entries admitted a new key")
+	}
+	if _, ok := a.limits["auth:fresh"]; ok || len(a.limits) != 4096 {
+		t.Fatalf("refused key stored (table size %d)", len(a.limits))
+	}
+	for i := range 4096 {
+		if b, ok := a.limits["auth:blocked"+strconv.Itoa(i)]; !ok || b.Count != 10 {
+			t.Fatalf("blocking entry %d evicted or changed: %+v", i, b)
+		}
+	}
+	if a.allow("auth:blocked0", 10) {
+		t.Fatal("blocked key admitted")
+	}
+}
+
+// A-11: junk keys evict each other, never a victim's counter, whether it is blocking or only partly used.
+func TestLimiterJunkCannotResetVictim(t *testing.T) {
+	a := &App{limits: map[string]bucket{}}
+	for range 10 {
+		a.allow("auth:blocked_victim", 10)
+	}
+	for range 5 {
+		a.allow("auth:partial_victim", 10)
+	}
+	for i := range 4096 + 256 { // fills the table, then forces 256 evictions
+		a.allow("auth:junk"+strconv.Itoa(i), 10)
+	}
+	if len(a.limits) > 4096 || a.limits["auth:blocked_victim"].Count != 10 || a.limits["auth:partial_victim"].Count != 5 {
+		t.Fatalf("victim counters reset: size=%d blocked=%+v partial=%+v", len(a.limits), a.limits["auth:blocked_victim"], a.limits["auth:partial_victim"])
+	}
+	if a.allow("auth:blocked_victim", 10) {
+		t.Fatal("blocked victim admitted after the flood")
+	}
+	for range 5 {
+		if !a.allow("auth:partial_victim", 10) {
+			t.Fatal("partial victim refused within its budget")
+		}
+	}
+	if a.allow("auth:partial_victim", 10) {
+		t.Fatal("partial victim's budget was reset by the flood")
+	}
+}
+
+// A-11: when the table is full, the non-blocking entry with the lowest count is evicted.
+func TestLimiterEvictsLowestCountNonBlockingEntry(t *testing.T) {
+	a := &App{limits: map[string]bucket{}}
+	limiterFill(a, "k", 4095, 2, 10)
+	a.allow("low", 10)
+	if !a.allow("fresh", 10) {
+		t.Fatal("full table with non-blocking entries refused a new key")
+	}
+	if _, ok := a.limits["low"]; ok || len(a.limits) != 4096 {
+		t.Fatalf("lowest-count entry not evicted (size %d)", len(a.limits))
+	}
+	for i := range 4095 {
+		if _, ok := a.limits["k"+strconv.Itoa(i)]; !ok {
+			t.Fatalf("entry k%d evicted before the lowest-count entry", i)
+		}
+	}
+}
+
+// A-11: a wrong or absent CAPTCHA does not consume the handle's sign-in budget; a passed CAPTCHA does.
+func TestWrongCaptchaDoesNotConsumeSignInBudget(t *testing.T) {
+	e := newTestApp(t)
+	id, _ := e.user("cap_budget", "buyer")
+	agExec(e, "UPDATE settings SET value='true' WHERE key='captcha_required'")
+	anon := randomToken()
+	login := func(cid, answer, password string) int {
+		return e.do("POST", "/login", anon, url.Values{"handle": {"cap_budget"}, "password": {password}, "captcha_id": {cid}, "captcha": {answer}}).Code
+	}
+	for i := range 15 {
+		cid, answer := "", ""
+		if i%2 == 0 {
+			cid, answer = e.captcha("/login", anon), "WRONG1"
+		}
+		if c := login(cid, answer, testPassword); c != 400 {
+			t.Fatalf("attempt %d with a wrong CAPTCHA: %d", i, c)
+		}
+	}
+	if agLimited(e, "auth:cap_budget") {
+		t.Fatal("wrong CAPTCHA created a sign-in limiter entry")
+	}
+	for i := range 10 {
+		cid := e.captcha("/login", anon)
+		if c := login(cid, e.A.captchaAnswer(cid), "wrong-password-123"); c != 401 {
+			t.Fatalf("attempt %d with a correct CAPTCHA and wrong password: %d", i, c)
+		}
+	}
+	cid := e.captcha("/login", anon)
+	if c := login(cid, e.A.captchaAnswer(cid), testPassword); c != 429 {
+		t.Fatalf("eleventh attempt after a passed CAPTCHA: %d, want 429", c)
+	}
+	if agUserSessions(e, id) != 1 {
+		t.Fatal("limited sign-in created a session")
+	}
+}
+
 // F3a: a buyer may hold at most three orders awaiting payment.
 func TestPayCapsOpenAwaitingPaymentOrders(t *testing.T) {
 	p := newPayEnv(t) // one awaiting_payment order already

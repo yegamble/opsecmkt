@@ -28,6 +28,7 @@ var schema string
 
 type bucket struct {
 	Count int
+	Limit int // requests admitted per window; an entry with Count >= Limit is blocking and is never evicted
 	Until time.Time
 }
 type App struct {
@@ -134,6 +135,10 @@ func (a *App) csrf(token string) string {
 func (a *App) cookie(w http.ResponseWriter, name, value string, age int) {
 	http.SetCookie(w, &http.Cookie{Name: name, Value: value, Path: "/", HttpOnly: true, Secure: a.secure, SameSite: http.SameSiteStrictMode, MaxAge: age})
 }
+
+// allow counts one request against key's budget of n per ten minutes. When the table is full it evicts
+// the non-blocking entry with the lowest count (earliest expiry breaks ties); if every entry is blocking
+// it refuses the new key instead, so junk keys can never reset a counter that is refusing requests.
 func (a *App) allow(key string, n int) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -145,18 +150,25 @@ func (a *App) allow(key string, n int) bool {
 	}
 	b := a.limits[key]
 	if b.Count == 0 {
-		if len(a.limits) >= 4096 { // full: evict the entry that expires first rather than refusing new keys
-			oldest := ""
+		if len(a.limits) >= 4096 {
+			victim, found := "", false
 			for k, v := range a.limits {
-				if oldest == "" || v.Until.Before(a.limits[oldest].Until) {
-					oldest = k
+				if v.Count >= v.Limit {
+					continue
+				}
+				if w := a.limits[victim]; !found || v.Count < w.Count || (v.Count == w.Count && v.Until.Before(w.Until)) {
+					victim, found = k, true
 				}
 			}
-			delete(a.limits, oldest)
+			if !found {
+				return false
+			}
+			delete(a.limits, victim)
 		}
 		b.Until = now.Add(10 * time.Minute)
 	}
 	b.Count++
+	b.Limit = n
 	a.limits[key] = b
 	return b.Count <= n
 }
