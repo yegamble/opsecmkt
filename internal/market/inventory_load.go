@@ -16,7 +16,7 @@ func init() {
 	registerLoader("vendor-dashboard", loadInventory)
 	registerPreview("listing-edit", func(d *PageData) {
 		d.Title = "Edit listing"
-		d.Listing = &ListingView{Updated: "Sample listing", OpenOrders: 1}
+		d.Listing = &ListingView{Updated: "Sample listing", OpenOrders: 1, VendorEditor: true}
 	})
 	registerPreview("vendor-dashboard", func(d *PageData) {
 		if len(d.Products) > 0 {
@@ -57,18 +57,22 @@ func loadInventory(_ context.Context, a *App, _ *http.Request, d *PageData) erro
 }
 
 // loadListingEdit loads one listing for its vendor or an administrator; anyone else gets 404.
+// Automatic delivery content (what every buyer receives) is loaded only for the listing's vendor; an
+// administrator editing another vendor's listing learns only whether it is set.
 func loadListingEdit(ctx context.Context, a *App, r *http.Request, d *PageData) error {
 	var p Product
 	var btc, xmr int64
 	v := &ListingView{AutoDelivery: a.autoDeliveryCurrencies()}
-	err := a.db.QueryRowContext(ctx, `SELECT p.id,p.title,p.description,p.category,p.region,p.kind,u.handle,p.vendor_id,p.btc,p.xmr,p.stock,p.archived,p.delivery_content,
+	err := a.db.QueryRowContext(ctx, `SELECT p.id,p.title,p.description,p.category,p.region,p.kind,u.handle,p.vendor_id,p.btc,p.xmr,p.stock,p.archived,
+ CASE WHEN p.vendor_id=$2 THEN p.delivery_content ELSE '' END,p.delivery_content<>'',
  to_char(p.updated,'YYYY-MM-DD HH24:MI'),coalesce(to_char(p.archived_at,'YYYY-MM-DD HH24:MI'),''),
  (`+openOrdersSQL+`)
  FROM products p JOIN users u ON u.id=p.vendor_id WHERE p.id=$1 AND (p.vendor_id=$2 OR $3='admin')`,
-		r.URL.Query().Get("id"), d.User.ID, d.User.Role).Scan(&p.ID, &p.Title, &p.Description, &p.Category, &p.Region, &p.Kind, &p.Vendor, &p.VendorID, &btc, &xmr, &p.Stock, &p.Archived, &v.DeliveryContent, &v.Updated, &v.ArchivedAt, &v.OpenOrders)
+		r.URL.Query().Get("id"), d.User.ID, d.User.Role).Scan(&p.ID, &p.Title, &p.Description, &p.Category, &p.Region, &p.Kind, &p.Vendor, &p.VendorID, &btc, &xmr, &p.Stock, &p.Archived, &v.DeliveryContent, &v.HasDeliveryContent, &v.Updated, &v.ArchivedAt, &v.OpenOrders)
 	if err != nil {
 		return err // sql.ErrNoRows -> 404
 	}
+	v.VendorEditor = p.VendorID == d.User.ID
 	p.PriceBTC, p.PriceXMR = amount(btc, 8), amount(xmr, 12)
 	d.Product, d.Listing, d.Title = &p, v, "Edit listing"
 	return nil

@@ -2,7 +2,9 @@ package market
 
 import (
 	"context"
+	"html"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -363,3 +365,89 @@ func (p inventoryStubProvider) Send(context.Context, string, int64) (string, err
 	return "", fail(409, "stub")
 }
 func (p inventoryStubProvider) ValidAddress(string) bool { return false }
+
+// A-72: automatic delivery content is what every buyer of the listing receives. Only the listing's vendor
+// may read or change it on /listing-edit; an administrator editing another vendor's listing sees whether it
+// is set, and their saves keep the stored content whatever the form sends.
+func TestAdminListingEditKeepsDeliveryContentHidden(t *testing.T) {
+	p := newPayEnv(t)
+	secret := "LICENSE-KEY-A72-" + randomToken()[:8]
+	digital := p.product(p.vendor.ID, "digital")
+	p.check(p.do("POST", "/listings/update", p.vendorSess, inventoryForm(digital, map[string]string{"kind": "digital", "delivery_content": secret})), 303)
+	stored := func() (kind, content string) {
+		t.Helper()
+		if err := p.DB.QueryRow("SELECT kind,delivery_content FROM products WHERE id=$1", digital).Scan(&kind, &content); err != nil {
+			t.Fatal(err)
+		}
+		return kind, content
+	}
+
+	// The administrator's editor says content is set, without the field or the content itself.
+	edit := p.page("/listing-edit?id="+digital, p.adminSess)
+	if strings.Contains(edit, secret) || strings.Contains(edit, `name="delivery_content"`) {
+		t.Fatal("administrator /listing-edit exposes the vendor's automatic delivery content")
+	}
+	if !strings.Contains(edit, "Automatic delivery content is set; only the vendor can view or change it.") {
+		t.Fatal("administrator /listing-edit does not say that delivery content is set")
+	}
+	if empty := p.page("/listing-edit?id="+p.product(p.vendor.ID, "digital"), p.adminSess); !strings.Contains(empty, "Automatic delivery content is not set; only the vendor can add it.") {
+		t.Fatal("administrator /listing-edit does not say that delivery content is not set")
+	}
+
+	// Saving the rendered form (as a browser would) keeps the content.
+	f := url.Values{}
+	for _, m := range regexp.MustCompile(`<input[^>]*name="([a-z_]+)"[^>]*value="([^"]*)"`).FindAllStringSubmatch(edit, -1) {
+		f.Set(m[1], html.UnescapeString(m[2]))
+	}
+	if m := regexp.MustCompile(`(?s)<textarea name="description"[^>]*>(.*?)</textarea>`).FindStringSubmatch(edit); m != nil {
+		f.Set("description", html.UnescapeString(m[1]))
+	}
+	f.Set("category", "Digital")
+	f.Set("region", "Worldwide")
+	f.Set("kind", "digital")
+	f.Set("title", "Admin retitled")
+	p.check(p.do("POST", "/listings/update", p.adminSess, f), 303)
+	if _, got := stored(); got != secret {
+		t.Fatalf("administrator title save changed delivery content to %q", got)
+	}
+
+	// A crafted administrator POST with other content (or none) does not change what buyers receive.
+	for _, dc := range []string{"ADMIN-SUBSTITUTED", ""} {
+		f.Set("delivery_content", dc)
+		p.check(p.do("POST", "/listings/update", p.adminSess, f), 303)
+		if _, got := stored(); got != secret {
+			t.Fatalf("administrator POST with delivery_content=%q changed it to %q", dc, got)
+		}
+	}
+
+	// The administrator cannot make the listing physical while content they cannot remove is stored.
+	f.Del("delivery_content")
+	f.Set("kind", "physical")
+	w := p.do("POST", "/listings/update", p.adminSess, f)
+	p.check(w, 400)
+	if !strings.Contains(w.Body.String(), "only its vendor can remove") {
+		t.Fatalf("kind refusal does not explain itself: %q", w.Body.String())
+	}
+	if kind, got := stored(); kind != "digital" || got != secret {
+		t.Fatalf("refused kind change stored kind=%q content=%q", kind, got)
+	}
+
+	// The next order is delivered the vendor's content.
+	o, addr := p.orderFor(p.buyer.ID, digital)
+	p.fake.Deposit(addr, longTxid("a7"), 0, 100000, 3)
+	p.poll()
+	var got string
+	if err := p.DB.QueryRow("SELECT content FROM deliveries WHERE order_id=$1", o).Scan(&got); err != nil || got != secret {
+		t.Fatalf("next order delivered %q (%v), want the vendor's content", got, err)
+	}
+
+	// The vendor still reads and changes the content.
+	vendorEdit := p.page("/listing-edit?id="+digital, p.vendorSess)
+	if !strings.Contains(vendorEdit, secret) || !strings.Contains(vendorEdit, `name="delivery_content"`) {
+		t.Fatal("vendor /listing-edit no longer shows the delivery content field")
+	}
+	p.check(p.do("POST", "/listings/update", p.vendorSess, inventoryForm(digital, map[string]string{"kind": "digital", "delivery_content": "VENDOR-NEW"})), 303)
+	if _, got := stored(); got != "VENDOR-NEW" {
+		t.Fatalf("vendor change not stored: %q", got)
+	}
+}
