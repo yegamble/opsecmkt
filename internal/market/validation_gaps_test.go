@@ -127,7 +127,7 @@ func TestResolveResolutionBounds(t *testing.T) {
 	if agStr(w.e, "SELECT status||'|'||outcome||'|'||resolution FROM disputes WHERE id=$1", dispute) != "Open||" || w.state(order) != stateDisputed {
 		t.Fatal("refused resolution changed the dispute")
 	}
-	w.expect("/resolve", w.mod, form("id", dispute, "outcome", "refund", "resolution", strings.Repeat("r", 5000)), 303, "")
+	w.expect("/resolve", w.mod, payoutConfirmed(form("id", dispute, "outcome", "refund", "resolution", strings.Repeat("r", 5000)), 0), 303, "")
 	if agStr(w.e, "SELECT outcome FROM disputes WHERE id=$1", dispute) != "refund" || w.state(order) != stateResolved {
 		t.Fatal("5000-character resolution not accepted")
 	}
@@ -155,7 +155,7 @@ func TestCompleteFromWrongState(t *testing.T) {
 	physical := w.e.product(w.vendorID, "physical")
 	for _, state := range []string{stateDraft, stateAwaitingPayment, statePaid, stateDisputed, stateCompleted} {
 		order := w.e.order(w.buyerID, physical, "BTC", state)
-		w.expect("/orders/complete", w.buyer, form("order_id", order), 409, "")
+		w.expect("/orders/complete", w.buyer, payoutConfirmed(form("order_id", order), 0), 409, "")
 		if w.state(order) != state || w.count("SELECT count(*) FROM order_events WHERE order_id=$1", order) != 0 {
 			t.Fatalf("completing from %s changed the order", state)
 		}
@@ -163,15 +163,15 @@ func TestCompleteFromWrongState(t *testing.T) {
 	// A digital order is completed from delivered, not shipped; the vendor can never confirm receipt.
 	digital := w.e.product(w.vendorID, "digital")
 	order := w.e.order(w.buyerID, digital, "BTC", statePaid)
-	w.expect("/orders/complete", w.buyer, form("order_id", order), 409, "")
+	w.expect("/orders/complete", w.buyer, payoutConfirmed(form("order_id", order), 0), 409, "")
 	shipped := w.e.order(w.buyerID, physical, "BTC", stateShipped)
-	w.expect("/orders/complete", w.vendor, form("order_id", shipped), 403, "")
-	w.expect("/orders/complete", w.other, form("order_id", shipped), 404, "")
+	w.expect("/orders/complete", w.vendor, payoutConfirmed(form("order_id", shipped), 0), 403, "")
+	w.expect("/orders/complete", w.other, payoutConfirmed(form("order_id", shipped), 0), 404, "")
 	if w.state(order) != statePaid || w.state(shipped) != stateShipped || w.count("SELECT count(*) FROM payouts") != 0 {
 		t.Fatal("refused completion changed data")
 	}
-	w.expect("/orders/complete", w.buyer, form("order_id", shipped), 303, "")
-	w.expect("/orders/complete", w.buyer, form("order_id", shipped), 409, "")
+	w.expect("/orders/complete", w.buyer, payoutConfirmed(form("order_id", shipped), 0), 303, "")
+	w.expect("/orders/complete", w.buyer, payoutConfirmed(form("order_id", shipped), 0), 409, "")
 	if w.state(shipped) != stateCompleted || w.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND to_state='completed'", shipped) != 1 {
 		t.Fatal("completion not recorded exactly once")
 	}

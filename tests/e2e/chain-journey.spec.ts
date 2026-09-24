@@ -89,6 +89,8 @@ test('isolated real chains: seeded buyer/vendor partial deposits, confirmation, 
       await vendor.getByRole('button', { name: 'Deliver digital content', exact: true }).click();
     }
     await buyer.reload();
+    const price = currency === 'BTC' ? '0.001 BTC' : '0.5 XMR';
+    await buyer.getByRole('checkbox', { name: `Release ${price} (test network) to chain_vendor — exactly the price. This is final.`, exact: true }).check();
     await buyer.getByRole('button', { name: 'Confirm receipt and complete' }).click();
     await expect(buyer.locator('.page-head .badge')).toHaveText('Completed');
     await refreshUntil(buyer, async () => {
@@ -115,8 +117,9 @@ test('isolated real chains: seeded buyer/vendor partial deposits, confirmation, 
     await expect(buyer.locator('.page-head .badge')).toHaveText('Disputed');
     await moderator.goto('/moderator');
     const resolution = moderator.locator('article.message').filter({ has: moderator.locator(`a[href="/order?id=${new URL(dispute.url).searchParams.get('id')}"]`) });
-    await resolution.getByRole('radio', { name: 'Refund to buyer' }).check();
+    await resolution.getByRole('radio', { name: `Refund ${price} (test network) to chain_buyer — exactly the price`, exact: true }).check();
     await resolution.getByLabel('Decision', { exact: true }).fill('Return this isolated test payment to the buyer.');
+    await resolution.getByRole('checkbox', { name: 'I checked the amount and who receives it for the outcome I chose. Resolving is final.' }).check();
     await resolution.getByRole('button', { name: 'Resolve dispute' }).click();
     await buyer.goto(dispute.url);
     await refreshUntil(buyer, async () => {

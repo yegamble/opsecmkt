@@ -106,7 +106,8 @@ var disputeOutcomes = map[string]string{"release": "Resolved — release to vend
 
 // resolveAction records the outcome, then moves disputed -> resolved as moderator (P3). The outcome is
 // written first so transition hooks (payouts) read it in the same transaction. A moderator who is a party
-// to the order is refused by transition().
+// to the order is refused by transition(). The form's payout confirmation is required (400), and the payout
+// hook refuses the whole resolution (409, the dispute stays Open) when the counted amount is not amount_seen.
 func resolveAction(c *actionCtx) (actionResult, error) {
 	outcome := c.Form.Get("outcome")
 	status, ok := disputeOutcomes[outcome]
@@ -117,15 +118,19 @@ func resolveAction(c *actionCtx) (actionResult, error) {
 	if len(resolution) < 20 || len(resolution) > 5000 {
 		return actionResult{}, fail(400, "Provide a decision of 20–5000 characters")
 	}
+	seen, err := payoutConfirmation(c)
+	if err != nil {
+		return actionResult{}, err
+	}
 	var orderID string
-	err := c.Tx.QueryRowContext(c.Ctx(), "UPDATE disputes SET resolution=$1,outcome=$2,status=$3 WHERE id=$4 AND status='Open' AND outcome='' RETURNING order_id", resolution, outcome, status, c.Form.Get("id")).Scan(&orderID)
+	err = c.Tx.QueryRowContext(c.Ctx(), "UPDATE disputes SET resolution=$1,outcome=$2,status=$3 WHERE id=$4 AND status='Open' AND outcome='' RETURNING order_id", resolution, outcome, status, c.Form.Get("id")).Scan(&orderID)
 	if err == sql.ErrNoRows {
 		return actionResult{}, fail(409, "Open dispute not found")
 	}
 	if err != nil {
 		return actionResult{}, err
 	}
-	if _, err = c.A.transition(c.Ctx(), c.Tx, orderID, stateDisputed, stateResolved, c.User, status); err != nil {
+	if _, err = c.A.transition(withPayoutSeen(c.Ctx(), orderID, seen), c.Tx, orderID, stateDisputed, stateResolved, c.User, status); err != nil {
 		return actionResult{}, err
 	}
 	return actionResult{Redirect: "/moderator?saved=1", Audit: "Resolved dispute on order " + shortID(orderID) + " (outcome: " + outcome + ")"}, nil

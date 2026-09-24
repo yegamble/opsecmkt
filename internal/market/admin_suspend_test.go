@@ -95,7 +95,7 @@ func TestAdminSuspendsAccount(t *testing.T) {
 	agExec(e, "DELETE FROM pending_logins WHERE user_id=$1", vendorID)
 
 	// The buyer's open orders with the suspended vendor continue; the vendor's listings are unchanged.
-	agExpect(e, "/orders/complete", buyer, form("order_id", shipped), 303, "")
+	agExpect(e, "/orders/complete", buyer, payoutConfirmed(form("order_id", shipped), 0), 303, "")
 	agExpect(e, "/disputes", buyer, form("order_id", disputed, "reason", "The parcel never arrived at the agreed drop."), 303, "")
 	if agStr(e, "SELECT state FROM orders WHERE id=$1", shipped) != stateCompleted || agStr(e, "SELECT state FROM orders WHERE id=$1", disputed) != stateDisputed {
 		t.Fatal("buyer could not continue orders with a suspended vendor")

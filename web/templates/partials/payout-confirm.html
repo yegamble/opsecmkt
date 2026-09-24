@@ -1,0 +1,6 @@
+{{/* P3 Orders owns (A-161, A-122). payout-confirm: what every form that queues a payout carries (complete, a vendor's
+cancel of a paid order, resolve). Call with a PayoutPreview: amount_seen is the counted amount the form states, which
+the server compares with the amount it counts under the payout's row locks (409 when it changed); the confirmation
+checkbox is required (400 without it). */}}
+{{define "payout-confirm"}}<input type="hidden" name="amount_seen" value="{{.Seen}}">
+<label class="check"><input type="checkbox" name="payout_confirmed" value="confirmed" required> {{.Confirm}}</label>{{end}}
