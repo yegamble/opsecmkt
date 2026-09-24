@@ -45,6 +45,8 @@ re-report them).
    - Test passes → drop the finding and list it under "disproved".
 4. Do not fix the bug, do not commit. Copy each failing test verbatim into the
    report.
+   Anything you keep under `artifacts/` is inside the Go module: save Go sources
+   there as `*.go.txt`, never `*.go`, or `go vet ./...` and `go test ./...` break.
 
 ## Report
 
