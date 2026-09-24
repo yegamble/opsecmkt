@@ -36,6 +36,7 @@ off.
 | `MONERO_WALLET_RPC_PASSWORD` | For the local `monero-wallet` service only: `openssl rand -hex 24` output, the same value as the password in `MONERO_WALLET_RPC_URL`. The service refuses to start without it. |
 | `PAYMENT_CONFIRMATIONS_BTC` / `PAYMENT_CONFIRMATIONS_XMR` | Defaults 3 and 10. |
 | `PAYMENT_POLL_INTERVAL` / `PAYMENT_EXPIRY` | Defaults `30s` and `24h`. |
+| `BITCOIN_PRUNE_MB` / `MONERO_PRUNE_FLAGS` | Local nodes only. Absent keys mean **pruned** (`2000` and `'--prune-blockchain --sync-pruned-blocks'`); `BITCOIN_PRUNE_MB='0'` and `MONERO_PRUNE_FLAGS=''` keep a full node. Read [section 7](#7-local-nodes-are-now-pruned) before deploying if you run a local node. |
 | `DATABASE_CONNECT_TIMEOUT` / `MIGRATION_LOCK_TIMEOUT` / `MIGRATION_TIMEOUT` | Optional; leave blank for `15s`, `10m` and `10m`. Raise `MIGRATION_TIMEOUT` if your database is large; see [Migrations](docs/operator-guide.md#migrations). |
 
 For a local Monero node, also add `monero-wallet` to `COMPOSE_PROFILES` (for example
@@ -108,6 +109,9 @@ loaded no longer stops the site; Bitcoin simply shows as unavailable on the admi
   `monero-wallet` profile and the keys above, then follow the runbook.
 
 ## 4. Deploy
+
+**Local nodes: decide on pruning first** ([section 7](#7-local-nodes-are-now-pruned)). The first start
+after this upgrade prunes an existing full Bitcoin or Monero chain unless `.env` says otherwise.
 
 ```sh
 git pull   # or check out the release tag
@@ -250,3 +254,27 @@ changed.
 The payout gate is enforced by this release. An older application image may not understand it; keep wallet
 RPC configuration disabled when inspecting a restored database with older code. Alpha.1 has no payment
 processing, but any other older release requires its own recovery review.
+
+## 7. Local nodes are now pruned
+
+The `bitcoin` and `monero` services now run pruned unless `.env` opts out: `bitcoind -prune=${BITCOIN_PRUNE_MB:-2000}`
+(and `-datadir=/data`, the directory the image already used) and `monerod --prune-blockchain --sync-pruned-blocks`
+unless `MONERO_PRUNE_FLAGS` is set. The application does not need old blocks (it uses the nodes' current state and
+wallet RPCs), so payments work the same either way. What happens to a volume you already have:
+
+- **Bitcoin volume with a full chain:** on its first start bitcoind deletes old block files down to about
+  2000 MiB. This cannot be undone without downloading the whole chain again, and afterwards a wallet backup
+  older than the node's `pruneheight` can no longer be restored on this node without doing so. To keep the full
+  chain, add `BITCOIN_PRUNE_MB='0'` to `.env` **before** `docker compose up -d`.
+- **Monero volume with a full chain:** monerod prunes the existing database in place on its first start
+  ("Pruning blockchain..." in its log). The database file does not shrink and pruning temporarily needs extra
+  space; to reclaim disk, remove the `monero_data` volume afterwards and let it sync again pruned. Monero
+  wallets (in the separate `monero_wallet` volume) are unaffected. To keep the full chain, add
+  `MONERO_PRUNE_FLAGS=''` to `.env` **before** `docker compose up -d`; once pruned, the database stays pruned
+  even if you blank the flags later.
+- **Volumes from v0.1.0-alpha.1** hold mainnet data and are removed in [section 3](#3-bitcoin_rpc_url-now-turns-payments-on);
+  the new test-network volumes start pruned.
+
+Behaviour on an already-synced chain is taken from the upstream sources and has not been rehearsed here
+(UNVERIFIED). Sources, disk sizes, switching between pruned and full later, and the wallet-restore trade-off:
+[Local node pruning](docs/operator-guide.md#local-node-pruning).

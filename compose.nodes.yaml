@@ -18,6 +18,12 @@ services:
       BITCOIN_DATA: /data
     command:
       - -chain=${BITCOIN_CHAIN:-testnet4}
+      # Explicit, so the data directory does not depend on the image entrypoint reading BITCOIN_DATA.
+      - -datadir=/data
+      # Pruned by default: bitcoind keeps about BITCOIN_PRUNE_MB MiB of recent block and undo files (at least
+      # 550) and deletes older ones. 2000 leaves a margin over the minimum for rescanning recent wallet
+      # backups; BITCOIN_PRUNE_MB=0 runs an unpruned full node. See docs/operator-guide.md#local-node-pruning.
+      - -prune=${BITCOIN_PRUNE_MB:-2000}
       - -server=1
       - -printtoconsole=1
       - -rpcbind=0.0.0.0
@@ -35,7 +41,13 @@ services:
     profiles: [monero]
     restart: unless-stopped
     networks: [backend, node_egress]
-    command: ['--${MONERO_NETWORK:-stagenet}', --data-dir=/home/monero/.bitmonero, --restricted-rpc, --rpc-restricted-bind-ip=0.0.0.0, --rpc-restricted-bind-port=18081, --confirm-external-bind]
+    # Pruned by default. monerod has no --prune-blockchain=false, so this command is a string: a blank
+    # MONERO_PRUNE_FLAGS= in .env adds no flag and runs a full node, while an unset one uses the default.
+    # See docs/operator-guide.md#local-node-pruning.
+    command: >-
+      --${MONERO_NETWORK:-stagenet} --data-dir=/home/monero/.bitmonero --restricted-rpc
+      --rpc-restricted-bind-ip=0.0.0.0 --rpc-restricted-bind-port=18081 --confirm-external-bind
+      ${MONERO_PRUNE_FLAGS---prune-blockchain --sync-pruned-blocks}
     volumes: [monero_data:/home/monero/.bitmonero]
   monero-wallet:
     # Separate wallet-RPC image; reachable only on the backend network.
