@@ -125,9 +125,12 @@ func TestCounterpartyKeysAndMessagePrefill(t *testing.T) {
 	// Paid physical order: the buyer is told to send shipping details encrypted to the vendor's key.
 	paid := w.e.order(w.buyerID, w.e.product(w.vendorID, "physical"), "BTC", statePaid)
 	body = w.page("/order?id="+paid, w.buyer, 200)
-	mustContain(t, body, "Send your shipping address", "encrypted to "+vendorHandle, "never stores shipping addresses", `href="/messages?to=`+vendorHandle+`"`)
+	// A-81: the market has no address field but keeps the encrypted message and who sent it to whom and when.
+	mustContain(t, body, "Send your shipping address", "encrypted to "+vendorHandle, "no address field", "keeps the encrypted message and who sent it to whom and when", `href="/messages?to=`+vendorHandle+`"`)
+	mustNotContain(t, body, "never stores")
 	body = w.page("/order?id="+paid, w.vendor, 200)
-	mustContain(t, body, "shipping address", "encrypted message")
+	mustContain(t, body, "shipping address", "encrypted message", "keeps the encrypted message and who sent it to whom and when")
+	mustNotContain(t, body, "never stores")
 	// Paid digital orders need no address.
 	paidDigital := w.e.order(w.buyerID, w.e.product(w.vendorID, "digital"), "BTC", statePaid)
 	mustNotContain(t, w.page("/order?id="+paidDigital, w.buyer, 200), "Send your shipping address")

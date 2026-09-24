@@ -128,6 +128,7 @@ Each package records its own acceptance checks here and edits only its subsectio
 - [ ] Audit exports and signatures are byte-stable for a given range and verify with the published Ed25519 key.
 - [ ] `verify-audit -pub <pinned key>` exits 0 for a genuine export and 1 for tampered files, other keys, or malformed input.
 - [ ] Without a valid `AUDIT_SIGNING_KEY` the export returns 409 and the admin and `/canary` pages show it as unavailable; non-administrators receive 403 and exports are rate-limited.
+- [ ] `/canary#records` lists each stored data class, who can read it and that nothing is deleted, matching [What the server keeps](implementation-status.md#what-the-server-keeps) and the schema; `/register`, `/account` and the `/messages` notice link to it, and the audit export is described as private operator evidence, never published (`preview-records.spec.ts` covers the rendered copy and links, not the schema match).
 
 ## Accessibility and visual verification
 

@@ -16,7 +16,7 @@
 <p>Vendor identity and reputation have not been independently verified by this application.</p>
 </div>{{range .Contacts}}<section class="panel" aria-labelledby="vendor-key">
 <h2 id="vendor-key">PGP public key</h2>
-<p class="help">Messages on this market must be encrypted to the recipient’s key in your own PGP application. Physical orders: send your shipping address only this way; the market never stores addresses.</p>
+<p class="help">Messages on this market must be encrypted to the recipient’s key in your own PGP application. Physical orders: send your shipping address only this way. The market has no address field; it keeps the encrypted message and who sent it to whom and when, but cannot read it.</p>
 {{template "contact-key" .}}</section>{{end}}{{template "products" .}}{{if not .Products}}<div class="empty">
 <h2>No active listings</h2>
 <p>This vendor has no listings in the marketplace right now.</p>
