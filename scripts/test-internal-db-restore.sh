@@ -11,7 +11,7 @@ done
 docker compose version >/dev/null
 # Only the temporary .env written below may configure Compose or the scripts.
 unset COMPOSE_FILE COMPOSE_PROFILES COMPOSE_PROJECT_NAME COMPOSE_ENV_FILES DATABASE_URL SETUP_TOKEN POSTGRES_PASSWORD \
-  BACKUP_DATABASE_URL RESTORE_DATABASE_URL RESTORE_INTERNAL_DATABASE AGE_RECIPIENT AGE_IDENTITY
+  BACKUP_DATABASE_URL BACKUP_INTERNAL_DATABASE RESTORE_DATABASE_URL RESTORE_INTERNAL_DATABASE AGE_RECIPIENT AGE_IDENTITY
 work=$(mktemp -d "${TMPDIR:-/tmp}/opsecmkt-internal-restore.XXXXXX")
 root="$work/deploy"
 mkdir -p "$root/scripts"
@@ -20,14 +20,18 @@ cp scripts/backup.sh scripts/restore.sh scripts/postgres-tool.py "$root/scripts/
 suffix=$(python3 -c 'import secrets; print(secrets.token_hex(6))')
 project="opsecmkt-restore-test-$suffix"
 password=$(python3 -c 'import secrets; print(secrets.token_hex(16))')
-cat > "$root/.env" <<ENV
+env_base=$(cat <<ENV
 COMPOSE_PROJECT_NAME='$project'
 COMPOSE_FILE='compose.yaml:compose.internal-db.yaml'
 COMPOSE_PROFILES='internal-db'
 POSTGRES_PASSWORD='$password'
-DATABASE_URL='postgres://opsecmkt:$password@db:5432/opsecmkt?sslmode=disable'
 SETUP_TOKEN='$(python3 -c 'import secrets; print(secrets.token_hex(32))')'
 ENV
+)
+# set_database_url LINE...: rewrite .env with the given DATABASE_URL line(s), as an operator editing it would.
+set_database_url() { printf '%s\n' "$env_base" "$@" > "$root/.env"; }
+# The installer's format: single-quoted, with a query string.
+set_database_url "DATABASE_URL='postgres://opsecmkt:$password@db:5432/opsecmkt?sslmode=disable'"
 
 compose() { (cd "$root" && docker compose "$@"); }
 # sql DATABASE QUERY: one unaligned result from inside the db container.
@@ -68,6 +72,7 @@ export AGE_IDENTITY="$work/identity"
 AGE_RECIPIENT=$(age-keygen -y "$work/identity")
 # backup.sh without BACKUP_DATABASE_URL dumps through `docker compose exec -T db`.
 AGE_RECIPIENT=$AGE_RECIPIENT backup "$work/backup.dump.age" > "$work/backup.log"
+grep -q 'of internal database opsecmkt saved to' "$work/backup.log"
 python3 - "$work/backup.dump.age" <<'PY'
 from pathlib import Path
 import stat, sys
@@ -121,6 +126,68 @@ grep -q 'do not contain the custodial wallets' "$work/restore.log"
 # The live database is untouched.
 [[ $(sql opsecmkt "$payouts") == "$source_payouts" ]]
 [[ $(sql opsecmkt "$gate") == false ]]
+grep -q 'Restored into database opsecmkt_restored' "$work/restore.log"
+grep -q "DATABASE_URL='postgres://opsecmkt:YOUR_POSTGRES_PASSWORD@db:5432/opsecmkt_restored?sslmode=disable'" "$work/restore.log"
+grep -q 'later backups follow DATABASE_URL' "$work/restore.log"
+
+# After switching DATABASE_URL to the restored database (the documented recovery), backups dump the live
+# database, not the abandoned opsecmkt. compose_database is the name Compose itself resolves for the app.
+compose_database() {
+  compose config --format json 2>/dev/null | python3 -c 'import json, sys, urllib.parse
+print(urllib.parse.urlsplit(json.load(sys.stdin)["services"]["app"]["environment"]["DATABASE_URL"]).path[1:])'
+}
+set_database_url "DATABASE_URL='postgres://opsecmkt:$password@db:5432/opsecmkt_restored?sslmode=disable'"
+[[ $(compose_database) == opsecmkt_restored ]]
+sql opsecmkt_restored "INSERT INTO notes VALUES (2, 'written after the switch')" >/dev/null
+AGE_RECIPIENT=$AGE_RECIPIENT backup "$work/switched.dump.age" > "$work/switched-backup.log"
+grep -q 'of internal database opsecmkt_restored saved to' "$work/switched-backup.log"
+RESTORE_INTERNAL_DATABASE=opsecmkt_check restore "$work/switched.dump.age" <<< RESTORE > "$work/check-restore.log"
+[[ $(sql opsecmkt_check 'SELECT note FROM notes WHERE id = 2') == 'written after the switch' ]]
+
+# Other ways operators write the same .env line; Compose must agree on the database for each.
+forms=(
+  "DATABASE_URL=\"postgres://opsecmkt:$password@db:5432/opsecmkt_restored?sslmode=disable\""
+  "export DATABASE_URL=postgresql://opsecmkt:$password@db/opsecmkt_restored # switched after a restore"
+  "DATABASE_URL='postgres://opsecmkt:p%40ss%2Fw%3Fx@db:5432/opsecmkt_restored?sslmode=disable&application_name=market'"
+  "DATABASE_URL='postgres://opsecmkt:$password@db:5432/opsecmkt_restored?sslmode=disable'"$'\r'
+  "# DATABASE_URL='postgres://opsecmkt:$password@db:5432/opsecmkt?sslmode=disable'
+DATABASE_URL='postgres://opsecmkt:$password@db:5432/opsecmkt?sslmode=disable'
+DATABASE_URL='postgres://opsecmkt:$password@db:5432/opsecmkt_restored?sslmode=disable'"
+)
+for index in "${!forms[@]}"; do
+  set_database_url "${forms[index]}"
+  [[ $(compose_database) == opsecmkt_restored ]] || { echo "Compose resolves another database for .env form $index" >&2; exit 1; }
+  AGE_RECIPIENT=$AGE_RECIPIENT backup "$work/form-$index.dump.age" > "$work/form-backup.log"
+  grep -q 'of internal database opsecmkt_restored saved to' "$work/form-backup.log" || { echo "backup.sh chose another database for .env form $index" >&2; exit 1; }
+  # Neither the URL nor its password is printed.
+  if grep -q -e "$password" -e 'p%40ss' -e 'postgres' "$work/form-backup.log"; then echo 'backup.sh printed the connection URL' >&2; exit 1; fi
+done
+
+# A BACKUP_INTERNAL_DATABASE that contradicts DATABASE_URL is refused before anything is written.
+set_database_url "DATABASE_URL='postgres://opsecmkt:$password@db:5432/opsecmkt_restored?sslmode=disable'"
+if BACKUP_INTERNAL_DATABASE=opsecmkt AGE_RECIPIENT=$AGE_RECIPIENT backup "$work/refused.dump.age" > "$work/refused.log" 2>&1; then
+  echo 'backup.sh dumped a database other than the one in DATABASE_URL' >&2; exit 1
+fi
+grep -q 'BACKUP_INTERNAL_DATABASE (opsecmkt) differs from the database in DATABASE_URL in .env (opsecmkt_restored)' "$work/refused.log"
+if compgen -G "$work/refused.dump.age*" >/dev/null; then echo 'A refused backup left a file behind' >&2; exit 1; fi
+BACKUP_INTERNAL_DATABASE=opsecmkt_restored AGE_RECIPIENT=$AGE_RECIPIENT backup "$work/agreed.dump.age" > "$work/agreed.log"
+grep -q 'of internal database opsecmkt_restored saved to' "$work/agreed.log"
+# A database name the script cannot read literally (here Compose interpolation) needs the explicit override.
+set_database_url "MARKET_DATABASE=opsecmkt_restored" "DATABASE_URL=\"postgres://opsecmkt:$password@db:5432/\${MARKET_DATABASE}?sslmode=disable\""
+[[ $(compose_database) == opsecmkt_restored ]]
+if AGE_RECIPIENT=$AGE_RECIPIENT backup "$work/unreadable.dump.age" > "$work/unreadable.log" 2>&1; then
+  echo 'backup.sh guessed a database from an unreadable DATABASE_URL' >&2; exit 1
+fi
+grep -q 'set BACKUP_INTERNAL_DATABASE' "$work/unreadable.log"
+BACKUP_INTERNAL_DATABASE=opsecmkt_restored AGE_RECIPIENT=$AGE_RECIPIENT backup "$work/override.dump.age" > "$work/override.log"
+grep -q 'of internal database opsecmkt_restored saved to' "$work/override.log"
+# Two sources at once are ambiguous.
+if BACKUP_INTERNAL_DATABASE=opsecmkt_restored BACKUP_DATABASE_URL='postgres://x@127.0.0.1/x' AGE_RECIPIENT=$AGE_RECIPIENT \
+  backup "$work/both.dump.age" > "$work/both-backup.log" 2>&1; then
+  echo 'backup.sh accepted two sources' >&2; exit 1
+fi
+grep -q 'Set only one of BACKUP_DATABASE_URL and BACKUP_INTERNAL_DATABASE' "$work/both-backup.log"
+set_database_url "DATABASE_URL='postgres://opsecmkt:$password@db:5432/opsecmkt?sslmode=disable'"
 
 # Restoring over the populated live database conflicts and rolls back completely; the gate is not applied.
 sql opsecmkt 'DROP TABLE notes' >/dev/null
@@ -148,4 +215,4 @@ if RESTORE_INTERNAL_DATABASE=opsecmkt_other restore "$work/backup.dump.age" <<< 
   echo 'Restore succeeded without a running database service' >&2; exit 1
 fi
 grep -q 'docker compose up -d --wait db' "$work/stopped.log"
-echo 'Internal-db Compose backup/restore regressions passed (no published port, typed confirmation, wrong key, side-by-side and fresh-volume restores, conflict rollback, payout recovery gate and holds).'
+echo 'Internal-db Compose backup/restore regressions passed (no published port, typed confirmation, wrong key, side-by-side and fresh-volume restores, backups following DATABASE_URL after a switch, conflict rollback, payout recovery gate and holds).'
