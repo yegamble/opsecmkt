@@ -190,29 +190,46 @@ the **upgraded** checkout: its `scripts/restore.sh` can restore into the interna
 Once payments are on, the marketplace is custodial for test coins: the Bitcoin wallet lives in the
 `bitcoin_data` volume and the Monero wallet in `monero_wallet`. **Database dumps do not include them.** Back
 them up separately (see the runbook). `scripts/restore.sh` now pauses all outbound payouts with a persistent recovery gate, holds every
-pending, sending, blocked or held payout, and marks every failed payout as possibly sent after the backup (it
-may have been requeued and sent since). Follow the [reconciliation procedure](docs/testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts),
+pending, sending, blocked or held payout (one held for an account suspension keeps its "Suspended account:"
+text, so its payout address check stays), marks every failed payout as possibly sent after the backup (it
+may have been requeued and sent since) and adds an audit row recording the gate and those counts. Follow the [reconciliation procedure](docs/testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts),
 including orders paid out after the backup that have no payout row in it, before explicitly clearing the
 gate. Restore with the application stopped and keep the site cut off from users until reconciliation is
 complete; the procedure says when the app runs for you alone and when it must be stopped.
-If the script reports recovery protection failed, do not start the application. Apply the protections to
-the restored application database in one transaction first (older databases without a `payouts` table need
-only the settings update; omit the `send_ambiguous` line if their `payouts` table has no such column, as
-migration 053 then marks their failed payouts ambiguous itself):
 
+**Any restore not done by `scripts/restore.sh` skips this payout protection.** A host or volume snapshot, a
+managed-database point-in-time recovery or a manual `pg_restore` brings payouts back as `pending` with no
+gate, and the application sends them again as soon as it starts, even if they were paid after that point in
+time. After such a restore, and whenever the script reports that recovery protection failed, keep the
+application stopped (`docker compose stop app`; for a volume snapshot start only the database with
+`docker compose up -d --wait db`) and apply the protection below to the restored application database
+**before starting the application**, then follow the same reconciliation procedure. It runs in one
+transaction and adds one audit row ("set manually"); existing audit rows are not changed. Older databases
+without a `payouts` table need only the `settings` and `audit_events` statements; omit the `send_ambiguous`
+line if their `payouts` table has no such column, as migration 053 then marks their failed payouts ambiguous
+itself.
+
+<!-- runbook-sql: restore-protection -->
 ```sql
 BEGIN;
 INSERT INTO settings(key,value) VALUES ('payments_recovery_required','true')
 ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
 UPDATE payouts SET state='held', updated=now(),
   error='Restored from backup: verify in the wallet before releasing; this payout may already have been sent.'
+    || coalesce(' ' || substring(error from 'Suspended account:.*'), '')
 WHERE state IN ('pending','sending','blocked','held');
 UPDATE payouts SET send_ambiguous=true WHERE state='failed';
 UPDATE payouts SET updated=now(),
   error='Restored from backup: verify in the wallet before requeueing; this payout may have been requeued and sent after the backup. Last error: ' || error
 WHERE state='failed';
+INSERT INTO audit_events(user_id,action) VALUES (NULL, 'Payout recovery gate set manually (UPGRADING.md section 6); all outbound payouts paused until an administrator clears the gate');
 COMMIT;
 ```
+
+Save it as `restore-protection.sql` and run it with `psql` against the restored database, for the internal
+database `docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d opsecmkt_restored < restore-protection.sql`
+(the database name in `DATABASE_URL`). It must end with `INSERT 0 1` and `COMMIT`; on an error nothing is
+changed.
 
 The payout gate is enforced by this release. An older application image may not understand it; keep wallet
 RPC configuration disabled when inspecting a restored database with older code. Alpha.1 has no payment
