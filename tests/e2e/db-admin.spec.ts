@@ -201,7 +201,7 @@ test('site settings, account suspension, operator key, canary signature checks a
   await expect(suspect.locator('.account-name')).toHaveText(suspectHandle);
   expect(await submitSuspension(suspectHandle, 'Suspend', ADMIN.password)).toBe(303);
   await expect(admin).toHaveURL(/\/admin\?saved=1#suspend$/);
-  await expect(suspended).toHaveText(new RegExp(`^${suspectHandle} · buyer · suspended \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}$`));
+  await expect(suspended).toHaveText(new RegExp(`^${suspectHandle} · buyer · suspended \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2} UTC$`));
   const suspendRows = admin.locator('table').last().locator('tbody tr');
   await expect(suspendRows.filter({ hasText: `Suspended account ${suspectHandle}; ended 1 session(s) and any pending sign-ins (confirmed with password)` }).locator('td').first()).toHaveText(ADMIN.handle);
   await expect(suspendRows.filter({ hasText: `Account suspended by administrator ${ADMIN.handle}; ended 1 session(s)` }).locator('td').first()).toHaveText(suspectHandle);

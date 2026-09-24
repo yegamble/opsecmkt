@@ -65,7 +65,7 @@ func loadListingEdit(ctx context.Context, a *App, r *http.Request, d *PageData) 
 	v := &ListingView{AutoDelivery: a.autoDeliveryCurrencies()}
 	err := a.db.QueryRowContext(ctx, `SELECT p.id,p.title,p.description,p.category,p.region,p.kind,u.handle,p.vendor_id,p.btc,p.xmr,p.stock,p.archived,
  CASE WHEN p.vendor_id=$2 THEN p.delivery_content ELSE '' END,p.delivery_content<>'',
- to_char(p.updated,'YYYY-MM-DD HH24:MI'),coalesce(to_char(p.archived_at,'YYYY-MM-DD HH24:MI'),''),
+ to_char(p.updated,'YYYY-MM-DD HH24:MI "UTC"'),coalesce(to_char(p.archived_at,'YYYY-MM-DD HH24:MI "UTC"'),''),
  (`+openOrdersSQL+`)
  FROM products p JOIN users u ON u.id=p.vendor_id WHERE p.id=$1 AND (p.vendor_id=$2 OR $3='admin')`,
 		r.URL.Query().Get("id"), d.User.ID, d.User.Role).Scan(&p.ID, &p.Title, &p.Description, &p.Category, &p.Region, &p.Kind, &p.Vendor, &p.VendorID, &btc, &xmr, &p.Stock, &p.Archived, &v.DeliveryContent, &v.HasDeliveryContent, &v.Updated, &v.ArchivedAt, &v.OpenOrders)

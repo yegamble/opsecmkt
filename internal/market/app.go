@@ -12,7 +12,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 	"html/template"
 	"net/http"
 	"net/url"
@@ -89,9 +90,9 @@ func New(ctx context.Context, preview bool) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("pgx", dsn)
+	db, err := OpenDB(dsn)
 	if err != nil {
-		return nil, errors.New("database configuration invalid")
+		return nil, err
 	}
 	a.db = db
 	db.SetMaxOpenConns(12)
@@ -111,6 +112,23 @@ func New(ctx context.Context, preview bool) (*App, error) {
 		return nil, err
 	}
 	return a, nil
+}
+
+// OpenDB opens the database in dsn with TimeZone pinned to UTC on every connection (a startup parameter, which
+// outranks database and role defaults), so displayed times never follow or reveal the server's zone. The
+// application pool, its migrations and the -reset-admin-password command all open the database here.
+func OpenDB(dsn string) (*sql.DB, error) {
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return nil, errors.New("database configuration invalid")
+	}
+	for k := range cfg.RuntimeParams {
+		if strings.EqualFold(k, "timezone") {
+			delete(cfg.RuntimeParams, k)
+		}
+	}
+	cfg.RuntimeParams["timezone"] = "UTC"
+	return stdlib.OpenDB(*cfg), nil
 }
 func randomToken() string {
 	b := make([]byte, 32)
