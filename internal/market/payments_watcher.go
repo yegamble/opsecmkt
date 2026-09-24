@@ -605,11 +605,34 @@ func (a *App) sendPayouts(ctx context.Context, p PaymentProvider, orders []strin
 			err = a.recordPayout(rctx, id, order, recipient, "sent", txid, "", false, "TESTNET payout of "+label+" sent: "+txid)
 		}
 		cancel()
+		// Logged here, not only in the returned error: the watcher drops a pass's error once shutdown has begun,
+		// and a send that could not be recorded leaves its txid nowhere else (A-141, A-107).
+		recorded := "yes"
 		if err != nil {
+			recorded = "no cause=" + errorCause(err)
 			errs = append(errs, fmt.Errorf("payout %d recorded as sending only: %w", id, err))
 		}
+		outcome := "sent txid=" + txid
+		if serr != nil {
+			outcome = "failed error=" + payoutErrorClass(cur, serr)
+		}
+		log.Printf("payout id=%d order=%s currency=%s amount=%s outcome=%s recorded=%s", id, order[:min(8, len(order))], cur, amount(amt, currencyDecimals(cur)), outcome, recorded)
 	}
 	return errors.Join(errs...)
+}
+
+// payoutErrorClass names a failed send for the log without the wallet's error text: definite (refused before
+// broadcasting, walletRejected) or ambiguous, then the JSON-RPC error code or errorCause's class.
+func payoutErrorClass(cur string, err error) string {
+	class := "ambiguous/"
+	if walletRejected(cur, err) {
+		class = "definite/"
+	}
+	var re *rpcError
+	if errors.As(err, &re) {
+		return class + fmt.Sprintf("rpc:%d", re.Code)
+	}
+	return class + errorCause(err)
 }
 
 // walletRejected reports a definite refusal: the wallet answered the send with a JSON-RPC error raised before

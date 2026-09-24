@@ -209,7 +209,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/healthz" {
 		if a.db != nil {
 			if err := a.db.PingContext(ctx); err != nil {
-				http.Error(w, "unavailable", 503)
+				serverError(w, r, 503, "unavailable", errorCause(err))
 				return
 			}
 		}
@@ -244,7 +244,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			user = u
 		} else if err != sql.ErrNoRows {
-			http.Error(w, "Service unavailable", 503)
+			serverError(w, r, 503, "Service unavailable", errorCause(err))
 			return
 		}
 	}
@@ -351,12 +351,12 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		d.CSRF = a.csrf(token)
 		d.Mode = a.mode
 		applyPreviews(&d)
-		a.render(w, d)
+		a.render(w, r, d)
 		return
 	}
 	var installed bool
 	if err := a.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM settings WHERE key='installed')").Scan(&installed); err != nil {
-		http.Error(w, "Service unavailable", 503)
+		serverError(w, r, 503, "Service unavailable", errorCause(err))
 		return
 	}
 	if !installed && page != "setup" {
@@ -381,16 +381,19 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := a.load(r, &d); err != nil {
 		var he *httpError
-		if err == sql.ErrNoRows {
+		switch {
+		case err == sql.ErrNoRows:
 			http.NotFound(w, r)
-		} else if errors.As(err, &he) {
+		case !errors.As(err, &he):
+			serverError(w, r, 500, "Unable to load this page", errorCause(err))
+		case he.Code >= 500:
+			serverError(w, r, he.Code, he.Msg, errorCause(he))
+		default:
 			http.Error(w, he.Msg, he.Code)
-		} else {
-			http.Error(w, "Unable to load this page", 500)
 		}
 		return
 	}
-	a.render(w, d)
+	a.render(w, r, d)
 }
 
 // pageData is the state a page render starts from, before a.load fills it.
@@ -402,12 +405,18 @@ func (a *App) pageData(r *http.Request, page, token string, user *User) PageData
 	return d
 }
 
-func (a *App) render(w http.ResponseWriter, d PageData) { a.renderStatus(w, d, http.StatusOK) }
+func (a *App) render(w http.ResponseWriter, r *http.Request, d PageData) {
+	a.renderStatus(w, r, d, http.StatusOK)
+}
 
-func (a *App) renderStatus(w http.ResponseWriter, d PageData, code int) {
+func (a *App) renderStatus(w http.ResponseWriter, r *http.Request, d PageData, code int) {
 	var b bytes.Buffer
 	if err := a.templates.ExecuteTemplate(&b, "page:"+d.Page, d); err != nil {
-		http.Error(w, "Unable to render page", 500)
+		cause := errorCause(err)
+		if !strings.HasPrefix(cause, "template:") {
+			cause = "template:page:" + d.Page
+		}
+		serverError(w, r, 500, "Unable to render page", cause)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
