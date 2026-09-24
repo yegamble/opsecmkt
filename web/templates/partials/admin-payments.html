@@ -67,7 +67,7 @@
 <td class="mono">{{if .TxID}}{{.TxID}}{{else}}{{.Error}}{{end}}</td>
 <td>{{.Updated}}</td>
 <td>{{if or (eq .State "held") (eq .State "failed") (and (eq .State "sending") .Attention)}}<details class="payout-actions">
-<summary>Resolve payout {{.ID}}</summary>
+<summary>Resolve payout {{.ID}}: {{.Kind}} {{.Amount}} {{.Currency}} to {{.Recipient}}, order {{.OrderShort}}</summary>
 {{if and .AddressCheck (not .Address)}}<p class="help">This payout was held when the recipient's account was suspended and has no payout address. It can be released after the recipient saves one (once the account is restored); check that address with them first.</p>
 {{else if .Waiting}}{{$threshold := .Threshold}}<p class="help">The payment watcher holds this payout while a credited deposit of {{if .OrderLink}}<a class="text-link" href="/order?id={{.OrderID}}">this order</a>{{else}}this order{{end}} is conflicted or below the confirmation threshold, and releases it by itself once the deposit confirms again. There is nothing to release until then:</p>
 <ul class="held-deposits">{{range .Waiting}}<li>Deposit <span class="mono">{{.TxID}}:{{.Index}}</span> to deposit address <span class="mono">{{.Address}}</span>: {{if lt .Confirmations 0}}conflicted or missing from the wallet{{else}}{{.Confirmations}} of {{$threshold}} confirmations{{end}}</li>{{end}}</ul>
