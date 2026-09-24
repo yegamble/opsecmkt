@@ -1,4 +1,5 @@
 import { expect, test, type Page, type Locator } from '@playwright/test';
+import { previewRoutes } from './preview-routes';
 
 async function filters(page: Page) {
   const mobile = page.locator('.filter-details');
@@ -95,10 +96,11 @@ test('seeded catalog text remains readable and reflows at doubled text size', as
   await expect(page.locator('.product-card h2').first()).toBeVisible();
   await fits(page);
   await expect(page.locator('script')).toHaveCount(0);
-  for (const path of ['/product?id=encrypted-drive', '/checkout?id=encrypted-drive', '/order?id=sample-draft', '/messages', '/account', '/vendor-dashboard', '/moderator', '/admin']) {
+  // A-115: every preview route, including real-shaped 64-hex order IDs, the sample deposit row and monospace h1s.
+  for (const [path, heading] of previewRoutes) {
     await page.goto(path);
     await page.locator('html').evaluate(element => { element.style.fontSize = '200%'; });
-    await expect(page.locator('main')).toBeVisible();
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText(heading);
     await fits(page);
   }
 });

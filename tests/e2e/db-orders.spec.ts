@@ -16,6 +16,13 @@ test('draft cannot be paid without a wallet, cancellation is recorded, vendor se
   await page.getByRole('button', { name: 'Create unfunded draft' }).click();
   await expect(page).toHaveURL(/\/order\?id=/);
   const orderURL = page.url();
+  // A-115: the 64-hex order ID in the page head and breadcrumb wraps instead of widening the page.
+  const viewport = page.viewportSize()!;
+  for (const width of [390, 320]) {
+    await page.setViewportSize({ width, height: viewport.height });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth), `draft at ${width}px`).toBeLessThanOrEqual(width);
+  }
+  await page.setViewportSize(viewport);
 
   // No provider: the payment step is visibly unavailable and there is no button for it.
   await expect(page.locator('.order-unavailable')).toContainText('Payment unavailable for BTC');

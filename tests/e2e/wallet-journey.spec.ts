@@ -15,6 +15,16 @@ async function submit(page: Page, button: ReturnType<Page['getByRole']>) {
 async function reloadUntil(page: Page, assertion: () => Promise<void>) {
   await expect(async () => { await page.reload(); await assertion(); }).toPass({ timeout: 20_000, intervals: [300, 500, 1000] });
 }
+// A-115: real 64-hex order IDs, txids and deposit tables never widen the page at phone or desktop width (tables
+// scroll inside .table-wrap). Checks 390 px (the project viewport), then 320 and 1280 px, and restores the size.
+async function fitsAt(page: Page, label: string) {
+  const original = page.viewportSize()!;
+  for (const width of [390, 320, 1280]) {
+    await page.setViewportSize({ width, height: original.height });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth), `${label} at ${width}px`).toBeLessThanOrEqual(width);
+  }
+  await page.setViewportSize(original);
+}
 
 test('BTC and XMR: partial payment, intake pause, confirmation, fulfillment and one payout', async ({ page: admin, browser, baseURL, request }) => {
   await admin.goto('/setup');
@@ -52,9 +62,11 @@ test('BTC and XMR: partial payment, intake pause, confirmation, fulfillment and 
     await buyer.getByRole('link', { name: 'Review order draft' }).click();
     await buyer.getByLabel('Reference currency').selectOption(currency);
     await buyer.getByRole('button', { name: 'Create unfunded draft' }).click();
+    await fitsAt(buyer, `${currency} draft`);
     await buyer.getByRole('button', { name: 'Request payment address' }).click();
     const orderURL = buyer.url();
     await expect(buyer.locator('.page-head .badge')).toHaveText('Awaiting payment');
+    await fitsAt(buyer, `${currency} awaiting payment`);
     const address = (await buyer.locator('.payment-address .mono').innerText()).trim();
     await admin.goto('/admin');
     const pause = admin.locator('form', { has: admin.getByRole('button', { name: `Pause new ${currency} payments` }) });
@@ -73,11 +85,14 @@ test('BTC and XMR: partial payment, intake pause, confirmation, fulfillment and 
     const remaining = buyer.locator('.payment-figures div').filter({ has: buyer.getByText('Remaining to send', { exact: true }) });
     await reloadUntil(buyer, async () => { await expect(remaining).toContainText(digital ? '0.3' : '0.0006', { timeout: 500 }); });
     await expect(buyer.locator('.page-head .badge')).toHaveText('Awaiting payment');
+    await expect(buyer.locator('.payment-deposits tbody tr')).toHaveCount(1);
+    await fitsAt(buyer, `${currency} partial deposit`);
     expect((await request.post(`${rpc}/test/deposit`, { data: { address, amount: total * 0.6 } })).ok()).toBeTruthy();
     await reloadUntil(buyer, async () => { await expect(buyer.getByText('Do not send another payment', { exact: false })).toBeVisible({ timeout: 500 }); });
     await expect(buyer.locator('.page-head .badge')).toHaveText('Awaiting payment');
     expect((await request.post(`${rpc}/test/confirm`, { data: { address } })).ok()).toBeTruthy();
     await reloadUntil(buyer, async () => { await expect(buyer.locator('.page-head .badge')).toHaveText('Paid', { timeout: 500 }); });
+    await fitsAt(buyer, `${currency} paid (buyer)`);
     // Existing addresses were monitored while intake was paused; now resume new requests.
     const resume = admin.locator('form', { has: admin.getByRole('button', { name: `Enable new ${currency} payments` }) });
     await resume.getByLabel('Current password', { exact: true }).fill(password);
@@ -85,6 +100,7 @@ test('BTC and XMR: partial payment, intake pause, confirmation, fulfillment and 
     await second.reload();
     await expect(second.getByRole('button', { name: 'Request payment address' })).toBeVisible();
     await admin.goto(orderURL);
+    await fitsAt(admin, `${currency} paid (vendor)`);
     if (digital) {
       await admin.getByLabel('Delivery content', { exact: true }).fill('Fixture digital delivery token');
       await submit(admin, admin.getByRole('button', { name: 'Deliver digital content', exact: true }));
@@ -102,6 +118,7 @@ test('BTC and XMR: partial payment, intake pause, confirmation, fulfillment and 
     expect(state.payouts.filter((p: any) => p.currency === currency)).toEqual([expect.objectContaining({ address: destination, amount: total })]);
     await reloadUntil(buyer, async () => { await expect(buyer.locator('.payment-figures div').filter({ has: buyer.getByText('Payout status', { exact: true }) })).toContainText('Sent', { timeout: 500 }); });
     await buyer.reload();
+    await fitsAt(buyer, `${currency} completed`);
     const checks = (await (await request.get(`${rpc}/test/state`)).json()).checks;
     await expect.poll(async () => (await (await request.get(`${rpc}/test/state`)).json()).checks).toBeGreaterThan(checks + 2);
     expect(((await (await request.get(`${rpc}/test/state`)).json()).payouts as any[]).filter(p => p.currency === currency)).toHaveLength(1);
@@ -152,6 +169,7 @@ test('funded dispute: encrypted moderator evidence, independent resolution and o
   // A-80: both dispute forms warn that the reason is plain text and point to the encrypted staff contacts.
   await buyer.goto('/disputes');
   await expect(buyer.getByLabel('Describe the issue')).toHaveAccessibleDescription(/^Stored unencrypted\..*Never include an address, real name or tracking number.*Contact dispute staff/);
+  await fitsAt(buyer, 'disputes form');
   await buyer.goto(orderURL);
   await buyer.getByText('Open a dispute', { exact: true }).click();
   await expect(buyer.getByLabel('Describe the issue')).toHaveAccessibleDescription(/^Stored unencrypted\..*Never include an address, real name or tracking number.*Contact dispute staff/);
@@ -159,6 +177,11 @@ test('funded dispute: encrypted moderator evidence, independent resolution and o
   await buyer.getByRole('button', { name: 'Submit dispute' }).click();
   await buyer.goto(orderURL);
   await expect(buyer.locator('.page-head .badge')).toHaveText('Disputed');
+  await fitsAt(buyer, 'disputed order');
+  await buyer.goto('/disputes');
+  await expect(buyer.getByRole('link', { name: `Order ${new URL(orderURL).searchParams.get('id')}` })).toBeVisible();
+  await fitsAt(buyer, 'disputes list');
+  await buyer.goto(orderURL);
   const staff = buyer.getByRole('region', { name: 'Contact dispute staff' });
   await expect(staff).not.toContainText('wallet_admin');
   await staff.locator('summary', { hasText: 'wallet_moderator' }).click();
@@ -173,6 +196,7 @@ test('funded dispute: encrypted moderator evidence, independent resolution and o
   await admin.goto('/moderator');
   await expect(admin.getByRole('button', { name: 'Resolve dispute' })).toHaveCount(0);
   await moderator.goto('/moderator');
+  await fitsAt(moderator, 'moderation desk');
   await moderator.getByRole('radio', { name: 'Refund to buyer' }).check();
   await moderator.getByLabel('Decision', { exact: true }).fill('Fixture review completed: return the confirmed test payment to the buyer.');
   await moderator.getByRole('button', { name: 'Resolve dispute' }).click();
