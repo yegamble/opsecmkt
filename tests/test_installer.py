@@ -15,6 +15,17 @@ INSTALLER = REPOSITORY / 'scripts' / 'install.sh'
 PRUNED_MONERO_FLAGS = '--prune-blockchain --sync-pruned-blocks'
 
 
+def preflight(project='opsecmkt', containers=False):
+    """The Docker calls the installer makes before asking anything: containers, then volumes if none."""
+    calls = ['compose version',
+             f'ps -a --filter label=com.docker.compose.project={project} '
+             '--format dir={{.Label "com.docker.compose.project.working_dir"}}']
+    return calls if containers else calls + [f'volume ls -q --filter label=com.docker.compose.project={project}']
+
+
+PREFLIGHT = preflight()
+
+
 class InstallerTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix='opsecmkt-installer-test-')
@@ -38,6 +49,20 @@ if args == ['compose', 'config', '--quiet']:
     assert Path('.env').is_file(), 'Configuration must exist before validation'
     sys.exit(42 if os.environ.get('INSTALLER_TEST_BAD_CONFIG') == '1' else 0)
 if args == ['compose', 'up', '-d', '--build']:
+    sys.exit(0)
+# Existing Compose objects: one working_dir label per container line, one volume name per line.
+if args[:2] == ['ps', '-a']:
+    if os.environ.get('INSTALLER_TEST_PS_FAIL') == '1':
+        sys.exit('Cannot connect to the Docker daemon')
+    # Render the installer's --format as docker does, one line per container (an empty label stays empty).
+    template = args[args.index('--format') + 1]
+    label = '{{.Label "com.docker.compose.project.working_dir"}}'
+    assert label in template, template
+    for directory in os.environ.get('INSTALLER_TEST_CONTAINERS', '').splitlines():
+        print(template.replace(label, directory))
+    sys.exit(0)
+if args[:2] == ['volume', 'ls']:
+    print(os.environ.get('INSTALLER_TEST_VOLUMES', ''), end='')
     sys.exit(0)
 sys.exit('Unexpected docker command')
 ''')
@@ -142,12 +167,20 @@ time.sleep(60)
     def calls(self):
         return self.log.read_text().splitlines() if self.log.exists() else []
 
-    def assert_started(self, result):
+    def assert_started(self, result, preflight_calls=PREFLIGHT):
         self.assertEqual(result.returncode, 0, 'Installer unexpectedly failed')
         self.assertEqual(self.calls(), [
-            'compose version', 'compose config --quiet', 'compose up -d --build',
+            *preflight_calls, 'compose config --quiet', 'compose up -d --build',
         ])
         self.assertEqual(list(self.root.glob('.env.install.*')), [])
+
+    def assert_refused_before_writing(self, result, calls):
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.calls(), calls)
+        self.assertFalse((self.root / '.env').exists())
+        self.assertEqual(list(self.root.glob('.env.install.*')), [])
+        # Nothing was asked: the refusal comes before the first question.
+        self.assertEqual(result.stdout, '')
 
     def test_internal_clearnet_defaults(self):
         # Every question answered with Enter: mode, database, local HTTP, then for each coin the node
@@ -157,6 +190,8 @@ time.sleep(60)
         config = self.config()
         self.assertEqual(config['APP_MODE'], 'clearnet')
         self.assertEqual(config['COOKIE_SECURE'], 'true')
+        # Existing installs have no COMPOSE_PROJECT_NAME and use compose.yaml's name; new ones keep that default.
+        self.assertEqual(config['COMPOSE_PROJECT_NAME'], 'opsecmkt')
         self.assertEqual(config['COMPOSE_PROFILES'], 'internal-db,bitcoin,monero,monero-wallet')
         self.assertEqual(config['COMPOSE_FILE'],
                          'compose.yaml:compose.clearnet.yaml:compose.nodes.yaml:compose.internal-db.yaml')
@@ -264,7 +299,7 @@ time.sleep(60)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('APP_PORT must', result.stderr)
         self.assertFalse((self.root / '.env').exists())
-        self.assertEqual(self.calls(), ['compose version'])
+        self.assertEqual(self.calls(), PREFLIGHT)
 
     def test_external_clearnet_local_http(self):
         url = 'postgresql://test:local-only@database:5432/scratch?sslmode=require'
@@ -337,7 +372,7 @@ time.sleep(60)
                 result = self.run_installer(['clearnet', '', 'yes', 'local', image])
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn('Invalid', result.stderr)
-                self.assertEqual(self.calls(), ['compose version'])
+                self.assertEqual(self.calls(), PREFLIGHT)
                 self.assertFalse((self.root / '.env').exists())
 
     def test_local_node_accepts_a_complete_digest_pinned_reference(self):
@@ -359,7 +394,7 @@ time.sleep(60)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('Live Bitcoin payments are disabled', result.stderr)
         self.assertFalse((self.root / '.env').exists())
-        self.assertEqual(self.calls(), ['compose version'])
+        self.assertEqual(self.calls(), PREFLIGHT)
 
     def test_external_monero_wallet_rpc(self):
         daemon, wallet = 'https://monerod.example.test', 'http://user:pass@wallet.example.test:18083'
@@ -399,9 +434,80 @@ time.sleep(60)
                 result = self.run_installer(answers, openssl_empty_call=call)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn('Could not generate a random secret', result.stderr)
-                self.assertEqual(self.calls(), ['compose version'])
+                self.assertEqual(self.calls(), PREFLIGHT)
                 self.assertFalse((self.root / '.env').exists())
                 self.assertEqual(list(self.root.glob('.env.install.*')), [])
+
+    def test_containers_from_another_checkout_are_refused_before_anything_is_written(self):
+        # A second checkout under the same project name would recreate the other installation's containers
+        # with new secrets, and its `docker compose down -v` would delete that installation's volumes.
+        other = '/srv/live-opsecmkt'
+        result = self.run_installer([''] * 11, extra_env={
+            'INSTALLER_TEST_CONTAINERS': f'{other}\n{self.root}\n{other}\n',
+        })
+        self.assert_refused_before_writing(result, preflight(containers=True))
+        self.assertIn("Compose project 'opsecmkt' already has containers created from another directory", result.stderr)
+        self.assertEqual(result.stderr.count(other), 1)
+        self.assertNotIn(str(self.root) + '\n', result.stderr)
+        self.assertIn('work in its directory', result.stderr)
+        self.assertIn('COMPOSE_PROJECT_NAME=opsecmkt-rehearsal ./scripts/install.sh', result.stderr)
+
+    def test_local_shortcut_refusal_repeats_the_local_argument(self):
+        result = self.run_installer([], arguments=['--local'], extra_env={
+            'INSTALLER_TEST_CONTAINERS': '/srv/live-opsecmkt\n',
+        })
+        self.assert_refused_before_writing(result, preflight(containers=True))
+        self.assertIn('COMPOSE_PROJECT_NAME=opsecmkt-rehearsal ./scripts/install.sh --local', result.stderr)
+
+    def test_unlabelled_project_container_is_refused(self):
+        result = self.run_installer([], arguments=['--local'], extra_env={'INSTALLER_TEST_CONTAINERS': '\n'})
+        self.assert_refused_before_writing(result, preflight(containers=True))
+        self.assertIn('(no working directory label)', result.stderr)
+
+    def test_containers_from_this_checkout_proceed(self):
+        # Also through a symlink: Compose labels the path it was started from, not the resolved one.
+        links = tempfile.TemporaryDirectory(prefix='opsecmkt-installer-link-')
+        self.addCleanup(links.cleanup)
+        link = Path(links.name) / 'checkout'
+        link.symlink_to(self.root, target_is_directory=True)
+        result = self.run_installer([], arguments=['--local'], extra_env={
+            'INSTALLER_TEST_CONTAINERS': f'{self.root}\n{link}\n',
+        })
+        self.assert_started(result, preflight(containers=True))
+        self.assertEqual(self.config()['COMPOSE_PROJECT_NAME'], 'opsecmkt')
+
+    def test_project_volumes_without_containers_are_refused(self):
+        # `docker compose down` (README's normal stop) removes the containers, so their labels are gone, but
+        # keeps the volumes. Their checkout cannot be identified; starting on them here is refused too.
+        result = self.run_installer([''] * 11, extra_env={
+            'INSTALLER_TEST_VOLUMES': 'opsecmkt_postgres_data\nopsecmkt_bitcoin_data\n',
+        })
+        self.assert_refused_before_writing(result, PREFLIGHT)
+        self.assertIn("Compose project 'opsecmkt' has volumes but no containers", result.stderr)
+        self.assertIn('  opsecmkt_postgres_data\n  opsecmkt_bitcoin_data\n', result.stderr)
+        self.assertIn('COMPOSE_PROJECT_NAME=opsecmkt-rehearsal ./scripts/install.sh', result.stderr)
+
+    def test_distinct_project_name_is_checked_and_saved(self):
+        result = self.run_installer([], arguments=['--local'], extra_env={
+            'COMPOSE_PROJECT_NAME': 'opsecmkt-rehearsal', 'APP_PORT': '8081',
+        })
+        self.assert_started(result, preflight('opsecmkt-rehearsal'))
+        config = self.config()
+        # Saved so every later docker compose command in this checkout (backup.sh, restore.sh, down) uses it.
+        self.assertEqual(config['COMPOSE_PROJECT_NAME'], 'opsecmkt-rehearsal')
+        self.assertEqual(config['APP_PORT'], '8081')
+
+    def test_invalid_project_name_or_unreachable_docker_starts_nothing(self):
+        for name in ('Opsecmkt', '-opsecmkt', 'opsec mkt', "opsecmkt'"):
+            with self.subTest(name=name):
+                self.log.unlink(missing_ok=True)
+                result = self.run_installer([], arguments=['--local'], extra_env={'COMPOSE_PROJECT_NAME': name})
+                self.assert_refused_before_writing(result, ['compose version'])
+                self.assertIn('COMPOSE_PROJECT_NAME must use lower-case letters', result.stderr)
+        self.log.unlink(missing_ok=True)
+        result = self.run_installer([], arguments=['--local'], extra_env={'INSTALLER_TEST_PS_FAIL': '1'})
+        self.assert_refused_before_writing(result, preflight(containers=True))
+        self.assertIn('Could not list Docker containers', result.stderr)
 
     def test_existing_env_is_never_changed(self):
         path = self.root / '.env'
@@ -415,7 +521,7 @@ time.sleep(60)
     def test_failed_compose_validation_never_starts_services(self):
         result = self.run_installer(['tor', '', 'disabled', 'disabled'], bad_config=True)
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(self.calls(), ['compose version', 'compose config --quiet'])
+        self.assertEqual(self.calls(), [*PREFLIGHT, 'compose config --quiet'])
         self.config()  # The retained configuration still has restrictive permissions.
 
     def test_invalid_input_leaves_no_configuration_or_services(self):
@@ -435,7 +541,7 @@ time.sleep(60)
                 self.log.unlink(missing_ok=True)
                 result = self.run_installer(answers)
                 self.assertNotEqual(result.returncode, 0)
-                self.assertEqual(self.calls(), ['compose version'])
+                self.assertEqual(self.calls(), PREFLIGHT)
                 self.assertFalse((self.root / '.env').exists())
                 self.assertEqual(list(self.root.glob('.env.install.*')), [])
 

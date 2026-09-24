@@ -70,8 +70,14 @@ Compose project with PostgreSQL 17 on a free loopback application port. It uses
 HTTP form submissions and a cookie jar to verify the browser wizard: wrong-token
 rejection, administrator creation, redirect to the branded admin onboarding,
 setup lockdown, refusal to replace an existing `.env`, and authenticated admin
-access after restarting the app. Browser rendering is covered separately by
-Playwright.
+access after restarting the app. It then installs a second copy of the inputs
+on the same host: under the first project's name the installer refuses, names
+the first checkout and writes no `.env`; under its own `COMPOSE_PROJECT_NAME` it
+installs, saves the name in its `.env`, and a `docker compose down --volumes`
+there (with the name taken from `.env` alone) leaves the first installation's
+containers unchanged and its admin session and completed setup intact. Both
+projects and their images are removed afterwards. Browser rendering is covered
+separately by Playwright.
 
 The user's configuration and database are never used. Generated credentials stay
 inside the protected temporary directory; logs do not print the setup token.
