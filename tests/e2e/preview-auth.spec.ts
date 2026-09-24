@@ -98,6 +98,13 @@ test('password change and second-factor reset are plain POST forms and the previ
   await expect(suspend.getByRole('radio', { name: /^Restore:/ })).not.toBeChecked();
   await expect(suspend.getByLabel('Authenticator code')).toHaveCount(0);
   await expect(suspension.locator('.account-list li')).toHaveText(['held_account · buyer · suspended 2026-01-01 00:00 UTC']);
+  // A-118: the copy does not promise that orders continue normally, and says a suspended moderator is not a
+  // resolver or contact.
+  await expect(suspension).toContainText(
+    'Orders waiting on this account stop until it is restored; the other party can still complete, cancel where allowed, or open a dispute.',
+  );
+  await expect(suspension).toContainText('A suspended moderator does not resolve disputes');
+  await expect(suspension).not.toContainText('continue open orders');
   await noScriptsNoOverflow(page);
   await suspend.getByLabel('Account handle').fill('held_account');
   await suspend.getByRole('radio', { name: /^Restore:/ }).check();

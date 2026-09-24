@@ -228,8 +228,8 @@ Each of these forms repeats the wallet check above in one line next to the check
 ### Handle a payment-review flag
 
 The watcher flags a deposit (`payments.flagged`): it writes a system note ending "Moderator review
-required." to the order history and notifies every moderator and administrator ("Payment review needed for
-order <first 8 characters of the order ID>"). A locked transfer or a deposit after settlement is flagged once.
+required." to the order history and notifies every moderator and administrator who is not suspended
+("Payment review needed for order <first 8 characters of the order ID>"). A locked transfer or a deposit after settlement is flagged once.
 A credited deposit that falls back below the threshold (conflicted, missing, or at a lower depth after a
 reorg) is announced once per episode while the order is open or its payout unsent: the buyer and the vendor
 are notified too (staff who are party to the order get that notification instead of the review one), and if

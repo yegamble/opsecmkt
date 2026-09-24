@@ -75,9 +75,10 @@ func disputeAction(c *actionCtx) (actionResult, error) {
 // notifyDisputeStaff tells every moderator and administrator who is not a party to the order that a dispute
 // opened. If every staff account is a party, the dispute still stands: the order history records that no
 // independent resolver was available and every administrator is told it needs a moderator who is not a party.
+// A suspended account cannot sign in, so it counts as neither a resolver nor a recipient (A-118).
 func notifyDisputeStaff(c *actionCtx, o *Order) error {
 	ctx, tx := c.Ctx(), c.Tx
-	staff, err := collectStrings(ctx, tx, "SELECT id FROM users WHERE role IN ('moderator','admin') AND id<>$1 AND id<>$2", o.BuyerID, o.VendorID)
+	staff, err := collectStrings(ctx, tx, "SELECT id FROM users WHERE role IN ('moderator','admin') AND suspended_at IS NULL AND id<>$1 AND id<>$2", o.BuyerID, o.VendorID)
 	if err != nil {
 		return err
 	}
@@ -86,7 +87,7 @@ func notifyDisputeStaff(c *actionCtx, o *Order) error {
 		if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, stateDisputed, noResolverNote); err != nil {
 			return err
 		}
-		if staff, err = collectStrings(ctx, tx, "SELECT id FROM users WHERE role='admin'"); err != nil {
+		if staff, err = collectStrings(ctx, tx, "SELECT id FROM users WHERE role='admin' AND suspended_at IS NULL"); err != nil {
 			return err
 		}
 		body = "Dispute opened on order " + shortID(o.ID) + " needs a moderator who is not a party to the order. Every moderator and administrator is its buyer or vendor, so nobody can resolve it yet."

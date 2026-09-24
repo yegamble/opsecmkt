@@ -53,13 +53,14 @@ func init() {
 
 // Only order parties need a directory of independent staff to contact about a dispute.
 // Staff roles and saved keys are read live; role labels never imply key ownership verification.
+// Suspended staff are left out: they cannot sign in to read an encrypted message (A-118).
 func disputeStaffLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 	o, u := d.Order, d.User
 	if o == nil || u == nil || (o.State != stateDisputed && o.State != stateResolved) ||
 		(u.ID != o.BuyerID && u.ID != o.VendorID) {
 		return nil
 	}
-	rows, err := a.db.QueryContext(ctx, `SELECT id,handle,role FROM users WHERE role IN ('moderator','admin') AND id<>$1 AND id<>$2 ORDER BY handle`, o.BuyerID, o.VendorID)
+	rows, err := a.db.QueryContext(ctx, `SELECT id,handle,role FROM users WHERE role IN ('moderator','admin') AND suspended_at IS NULL AND id<>$1 AND id<>$2 ORDER BY handle`, o.BuyerID, o.VendorID)
 	if err != nil {
 		return err
 	}
