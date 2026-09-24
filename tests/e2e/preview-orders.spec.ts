@@ -1,8 +1,9 @@
 import { expect, test } from '@playwright/test';
+import { PREVIEW_DRAFT_ID } from './preview-routes';
 
 // P3 order views in the read-only preview (sample data, JavaScript disabled).
 test('order page shows history, unavailable payment and the buyer actions', async ({ page }) => {
-  await page.goto('/order?id=sample-draft');
+  await page.goto(`/order?id=${PREVIEW_DRAFT_ID}`);
   await expect(page.getByRole('heading', { name: 'History' })).toBeVisible();
   await expect(page.locator('.order-timeline li')).toHaveCount(1);
   await expect(page.locator('.order-unavailable')).toContainText('Payment unavailable for BTC');
@@ -14,9 +15,9 @@ test('order page shows history, unavailable payment and the buyer actions', asyn
 
 test('plaintext order notes say who reads them and to send addresses encrypted', async ({ page }) => {
   // A-80: the cancel reason is stored unencrypted; its warning is the field's accessible description. The
-  // preview renders only the buyer's draft; the ship, dispute and review warnings are checked by the Go
+  // preview draft carries only this note; the ship, dispute and review warnings are checked by the Go
   // database tests and the wallet journey.
-  await page.goto('/order?id=sample-draft');
+  await page.goto(`/order?id=${PREVIEW_DRAFT_ID}`);
   await expect(page.getByLabel('Reason (optional)')).toHaveAccessibleDescription(
     /^Stored unencrypted\. The vendor reads it in the order history, .*moderators and administrators if the order is disputed .*the operator and anyone with a backup\. Never include an address, real name or tracking number: send those encrypted with Message vendor on this page\.$/);
   await expect(page.locator('#note-help-cancelled').getByRole('link', { name: 'Stored unencrypted.', exact: true })).toHaveAttribute('href', '/canary#records');
@@ -43,7 +44,7 @@ test('moderator desk requires an outcome and disputes explain eligibility', asyn
 });
 
 test('preview rejects order actions', async ({ page }) => {
-  await page.goto('/order?id=sample-draft');
+  await page.goto(`/order?id=${PREVIEW_DRAFT_ID}`);
   await page.getByRole('button', { name: 'Cancel draft' }).click();
   await expect(page.locator('body')).toContainText('Read-only preview');
 });

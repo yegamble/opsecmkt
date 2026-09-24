@@ -337,6 +337,9 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				d.Users = []User{{ID: d.Products[0].VendorID, Handle: d.Products[0].Vendor, Role: "vendor"}}
 			}
 		}
+		if page == "order" && q.Get("id") == previewPaidID {
+			previewPaidOrder(&d)
+		}
 		d.CSRF = a.csrf(token)
 		d.Mode = a.mode
 		applyPreviews(&d)
