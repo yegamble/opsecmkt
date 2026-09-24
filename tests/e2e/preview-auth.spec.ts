@@ -76,10 +76,11 @@ test('password change and second-factor reset are plain POST forms and the previ
   await expect(reset).toContainText('Administrator accounts cannot be reset here');
   const form = reset.locator('form[action="/admin/reset-factors"]');
   await expect(form).toHaveAttribute('method', 'post');
-  await expect(form.getByLabel('Account with second factors').locator('option', { hasText: 'ghost_circuit · TOTP' })).toHaveCount(1);
+  await expect(form.getByLabel('Account handle')).toHaveAttribute('pattern', '[a-zA-Z0-9_]{3,32}');
+  await expect(reset.locator('.account-list li', { hasText: 'ghost_circuit · TOTP' })).toHaveCount(1);
   await expect(page.locator('table').last().locator('thead')).toContainText('Account');
   await noScriptsNoOverflow(page);
-  await form.getByLabel('Account with second factors').selectOption({ label: 'ghost_circuit · TOTP' });
+  await form.getByLabel('Account handle').fill('ghost_circuit');
   await form.getByLabel('Current password').fill('preview-password-123');
   await form.getByRole('button', { name: 'Reset second factors' }).click();
   await expect(page.locator('body')).toHaveText('Read-only preview. Start with PostgreSQL to save changes.');

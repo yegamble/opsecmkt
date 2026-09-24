@@ -61,3 +61,21 @@
 .session-revoke {
   margin-top:17px
 }
+.account-list {
+  margin-top:14px
+}
+.account-list summary {
+  cursor:pointer;
+  min-height:44px;
+  display:flex;
+  align-items:center;
+  color:var(--muted)
+}
+.account-list summary:hover {
+  color:var(--amber)
+}
+.account-list ul {
+  margin:0;
+  padding-left:22px;
+  overflow-wrap:anywhere
+}

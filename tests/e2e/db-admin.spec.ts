@@ -22,40 +22,60 @@ test('promoting a buyer to vendor opens the vendor desk; the listing form shows 
 
   const admin = await signedIn(browser, baseURL, ADMIN.handle, ADMIN.password, false);
   await admin.goto('/admin');
-  await expect(admin.locator('option', { hasText: `${vendorHandle} ·` })).toHaveText(`${vendorHandle} · buyer`);
+  const roleSection = admin.getByRole('region', { name: 'Assign an account role' });
+  const roleForm = roleSection.locator('form');
+  const newest = roleSection.locator('.account-list li', { hasText: `${vendorHandle} ·` });
+  await expect(newest).toHaveText(`${vendorHandle} · buyer`);
+  // The form takes a handle looked up on the server. An unknown one answers 404 with the page again: the
+  // reason in an alert, the handle and role kept for correction, nothing changed.
+  const unknown = uniqueHandle('nobody');
+  await roleForm.getByLabel('Account handle').fill(unknown);
+  await roleForm.getByLabel('Role').selectOption('vendor');
+  expect(await submitStatus(admin, () => roleForm.getByRole('button', { name: 'Update role' }).click())).toBe(404);
+  await expect(admin.getByRole('alert')).toHaveText(`No buyer, vendor or moderator has the handle "${unknown}". Check the spelling: handles are case-sensitive, and administrator roles cannot be changed here.`);
+  await expect(roleForm.getByLabel('Account handle')).toHaveValue(unknown);
+  await expect(roleForm.getByLabel('Role')).toHaveValue('vendor');
+  // The administrator's own role is fixed.
+  await roleForm.getByLabel('Account handle').fill(ADMIN.handle);
+  expect(await submitStatus(admin, () => roleForm.getByRole('button', { name: 'Update role' }).click())).toBe(400);
+  await expect(admin.locator('body')).toHaveText('Cannot change your own administrator role');
   await setRole(admin, vendorHandle, 'vendor');
   await expect(admin.getByRole('status')).toHaveText('Changes saved.');
   await admin.reload();
-  await expect(admin.locator('option', { hasText: `${vendorHandle} ·` })).toHaveText(`${vendorHandle} · vendor`);
+  await expect(newest).toHaveText(`${vendorHandle} · vendor`);
   // The administrator's row names the account and both roles; the account gets its own row, and the
   // Account column shows whose row each is.
   const auditRows = admin.locator('table').last().locator('tbody tr');
   await expect(auditRows.filter({ hasText: `Changed role of ${vendorHandle} from buyer to vendor` }).locator('td').first()).toHaveText(ADMIN.handle);
   await expect(auditRows.filter({ hasText: 'Role changed from buyer to vendor by an administrator' }).filter({ hasText: vendorHandle }).locator('td').first()).toHaveText(vendorHandle);
   // Only roles the server can assign are offered; administrator remains setup-only.
-  const roleForm = admin.locator('form', { has: admin.getByRole('button', { name: 'Update role' }) });
   await expect(roleForm.getByLabel('Role').locator('option[value="admin"]')).toHaveCount(0);
 
-  // Second-factor reset: offered only for accounts with a factor, never the administrator; needs the
-  // administrator's own password; ends the account's sessions and records the reset on both accounts.
+  // Second-factor reset by handle: the helper list shows accounts with a factor, never the administrator; an
+  // unknown handle answers 404 with the handle kept; it needs the administrator's own password; it ends the
+  // account's sessions and records the reset on both accounts.
   const reset = admin.getByRole('region', { name: "Reset a user's second factors" });
-  const resetAccount = reset.getByLabel('Account with second factors');
-  await expect(resetAccount.locator('option', { hasText: `${lockedHandle} ·` })).toHaveText(`${lockedHandle} · TOTP`);
-  await expect(resetAccount.locator('option', { hasText: `${vendorHandle} ·` })).toHaveCount(0);
-  await expect(resetAccount.locator('option', { hasText: `${ADMIN.handle} ·` })).toHaveCount(0);
-  const submitReset = async (password: string) => {
+  const factorList = reset.locator('.account-list li');
+  await expect(factorList.filter({ hasText: `${lockedHandle} ·` })).toHaveText(`${lockedHandle} · TOTP`);
+  await expect(factorList.filter({ hasText: `${vendorHandle} ·` })).toHaveCount(0);
+  await expect(factorList.filter({ hasText: `${ADMIN.handle} ·` })).toHaveCount(0);
+  const submitReset = async (handle: string, password: string) => {
     await admin.goto('/admin');
-    await resetAccount.selectOption({ label: `${lockedHandle} · TOTP` });
+    await reset.getByLabel('Account handle').fill(handle);
     await reset.getByLabel('Current password').fill(password);
     return submitStatus(admin, () => reset.getByRole('button', { name: 'Reset second factors' }).click());
   };
-  expect(await submitReset('not-the-admin-password')).toBe(401);
+  expect(await submitReset(unknown, ADMIN.password)).toBe(404);
+  await expect(admin.getByRole('alert')).toHaveText(`No account has the handle "${unknown}". Check the spelling: handles are case-sensitive.`);
+  await expect(reset.getByLabel('Account handle')).toHaveValue(unknown);
+  await expect(reset.getByLabel('Current password')).toHaveValue('');
+  expect(await submitReset(lockedHandle, 'not-the-admin-password')).toBe(401);
   await expect(admin.locator('body')).toHaveText('Password incorrect');
   await locked.goto('/account');
   await expect(locked.locator('.key-values div', { hasText: 'TOTP authentication' }).locator('dd')).toHaveText('Enabled');
-  expect(await submitReset(ADMIN.password)).toBe(303);
+  expect(await submitReset(lockedHandle, ADMIN.password)).toBe(303);
   await expect(admin).toHaveURL(/\/admin\?saved=1#reset-factors$/);
-  await expect(resetAccount.locator('option', { hasText: `${lockedHandle} ·` })).toHaveCount(0);
+  await expect(factorList.filter({ hasText: `${lockedHandle} ·` })).toHaveCount(0);
   const resetRows = admin.locator('table').last().locator('tbody tr');
   await expect(resetRows.filter({ hasText: `Reset second factors of ${lockedHandle}: TOTP and recovery codes turned off; ended 1 session(s) (confirmed with password)` }).locator('td').first()).toHaveText(ADMIN.handle);
   await expect(resetRows.filter({ hasText: `Second factors reset by administrator ${ADMIN.handle}: TOTP and recovery codes turned off; ended 1 session(s)` }).locator('td').first()).toHaveText(lockedHandle);

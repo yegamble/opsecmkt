@@ -20,7 +20,7 @@ func TestAdminRoleChangeAuditsBothAccountsAndGuards(t *testing.T) {
 	agExec(e, "INSERT INTO audit_events(user_id,action) VALUES($1,'Changed user role')", adminID)
 	legacy := agInt(e, "SELECT id FROM audit_events WHERE action='Changed user role'")
 
-	agExpect(e, "/admin", admin, form("action", "role", "role", "vendor", "user_id", targetID), 303, "")
+	agExpect(e, "/admin", admin, form("action", "role", "role", "vendor", "handle", "role_target"), 303, "")
 	if !e.auditExact(adminID, "Changed role of role_target from buyer to vendor") {
 		t.Fatal("administrator audit row does not name the account and roles")
 	}
@@ -45,19 +45,19 @@ func TestAdminRoleChangeAuditsBothAccountsAndGuards(t *testing.T) {
 		"<td>role_target</td>\n<td>Role changed from buyer to vendor by an administrator</td>")
 
 	// Re-submitting the same role records nothing on the account.
-	agExpect(e, "/admin", admin, form("action", "role", "role", "vendor", "user_id", targetID), 303, "")
+	agExpect(e, "/admin", admin, form("action", "role", "role", "vendor", "handle", "role_target"), 303, "")
 	if !e.auditExact(adminID, "Role of role_target unchanged (already vendor)") || agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action LIKE 'Role changed%'", targetID) != 1 {
 		t.Fatal("unchanged role audited incorrectly")
 	}
 
 	before := agInt(e, "SELECT count(*) FROM audit_events")
 	// Server-side guards (actions_admin.go): administrator is never assignable, and the caller's own role is fixed.
-	agExpect(e, "/admin", admin, form("action", "role", "role", "admin", "user_id", targetID), 400, "Choose buyer, vendor, or moderator")
-	agExpect(e, "/admin", admin, form("action", "role", "role", "", "user_id", targetID), 400, "Choose buyer, vendor, or moderator")
-	agExpect(e, "/admin", admin, form("action", "role", "role", "buyer", "user_id", adminID), 400, "Cannot change your own administrator role")
+	agExpect(e, "/admin", admin, form("action", "role", "role", "admin", "handle", "role_target"), 400, "Choose buyer, vendor, or moderator")
+	agExpect(e, "/admin", admin, form("action", "role", "role", "", "handle", "role_target"), 400, "Choose buyer, vendor, or moderator")
+	agExpect(e, "/admin", admin, form("action", "role", "role", "buyer", "handle", "role_admin"), 400, "Cannot change your own administrator role")
 	// Another administrator is not an eligible target either.
-	agExpect(e, "/admin", admin, form("action", "role", "role", "buyer", "user_id", otherAdminID), 404, "Eligible user not found")
-	agExpect(e, "/admin", admin, form("action", "role", "role", "buyer", "user_id", "missing"), 404, "Eligible user not found")
+	agExpect(e, "/admin", admin, form("action", "role", "role", "buyer", "handle", "role_admin2"), 404, "No buyer, vendor or moderator has the handle")
+	agExpect(e, "/admin", admin, form("action", "role", "role", "buyer", "handle", "missing"), 404, "No buyer, vendor or moderator has the handle")
 	for id, want := range map[string]string{targetID: "vendor", adminID: "admin", otherAdminID: "admin"} {
 		if got := agStr(e, "SELECT role FROM users WHERE id=$1", id); got != want {
 			t.Fatalf("refused role change altered %s: %s", id, got)
@@ -210,9 +210,9 @@ func TestPasswordChangeNeedsSecondFactorWhenEnrolled(t *testing.T) {
 	}
 }
 
-// resetForm is the admin second-factor reset form for target, confirmed with the test password.
+// resetForm is the admin second-factor reset form for the handle target, confirmed with the test password.
 func resetForm(target string, extra ...string) url.Values {
-	f := form("user_id", target, "password", testPassword)
+	f := form("handle", target, "password", testPassword)
 	for i := 0; i+1 < len(extra); i += 2 {
 		f.Set(extra[i], extra[i+1])
 	}
@@ -229,20 +229,20 @@ func TestAdminResetsSecondFactors(t *testing.T) {
 	_, pub := testPGPKey(t, "target")
 	agEnablePGP(e, targetID, pub)
 	agExec(e, "UPDATE users SET totp_last_step=99,totp_pending='sealed-pending',recovery_reveal='sealed-codes',recovery_reveal_until=now()+interval '10 minutes' WHERE id=$1", targetID)
-	plainID, _ := e.user("reset_plain", "buyer")
+	e.user("reset_plain", "buyer")
 	otherAdminID, _ := e.user("reset_admin2", "admin")
 	agEnableTOTP(e, otherAdminID)
 	_, buyer := e.user("reset_buyer", "buyer")
 	_, mod := e.user("reset_mod", "moderator")
 
-	// The admin page offers only non-administrator accounts that have a second factor.
+	// The reset panel lists only non-administrator accounts that have a second factor.
 	resetOptions := func() string {
 		t.Helper()
 		_, f, ok := strings.Cut(e.body("GET", "/admin", admin, nil, 200), `action="/admin/reset-factors"`)
 		if !ok {
 			t.Fatal("reset form missing")
 		}
-		f, _, _ = strings.Cut(f, "</form>")
+		f, _, _ = strings.Cut(f, "</section>")
 		return f
 	}
 	opts := resetOptions()
@@ -256,19 +256,19 @@ func TestAdminResetsSecondFactors(t *testing.T) {
 		}
 	}
 	// Non-administrators and anonymous callers are refused.
-	agExpect(e, "/admin/reset-factors", buyer, resetForm(targetID), 403, "Administrator access required")
-	agExpect(e, "/admin/reset-factors", mod, resetForm(targetID), 403, "Administrator access required")
-	agExpect(e, "/admin/reset-factors", targetSess, resetForm(targetID), 403, "Administrator access required")
-	agExpect(e, "/admin/reset-factors", randomToken(), resetForm(targetID), 401, "Sign in required")
+	agExpect(e, "/admin/reset-factors", buyer, resetForm("reset_target"), 403, "Administrator access required")
+	agExpect(e, "/admin/reset-factors", mod, resetForm("reset_target"), 403, "Administrator access required")
+	agExpect(e, "/admin/reset-factors", targetSess, resetForm("reset_target"), 403, "Administrator access required")
+	agExpect(e, "/admin/reset-factors", randomToken(), resetForm("reset_target"), 401, "Sign in required")
 	// The administrator must confirm with their own password.
-	agExpect(e, "/admin/reset-factors", admin, resetForm(targetID, "password", ""), 400, "Enter your current password")
-	agExpect(e, "/admin/reset-factors", admin, resetForm(targetID, "password", "wrong-password-123"), 401, "Password incorrect")
+	agExpect(e, "/admin/reset-factors", admin, resetForm("reset_target", "password", ""), 400, "Enter your current password")
+	agExpect(e, "/admin/reset-factors", admin, resetForm("reset_target", "password", "wrong-password-123"), 401, "Password incorrect")
 	// Never the administrator's own account, never another administrator.
-	agExpect(e, "/admin/reset-factors", admin, resetForm(adminID), 400, "cannot reset your own second factors")
-	agExpect(e, "/admin/reset-factors", admin, resetForm(otherAdminID), 403, "Administrator second factors cannot be reset")
-	agExpect(e, "/admin/reset-factors", admin, resetForm(""), 400, "Choose an account")
-	agExpect(e, "/admin/reset-factors", admin, resetForm("missing"), 404, "Account not found")
-	agExpect(e, "/admin/reset-factors", admin, resetForm(plainID), 409, "no second factor enrolled")
+	agExpect(e, "/admin/reset-factors", admin, resetForm("reset_admin"), 400, "cannot reset your own second factors")
+	agExpect(e, "/admin/reset-factors", admin, resetForm("reset_admin2"), 403, "Administrator second factors cannot be reset")
+	agExpect(e, "/admin/reset-factors", admin, resetForm(""), 400, "Enter an account handle")
+	agExpect(e, "/admin/reset-factors", admin, resetForm("missing"), 404, "No account has the handle")
+	agExpect(e, "/admin/reset-factors", admin, resetForm("reset_plain"), 409, "no second factor enrolled")
 	untouched()
 	if agInt(e, "SELECT count(*) FROM users WHERE id=$1 AND totp_enabled", otherAdminID) != 1 {
 		t.Fatal("other administrator changed")
@@ -276,14 +276,14 @@ func TestAdminResetsSecondFactors(t *testing.T) {
 
 	// With TOTP on the administrator's account, the reset also needs a current code.
 	adminKey, _ := agEnableTOTP(e, adminID)
-	agExpect(e, "/admin/reset-factors", admin, resetForm(targetID), 401, "Verification code incorrect")
-	agExpect(e, "/admin/reset-factors", admin, resetForm(targetID, "code", e.wrongTOTP(adminID)), 401, "Verification code incorrect")
+	agExpect(e, "/admin/reset-factors", admin, resetForm("reset_target"), 401, "Verification code incorrect")
+	agExpect(e, "/admin/reset-factors", admin, resetForm("reset_target", "code", e.wrongTOTP(adminID)), 401, "Verification code incorrect")
 	// Recovery codes are not accepted for this confirmation.
-	agExpect(e, "/admin/reset-factors", admin, resetForm(targetID, "code", recovery), 401, "Verification code incorrect")
+	agExpect(e, "/admin/reset-factors", admin, resetForm("reset_target", "code", recovery), 401, "Verification code incorrect")
 	untouched()
 	mustContain(t, resetOptions(), `name="code" required`)
 
-	agExpect(e, "/admin/reset-factors", admin, resetForm(targetID, "code", agTOTPNow(adminKey)), 303, "")
+	agExpect(e, "/admin/reset-factors", admin, resetForm("reset_target", "code", agTOTPNow(adminKey)), 303, "")
 	var totp, pgp, verified bool
 	var secret, pending, reveal, key string
 	var step int
@@ -328,10 +328,10 @@ func TestAdminResetsSecondFactors(t *testing.T) {
 	mustContain(t, e.body("GET", "/notifications", e.session(w), nil, 200), "An administrator reset your two-factor sign-in")
 
 	// Repeating the reset finds nothing to do and records nothing.
-	// (Ten password confirmations per ten minutes: this is the administrator's ninth.)
+	// (Ten password confirmations per ten minutes: this is the administrator's eighth.)
 	before := agInt(e, "SELECT count(*) FROM audit_events")
 	adminCode, _ := e.totpCodeFor(adminID, 1)
-	agExpect(e, "/admin/reset-factors", admin, resetForm(targetID, "code", adminCode), 409, "no second factor enrolled")
+	agExpect(e, "/admin/reset-factors", admin, resetForm("reset_target", "code", adminCode), 409, "no second factor enrolled")
 	if agInt(e, "SELECT count(*) FROM audit_events") != before {
 		t.Fatal("repeated reset wrote audit rows")
 	}

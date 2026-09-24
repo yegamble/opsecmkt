@@ -57,8 +57,12 @@ type PageData struct {
 	// P1 Authentication
 	Security *SecurityView
 	Captcha  *CaptchaView
-	// FactorAccounts: admin page, non-administrator accounts with a second factor (User.Factors names them).
+	// FactorAccounts: admin page, up to 100 non-administrator accounts with a second factor, by handle
+	// (User.Factors names them); the reset form itself takes any handle.
 	FactorAccounts []User
+	// RoleHandle, RoleChoice and ResetHandle: admin page re-rendered after a handle matched no account,
+	// keeping what was typed into the role or second-factor reset form.
+	RoleHandle, RoleChoice, ResetHandle string
 
 	// P2 PGP
 	PGP *PGPView

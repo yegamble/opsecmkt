@@ -14,7 +14,7 @@ func TestReviewListingCreationRejectsDemotedRequestUser(t *testing.T) {
 	vendor, _ := e.user("listing_stale_vendor", "vendor")
 	_, admin := e.user("listing_stale_admin", "admin")
 	stale := e.loadUser(vendor)
-	e.check(e.do("POST", "/admin", admin, url.Values{"action": {"role"}, "user_id": {vendor}, "role": {"buyer"}}), 303)
+	e.check(e.do("POST", "/admin", admin, url.Values{"action": {"role"}, "handle": {e.loadUser(vendor).Handle}, "role": {"buyer"}}), 303)
 	tx, err := e.DB.BeginTx(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -44,13 +44,13 @@ func TestReviewDemotionWaitsForListingCreationThenArchivesIt(t *testing.T) {
 	}
 	done := make(chan int, 1)
 	go func() {
-		done <- e.do("POST", "/admin", admin, url.Values{"action": {"role"}, "user_id": {vendor}, "role": {"buyer"}}).Code
+		done <- e.do("POST", "/admin", admin, url.Values{"action": {"role"}, "handle": {e.loadUser(vendor).Handle}, "role": {"buyer"}}).Code
 	}()
 	deadline := time.Now().Add(5 * time.Second)
 	blocked := false
 	for time.Now().Before(deadline) {
 		// The role change locks the account row (FOR UPDATE) before reading its current role for the audit rows.
-		if agInt(e, "SELECT count(*) FROM pg_stat_activity WHERE query LIKE 'SELECT handle,role FROM users WHERE id=$1 AND role<>''admin'' FOR UPDATE%' AND wait_event_type='Lock'") > 0 {
+		if agInt(e, "SELECT count(*) FROM pg_stat_activity WHERE query LIKE 'SELECT id,role FROM users WHERE handle=$1 AND role<>''admin'' FOR UPDATE%' AND wait_event_type='Lock'") > 0 {
 			blocked = true
 			break
 		}

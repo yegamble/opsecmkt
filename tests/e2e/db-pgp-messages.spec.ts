@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { uniqueHandle } from './db-fixtures';
-import { enrollTOTP, pgpFixture, RECIPIENT_FINGERPRINT, signedIn, submitStatus, totp } from './db-helpers';
+import { enrollTOTP, pgpFixture, RECIPIENT_FINGERPRINT, setRole, signedIn, submitStatus, totp } from './db-helpers';
 
 // PGP identity, encrypted messages and message notifications against a real database, JavaScript disabled.
 // Each test registers its own accounts; keys and messages come from committed fixtures (see db-helpers.ts).
@@ -189,13 +189,7 @@ test('find a moderator key and exchange encrypted dispute evidence without scrip
   const buyer = await signedIn(browser, baseURL, uniqueHandle('evidence'), 'browser-evidence-password-123', true);
   const admin = await signedIn(browser, baseURL, ADMIN.handle, ADMIN.password, false);
   expect(await saveKey(staff, pgpFixture('recipient.pub.asc'))).toBe(303);
-  await admin.goto('/admin');
-  const roles = admin.locator('form', { has: admin.getByRole('button', { name: 'Update role' }) });
-  const account = roles.locator('option', { hasText: `${handle} ·` });
-  await roles.getByLabel('Account').selectOption((await account.getAttribute('value'))!);
-  await roles.getByLabel('Role').selectOption('moderator');
-  await roles.getByRole('button', { name: 'Update role' }).click();
-  await expect(admin).toHaveURL(/\/admin\?saved=1$/);
+  await setRole(admin, handle, 'moderator');
   await buyer.goto('/messages');
   await buyer.getByLabel('Find a recipient', { exact: true }).fill(handle);
   await buyer.getByRole('button', { name: 'Load recipient’s public key' }).click();

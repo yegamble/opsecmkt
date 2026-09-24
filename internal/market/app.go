@@ -340,10 +340,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "You do not have access to this page", 403)
 		return
 	}
-	d := PageData{Page: page, Title: strings.ReplaceAll(strings.Title(page), "-", " "), CSRF: a.csrf(token), User: user, Mode: a.mode, Query: r.URL.Query().Get("q"), Category: r.URL.Query().Get("category"), Region: r.URL.Query().Get("region"), Currency: r.URL.Query().Get("currency"), Settings: map[string]string{}}
-	if d.Currency != "XMR" {
-		d.Currency = "BTC"
-	}
+	d := a.pageData(r, page, token, user)
 	if r.URL.Query().Get("saved") == "1" {
 		d.Notice = "Changes saved."
 	}
@@ -360,13 +357,26 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	a.render(w, d)
 }
-func (a *App) render(w http.ResponseWriter, d PageData) {
+
+// pageData is the state a page render starts from, before a.load fills it.
+func (a *App) pageData(r *http.Request, page, token string, user *User) PageData {
+	d := PageData{Page: page, Title: strings.ReplaceAll(strings.Title(page), "-", " "), CSRF: a.csrf(token), User: user, Mode: a.mode, Query: r.URL.Query().Get("q"), Category: r.URL.Query().Get("category"), Region: r.URL.Query().Get("region"), Currency: r.URL.Query().Get("currency"), Settings: map[string]string{}}
+	if d.Currency != "XMR" {
+		d.Currency = "BTC"
+	}
+	return d
+}
+
+func (a *App) render(w http.ResponseWriter, d PageData) { a.renderStatus(w, d, http.StatusOK) }
+
+func (a *App) renderStatus(w http.ResponseWriter, d PageData, code int) {
 	var b bytes.Buffer
 	if err := a.templates.ExecuteTemplate(&b, "page:"+d.Page, d); err != nil {
 		http.Error(w, "Unable to render page", 500)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(code)
 	w.Write(b.Bytes())
 }
 

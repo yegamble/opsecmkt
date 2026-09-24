@@ -1,5 +1,6 @@
 import { expect, test, type Browser, type Page } from '@playwright/test';
 import { ADMIN, uniqueHandle } from './db-fixtures';
+import { setRole } from './db-helpers';
 
 // Contacts and vendor demotion against a real database: an administrator promotes a new account to
 // vendor, a buyer contacts it through a prefilled message form, the vendor sees an unread notification
@@ -14,16 +15,6 @@ async function signedIn(browser: Browser, baseURL: string | undefined, handle: s
   await page.getByRole('button', { name: register ? 'Create account' : 'Sign in' }).click();
   await expect(page.locator('.account-name')).toHaveText(handle);
   return page;
-}
-
-async function setRole(admin: Page, handle: string, role: string) {
-  await admin.goto('/admin');
-  const form = admin.locator('form', { has: admin.getByRole('button', { name: 'Update role' }) });
-  const option = form.locator('option', { hasText: `${handle} ·` });
-  await form.getByLabel('Account').selectOption(await option.getAttribute('value'));
-  await form.getByLabel('Role').selectOption(role);
-  await form.getByRole('button', { name: 'Update role' }).click();
-  await expect(admin).toHaveURL(/\/admin\?saved=1$/);
 }
 
 test('vendor contact, unread notifications and demotion archive', async ({ browser, baseURL }) => {
