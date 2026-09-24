@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"sort"
 	"strconv"
+	"strings"
 )
 
 // migrations/NNN_name.sql run once each, in numeric order, after the frozen schema.sql baseline.
@@ -88,9 +89,49 @@ func applyMigrations(ctx context.Context, tx *sql.Tx, list []migration) error {
 	return nil
 }
 
+// refuseUnknownMigrations fails when the database records a migration this binary does not embed: a newer
+// release upgraded it, and this older code must not run (or migrate) against a schema it does not know.
+// It runs before any statement that could change the database.
+func refuseUnknownMigrations(ctx context.Context, tx *sql.Tx, list []migration) error {
+	var exists bool
+	if err := tx.QueryRowContext(ctx, "SELECT to_regclass('schema_migrations') IS NOT NULL").Scan(&exists); err != nil || !exists {
+		return err
+	}
+	known := map[int]bool{}
+	for _, m := range list {
+		known[m.Version] = true
+	}
+	rows, err := tx.QueryContext(ctx, "SELECT version, name FROM schema_migrations ORDER BY version")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var unknown []string
+	for rows.Next() {
+		var v int
+		var name string
+		if err = rows.Scan(&v, &name); err != nil {
+			return err
+		}
+		if !known[v] {
+			unknown = append(unknown, fmt.Sprintf("%03d_%s", v, name))
+		}
+	}
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	if len(unknown) > 0 {
+		return fmt.Errorf("the database was upgraded by a newer release: it records migration(s) %s, which this server does not include. Nothing was changed. Start that newer release again, or roll back by restoring the pre-upgrade backup as described in UPGRADING.md, section \"Rolling back\"", strings.Join(unknown, ", "))
+	}
+	return nil
+}
+
 func migrate(ctx context.Context, tx *sql.Tx) error {
 	list, err := loadMigrations(migrationFiles)
 	if err != nil {
+		return err
+	}
+	if err = refuseUnknownMigrations(ctx, tx, list); err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, schema); err != nil {

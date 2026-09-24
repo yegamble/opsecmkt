@@ -62,7 +62,13 @@ func captchaPNG(a *App, w http.ResponseWriter, r *http.Request, _ *User) {
 	}
 	if !a.preview {
 		var ok bool
-		err := a.db.QueryRowContext(r.Context(), "SELECT EXISTS(SELECT 1 FROM captchas WHERE id=$1 AND session_hash=$2 AND NOT used AND expires>now())", id, digest(sessionToken(r))).Scan(&ok)
+		// Either cookie: a page rendered while `session` was withheld (cross-site landing) bound its
+		// challenge to `anon`, and its image request then sends both cookies.
+		anon := anonToken(r)
+		if anon == "" {
+			anon = sessionToken(r)
+		}
+		err := a.db.QueryRowContext(r.Context(), "SELECT EXISTS(SELECT 1 FROM captchas WHERE id=$1 AND session_hash IN ($2,$3) AND NOT used AND expires>now())", id, digest(sessionToken(r)), digest(anon)).Scan(&ok)
 		if err != nil {
 			http.Error(w, "Service unavailable", 503)
 			return

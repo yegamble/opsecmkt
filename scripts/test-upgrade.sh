@@ -4,7 +4,8 @@
 # Starts a disposable PostgreSQL 17 container, builds and runs the alpha.1 server from its git tag once,
 # populates it through alpha.1's own HTTP forms (admin, vendor, buyers, a listing, BTC/XMR order drafts with
 # the old status text, an armored message), stops it, then boots the server built from this checkout against
-# the same database and checks the migrated data and behaviour. Needs Docker, Go, Git (with the tag fetched)
+# the same database and checks the migrated data and behaviour, then that it refuses to start on a database
+# recording a migration it does not include (rollback rehearsal). Needs Docker, Go, Git (with the tag fetched)
 # and Python 3. Nothing outside the container, a temporary directory and two loopback ports is touched.
 set -euo pipefail
 umask 077
@@ -221,4 +222,31 @@ applied=$(sql -c "SELECT string_agg(version || '@' || applied, ',' ORDER BY vers
 start_server restart "$work/new-server" "$root"
 stop_server
 [[ $(sql -c "SELECT string_agg(version || '@' || applied, ',' ORDER BY version) FROM schema_migrations") == "$applied" ]]
-echo "Upgrade from $from_ref passed: health, every migration recorded once, orders migrated to draft, one draft per buyer/product/currency, data and sign-in preserved."
+
+# Rollback rehearsal: to this server, a database that a newer release has migrated is one that records a
+# migration it does not include. It must exit non-zero before serving, name that migration, and change nothing.
+sql -c "INSERT INTO schema_migrations(version,name) VALUES (999,'from_a_newer_release')"
+applied=$(sql -c "SELECT string_agg(version || '@' || applied, ',' ORDER BY version) FROM schema_migrations")
+(cd "$root" && exec env -i PATH="$PATH" DATABASE_URL="$database_url" SETUP_TOKEN="$setup_token" \
+  COOKIE_SECURE=false ADDR="127.0.0.1:$app_port" "$work/new-server") > "$work/refused.log" 2>&1 &
+server_pid=$!
+for _ in {1..60}; do
+  kill -0 "$server_pid" 2>/dev/null || break
+  sleep 0.5
+done
+if kill -0 "$server_pid" 2>/dev/null; then
+  echo 'The current server kept running on a database with a migration it does not include' >&2
+  exit 1
+fi
+refused=0
+wait "$server_pid" || refused=$?
+server_pid=''
+((refused != 0)) || { echo 'The current server exited 0 on a database with a migration it does not include' >&2; exit 1; }
+grep -q 'records migration(s) 999_from_a_newer_release, which this server does not include' "$work/refused.log"
+grep -q 'UPGRADING.md, section "Rolling back"' "$work/refused.log"
+[[ $(sql -c "SELECT string_agg(version || '@' || applied, ',' ORDER BY version) FROM schema_migrations") == "$applied" ]]
+# Rolling forward (the newer release's row gone again) starts normally.
+sql -c 'DELETE FROM schema_migrations WHERE version=999'
+start_server roll-forward "$work/new-server" "$root"
+stop_server
+echo "Upgrade from $from_ref passed: health, every migration recorded once, orders migrated to draft, one draft per buyer/product/currency, data and sign-in preserved; a database from a newer release is refused at startup."

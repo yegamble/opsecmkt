@@ -71,7 +71,10 @@ class Handler(BaseHTTPRequestHandler):
             currency = 'BTC' if method == 'sendtoaddress' else 'XMR'
             if currency in fail_next_send:
                 fail_next_send.remove(currency)
-                return self.reply({'id':data.get('id'),'error':{'code':-6,'message':'Fixture rejected send before broadcast'}})
+                # A definite pre-broadcast refusal: Bitcoin Core -6 (insufficient funds); monero-wallet-rpc -17
+                # (not enough money), one of the codes raised before commit_tx submits (payments_watcher.go).
+                code = -6 if currency == 'BTC' else -17
+                return self.reply({'id':data.get('id'),'error':{'code':code,'message':'Fixture rejected send before broadcast'}})
             destination = {'address':params[0], 'amount':round(params[1]*100000000)} if currency == 'BTC' else params['destinations'][0]
             txid = format(1000+len(payouts), '064x')
             payouts.append({'currency':currency, **destination, 'txid':txid})

@@ -19,12 +19,10 @@ func init() {
 	registerLoader("vendor", func(ctx context.Context, a *App, r *http.Request, d *PageData) error {
 		return loadPublicReviews(ctx, a, d, "p.vendor_id=$1", r.URL.Query().Get("id"))
 	})
-	registerLoader("vendor-dashboard", func(_ context.Context, _ *App, _ *http.Request, d *PageData) error {
-		fillIncomingOrders(d)
-		return nil
-	})
-	registerLoader("disputes", loadDisputeOrders)
-	registerLoader("moderator", loadDisputeOrders)
+	registerLoader("vendor-dashboard", loadIncomingOrders)
+	registerLoader("disputes", loadDisputes)
+	registerLoader("moderator", loadDisputes)
+	registerLoader("moderator", loadPaymentReviews)
 
 	registerPreview("order", previewOrder)
 	registerPreview("product", previewReviews)
@@ -32,6 +30,7 @@ func init() {
 	registerPreview("vendor-dashboard", previewVendorOrders)
 	registerPreview("disputes", previewDisputes)
 	registerPreview("moderator", previewDisputes)
+	registerPreview("moderator", previewPaymentReviews)
 }
 
 // transitionActions maps a target state to the form that performs it. Resolution happens on the
@@ -102,23 +101,38 @@ func eventActor(handle string, system bool, actorID string, o *Order) string {
 	return handle + " (moderator)"
 }
 
-// disputeReviewer: a moderator or administrator who is not party to the order may read it (never act on it
-// from the order page) once it is disputed, and keep reading it after resolution.
-func disputeReviewer(o *Order, u *User) bool {
-	return u != nil && u.ID != o.BuyerID && u.ID != o.VendorID && (u.Role == "moderator" || u.Role == "admin") &&
-		(o.State == stateDisputed || o.State == stateResolved)
+// staffReviewer: a moderator or administrator who is not party to the order may read it (never act on it
+// from the order page) once it is disputed, keep reading it after resolution, and read any order with a
+// payment flagged for review (payments.flagged, set by the watcher's flagOrder).
+func staffReviewer(ctx context.Context, a *App, o *Order, u *User) (bool, error) {
+	if u == nil || u.ID == o.BuyerID || u.ID == o.VendorID || (u.Role != "moderator" && u.Role != "admin") {
+		return false, nil
+	}
+	if disputeVisible(o) {
+		return true, nil
+	}
+	var flagged bool
+	err := a.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM payments WHERE order_id=$1 AND flagged)", o.ID).Scan(&flagged)
+	return flagged, err
 }
+
+// disputeVisible: the order is or was disputed, so a reviewer may also read its digital delivery.
+func disputeVisible(o *Order) bool { return o.State == stateDisputed || o.State == stateResolved }
 
 func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) error {
 	o, u := d.Order, d.User
-	switch {
-	case o == nil || u == nil:
+	if o == nil || u == nil {
 		return sql.ErrNoRows
+	}
+	reviewer, err := staffReviewer(ctx, a, o, u)
+	switch {
+	case err != nil:
+		return err
 	case u.ID == o.BuyerID:
 		d.OrderViewer = roleBuyer
 	case u.ID == o.VendorID:
 		d.OrderViewer = roleVendor
-	case disputeReviewer(o, u):
+	case reviewer:
 		d.OrderViewer = roleModerator
 	default:
 		return sql.ErrNoRows
@@ -143,12 +157,16 @@ func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) 
 	if err != nil {
 		return err
 	}
+	// A reviewer of a payment flag sees no delivery content unless the order is or was disputed.
+	d.DeliveryWithheld = d.OrderViewer == roleModerator && !disputeVisible(o)
 	var dv DeliveryView
-	err = a.db.QueryRowContext(ctx, "SELECT content,to_char(created,'YYYY-MM-DD HH24:MI') FROM deliveries WHERE order_id=$1", o.ID).Scan(&dv.Content, &dv.Created)
-	if err == nil {
-		d.Delivery = &dv
-	} else if err != sql.ErrNoRows {
-		return err
+	if !d.DeliveryWithheld {
+		err = a.db.QueryRowContext(ctx, "SELECT content,to_char(created,'YYYY-MM-DD HH24:MI') FROM deliveries WHERE order_id=$1", o.ID).Scan(&dv.Content, &dv.Created)
+		if err == nil {
+			d.Delivery = &dv
+		} else if err != sql.ErrNoRows {
+			return err
+		}
 	}
 	var rv Review
 	err = a.db.QueryRowContext(ctx, "SELECT r.id,r.order_id,b.handle,r.rating,r.body,to_char(r.created,'YYYY-MM-DD') FROM reviews r JOIN users b ON b.id=r.buyer_id WHERE r.order_id=$1", o.ID).Scan(&rv.ID, &rv.OrderID, &rv.Buyer, &rv.Rating, &rv.Body, &rv.Created)
@@ -207,25 +225,86 @@ func (r Review) Stars() string {
 	return strings.Repeat("★", n) + strings.Repeat("☆", 5-n)
 }
 
-func fillIncomingOrders(d *PageData) {
-	if d.User == nil {
-		return
+// historyLimit caps closed history (resolved disputes, orders needing no vendor action) on the dispute and
+// vendor desks. Open work is never capped: every open dispute and every paid order is always listed.
+const historyLimit = 100
+
+func queryOrders(ctx context.Context, a *App, query string, args ...any) ([]Order, error) {
+	rows, err := a.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
 	}
-	for _, o := range d.Orders {
-		if o.VendorID != d.User.ID {
-			continue
+	defer rows.Close()
+	var out []Order
+	for rows.Next() {
+		o, err := scanOrder(rows)
+		if err != nil {
+			return nil, err
 		}
-		d.IncomingOrders = append(d.IncomingOrders, o)
-		if o.State == statePaid {
-			d.NeedsAction++
-		}
+		out = append(out, o)
 	}
+	return out, rows.Err()
 }
 
-// loadDisputeOrders attaches an order summary to each dispute already loaded by load.go (which limits
-// disputes to the viewer's own orders, or all of them for moderators and administrators).
-func loadDisputeOrders(ctx context.Context, a *App, r *http.Request, d *PageData) error {
+// loadIncomingOrders lists orders on the viewer's own listings: every paid order first (the work queue,
+// oldest first; NeedsAction counts them), then the most recent other orders up to historyLimit.
+func loadIncomingOrders(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
+	if d.User == nil {
+		return nil
+	}
+	paid, err := queryOrders(ctx, a, orderQuery+" WHERE p.vendor_id=$1 AND o.state=$2 ORDER BY o.created,o.id", d.User.ID, statePaid)
+	if err != nil {
+		return err
+	}
+	rest, err := queryOrders(ctx, a, orderQuery+" WHERE p.vendor_id=$1 AND o.state<>$2 ORDER BY o.created DESC,o.id DESC LIMIT $3", d.User.ID, statePaid, historyLimit+1)
+	if err != nil {
+		return err
+	}
+	if len(rest) > historyLimit {
+		rest, d.HistoryLimit = rest[:historyLimit], historyLimit
+	}
+	d.IncomingOrders, d.NeedsAction = append(paid, rest...), len(paid)
+	return nil
+}
+
+func queryDisputes(ctx context.Context, a *App, query string, args ...any) ([]Dispute, error) {
+	rows, err := a.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Dispute
+	for rows.Next() {
+		var v Dispute
+		if err = rows.Scan(&v.ID, &v.OrderID, &v.Reason, &v.Status, &v.Resolution, &v.Created); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+// loadDisputes lists the viewer's disputes (on their own orders, or all of them for moderators and
+// administrators): every open dispute first, oldest first, then the most recent resolved ones up to
+// historyLimit. Each dispute gets its order summary.
+func loadDisputes(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 	d.DisputeOrders = map[string]Order{}
+	if d.User == nil {
+		return nil
+	}
+	const scope = `SELECT d.id,d.order_id,d.reason,d.status,d.resolution,to_char(d.created,'YYYY-MM-DD HH24:MI') FROM disputes d JOIN orders o ON o.id=d.order_id JOIN products p ON p.id=o.product_id WHERE (o.buyer_id=$1 OR p.vendor_id=$1 OR $2 IN ('admin','moderator'))`
+	open, err := queryDisputes(ctx, a, scope+" AND d.status='Open' ORDER BY d.created,d.id", d.User.ID, d.User.Role)
+	if err != nil {
+		return err
+	}
+	resolved, err := queryDisputes(ctx, a, scope+" AND d.status<>'Open' ORDER BY d.created DESC,d.id DESC LIMIT $3", d.User.ID, d.User.Role, historyLimit+1)
+	if err != nil {
+		return err
+	}
+	if len(resolved) > historyLimit {
+		resolved, d.HistoryLimit = resolved[:historyLimit], historyLimit
+	}
+	d.Disputes, d.OpenDisputes = append(open, resolved...), len(open)
 	if len(d.Disputes) == 0 {
 		return nil
 	}
@@ -233,19 +312,11 @@ func loadDisputeOrders(ctx context.Context, a *App, r *http.Request, d *PageData
 	for _, v := range d.Disputes {
 		ids = append(ids, v.OrderID)
 	}
-	rows, err := a.db.QueryContext(ctx, orderQuery+" WHERE o.id = ANY($1)", ids)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		o, err := scanOrder(rows)
-		if err != nil {
-			return err
-		}
+	orders, err := queryOrders(ctx, a, orderQuery+" WHERE o.id = ANY($1)", ids)
+	for _, o := range orders {
 		d.DisputeOrders[o.ID] = o
 	}
-	return rows.Err()
+	return err
 }
 
 func previewOrder(d *PageData) {
@@ -280,6 +351,55 @@ func previewDisputes(d *PageData) {
 	o := d.Orders[0]
 	o.ID, o.State, o.Status = "sample-disputed", stateDisputed, stateLabel(stateDisputed)
 	o.BuyerID, o.Buyer, o.VendorID = "sample-buyer", "sample_buyer", "sample-vendor"
-	d.Disputes = []Dispute{{ID: "sample-dispute", OrderID: o.ID, Reason: "Sample dispute for the read-only preview. No order or funds exist.", Status: "Open", Created: "Sample"}}
+	d.Disputes, d.OpenDisputes = []Dispute{{ID: "sample-dispute", OrderID: o.ID, Reason: "Sample dispute for the read-only preview. No order or funds exist.", Status: "Open", Created: "Sample"}}, 1
 	d.DisputeOrders = map[string]Order{o.ID: o}
+}
+
+// paymentReviewLimit caps the payment-review list on the moderation desk.
+const paymentReviewLimit = 100
+
+// loadPaymentReviews lists deposits the payment watcher flagged for staff review (payments.flagged), newest
+// flag first, up to paymentReviewLimit. The flag time is the watcher's flag event in order_events: flagOrder
+// writes a system note naming the deposit (truncate(txid, 20)) and ending "Moderator review required.".
+func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
+	if d.User == nil || (d.User.Role != "moderator" && d.User.Role != "admin") {
+		return nil
+	}
+	rows, err := a.db.QueryContext(ctx, `SELECT pm.order_id,o.state,pm.currency,pm.amount,pm.txid,pm.idx,pm.credited,pm.locked,COALESCE(to_char(f.at,'YYYY-MM-DD HH24:MI'),'')
+		FROM payments pm JOIN orders o ON o.id=pm.order_id
+		LEFT JOIN LATERAL (SELECT min(e.created) AS at FROM order_events e WHERE e.order_id=pm.order_id AND e.actor_id IS NULL
+			AND e.note LIKE '%Moderator review required.%'
+			AND strpos(e.note, ' '||CASE WHEN length(pm.txid)<=20 THEN pm.txid ELSE left(pm.txid,20)||'…' END||' ')>0) f ON true
+		WHERE pm.flagged ORDER BY f.at DESC NULLS LAST,pm.id DESC LIMIT $1`, paymentReviewLimit+1)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var v PaymentReview
+		var amt int64
+		var credited, locked bool
+		if err = rows.Scan(&v.OrderID, &v.OrderState, &v.Currency, &amt, &v.TxID, &v.Index, &credited, &locked, &v.Flagged); err != nil {
+			return err
+		}
+		v.Amount, v.OrderState = amount(amt, currencyDecimals(v.Currency)), stateLabel(v.OrderState)
+		switch {
+		case locked:
+			v.Reason = "Locked transfer (unlock time), not counted or paid out"
+		case credited:
+			v.Reason = "Credited deposit conflicted or missing"
+		default:
+			v.Reason = "Deposit confirmed after settlement, not paid out"
+		}
+		d.PaymentReviews = append(d.PaymentReviews, v)
+	}
+	if len(d.PaymentReviews) > paymentReviewLimit {
+		d.PaymentReviews, d.PaymentReviewLimit = d.PaymentReviews[:paymentReviewLimit], paymentReviewLimit
+	}
+	return rows.Err()
+}
+
+func previewPaymentReviews(d *PageData) {
+	d.PaymentReviews = []PaymentReview{{OrderID: "sample-flagged", OrderState: stateLabel(statePaid), Currency: "BTC", Amount: "0.001",
+		TxID: "sample-txid-preview-only", Reason: "Credited deposit conflicted or missing", Flagged: "Sample"}}
 }

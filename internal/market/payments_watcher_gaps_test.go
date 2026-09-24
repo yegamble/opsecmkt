@@ -122,7 +122,7 @@ func (p *payEnv) failedPayout(order, msg string, ambiguous bool) {
 	st, txid, _, _ := p.payout(order)
 	errText := p.str("SELECT error FROM payouts WHERE order_id=$1", order)
 	recorded := p.str("SELECT send_ambiguous::text FROM payouts WHERE order_id=$1", order) == "true"
-	wording := "The wallet rejected the send; nothing was broadcast."
+	wording := "The wallet reported a pre-broadcast error; nothing was broadcast."
 	if ambiguous {
 		wording = "may or may not have been broadcast"
 	}
@@ -534,5 +534,209 @@ func TestGapPayoutAddressRejectedByValidAddress(t *testing.T) {
 	reject("XMR", "payout_xmr", payMainnetPrimary, "stagenet", payStagenetSub)
 	if got := stored("payout_btc"); got != gapVendorBTC {
 		t.Fatalf("BTC address changed by XMR requests: %q", got)
+	}
+}
+
+// A-52: enqueuePayout runs inside a transition (HTTP cancel/complete/resolve) while the watcher's
+// recordIncoming writes the ledger without the order lock. A deposit that reaches the threshold after the
+// payout amount is fixed must not be marked credited (it is then flagged as not paid out); a counted deposit
+// cannot turn conflicted before it is credited. A test-only trigger (waiting on an advisory lock the test
+// holds) pauses the transition at the payout INSERT; it does not change what enqueuePayout does.
+func TestEnqueuePayoutCreditsOnlyWhatItPays(t *testing.T) {
+	p := newPayEnv(t)
+	p.paidByWatcher(p.order, p.addr, "tx-fund")    // 100000 credited, order paid
+	p.fake.Deposit(p.addr, "tx-extra", 1, 7000, 2) // extra deposit, one confirmation short
+	p.poll()
+	p.setPayoutAddress(p.buyer, "fake-testnet-buyer")
+
+	const key = 5252052
+	for _, q := range []string{
+		`CREATE FUNCTION a52_pause() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock(5252052); RETURN NEW; END $$`,
+		`CREATE TRIGGER a52_pause BEFORE INSERT ON payouts FOR EACH ROW EXECUTE FUNCTION a52_pause()`,
+	} {
+		if _, err := p.DB.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx := context.Background()
+	hold, err := p.DB.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hold.Close()
+	if _, err = hold.ExecContext(ctx, "SELECT pg_advisory_lock($1)", key); err != nil {
+		t.Fatal(err)
+	}
+	unlocked := false
+	defer func() {
+		if !unlocked {
+			hold.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", key)
+		}
+	}()
+
+	// The vendor cancels the paid order: transition -> enqueuePayout (refund) fixes the amount, then pauses.
+	cancelled := make(chan int, 1)
+	go func() {
+		cancelled <- p.do("POST", "/orders/cancel", p.vendorSess, url.Values{"order_id": {p.order}, "from": {statePaid}}).Code
+	}()
+	waitFor(t, func() bool {
+		return p.count("SELECT count(*) FROM pg_stat_activity WHERE query LIKE 'INSERT INTO payouts%' AND wait_event_type='Lock'") == 1
+	})
+
+	// The watcher records the wallet's report: the extra deposit has reached the threshold. (A wallet lists
+	// outputs in any order; with tx-extra first, its upsert lands while the refund is being queued, and the
+	// tx-fund upsert then waits for the refund's row lock.)
+	p.fake.SetConfirmations("tx-extra", 3)
+	report := newFakeProvider("BTC", 3)
+	report.Deposit(p.addr, "tx-extra", 1, 7000, 3)
+	report.Deposit(p.addr, "tx-fund", 0, 100000, 3)
+	recorded := make(chan error, 1)
+	go func() {
+		recorded <- p.A.recordIncoming(ctx, report, []string{p.addr}, map[string]string{p.addr: p.order})
+	}()
+	waitFor(t, func() bool {
+		return p.count("SELECT count(*) FROM payments WHERE order_id=$1 AND txid='tx-extra' AND confirmations=3", p.order) == 1
+	})
+	if _, err = hold.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", key); err != nil {
+		t.Fatal(err)
+	}
+	unlocked = true
+	if code := <-cancelled; code != 303 {
+		t.Fatalf("cancel: %d", code)
+	}
+	if err = <-recorded; err != nil {
+		t.Fatal(err)
+	}
+	p.poll()
+
+	_, _, _, amt := p.payout(p.order)
+	var credited, flagged bool
+	if err = p.DB.QueryRow("SELECT credited,flagged FROM payments WHERE order_id=$1 AND txid='tx-extra'", p.order).Scan(&credited, &flagged); err != nil {
+		t.Fatal(err)
+	}
+	creditedSum := p.count("SELECT COALESCE(sum(amount),0) FROM payments WHERE order_id=$1 AND credited", p.order)
+	if int64(creditedSum) != amt {
+		t.Fatalf("refund amount=%d but credited deposits sum to %d (tx-extra credited=%v flagged=%v)", amt, creditedSum, credited, flagged)
+	}
+	if amt != 107000 && !flagged {
+		t.Fatalf("confirmed deposit tx-extra lost: refund amount=%d, tx-extra credited=%v flagged=%v", amt, credited, flagged)
+	}
+	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE '%tx-extra arrived after this order was settled and was not paid out%'", p.order); amt != 107000 && n != 1 {
+		t.Fatalf("not-paid-out flag events for tx-extra: %d", n)
+	}
+}
+
+// raceEnqueueAgainstUpsert runs n transitions paid -> cancelled (enqueuePayout in the transition's
+// transaction) each racing the exact autocommit upsert recordIncoming runs for a second deposit, sweeping the
+// upsert's start offset across one transition. No trigger or pause: the natural window only. check inspects
+// each order afterwards.
+func raceEnqueueAgainstUpsert(t *testing.T, p *payEnv, n int, extraConfs, upsertConfs int64, check func(order, txExtra string)) {
+	t.Helper()
+	upsert := `INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,locked,late_notice)
+		VALUES($1,'BTC',$2,1,$3,7000,$4,false,false)
+		ON CONFLICT (currency,txid,idx) DO UPDATE SET confirmations=excluded.confirmations, locked=excluded.locked, updated=now()
+		WHERE (payments.confirmations,payments.locked) IS DISTINCT FROM (excluded.confirmations,excluded.locked)`
+	ctx := context.Background()
+	const calibrate, sweep = 20, 50 // mean transition time from the first 20 runs; 50 start offsets across it
+	step := 10 * time.Microsecond
+	var moveTotal time.Duration
+	for i := 0; i < n; i++ {
+		order := p.testEnv.order(p.buyer.ID, p.productID, "BTC", statePaid)
+		addr := "addr-" + order[:12]
+		txExtra := "tx-extra-" + order[:12]
+		for _, q := range []struct {
+			s    string
+			args []any
+		}{
+			{"INSERT INTO payment_addresses(order_id,currency,address,provider) VALUES($1,'BTC',$2,'fake')", []any{order, addr}},
+			{"INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,credited) VALUES($1,'BTC',$2,0,$3,100000,3,true)", []any{order, "tx-fund-" + order[:12], addr}},
+			{"INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations) VALUES($1,'BTC',$2,1,$3,7000,$4)", []any{order, txExtra, addr, extraConfs}},
+		} {
+			if _, err := p.DB.Exec(q.s, q.args...); err != nil {
+				t.Fatal(err)
+			}
+		}
+		p.fake.Deposit(addr, "tx-fund-"+order[:12], 0, 100000, 3)
+		delay := time.Duration(i%sweep) * step
+		done := make(chan error, 1)
+		start := time.Now()
+		go func() {
+			for time.Since(start) < delay {
+			}
+			_, err := p.DB.ExecContext(ctx, upsert, order, txExtra, addr, upsertConfs)
+			done <- err
+		}()
+		m0 := time.Now()
+		p.move(order, statePaid, stateCancelled, p.vendor)
+		if i < calibrate {
+			moveTotal += time.Since(m0)
+			if i == calibrate-1 {
+				step = moveTotal / calibrate / sweep
+			}
+		}
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		check(order, txExtra)
+	}
+}
+
+// A-52, direction 1: a deposit reaching the threshold while the refund is being queued is either in the
+// refund and credited, or neither (and later flagged as not paid out) — never credited but unpaid.
+func TestEnqueuePayoutNaturalRaceNeverCreditsUnpaidDeposit(t *testing.T) {
+	p := newPayEnv(t)
+	p.setPayoutAddress(p.buyer, "fake-testnet-buyer")
+	lost := 0
+	raceEnqueueAgainstUpsert(t, p, 100, 2, 3, func(order, txExtra string) {
+		_, _, _, amt := p.payout(order)
+		var credited bool
+		if err := p.DB.QueryRow("SELECT credited FROM payments WHERE txid=$1", txExtra).Scan(&credited); err != nil {
+			t.Fatal(err)
+		}
+		if amt == 100000 && credited {
+			lost++
+		}
+	})
+	if lost != 0 {
+		t.Fatalf("%d of 100 refunds left a credited deposit out of the payout (never flagged)", lost)
+	}
+}
+
+// A-52, direction 2: a counted deposit that turns conflicted while the refund is being queued is either left
+// out of the refund, or paid and credited (so the payout is held) — never paid out uncredited.
+func TestEnqueuePayoutNaturalRaceNeverPaysUncreditedConflictedDeposit(t *testing.T) {
+	p := newPayEnv(t)
+	p.setPayoutAddress(p.buyer, "fake-testnet-buyer")
+	lost := 0
+	raceEnqueueAgainstUpsert(t, p, 100, 3, -1, func(order, txExtra string) {
+		_, _, _, amt := p.payout(order)
+		var credited bool
+		if err := p.DB.QueryRow("SELECT credited FROM payments WHERE txid=$1", txExtra).Scan(&credited); err != nil {
+			t.Fatal(err)
+		}
+		if amt == 107000 && !credited {
+			lost++
+		}
+	})
+	if lost != 0 {
+		t.Fatalf("%d of 100 refunds paid out a conflicted deposit the ledger does not mark credited", lost)
+	}
+	p.poll()
+	p.poll()
+	for _, s := range p.fake.Sends() {
+		if s.Amount == 107000 {
+			t.Fatalf("wallet sent a refund including a conflicted deposit: %+v", s)
+		}
+	}
+}
+
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for condition")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }

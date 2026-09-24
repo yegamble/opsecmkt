@@ -3,7 +3,9 @@ package market
 import (
 	"bytes"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -702,4 +704,250 @@ func TestPGPVerifyRejectsChangedKey(t *testing.T) {
 		t.Fatal("key change kept the open challenge")
 	}
 	agExpect(e, "/pgp/verify", s, url.Values{"signature": {proof}}, 409, "No open challenge")
+}
+
+// --- A-47: adding a second factor needs re-authentication once one is enrolled ---
+
+// A session holder who knows the password but not the TOTP code (e.g. a phished password plus a stolen
+// session) must not swap in their own PGP key or turn PGP sign-in on: otherwise the password alone plus
+// their key completes sign-in after /revoke-sessions, although the victim's TOTP is still enrolled.
+func TestStolenSessionCannotAddPGPFactorToTOTPAccount(t *testing.T) {
+	e := newTestApp(t)
+	uid, stolen := e.user("victim_totp", "vendor")
+	agEnableTOTP(e, uid)
+	mallory, malloryPub := testPGPKey(t, "mallory")
+
+	// Saving a key needs the password and a current authenticator code while TOTP is enrolled.
+	agExpect(e, "/account", stolen, url.Values{"pgp": {malloryPub}}, 400, "Enter your current password")
+	agExpect(e, "/account", stolen, url.Values{"pgp": {malloryPub}, "password": {testPassword}}, 401, "")
+	if agStr(e, "SELECT pgp FROM users WHERE id=$1", uid) != "" {
+		t.Fatal("key saved on a TOTP account without full confirmation")
+	}
+	// Other profile fields still save without confirmation when the key is unchanged.
+	e.check(e.do("POST", "/account", stolen, url.Values{"xmpp": {"v@example.org"}}), 303)
+
+	// Even with a proven key already on file (as if saved earlier), turning PGP sign-in on needs both.
+	_, fp, _ := parsePublicKey(malloryPub)
+	agExec(e, "UPDATE users SET pgp=$2,pgp_fingerprint=$3,pgp_verified_at=now(),pgp_2fa=false WHERE id=$1", uid, malloryPub, fp)
+	agExpect(e, "/pgp/2fa", stolen, url.Values{"enable": {"1"}}, 400, "Enter your current password")
+	agExpect(e, "/pgp/2fa", stolen, url.Values{"enable": {"1"}, "password": {testPassword}}, 401, "")
+	if agStr(e, "SELECT pgp_2fa::text FROM users WHERE id=$1", uid) != "false" {
+		t.Fatal("PGP sign-in turned on for a TOTP account without full confirmation")
+	}
+	body := e.body("GET", "/pgp", stolen, nil, 200)
+	if !strings.Contains(body, `name="password"`) || !strings.Contains(body, `name="code"`) {
+		t.Fatal("/pgp does not ask for the password and authenticator code before turning PGP sign-in on")
+	}
+
+	// With the stolen session gone, the password plus mallory's key does not complete sign-in.
+	e.check(e.do("POST", "/revoke-sessions", stolen, nil), 303)
+	anon, pc := e.passwordLogin("victim_totp")
+	e.do("POST", "/challenge/pgp", anon, nil, pc)
+	answer := "guess"
+	if armored := agStr(e, "SELECT COALESCE(pgp_challenge,'') FROM pending_logins WHERE token_hash=$1", digest(pc.Value)); armored != "" {
+		answer = testDecrypt(t, mallory, armored)
+	}
+	w := e.do("POST", "/challenge", anon, url.Values{"method": {"pgp"}, "pgp_code": {answer}}, pc)
+	if w.Code == 303 && e.cookie(w, "session") != "" {
+		t.Fatal("signed in to a TOTP-protected account without a TOTP code")
+	}
+
+	// The owner, with the password and a current code, can do both; the audit says how it was confirmed.
+	owner := agSession(e, uid)
+	_, ownerPub := testPGPKey(t, "owner")
+	code, _ := e.totpCodeFor(uid, 0)
+	e.check(e.do("POST", "/account", owner, url.Values{"pgp": {ownerPub}, "password": {testPassword}, "code": {code}}), 303)
+	if agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action LIKE 'Updated PGP key (fingerprint %(confirmed with password and authenticator code)'", uid) != 1 {
+		t.Fatal("confirmed key change not audited with its confirmation")
+	}
+	agExec(e, "UPDATE users SET pgp_verified_at=now() WHERE id=$1", uid)
+	next, _ := e.totpCodeFor(uid, 1)
+	e.check(e.do("POST", "/pgp/2fa", owner, url.Values{"enable": {"1"}, "password": {testPassword}, "code": {next}}), 303)
+	if agStr(e, "SELECT pgp_2fa::text FROM users WHERE id=$1", uid) != "true" || agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action LIKE 'Turned on PGP sign-in verification%(confirmed with password and authenticator code)'", uid) != 1 {
+		t.Fatal("confirmed PGP sign-in enable not applied or not audited with its confirmation")
+	}
+}
+
+// The mirror case: TOTP cannot be activated on a PGP-sign-in account from a session without the password.
+func TestStolenSessionCannotEnrollTOTPOnPGPAccount(t *testing.T) {
+	e := newTestApp(t)
+	uid, stolen := e.user("victim_pgp", "vendor")
+	_, pub := testPGPKey(t, "victim")
+	agEnablePGP(e, uid, pub)
+
+	// Starting enrollment only stores an inactive secret; activation is the gate.
+	e.check(e.do("POST", "/totp/enroll", stolen, nil), 303)
+	if !strings.Contains(e.body("GET", "/totp", stolen, nil, 200), `name="password"`) {
+		t.Fatal("/totp does not ask for the password before activation on a PGP-sign-in account")
+	}
+	code, _ := e.totpCodeFor(uid, 0)
+	agExpect(e, "/totp/activate", stolen, url.Values{"code": {code}}, 400, "Enter your current password")
+	agExpect(e, "/totp/activate", stolen, url.Values{"code": {code}, "password": {"wrong password!"}}, 401, "Password incorrect")
+	if agStr(e, "SELECT totp_enabled::text FROM users WHERE id=$1", uid) != "false" || agInt(e, "SELECT count(*) FROM recovery_codes WHERE user_id=$1", uid) != 0 {
+		t.Fatal("TOTP activated on a PGP-sign-in account without the password")
+	}
+
+	e.check(e.do("POST", "/revoke-sessions", stolen, nil), 303)
+	anon, pc := e.passwordLogin("victim_pgp")
+	next, _ := e.totpCodeFor(uid, 1)
+	w := e.do("POST", "/challenge", anon, url.Values{"method": {"totp"}, "code": {next}}, pc)
+	if w.Code == 303 && e.cookie(w, "session") != "" {
+		t.Fatal("signed in to a PGP-sign-in account with an authenticator added from a session")
+	}
+
+	// The owner activates with the password; the audit records it.
+	owner := agSession(e, uid)
+	e.check(e.do("POST", "/totp/activate", owner, url.Values{"code": {code}, "password": {testPassword}}), 303)
+	if agStr(e, "SELECT totp_enabled::text FROM users WHERE id=$1", uid) != "true" || !e.auditHas(uid, "Enabled TOTP two-factor authentication; issued 10 recovery codes (confirmed with password)") {
+		t.Fatal("confirmed TOTP activation not applied or not audited with its confirmation")
+	}
+}
+
+// An account with no second factor keeps the session-only flow for its first factor and for key changes.
+func TestFirstFactorNeedsNoConfirmation(t *testing.T) {
+	e := newTestApp(t)
+	uid, s := e.user("first_factor", "buyer")
+	_, pub := testPGPKey(t, "first")
+	e.check(e.do("POST", "/account", s, url.Values{"pgp": {pub}}), 303)
+	agExec(e, "UPDATE users SET pgp_verified_at=now() WHERE id=$1", uid)
+	if strings.Contains(e.body("GET", "/pgp", s, nil, 200), `name="password"`) {
+		t.Fatal("/pgp asks for a password before the first factor")
+	}
+	e.check(e.do("POST", "/pgp/2fa", s, url.Values{"enable": {"1"}}), 303)
+	if !e.auditHas(uid, "Turned on PGP sign-in verification") || e.auditHas(uid, "confirmed with") {
+		t.Fatal("first-factor PGP enable not applied as before")
+	}
+
+	id2, s2 := e.user("first_totp", "buyer")
+	e.check(e.do("POST", "/totp/enroll", s2, nil), 303)
+	if strings.Contains(e.body("GET", "/totp", s2, nil, 200), `name="password"`) {
+		t.Fatal("/totp asks for a password before the first factor")
+	}
+	code, _ := e.totpCodeFor(id2, 0)
+	e.check(e.do("POST", "/totp/activate", s2, url.Values{"code": {code}}), 303)
+	if agStr(e, "SELECT totp_enabled::text FROM users WHERE id=$1", id2) != "true" || e.auditHas(id2, "confirmed with") {
+		t.Fatal("first-factor TOTP activation not applied as before")
+	}
+}
+
+// A-48: a cross-site link arrives without the SameSite=Strict cookies. The response must not store a
+// fresh anonymous `session` cookie over the real one, or the user is signed out on the next direct visit.
+func TestCrossSiteLinkClobbersSessionCookie(t *testing.T) {
+	e := newTestApp(t)
+	_, s := e.user("linked_buyer", "buyer")
+	jar := map[string]string{"session": s}
+	e.check(e.do("GET", "/account", jar["session"], nil), 200)
+
+	// Cross-site click: the Strict cookie is withheld.
+	r := httptest.NewRequest("GET", "/account", nil)
+	w := httptest.NewRecorder()
+	e.A.ServeHTTP(w, r)
+	for _, c := range w.Result().Cookies() {
+		if c.Name == "session" && c.SameSite == http.SameSiteStrictMode && c.Path == "/" {
+			jar["session"] = c.Value // top-level navigation response: stored, overwriting the real session
+		}
+	}
+
+	// The user now opens the market directly (same-site): the stored session is gone.
+	if w2 := e.do("GET", "/account", jar["session"], nil); w2.Code != 200 {
+		t.Fatalf("signed out after following a cross-site link: GET /account = %d %s (session cookie replaced: %v)", w2.Code, w2.Header().Get("Location"), jar["session"] != s)
+	}
+}
+
+var csrfField = regexp.MustCompile(`name="csrf" value="([0-9a-f]{64})"`)
+
+// a48Do sends a request carrying exactly the given cookies, form (csrf included by the caller) and headers.
+func a48Do(e *testEnv, method, path string, form url.Values, cookies map[string]string, header ...string) *httptest.ResponseRecorder {
+	e.t.Helper()
+	r := httptest.NewRequest(method, path, strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	for i := 0; i+1 < len(header); i += 2 {
+		r.Header.Set(header[i], header[i+1])
+	}
+	for name, value := range cookies {
+		r.AddCookie(&http.Cookie{Name: name, Value: value})
+	}
+	w := httptest.NewRecorder()
+	e.A.ServeHTTP(w, r)
+	return w
+}
+
+// A-48: a sign-in form rendered on a cookieless (cross-site) landing page carries a CSRF token and a
+// CAPTCHA bound to the separate pre-login `anon` cookie. The next same-site POST sends both the real
+// `session` and that `anon` cookie; it is served anonymously, as the page was rendered, and still submits.
+func TestAnonymousLandingFormPostsWhileSignedIn(t *testing.T) {
+	e := newTestApp(t)
+	id, s := e.user("landing_buyer", "buyer")
+	agExec(e, "UPDATE settings SET value='true' WHERE key='captcha_required'")
+
+	// Cross-site landing on /login: no cookies sent; only the pre-login cookie is issued.
+	w := a48Do(e, "GET", "/login", nil, nil)
+	e.check(w, 200)
+	if e.cookie(w, "session") != "" {
+		t.Fatal("a cookieless request set the session cookie")
+	}
+	anon := e.cookie(w, "anon")
+	m, cm := csrfField.FindStringSubmatch(w.Body.String()), captchaField.FindStringSubmatch(w.Body.String())
+	if len(anon) != 64 || m == nil || cm == nil || m[1] != e.A.csrf(anon) {
+		t.Fatalf("landing page: anon=%q csrf=%v captcha=%v", anon, m, cm)
+	}
+	both := map[string]string{"session": s, "anon": anon}
+	// The page's CAPTCHA image is a same-site request carrying both cookies.
+	e.check(a48Do(e, "GET", "/captcha?id="+cm[1], nil, both), 200)
+	// A still-signed-in reload renders as the session user and sets no cookie.
+	if w := a48Do(e, "GET", "/account", nil, both); w.Code != 200 || len(w.Result().Cookies()) != 0 {
+		t.Fatalf("signed-in GET: %d cookies=%v", w.Code, w.Result().Cookies())
+	}
+
+	// The anon-derived token never acts as the signed-in user: a protected action is refused.
+	e.check(a48Do(e, "POST", "/account", url.Values{"csrf": {m[1]}, "xmpp": {"x@example.org"}}, both), 401)
+	// Another browser's anon token, a cross-site POST and a foreign Origin are still rejected.
+	creds := url.Values{"csrf": {m[1]}, "handle": {"landing_buyer"}, "password": {testPassword}, "captcha_id": {cm[1]}, "captcha": {e.A.captchaAnswer(cm[1])}}
+	e.check(a48Do(e, "POST", "/login", creds, map[string]string{"session": s, "anon": randomToken()}), 403)
+	e.check(a48Do(e, "POST", "/login", creds, both, "Sec-Fetch-Site", "cross-site"), 403)
+	e.check(a48Do(e, "POST", "/login", creds, both, "Origin", "http://forum.example"), 403)
+
+	// The landing page's sign-in form submits: CSRF and CAPTCHA match the anon cookie it was rendered for.
+	w = a48Do(e, "POST", "/login", creds, both, "Origin", "http://example.com", "Sec-Fetch-Site", "same-origin")
+	e.check(w, 303)
+	fresh := e.session(w)
+	if fresh == s || fresh == anon || agInt(e, "SELECT count(*) FROM sessions WHERE token_hash=$1 AND user_id=$2", digest(fresh), id) != 1 {
+		t.Fatal("sign-in from the landing page did not issue a fresh session")
+	}
+	e.check(a48Do(e, "GET", "/account", nil, map[string]string{"session": fresh, "anon": anon}), 200)
+}
+
+// A-48: a browser with no cookies gets only the pre-login cookie; registering with it sets the session,
+// and a pre-upgrade anonymous `session` cookie still backs CSRF until sign-in replaces it.
+func TestPreLoginCookieSeparateFromSession(t *testing.T) {
+	e := newTestApp(t)
+	e.user("prelogin_admin", "admin") // marks the market installed
+	w := a48Do(e, "GET", "/register", nil, nil)
+	e.check(w, 200)
+	anon := e.cookie(w, "anon")
+	if e.cookie(w, "session") != "" || len(anon) != 64 {
+		t.Fatalf("cookieless GET cookies: %v", w.Result().Cookies())
+	}
+	for _, c := range w.Result().Cookies() {
+		if c.Name == "anon" && (!c.HttpOnly || c.SameSite != http.SameSiteStrictMode || c.Path != "/") {
+			t.Fatalf("anon cookie attributes: %+v", c)
+		}
+	}
+	// The same browser (anon cookie only) gets no new cookie on later GETs.
+	if w := a48Do(e, "GET", "/", nil, map[string]string{"anon": anon}); len(w.Result().Cookies()) != 0 {
+		t.Fatalf("anon GET reissued cookies: %v", w.Result().Cookies())
+	}
+	w = a48Do(e, "POST", "/register", url.Values{"csrf": {e.A.csrf(anon)}, "handle": {"prelogin_new"}, "password": {"a-long-buyer-password"}}, map[string]string{"anon": anon})
+	e.check(w, 303)
+	s := e.session(w)
+	if s == anon || e.cookie(w, "anon") != "" {
+		t.Fatal("register reused or reissued the pre-login token")
+	}
+	e.check(a48Do(e, "GET", "/account", nil, map[string]string{"session": s, "anon": anon}), 200)
+	legacy := randomToken()
+	w = e.do("POST", "/login", legacy, url.Values{"handle": {"prelogin_new"}, "password": {"a-long-buyer-password"}})
+	e.check(w, 303)
+	if s2 := e.session(w); s2 == legacy {
+		t.Fatal("legacy anonymous token became the session")
+	}
 }

@@ -123,18 +123,31 @@ coins; the order moves to *Paid* once the deposit reaches the confirmation thres
 
 ## 5. Recover a held or failed payout
 
-Each payout is sent once. The **Payouts** table on the admin page marks rows that need attention:
+Each payout is sent once. The **Payouts** table on the admin page marks rows that need attention and lists
+every one of them first, oldest first, under a count ("N payouts need attention"); other payouts are limited
+to the 50 most recent. An order ID links to the order page where the administrator can open it (an order they are party to, a
+disputed or resolved order, or one with a payment flagged for review); otherwise it is plain text.
 
-- **Failed — not retried; rejected by the wallet, nothing broadcast**: the wallet answered the send with an
-  error (for example insufficient or locked funds), so no transaction exists.
+- **Failed — not retried; the wallet reported a pre-broadcast error, nothing broadcast**: the wallet
+  answered the send with a pre-broadcast error (for example insufficient or locked funds), so no
+  transaction exists. For Bitcoin this is any `sendtoaddress` error: Bitcoin Core stores the transaction
+  before relaying it, and a failed relay is not returned as an error. For Monero it is only a `transfer`
+  error raised before the wallet submits to the daemon: -2 (wrong address), -16 (transaction not
+  possible), -17 (not enough money), -18 (transaction too large), -19 (not enough outputs to mix), -20 (no
+  destination) or -37 (not enough unlocked money).
 - **Failed — not retried; outcome unknown, may have been broadcast**: the wallet call ended without a
   definite answer (no reply within 30 s, a dropped connection or an unreadable reply after the request was
-  sent). The wallet may still have broadcast the transaction. Failures recorded before this distinction
-  existed are shown this way too.
+  sent), or monero-wallet-rpc returned any other error code. In particular -38 (no connection to daemon)
+  is also returned when `sendrawtransaction` timed out after monerod may already have relayed the
+  transaction, and -4 or -1 can follow a submission. The wallet may still have broadcast the transaction.
+  Failures recorded before this distinction existed are shown this way too.
 - **Stuck in sending**: claimed more than 5 minutes ago with no recorded outcome (crash or database error
   after the wallet call); it may have been broadcast.
 - **Held**: a credited deposit is conflicted or re-confirming (the watcher releases these itself once the
-  deposit is confirmed again), or the payout was restored from a backup (never released automatically).
+  deposit is confirmed again).
+- **Held after a restore from backup — may already have been sent**: the payout was pending, sending,
+  blocked or held in a restored dump (its error starts `Restored from backup:`). It is never released
+  automatically, and it may have been broadcast after the backup was taken.
 
 Ordinary wallet reads time out after 10 s; a payout send is allowed 30 s, so a slow wallet that broadcasts
 after 10 s is still recorded as sent.
@@ -157,8 +170,64 @@ the state you saw, so a double click or a second administrator cannot queue it t
   asks you to tick "I checked the wallet ... no transaction ... was broadcast"; the server refuses the
   requeue without it and records the confirmation in the audit trail. Include pending and pool transfers in
   that check, and if the wallet shows the transaction use **Mark sent** instead.
-- **Release held payout** (held): after a restore, once you have confirmed it was not sent. Refused while a
-  credited deposit for the order is still conflicted or below the threshold.
+- **Release held payout** (held): the payout goes back to the queue and the next pass sends it once.
+  Refused while a credited deposit for the order is still conflicted or below the threshold. For a payout
+  held by a restore the form also asks you to tick "I checked the wallet ... no transaction ... was
+  broadcast"; the server refuses the release without it and records the confirmation in the audit trail
+  and the order history. If the wallet shows the transaction use **Mark sent** instead.
+
+### Handle a payment-review flag
+
+The watcher flags a deposit once (`payments.flagged`): it writes a system note ending "Moderator review
+required." to the order history and notifies every moderator and administrator ("Payment review needed for
+order <first 8 characters of the order ID>"). Open **Moderation desk → Payment review**
+(`/moderator#payment-review`): it lists flagged deposits newest first (the 100 most recent, with a notice when
+older ones are cut) with the full order ID linking to the order, amount, full transaction ID, reason and
+flag time. A moderator or administrator who is not party to the order can open its page read-only: history
+with the flag note, the deposit ledger (while the currency's wallet is configured) and any payout. No buyer or
+vendor action is offered, the order actions refuse staff, and digital delivery content stays hidden unless
+the order is disputed.
+
+| Reason on the desk | What happened | What the application already did |
+| --- | --- | --- |
+| Credited deposit conflicted or missing | A deposit counted toward payment was double-spent, replaced, reorganised away or is no longer in the wallet. | Order state unchanged. Any unsent payout for the order is held (one queued later starts held). If the deposit confirms again the watcher lifts its own hold. |
+| Locked transfer (unlock time) | A Monero transfer with a non-zero `unlock_time`. | Never counted toward payment or paid out. The buyer was told to send an ordinary transfer. |
+| Deposit confirmed after settlement, not paid out | Extra funds confirmed after the order's single release or refund was queued (completed or resolved orders, or a cancellation that already queued a refund). | Not paid out: an order has exactly one payout. |
+
+What staff can do:
+
+1. Look the transaction up in the wallet (the `btc` and `xmr` helpers from steps 2 and 3; for incoming funds use
+   `btc -rpcwallet=opsecmkt gettransaction <txid>` or
+   `xmr get_transfer_by_txid '{"txid":"<txid>"}'`).
+2. A conflicted deposit that confirms again needs nothing. One that is gone for good means the order was
+   never fully funded: leave its held payout held (*Release held payout* is refused while the deposit is
+   conflicted) and talk to both parties through Messages. If either party opens a dispute, the moderator
+   resolves it on the desk as usual; the resulting payout is held too.
+3. Locked transfers and extra funds after settlement sit in the pooled wallet. They normally belong to the
+   buyer. Agree a return address with the buyer through Messages (ideally signed with their verified PGP key),
+   send the funds back **by hand from the wallet** (`sendtoaddress` / `transfer`), and record it.
+
+There is no web action to dismiss a flag or pay out a flagged deposit, and a flag stays on the desk. A
+manual refund is recorded as a **written note** (an order-history event plus an audit row), **never as a
+payout row**: `payouts.order_id` is unique, so the order's single release or refund owns that row; do not
+insert a payout and do not use *Mark sent* on the order's payout for a manual transfer. Record the note with
+`psql` (internal-db shown; replace the order ID, your staff handle and the note text):
+
+```sh
+docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -v order_id=FULL_ORDER_ID -v handle=YOUR_HANDLE \
+  -v note='Manual TESTNET refund: returned 0.0005 BTC from deposit <txid>:<n> to the buyer by hand in <refund txid>.' \
+  -U opsecmkt -d opsecmkt <<'SQL'
+WITH ev AS (
+  INSERT INTO order_events(order_id,from_state,to_state,actor_id,note)
+  SELECT o.id,o.state,o.state,u.id,:'note' FROM orders o JOIN users u ON u.handle=:'handle' AND u.role IN ('moderator','admin')
+  WHERE o.id=:'order_id' RETURNING order_id,actor_id)
+INSERT INTO audit_events(user_id,action) SELECT actor_id,'Order '||order_id||': '||:'note' FROM ev;
+SQL
+```
+
+It must report `INSERT 0 1`; `INSERT 0 0` means the order ID or staff handle was wrong and nothing was
+written. The note appears in the order history, which the buyer and vendor also read, so keep addresses and
+anything private out of it.
 
 ## 6. Back up the wallets
 

@@ -40,7 +40,8 @@
 </table>
 </div>
 <h3 id="payouts">Payouts</h3>
-<p>Each payout is attempted once. Failed or stuck payouts are never retried automatically: check the wallet before paying anything manually. A payout the wallet rejected was not broadcast; one whose outcome is unknown (the wallet call timed out or its reply was lost) or that is stuck in sending may have been. After checking the wallet you can release a held payout, requeue a payout that was not broadcast (confirming that explicitly when the outcome was unknown), or record one the wallet shows as sent. Each action needs your password and is audited.</p>
+<p>{{if eq .PayoutsAttention 0}}No payouts need attention.{{else}}<strong>{{.PayoutsAttention}} {{if eq .PayoutsAttention 1}}payout needs{{else}}payouts need{{end}} attention</strong>, listed first, oldest first.{{end}}{{if .PayoutHistoryLimit}} Showing every payout that needs attention and the {{.PayoutHistoryLimit}} most recent other payouts; older payouts that need no attention are not listed.{{end}}</p>
+<p>Each payout is attempted once. Failed or stuck payouts are never retried automatically: check the wallet before paying anything manually. A payout for which the wallet reported a pre-broadcast error was not broadcast; one whose outcome is unknown (the wallet call timed out or its reply was lost) or that is stuck in sending may have been. After checking the wallet you can release a held payout, requeue a payout that was not broadcast (confirming that explicitly when the outcome was unknown), or record one the wallet shows as sent. Each action needs your password and is audited.</p>
 <div class="table-wrap">
 <table>
 <thead>
@@ -56,7 +57,7 @@
 </tr>
 </thead>
 <tbody>{{range .Payouts}}<tr{{if .Attention}} class="payout-attention"{{end}}>
-<td class="mono">{{.OrderID}}</td>
+<td class="mono">{{if .OrderLink}}<a href="/order?id={{.OrderID}}">{{.OrderID}}</a>{{else}}{{.OrderID}}{{end}}</td>
 <td>{{if eq .Kind "release"}}Release{{else}}Refund{{end}}</td>
 <td>{{.Recipient}}</td>
 <td>{{.Amount}} {{.Currency}} <span class="badge testnet">TESTNET</span></td>
@@ -69,8 +70,10 @@
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="payout_id" value="{{.ID}}">
 <input type="hidden" name="op" value="release">
-<p class="help">Release only after checking the wallet: this payout was never sent from this database's point of view, and it will be sent once.</p>
-{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
+{{if .Ambiguous}}<p class="help">This payout was restored from a backup and may already have been sent. Release only if the wallet shows no transaction {{if .Address}}to {{.Address}} {{end}}for this amount; otherwise mark it sent with the wallet's transaction ID. It will be sent once.</p>
+<label class="check"><input type="checkbox" name="not_broadcast" value="confirmed" required> I checked the wallet (including pending and pool transfers): no transaction to this address for this amount was broadcast</label>
+{{else}}<p class="help">Release only after checking the wallet: this payout was never sent from this database's point of view, and it will be sent once.</p>
+{{end}}{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button type="submit">Release held payout</button>
 </form>{{else}}<form class="stack" method="post" action="/admin/payout">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">

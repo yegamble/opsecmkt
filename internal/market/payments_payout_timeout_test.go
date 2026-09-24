@@ -93,12 +93,20 @@ func TestSendFailureClassification(t *testing.T) {
 	// Definite: the wallet answered with a JSON-RPC error.
 	_, ov, s := newGapCore(t, "testnet4")
 	ov.fail("sendtoaddress", -6, "Insufficient funds")
-	if err := send(client(s.url(""))); err == nil || !walletRejected(err) {
+	if err := send(client(s.url(""))); err == nil || !walletRejected("BTC", err) {
 		t.Fatalf("JSON-RPC error not a definite rejection: %v", err)
+	}
+	// Bitcoin Core commits the wallet transaction before relaying it, so every sendtoaddress JSON-RPC error,
+	// whatever its code (including the ones Monero treats as ambiguous), is definite.
+	for _, code := range []int{-1, -4, -13, -25, -26, -38} {
+		ov.fail("sendtoaddress", code, "refused")
+		if err := send(client(s.url(""))); err == nil || !walletRejected("BTC", err) {
+			t.Fatalf("bitcoin JSON-RPC error %d not a definite rejection: %v", code, err)
+		}
 	}
 	// Ambiguous: no answer within the send bound.
 	ov.stall("sendtoaddress", true)
-	if err := send(client(s.url(""))); err == nil || walletRejected(err) || !strings.Contains(err.Error(), "timed out") {
+	if err := send(client(s.url(""))); err == nil || walletRejected("BTC", err) || !strings.Contains(err.Error(), "timed out") {
 		t.Fatalf("timeout classified as definite: %v", err)
 	}
 	// Ambiguous: the connection is dropped after the request was read.
@@ -112,15 +120,178 @@ func TestSendFailureClassification(t *testing.T) {
 		}
 	}))
 	defer reset.Close()
-	if err := send(client(reset.URL)); err == nil || walletRejected(err) {
+	if err := send(client(reset.URL)); err == nil || walletRejected("BTC", err) {
 		t.Fatalf("dropped connection classified as definite: %v", err)
 	}
 	// Ambiguous: an unreadable reply.
 	garbage := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("not json")) }))
 	defer garbage.Close()
-	if err := send(client(garbage.URL)); err == nil || walletRejected(err) || !strings.Contains(err.Error(), "invalid response") {
+	if err := send(client(garbage.URL)); err == nil || walletRejected("BTC", err) || !strings.Contains(err.Error(), "invalid response") {
 		t.Fatalf("unreadable reply classified as definite: %v", err)
 	}
+}
+
+// monero-wallet-rpc raises some transfer errors only after /sendrawtransaction may have relayed the
+// transaction (-38 when the daemon call times out, -4 and -3 from the daemon's reply, -1 when saving the tx
+// info fails after commit). Only the codes raised before anything is submitted are definite.
+func TestMoneroTransferErrorClassification(t *testing.T) {
+	shortRPCTimeouts(t, 100*time.Millisecond, 300*time.Millisecond)
+	_, ov, s := newGapMonero(t)
+	xp, err := newMoneroProvider(context.Background(), s.url(""), "", "stagenet", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	send := func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), payoutSendTimeout)
+		defer cancel()
+		txid, err := xp.Send(ctx, payStagenetSub, 42)
+		if txid != "" {
+			t.Fatalf("failed transfer returned txid %q", txid)
+		}
+		return err
+	}
+	for _, c := range []struct {
+		code     int
+		definite bool
+	}{
+		{-2, true}, {-16, true}, {-17, true}, {-18, true}, {-19, true}, {-20, true}, {-37, true},
+		{-38, false}, {-4, false}, {-1, false}, {-3, false}, {-13, false}, {-32601, false},
+	} {
+		ov.fail("transfer", c.code, "wallet error")
+		err := send()
+		var re *rpcError
+		if !errors.As(err, &re) || re.Code != int64(c.code) {
+			t.Fatalf("transfer error %d: %v", c.code, err)
+		}
+		if walletRejected("XMR", err) != c.definite {
+			t.Fatalf("monero transfer error %d classified definite=%v, want %v", c.code, !c.definite, c.definite)
+		}
+	}
+	// A wallet this function does not know is never trusted to have broadcast nothing.
+	if walletRejected("", &rpcError{Method: "unknown RPC send", Code: -6, Message: "Insufficient funds"}) {
+		t.Fatal("unclassified wallet error treated as definite")
+	}
+	// Transport failures stay ambiguous for Monero too.
+	ov.clear()
+	ov.stall("transfer", true)
+	if err := send(); err == nil || walletRejected("XMR", err) || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("monero timeout classified as definite: %v", err)
+	}
+}
+
+// A Monero transfer that fails with -38 (no daemon connection; the daemon may already have relayed it)
+// through the real adapter and the watcher is recorded as ambiguous and requeued only with the confirmation.
+func TestAmbiguousMoneroTransferRequeueNeedsBroadcastConfirmation(t *testing.T) {
+	p := newPayEnv(t)
+	ctx := context.Background()
+	g, _ := gapXMR(t, p, 1)
+	if _, err := p.DB.Exec("UPDATE users SET payout_xmr=$1 WHERE id=$2", payStagenetSub, p.vendor.ID); err != nil {
+		t.Fatal(err)
+	}
+	failed := map[int]string{}
+	for i, f := range []rpcFailure{{-38, "no connection to daemon"}, {-17, "not enough money"}} {
+		addr := "7gapxmrnodaemon" + strings.Repeat(string(rune('a'+i)), 80)
+		g.subaddress(addr, int64(40+i))
+		order := p.gapOrder("XMR", addr)
+		g.deposit(addr, "xmr-nodaemon-"+string(rune('a'+i)), 100000, 1)
+		p.poll()
+		p.complete(order)
+		g.ov.fail("transfer", f.code, f.msg)
+		if err := p.A.pollOnce(ctx); err == nil || !strings.Contains(err.Error(), f.msg) {
+			t.Fatalf("monero send failure %d not reported: %v", f.code, err)
+		}
+		g.reset()
+		p.failedPayout(order, f.msg, f.code == -38)
+		failed[f.code] = order
+	}
+	amb, def := p.payoutID(failed[-38]), p.payoutID(failed[-17])
+	calls := g.s.called("transfer")
+
+	// Without the confirmation the ambiguous payout stays failed and is never sent again.
+	w := p.do("POST", "/admin/payout", p.adminSess, url.Values{"payout_id": {amb}, "op": {"requeue"}, "password": {testPassword}})
+	if w.Code != 400 || !strings.Contains(html.UnescapeString(w.Body.String()), "may have been broadcast") {
+		t.Fatalf("unconfirmed requeue of a -38 failure: %d", w.Code)
+	}
+	p.poll()
+	if st, _, _, _ := p.payout(failed[-38]); st != "failed" || g.s.called("transfer") != calls {
+		t.Fatalf("-38 failure resent without confirmation: %s calls=%d", st, g.s.called("transfer"))
+	}
+
+	// Confirmed: requeued, audited and sent once; the pre-submission rejection needs the password only.
+	if code, body := p.payoutActionConfirmed(p.adminSess, amb, "requeue", testPassword); code != 303 {
+		t.Fatalf("confirmed requeue: %d %s", code, body)
+	}
+	if n := p.count("SELECT count(*) FROM audit_events WHERE action LIKE 'Requeued payout " + amb + " %administrator confirmed the wallet shows no broadcast transaction (confirmed with password)'"); n != 1 {
+		t.Fatalf("confirmation not audited: %d", n)
+	}
+	if code, body := p.payoutAction(p.adminSess, def, "requeue", "", testPassword); code != 303 {
+		t.Fatalf("definite requeue: %d %s", code, body)
+	}
+	p.poll()
+	for _, order := range failed {
+		if st, txid, _, _ := p.payout(order); st != "sent" || txid == "" {
+			t.Fatalf("requeued XMR payout %s: %s %q", order[:8], st, txid)
+		}
+	}
+	if g.s.called("transfer") != calls+2 {
+		t.Fatalf("transfer calls %d, want %d", g.s.called("transfer"), calls+2)
+	}
+}
+
+// Monero failures recorded as definite before migration 055 are reclassified unless their code was raised
+// before submission; Bitcoin failures and failures recorded with the current wording are left alone.
+func TestMoneroPostSubmitFailureMigrationReclassifiesOldRows(t *testing.T) {
+	p := newPayEnv(t)
+	p.setPayoutAddress(p.vendor, "fake-testnet-vendor")
+	const old = "The wallet rejected the send; nothing was broadcast. "
+	rows := []struct {
+		currency, error string
+		ambiguous       bool
+	}{
+		{"XMR", old + "monero wallet RPC transfer: error -38: no connection to daemon", true},
+		{"XMR", old + "monero wallet RPC transfer: error -4: transaction was rejected by daemon", true},
+		{"XMR", old + "monero wallet RPC transfer: error -1: Failed to save tx info", true},
+		{"XMR", old + "monero wallet RPC transfer: error -17: not enough money", false},
+		{"XMR", old + "monero wallet RPC transfer: error -2: WALLET_RPC_ERROR_CODE_WRONG_ADDRESS: x", false},
+		{"XMR", "The wallet reported a pre-broadcast error; nothing was broadcast. monero wallet RPC transfer: error -37: not enough unlocked money", false},
+		{"BTC", old + "bitcoin RPC sendtoaddress: error -4: Transaction commit failed", false},
+	}
+	orders := make([]string, len(rows))
+	for i, r := range rows {
+		orders[i], _ = p.failPayout("tx-mig-"+string(rune('a'+i)), &rpcError{Method: "fake RPC send", Code: -6, Message: "Insufficient funds"})
+		if _, err := p.DB.Exec("UPDATE payouts SET currency=$2,error=$3,send_ambiguous=false WHERE order_id=$1", orders[i], r.currency, r.error); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A database from before migration 055.
+	if _, err := p.DB.Exec("DELETE FROM schema_migrations WHERE version=55"); err != nil {
+		t.Fatal(err)
+	}
+	p.restart()
+	check := func() {
+		t.Helper()
+		for i, r := range rows {
+			got := p.str("SELECT send_ambiguous::text FROM payouts WHERE order_id=$1", orders[i]) == "true"
+			e := p.str("SELECT error FROM payouts WHERE order_id=$1", orders[i])
+			if got != r.ambiguous || (r.ambiguous && (!strings.Contains(e, "may or may not have been broadcast") || strings.Contains(e, "nothing was broadcast") || !strings.HasSuffix(e, r.error[len(old):]))) || (!r.ambiguous && e != r.error) {
+				t.Fatalf("row %d (%s): ambiguous=%v error=%q", i, r.error, got, e)
+			}
+		}
+	}
+	check()
+	// Re-running the migration changes nothing.
+	list, err := loadMigrations(migrationFiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range list {
+		if m.Version == 55 {
+			if _, err = p.DB.Exec(m.SQL); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	check()
 }
 
 func TestSlowWalletSendIsRecordedSentByTheWatcher(t *testing.T) {
@@ -171,7 +342,7 @@ func TestAmbiguousFailedPayoutRequeueNeedsBroadcastConfirmation(t *testing.T) {
 		t.Fatalf("definite error text %q", e)
 	}
 	admin := html.UnescapeString(p.page("/admin", p.adminSess))
-	if strings.Count(admin, `name="not_broadcast"`) != 1 || !strings.Contains(admin, "outcome unknown, may have been broadcast") || !strings.Contains(admin, "rejected by the wallet, nothing broadcast") {
+	if strings.Count(admin, `name="not_broadcast"`) != 1 || !strings.Contains(admin, "outcome unknown, may have been broadcast") || !strings.Contains(admin, "the wallet reported a pre-broadcast error, nothing broadcast") || !strings.Contains(admin, "The wallet reported a pre-broadcast error; nothing was broadcast.") {
 		t.Fatal("admin page does not distinguish the ambiguous failure or ask for the confirmation once")
 	}
 

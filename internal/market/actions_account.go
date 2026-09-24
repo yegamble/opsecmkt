@@ -27,13 +27,14 @@ func accountAction(c *actionCtx) (actionResult, error) {
 	if len(pgp) > 16384 || len(xmpp) > 254 {
 		return actionResult{}, fail(400, "Profile fields too long")
 	}
-	// Changing or removing the key while PGP sign-in is on needs the current password (and TOTP code if enrolled).
+	// Changing or removing the key while PGP sign-in or TOTP is on needs the current password (and TOTP code if
+	// enrolled), so a session alone cannot swap in a key and then add it as a sign-in factor.
 	var old string
-	var twoFA bool
-	if err := c.A.db.QueryRowContext(c.Ctx(), "SELECT pgp,pgp_2fa FROM users WHERE id=$1", c.User.ID).Scan(&old, &twoFA); err != nil {
+	var twoFA, totp bool
+	if err := c.A.db.QueryRowContext(c.Ctx(), "SELECT pgp,pgp_2fa,totp_enabled FROM users WHERE id=$1", c.User.ID).Scan(&old, &twoFA, &totp); err != nil {
 		return actionResult{}, err
 	}
-	confirm := twoFA && old != pgp
+	confirm := (twoFA || totp) && old != pgp
 	return confirmedTx(c, confirm, func(c *actionCtx) (actionResult, error) {
 		// P2: parse the key, store its fingerprint and reset ownership proof / PGP sign-in when it changes.
 		audit, err := saveProfileKey(c, pgp, confirm)

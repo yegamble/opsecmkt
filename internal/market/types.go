@@ -28,6 +28,12 @@ type Notification struct {
 	Read              bool
 }
 type Dispute struct{ ID, OrderID, Reason, Status, Resolution, Created string }
+
+// PaymentReview is one deposit the payment watcher flagged for staff review (payments.flagged).
+type PaymentReview struct {
+	OrderID, OrderState, Currency, Amount, TxID, Reason, Flagged string
+	Index                                                        int64
+}
 type Event struct{ Handle, Action, Created string } // Handle: account the audit row is recorded on ("" = system)
 
 type PageData struct {
@@ -64,11 +70,23 @@ type PageData struct {
 	Reviews       []Review
 	ReviewSummary *ReviewSummary
 	CanReview     bool
-	// IncomingOrders: vendor-dashboard orders on the viewer's own listings; NeedsAction counts paid ones.
+	// IncomingOrders: vendor-dashboard orders on the viewer's own listings, every paid one first;
+	// NeedsAction counts all paid ones.
 	IncomingOrders []Order
 	NeedsAction    int
 	// DisputeOrders: order summary per dispute (disputes and moderator pages), keyed by order id.
+	// OpenDisputes: how many leading entries of Disputes are open (the rest are resolved).
 	DisputeOrders map[string]Order
+	OpenDisputes  int
+	// HistoryLimit: non-zero when closed history (resolved disputes, or incoming orders not paid) was
+	// cut to this many most recent rows.
+	HistoryLimit int
+	// DeliveryWithheld: order page viewed by a reviewer of a payment flag on an order never disputed.
+	DeliveryWithheld bool
+	// PaymentReviews: moderator desk, payments flagged for review, newest flag first; PaymentReviewLimit is
+	// non-zero when the list was cut to that many rows.
+	PaymentReviews     []PaymentReview
+	PaymentReviewLimit int
 
 	// P4 Inventory (uses Product.Archived)
 	Listing   *ListingView
@@ -80,7 +98,11 @@ type PageData struct {
 	Payout          *PayoutView
 	PaymentsEnabled bool
 	PaymentNetworks string
-	Payouts         []PayoutRow // admin: recent payouts, newest first
+	Payouts         []PayoutRow // admin: every payout needing attention (oldest first), then recent others (newest first)
+	// PayoutsAttention counts the leading Payouts that need attention; PayoutHistoryLimit is non-zero when
+	// the other payouts were cut to this many most recent rows.
+	PayoutsAttention   int
+	PayoutHistoryLimit int
 
 	// P6 Transparency
 	Canary      *CanaryView
@@ -192,8 +214,9 @@ type PayoutRow struct {
 	OrderID, Kind, Recipient, Currency, Amount       string
 	Address, State, StateLabel, TxID, Error, Updated string
 	Attention                                        bool
-	// Ambiguous: the last send may have been broadcast (failed without a definite wallet answer, or stuck in
-	// sending); requeueing needs an explicit confirmation.
+	OrderLink                                        bool // the viewing administrator can open /order for it
+	// Ambiguous: the payout may already have been broadcast (failed without a definite wallet answer, stuck
+	// in sending, or held by a restore from backup); requeueing or releasing needs an explicit confirmation.
 	Ambiguous bool
 }
 

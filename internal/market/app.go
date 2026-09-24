@@ -193,9 +193,17 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.StripPrefix("/static/", http.FileServer(http.Dir("web/static"))).ServeHTTP(w, r)
 		return
 	}
-	token := ""
+	// Two SameSite=Strict cookies: `session` holds a signed-in session and is set only at sign-in (and
+	// cleared at sign-out); `anon` holds the pre-login token that backs CSRF and CAPTCHA for anonymous
+	// requests. A cross-site link arrives with neither, so the response issues only a new `anon` and can
+	// never overwrite the browser's real `session`. A `session` value that is not (or no longer) a live
+	// session, such as a pre-upgrade anonymous one, still serves as this request's token.
+	token, anon := "", ""
 	if c, err := r.Cookie("session"); err == nil && len(c.Value) == 64 {
 		token = c.Value
+	}
+	if c, err := r.Cookie("anon"); err == nil && len(c.Value) == 64 {
+		anon = c.Value
 	}
 	var user *User
 	if token != "" && a.db != nil {
@@ -209,10 +217,13 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if token == "" {
-		token = randomToken()
-		a.cookie(w, "session", token, 86400)
+		if anon == "" {
+			anon = randomToken()
+			a.cookie(w, "anon", anon, 86400)
+		}
+		token = anon
 	}
-	r = r.WithContext(context.WithValue(ctx, sessionKey{}, token))
+	r = r.WithContext(context.WithValue(context.WithValue(ctx, sessionKey{}, token), anonKey{}, anon))
 	ctx = r.Context()
 	if r.Method == "POST" {
 		if a.preview {
@@ -231,9 +242,23 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		if r.Header.Get("Sec-Fetch-Site") == "cross-site" || subtle.ConstantTimeCompare([]byte(r.PostForm.Get("csrf")), []byte(a.csrf(token))) != 1 {
+		if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
 			http.Error(w, "Form expired. Reload and try again.", 403)
 			return
+		}
+		if sent := []byte(r.PostForm.Get("csrf")); subtle.ConstantTimeCompare(sent, []byte(a.csrf(token))) != 1 {
+			// A page rendered while the browser withheld `session` (it followed a cross-site link) holds
+			// a token derived from `anon`, and this same-site POST now sends both cookies. Serve it as the
+			// anonymous request the form was rendered for: never as the signed-in user, so the anon token
+			// grants nothing an anonymous visitor lacks, while that page's sign-in form and CAPTCHA work.
+			// Origin and Sec-Fetch-Site are checked above either way. A sign-in served this way replaces
+			// the `session` cookie; the previous session row lapses at expiry or with revoke-sessions.
+			if anon == "" || anon == token || subtle.ConstantTimeCompare(sent, []byte(a.csrf(anon))) != 1 {
+				http.Error(w, "Form expired. Reload and try again.", 403)
+				return
+			}
+			token, user = anon, nil
+			r = r.WithContext(context.WithValue(r.Context(), sessionKey{}, token)) // keeps anonKey
 		}
 		a.post(w, r, user, token)
 		return

@@ -72,3 +72,39 @@ test('changing the password needs the current one, ends other sessions and keeps
   await expect(page.locator('.key-values div', { hasText: 'Unused recovery codes' }).locator('dd')).toHaveText('9 of 10');
   await page.context().close();
 });
+
+// A-48: following a link from another site withholds the SameSite=Strict cookies. The landing response must
+// not overwrite the session cookie, and the sign-in form rendered on that landing page must still submit.
+test('a cross-site link to the market does not sign the user out', async ({ browser, baseURL }) => {
+  const handle = uniqueHandle('xsite');
+  const password = 'browser-crosssite-password-1';
+  const page = await signedIn(browser, baseURL, handle, password, true);
+  const context = page.context();
+  await context.route('http://forum.example/**', route => route.fulfill({ contentType: 'text/html', body: `<a id="go" href="${baseURL}/account">market</a>` }));
+  const sessionCookie = async () => (await context.cookies(baseURL)).find(c => c.name === 'session')?.value;
+  const before = await sessionCookie();
+  expect(before).toMatch(/^[0-9a-f]{64}$/);
+
+  const fromForum = async () => {
+    await page.goto('http://forum.example/');
+    await page.locator('#go').click();
+    // The browser withheld the Strict session cookie, so the protected page redirected to sign-in.
+    await expect(page).toHaveURL(/\/login$/);
+  };
+  await fromForum();
+  expect(await sessionCookie()).toBe(before);
+  await page.goto('/account'); // typed or bookmarked: same-site
+  await expect(page).toHaveURL(/\/account$/);
+  await expect(page.locator('.account-name')).toHaveText(handle);
+
+  // The sign-in form rendered on the cross-site landing page still submits.
+  await fromForum();
+  await page.getByLabel('Handle', { exact: true }).fill(handle);
+  await page.getByLabel('Password', { exact: true }).fill(password);
+  expect(await submitStatus(page, () => page.getByRole('button', { name: 'Sign in' }).click())).toBe(303);
+  await expect(page.locator('.account-name')).toHaveText(handle);
+  await page.goto('/account');
+  await expect(page).toHaveURL(/\/account$/);
+  await expect(page.locator('.account-name')).toHaveText(handle);
+  await context.close();
+});

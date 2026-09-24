@@ -14,12 +14,12 @@
 </label>
 <label>PGP public key<textarea name="pgp" maxlength="32768" rows="8" spellcheck="false" placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----">{{.PGP}}</textarea>
 </label>
-<span class="help">Only your public key belongs here. Saving a different key clears ownership verification and PGP sign-in.</span>{{if and $.PGP $.PGP.TwoFactor}}
+<span class="help">Only your public key belongs here. Saving a different key clears ownership verification and PGP sign-in.</span>{{$totp := and $.Security $.Security.TOTPEnabled}}{{if or (and $.PGP $.PGP.TwoFactor) $totp}}
 <label>Current password<input type="password" name="password" maxlength="72" autocomplete="current-password" aria-describedby="pgp-confirm-help">
-</label>{{if and $.Security $.Security.TOTPEnabled}}
+</label>{{if $totp}}
 <label>Authenticator code<input name="code" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" autocomplete="one-time-code" aria-describedby="pgp-confirm-help">
 </label>{{end}}
-<span class="help" id="pgp-confirm-help">PGP sign-in verification is on: changing or removing the key needs your current password{{if and $.Security $.Security.TOTPEnabled}} and an authenticator code{{end}}. Leave blank to save other fields.</span>{{end}}{{with $.PGP}}{{if .HasKey}}<dl class="key-values pgp-summary">
+<span class="help" id="pgp-confirm-help">Sign-in verification is on: changing or removing the key needs your current password{{if $totp}} and an authenticator code{{end}}. Leave blank to save other fields.</span>{{end}}{{with $.PGP}}{{if .HasKey}}<dl class="key-values pgp-summary">
 <div>
 <dt>Fingerprint</dt>
 <dd class="pgp-fingerprint">{{if .Fingerprint}}{{.Fingerprint}}{{else}}Unreadable — paste your key again{{end}}</dd>
