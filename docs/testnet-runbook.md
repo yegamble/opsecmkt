@@ -24,13 +24,18 @@ What the application does on its own, so you know what to expect while following
 
 ## 1. Configure
 
-Run `scripts/install.sh` on a fresh host and choose `local` (a reviewed node image you supply) or `external`
-for each currency. For local nodes it writes:
+Run `scripts/install.sh` on a fresh host and choose, for each currency, `local` (the default: a node in
+Docker from the default image or a reviewed image you supply), `external` or `disabled`. Local nodes are
+**pruned** unless you answer `no` to "Prune the … node": a pruned Bitcoin node needs about 5 GB (testnet4)
+to 8 GB (signet), and the first sync of either coin takes hours. Sizes, full nodes and the wallet-restore
+trade-off: [Local node pruning](operator-guide.md#local-node-pruning). For local nodes it writes:
 
-- `BITCOIN_RPC_PASSWORD` and `BITCOIN_RPC_URL=http://marketplace:<password>@bitcoin:8332`, `BITCOIN_CHAIN=testnet4`;
+- `BITCOIN_RPC_PASSWORD` and `BITCOIN_RPC_URL=http://marketplace:<password>@bitcoin:8332`, `BITCOIN_CHAIN=testnet4`,
+  `BITCOIN_PRUNE_MB=2000` (`0` for a full node);
 - `MONERO_WALLET_RPC_PASSWORD`, `MONERO_WALLET_RPC_URL=http://marketplace:<password>@monero-wallet:18083`
   (the `monero-wallet` service runs with `--rpc-login marketplace:<password>`; the app answers its HTTP
-  Digest challenge), `MONERO_RPC_URL=http://monero:18081` and `MONERO_NETWORK=stagenet`.
+  Digest challenge), `MONERO_RPC_URL=http://monero:18081`, `MONERO_NETWORK=stagenet` and
+  `MONERO_PRUNE_FLAGS='--prune-blockchain --sync-pruned-blocks'` (blank for a full node).
 
 For external nodes `BITCOIN_CHAIN` and `MONERO_NETWORK` are left blank, so the app accepts whichever test
 network the node reports; set them in `.env` if you want the app to insist on one. If you choose an external
@@ -50,8 +55,8 @@ Wait for the nodes to sync before expecting deposits to be seen (`docker compose
 
 ## 2. Create the Bitcoin wallet
 
-The compose service runs `bitcoind -chain=${BITCOIN_CHAIN:-testnet4} -rpcport=8332 -rpcuser=marketplace
--rpcpassword=...`. `bitcoin-cli` inside the container must be told the same port and user, otherwise it looks
+The compose service runs `bitcoind -chain=${BITCOIN_CHAIN:-testnet4} -datadir=/data -prune=${BITCOIN_PRUNE_MB:-2000}
+-rpcport=8332 -rpcuser=marketplace -rpcpassword=...`. `bitcoin-cli` inside the container must be told the same port and user, otherwise it looks
 for the chain's default port (48332 on testnet4) and a cookie file that does not exist. The password is fed
 on standard input (`-stdinrpcpass`) so it does not appear in process arguments:
 
@@ -61,7 +66,7 @@ btc() {
   sed -n "s/^BITCOIN_RPC_PASSWORD='\(.*\)'$/\1/p" .env |
     docker compose exec -T bitcoin bitcoin-cli -chain="$chain" -rpcport=8332 -rpcuser=marketplace -stdinrpcpass "$@"
 }
-btc getblockchaininfo                      # "chain" must be your test chain; watch "initialblockdownload"
+btc getblockchaininfo                      # "chain" must be your test chain; watch "initialblockdownload"; "pruned"
 btc -named createwallet wallet_name=opsecmkt load_on_startup=true
 btc -rpcwallet=opsecmkt getwalletinfo
 btc -rpcwallet=opsecmkt getnewaddress funding bech32   # fund the pooled wallet from a faucet
@@ -290,9 +295,19 @@ copies like any other secret:
 
 ```sh
 btc -rpcwallet=opsecmkt backupwallet /data/opsecmkt-wallet.bak
+btc getblockcount                          # record this height with the backup (pruned nodes, below)
 docker compose cp bitcoin:/data/opsecmkt-wallet.bak ./opsecmkt-wallet.bak
 xmr query_key '{"key_type":"mnemonic"}'   # write the seed down offline; or copy the /wallet volume while stopped
 ```
+
+**The local Bitcoin node is pruned by default, which limits how old a restorable wallet backup can be.** A
+backup restored with `restorewallet` loads only if the height recorded with it is at or above the node's
+current `pruneheight` (`btc getblockchaininfo`); otherwise bitcoind refuses with "Prune: last wallet
+synchronisation goes beyond pruned data". Take wallet backups often enough that the latest one stays inside
+the prune window. For an older backup, restore the whole `bitcoin_data` volume from a copy taken with
+bitcoind stopped, or run the node unpruned (a full re-download) until the wallet has loaded and rescanned:
+see [Local node pruning](operator-guide.md#local-node-pruning). Monero wallets restore and refresh through a
+pruned daemon (upstream documentation; not rehearsed here).
 
 ### Reconcile a restored database before enabling payouts
 

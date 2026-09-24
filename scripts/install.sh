@@ -83,13 +83,21 @@ put AUDIT_SIGNING_KEY "$audit_key"
 # unless a local node is chosen: the app then accepts whichever test network an external node reports.
 bitcoin_chain=''
 monero_network=''
+# Local nodes are pruned unless the operator answers no. Keep this default equal to compose.nodes.yaml's.
+bitcoin_prune_mb=2000
+monero_prune_flags='--prune-blockchain --sync-pruned-blocks'
 for coin in BITCOIN MONERO; do
   if [[ $local_mode == true ]]; then
     choice=disabled
   else
-    read -r -p "$coin node (disabled/external/local) [disabled]: " choice
+    # Sizes are upstream estimates (docs/operator-guide.md#local-node-pruning) and grow with each chain.
+    case $coin in
+      BITCOIN) printf '%s\n' "BITCOIN: 'local' (the default) runs a pruned Bitcoin Core node in Docker. It keeps about 5-8 GB on disk (${bitcoin_prune_mb} MiB of recent blocks plus the chain state), but its first sync still downloads the whole test chain (about 24 GB signet, 31 GB testnet4) and can take hours. 'external' uses a node you run elsewhere; 'disabled' leaves Bitcoin payments off." ;;
+      MONERO) printf '%s\n' "MONERO: 'local' (the default) runs a pruned monerod and monero-wallet-rpc in Docker. Pruning keeps about a third of the chain; stagenet/testnet sizes are not published upstream, so keep 20 GB free (an estimate). The first sync can take hours. 'external' uses a node you run elsewhere; 'disabled' leaves Monero payments off." ;;
+    esac
+    read -r -p "$coin node (local/external/disabled) [local]: " choice
   fi
-  case ${choice:-disabled} in
+  case ${choice:-local} in
     disabled) ;;
     external)
       read -r -s -p "$coin RPC URL: " rpc; printf '\n'
@@ -140,6 +148,16 @@ for coin in BITCOIN MONERO; do
           live) echo 'Live Bitcoin payments are disabled: this application refuses mainnet wallets and addresses.' >&2; exit 1 ;;
           *) echo 'Choose testnet4, signet, or live.' >&2; exit 1 ;;
         esac
+        read -r -p 'Prune the BITCOIN node to save disk? (yes/no) [yes]: ' prune
+        case ${prune:-yes} in
+          yes) ;;
+          no)
+            bitcoin_prune_mb=0
+            echo 'Full node: BITCOIN keeps every block, about 28 GB on signet or 33 GB on testnet4 today (upstream estimates, growing), with the same first sync. BITCOIN_PRUNE_MB=0 in .env; see docs/operator-guide.md#local-node-pruning to change it later.'
+            ;;
+          *) echo 'Answer yes or no.' >&2; exit 1 ;;
+        esac
+        put BITCOIN_PRUNE_MB "$bitcoin_prune_mb"
         profiles="${profiles:+$profiles,}bitcoin"
       else
         read -r -p 'MONERO network (stagenet/testnet/live) [stagenet]: ' monero_network_choice
@@ -148,6 +166,16 @@ for coin in BITCOIN MONERO; do
           live) echo 'Live Monero payments are disabled: this application refuses mainnet wallets and addresses.' >&2; exit 1 ;;
           *) echo 'Choose stagenet, testnet, or live.' >&2; exit 1 ;;
         esac
+        read -r -p 'Prune the MONERO node to save disk? (yes/no) [yes]: ' prune
+        case ${prune:-yes} in
+          yes) ;;
+          no)
+            monero_prune_flags=''
+            echo 'Full node: MONERO keeps the whole chain, about three times the pruned size (upstream ratio), with a longer first sync. MONERO_PRUNE_FLAGS is blank in .env; see docs/operator-guide.md#local-node-pruning to change it later.'
+            ;;
+          *) echo 'Answer yes or no.' >&2; exit 1 ;;
+        esac
+        put MONERO_PRUNE_FLAGS "$monero_prune_flags"
         wallet_password=$(secret 24) || exit 1
         put MONERO_RPC_URL 'http://monero:18081'
         put MONERO_WALLET_RPC_PASSWORD "$wallet_password"

@@ -14,7 +14,7 @@ The Figma reference is adapted to Go-rendered HTML and CSS. The browser loads no
 - Versioned, idempotent schema migrations applied at startup under an advisory lock (see [migrations](operator-guide.md#migrations)). Startup refuses, changing nothing, a database that records a migration the server does not include (one migrated by a newer release). Connecting, waiting for the migration lock, migrating and payment provider startup have separate bounds (`DATABASE_CONNECT_TIMEOUT` 15s, `MIGRATION_LOCK_TIMEOUT` 10m, `MIGRATION_TIMEOUT` 10m, payments a fixed 15s); a timeout exits with an error naming the phase, and a timed-out migration is rolled back.
 - Storage of messages the sender encrypted with OpenPGP beforehand (packets are inspected and plaintext is rejected; see P2), in-app recipient notifications (linked from the main navigation at every width, with the unread count as text), and account audit history. The server cannot decrypt messages.
 - Moderators resolve disputes on paid, shipped or delivered orders with a release or refund outcome; the payment system then queues the matching test-network payout from the operator's wallet (see P3, P5).
-- Docker internal/external database selection, separate clearnet/Tor exposure, optional operator-supplied full-node containers, encrypted database backup and transactional restore scripts.
+- Docker internal/external database selection, separate clearnet/Tor exposure, optional operator-supplied node containers (pruned by default, full node on request), encrypted database backup and transactional restore scripts.
 
 ## What the server keeps
 
@@ -123,6 +123,6 @@ Not implemented: multisig escrow, marketplace commission or fee accounting, auto
 
 XMPP delivery (the XMPP address is stored as a profile field only), automatic mirror orchestration, multisig escrow, marketplace fee or commission accounting, mainnet payments (refused at startup by design), QR-code TOTP enrollment and an audio CAPTCHA alternative are not implemented. Narrower gaps are listed under each package above (for example, no order auto-completion timers and no automatic payout retries). Payments work only on test networks, and deposits are held in the operator's pooled test-network wallet, not in escrow. Unavailable interface states say so; no mock balances or deposit addresses are presented as real.
 
-Tor deployment isolates inbound exposure. Local full nodes use direct peer-network egress. Selecting external database/RPC services explicitly permits application egress; this is not an all-traffic-through-Tor configuration. Read the [operator guide](operator-guide.md) before deployment.
+Tor deployment isolates inbound exposure. Local nodes use direct peer-network egress. Selecting external database/RPC services explicitly permits application egress; this is not an all-traffic-through-Tor configuration. Read the [operator guide](operator-guide.md) before deployment.
 
 This is a functional test-network marketplace, not a production cryptocurrency exchange or escrow service.

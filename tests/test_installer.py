@@ -1,6 +1,7 @@
 """Exercise installer decisions in disposable directories with no real Docker."""
 import os
 from pathlib import Path
+import re
 import shutil
 import signal
 import stat
@@ -9,7 +10,9 @@ import sys
 import tempfile
 import unittest
 
-INSTALLER = Path(__file__).resolve().parents[1] / 'scripts' / 'install.sh'
+REPOSITORY = Path(__file__).resolve().parents[1]
+INSTALLER = REPOSITORY / 'scripts' / 'install.sh'
+PRUNED_MONERO_FLAGS = '--prune-blockchain --sync-pruned-blocks'
 
 
 class InstallerTests(unittest.TestCase):
@@ -147,12 +150,14 @@ time.sleep(60)
         self.assertEqual(list(self.root.glob('.env.install.*')), [])
 
     def test_internal_clearnet_defaults(self):
-        result = self.run_installer(['', '', '', '', ''])
+        # Every question answered with Enter: mode, database, local HTTP, then for each coin the node
+        # choice, image, network and pruning. The defaults are pruned local test-network nodes.
+        result = self.run_installer([''] * 11)
         self.assert_started(result)
         config = self.config()
         self.assertEqual(config['APP_MODE'], 'clearnet')
         self.assertEqual(config['COOKIE_SECURE'], 'true')
-        self.assertEqual(config['COMPOSE_PROFILES'], 'internal-db')
+        self.assertEqual(config['COMPOSE_PROFILES'], 'internal-db,bitcoin,monero,monero-wallet')
         self.assertEqual(config['COMPOSE_FILE'],
                          'compose.yaml:compose.clearnet.yaml:compose.nodes.yaml:compose.internal-db.yaml')
         self.assertIn('@db:5432/opsecmkt', config['DATABASE_URL'])
@@ -161,13 +166,68 @@ time.sleep(60)
         self.assertNotIn(config['SETUP_TOKEN'], result.stdout + result.stderr)
         self.assertEqual(len(config['AUDIT_SIGNING_KEY']), 64)
         self.assertNotIn(config['AUDIT_SIGNING_KEY'], result.stdout + result.stderr)
+        self.assertEqual(config['BITCOIN_CHAIN'], 'testnet4')
+        self.assertEqual(config['MONERO_NETWORK'], 'stagenet')
+        self.assertEqual(config['BITCOIN_IMAGE'], 'bitcoin/bitcoin:latest')
+        self.assertEqual(config['MONERO_IMAGE'], 'ghcr.io/sethforprivacy/simple-monerod:latest')
+        # Pruned by default, written explicitly so the operator can see and change it in .env.
+        self.assertEqual(config['BITCOIN_PRUNE_MB'], self.compose_bitcoin_prune_default())
+        self.assertEqual(config['MONERO_PRUNE_FLAGS'], PRUNED_MONERO_FLAGS)
+        self.assertEqual(config['BITCOIN_RPC_URL'],
+                         'http://marketplace:' + config['BITCOIN_RPC_PASSWORD'] + '@bitcoin:8332')
+        self.assertEqual(config['MONERO_WALLET_RPC_URL'],
+                         'http://marketplace:' + config['MONERO_WALLET_RPC_PASSWORD'] + '@monero-wallet:18083')
+        self.assertNotIn('compose.external-egress.yaml', config['COMPOSE_FILE'])
+        # The node question states the disk and first-sync cost before the operator answers.
+        self.assertIn('pruned Bitcoin Core node', result.stdout)
+        self.assertIn('pruned monerod', result.stdout)
+        self.assertIn('first sync', result.stdout)
+        self.assertNotIn('Full node', result.stdout)
+        self.assertIn('docs/testnet-runbook.md', result.stdout)
+        self.assertIn('Secure cookies require HTTPS', result.stdout)
+
+    def compose_bitcoin_prune_default(self):
+        # The installer writes the same default the Compose file falls back to for an .env without it.
+        text = (REPOSITORY / 'compose.nodes.yaml').read_text()
+        match = re.search(r'-prune=\$\{BITCOIN_PRUNE_MB:-([0-9]+)\}', text)
+        self.assertIsNotNone(match, 'compose.nodes.yaml must run bitcoind with -prune=${BITCOIN_PRUNE_MB:-N}')
+        self.assertGreaterEqual(int(match.group(1)), 550)
+        self.assertIn('${MONERO_PRUNE_FLAGS-' + PRUNED_MONERO_FLAGS + '}', text)
+        return match.group(1)
+
+    def test_internal_clearnet_without_nodes(self):
+        result = self.run_installer(['', '', '', 'disabled', 'disabled'])
+        self.assert_started(result)
+        config = self.config()
+        self.assertEqual(config['COMPOSE_PROFILES'], 'internal-db')
         # No node chosen: nothing forces a chain, so a node added later may use any test network.
         self.assertEqual(config['BITCOIN_CHAIN'], '')
         self.assertEqual(config['MONERO_NETWORK'], '')
         self.assertNotIn('BITCOIN_RPC_URL', config)
         self.assertNotIn('MONERO_WALLET_RPC_URL', config)
+        self.assertNotIn('BITCOIN_PRUNE_MB', config)
+        self.assertNotIn('MONERO_PRUNE_FLAGS', config)
         self.assertNotIn('docs/testnet-runbook.md', result.stdout)
-        self.assertIn('Secure cookies require HTTPS', result.stdout)
+
+    def test_local_nodes_can_opt_out_of_pruning(self):
+        result = self.run_installer(['tor', '', 'local', '', 'signet', 'no', 'local', '', 'testnet', 'no'])
+        self.assert_started(result)
+        config = self.config()
+        self.assertEqual(config['COMPOSE_PROFILES'], 'internal-db,bitcoin,monero,monero-wallet')
+        # -prune=0 disables pruning in bitcoind; a blank flag list drops --prune-blockchain for monerod.
+        self.assertEqual(config['BITCOIN_PRUNE_MB'], '0')
+        self.assertEqual(config['MONERO_PRUNE_FLAGS'], '')
+        self.assertEqual(config['BITCOIN_CHAIN'], 'signet')
+        self.assertEqual(config['MONERO_NETWORK'], 'testnet')
+        self.assertEqual(result.stdout.count('Full node'), 2)
+
+    def test_local_node_prune_answer_yes_is_pruned(self):
+        result = self.run_installer(['tor', '', 'local', '', '', 'yes', 'local', '', '', 'yes'])
+        self.assert_started(result)
+        config = self.config()
+        self.assertEqual(config['BITCOIN_PRUNE_MB'], self.compose_bitcoin_prune_default())
+        self.assertEqual(config['MONERO_PRUNE_FLAGS'], PRUNED_MONERO_FLAGS)
+        self.assertNotIn('Full node', result.stdout)
 
     def test_local_shortcut_needs_no_input_and_disables_inherited_wallets(self):
         result = self.run_installer([], arguments=['--local'], extra_env={
@@ -184,6 +244,12 @@ time.sleep(60)
             self.assertEqual(config[key], '')
         self.assertIn('http://127.0.0.1:18085/setup', result.stdout)
         self.assertNotIn('docs/testnet-runbook.md', result.stdout)
+        # Developer mode never starts nodes, so it writes no node images or pruning settings.
+        for key in ('BITCOIN_IMAGE', 'MONERO_IMAGE', 'BITCOIN_PRUNE_MB', 'MONERO_PRUNE_FLAGS'):
+            self.assertNotIn(key, config)
+        self.assertEqual(config['BITCOIN_CHAIN'], '')
+        self.assertEqual(config['MONERO_NETWORK'], '')
+        self.assertNotIn('pruned', result.stdout)
         self.assertNotIn(config['SETUP_TOKEN'], result.stdout + result.stderr)
 
     def test_unhealthy_local_app_does_not_report_ready(self):
@@ -202,7 +268,7 @@ time.sleep(60)
 
     def test_external_clearnet_local_http(self):
         url = 'postgresql://test:local-only@database:5432/scratch?sslmode=require'
-        result = self.run_installer(['clearnet', url, 'yes', '', ''])
+        result = self.run_installer(['clearnet', url, 'yes', 'disabled', 'disabled'])
         self.assert_started(result)
         config = self.config()
         self.assertEqual(config['DATABASE_URL'], url)
@@ -212,7 +278,7 @@ time.sleep(60)
         self.assertNotIn(url, result.stdout + result.stderr)
 
     def test_internal_tor_stays_without_direct_egress(self):
-        result = self.run_installer(['tor', '', '', ''])
+        result = self.run_installer(['tor', '', 'disabled', 'disabled'])
         self.assert_started(result)
         config = self.config()
         self.assertEqual(config['COOKIE_SECURE'], 'false')
@@ -221,7 +287,7 @@ time.sleep(60)
         self.assertNotIn('compose.external-egress.yaml', config['COMPOSE_FILE'])
 
     def test_external_tor_explicitly_enables_egress(self):
-        result = self.run_installer(['tor', 'postgres://test@database/scratch', '', ''])
+        result = self.run_installer(['tor', 'postgres://test@database/scratch', 'disabled', 'disabled'])
         self.assert_started(result)
         config = self.config()
         self.assertEqual(config['COMPOSE_PROFILES'], '')
@@ -230,7 +296,7 @@ time.sleep(60)
         self.assertIn('direct network egress is enabled', result.stdout)
 
     def test_external_rpc_also_enables_tor_egress(self):
-        result = self.run_installer(['tor', '', 'external', 'https://rpc.example.test', ''])
+        result = self.run_installer(['tor', '', 'external', 'https://rpc.example.test', 'disabled'])
         self.assert_started(result)
         config = self.config()
         self.assertEqual(config['BITCOIN_RPC_URL'], 'https://rpc.example.test')
@@ -242,7 +308,8 @@ time.sleep(60)
 
     def test_local_node_profiles_and_images(self):
         result = self.run_installer([
-            'tor', '', 'local', 'reviewed-bitcoin:test', 'testnet4', 'local', 'reviewed-monero:test', 'stagenet',
+            'tor', '', 'local', 'reviewed-bitcoin:test', 'testnet4', 'yes',
+            'local', 'reviewed-monero:test', 'stagenet', 'yes',
         ])
         self.assert_started(result)
         config = self.config()
@@ -275,12 +342,12 @@ time.sleep(60)
 
     def test_local_node_accepts_a_complete_digest_pinned_reference(self):
         digest_image = 'registry.example:5000/bitcoin/core@sha256:' + ('a' * 64)
-        result = self.run_installer(['clearnet', '', 'yes', 'local', digest_image, 'testnet4', 'disabled'])
+        result = self.run_installer(['clearnet', '', 'yes', 'local', digest_image, 'testnet4', '', 'disabled'])
         self.assert_started(result)
         self.assertEqual(self.config()['BITCOIN_IMAGE'], digest_image)
 
     def test_local_node_defaults_to_current_trusted_images(self):
-        result = self.run_installer(['tor', '', 'local', '', 'testnet4', 'local', '', 'stagenet'])
+        result = self.run_installer(['tor', '', 'local', '', 'testnet4', '', 'local', '', 'stagenet', ''])
         self.assert_started(result)
         config = self.config()
         self.assertEqual(config['BITCOIN_IMAGE'], 'bitcoin/bitcoin:latest')
@@ -296,7 +363,7 @@ time.sleep(60)
 
     def test_external_monero_wallet_rpc(self):
         daemon, wallet = 'https://monerod.example.test', 'http://user:pass@wallet.example.test:18083'
-        result = self.run_installer(['tor', '', '', 'external', daemon, wallet])
+        result = self.run_installer(['tor', '', 'disabled', 'external', daemon, wallet])
         self.assert_started(result)
         config = self.config()
         self.assertEqual(config['MONERO_RPC_URL'], daemon)
@@ -309,7 +376,7 @@ time.sleep(60)
         self.assertNotIn(wallet, result.stdout + result.stderr)
 
     def test_external_monero_daemon_without_wallet_warns(self):
-        result = self.run_installer(['tor', '', '', 'external', 'https://monerod.example.test', ''])
+        result = self.run_installer(['tor', '', 'disabled', 'external', 'https://monerod.example.test', ''])
         self.assert_started(result)
         config = self.config()
         self.assertNotIn('MONERO_WALLET_RPC_URL', config)
@@ -320,10 +387,11 @@ time.sleep(60)
     def test_secret_generation_failure_starts_nothing(self):
         # openssl calls: 1 database password, 2 setup token, 3 audit key, then one per local node.
         scenarios = [
-            (1, ['clearnet', '', '', '', '']),
-            (4, ['tor', '', 'local', 'reviewed-bitcoin:test', 'testnet4', '']),
-            (4, ['tor', '', '', 'local', 'reviewed-monero:test', 'stagenet']),
-            (5, ['tor', '', 'local', 'reviewed-bitcoin:test', 'testnet4', 'local', 'reviewed-monero:test', 'stagenet']),
+            (1, ['clearnet', '', '', 'disabled', 'disabled']),
+            (4, ['tor', '', 'local', 'reviewed-bitcoin:test', 'testnet4', '', 'disabled']),
+            (4, ['tor', '', 'disabled', 'local', 'reviewed-monero:test', 'stagenet', '']),
+            (5, ['tor', '', 'local', 'reviewed-bitcoin:test', 'testnet4', '',
+                 'local', 'reviewed-monero:test', 'stagenet', '']),
         ]
         for call, answers in scenarios:
             with self.subTest(call=call, answers=answers):
@@ -345,7 +413,7 @@ time.sleep(60)
         self.assertEqual(self.calls(), ['compose version'])
 
     def test_failed_compose_validation_never_starts_services(self):
-        result = self.run_installer(['tor', '', '', ''], bad_config=True)
+        result = self.run_installer(['tor', '', 'disabled', 'disabled'], bad_config=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.calls(), ['compose version', 'compose config --quiet'])
         self.config()  # The retained configuration still has restrictive permissions.
@@ -356,9 +424,11 @@ time.sleep(60)
             ['tor', 'https://not-postgres'],
             ['tor', '', 'invalid-node'],
             ['tor', '', 'external', 'ftp://invalid-rpc'],
-            ['tor', '', '', 'external', 'https://monerod.example.test', 'ftp://invalid-wallet'],
+            ['tor', '', 'disabled', 'external', 'https://monerod.example.test', 'ftp://invalid-wallet'],
             ['tor', '', 'local', ''],
-            ['tor', "postgres://test:quote'@database/scratch", '', ''],
+            ['tor', '', 'local', '', 'testnet4', 'maybe', 'disabled'],
+            ['tor', '', 'disabled', 'local', '', 'stagenet', 'maybe'],
+            ['tor', "postgres://test:quote'@database/scratch", 'disabled', 'disabled'],
         ]
         for answers in scenarios:
             with self.subTest(case=scenarios.index(answers)):
