@@ -102,7 +102,8 @@ xmr get_height '{}'
 This needs `curl` in your reviewed Monero image. If it has none, run the same `curl` command from a reviewed
 curl image attached to the backend network instead of `docker compose exec -T monero-wallet curl`:
 `docker run --rm -i --network opsecmkt_backend <reviewed-curl-image@sha256:...> -sS --digest --config - ...
-http://monero-wallet:18083/json_rpc`.
+http://monero-wallet:18083/json_rpc` (the network is `<COMPOSE_PROJECT_NAME>_backend` if `.env` sets another
+project name).
 
 Fund the primary address from a stagenet faucet. Keep a small buffer: Monero payout fees are paid by the
 pooled wallet on top of each payout.

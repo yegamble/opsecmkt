@@ -12,6 +12,45 @@ command -v docker >/dev/null || { echo 'Install Docker with Compose v2 first.' >
 docker compose version >/dev/null || { echo 'Docker Compose v2 is required.' >&2; exit 1; }
 command -v openssl >/dev/null || { echo 'OpenSSL is required to generate secrets.' >&2; exit 1; }
 [[ ! -e .env ]] || { echo '.env already exists; edit it and use docker compose up -d --build (see UPGRADING.md for new keys). No secrets overwritten.' >&2; exit 1; }
+# Compose names containers, volumes and networks after the project, not the checkout. A second checkout with
+# the same name would recreate another installation's containers with new secrets, and `docker compose down -v`
+# there would delete its volumes. Refuse unless everything under this name was created from this directory.
+project=${COMPOSE_PROJECT_NAME:-opsecmkt}
+[[ $project =~ ^[a-z0-9][a-z0-9_-]*$ ]] || { echo 'COMPOSE_PROJECT_NAME must use lower-case letters, digits, hyphens and underscores, starting with a letter or digit.' >&2; exit 1; }
+second_copy="To install a second copy on this host, give it its own project name, for example: COMPOSE_PROJECT_NAME=${project}-rehearsal ./scripts/install.sh${1:+ $1}"
+# One line per container; the prefix keeps a container without the label from vanishing as an empty line.
+owners=$(docker ps -a --filter "label=com.docker.compose.project=$project" --format 'dir={{.Label "com.docker.compose.project.working_dir"}}') || {
+  echo 'Could not list Docker containers (is the Docker daemon running?); nothing was written or started.' >&2; exit 1; }
+if [[ -n $owners ]]; then
+  here=$(pwd -P)
+  foreign=''
+  while IFS= read -r owner; do
+    owner=${owner#dir=}
+    # The label holds the path Compose was started from, which may go through a symlink.
+    if [[ -z $owner ]]; then
+      foreign="$foreign  (no working directory label)"$'\n'
+    elif [[ $owner != "$PWD" && ! ( -d $owner && $(cd "$owner" 2>/dev/null && pwd -P) == "$here" ) ]]; then
+      foreign="$foreign  $owner"$'\n'
+    fi
+  done <<< "$owners"
+  if [[ -n $foreign ]]; then
+    printf "Refusing to install: Compose project '%s' already has containers created from another directory:\n" "$project" >&2
+    printf '%s' "$foreign" | sort -u >&2
+    printf '%s\n' 'Installing here would recreate them with new secrets, and docker compose down -v here would delete their volumes. Nothing was written or started.' \
+      "To manage that installation, work in its directory. $second_copy" >&2
+    exit 1
+  fi
+else
+  volumes=$(docker volume ls -q --filter "label=com.docker.compose.project=$project") || {
+    echo 'Could not list Docker volumes (is the Docker daemon running?); nothing was written or started.' >&2; exit 1; }
+  if [[ -n $volumes ]]; then
+    printf "Refusing to install: Compose project '%s' has volumes but no containers, so the checkout that created them is unknown:\n" "$project" >&2
+    printf '%s\n' "$volumes" | sed 's/^/  /' >&2
+    printf '%s\n' "They may hold another installation's data: installing here would start on them with new secrets, and docker compose down -v here would delete them. Nothing was written or started." \
+      "To use that data, start it from the checkout (and .env) that created it. $second_copy" >&2
+    exit 1
+  fi
+fi
 # secret N prints N random bytes as hex and refuses to continue if generation failed.
 secret() {
   local value
@@ -71,6 +110,9 @@ put SETUP_TOKEN "$setup_token"
 put APP_MODE "$mode"
 put COOKIE_SECURE "$secure"
 put APP_PORT "${APP_PORT:-8080}"
+# Every later docker compose command in this directory reads the project name from .env. Never change it on an
+# existing install: Compose would start it on new, empty volumes.
+put COMPOSE_PROJECT_NAME "$project"
 if [[ $local_mode == true ]]; then
   put BITCOIN_RPC_URL ''
   put MONERO_RPC_URL ''
