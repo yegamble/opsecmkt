@@ -314,6 +314,8 @@ func paymentsAdminLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		switch {
 		case r.State == "sending" && r.Attention:
 			r.StateLabel, r.Ambiguous = "Stuck in sending — never retried; may have been broadcast, check the wallet", true
+		case r.State == "failed" && strings.HasPrefix(r.Error, restoredHoldPrefix):
+			r.StateLabel, r.Ambiguous = "Failed after a restore from backup — may have been requeued and sent after the backup, check the wallet", true
 		case r.State == "failed" && sendAmbiguous:
 			r.StateLabel, r.Ambiguous = r.StateLabel+"; outcome unknown, may have been broadcast", true
 		case r.State == "failed":

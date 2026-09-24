@@ -56,12 +56,15 @@ fi
 # No --clean: this cannot silently delete an existing schema. Transaction rolls back on conflicts.
 age -d -i "$AGE_IDENTITY" "$1" | client pg_restore --single-transaction --exit-on-error --no-owner --no-acl
 # The dump can predate a payout's creation as well as its broadcast. Pause ALL outbound payouts until
-# reconciliation, and replace automatic holds with manual recovery holds. Older app dumps have settings
-# even if payments migrations have not run; table-only test dumps can lack either table. The application
-# matches the "Restored from backup:" error prefix (restoredHoldPrefix in internal/market/payments_admin.go)
-# and asks for a "wallet shows no broadcast" confirmation before an administrator releases such a hold.
+# reconciliation, and replace automatic holds with manual recovery holds. A payout that failed before the
+# backup may have been requeued and sent after it, so failed payouts are marked possibly sent (send_ambiguous,
+# which dumps taken before migration 053 lack; that migration marks their failed payouts ambiguous itself) and
+# their error is prefixed with the same marker. Older app dumps have settings even if payments migrations have
+# not run; table-only test dumps can lack either table. The application matches the "Restored from backup:"
+# error prefix (restoredHoldPrefix in internal/market/payments_admin.go) and asks for a "wallet shows no
+# broadcast" confirmation before an administrator releases or requeues such a payout.
 # The same SQL runs in the same way for both destinations.
-if ! held=$(client psql -X -q -A -t -v ON_ERROR_STOP=1 --single-transaction <<'SQL'
+if ! counts=$(client psql -X -q -A -t -v ON_ERROR_STOP=1 --single-transaction <<'SQL'
 SELECT to_regclass('settings') IS NOT NULL AS has_settings \gset
 \if :has_settings
 INSERT INTO settings(key,value) VALUES ('payments_recovery_required','true')
@@ -69,20 +72,30 @@ ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
 \endif
 SELECT to_regclass('payouts') IS NOT NULL AS has_payouts \gset
 \if :has_payouts
+SELECT EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid=to_regclass('payouts') AND attname='send_ambiguous' AND NOT attisdropped) AS has_send_ambiguous \gset
+\if :has_send_ambiguous
+UPDATE payouts SET send_ambiguous=true WHERE state='failed';
+\endif
 WITH held AS (
   UPDATE payouts SET state='held', updated=now(),
     error='Restored from backup: verify in the wallet before releasing; this payout may already have been sent.'
-  WHERE state IN ('pending','sending','blocked','held') RETURNING 1)
-SELECT count(*) FROM held;
+  WHERE state IN ('pending','sending','blocked','held') RETURNING 1),
+failed AS (
+  UPDATE payouts SET updated=now(),
+    error='Restored from backup: verify in the wallet before requeueing; this payout may have been requeued and sent after the backup. Last error: ' || error
+  WHERE state='failed' RETURNING 1)
+SELECT (SELECT count(*) FROM held) || ' ' || (SELECT count(*) FROM failed);
 \else
-SELECT 0;
+SELECT '0 0';
 \endif
 SQL
 ); then
   echo 'The database was restored, but payout recovery protection FAILED. Do not start the application on it; apply the recovery gate and holds by hand first (see UPGRADING.md).' >&2
   exit 1
 fi
+read -r held failed <<< "$counts"
 printf 'Held %s restored payout(s); release each from the admin page only after checking the wallet.\n' "$held"
+printf 'Marked %s restored failed payout(s) as possibly sent after the backup; requeue each from the admin page only after checking the wallet.\n' "$failed"
 echo 'Application databases now require payout recovery reconciliation. All outbound payouts remain paused until the recovery gate is explicitly cleared (see docs/testnet-runbook.md).'
 echo 'Restore completed. Validate the new database before switching application traffic.'
 if [[ -n ${RESTORE_INTERNAL_DATABASE:-} ]]; then

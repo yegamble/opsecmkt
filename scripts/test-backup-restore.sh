@@ -71,8 +71,9 @@ pg '' -q -c "CREATE DATABASE $target_db"
 pg '' -q -c "CREATE DATABASE $app_source_db"
 pg '' -q -c "CREATE DATABASE $app_target_db"
 pg "$source_db" -q -c "CREATE TABLE a_first (id integer PRIMARY KEY, note text NOT NULL); INSERT INTO a_first VALUES (1, 'Crème brûlée — 東京 🔒'); CREATE TABLE z_conflict (id integer PRIMARY KEY); INSERT INTO z_conflict VALUES (42);"
-# The payouts shape restore.sh relies on (state, error, updated); one row per state.
-pg "$source_db" -q -c "CREATE TABLE payouts (id integer PRIMARY KEY, state text NOT NULL, error text NOT NULL DEFAULT '', updated timestamptz NOT NULL DEFAULT now()); INSERT INTO payouts(id,state) VALUES (1,'pending'),(2,'sending'),(3,'sent'),(4,'failed'),(5,'blocked'),(6,'held');"
+# The payouts shape restore.sh relies on (state, error, updated) in a dump older than send_ambiguous; one row
+# per state.
+pg "$source_db" -q -c "CREATE TABLE payouts (id integer PRIMARY KEY, state text NOT NULL, error text NOT NULL DEFAULT '', updated timestamptz NOT NULL DEFAULT now()); INSERT INTO payouts(id,state) VALUES (1,'pending'),(2,'sending'),(3,'sent'),(5,'blocked'),(6,'held'); INSERT INTO payouts(id,state,error) VALUES (4,'failed','Insufficient funds');"
 
 # Only the generated scratch database names replace the supplied URL path.
 connection_url() {
@@ -125,10 +126,14 @@ fi
 scripts/restore.sh "$backup" <<< 'RESTORE' > "$work/restore.log"
 [[ $(pg "$target_db" -Atq -c 'SELECT note FROM a_first WHERE id = 1') == 'Crème brûlée — 東京 🔒' ]]
 [[ $(pg "$target_db" -Atq -c 'SELECT id FROM z_conflict') == 42 ]]
-# Blocked and automatically held payouts must also require reconciliation after restoration.
-[[ $(pg "$target_db" -Atq -c "SELECT string_agg(id || ':' || state || ':' || (error LIKE 'Restored from backup:%'), ',' ORDER BY id) FROM payouts") == '1:held:true,2:held:true,3:sent:false,4:failed:false,5:held:true,6:held:true' ]]
+# Blocked and automatically held payouts must also require reconciliation after restoration. A failed payout
+# may have been requeued and sent after the backup: it keeps its state and error behind the restore marker
+# (this dump has no send_ambiguous column; migration 053 marks such failures ambiguous).
+[[ $(pg "$target_db" -Atq -c "SELECT string_agg(id || ':' || state || ':' || (error LIKE 'Restored from backup:%'), ',' ORDER BY id) FROM payouts") == '1:held:true,2:held:true,3:sent:false,4:failed:true,5:held:true,6:held:true' ]]
+[[ $(pg "$target_db" -Atq -c 'SELECT error FROM payouts WHERE id = 4') == 'Restored from backup: verify in the wallet before requeueing; this payout may have been requeued and sent after the backup. Last error: Insufficient funds' ]]
 [[ $(pg "$source_db" -Atq -c "SELECT count(*) FROM payouts WHERE state = 'held'") == 1 ]]
 grep -q 'Held 4 restored payout(s)' "$work/restore.log"
+grep -q 'Marked 1 restored failed payout(s) as possibly sent' "$work/restore.log"
 grep -q 'do not contain the custodial wallets' "$work/restore.log"
 grep -q 'point BACKUP_DATABASE_URL at the same database' "$work/restore.log"
 
@@ -151,10 +156,12 @@ scripts/restore.sh "$legacy_backup" <<< 'RESTORE' > "$work/legacy-restore.log"
 [[ $(pg "$target_db" -Atq -c "SELECT value FROM settings WHERE key='payments_recovery_required'") == true ]]
 [[ $(pg "$target_db" -Atq -c "SELECT to_regclass('payouts') IS NULL") == t ]]
 grep -q 'Held 0 restored payout(s)' "$work/legacy-restore.log"
+grep -q 'Marked 0 restored failed payout(s)' "$work/legacy-restore.log"
 
 # The same round trip on the real application schema. The server migrates an empty database itself; a
-# release payout is queued (pending) and another already sent; the dump is restored into an empty database.
-# The restore must hold the queued payout, and the server must then start on the restored database as-is.
+# release payout is queued (pending), another already sent and a third failed with a definite wallet rejection;
+# the dump is restored into an empty database. The restore must hold the queued payout and mark the failed one
+# possibly sent, and the server must then start on the restored database as-is.
 # start_app DATABASE: runs the server from this checkout with a clean environment and waits for /healthz.
 CGO_ENABLED=0 go build -trimpath -o "$work/server" ./cmd/server
 app_port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
@@ -188,19 +195,22 @@ pg "$app_source_db" -q -c "
 INSERT INTO users(id,handle,password_hash,role) VALUES ('ops-vendor','ops_vendor','not-a-login','vendor'),('ops-buyer','ops_buyer','not-a-login','buyer');
 INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock) VALUES ('ops-product','ops-vendor','Restore drill kit','','Hardware','Worldwide','physical',150000,250000000000,3);
 INSERT INTO orders(id,buyer_id,product_id,currency,amount,state) VALUES
- ('ops-order-queued','ops-buyer','ops-product','BTC',150000,'completed'),('ops-order-sent','ops-buyer','ops-product','XMR',250000000000,'resolved');
+ ('ops-order-queued','ops-buyer','ops-product','BTC',150000,'completed'),('ops-order-sent','ops-buyer','ops-product','XMR',250000000000,'resolved'),
+ ('ops-order-failed','ops-buyer','ops-product','BTC',150000,'completed');
 INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state) VALUES ('ops-order-queued','release','ops-vendor','BTC',150000,'tb1qopsrestorequeuedpayout','pending');
-INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state,txid) VALUES ('ops-order-sent','refund','ops-buyer','XMR',250000000000,'ops-restore-sent-address','sent',repeat('ab',32));"
+INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state,txid) VALUES ('ops-order-sent','refund','ops-buyer','XMR',250000000000,'ops-restore-sent-address','sent',repeat('ab',32));
+INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state,error,send_ambiguous) VALUES ('ops-order-failed','release','ops-vendor','BTC',150000,'tb1qopsrestorefailedpayout','failed','Insufficient funds',false);"
 app_backup="$work/app.dump.age"
 BACKUP_DATABASE_URL=$(connection_url "$app_source_db") scripts/backup.sh "$app_backup"
 RESTORE_DATABASE_URL=$(connection_url "$app_target_db") scripts/restore.sh "$app_backup" <<< 'RESTORE' > "$work/app-restore.log"
 grep -q 'Held 1 restored payout(s)' "$work/app-restore.log"
+grep -q 'Marked 1 restored failed payout(s) as possibly sent' "$work/app-restore.log"
 [[ $(pg "$app_target_db" -Atq -c "SELECT value FROM settings WHERE key='payments_recovery_required'") == true ]]
 [[ $(pg "$app_source_db" -Atq -c "SELECT count(*) FROM settings WHERE key='payments_recovery_required'") == 0 ]]
-payouts="SELECT string_agg(order_id || ':' || state || ':' || (error LIKE 'Restored from backup:%') || ':' || txid, ',' ORDER BY order_id) FROM payouts"
-held="ops-order-queued:held:true:,ops-order-sent:sent:false:$(printf 'ab%.0s' {1..32})"
+payouts="SELECT string_agg(order_id || ':' || state || ':' || (error LIKE 'Restored from backup:%') || ':' || send_ambiguous || ':' || txid, ',' ORDER BY order_id) FROM payouts"
+held="ops-order-failed:failed:true:true:,ops-order-queued:held:true:false:,ops-order-sent:sent:false:false:$(printf 'ab%.0s' {1..32})"
 [[ $(pg "$app_target_db" -Atq -c "$payouts") == "$held" ]]
-[[ $(pg "$app_source_db" -Atq -c "SELECT state FROM payouts WHERE order_id='ops-order-queued'") == pending ]]
+[[ $(pg "$app_source_db" -Atq -c "SELECT string_agg(state || ':' || send_ambiguous, ',' ORDER BY order_id) FROM payouts WHERE order_id IN ('ops-order-failed','ops-order-queued')") == failed:false,pending:false ]]
 [[ $(pg "$app_target_db" -Atq -c "SELECT string_agg(version || ':' || name || '@' || applied, ',' ORDER BY version) FROM schema_migrations") == "$migrations" ]]
 # The server starts on the restored database, applies nothing again and leaves the held payout alone.
 start_app "$app_target_db"
@@ -208,4 +218,4 @@ stop_app
 [[ $(pg "$app_target_db" -Atq -c "SELECT value FROM settings WHERE key='payments_recovery_required'") == true ]]
 [[ $(pg "$app_target_db" -Atq -c "SELECT string_agg(version || ':' || name || '@' || applied, ',' ORDER BY version) FROM schema_migrations") == "$migrations" ]]
 [[ $(pg "$app_target_db" -Atq -c "$payouts") == "$held" ]]
-echo 'Encrypted backup/restore regressions passed (Unicode, overwrite refusal, wrong key, transaction rollback, payout hold, application schema restore and restart).'
+echo 'Encrypted backup/restore regressions passed (Unicode, overwrite refusal, wrong key, transaction rollback, payout hold, failed payouts marked possibly sent, application schema restore and restart).'

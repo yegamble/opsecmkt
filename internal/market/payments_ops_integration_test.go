@@ -20,6 +20,18 @@ import (
 // restoredHold is the error scripts/restore.sh writes on payouts that were pending or sending in a dump.
 const restoredHold = "Restored from backup: verify in the wallet before releasing; this payout may already have been sent."
 
+// restoredFailed starts the error scripts/restore.sh writes on payouts that were failed in a dump, followed by
+// the failure recorded before the backup.
+const restoredFailed = "Restored from backup: verify in the wallet before requeueing; this payout may have been requeued and sent after the backup. Last error: "
+
+// restorePayoutSQL is the payout protection scripts/restore.sh and the manual SQL in UPGRADING.md apply to a
+// restored dump (TestRestoredHoldMarkerMatchesRestoreScripts keeps them identical, whitespace aside).
+var restorePayoutSQL = []string{
+	"UPDATE payouts SET state='held', updated=now(), error='" + restoredHold + "' WHERE state IN ('pending','sending','blocked','held')",
+	"UPDATE payouts SET send_ambiguous=true WHERE state='failed'",
+	"UPDATE payouts SET updated=now(), error='" + restoredFailed + "' || error WHERE state='failed'",
+}
+
 // expireAddress backdates an order's deposit address past PAYMENT_EXPIRY.
 func (p *payEnv) expireAddress(order string) {
 	p.t.Helper()
@@ -483,19 +495,142 @@ func TestReleaseRestoredHeldPayoutRequiresConfirmation(t *testing.T) {
 	}
 }
 
-// The restore script and the manual SQL in UPGRADING.md write the marker the release check matches.
+// The restore script and the manual SQL in UPGRADING.md apply the payout protection the tests use, with the
+// marker the release and requeue checks match.
 func TestRestoredHoldMarkerMatchesRestoreScripts(t *testing.T) {
-	if !strings.HasPrefix(restoredHold, restoredHoldPrefix) {
-		t.Fatalf("restoredHold %q lacks prefix %q", restoredHold, restoredHoldPrefix)
+	for _, marker := range []string{restoredHold, restoredFailed} {
+		if !strings.HasPrefix(marker, restoredHoldPrefix) {
+			t.Fatalf("restore marker %q lacks prefix %q", marker, restoredHoldPrefix)
+		}
 	}
 	for _, f := range []string{"scripts/restore.sh", "UPGRADING.md"} {
 		b, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(string(b), "error='"+restoredHold+"'") {
-			t.Fatalf("%s does not write the restored-hold marker %q", f, restoredHold)
+		text := strings.Join(strings.Fields(string(b)), " ")
+		for _, q := range restorePayoutSQL {
+			if !strings.Contains(text, q) {
+				t.Fatalf("%s does not apply the restore payout protection %q", f, q)
+			}
 		}
+	}
+}
+
+// A payout whose send the wallet definitely rejected before the backup may have been requeued and sent after
+// it. The restore marks it as possibly sent, so it is not labelled "nothing broadcast" and requeueing it needs
+// the explicit "wallet shows no broadcast" confirmation; without the restore marking the same requeue would
+// pay the recipient twice once the recovery gate is cleared.
+func TestRestoredDefiniteFailureRequeuesOnlyAfterWalletCheck(t *testing.T) {
+	p := newPayEnv(t)
+	p.setPayoutAddress(p.vendor, "fake-testnet-vendor")
+	order := p.completedWithPayout("tx-restore-failed")
+	p.fake.sendErr = &rpcError{Method: "fake wallet RPC sendtoaddress", Code: -6, Message: "Insufficient funds"}
+	p.A.pollOnce(context.Background())
+	if st, _, _, _ := p.payout(order); st != "failed" {
+		t.Fatalf("payout is %s, want failed", st)
+	}
+	id := p.payoutID(order)
+	var backupErr string
+	var ambiguous bool
+	p.DB.QueryRow("SELECT error,send_ambiguous FROM payouts WHERE id=$1", id).Scan(&backupErr, &ambiguous)
+	if ambiguous || !strings.Contains(backupErr, "nothing was broadcast") {
+		t.Fatalf("backed-up failure is not a definite rejection: ambiguous=%v %q", ambiguous, backupErr)
+	}
+
+	// After the backup: the wallet is funded, an administrator requeues the definite failure, it is sent.
+	p.fake.sendErr = nil
+	if code, body := p.payoutAction(p.adminSess, id, "requeue", "", testPassword); code != 303 {
+		t.Fatalf("requeue before the restore: %d %s", code, body)
+	}
+	p.poll()
+	if st, _, _, _ := p.payout(order); st != "sent" || len(p.fake.Sends()) != 1 {
+		t.Fatalf("after requeue: %s sends=%d", st, len(p.fake.Sends()))
+	}
+
+	// Restore the backup (the row is back to its backed-up failed state), then the restore payout protection.
+	if _, err := p.DB.Exec("UPDATE payouts SET state='failed',txid='',send_ambiguous=false,error=$2 WHERE id=$1::bigint", id, backupErr); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.DB.Exec("INSERT INTO settings(key,value) VALUES ('payments_recovery_required','true') ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value"); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range restorePayoutSQL {
+		if _, err := p.DB.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var restoredErr string
+	p.DB.QueryRow("SELECT error,send_ambiguous FROM payouts WHERE id=$1", id).Scan(&restoredErr, &ambiguous)
+	if !ambiguous || restoredErr != restoredFailed+backupErr {
+		t.Fatalf("restored failure: ambiguous=%v %q", ambiguous, restoredErr)
+	}
+
+	admin := html.UnescapeString(p.page("/admin", p.adminSess))
+	var row string
+	for _, r := range strings.Split(admin, "<tr") {
+		if strings.Contains(r, "Resolve payout "+id+"<") {
+			row = r
+		}
+	}
+	if row == "" || strings.Contains(row, "nothing broadcast") || !strings.Contains(row, "Failed after a restore from backup — may have been requeued and sent after the backup, check the wallet") {
+		t.Fatalf("restored failure labelled: %s", row)
+	}
+	if s := resolveSection(t, admin, id); !strings.Contains(s, `name="not_broadcast" value="confirmed" required`) || !strings.Contains(s, "Requeue payout") {
+		t.Fatalf("restored failure offered for requeue without the broadcast confirmation: %s", s)
+	}
+
+	// Without the confirmation: refused, still failed, nothing sent or recorded.
+	code, body := p.payoutAction(p.adminSess, id, "requeue", "", testPassword)
+	if code == 303 {
+		p.DB.Exec("UPDATE settings SET value='false' WHERE key='payments_recovery_required'")
+		p.poll()
+		t.Fatalf("restored failed payout requeued without a wallet check; wallet sends now %d", len(p.fake.Sends()))
+	}
+	if code != 400 || !strings.Contains(body, "restored from backup") || !strings.Contains(body, "mark it sent with the wallet") {
+		t.Fatalf("unconfirmed requeue of a restored failure: %d %s", code, body)
+	}
+	if st, _, _, _ := p.payout(order); st != "failed" {
+		t.Fatalf("restored failure is %s after a refused requeue", st)
+	}
+
+	// The wallet shows the send made after the backup: the administrator records it instead, and nothing is sent.
+	if code, body := p.payoutAction(p.adminSess, id, "sent", strings.Repeat("cd", 32), testPassword); code != 303 {
+		t.Fatalf("mark sent: %d %s", code, body)
+	}
+	p.DB.Exec("UPDATE settings SET value='false' WHERE key='payments_recovery_required'")
+	p.poll()
+	if st, txid, _, _ := p.payout(order); st != "sent" || txid != strings.Repeat("cd", 32) || len(p.fake.Sends()) != 1 {
+		t.Fatalf("after reconciliation: %s %s sends=%d", st, txid, len(p.fake.Sends()))
+	}
+}
+
+// A restored failure whose confirmation is given is requeued once, and the record says it was restored.
+func TestRestoredFailureConfirmedRequeueIsAudited(t *testing.T) {
+	p := newPayEnv(t)
+	p.setPayoutAddress(p.vendor, "fake-testnet-vendor")
+	order := p.completedWithPayout("tx-restore-failed-requeue")
+	id := p.payoutID(order)
+	if _, err := p.DB.Exec("UPDATE payouts SET state='failed',error='Insufficient funds' WHERE id=$1::bigint", id); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range restorePayoutSQL {
+		if _, err := p.DB.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if code, body := p.payoutActionConfirmed(p.adminSess, id, "requeue", testPassword); code != 303 {
+		t.Fatalf("confirmed requeue: %d %s", code, body)
+	}
+	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE 'Administrator confirmed the wallet shows no broadcast transaction%restored from backup%'", order); n != 1 {
+		t.Fatalf("order history for the confirmed requeue: %d", n)
+	}
+	if n := p.count("SELECT count(*) FROM audit_events WHERE action LIKE $1", "Requeued payout "+id+" %restored from backup, administrator confirmed the wallet shows no broadcast transaction%"); n != 1 {
+		t.Fatalf("audit for the confirmed requeue: %d", n)
+	}
+	p.poll()
+	if st, _, _, _ := p.payout(order); st != "sent" || len(p.fake.Sends()) != 1 {
+		t.Fatalf("requeued restored failure: %s sends=%d", st, len(p.fake.Sends()))
 	}
 }
 
