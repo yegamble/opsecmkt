@@ -156,8 +156,10 @@ test('funded dispute: encrypted moderator evidence, independent resolution and o
   const moderator = await signedIn(browser, baseURL, 'wallet_moderator', 'wallet-browser-moderator-password-123', true);
   await setRole(admin, 'wallet_moderator', 'moderator');
   await moderator.goto('/account');
-  await moderator.getByLabel('PGP public key', { exact: true }).fill(pgpFixture('recipient.pub.asc'));
-  await moderator.getByRole('button', { name: 'Save profile' }).click();
+  const profile = moderator.locator('form', { has: moderator.getByRole('button', { name: 'Save profile' }) });
+  await profile.getByLabel('PGP public key', { exact: true }).fill(pgpFixture('recipient.pub.asc'));
+  await profile.getByLabel('Current password', { exact: true }).fill('wallet-browser-moderator-password-123'); // A-152
+  await profile.getByRole('button', { name: 'Save profile' }).click();
   await buyer.goto('/account');
   const refundAddress = 'bcrt1qfixturebuyerrefund00000000';
   const addressForm = buyer.locator('form', { has: buyer.getByRole('button', { name: 'Save BTC address' }) });

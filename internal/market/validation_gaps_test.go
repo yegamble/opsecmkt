@@ -76,7 +76,7 @@ func TestProfileKeyRejectsRevokedAndPrivateMaterial(t *testing.T) {
 		"revoked": {rev.String(), "this key is revoked"},
 		"private": {priv.String(), "private key material rejected"},
 	} {
-		if b := e.body("POST", "/account", s, url.Values{"pgp": {tc.key}, "xmpp": {"x@example.test"}}, 400); !strings.Contains(b, tc.msg) {
+		if b := e.body("POST", "/account", s, url.Values{"pgp": {tc.key}, "xmpp": {"x@example.test"}, "password": {testPassword}}, 400); !strings.Contains(b, tc.msg) {
 			t.Errorf("%s: %s", name, b)
 		}
 	}

@@ -33,8 +33,10 @@ func (totpFactor) Verify(c *actionCtx, userID string) error {
 		if err != nil {
 			return err
 		}
-		_, err = c.Tx.ExecContext(c.Ctx(), "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", userID, "Used a recovery code to sign in ("+strconv.Itoa(left)+" remaining)")
-		return err
+		if _, err = c.Tx.ExecContext(c.Ctx(), "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", userID, "Used a recovery code to sign in ("+strconv.Itoa(left)+" remaining)"); err != nil {
+			return err
+		}
+		return notifyOwner(c.Ctx(), c.Tx, userID, "A recovery code was used to sign in to your account ("+strconv.Itoa(left)+" remaining).")
 	}
 	return c.A.checkTOTP(c.Ctx(), c.Tx, userID, c.Form.Get("code"))
 }

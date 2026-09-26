@@ -79,12 +79,14 @@ export function totp(secret: string, step: number): string {
   return ((mac.readUInt32BE(offset) & 0x7fffffff) % 1_000_000).toString().padStart(6, '0');
 }
 
-// Enrolls TOTP on /totp for the signed-in page with the current step's code and returns the secret.
-export async function enrollTOTP(page: Page): Promise<string> {
+// Enrolls TOTP on /totp for the signed-in page with the current step's code and the account password (A-152)
+// and returns the secret.
+export async function enrollTOTP(page: Page, password: string): Promise<string> {
   await page.goto('/totp');
   await page.getByRole('button', { name: 'Start enrollment ↗' }).click();
   const secret = (await page.locator('.totp-secret').innerText()).replace(/\s+/g, '');
   await page.getByLabel('6-digit code from your app').fill(totp(secret, Math.floor(Date.now() / 30_000)));
+  await page.getByLabel('Current password').fill(password);
   await page.getByRole('button', { name: 'Verify and turn on ↗' }).click();
   await expect(page.locator('.page-head .badge')).toHaveText('Enabled');
   return secret;

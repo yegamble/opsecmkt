@@ -439,5 +439,5 @@ func TestLegacyUnparseableKeySavesUnchanged(t *testing.T) {
 	if xmpp != "legacy@example.test" {
 		t.Fatal("profile not saved")
 	}
-	e.check(e.do("POST", "/account", s, url.Values{"pgp": {legacy + "\nchanged"}}), 400)
+	e.check(e.do("POST", "/account", s, url.Values{"pgp": {legacy + "\nchanged"}, "password": {testPassword}}), 400)
 }
