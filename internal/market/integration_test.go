@@ -26,7 +26,7 @@ func TestPostgresMarketplaceFlow(t *testing.T) {
 	check(w, 303)
 	other := session(w)
 	check(do("GET", "/admin", buyer, nil), 403)
-	listing := url.Values{"title": {"Encrypted <script>alert(1)</script> storage"}, "description": {"A test storage device"}, "category": {"Hardware"}, "region": {"Worldwide"}, "kind": {"physical"}, "price_btc": {"0.00000001"}, "price_xmr": {"0.000000000001"}, "stock": {"2"}}
+	listing := url.Values{"title": {"Encrypted <script>alert(1)</script> storage"}, "description": {"A test storage device"}, "category": {"Hardware"}, "region": {"Worldwide"}, "kind": {"physical"}, "price_btc": {"0.0001"}, "price_xmr": {"0.000000000001"}, "stock": {"2"}}
 	check(do("POST", "/listings", buyer, listing), 403)
 	check(do("POST", "/listings", admin, listing), 303)
 	var product string

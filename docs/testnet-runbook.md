@@ -246,7 +246,7 @@ Each of these forms repeats the wallet check above in one line next to the check
 
 The watcher flags a deposit (`payments.flagged`): it writes a system note ending "Moderator review
 required." to the order history and notifies every moderator and administrator who is not suspended
-("Payment review needed for order <first 8 characters of the order ID>"). A locked transfer or a deposit after settlement is flagged once.
+("Payment review needed for order <first 8 characters of the order ID>"). A locked transfer, a deposit after settlement or the deposits of a payout below the minimum automatic payout are flagged once.
 A credited deposit that falls back below the threshold (conflicted, missing, or at a lower depth after a
 reorg) is announced once per episode while the order is open or its payout unsent: the buyer and the vendor
 are notified too (staff who are party to the order get that notification instead of the review one), and if
@@ -255,7 +255,7 @@ behind the highest tip recorded (a restarted node catching up). Open **Moderatio
 (`/moderator#payment-review`): it lists every open flag first, oldest first and never cut, then the 100 most
 recently flagged others with their count, each with the full order ID linking to the order, amount, full
 transaction ID, reason and flag time (the latest flag note for that deposit). A flag is open while its deposit
-is a locked transfer or a deposit after settlement, or while a credited deposit's regression has not confirmed
+is a locked transfer, a deposit after settlement or part of a payout below the minimum, or while a credited deposit's regression has not confirmed
 again; the reason is read from the deposit's current confirmations. A moderator or administrator who is not
 party to the order can open its page read-only: history with the flag note, the deposit ledger (while the currency's wallet is configured) and any payout. No buyer or
 vendor action is offered, the order actions refuse staff, and digital delivery content stays hidden unless
@@ -268,6 +268,7 @@ the order is disputed.
 | Credited deposit confirmed again (N confirmations) | The flagged regression ended: the deposit reached the threshold again. Listed after the open flags. | The watcher lifted its own hold; a pending payout is sent on the next pass that reads the order. Nothing to do. |
 | Locked transfer (unlock time) | A Monero transfer with a non-zero `unlock_time`. | Never counted toward payment or paid out. The buyer was told to send an ordinary transfer. |
 | Deposit confirmed after settlement, not paid out | Extra funds confirmed after the order's single release or refund was queued (completed or resolved orders, or a cancellation that already queued a refund). | Not paid out: an order has exactly one payout. |
+| Below the minimum automatic payout, not paid out | The order's release or refund counted less than the minimum automatic payout: 0.0001 BTC for any Bitcoin payout (the network fee is taken from the amount, so a smaller one can never be sent), 0.001 XMR for a Monero refund (the fee is paid on top). Usually a stray deposit to a cancelled order's address. | No payout row was queued; the order kept its final state. The buyer and the vendor were told it was not sent. A later deposit that lifts the sum to the minimum is paid out with it and closes the flag. Otherwise see step 4 below. |
 
 What staff can do:
 
@@ -282,6 +283,11 @@ What staff can do:
 3. Locked transfers and extra funds after settlement sit in the pooled wallet. They normally belong to the
    buyer. Agree a return address with the buyer through Messages (ideally signed with their verified PGP key),
    send the funds back **by hand from the wallet** (`sendtoaddress` / `transfer`), and record it.
+4. Deposits below the minimum automatic payout are too small to send on their own: a Bitcoin amount at or
+   below the fee cannot be sent with the fee taken from it. Decide with the parties whether to leave them in the
+   pooled wallet or return them by hand with the wallet paying the fee (`sendtoaddress` with
+   `subtractfeefromamount` false, or `transfer`), and record whatever you did as below. A flag stays open until
+   a payout includes the deposits.
 
 There is no web action to dismiss a flag or pay out a flagged deposit, and an open flag stays on the desk. A
 manual refund is recorded as a **written note** (an order-history event plus an audit row), **never as a

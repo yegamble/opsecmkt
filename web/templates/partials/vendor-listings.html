@@ -38,11 +38,12 @@
 </label>
 <label>Stock<input type="number" name="stock" required min="0" max="1000000" value="1">
 </label>
-<label>Bitcoin reference price<input name="price_btc" required inputmode="decimal" placeholder="0.00100000">
+<label>Bitcoin reference price<input name="price_btc" required inputmode="decimal" placeholder="0.00100000" aria-describedby="price-btc-help">
 </label>
 <label>Monero reference price<input name="price_xmr" required inputmode="decimal" placeholder="0.500000000000">
 </label>
 </div>
+<p class="help" id="price-btc-help">The Bitcoin price must be at least 0.0001 BTC: a smaller Bitcoin payout cannot cover the network fee.</p>
 <label>Automatic delivery content<textarea name="delivery_content" maxlength="32000" rows="4" spellcheck="false" aria-describedby="delivery-help"></textarea>
 </label>
 {{if .Inventory}}{{template "vendor-listings:delivery-help" .Inventory.AutoDelivery}}{{else}}{{template "vendor-listings:delivery-help" ""}}{{end}}

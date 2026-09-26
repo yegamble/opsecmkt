@@ -220,8 +220,8 @@ func (a *App) orderPayouts(ctx context.Context, d *PageData) error {
 }
 
 // payoutStatement states a payout of sum (payoutBasis) for o: "Release 0.01 BTC (test network) to vendor_x —
-// 0.009 BTC more than the price". With nothing counted, later deposits go to later (the recipient's role, or
-// "the chosen party" on the resolve form).
+// 0.009 BTC more than the price", saying so when sum is below the minimum automatic payout (A-99). With nothing
+// counted, later deposits go to later (the recipient's role, or "the chosen party" on the resolve form).
 func payoutStatement(kind, recipient, later string, o *Order, sum int64) string {
 	verb := "Release"
 	if kind == "refund" {
@@ -232,7 +232,11 @@ func payoutStatement(kind, recipient, later string, o *Order, sum int64) string 
 	}
 	dec := currencyDecimals(o.Currency)
 	required, _ := parseAmount(o.Amount, dec)
-	return verb + " " + amount(sum, dec) + " " + o.Currency + " (test network) to " + recipient + " — " + priceDifference(sum, required, o.Currency)
+	statement := verb + " " + amount(sum, dec) + " " + o.Currency + " (test network) to " + recipient + " — " + priceDifference(sum, required, o.Currency)
+	if below := belowFloor(o.Currency, kind, sum); below != "" {
+		statement += "; " + below + ": not sent automatically, staff are asked to review it"
+	}
+	return statement
 }
 
 const resolveConfirm = "I checked the amount and who receives it for the outcome I chose. Resolving is final."
@@ -494,23 +498,23 @@ const paymentReviewLimit = 100
 
 // loadPaymentReviews lists deposits the payment watcher flagged for staff review (payments.flagged): every open
 // flag, oldest first and never capped, then the paymentReviewLimit most recently flagged others, with their
-// count. A flag is open while it has no settling event: a locked transfer or a late deposit (no disposition
-// action exists yet), or a credited deposit whose regression was announced and has not confirmed again
-// (payments.regress_notice). The reason comes from the deposit's current confirmations. The flag time is the
-// latest watcher flag event for the deposit in order_events: flagOrder writes a system note naming it
+// count. A flag is open while it has no settling event: a locked transfer, a late deposit or a deposit of a
+// payout below the minimum automatic payout (payments.below_floor, A-99; no disposition action exists yet), or a
+// credited deposit whose regression was announced and has not confirmed again (payments.regress_notice). The
+// reason comes from the deposit's current confirmations. The flag time is the latest watcher flag event for the deposit in order_events: flagOrder writes a system note naming it
 // (truncate(txid, 20)) and ending "Moderator review required.".
 func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 	if d.User == nil || (d.User.Role != "moderator" && d.User.Role != "admin") {
 		return nil
 	}
 	rows, err := a.db.QueryContext(ctx, `WITH v AS (SELECT pm.id,pm.order_id,o.state,pm.currency,pm.amount,pm.txid,pm.idx,pm.credited,pm.locked,pm.confirmations,
-			pm.regress_notice,(pm.locked OR NOT pm.credited OR pm.regress_notice) AS open,f.at
+			pm.regress_notice,pm.below_floor,(pm.locked OR NOT pm.credited OR pm.regress_notice OR pm.below_floor) AS open,f.at
 		FROM payments pm JOIN orders o ON o.id=pm.order_id
 		LEFT JOIN LATERAL (SELECT max(e.created) AS at FROM order_events e WHERE e.order_id=pm.order_id AND e.actor_id IS NULL
 			AND e.note LIKE '%Moderator review required.%'
 			AND strpos(e.note, ' '||CASE WHEN length(pm.txid)<=20 THEN pm.txid ELSE left(pm.txid,20)||'…' END||' ')>0) f ON true
 		WHERE pm.flagged)
-		SELECT order_id,state,currency,amount,txid,idx,credited,locked,confirmations,regress_notice,open,COALESCE(to_char(at,'YYYY-MM-DD HH24:MI "UTC"'),''),
+		SELECT order_id,state,currency,amount,txid,idx,credited,locked,confirmations,regress_notice,below_floor,open,COALESCE(to_char(at,'YYYY-MM-DD HH24:MI "UTC"'),''),
 			(SELECT count(*) FROM v WHERE NOT open)
 		FROM (SELECT * FROM v WHERE open UNION ALL (SELECT * FROM v WHERE NOT open ORDER BY at DESC NULLS LAST,id DESC LIMIT $1)) s
 		ORDER BY open DESC,CASE WHEN open THEN at END ASC NULLS FIRST,CASE WHEN open THEN id END,at DESC NULLS LAST,id DESC`, paymentReviewLimit)
@@ -521,8 +525,8 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 	for rows.Next() {
 		var v PaymentReview
 		var amt, confs int64
-		var credited, locked, regressed bool
-		if err = rows.Scan(&v.OrderID, &v.OrderState, &v.Currency, &amt, &v.TxID, &v.Index, &credited, &locked, &confs, &regressed, &v.Open, &v.Flagged, &d.PaymentReviewOthers); err != nil {
+		var credited, locked, regressed, belowFloor bool
+		if err = rows.Scan(&v.OrderID, &v.OrderState, &v.Currency, &amt, &v.TxID, &v.Index, &credited, &locked, &confs, &regressed, &belowFloor, &v.Open, &v.Flagged, &d.PaymentReviewOthers); err != nil {
 			return err
 		}
 		v.Amount, v.OrderState = amount(amt, currencyDecimals(v.Currency)), stateLabel(v.OrderState)
@@ -530,6 +534,11 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 		switch {
 		case locked:
 			v.Reason = "Locked transfer (unlock time), not counted or paid out"
+		case belowFloor && (!credited || confs >= threshold):
+			v.Reason = "Below the minimum automatic payout, not paid out"
+			if confs < 0 {
+				v.Reason += "; now conflicted or missing"
+			}
 		case !credited:
 			v.Reason = "Deposit confirmed after settlement, not paid out"
 			if confs < 0 {
