@@ -16,6 +16,8 @@
 <label>Recovery code<input name="recovery" required maxlength="40" autocomplete="off" spellcheck="false" autocapitalize="none" placeholder="xxxx-xxxx-xxxx-xxxx">
 </label>
 <span class="help">Each recovery code works once and is then spent.</span>
+<label class="check"><input type="checkbox" name="turn_off_totp" value="1"> I lost my authenticator — turn two-step sign-in off</label>
+<span class="help">Signs you in with this code and turns TOTP off: your other recovery codes are deleted, and you can then set up a new authenticator.{{if .Auth.PGPEnrolled}} PGP sign-in stays on.{{end}}</span>
 <button type="submit">Use recovery code</button>
 </form>
 </details>

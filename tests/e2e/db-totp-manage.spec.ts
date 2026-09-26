@@ -75,7 +75,10 @@ test('replacing recovery codes invalidates the old ones; TOTP turns off with pas
   await page.getByLabel('Recovery code').fill(newCodes[0]);
   await page.getByRole('button', { name: 'Use recovery code' }).click();
   await expect(page.locator('.account-name')).toHaveText(handle);
-  await page.goto('/totp');
+  // A recovery-code sign-in lands on /totp and says how many codes remain (A-154).
+  await expect(page).toHaveURL(/\/totp\?signin=recovery$/);
+  await expect(page.getByRole('status')).toContainText('You signed in with a recovery code. 9 recovery codes remain.');
+  await expect(page.locator('.page-head .badge')).toHaveText('Enabled');
   await expect(page.locator('.key-values div', { hasText: 'Unused recovery codes' }).locator('dd')).toHaveText('9 of 10');
   await page.goto('/notifications');
   const notes = page.locator('main');
@@ -113,6 +116,58 @@ test('replacing recovery codes invalidates the old ones; TOTP turns off with pas
   await expect(activity).toContainText('Signed in with password and recovery code');
 
   // Sign-in is password-only again.
+  await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+  await page.goto('/login');
+  await page.getByLabel('Handle', { exact: true }).fill(handle);
+  await page.getByLabel('Password', { exact: true }).fill(password);
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await expect(page.locator('.account-name')).toHaveText(handle);
+  await expect(page).not.toHaveURL(/\/challenge$/);
+  await page.context().close();
+});
+
+// A-154: someone who lost the authenticator signs in with a recovery code and ticks "I lost my authenticator": TOTP
+// is turned off in the same step, so they are not locked out when the session ends (no staff needed).
+test('a recovery code with "I lost my authenticator" turns TOTP off at sign-in', async ({ browser, baseURL }) => {
+  const handle = uniqueHandle('totplost');
+  const password = 'browser-totp-lost-1234';
+  const page = await signedIn(browser, baseURL, handle, password, true);
+  await page.goto('/totp');
+  await page.getByRole('button', { name: 'Start enrollment ↗' }).click();
+  const secret = (await page.locator('.totp-secret').innerText()).replace(/\s+/g, '');
+  await page.getByLabel('6-digit code from your app').fill(totp(secret, Math.floor(Date.now() / 30_000)));
+  await page.getByLabel('Current password').fill(password);
+  await page.getByRole('button', { name: 'Verify and turn on ↗' }).click();
+  await expect(page.locator('.page-head .badge')).toHaveText('Enabled');
+  const codes = await page.locator('.recovery-codes li').allInnerTexts();
+  expect(codes).toHaveLength(10);
+
+  // The authenticator is gone: sign in with a recovery code and the checkbox (unchecked by default).
+  await signOutAndChallenge(page, handle, password);
+  await page.getByText('Use a recovery code instead').click();
+  const lost = page.getByLabel('I lost my authenticator — turn two-step sign-in off');
+  await expect(lost).not.toBeChecked();
+  await page.getByLabel('Recovery code').fill(codes[3]);
+  await lost.check();
+  await page.getByRole('button', { name: 'Use recovery code' }).click();
+  await expect(page).toHaveURL(/\/totp\?signin=totp-off$/);
+  await expect(page.locator('.account-name')).toHaveText(handle);
+  await expect(page.getByRole('status')).toContainText('You signed in with a recovery code and turned off two-step sign-in with an authenticator app (TOTP)');
+  await expect(page.locator('.page-head .badge')).toHaveText('Not enrolled');
+  await expect(page.getByRole('button', { name: 'Start enrollment ↗' })).toBeVisible();
+  // A plain /totp visit does not repeat the one-time notice.
+  await page.goto('/totp');
+  await expect(page.getByRole('status')).toHaveCount(0);
+
+  await page.goto('/notifications');
+  await expect(page.locator('main')).toContainText('A recovery code was used to sign in to your account and two-step sign-in with an authenticator app (TOTP) was turned off and its recovery codes were deleted (9 remaining).');
+  await expect(page.locator('main')).not.toContainText(codes[3]);
+  await page.goto('/account');
+  const activity = page.getByRole('region', { name: 'Recent activity' });
+  await expect(activity).toContainText('TOTP turned off at sign-in with a recovery code (9 remaining)');
+  await expect(activity).toContainText('Signed in with password and recovery code');
+
+  // The next sign-in is password only.
   await page.getByRole('button', { name: 'Sign out', exact: true }).click();
   await page.goto('/login');
   await page.getByLabel('Handle', { exact: true }).fill(handle);

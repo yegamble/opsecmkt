@@ -40,6 +40,8 @@ test('challenge offers an authenticator code and a recovery code', async ({ page
   await expect(page.getByLabel('Recovery code')).toBeHidden();
   await page.getByText('Use a recovery code instead').click();
   await expect(page.getByLabel('Recovery code')).toBeVisible();
+  // A-154: a plain, unchecked checkbox turns TOTP off with the recovery code.
+  await expect(page.getByLabel('I lost my authenticator — turn two-step sign-in off')).not.toBeChecked();
   await noScriptsNoOverflow(page);
 });
 
