@@ -56,7 +56,11 @@
 <div>
 <dt>Payout status</dt>
 <dd>{{.StateLabel}}</dd>
-</div>{{if .TxID}}
+</div>{{if .Address}}
+<div>
+<dt>Destination (shown only to you)</dt>
+<dd><span class="mono">{{.Address}}</span> <span class="badge testnet">TESTNET {{$.Payment.Network}}</span></dd>
+</div>{{end}}{{if .TxID}}
 <div>
 <dt>Payout transaction</dt>
 <dd class="mono">{{.TxID}}</dd>

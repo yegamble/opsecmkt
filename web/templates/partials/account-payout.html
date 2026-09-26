@@ -6,6 +6,28 @@
 {{define "account-payout:panel"}}{{with .Payout}}<div class="panel payout-panel" id="payout">
 <h2>Payout addresses</h2>
 {{if .Blocked}}<div class="alert" role="status">{{.Blocked}} payout(s) are waiting for a payout address.</div>{{end}}
+{{if .Unsent}}<h3 id="unsent-payouts">Payouts to you not sent yet</h3>
+<p class="help">Every release or refund to you that has not been sent, oldest first: why it waits and what happens next. The destination is shown only to you.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-labelledby="unsent-payouts">
+<table>
+<thead>
+<tr>
+<th scope="col">Order</th>
+<th scope="col">Payout</th>
+<th scope="col">Destination</th>
+<th scope="col">Status</th>
+<th scope="col">Next step</th>
+</tr>
+</thead>
+<tbody>{{range .Unsent}}<tr>
+<td><a class="text-link mono" href="/order?id={{.OrderID}}">{{.OrderShort}}</a></td>
+<td>{{if eq .Kind "release"}}Release{{else}}Refund{{end}} of {{.Amount}} {{.Currency}} <span class="badge testnet">TESTNET{{with .Network}} {{.}}{{end}}</span></td>
+<td>{{if .Address}}<span class="mono">{{.Address}}</span> <span class="badge testnet">TESTNET{{with .Network}} {{.}}{{end}}</span>{{else}}None yet{{end}}</td>
+<td>{{.Status}}</td>
+<td>{{.NextStep}}</td>
+</tr>{{end}}</tbody>
+</table>
+</div>{{end}}
 <p class="help">Used for releases (vendors) and refunds (buyers). Test-network addresses only; mainnet addresses are rejected. The address is copied onto a payout when it is queued. Save an empty field to remove an address. Every change needs your current password{{if and $.Security $.Security.TOTPEnabled}} and an authenticator code{{end}}.</p>
 {{if .BTCNetwork}}<form class="stack" method="post" action="/account/payout">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">

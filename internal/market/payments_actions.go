@@ -13,6 +13,7 @@ func init() {
 	registerLoader("*", paymentsGlobalLoader)
 	registerLoader("order", paymentsOrderLoader)
 	registerLoader("account", paymentsAccountLoader)
+	registerLoader("vendor-dashboard", unsentPayoutsLoader)
 	registerLoader("admin", paymentsAdminLoader)
 }
 
@@ -149,8 +150,33 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 	if p != nil {
 		pv.Network, pv.Threshold = p.Network(), p.Confirmations()
 	}
+	dec := currencyDecimals(o.Currency)
+	// The payout is read before the provider checks: its recipient learns what happens next even while the
+	// wallet is unavailable (A-120). Only the recipient sees its destination and the reason it waits; the other
+	// party and staff reviewers see a neutral label (the full detail is on /admin).
+	var payout *PayoutRow
+	var row PayoutRow
+	var amt int64
+	var recipient, payoutErr string
+	var ambiguous, stuck bool
+	err := a.db.QueryRowContext(ctx, "SELECT kind,state,txid,amount,currency,user_id,address,error,send_ambiguous,"+stuckSending+" FROM payouts WHERE order_id=$1", o.ID).
+		Scan(&row.Kind, &row.State, &row.TxID, &amt, &row.Currency, &recipient, &row.Address, &payoutErr, &ambiguous, &stuck)
+	if err == nil {
+		row.Amount, row.StateLabel = amount(amt, dec), orderPayoutLabel(row.State, payoutErr)
+		if d.User != nil && d.User.ID == recipient {
+			if row.State != "sent" {
+				mine := recipientPayout(o.ID, row.Kind, row.Currency, pv.Network, row.Amount, row.Address, row.State, payoutErr, ambiguous, stuck)
+				row.StateLabel, d.MyPayout = mine.Status, &mine
+			}
+		} else {
+			row.Address = ""
+		}
+		payout = &row
+	} else if err != sql.ErrNoRows {
+		return err
+	}
 	var addr string
-	err := a.db.QueryRowContext(ctx, "SELECT address FROM payment_addresses WHERE order_id=$1", o.ID).Scan(&addr)
+	err = a.db.QueryRowContext(ctx, "SELECT address FROM payment_addresses WHERE order_id=$1", o.ID).Scan(&addr)
 	if err == sql.ErrNoRows {
 		return nil
 	}
@@ -170,7 +196,6 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 	if pv.Open {
 		pv.Address = addr
 	}
-	dec := currencyDecimals(o.Currency)
 	rows, err := a.db.QueryContext(ctx, "SELECT txid,idx,amount,confirmations,credited,locked,regress_notice FROM payments WHERE order_id=$1 ORDER BY created,id", o.ID)
 	if err != nil {
 		return err
@@ -255,15 +280,7 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 	default:
 		pv.Status = "Deposit address closed (order " + stateLabel(o.State) + ")"
 	}
-	var row PayoutRow
-	var amt int64
-	err = a.db.QueryRowContext(ctx, "SELECT kind,state,txid,amount,currency FROM payouts WHERE order_id=$1", o.ID).Scan(&row.Kind, &row.State, &row.TxID, &amt, &row.Currency)
-	if err == nil {
-		row.Amount, row.StateLabel = amount(amt, dec), payoutStateLabel(row.State)
-		pv.Payout = &row
-	} else if err != sql.ErrNoRows {
-		return err
-	}
+	pv.Payout = payout
 	return nil
 }
 
@@ -285,6 +302,85 @@ func payoutStateLabel(s string) string {
 	return s
 }
 
+// orderPayoutLabel is the payout status on the order page for everyone but its recipient: the other party and
+// staff reviewers. A hold other than the watcher's (whose deposit the payment panel already shows) is not
+// explained there, so neither a suspension nor a restore from backup is disclosed (A-120, A-107, A-112).
+func orderPayoutLabel(state, payoutErr string) string {
+	if state == "held" && payoutErr != heldReason {
+		return "Held — waiting for an administrator check"
+	}
+	if state == "held" {
+		return "Held — a deposit is re-confirming; released automatically once it confirms again"
+	}
+	return payoutStateLabel(state)
+}
+
+// recipientPayout describes an unsent payout to its recipient (A-120) in fixed copy: why it waits and what
+// happens next. payoutErr (the wallet's text or the hold's marker) only selects the copy and is never shown.
+// stuck: a send claimed longer ago than stuckSending allows, which may have been broadcast like an ambiguous
+// failure. A definite failure says administrators were notified: recordPayout notifies every administrator in
+// the transaction that records it.
+func recipientPayout(orderID, kind, cur, network, amt, address, state, payoutErr string, ambiguous, stuck bool) RecipientPayout {
+	r := RecipientPayout{OrderID: orderID, OrderShort: shortID(orderID), Kind: kind, Currency: cur, Network: network, Amount: amt, Address: address}
+	restored := strings.HasPrefix(payoutErr, restoredHoldPrefix)
+	switch {
+	case state == "blocked":
+		r.Status, r.NextStep = "Waiting for your payout address", "Save a "+cur+" payout address on your account page; the payout is then queued and sent automatically."
+	case state == "failed" && !ambiguous && !restored:
+		r.Status, r.NextStep = "Failed — nothing was sent", "The market wallet refused the send before broadcasting; administrators have been notified. It is never retried automatically: only an administrator can queue it again."
+	case state == "failed" || stuck:
+		r.Status, r.NextStep = "Outcome unknown", "The send may have been broadcast; an administrator checks the wallet before any resend, so it is not paid twice."
+	case heldForSuspension(state, payoutErr):
+		r.Status, r.NextStep = "Held for a payout address check", "Held because your account was suspended; an administrator checks your payout address before releasing it."
+	case state == "held" && restored:
+		r.Status, r.NextStep = "Held for a wallet check", "Held after the market restored its records from a backup; an administrator checks the market wallet before releasing it, so it is not paid twice."
+	case state == "held" && payoutErr == heldReason:
+		r.Status, r.NextStep = "Held until a deposit confirms", "A deposit for this order is re-confirming; the payment watcher releases the payout by itself once it confirms again."
+	case state == "held":
+		r.Status, r.NextStep = "Held for an administrator check", "An administrator reviews it before it is released."
+	case state == "sending":
+		r.Status, r.NextStep = "Being sent", "The market wallet is sending it now, in a single attempt."
+	default:
+		r.Status, r.NextStep = "Queued", "The payment watcher sends it automatically, in a single attempt."
+	}
+	if address == "" && state == "held" {
+		r.NextStep += " No " + cur + " payout address is saved yet: save one on your account page so it can be paid."
+	}
+	return r
+}
+
+// unsentPayouts lists every payout to userID that is not sent, oldest first and uncapped (A-120).
+func unsentPayouts(ctx context.Context, a *App, userID string) ([]RecipientPayout, error) {
+	rows, err := a.db.QueryContext(ctx, "SELECT order_id,kind,currency,amount,address,state,error,send_ambiguous,"+stuckSending+
+		" FROM payouts WHERE user_id=$1 AND state<>'sent' ORDER BY id", userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RecipientPayout
+	for rows.Next() {
+		var order, kind, cur, address, state, payoutErr, network string
+		var amt int64
+		var ambiguous, stuck bool
+		if err = rows.Scan(&order, &kind, &cur, &amt, &address, &state, &payoutErr, &ambiguous, &stuck); err != nil {
+			return nil, err
+		}
+		if p := a.provider(cur); p != nil {
+			network = p.Network()
+		}
+		out = append(out, recipientPayout(order, kind, cur, network, amount(amt, currencyDecimals(cur)), address, state, payoutErr, ambiguous, stuck))
+	}
+	return out, rows.Err()
+}
+
+// unsentPayoutsLoader counts the viewer's unsent payouts for the vendor desk, which links to the list.
+func unsentPayoutsLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
+	if d.User == nil {
+		return nil
+	}
+	return a.db.QueryRowContext(ctx, "SELECT count(*) FROM payouts WHERE user_id=$1 AND state<>'sent'", d.User.ID).Scan(&d.UnsentPayouts)
+}
+
 func paymentsAccountLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 	if d.User == nil {
 		return nil
@@ -299,6 +395,11 @@ func paymentsAccountLoader(ctx context.Context, a *App, _ *http.Request, d *Page
 	if err := a.db.QueryRowContext(ctx, "SELECT payout_btc,payout_xmr,(SELECT count(*) FROM payouts WHERE user_id=$1 AND state='blocked') FROM users WHERE id=$1", d.User.ID).Scan(&v.BTC, &v.XMR, &v.Blocked); err != nil {
 		return err
 	}
+	unsent, err := unsentPayouts(ctx, a, d.User.ID)
+	if err != nil {
+		return err
+	}
+	v.Unsent = unsent
 	d.Payout = v
 	return nil
 }

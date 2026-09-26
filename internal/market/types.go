@@ -125,6 +125,10 @@ type PageData struct {
 	// the other payouts were cut to this many most recent rows.
 	PayoutsAttention   int
 	PayoutHistoryLimit int
+	// MyPayout: order page, the viewer's own payout on this order while it is not sent (A-120).
+	// UnsentPayouts: vendor desk, how many payouts to the viewer are not sent (listed on /account#payout).
+	MyPayout      *RecipientPayout
+	UnsentPayouts int
 
 	// P6 Transparency
 	Canary      *CanaryView
@@ -250,6 +254,16 @@ type PayoutView struct {
 	BTC, XMR               string
 	BTCNetwork, XMRNetwork string // empty = no provider for that currency
 	Blocked                int    // payouts waiting for this user's address
+	Unsent                 []RecipientPayout
+}
+
+// RecipientPayout is a payout as its recipient sees it (A-120): every payout to the viewer that is not sent, on
+// /account#payout (oldest first, uncapped) and on its order page. Status and NextStep are fixed copy chosen by
+// recipientPayout from the payout's state and hold; the wallet's error text is never shown. Address is the
+// payout's destination ("" while none is set), shown to its recipient only.
+type RecipientPayout struct {
+	OrderID, OrderShort, Kind, Currency, Amount, Network string
+	Address, Status, NextStep                            string
 }
 type PayoutRow struct {
 	ID                                               int64

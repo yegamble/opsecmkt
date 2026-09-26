@@ -271,6 +271,68 @@ test('vendor cancels a paid physical order, refunds once and restores stock', as
   }
 });
 
+// A-120: a refund to a buyer with no payout address waits; its recipient (only) is told why and what to do, on the
+// order page and on /account#payout, and saving an address sends it once. A fresh buyer: it has no address, and
+// wallet_admin (the vendor here) has spent its password confirmations for this window.
+test('a refund waiting for a payout address tells its recipient what to do and is sent once', async ({ browser, baseURL, request }) => {
+  const vendor = await signedIn(browser, baseURL, 'wallet_admin', password, false);
+  const refundeePassword = 'wallet-browser-refundee-password-123';
+  const refundee = await signedIn(browser, baseURL, 'wallet_refundee', refundeePassword, true);
+  try {
+    await refundee.goto('/?q=Wallet%20BTC%20journey');
+    await refundee.getByRole('link', { name: 'Wallet BTC journey', exact: true }).click();
+    await refundee.getByRole('link', { name: 'Review order draft' }).click();
+    await refundee.getByRole('button', { name: 'Create unfunded draft' }).click();
+    await refundee.getByRole('button', { name: 'Request payment address' }).click();
+    await refundee.waitForURL(/&saved=1$/);
+    const orderURL = refundee.url();
+    const orderID = new URL(orderURL).searchParams.get('id')!;
+    const address = (await refundee.locator('.payment-address .mono').innerText()).trim();
+    expect((await request.post(`${rpc}/test/deposit`, { data: { address, amount: 100_000 } })).ok()).toBeTruthy();
+    expect((await request.post(`${rpc}/test/confirm`, { data: { address } })).ok()).toBeTruthy();
+    await reloadUntil(refundee, async () => { await expect(refundee.locator('.page-head .badge')).toHaveText('Paid', { timeout: 500 }); });
+    await vendor.goto(orderURL);
+    await vendor.getByRole('checkbox', { name: 'Refund 0.001 BTC (test network) to wallet_refundee — exactly the price. This is final.', exact: true }).check();
+    await submit(vendor, vendor.getByRole('button', { name: 'Cancel order', exact: true }));
+    await expect(vendor.locator('.page-head .badge')).toHaveText('Cancelled');
+    // The other party sees a closed order, not the refund's next step.
+    await expect(vendor.locator('main')).toContainText('No further changes are possible');
+    await expect(vendor.getByRole('link', { name: 'Your payouts not sent yet' })).toHaveCount(0);
+    await refundee.reload();
+    await expect(refundee.locator('.page-head .badge')).toHaveText('Cancelled');
+    await expect(refundee.locator('main')).not.toContainText('No further changes are possible');
+    await expect(refundee.getByRole('status').filter({ hasText: 'has not been sent' })).toContainText('Save a BTC payout address on your account page');
+    await expect(refundee.locator('.payment-figures div', { has: refundee.getByText('Payout status', { exact: true }) })).toContainText('Waiting for your payout address');
+    await fitsAt(refundee, 'refund waiting for an address');
+    await Promise.all([refundee.waitForURL(/\/account#payout$/), refundee.getByRole('link', { name: 'Your payouts not sent yet' }).click()]);
+    const unsent = refundee.getByRole('region', { name: 'Payouts to you not sent yet' });
+    const row = unsent.locator('tr', { has: refundee.getByRole('link', { name: orderID.slice(0, 8), exact: true }) });
+    await expect(row).toContainText('Refund of 0.001 BTC');
+    await expect(row).toContainText('Waiting for your payout address');
+    await expect(row).toContainText('None yet');
+    await fitsAt(refundee, 'unsent payouts');
+    const refundAddress = 'bcrt1qfixturerefundee00000000000';
+    const refunds = async () => ((await (await request.get(`${rpc}/test/state`)).json()).payouts as any[]).filter(p => p.address === refundAddress);
+    const form = refundee.locator('form', { has: refundee.getByRole('button', { name: 'Save BTC address' }) });
+    await form.locator('input[name="address"]').fill(refundAddress);
+    await form.getByLabel('Current password', { exact: true }).fill(refundeePassword);
+    await submit(refundee, form.getByRole('button'));
+    await expect.poll(async () => (await refunds()).length).toBe(1);
+    expect(await refunds()).toEqual([expect.objectContaining({ currency: 'BTC', amount: 100_000 })]);
+    await reloadUntil(refundee, async () => { await expect(unsent).toHaveCount(0, { timeout: 500 }); });
+    // Sent: the order is closed for both; only the recipient sees where the refund went.
+    await refundee.goto(orderURL);
+    await expect(refundee.locator('.payment-figures div', { has: refundee.getByText('Payout status', { exact: true }) })).toContainText('Sent');
+    await expect(refundee.locator('.payment-figures div', { has: refundee.getByText('Destination (shown only to you)', { exact: true }) })).toContainText(refundAddress);
+    await expect(refundee.locator('main')).toContainText('No further changes are possible');
+    await vendor.reload();
+    await expect(vendor.locator('main')).not.toContainText(refundAddress);
+    expect(await refunds()).toHaveLength(1);
+  } finally {
+    await Promise.allSettled([vendor.context().close(), refundee.context().close()]);
+  }
+});
+
 test('automatic digital delivery and administrator recovery of a rejected payout', async ({ browser, baseURL, request }) => {
   const admin = await signedIn(browser, baseURL, 'wallet_admin', password, false);
   const buyer = await signedIn(browser, baseURL, 'wallet_buyer', 'wallet-browser-buyer-password-123', false);
@@ -307,6 +369,13 @@ test('automatic digital delivery and administrator recovery of a rejected payout
     const checks = (await (await request.get(`${rpc}/test/state`)).json()).checks;
     await expect.poll(async () => (await (await request.get(`${rpc}/test/state`)).json()).checks).toBeGreaterThan(checks + 2);
     expect((await (await request.get(`${rpc}/test/state`)).json()).payouts).toHaveLength(before);
+    // A-120: the vendor desk counts the recipient's unsent payouts and links to them; the list gives the fixed
+    // copy for a definite failure, never the wallet's error text.
+    await admin.goto('/vendor-dashboard');
+    await Promise.all([admin.waitForURL(/\/account#payout$/), admin.getByRole('link', { name: '1 unsent payout(s) to you', exact: true }).click()]);
+    const unsent = admin.getByRole('region', { name: 'Payouts to you not sent yet' }).locator('tr', { has: admin.getByRole('link', { name: orderID.slice(0, 8), exact: true }) });
+    await expect(unsent).toContainText('The market wallet refused the send before broadcasting; administrators have been notified');
+    await expect(unsent).not.toContainText('Fixture rejected send');
     // A-121: saving a new address leaves the failed payout on its address and names the order to its owner; the
     // administrator moves it to the current address after checking it, and the requeue below pays that address once.
     // (With these two, wallet_admin uses all ten password confirmations its window allows.)
