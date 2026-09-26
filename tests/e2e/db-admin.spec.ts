@@ -312,7 +312,8 @@ test('site settings, account suspension, operator key, canary signature checks a
 // A-116: the payout resolve forms are the last human check before a possible double pay. Their help text and
 // confirmation labels must wrap inside the payouts table (not run off under table{white-space:nowrap}), and each
 // summary must say which payout it resolves. No wallet runs here, so the payouts are seeded in SQL: a refund held
-// by a restore from backup and an account suspension (both confirmations) and an ambiguous failed release. A fresh
+// by a restore from backup and an account suspension (both confirmations), an ambiguous failed release and a definite
+// failed release whose recipient has since saved another address (A-121: the move to the current address). A fresh
 // account is made administrator for this test only, so the shared administrator's sign-in budget is untouched.
 test('payout resolve forms wrap inside the payouts table and name what they resolve', async ({ browser, baseURL }) => {
   const database = process.env.E2E_DATABASE_URL!;
@@ -321,24 +322,29 @@ test('payout resolve forms wrap inside the payouts table and name what they reso
   const adminHandle = uniqueHandle('payout_admin');
   const buyer = uniqueHandle('refund_recipient_long_handle');
   const vendor = uniqueHandle('release_recipient_long_handle');
-  const [buyerID, vendorID, productID, refundOrder, releaseOrder] = [hex(16), hex(16), hex(16), hex(32), hex(32)];
+  const [buyerID, vendorID, productID, refundOrder, releaseOrder, movedOrder] = [hex(16), hex(16), hex(16), hex(32), hex(32), hex(32)];
   const admin = await signedIn(browser, baseURL, adminHandle, 'browser-payout-admin-password-123', true, 1280);
   try {
     sql(`UPDATE users SET role='admin' WHERE handle='${adminHandle}';
       INSERT INTO users(id,handle,password_hash,role) VALUES ('${buyerID}','${buyer}','!','buyer'),('${vendorID}','${vendor}','!','vendor');
+      UPDATE users SET payout_xmr='5${'b'.repeat(94)}',payout_xmr_changed=now() WHERE id='${vendorID}';
       INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock,archived)
         VALUES ('${productID}','${vendorID}','Payout layout fixture','Seeded by db-admin.spec.ts','Other','Worldwide','physical',100000,500000000000,0,true);
       INSERT INTO orders(id,buyer_id,product_id,currency,amount,state)
-        VALUES ('${refundOrder}','${buyerID}','${productID}','BTC',100000,'cancelled'),('${releaseOrder}','${buyerID}','${productID}','XMR',500000000000,'completed');
+        VALUES ('${refundOrder}','${buyerID}','${productID}','BTC',100000,'cancelled'),('${releaseOrder}','${buyerID}','${productID}','XMR',500000000000,'completed'),
+          ('${movedOrder}','${buyerID}','${productID}','XMR',500000000000,'completed');
       INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state,error,send_ambiguous) VALUES
         ('${refundOrder}','refund','${buyerID}','BTC',100000,'tb1q${'q'.repeat(58)}','held',
          'Restored from backup: verify in the wallet before releasing; this payout may already have been sent. Suspended account: payout held when the recipient''s account was suspended; an administrator must check the payout address before releasing it.',false),
         ('${releaseOrder}','release','${vendorID}','XMR',500000000000,'5${'a'.repeat(94)}','failed',
-         'wallet call failed without a definite answer: Post "http://monero-wallet-rpc:18083/json_rpc": context deadline exceeded (Client.Timeout exceeded while awaiting headers)',true);`);
-    const ids = sql(`SELECT id FROM payouts WHERE order_id IN ('${refundOrder}','${releaseOrder}') ORDER BY order_id='${releaseOrder}'`).split('\n');
+         'wallet call failed without a definite answer: Post "http://monero-wallet-rpc:18083/json_rpc": context deadline exceeded (Client.Timeout exceeded while awaiting headers)',true),
+        ('${movedOrder}','release','${vendorID}','XMR',500000000000,'5${'a'.repeat(94)}','failed',
+         'The wallet rejected the send; nothing was broadcast. monero-wallet-rpc error -17: not enough money',false);`);
+    const ids = sql(`SELECT id FROM payouts WHERE order_id IN ('${refundOrder}','${releaseOrder}','${movedOrder}') ORDER BY order_id='${movedOrder}', order_id='${releaseOrder}'`).split('\n');
     const summaries = [
       `Resolve payout ${ids[0]}: refund 0.001 BTC to ${buyer}, order ${refundOrder.slice(0, 8)}`,
       `Resolve payout ${ids[1]}: release 0.5 XMR to ${vendor}, order ${releaseOrder.slice(0, 8)}`,
+      `Resolve payout ${ids[2]}: release 0.5 XMR to ${vendor}, order ${movedOrder.slice(0, 8)}`,
     ];
     await admin.goto('/admin#payouts');
     for (const [i, summary] of summaries.entries()) {
@@ -368,15 +374,16 @@ test('payout resolve forms wrap inside the payouts table and name what they reso
       }
     }
     await expect(admin.locator('details.payout-actions input[name="not_broadcast"]')).toHaveCount(2);
-    await expect(admin.locator('details.payout-actions input[name="address_checked"]')).toHaveCount(1);
+    await expect(admin.locator('details.payout-actions input[name="address_checked"]')).toHaveCount(2);
+    await expect(admin.locator('details.payout-actions input[name="op"][value="repoint"]')).toHaveCount(1);
     for (const width of [1280, 390, 320]) {
       await admin.setViewportSize({ width, height: 900 });
       expect(await admin.evaluate(() => document.documentElement.scrollWidth), `/admin at ${width}px`).toBeLessThanOrEqual(width);
     }
   } finally {
     // db-payments.spec.ts expects no payouts, and no other spec should meet an extra administrator.
-    sql(`DELETE FROM payouts WHERE order_id IN ('${refundOrder}','${releaseOrder}');
-      DELETE FROM orders WHERE id IN ('${refundOrder}','${releaseOrder}');
+    sql(`DELETE FROM payouts WHERE order_id IN ('${refundOrder}','${releaseOrder}','${movedOrder}');
+      DELETE FROM orders WHERE id IN ('${refundOrder}','${releaseOrder}','${movedOrder}');
       DELETE FROM products WHERE id='${productID}';
       DELETE FROM users WHERE id IN ('${buyerID}','${vendorID}');
       DELETE FROM sessions WHERE user_id=(SELECT id FROM users WHERE handle='${adminHandle}');

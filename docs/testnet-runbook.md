@@ -225,6 +225,20 @@ the state you saw, so a double click or a second administrator cannot queue it t
   held for an account suspension when the backup was taken keeps that hold behind the restore marker
   (*Held after a restore from backup and for an account suspension*): releasing it needs both the wallet
   confirmation and "Payout address checked".
+- **Use the account's current address** (held, or failed with a pre-broadcast error; A-121): offered when the
+  recipient's saved payout address for the currency differs from the payout's. Saving a payout address never
+  moves a payout that already has one, because anyone with the account's password can save one; the owner
+  is notified instead ("N unsent payout(s) still use your previous address (orders …); an administrator
+  must confirm the change"). The form shows the payout's address and the account's current address with the
+  time it last changed ("change time not recorded" for an address saved before this was tracked). Check the
+  current address with the account owner through a channel you trust, tick "Current address checked" and
+  confirm. The payout keeps its state and nothing is sent: release or requeue it afterwards as above (a
+  suspension hold still needs "Payout address checked"). The audit row records the old and the new address;
+  the order history and the recipient's notification say that it moved, without the address. Refused (409,
+  nothing changed) for a payout being sent or stuck in sending, an *outcome unknown* failure and anything
+  held or marked by a restore from backup, since those may already have been broadcast; also when either
+  address changed since the page loaded (reload and check again), without the tick (400), or after another
+  administrator's action on the payout.
 
 Each of these forms repeats the wallet check above in one line next to the checkbox.
 
