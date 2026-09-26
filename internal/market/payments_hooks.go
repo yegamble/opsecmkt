@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"math"
+	"strings"
 )
 
 // Payout queueing on terminal transitions, inside the transition's transaction:
@@ -25,6 +26,51 @@ const heldReason = "A credited deposit is conflicted or below the confirmation t
 const suspendedHoldPrefix = "Suspended account:"
 
 const suspendedHold = suspendedHoldPrefix + " payout held when the recipient's account was suspended; an administrator must check the payout address before releasing it."
+
+// Minimum automatic payouts (A-99), in atomic units. A payout whose counted sum is below its floor is never
+// queued: enqueuePayout flags its deposits for staff review once instead (flagBelowFloor).
+//
+// minPayoutBTC applies to every Bitcoin payout (release or refund). Bitcoin Core's sendtoaddress is called with
+// subtractfeefromamount, so the network fee comes out of the amount sent and an amount at or below the fee can
+// never be sent: on regtest a 3,000-satoshi payout came out 6 satoshi negative after the fee while 5,000 was
+// sent. 10,000 satoshi (0.0001 BTC) clears that fee about three times over. It removes the never-sendable
+// class, not every failure: fees move, so a payout just above the floor can still fail and is requeued by an
+// administrator as before. Listings cannot be priced below it in BTC (validateListing).
+//
+// minAutoRefundXMR applies to Monero refunds only. monero-wallet-rpc pays the fee on top of the amount from the
+// market's pooled wallet, so any amount can be sent; a Monero transfer costs very roughly 0.00003-0.0001 XMR in
+// fees at the default priority (more for one spending many small outputs). A stray deposit to a cancelled
+// order's address below 0.001 XMR would cost the market several percent of its value or more to refund, and a
+// stream of such deposits could drain the pool in fees, so it is left to staff. Releases have no Monero floor:
+// the vendor's price was agreed and paid.
+const (
+	minPayoutBTC     = 10000      // 0.0001 BTC
+	minAutoRefundXMR = 1000000000 // 0.001 XMR
+)
+
+// payoutFloor is the smallest sum enqueuePayout queues for a payout of kind ("release" | "refund") in currency.
+func payoutFloor(currency, kind string) int64 {
+	switch {
+	case currency == "BTC":
+		return minPayoutBTC
+	case currency == "XMR" && kind == "refund":
+		return minAutoRefundXMR
+	}
+	return 0
+}
+
+// belowFloor states that a payout of sum is not sent automatically, or returns "" when sum reaches the floor.
+func belowFloor(currency, kind string, sum int64) string {
+	floor := payoutFloor(currency, kind)
+	if sum <= 0 || sum >= floor {
+		return ""
+	}
+	what := "payout"
+	if currency == "XMR" {
+		what = "refund"
+	}
+	return "below the minimum automatic " + what + " of " + amount(floor, currencyDecimals(currency)) + " " + currency
+}
 
 func paymentsTransitionHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, to string) error {
 	if !isTerminal(to) {
@@ -166,6 +212,9 @@ func (a *App) enqueuePayout(ctx context.Context, tx *sql.Tx, o *Order) error {
 	if err = checkPayoutSeen(ctx, o, sum); err != nil || sum == 0 {
 		return err
 	}
+	if below := belowFloor(o.Currency, kind, sum); below != "" {
+		return a.flagBelowFloor(ctx, tx, o, kind, who, below, ids, sum)
+	}
 	column := "payout_btc"
 	if o.Currency == "XMR" {
 		column = "payout_xmr"
@@ -200,7 +249,8 @@ func (a *App) enqueuePayout(ctx context.Context, tx *sql.Tx, o *Order) error {
 	if err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, "UPDATE payments SET credited=true WHERE id=ANY($1)", ids); err != nil {
+	// Deposits flagged earlier as below the floor are paid now: their flag closes (below_floor).
+	if _, err = tx.ExecContext(ctx, "UPDATE payments SET credited=true,below_floor=false WHERE id=ANY($1)", ids); err != nil {
 		return err
 	}
 	label := amount(sum, currencyDecimals(o.Currency)) + " " + o.Currency
@@ -237,4 +287,40 @@ func (a *App) enqueuePayout(ctx context.Context, tx *sql.Tx, o *Order) error {
 		}
 	}
 	return nil
+}
+
+// flagBelowFloor replaces the payout of sum (below the floor, see payoutFloor) with a payment-review flag on its
+// counted deposits: payments.flagged (staff read access, the desk) and below_floor, which keeps the flag open on
+// the desk and stops later passes counting the same deposits from flagging them again. Only deposits not yet
+// marked are flagged, with one order note, one notification to the buyer and the vendor, and one to every
+// moderator and administrator not party to the order. The deposits stay as they were (credited or not) and the
+// order keeps its terminal state.
+func (a *App) flagBelowFloor(ctx context.Context, tx *sql.Tx, o *Order, kind, who, below string, ids []int64, sum int64) error {
+	rows, err := tx.QueryContext(ctx, "UPDATE payments SET flagged=true,below_floor=true WHERE id=ANY($1) AND NOT below_floor RETURNING txid,amount", ids)
+	if err != nil {
+		return err
+	}
+	dec := currencyDecimals(o.Currency)
+	var deposits []string
+	for rows.Next() {
+		var txid string
+		var amt int64
+		if err = rows.Scan(&txid, &amt); err != nil {
+			rows.Close()
+			return err
+		}
+		deposits = append(deposits, "deposit "+truncate(txid, 20)+" ("+amount(amt, dec)+" "+o.Currency+")")
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil || len(deposits) == 0 {
+		return err
+	}
+	why := "a smaller Bitcoin payout cannot cover the network fee taken from it"
+	if o.Currency == "XMR" {
+		why = "the network fee paid on top would take too large a share of it"
+	}
+	payout := "TESTNET " + kind + " of " + amount(sum, dec) + " " + o.Currency + " to the " + who
+	note := payout + " was not queued: it is " + below + " (" + why + "). Not paid out: " + strings.Join(deposits, ", ") + ". Moderator review required."
+	party := "Order " + o.ID[:min(8, len(o.ID))] + ": the " + payout + " is " + below + " and was not sent. The market staff have been notified."
+	return a.flagOrder(ctx, tx, o, note, party)
 }

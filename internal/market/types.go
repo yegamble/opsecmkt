@@ -34,8 +34,8 @@ type Dispute struct {
 }
 
 // PaymentReview is one deposit the payment watcher flagged for staff review (payments.flagged). Open: not yet
-// settled by events (a locked transfer or a late deposit, which have no disposition action yet, or a credited
-// deposit in an announced regression that has not confirmed again).
+// settled by events (a locked transfer, a late deposit or a deposit of a payout below the minimum, which have no
+// disposition action yet, or a credited deposit in an announced regression that has not confirmed again).
 type PaymentReview struct {
 	OrderID, OrderState, Currency, Amount, TxID, Reason, Flagged string
 	Index                                                        int64
