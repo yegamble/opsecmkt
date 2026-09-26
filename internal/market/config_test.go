@@ -66,7 +66,6 @@ func setStartupEnv(t *testing.T, overrides map[string]string) {
 		t.Setenv(k, get(k))
 	}
 	t.Setenv("APP_MODE", "")
-	t.Setenv("COMPOSE_PATH_SEPARATOR", "")
 	for k, v := range overrides {
 		t.Setenv(k, v)
 	}
@@ -269,16 +268,17 @@ func TestStartupRefusesModeOverlayMismatch(t *testing.T) {
 			}
 		})
 	}
-	for _, c := range []struct{ mode, files, sep string }{
-		{"clearnet", clearnet, ""},
-		{"tor", tor, ""},
-		{"tor", tor + ":compose.external-egress.yaml", ""},
-		{"tor", "/srv/opsecmkt/compose.yaml:/srv/opsecmkt/compose.tor.yaml", ""},
-		{"tor", "compose.yaml;compose.tor.yaml", ";"},
-		{"clearnet", "", ""}, // no COMPOSE_FILE (plain `-f` flags, tests, bare binary): not checked
-		{"tor", "", ""},
+	for _, c := range []struct{ mode, files string }{
+		{"clearnet", clearnet},
+		{"tor", tor},
+		{"tor", tor + ":compose.external-egress.yaml"},
+		{"tor", "/srv/opsecmkt/compose.yaml:/srv/opsecmkt/compose.tor.yaml"},
+		{"tor", "compose.yaml;compose.tor.yaml"},                                 // Windows separator
+		{"tor", `C:\srv\opsecmkt\compose.yaml;C:\srv\opsecmkt\compose.tor.yaml`}, // Windows paths
+		{"clearnet", ""}, // no COMPOSE_FILE (plain `-f` flags, tests, bare binary): not checked
+		{"tor", ""},
 	} {
-		get := env(map[string]string{"COMPOSE_FILE": c.files, "COMPOSE_PATH_SEPARATOR": c.sep, "COOKIE_SECURE": "false"})
+		get := env(map[string]string{"COMPOSE_FILE": c.files, "COOKIE_SECURE": "false"})
 		if _, err := loadStartupConfig(get, c.mode); err != nil {
 			t.Fatalf("%s %q: %v", c.mode, c.files, err)
 		}

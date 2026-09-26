@@ -72,7 +72,7 @@ func loadStartupConfig(getenv func(string) string, mode string) (startupConfig, 
 	if dbPlaceholder(dsn) {
 		return c, errors.New("DATABASE_URL still contains a placeholder (REPLACE_ME, CHANGEME or similar, as in .env.example); set the real database password and host in .env (scripts/install.sh generates them)")
 	}
-	if err := checkComposeOverlay(mode, getenv("COMPOSE_FILE"), getenv("COMPOSE_PATH_SEPARATOR")); err != nil {
+	if err := checkComposeOverlay(mode, getenv("COMPOSE_FILE")); err != nil {
 		return c, err
 	}
 	if mode == "tor" && c.secure {
@@ -99,17 +99,15 @@ func dbPlaceholder(dsn string) bool {
 
 // checkComposeOverlay refuses an APP_MODE that disagrees with the exposure overlay Compose was started with:
 // tor needs compose.tor.yaml, clearnet compose.clearnet.yaml, and never both. COMPOSE_FILE is passed through
-// by compose.yaml; blank (plain -f flags, tests, the bare binary) skips the check. sep is
-// COMPOSE_PATH_SEPARATOR (default ":").
-func checkComposeOverlay(mode, composeFile, sep string) error {
+// by compose.yaml; blank (plain -f flags, tests, the bare binary) skips the check. It is split on both of
+// Compose's default path separators (":" and ";"): COMPOSE_PATH_SEPARATOR does not reach the container, and
+// only file names matter here, so a split Windows drive letter is harmless.
+func checkComposeOverlay(mode, composeFile string) error {
 	if strings.TrimSpace(composeFile) == "" {
 		return nil
 	}
-	if sep == "" {
-		sep = ":"
-	}
 	has := map[string]bool{}
-	for _, f := range strings.Split(composeFile, sep) {
+	for _, f := range strings.FieldsFunc(composeFile, func(r rune) bool { return r == ':' || r == ';' }) {
 		has[path.Base(strings.ReplaceAll(strings.TrimSpace(f), `\`, "/"))] = true
 	}
 	const fix = "; APP_MODE and the Compose overlay must agree (scripts/install.sh writes both; see docs/operator-guide.md)"

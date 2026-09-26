@@ -58,7 +58,8 @@ if [[ "$mode" == external ]]; then
   done
   docker exec "${project}-db" pg_isready -h 127.0.0.1 -U opsecmkt -d opsecmkt
 fi
-"${compose[@]}" up -d --no-build
+# --wait returns once every started service is healthy: the app by its own `-healthcheck` (compose.yaml).
+"${compose[@]}" up -d --no-build --wait --wait-timeout 180
 if [[ "$mode" == external ]]; then
   test -z "$(docker ps -aq --filter "label=com.docker.compose.project=$project" --filter label=com.docker.compose.service=db)"
 fi
@@ -129,6 +130,9 @@ work = Path(os.environ['SMOKE_WORK'])
 (work / 'tampered.jsonl').write_bytes(export_bytes.replace(b'Account created: admin', b'Account created: buyer'))
 print('Production image: database, health, bootstrap, admin session, setup lockdown, stylesheets, unavailable BTC and audit export passed')
 PY
+# -status inside the container reports the completed setup and nothing else (no secret).
+status_line=$("${compose[@]}" exec -T app /app/server -status)
+[[ $status_line =~ ^installed=true\ schema=[0-9]{3}$ ]] || { echo "unexpected -status output: $status_line" >&2; exit 1; }
 "$work/verify-audit" -pub "$SMOKE_AUDIT_PUBLIC_KEY" "$work/export.jsonl" "$work/export.sig"
 if "$work/verify-audit" -pub "$SMOKE_AUDIT_PUBLIC_KEY" "$work/tampered.jsonl" "$work/export.sig" 2>/dev/null; then
   echo 'verify-audit accepted a tampered export' >&2; exit 1
@@ -137,7 +141,7 @@ fi
 sleep 5
 python3 -c "import urllib.request; assert urllib.request.urlopen('http://127.0.0.1:18090/healthz', timeout=5).read() == b'ok'"
 app_container=$("${compose[@]}" ps -q app)
-[[ $(docker inspect -f '{{.State.Status}} {{.RestartCount}}' "$app_container") == 'running 0' ]]
+[[ $(docker inspect -f '{{.State.Status}} {{.RestartCount}} {{.State.Health.Status}}' "$app_container") == 'running 0 healthy' ]]
 "${compose[@]}" logs --no-color app > "$work/app.log" 2>&1
 grep -q 'payments: BTC unavailable at startup' "$work/app.log"
 echo 'Production image: stays healthy with an unreachable payment node; signed audit export verified with cmd/verify-audit'
