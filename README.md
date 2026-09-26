@@ -81,7 +81,8 @@ the interactive installer instead:
 ```
 
 The interactive clearnet path keeps secure cookies on by default; finish setup
-through your HTTPS reverse proxy. For each coin it defaults to a local
+through your HTTPS reverse proxy, which must forward the original `Host` header
+(nginx needs `proxy_set_header Host $host;`). For each coin it defaults to a local
 test-network node in Docker, **pruned** to save disk: allow about 5 GB (Bitcoin
 testnet4) to 8 GB (signet) and up to 20 GB for Monero stagenet (estimates), and
 hours for the first sync. Answer `no` to the pruning question for a full node,

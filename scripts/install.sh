@@ -266,6 +266,6 @@ else
   if [[ $secure == false ]]; then
     printf 'Ready. Open %s/setup to name your marketplace and create its administrator.\n' "$endpoint"
   else
-    printf 'Application healthy at %s. Configure your HTTPS reverse proxy, then open https://YOUR-DOMAIN/setup. Secure cookies require HTTPS.\n' "$endpoint"
+    printf 'Application healthy at %s. Configure your HTTPS reverse proxy to forward the original Host header (see docs/operator-guide.md), then open https://YOUR-DOMAIN/setup. Secure cookies require HTTPS.\n' "$endpoint"
   fi
 fi
