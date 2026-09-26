@@ -20,6 +20,8 @@ func main() {
 	statusFlag := flag.Bool("status", false, "print installed=true|false schema=NNN for DATABASE_URL and exit (read-only; starts no server)")
 	preview := flag.Bool("preview", false, "read-only UI preview with sample data, binds loopback only")
 	resetAdmin := flag.String("reset-admin-password", "", "host-only break-glass: read a new password for this administrator handle from stdin, end its sessions and exit (starts no server)")
+	bootstrap := flag.String("bootstrap-admin", "", "host-only first-run setup: create the first administrator with this handle, reading its password from stdin, mark the market installed and exit (starts no server; no setup token needed)")
+	siteName := flag.String("site-name", "", "with -bootstrap-admin: the marketplace name (default OPSMKT, at most 80 bytes)")
 	flag.Parse()
 	if *healthcheckFlag {
 		if err := healthcheck(os.Getenv("ADDR"), 4*time.Second); err != nil {
@@ -31,6 +33,13 @@ func main() {
 	if *statusFlag {
 		if err := status(context.Background(), os.Getenv("DATABASE_URL"), os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, "status:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if flagGiven("bootstrap-admin") || flagGiven("site-name") {
+		if err := bootstrapAdmin(context.Background(), *bootstrap, *siteName, flagGiven, flag.Args(), os.Stdin, os.Stdout, os.Stderr); err != nil {
+			fmt.Fprintln(os.Stderr, "bootstrap-admin:", err)
 			os.Exit(1)
 		}
 		return

@@ -22,26 +22,12 @@ func ResetAdminPassword(ctx context.Context, db *sql.DB, handle, password string
 	if err != nil {
 		return err
 	}
-	list, err := loadMigrations(migrationFiles)
-	if err != nil {
-		return err
-	}
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(782493)"); err != nil {
-		return err
-	}
-	var installed bool
-	if err = tx.QueryRowContext(ctx, "SELECT to_regclass('schema_migrations') IS NOT NULL").Scan(&installed); err != nil {
-		return err
-	}
-	if !installed {
-		return errors.New("this database has no OPSEC Market schema; start the server against it first")
-	}
-	if err = refuseUnknownMigrations(ctx, tx, list); err != nil {
+	if err = lockKnownSchema(ctx, tx); err != nil {
 		return err
 	}
 	// Pending sign-ins go before the account row is locked, in the order /challenge takes them (A-154); a refusal
@@ -72,4 +58,25 @@ func ResetAdminPassword(ctx context.Context, db *sql.DB, handle, password string
 		return err
 	}
 	return tx.Commit()
+}
+
+// lockKnownSchema starts a host tool's transaction: it takes advisory lock 782493 (startup migrations and
+// first-run setup) and refuses a database without the application schema or recording migrations this binary
+// does not include, before anything is changed.
+func lockKnownSchema(ctx context.Context, tx *sql.Tx) error {
+	list, err := loadMigrations(migrationFiles)
+	if err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(782493)"); err != nil {
+		return err
+	}
+	var schema bool
+	if err = tx.QueryRowContext(ctx, "SELECT to_regclass('schema_migrations') IS NOT NULL").Scan(&schema); err != nil {
+		return err
+	}
+	if !schema {
+		return errors.New("this database has no OPSEC Market schema; start the server against it first")
+	}
+	return refuseUnknownMigrations(ctx, tx, list)
 }
