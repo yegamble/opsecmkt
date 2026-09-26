@@ -310,7 +310,8 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if origin := r.Header.Get("Origin"); origin != "" {
 			u, e := url.Parse(origin)
 			if e != nil || u.Host != r.Host || (u.Scheme != "http" && u.Scheme != "https") {
-				http.Error(w, "Cross-origin request rejected", 403)
+				// Fixed copy naming no header value; the usual cause is a reverse proxy rewriting Host (A-138).
+				http.Error(w, "Origin does not match Host; if this market runs behind a reverse proxy, the proxy must forward the Host header.", 403)
 				return
 			}
 		}
