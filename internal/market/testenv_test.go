@@ -68,6 +68,8 @@ func newTestApp(t *testing.T) *testEnv {
 	t.Helper()
 	t.Setenv("DATABASE_URL", testSchemaDSN(t))
 	t.Setenv("SETUP_TOKEN", testSetupToken)
+	t.Setenv("APP_SECRET_KEY", "") // legacy key root: every DB-backed test also exercises the pre-split derivation
+	t.Setenv("COMPOSE_FILE", "")
 	t.Setenv("COOKIE_SECURE", "false")
 	e := &testEnv{t: t}
 	e.restart()

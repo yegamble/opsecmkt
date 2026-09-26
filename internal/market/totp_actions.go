@@ -306,7 +306,7 @@ func totpLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error
 	}
 	if s.Pending {
 		if secret, err := a.open("totp", pending); err != nil {
-			s.Error = "The pending secret can no longer be read (SETUP_TOKEN changed). Start enrollment again."
+			s.Error = "The pending secret can no longer be read (the server key changed). Start enrollment again."
 		} else {
 			issuer := d.Settings["site_name"]
 			if issuer == "" {
