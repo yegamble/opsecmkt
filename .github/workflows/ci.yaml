@@ -176,6 +176,19 @@ jobs:
           }
           check_nodes pruned
           BITCOIN_PRUNE_MB=0 MONERO_PRUNE_FLAGS='' check_nodes full
+          # Node and wallet images default to the release tags the payment error tables were verified against
+          # (A-100): a floating or missing tag could upgrade monero-wallet-rpc under moneroPreSubmitCodes.
+          docker compose "${files[@]}" "${profiles[@]}" config --format json | python3 -c '
+          import json, sys
+          services = json.load(sys.stdin)["services"]
+          for name in ("bitcoin", "monero", "monero-wallet"):
+              image = services[name]["image"]
+              reference, _, digest = image.partition("@")
+              tag = reference.rpartition("/")[2].partition(":")[2]
+              if tag == "latest" or not (tag or digest):
+                  sys.exit(f"{name} image must be a pinned release tag or digest, not {image!r}")
+              print(name, "image:", image)
+          '
       # The step above passes explicit --profile flags, which hides a documented command that drops the profiles
       # an installed .env lists. This one writes COMPOSE_FILE and COMPOSE_PROFILES as scripts/install.sh does.
       - name: Documented mirror commands with the installer's .env

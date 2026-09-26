@@ -160,8 +160,8 @@ for coin in BITCOIN MONERO; do
       ;;
     local)
       case $coin in
-        BITCOIN) default_image='bitcoin/bitcoin:latest' ;;
-        MONERO) default_image='ghcr.io/sethforprivacy/simple-monerod:latest' ;;
+        BITCOIN) default_image='bitcoin/bitcoin:31.1' ;;
+        MONERO) default_image='ghcr.io/sethforprivacy/simple-monerod:v0.18.5.1' ;;
       esac
       read -r -p "$coin Docker image [$default_image; blank uses this default]: " node_image
       node_image=${node_image:-$default_image}
@@ -222,7 +222,7 @@ for coin in BITCOIN MONERO; do
         put MONERO_RPC_URL 'http://monero:18081'
         put MONERO_WALLET_RPC_PASSWORD "$wallet_password"
         put MONERO_WALLET_RPC_URL "http://marketplace:${wallet_password}@monero-wallet:18083"
-        put MONERO_WALLET_IMAGE "${MONERO_WALLET_IMAGE:-ghcr.io/sethforprivacy/simple-monero-wallet-rpc:latest}"
+        put MONERO_WALLET_IMAGE "${MONERO_WALLET_IMAGE:-ghcr.io/sethforprivacy/simple-monero-wallet-rpc:v0.18.5.1}"
         profiles="${profiles:+$profiles,}monero,monero-wallet"
       fi
       ;;

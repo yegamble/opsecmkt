@@ -203,8 +203,10 @@ time.sleep(60)
         self.assertNotIn(config['AUDIT_SIGNING_KEY'], result.stdout + result.stderr)
         self.assertEqual(config['BITCOIN_CHAIN'], 'testnet4')
         self.assertEqual(config['MONERO_NETWORK'], 'stagenet')
-        self.assertEqual(config['BITCOIN_IMAGE'], 'bitcoin/bitcoin:latest')
-        self.assertEqual(config['MONERO_IMAGE'], 'ghcr.io/sethforprivacy/simple-monerod:latest')
+        images = self.compose_image_defaults()
+        self.assertEqual(config['BITCOIN_IMAGE'], images['BITCOIN_IMAGE'])
+        self.assertEqual(config['MONERO_IMAGE'], images['MONERO_IMAGE'])
+        self.assertEqual(config['MONERO_WALLET_IMAGE'], images['MONERO_WALLET_IMAGE'])
         # Pruned by default, written explicitly so the operator can see and change it in .env.
         self.assertEqual(config['BITCOIN_PRUNE_MB'], self.compose_bitcoin_prune_default())
         self.assertEqual(config['MONERO_PRUNE_FLAGS'], PRUNED_MONERO_FLAGS)
@@ -229,6 +231,32 @@ time.sleep(60)
         self.assertGreaterEqual(int(match.group(1)), 550)
         self.assertIn('${MONERO_PRUNE_FLAGS-' + PRUNED_MONERO_FLAGS + '}', text)
         return match.group(1)
+
+    def compose_image_defaults(self):
+        # The installer and .env.example write the image each compose.nodes.yaml service falls back to.
+        text = (REPOSITORY / 'compose.nodes.yaml').read_text()
+        defaults = dict(re.findall(r'^    image: \$\{([A-Z_]+_IMAGE):-([^}]+)\}$', text, re.MULTILINE))
+        self.assertEqual(sorted(defaults), ['BITCOIN_IMAGE', 'MONERO_IMAGE', 'MONERO_WALLET_IMAGE'])
+        return defaults
+
+    def test_node_images_default_to_the_verified_release_tags(self):
+        # War-room A-100: walletRejected's error tables are verified against these releases; a floating tag
+        # could upgrade the wallet under them and make a post-broadcast error look definite.
+        defaults = self.compose_image_defaults()
+        tags = {}
+        for variable, image in defaults.items():
+            tag = image.partition('@')[0].rpartition('/')[2].partition(':')[2]  # a digest may follow the tag
+            self.assertNotIn(tag, ('', 'latest'), f'{variable} defaults to {image!r}, not a pinned release tag')
+            tags[variable] = tag
+        # Bumping a tag means re-verifying the code tables first (docs/operator-guide.md#node-image-versions);
+        # the verified version named in payments_watcher.go must change in the same commit.
+        watcher = (REPOSITORY / 'internal/market/payments_watcher.go').read_text()
+        for verified in (f'Bitcoin Core (v{tags["BITCOIN_IMAGE"]} ', f'(monero {tags["MONERO_WALLET_IMAGE"]}: '):
+            self.assertTrue(verified in watcher, f'payments_watcher.go does not name {verified!r} as verified')
+        self.assertEqual(tags['MONERO_IMAGE'], tags['MONERO_WALLET_IMAGE'])
+        example = dict(line.split('=', 1) for line in (REPOSITORY / '.env.example').read_text().splitlines()
+                       if line.split('=', 1)[0] in defaults)
+        self.assertEqual(example, defaults)
 
     def test_internal_clearnet_without_nodes(self):
         result = self.run_installer(['', '', '', 'disabled', 'disabled'])
@@ -393,7 +421,7 @@ time.sleep(60)
         self.assertEqual(config['COMPOSE_PROFILES'], 'internal-db,bitcoin,monero,monero-wallet')
         self.assertEqual(config['BITCOIN_IMAGE'], 'reviewed-bitcoin:test')
         self.assertEqual(config['MONERO_IMAGE'], 'reviewed-monero:test')
-        self.assertEqual(config['MONERO_WALLET_IMAGE'], 'ghcr.io/sethforprivacy/simple-monero-wallet-rpc:latest')
+        self.assertEqual(config['MONERO_WALLET_IMAGE'], self.compose_image_defaults()['MONERO_WALLET_IMAGE'])
         self.assertEqual(len(config['BITCOIN_RPC_PASSWORD']), 48)
         self.assertEqual(config['BITCOIN_RPC_URL'],
                          'http://marketplace:' + config['BITCOIN_RPC_PASSWORD'] + '@bitcoin:8332')
@@ -427,9 +455,8 @@ time.sleep(60)
         result = self.run_installer(['tor', '', 'local', '', 'testnet4', '', 'local', '', 'stagenet', ''])
         self.assert_started(result)
         config = self.config()
-        self.assertEqual(config['BITCOIN_IMAGE'], 'bitcoin/bitcoin:latest')
-        self.assertEqual(config['MONERO_IMAGE'], 'ghcr.io/sethforprivacy/simple-monerod:latest')
-        self.assertEqual(config['MONERO_WALLET_IMAGE'], 'ghcr.io/sethforprivacy/simple-monero-wallet-rpc:latest')
+        self.assertEqual({key: config[key] for key in ('BITCOIN_IMAGE', 'MONERO_IMAGE', 'MONERO_WALLET_IMAGE')},
+                         self.compose_image_defaults())
 
     def test_local_mainnet_choice_fails_closed_before_writing_config(self):
         result = self.run_installer(['tor', '', 'local', '', 'live'])
