@@ -16,9 +16,25 @@ import (
 )
 
 func main() {
+	healthcheckFlag := flag.Bool("healthcheck", false, "probe the local server's /healthz (ADDR's port, default 8080) and exit 0 only when it answers ok; prints nothing on success (the Compose healthcheck)")
+	statusFlag := flag.Bool("status", false, "print installed=true|false schema=NNN for DATABASE_URL and exit (read-only; starts no server)")
 	preview := flag.Bool("preview", false, "read-only UI preview with sample data, binds loopback only")
 	resetAdmin := flag.String("reset-admin-password", "", "host-only break-glass: read a new password for this administrator handle from stdin, end its sessions and exit (starts no server)")
 	flag.Parse()
+	if *healthcheckFlag {
+		if err := healthcheck(os.Getenv("ADDR"), 4*time.Second); err != nil {
+			fmt.Fprintln(os.Stderr, "healthcheck:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if *statusFlag {
+		if err := status(context.Background(), os.Getenv("DATABASE_URL"), os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "status:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	reset := false
 	flag.Visit(func(f *flag.Flag) { reset = reset || f.Name == "reset-admin-password" })
 	if reset {

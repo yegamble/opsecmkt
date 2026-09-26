@@ -136,6 +136,21 @@ jobs:
             profiles+=(--profile mirror)
           fi
           docker compose "${files[@]}" "${profiles[@]}" config --quiet
+          # `up --wait` needs a healthcheck on the app (its -healthcheck flag) and, in Tor mode, on each Tor service
+          # (the onion hostname file exists).
+          docker compose "${files[@]}" "${profiles[@]}" config --format json | python3 -c '
+          import json, sys
+          services = json.load(sys.stdin)["services"]
+          mode, mirror = sys.argv[1], sys.argv[2]
+          want = {"app": ["CMD", "/app/server", "-healthcheck"]}
+          for name in ["tor"] + (["tor-mirror"] if mirror == "on" else []) if mode == "tor" else []:
+              want[name] = ["CMD-SHELL", "test -s /var/lib/tor/marketplace/hostname"]
+          for name, test in want.items():
+              got = services.get(name, {}).get("healthcheck", {})
+              if got.get("test") != test or got.get("disable"):
+                  sys.exit(f"{name} must have healthcheck {test!r}, got {got!r}")
+          print("healthchecks:", ", ".join(want))
+          ' "$MODE" "$MIRROR"
           # torrc resolves app:8080 once at startup, so Tor must restart whenever the app is recreated.
           if [ "$MODE" = tor ]; then
             docker compose "${files[@]}" "${profiles[@]}" config --format json | python3 -c '

@@ -56,8 +56,11 @@ This release refuses to start when `SETUP_TOKEN` is not a random value: the old 
 log then says `SETUP_TOKEN is still a placeholder value` or `SETUP_TOKEN is not random`. `scripts/install.sh`
 always generated a random 64-character hex token, so only hand-written `.env` files are affected.
 
-The placeholder is public, and `SETUP_TOKEN` authorizes `/setup` and derives the CSRF/CAPTCHA key and the key
-that encrypts TOTP secrets. An instance that ran with it must rotate it: put the output of
+The placeholder is public, and `SETUP_TOKEN` authorizes `/setup` and, without `APP_SECRET_KEY` (see
+[the next section](#app_secret_key-and-stricter-startup-checks)), derives the CSRF/CAPTCHA key and the key
+that encrypts TOTP secrets. The same checks apply to `APP_SECRET_KEY`; when it is set, keys derive from it
+alone, so rotating a placeholder `SETUP_TOKEN` changes only `/setup`, and a placeholder `APP_SECRET_KEY` is
+the value to rotate, with the consequences below. An instance that ran with the placeholder must rotate it: put the output of
 `openssl rand -hex 32` in `.env` as `SETUP_TOKEN='...'` and start the app again. What rotation does:
 
 - Sessions stay signed in (they are stored as hashes in the database). A form or CAPTCHA that was open during
@@ -86,8 +89,42 @@ that encrypts TOTP secrets. An instance that ran with it must rotate it: put the
 
   Check that the `UPDATE` reports one row; the user then signs in with the password alone and enrols again.
 
-A restored database needs the `SETUP_TOKEN` that was in use when its backup was taken for its TOTP secrets
-to be readable. Keep the rotated value, not the placeholder, in any `.env` you restore later.
+A restored database needs the `SETUP_TOKEN` (or `APP_SECRET_KEY`, when set) that was in use when its backup
+was taken for its TOTP secrets to be readable. Keep the rotated value, not the placeholder, in any `.env` you
+restore later.
+
+### `APP_SECRET_KEY` and stricter startup checks
+
+**Your existing `.env` keeps working unchanged.** This release adds `APP_SECRET_KEY`, which becomes the only
+root of the CSRF/CAPTCHA key and the key that encrypts TOTP secrets (the derivation is the same as before, only
+the input changes). Without it the app derives them from `SETUP_TOKEN` exactly as before, byte for byte, and
+logs `keys: derived from SETUP_TOKEN (legacy)` at startup. To move to it without changing any key, copy the
+current value (if `.env` already has an `APP_SECRET_KEY` line, edit that line instead):
+
+```sh
+grep '^SETUP_TOKEN=' .env | sed 's/^SETUP_TOKEN=/APP_SECRET_KEY=/' >> .env   # same value, new name
+docker compose up -d
+```
+
+Never put a new random value in `APP_SECRET_KEY` on an existing install: that is a key rotation, with the
+consequences described in the previous section. Once `APP_SECRET_KEY` is set and setup is complete,
+`SETUP_TOKEN` grants nothing (`/setup` answers 403 whatever the token) and can be removed from `.env`; while it
+is set, startup logs `hint: SETUP_TOKEN is set but installation is complete`. Before setup is complete the
+app refuses to start without `SETUP_TOKEN`, and names `./scripts/install.sh setup-token --new`, which issues
+one. Compose itself no longer refuses a blank `SETUP_TOKEN`: the app does, when neither `APP_SECRET_KEY` nor
+`SETUP_TOKEN` is set.
+
+Startup now also stops, with a message naming the key and never its value, when:
+
+- `COOKIE_SECURE` is anything but exactly `true` or `false` (for example `TRUE`, `1` or `yes`); unset still
+  means `true`. `scripts/install.sh` only ever wrote `true` or `false`, so only hand-edited values are affected.
+- `DATABASE_URL` still holds a placeholder such as `.env.example`'s `REPLACE_ME` or a `CHANGEME`.
+- `APP_MODE` disagrees with the exposure overlay in `COMPOSE_FILE`, which Compose now passes to the app:
+  `tor` needs `compose.tor.yaml`, `clearnet` needs `compose.clearnet.yaml`, and never both. A blank
+  `COMPOSE_FILE` (plain `-f` options) is not checked.
+
+`APP_MODE=tor` with `COOKIE_SECURE=true` only logs a warning. The app, `tor` and `tor-mirror` services now have
+Compose healthchecks: `docker compose ps` shows their health and `docker compose up -d --wait` waits for it.
 
 ## 3. `BITCOIN_RPC_URL` now turns payments on
 

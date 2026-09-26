@@ -771,7 +771,7 @@ func TestTOTPDisableInputValidation(t *testing.T) {
 
 func TestTOTPUnreadableSecret(t *testing.T) {
 	e := newTestApp(t)
-	foreign := &App{setupToken: strings.Repeat("z", 64)} // another server's SETUP_TOKEN
+	foreign := &App{keyRoot: strings.Repeat("z", 64)} // another server's key root
 	id, _ := e.user("totp_lost", "buyer")
 	_, recovery := agEnableTOTP(e, id)
 	sealed, err := foreign.seal("totp", newTOTPSecret())

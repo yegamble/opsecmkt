@@ -68,26 +68,35 @@ func TestCheckSetupTokenAcceptsGeneratedAndFixtureTokens(t *testing.T) {
 	}
 }
 
-// The shipped example must never be usable as-is: either blank (Compose refuses to start) or refused here.
+// The shipped example must never be usable as-is: its secrets are blank or refused, and startup refuses the
+// example as a whole (no secret set, placeholder DATABASE_URL).
 func TestEnvExampleSetupTokenIsNotUsable(t *testing.T) {
 	f, err := os.Open(".env.example")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	found := false
+	example := map[string]string{}
 	for s := bufio.NewScanner(f); s.Scan(); {
-		value, ok := strings.CutPrefix(s.Text(), "SETUP_TOKEN=")
-		if !ok {
-			continue
-		}
-		found = true
-		if value = strings.Trim(value, `'"`); value != "" && checkSetupToken(value) == nil {
-			t.Fatalf(".env.example SETUP_TOKEN %q would be accepted at startup", value)
+		if key, value, ok := strings.Cut(s.Text(), "="); ok && !strings.HasPrefix(key, "#") {
+			example[key] = strings.Trim(value, `'"`)
 		}
 	}
-	if !found {
-		t.Fatal(".env.example has no SETUP_TOKEN line")
+	for _, key := range []string{"SETUP_TOKEN", "APP_SECRET_KEY"} {
+		value, ok := example[key]
+		if !ok {
+			t.Fatalf(".env.example has no %s line", key)
+		}
+		if value != "" && checkSecret(key, value) == nil {
+			t.Fatalf(".env.example %s %q would be accepted at startup", key, value)
+		}
+	}
+	if _, err := loadStartupConfig(func(k string) string { return example[k] }, example["APP_MODE"]); err == nil {
+		t.Fatal("startup would accept .env.example as it is")
+	}
+	example["APP_SECRET_KEY"] = testAppSecretKey
+	if _, err := loadStartupConfig(func(k string) string { return example[k] }, example["APP_MODE"]); err == nil || !strings.Contains(err.Error(), "DATABASE_URL still contains a placeholder") {
+		t.Fatalf(".env.example DATABASE_URL: %v", err)
 	}
 }
 

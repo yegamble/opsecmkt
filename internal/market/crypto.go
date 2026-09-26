@@ -10,7 +10,9 @@ import (
 )
 
 // seal encrypts small secrets at rest (e.g. TOTP secrets, label "totp") with AES-256-GCM under
-// sha256(label+":"+SETUP_TOKEN). Rotating SETUP_TOKEN makes previously sealed values unreadable.
+// sha256(label+":"+root), root being APP_SECRET_KEY, or SETUP_TOKEN on a legacy install without it (config.go).
+// Changing the root makes previously sealed values unreadable; changing SETUP_TOKEN alongside APP_SECRET_KEY
+// does not.
 func (a *App) seal(label, plaintext string) (string, error) {
 	gcm, err := a.sealer(label)
 	if err != nil {
@@ -34,16 +36,16 @@ func (a *App) open(label, sealed string) (string, error) {
 	}
 	out, err := gcm.Open(nil, b[:gcm.NonceSize()], b[gcm.NonceSize():], []byte(label))
 	if err != nil {
-		return "", errors.New("sealed value cannot be opened; was SETUP_TOKEN rotated?")
+		return "", errors.New("sealed value cannot be opened; was APP_SECRET_KEY (or a legacy SETUP_TOKEN) changed?")
 	}
 	return string(out), nil
 }
 
 func (a *App) sealer(label string) (cipher.AEAD, error) {
-	if len(a.setupToken) < 32 || label == "" {
-		return nil, errors.New("sealing requires SETUP_TOKEN and a label")
+	if len(a.keyRoot) < 32 || label == "" {
+		return nil, errors.New("sealing requires APP_SECRET_KEY (or SETUP_TOKEN) and a label")
 	}
-	key := sha256.Sum256([]byte(label + ":" + a.setupToken))
+	key := sha256.Sum256([]byte(label + ":" + a.keyRoot))
 	block, err := aes.NewCipher(key[:])
 	if err != nil {
 		return nil, err

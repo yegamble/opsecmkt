@@ -83,7 +83,7 @@ func (a *App) checkTOTP(ctx context.Context, tx *sql.Tx, userID, code string) er
 	}
 	secret, err := a.open("totp", sealed)
 	if err != nil {
-		return fail(500, "TOTP secret cannot be read on this server; SETUP_TOKEN may have changed. Use a recovery code.")
+		return fail(500, "TOTP secret cannot be read on this server; the server key may have changed. Use a recovery code.")
 	}
 	key, err := decodeTOTPSecret(secret)
 	if err != nil {

@@ -291,7 +291,7 @@ func authAction(c *actionCtx) (actionResult, error) {
 		}
 		return a.secondFactor(c, id)
 	}
-	if path == "/setup" && (installed || subtle.ConstantTimeCompare([]byte(f.Get("token")), []byte(a.setupToken)) != 1) {
+	if path == "/setup" && (installed || a.setupToken == "" || subtle.ConstantTimeCompare([]byte(f.Get("token")), []byte(a.setupToken)) != 1) {
 		return actionResult{}, fail(403, "Setup unavailable or token incorrect")
 	}
 	if path == "/register" && !installed {
