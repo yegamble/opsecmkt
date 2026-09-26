@@ -48,10 +48,60 @@ func paymentWatcher(ctx context.Context, a *App) {
 		case <-t.C:
 		}
 		if err := a.pollOnce(ctx); err != nil && ctx.Err() == nil {
-			log.Printf("payment watcher: %v", err)
+			log.Printf("payment watcher: %s", watcherCause(err))
 		}
 		t.Reset(interval)
 	}
+}
+
+// watchError labels a watcher error. Error() keeps the wrapped text (payment_status, the admin pages), but the
+// watcher's log line prints only the label and the class (watcherCause), never the wallet's or the driver's
+// text, which can hold a payout address or the database user, name, host and port (A-170). A label holds
+// only a currency, "order <short id>", "payout <id>" and fixed words; an empty label adds nothing to Error().
+type watchError struct {
+	label string
+	class string // logged instead of watcherCause(err) when set
+	err   error
+}
+
+func (e *watchError) Error() string {
+	if e.label == "" {
+		return e.err.Error()
+	}
+	return e.label + ": " + e.err.Error()
+}
+
+func (e *watchError) Unwrap() error { return e.err }
+
+// watcherCause is the one-line log form of a watcher error: each joined error in turn ("; ") with all its
+// labels, then the JSON-RPC code of a wallet error (rpc:<code>) or errorCause's class.
+func watcherCause(err error) string { return strings.Join(watcherCauses(err), "; ") }
+
+func watcherCauses(err error) []string {
+	switch e := err.(type) {
+	case interface{ Unwrap() []error }:
+		var parts []string
+		for _, c := range e.Unwrap() {
+			parts = append(parts, watcherCauses(c)...)
+		}
+		return parts
+	case *watchError:
+		parts := []string{e.class}
+		if e.class == "" {
+			parts = watcherCauses(e.err)
+		}
+		if e.label != "" {
+			for i := range parts {
+				parts[i] = e.label + ": " + parts[i]
+			}
+		}
+		return parts
+	}
+	var re *rpcError
+	if errors.As(err, &re) {
+		return []string{fmt.Sprintf("rpc:%d", re.Code)}
+	}
+	return []string{errorCause(err)}
 }
 
 func currencyDecimals(currency string) int {
@@ -78,7 +128,7 @@ func (a *App) pollOnce(ctx context.Context) error {
 	if a.db == nil || !a.paymentsConfigured() {
 		return nil
 	}
-	skip, tips := a.refreshProviders(ctx)
+	skip, tips, why := a.refreshProviders(ctx)
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -115,7 +165,7 @@ func (a *App) pollOnce(ctx context.Context) error {
 		if err := a.db.QueryRowContext(ctx, `INSERT INTO payment_status(currency,network,last_poll,last_error,tip_height) VALUES($1,$2,NULL,'',$3)
 			ON CONFLICT(currency) DO UPDATE SET tip_height=GREATEST(payment_status.tip_height,excluded.tip_height) RETURNING tip_height`, cur, ready[cur].Network(), tip).Scan(&highest); err != nil {
 			errs = append(errs, err)
-			skip[cur] = "Could not compare the node tip with the highest tip recorded; watcher pass skipped (no deposits read, no expiry, no payouts)."
+			skip[cur], why[cur] = "Could not compare the node tip with the highest tip recorded; watcher pass skipped (no deposits read, no expiry, no payouts).", "tip comparison failed"
 		} else if tip < highest {
 			skip[cur] = fmt.Sprintf(tipBehindPrefix+" (node tip %d is below the highest tip %d recorded by the market: restarted or restored from an older state); watcher pass skipped (no deposits read, no expiry, no payouts) until it catches up.", tip, highest)
 		}
@@ -130,7 +180,11 @@ func (a *App) pollOnce(ctx context.Context) error {
 			errs = append(errs, err)
 		}
 		if reason != syncingReason && !strings.HasPrefix(reason, tipBehindPrefix) {
-			errs = append(errs, fmt.Errorf("%s: %s", cur, reason))
+			class := "pass skipped"
+			if why[cur] != "" {
+				class += ": " + why[cur]
+			}
+			errs = append(errs, &watchError{label: cur, class: class, err: errors.New(reason)})
 		}
 	}
 	for _, cur := range sortedCurrencies(ready) {
@@ -150,7 +204,7 @@ func (a *App) pollOnce(ctx context.Context) error {
 			}
 		}
 		if err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", cur, err))
+			errs = append(errs, &watchError{label: cur, err: err})
 		}
 	}
 	return errors.Join(errs...)
@@ -219,7 +273,7 @@ func (a *App) pollCurrency(ctx context.Context, p PaymentProvider) error {
 	var settled []string
 	for _, id := range orders {
 		if err = a.settleOrder(ctx, p, id, !unread[id]); err != nil {
-			errs = append(errs, fmt.Errorf("order %s: %w", id[:min(8, len(id))], err))
+			errs = append(errs, &watchError{label: "order " + id[:min(8, len(id))], err: err})
 		} else if !unread[id] {
 			settled = append(settled, id)
 		}
@@ -236,7 +290,7 @@ func (a *App) pollCurrency(ctx context.Context, p PaymentProvider) error {
 func (a *App) recordIncoming(ctx context.Context, p PaymentProvider, addresses []string, orderOf map[string]string) error {
 	incoming, err := p.Incoming(ctx, addresses)
 	if err != nil {
-		return err
+		return &watchError{class: "wallet read failed: " + watcherCause(err), err: err}
 	}
 	cur := p.Currency()
 	seen := map[ledgerKey]bool{}
@@ -600,7 +654,7 @@ func (a *App) sendPayouts(ctx context.Context, p PaymentProvider, orders []strin
 				msg = "Wallet call failed without a definite answer; the transaction may or may not have been broadcast. Check the wallet before requeueing or paying manually. "
 			}
 			err = a.recordPayout(rctx, id, order, recipient, "failed", "", msg+truncate(serr.Error(), 200), ambiguous, "TESTNET payout of "+label+" failed and will not be retried automatically.")
-			errs = append(errs, fmt.Errorf("payout %d: %w", id, serr))
+			errs = append(errs, &watchError{label: fmt.Sprintf("payout %d", id), class: payoutErrorClass(cur, serr), err: serr})
 		} else {
 			err = a.recordPayout(rctx, id, order, recipient, "sent", txid, "", false, "TESTNET payout of "+label+" sent: "+txid)
 		}
@@ -610,7 +664,7 @@ func (a *App) sendPayouts(ctx context.Context, p PaymentProvider, orders []strin
 		recorded := "yes"
 		if err != nil {
 			recorded = "no cause=" + errorCause(err)
-			errs = append(errs, fmt.Errorf("payout %d recorded as sending only: %w", id, err))
+			errs = append(errs, &watchError{label: fmt.Sprintf("payout %d recorded as sending only", id), err: err})
 		}
 		outcome := "sent txid=" + txid
 		if serr != nil {

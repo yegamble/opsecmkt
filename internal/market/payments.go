@@ -166,9 +166,10 @@ func (a *App) paymentsConfigured() bool {
 // refreshProviders runs at the start of every watcher pass, in every process. Unavailable providers are
 // checked again and promoted once they pass the test-network guard; working providers are checked so a
 // restarted wallet is loaded or opened again. The result maps each currency that must not be polled this
-// pass to the reason (check failed, node syncing, provider disabled); tips maps each other checked currency
-// whose node reported a height to that tip (pollOnce compares it with the highest tip recorded).
-func (a *App) refreshProviders(ctx context.Context) (skip map[string]string, tips map[string]int64) {
+// pass to the reason (check failed, node syncing, provider disabled), and why maps it to a class safe to log
+// (no wallet text, A-170); tips maps each other checked currency whose node reported a height to that tip
+// (pollOnce compares it with the highest tip recorded).
+func (a *App) refreshProviders(ctx context.Context) (skip map[string]string, tips map[string]int64, why map[string]string) {
 	a.checkMu.Lock() // a provider's first successful Check records its network; never run two at once
 	defer a.checkMu.Unlock()
 	a.payMu.RLock()
@@ -181,26 +182,28 @@ func (a *App) refreshProviders(ctx context.Context) (skip map[string]string, tip
 		waiting[c] = u
 	}
 	a.payMu.RUnlock()
-	skip, tips = map[string]string{}, map[string]int64{}
+	skip, tips, why = map[string]string{}, map[string]int64{}, map[string]string{}
 	for cur, u := range waiting {
 		a.payMu.RLock()
 		disabled, last := u.disabled, u.err
 		a.payMu.RUnlock()
 		if disabled {
-			skip[cur] = last
+			skip[cur], why[cur] = last, refusedClass
 			continue
 		}
 		st, err := checkProvider(ctx, u.p)
 		if ctx.Err() != nil {
-			return skip, tips
+			return skip, tips, why
 		}
 		a.payMu.Lock()
 		switch {
 		case isRefusal(err):
 			u.disabled, u.err = true, "Disabled until the node is fixed and the app restarted: "+truncate(err.Error(), 300)
-			log.Printf("payments: %s provider disabled: %v", cur, err)
+			why[cur] = refusedClass
+			log.Printf("payments: %s provider disabled: %s", cur, refusedClass)
 		case err != nil:
 			u.err = truncate(err.Error(), 300)
+			why[cur] = "wallet check failed: " + watcherCause(err)
 		default:
 			delete(a.unavailable, cur)
 			a.payments[cur] = u.p
@@ -221,7 +224,7 @@ func (a *App) refreshProviders(ctx context.Context) (skip map[string]string, tip
 		}
 		st, err := checkProvider(ctx, p)
 		if ctx.Err() != nil {
-			return skip, tips
+			return skip, tips, why
 		}
 		switch {
 		case isRefusal(err):
@@ -230,18 +233,23 @@ func (a *App) refreshProviders(ctx context.Context) (skip map[string]string, tip
 			delete(a.payments, cur)
 			a.unavailable[cur] = &unavailableProvider{p: p, err: msg, disabled: true}
 			a.payMu.Unlock()
-			log.Printf("payments: %s provider disabled: %v", cur, err)
-			skip[cur] = msg
+			log.Printf("payments: %s provider disabled: %s", cur, refusedClass)
+			skip[cur], why[cur] = msg, refusedClass
 		case err != nil:
 			skip[cur] = "Wallet check failed; watcher pass skipped (no deposits read, no expiry, no payouts): " + truncate(err.Error(), 300)
+			why[cur] = "wallet check failed: " + watcherCause(err)
 		case st.Syncing:
 			skip[cur] = syncingReason
 		case st.Tip > 0:
 			tips[cur] = st.Tip
 		}
 	}
-	return skip, tips
+	return skip, tips, why
 }
+
+// refusedClass is the log class of a provider the test-network guard refused; the node's own answer is only in
+// the reason on the admin page (Refused — not a test network).
+const refusedClass = "refused by the test-network guard (reason on the admin page)"
 
 const syncingReason = "Node is still syncing; watcher pass skipped (no deposits read, no expiry, no payouts) until it catches up."
 

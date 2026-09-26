@@ -210,7 +210,7 @@ func recoveryRevealSweeper(ctx context.Context, a *App) {
 		case <-t.C:
 		}
 		if err := a.sweepRecoveryReveals(ctx); err != nil && ctx.Err() == nil {
-			log.Printf("recovery code reveal sweep: %v", err)
+			log.Printf("recovery code reveal sweep: %s", errorCause(err)) // a class, never the driver's text (A-170)
 		}
 		t.Reset(recoveryRevealSweepInterval)
 	}
