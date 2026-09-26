@@ -74,7 +74,7 @@ into a temporary directory with its own `.env` and a uniquely named Compose proj
 - `scripts/backup.sh` without `BACKUP_DATABASE_URL` writes an age-encrypted `0600` dump through `docker compose exec -T db`.
 - `scripts/restore.sh` refuses two destinations, no destination, an unsafe `RESTORE_INTERNAL_DATABASE` name and a wrong confirmation without creating a database; a wrong identity restores no tables.
 - A side-by-side restore (`RESTORE_INTERNAL_DATABASE=opsecmkt_restored`) creates the new database, round-trips Unicode, holds `pending`, `sending`, `blocked` and `held` payouts, marks the `failed` one possibly sent (restore marker and `send_ambiguous=true`), sets `payments_recovery_required=true`, and leaves the live `opsecmkt` database unchanged.
-- The side-by-side restore prints the database it restored into and the exact `DATABASE_URL` line for `.env`. After `DATABASE_URL` is switched to `opsecmkt_restored` and a row is written there, `scripts/backup.sh` names and dumps `opsecmkt_restored`; restoring that backup into a check database contains the row. Double-quoted, `export`-prefixed, unquoted-with-comment, percent-encoded-password, CRLF and repeated `DATABASE_URL` lines select the same database, which the test confirms is the one `docker compose config` resolves for the app; the URL and password are never printed.
+- The side-by-side restore prints the database it restored into and the exact `DATABASE_URL` line for `.env`, and its last line names the `SETUP_TOKEN` and `AUDIT_SIGNING_KEY` the restored database needs from the same backup set. After `DATABASE_URL` is switched to `opsecmkt_restored` and a row is written there, `scripts/backup.sh` names and dumps `opsecmkt_restored`; restoring that backup into a check database contains the row. Double-quoted, `export`-prefixed, unquoted-with-comment, percent-encoded-password, CRLF and repeated `DATABASE_URL` lines select the same database, which the test confirms is the one `docker compose config` resolves for the app; the URL and password are never printed.
 - `scripts/backup.sh` refuses a `BACKUP_INTERNAL_DATABASE` that differs from the database in `DATABASE_URL`, and one set together with `BACKUP_DATABASE_URL`, without leaving a file; a matching one is accepted; when the name comes from Compose interpolation the script refuses to guess and uses `BACKUP_INTERNAL_DATABASE`.
 - Restoring over the populated live database fails and rolls back completely, without applying the gate.
 - After `docker compose down --volumes`, a fresh volume's empty `opsecmkt` database is restored into directly with the same gate and holds.
@@ -82,6 +82,37 @@ into a temporary directory with its own `.env` and a uniquely named Compose proj
 
 The exit trap runs `docker compose down --volumes --remove-orphans` for the test project and removes the
 temporary directory, keys and dumps. It never reads the checkout's `.env` or touches other projects.
+
+## Documented .env and onion identity backup and restore
+
+```sh
+docker build -t opsecmkt-tor:ci -f deploy/Dockerfile.tor deploy   # once; or set TOR_IMAGE to another tag
+./scripts/test-tor-identity-restore.sh
+```
+
+Requires Docker with Compose v2, the Tor image, `age`, `age-keygen` and OpenSSL; nothing is built or pulled,
+and every container runs with `--network none`. In a temporary copy of the Compose files with a Tor `.env`
+under a unique project name, the script tags the Tor image as the project's `<project>-tor` and runs the
+[operator guide's](operator-guide.md#secrets-env-and-onion-identities) `env-backup`, `env-restore`,
+`tor-identity-backup` and `tor-identity-restore` blocks (after their `<!-- ops-cmd: NAME -->` markers)
+verbatim with bash, with a test-only age identity:
+
+- `.env` is backed up encrypted with mode `0600` and restored byte for byte into a checkout without one; a
+  wrong identity creates no `.env`, and an existing `.env` is refused and left unchanged.
+- For `tor_identity` and `tor_mirror_identity`: Tor creates an onion offline, the backup prints its hostname
+  and writes a `0600` archive holding the secret key; restoring over the live volume is refused; after
+  `docker volume rm` the restore prints the same hostname, and Tor, started as `compose.tor.yaml` runs it (no
+  capabilities, no new privileges), bootstraps without an error and keeps the same hostname and secret key
+  (compared by digest; the key is never printed).
+- A root-owned archive (all entries `root/root`, as a copy taken by hand as root would be) restored into a
+  volume created and chowned to root beforehand: Tor starts with the same identity. Without the restore's
+  `chown`, Tor exits with `Directory /var/lib/tor/marketplace cannot be read: Permission denied`. (Docker 29
+  gives an empty volume the image directory's owner when it is mounted, so the volume's root-owned top
+  directory alone does not break Tor there.)
+
+The exit trap removes every container and volume of the test project, the image tag and the temporary
+directory with its keys. It proves the commands against the real Tor image offline, not that the restored
+onion is reachable over the Tor network.
 
 ## Real local installation and setup wizard
 
@@ -130,7 +161,7 @@ Requires Docker, Go, Git with the `v0.1.0-alpha.1` tag present (`git fetch origi
 
 Servers run with an empty environment apart from their database URL, setup token and loopback address, so local payment or signing settings cannot leak in. On failure, the server logs are printed. The container and temporary directory are always removed.
 
-This automates database recovery and upgrade checks; it does not test backup scheduling, off-host storage retention, Tor identity recovery, or a full production disaster-recovery procedure.
+This automates database recovery and upgrade checks; it does not test backup scheduling, off-host storage retention or a full production disaster-recovery procedure. Tor identity recovery is covered separately, offline ([above](#documented-env-and-onion-identity-backup-and-restore)).
 
 ## Real Bitcoin and Monero local chains
 

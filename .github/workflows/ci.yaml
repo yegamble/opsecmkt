@@ -271,6 +271,15 @@ jobs:
           cache-to: type=gha,mode=max,scope=tor
       - name: Validate Tor configuration without network access
         run: docker run --rm --network none --add-host app:127.0.0.1 --cap-drop ALL --security-opt no-new-privileges:true opsecmkt-tor:ci --verify-config
+      - name: Install age
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y age
+      # The operator guide's .env and onion-identity backup/restore commands, run verbatim with networking disabled.
+      - name: Documented onion identity and .env backup and restore
+        run: bash scripts/test-tor-identity-restore.sh
+        env:
+          TOR_IMAGE: opsecmkt-tor:ci
   browser:
     name: Playwright regressions
     runs-on: ubuntu-24.04

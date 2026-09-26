@@ -11,7 +11,7 @@ This is a verification plan, not a declaration that every check has passed. Reco
 - [ ] Clearnet deployment documents its HTTPS termination boundary and corresponding secure-cookie configuration.
 - [ ] Tor-only deployment publishes no application host port and loads no third-party fonts, scripts, analytics, or images. Confirm the effective Compose configuration, not only individual YAML files.
 - [ ] Mirror documentation distinguishes a shared database deployment from independent instances; it does not imply replicated balances or safe simultaneous spending.
-- [ ] Persistent data survives container replacement. Backup and restore instructions cover database records, deployment secrets, and any onion identity keys; a restore rehearsal is recorded.
+- [ ] Persistent data survives container replacement. Backup and restore instructions cover database records, deployment secrets, and any onion identity keys; a restore rehearsal is recorded. Partial evidence: the [operator guide](operator-guide.md#secrets-env-and-onion-identities) now gives `.env` and onion-identity backup/restore commands, and `scripts/test-tor-identity-restore.sh` runs them verbatim and offline against the real Tor image (backup, volume removed, restore, same address; [local run](verification.md#onion-identity-and-env-backup-and-restore-war-room-a-136--2026-09-26), no green CI run yet); no rehearsal of a whole deployment is recorded.
 
 ## Authentication and request security
 
