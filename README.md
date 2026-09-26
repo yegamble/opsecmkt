@@ -82,7 +82,7 @@ sample data and rejects every form write. Stop it with <kbd>Ctrl</kbd>+<kbd>C</k
 
 ## Self-host
 
-You need Docker with Compose v2 (2.17 or later for Tor), OpenSSL and curl.
+You need Docker with Compose v2 (2.17 or later for Tor) and OpenSSL.
 
 **Local marketplace in one command.** HTTP on loopback, internal PostgreSQL, no
 wallets:
@@ -92,28 +92,36 @@ wallets:
 ```
 
 The installer writes a private `.env`, starts PostgreSQL and the app, and waits
-until the app is healthy. Open the printed link (normally
-<http://127.0.0.1:8080/setup>), read `SETUP_TOKEN` from `.env`, and enter it with
-your marketplace name and administrator account. Keep `.env` private and keep it
-across restarts. The installer refuses to overwrite an existing configuration.
+until they are healthy. It then prints the setup link (normally
+<http://127.0.0.1:8080/setup>) and a one-time setup token. Paste the token there
+with your marketplace name and administrator account. Keep `.env` private: it
+holds every secret.
 
-**Production, Tor, external database or test-network nodes.** Run the interactive
-installer:
+**Onion service or production.** Choose the exposure; the installer asks the
+rest, or nothing if you pass every flag (`./scripts/install.sh --help`):
 
 ```sh
-./scripts/install.sh
+./scripts/install.sh init --tor        # prints the onion address, setup link and token
+./scripts/install.sh init --clearnet   # prints Caddy and nginx snippets for your HTTPS proxy
 ```
 
-It keeps secure cookies on for clearnet, which you finish through your own HTTPS
-reverse proxy. For each coin it defaults to a pruned local test-network node. The
-[operator guide](docs/operator-guide.md) covers HTTPS and Tor, mirrors,
+Add `--admin HANDLE` to create the administrator in the terminal instead of with
+a token. For each coin the installer defaults to a pruned local test-network
+node; `--nodes none` leaves payments off.
+
+**Afterwards.** `status` shows health, setup state and onion addresses.
+`add-mirror` adds a second onion address. `upgrade` brings a checkout up to date
+after `git pull`, with a backup first ([UPGRADING.md](UPGRADING.md)):
+
+```sh
+./scripts/install.sh status
+AGE_RECIPIENT=age1... ./scripts/install.sh upgrade
+```
+
+The [operator guide](docs/operator-guide.md) covers HTTPS and Tor, mirrors,
 port and project-name choices, node pruning, backups, upgrades and recovery.
-
-```sh
-docker compose up -d --build   # start or rebuild after a change
-docker compose logs app        # read startup and migration errors
-docker compose down            # stop; keeps database volumes
-```
+`docker compose logs app` shows startup and migration errors; `docker compose
+down` stops everything and keeps the data.
 
 > [!WARNING]
 > `docker compose down --volumes` deletes the marketplace's data. Use it only on

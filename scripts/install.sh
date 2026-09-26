@@ -66,7 +66,12 @@ temporaries=''
 trap 'if [[ -n $temporaries ]]; then rm -f $temporaries; fi' EXIT
 
 usage() {
-  cat >&2 <<'USAGE'
+  usage_text >&2
+  exit 2
+}
+
+usage_text() {
+  cat <<'USAGE'
 Usage: scripts/install.sh [init] [options]   first install (the default)
        scripts/install.sh --local [--admin HANDLE [--site-name NAME]]
        scripts/install.sh check | status | add-mirror
@@ -86,7 +91,6 @@ init options (each answers one question; a question without its option is asked)
                                    instead of printing a setup token for the browser
 Values given as options (URLs with passwords) are visible to other local users while the installer runs.
 USAGE
-  exit 2
 }
 
 die() {
@@ -220,6 +224,16 @@ secret_problem() {
   done
 }
 
+# database_placeholder URL: URL holds an example word the app refuses (dbPlaceholder: REPLACE in capitals, or
+# replace_me, replace-me, replace_with, changeme, change_me or change-me in any case).
+database_placeholder() {
+  local lower
+  [[ $1 != *REPLACE* ]] || return 0
+  lower=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  case $lower in *replace_me*|*replace-me*|*replace_with*|*changeme*|*change_me*|*change-me*) return 0 ;; esac
+  return 1
+}
+
 # image_pinned VALUE: the image names a release tag or a digest, not :latest or no tag.
 image_pinned() {
   local reference=${1%%@*} tag
@@ -341,13 +355,8 @@ run_check() {
   database=$(env_value DATABASE_URL)
   if [[ -z $database ]]; then
     problems="$problems  - DATABASE_URL is not set"$'\n'
-  else
-    value=$(printf '%s' "$database" | tr '[:upper:]' '[:lower:]')
-    case $database in *REPLACE*) value=placeholder ;; esac
-    case $value in
-      placeholder|*replace_me*|*replace-me*|*replace_with*|*changeme*|*change_me*|*change-me*)
-        problems="$problems  - DATABASE_URL still contains a placeholder (as in .env.example)"$'\n' ;;
-    esac
+  elif database_placeholder "$database"; then
+    problems="$problems  - DATABASE_URL still contains a placeholder (as in .env.example)"$'\n'
   fi
   files=$(env_value COMPOSE_FILE)
   if [[ -n $files ]]; then
@@ -598,6 +607,7 @@ cmd_init() {
     [[ $mode == clearnet || $mode == tor ]] || die 'Invalid mode'
     if [[ $bare == true ]]; then ask database 'External PostgreSQL URL (blank creates internal database): ' silent; fi
     if [[ -n $database && $database != postgres://* && $database != postgresql://* ]]; then die 'Use a postgres:// or postgresql:// database URL'; fi
+    if [[ -n $database ]] && database_placeholder "$database"; then die 'The database URL still contains a placeholder such as REPLACE_ME; nothing was written.'; fi
     if [[ $mode == clearnet ]]; then
       if [[ $bare == true ]]; then
         ask local_http 'Local HTTP development only? (yes/no) [no]: '
@@ -1005,7 +1015,7 @@ cmd_upgrade() {
     project=$(project_name)
   fi
   stamp=$(date -u +%Y%m%dT%H%M%SZ)
-  if [[ -n ${AGE_RECIPIENT:-} ]]; then
+  if [[ $no_backup == false ]]; then
     mkdir -p backups
     COMPOSE_PROJECT_NAME=$project scripts/backup.sh "backups/pre-upgrade-$stamp.dump.age" ||
       die 'The backup failed, so nothing was changed. Fix it (the message above says why) or pass --no-backup.'
@@ -1069,13 +1079,17 @@ cmd_upgrade() {
     env_set APP_PORT "$value"
     changes="$changes  added APP_PORT ($value)"$'\n'
   fi
+  local defaulted=''
   while IFS= read -r entry; do
     key=${entry%%=*}
     if ! env_get "$key" >/dev/null; then
       env_set "$key" "${entry#*=}"
-      changes="$changes  added $key (default)"$'\n'
+      defaulted="${defaulted:+$defaulted, }$key"
     fi
   done <<< "$upgrade_defaults"
+  if [[ -n $defaulted ]]; then
+    changes="$changes  added, with the values Compose already used: $defaulted"$'\n'
+  fi
   # Installs from before A-100 float the node and wallet images on :latest (A-174): pin the verified releases.
   for key in BITCOIN_IMAGE MONERO_IMAGE MONERO_WALLET_IMAGE; do
     case $key in
@@ -1127,7 +1141,7 @@ cmd_upgrade() {
 # From here on Docker Compose reads .env alone; the values the installer honours were captured above.
 isolate_env
 case ${1-} in
-  -h|--help|help) usage ;;
+  -h|--help|help) usage_text; exit 0 ;;
   init) shift; cmd_init "$@" ;;
   check) shift; [[ $# -eq 0 ]] || usage; require_docker; cmd_check ;;
   status) shift; [[ $# -eq 0 ]] || usage; require_docker; cmd_status ;;

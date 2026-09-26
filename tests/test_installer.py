@@ -841,6 +841,9 @@ time.sleep(60)
             ['tor', '', 'local', '', 'testnet4', 'maybe', 'disabled'],
             ['tor', '', 'disabled', 'local', '', 'stagenet', 'maybe'],
             ['tor', "postgres://test:quote'@database/scratch", 'disabled', 'disabled'],
+            # I8: a placeholder database URL is refused before .env is written.
+            ['tor', 'postgres://opsecmkt:REPLACE_ME@database/scratch', 'disabled', 'disabled'],
+            ['clearnet', 'postgres://opsecmkt:changeme@database/scratch', 'yes', 'disabled', 'disabled'],
         ]
         for answers in scenarios:
             with self.subTest(case=scenarios.index(answers)):
@@ -1340,6 +1343,14 @@ time.sleep(60)
         self.assertEqual(result.returncode, 0, result.stderr)
         backup = Path(str(self.log) + '.backup').read_text()
         self.assertRegex(backup, r'^backups/pre-upgrade-\d{8}T\d{6}Z\.dump\.age project=opsecmkt recipient=age1testrecipient\n$')
+        # --no-backup wins over an exported recipient.
+        Path(str(self.log) + '.backup').unlink()
+        self.write_env(alpha_env())
+        result = self.command('upgrade', '--no-backup', extra_env={'AGE_RECIPIENT': 'age1testrecipient'})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(Path(str(self.log) + '.backup').exists())
+        for copy in self.pre_upgrade_copies():
+            copy.unlink()
         # A failed backup stops the upgrade before .env changes.
         self.write_env(alpha_env())
         for copy in self.pre_upgrade_copies():
@@ -1380,7 +1391,7 @@ time.sleep(60)
             self.assertEqual(config[key], values[key], key)
         self.assertNotIn('AUDIT_SIGNING_KEY', config)  # secrets are not invented
         self.assertIn('AUDIT_SIGNING_KEY is not set', result.stdout)
-        self.assertIn('added PAYMENT_EXPIRY (default)', result.stdout)
+        self.assertRegex(result.stdout, r'added, with the values Compose already used: [A-Z_, ]*PAYMENT_EXPIRY')
         self.assert_no_secret_printed(result, values)
         self.assertEqual(self.calls()[-3:], [UP, STATUS, 'compose up -d --wait --force-recreate tor'])
 

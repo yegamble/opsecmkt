@@ -78,7 +78,9 @@ def installer(directory, environment, log_path, arguments, timeout=900, stdin_te
     redacted = text
     for values in (before, env_values(directory)):
         for key, value in values.items():
-            if len(value) >= 12 and key not in ('COMPOSE_FILE', 'COMPOSE_PROFILES', 'COMPOSE_PROJECT_NAME'):
+            secret = key in ('DATABASE_URL', 'APP_SECRET_KEY', 'AUDIT_SIGNING_KEY') or key.endswith(
+                ('_PASSWORD', '_TOKEN', '_RPC_URL'))
+            if secret and value:
                 redacted = redacted.replace(value, f'<{key}>')
     with log_path.open('a') as log:
         log.write(f'$ install.sh {" ".join(arguments)} (exit {code})\n{redacted}')

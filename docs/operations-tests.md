@@ -6,7 +6,7 @@ Run the URL/credential tests without any external service or third-party Python 
 python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 
-The installer tests cover the noninteractive `--local` shortcut, inherited-wallet isolation, persisted custom ports, readiness failure, HTTPS handoff, and existing-file preservation. They run the real installation script in temporary repositories with Docker and OpenSSL stubs. They cover internal/external databases, clearnet/Tor exposure, direct-egress overlays, local node profiles (pruned by default: Enter at every prompt gives pruned local nodes with the same prune target as `compose.nodes.yaml`; `no` writes full-node settings; `--local` writes no node settings), the Tor `COMPOSE_FILE`/`COMPOSE_PROFILES` values that the [mirror-command check](#documented-onion-mirror-commands) copies, protected configuration permissions, existing-file preservation, input rejection, and Compose validation failures that must not start services. They never read the user’s `.env`, invoke real Docker, or provision infrastructure.
+The installer tests cover the noninteractive `--local` shortcut, inherited-wallet isolation, persisted custom ports, readiness failure, HTTPS handoff, and existing-file preservation. They run the real installation script in temporary repositories with Docker and OpenSSL stubs. They cover internal/external databases, clearnet/Tor exposure, direct-egress overlays, local node profiles (pruned by default: Enter at every prompt gives pruned local nodes with the same prune target as `compose.nodes.yaml`; `no` writes full-node settings; `--local` writes no node settings), the Tor `COMPOSE_FILE`/`COMPOSE_PROFILES` values that the [mirror-command check](#documented-onion-mirror-commands) copies, protected configuration permissions, existing-file preservation, input rejection, and Compose validation failures that must not start services. They also cover the subcommands: `init` flags that need no prompt, distinct `APP_SECRET_KEY` and `SETUP_TOKEN`, the token printed only in init's final block and no other secret printed by any command, the 90-second onion wait, refusal on existing project volumes, `init --admin` (password read twice, piped on stdin, never in any argv, environment, output or `.env`; mismatches refused before anything is written), the `.env` editor (other lines byte for byte, CRLF and a missing final newline kept, mode `0600`), every `check` refusal, `status`, `setup-token [--new]`, `add-mirror`, and `upgrade` (backup or `--no-backup`, the `0600` pre-upgrade copy, defaults equal to `.env.example` for every non-secret key, the key-root copy, pinned images, the mirror profile, Tor recreate, token retirement and a second run that changes nothing). No command runs `curl`, `wget` or `git`. They never read the user’s `.env`, invoke real Docker, or provision infrastructure.
 
 The connection tests mock process execution and check decoded credentials, IPv6 hosts, ports, supported TLS/query settings, rejected target overrides and null bytes, removal of inherited libpq settings, and errors that do not expose connection secrets. They also verify that PostgreSQL client arguments contain no URL or password.
 
@@ -55,6 +55,8 @@ and every service it names, or `tor-mirror` for a bare `up`, must be active:
   command in the guide and UPGRADING.md, and the runbook's recovery steps 1 and 9 (`stop tor-mirror`, `up -d`,
   `ps tor-mirror`) resolve, and the internal database stays in the project. Each inline command must still
   appear verbatim in its document.
+- `./scripts/install.sh check` accepts each configuration, before and after `mirror` is added (what
+  `install.sh add-mirror` writes).
 
 `docker compose up --dry-run` is not used: with Compose 5.5.1 it sometimes failed spuriously
 (`app is missing dependency db`) or left lines out of its plan (see [verification](verification.md)). The
@@ -122,24 +124,37 @@ onion is reachable over the Tor network.
 python3 scripts/test-install.py
 ```
 
-Requires Docker Engine/Desktop with Compose v2, Python 3, Bash, OpenSSL and curl.
-The script copies only deployment/build inputs into a temporary directory, runs
+Requires Docker Engine/Desktop with Compose v2, Python 3, Bash and OpenSSL.
+The script copies only deployment/build inputs into temporary directories, runs
 `./scripts/install.sh --local` with no answers, and starts a uniquely named real
-Compose project with PostgreSQL 17 on a free loopback application port. It uses
-HTTP form submissions and a cookie jar to verify the browser wizard: wrong-token
-rejection, administrator creation, redirect to the branded admin onboarding,
-setup lockdown, refusal to replace an existing `.env`, and authenticated admin
-access after restarting the app. It then installs a second copy of the inputs
-on the same host: under the first project's name the installer refuses, names
-the first checkout and writes no `.env`; under its own `COMPOSE_PROJECT_NAME` it
-installs, saves the name in its `.env`, and a `docker compose down --volumes`
-there (with the name taken from `.env` alone) leaves the first installation's
-containers unchanged and its admin session and completed setup intact. Both
-projects and their images are removed afterwards. Browser rendering is covered
-separately by Playwright.
+Compose project with PostgreSQL 17 on a free loopback application port. It checks
+that the installer printed the `.env` setup token exactly once and no other
+secret, that `status` reports setup pending, and then uses HTTP form submissions
+and a cookie jar to verify the browser wizard: wrong-token rejection, the printed
+token creating the administrator, redirect to the branded admin onboarding and
+setup lockdown. The token, `APP_SECRET_KEY` and the database password must not
+appear in `docker compose logs`; `status` then reports setup complete and removes
+the token from `.env`, `setup-token` exits 1, the installer refuses to replace the
+existing `.env`, and the admin session survives recreating and restarting the app.
+It then installs a second copy of the inputs on the same host: under the first
+project's name the installer refuses, names the first checkout and writes no
+`.env`; under its own `COMPOSE_PROJECT_NAME`, `init --local --admin` creates the
+administrator from a password on standard input (no token in its output or `.env`,
+no password in its output, `.env` or Compose logs), that administrator signs in,
+and a `docker compose down --volumes` there (with the name taken from `.env` alone)
+leaves the first installation's containers unchanged and its admin session intact.
+A third copy runs from an `.env` in the v0.1.0-alpha.1 layout (`SETUP_TOKEN` only,
+no `APP_PORT` or project name, a `latest` wallet image). After setup, `upgrade`
+refuses without a backup choice, then with `--no-backup` copies the token to
+`APP_SECRET_KEY`, records the project and port, pins the image, removes the token
+and keeps the signed-in session and the CSRF token issued before it (sign-out
+with that token succeeds); a second `upgrade` changes nothing. All three projects
+and their images are removed afterwards. Browser rendering is covered separately
+by Playwright.
 
 The user's configuration and database are never used. Generated credentials stay
-inside the protected temporary directory; logs do not print the setup token.
+inside the protected temporary directory; the evidence log holds the installer's
+output with every `.env` secret replaced by its key name.
 Commands have deadlines, and timeout/interruption cleanup stops process groups,
 removes the test project's containers and volumes, and deletes its application
 image and temporary files. Forced termination (`SIGKILL`) or an unavailable Docker
