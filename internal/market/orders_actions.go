@@ -40,7 +40,18 @@ func partyOrder(c *actionCtx, id string) (Order, error) {
 // demoted vendor accept no new drafts, payment requests or restores; existing orders continue.
 func sellerIsVendor(c *actionCtx, productID string) (bool, error) {
 	var ok bool
-	err := c.Tx.QueryRowContext(c.Ctx(), "SELECT u.role IN ('vendor','admin') FROM products p JOIN users u ON u.id=p.vendor_id WHERE p.id=$1", productID).Scan(&ok)
+	err := c.Tx.QueryRowContext(c.Ctx(), sellerIsVendorSQL, productID).Scan(&ok)
+	return ok, err
+}
+
+const sellerIsVendorSQL = "SELECT u.role IN ('vendor','admin') FROM products p JOIN users u ON u.id=p.vendor_id WHERE p.id=$1"
+
+// sellerIsVendorLocked is sellerIsVendor for a restore (A-70, A-163): it share-locks the owner's account row until
+// the transaction ends, so a concurrent role change either commits first and is seen here, or waits and then
+// archives the restored listing in its own archive statement.
+func sellerIsVendorLocked(c *actionCtx, productID string) (bool, error) {
+	var ok bool
+	err := c.Tx.QueryRowContext(c.Ctx(), sellerIsVendorSQL+" FOR SHARE OF u", productID).Scan(&ok)
 	return ok, err
 }
 

@@ -32,3 +32,11 @@
 .inventory-unavailable {
   margin:0
 }
+.takedown-reason {
+  margin:0 0 10px;
+  overflow-wrap:anywhere;
+  white-space:pre-line
+}
+.listing-takedown form {
+  margin-top:12px
+}

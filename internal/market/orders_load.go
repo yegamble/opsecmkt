@@ -293,8 +293,8 @@ func (a *App) resolvePayouts(ctx context.Context, d *PageData) error {
 	return nil
 }
 
-// reviewModerationLoader tells an administrator's hide and restore review forms (A-125) whether to ask for an
-// authenticator code.
+// reviewModerationLoader tells an administrator's hide and restore review forms (A-125), and listing takedown and
+// restore forms (A-163), whether to ask for an authenticator code.
 func reviewModerationLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error {
 	if d.User == nil || d.User.Role != "admin" {
 		return nil

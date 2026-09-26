@@ -1,5 +1,6 @@
 {{/* P4 Inventory owns. Listing grid used by catalog, vendor and vendor-dashboard. Public pages never receive
-archived listings (load.go); on vendor-dashboard each card carries edit and archive/restore controls. */}}
+archived listings (load.go); on vendor-dashboard each card carries edit and archive/restore controls, and a listing an
+administrator took down shows the reason and no restore control (A-163). */}}
 {{define "products"}}<div class="listings-grid">{{range $i,$p := .Products}}<article class="product-card{{if .Archived}} is-archived{{end}}">
 <a class="product-art " href="{{if .Archived}}/listing-edit?id={{.ID}}{{else}}/product?id={{.ID}}{{end}}" aria-label="{{if .Archived}}Edit{{else}}View{{end}} {{.Title}}">
 <div class="device" aria-hidden="true">
@@ -15,7 +16,9 @@ archived listings (load.go); on vendor-dashboard each card carries edit and arch
 </div>
 <h2>
 <a href="{{if .Archived}}/listing-edit?id={{.ID}}{{else}}/product?id={{.ID}}{{end}}">{{.Title}}</a>
-</h2>{{if .Archived}}<p class="inventory-state"><span class="badge neutral">Archived</span> Hidden from the marketplace; no new orders.</p>{{end}}
+</h2>{{if .Archived}}<p class="inventory-state">{{if .TakedownReason}}<span class="badge danger">Taken down</span> Hidden from the marketplace by an administrator; no new orders.{{else}}<span class="badge neutral">Archived</span> Hidden from the marketplace; no new orders.{{end}}</p>{{end}}{{if and .TakedownReason (eq $.Page "vendor-dashboard")}}
+<p class="takedown-reason"><strong>Reason:</strong> {{.TakedownReason}}</p>
+<p class="help">Only an administrator can restore it. If you think this is wrong, contact the market staff.</p>{{end}}
 <p class="product-description">{{.Description}}</p>
 <div class="product-bottom">
 <span class="price">{{if eq $.Currency "XMR"}}{{.PriceXMR}}<small>XMR</small>{{else}}{{.PriceBTC}}<small>BTC</small>{{end}}</span>
@@ -23,11 +26,11 @@ archived listings (load.go); on vendor-dashboard each card carries edit and arch
 </div>{{if eq $.Page "vendor-dashboard"}}
 <div class="inventory-actions">
 <a class="button" href="/listing-edit?id={{.ID}}" aria-label="Edit {{.Title}}">Edit</a>
-<form method="post" action="{{if .Archived}}/listings/restore{{else}}/listings/archive{{end}}">
+{{if not .TakedownReason}}<form method="post" action="{{if .Archived}}/listings/restore{{else}}/listings/archive{{end}}">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="id" value="{{.ID}}">
 <button type="submit" aria-label="{{if .Archived}}Restore{{else}}Archive{{end}} {{.Title}}">{{if .Archived}}Restore{{else}}Archive{{end}}</button>
-</form>
+</form>{{end}}
 </div>{{end}}
 </div>
 </article>{{end}}</div>{{end}}

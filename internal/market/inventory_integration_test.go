@@ -310,13 +310,14 @@ func TestArchiveHidesListingAndRefusesDrafts(t *testing.T) {
 	e.check(e.do("GET", "/product?id="+p, buyerS, nil), 200)
 	e.check(e.do("POST", "/orders", buyerS, draft), 303)
 
-	// An administrator may archive another vendor's listing; the audit says so.
+	// An administrator takes another vendor's listing down with a reason (A-163, listing_takedown_test.go); the plain
+	// archive refuses them and changes nothing.
 	w = e.do("POST", "/listings/archive", adminS, url.Values{"id": {keep}})
-	e.check(w, 303)
-	if w.Header().Get("Location") != "/listing-edit?id="+keep+"&saved=1" {
-		t.Fatalf("admin redirect %q", w.Header().Get("Location"))
+	e.check(w, 400)
+	if archived, _ := takenDown(e, keep); archived {
+		t.Fatal("refused administrator archive changed the listing")
 	}
-	for like, want := range map[string]int{"Archived listing " + p[:8]: 1, "Restored listing " + p[:8]: 1, "Archived listing " + keep[:8] + " as administrator": 1} {
+	for like, want := range map[string]int{"Archived listing " + p[:8]: 1, "Restored listing " + p[:8]: 1, "Archived listing " + keep[:8] + "%": 0} {
 		if got := inventoryAudits(e, like); got != want {
 			t.Errorf("audit %q: %d", like, got)
 		}
