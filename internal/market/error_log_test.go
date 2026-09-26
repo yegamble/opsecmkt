@@ -326,6 +326,13 @@ func TestLogsContainNoSecretsFromBackgroundWork(t *testing.T) {
 		}
 	}
 
+	// A wallet read failure is named as such, with its code only.
+	p.fake.SetWallet(&rpcError{Method: "bitcoin RPC listreceivedbyaddress", Code: -5, Message: marker + " " + addrLike}, nil, false)
+	if got := watcherCause(p.A.pollOnce(context.Background())); !strings.Contains(got, "BTC: wallet read failed: rpc:-5") || strings.Contains(got, marker) {
+		t.Fatalf("wallet read failure cause %q", got)
+	}
+	p.fake.SetWallet(nil, nil, false)
+
 	// (b) The database refuses connections: nothing listens on its port any more.
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
