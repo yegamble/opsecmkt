@@ -37,6 +37,7 @@ off.
 | `PAYMENT_CONFIRMATIONS_BTC` / `PAYMENT_CONFIRMATIONS_XMR` | Defaults 3 and 10. |
 | `PAYMENT_POLL_INTERVAL` / `PAYMENT_EXPIRY` | Defaults `30s` and `24h`. |
 | `BITCOIN_PRUNE_MB` / `MONERO_PRUNE_FLAGS` | Local nodes only. Absent keys mean **pruned** (`2000` and `'--prune-blockchain --sync-pruned-blocks'`); `BITCOIN_PRUNE_MB='0'` and `MONERO_PRUNE_FLAGS=''` keep a full node. Read [section 7](#7-local-nodes-are-now-pruned) before deploying if you run a local node. |
+| `BITCOIN_IMAGE` / `MONERO_IMAGE` / `MONERO_WALLET_IMAGE` | Local nodes only. Absent keys mean the pinned release images the payout code was verified against; the images alpha.1 made you choose stay in use until you remove or change them. Read [section 8](#8-node-images-are-pinned-to-release-tags). |
 | `COMPOSE_PROJECT_NAME` | Not needed: absent means `opsecmkt`, which is what your containers and volumes are named after. Never set another value on this install, or Compose starts it on new, empty volumes. A second checkout on the same host needs its own name; see [Backups and recovery](docs/operator-guide.md#backups-and-recovery). |
 | `DATABASE_CONNECT_TIMEOUT` / `MIGRATION_LOCK_TIMEOUT` / `MIGRATION_TIMEOUT` | Optional; leave blank for `15s`, `10m` and `10m`. Raise `MIGRATION_TIMEOUT` if your database is large; see [Migrations](docs/operator-guide.md#migrations). |
 
@@ -284,3 +285,18 @@ wallet RPCs), so payments work the same either way. What happens to a volume you
 Behaviour on an already-synced chain is taken from the upstream sources and has not been rehearsed here
 (UNVERIFIED). Sources, disk sizes, switching between pruned and full later, and the wallet-restore trade-off:
 [Local node pruning](docs/operator-guide.md#local-node-pruning).
+
+## 8. Node images are pinned to release tags
+
+`compose.nodes.yaml` now defaults to `bitcoin/bitcoin:31.1`, `ghcr.io/sethforprivacy/simple-monerod:v0.18.5.1` and
+`ghcr.io/sethforprivacy/simple-monero-wallet-rpc:v0.18.5.1` instead of `latest`: the payout code decides whether
+a failed send can have been broadcast from the wallet's error, and that table is verified for monero-wallet-rpc
+v0.18.5.1 only. A `BITCOIN_IMAGE`, `MONERO_IMAGE` or `MONERO_WALLET_IMAGE` in your `.env` still wins. If one of
+them ends in `:latest` (an installer run from a pre-release checkout wrote that) or is an image you chose, change
+it to the tag above, or follow the bump checklist in
+[Node image versions](docs/operator-guide.md#node-image-versions) before running another version. Until you do,
+treat every failed Monero payout as possibly broadcast. Check with:
+
+```sh
+docker compose config --images
+```

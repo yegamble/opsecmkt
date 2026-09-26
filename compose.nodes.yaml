@@ -1,6 +1,8 @@
 # Default images: bitcoin/bitcoin (unofficial image, with upstream binary signature checks) and
 # Seth for Privacy's Monero daemon and wallet-RPC images. Override *_IMAGE in .env to use reviewed
-# alternatives. These tags follow the latest upstream release; pin a digest for reproducible deployments.
+# alternatives. The defaults are the release tags the payout error handling was verified against (Bitcoin
+# Core 31.1, Monero v0.18.5.1; payments_watcher.go walletRejected). Never change them to latest: follow the
+# bump checklist in docs/operator-guide.md#node-image-versions. Add @sha256:<digest> for reproducible deployments.
 # No RPC or peer ports are published to the host. Test networks only: BITCOIN_CHAIN (testnet4, signet,
 # regtest) and MONERO_NETWORK (stagenet, testnet); the app refuses mainnet. RPC ports are pinned so the
 # installer's URLs do not depend on the chain.
@@ -10,7 +12,7 @@
 # startup instead of running without authentication. Neither falls back to a guessable password.
 services:
   bitcoin:
-    image: ${BITCOIN_IMAGE:-bitcoin/bitcoin:latest}
+    image: ${BITCOIN_IMAGE:-bitcoin/bitcoin:31.1}
     profiles: [bitcoin]
     restart: unless-stopped
     networks: [backend, node_egress]
@@ -37,7 +39,7 @@ services:
       - -fallbackfee=0.0002
     volumes: [bitcoin_data:/data]
   monero:
-    image: ${MONERO_IMAGE:-ghcr.io/sethforprivacy/simple-monerod:latest}
+    image: ${MONERO_IMAGE:-ghcr.io/sethforprivacy/simple-monerod:v0.18.5.1}
     profiles: [monero]
     restart: unless-stopped
     networks: [backend, node_egress]
@@ -51,7 +53,7 @@ services:
     volumes: [monero_data:/home/monero/.bitmonero]
   monero-wallet:
     # Separate wallet-RPC image; reachable only on the backend network.
-    image: ${MONERO_WALLET_IMAGE:-ghcr.io/sethforprivacy/simple-monero-wallet-rpc:latest}
+    image: ${MONERO_WALLET_IMAGE:-ghcr.io/sethforprivacy/simple-monero-wallet-rpc:v0.18.5.1}
     profiles: [monero-wallet]
     restart: unless-stopped
     networks: [backend]
