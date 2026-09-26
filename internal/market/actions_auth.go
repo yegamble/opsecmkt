@@ -96,6 +96,16 @@ type confirmation struct {
 	Recovery bool
 	// AfterPassword runs after a correct password and before the transaction opens (e.g. hashing a new password).
 	AfterPassword func() error
+	// Before runs in the transaction before the account row is locked. Every path takes an account's locks in the
+	// order /challenge does — its pending sign-ins, then its recovery codes, then its row — so a change that also
+	// deletes pending sign-ins or replaces recovery codes does that (or locks them) here (A-154, BE11-5).
+	Before func(c *actionCtx) error
+}
+
+// lockRecoveryCodes locks the account's recovery codes, before its row, for a change that replaces or deletes them.
+func lockRecoveryCodes(ctx context.Context, tx *sql.Tx, userID string) error {
+	_, err := tx.ExecContext(ctx, "SELECT 1 FROM recovery_codes WHERE user_id=$1 FOR UPDATE", userID)
+	return err
 }
 
 // confirmedTx runs a sensitive change (an OwnTx action) in its own transaction. With confirm set, the current
@@ -132,14 +142,29 @@ func confirmedTxWith(c *actionCtx, opts *confirmation, run func(c *actionCtx) (a
 	defer func() { c.Tx = nil }()
 	how := "password"
 	if confirm {
+		if opts.Before != nil {
+			if err = opts.Before(c); err != nil {
+				return actionResult{}, err
+			}
+		}
+		// A recovery code is spent before the account row is locked (the lock order of confirmation.Before); it counts
+		// only when TOTP turns out to be on, and otherwise matches nothing (codes exist only while TOTP is on).
+		code := c.Form.Get("code")
+		recovery := opts.Recovery && normalizeRecoveryCode(code) != ""
+		var codeErr error
+		if recovery {
+			var he *httpError
+			if _, codeErr = a.useRecoveryCode(ctx, tx, uid, code); codeErr != nil && !errors.As(codeErr, &he) {
+				return actionResult{}, codeErr
+			}
+		}
 		var totp bool
 		if err = tx.QueryRowContext(ctx, "SELECT totp_enabled FROM users WHERE id=$1 FOR NO KEY UPDATE", uid).Scan(&totp); err != nil {
 			return actionResult{}, err
 		}
 		if totp {
-			code := c.Form.Get("code")
-			if opts.Recovery && normalizeRecoveryCode(code) != "" {
-				_, err = a.useRecoveryCode(ctx, tx, uid, code)
+			if recovery {
+				err = codeErr
 				how = "password and recovery code"
 			} else {
 				err = a.checkTOTP(ctx, tx, uid, code)
@@ -410,7 +435,15 @@ func challengeAction(c *actionCtx) (actionResult, error) {
 	if err != nil {
 		return actionResult{}, err
 	}
-	return actionResult{Redirect: "/", AfterCommit: func(w http.ResponseWriter) {
+	// A recovery-code sign-in lands on /totp, which says how many codes remain or that TOTP is now off (A-154).
+	next := "/"
+	if method == "recovery code" {
+		next = "/totp?signin=recovery"
+		if turnOffTOTPAtSignIn(c.Form) {
+			next = "/totp?signin=totp-off"
+		}
+	}
+	return actionResult{Redirect: next, AfterCommit: func(w http.ResponseWriter) {
 		a.cookie(w, "pending", "", -1)
 		a.cookie(w, "session", token, 43200)
 	}}, nil

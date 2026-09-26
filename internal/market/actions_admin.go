@@ -269,6 +269,13 @@ func adminResetFactorsAction(c *actionCtx) (actionResult, error) {
 	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
 		ctx, tx := c.Ctx(), c.Tx
+		// Pending sign-ins, then recovery codes, go before the account row is locked, in the order /challenge takes
+		// them (A-154); a refusal below rolls this back.
+		for _, q := range []string{"DELETE FROM pending_logins WHERE user_id=$1", "DELETE FROM recovery_codes WHERE user_id=$1"} {
+			if _, err := tx.ExecContext(ctx, q, target); err != nil {
+				return actionResult{}, err
+			}
+		}
 		var role string
 		var totp, pgp bool
 		err := tx.QueryRowContext(ctx, "SELECT role,totp_enabled,pgp_2fa FROM users WHERE id=$1 FOR UPDATE", target).Scan(&role, &totp, &pgp)
@@ -291,14 +298,8 @@ func adminResetFactorsAction(c *actionCtx) (actionResult, error) {
 		if len(what) == 0 {
 			return actionResult{}, fail(409, handle+" has no second factor enrolled; nothing was changed.")
 		}
-		for _, q := range []string{
-			"UPDATE users SET totp_enabled=false,totp_secret='',totp_pending='',totp_last_step=0,recovery_reveal='',recovery_reveal_until=NULL,pgp_2fa=false WHERE id=$1",
-			"DELETE FROM recovery_codes WHERE user_id=$1",
-			"DELETE FROM pending_logins WHERE user_id=$1",
-		} {
-			if _, err = tx.ExecContext(ctx, q, target); err != nil {
-				return actionResult{}, err
-			}
+		if _, err = tx.ExecContext(ctx, "UPDATE users SET totp_enabled=false,totp_secret='',totp_pending='',totp_last_step=0,recovery_reveal='',recovery_reveal_until=NULL,pgp_2fa=false WHERE id=$1", target); err != nil {
+			return actionResult{}, err
 		}
 		ended, err := tx.ExecContext(ctx, "DELETE FROM sessions WHERE user_id=$1", target)
 		if err != nil {
