@@ -28,6 +28,8 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/opsecmkt-mirror-commands.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 cp compose*.yaml Dockerfile "$work/"
 cp -R deploy "$work/"
+mkdir "$work/scripts"
+cp scripts/install.sh "$work/scripts/"
 project="opsecmkt-mirror-check-$(openssl rand -hex 6)"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
@@ -96,7 +98,10 @@ write_env() {
   cat > "$work/.env" <<ENV
 DATABASE_URL='$url'
 POSTGRES_PASSWORD='mirror-check'
+APP_SECRET_KEY='$(openssl rand -hex 32)'
 SETUP_TOKEN='$(openssl rand -hex 32)'
+BITCOIN_RPC_PASSWORD='$(openssl rand -hex 24)'
+MONERO_WALLET_RPC_PASSWORD='$(openssl rand -hex 24)'
 APP_MODE='tor'
 COOKIE_SECURE='false'
 APP_PORT='8080'
@@ -117,6 +122,7 @@ for install in "${installs[@]}"; do
   label="Tor, $database database, COMPOSE_PROFILES='$profiles'"
   write_env "$profiles"
   (cd "$work" && docker compose config --quiet) || fail "$label: the installer's configuration does not validate"
+  (cd "$work" && bash scripts/install.sh check) || fail "$label: install.sh check refused the installer's configuration"
   # Control: without mirror in .env, a bare up leaves the mirror out, and on an internal-db install the old guide
   # command fails; this check tells both apart from the documented commands.
   why=$(resolve 'docker compose up -d') && fail "$label: tor-mirror is active before mirror is added"
@@ -127,6 +133,8 @@ for install in "${installs[@]}"; do
   fi
   # The guide's first step: add mirror to COMPOSE_PROFILES, keeping the installer's profiles.
   write_env "${profiles:+$profiles,}mirror"
+  # What ./scripts/install.sh add-mirror writes; its check must accept it.
+  (cd "$work" && bash scripts/install.sh check) || fail "$label + mirror: install.sh check refused the configuration"
   if [[ $database == internal ]]; then
     # Read the whole list first: grep -q in a pipe exits at the first match, and under pipefail Compose's
     # next write then fails with a broken pipe (A-140 QA: 2/200 on Ubuntu, 4/10 under load on macOS).
