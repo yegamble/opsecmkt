@@ -11,6 +11,8 @@ type Product struct {
 	ID, Title, Description, Category, Region, Kind, Vendor, VendorID, PriceBTC, PriceXMR string
 	Stock                                                                                int
 	Archived                                                                             bool // Foundation; P4 uses
+	// P4, vendor-dashboard only: an administrator's takedown reason (A-163); never loaded for public pages.
+	TakedownReason string
 }
 
 // Order.Status is the display label derived from State by stateLabel.
@@ -211,6 +213,7 @@ type ListingView struct {
 	Updated, ArchivedAt string
 	OpenOrders          int    // orders not completed, resolved or cancelled
 	AutoDelivery        string // currencies with a configured payment provider, e.g. "BTC, XMR"; "" = none
+	TakedownReason      string // an administrator's takedown reason (A-163); "" when not taken down
 }
 type InventoryView struct {
 	Active, Archived int

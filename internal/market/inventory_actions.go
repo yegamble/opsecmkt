@@ -3,29 +3,34 @@ package market
 import (
 	"database/sql"
 	"strconv"
+	"strings"
+	"unicode/utf8"
 )
 
 // P4 Inventory: vendors edit, archive and restore their own listings; administrators may manage any listing
-// except its automatic delivery content, which only the listing's vendor can read or change.
+// except its automatic delivery content, which only the listing's vendor can read or change. An administrator
+// archives another vendor's listing only by taking it down with a reason (A-163), which the vendor cannot undo.
 
 func init() {
 	managers := []string{"vendor", "admin"}
 	registerAction("/listings/update", actionSpec{Roles: managers, Run: listingUpdateAction})
 	registerAction("/listings/archive", actionSpec{Roles: managers, Run: func(c *actionCtx) (actionResult, error) { return listingArchiveAction(c, true) }})
 	registerAction("/listings/restore", actionSpec{Roles: managers, Run: func(c *actionCtx) (actionResult, error) { return listingArchiveAction(c, false) }})
+	registerAction("/admin/listing", actionSpec{Roles: []string{"admin"}, OwnTx: true, Run: adminListingAction})
 }
 
 type managedListing struct {
 	ID, VendorID, Kind string
 	Stock              int
 	Archived           bool
+	Takedown           string // an administrator's takedown reason; "" when not taken down
 }
 
 // lockListing row-locks a listing the actor may manage (its vendor, or any administrator).
 // Anything else is reported as not found so listing ids of other vendors are not confirmed.
 func lockListing(c *actionCtx, id string) (managedListing, error) {
 	l := managedListing{ID: id}
-	err := c.Tx.QueryRowContext(c.Ctx(), `SELECT vendor_id,kind,stock,archived FROM products WHERE id=$1 AND (vendor_id=$2 OR $3='admin') FOR UPDATE`, id, c.User.ID, c.User.Role).Scan(&l.VendorID, &l.Kind, &l.Stock, &l.Archived)
+	err := c.Tx.QueryRowContext(c.Ctx(), `SELECT vendor_id,kind,stock,archived,coalesce(admin_archive_reason,'') FROM products WHERE id=$1 AND (vendor_id=$2 OR $3='admin') FOR UPDATE`, id, c.User.ID, c.User.Role).Scan(&l.VendorID, &l.Kind, &l.Stock, &l.Archived, &l.Takedown)
 	if err == sql.ErrNoRows {
 		return l, fail(404, "Listing not found")
 	}
@@ -92,11 +97,21 @@ func listingUpdateAction(c *actionCtx) (actionResult, error) {
 }
 
 // listingArchiveAction archives (hides from the catalog and refuses new drafts) or restores a listing.
-// Existing orders are not changed.
+// Existing orders are not changed. An administrator archives another vendor's listing only with a takedown, and a
+// taken-down listing is restored only with adminListingAction (A-163).
 func listingArchiveAction(c *actionCtx, archive bool) (actionResult, error) {
 	l, err := lockListing(c, c.Form.Get("id"))
 	if err != nil {
 		return actionResult{}, err
+	}
+	if archive && l.VendorID != c.User.ID {
+		return actionResult{}, fail(400, "Taking down another vendor's listing needs a reason and your password: use Take down listing on its edit page. Nothing was changed.")
+	}
+	if !archive && l.Takedown != "" {
+		if c.User.Role == "admin" {
+			return actionResult{}, fail(409, "An administrator took this listing down. Restore it with Restore listing on its edit page, confirmed with your password. Nothing was changed.")
+		}
+		return actionResult{}, fail(409, "An administrator took this listing down with the reason “"+l.Takedown+"”. Only an administrator can restore it; if you think this is wrong, contact the market staff. You can still edit it.")
 	}
 	if l.Archived == archive {
 		if archive {
@@ -105,7 +120,7 @@ func listingArchiveAction(c *actionCtx, archive bool) (actionResult, error) {
 		return actionResult{}, fail(409, "This listing is not archived.")
 	}
 	if !archive {
-		if ok, err := sellerIsVendor(c, l.ID); err != nil || !ok {
+		if ok, err := sellerIsVendorLocked(c, l.ID); err != nil || !ok {
 			if err == nil {
 				err = fail(409, "This listing's owner is no longer a vendor, so it cannot be restored.")
 			}
@@ -123,4 +138,87 @@ func listingArchiveAction(c *actionCtx, archive bool) (actionResult, error) {
 		redirect = "/listing-edit?id=" + l.ID + "&saved=1"
 	}
 	return actionResult{Redirect: redirect, Audit: listingAudit(action, c, l)}, nil
+}
+
+// Takedown reasons are shown to the vendor, so they must say something and fit a notification.
+const minTakedownReason, maxTakedownReason = 10, 500
+
+// adminListingAction takes down another vendor's listing or restores a taken-down one (A-163), from the listing's
+// edit page. A takedown archives the listing with the administrator's reason (10–500 characters after trimming,
+// stored unencrypted in products.admin_archive_reason and shown to the vendor, never on public pages). The vendor
+// can still edit it but not restore it, and it is not delivered automatically while taken down (autoDeliveryHook).
+// Only this restore clears the reason, and like any restore it needs the owner to still be a vendor. The
+// administrator confirms with their own password (and authenticator code when enrolled); both accounts are
+// audited, with the reason, and the vendor gets a link-free notification.
+func adminListingAction(c *actionCtx) (actionResult, error) {
+	choice := c.Form.Get("action")
+	takedown := choice == "takedown"
+	if !takedown && choice != "restore" {
+		return actionResult{}, fail(400, "Choose take down or restore")
+	}
+	var reason string
+	if takedown {
+		reason = strings.TrimSpace(strings.ReplaceAll(c.Form.Get("reason"), "\r\n", "\n"))
+		if n := utf8.RuneCountInString(reason); !utf8.ValidString(reason) || n < minTakedownReason || n > maxTakedownReason {
+			return actionResult{}, fail(400, "Give the vendor a reason of 10–500 characters. Nothing was changed.")
+		}
+	}
+	id := c.Form.Get("id")
+	// The listing is looked up before the password is checked, so a stale form does not use a confirmation attempt.
+	var vendorID string
+	err := c.A.db.QueryRowContext(c.Ctx(), "SELECT vendor_id FROM products WHERE id=$1", id).Scan(&vendorID)
+	if err == sql.ErrNoRows {
+		return actionResult{}, fail(404, "Listing not found")
+	}
+	if err != nil {
+		return actionResult{}, err
+	}
+	if takedown && vendorID == c.User.ID {
+		return actionResult{}, fail(400, "This is your own listing: archive it from the vendor desk. Nothing was changed.")
+	}
+	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
+		ctx, tx := c.Ctx(), c.Tx
+		var title, current, handle string
+		err := tx.QueryRowContext(ctx, `SELECT p.title,coalesce(p.admin_archive_reason,''),u.handle FROM products p JOIN users u ON u.id=p.vendor_id
+			WHERE p.id=$1 FOR UPDATE OF p`, id).Scan(&title, &current, &handle)
+		if err != nil {
+			return actionResult{}, err
+		}
+		short := shortID(id)
+		var audit, vendorAudit, note string
+		if takedown {
+			if current != "" {
+				return actionResult{}, fail(409, "This listing is already taken down; nothing was changed.")
+			}
+			if _, err = tx.ExecContext(ctx, "UPDATE products SET archived=true,archived_at=now(),admin_archive_reason=$2,updated=now() WHERE id=$1", id, reason); err != nil {
+				return actionResult{}, err
+			}
+			audit = "Took down listing " + short + " of " + handle + ": " + reason
+			vendorAudit = "Listing " + short + " taken down by administrator " + c.User.Handle + ": " + reason
+			note = "An administrator took down your listing “" + title + "” (" + short + ") with the reason “" + reason + "”. It is hidden from the marketplace and accepts no new orders. Existing orders continue, but paid orders on it are not delivered automatically: deliver or cancel them from the order page. You can still edit the listing; only an administrator can restore it. If you think this is wrong, contact the market staff."
+		} else {
+			if current == "" {
+				return actionResult{}, fail(409, "This listing was not taken down by an administrator; nothing was changed.")
+			}
+			if ok, err := sellerIsVendorLocked(c, id); err != nil || !ok {
+				if err == nil {
+					err = fail(409, "This listing's owner is no longer a vendor, so it cannot be restored. Nothing was changed.")
+				}
+				return actionResult{}, err
+			}
+			if _, err = tx.ExecContext(ctx, "UPDATE products SET archived=false,archived_at=NULL,admin_archive_reason=NULL,updated=now() WHERE id=$1", id); err != nil {
+				return actionResult{}, err
+			}
+			audit = "Restored listing " + short + " of " + handle + " after a takedown"
+			vendorAudit = "Listing " + short + " restored by administrator " + c.User.Handle
+			note = "An administrator restored your listing “" + title + "” (" + short + "). It is visible in the marketplace again and accepts new orders."
+		}
+		if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", vendorID, vendorAudit); err != nil {
+			return actionResult{}, err
+		}
+		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), vendorID, note); err != nil {
+			return actionResult{}, err
+		}
+		return actionResult{Redirect: "/listing-edit?id=" + id + "&saved=1", Audit: audit}, nil
+	})
 }

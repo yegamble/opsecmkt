@@ -27,7 +27,12 @@ func (a *App) load(r *http.Request, d *PageData) error {
 		return err
 	}
 	if d.Page == "catalog" || d.Page == "product" || d.Page == "vendor" || d.Page == "checkout" || d.Page == "vendor-dashboard" {
-		query := `SELECT p.id,p.title,p.description,p.category,p.region,p.kind,u.handle,p.vendor_id,p.btc,p.xmr,p.stock,p.archived FROM products p JOIN users u ON u.id=p.vendor_id WHERE true`
+		// An administrator's takedown reason (A-163) is read only for the owner's vendor desk.
+		takedown := "''"
+		if d.Page == "vendor-dashboard" {
+			takedown = "coalesce(p.admin_archive_reason,'')"
+		}
+		query := `SELECT p.id,p.title,p.description,p.category,p.region,p.kind,u.handle,p.vendor_id,p.btc,p.xmr,p.stock,p.archived,` + takedown + ` FROM products p JOIN users u ON u.id=p.vendor_id WHERE true`
 		args := []any{}
 		switch d.Page {
 		case "product", "checkout":
@@ -54,7 +59,7 @@ func (a *App) load(r *http.Request, d *PageData) error {
 		for rows.Next() {
 			var p Product
 			var btc, xmr int64
-			if err = rows.Scan(&p.ID, &p.Title, &p.Description, &p.Category, &p.Region, &p.Kind, &p.Vendor, &p.VendorID, &btc, &xmr, &p.Stock, &p.Archived); err != nil {
+			if err = rows.Scan(&p.ID, &p.Title, &p.Description, &p.Category, &p.Region, &p.Kind, &p.Vendor, &p.VendorID, &btc, &xmr, &p.Stock, &p.Archived, &p.TakedownReason); err != nil {
 				rows.Close()
 				return err
 			}
