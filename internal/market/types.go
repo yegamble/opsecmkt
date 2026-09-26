@@ -188,10 +188,14 @@ type Review struct {
 	Rating             int
 	Body, Created      string
 	Product            string // listing title, vendor page only
+	Hidden             bool   // hidden by an administrator (A-125): listed only for administrators and on the order
 }
+
+// ReviewSummary counts and averages the public (not hidden) reviews; Hidden counts the others, for administrators only.
 type ReviewSummary struct {
 	Count   int
 	Average string
+	Hidden  int
 }
 
 // P4 Inventory

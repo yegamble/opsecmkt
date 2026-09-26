@@ -115,13 +115,14 @@
 <pre class="code-block order-delivery">{{.Content}}</pre>{{else}}{{if $.DeliveryWithheld}}<p class="muted">Delivery content is shown to moderators only if the order is disputed.</p>{{else}}<p class="muted">Nothing has been delivered. Content appears here only when the order moves to Delivered.</p>{{end}}{{end}}</section>{{end}}{{if or $.CanReview $.Reviews}}<section class="panel" aria-labelledby="order-review">
 <h2 id="order-review">Review</h2>{{range $.Reviews}}<div class="review">
 <div class="message-meta">
-<span class="badge green">Verified purchase</span>
+<span class="badge green">Verified purchase</span>{{if .Hidden}}
+<span class="badge neutral">Hidden</span>{{end}}
 <span>{{.Created}}</span>
 </div>
 <p class="review-rating">
 <span aria-hidden="true">{{.Stars}}</span>
 <span class="sr-only">Rated {{.Rating}} out of 5</span>
-</p>{{if .Body}}<p>{{.Body}}</p>{{end}}</div>{{end}}{{if $.CanReview}}<form class="stack" method="post" action="/reviews">
+</p>{{if .Body}}<p>{{.Body}}</p>{{end}}{{if .Hidden}}<p class="help">Hidden from the listing and vendor pages by an administrator. It does not count in the rating.</p>{{end}}</div>{{end}}{{if $.CanReview}}<form class="stack" method="post" action="/reviews">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="order_id" value="{{.ID}}">
 <label>Rating<select name="rating" required>

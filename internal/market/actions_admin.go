@@ -12,6 +12,7 @@ func init() {
 	registerAction("/admin", actionSpec{Roles: []string{"admin"}, Run: adminAction})
 	registerAction("/admin/reset-factors", actionSpec{Roles: []string{"admin"}, OwnTx: true, Run: adminResetFactorsAction})
 	registerAction("/admin/suspend", actionSpec{Roles: []string{"admin"}, OwnTx: true, Run: adminSuspendAction})
+	registerAction("/admin/review", actionSpec{Roles: []string{"admin"}, OwnTx: true, Run: adminReviewAction})
 	registerLoader("admin", factorAccountsLoader)
 	registerLoader("admin", suspendedAccountsLoader)
 	registerPreview("admin", func(d *PageData) {
@@ -142,6 +143,67 @@ func adminSuspendAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, err
 		}
 		return actionResult{Redirect: "/admin?saved=1#suspend", Audit: "Suspended account " + handle + "; ended " + sessions}, nil
+	})
+}
+
+// adminReviewAction hides a public review or restores a hidden one (A-125), from the review's own form on the
+// product or vendor page (returning there). A hidden review is kept: it leaves the public pages and their rating,
+// and the buyer and vendor still see it, labelled, on the order. The administrator confirms with their own password
+// (and authenticator code when enrolled); both accounts are audited and the reviewer is notified, naming only the
+// short order ID: the review text may be the reason for hiding it, so it is never copied anywhere.
+func adminReviewAction(c *actionCtx) (actionResult, error) {
+	choice := c.Form.Get("action")
+	hide := choice == "hide"
+	if !hide && choice != "restore" {
+		return actionResult{}, fail(400, "Choose hide or restore")
+	}
+	id := c.Form.Get("review_id")
+	notFound := fail(404, "Review not found")
+	// The review is looked up before the password is checked, so a stale form does not use a confirmation attempt.
+	var exists bool
+	if err := c.A.db.QueryRowContext(c.Ctx(), "SELECT EXISTS(SELECT 1 FROM reviews WHERE id=$1)", id).Scan(&exists); err != nil {
+		return actionResult{}, err
+	}
+	if !exists {
+		return actionResult{}, notFound
+	}
+	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
+		ctx, tx := c.Ctx(), c.Tx
+		var orderID, productID, vendorID, buyerID string
+		var hidden bool
+		err := tx.QueryRowContext(ctx, `SELECT r.order_id,r.product_id,p.vendor_id,r.buyer_id,r.hidden_at IS NOT NULL
+			FROM reviews r JOIN products p ON p.id=r.product_id WHERE r.id=$1 FOR NO KEY UPDATE OF r`, id).Scan(&orderID, &productID, &vendorID, &buyerID, &hidden)
+		if err == sql.ErrNoRows {
+			return actionResult{}, notFound
+		}
+		if err != nil {
+			return actionResult{}, err
+		}
+		short := shortID(orderID)
+		verb, target, note := "Hid", "hidden", "An administrator hid your review of order "+short+" from the listing and vendor pages, and it no longer counts in the rating. It is kept: you and the vendor still see it on the order."
+		if !hide {
+			verb, target, note = "Restored", "restored", "An administrator restored your review of order "+short+" to the listing and vendor pages."
+		}
+		switch {
+		case hide && hidden:
+			return actionResult{}, fail(409, "This review is already hidden; nothing was changed.")
+		case !hide && !hidden:
+			return actionResult{}, fail(409, "This review is not hidden; nothing was changed.")
+		}
+		if _, err = tx.ExecContext(ctx, "UPDATE reviews SET hidden_at=CASE WHEN $2 THEN now() END WHERE id=$1", id, hide); err != nil {
+			return actionResult{}, err
+		}
+		if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", buyerID, "Review of order "+short+" "+target+" by administrator "+c.User.Handle); err != nil {
+			return actionResult{}, err
+		}
+		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), buyerID, note); err != nil {
+			return actionResult{}, err
+		}
+		back := "/product?id=" + productID
+		if c.Form.Get("from") == "vendor" {
+			back = "/vendor?id=" + vendorID
+		}
+		return actionResult{Redirect: back + "&saved=1#reviews-title", Audit: verb + " review of order " + short}, nil
 	})
 }
 

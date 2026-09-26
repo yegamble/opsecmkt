@@ -97,6 +97,7 @@ Each package records its own acceptance checks here and edits only its subsectio
 - [x] Completing, a vendor's cancel of a paid order and resolving a dispute state the payout (amount by the payout's own rule, recipient, difference from the price, test network; on the resolve form each recipient's payout state), need a ticked confirmation (400 otherwise, nothing changes) and are refused with 409 when the counted amount changed after the page was shown; concurrent resolutions queue one payout; an overpaid order warns both parties that payouts are all or nothing (`TestResolveStatesPayoutAmountAndNeedsConfirmation`, `TestResolveRefusesChangedAmount`, `TestCompleteNeedsConfirmationAndUnchangedAmount`, `TestVendorCancelOfPaidOrderNeedsConfirmation`, `TestConcurrentResolveQueuesOnePayout`, `TestOverpaidOrderPagesWarnBothParties`; fake wallet only).
 - [ ] Resolution requires a release/refund outcome, is refused to a moderator who is party to the order, and records the outcome before the resolved transition.
 - [ ] Reviews require a completed order and its buyer; a second review returns 409; public pages label them "Verified purchase" without reviewer handles.
+- [ ] An administrator hides a review from its product or vendor page with their password: after reload it is gone from both public pages and their rating, still labelled for the administrator and on the order, audited without its text and notified to the reviewer; restoring works the same way; other roles get 403.
 
 ### P4 Inventory
 
