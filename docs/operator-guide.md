@@ -44,7 +44,7 @@ For onion service deployment choose `tor` in the installer. The base and Tor Com
 docker compose exec tor cat /var/lib/tor/marketplace/hostname
 ```
 
-The persistent `tor_identity` volume contains the onion private keys. Preserve it to retain the address; encrypt any offline copy. The setup uses HTTP inside the authenticated onion circuit and sets `COOKIE_SECURE=false` for that endpoint. The application and database share an internal Docker network with no direct Internet egress. Only the Tor gateway has a separate egress network. Selecting external database or RPC endpoints adds `compose.external-egress.yaml`, which explicitly permits direct application egress; that configuration provides onion-only inbound exposure, not Tor-routed outbound traffic. Local nodes have their own direct egress network to synchronize with peers. Docker network isolation does not protect against host administrators or a compromised container runtime. Use the dedicated Tor Compose file without the clearnet overlay. If changing an existing clearnet deployment, stop it before changing `COMPOSE_FILE` and recreate containers and the backend network so published ports are removed and the network becomes internal. Remove only the unused network, not persistent volumes. Never run both overlays together.
+The persistent `tor_identity` volume contains the onion private keys. Preserve it to retain the address; back it up encrypted with the [documented commands](#secrets-env-and-onion-identities). The setup uses HTTP inside the authenticated onion circuit and sets `COOKIE_SECURE=false` for that endpoint. The application and database share an internal Docker network with no direct Internet egress. Only the Tor gateway has a separate egress network. Selecting external database or RPC endpoints adds `compose.external-egress.yaml`, which explicitly permits direct application egress; that configuration provides onion-only inbound exposure, not Tor-routed outbound traffic. Local nodes have their own direct egress network to synchronize with peers. Docker network isolation does not protect against host administrators or a compromised container runtime. Use the dedicated Tor Compose file without the clearnet overlay. If changing an existing clearnet deployment, stop it before changing `COMPOSE_FILE` and recreate containers and the backend network so published ports are removed and the network becomes internal. Remove only the unused network, not persistent volumes. Never run both overlays together.
 
 **Tor restarts with the app; this needs Docker Compose 2.17 or later** (check with `docker compose version`). Tor looks up the app's container address once, when it starts ([`deploy/torrc`](../deploy/torrc): `HiddenServicePort 80 app:8080`), and a recreated app container can get a different address, for example when an upgrade adds node services. Tor then keeps forwarding to the old address and the onion stops answering. `compose.tor.yaml` therefore gives `tor` and `tor-mirror` a `restart: true` dependency on the app: whenever Compose recreates the app (`docker compose up -d` after a rebuild or a `.env` change) or restarts it (`docker compose restart app`), it restarts Tor too. The mirror is included only when the command sees the `mirror` profile, so add `mirror` to `COMPOSE_PROFILES` in `.env` if you run it (see [Optional onion mirror](#optional-onion-mirror)). Compose does not restart Tor for `docker compose stop app` followed by `up -d`, and the setting does not repair a Tor that already forwards to an old address. On a Tor install deployed before this change, recreate Tor once:
 
@@ -66,7 +66,7 @@ docker compose up -d
 docker compose exec tor-mirror cat /var/lib/tor/marketplace/hostname
 ```
 
-Wait for the mirror's Tor process to initialize before reading its hostname. Do not start the mirror with a `--profile mirror` option instead: an option replaces `COMPOSE_PROFILES` for that command rather than adding to it, so with the internal database the command fails (`service "app" depends on undefined service "db"`), and a mirror started that way is left out of later `docker compose up -d` runs. With the profile in `.env`, every `docker compose` command includes the mirror and Compose restarts its Tor whenever it recreates the app (see [Clearnet and onion deployment](#clearnet-and-onion-deployment)). If you already run a mirror that is not in `COMPOSE_PROFILES`, add it now. This optional profile publishes no host ports and reaches the same application/database over the private backend network. The second address is a same-host alternate URL; it does not provide independence from host, application or database failures. Preserve and encrypt the separate `tor_mirror_identity` volume to retain its address.
+Wait for the mirror's Tor process to initialize before reading its hostname. Do not start the mirror with a `--profile mirror` option instead: an option replaces `COMPOSE_PROFILES` for that command rather than adding to it, so with the internal database the command fails (`service "app" depends on undefined service "db"`), and a mirror started that way is left out of later `docker compose up -d` runs. With the profile in `.env`, every `docker compose` command includes the mirror and Compose restarts its Tor whenever it recreates the app (see [Clearnet and onion deployment](#clearnet-and-onion-deployment)). If you already run a mirror that is not in `COMPOSE_PROFILES`, add it now. This optional profile publishes no host ports and reaches the same application/database over the private backend network. The second address is a same-host alternate URL; it does not provide independence from host, application or database failures. Preserve the separate `tor_mirror_identity` volume to retain its address, and back it up like the main one ([Secrets, .env and onion identities](#secrets-env-and-onion-identities)).
 
 Publish both addresses in an operator-signed verification document distributed through a trusted channel. Users should verify that signature with a previously trusted operator key; merely displaying an address or a “canonical” label on a page does not authenticate a mirror. Signing and distribution remain operator tasks.
 
@@ -274,7 +274,7 @@ Install [age](https://age-encryption.org/) and generate an identity offline (`ag
 AGE_RECIPIENT=age1YOUR_PUBLIC_RECIPIENT ./scripts/backup.sh backups/market.dump.age
 ```
 
-For external databases also set `BACKUP_DATABASE_URL`, install Python 3 and PostgreSQL client tools matching or newer than the server. The script streams a custom-format dump directly into encryption, uses restrictive file permissions, refuses overwrite and fails if either command fails. Back up `.env`, deployment settings and the Tor identity separately in encrypted storage. Database dumps do not include onion keys or blockchain volumes, and in particular **not the custodial payment wallets** (the `bitcoin_data` and `monero_wallet` volumes, or your external wallets): back those up on their own (see the [runbook](testnet-runbook.md#6-back-up-the-wallets)). Maintain offline copies and rehearse recovery.
+For external databases also set `BACKUP_DATABASE_URL`, install Python 3 and PostgreSQL client tools matching or newer than the server. The script streams a custom-format dump directly into encryption, uses restrictive file permissions, refuses overwrite and fails if either command fails. Back up `.env`, deployment settings and the Tor identity separately in encrypted storage ([commands below](#secrets-env-and-onion-identities)). Database dumps do not include onion keys or blockchain volumes, and in particular **not the custodial payment wallets** (the `bitcoin_data` and `monero_wallet` volumes, or your external wallets): back those up on their own (see the [runbook](testnet-runbook.md#6-back-up-the-wallets)). Maintain offline copies and rehearse recovery.
 
 Rehearse recovery on another host, or in a second checkout with its **own Compose project name**. Compose names containers, volumes and networks after the project (`opsecmkt` unless `.env` sets `COMPOSE_PROJECT_NAME`), not the directory: a second checkout under the same name recreates the live containers with its own secrets, and its `docker compose down --volumes` deletes the live volumes. Install the rehearsal copy with, for example, `COMPOSE_PROJECT_NAME=opsecmkt-rehearsal APP_PORT=8081 ./scripts/install.sh` (add `--local` for a quick local copy); the installer saves the name in that checkout's `.env`, so its later `docker compose`, `backup.sh` and `restore.sh` commands stay on the rehearsal project, and it refuses to install when containers of the chosen project were created from another directory, or when that project's volumes exist without containers. If you copy a `.env` into the rehearsal checkout instead, change `COMPOSE_PROJECT_NAME` (add the line if it is missing) and `APP_PORT` in the copy before running any `docker compose` command there. Never change `COMPOSE_PROJECT_NAME` on an existing install: it would start on new, empty volumes (`<project>_postgres_data` and the others).
 
@@ -311,6 +311,89 @@ second checkout on the same host needs its own `COMPOSE_PROJECT_NAME` (for examp
 [above](#backups-and-recovery)), or its `docker compose` commands act on the live containers and volumes.
 
 **Any restore not done by `scripts/restore.sh` skips this payout protection.** A host or volume snapshot (including a copy of the `postgres_data` volume), a managed-database point-in-time recovery or a manual `pg_restore` brings payouts back as `pending` with no recovery gate, and the application sends them as soon as it starts, even those already paid after that point in time. After such a restore keep the application stopped and apply the protection SQL in [UPGRADING.md, section 6](../UPGRADING.md#6-backups-now-need-the-wallets-too) to the restored database before starting it, then follow the same reconciliation procedure.
+
+### Secrets, .env and onion identities
+
+`scripts/backup.sh` dumps the database only. A restored database also needs the `.env` it ran with, and each onion address exists only as the keys in its Tor volume. Back both up whenever they change, encrypted to the same age recipient, and store them with the database backups (never next to the age identity).
+
+| Secret | Kept in | Backup | Rotation |
+| --- | --- | --- | --- |
+| `SETUP_TOKEN` | `.env` | with `.env` | Derives the CSRF/CAPTCHA key and the key that encrypts TOTP secrets. Restore a database with the token in use when it was dumped; under another token its TOTP secrets cannot be read. Rotate only when it is exposed, as [UPGRADING.md](../UPGRADING.md#replace-a-placeholder-setup_token) describes. |
+| `AUDIT_SIGNING_KEY` | `.env` | with `.env` | Signs audit exports ([Transparency](#transparency)). A new key (`openssl rand -hex 32`, then restart the app) is a new public key on `/canary`: announce it. |
+| `POSTGRES_PASSWORD` (internal database) | `.env`, twice: `POSTGRES_PASSWORD` and the password in `DATABASE_URL`; the database keeps its own hash in the `postgres_data` volume | with `.env` | `POSTGRES_PASSWORD` is used only when an empty volume is initialized, so editing it later changes nothing. Rotate in the database first: `docker compose exec db psql -U opsecmkt -d opsecmkt -c '\password opsecmkt'` asks for the new password twice and sends `ALTER ROLE opsecmkt PASSWORD` with it already hashed, so it appears in no command line or server log. Then put it in both places in `.env` and run `docker compose up -d`. A hex password (`openssl rand -hex 24`) needs no escaping in the URL. For an external database, change it on that server and in `DATABASE_URL`. |
+| `BITCOIN_RPC_PASSWORD`, `MONERO_WALLET_RPC_PASSWORD` (local nodes) | `.env`, each repeated in `BITCOIN_RPC_URL` / `MONERO_WALLET_RPC_URL` | with `.env` | Change a password and the same value in its URL together, then `docker compose up -d`. The wallets behind them are separate backups ([runbook](testnet-runbook.md#6-back-up-the-wallets)). |
+| Onion keys | the `tor_identity` volume (`tor_mirror_identity` for the mirror), named `<project>_tor_identity` by Compose, for example `opsecmkt_tor_identity` | the commands below | Losing or replacing the keys changes the address for good. A copied key lets anyone impersonate the address, so retire an exposed one: remove the volume, let Tor create a new address and publish it in your signed verification document. |
+
+The commands run in bash from the repository root, with `age` installed as above, and use the Tor image Compose builds for the project (`<project>-tor`; on a new host run `docker compose build tor` first). Set the variables each command names in the same shell first. Every command runs in a subshell that stops at the first failure, reads the project name from `docker compose config` (so it follows `COMPOSE_PROJECT_NAME` in `.env`), runs its containers with no network, and never overwrites a file.
+
+Back up `.env` (set `AGE_RECIPIENT`):
+
+<!-- ops-cmd: env-backup -->
+```sh
+( set -eu
+  : "${AGE_RECIPIENT:?set AGE_RECIPIENT}"
+  backup="backups/env-$(date -u +%Y%m%dT%H%M%SZ).age"
+  test ! -e "$backup"
+  mkdir -p backups
+  umask 077
+  age -r "$AGE_RECIPIENT" -o "$backup" .env
+  echo "Wrote $backup" )
+```
+
+Back up an onion identity (set `identity=tor_identity`, or `identity=tor_mirror_identity` for the mirror, and `AGE_RECIPIENT`). Tor may keep running: only its `marketplace` directory (keys and hostname), which Tor does not change once created, is copied, as `debian-tor` with no capabilities. The command prints the address the backup holds; record it with the file.
+
+<!-- ops-cmd: tor-identity-backup -->
+```sh
+( set -eu -o pipefail
+  : "${identity:?set identity=tor_identity or identity=tor_mirror_identity}" "${AGE_RECIPIENT:?set AGE_RECIPIENT}"
+  project=$(docker compose config | sed -n 's/^name: //p')
+  volume="${project}_$identity"
+  backup="backups/$volume-$(date -u +%Y%m%dT%H%M%SZ).tar.age"
+  docker volume inspect "$volume" >/dev/null
+  test ! -e "$backup"
+  mkdir -p backups
+  umask 077
+  docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges:true -v "$volume:/var/lib/tor:ro" \
+    --entrypoint tar "$project-tor" -C /var/lib/tor -cf - marketplace |
+    age -r "$AGE_RECIPIENT" -o "$backup" || { rm -f "$backup"; exit 1; }
+  docker run --rm --network none --cap-drop ALL -v "$volume:/var/lib/tor:ro" --entrypoint cat "$project-tor" \
+    /var/lib/tor/marketplace/hostname
+  echo "Wrote $backup" )
+```
+
+To recover on a new host (or after losing the volumes): check out the same revision, restore `.env`, run `docker compose build tor`, restore each onion identity **before Tor first starts there**, restore the database as described above, then `docker compose up -d`. Restore `.env` (set `backup` to the `.env` backup file and `AGE_IDENTITY`); it refuses to replace an existing `.env`:
+
+<!-- ops-cmd: env-restore -->
+```sh
+( set -eu
+  : "${backup:?set backup to the .env backup file}" "${AGE_IDENTITY:?set AGE_IDENTITY}"
+  if [ -e .env ]; then echo 'Refusing: .env exists; move it aside first' >&2; exit 1; fi
+  umask 077
+  age -d -i "$AGE_IDENTITY" -o .env "$backup"
+  echo 'Restored .env' )
+```
+
+Restore an onion identity (set `identity`, `backup` to its backup file and `AGE_IDENTITY`). The archive is decrypted straight into a container; it runs as root (`--user 0`) so it can write into the volume whatever its current owner, then gives the files to `debian-tor` with mode 700, because Tor refuses keys it does not own. It prints the restored address:
+
+<!-- ops-cmd: tor-identity-restore -->
+```sh
+( set -eu -o pipefail
+  : "${identity:?set identity=tor_identity or identity=tor_mirror_identity}" "${backup:?set backup to the identity backup file}" "${AGE_IDENTITY:?set AGE_IDENTITY}"
+  project=$(docker compose config | sed -n 's/^name: //p')
+  volume="${project}_$identity"
+  test -f "$backup"
+  docker image inspect "$project-tor" >/dev/null
+  age -d -i "$AGE_IDENTITY" "$backup" |
+    docker run --rm -i --network none --user 0 --security-opt no-new-privileges:true -v "$volume:/var/lib/tor" \
+      --entrypoint sh "$project-tor" -euc '
+        if [ -n "$(ls -A /var/lib/tor)" ]; then echo "Refusing: volume $0 is not empty" >&2; exit 1; fi
+        tar -C /var/lib/tor -xf - marketplace
+        chown -R debian-tor:debian-tor /var/lib/tor
+        chmod 700 /var/lib/tor /var/lib/tor/marketplace
+        cat /var/lib/tor/marketplace/hostname' "$volume" )
+```
+
+After `docker compose up -d`, compare the printed address with `docker compose exec tor cat /var/lib/tor/marketplace/hostname` (`tor-mirror` for the mirror); a different address means Tor did not use the restored keys. The restore refuses a volume that is not empty: Tor has already run on this host and created another address. If that address was never published, remove it and restore again: `docker compose rm -sf tor` (or `tor-mirror`), then `docker volume rm opsecmkt_tor_identity` (your project's volume name). `scripts/test-tor-identity-restore.sh` runs these four blocks verbatim ([operations tests](operations-tests.md#documented-env-and-onion-identity-backup-and-restore)).
 
 ## Verification and maintenance
 

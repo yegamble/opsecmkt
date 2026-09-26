@@ -123,6 +123,10 @@ grep -q 'Created empty database opsecmkt_restored' "$work/restore.log"
 grep -q 'Held 4 restored payout(s)' "$work/restore.log"
 grep -q 'Marked 1 restored failed payout(s) as possibly sent' "$work/restore.log"
 grep -q 'do not contain the custodial wallets' "$work/restore.log"
+# The last line names the .env secrets a restored database needs (A-136).
+last_line=$(tail -n 1 "$work/restore.log")
+[[ $last_line == *SETUP_TOKEN* && $last_line == *AUDIT_SIGNING_KEY* ]] || {
+  echo "restore.sh's last line does not name SETUP_TOKEN and AUDIT_SIGNING_KEY: $last_line" >&2; exit 1; }
 [[ $(sql opsecmkt_restored 'SELECT note FROM notes WHERE id = 1') == 'Crème brûlée — 東京 🔒' ]]
 [[ $(sql opsecmkt_restored "$payouts") == "$restored_payouts" ]]
 [[ $(sql opsecmkt_restored "$gate") == true ]]
