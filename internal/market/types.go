@@ -260,6 +260,10 @@ type PayoutRow struct {
 	// AddressCheck: held for an account suspension (suspendedHoldPrefix); releasing needs an explicit
 	// confirmation that the payout address was checked.
 	AddressCheck bool
+	// CurrentAddress: the recipient's saved payout address for Currency now; CurrentChanged: when it was last saved
+	// ("" when not recorded). Repoint: the payout may be moved to CurrentAddress (repointable, A-121).
+	CurrentAddress, CurrentChanged string
+	Repoint                        bool
 	// Waiting: held by the watcher (heldReason) while these credited deposits are below Threshold confirmations;
 	// no release is offered until they confirm again.
 	Waiting   []HeldDeposit

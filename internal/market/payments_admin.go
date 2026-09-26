@@ -16,6 +16,8 @@ import (
 // a payout whose last send may have been broadcast (an ambiguous failure or a stuck send), or releasing one
 // held by a restore, also needs an explicit confirmation that the wallet shows no such transaction. Releasing
 // one held for an account suspension needs an explicit confirmation that its payout address was checked.
+// Moving a held or definitely rejected payout to the recipient's current saved address (A-121) needs an explicit
+// confirmation that the administrator checked that address with the account owner; nothing is sent by the move.
 
 func init() {
 	registerAction("/admin/payout", actionSpec{Roles: []string{"admin"}, OwnTx: true, Run: adminPayoutAction})
@@ -48,12 +50,23 @@ func heldForSuspension(state, payoutErr string) bool {
 		strings.HasPrefix(payoutErr, restoredHoldPrefix) && strings.Contains(payoutErr, " "+suspendedHoldPrefix))
 }
 
+// repointable reports a payout an administrator may move to its recipient's current saved address (A-121): held
+// (but not by a restore from backup, after which it may have been sent) or failed with a definite wallet rejection.
+// A payout being sent, or one whose send may have been broadcast, is never moved: that could pay twice. Saving an
+// address never moves a payout that already has one, so a stolen password cannot re-point it.
+func repointable(state, payoutErr string, ambiguous bool) bool {
+	if strings.HasPrefix(payoutErr, restoredHoldPrefix) {
+		return false
+	}
+	return state == "held" || state == "failed" && !ambiguous
+}
+
 var txidPattern = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
 
 func adminPayoutAction(c *actionCtx) (actionResult, error) {
 	op := c.Form.Get("op")
-	if op != "release" && op != "requeue" && op != "sent" {
-		return actionResult{}, fail(400, "Choose release, requeue or mark sent")
+	if op != "release" && op != "requeue" && op != "sent" && op != "repoint" {
+		return actionResult{}, fail(400, "Choose release, requeue, mark sent or use the account's current address")
 	}
 	id, err := strconv.ParseInt(c.Form.Get("payout_id"), 10, 64)
 	if err != nil || id <= 0 {
@@ -153,6 +166,46 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 			note = "Administrator confirmed the wallet shows no broadcast transaction for the TESTNET payout of " + label + " (last send outcome unknown) and requeued it; it will be sent once more."
 			audit += "; last send outcome unknown, administrator confirmed the wallet shows no broadcast transaction"
 		}
+	case "repoint":
+		switch {
+		case state == "sending":
+			return actionResult{}, fail(409, "This payout is being sent, or its send is stuck and may have been broadcast, so it is never moved to another address: that could pay twice. Nothing was changed.")
+		case (state == "held" || state == "failed") && !repointable(state, payoutErr, ambiguous):
+			return actionResult{}, fail(409, "This payout may already have been broadcast (its last send had no definite answer, or it was restored from backup), so it is never moved to another address: that could pay twice. Check the wallet, then release, requeue or mark it sent. Nothing was changed.")
+		case !repointable(state, payoutErr, ambiguous):
+			return actionResult{}, fail(409, "This payout is "+payoutStateLabel(state)+": only a held payout or one the wallet definitely rejected can be moved to the account's current address. Nothing was changed.")
+		}
+		column := "payout_btc"
+		if cur == "XMR" {
+			column = "payout_xmr"
+		}
+		var current string
+		if err = tx.QueryRowContext(ctx, "SELECT "+column+" FROM users WHERE id=$1", recipient).Scan(&current); err != nil {
+			return actionResult{}, err
+		}
+		if current == "" {
+			return actionResult{}, fail(409, "The recipient has no saved "+cur+" payout address, so there is nothing to move this payout to. Nothing was changed.")
+		}
+		if address == "" {
+			return actionResult{}, fail(409, "This payout has no address yet; it gains the recipient's address when they save one. Nothing was changed.")
+		}
+		if current == address {
+			return actionResult{}, fail(409, "This payout already uses the account's current "+cur+" payout address. Nothing was changed.")
+		}
+		// The administrator checked the two addresses the page showed: either changing since then voids the check.
+		if c.Form.Get("from_address") != address || c.Form.Get("to_address") != current {
+			return actionResult{}, fail(409, "The payout's address or the account's saved "+cur+" payout address changed since the page loaded. Reload the admin page and check the addresses shown with the account owner again. Nothing was changed.")
+		}
+		if c.Form.Get("address_checked") != "confirmed" {
+			return actionResult{}, fail(400, "Anyone with the account's password can change its saved payout address. Check the account's current address with the account owner through a channel you trust, then confirm that you checked it to move the payout. Nothing was changed.")
+		}
+		// Compare-and-set on the state, address and error read above: a concurrent release, requeue, claim or
+		// second move changes one of them, and this one then changes nothing.
+		res, err = tx.ExecContext(ctx, `UPDATE payouts SET address=$2,updated=now()
+			WHERE id=$1 AND state=$3 AND address=$4 AND error=$5 AND send_ambiguous=$6 AND state IN ('held','failed')`, id, current, state, address, payoutErr, ambiguous)
+		note = "Administrator moved the TESTNET payout of " + label + " to the recipient's current payout address after checking it with them; nothing was sent and its status is unchanged."
+		audit = "Moved payout " + strconv.FormatInt(id, 10) + " (" + label + ", " + state + ") for order " + short + " from " + address +
+			" to the account's current address " + current + "; administrator checked the address with the account owner"
 	case "sent":
 		res, err = tx.ExecContext(ctx, `UPDATE payouts SET state='sent',txid=$2,error='',send_ambiguous=false,updated=now()
 			WHERE id=$1 AND (state IN ('failed','held') OR `+stuckSending+`)`, id, txid)
@@ -170,6 +223,14 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 	}
 	if op == "sent" {
 		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), recipient, "Order "+short+": "+note); err != nil {
+			return actionResult{}, err
+		}
+	}
+	if op == "repoint" {
+		// The recipient hears that the destination changed (the address itself is not repeated), as for their own saves.
+		body := "Order " + short + ": an administrator moved your unsent TESTNET payout of " + label + " to your current " + cur +
+			" payout address after checking it with you; nothing was sent and its status is unchanged. If you did not confirm this, contact the market staff."
+		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), recipient, body); err != nil {
 			return actionResult{}, err
 		}
 	}

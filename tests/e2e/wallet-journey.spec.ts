@@ -303,6 +303,31 @@ test('automatic digital delivery and administrator recovery of a rejected payout
     const checks = (await (await request.get(`${rpc}/test/state`)).json()).checks;
     await expect.poll(async () => (await (await request.get(`${rpc}/test/state`)).json()).checks).toBeGreaterThan(checks + 2);
     expect((await (await request.get(`${rpc}/test/state`)).json()).payouts).toHaveLength(before);
+    // A-121: saving a new address leaves the failed payout on its address and names the order to its owner; the
+    // administrator moves it to the current address after checking it, and the requeue below pays that address once.
+    // (With these two, wallet_admin uses all ten password confirmations its window allows.)
+    const moved = '5' + 'b'.repeat(94);
+    await admin.goto('/account');
+    const save = admin.locator('form', { has: admin.getByRole('button', { name: 'Save XMR address' }) });
+    await save.locator('input[name="address"]').fill(moved);
+    await save.getByLabel('Current password', { exact: true }).fill(password);
+    await submit(admin, save.getByRole('button'));
+    await admin.goto('/notifications');
+    await expect(admin.locator('main')).toContainText(`1 unsent payout(s) still use your previous address (order ${orderID.slice(0, 8)}); an administrator must confirm the change`);
+    await admin.goto('/admin');
+    payout = admin.locator('tr', { has: admin.getByText(orderID, { exact: true }) });
+    await payout.locator('summary').click();
+    const move = payout.locator('form', { has: admin.getByRole('button', { name: "Use the account's current address", exact: true }) });
+    await expect(move).toContainText(`Payout address: ${'5' + 'a'.repeat(94)}. Account's current address: ${moved} (last changed `);
+    await expect(move).toContainText(/last changed \d{4}-\d\d-\d\d \d\d:\d\d UTC\)/);
+    await move.getByRole('checkbox', { name: 'Current address checked: the account owner confirmed it is theirs', exact: true }).check();
+    await move.getByLabel('Current password', { exact: true }).fill(password);
+    await submit(admin, move.getByRole('button'));
+    await expect(admin.locator('main')).toContainText('Moved payout');
+    payout = admin.locator('tr', { has: admin.getByText(orderID, { exact: true }) });
+    await expect(payout).toContainText('Fixture rejected send before broadcast');
+    await expect(payout.getByRole('button', { name: "Use the account's current address", exact: true })).toHaveCount(0);
+    expect((await (await request.get(`${rpc}/test/state`)).json()).payouts).toHaveLength(before);
     await payout.locator('summary').click();
     let requeue = payout.locator('form', { has: admin.getByRole('button', { name: 'Requeue payout', exact: true }) });
     await requeue.getByLabel('Current password', { exact: true }).fill('incorrect-password');
@@ -316,6 +341,7 @@ test('automatic digital delivery and administrator recovery of a rejected payout
     await submit(admin, requeue.getByRole('button'));
     await reloadUntil(buyer, async () => { await expect(buyer.locator('.payment-figures div', { has: buyer.getByText('Payout status', { exact: true }) })).toContainText('Sent', { timeout: 500 }); });
     expect((await (await request.get(`${rpc}/test/state`)).json()).payouts).toHaveLength(before + 1);
+    expect(((await (await request.get(`${rpc}/test/state`)).json()).payouts as any[]).at(-1)).toEqual(expect.objectContaining({ currency: 'XMR', address: moved }));
     await admin.reload();
     await expect(admin.locator('tr', { has: admin.getByText(orderID, { exact: true }) })).not.toContainText('Requeue payout');
     await expect(admin.locator('main')).toContainText('Requeued payout');

@@ -43,7 +43,7 @@
 </div>
 <h3 id="payouts">Payouts</h3>
 <p>{{if eq .PayoutsAttention 0}}No payouts need attention.{{else}}<strong>{{.PayoutsAttention}} {{if eq .PayoutsAttention 1}}payout needs{{else}}payouts need{{end}} attention</strong>, listed first, oldest first.{{end}}{{if .PayoutHistoryLimit}} Showing every payout that needs attention and the {{.PayoutHistoryLimit}} most recent other payouts; older payouts that need no attention are not listed.{{end}}</p>
-<p>Each payout is attempted once. Failed or stuck payouts are never retried automatically: check the wallet before paying anything manually. A payout for which the wallet reported a pre-broadcast error was not broadcast; one whose outcome is unknown (the wallet call timed out or its reply was lost) or that is stuck in sending may have been. After checking the wallet you can release a held payout, requeue a payout that was not broadcast (confirming that explicitly when the outcome was unknown), or record one the wallet shows as sent. Each action needs your password and is audited.</p>
+<p>Each payout is attempted once. Failed or stuck payouts are never retried automatically: check the wallet before paying anything manually. A payout for which the wallet reported a pre-broadcast error was not broadcast; one whose outcome is unknown (the wallet call timed out or its reply was lost) or that is stuck in sending may have been. After checking the wallet you can release a held payout, requeue a payout that was not broadcast (confirming that explicitly when the outcome was unknown), or record one the wallet shows as sent. Saving a payout address never moves a payout that already has one: you can move a held payout, or one the wallet definitely rejected, to the recipient's current saved address after checking that address with the account owner. A payout that is being sent or may have been broadcast is never moved. Each action needs your password and is audited.</p>
 <div class="table-wrap">
 <table>
 <thead>
@@ -90,6 +90,17 @@
 {{if .Ambiguous}}{{template "admin-payments:wallet-check"}}<label class="check"><input type="checkbox" name="not_broadcast" value="confirmed" required> I checked the wallet (including pending and pool transfers): no transaction to this address for this amount was broadcast</label>
 {{end}}{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button type="submit">Requeue payout</button>
+</form>{{end}}
+{{if .Repoint}}<form class="stack" method="post" action="/admin/payout">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="payout_id" value="{{.ID}}">
+<input type="hidden" name="op" value="repoint">
+<input type="hidden" name="from_address" value="{{.Address}}">
+<input type="hidden" name="to_address" value="{{.CurrentAddress}}">
+<p class="help">The recipient's saved {{.Currency}} payout address differs from this payout's. Payout address: <span class="mono">{{.Address}}</span>. Account's current address: <span class="mono">{{.CurrentAddress}}</span> ({{if .CurrentChanged}}last changed {{.CurrentChanged}}{{else}}change time not recorded{{end}}). Anyone with the account's password can change the saved address: move the payout only after the account owner confirms the current address through a channel you trust. Moving sends nothing and keeps the payout's status{{if eq .State "failed"}}: requeue it afterwards{{end}}.</p>
+<label class="check"><input type="checkbox" name="address_checked" value="confirmed" required> Current address checked: the account owner confirmed it is theirs</label>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
+<button type="submit">Use the account's current address</button>
 </form>{{end}}
 <form class="stack" method="post" action="/admin/payout">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
