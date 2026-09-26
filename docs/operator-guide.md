@@ -314,6 +314,16 @@ payout id=12 order=5f2c9e7a currency=BTC amount=0.001 outcome=sent txid=<txid> r
 payout id=13 order=1b4d8036 currency=XMR amount=0.5 outcome=failed error=ambiguous/timeout recorded=yes
 ```
 
-`error` is `definite` (the wallet refused before broadcasting) or `ambiguous` (it may have been broadcast), then `rpc:<code>` for a wallet JSON-RPC error or one of the classes above. `recorded=no cause=<class>` means the outcome could not be saved and the payout stays `sending`: the line keeps the txid of such a send, so check it in the wallet before you do anything with that payout. The wallet's own error text is on the admin *Payouts* panel, not in this line.
+`error` is `definite` (the wallet refused before broadcasting) or `ambiguous` (it may have been broadcast), then `rpc:<code>` for a wallet JSON-RPC error or one of the classes above. `recorded=no cause=<class>` means the outcome could not be saved and the payout stays `sending`: the line keeps the txid of such a send, so check it in the wallet before you do anything with that payout. The wallet's own error text is on the admin *Payouts* panel and in no log line.
+
+After a watcher pass that met errors, one more line lists them, separated by `; `, with only the currency, `order <short id>`, `payout <id>` and a class:
+
+```text
+payment watcher: XMR: pass skipped: wallet check failed: rpc:-13; BTC: payout 14: definite/rpc:-6
+payment watcher: BTC: wallet read failed: *errors.errorString; BTC: order 1b4d8036: 40001
+payment watcher: db-connection
+```
+
+`pass skipped` means that currency was not polled (no deposits read, no expiry, no payouts): `wallet check failed: <class>`, `refused by the test-network guard` (the provider stays disabled until the node is fixed and the application restarted), or `tip comparison failed`. A wallet class is `rpc:<code>` for a JSON-RPC error or one of the classes above; a wallet that cannot be reached shows as the Go type of its error. The wallet's text (which can quote an address) is the provider's last error on the admin page; neither this line nor the payout line prints it. `db-connection` (or `timeout`) alone means the watcher could not reach the database; the line never holds `DATABASE_URL`, its user, database name, host or port. The recovery code reveal sweep logs `recovery code reveal sweep: <class>` the same way.
 
 When the database connection fails at startup the server exits with its class and no part of `DATABASE_URL`: `authentication failed (SQLSTATE 28P01)` or `(SQLSTATE 28000)` for a wrong user or password or a `pg_hba.conf` rule, `database missing (SQLSTATE 3D000)`, `host not found`, `connection refused`, `timed out`, or `TLS required` (the server accepts only encrypted connections; set `sslmode=require` or `verify-full`).
