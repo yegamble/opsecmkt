@@ -4,7 +4,7 @@ The Figma reference is adapted to Go-rendered HTML and CSS. The browser loads no
 
 ## Working application behavior
 
-- Token-protected, transactional first-run administrator setup; repeated setup is rejected.
+- Token-protected, transactional first-run administrator setup; repeated setup is rejected. The operator can instead create the first administrator on the host with `-bootstrap-admin HANDLE` (password on stdin, no setup token, same transaction and lock; no web path).
 - Buyer registration, bcrypt password hashing, rotating hashed sessions, session revocation, CSRF validation, bounded forms and authentication concurrency.
 - Two HttpOnly, SameSite=Strict cookies: `session` is set only at sign-in (with a fresh token) and cleared at sign-out or revocation; `anon` holds the pre-login token that CSRF forms and the CAPTCHA are bound to while no session is present. A request without cookies (for example, a link followed from another site, which Strict withholds) gets only a new `anon` cookie and never overwrites `session`, so the user stays signed in on their next direct visit. A form rendered on such a landing page carries an `anon`-derived CSRF token; its same-site POST, which then sends both cookies, is served as the anonymous request it was rendered for (it cannot act as the signed-in user, but its sign-in form and CAPTCHA work). Origin and `Sec-Fetch-Site` checks apply to every POST. Session cookies from before this change keep working.
 - Server-enforced buyer, vendor, moderator, and administrator roles.

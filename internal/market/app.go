@@ -118,7 +118,8 @@ func New(ctx context.Context, preview bool) (*App, error) {
 
 // OpenDB opens the database in dsn with TimeZone pinned to UTC on every connection (a startup parameter, which
 // outranks database and role defaults), so displayed times never follow or reveal the server's zone. The
-// application pool, its migrations and the -reset-admin-password command all open the database here.
+// application pool, its migrations and the -bootstrap-admin and -reset-admin-password commands all open the
+// database here.
 func OpenDB(dsn string) (*sql.DB, error) {
 	cfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
