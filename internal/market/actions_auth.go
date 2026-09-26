@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/subtle"
 	"database/sql"
+	"errors"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -50,20 +52,21 @@ func (a *App) confirmPassword(ctx context.Context, userID, password string) erro
 	if password == "" || len(password) > 72 {
 		return fail(400, "Enter your current password to confirm this change.")
 	}
-	if !a.allow("confirm:"+userID, 10) {
-		return fail(429, "Too many attempts. Try again in ten minutes.")
-	}
+	// The slot is taken before the attempt is counted, so a busy refusal spends none of the user's budget.
 	select {
 	case passwordWork <- struct{}{}:
 	default:
 		return fail(503, "Authentication is busy. Try again shortly.")
+	}
+	defer func() { <-passwordWork }()
+	if !a.allow("confirm:"+userID, 10) {
+		return fail(429, "Too many attempts. Try again in ten minutes.")
 	}
 	var hash string
 	err := a.db.QueryRowContext(ctx, "SELECT password_hash FROM users WHERE id=$1", userID).Scan(&hash)
 	if err == nil {
 		err = bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
 	}
-	<-passwordWork
 	if err != nil {
 		return fail(401, "Password incorrect")
 	}
@@ -163,37 +166,79 @@ func confirmedTxWith(c *actionCtx, opts *confirmation, run func(c *actionCtx) (a
 	return res, tx.Commit()
 }
 
-// authGate admits one password-bearing request: bounded bcrypt concurrency, input bounds, CAPTCHA and
-// per-handle rate limit, all before any expensive work. On success the caller must defer release().
+// notifyOwner tells the account owner, inside tx, of a sign-in factor, key or recovery-code event (A-152). The text
+// is link-free and never carries a code, secret, key fingerprint or address.
+func notifyOwner(ctx context.Context, tx *sql.Tx, userID, event string) error {
+	_, err := tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), userID,
+		event+" If this was not you, someone else may know your password: change it and contact the market staff.")
+	return err
+}
+
+// authGate admits one password-bearing request: input bounds, CAPTCHA, a free handle for /register and the
+// per-handle rate limit, then bounded bcrypt concurrency, all before any expensive work. On success the
+// caller must defer release().
 func authGate(c *actionCtx) (handle, password string, release func(), err error) {
+	a, path := c.A, c.R.URL.Path
+	handle, password = strings.TrimSpace(c.Form.Get("handle")), c.Form.Get("password")
+	// Validate the input and the CAPTCHA before the rate limit, so malformed handles and failed CAPTCHAs
+	// never create or increment a limiter entry (and cannot spend a real user's sign-in budget).
+	if !handlePattern.MatchString(handle) || !validPassword(password) {
+		err = fail(400, "Use a 3–32 character handle (letters, digits, underscores) and a password of 12–72 bytes.")
+	} else if path != "/setup" {
+		err = a.checkCaptcha(c) // P1: single-use image CAPTCHA unless an administrator turned it off
+	}
+	if err == nil && path == "/register" {
+		// A taken handle is refused before any bcrypt, slot or budget. The INSERT's unique key still
+		// refuses a handle registered concurrently after this check.
+		var taken bool
+		if qerr := a.db.QueryRowContext(c.Ctx(), "SELECT EXISTS(SELECT 1 FROM users WHERE handle=$1)", handle).Scan(&taken); qerr != nil {
+			err = fail(503, "Service unavailable")
+		} else if taken {
+			err = fail(400, "Handle unavailable")
+		}
+	}
+	// Each path has its own per-handle budget, so registering or setting up a handle never spends its sign-in
+	// budget. Sign-in reserves one attempt here and authAction refunds it when the password is correct, so only
+	// failed passwords spend "auth:" and concurrent guesses still cannot exceed it (A-153).
+	key, refused := signInKey(handle), errSignInPaused
+	if path != "/login" {
+		key, refused = strings.TrimPrefix(path, "/")+":"+strings.ToLower(handle), fail(429, "Too many attempts. Try again in ten minutes.")
+	}
+	if err == nil && a.limited(key, 10) {
+		err = refused
+	}
+	if err != nil {
+		return "", "", nil, err
+	}
+	// A password-check slot is taken only now, so requests refused above never hold one while real
+	// sign-ins wait. The attempt is counted after the slot, so a busy refusal spends no budget.
 	select {
 	case passwordWork <- struct{}{}:
 	default:
 		return "", "", nil, fail(503, "Authentication is busy. Try again shortly.")
 	}
 	release = func() { <-passwordWork }
-	handle, password = strings.TrimSpace(c.Form.Get("handle")), c.Form.Get("password")
-	// Validate the input and the CAPTCHA before the rate limit, so malformed handles and failed CAPTCHAs
-	// never create or increment a limiter entry (and cannot spend a real user's sign-in budget).
-	if !handlePattern.MatchString(handle) || !validPassword(password) {
-		err = fail(400, "Use a 3–32 character handle (letters, digits, underscores) and a password of 12–72 bytes.")
-	} else if c.R.URL.Path != "/setup" {
-		err = c.A.checkCaptcha(c) // P1: single-use image CAPTCHA unless an administrator turned it off
-	}
-	if err == nil && !c.A.allow("auth:"+strings.ToLower(handle), 10) {
-		err = fail(429, "Too many attempts. Try again in ten minutes.")
-	}
-	if err != nil {
+	if !a.allow(key, 10) {
 		release()
-		return "", "", nil, err
+		return "", "", nil, refused
 	}
 	return handle, password, release, nil
 }
+
+// signInKey is the limiter key of a handle's sign-in budget (case-insensitive).
+func signInKey(handle string) string { return "auth:" + strings.ToLower(handle) }
+
+// errSignInPaused refuses sign-in to a handle whose budget of failed passwords is spent. Anyone can spend it
+// (the budget is per handle: there is no per-client signal over Tor), so it does not blame the user.
+var errSignInPaused = fail(429, "Sign-in for this handle is paused for up to 10 minutes after too many failed passwords. Someone else may have caused this, and your password may be fine. Try again later.")
 
 // authAction serves /setup, /login and /register. bcrypt runs before any transaction is opened.
 func authAction(c *actionCtx) (actionResult, error) {
 	a, ctx, f, path, w := c.A, c.Ctx(), c.Form, c.R.URL.Path, c.W
 	handle, password, release, err := authGate(c)
+	if err == errSignInPaused {
+		a.logSignInRefusals()
+	}
 	if err != nil {
 		return actionResult{}, err
 	}
@@ -212,8 +257,10 @@ func authAction(c *actionCtx) (actionResult, error) {
 		}
 		check := bcrypt.CompareHashAndPassword(hash, []byte(password))
 		if err != nil || check != nil {
+			a.logSignInRefusals()
 			return actionResult{}, fail(401, "Invalid handle or password")
 		}
+		a.refund(signInKey(handle)) // a correct password spends no sign-in budget
 		if suspended {
 			return actionResult{}, errSuspended
 		}
@@ -345,16 +392,21 @@ func challengeAction(c *actionCtx) (actionResult, error) {
 	if p == nil {
 		return actionResult{}, fail(400, "Choose a verification method")
 	}
-	if ok, err := p.Enrolled(ctx, a.db, userID); err != nil || !ok {
+	// Through c.Tx: this transaction holds a connection and the pending row's lock, so a pool read here could
+	// wait for a connection that requests queued on the same lock hold (A-150).
+	if ok, err := p.Enrolled(ctx, c.Tx, userID); err != nil {
+		return actionResult{}, err
+	} else if !ok {
 		return actionResult{}, fail(400, "Choose a verification method")
 	}
+	method := signInMethod(p.Name(), c.Form)
 	if err = p.Verify(c, userID); err != nil {
-		return actionResult{}, err
+		return actionResult{}, recordFactorFailure(c, pending, userID, method, err)
 	}
 	if _, err = c.Tx.ExecContext(ctx, "DELETE FROM pending_logins WHERE token_hash=$1 OR expires<now()", digest(pending)); err != nil {
 		return actionResult{}, err
 	}
-	token, err := a.startSession(ctx, c.Tx, userID, c.Token)
+	token, err := a.startSession(ctx, c.Tx, userID, c.Token, "password and "+method)
 	if err != nil {
 		return actionResult{}, err
 	}
@@ -362,6 +414,45 @@ func challengeAction(c *actionCtx) (actionResult, error) {
 		a.cookie(w, "pending", "", -1)
 		a.cookie(w, "session", token, 43200)
 	}}, nil
+}
+
+// signInMethod names the second factor a /challenge request uses, as totpFactor.Verify and pgpFactor.Verify read it.
+func signInMethod(factor string, f url.Values) string {
+	switch {
+	case factor == "pgp":
+		return "PGP code"
+	case f.Get("recovery") != "":
+		return "recovery code"
+	}
+	return "TOTP"
+}
+
+// recordFactorFailure answers a failed second-factor check (err, a 401: wrong, used or missing code). The first
+// failure of each pending sign-in writes an audit row and notifies the owner, who then knows that someone has the
+// password (A-152); c.Tx is committed with that record (the failed check changed nothing else) and err returned.
+func recordFactorFailure(c *actionCtx, pending, userID, method string, err error) error {
+	var he *httpError
+	if !errors.As(err, &he) || he.Code != 401 {
+		return err
+	}
+	ctx, tx := c.Ctx(), c.Tx
+	res, uerr := tx.ExecContext(ctx, "UPDATE pending_logins SET factor_failed=true WHERE token_hash=$1 AND NOT factor_failed", digest(pending))
+	if uerr != nil {
+		return uerr
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return err
+	}
+	if _, uerr = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", userID, "Correct password but failed second sign-in step ("+method+")"); uerr != nil {
+		return uerr
+	}
+	if uerr = notifyOwner(ctx, tx, userID, "Someone entered your password correctly but failed the second sign-in step ("+method+")."); uerr != nil {
+		return uerr
+	}
+	if uerr = tx.Commit(); uerr != nil {
+		return uerr
+	}
+	return err
 }
 
 func challengeLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error {
@@ -390,10 +481,11 @@ func challengeLoader(ctx context.Context, a *App, r *http.Request, d *PageData) 
 	return nil
 }
 
-// startSession rotates the caller's session inside tx and records the sign-in; the caller sets the cookie after commit.
+// startSession rotates the caller's session inside tx and records the sign-in with how it was made (method, e.g.
+// "password and TOTP"); the caller sets the cookie after commit.
 // It refuses a suspended account with errSuspended. The account row is share-locked, so a suspension committing
 // concurrently either is seen here or runs after this commit and deletes the new session.
-func (a *App) startSession(ctx context.Context, tx *sql.Tx, id, old string) (string, error) {
+func (a *App) startSession(ctx context.Context, tx *sql.Tx, id, old, method string) (string, error) {
 	var suspended bool
 	if err := tx.QueryRowContext(ctx, "SELECT suspended_at IS NOT NULL FROM users WHERE id=$1 FOR SHARE", id).Scan(&suspended); err != nil {
 		return "", err
@@ -408,7 +500,7 @@ func (a *App) startSession(ctx context.Context, tx *sql.Tx, id, old string) (str
 	if _, err := tx.ExecContext(ctx, "INSERT INTO sessions(token_hash,user_id,expires) VALUES($1,$2,now()+interval '12 hours')", digest(token), id); err != nil {
 		return "", err
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,'Signed in')", id); err != nil {
+	if _, err := tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", id, "Signed in with "+method); err != nil {
 		return "", err
 	}
 	return token, nil
@@ -420,7 +512,7 @@ func (a *App) login(ctx context.Context, w http.ResponseWriter, id, old string) 
 		return err
 	}
 	defer tx.Rollback()
-	token, err := a.startSession(ctx, tx, id, old)
+	token, err := a.startSession(ctx, tx, id, old, "password")
 	if err != nil {
 		return err
 	}

@@ -84,7 +84,7 @@ func TestTOTPEnrollmentChallengeAndRecovery(t *testing.T) {
 	if b := body("/account"); !strings.Contains(b, "Not enrolled") || strings.Contains(b, ">Enabled<") {
 		t.Fatal("account page must say Not enrolled before enrollment")
 	}
-	e.check(e.do("POST", "/totp/activate", sess, url.Values{"code": {"123456"}}), 409)
+	e.check(e.do("POST", "/totp/activate", sess, url.Values{"code": {"123456"}, "password": {testPassword}}), 409)
 	w := e.do("POST", "/totp/enroll", sess, nil)
 	e.check(w, 303)
 	if w.Header().Get("Location") != "/totp" {
@@ -103,12 +103,12 @@ func TestTOTPEnrollmentChallengeAndRecovery(t *testing.T) {
 	if !strings.Contains(body("/account"), "setup not confirmed") {
 		t.Fatal("unconfirmed enrollment must not look enabled")
 	}
-	e.check(e.do("POST", "/totp/activate", sess, url.Values{"code": {e.wrongTOTP(id)}}), 400)
+	e.check(e.do("POST", "/totp/activate", sess, url.Values{"code": {e.wrongTOTP(id)}, "password": {testPassword}}), 400)
 	if e.DB.QueryRow("SELECT totp_enabled FROM users WHERE id=$1", id).Scan(&enabled); enabled {
 		t.Fatal("wrong code activated TOTP")
 	}
 	code, step := e.totpCodeFor(id, 0)
-	e.check(e.do("POST", "/totp/activate", sess, url.Values{"code": {code}}), 303)
+	e.check(e.do("POST", "/totp/activate", sess, url.Values{"code": {code}, "password": {testPassword}}), 303)
 	var hashes []string
 	rows, _ := e.DB.Query("SELECT code_hash FROM recovery_codes WHERE user_id=$1 AND used_at IS NULL", id)
 	for rows.Next() {
@@ -167,9 +167,9 @@ func TestTOTPEnrollmentChallengeAndRecovery(t *testing.T) {
 
 	// Replacing recovery codes needs a current code and invalidates every old code.
 	e.DB.Exec("UPDATE users SET totp_last_step=0 WHERE id=$1", id) // simulate the passage of time for the replay guard
-	e.check(e.do("POST", "/totp/recovery", sess, url.Values{"code": {e.wrongTOTP(id)}}), 401)
+	e.check(e.do("POST", "/totp/recovery", sess, url.Values{"code": {e.wrongTOTP(id)}, "password": {testPassword}}), 401)
 	now, _ := e.totpCodeFor(id, 0)
-	e.check(e.do("POST", "/totp/recovery", sess, url.Values{"code": {now}}), 303)
+	e.check(e.do("POST", "/totp/recovery", sess, url.Values{"code": {now}, "password": {testPassword}}), 303)
 	fresh := recoveryCodePattern.FindAllStringSubmatch(body("/totp"), -1)
 	if len(fresh) != 10 {
 		t.Fatal("new recovery codes not shown")
@@ -198,7 +198,7 @@ func TestTOTPConcurrentReplay(t *testing.T) {
 	id, sess := e.user("race_user", "buyer")
 	e.check(e.do("POST", "/totp/enroll", sess, nil), 303)
 	code, _ := e.totpCodeFor(id, 0)
-	e.check(e.do("POST", "/totp/activate", sess, url.Values{"code": {code}}), 303)
+	e.check(e.do("POST", "/totp/activate", sess, url.Values{"code": {code}, "password": {testPassword}}), 303)
 	e.DB.Exec("UPDATE users SET totp_last_step=0 WHERE id=$1", id)
 	type attempt struct {
 		anon string

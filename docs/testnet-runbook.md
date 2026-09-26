@@ -24,13 +24,18 @@ What the application does on its own, so you know what to expect while following
 
 ## 1. Configure
 
-Run `scripts/install.sh` on a fresh host and choose `local` (a reviewed node image you supply) or `external`
-for each currency. For local nodes it writes:
+Run `scripts/install.sh` on a fresh host and choose, for each currency, `local` (the default: a node in
+Docker from the default image or a reviewed image you supply), `external` or `disabled`. Local nodes are
+**pruned** unless you answer `no` to "Prune the … node": a pruned Bitcoin node needs about 5 GB (testnet4)
+to 8 GB (signet), and the first sync of either coin takes hours. Sizes, full nodes and the wallet-restore
+trade-off: [Local node pruning](operator-guide.md#local-node-pruning). For local nodes it writes:
 
-- `BITCOIN_RPC_PASSWORD` and `BITCOIN_RPC_URL=http://marketplace:<password>@bitcoin:8332`, `BITCOIN_CHAIN=testnet4`;
+- `BITCOIN_RPC_PASSWORD` and `BITCOIN_RPC_URL=http://marketplace:<password>@bitcoin:8332`, `BITCOIN_CHAIN=testnet4`,
+  `BITCOIN_PRUNE_MB=2000` (`0` for a full node);
 - `MONERO_WALLET_RPC_PASSWORD`, `MONERO_WALLET_RPC_URL=http://marketplace:<password>@monero-wallet:18083`
   (the `monero-wallet` service runs with `--rpc-login marketplace:<password>`; the app answers its HTTP
-  Digest challenge), `MONERO_RPC_URL=http://monero:18081` and `MONERO_NETWORK=stagenet`.
+  Digest challenge), `MONERO_RPC_URL=http://monero:18081`, `MONERO_NETWORK=stagenet` and
+  `MONERO_PRUNE_FLAGS='--prune-blockchain --sync-pruned-blocks'` (blank for a full node).
 
 For external nodes `BITCOIN_CHAIN` and `MONERO_NETWORK` are left blank, so the app accepts whichever test
 network the node reports; set them in `.env` if you want the app to insist on one. If you choose an external
@@ -50,8 +55,8 @@ Wait for the nodes to sync before expecting deposits to be seen (`docker compose
 
 ## 2. Create the Bitcoin wallet
 
-The compose service runs `bitcoind -chain=${BITCOIN_CHAIN:-testnet4} -rpcport=8332 -rpcuser=marketplace
--rpcpassword=...`. `bitcoin-cli` inside the container must be told the same port and user, otherwise it looks
+The compose service runs `bitcoind -chain=${BITCOIN_CHAIN:-testnet4} -datadir=/data -prune=${BITCOIN_PRUNE_MB:-2000}
+-rpcport=8332 -rpcuser=marketplace -rpcpassword=...`. `bitcoin-cli` inside the container must be told the same port and user, otherwise it looks
 for the chain's default port (48332 on testnet4) and a cookie file that does not exist. The password is fed
 on standard input (`-stdinrpcpass`) so it does not appear in process arguments:
 
@@ -61,7 +66,7 @@ btc() {
   sed -n "s/^BITCOIN_RPC_PASSWORD='\(.*\)'$/\1/p" .env |
     docker compose exec -T bitcoin bitcoin-cli -chain="$chain" -rpcport=8332 -rpcuser=marketplace -stdinrpcpass "$@"
 }
-btc getblockchaininfo                      # "chain" must be your test chain; watch "initialblockdownload"
+btc getblockchaininfo                      # "chain" must be your test chain; watch "initialblockdownload"; "pruned"
 btc -named createwallet wallet_name=opsecmkt load_on_startup=true
 btc -rpcwallet=opsecmkt getwalletinfo
 btc -rpcwallet=opsecmkt getnewaddress funding bech32   # fund the pooled wallet from a faucet
@@ -97,7 +102,8 @@ xmr get_height '{}'
 This needs `curl` in your reviewed Monero image. If it has none, run the same `curl` command from a reviewed
 curl image attached to the backend network instead of `docker compose exec -T monero-wallet curl`:
 `docker run --rm -i --network opsecmkt_backend <reviewed-curl-image@sha256:...> -sS --digest --config - ...
-http://monero-wallet:18083/json_rpc`.
+http://monero-wallet:18083/json_rpc` (the network is `<COMPOSE_PROJECT_NAME>_backend` if `.env` sets another
+project name).
 
 Fund the primary address from a stagenet faucet. Keep a small buffer: Monero payout fees are paid by the
 pooled wallet on top of each payout.
@@ -144,7 +150,9 @@ disputed or resolved order, or one with a payment flagged for review); otherwise
 - **Stuck in sending**: claimed more than 5 minutes ago with no recorded outcome (crash or database error
   after the wallet call); it may have been broadcast.
 - **Held**: a credited deposit is conflicted or re-confirming (the watcher releases these itself once the
-  deposit is confirmed again).
+  deposit is confirmed again). While the deposit is still below the threshold the row offers no *Release*
+  form; it names the deposit (transaction ID and output), its deposit address and its confirmations and links
+  to the order. Only *Mark sent* is offered, for a payout you already sent by hand.
 - **Held after a restore from backup — may already have been sent**: the payout was pending, sending,
   blocked or held in a restored dump (its error starts `Restored from backup:`). It is never released
   automatically, and it may have been broadcast after the backup was taken.
@@ -156,14 +164,45 @@ disputed or resolved order, or one with a payment flagged for review); otherwise
 Ordinary wallet reads time out after 10 s; a payout send is allowed 30 s, so a slow wallet that broadcasts
 after 10 s is still recorded as sent.
 
-First check the wallet for a transaction to the payout's address and amount:
+First check the wallet for a transaction to the payout's address and amount, covering everything since
+**before** the failed send (for a payout held or marked by a restore, since before the backup was taken).
+Nothing short of that is a check: `listtransactions "*" 50` shows only the newest 50 wallet entries (every
+deposit and send counts), so a payout followed by more entries is missing from it.
+
+Bitcoin: list every wallet transaction since a block mined before the failure. Pick a height safely earlier
+(testnet4 and signet mine about 144 blocks a day; a larger margin only lengthens the list):
 
 ```sh
-btc -rpcwallet=opsecmkt listtransactions "*" 50       # Bitcoin: look for "send" to the address
-xmr get_transfers '{"out":true,"pending":true,"pool":true}'   # Monero
+btc getblockcount                                         # the current height
+from=$(btc getblockhash HEIGHT_BEFORE)                    # a height mined before the failure or the backup
+btc -rpcwallet=opsecmkt listsinceblock "$from"            # look for "category": "send" to the payout address
+btc -rpcwallet=opsecmkt listtransactions "*" 100000       # the alternative: effectively the whole wallet
 ```
 
-Then open *Resolve payout N* on that row. Every action asks for your password (and authenticator code when
+`listsinceblock` also lists unconfirmed sends and, under `removed`, transactions a reorganisation took out.
+
+Monero: `get_transfers` builds its `pending` list before it updates the transaction pool, and the wallet
+refreshes by itself only every 20 s, so a single call can miss a send that has just reached the pool. Refresh,
+list, wait at least 20 s and do both again:
+
+```sh
+xmr refresh '{}'
+xmr get_transfers '{"out":true,"pending":true,"pool":true}'
+sleep 30
+xmr refresh '{}'
+xmr get_transfers '{"out":true,"pending":true,"pool":true}'
+```
+
+Look for the payout's address and amount in `destinations` of the `out`, `pending` and `pool` entries. A send
+the daemon relayed but the wallet reported as an error is recorded from the pool **without `destinations`**,
+with `amount` the total it spent less change (the payout plus the fee). Treat any `pending` or `out` transfer
+created after the failure (its `timestamp`) that has no destinations as **this payout** until you have proven
+otherwise, for example by matching it to another payout's transaction ID; never requeue or release while one
+is unexplained.
+
+Then open *Resolve payout N* on that row; its summary repeats the payout's kind, amount, recipient and short
+order ID (for example "Resolve payout 7: refund 0.001 BTC to alice, order 2d6b549f"), so check that it is the
+payout you reconciled before confirming. Every action asks for your password (and authenticator code when
 enrolled), is recorded in the audit trail and the order history, and applies only if the payout is still in
 the state you saw, so a double click or a second administrator cannot queue it twice:
 
@@ -176,43 +215,81 @@ the state you saw, so a double click or a second administrator cannot queue it t
   Include pending and pool transfers in that check, and if the wallet shows the transaction use **Mark
   sent** instead.
 - **Release held payout** (held): the payout goes back to the queue and the next pass sends it once.
-  Refused while a credited deposit for the order is still conflicted or below the threshold. For a payout
+  Refused (409, nothing changed) while a credited deposit for the order is still conflicted or below the
+  threshold. The watcher releases its own hold once the deposit confirms again; a hold from a restore or a
+  suspension stays until you release it, which works once the deposit has confirmed again (the watcher keeps
+  reading that order's deposits while the payout is held, whatever its age). For a payout
   held by a restore the form also asks you to tick "I checked the wallet ... no transaction ... was
   broadcast"; the server refuses the release without it and records the confirmation in the audit trail
-  and the order history. If the wallet shows the transaction use **Mark sent** instead.
+  and the order history. If the wallet shows the transaction use **Mark sent** instead. A payout that was
+  held for an account suspension when the backup was taken keeps that hold behind the restore marker
+  (*Held after a restore from backup and for an account suspension*): releasing it needs both the wallet
+  confirmation and "Payout address checked".
+- **Use the account's current address** (held, or failed with a pre-broadcast error; A-121): offered when the
+  recipient's saved payout address for the currency differs from the payout's. Saving a payout address never
+  moves a payout that already has one, because anyone with the account's password can save one; the owner
+  is notified instead ("N unsent payout(s) still use your previous address (orders …); an administrator
+  must confirm the change"). The form shows the payout's address and the account's current address with the
+  time it last changed ("change time not recorded" for an address saved before this was tracked). Check the
+  current address with the account owner through a channel you trust, tick "Current address checked" and
+  confirm. The payout keeps its state and nothing is sent: release or requeue it afterwards as above (a
+  suspension hold still needs "Payout address checked"). The audit row records the old and the new address;
+  the order history and the recipient's notification say that it moved, without the address. Refused (409,
+  nothing changed) for a payout being sent or stuck in sending, an *outcome unknown* failure and anything
+  held or marked by a restore from backup, since those may already have been broadcast; also when either
+  address changed since the page loaded (reload and check again), without the tick (400), or after another
+  administrator's action on the payout.
+
+Each of these forms repeats the wallet check above in one line next to the checkbox.
 
 ### Handle a payment-review flag
 
-The watcher flags a deposit once (`payments.flagged`): it writes a system note ending "Moderator review
-required." to the order history and notifies every moderator and administrator ("Payment review needed for
-order <first 8 characters of the order ID>"). Open **Moderation desk → Payment review**
-(`/moderator#payment-review`): it lists flagged deposits newest first (the 100 most recent, with a notice when
-older ones are cut) with the full order ID linking to the order, amount, full transaction ID, reason and
-flag time. A moderator or administrator who is not party to the order can open its page read-only: history
-with the flag note, the deposit ledger (while the currency's wallet is configured) and any payout. No buyer or
+The watcher flags a deposit (`payments.flagged`): it writes a system note ending "Moderator review
+required." to the order history and notifies every moderator and administrator who is not suspended
+("Payment review needed for order <first 8 characters of the order ID>"). A locked transfer, a deposit after settlement or the deposits of a payout below the minimum automatic payout are flagged once.
+A credited deposit that falls back below the threshold (conflicted, missing, or at a lower depth after a
+reorg) is announced once per episode while the order is open or its payout unsent: the buyer and the vendor
+are notified too (staff who are party to the order get that notification instead of the review one), and if
+it confirms again and later regresses again it is announced again. Nothing is announced while the node is
+behind the highest tip recorded (a restarted node catching up). Open **Moderation desk → Payment review**
+(`/moderator#payment-review`): it lists every open flag first, oldest first and never cut, then the 100 most
+recently flagged others with their count, each with the full order ID linking to the order, amount, full
+transaction ID, reason and flag time (the latest flag note for that deposit). A flag is open while its deposit
+is a locked transfer, a deposit after settlement or part of a payout below the minimum, or while a credited deposit's regression has not confirmed
+again; the reason is read from the deposit's current confirmations. A moderator or administrator who is not
+party to the order can open its page read-only: history with the flag note, the deposit ledger (while the currency's wallet is configured) and any payout. No buyer or
 vendor action is offered, the order actions refuse staff, and digital delivery content stays hidden unless
 the order is disputed.
 
 | Reason on the desk | What happened | What the application already did |
 | --- | --- | --- |
 | Credited deposit conflicted or missing | A deposit counted toward payment was double-spent, replaced, reorganised away or is no longer in the wallet. | Order state unchanged. Any unsent payout for the order is held (one queued later starts held). If the deposit confirms again the watcher lifts its own hold. |
+| Credited deposit below threshold (N of T confirmations) | A deposit counted toward payment is back at a lower depth, usually a chain reorganisation (it may sit at 0 confirmations in the mempool). | As above: order unchanged, unsent payout held until it reaches the threshold again. |
+| Credited deposit confirmed again (N confirmations) | The flagged regression ended: the deposit reached the threshold again. Listed after the open flags. | The watcher lifted its own hold; a pending payout is sent on the next pass that reads the order. Nothing to do. |
 | Locked transfer (unlock time) | A Monero transfer with a non-zero `unlock_time`. | Never counted toward payment or paid out. The buyer was told to send an ordinary transfer. |
 | Deposit confirmed after settlement, not paid out | Extra funds confirmed after the order's single release or refund was queued (completed or resolved orders, or a cancellation that already queued a refund). | Not paid out: an order has exactly one payout. |
+| Below the minimum automatic payout, not paid out | The order's release or refund counted less than the minimum automatic payout: 0.0001 BTC for any Bitcoin payout (the network fee is taken from the amount, so a smaller one can never be sent), 0.001 XMR for a Monero refund (the fee is paid on top). Usually a stray deposit to a cancelled order's address. | No payout row was queued; the order kept its final state. The buyer and the vendor were told it was not sent. A later deposit that lifts the sum to the minimum is paid out with it and closes the flag. Otherwise see step 4 below. |
 
 What staff can do:
 
 1. Look the transaction up in the wallet (the `btc` and `xmr` helpers from steps 2 and 3; for incoming funds use
    `btc -rpcwallet=opsecmkt gettransaction <txid>` or
    `xmr get_transfer_by_txid '{"txid":"<txid>"}'`).
-2. A conflicted deposit that confirms again needs nothing. One that is gone for good means the order was
-   never fully funded: leave its held payout held (*Release held payout* is refused while the deposit is
-   conflicted) and talk to both parties through Messages. If either party opens a dispute, the moderator
-   resolves it on the desk as usual; the resulting payout is held too.
+2. A conflicted or below-threshold deposit that confirms again needs nothing. One that is gone for good
+   means the order was never fully funded: leave its held payout held (/admin offers no *Release* while the
+   deposit is below the threshold, and the server refuses one) and talk to both parties through Messages. If
+   either party opens a dispute, the moderator resolves it on the desk as usual; the resulting payout is held
+   too.
 3. Locked transfers and extra funds after settlement sit in the pooled wallet. They normally belong to the
    buyer. Agree a return address with the buyer through Messages (ideally signed with their verified PGP key),
    send the funds back **by hand from the wallet** (`sendtoaddress` / `transfer`), and record it.
+4. Deposits below the minimum automatic payout are too small to send on their own: a Bitcoin amount at or
+   below the fee cannot be sent with the fee taken from it. Decide with the parties whether to leave them in the
+   pooled wallet or return them by hand with the wallet paying the fee (`sendtoaddress` with
+   `subtractfeefromamount` false, or `transfer`), and record whatever you did as below. A flag stays open until
+   a payout includes the deposits.
 
-There is no web action to dismiss a flag or pay out a flagged deposit, and a flag stays on the desk. A
+There is no web action to dismiss a flag or pay out a flagged deposit, and an open flag stays on the desk. A
 manual refund is recorded as a **written note** (an order-history event plus an audit row), **never as a
 payout row**: `payouts.order_id` is unique, so the order's single release or refund owns that row; do not
 insert a payout and do not use *Mark sent* on the order's payout for a manual transfer. Record the note with
@@ -241,9 +318,19 @@ copies like any other secret:
 
 ```sh
 btc -rpcwallet=opsecmkt backupwallet /data/opsecmkt-wallet.bak
+btc getblockcount                          # record this height with the backup (pruned nodes, below)
 docker compose cp bitcoin:/data/opsecmkt-wallet.bak ./opsecmkt-wallet.bak
 xmr query_key '{"key_type":"mnemonic"}'   # write the seed down offline; or copy the /wallet volume while stopped
 ```
+
+**The local Bitcoin node is pruned by default, which limits how old a restorable wallet backup can be.** A
+backup restored with `restorewallet` loads only if the height recorded with it is at or above the node's
+current `pruneheight` (`btc getblockchaininfo`); otherwise bitcoind refuses with "Prune: last wallet
+synchronisation goes beyond pruned data". Take wallet backups often enough that the latest one stays inside
+the prune window. For an older backup, restore the whole `bitcoin_data` volume from a copy taken with
+bitcoind stopped, or run the node unpruned (a full re-download) until the wallet has loaded and rescanned:
+see [Local node pruning](operator-guide.md#local-node-pruning). Monero wallets restore and refresh through a
+pruned daemon (upstream documentation; not rehearsed here).
 
 ### Reconcile a restored database before enabling payouts
 
@@ -253,8 +340,17 @@ deposits and moves funded orders to *Paid*. The script also converts pending, se
 to manual recovery holds; reconfirming a deposit or saving an address cannot release these holds
 automatically. Failed payouts stay failed but are marked as possibly sent (`send_ambiguous`, error prefixed
 `Restored from backup:`): one the wallet had rejected before the backup may have been requeued and sent after
-it, so requeueing it also needs the wallet confirmation. The script prints how many payouts it held and how
-many failed payouts it marked.
+it, so requeueing it also needs the wallet confirmation. A payout held for an account suspension keeps that
+text behind the restore marker, so releasing it still needs the payout address check. The script prints how
+many payouts it held and how many failed payouts it marked, and adds one audit row recording the gate and those
+counts.
+
+**Only `scripts/restore.sh` applies this protection.** A host or volume snapshot, a managed-database
+point-in-time recovery or a manual `pg_restore` brings payouts back as `pending` with no gate, and the
+application sends them as soon as it starts, even those already paid after that point in time. After any such
+restore, keep the application stopped and apply the protection SQL in
+[UPGRADING.md, section 6](../UPGRADING.md#6-backups-now-need-the-wallets-too) to the restored database
+**before starting the application**, then follow the steps below.
 
 The restored database knows nothing that happened after the backup. An order that was completed, cancelled or
 resolved **and paid out** after the backup comes back in its earlier state with **no payout row**. If its buyer
@@ -289,11 +385,14 @@ and no web action that clears the gate or records a lost payout.
 3. **Resolve the payouts the restore held or marked** on the admin page, with the wallet checks in
    [section 5](#5-recover-a-held-or-failed-payout) (*Mark sent*, *Release held payout*, *Requeue payout*).
    Nothing is sent while the gate is set.
-4. **List every wallet send since the backup was taken** and match each to a payout by transaction ID:
+4. **List every wallet send since the backup was taken** and match each to a payout by transaction ID, with the
+   complete checks from [section 5](#5-recover-a-held-or-failed-payout) (`from` is a block mined before the
+   backup; the Monero listing runs twice, 20 s or more apart, after a `refresh`):
 
    ```sh
-   btc -rpcwallet=opsecmkt listtransactions "*" 1000                  # "send" entries after the backup time
-   xmr get_transfers '{"out":true,"pending":true,"pool":true}'       # "out", "pending" and "pool" transfers
+   btc -rpcwallet=opsecmkt listsinceblock "$from"                       # "send" entries after the backup time
+   xmr refresh '{}'
+   xmr get_transfers '{"out":true,"pending":true,"pool":true}'         # "out", "pending" and "pool" transfers
    docker compose exec -T db psql -X -U opsecmkt -d opsecmkt_restored \
      -c "SELECT currency, txid, order_id, state FROM payouts WHERE txid <> '' ORDER BY currency, txid"
    ```
@@ -302,6 +401,8 @@ and no web action that clears the gate or records a lost payout.
    a written note (see "Handle a payment-review flag"; leave it alone) or a **payout the restore lost**. Find
    the order of each lost payout from the amount sent (Bitcoin amounts ×100 000 000 in satoshi, Monero
    destination amounts are already in atomic units; fees are separate) and the address it went to, in step 6.
+   A Monero `pending` or `out` transfer after the backup with no `destinations` is an unmatched send too (its
+   `amount` includes the fee): it counts as a lost payout until you prove otherwise.
    If a send cannot be matched to exactly one order, an order settled after the backup is missing from the
    restored database, or the order already has a `pending` payout queued since the restore, keep the gate set:
    restore a newer backup or get operator assistance.
@@ -311,13 +412,16 @@ and no web action that clears the gate or records a lost payout.
    (`AGE_RECIPIENT=age1YOUR_PUBLIC_RECIPIENT ./scripts/backup.sh backups/reconciled-YYYYMMDD.dump.age`, with
    `DATABASE_URL` in `.env` already naming the restored database) and keep it with the wallet transaction IDs
    and this reconciliation record.
-8. **Clear the gate**, with the app still stopped, as below. It must report `UPDATE 1`.
+8. **Clear the gate**, with the app still stopped, as below. It must end "Cleared the payout recovery gate;
+   committed."
 9. **Restart and let users back in**:
    - Clearnet: `docker compose up -d`, then start the reverse proxy again (`sudo systemctl start caddy`).
    - Tor: remove the client authorization
-     (`docker compose exec -T tor rm /var/lib/tor/marketplace/authorized_clients/operator.auth`), run
-     `docker compose up -d` (which also starts the mirror if you run one) and `docker compose restart tor`, and
-     delete `operator-auth.pem`.
+     (`docker compose exec -T tor rm /var/lib/tor/marketplace/authorized_clients/operator.auth`),
+     run `docker compose up -d` and `docker compose restart tor`, and delete `operator-auth.pem`. If you run the
+     onion mirror, `up -d` starts it again only when `mirror` is in `COMPOSE_PROFILES` in `.env`; add it first if
+     it is missing (see [Optional onion mirror](operator-guide.md#optional-onion-mirror)), and check that
+     `docker compose ps tor-mirror` shows it running.
 
 #### Record a payout sent after the backup (step 6)
 
@@ -462,25 +566,46 @@ the check in one transaction and ends "Recorded the payout as sent; committed." 
 - one new audit row ("Recorded payout N ... sent after the backup"). Existing audit rows are never changed.
 
 The recipient is not notified; tell them through Messages if needed. The SQL refuses to run once the gate is
-cleared: if you find a lost payout later, stop the app and set the gate again first (the settings statement in
-[UPGRADING.md](../UPGRADING.md#6-backups-now-need-the-wallets-too)).
+cleared: if you find a lost payout later, stop the app and set the gate again first (the `settings` and
+`audit_events` statements in [UPGRADING.md](../UPGRADING.md#6-backups-now-need-the-wallets-too), between its
+`BEGIN` and `COMMIT`).
 
 #### Clear the gate (step 8)
 
 Only after every step above, with the app stopped and the reconciled database backed up. Clearing the gate is
 your assertion that reconciliation is complete; it does not discover missing settlements or release individual
-holds.
+holds. Give your administrator handle: the SQL clears the gate and adds one audit row naming you ("Payout
+recovery gate cleared by ...") in one transaction, and changes nothing for a handle that is not an
+administrator or when the gate is not set.
 
 <!-- runbook-sql: clear-gate -->
 ```sh
-db_sql <<'SQL'
+db_sql -v handle=YOUR_ADMIN_HANDLE <<'SQL'
 BEGIN;
-UPDATE settings SET value='false' WHERE key='payments_recovery_required';
+SELECT c.problem, c.problem = 'none' AS ready FROM (SELECT CASE
+  WHEN NOT EXISTS (SELECT 1 FROM users WHERE handle=:'handle' AND role='admin') THEN 'no administrator with that handle'
+  WHEN NOT EXISTS (SELECT 1 FROM settings WHERE key='payments_recovery_required' AND value='true') THEN 'the recovery gate is not set'
+  ELSE 'none' END AS problem) AS c
+\gset c_
+\if :c_ready
+WITH cleared AS (
+  UPDATE settings SET value='false' FROM users u
+  WHERE settings.key='payments_recovery_required' AND settings.value='true' AND u.handle=:'handle' AND u.role='admin'
+  RETURNING u.id, u.handle)
+INSERT INTO audit_events(user_id,action)
+SELECT id, 'Payout recovery gate cleared by ' || handle || ' after reconciling the restored database with the wallets' FROM cleared;
 COMMIT;
+\echo 'Cleared the payout recovery gate; committed.'
+\else
+ROLLBACK;
+\echo 'Refused; nothing was changed:' :c_problem
+\endif
 SQL
 ```
 
-It must print `UPDATE 1`; then go on with step 9.
+It must print `INSERT 0 1` and end "Cleared the payout recovery gate; committed."; then go on with step 9.
+"Refused; nothing was changed:" gives the reason (a mistyped or non-administrator handle, or a gate already
+cleared) and rolls back.
 
 ## 7. Manual regtest check (Bitcoin)
 

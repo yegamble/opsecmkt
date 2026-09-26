@@ -58,12 +58,16 @@ test('BTC and XMR: partial payment, intake pause, confirmation, fulfillment and 
     await admin.getByRole('button', { name: 'Publish listing' }).click();
     await buyer.goto(`/?q=${encodeURIComponent(title)}`);
     await buyer.getByRole('link', { name: title, exact: true }).click();
+    await buyer.waitForURL(/\/product\?id=/);
     const productURL = buyer.url();
     await buyer.getByRole('link', { name: 'Review order draft' }).click();
     await buyer.getByLabel('Reference currency').selectOption(currency);
     await buyer.getByRole('button', { name: 'Create unfunded draft' }).click();
+    // Measure the draft page, not the checkout page mid-navigation (CI 36261986487 measured 504 px unstyled).
+    await buyer.waitForURL(/\/order\?id=/);
     await fitsAt(buyer, `${currency} draft`);
     await buyer.getByRole('button', { name: 'Request payment address' }).click();
+    await buyer.waitForURL(/&saved=1$/);
     const orderURL = buyer.url();
     await expect(buyer.locator('.page-head .badge')).toHaveText('Awaiting payment');
     await fitsAt(buyer, `${currency} awaiting payment`);
@@ -96,7 +100,7 @@ test('BTC and XMR: partial payment, intake pause, confirmation, fulfillment and 
     // Existing addresses were monitored while intake was paused; now resume new requests.
     const resume = admin.locator('form', { has: admin.getByRole('button', { name: `Enable new ${currency} payments` }) });
     await resume.getByLabel('Current password', { exact: true }).fill(password);
-    await resume.getByRole('button').click();
+    await submit(admin, resume.getByRole('button'));
     await second.reload();
     await expect(second.getByRole('button', { name: 'Request payment address' })).toBeVisible();
     await admin.goto(orderURL);
@@ -111,6 +115,12 @@ test('BTC and XMR: partial payment, intake pause, confirmation, fulfillment and 
     }
     await buyer.reload();
     if (digital) await expect(buyer.getByRole('region', { name: 'Digital delivery' })).toContainText('Fixture digital delivery token');
+    // A-122: the complete form states the release (amount, recipient, difference from the price) and refuses
+    // to complete until it is ticked.
+    const release = buyer.getByRole('checkbox', { name: `Release ${digital ? '0.5 XMR' : '0.001 BTC'} (test network) to wallet_admin — exactly the price. This is final.`, exact: true });
+    await expect(release).toHaveAttribute('required', '');
+    await expect(buyer.locator('input[name="amount_seen"]')).toHaveValue(String(total));
+    await release.check();
     await buyer.getByRole('button', { name: 'Confirm receipt and complete' }).click();
     await expect(buyer.locator('.page-head .badge')).toHaveText('Completed');
     await expect.poll(async () => ((await (await request.get(`${rpc}/test/state`)).json()).payouts as any[]).filter(p => p.currency === currency).length).toBe(1);
@@ -148,8 +158,10 @@ test('funded dispute: encrypted moderator evidence, independent resolution and o
   const moderator = await signedIn(browser, baseURL, 'wallet_moderator', 'wallet-browser-moderator-password-123', true);
   await setRole(admin, 'wallet_moderator', 'moderator');
   await moderator.goto('/account');
-  await moderator.getByLabel('PGP public key', { exact: true }).fill(pgpFixture('recipient.pub.asc'));
-  await moderator.getByRole('button', { name: 'Save profile' }).click();
+  const profile = moderator.locator('form', { has: moderator.getByRole('button', { name: 'Save profile' }) });
+  await profile.getByLabel('PGP public key', { exact: true }).fill(pgpFixture('recipient.pub.asc'));
+  await profile.getByLabel('Current password', { exact: true }).fill('wallet-browser-moderator-password-123'); // A-152
+  await profile.getByRole('button', { name: 'Save profile' }).click();
   await buyer.goto('/account');
   const refundAddress = 'bcrt1qfixturebuyerrefund00000000';
   const addressForm = buyer.locator('form', { has: buyer.getByRole('button', { name: 'Save BTC address' }) });
@@ -161,6 +173,7 @@ test('funded dispute: encrypted moderator evidence, independent resolution and o
   await buyer.getByRole('link', { name: 'Review order draft' }).click();
   await buyer.getByRole('button', { name: 'Create unfunded draft' }).click();
   await buyer.getByRole('button', { name: 'Request payment address' }).click();
+  await buyer.waitForURL(/&saved=1$/);
   const orderURL = buyer.url();
   const address = (await buyer.locator('.payment-address .mono').innerText()).trim();
   expect((await request.post(`${rpc}/test/deposit`, { data: { address, amount: 100_000 } })).ok()).toBeTruthy();
@@ -197,8 +210,12 @@ test('funded dispute: encrypted moderator evidence, independent resolution and o
   await expect(admin.getByRole('button', { name: 'Resolve dispute' })).toHaveCount(0);
   await moderator.goto('/moderator');
   await fitsAt(moderator, 'moderation desk');
-  await moderator.getByRole('radio', { name: 'Refund to buyer' }).check();
+  // A-161: each outcome states its payout; the decision warns against identifying text; a ticked confirmation is required.
+  await expect(moderator.getByRole('radio', { name: 'Release 0.001 BTC (test network) to wallet_admin — exactly the price', exact: true })).toBeVisible();
+  await moderator.getByRole('radio', { name: 'Refund 0.001 BTC (test network) to wallet_buyer — exactly the price', exact: true }).check();
+  await expect(moderator.getByLabel('Decision', { exact: true })).toHaveAccessibleDescription(/^Stored unencrypted\..*Never include an address, real name or tracking number/);
   await moderator.getByLabel('Decision', { exact: true }).fill('Fixture review completed: return the confirmed test payment to the buyer.');
+  await moderator.getByRole('checkbox', { name: 'I checked the amount and who receives it for the outcome I chose. Resolving is final.' }).check();
   await moderator.getByRole('button', { name: 'Resolve dispute' }).click();
   await buyer.goto(orderURL);
   await expect(buyer.locator('.page-head .badge')).toHaveText('Resolved');
@@ -218,12 +235,14 @@ test('vendor cancels a paid physical order, refunds once and restores stock', as
   try {
     await buyer.goto('/?q=Wallet%20BTC%20journey');
     await buyer.getByRole('link', { name: 'Wallet BTC journey', exact: true }).click();
+    await buyer.waitForURL(/\/product\?id=/);
     const productURL = buyer.url();
     const stock = buyer.locator('.key-values div', { has: buyer.getByText('Available stock', { exact: true }) });
     const before = Number(await stock.locator('dd').innerText());
     await buyer.getByRole('link', { name: 'Review order draft' }).click();
     await buyer.getByRole('button', { name: 'Create unfunded draft' }).click();
     await buyer.getByRole('button', { name: 'Request payment address' }).click();
+    await buyer.waitForURL(/&saved=1$/);
     const orderURL = buyer.url();
     const address = (await buyer.locator('.payment-address .mono').innerText()).trim();
     const beforePayouts = (await (await request.get(`${rpc}/test/state`)).json()).payouts.length;
@@ -234,6 +253,8 @@ test('vendor cancels a paid physical order, refunds once and restores stock', as
     await vendor.goto(orderURL);
     await expect(vendor.getByLabel('Reason (optional)')).toHaveAccessibleDescription(/^Stored unencrypted\..*Never include an address, real name or tracking number/);
     await vendor.getByLabel('Reason (optional)').fill('Fixture vendor unable to fulfill this paid order.');
+    // A-122: cancelling a paid order states the refund and needs its confirmation.
+    await vendor.getByRole('checkbox', { name: 'Refund 0.001 BTC (test network) to wallet_buyer — exactly the price. This is final.', exact: true }).check();
     await submit(vendor, vendor.getByRole('button', { name: 'Cancel order', exact: true }));
     await buyer.reload();
     await expect(buyer.locator('.page-head .badge')).toHaveText('Cancelled');
@@ -266,6 +287,7 @@ test('automatic digital delivery and administrator recovery of a rejected payout
     await buyer.getByLabel('Reference currency').selectOption('XMR');
     await buyer.getByRole('button', { name: 'Create unfunded draft' }).click();
     await buyer.getByRole('button', { name: 'Request payment address' }).click();
+    await buyer.waitForURL(/&saved=1$/);
     const orderURL = buyer.url();
     const orderID = new URL(orderURL).searchParams.get('id')!;
     await expect(buyer.locator('main')).not.toContainText(content);
@@ -276,6 +298,7 @@ test('automatic digital delivery and administrator recovery of a rejected payout
     await expect(buyer.getByRole('region', { name: 'Digital delivery' })).toContainText(content);
     const before = (await (await request.get(`${rpc}/test/state`)).json()).payouts.length;
     expect((await request.post(`${rpc}/test/fail-next-send`, { data: { currency: 'XMR' } })).ok()).toBeTruthy();
+    await buyer.getByRole('checkbox', { name: 'Release 0.5 XMR (test network) to wallet_admin — exactly the price. This is final.', exact: true }).check();
     await buyer.getByRole('button', { name: 'Confirm receipt and complete' }).click();
     await reloadUntil(buyer, async () => { await expect(buyer.locator('.payment-figures div', { has: buyer.getByText('Payout status', { exact: true }) })).toContainText('Failed', { timeout: 500 }); });
     await admin.goto('/admin');
@@ -283,6 +306,31 @@ test('automatic digital delivery and administrator recovery of a rejected payout
     await expect(payout).toContainText('Fixture rejected send before broadcast');
     const checks = (await (await request.get(`${rpc}/test/state`)).json()).checks;
     await expect.poll(async () => (await (await request.get(`${rpc}/test/state`)).json()).checks).toBeGreaterThan(checks + 2);
+    expect((await (await request.get(`${rpc}/test/state`)).json()).payouts).toHaveLength(before);
+    // A-121: saving a new address leaves the failed payout on its address and names the order to its owner; the
+    // administrator moves it to the current address after checking it, and the requeue below pays that address once.
+    // (With these two, wallet_admin uses all ten password confirmations its window allows.)
+    const moved = '5' + 'b'.repeat(94);
+    await admin.goto('/account');
+    const save = admin.locator('form', { has: admin.getByRole('button', { name: 'Save XMR address' }) });
+    await save.locator('input[name="address"]').fill(moved);
+    await save.getByLabel('Current password', { exact: true }).fill(password);
+    await submit(admin, save.getByRole('button'));
+    await admin.goto('/notifications');
+    await expect(admin.locator('main')).toContainText(`1 unsent payout(s) still use your previous address (order ${orderID.slice(0, 8)}); an administrator must confirm the change`);
+    await admin.goto('/admin');
+    payout = admin.locator('tr', { has: admin.getByText(orderID, { exact: true }) });
+    await payout.locator('summary').click();
+    const move = payout.locator('form', { has: admin.getByRole('button', { name: "Use the account's current address", exact: true }) });
+    await expect(move).toContainText(`Payout address: ${'5' + 'a'.repeat(94)}. Account's current address: ${moved} (last changed `);
+    await expect(move).toContainText(/last changed \d{4}-\d\d-\d\d \d\d:\d\d UTC\)/);
+    await move.getByRole('checkbox', { name: 'Current address checked: the account owner confirmed it is theirs', exact: true }).check();
+    await move.getByLabel('Current password', { exact: true }).fill(password);
+    await submit(admin, move.getByRole('button'));
+    await expect(admin.locator('main')).toContainText('Moved payout');
+    payout = admin.locator('tr', { has: admin.getByText(orderID, { exact: true }) });
+    await expect(payout).toContainText('Fixture rejected send before broadcast');
+    await expect(payout.getByRole('button', { name: "Use the account's current address", exact: true })).toHaveCount(0);
     expect((await (await request.get(`${rpc}/test/state`)).json()).payouts).toHaveLength(before);
     await payout.locator('summary').click();
     let requeue = payout.locator('form', { has: admin.getByRole('button', { name: 'Requeue payout', exact: true }) });
@@ -294,9 +342,10 @@ test('automatic digital delivery and administrator recovery of a rejected payout
     await payout.locator('summary').click();
     requeue = payout.locator('form', { has: admin.getByRole('button', { name: 'Requeue payout', exact: true }) });
     await requeue.getByLabel('Current password', { exact: true }).fill(password);
-    await requeue.getByRole('button').click();
+    await submit(admin, requeue.getByRole('button'));
     await reloadUntil(buyer, async () => { await expect(buyer.locator('.payment-figures div', { has: buyer.getByText('Payout status', { exact: true }) })).toContainText('Sent', { timeout: 500 }); });
     expect((await (await request.get(`${rpc}/test/state`)).json()).payouts).toHaveLength(before + 1);
+    expect(((await (await request.get(`${rpc}/test/state`)).json()).payouts as any[]).at(-1)).toEqual(expect.objectContaining({ currency: 'XMR', address: moved }));
     await admin.reload();
     await expect(admin.locator('tr', { has: admin.getByText(orderID, { exact: true }) })).not.toContainText('Requeue payout');
     await expect(admin.locator('main')).toContainText('Requeued payout');

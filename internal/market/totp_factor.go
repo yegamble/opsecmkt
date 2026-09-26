@@ -14,9 +14,9 @@ type totpFactor struct{}
 
 func (totpFactor) Name() string { return "totp" }
 
-func (totpFactor) Enrolled(ctx context.Context, db *sql.DB, userID string) (bool, error) {
+func (totpFactor) Enrolled(ctx context.Context, q rowQuerier, userID string) (bool, error) {
 	var on bool
-	err := db.QueryRowContext(ctx, "SELECT totp_enabled FROM users WHERE id=$1", userID).Scan(&on)
+	err := q.QueryRowContext(ctx, "SELECT totp_enabled FROM users WHERE id=$1", userID).Scan(&on)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}
@@ -33,8 +33,10 @@ func (totpFactor) Verify(c *actionCtx, userID string) error {
 		if err != nil {
 			return err
 		}
-		_, err = c.Tx.ExecContext(c.Ctx(), "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", userID, "Used a recovery code to sign in ("+strconv.Itoa(left)+" remaining)")
-		return err
+		if _, err = c.Tx.ExecContext(c.Ctx(), "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", userID, "Used a recovery code to sign in ("+strconv.Itoa(left)+" remaining)"); err != nil {
+			return err
+		}
+		return notifyOwner(c.Ctx(), c.Tx, userID, "A recovery code was used to sign in to your account ("+strconv.Itoa(left)+" remaining).")
 	}
 	return c.A.checkTOTP(c.Ctx(), c.Tx, userID, c.Form.Get("code"))
 }

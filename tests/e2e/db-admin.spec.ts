@@ -1,11 +1,13 @@
-import { createPublicKey, verify } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { createPublicKey, randomBytes, verify } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { expect, test } from '@playwright/test';
 import { ADMIN, uniqueHandle } from './db-fixtures';
 import { enrollTOTP, pgpFixture, RECIPIENT_FINGERPRINT, setRole, signedIn, submitStatus } from './db-helpers';
 
 // Administrator forms submitted against a real database with JavaScript disabled. Each test signs the shared
-// administrator in once (the per-handle sign-in limit is 10 per 10 minutes across all db specs).
+// administrator in once (the per-handle sign-in limit, 10 failed passwords per 10 minutes, no longer counts
+// correct sign-ins since A-153, but one sign-in per test keeps the specs independent of it).
 
 test('promoting a buyer to vendor opens the vendor desk; the listing form shows validation errors', async ({ browser, baseURL }) => {
   const vendorHandle = uniqueHandle('promoted');
@@ -18,7 +20,7 @@ test('promoting a buyer to vendor opens the vendor desk; the listing form shows 
   const lockedHandle = uniqueHandle('lostfactor');
   const lockedPassword = 'browser-lost-factor-123';
   const locked = await signedIn(browser, baseURL, lockedHandle, lockedPassword, true);
-  await enrollTOTP(locked);
+  await enrollTOTP(locked, lockedPassword);
 
   const admin = await signedIn(browser, baseURL, ADMIN.handle, ADMIN.password, false);
   await admin.goto('/admin');
@@ -41,6 +43,7 @@ test('promoting a buyer to vendor opens the vendor desk; the listing form shows 
   await expect(admin.locator('body')).toHaveText('Cannot change your own administrator role');
   await setRole(admin, vendorHandle, 'vendor');
   await expect(admin.getByRole('status')).toHaveText('Changes saved.');
+  await admin.waitForLoadState();
   await admin.reload();
   await expect(newest).toHaveText(`${vendorHandle} · vendor`);
   // The administrator's row names the account and both roles; the account gets its own row, and the
@@ -130,6 +133,7 @@ test('promoting a buyer to vendor opens the vendor desk; the listing form shows 
 
   // Editing with a stale stock value is refused rather than overwriting a change made meanwhile.
   await vendor.getByRole('link', { name: `Edit ${title}` }).click();
+  await vendor.waitForURL(/\/listing-edit\?id=/);
   const editURL = vendor.url();
   const second = await vendor.context().newPage();
   await second.goto(editURL);
@@ -164,6 +168,7 @@ test('site settings, account suspension, operator key, canary signature checks a
   await siteName.fill(renamed);
   expect(await submitStatus(admin, saveSettings)).toBe(303);
   await expect(admin).toHaveURL(/\/admin\?saved=1$/);
+  await admin.waitForLoadState();
   await admin.reload();
   await expect(siteName).toHaveValue(renamed);
   await expect(admin.locator('table').last()).toContainText('Saved marketplace settings');
@@ -244,6 +249,7 @@ test('site settings, account suspension, operator key, canary signature checks a
   await keyPanel.getByLabel('Armored public key').fill(pgpFixture('recipient.pub.asc'));
   expect(await submitStatus(admin, () => keyPanel.getByRole('button', { name: 'Save operator key' }).click())).toBe(303);
   await expect(admin).toHaveURL(/\/admin\?saved=1#transparency$/);
+  await admin.waitForLoadState();
   await admin.reload();
   await expect(keyPanel.locator('.badge')).toHaveText('Configured');
   await expect(keyPanel.locator('.fingerprint')).toHaveText(RECIPIENT_FINGERPRINT);
@@ -302,4 +308,87 @@ test('site settings, account suspension, operator key, canary signature checks a
     expect(verify(null, exported, spki, Buffer.from(fields.signature, 'hex'))).toBe(true);
   }
   await admin.context().close();
+});
+
+// A-116: the payout resolve forms are the last human check before a possible double pay. Their help text and
+// confirmation labels must wrap inside the payouts table (not run off under table{white-space:nowrap}), and each
+// summary must say which payout it resolves. No wallet runs here, so the payouts are seeded in SQL: a refund held
+// by a restore from backup and an account suspension (both confirmations), an ambiguous failed release and a definite
+// failed release whose recipient has since saved another address (A-121: the move to the current address). A fresh
+// account is made administrator for this test only, so the shared administrator's sign-in budget is untouched.
+test('payout resolve forms wrap inside the payouts table and name what they resolve', async ({ browser, baseURL }) => {
+  const database = process.env.E2E_DATABASE_URL!;
+  const sql = (query: string) => execFileSync('psql', [database, '-v', 'ON_ERROR_STOP=1', '-qtAc', query], { encoding: 'utf8' }).trim();
+  const hex = (bytes: number) => randomBytes(bytes).toString('hex');
+  const adminHandle = uniqueHandle('payout_admin');
+  const buyer = uniqueHandle('refund_recipient_long_handle');
+  const vendor = uniqueHandle('release_recipient_long_handle');
+  const [buyerID, vendorID, productID, refundOrder, releaseOrder, movedOrder] = [hex(16), hex(16), hex(16), hex(32), hex(32), hex(32)];
+  const admin = await signedIn(browser, baseURL, adminHandle, 'browser-payout-admin-password-123', true, 1280);
+  try {
+    sql(`UPDATE users SET role='admin' WHERE handle='${adminHandle}';
+      INSERT INTO users(id,handle,password_hash,role) VALUES ('${buyerID}','${buyer}','!','buyer'),('${vendorID}','${vendor}','!','vendor');
+      UPDATE users SET payout_xmr='5${'b'.repeat(94)}',payout_xmr_changed=now() WHERE id='${vendorID}';
+      INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock,archived)
+        VALUES ('${productID}','${vendorID}','Payout layout fixture','Seeded by db-admin.spec.ts','Other','Worldwide','physical',100000,500000000000,0,true);
+      INSERT INTO orders(id,buyer_id,product_id,currency,amount,state)
+        VALUES ('${refundOrder}','${buyerID}','${productID}','BTC',100000,'cancelled'),('${releaseOrder}','${buyerID}','${productID}','XMR',500000000000,'completed'),
+          ('${movedOrder}','${buyerID}','${productID}','XMR',500000000000,'completed');
+      INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state,error,send_ambiguous) VALUES
+        ('${refundOrder}','refund','${buyerID}','BTC',100000,'tb1q${'q'.repeat(58)}','held',
+         'Restored from backup: verify in the wallet before releasing; this payout may already have been sent. Suspended account: payout held when the recipient''s account was suspended; an administrator must check the payout address before releasing it.',false),
+        ('${releaseOrder}','release','${vendorID}','XMR',500000000000,'5${'a'.repeat(94)}','failed',
+         'wallet call failed without a definite answer: Post "http://monero-wallet-rpc:18083/json_rpc": context deadline exceeded (Client.Timeout exceeded while awaiting headers)',true),
+        ('${movedOrder}','release','${vendorID}','XMR',500000000000,'5${'a'.repeat(94)}','failed',
+         'The wallet rejected the send; nothing was broadcast. monero-wallet-rpc error -17: not enough money',false);`);
+    const ids = sql(`SELECT id FROM payouts WHERE order_id IN ('${refundOrder}','${releaseOrder}','${movedOrder}') ORDER BY order_id='${movedOrder}', order_id='${releaseOrder}'`).split('\n');
+    const summaries = [
+      `Resolve payout ${ids[0]}: refund 0.001 BTC to ${buyer}, order ${refundOrder.slice(0, 8)}`,
+      `Resolve payout ${ids[1]}: release 0.5 XMR to ${vendor}, order ${releaseOrder.slice(0, 8)}`,
+      `Resolve payout ${ids[2]}: release 0.5 XMR to ${vendor}, order ${movedOrder.slice(0, 8)}`,
+    ];
+    await admin.goto('/admin#payouts');
+    for (const [i, summary] of summaries.entries()) {
+      await expect(admin.locator('details.payout-actions > summary').filter({ hasText: new RegExp(`^Resolve payout ${ids[i]}\\b`) })).toHaveText(summary);
+      const details = admin.locator('details.payout-actions', { has: admin.getByText(summary, { exact: true }) });
+      await details.locator('summary').click();
+      const row = admin.locator('tr', { has: details });
+      // The resolve cell and the long-value cells wrap instead of widening the table.
+      expect(await details.evaluate(e => getComputedStyle(e).whiteSpace), summary).toBe('normal');
+      for (const cell of await row.locator('td.mono').all()) {
+        expect(await cell.evaluate(e => getComputedStyle(e).whiteSpace), summary).toBe('normal');
+      }
+      // Whichever control has focus (the browser scrolls it into view), every help text and label of its form lies
+      // inside the table's scroller, so the administrator reads the whole confirmation they are ticking.
+      for (const form of await details.locator('form').all()) {
+        for (const control of await form.locator('input:not([type="hidden"])').all()) {
+          await control.focus();
+          const clipped = await form.evaluate(f => {
+            const wrap = f.closest('.table-wrap')!.getBoundingClientRect();
+            return [...f.querySelectorAll('.help, label')].filter(e => {
+              const box = e.getBoundingClientRect();
+              return box.left < wrap.left - 1 || box.right > wrap.right + 1;
+            }).map(e => e.textContent!.trim().slice(0, 60));
+          });
+          expect(clipped, `${summary}: clipped with ${await control.getAttribute('name')} focused`).toEqual([]);
+        }
+      }
+    }
+    await expect(admin.locator('details.payout-actions input[name="not_broadcast"]')).toHaveCount(2);
+    await expect(admin.locator('details.payout-actions input[name="address_checked"]')).toHaveCount(2);
+    await expect(admin.locator('details.payout-actions input[name="op"][value="repoint"]')).toHaveCount(1);
+    for (const width of [1280, 390, 320]) {
+      await admin.setViewportSize({ width, height: 900 });
+      expect(await admin.evaluate(() => document.documentElement.scrollWidth), `/admin at ${width}px`).toBeLessThanOrEqual(width);
+    }
+  } finally {
+    // db-payments.spec.ts expects no payouts, and no other spec should meet an extra administrator.
+    sql(`DELETE FROM payouts WHERE order_id IN ('${refundOrder}','${releaseOrder}','${movedOrder}');
+      DELETE FROM orders WHERE id IN ('${refundOrder}','${releaseOrder}','${movedOrder}');
+      DELETE FROM products WHERE id='${productID}';
+      DELETE FROM users WHERE id IN ('${buyerID}','${vendorID}');
+      DELETE FROM sessions WHERE user_id=(SELECT id FROM users WHERE handle='${adminHandle}');
+      UPDATE users SET role='buyer' WHERE handle='${adminHandle}';`);
+    await admin.context().close();
+  }
 });

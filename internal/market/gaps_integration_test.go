@@ -53,8 +53,8 @@ func TestModeratorViewsDisputedOrderReadOnly(t *testing.T) {
 		mustNotContain(t, body, `action="/orders/`, `action="/reviews"`, `action="/disputes"`, "Confirm receipt", "Open a dispute")
 		if name == "moderator" {
 			// The actions themselves refuse a non-party (404, as on GET), so nothing can be changed from here.
-			w.expect("/orders/complete", session, form("order_id", order), 404, "Order not found")
-			w.expect("/orders/cancel", session, form("order_id", order, "from", statePaid), 404, "Order not found")
+			w.expect("/orders/complete", session, payoutConfirmed(form("order_id", order), 0), 404, "Order not found")
+			w.expect("/orders/cancel", session, payoutConfirmed(form("order_id", order, "from", statePaid), 0), 404, "Order not found")
 			w.expect("/reviews", session, form("order_id", order, "rating", "5"), 404, "Order not found")
 		}
 	}
@@ -71,7 +71,7 @@ func TestModeratorViewsDisputedOrderReadOnly(t *testing.T) {
 	if err := w.e.DB.QueryRow("SELECT id FROM disputes WHERE order_id=$1", order).Scan(&disputeID); err != nil {
 		t.Fatal(err)
 	}
-	w.expect("/resolve", w.mod, form("id", disputeID, "outcome", "refund", "resolution", "Key verified as invalid; refund the buyer."), 303, "")
+	w.expect("/resolve", w.mod, payoutConfirmed(form("id", disputeID, "outcome", "refund", "resolution", "Key verified as invalid; refund the buyer."), 0), 303, "")
 	body := w.page("/order?id="+order, w.mod, 200)
 	mustContain(t, body, "Key verified as invalid; refund the buyer.", "Resolved")
 	// Parties see the dispute record on their own order page as well.

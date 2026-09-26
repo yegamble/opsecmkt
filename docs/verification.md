@@ -33,6 +33,35 @@ Reading the real-chain rows:
 
 No row exists, so nothing is claimed, for: a public test network (testnet4, signet, stagenet or testnet), a deployed instance, Tor onion reachability, or a release. The only tag is `v0.1.0-alpha.1`, still a draft GitHub release. Monero behaviour when the daemon is killed mid-send is untested (war-room A-45).
 
+## Onion-mirror commands with the installer's `.env` (war-room A-140) — 2026-09-24
+
+Local Compose configuration check, not a running stack: Docker 29.8.0, Compose 5.5.1, a scratch `.env` in the
+installer's format for Tor with the internal database (`COMPOSE_FILE='compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.internal-db.yaml'`).
+With `COMPOSE_PROFILES='internal-db'`, the old guide command failed both ways:
+`docker compose --profile mirror config --quiet` and `docker compose --profile mirror up -d --dry-run tor-mirror`
+printed `service "app" depends on undefined service "db": invalid compose project`. With
+`COMPOSE_PROFILES='internal-db,mirror'`, `docker compose --dry-run up -d` planned `db`, `app`, `tor` and
+`tor-mirror` and `config --services` listed all four. Dry runs were not reliable enough for CI: 20 repeats of
+`docker compose --dry-run up -d` gave 1 or 2 spurious failures (`app is missing dependency db`), and an
+earlier dry-run version of the check failed 3 of 8 runs (that error, or a plan missing the `tor-mirror` lines).
+`scripts/test-mirror-commands.sh` therefore resolves commands with `config --services`; it passed for all
+four installer configurations, and failed with the message above when the guide's `up -d`
+line was temporarily replaced by the old command. CI runs it in the Tor rows with the mirror on (first green in
+run 36034975984). QA then found one check flaky: it piped `config --services` into `grep -q` under `pipefail`,
+so Compose sometimes hit a broken pipe after the first match (4/10 full-script runs under load on macOS, 2/200 of
+the pipeline on `ubuntu:24.04`); the list is now read in full before matching.
+
+## Tor restarts with the app (war-room A-134) — 2026-09-24
+
+Local Compose check with stand-in containers, not onion traffic: Docker 29.8.0, Compose 5.5.1, project `a134churn`, a scratch copy of `compose.yaml` and `compose.tor.yaml` with an override that replaces the app and Tor images by `alpine:3.20` running `sleep` (nothing built or pulled). Sequence: `up -d app tor`; then `up -d` with a changed app setting and one added service on the backend network (standing in for UPGRADING's node profiles); then `docker compose restart app`; then `down -v`.
+
+| `compose.tor.yaml` | App address after the change | Tor `StartedAt` after the app was recreated | After `restart app` |
+|---|---|---|---|
+| before (`depends_on: [app]`) | moved 172.19.0.2 → 172.19.0.4; the new service took .2 | unchanged (14:24:34.458) | unchanged |
+| after (`restart: true`) | unchanged in that run (172.18.0.2) | Compose logged `tor Stopping` → `app Recreated` → `tor Started`; 14:28:36.556 → 14:29:42.146 | restarted |
+
+With the mirror profile, `tor` and `tor-mirror` both restarted when the app was recreated; a mirror started with `--profile mirror up -d tor-mirror` was **not** restarted by a later plain `up -d` without the profile (hence the documents' advice to put `mirror` in `COMPOSE_PROFILES`). Limits found in the same session: pulling the new `compose.tor.yaml` alone does not restart a running Tor (only an app recreate or restart does, which then also restarts the pre-existing Tor container); `docker compose stop app` followed by `up -d` does not restart Tor; and `docker compose up --dry-run --force-recreate tor tor-mirror` on a project without the mirror profile creates and starts `tor-mirror`, which is why the documents name `tor-mirror` only for installs that run it. CI checks the setting in every Tor row of the Compose job; the runtime behaviour above is a local run, not CI. Onion reachability after churn is still not verified here.
+
 ## Review fixes — 2026-09-23
 
 A fresh-eyes review of the merged packages found eight defects. Each was reproduced by a failing test first (`internal/market/review_fixes_integration_test.go`), then fixed:

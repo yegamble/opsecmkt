@@ -348,3 +348,61 @@ func TestSuspensionDoesNotDeadlockWithWatcherHoldingPayout(t *testing.T) {
 	}
 	p.suspendedHeld("after the suspension", order)
 }
+
+// A-112: a restore from backup holds a payout already held for an account suspension again. scripts/restore.sh
+// (and the manual SQL in UPGRADING.md) keep the suspension text after the restore prefix, so releasing it still
+// needs the payout address check as well as the wallet check, and restoring twice changes nothing more.
+func TestRestoreKeepsSuspensionHold(t *testing.T) {
+	p := newPayEnv(t)
+	p.setPayoutAddress(p.vendor, "fake-testnet-vendor")
+	order := p.completedWithPayout("tx-restore-suspended")
+	p.check(p.do("POST", "/admin/suspend", p.adminSess, suspendForm("suspend", p.vendor.Handle)), 303)
+	p.suspendedHeld("after suspension", order)
+	for range 2 {
+		for _, q := range restorePayoutSQL {
+			if _, err := p.DB.Exec(q); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	restoredSuspended := restoredHold + " " + suspendedHold
+	if st, e := p.payoutError(order); st != "held" || e != restoredSuspended {
+		t.Fatalf("restored suspension hold: %s %q", st, e)
+	}
+	id := p.payoutID(order)
+	admin := html.UnescapeString(p.page("/admin", p.adminSess))
+	mustContain(t, admin, "Held after a restore from backup and for an account suspension — may already have been sent; check the wallet and the payout address before releasing")
+	s := resolveSection(t, admin, id)
+	mustContain(t, s, `name="address_checked" value="confirmed" required`, `name="not_broadcast" value="confirmed" required`,
+		"fake-testnet-vendor", "listsinceblock", "get_transfers")
+	release := func(extra url.Values) (int, string) {
+		t.Helper()
+		f := url.Values{"payout_id": {id}, "op": {"release"}, "password": {testPassword}}
+		for k, v := range extra {
+			f[k] = v
+		}
+		w := p.do("POST", "/admin/payout", p.adminSess, f)
+		return w.Code, w.Body.String()
+	}
+	if code, body := release(url.Values{"not_broadcast": {"confirmed"}}); code != 409 || !strings.Contains(body, "payout address") {
+		t.Fatalf("release with only the wallet check: %d %s", code, body)
+	}
+	if code, body := release(url.Values{"address_checked": {"confirmed"}}); code != 400 || !strings.Contains(body, "restore from backup") {
+		t.Fatalf("release with only the address check: %d %s", code, body)
+	}
+	if st, e := p.payoutError(order); st != "held" || e != restoredSuspended {
+		t.Fatalf("refused releases changed the payout: %s %q", st, e)
+	}
+	if code, body := release(url.Values{"not_broadcast": {"confirmed"}, "address_checked": {"confirmed"}}); code != 303 {
+		t.Fatalf("release with both checks: %d %s", code, body)
+	}
+	if st, _, _, _ := p.payout(order); st != "pending" {
+		t.Fatalf("released payout is %s", st)
+	}
+	if n := p.count("SELECT count(*) FROM audit_events WHERE action LIKE $1", "Released held payout "+id+" %; restored from backup, administrator confirmed the wallet shows no broadcast transaction; held for an account suspension, administrator checked the payout address fake-testnet-vendor%"); n != 1 {
+		t.Fatalf("audit for the release with both checks: %d", n)
+	}
+	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE 'Administrator confirmed the wallet shows no broadcast transaction%and checked the payout address%'", order); n != 1 {
+		t.Fatalf("order history for the release with both checks: %d", n)
+	}
+}

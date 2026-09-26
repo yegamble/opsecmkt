@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 	"html/template"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -40,6 +41,7 @@ type App struct {
 	key              []byte
 	mu               sync.Mutex
 	limits           map[string]bucket
+	signInLogAt      time.Time                       // last "sign-in limiter refusing" log line (guarded by mu)
 	payMu            sync.RWMutex                    // guards payments and unavailable once Start has run
 	checkMu          sync.Mutex                      // serialises provider checks (refreshProviders)
 	payments         map[string]PaymentProvider      // currency -> working provider; empty = payments disabled
@@ -183,6 +185,52 @@ func (a *App) allow(key string, n int) bool {
 	a.limits[key] = b
 	return b.Count <= n
 }
+
+// refund takes back one request that allow counted against key (a sign-in whose password was correct). An
+// entry left with no count is removed.
+func (a *App) refund(key string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	b, ok := a.limits[key]
+	if !ok {
+		return
+	}
+	if b.Count <= 1 {
+		delete(a.limits, key)
+		return
+	}
+	b.Count--
+	a.limits[key] = b
+}
+
+// logSignInRefusals writes "sign-in limiter refusing handles=N", at most once a minute, while N > 0 handles
+// have spent their sign-in budget, so the operator can see a lockout without the log naming anyone.
+func (a *App) logSignInRefusals() {
+	a.mu.Lock()
+	now, n := time.Now(), 0
+	if now.Sub(a.signInLogAt) >= time.Minute {
+		for k, b := range a.limits {
+			if strings.HasPrefix(k, "auth:") && b.Count >= b.Limit && !now.After(b.Until) {
+				n++
+			}
+		}
+		if n > 0 {
+			a.signInLogAt = now
+		}
+	}
+	a.mu.Unlock()
+	if n > 0 {
+		log.Printf("sign-in limiter refusing handles=%d", n)
+	}
+}
+
+// limited reports whether key has already spent its budget of n, without counting a request.
+func (a *App) limited(key string, n int) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	b, ok := a.limits[key]
+	return ok && !time.Now().After(b.Until) && b.Count >= n
+}
 func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; img-src 'self'; font-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -201,7 +249,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/healthz" {
 		if a.db != nil {
 			if err := a.db.PingContext(ctx); err != nil {
-				http.Error(w, "unavailable", 503)
+				serverError(w, r, 503, "unavailable", errorCause(err))
 				return
 			}
 		}
@@ -236,7 +284,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			user = u
 		} else if err != sql.ErrNoRows {
-			http.Error(w, "Service unavailable", 503)
+			serverError(w, r, 503, "Service unavailable", errorCause(err))
 			return
 		}
 	}
@@ -262,7 +310,8 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if origin := r.Header.Get("Origin"); origin != "" {
 			u, e := url.Parse(origin)
 			if e != nil || u.Host != r.Host || (u.Scheme != "http" && u.Scheme != "https") {
-				http.Error(w, "Cross-origin request rejected", 403)
+				// Fixed copy naming no header value; the usual cause is a reverse proxy rewriting Host (A-138).
+				http.Error(w, "Origin does not match Host; if this market runs behind a reverse proxy, the proxy must forward the Host header.", 403)
 				return
 			}
 		}
@@ -343,12 +392,12 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		d.CSRF = a.csrf(token)
 		d.Mode = a.mode
 		applyPreviews(&d)
-		a.render(w, d)
+		a.render(w, r, d)
 		return
 	}
 	var installed bool
 	if err := a.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM settings WHERE key='installed')").Scan(&installed); err != nil {
-		http.Error(w, "Service unavailable", 503)
+		serverError(w, r, 503, "Service unavailable", errorCause(err))
 		return
 	}
 	if !installed && page != "setup" {
@@ -373,16 +422,19 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := a.load(r, &d); err != nil {
 		var he *httpError
-		if err == sql.ErrNoRows {
+		switch {
+		case err == sql.ErrNoRows:
 			http.NotFound(w, r)
-		} else if errors.As(err, &he) {
+		case !errors.As(err, &he):
+			serverError(w, r, 500, "Unable to load this page", errorCause(err))
+		case he.Code >= 500:
+			serverError(w, r, he.Code, he.Msg, errorCause(he))
+		default:
 			http.Error(w, he.Msg, he.Code)
-		} else {
-			http.Error(w, "Unable to load this page", 500)
 		}
 		return
 	}
-	a.render(w, d)
+	a.render(w, r, d)
 }
 
 // pageData is the state a page render starts from, before a.load fills it.
@@ -394,12 +446,18 @@ func (a *App) pageData(r *http.Request, page, token string, user *User) PageData
 	return d
 }
 
-func (a *App) render(w http.ResponseWriter, d PageData) { a.renderStatus(w, d, http.StatusOK) }
+func (a *App) render(w http.ResponseWriter, r *http.Request, d PageData) {
+	a.renderStatus(w, r, d, http.StatusOK)
+}
 
-func (a *App) renderStatus(w http.ResponseWriter, d PageData, code int) {
+func (a *App) renderStatus(w http.ResponseWriter, r *http.Request, d PageData, code int) {
 	var b bytes.Buffer
 	if err := a.templates.ExecuteTemplate(&b, "page:"+d.Page, d); err != nil {
-		http.Error(w, "Unable to render page", 500)
+		cause := errorCause(err)
+		if !strings.HasPrefix(cause, "template:") {
+			cause = "template:page:" + d.Page
+		}
+		serverError(w, r, 500, "Unable to render page", cause)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

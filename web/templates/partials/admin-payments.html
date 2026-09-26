@@ -1,4 +1,6 @@
 {{/* P5 Payments owns. admin-payments: provider panels */}}
+{{define "admin-payments:wallet-check"}}<p class="help">Wallet check: Bitcoin <code>listsinceblock</code> from a block before the backup or failed send (not <code>listtransactions</code>, which shows only recent entries); Monero <code>refresh</code>, then <code>get_transfers</code> with out, pending and pool twice, where a pending or outgoing transfer since then without destinations is this payout until proven otherwise.</p>
+{{end}}
 {{define "admin-payments"}}<section class="panel admin-payments">
 <h2 id="payment-providers">Payment providers</h2>
 {{if eq (index .Settings "payments_recovery_required") "true"}}<div class="alert" role="status"><strong>Outbound payments paused for restore reconciliation.</strong> All payouts, including newly queued ones, stay unsent until the operator reconciles restored orders and payments with the wallets and clears the recovery lock. See the recovery runbook; releasing an individual payout does not clear this lock.</div>{{end}}
@@ -41,7 +43,7 @@
 </div>
 <h3 id="payouts">Payouts</h3>
 <p>{{if eq .PayoutsAttention 0}}No payouts need attention.{{else}}<strong>{{.PayoutsAttention}} {{if eq .PayoutsAttention 1}}payout needs{{else}}payouts need{{end}} attention</strong>, listed first, oldest first.{{end}}{{if .PayoutHistoryLimit}} Showing every payout that needs attention and the {{.PayoutHistoryLimit}} most recent other payouts; older payouts that need no attention are not listed.{{end}}</p>
-<p>Each payout is attempted once. Failed or stuck payouts are never retried automatically: check the wallet before paying anything manually. A payout for which the wallet reported a pre-broadcast error was not broadcast; one whose outcome is unknown (the wallet call timed out or its reply was lost) or that is stuck in sending may have been. After checking the wallet you can release a held payout, requeue a payout that was not broadcast (confirming that explicitly when the outcome was unknown), or record one the wallet shows as sent. Each action needs your password and is audited.</p>
+<p>Each payout is attempted once. Failed or stuck payouts are never retried automatically: check the wallet before paying anything manually. A payout for which the wallet reported a pre-broadcast error was not broadcast; one whose outcome is unknown (the wallet call timed out or its reply was lost) or that is stuck in sending may have been. After checking the wallet you can release a held payout, requeue a payout that was not broadcast (confirming that explicitly when the outcome was unknown), or record one the wallet shows as sent. Saving a payout address never moves a payout that already has one: you can move a held payout, or one the wallet definitely rejected, to the recipient's current saved address after checking that address with the account owner. A payout that is being sent or may have been broadcast is never moved. Each action needs your password and is audited.</p>
 <div class="table-wrap">
 <table>
 <thead>
@@ -65,17 +67,19 @@
 <td class="mono">{{if .TxID}}{{.TxID}}{{else}}{{.Error}}{{end}}</td>
 <td>{{.Updated}}</td>
 <td>{{if or (eq .State "held") (eq .State "failed") (and (eq .State "sending") .Attention)}}<details class="payout-actions">
-<summary>Resolve payout {{.ID}}</summary>
+<summary>Resolve payout {{.ID}}: {{.Kind}} {{.Amount}} {{.Currency}} to {{.Recipient}}, order {{.OrderShort}}</summary>
 {{if and .AddressCheck (not .Address)}}<p class="help">This payout was held when the recipient's account was suspended and has no payout address. It can be released after the recipient saves one (once the account is restored); check that address with them first.</p>
+{{else if .Waiting}}{{$threshold := .Threshold}}<p class="help">The payment watcher holds this payout while a credited deposit of {{if .OrderLink}}<a class="text-link" href="/order?id={{.OrderID}}">this order</a>{{else}}this order{{end}} is conflicted or below the confirmation threshold, and releases it by itself once the deposit confirms again. There is nothing to release until then:</p>
+<ul class="held-deposits">{{range .Waiting}}<li>Deposit <span class="mono">{{.TxID}}:{{.Index}}</span> to deposit address <span class="mono">{{.Address}}</span>: {{if lt .Confirmations 0}}conflicted or missing from the wallet{{else}}{{.Confirmations}} of {{$threshold}} confirmations{{end}}</li>{{end}}</ul>
 {{else if eq .State "held"}}<form class="stack" method="post" action="/admin/payout">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="payout_id" value="{{.ID}}">
 <input type="hidden" name="op" value="release">
 {{if .AddressCheck}}<p class="help">This payout was held when the recipient's account was suspended: someone with the account's password may have changed its payout address. Payout address: <span class="mono">{{.Address}}</span>. Release only after checking this address with the account owner through a channel you trust. It will be sent once.</p>
 <label class="check"><input type="checkbox" name="address_checked" value="confirmed" required> Payout address checked: the account owner confirmed this address is theirs</label>
-{{else if .Ambiguous}}<p class="help">This payout was restored from a backup and may already have been sent. Release only if the wallet shows no transaction {{if .Address}}to {{.Address}} {{end}}for this amount; otherwise mark it sent with the wallet's transaction ID. It will be sent once.</p>
-<label class="check"><input type="checkbox" name="not_broadcast" value="confirmed" required> I checked the wallet (including pending and pool transfers): no transaction to this address for this amount was broadcast</label>
-{{else}}<p class="help">Release only after checking the wallet: this payout was never sent from this database's point of view, and it will be sent once.</p>
+{{end}}{{if .Ambiguous}}<p class="help">This payout was restored from a backup and may already have been sent. Release only if the wallet shows no transaction {{if .Address}}to {{.Address}} {{end}}for this amount; otherwise mark it sent with the wallet's transaction ID. It will be sent once.</p>
+{{template "admin-payments:wallet-check"}}<label class="check"><input type="checkbox" name="not_broadcast" value="confirmed" required> I checked the wallet (including pending and pool transfers): no transaction to this address for this amount was broadcast</label>
+{{else if not .AddressCheck}}<p class="help">Release only after checking the wallet: this payout was never sent from this database's point of view, and it will be sent once.</p>
 {{end}}{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button type="submit">Release held payout</button>
 </form>{{else}}<form class="stack" method="post" action="/admin/payout">
@@ -83,9 +87,20 @@
 <input type="hidden" name="payout_id" value="{{.ID}}">
 <input type="hidden" name="op" value="requeue">
 <p class="help">Requeue only if the wallet shows no transaction to {{.Address}} for this amount; it will be sent once more.</p>
-{{if .Ambiguous}}<label class="check"><input type="checkbox" name="not_broadcast" value="confirmed" required> I checked the wallet (including pending and pool transfers): no transaction to this address for this amount was broadcast</label>
+{{if .Ambiguous}}{{template "admin-payments:wallet-check"}}<label class="check"><input type="checkbox" name="not_broadcast" value="confirmed" required> I checked the wallet (including pending and pool transfers): no transaction to this address for this amount was broadcast</label>
 {{end}}{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button type="submit">Requeue payout</button>
+</form>{{end}}
+{{if .Repoint}}<form class="stack" method="post" action="/admin/payout">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="payout_id" value="{{.ID}}">
+<input type="hidden" name="op" value="repoint">
+<input type="hidden" name="from_address" value="{{.Address}}">
+<input type="hidden" name="to_address" value="{{.CurrentAddress}}">
+<p class="help">The recipient's saved {{.Currency}} payout address differs from this payout's. Payout address: <span class="mono">{{.Address}}</span>. Account's current address: <span class="mono">{{.CurrentAddress}}</span> ({{if .CurrentChanged}}last changed {{.CurrentChanged}}{{else}}change time not recorded{{end}}). Anyone with the account's password can change the saved address: move the payout only after the account owner confirms the current address through a channel you trust. Moving sends nothing and keeps the payout's status{{if eq .State "failed"}}: requeue it afterwards{{end}}.</p>
+<label class="check"><input type="checkbox" name="address_checked" value="confirmed" required> Current address checked: the account owner confirmed it is theirs</label>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
+<button type="submit">Use the account's current address</button>
 </form>{{end}}
 <form class="stack" method="post" action="/admin/payout">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">

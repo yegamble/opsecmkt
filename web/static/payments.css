@@ -27,7 +27,25 @@
 .payment-figures dd .badge,.payment-deposits .badge {
   margin-left:6px
 }
+/* Tables do not wrap (style.css), which also stops break-all. The deposit and payout tables wrap, so txids,
+   order IDs, wallet errors, payout states and the resolve forms stay inside the table's scroller and a whole row
+   fits a desktop page (A-116, A-148). Headings break only between words; cells keep a readable width. */
+.payment-deposits table,.admin-payments table {
+  white-space:normal
+}
+.payment-deposits th,.admin-payments th {
+  overflow-wrap:normal
+}
+.admin-payments td {
+  min-width:12ch
+}
+/* The deposit table's scroller takes keyboard focus (it holds no links or controls) so it can be scrolled. */
+.payment-deposits:focus-visible {
+  outline:3px solid var(--amber);
+  outline-offset:2px
+}
 .payment-deposits td.mono,.admin-payments td.mono {
+  min-width:16ch;
   overflow-wrap:anywhere;
   word-break:break-all
 }
@@ -40,8 +58,11 @@
 .payout-attention td {
   color:#ffdc9e
 }
+/* The resolve forms' help text and confirmations wrap inside their cell, so the whole "nothing was broadcast"
+   statement is readable while its checkbox has focus (A-116). */
 .payout-actions {
-  min-width:240px
+  white-space:normal;
+  min-width:18rem
 }
 .payout-actions summary {
   cursor:pointer;

@@ -8,11 +8,11 @@
 </div>
 </div>
 <div class="notice">
-<p>Resolving a dispute records a release or refund outcome and closes the order. This desk moves no funds itself; any payout or refund is handled by the payment system. You cannot resolve disputes on orders you are party to.</p>
+<p>Resolving a dispute records a release or refund outcome and closes the order. Resolving queues one payout of the whole counted amount to one party; the payment watcher sends it automatically. There is no split. Each outcome states the amount, who receives it and how it differs from the price. You cannot resolve disputes on orders you are party to.</p>
 </div>{{template "disputes-list" .}}
 <section aria-labelledby="payment-review">
 <h2 class="section-title" id="payment-review">Payment review</h2>
-<p class="help">TESTNET deposits the payment watcher flagged for staff review: a credited deposit that became conflicted or missing, a locked transfer, or a deposit confirmed after the order's single release or refund. Open the order to read its history and deposits (read-only). Nothing here moves funds; see “Handle a payment-review flag” in docs/testnet-runbook.md.</p>{{if .PaymentReviews}}{{if .PaymentReviewLimit}}<p class="help" role="note">Showing the {{.PaymentReviewLimit}} most recently flagged payments; older flags are not listed.</p>{{end}}<div class="table-wrap payment-reviews">
+<p class="help">TESTNET deposits the payment watcher flagged for staff review: a credited deposit that became conflicted or missing or fell back below the confirmation threshold, a locked transfer, a deposit confirmed after the order's single release or refund, or deposits whose release or refund is below the minimum automatic payout. Open the order to read its history and deposits (read-only). Nothing here moves funds; see “Handle a payment-review flag” in docs/testnet-runbook.md.</p>{{if .PaymentReviews}}<p>{{if eq .PaymentReviewsOpen 0}}No flags are open.{{else}}<strong>{{.PaymentReviewsOpen}} open {{if eq .PaymentReviewsOpen 1}}flag{{else}}flags{{end}}</strong>, all listed first, oldest first.{{end}} A flag stays open while its deposit is a locked transfer, a deposit received after settlement or part of a payout below the minimum, or while a credited deposit is still conflicted or below the threshold; one that confirmed again is listed after the open flags.{{if .PaymentReviewOthers}} {{.PaymentReviewOthers}} other {{if eq .PaymentReviewOthers 1}}flag{{else}}flags{{end}}.{{end}}</p>{{if .PaymentReviewLimit}}<p class="help" role="note">Showing the {{.PaymentReviewLimit}} most recent of {{.PaymentReviewOthers}} other flags; older ones are not listed. Open flags are never cut.</p>{{end}}<div class="table-wrap payment-reviews">
 <table>
 <thead>
 <tr>
@@ -28,7 +28,7 @@
 <td><a class="text-link mono" href="/order?id={{.OrderID}}">{{.OrderID}}</a><br><span class="muted">{{.OrderState}}</span></td>
 <td>{{.Amount}} {{.Currency}} <span class="badge testnet">TESTNET</span></td>
 <td class="mono">{{.TxID}}:{{.Index}}</td>
-<td>{{.Reason}}</td>
+<td>{{if .Open}}<strong>Open:</strong> {{end}}{{.Reason}}</td>
 </tr>{{end}}</tbody>
 </table>
 </div>{{else}}<p class="muted">No payments are flagged for review.</p>{{end}}

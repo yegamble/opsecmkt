@@ -27,8 +27,8 @@
 <dd>{{.Status}}</dd>
 </div>
 </dl>
-{{if .Deposits}}<h3>Deposits seen by the wallet</h3>
-<div class="table-wrap payment-deposits">
+{{if .Deposits}}<h3 id="deposits-heading">Deposits seen by the wallet</h3>
+<div class="table-wrap payment-deposits" tabindex="0" role="region" aria-labelledby="deposits-heading">
 <table>
 <thead>
 <tr>

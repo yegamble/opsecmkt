@@ -136,6 +136,53 @@ jobs:
             profiles+=(--profile mirror)
           fi
           docker compose "${files[@]}" "${profiles[@]}" config --quiet
+          # torrc resolves app:8080 once at startup, so Tor must restart whenever the app is recreated.
+          if [ "$MODE" = tor ]; then
+            docker compose "${files[@]}" "${profiles[@]}" config --format json | python3 -c '
+          import json, sys
+          services = json.load(sys.stdin)["services"]
+          names = ["tor"] + (["tor-mirror"] if sys.argv[1] == "on" else [])
+          for name in names:
+              app = services.get(name, {}).get("depends_on", {}).get("app", {})
+              if app.get("condition") != "service_started" or app.get("restart") is not True:
+                  sys.exit(f"{name} must depend on app with condition service_started and restart: true, got {app!r}")
+          print("restart with app:", ", ".join(names))
+          ' "$MIRROR"
+          fi
+          # Local nodes are pruned by default; BITCOIN_PRUNE_MB=0 and a blank MONERO_PRUNE_FLAGS run full nodes.
+          check_nodes() {
+            docker compose "${files[@]}" "${profiles[@]}" config --format json | python3 -c '
+          import json, sys
+          services = json.load(sys.stdin)["services"]
+          bitcoin, monero = services["bitcoin"]["command"], services["monero"]["command"]
+          pruned = sys.argv[1] == "pruned"
+          if "-datadir=/data" not in bitcoin:
+              sys.exit(f"bitcoin must run with -datadir=/data, got {bitcoin!r}")
+          prune = [arg for arg in bitcoin if arg.startswith("-prune")]
+          if pruned and not (len(prune) == 1 and prune[0].startswith("-prune=") and prune[0][7:].isdigit() and int(prune[0][7:]) >= 550):
+              sys.exit(f"bitcoin must run pruned with -prune=<MiB >= 550>, got {prune!r}")
+          if not pruned and prune != ["-prune=0"]:
+              sys.exit(f"a full bitcoin node must run with -prune=0, got {prune!r}")
+          for flag in ("--stagenet", "--data-dir=/home/monero/.bitmonero", "--restricted-rpc", "--confirm-external-bind"):
+              if flag not in monero:
+                  sys.exit(f"monero lost {flag}: {monero!r}")
+          if "" in monero:
+              sys.exit(f"monero command has an empty argument: {monero!r}")
+          want = ["--prune-blockchain", "--sync-pruned-blocks"] if pruned else []
+          if [arg for arg in monero if "prune" in arg] != want:
+              sys.exit(f"monero prune flags must be {want!r}, got {monero!r}")
+          print(sys.argv[1], "nodes:", prune[0], " ".join(want) or "no monero prune flags")
+          ' "$1"
+          }
+          check_nodes pruned
+          BITCOIN_PRUNE_MB=0 MONERO_PRUNE_FLAGS='' check_nodes full
+      # The step above passes explicit --profile flags, which hides a documented command that drops the profiles
+      # an installed .env lists. This one writes COMPOSE_FILE and COMPOSE_PROFILES as scripts/install.sh does.
+      - name: Documented mirror commands with the installer's .env
+        if: matrix.mode == 'tor' && matrix.mirror == 'on'
+        env:
+          DATABASE: ${{ matrix.database }}
+        run: bash scripts/test-mirror-commands.sh "$DATABASE"
   container:
     name: Container runtime (${{ matrix.database }})
     runs-on: ubuntu-24.04

@@ -28,6 +28,8 @@ type fakeProvider struct {
 	incomingErr, checkErr error
 	syncing               bool
 	checks                int
+	// height is the tip Check reports (0 = not reported).
+	height int64
 }
 
 type fakeSend struct {
@@ -80,11 +82,18 @@ func (f *fakeProvider) Drop(txid string) {
 }
 
 // Check reports the scripted wallet state (see providerChecker).
-func (f *fakeProvider) Check(context.Context) (bool, error) {
+func (f *fakeProvider) Check(context.Context) (nodeStatus, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.checks++
-	return f.syncing, f.checkErr
+	return nodeStatus{Syncing: f.syncing, Tip: f.height}, f.checkErr
+}
+
+// SetHeight scripts the tip Check reports.
+func (f *fakeProvider) SetHeight(height int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.height = height
 }
 
 // SetWallet scripts the wallet: an Incoming error, a Check error and the syncing flag.

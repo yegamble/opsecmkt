@@ -46,8 +46,8 @@ anything else stops the preview at startup. `ADDR` is ignored in preview mode.
 
 ### Docker installation
 
-Install Docker Engine/Desktop with Compose v2, OpenSSL and curl. Start a local
-marketplace with one command:
+Install Docker Engine/Desktop with Compose v2.17 or later, OpenSSL and curl.
+Start a local marketplace with one command:
 
 ```sh
 ./scripts/install.sh --local
@@ -62,7 +62,17 @@ listing. No cryptocurrency wallet is required. Keep `.env` private and retain it
 across restarts. The installer refuses to overwrite an existing configuration.
 
 Use `APP_PORT=8081 ./scripts/install.sh --local` if port 8080 is occupied. The
-chosen port is saved in `.env`. The shortcut is for local HTTP development only;
+chosen port is saved in `.env`. Any second checkout of this marketplace on the
+same host (for example next to a running install, or to rehearse recovery) also
+needs its own Compose project name:
+`COMPOSE_PROJECT_NAME=opsecmkt-rehearsal APP_PORT=8081 ./scripts/install.sh --local`.
+Compose names containers and volumes after the project (`opsecmkt` by default),
+not the directory, so two checkouts sharing a name would replace each other's
+containers, and `docker compose down --volumes` in one would delete the other's
+data. The installer saves the name in `.env` and refuses to install when
+containers of that project were created from another directory, or when its
+volumes exist with no containers. Never change the name of an existing install:
+it would start on new, empty volumes. The shortcut is for local HTTP development only;
 for production HTTPS, Tor, external databases or optional test-network nodes, use
 the interactive installer instead:
 
@@ -71,9 +81,15 @@ the interactive installer instead:
 ```
 
 The interactive clearnet path keeps secure cookies on by default; finish setup
-through your HTTPS reverse proxy. See the [operator guide](docs/operator-guide.md)
-for deployment choices. Both paths keep the database and optional node RPC ports
-private.
+through your HTTPS reverse proxy, which must forward the original `Host` header
+(nginx needs `proxy_set_header Host $host;`). For each coin it defaults to a local
+test-network node in Docker, **pruned** to save disk: allow about 5 GB (Bitcoin
+testnet4) to 8 GB (signet) and up to 20 GB for Monero stagenet (estimates), and
+hours for the first sync. Answer `no` to the pruning question for a full node,
+or choose `external` or `disabled` instead; see
+[Local node pruning](docs/operator-guide.md#local-node-pruning). See the
+[operator guide](docs/operator-guide.md) for deployment choices. Both paths keep
+the database and optional node RPC ports private.
 
 ```sh
 docker compose up -d --build  # rebuild/start subsequent runs

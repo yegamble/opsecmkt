@@ -61,15 +61,19 @@ test('enroll TOTP, sign in through the challenge and spend a recovery code once'
   const step = currentStep();
   const wrong = ['000000', '111111', '222222'].find(c => ![-1, 0, 1, 2].some(d => totp(secret, step + d) === c))!;
   await page.getByLabel('6-digit code from your app').fill(wrong);
+  await page.getByLabel('Current password').fill(password);
   await page.getByRole('button', { name: 'Verify and turn on' }).click();
   await expect(page.locator('body')).toContainText('Code incorrect');
   await page.goto('/totp');
   await expect(page.locator('.page-head .badge')).toHaveText('Not enrolled');
   await page.getByLabel('6-digit code from your app').fill(totp(secret, step));
+  // Adding the first sign-in factor needs the current password too (A-152).
+  await page.getByLabel('Current password').fill(password);
   await page.getByRole('button', { name: 'Verify and turn on' }).click();
   await expect(page.locator('.page-head .badge')).toHaveText('Enabled');
   const codes = await page.locator('.recovery-codes li').allInnerTexts();
   expect(codes).toHaveLength(10);
+  await page.waitForLoadState();
   await page.reload();
   await expect(page.locator('.recovery-codes')).toHaveCount(0);
   await page.goto('/account');
@@ -86,6 +90,11 @@ test('enroll TOTP, sign in through the challenge and spend a recovery code once'
   await page.getByLabel('Recovery code').fill(codes[0]);
   await page.getByRole('button', { name: 'Use recovery code' }).click();
   await expect(page.locator('.account-name')).toHaveText(handle);
+  // The owner is told, and the sign-in names its method (A-152).
+  await page.goto('/notifications');
+  await expect(page.locator('main')).toContainText('A recovery code was used to sign in to your account (9 remaining).');
+  await page.goto('/account');
+  await expect(page.locator('main')).toContainText('Signed in with password and recovery code');
 
   await signOutAndIn(page, handle, password);
   await page.getByText('Use a recovery code instead').click();

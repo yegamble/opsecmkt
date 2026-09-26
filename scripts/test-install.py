@@ -60,6 +60,13 @@ def wait_for(check, description, seconds=90):
     raise RuntimeError(description)
 
 
+def containers(directory, environment):
+    """The IDs of the Compose project's containers; a recreated container gets a new ID."""
+    listed = subprocess.run(['docker', 'compose', 'ps', '-aq'], cwd=directory, env=environment,
+                            capture_output=True, text=True, timeout=60, check=True)
+    return sorted(listed.stdout.split())
+
+
 def expect_status(client, url, status, data=None):
     try:
         with client.open(url, data=data, timeout=5) as response:
@@ -70,7 +77,7 @@ def expect_status(client, url, status, data=None):
     require(actual == status, f'Expected HTTP {status}, received {actual} for {url}')
 
 
-def exercise(repo, environment, log_path):
+def exercise(repo, environment, second, second_environment, log_path):
     with log_path.open('a') as log:
         require(run(['bash', 'scripts/install.sh', '--local'], repo, environment, log, 900) == 0,
                 'Local installer failed')
@@ -108,9 +115,53 @@ def exercise(repo, environment, log_path):
     wait_for(lambda: 'Get your marketplace ready' in page('/admin'),
              'Admin session or installation did not survive restart')
     expect_status(client, base + '/setup', 403)
+    # A second checkout on the same host. Under the same project name it is refused before writing
+    # anything; under its own name it installs, and its `down --volumes` leaves this installation alone.
+    first_containers = containers(repo, environment)
+    same_project = dict(environment, APP_PORT=second_environment['APP_PORT'])
+    with log_path.open('a') as log:
+        require(run(['bash', 'scripts/install.sh', '--local'], second, same_project, log, 60) != 0,
+                'A second checkout was installed under the same Compose project name')
+    require(not (second / '.env').exists(), 'The refused second checkout wrote a configuration')
+    text = log_path.read_text()
+    require('already has containers created from another directory' in text
+            and (str(repo) in text or str(repo.resolve()) in text), 'The refusal did not name the first checkout')
+    with log_path.open('a') as log:
+        require(run(['bash', 'scripts/install.sh', '--local'], second, second_environment, log, 900) == 0,
+                'Installer failed for a second checkout with its own COMPOSE_PROJECT_NAME')
+        saved = "COMPOSE_PROJECT_NAME='" + second_environment['COMPOSE_PROJECT_NAME'] + "'"
+        require(saved in (second / '.env').read_text().splitlines(), 'The project name was not saved in .env')
+        # No COMPOSE_PROJECT_NAME in the environment: the saved name alone must select the second project.
+        unnamed = {key: value for key, value in second_environment.items() if key != 'COMPOSE_PROJECT_NAME'}
+        require(run(['docker', 'compose', 'down', '--volumes', '--remove-orphans'], second, unnamed, log) == 0,
+                'Second checkout cleanup failed')
+    require(containers(repo, environment) == first_containers, 'The second checkout recreated the first one')
+    wait_for(lambda: 'Get your marketplace ready' in page('/admin'),
+             'The first installation did not survive a second checkout')
+    expect_status(client, base + '/setup', 403)
     return dict(installer='passed', wrong_setup_token='rejected', setup='passed',
                 admin_onboarding='passed', configured_title='passed', setup_lockout='passed',
-                existing_configuration='preserved', restart_admin_session='passed')
+                existing_configuration='preserved', restart_admin_session='passed',
+                second_checkout_same_project='refused', second_checkout_own_project_down_volumes='first_intact')
+
+
+def free_port():
+    with socket.socket() as sock:
+        sock.bind(('127.0.0.1', 0))
+        return sock.getsockname()[1]
+
+
+def copy_inputs(repo):
+    # Copy only deployment/build inputs. This excludes .env, Git/Claude worktrees,
+    # node_modules, reports, backups and other local artifacts by construction.
+    repo.mkdir()
+    for name in ('Dockerfile', '.dockerignore', 'go.mod', 'go.sum'):
+        shutil.copy2(ROOT / name, repo / name)
+    for compose in ROOT.glob('compose*.yaml'):
+        shutil.copy2(compose, repo / compose.name)
+    for name in ('cmd', 'internal', 'web', 'scripts'):
+        shutil.copytree(ROOT / name, repo / name, ignore=shutil.ignore_patterns(
+            '.env', '.env.*', '*.dump', '*.age', '__pycache__', '*.test', '.DS_Store'))
 
 
 def main():
@@ -122,50 +173,42 @@ def main():
     log_path = logs / 'install.log'
     environment = {key: value for key, value in os.environ.items()
                    if key in ('PATH', 'HOME', 'DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_CONFIG')}
-    with socket.socket() as sock:
-        sock.bind(('127.0.0.1', 0))
-        port = sock.getsockname()[1]
-    environment.update(COMPOSE_PROJECT_NAME=project, APP_PORT=str(port))
+    second_environment = dict(environment, COMPOSE_PROJECT_NAME=project + '-second', APP_PORT=str(free_port()))
+    environment.update(COMPOSE_PROJECT_NAME=project, APP_PORT=str(free_port()))
     failure = None
     cleanup_failures = []
     result = None
     with tempfile.TemporaryDirectory(prefix=project + '-') as temporary:
-        repo = Path(temporary) / 'repo'
-        repo.mkdir()
-        # Copy only deployment/build inputs. This excludes .env, Git/Claude worktrees,
-        # node_modules, reports, backups and other local artifacts by construction.
-        for name in ('Dockerfile', '.dockerignore', 'go.mod', 'go.sum'):
-            shutil.copy2(ROOT / name, repo / name)
-        for compose in ROOT.glob('compose*.yaml'):
-            shutil.copy2(compose, repo / compose.name)
-        for name in ('cmd', 'internal', 'web', 'scripts'):
-            shutil.copytree(ROOT / name, repo / name, ignore=shutil.ignore_patterns(
-                '.env', '.env.*', '*.dump', '*.age', '__pycache__', '*.test', '.DS_Store'))
+        repo, second = Path(temporary) / 'repo', Path(temporary) / 'second'
+        copy_inputs(repo)
+        copy_inputs(second)
         try:
-            result = exercise(repo, environment, log_path)
+            result = exercise(repo, environment, second, second_environment, log_path)
         except BaseException as error:
             failure = error
         finally:
             with log_path.open('a') as log:
                 # Every cleanup is attempted even if another one times out or fails.
-                commands = [['docker', 'compose', 'down', '--volumes', '--remove-orphans'],
-                            ['docker', 'image', 'rm', project + '-app']]
-                for command in commands:
-                    if command[1] == 'compose' and not (repo / '.env').exists():
-                        continue
-                    try:
-                        code = run(command, repo, environment, log, 120)
-                        # No image exists if installation failed before building.
-                        if code and command[1] == 'compose':
-                            cleanup_failures.append('Compose cleanup failed')
-                    except BaseException as error:
-                        cleanup_failures.append(type(error).__name__ + ' during cleanup')
+                for directory, env in ((second, second_environment), (repo, environment)):
+                    commands = [['docker', 'compose', 'down', '--volumes', '--remove-orphans'],
+                                ['docker', 'image', 'rm', env['COMPOSE_PROJECT_NAME'] + '-app']]
+                    for command in commands:
+                        if command[1] == 'compose' and not (directory / '.env').exists():
+                            continue
+                        try:
+                            code = run(command, directory, env, log, 120)
+                            # No image exists if installation failed before building.
+                            if code and command[1] == 'compose':
+                                cleanup_failures.append('Compose cleanup failed')
+                        except BaseException as error:
+                            cleanup_failures.append(type(error).__name__ + ' during cleanup')
     print('Installer test log: ' + str(log_path))
     if failure:
         raise RuntimeError('Installer test failed: ' + str(failure)) from failure
     require(not cleanup_failures, '; '.join(cleanup_failures))
     (logs / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
-    print('Local installer, setup authorization, admin onboarding and restart persistence passed.')
+    print('Local installer, setup authorization, admin onboarding, restart persistence and '
+          'second-checkout isolation passed.')
 
 
 def interrupted(_signal, _frame):

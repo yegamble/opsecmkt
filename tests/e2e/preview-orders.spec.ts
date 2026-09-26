@@ -35,9 +35,15 @@ test('reviews are labelled verified purchases without reviewer handles', async (
 test('moderator desk requires an outcome and disputes explain eligibility', async ({ page }) => {
   await page.goto('/moderator');
   await expect(page.getByRole('group', { name: 'Outcome' })).toBeVisible();
-  await expect(page.getByRole('radio', { name: 'Release to vendor' })).toBeVisible();
-  await expect(page.getByRole('radio', { name: 'Refund to buyer' })).toBeVisible();
-  await expect(page.locator('main')).toContainText('This desk moves no funds itself');
+  // A-161: each outcome states the amount, recipient, difference from the price and the recipient's payout state
+  // (sample figures); resolving needs a ticked confirmation and the decision field warns against identifying text.
+  await expect(page.getByRole('radio', { name: 'Release 0.00412 BTC (test network) to ghost_circuit — exactly the price', exact: true })).toBeVisible();
+  await expect(page.getByRole('radio', { name: 'Refund 0.00412 BTC (test network) to sample_buyer — exactly the price; no payout address: the payout waits for one', exact: true })).toBeVisible();
+  await expect(page.getByRole('checkbox', { name: 'I checked the amount and who receives it for the outcome I chose. Resolving is final.' })).toHaveAttribute('required', '');
+  await expect(page.locator('input[type="hidden"][name="amount_seen"]')).toHaveValue('412000');
+  await expect(page.getByLabel('Decision', { exact: true })).toHaveAccessibleDescription(/^Stored unencrypted\..*Never include an address, real name or tracking number/);
+  await expect(page.locator('main')).toContainText('Resolving queues one payout of the whole counted amount to one party; the payment watcher sends it automatically. There is no split.');
+  await expect(page.locator('main')).not.toContainText('moves no funds');
   await page.goto('/disputes');
   await expect(page.locator('.order-unavailable')).toContainText('Only paid, shipped, or delivered orders qualify');
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()!.width);

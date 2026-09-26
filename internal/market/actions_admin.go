@@ -43,10 +43,11 @@ func suspendedAccountsLoader(ctx context.Context, a *App, r *http.Request, d *Pa
 // the account's sessions and pending sign-ins and blocks sign-in (checked at the password step, when a
 // session starts and whenever a session loads) and holds the account's unsent payouts for an administrator's
 // payout address check; restoring allows sign-in again and leaves those holds. Role, listings and orders stay
-// as they are, so counterparties can continue open orders. Both accounts are
-// audited and the account is notified. The administrator confirms with their own password (and
-// authenticator code when enrolled). Not available for the administrator's own account or another
-// administrator.
+// as they are: orders waiting on the account stop until it is restored, and the other party can still
+// complete, cancel where allowed or dispute them. A suspended moderator is not a dispute resolver, recipient
+// or contact (A-118). Both accounts are audited and the account is notified. The administrator confirms
+// with their own password (and authenticator code when enrolled). Not available for the administrator's own
+// account or another administrator.
 func adminSuspendAction(c *actionCtx) (actionResult, error) {
 	choice := c.Form.Get("action")
 	suspend := choice == "suspend"
@@ -250,7 +251,7 @@ func adminHandleError(c *actionCtx, msg string, keep func(d *PageData)) error {
 		}
 		d.Error = msg
 		keep(&d)
-		a.renderStatus(w, d, 404)
+		a.renderStatus(w, c.R, d, 404)
 	}}
 }
 

@@ -110,6 +110,67 @@ func TestCSRFRejectsCrossOriginAndWrongSession(t *testing.T) {
 	}
 }
 
+// originHostMismatch is the fixed 403 copy (plus http.Error's newline). It names no header value: a proxy that
+// rewrites Host made every form fail with a message blaming the visitor (A-138).
+const originHostMismatch = "Origin does not match Host; if this market runs behind a reverse proxy, the proxy must forward the Host header.\n"
+
+func TestOriginHostMismatchNamesTheProxyFixWithoutEchoingHeaders(t *testing.T) {
+	a := testHTTPApp(false)
+	token := strings.Repeat("a", 64)
+	for _, tc := range []struct{ name, target, origin string }{
+		{"cross-origin", "http://market.example/account", "https://attacker.example"},
+		{"proxy-rewrote-host", "http://127.0.0.1:8080/account", "https://market.example"},
+		{"opaque-origin", "http://market.example/account", "null"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, tc.target, strings.NewReader(url.Values{"csrf": {a.csrf(token)}}.Encode()))
+			r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			r.Header.Set("Origin", tc.origin)
+			r.AddCookie(&http.Cookie{Name: "session", Value: token})
+			w := httptest.NewRecorder()
+			a.ServeHTTP(w, r)
+			if w.Code != http.StatusForbidden || w.Body.String() != originHostMismatch {
+				t.Fatalf("status=%d body=%q", w.Code, w.Body)
+			}
+			for _, leak := range []string{"attacker", "example", "127.0.0.1", "8080", "null"} {
+				if strings.Contains(w.Body.String(), leak) {
+					t.Fatalf("body echoes header value %q: %q", leak, w.Body)
+				}
+			}
+		})
+	}
+}
+
+// A proxy that forwards Host (nginx `proxy_set_header Host $host;`, Caddy by default) lets /setup through,
+// while the nginx default (Host rewritten to the upstream address) is refused with the fixed copy.
+func TestSetupBehindProxyNeedsForwardedHost(t *testing.T) {
+	e := newTestApp(t)
+	setup := func(host string) *httptest.ResponseRecorder {
+		anon := randomToken()
+		form := url.Values{"csrf": {e.A.csrf(anon)}, "token": {testSetupToken}, "handle": {"admin_user"}, "password": {testPassword}, "site_name": {"Proxy Market"}}
+		r := httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(form.Encode()))
+		r.Host = host
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		r.Header.Set("Origin", "https://market.example")
+		r.Header.Set("Sec-Fetch-Site", "same-origin")
+		r.AddCookie(&http.Cookie{Name: "anon", Value: anon})
+		w := httptest.NewRecorder()
+		e.A.ServeHTTP(w, r)
+		return w
+	}
+	if w := setup("127.0.0.1:8080"); w.Code != http.StatusForbidden || w.Body.String() != originHostMismatch {
+		t.Fatalf("rewritten Host: status=%d body=%q", w.Code, w.Body)
+	}
+	var installed int
+	if err := e.DB.QueryRow("SELECT count(*) FROM users").Scan(&installed); err != nil || installed != 0 {
+		t.Fatalf("rejected setup created %d users (err %v)", installed, err)
+	}
+	e.check(setup("market.example"), http.StatusSeeOther)
+	if err := e.DB.QueryRow("SELECT count(*) FROM users WHERE handle='admin_user'").Scan(&installed); err != nil || installed != 1 {
+		t.Fatalf("forwarded Host setup: %d admin users (err %v)", installed, err)
+	}
+}
+
 func TestValidCSRFMustStillAuthenticate(t *testing.T) {
 	a := testHTTPApp(false)
 	token := strings.Repeat("a", 64)

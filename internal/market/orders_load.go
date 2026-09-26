@@ -185,9 +185,110 @@ func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) 
 	d.CanReview = u.ID == o.BuyerID && o.State == stateCompleted && len(d.Reviews) == 0
 	if d.OrderViewer != roleModerator { // reviewers resolve on the moderation desk; the order page is read-only for them
 		d.Transitions = viewerTransitions(a.providers(), o, u)
+		if err = a.orderPayouts(ctx, d); err != nil {
+			return err
+		}
 	}
 	d.Contacts, err = orderContacts(ctx, a, o, d.OrderViewer)
 	return err
+}
+
+// orderPayouts (A-122): on a paid, shipped or delivered order the complete and paid-cancel forms state the
+// payout they queue (payoutBasis), and counted deposits above the price set Overpaid.
+func (a *App) orderPayouts(ctx context.Context, d *PageData) error {
+	o := d.Order
+	if o.State != statePaid && o.State != stateShipped && o.State != stateDelivered {
+		return nil
+	}
+	_, sum, _, err := a.payoutBasis(ctx, a.db, o, false)
+	if err != nil {
+		return err
+	}
+	dec := currencyDecimals(o.Currency)
+	if required, _ := parseAmount(o.Amount, dec); sum > required {
+		d.Overpaid = amount(sum-required, dec) + " " + o.Currency
+	}
+	for i, t := range d.Transitions {
+		switch {
+		case t.To == stateCompleted:
+			d.Transitions[i].Payout = &PayoutPreview{Seen: sum, Confirm: payoutStatement("release", o.Vendor, "the vendor", o, sum) + ". This is final."}
+		case t.To == stateCancelled && o.State == statePaid:
+			d.Transitions[i].Payout = &PayoutPreview{Seen: sum, Confirm: payoutStatement("refund", o.Buyer, "the buyer", o, sum) + ". This is final."}
+		}
+	}
+	return nil
+}
+
+// payoutStatement states a payout of sum (payoutBasis) for o: "Release 0.01 BTC (test network) to vendor_x —
+// 0.009 BTC more than the price", saying so when sum is below the minimum automatic payout (A-99). With nothing
+// counted, later deposits go to later (the recipient's role, or "the chosen party" on the resolve form).
+func payoutStatement(kind, recipient, later string, o *Order, sum int64) string {
+	verb := "Release"
+	if kind == "refund" {
+		verb = "Refund"
+	}
+	if sum == 0 {
+		return verb + " (test network) to " + recipient + " — nothing counted yet; deposits confirming later go to " + later
+	}
+	dec := currencyDecimals(o.Currency)
+	required, _ := parseAmount(o.Amount, dec)
+	statement := verb + " " + amount(sum, dec) + " " + o.Currency + " (test network) to " + recipient + " — " + priceDifference(sum, required, o.Currency)
+	if below := belowFloor(o.Currency, kind, sum); below != "" {
+		statement += "; " + below + ": not sent automatically, staff are asked to review it"
+	}
+	return statement
+}
+
+const resolveConfirm = "I checked the amount and who receives it for the outcome I chose. Resolving is final."
+
+// resolvePayouts (A-161) fills the resolve form of every open dispute on a disputed order the staff viewer is not
+// party to: each outcome's payout (payoutBasis) and the recipient's payout state.
+func (a *App) resolvePayouts(ctx context.Context, d *PageData) error {
+	d.DisputePayouts = map[string]PayoutPreview{}
+	if d.User == nil || (d.User.Role != "moderator" && d.User.Role != "admin") {
+		return nil
+	}
+	for _, v := range d.Disputes[:d.OpenDisputes] {
+		o, ok := d.DisputeOrders[v.OrderID]
+		if !ok || o.State != stateDisputed || d.User.ID == o.BuyerID || d.User.ID == o.VendorID {
+			continue
+		}
+		_, sum, _, err := a.payoutBasis(ctx, a.db, &o, false)
+		if err != nil {
+			return err
+		}
+		column := "payout_btc"
+		if o.Currency == "XMR" {
+			column = "payout_xmr"
+		}
+		state := map[string]string{}
+		rows, err := a.db.QueryContext(ctx, "SELECT id,"+column+"='',suspended_at IS NOT NULL FROM users WHERE id=$1 OR id=$2", o.BuyerID, o.VendorID)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var id string
+			var noAddress, suspended bool
+			if err = rows.Scan(&id, &noAddress, &suspended); err != nil {
+				rows.Close()
+				return err
+			}
+			switch {
+			case suspended:
+				state[id] = "; account suspended: an administrator must check the address"
+			case noAddress:
+				state[id] = "; no payout address: the payout waits for one"
+			}
+		}
+		rows.Close()
+		if err = rows.Err(); err != nil {
+			return err
+		}
+		d.DisputePayouts[v.ID] = PayoutPreview{Seen: sum, Confirm: resolveConfirm,
+			Release: payoutStatement("release", o.Vendor, "the chosen party", &o, sum) + state[o.VendorID],
+			Refund:  payoutStatement("refund", o.Buyer, "the chosen party", &o, sum) + state[o.BuyerID]}
+	}
+	return nil
 }
 
 // loadPublicReviews fills public reviews. Only reviews keyed to completed orders count; reviewer handles
@@ -287,13 +388,13 @@ func queryDisputes(ctx context.Context, a *App, query string, args ...any) ([]Di
 // loadDisputes lists the viewer's disputes (on their own orders, or all of them for moderators and
 // administrators): every open dispute first, oldest first, then the most recent resolved ones up to
 // historyLimit. Each dispute gets its order summary; an open one is marked NoResolver while every
-// moderator and administrator is a party to its order.
+// moderator and administrator who is not suspended is a party to its order.
 func loadDisputes(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 	d.DisputeOrders = map[string]Order{}
 	if d.User == nil {
 		return nil
 	}
-	const scope = `SELECT d.id,d.order_id,d.reason,d.status,d.resolution,to_char(d.created,'YYYY-MM-DD HH24:MI "UTC"'),d.status='Open' AND NOT EXISTS(SELECT 1 FROM users s WHERE s.role IN ('moderator','admin') AND s.id<>o.buyer_id AND s.id<>p.vendor_id) FROM disputes d JOIN orders o ON o.id=d.order_id JOIN products p ON p.id=o.product_id WHERE (o.buyer_id=$1 OR p.vendor_id=$1 OR $2 IN ('admin','moderator'))`
+	const scope = `SELECT d.id,d.order_id,d.reason,d.status,d.resolution,to_char(d.created,'YYYY-MM-DD HH24:MI "UTC"'),d.status='Open' AND NOT EXISTS(SELECT 1 FROM users s WHERE s.role IN ('moderator','admin') AND s.suspended_at IS NULL AND s.id<>o.buyer_id AND s.id<>p.vendor_id) FROM disputes d JOIN orders o ON o.id=d.order_id JOIN products p ON p.id=o.product_id WHERE (o.buyer_id=$1 OR p.vendor_id=$1 OR $2 IN ('admin','moderator'))`
 	open, err := queryDisputes(ctx, a, scope+" AND d.status='Open' ORDER BY d.created,d.id", d.User.ID, d.User.Role)
 	if err != nil {
 		return err
@@ -314,10 +415,13 @@ func loadDisputes(ctx context.Context, a *App, _ *http.Request, d *PageData) err
 		ids = append(ids, v.OrderID)
 	}
 	orders, err := queryOrders(ctx, a, orderQuery+" WHERE o.id = ANY($1)", ids)
+	if err != nil {
+		return err
+	}
 	for _, o := range orders {
 		d.DisputeOrders[o.ID] = o
 	}
-	return err
+	return a.resolvePayouts(ctx, d)
 }
 
 // Preview order IDs and txids have the real 64-hex shape so the read-only preview exercises the same layout
@@ -382,53 +486,86 @@ func previewDisputes(d *PageData) {
 	o.BuyerID, o.Buyer, o.VendorID = "sample-buyer", "sample_buyer", "sample-vendor"
 	d.Disputes, d.OpenDisputes = []Dispute{{ID: "sample-dispute", OrderID: o.ID, Reason: "Sample dispute for the read-only preview. No order or funds exist.", Status: "Open", Created: "Sample"}}, 1
 	d.DisputeOrders = map[string]Order{o.ID: o}
+	// A sample counted amount equal to the price; the sample buyer has no payout address.
+	sum, _ := parseAmount(o.Amount, currencyDecimals(o.Currency))
+	d.DisputePayouts = map[string]PayoutPreview{"sample-dispute": {Seen: sum, Confirm: resolveConfirm,
+		Release: payoutStatement("release", o.Vendor, "the chosen party", &o, sum),
+		Refund:  payoutStatement("refund", o.Buyer, "the chosen party", &o, sum) + "; no payout address: the payout waits for one"}}
 }
 
-// paymentReviewLimit caps the payment-review list on the moderation desk.
+// paymentReviewLimit caps the other (not open) flags on the moderation desk's payment-review list.
 const paymentReviewLimit = 100
 
-// loadPaymentReviews lists deposits the payment watcher flagged for staff review (payments.flagged), newest
-// flag first, up to paymentReviewLimit. The flag time is the watcher's flag event in order_events: flagOrder
-// writes a system note naming the deposit (truncate(txid, 20)) and ending "Moderator review required.".
+// loadPaymentReviews lists deposits the payment watcher flagged for staff review (payments.flagged): every open
+// flag, oldest first and never capped, then the paymentReviewLimit most recently flagged others, with their
+// count. A flag is open while it has no settling event: a locked transfer, a late deposit or a deposit of a
+// payout below the minimum automatic payout (payments.below_floor, A-99; no disposition action exists yet), or a
+// credited deposit whose regression was announced and has not confirmed again (payments.regress_notice). The
+// reason comes from the deposit's current confirmations. The flag time is the latest watcher flag event for the deposit in order_events: flagOrder writes a system note naming it
+// (truncate(txid, 20)) and ending "Moderator review required.".
 func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 	if d.User == nil || (d.User.Role != "moderator" && d.User.Role != "admin") {
 		return nil
 	}
-	rows, err := a.db.QueryContext(ctx, `SELECT pm.order_id,o.state,pm.currency,pm.amount,pm.txid,pm.idx,pm.credited,pm.locked,COALESCE(to_char(f.at,'YYYY-MM-DD HH24:MI "UTC"'),'')
+	rows, err := a.db.QueryContext(ctx, `WITH v AS (SELECT pm.id,pm.order_id,o.state,pm.currency,pm.amount,pm.txid,pm.idx,pm.credited,pm.locked,pm.confirmations,
+			pm.regress_notice,pm.below_floor,(pm.locked OR NOT pm.credited OR pm.regress_notice OR pm.below_floor) AS open,f.at
 		FROM payments pm JOIN orders o ON o.id=pm.order_id
-		LEFT JOIN LATERAL (SELECT min(e.created) AS at FROM order_events e WHERE e.order_id=pm.order_id AND e.actor_id IS NULL
+		LEFT JOIN LATERAL (SELECT max(e.created) AS at FROM order_events e WHERE e.order_id=pm.order_id AND e.actor_id IS NULL
 			AND e.note LIKE '%Moderator review required.%'
 			AND strpos(e.note, ' '||CASE WHEN length(pm.txid)<=20 THEN pm.txid ELSE left(pm.txid,20)||'…' END||' ')>0) f ON true
-		WHERE pm.flagged ORDER BY f.at DESC NULLS LAST,pm.id DESC LIMIT $1`, paymentReviewLimit+1)
+		WHERE pm.flagged)
+		SELECT order_id,state,currency,amount,txid,idx,credited,locked,confirmations,regress_notice,below_floor,open,COALESCE(to_char(at,'YYYY-MM-DD HH24:MI "UTC"'),''),
+			(SELECT count(*) FROM v WHERE NOT open)
+		FROM (SELECT * FROM v WHERE open UNION ALL (SELECT * FROM v WHERE NOT open ORDER BY at DESC NULLS LAST,id DESC LIMIT $1)) s
+		ORDER BY open DESC,CASE WHEN open THEN at END ASC NULLS FIRST,CASE WHEN open THEN id END,at DESC NULLS LAST,id DESC`, paymentReviewLimit)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var v PaymentReview
-		var amt int64
-		var credited, locked bool
-		if err = rows.Scan(&v.OrderID, &v.OrderState, &v.Currency, &amt, &v.TxID, &v.Index, &credited, &locked, &v.Flagged); err != nil {
+		var amt, confs int64
+		var credited, locked, regressed, belowFloor bool
+		if err = rows.Scan(&v.OrderID, &v.OrderState, &v.Currency, &amt, &v.TxID, &v.Index, &credited, &locked, &confs, &regressed, &belowFloor, &v.Open, &v.Flagged, &d.PaymentReviewOthers); err != nil {
 			return err
 		}
 		v.Amount, v.OrderState = amount(amt, currencyDecimals(v.Currency)), stateLabel(v.OrderState)
+		threshold := a.confirmationThreshold(v.Currency)
 		switch {
 		case locked:
 			v.Reason = "Locked transfer (unlock time), not counted or paid out"
-		case credited:
-			v.Reason = "Credited deposit conflicted or missing"
-		default:
+		case belowFloor && (!credited || confs >= threshold):
+			v.Reason = "Below the minimum automatic payout, not paid out"
+			if confs < 0 {
+				v.Reason += "; now conflicted or missing"
+			}
+		case !credited:
 			v.Reason = "Deposit confirmed after settlement, not paid out"
+			if confs < 0 {
+				v.Reason += "; now conflicted or missing"
+			}
+		case confs < 0:
+			v.Reason = "Credited deposit conflicted or missing"
+		case threshold > 0 && confs < threshold:
+			v.Reason = fmt.Sprintf("Credited deposit below threshold (%d of %d confirmations)", confs, threshold)
+		case threshold == 0 && regressed:
+			v.Reason = fmt.Sprintf("Credited deposit below threshold (%d confirmations)", confs)
+		default:
+			v.Reason = fmt.Sprintf("Credited deposit confirmed again (%d confirmations)", confs)
+		}
+		if v.Open {
+			d.PaymentReviewsOpen++
 		}
 		d.PaymentReviews = append(d.PaymentReviews, v)
 	}
-	if len(d.PaymentReviews) > paymentReviewLimit {
-		d.PaymentReviews, d.PaymentReviewLimit = d.PaymentReviews[:paymentReviewLimit], paymentReviewLimit
+	if d.PaymentReviewOthers > paymentReviewLimit {
+		d.PaymentReviewLimit = paymentReviewLimit
 	}
 	return rows.Err()
 }
 
 func previewPaymentReviews(d *PageData) {
 	d.PaymentReviews = []PaymentReview{{OrderID: previewFlaggedID, OrderState: stateLabel(statePaid), Currency: "BTC", Amount: "0.001",
-		TxID: "a6fca84477376ef06de0fa66091d6435fbd7be1abe70d867cdcc06529fbc952b", Reason: "Credited deposit conflicted or missing", Flagged: "Sample"}}
+		TxID: "a6fca84477376ef06de0fa66091d6435fbd7be1abe70d867cdcc06529fbc952b", Reason: "Credited deposit conflicted or missing", Flagged: "Sample", Open: true}}
+	d.PaymentReviewsOpen = 1
 }

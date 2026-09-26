@@ -1,6 +1,7 @@
 """Exercise installer decisions in disposable directories with no real Docker."""
 import os
 from pathlib import Path
+import re
 import shutil
 import signal
 import stat
@@ -9,7 +10,20 @@ import sys
 import tempfile
 import unittest
 
-INSTALLER = Path(__file__).resolve().parents[1] / 'scripts' / 'install.sh'
+REPOSITORY = Path(__file__).resolve().parents[1]
+INSTALLER = REPOSITORY / 'scripts' / 'install.sh'
+PRUNED_MONERO_FLAGS = '--prune-blockchain --sync-pruned-blocks'
+
+
+def preflight(project='opsecmkt', containers=False):
+    """The Docker calls the installer makes before asking anything: containers, then volumes if none."""
+    calls = ['compose version',
+             f'ps -a --filter label=com.docker.compose.project={project} '
+             '--format dir={{.Label "com.docker.compose.project.working_dir"}}']
+    return calls if containers else calls + [f'volume ls -q --filter label=com.docker.compose.project={project}']
+
+
+PREFLIGHT = preflight()
 
 
 class InstallerTests(unittest.TestCase):
@@ -35,6 +49,20 @@ if args == ['compose', 'config', '--quiet']:
     assert Path('.env').is_file(), 'Configuration must exist before validation'
     sys.exit(42 if os.environ.get('INSTALLER_TEST_BAD_CONFIG') == '1' else 0)
 if args == ['compose', 'up', '-d', '--build']:
+    sys.exit(0)
+# Existing Compose objects: one working_dir label per container line, one volume name per line.
+if args[:2] == ['ps', '-a']:
+    if os.environ.get('INSTALLER_TEST_PS_FAIL') == '1':
+        sys.exit('Cannot connect to the Docker daemon')
+    # Render the installer's --format as docker does, one line per container (an empty label stays empty).
+    template = args[args.index('--format') + 1]
+    label = '{{.Label "com.docker.compose.project.working_dir"}}'
+    assert label in template, template
+    for directory in os.environ.get('INSTALLER_TEST_CONTAINERS', '').splitlines():
+        print(template.replace(label, directory))
+    sys.exit(0)
+if args[:2] == ['volume', 'ls']:
+    print(os.environ.get('INSTALLER_TEST_VOLUMES', ''), end='')
     sys.exit(0)
 sys.exit('Unexpected docker command')
 ''')
@@ -139,20 +167,32 @@ time.sleep(60)
     def calls(self):
         return self.log.read_text().splitlines() if self.log.exists() else []
 
-    def assert_started(self, result):
+    def assert_started(self, result, preflight_calls=PREFLIGHT):
         self.assertEqual(result.returncode, 0, 'Installer unexpectedly failed')
         self.assertEqual(self.calls(), [
-            'compose version', 'compose config --quiet', 'compose up -d --build',
+            *preflight_calls, 'compose config --quiet', 'compose up -d --build',
         ])
         self.assertEqual(list(self.root.glob('.env.install.*')), [])
 
+    def assert_refused_before_writing(self, result, calls):
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.calls(), calls)
+        self.assertFalse((self.root / '.env').exists())
+        self.assertEqual(list(self.root.glob('.env.install.*')), [])
+        # Nothing was asked: the refusal comes before the first question.
+        self.assertEqual(result.stdout, '')
+
     def test_internal_clearnet_defaults(self):
-        result = self.run_installer(['', '', '', '', ''])
+        # Every question answered with Enter: mode, database, local HTTP, then for each coin the node
+        # choice, image, network and pruning. The defaults are pruned local test-network nodes.
+        result = self.run_installer([''] * 11)
         self.assert_started(result)
         config = self.config()
         self.assertEqual(config['APP_MODE'], 'clearnet')
         self.assertEqual(config['COOKIE_SECURE'], 'true')
-        self.assertEqual(config['COMPOSE_PROFILES'], 'internal-db')
+        # Existing installs have no COMPOSE_PROJECT_NAME and use compose.yaml's name; new ones keep that default.
+        self.assertEqual(config['COMPOSE_PROJECT_NAME'], 'opsecmkt')
+        self.assertEqual(config['COMPOSE_PROFILES'], 'internal-db,bitcoin,monero,monero-wallet')
         self.assertEqual(config['COMPOSE_FILE'],
                          'compose.yaml:compose.clearnet.yaml:compose.nodes.yaml:compose.internal-db.yaml')
         self.assertIn('@db:5432/opsecmkt', config['DATABASE_URL'])
@@ -161,13 +201,79 @@ time.sleep(60)
         self.assertNotIn(config['SETUP_TOKEN'], result.stdout + result.stderr)
         self.assertEqual(len(config['AUDIT_SIGNING_KEY']), 64)
         self.assertNotIn(config['AUDIT_SIGNING_KEY'], result.stdout + result.stderr)
+        self.assertEqual(config['BITCOIN_CHAIN'], 'testnet4')
+        self.assertEqual(config['MONERO_NETWORK'], 'stagenet')
+        self.assertEqual(config['BITCOIN_IMAGE'], 'bitcoin/bitcoin:latest')
+        self.assertEqual(config['MONERO_IMAGE'], 'ghcr.io/sethforprivacy/simple-monerod:latest')
+        # Pruned by default, written explicitly so the operator can see and change it in .env.
+        self.assertEqual(config['BITCOIN_PRUNE_MB'], self.compose_bitcoin_prune_default())
+        self.assertEqual(config['MONERO_PRUNE_FLAGS'], PRUNED_MONERO_FLAGS)
+        self.assertEqual(config['BITCOIN_RPC_URL'],
+                         'http://marketplace:' + config['BITCOIN_RPC_PASSWORD'] + '@bitcoin:8332')
+        self.assertEqual(config['MONERO_WALLET_RPC_URL'],
+                         'http://marketplace:' + config['MONERO_WALLET_RPC_PASSWORD'] + '@monero-wallet:18083')
+        self.assertNotIn('compose.external-egress.yaml', config['COMPOSE_FILE'])
+        # The node question states the disk and first-sync cost before the operator answers.
+        self.assertIn('pruned Bitcoin Core node', result.stdout)
+        self.assertIn('pruned monerod', result.stdout)
+        self.assertIn('first sync', result.stdout)
+        self.assertNotIn('Full node', result.stdout)
+        self.assertIn('docs/testnet-runbook.md', result.stdout)
+        self.assertIn('Secure cookies require HTTPS', result.stdout)
+
+    def compose_bitcoin_prune_default(self):
+        # The installer writes the same default the Compose file falls back to for an .env without it.
+        text = (REPOSITORY / 'compose.nodes.yaml').read_text()
+        match = re.search(r'-prune=\$\{BITCOIN_PRUNE_MB:-([0-9]+)\}', text)
+        self.assertIsNotNone(match, 'compose.nodes.yaml must run bitcoind with -prune=${BITCOIN_PRUNE_MB:-N}')
+        self.assertGreaterEqual(int(match.group(1)), 550)
+        self.assertIn('${MONERO_PRUNE_FLAGS-' + PRUNED_MONERO_FLAGS + '}', text)
+        return match.group(1)
+
+    def test_internal_clearnet_without_nodes(self):
+        result = self.run_installer(['', '', '', 'disabled', 'disabled'])
+        self.assert_started(result)
+        config = self.config()
+        self.assertEqual(config['COMPOSE_PROFILES'], 'internal-db')
         # No node chosen: nothing forces a chain, so a node added later may use any test network.
         self.assertEqual(config['BITCOIN_CHAIN'], '')
         self.assertEqual(config['MONERO_NETWORK'], '')
         self.assertNotIn('BITCOIN_RPC_URL', config)
         self.assertNotIn('MONERO_WALLET_RPC_URL', config)
+        self.assertNotIn('BITCOIN_PRUNE_MB', config)
+        self.assertNotIn('MONERO_PRUNE_FLAGS', config)
         self.assertNotIn('docs/testnet-runbook.md', result.stdout)
-        self.assertIn('Secure cookies require HTTPS', result.stdout)
+
+    def test_local_nodes_can_opt_out_of_pruning(self):
+        result = self.run_installer(['tor', '', 'local', '', 'signet', 'no', 'local', '', 'testnet', 'no'])
+        self.assert_started(result)
+        config = self.config()
+        self.assertEqual(config['COMPOSE_PROFILES'], 'internal-db,bitcoin,monero,monero-wallet')
+        # -prune=0 disables pruning in bitcoind; a blank flag list drops --prune-blockchain for monerod.
+        self.assertEqual(config['BITCOIN_PRUNE_MB'], '0')
+        self.assertEqual(config['MONERO_PRUNE_FLAGS'], '')
+        self.assertEqual(config['BITCOIN_CHAIN'], 'signet')
+        self.assertEqual(config['MONERO_NETWORK'], 'testnet')
+        self.assertEqual(result.stdout.count('Full node'), 2)
+        # Compose reads an unquoted blank followed by a comment ("MONERO_PRUNE_FLAGS= # x") as the value "# x"
+        # (A-149): every line the installer writes is a single-quoted value with nothing after it.
+        for line in (self.root / '.env').read_text().splitlines():
+            self.assertRegex(line, r"^[A-Z0-9_]+='[^'\n]*'$")
+        self.assertIn("\nMONERO_PRUNE_FLAGS=''\n", (self.root / '.env').read_text())
+
+    def test_env_example_value_lines_have_no_inline_comments(self):
+        # Same Compose rule for the template operators copy and hand-edit (A-149).
+        for line in (REPOSITORY / '.env.example').read_text().splitlines():
+            if line and not line.startswith('#'):
+                self.assertRegex(line, r'^[A-Z0-9_]+=[^#]*$')
+
+    def test_local_node_prune_answer_yes_is_pruned(self):
+        result = self.run_installer(['tor', '', 'local', '', '', 'yes', 'local', '', '', 'yes'])
+        self.assert_started(result)
+        config = self.config()
+        self.assertEqual(config['BITCOIN_PRUNE_MB'], self.compose_bitcoin_prune_default())
+        self.assertEqual(config['MONERO_PRUNE_FLAGS'], PRUNED_MONERO_FLAGS)
+        self.assertNotIn('Full node', result.stdout)
 
     def test_local_shortcut_needs_no_input_and_disables_inherited_wallets(self):
         result = self.run_installer([], arguments=['--local'], extra_env={
@@ -184,6 +290,12 @@ time.sleep(60)
             self.assertEqual(config[key], '')
         self.assertIn('http://127.0.0.1:18085/setup', result.stdout)
         self.assertNotIn('docs/testnet-runbook.md', result.stdout)
+        # Developer mode never starts nodes, so it writes no node images or pruning settings.
+        for key in ('BITCOIN_IMAGE', 'MONERO_IMAGE', 'BITCOIN_PRUNE_MB', 'MONERO_PRUNE_FLAGS'):
+            self.assertNotIn(key, config)
+        self.assertEqual(config['BITCOIN_CHAIN'], '')
+        self.assertEqual(config['MONERO_NETWORK'], '')
+        self.assertNotIn('pruned', result.stdout)
         self.assertNotIn(config['SETUP_TOKEN'], result.stdout + result.stderr)
 
     def test_unhealthy_local_app_does_not_report_ready(self):
@@ -198,11 +310,11 @@ time.sleep(60)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('APP_PORT must', result.stderr)
         self.assertFalse((self.root / '.env').exists())
-        self.assertEqual(self.calls(), ['compose version'])
+        self.assertEqual(self.calls(), PREFLIGHT)
 
     def test_external_clearnet_local_http(self):
         url = 'postgresql://test:local-only@database:5432/scratch?sslmode=require'
-        result = self.run_installer(['clearnet', url, 'yes', '', ''])
+        result = self.run_installer(['clearnet', url, 'yes', 'disabled', 'disabled'])
         self.assert_started(result)
         config = self.config()
         self.assertEqual(config['DATABASE_URL'], url)
@@ -212,7 +324,7 @@ time.sleep(60)
         self.assertNotIn(url, result.stdout + result.stderr)
 
     def test_internal_tor_stays_without_direct_egress(self):
-        result = self.run_installer(['tor', '', '', ''])
+        result = self.run_installer(['tor', '', 'disabled', 'disabled'])
         self.assert_started(result)
         config = self.config()
         self.assertEqual(config['COOKIE_SECURE'], 'false')
@@ -221,7 +333,7 @@ time.sleep(60)
         self.assertNotIn('compose.external-egress.yaml', config['COMPOSE_FILE'])
 
     def test_external_tor_explicitly_enables_egress(self):
-        result = self.run_installer(['tor', 'postgres://test@database/scratch', '', ''])
+        result = self.run_installer(['tor', 'postgres://test@database/scratch', 'disabled', 'disabled'])
         self.assert_started(result)
         config = self.config()
         self.assertEqual(config['COMPOSE_PROFILES'], '')
@@ -229,8 +341,39 @@ time.sleep(60)
         self.assertTrue(config['COMPOSE_FILE'].endswith(':compose.external-egress.yaml'))
         self.assertIn('direct network egress is enabled', result.stdout)
 
+    def test_tor_profiles_match_the_mirror_command_check(self):
+        # A-140: scripts/test-mirror-commands.sh (run by CI) checks the guide's onion-mirror commands against .env
+        # files holding COMPOSE_FILE and COMPOSE_PROFILES exactly as the installer writes them for Tor. If either
+        # side drifts, this fails.
+        script = (REPOSITORY / 'scripts' / 'test-mirror-commands.sh').read_text()
+        external = 'postgres://test@database/scratch'
+        cases = [
+            ('internal', ['tor', ''] + [''] * 8, 'internal-db,bitcoin,monero,monero-wallet'),
+            ('internal', ['tor', '', 'disabled', 'disabled'], 'internal-db'),
+            ('external', ['tor', external] + [''] * 8, 'bitcoin,monero,monero-wallet'),
+            ('external', ['tor', external, 'disabled', 'disabled'], ''),
+        ]
+        for database, answers, profiles in cases:
+            with self.subTest(database=database, profiles=profiles):
+                (self.root / '.env').unlink(missing_ok=True)
+                self.log.unlink(missing_ok=True)
+                self.assert_started(self.run_installer(answers))
+                config = self.config()
+                self.assertEqual(config['COMPOSE_PROFILES'], profiles)
+                self.assertIn(f"'{database}|{config['COMPOSE_FILE']}|{profiles}'", script)
+
+    def test_documented_mirror_commands_keep_the_installers_profiles(self):
+        # `docker compose --profile X` replaces COMPOSE_PROFILES for that command instead of adding to it, so on
+        # an internal-db install it drops the database ("app depends on undefined service db"). The documents
+        # add `mirror` to COMPOSE_PROFILES in .env instead, and CI runs the marked guide block.
+        for name in ('README.md', 'UPGRADING.md', '.env.example', 'docs/operator-guide.md', 'docs/testnet-runbook.md'):
+            self.assertNotIn('docker compose --profile', (REPOSITORY / name).read_text(), name)
+        guide = (REPOSITORY / 'docs' / 'operator-guide.md').read_text()
+        self.assertEqual(guide.count('<!-- ops-cmd: onion-mirror -->'), 1)
+        self.assertIn("COMPOSE_PROFILES='internal-db,bitcoin,monero,monero-wallet,mirror'", guide)
+
     def test_external_rpc_also_enables_tor_egress(self):
-        result = self.run_installer(['tor', '', 'external', 'https://rpc.example.test', ''])
+        result = self.run_installer(['tor', '', 'external', 'https://rpc.example.test', 'disabled'])
         self.assert_started(result)
         config = self.config()
         self.assertEqual(config['BITCOIN_RPC_URL'], 'https://rpc.example.test')
@@ -242,7 +385,8 @@ time.sleep(60)
 
     def test_local_node_profiles_and_images(self):
         result = self.run_installer([
-            'tor', '', 'local', 'reviewed-bitcoin:test', 'testnet4', 'local', 'reviewed-monero:test', 'stagenet',
+            'tor', '', 'local', 'reviewed-bitcoin:test', 'testnet4', 'yes',
+            'local', 'reviewed-monero:test', 'stagenet', 'yes',
         ])
         self.assert_started(result)
         config = self.config()
@@ -270,17 +414,17 @@ time.sleep(60)
                 result = self.run_installer(['clearnet', '', 'yes', 'local', image])
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn('Invalid', result.stderr)
-                self.assertEqual(self.calls(), ['compose version'])
+                self.assertEqual(self.calls(), PREFLIGHT)
                 self.assertFalse((self.root / '.env').exists())
 
     def test_local_node_accepts_a_complete_digest_pinned_reference(self):
         digest_image = 'registry.example:5000/bitcoin/core@sha256:' + ('a' * 64)
-        result = self.run_installer(['clearnet', '', 'yes', 'local', digest_image, 'testnet4', 'disabled'])
+        result = self.run_installer(['clearnet', '', 'yes', 'local', digest_image, 'testnet4', '', 'disabled'])
         self.assert_started(result)
         self.assertEqual(self.config()['BITCOIN_IMAGE'], digest_image)
 
     def test_local_node_defaults_to_current_trusted_images(self):
-        result = self.run_installer(['tor', '', 'local', '', 'testnet4', 'local', '', 'stagenet'])
+        result = self.run_installer(['tor', '', 'local', '', 'testnet4', '', 'local', '', 'stagenet', ''])
         self.assert_started(result)
         config = self.config()
         self.assertEqual(config['BITCOIN_IMAGE'], 'bitcoin/bitcoin:latest')
@@ -292,11 +436,11 @@ time.sleep(60)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('Live Bitcoin payments are disabled', result.stderr)
         self.assertFalse((self.root / '.env').exists())
-        self.assertEqual(self.calls(), ['compose version'])
+        self.assertEqual(self.calls(), PREFLIGHT)
 
     def test_external_monero_wallet_rpc(self):
         daemon, wallet = 'https://monerod.example.test', 'http://user:pass@wallet.example.test:18083'
-        result = self.run_installer(['tor', '', '', 'external', daemon, wallet])
+        result = self.run_installer(['tor', '', 'disabled', 'external', daemon, wallet])
         self.assert_started(result)
         config = self.config()
         self.assertEqual(config['MONERO_RPC_URL'], daemon)
@@ -309,7 +453,7 @@ time.sleep(60)
         self.assertNotIn(wallet, result.stdout + result.stderr)
 
     def test_external_monero_daemon_without_wallet_warns(self):
-        result = self.run_installer(['tor', '', '', 'external', 'https://monerod.example.test', ''])
+        result = self.run_installer(['tor', '', 'disabled', 'external', 'https://monerod.example.test', ''])
         self.assert_started(result)
         config = self.config()
         self.assertNotIn('MONERO_WALLET_RPC_URL', config)
@@ -320,10 +464,11 @@ time.sleep(60)
     def test_secret_generation_failure_starts_nothing(self):
         # openssl calls: 1 database password, 2 setup token, 3 audit key, then one per local node.
         scenarios = [
-            (1, ['clearnet', '', '', '', '']),
-            (4, ['tor', '', 'local', 'reviewed-bitcoin:test', 'testnet4', '']),
-            (4, ['tor', '', '', 'local', 'reviewed-monero:test', 'stagenet']),
-            (5, ['tor', '', 'local', 'reviewed-bitcoin:test', 'testnet4', 'local', 'reviewed-monero:test', 'stagenet']),
+            (1, ['clearnet', '', '', 'disabled', 'disabled']),
+            (4, ['tor', '', 'local', 'reviewed-bitcoin:test', 'testnet4', '', 'disabled']),
+            (4, ['tor', '', 'disabled', 'local', 'reviewed-monero:test', 'stagenet', '']),
+            (5, ['tor', '', 'local', 'reviewed-bitcoin:test', 'testnet4', '',
+                 'local', 'reviewed-monero:test', 'stagenet', '']),
         ]
         for call, answers in scenarios:
             with self.subTest(call=call, answers=answers):
@@ -331,9 +476,80 @@ time.sleep(60)
                 result = self.run_installer(answers, openssl_empty_call=call)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn('Could not generate a random secret', result.stderr)
-                self.assertEqual(self.calls(), ['compose version'])
+                self.assertEqual(self.calls(), PREFLIGHT)
                 self.assertFalse((self.root / '.env').exists())
                 self.assertEqual(list(self.root.glob('.env.install.*')), [])
+
+    def test_containers_from_another_checkout_are_refused_before_anything_is_written(self):
+        # A second checkout under the same project name would recreate the other installation's containers
+        # with new secrets, and its `docker compose down -v` would delete that installation's volumes.
+        other = '/srv/live-opsecmkt'
+        result = self.run_installer([''] * 11, extra_env={
+            'INSTALLER_TEST_CONTAINERS': f'{other}\n{self.root}\n{other}\n',
+        })
+        self.assert_refused_before_writing(result, preflight(containers=True))
+        self.assertIn("Compose project 'opsecmkt' already has containers created from another directory", result.stderr)
+        self.assertEqual(result.stderr.count(other), 1)
+        self.assertNotIn(str(self.root) + '\n', result.stderr)
+        self.assertIn('work in its directory', result.stderr)
+        self.assertIn('COMPOSE_PROJECT_NAME=opsecmkt-rehearsal ./scripts/install.sh', result.stderr)
+
+    def test_local_shortcut_refusal_repeats_the_local_argument(self):
+        result = self.run_installer([], arguments=['--local'], extra_env={
+            'INSTALLER_TEST_CONTAINERS': '/srv/live-opsecmkt\n',
+        })
+        self.assert_refused_before_writing(result, preflight(containers=True))
+        self.assertIn('COMPOSE_PROJECT_NAME=opsecmkt-rehearsal ./scripts/install.sh --local', result.stderr)
+
+    def test_unlabelled_project_container_is_refused(self):
+        result = self.run_installer([], arguments=['--local'], extra_env={'INSTALLER_TEST_CONTAINERS': '\n'})
+        self.assert_refused_before_writing(result, preflight(containers=True))
+        self.assertIn('(no working directory label)', result.stderr)
+
+    def test_containers_from_this_checkout_proceed(self):
+        # Also through a symlink: Compose labels the path it was started from, not the resolved one.
+        links = tempfile.TemporaryDirectory(prefix='opsecmkt-installer-link-')
+        self.addCleanup(links.cleanup)
+        link = Path(links.name) / 'checkout'
+        link.symlink_to(self.root, target_is_directory=True)
+        result = self.run_installer([], arguments=['--local'], extra_env={
+            'INSTALLER_TEST_CONTAINERS': f'{self.root}\n{link}\n',
+        })
+        self.assert_started(result, preflight(containers=True))
+        self.assertEqual(self.config()['COMPOSE_PROJECT_NAME'], 'opsecmkt')
+
+    def test_project_volumes_without_containers_are_refused(self):
+        # `docker compose down` (README's normal stop) removes the containers, so their labels are gone, but
+        # keeps the volumes. Their checkout cannot be identified; starting on them here is refused too.
+        result = self.run_installer([''] * 11, extra_env={
+            'INSTALLER_TEST_VOLUMES': 'opsecmkt_postgres_data\nopsecmkt_bitcoin_data\n',
+        })
+        self.assert_refused_before_writing(result, PREFLIGHT)
+        self.assertIn("Compose project 'opsecmkt' has volumes but no containers", result.stderr)
+        self.assertIn('  opsecmkt_postgres_data\n  opsecmkt_bitcoin_data\n', result.stderr)
+        self.assertIn('COMPOSE_PROJECT_NAME=opsecmkt-rehearsal ./scripts/install.sh', result.stderr)
+
+    def test_distinct_project_name_is_checked_and_saved(self):
+        result = self.run_installer([], arguments=['--local'], extra_env={
+            'COMPOSE_PROJECT_NAME': 'opsecmkt-rehearsal', 'APP_PORT': '8081',
+        })
+        self.assert_started(result, preflight('opsecmkt-rehearsal'))
+        config = self.config()
+        # Saved so every later docker compose command in this checkout (backup.sh, restore.sh, down) uses it.
+        self.assertEqual(config['COMPOSE_PROJECT_NAME'], 'opsecmkt-rehearsal')
+        self.assertEqual(config['APP_PORT'], '8081')
+
+    def test_invalid_project_name_or_unreachable_docker_starts_nothing(self):
+        for name in ('Opsecmkt', '-opsecmkt', 'opsec mkt', "opsecmkt'"):
+            with self.subTest(name=name):
+                self.log.unlink(missing_ok=True)
+                result = self.run_installer([], arguments=['--local'], extra_env={'COMPOSE_PROJECT_NAME': name})
+                self.assert_refused_before_writing(result, ['compose version'])
+                self.assertIn('COMPOSE_PROJECT_NAME must use lower-case letters', result.stderr)
+        self.log.unlink(missing_ok=True)
+        result = self.run_installer([], arguments=['--local'], extra_env={'INSTALLER_TEST_PS_FAIL': '1'})
+        self.assert_refused_before_writing(result, preflight(containers=True))
+        self.assertIn('Could not list Docker containers', result.stderr)
 
     def test_existing_env_is_never_changed(self):
         path = self.root / '.env'
@@ -345,9 +561,9 @@ time.sleep(60)
         self.assertEqual(self.calls(), ['compose version'])
 
     def test_failed_compose_validation_never_starts_services(self):
-        result = self.run_installer(['tor', '', '', ''], bad_config=True)
+        result = self.run_installer(['tor', '', 'disabled', 'disabled'], bad_config=True)
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(self.calls(), ['compose version', 'compose config --quiet'])
+        self.assertEqual(self.calls(), [*PREFLIGHT, 'compose config --quiet'])
         self.config()  # The retained configuration still has restrictive permissions.
 
     def test_invalid_input_leaves_no_configuration_or_services(self):
@@ -356,16 +572,18 @@ time.sleep(60)
             ['tor', 'https://not-postgres'],
             ['tor', '', 'invalid-node'],
             ['tor', '', 'external', 'ftp://invalid-rpc'],
-            ['tor', '', '', 'external', 'https://monerod.example.test', 'ftp://invalid-wallet'],
+            ['tor', '', 'disabled', 'external', 'https://monerod.example.test', 'ftp://invalid-wallet'],
             ['tor', '', 'local', ''],
-            ['tor', "postgres://test:quote'@database/scratch", '', ''],
+            ['tor', '', 'local', '', 'testnet4', 'maybe', 'disabled'],
+            ['tor', '', 'disabled', 'local', '', 'stagenet', 'maybe'],
+            ['tor', "postgres://test:quote'@database/scratch", 'disabled', 'disabled'],
         ]
         for answers in scenarios:
             with self.subTest(case=scenarios.index(answers)):
                 self.log.unlink(missing_ok=True)
                 result = self.run_installer(answers)
                 self.assertNotEqual(result.returncode, 0)
-                self.assertEqual(self.calls(), ['compose version'])
+                self.assertEqual(self.calls(), PREFLIGHT)
                 self.assertFalse((self.root / '.env').exists())
                 self.assertEqual(list(self.root.glob('.env.install.*')), [])
 

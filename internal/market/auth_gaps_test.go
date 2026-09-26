@@ -2,11 +2,16 @@ package market
 
 import (
 	"bytes"
+	"context"
+	"database/sql"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -142,26 +147,35 @@ func TestRateLimitLoginAndRegisterPerHandle(t *testing.T) {
 	// The 11th attempt is refused before bcrypt, even with the right password; the key ignores case.
 	w := e.do("POST", "/login", randomToken(), url.Values{"handle": {"RL_LOGIN"}, "password": {testPassword}})
 	e.check(w, 429)
-	if !strings.Contains(w.Body.String(), "Too many attempts") || e.cookie(w, "session") != "" || e.cookie(w, "pending") != "" {
+	if !strings.Contains(w.Body.String(), signInPausedText) || e.cookie(w, "session") != "" || e.cookie(w, "pending") != "" {
 		t.Fatalf("limited login issued credentials: %v %q", w.Header(), w.Body.String())
 	}
 	if n := agUserSessions(e, id); n != 1 {
 		t.Fatalf("limited login created a session: %d", n)
 	}
-	// /register shares the per-handle key: the exhausted handle is refused without creating anything.
-	agExpect(e, "/register", randomToken(), url.Values{"handle": {"rl_login"}, "password": {"a-new-long-password"}}, 429, "Too many attempts")
 	// A different handle is unaffected.
 	w = e.do("POST", "/login", randomToken(), url.Values{"handle": {"rl_other"}, "password": {testPassword}})
 	e.check(w, 303)
 	e.session(w)
 
-	// Register on its own: ten attempts for a taken handle, then 429; no account is ever created.
+	// /register has its own per-handle budget (A-153): wrong sign-ins on a free handle do not refuse its
+	// registration (TestRegisterAndSetupNeverSpendSignInBudget covers the reverse and the register limit).
+	for i := range 10 {
+		agExpect(e, "/login", randomToken(), url.Values{"handle": {"rl_free"}, "password": {"wrong-password-" + string(rune('a'+i))}}, 401, "Invalid handle or password")
+	}
+	agExpect(e, "/register", randomToken(), url.Values{"handle": {"rl_free"}, "password": {"a-new-long-password"}}, 303, "")
+
+	// A taken handle is refused before the limiter (A-151): it never spends the handle's budget, however
+	// often it is tried, and no account is ever created.
+	agExpect(e, "/register", randomToken(), url.Values{"handle": {"rl_login"}, "password": {"a-new-long-password"}}, 400, "Handle unavailable")
 	e.user("rl_taken", "buyer")
-	for range 10 {
+	for range 11 {
 		agExpect(e, "/register", randomToken(), url.Values{"handle": {"rl_taken"}, "password": {"a-new-long-password"}}, 400, "Handle unavailable")
 	}
-	agExpect(e, "/register", randomToken(), url.Values{"handle": {"rl_taken"}, "password": {"a-new-long-password"}}, 429, "Too many attempts")
-	if n := agInt(e, "SELECT count(*) FROM users"); n != 3 {
+	if agLimited(e, "auth:rl_taken") || agLimited(e, "register:rl_taken") {
+		t.Fatal("taken-handle registration spent a per-handle budget")
+	}
+	if n := agInt(e, "SELECT count(*) FROM users"); n != 4 {
 		t.Fatalf("users=%d", n)
 	}
 	// Malformed handles are rejected before the limiter, so they create no limiter entries.
@@ -260,24 +274,26 @@ func TestRateLimitTOTPManagementActions(t *testing.T) {
 	e.check(e.do("POST", "/totp/enroll", s, nil), 303)
 	wrong := e.wrongTOTP(id)
 	for range 10 {
-		agExpect(e, "/totp/activate", s, url.Values{"code": {wrong}}, 400, "Code incorrect")
+		agExpect(e, "/totp/activate", s, url.Values{"code": {wrong}, "password": {testPassword}}, 400, "Code incorrect")
 	}
 	code, _ := e.totpCodeFor(id, 0)
-	agExpect(e, "/totp/activate", s, url.Values{"code": {code}}, 429, "Too many attempts")
+	confirms := func() int { e.A.mu.Lock(); defer e.A.mu.Unlock(); return e.A.limits["confirm:"+id].Count }
+	spent := confirms() // the ten activations above checked the password (A-152)
+	agExpect(e, "/totp/activate", s, url.Values{"code": {code}, "password": {testPassword}}, 429, "Too many attempts")
 	// The same totp:<user> budget covers recovery regeneration and disabling.
-	agExpect(e, "/totp/recovery", s, url.Values{"code": {code}}, 429, "Too many attempts")
+	agExpect(e, "/totp/recovery", s, url.Values{"code": {code}, "password": {testPassword}}, 429, "Too many attempts")
 	agExpect(e, "/totp/disable", s, url.Values{"password": {testPassword}, "code": {code}}, 429, "Too many attempts")
 	if agStr(e, "SELECT totp_enabled::text FROM users WHERE id=$1", id) != "false" || agInt(e, "SELECT count(*) FROM recovery_codes WHERE user_id=$1", id) != 0 {
 		t.Fatal("limited activation enabled TOTP")
 	}
-	if agLimited(e, "confirm:"+id) {
-		t.Fatal("limited disable reached the password check")
+	if confirms() != spent {
+		t.Fatal("a limited TOTP action reached the password check")
 	}
 	// Another user can still enroll and activate.
 	otherID, other := e.user("rl_totp2", "buyer")
 	e.check(e.do("POST", "/totp/enroll", other, nil), 303)
 	c2, _ := e.totpCodeFor(otherID, 0)
-	e.check(e.do("POST", "/totp/activate", other, url.Values{"code": {c2}}), 303)
+	e.check(e.do("POST", "/totp/activate", other, url.Values{"code": {c2}, "password": {testPassword}}), 303)
 	if agStr(e, "SELECT totp_enabled::text FROM users WHERE id=$1", otherID) != "true" {
 		t.Fatal("other user's activation failed")
 	}
@@ -289,8 +305,8 @@ func TestRateLimitPGPChallengeAndVerify(t *testing.T) {
 	bob, bobPub := testPGPKey(t, "bob")
 	id, s := e.user("rl_pgp", "buyer")
 	otherID, other := e.user("rl_pgp2", "buyer")
-	e.check(e.do("POST", "/account", s, url.Values{"pgp": {alicePub}}), 303)
-	e.check(e.do("POST", "/account", other, url.Values{"pgp": {bobPub}}), 303)
+	e.check(e.do("POST", "/account", s, url.Values{"pgp": {alicePub}, "password": {testPassword}}), 303)
+	e.check(e.do("POST", "/account", other, url.Values{"pgp": {bobPub}, "password": {testPassword}}), 303)
 
 	// An invalid kind is rejected before the limiter; then exactly 20 challenges are issued.
 	agExpect(e, "/pgp/challenge", s, url.Values{"kind": {"bogus"}}, 400, "Choose to sign")
@@ -397,7 +413,7 @@ func TestPasswordWorkBusyReturns503(t *testing.T) {
 	agExpect(e, "/setup", randomToken(), url.Values{"handle": {"busy_admin"}, "password": {testPassword}, "token": {testSetupToken}}, 503, "Authentication is busy")
 	agExpect(e, "/pgp/2fa", s, url.Values{"enable": {"0"}, "password": {testPassword}}, 503, "Authentication is busy")
 	// Refused before any per-handle budget is spent and before anything is written.
-	if agLimited(e, "auth:busy_user") || agLimited(e, "auth:busy_new") {
+	if agLimited(e, "auth:busy_user") || agLimited(e, "register:busy_new") || agLimited(e, "setup:busy_admin") {
 		t.Fatal("busy refusal consumed the per-handle limit")
 	}
 	if agUserSessions(e, id) != 1 || agInt(e, "SELECT count(*) FROM users") != 1 || agStr(e, "SELECT pgp_2fa::text FROM users WHERE id=$1", id) != "true" {
@@ -407,6 +423,169 @@ func TestPasswordWorkBusyReturns503(t *testing.T) {
 	w := e.do("POST", "/login", randomToken(), creds)
 	e.check(w, 303)
 	e.session(w)
+}
+
+// --- A-151: password-check slots are taken only by requests that will run bcrypt ---
+
+// agHoldPasswordWork takes every password-check slot (as concurrent bcrypt work would) and returns an
+// idempotent release, also run at cleanup. bcrypt only ever runs while its caller holds a slot.
+func agHoldPasswordWork(t *testing.T) (release func()) {
+	t.Helper()
+	if len(passwordWork) != 0 {
+		t.Fatal("password work slots already taken")
+	}
+	for range cap(passwordWork) {
+		passwordWork <- struct{}{}
+	}
+	var once sync.Once
+	release = func() {
+		once.Do(func() {
+			for range cap(passwordWork) {
+				<-passwordWork
+			}
+		})
+	}
+	t.Cleanup(release)
+	return release
+}
+
+// agJunkCaptchaFlood runs loops anonymous clients posting /login with unknown handles and unsolved
+// CAPTCHAs until stop is called; stop returns their status counts. It returns once the flood is running.
+func agJunkCaptchaFlood(e *testEnv, loops int) (stop func() map[int]int) {
+	e.t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	var mu sync.Mutex
+	codes := map[int]int{}
+	var sent atomic.Int64
+	var wg sync.WaitGroup
+	for range loops {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for ctx.Err() == nil {
+				w := e.do("POST", "/login", randomToken(), url.Values{"handle": {"u" + randomToken()[:12]}, "password": {"guess-guess-guess"}, "captcha_id": {randomToken()}, "captcha": {"XXXXXX"}})
+				sent.Add(1)
+				mu.Lock()
+				codes[w.Code]++
+				mu.Unlock()
+			}
+		}()
+	}
+	stop = func() map[int]int {
+		cancel()
+		wg.Wait()
+		mu.Lock()
+		defer mu.Unlock()
+		return codes
+	}
+	for deadline := time.Now().Add(60 * time.Second); sent.Load() < int64(2*loops); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			stop()
+			e.t.Fatalf("junk flood sent only %d requests in 60s", sent.Load())
+		}
+	}
+	return stop
+}
+
+// A flood of unsolved CAPTCHAs is refused before it takes a password-check slot, so real sign-ins and an
+// administrator's confirmation keep working while it runs (acceptance.md: junk leaves sign-ins working).
+func TestJunkCaptchaFloodLeavesSignInAndConfirmWorking(t *testing.T) {
+	e := newTestApp(t)
+	agExec(e, "UPDATE settings SET value='true' WHERE key='captcha_required'")
+	const signIns = 12
+	for i := range signIns {
+		e.user(fmt.Sprintf("real_user_%d", i), "buyer")
+	}
+	_, admin := e.user("flood_admin", "admin")
+	e.user("bad_vendor", "vendor")
+	stop := agJunkCaptchaFlood(e, 32)
+	defer stop()
+	for i := range signIns {
+		anon := randomToken()
+		id := e.captcha("/login", anon)
+		w := e.do("POST", "/login", anon, url.Values{"handle": {fmt.Sprintf("real_user_%d", i)}, "password": {testPassword}, "captcha_id": {id}, "captcha": {e.A.captchaAnswer(id)}})
+		if w.Code != 303 {
+			t.Fatalf("real sign-in %d during the junk flood: status=%d body=%q", i, w.Code, strings.TrimSpace(w.Body.String()))
+		}
+		e.session(w)
+	}
+	w := e.do("POST", "/admin/suspend", admin, url.Values{"handle": {"bad_vendor"}, "action": {"suspend"}, "password": {testPassword}})
+	if w.Code != 303 {
+		t.Fatalf("admin suspend during the junk flood: status=%d body=%q", w.Code, strings.TrimSpace(w.Body.String()))
+	}
+	codes := stop()
+	if agInt(e, "SELECT count(*) FROM users WHERE handle='bad_vendor' AND suspended_at IS NOT NULL") != 1 {
+		t.Fatal("suspension not recorded")
+	}
+	if codes[400] == 0 || len(codes) != 1 {
+		t.Fatalf("junk requests: %v, want only 400", codes)
+	}
+}
+
+// A busy refusal of a confirmation spends nothing, and an exhausted sign-in budget is refused (429) without
+// needing a slot.
+func TestPasswordBusyRefusalsSpendNoBudget(t *testing.T) {
+	e := newTestApp(t)
+	adminID, admin := e.user("busy_admin", "admin")
+	e.user("busy_vendor", "vendor")
+	e.user("spent_user", "buyer")
+	for i := range 10 {
+		agExpect(e, "/login", randomToken(), url.Values{"handle": {"spent_user"}, "password": {"wrong-password-" + string(rune('a'+i))}}, 401, "Invalid handle or password")
+	}
+	release := agHoldPasswordWork(t)
+	suspend := url.Values{"handle": {"busy_vendor"}, "action": {"suspend"}, "password": {testPassword}}
+	for range 12 {
+		agExpect(e, "/admin/suspend", admin, suspend, 503, "Authentication is busy")
+	}
+	if agLimited(e, "confirm:"+adminID) {
+		t.Fatal("busy confirmation refusals spent the confirm budget")
+	}
+	agExpect(e, "/login", randomToken(), url.Values{"handle": {"spent_user"}, "password": {testPassword}}, 429, signInPausedText)
+	release()
+	agExpect(e, "/admin/suspend", admin, suspend, 303, "")
+	if agInt(e, "SELECT count(*) FROM users WHERE handle='busy_vendor' AND suspended_at IS NOT NULL") != 1 {
+		t.Fatal("suspension not recorded after the busy refusals")
+	}
+}
+
+// Registering a taken handle is refused before bcrypt, a password-check slot or the sign-in budget: with
+// every slot held (so bcrypt cannot run) it still answers "Handle unavailable", after the CAPTCHA.
+func TestRegisterTakenHandleSkipsPasswordWork(t *testing.T) {
+	e := newTestApp(t)
+	agExec(e, "UPDATE settings SET value='true' WHERE key='captcha_required'")
+	e.user("taken_name", "buyer")
+	release := agHoldPasswordWork(t)
+	register := func(handle string, solve bool) *httptest.ResponseRecorder {
+		anon := randomToken()
+		id := e.captcha("/register", anon)
+		answer := e.A.captchaAnswer(id)
+		if !solve {
+			answer = "WRONG1"
+		}
+		return e.do("POST", "/register", anon, url.Values{"handle": {handle}, "password": {"a-new-long-password"}, "captcha_id": {id}, "captcha": {answer}})
+	}
+	// The CAPTCHA still comes first: an unsolved one never learns whether the handle is taken.
+	if w := register("taken_name", false); w.Code != 400 || !strings.Contains(w.Body.String(), "CAPTCHA answer incorrect") {
+		t.Fatalf("unsolved CAPTCHA on a taken handle: status=%d body=%q", w.Code, w.Body.String())
+	}
+	for range 12 {
+		if w := register("taken_name", true); w.Code != 400 || !strings.Contains(w.Body.String(), "Handle unavailable") {
+			t.Fatalf("taken handle with every slot held: status=%d body=%q", w.Code, w.Body.String())
+		}
+	}
+	if agLimited(e, "auth:taken_name") || agLimited(e, "register:taken_name") {
+		t.Fatal("taken-handle registration spent the sign-in budget")
+	}
+	if w := register("fresh_name", true); w.Code != 503 {
+		t.Fatalf("free handle with every slot held: status=%d, want 503", w.Code)
+	}
+	release()
+	w := register("fresh_name", true)
+	e.check(w, 303)
+	e.session(w)
+	if agInt(e, "SELECT count(*) FROM users") != 2 {
+		t.Fatal("registration did not create exactly one account")
+	}
 }
 
 // --- B9: sessions and pending logins ---
@@ -614,7 +793,7 @@ func TestTOTPUnreadableSecret(t *testing.T) {
 	// A pending (not yet active) secret that can no longer be read cannot be activated.
 	id2, s2 := e.user("totp_lost2", "buyer")
 	agExec(e, "UPDATE users SET totp_pending=$2 WHERE id=$1", id2, sealed)
-	agExpect(e, "/totp/activate", s2, url.Values{"code": {"123456"}}, 409, "Start enrollment again")
+	agExpect(e, "/totp/activate", s2, url.Values{"code": {"123456"}, "password": {testPassword}}, 409, "Start enrollment again")
 	if agStr(e, "SELECT totp_enabled::text FROM users WHERE id=$1", id2) != "false" {
 		t.Fatal("unreadable pending secret activated")
 	}
@@ -648,7 +827,7 @@ func TestPGPLoginCodeErrorPaths(t *testing.T) {
 	}
 	// Turning PGP sign-in on is refused for such a key as well.
 	agExec(e, "UPDATE users SET pgp_2fa=false WHERE id=$1", signID)
-	agExpect(e, "/pgp/2fa", signSess, url.Values{"enable": {"1"}}, 409, "no usable encryption subkey")
+	agExpect(e, "/pgp/2fa", signSess, url.Values{"enable": {"1"}, "password": {testPassword}}, 409, "no usable encryption subkey")
 	if agStr(e, "SELECT pgp_2fa::text FROM users WHERE id=$1", signID) != "false" {
 		t.Fatal("PGP sign-in enabled for a sign-only key")
 	}
@@ -684,7 +863,7 @@ func TestPGPVerifyRejectsChangedKey(t *testing.T) {
 	_, bobPub := testPGPKey(t, "bob")
 	_, bobFP, _ := parsePublicKey(bobPub)
 	id, s := e.user("pgp_swap", "buyer")
-	e.check(e.do("POST", "/account", s, url.Values{"pgp": {alicePub}}), 303)
+	e.check(e.do("POST", "/account", s, url.Values{"pgp": {alicePub}, "password": {testPassword}}), 303)
 	e.check(e.do("POST", "/pgp/challenge", s, url.Values{"kind": {"sign"}}), 303)
 	challenge := agStr(e, "SELECT challenge FROM pgp_challenges WHERE user_id=$1", id)
 	proof := testClearsign(t, alice, challenge)
@@ -699,14 +878,14 @@ func TestPGPVerifyRejectsChangedKey(t *testing.T) {
 		t.Fatal("proof for the old key verified the new one")
 	}
 	// Saving through /account purges the stale challenge, so the old proof has nothing to answer.
-	e.check(e.do("POST", "/account", s, url.Values{"pgp": {alicePub}}), 303)
+	e.check(e.do("POST", "/account", s, url.Values{"pgp": {alicePub}, "password": {testPassword}}), 303)
 	if agInt(e, "SELECT count(*) FROM pgp_challenges WHERE user_id=$1", id) != 0 {
 		t.Fatal("key change kept the open challenge")
 	}
 	agExpect(e, "/pgp/verify", s, url.Values{"signature": {proof}}, 409, "No open challenge")
 }
 
-// --- A-47: adding a second factor needs re-authentication once one is enrolled ---
+// --- A-47: adding a second factor needs re-authentication (A-152 extends this to the first factor: factor_change_guard_test.go) ---
 
 // A session holder who knows the password but not the TOTP code (e.g. a phished password plus a stolen
 // session) must not swap in their own PGP key or turn PGP sign-in on: otherwise the password alone plus
@@ -800,33 +979,6 @@ func TestStolenSessionCannotEnrollTOTPOnPGPAccount(t *testing.T) {
 	e.check(e.do("POST", "/totp/activate", owner, url.Values{"code": {code}, "password": {testPassword}}), 303)
 	if agStr(e, "SELECT totp_enabled::text FROM users WHERE id=$1", uid) != "true" || !e.auditHas(uid, "Enabled TOTP two-factor authentication; issued 10 recovery codes (confirmed with password)") {
 		t.Fatal("confirmed TOTP activation not applied or not audited with its confirmation")
-	}
-}
-
-// An account with no second factor keeps the session-only flow for its first factor and for key changes.
-func TestFirstFactorNeedsNoConfirmation(t *testing.T) {
-	e := newTestApp(t)
-	uid, s := e.user("first_factor", "buyer")
-	_, pub := testPGPKey(t, "first")
-	e.check(e.do("POST", "/account", s, url.Values{"pgp": {pub}}), 303)
-	agExec(e, "UPDATE users SET pgp_verified_at=now() WHERE id=$1", uid)
-	if strings.Contains(e.body("GET", "/pgp", s, nil, 200), `name="password"`) {
-		t.Fatal("/pgp asks for a password before the first factor")
-	}
-	e.check(e.do("POST", "/pgp/2fa", s, url.Values{"enable": {"1"}}), 303)
-	if !e.auditHas(uid, "Turned on PGP sign-in verification") || e.auditHas(uid, "confirmed with") {
-		t.Fatal("first-factor PGP enable not applied as before")
-	}
-
-	id2, s2 := e.user("first_totp", "buyer")
-	e.check(e.do("POST", "/totp/enroll", s2, nil), 303)
-	if strings.Contains(e.body("GET", "/totp", s2, nil, 200), `name="password"`) {
-		t.Fatal("/totp asks for a password before the first factor")
-	}
-	code, _ := e.totpCodeFor(id2, 0)
-	e.check(e.do("POST", "/totp/activate", s2, url.Values{"code": {code}}), 303)
-	if agStr(e, "SELECT totp_enabled::text FROM users WHERE id=$1", id2) != "true" || e.auditHas(id2, "confirmed with") {
-		t.Fatal("first-factor TOTP activation not applied as before")
 	}
 }
 
@@ -949,5 +1101,95 @@ func TestPreLoginCookieSeparateFromSession(t *testing.T) {
 	e.check(w, 303)
 	if s2 := e.session(w); s2 == legacy {
 		t.Fatal("legacy anonymous token became the session")
+	}
+}
+
+// A-150: /challenge holds its transaction (and the pending login's row lock) while it checks the factor is
+// enrolled. That check must read through the transaction: on a second pool connection, a burst on one pending
+// cookie filled the pool (MaxOpenConns 12) with requests queued on the row lock while the lock holder waited
+// for a connection, freezing every page until the 12 s request timeout.
+func TestChallengeBurstDoesNotExhaustPool(t *testing.T) {
+	e := newTestApp(t)
+	id, _ := e.user("burst_owner", "buyer")
+	agEnableTOTP(e, id)
+	_, bystander := e.user("burst_bystander", "buyer")
+	pc := agPending(e, id)
+	anon, wrong := randomToken(), e.wrongTOTP(id)
+	const n = 20
+	start := make(chan struct{})
+	codes := make(chan int, n)
+	var wg sync.WaitGroup
+	for range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			codes <- e.do("POST", "/challenge", anon, url.Values{"method": {"totp"}, "code": {wrong}}, pc).Code
+		}()
+	}
+	var byCode int
+	var byTook time.Duration
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-start
+		time.Sleep(20 * time.Millisecond) // let the burst take the pool first
+		s := time.Now()
+		byCode = e.do("GET", "/account", bystander, nil).Code
+		byTook = time.Since(s)
+	}()
+	began := time.Now()
+	close(start)
+	wg.Wait()
+	took := time.Since(began)
+	close(codes)
+	seen := map[int]int{}
+	for c := range codes {
+		seen[c]++
+	}
+	if took >= time.Second || byTook >= time.Second {
+		t.Fatalf("%d concurrent POST /challenge on one pending login took %v (bystander GET /account %v); want both < 1s; responses %v", n, took, byTook, seen)
+	}
+	if byCode != 200 {
+		t.Fatalf("bystander GET /account: %d", byCode)
+	}
+	// Wrong codes are refused until a limiter trips; nothing is a timeout or a misleading 400.
+	if seen[401]+seen[429] != n || seen[401] == 0 {
+		t.Fatalf("challenge burst responses: %v", seen)
+	}
+	if agUserSessions(e, id) != 1 || agInt(e, "SELECT count(*) FROM pending_logins WHERE token_hash=$1", digest(pc.Value)) != 1 {
+		t.Fatal("wrong codes signed in or consumed the pending login")
+	}
+}
+
+// failingFactor's enrolment check fails in the database, through whatever querier /challenge hands it.
+type failingFactor struct{ tx bool }
+
+func (*failingFactor) Name() string { return "test-failing" }
+func (f *failingFactor) Enrolled(ctx context.Context, q rowQuerier, _ string) (bool, error) {
+	_, f.tx = q.(*sql.Tx)
+	var n int
+	return true, q.QueryRowContext(ctx, "SELECT 1/0").Scan(&n)
+}
+func (*failingFactor) Verify(*actionCtx, string) error { return nil }
+
+// A-150: a database error while checking the factor is a server error, not "Choose a verification method",
+// and the check runs in /challenge's transaction.
+func TestChallengeEnrolledErrorIsServerError(t *testing.T) {
+	e := newTestApp(t)
+	id, _ := e.user("enrolled_err", "buyer")
+	f := &failingFactor{}
+	factors = append(factors, f)
+	t.Cleanup(func() { factors = factors[:len(factors)-1] })
+	pc := agPending(e, id)
+	w := e.do("POST", "/challenge", randomToken(), url.Values{"method": {"test-failing"}}, pc)
+	if w.Code != 500 || strings.Contains(w.Body.String(), "Choose a verification method") {
+		t.Fatalf("Enrolled database error answered %d %q; want 500", w.Code, strings.TrimSpace(w.Body.String()))
+	}
+	if !f.tx {
+		t.Fatal("/challenge checked enrolment outside its transaction")
+	}
+	if agUserSessions(e, id) != 1 || agInt(e, "SELECT count(*) FROM pending_logins WHERE token_hash=$1", digest(pc.Value)) != 1 {
+		t.Fatal("failed enrolment check signed in or consumed the pending login")
 	}
 }

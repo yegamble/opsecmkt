@@ -17,7 +17,8 @@ import (
 // Operational safety: wallet outages never expire orders, unavailable nodes do not stop the site, shutdown
 // does not abort a payout, restored payouts stay held, and administrators can recover held or failed payouts.
 
-// restoredHold is the error scripts/restore.sh writes on payouts that were pending or sending in a dump.
+// restoredHold is the error scripts/restore.sh writes on payouts that were pending, sending, blocked or held in a
+// dump; a payout held for an account suspension keeps that text after it (A-112).
 const restoredHold = "Restored from backup: verify in the wallet before releasing; this payout may already have been sent."
 
 // restoredFailed starts the error scripts/restore.sh writes on payouts that were failed in a dump, followed by
@@ -27,7 +28,7 @@ const restoredFailed = "Restored from backup: verify in the wallet before requeu
 // restorePayoutSQL is the payout protection scripts/restore.sh and the manual SQL in UPGRADING.md apply to a
 // restored dump (TestRestoredHoldMarkerMatchesRestoreScripts keeps them identical, whitespace aside).
 var restorePayoutSQL = []string{
-	"UPDATE payouts SET state='held', updated=now(), error='" + restoredHold + "' WHERE state IN ('pending','sending','blocked','held')",
+	"UPDATE payouts SET state='held', updated=now(), error='" + restoredHold + "' || coalesce(' ' || substring(error from 'Suspended account:.*'), '') WHERE state IN ('pending','sending','blocked','held')",
 	"UPDATE payouts SET send_ambiguous=true WHERE state='failed'",
 	"UPDATE payouts SET updated=now(), error='" + restoredFailed + "' || error WHERE state='failed'",
 }
@@ -250,7 +251,13 @@ func TestAdminPayoutActions(t *testing.T) {
 	p.DB.Exec("UPDATE payouts SET state='held',error=$2 WHERE order_id=$1", held, restoredHold)
 	heldID := p.payoutID(held)
 	admin := p.page("/admin", p.adminSess)
-	for _, want := range []string{"Resolve payout " + heldID, "Release held payout", "Mark sent", `name="password"`} {
+	var heldAmount int64
+	if err := p.DB.QueryRow("SELECT amount FROM payouts WHERE order_id=$1", held).Scan(&heldAmount); err != nil {
+		t.Fatal(err)
+	}
+	// The summary names what is resolved even when the row's other columns are scrolled out of view (A-116).
+	summary := "Resolve payout " + heldID + ": release " + amount(heldAmount, 8) + " BTC to " + p.vendor.Handle + ", order " + held[:8] + "</summary>"
+	for _, want := range []string{summary, "Release held payout", "Mark sent", `name="password"`} {
 		if !strings.Contains(admin, want) {
 			t.Fatalf("admin page missing %q", want)
 		}
@@ -411,7 +418,7 @@ func TestAdminPayoutActionsAreSingleUseUnderConcurrency(t *testing.T) {
 // resolveSection returns the admin page's resolve controls for one payout.
 func resolveSection(t *testing.T, admin, id string) string {
 	t.Helper()
-	_, s, ok := strings.Cut(admin, "Resolve payout "+id+"<")
+	_, s, ok := strings.Cut(admin, "Resolve payout "+id+":")
 	if !ok {
 		t.Fatalf("admin page has no controls for payout %s", id)
 	}
@@ -569,7 +576,7 @@ func TestRestoredDefiniteFailureRequeuesOnlyAfterWalletCheck(t *testing.T) {
 	admin := html.UnescapeString(p.page("/admin", p.adminSess))
 	var row string
 	for _, r := range strings.Split(admin, "<tr") {
-		if strings.Contains(r, "Resolve payout "+id+"<") {
+		if strings.Contains(r, "Resolve payout "+id+":") {
 			row = r
 		}
 	}
@@ -662,14 +669,14 @@ func TestAdminPayoutsAttentionNeverHidden(t *testing.T) {
 	for _, want := range []string{
 		"2 payouts need attention",
 		"Showing every payout that needs attention and the 50 most recent other payouts",
-		"Resolve payout " + failedID + "<", "Resolve payout " + stuckID + "<",
+		"Resolve payout " + failedID + ":", "Resolve payout " + stuckID + ":",
 		`href="/order?id=` + failedOrder + `"`,
 	} {
 		if !strings.Contains(admin, want) {
 			t.Fatalf("admin page missing %q", want)
 		}
 	}
-	if strings.Index(admin, "Resolve payout "+failedID+"<") > strings.Index(admin, "Resolve payout "+stuckID+"<") {
+	if strings.Index(admin, "Resolve payout "+failedID+":") > strings.Index(admin, "Resolve payout "+stuckID+":") {
 		t.Fatal("payouts needing attention are not listed oldest first")
 	}
 	if strings.Contains(admin, `href="/order?id=`+stuckOrder+`"`) || !strings.Contains(admin, stuckOrder) {

@@ -48,6 +48,7 @@ class Handler(BaseHTTPRequestHandler):
             result = {'chain':'regtest','initialblockdownload':False}
         elif method == 'getwalletinfo': result = {'walletname':'opsecmkt'}
         elif method == 'get_address': result = {'address':'5'+'a'*94}
+        elif method == 'get_height': result = {'height':100}
         elif method == 'get_info': result = {'nettype':'stagenet','stagenet':True,'height':100,'target_height':100}
         elif method in ('getnewaddress','create_address'):
             index = len(addresses)+1

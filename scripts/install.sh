@@ -12,6 +12,45 @@ command -v docker >/dev/null || { echo 'Install Docker with Compose v2 first.' >
 docker compose version >/dev/null || { echo 'Docker Compose v2 is required.' >&2; exit 1; }
 command -v openssl >/dev/null || { echo 'OpenSSL is required to generate secrets.' >&2; exit 1; }
 [[ ! -e .env ]] || { echo '.env already exists; edit it and use docker compose up -d --build (see UPGRADING.md for new keys). No secrets overwritten.' >&2; exit 1; }
+# Compose names containers, volumes and networks after the project, not the checkout. A second checkout with
+# the same name would recreate another installation's containers with new secrets, and `docker compose down -v`
+# there would delete its volumes. Refuse unless everything under this name was created from this directory.
+project=${COMPOSE_PROJECT_NAME:-opsecmkt}
+[[ $project =~ ^[a-z0-9][a-z0-9_-]*$ ]] || { echo 'COMPOSE_PROJECT_NAME must use lower-case letters, digits, hyphens and underscores, starting with a letter or digit.' >&2; exit 1; }
+second_copy="To install a second copy on this host, give it its own project name, for example: COMPOSE_PROJECT_NAME=${project}-rehearsal ./scripts/install.sh${1:+ $1}"
+# One line per container; the prefix keeps a container without the label from vanishing as an empty line.
+owners=$(docker ps -a --filter "label=com.docker.compose.project=$project" --format 'dir={{.Label "com.docker.compose.project.working_dir"}}') || {
+  echo 'Could not list Docker containers (is the Docker daemon running?); nothing was written or started.' >&2; exit 1; }
+if [[ -n $owners ]]; then
+  here=$(pwd -P)
+  foreign=''
+  while IFS= read -r owner; do
+    owner=${owner#dir=}
+    # The label holds the path Compose was started from, which may go through a symlink.
+    if [[ -z $owner ]]; then
+      foreign="$foreign  (no working directory label)"$'\n'
+    elif [[ $owner != "$PWD" && ! ( -d $owner && $(cd "$owner" 2>/dev/null && pwd -P) == "$here" ) ]]; then
+      foreign="$foreign  $owner"$'\n'
+    fi
+  done <<< "$owners"
+  if [[ -n $foreign ]]; then
+    printf "Refusing to install: Compose project '%s' already has containers created from another directory:\n" "$project" >&2
+    printf '%s' "$foreign" | sort -u >&2
+    printf '%s\n' 'Installing here would recreate them with new secrets, and docker compose down -v here would delete their volumes. Nothing was written or started.' \
+      "To manage that installation, work in its directory. $second_copy" >&2
+    exit 1
+  fi
+else
+  volumes=$(docker volume ls -q --filter "label=com.docker.compose.project=$project") || {
+    echo 'Could not list Docker volumes (is the Docker daemon running?); nothing was written or started.' >&2; exit 1; }
+  if [[ -n $volumes ]]; then
+    printf "Refusing to install: Compose project '%s' has volumes but no containers, so the checkout that created them is unknown:\n" "$project" >&2
+    printf '%s\n' "$volumes" | sed 's/^/  /' >&2
+    printf '%s\n' "They may hold another installation's data: installing here would start on them with new secrets, and docker compose down -v here would delete them. Nothing was written or started." \
+      "To use that data, start it from the checkout (and .env) that created it. $second_copy" >&2
+    exit 1
+  fi
+fi
 # secret N prints N random bytes as hex and refuses to continue if generation failed.
 secret() {
   local value
@@ -71,6 +110,9 @@ put SETUP_TOKEN "$setup_token"
 put APP_MODE "$mode"
 put COOKIE_SECURE "$secure"
 put APP_PORT "${APP_PORT:-8080}"
+# Every later docker compose command in this directory reads the project name from .env. Never change it on an
+# existing install: Compose would start it on new, empty volumes.
+put COMPOSE_PROJECT_NAME "$project"
 if [[ $local_mode == true ]]; then
   put BITCOIN_RPC_URL ''
   put MONERO_RPC_URL ''
@@ -83,13 +125,21 @@ put AUDIT_SIGNING_KEY "$audit_key"
 # unless a local node is chosen: the app then accepts whichever test network an external node reports.
 bitcoin_chain=''
 monero_network=''
+# Local nodes are pruned unless the operator answers no. Keep this default equal to compose.nodes.yaml's.
+bitcoin_prune_mb=2000
+monero_prune_flags='--prune-blockchain --sync-pruned-blocks'
 for coin in BITCOIN MONERO; do
   if [[ $local_mode == true ]]; then
     choice=disabled
   else
-    read -r -p "$coin node (disabled/external/local) [disabled]: " choice
+    # Sizes are upstream estimates (docs/operator-guide.md#local-node-pruning) and grow with each chain.
+    case $coin in
+      BITCOIN) printf '%s\n' "BITCOIN: 'local' (the default) runs a pruned Bitcoin Core node in Docker. It keeps about 5-8 GB on disk (${bitcoin_prune_mb} MiB of recent blocks plus the chain state), but its first sync still downloads the whole test chain (about 24 GB signet, 31 GB testnet4) and can take hours. 'external' uses a node you run elsewhere; 'disabled' leaves Bitcoin payments off." ;;
+      MONERO) printf '%s\n' "MONERO: 'local' (the default) runs a pruned monerod and monero-wallet-rpc in Docker. Pruning keeps about a third of the chain; stagenet/testnet sizes are not published upstream, so keep 20 GB free (an estimate). The first sync can take hours. 'external' uses a node you run elsewhere; 'disabled' leaves Monero payments off." ;;
+    esac
+    read -r -p "$coin node (local/external/disabled) [local]: " choice
   fi
-  case ${choice:-disabled} in
+  case ${choice:-local} in
     disabled) ;;
     external)
       read -r -s -p "$coin RPC URL: " rpc; printf '\n'
@@ -140,6 +190,16 @@ for coin in BITCOIN MONERO; do
           live) echo 'Live Bitcoin payments are disabled: this application refuses mainnet wallets and addresses.' >&2; exit 1 ;;
           *) echo 'Choose testnet4, signet, or live.' >&2; exit 1 ;;
         esac
+        read -r -p 'Prune the BITCOIN node to save disk? (yes/no) [yes]: ' prune
+        case ${prune:-yes} in
+          yes) ;;
+          no)
+            bitcoin_prune_mb=0
+            echo 'Full node: BITCOIN keeps every block, about 28 GB on signet or 33 GB on testnet4 today (upstream estimates, growing), with the same first sync. BITCOIN_PRUNE_MB=0 in .env; see docs/operator-guide.md#local-node-pruning to change it later.'
+            ;;
+          *) echo 'Answer yes or no.' >&2; exit 1 ;;
+        esac
+        put BITCOIN_PRUNE_MB "$bitcoin_prune_mb"
         profiles="${profiles:+$profiles,}bitcoin"
       else
         read -r -p 'MONERO network (stagenet/testnet/live) [stagenet]: ' monero_network_choice
@@ -148,6 +208,16 @@ for coin in BITCOIN MONERO; do
           live) echo 'Live Monero payments are disabled: this application refuses mainnet wallets and addresses.' >&2; exit 1 ;;
           *) echo 'Choose stagenet, testnet, or live.' >&2; exit 1 ;;
         esac
+        read -r -p 'Prune the MONERO node to save disk? (yes/no) [yes]: ' prune
+        case ${prune:-yes} in
+          yes) ;;
+          no)
+            monero_prune_flags=''
+            echo 'Full node: MONERO keeps the whole chain, about three times the pruned size (upstream ratio), with a longer first sync. MONERO_PRUNE_FLAGS is blank in .env; see docs/operator-guide.md#local-node-pruning to change it later.'
+            ;;
+          *) echo 'Answer yes or no.' >&2; exit 1 ;;
+        esac
+        put MONERO_PRUNE_FLAGS "$monero_prune_flags"
         wallet_password=$(secret 24) || exit 1
         put MONERO_RPC_URL 'http://monero:18081'
         put MONERO_WALLET_RPC_PASSWORD "$wallet_password"
@@ -196,6 +266,6 @@ else
   if [[ $secure == false ]]; then
     printf 'Ready. Open %s/setup to name your marketplace and create its administrator.\n' "$endpoint"
   else
-    printf 'Application healthy at %s. Configure your HTTPS reverse proxy, then open https://YOUR-DOMAIN/setup. Secure cookies require HTTPS.\n' "$endpoint"
+    printf 'Application healthy at %s. Configure your HTTPS reverse proxy to forward the original Host header (see docs/operator-guide.md), then open https://YOUR-DOMAIN/setup. Secure cookies require HTTPS.\n' "$endpoint"
   fi
 fi

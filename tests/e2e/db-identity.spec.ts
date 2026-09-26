@@ -59,7 +59,7 @@ test('changing the password needs the current one, ends other sessions and keeps
   await other.context().close();
 
   // With TOTP enrolled the change also needs a code; a one-time recovery code is accepted once.
-  await enrollTOTP(page);
+  await enrollTOTP(page, second);
   const recovery = (await page.locator('.recovery-codes li').allInnerTexts())[0];
   await page.goto('/account');
   await expect(page.getByLabel('Authenticator code or recovery code')).toBeVisible();

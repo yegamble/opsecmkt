@@ -41,11 +41,12 @@
 </label>
 <label>Stock<input type="number" name="stock" required min="0" max="1000000" value="{{.Stock}}" aria-describedby="stock-help">
 </label>
-<label>Bitcoin reference price<input name="price_btc" required inputmode="decimal" value="{{.PriceBTC}}">
+<label>Bitcoin reference price<input name="price_btc" required inputmode="decimal" value="{{.PriceBTC}}" aria-describedby="price-btc-help">
 </label>
 <label>Monero reference price<input name="price_xmr" required inputmode="decimal" value="{{.PriceXMR}}">
 </label>
 </div>
+<p class="help" id="price-btc-help">The Bitcoin price must be at least 0.0001 BTC: a smaller Bitcoin payout cannot cover the network fee.</p>
 <p class="help" id="stock-help">Payment requests reserve stock. If stock changes while you edit, saving a new stock value is refused so no reservation is overwritten.</p>
 {{with $.Listing}}<p class="help" id="kind-help">{{if .OpenOrders}}{{.OpenOrders}} open order(s) depend on this listing, so the fulfillment type cannot change until they finish.{{else}}No open orders; the fulfillment type can change.{{end}} Orders that have requested payment keep their recorded amount; open drafts use the current price.</p>
 {{if .VendorEditor}}<label>Automatic delivery content<textarea name="delivery_content" maxlength="32000" rows="6" spellcheck="false" aria-describedby="delivery-help">{{.DeliveryContent}}</textarea>

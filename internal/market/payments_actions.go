@@ -44,7 +44,8 @@ func savePayoutAddress(c *actionCtx, cur, addr string, p PaymentProvider) (actio
 		column = "payout_xmr"
 	}
 	ctx := c.Ctx()
-	if _, err := c.Tx.ExecContext(ctx, "UPDATE users SET "+column+"=$1 WHERE id=$2", addr, c.User.ID); err != nil {
+	// The change time is shown next to the address when an administrator moves a payout to it (A-121).
+	if _, err := c.Tx.ExecContext(ctx, "UPDATE users SET "+column+"=$1,"+column+"_changed=CASE WHEN "+column+"=$1 THEN "+column+"_changed ELSE now() END WHERE id=$2", addr, c.User.ID); err != nil {
 		return actionResult{}, err
 	}
 	audit := "Removed " + cur + " payout address"
@@ -64,6 +65,19 @@ func savePayoutAddress(c *actionCtx, cur, addr string, p PaymentProvider) (actio
 			audit += "; " + strconv.FormatInt(n, 10) + " waiting payout(s) now use it"
 			note += "; " + strconv.FormatInt(n, 10) + " waiting payout(s) now use it"
 		}
+		// An unsent payout that already has an address keeps it (A-121): someone who knows the password must not
+		// re-point money already on its way. The owner learns which orders still use a previous address; an
+		// administrator moves a held or definitely rejected one after checking the new address with them.
+		movable, others, err := previousAddressPayouts(ctx, c.Tx, c.User.ID, cur, addr)
+		if err != nil {
+			return actionResult{}, err
+		}
+		if len(movable) > 0 {
+			note += "; " + strconv.Itoa(len(movable)) + " unsent payout(s) still use your previous address (" + ordersList(movable) + "); an administrator must confirm the change"
+		}
+		if len(others) > 0 {
+			note += "; " + strconv.Itoa(len(others)) + " other unsent payout(s) are queued, being sent or may already have been sent, and stay on your previous address (" + ordersList(others) + ")"
+		}
 	}
 	// The owner hears of every change, so one made by someone who knows the password does not go unseen (A-102).
 	// The address itself is not repeated.
@@ -72,6 +86,39 @@ func savePayoutAddress(c *actionCtx, cur, addr string, p PaymentProvider) (actio
 		return actionResult{}, err
 	}
 	return actionResult{Redirect: "/account?saved=1", Audit: audit}, nil
+}
+
+// previousAddressPayouts returns the short order IDs of the user's unsent payouts in cur that use an address other
+// than addr, oldest first: those an administrator may move (repointable), and the others (queued, being sent, or
+// possibly broadcast).
+func previousAddressPayouts(ctx context.Context, tx *sql.Tx, userID, cur, addr string) (movable, others []string, err error) {
+	rows, err := tx.QueryContext(ctx, `SELECT order_id,state,error,send_ambiguous FROM payouts WHERE user_id=$1 AND currency=$2
+		AND address<>'' AND address<>$3 AND state IN ('held','failed','pending','sending') ORDER BY id`, userID, cur, addr)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var order, state, payoutErr string
+		var ambiguous bool
+		if err = rows.Scan(&order, &state, &payoutErr, &ambiguous); err != nil {
+			return nil, nil, err
+		}
+		if repointable(state, payoutErr, ambiguous) {
+			movable = append(movable, shortID(order))
+		} else {
+			others = append(others, shortID(order))
+		}
+	}
+	return movable, others, rows.Err()
+}
+
+// ordersList names short order IDs in a notification: "order 1a2b3c4d" or "orders 1a2b3c4d, 5e6f7a8b".
+func ordersList(ids []string) string {
+	if len(ids) == 1 {
+		return "order " + ids[0]
+	}
+	return "orders " + strings.Join(ids, ", ")
 }
 
 func paymentsGlobalLoader(_ context.Context, a *App, _ *http.Request, d *PageData) error {
@@ -124,7 +171,7 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		pv.Address = addr
 	}
 	dec := currencyDecimals(o.Currency)
-	rows, err := a.db.QueryContext(ctx, "SELECT txid,idx,amount,confirmations,credited,locked FROM payments WHERE order_id=$1 ORDER BY created,id", o.ID)
+	rows, err := a.db.QueryContext(ctx, "SELECT txid,idx,amount,confirmations,credited,locked,regress_notice FROM payments WHERE order_id=$1 ORDER BY created,id", o.ID)
 	if err != nil {
 		return err
 	}
@@ -136,12 +183,14 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 	}
 	remaining := required
 	minConfs := int64(-1)
-	conflicted := false
+	// conflicted/regressed: a credited deposit is conflicted, or back below the threshold; notified: that
+	// regression was announced to the parties and staff (settleOrder).
+	conflicted, regressed, notified := false, false, false
 	for rows.Next() {
 		var dep PaymentDeposit
 		var amt int64
-		var credited, locked bool
-		if err = rows.Scan(&dep.TxID, &dep.Index, &amt, &dep.Confirmations, &credited, &locked); err != nil {
+		var credited, locked, notice bool
+		if err = rows.Scan(&dep.TxID, &dep.Index, &amt, &dep.Confirmations, &credited, &locked, &notice); err != nil {
 			return err
 		}
 		if !locked && dep.Confirmations >= 0 {
@@ -154,12 +203,15 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		case dep.Confirmations < 0:
 			dep.State = "Conflicted or missing — not counted"
 			conflicted = conflicted || credited
+			notified = notified || (credited && notice)
 		case dep.Confirmations >= int64(pv.Threshold):
 			dep.State = "Confirmed"
 			received += amt
 		default:
 			dep.State = "Waiting for confirmations"
 			pending += amt
+			regressed = regressed || credited
+			notified = notified || (credited && notice)
 		}
 		if !locked && dep.Confirmations >= 0 && (minConfs < 0 || dep.Confirmations < minConfs) {
 			minConfs = dep.Confirmations
@@ -184,8 +236,14 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		pv.Confirmations = int(minConfs)
 	}
 	switch {
-	case conflicted:
-		pv.Status = "A credited deposit is conflicted; moderators have been notified"
+	case conflicted || regressed:
+		pv.Status = "A credited deposit is back below " + strconv.Itoa(pv.Threshold) + " confirmations; unsent payouts wait until it confirms again"
+		if conflicted {
+			pv.Status = "A credited deposit is conflicted or missing; unsent payouts wait until it confirms again"
+		}
+		if notified {
+			pv.Status += "; market staff have been notified"
+		}
 	case o.State == stateAwaitingPayment && len(pv.Deposits) == 0:
 		pv.Status = "Waiting for a deposit"
 	case o.State == stateAwaitingPayment && pending > 0:
@@ -298,7 +356,9 @@ func paymentsAdminLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 	}
 	rows, err = a.db.QueryContext(ctx, `WITH v AS (SELECT p.id,p.order_id,p.kind,u.handle,p.currency,p.amount,p.address,p.state,p.txid,p.error,to_char(p.updated,'YYYY-MM-DD HH24:MI "UTC"') AS updated,
 		(p.state IN ('blocked','held','failed') OR (p.state='sending' AND p.updated < now()-interval '5 minutes')) AS attention,p.send_ambiguous,
-		(o.buyer_id=$1 OR pr.vendor_id=$1 OR o.state IN ('disputed','resolved') OR EXISTS(SELECT 1 FROM payments pm WHERE pm.order_id=o.id AND pm.flagged)) AS order_link
+		(o.buyer_id=$1 OR pr.vendor_id=$1 OR o.state IN ('disputed','resolved') OR EXISTS(SELECT 1 FROM payments pm WHERE pm.order_id=o.id AND pm.flagged)) AS order_link,
+		CASE p.currency WHEN 'XMR' THEN u.payout_xmr ELSE u.payout_btc END AS current_address,
+		COALESCE(to_char(CASE p.currency WHEN 'XMR' THEN u.payout_xmr_changed ELSE u.payout_btc_changed END,'YYYY-MM-DD HH24:MI "UTC"'),'') AS current_changed
 		FROM payouts p JOIN users u ON u.id=p.user_id JOIN orders o ON o.id=p.order_id JOIN products pr ON pr.id=o.product_id)
 		SELECT * FROM (SELECT * FROM v WHERE attention UNION ALL (SELECT * FROM v WHERE NOT attention ORDER BY id DESC LIMIT $2)) s
 		ORDER BY attention DESC, CASE WHEN attention THEN id END, id DESC`, uid, payoutHistoryLimit+1)
@@ -311,7 +371,7 @@ func paymentsAdminLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		var r PayoutRow
 		var amt int64
 		var sendAmbiguous bool
-		if err = rows.Scan(&r.ID, &r.OrderID, &r.Kind, &r.Recipient, &r.Currency, &amt, &r.Address, &r.State, &r.TxID, &r.Error, &r.Updated, &r.Attention, &sendAmbiguous, &r.OrderLink); err != nil {
+		if err = rows.Scan(&r.ID, &r.OrderID, &r.Kind, &r.Recipient, &r.Currency, &amt, &r.Address, &r.State, &r.TxID, &r.Error, &r.Updated, &r.Attention, &sendAmbiguous, &r.OrderLink, &r.CurrentAddress, &r.CurrentChanged); err != nil {
 			return err
 		}
 		if r.Attention {
@@ -320,7 +380,8 @@ func paymentsAdminLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 			d.PayoutHistoryLimit = payoutHistoryLimit
 			continue
 		}
-		r.Amount, r.StateLabel = amount(amt, currencyDecimals(r.Currency)), payoutStateLabel(r.State)
+		r.Amount, r.StateLabel, r.OrderShort = amount(amt, currencyDecimals(r.Currency)), payoutStateLabel(r.State), shortID(r.OrderID)
+		r.Repoint = repointable(r.State, r.Error, sendAmbiguous) && r.Address != "" && r.CurrentAddress != "" && r.CurrentAddress != r.Address
 		switch {
 		case r.State == "sending" && r.Attention:
 			r.StateLabel, r.Ambiguous = "Stuck in sending — never retried; may have been broadcast, check the wallet", true
@@ -333,10 +394,42 @@ func paymentsAdminLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		case r.State == "held" && strings.HasPrefix(r.Error, restoredHoldPrefix):
 			r.StateLabel, r.Ambiguous = "Held after a restore from backup — may already have been sent, check the wallet", true
 		}
-		if r.State == "held" && strings.HasPrefix(r.Error, suspendedHoldPrefix) {
+		if heldForSuspension(r.State, r.Error) {
 			r.StateLabel, r.AddressCheck = "Held: account suspended — check the payout address before releasing", true
+			if r.Ambiguous {
+				r.StateLabel = "Held after a restore from backup and for an account suspension — may already have been sent; check the wallet and the payout address before releasing"
+			}
 		}
 		d.Payouts = append(d.Payouts, r)
 	}
-	return rows.Err()
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+	// A payout the watcher holds offers no release while a credited deposit of its order is still below the
+	// threshold (the release would be refused): the row names the deposits instead.
+	for i := range d.Payouts {
+		r := &d.Payouts[i]
+		if r.State != "held" || r.Error != heldReason {
+			continue
+		}
+		r.Threshold = a.confirmationThreshold(r.Currency)
+		deps, err := a.db.QueryContext(ctx, "SELECT txid,idx,confirmations,address FROM payments WHERE order_id=$1 AND credited AND confirmations<$2 ORDER BY id", r.OrderID, r.Threshold)
+		if err != nil {
+			return err
+		}
+		for deps.Next() {
+			var h HeldDeposit
+			if err = deps.Scan(&h.TxID, &h.Index, &h.Confirmations, &h.Address); err != nil {
+				deps.Close()
+				return err
+			}
+			r.Waiting = append(r.Waiting, h)
+		}
+		deps.Close()
+		if err = deps.Err(); err != nil {
+			return err
+		}
+	}
+	return nil
 }

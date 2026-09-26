@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -47,10 +48,60 @@ func paymentWatcher(ctx context.Context, a *App) {
 		case <-t.C:
 		}
 		if err := a.pollOnce(ctx); err != nil && ctx.Err() == nil {
-			log.Printf("payment watcher: %v", err)
+			log.Printf("payment watcher: %s", watcherCause(err))
 		}
 		t.Reset(interval)
 	}
+}
+
+// watchError labels a watcher error. Error() keeps the wrapped text (payment_status, the admin pages), but the
+// watcher's log line prints only the label and the class (watcherCause), never the wallet's or the driver's
+// text, which can hold a payout address or the database user, name, host and port (A-170). A label holds
+// only a currency, "order <short id>", "payout <id>" and fixed words; an empty label adds nothing to Error().
+type watchError struct {
+	label string
+	class string // logged instead of watcherCause(err) when set
+	err   error
+}
+
+func (e *watchError) Error() string {
+	if e.label == "" {
+		return e.err.Error()
+	}
+	return e.label + ": " + e.err.Error()
+}
+
+func (e *watchError) Unwrap() error { return e.err }
+
+// watcherCause is the one-line log form of a watcher error: each joined error in turn ("; ") with all its
+// labels, then the JSON-RPC code of a wallet error (rpc:<code>) or errorCause's class.
+func watcherCause(err error) string { return strings.Join(watcherCauses(err), "; ") }
+
+func watcherCauses(err error) []string {
+	switch e := err.(type) {
+	case interface{ Unwrap() []error }:
+		var parts []string
+		for _, c := range e.Unwrap() {
+			parts = append(parts, watcherCauses(c)...)
+		}
+		return parts
+	case *watchError:
+		parts := []string{e.class}
+		if e.class == "" {
+			parts = watcherCauses(e.err)
+		}
+		if e.label != "" {
+			for i := range parts {
+				parts[i] = e.label + ": " + parts[i]
+			}
+		}
+		return parts
+	}
+	var re *rpcError
+	if errors.As(err, &re) {
+		return []string{fmt.Sprintf("rpc:%d", re.Code)}
+	}
+	return []string{errorCause(err)}
 }
 
 func currencyDecimals(currency string) int {
@@ -77,7 +128,7 @@ func (a *App) pollOnce(ctx context.Context) error {
 	if a.db == nil || !a.paymentsConfigured() {
 		return nil
 	}
-	skip := a.refreshProviders(ctx)
+	skip, tips, why := a.refreshProviders(ctx)
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -102,6 +153,23 @@ func (a *App) pollOnce(ctx context.Context) error {
 	}()
 	var errs []error
 	ready := a.providers()
+	// A node whose tip is below the highest tip recorded for its currency (restarted from an older state, or a
+	// wallet rescanning after a restore) is treated as syncing: read now, deposits it has not caught up with would
+	// be recorded as missing or back below the threshold and announced as regressions.
+	for _, cur := range sortedCurrencies(ready) {
+		tip, reported := tips[cur]
+		if _, skipped := skip[cur]; skipped || !reported {
+			continue
+		}
+		var highest int64
+		if err := a.db.QueryRowContext(ctx, `INSERT INTO payment_status(currency,network,last_poll,last_error,tip_height) VALUES($1,$2,NULL,'',$3)
+			ON CONFLICT(currency) DO UPDATE SET tip_height=GREATEST(payment_status.tip_height,excluded.tip_height) RETURNING tip_height`, cur, ready[cur].Network(), tip).Scan(&highest); err != nil {
+			errs = append(errs, err)
+			skip[cur], why[cur] = "Could not compare the node tip with the highest tip recorded; watcher pass skipped (no deposits read, no expiry, no payouts).", "tip comparison failed"
+		} else if tip < highest {
+			skip[cur] = fmt.Sprintf(tipBehindPrefix+" (node tip %d is below the highest tip %d recorded by the market: restarted or restored from an older state); watcher pass skipped (no deposits read, no expiry, no payouts) until it catches up.", tip, highest)
+		}
+	}
 	for cur, reason := range skip {
 		network := ""
 		if p := ready[cur]; p != nil {
@@ -111,8 +179,12 @@ func (a *App) pollOnce(ctx context.Context) error {
 			ON CONFLICT(currency) DO UPDATE SET last_error=excluded.last_error`, cur, network, reason); err != nil {
 			errs = append(errs, err)
 		}
-		if reason != syncingReason {
-			errs = append(errs, fmt.Errorf("%s: %s", cur, reason))
+		if reason != syncingReason && !strings.HasPrefix(reason, tipBehindPrefix) {
+			class := "pass skipped"
+			if why[cur] != "" {
+				class += ": " + why[cur]
+			}
+			errs = append(errs, &watchError{label: cur, class: class, err: errors.New(reason)})
 		}
 	}
 	for _, cur := range sortedCurrencies(ready) {
@@ -132,7 +204,7 @@ func (a *App) pollOnce(ctx context.Context) error {
 			}
 		}
 		if err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", cur, err))
+			errs = append(errs, &watchError{label: cur, err: err})
 		}
 	}
 	return errors.Join(errs...)
@@ -154,15 +226,17 @@ func (a *App) pollCurrency(ctx context.Context, p PaymentProvider) error {
 	// address was issued within 30 days and that still have a deposit below the threshold or a confirmed deposit
 	// neither credited (paid out / counted) nor flagged. Credited deposits below threshold remain watched even
 	// after a conflict was flagged. Whatever their age, orders with a payout pending (sendPayouts sends only
-	// payouts of orders read and settled in this pass) or held by the watcher (so it resumes once the deposit
-	// re-confirms) are watched too. Other older addresses of closed orders are not polled.
+	// payouts of orders read and settled in this pass) or held are watched too: the watcher's own hold resumes
+	// once the deposit re-confirms, and the ledger of a hold an administrator must release (a watcher hold
+	// converted by a suspension or a restore from backup) stays current, so the release is not refused on stale
+	// confirmations. Other older addresses of closed orders are not polled.
 	rows, err := a.db.QueryContext(ctx, `SELECT pa.address,pa.order_id FROM payment_addresses pa JOIN orders o ON o.id=pa.order_id
 		WHERE pa.currency=$1 AND (o.state IN ('awaiting_payment',`+fundedOpenStates+`) OR (o.state<>'draft' AND o.updated > now()-interval '24 hours')
 			OR (o.state IN ('cancelled','resolved','completed') AND pa.created > now()-interval '30 days' AND EXISTS (SELECT 1 FROM payments pm
 				WHERE pm.order_id=o.id AND ((pm.credited AND pm.confirmations<$2)
 					OR (NOT pm.flagged AND (pm.confirmations BETWEEN 0 AND $2-1 OR (pm.confirmations>=$2 AND NOT pm.credited))))))
-			OR EXISTS (SELECT 1 FROM payouts po WHERE po.order_id=o.id AND (po.state='pending' OR (po.state='held' AND po.error=$3))))
-		ORDER BY o.updated`, cur, int64(p.Confirmations()), heldReason)
+			OR EXISTS (SELECT 1 FROM payouts po WHERE po.order_id=o.id AND po.state IN ('pending','held')))
+		ORDER BY o.updated`, cur, int64(p.Confirmations()))
 	if err != nil {
 		return err
 	}
@@ -199,7 +273,7 @@ func (a *App) pollCurrency(ctx context.Context, p PaymentProvider) error {
 	var settled []string
 	for _, id := range orders {
 		if err = a.settleOrder(ctx, p, id, !unread[id]); err != nil {
-			errs = append(errs, fmt.Errorf("order %s: %w", id[:min(8, len(id))], err))
+			errs = append(errs, &watchError{label: "order " + id[:min(8, len(id))], err: err})
 		} else if !unread[id] {
 			settled = append(settled, id)
 		}
@@ -216,7 +290,7 @@ func (a *App) pollCurrency(ctx context.Context, p PaymentProvider) error {
 func (a *App) recordIncoming(ctx context.Context, p PaymentProvider, addresses []string, orderOf map[string]string) error {
 	incoming, err := p.Incoming(ctx, addresses)
 	if err != nil {
-		return err
+		return &watchError{class: "wallet read failed: " + watcherCause(err), err: err}
 	}
 	cur := p.Currency()
 	seen := map[ledgerKey]bool{}
@@ -331,7 +405,7 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 			return err
 		}
 		note := fmt.Sprintf("TESTNET deposit %s has an unlock time; locked transfer ignored: it is not counted toward payment and is never paid out automatically. Moderator review required.", truncate(txid, 20))
-		if err = a.flagOrder(ctx, tx, &o, note); err != nil {
+		if err = a.flagOrder(ctx, tx, &o, note, ""); err != nil {
 			return err
 		}
 		body := "Order " + orderID[:min(8, len(orderID))] + ": locked transfer ignored. Deposit " + truncate(txid, 20) + " has an unlock time and does not count toward payment; send an ordinary transfer (TESTNET)."
@@ -374,18 +448,49 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 			}
 		}
 	}
-	// A credited deposit that is now conflicted or gone: report once, hold unsent payouts, never revert state.
-	conflicted, err := collectStrings(ctx, tx, "SELECT txid FROM payments WHERE order_id=$1 AND credited AND confirmations<0 AND NOT flagged", orderID)
-	if err != nil {
+	// A credited deposit back below the threshold (conflicted or missing, or at a lower depth after a reorg) is
+	// announced once per episode while the order is open or its payout unsent; unsent payouts are held below and
+	// the order state is never reverted. Reaching the threshold again ends the episode (regress_notice), so a
+	// later regression is announced again. payments.flagged stays set: staff keep read access and the desk lists it.
+	if _, err = tx.ExecContext(ctx, "UPDATE payments SET regress_notice=false WHERE order_id=$1 AND regress_notice AND confirmations>=$2", orderID, threshold); err != nil {
 		return err
 	}
-	for _, txid := range conflicted {
-		if _, err = tx.ExecContext(ctx, "UPDATE payments SET flagged=true WHERE order_id=$1 AND txid=$2 AND credited AND confirmations<0", orderID, txid); err != nil {
+	var sent bool
+	if err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM payouts WHERE order_id=$1 AND state='sent')", orderID).Scan(&sent); err != nil {
+		return err
+	}
+	if !isTerminal(o.State) || !sent {
+		rows, err := tx.QueryContext(ctx, "UPDATE payments SET flagged=true,regress_notice=true WHERE order_id=$1 AND credited AND confirmations<$2 AND NOT regress_notice RETURNING txid,confirmations", orderID, threshold)
+		if err != nil {
 			return err
 		}
-		note := fmt.Sprintf("Credited TESTNET deposit %s is now conflicted or missing from the wallet. Order state was not changed; unsent payouts are held. Moderator review required.", truncate(txid, 20))
-		if err = a.flagOrder(ctx, tx, &o, note); err != nil {
+		type regression struct {
+			txid  string
+			confs int64
+		}
+		var found []regression
+		for rows.Next() {
+			var r regression
+			if err = rows.Scan(&r.txid, &r.confs); err != nil {
+				rows.Close()
+				return err
+			}
+			found = append(found, r)
+		}
+		rows.Close()
+		if err = rows.Err(); err != nil {
 			return err
+		}
+		for _, r := range found {
+			what := "is now conflicted or missing from the wallet"
+			if r.confs >= 0 {
+				what = fmt.Sprintf("is back below the confirmation threshold (%d of %d confirmations), as after a chain reorganisation", r.confs, threshold)
+			}
+			note := fmt.Sprintf("Credited TESTNET deposit %s %s. Order state was not changed; unsent payouts are held until it confirms again. Moderator review required.", truncate(r.txid, 20), what)
+			party := fmt.Sprintf("Order %s: credited TESTNET deposit %s %s. The order was not changed and any unsent payout waits until the deposit confirms again; until then this payment is not final. The market staff have been notified.", orderID[:min(8, len(orderID))], truncate(r.txid, 20), what)
+			if err = a.flagOrder(ctx, tx, &o, note, party); err != nil {
+				return err
+			}
 		}
 	}
 	// Unsent payouts wait while any credited deposit is conflicted or back below the threshold (reorg), and
@@ -432,7 +537,7 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 					return err
 				}
 				note := fmt.Sprintf("TESTNET deposit %s arrived after this order was settled and was not paid out. Moderator review required.", truncate(txid, 20))
-				if err = a.flagOrder(ctx, tx, &o, note); err != nil {
+				if err = a.flagOrder(ctx, tx, &o, note, ""); err != nil {
 					return err
 				}
 			}
@@ -458,12 +563,23 @@ func collectStrings(ctx context.Context, tx *sql.Tx, query string, args ...any) 
 	return out, rows.Err()
 }
 
-// flagOrder records a note in order_events (state unchanged) and notifies every moderator and administrator.
-func (a *App) flagOrder(ctx context.Context, tx *sql.Tx, o *Order, note string) error {
+// flagOrder records a note in order_events (state unchanged) and notifies every moderator and administrator
+// who is not suspended. With a party message, the buyer and the vendor are sent it instead of the staff
+// notification.
+func (a *App) flagOrder(ctx context.Context, tx *sql.Tx, o *Order, note, party string) error {
 	if _, err := tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, o.State, note); err != nil {
 		return err
 	}
-	staff, err := collectStrings(ctx, tx, "SELECT id FROM users WHERE role IN ('moderator','admin')")
+	parties := []string{}
+	if party != "" {
+		parties = []string{o.BuyerID, o.VendorID}
+		for _, uid := range parties {
+			if _, err := tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), uid, party); err != nil {
+				return err
+			}
+		}
+	}
+	staff, err := collectStrings(ctx, tx, "SELECT id FROM users WHERE role IN ('moderator','admin') AND suspended_at IS NULL AND id<>ALL($1)", parties)
 	if err != nil {
 		return err
 	}
@@ -538,16 +654,39 @@ func (a *App) sendPayouts(ctx context.Context, p PaymentProvider, orders []strin
 				msg = "Wallet call failed without a definite answer; the transaction may or may not have been broadcast. Check the wallet before requeueing or paying manually. "
 			}
 			err = a.recordPayout(rctx, id, order, recipient, "failed", "", msg+truncate(serr.Error(), 200), ambiguous, "TESTNET payout of "+label+" failed and will not be retried automatically.")
-			errs = append(errs, fmt.Errorf("payout %d: %w", id, serr))
+			errs = append(errs, &watchError{label: fmt.Sprintf("payout %d", id), class: payoutErrorClass(cur, serr), err: serr})
 		} else {
 			err = a.recordPayout(rctx, id, order, recipient, "sent", txid, "", false, "TESTNET payout of "+label+" sent: "+txid)
 		}
 		cancel()
+		// Logged here, not only in the returned error: the watcher drops a pass's error once shutdown has begun,
+		// and a send that could not be recorded leaves its txid nowhere else (A-141, A-107).
+		recorded := "yes"
 		if err != nil {
-			errs = append(errs, fmt.Errorf("payout %d recorded as sending only: %w", id, err))
+			recorded = "no cause=" + errorCause(err)
+			errs = append(errs, &watchError{label: fmt.Sprintf("payout %d recorded as sending only", id), err: err})
 		}
+		outcome := "sent txid=" + txid
+		if serr != nil {
+			outcome = "failed error=" + payoutErrorClass(cur, serr)
+		}
+		log.Printf("payout id=%d order=%s currency=%s amount=%s outcome=%s recorded=%s", id, order[:min(8, len(order))], cur, amount(amt, currencyDecimals(cur)), outcome, recorded)
 	}
 	return errors.Join(errs...)
+}
+
+// payoutErrorClass names a failed send for the log without the wallet's error text: definite (refused before
+// broadcasting, walletRejected) or ambiguous, then the JSON-RPC error code or errorCause's class.
+func payoutErrorClass(cur string, err error) string {
+	class := "ambiguous/"
+	if walletRejected(cur, err) {
+		class = "definite/"
+	}
+	var re *rpcError
+	if errors.As(err, &re) {
+		return class + fmt.Sprintf("rpc:%d", re.Code)
+	}
+	return class + errorCause(err)
 }
 
 // walletRejected reports a definite refusal: the wallet answered the send with a JSON-RPC error raised before

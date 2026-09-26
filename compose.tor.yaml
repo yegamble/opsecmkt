@@ -1,10 +1,16 @@
+# torrc resolves app:8080 to an IP address once, when Tor starts. `restart: true` restarts Tor whenever
+# Compose recreates or restarts the app (whose IP address can change), so the onion keeps answering.
+# Requires Docker Compose 2.17 or later.
 services:
   tor:
     build:
       context: deploy
       dockerfile: Dockerfile.tor
     restart: unless-stopped
-    depends_on: [app]
+    depends_on:
+      app:
+        condition: service_started
+        restart: true
     networks: [backend, tor_egress]
     volumes: [tor_identity:/var/lib/tor]
     cap_drop: [ALL]
@@ -15,7 +21,10 @@ services:
       context: deploy
       dockerfile: Dockerfile.tor
     restart: unless-stopped
-    depends_on: [app]
+    depends_on:
+      app:
+        condition: service_started
+        restart: true
     networks: [backend, tor_egress]
     volumes: [tor_mirror_identity:/var/lib/tor]
     cap_drop: [ALL]

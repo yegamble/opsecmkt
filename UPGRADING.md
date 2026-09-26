@@ -36,10 +36,16 @@ off.
 | `MONERO_WALLET_RPC_PASSWORD` | For the local `monero-wallet` service only: `openssl rand -hex 24` output, the same value as the password in `MONERO_WALLET_RPC_URL`. The service refuses to start without it. |
 | `PAYMENT_CONFIRMATIONS_BTC` / `PAYMENT_CONFIRMATIONS_XMR` | Defaults 3 and 10. |
 | `PAYMENT_POLL_INTERVAL` / `PAYMENT_EXPIRY` | Defaults `30s` and `24h`. |
+| `BITCOIN_PRUNE_MB` / `MONERO_PRUNE_FLAGS` | Local nodes only. Absent keys mean **pruned** (`2000` and `'--prune-blockchain --sync-pruned-blocks'`); `BITCOIN_PRUNE_MB='0'` and `MONERO_PRUNE_FLAGS=''` keep a full node. Read [section 7](#7-local-nodes-are-now-pruned) before deploying if you run a local node. |
+| `COMPOSE_PROJECT_NAME` | Not needed: absent means `opsecmkt`, which is what your containers and volumes are named after. Never set another value on this install, or Compose starts it on new, empty volumes. A second checkout on the same host needs its own name; see [Backups and recovery](docs/operator-guide.md#backups-and-recovery). |
 | `DATABASE_CONNECT_TIMEOUT` / `MIGRATION_LOCK_TIMEOUT` / `MIGRATION_TIMEOUT` | Optional; leave blank for `15s`, `10m` and `10m`. Raise `MIGRATION_TIMEOUT` if your database is large; see [Migrations](docs/operator-guide.md#migrations). |
 
 For a local Monero node, also add `monero-wallet` to `COMPOSE_PROFILES` (for example
-`COMPOSE_PROFILES='internal-db,monero,monero-wallet'`).
+`COMPOSE_PROFILES='internal-db,monero,monero-wallet'`). If you run the Tor onion mirror, add `mirror` there too
+(for example `COMPOSE_PROFILES='internal-db,mirror'`) instead of starting it with a `--profile mirror` option,
+which drops the other profiles for that command; without it in `.env`, `docker compose up -d` leaves the mirror
+out and Compose does not restart its Tor with the app. See
+[Optional onion mirror](docs/operator-guide.md#optional-onion-mirror).
 
 ### Replace a placeholder `SETUP_TOKEN`
 
@@ -109,12 +115,32 @@ loaded no longer stops the site; Bitcoin simply shows as unavailable on the admi
 
 ## 4. Deploy
 
+**Local nodes: decide on pruning first** ([section 7](#7-local-nodes-are-now-pruned)). The first start
+after this upgrade prunes an existing full Bitcoin or Monero chain unless `.env` says otherwise.
+
 ```sh
 git pull   # or check out the release tag
 docker compose config --quiet   # fails loudly on a malformed .env
 docker compose up -d --build
 docker compose logs -f app      # migrations run at startup under an advisory lock
 ```
+
+**Tor installs: recreate Tor once.** Tor looks up the app's address only when it starts, and the node
+services from steps 2 and 3 can move the recreated app to a different address; Tor then forwards to the old
+one and the onion stops answering. This release restarts Tor whenever Compose recreates or restarts the app,
+which needs **Docker Compose 2.17 or later** (`docker compose version`); the mirror is included only when
+`mirror` is in `COMPOSE_PROFILES` (step 2). That does not repair a Tor that is already forwarding to an old
+address.
+After `up -d`, run once:
+
+```sh
+docker compose up -d --force-recreate tor              # without the onion mirror
+docker compose up -d --force-recreate tor tor-mirror   # with the onion mirror (naming it starts it)
+```
+
+If the onion does not answer after any later change, recreate Tor the same way. The onion address is kept in
+the `tor_identity` volume (`tor_mirror_identity` for the mirror) and does not change. See
+[Clearnet and onion deployment](docs/operator-guide.md#clearnet-and-onion-deployment).
 
 Then open the admin page. **Payment providers** shows each currency as Enabled, Unavailable (with the
 error; retried every poll), Refused (not a test network) or Disabled. The container stop grace period is now
@@ -190,30 +216,71 @@ the **upgraded** checkout: its `scripts/restore.sh` can restore into the interna
 Once payments are on, the marketplace is custodial for test coins: the Bitcoin wallet lives in the
 `bitcoin_data` volume and the Monero wallet in `monero_wallet`. **Database dumps do not include them.** Back
 them up separately (see the runbook). `scripts/restore.sh` now pauses all outbound payouts with a persistent recovery gate, holds every
-pending, sending, blocked or held payout, and marks every failed payout as possibly sent after the backup (it
-may have been requeued and sent since). Follow the [reconciliation procedure](docs/testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts),
+pending, sending, blocked or held payout (one held for an account suspension keeps its "Suspended account:"
+text, so its payout address check stays), marks every failed payout as possibly sent after the backup (it
+may have been requeued and sent since) and adds an audit row recording the gate and those counts. Follow the [reconciliation procedure](docs/testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts),
 including orders paid out after the backup that have no payout row in it, before explicitly clearing the
 gate. Restore with the application stopped and keep the site cut off from users until reconciliation is
 complete; the procedure says when the app runs for you alone and when it must be stopped.
-If the script reports recovery protection failed, do not start the application. Apply the protections to
-the restored application database in one transaction first (older databases without a `payouts` table need
-only the settings update; omit the `send_ambiguous` line if their `payouts` table has no such column, as
-migration 053 then marks their failed payouts ambiguous itself):
 
+**Any restore not done by `scripts/restore.sh` skips this payout protection.** A host or volume snapshot, a
+managed-database point-in-time recovery or a manual `pg_restore` brings payouts back as `pending` with no
+gate, and the application sends them again as soon as it starts, even if they were paid after that point in
+time. After such a restore, and whenever the script reports that recovery protection failed, keep the
+application stopped (`docker compose stop app`; for a volume snapshot start only the database with
+`docker compose up -d --wait db`) and apply the protection below to the restored application database
+**before starting the application**, then follow the same reconciliation procedure. It runs in one
+transaction and adds one audit row ("set manually"); existing audit rows are not changed. Older databases
+without a `payouts` table need only the `settings` and `audit_events` statements; omit the `send_ambiguous`
+line if their `payouts` table has no such column, as migration 053 then marks their failed payouts ambiguous
+itself.
+
+<!-- runbook-sql: restore-protection -->
 ```sql
 BEGIN;
 INSERT INTO settings(key,value) VALUES ('payments_recovery_required','true')
 ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
 UPDATE payouts SET state='held', updated=now(),
   error='Restored from backup: verify in the wallet before releasing; this payout may already have been sent.'
+    || coalesce(' ' || substring(error from 'Suspended account:.*'), '')
 WHERE state IN ('pending','sending','blocked','held');
 UPDATE payouts SET send_ambiguous=true WHERE state='failed';
 UPDATE payouts SET updated=now(),
   error='Restored from backup: verify in the wallet before requeueing; this payout may have been requeued and sent after the backup. Last error: ' || error
 WHERE state='failed';
+INSERT INTO audit_events(user_id,action) VALUES (NULL, 'Payout recovery gate set manually (UPGRADING.md section 6); all outbound payouts paused until an administrator clears the gate');
 COMMIT;
 ```
+
+Save it as `restore-protection.sql` and run it with `psql` against the restored database, for the internal
+database `docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d opsecmkt_restored < restore-protection.sql`
+(the database name in `DATABASE_URL`). It must end with `INSERT 0 1` and `COMMIT`; on an error nothing is
+changed.
 
 The payout gate is enforced by this release. An older application image may not understand it; keep wallet
 RPC configuration disabled when inspecting a restored database with older code. Alpha.1 has no payment
 processing, but any other older release requires its own recovery review.
+
+## 7. Local nodes are now pruned
+
+The `bitcoin` and `monero` services now run pruned unless `.env` opts out: `bitcoind -prune=${BITCOIN_PRUNE_MB:-2000}`
+(and `-datadir=/data`, the directory the image already used) and `monerod --prune-blockchain --sync-pruned-blocks`
+unless `MONERO_PRUNE_FLAGS` is set. The application does not need old blocks (it uses the nodes' current state and
+wallet RPCs), so payments work the same either way. What happens to a volume you already have:
+
+- **Bitcoin volume with a full chain:** on its first start bitcoind deletes old block files down to about
+  2000 MiB. This cannot be undone without downloading the whole chain again, and afterwards a wallet backup
+  older than the node's `pruneheight` can no longer be restored on this node without doing so. To keep the full
+  chain, add `BITCOIN_PRUNE_MB='0'` to `.env` **before** `docker compose up -d`.
+- **Monero volume with a full chain:** monerod prunes the existing database in place on its first start
+  ("Pruning blockchain..." in its log). The database file does not shrink and pruning temporarily needs extra
+  space; to reclaim disk, remove the `monero_data` volume afterwards and let it sync again pruned. Monero
+  wallets (in the separate `monero_wallet` volume) are unaffected. To keep the full chain, add
+  `MONERO_PRUNE_FLAGS=''` to `.env` **before** `docker compose up -d`; once pruned, the database stays pruned
+  even if you blank the flags later.
+- **Volumes from v0.1.0-alpha.1** hold mainnet data and are removed in [section 3](#3-bitcoin_rpc_url-now-turns-payments-on);
+  the new test-network volumes start pruned.
+
+Behaviour on an already-synced chain is taken from the upstream sources and has not been rehearsed here
+(UNVERIFIED). Sources, disk sizes, switching between pruned and full later, and the wallet-restore trade-off:
+[Local node pruning](docs/operator-guide.md#local-node-pruning).
