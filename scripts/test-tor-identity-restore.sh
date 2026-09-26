@@ -202,4 +202,18 @@ start_tor "$volume"
 [[ $(identity_of "$started") == "$original" ]] || fail 'Tor did not keep the identity restored from a root-owned archive'
 stop_tor "$started"
 echo "ok: root-owned archive restored into a root-owned volume, Tor started with $hostname"
+
+# Without the project's Tor image, both commands fail instead of pulling an image of that name from a registry.
+docker image rm "$project-tor" >/dev/null
+before=$(cd "$deployment" && ls backups)
+if run "$deployment" "$tor_backup" identity="$identity" AGE_RECIPIENT="$recipient" > "$work/no-image.log" 2>&1; then
+  fail 'the backup ran without the Tor image'
+fi
+grep -qi 'no such image' "$work/no-image.log" || fail "backup without the image: $(cat "$work/no-image.log")"
+[[ $(cd "$deployment" && ls backups) == "$before" ]] || fail 'the failed backup left a file'
+docker volume rm "$volume" >/dev/null
+if run "$deployment" "$tor_restore" identity="$identity" backup="$file" AGE_IDENTITY="$work/identity.txt" \
+  > "$work/no-image-restore.log" 2>&1; then fail 'the restore ran without the Tor image'; fi
+grep -qi 'no such image' "$work/no-image-restore.log" || fail "restore without the image: $(cat "$work/no-image-restore.log")"
+echo 'ok: without the Tor image, backup and restore fail and pull nothing'
 echo 'PASS: documented .env and onion identity backup and restore'

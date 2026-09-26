@@ -327,7 +327,7 @@ second checkout on the same host needs its own `COMPOSE_PROJECT_NAME` (for examp
 | `BITCOIN_RPC_PASSWORD`, `MONERO_WALLET_RPC_PASSWORD` (local nodes) | `.env`, each repeated in `BITCOIN_RPC_URL` / `MONERO_WALLET_RPC_URL` | with `.env` | Change a password and the same value in its URL together, then `docker compose up -d`. The wallets behind them are separate backups ([runbook](testnet-runbook.md#6-back-up-the-wallets)). |
 | Onion keys | the `tor_identity` volume (`tor_mirror_identity` for the mirror), named `<project>_tor_identity` by Compose, for example `opsecmkt_tor_identity` | the commands below | Losing or replacing the keys changes the address for good. A copied key lets anyone impersonate the address, so retire an exposed one: remove the volume, let Tor create a new address and publish it in your signed verification document. |
 
-The commands run in bash from the repository root, with `age` installed as above, and use the Tor image Compose builds for the project (`<project>-tor`; on a new host run `docker compose build tor` first). Set the variables each command names in the same shell first. Every command runs in a subshell that stops at the first failure, reads the project name from `docker compose config` (so it follows `COMPOSE_PROJECT_NAME` in `.env`), runs its containers with no network, and never overwrites a file.
+The commands run in bash from the repository root, with `age` installed as above, and use the Tor image Compose builds for the project (`<project>-tor`; on a new host run `docker compose build tor` first). Set the variables each command names in the same shell first. Every command runs in a subshell that stops at the first failure, reads the project name from `docker compose config` (so it follows `COMPOSE_PROJECT_NAME` in `.env`), runs its containers with no network, and never overwrites a file. `--pull never` makes a missing local image an error instead of a download of whatever image of that name a registry offers.
 
 Back up `.env` (set `AGE_RECIPIENT`):
 
@@ -356,10 +356,10 @@ Back up an onion identity (set `identity=tor_identity`, or `identity=tor_mirror_
   test ! -e "$backup"
   mkdir -p backups
   umask 077
-  docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges:true -v "$volume:/var/lib/tor:ro" \
+  docker run --rm --pull never --network none --cap-drop ALL --security-opt no-new-privileges:true -v "$volume:/var/lib/tor:ro" \
     --entrypoint tar "$project-tor" -C /var/lib/tor -cf - marketplace |
     age -r "$AGE_RECIPIENT" -o "$backup" || { rm -f "$backup"; exit 1; }
-  docker run --rm --network none --cap-drop ALL -v "$volume:/var/lib/tor:ro" --entrypoint cat "$project-tor" \
+  docker run --rm --pull never --network none --cap-drop ALL -v "$volume:/var/lib/tor:ro" --entrypoint cat "$project-tor" \
     /var/lib/tor/marketplace/hostname
   echo "Wrote $backup" )
 ```
@@ -387,7 +387,7 @@ Restore an onion identity (set `identity`, `backup` to its backup file and `AGE_
   test -f "$backup"
   docker image inspect "$project-tor" >/dev/null
   age -d -i "$AGE_IDENTITY" "$backup" |
-    docker run --rm -i --network none --user 0 --security-opt no-new-privileges:true -v "$volume:/var/lib/tor" \
+    docker run --rm -i --pull never --network none --user 0 --security-opt no-new-privileges:true -v "$volume:/var/lib/tor" \
       --entrypoint sh "$project-tor" -euc '
         if [ -n "$(ls -A /var/lib/tor)" ]; then echo "Refusing: volume $0 is not empty" >&2; exit 1; fi
         tar -C /var/lib/tor -xf - marketplace

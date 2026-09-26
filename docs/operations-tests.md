@@ -109,6 +109,8 @@ verbatim with bash, with a test-only age identity:
   `chown`, Tor exits with `Directory /var/lib/tor/marketplace cannot be read: Permission denied`. (Docker 29
   gives an empty volume the image directory's owner when it is mounted, so the volume's root-owned top
   directory alone does not break Tor there.)
+- With the project's Tor image removed, the backup and the restore both fail with `No such image` (the
+  commands pass `--pull never`, so nothing of that name is fetched from a registry) and no backup file is left.
 
 The exit trap removes every container and volume of the test project, the image tag and the temporary
 directory with its keys. It proves the commands against the real Tor image offline, not that the restored
