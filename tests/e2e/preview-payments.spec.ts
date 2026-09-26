@@ -38,4 +38,11 @@ test('preview paid sample shows one sample deposit inside a scrolling table', as
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
   const box = (await deposits.boundingBox())!;
   expect(box.x + box.width).toBeLessThanOrEqual(width);
+  // A-148: the txid wraps, so from tablet width up every column fits without scrolling; where the table does
+  // scroll (phones), the scroller is a named region a keyboard user can focus and scroll.
+  await expect(page.getByRole('region', { name: 'Deposits seen by the wallet' })).toHaveAttribute('tabindex', '0');
+  expect(await deposits.locator('td.mono').evaluate(e => getComputedStyle(e).whiteSpace)).toBe('normal');
+  if (width >= 768) {
+    expect(await deposits.evaluate(e => e.scrollWidth - e.clientWidth), `deposit table overflow at ${width}px`).toBeLessThanOrEqual(0);
+  }
 });

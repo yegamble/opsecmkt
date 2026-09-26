@@ -462,7 +462,8 @@ func TestGapMonerodGetInfoWithoutNettype(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			syncing, err := p.Check(ctx)
+			st, err := p.Check(ctx)
+			syncing := st.Syncing
 			if tc.refuse == "" {
 				if err != nil || syncing != tc.sync || p.Network() != "stagenet" {
 					t.Fatalf("accepted daemon: syncing=%v err=%v", syncing, err)
@@ -473,5 +474,61 @@ func TestGapMonerodGetInfoWithoutNettype(t *testing.T) {
 				t.Fatalf("daemon %v: %v", tc.info, err)
 			}
 		})
+	}
+}
+
+// A-98: Check reports the tip the wallet's confirmations are counted from, so the watcher can tell a node that
+// restarted behind its previous tip: Bitcoin Core's getblockchaininfo "blocks", and monero-wallet-rpc's
+// get_height (the wallet's own height, which also covers a wallet rescanning after a restore). No height
+// reported is 0 (unknown); a failed get_height fails the check like any other wallet call.
+func TestGapCheckReportsTipHeight(t *testing.T) {
+	ctx := context.Background()
+	_, ov, s := newGapCore(t, "regtest")
+	p, err := buildBitcoinProvider(s.url(""), "opsecmkt", "", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		info map[string]any
+		tip  int64
+		sync bool
+	}{
+		{map[string]any{"chain": "regtest", "blocks": 812, "initialblockdownload": false}, 812, false},
+		{map[string]any{"chain": "regtest", "blocks": 17, "initialblockdownload": true}, 17, true},
+		{map[string]any{"chain": "regtest"}, 0, false},
+	} {
+		ov.answer("getblockchaininfo", func(string, string, json.RawMessage) (any, int, string) { return tc.info, 0, "" })
+		st, err := p.Check(ctx)
+		if err != nil || st.Tip != tc.tip || st.Syncing != tc.sync {
+			t.Fatalf("bitcoin %v: %+v %v", tc.info, st, err)
+		}
+	}
+	ov.answer("getblockchaininfo", func(string, string, json.RawMessage) (any, int, string) {
+		return map[string]any{"chain": "regtest", "blocks": "tall"}, 0, ""
+	})
+	if _, err = p.Check(ctx); err == nil {
+		t.Fatal("bitcoin: malformed blocks accepted")
+	}
+
+	_, xov, xs := newGapMonero(t)
+	xp, err := buildMoneroProvider(xs.url(""), "", "stagenet", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	xov.answer("get_height", func(path, _ string, _ json.RawMessage) (any, int, string) {
+		if path != "/json_rpc" {
+			return nil, -32601, "bad path"
+		}
+		return map[string]any{"height": 1554321}, 0, ""
+	})
+	if st, err := xp.Check(ctx); err != nil || st.Tip != 1554321 || st.Syncing {
+		t.Fatalf("monero wallet height: %+v %v", st, err)
+	}
+	if xs.called("get_height") != 1 {
+		t.Fatalf("get_height calls: %d", xs.called("get_height"))
+	}
+	xov.fail("get_height", -13, "No wallet file")
+	if _, err = xp.Check(ctx); err == nil || isRefusal(err) || !strings.Contains(err.Error(), "No wallet file") {
+		t.Fatalf("monero get_height failure: %v", err)
 	}
 }

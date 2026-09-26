@@ -1,4 +1,4 @@
-{{/* Review fix 2026-09-23. confirm-fields: re-authentication for sensitive changes (payout addresses, PGP sign-in, adding a second sign-in factor).
+{{/* Review fix 2026-09-23. confirm-fields: re-authentication for sensitive changes (payout addresses, PGP key and sign-in, sign-in factors, recovery codes).
 Call with a bool: true when TOTP is enrolled, which adds the authenticator code field. */}}
 {{define "confirm-fields"}}<label>Current password<input type="password" name="password" required maxlength="72" autocomplete="current-password">
 </label>{{if .}}

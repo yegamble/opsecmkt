@@ -3,11 +3,20 @@ package market
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
+	"fmt"
+	"html/template"
+	"io"
+	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"slices"
 	"strings"
+	texttemplate "text/template"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Registries are filled from init() in feature files and read-only afterwards.
@@ -98,7 +107,79 @@ type httpError struct {
 func (e *httpError) Error() string { return e.Msg }
 
 // fail returns an error that post() and page loaders send as an HTTP status with a plain-text message.
+// A 5xx code is also logged (serverError).
 func fail(code int, msg string) error { return &httpError{Code: code, Msg: msg} }
+
+// serverError answers with a 5xx status and msg followed by a reference, and logs one line with the same
+// reference so the operator can find what a user reports (A-141):
+//
+//	http 5xx kind=page|action name=<registered route key> status=<code> ref=<8 hex> cause=<class>
+//
+// cause is a class from errorCause, never the error's text, and the line names nothing about the request or
+// its sender: no URL path or query, form value, cookie, header, address, handle or user id.
+func serverError(w http.ResponseWriter, r *http.Request, code int, msg, cause string) {
+	ref := randomToken()[:8]
+	kind, name := routeOf(r)
+	log.Printf("http 5xx kind=%s name=%s status=%d ref=%s cause=%s", kind, name, code, ref, cause)
+	http.Error(w, msg+"\nReference: "+ref, code)
+}
+
+// routeOf names r's registered route: an action path, a page name or a raw handler path, else "unregistered".
+func routeOf(r *http.Request) (kind, name string) {
+	p := r.URL.Path
+	if p == "/healthz" {
+		return "page", p
+	}
+	if r.Method == "POST" {
+		if _, ok := actions[p]; ok {
+			return "action", p
+		}
+		return "action", "unregistered"
+	}
+	if _, ok := raws[p]; ok {
+		return "page", p
+	}
+	page := strings.TrimPrefix(p, "/")
+	if page == "" {
+		page = "catalog"
+	}
+	if _, ok := pages[page]; ok {
+		return "page", page
+	}
+	return "page", "unregistered"
+}
+
+// errorCause classifies err for the log without its text, which can quote user input or configuration:
+// the SQLSTATE (with the table and constraint when PostgreSQL names them), timeout, canceled, db-connection,
+// template:<name>, or else the type of the innermost wrapped error.
+func errorCause(err error) string {
+	var pe *pgconn.PgError
+	var ce *pgconn.ConnectError
+	var ne net.Error
+	var ee texttemplate.ExecError
+	var te *template.Error
+	switch {
+	case err == nil:
+		return "none"
+	case errors.As(err, &pe):
+		return strings.Join(slices.DeleteFunc([]string{pe.Code, pe.TableName, pe.ConstraintName}, func(s string) bool { return s == "" }), " ")
+	case errors.Is(err, context.DeadlineExceeded) || errors.As(err, &ne) && ne.Timeout():
+		return "timeout"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, driver.ErrBadConn) || errors.Is(err, sql.ErrConnDone) || errors.As(err, &ce) || errors.As(err, &ne) ||
+		errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF):
+		return "db-connection"
+	case errors.As(err, &ee):
+		return "template:" + ee.Name
+	case errors.As(err, &te):
+		return "template:" + te.Name
+	}
+	for u := errors.Unwrap(err); u != nil; u = errors.Unwrap(err) {
+		err = u
+	}
+	return fmt.Sprintf("%T", err)
+}
 
 type rawHandler func(a *App, w http.ResponseWriter, r *http.Request, u *User)
 
@@ -132,9 +213,16 @@ var transitionHooks []transitionHook
 // Returning an error aborts the whole action. Hooks may call a.transition again for the same order.
 func registerTransitionHook(f transitionHook) { transitionHooks = append(transitionHooks, f) }
 
+// rowQuerier is a *sql.Tx or *sql.DB. Code that runs while a transaction is open reads through that
+// transaction: a second pool connection there can wait on the pool while holding one (A-150).
+type rowQuerier interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
 type factorProvider interface {
 	Name() string // "totp", "pgp"
-	Enrolled(ctx context.Context, db *sql.DB, userID string) (bool, error)
+	// Enrolled reports whether userID has this factor on. /challenge passes its transaction (c.Tx).
+	Enrolled(ctx context.Context, q rowQuerier, userID string) (bool, error)
 	Verify(c *actionCtx, userID string) error // return fail(401, ...) on a wrong answer; c.Tx is the /challenge tx
 }
 
@@ -201,7 +289,7 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 	if !spec.OwnTx {
 		tx, err := a.db.BeginTx(ctx, nil)
 		if err != nil {
-			http.Error(w, "Service unavailable", 503)
+			serverError(w, r, 503, "Service unavailable", errorCause(err))
 			return
 		}
 		defer tx.Rollback()
@@ -217,11 +305,15 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 			he.Render(w)
 			return
 		}
+		if he.Code >= 500 {
+			serverError(w, r, he.Code, he.Msg, errorCause(he))
+			return
+		}
 		http.Error(w, he.Msg, he.Code)
 		return
 	}
 	if err != nil {
-		http.Error(w, "Unable to save changes", 500)
+		serverError(w, r, 500, "Unable to save changes", errorCause(err))
 		return
 	}
 	if res.Audit != "" {
@@ -236,13 +328,13 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 			exec = c.Tx.ExecContext
 		}
 		if _, err = exec(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", uid, res.Audit); err != nil {
-			http.Error(w, "Unable to record change", 500)
+			serverError(w, r, 500, "Unable to record change", errorCause(err))
 			return
 		}
 	}
 	if c.Tx != nil {
 		if err = c.Tx.Commit(); err != nil {
-			http.Error(w, "Unable to save changes", 500)
+			serverError(w, r, 500, "Unable to save changes", errorCause(err))
 			return
 		}
 	}

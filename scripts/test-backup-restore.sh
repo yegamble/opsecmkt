@@ -15,6 +15,8 @@ target_db="opsecmkt_ops_${suffix}_target"
 # The real application schema: migrated by the server itself, then backed up and restored.
 app_source_db="opsecmkt_ops_${suffix}_app_source"
 app_target_db="opsecmkt_ops_${suffix}_app_target"
+# A copy made without scripts/restore.sh (plain pg_dump/pg_restore, as a snapshot or point-in-time recovery would).
+app_manual_db="opsecmkt_ops_${suffix}_app_manual"
 server_pid=''
 
 # Reuse the production URL parser, substituting psql only after validation.
@@ -59,7 +61,7 @@ cleanup() {
   trap - EXIT
   stop_app
   if ((status)) && [[ -f $work/app.log ]]; then echo '--- application log ---' >&2; cat "$work/app.log" >&2; fi
-  for database in "$source_db" "$target_db" "$app_source_db" "$app_target_db"; do
+  for database in "$source_db" "$target_db" "$app_source_db" "$app_target_db" "$app_manual_db"; do
     pg '' -q -c "DROP DATABASE IF EXISTS $database" >/dev/null 2>&1 || true
   done
   rm -rf "$work"
@@ -70,6 +72,7 @@ pg '' -q -c "CREATE DATABASE $source_db"
 pg '' -q -c "CREATE DATABASE $target_db"
 pg '' -q -c "CREATE DATABASE $app_source_db"
 pg '' -q -c "CREATE DATABASE $app_target_db"
+pg '' -q -c "CREATE DATABASE $app_manual_db"
 pg "$source_db" -q -c "CREATE TABLE a_first (id integer PRIMARY KEY, note text NOT NULL); INSERT INTO a_first VALUES (1, 'Crème brûlée — 東京 🔒'); CREATE TABLE z_conflict (id integer PRIMARY KEY); INSERT INTO z_conflict VALUES (42);"
 # The payouts shape restore.sh relies on (state, error, updated) in a dump older than send_ambiguous; one row
 # per state.
@@ -200,6 +203,16 @@ INSERT INTO orders(id,buyer_id,product_id,currency,amount,state) VALUES
 INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state) VALUES ('ops-order-queued','release','ops-vendor','BTC',150000,'tb1qopsrestorequeuedpayout','pending');
 INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state,txid) VALUES ('ops-order-sent','refund','ops-buyer','XMR',250000000000,'ops-restore-sent-address','sent',repeat('ab',32));
 INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state,error,send_ambiguous) VALUES ('ops-order-failed','release','ops-vendor','BTC',150000,'tb1qopsrestorefailedpayout','failed','Insufficient funds',false);"
+# A refund held for an account suspension (A-102, suspendedHold in payments_hooks.go): the restore must keep that
+# text behind its own marker, or releasing it would no longer ask for the payout address check.
+suspended_hold="Suspended account: payout held when the recipient's account was suspended; an administrator must check the payout address before releasing it."
+restored_hold='Restored from backup: verify in the wallet before releasing; this payout may already have been sent.'
+cat > "$work/suspended.sql" <<'SQL'
+INSERT INTO users(id,handle,password_hash,role,suspended_at) VALUES ('ops-suspended','ops_suspended','not-a-login','buyer',now());
+INSERT INTO orders(id,buyer_id,product_id,currency,amount,state) VALUES ('ops-order-suspended','ops-suspended','ops-product','BTC',150000,'cancelled');
+INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state,error) VALUES ('ops-order-suspended','refund','ops-suspended','BTC',150000,'tb1qopsrestoresuspended','held',:'hold');
+SQL
+pg "$app_source_db" -q -v hold="$suspended_hold" -f "$work/suspended.sql"
 # Two funded orders with no payout row in the backup, both settled and paid out after it (the release sent to the
 # vendor once the buyer completed the delivered order, the refund sent to the buyer once a moderator resolved the
 # open dispute); the restored database knows of neither send. The disputed order also holds a locked transfer,
@@ -221,13 +234,22 @@ INSERT INTO audit_events(user_id,action) VALUES ('ops-admin','Restore drill: an 
 app_backup="$work/app.dump.age"
 BACKUP_DATABASE_URL=$(connection_url "$app_source_db") scripts/backup.sh "$app_backup"
 RESTORE_DATABASE_URL=$(connection_url "$app_target_db") scripts/restore.sh "$app_backup" <<< 'RESTORE' > "$work/app-restore.log"
-grep -q 'Held 1 restored payout(s)' "$work/app-restore.log"
+grep -q 'Held 2 restored payout(s)' "$work/app-restore.log"
 grep -q 'Marked 1 restored failed payout(s) as possibly sent' "$work/app-restore.log"
 [[ $(pg "$app_target_db" -Atq -c "SELECT value FROM settings WHERE key='payments_recovery_required'") == true ]]
 [[ $(pg "$app_source_db" -Atq -c "SELECT count(*) FROM settings WHERE key='payments_recovery_required'") == 0 ]]
 payouts="SELECT string_agg(order_id || ':' || state || ':' || (error LIKE 'Restored from backup:%') || ':' || send_ambiguous || ':' || txid, ',' ORDER BY order_id) FROM payouts"
-held="ops-order-failed:failed:true:true:,ops-order-queued:held:true:false:,ops-order-sent:sent:false:false:$(printf 'ab%.0s' {1..32})"
+held="ops-order-failed:failed:true:true:,ops-order-queued:held:true:false:,ops-order-sent:sent:false:false:$(printf 'ab%.0s' {1..32}),ops-order-suspended:held:true:false:"
 [[ $(pg "$app_target_db" -Atq -c "$payouts") == "$held" ]]
+# The suspension hold survives behind the restore marker.
+suspended_error="SELECT error FROM payouts WHERE order_id='ops-order-suspended'"
+[[ $(pg "$app_target_db" -Atq -c "$suspended_error") == "$restored_hold $suspended_hold" ]]
+# restore.sh adds one audit row with no user and the counts; the row from before the backup is unchanged.
+audit_all="SELECT string_agg(coalesce(user_id,'-') || ':' || action, '|' ORDER BY id) FROM audit_events"
+source_audit=$(pg "$app_source_db" -Atq -c "$audit_all")
+[[ $source_audit == 'ops-admin:Restore drill: an audit row written before the backup' ]]
+restore_audit='-:Payout recovery gate set by scripts/restore.sh: held 2 restored payout(s) and marked 1 restored failed payout(s) as possibly sent; all outbound payouts paused until an administrator clears the gate'
+[[ $(pg "$app_target_db" -Atq -c "$audit_all") == "$source_audit|$restore_audit" ]]
 [[ $(pg "$app_source_db" -Atq -c "SELECT string_agg(state || ':' || send_ambiguous, ',' ORDER BY order_id) FROM payouts WHERE order_id IN ('ops-order-failed','ops-order-queued')") == failed:false,pending:false ]]
 [[ $(pg "$app_target_db" -Atq -c "SELECT string_agg(version || ':' || name || '@' || applied, ',' ORDER BY version) FROM schema_migrations") == "$migrations" ]]
 # The server starts on the restored database, applies nothing again and leaves the held payout alone.
@@ -238,10 +260,10 @@ stop_app
 [[ $(pg "$app_target_db" -Atq -c "$payouts") == "$held" ]]
 
 # Payouts sent after the backup (docs/testnet-runbook.md, "Reconcile a restored database before enabling payouts").
-# The runbook's SQL runs verbatim: runbook_sql NAME prints the psql here-document (or the sql block) that follows
-# the marker <!-- runbook-sql: NAME --> in the runbook.
+# The runbook's SQL runs verbatim: runbook_sql NAME [FILE] prints the psql here-document (or the sql block) that
+# follows the marker <!-- runbook-sql: NAME --> in FILE (the runbook by default).
 runbook_sql() {
-  python3 - "$1" docs/testnet-runbook.md <<'PY'
+  python3 - "$1" "${2:-docs/testnet-runbook.md}" <<'PY'
 import re
 import sys
 name, path = sys.argv[1], sys.argv[2]
@@ -264,6 +286,26 @@ PY
 runbook_sql find-order > "$work/find-order.sql"
 runbook_sql record-payout > "$work/record-payout.sql"
 runbook_sql clear-gate > "$work/clear-gate.sql"
+runbook_sql restore-protection UPGRADING.md > "$work/restore-protection.sql"
+
+# A restore not done by restore.sh (plain pg_dump/pg_restore here; a volume snapshot or point-in-time recovery is
+# the same) brings the queued payout back pending with no gate: the application would send it again. The manual
+# protection in UPGRADING.md section 6, run verbatim, must leave the copy exactly as restore.sh leaves it, with
+# its own audit row.
+(export MANUAL_SOURCE_URL MANUAL_TARGET_URL
+ MANUAL_SOURCE_URL=$(connection_url "$app_source_db")
+ MANUAL_TARGET_URL=$(connection_url "$app_manual_db")
+ python3 scripts/postgres-tool.py MANUAL_SOURCE_URL pg_dump --format=custom --no-owner --no-acl > "$work/manual.dump"
+ python3 scripts/postgres-tool.py MANUAL_TARGET_URL pg_restore --dbname='' --single-transaction --exit-on-error --no-owner --no-acl < "$work/manual.dump")
+[[ $(pg "$app_manual_db" -Atq -c "SELECT count(*) FROM settings WHERE key='payments_recovery_required'") == 0 ]]
+[[ $(pg "$app_manual_db" -Atq -c "SELECT state FROM payouts WHERE order_id='ops-order-queued'") == pending ]]
+[[ $(pg "$app_manual_db" -At -f "$work/restore-protection.sql") == $'BEGIN\nINSERT 0 1\nUPDATE 2\nUPDATE 1\nUPDATE 1\nINSERT 0 1\nCOMMIT' ]]
+[[ $(pg "$app_manual_db" -Atq -c "SELECT value FROM settings WHERE key='payments_recovery_required'") == true ]]
+[[ $(pg "$app_manual_db" -Atq -c "$payouts") == "$held" ]]
+[[ $(pg "$app_manual_db" -Atq -c "$suspended_error") == "$restored_hold $suspended_hold" ]]
+[[ $(pg "$app_manual_db" -Atq -c "SELECT error FROM payouts WHERE order_id='ops-order-failed'") == $(pg "$app_target_db" -Atq -c "SELECT error FROM payouts WHERE order_id='ops-order-failed'") ]]
+[[ $(pg "$app_manual_db" -Atq -c "$audit_all") == "$source_audit|-:Payout recovery gate set manually (UPGRADING.md section 6); all outbound payouts paused until an administrator clears the gate" ]]
+
 late_txid=$(printf 'cd%.0s' {1..32})
 refund_txid=$(printf 'ef%.0s' {1..32})
 # record ORDER KIND STATE AMOUNT ADDRESS TXID HANDLE yes|no: the runbook's record-payout SQL with its variables.
@@ -291,7 +333,7 @@ audit_max=$(pg "$app_target_db" -Atq -c 'SELECT max(id) FROM audit_events')
 # The check (record=no) prints one row and writes nothing.
 check_row='ops-order-late|delivered|completed|release|BTC|ops_vendor|150000|150000|0|none|t'
 [[ $(record ops-order-late release completed 150000 tb1qopsrestorelatevendor "$late_txid" ops_admin no) == "$check_row"$'\nCheck passed; nothing was written. Run it again with -v record=yes to record this payout.' ]]
-[[ $(pg "$app_target_db" -Atq -c "$payout_count") == 3 ]]
+[[ $(pg "$app_target_db" -Atq -c "$payout_count") == 4 ]]
 # Refusals write nothing: record=yes only records what the check accepts.
 refused() {
   local output payouts_before
@@ -329,13 +371,33 @@ refusal='that transaction ID is already recorded on another payout' refused ops-
 [[ $(pg "$app_target_db" -Atq -c "SELECT md5(string_agg(id || ':' || coalesce(user_id,'') || ':' || action || ':' || created, ',' ORDER BY id)) FROM audit_events WHERE id <= $audit_max") == "$audit_before" ]]
 # Completing the reconciled order again changes nothing and queues nothing.
 [[ $(complete_again) == 0:0 ]]
-# Clear the gate with the runbook's SQL, restart the server and check that no second payout exists.
-[[ $(pg "$app_target_db" -At -f "$work/clear-gate.sql") == $'BEGIN\nUPDATE 1\nCOMMIT' ]]
-[[ $(pg "$app_target_db" -Atq -c "SELECT value FROM settings WHERE key='payments_recovery_required'") == false ]]
+# Clear the gate with the runbook's SQL, restart the server and check that no second payout exists. An unknown or
+# non-administrator handle is refused and rolls back: the gate stays set and no audit row is added.
+gate_value="SELECT value FROM settings WHERE key='payments_recovery_required'"
+audit_count='SELECT count(*) FROM audit_events'
+audit_total=$(pg "$app_target_db" -Atq -c "$audit_count")
+clear_gate() { pg "$app_target_db" -At -v handle="$1" -f "$work/clear-gate.sql"; }
+for handle in ops_nobody ops_vendor; do
+  [[ $(clear_gate "$handle") == $'BEGIN\nROLLBACK\nRefused; nothing was changed: no administrator with that handle' ]]
+  [[ $(pg "$app_target_db" -Atq -c "$gate_value") == true ]]
+  [[ $(pg "$app_target_db" -Atq -c "$audit_count") == "$audit_total" ]]
+done
+[[ $(clear_gate ops_admin) == $'BEGIN\nINSERT 0 1\nCOMMIT\nCleared the payout recovery gate; committed.' ]]
+[[ $(pg "$app_target_db" -Atq -c "$gate_value") == false ]]
+[[ $(pg "$app_target_db" -Atq -c "SELECT user_id || ':' || action FROM audit_events WHERE id > (SELECT max(id) - 1 FROM audit_events)") == 'ops-admin:Payout recovery gate cleared by ops_admin after reconciling the restored database with the wallets' ]]
+[[ $(pg "$app_target_db" -Atq -c "$audit_count") == $((audit_total + 1)) ]]
+# Clearing again is refused: the gate is not set.
+[[ $(clear_gate ops_admin) == $'BEGIN\nROLLBACK\nRefused; nothing was changed: the recovery gate is not set' ]]
+[[ $(pg "$app_target_db" -Atq -c "$audit_count") == $((audit_total + 1)) ]]
+# Every audit row from before the clear is unchanged.
+[[ $(pg "$app_target_db" -Atq -c "SELECT md5(string_agg(id || ':' || coalesce(user_id,'') || ':' || action || ':' || created, ',' ORDER BY id)) FROM audit_events WHERE id <= $audit_max") == "$audit_before" ]]
 start_app "$app_target_db"
 stop_app
 [[ $(pg "$app_target_db" -Atq -c "SELECT string_agg(order_id || ':' || state, ',' ORDER BY order_id) FROM payouts WHERE order_id IN ('ops-order-late','ops-order-disputed')") == ops-order-disputed:sent,ops-order-late:sent ]]
-[[ $(pg "$app_target_db" -Atq -c "$payout_count") == 5 ]]
+[[ $(pg "$app_target_db" -Atq -c "$payout_count") == 6 ]]
 [[ $(complete_again) == 0:0 ]]
+# The restore's holds, including the suspension hold, outlive the cleared gate and the restart.
+[[ $(pg "$app_target_db" -Atq -c "SELECT string_agg(order_id || ':' || state, ',' ORDER BY order_id) FROM payouts WHERE order_id IN ('ops-order-queued','ops-order-suspended')") == ops-order-queued:held,ops-order-suspended:held ]]
+[[ $(pg "$app_target_db" -Atq -c "$suspended_error") == "$restored_hold $suspended_hold" ]]
 [[ $(pg "$app_source_db" -Atq -c "SELECT count(*) FROM payouts WHERE order_id IN ('ops-order-late','ops-order-disputed')") == 0 ]]
-echo 'Encrypted backup/restore regressions passed (Unicode, overwrite refusal, wrong key, transaction rollback, payout hold, failed payouts marked possibly sent, application schema restore and restart, runbook reconciliation of payouts sent after the backup).'
+echo 'Encrypted backup/restore regressions passed (Unicode, overwrite refusal, wrong key, transaction rollback, payout hold, suspension hold kept, failed payouts marked possibly sent, restore audit row, application schema restore and restart, manual UPGRADING.md protection after a plain pg_dump/pg_restore copy, runbook reconciliation of payouts sent after the backup, audited gate clear refusing unknown handles).'

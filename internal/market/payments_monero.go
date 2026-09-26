@@ -84,8 +84,10 @@ func newMoneroProvider(ctx context.Context, walletURL, daemonURL, wantNetwork st
 // Check opens the conventional wallet when monero-wallet-rpc has none open (for example after the wallet
 // service restarted), refuses wallets and daemons that are not on a test network or disagree with
 // MONERO_NETWORK or with each other, and reports the daemon as syncing while its target_height is above its
-// height. Without MONERO_RPC_URL the sync state is not checked.
-func (p *moneroProvider) Check(ctx context.Context) (bool, error) {
+// height. Without MONERO_RPC_URL the sync state is not checked. The tip is the wallet's own height (get_height),
+// the height its transfer confirmations are counted from; it is lower while a restarted or restored wallet
+// rescans.
+func (p *moneroProvider) Check(ctx context.Context) (nodeStatus, error) {
 	var addr struct {
 		Address string `json:"address"`
 	}
@@ -96,12 +98,12 @@ func (p *moneroProvider) Check(ctx context.Context) (bool, error) {
 	var re *rpcError
 	if errors.As(err, &re) && re.Code == -13 { // no wallet file open: try the conventional wallet once
 		if oerr := p.wallet.call(ctx, "/json_rpc", "open_wallet", map[string]any{"filename": "opsecmkt", "password": ""}, nil); oerr != nil {
-			return false, fmt.Errorf("monero-wallet-rpc has no open wallet and wallet \"opsecmkt\" could not be opened (create it with the create_wallet RPC; see docs/testnet-runbook.md): %w", oerr)
+			return nodeStatus{}, fmt.Errorf("monero-wallet-rpc has no open wallet and wallet \"opsecmkt\" could not be opened (create it with the create_wallet RPC; see docs/testnet-runbook.md): %w", oerr)
 		}
 		err = getAddress()
 	}
 	if err != nil {
-		return false, fmt.Errorf("monero wallet check failed: %w", err)
+		return nodeStatus{}, fmt.Errorf("monero wallet check failed: %w", err)
 	}
 	network := ""
 	for name, n := range moneroNetworks {
@@ -114,13 +116,25 @@ func (p *moneroProvider) Check(ctx context.Context) (bool, error) {
 		if addr.Address != "" && strings.ContainsRune("48", rune(addr.Address[0])) {
 			kind = "mainnet"
 		}
-		return false, refusef("monero wallet primary address is a %s address (prefix %q); only stagenet or testnet wallets are allowed", kind, truncate(addr.Address, 1))
+		return nodeStatus{}, refusef("monero wallet primary address is a %s address (prefix %q); only stagenet or testnet wallets are allowed", kind, truncate(addr.Address, 1))
 	}
 	if p.wantNetwork != "" && p.wantNetwork != network {
-		return false, refusef("monero wallet is on %s but MONERO_NETWORK is %q", network, p.wantNetwork)
+		return nodeStatus{}, refusef("monero wallet is on %s but MONERO_NETWORK is %q", network, p.wantNetwork)
 	}
 	if p.network != "" && p.network != network {
-		return false, refusef("monero wallet is now on %s; it was on %s", network, p.network)
+		return nodeStatus{}, refusef("monero wallet is now on %s; it was on %s", network, p.network)
+	}
+	var wh struct {
+		Height json.Number `json:"height"`
+	}
+	if err = p.wallet.call(ctx, "/json_rpc", "get_height", nil, &wh); err != nil {
+		return nodeStatus{}, fmt.Errorf("monero wallet height check failed: %w", err)
+	}
+	var tip int64
+	if wh.Height != "" {
+		if tip, err = wh.Height.Int64(); err != nil || tip < 0 {
+			return nodeStatus{}, fmt.Errorf("monero wallet height check failed: bad height %q", truncate(string(wh.Height), 20))
+		}
 	}
 	syncing := false
 	if p.daemon != nil {
@@ -133,7 +147,7 @@ func (p *moneroProvider) Check(ctx context.Context) (bool, error) {
 			TargetHeight json.Number `json:"target_height"`
 		}
 		if err = p.daemon.call(ctx, "/json_rpc", "get_info", nil, &info); err != nil {
-			return false, fmt.Errorf("monero daemon check failed: %w", err)
+			return nodeStatus{}, fmt.Errorf("monero daemon check failed: %w", err)
 		}
 		nt := info.NetType
 		if nt == "" {
@@ -147,10 +161,10 @@ func (p *moneroProvider) Check(ctx context.Context) (bool, error) {
 			}
 		}
 		if _, ok := moneroNetworks[nt]; !ok || info.Mainnet {
-			return false, refusef("monero daemon network %q is not a test network", nt)
+			return nodeStatus{}, refusef("monero daemon network %q is not a test network", nt)
 		}
 		if nt != network {
-			return false, refusef("monero daemon is on %s but the wallet is on %s", nt, network)
+			return nodeStatus{}, refusef("monero daemon is on %s but the wallet is on %s", nt, network)
 		}
 		height, herr := info.Height.Int64()
 		target, terr := info.TargetHeight.Int64()
@@ -159,7 +173,7 @@ func (p *moneroProvider) Check(ctx context.Context) (bool, error) {
 	if p.network == "" { // first success, before the provider is published to request handlers
 		p.network = network
 	}
-	return syncing, nil
+	return nodeStatus{Syncing: syncing, Tip: tip}, nil
 }
 
 func (p *moneroProvider) Currency() string { return "XMR" }

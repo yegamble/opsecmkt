@@ -5,20 +5,28 @@ import { enrollTOTP, pgpFixture, RECIPIENT_FINGERPRINT, setRole, signedIn, submi
 // PGP identity, encrypted messages and message notifications against a real database, JavaScript disabled.
 // Each test registers its own accounts; keys and messages come from committed fixtures (see db-helpers.ts).
 
-async function saveKey(page: Page, armored: string): Promise<number> {
+// Saves a key on /account, confirming with password when given (adding, changing or removing a key needs it: A-152).
+async function saveKey(page: Page, armored: string, password?: string): Promise<number> {
   await page.goto('/account');
-  await page.getByLabel('PGP public key').fill(armored);
-  return submitStatus(page, () => page.getByRole('button', { name: 'Save profile' }).click());
+  const form = page.locator('form', { has: page.getByRole('button', { name: 'Save profile' }) });
+  await form.getByLabel('PGP public key').fill(armored);
+  if (password !== undefined) await form.getByLabel('Current password').fill(password);
+  return submitStatus(page, () => form.getByRole('button', { name: 'Save profile' }).click());
 }
 
 const pgpRow = (page: Page) => page.locator('.key-values div', { hasText: 'PGP sign-in verification' }).locator('dd');
 
 test('save a PGP key, see its fingerprint unverified, and fail ownership proofs that do not match', async ({ browser, baseURL }) => {
   const handle = uniqueHandle('pgpkey');
-  const page = await signedIn(browser, baseURL, handle, 'browser-pgp-password-123', true);
+  const password = 'browser-pgp-password-123';
+  const page = await signedIn(browser, baseURL, handle, password, true);
+
+  // A session alone cannot add the first key (A-152): buyers would encrypt addresses to it.
+  expect(await saveKey(page, pgpFixture('recipient.pub.asc'))).toBe(400);
+  await expect(page.locator('body')).toContainText('Enter your current password');
 
   // A malformed key is refused with the reason and nothing is stored.
-  expect(await saveKey(page, '-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nbm90IGEga2V5\n-----END PGP PUBLIC KEY BLOCK-----')).toBe(400);
+  expect(await saveKey(page, '-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nbm90IGEga2V5\n-----END PGP PUBLIC KEY BLOCK-----', password)).toBe(400);
   await expect(page.locator('body')).toContainText('PGP key rejected:');
   await page.goto('/account');
   await expect(pgpRow(page)).toHaveText('No key saved');
@@ -27,9 +35,10 @@ test('save a PGP key, see its fingerprint unverified, and fail ownership proofs 
   // The note above the key field says who can see it. Text around the block and armor headers are not kept.
   await expect(page.locator('#pgp-visibility')).toHaveText('Shown to every signed-in account that looks up your handle, to every vendor or buyer you trade with, and publicly on your vendor page if you sell — with its user IDs and creation date. Use a key made only for this market.');
   const withHeaders = 'Leading note\n' + pgpFixture('recipient.pub.asc').replace('-----BEGIN PGP PUBLIC KEY BLOCK-----\n', '-----BEGIN PGP PUBLIC KEY BLOCK-----\nComment: e2e header\n');
-  expect(await saveKey(page, withHeaders)).toBe(303);
+  expect(await saveKey(page, withHeaders, password)).toBe(303);
   await expect(page).toHaveURL(/\/account\?saved=1$/);
   await expect(page.getByRole('status')).toHaveText('Changes saved.');
+  await page.waitForLoadState();
   await page.reload();
   await expect(page.getByLabel('PGP public key')).toHaveValue(/^-----BEGIN PGP PUBLIC KEY BLOCK-----\n\n/);
   await expect(page.getByLabel('PGP public key')).not.toHaveValue(/Leading note|Comment|e2e header/);
@@ -40,7 +49,12 @@ test('save a PGP key, see its fingerprint unverified, and fail ownership proofs 
   await expect(page.getByRole('region', { name: 'Recent activity' }).getByText(/Updated PGP key/)).toHaveCount(1);
   await expect(page.locator('.pgp-summary .badge')).toHaveText('Not verified');
   await expect(pgpRow(page)).toHaveText('Requires a verified key');
-  await expect(page.getByRole('region', { name: 'Recent activity' })).toContainText(`Updated PGP key (fingerprint ${RECIPIENT_FINGERPRINT.replace(/ /g, '')}; ownership unverified)`);
+  await expect(page.getByRole('region', { name: 'Recent activity' })).toContainText(`Updated PGP key (fingerprint ${RECIPIENT_FINGERPRINT.replace(/ /g, '')}; ownership unverified) (confirmed with password)`);
+  // The owner is told of the key change once, without its fingerprint (A-152).
+  await page.goto('/notifications');
+  await expect(page.locator('main').getByText('A PGP public key was added to your account')).toHaveCount(1);
+  await expect(page.locator('main')).not.toContainText(RECIPIENT_FINGERPRINT.replace(/ /g, ''));
+  await page.goto('/account');
 
   await page.getByRole('link', { name: 'Prove key ownership' }).click();
   await expect(page).toHaveURL(/\/pgp$/);
@@ -97,7 +111,7 @@ test('with TOTP on, saving a PGP key needs the password and an authenticator cod
   const handle = uniqueHandle('pgptotp');
   const password = 'browser-pgp-totp-password-123';
   const page = await signedIn(browser, baseURL, handle, password, true);
-  const secret = await enrollTOTP(page);
+  const secret = await enrollTOTP(page, password);
   const step = Math.floor(Date.now() / 30_000);
 
   // A session alone cannot swap in a key that could later become a second sign-in factor.
@@ -124,11 +138,16 @@ test('only OpenPGP-encrypted messages are accepted; status badges and the unread
   const r = await signedIn(browser, baseURL, withKey, 'browser-msg-recipient-123', true);
   const o = await signedIn(browser, baseURL, otherKey, 'browser-msg-other-123', true);
   const n = await signedIn(browser, baseURL, noKey, 'browser-msg-nokey-123', true);
-  expect(await saveKey(r, pgpFixture('recipient.pub.asc'))).toBe(303);
-  expect(await saveKey(o, pgpFixture('other.pub.asc'))).toBe(303);
+  expect(await saveKey(r, pgpFixture('recipient.pub.asc'), 'browser-msg-recipient-123')).toBe(303);
+  expect(await saveKey(o, pgpFixture('other.pub.asc'), 'browser-msg-other-123')).toBe(303);
 
+  // Adding the key notified the recipient (A-152); once that is read the navigation shows no unread count.
   const rNav = r.getByRole('navigation', { name: 'Main navigation' });
-  await r.goto('/');
+  await r.goto('/notifications');
+  const keyNote = r.locator('article.message', { hasText: 'A PGP public key was added to your account' });
+  await expect(keyNote.locator('.message-meta span')).toHaveText('Unread');
+  await keyNote.getByRole('button', { name: 'Mark as read' }).click();
+  await expect(r).toHaveURL(/\/notifications$/);
   await expect(rNav.getByRole('link', { name: 'Notifications', exact: true })).toBeVisible();
 
   // The compose form names the recipient and shows the key it must be encrypted to.
@@ -163,6 +182,7 @@ test('only OpenPGP-encrypted messages are accepted; status badges and the unread
     expect(await submitStatus(s, send)).toBe(303);
     await expect(s).toHaveURL(/\/messages\?saved=1$/);
   }
+  await s.waitForLoadState();
   await s.reload();
   const sent = (to: string) => s.locator('article.message', { hasText: `${sender} → ${to}` }).locator('.pgp-message-status .badge');
   await expect(sent(withKey)).toHaveText('Encrypted (to recipient’s key)');
@@ -182,6 +202,7 @@ test('only OpenPGP-encrypted messages are accepted; status badges and the unread
   await note.getByRole('button', { name: 'Mark as read' }).click();
   await expect(r).toHaveURL(/\/notifications$/);
   await expect(rNav.getByRole('link', { name: 'Notifications', exact: true })).toBeVisible();
+  await r.waitForLoadState();
   await r.reload();
   await expect(note.locator('.message-meta span')).toHaveText('Read');
   await expect(note.getByRole('button', { name: 'Mark as read' })).toHaveCount(0);
@@ -196,7 +217,7 @@ test('find a moderator key and exchange encrypted dispute evidence without scrip
   const staff = await signedIn(browser, baseURL, handle, 'browser-staff-password-123', true);
   const buyer = await signedIn(browser, baseURL, uniqueHandle('evidence'), 'browser-evidence-password-123', true);
   const admin = await signedIn(browser, baseURL, ADMIN.handle, ADMIN.password, false);
-  expect(await saveKey(staff, pgpFixture('recipient.pub.asc'))).toBe(303);
+  expect(await saveKey(staff, pgpFixture('recipient.pub.asc'), 'browser-staff-password-123')).toBe(303);
   await setRole(admin, handle, 'moderator');
   await buyer.goto('/messages');
   await buyer.getByLabel('Find a recipient', { exact: true }).fill(handle);

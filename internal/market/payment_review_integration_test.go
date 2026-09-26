@@ -95,6 +95,16 @@ func TestFlaggedOrderReadableByNotifiedStaff(t *testing.T) {
 	body := p.page("/order?id="+partyOrder, partyModSess)
 	mustContain(t, body, "you are the buyer", `action="/disputes"`)
 	mustNotContain(t, body, "Moderator review (read-only)")
+	// A-98: the regression is announced to the party moderator as the buyer, not as a reviewer; non-party staff
+	// get the review notification.
+	short := partyOrder[:8]
+	if a, b := p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE 'Order '||$2||': credited TESTNET deposit%'", partyModID, short),
+		p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE 'Payment review needed for order '||$2||'%'", partyModID, short); a != 1 || b != 0 {
+		t.Fatalf("party moderator notifications: party %d, review %d", a, b)
+	}
+	if n := p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE 'Payment review needed for order '||$2||'%'", p.mod.ID, short); n != 1 {
+		t.Fatalf("non-party moderator review notifications: %d", n)
+	}
 
 	// Digital delivery content is withheld from staff until the order is disputed.
 	digital := p.product(p.vendor.ID, "digital")
@@ -118,6 +128,40 @@ func TestFlaggedOrderReadableByNotifiedStaff(t *testing.T) {
 	}
 	for _, sess := range staff {
 		mustContain(t, p.page("/order?id="+dOrder, sess), "licence-key-FLAG-42")
+	}
+}
+
+// A-118: a suspended moderator is not sent payment-review notifications; once restored it is again.
+func TestFlagNotificationSkipsSuspendedStaff(t *testing.T) {
+	p := newPayEnv(t)
+	reviews := func(uid, order string) int {
+		return p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE 'Payment review needed for order '||$2||'%'", uid, order[:8])
+	}
+	var adminID string
+	if err := p.DB.QueryRow("SELECT id FROM users WHERE handle LIKE 'padmin%'").Scan(&adminID); err != nil {
+		t.Fatal(err)
+	}
+	p.check(p.do("POST", "/admin/suspend", p.adminSess, suspendForm("suspend", p.mod.Handle)), 303)
+
+	txid := longTxid("ee")
+	p.paidByWatcher(p.order, p.addr, txid)
+	p.fake.SetConfirmations(txid, -1)
+	p.poll()
+	if p.count("SELECT count(*) FROM payments WHERE order_id=$1 AND flagged", p.order) != 1 {
+		t.Fatal("conflicted deposit not flagged")
+	}
+	if a, m := reviews(adminID, p.order), reviews(p.mod.ID, p.order); a != 1 || m != 0 {
+		t.Fatalf("review notifications with the moderator suspended: admin %d, moderator %d", a, m)
+	}
+
+	p.check(p.do("POST", "/admin/suspend", p.adminSess, suspendForm("restore", p.mod.Handle)), 303)
+	order, addr := p.newOrder(stateAwaitingPayment)
+	txid = longTxid("ef")
+	p.paidByWatcher(order, addr, txid)
+	p.fake.SetConfirmations(txid, -1)
+	p.poll()
+	if a, m := reviews(adminID, order), reviews(p.mod.ID, order); a != 1 || m != 1 {
+		t.Fatalf("review notifications after restore: admin %d, moderator %d", a, m)
 	}
 }
 
@@ -145,9 +189,9 @@ func TestModeratorDeskListsPaymentReviews(t *testing.T) {
 			amount(100000, currencyDecimals("BTC"))+" BTC", "Credited deposit conflicted or missing")
 		// The flag time comes from the watcher's flag event.
 		mustNotContain(t, body, "No payments are flagged for review.", "Not recorded")
-		// Newest flag first.
-		if strings.Index(body, secondTx) > strings.Index(body, first) {
-			t.Fatal("payment-review list is not newest first")
+		// Open flags (both deposits are still conflicted) are listed oldest first.
+		if strings.Index(body, secondTx) < strings.Index(body, first) {
+			t.Fatal("open payment-review flags are not oldest first")
 		}
 	}
 	// Buyers cannot open the desk; the disputes page carries no payment-review list.
@@ -156,16 +200,50 @@ func TestModeratorDeskListsPaymentReviews(t *testing.T) {
 	}
 	mustNotContain(t, p.page("/disputes", p.buyerSess), `id="payment-review"`)
 
-	// The list is capped with a truncation notice.
-	for i := range paymentReviewLimit + 1 {
-		if _, err := p.DB.Exec(`INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,flagged) VALUES($1,'BTC',$2,0,$3,1,3,true)`,
-			second, fmt.Sprintf("bulk-%03d", i), secondAddr); err != nil {
+}
+
+// A-98: every open (unhandled) flag is listed, oldest first and never capped, before the most recent other flags
+// (credited deposits that confirmed again), which are capped with a count. A flag's reason comes from its
+// deposit's current confirmations.
+func TestPaymentReviewListsEveryOpenFlagOldestFirst(t *testing.T) {
+	p := newPayEnv(t)
+	_, modSess := p.user("omod_"+randomToken()[:6], "moderator")
+	flag := func(txid string, credited bool, confs int, ago string) {
+		t.Helper()
+		if _, err := p.DB.Exec(`INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,credited,flagged) VALUES($1,'BTC',$2,0,$3,1,$4,$5,true)`,
+			p.order, txid, p.addr, confs, credited); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := p.DB.Exec(`INSERT INTO order_events(order_id,from_state,to_state,actor_id,note,created) VALUES($1,'paid','paid',NULL,$2,now()-$3::interval)`,
+			p.order, "TESTNET deposit "+txid+" arrived after this order was settled and was not paid out. Moderator review required.", ago); err != nil {
 			t.Fatal(err)
 		}
 	}
-	body = p.page("/moderator", modSess)
-	mustContain(t, body, fmt.Sprintf("Showing the %d most recently flagged payments", paymentReviewLimit))
-	if n := strings.Count(body, `<tr class="payment-review-row">`); n != paymentReviewLimit {
-		t.Fatalf("payment-review rows: %d", n)
+	// One old open flag, 101 newer open flags and 101 flags whose credited deposit confirmed again.
+	flag("open-old", false, 3, "30 days")
+	for i := range paymentReviewLimit + 1 {
+		flag(fmt.Sprintf("open-%03d", i), false, 3, fmt.Sprintf("%d minutes", 200-i))
+		flag(fmt.Sprintf("again-%03d", i), true, 5, fmt.Sprintf("%d minutes", 400-i))
 	}
+	body := p.page("/moderator", modSess)
+	rows := strings.Split(body, `<tr class="payment-review-row">`)[1:]
+	for i, r := range rows {
+		rows[i] = r[:strings.Index(r, "</tr>")]
+	}
+	if len(rows) != paymentReviewLimit+2+paymentReviewLimit {
+		t.Fatalf("payment-review rows: %d", len(rows))
+	}
+	mustContain(t, rows[0], "open-old:0", "Open", "Deposit confirmed after settlement, not paid out")
+	for i := range paymentReviewLimit + 1 {
+		mustContain(t, rows[1+i], fmt.Sprintf("open-%03d:0", i), "Open")
+	}
+	// Then the 100 most recently flagged others, newest first; the oldest one is cut and counted.
+	others := rows[paymentReviewLimit+2:]
+	for i, r := range others {
+		mustContain(t, r, fmt.Sprintf("again-%03d:0", paymentReviewLimit-i), "Credited deposit confirmed again (5 confirmations)")
+		mustNotContain(t, r, "Open")
+	}
+	mustNotContain(t, body, "again-000:0")
+	mustContain(t, body, fmt.Sprintf("%d open flags", paymentReviewLimit+2),
+		fmt.Sprintf("Showing the %d most recent of %d other flags", paymentReviewLimit, paymentReviewLimit+1))
 }

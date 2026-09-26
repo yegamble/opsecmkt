@@ -3,10 +3,14 @@ package market
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // A-9: startup bounds the database connection, the migration lock wait, the migrations and payment
@@ -204,5 +208,75 @@ func TestStartupPaymentPhaseTimeoutNamesThePhase(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "payment provider startup timed out after 200ms") {
 		t.Fatalf("error does not name the payment phase: %v", err)
+	}
+}
+
+// A-141: a failed startup connection names its class (authentication, missing database, unknown host,
+// refused) so the operator can act on it, without printing the DSN or the driver's error text (which carries
+// the user, database and host).
+func TestStartupDatabaseErrorNamesItsClass(t *testing.T) {
+	base := os.Getenv("TEST_DATABASE_URL")
+	if base == "" {
+		t.Skip("set TEST_DATABASE_URL for isolated PostgreSQL integration tests")
+	}
+	t.Setenv("SETUP_TOKEN", testSetupToken)
+	t.Setenv("DATABASE_CONNECT_TIMEOUT", "10s")
+	u, err := url.Parse(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	user := u.User.Username()
+	password := "wrong-pw-" + randomToken()[:12]
+	wrongPassword := *u
+	wrongPassword.User = url.UserPassword(user, password)
+	missing := "missing_db_" + randomToken()[:12]
+	missingDB := *u
+	missingDB.Path = "/" + missing
+	unknownHost := *u
+	unknownHost.Host = "no-such-db-host.invalid:5432"
+	refused := *u
+	refused.Host = "127.0.0.1:1"
+	// A trust-authenticated server accepts any password: that case then proves nothing.
+	if probe, err := OpenDB(wrongPassword.String()); err == nil {
+		perr := probe.PingContext(context.Background())
+		probe.Close()
+		if perr == nil {
+			t.Skip("TEST_DATABASE_URL's server accepts a wrong password (trust authentication)")
+		}
+	}
+	for _, c := range []struct {
+		name, dsn, want string
+	}{
+		{"wrong password", wrongPassword.String(), "authentication failed (SQLSTATE 28P01)"},
+		{"unknown database", missingDB.String(), "database missing (SQLSTATE 3D000)"},
+		{"unknown host", unknownHost.String(), "host not found"},
+		{"refused", refused.String(), "connection refused"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("DATABASE_URL", c.dsn)
+			a, err := New(context.Background(), false)
+			if a != nil {
+				a.Close()
+			}
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("New: %v, want %q", err, c.want)
+			}
+			for _, secret := range []string{c.dsn, password, missing, "no-such-db-host", "user=" + user, "127.0.0.1", "failed to connect"} {
+				if strings.Contains(err.Error(), secret) {
+					t.Fatalf("startup error %q contains %q", err, secret)
+				}
+			}
+		})
+	}
+}
+
+func TestConnectErrorClassTLSRequired(t *testing.T) {
+	err := &pgconn.PgError{Severity: "FATAL", Code: "28000", Message: `no pg_hba.conf entry for host "10.0.0.5", user "market", database "market", no encryption`}
+	if got := connectErrorClass(fmt.Errorf("connect: %w", err)); !strings.Contains(got, "TLS required") || strings.Contains(got, "10.0.0.5") {
+		t.Fatalf("class %q", got)
+	}
+	err.Message = `pg_hba.conf rejects connection for host "10.0.0.5", user "market", database "market", SSL encryption`
+	if got := connectErrorClass(err); !strings.Contains(got, "authentication failed (SQLSTATE 28000)") {
+		t.Fatalf("class %q", got)
 	}
 }

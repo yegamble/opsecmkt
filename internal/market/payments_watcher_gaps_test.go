@@ -353,7 +353,7 @@ func TestGapConcurrentCompletionWithProviderSendsOnce(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			codes <- p.do("POST", "/orders/complete", p.buyerSess, url.Values{"order_id": {p.order}}).Code
+			codes <- p.do("POST", "/orders/complete", p.buyerSess, payoutConfirmed(url.Values{"order_id": {p.order}}, 100000)).Code
 		}()
 	}
 	wg.Wait()
@@ -578,7 +578,7 @@ func TestEnqueuePayoutCreditsOnlyWhatItPays(t *testing.T) {
 	// The vendor cancels the paid order: transition -> enqueuePayout (refund) fixes the amount, then pauses.
 	cancelled := make(chan int, 1)
 	go func() {
-		cancelled <- p.do("POST", "/orders/cancel", p.vendorSess, url.Values{"order_id": {p.order}, "from": {statePaid}}).Code
+		cancelled <- p.do("POST", "/orders/cancel", p.vendorSess, payoutConfirmed(url.Values{"order_id": {p.order}, "from": {statePaid}}, 100000)).Code
 	}()
 	waitFor(t, func() bool {
 		return p.count("SELECT count(*) FROM pg_stat_activity WHERE query LIKE 'INSERT INTO payouts%' AND wait_event_type='Lock'") == 1
@@ -983,5 +983,300 @@ func TestLateRecordDoesNotOverwriteAdminResolution(t *testing.T) {
 	p.poll()
 	if len(p.fake.Sends()) != 1 {
 		t.Fatalf("sends after another pass: %d", len(p.fake.Sends()))
+	}
+}
+
+// A-98: a credited deposit that falls back below the threshold (conflicted or missing, or back at a lower
+// depth after a reorg, as QA saw on a real chain) is announced once per episode: one order-history note and a
+// notification to the buyer, the vendor and every moderator and administrator not party to the order. The order
+// becomes readable by staff and is listed for payment review; unsent payouts are held and nothing is sent until
+// the deposit confirms again, which ends the episode. A later regression is announced again unless the order is
+// closed and its payout already sent. While the node's tip is below the highest tip recorded for the currency
+// (a restarted or restored node catching up) the pass is skipped and nothing is announced.
+//
+// Rows: an open paid order (no payout yet), and completed orders changed just now, 48 hours ago, or 40 days ago
+// with a 40-day-old address, whose release is pending, blocked (the vendor saves an address after the drop) or
+// held by a restore (an administrator releases it after the drop). The blocked and restored rows are released
+// after the drop and before the next pass, so the pass that would send them reads the wallet first (A-97).
+func TestCreditedDepositRegressionAnnouncedPerEpisode(t *testing.T) {
+	type row struct{ name, age, payout string }
+	rows := []row{{"paid", "fresh", "none"}}
+	for _, age := range []string{"fresh", "updated-48h", "address-40d"} {
+		for _, payout := range []string{"pending", "blocked", "restored-held"} {
+			rows = append(rows, row{age + "/" + payout, age, payout})
+		}
+	}
+	for _, c := range rows {
+		t.Run(c.name, func(t *testing.T) {
+			p := newPayEnv(t)
+			_, modSess := p.user("a98mod_"+randomToken()[:6], "moderator")
+			const vendorAddr = "fake-testnet-vendor"
+			tx := longTxid("98")
+			p.fake.SetHeight(200)
+			if c.payout == "pending" || c.payout == "restored-held" {
+				p.setPayoutAddress(p.vendor, vendorAddr)
+			}
+			p.paidByWatcher(p.order, p.addr, tx)
+			closed := c.payout != "none"
+			if closed {
+				p.complete(p.order)
+			}
+			if c.payout == "restored-held" {
+				if _, err := p.DB.Exec("UPDATE payouts SET state='held',error=$2 WHERE order_id=$1", p.order, restoredHold); err != nil {
+					t.Fatal(err)
+				}
+			}
+			switch c.age {
+			case "updated-48h":
+				p.DB.Exec("UPDATE orders SET updated=now()-interval '48 hours' WHERE id=$1", p.order)
+			case "address-40d":
+				p.DB.Exec("UPDATE orders SET updated=now()-interval '40 days' WHERE id=$1", p.order)
+				p.DB.Exec("UPDATE payment_addresses SET created=now()-interval '40 days' WHERE order_id=$1", p.order)
+			}
+			if w := p.do("GET", "/order?id="+p.order, modSess, nil); w.Code != 404 {
+				t.Fatalf("staff read an unflagged order: %d", w.Code)
+			}
+			// episodes asserts the announcements so far: order-history notes, party notifications and one
+			// "Payment review needed" notification per non-party moderator and administrator per episode.
+			episodes := func(step string, want int) {
+				t.Helper()
+				if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE 'Credited TESTNET deposit %Moderator review required.'", p.order); n != want {
+					t.Fatalf("%s: regression notes %d, want %d", step, n, want)
+				}
+				for who, id := range map[string]string{"buyer": p.buyer.ID, "vendor": p.vendor.ID} {
+					if n := p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE '%market staff have been notified%'", id); n != want {
+						t.Fatalf("%s: %s notifications %d, want %d", step, who, n, want)
+					}
+				}
+				if n := p.count(`SELECT count(*) FROM users u WHERE u.role IN ('moderator','admin')
+					AND (SELECT count(*) FROM notifications n WHERE n.user_id=u.id AND n.body LIKE 'Payment review needed for order '||left($1,8)||': Credited TESTNET deposit %')<>$2`, p.order, want); n != 0 {
+					t.Fatalf("%s: %d staff accounts without exactly %d review notification(s)", step, n, want)
+				}
+			}
+			held := func(step string) {
+				t.Helper()
+				if !closed {
+					return
+				}
+				if st, _, _, _ := p.payout(p.order); st != "held" || p.str("SELECT error FROM payouts WHERE order_id=$1", p.order) != heldReason || len(p.fake.Sends()) != 0 {
+					t.Fatalf("%s: payout %s sends %d, want held by the watcher and nothing sent", step, st, len(p.fake.Sends()))
+				}
+			}
+			desk := func(step, reason string) string {
+				t.Helper()
+				body := html.UnescapeString(p.page("/moderator", modSess))
+				i := strings.Index(body, tx+":0")
+				if i < 0 || !strings.Contains(body[i:], reason) {
+					t.Fatalf("%s: payment review does not list %s with %q", step, tx[:8], reason)
+				}
+				return body
+			}
+
+			// Episode 1: the wallet drops the credited deposit.
+			p.fake.Drop(tx)
+			switch c.payout {
+			case "blocked":
+				p.check(p.do("POST", "/account/payout", p.vendorSess, url.Values{"currency": {"BTC"}, "address": {vendorAddr}, "password": {testPassword}}), 303)
+			case "restored-held":
+				if code, body := p.payoutActionConfirmed(p.adminSess, p.payoutID(p.order), "release", testPassword); code != 303 {
+					t.Fatalf("release restored hold: %d %s", code, body)
+				}
+			}
+			p.poll()
+			p.poll()
+			episodes("dropped", 1)
+			held("dropped")
+			if p.state(p.order) != map[bool]string{true: stateCompleted, false: statePaid}[closed] {
+				t.Fatalf("order state changed: %s", p.state(p.order))
+			}
+			mustContain(t, p.page("/order?id="+p.order, modSess), "Moderator review (read-only)")
+			mustContain(t, p.page("/order?id="+p.order, p.vendorSess), "A credited deposit is conflicted or missing; unsent payouts wait until it confirms again; market staff have been notified")
+			desk("dropped", "Credited deposit conflicted or missing")
+
+			// Still episode 1: the transaction is back at depth 0 (reorged into the mempool).
+			p.fake.Deposit(p.addr, tx, 0, 100000, 0)
+			p.poll()
+			episodes("depth 0", 1)
+			held("depth 0")
+			desk("depth 0", "below threshold (0 of 3 confirmations)")
+			mustContain(t, p.page("/order?id="+p.order, p.buyerSess), "A credited deposit is back below 3 confirmations; unsent payouts wait until it confirms again; market staff have been notified")
+			if closed {
+				id := p.payoutID(p.order)
+				admin := html.UnescapeString(p.page("/admin", p.adminSess))
+				i := strings.Index(admin, "Resolve payout "+id+":")
+				if i < 0 {
+					t.Fatal("watcher-held payout not listed for attention")
+				}
+				rowHTML := admin[i:]
+				rowHTML = rowHTML[:strings.Index(rowHTML, "</details>")]
+				mustContain(t, rowHTML, tx+":0", "0 of 3 confirmations", p.addr, `href="/order?id=`+p.order+`"`)
+				mustNotContain(t, rowHTML, `value="release"`, "Release held payout")
+				code, body := p.payoutAction(p.adminSess, id, "release", "", testPassword)
+				if code != 409 || !strings.Contains(body, "releases it by itself once the deposit confirms again") || strings.Contains(body, "Review it with a moderator") {
+					t.Fatalf("release while the deposit is below the threshold: %d %s", code, body)
+				}
+				held("release refused")
+			}
+
+			// The deposit confirms again: the episode ends and the held payout is sent exactly once.
+			p.fake.SetConfirmations(tx, 3)
+			p.poll()
+			episodes("confirmed again", 1)
+			if closed {
+				if st, _, to, _ := p.payout(p.order); st != "sent" || to != vendorAddr || len(p.fake.Sends()) != 1 {
+					t.Fatalf("after re-confirmation: payout %s to %q, sends %d", st, to, len(p.fake.Sends()))
+				}
+			}
+			desk("confirmed again", "confirmed again (3 confirmations)")
+
+			// Episode 2: dropped again. An open order is announced again; a completed order whose payout was sent is not.
+			p.fake.Drop(tx)
+			p.poll()
+			want := 1
+			if !closed {
+				want = 2
+			}
+			episodes("dropped again", want)
+
+			// Confirmed again, then the node restarts behind the highest tip recorded: the pass is skipped, so the
+			// deposit at a lower depth in the catching-up wallet is neither recorded nor announced.
+			p.fake.Deposit(p.addr, tx, 0, 100000, 3)
+			p.poll()
+			p.fake.SetHeight(150)
+			p.fake.SetConfirmations(tx, 1)
+			if err := p.A.pollOnce(context.Background()); err != nil {
+				t.Fatalf("pass with the tip behind: %v", err)
+			}
+			episodes("tip lowered", want)
+			if n := p.count("SELECT confirmations FROM payments WHERE txid=$1", tx); n != 3 {
+				t.Fatalf("ledger read while the tip was behind: %d confirmations", n)
+			}
+			if msg := p.str("SELECT last_error FROM payment_status WHERE currency='BTC'"); !strings.Contains(msg, "below the highest tip") {
+				t.Fatalf("tip guard not reported: %q", msg)
+			}
+			// Caught up at the same depth: a real reorg, announced (episode 3) on an open order although the deposit
+			// never left the wallet.
+			p.fake.SetHeight(201)
+			p.poll()
+			if !closed {
+				want = 3
+				if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE '%is back below the confirmation threshold (1 of 3 confirmations)%'", p.order); n != 1 {
+					t.Fatalf("depth regression notes: %d", n)
+				}
+			}
+			episodes("caught up", want)
+			if len(p.fake.Sends()) != map[bool]int{true: 1, false: 0}[closed] {
+				t.Fatalf("sends: %d", len(p.fake.Sends()))
+			}
+		})
+	}
+}
+
+// QA10V-1: a watcher hold that a suspension (A-102) or a restore from backup converts into its own hold keeps
+// its order watched, however old the order and its address, so the ledger sees the deposit confirm again and an
+// administrator's release is accepted. Nothing is sent before that release, and the send follows it once.
+func TestConvertedWatcherHoldReleasableAfterReconfirm(t *testing.T) {
+	for _, via := range []string{"suspension", "restore"} {
+		t.Run(via, func(t *testing.T) {
+			p := newPayEnv(t)
+			p.setPayoutAddress(p.vendor, "fake-testnet-vendor")
+			tx := "tx-converted-" + via
+			order := p.completedWithPayout(tx)
+			p.fake.SetConfirmations(tx, 1)
+			p.poll()
+			if st, e := p.payoutError(order); st != "held" || e != heldReason {
+				t.Fatalf("watcher hold: %s %q", st, e)
+			}
+			for _, q := range []string{
+				"UPDATE orders SET updated=now()-interval '40 days' WHERE id=$1",
+				"UPDATE payment_addresses SET created=now()-interval '40 days' WHERE order_id=$1",
+			} {
+				if _, err := p.DB.Exec(q, order); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if via == "suspension" {
+				p.check(p.do("POST", "/admin/suspend", p.adminSess, suspendForm("suspend", p.vendor.Handle)), 303)
+				p.suspendedHeld("after suspension", order)
+			} else if _, err := p.DB.Exec("UPDATE payouts SET state='held',error=$2 WHERE order_id=$1", order, restoredHold); err != nil {
+				t.Fatal(err)
+			}
+			release := func() (int, string) {
+				if via == "suspension" {
+					w := p.do("POST", "/admin/payout", p.adminSess, url.Values{"payout_id": {p.payoutID(order)}, "op": {"release"}, "password": {testPassword}, "address_checked": {"confirmed"}})
+					return w.Code, w.Body.String()
+				}
+				return p.payoutActionConfirmed(p.adminSess, p.payoutID(order), "release", testPassword)
+			}
+			// Still below the threshold: refused, and the refusal does not promise a release by the watcher.
+			if code, body := release(); code != 409 || !strings.Contains(body, "Release it after the deposit confirms again") || strings.Contains(body, "by itself") {
+				t.Fatalf("release below the threshold: %d %s", code, body)
+			}
+			p.fake.SetConfirmations(tx, 6)
+			p.poll()
+			p.poll()
+			if n := p.count("SELECT confirmations FROM payments WHERE txid=$1", tx); n != 6 {
+				t.Fatalf("ledger not refreshed for the converted hold: %d confirmations", n)
+			}
+			if st, e := p.payoutError(order); st != "held" || e == heldReason || len(p.fake.Sends()) != 0 {
+				t.Fatalf("converted hold lifted by the watcher: %s %q sends %d", st, e, len(p.fake.Sends()))
+			}
+			if via == "suspension" {
+				p.check(p.do("POST", "/admin/suspend", p.adminSess, suspendForm("restore", p.vendor.Handle)), 303)
+				p.poll()
+			}
+			code, body := release()
+			if code != 303 || len(p.fake.Sends()) != 0 {
+				t.Fatalf("release after re-confirmation: %d sends %d %s", code, len(p.fake.Sends()), body)
+			}
+			p.poll()
+			if st, _, _, _ := p.payout(order); st != "sent" || len(p.fake.Sends()) != 1 {
+				t.Fatalf("after release: payout %s sends %d", st, len(p.fake.Sends()))
+			}
+		})
+	}
+}
+
+// A-98 upgrade: migration 056 rewrites the watcher's earlier hold text to heldReason (the watcher recognises its
+// holds by that exact text) and marks credited deposits already reported as conflicted as an announced
+// episode, so an upgrade neither strands a held payout nor announces an old conflict again.
+func TestMigration056CarriesWatcherHoldsAndReportedConflicts(t *testing.T) {
+	p := newPayEnv(t)
+	p.setPayoutAddress(p.vendor, "fake-testnet-vendor")
+	tx := longTxid("56")
+	p.paidByWatcher(p.order, p.addr, tx)
+	p.complete(p.order)
+	p.fake.SetConfirmations(tx, -1)
+	const oldHeld = "A credited deposit is conflicted or below the confirmation threshold; payout held until it confirms again or a moderator reviews it."
+	for _, q := range []string{
+		"UPDATE payments SET confirmations=-1,flagged=true,regress_notice=false WHERE txid='" + tx + "'",
+		"UPDATE payouts SET state='held',error='" + oldHeld + "' WHERE order_id='" + p.order + "'",
+	} {
+		if _, err := p.DB.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	list, err := loadMigrations(migrationFiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range list {
+		if m.Version == 56 {
+			if _, err = p.DB.Exec(m.SQL); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if st, errText := p.payoutError(p.order); st != "held" || errText != heldReason {
+		t.Fatalf("after migration: payout %s %q", st, errText)
+	}
+	p.poll()
+	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE 'Credited TESTNET deposit %'", p.order); n != 0 {
+		t.Fatalf("old conflict announced again after the upgrade: %d", n)
+	}
+	p.fake.SetConfirmations(tx, 3)
+	p.poll()
+	if st, _, _, _ := p.payout(p.order); st != "sent" || len(p.fake.Sends()) != 1 {
+		t.Fatalf("migrated hold after re-confirmation: %s sends %d", st, len(p.fake.Sends()))
 	}
 }

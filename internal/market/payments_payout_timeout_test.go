@@ -424,11 +424,17 @@ func TestPayoutSentButNotRecordedStaysSendingAndNeedsConfirmation(t *testing.T) 
 			t.Error(err)
 		}
 	}
+	logs := captureLog(t)
 	err = p.A.pollOnce(context.Background())
 	p.fake.sendHook = nil
 	lock.Rollback()
 	if err == nil || !strings.Contains(err.Error(), "payout "+id+" recorded as sending only") {
 		t.Fatalf("unrecorded send not reported: %v", err)
+	}
+	// A-107/A-141: the txid of a send whose outcome could not be recorded is in the log.
+	if got := logs.lines("payout id=" + id + " "); len(p.fake.Sends()) != 1 || len(got) != 1 ||
+		got[0] != "payout id="+id+" order="+order[:8]+" currency=BTC amount=0.001 outcome=sent txid="+p.fake.Sends()[0].TxID+" recorded=no cause=timeout" {
+		t.Fatalf("unrecorded send log %q", got)
 	}
 	if st, txid, _, _ := p.payout(order); st != "sending" || txid != "" || len(p.fake.Sends()) != 1 {
 		t.Fatalf("after unrecorded send: %s %q sends=%d", st, txid, len(p.fake.Sends()))

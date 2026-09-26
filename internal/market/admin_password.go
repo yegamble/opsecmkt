@@ -44,6 +44,11 @@ func ResetAdminPassword(ctx context.Context, db *sql.DB, handle, password string
 	if err = refuseUnknownMigrations(ctx, tx, list); err != nil {
 		return err
 	}
+	// Pending sign-ins go before the account row is locked, in the order /challenge takes them (A-154); a refusal
+	// below rolls this back.
+	if _, err = tx.ExecContext(ctx, "DELETE FROM pending_logins WHERE user_id IN (SELECT id FROM users WHERE handle=$1)", handle); err != nil {
+		return err
+	}
 	var id, role string
 	err = tx.QueryRowContext(ctx, "SELECT id,role FROM users WHERE handle=$1 FOR UPDATE", handle).Scan(&id, &role)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -63,9 +68,6 @@ func ResetAdminPassword(ctx context.Context, db *sql.DB, handle, password string
 		return err
 	}
 	n, _ := ended.RowsAffected()
-	if _, err = tx.ExecContext(ctx, "DELETE FROM pending_logins WHERE user_id=$1", id); err != nil {
-		return err
-	}
 	if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", id, "Password reset by the operator on the host; ended "+strconv.FormatInt(n, 10)+" session(s) and any pending sign-ins"); err != nil {
 		return err
 	}

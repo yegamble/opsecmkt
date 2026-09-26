@@ -43,7 +43,7 @@
 </section>
 <section class="panel admin-suspend" id="suspend" aria-labelledby="suspend-heading">
 <h2 id="suspend-heading">Suspend or restore an account</h2>
-<p>Contains a compromised or abusive account. Suspending signs it out everywhere, cancels any sign-in in progress and refuses new sign-ins until you restore it. Its role, listings and orders stay as they are, so buyers and vendors can continue open orders with it. The account is notified and both accounts record the change.</p>
+<p>Contains a compromised or abusive account. Suspending signs it out everywhere, cancels any sign-in in progress and refuses new sign-ins until you restore it. Its role, listings and orders stay as they are. Orders waiting on this account stop until it is restored; the other party can still complete, cancel where allowed, or open a dispute. A suspended moderator does not resolve disputes, is not notified of them or of payment reviews and is not offered as a dispute contact. The account is notified and both accounts record the change.</p>
 <form class="stack" method="post" action="/admin/suspend">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
 <label>Account handle<input name="handle" value="{{.SuspendHandle}}" required minlength="3" maxlength="32" pattern="[a-zA-Z0-9_]{3,32}" autocomplete="off" autocapitalize="none" spellcheck="false"{{if .SuspendHandle}} aria-invalid="true"{{end}}>

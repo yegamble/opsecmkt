@@ -1,4 +1,5 @@
-{{/* P3 Orders owns. Dispute list used by disputes and moderator; resolve form for moderators who are not party to the order;
+{{/* P3 Orders owns. Dispute list used by disputes and moderator; resolve form for moderators who are not party to the order,
+each outcome stating its payout from DisputePayouts (A-161);
 administrators see a "No eligible resolver" note on an open dispute whose order has every staff account as a party.
 Disputes holds every open dispute first (OpenDisputes of them, oldest first), then the most recent resolved ones. */}}
 {{define "disputes-list"}}{{if .Disputes}}<h2 class="section-title">Open disputes</h2>{{if .OpenDisputes}}<div class="messages-list">{{else}}<p class="help">No open disputes. Every open dispute is listed here, oldest first.</p>{{end}}{{range $i, $d := .Disputes}}{{if eq $i $.OpenDisputes}}{{if $i}}</div>{{end}}
@@ -6,7 +7,7 @@ Disputes holds every open dispute first (OpenDisputes of them, oldest first), th
 <div class="message-meta">{{if or $party (and $.User $o.ID (or (eq $.User.Role "moderator") (eq $.User.Role "admin")))}}<a class="text-link" href="/order?id={{.OrderID}}">Order {{.OrderID}}</a>{{else}}<span class="mono">Order {{.OrderID}}</span>{{end}}
 <span class="badge">{{.Status}}</span>
 </div>{{if $o.ID}}<p class="dispute-order">
-<strong>{{$o.Title}}</strong> · {{$o.Amount}} {{$o.Currency}} · {{$o.Kind}}<br>
+<strong>{{$o.Title}}</strong> · price {{$o.Amount}} {{$o.Currency}} · {{$o.Kind}}<br>
 <span class="muted">Buyer {{$o.Buyer}} · vendor {{$o.Vendor}} · order state</span> <span class="badge {{template "order-badge-class" $o.State}}">{{$o.Status}}</span>
 </p>{{end}}
 <p>{{.Reason}}</p>
@@ -16,18 +17,19 @@ Disputes holds every open dispute first (OpenDisputes of them, oldest first), th
 <strong>Unavailable.</strong> You are a party to this order; another moderator must resolve it.</p>{{else if ne $o.State "disputed"}}<p class="order-unavailable" role="note">
 <strong>Unavailable.</strong> This order is not in the Disputed state, so no outcome can be recorded.</p>{{else}}<form class="stack" method="post" action="/resolve">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
-<input type="hidden" name="id" value="{{.ID}}">
+<input type="hidden" name="id" value="{{.ID}}">{{$p := index $.DisputePayouts .ID}}
 <fieldset class="dispute-outcome">
 <legend>Outcome</legend>
 <label class="check">
-<input type="radio" name="outcome" value="release" required> Release to vendor</label>
+<input type="radio" name="outcome" value="release" required> {{$p.Release}}</label>
 <label class="check">
-<input type="radio" name="outcome" value="refund" required> Refund to buyer</label>
+<input type="radio" name="outcome" value="refund" required> {{$p.Refund}}</label>
 </fieldset>
-<label>Decision<textarea name="resolution" required minlength="20" maxlength="5000">
+<p class="help">Resolving queues one payout of the whole counted amount to one party; the payment watcher sends it automatically. There is no split.</p>
+<label>Decision<textarea name="resolution" required minlength="20" maxlength="5000" aria-describedby="resolution-help-{{.ID}}">
 </textarea>
 </label>
-<span class="help">Resolving closes the order and records the outcome. This form moves no funds; any payout or refund is handled by the payment system.</span>
+<span class="help" id="resolution-help-{{.ID}}"><a class="text-link" href="/canary#records">Stored unencrypted.</a> The buyer and the vendor read the decision on the order and on their disputes page, as does every moderator and administrator, and the operator and anyone with a backup. Never include an address, real name or tracking number, including any a party sent you encrypted.</span>{{template "payout-confirm" $p}}
 <button type="submit">Resolve dispute</button>
 </form>{{end}}{{end}}{{end}}{{end}}</article>{{end}}</div>{{else}}<div class="empty">
 <span class="empty-icon">◇</span>

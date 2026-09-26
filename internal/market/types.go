@@ -11,6 +11,8 @@ type Product struct {
 	ID, Title, Description, Category, Region, Kind, Vendor, VendorID, PriceBTC, PriceXMR string
 	Stock                                                                                int
 	Archived                                                                             bool // Foundation; P4 uses
+	// P4, vendor-dashboard only: an administrator's takedown reason (A-163); never loaded for public pages.
+	TakedownReason string
 }
 
 // Order.Status is the display label derived from State by stateLabel.
@@ -33,10 +35,13 @@ type Dispute struct {
 	NoResolver                                       bool // open, and every moderator and administrator is a party
 }
 
-// PaymentReview is one deposit the payment watcher flagged for staff review (payments.flagged).
+// PaymentReview is one deposit the payment watcher flagged for staff review (payments.flagged). Open: not yet
+// settled by events (a locked transfer, a late deposit or a deposit of a payout below the minimum, which have no
+// disposition action yet, or a credited deposit in an announced regression that has not confirmed again).
 type PaymentReview struct {
 	OrderID, OrderState, Currency, Amount, TxID, Reason, Flagged string
 	Index                                                        int64
+	Open                                                         bool
 }
 type Event struct{ Handle, Action, Created string } // Handle: account the audit row is recorded on ("" = system)
 
@@ -89,15 +94,23 @@ type PageData struct {
 	// OpenDisputes: how many leading entries of Disputes are open (the rest are resolved).
 	DisputeOrders map[string]Order
 	OpenDisputes  int
+	// DisputePayouts: resolve form per open dispute the viewer may resolve, keyed by dispute id.
+	DisputePayouts map[string]PayoutPreview
+	// Overpaid: order page for its buyer or vendor, a paid, shipped or delivered order whose counted deposits
+	// exceed the price by this much ("0.009 BTC"); "" otherwise.
+	Overpaid string
 	// HistoryLimit: non-zero when closed history (resolved disputes, or incoming orders not paid) was
 	// cut to this many most recent rows.
 	HistoryLimit int
 	// DeliveryWithheld: order page viewed by a reviewer of a payment flag on an order never disputed.
 	DeliveryWithheld bool
-	// PaymentReviews: moderator desk, payments flagged for review, newest flag first; PaymentReviewLimit is
-	// non-zero when the list was cut to that many rows.
-	PaymentReviews     []PaymentReview
-	PaymentReviewLimit int
+	// PaymentReviews: moderator desk, payments flagged for review: every open flag (PaymentReviewsOpen of them,
+	// oldest first), then the most recent other flags (PaymentReviewOthers in all); PaymentReviewLimit is
+	// non-zero when the other flags were cut to that many rows.
+	PaymentReviews      []PaymentReview
+	PaymentReviewsOpen  int
+	PaymentReviewOthers int
+	PaymentReviewLimit  int
 
 	// P4 Inventory (uses Product.Archived)
 	Listing   *ListingView
@@ -114,6 +127,10 @@ type PageData struct {
 	// the other payouts were cut to this many most recent rows.
 	PayoutsAttention   int
 	PayoutHistoryLimit int
+	// MyPayout: order page, the viewer's own payout on this order while it is not sent (A-120).
+	// UnsentPayouts: vendor desk, how many payouts to the viewer are not sent (listed on /account#payout).
+	MyPayout      *RecipientPayout
+	UnsentPayouts int
 
 	// P6 Transparency
 	Canary      *CanaryView
@@ -158,17 +175,33 @@ type PGPView struct {
 
 // P3 Orders
 type OrderEvent struct{ From, To, Actor, Note, Created string }
-type Transition struct{ To, Label, Action string } // Action "" = shown as unavailable with Label as the reason
+type Transition struct {
+	To, Label, Action string         // Action "" = shown as unavailable with Label as the reason
+	Payout            *PayoutPreview // complete, and cancel of a paid order: the payout it queues
+}
+
+// PayoutPreview states what a form that queues a payout (complete, a vendor's cancel of a paid order, resolve)
+// pays now, by payoutBasis (A-161, A-122). Seen is that amount in atomic units, sent back as amount_seen;
+// Confirm labels the required confirmation checkbox. Resolve form only: Release and Refund state each outcome
+// (amount, recipient, difference from the price, the recipient's payout state).
+type PayoutPreview struct {
+	Seen                     int64
+	Confirm, Release, Refund string
+}
 type DeliveryView struct{ Content, Created string }
 type Review struct {
 	ID, OrderID, Buyer string
 	Rating             int
 	Body, Created      string
 	Product            string // listing title, vendor page only
+	Hidden             bool   // hidden by an administrator (A-125): listed only for administrators and on the order
 }
+
+// ReviewSummary counts and averages the public (not hidden) reviews; Hidden counts the others, for administrators only.
 type ReviewSummary struct {
 	Count   int
 	Average string
+	Hidden  int
 }
 
 // P4 Inventory
@@ -180,6 +213,7 @@ type ListingView struct {
 	Updated, ArchivedAt string
 	OpenOrders          int    // orders not completed, resolved or cancelled
 	AutoDelivery        string // currencies with a configured payment provider, e.g. "BTC, XMR"; "" = none
+	TakedownReason      string // an administrator's takedown reason (A-163); "" when not taken down
 }
 type InventoryView struct {
 	Active, Archived int
@@ -223,11 +257,22 @@ type PayoutView struct {
 	BTC, XMR               string
 	BTCNetwork, XMRNetwork string // empty = no provider for that currency
 	Blocked                int    // payouts waiting for this user's address
+	Unsent                 []RecipientPayout
+}
+
+// RecipientPayout is a payout as its recipient sees it (A-120): every payout to the viewer that is not sent, on
+// /account#payout (oldest first, uncapped) and on its order page. Status and NextStep are fixed copy chosen by
+// recipientPayout from the payout's state and hold; the wallet's error text is never shown. Address is the
+// payout's destination ("" while none is set), shown to its recipient only.
+type RecipientPayout struct {
+	OrderID, OrderShort, Kind, Currency, Amount, Network string
+	Address, Status, NextStep                            string
 }
 type PayoutRow struct {
 	ID                                               int64
 	OrderID, Kind, Recipient, Currency, Amount       string
 	Address, State, StateLabel, TxID, Error, Updated string
+	OrderShort                                       string // shortID(OrderID), named in the resolve summary
 	Attention                                        bool
 	OrderLink                                        bool // the viewing administrator can open /order for it
 	// Ambiguous: the payout may already have been broadcast (failed without a definite wallet answer, stuck
@@ -236,6 +281,20 @@ type PayoutRow struct {
 	// AddressCheck: held for an account suspension (suspendedHoldPrefix); releasing needs an explicit
 	// confirmation that the payout address was checked.
 	AddressCheck bool
+	// CurrentAddress: the recipient's saved payout address for Currency now; CurrentChanged: when it was last saved
+	// ("" when not recorded). Repoint: the payout may be moved to CurrentAddress (repointable, A-121).
+	CurrentAddress, CurrentChanged string
+	Repoint                        bool
+	// Waiting: held by the watcher (heldReason) while these credited deposits are below Threshold confirmations;
+	// no release is offered until they confirm again.
+	Waiting   []HeldDeposit
+	Threshold int64
+}
+
+// HeldDeposit is a credited deposit, at its deposit address, that holds its order's payout.
+type HeldDeposit struct {
+	TxID, Address        string
+	Index, Confirmations int64
 }
 
 // P6 Transparency

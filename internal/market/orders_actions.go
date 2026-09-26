@@ -40,7 +40,18 @@ func partyOrder(c *actionCtx, id string) (Order, error) {
 // demoted vendor accept no new drafts, payment requests or restores; existing orders continue.
 func sellerIsVendor(c *actionCtx, productID string) (bool, error) {
 	var ok bool
-	err := c.Tx.QueryRowContext(c.Ctx(), "SELECT u.role IN ('vendor','admin') FROM products p JOIN users u ON u.id=p.vendor_id WHERE p.id=$1", productID).Scan(&ok)
+	err := c.Tx.QueryRowContext(c.Ctx(), sellerIsVendorSQL, productID).Scan(&ok)
+	return ok, err
+}
+
+const sellerIsVendorSQL = "SELECT u.role IN ('vendor','admin') FROM products p JOIN users u ON u.id=p.vendor_id WHERE p.id=$1"
+
+// sellerIsVendorLocked is sellerIsVendor for a restore (A-70, A-163): it share-locks the owner's account row until
+// the transaction ends, so a concurrent role change either commits first and is seen here, or waits and then
+// archives the restored listing in its own archive statement.
+func sellerIsVendorLocked(c *actionCtx, productID string) (bool, error) {
+	var ok bool
+	err := c.Tx.QueryRowContext(c.Ctx(), sellerIsVendorSQL+" FOR SHARE OF u", productID).Scan(&ok)
 	return ok, err
 }
 
@@ -60,6 +71,20 @@ func formNote(c *actionCtx, fallback string) (string, error) {
 		return fallback, nil
 	}
 	return note, nil
+}
+
+// payoutConfirmation reads what the complete, paid-cancel and resolve forms carry (A-161, A-122): the ticked
+// confirmation and amount_seen, the counted amount (payoutBasis) the form stated. Both are required (400);
+// enqueuePayout compares amount_seen with what it counts (409 when it changed).
+func payoutConfirmation(c *actionCtx) (int64, error) {
+	if c.Form.Get("payout_confirmed") != "confirmed" {
+		return 0, fail(400, "Tick the box confirming the amount and who receives it. Nothing was changed.")
+	}
+	seen, err := strconv.ParseInt(c.Form.Get("amount_seen"), 10, 64)
+	if err != nil || seen < 0 {
+		return 0, fail(400, "The form did not say which amount you reviewed. Reload the page and review it again. Nothing was changed.")
+	}
+	return seen, nil
 }
 
 // maxAwaitingPayment bounds the stock one buyer can hold in unpaid orders (the watcher also expires them).
@@ -120,6 +145,7 @@ func payAction(c *actionCtx) (actionResult, error) {
 }
 
 // cancelAction takes the state the viewer saw ("from") so a stale or repeated form is a 409, not a new move.
+// Cancelling a paid order refunds every counted deposit, so it needs the payout confirmation.
 func cancelAction(c *actionCtx) (actionResult, error) {
 	from := c.Form.Get("from")
 	if from != stateDraft && from != stateAwaitingPayment && from != statePaid {
@@ -129,11 +155,21 @@ func cancelAction(c *actionCtx) (actionResult, error) {
 	if err != nil {
 		return actionResult{}, err
 	}
+	var seen int64
+	if from == statePaid {
+		if seen, err = payoutConfirmation(c); err != nil {
+			return actionResult{}, err
+		}
+	}
 	o, err := partyOrder(c, c.Form.Get("order_id"))
 	if err != nil {
 		return actionResult{}, err
 	}
-	if _, err = c.A.transition(c.Ctx(), c.Tx, o.ID, from, stateCancelled, c.User, note); err != nil {
+	ctx := c.Ctx()
+	if from == statePaid {
+		ctx = withPayoutSeen(ctx, o.ID, seen)
+	}
+	if _, err = c.A.transition(ctx, c.Tx, o.ID, from, stateCancelled, c.User, note); err != nil {
 		return actionResult{}, err
 	}
 	return actionResult{Redirect: orderPage(o.ID), Audit: "Cancelled order " + shortID(o.ID) + " (was " + stateLabel(from) + ")"}, nil
@@ -175,8 +211,13 @@ func deliverAction(c *actionCtx) (actionResult, error) {
 }
 
 // completeAction: the buyer confirms receipt. The from-state follows the product kind, so a repeated or
-// concurrent confirmation fails the compare-and-set with 409.
+// concurrent confirmation fails the compare-and-set with 409. Completing releases every counted deposit to the
+// vendor, so it needs the payout confirmation.
 func completeAction(c *actionCtx) (actionResult, error) {
+	seen, err := payoutConfirmation(c)
+	if err != nil {
+		return actionResult{}, err
+	}
 	o, err := partyOrder(c, c.Form.Get("order_id"))
 	if err != nil {
 		return actionResult{}, err
@@ -189,7 +230,7 @@ func completeAction(c *actionCtx) (actionResult, error) {
 	default:
 		return actionResult{}, fail(403, "Only shipped or delivered orders can be completed")
 	}
-	if _, err = c.A.transition(c.Ctx(), c.Tx, o.ID, from, stateCompleted, c.User, "Buyer confirmed receipt"); err != nil {
+	if _, err = c.A.transition(withPayoutSeen(c.Ctx(), o.ID, seen), c.Tx, o.ID, from, stateCompleted, c.User, "Buyer confirmed receipt"); err != nil {
 		return actionResult{}, err
 	}
 	return actionResult{Redirect: orderPage(o.ID), Audit: "Completed order " + shortID(o.ID)}, nil

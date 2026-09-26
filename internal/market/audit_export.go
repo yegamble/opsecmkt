@@ -145,7 +145,7 @@ func auditExportHandler(a *App, w http.ResponseWriter, r *http.Request, u *User)
 	ctx := r.Context()
 	settled, err := settledAuditMax(ctx, a.db)
 	if err != nil {
-		http.Error(w, "Service unavailable", 503)
+		serverError(w, r, 503, "Service unavailable", errorCause(err))
 		return
 	}
 	if upto > settled {
@@ -154,7 +154,7 @@ func auditExportHandler(a *App, w http.ResponseWriter, r *http.Request, u *User)
 	}
 	export, err := auditExport(ctx, a.db, upto)
 	if err != nil {
-		http.Error(w, "Unable to export audit events", 500)
+		serverError(w, r, 500, "Unable to export audit events", errorCause(err))
 		return
 	}
 	name := fmt.Sprintf("audit-events-upto-%d", upto)

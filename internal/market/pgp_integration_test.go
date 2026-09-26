@@ -56,7 +56,7 @@ func TestPGPKeyOwnershipAndSecondFactor(t *testing.T) {
 		"garbage": "-----BEGIN PGP PUBLIC KEY BLOCK-----\nnot a key\n-----END PGP PUBLIC KEY BLOCK-----",
 		"private": priv.String(), "two keys": alicePub + "\n" + bobPub,
 	} {
-		if b := e.body("POST", "/account", s, url.Values{"pgp": {key}}, 400); !strings.Contains(b, "PGP key rejected") {
+		if b := e.body("POST", "/account", s, url.Values{"pgp": {key}, "password": {testPassword}}, 400); !strings.Contains(b, "PGP key rejected") {
 			t.Errorf("%s: %s", name, b)
 		}
 	}
@@ -65,11 +65,11 @@ func TestPGPKeyOwnershipAndSecondFactor(t *testing.T) {
 	}
 
 	// Saving a key stores its fingerprint, unverified; the page says so and PGP sign-in is refused.
-	e.check(e.do("POST", "/account", s, url.Values{"pgp": {alicePub}}), 303)
+	e.check(e.do("POST", "/account", s, url.Values{"pgp": {alicePub}, "password": {testPassword}}), 303)
 	if fp, verified, _ := status(); fp != aliceFP || verified {
 		t.Fatalf("fp=%s verified=%v", fp, verified)
 	}
-	if !e.auditExact(uid, "Updated PGP key (fingerprint "+aliceFP+"; ownership unverified)") {
+	if !e.auditExact(uid, "Updated PGP key (fingerprint "+aliceFP+"; ownership unverified) (confirmed with password)") {
 		t.Fatal("key change not audited")
 	}
 	page := e.body("GET", "/account", s, nil, 200)
@@ -81,7 +81,7 @@ func TestPGPKeyOwnershipAndSecondFactor(t *testing.T) {
 	if strings.Contains(page, ">Verified") {
 		t.Fatal("unverified key shown as verified")
 	}
-	if b := e.body("POST", "/pgp/2fa", s, url.Values{"enable": {"1"}}, 409); !strings.Contains(b, "Verify ownership") {
+	if b := e.body("POST", "/pgp/2fa", s, url.Values{"enable": {"1"}, "password": {testPassword}}, 409); !strings.Contains(b, "Verify ownership") {
 		t.Fatal(b)
 	}
 	e.check(e.do("POST", "/pgp/verify", s, url.Values{"signature": {"x"}}), 409)
@@ -139,7 +139,7 @@ func TestPGPKeyOwnershipAndSecondFactor(t *testing.T) {
 	}
 
 	// PGP second factor: enabling requires the verified key; sign-in then needs the decrypted code.
-	e.check(e.do("POST", "/pgp/2fa", s, url.Values{"enable": {"1"}}), 303)
+	e.check(e.do("POST", "/pgp/2fa", s, url.Values{"enable": {"1"}, "password": {testPassword}}), 303)
 	if _, _, twoFA := status(); !twoFA {
 		t.Fatal("2fa not enabled")
 	}
@@ -196,11 +196,11 @@ func TestPGPKeyOwnershipAndSecondFactor(t *testing.T) {
 		t.Fatal(err)
 	}
 	bobNonce := testDecrypt(t, bob, armored)
-	e.check(e.do("POST", "/account", s, url.Values{"pgp": {alicePub}}), 303)
+	e.check(e.do("POST", "/account", s, url.Values{"pgp": {alicePub}, "password": {testPassword}}), 303)
 	e.check(e.do("POST", "/pgp/verify", s, url.Values{"response": {bobNonce}}), 409)
 
 	// Removing the key clears everything.
-	e.check(e.do("POST", "/account", s, url.Values{"pgp": {""}}), 303)
+	e.check(e.do("POST", "/account", s, url.Values{"pgp": {""}, "password": {testPassword}}), 303)
 	if fp, verified, _ := status(); fp != "" || verified {
 		t.Fatal("removed key kept state")
 	}
@@ -246,7 +246,7 @@ func TestMessageEncryptionStatus(t *testing.T) {
 	senderID, sender := e.user("msg_sender", "buyer")
 	aliceID, aliceSession := e.user("msg_alice", "vendor")
 	e.user("msg_nokey", "vendor")
-	e.check(e.do("POST", "/account", aliceSession, url.Values{"pgp": {alicePub}}), 303)
+	e.check(e.do("POST", "/account", aliceSession, url.Values{"pgp": {alicePub}, "password": {testPassword}}), 303)
 
 	toAlice, _ := encryptTo(alice, "for alice")
 	toBob, _ := encryptTo(bob, "for bob")
@@ -327,7 +327,7 @@ func TestMessagePlaintextInsideArmorRejected(t *testing.T) {
 	alice, alicePub := testPGPKey(t, "alice")
 	senderID, sender := e.user("armor_buyer", "buyer")
 	_, aliceSession := e.user("armor_vendor", "vendor")
-	e.check(e.do("POST", "/account", aliceSession, url.Values{"pgp": {alicePub}}), 303)
+	e.check(e.do("POST", "/account", aliceSession, url.Values{"pgp": {alicePub}, "password": {testPassword}}), 303)
 
 	ct, err := encryptTo(alice, strings.Repeat("order notes ", 300))
 	if err != nil {
@@ -471,8 +471,8 @@ func TestMessageArmorCanonicalised(t *testing.T) {
 	senderID, sender := e.user("canon_buyer", "buyer")
 	_, aliceSession := e.user("canon_alice", "vendor")
 	_, carolSession := e.user("canon_carol", "vendor")
-	e.check(e.do("POST", "/account", aliceSession, url.Values{"pgp": {alicePub}}), 303)
-	e.check(e.do("POST", "/account", carolSession, url.Values{"pgp": {gpgFixtureKey}}), 303)
+	e.check(e.do("POST", "/account", aliceSession, url.Values{"pgp": {alicePub}, "password": {testPassword}}), 303)
+	e.check(e.do("POST", "/account", carolSession, url.Values{"pgp": {gpgFixtureKey}, "password": {testPassword}}), 303)
 
 	var buf bytes.Buffer
 	w, _ := armor.Encode(&buf, "PGP MESSAGE", map[string]string{"Version": "GnuPG v2", "Comment": "Ship to: 2 Header Road"})
@@ -556,7 +556,7 @@ func TestProfileKeyStoredCanonically(t *testing.T) {
 	vendorID, vendor := e.user("canon_vendor", "vendor")
 	legacyID, legacy := e.user("canon_legacy", "vendor")
 	_, other := e.user("canon_other", "buyer")
-	e.check(e.do("POST", "/account", vendor, url.Values{"pgp": {pasted}}), 303)
+	e.check(e.do("POST", "/account", vendor, url.Values{"pgp": {pasted}, "password": {testPassword}}), 303)
 	var stored, storedFP string
 	if err = e.DB.QueryRow("SELECT pgp,pgp_fingerprint FROM users WHERE id=$1", vendorID).Scan(&stored, &storedFP); err != nil {
 		t.Fatal(err)

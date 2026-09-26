@@ -1,3 +1,17 @@
+{{/* A-163: an administrator takes down another vendor's listing with a reason, confirmed with their password. Called with PageData. */}}
+{{define "listing-edit:takedown"}}<details class="listing-takedown">
+<summary>Take down listing</summary>
+<form class="stack" method="post" action="/admin/listing">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="id" value="{{.Product.ID}}">
+<input type="hidden" name="action" value="takedown">
+<label>Reason for the vendor<textarea name="reason" required minlength="10" maxlength="500" rows="4" aria-describedby="takedown-help"></textarea>
+</label>
+<p class="help" id="takedown-help">10–500 characters. Taking the listing down archives it and stops automatic delivery of its paid orders; the vendor can still edit it, but only an administrator can restore it. The vendor is notified with this reason and sees it on the listing; it is <a class="text-link" href="/canary#records">stored unencrypted</a> and kept in both accounts' activity logs, never shown publicly. Never include an address, real name or tracking number.</p>
+{{template "confirm-fields" (and .Security .Security.TOTPEnabled)}}
+<button type="submit">Take down listing</button>
+</form>
+</details>{{end}}
 {{define "page:listing-edit"}}{{template "header" .}}
 {{with .Product}}<div class="breadcrumbs">
 <a href="/vendor-dashboard">Vendor desk</a> / Edit listing</div>
@@ -41,11 +55,12 @@
 </label>
 <label>Stock<input type="number" name="stock" required min="0" max="1000000" value="{{.Stock}}" aria-describedby="stock-help">
 </label>
-<label>Bitcoin reference price<input name="price_btc" required inputmode="decimal" value="{{.PriceBTC}}">
+<label>Bitcoin reference price<input name="price_btc" required inputmode="decimal" value="{{.PriceBTC}}" aria-describedby="price-btc-help">
 </label>
 <label>Monero reference price<input name="price_xmr" required inputmode="decimal" value="{{.PriceXMR}}">
 </label>
 </div>
+<p class="help" id="price-btc-help">The Bitcoin price must be at least 0.0001 BTC: a smaller Bitcoin payout cannot cover the network fee.</p>
 <p class="help" id="stock-help">Payment requests reserve stock. If stock changes while you edit, saving a new stock value is refused so no reservation is overwritten.</p>
 {{with $.Listing}}<p class="help" id="kind-help">{{if .OpenOrders}}{{.OpenOrders}} open order(s) depend on this listing, so the fulfillment type cannot change until they finish.{{else}}No open orders; the fulfillment type can change.{{end}} Orders that have requested payment keep their recorded amount; open drafts use the current price.</p>
 {{if .VendorEditor}}<label>Automatic delivery content<textarea name="delivery_content" maxlength="32000" rows="6" spellcheck="false" aria-describedby="delivery-help">{{.DeliveryContent}}</textarea>
@@ -56,18 +71,28 @@
 </section>
 <aside>
 <section class="panel">
-<h2>Visibility</h2>{{if .Archived}}<p>Archived{{with $.Listing}}{{if .ArchivedAt}} since {{.ArchivedAt}}{{end}}{{end}}. Hidden from the marketplace, your vendor page and search; new orders are refused. Existing orders continue unchanged.</p>
+<h2>Visibility</h2>{{with $.Listing}}{{if .TakedownReason}}<p><span class="badge danger">Taken down</span> Taken down by an administrator{{if .ArchivedAt}} on {{.ArchivedAt}}{{end}}. Hidden from the marketplace, the vendor page and search; new orders are refused. Existing orders continue, but paid orders are not delivered automatically: the vendor delivers or cancels them.</p>
+<p class="takedown-reason"><strong>Reason:</strong> {{.TakedownReason}}</p>{{if ne $.User.Role "admin"}}
+<p>Only an administrator can restore this listing. If you think this is wrong, contact the market staff. You can still edit it.</p>{{else}}
+<form class="stack" method="post" action="/admin/listing">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="id" value="{{$.Product.ID}}">
+<input type="hidden" name="action" value="restore">
+<p class="help">Restoring shows the listing in the marketplace again, clears the reason and notifies the vendor.</p>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
+<button type="submit">Restore listing</button>
+</form>{{end}}{{else if $.Product.Archived}}<p>Archived{{if .ArchivedAt}} since {{.ArchivedAt}}{{end}}. Hidden from the marketplace, your vendor page and search; new orders are refused. Existing orders continue unchanged.</p>
 <form method="post" action="/listings/restore">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
-<input type="hidden" name="id" value="{{.ID}}">
+<input type="hidden" name="id" value="{{$.Product.ID}}">
 <button type="submit">Restore listing</button>
-</form>{{else}}<p>Visible in the marketplace. Archiving hides it and refuses new orders; existing orders continue unchanged.</p>
-<a class="text-link" href="/product?id={{.ID}}">View public listing <span class="action-icon">→</span></a>
+</form>{{if not .VendorEditor}}{{template "listing-edit:takedown" $}}{{end}}{{else}}<p>Visible in the marketplace. {{if .VendorEditor}}Archiving hides it and refuses new orders; existing orders continue unchanged.{{else}}To remove another vendor's listing, take it down with a reason for the vendor.{{end}}</p>
+<a class="text-link" href="/product?id={{$.Product.ID}}">View public listing <span class="action-icon">→</span></a>{{if .VendorEditor}}
 <form method="post" action="/listings/archive">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
-<input type="hidden" name="id" value="{{.ID}}">
+<input type="hidden" name="id" value="{{$.Product.ID}}">
 <button type="submit">Archive listing</button>
-</form>{{end}}
+</form>{{else}}{{template "listing-edit:takedown" $}}{{end}}{{end}}{{end}}
 </section>
 <section class="panel">
 <h2>Record</h2>

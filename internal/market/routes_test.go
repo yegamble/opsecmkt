@@ -2,7 +2,6 @@ package market
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -248,7 +247,7 @@ func TestSecondFactorSeam(t *testing.T) {
 type fakeFactor struct{ name, user string }
 
 func (f *fakeFactor) Name() string { return f.name }
-func (f *fakeFactor) Enrolled(_ context.Context, _ *sql.DB, userID string) (bool, error) {
+func (f *fakeFactor) Enrolled(_ context.Context, _ rowQuerier, userID string) (bool, error) {
 	return userID == f.user, nil
 }
 func (f *fakeFactor) Verify(c *actionCtx, userID string) error {

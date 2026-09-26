@@ -36,17 +36,26 @@ func stockHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, to strin
 // autoDeliveryHook releases a digital listing's stored delivery content as soon as the payment watcher
 // marks the order paid, by recording the delivery and moving paid -> delivered as the system actor.
 // Content that cannot be delivered automatically (blank or over the limit) leaves the order paid for
-// the vendor to deliver by hand; it never blocks the payment transition.
+// the vendor to deliver by hand; it never blocks the payment transition. Neither is a listing an administrator
+// took down (A-163) delivered: the order stays paid with a history note, for the vendor to deliver or cancel.
 func autoDeliveryHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, to string) error {
 	if to != statePaid || o.Kind != "digital" {
 		return nil
 	}
 	var content string
-	if err := tx.QueryRowContext(ctx, "SELECT delivery_content FROM products WHERE id=$1", o.ProductID).Scan(&content); err != nil {
+	var takenDown bool
+	// FOR KEY SHARE waits for a takedown in progress (it holds the listing row FOR UPDATE) and then reads its result,
+	// without blocking stock reservations on the same listing.
+	if err := tx.QueryRowContext(ctx, "SELECT delivery_content,admin_archive_reason IS NOT NULL FROM products WHERE id=$1 FOR KEY SHARE", o.ProductID).Scan(&content, &takenDown); err != nil {
 		return err
 	}
 	if strings.TrimSpace(content) == "" || utf8.RuneCountInString(content) > maxDeliveryChars {
 		return nil
+	}
+	if takenDown {
+		_, err := tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, statePaid,
+			"Not delivered automatically: an administrator took this listing down. The vendor can deliver by hand or cancel and refund.")
+		return err
 	}
 	next, err := a.transition(ctx, tx, o.ID, statePaid, stateDelivered, nil, "Automatic delivery after confirmed payment")
 	if err != nil {

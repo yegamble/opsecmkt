@@ -25,7 +25,7 @@ func TestPGPLoginCodeRejectedAfterKeyRotation(t *testing.T) {
 			t.Fatal(err)
 		}
 		e.check(e.do("POST", "/pgp/verify", session, form("response", testDecrypt(t, key, challenge))), 303)
-		e.check(e.do("POST", "/pgp/2fa", session, form("enable", "1")), 303)
+		e.check(e.do("POST", "/pgp/2fa", session, form("enable", "1", "password", testPassword)), 303)
 	}
 	saveAndVerify(first, firstPub)
 	anon := randomToken()

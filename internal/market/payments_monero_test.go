@@ -17,16 +17,18 @@ const (
 
 // payMoneroWallet is a scripted monero-wallet-rpc (and optionally monerod) JSON-RPC endpoint.
 type payMoneroWallet struct {
-	mu        sync.Mutex
-	primary   string
-	sub       string
-	open      bool
-	nettype   string // daemon get_info
-	height    int64  // daemon get_info height / target_height (target > height = syncing)
-	target    int64
-	transfers map[string]any
-	nextIndex int64
-	valid     map[string]string // address -> nettype
+	mu      sync.Mutex
+	primary string
+	sub     string
+	open    bool
+	nettype string // daemon get_info
+	height  int64  // daemon get_info height / target_height (target > height = syncing)
+	target  int64
+	// walletHeight: monero-wallet-rpc get_height (the tip Check reports; 0 = unknown)
+	walletHeight int64
+	transfers    map[string]any
+	nextIndex    int64
+	valid        map[string]string // address -> nettype
 }
 
 func (m *payMoneroWallet) handle(path, method string, params json.RawMessage) (any, int, string) {
@@ -51,6 +53,8 @@ func (m *payMoneroWallet) handle(path, method string, params json.RawMessage) (a
 		return map[string]any{}, 0, ""
 	case "get_address":
 		return map[string]any{"address": m.primary}, 0, ""
+	case "get_height":
+		return map[string]any{"height": m.walletHeight}, 0, ""
 	case "create_address":
 		m.nextIndex++
 		return map[string]any{"address": m.sub, "address_index": m.nextIndex}, 0, ""

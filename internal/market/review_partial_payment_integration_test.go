@@ -71,8 +71,8 @@ func TestReviewPartialPaymentTopUpThroughFulfillmentAndPayout(t *testing.T) {
 				if kind == "digital" && !strings.Contains(p.page("/order?id="+order, p.buyerSess), "Purchased delivery: top-up regression fixture") {
 					t.Fatal("buyer cannot read purchased delivery")
 				}
-				p.check(p.do("POST", "/orders/complete", p.buyerSess, url.Values{"order_id": {order}}), 303)
-				p.check(p.do("POST", "/orders/complete", p.buyerSess, url.Values{"order_id": {order}}), 409)
+				p.check(p.do("POST", "/orders/complete", p.buyerSess, payoutConfirmed(url.Values{"order_id": {order}}, total)), 303)
+				p.check(p.do("POST", "/orders/complete", p.buyerSess, payoutConfirmed(url.Values{"order_id": {order}}, total)), 409)
 				p.poll()
 				p.poll()
 				state, _, to, paid := p.payout(order)

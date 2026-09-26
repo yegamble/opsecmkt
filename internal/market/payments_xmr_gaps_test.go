@@ -108,7 +108,7 @@ func TestGapXMRMoneyPathEndToEnd(t *testing.T) {
 
 	// Release: exact atomic units queued, sent once, and formatted with all 12 decimals.
 	l.post("/orders/ship", vendor, form("order_id", order), 303)
-	l.post("/orders/complete", buyer, form("order_id", order), 303)
+	l.post("/orders/complete", buyer, payoutConfirmed(form("order_id", order), amountSeen(t, l.get("/order?id="+order, buyer, 200))[0]), 303)
 	var kind, to, state string
 	var amt int64
 	if err := e.DB.QueryRow("SELECT kind,address,state,amount FROM payouts WHERE order_id=$1 AND currency='XMR'", order).Scan(&kind, &to, &state, &amt); err != nil {

@@ -78,24 +78,32 @@ func newBitcoinProvider(ctx context.Context, rawURL, wallet, wantChain string, c
 
 // Check refuses non-test chains (and a chain that differs from BITCOIN_CHAIN or from the chain seen before),
 // loads the wallet when the node reports it is not loaded (after a node restart, for example) and reports
-// initialblockdownload as syncing.
-func (p *bitcoinProvider) Check(ctx context.Context) (bool, error) {
+// initialblockdownload as syncing and "blocks" as the tip (the height gettransaction counts confirmations from).
+func (p *bitcoinProvider) Check(ctx context.Context) (nodeStatus, error) {
 	var info struct {
-		Chain string `json:"chain"`
-		IBD   bool   `json:"initialblockdownload"`
+		Chain  string      `json:"chain"`
+		IBD    bool        `json:"initialblockdownload"`
+		Blocks json.Number `json:"blocks"`
 	}
 	if err := p.rpc.call(ctx, "", "getblockchaininfo", nil, &info); err != nil {
-		return false, fmt.Errorf("bitcoin node check failed: %w", err)
+		return nodeStatus{}, fmt.Errorf("bitcoin node check failed: %w", err)
 	}
 	prefix, ok := bitcoinTestChains[info.Chain]
 	if !ok {
-		return false, refusef("bitcoin chain %q is not a test network (allowed: testnet3 \"test\", testnet4, signet, regtest)", info.Chain)
+		return nodeStatus{}, refusef("bitcoin chain %q is not a test network (allowed: testnet3 \"test\", testnet4, signet, regtest)", info.Chain)
 	}
 	if p.wantChain != "" && p.wantChain != info.Chain {
-		return false, refusef("bitcoin node reports chain %q but BITCOIN_CHAIN is %q", info.Chain, p.wantChain)
+		return nodeStatus{}, refusef("bitcoin node reports chain %q but BITCOIN_CHAIN is %q", info.Chain, p.wantChain)
 	}
 	if p.chain != "" && p.chain != info.Chain {
-		return false, refusef("bitcoin node now reports chain %q; it was %q", info.Chain, p.chain)
+		return nodeStatus{}, refusef("bitcoin node now reports chain %q; it was %q", info.Chain, p.chain)
+	}
+	var tip int64
+	if info.Blocks != "" {
+		var err error
+		if tip, err = info.Blocks.Int64(); err != nil || tip < 0 {
+			return nodeStatus{}, fmt.Errorf("bitcoin node check failed: bad block height %q", truncate(string(info.Blocks), 20))
+		}
 	}
 	var winfo struct {
 		WalletName string `json:"walletname"`
@@ -104,17 +112,17 @@ func (p *bitcoinProvider) Check(ctx context.Context) (bool, error) {
 	var re *rpcError
 	if errors.As(err, &re) && re.Code == -18 {
 		if lerr := p.rpc.call(ctx, "", "loadwallet", []any{p.walletName}, nil); lerr != nil {
-			return false, fmt.Errorf("bitcoin wallet %q is not loaded and could not be loaded (create it once with the createwallet RPC; see docs/testnet-runbook.md): %w", p.walletName, lerr)
+			return nodeStatus{}, fmt.Errorf("bitcoin wallet %q is not loaded and could not be loaded (create it once with the createwallet RPC; see docs/testnet-runbook.md): %w", p.walletName, lerr)
 		}
 		err = p.rpc.call(ctx, p.wallet, "getwalletinfo", nil, &winfo)
 	}
 	if err != nil {
-		return false, fmt.Errorf("bitcoin wallet %q unavailable: %w", p.walletName, err)
+		return nodeStatus{}, fmt.Errorf("bitcoin wallet %q unavailable: %w", p.walletName, err)
 	}
 	if p.chain == "" { // first success, before the provider is published to request handlers
 		p.chain, p.prefix = info.Chain, prefix
 	}
-	return info.IBD, nil
+	return nodeStatus{Syncing: info.IBD, Tip: tip}, nil
 }
 
 func (p *bitcoinProvider) Currency() string { return "BTC" }

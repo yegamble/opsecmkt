@@ -119,7 +119,7 @@ func TestAnnouncedDepositIncludedWhenCompletedWhileProviderUnavailable(t *testin
 	}
 	p.move(p.order, statePaid, stateShipped, p.vendor)
 	p.setUnavailable(false, false)
-	if w := p.do("POST", "/orders/complete", p.buyerSess, url.Values{"order_id": {p.order}}); w.Code != 303 {
+	if w := p.do("POST", "/orders/complete", p.buyerSess, payoutConfirmed(url.Values{"order_id": {p.order}}, 107000)); w.Code != 303 {
 		t.Fatalf("complete: %d %s", w.Code, w.Body.String())
 	}
 	if st, _, _, amt := p.payout(p.order); st != "pending" || amt != 107000 {

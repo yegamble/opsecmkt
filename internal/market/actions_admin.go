@@ -12,6 +12,7 @@ func init() {
 	registerAction("/admin", actionSpec{Roles: []string{"admin"}, Run: adminAction})
 	registerAction("/admin/reset-factors", actionSpec{Roles: []string{"admin"}, OwnTx: true, Run: adminResetFactorsAction})
 	registerAction("/admin/suspend", actionSpec{Roles: []string{"admin"}, OwnTx: true, Run: adminSuspendAction})
+	registerAction("/admin/review", actionSpec{Roles: []string{"admin"}, OwnTx: true, Run: adminReviewAction})
 	registerLoader("admin", factorAccountsLoader)
 	registerLoader("admin", suspendedAccountsLoader)
 	registerPreview("admin", func(d *PageData) {
@@ -43,10 +44,11 @@ func suspendedAccountsLoader(ctx context.Context, a *App, r *http.Request, d *Pa
 // the account's sessions and pending sign-ins and blocks sign-in (checked at the password step, when a
 // session starts and whenever a session loads) and holds the account's unsent payouts for an administrator's
 // payout address check; restoring allows sign-in again and leaves those holds. Role, listings and orders stay
-// as they are, so counterparties can continue open orders. Both accounts are
-// audited and the account is notified. The administrator confirms with their own password (and
-// authenticator code when enrolled). Not available for the administrator's own account or another
-// administrator.
+// as they are: orders waiting on the account stop until it is restored, and the other party can still
+// complete, cancel where allowed or dispute them. A suspended moderator is not a dispute resolver, recipient
+// or contact (A-118). Both accounts are audited and the account is notified. The administrator confirms
+// with their own password (and authenticator code when enrolled). Not available for the administrator's own
+// account or another administrator.
 func adminSuspendAction(c *actionCtx) (actionResult, error) {
 	choice := c.Form.Get("action")
 	suspend := choice == "suspend"
@@ -105,7 +107,23 @@ func adminSuspendAction(c *actionCtx) (actionResult, error) {
 			if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", target, "Account restored by administrator "+c.User.Handle); err != nil {
 				return actionResult{}, err
 			}
-			if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), target, "An administrator restored your account. You can sign in again."); err != nil {
+			// Restoring does not release payouts held for the suspension (A-102); the owner is told how many wait
+			// (A-120), and where each one's next step is.
+			holds, err := collectStrings(ctx, tx, "SELECT error FROM payouts WHERE user_id=$1 AND state='held'", target)
+			if err != nil {
+				return actionResult{}, err
+			}
+			held := 0
+			for _, e := range holds {
+				if heldForSuspension("held", e) {
+					held++
+				}
+			}
+			note := "An administrator restored your account. You can sign in again."
+			if held > 0 {
+				note += " " + strconv.Itoa(held) + " payout(s) to you stay held until an administrator checks your payout address; your account page lists them."
+			}
+			if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), target, note); err != nil {
 				return actionResult{}, err
 			}
 			return actionResult{Redirect: "/admin?saved=1#suspend", Audit: "Restored account " + handle}, nil
@@ -130,17 +148,79 @@ func adminSuspendAction(c *actionCtx) (actionResult, error) {
 		if err != nil {
 			return actionResult{}, err
 		}
+		note := "An administrator suspended your account and signed you out everywhere. A suspended account cannot sign in; your listings and orders were not changed."
 		if h, _ := heldRes.RowsAffected(); h > 0 {
 			sessions += "; held " + strconv.FormatInt(h, 10) + " unsent payout(s)"
+			note += " " + strconv.FormatInt(h, 10) + " unsent payout(s) to you are held until an administrator checks your payout address."
 		}
 		if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", target, "Account suspended by administrator "+c.User.Handle+"; ended "+sessions); err != nil {
 			return actionResult{}, err
 		}
-		note := "An administrator suspended your account and signed you out everywhere. A suspended account cannot sign in; your listings and orders were not changed."
 		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), target, note); err != nil {
 			return actionResult{}, err
 		}
 		return actionResult{Redirect: "/admin?saved=1#suspend", Audit: "Suspended account " + handle + "; ended " + sessions}, nil
+	})
+}
+
+// adminReviewAction hides a public review or restores a hidden one (A-125), from the review's own form on the
+// product or vendor page (returning there). A hidden review is kept: it leaves the public pages and their rating,
+// and the buyer and vendor still see it, labelled, on the order. The administrator confirms with their own password
+// (and authenticator code when enrolled); both accounts are audited and the reviewer is notified, naming only the
+// short order ID: the review text may be the reason for hiding it, so it is never copied anywhere.
+func adminReviewAction(c *actionCtx) (actionResult, error) {
+	choice := c.Form.Get("action")
+	hide := choice == "hide"
+	if !hide && choice != "restore" {
+		return actionResult{}, fail(400, "Choose hide or restore")
+	}
+	id := c.Form.Get("review_id")
+	notFound := fail(404, "Review not found")
+	// The review is looked up before the password is checked, so a stale form does not use a confirmation attempt.
+	var exists bool
+	if err := c.A.db.QueryRowContext(c.Ctx(), "SELECT EXISTS(SELECT 1 FROM reviews WHERE id=$1)", id).Scan(&exists); err != nil {
+		return actionResult{}, err
+	}
+	if !exists {
+		return actionResult{}, notFound
+	}
+	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
+		ctx, tx := c.Ctx(), c.Tx
+		var orderID, productID, vendorID, buyerID string
+		var hidden bool
+		err := tx.QueryRowContext(ctx, `SELECT r.order_id,r.product_id,p.vendor_id,r.buyer_id,r.hidden_at IS NOT NULL
+			FROM reviews r JOIN products p ON p.id=r.product_id WHERE r.id=$1 FOR NO KEY UPDATE OF r`, id).Scan(&orderID, &productID, &vendorID, &buyerID, &hidden)
+		if err == sql.ErrNoRows {
+			return actionResult{}, notFound
+		}
+		if err != nil {
+			return actionResult{}, err
+		}
+		short := shortID(orderID)
+		verb, target, note := "Hid", "hidden", "An administrator hid your review of order "+short+" from the listing and vendor pages, and it no longer counts in the rating. It is kept: you and the vendor still see it on the order."
+		if !hide {
+			verb, target, note = "Restored", "restored", "An administrator restored your review of order "+short+" to the listing and vendor pages."
+		}
+		switch {
+		case hide && hidden:
+			return actionResult{}, fail(409, "This review is already hidden; nothing was changed.")
+		case !hide && !hidden:
+			return actionResult{}, fail(409, "This review is not hidden; nothing was changed.")
+		}
+		if _, err = tx.ExecContext(ctx, "UPDATE reviews SET hidden_at=CASE WHEN $2 THEN now() END WHERE id=$1", id, hide); err != nil {
+			return actionResult{}, err
+		}
+		if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", buyerID, "Review of order "+short+" "+target+" by administrator "+c.User.Handle); err != nil {
+			return actionResult{}, err
+		}
+		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), buyerID, note); err != nil {
+			return actionResult{}, err
+		}
+		back := "/product?id=" + productID
+		if c.Form.Get("from") == "vendor" {
+			back = "/vendor?id=" + vendorID
+		}
+		return actionResult{Redirect: back + "&saved=1#reviews-title", Audit: verb + " review of order " + short}, nil
 	})
 }
 
@@ -189,6 +269,13 @@ func adminResetFactorsAction(c *actionCtx) (actionResult, error) {
 	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
 		ctx, tx := c.Ctx(), c.Tx
+		// Pending sign-ins, then recovery codes, go before the account row is locked, in the order /challenge takes
+		// them (A-154); a refusal below rolls this back.
+		for _, q := range []string{"DELETE FROM pending_logins WHERE user_id=$1", "DELETE FROM recovery_codes WHERE user_id=$1"} {
+			if _, err := tx.ExecContext(ctx, q, target); err != nil {
+				return actionResult{}, err
+			}
+		}
 		var role string
 		var totp, pgp bool
 		err := tx.QueryRowContext(ctx, "SELECT role,totp_enabled,pgp_2fa FROM users WHERE id=$1 FOR UPDATE", target).Scan(&role, &totp, &pgp)
@@ -211,14 +298,8 @@ func adminResetFactorsAction(c *actionCtx) (actionResult, error) {
 		if len(what) == 0 {
 			return actionResult{}, fail(409, handle+" has no second factor enrolled; nothing was changed.")
 		}
-		for _, q := range []string{
-			"UPDATE users SET totp_enabled=false,totp_secret='',totp_pending='',totp_last_step=0,recovery_reveal='',recovery_reveal_until=NULL,pgp_2fa=false WHERE id=$1",
-			"DELETE FROM recovery_codes WHERE user_id=$1",
-			"DELETE FROM pending_logins WHERE user_id=$1",
-		} {
-			if _, err = tx.ExecContext(ctx, q, target); err != nil {
-				return actionResult{}, err
-			}
+		if _, err = tx.ExecContext(ctx, "UPDATE users SET totp_enabled=false,totp_secret='',totp_pending='',totp_last_step=0,recovery_reveal='',recovery_reveal_until=NULL,pgp_2fa=false WHERE id=$1", target); err != nil {
+			return actionResult{}, err
 		}
 		ended, err := tx.ExecContext(ctx, "DELETE FROM sessions WHERE user_id=$1", target)
 		if err != nil {
@@ -250,7 +331,7 @@ func adminHandleError(c *actionCtx, msg string, keep func(d *PageData)) error {
 		}
 		d.Error = msg
 		keep(&d)
-		a.renderStatus(w, d, 404)
+		a.renderStatus(w, c.R, d, 404)
 	}}
 }
 
