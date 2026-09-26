@@ -106,7 +106,23 @@ func adminSuspendAction(c *actionCtx) (actionResult, error) {
 			if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", target, "Account restored by administrator "+c.User.Handle); err != nil {
 				return actionResult{}, err
 			}
-			if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), target, "An administrator restored your account. You can sign in again."); err != nil {
+			// Restoring does not release payouts held for the suspension (A-102); the owner is told how many wait
+			// (A-120), and where each one's next step is.
+			holds, err := collectStrings(ctx, tx, "SELECT error FROM payouts WHERE user_id=$1 AND state='held'", target)
+			if err != nil {
+				return actionResult{}, err
+			}
+			held := 0
+			for _, e := range holds {
+				if heldForSuspension("held", e) {
+					held++
+				}
+			}
+			note := "An administrator restored your account. You can sign in again."
+			if held > 0 {
+				note += " " + strconv.Itoa(held) + " payout(s) to you stay held until an administrator checks your payout address; your account page lists them."
+			}
+			if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), target, note); err != nil {
 				return actionResult{}, err
 			}
 			return actionResult{Redirect: "/admin?saved=1#suspend", Audit: "Restored account " + handle}, nil
@@ -131,13 +147,14 @@ func adminSuspendAction(c *actionCtx) (actionResult, error) {
 		if err != nil {
 			return actionResult{}, err
 		}
+		note := "An administrator suspended your account and signed you out everywhere. A suspended account cannot sign in; your listings and orders were not changed."
 		if h, _ := heldRes.RowsAffected(); h > 0 {
 			sessions += "; held " + strconv.FormatInt(h, 10) + " unsent payout(s)"
+			note += " " + strconv.FormatInt(h, 10) + " unsent payout(s) to you are held until an administrator checks your payout address."
 		}
 		if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", target, "Account suspended by administrator "+c.User.Handle+"; ended "+sessions); err != nil {
 			return actionResult{}, err
 		}
-		note := "An administrator suspended your account and signed you out everywhere. A suspended account cannot sign in; your listings and orders were not changed."
 		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), target, note); err != nil {
 			return actionResult{}, err
 		}

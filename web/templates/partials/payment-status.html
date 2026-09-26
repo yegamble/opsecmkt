@@ -16,6 +16,7 @@
 <p>
 <strong>UNFUNDED DRAFT ONLY.</strong> Bitcoin, Monero, multisig escrow, shipping addresses, and settlement are not configured. Do not send funds.</p>
 </div>{{end}}{{end}}
+{{define "payment-status:vendor-payouts"}}{{if .UnsentPayouts}}<div class="alert" role="status"><a class="text-link" href="/account#payout">{{.UnsentPayouts}} unsent payout(s) to you</a>: the reason and next step for each are on your account page.</div>{{end}}{{end}}
 {{define "payment-status:vendor-dashboard"}}{{if .PaymentsEnabled}}<div class="stat">
 <div class="eyebrow">Payments</div>
 <strong>TESTNET</strong>
