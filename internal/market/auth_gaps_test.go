@@ -147,7 +147,7 @@ func TestRateLimitLoginAndRegisterPerHandle(t *testing.T) {
 	// The 11th attempt is refused before bcrypt, even with the right password; the key ignores case.
 	w := e.do("POST", "/login", randomToken(), url.Values{"handle": {"RL_LOGIN"}, "password": {testPassword}})
 	e.check(w, 429)
-	if !strings.Contains(w.Body.String(), "Too many attempts") || e.cookie(w, "session") != "" || e.cookie(w, "pending") != "" {
+	if !strings.Contains(w.Body.String(), signInPausedText) || e.cookie(w, "session") != "" || e.cookie(w, "pending") != "" {
 		t.Fatalf("limited login issued credentials: %v %q", w.Header(), w.Body.String())
 	}
 	if n := agUserSessions(e, id); n != 1 {
@@ -158,12 +158,12 @@ func TestRateLimitLoginAndRegisterPerHandle(t *testing.T) {
 	e.check(w, 303)
 	e.session(w)
 
-	// /register shares the per-handle key: a free handle whose budget wrong sign-ins spent is refused
-	// without creating anything.
+	// /register has its own per-handle budget (A-153): wrong sign-ins on a free handle do not refuse its
+	// registration (TestRegisterAndSetupNeverSpendSignInBudget covers the reverse and the register limit).
 	for i := range 10 {
 		agExpect(e, "/login", randomToken(), url.Values{"handle": {"rl_free"}, "password": {"wrong-password-" + string(rune('a'+i))}}, 401, "Invalid handle or password")
 	}
-	agExpect(e, "/register", randomToken(), url.Values{"handle": {"rl_free"}, "password": {"a-new-long-password"}}, 429, "Too many attempts")
+	agExpect(e, "/register", randomToken(), url.Values{"handle": {"rl_free"}, "password": {"a-new-long-password"}}, 303, "")
 
 	// A taken handle is refused before the limiter (A-151): it never spends the handle's budget, however
 	// often it is tried, and no account is ever created.
@@ -172,10 +172,10 @@ func TestRateLimitLoginAndRegisterPerHandle(t *testing.T) {
 	for range 11 {
 		agExpect(e, "/register", randomToken(), url.Values{"handle": {"rl_taken"}, "password": {"a-new-long-password"}}, 400, "Handle unavailable")
 	}
-	if agLimited(e, "auth:rl_taken") {
-		t.Fatal("taken-handle registration spent the sign-in budget")
+	if agLimited(e, "auth:rl_taken") || agLimited(e, "register:rl_taken") {
+		t.Fatal("taken-handle registration spent a per-handle budget")
 	}
-	if n := agInt(e, "SELECT count(*) FROM users"); n != 3 {
+	if n := agInt(e, "SELECT count(*) FROM users"); n != 4 {
 		t.Fatalf("users=%d", n)
 	}
 	// Malformed handles are rejected before the limiter, so they create no limiter entries.
@@ -411,7 +411,7 @@ func TestPasswordWorkBusyReturns503(t *testing.T) {
 	agExpect(e, "/setup", randomToken(), url.Values{"handle": {"busy_admin"}, "password": {testPassword}, "token": {testSetupToken}}, 503, "Authentication is busy")
 	agExpect(e, "/pgp/2fa", s, url.Values{"enable": {"0"}, "password": {testPassword}}, 503, "Authentication is busy")
 	// Refused before any per-handle budget is spent and before anything is written.
-	if agLimited(e, "auth:busy_user") || agLimited(e, "auth:busy_new") {
+	if agLimited(e, "auth:busy_user") || agLimited(e, "register:busy_new") || agLimited(e, "setup:busy_admin") {
 		t.Fatal("busy refusal consumed the per-handle limit")
 	}
 	if agUserSessions(e, id) != 1 || agInt(e, "SELECT count(*) FROM users") != 1 || agStr(e, "SELECT pgp_2fa::text FROM users WHERE id=$1", id) != "true" {
@@ -538,7 +538,7 @@ func TestPasswordBusyRefusalsSpendNoBudget(t *testing.T) {
 	if agLimited(e, "confirm:"+adminID) {
 		t.Fatal("busy confirmation refusals spent the confirm budget")
 	}
-	agExpect(e, "/login", randomToken(), url.Values{"handle": {"spent_user"}, "password": {testPassword}}, 429, "Too many attempts")
+	agExpect(e, "/login", randomToken(), url.Values{"handle": {"spent_user"}, "password": {testPassword}}, 429, signInPausedText)
 	release()
 	agExpect(e, "/admin/suspend", admin, suspend, 303, "")
 	if agInt(e, "SELECT count(*) FROM users WHERE handle='busy_vendor' AND suspended_at IS NOT NULL") != 1 {
@@ -571,7 +571,7 @@ func TestRegisterTakenHandleSkipsPasswordWork(t *testing.T) {
 			t.Fatalf("taken handle with every slot held: status=%d body=%q", w.Code, w.Body.String())
 		}
 	}
-	if agLimited(e, "auth:taken_name") {
+	if agLimited(e, "auth:taken_name") || agLimited(e, "register:taken_name") {
 		t.Fatal("taken-handle registration spent the sign-in budget")
 	}
 	if w := register("fresh_name", true); w.Code != 503 {

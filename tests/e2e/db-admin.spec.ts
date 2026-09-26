@@ -6,7 +6,8 @@ import { ADMIN, uniqueHandle } from './db-fixtures';
 import { enrollTOTP, pgpFixture, RECIPIENT_FINGERPRINT, setRole, signedIn, submitStatus } from './db-helpers';
 
 // Administrator forms submitted against a real database with JavaScript disabled. Each test signs the shared
-// administrator in once (the per-handle sign-in limit is 10 per 10 minutes across all db specs).
+// administrator in once (the per-handle sign-in limit, 10 failed passwords per 10 minutes, no longer counts
+// correct sign-ins since A-153, but one sign-in per test keeps the specs independent of it).
 
 test('promoting a buyer to vendor opens the vendor desk; the listing form shows validation errors', async ({ browser, baseURL }) => {
   const vendorHandle = uniqueHandle('promoted');

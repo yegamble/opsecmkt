@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 	"html/template"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -40,6 +41,7 @@ type App struct {
 	key              []byte
 	mu               sync.Mutex
 	limits           map[string]bucket
+	signInLogAt      time.Time                       // last "sign-in limiter refusing" log line (guarded by mu)
 	payMu            sync.RWMutex                    // guards payments and unavailable once Start has run
 	checkMu          sync.Mutex                      // serialises provider checks (refreshProviders)
 	payments         map[string]PaymentProvider      // currency -> working provider; empty = payments disabled
@@ -182,6 +184,44 @@ func (a *App) allow(key string, n int) bool {
 	b.Limit = n
 	a.limits[key] = b
 	return b.Count <= n
+}
+
+// refund takes back one request that allow counted against key (a sign-in whose password was correct). An
+// entry left with no count is removed.
+func (a *App) refund(key string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	b, ok := a.limits[key]
+	if !ok {
+		return
+	}
+	if b.Count <= 1 {
+		delete(a.limits, key)
+		return
+	}
+	b.Count--
+	a.limits[key] = b
+}
+
+// logSignInRefusals writes "sign-in limiter refusing handles=N", at most once a minute, while N > 0 handles
+// have spent their sign-in budget, so the operator can see a lockout without the log naming anyone.
+func (a *App) logSignInRefusals() {
+	a.mu.Lock()
+	now, n := time.Now(), 0
+	if now.Sub(a.signInLogAt) >= time.Minute {
+		for k, b := range a.limits {
+			if strings.HasPrefix(k, "auth:") && b.Count >= b.Limit && !now.After(b.Until) {
+				n++
+			}
+		}
+		if n > 0 {
+			a.signInLogAt = now
+		}
+	}
+	a.mu.Unlock()
+	if n > 0 {
+		log.Printf("sign-in limiter refusing handles=%d", n)
+	}
 }
 
 // limited reports whether key has already spent its budget of n, without counting a request.

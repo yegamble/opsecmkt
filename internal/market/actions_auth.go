@@ -187,9 +187,15 @@ func authGate(c *actionCtx) (handle, password string, release func(), err error)
 			err = fail(400, "Handle unavailable")
 		}
 	}
-	key := "auth:" + strings.ToLower(handle)
+	// Each path has its own per-handle budget, so registering or setting up a handle never spends its sign-in
+	// budget. Sign-in reserves one attempt here and authAction refunds it when the password is correct, so only
+	// failed passwords spend "auth:" and concurrent guesses still cannot exceed it (A-153).
+	key, refused := signInKey(handle), errSignInPaused
+	if path != "/login" {
+		key, refused = strings.TrimPrefix(path, "/")+":"+strings.ToLower(handle), fail(429, "Too many attempts. Try again in ten minutes.")
+	}
 	if err == nil && a.limited(key, 10) {
-		err = fail(429, "Too many attempts. Try again in ten minutes.")
+		err = refused
 	}
 	if err != nil {
 		return "", "", nil, err
@@ -204,15 +210,25 @@ func authGate(c *actionCtx) (handle, password string, release func(), err error)
 	release = func() { <-passwordWork }
 	if !a.allow(key, 10) {
 		release()
-		return "", "", nil, fail(429, "Too many attempts. Try again in ten minutes.")
+		return "", "", nil, refused
 	}
 	return handle, password, release, nil
 }
+
+// signInKey is the limiter key of a handle's sign-in budget (case-insensitive).
+func signInKey(handle string) string { return "auth:" + strings.ToLower(handle) }
+
+// errSignInPaused refuses sign-in to a handle whose budget of failed passwords is spent. Anyone can spend it
+// (the budget is per handle: there is no per-client signal over Tor), so it does not blame the user.
+var errSignInPaused = fail(429, "Sign-in for this handle is paused for up to 10 minutes after too many failed passwords. Someone else may have caused this, and your password may be fine. Try again later.")
 
 // authAction serves /setup, /login and /register. bcrypt runs before any transaction is opened.
 func authAction(c *actionCtx) (actionResult, error) {
 	a, ctx, f, path, w := c.A, c.Ctx(), c.Form, c.R.URL.Path, c.W
 	handle, password, release, err := authGate(c)
+	if err == errSignInPaused {
+		a.logSignInRefusals()
+	}
 	if err != nil {
 		return actionResult{}, err
 	}
@@ -231,8 +247,10 @@ func authAction(c *actionCtx) (actionResult, error) {
 		}
 		check := bcrypt.CompareHashAndPassword(hash, []byte(password))
 		if err != nil || check != nil {
+			a.logSignInRefusals()
 			return actionResult{}, fail(401, "Invalid handle or password")
 		}
+		a.refund(signInKey(handle)) // a correct password spends no sign-in budget
 		if suspended {
 			return actionResult{}, errSuspended
 		}
