@@ -274,24 +274,26 @@ func TestRateLimitTOTPManagementActions(t *testing.T) {
 	e.check(e.do("POST", "/totp/enroll", s, nil), 303)
 	wrong := e.wrongTOTP(id)
 	for range 10 {
-		agExpect(e, "/totp/activate", s, url.Values{"code": {wrong}}, 400, "Code incorrect")
+		agExpect(e, "/totp/activate", s, url.Values{"code": {wrong}, "password": {testPassword}}, 400, "Code incorrect")
 	}
 	code, _ := e.totpCodeFor(id, 0)
-	agExpect(e, "/totp/activate", s, url.Values{"code": {code}}, 429, "Too many attempts")
+	confirms := func() int { e.A.mu.Lock(); defer e.A.mu.Unlock(); return e.A.limits["confirm:"+id].Count }
+	spent := confirms() // the ten activations above checked the password (A-152)
+	agExpect(e, "/totp/activate", s, url.Values{"code": {code}, "password": {testPassword}}, 429, "Too many attempts")
 	// The same totp:<user> budget covers recovery regeneration and disabling.
-	agExpect(e, "/totp/recovery", s, url.Values{"code": {code}}, 429, "Too many attempts")
+	agExpect(e, "/totp/recovery", s, url.Values{"code": {code}, "password": {testPassword}}, 429, "Too many attempts")
 	agExpect(e, "/totp/disable", s, url.Values{"password": {testPassword}, "code": {code}}, 429, "Too many attempts")
 	if agStr(e, "SELECT totp_enabled::text FROM users WHERE id=$1", id) != "false" || agInt(e, "SELECT count(*) FROM recovery_codes WHERE user_id=$1", id) != 0 {
 		t.Fatal("limited activation enabled TOTP")
 	}
-	if agLimited(e, "confirm:"+id) {
-		t.Fatal("limited disable reached the password check")
+	if confirms() != spent {
+		t.Fatal("a limited TOTP action reached the password check")
 	}
 	// Another user can still enroll and activate.
 	otherID, other := e.user("rl_totp2", "buyer")
 	e.check(e.do("POST", "/totp/enroll", other, nil), 303)
 	c2, _ := e.totpCodeFor(otherID, 0)
-	e.check(e.do("POST", "/totp/activate", other, url.Values{"code": {c2}}), 303)
+	e.check(e.do("POST", "/totp/activate", other, url.Values{"code": {c2}, "password": {testPassword}}), 303)
 	if agStr(e, "SELECT totp_enabled::text FROM users WHERE id=$1", otherID) != "true" {
 		t.Fatal("other user's activation failed")
 	}
@@ -303,8 +305,8 @@ func TestRateLimitPGPChallengeAndVerify(t *testing.T) {
 	bob, bobPub := testPGPKey(t, "bob")
 	id, s := e.user("rl_pgp", "buyer")
 	otherID, other := e.user("rl_pgp2", "buyer")
-	e.check(e.do("POST", "/account", s, url.Values{"pgp": {alicePub}}), 303)
-	e.check(e.do("POST", "/account", other, url.Values{"pgp": {bobPub}}), 303)
+	e.check(e.do("POST", "/account", s, url.Values{"pgp": {alicePub}, "password": {testPassword}}), 303)
+	e.check(e.do("POST", "/account", other, url.Values{"pgp": {bobPub}, "password": {testPassword}}), 303)
 
 	// An invalid kind is rejected before the limiter; then exactly 20 challenges are issued.
 	agExpect(e, "/pgp/challenge", s, url.Values{"kind": {"bogus"}}, 400, "Choose to sign")
@@ -791,7 +793,7 @@ func TestTOTPUnreadableSecret(t *testing.T) {
 	// A pending (not yet active) secret that can no longer be read cannot be activated.
 	id2, s2 := e.user("totp_lost2", "buyer")
 	agExec(e, "UPDATE users SET totp_pending=$2 WHERE id=$1", id2, sealed)
-	agExpect(e, "/totp/activate", s2, url.Values{"code": {"123456"}}, 409, "Start enrollment again")
+	agExpect(e, "/totp/activate", s2, url.Values{"code": {"123456"}, "password": {testPassword}}, 409, "Start enrollment again")
 	if agStr(e, "SELECT totp_enabled::text FROM users WHERE id=$1", id2) != "false" {
 		t.Fatal("unreadable pending secret activated")
 	}
@@ -825,7 +827,7 @@ func TestPGPLoginCodeErrorPaths(t *testing.T) {
 	}
 	// Turning PGP sign-in on is refused for such a key as well.
 	agExec(e, "UPDATE users SET pgp_2fa=false WHERE id=$1", signID)
-	agExpect(e, "/pgp/2fa", signSess, url.Values{"enable": {"1"}}, 409, "no usable encryption subkey")
+	agExpect(e, "/pgp/2fa", signSess, url.Values{"enable": {"1"}, "password": {testPassword}}, 409, "no usable encryption subkey")
 	if agStr(e, "SELECT pgp_2fa::text FROM users WHERE id=$1", signID) != "false" {
 		t.Fatal("PGP sign-in enabled for a sign-only key")
 	}
@@ -861,7 +863,7 @@ func TestPGPVerifyRejectsChangedKey(t *testing.T) {
 	_, bobPub := testPGPKey(t, "bob")
 	_, bobFP, _ := parsePublicKey(bobPub)
 	id, s := e.user("pgp_swap", "buyer")
-	e.check(e.do("POST", "/account", s, url.Values{"pgp": {alicePub}}), 303)
+	e.check(e.do("POST", "/account", s, url.Values{"pgp": {alicePub}, "password": {testPassword}}), 303)
 	e.check(e.do("POST", "/pgp/challenge", s, url.Values{"kind": {"sign"}}), 303)
 	challenge := agStr(e, "SELECT challenge FROM pgp_challenges WHERE user_id=$1", id)
 	proof := testClearsign(t, alice, challenge)
@@ -876,14 +878,14 @@ func TestPGPVerifyRejectsChangedKey(t *testing.T) {
 		t.Fatal("proof for the old key verified the new one")
 	}
 	// Saving through /account purges the stale challenge, so the old proof has nothing to answer.
-	e.check(e.do("POST", "/account", s, url.Values{"pgp": {alicePub}}), 303)
+	e.check(e.do("POST", "/account", s, url.Values{"pgp": {alicePub}, "password": {testPassword}}), 303)
 	if agInt(e, "SELECT count(*) FROM pgp_challenges WHERE user_id=$1", id) != 0 {
 		t.Fatal("key change kept the open challenge")
 	}
 	agExpect(e, "/pgp/verify", s, url.Values{"signature": {proof}}, 409, "No open challenge")
 }
 
-// --- A-47: adding a second factor needs re-authentication once one is enrolled ---
+// --- A-47: adding a second factor needs re-authentication (A-152 extends this to the first factor: factor_change_guard_test.go) ---
 
 // A session holder who knows the password but not the TOTP code (e.g. a phished password plus a stolen
 // session) must not swap in their own PGP key or turn PGP sign-in on: otherwise the password alone plus
@@ -977,33 +979,6 @@ func TestStolenSessionCannotEnrollTOTPOnPGPAccount(t *testing.T) {
 	e.check(e.do("POST", "/totp/activate", owner, url.Values{"code": {code}, "password": {testPassword}}), 303)
 	if agStr(e, "SELECT totp_enabled::text FROM users WHERE id=$1", uid) != "true" || !e.auditHas(uid, "Enabled TOTP two-factor authentication; issued 10 recovery codes (confirmed with password)") {
 		t.Fatal("confirmed TOTP activation not applied or not audited with its confirmation")
-	}
-}
-
-// An account with no second factor keeps the session-only flow for its first factor and for key changes.
-func TestFirstFactorNeedsNoConfirmation(t *testing.T) {
-	e := newTestApp(t)
-	uid, s := e.user("first_factor", "buyer")
-	_, pub := testPGPKey(t, "first")
-	e.check(e.do("POST", "/account", s, url.Values{"pgp": {pub}}), 303)
-	agExec(e, "UPDATE users SET pgp_verified_at=now() WHERE id=$1", uid)
-	if strings.Contains(e.body("GET", "/pgp", s, nil, 200), `name="password"`) {
-		t.Fatal("/pgp asks for a password before the first factor")
-	}
-	e.check(e.do("POST", "/pgp/2fa", s, url.Values{"enable": {"1"}}), 303)
-	if !e.auditHas(uid, "Turned on PGP sign-in verification") || e.auditHas(uid, "confirmed with") {
-		t.Fatal("first-factor PGP enable not applied as before")
-	}
-
-	id2, s2 := e.user("first_totp", "buyer")
-	e.check(e.do("POST", "/totp/enroll", s2, nil), 303)
-	if strings.Contains(e.body("GET", "/totp", s2, nil, 200), `name="password"`) {
-		t.Fatal("/totp asks for a password before the first factor")
-	}
-	code, _ := e.totpCodeFor(id2, 0)
-	e.check(e.do("POST", "/totp/activate", s2, url.Values{"code": {code}}), 303)
-	if agStr(e, "SELECT totp_enabled::text FROM users WHERE id=$1", id2) != "true" || e.auditHas(id2, "confirmed with") {
-		t.Fatal("first-factor TOTP activation not applied as before")
 	}
 }
 

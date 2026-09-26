@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/subtle"
 	"database/sql"
+	"errors"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -162,6 +164,14 @@ func confirmedTxWith(c *actionCtx, opts *confirmation, run func(c *actionCtx) (a
 		res.Audit = ""
 	}
 	return res, tx.Commit()
+}
+
+// notifyOwner tells the account owner, inside tx, of a sign-in factor, key or recovery-code event (A-152). The text
+// is link-free and never carries a code, secret, key fingerprint or address.
+func notifyOwner(ctx context.Context, tx *sql.Tx, userID, event string) error {
+	_, err := tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), userID,
+		event+" If this was not you, someone else may know your password: change it and contact the market staff.")
+	return err
 }
 
 // authGate admits one password-bearing request: input bounds, CAPTCHA, a free handle for /register and the
@@ -389,13 +399,14 @@ func challengeAction(c *actionCtx) (actionResult, error) {
 	} else if !ok {
 		return actionResult{}, fail(400, "Choose a verification method")
 	}
+	method := signInMethod(p.Name(), c.Form)
 	if err = p.Verify(c, userID); err != nil {
-		return actionResult{}, err
+		return actionResult{}, recordFactorFailure(c, pending, userID, method, err)
 	}
 	if _, err = c.Tx.ExecContext(ctx, "DELETE FROM pending_logins WHERE token_hash=$1 OR expires<now()", digest(pending)); err != nil {
 		return actionResult{}, err
 	}
-	token, err := a.startSession(ctx, c.Tx, userID, c.Token)
+	token, err := a.startSession(ctx, c.Tx, userID, c.Token, "password and "+method)
 	if err != nil {
 		return actionResult{}, err
 	}
@@ -403,6 +414,45 @@ func challengeAction(c *actionCtx) (actionResult, error) {
 		a.cookie(w, "pending", "", -1)
 		a.cookie(w, "session", token, 43200)
 	}}, nil
+}
+
+// signInMethod names the second factor a /challenge request uses, as totpFactor.Verify and pgpFactor.Verify read it.
+func signInMethod(factor string, f url.Values) string {
+	switch {
+	case factor == "pgp":
+		return "PGP code"
+	case f.Get("recovery") != "":
+		return "recovery code"
+	}
+	return "TOTP"
+}
+
+// recordFactorFailure answers a failed second-factor check (err, a 401: wrong, used or missing code). The first
+// failure of each pending sign-in writes an audit row and notifies the owner, who then knows that someone has the
+// password (A-152); c.Tx is committed with that record (the failed check changed nothing else) and err returned.
+func recordFactorFailure(c *actionCtx, pending, userID, method string, err error) error {
+	var he *httpError
+	if !errors.As(err, &he) || he.Code != 401 {
+		return err
+	}
+	ctx, tx := c.Ctx(), c.Tx
+	res, uerr := tx.ExecContext(ctx, "UPDATE pending_logins SET factor_failed=true WHERE token_hash=$1 AND NOT factor_failed", digest(pending))
+	if uerr != nil {
+		return uerr
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return err
+	}
+	if _, uerr = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", userID, "Correct password but failed second sign-in step ("+method+")"); uerr != nil {
+		return uerr
+	}
+	if uerr = notifyOwner(ctx, tx, userID, "Someone entered your password correctly but failed the second sign-in step ("+method+")."); uerr != nil {
+		return uerr
+	}
+	if uerr = tx.Commit(); uerr != nil {
+		return uerr
+	}
+	return err
 }
 
 func challengeLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error {
@@ -431,10 +481,11 @@ func challengeLoader(ctx context.Context, a *App, r *http.Request, d *PageData) 
 	return nil
 }
 
-// startSession rotates the caller's session inside tx and records the sign-in; the caller sets the cookie after commit.
+// startSession rotates the caller's session inside tx and records the sign-in with how it was made (method, e.g.
+// "password and TOTP"); the caller sets the cookie after commit.
 // It refuses a suspended account with errSuspended. The account row is share-locked, so a suspension committing
 // concurrently either is seen here or runs after this commit and deletes the new session.
-func (a *App) startSession(ctx context.Context, tx *sql.Tx, id, old string) (string, error) {
+func (a *App) startSession(ctx context.Context, tx *sql.Tx, id, old, method string) (string, error) {
 	var suspended bool
 	if err := tx.QueryRowContext(ctx, "SELECT suspended_at IS NOT NULL FROM users WHERE id=$1 FOR SHARE", id).Scan(&suspended); err != nil {
 		return "", err
@@ -449,7 +500,7 @@ func (a *App) startSession(ctx context.Context, tx *sql.Tx, id, old string) (str
 	if _, err := tx.ExecContext(ctx, "INSERT INTO sessions(token_hash,user_id,expires) VALUES($1,$2,now()+interval '12 hours')", digest(token), id); err != nil {
 		return "", err
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,'Signed in')", id); err != nil {
+	if _, err := tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", id, "Signed in with "+method); err != nil {
 		return "", err
 	}
 	return token, nil
@@ -461,7 +512,7 @@ func (a *App) login(ctx context.Context, w http.ResponseWriter, id, old string) 
 		return err
 	}
 	defer tx.Rollback()
-	token, err := a.startSession(ctx, tx, id, old)
+	token, err := a.startSession(ctx, tx, id, old, "password")
 	if err != nil {
 		return err
 	}

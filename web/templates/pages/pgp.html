@@ -28,7 +28,7 @@
 <dd>{{if .TwoFactor}}On{{else}}Off{{end}}</dd>
 </div>
 </dl>
-<p class="help">Compare this fingerprint with the one your own PGP software shows before relying on it. Saving a different key on the account page clears verification and turns PGP sign-in off; while PGP sign-in or TOTP is on, that needs your current password (and an authenticator code when TOTP is on).</p>
+<p class="help">Compare this fingerprint with the one your own PGP software shows before relying on it. Saving a different key on the account page clears verification and turns PGP sign-in off; that needs your current password (and an authenticator code when TOTP is on).</p>
 </section>
 <section class="panel">
 <h2>{{if .Verified}}Prove ownership again{{else}}Prove ownership{{end}}</h2>
@@ -73,9 +73,9 @@
 <p>Off. When on, sign-in asks you to decrypt a one-time code encrypted to this key after your password. If the key expires or you lose it, you cannot sign in unless another verification method is enrolled.</p>
 <form class="stack" method="post" action="/pgp/2fa">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
-<input type="hidden" name="enable" value="1">{{if and $.Security $.Security.TOTPEnabled}}
-{{template "confirm-fields" true}}
-<span class="help">TOTP is on, so adding another sign-in method needs your current password and an authenticator code.</span>{{end}}
+<input type="hidden" name="enable" value="1">{{$totp := and $.Security $.Security.TOTPEnabled}}
+{{template "confirm-fields" $totp}}
+<span class="help">Adding a sign-in method needs your current password{{if $totp}} and an authenticator code{{end}}, so someone using only your session cannot lock you out.</span>
 <button class="primary" type="submit">Turn on PGP sign-in verification</button>
 </form>{{else}}
 <p>Unavailable until ownership of this key is verified.</p>{{end}}

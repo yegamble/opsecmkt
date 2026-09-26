@@ -14,8 +14,9 @@ import (
 
 // P2 PGP identity: the profile key is parsed and fingerprinted on save; ownership is "Verified" only
 // after the user signs a server nonce or decrypts a nonce encrypted to the key. Changing the key
-// resets verification and PGP sign-in. Once a second factor is enrolled, changing the key or adding
-// PGP sign-in needs re-authentication (A-47). The server never sees or stores private keys.
+// resets verification and PGP sign-in. Adding, changing or removing the key and turning PGP sign-in on or off
+// need the current password, plus a TOTP code when enrolled (A-47, A-152), and notify the owner. The server never
+// sees or stores private keys.
 
 const pgpChallengeTTL = "30 minutes"
 
@@ -58,15 +59,15 @@ func sameProfileKey(stored, pasted string) bool {
 
 // saveProfileKey is called by the /account action (inside its tx). An unchanged key is not re-parsed (a
 // legacy key that no longer parses must not block the profile form). The same key re-saved (sameProfileKey)
-// is stored in its canonical form and keeps its ownership proof and PGP sign-in. A changed key must parse, and
-// needs the confirmation (confirmed: password, plus a TOTP code if enrolled) while PGP sign-in or TOTP is on; it
-// stores the canonical form and new fingerprint, clears ownership proof, PGP sign-in and any open challenge. It
-// returns the audit text for the profile update.
+// is stored in its canonical form and keeps its ownership proof and PGP sign-in. A changed key (added, replaced or
+// removed) must parse and needs the confirmation (confirmed: password, plus a TOTP code if enrolled) on every
+// account (A-152): buyers encrypt shipping addresses to it. It stores the canonical form and new fingerprint, clears
+// ownership proof, PGP sign-in and any open challenge, and notifies the owner. It returns the audit text for the
+// profile update.
 func saveProfileKey(c *actionCtx, armored string, confirmed bool) (string, error) {
 	ctx, tx, uid := c.Ctx(), c.Tx, c.User.ID
 	var old string
-	var twoFA, totp bool
-	if err := tx.QueryRowContext(ctx, "SELECT pgp,pgp_2fa,totp_enabled FROM users WHERE id=$1 FOR UPDATE", uid).Scan(&old, &twoFA, &totp); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT pgp FROM users WHERE id=$1 FOR UPDATE", uid).Scan(&old); err != nil {
 		return "", err
 	}
 	if old == armored {
@@ -77,8 +78,8 @@ func saveProfileKey(c *actionCtx, armored string, confirmed bool) (string, error
 		_, err := tx.ExecContext(ctx, "UPDATE users SET pgp=$1 WHERE id=$2", canonical, uid)
 		return "Updated profile", err
 	}
-	if (twoFA || totp) && !confirmed {
-		return "", fail(400, "Enter your current password to change or remove your key while sign-in verification is on.")
+	if !confirmed { // the key changed since accountAction's unlocked read
+		return "", fail(400, "Enter your current password to add, change or remove your PGP key.")
 	}
 	fp, canonical := "", ""
 	if armored != "" {
@@ -95,7 +96,17 @@ func saveProfileKey(c *actionCtx, armored string, confirmed bool) (string, error
 		return "", err
 	}
 	if fp == "" {
+		if err := notifyOwner(ctx, tx, uid, "The PGP public key on your account was removed; its ownership proof and PGP sign-in verification were cleared."); err != nil {
+			return "", err
+		}
 		return "Removed PGP key (ownership proof and PGP sign-in cleared)", nil
+	}
+	note := "The PGP public key on your account was changed; others now encrypt messages and shipping addresses to the new key."
+	if old == "" {
+		note = "A PGP public key was added to your account; others now encrypt messages and shipping addresses to it."
+	}
+	if err := notifyOwner(ctx, tx, uid, note+" Compare its fingerprint on your account page with your own PGP software."); err != nil {
+		return "", err
 	}
 	return "Updated PGP key (fingerprint " + fp + "; ownership unverified)", nil
 }
@@ -271,41 +282,37 @@ func pgpVerifyAction(c *actionCtx) (actionResult, error) {
 	if _, err = tx.ExecContext(ctx, "DELETE FROM pgp_challenges WHERE user_id=$1", u.ID); err != nil {
 		return actionResult{}, err
 	}
+	if err = notifyOwner(ctx, tx, u.ID, "Ownership of the PGP key on your account was proved."); err != nil {
+		return actionResult{}, err
+	}
 	return actionResult{Redirect: "/pgp?saved=1", Audit: "Verified PGP key ownership (fingerprint " + p.Fingerprint + ", " + kind + " challenge)"}, nil
 }
 
-// pgpTwoFactorAction turns PGP sign-in on (verified key) or off. Turning it off, or on while TOTP is enrolled
-// (adding a second factor), needs the current password plus a TOTP code if enrolled.
+// pgpTwoFactorAction turns PGP sign-in on (verified key) or off. Either needs the current password plus a TOTP
+// code if enrolled (A-152: also for the first factor, so a stolen session cannot lock the owner out) and notifies
+// the owner.
 func pgpTwoFactorAction(c *actionCtx) (actionResult, error) {
 	enable := c.Form.Get("enable")
 	if enable != "1" && enable != "0" {
 		return actionResult{}, fail(400, "Choose to turn PGP sign-in verification on or off")
 	}
-	var totp bool
-	if err := c.A.db.QueryRowContext(c.Ctx(), "SELECT totp_enabled FROM users WHERE id=$1", c.User.ID).Scan(&totp); err != nil {
-		return actionResult{}, err
-	}
-	confirm := enable == "0" || totp
-	return confirmedTx(c, confirm, func(c *actionCtx) (actionResult, error) { return pgpTwoFactor(c, enable, confirm) })
+	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) { return pgpTwoFactor(c, enable == "1") })
 }
 
-func pgpTwoFactor(c *actionCtx, enable string, confirmed bool) (actionResult, error) {
+func pgpTwoFactor(c *actionCtx, enable bool) (actionResult, error) {
 	ctx, tx, u := c.Ctx(), c.Tx, c.User
 	p, err := loadPGPAccount(ctx, tx, u.ID, true)
 	if err != nil {
 		return actionResult{}, err
 	}
-	if enable == "0" {
-		_, err = tx.ExecContext(ctx, "UPDATE users SET pgp_2fa=false WHERE id=$1", u.ID)
-		return actionResult{Redirect: "/pgp?saved=1", Audit: "Turned off PGP sign-in verification"}, err
-	}
-	// TOTP may have been turned on since the unlocked read above; the row is locked now.
-	var totp bool
-	if err = tx.QueryRowContext(ctx, "SELECT totp_enabled FROM users WHERE id=$1", u.ID).Scan(&totp); err != nil {
-		return actionResult{}, err
-	}
-	if totp && !confirmed {
-		return actionResult{}, fail(400, "Enter your current password and an authenticator code to add PGP sign-in verification.")
+	if !enable {
+		if _, err = tx.ExecContext(ctx, "UPDATE users SET pgp_2fa=false WHERE id=$1", u.ID); err != nil {
+			return actionResult{}, err
+		}
+		if err = notifyOwner(ctx, tx, u.ID, "PGP sign-in verification was turned off for your account."); err != nil {
+			return actionResult{}, err
+		}
+		return actionResult{Redirect: "/pgp?saved=1", Audit: "Turned off PGP sign-in verification"}, nil
 	}
 	if !p.Verified {
 		return actionResult{}, fail(409, "Verify ownership of your saved key before turning on PGP sign-in verification.")
@@ -314,6 +321,9 @@ func pgpTwoFactor(c *actionCtx, enable string, confirmed bool) (actionResult, er
 		return actionResult{}, fail(409, "Your key has no usable encryption subkey (expired or sign-only), so sign-in codes cannot be encrypted to it.")
 	}
 	if _, err = tx.ExecContext(ctx, "UPDATE users SET pgp_2fa=true WHERE id=$1", u.ID); err != nil {
+		return actionResult{}, err
+	}
+	if err = notifyOwner(ctx, tx, u.ID, "PGP sign-in verification was turned on for your account: sign-in now also asks for a code encrypted to its key."); err != nil {
 		return actionResult{}, err
 	}
 	return actionResult{Redirect: "/pgp?saved=1", Audit: "Turned on PGP sign-in verification (fingerprint " + p.Fingerprint + ")"}, nil

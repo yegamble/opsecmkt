@@ -20,7 +20,7 @@ test('promoting a buyer to vendor opens the vendor desk; the listing form shows 
   const lockedHandle = uniqueHandle('lostfactor');
   const lockedPassword = 'browser-lost-factor-123';
   const locked = await signedIn(browser, baseURL, lockedHandle, lockedPassword, true);
-  await enrollTOTP(locked);
+  await enrollTOTP(locked, lockedPassword);
 
   const admin = await signedIn(browser, baseURL, ADMIN.handle, ADMIN.password, false);
   await admin.goto('/admin');
