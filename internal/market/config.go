@@ -1,0 +1,176 @@
+package market
+
+import (
+	"context"
+	"crypto/sha256"
+	"database/sql"
+	"errors"
+	"log"
+	"path"
+	"strings"
+)
+
+// startupConfig is what New checks in the environment before it opens the database (D8, I8). Every refusal
+// names the variable and how to fix it, never its value.
+type startupConfig struct {
+	appSecretKey string   // APP_SECRET_KEY: the root of every derived key when set
+	setupToken   string   // SETUP_TOKEN: authorizes /setup until installed; the legacy key root without APP_SECRET_KEY
+	secure       bool     // COOKIE_SECURE (unset = true)
+	notes        []string // startup log lines (warnings and the legacy key-root notice); never a secret
+}
+
+// keyRoot is the secret the CSRF/CAPTCHA HMAC key and the sealing keys derive from: APP_SECRET_KEY when set,
+// else SETUP_TOKEN (legacy, as before the split, so existing installs keep their keys).
+func (c startupConfig) keyRoot() (root string, legacy bool) {
+	if c.appSecretKey != "" {
+		return c.appSecretKey, false
+	}
+	return c.setupToken, true
+}
+
+// useKeyRoot derives the CSRF/CAPTCHA HMAC key from root and keeps root for sealing (crypto.go). The
+// derivation strings are those used before APP_SECRET_KEY existed.
+func (a *App) useKeyRoot(root string) {
+	a.keyRoot = root
+	sum := sha256.Sum256([]byte("csrf:" + root))
+	a.key = sum[:]
+}
+
+// dbPlaceholderMarkers are the example-value words refused in DATABASE_URL (compared case-insensitively;
+// "REPLACE" alone also in upper case). Plain words such as "replacement" in a host name are allowed.
+var dbPlaceholderMarkers = []string{"replace_me", "replace-me", "replace_with", "changeme", "change_me", "change-me"}
+
+// loadStartupConfig checks the environment (getenv) for mode, which New has already validated. It refuses
+// weak or missing secrets, a COOKIE_SECURE other than true/false, a placeholder DATABASE_URL and an APP_MODE
+// that disagrees with the Compose overlay in COMPOSE_FILE.
+func loadStartupConfig(getenv func(string) string, mode string) (startupConfig, error) {
+	c := startupConfig{appSecretKey: getenv("APP_SECRET_KEY"), setupToken: getenv("SETUP_TOKEN")}
+	if c.appSecretKey != "" {
+		if err := checkSecret("APP_SECRET_KEY", c.appSecretKey); err != nil {
+			return c, err
+		}
+	}
+	if c.setupToken != "" {
+		if err := checkSecret("SETUP_TOKEN", c.setupToken); err != nil {
+			return c, err
+		}
+	}
+	if c.appSecretKey == "" && c.setupToken == "" {
+		return c, errors.New("APP_SECRET_KEY is not set: it derives the CSRF/CAPTCHA key and the key sealing TOTP secrets. Generate one with `openssl rand -hex 32` and put it in .env (an install that predates it keeps working with SETUP_TOKEN alone; see UPGRADING.md)")
+	}
+	switch getenv("COOKIE_SECURE") {
+	case "", "true":
+		c.secure = true
+	case "false":
+	default:
+		return c, errors.New(`COOKIE_SECURE must be "true" or "false" (or unset, which means true); fix it in .env`)
+	}
+	dsn := getenv("DATABASE_URL")
+	if dsn == "" {
+		return c, errors.New("DATABASE_URL required; use -preview for read-only sample UI")
+	}
+	if dbPlaceholder(dsn) {
+		return c, errors.New("DATABASE_URL still contains a placeholder (REPLACE_ME, CHANGEME or similar, as in .env.example); set the real database password and host in .env (scripts/install.sh generates them)")
+	}
+	if err := checkComposeOverlay(mode, getenv("COMPOSE_FILE")); err != nil {
+		return c, err
+	}
+	if mode == "tor" && c.secure {
+		c.notes = append(c.notes, "warning: APP_MODE=tor with COOKIE_SECURE=true: the onion is served over plain HTTP, so only browsers that treat .onion addresses as secure keep the Secure session cookie. The installer writes COOKIE_SECURE=false for Tor; set that in .env unless you mean it")
+	}
+	if _, legacy := c.keyRoot(); legacy {
+		c.notes = append(c.notes, "keys: derived from SETUP_TOKEN (legacy); add APP_SECRET_KEY to .env with the same value to keep them, as UPGRADING.md describes")
+	}
+	return c, nil
+}
+
+func dbPlaceholder(dsn string) bool {
+	if strings.Contains(dsn, "REPLACE") {
+		return true
+	}
+	lower := strings.ToLower(dsn)
+	for _, m := range dbPlaceholderMarkers {
+		if strings.Contains(lower, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// checkComposeOverlay refuses an APP_MODE that disagrees with the exposure overlay Compose was started with:
+// tor needs compose.tor.yaml, clearnet compose.clearnet.yaml, and never both. COMPOSE_FILE is passed through
+// by compose.yaml; blank (plain -f flags, tests, the bare binary) skips the check. It is split on both of
+// Compose's default path separators (":" and ";"): COMPOSE_PATH_SEPARATOR does not reach the container, and
+// only file names matter here, so a split Windows drive letter is harmless.
+func checkComposeOverlay(mode, composeFile string) error {
+	if strings.TrimSpace(composeFile) == "" {
+		return nil
+	}
+	has := map[string]bool{}
+	for _, f := range strings.FieldsFunc(composeFile, func(r rune) bool { return r == ':' || r == ';' }) {
+		has[path.Base(strings.ReplaceAll(strings.TrimSpace(f), `\`, "/"))] = true
+	}
+	const fix = "; APP_MODE and the Compose overlay must agree (scripts/install.sh writes both; see docs/operator-guide.md)"
+	if has["compose.clearnet.yaml"] && has["compose.tor.yaml"] {
+		return errors.New("COMPOSE_FILE lists both compose.clearnet.yaml and compose.tor.yaml; never run both overlays together" + fix)
+	}
+	if want := "compose." + mode + ".yaml"; !has[want] {
+		return errors.New("APP_MODE=" + mode + " needs " + want + " in COMPOSE_FILE" + fix)
+	}
+	return nil
+}
+
+// errSetupTokenRequired stops a server that is not installed yet and has no SETUP_TOKEN: nobody could
+// complete /setup.
+var errSetupTokenRequired = errors.New("SETUP_TOKEN is not set and installation is not complete, so /setup cannot be used. Run `./scripts/install.sh setup-token --new` to issue one (or put the output of `openssl rand -hex 32` in .env as SETUP_TOKEN) and start again")
+
+// checkInstallState applies the SETUP_TOKEN rules that need the database: required until installed, and
+// only a hint (it grants nothing) afterwards.
+func (a *App) checkInstallState(ctx context.Context, legacy bool) error {
+	installed, err := isInstalled(ctx, a.db)
+	if err != nil {
+		return errors.New("database status query failed: " + connectErrorClass(err))
+	}
+	switch {
+	case !installed && a.setupToken == "":
+		return errSetupTokenRequired
+	case installed && a.setupToken != "" && legacy:
+		log.Printf("hint: SETUP_TOKEN is set but installation is complete; it no longer opens /setup. It still derives this server's keys (no APP_SECRET_KEY): copy its value to APP_SECRET_KEY before removing it, as UPGRADING.md describes")
+	case installed && a.setupToken != "":
+		log.Printf("hint: SETUP_TOKEN is set but installation is complete; it grants nothing now and can be removed from .env")
+	}
+	return nil
+}
+
+// isInstalled reports whether first-run setup has completed (the schema must be migrated).
+func isInstalled(ctx context.Context, db *sql.DB) (bool, error) {
+	var installed bool
+	err := db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM settings WHERE key='installed')").Scan(&installed)
+	return installed, err
+}
+
+// Status reports, read-only, whether setup has completed and the highest applied migration (0 when none).
+// Errors carry a class only, never DATABASE_URL or driver text (for -status).
+func Status(ctx context.Context, dsn string) (installed bool, schema int, err error) {
+	db, err := OpenDB(dsn)
+	if err != nil {
+		return false, 0, err
+	}
+	defer db.Close()
+	if err = db.PingContext(ctx); err != nil {
+		return false, 0, errors.New("database connection failed: " + connectErrorClass(err))
+	}
+	// A database that was never migrated has neither table: not installed, schema 0.
+	var settings, migrations bool
+	err = db.QueryRowContext(ctx, "SELECT to_regclass('settings') IS NOT NULL, to_regclass('schema_migrations') IS NOT NULL").Scan(&settings, &migrations)
+	if err == nil && settings {
+		installed, err = isInstalled(ctx, db)
+	}
+	if err == nil && migrations {
+		err = db.QueryRowContext(ctx, "SELECT coalesce(max(version), 0) FROM schema_migrations").Scan(&schema)
+	}
+	if err != nil {
+		return false, 0, errors.New("database status query failed: " + connectErrorClass(err))
+	}
+	return installed, schema, nil
+}

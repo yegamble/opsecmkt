@@ -7,9 +7,14 @@ services:
     environment:
       ADDR: ':8080'
       DATABASE_URL: ${DATABASE_URL:?Run scripts/install.sh first}
-      SETUP_TOKEN: ${SETUP_TOKEN:?Run scripts/install.sh first}
+      # The app itself refuses to start without a usable APP_SECRET_KEY or SETUP_TOKEN (see UPGRADING.md), and
+      # without SETUP_TOKEN until first-run setup is complete.
+      APP_SECRET_KEY: ${APP_SECRET_KEY:-}
+      SETUP_TOKEN: ${SETUP_TOKEN:-}
       APP_MODE: ${APP_MODE:-clearnet}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      # Only read to check that APP_MODE matches the exposure overlay (compose.tor.yaml or compose.clearnet.yaml).
+      COMPOSE_FILE: ${COMPOSE_FILE:-}
       # Startup phase bounds; blank uses the app defaults (15s, 10m, 10m). See docs/operator-guide.md#migrations.
       DATABASE_CONNECT_TIMEOUT: ${DATABASE_CONNECT_TIMEOUT:-}
       MIGRATION_LOCK_TIMEOUT: ${MIGRATION_LOCK_TIMEOUT:-}
@@ -26,6 +31,14 @@ services:
       PAYMENT_POLL_INTERVAL: ${PAYMENT_POLL_INTERVAL:-30s}
       PAYMENT_EXPIRY: ${PAYMENT_EXPIRY:-24h}
       AUDIT_SIGNING_KEY: ${AUDIT_SIGNING_KEY:-}
+    # Healthy once /healthz answers "ok" (the app is serving and reaches PostgreSQL); `up --wait` waits for it.
+    # start_period covers migrations on a large database; raise it with MIGRATION_TIMEOUT if needed.
+    healthcheck:
+      test: [CMD, /app/server, -healthcheck]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 2m
     # Shutdown waits for in-flight requests (10 s) and then for an in-flight payout send (at most 30 s,
     # payoutSendTimeout, plus 10 s to record it); keep this above their sum so a redeploy never kills a
     # broadcast half-way.

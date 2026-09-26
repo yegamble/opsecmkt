@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -61,6 +62,18 @@ func hideUntilDone(in *os.File) (func(), error) {
 
 // resetWithDSN opens the application database, resets the password and reports success on out.
 func resetWithDSN(ctx context.Context, dsn, handle, password string, out io.Writer) error {
+	return withHostDB(ctx, dsn, func(ctx context.Context, db *sql.DB) error {
+		if err := market.ResetAdminPassword(ctx, db, handle, password); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "Password reset for administrator %s. Its sessions and pending sign-ins have ended; sign in with the new password.\n", handle)
+		return nil
+	})
+}
+
+// withHostDB opens the application database in dsn for a host tool, checks the connection and runs fn, all
+// within one minute. Connection errors are reported by class only, never with DATABASE_URL.
+func withHostDB(ctx context.Context, dsn string, fn func(context.Context, *sql.DB) error) error {
 	db, err := market.OpenDB(dsn)
 	if err != nil {
 		return err
@@ -71,11 +84,7 @@ func resetWithDSN(ctx context.Context, dsn, handle, password string, out io.Writ
 	if err = db.PingContext(ctx); err != nil {
 		return errors.New("database connection failed; check DATABASE_URL and service health")
 	}
-	if err = market.ResetAdminPassword(ctx, db, handle, password); err != nil {
-		return err
-	}
-	fmt.Fprintf(out, "Password reset for administrator %s. Its sessions and pending sign-ins have ended; sign in with the new password.\n", handle)
-	return nil
+	return fn(ctx, db)
 }
 
 // readNewPassword reads the new password from in. On a terminal (hide succeeds) it turns off echo, prompts on

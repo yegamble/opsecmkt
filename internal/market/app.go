@@ -37,8 +37,9 @@ type App struct {
 	db               *sql.DB
 	templates        *template.Template
 	preview, secure  bool
-	mode, setupToken string
-	key              []byte
+	mode, setupToken string // setupToken authorizes /setup only, and only until installed
+	keyRoot          string // APP_SECRET_KEY, or SETUP_TOKEN (legacy): the root of key and the sealing keys
+	key              []byte // CSRF/CAPTCHA HMAC key, sha256("csrf:"+keyRoot)
 	mu               sync.Mutex
 	limits           map[string]bucket
 	signInLogAt      time.Time                       // last "sign-in limiter refusing" log line (guarded by mu)
@@ -67,7 +68,7 @@ func New(ctx context.Context, preview bool) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	a := &App{templates: t, preview: preview, secure: os.Getenv("COOKIE_SECURE") != "false", mode: os.Getenv("APP_MODE"), setupToken: os.Getenv("SETUP_TOKEN"), limits: make(map[string]bucket), payments: map[string]PaymentProvider{}, unavailable: map[string]*unavailableProvider{}}
+	a := &App{templates: t, preview: preview, mode: os.Getenv("APP_MODE"), limits: make(map[string]bucket), payments: map[string]PaymentProvider{}, unavailable: map[string]*unavailableProvider{}}
 	if a.mode == "" {
 		a.mode = "clearnet"
 	}
@@ -75,19 +76,21 @@ func New(ctx context.Context, preview bool) (*App, error) {
 		return nil, errors.New("APP_MODE must be clearnet or tor")
 	}
 	if preview {
-		a.secure = false
 		a.key = []byte(randomToken())
 		return a, nil
 	}
-	if err := checkSetupToken(a.setupToken); err != nil {
+	// Everything checkable without the database is checked before it is opened (config.go).
+	cfg, err := loadStartupConfig(os.Getenv, a.mode)
+	if err != nil {
 		return nil, err
 	}
-	sum := sha256.Sum256([]byte("csrf:" + a.setupToken))
-	a.key = sum[:]
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		return nil, errors.New("DATABASE_URL required; use -preview for read-only sample UI")
+	a.secure, a.setupToken = cfg.secure, cfg.setupToken
+	root, legacy := cfg.keyRoot()
+	a.useKeyRoot(root)
+	for _, note := range cfg.notes {
+		log.Print(note)
 	}
+	dsn := os.Getenv("DATABASE_URL")
 	timeouts, err := startupTimeoutsFromEnv()
 	if err != nil {
 		return nil, err
@@ -101,6 +104,10 @@ func New(ctx context.Context, preview bool) (*App, error) {
 	db.SetMaxIdleConns(4)
 	db.SetConnMaxLifetime(30 * time.Minute)
 	if err = prepareDatabase(ctx, db, timeouts); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err = a.checkInstallState(ctx, legacy); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -118,7 +125,8 @@ func New(ctx context.Context, preview bool) (*App, error) {
 
 // OpenDB opens the database in dsn with TimeZone pinned to UTC on every connection (a startup parameter, which
 // outranks database and role defaults), so displayed times never follow or reveal the server's zone. The
-// application pool, its migrations and the -reset-admin-password command all open the database here.
+// application pool, its migrations and the -bootstrap-admin and -reset-admin-password commands all open the
+// database here.
 func OpenDB(dsn string) (*sql.DB, error) {
 	cfg, err := pgx.ParseConfig(dsn)
 	if err != nil {

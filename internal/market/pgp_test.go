@@ -186,7 +186,7 @@ func TestInspectEncryptedPacketSequence(t *testing.T) {
 }
 
 func TestSealOpen(t *testing.T) {
-	a := &App{setupToken: testSetupToken}
+	a := &App{keyRoot: testSetupToken}
 	ct, err := a.seal("totp", "JBSWY3DPEHPK3PXP")
 	if err != nil || strings.Contains(ct, "JBSWY3DPEHPK3PXP") {
 		t.Fatalf("%v %q", err, ct)
@@ -200,13 +200,13 @@ func TestSealOpen(t *testing.T) {
 	if _, err = a.open("other", ct); err == nil {
 		t.Fatal("opened under another label")
 	}
-	if _, err = (&App{setupToken: strings.Repeat("x", 64)}).open("totp", ct); err == nil {
-		t.Fatal("opened after SETUP_TOKEN rotation")
+	if _, err = (&App{keyRoot: strings.Repeat("x", 64)}).open("totp", ct); err == nil {
+		t.Fatal("opened after key root rotation")
 	}
 	if _, err = a.open("totp", ct[:len(ct)-2]); err == nil {
 		t.Fatal("truncated ciphertext opened")
 	}
 	if _, err = (&App{}).seal("totp", "x"); err == nil {
-		t.Fatal("sealed without SETUP_TOKEN")
+		t.Fatal("sealed without a key root")
 	}
 }

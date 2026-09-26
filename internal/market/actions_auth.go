@@ -291,7 +291,7 @@ func authAction(c *actionCtx) (actionResult, error) {
 		}
 		return a.secondFactor(c, id)
 	}
-	if path == "/setup" && (installed || subtle.ConstantTimeCompare([]byte(f.Get("token")), []byte(a.setupToken)) != 1) {
+	if path == "/setup" && (installed || a.setupToken == "" || subtle.ConstantTimeCompare([]byte(f.Get("token")), []byte(a.setupToken)) != 1) {
 		return actionResult{}, fail(403, "Setup unavailable or token incorrect")
 	}
 	if path == "/register" && !installed {
@@ -306,36 +306,22 @@ func authAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, fail(503, "Service unavailable")
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(782493)"); err != nil {
-		return actionResult{}, fail(503, "Service unavailable")
-	}
+	var id string
 	if path == "/setup" {
-		if err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM settings WHERE key='installed')").Scan(&installed); err != nil || installed {
-			return actionResult{}, fail(403, "Setup already complete")
+		if id, err = installFirstAdmin(ctx, tx, handle, string(hash), f.Get("site_name")); err != nil {
+			return actionResult{}, err
 		}
-	}
-	role := "buyer"
-	if path == "/setup" {
-		role = "admin"
-	}
-	id := randomToken()
-	if _, err = tx.ExecContext(ctx, "INSERT INTO users(id,handle,password_hash,role) VALUES($1,$2,$3,$4)", id, handle, string(hash), role); err != nil {
-		return actionResult{}, fail(400, "Handle unavailable")
-	}
-	if path == "/setup" {
-		name := strings.TrimSpace(f.Get("site_name"))
-		if name == "" {
-			name = "OPSMKT"
+	} else {
+		if _, err = tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(782493)"); err != nil {
+			return actionResult{}, fail(503, "Service unavailable")
 		}
-		if len(name) > 80 {
-			return actionResult{}, fail(400, "Site name too long")
+		id = randomToken()
+		if _, err = tx.ExecContext(ctx, "INSERT INTO users(id,handle,password_hash,role) VALUES($1,$2,$3,'buyer')", id, handle, string(hash)); err != nil {
+			return actionResult{}, fail(400, "Handle unavailable")
 		}
-		if _, err = tx.ExecContext(ctx, "INSERT INTO settings(key,value) VALUES('installed','true'),('site_name',$1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", name); err != nil {
-			return actionResult{}, fail(500, "Setup failed")
+		if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", id, "Account created: buyer"); err != nil {
+			return actionResult{}, fail(500, "Audit failed")
 		}
-	}
-	if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", id, "Account created: "+role); err != nil {
-		return actionResult{}, fail(500, "Audit failed")
 	}
 	if err = tx.Commit(); err != nil {
 		return actionResult{}, fail(500, "Unable to save account")
@@ -347,6 +333,52 @@ func authAction(c *actionCtx) (actionResult, error) {
 		return actionResult{Redirect: "/admin?welcome=1"}, nil
 	}
 	return actionResult{Redirect: "/"}, nil
+}
+
+// errSetupComplete refuses first-run setup once the market is installed.
+var errSetupComplete = fail(403, "Setup already complete")
+
+// setupSiteName applies first-run setup's marketplace-name rule: surrounding space trimmed, "OPSMKT" when
+// blank, at most 80 bytes.
+func setupSiteName(raw string) (string, error) {
+	name := strings.TrimSpace(raw)
+	if name == "" {
+		name = "OPSMKT"
+	}
+	if len(name) > 80 {
+		return "", fail(400, "Site name too long")
+	}
+	return name, nil
+}
+
+// installFirstAdmin is first-run setup's write, shared by POST /setup and the host's -bootstrap-admin
+// (BootstrapAdmin). In tx, under advisory lock 782493 (shared with startup migrations), it re-checks that the
+// market is not installed, creates the one administrator with hash (bcrypt, made before tx opened), records
+// installed and site_name and audits the new account. It returns the account's id; on an error the caller
+// rolls tx back, so nothing is written.
+func installFirstAdmin(ctx context.Context, tx *sql.Tx, handle, hash, siteName string) (string, error) {
+	if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(782493)"); err != nil {
+		return "", fail(503, "Service unavailable")
+	}
+	var installed bool
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM settings WHERE key='installed')").Scan(&installed); err != nil || installed {
+		return "", errSetupComplete
+	}
+	id := randomToken()
+	if _, err := tx.ExecContext(ctx, "INSERT INTO users(id,handle,password_hash,role) VALUES($1,$2,$3,'admin')", id, handle, hash); err != nil {
+		return "", fail(400, "Handle unavailable")
+	}
+	name, err := setupSiteName(siteName)
+	if err != nil {
+		return "", err
+	}
+	if _, err = tx.ExecContext(ctx, "INSERT INTO settings(key,value) VALUES('installed','true'),('site_name',$1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", name); err != nil {
+		return "", fail(500, "Setup failed")
+	}
+	if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", id, "Account created: admin"); err != nil {
+		return "", fail(500, "Audit failed")
+	}
+	return id, nil
 }
 
 // enrolledFactors lists the registered second factors the user has enrolled.
