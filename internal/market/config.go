@@ -76,7 +76,7 @@ func loadStartupConfig(getenv func(string) string, mode string) (startupConfig, 
 		return c, err
 	}
 	if mode == "tor" && c.secure {
-		c.notes = append(c.notes, "warning: APP_MODE=tor with COOKIE_SECURE=true: Tor Browser reaches the onion over plain HTTP, so it drops Secure cookies and nobody can sign in. Set COOKIE_SECURE=false in .env unless an HTTPS onion endpoint terminates in front of the app")
+		c.notes = append(c.notes, "warning: APP_MODE=tor with COOKIE_SECURE=true: the onion is served over plain HTTP, so only browsers that treat .onion addresses as secure keep the Secure session cookie. The installer writes COOKIE_SECURE=false for Tor; set that in .env unless you mean it")
 	}
 	if _, legacy := c.keyRoot(); legacy {
 		c.notes = append(c.notes, "keys: derived from SETUP_TOKEN (legacy); add APP_SECRET_KEY to .env with the same value to keep them, as UPGRADING.md describes")
