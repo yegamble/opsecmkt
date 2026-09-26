@@ -19,6 +19,8 @@ func init() {
 	registerLoader("vendor", func(ctx context.Context, a *App, r *http.Request, d *PageData) error {
 		return loadPublicReviews(ctx, a, d, "p.vendor_id=$1", r.URL.Query().Get("id"))
 	})
+	registerLoader("product", reviewModerationLoader)
+	registerLoader("vendor", reviewModerationLoader)
 	registerLoader("vendor-dashboard", loadIncomingOrders)
 	registerLoader("disputes", loadDisputes)
 	registerLoader("moderator", loadDisputes)
@@ -169,7 +171,7 @@ func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) 
 		}
 	}
 	var rv Review
-	err = a.db.QueryRowContext(ctx, "SELECT r.id,r.order_id,b.handle,r.rating,r.body,to_char(r.created,'YYYY-MM-DD') FROM reviews r JOIN users b ON b.id=r.buyer_id WHERE r.order_id=$1", o.ID).Scan(&rv.ID, &rv.OrderID, &rv.Buyer, &rv.Rating, &rv.Body, &rv.Created)
+	err = a.db.QueryRowContext(ctx, "SELECT r.id,r.order_id,b.handle,r.rating,r.body,to_char(r.created,'YYYY-MM-DD'),r.hidden_at IS NOT NULL FROM reviews r JOIN users b ON b.id=r.buyer_id WHERE r.order_id=$1", o.ID).Scan(&rv.ID, &rv.OrderID, &rv.Buyer, &rv.Rating, &rv.Body, &rv.Created, &rv.Hidden)
 	if err == nil {
 		d.Reviews = []Review{rv}
 	} else if err != sql.ErrNoRows {
@@ -291,25 +293,43 @@ func (a *App) resolvePayouts(ctx context.Context, d *PageData) error {
 	return nil
 }
 
+// reviewModerationLoader tells an administrator's hide and restore review forms (A-125) whether to ask for an
+// authenticator code.
+func reviewModerationLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error {
+	if d.User == nil || d.User.Role != "admin" {
+		return nil
+	}
+	return adminConfirmLoader(ctx, a, r, d)
+}
+
 // loadPublicReviews fills public reviews. Only reviews keyed to completed orders count; reviewer handles
-// and order ids are never shown publicly and dates are coarsened to the month.
+// and order ids are never shown publicly and dates are coarsened to the month. A review an administrator hid
+// (A-125) is left out of the list and the rating; administrators see it listed, labelled, with a restore form.
 func loadPublicReviews(ctx context.Context, a *App, d *PageData, where, id string) error {
 	base := " FROM reviews r JOIN orders o ON o.id=r.order_id JOIN products p ON p.id=r.product_id WHERE o.state='completed' AND " + where
+	admin := d.User != nil && d.User.Role == "admin"
 	var sum ReviewSummary
 	var avg float64
-	if err := a.db.QueryRowContext(ctx, "SELECT count(*),COALESCE(avg(r.rating),0)::float8"+base, id).Scan(&sum.Count, &avg); err != nil {
+	if err := a.db.QueryRowContext(ctx, `SELECT count(*) FILTER (WHERE r.hidden_at IS NULL),
+		COALESCE(avg(r.rating) FILTER (WHERE r.hidden_at IS NULL),0)::float8,count(*) FILTER (WHERE r.hidden_at IS NOT NULL)`+base, id).Scan(&sum.Count, &avg, &sum.Hidden); err != nil {
 		return err
 	}
 	sum.Average = fmt.Sprintf("%.1f", avg)
+	listed := " AND r.hidden_at IS NULL"
+	if admin {
+		listed = ""
+	} else {
+		sum.Hidden = 0
+	}
 	d.ReviewSummary = &sum
-	rows, err := a.db.QueryContext(ctx, "SELECT r.id,r.rating,r.body,to_char(r.created,'YYYY-MM'),p.title"+base+" ORDER BY r.created DESC LIMIT 50", id)
+	rows, err := a.db.QueryContext(ctx, "SELECT r.id,r.rating,r.body,to_char(r.created,'YYYY-MM'),p.title,r.hidden_at IS NOT NULL"+base+listed+" ORDER BY r.created DESC LIMIT 50", id)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var rv Review
-		if err = rows.Scan(&rv.ID, &rv.Rating, &rv.Body, &rv.Created, &rv.Product); err != nil {
+		if err = rows.Scan(&rv.ID, &rv.Rating, &rv.Body, &rv.Created, &rv.Product, &rv.Hidden); err != nil {
 			return err
 		}
 		if d.Page != "vendor" {

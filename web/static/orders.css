@@ -107,3 +107,6 @@
   overflow-wrap:anywhere;
   word-break:break-all
 }
+.review-moderation form {
+  margin-top:12px
+}

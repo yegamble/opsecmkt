@@ -1,17 +1,30 @@
-{{/* P3 Orders owns. Verified reviews on product and vendor pages; only reviews keyed to completed orders */}}
-{{define "product-reviews"}}<section class="order-reviews" aria-labelledby="reviews-title">
+{{/* P3 Orders owns. Verified reviews on product and vendor pages; only reviews keyed to completed orders.
+Administrators also see reviews they hid (A-125), labelled, and hide or restore each one with their password. */}}
+{{define "product-reviews"}}{{$admin := and $.User (eq $.User.Role "admin")}}<section class="order-reviews" aria-labelledby="reviews-title">
 <div class="order-reviews-head">
 <h2 class="section-title" id="reviews-title">{{if eq .Page "vendor"}}Verified reviews for this vendor{{else}}Verified reviews{{end}}</h2>{{with .ReviewSummary}}{{if .Count}}<p class="review-summary">
-<strong>{{.Average}}</strong> / 5 · {{.Count}} review{{if ne .Count 1}}s{{end}}</p>{{end}}{{end}}</div>{{if .Reviews}}<p class="help">Only the buyer of a completed order can review it, once. Reviewer handles are not shown and dates are shown by month.</p>
+<strong>{{.Average}}</strong> / 5 · {{.Count}} review{{if ne .Count 1}}s{{end}}</p>{{end}}{{end}}</div>{{with .ReviewSummary}}{{if .Hidden}}<p class="help">{{.Hidden}} hidden review{{if eq .Hidden 1}} is{{else}}s are{{end}} not shown to others or counted.</p>{{end}}{{end}}{{if .Reviews}}<p class="help">Only the buyer of a completed order can review it, once. Reviewer handles are not shown and dates are shown by month.</p>
 <div class="messages-list">{{range .Reviews}}<article class="message review">
 <div class="message-meta">
-<span class="badge green">Verified purchase</span>
+<span class="badge green">Verified purchase</span>{{if .Hidden}}
+<span class="badge neutral">Hidden by an administrator</span>{{end}}
 <span>{{.Created}}</span>
 </div>
 <p class="review-rating">
 <span aria-hidden="true">{{.Stars}}</span>
 <span class="sr-only">Rated {{.Rating}} out of 5</span>
-</p>{{if .Product}}<p class="muted">{{.Product}}</p>{{end}}{{if .Body}}<p>{{.Body}}</p>{{end}}</article>{{end}}</div>{{else}}<div class="empty">
+</p>{{if .Product}}<p class="muted">{{.Product}}</p>{{end}}{{if .Body}}<p>{{.Body}}</p>{{end}}{{if $admin}}<details class="review-moderation">
+<summary>{{if .Hidden}}Restore this review{{else}}Hide this review{{end}}<span class="sr-only">: rated {{.Rating}} out of 5, {{.Created}}</span></summary>
+<form class="stack" method="post" action="/admin/review">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="review_id" value="{{.ID}}">
+<input type="hidden" name="action" value="{{if .Hidden}}restore{{else}}hide{{end}}">
+<input type="hidden" name="from" value="{{$.Page}}">
+<p class="help">{{if .Hidden}}Restoring shows this review on the listing and vendor pages again and counts it in the rating.{{else}}Hiding removes this review from the listing and vendor pages and from the rating. It is kept, not deleted: the buyer and vendor still see it on the order, and you can restore it here.{{end}} The reviewer is notified; the review text is not copied into the notification or the activity log.</p>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
+<button type="submit">{{if .Hidden}}Restore review{{else}}Hide review{{end}}</button>
+</form>
+</details>{{end}}</article>{{end}}</div>{{else}}<div class="empty">
 <span class="empty-icon">☆</span>
 <h2>No verified reviews yet</h2>
 <p>Reviews appear only after a buyer completes an order{{if eq .Page "vendor"}} with this vendor{{end}}.</p>
