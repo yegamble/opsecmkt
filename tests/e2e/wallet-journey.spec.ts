@@ -63,6 +63,8 @@ test('BTC and XMR: partial payment, intake pause, confirmation, fulfillment and 
     await buyer.getByRole('link', { name: 'Review order draft' }).click();
     await buyer.getByLabel('Reference currency').selectOption(currency);
     await buyer.getByRole('button', { name: 'Create unfunded draft' }).click();
+    // Measure the draft page, not the checkout page mid-navigation (CI 36261986487 measured 504 px unstyled).
+    await buyer.waitForURL(/\/order\?id=/);
     await fitsAt(buyer, `${currency} draft`);
     await buyer.getByRole('button', { name: 'Request payment address' }).click();
     await buyer.waitForURL(/&saved=1$/);
