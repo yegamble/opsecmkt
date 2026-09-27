@@ -41,9 +41,9 @@ Tor Browser with scripts off, and an operator who runs everything on one host.
 | For | Capabilities |
 | --- | --- |
 | **Buyers** | Catalog search and filters, vendor profiles, order tracking, disputes, and reviews tied to a completed test-network order |
-| **Vendors** | Physical and digital listings, stock, automatic digital delivery, and a desk of orders to fulfil |
-| **Moderators** | A dispute desk, payment-review flags, and read-only access to disputed orders |
-| **Administrators** | Roles, suspensions, second-factor resets, listing takedowns, CAPTCHA and payment-intake controls, payout recovery, the canary and signed audit exports |
+| **Vendors** | Physical and digital listings with up to 4 photos each, an avatar, stock, automatic digital delivery, and a desk of orders to fulfil |
+| **Moderators** | A dispute desk, payment-review flags, read-only access to disputed orders, and takedown of vendors' photos and avatars |
+| **Administrators** | Roles, suspensions, second-factor resets, listing and photo takedowns, the public staff list, CAPTCHA and payment-intake controls, payout recovery, the canary and signed audit exports |
 | **Operators** | One-command install, PostgreSQL inside or outside Compose, optional pruned test-network nodes, onion mirrors, encrypted backups |
 
 <table>
@@ -113,7 +113,8 @@ node; `--nodes none` leaves payments off.
 `add-mirror` adds a second onion address. `add-scanner` adds the ClamAV malware
 scanner that photo uploads need (a host with at least 3 GiB of memory), and
 `refresh-scanner` refreshes its signatures ([operator
-guide](docs/operator-guide.md#photo-uploads-and-the-malware-scanner)). `upgrade`
+guide](docs/operator-guide.md#photo-uploads-and-the-malware-scanner)). ClamAV
+checks uploads for known malware; it does not review picture content. `upgrade`
 brings a checkout up to date after `git pull`, with a backup first
 ([UPGRADING.md](UPGRADING.md)):
 
@@ -151,7 +152,9 @@ payouts.
 the operator or anyone holding a decrypted backup can read what is stored.
 Shipping addresses are never stored: buyers send them to the vendor
 PGP-encrypted. Review text, dispute reasons, order
-notes and digital delivery content are stored in plaintext. The full list is in
+notes and digital delivery content are stored in plaintext. Listing photos and
+avatars are kept only as re-encoded JPEGs without the uploaded file, its name or
+its metadata; deleting one leaves copies in older backups. The full list is in
 [what the server keeps](docs/implementation-status.md#what-the-server-keeps).
 
 **Account recovery.** There is no forgotten-password reset. Recovery codes
@@ -180,7 +183,7 @@ host with `-reset-admin-password` (see the [operator guide](docs/operator-guide.
 | `internal/market/` | Marketplace behaviour, database access and Go tests |
 | `internal/market/migrations/` | Ordered SQL migrations; add new files, never rewrite merged ones |
 | `web/` | Server-rendered templates and static CSS |
-| `deploy/` | Tor image and `torrc` |
+| `deploy/` | Tor image and `torrc`, the malware scanner's `clamd.conf` |
 | `scripts/` | Installer, backup and restore, and operations checks |
 | `tests/` | Playwright journeys (`tests/e2e/`) and installer tests |
 | `docs/` | Status, acceptance, operator runbooks and README assets |
