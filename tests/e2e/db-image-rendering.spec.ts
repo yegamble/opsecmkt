@@ -63,7 +63,7 @@ test('vendor page image budget and cache', async ({ browser, baseURL }) => {
     const ids = Array.from({ length: 30 }, () => randomBytes(32).toString('hex'));
     sql(`UPDATE users SET role='vendor' WHERE handle='${vendorHandle}';
       INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock,created)
-        SELECT v.id, u.id, 'Photo listing '||lpad(v.n::text,2,'0'), 'Seeded by db-listing-photos.spec.ts', 'Hardware', 'Worldwide', 'physical', 100000, 500000000000, 1, now()+v.n*interval '1 second'
+        SELECT v.id, u.id, 'Photo listing '||lpad(v.n::text,2,'0'), 'Seeded by db-image-rendering.spec.ts', 'Hardware', 'Worldwide', 'physical', 100000, 500000000000, 1, now()+v.n*interval '1 second'
         FROM users u, unnest(ARRAY['${ids.join("','")}']) WITH ORDINALITY AS v(id,n) WHERE u.handle='${vendorHandle}';`);
     const vendorID = sql(`SELECT id FROM users WHERE handle='${vendorHandle}'`);
 
