@@ -1,6 +1,7 @@
 # Tor from the Tor Project's own Debian repository (https://support.torproject.org/little-t-tor/getting-started/installing/),
-# pinned so that a rebuild installs the same release. deb.torproject.org keeps only its newest build in the index:
-# when it moves on, this build fails at `apt-get install` until TOR_VERSION is bumped here, or set in .env, which
+# pinned so that a rebuild installs the same release. deb.torproject.org keeps only its newest build in the index,
+# so when the pinned build has been withdrawn the image installs the repository's current build instead, but only
+# if it is the same or newer (never older), and says so; TOR_VERSION can be bumped here, or set in .env, which
 # compose.tor.yaml passes as a build argument (docs/operator-guide.md#tor-image). Both architectures the repository
 # publishes (amd64, arm64) share the version string.
 FROM debian:bookworm-20260918-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
@@ -21,7 +22,14 @@ RUN set -eu; \
       'Components: main' 'Signed-By: /usr/share/keyrings/deb.torproject.org-keyring.gpg' \
       > /etc/apt/sources.list.d/tor.sources; \
     apt-get update; \
-    apt-get install -y --no-install-recommends tor="${TOR_VERSION}"; \
+    if ! apt-get install -y --no-install-recommends tor="${TOR_VERSION}"; then \
+      candidate=$(apt-cache policy tor | awk '$1 == "Candidate:" { print $2 }'); \
+      if [ -z "$candidate" ] || [ "$candidate" = "(none)" ] || ! dpkg --compare-versions "$candidate" ge "$TOR_VERSION"; then \
+        echo "tor ${TOR_VERSION} is no longer published and the repository offers no newer build (${candidate:-none}); set TOR_VERSION (docs/operator-guide.md#tor-image)" >&2; exit 1; \
+      fi; \
+      echo "tor ${TOR_VERSION} is no longer published; installing the newer ${candidate} from the same signed repository" >&2; \
+      apt-get install -y --no-install-recommends tor="${candidate}"; \
+    fi; \
     apt-get purge -y --auto-remove curl gnupg; \
     rm -rf /var/lib/apt/lists/* /root/.gnupg; \
     chown debian-tor:debian-tor /var/lib/tor; \

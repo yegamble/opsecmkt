@@ -109,6 +109,14 @@ class DockerfileTests(unittest.TestCase):
         # The downloaded key is refused unless its fingerprint is the pinned one.
         self.assertRegex(self.text, r'gpg --show-keys --with-colons')
 
+    def test_withdrawn_pin_falls_back_only_to_a_newer_build(self):
+        # deb.torproject.org drops old builds, so a fresh install would otherwise fail to build Tor. The fallback
+        # installs the repository's candidate only when dpkg says it is the same or newer than the pin.
+        self.assertIn('if ! apt-get install -y --no-install-recommends tor="${TOR_VERSION}"; then', self.text)
+        self.assertIn('dpkg --compare-versions "$candidate" ge "$TOR_VERSION"', self.text)
+        self.assertIn('tor="${candidate}"', self.text)
+        self.assertIn('no longer published and the repository offers no newer build', self.text)
+
     def test_build_fails_without_the_pow_module(self):
         self.assertRegex(self.text, r"tor --list-modules \| grep -qx 'pow: yes'")
 
