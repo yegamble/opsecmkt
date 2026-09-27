@@ -381,6 +381,19 @@ func adminAction(c *actionCtx) (actionResult, error) {
 			}
 			_, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", target, "Role changed from "+old+" to "+role+" by an administrator")
 		}
+		if err == nil && old != role && (old == "moderator" || old == "admin") && role != "moderator" {
+			// PR #28 review: a staff avatar was uploaded under the staff rules (hidden unless listed); as a
+			// vendor's it would be public. It is deleted here (D4's hard delete), after the users row lock above.
+			var res sql.Result
+			if res, err = tx.ExecContext(ctx, "DELETE FROM images WHERE owner_user_id=$1 AND kind='avatar'", target); err == nil {
+				if n, _ := res.RowsAffected(); n > 0 {
+					action += "; removed their staff avatar"
+					if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", target, "Staff avatar removed when the role changed"); err == nil {
+						_, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), target, "Your staff avatar was removed when your role changed; upload a new one if you want one shown.")
+					}
+				}
+			}
+		}
 		if err == nil && role != "vendor" {
 			// A user who is no longer a vendor cannot manage listings, so their active listings are archived in
 			// this transaction (audited for both accounts). Existing orders are unaffected.

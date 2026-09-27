@@ -606,3 +606,63 @@ func TestImageTakedownReasonWithNULRefused(t *testing.T) {
 		t.Fatalf("NUL in the reason: %d %q, %d rows", w.Code, w.Body.String(), e.imageRows(photo.id))
 	}
 }
+
+// PR #28 review (chair's ruling on REQUIRED 1): a staff avatar is uploaded under the staff privacy rules (hidden
+// unless listed), while a vendor's avatar is public. An administrator moving a moderator to another role deletes
+// the avatar in that transaction (D4's hard delete), notifies the owner and audits it, so a demotion to vendor
+// never publishes it on /img or the vendor page. The admin role form cannot change an administrator, so an
+// administrator's hidden avatar stays hidden. A vendor promoted to moderator starts hidden: nothing to delete.
+func TestStaffDemotionDeletesAvatar(t *testing.T) {
+	e := newTestApp(t)
+	adminID, admin := e.user("demote_admin", "admin")
+	otherAdminID, _ := e.user("demote_other_admin", "admin")
+	const note = "Your staff avatar was removed when your role changed; upload a new one if you want one shown."
+	const audit = "Staff avatar removed when the role changed"
+	for _, to := range []string{"vendor", "buyer"} {
+		modID, _ := e.user("demote_mod_to_"+to, "moderator")
+		avatar := e.image(modID, "", "avatar")
+		e.wantHidden(avatar, "hidden moderator's avatar before the change")
+		agExpect(e, "/admin", admin, form("action", "role", "role", to, "handle", "demote_mod_to_"+to), 303, "")
+		if agStr(e, "SELECT role FROM users WHERE id=$1", modID) != to {
+			t.Fatalf("moderator not changed to %s", to)
+		}
+		if n := e.imageRows(avatar.id); n != 0 {
+			t.Fatalf("moderator → %s: %d avatar rows left, want 0", to, n)
+		}
+		e.wantHidden(avatar, "former moderator's avatar after the change to "+to)
+		if to == "vendor" {
+			body := e.body("GET", "/vendor?id="+modID, randomToken(), nil, 200)
+			mustNotContain(t, body, avatar.id, "/img/")
+		}
+		if agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1 AND body=$2", modID, note) != 1 {
+			t.Fatalf("moderator → %s: owner not notified", to)
+		}
+		if !e.auditExact(modID, audit) || !e.auditExact(adminID, "Changed role of demote_mod_to_"+to+" from moderator to "+to+"; removed their staff avatar") {
+			t.Fatalf("moderator → %s: audit rows missing", to)
+		}
+	}
+	// A moderator without an avatar is changed with no avatar note or audit row.
+	bareID, _ := e.user("demote_mod_bare", "moderator")
+	agExpect(e, "/admin", admin, form("action", "role", "role", "vendor", "handle", "demote_mod_bare"), 303, "")
+	if agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1", bareID) != 0 || e.auditExact(bareID, audit) {
+		t.Fatal("a moderator without an avatar got the avatar note or audit row")
+	}
+	// Administrators' roles are not changed here: the other administrator's hidden avatar stays, and stays hidden.
+	adminAvatar := e.image(otherAdminID, "", "avatar")
+	agExpect(e, "/admin", admin, form("action", "role", "role", "vendor", "handle", "demote_other_admin"), 404, "No buyer, vendor or moderator has the handle")
+	if agStr(e, "SELECT role FROM users WHERE id=$1", otherAdminID) != "admin" || e.imageRows(adminAvatar.id) != 1 {
+		t.Fatal("the admin role form changed an administrator or their avatar")
+	}
+	e.wantHidden(adminAvatar, "administrator's hidden avatar after a refused change")
+	// A vendor promoted to moderator starts hidden: the avatar is kept and is no longer public.
+	vendorID, _ := e.user("promote_vendor", "vendor")
+	vendorAvatar := e.image(vendorID, "", "avatar")
+	e.wantPublic(vendorAvatar, "vendor's avatar")
+	agExpect(e, "/admin", admin, form("action", "role", "role", "moderator", "handle", "promote_vendor"), 303, "")
+	if e.imageRows(vendorAvatar.id) != 1 || agStr(e, "SELECT staff_hidden::text FROM users WHERE id=$1", vendorID) != "true" {
+		t.Fatal("promotion deleted the avatar or did not start hidden")
+	}
+	e.wantHidden(vendorAvatar, "new moderator's avatar, hidden by default")
+	agExec(e, "UPDATE settings SET value='true' WHERE key='staff_list_public'")
+	e.wantHidden(vendorAvatar, "new moderator's avatar with the list on, still hidden by default")
+}
