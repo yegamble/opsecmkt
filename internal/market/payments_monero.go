@@ -10,7 +10,8 @@ import (
 	"sync"
 )
 
-// monero-wallet-rpc adapter (stagenet, testnet). Mainnet wallets and daemons are refused at startup.
+// monero-wallet-rpc adapter (stagenet, testnet, and mainnet). Mainnet wallets and daemons are used only when
+// MONERO_NETWORK=mainnet names it; they are refused otherwise.
 
 func init() { registerProvider(moneroFromEnv) }
 
@@ -18,12 +19,13 @@ func init() { registerProvider(moneroFromEnv) }
 var moneroNetworks = map[string]struct{ primary, sub string }{
 	"stagenet": {"5", "7"},
 	"testnet":  {"9A", "B"},
+	"mainnet":  {"4", "8"},
 }
 
 type moneroProvider struct {
 	wallet       *rpcClient
 	daemon       *rpcClient // nil unless MONERO_RPC_URL is set
-	wantNetwork  string     // MONERO_NETWORK ("" = any test network the wallet reports)
+	wantNetwork  string     // MONERO_NETWORK ("" = any test network the wallet reports; "mainnet" is never implied)
 	network      string     // from the wallet's primary address; set by the first successful Check, never changed
 	confirmation int
 
@@ -53,7 +55,7 @@ func moneroFromEnv(ctx context.Context) (PaymentProvider, error) {
 func buildMoneroProvider(walletURL, daemonURL, wantNetwork string, confs int) (*moneroProvider, error) {
 	if wantNetwork != "" {
 		if _, ok := moneroNetworks[wantNetwork]; !ok {
-			return nil, fmt.Errorf("refusing to start: MONERO_NETWORK %q is not a test network (use stagenet or testnet)", wantNetwork)
+			return nil, fmt.Errorf("refusing to start: MONERO_NETWORK %q is not a known network (use mainnet, stagenet or testnet)", wantNetwork)
 		}
 	}
 	w, err := newRPCClient("monero wallet", walletURL, "2.0", true)
@@ -69,7 +71,7 @@ func buildMoneroProvider(walletURL, daemonURL, wantNetwork string, confs int) (*
 	return p, nil
 }
 
-// newMoneroProvider builds the provider and checks it once (wallet open, test network, daemon agrees).
+// newMoneroProvider builds the provider and checks it once (wallet open, configured network, daemon agrees).
 func newMoneroProvider(ctx context.Context, walletURL, daemonURL, wantNetwork string, confs int) (*moneroProvider, error) {
 	p, err := buildMoneroProvider(walletURL, daemonURL, wantNetwork, confs)
 	if err != nil {
@@ -82,8 +84,8 @@ func newMoneroProvider(ctx context.Context, walletURL, daemonURL, wantNetwork st
 }
 
 // Check opens the conventional wallet when monero-wallet-rpc has none open (for example after the wallet
-// service restarted), refuses wallets and daemons that are not on a test network or disagree with
-// MONERO_NETWORK or with each other, and reports the daemon as syncing while its target_height is above its
+// service restarted), refuses mainnet wallets and daemons unless MONERO_NETWORK=mainnet, refuses ones that
+// disagree with MONERO_NETWORK or with each other, and reports the daemon as syncing while its target_height is above its
 // height. Without MONERO_RPC_URL the sync state is not checked. The tip is the wallet's own height (get_height),
 // the height its transfer confirmations are counted from; it is lower while a restarted or restored wallet
 // rescans.
@@ -112,11 +114,10 @@ func (p *moneroProvider) Check(ctx context.Context) (nodeStatus, error) {
 		}
 	}
 	if network == "" {
-		kind := "unknown"
-		if addr.Address != "" && strings.ContainsRune("48", rune(addr.Address[0])) {
-			kind = "mainnet"
-		}
-		return nodeStatus{}, refusef("monero wallet primary address is a %s address (prefix %q); only stagenet or testnet wallets are allowed", kind, truncate(addr.Address, 1))
+		return nodeStatus{}, refusef("monero wallet primary address is an unknown address (prefix %q)", truncate(addr.Address, 1))
+	}
+	if network == "mainnet" && p.wantNetwork != "mainnet" {
+		return nodeStatus{}, refusef("monero wallet primary address is a mainnet address (prefix %q); only stagenet or testnet wallets are allowed unless MONERO_NETWORK=mainnet", truncate(addr.Address, 1))
 	}
 	if p.wantNetwork != "" && p.wantNetwork != network {
 		return nodeStatus{}, refusef("monero wallet is on %s but MONERO_NETWORK is %q", network, p.wantNetwork)
@@ -150,18 +151,22 @@ func (p *moneroProvider) Check(ctx context.Context) (nodeStatus, error) {
 			return nodeStatus{}, fmt.Errorf("monero daemon check failed: %w", err)
 		}
 		nt := info.NetType
-		if nt == "" {
-			switch {
-			case info.Stagenet:
-				nt = "stagenet"
-			case info.Testnet:
-				nt = "testnet"
-			default:
-				nt = "mainnet"
-			}
+		switch {
+		case info.Mainnet: // the mainnet flag wins over a nettype that says otherwise
+			nt = "mainnet"
+		case nt != "":
+		case info.Stagenet:
+			nt = "stagenet"
+		case info.Testnet:
+			nt = "testnet"
+		default:
+			nt = "mainnet"
 		}
-		if _, ok := moneroNetworks[nt]; !ok || info.Mainnet {
-			return nodeStatus{}, refusef("monero daemon network %q is not a test network", nt)
+		if _, ok := moneroNetworks[nt]; !ok {
+			return nodeStatus{}, refusef("monero daemon network %q is not a known network", nt)
+		}
+		if nt == "mainnet" && p.wantNetwork != "mainnet" {
+			return nodeStatus{}, refusef("monero daemon network %q is not a test network (set MONERO_NETWORK=mainnet to accept mainnet)", nt)
 		}
 		if nt != network {
 			return nodeStatus{}, refusef("monero daemon is on %s but the wallet is on %s", nt, network)
@@ -183,7 +188,8 @@ func (p *moneroProvider) Network() string {
 	}
 	return p.network
 }
-func (p *moneroProvider) Confirmations() int { return p.confirmation }
+func (p *moneroProvider) Confirmations() int      { return p.confirmation }
+func (p *moneroProvider) MainnetConfigured() bool { return p.wantNetwork == "mainnet" }
 
 func (p *moneroProvider) NewAddress(ctx context.Context, orderID string) (string, error) {
 	var r struct {
@@ -314,7 +320,8 @@ func (p *moneroProvider) Send(ctx context.Context, to string, amt int64) (string
 }
 
 func (p *moneroProvider) ValidAddress(addr string) bool {
-	if len(addr) < 90 || len(addr) > 110 || strings.ContainsRune("48", rune(addr[0])) {
+	n, ok := moneroNetworks[p.network]
+	if len(addr) < 90 || len(addr) > 110 || !ok || !strings.ContainsRune(n.primary+n.sub, rune(addr[0])) {
 		return false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)

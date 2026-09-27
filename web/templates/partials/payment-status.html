@@ -1,17 +1,17 @@
 {{/* P5 Payments owns. Slots: payment-status (footer), :catalog, :product, :checkout, :vendor-dashboard (stat tiles) */}}
-{{define "payment-status"}}{{if .PaymentsEnabled}}<span class="badge testnet">TESTNET payments ({{.PaymentNetworks}}) — no real funds</span>{{else}}<span class="accent">Payments disabled</span>{{end}}{{end}}
-{{define "payment-status:catalog"}}{{if .PaymentsEnabled}}<div class="notice testnet-notice">
+{{define "payment-status"}}{{if .PaymentsEnabled}}{{if $.LiveNetwork}}<span class="badge live">MAINNET payments ({{.PaymentNetworks}}) — real funds</span>{{else}}<span class="badge testnet">TESTNET payments ({{.PaymentNetworks}}) — no real funds</span>{{end}}{{else}}<span class="accent">Payments disabled</span>{{end}}{{end}}
+{{define "payment-status:catalog"}}{{if .PaymentsEnabled}}<div class="notice {{if $.LiveNetwork}}live-notice{{else}}testnet-notice{{end}}">
 <p>
-<strong>TESTNET payments ({{.PaymentNetworks}}) — no real funds.</strong> Deposits go to the market's pooled test-network wallet and are released to the vendor on completion or refunded on cancellation, including a deposit that confirms after the order was cancelled (watched for 30 days after the address is issued). Orders left unpaid past the payment window are cancelled. This is custodial holding, not multisig escrow.</p>
+{{if $.LiveNetwork}}<strong>MAINNET payments ({{.PaymentNetworks}}) — real funds.</strong> Deposits go to the market's pooled mainnet wallet and{{else}}<strong>TESTNET payments ({{.PaymentNetworks}}) — no real funds.</strong> Deposits go to the market's pooled test-network wallet and{{end}} are released to the vendor on completion or refunded on cancellation, including a deposit that confirms after the order was cancelled (watched for 30 days after the address is issued). Orders left unpaid past the payment window are cancelled. This is custodial holding, not multisig escrow.</p>
 </div>{{else}}<div class="notice">
 <p>
 <strong>Order drafts only.</strong> Payments and escrow are not active.</p>
 </div>{{end}}{{end}}
 {{define "payment-status:product"}}{{if .PaymentsEnabled}}<p>
-<span class="badge testnet">TESTNET payments ({{.PaymentNetworks}}) — no real funds</span> Only test-network coins are accepted. No protection or verification claim is implied by a listing.</p>{{else}}<p>Payments and escrow are not active. No protection or verification claim is implied by a listing.</p>{{end}}{{end}}
-{{define "payment-status:checkout"}}{{if .PaymentsEnabled}}<div class="notice testnet-notice">
+{{if $.LiveNetwork}}<span class="badge live">MAINNET payments ({{.PaymentNetworks}}) — real funds</span> Only mainnet coins are accepted.{{else}}<span class="badge testnet">TESTNET payments ({{.PaymentNetworks}}) — no real funds</span> Only test-network coins are accepted.{{end}} No protection or verification claim is implied by a listing.</p>{{else}}<p>Payments and escrow are not active. No protection or verification claim is implied by a listing.</p>{{end}}{{end}}
+{{define "payment-status:checkout"}}{{if .PaymentsEnabled}}<div class="notice {{if $.LiveNetwork}}live-notice{{else}}testnet-notice{{end}}">
 <p>
-<strong>TESTNET payments ({{.PaymentNetworks}}) — no real funds.</strong> Creating a draft collects nothing. Request payment on the order page to receive a test-network deposit address; a currency without a configured provider stays an unfunded draft. Never send mainnet coins.</p>
+{{if $.LiveNetwork}}<strong>MAINNET payments ({{.PaymentNetworks}}) — real funds.</strong> Creating a draft collects nothing. Request payment on the order page to receive a mainnet deposit address; a currency without a configured provider stays an unfunded draft. Never send test-network coins.{{else}}<strong>TESTNET payments ({{.PaymentNetworks}}) — no real funds.</strong> Creating a draft collects nothing. Request payment on the order page to receive a test-network deposit address; a currency without a configured provider stays an unfunded draft. Never send mainnet coins.{{end}}</p>
 </div>{{else}}<div class="notice">
 <p>
 <strong>UNFUNDED DRAFT ONLY.</strong> Bitcoin, Monero, multisig escrow, shipping addresses, and settlement are not configured. Do not send funds.</p>
@@ -19,13 +19,14 @@
 {{define "payment-status:vendor-payouts"}}{{if .UnsentPayouts}}<div class="alert" role="status"><a class="text-link" href="/account#payout">{{.UnsentPayouts}} unsent payout(s) to you</a>: the reason and next step for each are on your account page.</div>{{end}}{{end}}
 {{define "payment-status:vendor-dashboard"}}{{if .PaymentsEnabled}}<div class="stat">
 <div class="eyebrow">Payments</div>
-<strong>TESTNET</strong>
-<span>{{.PaymentNetworks}} — no real funds</span>
+{{if $.LiveNetwork}}<strong>MAINNET</strong>
+<span>{{.PaymentNetworks}} — real funds</span>{{else}}<strong>TESTNET</strong>
+<span>{{.PaymentNetworks}} — no real funds</span>{{end}}
 </div>
 <div class="stat">
 <div class="eyebrow">Funds holding</div>
 <strong>POOLED</strong>
-<span>Custodial test wallet; no multisig escrow</span>
+<span>Custodial {{if $.LiveNetwork}}mainnet{{else}}test{{end}} wallet; no multisig escrow</span>
 </div>{{else}}<div class="stat">
 <div class="eyebrow">Payments</div>
 <strong>OFF</strong>

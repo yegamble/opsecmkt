@@ -4,18 +4,18 @@
 {{define "admin-payments"}}<section class="panel admin-payments">
 <h2 id="payment-providers">Payment providers</h2>
 {{if eq (index .Settings "payments_recovery_required") "true"}}<div class="alert" role="status"><strong>Outbound payments paused for restore reconciliation.</strong> All payouts, including newly queued ones, stay unsent until the operator reconciles restored orders and payments with the wallets and clears the recovery lock. See the recovery runbook; releasing an individual payout does not clear this lock.</div>{{end}}
-<p>Test networks only; the server refuses to start against mainnet and disables a provider whose node later reports mainnet. An unreachable node or a wallet that is not loaded does not stop the site: that currency shows as unavailable, payment requests for it are refused, and the check is retried every poll. Deposits sit in one pooled wallet per currency. There is no commission or fee accounting.</p>
+<p>{{if $.LiveNetwork}}<strong>Mainnet: deposits and payouts move real funds.</strong> The server was configured for mainnet (<code>BITCOIN_CHAIN=main</code>, <code>MONERO_NETWORK=mainnet</code>) and disables a provider whose node later reports another network.{{else}}Test networks. The server refuses to start against mainnet unless the operator configures it (<code>BITCOIN_CHAIN=main</code>, <code>MONERO_NETWORK=mainnet</code>) and disables a provider whose node later reports another network.{{end}} An unreachable node or a wallet that is not loaded does not stop the site: that currency shows as unavailable, payment requests for it are refused, and the check is retried every poll. Deposits sit in one pooled wallet per currency. There is no commission or fee accounting.</p>
 <h3 id="payment-intake">New payment addresses</h3>
 <p>Enable or pause Bitcoin and Monero separately. Pausing prevents new payment addresses; existing deposit addresses, payment confirmation, refunds and payouts continue. Wallet RPC connections must be provisioned on the server first. Changes require your password and are audited.</p>
 {{range .Providers}}<div class="order-action">
 <h4>{{.Currency}} intake: {{if eq (index $.Settings (printf "payment_intake_%s" .Currency)) "false"}}Paused{{else}}Enabled when wallet is available{{end}}</h4>
-{{if or .Enabled (eq .Status "Unavailable — retried every poll") (eq .Status "Refused — not a test network")}}<form class="stack" method="post" action="/admin/payment-intake">
+{{if or .Enabled (eq .Status "Unavailable — retried every poll") (eq .Status "Refused — not a test network" "Refused — not mainnet")}}<form class="stack" method="post" action="/admin/payment-intake">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="currency" value="{{.Currency}}">
 <input type="hidden" name="enabled" value="{{if eq (index $.Settings (printf "payment_intake_%s" .Currency)) "false"}}true{{else}}false{{end}}">
 {{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button type="submit">{{if eq (index $.Settings (printf "payment_intake_%s" .Currency)) "false"}}Enable{{else}}Pause{{end}} new {{.Currency}} payments</button>
-</form>{{else}}<p class="help">Configure the {{.Currency}} test-network wallet RPC on the server to enable payments.</p>{{end}}
+</form>{{else}}<p class="help">Configure the {{.Currency}} wallet RPC on the server to enable payments.</p>{{end}}
 </div>{{end}}
 <div class="table-wrap">
 <table>
@@ -31,7 +31,7 @@
 </thead>
 <tbody>{{range .Providers}}<tr>
 <td>{{.Currency}}</td>
-<td>{{if .Enabled}}<span class="badge testnet">TESTNET {{.Network}}</span>{{else}}—{{end}}</td>
+<td>{{if .Enabled}}{{if $.LiveNetwork}}<span class="badge live">MAINNET</span>{{else}}<span class="badge testnet">TESTNET {{.Network}}</span>{{end}}{{else}}—{{end}}</td>
 <td>{{.Status}}</td>
 <td>{{if .Enabled}}{{.Confirmations}}{{else}}—{{end}}</td>
 <td>{{if .Enabled}}{{.LastPoll}}{{else}}—{{end}}</td>
@@ -62,7 +62,7 @@
 <td class="mono">{{if .OrderLink}}<a href="/order?id={{.OrderID}}">{{.OrderID}}</a>{{else}}{{.OrderID}}{{end}}</td>
 <td>{{if eq .Kind "release"}}Release{{else}}Refund{{end}}</td>
 <td>{{.Recipient}}</td>
-<td>{{.Amount}} {{.Currency}} <span class="badge testnet">TESTNET</span></td>
+<td>{{.Amount}} {{.Currency}} {{if $.LiveNetwork}}<span class="badge live">MAINNET</span>{{else}}<span class="badge testnet">TESTNET</span>{{end}}</td>
 <td>{{if .Attention}}<strong>Needs attention:</strong> {{end}}{{.StateLabel}}</td>
 <td class="mono">{{if .TxID}}{{.TxID}}{{else}}{{.Error}}{{end}}</td>
 <td>{{.Updated}}</td>

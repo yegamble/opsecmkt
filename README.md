@@ -17,7 +17,9 @@ Server-rendered Go and PostgreSQL, PGP identity, Tor-first deployment.
 </div>
 
 > [!IMPORTANT]
-> **Test networks only.** Bitcoin and Monero mainnet are refused. Deposits sit in
+> **Test networks by default.** Bitcoin and Monero mainnet are refused unless the
+> operator configures them ([Mainnet](docs/operator-guide.md#mainnet)); a market is
+> all mainnet or all test networks. Deposits sit in
 > the operator's pooled custodial wallets: this is not escrow, and there is no
 > multisig or fee accounting. Tor protects inbound connections to the site; it
 > does not guarantee anonymity. See [implementation status](docs/implementation-status.md).
@@ -145,8 +147,8 @@ A browser with scripts off reaches the Go server through a Tor onion service
 server renders every page, checks CSRF and origin on every form, and writes an
 audit row in the same transaction as each action. PostgreSQL holds all state
 and applies migrations on startup. Optional Bitcoin Core and monero-wallet-rpc
-wallets run on test networks only; a single watcher confirms deposits and sends
-payouts.
+wallets run on test networks unless the operator configures mainnet; a single
+watcher confirms deposits and sends payouts.
 
 **What the server keeps.** There is no account, message or order deletion, and
 the operator or anyone holding a decrypted backup can read what is stored.

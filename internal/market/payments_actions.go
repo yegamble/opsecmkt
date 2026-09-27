@@ -18,7 +18,7 @@ func init() {
 }
 
 // payoutAddressAction saves (or clears) the user's payout address for one currency. Saving requires a live
-// provider and an address valid for its test network; blocked payouts for that currency are then released.
+// provider and an address valid for its network; blocked payouts for that currency are then released.
 // Every change needs the current password (and a TOTP code when enrolled), checked after the cheap validation,
 // and notifies the account.
 func payoutAddressAction(c *actionCtx) (actionResult, error) {
@@ -33,7 +33,7 @@ func payoutAddressAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, fail(409, cur+" payments are not configured on this market, so a payout address cannot be saved.")
 		}
 		if len(addr) > 128 || !p.ValidAddress(addr) {
-			return actionResult{}, fail(400, "Enter a valid "+cur+" address for the "+p.Network()+" test network. Mainnet addresses are rejected.")
+			return actionResult{}, fail(400, payoutAddressHint(cur, p.Network()))
 		}
 	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) { return savePayoutAddress(c, cur, addr, p) })
@@ -60,7 +60,7 @@ func savePayoutAddress(c *actionCtx, cur, addr string, p PaymentProvider) (actio
 			return actionResult{}, err
 		}
 		n, _ := res.RowsAffected()
-		audit = "Saved " + cur + " payout address (TESTNET " + p.Network() + ")"
+		audit = "Saved " + cur + " payout address (" + c.A.netTag() + " " + p.Network() + ")"
 		note = "Your " + cur + " payout address was changed"
 		if n > 0 {
 			audit += "; " + strconv.FormatInt(n, 10) + " waiting payout(s) now use it"
@@ -122,6 +122,14 @@ func ordersList(ids []string) string {
 	return "orders " + strings.Join(ids, ", ")
 }
 
+// payoutAddressHint is the error for a payout address that is not valid for network.
+func payoutAddressHint(cur, network string) string {
+	if isLiveNetwork(network) {
+		return "Enter a valid " + cur + " mainnet address. Test-network addresses are rejected."
+	}
+	return "Enter a valid " + cur + " address for the " + network + " test network. Mainnet addresses are rejected."
+}
+
 func paymentsGlobalLoader(_ context.Context, a *App, _ *http.Request, d *PageData) error {
 	var nets []string
 	ready := a.providers()
@@ -130,6 +138,7 @@ func paymentsGlobalLoader(_ context.Context, a *App, _ *http.Request, d *PageDat
 	}
 	d.PaymentsEnabled = len(nets) > 0
 	d.PaymentNetworks = strings.Join(nets, ", ")
+	d.LiveNetwork = a.live
 	return nil
 }
 
@@ -141,7 +150,7 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 	}
 	o := d.Order
 	p := a.provider(o.Currency)
-	pv := &PaymentView{Currency: o.Currency, Required: o.Amount, Testnet: true, Available: p != nil}
+	pv := &PaymentView{Currency: o.Currency, Required: o.Amount, Testnet: !a.live, Available: p != nil}
 	if p == nil {
 		msg, _ := a.unavailableError(o.Currency)
 		pv.Degraded = msg != ""
@@ -188,7 +197,7 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 	if !pv.Monitored {
 		pv.Status = "Not monitored: " + o.Currency + " payments are not configured on this server."
 		if pv.Degraded {
-			pv.Status = "Not monitored right now: the " + o.Currency + " test-network wallet is unavailable."
+			pv.Status = "Not monitored right now: the " + o.Currency + " " + a.netAdj() + " wallet is unavailable."
 		}
 		return nil
 	}
@@ -441,6 +450,9 @@ func paymentsAdminLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 			s.Status, s.Error = "Unavailable — retried every poll", msg
 			if disabled {
 				s.Status = "Refused — not a test network"
+				if a.live {
+					s.Status = "Refused — not mainnet"
+				}
 			}
 		} else {
 			s.Error = "Not configured (" + env[cur] + " is blank)"

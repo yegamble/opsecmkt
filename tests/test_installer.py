@@ -839,12 +839,26 @@ time.sleep(60)
         self.assertEqual({key: config[key] for key in ('BITCOIN_IMAGE', 'MONERO_IMAGE', 'MONERO_WALLET_IMAGE')},
                          self.compose_image_defaults())
 
-    def test_local_mainnet_choice_fails_closed_before_writing_config(self):
-        result = self.run_installer(['tor', '', 'local', '', 'live'])
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('Live Bitcoin payments are disabled', result.stderr)
-        self.assertFalse((self.root / '.env').exists())
-        self.assertEqual(self.calls(), PREFLIGHT)
+    def test_local_live_nodes_configure_mainnet(self):
+        result = self.run_installer(['tor', '', 'local', '', 'live', '', 'local', '', 'live', ''])
+        self.assert_started(result)
+        config = self.config()
+        self.assertEqual(config['BITCOIN_CHAIN'], 'main')
+        self.assertEqual(config['MONERO_NETWORK'], 'mainnet')
+        # monerod has no --mainnet flag: the blank flag makes compose.nodes.yaml pass none.
+        self.assertEqual(config['MONERO_NETWORK_FLAG'], '')
+        self.assertIn('MAINNET', result.stdout)
+
+    def test_local_live_node_with_a_test_network_fails_closed_before_writing_config(self):
+        for answers in (['tor', '', 'local', '', 'live', '', 'local', '', 'stagenet', ''],
+                        ['tor', '', 'local', '', 'testnet4', '', 'local', '', 'live', '']):
+            with self.subTest(answers=answers):
+                self.log.unlink(missing_ok=True)
+                result = self.run_installer(answers)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('cannot mix mainnet and test networks', result.stderr)
+                self.assertFalse((self.root / '.env').exists())
+                self.assertEqual(self.calls(), PREFLIGHT)
 
     def test_external_monero_wallet_rpc(self):
         daemon, wallet = 'https://monerod.example.test', 'http://user:pass@wallet.example.test:18083'

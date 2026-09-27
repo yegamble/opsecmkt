@@ -825,7 +825,7 @@ cmd_init() {
           if [[ -z $network && $detail == true ]]; then ask network 'BITCOIN network (testnet4/signet/live) [testnet4]: '; fi
           case ${network:-testnet4} in
             testnet4|signet) network=${network:-testnet4} ;;
-            live) die 'Live Bitcoin payments are disabled: this application refuses mainnet wallets and addresses.' ;;
+            live) network=main ;;
             *) die 'Choose testnet4, signet, or live.' ;;
           esac
           if [[ -z $prune && $detail == true ]]; then ask prune 'Prune the BITCOIN node to save disk? (yes/no) [yes]: '; fi
@@ -833,7 +833,7 @@ cmd_init() {
           if [[ -z $network && $detail == true ]]; then ask network 'MONERO network (stagenet/testnet/live) [stagenet]: '; fi
           case ${network:-stagenet} in
             stagenet|testnet) network=${network:-stagenet} ;;
-            live) die 'Live Monero payments are disabled: this application refuses mainnet wallets and addresses.' ;;
+            live) network=mainnet ;;
             *) die 'Choose stagenet, testnet, or live.' ;;
           esac
           if [[ -z $prune && $detail == true ]]; then ask prune 'Prune the MONERO node to save disk? (yes/no) [yes]: '; fi
@@ -850,6 +850,14 @@ cmd_init() {
       if [[ $choice == local ]]; then monero_network=$network; if [[ $prune == no ]]; then xmr_prune_flags=''; fi; fi
     fi
   done
+  # A market is all mainnet or all test networks: the app refuses to start with one of each. An external node's
+  # network is left blank here, which the app treats as a test network.
+  if [[ $bitcoin_chain == main || $monero_network == mainnet ]]; then
+    if { [[ $btc_choice != disabled && $bitcoin_chain != main ]]; } ||
+      { [[ $xmr_choice == local || ( $xmr_choice == external && -n $xmr_wallet_rpc ) ]] && [[ $monero_network != mainnet ]]; }; then
+      die 'Choose live for both Bitcoin and Monero, or disable the other coin: one market cannot mix mainnet and test networks. Nothing was written.'
+    fi
+  fi
   if [[ -n $admin ]]; then
     # Asked last, before anything is written or built. Kept in an unexported variable: it reaches the server
     # only through a pipe on stdin, never argv, the environment, the output or .env.
@@ -903,8 +911,8 @@ cmd_init() {
     put MONERO_WALLET_RPC_URL ''
   fi
   put AUDIT_SIGNING_KEY "$audit_key"
-  # Payments are test-network only (mainnet is always refused). BITCOIN_CHAIN / MONERO_NETWORK stay blank
-  # unless a local node is chosen: the app then accepts whichever test network an external node reports.
+  # BITCOIN_CHAIN / MONERO_NETWORK stay blank unless a local node is chosen: the app then accepts whichever test
+  # network an external node reports, never mainnet (an external mainnet node needs main / mainnet set by hand).
   case $btc_choice in
     external)
       put BITCOIN_RPC_URL "$btc_rpc"
@@ -943,6 +951,12 @@ cmd_init() {
   esac
   put BITCOIN_CHAIN "$bitcoin_chain"
   put MONERO_NETWORK "$monero_network"
+  # monerod and monero-wallet-rpc have no --mainnet flag: a blank MONERO_NETWORK_FLAG drops the network flag
+  # compose.nodes.yaml otherwise derives from MONERO_NETWORK.
+  if [[ $monero_network == mainnet ]]; then put MONERO_NETWORK_FLAG ''; fi
+  if [[ $bitcoin_chain == main || $monero_network == mainnet ]]; then
+    echo 'MAINNET: payments on this market move real funds. Deposits sit in the pooled wallets on this host; back them up (docs/testnet-runbook.md).'
+  fi
   if [[ ,$profiles, == *,bitcoin,* ]] && ! [[ $(env_get BITCOIN_RPC_PASSWORD "$config") =~ ^[0-9a-f]{48}$ ]]; then
     die 'Refusing to enable the local Bitcoin node without a generated RPC password.'
   fi

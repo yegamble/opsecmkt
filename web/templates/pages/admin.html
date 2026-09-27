@@ -13,7 +13,7 @@
 <ol>
 <li><a class="text-link" href="/totp">Protect your administrator account with two-factor sign-in</a>.</li>
 <li><a class="text-link" href="/account">Add your public PGP key</a>, then <a class="text-link" href="/pgp">verify ownership</a> so users can contact you securely.</li>
-<li><a class="text-link" href="#payment-providers">Check Bitcoin and Monero wallet status</a> and choose which currencies accept new payments. Only test networks are supported.</li>
+<li><a class="text-link" href="#payment-providers">Check Bitcoin and Monero wallet status</a> and choose which currencies accept new payments. {{if $.LiveNetwork}}This market is on mainnet: payments are real funds.{{else}}This market is on test networks.{{end}}</li>
 <li><a class="text-link" href="/vendor-dashboard">Publish your first listing</a>, or invite a user to register and assign them the vendor role below.</li>
 <li>Assign a trusted moderator below and ask them to add and verify their PGP key for dispute messages.</li>
 <li><a class="text-link" href="/">Open the marketplace</a> in another browser profile to test the buyer journey.</li>

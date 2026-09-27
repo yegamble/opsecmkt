@@ -171,8 +171,8 @@ Compose healthchecks: `docker compose ps` shows their health and `docker compose
 ## 3. `BITCOIN_RPC_URL` now turns payments on
 
 In alpha.1 the installer wrote `BITCOIN_RPC_URL` but nothing read it. Now a non-empty value enables Bitcoin
-test-network payments. The app never starts against a mainnet node: startup exits with
-`refusing to start: bitcoin chain "main" ...`. A node that is unreachable, still syncing or has no wallet
+test-network payments. The app never starts against a mainnet node unless `BITCOIN_CHAIN=main` is set: startup
+exits with `refusing to start: bitcoin chain "main" ...`. A node that is unreachable, still syncing or has no wallet
 loaded no longer stops the site; Bitcoin simply shows as unavailable on the admin page until it works.
 
 - **External mainnet node**: blank `BITCOIN_RPC_URL`, or point it at a testnet4/signet/regtest node.
@@ -225,7 +225,7 @@ the `tor_identity` volume (`tor_mirror_identity` for the mirror) and does not ch
 [Clearnet and onion deployment](docs/operator-guide.md#clearnet-and-onion-deployment).
 
 Then open the admin page. **Payment providers** shows each currency as Enabled, Unavailable (with the
-error; retried every poll), Refused (not a test network) or Disabled. The container stop grace period is now
+error; retried every poll), Refused (not a test network, or not mainnet on a mainnet market) or Disabled. The container stop grace period is now
 60 seconds so a redeploy does not interrupt a payout that is being broadcast.
 
 **Container logs now rotate, with Docker's `json-file` driver.** Every container keeps at most three 10 MB
@@ -418,9 +418,9 @@ quotes, as the installer writes them). Blank values keep a feature off.
 | Key | What to put there |
 | --- | --- |
 | `AUDIT_SIGNING_KEY` | `openssl rand -hex 32` output. Enables signed audit exports; back it up with `.env`. |
-| `BITCOIN_CHAIN` | Leave blank to accept whichever test chain the node reports, or `testnet4` / `signet` / `regtest`. Mainnet is always refused. See step 3 before setting it for a local node. |
+| `BITCOIN_CHAIN` | Leave blank to accept whichever test chain the node reports, or `testnet4` / `signet` / `regtest`. `main` configures mainnet (real funds; [operator guide](docs/operator-guide.md#mainnet)); mainnet is refused otherwise. See step 3 before setting it for a local node. |
 | `BITCOIN_WALLET` | Wallet name, default `opsecmkt`. |
-| `MONERO_NETWORK` | Blank, `stagenet` or `testnet`. |
+| `MONERO_NETWORK` | Blank, `stagenet` or `testnet`; `mainnet` configures mainnet (a local node also needs `MONERO_NETWORK_FLAG=`). |
 | `MONERO_WALLET_RPC_URL` | monero-wallet-rpc URL with credentials, for example `http://marketplace:PASSWORD@monero-wallet:18083`. Blank keeps Monero payments off. A daemon URL alone (`MONERO_RPC_URL`, which alpha.1 wrote) does **not** enable them. |
 | `MONERO_WALLET_RPC_PASSWORD` | For the local `monero-wallet` service only: `openssl rand -hex 24` output, the same value as the password in `MONERO_WALLET_RPC_URL`. The service refuses to start without it. |
 | `PAYMENT_CONFIRMATIONS_BTC` / `PAYMENT_CONFIRMATIONS_XMR` | Defaults 3 and 10. |

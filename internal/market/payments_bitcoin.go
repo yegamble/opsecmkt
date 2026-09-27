@@ -12,17 +12,19 @@ import (
 	"time"
 )
 
-// Bitcoin Core adapter (testnet3 "test", testnet4, signet, regtest). Mainnet is refused at startup.
+// Bitcoin Core adapter (testnet3 "test", testnet4, signet, regtest, and mainnet "main"). Mainnet is used only
+// when BITCOIN_CHAIN=main names it; a node that reports main otherwise is refused.
 
 func init() { registerProvider(bitcoinFromEnv) }
 
-var bitcoinTestChains = map[string]string{"test": "tb1", "testnet4": "tb1", "signet": "tb1", "regtest": "bcrt1"}
+// bitcoinChains maps each chain getblockchaininfo reports to its bech32 address prefix.
+var bitcoinChains = map[string]string{"test": "tb1", "testnet4": "tb1", "signet": "tb1", "regtest": "bcrt1", "main": "bc1"}
 
 type bitcoinProvider struct {
 	rpc          *rpcClient
 	walletName   string
 	wallet       string // "/wallet/<name>"
-	wantChain    string // BITCOIN_CHAIN ("" = any test chain the node reports)
+	wantChain    string // BITCOIN_CHAIN ("" = any test chain the node reports; "main" = mainnet, never implied)
 	chain        string // as reported by getblockchaininfo; set by the first successful Check, never changed
 	prefix       string // bech32 HRP prefix for this chain
 	confirmation int
@@ -53,8 +55,8 @@ func bitcoinFromEnv(ctx context.Context) (PaymentProvider, error) {
 // buildBitcoinProvider validates configuration without contacting the node.
 func buildBitcoinProvider(rawURL, wallet, wantChain string, confs int) (*bitcoinProvider, error) {
 	if wantChain != "" {
-		if _, ok := bitcoinTestChains[wantChain]; !ok {
-			return nil, fmt.Errorf("refusing to start: BITCOIN_CHAIN %q is not a test network (use test for testnet3, testnet4, signet or regtest)", wantChain)
+		if _, ok := bitcoinChains[wantChain]; !ok {
+			return nil, fmt.Errorf("refusing to start: BITCOIN_CHAIN %q is not a known chain (use main for mainnet, or test for testnet3, testnet4, signet or regtest)", wantChain)
 		}
 	}
 	c, err := newRPCClient("bitcoin", rawURL, "1.0", false)
@@ -64,7 +66,7 @@ func buildBitcoinProvider(rawURL, wallet, wantChain string, confs int) (*bitcoin
 	return &bitcoinProvider{rpc: c, walletName: wallet, wallet: "/wallet/" + url.PathEscape(wallet), wantChain: wantChain, confirmation: confs}, nil
 }
 
-// newBitcoinProvider builds the provider and checks it once (node reachable, test chain, wallet loaded).
+// newBitcoinProvider builds the provider and checks it once (node reachable, configured chain, wallet loaded).
 func newBitcoinProvider(ctx context.Context, rawURL, wallet, wantChain string, confs int) (*bitcoinProvider, error) {
 	p, err := buildBitcoinProvider(rawURL, wallet, wantChain, confs)
 	if err != nil {
@@ -76,8 +78,8 @@ func newBitcoinProvider(ctx context.Context, rawURL, wallet, wantChain string, c
 	return p, nil
 }
 
-// Check refuses non-test chains (and a chain that differs from BITCOIN_CHAIN or from the chain seen before),
-// loads the wallet when the node reports it is not loaded (after a node restart, for example) and reports
+// Check refuses mainnet unless BITCOIN_CHAIN=main (and a chain that differs from BITCOIN_CHAIN or from the
+// chain seen before), loads the wallet when the node reports it is not loaded (after a node restart, for example) and reports
 // initialblockdownload as syncing and "blocks" as the tip (the height gettransaction counts confirmations from).
 func (p *bitcoinProvider) Check(ctx context.Context) (nodeStatus, error) {
 	var info struct {
@@ -88,9 +90,12 @@ func (p *bitcoinProvider) Check(ctx context.Context) (nodeStatus, error) {
 	if err := p.rpc.call(ctx, "", "getblockchaininfo", nil, &info); err != nil {
 		return nodeStatus{}, fmt.Errorf("bitcoin node check failed: %w", err)
 	}
-	prefix, ok := bitcoinTestChains[info.Chain]
+	prefix, ok := bitcoinChains[info.Chain]
 	if !ok {
-		return nodeStatus{}, refusef("bitcoin chain %q is not a test network (allowed: testnet3 \"test\", testnet4, signet, regtest)", info.Chain)
+		return nodeStatus{}, refusef("bitcoin chain %q is not a known chain", info.Chain)
+	}
+	if info.Chain == "main" && p.wantChain != "main" {
+		return nodeStatus{}, refusef("bitcoin chain %q is not a test network (set BITCOIN_CHAIN=main to accept mainnet; test networks: testnet3 \"test\", testnet4, signet, regtest)", info.Chain)
 	}
 	if p.wantChain != "" && p.wantChain != info.Chain {
 		return nodeStatus{}, refusef("bitcoin node reports chain %q but BITCOIN_CHAIN is %q", info.Chain, p.wantChain)
@@ -131,12 +136,16 @@ func (p *bitcoinProvider) Network() string {
 	if chain == "" {
 		chain = p.wantChain // before the first successful check
 	}
-	if chain == "test" {
+	switch chain {
+	case "test":
 		return "testnet3"
+	case "main":
+		return "mainnet"
 	}
 	return chain
 }
-func (p *bitcoinProvider) Confirmations() int { return p.confirmation }
+func (p *bitcoinProvider) Confirmations() int      { return p.confirmation }
+func (p *bitcoinProvider) MainnetConfigured() bool { return p.wantChain == "main" }
 
 func (p *bitcoinProvider) NewAddress(ctx context.Context, orderID string) (string, error) {
 	var addr string

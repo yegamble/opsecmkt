@@ -124,7 +124,7 @@ type rowsQuerier interface {
 // held, not dropped); others need the confirmation threshold of the currency's provider. A configured provider
 // that is only unavailable in this process (node down, e.g. after a restart) keeps its threshold, applied to the
 // confirmations last recorded by the watcher, as the post-funding notice promises. With no provider, or a
-// disabled one (refused as not a test network), only deposits already credited count. Locked (unlock_time)
+// disabled one (refused by the network guard), only deposits already credited count. Locked (unlock_time)
 // transfers never count. Credited deposits below holdBelow hold the payout (conflicted; with a provider,
 // re-confirming). lock row-locks the counted deposits (FOR UPDATE, for enqueuePayout).
 func (a *App) payoutBasis(ctx context.Context, q rowsQuerier, o *Order, lock bool) (ids []int64, sum, holdBelow int64, err error) {
@@ -258,14 +258,14 @@ func (a *App) enqueuePayout(ctx context.Context, tx *sql.Tx, o *Order) error {
 		return err
 	}
 	label := amount(sum, currencyDecimals(o.Currency)) + " " + o.Currency
-	note := "Queued TESTNET " + kind + " of " + label + " to the " + who + " (single attempt)."
+	note := "Queued " + a.netTag() + " " + kind + " of " + label + " to the " + who + " (single attempt)."
 	switch state {
 	case "blocked":
-		note = "TESTNET " + kind + " of " + label + " to the " + who + " is blocked until the " + who + " saves a " + o.Currency + " payout address."
+		note = a.netTag() + " " + kind + " of " + label + " to the " + who + " is blocked until the " + who + " saves a " + o.Currency + " payout address."
 	case "held":
-		note = "TESTNET " + kind + " of " + label + " to the " + who + " is held: a credited deposit is conflicted or re-confirming."
+		note = a.netTag() + " " + kind + " of " + label + " to the " + who + " is held: a credited deposit is conflicted or re-confirming."
 		if suspended {
-			note = "TESTNET " + kind + " of " + label + " to the " + who + " is held until an administrator checks the payout address."
+			note = a.netTag() + " " + kind + " of " + label + " to the " + who + " is held until an administrator checks the payout address."
 		}
 	}
 	// An overpayment is paid out whole to one party (no split, no automatic refund of the excess); say so.
@@ -277,7 +277,7 @@ func (a *App) enqueuePayout(ctx context.Context, tx *sql.Tx, o *Order) error {
 		return err
 	}
 	if kind == "release" && sum > required {
-		body := "Order " + o.ID[:min(8, len(o.ID))] + ": the TESTNET release of " + label + " to the vendor includes " + priceDifference(sum, required, o.Currency) + ". The whole counted amount goes to one party; the excess is not refunded automatically."
+		body := "Order " + o.ID[:min(8, len(o.ID))] + ": the " + a.netTag() + " release of " + label + " to the vendor includes " + priceDifference(sum, required, o.Currency) + ". The whole counted amount goes to one party; the excess is not refunded automatically."
 		for _, uid := range []string{o.BuyerID, o.VendorID} {
 			if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), uid, body); err != nil {
 				return err
@@ -285,7 +285,7 @@ func (a *App) enqueuePayout(ctx context.Context, tx *sql.Tx, o *Order) error {
 		}
 	}
 	if state == "blocked" {
-		body := "Order " + o.ID[:min(8, len(o.ID))] + ": add a " + o.Currency + " payout address on your account page to receive " + label + " (TESTNET)."
+		body := "Order " + o.ID[:min(8, len(o.ID))] + ": add a " + o.Currency + " payout address on your account page to receive " + label + " (" + a.netTag() + ")."
 		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), recipient, body); err != nil {
 			return err
 		}
@@ -323,7 +323,7 @@ func (a *App) flagBelowFloor(ctx context.Context, tx *sql.Tx, o *Order, kind, wh
 	if o.Currency == "XMR" {
 		why = "the network fee paid on top would take too large a share of it"
 	}
-	payout := "TESTNET " + kind + " of " + amount(sum, dec) + " " + o.Currency + " to the " + who
+	payout := a.netTag() + " " + kind + " of " + amount(sum, dec) + " " + o.Currency + " to the " + who
 	note := payout + " was not queued: it is " + below + " (" + why + "). Not paid out: " + strings.Join(deposits, ", ") + ". Moderator review required."
 	party := "Order " + o.ID[:min(8, len(o.ID))] + ": the " + payout + " is " + below + " and was not sent. The market staff have been notified."
 	return a.flagOrder(ctx, tx, o, note, party)

@@ -24,7 +24,7 @@ func paymentIntakeAction(c *actionCtx) (actionResult, error) {
 		configured := c.A.payments[cur] != nil || c.A.unavailable[cur] != nil
 		c.A.payMu.RUnlock()
 		if !configured {
-			return actionResult{}, fail(409, "Configure the "+cur+" test-network wallet RPC before changing payment intake")
+			return actionResult{}, fail(409, "Configure the "+cur+" wallet RPC before changing payment intake")
 		}
 		// A checkout holds the setting FOR SHARE while it waits on the wallet (lockPaymentIntake).
 		if err := waitForWalletLocks(c.Ctx(), c.Tx); err != nil {
@@ -39,7 +39,7 @@ func paymentIntakeAction(c *actionCtx) (actionResult, error) {
 		}
 		action := "Paused new " + cur + " payment addresses; existing deposits and payouts continue"
 		if enabled == "true" {
-			action = "Enabled new " + cur + " payment addresses (test networks only)"
+			action = "Enabled new " + cur + " payment addresses (" + c.A.netName() + ")"
 		}
 		return actionResult{Redirect: "/admin?saved=1#payment-intake", Audit: action}, nil
 	})

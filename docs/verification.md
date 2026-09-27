@@ -105,7 +105,7 @@ Scope: the Foundation refactor and packages P1–P6 (authentication, PGP, orders
 - Live Docker image builds, container startup and Tor/onion reachability were not exercised in this effort. *Superseded in part, 2026-09-24:* every CI row in the evidence table builds the production image and starts it with internal and external PostgreSQL. Tor/onion reachability is still unverified.
 - Live Bitcoin regtest/testnet run: the Bitcoin Core adapter is tested only against local HTTP fakes. `scripts/regtest-smoke.sh` is provided for the operator to run against `bitcoind -regtest`; it was not run here. *Superseded, 2026-09-24:* the smoke test and real local-chain browser journeys were run later on 2026-09-23; see the real-chain rows of the evidence table. No public testnet run is recorded.
 - Monero stagenet live run: the monero-wallet-rpc adapter is tested only against local HTTP fakes. *Superseded in part, 2026-09-24:* real local-chain journeys on an offline stagenet fork are in the evidence table. The public stagenet has not been used.
-- Mainnet payments: unsupported by design. Startup refusal of mainnet chains and addresses is tested against fakes.
+- Mainnet payments: an operator opt-in (`BITCOIN_CHAIN=main`, `MONERO_NETWORK=mainnet`). Its refusals, labels and network-history guard are tested against fakes and simulated wallet RPC only; no mainnet run is recorded.
 - The GitHub Actions run for this branch (including the full `-race` suite on PostgreSQL 17) is not recorded here. *Superseded, 2026-09-24:* later CI runs, with commits, are in the evidence table.
 - Browser checks are not a complete WCAG AAA audit.
 

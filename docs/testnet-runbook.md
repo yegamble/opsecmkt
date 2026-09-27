@@ -1,8 +1,10 @@
 # Test-network payments runbook
 
 End-to-end operator steps for turning on Bitcoin (testnet4/signet/regtest) and Monero (stagenet/testnet)
-payments with the compose deployment. **Test networks only: these coins have no value and the application
-refuses mainnet.** Commands run from the repository directory on the Docker host, where `.env` lives.
+payments with the compose deployment. **Test networks: these coins have no value, and the application refuses
+mainnet unless it is configured** ([Mainnet](operator-guide.md#mainnet); the wallet, backup, restore and
+payout-recovery steps below apply unchanged to a mainnet market, with real funds). Commands run from the
+repository directory on the Docker host, where `.env` lives.
 
 What the application does on its own, so you know what to expect while following these steps:
 
@@ -11,9 +13,10 @@ What the application does on its own, so you know what to expect while following
   requests for it are refused ("Payment unavailable for BTC"), and every watcher pass
   (`PAYMENT_POLL_INTERVAL`, default 30 s) tries again: it reconnects, loads the Bitcoin wallet (`loadwallet`)
   or opens the Monero wallet (`open_wallet`) if the node was restarted, and then enables the currency.
-- Before a currency is used, the node's network is checked. A mainnet node or wallet stops startup; one that
-  appears later (for example a node swapped under a running site) disables that currency with *Refused — not
-  a test network* until the node is fixed and the app restarted.
+- Before a currency is used, the node's network is checked. A mainnet node or wallet stops startup unless
+  mainnet is configured; one on another network that appears later (for example a node swapped under a running
+  site) disables that currency with *Refused — not a test network* (*Refused — not mainnet* on a mainnet
+  market) until the node is fixed and the app restarted.
 - While the Bitcoin node is in initial block download, or the Monero daemon's `target_height` is above its
   `height`, the watcher skips that currency entirely: no deposits are read, no order expires and no payout is
   sent. The admin page shows "Node is still syncing". The Monero sync check needs `MONERO_RPC_URL`; without
@@ -119,7 +122,7 @@ Open **Admin → Payment providers**. For each currency:
 | --- | --- | --- |
 | Enabled | Checks passed; *Last poll* updates after every completed pass. *Last error* shows the latest wallet error, "Wallet check failed; watcher pass skipped …" when the node or wallet stopped answering, or "Node is still syncing". | Nothing, unless the error persists. |
 | Unavailable — retried every poll | Configured, but the node is unreachable, the credentials are rejected or the wallet cannot be loaded/opened. Payment requests are refused. | Fix the node or create the wallet; it is picked up within one poll interval, no restart needed. |
-| Refused — not a test network | The node or wallet reported mainnet (or a different chain than before) after startup. The currency is off. | Fix the node configuration, then restart the app. |
+| Refused — not a test network (or not mainnet) | The node or wallet reported another network (or a different chain than before) after startup. The currency is off. | Fix the node configuration, then restart the app. |
 | Disabled | The URL is blank. | Set it in `.env` and restart. |
 
 The app logs the same transitions (`docker compose logs app | grep payments`).

@@ -375,7 +375,7 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 			if _, err = tx.ExecContext(ctx, "UPDATE payments SET credited=true WHERE order_id=$1 AND confirmations>=$2 AND NOT locked", orderID, threshold); err != nil {
 				return err
 			}
-			note := fmt.Sprintf("TESTNET %s payment confirmed: %s %s in %d output(s) with at least %d confirmations", p.Network(), amount(sum, dec), o.Currency, n, threshold)
+			note := fmt.Sprintf("%s %s payment confirmed: %s %s in %d output(s) with at least %d confirmations", a.netTag(), p.Network(), amount(sum, dec), o.Currency, n, threshold)
 			next, err := a.transition(ctx, tx, orderID, stateAwaitingPayment, statePaid, nil, note)
 			if err != nil {
 				return err
@@ -412,11 +412,11 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 		if _, err = tx.ExecContext(ctx, "UPDATE payments SET flagged=true WHERE order_id=$1 AND txid=$2 AND locked", orderID, txid); err != nil {
 			return err
 		}
-		note := fmt.Sprintf("TESTNET deposit %s has an unlock time; locked transfer ignored: it is not counted toward payment and is never paid out automatically. Moderator review required.", truncate(txid, 20))
+		note := fmt.Sprintf("%s deposit %s has an unlock time; locked transfer ignored: it is not counted toward payment and is never paid out automatically. Moderator review required.", a.netTag(), truncate(txid, 20))
 		if err = a.flagOrder(ctx, tx, &o, note, ""); err != nil {
 			return err
 		}
-		body := "Order " + orderID[:min(8, len(orderID))] + ": locked transfer ignored. Deposit " + truncate(txid, 20) + " has an unlock time and does not count toward payment; send an ordinary transfer (TESTNET)."
+		body := "Order " + orderID[:min(8, len(orderID))] + ": locked transfer ignored. Deposit " + truncate(txid, 20) + " has an unlock time and does not count toward payment; send an ordinary transfer (" + a.netTag() + ")."
 		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, body); err != nil {
 			return err
 		}
@@ -438,8 +438,8 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 				rows.Close()
 				return err
 			}
-			notes = append(notes, fmt.Sprintf("TESTNET %s deposit %s:%d of %s %s received after this order was funded. If it has %d confirmations, as last recorded by the market, when the order is completed, cancelled or resolved, it is included in the order's single release or refund; otherwise it is not paid out automatically.",
-				p.Network(), truncate(txid, 20), idx, amount(amt, dec), o.Currency, threshold))
+			notes = append(notes, fmt.Sprintf("%s %s deposit %s:%d of %s %s received after this order was funded. If it has %d confirmations, as last recorded by the market, when the order is completed, cancelled or resolved, it is included in the order's single release or refund; otherwise it is not paid out automatically.",
+				a.netTag(), p.Network(), truncate(txid, 20), idx, amount(amt, dec), o.Currency, threshold))
 		}
 		rows.Close()
 		if err = rows.Err(); err != nil {
@@ -494,8 +494,8 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 			if r.confs >= 0 {
 				what = fmt.Sprintf("is back below the confirmation threshold (%d of %d confirmations), as after a chain reorganisation", r.confs, threshold)
 			}
-			note := fmt.Sprintf("Credited TESTNET deposit %s %s. Order state was not changed; unsent payouts are held until it confirms again. Moderator review required.", truncate(r.txid, 20), what)
-			party := fmt.Sprintf("Order %s: credited TESTNET deposit %s %s. The order was not changed and any unsent payout waits until the deposit confirms again; until then this payment is not final. The market staff have been notified.", orderID[:min(8, len(orderID))], truncate(r.txid, 20), what)
+			note := fmt.Sprintf("Credited %s deposit %s %s. Order state was not changed; unsent payouts are held until it confirms again. Moderator review required.", a.netTag(), truncate(r.txid, 20), what)
+			party := fmt.Sprintf("Order %s: credited %s deposit %s %s. The order was not changed and any unsent payout waits until the deposit confirms again; until then this payment is not final. The market staff have been notified.", orderID[:min(8, len(orderID))], a.netTag(), truncate(r.txid, 20), what)
 			if err = a.flagOrder(ctx, tx, &o, note, party); err != nil {
 				return err
 			}
@@ -530,7 +530,7 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 		}
 		if !queued && paidOut && o.State == stateCancelled {
 			// The cancellation found nothing to refund, so these funds confirmed afterwards.
-			body := "Order " + orderID[:min(8, len(orderID))] + ": a TESTNET deposit confirmed after this order was cancelled and is being refunded to you (blocked until you save a " + o.Currency + " payout address, if you have none)."
+			body := "Order " + orderID[:min(8, len(orderID))] + ": a " + a.netTag() + " deposit confirmed after this order was cancelled and is being refunded to you (blocked until you save a " + o.Currency + " payout address, if you have none)."
 			if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, body); err != nil {
 				return err
 			}
@@ -544,7 +544,7 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 				if _, err = tx.ExecContext(ctx, "UPDATE payments SET flagged=true WHERE order_id=$1 AND txid=$2 AND NOT credited", orderID, txid); err != nil {
 					return err
 				}
-				note := fmt.Sprintf("TESTNET deposit %s arrived after this order was settled and was not paid out. Moderator review required.", truncate(txid, 20))
+				note := fmt.Sprintf("%s deposit %s arrived after this order was settled and was not paid out. Moderator review required.", a.netTag(), truncate(txid, 20))
 				if err = a.flagOrder(ctx, tx, &o, note, ""); err != nil {
 					return err
 				}
@@ -661,10 +661,10 @@ func (a *App) sendPayouts(ctx context.Context, p PaymentProvider, orders []strin
 			if ambiguous {
 				msg = "Wallet call failed without a definite answer; the transaction may or may not have been broadcast. Check the wallet before requeueing or paying manually. "
 			}
-			err = a.recordPayout(rctx, id, order, recipient, "failed", "", msg+truncate(serr.Error(), 200), ambiguous, "TESTNET payout of "+label+" failed and will not be retried automatically.")
+			err = a.recordPayout(rctx, id, order, recipient, "failed", "", msg+truncate(serr.Error(), 200), ambiguous, a.netTag()+" payout of "+label+" failed and will not be retried automatically.")
 			errs = append(errs, &watchError{label: fmt.Sprintf("payout %d", id), class: payoutErrorClass(cur, serr), err: serr})
 		} else {
-			err = a.recordPayout(rctx, id, order, recipient, "sent", txid, "", false, "TESTNET payout of "+label+" sent: "+txid)
+			err = a.recordPayout(rctx, id, order, recipient, "sent", txid, "", false, a.netTag()+" payout of "+label+" sent: "+txid)
 		}
 		cancel()
 		// Logged here, not only in the returned error: the watcher drops a pass's error once shutdown has begun,

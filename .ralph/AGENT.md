@@ -22,5 +22,6 @@ fresh database on each run and leaves fixtures behind. Preview is read-only and
 never seeds PostgreSQL. Never use a real deployment database for any test.
 
 Payment tests use fake RPC providers; real regtest and deployment checks are
-separate evidence. Never configure mainnet or claim multisig escrow. Immutable
+separate evidence. Never configure mainnet in development or tests (it is an
+operator opt-in with real funds) or claim multisig escrow. Immutable
 merged migrations stay unchanged; add numbered migrations for schema changes.

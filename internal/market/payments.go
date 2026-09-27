@@ -2,6 +2,7 @@ package market
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log"
@@ -17,21 +18,66 @@ type Incoming struct {
 	Locked        bool  // Monero unlock_time != 0: recorded and reported, never credited
 }
 
-// PaymentProvider is a test-network wallet adapter. Implementations never accept mainnet.
+// PaymentProvider is a wallet adapter for one currency on one network. A test network is the default; the live
+// network (mainnet) is used only when the operator names it (BITCOIN_CHAIN=main, MONERO_NETWORK=mainnet).
 type PaymentProvider interface {
 	Currency() string // "BTC" or "XMR"
-	Network() string  // never "main"/"mainnet"
+	// Network is the configured network until the first successful check ("" when detected from the node) and
+	// the node's network after it. It is a live network ("main"/"mainnet") only when the operator configured one.
+	Network() string
 	Confirmations() int
 	NewAddress(ctx context.Context, orderID string) (string, error)
 	Incoming(ctx context.Context, addresses []string) ([]Incoming, error)
 	Send(ctx context.Context, to string, amount int64) (txid string, err error)
-	ValidAddress(addr string) bool // format for THIS network; mainnet formats false
+	ValidAddress(addr string) bool // format for THIS network; other networks' formats false
 }
 
-// providerChecker is implemented by node-backed providers. Check (re)connects, runs the test-network guard,
+// mainnetOptIn is implemented by providers the operator can configure for mainnet. A provider without it, or
+// one whose MainnetConfigured is false, is held to test networks by checkProvider whatever it reports.
+type mainnetOptIn interface {
+	MainnetConfigured() bool // BITCOIN_CHAIN=main, MONERO_NETWORK=mainnet
+}
+
+func mainnetConfigured(p PaymentProvider) bool {
+	m, ok := p.(mainnetOptIn)
+	return ok && m.MainnetConfigured()
+}
+
+// isLiveNetwork reports whether network is a live (mainnet) network rather than a test network.
+func isLiveNetwork(network string) bool {
+	n := strings.ToLower(network)
+	return n == "main" || n == "mainnet"
+}
+
+// netTag, netName and netAdj label amounts, notes and copy with the network class of this market: every
+// provider is on a test network, or every provider is on mainnet (initPayments refuses a mix).
+func (a *App) netTag() string {
+	if a.live {
+		return "MAINNET"
+	}
+	return "TESTNET"
+}
+
+// netName is the network class as a noun: "(test network)", "(mainnet)".
+func (a *App) netName() string {
+	if a.live {
+		return "mainnet"
+	}
+	return "test network"
+}
+
+// netAdj is the network class as an adjective: "the BTC test-network wallet", "the BTC mainnet wallet".
+func (a *App) netAdj() string {
+	if a.live {
+		return "mainnet"
+	}
+	return "test-network"
+}
+
+// providerChecker is implemented by node-backed providers. Check (re)connects, runs the network guard,
 // loads or opens the wallet when needed and reports whether the node is still syncing. It runs at startup
 // and at the start of every watcher pass, so a restarted node or wallet service is picked up again.
-// An error for which isRefusal is true means the node is not (or no longer) on an allowed test network.
+// An error for which isRefusal is true means the node is not (or no longer) on the configured network.
 type providerChecker interface {
 	Check(ctx context.Context) (nodeStatus, error)
 }
@@ -42,7 +88,7 @@ type nodeStatus struct {
 	Tip     int64
 }
 
-// refusalError marks a node or wallet that is not on an allowed test network. At startup it is fatal; once
+// refusalError marks a node or wallet that is not on the configured network. At startup it is fatal; once
 // the site is running it permanently disables that provider (never retried until a restart).
 type refusalError struct{ msg string }
 
@@ -68,11 +114,12 @@ func registerProvider(f providerFactory) { providerFactories = append(providerFa
 type unavailableProvider struct {
 	p        PaymentProvider
 	err      string // last check error, shown on the admin page
-	disabled bool   // refused (not a test network): never retried
+	disabled bool   // refused (not on the configured network): never retried
 }
 
-// checkProvider runs the provider's own Check (when it has one) and then the generic network guard.
-func checkProvider(ctx context.Context, p PaymentProvider) (nodeStatus, error) {
+// checkProvider runs the provider's own Check (when it has one) and then the generic network guard: the
+// provider must report a live network exactly when live (the operator configured mainnet), and some network.
+func checkProvider(ctx context.Context, p PaymentProvider, live bool) (nodeStatus, error) {
 	var st nodeStatus
 	if c, ok := p.(providerChecker); ok {
 		var err error
@@ -80,29 +127,45 @@ func checkProvider(ctx context.Context, p PaymentProvider) (nodeStatus, error) {
 			return nodeStatus{}, err
 		}
 	}
-	if n := strings.ToLower(p.Network()); n == "main" || n == "mainnet" || n == "" {
-		return nodeStatus{}, refusef("%s provider network %q is not a test network", p.Currency(), p.Network())
+	switch n := p.Network(); {
+	case live && !isLiveNetwork(n):
+		return nodeStatus{}, refusef("%s provider network %q is not mainnet", p.Currency(), n)
+	case !live && (isLiveNetwork(n) || n == ""):
+		return nodeStatus{}, refusef("%s provider network %q is not a test network", p.Currency(), n)
 	}
 	return st, nil
 }
 
 // initPayments builds the providers from registered factories during New() (not in preview). A node that
-// refuses the test-network guard stops startup; an unreachable node or a wallet that is not loaded leaves
-// that currency unavailable (not fatal) until a watcher pass finds it working.
+// refuses the network guard stops startup; an unreachable node or a wallet that is not loaded leaves that
+// currency unavailable (not fatal) until a watcher pass finds it working. A provider configured for mainnet
+// makes this a live market (a.live): every other provider must be configured for mainnet too. New() then runs
+// checkNetworkHistory.
 func (a *App) initPayments(ctx context.Context) error {
+	var built []PaymentProvider
 	for _, f := range providerFactories {
 		p, err := f(ctx)
 		if err != nil {
 			return err
 		}
-		if p == nil {
-			continue
+		if p != nil {
+			built = append(built, p)
 		}
+	}
+	for i, p := range built {
+		live := mainnetConfigured(p)
+		if i == 0 {
+			a.live = live
+		} else if live != a.live {
+			return errors.New("refusing to start: one payment currency is configured for mainnet and another for a test network; configure both for mainnet (BITCOIN_CHAIN=main, MONERO_NETWORK=mainnet) or both for test networks")
+		}
+	}
+	for _, p := range built {
 		cur := p.Currency()
 		if a.payments[cur] != nil || a.unavailable[cur] != nil {
 			return fmt.Errorf("two payment providers configured for %s", cur)
 		}
-		if _, err = checkProvider(ctx, p); err != nil {
+		if _, err := checkProvider(ctx, p, a.live); err != nil {
 			if isRefusal(err) {
 				return fmt.Errorf("refusing to start: %w", err)
 			}
@@ -112,7 +175,57 @@ func (a *App) initPayments(ctx context.Context) error {
 		}
 		a.payments[cur] = p
 	}
+	if a.live {
+		log.Printf("payments: MAINNET — deposits and payouts move real funds")
+	}
 	return nil
+}
+
+// checkNetworkHistory runs in New() after initPayments. It refuses to start when the database holds deposit
+// addresses for a configured currency issued on the other class of network: a mainnet wallet must never pay
+// out for test-network deposits, and test coins must never settle mainnet orders. Addresses record their
+// network in payment_addresses.provider ("btc-testnet3", "xmr-mainnet"; see orders_actions.go). With no such
+// address, a watcher status row from the other class is deleted: its highest tip (a testnet3 tip is far above
+// mainnet's) would otherwise hold every pass as "node is behind".
+func (a *App) checkNetworkHistory(ctx context.Context) error {
+	a.payMu.RLock()
+	var currencies []string
+	for cur := range a.payments {
+		currencies = append(currencies, cur)
+	}
+	for cur := range a.unavailable {
+		currencies = append(currencies, cur)
+	}
+	a.payMu.RUnlock()
+	for _, cur := range currencies {
+		var provider string
+		err := a.db.QueryRowContext(ctx, "SELECT provider FROM payment_addresses WHERE currency=$1 AND (split_part(provider,'-',2) IN ('main','mainnet'))<>$2 LIMIT 1", cur, a.live).Scan(&provider)
+		if err == sql.ErrNoRows {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("payments: reading %s payment history: %w", cur, err)
+		}
+		_, network, _ := strings.Cut(provider, "-")
+		return fmt.Errorf("refusing to start: this database holds %s payments made on %s, but the %s wallet is configured for %s; use a fresh database", cur, historyClass(network), cur, a.netName())
+	}
+	for _, cur := range currencies {
+		res, err := a.db.ExecContext(ctx, "DELETE FROM payment_status WHERE currency=$1 AND network<>'' AND (network IN ('main','mainnet'))<>$2", cur, a.live)
+		if err != nil {
+			return fmt.Errorf("payments: resetting %s watcher status: %w", cur, err)
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			log.Printf("payments: %s watcher status from another network class reset for %s", cur, a.netName())
+		}
+	}
+	return nil
+}
+
+func historyClass(network string) string {
+	if isLiveNetwork(network) {
+		return "mainnet"
+	}
+	return "a test network (" + network + ")"
 }
 
 // provider returns the working provider for currency, or nil when it is not configured or unavailable.
@@ -164,7 +277,7 @@ func (a *App) paymentsConfigured() bool {
 }
 
 // refreshProviders runs at the start of every watcher pass, in every process. Unavailable providers are
-// checked again and promoted once they pass the test-network guard; working providers are checked so a
+// checked again and promoted once they pass the network guard; working providers are checked so a
 // restarted wallet is loaded or opened again. The result maps each currency that must not be polled this
 // pass to the reason (check failed, node syncing, provider disabled), and why maps it to a class safe to log
 // (no wallet text, A-170); tips maps each other checked currency whose node reported a height to that tip
@@ -191,7 +304,7 @@ func (a *App) refreshProviders(ctx context.Context) (skip map[string]string, tip
 			skip[cur], why[cur] = last, refusedClass
 			continue
 		}
-		st, err := checkProvider(ctx, u.p)
+		st, err := checkProvider(ctx, u.p, a.live)
 		if ctx.Err() != nil {
 			return skip, tips, why
 		}
@@ -207,7 +320,7 @@ func (a *App) refreshProviders(ctx context.Context) (skip map[string]string, tip
 		default:
 			delete(a.unavailable, cur)
 			a.payments[cur] = u.p
-			log.Printf("payments: %s provider available (TESTNET %s)", cur, u.p.Network())
+			log.Printf("payments: %s provider available (%s %s)", cur, a.netTag(), u.p.Network())
 		}
 		if err != nil {
 			skip[cur] = u.err
@@ -222,7 +335,7 @@ func (a *App) refreshProviders(ctx context.Context) (skip map[string]string, tip
 		if _, ok := p.(providerChecker); !ok {
 			continue
 		}
-		st, err := checkProvider(ctx, p)
+		st, err := checkProvider(ctx, p, a.live)
 		if ctx.Err() != nil {
 			return skip, tips, why
 		}
@@ -247,9 +360,9 @@ func (a *App) refreshProviders(ctx context.Context) (skip map[string]string, tip
 	return skip, tips, why
 }
 
-// refusedClass is the log class of a provider the test-network guard refused; the node's own answer is only in
-// the reason on the admin page (Refused — not a test network).
-const refusedClass = "refused by the test-network guard (reason on the admin page)"
+// refusedClass is the log class of a provider the network guard refused; the node's own answer is only in
+// the reason on the admin page (Refused — not a test network, or not mainnet).
+const refusedClass = "refused by the network guard (reason on the admin page)"
 
 const syncingReason = "Node is still syncing; watcher pass skipped (no deposits read, no expiry, no payouts) until it catches up."
 
