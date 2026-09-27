@@ -3,13 +3,71 @@
 This release adds test-network payments, signed audit exports and several database migrations. Read this
 whole page before pulling the new code onto a running v0.1.0-alpha.1 deployment.
 
+## Upgrade with the installer
+
+From the directory you deploy from, with your age public key:
+
+```sh
+git describe --tags --always   # note the revision you run today, e.g. v0.1.0-alpha.1
+git pull                       # or check out the release tag
+AGE_RECIPIENT=age1YOUR_PUBLIC_RECIPIENT ./scripts/install.sh upgrade
+```
+
+With an **external database** (`DATABASE_URL` names another host than `db`), the backup reads the database
+only from `BACKUP_DATABASE_URL`, and needs Python 3 and PostgreSQL client tools matching or newer than the
+server ([Backups and recovery](docs/operator-guide.md#backups-and-recovery)). Give both:
+
+```sh
+BACKUP_DATABASE_URL=YOUR_EXTERNAL_DATABASE_URL AGE_RECIPIENT=age1YOUR_PUBLIC_RECIPIENT ./scripts/install.sh upgrade
+```
+
+The value of `DATABASE_URL` in `.env` serves when this host can reach that server (quote it in single quotes). Without `BACKUP_DATABASE_URL`,
+`upgrade` refuses before changing anything. Like any command-line value, it is visible to other local users
+while the command runs and may be kept in your shell history.
+
+Read [section 3](#3-bitcoin_rpc_url-now-turns-payments-on) first if `.env` sets a node URL, and
+[section 7](#7-local-nodes-are-now-pruned) and [section 8](#8-node-images-are-pinned-to-release-tags) if you
+run local nodes. `upgrade` then does, in order:
+
+1. **Backup.** It runs `scripts/backup.sh` into `backups/pre-upgrade-<time>.dump.age` and stops, changing
+   nothing, if that fails. Without `AGE_RECIPIENT` (and, for an external database, `BACKUP_DATABASE_URL`) it
+   refuses to run unless you pass `--no-backup` (for example because you have just taken a backup; migrations
+   are one-way).
+2. **A copy of `.env`** as `.env.pre-upgrade-<time>` (mode `0600`): the configuration to roll back with.
+3. **Missing keys.** It adds every non-secret key `.env.example` documents that `.env` lacks, with the value
+   Compose already used while the key was absent, so nothing changes but what `.env` shows
+   ([the appendix](#appendix-new-keys-by-hand) explains them). It records the
+   `COMPOSE_PROJECT_NAME` your containers use and `APP_PORT`: the value in your shell when you set one, else
+   the host port the running app container publishes (`docker compose port app 8080`), else `8080`. It never invents
+   a secret: `AUDIT_SIGNING_KEY` and a local Monero wallet stay off until you add them.
+4. **`APP_SECRET_KEY`** set to the current `SETUP_TOKEN` value when it is missing, so every key, session and
+   TOTP secret stays the same ([details](#app_secret_key-and-stricter-startup-checks)).
+5. **Pinned images.** `bitcoin/bitcoin`, `simple-monerod` and `simple-monero-wallet-rpc` on `latest` (or on no
+   tag) become the verified releases ([section 8](#8-node-images-are-pinned-to-release-tags)). Another
+   publisher's image on `latest` is kept, and the check below refuses it until you pin it.
+6. **The onion mirror.** On Tor, when a `tor-mirror` container exists, `mirror` joins `COMPOSE_PROFILES`.
+7. It prints what changed (key names, never secret values), runs `./scripts/install.sh check`, then
+   `docker compose up -d --build --wait`; migrations run at startup.
+8. Once setup is complete and the restarted app reports that its keys derive from `APP_SECRET_KEY`
+   (`-status` prints `keyroot=app_secret_key`), it removes `SETUP_TOKEN`, which grants nothing any more, and
+   recreates the app.
+   On Tor, when `.env` changed, it recreates `tor` (and `tor-mirror`) once ([section 4](#4-deploy)).
+
+Running it again changes nothing. Installer commands that change `.env` hold a lock, the directory
+`.env.lock`, while they run; a second one refuses to start until the first ends. If a killed run left it
+behind, remove it with `rmdir .env.lock`. If the check or a service fails, it says so and changes nothing more: fix
+`.env`, or put the copy back with `mv .env.pre-upgrade-<time> .env`, and see
+[Rolling back](#5-rolling-back). Then open the admin page as [section 4](#4-deploy) describes. The sections
+below explain each change and how to make it by hand.
+
 ## 1. Take a backup and record what you run
 
 Migrations are **one-way**. There are no down-migrations, and the alpha.1 code must not run against a
 migrated database (for example, migration 001 replaces `orders.status` with `orders.state` and drops the old
 unique constraint). `compose.yaml` builds the app from the checkout (`build: .`), so there is no saved image
-to switch back to: rolling back means restoring this backup and rebuilding the old revision. Before
-upgrading, from the directory you deploy from:
+to switch back to: rolling back means restoring this backup and rebuilding the old revision.
+`./scripts/install.sh upgrade` takes the backup and the copy of `.env` for you. By hand, before upgrading, from
+the directory you deploy from:
 
 ```sh
 AGE_RECIPIENT=age1YOUR_PUBLIC_RECIPIENT ./scripts/backup.sh backups/pre-upgrade.dump.age
@@ -20,33 +78,11 @@ git describe --tags --always  # note the revision you run today, e.g. v0.1.0-alp
 Keep the backup, `.env.pre-upgrade` and the revision until you have run the new version for a while. See
 [Rolling back](#5-rolling-back).
 
-## 2. Add the new keys to your existing `.env`
+## 2. New keys in `.env`
 
-`scripts/install.sh` refuses to touch an existing `.env`, so it will not add them for you. Add the lines
-below with your editor (values in single quotes, as the installer writes them). Blank values keep a feature
-off.
-
-| Key | What to put there |
-| --- | --- |
-| `AUDIT_SIGNING_KEY` | `openssl rand -hex 32` output. Enables signed audit exports; back it up with `.env`. |
-| `BITCOIN_CHAIN` | Leave blank to accept whichever test chain the node reports, or `testnet4` / `signet` / `regtest`. Mainnet is always refused. See step 3 before setting it for a local node. |
-| `BITCOIN_WALLET` | Wallet name, default `opsecmkt`. |
-| `MONERO_NETWORK` | Blank, `stagenet` or `testnet`. |
-| `MONERO_WALLET_RPC_URL` | monero-wallet-rpc URL with credentials, for example `http://marketplace:PASSWORD@monero-wallet:18083`. Blank keeps Monero payments off. A daemon URL alone (`MONERO_RPC_URL`, which alpha.1 wrote) does **not** enable them. |
-| `MONERO_WALLET_RPC_PASSWORD` | For the local `monero-wallet` service only: `openssl rand -hex 24` output, the same value as the password in `MONERO_WALLET_RPC_URL`. The service refuses to start without it. |
-| `PAYMENT_CONFIRMATIONS_BTC` / `PAYMENT_CONFIRMATIONS_XMR` | Defaults 3 and 10. |
-| `PAYMENT_POLL_INTERVAL` / `PAYMENT_EXPIRY` | Defaults `30s` and `24h`. |
-| `BITCOIN_PRUNE_MB` / `MONERO_PRUNE_FLAGS` | Local nodes only. Absent keys mean **pruned** (`2000` and `'--prune-blockchain --sync-pruned-blocks'`); `BITCOIN_PRUNE_MB='0'` and `MONERO_PRUNE_FLAGS=''` keep a full node. Read [section 7](#7-local-nodes-are-now-pruned) before deploying if you run a local node. |
-| `BITCOIN_IMAGE` / `MONERO_IMAGE` / `MONERO_WALLET_IMAGE` | Local nodes only. Absent keys mean the pinned release images the payout code was verified against; the images alpha.1 made you choose stay in use until you remove or change them. Read [section 8](#8-node-images-are-pinned-to-release-tags). |
-| `COMPOSE_PROJECT_NAME` | Not needed: absent means `opsecmkt`, which is what your containers and volumes are named after. Never set another value on this install, or Compose starts it on new, empty volumes. A second checkout on the same host needs its own name; see [Backups and recovery](docs/operator-guide.md#backups-and-recovery). |
-| `DATABASE_CONNECT_TIMEOUT` / `MIGRATION_LOCK_TIMEOUT` / `MIGRATION_TIMEOUT` | Optional; leave blank for `15s`, `10m` and `10m`. Raise `MIGRATION_TIMEOUT` if your database is large; see [Migrations](docs/operator-guide.md#migrations). |
-
-For a local Monero node, also add `monero-wallet` to `COMPOSE_PROFILES` (for example
-`COMPOSE_PROFILES='internal-db,monero,monero-wallet'`). If you run the Tor onion mirror, add `mirror` there too
-(for example `COMPOSE_PROFILES='internal-db,mirror'`) instead of starting it with a `--profile mirror` option,
-which drops the other profiles for that command; without it in `.env`, `docker compose up -d` leaves the mirror
-out and Compose does not restart its Tor with the app. See
-[Optional onion mirror](docs/operator-guide.md#optional-onion-mirror).
+`./scripts/install.sh upgrade` adds every missing key with the value Compose already used while it was absent,
+so adding them changes nothing by itself. [The appendix](#appendix-new-keys-by-hand) lists them for an upgrade
+by hand. Two changes need your attention either way: the checks on `SETUP_TOKEN` and the new `APP_SECRET_KEY`.
 
 ### Replace a placeholder `SETUP_TOKEN`
 
@@ -98,8 +134,9 @@ restore later.
 **Your existing `.env` keeps working unchanged.** This release adds `APP_SECRET_KEY`, which becomes the only
 root of the CSRF/CAPTCHA key and the key that encrypts TOTP secrets (the derivation is the same as before, only
 the input changes). Without it the app derives them from `SETUP_TOKEN` exactly as before, byte for byte, and
-logs `keys: derived from SETUP_TOKEN (legacy)` at startup. To move to it without changing any key, copy the
-current value (if `.env` already has an `APP_SECRET_KEY` line, edit that line instead):
+logs `keys: derived from SETUP_TOKEN (legacy)` at startup. `./scripts/install.sh upgrade` moves to it without
+changing any key, and removes `SETUP_TOKEN` once setup is complete. By hand, copy the current value (if `.env`
+already has an `APP_SECRET_KEY` line, edit that line instead):
 
 ```sh
 grep '^SETUP_TOKEN=' .env | sed 's/^SETUP_TOKEN=/APP_SECRET_KEY=/' >> .env   # same value, new name
@@ -156,6 +193,8 @@ loaded no longer stops the site; Bitcoin simply shows as unavailable on the admi
 **Local nodes: decide on pruning first** ([section 7](#7-local-nodes-are-now-pruned)). The first start
 after this upgrade prunes an existing full Bitcoin or Monero chain unless `.env` says otherwise.
 
+`./scripts/install.sh upgrade` runs this section for you, Tor recreate included. By hand:
+
 ```sh
 git pull   # or check out the release tag
 docker compose config --quiet   # fails loudly on a malformed .env
@@ -210,6 +249,9 @@ the **upgraded** checkout: its `scripts/restore.sh` can restore into the interna
      ./scripts/restore.sh backups/pre-upgrade.dump.age
    ```
 
+   After `./scripts/install.sh upgrade` the backup is `backups/pre-upgrade-<time>.dump.age` (it printed the
+   name).
+
    With an external database, create an empty database on that server and restore with
    `RESTORE_DATABASE_URL` instead (see [backups and recovery](docs/operator-guide.md#backups-and-recovery)).
    The restore pauses payouts and holds queued ones (see step 6); alpha.1 has no payment processing.
@@ -217,7 +259,7 @@ the **upgraded** checkout: its `scripts/restore.sh` can restore into the interna
 3. Put back the old configuration and point it at the restored database:
 
    ```sh
-   cp -p .env.pre-upgrade .env
+   cp -p .env.pre-upgrade .env   # after install.sh upgrade: .env.pre-upgrade-<time>
    ```
 
    Edit `DATABASE_URL` in `.env` so the database name after the port is the restored one, for example
@@ -337,3 +379,30 @@ treat every failed Monero payout as possibly broadcast. Check with:
 ```sh
 docker compose config --images
 ```
+
+## Appendix: new keys by hand
+
+`./scripts/install.sh upgrade` writes these for you. To add them yourself, use your editor (values in single
+quotes, as the installer writes them). Blank values keep a feature off.
+
+| Key | What to put there |
+| --- | --- |
+| `AUDIT_SIGNING_KEY` | `openssl rand -hex 32` output. Enables signed audit exports; back it up with `.env`. |
+| `BITCOIN_CHAIN` | Leave blank to accept whichever test chain the node reports, or `testnet4` / `signet` / `regtest`. Mainnet is always refused. See step 3 before setting it for a local node. |
+| `BITCOIN_WALLET` | Wallet name, default `opsecmkt`. |
+| `MONERO_NETWORK` | Blank, `stagenet` or `testnet`. |
+| `MONERO_WALLET_RPC_URL` | monero-wallet-rpc URL with credentials, for example `http://marketplace:PASSWORD@monero-wallet:18083`. Blank keeps Monero payments off. A daemon URL alone (`MONERO_RPC_URL`, which alpha.1 wrote) does **not** enable them. |
+| `MONERO_WALLET_RPC_PASSWORD` | For the local `monero-wallet` service only: `openssl rand -hex 24` output, the same value as the password in `MONERO_WALLET_RPC_URL`. The service refuses to start without it. |
+| `PAYMENT_CONFIRMATIONS_BTC` / `PAYMENT_CONFIRMATIONS_XMR` | Defaults 3 and 10. |
+| `PAYMENT_POLL_INTERVAL` / `PAYMENT_EXPIRY` | Defaults `30s` and `24h`. |
+| `BITCOIN_PRUNE_MB` / `MONERO_PRUNE_FLAGS` | Local nodes only. Absent keys mean **pruned** (`2000` and `'--prune-blockchain --sync-pruned-blocks'`); `BITCOIN_PRUNE_MB='0'` and `MONERO_PRUNE_FLAGS=''` keep a full node. Read [section 7](#7-local-nodes-are-now-pruned) before deploying if you run a local node. |
+| `BITCOIN_IMAGE` / `MONERO_IMAGE` / `MONERO_WALLET_IMAGE` | Local nodes only. Absent keys mean the pinned release images the payout code was verified against; the images alpha.1 made you choose stay in use until you remove or change them (`upgrade` pins the default images left on `latest`). Read [section 8](#8-node-images-are-pinned-to-release-tags). |
+| `COMPOSE_PROJECT_NAME` | Not needed: absent means `opsecmkt`, which is what your containers and volumes are named after. Never set another value on this install, or Compose starts it on new, empty volumes. A second checkout on the same host needs its own name; see [Backups and recovery](docs/operator-guide.md#backups-and-recovery). |
+| `DATABASE_CONNECT_TIMEOUT` / `MIGRATION_LOCK_TIMEOUT` / `MIGRATION_TIMEOUT` | Optional; leave blank for `15s`, `10m` and `10m`. Raise `MIGRATION_TIMEOUT` if your database is large; see [Migrations](docs/operator-guide.md#migrations). |
+
+For a local Monero node, also add `monero-wallet` to `COMPOSE_PROFILES` (for example
+`COMPOSE_PROFILES='internal-db,monero,monero-wallet'`). If you run the Tor onion mirror, add `mirror` there too
+(for example `COMPOSE_PROFILES='internal-db,mirror'`) instead of starting it with a `--profile mirror` option,
+which drops the other profiles for that command; without it in `.env`, `docker compose up -d` leaves the mirror
+out and Compose does not restart its Tor with the app. See
+[Optional onion mirror](docs/operator-guide.md#optional-onion-mirror).

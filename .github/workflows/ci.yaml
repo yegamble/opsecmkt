@@ -234,14 +234,14 @@ jobs:
       - name: Bootstrap production image with a real database
         run: bash scripts/ci-smoke.sh "${{ matrix.database }}"
   installer:
-    name: Local installer and browser setup wizard
+    name: Local installer, setup wizard, terminal bootstrap and upgrade
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install, bootstrap and restart an isolated real deployment
+      - name: Install, set up (browser and terminal), upgrade an alpha-layout .env, in isolated real deployments
         run: python3 scripts/test-install.py
       - name: Preserve installer evidence
         if: always()
@@ -286,6 +286,20 @@ jobs:
           cache-to: type=gha,mode=max,scope=tor
       - name: Validate Tor configuration without network access
         run: docker run --rm --network none --add-host app:127.0.0.1 --cap-drop ALL --security-opt no-new-privileges:true opsecmkt-tor:ci --verify-config
+      # compose.tor.yaml's healthcheck passes once Tor has written its onion address. Tor does that at startup,
+      # before it reaches the network; `up --wait` and scripts/install.sh rely on it.
+      - name: Onion address written offline (the Tor healthcheck)
+        run: |
+          grep -qF "test: [CMD-SHELL, 'test -s /var/lib/tor/marketplace/hostname']" compose.tor.yaml
+          docker run -d --name tor-offline --network none --add-host app:127.0.0.1 --cap-drop ALL \
+            --security-opt no-new-privileges:true opsecmkt-tor:ci
+          for _ in $(seq 60); do
+            docker exec tor-offline sh -c 'test -s /var/lib/tor/marketplace/hostname' && break
+            sleep 1
+          done
+          docker exec tor-offline sh -c 'test -s /var/lib/tor/marketplace/hostname'
+          docker exec tor-offline cat /var/lib/tor/marketplace/hostname | grep -Eq '^[a-z2-7]{56}\.onion$'
+          docker rm -f tor-offline
       - name: Install age
         run: |
           sudo apt-get update

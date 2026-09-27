@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Exercises the built production image; uses only disposable CI containers/volumes.
 set -euo pipefail
-unset COMPOSE_PROFILES COMPOSE_FILE
+unset COMPOSE_PROFILES COMPOSE_FILE APP_SECRET_KEY
 mode=${1:?usage: ci-smoke.sh internal|external}
 [[ "$mode" == internal || "$mode" == external ]] || exit 2
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -130,9 +130,10 @@ work = Path(os.environ['SMOKE_WORK'])
 (work / 'tampered.jsonl').write_bytes(export_bytes.replace(b'Account created: admin', b'Account created: buyer'))
 print('Production image: database, health, bootstrap, admin session, setup lockdown, stylesheets, unavailable BTC and audit export passed')
 PY
-# -status inside the container reports the completed setup and nothing else (no secret).
+# -status inside the container reports the completed setup, and that this SETUP_TOKEN-only environment is a
+# legacy key root, and nothing else (no secret).
 status_line=$("${compose[@]}" exec -T app /app/server -status)
-[[ $status_line =~ ^installed=true\ schema=[0-9]{3}$ ]] || { echo "unexpected -status output: $status_line" >&2; exit 1; }
+[[ $status_line =~ ^installed=true\ schema=[0-9]{3}\ keyroot=setup_token$ ]] || { echo "unexpected -status output: $status_line" >&2; exit 1; }
 "$work/verify-audit" -pub "$SMOKE_AUDIT_PUBLIC_KEY" "$work/export.jsonl" "$work/export.sig"
 if "$work/verify-audit" -pub "$SMOKE_AUDIT_PUBLIC_KEY" "$work/tampered.jsonl" "$work/export.sig" 2>/dev/null; then
   echo 'verify-audit accepted a tampered export' >&2; exit 1
