@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 # Exercises the built production image; uses only disposable CI containers/volumes.
+# With `scanner` (war room A-192) it runs the malware scanner leg instead: the same app and database plus the
+# pinned clamd of compose.scanner.yaml, whose only signature is deploy/testdata/clamav-test.ndb (see scanner_leg).
 set -euo pipefail
-unset COMPOSE_PROFILES COMPOSE_FILE APP_SECRET_KEY
-mode=${1:?usage: ci-smoke.sh internal|external}
+unset COMPOSE_PROFILES COMPOSE_FILE APP_SECRET_KEY CLAMD_ADDRESS SCANNER_MAX_SIGNATURE_AGE_DAYS
+mode=${1:?usage: ci-smoke.sh internal|external [scanner]}
+leg=${2:-}
 [[ "$mode" == internal || "$mode" == external ]] || exit 2
+[[ -z "$leg" || "$leg" == scanner ]] || exit 2
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
 work=$(mktemp -d)
-project="opsecmkt-ci-${mode}-$$"
+project="opsecmkt-ci-${mode}${leg:+-$leg}-$$"
 network="${project}-backend"
 export DATABASE_URL='postgres://opsecmkt:ci-runtime-only@db:5432/opsecmkt?sslmode=disable'
 export POSTGRES_PASSWORD='ci-runtime-only'
@@ -34,16 +38,235 @@ compose=(docker compose --env-file "$work/env" -p "$project" -f compose.yaml -f 
 if [[ "$mode" == internal ]]; then
   compose+=(-f compose.internal-db.yaml --profile internal-db)
 fi
+if [[ "$leg" == scanner ]]; then
+  # clamd exactly as compose.scanner.yaml defines it, except that its signature directory is a read-only bind
+  # of the one test database scanner_prepare builds (the image's own signatures are hidden by the mount).
+  export CLAMD_ADDRESS=clamd:3310
+  mkdir "$work/clamav"
+  cat > "$work/scanner.yaml" <<YAML
+services:
+  clamd:
+    volumes:
+      - type: bind
+        source: $work/clamav
+        target: /var/lib/clamav
+        read_only: true
+YAML
+  compose+=(-f compose.scanner.yaml -f "$work/scanner.yaml" --profile scanner)
+fi
 cleanup() {
   status=$?
   if ((status)); then "${compose[@]}" logs --no-color || true; fi
   "${compose[@]}" down --volumes --remove-orphans || true
-  if [[ "$mode" == external ]]; then docker rm -f "${project}-db" >/dev/null 2>&1 || true; fi
+  if [[ "$mode" == external ]]; then docker rm -f -v "${project}-db" >/dev/null 2>&1 || true; fi
   docker network rm "$network" >/dev/null 2>&1 || true
   rm -rf "$work"
   exit "$status"
 }
 trap cleanup EXIT
+fail() { echo "FAIL: $*" >&2; exit 1; }
+
+# The scanner leg's only signature database. deploy/testdata/clamav-test.ndb (text: one signature matching the
+# test marker the Go and browser tests' fake clamd also knows) is packed inside the pinned image into an
+# unsigned daily.cud built now. clamd reports that build time in VERSION ("ClamAV x.y.z/1/<now>"), so the
+# app's 30-day signature age gate passes on any calendar day with the default SCANNER_MAX_SIGNATURE_AGE_DAYS.
+# This proves the upload path against real clamd, not detection quality: no production signature is loaded.
+scanner_prepare() {
+  local image
+  image=$("${compose[@]}" config --format json | python3 -c 'import json, sys; print(json.load(sys.stdin)["services"]["clamd"]["image"])')
+  docker image inspect "$image" >/dev/null 2>&1 || docker pull -q "$image" >/dev/null
+  # sigtool --build packs every daily.* file of its working directory, needs a COPYING file and reads the
+  # builder name from standard input; nothing is signed and nothing leaves the container but daily.cud.
+  docker run --rm -i --network none --read-only --tmpfs /build --user clamav --cap-drop ALL \
+    --security-opt no-new-privileges:true --entrypoint bash "$image" -c '
+      set -e
+      cd /build
+      cat > daily.ndb
+      echo "OPSEC Market CI test signature; not for scanning anything else." > COPYING
+      sigtool --build=daily.cud --unsigned --cvd-version=1 --datadir=/build <<< ci >&2
+      sigtool --info daily.cud >&2
+      cat daily.cud' < deploy/testdata/clamav-test.ndb > "$work/clamav/daily.cud"
+  chmod 0755 "$work/clamav"
+  chmod 0644 "$work/clamav/daily.cud"
+  echo "scanner: $image with deploy/testdata/clamav-test.ndb as its only signature database (an unsigned daily.cud)"
+}
+
+# The scanner leg (war room A-192, rulings C1, C2, C4 and C6), driven the way a browser without JavaScript
+# drives it: curl with a cookie jar, the page's CSRF token, an Origin header, and multipart bodies with csrf as
+# the first part, like the listing's Photos form.
+scanner_leg() {
+  local base=http://127.0.0.1:18090 jar="$work/cookies" page="$work/page.html" status location csrf listing image reply
+  local planted=CI-FIXTURE-TEXT-CHUNK marker=OPSECMKT-CLAMD-TEST-MARKER re
+  get() { local path=$1; shift; curl -sS -o "$page" -w '%{http_code}' -b "$jar" -c "$jar" "$@" "$base$path"; }
+  post() { local path=$1; shift; curl -sS -o "$page" -w '%{http_code} %{redirect_url}\n' -b "$jar" -c "$jar" -H "Origin: $base" "$@" "$base$path"; }
+  page_csrf() { grep -o 'name="csrf" value="[0-9a-f]*"' "$page" | sed -n '1s/.*value="\([0-9a-f]*\)"/\1/p'; }
+  rows() {
+    local sql='SELECT count(*) FROM images'
+    if [[ "$mode" == internal ]]; then "${compose[@]}" exec -T db psql -U opsecmkt -d opsecmkt -tAc "$sql"
+    else docker exec "${project}-db" psql -U opsecmkt -d opsecmkt -tAc "$sql"; fi
+  }
+  # upload FILE: the listing's Photos form as the browser sends it (csrf, id, description, photo, in order).
+  upload() {
+    curl -sS -o "$page" -w '%{http_code}' -b "$jar" -c "$jar" -H "Origin: $base" \
+      --form-string "csrf=$csrf" --form-string "id=$listing" --form-string 'description=' \
+      -F "photo=@$1;type=image/png;filename=IMG_0001.png" "$base/listings/photo"
+  }
+  # wait_ready: the listing's Photos form is offered (the app's scanner poll, every 30 s, found clamd Ready).
+  wait_ready() {
+    local started=$SECONDS
+    until [[ $(get "/listing-edit?id=$listing") == 200 ]] && grep -q 'action="/listings/photo"' "$page" &&
+      ! grep -q 'Photo uploads are paused' "$page"; do
+      ((SECONDS - started < 180)) || fail "uploads still paused after 180 s: $(grep -o 'Photo uploads are [^<]*' "$page" || true)"
+      sleep 2
+    done
+    echo "scanner: uploads offered after $((SECONDS - started)) s"
+  }
+  # A PNG with a tEXt chunk (which re-encoding must drop): clean.png carries planted text, infected.png the marker.
+  python3 - "$work" "$planted" "$marker" <<'PY'
+import struct, sys, zlib
+def chunk(kind, body):
+    return struct.pack('>I', len(body)) + kind + body + struct.pack('>I', zlib.crc32(kind + body))
+def png(text):
+    rows = b''.join(b'\0' + bytes(v for x in range(96) for v in ((x * 4) & 255, (y * 5) & 255, 160)) for y in range(72))
+    return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', 96, 72, 8, 2, 0, 0, 0))
+            + chunk(b'tEXt', b'Comment\0' + text.encode()) + chunk(b'IDAT', zlib.compress(rows)) + chunk(b'IEND', b''))
+work, planted, marker = sys.argv[1:]
+open(work + '/clean.png', 'wb').write(png(planted))
+open(work + '/infected.png', 'wb').write(png(marker))
+PY
+
+  # Bootstrap the administrator (vendors and administrators add listing photos) and publish a listing.
+  [[ $(get /setup) == 200 ]] || fail '/setup did not answer 200'
+  csrf=$(page_csrf) || fail '/setup has no CSRF token'
+  read -r status location < <(post /setup --data-urlencode "csrf=$csrf" --data-urlencode "token=$SETUP_TOKEN" \
+    --data-urlencode handle=ci_admin --data-urlencode password=ci-long-disposable-password --data-urlencode 'site_name=CI Scanner Market')
+  [[ $status == 303 ]] || fail "setup answered $status"
+  [[ $(get /vendor-dashboard) == 200 ]] || fail 'the administrator has no vendor desk after setup'
+  csrf=$(page_csrf) || fail '/vendor-dashboard has no CSRF token'
+  read -r status location < <(post /listings --data-urlencode "csrf=$csrf" --data-urlencode 'title=CI scanner listing' \
+    --data-urlencode 'description=Listing for the malware scanner leg.' -d category=Hardware -d region=Worldwide -d kind=physical \
+    -d stock=1 -d price_btc=0.001 -d price_xmr=0.5)
+  re='/listing-edit\?id=([0-9a-f]{64})&saved=1#photos$'
+  [[ $status == 303 && $location =~ $re ]] || fail "publishing the listing answered $status $location"
+  listing=${BASH_REMATCH[1]}
+  wait_ready
+  csrf=$(page_csrf) || fail 'the listing edit page has no CSRF token'
+
+  # Only the test database is loaded: the image's own signatures would find the EICAR test string (assembled
+  # here, so this file never contains it), sent over INSTREAM inside the clamd container.
+  reply=$(python3 - <<'PY' | "${compose[@]}" exec -T clamd nc 127.0.0.1 3310 | tr -d '\0'
+import struct, sys
+data = b'X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR' + b'-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*'
+sys.stdout.buffer.write(b'zINSTREAM\0' + struct.pack('>I', len(data)) + data + b'\0\0\0\0')
+PY
+)
+  [[ $reply == 'stream: OK' ]] || fail "EICAR answered '$reply': clamd loaded signatures besides the test database"
+  echo 'scanner: clamd has only the test signature (the EICAR test string is not found)'
+
+  # The marker in a tEXt chunk passes the app's own caps and is refused by clamd: the original bytes are scanned.
+  [[ $(upload "$work/infected.png") == 422 ]] || fail "the marker PNG was not refused as infected: $(cat "$page")"
+  grep -qF 'Photo refused: the malware scanner flagged this file. Nothing was stored.' "$page" || fail 'no infected copy'
+  grep -qE 'Reference: [0-9a-f]{8}' "$page" || fail 'the infected page has no reference'
+  ! grep -q 'Opsecmkt.Test.Marker' "$page" || fail 'the uploader saw the signature name'
+  [[ $(rows) == 0 ]] || fail 'the refused upload stored a row'
+  echo 'scanner: the marker PNG was refused as infected (422) and stored nothing'
+
+  # A clean PNG is stored, and served publicly only as the re-encoded JPEG (no tEXt, no planted text).
+  [[ $(upload "$work/clean.png") == 303 ]] || fail "the clean PNG was not stored: $(cat "$page")"
+  [[ $(rows) == 1 ]] || fail 'the clean upload did not store exactly one row'
+  [[ $(curl -sS -o "$page" -w '%{http_code}' "$base/product?id=$listing") == 200 ]] || fail 'the product page did not answer 200'
+  image=$(grep -o '/img/[0-9a-f]\{32\}-f' "$page" | sed -n 1p)
+  [[ -n $image ]] || fail 'the product page shows no photo'
+  [[ $(curl -sS -D "$work/headers" -o "$work/served" -w '%{http_code} %{content_type}' "$base$image") == '200 image/jpeg' ]] ||
+    fail "$image was not served as a JPEG"
+  python3 - "$work/served" "$planted" "$marker" <<'PY' || fail 'the served photo is not a clean re-encoded JPEG'
+import sys
+data = open(sys.argv[1], 'rb').read()
+assert data[:3] == b'\xff\xd8\xff', 'not a JPEG'
+for needle in (b'tEXt', b'IHDR', sys.argv[2].encode(), sys.argv[3].encode()):
+    assert needle not in data, needle
+PY
+  echo "scanner: the clean PNG was stored and $image serves a re-encoded JPEG without its tEXt chunk"
+
+  # clamd stopped: uploads are refused with the scanner copy and store nothing; the market keeps serving.
+  "${compose[@]}" stop clamd
+  [[ $(upload "$work/clean.png") == 503 ]] || fail "an upload with clamd stopped was not refused: $(cat "$page")"
+  # Before the app's next 30 s poll the upload reaches clamd and fails there ("did not respond", counted as a
+  # scanner failure); after it, the cached state refuses the upload before its body is read ("paused", not
+  # counted). Either is the scanner copy, and the admin count below follows whichever was seen.
+  if grep -qF 'Photo not saved: the malware scanner did not respond, so nothing was stored. Try again later.' "$page"; then
+    scanner_failed=1
+  elif grep -qF 'Photo uploads are paused: the malware scanner is not responding.' "$page"; then
+    scanner_failed=0
+  else
+    fail 'no scanner-unavailable copy'
+  fi
+  [[ $(rows) == 1 ]] || fail 'an upload with clamd stopped stored a row'
+  [[ $(curl -sS "$base/healthz") == ok ]] || fail '/healthz failed with clamd stopped'
+  [[ $(curl -sS -o /dev/null -w '%{http_code}' "$base/") == 200 ]] || fail 'the catalog failed with clamd stopped'
+  [[ $(get "/listing-edit?id=$listing") == 200 ]] && grep -qF 'Photo uploads are paused: the malware scanner is not responding.' "$page" ||
+    fail 'the Photos panel does not say uploads are paused'
+  echo 'scanner: with clamd stopped an upload is refused (503, nothing stored); /healthz and the catalog answer'
+  "${compose[@]}" start clamd
+  wait_ready
+  [[ $(upload "$work/clean.png") == 303 && $(rows) == 2 ]] || fail 'uploads did not resume after clamd started'
+  echo 'scanner: uploads resume after clamd starts'
+
+  # SHUTDOWN from the app container (the only other member of the scanner network) is refused; clamd keeps serving.
+  clamd_command() {
+    "${compose[@]}" exec -T app timeout 10 bash -c 'exec 3<>/dev/tcp/clamd/3310 && printf "z%s\0" "$1" >&3 && tr -d "\0" <&3' _ "$1"
+  }
+  reply=$(clamd_command SHUTDOWN)
+  [[ $reply == 'COMMAND UNAVAILABLE' ]] || fail "SHUTDOWN answered '$reply'"
+  sleep 2
+  reply=$(clamd_command PING)
+  [[ $reply == PONG ]] || fail "PING after SHUTDOWN answered '$reply'"
+  [[ $(docker inspect -f '{{.State.Running}} {{.RestartCount}}' "$("${compose[@]}" ps -q clamd)") == 'true 0' ]] ||
+    fail 'clamd stopped or restarted after SHUTDOWN'
+  [[ $(curl -sS "$base/healthz") == ok ]] || fail '/healthz failed after SHUTDOWN'
+  [[ $(upload "$work/clean.png") == 303 && $(rows) == 3 ]] || fail 'uploads failed after SHUTDOWN'
+  echo 'scanner: SHUTDOWN from the app container answers COMMAND UNAVAILABLE; clamd keeps serving, never restarted'
+
+  # clamd reaches nothing but the scanner network: it resolves app (the control) but not db, connects to app:8080
+  # but not to the database's address or outside, and has no default route.
+  local db_container db_ip
+  if [[ "$mode" == internal ]]; then db_container=$("${compose[@]}" ps -q db); else db_container="${project}-db"; fi
+  db_ip=$(docker inspect -f "{{(index .NetworkSettings.Networks \"$network\").IPAddress}}" "$db_container")
+  [[ -n $db_ip ]] || fail 'no database address on the backend network'
+  "${compose[@]}" exec -T clamd getent hosts app >/dev/null || fail 'control: clamd cannot resolve app'
+  ! "${compose[@]}" exec -T clamd getent hosts db || fail 'clamd resolves db'
+  "${compose[@]}" exec -T clamd nc -z -w 5 app 8080 || fail 'control: clamd cannot connect to app:8080'
+  ! "${compose[@]}" exec -T clamd nc -z -w 5 "$db_ip" 5432 2>/dev/null || fail "clamd connects to the database at $db_ip"
+  ! "${compose[@]}" exec -T clamd nc -z -w 5 1.1.1.1 443 2>/dev/null || fail 'clamd connects outside the host'
+  "${compose[@]}" exec -T clamd cat /proc/net/route > "$work/route"
+  ! awk 'NR > 1 && $2 == "00000000"' "$work/route" | grep -q . || fail 'clamd has a default route'
+  echo "scanner: clamd resolves app but not db, and cannot connect to the database ($db_ip:5432) or outside (1.1.1.1:443)"
+
+  # /admin shows the test database's build date (so the age gate passed) and the counts; the log names the
+  # signature with the reference only (ruling C4).
+  [[ $(get /admin) == 200 ]] || fail '/admin did not answer 200'
+  python3 - "$page" "$scanner_failed" <<'PY' || fail '/admin image scanner panel'
+import calendar, re, sys, time
+html = open(sys.argv[1], encoding='utf-8').read()
+raw = html[html.index('id="image-scanner"'):]
+raw = raw[:raw.index('</section>')]
+panel = ' '.join(re.sub(r'<[^>]+>', ' ', raw).split())
+checks = [f'3 stored · 1 refused as infected · {sys.argv[2]} refused because the scanner failed', 'Opsecmkt.Test.Marker.UNOFFICIAL']
+missing = [check for check in checks if check not in panel] + ['Ready'] * ('<strong>Ready</strong>' not in raw)
+signatures = re.search(r'Signatures: ClamAV [0-9.]+, daily database 1 built (\d{4}-\d{2}-\d{2} \d{2}:\d{2}) UTC, 0 days old \(limit 30\)', panel)
+if missing or not signatures:
+    sys.exit(f'missing {missing!r} or the test database signature line in: {panel}')
+# The date VERSION reported is the test database's build time, minutes ago (not the image's own signatures).
+built = calendar.timegm(time.strptime(signatures[1], '%Y-%m-%d %H:%M'))
+if not -120 <= time.time() - built <= 3600:
+    sys.exit(f'the signatures were not built during this run: {signatures[0]}')
+print('scanner: /admin shows', signatures[0])
+PY
+  "${compose[@]}" logs --no-color app > "$work/app.log" 2>&1
+  grep -qE 'upload outcome=refused reason=infected sig=Opsecmkt\.Test\.Marker\.UNOFFICIAL ref=[0-9a-f]{8} kind=listing$' "$work/app.log" ||
+    fail 'no infected log line'
+  echo 'Scanner leg passed: real clamd with a test signature only (not a production signature feed).'
+}
 command -v go >/dev/null || { echo 'Go is required to build cmd/verify-audit for the audit export check' >&2; exit 1; }
 CGO_ENABLED=0 go build -trimpath -o "$work/verify-audit" ./cmd/verify-audit
 export SMOKE_WORK="$work" SMOKE_ROOT="$root"
@@ -58,10 +281,16 @@ if [[ "$mode" == external ]]; then
   done
   docker exec "${project}-db" pg_isready -h 127.0.0.1 -U opsecmkt -d opsecmkt
 fi
-# --wait returns once every started service is healthy: the app by its own `-healthcheck` (compose.yaml).
+if [[ "$leg" == scanner ]]; then scanner_prepare; fi
+# --wait returns once every started service is healthy: the app by its own `-healthcheck` (compose.yaml), and
+# in the scanner leg clamd by clamdcheck.sh (PING).
 "${compose[@]}" up -d --no-build --wait --wait-timeout 180
 if [[ "$mode" == external ]]; then
   test -z "$(docker ps -aq --filter "label=com.docker.compose.project=$project" --filter label=com.docker.compose.service=db)"
+fi
+if [[ "$leg" == scanner ]]; then
+  scanner_leg
+  exit 0
 fi
 python3 - <<'PY'
 import http.cookiejar, os, re, time, urllib.parse, urllib.request

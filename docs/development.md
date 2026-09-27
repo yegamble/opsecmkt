@@ -162,7 +162,9 @@ npm run test:e2e
 npm run test:e2e:report
 ```
 
-The `db-setup` project seeds once before `database-chromium`; each subsequent test
+The `db-setup` project seeds once before `database-chromium` and `database-firefox`
+(the upload cases of `db-listing-photos.spec.ts` in Firefox; alone, on a fresh
+database: `npx playwright test --project=database-firefox`); each subsequent test
 creates its own accounts and listings. Recreate the E2E database before every full
 run, including after a setup-only seed. Playwright starts its own servers on
 loopback ports **18080** and **18081**, and refuses to reuse existing servers.

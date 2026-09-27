@@ -6,6 +6,8 @@ import { setRole, signedIn, submitStatus } from './db-helpers';
 // A-188: listing photos and avatars through the real forms with JavaScript disabled, against the fake clamd the
 // Playwright config starts (tests/e2e/fixtures/fake-clamd.py; not a malware scanner: it reports a stream FOUND
 // only when it carries the test marker). Fixture pictures are generated here, never committed.
+// Tests tagged @firefox also run in the database-firefox project (playwright.config.ts, A-192): the upload and
+// refusal cases in Firefox, which shows a connection reset instead of a page when an answer races the upload.
 
 const MARKER = 'OPSECMKT-CLAMD-TEST-MARKER';
 const PLANTED = 'E2E-FIXTURE-TEXT-CHUNK';
@@ -89,7 +91,7 @@ test('publish lands on photos', async ({ browser, baseURL }) => {
   await vendor.context().close();
 });
 
-test('uploaded photo persists after reload, re-encoded', async ({ browser, baseURL }) => {
+test('uploaded photo persists after reload, re-encoded', { tag: '@firefox' }, async ({ browser, baseURL }) => {
   const { page: vendor } = await newVendor(browser, baseURL);
   const listing = await publish(vendor, `Photos ${uniqueHandle('keep')}`);
   expect(await uploadPhoto(vendor, png(96, 72, PLANTED), 'A grey box on a wooden table')).toBe(303);
@@ -134,7 +136,7 @@ test('vendor removes own photo', async ({ browser, baseURL }) => {
   await vendor.context().close();
 });
 
-test('scanner found stores nothing', async ({ browser, baseURL }) => {
+test('scanner found stores nothing', { tag: '@firefox' }, async ({ browser, baseURL }) => {
   const { page: vendor } = await newVendor(browser, baseURL);
   const listing = await publish(vendor, `Photos ${uniqueHandle('found')}`);
   expect(await uploadPhoto(vendor, png(64, 48, MARKER))).toBe(422);
@@ -145,6 +147,26 @@ test('scanner found stores nothing', async ({ browser, baseURL }) => {
   await expect(vendor.getByRole('region', { name: 'Photos' })).toContainText('0 of 4 photos');
   await vendor.goto('/account');
   await expect(vendor.getByRole('region', { name: 'Recent activity' })).toContainText('Upload refused by the malware scanner');
+  await vendor.context().close();
+});
+
+// Ruling C3: a file just under the Content-Length ceiling (cap + 4 MiB), so nearly 4 MiB of it is still unsent when
+// the server refuses at the 4 MB cap. The server reads that rest into nothing before it answers, so the browser shows
+// the page naming the limit, not a connection reset. A file only just over the cap would not test this: Go's server
+// discards up to 256 KiB of unread body by itself, and Firefox showed the page with no drain at all (PR #26 review
+// R-1: without the drain, a ~4 MiB remainder reset the connection 4 times in 4).
+test('oversized photo shows the limit without JS', { tag: '@firefox' }, async ({ browser, baseURL }) => {
+  const { page: vendor } = await newVendor(browser, baseURL);
+  const listing = await publish(vendor, `Photos ${uniqueHandle('big')}`);
+  const big = Buffer.alloc(8 * 1024 * 1024 - 2048); // with the form's other parts, still under the ceiling
+  png(64, 48, PLANTED).copy(big);
+  expect(await uploadPhoto(vendor, big)).toBe(413);
+  await expect(vendor.getByRole('alert')).toHaveText('Photo not saved: the file is larger than 4 MB, the most accepted. Nothing was stored.');
+  // A refusal while the form is read links to the vendor desk, not the listing (uploads.go sets the listing link
+  // only once the whole form has been read).
+  await expect(vendor.getByRole('link', { name: 'Back to the vendor desk' })).toHaveAttribute('href', '/vendor-dashboard');
+  await vendor.goto(`/listing-edit?id=${listing}`);
+  await expect(vendor.getByRole('region', { name: 'Photos' })).toContainText('0 of 4 photos');
   await vendor.context().close();
 });
 

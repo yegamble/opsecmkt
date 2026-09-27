@@ -6,7 +6,7 @@ Run the URL/credential tests without any external service or third-party Python 
 python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 
-The installer tests cover the noninteractive `--local` shortcut, inherited-wallet isolation, persisted custom ports, readiness failure, HTTPS handoff, and existing-file preservation. They run the real installation script in temporary repositories with Docker and OpenSSL stubs. They cover internal/external databases, clearnet/Tor exposure, direct-egress overlays, local node profiles (pruned by default: Enter at every prompt gives pruned local nodes with the same prune target as `compose.nodes.yaml`; `no` writes full-node settings; `--local` writes no node settings), the Tor `COMPOSE_FILE`/`COMPOSE_PROFILES` values that the [mirror-command check](#documented-onion-mirror-commands) copies, protected configuration permissions, existing-file preservation, input rejection, and Compose validation failures that must not start services. They also cover the subcommands: `init` flags that need no prompt, distinct `APP_SECRET_KEY` and `SETUP_TOKEN`, the token printed only in init's final block and no other secret printed by any command, the 90-second onion wait, refusal on existing project volumes, `init --admin` (password read twice, piped on stdin, never in any argv, environment, output or `.env`; mismatches refused before anything is written), the `.env` editor (other lines byte for byte, CRLF and a missing final newline kept, mode `0600`), every `check` refusal, `status`, `setup-token [--new]`, `add-mirror`, and `upgrade` (backup or `--no-backup`, the `0600` pre-upgrade copy, defaults equal to `.env.example` for every non-secret key, the key-root copy, pinned images, the mirror profile, Tor recreate, token retirement and a second run that changes nothing), and the malware scanner (A-184): `add-scanner` (refused below 3 GiB with nothing changed, a warning below 4 GiB, the three keys written together and idempotently, a failed check putting `.env` back, the bounded 10-minute wait naming `docker compose logs clamd`), `refresh-scanner` (a pull even when the tag is present, then clamd recreated and the signature version before and after), `init --uploads`, every scanner `check` refusal (fed `docker compose config` output, and when Docker is installed the real output for both modes), `status`, and `upgrade` refreshing the scanner only when it is on and never turning it on; a `clamd` that never becomes healthy fails none of `init` (with and without `--admin`), `upgrade`, `add-mirror` and `setup-token --new`, and floating image tags (`stable-debian`, `1.5`, `_base` and so on) are refused. No command runs `curl`, `wget` or `git`; the only image the installer has Docker pull is the scanner's. They never read the user’s `.env`, let the installer invoke real Docker, or provision infrastructure (one scanner test runs `docker compose config` itself, when Docker is installed, to hand the stub real output).
+The installer tests cover the noninteractive `--local` shortcut, inherited-wallet isolation, persisted custom ports, readiness failure, HTTPS handoff, and existing-file preservation. They run the real installation script in temporary repositories with Docker and OpenSSL stubs. They cover internal/external databases, clearnet/Tor exposure, direct-egress overlays, local node profiles (pruned by default: Enter at every prompt gives pruned local nodes with the same prune target as `compose.nodes.yaml`; `no` writes full-node settings; `--local` writes no node settings), the Tor `COMPOSE_FILE`/`COMPOSE_PROFILES` values that the [mirror-command check](#documented-onion-mirror-commands) copies, protected configuration permissions, existing-file preservation, input rejection, and Compose validation failures that must not start services. They also cover the subcommands: `init` flags that need no prompt, distinct `APP_SECRET_KEY` and `SETUP_TOKEN`, the token printed only in init's final block and no other secret printed by any command, the 90-second onion wait, refusal on existing project volumes, `init --admin` (password read twice, piped on stdin, never in any argv, environment, output or `.env`; mismatches refused before anything is written), the `.env` editor (other lines byte for byte, CRLF and a missing final newline kept, mode `0600`), every `check` refusal, `status`, `setup-token [--new]`, `add-mirror`, and `upgrade` (backup or `--no-backup`, the `0600` pre-upgrade copy, defaults equal to `.env.example` for every non-secret key, the key-root copy, pinned images, the mirror profile, Tor recreate, token retirement and a second run that changes nothing), and the malware scanner (A-184): `add-scanner` (refused below 3 GiB with nothing changed, a warning below 4 GiB, the three keys written together and idempotently, a failed check putting `.env` back, the bounded 10-minute wait naming `docker compose logs clamd`), `refresh-scanner` (a pull even when the tag is present, then clamd recreated and the signature version before and after), `init --uploads`, every scanner `check` refusal (fed `docker compose config` output, and when Docker is installed the real output for both modes), `status`, and `upgrade` refreshing the scanner only when it is on and never turning it on; a `clamd` that never becomes healthy fails none of `init` (with and without `--admin`), `upgrade`, `add-mirror` and `setup-token --new`, and floating image tags (`stable-debian`, `1.5`, `_base` and so on) are refused. No command runs `curl`, `wget` or `git`; the only image the installer has Docker pull is the scanner's. They never read the user’s `.env`, let the installer invoke real Docker, or provision infrastructure (one scanner test runs `docker compose config` itself, when Docker is installed, to hand the stub real output). Without Docker Compose that test and two in `tests/test_compose_scanner.py` are skipped; CI's operations job fails on any skipped test.
 
 The connection tests mock process execution and check decoded credentials, IPv6 hosts, ports, supported TLS/query settings, rejected target overrides and null bytes, removal of inherited libpq settings, and errors that do not expose connection secrets. They also verify that PostgreSQL client arguments contain no URL or password.
 
@@ -90,7 +90,59 @@ those settings, but `--network none` instead of the `scanner` network. It then c
   use and peak.
 
 `tests/test_compose_scanner.py` checks the Compose file and `deploy/clamd.conf` as text, and with Docker
-installed the configuration Compose resolves in each mode; CI's Compose job repeats those assertions.
+installed the configuration Compose resolves in each mode; CI's Compose job repeats those assertions. CI runs
+`scripts/test-scanner.sh` in the container job (internal-database row), and the Python tests, including the
+scanner's installer and Compose tests, in the operations job, which fails if any test is skipped (so the
+Docker-backed ones cannot be skipped silently).
+
+## Malware scanner leg in CI
+
+```sh
+docker build -t opsecmkt:ci .
+./scripts/ci-smoke.sh internal scanner    # or: external scanner
+```
+
+Requires Docker with Compose v2, Go (it builds `cmd/verify-audit`, as the plain run does), Python 3 and curl;
+pulls the ClamAV image of `compose.scanner.yaml` when it is missing (one signature loads in a second or two).
+Like the plain `ci-smoke.sh internal|external`, it runs the `opsecmkt:ci` image under a unique project name on
+loopback port 18090, with the internal or an external PostgreSQL, ignores `.env`, and its exit trap removes
+every container, volume and network it created. The app
+runs with `CLAMD_ADDRESS=clamd:3310` and the default 30-day signature age limit, and `clamd` exactly as
+`compose.scanner.yaml` defines it (hardened, `scanner` network only) except for one read-only bind mount over
+`/var/lib/clamav`, which hides the image's own signatures:
+
+- The only signature is `deploy/testdata/clamav-test.ndb`, a text file with one signature,
+  `Opsecmkt.Test.Marker`, matching the marker string the Go and browser tests' fake clamd also looks for.
+  The script packs it inside the pinned image, with no network, into an unsigned `daily.cud` built at that
+  moment (`sigtool --build=daily.cud --unsigned`). Verified with ClamAV 1.5.4: clamd then answers `VERSION` with
+  `ClamAV 1.5.4/1/<the .cud's build time>`, so `/admin` shows the database 0 days old and uploads are Ready on
+  any calendar day. (Had it not, the fallback was the image's own signatures plus the test signature with
+  `SCANNER_MAX_SIGNATURE_AGE_DAYS=90`; it is not needed.) The EICAR test string, assembled at run time and
+  sent over `INSTREAM` inside the clamd container, is `stream: OK`: the image's own signatures are not loaded.
+- Every request is sent as a browser without JavaScript sends it: curl with a cookie jar, the CSRF token read
+  from the page, an `Origin` header, form posts, and the Photos form's multipart body with `csrf` first, then
+  `id`, `description` and the photo. It completes first-run setup, publishes a listing as the administrator,
+  and waits until the listing's Photos form is offered (the app polls clamd every 30 seconds).
+- A PNG with the marker in a tEXt chunk passes the app's own caps and is refused by clamd: 422, the "flagged
+  this file" copy with a reference and without the signature name, no row in `images`, and the one log line
+  naming `Opsecmkt.Test.Marker.UNOFFICIAL`. A clean PNG with other text in a tEXt chunk is stored, and the
+  product page's photo is served publicly as `image/jpeg` without `tEXt`, `IHDR`, that text or the marker.
+- `docker compose stop clamd`: an upload gets 503 with "the malware scanner did not respond, so nothing was
+  stored", no row is added, `/healthz` answers `ok`, the catalog 200, and the Photos panel says uploads are
+  paused. After `docker compose start clamd` the form is offered again (within about 30 seconds) and an upload
+  is stored.
+- `SHUTDOWN` sent to `clamd:3310` from inside the app container (bash's `/dev/tcp`) answers
+  `COMMAND UNAVAILABLE`; clamd still answers `PING`, has not stopped or restarted, and the next upload is
+  stored.
+- From inside clamd: `getent hosts app` resolves (the control) but `getent hosts db` does not; `nc` reaches
+  `app:8080` (the control) but not the database's address on the backend network or `1.1.1.1:443`; and there
+  is no default route.
+- `/admin#image-scanner` shows Ready, `daily database 1` built during the run, 0 days old (limit 30), the counts
+  "3 stored · 1 refused as infected · 1 refused because the scanner failed", and the signature in the table.
+
+CI runs the leg in the container job for both database modes, after the plain smoke test. It proves the app's
+use of a real clamd, not what ClamAV detects: no production signature is loaded, so it is no evidence about a
+production signature feed or its freshness.
 
 ## Backup and restore through the internal-db Compose service
 
