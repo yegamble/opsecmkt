@@ -48,6 +48,8 @@
   min-width:0
 }
 input[type=file] {
+  display:block;
+  height:auto;
   min-height:44px;
   max-width:100%;
   padding:6px;
@@ -55,18 +57,24 @@ input[type=file] {
   line-height:1.5;
   cursor:pointer
 }
+/* The button sits on its own line so the chosen file's name, which the privacy notice asks the uploader to
+   check, keeps the full width beside it instead of being cut to "…" on a narrow screen (PR #24 review R24-2). */
 input[type=file]::file-selector-button {
+  display:block;
+  width:min-content;
+  height:auto;
   min-height:44px;
   max-width:100%;
-  margin:0 12px 0 0;
-  padding:10px 14px;
+  margin:0 8px 8px 0;
+  padding:10px 8px;
   border:1px solid var(--line);
   border-radius:2px;
   background:var(--surface);
   color:var(--text);
   font:700 0.875rem/1.5 var(--mono);
-  letter-spacing:.04em;
+  letter-spacing:0;
   white-space:normal;
+  overflow-wrap:normal;
   cursor:pointer
 }
 input[type=file]:hover::file-selector-button {
@@ -86,6 +94,13 @@ input[type=file]:disabled,input[type=file]:disabled::file-selector-button {
 .upload-form fieldset {
   display:grid;
   gap:17px
+}
+@media(max-width:420px) {
+  /* A narrow screen gives the file input the fieldset's padding: WebKit draws the chosen name beside the button,
+     in what width is left. */
+  .upload-form fieldset {
+    padding:12px 4px
+  }
 }
 .upload-form fieldset:disabled {
   opacity:.7
