@@ -990,6 +990,7 @@ cmd_init() {
   # that does not answer leaves the rest of the install to finish.
   local scanner=''
   if [[ $uploads == yes ]]; then
+    echo 'Waiting for clamd to load its signatures (a minute or two; at most 10 minutes).'
     if scanner=$(wait_clamd); then
       scanner="signatures $scanner. Refresh them at least monthly with ./scripts/install.sh refresh-scanner."
     else
