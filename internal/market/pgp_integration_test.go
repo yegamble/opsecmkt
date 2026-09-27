@@ -630,7 +630,7 @@ func shownKeys(t *testing.T, page string) []string {
 // with its packets unchanged.
 func TestProfileKeyPhotoIDRefused(t *testing.T) {
 	e := newTestApp(t)
-	_, photo, plain := testPhotoIDKey(t, "photo_key")
+	key, photo, plain := testPhotoIDKey(t, "photo_key")
 	_, fp, _ := parsePublicKey(plain)
 	uid, s := e.user("photo_owner", "vendor")
 	type row struct {
@@ -647,19 +647,31 @@ func TestProfileKeyPhotoIDRefused(t *testing.T) {
 		}
 		return r
 	}
-	refuse := func(form url.Values) {
+	refuseAs := func(form url.Values, want ...string) {
 		t.Helper()
 		before := state()
 		b := html.UnescapeString(e.body("POST", "/account", s, form, 400))
-		mustContain(t, b, "PGP key rejected: it contains a photo ID", "gpg --edit-key "+fp, "deluid", "save")
+		mustContain(t, b, want...)
 		if after := state(); after != before {
-			t.Fatalf("refused photo ID key changed the account: %+v -> %+v", before, after)
+			t.Fatalf("refused key changed the account: %+v -> %+v", before, after)
 		}
 	}
+	photoHint := []string{"PGP key rejected: it contains a photo ID", "gpg --edit-key " + fp, "deluid", "save"}
+	refuse := func(form url.Values) { t.Helper(); refuseAs(form, photoHint...) }
 	// No key yet: refused with and without the password, and in the CRLF form a browser submits.
 	refuse(url.Values{"pgp": {photo}, "password": {testPassword}, "xmpp": {"photo@example.test"}})
 	refuse(url.Values{"pgp": {photo}})
 	refuse(url.Values{"pgp": {strings.ReplaceAll(photo, "\n", "\r\n")}, "password": {testPassword}})
+	// Every placement: several photo IDs, after the subkey, partial body lengths get the photo ID hint; a photo
+	// ID hidden in a compressed or private packet is refused as an unsupported packet type.
+	for name, v := range testPhotoIDVariants(t, key) {
+		want := photoHint
+		if v.photos == 0 {
+			want = []string{"PGP key rejected: it contains an OpenPGP packet type this market does not publish", "gpg --armor --export " + fp, "photo ID"}
+		}
+		t.Log(name)
+		refuseAs(url.Values{"pgp": {v.armored}, "password": {testPassword}}, want...)
+	}
 
 	// The key without its photo is accepted and stored with its packets unchanged.
 	e.check(e.do("POST", "/account", s, url.Values{"pgp": {plain}, "password": {testPassword}}), 303)
@@ -687,28 +699,38 @@ func TestStoredPhotoIDNeverShown(t *testing.T) {
 	vendorID, vendor := e.user("photo_vendor", "vendor")
 	buyerID, buyer := e.user("photo_buyer", "buyer")
 	// As the A-79 save path stored it: a re-armor of every pasted packet, photo ID included.
-	var legacy bytes.Buffer
-	w, _ := armor.Encode(&legacy, openpgp.PublicKeyType, nil)
-	w.Write([]byte(armorPackets(t, photo)))
-	w.Close()
-	if _, err := e.DB.Exec("UPDATE users SET pgp=$1,pgp_fingerprint=$2,pgp_verified_at=now() WHERE id=$3", legacy.String(), fp, vendorID); err != nil {
-		t.Fatal(err)
+	store := func(armored string) string {
+		t.Helper()
+		var legacy bytes.Buffer
+		w, _ := armor.Encode(&legacy, openpgp.PublicKeyType, nil)
+		w.Write([]byte(armorPackets(t, armored)))
+		w.Close()
+		if _, err := e.DB.Exec("UPDATE users SET pgp=$1,pgp_fingerprint=$2,pgp_verified_at=now() WHERE id=$3", legacy.String(), fp, vendorID); err != nil {
+			t.Fatal(err)
+		}
+		return legacy.String()
 	}
 	order := e.order(buyerID, e.product(vendorID, "physical"), "BTC", statePaid)
 	want := armorPackets(t, plain)
-	for name, page := range map[string]string{
-		"vendor page": e.body("GET", "/vendor?id="+vendorID, "", nil, 200),
-		"messages":    e.body("GET", "/messages?to=photo_vendor", buyer, nil, 200),
-		"order":       e.body("GET", "/order?id="+order, buyer, nil, 200),
-		"account":     e.body("GET", "/account", vendor, nil, 200),
-	} {
-		keys := shownKeys(t, page)
-		if len(keys) != 1 || keys[0] != want {
-			t.Fatalf("%s: %d keys shown, or the key shown is not the key without its photo ID", name, len(keys))
+	variants := testPhotoIDVariants(t, key)
+	variants["as first saved"] = photoIDVariant{armored: photo}
+	for variant, v := range variants {
+		store(v.armored)
+		for name, page := range map[string]string{
+			"vendor page": e.body("GET", "/vendor?id="+vendorID, "", nil, 200),
+			"messages":    e.body("GET", "/messages?to=photo_vendor", buyer, nil, 200),
+			"order":       e.body("GET", "/order?id="+order, buyer, nil, 200),
+			"account":     e.body("GET", "/account", vendor, nil, 200),
+		} {
+			keys := shownKeys(t, page)
+			if len(keys) != 1 || keys[0] != want || strings.Contains(keys[0], "\xff\xd8\xff") {
+				t.Fatalf("%s, %s: %d keys shown, or the key shown is not the key without its photo ID", variant, name, len(keys))
+			}
+			mustContain(t, page, formatFingerprint(fp))
 		}
-		mustContain(t, page, formatFingerprint(fp))
+		mustContain(t, e.body("GET", "/vendor?id="+vendorID, "", nil, 200), "Ownership verified")
 	}
-	mustContain(t, e.body("GET", "/vendor?id="+vendorID, "", nil, 200), "Ownership verified")
+	legacy := store(photo)
 
 	// The stored key still works: a message encrypted to it matches its key IDs.
 	var msg bytes.Buffer
@@ -720,7 +742,7 @@ func TestStoredPhotoIDNeverShown(t *testing.T) {
 	io.WriteString(pt, "hello")
 	pt.Close()
 	mw.Close()
-	if encrypted, match := messageStatus(msg.String(), legacy.String()); !encrypted || match != matchYes {
+	if encrypted, match := messageStatus(msg.String(), legacy); !encrypted || match != matchYes {
 		t.Fatalf("stored photo ID key no longer matches its messages: %v %q", encrypted, match)
 	}
 

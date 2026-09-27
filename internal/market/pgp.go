@@ -28,14 +28,15 @@ func parsePublicKey(armored string) (*openpgp.Entity, string, error) {
 
 // parseCanonicalPublicKey is parsePublicKey that also returns the canonical form of the key (A-79): its
 // decoded packets re-armored unchanged, without armor headers (Version:, Comment: ...), CRLF line endings
-// or any text around the block. The same key always has the same canonical form. It never includes a
-// photo ID (A-110): a key saved with one before such keys were refused is shown and re-saved without it.
+// or any text around the block. The same key always has the same canonical form. It keeps only the packets
+// publishablePackets allows (A-110): a key saved with a photo ID or another packet type before such keys were
+// refused is shown and re-saved without them.
 func parseCanonicalPublicKey(armored string) (*openpgp.Entity, string, string, error) {
 	e, fp, data, err := decodePublicKey(armored)
 	if err != nil {
 		return nil, "", "", err
 	}
-	if data, _, err = withoutUserAttributes(data); err != nil {
+	if data, _, _, err = publishablePackets(data); err != nil {
 		return nil, "", "", errors.New("the public key could not be parsed")
 	}
 	var buf bytes.Buffer
@@ -85,37 +86,53 @@ func decodePublicKey(armored string) (*openpgp.Entity, string, []byte, error) {
 	return e, strings.ToUpper(hex.EncodeToString(e.PrimaryKey.Fingerprint)), data, nil
 }
 
-// OpenPGP packet tags (RFC 9580 section 5). GnuPG stores a photo ID - an image, usually of the key owner's
-// face - in a user attribute packet, followed by the signatures that certify it.
+// OpenPGP packet tags (RFC 9580 section 5).
 const (
 	signaturePacketTag     = 2
+	publicKeyPacketTag     = 6
 	trustPacketTag         = 12
+	userIDPacketTag        = 13
+	publicSubkeyPacketTag  = 14
 	userAttributePacketTag = 17
 )
 
-// withoutUserAttributes returns decoded key packets without any user attribute packet and the certifications
-// and trust packets that follow it, every other packet byte for byte, and how many it removed (A-110).
-func withoutUserAttributes(data []byte) ([]byte, int, error) {
+// publishablePackets returns decoded key packets keeping only public key, public subkey, user ID and signature
+// packets, each byte for byte (A-110). Everything else is removed: user attribute packets, where GnuPG stores a
+// photo ID (an image, usually of the owner's face), and every other packet type - a compressed packet or a
+// non-critical private one can carry a photo ID that OpenPGP software still imports - including keyring trust
+// packets. Signatures that follow a removed packet certify it and go too, except direct-key signatures and key
+// revocations. It also returns how many user attribute packets and other packets it removed.
+func publishablePackets(data []byte) ([]byte, int, int, error) {
 	r := bytes.NewReader(data)
 	packets := packet.NewOpaqueReader(r)
-	kept, removed, skipping := make([]byte, 0, len(data)), 0, false
+	kept, photos, other, skipping := make([]byte, 0, len(data)), 0, 0, false
 	for {
 		start := len(data) - r.Len()
 		p, err := packets.Next()
 		if err == io.EOF {
-			return kept, removed, nil
+			return kept, photos, other, nil
 		}
 		if err != nil {
-			return nil, 0, err
+			return nil, 0, 0, err
 		}
-		switch {
-		case p.Tag == userAttributePacketTag:
-			removed, skipping = removed+1, true
-		case skipping && (p.Tag == trustPacketTag || p.Tag == signaturePacketTag && !wholeKeySignature(p)):
+		switch p.Tag {
+		case publicKeyPacketTag, userIDPacketTag, publicSubkeyPacketTag:
+			skipping = false
+		case signaturePacketTag:
+			if skipping && !wholeKeySignature(p) {
+				continue
+			}
+		case userAttributePacketTag:
+			photos, skipping = photos+1, true
+			continue
+		case trustPacketTag: // follows a signature in a keyring and certifies nothing
+			other++
+			continue
 		default:
-			skipping = skipping && p.Tag == signaturePacketTag
-			kept = append(kept, data[start:len(data)-r.Len()]...)
+			other, skipping = other+1, true
+			continue
 		}
+		kept = append(kept, data[start:len(data)-r.Len()]...)
 	}
 }
 
@@ -127,15 +144,15 @@ func wholeKeySignature(p *packet.OpaquePacket) bool {
 	return err == nil && ok && (sig.SigType == packet.SigTypeDirectSignature || sig.SigType == packet.SigTypeKeyRevocation)
 }
 
-// keyPhotoIDs returns the fingerprint of a pasted public key and how many photo IDs (user attribute packets)
-// it carries; a key that does not parse reports none.
-func keyPhotoIDs(armored string) (string, int) {
+// keyExtraPackets returns the fingerprint of a pasted public key, how many photo IDs (user attribute packets)
+// it carries and how many other packets publishablePackets would remove; a key that does not parse reports none.
+func keyExtraPackets(armored string) (fp string, photos, other int) {
 	_, fp, data, err := decodePublicKey(armored)
 	if err != nil {
-		return "", 0
+		return "", 0, 0
 	}
-	_, n, _ := withoutUserAttributes(data)
-	return fp, n
+	_, photos, other, _ = publishablePackets(data)
+	return fp, photos, other
 }
 
 // entityKeyIDs lists the primary and subkey IDs, for matching encrypted-message recipients.

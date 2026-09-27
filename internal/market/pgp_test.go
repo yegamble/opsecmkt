@@ -39,28 +39,25 @@ func testPGPKey(t *testing.T, name string) (*openpgp.Entity, string) {
 func testPhotoIDKey(t *testing.T, name string) (key *openpgp.Entity, photo, plain string) {
 	t.Helper()
 	key, plain = testPGPKey(t, name)
-	return key, withPhotoID(t, key), plain
+	body, cert := testPhotoID(t, key, 8)
+	return key, testKeyWith(t, key, append(testPacket(17, body), cert...), nil), plain
 }
 
-// withPhotoID armors key with a certified photo ID after its user ID, followed by the extra packets.
-func withPhotoID(t *testing.T, key *openpgp.Entity, extra ...[]byte) string {
+// testPhotoID returns the body of a user attribute packet holding a size x size JPEG and the owner's positive
+// certification over it.
+func testPhotoID(t *testing.T, key *openpgp.Entity, size int) (body, cert []byte) {
 	t.Helper()
-	var head, full bytes.Buffer
-	withoutSubkeys := *key
-	withoutSubkeys.Subkeys = nil
-	if err := withoutSubkeys.Serialize(&head); err != nil {
-		t.Fatal(err)
+	img := image.NewGray(image.Rect(0, 0, size, size))
+	for i, seed := range img.Pix {
+		img.Pix[i] = seed + byte(i*i*31+i*7) // noise, so a large photo stays large as a JPEG
 	}
-	if err := key.Serialize(&full); err != nil {
-		t.Fatal(err)
-	}
-	uat, err := packet.NewUserAttributePhoto(image.NewGray(image.Rect(0, 0, 8, 8)))
+	uat, err := packet.NewUserAttributePhoto(img)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var body bytes.Buffer
+	var b bytes.Buffer
 	for _, sp := range uat.Contents {
-		if err = sp.Serialize(&body); err != nil {
+		if err = sp.Serialize(&b); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -74,57 +71,145 @@ func withPhotoID(t *testing.T, key *openpgp.Entity, extra ...[]byte) string {
 	if err = key.PrimaryKey.SerializeForHash(h); err != nil {
 		t.Fatal(err)
 	}
-	h.Write(binary.BigEndian.AppendUint32([]byte{0xD1}, uint32(body.Len())))
-	h.Write(body.Bytes())
+	h.Write(binary.BigEndian.AppendUint32([]byte{0xD1}, uint32(b.Len())))
+	h.Write(b.Bytes())
 	if err = sig.Sign(h, key.PrivateKey, nil); err != nil {
+		t.Fatal(err)
+	}
+	var c bytes.Buffer
+	if err = sig.Serialize(&c); err != nil {
+		t.Fatal(err)
+	}
+	return b.Bytes(), c.Bytes()
+}
+
+// testPacket encodes a new-format OpenPGP packet with a five-octet length.
+func testPacket(tag byte, body []byte) []byte {
+	return append(binary.BigEndian.AppendUint32([]byte{0xC0 | tag, 0xFF}, uint32(len(body))), body...)
+}
+
+// testPartialPacket encodes a new-format OpenPGP packet in 512-octet partial body lengths.
+func testPartialPacket(tag byte, body []byte) []byte {
+	out := []byte{0xC0 | tag}
+	for len(body) > 512 {
+		out = append(append(out, 0xE9), body[:512]...)
+		body = body[512:]
+	}
+	return append(binary.BigEndian.AppendUint32(append(out, 0xFF), uint32(len(body))), body...)
+}
+
+// testKeyWith armors key with the middle packets after its user ID and the after packets after its subkey.
+func testKeyWith(t *testing.T, key *openpgp.Entity, middle, after []byte) string {
+	t.Helper()
+	var head, full bytes.Buffer
+	withoutSubkeys := *key
+	withoutSubkeys.Subkeys = nil
+	if err := withoutSubkeys.Serialize(&head); err != nil {
+		t.Fatal(err)
+	}
+	if err := key.Serialize(&full); err != nil {
 		t.Fatal(err)
 	}
 	var buf bytes.Buffer
 	w, _ := armor.Encode(&buf, openpgp.PublicKeyType, nil)
 	w.Write(head.Bytes())
-	if err = uat.Serialize(w); err != nil {
-		t.Fatal(err)
-	}
-	if err = sig.Serialize(w); err != nil {
-		t.Fatal(err)
-	}
-	for _, p := range extra {
-		w.Write(p)
-	}
+	w.Write(middle)
 	w.Write(full.Bytes()[head.Len():])
+	w.Write(after)
 	w.Close()
 	return buf.String()
 }
 
-// A-110: a photo ID is found in a pasted key, and the canonical form of a key that carries one - the
-// text shown to others - is the same key without it: every other packet byte for byte, same fingerprint.
+type photoIDVariant struct {
+	armored       string
+	photos, other int // user attribute packets, other packets outside the allowlist
+}
+
+// testPhotoIDVariants arms key with photo IDs in every placement a reviewer found or probed (A-110): one or two
+// photo IDs, a photo ID after the subkey, a photo ID in partial body lengths, and a photo ID hidden inside a
+// compressed packet (algorithm 0) or a non-critical private packet (tag 60) that OpenPGP readers skip.
+func testPhotoIDVariants(t *testing.T, key *openpgp.Entity) map[string]photoIDVariant {
+	t.Helper()
+	body, cert := testPhotoID(t, key, 8)
+	photo := append(testPacket(17, body), cert...)
+	body2, cert2 := testPhotoID(t, key, 64)
+	photo2 := append(testPacket(17, body2), cert2...)
+	if len(body2) <= 1024 {
+		t.Fatalf("large photo is only %d bytes", len(body2))
+	}
+	both := append(append([]byte{}, photo...), photo2...)
+	return map[string]photoIDVariant{
+		"photo ID":                {testKeyWith(t, key, photo, nil), 1, 0},
+		"two photo IDs":           {testKeyWith(t, key, both, nil), 2, 0},
+		"photo ID after subkey":   {testKeyWith(t, key, nil, photo), 1, 0},
+		"partial-length photo ID": {testKeyWith(t, key, append(testPartialPacket(17, body2), cert2...), nil), 1, 0},
+		"photo ID in compressed":  {testKeyWith(t, key, testPacket(8, append([]byte{0}, photo...)), nil), 0, 1},
+		"photo ID in tag 60":      {testKeyWith(t, key, testPacket(60, photo), nil), 0, 1},
+		"compressed after subkey": {testKeyWith(t, key, nil, testPacket(8, append([]byte{0}, photo...))), 0, 1},
+	}
+}
+
+// A-110: photo IDs and packets outside the allowlist are found in a pasted key, and the canonical form of
+// a key that carries them - the text shown to others - is the same key without them: every other packet
+// byte for byte, same fingerprint, no JPEG.
 func TestPhotoIDFoundAndNeverRepublished(t *testing.T) {
-	key, photo, plain := testPhotoIDKey(t, "photo")
+	key, plain := testPGPKey(t, "photo")
 	_, fp, err := parsePublicKey(plain)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(armorPackets(t, photo), "\xff\xd8\xff") { // JPEG start-of-image marker
-		t.Fatal("fixture carries no JPEG")
+	const jpeg = "\xff\xd8\xff" // JPEG start-of-image marker
+	for name, v := range testPhotoIDVariants(t, key) {
+		if !strings.Contains(armorPackets(t, v.armored), jpeg) {
+			t.Fatalf("%s: fixture carries no JPEG", name)
+		}
+		if got, photos, other := keyExtraPackets(v.armored); got != fp || photos != v.photos || other != v.other {
+			t.Errorf("%s: fingerprint %q, %d photo IDs, %d other packets", name, got, photos, other)
+		}
+		parsed, gotFP, canonical, err := parseCanonicalPublicKey(v.armored)
+		if err != nil || gotFP != fp || parsed.PrimaryKey.KeyId != key.PrimaryKey.KeyId {
+			t.Fatalf("%s: fp=%q err=%v", name, gotFP, err)
+		}
+		if got := armorPackets(t, canonical); got != armorPackets(t, plain) || strings.Contains(got, jpeg) {
+			t.Errorf("%s: canonical form is not the key without its photo ID", name)
+		}
 	}
-	if got, n := keyPhotoIDs(photo); got != fp || n != 1 {
-		t.Fatalf("photo key: fingerprint %q, %d photo IDs", got, n)
+	// A keyring trust packet between a user ID and its self-signature is refused and dropped; the signature stays.
+	var packets bytes.Buffer
+	key.PrimaryKey.Serialize(&packets)
+	for _, id := range key.Identities {
+		id.UserId.Serialize(&packets)
+		packets.Write(testPacket(12, []byte{0, 0}))
+		for _, sig := range id.Signatures {
+			sig.Serialize(&packets)
+		}
 	}
-	if got, n := keyPhotoIDs(plain); got != fp || n != 0 {
-		t.Fatalf("plain key: fingerprint %q, %d photo IDs", got, n)
+	for _, sub := range key.Subkeys {
+		sub.PublicKey.Serialize(&packets)
+		sub.Sig.Serialize(&packets)
 	}
-	if _, n := keyPhotoIDs("not a key"); n != 0 {
-		t.Fatal("garbage reported as carrying a photo ID")
+	var trustedBuf bytes.Buffer
+	w, _ := armor.Encode(&trustedBuf, openpgp.PublicKeyType, nil)
+	w.Write(packets.Bytes())
+	w.Close()
+	trusted := trustedBuf.String()
+	if _, photos, other := keyExtraPackets(trusted); photos != 0 || other != 1 {
+		t.Fatalf("trust packet: %d photo IDs, %d other packets", photos, other)
 	}
-	parsed, gotFP, canonical, err := parseCanonicalPublicKey(photo)
-	if err != nil || gotFP != fp || parsed.PrimaryKey.KeyId != key.PrimaryKey.KeyId {
-		t.Fatalf("fp=%q err=%v", gotFP, err)
+	if _, _, canonical, err := parseCanonicalPublicKey(trusted); err != nil || armorPackets(t, canonical) != armorPackets(t, plain) {
+		t.Fatalf("trust packet: canonical form is not the plain key (%v)", err)
 	}
-	if armorPackets(t, canonical) != armorPackets(t, plain) {
-		t.Fatal("canonical form of a photo ID key is not the key without its photo ID")
+	if got, photos, other := keyExtraPackets(plain); got != fp || photos != 0 || other != 0 {
+		t.Fatalf("plain key: fingerprint %q, %d photo IDs, %d other packets", got, photos, other)
+	}
+	if _, photos, other := keyExtraPackets("not a key"); photos != 0 || other != 0 {
+		t.Fatal("garbage reported as carrying extra packets")
 	}
 	if _, _, again, _ := parseCanonicalPublicKey(plain); armorPackets(t, again) != armorPackets(t, plain) {
 		t.Fatal("a key without a photo ID changed")
+	}
+	if _, _, again, _ := parseCanonicalPublicKey(gpgFixtureKey); armorPackets(t, again) != armorPackets(t, gpgFixtureKey) {
+		t.Fatal("a GnuPG-exported key changed")
 	}
 
 	// Only the photo ID's certifications go with it: a direct-key signature placed after them applies to the
@@ -138,7 +223,8 @@ func TestPhotoIDFoundAndNeverRepublished(t *testing.T) {
 	if err = direct.Serialize(&directPacket); err != nil {
 		t.Fatal(err)
 	}
-	_, _, canonical, err = parseCanonicalPublicKey(withPhotoID(t, key, directPacket.Bytes()))
+	body, cert := testPhotoID(t, key, 8)
+	_, _, canonical, err := parseCanonicalPublicKey(testKeyWith(t, key, append(append(testPacket(17, body), cert...), directPacket.Bytes()...), nil))
 	if err != nil {
 		t.Fatal(err)
 	}
