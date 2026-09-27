@@ -3,7 +3,9 @@
 # so when the pinned build has been withdrawn the image installs the repository's current build instead, but only
 # if it is the same or newer (never older), and says so; TOR_VERSION can be bumped here, or set in .env, which
 # compose.tor.yaml passes as a build argument (docs/operator-guide.md#tor-image). Both architectures the repository
-# publishes (amd64, arm64) share the version string.
+# publishes (amd64, arm64) share the version string. Debian's archive also ships tor: an apt preference keeps the
+# candidate on deb.torproject.org, and the build fails if the installed tor (TOR_VERSION is installed whatever its
+# priority) is not a build deb.torproject.org publishes.
 FROM debian:bookworm-20260918-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
 ARG TOR_VERSION=0.4.9.13-1~d12.bookworm+1
 # The Tor Project archive signing key; the download is refused unless it carries this fingerprint.
@@ -21,6 +23,8 @@ RUN set -eu; \
     printf '%s\n' 'Types: deb' 'URIs: https://deb.torproject.org/torproject.org/' 'Suites: bookworm' \
       'Components: main' 'Signed-By: /usr/share/keyrings/deb.torproject.org-keyring.gpg' \
       > /etc/apt/sources.list.d/tor.sources; \
+    printf '%s\n' 'Package: tor tor-geoipdb' 'Pin: origin deb.torproject.org' 'Pin-Priority: 500' '' \
+      'Package: tor tor-geoipdb' 'Pin: version *' 'Pin-Priority: -1' > /etc/apt/preferences.d/tor; \
     apt-get update; \
     if ! apt-get install -y --no-install-recommends tor="${TOR_VERSION}"; then \
       candidate=$(apt-cache policy tor | awk '$1 == "Candidate:" { print $2 }'); \
@@ -30,6 +34,10 @@ RUN set -eu; \
       echo "tor ${TOR_VERSION} is no longer published; installing the newer ${candidate} from the same signed repository" >&2; \
       apt-get install -y --no-install-recommends tor="${candidate}"; \
     fi; \
+    installed=$(dpkg-query --show --showformat '${Version}' tor); \
+    apt-cache madison tor | awk -F '|' -v version="$installed" \
+      '{ gsub(/ /, "", $2) } $2 == version && $3 ~ /^ https:\/\/deb\.torproject\.org\/torproject\.org / { found = 1 } END { exit !found }' \
+      || { echo "tor ${installed} is not a build deb.torproject.org publishes; set TOR_VERSION to one (docs/operator-guide.md#tor-image)" >&2; exit 1; }; \
     apt-get purge -y --auto-remove curl gnupg; \
     rm -rf /var/lib/apt/lists/* /root/.gnupg; \
     chown debian-tor:debian-tor /var/lib/tor; \
