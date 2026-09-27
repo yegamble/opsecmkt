@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"image"
 	"image/color"
 	"image/png"
@@ -13,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -76,6 +80,50 @@ func TestNoImageDecodeRegistry(t *testing.T) {
 		if m := banned.Find(src); m != nil {
 			t.Errorf("%s uses %s", name, m)
 		}
+	}
+}
+
+// Only reencodeImage, which takes a scannedUpload, calls reencode, and only reencode calls a decoder: nothing
+// decodes bytes clamd did not answer "stream: OK" for.
+func TestOnlyScannedBytesAreDecoded(t *testing.T) {
+	files, err := filepath.Glob("internal/market/*.go")
+	if err != nil || len(files) < 50 {
+		t.Fatalf("package files: %d, %v", len(files), err)
+	}
+	callers := map[string][]string{}
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(token.NewFileSet(), name, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range f.Decls {
+			fn, ok := d.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				if id, ok := n.(*ast.Ident); ok && (id.Name == "reencode" || id.Name == "decodeJPEG" || id.Name == "decodePNG") {
+					callers[id.Name] = append(callers[id.Name], fn.Name.Name)
+				}
+				if sel, ok := n.(*ast.SelectorExpr); ok && (sel.Sel.Name == "Decode") {
+					if pkg, ok := sel.X.(*ast.Ident); ok && (pkg.Name == "jpeg" || pkg.Name == "png") {
+						callers[pkg.Name+".Decode"] = append(callers[pkg.Name+".Decode"], fn.Name.Name)
+					}
+				}
+				return true
+			})
+		}
+	}
+	for name, want := range map[string][]string{"reencode": {"reencodeImage"}, "decodeJPEG": {"reencode"}, "decodePNG": {"reencode"}} {
+		if !slices.Equal(callers[name], want) {
+			t.Errorf("%s used in %q, want only %q", name, callers[name], want)
+		}
+	}
+	if len(callers["jpeg.Decode"])+len(callers["png.Decode"]) != 0 {
+		t.Errorf("a decoder is called directly in %q", append(callers["jpeg.Decode"], callers["png.Decode"]...))
 	}
 }
 
@@ -169,6 +217,10 @@ func TestProgressiveAllocationCap(t *testing.T) {
 		{"baseline 12 MP YCbCr (36 MB)", jpegHeader(0xC0, 4000, 3000, 3), true},
 		{"progressive 3 MP (36 MB)", jpegHeader(0xC2, 2000, 1500, 3), true},
 		{"progressive 6 MP (72 MB)", jpegHeader(0xC2, 3000, 2000, 3), false},
+		{"YCbCr 9.6 MP (29 MB)", jpegHeader(0xC0, 4000, 2400, 3), true},
+		{"RGB 9.6 MP (67 MB)", rgbJPEGHeader(0xC0, 4000, 2400), false},
+		{"RGB 8 MP (56 MB)", rgbJPEGHeader(0xC0, 4000, 2000), true},
+		{"progressive RGB 4.2 MP (67 MB)", rgbJPEGHeader(0xC2, 2100, 2000), false},
 		{"PNG 16-bit RGBA 7.8 MP (63 MB)", pngHeader(2800, 2800, 16, 6, 0), true},
 		{"PNG 16-bit RGBA 9 MP (72 MB)", pngHeader(3000, 3000, 16, 6, 0), false},
 		{"PNG 8-bit RGBA 12 MP (48 MB)", pngHeader(4000, 3000, 8, 6, 0), true},
@@ -181,6 +233,35 @@ func TestProgressiveAllocationCap(t *testing.T) {
 		if !c.ok && (err == nil || refusalCode(t, err) != 422 || !strings.Contains(err.Error(), "64 MB")) {
 			t.Errorf("%s: %+v %v", c.name, info, err)
 		}
+	}
+}
+
+// rgbJPEGHeader is jpegHeader with components named R, G and B: a JPEG stored as RGB, which DecodeConfig
+// reports as RGBA and the decoder converts to RGBA after decoding its planes.
+func rgbJPEGHeader(sof byte, w, h uint16) []byte {
+	b := jpegHeader(sof, w, h, 3)
+	for i, id := range []byte("RGB") {
+		b[4+2+6+3*i] = id      // frame header component ids
+		b[4+2+17+2+1+2*i] = id // scan header component selectors
+	}
+	return b
+}
+
+// A progressive JPEG with more scans than any encoder writes is refused before the scan: the decoder walks every
+// block once a scan, with no limit of its own.
+func TestJPEGScanCountCapped(t *testing.T) {
+	header := jpegHeader(0xC2, 64, 64, 3)
+	scan := jpegSegment(0xDA, []byte{1, 1, 0, 1, 1, 0x10})
+	bomb := append([]byte(nil), header[:len(header)-2]...)
+	for range maxJPEGScans - 1 {
+		bomb = append(bomb, scan...)
+	}
+	if _, err := inspectImage(append(bomb, 0xFF, 0xD9)); err != nil {
+		t.Fatalf("%d scans refused: %v", maxJPEGScans, err) // the header's own scan plus 99
+	}
+	bomb = append(bomb, scan...)
+	if _, err := inspectImage(append(bomb, 0xFF, 0xD9)); refusalCode(t, err) != 422 || !strings.Contains(err.Error(), "more than 100 progressive scans") {
+		t.Fatalf("%d scans: %v", maxJPEGScans+1, err)
 	}
 }
 
@@ -427,7 +508,7 @@ func FuzzDecodeReencode(f *testing.F) {
 		if info.width*info.height > 1<<20 {
 			return // valid but slow to fuzz
 		}
-		out, err := reencodeImage(scanFixture(t, uploadListing, data), info, uploadListing)
+		out, err := reencode(data, info, uploadListing) // a TCP scan per input would exhaust loopback ports
 		if err != nil {
 			refusalCode(t, err)
 			return

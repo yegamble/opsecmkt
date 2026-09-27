@@ -47,6 +47,7 @@ const (
 	maxThumbBytes            = 256 << 10 // and on images.thumb
 	maxHeaderSegments        = 256       // JPEG segments or PNG chunks walked before the image data
 	progressiveBytesPerPixel = 12
+	maxJPEGScans             = 100 // encoders write about 10; libjpeg-turbo suggests a limit of a few hundred
 )
 
 type imageFormat string
@@ -78,6 +79,7 @@ var (
 	errImageCMYK       = &httpError{Code: http.StatusUnsupportedMediaType, Msg: "Photo not saved: CMYK JPEGs are not accepted. Save the picture as an RGB JPEG or a PNG and upload that. Nothing was stored."}
 	errImageUnreadable = &httpError{Code: http.StatusUnprocessableEntity, Msg: "Photo not saved: the file is not a readable JPEG or PNG. Nothing was stored."}
 	errImageMemory     = &httpError{Code: http.StatusUnprocessableEntity, Msg: "Photo not saved: this picture would need more than 64 MB of memory to process (a progressive JPEG or a 16-bit PNG needs several times more than a standard JPEG). Save it as a standard JPEG or at a smaller size. Nothing was stored."}
+	errImageScans      = &httpError{Code: http.StatusUnprocessableEntity, Msg: "Photo not saved: this JPEG has more than 100 progressive scans. Save it as a standard JPEG and upload that. Nothing was stored."}
 	errImageDetailed   = &httpError{Code: http.StatusUnprocessableEntity, Msg: "Photo not saved: the re-encoded picture is too large to store (it is unusually detailed). Try a smaller or less detailed picture. Nothing was stored."}
 )
 
@@ -128,17 +130,24 @@ func inspectImage(data []byte) (imageInfo, error) {
 }
 
 // bytesPerPixel is the decoder's allocation per pixel for the colour model DecodeConfig reported: a progressive
-// JPEG's coefficient buffers count 12 B/px, and an interlaced PNG (info.progressive, set by walkPNG) twice its
-// model's size.
+// JPEG's coefficient buffers count 12 B/px, an RGB (not YCbCr) JPEG 4 B/px more for its conversion to RGBA, and
+// an interlaced PNG (info.progressive, set by walkPNG) twice its model's size.
 func bytesPerPixel(info imageInfo, m color.Model) int64 {
 	if info.format == formatJPEG {
+		var n int64 = 3 // YCbCr planes
 		switch {
-		case info.progressive:
-			return progressiveBytesPerPixel
 		case m == color.GrayModel:
-			return 1
+			n = 1
+		case m == color.RGBAModel: // stored as RGB, not YCbCr: decoded into planes, then copied to RGBA
+			n = 3 + 4
 		}
-		return 3
+		if info.progressive {
+			n = max(n, progressiveBytesPerPixel)
+			if m == color.RGBAModel {
+				n += 4
+			}
+		}
+		return n
 	}
 	var n int64
 	switch m {
@@ -184,6 +193,12 @@ func walkJPEG(data []byte) (imageInfo, error) {
 		case m == 0xDA || m == 0xD9: // SOS, EOI
 			if !sof {
 				return info, errImageUnreadable
+			}
+			// From here on every FF xx is a marker (entropy-coded data stuffs FF as FF 00). image/jpeg has no
+			// limit on scans, and each progressive scan walks every block, so a few bytes a scan could keep the
+			// one decode slot busy for minutes.
+			if bytes.Count(data[i:], []byte{0xFF, 0xDA}) > maxJPEGScans {
+				return info, errImageScans
 			}
 			return info, nil
 		case m == 0x01 || m >= 0xD0 && m <= 0xD7: // TEM, RSTn: no length
@@ -305,13 +320,18 @@ var (
 // reencodeImage decodes a scanned upload that passed inspectImage and returns its re-encoded JPEGs: a photo
 // fitting 1200×1200 (q82) with a thumbnail letterboxed to exactly 320×240 (q70); an avatar centre-cropped to
 // 256×256 with a 64×64 thumbnail. Nothing is upscaled. The caller holds an imageDecodeWork slot.
-func reencodeImage(u scannedUpload, info imageInfo, kind uploadKind) (out encodedImage, err error) {
+func reencodeImage(u scannedUpload, info imageInfo, kind uploadKind) (encodedImage, error) {
+	return reencode(u.Bytes(), info, kind)
+}
+
+// reencode is reencodeImage's work on the bytes. Only reencodeImage calls it, so only scanned bytes are decoded
+// (TestOnlyScannedBytesAreDecoded); the fuzz test calls it directly.
+func reencode(data []byte, info imageInfo, kind uploadKind) (out encodedImage, err error) {
 	defer func() {
 		if recover() != nil {
 			out, err = encodedImage{}, errImageUnreadable
 		}
 	}()
-	data := u.Bytes()
 	var img image.Image
 	switch {
 	case info.format == formatJPEG && bytes.HasPrefix(data, jpegMagic):
