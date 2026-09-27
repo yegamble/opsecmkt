@@ -7,11 +7,13 @@ import (
 	"go/parser"
 	"go/token"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -602,6 +604,17 @@ func TestStaffAvatarVisibleToOrderParties(t *testing.T) {
 	e.wantDeskHidden(otherVendor, avatar, "unrelated vendor")
 	// buyer2's order was decided by another moderator; buyer2 is no party to modID's decision.
 	e.wantDeskHidden(buyer2, avatar, "party to an order another moderator decided")
+	// A decider who is no longer staff: their avatar is no longer shown beside the decision.
+	if _, err := e.DB.Exec("UPDATE users SET role='buyer' WHERE id=$1", modID); err != nil {
+		t.Fatal(err)
+	}
+	e.wantDeskHidden(buyer, avatar, "buyer, demoted moderator")
+	e.wantDeskHidden(otherMod, avatar, "another moderator, demoted moderator")
+	e.wantDesk(mod, avatar, "the demoted moderator's own avatar")
+	if _, err := e.DB.Exec("UPDATE users SET role='moderator' WHERE id=$1", modID); err != nil {
+		t.Fatal(err)
+	}
+	e.wantDesk(buyer, avatar, "buyer, moderator again")
 	// A suspended staff member's avatar is no longer shown to the parties.
 	if _, err := e.DB.Exec("UPDATE users SET suspended_at=now() WHERE id=$1", modID); err != nil {
 		t.Fatal(err)
@@ -609,19 +622,208 @@ func TestStaffAvatarVisibleToOrderParties(t *testing.T) {
 	e.wantDeskHidden(buyer, avatar, "buyer, suspended moderator")
 }
 
-// A-187: catalog, vendor, desk and every other query read image bytes nowhere but the image routes. Every SQL
-// string literal in the package's non-test Go files that names the "full" or thumb column must use it only
-// inside octet_length(...) or as an INSERT column, and no query selects every column of images.
-func TestOnlyImageRoutesSelectImageBytes(t *testing.T) {
-	files, err := filepath.Glob("internal/market/*.go")
-	if err != nil || len(files) < 20 {
-		t.Fatalf("package files: %d %v", len(files), err)
+// imageByteReaders are the helpers in image_routes.go that build a query reading image bytes; no other file may
+// name them.
+var imageByteReaders = []string{"imageSelect"}
+
+// imageBytesChecker finds SQL that could read image bytes in Go sources (file name -> source) outside
+// image_routes.go. It checks every string literal, and every concatenation of literals and string constants
+// (constants resolved across all the files given, anything else standing in as " ? "), for:
+//
+//   - the full or thumb column named anywhere (any case, qualified or quoted) but inside octet_length(...) or an
+//     INSERT INTO images(...) column list;
+//   - whole rows of images: SELECT * or RETURNING *, alias.*, the table or its alias as a select or RETURNING
+//     item or as a function argument, and row_to_json, to_json(b) and the other row-to-value functions;
+//   - any reference to imageByteReaders.
+//
+// It returns one line per finding, and how many texts in image_routes.go name the columns (the check's anchor).
+func imageBytesChecker(t *testing.T, files map[string]string) (findings []string, anchors int) {
+	t.Helper()
+	fset := token.NewFileSet()
+	parsed := map[string]*ast.File{}
+	constExprs := map[string]ast.Expr{}
+	for name, src := range files {
+		f, err := parser.ParseFile(fset, name, src, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		parsed[name] = f
+		ast.Inspect(f, func(n ast.Node) bool {
+			if d, ok := n.(*ast.GenDecl); ok && d.Tok == token.CONST {
+				for _, spec := range d.Specs {
+					vs := spec.(*ast.ValueSpec)
+					for i, id := range vs.Names {
+						if i < len(vs.Values) {
+							constExprs[id.Name] = vs.Values[i]
+						}
+					}
+				}
+			}
+			return true
+		})
 	}
-	column := regexp.MustCompile(`"full"|\bthumb\b`)
-	allowed := regexp.MustCompile(`octet_length\(("full"|thumb)\)`)
-	star := regexp.MustCompile(`(?i)select\s+(\*|\w+\.\*)[^;]*\bimages\b|\bimages\b[^;]*\bi\.\*|images\.\*`)
-	servedBy := map[string]int{}
-	for _, f := range files {
+	consts := map[string]string{}
+	// fold renders a string expression: literals and resolved constants as their text, anything else as " ? ".
+	var fold func(e ast.Expr) (string, bool)
+	fold = func(e ast.Expr) (string, bool) {
+		switch e := e.(type) {
+		case *ast.BasicLit:
+			if e.Kind == token.STRING {
+				if s, err := strconv.Unquote(e.Value); err == nil {
+					return s, true
+				}
+			}
+		case *ast.ParenExpr:
+			return fold(e.X)
+		case *ast.Ident:
+			if s, ok := consts[e.Name]; ok {
+				return s, true
+			}
+		case *ast.BinaryExpr:
+			if e.Op == token.ADD {
+				l, lok := fold(e.X)
+				r, rok := fold(e.Y)
+				if !lok {
+					l = " ? "
+				}
+				if !rok {
+					r = " ? "
+				}
+				return l + r, lok || rok
+			}
+		}
+		return "", false
+	}
+	for changed := true; changed; { // constants defined from other constants
+		changed = false
+		for name, e := range constExprs {
+			if s, ok := fold(e); ok && consts[name] != s {
+				consts[name], changed = s, true
+			}
+		}
+	}
+	octet := regexp.MustCompile(`(?i)octet_length\s*\([^()]*\)`)
+	insertColumns := regexp.MustCompile(`(?is)\binsert\s+into\s+images\s*\([^)]*\)`)
+	column := regexp.MustCompile(`(?i)\b(full|thumb)\b`)
+	sqlish := regexp.MustCompile(`(?i)\b(select|insert|update|delete|returning|from|join|where)\b|\.\s*"?(full|thumb)\b|"(full|thumb)"`)
+	tableRef := regexp.MustCompile(`(?i)\bimages\b(?:\s+(?:as\s+)?([a-z_][a-z0-9_]*))?`)
+	notAlias := map[string]bool{"where": true, "join": true, "left": true, "right": true, "inner": true, "full": true, "cross": true,
+		"natural": true, "on": true, "set": true, "values": true, "order": true, "group": true, "limit": true, "offset": true,
+		"returning": true, "using": true, "for": true, "union": true, "lateral": true, "and": true, "or": true}
+	rowFunc := regexp.MustCompile(`(?i)\b(row_to_json|to_json|to_jsonb|json_agg|jsonb_agg|json_build_object|jsonb_build_object|hstore|json_populate_record|jsonb_populate_record|array_agg|string_agg|format|concat|concat_ws|encode)\s*\(`)
+	star := regexp.MustCompile(`(?i)\b(select\s+(distinct\s+)?|returning\s+)\*`)
+	check := func(file, text string) {
+		rest := insertColumns.ReplaceAllString(octet.ReplaceAllString(text, ""), "images")
+		if column.MatchString(rest) && sqlish.MatchString(rest) {
+			if file == "image_routes.go" {
+				anchors++
+			} else {
+				findings = append(findings, file+": names an image column: "+text)
+			}
+		}
+		if file == "image_routes.go" || !tableRef.MatchString(text) {
+			return
+		}
+		aliases := []string{"images"}
+		for _, m := range tableRef.FindAllStringSubmatch(text, -1) {
+			if m[1] != "" && !notAlias[strings.ToLower(m[1])] {
+				aliases = append(aliases, m[1])
+			}
+		}
+		whole := star.MatchString(text) || rowFunc.MatchString(text)
+		for _, a := range aliases {
+			q := regexp.QuoteMeta(a)
+			for _, re := range []string{
+				`(?i)\b` + q + `\s*\.\s*\*`, // alias.*
+				`(?i)(\bselect\s+(distinct\s+)?|\breturning\s+|,\s*)` + q + `\s*(,|\bfrom\b|$)`, // the row as an item
+				`(?i)\(\s*` + q + `\s*[),]`, // the row as an argument
+			} {
+				whole = whole || regexp.MustCompile(re).MatchString(text)
+			}
+		}
+		if whole {
+			findings = append(findings, file+": reads whole rows of images: "+text)
+		}
+	}
+	for name, f := range parsed {
+		inner := map[ast.Node]bool{} // parts of a concatenation already checked as a whole
+		ast.Inspect(f, func(n ast.Node) bool {
+			switch n := n.(type) {
+			case *ast.BinaryExpr:
+				if n.Op != token.ADD {
+					return true
+				}
+				if !inner[n] {
+					if s, ok := fold(n); ok {
+						check(name, s)
+					}
+				}
+				for _, side := range []ast.Expr{n.X, n.Y} {
+					if b, ok := side.(*ast.BinaryExpr); ok {
+						inner[b] = true
+					}
+				}
+			case *ast.BasicLit:
+				if s, ok := fold(n); ok {
+					check(name, s)
+				}
+			case *ast.Ident:
+				if name != "image_routes.go" && slices.Contains(imageByteReaders, n.Name) {
+					findings = append(findings, name+": uses "+n.Name+", which reads image bytes")
+				}
+			}
+			return true
+		})
+	}
+	return findings, anchors
+}
+
+// The checker itself: each of these reads image bytes on PostgreSQL 17 and must be found; the allowed forms
+// must not be.
+func TestImageBytesCheckerCatchesEvasions(t *testing.T) {
+	for name, src := range map[string]string{
+		"qualified unquoted":  "const q = `SELECT i.full FROM images i WHERE i.id=$1`",
+		"upper case":          "const q = `SELECT THUMB FROM images WHERE id=$1`",
+		"whole-row alias":     "const q = `SELECT i FROM images i WHERE i.id=$1`",
+		"row_to_json":         "const q = `SELECT row_to_json(i) FROM images i WHERE i.id=$1`",
+		"insert returning":    "const q = `INSERT INTO images(id,owner_user_id,kind,\"full\",thumb) VALUES($1,$2,$3,$4,$5) RETURNING thumb`",
+		"reader reused":       "func q(full bool) string { return imageSelect(full, false) + \"images i WHERE i.id=$1\" }",
+		"to_jsonb of table":   "const q = `SELECT to_jsonb(images) FROM images WHERE id=$1`",
+		"select star":         "const q = `SELECT * FROM images WHERE id=$1`",
+		"alias star":          "const q = `SELECT i.* FROM images i`",
+		"returning star":      "const q = `DELETE FROM images WHERE id=$1 RETURNING *`",
+		"concatenated alias":  "const from = `images i JOIN users o ON o.id=i.owner_user_id`\nconst q = \"SELECT i FROM \" + from",
+		"concatenated column": "const col = `i.\"full\"`\nfunc q() string { return \"SELECT \" + col + \" FROM x\" }",
+	} {
+		findings, _ := imageBytesChecker(t, map[string]string{"load.go": "package market\n" + src})
+		if len(findings) == 0 {
+			t.Errorf("%s: not found in %s", name, src)
+		}
+	}
+	for name, src := range map[string]string{
+		"sizes":        "const q = `SELECT count(*),coalesce(sum(octet_length(\"full\")+octet_length(thumb)),0) FROM images`",
+		"insert":       "const q = `INSERT INTO images(id,owner_user_id,product_id,kind,\"full\",thumb,width,height,description) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`",
+		"ids":          "const q = `SELECT i.id,i.width,i.height,i.description FROM images i WHERE i.product_id=$1 ORDER BY i.created`",
+		"public ids":   "const from = `images i JOIN users o ON o.id=i.owner_user_id`\nconst q = \"SELECT i.id FROM \" + from + \" WHERE i.product_id=$1\"",
+		"delete":       "const q = `DELETE FROM images WHERE owner_user_id=$1 AND kind='avatar'`",
+		"prose":        "const m = \"Photo storage on this market is full; contact the operator.\"",
+		"prose verify": "const m = \"set sslmode=require or verify-full in DATABASE_URL\"",
+	} {
+		if findings, _ := imageBytesChecker(t, map[string]string{"load.go": "package market\n" + src}); len(findings) != 0 {
+			t.Errorf("%s: allowed form flagged: %q", name, findings)
+		}
+	}
+}
+
+// A-187: catalog, vendor, desk and every other query read image bytes nowhere but the image routes
+// (imageBytesChecker over the package's non-test Go files).
+func TestOnlyImageRoutesSelectImageBytes(t *testing.T) {
+	names, err := filepath.Glob("internal/market/*.go")
+	if err != nil || len(names) < 20 {
+		t.Fatalf("package files: %d %v", len(names), err)
+	}
+	files := map[string]string{}
+	for _, f := range names {
 		if strings.HasSuffix(f, "_test.go") {
 			continue
 		}
@@ -629,36 +831,13 @@ func TestOnlyImageRoutesSelectImageBytes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		parsed, err := parser.ParseFile(token.NewFileSet(), f, src, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ast.Inspect(parsed, func(n ast.Node) bool {
-			lit, ok := n.(*ast.BasicLit)
-			if !ok || lit.Kind != token.STRING {
-				return true
-			}
-			s, err := strconv.Unquote(lit.Value)
-			if err != nil {
-				return true
-			}
-			if star.MatchString(s) {
-				t.Errorf("%s selects every column of images: %q", f, s)
-			}
-			rest := allowed.ReplaceAllString(s, "")
-			if strings.HasPrefix(strings.TrimSpace(rest), "INSERT INTO images(") {
-				return true
-			}
-			if column.MatchString(rest) {
-				servedBy[filepath.Base(f)]++
-				if filepath.Base(f) != "image_routes.go" {
-					t.Errorf("%s reads image bytes: %q", f, s)
-				}
-			}
-			return true
-		})
+		files[filepath.Base(f)] = string(src)
 	}
-	if servedBy["image_routes.go"] == 0 {
+	findings, anchors := imageBytesChecker(t, files)
+	for _, f := range findings {
+		t.Error(f)
+	}
+	if anchors == 0 {
 		t.Fatal("found no image query in image_routes.go: the check is not looking at the right strings")
 	}
 }
@@ -671,11 +850,122 @@ func TestImageRouteLogNameHasNoID(t *testing.T) {
 			t.Fatalf("routeOf(%s) = %s %s, want page %s", path, kind, name, want)
 		}
 	}
-	a := testHTTPApp(false)
 	logs := captureLog(t)
 	w := httptest.NewRecorder()
-	a.writeImage(w, httptest.NewRequest("GET", publicImageURL(id, true), nil), nil, io.ErrUnexpectedEOF)
+	writeImage(w, httptest.NewRequest("GET", publicImageURL(id, true), nil), 0, nil, io.ErrUnexpectedEOF)
 	if w.Code != 503 || w.Header().Get("Retry-After") != "5" || !strings.Contains(logs.String(), "name=/img/ ") || strings.Contains(logs.String(), id) {
 		t.Fatalf("database failure: %d %q, log %q", w.Code, w.Body.String(), logs.String())
+	}
+}
+
+// smallSendBuffers gives each accepted connection an 8 KiB send buffer, so a response to a client that does not
+// read blocks in Write after a few KiB instead of filling the kernel's buffers.
+type smallSendBuffers struct{ net.Listener }
+
+func (l smallSendBuffers) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if tc, ok := c.(*net.TCPConn); ok {
+		tc.SetWriteBuffer(8 << 10)
+	}
+	return c, err
+}
+
+// PR #23 review R-1: the image bytes held by responses still being written are bounded by imageBytes (64 MiB),
+// though the image slot is released when the response starts. Clients that never read pin at most that much;
+// once it is spent a full image gets the busy 503 with Retry-After at once, pages still load, and a HEAD, which
+// holds no bytes, still answers. Closing the clients gives it all back.
+func TestImageSlowReadersBoundedByByteBudget(t *testing.T) {
+	e := newTestApp(t)
+	vendorID, _ := e.user("slow_reader_vendor", "vendor")
+	full := bytes.Repeat([]byte{0xab}, 2_000_000)
+	id := randomToken()[:32]
+	if _, err := e.DB.Exec(`INSERT INTO images(id,owner_user_id,product_id,kind,"full",thumb,width,height) VALUES($1,$2,$3,'photo',$4,$5,1200,900)`,
+		id, vendorID, e.product(vendorID, "physical"), full, []byte("\xff\xd8\xff thumbnail")); err != nil {
+		t.Fatal(err)
+	}
+	if imageBytes.limit != 64<<20 || imageBytes.inUse() != 0 {
+		t.Fatalf("image byte budget %d, %d in use; want 64 MiB, none", imageBytes.limit, imageBytes.inUse())
+	}
+	s := httptest.NewUnstartedServer(e.A)
+	s.Listener = smallSendBuffers{s.Listener}
+	s.Start()
+	defer s.Close()
+	path := publicImageURL(id, true)
+	get := func(method, p string) *http.Response {
+		t.Helper()
+		resp, _ := fetch(t, method, s.URL+p)
+		return resp
+	}
+	for range 3 { // warm the pools the baseline should include
+		if resp := get("GET", path); resp.StatusCode != 200 || resp.ContentLength != int64(len(full)) {
+			t.Fatalf("warm-up: %d", resp.StatusCode)
+		}
+	}
+	heap := func() uint64 {
+		runtime.GC()
+		runtime.GC()
+		var m runtime.MemStats
+		runtime.ReadMemStats(&m)
+		return m.HeapAlloc
+	}
+	base := heap()
+	var slow []net.Conn
+	defer func() {
+		for _, c := range slow {
+			c.Close()
+		}
+	}()
+	send := func() net.Conn {
+		c, err := net.Dial("tcp", s.Listener.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.(*net.TCPConn).SetReadBuffer(4 << 10)
+		if _, err = io.WriteString(c, "GET "+path+" HTTP/1.1\r\nHost: market.test\r\n\r\n"); err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	size := int64(len(full))
+	for imageBytes.inUse()+size <= imageBytes.limit {
+		before := imageBytes.inUse()
+		slow = append(slow, send())
+		waitFor(t, func() bool { return imageBytes.inUse() > before })
+	}
+	if n := len(slow); n != int(imageBytes.limit/size) {
+		t.Fatalf("%d clients that never read filled the budget, want %d", n, imageBytes.limit/size)
+	}
+	// Further clients get the busy answer at once, whether or not they read it.
+	for range 16 {
+		c := send()
+		slow = append(slow, c)
+		c.SetReadDeadline(time.Now().Add(10 * time.Second))
+		status := make([]byte, 12)
+		if _, err := io.ReadFull(c, status); err != nil || string(status) != "HTTP/1.1 503" {
+			t.Fatalf("a client past the budget got %q %v", status, err)
+		}
+	}
+	resp := get("GET", path)
+	if resp.StatusCode != 503 || resp.Header.Get("Retry-After") != "5" {
+		t.Fatalf("full image with the byte budget spent: %d Retry-After=%q", resp.StatusCode, resp.Header.Get("Retry-After"))
+	}
+	if resp := get("GET", "/catalog"); resp.StatusCode != 200 {
+		t.Fatalf("page with the byte budget spent: %d", resp.StatusCode)
+	}
+	if resp := get("HEAD", path); resp.StatusCode != 200 || resp.Header.Get("Content-Length") != strconv.Itoa(len(full)) {
+		t.Fatalf("HEAD with the byte budget spent: %d %v", resp.StatusCode, resp.Header)
+	}
+	if grown := int64(heap()) - int64(base); grown > imageBytes.limit+16<<20 {
+		t.Fatalf("heap grew %d MiB with %d clients not reading; the budget is %d MiB", grown>>20, len(slow), imageBytes.limit>>20)
+	} else {
+		t.Logf("heap grew %d MiB with %d clients not reading", grown>>20, len(slow))
+	}
+	for _, c := range slow {
+		c.Close()
+	}
+	slow = nil
+	waitFor(t, func() bool { return imageBytes.inUse() == 0 })
+	if resp := get("GET", path); resp.StatusCode != 200 {
+		t.Fatalf("full image after the clients went away: %d", resp.StatusCode)
 	}
 }

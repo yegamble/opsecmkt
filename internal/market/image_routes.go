@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // A-187 (war room 2026-09-27, rulings D7 and D8, owner decision 1): the two routes that serve stored photos and
@@ -22,12 +23,50 @@ import (
 //     and it too sets no cookie.
 //
 // <id> is the 32 lowercase hex characters of the row's id (128 random bits, storeImage); -t is the thumbnail and
-// -f the full image. Anything else, and any image the request may not see, gets http.NotFound: the same status,
-// headers and body as an unknown route, so an id cannot be probed (TestImageUnknownAndHiddenIdentical).
+// -f the full image. A malformed path, and any image the request may not see, gets the same 404 as an unknown
+// image id (status, headers and body; no cookie on either route), so an id cannot be probed
+// (TestImageUnknownAndHiddenIdentical); a POST gets 405. A GET also reserves the image's bytes from imageBytes
+// until they are written (serveImage).
 
 // imageWork admits 16 concurrent image requests on the public route. Its own class: a catalog page of 25
 // thumbnails fills it rather than the page class, and a flood of image requests cannot refuse pages.
 var imageWork = make(chan struct{}, 16)
+
+// imageBytes bounds the image bytes that responses hold from their database read until their Write returns
+// (PR #23 review R-1). The image slot is released when a response starts, so without it every client that never
+// reads would pin up to 2 MiB until the server's write timeout, bounded only by the connection cap.
+var imageBytes = &byteBudget{limit: 64 << 20}
+
+// byteBudget counts bytes reserved against a limit. It never waits: a reservation that does not fit is refused.
+type byteBudget struct {
+	mu          sync.Mutex
+	used, limit int64
+}
+
+// take reserves n bytes if they fit.
+func (b *byteBudget) take(n int64) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.used+n > b.limit {
+		return false
+	}
+	b.used += n
+	return true
+}
+
+// give returns n reserved bytes.
+func (b *byteBudget) give(n int64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.used -= n
+}
+
+// inUse is the number of bytes reserved.
+func (b *byteBudget) inUse() int64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.used
+}
 
 var imagePathForm = regexp.MustCompile(`^([0-9a-f]{32})-([tf])$`)
 
@@ -86,17 +125,18 @@ const imageDeskWhere = `(i.owner_user_id=$2 OR $3='admin'
    WHERE od.state='resolved' AND (od.buyer_id=$2 OR pr.vendor_id=$2 OR $3='moderator')
      AND EXISTS(SELECT 1 FROM order_events e WHERE e.order_id=od.id AND e.from_state='disputed' AND e.to_state='resolved' AND e.actor_id=i.owner_user_id))))`
 
-// The two columns an image route selects; only these queries read image bytes.
-const (
-	imageThumbSQL = `SELECT i.thumb FROM `
-	imageFullSQL  = `SELECT i."full" FROM `
-)
-
-func imageColumn(full bool) string {
+// imageSelect starts an image route's query: the length of one size of the image and, for a GET, its bytes (a
+// HEAD reads only the length). The only way a query reads image bytes; no other file may use it
+// (TestOnlyImageRoutesSelectImageBytes).
+func imageSelect(full, head bool) string {
+	col := "i.thumb"
 	if full {
-		return imageFullSQL
+		col = `i."full"`
 	}
-	return imageThumbSQL
+	if head {
+		return "SELECT octet_length(" + col + "),NULL::bytea FROM "
+	}
+	return "SELECT octet_length(" + col + ")," + col + " FROM "
 }
 
 // servePublicImage answers GET/HEAD /img/<rest>. ServeHTTP calls it before reading any cookie.
@@ -110,9 +150,7 @@ func (a *App) servePublicImage(w http.ResponseWriter, r *http.Request, rest stri
 		http.NotFound(w, r)
 		return
 	}
-	var b []byte
-	err := a.db.QueryRowContext(r.Context(), imageColumn(ref.full)+imagePublicFrom+` WHERE i.id=$1 AND `+imagePublicWhere, ref.id).Scan(&b)
-	a.writeImage(w, r, b, err)
+	a.serveImage(w, r, ref, imagePublicFrom+` WHERE i.id=$1 AND `+imagePublicWhere, ref.id)
 }
 
 // serveDeskImage answers GET/HEAD /desk/img/<rest> for the session in the request's session cookie. It reads no
@@ -137,14 +175,41 @@ func (a *App) serveDeskImage(w http.ResponseWriter, r *http.Request, rest string
 		http.NotFound(w, r)
 		return
 	}
-	var b []byte
-	err = a.db.QueryRowContext(r.Context(), imageColumn(ref.full)+`images i JOIN users o ON o.id=i.owner_user_id WHERE i.id=$1 AND `+imageDeskWhere, ref.id, u.ID, u.Role).Scan(&b)
-	a.writeImage(w, r, b, err)
+	a.serveImage(w, r, ref, `images i JOIN users o ON o.id=i.owner_user_id WHERE i.id=$1 AND `+imageDeskWhere, ref.id, u.ID, u.Role)
 }
 
-// writeImage answers with image bytes b under D7's header set exactly (the page headers ServeHTTP set are
-// replaced), or the unknown-route 404 when there is no row, or 503 on a database error.
-func (a *App) writeImage(w http.ResponseWriter, r *http.Request, b []byte, err error) {
+// serveImage runs an image route's query (from: what follows imageSelect) and answers with the image. A GET
+// first reserves the largest stored size of what it asked for from imageBytes, without waiting (the busy 503
+// with Retry-After when it does not fit, before any query, so the answer is the same for every id), keeps what
+// the image needs once read until its Write returns, and gives it all back however the handler ends (a client
+// that went away, a panic). A HEAD reads only the length and reserves nothing.
+func (a *App) serveImage(w http.ResponseWriter, r *http.Request, ref imageRef, from string, args ...any) {
+	head := r.Method == "HEAD"
+	var reserved int64
+	if !head {
+		reserved = maxThumbBytes // the largest stored sizes (images.go, migration 063's CHECKs)
+		if ref.full {
+			reserved = maxFullBytes
+		}
+		if !imageBytes.take(reserved) {
+			busy(w)
+			return
+		}
+		defer func() { imageBytes.give(reserved) }()
+	}
+	var n int64
+	var b []byte
+	err := a.db.QueryRowContext(r.Context(), imageSelect(ref.full, head)+from, args...).Scan(&n, &b)
+	if err == nil && !head {
+		imageBytes.give(reserved - int64(len(b)))
+		reserved = int64(len(b))
+	}
+	writeImage(w, r, n, b, err)
+}
+
+// writeImage answers with an image of n bytes b (nil for HEAD) under D7's header set exactly (the page headers
+// ServeHTTP set are replaced), or the unknown-id 404 when there is no row, or 503 on a database error.
+func writeImage(w http.ResponseWriter, r *http.Request, n int64, b []byte, err error) {
 	switch {
 	case err == sql.ErrNoRows:
 		http.NotFound(w, r)
@@ -161,7 +226,7 @@ func (a *App) writeImage(w http.ResponseWriter, r *http.Request, b []byte, err e
 		h.Del(k)
 	}
 	h.Set("Content-Type", "image/jpeg")
-	h.Set("Content-Length", strconv.Itoa(len(b)))
+	h.Set("Content-Length", strconv.FormatInt(n, 10))
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Content-Security-Policy", "default-src 'none'; sandbox")
 	// D7: a day in the browser's private cache, not revalidated (no validators: an id's bytes never change).
