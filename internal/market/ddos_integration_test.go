@@ -274,6 +274,53 @@ func TestPageLoadConnectionLossIs503(t *testing.T) {
 	}
 }
 
+// QA-178-2 review: an OwnTx action commits its own change, and post() then writes the action's audit row in
+// autocommit, so a connection lost at that row stays 500, never the "try again" 503: a retry could repeat the
+// change. (The OwnTx actions registered today go through confirmedTx, which writes the row inside its own
+// transaction; this pins post()'s path for any that does not.)
+func TestAuditLostAfterOwnTxCommitIs500(t *testing.T) {
+	e := newTestApp(t)
+	_, staff := e.user("lost_owntx_admin", "admin")
+	withAction(t, "/test/owntx-audit", actionSpec{Roles: []string{"admin"}, OwnTx: true, Run: func(c *actionCtx) (actionResult, error) {
+		_, err := c.A.db.ExecContext(c.Ctx(), "INSERT INTO settings(key,value) VALUES('owntx_probe','done')")
+		return actionResult{Redirect: "/admin", Audit: "OwnTx probe"}, err
+	}})
+	admin, err := OpenDB(os.Getenv("DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	tx, err := admin.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec("LOCK TABLE audit_events IN ACCESS EXCLUSIVE MODE"); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() { done <- e.do("POST", "/test/owntx-audit", staff, nil) }()
+	var pid int
+	for deadline := time.Now().Add(5 * time.Second); pid == 0; time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the audit row never queued on audit_events")
+		}
+		admin.QueryRow("SELECT coalesce(max(pid),0) FROM pg_locks WHERE relation='audit_events'::regclass AND NOT granted").Scan(&pid)
+	}
+	if _, err = admin.Exec("SELECT pg_terminate_backend($1)", pid); err != nil {
+		t.Fatal(err)
+	}
+	w := <-done
+	tx.Rollback()
+	var n int
+	if err = admin.QueryRow("SELECT count(*) FROM settings WHERE key='owntx_probe'").Scan(&n); err != nil || n != 1 {
+		t.Fatalf("the OwnTx change was not committed before its audit row: %d %v", n, err)
+	}
+	if w.Code != 500 || strings.HasPrefix(w.Body.String(), errBusyMsg) {
+		t.Fatalf("audit row lost after an OwnTx commit: %d %q", w.Code, w.Body.String())
+	}
+}
+
 // A-177: migrations run without the application pool's timeouts, so a long one is bounded only by
 // MIGRATION_TIMEOUT.
 func TestMigrationsRunWithoutSessionTimeouts(t *testing.T) {
