@@ -238,11 +238,26 @@ INSERT INTO audit_events(user_id,action) VALUES ('ops-admin','Restore drill: an 
 INSERT INTO images(id,owner_user_id,product_id,kind,\"full\",thumb,width,height) VALUES
  (repeat('a',32),'ops-vendor','ops-product','photo','\\xffd8ff','\\xffd8ff',1,1),(repeat('b',32),'ops-vendor',NULL,'avatar','\\xffd8ff','\\xffd8ff',1,1);"
 app_backup="$work/app.dump.age"
-BACKUP_DATABASE_URL=$(connection_url "$app_source_db") scripts/backup.sh "$app_backup"
-RESTORE_DATABASE_URL=$(connection_url "$app_target_db") scripts/restore.sh "$app_backup" <<< 'RESTORE' > "$work/app-restore.log"
+# The backup is taken in one time zone and restored in another (PR #27 SHOULD-3): the restore line must still show
+# when it was taken, in UTC. A custom-format dump keeps the wall-clock time of the zone pg_dump ran in, and
+# pg_restore --list labels it with its own, so both scripts run those tools in UTC.
+backup_started=$(date -u +%s)
+TZ=Asia/Tokyo BACKUP_DATABASE_URL=$(connection_url "$app_source_db") scripts/backup.sh "$app_backup"
+backup_finished=$(date -u +%s)
+TZ=America/New_York RESTORE_DATABASE_URL=$(connection_url "$app_target_db") scripts/restore.sh "$app_backup" <<< 'RESTORE' > "$work/app-restore.log"
 grep -q 'Held 2 restored payout(s)' "$work/app-restore.log"
 grep -q 'Marked 1 restored failed payout(s) as possibly sent' "$work/app-restore.log"
 grep -Eq "$(images_line 2)" "$work/app-restore.log"
+python3 - "$work/app-restore.log" "$backup_started" "$backup_finished" <<'PY'
+import calendar, re, sys, time
+log, started, finished = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+match = re.search(r'from a backup taken (\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) (\S+);', open(log, encoding='utf-8').read())
+assert match, 'no restored-images line'
+taken = calendar.timegm(time.strptime(match.group(1), '%Y-%m-%d %H:%M:%S'))
+assert match.group(2) == 'UTC' and started - 1 <= taken <= finished + 1, \
+    'backup time %s %s, taken between %s and %s UTC' % (match.group(1), match.group(2),
+    time.strftime('%H:%M:%S', time.gmtime(started)), time.strftime('%H:%M:%S', time.gmtime(finished)))
+PY
 [[ $(pg "$app_target_db" -Atq -c "SELECT value FROM settings WHERE key='payments_recovery_required'") == true ]]
 [[ $(pg "$app_source_db" -Atq -c "SELECT count(*) FROM settings WHERE key='payments_recovery_required'") == 0 ]]
 payouts="SELECT string_agg(order_id || ':' || state || ':' || (error LIKE 'Restored from backup:%') || ':' || send_ambiguous || ':' || txid, ',' ORDER BY order_id) FROM payouts"
