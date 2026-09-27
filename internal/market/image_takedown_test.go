@@ -292,7 +292,7 @@ func TestTakedownNotifiesOwnerWithReason(t *testing.T) {
 		t.Fatal("the product page after the takedown still shows the photo, or lost the other one")
 	}
 	wantNote := "Staff removed a photo from your listing “Test listing” (" + listing[:8] + ") with the reason “" + imageTakedownReason +
-		"”. The photo was deleted and cannot be restored; the listing itself is unchanged. You can add another photo from the listing's edit page. If you think this is wrong, contact the market staff."
+		"”. The photo was deleted; you cannot undo this. The listing itself is unchanged. You can add another photo from the listing's edit page. If you think this is wrong, contact the market staff."
 	if got := e.notes(vendorID); len(got) != 1 || got[0] != wantNote {
 		t.Fatalf("vendor's notifications %q, want %q", got, wantNote)
 	}
@@ -320,7 +320,7 @@ func TestTakedownNotifiesOwnerWithReason(t *testing.T) {
 	if w.Code != 303 || w.Header().Get("Location") != "/vendor?id="+vendorID+"&image=removed" {
 		t.Fatalf("takedown from the vendor page: %d %q %s", w.Code, w.Header().Get("Location"), w.Body.String())
 	}
-	wantAvatar := "Staff removed your avatar with the reason “Avatar shows a real name tag.”. It was deleted and cannot be restored. If you think this is wrong, contact the market staff."
+	wantAvatar := "Staff removed your avatar with the reason “Avatar shows a real name tag.”. It was deleted; you cannot undo this. If you think this is wrong, contact the market staff."
 	if got := last(e.notes(vendorID)); got != wantAvatar {
 		t.Fatalf("avatar notification %q, want %q", got, wantAvatar)
 	}
@@ -388,7 +388,7 @@ func TestStaffImageChangeNotifiesOwner(t *testing.T) {
 	want := []string{
 		"An administrator added a photo to your listing " + listing[:8] + ".",
 		"An administrator removed a photo from your listing " + listing[:8] + ".",
-		"Staff removed your avatar with the reason “Avatar shows a real name tag.”. It was deleted and cannot be restored. If you think this is wrong, contact the market staff.",
+		"Staff removed your avatar with the reason “Avatar shows a real name tag.”. It was deleted; you cannot undo this. If you think this is wrong, contact the market staff.",
 	}
 	if got := e.notes(vendorID); strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("vendor's notifications %q, want %q", got, want)
@@ -604,5 +604,74 @@ func TestImageTakedownReasonWithNULRefused(t *testing.T) {
 	w := e.takeDown(moderator, photo.id, "A reason with a \x00 NUL byte in it.")
 	if w.Code != 400 || !strings.Contains(w.Body.String(), "10–500 characters") || e.imageRows(photo.id) != 1 {
 		t.Fatalf("NUL in the reason: %d %q, %d rows", w.Code, w.Body.String(), e.imageRows(photo.id))
+	}
+}
+
+// PR #28 review (chair's ruling on REQUIRED 1): a staff avatar is uploaded under the staff privacy rules (hidden
+// unless listed), while a vendor's avatar is public. An administrator moving a moderator to another role deletes
+// the avatar in that transaction (D4's hard delete), notifies the owner and audits it, so a demotion to vendor
+// never publishes it on /img or the vendor page. The admin role form cannot change an administrator, so an
+// administrator's hidden avatar stays hidden. A vendor promoted to moderator starts hidden: nothing to delete.
+func TestStaffDemotionDeletesAvatar(t *testing.T) {
+	e := newTestApp(t)
+	adminID, admin := e.user("demote_admin", "admin")
+	otherAdminID, _ := e.user("demote_other_admin", "admin")
+	const note = "Your staff avatar was removed when your role changed; upload a new one if you want one shown."
+	const audit = "Staff avatar removed when the role changed"
+	for _, to := range []string{"vendor", "buyer"} {
+		modID, _ := e.user("demote_mod_to_"+to, "moderator")
+		avatar := e.image(modID, "", "avatar")
+		e.wantHidden(avatar, "hidden moderator's avatar before the change")
+		agExpect(e, "/admin", admin, form("action", "role", "role", to, "handle", "demote_mod_to_"+to), 303, "")
+		if agStr(e, "SELECT role FROM users WHERE id=$1", modID) != to {
+			t.Fatalf("moderator not changed to %s", to)
+		}
+		if n := e.imageRows(avatar.id); n != 0 {
+			t.Fatalf("moderator → %s: %d avatar rows left, want 0", to, n)
+		}
+		e.wantHidden(avatar, "former moderator's avatar after the change to "+to)
+		if to == "vendor" {
+			body := e.body("GET", "/vendor?id="+modID, randomToken(), nil, 200)
+			mustNotContain(t, body, avatar.id, "/img/")
+		}
+		if agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1 AND body=$2", modID, note) != 1 {
+			t.Fatalf("moderator → %s: owner not notified", to)
+		}
+		if !e.auditExact(modID, audit) || !e.auditExact(adminID, "Changed role of demote_mod_to_"+to+" from moderator to "+to+"; removed their staff avatar") {
+			t.Fatalf("moderator → %s: audit rows missing", to)
+		}
+	}
+	// A moderator without an avatar is changed with no avatar note or audit row.
+	bareID, _ := e.user("demote_mod_bare", "moderator")
+	agExpect(e, "/admin", admin, form("action", "role", "role", "vendor", "handle", "demote_mod_bare"), 303, "")
+	if agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1", bareID) != 0 || e.auditExact(bareID, audit) {
+		t.Fatal("a moderator without an avatar got the avatar note or audit row")
+	}
+	// Administrators' roles are not changed here: the other administrator's hidden avatar stays, and stays hidden.
+	adminAvatar := e.image(otherAdminID, "", "avatar")
+	agExpect(e, "/admin", admin, form("action", "role", "role", "vendor", "handle", "demote_other_admin"), 404, "No buyer, vendor or moderator has the handle")
+	if agStr(e, "SELECT role FROM users WHERE id=$1", otherAdminID) != "admin" || e.imageRows(adminAvatar.id) != 1 {
+		t.Fatal("the admin role form changed an administrator or their avatar")
+	}
+	e.wantHidden(adminAvatar, "administrator's hidden avatar after a refused change")
+	// A vendor promoted to moderator starts hidden: the avatar is kept and is no longer public.
+	vendorID, _ := e.user("promote_vendor", "vendor")
+	vendorAvatar := e.image(vendorID, "", "avatar")
+	e.wantPublic(vendorAvatar, "vendor's avatar")
+	agExpect(e, "/admin", admin, form("action", "role", "role", "moderator", "handle", "promote_vendor"), 303, "")
+	if e.imageRows(vendorAvatar.id) != 1 || agStr(e, "SELECT staff_hidden::text FROM users WHERE id=$1", vendorID) != "true" {
+		t.Fatal("promotion deleted the avatar or did not start hidden")
+	}
+	e.wantHidden(vendorAvatar, "new moderator's avatar, hidden by default")
+	agExec(e, "UPDATE settings SET value='true' WHERE key='staff_list_public'")
+	e.wantHidden(vendorAvatar, "new moderator's avatar with the list on, still hidden by default")
+	// A moderator who chose to be listed, then was demoted and promoted again, starts hidden again: the choice
+	// was made as staff and does not outlive the role (PR #28 re-promotion follow-up).
+	listedID, _ := e.user("listed_mod", "moderator")
+	agExec(e, "UPDATE users SET staff_hidden=false WHERE id=$1", listedID)
+	agExpect(e, "/admin", admin, form("action", "role", "role", "vendor", "handle", "listed_mod"), 303, "")
+	agExpect(e, "/admin", admin, form("action", "role", "role", "moderator", "handle", "listed_mod"), 303, "")
+	if agStr(e, "SELECT staff_hidden::text FROM users WHERE id=$1", listedID) != "true" {
+		t.Fatal("a re-promoted moderator kept the public staff list choice from before the demotion")
 	}
 }

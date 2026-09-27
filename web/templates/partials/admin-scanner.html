@@ -1,7 +1,7 @@
 {{/* A-185 image scanner panel (clamd.go): rendered from the cached state only; it never contacts clamd. */}}
 {{define "admin-scanner"}}{{with .Scanner}}<section class="panel" id="image-scanner" aria-labelledby="image-scanner-title">
 <h2 id="image-scanner-title">Image scanner</h2>
-<p>Every photo and avatar upload is checked by the ClamAV malware scanner before anything is stored; only a clean answer lets it through. ClamAV checks for known malware; it does not review picture content. This panel shows what the app last heard from the scanner, checked every 30 seconds.</p>
+<p>Every photo and avatar upload is checked by the ClamAV malware scanner before anything is stored; only clamd’s answer that it found nothing (<code>stream: OK</code>) lets it through. ClamAV checks uploads for known malware; it does not review picture content. This panel shows what the app last heard from the scanner, checked every 30 seconds.</p>
 <p><strong>{{.State}}{{if .Detail}} ({{.Detail}}){{end}}</strong></p>
 {{if .Disabled}}<p>Photo uploads are off: <code>CLAMD_ADDRESS</code> is not set, so every upload is refused. <code>./scripts/install.sh add-scanner</code> starts the scanner and sets it (Docker needs at least 3 GB of memory); see the operator guide.</p>
 {{else}}<p>Signatures: {{if .HasDate}}{{if .Engine}}{{.Engine}}{{else}}engine not reported{{end}}, daily database {{.Daily}} built {{.DailyDate}}, {{.AgeDays}} {{if eq .AgeDays 1}}day{{else}}days{{end}} old (limit {{.LimitDays}}){{else if .Stale}}{{if .Engine}}{{.Engine}}; {{end}}the daily database date could not be read, so uploads are paused{{else}}not read yet{{end}}.</p>

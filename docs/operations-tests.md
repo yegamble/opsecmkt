@@ -114,7 +114,7 @@ runs with `CLAMD_ADDRESS=clamd:3310` and the default 30-day signature age limit,
 - The only signature is `deploy/testdata/clamav-test.ndb`, a text file with one signature,
   `Opsecmkt.Test.Marker`, matching the marker string the Go and browser tests' fake clamd also looks for.
   The script packs it inside the pinned image, with no network, into an unsigned `daily.cud` built at that
-  moment (`sigtool --build=daily.cud --unsigned`). Verified with ClamAV 1.5.4: clamd then answers `VERSION` with
+  moment (`sigtool --build=daily.cud --unsigned`). Checked with ClamAV 1.5.4: clamd then answers `VERSION` with
   `ClamAV 1.5.4/1/<the .cud's build time>`, so `/admin` shows the database 0 days old and uploads are Ready on
   any calendar day. (Had it not, the fallback was the image's own signatures plus the test signature with
   `SCANNER_MAX_SIGNATURE_AGE_DAYS=90`; it is not needed.) The EICAR test string, assembled at run time and
@@ -125,7 +125,7 @@ runs with `CLAMD_ADDRESS=clamd:3310` and the default 30-day signature age limit,
   and waits until the listing's Photos form is offered (the app polls clamd every 30 seconds).
 - A PNG with the marker in a tEXt chunk passes the app's own caps and is refused by clamd: 422, the "flagged
   this file" copy with a reference and without the signature name, no row in `images`, and the one log line
-  naming `Opsecmkt.Test.Marker.UNOFFICIAL`. A clean PNG with other text in a tEXt chunk is stored, and the
+  naming `Opsecmkt.Test.Marker.UNOFFICIAL`. A PNG with other text in a tEXt chunk and no marker is stored, and the
   product page's photo is served publicly as `image/jpeg` without `tEXt`, `IHDR`, that text or the marker.
 - `docker compose stop clamd`: an upload gets 503 with "the malware scanner did not respond, so nothing was
   stored", no row is added, `/healthz` answers `ok`, the catalog 200, and the Photos panel says uploads are

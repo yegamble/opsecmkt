@@ -606,3 +606,25 @@ func uploadBesideRoleChange(t *testing.T, byAdmin bool) {
 		t.Fatalf("status %d with %d rows", w.Code, n)
 	}
 }
+
+// A-208(a), PR #28 re-check: a staff avatar is uploaded under the staff privacy rules (hidden unless listed). If
+// an administrator makes the moderator a vendor while the upload is being scanned, the store step's role
+// re-check alone would accept it (vendors may upload avatars) and publish it as a vendor's avatar. An avatar
+// admitted for a staff member is refused once they are no longer staff; nothing is stored.
+func TestStaffAvatarRefusedAfterScanDemotion(t *testing.T) {
+	e, f := uploadEnv(t)
+	_, admin := e.user("demoting_admin", "admin")
+	modID, mod := e.user("demoted_mod", "moderator")
+	entered, release := stallScans(t, f)
+	done := e.uploadAsync("/account/avatar", mod, e.avatarParts(mod, smallJPEG(t))...)
+	waitEntered(t, entered)
+	agExpect(e, "/admin", admin, form("action", "role", "role", "vendor", "handle", "demoted_mod"), 303, "")
+	release()
+	checkPage(t, <-done, 403, "role changed")
+	if e.imageCount() != 0 {
+		t.Fatal("a staff avatar admitted before a demotion to vendor was stored")
+	}
+	if agStr(e, "SELECT role FROM users WHERE id=$1", modID) != "vendor" {
+		t.Fatal("the demotion did not apply")
+	}
+}

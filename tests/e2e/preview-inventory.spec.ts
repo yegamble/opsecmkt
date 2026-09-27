@@ -77,6 +77,7 @@ test('limits and warning precede the input', async ({ page }) => {
   await expect(help).toContainText('At most 4 photos per listing.');
   await expect(help).toContainText('Uploading can take up to 90 seconds over Tor; press Upload once and wait for the page to change.');
   await expect(help).toContainText('Each file is checked by the ClamAV malware scanner; a match is refused and nothing is stored.');
+  await expect(help).toContainText('ClamAV checks uploads for known malware; it does not review picture content.');
   const privacy = page.locator('#photo-privacy');
   await expect(privacy).toHaveClass(/\bnotice\b/);
   await expect(privacy).toContainText('public to anyone, including visitors who are not signed in');

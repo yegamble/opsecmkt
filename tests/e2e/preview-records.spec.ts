@@ -31,6 +31,36 @@ test('/canary#records lists what the server keeps, who reads it and that nothing
   await noScriptsNoOverflow(page);
 });
 
+// A-191: listing photos and avatars are a stored data class like any other: what is kept, who sees it, the
+// browser cache and what deleting one leaves behind, plus what the malware scanner does and does not do.
+test('records list photos and avatars', async ({ page }) => {
+  expect((await page.goto('/canary#records'))?.status()).toBe(200);
+  const item = page.locator('section#records li', { has: page.locator('strong', { hasText: /^Photos and avatars\.$/ }) });
+  await expect(item).toHaveCount(1);
+  await expect(item).toBeVisible();
+  for (const text of [
+    'only the re-encoded JPEG, its thumbnail, its dimensions, an optional description',
+    'The file you uploaded, its name and its metadata are never kept',
+    'Listing photos and their descriptions are public to anyone',
+    'a vendor’s avatar is public while',
+    'A staff avatar is public on this page (and on an administrator’s vendor page)',
+    'public staff list',
+    'otherwise it is shown only beside that staff member’s dispute decisions',
+    'Demoting a staff member removes their staff avatar and resets their staff list choice to hidden.',
+    'A normal browser may keep viewed images in its disk cache: it reuses them for a day without asking the server, and the files can stay until its cache is cleared. Tor Browser keeps them in memory only, until it closes (not yet tried in Tor Browser, A-199).',
+    'deletes it from the database at once',
+    'copies remain in backups made before that and, until PostgreSQL reuses the space, in its data files and write-ahead log',
+    'If the operator restores a backup made before a removal, the image returns until it is removed again.',
+    'ClamAV checks uploads for known malware; it does not review picture content',
+    'the server log keeps the signature name and the reference shown to the uploader',
+  ]) {
+    await expect(item).toContainText(text);
+  }
+  await expect(item).not.toContainText(/\b(safe|clean|virus-free|malware-free|verified|harmless)\b/i);
+  await expect(page.locator('section#records > p').first()).toContainText('except photos and avatars (below)');
+  await noScriptsNoOverflow(page);
+});
+
 for (const [path, where] of [['/register', 'main'], ['/account', 'main .page-head'], ['/messages', 'main .notice']]) {
   test(`${path} links to the records disclosure`, async ({ page }) => {
     expect((await page.goto(path))?.status()).toBe(200);
