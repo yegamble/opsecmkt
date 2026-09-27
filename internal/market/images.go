@@ -20,8 +20,9 @@ import (
 // segment (JPEG) or chunk (PNG) headers up to the image data, which also yields the EXIF Orientation; then
 // jpeg.DecodeConfig or png.DecodeConfig, which must agree with the walk. Refused: either side over 4096 px,
 // more than 12 000 000 px, a 4-component (CMYK or YCCK) JPEG, and an estimated decode allocation over 64 MiB
-// (width × height × the bytes a pixel of the reported colour model takes; a progressive JPEG counts 12 B/px
-// for its coefficient buffers, an interlaced PNG twice). Only bytes passing every cap reach clamd.
+// (bytesPerPixel: a JPEG's pixels rounded up to whole MCUs × its planes, plus 4 B/px a component of coefficients
+// when progressive and 4 for the RGBA copy of an RGB JPEG; a PNG's pixels × its colour model's size, twice when
+// interlaced), and a JPEG of more than 100 scans. Only bytes passing every cap reach clamd.
 //
 // After a clean scan (reencodeImage, which takes only a scannedUpload): jpeg.Decode or png.Decode chosen by
 // the magic bytes (the package never calls image.Decode, so no other registered format is reachable); bounds
@@ -37,17 +38,16 @@ const (
 	maxImagePixels = 12_000_000 // width × height
 	maxDecodeBytes = 64 << 20   // estimated decode allocation
 
-	photoLongEdge            = 1200 // full photo: fits a 1200×1200 box
-	photoQuality             = 82
-	thumbWidth, thumbHeight  = 320, 240 // listing thumbnail: letterboxed to exactly this
-	thumbQuality             = 70
-	avatarSide               = 256 // avatar: centre-cropped square
-	avatarThumbSide          = 64
-	maxFullBytes             = 2 << 20   // migration 063's CHECK on images.full
-	maxThumbBytes            = 256 << 10 // and on images.thumb
-	maxHeaderSegments        = 256       // JPEG segments or PNG chunks walked before the image data
-	progressiveBytesPerPixel = 12
-	maxJPEGScans             = 100 // encoders write about 10; libjpeg-turbo suggests a limit of a few hundred
+	photoLongEdge           = 1200 // full photo: fits a 1200×1200 box
+	photoQuality            = 82
+	thumbWidth, thumbHeight = 320, 240 // listing thumbnail: letterboxed to exactly this
+	thumbQuality            = 70
+	avatarSide              = 256 // avatar: centre-cropped square
+	avatarThumbSide         = 64
+	maxFullBytes            = 2 << 20   // migration 063's CHECK on images.full
+	maxThumbBytes           = 256 << 10 // and on images.thumb
+	maxHeaderSegments       = 256       // JPEG segments or PNG chunks walked before the image data
+	maxJPEGScans            = 100       // encoders write about 10; libjpeg-turbo suggests a limit of a few hundred
 )
 
 type imageFormat string
@@ -68,7 +68,9 @@ type imageInfo struct {
 	format        imageFormat
 	width, height int
 	orientation   int
-	progressive   bool // JPEG SOF2/6/10/14
+	progressive   bool // JPEG SOF2; PNG interlaced
+	components    int  // JPEG: 1 or 3 (4 is refused)
+	mcuW, mcuH    int  // JPEG: the decoder rounds the image up to whole MCUs of this many pixels
 	decodeBytes   int64
 }
 
@@ -78,7 +80,7 @@ var (
 	errImageType       = &httpError{Code: http.StatusUnsupportedMediaType, Msg: "Photo not saved: only JPEG and PNG files are accepted. Nothing was stored."}
 	errImageCMYK       = &httpError{Code: http.StatusUnsupportedMediaType, Msg: "Photo not saved: CMYK JPEGs are not accepted. Save the picture as an RGB JPEG or a PNG and upload that. Nothing was stored."}
 	errImageUnreadable = &httpError{Code: http.StatusUnprocessableEntity, Msg: "Photo not saved: the file is not a readable JPEG or PNG. Nothing was stored."}
-	errImageMemory     = &httpError{Code: http.StatusUnprocessableEntity, Msg: "Photo not saved: this picture would need more than 64 MB of memory to process (a progressive JPEG or a 16-bit PNG needs several times more than a standard JPEG). Save it as a standard JPEG or at a smaller size. Nothing was stored."}
+	errImageMemory     = &httpError{Code: http.StatusUnprocessableEntity, Msg: "Photo not saved: this picture would need more than 64 MB of memory to process (a progressive JPEG needs up to five times as much as a standard one, and a 16-bit PNG more than twice). Save it as a standard JPEG or at a smaller size. Nothing was stored."}
 	errImageScans      = &httpError{Code: http.StatusUnprocessableEntity, Msg: "Photo not saved: this JPEG has more than 100 progressive scans. Save it as a standard JPEG and upload that. Nothing was stored."}
 	errImageDetailed   = &httpError{Code: http.StatusUnprocessableEntity, Msg: "Photo not saved: the re-encoded picture is too large to store (it is unusually detailed). Try a smaller or less detailed picture. Nothing was stored."}
 )
@@ -122,16 +124,29 @@ func inspectImage(data []byte) (imageInfo, error) {
 	if cfg.ColorModel == color.CMYKModel {
 		return info, errImageCMYK
 	}
-	info.decodeBytes = int64(info.width) * int64(info.height) * bytesPerPixel(info, cfg.ColorModel)
+	// The walk and the decoder read the same frame header (walkJPEG accepts nothing the decoder would parse
+	// differently); their component counts must agree.
+	if info.format == formatJPEG && (info.components == 1) != (cfg.ColorModel == color.GrayModel) {
+		return info, errImageUnreadable
+	}
+	w, h := int64(info.width), int64(info.height)
+	if info.format == formatJPEG {
+		w, h = roundUp(w, int64(info.mcuW)), roundUp(h, int64(info.mcuH))
+	}
+	info.decodeBytes = w * h * bytesPerPixel(info, cfg.ColorModel)
 	if info.decodeBytes > maxDecodeBytes {
 		return info, errImageMemory
 	}
 	return info, nil
 }
 
-// bytesPerPixel is the decoder's allocation per pixel for the colour model DecodeConfig reported: a progressive
-// JPEG's coefficient buffers count 12 B/px, an RGB (not YCbCr) JPEG 4 B/px more for its conversion to RGBA, and
-// an interlaced PNG (info.progressive, set by walkPNG) twice its model's size.
+// bytesPerPixel is the decoder's allocation per pixel for the colour model DecodeConfig reported (for a JPEG,
+// per pixel of the image rounded up to whole MCUs). A JPEG decodes into planes of at most 1 (grey) or 3 (YCbCr
+// or RGB) bytes a pixel; an RGB (not YCbCr) one is then copied to RGBA, 4 more; a progressive one keeps, beside
+// the planes, a coefficient block of 4 bytes a pixel for each component (at most; fewer for subsampled chroma).
+// Measured with image/jpeg: progressive 4:4:4 15.07 B/px, 4:2:0 7.57, grey 5.03, RGB 19.05; baseline RGB 7.01,
+// 4:2:0 1.52 (TestDecodeAllocationWithinEstimate). A PNG decodes into one image of its model's size, and an
+// interlaced one (info.progressive, set by walkPNG) into one per pass as well, so twice.
 func bytesPerPixel(info imageInfo, m color.Model) int64 {
 	if info.format == formatJPEG {
 		var n int64 = 3 // YCbCr planes
@@ -142,10 +157,7 @@ func bytesPerPixel(info imageInfo, m color.Model) int64 {
 			n = 3 + 4
 		}
 		if info.progressive {
-			n = max(n, progressiveBytesPerPixel)
-			if m == color.RGBAModel {
-				n += 4
-			}
+			n += 4 * int64(info.components)
 		}
 		return n
 	}
@@ -170,10 +182,17 @@ func bytesPerPixel(info imageInfo, m color.Model) int64 {
 	return n
 }
 
+// roundUp rounds n up to a multiple of m.
+func roundUp(n, m int64) int64 { return (n + m - 1) / m * m }
+
 // walkJPEG reads the segment headers from SOI to the first SOS (bodies are skipped by length, at most
-// maxHeaderSegments of them): the frame header gives the size, component count and whether the JPEG is
-// progressive, and the first APP1 Exif segment its orientation. A second frame header, a truncated segment or
-// no frame header is unreadable.
+// maxHeaderSegments of them): the frame header gives the size, component count, sampling factors and whether the
+// JPEG is progressive, and the first APP1 Exif segment its orientation. It accepts a strict subset of what
+// image/jpeg parses, so both read the same frame header: only the segments the decoder parses by their length
+// (SOF0, SOF1, SOF2, DHT, DQT, DRI, APPn, COM), restart markers and fill bytes. Stray bytes between segments
+// and FF 00 (which the decoder skips), TEM, the other frame types, JPG, DAC and the reserved markers (which it
+// refuses), a second frame header, a frame the decoder would refuse, a truncated segment or no frame header are
+// unreadable.
 func walkJPEG(data []byte) (imageInfo, error) {
 	info := imageInfo{format: formatJPEG, orientation: 1}
 	sof, exif := false, false
@@ -201,9 +220,11 @@ func walkJPEG(data []byte) (imageInfo, error) {
 				return info, errImageScans
 			}
 			return info, nil
-		case m == 0x01 || m >= 0xD0 && m <= 0xD7: // TEM, RSTn: no length
+		case m >= 0xD0 && m <= 0xD7: // RSTn: no length; the decoder skips a stray one
 			i += 2
 			continue
+		case !(m >= 0xC0 && m <= 0xC2 || m == 0xC4 || m == 0xDB || m == 0xDD || m >= 0xE0 && m <= 0xEF || m == 0xFE):
+			return info, errImageUnreadable // FF 00, TEM, SOF3/5-7/9-11/13-15, JPG, DAC, DNL, DHP, EXP, JPGn, reserved
 		}
 		if i+4 > len(data) {
 			return info, errImageUnreadable
@@ -214,17 +235,34 @@ func walkJPEG(data []byte) (imageInfo, error) {
 		}
 		seg := data[i+4 : i+2+length]
 		switch {
-		case m >= 0xC0 && m <= 0xCF && m != 0xC4 && m != 0xC8 && m != 0xCC: // SOFn (not DHT, JPG, DAC)
+		case m <= 0xC2: // SOF0, SOF1 (baseline, extended), SOF2 (progressive)
 			if sof || len(seg) < 6 {
 				return info, errImageUnreadable
 			}
 			sof = true
 			info.height = int(binary.BigEndian.Uint16(seg[1:]))
 			info.width = int(binary.BigEndian.Uint16(seg[3:]))
-			info.progressive = m == 0xC2 || m == 0xC6 || m == 0xCA || m == 0xCE
-			if seg[5] == 4 {
+			info.progressive = m == 0xC2
+			info.components = int(seg[5])
+			if info.components == 4 {
 				return info, errImageCMYK
 			}
+			if (info.components != 1 && info.components != 3) || len(seg) != 6+3*info.components {
+				return info, errImageUnreadable
+			}
+			// The largest sampling factors set the MCU the decoder rounds the image up to (a grey image's is
+			// always 8×8).
+			maxH, maxV := 1, 1
+			for c := range info.components {
+				f := seg[7+3*c]
+				if f>>4 < 1 || f>>4 > 4 || f&15 < 1 || f&15 > 4 {
+					return info, errImageUnreadable
+				}
+				if info.components > 1 {
+					maxH, maxV = max(maxH, int(f>>4)), max(maxV, int(f&15))
+				}
+			}
+			info.mcuW, info.mcuH = 8*maxH, 8*maxV
 		case m == 0xE1 && !exif && bytes.HasPrefix(seg, []byte("Exif\x00\x00")):
 			exif = true
 			info.orientation = exifOrientation(seg[6:])

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -14,8 +15,10 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -215,8 +218,13 @@ func TestProgressiveAllocationCap(t *testing.T) {
 		ok   bool
 	}{
 		{"baseline 12 MP YCbCr (36 MB)", jpegHeader(0xC0, 4000, 3000, 3), true},
-		{"progressive 3 MP (36 MB)", jpegHeader(0xC2, 2000, 1500, 3), true},
-		{"progressive 6 MP (72 MB)", jpegHeader(0xC2, 3000, 2000, 3), false},
+		{"progressive 3 MP (45 MB)", jpegHeader(0xC2, 2000, 1500, 3), true},
+		{"progressive 6 MP (90 MB)", jpegHeader(0xC2, 3000, 2000, 3), false},
+		// The review's measurement: a 2700×2050 progressive 4:4:4 JPEG made image/jpeg allocate 79.6 MiB (15 B/px:
+		// 12 of coefficients beside the 3 of YCbCr planes) while 12 B/px estimated 63.3 MiB.
+		{"progressive 4:4:4 2700×2050 (79 MiB)", jpegHeader444(0xC2, 2700, 2050), false},
+		{"progressive 4:4:4 2000×2000 (57 MiB)", jpegHeader444(0xC2, 2000, 2000), true},
+		{"progressive grey 12 MP (57 MiB)", jpegHeader(0xC2, 4000, 3000, 1), true},
 		{"YCbCr 9.6 MP (29 MB)", jpegHeader(0xC0, 4000, 2400, 3), true},
 		{"RGB 9.6 MP (67 MB)", rgbJPEGHeader(0xC0, 4000, 2400), false},
 		{"RGB 8 MP (56 MB)", rgbJPEGHeader(0xC0, 4000, 2000), true},
@@ -232,6 +240,136 @@ func TestProgressiveAllocationCap(t *testing.T) {
 		}
 		if !c.ok && (err == nil || refusalCode(t, err) != 422 || !strings.Contains(err.Error(), "64 MB")) {
 			t.Errorf("%s: %+v %v", c.name, info, err)
+		}
+	}
+}
+
+// jpegHeader444 is jpegHeader with every component sampled 1×1 (4:4:4) instead of a 2×2 luma (4:2:0).
+func jpegHeader444(sof byte, w, h uint16) []byte {
+	b := jpegHeader(sof, w, h, 3)
+	b[4+2+6+1] = 0x11 // the first component's sampling factors
+	return b
+}
+
+// The estimate bounds what the decoder really allocates. Go can encode only baseline JPEGs, so the progressive,
+// RGB and 4:4:4 cases are made with libjpeg-turbo's cjpeg when it is installed (it is not in CI; locally the
+// review's figures reproduce: progressive 4:4:4 15.07 B/px, 4:2:0 7.57, grey 5.03, RGB 19.05; baseline RGB 7.01,
+// 4:2:0 1.52).
+func TestDecodeAllocationWithinEstimate(t *testing.T) {
+	pic := fixturePicture(1000, 800)
+	gray := image.NewGray(pic.Rect)
+	for i := range gray.Pix {
+		gray.Pix[i] = pic.Pix[4*i]
+	}
+	cases := map[string][]byte{
+		"baseline 4:2:0":      encodeJPEG(pic, 90),
+		"baseline grey":       encodeJPEG(gray, 90),
+		"PNG RGBA":            fixturePNG(t, pic),
+		"PNG NRGBA":           fixturePNG(t, alphaPicture(1000, 800)),
+		"PNG grey":            fixturePNG(t, gray),
+		"PNG 16-bit":          fixturePNG(t, image.NewRGBA64(image.Rect(0, 0, 700, 500))),
+		"PNG paletted":        fixturePNG(t, image.NewPaletted(image.Rect(0, 0, 1000, 800), color.Palette{color.Black, color.White})),
+		"PNG wide single row": fixturePNG(t, image.NewNRGBA64(image.Rect(0, 0, 4096, 1))),
+	}
+	if cjpeg, err := exec.LookPath("cjpeg"); err == nil {
+		var ppm bytes.Buffer
+		fmt.Fprintf(&ppm, "P6\n%d %d\n255\n", pic.Rect.Dx(), pic.Rect.Dy())
+		for i := 0; i < len(pic.Pix); i += 4 {
+			ppm.Write(pic.Pix[i : i+3])
+		}
+		for name, args := range map[string][]string{
+			"progressive 4:4:4": {"-progressive", "-sample", "1x1"},
+			"progressive 4:2:0": {"-progressive", "-sample", "2x2"},
+			"progressive grey":  {"-progressive", "-grayscale"},
+			"progressive RGB":   {"-progressive", "-rgb"},
+			"baseline RGB":      {"-rgb"},
+			"baseline 4:4:4":    {"-sample", "1x1"},
+		} {
+			cmd := exec.Command(cjpeg, args...)
+			cmd.Stdin = bytes.NewReader(ppm.Bytes())
+			out, err := cmd.Output()
+			if err != nil {
+				t.Fatalf("cjpeg %v: %v", args, err)
+			}
+			cases[name] = out
+		}
+	} else {
+		t.Log("cjpeg not installed: progressive, RGB and 4:4:4 JPEGs not measured")
+	}
+	for name, data := range cases {
+		info, err := inspectImage(data)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got := decodeAllocation(t, info, data); got > uint64(info.decodeBytes)+decodeAllocationMargin {
+			t.Errorf("%s: the decoder allocated %d bytes, estimate %d", name, got, info.decodeBytes)
+		}
+	}
+}
+
+// decodeAllocationMargin is the decoders' own fixed allocations (zlib's window, huffman tables, row buffers).
+const decodeAllocationMargin = 256 << 10
+
+// decodeAllocation is the bytes the decoder inspectImage chose allocates for data.
+func decodeAllocation(t *testing.T, info imageInfo, data []byte) uint64 {
+	t.Helper()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	func() {
+		defer func() { recover() }()
+		if info.format == formatJPEG {
+			decodeJPEG(bytes.NewReader(data))
+		} else {
+			decodePNG(bytes.NewReader(data))
+		}
+	}()
+	runtime.ReadMemStats(&after)
+	return after.TotalAlloc - before.TotalAlloc
+}
+
+// The header walk accepts only what image/jpeg parses the same way: any marker before the first scan that the
+// decoder would skip as stray data (FF 00) or not parse as a length-prefixed segment is refused, so the frame
+// header, progressive flag and component count the caps use are the decoder's own.
+func TestJPEGWalkRefusesMarkersTheDecoderWouldNot(t *testing.T) {
+	good := jpegHeader(0xC0, 16, 16, 3)
+	insert := func(extra []byte) []byte {
+		return append(append(append([]byte(nil), good[:2]...), extra...), good[2:]...)
+	}
+	refused := map[string][]byte{
+		"FF 00 before the frame": insert([]byte{0xFF, 0x00, 0x00, 0x04, 0x00, 0x00}),
+		"FF 00 between segments": append(append(append([]byte(nil), good[:21]...), 0xFF, 0x00), good[21:]...),
+		"TEM":                    insert(jpegSegment(0x01, []byte{0, 0})),
+		"JPG":                    insert(jpegSegment(0xC8, []byte{0, 0})),
+		"DAC":                    insert(jpegSegment(0xCC, []byte{0, 0})),
+		"DNL":                    insert(jpegSegment(0xDC, []byte{0, 0})),
+		"DHP":                    insert(jpegSegment(0xDE, []byte{0, 0})),
+		"EXP":                    insert(jpegSegment(0xDF, []byte{0, 0})),
+		"JPG0":                   insert(jpegSegment(0xF0, []byte{0, 0})),
+		"JPG13":                  insert(jpegSegment(0xFD, []byte{0, 0})),
+		"reserved 02":            insert(jpegSegment(0x02, []byte{0, 0})),
+		"reserved BF":            insert(jpegSegment(0xBF, []byte{0, 0})),
+		"two-component frame":    jpegHeader(0xC0, 16, 16, 2),
+		"luma sampled 5×1":       func() []byte { b := jpegHeader(0xC0, 16, 16, 3); b[13] = 0x51; return b }(),
+	}
+	for _, sof := range []byte{0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF} {
+		refused[fmt.Sprintf("SOF %X", sof)] = jpegHeader(sof, 16, 16, 3)
+	}
+	for name, data := range refused {
+		if _, err := inspectImage(data); err == nil || refusalCode(t, err) != 422 {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	// What the decoder parses as segments, and what it skips as harmless, still passes.
+	for name, data := range map[string][]byte{
+		"plain":            good,
+		"DHT DQT DRI APPn": insert(slices.Concat(jpegSegment(0xC4, []byte{0}), jpegSegment(0xDB, []byte{0}), jpegSegment(0xDD, []byte{0, 0}), jpegSegment(0xEF, []byte("x")), jpegSegment(0xFE, []byte("x")))),
+		"fill bytes":       insert([]byte{0xFF, 0xFF, 0xFF, 0xFE, 0x00, 0x03, 'x'}),
+		"stray RST":        insert([]byte{0xFF, 0xD3}),
+		"SOF1":             jpegHeader(0xC1, 16, 16, 3),
+		"grey":             jpegHeader(0xC0, 16, 16, 1),
+	} {
+		if _, err := inspectImage(data); err != nil {
+			t.Errorf("%s: refused %v", name, err)
 		}
 	}
 }
@@ -499,6 +637,8 @@ func FuzzDecodeReencode(f *testing.F) {
 	f.Add(jpegHeader(0xC2, 16, 16, 3))
 	f.Add(pngHeader(16, 16, 16, 6, 1))
 	f.Add([]byte("\xFF\xD8\xFF"))
+	f.Add(jpegHeader444(0xC2, 64, 48))
+	f.Add(rgbJPEGHeader(0xC2, 64, 48))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		info, err := inspectImage(data)
 		if err != nil {
@@ -507,6 +647,10 @@ func FuzzDecodeReencode(f *testing.F) {
 		}
 		if info.width*info.height > 1<<20 {
 			return // valid but slow to fuzz
+		}
+		// Whatever passes the caps, the decoder allocates no more than the estimate the caps used.
+		if got := decodeAllocation(t, info, data); got > uint64(info.decodeBytes)+decodeAllocationMargin {
+			t.Fatalf("%+v: the decoder allocated %d bytes, estimate %d", info, got, info.decodeBytes)
 		}
 		out, err := reencode(data, info, uploadListing) // a TCP scan per input would exhaust loopback ports
 		if err != nil {

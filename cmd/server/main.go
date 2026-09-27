@@ -22,9 +22,11 @@ import (
 //
 // Memory budget with photo uploads (A-186): those 128 MiB of form bodies, plus 2 upload bodies of at most 4 MiB
 // (uploadWork admits two; every other upload, and every refused one, is read into io.Discard, not memory), plus
-// one decode at a time (imageDecodeWork) estimated at no more than 64 MiB before it starts, plus its outputs
-// (a resampled copy of at most a quarter of the decoded pixels, the 1200 px and thumbnail images and their JPEGs,
-// about 20 MiB): about 220 MiB live, inside the 400 MiB GOMEMLIMIT (TestUploadConcurrentMaxSizeStaysInBudget).
+// one decode at a time (imageDecodeWork), refused before it starts unless its estimate is at most 64 MiB (an
+// upper bound on what image/jpeg and image/png allocate, plus up to 256 KiB of their fixed tables and buffers:
+// TestDecodeAllocationWithinEstimate, FuzzDecodeReencode), plus its outputs (a resampled copy of at most a quarter
+// of the decoded pixels, the 1200 px and thumbnail images and their JPEGs, about 20 MiB): about 220 MiB live,
+// inside the 400 MiB GOMEMLIMIT (TestUploadConcurrentMaxSizeStaysInBudget).
 const maxConns = 2048
 
 // newServer is the HTTP server with its read and write bounds.
