@@ -29,6 +29,7 @@ type fakeClamd struct {
 	version  string                   // VERSION reply
 	verdict  func(data []byte) string // INSTREAM reply, or fakeClamdHang / fakeClamdClose
 	hang     bool                     // every command: read it, never answer
+	limit    int                      // non-zero: a stream longer than this is answered at once with clamd's size error
 	scans    [][]byte                 // every complete stream received
 	maxChunk int                      // largest INSTREAM chunk received
 	commands []string                 // every command received, in order
@@ -97,6 +98,10 @@ func (f *fakeClamd) SetVerdict(v func(data []byte) string) { f.mu.Lock(); f.verd
 // SetHang makes every later command (PING and VERSION too) go unanswered until the test ends.
 func (f *fakeClamd) SetHang(h bool) { f.mu.Lock(); f.hang = h; f.mu.Unlock() }
 
+// SetStreamLimit makes a stream longer than n bytes get clamd's "INSTREAM size limit exceeded. ERROR" as soon
+// as it passes n (like StreamMaxLength), before the client has finished sending; the rest is read and dropped.
+func (f *fakeClamd) SetStreamLimit(n int) { f.mu.Lock(); f.limit = n; f.mu.Unlock() }
+
 // Scans returns the streams received so far.
 func (f *fakeClamd) Scans() [][]byte {
 	f.mu.Lock()
@@ -127,7 +132,7 @@ func (f *fakeClamd) serve(c net.Conn) {
 	}
 	f.mu.Lock()
 	f.commands = append(f.commands, cmd)
-	hang, version, verdict := f.hang, f.version, f.verdict
+	hang, version, verdict, limit := f.hang, f.version, f.verdict, f.limit
 	f.mu.Unlock()
 	reply := ""
 	switch cmd {
@@ -157,6 +162,11 @@ func (f *fakeClamd) serve(c net.Conn) {
 			f.mu.Lock()
 			f.maxChunk = max(f.maxChunk, int(n))
 			f.mu.Unlock()
+			if limit > 0 && len(data) > limit {
+				c.Write([]byte("INSTREAM size limit exceeded. ERROR\x00"))
+				io.Copy(io.Discard, c)
+				return
+			}
 		}
 		f.mu.Lock()
 		f.scans = append(f.scans, data)

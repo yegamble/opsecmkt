@@ -134,12 +134,37 @@ func TestClamdTimeoutRefuses(t *testing.T) {
 	shortScanTimeout(t, 10*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
+	failedBefore := s.counts().Failed
 	start = time.Now()
 	if _, err = s.Scan(ctx, uploadListing, []byte("photo")); refusalOf(t, err).Class != scanTimeout {
 		t.Fatalf("cancelled scan: %v", err)
 	}
 	if d := time.Since(start); d > 2*time.Second {
 		t.Fatalf("cancelled scan took %s", d)
+	}
+	// ... but clamd was not at fault: uploads stay available and no scanner failure is counted.
+	if st, c := s.State(), s.counts(); st.Name != scannerReady || c.Failed != failedBefore {
+		t.Fatalf("after a request that ended first: state %+v, %d failures counted, want %d", st, c.Failed, failedBefore)
+	}
+
+	// clamd refusing a stream it finds too long, before the client finished sending, is an error reply: the
+	// upload is refused and the scanner stays Ready.
+	f.SetVerdict(func([]byte) string { return "stream: OK" })
+	f.SetStreamLimit(128 << 10)
+	if _, err = s.Scan(context.Background(), uploadListing, make([]byte, 4<<20)); refusalOf(t, err).Class != scanError {
+		t.Fatalf("stream over clamd's limit: %v", err)
+	}
+	if st := s.State(); st.Name != scannerReady {
+		t.Fatalf("state after a size error = %+v", st)
+	}
+
+	// A poll cut short by shutdown records nothing.
+	stopped, cancelPoll := context.WithCancel(context.Background())
+	cancelPoll()
+	fresh := newImageScanner(scannerConfig{address: f.Addr, maxAgeDays: 30})
+	fresh.poll(stopped)
+	if st := fresh.State(); st.Cause != "not checked yet" {
+		t.Fatalf("poll during shutdown changed the state: %+v", st)
 	}
 
 	// Nothing listening: refused as unavailable, within the dial bound.
@@ -455,7 +480,7 @@ func TestMarketHealthyWhileScannerDown(t *testing.T) {
 	before := len(f.Commands())
 	w := e.do("GET", "/admin", admin, nil)
 	e.check(w, 200)
-	if !strings.Contains(w.Body.String(), "Unavailable (timed out)") {
+	if body := w.Body.String(); !strings.Contains(body, "Unavailable (timed out)") || !strings.Contains(body, "Signatures: not read yet.") || !strings.Contains(body, "docker compose logs clamd") {
 		t.Fatalf("admin page does not show the scanner unavailable:\n%s", scannerPanel(w.Body.String()))
 	}
 	if len(f.Commands()) != before {

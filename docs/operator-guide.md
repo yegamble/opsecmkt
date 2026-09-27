@@ -661,7 +661,7 @@ image scanner: Signatures stale (signature date unreadable, limit 30)
 - `timed out`: clamd accepted the connection but did not answer within 10 seconds (connecting is given 3): it is overloaded, short of memory (`docker stats`) or reloading its database.
 - `unexpected reply`: whatever answers at `CLAMD_ADDRESS` is not clamd.
 - `Signatures stale`: run `./scripts/install.sh refresh-scanner` to pull the current scanner image; uploads resume within 30 seconds of clamd answering with the new date. `signature date unreadable` means clamd reported no daily database date, which counts as stale.
-- A scan that fails also marks the scanner Unavailable until the next successful check, so uploads are refused for up to 30 seconds afterwards.
+- A scan that clamd fails (no connection, no answer within 10 seconds) also marks the scanner Unavailable until the next successful check, so uploads are refused for up to 30 seconds afterwards. An uploader who gives up first does not.
 - `/healthz` never contacts clamd: a scanner outage pauses uploads only, and never marks the app unhealthy or restarts it.
 
 Each upload the scanner refuses writes one line, and the uploader's error page ends with the same reference:

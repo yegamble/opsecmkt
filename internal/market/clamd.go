@@ -298,6 +298,9 @@ func (s *imageScanner) poll(ctx context.Context) {
 	if err == nil {
 		version, err = clamdCommand(ctx, s.cfg.address, "VERSION", nil)
 	}
+	if contextEnded(ctx) {
+		return // shutting down: the failure says nothing about clamd
+	}
 	s.update(func() {
 		s.checked = s.now()
 		if err != nil {
@@ -348,12 +351,18 @@ func (s *imageScanner) Scan(ctx context.Context, kind uploadKind, data []byte) (
 	case scannerStale:
 		return scannedUpload{}, &scanRefusal{Class: scanStale, notice: st.VendorNotice()}
 	case scannerUnavailable:
+		s.record(scanUnavailable, "")
 		return scannedUpload{}, s.refuse(kind, scanUnavailable, "")
 	}
 	reply, err := clamdCommand(ctx, s.cfg.address, "INSTREAM", data)
 	if err != nil {
 		class := clamdErrorClass(err)
-		s.update(func() { s.up, s.cause = false, failureCause(err) })
+		// When the request ended first (the uploader went away), clamd is not at fault: neither pause everyone's
+		// uploads nor count a scanner failure.
+		if !contextEnded(ctx) {
+			s.update(func() { s.up, s.cause = false, failureCause(err) })
+			s.record(class, "")
+		}
 		return scannedUpload{}, s.refuse(kind, class, "")
 	}
 	if reply == "stream: OK" {
@@ -364,16 +373,18 @@ func (s *imageScanner) Scan(ctx context.Context, kind uploadKind, data []byte) (
 	}
 	if name, ok := strings.CutPrefix(reply, "stream: "); ok {
 		if name, ok = strings.CutSuffix(name, " FOUND"); ok && strings.TrimSpace(name) != "" {
-			return scannedUpload{}, s.refuse(kind, scanInfected, logSafe(name, 128))
+			name = logSafe(name, 128)
+			s.record(scanInfected, name)
+			return scannedUpload{}, s.refuse(kind, scanInfected, name)
 		}
 	}
+	s.record(scanError, "")
 	return scannedUpload{}, s.refuse(kind, scanError, "")
 }
 
-// refuse counts and logs a refusal with a new reference.
+// refuse logs a refusal with a new reference.
 func (s *imageScanner) refuse(kind uploadKind, class scanClass, sig string) *scanRefusal {
 	r := &scanRefusal{Class: class, Ref: randomToken()[:8], sig: sig}
-	s.record(class, sig)
 	if class == scanInfected {
 		log.Printf("upload outcome=refused reason=infected sig=%s ref=%s kind=%s", sig, r.Ref, kind)
 	} else {
@@ -422,6 +433,10 @@ func clamdCommand(ctx context.Context, addr, cmd string, stream []byte) (string,
 			binary.BigEndian.PutUint32(buf, uint32(n))
 			copy(buf[4:], rest[:n])
 			if _, err = conn.Write(buf[:4+n]); err != nil {
+				// clamd answers and closes early when a stream exceeds StreamMaxLength: report that answer.
+				if reply, rerr := readClamdReply(conn); rerr == nil {
+					return reply, nil
+				}
 				return "", err
 			}
 			if n == 0 {
@@ -430,6 +445,11 @@ func clamdCommand(ctx context.Context, addr, cmd string, stream []byte) (string,
 			rest = rest[n:]
 		}
 	}
+	return readClamdReply(conn)
+}
+
+// readClamdReply reads a NUL-terminated reply of at most clamdReplyLimit bytes.
+func readClamdReply(conn net.Conn) (string, error) {
 	reply, err := bufio.NewReaderSize(conn, clamdReplyLimit+1).ReadSlice(0)
 	switch {
 	case err == nil:
@@ -438,6 +458,16 @@ func clamdCommand(ctx context.Context, addr, cmd string, stream []byte) (string,
 		return "", errUnexpectedReply
 	}
 	return "", err
+}
+
+// contextEnded reports whether ctx is done or its deadline has passed: the connection deadline clamdCommand
+// takes from ctx can fire a moment before ctx itself reports it.
+func contextEnded(ctx context.Context) bool {
+	if ctx.Err() != nil {
+		return true
+	}
+	d, ok := ctx.Deadline()
+	return ok && !time.Now().Before(d)
 }
 
 // clamdErrorClass classifies a failed exchange: timeout (including the request ending), error (a reply that
