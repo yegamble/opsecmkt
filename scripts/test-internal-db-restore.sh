@@ -66,7 +66,10 @@ start_db
 sql opsecmkt "CREATE TABLE notes (id integer PRIMARY KEY, note text NOT NULL); INSERT INTO notes VALUES (1, 'Crème brûlée — 東京 🔒');
 CREATE TABLE settings (key text PRIMARY KEY, value text NOT NULL); INSERT INTO settings VALUES ('payments_recovery_required','false');
 CREATE TABLE payouts (id integer PRIMARY KEY, state text NOT NULL, error text NOT NULL DEFAULT '', updated timestamptz NOT NULL DEFAULT now(), send_ambiguous boolean NOT NULL DEFAULT false);
-INSERT INTO payouts(id,state) VALUES (1,'pending'),(2,'sending'),(3,'sent'),(4,'failed'),(5,'blocked'),(6,'held');" >/dev/null
+INSERT INTO payouts(id,state) VALUES (1,'pending'),(2,'sending'),(3,'sent'),(4,'failed'),(5,'blocked'),(6,'held');
+CREATE TABLE images (id text PRIMARY KEY); INSERT INTO images VALUES ('photo-1'),('photo-2'),('avatar-1');" >/dev/null
+# A-190 (ruling D4): the line restore.sh prints about images removed after the backup, with the dump's creation time.
+images_line='^3 images restored from a backup taken [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} [A-Z]+; photo and avatar removals made after that time are undone — check /moderator Recent photos and remove them again$'
 
 age-keygen -o "$work/identity" 2> "$work/keygen.log"
 age-keygen -o "$work/wrong-identity" 2>> "$work/keygen.log"
@@ -123,6 +126,7 @@ grep -q 'Created empty database opsecmkt_restored' "$work/restore.log"
 grep -q 'Held 4 restored payout(s)' "$work/restore.log"
 grep -q 'Marked 1 restored failed payout(s) as possibly sent' "$work/restore.log"
 grep -q 'do not contain the custodial wallets' "$work/restore.log"
+grep -Eq "$images_line" "$work/restore.log"
 # The last line names the .env secrets a restored database needs (A-136).
 last_line=$(tail -n 1 "$work/restore.log")
 [[ $last_line == *SETUP_TOKEN* && $last_line == *AUDIT_SIGNING_KEY* ]] || {
@@ -213,6 +217,7 @@ RESTORE_INTERNAL_DATABASE=opsecmkt restore "$work/backup.dump.age" <<< RESTORE >
 if grep -q 'Created empty database' "$work/fresh-restore.log"; then echo 'Existing database was recreated' >&2; exit 1; fi
 grep -q 'Held 4 restored payout(s)' "$work/fresh-restore.log"
 grep -q 'Marked 1 restored failed payout(s) as possibly sent' "$work/fresh-restore.log"
+grep -Eq "$images_line" "$work/fresh-restore.log"
 [[ $(sql opsecmkt 'SELECT note FROM notes WHERE id = 1') == 'Crème brûlée — 東京 🔒' ]]
 [[ $(sql opsecmkt "$payouts") == "$restored_payouts" ]]
 [[ $(sql opsecmkt "$gate") == true ]]
@@ -223,4 +228,4 @@ if RESTORE_INTERNAL_DATABASE=opsecmkt_other restore "$work/backup.dump.age" <<< 
   echo 'Restore succeeded without a running database service' >&2; exit 1
 fi
 grep -q 'docker compose up -d --wait db' "$work/stopped.log"
-echo 'Internal-db Compose backup/restore regressions passed (no published port, typed confirmation, wrong key, side-by-side and fresh-volume restores, backups following DATABASE_URL after a switch, conflict rollback, payout recovery gate, holds and failed payouts marked possibly sent).'
+echo 'Internal-db Compose backup/restore regressions passed (no published port, typed confirmation, wrong key, side-by-side and fresh-volume restores, backups following DATABASE_URL after a switch, conflict rollback, payout recovery gate, holds and failed payouts marked possibly sent, the restored-images line).'

@@ -538,7 +538,7 @@ func (a *App) storeImage(ctx context.Context, r *http.Request, session string, a
 	}
 	current := *actor
 	current.Role = role
-	owner, audit, notify, redirect := current.ID, "", "", "/account?avatar=saved#avatar"
+	owner, audit, ownerAudit, notify, redirect := current.ID, "", "", "", "/account?avatar=saved#avatar"
 	var product any
 	if route.kind == uploadListing {
 		// lockListing takes the listing's vendor's users row before the listing (the vendor never changes).
@@ -560,8 +560,9 @@ func (a *App) storeImage(ctx context.Context, r *http.Request, session string, a
 		owner, product = l.VendorID, l.ID
 		audit = listingAudit("Added a photo to", c, l)
 		redirect = "/listing-edit?id=" + url.QueryEscape(l.ID) + "&photo=saved#photos"
-		if owner != current.ID {
-			notify = "An administrator added a photo to your listing " + l.ID[:min(8, len(l.ID))] + "."
+		if owner != current.ID { // A-190: recorded in the vendor's own audit trail too
+			notify = "An administrator added a photo to your listing " + shortID(l.ID) + "."
+			ownerAudit = "Photo added to listing " + shortID(l.ID) + " by an administrator"
 		}
 	}
 	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, imagesLock); err != nil {
@@ -603,6 +604,11 @@ func (a *App) storeImage(ctx context.Context, r *http.Request, session string, a
 	}
 	if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", current.ID, audit); err != nil {
 		return "", err
+	}
+	if ownerAudit != "" {
+		if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", owner, ownerAudit); err != nil {
+			return "", err
+		}
 	}
 	if notify != "" {
 		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), owner, notify); err != nil {

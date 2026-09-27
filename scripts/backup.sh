@@ -56,12 +56,14 @@ trap 'rm -f "$temporary"' EXIT
 if [[ -n ${BACKUP_DATABASE_URL:-} ]]; then
   command -v pg_dump >/dev/null || { echo 'Install PostgreSQL client tools for external backups.' >&2; exit 1; }
   command -v python3 >/dev/null || { echo 'Python 3 is required for external connection URL parsing.' >&2; exit 1; }
-  python3 scripts/postgres-tool.py BACKUP_DATABASE_URL pg_dump --format=custom --no-owner --no-acl | age -r "$AGE_RECIPIENT" > "$temporary"
+  # TZ=UTC here and below: a custom-format dump records its creation time as wall-clock fields of pg_dump's zone,
+  # and restore.sh reads them back as UTC.
+  TZ=UTC python3 scripts/postgres-tool.py BACKUP_DATABASE_URL pg_dump --format=custom --no-owner --no-acl | age -r "$AGE_RECIPIENT" > "$temporary"
   database=$(url_database "$BACKUP_DATABASE_URL")
   # A database name is not a credential; show it when it is printable as it stands.
   if [[ $database =~ ^[A-Za-z0-9_-]{1,63}$ ]]; then dumped="database $database (BACKUP_DATABASE_URL)"; else dumped='the BACKUP_DATABASE_URL database'; fi
 else
-  docker compose exec -T db pg_dump -U opsecmkt -d "$database" --format=custom --no-owner --no-acl | age -r "$AGE_RECIPIENT" > "$temporary"
+  docker compose exec -T -e TZ=UTC db pg_dump -U opsecmkt -d "$database" --format=custom --no-owner --no-acl | age -r "$AGE_RECIPIENT" > "$temporary"
   dumped="internal database $database"
 fi
 mv "$temporary" "$output"

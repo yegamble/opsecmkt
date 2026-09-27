@@ -1,0 +1,13 @@
+{{/* A-190: a moderator's or administrator's remove form for one photo or avatar (image_takedown.go), called with an ImageTakedown. Urlencoded, like every form but the two uploads. */}}
+{{define "image-takedown"}}<details class="image-takedown">
+<summary>{{.Label}}</summary>
+<form class="stack" method="post" action="/images/remove">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="id" value="{{.ID}}">{{if .From}}
+<input type="hidden" name="from" value="{{.From}}">{{end}}
+<label>Reason for the owner<textarea name="reason" required minlength="10" maxlength="500" rows="3"></textarea>
+</label>
+<p class="help">10–500 characters. The {{.What}} is deleted at once and cannot be restored. Its owner is notified with this reason{{if eq .What "photo"}} and sees it on the listing's edit page{{end}}; it is kept in both accounts' activity logs, never shown publicly. Never include an address, real name or tracking number.</p>
+<button type="submit">Remove {{.What}}</button>
+</form>
+</details>{{end}}

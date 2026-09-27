@@ -24,8 +24,10 @@ type Product struct {
 // its size and description, and the text naming it: Alt for photo 1, shown full size, and Label for the link to
 // each other photo's full size.
 type ProductPhoto struct {
-	Full, Thumb, Description, Alt, Label string
-	Width, Height                        int
+	ID, Full, Thumb, Description, Alt, Label string
+	Width, Height                            int
+	// A-190, product page only: the staff remove form (image_takedown.go), nil unless the viewer is staff.
+	Takedown *ImageTakedown
 }
 
 // Order.Status is the display label derived from State by stateLabel.
@@ -82,6 +84,10 @@ type PageData struct {
 	// StaffList: then the moderators and administrators listed (User.Avatar set when it may be shown).
 	StaffListPublic bool
 	StaffList       []User
+	// A-190 (image_takedown.go). RecentImages: /moderator, the newest public photos and avatars (vendors' only for a moderator); AvatarTakedown:
+	// vendor page, the staff remove form for the vendor's avatar.
+	RecentImages   []RecentImage
+	AvatarTakedown *ImageTakedown
 
 	// Foundation
 	Auth *AuthView

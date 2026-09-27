@@ -165,3 +165,32 @@ input[type=file]:disabled,input[type=file]:disabled::file-selector-button {
   min-width:0
 }
 /* end A-188 upload forms */
+/* A-190 staff image takedown: the <details> remove form (partials/image-takedown.html) on the product page, the
+   vendor page and /moderator's Recent photos, and the owner's "Photo removed by staff" lines on listing-edit.
+   The reason may be long and have line breaks: it wraps, never scrolls sideways. */
+.image-takedown {
+  margin:8px 0 0;
+  min-width:0
+}
+.product-card>.image-takedown {
+  padding:0 24px
+}
+.photo-thumbs li:has(>.image-takedown[open]) {
+  width:100%
+}
+.page-head+.image-takedown {
+  margin:-8px 0 24px
+}
+.image-takedown form {
+  margin-top:8px
+}
+.image-takedown textarea {
+  width:100%;
+  max-width:100%
+}
+.staff-removal {
+  margin:0 0 12px;
+  overflow-wrap:anywhere;
+  white-space:pre-line
+}
+/* end A-190 */

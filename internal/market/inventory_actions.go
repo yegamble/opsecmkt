@@ -174,7 +174,8 @@ func adminListingAction(c *actionCtx) (actionResult, error) {
 	var reason string
 	if takedown {
 		reason = strings.TrimSpace(strings.ReplaceAll(c.Form.Get("reason"), "\r\n", "\n"))
-		if n := utf8.RuneCountInString(reason); !utf8.ValidString(reason) || n < minTakedownReason || n > maxTakedownReason {
+		// PostgreSQL text refuses NUL, so one is the reason's 400 here rather than a failed update (PR #27 NIT-1).
+		if n := utf8.RuneCountInString(reason); !utf8.ValidString(reason) || strings.ContainsRune(reason, 0) || n < minTakedownReason || n > maxTakedownReason {
 			return actionResult{}, fail(400, "Give the vendor a reason of 10–500 characters. Nothing was changed.")
 		}
 	}

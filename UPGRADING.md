@@ -323,6 +323,15 @@ including orders paid out after the backup that have no payout row in it, before
 gate. Restore with the application stopped and keep the site cut off from users until reconciliation is
 complete; the procedure says when the app runs for you alone and when it must be stopped.
 
+The script also prints `<N> images restored from a backup taken <time>; photo and avatar removals made after
+that time are undone — check /moderator Recent photos and remove them again`. Removing a listing photo or an
+avatar, by its owner or as a staff takedown, deletes it from the database, so a restore brings back every image
+removed after the backup was taken. Before users return, have a moderator check the moderation desk's Recent
+photos and take down again any image that had been removed. A restore not done by `scripts/restore.sh` prints
+nothing, but undoes those removals all the same. The time is in UTC for backups made by this release's
+`scripts/backup.sh`; for a backup made by an earlier one on a host (or, for the internal database, a container)
+not set to UTC, it is off by that zone's offset from UTC.
+
 **Any restore not done by `scripts/restore.sh` skips this payout protection.** A host or volume snapshot, a
 managed-database point-in-time recovery or a manual `pg_restore` brings payouts back as `pending` with no
 gate, and the application sends them again as soon as it starts, even if they were paid after that point in
