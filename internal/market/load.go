@@ -13,7 +13,7 @@ import (
 // A-181 (with A-16 catalog paging, A-60 PA-8): the catalog on / is searched with a capped, literal term and
 // served 25 listings a page, each card showing an excerpt; the product page keeps the full description.
 const (
-	searchMaxBytes  = 64  // q beyond this is ignored (cut on a rune boundary)
+	searchMaxRunes  = 64  // characters of q kept, as the search boxes' maxlength counts them; so at most 256 bytes
 	filterMaxBytes  = 80  // category and region filters (a listing region is at most 80 bytes)
 	catalogPageSize = 25  // listings per catalog page
 	excerptRunes    = 300 // characters of description on a listing card, including the trailing "…"
@@ -33,7 +33,20 @@ func cleanParam(s string, limit int) string {
 	return s[:i]
 }
 
-func searchTerm(s string) string  { return cleanParam(s, searchMaxBytes) }
+// searchTerm is q cleaned and cut to searchMaxRunes characters. A search box's maxlength="64" counts UTF-16
+// code units, never fewer than characters, so a term typed into it is searched in full.
+func searchTerm(s string) string {
+	s = cleanParam(s, utf8.UTFMax*searchMaxRunes)
+	n := 0
+	for i := range s {
+		if n == searchMaxRunes {
+			return s[:i]
+		}
+		n++
+	}
+	return s
+}
+
 func filterValue(s string) string { return cleanParam(s, filterMaxBytes) }
 
 // normaliseCatalogFilters applies the caps to the search and filter values every page echoes in its header.

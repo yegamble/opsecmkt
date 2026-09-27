@@ -77,7 +77,7 @@ test('search, empty state, filter and reset work without client scripts', async 
 });
 
 // A-181: one page of samples needs no pager; an out-of-range or malformed page still lands on the catalog,
-// and the search term is capped at 64 bytes (the box says so with maxlength and echoes the capped term).
+// and the search term is capped at 64 characters (the box says so with maxlength and echoes the capped term).
 test('catalog page numbers and long search terms are handled without client scripts', async ({ page }) => {
   for (const path of ['/?page=9', '/?page=-1', '/?page=abc']) {
     expect((await page.goto(path))?.status()).toBe(200);

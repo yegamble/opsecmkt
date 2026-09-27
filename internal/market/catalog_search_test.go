@@ -19,12 +19,16 @@ func TestSearchTermCapsAndCleans(t *testing.T) {
 		{"  drive  ", "drive"},
 		{strings.Repeat("a", 64), strings.Repeat("a", 64)},
 		{strings.Repeat("a", 65), strings.Repeat("a", 64)},
-		{strings.Repeat("a", 63) + "é", strings.Repeat("a", 63)}, // é is 2 bytes: never cut inside a rune
-		{strings.Repeat("ж", 40), strings.Repeat("ж", 32)},
+		// The cap counts characters, as the search boxes' maxlength does (PR #15 review): whatever a box
+		// accepts is searched in full.
+		{strings.Repeat("a", 63) + "é", strings.Repeat("a", 63) + "é"},
+		{strings.Repeat("ж", 64), strings.Repeat("ж", 64)},
+		{strings.Repeat("ж", 70), strings.Repeat("ж", 64)},
+		{strings.Repeat("𝄞", 70), strings.Repeat("𝄞", 64)}, // 4 bytes each: the byte ceiling is 256
 		{"a\x00b\xffc", "abc"},
 	} {
 		got := searchTerm(tc.in)
-		if got != tc.want || len(got) > searchMaxBytes || !utf8.ValidString(got) {
+		if got != tc.want || utf8.RuneCountInString(got) > searchMaxRunes || len(got) > utf8.UTFMax*searchMaxRunes || !utf8.ValidString(got) {
 			t.Errorf("searchTerm(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
@@ -149,7 +153,7 @@ func TestPreviewCatalogPagingAndCap(t *testing.T) {
 	long := strings.Repeat("e", 70)
 	body := get("/?q=" + long)
 	if !strings.Contains(body, `value="`+strings.Repeat("e", 64)+`"`) || strings.Contains(body, strings.Repeat("e", 65)) {
-		t.Error("search box does not echo the 64-byte capped term")
+		t.Error("search box does not echo the 64-character capped term")
 	}
 	if !strings.Contains(body, `maxlength="64"`) {
 		t.Error("search inputs lack maxlength=64")
@@ -223,15 +227,15 @@ func TestCatalogSearchEscapesWildcards(t *testing.T) {
 	}
 }
 
-func TestCatalogQueryCappedAt64Bytes(t *testing.T) {
+func TestCatalogQueryCappedAt64Characters(t *testing.T) {
 	e := newTestApp(t)
 	vendor, _ := e.user("cap_vendor", "vendor")
-	term := strings.Repeat("k", 64)
+	term := strings.Repeat("k", 63) + "ж" // 64 characters, 65 bytes: searched in full
 	if _, err := e.DB.Exec(`INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock) VALUES($1,$2,'Capped','prefix `+term+` suffix','Hardware','Worldwide','physical',1,1,1)`, randomToken(), vendor); err != nil {
 		t.Fatal(err)
 	}
-	// The 65th byte onward is ignored: a longer term that the listing does not contain still finds it.
-	w := e.do("GET", "/?q="+term+"ZZZZ", "", nil)
+	// The 65th character onward is ignored: a longer term that the listing does not contain still finds it.
+	w := e.do("GET", "/?q="+url.QueryEscape(term+"ZZZZ"), "", nil)
 	e.check(w, 200)
 	body := w.Body.String()
 	if got := cardTitles(body); len(got) != 1 {
