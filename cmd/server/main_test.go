@@ -54,3 +54,21 @@ func TestServeReturnsListenErrors(t *testing.T) {
 		t.Fatalf("serve = %v", err)
 	}
 }
+
+// A-178 (PR #15 review): the connection cap is not what bounds work (the per-class slots in internal/market
+// do); it must only make holding every connection with trickled headers expensive. Each such connection lasts
+// at most ReadHeaderTimeout, so filling the cap takes maxConns/ReadHeaderTimeout new connections a second.
+func TestConnectionCapOutlastsSlowHeaders(t *testing.T) {
+	srv := newServer(":0", http.NotFoundHandler())
+	if srv.ReadHeaderTimeout <= 0 || srv.ReadTimeout <= 0 {
+		t.Fatal("server without header and body read timeouts")
+	}
+	if perSecond := float64(maxConns) / srv.ReadHeaderTimeout.Seconds(); perSecond < 400 {
+		t.Fatalf("%d connections with a %s header timeout: slow headers hold them all with %.0f new connections a second", maxConns, srv.ReadHeaderTimeout, perSecond)
+	}
+	// Every connection may be reading a form body at once (posts take their slot only after it, A-178): at the
+	// 64 KiB body cap, the cap bounds that memory well below the app's GOMEMLIMIT (400 MiB in compose.yaml).
+	if bodies := maxConns * 64 << 10; bodies > 200<<20 {
+		t.Fatalf("%d connections × 64 KiB = %d MiB of form bodies", maxConns, bodies>>20)
+	}
+}

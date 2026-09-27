@@ -15,8 +15,16 @@ import (
 	"time"
 )
 
-// maxConns caps the server's simultaneous connections (A-178).
-const maxConns = 256
+// maxConns caps the server's simultaneous connections (A-178). The per-class slots in internal/market bound the
+// work; this cap only bounds goroutines and buffers. It is high enough that trickled headers (each connection
+// lasts at most ReadHeaderTimeout, 5 s) need about 400 new connections a second to hold it, and low enough that
+// every connection reading a 64 KiB form body at once needs 128 MiB, well inside the app's GOMEMLIMIT.
+const maxConns = 2048
+
+// newServer is the HTTP server with its read and write bounds.
+func newServer(addr string, h http.Handler) *http.Server {
+	return &http.Server{Addr: addr, Handler: h, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 20 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16384}
+}
 
 func main() {
 	healthcheckFlag := flag.Bool("healthcheck", false, "probe the local server's /healthz (ADDR's port, default 8080) and exit 0 only when it answers ok; prints nothing on success (the Compose healthcheck)")
@@ -76,7 +84,7 @@ func main() {
 			log.Fatal("PREVIEW_ADDR must be a loopback IP address and port")
 		}
 	}
-	srv := &http.Server{Addr: addr, Handler: app, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 20 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16384}
+	srv := newServer(addr, app)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	app.Start(ctx)
