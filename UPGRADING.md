@@ -13,18 +13,32 @@ git pull                       # or check out the release tag
 AGE_RECIPIENT=age1YOUR_PUBLIC_RECIPIENT ./scripts/install.sh upgrade
 ```
 
+With an **external database** (`DATABASE_URL` names another host than `db`), the backup reads the database
+only from `BACKUP_DATABASE_URL`, and needs Python 3 and PostgreSQL client tools matching or newer than the
+server ([Backups and recovery](docs/operator-guide.md#backups-and-recovery)). Give both:
+
+```sh
+BACKUP_DATABASE_URL=YOUR_EXTERNAL_DATABASE_URL AGE_RECIPIENT=age1YOUR_PUBLIC_RECIPIENT ./scripts/install.sh upgrade
+```
+
+The value of `DATABASE_URL` in `.env` serves when this host can reach that server (quote it in single quotes). Without `BACKUP_DATABASE_URL`,
+`upgrade` refuses before changing anything. Like any command-line value, it is visible to other local users
+while the command runs and may be kept in your shell history.
+
 Read [section 3](#3-bitcoin_rpc_url-now-turns-payments-on) first if `.env` sets a node URL, and
 [section 7](#7-local-nodes-are-now-pruned) and [section 8](#8-node-images-are-pinned-to-release-tags) if you
 run local nodes. `upgrade` then does, in order:
 
 1. **Backup.** It runs `scripts/backup.sh` into `backups/pre-upgrade-<time>.dump.age` and stops, changing
-   nothing, if that fails. Without `AGE_RECIPIENT` it refuses to run unless you pass `--no-backup` (for
-   example because you have just taken a backup; migrations are one-way).
+   nothing, if that fails. Without `AGE_RECIPIENT` (and, for an external database, `BACKUP_DATABASE_URL`) it
+   refuses to run unless you pass `--no-backup` (for example because you have just taken a backup; migrations
+   are one-way).
 2. **A copy of `.env`** as `.env.pre-upgrade-<time>` (mode `0600`): the configuration to roll back with.
 3. **Missing keys.** It adds every non-secret key `.env.example` documents that `.env` lacks, with the value
    Compose already used while the key was absent, so nothing changes but what `.env` shows
    ([the appendix](#appendix-new-keys-by-hand) explains them). It records the
-   `COMPOSE_PROJECT_NAME` your containers use and `APP_PORT` (from your shell, else `8080`). It never invents
+   `COMPOSE_PROJECT_NAME` your containers use and `APP_PORT`: the value in your shell when you set one, else
+   the host port the running app container publishes (`docker compose port app 8080`), else `8080`. It never invents
    a secret: `AUDIT_SIGNING_KEY` and a local Monero wallet stay off until you add them.
 4. **`APP_SECRET_KEY`** set to the current `SETUP_TOKEN` value when it is missing, so every key, session and
    TOTP secret stays the same ([details](#app_secret_key-and-stricter-startup-checks)).
@@ -34,10 +48,14 @@ run local nodes. `upgrade` then does, in order:
 6. **The onion mirror.** On Tor, when a `tor-mirror` container exists, `mirror` joins `COMPOSE_PROFILES`.
 7. It prints what changed (key names, never secret values), runs `./scripts/install.sh check`, then
    `docker compose up -d --build --wait`; migrations run at startup.
-8. Once setup is complete it removes `SETUP_TOKEN`, which grants nothing any more, and recreates the app.
+8. Once setup is complete and the restarted app reports that its keys derive from `APP_SECRET_KEY`
+   (`-status` prints `keyroot=app_secret_key`), it removes `SETUP_TOKEN`, which grants nothing any more, and
+   recreates the app.
    On Tor, when `.env` changed, it recreates `tor` (and `tor-mirror`) once ([section 4](#4-deploy)).
 
-Running it again changes nothing. If the check or a service fails, it says so and changes nothing more: fix
+Running it again changes nothing. Installer commands that change `.env` hold a lock, the directory
+`.env.lock`, while they run; a second one refuses to start until the first ends. If a killed run left it
+behind, remove it with `rmdir .env.lock`. If the check or a service fails, it says so and changes nothing more: fix
 `.env`, or put the copy back with `mv .env.pre-upgrade-<time> .env`, and see
 [Rolling back](#5-rolling-back). Then open the admin page as [section 4](#4-deploy) describes. The sections
 below explain each change and how to make it by hand.

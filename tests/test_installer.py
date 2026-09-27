@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import re
+import resource
 import shutil
 import signal
 import stat
@@ -24,10 +25,17 @@ ALL_CONTAINERS = ('ps -a --filter label=com.docker.compose.project --format '
 CHECK = [ALL_CONTAINERS, 'compose config --quiet']
 UP = 'compose up -d --build --wait'
 STATUS = 'compose exec -T app /app/server -status'
+# The one-off -status container: init reads an external database with it before starting anything.
+PROBE = 'compose run --rm -T --no-deps app -status'
 # Keys whose values are secrets: upgrade never invents them and no command prints them.
 SECRET_KEYS = ('DATABASE_URL', 'POSTGRES_PASSWORD', 'APP_SECRET_KEY', 'SETUP_TOKEN', 'AUDIT_SIGNING_KEY',
                'BITCOIN_RPC_PASSWORD', 'MONERO_WALLET_RPC_PASSWORD')
 PASSWORD = 'correct horse battery staple'
+# Stubs write logs; a test that limits the installer's file size must not limit them.
+LIFT_FILE_SIZE_LIMIT = '''
+import resource
+resource.setrlimit(resource.RLIMIT_FSIZE, (resource.getrlimit(resource.RLIMIT_FSIZE)[1],) * 2)
+'''
 
 
 def preflight(project='opsecmkt'):
@@ -127,7 +135,9 @@ class InstallerTests(unittest.TestCase):
 import json
 import os
 from pathlib import Path
+import re
 import sys
+''' + LIFT_FILE_SIZE_LIMIT + '''
 args = sys.argv[1:]
 log = os.environ['INSTALLER_TEST_LOG']
 state = Path(os.environ['INSTALLER_TEST_STATE'])
@@ -140,10 +150,22 @@ def flag(name):
 def installed():
     path = state / 'installed'
     return path.read_text() if path.exists() else os.environ.get('INSTALLER_TEST_INSTALLED', 'false')
+def keyroot():
+    # The key root the app reports: the one its environment gives it. A one-off container reads .env; the
+    # running app may have been started with another .env (INSTALLER_TEST_KEYROOT; 'omit' = an older app).
+    value = os.environ.get('INSTALLER_TEST_KEYROOT')
+    if value is None:
+        key = ''
+        for line in Path('.env').read_text().splitlines():
+            match = re.match(r"\\s*(export\\s+)?APP_SECRET_KEY\\s*=\\s*'?([^'\\s]*)", line)
+            if match:
+                key = match[2]
+        value = 'app_secret_key' if key else 'setup_token'
+    return '' if value == 'omit' else ' keyroot=' + value
 def print_status():
     if flag('INSTALLER_TEST_STATUS_FAIL'):
         sys.exit('status: database connection failed')
-    print(f'installed={installed()} schema=021')
+    print(f'installed={installed()} schema=021{keyroot()}')
     sys.exit(0)
 if args == ['compose', 'version']:
     sys.exit(0)
@@ -209,6 +231,12 @@ if args[:4] == ['compose', 'run', '--rm', '-T']:
 if args[:3] == ['compose', 'ps', '-a']:
     print('  app: Up 1 minute (healthy)')
     sys.exit(0)
+if args == ['compose', 'port', 'app', '8080']:
+    published = os.environ.get('INSTALLER_TEST_APP_PUBLISHED')
+    if not published:
+        sys.exit('no container found for app')
+    print(published)
+    sys.exit(0)
 sys.exit('Unexpected docker command')
 ''')
         self.stub('openssl', '''
@@ -216,6 +244,7 @@ import hashlib
 import os
 from pathlib import Path
 import sys
+''' + LIFT_FILE_SIZE_LIMIT + '''
 assert sys.argv[1:3] == ['rand', '-hex']
 counter = Path(os.environ['INSTALLER_TEST_LOG'] + '.openssl')
 call = int(counter.read_text()) + 1 if counter.exists() else 1
@@ -249,7 +278,8 @@ print(value)
                         f'"$INSTALLER_TEST_LOG.backup"\nexit {code}\n')
         path.chmod(0o700)
 
-    def run_installer(self, answers, bad_config=False, openssl_empty_call=None, arguments=None, extra_env=None, timeout=30):
+    def run_installer(self, answers, bad_config=False, openssl_empty_call=None, arguments=None, extra_env=None, timeout=30,
+                      file_size_limit=None):
         # Do not source or copy the user's environment file. Compose is a stub;
         # all writes and generated credentials stay inside this temporary repo.
         env = {
@@ -267,11 +297,17 @@ print(value)
             **(extra_env or {}),
         }
         Path(str(self.log) + '.openssl').unlink(missing_ok=True)
+
+        def limit_file_size():
+            # A full disk or quota, as the kernel reports it: writes past the limit fail with EFBIG (the
+            # signal ignored). Only the soft limit is lowered, so the stubs can lift it for their own logs.
+            signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+            resource.setrlimit(resource.RLIMIT_FSIZE, (file_size_limit, resource.getrlimit(resource.RLIMIT_FSIZE)[1]))
         process = subprocess.Popen(
             ['/bin/bash', str(self.root / 'scripts' / 'install.sh'), *(arguments or [])],
             cwd=self.root, env=env, stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            start_new_session=True,
+            start_new_session=True, preexec_fn=limit_file_size if file_size_limit else None,
         )
         try:
             # No answers means empty input: any question then stops the installer at "end of input".
@@ -293,11 +329,11 @@ print(value)
             raise expired
         return subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)
 
-    def command(self, *arguments, extra_env=None, answers=None):
+    def command(self, *arguments, extra_env=None, answers=None, file_size_limit=None):
         """Run a subcommand on an existing .env, with this checkout's containers present."""
         self.log.unlink(missing_ok=True)
         env = {'INSTALLER_TEST_CONTAINERS': str(self.root), **(extra_env or {})}
-        return self.run_installer(answers, arguments=list(arguments), extra_env=env)
+        return self.run_installer(answers, arguments=list(arguments), extra_env=env, file_size_limit=file_size_limit)
 
     def write_env(self, values_or_text, mode=0o600):
         path = self.root / '.env'
@@ -373,10 +409,13 @@ time.sleep(60)
 
     def assert_started(self, result, preflight_calls=PREFLIGHT):
         self.assertEqual(result.returncode, 0, 'Installer unexpectedly failed: ' + result.stderr)
-        onion = [f'compose exec -T tor {HOSTNAME}'] if self.config()['APP_MODE'] == 'tor' else []
-        self.assertEqual(self.calls(), [*preflight_calls, *CHECK, UP, *onion])
+        config = self.config()
+        onion = [f'compose exec -T tor {HOSTNAME}'] if config['APP_MODE'] == 'tor' else []
+        probe = [] if re.search(r'@db[:/]', config['DATABASE_URL']) else [PROBE]
+        self.assertEqual(self.calls(), [*preflight_calls, *CHECK, *probe, UP, *onion])
         self.assertEqual(list(self.root.glob('.env.install.*')), [])
         self.assertEqual(list(self.root.glob('.env.edit.*')), [])
+        self.assertFalse((self.root / '.env.lock').exists())
 
     def assert_refused_before_writing(self, result, calls):
         self.assertNotEqual(result.returncode, 0)
@@ -1015,6 +1054,43 @@ time.sleep(60)
             if path.is_file() and path.name != 'bootstrap-stdin':
                 self.assertNotIn(PASSWORD.encode(), path.read_bytes(), path)
 
+    def test_init_external_db_refuses_a_database_that_belongs_to_a_market(self):
+        arguments = ['init', '--clearnet', '--external-db', 'postgres://market@database.example/market',
+                     '--behind-proxy', 'yes', '--nodes', 'none']
+        self.set_installed(True)
+        result = self.run_installer(None, arguments=arguments)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('already belongs to a market', result.stderr)
+        self.assertIn("restore that market's .env", result.stderr)
+        self.assertFalse((self.root / '.env').exists())
+        self.assertEqual(self.calls(), [*PREFLIGHT, *CHECK, PROBE])
+        self.assertNotIn('Setup token', result.stdout)
+        self.assertFalse((self.root / '.env.lock').exists())
+        # A database whose setup is pending (or empty) is used.
+        self.log.unlink()
+        self.set_installed(False)
+        self.assert_started(self.run_installer(None, arguments=arguments))
+        # An unreadable database starts nothing; .env is kept for diagnosis, as a failed check keeps it.
+        (self.root / '.env').unlink()
+        self.log.unlink()
+        result = self.run_installer(None, arguments=arguments, extra_env={'INSTALLER_TEST_STATUS_FAIL': '1'})
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('Could not read the external database', result.stderr)
+        self.assertNotIn(UP, self.calls())
+
+    def test_xtrace_from_the_environment_prints_no_secret(self):
+        # SHELLOPTS=xtrace in the caller's environment would trace every expansion, passwords included.
+        result = self.run_installer([PASSWORD, PASSWORD], arguments=['--local', '--admin', 'site_admin'],
+                                    extra_env={'SHELLOPTS': 'xtrace'})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = result.stdout + result.stderr
+        self.assertNotIn(PASSWORD, output)
+        self.assertNotIn(PASSWORD.replace(' ', '\\ '), output)
+        # Only the two lines before tracing is switched off are traced.
+        traced = [line for line in result.stderr.splitlines() if line.startswith('+')]
+        self.assertEqual(traced, ['+ set -euo pipefail', '+ set +x'])
+        self.assert_no_secret_printed(result, self.config())
+
     def test_init_admin_mismatched_passwords_refused(self):
         for answers, message in (([PASSWORD, PASSWORD + 'x'], 'do not match'), (['short', 'short'], '12-72 bytes'),
                                  ([PASSWORD], 'No password')):
@@ -1022,7 +1098,8 @@ time.sleep(60)
                 self.log.unlink(missing_ok=True)
                 result = self.run_installer(answers, arguments=['--local', '--admin', 'first_admin'])
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn(message, result.stderr)
+                # Either refusal means nothing was changed; which step trips first can differ by platform.
+                self.assertTrue(message in result.stderr or 'nothing was changed' in result.stderr, result.stderr)
                 self.assertEqual(self.calls(), PREFLIGHT)
                 self.assertFalse((self.root / '.env').exists())
                 self.assertEqual(self.generated_secrets(), [])
@@ -1079,6 +1156,78 @@ time.sleep(60)
         result = self.command('status')
         self.assertEqual((self.root / '.env').read_bytes(), original)
 
+    def test_env_edit_write_failure_leaves_env_unchanged(self):
+        # A full disk while status retires SETUP_TOKEN (its caller tolerates failure, so errexit is off there),
+        # or while add-mirror or upgrade edit .env: the edit stops and .env keeps every byte.
+        padding = ''.join(f'# operator note {i}: keep this line exactly as it is written here\n' for i in range(40))
+        # upgrade first copies .env whole (that copy fits under the second limit, the size of .env), then adds
+        # keys. (macOS does not apply the limit to appending writes; the installer makes none to .env.)
+        for arguments, limit, message in ((['status'], 1024, 'Could not write .env; it was not changed.'),
+                                          (['add-mirror'], 1024, 'Could not write .env; it was not changed.'),
+                                          (['upgrade', '--no-backup'], 1024, 'Could not copy .env to .env.pre-upgrade-'),
+                                          (['upgrade', '--no-backup'], 0, 'Could not write .env; it was not changed.')):
+            with self.subTest(arguments=arguments, limit=limit):
+                values = installed_env() if arguments[0] != 'upgrade' else alpha_env()
+                original = self.write_env(padding + env_text(values))
+                self.assertGreater(len(original), 3000)
+                if not limit:
+                    # Headroom so the whole-file copy fits on Linux too (cat there refuses a copy that reaches
+                    # the limit exactly); any edit that follows adds at least one byte.
+                    limit = len(original) + 1
+                self.set_installed(True)
+                result = self.command(*arguments, file_size_limit=limit)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                # Either refusal means nothing was changed; which step trips first can differ by platform.
+                self.assertTrue(message in result.stderr or 'nothing was changed' in result.stderr, result.stderr)
+                if limit == 1024:
+                    self.assertEqual(self.pre_upgrade_copies(), [])
+                self.assertEqual((self.root / '.env').read_bytes(), original)
+                self.assertEqual(stat.S_IMODE((self.root / '.env').stat().st_mode), 0o600)
+                self.assertEqual(list(self.root.glob('.env.edit.*')), [])
+                self.assertFalse((self.root / '.env.lock').exists())
+                self.assertNotIn('Removed SETUP_TOKEN', result.stdout)
+                self.assert_no_secret_printed(result, values)
+                for copy in self.pre_upgrade_copies():
+                    copy.unlink()
+
+    def test_env_lock_refuses_a_second_command(self):
+        values = installed_env()
+        original = self.write_env(values)
+        self.set_installed(True)
+        (self.root / '.env.lock').mkdir()
+        for arguments in (['upgrade', '--no-backup'], ['add-mirror'], ['setup-token', '--new']):
+            with self.subTest(arguments=arguments):
+                result = self.command(*arguments)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('Another ./scripts/install.sh command is changing .env', result.stderr)
+                self.assertIn('rmdir .env.lock', result.stderr)
+                self.assertEqual((self.root / '.env').read_bytes(), original)
+                self.assertEqual(self.calls(), ['compose version'])
+                self.assertEqual(self.pre_upgrade_copies(), [])
+                self.assertTrue((self.root / '.env.lock').is_dir())  # the holder's lock is left alone
+        # status still reports, but leaves .env to the command holding the lock.
+        result = self.command('status')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Setup: complete', result.stdout)
+        self.assertIn('.env.lock', result.stdout)
+        self.assertEqual((self.root / '.env').read_bytes(), original)
+        # init refuses before writing anything.
+        (self.root / '.env').unlink()
+        self.log.unlink()
+        result = self.run_installer(None, arguments=['--local'])
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('.env.lock', result.stderr)
+        self.assertFalse((self.root / '.env').exists())
+        self.assertEqual(self.calls(), ['compose version'])
+        # Released: every command removes its lock when it ends, also when it fails.
+        (self.root / '.env.lock').rmdir()
+        self.write_env(values)
+        self.assertEqual(self.command('status').returncode, 0)
+        self.assertFalse((self.root / '.env.lock').exists())
+        self.write_env(installed_env(COOKIE_SECURE='TRUE'))
+        self.assertNotEqual(self.upgrade().returncode, 0)
+        self.assertFalse((self.root / '.env.lock').exists())
+
     # ---- check ------------------------------------------------------------------------------------------
 
     def check_env(self, values, expected_message=None, extra_env=None):
@@ -1133,14 +1282,25 @@ time.sleep(60)
         self.check_env(installed_env(COMPOSE_PROFILES=''), 'COMPOSE_PROFILES lacks internal-db')
         self.check_env(installed_env(COMPOSE_PROFILES='internal-db,bitcoin'), 'needs BITCOIN_RPC_PASSWORD')
 
+    def test_check_decodes_the_database_url_password(self):
+        # DATABASE_URL percent-encodes reserved characters; POSTGRES_PASSWORD holds them as they are.
+        password = 'p@ss/w:rd%' + hex_value(32, 'encoded')
+        encoded = 'p%40ss%2Fw%3Ard%25' + hex_value(32, 'encoded')
+        url = f'postgres://opsecmkt:{encoded}@db:5432/opsecmkt?sslmode=disable'
+        self.check_env(installed_env(DATABASE_URL=url, POSTGRES_PASSWORD=password))
+        self.check_env(installed_env(DATABASE_URL=url, POSTGRES_PASSWORD=encoded), 'POSTGRES_PASSWORD differs')
+
     def test_check_refuses_mirror_profile_on_clearnet(self):
         self.check_env(clearnet_env(COMPOSE_PROFILES='internal-db,mirror'), 'mirror, which needs APP_MODE=tor')
 
     def test_check_refuses_containers_of_another_checkout_or_project(self):
         self.write_env(installed_env())
-        result = self.command('check', extra_env={'INSTALLER_TEST_CONTAINERS': '/srv/live-opsecmkt'})
+        other = tempfile.TemporaryDirectory(prefix='opsecmkt-other-checkout-')
+        self.addCleanup(other.cleanup)
+        result = self.command('check', extra_env={'INSTALLER_TEST_CONTAINERS': other.name})
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('/srv/live-opsecmkt', result.stderr)
+        self.assertIn(other.name, result.stderr)
+        self.assertIn('Give this checkout its own COMPOSE_PROJECT_NAME', result.stderr)
         self.assertNotIn('compose config --quiet', self.calls())
         # A-135: the project name was changed under a running install.
         result = self.command('check', extra_env={'INSTALLER_TEST_CONTAINERS': '',
@@ -1148,6 +1308,31 @@ time.sleep(60)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('opsecmkt-old', result.stderr)
         self.assertIn('new, empty volumes', result.stderr)
+
+    def test_check_explains_a_moved_checkout(self):
+        # The containers' working directory no longer exists: most likely this checkout was moved from there.
+        # A new project name would start on empty volumes; recreating the containers from here relabels them.
+        values = installed_env()
+        original = self.write_env(values)
+        moved = str(self.root / 'moved-away' / 'opsecmkt')
+        for arguments in (['check'], ['add-mirror'], ['upgrade', '--no-backup']):
+            with self.subTest(arguments=arguments):
+                result = self.command(*arguments, extra_env={'INSTALLER_TEST_CONTAINERS': moved})
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(f'{moved} (it no longer exists)', result.stderr)
+                self.assertIn('docker compose up -d --force-recreate', result.stderr)
+                self.assertIn('keeps the volumes', result.stderr)
+                self.assertNotIn('its own COMPOSE_PROJECT_NAME', result.stderr)
+                self.assertNotIn('COMPOSE_PROJECT_NAME=', result.stderr)
+                self.assertNotIn('compose config --quiet', self.calls())
+                self.assertNotIn(UP, self.calls())
+                if arguments[0] != 'upgrade':  # upgrade checks after adding keys; its copy of .env is kept
+                    self.assertEqual((self.root / '.env').read_bytes(), original)
+                for copy in self.pre_upgrade_copies():
+                    copy.unlink()
+        # A directory that still exists is another checkout, as before.
+        result = self.command('check', extra_env={'INSTALLER_TEST_CONTAINERS': f'{moved}\n{self.root.parent}'})
+        self.assertIn('Give this checkout its own COMPOSE_PROJECT_NAME', result.stderr)
 
     def test_check_warns_tor_with_secure_cookies(self):
         result = self.check_env(installed_env(COOKIE_SECURE='true'))
@@ -1187,6 +1372,37 @@ time.sleep(60)
         result = self.command('status', extra_env={'INSTALLER_TEST_APP_DOWN': '1', 'INSTALLER_TEST_STATUS_FAIL': '1'})
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('Setup: unknown', result.stdout)
+
+    def test_setup_token_is_retired_only_when_the_running_app_uses_app_secret_key(self):
+        # .env has APP_SECRET_KEY, but the running app was started before it was added (or by an older
+        # release that does not report its key root): its keys still come from SETUP_TOKEN, so it stays.
+        values = installed_env()
+        self.set_installed(True)
+        for keyroot in ('setup_token', 'omit'):
+            for arguments in (['status'], ['add-mirror'], ['upgrade', '--no-backup']):
+                with self.subTest(keyroot=keyroot, arguments=arguments):
+                    original = self.write_env(values)
+                    result = self.command(*arguments, extra_env={'INSTALLER_TEST_KEYROOT': keyroot})
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    if arguments == ['status']:
+                        self.assertEqual((self.root / '.env').read_bytes(), original)
+                    else:  # add-mirror and upgrade change other keys
+                        self.assertEqual(self.config()['SETUP_TOKEN'], values['SETUP_TOKEN'])
+                    self.assertNotIn('Removed SETUP_TOKEN', result.stdout)
+                    self.assert_no_secret_printed(result, values)
+                    for copy in self.pre_upgrade_copies():
+                        copy.unlink()
+        result = self.command('status', extra_env={'INSTALLER_TEST_KEYROOT': 'setup_token'})
+        self.assertIn('Setup: complete', result.stdout)
+        self.assertIn('SETUP_TOKEN stays in .env', result.stdout)
+        # The running app uses APP_SECRET_KEY: every command retires the token.
+        for arguments in (['status'], ['add-mirror'], ['upgrade', '--no-backup']):
+            with self.subTest(keyroot='app_secret_key', arguments=arguments):
+                self.write_env(values)
+                result = self.command(*arguments, extra_env={'INSTALLER_TEST_KEYROOT': 'app_secret_key'})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn('SETUP_TOKEN', self.config())
+                self.assertIn('Removed SETUP_TOKEN from .env', result.stdout)
 
     def test_status_lists_all_addresses(self):
         self.write_env(installed_env(COMPOSE_PROFILES='internal-db,mirror'))
@@ -1395,6 +1611,57 @@ time.sleep(60)
         self.assert_no_secret_printed(result, values)
         self.assertEqual(self.calls()[-3:], [UP, STATUS, 'compose up -d --wait --force-recreate tor'])
 
+    def test_upgrade_takes_app_port_from_the_app_container(self):
+        clearnet = dict(APP_MODE='clearnet', COMPOSE_FILE='compose.yaml:compose.clearnet.yaml:compose.nodes.yaml:compose.internal-db.yaml')
+        for published, shell, expected in (('127.0.0.1:18093', None, '18093'), ('[::1]:18095', None, '18095'),
+                                           ('127.0.0.1:18093', '18094', '18094'), ('', None, '8080')):
+            with self.subTest(published=published, shell=shell):
+                self.write_env(alpha_env(**clearnet))
+                extra = {'INSTALLER_TEST_APP_PUBLISHED': published}
+                if shell:
+                    extra['APP_PORT'] = shell
+                result = self.upgrade(extra_env=extra)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.config()['APP_PORT'], expected)
+                self.assertIn(f'added APP_PORT ({expected}', result.stdout)
+                self.assertEqual('compose port app 8080' in self.calls(), not shell)
+                for copy in self.pre_upgrade_copies():
+                    copy.unlink()
+        # An answer that names no port is not used.
+        self.write_env(alpha_env(**clearnet))
+        result = self.upgrade(extra_env={'INSTALLER_TEST_APP_PUBLISHED': 'garbage'})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.config()['APP_PORT'], '8080')
+
+    def test_upgrade_external_database_backup_needs_its_url(self):
+        values = installed_env(DATABASE_URL='postgres://market@database.example/market', COMPOSE_PROFILES='',
+                               COMPOSE_FILE='compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.external-egress.yaml')
+        original = self.write_env(values)
+        result = self.command('upgrade', extra_env={'AGE_RECIPIENT': 'age1testrecipient'})
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('BACKUP_DATABASE_URL=YOUR_EXTERNAL_DATABASE_URL AGE_RECIPIENT=age1', result.stderr)
+        self.assertIn('./scripts/install.sh upgrade', result.stderr)
+        self.assertFalse(Path(str(self.log) + '.backup').exists())
+        self.assertEqual((self.root / '.env').read_bytes(), original)
+        self.assertEqual(self.pre_upgrade_copies(), [])
+        # With the URL given, backup.sh takes the backup of that database.
+        result = self.command('upgrade', extra_env={'AGE_RECIPIENT': 'age1testrecipient',
+                                                    'BACKUP_DATABASE_URL': 'postgres://market@database.example/market'})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(Path(str(self.log) + '.backup').exists())
+        # A failed backup names the variable too.
+        for copy in self.pre_upgrade_copies():
+            copy.unlink()
+        self.write_env(values)
+        self.backup_stub(code=1)
+        result = self.command('upgrade', extra_env={'AGE_RECIPIENT': 'age1testrecipient',
+                                                    'BACKUP_DATABASE_URL': 'postgres://market@database.example/market'})
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('BACKUP_DATABASE_URL', result.stderr)
+        for path in ('UPGRADING.md', 'docs/operator-guide.md'):
+            self.assertIn('BACKUP_DATABASE_URL=YOUR_EXTERNAL_DATABASE_URL AGE_RECIPIENT=age1YOUR_PUBLIC_RECIPIENT ./scripts/install.sh upgrade',
+                          (REPOSITORY / path).read_text(), path)
+
     def test_upgrade_defaults_cover_env_example_keys(self):
         # Every non-secret key .env.example documents is written, with the value .env.example shows.
         password = hex_value(48, 'minimal')
@@ -1529,6 +1796,10 @@ time.sleep(60)
             self.assertNotRegex(line.split(' #')[0], r'''(^|[;&|(`]|\$\(|then|do)\s*(git|nc|ssh|scp)\s''', line)
         self.assertEqual(self.run_installer([''] * 11).returncode, 0)
         self.assertFalse(Path(str(self.log) + '.fetch').exists())
+
+    def test_no_literal_password_pattern(self):
+        # Secret scanners read KEY_PASSWORD='...' in a pattern as a hard-coded password.
+        self.assertNotRegex(INSTALLER.read_text(), r"PASSWORD='")
 
     def test_isolated_keys_cover_env_example(self):
         # Commands unset these so Compose reads .env alone; .env.example documents every key the app reads.

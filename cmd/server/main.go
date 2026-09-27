@@ -20,7 +20,7 @@ const maxConns = 256
 
 func main() {
 	healthcheckFlag := flag.Bool("healthcheck", false, "probe the local server's /healthz (ADDR's port, default 8080) and exit 0 only when it answers ok; prints nothing on success (the Compose healthcheck)")
-	statusFlag := flag.Bool("status", false, "print installed=true|false schema=NNN for DATABASE_URL and exit (read-only; starts no server)")
+	statusFlag := flag.Bool("status", false, "print installed=true|false schema=NNN keyroot=app_secret_key|setup_token for DATABASE_URL and exit (read-only; starts no server; prints no secret)")
 	preview := flag.Bool("preview", false, "read-only UI preview with sample data, binds loopback only")
 	resetAdmin := flag.String("reset-admin-password", "", "host-only break-glass: read a new password for this administrator handle from stdin, end its sessions and exit (starts no server)")
 	bootstrap := flag.String("bootstrap-admin", "", "host-only first-run setup: create the first administrator with this handle, reading its password from stdin, mark the market installed and exit (starts no server; no setup token needed)")
@@ -34,7 +34,7 @@ func main() {
 		return
 	}
 	if *statusFlag {
-		if err := status(context.Background(), os.Getenv("DATABASE_URL"), os.Stdout); err != nil {
+		if err := status(context.Background(), os.Getenv("DATABASE_URL"), os.Getenv, os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, "status:", err)
 			os.Exit(1)
 		}

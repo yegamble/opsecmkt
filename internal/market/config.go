@@ -28,6 +28,16 @@ func (c startupConfig) keyRoot() (root string, legacy bool) {
 	return c.setupToken, true
 }
 
+// KeyRootSource names, without its value, the secret the app's keys derive from under getenv: "app_secret_key"
+// or "setup_token" (legacy). -status prints it so the installer removes SETUP_TOKEN only from an install whose
+// running app no longer derives anything from it.
+func KeyRootSource(getenv func(string) string) string {
+	if _, legacy := (startupConfig{appSecretKey: getenv("APP_SECRET_KEY"), setupToken: getenv("SETUP_TOKEN")}).keyRoot(); legacy {
+		return "setup_token"
+	}
+	return "app_secret_key"
+}
+
 // useKeyRoot derives the CSRF/CAPTCHA HMAC key and the CAPTCHA challenge-id key from root and keeps root for
 // sealing (crypto.go). The "csrf:" derivation string is the one used before APP_SECRET_KEY existed.
 func (a *App) useKeyRoot(root string) {

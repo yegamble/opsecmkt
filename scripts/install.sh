@@ -13,6 +13,8 @@
 # block and from setup-token. After init it changes .env only through env_set/env_unset (a temporary file moved
 # into place), and it never fetches anything itself: Docker builds and pulls the images.
 set -euo pipefail
+# Never trace: SHELLOPTS=xtrace in the caller's environment would print every secret the installer handles.
+set +x
 cd "$(dirname "$0")/.."
 umask 077
 
@@ -63,7 +65,13 @@ caller_app_port=${APP_PORT-}
 caller_project=${COMPOSE_PROJECT_NAME-}
 caller_wallet_image=${MONERO_WALLET_IMAGE-}
 temporaries=''
-trap 'if [[ -n $temporaries ]]; then rm -f $temporaries; fi' EXIT
+env_locked=false
+# Bash runs this on exit, including after SIGINT, SIGTERM and SIGHUP.
+cleanup() {
+  if [[ -n $temporaries ]]; then rm -f $temporaries; fi
+  if [[ $env_locked == true ]]; then rmdir .env.lock 2>/dev/null || true; fi
+}
+trap cleanup EXIT
 
 usage() {
   usage_text >&2
@@ -100,18 +108,19 @@ die() {
 
 # ---- .env access -------------------------------------------------------------------------------------------
 
-# env_get KEY: print the value of the last line assigning KEY in .env (quotes removed, as Compose reads the
-# installer's single quotes, double quotes, `export` and unquoted values); status 1 when no line assigns it.
+# env_get KEY [FILE]: print the value of the last line assigning KEY in FILE (default .env; quotes removed, as
+# Compose reads the installer's single quotes, double quotes, `export` and unquoted values); status 1 when no
+# line assigns it.
 env_get() {
-  local key=$1 line value='' found=false
-  [[ -f .env ]] || return 1
+  local key=$1 file=${2:-.env} line value='' found=false
+  [[ -f $file ]] || return 1
   while IFS= read -r line || [[ -n $line ]]; do
     line=${line%$'\r'}
     if [[ $line =~ $env_key_pattern && ${BASH_REMATCH[2]} == "$key" ]]; then
       value=${line#*=}
       found=true
     fi
-  done < .env
+  done < "$file"
   [[ $found == true ]] || return 1
   value=${value#"${value%%[![:space:]]*}"}
   case $value in
@@ -128,37 +137,60 @@ env_value() { env_get "$1" || true; }
 # env_edit KEY VALUE set|unset: rewrite .env line by line into a temporary file beside it, then move that into
 # place with mode 0600. Only lines assigning KEY change: set replaces the first with KEY='VALUE' (appending one
 # when none exists) and drops later ones; unset drops them all. Every other line, including comments, blank
-# lines, CRLF endings and a missing final newline, is copied byte for byte.
+# lines, CRLF endings and a missing final newline, is copied byte for byte. Every step is checked here, not by
+# errexit, which is off when a caller tests the result (`retire_setup_token ... || true`, `if ...`): a failed
+# write (a full disk) exits before .env is replaced, so .env is either the old file or the complete new one.
 env_edit() {
   local key=$1 value=$2 action=$3 line temporary replaced=false ended open=false
   [[ $value != *"'"* && $value != *$'\n'* && $value != *$'\r'* ]] || die 'Values cannot contain single quotes or newlines.'
-  temporary=$(mktemp .env.edit.XXXXXX)
+  temporary=$(mktemp .env.edit.XXXXXX) || die 'Could not write .env; it was not changed.'
   temporaries="$temporaries $temporary"
-  while :; do
-    ended=true
-    IFS= read -r line || { [[ -n $line ]] || break; ended=false; }
-    if [[ $line =~ $env_key_pattern && ${BASH_REMATCH[2]} == "$key" ]]; then
-      if [[ $action == set && $replaced == false ]]; then printf "%s='%s'\n" "$key" "$value"; fi
-      replaced=true
-      open=false
-    elif [[ $ended == true ]]; then
-      printf '%s\n' "$line"
-      open=false
-    else
-      printf '%s' "$line"
-      open=true
+  # One redirection for the whole file (appending writes can escape a file size limit on some systems).
+  {
+    while :; do
+      ended=true
+      IFS= read -r line || { [[ -n $line ]] || break; ended=false; }
+      if [[ $line =~ $env_key_pattern && ${BASH_REMATCH[2]} == "$key" ]]; then
+        if [[ $action == set && $replaced == false ]]; then
+          printf "%s='%s'\n" "$key" "$value" || env_edit_failed "$temporary"
+        fi
+        replaced=true
+        open=false
+      elif [[ $ended == true ]]; then
+        printf '%s\n' "$line" || env_edit_failed "$temporary"
+        open=false
+      else
+        printf '%s' "$line" || env_edit_failed "$temporary"
+        open=true
+      fi
+      [[ $ended == true ]] || break
+    done < .env || env_edit_failed "$temporary"
+    if [[ $action == set && $replaced == false ]]; then
+      if [[ $open == true ]]; then printf '\n' || env_edit_failed "$temporary"; fi
+      printf "%s='%s'\n" "$key" "$value" || env_edit_failed "$temporary"
     fi
-    [[ $ended == true ]] || break
-  done < .env > "$temporary"
-  if [[ $action == set && $replaced == false ]]; then
-    if [[ $open == true ]]; then printf '\n' >> "$temporary"; fi
-    printf "%s='%s'\n" "$key" "$value" >> "$temporary"
-  fi
-  chmod 600 "$temporary"
-  mv -f "$temporary" .env
+  } > "$temporary" || env_edit_failed "$temporary"
+  chmod 600 "$temporary" && mv -f "$temporary" .env || env_edit_failed "$temporary"
+}
+env_edit_failed() {
+  rm -f "$1"
+  die 'Could not write .env; it was not changed.'
 }
 env_set() { env_edit "$1" "$2" set; }
 env_unset() { env_edit "$1" '' unset; }
+
+# lock_env: take .env.lock (mkdir is atomic everywhere) so that two installer commands cannot both read .env,
+# change it and write it back, the second losing the first one's change. cleanup removes it on exit. Status 1,
+# with nothing taken, when another command holds it.
+lock_env() {
+  [[ $env_locked == false ]] || return 0
+  mkdir .env.lock 2>/dev/null || return 1
+  env_locked=true
+}
+lock_env_or_die() {
+  lock_env || die 'Another ./scripts/install.sh command is changing .env in this checkout (.env.lock exists), so nothing was done.' \
+    'Wait for it to finish and run this again. If none is running (it was killed), remove the stale lock with: rmdir .env.lock'
+}
 
 isolate_env() {
   local key
@@ -198,6 +230,22 @@ url_password() {
   authority=${authority%@*}
   [[ $authority == *:* ]] || return 0
   printf '%s' "${authority#*:}"
+}
+
+# url_decode TEXT: TEXT with %XX escapes decoded, as the app's URL parser reads userinfo (+ stays +).
+url_decode() {
+  local LC_ALL=C text=$1 decoded='' byte
+  while [[ -n $text ]]; do
+    if [[ $text =~ ^%([0-9A-Fa-f]{2}) ]]; then
+      printf -v byte "\\x${BASH_REMATCH[1]}"
+      decoded=$decoded$byte
+      text=${text:3}
+    else
+      decoded=$decoded${text:0:1}
+      text=${text:1}
+    fi
+  done
+  printf '%s' "$decoded"
 }
 
 # secret N prints N random bytes as hex and refuses to continue if generation failed.
@@ -281,12 +329,18 @@ same_dir() {
   [[ -d $1 && $(cd "$1" 2>/dev/null && pwd -P) == "$(pwd -P)" ]]
 }
 
-# app_status: the app's `-status` line (installed=true|false schema=NNN), from the running app or, when it is
-# not running, a one-off container (the database must be up). Status 1 when it cannot be read.
+# status_line_ok LINE: LINE is a `-status` line: installed=true|false schema=NNN keyroot=app_secret_key|setup_token
+# (an app from before keyroot existed prints no keyroot).
+status_line_ok() {
+  [[ $1 =~ ^installed=(true|false)\ schema=[0-9]+(\ keyroot=(app_secret_key|setup_token))?$ ]]
+}
+
+# app_status: the app's `-status` line, from the running app (so keyroot is the key root it runs with) or, when
+# it is not running, a one-off container with this .env (the database must be up). Status 1 when unreadable.
 app_status() {
   local out
   out=$(docker compose exec -T app /app/server -status 2>/dev/null) || out=$(docker compose run --rm -T --no-deps app -status) || return 1
-  [[ $out =~ ^installed=(true|false)\ schema=[0-9]+$ ]] || return 1
+  status_line_ok "$out" || return 1
   printf '%s' "$out"
 }
 
@@ -313,12 +367,17 @@ wait_onion() {
 }
 
 # retire_setup_token STATUS: once setup is complete SETUP_TOKEN grants nothing (the app refuses it), so remove
-# it from .env, but only when APP_SECRET_KEY holds the key root and so no derived key changes. Status 0 when it
-# removed the line.
+# it from .env, but only when no derived key changes: the app reports (keyroot=app_secret_key) that it derives
+# its keys from APP_SECRET_KEY, and .env still sets that. Status 0 when it removed the line, 1 when it left
+# .env alone. The caller holds the .env lock.
 retire_setup_token() {
-  [[ $1 == installed=true* ]] || return 1
-  [[ -n $(env_value APP_SECRET_KEY) ]] || return 1
+  [[ $1 == installed=true\ * ]] || return 1
   env_get SETUP_TOKEN >/dev/null || return 1
+  [[ -n $(env_value APP_SECRET_KEY) ]] || return 1
+  if [[ $1 != *\ keyroot=app_secret_key ]]; then
+    echo 'SETUP_TOKEN stays in .env: the running app does not report that its keys derive from APP_SECRET_KEY (it was started before .env had it, or by an older release). Recreate it with docker compose up -d, then run ./scripts/install.sh status to remove the token.'
+    return 1
+  fi
   env_unset SETUP_TOKEN
   echo 'Removed SETUP_TOKEN from .env: setup is complete, so it grants nothing now.'
 }
@@ -328,7 +387,7 @@ retire_setup_token() {
 # run_check: the app's startup refusals (D8) plus what only the host can see. Messages name keys, never values.
 run_check() {
   local problems='' warnings='' key value problem mode secure files profiles database host project listing
-  local entry entry_project entry_dir foreign='' elsewhere=''
+  local entry entry_project entry_dir foreign='' moved='' elsewhere=''
   for key in APP_SECRET_KEY SETUP_TOKEN; do
     value=$(env_value "$key")
     [[ -n $value ]] || continue
@@ -371,7 +430,7 @@ run_check() {
   if has_item "$profiles" internal-db; then
     if [[ -n $database && $host != db ]]; then
       problems="$problems  - COMPOSE_PROFILES runs the internal database (internal-db) but DATABASE_URL points elsewhere"$'\n'
-    elif [[ -n $database && $(url_password "$database") != "$(env_value POSTGRES_PASSWORD)" ]]; then
+    elif [[ -n $database && $(url_decode "$(url_password "$database")") != "$(env_value POSTGRES_PASSWORD)" ]]; then
       problems="$problems  - POSTGRES_PASSWORD differs from the password in DATABASE_URL, so the app cannot sign in to the internal database"$'\n'
     fi
   elif [[ $host == db ]]; then
@@ -413,7 +472,13 @@ run_check() {
     entry_project=${entry%%|*}
     entry_dir=${entry#*|}
     if [[ $entry_project == "$project" ]]; then
-      same_dir "$entry_dir" || foreign="$foreign  ${entry_dir:-(no working directory label)}"$'\n'
+      if same_dir "$entry_dir"; then
+        :
+      elif [[ -n $entry_dir && ! -e $entry_dir ]]; then
+        moved="$moved  $entry_dir (it no longer exists)"$'\n'
+      else
+        foreign="$foreign  ${entry_dir:-(no working directory label)}"$'\n'
+      fi
     elif same_dir "$entry_dir"; then
       elsewhere="$elsewhere  $entry_project"$'\n'
     fi
@@ -422,6 +487,14 @@ run_check() {
     printf "Configuration check failed: Compose project '%s' has containers created from another directory:\n" "$project" >&2
     printf '%s' "$foreign" | sort -u >&2
     echo 'Commands here would recreate them with this .env. Give this checkout its own COMPOSE_PROJECT_NAME.' >&2
+    return 1
+  fi
+  if [[ -n $moved ]]; then
+    printf "Configuration check failed: Compose project '%s' has containers created from a directory that no longer exists:\n" "$project" >&2
+    printf '%s' "$moved" | sort -u >&2
+    printf '%s\n' 'If this checkout (with its .env) was moved from there, recreate the containers from here so they record this' \
+      'directory: docker compose up -d --force-recreate (it keeps the volumes and their data), then run this command again.' \
+      'Keep COMPOSE_PROJECT_NAME as it is: another name starts the install on new, empty volumes.' >&2
     return 1
   fi
   if [[ -n $elsewhere ]]; then
@@ -550,6 +623,7 @@ cmd_init() {
   if [[ -n $btc$xmr && -z $nodes ]]; then nodes=custom; fi
 
   require_docker
+  lock_env_or_die
   command -v openssl >/dev/null || die 'OpenSSL is required to generate secrets.'
   [[ ! -e .env ]] || die '.env already exists, so this checkout is installed. To bring it up to date after git pull, run ./scripts/install.sh upgrade; ./scripts/install.sh status shows its state. No secrets were overwritten.'
   # Compose names containers, volumes and networks after the project, not the checkout. A second checkout with
@@ -714,6 +788,7 @@ cmd_init() {
 
   # Secrets and the configuration.
   local password app_key setup_token audit_key rpc_password wallet_password profiles='' external_egress=false secure=true
+  local external_database=false
   local compose_files="compose.yaml:compose.${mode}.yaml:compose.nodes.yaml"
   password=$(secret 24) || exit 1
   # Distinct roots: APP_SECRET_KEY derives the CSRF/CAPTCHA and sealing keys; SETUP_TOKEN only opens /setup.
@@ -729,6 +804,7 @@ cmd_init() {
     compose_files="${compose_files}:compose.internal-db.yaml"
   else
     external_egress=true
+    external_database=true
   fi
   if [[ $mode == tor || $local_http == yes ]]; then secure=false; fi
   config=$(mktemp .env.install.XXXXXX)
@@ -789,7 +865,7 @@ cmd_init() {
   esac
   put BITCOIN_CHAIN "$bitcoin_chain"
   put MONERO_NETWORK "$monero_network"
-  if [[ ,$profiles, == *,bitcoin,* ]] && ! grep -q "^BITCOIN_RPC_PASSWORD='[0-9a-f]\{48\}'$" "$config"; then
+  if [[ ,$profiles, == *,bitcoin,* ]] && ! [[ $(env_get BITCOIN_RPC_PASSWORD "$config") =~ ^[0-9a-f]{48}$ ]]; then
     die 'Refusing to enable the local Bitcoin node without a generated RPC password.'
   fi
   if [[ $mode == tor && $external_egress == true ]]; then
@@ -800,6 +876,20 @@ cmd_init() {
   put COMPOSE_PROFILES "$profiles"
   mv "$config" .env
   run_check || die 'Nothing was started; .env was kept for diagnosis. Fix it (or remove it and run the installer again).'
+  if [[ $external_database == true ]]; then
+    # An external database may already hold a market: starting on it with new secrets would lock its users out
+    # of their second factors and orphan its sealed data. Read it first, with a one-off container.
+    local probe
+    probe=$(docker compose run --rm -T --no-deps app -status) && status_line_ok "$probe" ||
+      die 'Could not read the external database with DATABASE_URL (the message above says why). Nothing was started; .env was kept for diagnosis. Fix it (or remove it and run the installer again).'
+    if [[ $probe == installed=true\ * ]]; then
+      rm -f .env
+      die 'Refusing to install: the external database already belongs to a market (its setup is complete).' \
+        "A new .env would start it with new secrets. To run that market from this checkout, restore that market's .env here" \
+        'instead (docs/operator-guide.md#secrets-env-and-onion-identities); to start a new market, give --external-db an empty database.' \
+        'The new .env was removed and nothing was started.'
+    fi
+  fi
   # Builds, starts and waits until every service's healthcheck passes: the app answers /healthz (it reaches
   # PostgreSQL and has migrated) and each Tor service has written its onion address.
   docker compose up -d --build --wait ||
@@ -873,7 +963,13 @@ cmd_status() {
   if state=$(app_status); then
     if [[ $state == installed=true* ]]; then
       echo 'Setup: complete'
-      retire_setup_token "$state" && echo 'The running app drops it the next time it is recreated (docker compose up -d).' || true
+      if ! env_get SETUP_TOKEN >/dev/null; then
+        :
+      elif ! lock_env; then
+        echo 'SETUP_TOKEN stays in .env for now: another installer command is changing .env (.env.lock exists).'
+      elif retire_setup_token "$state"; then
+        echo 'The running app drops it the next time it is recreated (docker compose up -d).'
+      fi
     else
       echo 'Setup: pending. ./scripts/install.sh setup-token shows the token for the setup page.'
     fi
@@ -919,6 +1015,7 @@ cmd_setup_token() {
     *) usage ;;
   esac
   require_env
+  if [[ $new == true ]]; then lock_env_or_die; fi
   state=$(app_status) || die 'Could not read the setup state: start the database and app (docker compose up -d) and try again.'
   [[ $state == installed=false* ]] || die 'Setup is complete, so there is no setup token: it grants nothing now. Sign in on /login.'
   if [[ $new == true ]]; then
@@ -950,6 +1047,7 @@ cmd_setup_token() {
 cmd_add_mirror() {
   [[ $# -eq 0 ]] || usage
   require_env
+  lock_env_or_die
   local profiles mirror main state
   [[ $(env_value APP_MODE) == tor ]] || die 'The onion mirror is a second Tor address, so it needs a Tor install (APP_MODE=tor). Nothing was changed.'
   run_check || exit 1
@@ -987,10 +1085,23 @@ cmd_upgrade() {
     *) usage ;;
   esac
   require_env
+  lock_env_or_die
+  # backup.sh dumps the internal database through Compose; an external one only from BACKUP_DATABASE_URL.
+  local external_backup='' database_url
+  database_url=$(env_value DATABASE_URL)
+  if [[ -n $database_url && $(url_host "$database_url") != db ]]; then
+    external_backup='With an external database, backup.sh also needs its URL: BACKUP_DATABASE_URL=YOUR_EXTERNAL_DATABASE_URL AGE_RECIPIENT=age1YOUR_PUBLIC_RECIPIENT ./scripts/install.sh upgrade (the URL of DATABASE_URL in .env serves; PostgreSQL client tools and Python 3 must be installed; see UPGRADING.md).'
+  fi
   if [[ -z ${AGE_RECIPIENT:-} && $no_backup == false ]]; then
     die 'Refusing to upgrade without a database backup: migrations are one-way.' \
-      'Set AGE_RECIPIENT to your age public key (AGE_RECIPIENT=age1... ./scripts/install.sh upgrade), or pass --no-backup if you have just taken one.'
+      'Set AGE_RECIPIENT to your age public key (AGE_RECIPIENT=age1... ./scripts/install.sh upgrade), or pass --no-backup if you have just taken one.' \
+      ${external_backup:+"$external_backup"}
   fi
+  if [[ $no_backup == false && -n $external_backup && -z ${BACKUP_DATABASE_URL:-} ]]; then
+    die 'Refusing to upgrade: DATABASE_URL names an external database, which the backup reads only from BACKUP_DATABASE_URL. Nothing was changed.' \
+      "$external_backup" 'Or pass --no-backup if you have just taken a backup.'
+  fi
+  database_url=''
   local project listing entry candidates='' count stamp copy changes='' key value default mode files profiles token database host egress
   # The project whose volumes hold this install: COMPOSE_PROJECT_NAME, else the one its containers were created
   # under from this directory, else the caller's COMPOSE_PROJECT_NAME or Compose's default.
@@ -1018,14 +1129,16 @@ cmd_upgrade() {
   if [[ $no_backup == false ]]; then
     mkdir -p backups
     COMPOSE_PROJECT_NAME=$project scripts/backup.sh "backups/pre-upgrade-$stamp.dump.age" ||
-      die 'The backup failed, so nothing was changed. Fix it (the message above says why) or pass --no-backup.'
+      die 'The backup failed, so nothing was changed. Fix it (the message above says why) or pass --no-backup.' \
+        ${external_backup:+"$external_backup"}
   fi
   # The one other copy of the secrets the installer writes (I9): .env as it was, for rolling back.
   copy=.env.pre-upgrade-$stamp
   count=1
   while [[ -e $copy ]]; do count=$((count + 1)); copy=.env.pre-upgrade-$stamp-$count; done
-  cat .env > "$copy"
-  chmod 600 "$copy"
+  temporaries="$temporaries $copy"
+  cat .env > "$copy" && chmod 600 "$copy" || die "Could not copy .env to $copy (is the disk full?); nothing was changed."
+  temporaries=${temporaries% "$copy"}
 
   if ! env_get COMPOSE_PROJECT_NAME >/dev/null; then
     env_set COMPOSE_PROJECT_NAME "$project"
@@ -1074,10 +1187,19 @@ cmd_upgrade() {
     changes="$changes  added COMPOSE_FILE (from APP_MODE and the profiles)"$'\n'
   fi
   if ! env_get APP_PORT >/dev/null; then
-    value=${caller_app_port:-8080}
+    # The port the install publishes now: the caller's APP_PORT when given, else the host port of the app
+    # container (docker compose port prints ADDRESS:PORT), else Compose's default.
+    local source='the port from your shell'
+    value=$caller_app_port
+    if [[ -z $value ]]; then
+      value=$(docker compose port app 8080 2>/dev/null | head -n 1) || value=''
+      value=${value##*:}
+      source='the port the app container publishes'
+      if ! [[ $value =~ ^[0-9]{1,5}$ ]]; then value=8080 source='the default'; fi
+    fi
     [[ $value =~ ^[0-9]{1,5}$ ]] && ((10#$value > 0 && 10#$value <= 65535)) || die 'APP_PORT must be between 1 and 65535.'
     env_set APP_PORT "$value"
-    changes="$changes  added APP_PORT ($value)"$'\n'
+    changes="$changes  added APP_PORT ($value, $source)"$'\n'
   fi
   local defaulted=''
   while IFS= read -r entry; do
