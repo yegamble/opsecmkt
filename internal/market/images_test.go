@@ -176,19 +176,21 @@ func TestDecodeConfigCapBeforeScan(t *testing.T) {
 	}{
 		{4097, 1, "4097×1 pixels"},
 		{1, 4097, "1×4097 pixels"},
-		{3465, 3464, "3465×3464 pixels"}, // 12 002 760 px
+		{4096, 3073, "4096×3073 pixels"}, // one row over 4096×3072
 		{1 << 31, 1, "1073741824×1 pixels"},
 	} {
 		_, err := inspectImage(pngHeader(c.w, c.h, 8, 2, 0))
-		if refusalCode(t, err) != 422 || !strings.Contains(err.Error(), c.want) || !strings.Contains(err.Error(), "4096 pixels") || !strings.Contains(err.Error(), "12 megapixels") {
+		if refusalCode(t, err) != 422 || !strings.Contains(err.Error(), c.want) || !strings.Contains(err.Error(), "4096 pixels") || !strings.Contains(err.Error(), "4096×3072 (about 12.6 megapixels)") {
 			t.Errorf("%dx%d: %v", c.w, c.h, err)
 		}
 	}
 	if _, err := inspectImage(jpegHeader(0xC0, 4097, 16, 3)); refusalCode(t, err) != 422 || !strings.Contains(err.Error(), "4097×16") {
 		t.Errorf("wide JPEG: %v", err)
 	}
-	// At the limits: 4096 on a side and exactly 12 000 000 px pass the caps.
-	for _, data := range [][]byte{pngHeader(4096, 16, 8, 2, 0), jpegHeader(0xC0, 4000, 3000, 3)} {
+	// At the limits: 4096 on a side and exactly 4096×3072 px pass the caps, and so do the common 12 MP phone
+	// sizes 4032×3024 and 4080×3060 (D10: the caps must cover a 4032×3024 phone JPEG).
+	for _, data := range [][]byte{pngHeader(4096, 16, 8, 2, 0), jpegHeader(0xC0, 4000, 3000, 3), jpegHeader(0xC0, 4032, 3024, 3),
+		jpegHeader(0xC0, 4080, 3060, 3), jpegHeader(0xC0, 4096, 3072, 3), pngHeader(4096, 3072, 8, 2, 0)} {
 		if _, err := inspectImage(data); err != nil {
 			t.Errorf("at the limit: %v", err)
 		}
@@ -218,8 +220,12 @@ func TestProgressiveAllocationCap(t *testing.T) {
 		ok   bool
 	}{
 		{"baseline 12 MP YCbCr (36 MB)", jpegHeader(0xC0, 4000, 3000, 3), true},
-		{"progressive 3 MP (45 MB)", jpegHeader(0xC2, 2000, 1500, 3), true},
-		{"progressive 6 MP (90 MB)", jpegHeader(0xC2, 3000, 2000, 3), false},
+		// Progressive 4:2:0 keeps 6 coefficient blocks per 16×16 MCU (4 luma, 1 of each chroma): 6 B/px beside
+		// the 3 of planes, 9 in all (image/jpeg measured 7.57), not 4 B/px for every component at full size.
+		{"progressive 4:2:0 3 MP (27 MB)", jpegHeader(0xC2, 2000, 1500, 3), true},
+		{"progressive 4:2:0 5 MP phone (45 MB)", jpegHeader(0xC2, 2592, 1944, 3), true},
+		{"progressive 4:2:0 6 MP (54 MB)", jpegHeader(0xC2, 3000, 2000, 3), true},
+		{"progressive 4:2:0 8 MP (72 MB)", jpegHeader(0xC2, 3464, 2310, 3), false},
 		// The review's measurement: a 2700×2050 progressive 4:4:4 JPEG made image/jpeg allocate 79.6 MiB (15 B/px:
 		// 12 of coefficients beside the 3 of YCbCr planes) while 12 B/px estimated 63.3 MiB.
 		{"progressive 4:4:4 2700×2050 (79 MiB)", jpegHeader444(0xC2, 2700, 2050), false},
@@ -228,7 +234,8 @@ func TestProgressiveAllocationCap(t *testing.T) {
 		{"YCbCr 9.6 MP (29 MB)", jpegHeader(0xC0, 4000, 2400, 3), true},
 		{"RGB 9.6 MP (67 MB)", rgbJPEGHeader(0xC0, 4000, 2400), false},
 		{"RGB 8 MP (56 MB)", rgbJPEGHeader(0xC0, 4000, 2000), true},
-		{"progressive RGB 4.2 MP (67 MB)", rgbJPEGHeader(0xC2, 2100, 2000), false},
+		{"progressive RGB 4:4:4 4.2 MP (80 MB)", rgb444(rgbJPEGHeader(0xC2, 2100, 2000)), false},
+		{"progressive RGB 4:4:4 3.2 MP (61 MB)", rgb444(rgbJPEGHeader(0xC2, 1800, 1800)), true},
 		{"PNG 16-bit RGBA 7.8 MP (63 MB)", pngHeader(2800, 2800, 16, 6, 0), true},
 		{"PNG 16-bit RGBA 9 MP (72 MB)", pngHeader(3000, 3000, 16, 6, 0), false},
 		{"PNG 8-bit RGBA 12 MP (48 MB)", pngHeader(4000, 3000, 8, 6, 0), true},
@@ -252,8 +259,8 @@ func jpegHeader444(sof byte, w, h uint16) []byte {
 }
 
 // The estimate bounds what the decoder really allocates. Go can encode only baseline JPEGs, so the progressive,
-// RGB and 4:4:4 cases are made with libjpeg-turbo's cjpeg when it is installed (it is not in CI; locally the
-// review's figures reproduce: progressive 4:4:4 15.07 B/px, 4:2:0 7.57, grey 5.03, RGB 19.05; baseline RGB 7.01,
+// RGB and 4:4:4 cases are made with libjpeg-turbo's cjpeg (CI installs it and fails without it; elsewhere they
+// are skipped when it is missing). The review's figures reproduce: progressive 4:4:4 15.07 B/px, 4:2:0 7.57, grey 5.03, RGB 19.05; baseline RGB 7.01,
 // 4:2:0 1.52).
 func TestDecodeAllocationWithinEstimate(t *testing.T) {
 	pic := fixturePicture(1000, 800)
@@ -280,6 +287,7 @@ func TestDecodeAllocationWithinEstimate(t *testing.T) {
 		for name, args := range map[string][]string{
 			"progressive 4:4:4": {"-progressive", "-sample", "1x1"},
 			"progressive 4:2:0": {"-progressive", "-sample", "2x2"},
+			"progressive 4:2:2": {"-progressive", "-sample", "2x1"},
 			"progressive grey":  {"-progressive", "-grayscale"},
 			"progressive RGB":   {"-progressive", "-rgb"},
 			"baseline RGB":      {"-rgb"},
@@ -294,6 +302,9 @@ func TestDecodeAllocationWithinEstimate(t *testing.T) {
 			cases[name] = out
 		}
 	} else {
+		if os.Getenv("CI") != "" {
+			t.Fatal("cjpeg not installed: CI must measure the progressive, RGB and 4:4:4 JPEGs")
+		}
 		t.Log("cjpeg not installed: progressive, RGB and 4:4:4 JPEGs not measured")
 	}
 	for name, data := range cases {
@@ -376,6 +387,12 @@ func TestJPEGWalkRefusesMarkersTheDecoderWouldNot(t *testing.T) {
 
 // rgbJPEGHeader is jpegHeader with components named R, G and B: a JPEG stored as RGB, which DecodeConfig
 // reports as RGBA and the decoder converts to RGBA after decoding its planes.
+// rgb444 samples every component of a jpegHeader 1×1, as RGB encoders do.
+func rgb444(b []byte) []byte {
+	b[4+2+6+1] = 0x11
+	return b
+}
+
 func rgbJPEGHeader(sof byte, w, h uint16) []byte {
 	b := jpegHeader(sof, w, h, 3)
 	for i, id := range []byte("RGB") {

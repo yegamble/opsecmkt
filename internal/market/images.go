@@ -19,9 +19,9 @@ import (
 // FF D8 FF, PNG 89 50 4E 47 0D 0A 1A 0A; the part's file name and Content-Type are never read); a walk of the
 // segment (JPEG) or chunk (PNG) headers up to the image data, which also yields the EXIF Orientation; then
 // jpeg.DecodeConfig or png.DecodeConfig, which must agree with the walk. Refused: either side over 4096 px,
-// more than 12 000 000 px, a 4-component (CMYK or YCCK) JPEG, and an estimated decode allocation over 64 MiB
-// (bytesPerPixel: a JPEG's pixels rounded up to whole MCUs × its planes, plus 4 B/px a component of coefficients
-// when progressive and 4 for the RGBA copy of an RGB JPEG; a PNG's pixels × its colour model's size, twice when
+// more than 4096×3072 px, a 4-component (CMYK or YCCK) JPEG, and an estimated decode allocation over 64 MiB
+// (bytesPerPixel: a JPEG's pixels rounded up to whole MCUs × its planes, plus, when progressive, 256 bytes for each
+// 8×8 coefficient block of every component at its own sampling, and 4 B/px for the RGBA copy of an RGB JPEG; a PNG's pixels × its colour model's size, twice when
 // interlaced), and a JPEG of more than 100 scans. Only bytes passing every cap reach clamd.
 //
 // After a clean scan (reencodeImage, which takes only a scannedUpload): jpeg.Decode or png.Decode chosen by
@@ -33,10 +33,10 @@ import (
 // panic in any of it is recovered and refused (422).
 
 const (
-	uploadCap      = 4 << 20    // bytes of one photo or avatar file
-	maxImageSide   = 4096       // pixels on either side
-	maxImagePixels = 12_000_000 // width × height
-	maxDecodeBytes = 64 << 20   // estimated decode allocation
+	uploadCap      = 4 << 20     // bytes of one photo or avatar file
+	maxImageSide   = 4096        // pixels on either side
+	maxImagePixels = 4096 * 3072 // width × height: about 12.6 megapixels, so a 4032×3024 phone photo fits
+	maxDecodeBytes = 64 << 20    // estimated decode allocation
 
 	photoLongEdge           = 1200 // full photo: fits a 1200×1200 box
 	photoQuality            = 82
@@ -71,6 +71,7 @@ type imageInfo struct {
 	progressive   bool // JPEG SOF2; PNG interlaced
 	components    int  // JPEG: 1 or 3 (4 is refused)
 	mcuW, mcuH    int  // JPEG: the decoder rounds the image up to whole MCUs of this many pixels
+	mcuBlocks     int  // JPEG: 8×8 blocks per MCU over all components (the sum of each one's h×v sampling)
 	decodeBytes   int64
 }
 
@@ -86,7 +87,7 @@ var (
 )
 
 func errImageDimensions(w, h int) error {
-	return &httpError{Code: http.StatusUnprocessableEntity, Msg: fmt.Sprintf("Photo not saved: the picture is %d×%d pixels; the limit is 4096 pixels on either side and 12 megapixels in all. Nothing was stored.", w, h)}
+	return &httpError{Code: http.StatusUnprocessableEntity, Msg: fmt.Sprintf("Photo not saved: the picture is %d×%d pixels; the limit is 4096 pixels on either side and 4096×3072 (about 12.6 megapixels) in all. Nothing was stored.", w, h)}
 }
 
 // inspectImage applies every cap that comes before the scan (C6). It decodes nothing.
@@ -134,6 +135,11 @@ func inspectImage(data []byte) (imageInfo, error) {
 		w, h = roundUp(w, int64(info.mcuW)), roundUp(h, int64(info.mcuH))
 	}
 	info.decodeBytes = w * h * bytesPerPixel(info, cfg.ColorModel)
+	if info.format == formatJPEG && info.progressive {
+		// A progressive JPEG also keeps every coefficient block until the last scan: 64 int32s (256 bytes) per
+		// 8×8 block, mcuBlocks of them per MCU, as image/jpeg allocates them.
+		info.decodeBytes += (w / int64(info.mcuW)) * (h / int64(info.mcuH)) * int64(info.mcuBlocks) * 256
+	}
 	if info.decodeBytes > maxDecodeBytes {
 		return info, errImageMemory
 	}
@@ -142,8 +148,8 @@ func inspectImage(data []byte) (imageInfo, error) {
 
 // bytesPerPixel is the decoder's allocation per pixel for the colour model DecodeConfig reported (for a JPEG,
 // per pixel of the image rounded up to whole MCUs). A JPEG decodes into planes of at most 1 (grey) or 3 (YCbCr
-// or RGB) bytes a pixel; an RGB (not YCbCr) one is then copied to RGBA, 4 more; a progressive one keeps, beside
-// the planes, a coefficient block of 4 bytes a pixel for each component (at most; fewer for subsampled chroma).
+// or RGB) bytes a pixel; an RGB (not YCbCr) one is then copied to RGBA, 4 more. A progressive one's coefficient
+// blocks (4 bytes a pixel of each component at its own sampling) are added by inspectImage.
 // Measured with image/jpeg: progressive 4:4:4 15.07 B/px, 4:2:0 7.57, grey 5.03, RGB 19.05; baseline RGB 7.01,
 // 4:2:0 1.52 (TestDecodeAllocationWithinEstimate). A PNG decodes into one image of its model's size, and an
 // interlaced one (info.progressive, set by walkPNG) into one per pass as well, so twice.
@@ -155,9 +161,6 @@ func bytesPerPixel(info imageInfo, m color.Model) int64 {
 			n = 1
 		case m == color.RGBAModel: // stored as RGB, not YCbCr: decoded into planes, then copied to RGBA
 			n = 3 + 4
-		}
-		if info.progressive {
-			n += 4 * int64(info.components)
 		}
 		return n
 	}
@@ -252,7 +255,10 @@ func walkJPEG(data []byte) (imageInfo, error) {
 			}
 			// The largest sampling factors set the MCU the decoder rounds the image up to (a grey image's is
 			// always 8×8).
-			maxH, maxV := 1, 1
+			maxH, maxV, blocks := 1, 1, 1
+			if info.components > 1 {
+				blocks = 0
+			}
 			for c := range info.components {
 				f := seg[7+3*c]
 				if f>>4 < 1 || f>>4 > 4 || f&15 < 1 || f&15 > 4 {
@@ -260,9 +266,10 @@ func walkJPEG(data []byte) (imageInfo, error) {
 				}
 				if info.components > 1 {
 					maxH, maxV = max(maxH, int(f>>4)), max(maxV, int(f&15))
+					blocks += int(f>>4) * int(f&15)
 				}
 			}
-			info.mcuW, info.mcuH = 8*maxH, 8*maxV
+			info.mcuW, info.mcuH, info.mcuBlocks = 8*maxH, 8*maxV, blocks
 		case m == 0xE1 && !exif && bytes.HasPrefix(seg, []byte("Exif\x00\x00")):
 			exif = true
 			info.orientation = exifOrientation(seg[6:])
