@@ -612,3 +612,27 @@ func imageDescription(route uploadRoute, f uploadForm) string {
 	}
 	return f.description
 }
+
+// ImageStorageView is the admin image scanner panel's storage line (A-185's panel, A-186's table): how many
+// photos and avatars are stored, the megabytes they use and IMAGE_STORAGE_LIMIT_MB.
+type ImageStorageView struct {
+	Count       int64
+	Used, Limit string // megabytes, "12.3" and "2048"
+}
+
+func init() {
+	registerLoader("admin", func(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
+		var n, used int64
+		if err := a.db.QueryRowContext(ctx, `SELECT count(*),coalesce(sum(octet_length("full")+octet_length(thumb)),0) FROM images`).Scan(&n, &used); err != nil {
+			return err
+		}
+		d.ImageStorage = &ImageStorageView{Count: n, Used: megabytes(used), Limit: strconv.FormatInt(a.imageLimit()>>20, 10)}
+		return nil
+	})
+	registerPreview("admin", func(d *PageData) {
+		d.ImageStorage = &ImageStorageView{Count: 3, Used: "0.4", Limit: strconv.Itoa(defaultImageStorageMB)}
+	})
+}
+
+// megabytes is n bytes in MB (2^20) to one decimal.
+func megabytes(n int64) string { return strconv.FormatFloat(float64(n)/(1<<20), 'f', 1, 64) }

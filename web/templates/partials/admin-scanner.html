@@ -25,5 +25,6 @@
 </tr>{{end}}</tbody>
 </table>
 </div>
+{{end}}{{with $.ImageStorage}}<p>Stored photos and avatars: {{.Count}}, using {{.Used}} MB of the {{.Limit}} MB limit (<code>IMAGE_STORAGE_LIMIT_MB</code>). Uploads are refused once the limit would be passed.</p>
 {{end}}<p>Database size: {{.DatabaseSize}}.</p>
 </section>{{end}}{{end}}

@@ -19,6 +19,12 @@ import (
 // work; this cap only bounds goroutines and buffers. It is high enough that trickled headers (each connection
 // lasts at most ReadHeaderTimeout, 5 s) need about 400 new connections a second to hold it, and low enough that
 // every connection reading a 64 KiB form body at once needs 128 MiB, well inside the app's GOMEMLIMIT.
+//
+// Memory budget with photo uploads (A-186): those 128 MiB of form bodies, plus 2 upload bodies of at most 4 MiB
+// (uploadWork admits two; every other upload, and every refused one, is read into io.Discard, not memory), plus
+// one decode at a time (imageDecodeWork) estimated at no more than 64 MiB before it starts, plus its outputs
+// (a resampled copy of at most a quarter of the decoded pixels, the 1200 px and thumbnail images and their JPEGs,
+// about 20 MiB): about 220 MiB live, inside the 400 MiB GOMEMLIMIT (TestUploadConcurrentMaxSizeStaysInBudget).
 const maxConns = 2048
 
 // newServer is the HTTP server with its read and write bounds.

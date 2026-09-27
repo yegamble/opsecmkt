@@ -742,3 +742,37 @@ func TestUploadLockReleasedOnClientAbort(t *testing.T) {
 		t.Fatalf("next upload: %v %v", err, resp)
 	}
 }
+
+// Admission: a flood of anonymous multipart posts trickling their bodies holds no post, lookup or upload slot,
+// and a vendor's upload goes through meanwhile.
+func TestUploadAnonFloodHoldsNoPostSlot(t *testing.T) {
+	e, _ := uploadEnv(t)
+	vendorID, vendor := e.user("flood_vendor", "vendor")
+	listing := e.product(vendorID, "physical")
+	addr := uploadServer(t, e, 15*time.Second, 20*time.Second)
+	body, ct := multipartBody(e.avatarParts(randomToken(), make([]byte, 1<<20))...)
+	n := cap(anonPostWork) + cap(userPostWork) + cap(uploadWork) + 8
+	for i := range n {
+		c, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		path := "/account/avatar"
+		if i%2 == 1 {
+			path = "/listings/photo"
+		}
+		fmt.Fprintf(c, "POST %s HTTP/1.1\r\nHost: %s\r\nContent-Type: %s\r\nContent-Length: %d\r\nCookie: session=%s\r\n\r\n", path, addr, ct, len(body), randomToken())
+		go trickle(256, 100*time.Millisecond)(c, body)
+	}
+	time.Sleep(500 * time.Millisecond)
+	for name, sem := range map[string]chan struct{}{"anon post": anonPostWork, "user post": userPostWork, "lookup": sessionLookupWork, "upload": uploadWork} {
+		if len(sem) != 0 {
+			t.Fatalf("%d trickling anonymous uploads hold %d %s slots", n, len(sem), name)
+		}
+	}
+	photo, pct := multipartBody(e.photoParts(vendor, listing, smallJPEG(t))...)
+	if resp, _, err := rawUpload(t, addr, "/listings/photo", vendor, photo, pct, nil); err != nil || resp.StatusCode != 303 {
+		t.Fatalf("vendor upload during the flood: %v %v", err, resp)
+	}
+}

@@ -408,6 +408,8 @@ test('admin sees scanner status and signature date', async ({ browser, baseURL }
   await expect(panel).toContainText('stored · ');
   await expect(panel).toContainText('never linked to accounts');
   await expect(panel).toContainText(/Database size: \d+ [kMG]B\./);
+  // A-186: stored photos and avatars against IMAGE_STORAGE_LIMIT_MB (default 2048).
+  await expect(panel).toContainText(/Stored photos and avatars: \d+, using \d+\.\d MB of the 2048 MB limit \(IMAGE_STORAGE_LIMIT_MB\)\./);
   // Fresh signatures: no refresh warning and no paused notice.
   await expect(panel.getByRole('status')).toHaveCount(0);
   await expect(panel).not.toContainText('refresh-scanner');
