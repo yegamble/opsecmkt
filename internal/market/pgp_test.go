@@ -120,6 +120,43 @@ func testKeyWith(t *testing.T, key *openpgp.Entity, middle, after []byte) string
 	return buf.String()
 }
 
+// testKeyInterleaved armors key with afterUID between its user ID and the self-signature, and afterSubkey
+// between its subkey and the binding signature.
+func testKeyInterleaved(t *testing.T, key *openpgp.Entity, afterUID, afterSubkey []byte) string {
+	t.Helper()
+	var buf bytes.Buffer
+	w, _ := armor.Encode(&buf, openpgp.PublicKeyType, nil)
+	key.PrimaryKey.Serialize(w)
+	for _, id := range key.Identities {
+		id.UserId.Serialize(w)
+		w.Write(afterUID)
+		for _, sig := range id.Signatures {
+			sig.Serialize(w)
+		}
+	}
+	for _, sub := range key.Subkeys {
+		sub.PublicKey.Serialize(w)
+		w.Write(afterSubkey)
+		sub.Sig.Serialize(w)
+	}
+	w.Close()
+	return buf.String()
+}
+
+// testSplitKeyVariants places a marker packet (tag 10) or a non-critical private packet (tag 60), which
+// OpenPGP readers skip, between a user ID or subkey and its signature (A-110 review): the key parses, but
+// without those packets the signature that follows is dropped with them.
+func testSplitKeyVariants(t *testing.T, key *openpgp.Entity) map[string]string {
+	t.Helper()
+	marker, private := testPacket(10, []byte("PGP")), testPacket(60, []byte("private"))
+	return map[string]string{
+		"marker uid->sig":  testKeyInterleaved(t, key, marker, nil),
+		"marker sub->bind": testKeyInterleaved(t, key, nil, marker),
+		"tag60 uid->sig":   testKeyInterleaved(t, key, private, nil),
+		"tag60 sub->bind":  testKeyInterleaved(t, key, nil, private),
+	}
+}
+
 type photoIDVariant struct {
 	armored       string
 	photos, other int // user attribute packets, other packets outside the allowlist
@@ -175,29 +212,22 @@ func TestPhotoIDFoundAndNeverRepublished(t *testing.T) {
 		}
 	}
 	// A keyring trust packet between a user ID and its self-signature is refused and dropped; the signature stays.
-	var packets bytes.Buffer
-	key.PrimaryKey.Serialize(&packets)
-	for _, id := range key.Identities {
-		id.UserId.Serialize(&packets)
-		packets.Write(testPacket(12, []byte{0, 0}))
-		for _, sig := range id.Signatures {
-			sig.Serialize(&packets)
-		}
-	}
-	for _, sub := range key.Subkeys {
-		sub.PublicKey.Serialize(&packets)
-		sub.Sig.Serialize(&packets)
-	}
-	var trustedBuf bytes.Buffer
-	w, _ := armor.Encode(&trustedBuf, openpgp.PublicKeyType, nil)
-	w.Write(packets.Bytes())
-	w.Close()
-	trusted := trustedBuf.String()
+	trusted := testKeyInterleaved(t, key, testPacket(12, []byte{0, 0}), nil)
 	if _, photos, other := keyExtraPackets(trusted); photos != 0 || other != 1 {
 		t.Fatalf("trust packet: %d photo IDs, %d other packets", photos, other)
 	}
 	if _, _, canonical, err := parseCanonicalPublicKey(trusted); err != nil || armorPackets(t, canonical) != armorPackets(t, plain) {
 		t.Fatalf("trust packet: canonical form is not the plain key (%v)", err)
+	}
+	// A skipped packet between a user ID or subkey and its signature: the key parses, but the canonical form would
+	// not, so the key is reported as unusable rather than shown broken.
+	for name, armored := range testSplitKeyVariants(t, key) {
+		if _, photos, other := keyExtraPackets(armored); photos != 0 || other != 1 {
+			t.Errorf("%s: %d photo IDs, %d other packets", name, photos, other)
+		}
+		if _, _, _, err := parseCanonicalPublicKey(armored); err == nil {
+			t.Errorf("%s: a canonical form that does not parse was accepted", name)
+		}
 	}
 	if got, photos, other := keyExtraPackets(plain); got != fp || photos != 0 || other != 0 {
 		t.Fatalf("plain key: fingerprint %q, %d photo IDs, %d other packets", got, photos, other)
@@ -224,12 +254,29 @@ func TestPhotoIDFoundAndNeverRepublished(t *testing.T) {
 		t.Fatal(err)
 	}
 	body, cert := testPhotoID(t, key, 8)
-	_, _, canonical, err := parseCanonicalPublicKey(testKeyWith(t, key, append(append(testPacket(17, body), cert...), directPacket.Bytes()...), nil))
+	photo := append(testPacket(17, body), cert...)
+	var primary bytes.Buffer
+	if err = key.PrimaryKey.Serialize(&primary); err != nil {
+		t.Fatal(err)
+	}
+	rest := armorPackets(t, plain)[primary.Len():]
+	var directFirst bytes.Buffer
+	w, _ := armor.Encode(&directFirst, openpgp.PublicKeyType, nil)
+	for _, p := range [][]byte{primary.Bytes(), photo, directPacket.Bytes(), []byte(rest)} {
+		w.Write(p)
+	}
+	w.Close()
+	_, _, canonical, err := parseCanonicalPublicKey(directFirst.String())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := armorPackets(t, canonical); !strings.Contains(got, directPacket.String()) || strings.Replace(got, directPacket.String(), "", 1) != armorPackets(t, plain) {
+	if armorPackets(t, canonical) != primary.String()+directPacket.String()+rest {
 		t.Fatal("a direct-key signature after the photo ID was dropped, or the photo ID kept")
+	}
+	// Placed after a photo ID that follows the user ID, it would land among the user ID's signatures once the
+	// photo ID goes; that published form does not parse, so the key is refused rather than shown broken.
+	if _, _, _, err = parseCanonicalPublicKey(testKeyWith(t, key, append(photo, directPacket.Bytes()...), nil)); err == nil {
+		t.Fatal("a canonical form that does not parse was accepted")
 	}
 }
 

@@ -30,13 +30,18 @@ func parsePublicKey(armored string) (*openpgp.Entity, string, error) {
 // decoded packets re-armored unchanged, without armor headers (Version:, Comment: ...), CRLF line endings
 // or any text around the block. The same key always has the same canonical form. It keeps only the packets
 // publishablePackets allows (A-110): a key saved with a photo ID or another packet type before such keys were
-// refused is shown and re-saved without them.
+// refused is shown and re-saved without them. If the kept packets are not exactly one key with the same
+// fingerprint (a skipped packet sat between a user ID or subkey and its signature), the key is refused, so it
+// is reported as unusable rather than shown to others in a form their PGP software cannot import.
 func parseCanonicalPublicKey(armored string) (*openpgp.Entity, string, string, error) {
 	e, fp, data, err := decodePublicKey(armored)
 	if err != nil {
 		return nil, "", "", err
 	}
 	if data, _, _, err = publishablePackets(data); err != nil {
+		return nil, "", "", errors.New("the public key could not be parsed")
+	}
+	if list, err := openpgp.ReadKeyRing(bytes.NewReader(data)); err != nil || len(list) != 1 || !bytes.Equal(list[0].PrimaryKey.Fingerprint, e.PrimaryKey.Fingerprint) {
 		return nil, "", "", errors.New("the public key could not be parsed")
 	}
 	var buf bytes.Buffer

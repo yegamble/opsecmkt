@@ -759,3 +759,35 @@ func TestStoredPhotoIDNeverShown(t *testing.T) {
 		t.Fatalf("re-saved key keeps its photo ID or lost its proof (verified=%v)", verified)
 	}
 }
+
+// A-110 review: a key stored before the packet allowlist with a marker or private packet between a user ID or
+// subkey and its signature parses, but its published form would not. Others see it as unreadable, never as a
+// verified key they could copy; saving it is refused.
+func TestStoredSplitKeyShownUnreadable(t *testing.T) {
+	e := newTestApp(t)
+	key, plain := testPGPKey(t, "split_key")
+	_, fp, _ := parsePublicKey(plain)
+	vendorID, vendor := e.user("split_vendor", "vendor")
+	buyerID, buyer := e.user("split_buyer", "buyer")
+	order := e.order(buyerID, e.product(vendorID, "physical"), "BTC", statePaid)
+	for variant, armored := range testSplitKeyVariants(t, key) {
+		b := html.UnescapeString(e.body("POST", "/account", vendor, url.Values{"pgp": {armored}, "password": {testPassword}}, 400))
+		mustContain(t, b, "PGP key rejected: it contains an OpenPGP packet type this market does not publish", "gpg --armor --export "+fp)
+		if _, err := e.DB.Exec("UPDATE users SET pgp=$1,pgp_fingerprint=$2,pgp_verified_at=now() WHERE id=$3", armored, fp, vendorID); err != nil {
+			t.Fatal(err)
+		}
+		for name, page := range map[string]string{
+			"vendor page": e.body("GET", "/vendor?id="+vendorID, "", nil, 200),
+			"messages":    e.body("GET", "/messages?to=split_vendor", buyer, nil, 200),
+			"order":       e.body("GET", "/order?id="+order, buyer, nil, 200),
+		} {
+			if keys := shownKeys(t, page); len(keys) != 0 {
+				t.Fatalf("%s, %s: a key that does not parse once published is shown", variant, name)
+			}
+			mustContain(t, page, "No usable key.", "saved PGP key can no longer be read")
+			mustNotContain(t, page, "Ownership verified", formatFingerprint(fp))
+		}
+		mustContain(t, e.body("GET", "/account", vendor, nil, 200), "Unreadable — paste your key again")
+		mustContain(t, e.body("GET", "/pgp", vendor, nil, 200), "The saved key cannot be used: the public key could not be parsed.")
+	}
+}
