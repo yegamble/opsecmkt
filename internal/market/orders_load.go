@@ -139,19 +139,28 @@ func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) 
 	default:
 		return sql.ErrNoRows
 	}
-	rows, err := a.db.QueryContext(ctx, `SELECT e.from_state,e.to_state,COALESCE(u.handle,''),e.actor_id IS NULL,COALESCE(e.actor_id,''),e.note,to_char(e.created,'YYYY-MM-DD HH24:MI "UTC"') FROM order_events e LEFT JOIN users u ON u.id=e.actor_id WHERE e.order_id=$1 ORDER BY e.id`, o.ID)
+	// A dispute decision carries the deciding staff member's avatar (A-189, owner decision 1(c)) when the desk
+	// route serves it to this viewer: its own predicate (imageDeskWhere, $2 viewer and $3 role) picks it, so the
+	// page never links an avatar that route would refuse. No other entry shows an avatar.
+	rows, err := a.db.QueryContext(ctx, `SELECT e.from_state,e.to_state,COALESCE(u.handle,''),e.actor_id IS NULL,COALESCE(e.actor_id,''),e.note,to_char(e.created,'YYYY-MM-DD HH24:MI "UTC"'),
+		CASE WHEN e.from_state='disputed' AND e.to_state='resolved' THEN COALESCE((SELECT i.id FROM images i JOIN users o ON o.id=i.owner_user_id
+			WHERE i.owner_user_id=e.actor_id AND i.kind='avatar' AND `+imageDeskWhere+`),'') ELSE '' END
+		FROM order_events e LEFT JOIN users u ON u.id=e.actor_id WHERE e.order_id=$1 ORDER BY e.id`, o.ID, u.ID, u.Role)
 	if err != nil {
 		return err
 	}
 	for rows.Next() {
 		var ev OrderEvent
-		var handle, actorID string
+		var handle, actorID, avatar string
 		var system bool
-		if err = rows.Scan(&ev.From, &ev.To, &handle, &system, &actorID, &ev.Note, &ev.Created); err != nil {
+		if err = rows.Scan(&ev.From, &ev.To, &handle, &system, &actorID, &ev.Note, &ev.Created, &avatar); err != nil {
 			rows.Close()
 			return err
 		}
 		ev.From, ev.To, ev.Actor = stateLabel(ev.From), stateLabel(ev.To), eventActor(handle, system, actorID, o)
+		if avatar != "" {
+			ev.Avatar = deskImageURL(avatar, false)
+		}
 		d.OrderEvents = append(d.OrderEvents, ev)
 	}
 	err = rows.Err()

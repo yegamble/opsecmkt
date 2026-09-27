@@ -37,6 +37,23 @@ test('canary page shows one verified, clearly labelled sample statement', async 
   await noScriptsNoOverflow(page);
 });
 
+// A-189, owner decision 1(a): the public staff list is off by default, so /canary lists no staff and shows no
+// avatar; the admin page offers the password-confirmed switch.
+test('canary shows no staff list by default; the admin switch is off', async ({ page }) => {
+  await page.goto('/canary');
+  await expect(page.locator('#staff')).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Market staff' })).toHaveCount(0);
+  await expect(page.locator('main img')).toHaveCount(0);
+  await page.goto('/admin');
+  const panel = page.locator('#staff-list');
+  await expect(panel).toContainText('Show a public staff list: Off');
+  const form = panel.locator('form[method="post"][action="/admin/staff-list"]');
+  await expect(form.locator('input[name="staff_list_public"]')).toHaveValue('true');
+  await expect(form.getByLabel('Current password')).toHaveAttribute('type', 'password');
+  await expect(form.getByRole('button', { name: 'Turn the public staff list on' })).toBeVisible();
+  await noScriptsNoOverflow(page);
+});
+
 test('admin transparency panels are server-rendered forms and export is visibly unavailable', async ({ page }) => {
   await page.goto('/admin');
   await expect(page.getByRole('heading', { name: 'Transparency', level: 2 })).toBeVisible();

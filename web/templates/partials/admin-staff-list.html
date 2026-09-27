@@ -1,0 +1,13 @@
+{{/* A-189, owner decision 1(a): the administrator setting "Show a public staff list" (image_pages.go), off by default */}}
+{{define "admin-staff-list"}}{{$on := eq (index .Settings "staff_list_public") "true"}}<section class="panel" id="staff-list" aria-labelledby="staff-list-heading">
+<h2 id="staff-list-heading">Public staff list</h2>
+<p>Show a public staff list: <strong>{{if $on}}On{{else}}Off{{end}}</strong></p>
+<p>While it is on, the <a class="text-link" href="/canary#staff">Transparency page</a> lists the handle, role and avatar of each moderator and administrator who has not hidden themselves, and anyone can view those avatars. Every staff account is hidden until its owner chooses to be listed on their account page, and a suspended account is never listed. While it is off, no staff list is shown and a staff avatar appears only beside that person’s dispute decisions, to the order’s buyer and vendor and to staff. A staff photo links the person to every decision they record.</p>
+<form class="stack" method="post" action="/admin/staff-list">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="staff_list_public" value="{{if $on}}false{{else}}true{{end}}">
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
+<span class="help">Confirm with your own password{{if and $.Security $.Security.TOTPEnabled}} and authenticator code{{end}}. The change is recorded in the audit trail.</span>
+<button type="submit">{{if $on}}Turn the public staff list off{{else}}Turn the public staff list on{{end}}</button>
+</form>
+</section>{{end}}

@@ -3,6 +3,7 @@ package market
 import (
 	"database/sql"
 	"errors"
+	"maps"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -94,6 +95,24 @@ func (p CatalogPaging) NextPage() int { return p.Page + 1 }
 // catalogPaging reads the requested page: anything but a positive decimal number is page 1, and a page past
 // the end (including one too large to parse) is the last page, so every link and typed URL lands somewhere.
 func catalogPaging(d *PageData, total int, raw string) CatalogPaging {
+	v := url.Values{}
+	for k, x := range map[string]string{"q": d.Query, "category": d.Category, "region": d.Region} {
+		if x != "" {
+			v.Set(k, x)
+		}
+	}
+	return listPaging("/", v, d.Currency, total, raw)
+}
+
+// vendorPaging is catalogPaging for a vendor page's listings (A-189): its links keep the vendor and the display
+// currency.
+func vendorPaging(d *PageData, vendorID string, total int, raw string) CatalogPaging {
+	return listPaging("/vendor", url.Values{"id": {vendorID}}, d.Currency, total, raw)
+}
+
+// listPaging pages total listings catalogPageSize at a time; its links lead to path with the query v, the
+// display currency and the page number.
+func listPaging(path string, v url.Values, currency string, total int, raw string) CatalogPaging {
 	p := CatalogPaging{Page: 1, Total: total, Pages: max(1, (total+catalogPageSize-1)/catalogPageSize)}
 	if n, err := strconv.Atoi(raw); err == nil && n > 1 {
 		p.Page = min(n, p.Pages)
@@ -104,22 +123,17 @@ func catalogPaging(d *PageData, total int, raw string) CatalogPaging {
 		p.First, p.Last = p.Offset()+1, min(p.Offset()+catalogPageSize, total)
 	}
 	link := func(page int) string {
-		v := url.Values{}
-		for k, x := range map[string]string{"q": d.Query, "category": d.Category, "region": d.Region} {
-			if x != "" {
-				v.Set(k, x)
-			}
-		}
-		if d.Currency == "XMR" {
+		v := maps.Clone(v)
+		if currency == "XMR" {
 			v.Set("currency", "XMR")
 		}
 		if page > 1 {
 			v.Set("page", strconv.Itoa(page))
 		}
 		if len(v) == 0 {
-			return "/"
+			return path
 		}
-		return "/?" + v.Encode()
+		return path + "?" + v.Encode()
 	}
 	if p.Page > 1 {
 		p.PrevURL = link(p.Page - 1)
@@ -181,8 +195,17 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			query += " AND p.id=$1"
 			args = append(args, r.URL.Query().Get("id"))
 		case "vendor":
+			// A-189: 25 listings a page, like the catalog, so a vendor page links at most 25 thumbnails.
+			vendorID := r.URL.Query().Get("id")
 			query += " AND p.vendor_id=$1"
-			args = append(args, r.URL.Query().Get("id"))
+			args = append(args, vendorID)
+			var total int
+			if err = a.db.QueryRowContext(ctx, `SELECT count(*) FROM products p WHERE p.vendor_id=$1 AND NOT p.archived`, vendorID).Scan(&total); err != nil {
+				return err
+			}
+			paging := vendorPaging(d, vendorID, total, r.URL.Query().Get("page"))
+			d.Paging = &paging
+			limit = " LIMIT " + strconv.Itoa(catalogPageSize) + " OFFSET " + strconv.Itoa(paging.Offset())
 		case "vendor-dashboard":
 			query += " AND p.vendor_id=$1"
 			args = append(args, d.User.ID)

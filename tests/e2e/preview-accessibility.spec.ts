@@ -16,7 +16,8 @@ async function fits(page: Page) {
 
 test('seeded categories expose one current link and matching listings after every navigation', async ({ page }) => {
   await page.goto('/');
-  for (const [category, count] of [['All listings', 6], ['Hardware', 2], ['Digital', 3], ['Services', 1], ['All listings', 6]] as const) {
+  // A-189: the encrypted drive and security research samples have preview photos; the other cards are illustrations.
+  for (const [category, count, photos] of [['All listings', 6, 2], ['Hardware', 2, 1], ['Digital', 3, 1], ['Services', 1, 0], ['All listings', 6, 2]] as const) {
     let panel = await filters(page);
     // Wait for the new document; otherwise filters() can inspect the page mid-navigation and pick the hidden panel.
     await Promise.all([page.waitForEvent('load'), panel.getByRole('link', { name: category, exact: true }).click()]);
@@ -27,12 +28,78 @@ test('seeded categories expose one current link and matching listings after ever
     await expect(current).toHaveClass('active');
     await expect(panel.locator('.category-links .active')).toHaveCount(1);
     await expect(page.locator('.listings-grid .product-card')).toHaveCount(count);
+    await expect(page.locator('.product-art.has-photo')).toHaveCount(photos);
     if (category !== 'All listings') {
-      await expect(page.locator('.product-art .art-label')).toHaveText(Array(count).fill(`${category} / ILLUSTRATION`));
+      await expect(page.locator('.product-art .art-label')).toHaveText(Array(count - photos).fill(`${category} / ILLUSTRATION`));
       await expect(panel.getByRole('combobox', { name: 'Category', exact: true })).toHaveValue(category);
     }
     await fits(page);
   }
+});
+
+// A-189: a photo card shows the listing's first photo as a decorative 320×240 thumbnail (the card link is named by
+// the title) with no illustration label or scanline over it, and its kind badge on a solid chip; cards without
+// photos keep the illustration. The product page shows photo 1 at full size, named, and links the others' full
+// size by number, type and size. The preview's sample photos are generated and served by the real image route.
+test('photo cards: decorative thumbnail, no overlaid label; product photo named', async ({ page, request }) => {
+  await page.goto('/');
+  const photoArt = page.locator('.product-art.has-photo');
+  await expect(photoArt).toHaveCount(2);
+  for (const art of await photoArt.all()) {
+    const img = art.locator('img');
+    await expect(img).toHaveCount(1);
+    await expect(img).toHaveAttribute('alt', '');
+    await expect(img).toHaveAttribute('src', /^\/img\/[0-9a-f]{32}-t$/);
+    await expect(img).toHaveAttribute('width', '320');
+    await expect(img).toHaveAttribute('height', '240');
+    expect(await img.evaluate(element => (element as HTMLImageElement).complete && (element as HTMLImageElement).naturalWidth)).toBe(320);
+    expect(await img.evaluate(element => getComputedStyle(element).objectFit)).toBe('contain');
+    await expect(art).toHaveAccessibleName(/^View [^/]+$/);
+    await expect(art.locator('.art-label')).toHaveCount(0);
+    await expect(art.locator('.device')).toHaveCount(0);
+    expect(await art.evaluate(element => getComputedStyle(element, '::after').content)).toBe('none');
+    const badge = art.locator('.art-badge');
+    await expect(badge).toBeVisible();
+    expect(await badge.evaluate(element => getComputedStyle(element).backgroundColor)).toBe('rgb(17, 17, 17)');
+    expect(await contrast(badge)).toBeGreaterThanOrEqual(4.5);
+  }
+  const illustrated = page.locator('.product-art:not(.has-photo)');
+  await expect(illustrated).toHaveCount(4);
+  await expect(illustrated.locator('img')).toHaveCount(0);
+  await expect(illustrated.locator('.art-label')).toHaveText(Array(4).fill(/ \/ ILLUSTRATION$/));
+  await expect(page.locator('img[src$="-f"]')).toHaveCount(0);
+  await fits(page);
+
+  await page.goto('/product?id=encrypted-drive');
+  const photo = page.locator('.product-photo img');
+  await expect(photo).toHaveAccessibleName('Photo 1 of 2: Encrypted USB Drive — 256GB');
+  await expect(photo).toHaveAttribute('src', /^\/img\/[0-9a-f]{32}-f$/);
+  expect(await photo.evaluate(element => getComputedStyle(element).objectFit)).toBe('contain');
+  expect(await photo.evaluate(element => (element as HTMLImageElement).complete && (element as HTMLImageElement).naturalWidth)).toBe(1000);
+  const more = page.getByRole('link', { name: /^Photo 2 of 2, full size \(JPEG, \d+ KB\)$/ });
+  await expect(more).toHaveAttribute('href', /^\/img\/[0-9a-f]{32}-f$/);
+  await expect(more.locator('img')).toHaveAttribute('alt', '');
+  expect((await more.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  await more.focus();
+  await expect(more).toBeFocused();
+  await expect(more).not.toHaveCSS('outline-style', 'none');
+  await expect(page.getByText('Photos are supplied by the vendor; the market does not verify them.')).toBeVisible();
+  await expect(page.locator('.art-label, .device')).toHaveCount(0);
+  await fits(page);
+  const full = await request.get((await more.getAttribute('href'))!);
+  expect(full.status()).toBe(200);
+  expect(full.headers()['content-type']).toBe('image/jpeg');
+  expect(full.headers()['cache-control']).toBe('private, max-age=86400, immutable');
+  expect(full.headers()['set-cookie']).toBeUndefined();
+
+  // A described photo is named by its description; a listing without photos keeps the illustration notice.
+  await page.goto('/product?id=security-research');
+  await expect(page.locator('.product-photo img')).toHaveAccessibleName(/^Preview sample picture: /);
+  await expect(page.locator('.photo-thumbs')).toHaveCount(0);
+  await page.goto('/product?id=faraday-bag');
+  await expect(page.locator('img')).toHaveCount(0);
+  await expect(page.locator('.detail-art .art-label')).toHaveText('Hardware / ILLUSTRATION');
+  await expect(page.getByText('Product illustrations are decorative.')).toBeVisible();
 });
 
 test('search has a readable keyboard focus indicator, usable controls and a decorative magnifier', async ({ page, browserName }) => {

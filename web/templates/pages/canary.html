@@ -40,7 +40,16 @@
 <p class="help">A valid signature proves an export was produced with this server's key. Anyone who controls the server also controls that key and can sign an altered history; the signature is not proof that past events were never changed.</p>{{else}}<p><span class="badge neutral">Signed exports unavailable</span></p>
 <p>{{.Error}}</p>{{end}}{{else}}<p><span class="badge neutral">Signed exports unavailable</span></p>{{end}}
 <p class="help">An export names every account and its activity, so it is private operator evidence: it is never published and visitors do not receive it.</p>
-</section>
+</section>{{if .StaffListPublic}}
+<section class="panel staff-list" id="staff" aria-labelledby="staff-title">{{/* A-189, owner decision 1: only while an administrator shows it; hidden staff are not listed */}}
+<h2 id="staff-title">Market staff</h2>
+<p>Moderators decide disputes; administrators run the market. Only staff who chose to be listed appear here.</p>
+{{if .StaffList}}<ul class="staff-members">{{range .StaffList}}
+<li>{{if .Avatar}}<img src="{{.Avatar}}" alt="" width="64" height="64">{{else}}<span class="staff-glyph" aria-hidden="true">◇</span>{{end}}
+<span><strong>{{.Handle}}</strong> <span class="muted">{{if eq .Role "admin"}}Administrator{{else}}Moderator{{end}}</span></span>
+</li>{{end}}
+</ul>{{else}}<p class="help">No moderator or administrator has chosen to be listed.</p>{{end}}
+</section>{{end}}
 <section class="panel">
 <h2>What this application currently does</h2>
 <ul>

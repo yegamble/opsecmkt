@@ -299,7 +299,7 @@ func TestStaffAvatarVisibleToOrderPartiesOnOrderPage(t *testing.T) {
 		if before, _, _ := strings.Cut(after, "</li>"); !strings.Contains(before, "decision_moderator (moderator)") {
 			t.Fatalf("%s: the avatar is not beside the decision:\n%s", name, body)
 		}
-		if strings.Contains(body, vendorAvatar.id) || strings.Contains(body, "/img/"+avatar.id) {
+		if strings.Contains(body, vendorAvatar.id) || strings.Contains(body, `"/img/`+avatar.id) {
 			t.Fatalf("%s: the order page shows a party's avatar or a public avatar URL:\n%s", name, body)
 		}
 		// The link works for this viewer.
