@@ -30,11 +30,22 @@ import (
 // responses hold from their query until written, reserved from market's imageBytes (64 MiB, /img) and
 // deskImageBytes (32 MiB, /desk/img) budgets or refused with 503 (TestImageSlowReadersBoundedByByteBudget). About
 // 320 MiB in all, plus the database driver's buffers for rows being read, inside the 400 MiB GOMEMLIMIT.
-const maxConns = 2048
+const maxConns = market.MaxConns
 
 // newServer is the HTTP server with its read and write bounds.
 func newServer(addr string, h http.Handler) *http.Server {
 	return &http.Server{Addr: addr, Handler: h, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 20 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16384}
+}
+
+// listen opens srv's address with at most maxConns open connections (A-178); later clients wait in the kernel's
+// accept backlog. While every slot is taken, keep-alive is off: idle connections are closed and each response
+// ends its own.
+func listen(srv *http.Server) (net.Listener, error) {
+	ln, err := net.Listen("tcp", srv.Addr)
+	if err != nil {
+		return nil, err
+	}
+	return market.LimitListener(ln, maxConns, func(full bool) { srv.SetKeepAlivesEnabled(!full) }), nil
 }
 
 func main() {
@@ -99,14 +110,11 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	app.Start(ctx)
-	ln, err := net.Listen("tcp", addr)
+	ln, err := listen(srv)
 	if err != nil {
 		app.Close()
 		log.Fatal(err)
 	}
-	// At most maxConns open connections (A-178); later clients wait in the kernel's accept backlog. While
-	// every slot is taken, keep-alive is off: idle connections are closed and each response ends its own.
-	ln = market.LimitListener(ln, maxConns, func(full bool) { srv.SetKeepAlivesEnabled(!full) })
 	log.Printf("OPSMKT listening on %s (preview=%v)", addr, *preview)
 	err = serve(ctx, srv, func() error { return srv.Serve(ln) }, 10*time.Second)
 	// Only after in-flight requests have finished: stop the payment watcher (Close waits for an in-flight

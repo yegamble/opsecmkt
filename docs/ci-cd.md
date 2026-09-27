@@ -15,6 +15,12 @@ The suite covers:
 
 The browser job also runs `npm run test:e2e:wallet` against a separate fresh database and loopback JSON-RPC simulators, exercising the production Bitcoin/Monero adapters through partial deposits, top-ups, intake controls, fulfillment and single payouts. This is application integration evidence, not a live-chain test.
 
+The A-178 overload load check, `TestLoadSearchFloodKeepsHealthz` (`internal/market/admission_load_test.go`), is manual-only evidence and never runs in CI: it skips unless `LOAD_TEST=1`, and its latency bound (500 concurrent searches while `/healthz` p99 stays under 1 s) is not reliable on shared runners. CI runs the deterministic `TestHealthzAndRetryAfterUnderLoad` and the `TestAdmission*` and `TestLimitListener*` tests instead. Run it on Linux against a dedicated test database, without `-race`, and record the logged summary line:
+
+```sh
+LOAD_TEST=1 LOAD_SECONDS=30 TEST_DATABASE_URL=<dedicated-test-db> go test -count=1 -run TestLoadSearchFloodKeepsHealthz -v ./internal/market
+```
+
 GitHub retains coverage and browser reports/traces for 14 days. Inspect failed Actions jobs and the `playwright-results` artifact before updating a regression expectation. Runtime smoke tests isolate containers, volumes and networks with a unique project name and ignore local `.env` files.
 
 ## Release a tested version

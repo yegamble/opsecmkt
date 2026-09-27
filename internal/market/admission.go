@@ -13,7 +13,7 @@ import (
 // Admission control (A-178). Overload is refused at once with 503 and Retry-After instead of queueing until
 // the 12 s request context expires:
 //
-//   - LimitListener caps open connections (2048 in cmd/server); further clients wait in the kernel backlog.
+//   - LimitListener caps open connections (MaxConns in cmd/server); further clients wait in the kernel backlog.
 //   - pageWork admits 64 concurrent GET/HEAD requests. /healthz and /static/ take no slot, so a flood of pages
 //     cannot starve the health probe.
 //   - A form post takes a slot only once its body has been read (at most 64 KiB) and its Origin,
@@ -42,6 +42,10 @@ var (
 	// sessionLookupWork admits 16 concurrent session lookups of form posts (ServeHTTP); see takeLookupSlot.
 	sessionLookupWork = make(chan struct{}, 16)
 )
+
+// MaxConns is the connection cap cmd/server gives LimitListener, and the one the A-178 load check uses; its
+// memory budget is set out beside maxConns in cmd/server.
+const MaxConns = 2048
 
 // postLookupWait is how long a post's session lookup waits for a sessionLookupWork slot before it is refused
 // as busy (tests shorten it).

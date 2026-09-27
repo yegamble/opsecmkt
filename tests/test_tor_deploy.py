@@ -117,6 +117,25 @@ class DockerfileTests(unittest.TestCase):
         self.assertIn('tor="${candidate}"', self.text)
         self.assertIn('no longer published and the repository offers no newer build', self.text)
 
+    def test_only_the_tor_project_build_is_installed(self):
+        # SRE-179-2: Debian's archive also publishes tor (an older build). An apt preference keeps tor's candidate, and
+        # so the withdrawn-pin fallback, on deb.torproject.org (the first matching stanza wins). apt installs an
+        # explicitly requested version whatever its priority, so the build also refuses an installed tor that
+        # deb.torproject.org does not publish, e.g. TOR_VERSION=0.4.9.11-0+deb12u1 from the Debian archive.
+        preference = ("printf '%s\\n' 'Package: tor tor-geoipdb' 'Pin: origin deb.torproject.org' 'Pin-Priority: 500' '' \\\n"
+                      "      'Package: tor tor-geoipdb' 'Pin: version *' 'Pin-Priority: -1' > /etc/apt/preferences.d/tor;")
+        self.assertIn(preference, self.text)
+        self.assertLess(self.text.index(preference), self.text.index('tor="${TOR_VERSION}"'))
+        check = ("apt-cache madison tor | awk -F '|' -v version=\"$installed\" \\\n"
+                 "      '{ gsub(/ /, \"\", $2) } $2 == version && $3 ~ /^ https:\\/\\/deb\\.torproject\\.org\\/torproject\\.org /"
+                 " { found = 1 } END { exit !found }' \\\n"
+                 "      || { echo \"tor ${installed} is not a build deb.torproject.org publishes")
+        self.assertIn("installed=$(dpkg-query --show --showformat '${Version}' tor);", self.text)
+        self.assertIn(check, self.text)
+        # After either install path, and before the package lists it reads are deleted.
+        self.assertGreater(self.text.index(check), self.text.index('tor="${candidate}"'))
+        self.assertLess(self.text.index(check), self.text.index('rm -rf /var/lib/apt/lists/*'))
+
     def test_build_fails_without_the_pow_module(self):
         self.assertRegex(self.text, r"tor --list-modules \| grep -qx 'pow: yes'")
 

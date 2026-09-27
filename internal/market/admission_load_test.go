@@ -16,7 +16,7 @@ import (
 )
 
 // TestLoadSearchFloodKeepsHealthz is the A-178 load check: one client runs 500 concurrent catalog searches
-// (keep-alive, as many connections as it likes) against the real listener stack (256-connection cap, the
+// (keep-alive, as many connections as it likes) against the real listener stack (the MaxConns cap and the
 // server timeouts of cmd/server) while a second client probes /healthz on a fresh connection every 20 ms,
 // as the Compose healthcheck does. The probe's p99 must stay under 1 s, and every refusal must carry
 // Retry-After. It needs TEST_DATABASE_URL and LOAD_TEST=1 (it runs for LOAD_SECONDS, default 10); run it
@@ -41,7 +41,7 @@ func TestLoadSearchFloodKeepsHealthz(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv := &http.Server{Handler: e.A, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 20 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16384}
-	go srv.Serve(LimitListener(ln, 256, func(full bool) { srv.SetKeepAlivesEnabled(!full) })) // as cmd/server
+	go srv.Serve(LimitListener(ln, MaxConns, func(full bool) { srv.SetKeepAlivesEnabled(!full) })) // as cmd/server
 	defer srv.Close()
 	base := "http://" + ln.Addr().String()
 

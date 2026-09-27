@@ -3,6 +3,7 @@ package market
 import (
 	"image/png"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"regexp"
 	"strings"
@@ -244,6 +245,18 @@ func (e *testEnv) captcha(page, session string) string {
 	return m[1]
 }
 
+// wrongCaptchaRetry checks the page a wrong CAPTCHA answer to form gets: the error, a link to form, and a new
+// challenge other than spent. It returns the new challenge id; following the link issues another.
+func wrongCaptchaRetry(e *testEnv, w *httptest.ResponseRecorder, form, spent string) string {
+	e.t.Helper()
+	b := w.Body.String()
+	m := captchaField.FindStringSubmatch(b)
+	if !strings.Contains(b, "CAPTCHA answer incorrect") || !strings.Contains(b, `href="`+form+`"`) || !strings.Contains(b, `action="`+form+`"`) || m == nil || m[1] == spent {
+		e.t.Fatalf("wrong CAPTCHA answer to %s: %s", form, b)
+	}
+	return m[1]
+}
+
 func TestCaptchaOnRegisterAndLogin(t *testing.T) {
 	e := newTestApp(t)
 	adminID, admin := e.user("cap_admin", "admin")
@@ -272,13 +285,18 @@ func TestCaptchaOnRegisterAndLogin(t *testing.T) {
 		return url.Values{"handle": {handle}, "password": {"a-long-buyer-password"}, "captcha_id": {id}, "captcha": {answer}}
 	}
 	e.check(e.do("POST", "/register", anon, url.Values{"handle": {"cap_new"}, "password": {"a-long-buyer-password"}}), 400)
-	e.check(e.do("POST", "/register", anon, reg("cap_new", id, "WRONG1")), 400)
+	// QA-3: a wrong answer shows the form again with the error and a fresh challenge, so a browser without
+	// JavaScript needs no reload; the page also links to the form.
+	w = e.do("POST", "/register", anon, reg("cap_new", id, "WRONG1"))
+	e.check(w, 400)
+	retry := wrongCaptchaRetry(e, w, "/register", id)
 	e.check(e.do("POST", "/register", anon, reg("cap_new", id, e.A.captchaAnswer(id))), 400) // consumed by the wrong attempt
 	// A-176: the image endpoint reads no database, so a used id still shows its same image; only POST refuses it.
 	e.check(e.do("GET", "/captcha?id="+id, anon, nil), 200)
 	id = e.captcha("/register", anon)
 	e.check(e.do("POST", "/register", randomToken(), reg("cap_new", id, e.A.captchaAnswer(id))), 400) // other session
-	id = e.captcha("/register", anon)
+	// The challenge the wrong-answer page issued.
+	id = retry
 	w = e.do("POST", "/register", anon, reg("cap_new", id, strings.ToLower(e.A.captchaAnswer(id))))
 	e.check(w, 303)
 	e.session(w)
@@ -288,8 +306,10 @@ func TestCaptchaOnRegisterAndLogin(t *testing.T) {
 	}
 	anon = randomToken()
 	id = e.captcha("/login", anon)
-	if c := login(anon, id, "WRONG1"); c != 400 {
-		t.Fatalf("wrong captcha on login: %d", c)
+	w = e.do("POST", "/login", anon, url.Values{"handle": {"cap_login"}, "password": {testPassword}, "captcha_id": {id}, "captcha": {"WRONG1"}})
+	e.check(w, 400)
+	if retry = wrongCaptchaRetry(e, w, "/login", id); login(anon, retry, e.A.captchaAnswer(retry)) != 303 {
+		t.Fatal("the challenge on the wrong-answer page does not sign in")
 	}
 	id = e.A.newCaptchaID(digest(anon), time.Now().Add(-time.Second)) // A-176: the expiry is inside the id
 	e.check(e.do("GET", "/captcha?id="+id, anon, nil), 404)
