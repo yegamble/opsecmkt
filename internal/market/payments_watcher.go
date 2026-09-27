@@ -24,9 +24,14 @@ const paymentWatcherLock = 782494
 // payoutRecordTimeout bounds recording its outcome. Both are detached from shutdown, so keep the container
 // stop grace period (compose.yaml stop_grace_period, 60 s) above their sum plus the HTTP shutdown time (10 s).
 // Variables only so tests can shorten them.
+//
+// watcherPassTimeout bounds one watcher pass (A-177): its queries, including the wait for a pool connection,
+// and its wallet reads. A normal pass takes seconds; a pass cut short leaves its remaining orders and pending
+// payouts for the next one. A payout send already under way is detached from it and keeps its own bound.
 var (
 	payoutSendTimeout   = 30 * time.Second
 	payoutRecordTimeout = 10 * time.Second
+	watcherPassTimeout  = 5 * time.Minute
 )
 
 func init() { registerBackground(paymentWatcher) }
@@ -47,7 +52,10 @@ func paymentWatcher(ctx context.Context, a *App) {
 			return
 		case <-t.C:
 		}
-		if err := a.pollOnce(ctx); err != nil && ctx.Err() == nil {
+		pass, cancel := context.WithTimeout(ctx, watcherPassTimeout)
+		err := a.pollOnce(pass)
+		cancel()
+		if err != nil && ctx.Err() == nil {
 			log.Printf("payment watcher: %s", watcherCause(err))
 		}
 		t.Reset(interval)
@@ -730,6 +738,11 @@ func (a *App) recordPayout(ctx context.Context, id int64, orderID, recipient, st
 		return err
 	}
 	defer tx.Rollback()
+	// A send whose outcome is not recorded leaves its txid only in the log, so recording waits for row locks
+	// as long as its own bound (payoutRecordTimeout) allows, not the application pool's 3 s/8 s (A-177).
+	if _, err = tx.ExecContext(ctx, "SELECT set_config('lock_timeout','0',true), set_config('statement_timeout','0',true)"); err != nil {
+		return err
+	}
 	var orderState string
 	if err = tx.QueryRowContext(ctx, "UPDATE payouts p SET state=$2,txid=$3,error=$4,send_ambiguous=$5,updated=now() FROM orders o WHERE p.id=$1 AND p.state='sending' AND o.id=p.order_id RETURNING o.state", id, state, txid, msg, ambiguous).Scan(&orderState); err != nil {
 		return err

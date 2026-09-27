@@ -35,11 +35,13 @@ type bucket struct {
 }
 type App struct {
 	db               *sql.DB
+	health           *sql.DB // one connection for /healthz, apart from the application pool (A-178)
 	templates        *template.Template
 	preview, secure  bool
 	mode, setupToken string // setupToken authorizes /setup only, and only until installed
 	keyRoot          string // APP_SECRET_KEY, or SETUP_TOKEN (legacy): the root of key and the sealing keys
 	key              []byte // CSRF/CAPTCHA HMAC key, sha256("csrf:"+keyRoot)
+	captchaIDKey     []byte // CAPTCHA challenge-id MAC key, sha256("captcha-id:"+keyRoot); empty = no challenges
 	mu               sync.Mutex
 	limits           map[string]bucket
 	signInLogAt      time.Time                       // last "sign-in limiter refusing" log line (guarded by mu)
@@ -95,7 +97,20 @@ func New(ctx context.Context, preview bool) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	db, err := OpenDB(dsn)
+	// Migrations run on their own connection without the application pool's session timeouts (A-177): a
+	// large migration, or the wait for another instance's migration lock, is bounded by MIGRATION_TIMEOUT
+	// and MIGRATION_LOCK_TIMEOUT instead.
+	mdb, err := OpenDB(dsn)
+	if err != nil {
+		return nil, err
+	}
+	mdb.SetMaxOpenConns(2) // the migration transaction, plus pg_terminate_backend when a phase times out
+	err = prepareDatabase(ctx, mdb, timeouts)
+	mdb.Close()
+	if err != nil {
+		return nil, err
+	}
+	db, err := OpenDB(dsn, WithAppTimeouts())
 	if err != nil {
 		return nil, err
 	}
@@ -103,18 +118,22 @@ func New(ctx context.Context, preview bool) (*App, error) {
 	db.SetMaxOpenConns(12)
 	db.SetMaxIdleConns(4)
 	db.SetConnMaxLifetime(30 * time.Minute)
-	if err = prepareDatabase(ctx, db, timeouts); err != nil {
+	// /healthz pings on its own connection, so a saturated application pool does not make the probe wait.
+	if a.health, err = OpenDB(dsn, WithAppTimeouts()); err != nil {
 		db.Close()
 		return nil, err
 	}
+	a.health.SetMaxOpenConns(1)
+	a.health.SetMaxIdleConns(1)
+	a.health.SetConnMaxLifetime(30 * time.Minute)
 	if err = a.checkInstallState(ctx, legacy); err != nil {
-		db.Close()
+		a.closeDB()
 		return nil, err
 	}
 	payCtx, cancel := context.WithTimeout(ctx, paymentStartupTimeout)
 	defer cancel()
 	if err = a.initPayments(payCtx); err != nil {
-		db.Close()
+		a.closeDB()
 		if timedOut(ctx, payCtx) {
 			return nil, fmt.Errorf("payment provider startup timed out after %s; check the wallet and node RPC services: %w", paymentStartupTimeout, err)
 		}
@@ -123,22 +142,62 @@ func New(ctx context.Context, preview bool) (*App, error) {
 	return a, nil
 }
 
+// DBOption adjusts the connection settings OpenDB uses.
+type DBOption func(runtimeParams map[string]string)
+
+// appSessionTimeouts are the per-connection limits of the application pool (A-177): no statement runs longer
+// than 8 s, no lock is waited for longer than 3 s and no transaction sits idle longer than 15 s. A longer
+// operation on that pool needs a scoped SET LOCAL. Migrations and the host commands never get them.
+var appSessionTimeouts = map[string]string{
+	"statement_timeout":                   "8s",
+	"lock_timeout":                        "3s",
+	"idle_in_transaction_session_timeout": "15s",
+}
+
+// WithAppTimeouts sets appSessionTimeouts on every connection (startup parameters, beside timezone). Only the
+// server's application pool and its health probe connection use it.
+func WithAppTimeouts() DBOption {
+	return func(p map[string]string) {
+		for k, v := range appSessionTimeouts {
+			setRuntimeParam(p, k, v)
+		}
+	}
+}
+
+// setRuntimeParam sets k, replacing any spelling of it that dsn carried (setting names are case-insensitive).
+func setRuntimeParam(p map[string]string, k, v string) {
+	for existing := range p {
+		if strings.EqualFold(existing, k) {
+			delete(p, existing)
+		}
+	}
+	p[k] = v
+}
+
 // OpenDB opens the database in dsn with TimeZone pinned to UTC on every connection (a startup parameter, which
 // outranks database and role defaults), so displayed times never follow or reveal the server's zone. The
-// application pool, its migrations and the -bootstrap-admin and -reset-admin-password commands all open the
-// database here.
-func OpenDB(dsn string) (*sql.DB, error) {
+// application pool, its migrations and the -bootstrap-admin, -reset-admin-password and -status commands all
+// open the database here; only the application pool passes WithAppTimeouts.
+func OpenDB(dsn string, opts ...DBOption) (*sql.DB, error) {
 	cfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
 		return nil, errors.New("database configuration invalid")
 	}
-	for k := range cfg.RuntimeParams {
-		if strings.EqualFold(k, "timezone") {
-			delete(cfg.RuntimeParams, k)
-		}
+	setRuntimeParam(cfg.RuntimeParams, "timezone", "UTC")
+	for _, o := range opts {
+		o(cfg.RuntimeParams)
 	}
-	cfg.RuntimeParams["timezone"] = "UTC"
 	return stdlib.OpenDB(*cfg), nil
+}
+
+// closeDB closes the application pool and the health probe connection.
+func (a *App) closeDB() {
+	if a.health != nil {
+		a.health.Close()
+	}
+	if a.db != nil {
+		a.db.Close()
+	}
 }
 func randomToken() string {
 	b := make([]byte, 32)
@@ -251,12 +310,23 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", 405)
 		return
 	}
+	// Admission control (admission.go): a full class is refused here with 503, before any database work.
+	aw, release, ok := admit(w, r)
+	if !ok {
+		return
+	}
+	defer release()
+	w = aw
 	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 	defer cancel()
 	r = r.WithContext(ctx)
 	if r.URL.Path == "/healthz" {
-		if a.db != nil {
-			if err := a.db.PingContext(ctx); err != nil {
+		probe := a.health
+		if probe == nil {
+			probe = a.db // an App built without New (tests)
+		}
+		if probe != nil {
+			if err := probe.PingContext(ctx); err != nil {
 				serverError(w, r, 503, "unavailable", errorCause(err))
 				return
 			}
@@ -433,6 +503,8 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case err == sql.ErrNoRows:
 			http.NotFound(w, r)
+		case dbBusy(err):
+			serverError(w, r, 503, errBusyMsg, errorCause(err))
 		case !errors.As(err, &he):
 			serverError(w, r, 500, "Unable to load this page", errorCause(err))
 		case he.Code >= 500:

@@ -498,7 +498,9 @@ func TestJunkCaptchaFloodLeavesSignInAndConfirmWorking(t *testing.T) {
 	}
 	_, admin := e.user("flood_admin", "admin")
 	e.user("bad_vendor", "vendor")
-	stop := agJunkCaptchaFlood(e, 32)
+	// One POST admission slot (A-178) is left for the real requests, so none of them is refused as busy; the
+	// flood still outnumbers the four password-check slots almost fourfold.
+	stop := agJunkCaptchaFlood(e, cap(writeWork)-1)
 	defer stop()
 	for i := range signIns {
 		anon := randomToken()
@@ -1115,7 +1117,9 @@ func TestChallengeBurstDoesNotExhaustPool(t *testing.T) {
 	_, bystander := e.user("burst_bystander", "buyer")
 	pc := agPending(e, id)
 	anon, wrong := randomToken(), e.wrongTOTP(id)
-	const n = 20
+	// As many as the POST admission class admits at once (A-178), so none is refused before the pool is
+	// reached; still more than the pool's 12 connections.
+	n := cap(writeWork)
 	start := make(chan struct{})
 	codes := make(chan int, n)
 	var wg sync.WaitGroup

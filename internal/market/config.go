@@ -28,12 +28,14 @@ func (c startupConfig) keyRoot() (root string, legacy bool) {
 	return c.setupToken, true
 }
 
-// useKeyRoot derives the CSRF/CAPTCHA HMAC key from root and keeps root for sealing (crypto.go). The
-// derivation strings are those used before APP_SECRET_KEY existed.
+// useKeyRoot derives the CSRF/CAPTCHA HMAC key and the CAPTCHA challenge-id key from root and keeps root for
+// sealing (crypto.go). The "csrf:" derivation string is the one used before APP_SECRET_KEY existed.
 func (a *App) useKeyRoot(root string) {
 	a.keyRoot = root
 	sum := sha256.Sum256([]byte("csrf:" + root))
 	a.key = sum[:]
+	id := sha256.Sum256([]byte("captcha-id:" + root))
+	a.captchaIDKey = id[:]
 }
 
 // dbPlaceholderMarkers are the example-value words refused in DATABASE_URL (compared case-insensitively;

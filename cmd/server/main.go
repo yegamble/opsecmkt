@@ -15,6 +15,9 @@ import (
 	"time"
 )
 
+// maxConns caps the server's simultaneous connections (A-178).
+const maxConns = 256
+
 func main() {
 	healthcheckFlag := flag.Bool("healthcheck", false, "probe the local server's /healthz (ADDR's port, default 8080) and exit 0 only when it answers ok; prints nothing on success (the Compose healthcheck)")
 	statusFlag := flag.Bool("status", false, "print installed=true|false schema=NNN for DATABASE_URL and exit (read-only; starts no server)")
@@ -77,8 +80,16 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	app.Start(ctx)
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		app.Close()
+		log.Fatal(err)
+	}
+	// At most maxConns open connections (A-178); later clients wait in the kernel's accept backlog. While
+	// every slot is taken, keep-alive is off: idle connections are closed and each response ends its own.
+	ln = market.LimitListener(ln, maxConns, func(full bool) { srv.SetKeepAlivesEnabled(!full) })
 	log.Printf("OPSMKT listening on %s (preview=%v)", addr, *preview)
-	err = serve(ctx, srv, srv.ListenAndServe, 10*time.Second)
+	err = serve(ctx, srv, func() error { return srv.Serve(ln) }, 10*time.Second)
 	// Only after in-flight requests have finished: stop the payment watcher (Close waits for an in-flight
 	// payout, which runs on its own bounded context) and close the database.
 	app.Close()

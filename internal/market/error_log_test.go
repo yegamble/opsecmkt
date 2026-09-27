@@ -62,6 +62,7 @@ func captureLog(t *testing.T) *lockedBuffer {
 	w, flags := log.Writer(), log.Flags()
 	log.SetOutput(buf)
 	log.SetFlags(0)
+	http5xxLog.reset() // a previous test's burst of 5xx lines must not suppress this test's
 	t.Cleanup(func() { log.SetOutput(w); log.SetFlags(flags) })
 	return buf
 }
