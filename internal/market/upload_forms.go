@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"slices"
 	"strconv"
+	"strings"
 )
 
 // A-188 (war room 2026-09-27; owner decision 1): the forms around the upload routes (uploads.go). The listing-edit
@@ -133,6 +134,7 @@ func loadAvatarPanel(ctx context.Context, a *App, r *http.Request, d *PageData) 
 	role := d.User.Role
 	v := &UploadsView{AvatarForm: slices.Contains(uploadRoutes["/account/avatar"].roles, role), Staff: role == "admin" || role == "moderator"}
 	uploadState(v, a.scanner.State())
+	v.Notice = strings.TrimSuffix(v.Notice, " Listing details can still be saved.") // the listing panel's copy
 	var id sql.NullString
 	var w, h, size sql.NullInt64
 	err := a.db.QueryRowContext(ctx, `SELECT i.id,i.width,i.height,octet_length(i."full"),u.staff_hidden FROM users u LEFT JOIN images i ON i.owner_user_id=u.id AND i.kind='avatar' WHERE u.id=$1`, d.User.ID).Scan(&id, &w, &h, &size, &v.StaffHidden)

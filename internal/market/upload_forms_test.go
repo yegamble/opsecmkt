@@ -93,7 +93,14 @@ func TestUploadScannerDownFailsClosedWithPage(t *testing.T) {
 		state.setup()
 		for _, page := range []struct{ path, id string }{{edit, "photos"}, {"/account", "avatar"}} {
 			s := sectionOf(t, get(page.path), page.id)
-			if !strings.Contains(s, state.notice) || !strings.Contains(s, "<fieldset disabled") || !strings.Contains(s, `type="file"`) {
+			want := state.notice
+			if page.id == "avatar" { // the account page has no listing details to save
+				want = strings.TrimSuffix(want, " Listing details can still be saved.")
+				if strings.Contains(s, "Listing details") {
+					t.Fatalf("%s: the avatar panel mentions listing details:\n%s", state.name, s)
+				}
+			}
+			if !strings.Contains(s, want) || !strings.Contains(s, "<fieldset disabled") || !strings.Contains(s, `type="file"`) {
 				t.Fatalf("%s %s: want the paused copy and a disabled fieldset:\n%s", state.name, page.path, s)
 			}
 			if strings.Index(s, "<fieldset disabled") > strings.Index(s, `type="file"`) {
@@ -409,6 +416,34 @@ func TestStaffHideChoiceAudited(t *testing.T) {
 		e.check(e.do("POST", "/account/staff-list", s, nil), 403)
 		if !hidden(id) || len(audits(id)) != 0 {
 			t.Fatalf("%s changed the flag or was audited", role)
+		}
+	}
+}
+
+// A listing that cannot take another photo says why instead of showing the form (the post would be refused
+// with 409), and still lists its photos with their remove forms.
+func TestPhotoFormBlockedStates(t *testing.T) {
+	e, _ := uploadEnv(t)
+	vendorID, vendor := e.user("blocked_photos_vendor", "vendor")
+	listing := e.product(vendorID, "physical")
+	for range photosPerListing {
+		if _, err := e.DB.Exec(`INSERT INTO images(id,owner_user_id,product_id,kind,"full",thumb,width,height) VALUES($1,$2,$3,'photo','\x00','\x00',1,1)`, randomToken()[:32], vendorID, listing); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, c := range []struct{ setup, want string }{
+		{"", "This listing has 4 photos, the most allowed. Remove one to add another."},
+		{"UPDATE products SET archived=true,archived_at=now() WHERE id=$1", "This listing is archived. Restore it before adding photos."},
+		{"UPDATE products SET admin_archive_reason='Taken down for the test' WHERE id=$1", "An administrator took this listing down, so photos cannot be added to it."},
+	} {
+		if c.setup != "" {
+			if _, err := e.DB.Exec(c.setup, listing); err != nil {
+				t.Fatal(err)
+			}
+		}
+		s := sectionOf(t, e.do("GET", "/listing-edit?id="+listing, vendor, nil).Body.String(), "photos")
+		if !strings.Contains(s, c.want) || strings.Contains(s, `type="file"`) || strings.Count(s, `action="/listings/photo/remove"`) != photosPerListing || !strings.Contains(s, "4 of 4 photos") {
+			t.Fatalf("want %q, no file input and 4 remove forms:\n%s", c.want, s)
 		}
 	}
 }
