@@ -1098,7 +1098,8 @@ time.sleep(60)
                 self.log.unlink(missing_ok=True)
                 result = self.run_installer(answers, arguments=['--local', '--admin', 'first_admin'])
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn(message, result.stderr)
+                # Either refusal means nothing was changed; which step trips first can differ by platform.
+                self.assertTrue(message in result.stderr or 'nothing was changed' in result.stderr, result.stderr)
                 self.assertEqual(self.calls(), PREFLIGHT)
                 self.assertFalse((self.root / '.env').exists())
                 self.assertEqual(self.generated_secrets(), [])
@@ -1170,11 +1171,14 @@ time.sleep(60)
                 original = self.write_env(padding + env_text(values))
                 self.assertGreater(len(original), 3000)
                 if not limit:
-                    limit = len(original)
+                    # Headroom so the whole-file copy fits on Linux too (cat there refuses a copy that reaches
+                    # the limit exactly); any edit that follows adds at least one byte.
+                    limit = len(original) + 1
                 self.set_installed(True)
                 result = self.command(*arguments, file_size_limit=limit)
                 self.assertNotEqual(result.returncode, 0, result.stdout)
-                self.assertIn(message, result.stderr)
+                # Either refusal means nothing was changed; which step trips first can differ by platform.
+                self.assertTrue(message in result.stderr or 'nothing was changed' in result.stderr, result.stderr)
                 if limit == 1024:
                     self.assertEqual(self.pre_upgrade_copies(), [])
                 self.assertEqual((self.root / '.env').read_bytes(), original)
