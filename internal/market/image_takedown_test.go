@@ -400,9 +400,10 @@ func TestStaffImageChangeNotifiesOwner(t *testing.T) {
 	}
 }
 
-// The takedown takes the users rows of the actor and the owner before it deletes the image and writes its audit
-// and notification rows (lockListing's order), so beside an administrator's role change of the owner it waits and
-// then finishes instead of deadlocking (R24-1).
+// Beside an administrator's role change of the owner (which holds the owner's users row and archives their
+// listings) the takedown still finishes. It never locks a listing, so this is a regression check of the lock order
+// (users rows first, as lockListing), not a deadlock reproduction: what the actor's lock is for is proven by
+// TestImageTakedownRefusedWhenActorDemotedMidRequest.
 func TestImageTakedownDoesNotDeadlockWithRoleChange(t *testing.T) {
 	for _, kind := range []string{"photo", "avatar"} {
 		t.Run(kind, func(t *testing.T) {
@@ -513,7 +514,95 @@ func TestRecentPhotosAndStaffForms(t *testing.T) {
 	if strings.Contains(e.body("GET", "/product?id="+ownListing, admin, nil, 200), "/images/remove") {
 		t.Fatal("an administrator is offered the staff form for their own photo")
 	}
-	if !strings.Contains(e.body("GET", "/product?id="+ownListing, moderator, nil, 200), "/images/remove") {
-		t.Fatal("a moderator is not offered the staff form for an administrator's photo")
+	// Owner decision 1: moderators take down vendors' images only, so they get no form for an administrator's.
+	if strings.Contains(e.body("GET", "/product?id="+ownListing, moderator, nil, 200), "/images/remove") {
+		t.Fatal("a moderator is offered the staff form for an administrator's photo")
+	}
+}
+
+// PR #27 SHOULD-1: the takedown locks the actor's users row before it re-reads the actor's role, so a takedown
+// racing an administrator's demotion of the actor waits for it and is then refused (403), deleting nothing.
+// Without the lock the re-read sees the old role; without the re-read nothing checks it.
+func TestImageTakedownRefusedWhenActorDemotedMidRequest(t *testing.T) {
+	e := newTestApp(t)
+	vendorID, _ := e.user("td_demoted_vendor", "vendor")
+	moderatorID, moderator := e.user("td_demoted_moderator", "moderator")
+	photo := e.image(vendorID, e.product(vendorID, "physical"), "photo")
+	w := besideRoleChange(t, e, moderatorID, func() *httptest.ResponseRecorder {
+		return e.takeDown(moderator, photo.id, imageTakedownReason)
+	})
+	if w.Code != 403 || e.imageRows(photo.id) != 1 {
+		t.Fatalf("takedown by a moderator demoted meanwhile: %d %s, %d rows", w.Code, w.Body.String(), e.imageRows(photo.id))
+	}
+	if len(e.audits(moderatorID)) != 0 || len(e.audits(vendorID)) != 0 || len(e.notes(vendorID)) != 0 {
+		t.Fatal("a refused takedown was recorded")
+	}
+}
+
+// PR #27 SHOULD-2 (owner decision 1: moderators take down vendors' images): a moderator gets the unknown-id 404 for
+// an administrator's public avatar, another moderator's decision avatar and a photo on an administrator's own
+// listing, although they can see all three; an administrator removes each of them. A moderator's Recent photos
+// lists only the images they may remove; an administrator's lists every public image.
+func TestModeratorTakesDownOnlyVendorImages(t *testing.T) {
+	e := newTestApp(t)
+	vendorID, _ := e.user("td_only_vendor", "vendor")
+	buyerID, _ := e.user("td_only_buyer", "buyer")
+	_, moderator := e.user("td_only_moderator", "moderator")
+	deciderID, _ := e.user("td_only_decider", "moderator")
+	adminID, _ := e.user("td_only_admin", "admin")
+	_, otherAdmin := e.user("td_only_other_admin", "admin")
+	// The administrator is on the public staff list, so their avatar is public.
+	if _, err := e.DB.Exec(`UPDATE settings SET value='true' WHERE key='staff_list_public'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.DB.Exec(`UPDATE users SET staff_hidden=false WHERE id=$1`, adminID); err != nil {
+		t.Fatal(err)
+	}
+	adminAvatar := e.image(adminID, "", "avatar")
+	adminPhoto := e.image(adminID, e.product(adminID, "physical"), "photo")
+	// The other moderator decided a dispute, so every moderator sees their avatar on the desk route.
+	deciderAvatar := e.image(deciderID, "", "avatar")
+	order := e.order(buyerID, e.product(vendorID, "physical"), "BTC", "resolved")
+	if _, err := e.DB.Exec("INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,'disputed','resolved',$2,'Resolved — refund to buyer')", order, deciderID); err != nil {
+		t.Fatal(err)
+	}
+	e.wantPublic(adminAvatar, "administrator's listed avatar")
+	e.wantPublic(adminPhoto, "administrator's listing photo")
+	e.wantDesk(moderator, deciderAvatar, "decision avatar for a moderator")
+	vendorPhoto := e.image(vendorID, e.product(vendorID, "physical"), "photo")
+
+	section := sectionOf(t, e.body("GET", "/moderator", moderator, nil, 200), "recent-photos")
+	if !strings.Contains(section, vendorPhoto.id) || strings.Contains(section, adminAvatar.id) || strings.Contains(section, adminPhoto.id) {
+		t.Fatalf("a moderator's Recent photos must list only vendors' images:\n%s", section)
+	}
+	section = sectionOf(t, e.body("GET", "/moderator", otherAdmin, nil, 200), "recent-photos")
+	mustContain(t, section, vendorPhoto.id, adminAvatar.id, adminPhoto.id)
+	imageTakedownForm(t, section, adminAvatar.id, imageTakedownReason)
+
+	ref := e.takeDown(moderator, randomToken()[:32], imageTakedownReason)
+	for what, im := range map[string]testImage{"administrator's avatar": adminAvatar, "another moderator's decision avatar": deciderAvatar, "administrator's listing photo": adminPhoto} {
+		w := e.takeDown(moderator, im.id, imageTakedownReason)
+		if w.Code != 404 || w.Body.String() != ref.Body.String() || e.imageRows(im.id) != 1 {
+			t.Fatalf("moderator on the %s: %d %q, %d rows; want the unknown-id 404", what, w.Code, w.Body.String(), e.imageRows(im.id))
+		}
+	}
+	for what, im := range map[string]testImage{"administrator's avatar": adminAvatar, "moderator's decision avatar": deciderAvatar, "administrator's listing photo": adminPhoto} {
+		if w := e.takeDown(otherAdmin, im.id, imageTakedownReason); w.Code != 303 || e.imageRows(im.id) != 0 {
+			t.Fatalf("administrator on the %s: %d %s", what, w.Code, w.Body.String())
+		}
+	}
+	e.check(e.takeDown(moderator, vendorPhoto.id, imageTakedownReason), 303)
+}
+
+// PR #27 NIT-1: PostgreSQL refuses a NUL byte in text, so a reason carrying one gets the reason's 400 before
+// anything is written, not a 500 from the insert.
+func TestImageTakedownReasonWithNULRefused(t *testing.T) {
+	e := newTestApp(t)
+	vendorID, _ := e.user("td_nul_vendor", "vendor")
+	_, moderator := e.user("td_nul_moderator", "moderator")
+	photo := e.image(vendorID, e.product(vendorID, "physical"), "photo")
+	w := e.takeDown(moderator, photo.id, "A reason with a \x00 NUL byte in it.")
+	if w.Code != 400 || !strings.Contains(w.Body.String(), "10–500 characters") || e.imageRows(photo.id) != 1 {
+		t.Fatalf("NUL in the reason: %d %q, %d rows", w.Code, w.Body.String(), e.imageRows(photo.id))
 	}
 }

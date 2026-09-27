@@ -270,6 +270,20 @@ func TestDemotionArchiveIsNotATakedown(t *testing.T) {
 // audit and notification inserts, the vendor's users row; a role change holding that row and then archiving the
 // vendor's listings deadlocked with it (40P01, a 500). The takedown now takes the users rows first, as lockListing
 // does, and waits for the role change instead.
+// PR #27 NIT-1: PostgreSQL refuses a NUL byte in text, so a takedown reason carrying one gets the reason's 400,
+// before the password is checked, not a 500 from the update.
+func TestAdminTakedownReasonWithNULRefused(t *testing.T) {
+	e := newTestApp(t)
+	_, admin := e.user("td_nul_admin", "admin")
+	vendorID, _ := e.user("td_nul_vendor", "vendor")
+	p := e.product(vendorID, "physical")
+	take := takedownForm(t, e.body("GET", "/listing-edit?id="+p, admin, nil, 200), "takedown", p)
+	agExpect(e, "/admin/listing", admin, withField(take, "reason", "Counterfeit \x00 goods in this listing."), 400, "10–500 characters")
+	if archived, reason := takenDown(e, p); archived || reason != "" {
+		t.Fatalf("after a NUL reason: archived=%v reason=%q", archived, reason)
+	}
+}
+
 func TestAdminTakedownDoesNotDeadlockWithRoleChange(t *testing.T) {
 	e := newTestApp(t)
 	_, admin := e.user("td_deadlock_admin", "admin")
