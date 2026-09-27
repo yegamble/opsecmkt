@@ -12,6 +12,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -206,5 +207,83 @@ func TestResetAdminPasswordCLI(t *testing.T) {
 	}
 	if sessions != 0 || pending != 0 || audits != 1 || buyerSessions != 1 || buyerHash != string(old) {
 		t.Fatalf("sessions=%d pending=%d audits=%d buyerSessions=%d buyerChanged=%v", sessions, pending, audits, buyerSessions, buyerHash != string(old))
+	}
+}
+
+// The host commands open the database without the application pool's session timeouts (A-177): both wait
+// out migration lock 782493 held for longer than the pool's 3 s lock_timeout, and then succeed.
+func TestHostCommandsRunWithoutAppTimeouts(t *testing.T) {
+	resetDSN, bootDSN := cliSchema(t), cliSchema(t)
+	db, err := sql.Open("pgx", resetDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	old, _ := bcrypt.GenerateFromPassword([]byte("the-forgotten-password"), bcrypt.MinCost)
+	if _, err = db.Exec("INSERT INTO users(id,handle,password_hash,role) VALUES('a1','root_admin',$1,'admin')", string(old)); err != nil {
+		t.Fatal(err)
+	}
+	err = withHostDB(context.Background(), resetDSN, func(ctx context.Context, db *sql.DB) error {
+		var st, lt, it string
+		if err := db.QueryRowContext(ctx, "SELECT current_setting('statement_timeout'), current_setting('lock_timeout'), current_setting('idle_in_transaction_session_timeout')").Scan(&st, &lt, &it); err != nil {
+			return err
+		}
+		if st != "0" || lt != "0" || it != "0" {
+			t.Errorf("host connection statement_timeout=%s lock_timeout=%s idle_in_transaction_session_timeout=%s, want 0", st, lt, it)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	holder, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Close()
+	if _, err = holder.ExecContext(context.Background(), "SELECT pg_advisory_lock(782493)"); err != nil {
+		t.Fatal(err)
+	}
+	unlocked := false
+	unlock := func() {
+		if !unlocked {
+			unlocked = true
+			holder.ExecContext(context.Background(), "SELECT pg_advisory_unlock(782493)")
+		}
+	}
+	defer unlock()
+	errs := make(chan error, 2)
+	var resetOut, bootOut, prompt bytes.Buffer
+	go func() {
+		errs <- resetWithDSN(context.Background(), resetDSN, "root_admin", "operator-chosen-password", &resetOut)
+	}()
+	go func() {
+		errs <- runBootstrap(context.Background(), bootDSN, "first_admin", "", strings.NewReader("operator-chosen-password\n"), notTerminal, &bootOut, &prompt)
+	}()
+	// Both commands queue behind the lock before the wait below starts, so each waits longer than 3 s.
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		var waiting int
+		if err = db.QueryRow("SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND objid=782493 AND NOT granted").Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting >= 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d host commands waiting for the lock", waiting)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	time.Sleep(4 * time.Second)
+	unlock()
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatalf("host command after a 4 s lock wait: %v", err)
+		}
+	}
+	if !strings.HasPrefix(resetOut.String(), "Password reset for administrator root_admin.") || !strings.HasPrefix(bootOut.String(), "Setup complete: administrator first_admin created.") {
+		t.Fatalf("output %q %q", resetOut.String(), bootOut.String())
 	}
 }
