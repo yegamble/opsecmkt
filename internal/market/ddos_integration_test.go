@@ -369,16 +369,43 @@ func TestSlowBodyPostsLeaveSignInWorking(t *testing.T) {
 	}
 }
 
-// A post's session lookup is a page-sized read: it takes a page slot for the query only, so a flood of posts
-// with made-up session cookies is bounded like a flood of pages, and a post without a session cookie needs no
-// page slot.
-func TestPostSessionLookupTakesPageSlot(t *testing.T) {
+// PR #15 re-review (NEW-2): a post's session lookup has its own small class, so an anonymous flood of pages
+// that fills the page class refuses no signed-in or staff post. A lookup that finds its class full waits its
+// turn (each holds its slot for one indexed read) for up to postLookupWait, then is refused as busy; a post
+// without a session cookie needs no lookup.
+func TestPostSessionLookupHasItsOwnClass(t *testing.T) {
 	e := newTestApp(t)
 	e.user("lookup_user", "buyer")
 	_, buyer := e.user("lookup_buyer", "buyer")
+	_, admin := e.user("lookup_admin", "admin")
 	release := holdSlots(t, pageWork)
+	if w := e.do("GET", "/catalog", buyer, nil); w.Code != 503 {
+		t.Fatalf("page with the page class full: %d", w.Code)
+	}
+	e.check(e.do("POST", "/notifications", buyer, url.Values{}), 303)
+	e.check(e.do("POST", "/admin", admin, url.Values{"action": {"settings"}, "site_name": {"Lookup Market"}}), 303)
+	release()
+
+	defer func(d time.Duration) { postLookupWait = d }(postLookupWait)
+	postLookupWait = 3 * time.Second
+	release = holdSlots(t, sessionLookupWork)
+	result := make(chan int, 1)
+	go func() { result <- e.do("POST", "/notifications", buyer, url.Values{}).Code }()
+	time.Sleep(300 * time.Millisecond)
+	select {
+	case code := <-result:
+		t.Fatalf("signed-in post answered %d while every lookup slot was held", code)
+	default:
+	}
+	release()
+	if code := <-result; code != 303 {
+		t.Fatalf("signed-in post once a lookup slot came free: %d", code)
+	}
+
+	postLookupWait = 200 * time.Millisecond
+	release = holdSlots(t, sessionLookupWork)
 	if w := e.do("POST", "/notifications", buyer, url.Values{}); w.Code != 503 || w.Header().Get("Retry-After") != "5" {
-		t.Fatalf("signed-in post with the page class full: %d Retry-After=%q", w.Code, w.Header().Get("Retry-After"))
+		t.Fatalf("signed-in post with the lookup class held past the wait: %d Retry-After=%q", w.Code, w.Header().Get("Retry-After"))
 	}
 	anon := randomToken()
 	r := httptest.NewRequest("POST", "/login", strings.NewReader(url.Values{"handle": {"lookup_user"}, "password": {testPassword}, "csrf": {e.A.csrf(anon)}}.Encode()))
@@ -386,10 +413,9 @@ func TestPostSessionLookupTakesPageSlot(t *testing.T) {
 	r.AddCookie(&http.Cookie{Name: "anon", Value: anon})
 	w := httptest.NewRecorder()
 	e.A.ServeHTTP(w, r)
-	e.check(w, 303)
+	e.check(w, 303) // no session cookie: no lookup
 	release()
-	e.check(e.do("POST", "/notifications", buyer, url.Values{}), 303)
-	if len(pageWork) != 0 || len(anonPostWork) != 0 || len(userPostWork) != 0 {
+	if len(pageWork) != 0 || len(sessionLookupWork) != 0 || len(anonPostWork) != 0 || len(userPostWork) != 0 {
 		t.Fatal("slots leaked")
 	}
 }

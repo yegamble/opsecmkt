@@ -1,6 +1,7 @@
 package market
 
 import (
+	"context"
 	"log"
 	"net"
 	"net/http"
@@ -22,8 +23,10 @@ import (
 //     userPostWork's 16 slots; a public action (sign-in, registration, the sign-in challenge), whoever posts
 //     it, takes one of anonPostWork's 16. A flood of public posts, anonymous or from a signed-in account,
 //     cannot refuse a signed-in user's or an administrator's change, and one account's own changes stop at
-//     its write budget. A post's session lookup, a single read, takes a page slot for that
-//     query only (ServeHTTP).
+//     its write budget.
+//   - A post's session lookup (ServeHTTP), a single indexed read before its post class is known, takes one of
+//     sessionLookupWork's 16 slots for that query only, waiting its turn for up to 2 s (takeLookupSlot). Pages
+//     never take it, so a flood of pages cannot refuse a signed-in or staff post.
 //   - captchaWork (captcha_actions.go) admits 8 concurrent CAPTCHA image renders and passwordWork
 //     (actions_auth.go) 4 concurrent bcrypt checks, each inside the class slot of its request.
 //
@@ -33,7 +36,13 @@ var (
 	pageWork     = make(chan struct{}, 64)
 	anonPostWork = make(chan struct{}, 16)
 	userPostWork = make(chan struct{}, 16)
+	// sessionLookupWork admits 16 concurrent session lookups of form posts (ServeHTTP); see takeLookupSlot.
+	sessionLookupWork = make(chan struct{}, 16)
 )
+
+// postLookupWait is how long a post's session lookup waits for a sessionLookupWork slot before it is refused
+// as busy (tests shorten it).
+var postLookupWait = 2 * time.Second
 
 // busyRetryAfter is the Retry-After, in seconds, of an admission refusal and of any other 503.
 const busyRetryAfter = "5"
@@ -57,6 +66,27 @@ func admitClass(r *http.Request) chan struct{} {
 		return nil
 	}
 	return pageWork
+}
+
+// takeLookupSlot takes a sessionLookupWork slot for a form post's session lookup, waiting for up to
+// postLookupWait (or until ctx ends). The lookup is one indexed read, so a slot comes free within a millisecond
+// or so, and waiting senders on a channel are served in arrival order: under a flood of posts with made-up
+// session cookies a real post waits its turn behind at most one connection limit's worth of lookups instead of
+// losing a race for a slot that is refused at once. The class keeps those lookups to 16 of the pool's
+// connections, and pages (pageWork) never take it, so a flood of pages cannot refuse a signed-in post.
+func takeLookupSlot(ctx context.Context) (release func(), ok bool) {
+	if release, ok = tryTake(sessionLookupWork); ok {
+		return release, true
+	}
+	t := time.NewTimer(postLookupWait)
+	defer t.Stop()
+	select {
+	case sessionLookupWork <- struct{}{}:
+		return sync.OnceFunc(func() { <-sessionLookupWork }), true
+	case <-t.C:
+	case <-ctx.Done():
+	}
+	return nil, false
 }
 
 // tryTake takes a slot of sem if one is free, returning its release (safe to call more than once).

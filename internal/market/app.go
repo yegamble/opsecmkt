@@ -348,7 +348,8 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Admission control (admission.go): a page finding its class full is refused here with 503, before any
-	// database work; a form post takes its slot in a.post, once its body has been read and checked.
+	// database work; a form post takes its slot in a.post, once its body has been read and checked and its
+	// session looked up.
 	aw, release, ok := admit(w, r)
 	if !ok {
 		return
@@ -451,10 +452,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if session != "" && a.db != nil {
 		lookupDone := func() {}
 		if r.Method == "POST" {
-			// A page holds its page slot already; a post's lookup is the same single read, so it takes a
-			// page slot for this query only, and a flood of posts with made-up session cookies is bounded
-			// like a flood of pages.
-			done, ok := tryTake(pageWork)
+			// A page holds its page slot already. A post's lookup takes a slot of its own class for this
+			// query only (takeLookupSlot), so a flood of posts with made-up session cookies is bounded, and a
+			// flood of pages, which never takes that class, cannot refuse a signed-in or staff post.
+			done, ok := takeLookupSlot(ctx)
 			if !ok {
 				busy(w)
 				return
