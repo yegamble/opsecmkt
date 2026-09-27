@@ -30,9 +30,11 @@ type fakeClamd struct {
 	verdict  func(data []byte) string // INSTREAM reply, or fakeClamdHang / fakeClamdClose
 	hang     bool                     // every command: read it, never answer
 	limit    int                      // non-zero: a stream longer than this is answered at once with clamd's size error
-	scans    [][]byte                 // every complete stream received
-	maxChunk int                      // largest INSTREAM chunk received
-	commands []string                 // every command received, in order
+	earlyAt  int                      // non-zero: past this many stream bytes, answer earlyMsg and close unread
+	earlyMsg string
+	scans    [][]byte // every complete stream received
+	maxChunk int      // largest INSTREAM chunk received
+	commands []string // every command received, in order
 	conns    map[net.Conn]bool
 }
 
@@ -102,6 +104,16 @@ func (f *fakeClamd) SetHang(h bool) { f.mu.Lock(); f.hang = h; f.mu.Unlock() }
 // as it passes n (like StreamMaxLength), before the client has finished sending; the rest is read and dropped.
 func (f *fakeClamd) SetStreamLimit(n int) { f.mu.Lock(); f.limit = n; f.mu.Unlock() }
 
+// SetEarlyReply makes a stream longer than n bytes get reply as soon as it passes n, after which the connection
+// is closed without reading the rest, as real clamd does when a stream exceeds StreamMaxLength (reply "INSTREAM
+// size limit exceeded. ERROR"). With reply "stream: OK" it is a server that claims a clean scan of bytes it
+// never read.
+func (f *fakeClamd) SetEarlyReply(n int, reply string) {
+	f.mu.Lock()
+	f.earlyAt, f.earlyMsg = n, reply
+	f.mu.Unlock()
+}
+
 // Scans returns the streams received so far.
 func (f *fakeClamd) Scans() [][]byte {
 	f.mu.Lock()
@@ -132,7 +144,7 @@ func (f *fakeClamd) serve(c net.Conn) {
 	}
 	f.mu.Lock()
 	f.commands = append(f.commands, cmd)
-	hang, version, verdict, limit := f.hang, f.version, f.verdict, f.limit
+	hang, version, verdict, limit, earlyAt, earlyMsg := f.hang, f.version, f.verdict, f.limit, f.earlyAt, f.earlyMsg
 	f.mu.Unlock()
 	reply := ""
 	switch cmd {
@@ -162,6 +174,10 @@ func (f *fakeClamd) serve(c net.Conn) {
 			f.mu.Lock()
 			f.maxChunk = max(f.maxChunk, int(n))
 			f.mu.Unlock()
+			if earlyAt > 0 && len(data) > earlyAt {
+				c.Write([]byte(earlyMsg + "\x00"))
+				return // closed with the rest of the stream unread
+			}
 			if limit > 0 && len(data) > limit {
 				c.Write([]byte("INSTREAM size limit exceeded. ERROR\x00"))
 				io.Copy(io.Discard, c)

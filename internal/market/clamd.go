@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -102,7 +103,7 @@ const (
 	scanInfected    scanClass = "infected"    // clamd replied "stream: <name> FOUND"
 	scanUnavailable scanClass = "unavailable" // no connection, or it closed without a reply; or the scanner was already down
 	scanTimeout     scanClass = "timeout"     // no reply within clamdTimeout, or the request ended first
-	scanError       scanClass = "error"       // any reply other than OK or FOUND
+	scanError       scanClass = "error"       // any reply other than OK or FOUND, or a stream the server cut short (this upload only)
 	scanStale       scanClass = "stale"       // signatures older than the limit, or their date unreadable
 	scanDisabled    scanClass = "disabled"    // no CLAMD_ADDRESS
 )
@@ -230,7 +231,7 @@ func (s *imageScanner) stateLocked() scannerState {
 		st.Name, st.Cause = scannerUnavailable, s.cause
 	case s.date.IsZero():
 		st.Name, st.Cause = scannerStale, "signature date unreadable"
-	case st.AgeDays > st.LimitDays:
+	case s.now().Sub(s.date) > time.Duration(st.LimitDays)*24*time.Hour: // exact, as "older than N days" says
 		st.Name = scannerStale
 	default:
 		st.Name = scannerReady
@@ -360,7 +361,9 @@ func (s *imageScanner) Scan(ctx context.Context, kind uploadKind, data []byte) (
 		// When the request ended first (the uploader went away), clamd is not at fault: neither pause everyone's
 		// uploads nor count a scanner failure.
 		if !contextEnded(ctx) {
-			s.update(func() { s.up, s.cause = false, failureCause(err) })
+			if class != scanError { // a bad reply to one stream is that upload's failure; the poller checks clamd itself
+				s.update(func() { s.up, s.cause = false, failureCause(err) })
+			}
 			s.record(class, "")
 		}
 		return scannedUpload{}, s.refuse(kind, class, "")
@@ -426,31 +429,61 @@ func clamdCommand(ctx context.Context, addr, cmd string, stream []byte) (string,
 	if _, err = conn.Write([]byte("z" + cmd + "\x00")); err != nil {
 		return "", err
 	}
-	if cmd == "INSTREAM" {
-		buf := make([]byte, 4+clamdChunk)
-		for rest := stream; ; {
-			n := min(len(rest), clamdChunk)
-			binary.BigEndian.PutUint32(buf, uint32(n))
-			copy(buf[4:], rest[:n])
-			if _, err = conn.Write(buf[:4+n]); err != nil {
-				// clamd answers and closes early when a stream exceeds StreamMaxLength: report that answer.
-				if reply, rerr := readClamdReply(conn); rerr == nil {
-					return reply, nil
-				}
+	br := bufio.NewReaderSize(conn, clamdReplyLimit+1)
+	if cmd != "INSTREAM" {
+		return readClamdReply(br)
+	}
+	buf := make([]byte, 4+clamdChunk)
+	for rest := stream; ; {
+		n := min(len(rest), clamdChunk)
+		binary.BigEndian.PutUint32(buf, uint32(n))
+		copy(buf[4:], rest[:n])
+		if _, err = conn.Write(buf[:4+n]); err != nil {
+			var ne net.Error
+			if errors.As(err, &ne) && ne.Timeout() {
 				return "", err
 			}
-			if n == 0 {
-				break
+			// The server closed before reading the whole stream, as clamd does after its error reply when a
+			// stream exceeds StreamMaxLength. An error reply is reported as such. An early "stream: OK" is not a
+			// scan of the bytes sent, and no reply (or one lost to the reset) fails this stream, not the scanner.
+			reply, rerr := readClamdReply(br)
+			if rerr == nil && reply != "stream: OK" {
+				return reply, nil
 			}
-			rest = rest[n:]
+			return "", errStreamCut
 		}
+		if n == 0 {
+			break
+		}
+		rest = rest[n:]
 	}
-	return readClamdReply(conn)
+	reply, err := readClamdReply(br)
+	switch {
+	case errors.Is(err, syscall.ECONNRESET):
+		return "", errStreamCut // closed with part of the stream unread (a size overrun)
+	case err != nil || reply != "stream: OK":
+		return reply, err
+	}
+	// clamd closes the connection once it has answered (clamdscan reads to the end the same way). A reset
+	// instead of that clean end means the server closed with part of the stream unread, so its OK does not
+	// cover every byte sent; anything after the reply breaks the protocol.
+	if _, err = br.ReadByte(); !errors.Is(err, io.EOF) {
+		var ne net.Error
+		if errors.As(err, &ne) && ne.Timeout() {
+			return "", err
+		}
+		return "", errUnexpectedReply
+	}
+	return reply, nil
 }
 
+// errStreamCut: the server closed the connection before reading the whole zINSTREAM stream. It refuses that
+// upload as an error reply would; it does not mark the scanner unavailable (the poller finds a real outage).
+var errStreamCut = errors.New("clamd closed the connection before reading the whole stream")
+
 // readClamdReply reads a NUL-terminated reply of at most clamdReplyLimit bytes.
-func readClamdReply(conn net.Conn) (string, error) {
-	reply, err := bufio.NewReaderSize(conn, clamdReplyLimit+1).ReadSlice(0)
+func readClamdReply(br *bufio.Reader) (string, error) {
+	reply, err := br.ReadSlice(0)
 	switch {
 	case err == nil:
 		return string(reply[:len(reply)-1]), nil
@@ -475,7 +508,7 @@ func contextEnded(ctx context.Context) bool {
 func clamdErrorClass(err error) scanClass {
 	var ne net.Error
 	switch {
-	case errors.Is(err, errUnexpectedReply):
+	case errors.Is(err, errUnexpectedReply) || errors.Is(err, errStreamCut):
 		return scanError
 	case errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || errors.As(err, &ne) && ne.Timeout():
 		return scanTimeout

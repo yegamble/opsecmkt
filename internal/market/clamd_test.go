@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -73,18 +74,7 @@ func TestClamdOnlyExactOK(t *testing.T) {
 			f.SetVerdict(func([]byte) string { return c.reply })
 			s := readyScanner(t, f)
 			got, err := s.Scan(context.Background(), uploadListing, data)
-			if c.class == "" {
-				if err != nil || !bytes.Equal(got.Bytes(), data) {
-					t.Fatalf("clean scan: err=%v, %d bytes returned", err, len(got.Bytes()))
-				}
-			} else {
-				if r := refusalOf(t, err); r.Class != c.class {
-					t.Fatalf("class = %q, want %q", r.Class, c.class)
-				}
-				if got.Bytes() != nil {
-					t.Fatal("a refused scan returned bytes")
-				}
-			}
+			checkRefusal(t, c.class, got, err, data)
 			if scans := f.Scans(); len(scans) != 1 || !bytes.Equal(scans[0], data) {
 				t.Fatalf("clamd received %d streams, want the upload's bytes once, unmodified", len(scans))
 			}
@@ -92,6 +82,51 @@ func TestClamdOnlyExactOK(t *testing.T) {
 				t.Fatalf("largest chunk = %d, want 65536", n)
 			}
 		})
+	}
+	// A server that answers before it has read the whole stream and closes the connection with the rest unread:
+	// real clamd does this with its size error when a stream exceeds StreamMaxLength. An early "stream: OK" is not
+	// a clean scan of the bytes sent, whatever the size and however the close reaches the client. Either way the
+	// upload is refused as that request's error, not as a scanner outage: the scanner stays Ready.
+	for _, c := range []struct {
+		name, reply string
+		size        int
+	}{
+		{"early ok, 8 MiB", "stream: OK", 8 << 20},
+		{"early ok, 200 KiB", "stream: OK", 200 << 10},
+		{"early size error, 8 MiB", "INSTREAM size limit exceeded. ERROR", 8 << 20},
+		{"early size error, 200 KiB", "INSTREAM size limit exceeded. ERROR", 200 << 10},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFakeClamd(t)
+			f.SetEarlyReply(64<<10, c.reply)
+			s := readyScanner(t, f)
+			for range 5 {
+				data := bytes.Repeat([]byte{0xa5}, c.size)
+				got, err := s.Scan(context.Background(), uploadListing, data)
+				checkRefusal(t, scanError, got, err, data)
+				if st := s.State(); st.Name != scannerReady {
+					t.Fatalf("state after the server cut the stream short = %+v", st)
+				}
+			}
+		})
+	}
+}
+
+// checkRefusal checks a scan's outcome: clean (class "") returns exactly data; otherwise a refusal of class and
+// no bytes.
+func checkRefusal(t *testing.T, class scanClass, got scannedUpload, err error, data []byte) {
+	t.Helper()
+	if class == "" {
+		if err != nil || !bytes.Equal(got.Bytes(), data) {
+			t.Fatalf("clean scan: err=%v, %d bytes returned", err, len(got.Bytes()))
+		}
+		return
+	}
+	if r := refusalOf(t, err); r.Class != class {
+		t.Fatalf("class = %q, want %q", r.Class, class)
+	}
+	if got.Bytes() != nil {
+		t.Fatalf("a refused scan returned %d bytes", len(got.Bytes()))
 	}
 }
 
@@ -203,17 +238,17 @@ func TestClamdStaleRefuses(t *testing.T) {
 	if _, err = s.Scan(context.Background(), uploadListing, []byte("photo")); err != nil {
 		t.Fatalf("29 days old: %v", err)
 	}
-	// Exactly the limit is still accepted; the vendor copy follows the configured limit.
-	f.SetVersion(fakeClamdVersion(7*24*time.Hour + time.Hour))
+	// The limit is exact, as the copy "older than N days" says: an hour under 7 days passes, an hour over does not.
+	f.SetVersion(fakeClamdVersion(7*24*time.Hour - time.Hour))
 	s7 := newImageScanner(scannerConfig{address: f.Addr, maxAgeDays: 7})
 	s7.poll(context.Background())
-	if st := s7.State(); st.Name != scannerReady || st.AgeDays != 7 {
-		t.Fatalf("7 days at limit 7 = %+v", st)
+	if st := s7.State(); st.Name != scannerReady || st.AgeDays != 6 {
+		t.Fatalf("7 days less an hour at limit 7 = %+v", st)
 	}
-	f.SetVersion(fakeClamdVersion(8*24*time.Hour + time.Hour))
+	f.SetVersion(fakeClamdVersion(7*24*time.Hour + time.Hour))
 	s7.poll(context.Background())
-	if st := s7.State(); st.Name != scannerStale || !strings.Contains(st.VendorNotice(), "older than 7 days") {
-		t.Fatalf("8 days at limit 7 = %+v", st)
+	if st := s7.State(); st.Name != scannerStale || st.AgeDays != 7 || !strings.Contains(st.VendorNotice(), "older than 7 days") {
+		t.Fatalf("7 days and an hour at limit 7 = %+v", st)
 	}
 }
 
@@ -614,6 +649,57 @@ func TestNoScannerSkipSwitch(t *testing.T) {
 			if (strings.Contains(v, "SCAN") || strings.Contains(v, "CLAM") || strings.Contains(v, "UPLOAD")) && v != "CLAMD_ADDRESS" && v != "SCANNER_MAX_SIGNATURE_AGE_DAYS" {
 				t.Errorf("%s reads %s", name, v)
 			}
+		}
+	}
+}
+
+// TestRealClamd runs the client against a real clamd (opt-in: CLAMD_TEST_ADDRESS=host:port), for example
+//
+//	docker run -d --rm -p 127.0.0.1:3310:3310 -e CLAMAV_NO_FRESHCLAMD=true clamav/clamav-debian:stable
+//
+// once clamd has loaded its signatures. It proves the real VERSION reply parses; that a clean stream passes,
+// which also proves clamd closes the connection cleanly after answering (the client requires that before it
+// accepts "stream: OK"); and that the EICAR test file is FOUND. Fake-clamd tests do not prove these.
+func TestRealClamd(t *testing.T) {
+	addr := os.Getenv("CLAMD_TEST_ADDRESS")
+	if addr == "" {
+		t.Skip("set CLAMD_TEST_ADDRESS=host:port of a running clamd to check the client against it")
+	}
+	ctx := context.Background()
+	s := newImageScanner(scannerConfig{address: addr, maxAgeDays: 90})
+	s.poll(ctx)
+	st := s.State()
+	if st.Name != scannerReady || !strings.HasPrefix(st.Engine, "ClamAV ") || st.Daily == "" || st.DailyDate.IsZero() {
+		t.Fatalf("state = %+v", st)
+	}
+	t.Logf("%s daily %s built %s (%d days old)", st.Engine, st.Daily, st.DailyDate.Format(time.RFC3339), st.AgeDays)
+	clean := bytes.Repeat([]byte("an ordinary upload with nothing in it\n"), 8000) // about 300 KiB: several chunks
+	for range 3 {
+		got, err := s.Scan(ctx, uploadListing, clean)
+		if err != nil || !bytes.Equal(got.Bytes(), clean) {
+			t.Fatalf("clean stream: %v", err)
+		}
+	}
+	// The EICAR anti-virus test string, assembled at run time so this source file is not itself detected.
+	eicar := []byte(`X5O!P%@AP[4\PZX54(P^)7CC)7}$` + `EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*`)
+	_, err := s.Scan(ctx, uploadListing, eicar)
+	if r := refusalOf(t, err); r.Class != scanInfected || !strings.Contains(strings.ToLower(r.sig), "eicar") {
+		t.Fatalf("EICAR: %+v", r)
+	}
+	if st := s.State(); st.Name != scannerReady {
+		t.Fatalf("state after scans = %+v", st)
+	}
+	// CLAMD_TEST_OVERRUN_BYTES, above that clamd's StreamMaxLength: clamd answers with its size error and closes
+	// with the rest unread. The upload is refused as an error, the scanner stays Ready, and a clean scan follows.
+	if n, _ := strconv.Atoi(os.Getenv("CLAMD_TEST_OVERRUN_BYTES")); n > 0 {
+		for range 5 {
+			_, err := s.Scan(ctx, uploadListing, bytes.Repeat([]byte{0xa5}, n))
+			if r := refusalOf(t, err); r.Class != scanError {
+				t.Fatalf("overrun of %d bytes: %+v", n, r)
+			}
+		}
+		if _, err := s.Scan(ctx, uploadListing, clean); err != nil || s.State().Name != scannerReady {
+			t.Fatalf("after overruns: %v, %+v", err, s.State())
 		}
 	}
 }
