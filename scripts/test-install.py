@@ -139,6 +139,12 @@ class Browser:
             return urllib.parse.urlsplit(response.url).path
 
 
+def app_status_line(directory, environment):
+    """The running app's -status line: installed=... schema=NNN keyroot=... (no secret)."""
+    return subprocess.run(['docker', 'compose', 'exec', '-T', 'app', '/app/server', '-status'], cwd=directory,
+                          env=environment, capture_output=True, text=True, timeout=120, check=True).stdout.strip()
+
+
 def compose_logs(directory, environment):
     return subprocess.run(['docker', 'compose', 'logs', '--no-color'], cwd=directory, env=environment,
                           capture_output=True, text=True, timeout=120, check=True).stdout
@@ -173,6 +179,11 @@ def exercise(repo, environment, second, second_environment, third, third_environ
     logs = compose_logs(repo, environment)
     for key in ('SETUP_TOKEN', 'APP_SECRET_KEY', 'POSTGRES_PASSWORD'):
         require(configuration[key] not in logs, f'{key} appears in docker compose logs')
+    # The app reports its key root (APP_SECRET_KEY, which init wrote), and so status may retire the token.
+    line = app_status_line(repo, environment)
+    require(re.fullmatch(r'installed=true schema=\d{3} keyroot=app_secret_key', line), f'unexpected -status line: {line}')
+    for key in ('SETUP_TOKEN', 'APP_SECRET_KEY', 'POSTGRES_PASSWORD'):
+        require(configuration[key] not in line, f'-status printed {key}')
     # status reports the completed setup and retires the token; setup-token then has nothing to show.
     code, output = installer(repo, environment, log_path, ['status'], 120)
     require(code == 0 and 'Setup: complete' in output, 'status did not report setup complete')
@@ -192,7 +203,7 @@ def exercise(repo, environment, second, second_environment, third, third_environ
     expect_status(browser.client, browser.base + '/setup', 403)
     result.update(installer='passed', printed_token_opens_setup='passed', token_absent_from_compose_logs='passed',
                   wrong_setup_token='rejected', admin_onboarding='passed', configured_title='passed',
-                  status_pending_then_complete='passed', setup_token_after_install='exit 1',
+                  status_pending_then_complete='passed', status_keyroot='app_secret_key', setup_token_after_install='exit 1',
                   existing_configuration='preserved', restart_admin_session='passed')
 
     # A second checkout on the same host. Under the same project name it is refused before writing anything;
@@ -264,7 +275,9 @@ def exercise(repo, environment, second, second_environment, third, third_environ
     csrf_before = third_browser.csrf('/admin')
     code, output = installer(third, third_environment, log_path, ['upgrade'], 60)
     require(code == 1 and 'AGE_RECIPIENT' in output, 'upgrade ran without a backup or --no-backup')
-    code, output = installer(third, third_environment, log_path, ['upgrade', '--no-backup'], 900)
+    # Without APP_PORT in the shell, upgrade records the port the running app container publishes.
+    unset_port = {key: value for key, value in third_environment.items() if key != 'APP_PORT'}
+    code, output = installer(third, unset_port, log_path, ['upgrade', '--no-backup'], 900)
     require(code == 0, 'upgrade failed on the alpha-layout installation')
     require(alpha_token not in output and password not in output, 'upgrade printed a secret')
     upgraded = env_values(third)

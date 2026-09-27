@@ -56,18 +56,26 @@ func TestStatusFlagPrintsNoSecrets(t *testing.T) {
 	dsn := u.String()
 	password, _ := u.User.Password()
 	const setupToken = "status-test-setup-token-5f2c9e7a1b4d8036cafe0123456789abcdef"
+	const appSecretKey = "status-test-app-secret-key-9d3b7f1e5a2c8046beef0123456789abcdef"
+	// check runs -status with SETUP_TOKEN alone (the legacy key root), then with APP_SECRET_KEY as well: the
+	// line names the root in use (keyroot=, for the installer) and never a value.
 	check := func(want string) {
 		t.Helper()
-		stdout, stderr, code := runServer(t, []string{"DATABASE_URL=" + dsn, "SETUP_TOKEN=" + setupToken}, "-status")
-		if code != 0 || stdout != want || stderr != "" {
-			t.Fatalf("exit %d stdout %q stderr %q; want %q", code, stdout, stderr, want)
-		}
-		if strings.Contains(stdout, setupToken) || password != "" && strings.Contains(stdout, password) {
-			t.Fatalf("stdout carries a secret: %q", stdout)
+		for keyroot, environment := range map[string][]string{
+			"setup_token":    {"DATABASE_URL=" + dsn, "SETUP_TOKEN=" + setupToken, "APP_SECRET_KEY="},
+			"app_secret_key": {"DATABASE_URL=" + dsn, "SETUP_TOKEN=" + setupToken, "APP_SECRET_KEY=" + appSecretKey},
+		} {
+			stdout, stderr, code := runServer(t, environment, "-status")
+			if line := want + " keyroot=" + keyroot + "\n"; code != 0 || stdout != line || stderr != "" {
+				t.Fatalf("exit %d stdout %q stderr %q; want %q", code, stdout, stderr, line)
+			}
+			if strings.Contains(stdout, setupToken) || strings.Contains(stdout, appSecretKey) || password != "" && strings.Contains(stdout, password) {
+				t.Fatalf("stdout carries a secret: %q", stdout)
+			}
 		}
 	}
 	// A database that was never migrated: nothing installed, no schema, and -status changes nothing.
-	check("installed=false schema=000\n")
+	check("installed=false schema=000")
 	var tables int
 	if err = admin.QueryRow("SELECT count(*) FROM information_schema.tables WHERE table_schema=$1", schema).Scan(&tables); err != nil || tables != 0 {
 		t.Fatalf("-status created %d tables (err %v)", tables, err)
@@ -88,11 +96,11 @@ func TestStatusFlagPrintsNoSecrets(t *testing.T) {
 	if err = admin.QueryRow("SELECT max(version) FROM " + schema + ".schema_migrations").Scan(&latest); err != nil || latest < 1 {
 		t.Fatalf("max migration %d (err %v)", latest, err)
 	}
-	check(fmt.Sprintf("installed=false schema=%03d\n", latest))
+	check(fmt.Sprintf("installed=false schema=%03d", latest))
 	if _, err = admin.Exec("INSERT INTO " + schema + ".settings(key,value) VALUES('installed','true')"); err != nil {
 		t.Fatal(err)
 	}
-	check(fmt.Sprintf("installed=true schema=%03d\n", latest))
+	check(fmt.Sprintf("installed=true schema=%03d", latest))
 
 	// A wrong password against the real server: a class, never the URL or the password tried.
 	if password != "" {

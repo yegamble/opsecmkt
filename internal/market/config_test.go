@@ -130,6 +130,27 @@ func TestKeyRootPrefersAppSecretKey(t *testing.T) {
 	}
 }
 
+func TestKeyRootSourceNamesTheRootWithoutItsValue(t *testing.T) {
+	for _, c := range []struct {
+		env  map[string]string
+		want string
+	}{
+		{nil, "app_secret_key"},
+		{map[string]string{"SETUP_TOKEN": ""}, "app_secret_key"},
+		{map[string]string{"APP_SECRET_KEY": ""}, "setup_token"},
+		{map[string]string{"APP_SECRET_KEY": "", "SETUP_TOKEN": ""}, "setup_token"},
+	} {
+		getenv := env(c.env)
+		if got := KeyRootSource(getenv); got != c.want {
+			t.Fatalf("KeyRootSource(%v) = %q; want %q", c.env, got, c.want)
+		}
+		cfg := startupConfig{appSecretKey: getenv("APP_SECRET_KEY"), setupToken: getenv("SETUP_TOKEN")}
+		if _, legacy := cfg.keyRoot(); legacy != (c.want == "setup_token") {
+			t.Fatalf("KeyRootSource(%v) = %q disagrees with keyRoot (legacy=%v)", c.env, c.want, legacy)
+		}
+	}
+}
+
 func TestLegacySetupTokenKeyRootUnchanged(t *testing.T) {
 	cfg, err := loadStartupConfig(env(map[string]string{"APP_SECRET_KEY": ""}), "clearnet")
 	if err != nil {
