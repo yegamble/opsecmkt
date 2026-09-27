@@ -1,0 +1,519 @@
+package market
+
+import (
+	"html"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"testing"
+)
+
+// A-190 (war room 2026-09-27, ruling D4, owner decision 1): moderators and administrators take down listing photos
+// and avatars (POST /images/remove) by deleting the row, with a reason the owner is told and sees on the listing's
+// edit page; /moderator lists the recent public images for the check after a restore (PostgreSQL).
+
+// imageTakedownReason contains characters the pages must escape.
+const imageTakedownReason = "Shows a face & a <street sign>; upload a photo of the item alone."
+
+// imageTakedownForm returns the fields of the staff remove form for image id on page, as the browser would submit
+// them with reason, and checks it is a urlencoded form inside a <details> with a required 10–500 character reason.
+func imageTakedownForm(t *testing.T, page, id, reason string) url.Values {
+	t.Helper()
+	for _, d := range strings.Split(page, "<details")[1:] {
+		d, _, _ = strings.Cut(d, "</details>")
+		if !strings.Contains(d, `action="/images/remove"`) || !strings.Contains(d, `name="id" value="`+id+`"`) {
+			continue
+		}
+		mustContain(t, d, "<summary>", `method="post"`, `name="reason" required minlength="10" maxlength="500"`)
+		if strings.Contains(d, "enctype") {
+			t.Fatalf("the remove form is not urlencoded:\n%s", d)
+		}
+		v := url.Values{"reason": {reason}}
+		for _, m := range hiddenInput.FindAllStringSubmatch(d, -1) {
+			if m[1] != "csrf" {
+				v.Set(m[1], m[2])
+			}
+		}
+		return v
+	}
+	t.Fatalf("no staff remove form for image %s", id)
+	return nil
+}
+
+// takeDown posts the staff remove form for image id with reason as session.
+func (e *testEnv) takeDown(session, id, reason string) *httptest.ResponseRecorder {
+	return e.do("POST", "/images/remove", session, url.Values{"id": {id}, "reason": {reason}})
+}
+
+// imageRows counts the rows with id.
+func (e *testEnv) imageRows(id string) (n int) {
+	e.t.Helper()
+	if err := e.DB.QueryRow("SELECT count(*) FROM images WHERE id=$1", id).Scan(&n); err != nil {
+		e.t.Fatal(err)
+	}
+	return n
+}
+
+// audits returns the audit actions recorded for user, oldest first.
+func (e *testEnv) audits(user string) (actions []string) {
+	e.t.Helper()
+	rows, err := e.DB.Query("SELECT action FROM audit_events WHERE user_id=$1 ORDER BY id", user)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var a string
+		rows.Scan(&a)
+		actions = append(actions, a)
+	}
+	return actions
+}
+
+// notes returns the notification bodies of user, oldest first.
+func (e *testEnv) notes(user string) (bodies []string) {
+	e.t.Helper()
+	rows, err := e.DB.Query("SELECT body FROM notifications WHERE user_id=$1 ORDER BY created,id", user)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var b string
+		rows.Scan(&b)
+		bodies = append(bodies, b)
+	}
+	return bodies
+}
+
+func last(s []string) string {
+	if len(s) == 0 {
+		return ""
+	}
+	return s[len(s)-1]
+}
+
+// D4: a moderator's takedown deletes the row in the action's transaction (photo, a vendor's avatar, and an
+// administrator's takedown of a staff avatar); afterwards both routes answer exactly as for an unknown id, and the
+// audit rows carry fixed copy, the listing's short id and the reason, never the image id.
+func TestModeratorRemovesImageHardDelete(t *testing.T) {
+	e := newTestApp(t)
+	vendorID, vendor := e.user("td_img_vendor", "vendor")
+	moderatorID, moderator := e.user("td_img_moderator", "moderator")
+	adminID, admin := e.user("td_img_admin", "admin")
+	listing := e.product(vendorID, "physical")
+	photo := e.image(vendorID, listing, "photo")
+	e.wantPublic(photo, "before the takedown")
+
+	w := e.takeDown(moderator, photo.id, imageTakedownReason)
+	if w.Code != 303 || w.Header().Get("Location") != "/moderator?image=removed#recent-photos" {
+		t.Fatalf("takedown: %d %q %s", w.Code, w.Header().Get("Location"), w.Body.String())
+	}
+	if n := e.imageRows(photo.id); n != 0 {
+		t.Fatalf("%d rows after the takedown", n)
+	}
+	e.wantHidden(photo, "public route after the takedown")
+	e.wantDeskHidden(vendor, photo, "owner's desk route after the takedown")
+	e.wantDeskHidden(admin, photo, "administrator's desk route after the takedown")
+	if got, want := last(e.audits(moderatorID)), "Took down a photo on listing "+listing[:8]+": "+imageTakedownReason; got != want {
+		t.Fatalf("moderator's audit %q, want %q", got, want)
+	}
+	if got, want := last(e.audits(vendorID)), "Photo on listing "+listing[:8]+" removed by staff: "+imageTakedownReason; got != want {
+		t.Fatalf("vendor's audit %q, want %q", got, want)
+	}
+
+	// A vendor's avatar, and a moderator's avatar (a staff avatar) taken down by an administrator.
+	avatar := e.image(vendorID, "", "avatar")
+	staffAvatar := e.image(moderatorID, "", "avatar")
+	e.check(e.takeDown(moderator, avatar.id, imageTakedownReason), 303)
+	e.check(e.takeDown(admin, staffAvatar.id, imageTakedownReason), 303)
+	for _, im := range []testImage{avatar, staffAvatar} {
+		if n := e.imageRows(im.id); n != 0 {
+			t.Fatalf("avatar %s: %d rows after the takedown", im.id, n)
+		}
+		e.wantHidden(im, "avatar after the takedown")
+		e.wantDeskHidden(admin, im, "avatar on the desk route after the takedown")
+	}
+	if got, want := last(e.audits(moderatorID)), "Avatar removed by staff: "+imageTakedownReason; got != want {
+		t.Fatalf("moderator's own avatar audit %q, want %q", got, want)
+	}
+	if got, want := last(e.audits(adminID)), "Took down the avatar of td_img_moderator: "+imageTakedownReason; got != want {
+		t.Fatalf("administrator's audit %q, want %q", got, want)
+	}
+	for _, uid := range []string{vendorID, moderatorID, adminID} {
+		for _, a := range e.audits(uid) {
+			for _, im := range []testImage{photo, avatar, staffAvatar} {
+				if strings.Contains(a, im.id) || strings.Contains(a, im.id[:8]) {
+					t.Fatalf("audit row %q names image %s", a, im.id)
+				}
+			}
+		}
+	}
+	// Removing it again is the unknown-id answer.
+	again, unknown := e.takeDown(moderator, photo.id, imageTakedownReason), e.takeDown(moderator, randomToken()[:32], imageTakedownReason)
+	if again.Code != 404 || again.Body.String() != unknown.Body.String() {
+		t.Fatalf("second takedown: %d %q, unknown id: %d %q", again.Code, again.Body.String(), unknown.Code, unknown.Body.String())
+	}
+}
+
+// Every refusal after the role check is the unknown-id 404: an image a moderator may not see (an archived
+// listing's photo, a hidden staff member's avatar), the actor's own image (removed with the owner's form) and an
+// unknown or malformed id. A reason outside 10–500 characters is refused before the id is looked at. Nothing is
+// deleted and nothing recorded.
+func TestImageTakedownRefusalsMatchUnknownID(t *testing.T) {
+	e := newTestApp(t)
+	vendorID, _ := e.user("td_ref_vendor", "vendor")
+	moderatorID, moderator := e.user("td_ref_moderator", "moderator")
+	adminID, admin := e.user("td_ref_admin", "admin")
+	archived := e.product(vendorID, "physical")
+	hiddenPhoto := e.image(vendorID, archived, "photo")
+	if _, err := e.DB.Exec("UPDATE products SET archived=true,archived_at=now() WHERE id=$1", archived); err != nil {
+		t.Fatal(err)
+	}
+	hiddenAdminAvatar := e.image(adminID, "", "avatar") // staff are hidden and the list is off by default
+	ownAvatar := e.image(moderatorID, "", "avatar")
+	ref := e.takeDown(moderator, randomToken()[:32], imageTakedownReason)
+	if ref.Code != 404 || !strings.Contains(ref.Body.String(), "Nothing was removed") {
+		t.Fatalf("unknown id: %d %q", ref.Code, ref.Body.String())
+	}
+	for what, id := range map[string]string{"archived listing's photo": hiddenPhoto.id, "hidden administrator's avatar": hiddenAdminAvatar.id,
+		"own avatar": ownAvatar.id, "malformed id": "../" + hiddenPhoto.id, "empty id": ""} {
+		w := e.takeDown(moderator, id, imageTakedownReason)
+		if w.Code != ref.Code || w.Body.String() != ref.Body.String() {
+			t.Fatalf("%s: %d %q, want the unknown-id answer %q", what, w.Code, w.Body.String(), ref.Body.String())
+		}
+	}
+	// An administrator may take down the photo of an archived listing, but not their own avatar here.
+	if w := e.takeDown(admin, hiddenAdminAvatar.id, imageTakedownReason); w.Code != 404 || w.Body.String() != ref.Body.String() {
+		t.Fatalf("administrator's own avatar: %d %q", w.Code, w.Body.String())
+	}
+	for _, reason := range []string{"", "too short", "   short   ", strings.Repeat("x", 501), "\xff\xfe invalid utf-8 reason"} {
+		for _, id := range []string{hiddenPhoto.id, randomToken()[:32]} {
+			w := e.takeDown(admin, id, reason)
+			if w.Code != 400 || !strings.Contains(w.Body.String(), "10–500 characters") {
+				t.Fatalf("reason %q: %d %q", reason, w.Code, w.Body.String())
+			}
+		}
+	}
+	if e.imageCount() != 3 {
+		t.Fatalf("%d images after refused takedowns", e.imageCount())
+	}
+	for _, uid := range []string{vendorID, moderatorID, adminID} {
+		if len(e.audits(uid)) != 0 || len(e.notes(uid)) != 0 {
+			t.Fatalf("a refused takedown was recorded: %q %q", e.audits(uid), e.notes(uid))
+		}
+	}
+	e.check(e.takeDown(admin, hiddenPhoto.id, strings.Repeat("y", 500)), 303)
+	if e.imageRows(hiddenPhoto.id) != 0 {
+		t.Fatal("the administrator's takedown of an archived listing's photo left the row")
+	}
+}
+
+// Buyers and vendors, the image's owner included, cannot use the staff route, and are offered no staff forms.
+func TestBuyerAndVendorCannotRemoveOthersImage(t *testing.T) {
+	e := newTestApp(t)
+	vendorID, vendor := e.user("td_owner_vendor", "vendor")
+	_, other := e.user("td_other_vendor", "vendor")
+	_, buyer := e.user("td_buyer", "buyer")
+	listing := e.product(vendorID, "physical")
+	photo := e.image(vendorID, listing, "photo")
+	avatar := e.image(vendorID, "", "avatar")
+	for _, s := range []string{buyer, other, vendor} {
+		for _, id := range []string{photo.id, avatar.id} {
+			e.check(e.takeDown(s, id, imageTakedownReason), 403)
+		}
+		for _, path := range []string{"/product?id=" + listing, "/vendor?id=" + vendorID} {
+			if body := e.body("GET", path, s, nil, 200); strings.Contains(body, "/images/remove") {
+				t.Fatalf("%s offers a staff remove form to a non-staff account", path)
+			}
+		}
+		e.check(e.do("GET", "/moderator", s, nil), 403)
+	}
+	if body := e.body("GET", "/product?id="+listing, "", nil, 200); strings.Contains(body, "/images/remove") {
+		t.Fatal("the product page offers a staff remove form to a visitor")
+	}
+	if e.imageCount() != 2 {
+		t.Fatalf("%d images after refused takedowns", e.imageCount())
+	}
+	e.wantPublic(photo, "photo after refused takedowns")
+	e.wantPublic(avatar, "avatar after refused takedowns")
+}
+
+// A moderator takes images down and nothing more: listing edits, archive, restore, takedown, the listing's edit
+// page, photo upload and the owner's photo removal all stay refused.
+func TestModeratorCannotEditListing(t *testing.T) {
+	e, f := uploadEnv(t)
+	vendorID, _ := e.user("td_edit_vendor", "vendor")
+	_, moderator := e.user("td_edit_moderator", "moderator")
+	listing := e.product(vendorID, "physical")
+	photo := e.image(vendorID, listing, "photo")
+	for path, form := range map[string]url.Values{
+		"/listings/update":       inventoryForm(listing, map[string]string{"stock_seen": "5", "title": "Changed by a moderator"}),
+		"/listings/archive":      {"id": {listing}},
+		"/listings/restore":      {"id": {listing}},
+		"/admin/listing":         {"id": {listing}, "action": {"takedown"}, "reason": {imageTakedownReason}, "password": {testPassword}},
+		"/listings/photo/remove": {"id": {photo.id}},
+	} {
+		e.check(e.do("POST", path, moderator, form), 403)
+	}
+	e.check(e.do("GET", "/listing-edit?id="+listing, moderator, nil), 403)
+	checkPage(t, e.upload("/listings/photo", moderator, e.photoParts(moderator, listing, smallJPEG(t))...), 403, "only vendors and administrators")
+	var title string
+	var archived bool
+	if err := e.DB.QueryRow("SELECT title,archived FROM products WHERE id=$1", listing).Scan(&title, &archived); err != nil {
+		t.Fatal(err)
+	}
+	if title != "Test listing" || archived || e.imageCount() != 1 || scansOf(f) != 0 {
+		t.Fatalf("after a moderator's refused changes: title %q archived %v, %d images, %d scans", title, archived, e.imageCount(), scansOf(f))
+	}
+}
+
+// The owner is notified with the reason (link-free, no image id) and sees "Photo removed by staff: <reason>" on the
+// listing's edit page on every load, derived from their audit row; an administrator sees it there too; another
+// listing of the same vendor does not show it. The takedown is posted through the form on the product page.
+func TestTakedownNotifiesOwnerWithReason(t *testing.T) {
+	e := newTestApp(t)
+	vendorID, vendor := e.user("td_note_vendor", "vendor")
+	moderatorID, moderator := e.user("td_note_moderator", "moderator")
+	_, admin := e.user("td_note_admin", "admin")
+	listing := e.product(vendorID, "physical")
+	otherListing := e.product(vendorID, "physical")
+	photo := e.image(vendorID, listing, "photo")
+	kept := e.image(vendorID, listing, "photo")
+
+	form := imageTakedownForm(t, e.body("GET", "/product?id="+listing, moderator, nil, 200), photo.id, imageTakedownReason)
+	w := e.do("POST", "/images/remove", moderator, form)
+	if w.Code != 303 || w.Header().Get("Location") != "/product?id="+listing+"&image=removed" {
+		t.Fatalf("takedown from the product page: %d %q %s", w.Code, w.Header().Get("Location"), w.Body.String())
+	}
+	back := e.body("GET", w.Header().Get("Location"), moderator, nil, 200)
+	mustContain(t, back, "Image removed. Its owner was notified with your reason.")
+	if strings.Contains(back, photo.id) || !strings.Contains(back, kept.id) {
+		t.Fatal("the product page after the takedown still shows the photo, or lost the other one")
+	}
+	wantNote := "Staff removed a photo from your listing “Test listing” (" + listing[:8] + ") with the reason “" + imageTakedownReason +
+		"”. The photo was deleted and cannot be restored; the listing itself is unchanged. You can add another photo from the listing's edit page. If you think this is wrong, contact the market staff."
+	if got := e.notes(vendorID); len(got) != 1 || got[0] != wantNote {
+		t.Fatalf("vendor's notifications %q, want %q", got, wantNote)
+	}
+	if len(e.notes(moderatorID)) != 0 {
+		t.Fatal("the moderator was notified of their own takedown")
+	}
+	shown := "Photo removed by staff:</strong> " + html.EscapeString(imageTakedownReason)
+	for range 2 { // survives a reload
+		for _, s := range []string{vendor, admin} {
+			mustContain(t, sectionOf(t, e.body("GET", "/listing-edit?id="+listing, s, nil, 200), "photos"), shown)
+		}
+	}
+	if strings.Contains(e.body("GET", "/listing-edit?id="+otherListing, vendor, nil, 200), "Photo removed by staff") {
+		t.Fatal("another listing shows the takedown")
+	}
+	// The public product page never shows the reason.
+	if strings.Contains(e.body("GET", "/product?id="+listing, "", nil, 200), "street sign") {
+		t.Fatal("the reason is shown publicly")
+	}
+
+	// An avatar, taken down from the vendor page's form.
+	avatar := e.image(vendorID, "", "avatar")
+	form = imageTakedownForm(t, e.body("GET", "/vendor?id="+vendorID, moderator, nil, 200), avatar.id, "Avatar shows a real name tag.")
+	w = e.do("POST", "/images/remove", moderator, form)
+	if w.Code != 303 || w.Header().Get("Location") != "/vendor?id="+vendorID+"&image=removed" {
+		t.Fatalf("takedown from the vendor page: %d %q %s", w.Code, w.Header().Get("Location"), w.Body.String())
+	}
+	wantAvatar := "Staff removed your avatar with the reason “Avatar shows a real name tag.”. It was deleted and cannot be restored. If you think this is wrong, contact the market staff."
+	if got := last(e.notes(vendorID)); got != wantAvatar {
+		t.Fatalf("avatar notification %q, want %q", got, wantAvatar)
+	}
+	for _, n := range e.notes(vendorID) {
+		if strings.Contains(n, photo.id) || strings.Contains(n, avatar.id) || strings.Contains(n, "href") {
+			t.Fatalf("notification %q names the image or links", n)
+		}
+	}
+}
+
+// Item 5: an administrator adding a photo to, or removing one from, another vendor's listing is recorded in the
+// vendor's own audit trail too (fixed copy, the listing's short id). The vendor's own changes are not doubled.
+func TestAdminPhotoAuditedToVendor(t *testing.T) {
+	e, _ := uploadEnv(t)
+	vendorID, vendor := e.user("td_audit_vendor", "vendor")
+	adminID, admin := e.user("td_audit_admin", "admin")
+	listing := e.product(vendorID, "physical")
+	if w := e.upload("/listings/photo", admin, e.photoParts(admin, listing, smallJPEG(t))...); w.Code != 303 {
+		t.Fatalf("administrator's upload: %d %s", w.Code, w.Body.String())
+	}
+	if got, want := e.audits(vendorID), []string{"Photo added to listing " + listing[:8] + " by an administrator"}; strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("vendor's audit after the administrator's upload %q, want %q", got, want)
+	}
+	if got := last(e.audits(adminID)); got != "Added a photo to listing "+listing[:8]+" as administrator" {
+		t.Fatalf("administrator's audit %q", got)
+	}
+	e.check(e.do("POST", "/listings/photo/remove", admin, url.Values{"id": {photoIDOf(t, e, listing)}}), 303)
+	if got := last(e.audits(vendorID)); got != "Photo removed from listing "+listing[:8]+" by an administrator" {
+		t.Fatalf("vendor's audit after the administrator's removal %q", got)
+	}
+	// The vendor's own upload and removal: one row each, the vendor's own.
+	if w := e.upload("/listings/photo", vendor, e.photoParts(vendor, listing, smallJPEG(t))...); w.Code != 303 {
+		t.Fatalf("vendor's upload: %d", w.Code)
+	}
+	e.check(e.do("POST", "/listings/photo/remove", vendor, url.Values{"id": {photoIDOf(t, e, listing)}}), 303)
+	want := []string{"Photo added to listing " + listing[:8] + " by an administrator", "Photo removed from listing " + listing[:8] + " by an administrator",
+		"Added a photo to listing " + listing[:8], "Removed a photo from listing " + listing[:8]}
+	if got := e.audits(vendorID); strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("vendor's audit %q, want %q", got, want)
+	}
+}
+
+// Every staff change to another account's image notifies its owner: an administrator's upload and removal on a
+// vendor's listing, a moderator's takedown of a vendor's avatar and an administrator's takedown of a moderator's
+// avatar. The owner's own changes notify nobody.
+func TestStaffImageChangeNotifiesOwner(t *testing.T) {
+	e, _ := uploadEnv(t)
+	vendorID, vendor := e.user("td_notify_vendor", "vendor")
+	moderatorID, moderator := e.user("td_notify_moderator", "moderator")
+	_, admin := e.user("td_notify_admin", "admin")
+	listing := e.product(vendorID, "physical")
+	if w := e.upload("/listings/photo", vendor, e.photoParts(vendor, listing, smallJPEG(t))...); w.Code != 303 {
+		t.Fatalf("vendor's upload: %d", w.Code)
+	}
+	e.check(e.do("POST", "/listings/photo/remove", vendor, url.Values{"id": {photoIDOf(t, e, listing)}}), 303)
+	if n := e.notes(vendorID); len(n) != 0 {
+		t.Fatalf("the vendor's own changes notified: %q", n)
+	}
+	if w := e.upload("/listings/photo", admin, e.photoParts(admin, listing, smallJPEG(t))...); w.Code != 303 {
+		t.Fatalf("administrator's upload: %d", w.Code)
+	}
+	e.check(e.do("POST", "/listings/photo/remove", admin, url.Values{"id": {photoIDOf(t, e, listing)}}), 303)
+	avatar := e.image(vendorID, "", "avatar")
+	e.check(e.takeDown(moderator, avatar.id, "Avatar shows a real name tag."), 303)
+	want := []string{
+		"An administrator added a photo to your listing " + listing[:8] + ".",
+		"An administrator removed a photo from your listing " + listing[:8] + ".",
+		"Staff removed your avatar with the reason “Avatar shows a real name tag.”. It was deleted and cannot be restored. If you think this is wrong, contact the market staff.",
+	}
+	if got := e.notes(vendorID); strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("vendor's notifications %q, want %q", got, want)
+	}
+	staffAvatar := e.image(moderatorID, "", "avatar")
+	e.check(e.takeDown(admin, staffAvatar.id, "A staff avatar must not show a face."), 303)
+	if got := e.notes(moderatorID); len(got) != 1 || !strings.Contains(got[0], "“A staff avatar must not show a face.”") {
+		t.Fatalf("moderator's notifications %q", got)
+	}
+}
+
+// The takedown takes the users rows of the actor and the owner before it deletes the image and writes its audit
+// and notification rows (lockListing's order), so beside an administrator's role change of the owner it waits and
+// then finishes instead of deadlocking (R24-1).
+func TestImageTakedownDoesNotDeadlockWithRoleChange(t *testing.T) {
+	for _, kind := range []string{"photo", "avatar"} {
+		t.Run(kind, func(t *testing.T) {
+			e := newTestApp(t)
+			vendorID, _ := e.user("td_deadlock_vendor", "vendor")
+			_, moderator := e.user("td_deadlock_moderator", "moderator")
+			product := ""
+			if kind == "photo" {
+				product = e.product(vendorID, "physical")
+			}
+			im := e.image(vendorID, product, kind)
+			w := besideRoleChange(t, e, vendorID, func() *httptest.ResponseRecorder {
+				return e.takeDown(moderator, im.id, imageTakedownReason)
+			})
+			if w.Code != 303 || e.imageRows(im.id) != 0 {
+				t.Fatalf("takedown beside a role change: %d %s, %d rows", w.Code, w.Body.String(), e.imageRows(im.id))
+			}
+		})
+	}
+}
+
+// /moderator "Recent photos": the 50 newest images the public route serves, newest first, each with its thumbnail
+// on /img, its listing and owner links, when it was added and a remove form; never an image the public route
+// refuses (an archived listing's photo, a suspended vendor's, a hidden staff avatar). Staff see <details> remove
+// forms on the product page (per photo) and the vendor page (the avatar), never for their own images.
+func TestRecentPhotosAndStaffForms(t *testing.T) {
+	e := newTestApp(t)
+	vendorID, _ := e.user("td_recent_vendor", "vendor")
+	suspendedID, _ := e.user("td_recent_suspended", "vendor")
+	_, moderator := e.user("td_recent_moderator", "moderator")
+	adminID, admin := e.user("td_recent_admin", "admin")
+	listing := e.product(vendorID, "physical")
+	archived := e.product(vendorID, "physical")
+	suspendedListing := e.product(suspendedID, "physical")
+	if _, err := e.DB.Exec("UPDATE products SET archived=true,archived_at=now() WHERE id=$1", archived); err != nil {
+		t.Fatal(err)
+	}
+	hidden := []testImage{e.image(vendorID, archived, "photo"), e.image(suspendedID, suspendedListing, "photo"), e.image(adminID, "", "avatar")}
+	if _, err := e.DB.Exec("UPDATE users SET suspended_at=now() WHERE id=$1", suspendedID); err != nil {
+		t.Fatal(err)
+	}
+	avatar := e.image(vendorID, "", "avatar")
+	var photos []testImage
+	for range 50 {
+		photos = append(photos, e.image(vendorID, listing, "photo"))
+	}
+	// Distinct times, oldest first: the avatar, then photos[0..49].
+	if _, err := e.DB.Exec(`UPDATE images SET created=now()-interval '1 hour' WHERE id=$1`, avatar.id); err != nil {
+		t.Fatal(err)
+	}
+	for i, p := range photos {
+		if _, err := e.DB.Exec(`UPDATE images SET created=now()-make_interval(mins => $2) WHERE id=$1`, p.id, 50-i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, s := range []string{moderator, admin} {
+		section := sectionOf(t, e.body("GET", "/moderator", s, nil, 200), "recent-photos")
+		mustContain(t, section, "Recent photos", publicImageURL(photos[49].id, false), `href="/product?id=`+listing+`"`, `href="/vendor?id=`+vendorID+`"`, "UTC")
+		if strings.Count(section, `action="/images/remove"`) != 50 || strings.Count(section, "<details") != 50 {
+			t.Fatalf("want 50 remove forms:\n%s", section)
+		}
+		if strings.Contains(section, avatar.id) {
+			t.Fatal("the 51st newest image is listed")
+		}
+		if strings.Index(section, photos[49].id) > strings.Index(section, photos[0].id) {
+			t.Fatal("not newest first")
+		}
+		for _, im := range hidden {
+			if strings.Contains(section, im.id) {
+				t.Fatalf("an image the public route refuses is listed: %s", im.id)
+			}
+		}
+		if strings.Contains(section, "/desk/img/") {
+			t.Fatal("Recent photos links the desk route")
+		}
+		imageTakedownForm(t, section, photos[10].id, imageTakedownReason)
+	}
+	// With fewer images the avatar is listed too, linked to the vendor page.
+	for _, p := range photos[:45] {
+		e.DB.Exec("DELETE FROM images WHERE id=$1", p.id)
+	}
+	section := sectionOf(t, e.body("GET", "/moderator", moderator, nil, 200), "recent-photos")
+	mustContain(t, section, publicImageURL(avatar.id, false))
+	imageTakedownForm(t, section, avatar.id, imageTakedownReason)
+
+	// The product page: one staff form per photo; the vendor page: one for the avatar.
+	for _, s := range []string{moderator, admin} {
+		product := e.body("GET", "/product?id="+listing, s, nil, 200)
+		if n := strings.Count(product, `action="/images/remove"`); n != 5 {
+			t.Fatalf("product page: %d staff forms, want 5", n)
+		}
+		for _, p := range photos[45:] {
+			if f := imageTakedownForm(t, product, p.id, imageTakedownReason); f.Get("from") != "product" {
+				t.Fatalf("product form fields %v", f)
+			}
+		}
+		vendorPage := e.body("GET", "/vendor?id="+vendorID, s, nil, 200)
+		if n := strings.Count(vendorPage, `action="/images/remove"`); n != 1 {
+			t.Fatalf("vendor page: %d staff forms, want 1 (the avatar; cards have none)", n)
+		}
+		if f := imageTakedownForm(t, vendorPage, avatar.id, imageTakedownReason); f.Get("from") != "vendor" {
+			t.Fatalf("vendor form fields %v", f)
+		}
+	}
+	// An administrator's own listing and avatar: no staff form for the administrator.
+	ownListing := e.product(adminID, "physical")
+	e.image(adminID, ownListing, "photo")
+	if strings.Contains(e.body("GET", "/product?id="+ownListing, admin, nil, 200), "/images/remove") {
+		t.Fatal("an administrator is offered the staff form for their own photo")
+	}
+	if !strings.Contains(e.body("GET", "/product?id="+ownListing, moderator, nil, 200), "/images/remove") {
+		t.Fatal("a moderator is not offered the staff form for an administrator's photo")
+	}
+}
