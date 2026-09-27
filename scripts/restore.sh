@@ -115,8 +115,16 @@ echo 'Application databases now require payout recovery reconciliation. All outb
 # A-190 (ruling D4): staff takedowns and owners' removals delete an image's row, so the restored database has every
 # photo and avatar the backup had, including those removed since. The backup time is the dump's own creation time
 # from its table of contents (pg_restore --list reads only the start of the archive; the decryption stopping early
-# is expected, hence || true).
-backup_time=$(age -d -i "$AGE_IDENTITY" "$1" 2>/dev/null | client pg_restore --list 2>/dev/null | sed -n 's/^;[[:space:]]*Archive created at //p' | head -n 1) || true
+# is expected, hence || true). The dump holds it as wall-clock fields of the zone pg_dump ran in, which
+# scripts/backup.sh sets to UTC, and pg_restore labels them with its own zone, so it runs in UTC too.
+list_archive() {
+  if [[ -n ${RESTORE_DATABASE_URL:-} ]]; then
+    TZ=UTC python3 "$script_dir/postgres-tool.py" RESTORE_DATABASE_URL pg_restore --list
+  else
+    (cd "$root_dir" && docker compose exec -T -e TZ=UTC db pg_restore --list)
+  fi
+}
+backup_time=$(age -d -i "$AGE_IDENTITY" "$1" 2>/dev/null | list_archive 2>/dev/null | sed -n 's/^;[[:space:]]*Archive created at //p' | head -n 1) || true
 printf '%s images restored from a backup taken %s; photo and avatar removals made after that time are undone — check /moderator Recent photos and remove them again\n' "$images" "${backup_time:-at an unknown time}"
 echo 'Restore completed. Validate the new database before switching application traffic.'
 if [[ -n ${RESTORE_INTERNAL_DATABASE:-} ]]; then

@@ -328,7 +328,9 @@ that time are undone — check /moderator Recent photos and remove them again`. 
 avatar, by its owner or as a staff takedown, deletes it from the database, so a restore brings back every image
 removed after the backup was taken. Before users return, have a moderator check the moderation desk's Recent
 photos and take down again any image that had been removed. A restore not done by `scripts/restore.sh` prints
-nothing, but undoes those removals all the same.
+nothing, but undoes those removals all the same. The time is in UTC for backups made by this release's
+`scripts/backup.sh`; for a backup made by an earlier one on a host (or, for the internal database, a container)
+not set to UTC, it is off by that zone's offset from UTC.
 
 **Any restore not done by `scripts/restore.sh` skips this payout protection.** A host or volume snapshot, a
 managed-database point-in-time recovery or a manual `pg_restore` brings payouts back as `pending` with no
