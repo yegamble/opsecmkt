@@ -174,8 +174,9 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			query += " AND p.vendor_id=$1"
 			args = append(args, d.User.ID)
 		case "catalog":
-			// The term is matched literally (likePattern); the count and the page share one filter.
-			filter := ` AND NOT p.archived AND ($1='' OR p.title ILIKE $4 ESCAPE '\' OR p.description ILIKE $4 ESCAPE '\') AND ($2='' OR p.category=$2) AND ($3='' OR p.region=$3 OR p.region='Worldwide')`
+			// The term is matched literally (likePattern); the count and the page share one filter. E'\\' is one
+			// backslash whatever standard_conforming_strings an external database sets.
+			filter := ` AND NOT p.archived AND ($1='' OR p.title ILIKE $4 ESCAPE E'\\' OR p.description ILIKE $4 ESCAPE E'\\') AND ($2='' OR p.category=$2) AND ($3='' OR p.region=$3 OR p.region='Worldwide')`
 			args = append(args, d.Query, d.Category, d.Region, likePattern(d.Query))
 			var total int
 			if err = a.db.QueryRowContext(ctx, `SELECT count(*) FROM products p WHERE true`+filter, args...).Scan(&total); err != nil {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -205,6 +206,20 @@ func TestCatalogSearchEscapesWildcards(t *testing.T) {
 		if strings.Join(got, "|") != strings.Join(want, "|") {
 			t.Errorf("q=%q: got %q want %q", q, got, want)
 		}
+	}
+	// The ESCAPE literal must not depend on the server's string-literal setting (external databases).
+	// Set per connection through the DSN (pgx runtime parameter), not for the role: other test packages
+	// share the database.
+	t.Setenv("DATABASE_URL", os.Getenv("DATABASE_URL")+"&standard_conforming_strings=off")
+	e.restart()
+	var scs string
+	if err := e.DB.QueryRow("SHOW standard_conforming_strings").Scan(&scs); err != nil || scs != "off" {
+		t.Fatalf("standard_conforming_strings=%q %v", scs, err)
+	}
+	w := e.do("GET", "/?q=%25", "", nil)
+	e.check(w, 200)
+	if got := cardTitles(w.Body.String()); len(got) != 1 || got[0] != "Cotton 100% organic" {
+		t.Errorf("standard_conforming_strings=off: q=%% got %q", got)
 	}
 }
 
