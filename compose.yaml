@@ -28,6 +28,8 @@ services:
       DATABASE_CONNECT_TIMEOUT: ${DATABASE_CONNECT_TIMEOUT:-}
       MIGRATION_LOCK_TIMEOUT: ${MIGRATION_LOCK_TIMEOUT:-}
       MIGRATION_TIMEOUT: ${MIGRATION_TIMEOUT:-}
+      # The most all stored photos and avatars may use, in MB; blank uses 2048 (docs/operator-guide.md#troubleshooting).
+      IMAGE_STORAGE_LIMIT_MB: ${IMAGE_STORAGE_LIMIT_MB:-}
       BITCOIN_RPC_URL: ${BITCOIN_RPC_URL:-}
       BITCOIN_WALLET: ${BITCOIN_WALLET:-opsecmkt}
       # Blank chain/network: accept whichever test network the node reports (mainnet is always refused).
