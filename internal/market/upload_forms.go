@@ -41,6 +41,8 @@ type UploadsView struct {
 	PhotoLimit  int
 	Used, Quota string
 	Blocked     string
+	// Listing-edit: staff takedowns of the listing's photos with their reasons, newest first (A-190, staffRemovals).
+	StaffRemovals []StaffRemoval
 	// Account: the viewer's avatar (nil when none); whether the viewer may upload one (vendor, administrator,
 	// moderator); whether the viewer is staff (moderator, administrator) and hidden from the public staff list.
 	Avatar      *StoredImage
@@ -113,6 +115,9 @@ func loadPhotoPanel(ctx context.Context, a *App, r *http.Request, d *PageData) e
 		return err
 	}
 	v.PhotoCount, v.Used = len(v.Photos), quotaMB(used)
+	if v.StaffRemovals, err = staffRemovals(ctx, a, d.Product); err != nil {
+		return err
+	}
 	switch {
 	case d.Listing != nil && d.Listing.TakedownReason != "":
 		v.Blocked = "An administrator took this listing down, so photos cannot be added to it. Its photos can still be removed."
@@ -160,8 +165,8 @@ func loadAvatarPanel(ctx context.Context, a *App, r *http.Request, d *PageData) 
 
 // photoRemoveAction deletes one of a listing's photos for the listing's vendor or an administrator (the
 // lockListing predicate), in any state of the listing. Any other photo, an avatar and an unknown id get the same
-// 404. The removal is audited with fixed copy (listingAudit), and the vendor is notified when an administrator
-// removed it (as storeImage does for an administrator's addition).
+// 404. The removal is audited with fixed copy (listingAudit); when an administrator removed it, the vendor's own
+// audit trail records it too and the vendor is notified (as storeImage does for an administrator's addition).
 func photoRemoveAction(c *actionCtx) (actionResult, error) {
 	notFound := fail(404, "Photo not found. Nothing was removed.")
 	id := c.Form.Get("id")
@@ -188,7 +193,10 @@ func photoRemoveAction(c *actionCtx) (actionResult, error) {
 	if n, _ := res.RowsAffected(); n == 0 { // removed meanwhile
 		return actionResult{}, notFound
 	}
-	if l.VendorID != c.User.ID {
+	if l.VendorID != c.User.ID { // A-190: in the vendor's own audit trail too
+		if _, err = c.Tx.ExecContext(c.Ctx(), "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", l.VendorID, "Photo removed from listing "+shortID(l.ID)+" by an administrator"); err != nil {
+			return actionResult{}, err
+		}
 		if _, err = c.Tx.ExecContext(c.Ctx(), "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), l.VendorID, "An administrator removed a photo from your listing "+shortID(l.ID)+"."); err != nil {
 			return actionResult{}, err
 		}

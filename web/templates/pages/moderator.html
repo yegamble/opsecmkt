@@ -33,4 +33,19 @@
 </table>
 </div>{{else}}<p class="muted">No payments are flagged for review.</p>{{end}}
 </section>
+<section id="recent-photos" aria-labelledby="recent-photos-title">{{/* A-190: image_takedown.go */}}
+<h2 class="section-title" id="recent-photos-title">Recent photos</h2>
+<p class="help">The 50 newest listing photos and avatars that anyone can see, newest first. Remove one that breaks the market's rules: it is deleted at once and its owner is told your reason. After the operator restores the database from a backup, photos and avatars removed after that backup are back: check this list and remove them again.</p>{{if .RecentImages}}
+<ol class="photo-list recent-photos">{{range .RecentImages}}
+<li class="photo-item">
+<a class="photo-thumb" href="{{.Full}}"><img src="{{.Thumb}}" alt="" width="{{.Width}}" height="{{.Height}}"><span class="sr-only">{{if .Photo}}Photo{{else}}Avatar{{end}} at full size</span></a>
+<div class="photo-meta">
+<p>{{if .Photo}}Photo on <a class="text-link" href="/product?id={{.Listing}}">{{.Title}}</a>{{else}}Avatar{{end}} of <a class="text-link" href="{{.OwnerLink}}">{{.Owner}}</a></p>
+<p class="muted">Added {{.Added}}</p>
+{{with .Takedown}}{{template "image-takedown" .}}{{else}}<p class="help">Your own: remove it from {{if .Photo}}the listing's edit page{{else}}your account page{{end}}.</p>{{end}}
+</div>
+</li>{{end}}
+</ol>{{else}}
+<p class="muted">No photos or avatars are shown publicly.</p>{{end}}
+</section>
 {{template "footer" .}}{{end}}

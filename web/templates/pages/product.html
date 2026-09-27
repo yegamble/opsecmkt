@@ -5,12 +5,12 @@
 <section class="product-card">{{/* A-189: photo 1 full size, the others as thumbnails linking to theirs (image_pages.go) */}}
 {{with .Photos}}{{with index . 0}}<div class="product-photo">
 <img src="{{.Full}}" alt="{{.Alt}}" width="{{.Width}}" height="{{.Height}}">
-</div>{{end}}{{if gt (len .) 1}}
+</div>{{with .Takedown}}{{template "image-takedown" .}}{{end}}{{end}}{{if gt (len .) 1}}
 <ul class="photo-thumbs">{{range slice . 1}}
 <li>
 <a href="{{.Full}}"><img src="{{.Thumb}}" alt="" width="160" height="120">
 <span>{{.Label}}</span></a>{{if .Description}}
-<p class="help">{{.Description}}</p>{{end}}
+<p class="help">{{.Description}}</p>{{end}}{{with .Takedown}}{{template "image-takedown" .}}{{end}}
 </li>{{end}}
 </ul>{{end}}{{else}}<div class="product-art detail-art" aria-label="Illustrative product graphic">
 <div class="device" aria-hidden="true">
