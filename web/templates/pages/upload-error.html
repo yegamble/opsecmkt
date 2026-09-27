@@ -1,0 +1,9 @@
+{{/* A-186: the page a refused photo or avatar upload gets, and a file posted to a form that takes none (uploads.go). Not a registered page: only rendered as a response. The reason is .Error (the layout's alert). */}}
+{{define "page:upload-error"}}{{template "header" .}}
+<div class="form-narrow">
+<div class="panel">
+<h1>{{.Title}}<span class="accent">.</span></h1>
+<p><a class="text-link" href="{{with .UploadBack}}{{.}}{{else}}/{{end}}">{{with .UploadBackLabel}}{{.}}{{else}}Back to the market{{end}}</a></p>
+</div>
+</div>
+{{template "footer" .}}{{end}}

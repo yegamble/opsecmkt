@@ -106,7 +106,7 @@ func exifTIFF(orientation int, thumb []byte) []byte {
 	u16(2)
 	u32(2)
 	b.Write([]byte{'N', 0, 0, 0})
-	entry(0x0002, 5, 3, uint32(latAt))                     // GPSLatitude
+	entry(0x0002, 5, 3, uint32(latAt))                      // GPSLatitude
 	entry(0x001B, 7, uint32(len(method)), uint32(methodAt)) // GPSProcessingMethod
 	u32(0)
 	for _, v := range []uint32{51, 1, 30, 1, 2667, 100} {
