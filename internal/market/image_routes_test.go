@@ -937,7 +937,9 @@ func TestImageSlowReadersBoundedByByteBudget(t *testing.T) {
 	for imageBytes.inUse()+size <= imageBytes.limit {
 		before := imageBytes.inUse()
 		slow = append(slow, send())
-		waitFor(t, func() bool { return imageBytes.inUse() > before })
+		// Wait for the reservation trimmed to the image's size: the request first reserves maxFullBytes, and
+		// counting that transient 2 MiB stops the loop one client early (seen under load: "32 … want 33").
+		waitFor(t, func() bool { return imageBytes.inUse() == before+size })
 	}
 	if n := len(slow); n != int(imageBytes.limit/size) {
 		t.Fatalf("%d clients that never read filled the budget, want %d", n, imageBytes.limit/size)
