@@ -23,6 +23,9 @@ umask 077
 bitcoin_image_default='bitcoin/bitcoin:31.1'
 monero_image_default='ghcr.io/sethforprivacy/simple-monerod:v0.18.5.1'
 monero_wallet_image_default='ghcr.io/sethforprivacy/simple-monero-wallet-rpc:v0.18.5.1'
+# The malware scanner's image: a ClamAV release with signatures (never _base or latest). Change it together with
+# compose.scanner.yaml and .env.example (docs/operator-guide.md#photo-uploads-and-the-malware-scanner).
+clamav_image_default='clamav/clamav:1.5.4-debian'
 # Local nodes are pruned unless the operator says no. Keep these equal to compose.nodes.yaml's defaults.
 bitcoin_prune_default=2000
 monero_prune_default='--prune-blockchain --sync-pruned-blocks'
@@ -36,7 +39,8 @@ env_keys='DATABASE_URL POSTGRES_PASSWORD APP_SECRET_KEY SETUP_TOKEN APP_MODE COO
 DATABASE_CONNECT_TIMEOUT MIGRATION_LOCK_TIMEOUT MIGRATION_TIMEOUT COMPOSE_PROJECT_NAME COMPOSE_FILE COMPOSE_PROFILES
 BITCOIN_RPC_URL BITCOIN_WALLET BITCOIN_CHAIN PAYMENT_CONFIRMATIONS_BTC MONERO_RPC_URL MONERO_WALLET_RPC_URL
 MONERO_NETWORK PAYMENT_CONFIRMATIONS_XMR PAYMENT_POLL_INTERVAL PAYMENT_EXPIRY AUDIT_SIGNING_KEY BITCOIN_IMAGE
-MONERO_IMAGE MONERO_WALLET_IMAGE BITCOIN_PRUNE_MB MONERO_PRUNE_FLAGS BITCOIN_RPC_PASSWORD MONERO_WALLET_RPC_PASSWORD'
+MONERO_IMAGE MONERO_WALLET_IMAGE BITCOIN_PRUNE_MB MONERO_PRUNE_FLAGS BITCOIN_RPC_PASSWORD MONERO_WALLET_RPC_PASSWORD
+CLAMD_ADDRESS CLAMAV_IMAGE'
 # What `upgrade` writes for a key missing from .env: the value Compose already uses when the key is absent, so
 # adding it changes nothing but makes it visible. APP_MODE, APP_PORT, COMPOSE_PROJECT_NAME, COMPOSE_PROFILES and
 # COMPOSE_FILE are derived from the install instead; secrets are never invented (APP_SECRET_KEY is copied from
@@ -59,7 +63,9 @@ BITCOIN_IMAGE=$bitcoin_image_default
 MONERO_IMAGE=$monero_image_default
 MONERO_WALLET_IMAGE=$monero_wallet_image_default
 BITCOIN_PRUNE_MB=$bitcoin_prune_default
-MONERO_PRUNE_FLAGS=$monero_prune_default"
+MONERO_PRUNE_FLAGS=$monero_prune_default
+CLAMD_ADDRESS=
+CLAMAV_IMAGE=$clamav_image_default"
 # Values from the caller's environment that init and upgrade honour, read before isolate_env clears them.
 caller_app_port=${APP_PORT-}
 caller_project=${COMPOSE_PROJECT_NAME-}

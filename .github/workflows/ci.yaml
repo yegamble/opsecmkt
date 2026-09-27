@@ -135,6 +135,10 @@ jobs:
           if [ "$MIRROR" = on ]; then
             profiles+=(--profile mirror)
           fi
+          # Without the malware scanner (the default), then with it: compose.scanner.yaml and its profile (A-184).
+          docker compose "${files[@]}" "${profiles[@]}" config --quiet
+          files+=(-f compose.scanner.yaml)
+          profiles+=(--profile scanner)
           docker compose "${files[@]}" "${profiles[@]}" config --quiet
           # `up --wait` needs a healthcheck on the app (its -healthcheck flag) and, in Tor mode, on each Tor service
           # (the onion hostname file exists).
@@ -142,7 +146,7 @@ jobs:
           import json, sys
           services = json.load(sys.stdin)["services"]
           mode, mirror = sys.argv[1], sys.argv[2]
-          want = {"app": ["CMD", "/app/server", "-healthcheck"]}
+          want = {"app": ["CMD", "/app/server", "-healthcheck"], "clamd": ["CMD", "clamdcheck.sh"]}
           for name in ["tor"] + (["tor-mirror"] if mirror == "on" else []) if mode == "tor" else []:
               want[name] = ["CMD-SHELL", "test -s /var/lib/tor/marketplace/hostname"]
           for name, test in want.items():
@@ -161,7 +165,8 @@ jobs:
           # service: (mem_limit, CPUs as cpu_quota / cpu_period, pids_limit). Not cpus: Docker refuses to create a
           # container whose cpus exceed the host CPU count, which would break 1-CPU hosts.
           limits = {"app": ("512m", 2, 512), "db": ("1g", 2, 256), "tor": ("256m", 1, 64), "tor-mirror": ("256m", 1, 64),
-                    "bitcoin": ("2g", 2, 256), "monero": ("2g", 2, 512), "monero-wallet": ("512m", 1, 128)}
+                    "bitcoin": ("2g", 2, 256), "monero": ("2g", 2, 512), "monero-wallet": ("512m", 1, 128),
+                    "clamd": ("3g", 2, 256)}
           logging = {"driver": sys.argv[1] or "json-file", "options": {"max-size": "10m", "max-file": "3"}}
           for name, service in sorted(services.items()):
               if name not in limits:
@@ -194,6 +199,36 @@ jobs:
           print("restart with app:", ", ".join(names))
           ' "$MIRROR"
           fi
+          # The malware scanner (A-184, ruling C1): clamd reads the pinned image's own signatures (no volume, no
+          # freshclam), hardened, on the internal scanner network that only it and the app join; nothing waits for it.
+          docker compose "${files[@]}" "${profiles[@]}" config --format json | python3 -c '
+          import json, sys
+          config = json.load(sys.stdin)
+          services, clamd = config["services"], config["services"]["clamd"]
+          members = sorted(name for name, service in services.items() if "scanner" in (service.get("networks") or {}))
+          networks = list(clamd.get("networks") or {})
+          if members != ["app", "clamd"] or networks != ["scanner"] or config["networks"]["scanner"].get("internal") is not True:
+              sys.exit(f"the internal scanner network must hold exactly app and clamd, and clamd only it; got {members!r}, {networks!r}")
+          for name, service in services.items():
+              if "clamd" in (service.get("depends_on") or {}):
+                  sys.exit(f"{name} must not depend on clamd")
+          want = {"user": "clamav", "read_only": True, "cap_drop": ["ALL"], "security_opt": ["no-new-privileges:true"],
+                  "entrypoint": ["clamd"], "command": ["--foreground", "--config-file=/etc/clamav/clamd.conf"],
+                  "tmpfs": ["/tmp:size=64m"], "profiles": ["scanner"], "restart": "unless-stopped"}
+          for key, value in want.items():
+              if clamd.get(key) != value:
+                  sys.exit(f"clamd must have {key} {value!r}, got {clamd.get(key)!r}")
+          volumes = [(volume["type"], volume["target"], volume.get("read_only")) for volume in clamd.get("volumes", [])]
+          if volumes != [("bind", "/etc/clamav/clamd.conf", True)] or any(key in clamd for key in ("ports", "environment", "network_mode")):
+              sys.exit(f"clamd must mount only clamd.conf, read-only, and publish nothing; got volumes {volumes!r}")
+          if clamd["healthcheck"].get("start_period") != "10m0s":
+              sys.exit("clamd healthcheck start_period must be 10m")
+          image = clamd["image"]
+          tag = image.partition("@")[0].rpartition("/")[2].partition(":")[2]
+          if not tag or tag in ("latest", "stable") or "_base" in tag:
+              sys.exit(f"clamd image must be a pinned release tag with signatures, not {image!r}")
+          print("scanner:", image, "on the internal scanner network with", ", ".join(members))
+          '
           # Local nodes are pruned by default; BITCOIN_PRUNE_MB=0 and a blank MONERO_PRUNE_FLAGS run full nodes.
           check_nodes() {
             docker compose "${files[@]}" "${profiles[@]}" config --format json | python3 -c '
