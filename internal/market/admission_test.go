@@ -372,6 +372,27 @@ func TestAdmissionSlowBodiesHoldNoPostSlot(t *testing.T) {
 	}
 }
 
+// The class sizes the ledger fixes (A-176, A-178; bcrypt's 4 unchanged). The class tests fill whatever
+// capacity a class has, so only this pins the numbers (imageWork's 16: image_routes_test.go).
+func TestAdmissionClassSizes(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		sem  chan struct{}
+		want int
+	}{
+		{"pageWork", pageWork, 64},
+		{"anonPostWork", anonPostWork, 16},
+		{"userPostWork", userPostWork, 16},
+		{"sessionLookupWork", sessionLookupWork, 16},
+		{"captchaWork", captchaWork, 8},
+		{"passwordWork", passwordWork, 4},
+	} {
+		if cap(c.sem) != c.want {
+			t.Errorf("%s has %d slots, want %d", c.name, cap(c.sem), c.want)
+		}
+	}
+}
+
 // The CAPTCHA image has its own class of 8 inside the page class (A-176).
 func TestAdmissionCaptchaImageClassFull(t *testing.T) {
 	a := admitPreviewApp(t)
