@@ -347,6 +347,7 @@ Source: DDoS assessment (Opus research: app surface, standard Tor/clearnet defen
 - TECHNICAL COST/RISK: nil.
 - ACCEPTANCE CRITERIA: both image routes emit exactly the header set above, no `ETag`/`Last-Modified`, no `Set-Cookie`.
 - TEST PLAN: `TestImageHeaders`.
+- CORRECTION (chair, PR #28 review): max-age sets freshness, not retention; the records say so.
 
 ##### D8 — two image routes
 

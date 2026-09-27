@@ -56,6 +56,7 @@ run local nodes. `upgrade` then does, in order:
    signatures as `./scripts/install.sh refresh-scanner` does. A failed pull is only a warning. `upgrade` never
    turns the scanner on; it adds `CLAMD_ADDRESS` blank, which keeps photo uploads off
    ([Photo uploads and the malware scanner](docs/operator-guide.md#photo-uploads-and-the-malware-scanner)).
+   ClamAV checks uploads for known malware; it does not review picture content.
 
 Running it again changes nothing. Installer commands that change `.env` hold a lock, the directory
 `.env.lock`, while they run; a second one refuses to start until the first ends. If a killed run left it
