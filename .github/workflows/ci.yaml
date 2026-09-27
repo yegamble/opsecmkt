@@ -152,7 +152,9 @@ jobs:
           print("healthchecks:", ", ".join(want))
           ' "$MODE" "$MIRROR"
           # Every service has resource ceilings and rotated logs (A-180, A-144); a new service must be added here.
-          docker compose "${files[@]}" "${profiles[@]}" config --format json | python3 -c '
+          # LOG_DRIVER picks the logging driver (blank: json-file); the rotation options stay.
+          for log_driver in "" local; do
+          LOG_DRIVER="$log_driver" docker compose "${files[@]}" "${profiles[@]}" config --format json | python3 -c '
           import json, sys
           services = json.load(sys.stdin)["services"]
           units = {"m": 2**20, "g": 2**30}
@@ -160,7 +162,7 @@ jobs:
           # container whose cpus exceed the host CPU count, which would break 1-CPU hosts.
           limits = {"app": ("512m", 2, 512), "db": ("1g", 2, 256), "tor": ("256m", 1, 64), "tor-mirror": ("256m", 1, 64),
                     "bitcoin": ("2g", 2, 256), "monero": ("2g", 2, 512), "monero-wallet": ("512m", 1, 128)}
-          logging = {"driver": "json-file", "options": {"max-size": "10m", "max-file": "3"}}
+          logging = {"driver": sys.argv[1] or "json-file", "options": {"max-size": "10m", "max-file": "3"}}
           for name, service in sorted(services.items()):
               if name not in limits:
                   sys.exit(f"{name} has no expected resource limits in the CI check")
@@ -176,8 +178,9 @@ jobs:
           # The Go heap target stays below the app container memory limit.
           if services["app"].get("environment", {}).get("GOMEMLIMIT") != "400MiB":
               sys.exit("app must set GOMEMLIMIT=400MiB below its 512m mem_limit")
-          print("limits and log rotation:", ", ".join(sorted(services)))
-          '
+          print("limits and log rotation (" + logging["driver"] + "):", ", ".join(sorted(services)))
+          ' "$log_driver"
+          done
           # torrc resolves app:8080 once at startup, so Tor must restart whenever the app is recreated.
           if [ "$MODE" = tor ]; then
             docker compose "${files[@]}" "${profiles[@]}" config --format json | python3 -c '

@@ -3,7 +3,7 @@
 # Requires Docker Compose 2.17 or later.
 # Same log rotation as compose.yaml (anchors do not cross files; CI checks every service has it).
 x-logging: &logging
-  driver: json-file
+  driver: ${LOG_DRIVER:-json-file}
   options:
     max-size: 10m
     max-file: '3'

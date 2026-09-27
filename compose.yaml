@@ -1,8 +1,10 @@
 name: opsecmkt
-# Every service's logs rotate: Docker keeps at most three 10 MB json-file logs per container (docker compose logs
-# reads them). compose.tor.yaml and compose.nodes.yaml repeat this block, because YAML anchors do not cross files.
+# Every service's logs rotate: Docker keeps at most three 10 MB logs per container (docker compose logs reads
+# them). LOG_DRIVER in .env picks the driver: json-file (default) or local, the drivers that take these options;
+# for another driver see docs/operator-guide.md#resource-limits-and-log-rotation. compose.tor.yaml and
+# compose.nodes.yaml repeat this block, because YAML anchors do not cross files.
 x-logging: &logging
-  driver: json-file
+  driver: ${LOG_DRIVER:-json-file}
   options:
     max-size: 10m
     max-file: '3'

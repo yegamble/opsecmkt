@@ -12,7 +12,7 @@
 # startup instead of running without authentication. Neither falls back to a guessable password.
 # Same log rotation as compose.yaml (anchors do not cross files; CI checks every service has it).
 x-logging: &logging
-  driver: json-file
+  driver: ${LOG_DRIVER:-json-file}
   options:
     max-size: 10m
     max-file: '3'
