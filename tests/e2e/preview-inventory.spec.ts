@@ -1,3 +1,4 @@
+import { inflateSync } from 'node:zlib';
 import { expect, test } from '@playwright/test';
 
 // P4 Inventory preview surfaces: the listing editor and archived listings on the vendor desk.
@@ -129,5 +130,67 @@ test('fits 320 px at 200%', async ({ page, browserName }) => {
       const box = (await file.boundingBox())!;
       expect(box.x + box.width, `${path} file input at ${scale} text (${browserName})`).toBeLessThanOrEqual(320);
     }
+    // PR #24 review R24-2: with a file chosen, its name stays readable at 320 px and 200% text, where the privacy
+    // warning asks the uploader to check the file. The name is drawn inside the control, out of the DOM's reach,
+    // so it is measured in pixels: the columns that change when only the name's colour is made transparent.
+    await file.setInputFiles({ name: 'holiday-kitchen-photo.png', mimeType: 'image/png', buffer: Buffer.from('not read in the preview') });
+    await page.locator('html').evaluate(element => { element.style.fontSize = '200%'; });
+    await page.mouse.move(0, 0);
+    await file.evaluate(input => (input as HTMLInputElement).blur());
+    const shown = await file.screenshot({ animations: 'disabled', caret: 'hide' });
+    await file.evaluate(input => { (input as HTMLInputElement).style.color = 'transparent'; });
+    const hidden = await file.screenshot({ animations: 'disabled', caret: 'hide' });
+    await file.evaluate(input => { (input as HTMLInputElement).style.color = ''; });
+    // At 28 px text a character is about 12–17 px wide: at least five characters of the name are drawn.
+    expect(changedColumns(shown, hidden), `${path}: chosen file name width in px (${browserName})`).toBeGreaterThanOrEqual(60);
   }
 });
+
+// changedColumns decodes two same-sized 8-bit, non-interlaced PNG screenshots (Playwright's) and counts the pixel
+// columns in which any pixel differs.
+function changedColumns(a: Buffer, b: Buffer): number {
+  const pa = decodePNG(a), pb = decodePNG(b);
+  expect([pa.width, pa.height]).toEqual([pb.width, pb.height]);
+  let columns = 0;
+  for (let x = 0; x < pa.width; x++) {
+    for (let y = 0; y < pa.height; y++) {
+      const i = (y * pa.width + x) * pa.channels;
+      if (pa.pixels.subarray(i, i + 3).compare(pb.pixels.subarray(i, i + 3)) !== 0) {
+        columns++;
+        break;
+      }
+    }
+  }
+  return columns;
+}
+
+function decodePNG(png: Buffer): { width: number; height: number; channels: number; pixels: Buffer } {
+  let offset = 8, width = 0, height = 0, channels = 0;
+  const data: Buffer[] = [];
+  while (offset < png.length) {
+    const length = png.readUInt32BE(offset), type = png.toString('latin1', offset + 4, offset + 8);
+    const body = png.subarray(offset + 8, offset + 8 + length);
+    if (type === 'IHDR') {
+      width = body.readUInt32BE(0);
+      height = body.readUInt32BE(4);
+      expect([body[8], body[12]], 'PNG bit depth and interlace').toEqual([8, 0]);
+      channels = ({ 0: 1, 2: 3, 4: 2, 6: 4 } as Record<number, number>)[body[9]];
+    } else if (type === 'IDAT') {
+      data.push(body);
+    }
+    offset += 12 + length;
+  }
+  const raw = inflateSync(Buffer.concat(data)), stride = width * channels, pixels = Buffer.alloc(stride * height);
+  for (let y = 0; y < height; y++) {
+    const filter = raw[y * (stride + 1)], line = raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1));
+    for (let x = 0; x < stride; x++) {
+      const left = x >= channels ? pixels[y * stride + x - channels] : 0;
+      const up = y > 0 ? pixels[(y - 1) * stride + x] : 0;
+      const upLeft = x >= channels && y > 0 ? pixels[(y - 1) * stride + x - channels] : 0;
+      const p = left + up - upLeft, pl = Math.abs(p - left), pu = Math.abs(p - up), pul = Math.abs(p - upLeft);
+      const predictor = [0, left, up, (left + up) >> 1, pl <= pu && pl <= pul ? left : pu <= pul ? up : upLeft][filter];
+      pixels[y * stride + x] = (line[x] + predictor) & 0xff;
+    }
+  }
+  return { width, height, channels, pixels };
+}
