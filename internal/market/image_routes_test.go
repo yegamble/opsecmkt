@@ -737,6 +737,9 @@ func imageBytesChecker(t *testing.T, files map[string]string) (findings []string
 				`(?i)\b` + q + `\s*\.\s*\*`, // alias.*
 				`(?i)(\bselect\s+(distinct\s+)?|\breturning\s+|,\s*)` + q + `\s*(,|\bfrom\b|$)`, // the row as an item
 				`(?i)\(\s*` + q + `\s*[),]`, // the row as an argument
+				`(?i)(\bselect\s+(distinct\s+)?|\breturning\s+|,\s*|\(\s*)` + q + `\s+as\b`, // the row renamed or CAST(row AS …)
+				`(?i)\b` + q + `\s*::`,       // the row cast (i::text)
+				`(?i)\[\s*` + q + `\s*[\],]`, // the row in an array (ARRAY[i])
 			} {
 				whole = whole || regexp.MustCompile(re).MatchString(text)
 			}
@@ -794,6 +797,10 @@ func TestImageBytesCheckerCatchesEvasions(t *testing.T) {
 		"returning star":      "const q = `DELETE FROM images WHERE id=$1 RETURNING *`",
 		"concatenated alias":  "const from = `images i JOIN users o ON o.id=i.owner_user_id`\nconst q = \"SELECT i FROM \" + from",
 		"concatenated column": "const col = `i.\"full\"`\nfunc q() string { return \"SELECT \" + col + \" FROM x\" }",
+		"row cast":            "const q = `SELECT i::text FROM images i WHERE i.id=$1`",
+		"row in array":        "const q = `SELECT ARRAY[i] FROM images i WHERE i.id=$1`",
+		"CAST row":            "const q = `SELECT CAST(i AS text) FROM images i WHERE i.id=$1`",
+		"lateral row":         "const q = `SELECT x.v FROM images i, LATERAL (SELECT i AS v) x WHERE i.id=$1`",
 	} {
 		findings, _ := imageBytesChecker(t, map[string]string{"load.go": "package market\n" + src})
 		if len(findings) == 0 {
@@ -967,5 +974,43 @@ func TestImageSlowReadersBoundedByByteBudget(t *testing.T) {
 	waitFor(t, func() bool { return imageBytes.inUse() == 0 })
 	if resp := get("GET", path); resp.StatusCode != 200 {
 		t.Fatalf("full image after the clients went away: %d", resp.StatusCode)
+	}
+}
+
+// PR #23 re-check N-1: /desk/img has its own byte budget. A signed-in account (anyone can register) flooding the
+// desk route with unknown full-image ids reserves 2 MiB each before its query under the 64 page slots; with one
+// shared budget that refused public images. With the desk budget spent, the desk route answers busy and the
+// public route still serves, full images included.
+func TestDeskImageFloodLeavesPublicImages(t *testing.T) {
+	e := newTestApp(t)
+	vendorID, vendorSession := e.user("desk_flood_vendor", "vendor")
+	photo := e.image(vendorID, e.product(vendorID, "physical"), "photo")
+	if imageBytes == deskImageBytes || deskImageBytes.limit != 32<<20 || deskImageBytes.inUse() != 0 || imageBytes.inUse() != 0 {
+		t.Fatalf("budgets: public %d/%d, desk %d/%d", imageBytes.inUse(), imageBytes.limit, deskImageBytes.inUse(), deskImageBytes.limit)
+	}
+	if !deskImageBytes.take(deskImageBytes.limit) { // what a flood of 16 unknown -f ids in flight holds
+		t.Fatal("could not fill the desk budget")
+	}
+	filled := true
+	t.Cleanup(func() { // a failure below must not leave the package-wide budget spent for later tests
+		if filled {
+			deskImageBytes.give(deskImageBytes.limit)
+		}
+	})
+	for _, full := range []bool{false, true} {
+		if w := e.desk(vendorSession, photo.id, full); w.Code != http.StatusServiceUnavailable || w.Header().Get("Retry-After") == "" {
+			t.Fatalf("desk route with its budget spent (full=%v): %d %q", full, w.Code, w.Header().Get("Retry-After"))
+		}
+		if w := e.imgGet("GET", publicImageURL(photo.id, full)); w.Code != 200 {
+			t.Fatalf("public route while the desk budget is spent (full=%v): %d", full, w.Code)
+		}
+	}
+	if imageBytes.inUse() != 0 {
+		t.Fatalf("public budget holds %d after its responses", imageBytes.inUse())
+	}
+	deskImageBytes.give(deskImageBytes.limit)
+	filled = false
+	if w := e.desk(vendorSession, photo.id, true); w.Code != 200 || deskImageBytes.inUse() != 0 {
+		t.Fatalf("desk route once its budget is back: %d, %d in use", w.Code, deskImageBytes.inUse())
 	}
 }

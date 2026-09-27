@@ -25,8 +25,8 @@ import (
 // <id> is the 32 lowercase hex characters of the row's id (128 random bits, storeImage); -t is the thumbnail and
 // -f the full image. A malformed path, and any image the request may not see, gets the same 404 as an unknown
 // image id (status, headers and body; no cookie on either route), so an id cannot be probed
-// (TestImageUnknownAndHiddenIdentical); a POST gets 405. A GET also reserves the image's bytes from imageBytes
-// until they are written (serveImage).
+// (TestImageUnknownAndHiddenIdentical); a POST gets 405. A GET also reserves the image's bytes from its route's
+// budget (imageBytes, deskImageBytes) until they are written (serveImage).
 
 // imageWork admits 16 concurrent image requests on the public route. Its own class: a catalog page of 25
 // thumbnails fills it rather than the page class, and a flood of image requests cannot refuse pages.
@@ -36,6 +36,11 @@ var imageWork = make(chan struct{}, 16)
 // (PR #23 review R-1). The image slot is released when a response starts, so without it every client that never
 // reads would pin up to 2 MiB until the server's write timeout, bounded only by the connection cap.
 var imageBytes = &byteBudget{limit: 64 << 20}
+
+// deskImageBytes is the same bound for /desk/img, kept apart so that a signed-in account (any role, and anyone
+// can register) flooding the desk route with unknown ids, each reserving 2 MiB before its query under the 64
+// page slots, cannot refuse public images (PR #23 re-check N-1; TestDeskImageFloodLeavesPublicImages).
+var deskImageBytes = &byteBudget{limit: 32 << 20}
 
 // byteBudget counts bytes reserved against a limit. It never waits: a reservation that does not fit is refused.
 type byteBudget struct {
@@ -150,7 +155,7 @@ func (a *App) servePublicImage(w http.ResponseWriter, r *http.Request, rest stri
 		http.NotFound(w, r)
 		return
 	}
-	a.serveImage(w, r, ref, imagePublicFrom+` WHERE i.id=$1 AND `+imagePublicWhere, ref.id)
+	a.serveImage(w, r, imageBytes, ref, imagePublicFrom+` WHERE i.id=$1 AND `+imagePublicWhere, ref.id)
 }
 
 // serveDeskImage answers GET/HEAD /desk/img/<rest> for the session in the request's session cookie. It reads no
@@ -175,15 +180,15 @@ func (a *App) serveDeskImage(w http.ResponseWriter, r *http.Request, rest string
 		http.NotFound(w, r)
 		return
 	}
-	a.serveImage(w, r, ref, `images i JOIN users o ON o.id=i.owner_user_id WHERE i.id=$1 AND `+imageDeskWhere, ref.id, u.ID, u.Role)
+	a.serveImage(w, r, deskImageBytes, ref, `images i JOIN users o ON o.id=i.owner_user_id WHERE i.id=$1 AND `+imageDeskWhere, ref.id, u.ID, u.Role)
 }
 
 // serveImage runs an image route's query (from: what follows imageSelect) and answers with the image. A GET
-// first reserves the largest stored size of what it asked for from imageBytes, without waiting (the busy 503
+// first reserves the largest stored size of what it asked for from budget, without waiting (the busy 503
 // with Retry-After when it does not fit, before any query, so the answer is the same for every id), keeps what
 // the image needs once read until its Write returns, and gives it all back however the handler ends (a client
 // that went away, a panic). A HEAD reads only the length and reserves nothing.
-func (a *App) serveImage(w http.ResponseWriter, r *http.Request, ref imageRef, from string, args ...any) {
+func (a *App) serveImage(w http.ResponseWriter, r *http.Request, budget *byteBudget, ref imageRef, from string, args ...any) {
 	head := r.Method == "HEAD"
 	var reserved int64
 	if !head {
@@ -191,17 +196,17 @@ func (a *App) serveImage(w http.ResponseWriter, r *http.Request, ref imageRef, f
 		if ref.full {
 			reserved = maxFullBytes
 		}
-		if !imageBytes.take(reserved) {
+		if !budget.take(reserved) {
 			busy(w)
 			return
 		}
-		defer func() { imageBytes.give(reserved) }()
+		defer func() { budget.give(reserved) }()
 	}
 	var n int64
 	var b []byte
 	err := a.db.QueryRowContext(r.Context(), imageSelect(ref.full, head)+from, args...).Scan(&n, &b)
 	if err == nil && !head {
-		imageBytes.give(reserved - int64(len(b)))
+		budget.give(reserved - int64(len(b)))
 		reserved = int64(len(b))
 	}
 	writeImage(w, r, n, b, err)
