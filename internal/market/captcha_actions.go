@@ -82,6 +82,9 @@ func captchaPNG(a *App, w http.ResponseWriter, r *http.Request, _ *User) {
 	w.Write(b.Bytes())
 }
 
+// errCaptchaExpired refuses a challenge id that expired, was already used or was not issued to this session.
+var errCaptchaExpired = fail(400, "The CAPTCHA expired or was already used. Go back, reload the page and enter the new image's characters.")
+
 // checkCaptcha consumes the submitted challenge (single use, even when the answer is wrong) and compares the
 // answer. It is a no-op while the CAPTCHA is turned off. An id this server did not issue to this session, or
 // one that has expired, is refused before anything is written.
@@ -95,11 +98,10 @@ func (a *App) checkCaptcha(c *actionCtx) error {
 	if !captchaRequired(map[string]string{"captcha_required": v}) {
 		return nil
 	}
-	const expired = "The CAPTCHA expired or was already used. Go back, reload the page and enter the new image's characters."
 	id := c.Form.Get("captcha_id")
 	expires, ok := a.captchaIDValid(id, time.Now(), digest(c.Token))
 	if !ok {
-		return fail(400, expired)
+		return errCaptchaExpired
 	}
 	// The primary key makes a replayed or concurrent second use insert nothing. Expiry is checked again on the
 	// database clock, which the sweep deletes by, so an id whose row was swept can never be inserted afresh.
@@ -108,7 +110,7 @@ func (a *App) checkCaptcha(c *actionCtx) error {
 		return fail(503, "Service unavailable")
 	}
 	if n, err := res.RowsAffected(); err != nil || n != 1 {
-		return fail(400, expired)
+		return errCaptchaExpired
 	}
 	if !a.captchaMatches(id, c.Form.Get("captcha")) {
 		return fail(400, "CAPTCHA answer incorrect. Go back, reload the page and enter the new image's characters.")

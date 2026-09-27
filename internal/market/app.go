@@ -310,7 +310,8 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", 405)
 		return
 	}
-	// Admission control (admission.go): a full class is refused here with 503, before any database work.
+	// Admission control (admission.go): a page finding its class full is refused here with 503, before any
+	// database work; a form post takes its slot in a.post, once its body has been read and checked.
 	aw, release, ok := admit(w, r)
 	if !ok {
 		return
@@ -354,18 +355,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie("anon"); err == nil && len(c.Value) == 64 {
 		anon = c.Value
 	}
-	var user *User
-	if token != "" && a.db != nil {
-		// A suspended account's sessions never authenticate (suspension also deletes them).
-		u := &User{}
-		err := a.db.QueryRowContext(ctx, `SELECT u.id,u.handle,u.role,u.pgp,u.xmpp FROM users u JOIN sessions s ON s.user_id=u.id WHERE s.token_hash=$1 AND s.expires>now() AND u.suspended_at IS NULL`, digest(token)).Scan(&u.ID, &u.Handle, &u.Role, &u.PGP, &u.XMPP)
-		if err == nil {
-			user = u
-		} else if err != sql.ErrNoRows {
-			serverError(w, r, 503, "Service unavailable", errorCause(err))
-			return
-		}
-	}
+	session := token // looked up below, unless a post's form turns out to have been rendered for `anon`
 	if token == "" {
 		if anon == "" {
 			anon = randomToken()
@@ -376,6 +366,8 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(context.WithValue(context.WithValue(ctx, sessionKey{}, token), anonKey{}, anon))
 	ctx = r.Context()
 	if r.Method == "POST" {
+		// Everything here reads no database and holds no slot: a post takes its slot in a.post, after its
+		// body has been read and checked, so a client trickling a body holds only its connection (A-178).
 		if a.preview {
 			http.Error(w, "Read-only preview. Start with PostgreSQL to save changes.", 403)
 			return
@@ -408,9 +400,43 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "Form expired. Reload and try again.", 403)
 				return
 			}
-			token, user = anon, nil
+			token, session = anon, ""
 			r = r.WithContext(context.WithValue(r.Context(), sessionKey{}, token)) // keeps anonKey
 		}
+		if spec, ok := actions[r.URL.Path]; ok && spec.Precheck != nil {
+			if err := spec.Precheck(a, r, token); err != nil {
+				writeHTTPError(w, r, err)
+				return
+			}
+		}
+	}
+	var user *User
+	if session != "" && a.db != nil {
+		lookupDone := func() {}
+		if r.Method == "POST" {
+			// A page holds its page slot already; a post's lookup is the same single read, so it takes a
+			// page slot for this query only, and a flood of posts with made-up session cookies is bounded
+			// like a flood of pages.
+			done, ok := tryTake(pageWork)
+			if !ok {
+				busy(w)
+				return
+			}
+			defer done() // on a panic; released below as soon as the query is done
+			lookupDone = done
+		}
+		// A suspended account's sessions never authenticate (suspension also deletes them).
+		u := &User{}
+		err := a.db.QueryRowContext(ctx, `SELECT u.id,u.handle,u.role,u.pgp,u.xmpp FROM users u JOIN sessions s ON s.user_id=u.id WHERE s.token_hash=$1 AND s.expires>now() AND u.suspended_at IS NULL`, digest(session)).Scan(&u.ID, &u.Handle, &u.Role, &u.PGP, &u.XMPP)
+		lookupDone()
+		if err == nil {
+			user = u
+		} else if err != sql.ErrNoRows {
+			serverError(w, r, 503, "Service unavailable", errorCause(err))
+			return
+		}
+	}
+	if r.Method == "POST" {
 		a.post(w, r, user, token)
 		return
 	}

@@ -6,7 +6,10 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -73,20 +76,197 @@ func TestAdmissionPageClassFull(t *testing.T) {
 	if w := admitServe(a, "GET", "/"); w.Code != 200 {
 		t.Fatalf("GET / after the slots were released: %d", w.Code)
 	}
-	if len(pageWork) != 0 || len(writeWork) != 0 {
-		t.Fatalf("slots leaked: pages=%d writes=%d", len(pageWork), len(writeWork))
+	if len(pageWork) != 0 || len(anonPostWork) != 0 || len(userPostWork) != 0 {
+		t.Fatalf("slots leaked: pages=%d anonymous posts=%d signed-in posts=%d", len(pageWork), len(anonPostWork), len(userPostWork))
 	}
 }
 
-func TestAdmissionWriteClassFull(t *testing.T) {
-	a := admitPreviewApp(t)
-	holdSlots(t, writeWork)
-	w := admitServe(a, "POST", "/login")
-	if w.Code != 503 || w.Header().Get("Retry-After") != "5" {
-		t.Fatalf("POST with the write class full: %d Retry-After=%q", w.Code, w.Header().Get("Retry-After"))
+// admitAnonPost is an anonymous browser's same-site form post: an anon cookie and its CSRF token.
+func admitAnonPost(a *App, path string, form url.Values) *http.Request {
+	anon := randomToken()
+	if form == nil {
+		form = url.Values{}
 	}
-	if w := admitServe(a, "GET", "/"); w.Code != 200 {
-		t.Fatalf("GET with only the write class full: %d", w.Code)
+	if !form.Has("csrf") {
+		form.Set("csrf", a.csrf(anon))
+	}
+	r := httptest.NewRequest("POST", path, strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.AddCookie(&http.Cookie{Name: "anon", Value: anon})
+	return r
+}
+
+// admitTestAction registers a public and a signed-in action that report how many slots of each post class
+// were held while they ran.
+func admitTestAction(t *testing.T) (held func() [2]int) {
+	t.Helper()
+	var mu sync.Mutex
+	var last [2]int
+	run := func(c *actionCtx) (actionResult, error) {
+		mu.Lock()
+		last = [2]int{len(anonPostWork), len(userPostWork)}
+		mu.Unlock()
+		if c.Form.Get("panic") != "" {
+			panic("handler bug")
+		}
+		return actionResult{Redirect: "/done"}, nil
+	}
+	withAction(t, "/test/admit", actionSpec{Public: true, OwnTx: true, Run: run})
+	withAction(t, "/test/admit-signed", actionSpec{OwnTx: true, Run: run})
+	return func() [2]int { mu.Lock(); defer mu.Unlock(); return last }
+}
+
+// A form post takes its class slot only after its body is read and its Origin, Sec-Fetch-Site and CSRF checks
+// pass (PR #15 review): with both post classes full, a bad post is refused for what it is, not as busy; only a
+// post that passed every check is refused 503.
+func TestAdmissionPostClassFullChecksFirst(t *testing.T) {
+	a := testHTTPApp(false)
+	admitTestAction(t)
+	holdSlots(t, anonPostWork)
+	holdSlots(t, userPostWork)
+	serve := func(r *http.Request) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		a.ServeHTTP(w, r)
+		return w
+	}
+	bad := admitAnonPost(a, "/test/admit", url.Values{"csrf": {"wrong"}})
+	if w := serve(bad); w.Code != 403 {
+		t.Fatalf("wrong CSRF with the post classes full: %d %q", w.Code, w.Body.String())
+	}
+	cross := admitAnonPost(a, "/test/admit", nil)
+	cross.Header.Set("Origin", "https://attacker.example")
+	if w := serve(cross); w.Code != 403 {
+		t.Fatalf("cross-origin post with the post classes full: %d", w.Code)
+	}
+	huge := admitAnonPost(a, "/test/admit", url.Values{"x": {strings.Repeat("a", 70000)}})
+	if w := serve(huge); w.Code != 400 {
+		t.Fatalf("oversized post with the post classes full: %d", w.Code)
+	}
+	if w := serve(admitAnonPost(a, "/test/admit-signed", nil)); w.Code != 401 {
+		t.Fatalf("signed-in action without a session, post classes full: %d", w.Code)
+	}
+	w := serve(admitAnonPost(a, "/test/admit", nil))
+	if w.Code != 503 || w.Header().Get("Retry-After") != "5" || !strings.Contains(w.Body.String(), "busy") {
+		t.Fatalf("valid post with its class full: %d Retry-After=%q %q", w.Code, w.Header().Get("Retry-After"), w.Body.String())
+	}
+	if w := admitServe(admitPreviewApp(t), "GET", "/"); w.Code != 200 {
+		t.Fatalf("GET with only the post classes full: %d", w.Code)
+	}
+}
+
+// Signed-in posts and anonymous posts have separate classes (PR #15 review): a flood of anonymous posts
+// cannot refuse a signed-in user's or an administrator's change, and the reverse.
+func TestAdmissionPostClassesAreSeparate(t *testing.T) {
+	a := testHTTPApp(false)
+	held := admitTestAction(t)
+	user := &User{ID: "u1", Role: "buyer"}
+	release := holdSlots(t, anonPostWork)
+	if w := postAs(a, nil, "/test/admit"); w.Code != 503 || w.Header().Get("Retry-After") != "5" {
+		t.Fatalf("anonymous post with the anonymous class full: %d Retry-After=%q", w.Code, w.Header().Get("Retry-After"))
+	}
+	if w := postAs(a, user, "/test/admit-signed"); w.Code != 303 || held() != [2]int{cap(anonPostWork), 1} {
+		t.Fatalf("signed-in post with the anonymous class full: %d held=%v", w.Code, held())
+	}
+	if w := postAs(a, user, "/test/admit"); w.Code != 303 || held()[1] != 1 { // a public action, signed in
+		t.Fatalf("signed-in public post with the anonymous class full: %d held=%v", w.Code, held())
+	}
+	release()
+	release = holdSlots(t, userPostWork)
+	if w := postAs(a, user, "/test/admit-signed"); w.Code != 503 {
+		t.Fatalf("signed-in post with the signed-in class full: %d", w.Code)
+	}
+	if w := postAs(a, nil, "/test/admit"); w.Code != 303 || held() != [2]int{1, cap(userPostWork)} {
+		t.Fatalf("anonymous post with the signed-in class full: %d held=%v", w.Code, held())
+	}
+	release()
+	if len(anonPostWork) != 0 || len(userPostWork) != 0 {
+		t.Fatalf("post slots leaked: anonymous=%d signed-in=%d", len(anonPostWork), len(userPostWork))
+	}
+}
+
+// Sign-in, registration and setup posts with a malformed handle or password, or a CAPTCHA id that is not a
+// live one issued to their session, are refused before they take a post slot (PR #15 review): a flood of
+// them cannot refuse a real sign-in as busy. A well-formed post with a live id goes on to the slot.
+func TestAdmissionAuthJunkTakesNoSlot(t *testing.T) {
+	a := testHTTPApp(false)
+	a.captchaIDKey = []byte("test-captcha-id-key")
+	holdSlots(t, anonPostWork)
+	anon := randomToken()
+	post := func(path string, form url.Values) *httptest.ResponseRecorder {
+		form.Set("csrf", a.csrf(anon))
+		r := httptest.NewRequest("POST", path, strings.NewReader(form.Encode()))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		r.AddCookie(&http.Cookie{Name: "anon", Value: anon})
+		w := httptest.NewRecorder()
+		a.ServeHTTP(w, r)
+		return w
+	}
+	creds := func(handle, password, id string) url.Values {
+		return url.Values{"handle": {handle}, "password": {password}, "captcha_id": {id}, "captcha": {"XXXXXX"}}
+	}
+	live := a.newCaptchaID(digest(anon), time.Now().Add(captchaTTL))
+	for _, c := range []struct {
+		name, path string
+		form       url.Values
+		want       int
+		body       string
+	}{
+		{"random id", "/login", creds("junk_user", "guess-guess-guess", randomToken()), 400, "expired or was already used"},
+		{"other session's id", "/login", creds("junk_user", "guess-guess-guess", a.newCaptchaID(digest(randomToken()), time.Now().Add(captchaTTL))), 400, "expired or was already used"},
+		{"expired id", "/register", creds("junk_user", "guess-guess-guess", a.newCaptchaID(digest(anon), time.Now().Add(-time.Second))), 400, "expired or was already used"},
+		{"malformed handle", "/login", creds("x", "guess-guess-guess", live), 400, "3–32 character handle"},
+		{"short password", "/register", creds("junk_user", "short", live), 400, "3–32 character handle"},
+		{"setup, malformed handle", "/setup", url.Values{"handle": {"no spaces"}, "password": {"guess-guess-guess"}}, 400, "3–32 character handle"},
+		{"live id", "/login", creds("junk_user", "guess-guess-guess", live), 503, "busy"},
+		{"no id (the CAPTCHA may be off)", "/login", url.Values{"handle": {"junk_user"}, "password": {"guess-guess-guess"}}, 503, "busy"},
+	} {
+		if w := post(c.path, c.form); w.Code != c.want || !strings.Contains(w.Body.String(), c.body) {
+			t.Errorf("%s: %d %q, want %d %q", c.name, w.Code, w.Body.String(), c.want, c.body)
+		}
+	}
+}
+
+// Slow-body posts hold no post slot (PR #15 review, the blocker): with twice the anonymous class's size of
+// posts trickling their bodies, a normal post is still served.
+func TestAdmissionSlowBodiesHoldNoPostSlot(t *testing.T) {
+	a := testHTTPApp(false)
+	held := admitTestAction(t)
+	var entered atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		entered.Add(1)
+		a.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	host := srv.Listener.Addr().String()
+	n := 2 * cap(anonPostWork)
+	for range n {
+		c, err := net.Dial("tcp", host)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		anon := randomToken()
+		fmt.Fprintf(c, "POST /test/admit HTTP/1.1\r\nHost: %s\r\nContent-Type: application/x-www-form-urlencoded\r\nCookie: anon=%s\r\nContent-Length: 1000\r\n\r\ncsrf=%s&x=", host, anon, a.csrf(anon))
+	}
+	for deadline := time.Now().Add(5 * time.Second); entered.Load() < int64(n); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("only %d of %d slow posts reached the handler", entered.Load(), n)
+		}
+	}
+	time.Sleep(100 * time.Millisecond) // each is now blocked reading its body
+	if len(anonPostWork) != 0 || len(userPostWork) != 0 {
+		t.Fatalf("slow-body posts hold post slots: anonymous=%d signed-in=%d", len(anonPostWork), len(userPostWork))
+	}
+	r := admitAnonPost(a, "/test/admit", nil)
+	r.RequestURI, r.URL.Scheme, r.URL.Host = "", "http", host
+	client := &http.Client{Timeout: 5 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := client.Do(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 303 || held()[0] != 1 {
+		t.Fatalf("normal post during %d slow-body posts: %d held=%v", n, resp.StatusCode, held())
 	}
 }
 
@@ -125,12 +305,28 @@ func TestAdmissionSlotReleased(t *testing.T) {
 
 	func() {
 		defer func() { recover() }()
-		_, release, _ := admit(httptest.NewRecorder(), httptest.NewRequest("POST", "/login", nil))
+		_, release, _ := admit(httptest.NewRecorder(), httptest.NewRequest("GET", "/login", nil))
 		defer release()
 		panic("handler bug")
 	}()
-	if len(writeWork) != 0 {
+	if len(pageWork) != 0 {
 		t.Fatal("slot leaked by a panicking handler")
+	}
+	// A post's slot, taken late (after its checks), is held while its action runs and comes back when the
+	// response starts, when the action returns and when it panics.
+	pa := testHTTPApp(false)
+	held := admitTestAction(t)
+	w := httptest.NewRecorder()
+	pa.ServeHTTP(w, admitAnonPost(pa, "/test/admit", nil))
+	if w.Code != 303 || held() != [2]int{1, 0} || len(anonPostWork) != 0 {
+		t.Fatalf("post: %d held while running=%v after=%d", w.Code, held(), len(anonPostWork))
+	}
+	func() {
+		defer func() { recover() }()
+		pa.ServeHTTP(httptest.NewRecorder(), admitAnonPost(pa, "/test/admit", url.Values{"panic": {"1"}}))
+	}()
+	if len(anonPostWork) != 0 || len(userPostWork) != 0 {
+		t.Fatal("post slot leaked by a panicking action")
 	}
 	// Through ServeHTTP: net/http recovers a handler panic; the slot must come back with it. Without a
 	// database, the installed check dereferences a nil *sql.DB before any response is written.

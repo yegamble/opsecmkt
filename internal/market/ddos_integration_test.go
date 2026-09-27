@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -311,4 +313,82 @@ func TestHealthzAndRetryAfterUnderLoad(t *testing.T) {
 		t.Fatalf("password checks busy: %d Retry-After=%q", w.Code, w.Header().Get("Retry-After"))
 	}
 	release()
+}
+
+// PR #15 review (the blocker): posts that trickle their bodies hold no post slot, so with more of them in
+// flight than both post classes hold, a real sign-in and a signed-in change still succeed.
+func TestSlowBodyPostsLeaveSignInWorking(t *testing.T) {
+	e := newTestApp(t)
+	e.user("slow_body_user", "buyer")
+	_, buyer := e.user("slow_body_buyer", "buyer")
+	srv := httptest.NewServer(e.A)
+	defer srv.Close()
+	host := srv.Listener.Addr().String()
+	n := cap(anonPostWork) + cap(userPostWork) + 8
+	for i := range n {
+		c, err := net.Dial("tcp", host)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		path, token := "/login", randomToken()
+		if i%2 == 1 {
+			path, token = "/notifications", buyer // signed in
+		}
+		fmt.Fprintf(c, "POST %s HTTP/1.1\r\nHost: %s\r\nContent-Type: application/x-www-form-urlencoded\r\nCookie: session=%s\r\nContent-Length: 4000\r\n\r\ncsrf=%s&handle=", path, host, token, e.A.csrf(token))
+	}
+	time.Sleep(500 * time.Millisecond) // every one is now waiting for the rest of its body
+	if len(anonPostWork) != 0 || len(userPostWork) != 0 {
+		t.Fatalf("slow-body posts hold post slots: anonymous=%d signed-in=%d", len(anonPostWork), len(userPostWork))
+	}
+	client := &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	post := func(path, token string, form url.Values) int {
+		form.Set("csrf", e.A.csrf(token))
+		r, err := http.NewRequest("POST", srv.URL+path, strings.NewReader(form.Encode()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		r.AddCookie(&http.Cookie{Name: "anon", Value: token})
+		if path != "/login" {
+			r.AddCookie(&http.Cookie{Name: "session", Value: token})
+		}
+		resp, err := client.Do(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if c := post("/login", randomToken(), url.Values{"handle": {"slow_body_user"}, "password": {testPassword}}); c != 303 {
+		t.Fatalf("POST /login during %d slow-body posts: %d", n, c)
+	}
+	if c := post("/notifications", buyer, url.Values{}); c != 303 {
+		t.Fatalf("signed-in POST during %d slow-body posts: %d", n, c)
+	}
+}
+
+// A post's session lookup is a page-sized read: it takes a page slot for the query only, so a flood of posts
+// with made-up session cookies is bounded like a flood of pages, and a post without a session cookie needs no
+// page slot.
+func TestPostSessionLookupTakesPageSlot(t *testing.T) {
+	e := newTestApp(t)
+	e.user("lookup_user", "buyer")
+	_, buyer := e.user("lookup_buyer", "buyer")
+	release := holdSlots(t, pageWork)
+	if w := e.do("POST", "/notifications", buyer, url.Values{}); w.Code != 503 || w.Header().Get("Retry-After") != "5" {
+		t.Fatalf("signed-in post with the page class full: %d Retry-After=%q", w.Code, w.Header().Get("Retry-After"))
+	}
+	anon := randomToken()
+	r := httptest.NewRequest("POST", "/login", strings.NewReader(url.Values{"handle": {"lookup_user"}, "password": {testPassword}, "csrf": {e.A.csrf(anon)}}.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.AddCookie(&http.Cookie{Name: "anon", Value: anon})
+	w := httptest.NewRecorder()
+	e.A.ServeHTTP(w, r)
+	e.check(w, 303)
+	release()
+	e.check(e.do("POST", "/notifications", buyer, url.Values{}), 303)
+	if len(pageWork) != 0 || len(anonPostWork) != 0 || len(userPostWork) != 0 {
+		t.Fatal("slots leaked")
+	}
 }

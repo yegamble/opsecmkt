@@ -12,17 +12,25 @@ import (
 // Admission control (A-178). Overload is refused at once with 503 and Retry-After instead of queueing until
 // the 12 s request context expires:
 //
-//   - LimitListener caps open connections (256 in cmd/server); further clients wait in the kernel backlog.
-//   - pageWork admits 64 concurrent GET/HEAD requests and writeWork 16 concurrent POSTs. /healthz and
-//     /static/ take neither, so a flood of pages cannot starve the health probe.
+//   - LimitListener caps open connections (2048 in cmd/server); further clients wait in the kernel backlog.
+//   - pageWork admits 64 concurrent GET/HEAD requests. /healthz and /static/ take no slot, so a flood of pages
+//     cannot starve the health probe.
+//   - A form post takes a slot only once its body has been read (at most 64 KiB) and its Origin,
+//     Sec-Fetch-Site and CSRF checks and its action's stateless checks have passed (App.post), so a client
+//     trickling a body, or posting junk, holds no slot; the server's ReadTimeout bounds the trickle. Signed-in
+//     posts (a live session) take one of userPostWork's 16 slots and anonymous posts (sign-in, registration,
+//     the sign-in challenge) one of anonPostWork's 16, so a flood of anonymous posts cannot refuse a signed-in
+//     user's or an administrator's change. A post's session lookup, a single read, takes a page slot for that
+//     query only (ServeHTTP).
 //   - captchaWork (captcha_actions.go) admits 8 concurrent CAPTCHA image renders and passwordWork
 //     (actions_auth.go) 4 concurrent bcrypt checks, each inside the class slot of its request.
 //
 // A class slot is released when the response starts (admitWriter), so it bounds the database and render work
 // of a request but not the time a slow client takes to read the response.
 var (
-	pageWork  = make(chan struct{}, 64)
-	writeWork = make(chan struct{}, 16)
+	pageWork     = make(chan struct{}, 64)
+	anonPostWork = make(chan struct{}, 16)
+	userPostWork = make(chan struct{}, 16)
 )
 
 // busyRetryAfter is the Retry-After, in seconds, of an admission refusal and of any other 503.
@@ -40,15 +48,38 @@ func busy(w http.ResponseWriter) {
 	http.Error(w, "The market is busy. Try again in a few seconds.", http.StatusServiceUnavailable)
 }
 
-// admitClass returns the admission semaphore of r, or nil when r is not admission-controlled.
+// admitClass returns the admission semaphore r takes on arrival, or nil when it takes none there: /healthz
+// and static files take none, and a form post takes its slot later, in App.post (admitPost).
 func admitClass(r *http.Request) chan struct{} {
-	switch {
-	case r.URL.Path == "/healthz" || strings.HasPrefix(r.URL.Path, "/static/"):
+	if r.Method == "POST" || r.URL.Path == "/healthz" || strings.HasPrefix(r.URL.Path, "/static/") {
 		return nil
-	case r.Method == "POST":
-		return writeWork
 	}
 	return pageWork
+}
+
+// tryTake takes a slot of sem if one is free, returning its release (safe to call more than once).
+func tryTake(sem chan struct{}) (release func(), ok bool) {
+	select {
+	case sem <- struct{}{}:
+		return sync.OnceFunc(func() { <-sem }), true
+	default:
+		return nil, false
+	}
+}
+
+// admitPost takes a slot of sem for a form post that passed its checks, or answers 503 (busy) and returns
+// ok=false. The caller defers release, which also runs when the response starts if w is ServeHTTP's
+// admitWriter, like an arrival slot.
+func admitPost(w http.ResponseWriter, sem chan struct{}) (release func(), ok bool) {
+	release, ok = tryTake(sem)
+	if !ok {
+		busy(w)
+		return nil, false
+	}
+	if aw, wrapped := w.(*admitWriter); wrapped && !aw.started {
+		aw.release = release
+	}
+	return release, true
 }
 
 // admitWriter wraps every response. It adds Retry-After to a 503 or 429 that lacks one, and calls release
@@ -90,10 +121,7 @@ func (w *admitWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 func admit(w http.ResponseWriter, r *http.Request) (aw *admitWriter, release func(), ok bool) {
 	release = func() {}
 	if sem := admitClass(r); sem != nil {
-		select {
-		case sem <- struct{}{}:
-			release = sync.OnceFunc(func() { <-sem })
-		default:
+		if release, ok = tryTake(sem); !ok {
 			busy(w)
 			return nil, nil, false
 		}

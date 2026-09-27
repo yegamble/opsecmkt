@@ -82,7 +82,11 @@ type actionSpec struct {
 	Public bool     // allow anonymous; skips the write:<user> rate limit
 	Roles  []string // required user roles (implies signed in)
 	OwnTx  bool     // Run opens its own transactions (e.g. bcrypt before any tx); c.Tx is nil, Audit is written without a tx
-	Run    func(c *actionCtx) (actionResult, error)
+	// Precheck, when set, runs in ServeHTTP after the CSRF check and before the session lookup and the post
+	// slot: a check of the form alone (no database), so a flood of posts it refuses holds no slot (A-178).
+	// Run must still make the same checks; it is also called without Precheck (tests call post directly).
+	Precheck func(a *App, r *http.Request, token string) error
+	Run      func(c *actionCtx) (actionResult, error)
 }
 
 var actions = map[string]actionSpec{}
@@ -126,6 +130,16 @@ func serverError(w http.ResponseWriter, r *http.Request, code int, msg, cause st
 		w.Header().Set("Retry-After", busyRetryAfter)
 	}
 	http.Error(w, msg+"\nReference: "+ref, code)
+}
+
+// writeHTTPError answers err from a check made before the action runs (actionSpec.Precheck).
+func writeHTTPError(w http.ResponseWriter, r *http.Request, err error) {
+	var he *httpError
+	if errors.As(err, &he) && he.Code < 500 {
+		http.Error(w, he.Msg, he.Code)
+		return
+	}
+	serverError(w, r, 503, "Service unavailable", errorCause(err))
 }
 
 // dbBusy reports a statement cancelled by the application pool's statement_timeout or lock_timeout (A-177):
@@ -298,6 +312,17 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 			return
 		}
 	}
+	// The post's admission slot (A-178), taken only now: its body has been read and its CSRF, sign-in, role
+	// and write-budget checks have passed. Signed-in and anonymous posts have separate classes.
+	class := anonPostWork
+	if u != nil {
+		class = userPostWork
+	}
+	release, ok := admitPost(w, class)
+	if !ok {
+		return
+	}
+	defer release()
 	ctx := r.Context()
 	c := &actionCtx{A: a, W: w, R: r, User: u, Token: token, Form: r.PostForm}
 	if !spec.OwnTx {
