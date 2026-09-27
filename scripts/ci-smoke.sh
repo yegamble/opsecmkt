@@ -191,8 +191,16 @@ PY
   # clamd stopped: uploads are refused with the scanner copy and store nothing; the market keeps serving.
   "${compose[@]}" stop clamd
   [[ $(upload "$work/clean.png") == 503 ]] || fail "an upload with clamd stopped was not refused: $(cat "$page")"
-  grep -qF 'Photo not saved: the malware scanner did not respond, so nothing was stored. Try again later.' "$page" ||
+  # Before the app's next 30 s poll the upload reaches clamd and fails there ("did not respond", counted as a
+  # scanner failure); after it, the cached state refuses the upload before its body is read ("paused", not
+  # counted). Either is the scanner copy, and the admin count below follows whichever was seen.
+  if grep -qF 'Photo not saved: the malware scanner did not respond, so nothing was stored. Try again later.' "$page"; then
+    scanner_failed=1
+  elif grep -qF 'Photo uploads are paused: the malware scanner is not responding.' "$page"; then
+    scanner_failed=0
+  else
     fail 'no scanner-unavailable copy'
+  fi
   [[ $(rows) == 1 ]] || fail 'an upload with clamd stopped stored a row'
   [[ $(curl -sS "$base/healthz") == ok ]] || fail '/healthz failed with clamd stopped'
   [[ $(curl -sS -o /dev/null -w '%{http_code}' "$base/") == 200 ]] || fail 'the catalog failed with clamd stopped'
@@ -237,13 +245,13 @@ PY
   # /admin shows the test database's build date (so the age gate passed) and the counts; the log names the
   # signature with the reference only (ruling C4).
   [[ $(get /admin) == 200 ]] || fail '/admin did not answer 200'
-  python3 - "$page" <<'PY' || fail '/admin image scanner panel'
+  python3 - "$page" "$scanner_failed" <<'PY' || fail '/admin image scanner panel'
 import calendar, re, sys, time
 html = open(sys.argv[1], encoding='utf-8').read()
 raw = html[html.index('id="image-scanner"'):]
 raw = raw[:raw.index('</section>')]
 panel = ' '.join(re.sub(r'<[^>]+>', ' ', raw).split())
-checks = ['3 stored · 1 refused as infected · 1 refused because the scanner failed', 'Opsecmkt.Test.Marker.UNOFFICIAL']
+checks = [f'3 stored · 1 refused as infected · {sys.argv[2]} refused because the scanner failed', 'Opsecmkt.Test.Marker.UNOFFICIAL']
 missing = [check for check in checks if check not in panel] + ['Ready'] * ('<strong>Ready</strong>' not in raw)
 signatures = re.search(r'Signatures: ClamAV [0-9.]+, daily database 1 built (\d{4}-\d{2}-\d{2} \d{2}:\d{2}) UTC, 0 days old \(limit 30\)', panel)
 if missing or not signatures:

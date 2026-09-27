@@ -150,12 +150,15 @@ test('scanner found stores nothing', { tag: '@firefox' }, async ({ browser, base
   await vendor.context().close();
 });
 
-// Ruling C3: one byte over the 4 MB cap, well under the Content-Length ceiling (cap + 4 MiB). The server reads the
-// rest of the body before it answers, so the browser shows the page naming the limit, not a connection reset.
+// Ruling C3: a file just under the Content-Length ceiling (cap + 4 MiB), so nearly 4 MiB of it is still unsent when
+// the server refuses at the 4 MB cap. The server reads that rest into nothing before it answers, so the browser shows
+// the page naming the limit, not a connection reset. A file only just over the cap would not test this: Go's server
+// discards up to 256 KiB of unread body by itself, and Firefox showed the page with no drain at all (PR #26 review
+// R-1: without the drain, a ~4 MiB remainder reset the connection 4 times in 4).
 test('oversized photo shows the limit without JS', { tag: '@firefox' }, async ({ browser, baseURL }) => {
   const { page: vendor } = await newVendor(browser, baseURL);
   const listing = await publish(vendor, `Photos ${uniqueHandle('big')}`);
-  const big = Buffer.alloc(4 * 1024 * 1024 + 1);
+  const big = Buffer.alloc(8 * 1024 * 1024 - 2048); // with the form's other parts, still under the ceiling
   png(64, 48, PLANTED).copy(big);
   expect(await uploadPhoto(vendor, big)).toBe(413);
   await expect(vendor.getByRole('alert')).toHaveText('Photo not saved: the file is larger than 4 MB, the most accepted. Nothing was stored.');
