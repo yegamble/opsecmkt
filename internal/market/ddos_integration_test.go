@@ -217,6 +217,54 @@ func TestAppPoolLockTimeout(t *testing.T) {
 	}
 }
 
+// QA-178-2: a page load or a post whose pool connection is terminated mid-request (a database restart or
+// failover) answers the busy 503 with Retry-After, like the query one step earlier, never a 500.
+func TestPageLoadConnectionLossIs503(t *testing.T) {
+	e := newTestApp(t)
+	_, buyer := e.user("lost_buyer", "buyer")
+	admin, err := OpenDB(os.Getenv("DATABASE_URL")) // no timeouts: it holds the lock for as long as needed
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	for _, c := range []struct {
+		method, path, token, table string
+	}{
+		{"GET", "/?q=lamp", "", "products"},
+		{"POST", "/notifications", buyer, "notifications"},
+	} {
+		// The request's query queues behind an exclusive lock on table; its backend is then terminated.
+		tx, err := admin.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = tx.Exec("LOCK TABLE " + c.table + " IN ACCESS EXCLUSIVE MODE"); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan *httptest.ResponseRecorder, 1)
+		go func() { done <- e.do(c.method, c.path, c.token, nil) }()
+		var pid int
+		for deadline := time.Now().Add(2 * time.Second); pid == 0; time.Sleep(20 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("%s %s never queued on %s", c.method, c.path, c.table)
+			}
+			admin.QueryRow("SELECT coalesce(max(pid),0) FROM pg_locks WHERE relation=$1::regclass AND NOT granted", c.table).Scan(&pid)
+		}
+		if _, err = admin.Exec("SELECT pg_terminate_backend($1)", pid); err != nil {
+			t.Fatal(err)
+		}
+		w := <-done
+		tx.Rollback()
+		if w.Code != 503 || w.Header().Get("Retry-After") != "5" || !strings.HasPrefix(w.Body.String(), errBusyMsg) {
+			t.Errorf("%s %s with its connection terminated: %d Retry-After=%q %q", c.method, c.path, w.Code, w.Header().Get("Retry-After"), w.Body.String())
+		}
+	}
+	// The pool replaces the lost connections.
+	if w := e.do("GET", "/?q=lamp", "", nil); w.Code != 200 {
+		t.Fatalf("page after the connections were lost: %d", w.Code)
+	}
+}
+
 // A-177: migrations run without the application pool's timeouts, so a long one is bounded only by
 // MIGRATION_TIMEOUT.
 func TestMigrationsRunWithoutSessionTimeouts(t *testing.T) {

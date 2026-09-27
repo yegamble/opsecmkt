@@ -7,6 +7,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -179,6 +180,29 @@ func TestErrorCauseClasses(t *testing.T) {
 	} {
 		if got := errorCause(c.err); got != c.want {
 			t.Errorf("errorCause(%#v) = %q, want %q", c.err, got, c.want)
+		}
+	}
+}
+
+// QA-178-2: a statement timeout, a lock timeout, a server that is shutting down or refusing connections, and
+// a lost connection (errorCause's db-connection class) answer the busy 503; application errors and a client
+// that went away do not.
+func TestDBBusyClasses(t *testing.T) {
+	for _, code := range []string{"57014", "55P03", "57P01", "57P02", "57P03", "53300", "08000", "08003", "08006", "08P01"} {
+		if !dbBusy(fmt.Errorf("x: %w", &pgconn.PgError{Code: code})) {
+			t.Errorf("SQLSTATE %s is not busy", code)
+		}
+	}
+	for _, err := range []error{driver.ErrBadConn, sql.ErrConnDone, &pgconn.ConnectError{}, fmt.Errorf("x: %w", io.EOF), io.ErrUnexpectedEOF,
+		&net.OpError{Op: "read", Err: errors.New("connection reset by peer")}} {
+		if !dbBusy(err) || errorCause(err) != "db-connection" {
+			t.Errorf("%#v: busy=%v cause=%q", err, dbBusy(err), errorCause(err))
+		}
+	}
+	for _, err := range []error{nil, sql.ErrNoRows, errors.New("x"), fail(500, "x"), context.Canceled, context.DeadlineExceeded,
+		&pgconn.PgError{Code: "23505"}, &pgconn.PgError{Code: "40001"}, &pgconn.PgError{Code: "53100"}, &pgconn.PgError{Code: "42P01"}} {
+		if dbBusy(err) {
+			t.Errorf("%#v is busy", err)
 		}
 	}
 }
