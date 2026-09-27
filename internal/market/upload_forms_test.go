@@ -2,6 +2,7 @@ package market
 
 import (
 	"html"
+	"net/http/httptest"
 	"net/url"
 	"regexp"
 	"strings"
@@ -465,5 +466,104 @@ func TestPublishLandsOnPhotos(t *testing.T) {
 	e.check(page, 200)
 	if !strings.Contains(page.Body.String(), `id="photos"`) {
 		t.Fatal("no photo panel on the new listing's edit page")
+	}
+}
+
+// besideRoleChange runs act while an administrator's role change holds the vendor's users row (FOR UPDATE, as
+// adminAction does), then lets the role change demote the vendor, archive their listings and commit, and returns
+// act's response. A listing action that locked the listing first and then needed the users row (explicitly, or
+// through the foreign keys of its audit or notification insert) would deadlock with it: one of the two would
+// fail with 40P01 (PR #24 review R24-1).
+func besideRoleChange(t *testing.T, e *testEnv, vendorID string, act func() *httptest.ResponseRecorder) *httptest.ResponseRecorder {
+	t.Helper()
+	ctx := t.Context()
+	tx, err := e.DB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	var role string
+	if err = tx.QueryRowContext(ctx, "SELECT role FROM users WHERE id=$1 FOR UPDATE", vendorID).Scan(&role); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() { done <- act() }()
+	// Until the action waits on a lock (or, if it needs none of the role change's, has finished).
+	var w *httptest.ResponseRecorder
+	for deadline := time.Now().Add(5 * time.Second); w == nil && time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		select {
+		case w = <-done:
+			continue
+		default:
+		}
+		var waiting int
+		e.DB.QueryRow(`SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock'`).Scan(&waiting)
+		if waiting > 0 {
+			break
+		}
+	}
+	if _, err = tx.ExecContext(ctx, "UPDATE users SET role='buyer' WHERE id=$1", vendorID); err != nil {
+		t.Fatalf("role change: %v", err)
+	}
+	if _, err = tx.ExecContext(ctx, "UPDATE products SET archived=true,archived_at=now(),updated=now() WHERE vendor_id=$1 AND NOT archived", vendorID); err != nil {
+		t.Fatalf("role change archiving the listings: %v", err)
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatalf("role change commit: %v", err)
+	}
+	if w == nil {
+		select {
+		case w = <-done:
+		case <-time.After(15 * time.Second):
+			t.Fatal("the action never finished")
+		}
+	}
+	if w.Code >= 500 {
+		t.Fatalf("action beside a role change: %d %s", w.Code, w.Body.String())
+	}
+	return w
+}
+
+// R24-1: removing a photo, as the vendor or as an administrator, beside the vendor's role change finishes (the
+// removal waits for the role change, then removes) instead of deadlocking.
+func TestPhotoRemoveDoesNotDeadlockWithRoleChange(t *testing.T) {
+	for _, byAdmin := range []bool{false, true} {
+		t.Run(map[bool]string{false: "vendor's removal", true: "administrator's removal"}[byAdmin], func(t *testing.T) {
+			e := newTestApp(t)
+			vendorID, remover := e.user("remove_deadlock_vendor", "vendor")
+			if byAdmin {
+				_, remover = e.user("remove_deadlock_admin", "admin")
+			}
+			listing := e.product(vendorID, "physical")
+			id := randomToken()[:32]
+			if _, err := e.DB.Exec(`INSERT INTO images(id,owner_user_id,product_id,kind,"full",thumb,width,height) VALUES($1,$2,$3,'photo','\x00','\x00',1,1)`, id, vendorID, listing); err != nil {
+				t.Fatal(err)
+			}
+			w := besideRoleChange(t, e, vendorID, func() *httptest.ResponseRecorder {
+				return e.do("POST", "/listings/photo/remove", remover, url.Values{"id": {id}})
+			})
+			if w.Code != 303 || e.imageCount() != 0 {
+				t.Fatalf("removal: %d, %d images left", w.Code, e.imageCount())
+			}
+		})
+	}
+}
+
+// R24-1, the same lock order for every lockListing caller: editing and archiving a listing beside the vendor's role
+// change finish instead of deadlocking.
+func TestListingActionsDoNotDeadlockWithRoleChange(t *testing.T) {
+	for _, path := range []string{"/listings/update", "/listings/archive"} {
+		t.Run(path, func(t *testing.T) {
+			e := newTestApp(t)
+			vendorID, vendor := e.user("listing_deadlock_vendor", "vendor")
+			listing := e.product(vendorID, "physical")
+			w := besideRoleChange(t, e, vendorID, func() *httptest.ResponseRecorder {
+				return e.do("POST", path, vendor, inventoryForm(listing, nil))
+			})
+			// It ran after the role change: saved (303), or refused because the listing is already archived (409).
+			if w.Code != 303 && w.Code != 409 {
+				t.Fatalf("%s: %d %s", path, w.Code, w.Body.String())
+			}
+		})
 	}
 }
