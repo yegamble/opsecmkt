@@ -28,9 +28,19 @@ type managedListing struct {
 
 // lockListing row-locks a listing the actor may manage (its vendor, or any administrator).
 // Anything else is reported as not found so listing ids of other vendors are not confirmed.
+//
+// Lock order: the users rows of the actor and the listing's vendor (FOR KEY SHARE), then the listing. An
+// administrator's role change, suspension or takedown locks a users row FOR UPDATE and then that vendor's
+// listings; a listing action that locked the listing first and then took a users row, which the foreign keys of
+// its audit and notification inserts do, would deadlock with it (PR #24 review R24-1;
+// TestListingActionsDoNotDeadlockWithRoleChange, TestPhotoRemoveDoesNotDeadlockWithRoleChange). Taken first, the
+// users rows make the action wait for such a change instead. Every caller takes users rows only after this.
 func lockListing(c *actionCtx, id string) (managedListing, error) {
 	l := managedListing{ID: id}
 	if err := waitForWalletLocks(c.Ctx(), c.Tx); err != nil { // a checkout may hold the row (payAction)
+		return l, err
+	}
+	if _, err := c.Tx.ExecContext(c.Ctx(), `SELECT 1 FROM users WHERE id=$1 OR id=(SELECT vendor_id FROM products WHERE id=$2) FOR KEY SHARE`, c.User.ID, id); err != nil {
 		return l, err
 	}
 	err := c.Tx.QueryRowContext(c.Ctx(), `SELECT vendor_id,kind,stock,archived,coalesce(admin_archive_reason,'') FROM products WHERE id=$1 AND (vendor_id=$2 OR $3='admin') FOR UPDATE`, id, c.User.ID, c.User.Role).Scan(&l.VendorID, &l.Kind, &l.Stock, &l.Archived, &l.Takedown)
