@@ -662,3 +662,20 @@ func TestOnlyImageRoutesSelectImageBytes(t *testing.T) {
 		t.Fatal("found no image query in image_routes.go: the check is not looking at the right strings")
 	}
 }
+
+// A server error on an image route is logged under the route's name, never the image id (A-141's log line).
+func TestImageRouteLogNameHasNoID(t *testing.T) {
+	id := randomToken()[:32]
+	for path, want := range map[string]string{publicImageURL(id, false): "/img/", deskImageURL(id, true): "/desk/img/"} {
+		if kind, name := routeOf(httptest.NewRequest("GET", path, nil)); kind != "page" || name != want {
+			t.Fatalf("routeOf(%s) = %s %s, want page %s", path, kind, name, want)
+		}
+	}
+	a := testHTTPApp(false)
+	logs := captureLog(t)
+	w := httptest.NewRecorder()
+	a.writeImage(w, httptest.NewRequest("GET", publicImageURL(id, true), nil), nil, io.ErrUnexpectedEOF)
+	if w.Code != 503 || w.Header().Get("Retry-After") != "5" || !strings.Contains(logs.String(), "name=/img/ ") || strings.Contains(logs.String(), id) {
+		t.Fatalf("database failure: %d %q, log %q", w.Code, w.Body.String(), logs.String())
+	}
+}
