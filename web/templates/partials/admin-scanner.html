@@ -1,0 +1,29 @@
+{{/* A-185 image scanner panel (clamd.go): rendered from the cached state only; it never contacts clamd. */}}
+{{define "admin-scanner"}}{{with .Scanner}}<section class="panel" id="image-scanner" aria-labelledby="image-scanner-title">
+<h2 id="image-scanner-title">Image scanner</h2>
+<p>Every photo and avatar upload is checked by the ClamAV malware scanner before anything is stored; only a clean answer lets it through. ClamAV checks for known malware; it does not review picture content. This panel shows what the app last heard from the scanner, checked every 30 seconds.</p>
+<p><strong>{{.State}}{{if .Detail}} ({{.Detail}}){{end}}</strong></p>
+{{if .Disabled}}<p>Photo uploads are off: <code>CLAMD_ADDRESS</code> is not set, so every upload is refused. <code>./scripts/install.sh add-scanner</code> starts the scanner and sets it (Docker needs at least 3 GB of memory); see the operator guide.</p>
+{{else}}<p>Signatures: {{if .HasDate}}{{if .Engine}}{{.Engine}}{{else}}engine not reported{{end}}, daily database {{.Daily}} built {{.DailyDate}}, {{.AgeDays}} {{if eq .AgeDays 1}}day{{else}}days{{end}} old (limit {{.LimitDays}}){{else if .Stale}}{{if .Engine}}{{.Engine}}; {{end}}the daily database date could not be read, so uploads are paused{{else}}not read yet{{end}}.</p>
+{{if .Stale}}<p class="alert error" role="status">Photo uploads are paused until the signatures are refreshed. Run <code>./scripts/install.sh refresh-scanner</code> on the host: it pulls the current scanner image and restarts the scanner. Uploads resume within 30 seconds of the new signatures loading.</p>
+{{else if .Warn}}<p class="alert" role="status">The signatures are {{.AgeDays}} days old; photo uploads pause once they are more than {{.LimitDays}} days old. Run <code>./scripts/install.sh refresh-scanner</code> on the host (<code>./scripts/install.sh upgrade</code> runs it too).</p>
+{{else if not .Ready}}<p class="alert error" role="status">Photo uploads are paused: the app cannot use the scanner. Check <code>docker compose ps clamd</code> and <code>docker compose logs clamd</code> on the host; after a start the scanner can take several minutes to load its signatures. The rest of the market is unaffected.</p>
+{{end}}<p>Last checked: {{if .Checked}}{{.Checked}}{{else}}not yet{{end}}. {{if .LastScan}}Last successful scan: {{.LastScan}}.{{else}}No successful scan since the app started.{{end}}</p>
+{{end}}<h3>Last 24 hours</h3>
+<p>{{.Counts.Stored}} stored · {{.Counts.Infected}} refused as infected · {{.Counts.Failed}} refused because the scanner failed. Counted in memory since the app last started, and never linked to accounts.</p>
+{{if .Counts.Signatures}}<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th scope="col">Signature</th>
+<th scope="col">Uploads refused</th>
+</tr>
+</thead>
+<tbody>{{range .Counts.Signatures}}<tr>
+<td>{{.Name}}</td>
+<td>{{.Count}}</td>
+</tr>{{end}}</tbody>
+</table>
+</div>
+{{end}}<p>Database size: {{.DatabaseSize}}.</p>
+</section>{{end}}{{end}}

@@ -644,3 +644,31 @@ payment watcher: db-connection
 `pass skipped` means that currency was not polled (no deposits read, no expiry, no payouts): `wallet check failed: <class>`, `refused by the test-network guard` (the provider stays disabled until the node is fixed and the application restarted), or `tip comparison failed`. A wallet class is `rpc:<code>` for a JSON-RPC error or one of the classes above; a wallet that cannot be reached shows as the Go type of its error. The wallet's text (which can quote an address) is the provider's last error on the admin page; neither this line nor the payout line prints it. `db-connection` (or `timeout`) alone means the watcher could not reach the database, or could not finish its pass within 5 minutes (for example while the pool was exhausted); the next pass picks up what it left; the line never holds `DATABASE_URL`, its user, database name, host or port. The recovery code reveal sweep logs `recovery code reveal sweep: <class>` the same way.
 
 When the database connection fails at startup the server exits with its class and no part of `DATABASE_URL`: `authentication failed (SQLSTATE 28P01)` or `(SQLSTATE 28000)` for a wrong user or password or a `pg_hba.conf` rule, `database missing (SQLSTATE 3D000)`, `host not found`, `connection refused`, `timed out`, or `TLS required` (the server accepts only encrypted connections; set `sslmode=require` or `verify-full`).
+
+**Image scanner.** Photo and avatar uploads need the ClamAV scanner: `CLAMD_ADDRESS` is clamd's `host:port` on the scanner network (the installer writes `clamd:3310`; empty turns uploads off), and `SCANNER_MAX_SIGNATURE_AGE_DAYS` (default 30, from 7 to 90) is how old the daily signatures may be before uploads pause. The app refuses to start with a malformed value of either, naming the variable. No setting lets an upload skip the scan. The app asks clamd for `PING` and `VERSION` every 30 seconds; `/admin#image-scanner` shows the result, and each change of state writes one line:
+
+```text
+image scanner: Ready
+image scanner: Unavailable (connection failed)
+image scanner: Unavailable (timed out)
+image scanner: Unavailable (unexpected reply)
+image scanner: Signatures stale (31 days, limit 30)
+image scanner: Signatures stale (signature date unreadable, limit 30)
+```
+
+- `Unavailable (not checked yet)` on the admin page: the app started less than a few seconds ago.
+- `connection failed`: clamd is not running, is still loading its signatures (it refuses connections for the first minutes after a start; its healthcheck allows 10 minutes), or is not on the `scanner` network with the app at `CLAMD_ADDRESS`. Check `docker compose ps clamd` and `docker compose logs clamd`.
+- `timed out`: clamd accepted the connection but did not answer within 10 seconds (connecting is given 3): it is overloaded, short of memory (`docker stats`) or reloading its database.
+- `unexpected reply`: whatever answers at `CLAMD_ADDRESS` is not clamd.
+- `Signatures stale`: run `./scripts/install.sh refresh-scanner` to pull the current scanner image; uploads resume within 30 seconds of clamd answering with the new date. `signature date unreadable` means clamd reported no daily database date, which counts as stale.
+- A scan that clamd fails (no connection, no answer within 10 seconds) also marks the scanner Unavailable until the next successful check, so uploads are refused for up to 30 seconds afterwards. An uploader who gives up first does not.
+- `/healthz` never contacts clamd: a scanner outage pauses uploads only, and never marks the app unhealthy or restarts it.
+
+Each upload the scanner refuses writes one line, and the uploader's error page ends with the same reference:
+
+```text
+upload outcome=refused reason=infected sig=Win.Test.EICAR_HDB-1 ref=3f9a0c12 kind=listing
+upload outcome=refused reason=timeout ref=0bbdc379 kind=avatar
+```
+
+`reason` is `infected` (a signature matched; `sig` is its name), `unavailable` (no connection, or clamd closed it without answering), `timeout` or `error` (clamd answered anything other than a clean result or a match, such as `INSTREAM size limit exceeded`, or closed the connection before reading the whole upload; this refuses that upload only and does not pause the scanner). `kind` is `listing` or `avatar`. The line never holds a handle, user id, listing id, file name or size, and the reference is stored nowhere else: a vendor who believes a refusal was a false positive can quote it, and you find the signature with `docker compose logs app | grep ref=3f9a0c12`. The uploader is never shown the signature name, and their activity log records only "Upload refused by the malware scanner". The admin panel counts refusals by signature over about the last 24 hours, in memory (the counts start again when the app restarts) and never linked to accounts. Uploads refused because the scanner is off or its signatures are stale are not logged; the admin panel says why.
