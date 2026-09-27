@@ -57,8 +57,9 @@ input[type=file] {
   line-height:1.5;
   cursor:pointer
 }
-/* The button sits on its own line so the chosen file's name, which the privacy notice asks the uploader to
-   check, keeps the full width beside it instead of being cut to "…" on a narrow screen (PR #24 review R24-2). */
+/* The button is a block only as wide as its words, so the chosen file's name, which the privacy notice asks the
+   uploader to check, is not cut to "…" on a narrow screen: Chromium and Firefox draw it on the line below at the
+   input's full width, WebKit beside the button (PR #24 review R24-2). */
 input[type=file]::file-selector-button {
   display:block;
   width:min-content;
