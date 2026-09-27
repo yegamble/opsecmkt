@@ -173,7 +173,8 @@ Each package records its own acceptance checks here and edits only its subsectio
 - [x] Moderators get nothing on `/desk/img` but their own avatar and the avatar of a staff member who decided a dispute; that avatar is served to the order's buyer, vendor and moderators, and an unrelated account gets the 404 (`TestModeratorDeskRouteRefused`, `TestStaffAvatarVisibleToOrderParties`).
 - [x] A staff avatar is public only while the "public staff list" setting is on and that account is not hidden; both are off by default, and an unknown or missing setting counts as off (`TestHiddenStaffAvatarNotPublic`).
 - [x] A served image carries exactly D7's header set and `Content-Length`, with no `ETag`, `Last-Modified` or `Set-Cookie`, over `httptest` and a loopback server; `HEAD` answers the same without a body (`TestImageHeaders`, `TestImageHeadSupported`).
-- [x] No query outside `image_routes.go` reads image bytes (`TestOnlyImageRoutesSelectImageBytes`, which scans the package's SQL strings).
+- [x] No query outside `image_routes.go` reads image bytes (`TestOnlyImageRoutesSelectImageBytes`, which scans the package's SQL strings and constant concatenations for the columns in any case, whole-row reads and the byte-reading helper; `TestImageBytesCheckerCatchesEvasions` proves it finds a qualified or upper-case column, a whole-row alias, `row_to_json`, `INSERT … RETURNING thumb`, reuse of the helper and more).
+- [x] Image bytes held by responses still being written are capped at 64 MiB: clients that never read fill it, then images get the busy 503 with `Retry-After: 5` while pages load and HEAD answers, the heap stays within the cap, and closing the clients gives it back (`TestImageSlowReadersBoundedByByteBudget`).
 - [ ] A real Tor Browser (Safest) shows the JPEG inline under `default-src 'none'; sandbox` and `nosniff` (A-199), and the cache policy's benefit over Tor is measured (A-198).
 
 ## Accessibility and visual verification

@@ -25,8 +25,10 @@ import (
 // one decode at a time (imageDecodeWork), refused before it starts unless its estimate is at most 64 MiB (an
 // upper bound on what image/jpeg and image/png allocate, plus up to 256 KiB of their fixed tables and buffers:
 // TestDecodeAllocationWithinEstimate, FuzzDecodeReencode), plus its outputs (a resampled copy of at most a quarter
-// of the decoded pixels, the 1200 px and thumbnail images and their JPEGs, about 20 MiB): about 220 MiB live,
-// inside the 400 MiB GOMEMLIMIT (TestUploadConcurrentMaxSizeStaysInBudget).
+// of the decoded pixels, the 1200 px and thumbnail images and their JPEGs, about 20 MiB): about 220 MiB live
+// (TestUploadConcurrentMaxSizeStaysInBudget). Serving images (A-187) adds at most 64 MiB: the bytes that image
+// responses hold from their query until written, reserved from market's imageBytes budget or refused with 503
+// (TestImageSlowReadersBoundedByByteBudget). About 285 MiB in all, inside the 400 MiB GOMEMLIMIT.
 const maxConns = 2048
 
 // newServer is the HTTP server with its read and write bounds.
