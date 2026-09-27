@@ -384,7 +384,12 @@ func adminAction(c *actionCtx) (actionResult, error) {
 		if err == nil && old != role && (old == "moderator" || old == "admin") && role != "moderator" {
 			// PR #28 review: a staff avatar was uploaded under the staff rules (hidden unless listed); as a
 			// vendor's it would be public. It is deleted here (D4's hard delete), after the users row lock above.
+			// The public staff list choice was made as staff too: it is reset to the default (hidden), so a later
+			// promotion starts hidden again.
 			var res sql.Result
+			if _, err = tx.ExecContext(ctx, "UPDATE users SET staff_hidden=true WHERE id=$1", target); err != nil {
+				return actionResult{}, err
+			}
 			if res, err = tx.ExecContext(ctx, "DELETE FROM images WHERE owner_user_id=$1 AND kind='avatar'", target); err == nil {
 				if n, _ := res.RowsAffected(); n > 0 {
 					action += "; removed their staff avatar"

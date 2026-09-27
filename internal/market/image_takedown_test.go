@@ -665,4 +665,13 @@ func TestStaffDemotionDeletesAvatar(t *testing.T) {
 	e.wantHidden(vendorAvatar, "new moderator's avatar, hidden by default")
 	agExec(e, "UPDATE settings SET value='true' WHERE key='staff_list_public'")
 	e.wantHidden(vendorAvatar, "new moderator's avatar with the list on, still hidden by default")
+	// A moderator who chose to be listed, then was demoted and promoted again, starts hidden again: the choice
+	// was made as staff and does not outlive the role (PR #28 re-promotion follow-up).
+	listedID, _ := e.user("listed_mod", "moderator")
+	agExec(e, "UPDATE users SET staff_hidden=false WHERE id=$1", listedID)
+	agExpect(e, "/admin", admin, form("action", "role", "role", "vendor", "handle", "listed_mod"), 303, "")
+	agExpect(e, "/admin", admin, form("action", "role", "role", "moderator", "handle", "listed_mod"), 303, "")
+	if agStr(e, "SELECT staff_hidden::text FROM users WHERE id=$1", listedID) != "true" {
+		t.Fatal("a re-promoted moderator kept the public staff list choice from before the demotion")
+	}
 }

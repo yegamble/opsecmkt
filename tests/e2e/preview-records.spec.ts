@@ -46,7 +46,7 @@ test('records list photos and avatars', async ({ page }) => {
     'A staff avatar is public on this page (and on an administrator’s vendor page)',
     'public staff list',
     'otherwise it is shown only beside that staff member’s dispute decisions',
-    'Demoting a staff member removes their staff avatar.',
+    'Demoting a staff member removes their staff avatar and resets their staff list choice to hidden.',
     'A normal browser may keep viewed images in its disk cache: it reuses them for a day without asking the server, and the files can stay until its cache is cleared. Tor Browser keeps them in memory only, until it closes (not yet tried in Tor Browser, A-199).',
     'deletes it from the database at once',
     'copies remain in backups made before that and, until PostgreSQL reuses the space, in its data files and write-ahead log',
