@@ -12,17 +12,18 @@ below run from the repository root.
 | --- | --- |
 | `init` (the default: `./scripts/install.sh` and `./scripts/install.sh --local` run it too) | Refuses when `.env` exists, when containers of the Compose project come from another checkout, and when any volume of the project exists. Asks its questions (none when flags answer them), writes `.env` with distinct random `APP_SECRET_KEY` and `SETUP_TOKEN`, runs `check`, then `docker compose up -d --build --wait`. With `--external-db` it first reads that database with a one-off `docker compose run --rm --no-deps app -status`: when a market's setup is already complete there, it removes the new `.env`, starts nothing and says to restore that market's `.env` instead (new secrets would leave its TOTP secrets unreadable). On Tor it waits up to 90 seconds for the onion address. It ends with the setup link and token, and for clearnet behind a proxy with Caddy and nginx snippets for `APP_PORT`. |
 | `init --admin HANDLE [--site-name NAME]` | The same, but creates the first administrator in the terminal ([First administrator from the host](#authentication)): it asks for the password twice without showing it and pipes it to `-bootstrap-admin` on standard input, never in a command line, the environment or `.env`. Then it removes `SETUP_TOKEN` from `.env`, recreates the app and prints no token. |
-| `check` | Validates `.env` and the Compose configuration and starts nothing: the app's startup refusals (placeholder or weak secrets, `COOKIE_SECURE`, a placeholder `DATABASE_URL`, `APP_MODE` against `COMPOSE_FILE`), `POSTGRES_PASSWORD` against the password in `DATABASE_URL`, `COMPOSE_PROFILES` against the database and node settings, node images on `latest`, the mirror outside Tor, the project's containers created from another checkout (or this checkout's containers under another project name), and `docker compose config`. When the directory those containers were created from no longer exists, the checkout was probably moved: `check` says so, and `docker compose up -d --force-recreate` run in the moved checkout recreates them with its directory, keeping the volumes (a plain `up -d` leaves them as they are). Do not change `COMPOSE_PROJECT_NAME` for this. Messages name keys, never values. |
-| `status` | Mode, each service's health, whether setup is pending or complete, the schema version and every onion address. |
+| `check` | Validates `.env` and the Compose configuration and starts nothing: the app's startup refusals (placeholder or weak secrets, `COOKIE_SECURE`, a placeholder `DATABASE_URL`, `APP_MODE` against `COMPOSE_FILE`), `POSTGRES_PASSWORD` against the password in `DATABASE_URL`, `COMPOSE_PROFILES` against the database and node settings, node images on `latest`, the mirror outside Tor, the [malware scanner](#photo-uploads-and-the-malware-scanner) (its profile, `CLAMD_ADDRESS` and `compose.scanner.yaml` only together, a readable `deploy/clamd.conf`, `CLAMAV_IMAGE` pinned to a release with signatures and, from `docker compose config`, `clamd` alone with the app on the internal `scanner` network with no port or volume), the project's containers created from another checkout (or this checkout's containers under another project name), and `docker compose config`. When the directory those containers were created from no longer exists, the checkout was probably moved: `check` says so, and `docker compose up -d --force-recreate` run in the moved checkout recreates them with its directory, keeping the volumes (a plain `up -d` leaves them as they are). Do not change `COMPOSE_PROJECT_NAME` for this. Messages name keys, never values. |
+| `status` | Mode, each service's health, whether setup is pending or complete, the schema version, every onion address and the malware scanner's state with the version and date of its signatures. |
 | `setup-token [--new]` | While setup is pending: shows the token and setup link, or with `--new` issues a new token and recreates the app. After setup it exits 1: the token grants nothing then. It never shows a token that is also the key root (an install without its own `APP_SECRET_KEY`); `--new` issues a separate one and keeps the keys. |
 | `add-mirror` | See [Optional onion mirror](#optional-onion-mirror). |
+| `add-scanner`, `refresh-scanner` | Add the ClamAV malware scanner that photo uploads need, and refresh its signatures: see [Photo uploads and the malware scanner](#photo-uploads-and-the-malware-scanner). |
 | `upgrade [--no-backup]` | After `git pull`: see [UPGRADING.md](../UPGRADING.md). |
 
-Flags answer `init`'s questions: `--tor` or `--clearnet`; `--local` (loopback HTTP, internal database, no nodes); `--external-db URL` (without it, a flagged install gets the internal database); `--behind-proxy yes|no` (clearnet: secure cookies behind an HTTPS proxy, or local HTTP only); `--nodes local|none|custom` (`local` runs pruned Bitcoin testnet4 and Monero stagenet nodes with the [default images](#node-image-versions), `custom` asks per coin); and per coin `--bitcoin` or `--monero` `local|external|disabled`, `--bitcoin-image`, `--bitcoin-network testnet4|signet`, `--bitcoin-prune yes|no`, `--bitcoin-rpc-url`, and the Monero equivalents with `--monero-wallet-rpc-url`. `./scripts/install.sh --help` lists them. A question without its flag is asked. A value given as a flag, such as an RPC URL with a password, is visible to other local users while the installer runs; answer the question instead to keep it off the command line.
+Flags answer `init`'s questions: `--tor` or `--clearnet`; `--local` (loopback HTTP, internal database, no nodes); `--external-db URL` (without it, a flagged install gets the internal database); `--behind-proxy yes|no` (clearnet: secure cookies behind an HTTPS proxy, or local HTTP only); `--nodes local|none|custom` (`local` runs pruned Bitcoin testnet4 and Monero stagenet nodes with the [default images](#node-image-versions), `custom` asks per coin); and per coin `--bitcoin` or `--monero` `local|external|disabled`, `--bitcoin-image`, `--bitcoin-network testnet4|signet`, `--bitcoin-prune yes|no`, `--bitcoin-rpc-url`, and the Monero equivalents with `--monero-wallet-rpc-url`. `--uploads yes` also sets up the [malware scanner](#photo-uploads-and-the-malware-scanner) as `add-scanner` does (the default, `no`, leaves it out and asks nothing). `./scripts/install.sh --help` lists them. A question without its flag is asked. A value given as a flag, such as an RPC URL with a password, is visible to other local users while the installer runs; answer the question instead to keep it off the command line.
 
 The setup token opens `/setup` once. After setup, `status`, `add-mirror` and `upgrade` remove it from `.env` when `APP_SECRET_KEY` is set and the running app reports `keyroot=app_secret_key` (the next `docker compose up -d` drops it from the running app); it grants nothing by then. An app started before `.env` had `APP_SECRET_KEY` still derives its keys from the token, so the token stays until the app is recreated.
 
-Commands that change `.env` (`init`, `setup-token --new`, `add-mirror`, `upgrade`, and `status` when it removes the token) hold the lock directory `.env.lock` while they run, so two of them cannot overwrite each other's changes; a second one refuses with a message (`status` only leaves the token). If a killed run left the lock behind, remove it with `rmdir .env.lock`. The installer switches off shell tracing, so `SHELLOPTS=xtrace` cannot print its secrets.
+Commands that change `.env` (`init`, `setup-token --new`, `add-mirror`, `add-scanner`, `upgrade`, and `status` when it removes the token) hold the lock directory `.env.lock` while they run, so two of them cannot overwrite each other's changes; a second one refuses with a message (`status` only leaves the token). If a killed run left the lock behind, remove it with `rmdir .env.lock`. The installer switches off shell tracing, so `SHELLOPTS=xtrace` cannot print its secrets.
 
 ## Clearnet and onion deployment
 
@@ -95,6 +96,78 @@ docker compose exec tor-mirror cat /var/lib/tor/marketplace/hostname
 Wait for the mirror's Tor process to initialize before reading its hostname. Do not start the mirror with a `--profile mirror` option instead: an option replaces `COMPOSE_PROFILES` for that command rather than adding to it, so with the internal database the command fails (`service "app" depends on undefined service "db"`), and a mirror started that way is left out of later `docker compose up -d` runs. With the profile in `.env`, every `docker compose` command includes the mirror and Compose restarts its Tor whenever it recreates the app (see [Clearnet and onion deployment](#clearnet-and-onion-deployment)). If you already run a mirror that is not in `COMPOSE_PROFILES`, add it now. This optional profile publishes no host ports and reaches the same application/database over the private backend network. The second address is a same-host alternate URL; it does not provide independence from host, application or database failures. Preserve the separate `tor_mirror_identity` volume to retain its address, and back it up like the main one ([Secrets, .env and onion identities](#secrets-env-and-onion-identities)).
 
 Publish both addresses in an operator-signed verification document distributed through a trusted channel. Users should verify that signature with a previously trusted operator key; merely displaying an address or a “canonical” label on a page does not authenticate a mirror. Signing and distribution remain operator tasks.
+
+## Photo uploads and the malware scanner
+
+Listing photos and vendor avatars need ClamAV's malware scanner, `clamd`, an optional service in [`compose.scanner.yaml`](../compose.scanner.yaml). The app is to store an upload only after `clamd` has scanned the file it received and found nothing, and to refuse uploads whenever it cannot ask. There is no setting that accepts uploads without it: with `CLAMD_ADDRESS` blank, uploads are off. **This release contains the scanner service and these installer commands; the upload forms and the app's side of the scan are being built (war room A-185 to A-188).** Until they arrive, `clamd` runs but nothing sends it files.
+
+### Turning it on
+
+```sh
+./scripts/install.sh add-scanner
+```
+
+or `./scripts/install.sh init --uploads yes` on a new install. The host needs **at least 3 GiB of memory** as Docker reports it (`docker info`); the installer refuses a smaller one, changing nothing, and warns below 4 GiB. `clamd` keeps ClamAV's signature databases in memory, about 1 GiB (see the [resource limits](#resource-limits-and-log-rotation)).
+
+`add-scanner` changes three things in `.env` together (in a copy moved into place, so never only some of them): it adds `scanner` to `COMPOSE_PROFILES` and `compose.scanner.yaml` to `COMPOSE_FILE`, and sets `CLAMD_ADDRESS='clamd:3310'`; it also writes `CLAMAV_IMAGE` when `.env` has none. If `check` refuses the result, it puts the previous `.env` back. It then starts `clamd`, waits for it to load its signatures and answer (usually under a minute; it gives up after 10 minutes and names `docker compose logs clamd`), recreates the app so that it joins the scanner network and reads `CLAMD_ADDRESS` (on Tor, Tor restarts with it), and prints the signatures `clamd` reports, for example:
+
+```text
+Malware scanner ready. Signatures: ClamAV 1.5.4/28130/Mon Sep 21 06:24:29 2026
+```
+
+That is the ClamAV release, the version of its daily signature database and when that database was built. Running `add-scanner` again changes nothing in `.env`. `./scripts/install.sh status` prints the same line (`Malware scanner: answering; signatures ...`), or says the scanner is off or not answering. `check` refuses the profile without `CLAMD_ADDRESS`, `CLAMD_ADDRESS` without the profile, any other address (a remote scanner is not supported) and the profile without `compose.scanner.yaml`.
+
+### How it runs
+
+- **Its own signatures, no downloads.** `clamd` reads the signatures built into its image (`/var/lib/clamav`, read-only). There is no signature volume and no `freshclam`, and the container has no route out of the host in either mode.
+- **Isolated.** It is on its own `scanner` network, `internal: true` in clearnet and Tor installs alike, which only the app and `clamd` join. It publishes no port. Nothing depends on it: the market, `/healthz` and the app's healthcheck work while it is down or loading, and only uploads wait. The installer's commands (`init`, `upgrade`, `add-mirror`, `setup-token --new`) wait for every other service to become healthy but only start `clamd`, so a scanner that never becomes healthy does not stop them part-way; `init` then says so and names `docker compose logs clamd`, and `status` shows it.
+- **Hardened.** A read-only container running as the image's `clamav` user with every capability dropped and `no-new-privileges`, within 3 GiB, 2 CPUs and 256 processes. Uploads are streamed into a 64 MiB in-memory `/tmp` while they are scanned. The image's own entrypoint is not used: it creates `/run/clamav` and changes the ownership of `/var/lib/clamav`, which a read-only container refuses, and it would start `freshclam`; Compose runs `clamd --foreground --config-file=/etc/clamav/clamd.conf` directly instead.
+- **Configured by [`deploy/clamd.conf`](../deploy/clamd.conf),** mounted read-only; each option is commented there. `SHUTDOWN`, `RELOAD` and `STATS` answer `COMMAND UNAVAILABLE`, so nothing on the scanner network can stop it (`restart: unless-stopped` covers a crash). A stream over 9 MiB is refused (the upload limit is 4 MiB), and `AlertExceedsMax` turns any scanning limit a file reaches into a detection, which the app refuses, instead of a clean result for a file scanned only in part. Image fuzzy hashing and broken-media alerts are off until they are measured on real phone photos (war room A-197). `clamd` logs to Docker's rotated logs; it does not log clean scans. It reads `deploy/clamd.conf` as its own user, so the file must be readable by everyone (`chmod 644 deploy/clamd.conf` if your checkout was made with a restrictive `umask`); `check` says so.
+
+`scripts/test-scanner.sh` runs this service definition with no network at all and checks each point above against the real image ([operations tests](operations-tests.md#malware-scanner-container)).
+
+### Keeping the signatures fresh
+
+ClamAV publishes new signatures every day, but `clamd` has only those its image was built with. ClamAV rebuilds each release tag with newer signatures ("the non-base version will only ever be updated to have newer signature databases", [ClamAV's Docker documentation](https://docs.clamav.net/manual/Installing/Docker.html)). For example, `clamav/clamav:1.5.4` was released on 7 August 2026, and its build of 21 September 2026 carries the daily database of that morning. How often the tags are rebuilt is not documented. To fetch the newest build:
+
+```sh
+./scripts/install.sh refresh-scanner
+```
+
+It has Docker pull `CLAMAV_IMAGE` again even though the tag is already present, recreates `clamd` when the pull brought a newer build (uploads pause while it loads, usually under a minute), and prints the signatures before and after. `./scripts/install.sh upgrade` runs it whenever the scanner is on (it never turns the scanner on); a failed pull there is a warning, and the upgrade itself still completes.
+
+**Refresh at least monthly.** The upload code will refuse uploads while the signatures are older than a limit, 30 days by default (war room ruling C2), so an install that is neither upgraded nor refreshed stops taking photos. On a clearnet host, a weekly cron entry does it:
+
+```text
+17 4 * * 1 cd /srv/opsecmkt && ./scripts/install.sh refresh-scanner >> refresh-scanner.log 2>&1
+```
+
+**On Tor** the pull, like every image Docker pulls or builds for `upgrade`, goes directly from the host to Docker Hub, not through Tor. It tells Docker Hub, and anyone watching the host's connection, that this host fetches ClamAV images, nothing about the market. The `clamd` container itself never connects anywhere. If the host must not contact Docker Hub, fetch the image on another machine and carry it over (use `--platform linux/arm64` there if the market's host is ARM):
+
+```sh
+docker pull clamav/clamav:1.5.4-debian
+docker save -o clamav.tar clamav/clamav:1.5.4-debian
+```
+
+and, on the market's host, in its checkout:
+
+```sh
+docker load -i clamav.tar
+docker compose up -d clamd
+./scripts/install.sh status
+```
+
+`upgrade` on such a host warns that it could not refresh the scanner; load a new image instead. `freshclam` (downloading signatures from inside a container, directly or over Tor) is not supported; war room A-195 tests it over Tor first, and turning it on would replace the image's signatures for good.
+
+### The image
+
+The default, `clamav/clamav:1.5.4-debian`, is ClamAV 1.5.4 with its signatures on a Debian base. It is published for amd64, arm64 and ppc64le hosts, while the Alpine-based `clamav/clamav:1.5.4` is published for amd64 only. `CLAMAV_IMAGE` in `.env` overrides it. `check` accepts only a `MAJOR.MINOR.PATCH` tag, optionally with `-debian` (upstream rebuilds those only with newer signatures), or an `@sha256` digest. It refuses `latest`, `stable`, `unstable` and feature-release tags such as `1.5`, with or without `-debian`, which move to other releases, and any `_base` tag, which has no signatures (with no volume, `clamd` would have none and exit). Append `@sha256:<digest>` to pin one build, but a digest never receives newer signatures: `refresh-scanner` then changes nothing, and you replace the digest yourself. To try another release before switching to it, run `CLAMAV_IMAGE=clamav/clamav:<tag> ./scripts/test-scanner.sh`, then set it in `.env` and run `./scripts/install.sh refresh-scanner`. The default is written in `compose.scanner.yaml`, `.env.example` and `scripts/install.sh`; change all three together (`tests/test_compose_scanner.py` fails otherwise).
+
+### Troubleshooting and turning it off
+
+- **`status` says the scanner is not answering.** `docker compose ps clamd` shows whether it is starting (the healthcheck allows it 10 minutes), restarting or stopped, and `docker compose logs clamd` why. `docker inspect --format '{{.State.OOMKilled}} {{.RestartCount}}' "$(docker compose ps -q clamd)"` shows whether it ran out of memory; raise `mem_limit` for `clamd` in your own Compose file as for the [other limits](#resource-limits-and-log-rotation).
+- **`Can't open/parse the config file /etc/clamav/clamd.conf`** in its log: make `deploy/clamd.conf` readable by everyone (`chmod 644 deploy/clamd.conf`) and run `docker compose up -d clamd`.
+- **Turning it off:** remove `scanner` from `COMPOSE_PROFILES` and `compose.scanner.yaml` from `COMPOSE_FILE`, set `CLAMD_ADDRESS=''`, then run `./scripts/install.sh check` and `docker compose up -d --remove-orphans`, which removes the `clamd` container and recreates the app without the scanner network. Uploads are then off.
 
 ## Denial-of-service defences
 
@@ -195,6 +268,7 @@ Every service has a memory, CPU and process ceiling, so a flood, a leak or a run
 | `bitcoin` | 2g | 2 | 256 | A pruned test-network node: its database cache and mempool (at most 300 MB by default) plus headroom for the initial sync. Raise it for an unpruned node or a larger `-dbcache`. |
 | `monero` | 2g | 2 | 512 | monerod starts threads per core for sync and verification. |
 | `monero-wallet` | 512m | 1 | 128 | |
+| `clamd` | 3g | 2 | 256 | The [malware scanner](#photo-uploads-and-the-malware-scanner), only when it is on. It holds ClamAV's signatures in memory: 1035 MiB at its peak with ClamAV 1.5.4 and the signatures of 21 September 2026 (`scripts/test-scanner.sh` prints it), and `ConcurrentDatabaseReload no` keeps a reload from loading a second copy. The figures are provisional until war room A-196 measures scans at the upload limits. |
 
 CPUs are set as `cpu_quota` over `cpu_period` (`cpu_period: 100000` and `cpu_quota: 200000` is 2 CPUs), not with `cpus`: Docker refuses to create a container whose `cpus` exceeds the host's CPU count, so `cpus: 2` would stop the app from starting on a 1-CPU server, while a quota simply never binds there. `pids_limit` counts threads as well as processes. The limits are ceilings, not reservations: a host smaller than their sum still starts everything, but the ceilings then protect it less. When a container reaches its memory limit the kernel kills its process and Docker restarts it (`restart: unless-stopped`); `docker inspect --format '{{.State.OOMKilled}} {{.RestartCount}}' "$(docker compose ps -q app)"` shows whether that happened. A CPU limit only slows a container down; at its process limit new threads fail to start.
 
@@ -379,7 +453,7 @@ No environment keys. Second-factor secrets are encrypted with a key derived from
 
 ### PGP identity
 
-No configuration. Users paste an ASCII-armored public key on `/account`; it is stored without armor headers or surrounding text, and the fingerprint and user IDs are shown and ownership is proven on `/pgp` by signing a server text or decrypting a message encrypted to the key (for example `gpg --clearsign`, `gpg --decrypt`). A verified key can be used as a sign-in second factor. Changing the key clears verification and PGP sign-in. `/messages` accepts only OpenPGP-encrypted messages and labels each by whether its recipient key IDs match the recipient's saved key; the server never decrypts or holds private keys. Losing the private key locks PGP sign-in unless another second factor is enrolled or an administrator resets the account's second factors (see Authentication). Vendor pages and order pages show the other party's armored public key, fingerprint and whether ownership is verified, and "Message vendor"/"Contact vendor" links open `/messages?to=<handle>` with the recipient filled in; without a saved key, the page says messages cannot be sent until one is added.
+No configuration. Users paste an ASCII-armored public key on `/account`; it is stored without armor headers or surrounding text (only public key, subkey, user ID and signature packets are accepted: a key with a GnuPG photo ID is refused, with the `gpg --edit-key` … `deluid` steps to remove it), and the fingerprint and user IDs are shown and ownership is proven on `/pgp` by signing a server text or decrypting a message encrypted to the key (for example `gpg --clearsign`, `gpg --decrypt`). A verified key can be used as a sign-in second factor. Changing the key clears verification and PGP sign-in. `/messages` accepts only OpenPGP-encrypted messages and labels each by whether its recipient key IDs match the recipient's saved key; the server never decrypts or holds private keys. Losing the private key locks PGP sign-in unless another second factor is enrolled or an administrator resets the account's second factors (see Authentication). Vendor pages and order pages show the other party's armored public key, fingerprint and whether ownership is verified, and "Message vendor"/"Contact vendor" links open `/messages?to=<handle>` with the recipient filled in; without a saved key, the page says messages cannot be sent until one is added.
 
 ### Orders
 

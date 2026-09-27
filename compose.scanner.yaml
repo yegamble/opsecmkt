@@ -1,0 +1,58 @@
+# Optional malware scanner for photo uploads (war room A-184): ClamAV's clamd, which the app asks to scan every
+# upload before it stores anything. Include it only together with the `scanner` profile in COMPOSE_PROFILES and
+# CLAMD_ADDRESS=clamd:3310; `./scripts/install.sh add-scanner` sets all three (docs/operator-guide.md#photo-uploads-and-the-malware-scanner).
+#
+# clamd reads the signatures built into the pinned image (no volume, no freshclam, no egress in either mode):
+# `./scripts/install.sh refresh-scanner` pulls a newer build of the same tag and recreates clamd. The app does
+# not depend on clamd: while it is down or starting, uploads are refused and everything else keeps working.
+# Same log rotation as compose.yaml (anchors do not cross files; CI checks every service has it).
+x-logging: &logging
+  driver: ${LOG_DRIVER:-json-file}
+  options:
+    max-size: 10m
+    max-file: '3'
+services:
+  app:
+    networks: [scanner]
+  clamd:
+    # A release tag with signatures (never `_base`, which has none, nor latest). Change it together with
+    # .env.example and scripts/install.sh (docs/operator-guide.md#photo-uploads-and-the-malware-scanner).
+    image: ${CLAMAV_IMAGE:-clamav/clamav:1.5.4-debian}
+    profiles: [scanner]
+    restart: unless-stopped
+    networks: [scanner]
+    # The image's entrypoint (/init) creates /run/clamav and chowns /var/lib/clamav before anything else, which
+    # a read-only container refuses, and would start freshclam; run clamd directly instead, as its own user.
+    entrypoint: [clamd]
+    command: [--foreground, --config-file=/etc/clamav/clamd.conf]
+    user: clamav
+    volumes:
+      - type: bind
+        source: ./deploy/clamd.conf
+        target: /etc/clamav/clamd.conf
+        read_only: true
+    read_only: true
+    # Uploads are streamed here while scanned (TemporaryDirectory in deploy/clamd.conf): room for two at the
+    # 9 MiB StreamMaxLength plus what clamd unpacks from them.
+    tmpfs: ['/tmp:size=64m']
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    # The loaded signatures take about 1 GiB (docs/operator-guide.md#resource-limits-and-log-rotation).
+    mem_limit: 3g
+    cpu_period: 100000
+    cpu_quota: 200000
+    pids_limit: 256
+    # Healthy once clamd answers PING (the image's own check). Loading the signatures takes a minute or more on
+    # a small host, so failures in the first 10 minutes do not count.
+    healthcheck:
+      test: [CMD, clamdcheck.sh]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10m
+    logging: *logging
+
+networks:
+  # Only the app and clamd are on it, in every mode; internal: no route out of the host.
+  scanner:
+    internal: true

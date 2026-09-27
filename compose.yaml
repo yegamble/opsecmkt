@@ -42,6 +42,8 @@ services:
       PAYMENT_POLL_INTERVAL: ${PAYMENT_POLL_INTERVAL:-30s}
       PAYMENT_EXPIRY: ${PAYMENT_EXPIRY:-24h}
       AUDIT_SIGNING_KEY: ${AUDIT_SIGNING_KEY:-}
+      # Photo uploads: clamd:3310 with compose.scanner.yaml and the scanner profile; blank keeps uploads off.
+      CLAMD_ADDRESS: ${CLAMD_ADDRESS:-}
       # Go's garbage collector works harder as the heap nears this, below mem_limit (512m), so that load makes
       # the app slower rather than killed mid-request. Raise both together (docs/operator-guide.md#resource-limits-and-log-rotation).
       GOMEMLIMIT: 400MiB
