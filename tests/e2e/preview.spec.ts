@@ -76,6 +76,22 @@ test('search, empty state, filter and reset work without client scripts', async 
   await expect(page.locator('.listings-grid')).toContainText('Encrypted USB Drive');
 });
 
+// A-181: one page of samples needs no pager; an out-of-range or malformed page still lands on the catalog,
+// and the search term is capped at 64 bytes (the box says so with maxlength and echoes the capped term).
+test('catalog page numbers and long search terms are handled without client scripts', async ({ page }) => {
+  for (const path of ['/?page=9', '/?page=-1', '/?page=abc']) {
+    expect((await page.goto(path))?.status()).toBe(200);
+    await expect(page.locator('.listings-grid .product-card')).toHaveCount(6);
+    await expect(page.getByRole('navigation', { name: 'Catalog pages' })).toHaveCount(0);
+  }
+  const search = page.locator('form[role="search"]:visible');
+  await expect(search.getByRole('textbox')).toHaveAttribute('maxlength', '64');
+  await page.goto(`/?q=${'e'.repeat(70)}`);
+  await expect(page.locator('form[role="search"]:visible').getByRole('textbox')).toHaveValue('e'.repeat(64));
+  await page.goto('/?q=%25');
+  await expect(page.getByRole('heading', { name: 'No listings found' })).toBeVisible();
+});
+
 test('product, vendor and checkout navigation preserves listing identity', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('link', { name: 'Faraday Laptop Bag — 15 inch', exact: true }).click();

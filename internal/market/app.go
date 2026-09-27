@@ -362,6 +362,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		d.Query = q.Get("q")
 		d.Category = q.Get("category")
 		d.Region = q.Get("region")
+		normaliseCatalogFilters(&d)
 		if q.Get("currency") == "XMR" {
 			d.Currency = "XMR"
 		}
@@ -382,6 +383,9 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				if match {
 					d.Products = append(d.Products, p)
 				}
+			}
+			if page == "catalog" {
+				d.Products = pageSlice(&d, d.Products, q.Get("page"))
 			}
 			if page == "product" || page == "checkout" {
 				if len(d.Products) == 0 {

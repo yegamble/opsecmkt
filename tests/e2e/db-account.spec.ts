@@ -11,6 +11,8 @@ test('register, draft, profile persistence and session boundaries', async ({ pag
   await page.getByLabel('Password', { exact: true }).fill(password);
   await page.getByRole('button', { name: 'Create account' }).click();
   await expect(page.locator('.account-name')).toHaveText(handle);
+  // The catalog shows 25 listings a page (A-181) and other specs publish more: search for the setup fixture.
+  await page.goto(`/?q=${encodeURIComponent(FIXTURE_LISTING)}`);
   await page.getByRole('link', { name: FIXTURE_LISTING, exact: true }).click();
   await page.getByRole('link', { name: 'Review order draft' }).click();
   await page.getByLabel('Reference currency').selectOption('XMR');

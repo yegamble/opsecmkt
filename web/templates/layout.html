@@ -25,7 +25,7 @@
 </a>
 <form class="header-search" action="/" method="get" role="search">
 <label class="sr-only" for="header-search">Search listings</label>
-<input id="header-search" name="q" value="{{.Query}}" placeholder="Search the marketplace…">
+<input id="header-search" name="q" value="{{.Query}}" maxlength="64" placeholder="Search the marketplace…">
 <button type="submit" aria-label="Search marketplace"><svg class="ui-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg></button>
 </form>
 <div class="header-actions">{{if .User}}<a class="account-name" href="/account">{{.User.Handle}}</a>{{else}}<a href="/login">Sign in</a>

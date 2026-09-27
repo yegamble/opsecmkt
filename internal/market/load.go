@@ -2,9 +2,130 @@ package market
 
 import (
 	"database/sql"
+	"errors"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 )
+
+// A-181 (with A-16 catalog paging, A-60 PA-8): the catalog on / is searched with a capped, literal term and
+// served 25 listings a page, each card showing an excerpt; the product page keeps the full description.
+const (
+	searchMaxBytes  = 64  // q beyond this is ignored (cut on a rune boundary)
+	filterMaxBytes  = 80  // category and region filters (a listing region is at most 80 bytes)
+	catalogPageSize = 25  // listings per catalog page
+	excerptRunes    = 300 // characters of description on a listing card, including the trailing "…"
+)
+
+// cleanParam drops NUL bytes and invalid UTF-8 (PostgreSQL refuses both, which would be a 500), trims
+// surrounding space and cuts s to at most limit bytes without splitting a character.
+func cleanParam(s string, limit int) string {
+	s = strings.TrimSpace(strings.ToValidUTF8(strings.ReplaceAll(s, "\x00", ""), ""))
+	if len(s) <= limit {
+		return s
+	}
+	i := limit
+	for i > 0 && !utf8.RuneStart(s[i]) {
+		i--
+	}
+	return s[:i]
+}
+
+func searchTerm(s string) string  { return cleanParam(s, searchMaxBytes) }
+func filterValue(s string) string { return cleanParam(s, filterMaxBytes) }
+
+// normaliseCatalogFilters applies the caps to the search and filter values every page echoes in its header.
+func normaliseCatalogFilters(d *PageData) {
+	d.Query, d.Category, d.Region = searchTerm(d.Query), filterValue(d.Category), filterValue(d.Region)
+}
+
+// likePattern matches term literally anywhere in a column compared with ILIKE ... ESCAPE '\': the
+// wildcards % and _ and the escape character itself are escaped.
+func likePattern(term string) string {
+	return "%" + strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`).Replace(term) + "%"
+}
+
+// Excerpt is the description shown on a listing card: at most excerptRunes characters, cut on a character
+// boundary and marked with "…" when shortened. Listing-grid pages load only the first excerptRunes+1
+// characters of each description (load), which is enough to tell whether it was cut.
+func (p Product) Excerpt() string {
+	if utf8.RuneCountInString(p.Description) <= excerptRunes {
+		return p.Description
+	}
+	n := 0
+	for i := range p.Description {
+		if n == excerptRunes-1 {
+			return strings.TrimRight(p.Description[:i], " \t\r\n") + "…"
+		}
+		n++
+	}
+	return p.Description
+}
+
+// CatalogPaging is the catalog's position: Page of Pages (1-based), listings First..Last of Total, and the
+// previous/next page links ("" at either end) carrying the same search, filters and display currency.
+type CatalogPaging struct {
+	Page, Pages, Total, First, Last int
+	PrevURL, NextURL                string
+}
+
+// Offset is the number of listings before this page.
+func (p CatalogPaging) Offset() int { return (p.Page - 1) * catalogPageSize }
+
+// PrevPage and NextPage number the pages PrevURL and NextURL lead to (for the links' accessible names).
+func (p CatalogPaging) PrevPage() int { return p.Page - 1 }
+func (p CatalogPaging) NextPage() int { return p.Page + 1 }
+
+// catalogPaging reads the requested page: anything but a positive decimal number is page 1, and a page past
+// the end (including one too large to parse) is the last page, so every link and typed URL lands somewhere.
+func catalogPaging(d *PageData, total int, raw string) CatalogPaging {
+	p := CatalogPaging{Page: 1, Total: total, Pages: max(1, (total+catalogPageSize-1)/catalogPageSize)}
+	if n, err := strconv.Atoi(raw); err == nil && n > 1 {
+		p.Page = min(n, p.Pages)
+	} else if errors.Is(err, strconv.ErrRange) && !strings.HasPrefix(raw, "-") {
+		p.Page = p.Pages
+	}
+	if total > 0 {
+		p.First, p.Last = p.Offset()+1, min(p.Offset()+catalogPageSize, total)
+	}
+	link := func(page int) string {
+		v := url.Values{}
+		for k, x := range map[string]string{"q": d.Query, "category": d.Category, "region": d.Region} {
+			if x != "" {
+				v.Set(k, x)
+			}
+		}
+		if d.Currency == "XMR" {
+			v.Set("currency", "XMR")
+		}
+		if page > 1 {
+			v.Set("page", strconv.Itoa(page))
+		}
+		if len(v) == 0 {
+			return "/"
+		}
+		return "/?" + v.Encode()
+	}
+	if p.Page > 1 {
+		p.PrevURL = link(p.Page - 1)
+	}
+	if p.Page < p.Pages {
+		p.NextURL = link(p.Page + 1)
+	}
+	return p
+}
+
+// pageSlice is catalogPaging for an in-memory list (the read-only preview's sample listings).
+func pageSlice(d *PageData, all []Product, raw string) []Product {
+	p := catalogPaging(d, len(all), raw)
+	d.Paging = &p
+	if len(all) == 0 {
+		return all
+	}
+	return all[p.First-1 : p.Last]
+}
 
 // load fills generic page data, then runs registered loaders (routes.go).
 func (a *App) load(r *http.Request, d *PageData) error {
@@ -26,14 +147,22 @@ func (a *App) load(r *http.Request, d *PageData) error {
 	if err != nil {
 		return err
 	}
+	normaliseCatalogFilters(d)
 	if d.Page == "catalog" || d.Page == "product" || d.Page == "vendor" || d.Page == "checkout" || d.Page == "vendor-dashboard" {
 		// An administrator's takedown reason (A-163) is read only for the owner's vendor desk.
 		takedown := "''"
 		if d.Page == "vendor-dashboard" {
 			takedown = "coalesce(p.admin_archive_reason,'')"
 		}
-		query := `SELECT p.id,p.title,p.description,p.category,p.region,p.kind,u.handle,p.vendor_id,p.btc,p.xmr,p.stock,p.archived,` + takedown + ` FROM products p JOIN users u ON u.id=p.vendor_id WHERE true`
+		// Listing grids (catalog, vendor, vendor desk) render Product.Excerpt, so they load only its prefix;
+		// product and checkout pages load and show the full description.
+		description := "p.description"
+		if d.Page == "catalog" || d.Page == "vendor" || d.Page == "vendor-dashboard" {
+			description = "left(p.description," + strconv.Itoa(excerptRunes+1) + ")"
+		}
+		query := `SELECT p.id,p.title,` + description + `,p.category,p.region,p.kind,u.handle,p.vendor_id,p.btc,p.xmr,p.stock,p.archived,` + takedown + ` FROM products p JOIN users u ON u.id=p.vendor_id WHERE true`
 		args := []any{}
+		limit := " LIMIT 100"
 		switch d.Page {
 		case "product", "checkout":
 			query += " AND p.id=$1"
@@ -45,13 +174,23 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			query += " AND p.vendor_id=$1"
 			args = append(args, d.User.ID)
 		case "catalog":
-			query += ` AND ($1='' OR p.title ILIKE '%'||$1||'%' OR p.description ILIKE '%'||$1||'%') AND ($2='' OR p.category=$2) AND ($3='' OR p.region=$3 OR p.region='Worldwide')`
-			args = append(args, d.Query, d.Category, d.Region)
+			// The term is matched literally (likePattern); the count and the page share one filter.
+			filter := ` AND NOT p.archived AND ($1='' OR p.title ILIKE $4 ESCAPE '\' OR p.description ILIKE $4 ESCAPE '\') AND ($2='' OR p.category=$2) AND ($3='' OR p.region=$3 OR p.region='Worldwide')`
+			args = append(args, d.Query, d.Category, d.Region, likePattern(d.Query))
+			var total int
+			if err = a.db.QueryRowContext(ctx, `SELECT count(*) FROM products p WHERE true`+filter, args...).Scan(&total); err != nil {
+				return err
+			}
+			paging := catalogPaging(d, total, r.URL.Query().Get("page"))
+			d.Paging = &paging
+			query += filter
+			limit = " LIMIT " + strconv.Itoa(catalogPageSize) + " OFFSET " + strconv.Itoa(paging.Offset())
 		}
-		if d.Page != "vendor-dashboard" {
+		if d.Page != "vendor-dashboard" && d.Page != "catalog" {
 			query += " AND NOT p.archived"
 		}
-		query += " ORDER BY p.created DESC LIMIT 100"
+		// p.id breaks ties between listings created in the same transaction, so pages never overlap.
+		query += " ORDER BY p.created DESC, p.id DESC" + limit
 		rows, err = a.db.QueryContext(ctx, query, args...)
 		if err != nil {
 			return err
