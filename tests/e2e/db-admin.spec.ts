@@ -392,3 +392,29 @@ test('payout resolve forms wrap inside the payouts table and name what they reso
     await admin.context().close();
   }
 });
+
+// A-185: the image scanner panel reads the app's cached clamd state. playwright.config.ts starts a loopback fake
+// clamd (tests/e2e/fixtures/fake-clamd.py) whose daily signatures were built two days before the suite began.
+test('admin sees scanner status and signature date', async ({ browser, baseURL }) => {
+  const admin = await signedIn(browser, baseURL, ADMIN.handle, ADMIN.password, false);
+  await admin.goto('/admin#image-scanner');
+  const panel = admin.getByRole('region', { name: 'Image scanner' });
+  await expect(panel.locator('strong').first()).toHaveText('Ready');
+  await expect(panel).toContainText(/Signatures: ClamAV 1\.4\.3, daily database 27999 built \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC, 2 days old \(limit 30\)\./);
+  const built = new Date(Date.now() - 2 * 86400_000).toISOString().slice(0, 10);
+  const builtEarlier = new Date(Date.now() - 3 * 86400_000).toISOString().slice(0, 10); // the suite started before midnight UTC
+  expect([built, builtEarlier]).toContain((await panel.textContent())!.match(/built (\d{4}-\d{2}-\d{2})/)![1]);
+  await expect(panel).toContainText(/Last checked: \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\./);
+  await expect(panel).toContainText('stored · ');
+  await expect(panel).toContainText('never linked to accounts');
+  await expect(panel).toContainText(/Database size: \d+ [kMG]B\./);
+  // Fresh signatures: no refresh warning and no paused notice.
+  await expect(panel.getByRole('status')).toHaveCount(0);
+  await expect(panel).not.toContainText('refresh-scanner');
+  await expect(admin.locator('script')).toHaveCount(0);
+  for (const width of [390, 320]) {
+    await admin.setViewportSize({ width, height: 900 });
+    expect(await admin.evaluate(() => document.documentElement.scrollWidth), `/admin at ${width}px`).toBeLessThanOrEqual(width);
+  }
+  await admin.context().close();
+});

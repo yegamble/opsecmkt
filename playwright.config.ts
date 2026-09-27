@@ -61,7 +61,14 @@ export default defineConfig({
       reuseExistingServer: false,
       timeout: 120_000,
     },
+    // A loopback fake clamd (not a malware scanner) whose signatures are two days old, so the image scanner is
+    // Ready; it starts before the app so the app's first poll finds it.
     ...(databaseURL ? [{
+      command: 'python3 tests/e2e/fixtures/fake-clamd.py',
+      env: { FAKE_CLAMD_PORT: '18086', FAKE_CLAMD_AGE_DAYS: '2' },
+      port: 18086,
+      reuseExistingServer: false,
+    }, {
       command: 'go run ./cmd/server',
       env: {
         ADDR: '127.0.0.1:18081', DATABASE_URL: databaseURL,
@@ -69,6 +76,7 @@ export default defineConfig({
         SETUP_TOKEN: 'e2e-local-only-setup-token-at-least-32-characters',
         // Never connect disposable browser fixtures to wallets inherited from the developer's shell.
         BITCOIN_RPC_URL: '', MONERO_RPC_URL: '', MONERO_WALLET_RPC_URL: '',
+        CLAMD_ADDRESS: '127.0.0.1:18086', SCANNER_MAX_SIGNATURE_AGE_DAYS: '30',
       },
       url: 'http://127.0.0.1:18081/healthz',
       reuseExistingServer: false,

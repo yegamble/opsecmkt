@@ -28,35 +28,21 @@ func parsePublicKey(armored string) (*openpgp.Entity, string, error) {
 
 // parseCanonicalPublicKey is parsePublicKey that also returns the canonical form of the key (A-79): its
 // decoded packets re-armored unchanged, without armor headers (Version:, Comment: ...), CRLF line endings
-// or any text around the block. The same key always has the same canonical form.
+// or any text around the block. The same key always has the same canonical form. It keeps only the packets
+// publishablePackets allows (A-110): a key saved with a photo ID or another packet type before such keys were
+// refused is shown and re-saved without them. If the kept packets are not exactly one key with the same
+// fingerprint (a skipped packet sat between a user ID or subkey and its signature), the key is refused, so it
+// is reported as unusable rather than shown to others in a form their PGP software cannot import.
 func parseCanonicalPublicKey(armored string) (*openpgp.Entity, string, string, error) {
-	if strings.Count(armored, "-----BEGIN PGP") != 1 {
-		return nil, "", "", errors.New("paste exactly one armored public key block")
-	}
-	block, err := armor.Decode(strings.NewReader(strings.TrimSpace(armored)))
+	e, fp, data, err := decodePublicKey(armored)
 	if err != nil {
-		return nil, "", "", errors.New("not an ASCII-armored OpenPGP key")
+		return nil, "", "", err
 	}
-	if block.Type != openpgp.PublicKeyType {
-		return nil, "", "", errors.New("paste an armored public key block only; never upload a private key")
-	}
-	data, err := io.ReadAll(block.Body)
-	if err != nil {
+	if data, _, _, err = publishablePackets(data); err != nil {
 		return nil, "", "", errors.New("the public key could not be parsed")
 	}
-	list, err := openpgp.ReadKeyRing(bytes.NewReader(data))
-	if err != nil {
+	if list, err := openpgp.ReadKeyRing(bytes.NewReader(data)); err != nil || len(list) != 1 || !bytes.Equal(list[0].PrimaryKey.Fingerprint, e.PrimaryKey.Fingerprint) {
 		return nil, "", "", errors.New("the public key could not be parsed")
-	}
-	if len(list) != 1 {
-		return nil, "", "", errors.New("paste exactly one public key")
-	}
-	e := list[0]
-	if e.PrivateKey != nil {
-		return nil, "", "", errors.New("private key material rejected; paste only your public key")
-	}
-	if e.Revoked(time.Now()) {
-		return nil, "", "", errors.New("this key is revoked")
 	}
 	var buf bytes.Buffer
 	w, err := armor.Encode(&buf, openpgp.PublicKeyType, nil)
@@ -68,7 +54,110 @@ func parseCanonicalPublicKey(armored string) (*openpgp.Entity, string, string, e
 	if err != nil {
 		return nil, "", "", err
 	}
-	return e, strings.ToUpper(hex.EncodeToString(e.PrimaryKey.Fingerprint)), strings.TrimSpace(buf.String()), nil
+	return e, fp, strings.TrimSpace(buf.String()), nil
+}
+
+// decodePublicKey accepts exactly one armored, unrevoked public key and returns it with its uppercase hex
+// fingerprint and its decoded packets.
+func decodePublicKey(armored string) (*openpgp.Entity, string, []byte, error) {
+	if strings.Count(armored, "-----BEGIN PGP") != 1 {
+		return nil, "", nil, errors.New("paste exactly one armored public key block")
+	}
+	block, err := armor.Decode(strings.NewReader(strings.TrimSpace(armored)))
+	if err != nil {
+		return nil, "", nil, errors.New("not an ASCII-armored OpenPGP key")
+	}
+	if block.Type != openpgp.PublicKeyType {
+		return nil, "", nil, errors.New("paste an armored public key block only; never upload a private key")
+	}
+	data, err := io.ReadAll(block.Body)
+	if err != nil {
+		return nil, "", nil, errors.New("the public key could not be parsed")
+	}
+	list, err := openpgp.ReadKeyRing(bytes.NewReader(data))
+	if err != nil {
+		return nil, "", nil, errors.New("the public key could not be parsed")
+	}
+	if len(list) != 1 {
+		return nil, "", nil, errors.New("paste exactly one public key")
+	}
+	e := list[0]
+	if e.PrivateKey != nil {
+		return nil, "", nil, errors.New("private key material rejected; paste only your public key")
+	}
+	if e.Revoked(time.Now()) {
+		return nil, "", nil, errors.New("this key is revoked")
+	}
+	return e, strings.ToUpper(hex.EncodeToString(e.PrimaryKey.Fingerprint)), data, nil
+}
+
+// OpenPGP packet tags (RFC 9580 section 5).
+const (
+	signaturePacketTag     = 2
+	publicKeyPacketTag     = 6
+	trustPacketTag         = 12
+	userIDPacketTag        = 13
+	publicSubkeyPacketTag  = 14
+	userAttributePacketTag = 17
+)
+
+// publishablePackets returns decoded key packets keeping only public key, public subkey, user ID and signature
+// packets, each byte for byte (A-110). Everything else is removed: user attribute packets, where GnuPG stores a
+// photo ID (an image, usually of the owner's face), and every other packet type - a compressed packet or a
+// non-critical private one can carry a photo ID that OpenPGP software still imports - including keyring trust
+// packets. Signatures that follow a removed packet certify it and go too, except direct-key signatures and key
+// revocations. It also returns how many user attribute packets and other packets it removed.
+func publishablePackets(data []byte) ([]byte, int, int, error) {
+	r := bytes.NewReader(data)
+	packets := packet.NewOpaqueReader(r)
+	kept, photos, other, skipping := make([]byte, 0, len(data)), 0, 0, false
+	for {
+		start := len(data) - r.Len()
+		p, err := packets.Next()
+		if err == io.EOF {
+			return kept, photos, other, nil
+		}
+		if err != nil {
+			return nil, 0, 0, err
+		}
+		switch p.Tag {
+		case publicKeyPacketTag, userIDPacketTag, publicSubkeyPacketTag:
+			skipping = false
+		case signaturePacketTag:
+			if skipping && !wholeKeySignature(p) {
+				continue
+			}
+		case userAttributePacketTag:
+			photos, skipping = photos+1, true
+			continue
+		case trustPacketTag: // follows a signature in a keyring and certifies nothing
+			other++
+			continue
+		default:
+			other, skipping = other+1, true
+			continue
+		}
+		kept = append(kept, data[start:len(data)-r.Len()]...)
+	}
+}
+
+// wholeKeySignature reports whether a signature packet is a direct-key signature or key revocation. OpenPGP
+// readers apply these to the whole key wherever they appear (openpgp.ReadEntity), so they are kept.
+func wholeKeySignature(p *packet.OpaquePacket) bool {
+	parsed, err := p.Parse()
+	sig, ok := parsed.(*packet.Signature)
+	return err == nil && ok && (sig.SigType == packet.SigTypeDirectSignature || sig.SigType == packet.SigTypeKeyRevocation)
+}
+
+// keyExtraPackets returns the fingerprint of a pasted public key, how many photo IDs (user attribute packets)
+// it carries and how many other packets publishablePackets would remove; a key that does not parse reports none.
+func keyExtraPackets(armored string) (fp string, photos, other int) {
+	_, fp, data, err := decodePublicKey(armored)
+	if err != nil {
+		return "", 0, 0
+	}
+	_, photos, other, _ = publishablePackets(data)
+	return fp, photos, other
 }
 
 // entityKeyIDs lists the primary and subkey IDs, for matching encrypted-message recipients.

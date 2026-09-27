@@ -138,6 +138,9 @@ type PageData struct {
 	Canary      *CanaryView
 	AuditExport *AuditExportView
 
+	// Scanner: admin page, the image scanner panel (clamd.go)
+	Scanner *ScannerView
+
 	// Contacts (contacts.go): counterparty PGP keys, message recipient prefill, unread notifications
 	Contacts            []ContactKey // vendor page: the vendor; order page: the other party (both for a reviewer); messages: the ?to recipient
 	StaffContacts       []ContactKey // disputed order: independent moderators and administrators
