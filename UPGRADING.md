@@ -52,6 +52,10 @@ run local nodes. `upgrade` then does, in order:
    (`-status` prints `keyroot=app_secret_key`), it removes `SETUP_TOKEN`, which grants nothing any more, and
    recreates the app.
    On Tor, when `.env` changed, it recreates `tor` (and `tor-mirror`) once ([section 4](#4-deploy)).
+9. **The malware scanner**, only when it is on (`scanner` in `COMPOSE_PROFILES`): it refreshes the scanner's
+   signatures as `./scripts/install.sh refresh-scanner` does. A failed pull is only a warning. `upgrade` never
+   turns the scanner on; it adds `CLAMD_ADDRESS` blank, which keeps photo uploads off
+   ([Photo uploads and the malware scanner](docs/operator-guide.md#photo-uploads-and-the-malware-scanner)).
 
 Running it again changes nothing. Installer commands that change `.env` hold a lock, the directory
 `.env.lock`, while they run; a second one refuses to start until the first ends. If a killed run left it
@@ -287,9 +291,12 @@ the **upgraded** checkout: its `scripts/restore.sh` can restore into the interna
    ```sh
    git checkout v0.1.0-alpha.1
    docker compose config --quiet
-   docker compose up -d --build
+   docker compose up -d --build --remove-orphans
    docker compose logs -f app
    ```
+
+   `--remove-orphans` removes the containers of services the older revision does not define, such as the
+   malware scanner's `clamd` if you turned it on after the upgrade.
 
 5. Keep backing up the database you now run. This release's `scripts/backup.sh` dumps the internal
    database named in `DATABASE_URL`, so it follows the switch and its success line names `opsecmkt_rollback`.
@@ -411,6 +418,7 @@ quotes, as the installer writes them). Blank values keep a feature off.
 | `BITCOIN_PRUNE_MB` / `MONERO_PRUNE_FLAGS` | Local nodes only. Absent keys mean **pruned** (`2000` and `'--prune-blockchain --sync-pruned-blocks'`); `BITCOIN_PRUNE_MB='0'` and `MONERO_PRUNE_FLAGS=''` keep a full node. Read [section 7](#7-local-nodes-are-now-pruned) before deploying if you run a local node. |
 | `BITCOIN_IMAGE` / `MONERO_IMAGE` / `MONERO_WALLET_IMAGE` | Local nodes only. Absent keys mean the pinned release images the payout code was verified against; the images alpha.1 made you choose stay in use until you remove or change them (`upgrade` pins the default images left on `latest`). Read [section 8](#8-node-images-are-pinned-to-release-tags). |
 | `COMPOSE_PROJECT_NAME` | Not needed: absent means `opsecmkt`, which is what your containers and volumes are named after. Never set another value on this install, or Compose starts it on new, empty volumes. A second checkout on the same host needs its own name; see [Backups and recovery](docs/operator-guide.md#backups-and-recovery). |
+| `CLAMD_ADDRESS` / `CLAMAV_IMAGE` | The malware scanner photo uploads need. Leave `CLAMD_ADDRESS` blank (uploads off) and `CLAMAV_IMAGE` at `clamav/clamav:1.5.4-debian`; `./scripts/install.sh add-scanner` turns the scanner on. See [Photo uploads and the malware scanner](docs/operator-guide.md#photo-uploads-and-the-malware-scanner). |
 | `DATABASE_CONNECT_TIMEOUT` / `MIGRATION_LOCK_TIMEOUT` / `MIGRATION_TIMEOUT` | Optional; leave blank for `15s`, `10m` and `10m`. Raise `MIGRATION_TIMEOUT` if your database is large; see [Migrations](docs/operator-guide.md#migrations). |
 
 For a local Monero node, also add `monero-wallet` to `COMPOSE_PROFILES` (for example

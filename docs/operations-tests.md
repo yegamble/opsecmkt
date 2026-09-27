@@ -6,7 +6,7 @@ Run the URL/credential tests without any external service or third-party Python 
 python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 
-The installer tests cover the noninteractive `--local` shortcut, inherited-wallet isolation, persisted custom ports, readiness failure, HTTPS handoff, and existing-file preservation. They run the real installation script in temporary repositories with Docker and OpenSSL stubs. They cover internal/external databases, clearnet/Tor exposure, direct-egress overlays, local node profiles (pruned by default: Enter at every prompt gives pruned local nodes with the same prune target as `compose.nodes.yaml`; `no` writes full-node settings; `--local` writes no node settings), the Tor `COMPOSE_FILE`/`COMPOSE_PROFILES` values that the [mirror-command check](#documented-onion-mirror-commands) copies, protected configuration permissions, existing-file preservation, input rejection, and Compose validation failures that must not start services. They also cover the subcommands: `init` flags that need no prompt, distinct `APP_SECRET_KEY` and `SETUP_TOKEN`, the token printed only in init's final block and no other secret printed by any command, the 90-second onion wait, refusal on existing project volumes, `init --admin` (password read twice, piped on stdin, never in any argv, environment, output or `.env`; mismatches refused before anything is written), the `.env` editor (other lines byte for byte, CRLF and a missing final newline kept, mode `0600`), every `check` refusal, `status`, `setup-token [--new]`, `add-mirror`, and `upgrade` (backup or `--no-backup`, the `0600` pre-upgrade copy, defaults equal to `.env.example` for every non-secret key, the key-root copy, pinned images, the mirror profile, Tor recreate, token retirement and a second run that changes nothing). No command runs `curl`, `wget` or `git`. They never read the user’s `.env`, invoke real Docker, or provision infrastructure.
+The installer tests cover the noninteractive `--local` shortcut, inherited-wallet isolation, persisted custom ports, readiness failure, HTTPS handoff, and existing-file preservation. They run the real installation script in temporary repositories with Docker and OpenSSL stubs. They cover internal/external databases, clearnet/Tor exposure, direct-egress overlays, local node profiles (pruned by default: Enter at every prompt gives pruned local nodes with the same prune target as `compose.nodes.yaml`; `no` writes full-node settings; `--local` writes no node settings), the Tor `COMPOSE_FILE`/`COMPOSE_PROFILES` values that the [mirror-command check](#documented-onion-mirror-commands) copies, protected configuration permissions, existing-file preservation, input rejection, and Compose validation failures that must not start services. They also cover the subcommands: `init` flags that need no prompt, distinct `APP_SECRET_KEY` and `SETUP_TOKEN`, the token printed only in init's final block and no other secret printed by any command, the 90-second onion wait, refusal on existing project volumes, `init --admin` (password read twice, piped on stdin, never in any argv, environment, output or `.env`; mismatches refused before anything is written), the `.env` editor (other lines byte for byte, CRLF and a missing final newline kept, mode `0600`), every `check` refusal, `status`, `setup-token [--new]`, `add-mirror`, and `upgrade` (backup or `--no-backup`, the `0600` pre-upgrade copy, defaults equal to `.env.example` for every non-secret key, the key-root copy, pinned images, the mirror profile, Tor recreate, token retirement and a second run that changes nothing), and the malware scanner (A-184): `add-scanner` (refused below 3 GiB with nothing changed, a warning below 4 GiB, the three keys written together and idempotently, a failed check putting `.env` back, the bounded 10-minute wait naming `docker compose logs clamd`), `refresh-scanner` (a pull even when the tag is present, then clamd recreated and the signature version before and after), `init --uploads`, every scanner `check` refusal (fed `docker compose config` output, and when Docker is installed the real output for both modes), `status`, and `upgrade` refreshing the scanner only when it is on and never turning it on. No command runs `curl`, `wget` or `git`; the only image the installer has Docker pull is the scanner's. They never read the user’s `.env`, let the installer invoke real Docker, or provision infrastructure (one scanner test runs `docker compose config` itself, when Docker is installed, to hand the stub real output).
 
 The connection tests mock process execution and check decoded credentials, IPv6 hosts, ports, supported TLS/query settings, rejected target overrides and null bytes, removal of inherited libpq settings, and errors that do not expose connection secrets. They also verify that PostgreSQL client arguments contain no URL or password.
 
@@ -61,6 +61,35 @@ and every service it names, or `tor-mirror` for a bare `up`, must be active:
 `docker compose up --dry-run` is not used: with Compose 5.5.1 it sometimes failed spuriously
 (`app is missing dependency db`) or left lines out of its plan (see [verification](verification.md)). The
 check therefore proves which services each command would include, not that Tor starts or the mirror answers.
+
+## Malware scanner container
+
+```sh
+./scripts/test-scanner.sh    # CLAMAV_IMAGE=clamav/clamav:<tag> ./scripts/test-scanner.sh tries another image
+```
+
+Requires Docker with Compose v2, Python 3 and OpenSSL, and pulls the ClamAV image (about 540 MB) when it is
+missing; it never reads the checkout's `.env`, and its exit trap removes the container. It resolves the `clamd`
+service of `compose.scanner.yaml` with `docker compose config` (refusing a definition that lost a hardening
+key or gained a volume, port, network, environment or dependency) and runs it with `docker run` and exactly
+those settings, but `--network none` instead of the `scanner` network. It then checks, against the real image
+(war room A-184, rulings C1 and C6):
+
+- The image's own entrypoint stops in a read-only container (`Read-only file system`), which is why Compose
+  runs `clamd` directly; the script only reports it if a newer image no longer does.
+- `clamd` loads the image's signatures and answers `PING` within 10 minutes (with the Compose healthcheck,
+  `clamdcheck.sh`); the container is read-only, runs as `clamav` with every capability dropped and
+  `no-new-privileges`, mounts only `deploy/clamd.conf` (read-only), has no route but loopback, and runs no
+  `freshclam`; the signatures and `clamd.conf` cannot be written, `/tmp` can.
+- `VERSION` reports the daily signature version of the image's own `daily.cvd` (read with `sigtool`), with no
+  volume; `SHUTDOWN`, `RELOAD` and `STATS` answer `COMMAND UNAVAILABLE` and `clamd` keeps running.
+- Over `INSTREAM`, framed as the app sends it: a text file is `stream: OK`, the EICAR test string (assembled at
+  run time) is `FOUND`, and 9 MiB plus one byte is `INSTREAM size limit exceeded. ERROR`.
+- `clamconf` shows the options of `deploy/clamd.conf` in force, and the script prints the container's memory
+  use and peak.
+
+`tests/test_compose_scanner.py` checks the Compose file and `deploy/clamd.conf` as text, and with Docker
+installed the configuration Compose resolves in each mode; CI's Compose job repeats those assertions.
 
 ## Backup and restore through the internal-db Compose service
 

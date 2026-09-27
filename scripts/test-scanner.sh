@@ -7,7 +7,7 @@
 #
 # Requires Docker with Compose v2 and Python 3. Pulls the image if it is missing (CLAMAV_IMAGE overrides it, for
 # example to try a new tag before changing the default). Never reads the checkout's .env; the exit trap removes
-# every container it started. Loading the signatures takes a minute or two and about 1.5 GB of memory.
+# every container it started. Loading the signatures takes up to a minute or two and about 1 GiB of memory.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 for dependency in docker python3 openssl; do

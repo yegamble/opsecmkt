@@ -37,7 +37,7 @@ services:
     tmpfs: ['/tmp:size=64m']
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-    # The signature databases take about 1.5 GB in memory once loaded (docs/operator-guide.md#resource-limits-and-log-rotation).
+    # The loaded signatures take about 1 GiB (docs/operator-guide.md#resource-limits-and-log-rotation).
     mem_limit: 3g
     cpu_period: 100000
     cpu_quota: 200000

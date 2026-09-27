@@ -110,8 +110,12 @@ a token. For each coin the installer defaults to a pruned local test-network
 node; `--nodes none` leaves payments off.
 
 **Afterwards.** `status` shows health, setup state and onion addresses.
-`add-mirror` adds a second onion address. `upgrade` brings a checkout up to date
-after `git pull`, with a backup first ([UPGRADING.md](UPGRADING.md)):
+`add-mirror` adds a second onion address. `add-scanner` adds the ClamAV malware
+scanner that photo uploads need (a host with at least 3 GiB of memory), and
+`refresh-scanner` refreshes its signatures ([operator
+guide](docs/operator-guide.md#photo-uploads-and-the-malware-scanner)). `upgrade`
+brings a checkout up to date after `git pull`, with a backup first
+([UPGRADING.md](UPGRADING.md)):
 
 ```sh
 ./scripts/install.sh status
