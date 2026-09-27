@@ -99,7 +99,11 @@ Publish both addresses in an operator-signed verification document distributed t
 
 ## Photo uploads and the malware scanner
 
-Listing photos and vendor avatars need ClamAV's malware scanner, `clamd`, an optional service in [`compose.scanner.yaml`](../compose.scanner.yaml). The app is to store an upload only after `clamd` has scanned the file it received and found nothing, and to refuse uploads whenever it cannot ask. There is no setting that accepts uploads without it: with `CLAMD_ADDRESS` blank, uploads are off. **This release contains the scanner service and these installer commands; the upload forms and the app's side of the scan are being built (war room A-185 to A-188).** Until they arrive, `clamd` runs but nothing sends it files.
+Listing photos and vendor and staff avatars need ClamAV's malware scanner, `clamd`, an optional service in [`compose.scanner.yaml`](../compose.scanner.yaml). The app stores an upload only after `clamd` has scanned the file it received and found nothing, and refuses uploads whenever it cannot ask. There is no setting that accepts uploads without it: with `CLAMD_ADDRESS` blank, uploads are off. Vendors (and administrators, on any listing) add up to 4 photos on each listing's edit page, under **Photos**, and vendors, moderators and administrators set an avatar on `/account`; each owner can remove their own there (war room A-188). Listing, catalog and vendor pages do not show photos or avatars yet (war room A-189).
+
+What uploaders see follows the scanner's state on `/admin#image-scanner`: *Ready* shows the upload forms; *Unavailable* or *Signatures stale* keeps them on the page but disabled, with "Photo uploads are paused: …" and the reason (never the signature date); *Disabled* (no `CLAMD_ADDRESS`) replaces them with "Photo uploads are off on this market: they require the ClamAV malware scanner, which the operator has not set up." Listing details still save in every state, and stored photos and avatars can still be removed.
+
+Moderators and administrators also choose on `/account` whether to **hide themselves from the public staff list**; everyone is hidden until they untick it, and each change is recorded in their activity log. A hidden staff member's avatar can be shown only to the buyer and vendor of orders whose dispute they decided (and to moderators and administrators). The public staff list itself is off until an administrator turns it on (war room A-189).
 
 ### Turning it on
 

@@ -1,0 +1,102 @@
+{{/* A-188: the upload forms (upload_forms.go). "uploads:photos" is listing-edit's Photos panel, "uploads:avatar" and "uploads:staff-list" are /account's avatar panel and staff list choice; each is called with PageData. The two upload forms are the only multipart forms in the market; every other form, the remove forms here included, stays urlencoded. */}}
+{{define "uploads:privacy-lists"}}<p><strong>Removed:</strong> location, camera and date (EXIF, XMP, IPTC), colour profiles, embedded previews and the file name.</p>
+<p><strong>Not removed:</strong> anything visible in the picture — faces, hands, tattoos, reflections, windows, the room, packaging, handwriting, screens, logos — and the sensor noise that can link photos taken with one camera.</p>
+<p>Screenshots can show your clock and timezone, language, username, file paths, other tabs and notifications. Crop them before uploading.</p>
+<p>Never reuse a photo you have used anywhere else.</p>{{end}}
+{{define "uploads:limits"}}<li>Uploading can take up to 90 seconds over Tor; press Upload once and wait for the page to change.</li>
+<li>Each file is checked by the ClamAV malware scanner; a match is refused and nothing is stored.</li>{{end}}
+{{define "uploads:photos"}}{{with .Uploads}}<section class="panel upload-panel" id="photos" aria-labelledby="photos-title">
+<h2 id="photos-title">Photos</h2>
+<p class="upload-usage">{{.PhotoCount}} of {{.PhotoLimit}} photos · {{.Used}} MB of {{.Quota}} MB</p>{{if .Photos}}
+<ol class="photo-list">{{range .Photos}}
+<li class="photo-item">
+<a class="photo-thumb" href="{{.Full}}"><img src="{{.Thumb}}" alt="" width="160" height="120"><span class="sr-only">Photo {{.N}} at full size</span></a>
+<div class="photo-meta">
+<p class="mono">Photo {{.N}}: JPEG, {{.Width}}×{{.Height}}, {{.KB}} KB</p>
+<p class="photo-description">{{if .Description}}{{.Description}}{{else}}No description{{end}}</p>
+<form method="post" action="/listings/photo/remove">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="id" value="{{.ID}}">
+<button type="submit">Remove photo {{.N}}</button>
+</form>
+</div>
+</li>{{end}}
+</ol>
+<p class="help">Removing a photo deletes it at once; it cannot be restored.</p>{{else}}
+<p>No photos yet.</p>{{end}}{{if .Off}}
+<p class="notice upload-state">{{.Notice}}</p>{{else if .Blocked}}
+<p class="upload-state">{{.Blocked}}</p>{{else}}{{if .Paused}}
+<p class="notice upload-state">{{.Notice}}</p>{{end}}
+<form class="stack upload-form" method="post" action="/listings/photo" enctype="multipart/form-data">
+{{/* csrf must be the first field: the server reads this multipart body in order and checks the token before it reads anything else, so a forged or expired form is refused before any of the photo is read (uploads.go). */}}
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="id" value="{{$.Product.ID}}">
+<fieldset{{if .Paused}} disabled{{end}}>
+<legend>Add a photo</legend>
+<ul class="help upload-limits" id="photo-help">
+<li>JPEG or PNG, at most 4 MB, 4096 pixels a side and 4096×3072 in all (about 12.6 megapixels). A progressive JPEG or a 16-bit PNG may have to be smaller than this to fit the market’s memory limit for processing pictures.</li>
+<li>Re-encoded to a JPEG at most 1200 pixels on its longer side; location, camera and other metadata removed; the original file is not kept.</li>
+<li>At most 4 photos per listing.</li>
+{{template "uploads:limits"}}
+</ul>
+<div class="notice upload-privacy" id="photo-privacy">
+<div>
+<p><strong>Before you upload:</strong> listing photos are public to anyone, including visitors who are not signed in, while the listing is published.</p>
+{{template "uploads:privacy-lists"}}
+</div>
+</div>
+<label>Photo description (optional)<input name="description" maxlength="250" aria-describedby="photo-description-help">
+</label>
+<p class="help" id="photo-description-help">Read aloud to blind buyers by their screen readers: say what the photo shows.</p>
+<label>Photo<input type="file" name="photo" required accept="image/jpeg,image/png" aria-describedby="photo-help photo-privacy">
+</label>
+<button type="submit">Upload photo</button>
+</fieldset>
+</form>{{end}}
+</section>{{end}}{{end}}
+{{define "uploads:avatar"}}{{with .Uploads}}{{if or .AvatarForm .Avatar}}<section class="panel upload-panel" id="avatar" aria-labelledby="avatar-title">
+<h2 id="avatar-title">Avatar</h2>{{with .Avatar}}
+<div class="avatar-current">
+<img src="{{.Full}}" alt="" width="128" height="128">
+<div>
+<p class="mono">Your avatar: JPEG, {{.Width}}×{{.Height}}, {{.KB}} KB</p>
+<form method="post" action="/account/avatar/remove">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<button type="submit">Remove avatar</button>
+</form>
+</div>
+</div>{{else}}
+<p>No avatar.</p>{{end}}{{if .AvatarForm}}{{if .Off}}
+<p class="notice upload-state">{{.Notice}}</p>{{else}}{{if .Paused}}
+<p class="notice upload-state">{{.Notice}}</p>{{end}}
+<form class="stack upload-form" method="post" action="/account/avatar" enctype="multipart/form-data">
+{{/* csrf must be the first field: the server reads this multipart body in order and checks the token before it reads anything else, so a forged or expired form is refused before any of the picture is read (uploads.go). */}}
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<fieldset{{if .Paused}} disabled{{end}}>
+<legend>{{if .Avatar}}Replace your avatar{{else}}Add an avatar{{end}}</legend>
+<ul class="help upload-limits" id="avatar-help">
+<li>JPEG or PNG, at most 4 MB, 4096 pixels a side and 4096×3072 in all (about 12.6 megapixels). A progressive JPEG or a 16-bit PNG may have to be smaller than this to fit the market’s memory limit for processing pictures.</li>
+<li>Cropped to its centre square and re-encoded to a JPEG of at most 256×256 pixels; location, camera and other metadata removed; the original file is not kept. A new avatar replaces the old one.</li>
+{{template "uploads:limits"}}
+</ul>
+<div class="notice upload-privacy" id="avatar-privacy">
+<div>
+<p><strong>Before you upload:</strong> {{if .Staff}}your avatar is shown beside your dispute decisions to the buyer and vendor of each order and to moderators and administrators, so a staff photo links your identity across every dispute decision. It is public, to anyone including visitors who are not signed in, only on the public staff list, when an administrator turns that list on and you have not hidden yourself from it.{{else}}your avatar is public to anyone, including visitors who are not signed in, on your vendor page.{{end}}</p>
+{{template "uploads:privacy-lists"}}
+</div>
+</div>
+<label>Avatar<input type="file" name="photo" required accept="image/jpeg,image/png" aria-describedby="avatar-help avatar-privacy">
+</label>
+<button type="submit">Upload avatar</button>
+</fieldset>
+</form>{{end}}{{end}}
+</section>{{end}}{{end}}{{end}}
+{{define "uploads:staff-list"}}{{with .Uploads}}{{if .Staff}}<section class="panel" id="staff-list" aria-labelledby="staff-list-title">
+<h2 id="staff-list-title">Public staff list</h2>
+<form class="stack" method="post" action="/account/staff-list">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<label class="check"><input type="checkbox" name="hide" value="yes"{{if .StaffHidden}} checked{{end}} aria-describedby="staff-list-help"> Hide me from the public staff list</label>
+<p class="help" id="staff-list-help">Hidden staff are left off the public staff list even when an administrator turns it on, and hidden staff avatars are shown only to the parties of orders they decided and to moderators and administrators.</p>
+<button type="submit">Save choice</button>
+</form>
+</section>{{end}}{{end}}{{end}}

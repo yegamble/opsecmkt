@@ -18,6 +18,8 @@ test('initialize the market and publish the fixture listing', async ({ page, bro
   await page.getByLabel('Bitcoin reference price').fill('0.00100000');
   await page.getByLabel('Monero reference price').fill('0.500000000000');
   await page.getByRole('button', { name: 'Publish listing' }).click();
+  await expect(page.getByLabel('Listing title')).toHaveValue(FIXTURE_LISTING); // A-188: publishing lands on its edit page
+  await page.goto('/vendor-dashboard');
   await expect(page.locator('.listings-grid')).toContainText(FIXTURE_LISTING);
 
   // P1: a fresh install requires the image CAPTCHA; a wrong answer creates no account.

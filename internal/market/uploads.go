@@ -541,10 +541,7 @@ func (a *App) storeImage(ctx context.Context, r *http.Request, session string, a
 	owner, audit, notify, redirect := current.ID, "", "", "/account?avatar=saved#avatar"
 	var product any
 	if route.kind == uploadListing {
-		// The listing's vendor's users row before the listing (the vendor never changes; no row: lockListing 404s).
-		if _, err = tx.ExecContext(ctx, `SELECT 1 FROM users WHERE id=(SELECT vendor_id FROM products WHERE id=$1) FOR KEY SHARE`, f.id); err != nil {
-			return "", err
-		}
+		// lockListing takes the listing's vendor's users row before the listing (the vendor never changes).
 		c := &actionCtx{A: a, R: r.WithContext(ctx), Tx: tx, User: &current}
 		l, err := lockListing(c, f.id)
 		if err != nil {

@@ -33,6 +33,8 @@ test('seeded catalog discovery, role boundaries and persistent unfunded orders',
       await vendor.getByLabel('Bitcoin reference price').fill('0.002');
       await vendor.getByLabel('Monero reference price').fill('0.75');
       await vendor.getByRole('button', { name: 'Publish listing' }).click();
+      await expect(vendor.getByLabel('Listing title')).toHaveValue(title); // A-188: publishing lands on its edit page
+      await vendor.goto('/vendor-dashboard');
       await expect(vendor.locator('.listings-grid')).toContainText(title);
       return title;
     };
