@@ -62,6 +62,8 @@ func listingAction(c *actionCtx) (actionResult, error) {
 	if role != "vendor" && role != "admin" {
 		return actionResult{}, fail(403, "Vendor access required")
 	}
-	_, err = c.Tx.ExecContext(c.Ctx(), `INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock,delivery_content) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, randomToken(), c.User.ID, in.Title, in.Description, in.Category, in.Region, in.Kind, in.BTC, in.XMR, in.Stock, in.DeliveryContent)
-	return actionResult{Redirect: "/vendor-dashboard?saved=1", Audit: "Created listing"}, err
+	id := randomToken()
+	_, err = c.Tx.ExecContext(c.Ctx(), `INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock,delivery_content) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, id, c.User.ID, in.Title, in.Description, in.Category, in.Region, in.Kind, in.BTC, in.XMR, in.Stock, in.DeliveryContent)
+	// A-188: a new listing lands on its edit page's Photos panel, where its photos are added.
+	return actionResult{Redirect: "/listing-edit?id=" + id + "&saved=1#photos", Audit: "Created listing"}, err
 }

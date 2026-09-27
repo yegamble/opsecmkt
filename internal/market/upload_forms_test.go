@@ -1,6 +1,7 @@
 package market
 
 import (
+	"html"
 	"net/url"
 	"regexp"
 	"strings"
@@ -76,7 +77,7 @@ func TestUploadScannerDownFailsClosedWithPage(t *testing.T) {
 	assertUploadForm(t, sectionOf(t, get("/account"), "avatar"), "/account/avatar", vendor, e)
 
 	const paused = "Photo uploads are paused: the malware scanner is not responding. Listing details can still be saved."
-	stale := "Photo uploads are paused: the malware scanner's signatures are older than 30 days."
+	stale := html.EscapeString("Photo uploads are paused: the malware scanner's signatures are older than 30 days.")
 	e.A.scanner = newImageScanner(scannerConfig{address: "127.0.0.1:1", maxAgeDays: defaultSignatureAgeDays})
 	e.A.scanner.poll(t.Context()) // connection refused: Unavailable
 	for _, state := range []struct {
@@ -144,7 +145,7 @@ func TestVendorRemovesOwnPhoto(t *testing.T) {
 		t.Fatalf("upload: %d %s", w.Code, w.Body.String())
 	}
 	e.upload("/listings/photo", vendor, e.photoParts(vendor, listing, smallJPEG(t))...)
-	loc := w.Header().Get("Location")
+	loc, _, _ := strings.Cut(w.Header().Get("Location"), "#") // browsers never send the fragment
 	page := e.do("GET", loc, vendor, nil)
 	e.check(page, 200)
 	body := page.Body.String()
@@ -283,7 +284,8 @@ func TestAvatarFormAndRemoval(t *testing.T) {
 		}
 		var avatar string
 		e.DB.QueryRow("SELECT id FROM images WHERE owner_user_id=$1 AND kind='avatar'", id).Scan(&avatar)
-		page := e.do("GET", w.Header().Get("Location"), s, nil).Body.String()
+		loc, _, _ := strings.Cut(w.Header().Get("Location"), "#")
+		page := e.do("GET", loc, s, nil).Body.String()
 		section = sectionOf(t, page, "avatar")
 		if !strings.Contains(page, "Avatar saved as a re-encoded JPEG") || !strings.Contains(section, deskImageURL(avatar, true)) || !strings.Contains(section, `action="/account/avatar/remove"`) {
 			t.Fatalf("%s: avatar not shown after upload:\n%s", role, section)
