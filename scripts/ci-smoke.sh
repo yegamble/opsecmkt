@@ -58,7 +58,7 @@ cleanup() {
   status=$?
   if ((status)); then "${compose[@]}" logs --no-color || true; fi
   "${compose[@]}" down --volumes --remove-orphans || true
-  if [[ "$mode" == external ]]; then docker rm -f "${project}-db" >/dev/null 2>&1 || true; fi
+  if [[ "$mode" == external ]]; then docker rm -f -v "${project}-db" >/dev/null 2>&1 || true; fi
   docker network rm "$network" >/dev/null 2>&1 || true
   rm -rf "$work"
   exit "$status"
