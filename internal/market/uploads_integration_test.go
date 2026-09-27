@@ -86,34 +86,64 @@ func TestFilenameNeverPersistedLoggedOrRendered(t *testing.T) {
 		if strings.Contains(logs.String(), needle) {
 			t.Fatalf("the log carries %q:\n%s", needle, logs.String())
 		}
-		// Every text and bytea column of every table.
-		rows, err := e.DB.Query(`SELECT table_name,column_name,data_type FROM information_schema.columns WHERE table_schema=current_schema() AND data_type IN ('text','character varying','bytea','jsonb','json')`)
-		if err != nil {
-			t.Fatal(err)
+		assertNowhereInDB(t, e, needle)
+	}
+}
+
+// assertNowhereInDB fails when any text or bytea column of any table in the test schema holds needle.
+func assertNowhereInDB(t *testing.T, e *testEnv, needle string) {
+	t.Helper()
+	rows, err := e.DB.Query(`SELECT table_name,column_name,data_type FROM information_schema.columns WHERE table_schema=current_schema() AND data_type IN ('text','character varying','bytea','jsonb','json')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cols [][3]string
+	for rows.Next() {
+		var c [3]string
+		rows.Scan(&c[0], &c[1], &c[2])
+		cols = append(cols, c)
+	}
+	rows.Close()
+	if len(cols) < 20 {
+		t.Fatalf("only %d columns found", len(cols))
+	}
+	for _, c := range cols {
+		cond := `"` + c[1] + `"::text LIKE '%'||$1||'%'`
+		if c[2] == "bytea" {
+			cond = `position(convert_to($1,'UTF8') in "` + c[1] + `")>0`
 		}
-		var cols [][3]string
-		for rows.Next() {
-			var c [3]string
-			rows.Scan(&c[0], &c[1], &c[2])
-			cols = append(cols, c)
+		var n int
+		if err := e.DB.QueryRow(`SELECT count(*) FROM "`+c[0]+`" WHERE `+cond, needle).Scan(&n); err != nil {
+			t.Fatalf("%s.%s: %v", c[0], c[1], err)
 		}
-		rows.Close()
-		if len(cols) < 20 {
-			t.Fatalf("only %d columns found", len(cols))
+		if n != 0 {
+			t.Fatalf("%s.%s holds %q", c[0], c[1], needle)
 		}
-		for _, c := range cols {
-			cond := `"` + c[1] + `"::text LIKE '%'||$1||'%'`
-			if c[2] == "bytea" {
-				cond = `position(convert_to($1,'UTF8') in "` + c[1] + `")>0`
-			}
-			var n int
-			if err := e.DB.QueryRow(`SELECT count(*) FROM "`+c[0]+`" WHERE `+cond, needle).Scan(&n); err != nil {
-				t.Fatalf("%s.%s: %v", c[0], c[1], err)
-			}
-			if n != 0 {
-				t.Fatalf("%s.%s holds %q", c[0], c[1], needle)
-			}
-		}
+	}
+}
+
+// C4: an upload the scanner refuses, or that fails the caps, leaves no row and none of its bytes anywhere in the
+// database; only the infected one leaves its fixed-copy audit row.
+func TestRefusedUploadLeavesNoRow(t *testing.T) {
+	e, f := uploadEnv(t)
+	vendorID, vendor := e.user("no_row_vendor", "vendor")
+	listing := e.product(vendorID, "physical")
+	const planted = "FIXTURE-REFUSED-UPLOAD-BYTES"
+	infected := withPNGChunks(markerPNG(t), pngChunk("tEXt", []byte("Comment\x00"+planted)))
+	capped := withPNGChunks(pngHeader(4097, 1, 8, 2, 0), pngChunk("tEXt", []byte("Comment\x00"+planted)))
+	checkPage(t, e.upload("/listings/photo", vendor, e.photoParts(vendor, listing, infected)...), 422, "the malware scanner flagged this file")
+	checkPage(t, e.upload("/listings/photo", vendor, e.photoParts(vendor, listing, capped)...), 422, "4097×1 pixels")
+	f.SetVerdict(func([]byte) string { return fakeClamdClose })
+	checkPage(t, e.upload("/account/avatar", vendor, e.avatarParts(vendor, withPNGChunks(fixturePNG(t, fixturePicture(64, 48)), pngChunk("tEXt", []byte("Comment\x00"+planted))))...), 503, "did not respond")
+	if e.imageCount() != 0 {
+		t.Fatalf("%d image rows after refusals", e.imageCount())
+	}
+	assertNowhereInDB(t, e, planted)
+	assertNowhereInDB(t, e, fakeClamdMarker)
+	var audits int
+	e.DB.QueryRow("SELECT count(*) FROM audit_events WHERE user_id=$1", vendorID).Scan(&audits)
+	if audits != 1 {
+		t.Fatalf("%d audit rows, want the one infected refusal", audits)
 	}
 }
 

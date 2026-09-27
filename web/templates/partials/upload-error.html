@@ -1,4 +1,4 @@
-{{/* A-186: the page a refused photo or avatar upload gets, and a file posted to a form that takes none (uploads.go). Not a registered page: only rendered as a response. The reason is .Error (the layout's alert). */}}
+{{/* A-186: the page a refused photo or avatar upload gets, and a file posted to a form that takes none (uploads.go). Response-only, so it lives here rather than in pages/ (every pages/ template is a routable GET page). The reason is .Error (the layout alert). */}}
 {{define "page:upload-error"}}{{template "header" .}}
 <div class="form-narrow">
 <div class="panel">

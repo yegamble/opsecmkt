@@ -458,7 +458,7 @@ func (u *upload) serverError(code int, cause string) {
 	u.render(code, msg)
 }
 
-// renderUploadPage answers with web/templates/pages/upload-error.html: msg in its error alert and a link back.
+// renderUploadPage answers with web/templates/partials/upload-error.html: msg in its error alert and a link back.
 func (a *App) renderUploadPage(w http.ResponseWriter, r *http.Request, user *User, token string, code int, title, msg, back, backLabel string) {
 	d := a.pageData(r, "upload-error", token, user)
 	d.Title, d.Error, d.UploadBack, d.UploadBackLabel = title, msg, back, backLabel
