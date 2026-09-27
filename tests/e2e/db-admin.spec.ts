@@ -129,6 +129,8 @@ test('promoting a buyer to vendor opens the vendor desk; the listing form shows 
   await expect(vendor.getByText('You have not published any listings yet.')).toBeVisible();
 
   expect(await publish({ title, btc: '0.001' })).toBe(303);
+  await expect(vendor.getByLabel('Listing title')).toHaveValue(title); // A-188: publishing lands on its edit page
+  await vendor.goto('/vendor-dashboard');
   await expect(vendor.locator('.listings-grid')).toContainText(title);
 
   // Editing with a stale stock value is refused rather than overwriting a change made meanwhile.

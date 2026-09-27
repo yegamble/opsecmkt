@@ -43,7 +43,7 @@ test('vendor contact, unread notifications and demotion archive', async ({ brows
   await vendor.getByLabel('Bitcoin reference price').fill('0.001');
   await vendor.getByLabel('Monero reference price').fill('0.5');
   await vendor.getByRole('button', { name: 'Publish listing' }).click();
-  await expect(vendor.locator('.listings-grid')).toContainText(title);
+  await expect(vendor.getByLabel('Listing title')).toHaveValue(title); // A-188: publishing lands on its edit page
 
   // The buyer contacts the vendor: the recipient is prefilled and the missing key is stated plainly.
   await buyer.goto(`/?q=${encodeURIComponent(title)}`);

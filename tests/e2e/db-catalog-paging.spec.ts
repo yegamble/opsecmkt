@@ -26,7 +26,8 @@ test('catalog pages through search results with plain links at 320 px', async ({
       await vendor.getByLabel('Bitcoin reference price').fill('0.001');
       await vendor.getByLabel('Monero reference price').fill('0.5');
       await vendor.getByRole('button', { name: 'Publish listing' }).click();
-      await expect(vendor.locator('.listings-grid')).toContainText(`${seed} item ${String(i).padStart(2, '0')}`);
+      // A-188: publishing lands on the new listing's edit page.
+      await expect(vendor.getByLabel('Listing title')).toHaveValue(`${seed} item ${String(i).padStart(2, '0')}`);
     }
 
     await visitor.goto('/');
