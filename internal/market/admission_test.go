@@ -264,7 +264,9 @@ func TestFormFieldFloodIsBounded(t *testing.T) {
 	runtime.ReadMemStats(&after)
 	perPost := (after.TotalAlloc - before.TotalAlloc) / n
 	t.Logf("%d concurrent maximum-field junk posts: %d bytes allocated per post, %v in all", n, perPost, took)
-	if perPost > 3*65536 {
+	// About 150 KB alone (the body buffer as it grows); the bound leaves room for other tests running in
+	// parallel and the race detector, which share the process-wide counter, and is still far below 3.7 MB.
+	if perPost > 1<<20 {
 		t.Fatalf("a maximum-field junk post allocates %d bytes", perPost)
 	}
 	// The largest form (listing edit, 12 fields) and one just under the limit are served.
