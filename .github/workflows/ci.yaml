@@ -90,10 +90,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y postgresql-client-17 age
           echo /usr/lib/postgresql/17/bin >> "$GITHUB_PATH"
+      # The installer and Compose tests of the malware scanner (A-184) run here too; the Docker-backed ones skip
+      # only without Docker Compose, which this runner has, so any skip fails the step.
       - name: Shell syntax and Python helper regressions
         run: |
           for script in scripts/*.sh; do bash -n "$script"; done
-          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          python3 -m unittest discover -s tests -p 'test_*.py' -v 2> "$RUNNER_TEMP/unittest.log" || { cat "$RUNNER_TEMP/unittest.log"; exit 1; }
+          cat "$RUNNER_TEMP/unittest.log"
+          if grep -E ' \.\.\. skipped' "$RUNNER_TEMP/unittest.log"; then echo 'Python tests were skipped' >&2; exit 1; fi
       - name: Encrypted backup and restore against PostgreSQL
         run: bash scripts/test-backup-restore.sh
         env:
@@ -303,6 +307,16 @@ jobs:
           cache-to: type=gha,mode=max,scope=app
       - name: Bootstrap production image with a real database
         run: bash scripts/ci-smoke.sh "${{ matrix.database }}"
+      # A-192: the app, the database and the pinned clamd of compose.scanner.yaml whose only signature database is
+      # deploy/testdata/clamav-test.ndb, packed at job time into an unsigned daily.cud (a test signature, not a
+      # production signature feed): uploads refused and stored, clamd stopped and started, SHUTDOWN, isolation.
+      - name: Malware scanner leg (pinned clamd, test signature only)
+        run: bash scripts/ci-smoke.sh "${{ matrix.database }}" scanner
+      # The scanner container as compose.scanner.yaml defines it, with the image's own signatures, read-only and
+      # with no network (ruling C1); the same for both database modes, so it runs once.
+      - name: Malware scanner container, read-only and offline
+        if: matrix.database == 'internal'
+        run: bash scripts/test-scanner.sh
   installer:
     name: Local installer, setup wizard, terminal bootstrap and upgrade
     runs-on: ubuntu-24.04
