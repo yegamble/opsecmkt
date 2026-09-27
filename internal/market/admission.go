@@ -44,6 +44,10 @@ var (
 // as busy (tests shorten it).
 var postLookupWait = 2 * time.Second
 
+// maxFormFields bounds the fields of a form post: a body with this many '&' separators is refused before it is
+// parsed (ServeHTTP). The largest form, the listing editor, has 12.
+const maxFormFields = 64
+
 // busyRetryAfter is the Retry-After, in seconds, of an admission refusal and of any other 503.
 const busyRetryAfter = "5"
 

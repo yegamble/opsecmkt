@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/stdlib"
 	"html/template"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -411,7 +412,15 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Read-only preview. Start with PostgreSQL to save changes.", 403)
 			return
 		}
-		r.Body = http.MaxBytesReader(w, r.Body, 65536)
+		// The body is read first (at most 64 KiB) and its fields counted before it is parsed: parsing runs before
+		// any slot, on as many connections as the listener admits, and a body of thousands of distinct empty
+		// fields cost about 3.7 MB of allocation to parse. No form has more than maxFormFields (PR #15 re-review).
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 65536))
+		if err != nil || bytes.Count(body, []byte("&")) >= maxFormFields {
+			http.Error(w, "Invalid or oversized form", 400)
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
 		if err := r.ParseForm(); err != nil {
 			http.Error(w, "Invalid or oversized form", 400)
 			return

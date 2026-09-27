@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -221,6 +222,62 @@ func TestSignedInPublicFloodLeavesStaffPosts(t *testing.T) {
 	}
 	if w := postAs(a, &User{ID: "admin", Role: "admin"}, "/test/admin-change"); w.Code != 303 {
 		t.Fatalf("administrator's change during a signed-in public-post flood: %d %q", w.Code, w.Body.String())
+	}
+}
+
+// PR #15 re-review (NEW-4): a form is parsed before any slot, on up to 2048 connections at once, so a post
+// with more fields than any form has (maxFormFields) is refused (400) before parsing. A 64 KiB body of 9 999
+// distinct empty fields (net/url's own limit is 10 000) cost about 3.7 MB of allocation and 2 ms of CPU to
+// parse; refused, it costs little more than its body. Ordinary posts, the largest form included, still parse.
+func TestFormFieldFloodIsBounded(t *testing.T) {
+	a := testHTTPApp(false)
+	held := admitTestAction(t)
+	anon := randomToken()
+	var b strings.Builder
+	for i := range 9999 {
+		fmt.Fprintf(&b, "k%d=&", i)
+	}
+	junk := b.String()[:65536]
+	post := func(body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("POST", "/test/admit", strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		r.AddCookie(&http.Cookie{Name: "anon", Value: anon})
+		w := httptest.NewRecorder()
+		a.ServeHTTP(w, r)
+		return w
+	}
+	if w := post(junk); w.Code != 400 {
+		t.Fatalf("a post of %d empty fields: %d %q", strings.Count(junk, "&"), w.Code, w.Body.String())
+	}
+	const n = 256
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	start := time.Now()
+	var wg sync.WaitGroup
+	for range n {
+		wg.Add(1)
+		go func() { defer wg.Done(); post(junk) }()
+	}
+	wg.Wait()
+	took := time.Since(start)
+	runtime.ReadMemStats(&after)
+	perPost := (after.TotalAlloc - before.TotalAlloc) / n
+	t.Logf("%d concurrent maximum-field junk posts: %d bytes allocated per post, %v in all", n, perPost, took)
+	if perPost > 3*65536 {
+		t.Fatalf("a maximum-field junk post allocates %d bytes", perPost)
+	}
+	// The largest form (listing edit, 12 fields) and one just under the limit are served.
+	form := url.Values{"csrf": {a.csrf(anon)}}
+	for i := range maxFormFields - 1 {
+		form.Set(fmt.Sprintf("f%d", i), "x")
+	}
+	if w := post(form.Encode()); w.Code != 303 || held() != [2]int{1, 0} {
+		t.Fatalf("a post of %d fields: %d %q", len(form), w.Code, w.Body.String())
+	}
+	form.Set("one_more", "x")
+	if w := post(form.Encode()); w.Code != 400 {
+		t.Fatalf("a post of %d fields: %d", len(form), w.Code)
 	}
 }
 
