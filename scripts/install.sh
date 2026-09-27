@@ -149,9 +149,9 @@ env_get() {
 env_value() { env_get "$1" || true; }
 
 # env_edit KEY VALUE set|unset: rewrite .env (or $env_file) line by line into a temporary file beside it, then
-# move that into place with mode 0600. Only lines assigning KEY change: set replaces the first with KEY='VALUE' (appending one
-# when none exists) and drops later ones; unset drops them all. Every other line, including comments, blank
-# lines, CRLF endings and a missing final newline, is copied byte for byte. Every step is checked here, not by
+# move that into place with mode 0600. Only lines assigning KEY change: set replaces the first with KEY='VALUE'
+# (appending one when none exists) and drops later ones; unset drops them all. Every other line, including
+# comments, blank lines, CRLF endings and a missing final newline, is copied byte for byte. Every step is checked here, not by
 # errexit, which is off when a caller tests the result (`retire_setup_token ... || true`, `if ...`): a failed
 # write (a full disk) exits before .env is replaced, so .env is either the old file or the complete new one.
 env_edit() {
@@ -1257,7 +1257,8 @@ cmd_add_scanner() {
   if [[ -z $(env_value CLAMAV_IMAGE) ]]; then env_set CLAMAV_IMAGE "$clamav_image_default"; fi
   compose_has compose.scanner.yaml || env_set COMPOSE_FILE "$files:compose.scanner.yaml"
   profiles=$(env_value COMPOSE_PROFILES)
-  # In .env rather than as a Compose profile option, which would replace the other profiles for that one command (A-140).
+  # In .env rather than as a Compose profile option, which would replace the other profiles for that one
+  # command (A-140).
   has_item "$profiles" scanner || env_set COMPOSE_PROFILES "${profiles:+$profiles,}scanner"
   [[ $(env_value CLAMD_ADDRESS) == "$clamd_address" ]] || env_set CLAMD_ADDRESS "$clamd_address"
   env_file=.env

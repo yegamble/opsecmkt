@@ -33,7 +33,7 @@ services:
         read_only: true
     read_only: true
     # Uploads are streamed here while scanned (TemporaryDirectory in deploy/clamd.conf): room for two at the
-    # 9 MB StreamMaxLength plus what clamd unpacks from them.
+    # 9 MiB StreamMaxLength plus what clamd unpacks from them.
     tmpfs: ['/tmp:size=64m']
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]

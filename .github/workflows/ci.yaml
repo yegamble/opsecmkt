@@ -225,7 +225,7 @@ jobs:
               sys.exit("clamd healthcheck start_period must be 10m")
           image = clamd["image"]
           tag = image.partition("@")[0].rpartition("/")[2].partition(":")[2]
-          if not tag or tag in ("latest", "stable") or "_base" in tag:
+          if not tag or tag in ("latest", "stable", "unstable") or "_base" in tag:
               sys.exit(f"clamd image must be a pinned release tag with signatures, not {image!r}")
           print("scanner:", image, "on the internal scanner network with", ", ".join(members))
           '
