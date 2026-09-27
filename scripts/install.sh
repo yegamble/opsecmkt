@@ -7,6 +7,8 @@
 #   ./scripts/install.sh status             mode, service health, setup state and onion addresses
 #   ./scripts/install.sh setup-token [--new]   show (or reissue) the first-run setup token while setup is pending
 #   ./scripts/install.sh add-mirror         add the second onion address (Tor installs)
+#   ./scripts/install.sh add-scanner        add the ClamAV malware scanner that photo uploads need
+#   ./scripts/install.sh refresh-scanner    have Docker fetch the scanner's newer signatures and restart it
 #   ./scripts/install.sh upgrade [--no-backup]  after pulling new code: back up, update .env, rebuild, restart
 #
 # Secrets live only in .env (mode 0600). The installer prints one of them, SETUP_TOKEN, and only in init's final
@@ -26,6 +28,8 @@ monero_wallet_image_default='ghcr.io/sethforprivacy/simple-monero-wallet-rpc:v0.
 # The malware scanner's image: a ClamAV release with signatures (never _base or latest). Change it together with
 # compose.scanner.yaml and .env.example (docs/operator-guide.md#photo-uploads-and-the-malware-scanner).
 clamav_image_default='clamav/clamav:1.5.4-debian'
+# The only scanner address the app is given: compose.scanner.yaml's clamd, on the internal scanner network.
+clamd_address='clamd:3310'
 # Local nodes are pruned unless the operator says no. Keep these equal to compose.nodes.yaml's defaults.
 bitcoin_prune_default=2000
 monero_prune_default='--prune-blockchain --sync-pruned-blocks'
@@ -72,6 +76,9 @@ caller_project=${COMPOSE_PROJECT_NAME-}
 caller_wallet_image=${MONERO_WALLET_IMAGE-}
 temporaries=''
 env_locked=false
+# The file env_get reads and env_edit rewrites: .env, or a staged copy that a command moves into place whole
+# (add-scanner changes three keys together).
+env_file=.env
 # Bash runs this on exit, including after SIGINT, SIGTERM and SIGHUP.
 cleanup() {
   if [[ -n $temporaries ]]; then rm -f $temporaries; fi
@@ -88,7 +95,7 @@ usage_text() {
   cat <<'USAGE'
 Usage: scripts/install.sh [init] [options]   first install (the default)
        scripts/install.sh --local [--admin HANDLE [--site-name NAME]]
-       scripts/install.sh check | status | add-mirror
+       scripts/install.sh check | status | add-mirror | add-scanner | refresh-scanner
        scripts/install.sh setup-token [--new]
        scripts/install.sh upgrade [--no-backup]
 init options (each answers one question; a question without its option is asked):
@@ -103,6 +110,7 @@ init options (each answers one question; a question without its option is asked)
   --monero-prune yes|no            --monero-rpc-url URL   --monero-wallet-rpc-url URL
   --admin HANDLE [--site-name NAME]  create the first administrator here (password asked twice, never shown)
                                    instead of printing a setup token for the browser
+  --uploads yes|no                 photo uploads with the ClamAV malware scanner (needs 3 GiB of memory; default no)
 Values given as options (URLs with passwords) are visible to other local users while the installer runs.
 USAGE
 }
@@ -114,11 +122,11 @@ die() {
 
 # ---- .env access -------------------------------------------------------------------------------------------
 
-# env_get KEY [FILE]: print the value of the last line assigning KEY in FILE (default .env; quotes removed, as
-# Compose reads the installer's single quotes, double quotes, `export` and unquoted values); status 1 when no
-# line assigns it.
+# env_get KEY [FILE]: print the value of the last line assigning KEY in FILE (default $env_file, normally .env;
+# quotes removed, as Compose reads the installer's single quotes, double quotes, `export` and unquoted values);
+# status 1 when no line assigns it.
 env_get() {
-  local key=$1 file=${2:-.env} line value='' found=false
+  local key=$1 file=${2:-$env_file} line value='' found=false
   [[ -f $file ]] || return 1
   while IFS= read -r line || [[ -n $line ]]; do
     line=${line%$'\r'}
@@ -140,8 +148,8 @@ env_get() {
 # env_value KEY: the value, or nothing when the key is absent.
 env_value() { env_get "$1" || true; }
 
-# env_edit KEY VALUE set|unset: rewrite .env line by line into a temporary file beside it, then move that into
-# place with mode 0600. Only lines assigning KEY change: set replaces the first with KEY='VALUE' (appending one
+# env_edit KEY VALUE set|unset: rewrite .env (or $env_file) line by line into a temporary file beside it, then
+# move that into place with mode 0600. Only lines assigning KEY change: set replaces the first with KEY='VALUE' (appending one
 # when none exists) and drops later ones; unset drops them all. Every other line, including comments, blank
 # lines, CRLF endings and a missing final newline, is copied byte for byte. Every step is checked here, not by
 # errexit, which is off when a caller tests the result (`retire_setup_token ... || true`, `if ...`): a failed
@@ -170,13 +178,13 @@ env_edit() {
         open=true
       fi
       [[ $ended == true ]] || break
-    done < .env || env_edit_failed "$temporary"
+    done < "$env_file" || env_edit_failed "$temporary"
     if [[ $action == set && $replaced == false ]]; then
       if [[ $open == true ]]; then printf '\n' || env_edit_failed "$temporary"; fi
       printf "%s='%s'\n" "$key" "$value" || env_edit_failed "$temporary"
     fi
   } > "$temporary" || env_edit_failed "$temporary"
-  chmod 600 "$temporary" && mv -f "$temporary" .env || env_edit_failed "$temporary"
+  chmod 600 "$temporary" && mv -f "$temporary" "$env_file" || env_edit_failed "$temporary"
 }
 env_edit_failed() {
   rm -f "$1"
@@ -302,6 +310,15 @@ image_repository() {
   last=${reference##*/}
   if [[ $last == *:* ]]; then reference=${reference%:*}; fi
   printf '%s' "$reference"
+}
+# clamav_image_ok VALUE: a pinned image with signatures: not latest, stable or unstable (which move to new
+# releases) and not a _base tag (no signatures; with no volume clamd would have none).
+clamav_image_ok() {
+  local tag=${1%%@*}
+  image_pinned "$1" || return 1
+  tag=${tag##*/}
+  if [[ $tag == *:* ]]; then tag=${tag##*:}; else tag=''; fi
+  [[ $tag != *_base* && $tag != stable && $tag != unstable ]]
 }
 
 # ---- Docker helpers ---------------------------------------------------------------------------------------
@@ -457,6 +474,25 @@ run_check() {
       problems="$problems  - $key must name a release tag or @sha256 digest, not latest (./scripts/install.sh upgrade pins the default images; see docs/operator-guide.md#node-image-versions)"$'\n'
     fi
   done
+  # The malware scanner (A-184): the profile runs clamd, CLAMD_ADDRESS points the app at it, and neither works
+  # without the other. The address is always clamd's own; a scanner elsewhere is not supported.
+  value=$(env_value CLAMD_ADDRESS)
+  if [[ -n $value && $value != "$clamd_address" ]]; then
+    problems="$problems  - CLAMD_ADDRESS must be $clamd_address (the scanner in compose.scanner.yaml) or blank"$'\n'
+  elif has_item "$profiles" scanner; then
+    [[ -n $value ]] || problems="$problems  - the malware scanner (scanner profile) needs CLAMD_ADDRESS=$clamd_address; ./scripts/install.sh add-scanner sets both"$'\n'
+  elif [[ -n $value ]]; then
+    problems="$problems  - CLAMD_ADDRESS is set but COMPOSE_PROFILES lacks scanner, so uploads would wait for a scanner that never runs; ./scripts/install.sh add-scanner sets both"$'\n'
+  fi
+  if has_item "$profiles" scanner; then
+    compose_has compose.scanner.yaml || problems="$problems  - the scanner profile needs compose.scanner.yaml in COMPOSE_FILE"$'\n'
+    [[ -n $(find deploy/clamd.conf -perm -0004 2>/dev/null) ]] ||
+      problems="$problems  - deploy/clamd.conf must be readable by every user (chmod 644 deploy/clamd.conf): clamd reads it as its own user"$'\n'
+  fi
+  value=$(env_value CLAMAV_IMAGE)
+  if [[ -n $value ]] && ! clamav_image_ok "$value"; then
+    problems="$problems  - CLAMAV_IMAGE must name a ClamAV release with signatures: a version tag or @sha256 digest, not latest, stable or a _base tag (docs/operator-guide.md#photo-uploads-and-the-malware-scanner)"$'\n'
+  fi
   value=$(env_value APP_PORT)
   if [[ -n $value ]] && ! { [[ $value =~ ^[0-9]{1,5}$ ]] && ((10#$value > 0 && 10#$value <= 65535)); }; then
     problems="$problems  - APP_PORT must be between 1 and 65535"$'\n'
@@ -510,6 +546,14 @@ run_check() {
     return 1
   fi
   docker compose config --quiet || { echo 'Configuration check failed: docker compose config rejected the configuration.' >&2; return 1; }
+  if has_item "$profiles" scanner; then
+    listing=$(docker compose config) || { echo 'Configuration check failed: docker compose config rejected the configuration.' >&2; return 1; }
+    problems=$(scanner_layout_problems "$listing")
+    if [[ -n $problems ]]; then
+      printf 'Configuration check failed (the malware scanner, as the Compose files resolve it):\n%s\n' "$problems" >&2
+      return 1
+    fi
+  fi
 }
 
 cmd_check() {
@@ -582,7 +626,7 @@ EOF
 cmd_init() {
   local bare=true local_mode=false mode='' database='' proxy='' nodes='' admin='' site_name='' site_given=false
   local btc='' xmr='' btc_image='' xmr_image='' btc_network='' xmr_network='' btc_prune='' xmr_prune=''
-  local btc_rpc='' xmr_rpc='' xmr_wallet_rpc='' detail=false local_http='' password1='' password2=''
+  local btc_rpc='' xmr_rpc='' xmr_wallet_rpc='' detail=false local_http='' password1='' password2='' uploads=''
   (($# == 0)) || bare=false
   while (($#)); do
     case $1 in
@@ -590,7 +634,7 @@ cmd_init() {
       --tor|--clearnet) [[ -z $mode ]] || usage; mode=${1#--} ;;
       --external-db|--behind-proxy|--nodes|--bitcoin|--monero|--bitcoin-image|--monero-image|--bitcoin-network|\
       --monero-network|--bitcoin-prune|--monero-prune|--bitcoin-rpc-url|--monero-rpc-url|--monero-wallet-rpc-url|\
-      --admin|--site-name)
+      --admin|--site-name|--uploads)
         (($# >= 2)) || usage
         case $1 in
           --external-db) database=$2; [[ -n $database ]] || usage ;;
@@ -609,13 +653,14 @@ cmd_init() {
           --monero-wallet-rpc-url) xmr_wallet_rpc=$2 ;;
           --admin) admin=$2 ;;
           --site-name) site_name=$2; site_given=true ;;
+          --uploads) uploads=$(one_of "$1" "$2" yes no) ;;
         esac
         shift ;;
       *) usage ;;
     esac
     shift
   done
-  if [[ $local_mode == true && -n $mode$database$proxy$nodes$btc$xmr$btc_image$xmr_image$btc_network$xmr_network$btc_prune$xmr_prune$btc_rpc$xmr_rpc$xmr_wallet_rpc ]]; then
+  if [[ $local_mode == true && -n $mode$database$proxy$nodes$btc$xmr$btc_image$xmr_image$btc_network$xmr_network$btc_prune$xmr_prune$btc_rpc$xmr_rpc$xmr_wallet_rpc$uploads ]]; then
     echo '--local answers every question itself; combine it only with --admin and --site-name.' >&2
     exit 2
   fi
@@ -674,6 +719,7 @@ cmd_init() {
       "To use that data, start it from the checkout (and .env) that created it. $second_copy" >&2
     exit 1
   fi
+  if [[ $uploads == yes ]]; then host_memory_check || exit 1; fi
 
   # Questions. The bare invocation asks today's questions; with options, only what they leave open.
   if [[ $local_mode == true ]]; then
@@ -878,6 +924,13 @@ cmd_init() {
     compose_files="${compose_files}:compose.external-egress.yaml"
     echo 'External endpoints selected: app direct network egress is enabled; only inbound exposure is Tor-only.'
   fi
+  # Photo uploads: the malware scanner, its profile and the app's address for it (off unless --uploads yes).
+  if [[ $uploads == yes ]]; then
+    put CLAMAV_IMAGE "$clamav_image_default"
+    put CLAMD_ADDRESS "$clamd_address"
+    profiles="${profiles:+$profiles,}scanner"
+    compose_files="${compose_files}:compose.scanner.yaml"
+  fi
   put COMPOSE_FILE "$compose_files"
   put COMPOSE_PROFILES "$profiles"
   mv "$config" .env
@@ -909,6 +962,11 @@ cmd_init() {
   else
     base='https://YOUR-DOMAIN'
   fi
+  # `up --wait` waited for clamd's healthcheck, so it answers now.
+  local scanner=''
+  if [[ $uploads == yes ]]; then
+    scanner=$(clamd_version) && scanner="signatures $scanner" || scanner='not answering yet; ./scripts/install.sh status shows it later'
+  fi
   if [[ -n $admin ]]; then
     local args=(-bootstrap-admin "$admin")
     if [[ -n $site_name ]]; then args+=(-site-name "$site_name"); fi
@@ -928,6 +986,9 @@ cmd_init() {
   # Final block: the only place init prints a secret (SETUP_TOKEN, when no --admin was given).
   if grep -q -E "^(BITCOIN_RPC_URL|MONERO_WALLET_RPC_URL)='[^']+'$" .env; then
     printf 'Payment wallets must exist before test-network payments work; until then the admin page shows the provider as unavailable. Follow docs/testnet-runbook.md.\n'
+  fi
+  if [[ -n $scanner ]]; then
+    printf 'Malware scanner: %s. Refresh its signatures at least monthly with ./scripts/install.sh refresh-scanner.\n' "$scanner"
   fi
   if [[ $mode == clearnet && $secure == true ]]; then
     printf 'Application healthy at http://127.0.0.1:%s. Secure cookies require HTTPS, so finish through your reverse proxy.\n' "${caller_app_port:-8080}"
@@ -959,7 +1020,7 @@ cmd_init() {
 
 cmd_status() {
   require_env
-  local mode state='' known=true profiles address
+  local mode state='' known=true profiles address version
   mode=$(env_value APP_MODE)
   mode=${mode:-clearnet}
   profiles=$(env_value COMPOSE_PROFILES)
@@ -995,6 +1056,13 @@ cmd_status() {
   else
     address=$(env_value APP_PORT)
     printf 'App: http://127.0.0.1:%s (host loopback)\n' "${address:-8080}"
+  fi
+  if ! has_item "$profiles" scanner; then
+    echo 'Malware scanner: off (photo uploads are off; ./scripts/install.sh add-scanner turns it on)'
+  elif version=$(clamd_version); then
+    printf 'Malware scanner: answering; signatures %s\n' "$version"
+  else
+    echo 'Malware scanner: not answering, so photo uploads are refused (still loading its signatures, or see docker compose logs clamd)'
   fi
   [[ $known == true ]]
 }
@@ -1079,6 +1147,150 @@ cmd_add_mirror() {
   echo '  identity=tor_mirror_identity AGE_RECIPIENT=age1YOUR_PUBLIC_RECIPIENT'
   echo 'and then the "Back up an onion identity" commands in docs/operator-guide.md#secrets-env-and-onion-identities.'
   echo 'Publish both addresses in your operator-signed verification document; the installer does not sign anything.'
+}
+
+# ---- malware scanner (photo uploads) ----------------------------------------------------------------------
+
+# host_memory_check: clamd holds ClamAV's signatures in memory (about 1 GiB, up to its 3 GiB limit) beside the
+# app and database. Refuse a Docker host with less than 3 GiB (status 1) and warn below 4 GiB.
+host_memory_check() {
+  local total
+  total=$(docker info --format '{{.MemTotal}}' 2>/dev/null) || total=''
+  if ! [[ $total =~ ^[0-9]+$ ]]; then
+    echo 'Could not read the memory of the Docker host (docker info). Nothing was changed.' >&2
+    return 1
+  fi
+  if ((total < 3 * 1073741824)); then
+    printf '%s\n' "The malware scanner needs a Docker host with at least 3 GiB of memory; this one has $((total / 1048576)) MiB." \
+      'clamd keeps the ClamAV signatures in memory beside the app and the database. Nothing was changed.' >&2
+    return 1
+  fi
+  if ((total < 4 * 1073741824)); then
+    printf 'warning: this Docker host has %s MiB of memory; with the malware scanner, 4 GiB or more is advised.\n' "$((total / 1048576))" >&2
+  fi
+}
+
+# clamd_version: clamd's VERSION reply (ClamAV <release>/<daily signature version>/<signature date>). Status 1
+# when clamd does not answer: clamdscan then prints only its own version.
+clamd_version() {
+  local version
+  version=$(docker compose exec -T clamd clamdscan --version 2>/dev/null) || return 1
+  [[ $version =~ ^ClamAV\ [^/]+/[0-9]+/.+$ ]] || return 1
+  printf '%s' "$version"
+}
+
+# wait_clamd: wait up to 10 minutes for clamd to load its signatures and answer, and print its VERSION.
+wait_clamd() {
+  local attempt deadline=$((SECONDS + 600))
+  for ((attempt = 0; attempt < 120 && SECONDS < deadline; attempt++)); do
+    clamd_version && return 0
+    sleep 5
+  done
+  return 1
+}
+
+# scanner_layout_problems CONFIG: what is wrong with the scanner in CONFIG, `docker compose config` output
+# (Compose's own normalised YAML, with two-space indents): clamd on the internal scanner network alone, which
+# only the app joins, with no host port, no volume and a pinned image with signatures. One line per problem.
+scanner_layout_problems() {
+  local facts members networks image
+  facts=$(awk '
+    /^[^ ]/ { top = $1; section = ""; next }
+    top == "services:" && /^  [^ ]/ { service = $1; sub(/:$/, "", service); section = ""; next }
+    top == "services:" && /^    [^ ]/ {
+      section = $1; sub(/:.*/, "", section)
+      if (section == "network_mode" || section == "ports") print service, section
+      if (section == "image") print service, "image", $2
+      next
+    }
+    top == "services:" && section == "networks" && /^      [^ -]/ { name = $1; sub(/:.*/, "", name); print service, "network", name; next }
+    top == "services:" && section == "volumes" && /^      - type: / { print service, "mount", $3; next }
+    top == "networks:" && /^  [^ ]/ { network = $1; sub(/:$/, "", network); next }
+    top == "networks:" && /^    internal: true$/ { print network, "internal" }
+  ' <<< "$1")
+  members=$(awk '$2 == "network" && $3 == "scanner" { print $1 }' <<< "$facts" | sort | tr '\n' ' ')
+  networks=$(awk '$1 == "clamd" && $2 == "network" { print $3 }' <<< "$facts" | sort | tr '\n' ' ')
+  image=$(awk '$1 == "clamd" && $2 == "image" { print $3 }' <<< "$facts")
+  [[ $networks == 'scanner ' ]] || echo "  - clamd must be on the scanner network only (it is on: ${networks% })"
+  [[ $members == 'app clamd ' ]] || echo "  - only app and clamd may join the scanner network (it has: ${members% })"
+  grep -qx 'scanner internal' <<< "$facts" || echo '  - the scanner network must be internal (no route out of the host)'
+  if grep -qx 'clamd network_mode' <<< "$facts"; then echo '  - clamd must not set network_mode'; fi
+  if grep -qx 'clamd ports' <<< "$facts"; then echo '  - clamd must publish no port'; fi
+  if grep -q '^clamd mount [^b]' <<< "$facts"; then
+    echo '  - clamd must mount no volume: its signatures come from its image (docs/operator-guide.md#photo-uploads-and-the-malware-scanner)'
+  fi
+  clamav_image_ok "$image" || echo "  - clamd runs ${image:-no image}: it must be a ClamAV release with signatures, not latest, stable or _base"
+}
+
+# refresh_scanner: have Docker fetch the newest build of the pinned tag (upstream rebuilds it with newer
+# signatures) and recreate clamd from it when it changed, then print the signature versions before and after.
+refresh_scanner() {
+  local before after
+  before=$(clamd_version) || before='(clamd not answering)'
+  printf 'Signatures before: %s\n' "$before"
+  docker compose pull clamd || {
+    printf '%s\n' 'Could not pull the scanner image (the message above says why); clamd keeps its current signatures.' \
+      'On a host without Internet access, load the image instead: docs/operator-guide.md#photo-uploads-and-the-malware-scanner.' >&2
+    return 1
+  }
+  docker compose up -d clamd || { echo 'Could not recreate clamd. Inspect docker compose logs clamd.' >&2; return 1; }
+  after=$(wait_clamd) || {
+    echo 'clamd did not answer within 10 minutes; photo uploads are refused until it does. Inspect docker compose logs clamd.' >&2
+    return 1
+  }
+  printf 'Signatures now:    %s\n' "$after"
+}
+
+cmd_add_scanner() {
+  [[ $# -eq 0 ]] || usage
+  require_env
+  lock_env_or_die
+  local staged previous files profiles version
+  host_memory_check || exit 1
+  files=$(env_value COMPOSE_FILE)
+  [[ -n $files ]] || die 'COMPOSE_FILE is not set in .env; run ./scripts/install.sh upgrade first, which adds it. Nothing was changed.'
+  # All three keys change in a copy that replaces .env whole, so .env never enables half the scanner.
+  staged=$(mktemp .env.edit.XXXXXX) && previous=$(mktemp .env.edit.XXXXXX) || die 'Could not write .env; it was not changed.'
+  temporaries="$temporaries $staged $previous"
+  { cat .env > "$staged" && cat .env > "$previous"; } || die 'Could not write .env; it was not changed.'
+  env_file=$staged
+  if [[ -z $(env_value CLAMAV_IMAGE) ]]; then env_set CLAMAV_IMAGE "$clamav_image_default"; fi
+  compose_has compose.scanner.yaml || env_set COMPOSE_FILE "$files:compose.scanner.yaml"
+  profiles=$(env_value COMPOSE_PROFILES)
+  # In .env rather than as a Compose profile option, which would replace the other profiles for that one command (A-140).
+  has_item "$profiles" scanner || env_set COMPOSE_PROFILES "${profiles:+$profiles,}scanner"
+  [[ $(env_value CLAMD_ADDRESS) == "$clamd_address" ]] || env_set CLAMD_ADDRESS "$clamd_address"
+  env_file=.env
+  # The whole configuration is checked with the scanner in it; a refusal puts the previous .env back.
+  if cmp -s "$staged" .env; then
+    run_check || exit 1
+    echo 'The malware scanner is already configured in .env.'
+  else
+    chmod 600 "$staged" && mv -f "$staged" .env || die 'Could not write .env; it was not changed.'
+    if ! run_check; then
+      chmod 600 "$previous" && mv -f "$previous" .env
+      die 'The configuration with the scanner failed the check above, so .env was not changed.'
+    fi
+    echo 'Added the malware scanner to .env: the scanner profile, compose.scanner.yaml and CLAMD_ADDRESS.'
+  fi
+  docker compose up -d clamd || die 'Could not start clamd. Inspect docker compose logs clamd.'
+  echo 'Waiting for clamd to load its signatures (a minute or two; at most 10 minutes).'
+  version=$(wait_clamd) || die 'clamd did not answer within 10 minutes. Inspect docker compose logs clamd, fix the cause and run' \
+    './scripts/install.sh add-scanner again. Until then photo uploads are refused; the rest of the market is unaffected.'
+  # The app learns CLAMD_ADDRESS and joins the scanner network when Compose recreates it (Tor restarts with it).
+  docker compose up -d --wait || die 'The services did not become healthy. Inspect docker compose ps and docker compose logs app.'
+  printf 'Malware scanner ready. Signatures: %s\n' "$version"
+  echo 'ClamAV updates its signatures daily; refresh them at least monthly with ./scripts/install.sh refresh-scanner'
+  echo '(upgrade does it too). docs/operator-guide.md#photo-uploads-and-the-malware-scanner explains the options.'
+}
+
+cmd_refresh_scanner() {
+  [[ $# -eq 0 ]] || usage
+  require_env
+  has_item "$(env_value COMPOSE_PROFILES)" scanner ||
+    die 'The malware scanner is off in this install (COMPOSE_PROFILES lacks scanner): there is nothing to refresh. ./scripts/install.sh add-scanner turns it on.'
+  run_check || exit 1
+  refresh_scanner || exit 1
 }
 
 # ---- upgrade ----------------------------------------------------------------------------------------------
@@ -1263,6 +1475,11 @@ cmd_upgrade() {
       docker compose up -d --wait --force-recreate tor || die 'Tor did not become healthy. Inspect docker compose logs tor.'
     fi
   fi
+  # The scanner's signatures age with its image: every upgrade refreshes them (never turns the scanner on).
+  if has_item "$(env_value COMPOSE_PROFILES)" scanner; then
+    refresh_scanner || printf '%s\n' 'warning: the malware scanner signatures were not refreshed (see above); the upgrade itself is complete.' \
+      'Run ./scripts/install.sh refresh-scanner once the cause is fixed.' >&2
+  fi
   echo 'Upgrade complete. ./scripts/install.sh status shows the result.'
 }
 
@@ -1275,6 +1492,8 @@ case ${1-} in
   status) shift; [[ $# -eq 0 ]] || usage; require_docker; cmd_status ;;
   setup-token) shift; require_docker; cmd_setup_token "$@" ;;
   add-mirror) shift; require_docker; cmd_add_mirror "$@" ;;
+  add-scanner) shift; require_docker; cmd_add_scanner "$@" ;;
+  refresh-scanner) shift; require_docker; cmd_refresh_scanner "$@" ;;
   upgrade) shift; require_docker; cmd_upgrade "$@" ;;
   ''|--*) cmd_init "$@" ;;
   *) usage ;;

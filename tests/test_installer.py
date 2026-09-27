@@ -31,6 +31,72 @@ PROBE = 'compose run --rm -T --no-deps app -status'
 SECRET_KEYS = ('DATABASE_URL', 'POSTGRES_PASSWORD', 'APP_SECRET_KEY', 'SETUP_TOKEN', 'AUDIT_SIGNING_KEY',
                'BITCOIN_RPC_PASSWORD', 'MONERO_WALLET_RPC_PASSWORD')
 PASSWORD = 'correct horse battery staple'
+# The malware scanner (A-184): what clamdscan --version prints once clamd answers, and the calls it takes.
+CLAMD_VERSION = 'ClamAV 1.5.4/28130/Mon Sep 21 06:24:29 2026'
+CLAMD_READ = 'compose exec -T clamd clamdscan --version'
+MEMORY = 'info --format {{.MemTotal}}'
+CHECK_SCANNER = [*CHECK, 'compose config']
+SCANNER_FILES = 'compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.internal-db.yaml:compose.scanner.yaml'
+# `docker compose config` for a Tor install with the scanner, as Compose prints it (abridged to what the
+# installer reads). ScannerConfigTests.test_check_reads_real_compose_output checks the parser on the real thing.
+SCANNER_CONFIG = '''name: opsecmkt
+services:
+  app:
+    build:
+      context: /srv/opsecmkt
+      dockerfile: Dockerfile
+    environment:
+      CLAMD_ADDRESS: clamd:3310
+    networks:
+      backend: null
+      scanner: null
+  clamd:
+    profiles:
+      - scanner
+    entrypoint:
+      - clamd
+    image: clamav/clamav:1.5.4-debian
+    networks:
+      scanner: null
+    read_only: true
+    user: clamav
+    volumes:
+      - type: bind
+        source: /srv/opsecmkt/deploy/clamd.conf
+        target: /etc/clamav/clamd.conf
+        read_only: true
+        bind: {}
+  db:
+    image: postgres:17-alpine
+    networks:
+      backend: null
+    volumes:
+      - type: volume
+        source: postgres_data
+        target: /var/lib/postgresql/data
+        volume: {}
+  tor:
+    networks:
+      backend: null
+      tor_egress: null
+networks:
+  backend:
+    name: opsecmkt_backend
+    internal: true
+  scanner:
+    name: opsecmkt_scanner
+    internal: true
+  tor_egress:
+    name: opsecmkt_tor_egress
+volumes:
+  postgres_data:
+    name: opsecmkt_postgres_data
+x-logging:
+  driver: json-file
+  options:
+    max-file: "3"
+    max-size: 10m
+'''
 # Stubs write logs; a test that limits the installer's file size must not limit them.
 LIFT_FILE_SIZE_LIMIT = '''
 import resource
@@ -89,6 +155,12 @@ def clearnet_env(**overrides):
                             **overrides})
 
 
+def scanner_env(**overrides):
+    """installed_env with the malware scanner, as add-scanner leaves it."""
+    return installed_env(**{'COMPOSE_FILE': SCANNER_FILES, 'COMPOSE_PROFILES': 'internal-db,scanner',
+                            'CLAMD_ADDRESS': 'clamd:3310', 'CLAMAV_IMAGE': 'clamav/clamav:1.5.4-debian', **overrides})
+
+
 def alpha_env(**overrides):
     """An .env as the v0.1.0-alpha.1 installer wrote it: Tor, internal database, a local Monero node."""
     password = hex_value(48, 'alpha-db')
@@ -124,6 +196,10 @@ class InstallerTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         (self.root / 'scripts').mkdir()
         shutil.copyfile(INSTALLER, self.root / 'scripts' / 'install.sh')
+        # check reads clamd's configuration file, which clamd reads as its own user (A-184).
+        (self.root / 'deploy').mkdir()
+        shutil.copyfile(REPOSITORY / 'deploy' / 'clamd.conf', self.root / 'deploy' / 'clamd.conf')
+        (self.root / 'deploy' / 'clamd.conf').chmod(0o644)
         self.bin = self.root / 'bin'
         self.bin.mkdir()
         self.state = self.root / 'stub-state'
@@ -237,6 +313,36 @@ if args == ['compose', 'port', 'app', '8080']:
         sys.exit('no container found for app')
     print(published)
     sys.exit(0)
+# The malware scanner: the host's memory, the resolved Compose configuration, pulls and clamd's VERSION.
+if args == ['info', '--format', '{{.MemTotal}}']:
+    if flag('INSTALLER_TEST_INFO_FAIL'):
+        sys.exit('Cannot connect to the Docker daemon')
+    print(os.environ.get('INSTALLER_TEST_MEMTOTAL', str(8 * 2**30)))
+    sys.exit(0)
+if args == ['compose', 'config']:
+    assert Path('.env').is_file(), 'Configuration must exist before validation'
+    print(os.environ['INSTALLER_TEST_COMPOSE_CONFIG'], end='')
+    sys.exit(0)
+if args == ['compose', 'pull', 'clamd']:
+    if flag('INSTALLER_TEST_PULL_FAIL'):
+        sys.exit('Error response from daemon: Get "https://registry-1.docker.io/v2/": dial tcp: i/o timeout')
+    if os.environ.get('INSTALLER_TEST_PULLED_VERSION'):
+        (state / 'clamd-version').write_text(os.environ['INSTALLER_TEST_PULLED_VERSION'])
+    sys.exit(0)
+if args == ['compose', 'exec', '-T', 'clamd', 'clamdscan', '--version']:
+    if flag('INSTALLER_TEST_CLAMD_STOPPED'):
+        sys.exit('service "clamd" is not running')
+    counter = state / 'clamd-reads'
+    reads = int(counter.read_text()) + 1 if counter.exists() else 1
+    counter.write_text(str(reads))
+    # clamdscan prints only its own version, and exits 0, while clamd does not answer.
+    if flag('INSTALLER_TEST_CLAMD_DOWN') or reads <= int(os.environ.get('INSTALLER_TEST_CLAMD_WAITS', '0')):
+        print('ClamAV 1.5.4')
+        print('ERROR: Could not connect to clamd on 0.0.0.0: Connection refused', file=sys.stderr)
+        sys.exit(0)
+    version = state / 'clamd-version'
+    print(version.read_text() if version.exists() else os.environ['INSTALLER_TEST_CLAMD_VERSION'])
+    sys.exit(0)
 sys.exit('Unexpected docker command')
 ''')
         self.stub('openssl', '''
@@ -291,6 +397,8 @@ print(value)
             'INSTALLER_TEST_OPENSSL_EMPTY_CALL': str(openssl_empty_call or ''),
             'INSTALLER_TEST_TOR_ONION': MAIN_ONION,
             'INSTALLER_TEST_TOR_MIRROR_ONION': MIRROR_ONION,
+            'INSTALLER_TEST_COMPOSE_CONFIG': SCANNER_CONFIG,
+            'INSTALLER_TEST_CLAMD_VERSION': CLAMD_VERSION,
             # macOS's Python can redirect bytecode caches beneath the temporary
             # HOME. Stubs must not keep populating it while cleanup removes it.
             'PYTHONDONTWRITEBYTECODE': '1',
@@ -329,11 +437,12 @@ print(value)
             raise expired
         return subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)
 
-    def command(self, *arguments, extra_env=None, answers=None, file_size_limit=None):
+    def command(self, *arguments, extra_env=None, answers=None, file_size_limit=None, timeout=30):
         """Run a subcommand on an existing .env, with this checkout's containers present."""
         self.log.unlink(missing_ok=True)
         env = {'INSTALLER_TEST_CONTAINERS': str(self.root), **(extra_env or {})}
-        return self.run_installer(answers, arguments=list(arguments), extra_env=env, file_size_limit=file_size_limit)
+        return self.run_installer(answers, arguments=list(arguments), extra_env=env, file_size_limit=file_size_limit,
+                                  timeout=timeout)
 
     def write_env(self, values_or_text, mode=0o600):
         path = self.root / '.env'
@@ -1195,7 +1304,7 @@ time.sleep(60)
         original = self.write_env(values)
         self.set_installed(True)
         (self.root / '.env.lock').mkdir()
-        for arguments in (['upgrade', '--no-backup'], ['add-mirror'], ['setup-token', '--new']):
+        for arguments in (['upgrade', '--no-backup'], ['add-mirror'], ['setup-token', '--new'], ['add-scanner']):
             with self.subTest(arguments=arguments):
                 result = self.command(*arguments)
                 self.assertEqual(result.returncode, 1)
@@ -1339,7 +1448,8 @@ time.sleep(60)
         self.assertIn('warning: APP_MODE=tor with COOKIE_SECURE=true', result.stderr)
 
     def test_commands_need_an_env(self):
-        for arguments in (['check'], ['status'], ['setup-token'], ['add-mirror'], ['upgrade', '--no-backup']):
+        for arguments in (['check'], ['status'], ['setup-token'], ['add-mirror'], ['upgrade', '--no-backup'],
+                          ['add-scanner'], ['refresh-scanner']):
             with self.subTest(arguments=arguments):
                 self.log.unlink(missing_ok=True)
                 result = self.run_installer(None, arguments=arguments)
@@ -1785,12 +1895,326 @@ time.sleep(60)
         self.assertIn('more than one Compose project', result.stderr)
         self.assertEqual(self.pre_upgrade_copies()[1:], [])
 
+    # ---- malware scanner (A-184) ------------------------------------------------------------------------
+
+    def assert_scanner_added(self, config, original_profiles, original_files):
+        self.assertEqual(config['COMPOSE_PROFILES'], f'{original_profiles},scanner' if original_profiles else 'scanner')
+        self.assertEqual(config['COMPOSE_FILE'], f'{original_files}:compose.scanner.yaml')
+        self.assertEqual(config['CLAMD_ADDRESS'], 'clamd:3310')
+        self.assertEqual(config['CLAMAV_IMAGE'], 'clamav/clamav:1.5.4-debian')
+
+    def test_add_scanner_refuses_small_host(self):
+        original = self.write_env(installed_env())
+        for memory in (3 * 2**30 - 1, 512 * 2**20):
+            with self.subTest(memory=memory):
+                result = self.command('add-scanner', extra_env={'INSTALLER_TEST_MEMTOTAL': str(memory)})
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('at least 3 GiB', result.stderr)
+                self.assertIn(f'{memory // 2**20} MiB', result.stderr)
+                self.assertIn('Nothing was changed', result.stderr)
+                self.assertEqual((self.root / '.env').read_bytes(), original)
+                self.assertEqual(self.calls(), ['compose version', MEMORY])
+                self.assertFalse((self.root / '.env.lock').exists())
+                self.assertEqual(list(self.root.glob('.env.edit.*')), [])
+        # Docker cannot say: refused the same way.
+        result = self.command('add-scanner', extra_env={'INSTALLER_TEST_INFO_FAIL': '1'})
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('Could not read', result.stderr)
+        self.assertEqual((self.root / '.env').read_bytes(), original)
+        # 3 GiB to 4 GiB: a warning, then the scanner.
+        result = self.command('add-scanner', extra_env={'INSTALLER_TEST_MEMTOTAL': str(3 * 2**30)})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('warning: this Docker host has 3072 MiB of memory', result.stderr)
+        self.assert_scanner_added(self.config(), 'internal-db', installed_env()['COMPOSE_FILE'])
+
+    def test_add_scanner_idempotent(self):
+        for profiles in ('internal-db,bitcoin', ''):
+            with self.subTest(profiles=profiles):
+                values = installed_env(COMPOSE_PROFILES=profiles, BITCOIN_RPC_PASSWORD=hex_value(48, 'rpc'))
+                if 'internal-db' not in profiles:
+                    values['DATABASE_URL'] = 'postgres://market@database.example/market'
+                # A comment, a CRLF line and an unrelated key stay byte for byte.
+                original = self.write_env(env_text(values).encode() + b"# keep me\r\nLOG_DRIVER='local'")
+                (self.root / '.env').chmod(0o640)
+                (self.state / 'clamd-reads').unlink(missing_ok=True)
+                result = self.command('add-scanner', extra_env={'INSTALLER_TEST_CLAMD_WAITS': '3'})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                text = (self.root / '.env').read_bytes()
+                config = {key: value[1:-1] for key, value in (line.split('=', 1) for line in text.decode().splitlines()
+                                                              if not line.startswith('#'))}
+                self.assert_scanner_added(config, profiles, values['COMPOSE_FILE'])
+                self.assertTrue(text.startswith(original.split(b'COMPOSE_FILE=')[0]))
+                self.assertIn(b"# keep me\r\nLOG_DRIVER='local'\n", text)
+                self.assertEqual(stat.S_IMODE((self.root / '.env').stat().st_mode), 0o600)
+                # Checked, started, waited for (three unanswered reads), then the app recreated with it.
+                self.assertEqual(self.calls(), ['compose version', MEMORY, *CHECK_SCANNER, 'compose up -d clamd',
+                                                *[CLAMD_READ] * 4, 'compose up -d --wait'])
+                self.assertIn(f'Signatures: {CLAMD_VERSION}', result.stdout)
+                self.assertIn('refresh-scanner', result.stdout)
+                self.assertEqual(list(self.root.glob('.env.edit.*')), [])
+                self.assertFalse((self.root / '.env.lock').exists())
+                self.assert_no_secret_printed(result, values)
+                # Again: .env is left alone and clamd is only checked.
+                after_first = (self.root / '.env').read_bytes()
+                (self.state / 'clamd-reads').unlink()
+                result = self.command('add-scanner')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual((self.root / '.env').read_bytes(), after_first)
+                self.assertIn('already', result.stdout)
+                self.assertEqual(self.calls(), ['compose version', MEMORY, *CHECK_SCANNER,
+                                                'compose up -d clamd', CLAMD_READ, 'compose up -d --wait'])
+                (self.root / '.env').unlink()
+
+    def test_add_scanner_bounded_wait_names_the_logs(self):
+        original_values = installed_env()
+        self.write_env(original_values)
+        # 120 stub calls (sleep is stubbed): allow for a slow interpreter start under load.
+        result = self.command('add-scanner', extra_env={'INSTALLER_TEST_CLAMD_DOWN': '1'}, timeout=180)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('within 10 minutes', result.stderr)
+        self.assertIn('docker compose logs clamd', result.stderr)
+        # Bounded: 120 reads 5 seconds apart, and the app is not recreated.
+        self.assertEqual(self.calls().count(CLAMD_READ), 120)
+        self.assertNotIn('compose up -d --wait', self.calls())
+        self.assertFalse((self.root / '.env.lock').exists())
+        # A configuration the check refuses after the change is put back.
+        original = self.write_env(original_values)
+        (self.root / 'deploy' / 'clamd.conf').chmod(0o600)
+        result = self.command('add-scanner')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('deploy/clamd.conf must be readable', result.stderr)
+        self.assertIn('.env was not changed', result.stderr)
+        self.assertEqual((self.root / '.env').read_bytes(), original)
+        self.assertNotIn('compose up -d clamd', self.calls())
+        self.assertEqual(list(self.root.glob('.env.edit.*')), [])
+
+    def test_add_scanner_completes_a_partial_configuration(self):
+        # check refuses an address without the profile and points here; add-scanner must not refuse it too.
+        self.write_env(installed_env(CLAMD_ADDRESS='clamd:3310'))
+        result = self.command('add-scanner')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_scanner_added(self.config(), 'internal-db', installed_env()['COMPOSE_FILE'])
+
+    def test_add_scanner_needs_compose_file(self):
+        values = installed_env(COMPOSE_FILE=None)
+        original = self.write_env(values)
+        result = self.command('add-scanner')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('./scripts/install.sh upgrade', result.stderr)
+        self.assertEqual((self.root / '.env').read_bytes(), original)
+
+    def test_check_scanner_profile_needs_address(self):
+        self.write_env(scanner_env())
+        result = self.command('check')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.calls(), ['compose version', *CHECK_SCANNER])
+        self.check_env(scanner_env(CLAMD_ADDRESS=''), 'the malware scanner (scanner profile) needs CLAMD_ADDRESS=clamd:3310')
+        self.check_env(scanner_env(CLAMD_ADDRESS=None), 'needs CLAMD_ADDRESS=clamd:3310')
+        self.check_env(installed_env(CLAMD_ADDRESS='clamd:3310'), 'CLAMD_ADDRESS is set but COMPOSE_PROFILES lacks scanner')
+        self.check_env(scanner_env(CLAMD_ADDRESS='scanner.example:3310'), 'CLAMD_ADDRESS must be clamd:3310')
+        self.check_env(scanner_env(COMPOSE_FILE=installed_env()['COMPOSE_FILE']),
+                       'the scanner profile needs compose.scanner.yaml in COMPOSE_FILE')
+        (self.root / 'deploy' / 'clamd.conf').chmod(0o600)
+        self.check_env(scanner_env(), 'deploy/clamd.conf must be readable by every user')
+        (self.root / 'deploy' / 'clamd.conf').chmod(0o644)
+        # Off: a blank CLAMD_ADDRESS and no profile, with or without the key.
+        self.check_env(installed_env(CLAMD_ADDRESS=''))
+
+    def test_check_refuses_unpinned_clamav(self):
+        for image in ('clamav/clamav:latest', 'clamav/clamav', 'clamav/clamav:1.5.4_base', 'clamav/clamav:stable_base'):
+            with self.subTest(image=image):
+                self.check_env(scanner_env(CLAMAV_IMAGE=image), 'CLAMAV_IMAGE must name a ClamAV release')
+                # Also while the scanner is off: the key would be used as soon as it is turned on.
+                self.check_env(installed_env(CLAMAV_IMAGE=image), 'CLAMAV_IMAGE must name a ClamAV release')
+        self.write_env(scanner_env(CLAMAV_IMAGE='clamav/clamav@sha256:' + 'b' * 64))
+        self.assertEqual(self.command('check').returncode, 0)
+        # The image Compose resolves (an override file can set one) is checked too.
+        self.write_env(scanner_env())
+        rendered = SCANNER_CONFIG.replace('image: clamav/clamav:1.5.4-debian', 'image: clamav/clamav:latest')
+        result = self.command('check', extra_env={'INSTALLER_TEST_COMPOSE_CONFIG': rendered})
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('clamd runs clamav/clamav:latest', result.stderr)
+
+    def test_check_refuses_clamd_off_scanner_network(self):
+        self.write_env(scanner_env())
+        cases = [
+            (SCANNER_CONFIG.replace('    networks:\n      scanner: null\n    read_only',
+                                    '    networks:\n      backend: null\n      scanner: null\n    read_only'),
+             'clamd must be on the scanner network only (it is on: backend scanner)'),
+            (SCANNER_CONFIG.replace('    read_only: true\n    user', '    network_mode: host\n    read_only: true\n    user'),
+             'clamd must not set network_mode'),
+            (SCANNER_CONFIG.replace('    read_only: true\n    user', '    ports:\n      - target: 3310\n    read_only: true\n    user'),
+             'clamd must publish no port'),
+            (SCANNER_CONFIG.replace('  scanner:\n    name: opsecmkt_scanner\n    internal: true\n',
+                                    '  scanner:\n    name: opsecmkt_scanner\n'),
+             'the scanner network must be internal'),
+            (SCANNER_CONFIG.replace('      backend: null\n      tor_egress: null\n', '      backend: null\n      scanner: null\n      tor_egress: null\n'),
+             'only app and clamd may join the scanner network (it has: app clamd tor)'),
+            (SCANNER_CONFIG.replace('        read_only: true\n        bind: {}\n',
+                                    '        read_only: true\n        bind: {}\n      - type: volume\n        source: signatures\n'
+                                    '        target: /var/lib/clamav\n        volume: {}\n'),
+             'clamd must mount no volume'),
+        ]
+        for rendered, message in cases:
+            with self.subTest(message=message):
+                self.assertNotEqual(rendered, SCANNER_CONFIG)
+                result = self.command('check', extra_env={'INSTALLER_TEST_COMPOSE_CONFIG': rendered})
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(message, result.stderr)
+                self.assertNotIn('Configuration OK', result.stdout)
+
+    @unittest.skipUnless(shutil.which('docker') and subprocess.run(['docker', 'compose', 'version'], capture_output=True).returncode == 0,
+                         'Docker Compose is not installed')
+    def test_check_reads_real_compose_output(self):
+        # The parser against what this machine's Compose prints for the real files, in both modes.
+        for mode in ('tor', 'clearnet'):
+            with self.subTest(mode=mode):
+                files = f'compose.yaml:compose.{mode}.yaml:compose.nodes.yaml:compose.internal-db.yaml:compose.scanner.yaml'
+                environment = {key: value for key, value in os.environ.items() if not key.startswith('COMPOSE_')}
+                environment.update(COMPOSE_FILE=files, COMPOSE_PROFILES='internal-db,scanner,bitcoin,monero,monero-wallet',
+                                   DATABASE_URL='postgres://unused@db/unused')
+                rendered = subprocess.run(['docker', 'compose', '--env-file', os.devnull, 'config'], cwd=REPOSITORY,
+                                          env=environment, capture_output=True, text=True, check=True).stdout
+                values = scanner_env(COMPOSE_FILE=files)
+                if mode == 'clearnet':
+                    values.update(APP_MODE='clearnet', COOKIE_SECURE='true')
+                self.write_env(values)
+                result = self.command('check', extra_env={'INSTALLER_TEST_COMPOSE_CONFIG': rendered})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                broken = rendered.replace('    networks:\n      scanner: null\n    pids_limit: 256',
+                                          '    networks:\n      scanner: null\n      backend: null\n    pids_limit: 256')
+                self.assertNotEqual(broken, rendered)
+                result = self.command('check', extra_env={'INSTALLER_TEST_COMPOSE_CONFIG': broken})
+                self.assertIn('clamd must be on the scanner network only', result.stderr)
+
+    def test_refresh_scanner_pulls_and_recreates(self):
+        values = scanner_env()
+        self.write_env(values)
+        newer = 'ClamAV 1.5.4/28140/Thu Oct  1 07:20:00 2026'
+        result = self.command('refresh-scanner', extra_env={'INSTALLER_TEST_PULLED_VERSION': newer})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # Pulled even though the tag is present, then clamd recreated from it (Compose recreates it when the
+        # pull brought a newer build) and waited for.
+        self.assertEqual(self.calls(), ['compose version', *CHECK_SCANNER, CLAMD_READ, 'compose pull clamd',
+                                        'compose up -d clamd', CLAMD_READ])
+        self.assertIn(f'Signatures before: {CLAMD_VERSION}', result.stdout)
+        self.assertIn(f'Signatures now:    {newer}', result.stdout)
+        self.assertEqual((self.root / '.env').read_bytes(), env_text(values).encode())
+        # A failed pull changes nothing and says why.
+        result = self.command('refresh-scanner', extra_env={'INSTALLER_TEST_PULL_FAIL': '1'})
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('Could not pull', result.stderr)
+        self.assertNotIn('compose up -d clamd', self.calls())
+        # clamd stopped: refreshed all the same.
+        (self.state / 'clamd-version').unlink()
+        result = self.command('refresh-scanner', extra_env={'INSTALLER_TEST_CLAMD_STOPPED': '1'}, timeout=180)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('did not answer within 10 minutes', result.stderr)
+        self.assertIn('Signatures before: (clamd not answering)', result.stdout)
+        self.assertIn('compose pull clamd', self.calls())
+        # Scanner off: nothing to refresh.
+        self.write_env(installed_env())
+        result = self.command('refresh-scanner')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('add-scanner', result.stderr)
+        self.assertEqual(self.calls(), ['compose version'])
+
+    def test_upgrade_does_not_enable_scanner(self):
+        for values in (alpha_env(), installed_env(), clearnet_env()):
+            with self.subTest(mode=values['APP_MODE'], alpha='SETUP_TOKEN' in values and 'APP_SECRET_KEY' not in values):
+                self.write_env(values)
+                result = self.upgrade(extra_env={'INSTALLER_TEST_MEMTOTAL': str(64 * 2**30)})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                config = self.config()
+                self.assertNotIn('scanner', config['COMPOSE_PROFILES'].split(','))
+                self.assertNotIn('compose.scanner.yaml', config['COMPOSE_FILE'])
+                self.assertEqual(config['CLAMD_ADDRESS'], '')
+                self.assertEqual(config['CLAMAV_IMAGE'], 'clamav/clamav:1.5.4-debian')
+                self.assertFalse([call for call in self.calls() if 'clamd' in call or call == MEMORY])
+                for copy in self.pre_upgrade_copies():
+                    copy.unlink()
+
+    def test_upgrade_runs_refresh_scanner_only_when_profile_on(self):
+        self.write_env(scanner_env())
+        self.set_installed(False)
+        newer = 'ClamAV 1.5.4/28140/Thu Oct  1 07:20:00 2026'
+        result = self.upgrade(extra_env={'INSTALLER_TEST_PULLED_VERSION': newer})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # Last, once the upgrade itself is up and healthy.
+        calls = self.calls()
+        self.assertEqual(calls[-4:], [CLAMD_READ, 'compose pull clamd', 'compose up -d clamd', CLAMD_READ])
+        self.assertLess(calls.index(UP), calls.index('compose pull clamd'))
+        self.assertIn(f'Signatures now:    {newer}', result.stdout)
+        # A failed pull does not fail the upgrade: it has already been applied.
+        for copy in self.pre_upgrade_copies():
+            copy.unlink()
+        self.write_env(scanner_env())
+        result = self.upgrade(extra_env={'INSTALLER_TEST_PULL_FAIL': '1'})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('scanner signatures were not refreshed', result.stderr)
+        self.assertIn('./scripts/install.sh refresh-scanner', result.stderr)
+        self.assertIn('Upgrade complete', result.stdout)
+
+    def test_status_prints_scanner(self):
+        self.write_env(installed_env())
+        result = self.command('status')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Malware scanner: off (photo uploads are off; ./scripts/install.sh add-scanner turns it on)', result.stdout)
+        self.assertNotIn(CLAMD_READ, self.calls())
+        self.write_env(scanner_env())
+        result = self.command('status')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f'Malware scanner: answering; signatures {CLAMD_VERSION}', result.stdout)
+        for extra in ({'INSTALLER_TEST_CLAMD_DOWN': '1'}, {'INSTALLER_TEST_CLAMD_STOPPED': '1'}):
+            with self.subTest(extra=extra):
+                result = self.command('status', extra_env=extra)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('Malware scanner: not answering', result.stdout)
+                self.assertIn('docker compose logs clamd', result.stdout)
+                self.assertEqual(self.calls().count(CLAMD_READ), 1)
+
+    def test_init_uploads(self):
+        result = self.run_installer(None, arguments=['init', '--tor', '--nodes', 'none', '--uploads', 'yes'])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        config = self.config()
+        self.assert_scanner_added(config, 'internal-db', 'compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.internal-db.yaml')
+        self.assertEqual(self.calls(), [*PREFLIGHT, MEMORY, *CHECK_SCANNER, UP, f'compose exec -T tor {HOSTNAME}', CLAMD_READ])
+        self.assertIn(f'Malware scanner: signatures {CLAMD_VERSION}', result.stdout)
+        self.assert_token_only_in_final_block(result, config['SETUP_TOKEN'])
+        # no, or no option: nothing about the scanner is written.
+        for arguments in (['init', '--tor', '--nodes', 'none', '--uploads', 'no'], ['init', '--tor', '--nodes', 'none']):
+            with self.subTest(arguments=arguments):
+                (self.root / '.env').unlink()
+                self.log.unlink()
+                result = self.run_installer(None, arguments=arguments)
+                self.assert_started(result)
+                config = self.config()
+                self.assertNotIn('CLAMD_ADDRESS', config)
+                self.assertNotIn('scanner', config['COMPOSE_PROFILES'])
+                self.assertNotIn('compose.scanner.yaml', config['COMPOSE_FILE'])
+        # A small host is refused before anything is written.
+        (self.root / '.env').unlink()
+        self.log.unlink()
+        result = self.run_installer(None, arguments=['init', '--tor', '--nodes', 'none', '--uploads', 'yes'],
+                                    extra_env={'INSTALLER_TEST_MEMTOTAL': str(2 * 2**30)})
+        self.assert_refused_before_writing(result, [*PREFLIGHT, MEMORY])
+        self.assertIn('at least 3 GiB', result.stderr)
+        # Bad values and --local are usage errors.
+        for arguments in (['--uploads', 'maybe'], ['--uploads'], ['--local', '--uploads', 'yes']):
+            with self.subTest(arguments=arguments):
+                self.log.unlink(missing_ok=True)
+                result = self.run_installer(None, arguments=arguments)
+                self.assertEqual(result.returncode, 2)
+                self.assertFalse((self.root / '.env').exists())
+
     # ---- invariants -------------------------------------------------------------------------------------
 
     def test_installer_makes_no_outbound_fetch(self):
         text = INSTALLER.read_text()
-        for word in ('curl', 'wget', '/dev/tcp', '/dev/udp', 'docker pull', 'compose pull'):
+        for word in ('curl', 'wget', '/dev/tcp', '/dev/udp', 'docker pull', 'freshclam'):
             self.assertNotIn(word, text)
+        # Docker pulls one image on the installer's behalf: the scanner's, for refresh-scanner (A-184, ruling C1).
+        self.assertEqual(re.findall(r'.*compose pull.*', text), ['  docker compose pull clamd || {'])
         # No command runs git, nc or ssh (messages may mention `git pull` for the operator to run).
         for line in text.splitlines():
             self.assertNotRegex(line.split(' #')[0], r'''(^|[;&|(`]|\$\(|then|do)\s*(git|nc|ssh|scp)\s''', line)
