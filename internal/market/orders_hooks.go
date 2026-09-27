@@ -27,6 +27,10 @@ func stockHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, to strin
 			return fail(409, "This listing is out of stock or no longer available")
 		}
 	case to == stateCancelled && (from == stateAwaitingPayment || from == statePaid):
+		// A checkout of the same listing may hold its row while it waits on the wallet (payAction).
+		if err := waitForWalletLocks(ctx, tx); err != nil {
+			return err
+		}
 		_, err := tx.ExecContext(ctx, "UPDATE products SET stock=stock+1 WHERE id=$1", o.ProductID)
 		return err
 	}

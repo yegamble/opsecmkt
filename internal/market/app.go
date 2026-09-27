@@ -45,6 +45,7 @@ type App struct {
 	captchaIDKey     []byte // CAPTCHA challenge-id MAC key, sha256("captcha-id:"+keyRoot); empty = no challenges
 	mu               sync.Mutex
 	limits           map[string]bucket
+	inFlight         map[string]int                  // OneAtATime actions in progress, by path and account (enterOneAtATime)
 	signInLogAt      time.Time                       // last "sign-in limiter refusing" log line (guarded by mu)
 	payMu            sync.RWMutex                    // guards payments and unavailable once Start has run
 	checkMu          sync.Mutex                      // serialises provider checks (refreshProviders)

@@ -498,6 +498,212 @@ func TestSlowWalletDoesNotRefuseQueuedListingWriters(t *testing.T) {
 	}
 }
 
+// PR #15 re-review (NEW-3): while a checkout waits 5 s on a slow wallet, holding the buyer, payment-intake and
+// listing rows, the requests that queue for those rows wait for it instead of failing at the 3 s lock_timeout:
+// an administrator pausing intake, another buyer cancelling an order of the same listing (its stock comes
+// back), administrators suspending the buyer or resetting their second factors, and one demoting the vendor
+// (which archives the listing). A change that only notifies the buyer does not wait at all.
+func TestSlowWalletDoesNotRefuseStaffOrCancel(t *testing.T) {
+	w := newOrderWorld(t)
+	// Two administrators: one administrator's confirmed actions queue on that administrator's own row.
+	_, admin := w.e.user("slow_cancel_admin", "admin")
+	_, admin2 := w.e.user("slow_cancel_admin2", "admin")
+	_, admin3 := w.e.user("slow_cancel_admin3", "admin")
+	wallet := &slowWallet{hold: 5 * time.Second, slow: map[string]bool{}, entered: make(chan string, 1)}
+	w.e.A.payments["BTC"] = wallet
+	p := w.e.product(w.vendorID, "physical")
+	agExec(w.e, "UPDATE products SET stock=4 WHERE id=$1", p)
+	cancelled := w.e.order(w.otherID, p, "BTC", stateAwaitingPayment) // its unit is already out of stock
+	shipped := w.e.order(w.buyerID, w.e.product(w.vendorID, "physical"), "BTC", statePaid)
+	order := w.e.order(w.buyerID, p, "BTC", stateDraft)
+	wallet.slow[order] = true
+	first := make(chan int, 1)
+	go func() { first <- w.post("/orders/pay", w.buyer, form("order_id", order)).Code }()
+	select {
+	case <-wallet.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the payment request never reached the wallet")
+	}
+	started := time.Now()
+	handle := func(id string) string { return agStr(w.e, "SELECT handle FROM users WHERE id=$1", id) }
+	competitors := map[string]func() *httptest.ResponseRecorder{
+		"pause payment intake": func() *httptest.ResponseRecorder {
+			return w.post("/admin/payment-intake", admin, url.Values{"currency": {"BTC"}, "enabled": {"false"}, "password": {testPassword}})
+		},
+		"another buyer's cancel": func() *httptest.ResponseRecorder {
+			return w.post("/orders/cancel", w.other, form("order_id", cancelled, "from", stateAwaitingPayment))
+		},
+		"suspend the buyer": func() *httptest.ResponseRecorder {
+			return w.post("/admin/suspend", admin2, url.Values{"handle": {handle(w.buyerID)}, "action": {"suspend"}, "password": {testPassword}})
+		},
+		"reset the buyer's second factors": func() *httptest.ResponseRecorder { // none enrolled: 409 once it waited
+			return w.post("/admin/reset-factors", admin3, url.Values{"handle": {handle(w.buyerID)}, "password": {testPassword}})
+		},
+		// Shipping notifies the buyer: an insert referencing the buyer's row, which the checkout's
+		// FOR NO KEY UPDATE lets through at once.
+		"ship the buyer's other order": func() *httptest.ResponseRecorder {
+			return w.post("/orders/ship", w.vendor, form("order_id", shipped))
+		},
+		"demote the vendor": func() *httptest.ResponseRecorder {
+			return w.post("/admin", admin, url.Values{"action": {"role"}, "handle": {handle(w.vendorID)}, "role": {"buyer"}})
+		},
+	}
+	type result struct {
+		name string
+		code int
+		body string
+		took time.Duration
+	}
+	results := make(chan result, len(competitors))
+	for name, run := range competitors {
+		go func() {
+			r := run()
+			results <- result{name, r.Code, r.Body.String(), time.Since(started)}
+		}()
+	}
+	for range competitors {
+		r := <-results
+		want := 303
+		if strings.HasPrefix(r.name, "reset") {
+			want = 409
+		}
+		if r.code != want {
+			t.Errorf("%s behind a checkout waiting on the wallet: %d %q after %v", r.name, r.code, r.body, r.took)
+		}
+		if strings.HasPrefix(r.name, "ship") && r.took > 2*time.Second {
+			t.Errorf("%s waited %v for the checkout", r.name, r.took)
+		}
+	}
+	if code := <-first; code != 303 {
+		t.Fatalf("the slow checkout: %d", code)
+	}
+	if t.Failed() {
+		return
+	}
+	if w.state(cancelled) != stateCancelled || w.stock(p) != 4 || w.state(order) != stateAwaitingPayment {
+		t.Fatalf("after the queued writers: cancelled order %s, stock %d, checkout %s", w.state(cancelled), w.stock(p), w.state(order))
+	}
+	if agStr(w.e, "SELECT value FROM settings WHERE key='payment_intake_BTC'") != "false" ||
+		agInt(w.e, "SELECT count(*) FROM users WHERE id=$1 AND suspended_at IS NOT NULL", w.buyerID) != 1 ||
+		agInt(w.e, "SELECT count(*) FROM products WHERE id=$1 AND archived", p) != 1 {
+		t.Fatal("a queued staff change did not take effect")
+	}
+}
+
+// PR #15 re-review (NEW-3): a moderator's refund queues a payout, which share-locks the buyer's row; a checkout
+// by that buyer holds the row FOR UPDATE while it waits on the wallet (payAction), here for 5 s. The resolve
+// waits for it instead of failing at the 3 s lock_timeout.
+func TestResolveRefundWaitsForBuyersCheckout(t *testing.T) {
+	p := newPayEnv(t)
+	p.setPayoutAddress(p.buyer, "fake-testnet-buyer")
+	dispute, modSess := p.disputedOrder(100000)
+	seen := amountSeen(t, p.page("/moderator", modSess))
+	tx, err := p.DB.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec("SELECT 1 FROM users WHERE id=$1 FOR NO KEY UPDATE", p.buyer.ID); err != nil { // as payAction does
+		t.Fatal(err)
+	}
+	go func() { time.Sleep(5 * time.Second); tx.Rollback() }()
+	start := time.Now()
+	decision := url.Values{"id": {dispute}, "outcome": {"refund"}, "resolution": {"No proof of shipment; refund the buyer."}}
+	w := p.do("POST", "/resolve", modSess, payoutConfirmed(decision, seen[0]))
+	if w.Code != 303 || time.Since(start) < 4*time.Second {
+		t.Fatalf("refund behind the buyer's checkout: %d %q after %v", w.Code, w.Body.String(), time.Since(start))
+	}
+	if st, _, addr, amt := p.payout(p.order); st != "pending" || addr != "fake-testnet-buyer" || amt != 100000 {
+		t.Fatalf("payout %s %s %d", st, addr, amt)
+	}
+}
+
+// The wait covers a wallet as slow as rpcTimeout allows: the application pool's 8 s statement_timeout would
+// otherwise end a queued writer's lock wait at 8 s. Here the wallet takes 9 s and a stock edit queued behind
+// the checkout still succeeds.
+func TestWalletLockWaitOutlastsStatementTimeout(t *testing.T) {
+	w := newOrderWorld(t)
+	wallet := &slowWallet{hold: 9 * time.Second, slow: map[string]bool{}, entered: make(chan string, 1)}
+	w.e.A.payments["BTC"] = wallet
+	p := w.e.product(w.vendorID, "physical")
+	order := w.e.order(w.buyerID, p, "BTC", stateDraft)
+	wallet.slow[order] = true
+	first := make(chan int, 1)
+	go func() { first <- w.post("/orders/pay", w.buyer, form("order_id", order)).Code }()
+	select {
+	case <-wallet.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the payment request never reached the wallet")
+	}
+	edit := w.post("/listings/update", w.vendor, inventoryForm(p, map[string]string{"stock": "9", "stock_seen": "4"}))
+	if code := <-first; code != 303 || edit.Code != 303 || w.stock(p) != 9 {
+		t.Fatalf("a stock edit behind a 9 s wallet call: checkout %d, edit %d %q, stock %d", code, edit.Code, edit.Body.String(), w.stock(p))
+	}
+}
+
+// PR #15 re-review (NEW-3, measured): with the wallet slow (5 s an address), one buyer firing 12 concurrent
+// payment requests must not occupy the application pool's 12 connections while the requests queue on the
+// buyer's row for up to walletLockWait. Other users' pages and posts stay fast.
+func TestOneBuyersPayFloodLeavesPoolForOthers(t *testing.T) {
+	w := newOrderWorld(t)
+	_, admin := w.e.user("pay_flood_admin", "admin")
+	wallet := &slowWallet{hold: 5 * time.Second, slow: map[string]bool{}, entered: make(chan string, 16)}
+	w.e.A.payments["BTC"] = wallet
+	var orders []string
+	for range 12 {
+		o := w.e.order(w.buyerID, w.e.product(w.vendorID, "physical"), "BTC", stateDraft)
+		wallet.slow[o] = true
+		orders = append(orders, o)
+	}
+	type result struct {
+		code       int
+		retryAfter string
+		took       time.Duration
+	}
+	results := make(chan result, len(orders))
+	start := time.Now()
+	for _, o := range orders {
+		go func() {
+			r := w.post("/orders/pay", w.buyer, form("order_id", o))
+			results <- result{r.Code, r.Header().Get("Retry-After"), time.Since(start)}
+		}()
+	}
+	select {
+	case <-wallet.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no payment request reached the wallet")
+	}
+	time.Sleep(300 * time.Millisecond) // the rest are queued (or refused) by now
+	measure := func(name string, run func() int, want int) {
+		t.Helper()
+		began := time.Now()
+		code := run()
+		took := time.Since(began)
+		t.Logf("during the flood: %s -> %d in %v", name, code, took)
+		if code != want || took > time.Second {
+			t.Errorf("%s during one buyer's payment flood: %d after %v", name, code, took)
+		}
+	}
+	measure("another buyer's orders page", func() int { return w.e.do("GET", "/orders", w.other, nil).Code }, 200)
+	measure("the catalog", func() int { return w.e.do("GET", "/catalog", w.other, nil).Code }, 200)
+	measure("another buyer's post", func() int { return w.e.do("POST", "/notifications", w.other, url.Values{}).Code }, 303)
+	measure("an administrator's change", func() int {
+		return w.e.do("POST", "/admin", admin, url.Values{"action": {"settings"}, "site_name": {"Flood Market"}}).Code
+	}, 303)
+	codes := map[int]int{}
+	for range orders {
+		r := <-results
+		codes[r.code]++
+		if r.code == 429 && (r.retryAfter != "5" || r.took > time.Second) {
+			t.Errorf("a refused extra payment request: Retry-After=%q after %v", r.retryAfter, r.took)
+		}
+	}
+	t.Logf("the buyer's 12 payment requests: %v", codes)
+	if codes[303] != 1 || codes[429] != 11 {
+		t.Errorf("one buyer's 12 concurrent payment requests: %v, want one served and 11 refused at once", codes)
+	}
+}
+
 // PR #15 review: the application pool's session timeouts are startup parameters, which a connection pooler
 // such as PgBouncer may refuse. The pool is opened and pinged before migrations, so such a database stops
 // startup with a class-only error and an untouched schema. A server that refuses one of the parameters stands

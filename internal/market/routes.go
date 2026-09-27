@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	texttemplate "text/template"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -86,7 +87,37 @@ type actionSpec struct {
 	// slot: a check of the form alone (no database), so a flood of posts it refuses holds no slot (A-178).
 	// Run must still make the same checks; it is also called without Precheck (tests call post directly).
 	Precheck func(a *App, r *http.Request, token string) error
-	Run      func(c *actionCtx) (actionResult, error)
+	// OneAtATime admits at most oneAtATimeLimit requests of this action per signed-in account at once; another
+	// is refused at once with 429 and Retry-After: 5, before it takes a post slot or a database connection. For
+	// an action that may wait on a slow wallet while holding the account's row (payAction), so one account's
+	// burst cannot hold the application pool's connections queued on its own row lock (PR #15 re-review).
+	OneAtATime bool
+	Run        func(c *actionCtx) (actionResult, error)
+}
+
+// oneAtATimeLimit is the per-account limit of OneAtATime actions (tests of the database's own guards lift it).
+var oneAtATimeLimit = 1
+
+// enterOneAtATime counts a request of path by userID in, unless oneAtATimeLimit are already in progress; done
+// counts it out.
+func (a *App) enterOneAtATime(path, userID string) (done func(), ok bool) {
+	key := path + "\x00" + userID
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.inFlight[key] >= oneAtATimeLimit {
+		return nil, false
+	}
+	if a.inFlight == nil {
+		a.inFlight = map[string]int{}
+	}
+	a.inFlight[key]++
+	return sync.OnceFunc(func() {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		if a.inFlight[key]--; a.inFlight[key] <= 0 {
+			delete(a.inFlight, key)
+		}
+	}), true
 }
 
 var actions = map[string]actionSpec{}
@@ -316,6 +347,15 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 			http.Error(w, roleRequired(spec.Roles), 403)
 			return
 		}
+	}
+	if spec.OneAtATime && u != nil {
+		done, ok := a.enterOneAtATime(r.URL.Path, u.ID)
+		if !ok {
+			w.Header().Set("Retry-After", busyRetryAfter)
+			http.Error(w, "Your previous request is still being processed. Wait a few seconds, then reload the page to see its result.", http.StatusTooManyRequests)
+			return
+		}
+		defer done()
 	}
 	// The post's admission slot (A-178), taken only now: its body has been read and its CSRF, sign-in, role
 	// and write-budget checks have passed.

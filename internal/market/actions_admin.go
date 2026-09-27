@@ -76,6 +76,9 @@ func adminSuspendAction(c *actionCtx) (actionResult, error) {
 	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
 		ctx, tx := c.Ctx(), c.Tx
+		if err := waitForWalletLocks(ctx, tx); err != nil { // a checkout by the account holds its row (payAction)
+			return actionResult{}, err
+		}
 		// Pending sign-ins go first, before the account row is locked: /challenge locks its pending sign-in and
 		// then the account row, so taking them in the same order cannot deadlock. A refusal rolls this back.
 		if _, err := tx.ExecContext(ctx, "DELETE FROM pending_logins WHERE user_id=$1", target); err != nil {
@@ -269,6 +272,9 @@ func adminResetFactorsAction(c *actionCtx) (actionResult, error) {
 	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
 		ctx, tx := c.Ctx(), c.Tx
+		if err := waitForWalletLocks(ctx, tx); err != nil { // a checkout by the account holds its row (payAction)
+			return actionResult{}, err
+		}
 		// Pending sign-ins, then recovery codes, go before the account row is locked, in the order /challenge takes
 		// them (A-154); a refusal below rolls this back.
 		for _, q := range []string{"DELETE FROM pending_logins WHERE user_id=$1", "DELETE FROM recovery_codes WHERE user_id=$1"} {
@@ -351,6 +357,10 @@ func adminAction(c *actionCtx) (actionResult, error) {
 		}
 		if handle == u.Handle {
 			return actionResult{}, fail(400, "Cannot change your own administrator role")
+		}
+		// Leaving vendor archives the listings, whose rows a checkout may hold while it waits on the wallet.
+		if err = waitForWalletLocks(ctx, tx); err != nil {
+			return actionResult{}, err
 		}
 		var target, old string
 		err = tx.QueryRowContext(ctx, "SELECT id,role FROM users WHERE handle=$1 AND role<>'admin' FOR UPDATE", handle).Scan(&target, &old)

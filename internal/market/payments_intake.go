@@ -26,6 +26,10 @@ func paymentIntakeAction(c *actionCtx) (actionResult, error) {
 		if !configured {
 			return actionResult{}, fail(409, "Configure the "+cur+" test-network wallet RPC before changing payment intake")
 		}
+		// A checkout holds the setting FOR SHARE while it waits on the wallet (lockPaymentIntake).
+		if err := waitForWalletLocks(c.Ctx(), c.Tx); err != nil {
+			return actionResult{}, err
+		}
 		res, err := c.Tx.ExecContext(c.Ctx(), "UPDATE settings SET value=$2 WHERE key=$1", paymentIntakeKey(cur), enabled)
 		if err != nil {
 			return actionResult{}, err

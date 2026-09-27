@@ -85,6 +85,10 @@ func TestConcurrentPayRespectsPerBuyerCap(t *testing.T) {
 	vendorID, _ := e.user("cap_vendor", "vendor")
 	e.A.payments["BTC"] = newFakeProvider("BTC", 1)
 	const n = 8
+	// The in-process limit of one payment request per account at a time is lifted: this races the database's
+	// own guard (the buyer row lock), which also holds when the limit does not (another process, a restart).
+	defer func(v int) { oneAtATimeLimit = v }(oneAtATimeLimit)
+	oneAtATimeLimit = n
 	orders, products := make([]string, n), make([]string, n)
 	for i := range n {
 		products[i] = e.product(vendorID, "physical")
