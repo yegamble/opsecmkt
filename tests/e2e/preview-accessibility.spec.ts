@@ -102,6 +102,28 @@ test('photo cards: decorative thumbnail, no overlaid label; product photo named'
   await expect(page.getByText('Product illustrations are decorative.')).toBeVisible();
 });
 
+// A-189 review: a thumbnail can fail to load (a 404 after a takedown race, or a busy 503 with 25 eager loads). The
+// card keeps its size and the page does not overflow; Firefox (and Tor Browser) then shows the card's art
+// background, while Chromium and WebKit draw their broken-image icon (no fix without JavaScript is known). The
+// check runs in every project; the art background claim is Firefox's.
+test('a thumbnail that fails to load leaves the card intact', async ({ page }) => {
+  await page.goto('/');
+  const art = page.locator('.product-art.has-photo').first();
+  const before = (await art.boundingBox())!;
+  const img = art.locator('img');
+  // Point the card at an unknown id, as a takedown between page and image request would.
+  await img.evaluate(element => { (element as HTMLImageElement).src = `/img/${'0'.repeat(32)}-t`; });
+  await expect.poll(() => img.evaluate(element => (element as HTMLImageElement).complete)).toBe(true);
+  expect(await img.evaluate(element => (element as HTMLImageElement).naturalWidth)).toBe(0);
+  const after = (await art.boundingBox())!;
+  expect(Math.abs(after.width - before.width)).toBeLessThanOrEqual(1);
+  expect(Math.abs(after.height - before.height)).toBeLessThanOrEqual(1);
+  await expect(art.locator('.art-badge')).toBeVisible();
+  await expect(art).toHaveAccessibleName(/^View /);
+  expect(await art.evaluate(element => getComputedStyle(element).backgroundImage)).toContain('gradient');
+  await fits(page);
+});
+
 test('search has a readable keyboard focus indicator, usable controls and a decorative magnifier', async ({ page, browserName }) => {
   await page.goto('/');
   const search = page.locator('form[role="search"]:visible');

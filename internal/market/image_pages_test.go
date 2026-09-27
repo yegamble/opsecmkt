@@ -316,6 +316,10 @@ func TestStaffAvatarVisibleToOrderPartiesOnOrderPage(t *testing.T) {
 	if body := e.body("GET", "/order?id="+order, buyer, nil, 200); strings.Contains(body, avatar.id) {
 		t.Fatalf("demoted decider's avatar still shown:\n%s", body)
 	}
+	// Administrators are served any image on the desk route, so they still see it.
+	if body := e.body("GET", "/order?id="+order, admin, nil, 200); !strings.Contains(body, img) {
+		t.Fatalf("administrator no longer sees the demoted decider's avatar:\n%s", body)
+	}
 	e.mustExec("UPDATE users SET role='moderator', suspended_at=now() WHERE id=$1", modID)
 	if body := e.body("GET", "/order?id="+order, vendor, nil, 200); strings.Contains(body, avatar.id) {
 		t.Fatalf("suspended decider's avatar still shown:\n%s", body)

@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { deflateSync } from 'node:zlib';
-import { expect, test } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import { uniqueHandle } from './db-fixtures';
 import { signedIn } from './db-helpers';
 
@@ -137,6 +137,87 @@ test('vendor page image budget and cache', async ({ browser, baseURL }) => {
     expect(await visitor.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
   } finally {
     await vendor.context().close();
+    await visitorContext.close();
+  }
+});
+
+// A-189 review: the "on" states of owner decision 1. A moderator who chose to be listed, with an avatar uploaded
+// through the real route, appears on /canary#staff while the public staff list is on, and their avatar shows
+// beside their dispute decision on the order page for the buyer. Both pages fit 320 px at 200% text and keep a
+// visible keyboard focus. The order and its dispute are seeded in SQL (no wallet runs in this project); the
+// market-wide setting is put back to its default afterwards so later specs see it off.
+test('public staff list and decision avatar when shown', async ({ browser, baseURL }) => {
+  test.setTimeout(120_000);
+  const database = process.env.E2E_DATABASE_URL!;
+  const sql = (query: string) => execFileSync('psql', [database, '-v', 'ON_ERROR_STOP=1', '-qtAc', query], { encoding: 'utf8' }).trim();
+  const hex = (bytes: number) => randomBytes(bytes).toString('hex');
+  const modHandle = uniqueHandle('listed_mod');
+  const buyerHandle = uniqueHandle('decided_buyer');
+  const vendorHandle = uniqueHandle('decided_vendor');
+  const [vendorID, productID, orderID] = [hex(16), hex(16), hex(32)];
+  const moderator = await signedIn(browser, baseURL, modHandle, 'browser-listed-moderator-123', true, 320);
+  const buyer = await signedIn(browser, baseURL, buyerHandle, 'browser-decided-buyer-123', true, 320);
+  const visitorContext = await browser.newContext({ baseURL, javaScriptEnabled: false, viewport: { width: 320, height: 800 } });
+  const visitor = await visitorContext.newPage();
+  const fitsAt200 = async (page: Page, label: string) => {
+    for (const scale of ['100%', '200%']) {
+      await page.locator('html').evaluate((element, size) => { element.style.fontSize = size; }, scale);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth), `${label} at ${scale}`).toBeLessThanOrEqual(320);
+    }
+  };
+  const focusVisible = async (link: Locator) => {
+    await link.focus();
+    await expect(link).toBeFocused();
+    await expect(link).not.toHaveCSS('outline-style', 'none');
+  };
+  try {
+    sql(`UPDATE users SET role='moderator', staff_hidden=false WHERE handle='${modHandle}'`);
+    // The avatar through the real upload route (the suite's fake clamd scans it), as the moderator.
+    await moderator.goto('/account');
+    const form = new FormData();
+    form.append('csrf', await moderator.locator('input[name="csrf"]').first().inputValue());
+    form.append('photo', new Blob([samplePNG()], { type: 'image/png' }), 'avatar.png');
+    const upload = await moderator.request.post('/account/avatar', { multipart: form, maxRedirects: 0 });
+    expect(upload.status(), await upload.text()).toBe(303);
+    const avatarID = sql(`SELECT i.id FROM images i JOIN users u ON u.id=i.owner_user_id WHERE u.handle='${modHandle}' AND i.kind='avatar'`);
+    expect(avatarID).toMatch(/^[0-9a-f]{32}$/);
+    sql(`UPDATE settings SET value='true' WHERE key='staff_list_public';
+      INSERT INTO users(id,handle,password_hash,role) VALUES ('${vendorID}','${vendorHandle}','!','vendor');
+      INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock)
+        VALUES ('${productID}','${vendorID}','Decision avatar fixture','Seeded by db-image-rendering.spec.ts','Hardware','Worldwide','physical',100000,500000000000,1);
+      INSERT INTO orders(id,buyer_id,product_id,currency,amount,state)
+        SELECT '${orderID}',id,'${productID}','BTC',100000,'resolved' FROM users WHERE handle='${buyerHandle}';
+      INSERT INTO disputes(id,order_id,reason,status,resolution,outcome)
+        VALUES ('${hex(32)}','${orderID}','The parcel never arrived at the agreed place','Resolved — refund to buyer','No proof of shipping was provided by the vendor.','refund');
+      INSERT INTO order_events(order_id,from_state,to_state,actor_id,note)
+        SELECT '${orderID}','shipped','disputed',id,'' FROM users WHERE handle='${buyerHandle}';
+      INSERT INTO order_events(order_id,from_state,to_state,actor_id,note)
+        SELECT '${orderID}','disputed','resolved',id,'Resolved — refund to buyer' FROM users WHERE handle='${modHandle}';`);
+
+    // /canary lists the moderator with the avatar on the public route.
+    await visitor.goto('/canary#staff');
+    const entry = visitor.locator('#staff li', { hasText: modHandle });
+    await expect(entry).toContainText('Moderator');
+    const listed = entry.locator('img');
+    await expect(listed).toHaveAttribute('src', `/img/${avatarID}-t`);
+    await expect(listed).toHaveAttribute('alt', '');
+    expect(await listed.evaluate(element => (element as HTMLImageElement).complete && (element as HTMLImageElement).naturalWidth)).toBe(64);
+    await fitsAt200(visitor, '/canary staff list');
+    await focusVisible(visitor.getByRole('link', { name: /Return to marketplace/ }));
+
+    // The buyer sees the decision avatar, on the desk route, beside the decision and nowhere else in the history.
+    await buyer.goto(`/order?id=${orderID}`);
+    const decision = buyer.locator('.order-timeline li', { hasText: `${modHandle} (moderator)` });
+    const avatar = decision.locator('img.decision-avatar');
+    await expect(avatar).toHaveAttribute('src', `/desk/img/${avatarID}-t`);
+    await expect(avatar).toHaveAttribute('alt', '');
+    expect(await avatar.evaluate(element => (element as HTMLImageElement).complete && (element as HTMLImageElement).naturalWidth)).toBe(64);
+    await expect(buyer.locator('.order-timeline img')).toHaveCount(1);
+    await fitsAt200(buyer, 'order page');
+    await focusVisible(buyer.getByRole('link', { name: 'Message vendor' }));
+  } finally {
+    sql(`UPDATE settings SET value='false' WHERE key='staff_list_public'`);
+    for (const p of [moderator, buyer]) await p.context().close();
     await visitorContext.close();
   }
 });
