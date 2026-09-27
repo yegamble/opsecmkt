@@ -37,7 +37,7 @@ trap 'exit 130' INT TERM HUP
 config=$(DATABASE_URL=postgres://unused@db/unused docker compose --env-file /dev/null -p "$name" \
   -f compose.yaml -f compose.scanner.yaml --profile scanner config --format json)
 options=$(python3 -c '
-import json, sys
+import json, re, sys
 config = json.load(sys.stdin)
 clamd = config["services"]["clamd"]
 def need(ok, message):
@@ -57,8 +57,11 @@ need(len(volumes) == 1 and volumes[0]["type"] == "bind" and volumes[0]["target"]
 need(clamd.get("entrypoint") == ["clamd"] and clamd.get("command") == ["--foreground", "--config-file=/etc/clamav/clamd.conf"],
      "must run clamd --foreground --config-file=/etc/clamav/clamd.conf directly")
 image = clamd["image"]
-tag = image.partition("@")[0].rpartition("/")[2].partition(":")[2]
-need(tag and tag != "latest" and "_base" not in tag, f"image must be a pinned release tag with signatures, got {image!r}")
+reference, _, digest = image.partition("@")
+tag = reference.rpartition("/")[2].partition(":")[2]
+# One release with signatures: MAJOR.MINOR.PATCH (optionally -debian) or a digest, never a moving or _base tag.
+need(re.fullmatch(r"\d+\.\d+\.\d+(-debian)?", tag) or (digest and "_base" not in tag),
+     f"image must be one ClamAV release with signatures, got {image!r}")
 options = ["--user", clamd["user"], "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
            "--memory", str(clamd["mem_limit"]), "--pids-limit", str(clamd["pids_limit"]),
            "--cpu-period", str(clamd["cpu_period"]), "--cpu-quota", str(clamd["cpu_quota"]),

@@ -311,14 +311,18 @@ image_repository() {
   if [[ $last == *:* ]]; then reference=${reference%:*}; fi
   printf '%s' "$reference"
 }
-# clamav_image_ok VALUE: a pinned image with signatures: not latest, stable or unstable (which move to new
-# releases) and not a _base tag (no signatures; with no volume clamd would have none).
+# clamav_image_ok VALUE: one ClamAV release with signatures: a MAJOR.MINOR.PATCH tag, optionally -debian (upstream
+# rebuilds it only with newer signatures), or an @sha256 digest (one build). Every other tag moves to other
+# releases (latest, stable, unstable, 1.5 and their -debian forms), and a _base tag has no signatures (with no
+# volume clamd would have none).
 clamav_image_ok() {
-  local tag=${1%%@*}
-  image_pinned "$1" || return 1
-  tag=${tag##*/}
-  if [[ $tag == *:* ]]; then tag=${tag##*:}; else tag=''; fi
-  [[ $tag != *_base* && $tag != stable && $tag != unstable ]]
+  local reference=${1%%@*} tag=''
+  if [[ ${reference##*/} == *:* ]]; then tag=${reference##*:}; fi
+  if [[ $1 == *@* ]]; then
+    image_pinned "$1" && [[ $tag != *_base* ]]
+  else
+    [[ $tag =~ ^[0-9]+\.[0-9]+\.[0-9]+(-debian)?$ ]]
+  fi
 }
 
 # ---- Docker helpers ---------------------------------------------------------------------------------------
@@ -350,6 +354,26 @@ same_dir() {
   [[ -n $1 ]] || return 1
   [[ $1 != "$PWD" ]] || return 0
   [[ -d $1 && $(cd "$1" 2>/dev/null && pwd -P) == "$(pwd -P)" ]]
+}
+
+# up_wait [OPTION...]: docker compose up -d OPTION... --wait, except that with the malware scanner on it waits
+# for every service but clamd and then starts clamd without waiting. Nothing depends on the scanner (ruling C1),
+# so a clamd that never becomes healthy (out of memory, a bad upstream build) must not stop init, upgrade,
+# add-mirror or setup-token part-way; uploads are refused until it answers, and status shows it.
+up_wait() {
+  local listing line services=()
+  if ! has_item "$(env_value COMPOSE_PROFILES)" scanner; then
+    docker compose up -d "$@" --wait
+    return
+  fi
+  listing=$(docker compose config --services) || return 1
+  while IFS= read -r line; do
+    if [[ -n $line && $line != clamd ]]; then services+=("$line"); fi
+  done <<< "$listing"
+  ((${#services[@]})) || return 1
+  docker compose up -d "$@" --wait "${services[@]}" || return 1
+  docker compose up -d clamd ||
+    echo 'warning: the malware scanner (clamd) did not start, so photo uploads are refused. Inspect docker compose logs clamd.' >&2
 }
 
 # status_line_ok LINE: LINE is a `-status` line: installed=true|false schema=NNN keyroot=app_secret_key|setup_token
@@ -491,7 +515,7 @@ run_check() {
   fi
   value=$(env_value CLAMAV_IMAGE)
   if [[ -n $value ]] && ! clamav_image_ok "$value"; then
-    problems="$problems  - CLAMAV_IMAGE must name a ClamAV release with signatures: a version tag or @sha256 digest, not latest, stable or a _base tag (docs/operator-guide.md#photo-uploads-and-the-malware-scanner)"$'\n'
+    problems="$problems  - CLAMAV_IMAGE must name a ClamAV release with signatures: a MAJOR.MINOR.PATCH tag (optionally -debian) or an @sha256 digest; latest, stable, unstable and 1.5 move to other releases and _base has no signatures (docs/operator-guide.md#photo-uploads-and-the-malware-scanner)"$'\n'
   fi
   value=$(env_value APP_PORT)
   if [[ -n $value ]] && ! { [[ $value =~ ^[0-9]{1,5}$ ]] && ((10#$value > 0 && 10#$value <= 65535)); }; then
@@ -951,7 +975,7 @@ cmd_init() {
   fi
   # Builds, starts and waits until every service's healthcheck passes: the app answers /healthz (it reaches
   # PostgreSQL and has migrated) and each Tor service has written its onion address.
-  docker compose up -d --build --wait ||
+  up_wait --build ||
     die 'The services did not become healthy. Inspect docker compose ps and docker compose logs app; .env and data were kept.'
   local onion='' base
   if [[ $mode == tor ]]; then
@@ -962,10 +986,15 @@ cmd_init() {
   else
     base='https://YOUR-DOMAIN'
   fi
-  # `up --wait` waited for clamd's healthcheck, so it answers now.
+  # clamd was started without waiting (up_wait): give it the same bounded wait as add-scanner, but a scanner
+  # that does not answer leaves the rest of the install to finish.
   local scanner=''
   if [[ $uploads == yes ]]; then
-    scanner=$(clamd_version) && scanner="signatures $scanner" || scanner='not answering yet; ./scripts/install.sh status shows it later'
+    if scanner=$(wait_clamd); then
+      scanner="signatures $scanner. Refresh them at least monthly with ./scripts/install.sh refresh-scanner."
+    else
+      scanner='not answering after 10 minutes, so photo uploads are refused until it does. Inspect docker compose logs clamd; ./scripts/install.sh status checks it again.'
+    fi
   fi
   if [[ -n $admin ]]; then
     local args=(-bootstrap-admin "$admin")
@@ -980,7 +1009,7 @@ cmd_init() {
     password1=''
     # The setup token opened nothing and now grants nothing; drop it and recreate the app without it.
     env_unset SETUP_TOKEN
-    docker compose up -d --wait || die 'The app did not become healthy after setup. Inspect docker compose logs app.'
+    up_wait || die 'The app did not become healthy after setup. Inspect docker compose logs app.'
   fi
 
   # Final block: the only place init prints a secret (SETUP_TOKEN, when no --admin was given).
@@ -988,7 +1017,7 @@ cmd_init() {
     printf 'Payment wallets must exist before test-network payments work; until then the admin page shows the provider as unavailable. Follow docs/testnet-runbook.md.\n'
   fi
   if [[ -n $scanner ]]; then
-    printf 'Malware scanner: %s. Refresh its signatures at least monthly with ./scripts/install.sh refresh-scanner.\n' "$scanner"
+    printf 'Malware scanner: %s\n' "$scanner"
   fi
   if [[ $mode == clearnet && $secure == true ]]; then
     printf 'Application healthy at http://127.0.0.1:%s. Secure cookies require HTTPS, so finish through your reverse proxy.\n' "${caller_app_port:-8080}"
@@ -1105,7 +1134,7 @@ cmd_setup_token() {
     token=$(secret 32) || exit 1
     env_set SETUP_TOKEN "$token"
     echo 'New SETUP_TOKEN written to .env; restarting the app with it.'
-    docker compose up -d --wait || die 'The app did not become healthy. Inspect docker compose logs app.'
+    up_wait || die 'The app did not become healthy. Inspect docker compose logs app.'
   else
     token=$(env_value SETUP_TOKEN)
     [[ -n $token ]] || die 'There is no SETUP_TOKEN in .env. Issue one with ./scripts/install.sh setup-token --new.'
@@ -1134,7 +1163,7 @@ cmd_add_mirror() {
     env_set COMPOSE_PROFILES "${profiles:+$profiles,}mirror"
     echo 'Added mirror to COMPOSE_PROFILES in .env (the other profiles are kept).'
   fi
-  docker compose up -d --wait || die 'The services did not become healthy. Inspect docker compose ps and docker compose logs tor-mirror.'
+  up_wait || die 'The services did not become healthy. Inspect docker compose ps and docker compose logs tor-mirror.'
   mirror=$(wait_onion tor-mirror) || die 'tor-mirror did not write its onion address within 90 seconds. Run ./scripts/install.sh status later to see it.'
   main=$(onion_address tor) || main='(not available: is tor running?)'
   if state=$(app_status 2>/dev/null); then retire_setup_token "$state" || true; fi
@@ -1219,7 +1248,7 @@ scanner_layout_problems() {
   if grep -q '^clamd mount [^b]' <<< "$facts"; then
     echo '  - clamd must mount no volume: its signatures come from its image (docs/operator-guide.md#photo-uploads-and-the-malware-scanner)'
   fi
-  clamav_image_ok "$image" || echo "  - clamd runs ${image:-no image}: it must be a ClamAV release with signatures, not latest, stable or _base"
+  clamav_image_ok "$image" || echo "  - clamd runs ${image:-no image}: it must be one ClamAV release with signatures (a MAJOR.MINOR.PATCH tag, optionally -debian, or an @sha256 digest)"
 }
 
 # refresh_scanner: have Docker fetch the newest build of the pinned tag (upstream rebuilds it with newer
@@ -1279,7 +1308,7 @@ cmd_add_scanner() {
   version=$(wait_clamd) || die 'clamd did not answer within 10 minutes. Inspect docker compose logs clamd, fix the cause and run' \
     './scripts/install.sh add-scanner again. Until then photo uploads are refused; the rest of the market is unaffected.'
   # The app learns CLAMD_ADDRESS and joins the scanner network when Compose recreates it (Tor restarts with it).
-  docker compose up -d --wait || die 'The services did not become healthy. Inspect docker compose ps and docker compose logs app.'
+  up_wait || die 'The services did not become healthy. Inspect docker compose ps and docker compose logs app.'
   printf 'Malware scanner ready. Signatures: %s\n' "$version"
   echo 'ClamAV updates its signatures daily; refresh them at least monthly with ./scripts/install.sh refresh-scanner'
   echo '(upgrade does it too). docs/operator-guide.md#photo-uploads-and-the-malware-scanner explains the options.'
@@ -1459,12 +1488,12 @@ cmd_upgrade() {
     echo 'Note: AUDIT_SIGNING_KEY is not set, so signed audit exports stay off (see UPGRADING.md).'
   fi
   run_check || die "Nothing was restarted. Fix .env, or put the previous file back with: mv $copy .env"
-  docker compose up -d --build --wait ||
+  up_wait --build ||
     die "The services did not become healthy. Inspect docker compose ps and docker compose logs app; the previous .env is $copy (UPGRADING.md, Rolling back)."
   local state recreate=false
   if state=$(app_status) && retire_setup_token "$state"; then recreate=true; fi
   if [[ $recreate == true ]]; then
-    docker compose up -d --wait || die 'The app did not become healthy. Inspect docker compose logs app.'
+    up_wait || die 'The app did not become healthy. Inspect docker compose logs app.'
   fi
   if cmp -s .env "$copy"; then
     rm -f "$copy"

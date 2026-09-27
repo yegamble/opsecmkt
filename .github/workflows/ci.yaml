@@ -202,7 +202,7 @@ jobs:
           # The malware scanner (A-184, ruling C1): clamd reads the pinned image's own signatures (no volume, no
           # freshclam), hardened, on the internal scanner network that only it and the app join; nothing waits for it.
           docker compose "${files[@]}" "${profiles[@]}" config --format json | python3 -c '
-          import json, sys
+          import json, re, sys
           config = json.load(sys.stdin)
           services, clamd = config["services"], config["services"]["clamd"]
           members = sorted(name for name, service in services.items() if "scanner" in (service.get("networks") or {}))
@@ -223,10 +223,13 @@ jobs:
               sys.exit(f"clamd must mount only clamd.conf, read-only, and publish nothing; got volumes {volumes!r}")
           if clamd["healthcheck"].get("start_period") != "10m0s":
               sys.exit("clamd healthcheck start_period must be 10m")
+          # One release with signatures: MAJOR.MINOR.PATCH (optionally -debian) or a digest; latest, stable, unstable
+          # and 1.5 (and their -debian forms) move to other releases, _base has no signatures.
           image = clamd["image"]
-          tag = image.partition("@")[0].rpartition("/")[2].partition(":")[2]
-          if not tag or tag in ("latest", "stable", "unstable") or "_base" in tag:
-              sys.exit(f"clamd image must be a pinned release tag with signatures, not {image!r}")
+          reference, _, digest = image.partition("@")
+          tag = reference.rpartition("/")[2].partition(":")[2]
+          if not (re.fullmatch(r"\d+\.\d+\.\d+(-debian)?", tag) or (digest and "_base" not in tag)):
+              sys.exit(f"clamd image must be one ClamAV release with signatures, not {image!r}")
           print("scanner:", image, "on the internal scanner network with", ", ".join(members))
           '
           # Local nodes are pruned by default; BITCOIN_PRUNE_MB=0 and a blank MONERO_PRUNE_FLAGS run full nodes.

@@ -36,6 +36,12 @@ CLAMD_VERSION = 'ClamAV 1.5.4/28130/Mon Sep 21 06:24:29 2026'
 CLAMD_READ = 'compose exec -T clamd clamdscan --version'
 MEMORY = 'info --format {{.MemTotal}}'
 CHECK_SCANNER = [*CHECK, 'compose config']
+# With the scanner on, `up --wait` names every service but clamd, which is then started without waiting: its
+# health never decides whether a command succeeds (ruling C1).
+SERVICES = 'compose config --services'
+START_CLAMD = 'compose up -d clamd'
+UP_SCANNER = [SERVICES, 'compose up -d --build --wait app db tor', START_CLAMD]
+UP_WAIT_SCANNER = [SERVICES, 'compose up -d --wait app db tor', START_CLAMD]
 SCANNER_FILES = 'compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.internal-db.yaml:compose.scanner.yaml'
 # `docker compose config` for a Tor install with the scanner, as Compose prints it (abridged to what the
 # installer reads). ScannerConfigTests.test_check_reads_real_compose_output checks the parser on the real thing.
@@ -249,7 +255,15 @@ if args == ['compose', 'config', '--quiet']:
     assert Path('.env').is_file(), 'Configuration must exist before validation'
     sys.exit(42 if flag('INSTALLER_TEST_BAD_CONFIG') else 0)
 if args[:2] == ['compose', 'up']:
+    # A clamd that never becomes healthy fails `up --wait` whenever that wait includes it: named, or no service
+    # named (every service of the active profiles).
+    named = [arg for arg in args[2:] if not arg.startswith('-')]
+    if flag('INSTALLER_TEST_CLAMD_UNHEALTHY') and '--wait' in args and (not named or 'clamd' in named):
+        sys.exit('dependency failed to start: container clamd is unhealthy')
     sys.exit(1 if flag('INSTALLER_TEST_UNHEALTHY') else 0)
+if args == ['compose', 'config', '--services']:
+    print(os.environ.get('INSTALLER_TEST_SERVICES', 'app\\ndb\\ntor\\nclamd'))
+    sys.exit(0)
 if args[:2] == ['ps', '-a']:
     if flag('INSTALLER_TEST_PS_FAIL'):
         sys.exit('Cannot connect to the Docker daemon')
@@ -1948,7 +1962,7 @@ time.sleep(60)
                 self.assertEqual(stat.S_IMODE((self.root / '.env').stat().st_mode), 0o600)
                 # Checked, started, waited for (three unanswered reads), then the app recreated with it.
                 self.assertEqual(self.calls(), ['compose version', MEMORY, *CHECK_SCANNER, 'compose up -d clamd',
-                                                *[CLAMD_READ] * 4, 'compose up -d --wait'])
+                                                *[CLAMD_READ] * 4, *UP_WAIT_SCANNER])
                 self.assertIn(f'Signatures: {CLAMD_VERSION}', result.stdout)
                 self.assertIn('refresh-scanner', result.stdout)
                 self.assertEqual(list(self.root.glob('.env.edit.*')), [])
@@ -1962,7 +1976,7 @@ time.sleep(60)
                 self.assertEqual((self.root / '.env').read_bytes(), after_first)
                 self.assertIn('already', result.stdout)
                 self.assertEqual(self.calls(), ['compose version', MEMORY, *CHECK_SCANNER,
-                                                'compose up -d clamd', CLAMD_READ, 'compose up -d --wait'])
+                                                'compose up -d clamd', CLAMD_READ, *UP_WAIT_SCANNER])
                 (self.root / '.env').unlink()
 
     def test_add_scanner_bounded_wait_names_the_logs(self):
@@ -2143,7 +2157,8 @@ time.sleep(60)
         # Last, once the upgrade itself is up and healthy.
         calls = self.calls()
         self.assertEqual(calls[-4:], [CLAMD_READ, 'compose pull clamd', 'compose up -d clamd', CLAMD_READ])
-        self.assertLess(calls.index(UP), calls.index('compose pull clamd'))
+        self.assertLess(calls.index(UP_SCANNER[1]), calls.index('compose pull clamd'))
+        self.assertNotIn(UP, calls)
         self.assertIn(f'Signatures now:    {newer}', result.stdout)
         # A failed pull does not fail the upgrade: it has already been applied.
         for copy in self.pre_upgrade_copies():
@@ -2178,7 +2193,7 @@ time.sleep(60)
         self.assertEqual(result.returncode, 0, result.stderr)
         config = self.config()
         self.assert_scanner_added(config, 'internal-db', 'compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.internal-db.yaml')
-        self.assertEqual(self.calls(), [*PREFLIGHT, MEMORY, *CHECK_SCANNER, UP, f'compose exec -T tor {HOSTNAME}', CLAMD_READ])
+        self.assertEqual(self.calls(), [*PREFLIGHT, MEMORY, *CHECK_SCANNER, *UP_SCANNER, f'compose exec -T tor {HOSTNAME}', CLAMD_READ])
         self.assertIn(f'Malware scanner: signatures {CLAMD_VERSION}', result.stdout)
         self.assert_token_only_in_final_block(result, config['SETUP_TOKEN'])
         # no, or no option: nothing about the scanner is written.
@@ -2206,6 +2221,73 @@ time.sleep(60)
                 result = self.run_installer(None, arguments=arguments)
                 self.assertEqual(result.returncode, 2)
                 self.assertFalse((self.root / '.env').exists())
+
+    def test_unhealthy_clamd_fails_no_command(self):
+        # Nothing depends on the scanner (ruling C1): a clamd that never becomes healthy (an OOM loop, a bad
+        # upstream build) must not stop init, upgrade, add-mirror or setup-token part-way.
+        broken = {'INSTALLER_TEST_CLAMD_UNHEALTHY': '1', 'INSTALLER_TEST_CLAMD_DOWN': '1'}
+        result = self.run_installer(None, arguments=['init', '--tor', '--nodes', 'none', '--uploads', 'yes'],
+                                    extra_env=broken, timeout=180)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Malware scanner: not answering after 10 minutes', result.stdout)
+        self.assertIn('docker compose logs clamd', result.stdout)
+        self.assertIn(f'Onion address: {MAIN_ONION}', result.stdout)
+        self.assert_token_only_in_final_block(result, self.config()['SETUP_TOKEN'])
+        self.assertEqual(self.calls()[len(PREFLIGHT) + 1 + len(CHECK_SCANNER):][:3], UP_SCANNER)
+        # --admin: the administrator is created and the app recreated without the token.
+        (self.root / '.env').unlink()
+        self.log.unlink()
+        self.set_installed(False)
+        result = self.run_installer([PASSWORD, PASSWORD], extra_env=broken, timeout=180,
+                                    arguments=['init', '--tor', '--nodes', 'none', '--uploads', 'yes', '--admin', 'alice'])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Administrator alice is created', result.stdout)
+        self.assertNotIn('SETUP_TOKEN', self.config())
+        self.assertEqual(self.calls().count(START_CLAMD), 2)
+        # upgrade: the upgrade, the Tor recreate and the (failing) signature refresh all run.
+        self.set_installed(True)
+        self.write_env(scanner_env())
+        result = self.command('upgrade', '--no-backup', extra_env=broken, timeout=180)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Upgrade complete', result.stdout)
+        self.assertIn('compose up -d --wait --force-recreate tor', self.calls())
+        self.assertIn('compose pull clamd', self.calls())
+        self.assertIn('scanner signatures were not refreshed', result.stderr)
+        self.assertNotIn(UP, self.calls())
+        # add-mirror and setup-token --new finish too.
+        self.write_env(scanner_env())
+        result = self.command('add-mirror', extra_env=broken)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.calls()[len(CHECK_SCANNER) + 1:][:3], UP_WAIT_SCANNER)
+        self.set_installed(False)
+        self.write_env(scanner_env())
+        result = self.command('setup-token', '--new', extra_env=broken)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Setup token: ', result.stdout)
+        # Without the scanner nothing changes: one `up --wait` for every service.
+        self.write_env(installed_env())
+        result = self.command('add-mirror')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('compose up -d --wait', self.calls())
+        self.assertNotIn(SERVICES, self.calls())
+
+    def test_check_refuses_floating_clamav_tags(self):
+        # Tags that move to new builds of other releases; only MAJOR.MINOR.PATCH (optionally -debian) or a digest.
+        for image in ('clamav/clamav:stable-debian', 'clamav/clamav:latest-debian', 'clamav/clamav:unstable-debian',
+                      'clamav/clamav:1.5-debian', 'clamav/clamav:1.5', 'clamav/clamav:unstable', 'clamav/clamav:1.5.4_base-debian',
+                      'clamav/clamav:1.5.4_base@sha256:' + 'c' * 64):
+            with self.subTest(image=image):
+                self.check_env(installed_env(CLAMAV_IMAGE=image), 'CLAMAV_IMAGE must name a ClamAV release')
+        for image in ('clamav/clamav:1.5.4', 'clamav/clamav:1.4.6-debian', 'registry.example:5000/clamav/clamav:1.5.4-debian',
+                      'clamav/clamav:1.5.4-debian@sha256:' + 'd' * 64):
+            with self.subTest(image=image):
+                self.check_env(installed_env(CLAMAV_IMAGE=image))
+        # The image Compose resolves follows the same rule.
+        self.write_env(scanner_env())
+        rendered = SCANNER_CONFIG.replace('image: clamav/clamav:1.5.4-debian', 'image: clamav/clamav:stable-debian')
+        result = self.command('check', extra_env={'INSTALLER_TEST_COMPOSE_CONFIG': rendered})
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('clamd runs clamav/clamav:stable-debian', result.stderr)
 
     # ---- invariants -------------------------------------------------------------------------------------
 
