@@ -151,6 +151,10 @@ func (a *App) servePublicImage(w http.ResponseWriter, r *http.Request, rest stri
 		return
 	}
 	ref, ok := parseImagePath(rest)
+	if ok && a.preview { // no database: the preview's generated sample photos (image_pages.go)
+		servePreviewImage(w, r, ref)
+		return
+	}
 	if !ok || a.db == nil {
 		http.NotFound(w, r)
 		return

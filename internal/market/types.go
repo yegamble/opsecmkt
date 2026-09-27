@@ -6,6 +6,7 @@ type User struct {
 	ID, Handle, Role, PGP, XMPP string
 	Factors                     string // P1, PageData.FactorAccounts only: enrolled second factors, e.g. "TOTP and PGP sign-in"
 	Suspended                   string // P1, PageData.SuspendedAccounts only: when the account was suspended
+	Avatar                      string // A-189, vendor page and /canary staff list only: the avatar thumbnail on /img, "" when none may be shown
 }
 type Product struct {
 	ID, Title, Description, Category, Region, Kind, Vendor, VendorID, PriceBTC, PriceXMR string
@@ -13,6 +14,18 @@ type Product struct {
 	Archived                                                                             bool // Foundation; P4 uses
 	// P4, vendor-dashboard only: an administrator's takedown reason (A-163); never loaded for public pages.
 	TakedownReason string
+	// A-189, catalog, vendor and product pages only: the listing's public photos, oldest first (image_pages.go),
+	// and Thumb, the first one's thumbnail URL for its card ("" = the CSS illustration).
+	Photos []ProductPhoto
+	Thumb  string
+}
+
+// ProductPhoto is one public photo of a listing on the product page (A-189): its URLs on the public image route,
+// its size and description, and the text naming it: Alt for photo 1, shown full size, and Label for the link to
+// each other photo's full size.
+type ProductPhoto struct {
+	Full, Thumb, Description, Alt, Label string
+	Width, Height                        int
 }
 
 // Order.Status is the display label derived from State by stateLabel.
@@ -59,12 +72,16 @@ type PageData struct {
 	Events                                                                    []Event
 	Settings                                                                  map[string]string
 	Preview                                                                   bool
-	// Paging: catalog only, the page shown of the matching listings (A-181, load.go).
+	// Paging: catalog and vendor page, the page shown of the matching listings (A-181, A-189, load.go).
 	Paging *CatalogPaging
 	// UploadBack and UploadBackLabel: the refusal page of an upload (A-186, uploads.go) links back here.
 	UploadBack, UploadBackLabel string
 	// ImageStorage: admin page, stored photos and avatars against IMAGE_STORAGE_LIMIT_MB (uploads.go).
 	ImageStorage *ImageStorageView
+	// A-189 (image_pages.go). StaffListPublic: /canary, the administrator's "Show a public staff list" is on;
+	// StaffList: then the moderators and administrators listed (User.Avatar set when it may be shown).
+	StaffListPublic bool
+	StaffList       []User
 
 	// Foundation
 	Auth *AuthView
@@ -185,7 +202,9 @@ type PGPView struct {
 }
 
 // P3 Orders
-type OrderEvent struct{ From, To, Actor, Note, Created string }
+// OrderEvent.Avatar (A-189, owner decision 1(c)): on a dispute decision, the deciding staff member's avatar
+// thumbnail on /desk/img when the viewer may see it there; "" otherwise.
+type OrderEvent struct{ From, To, Actor, Note, Created, Avatar string }
 type Transition struct {
 	To, Label, Action string         // Action "" = shown as unavailable with Label as the reason
 	Payout            *PayoutPreview // complete, and cancel of a paid order: the payout it queues

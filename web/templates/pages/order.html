@@ -53,7 +53,7 @@
 <span>Draft created by {{.Buyer}} (buyer)</span>
 </li>{{range $.OrderEvents}}<li>
 <span class="order-when">{{.Created}}</span>
-<span>
+<span>{{with .Avatar}}<img class="decision-avatar" src="{{.}}" alt="" width="64" height="64">{{end}}
 <strong>{{.From}} → {{.To}}</strong> by {{.Actor}}</span>{{if .Note}}<span class="muted order-note">{{.Note}}</span>{{end}}</li>{{end}}</ol>
 <p class="help">Every state change is recorded server-side with its actor and time.</p>
 </section>{{range $.Disputes}}<section class="panel" aria-labelledby="order-dispute">

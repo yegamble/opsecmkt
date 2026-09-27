@@ -1694,3 +1694,99 @@ small {
   font-size:1.25rem;
   line-height:1
 }
+
+/* A-189 image rendering: listing photos on cards and the product page, the vendor avatar, the /canary staff
+   list and the staff avatar beside a dispute decision. Photos are letterboxed, never cropped. */
+.product-art.has-photo::after {
+  content:none
+}
+.product-art.has-photo img {
+  position:absolute;
+  inset:0;
+  width:100%;
+  height:100%;
+  object-fit:contain
+}
+.product-art.has-photo .art-badge {
+  background:#111;
+  z-index:1
+}
+.product-photo {
+  background:#0b0e0c;
+  border-bottom:1px solid var(--line)
+}
+.product-photo img {
+  display:block;
+  width:100%;
+  height:auto;
+  max-height:70vh;
+  object-fit:contain
+}
+.photo-thumbs {
+  list-style:none;
+  margin:0;
+  padding:16px 24px 0;
+  display:flex;
+  flex-wrap:wrap;
+  gap:14px
+}
+.photo-thumbs li {
+  width:160px;
+  max-width:100%
+}
+.photo-thumbs a {
+  display:grid;
+  gap:6px;
+  min-height:44px;
+  font-size:0.875rem;
+  text-decoration:underline
+}
+.photo-thumbs img {
+  display:block;
+  width:100%;
+  height:auto;
+  border:1px solid var(--line)
+}
+.photo-thumbs .help {
+  margin:4px 0 0;
+  overflow-wrap:anywhere
+}
+img.vendor-avatar {
+  object-fit:cover
+}
+.decision-avatar {
+  display:block;
+  width:64px;
+  height:64px;
+  margin:4px 0 6px;
+  border:1px solid var(--line);
+  object-fit:cover
+}
+.staff-members {
+  list-style:none;
+  margin:0;
+  padding:0;
+  display:grid;
+  gap:12px
+}
+.staff-members li {
+  display:flex;
+  align-items:center;
+  gap:14px;
+  overflow-wrap:anywhere;
+  min-width:0
+}
+.staff-members img,.staff-glyph {
+  width:64px;
+  height:64px;
+  flex-shrink:0;
+  border:1px solid var(--line);
+  object-fit:cover
+}
+.staff-glyph {
+  display:grid;
+  place-items:center;
+  color:var(--amber);
+  font-size:1.375rem
+}
+/* end A-189 image rendering */

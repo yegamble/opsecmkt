@@ -1,11 +1,14 @@
 {{/* P4 Inventory owns. Listing grid used by catalog, vendor and vendor-dashboard. Public pages never receive
 archived listings (load.go); on vendor-dashboard each card carries edit and archive/restore controls, and a listing an
-administrator took down shows the reason and no restore control (A-163). */}}
+administrator took down shows the reason and no restore control (A-163). A-189: a listing with a public photo shows
+its first photo's thumbnail (decorative: the link is named by the title) over the art background, without the
+illustration label (a thumbnail that fails to load shows that background in Firefox and Tor Browser, and a
+broken-image icon in Chromium and WebKit); otherwise the CSS illustration. Thumb is set only on the catalog and vendor page. */}}
 {{define "products"}}<div class="listings-grid">{{range $i,$p := .Products}}<article class="product-card{{if .Archived}} is-archived{{end}}">
-<a class="product-art " href="{{if .Archived}}/listing-edit?id={{.ID}}{{else}}/product?id={{.ID}}{{end}}" aria-label="{{if .Archived}}Edit{{else}}View{{end}} {{.Title}}">
-<div class="device" aria-hidden="true">
+<a class="product-art{{if .Thumb}} has-photo{{end}}" href="{{if .Archived}}/listing-edit?id={{.ID}}{{else}}/product?id={{.ID}}{{end}}" aria-label="{{if .Archived}}Edit{{else}}View{{end}} {{.Title}}">
+{{if .Thumb}}<img src="{{.Thumb}}" alt="" width="320" height="240">{{else}}<div class="device" aria-hidden="true">
 </div>
-<span class="art-label">{{.Category}} / ILLUSTRATION</span>
+<span class="art-label">{{.Category}} / ILLUSTRATION</span>{{end}}
 <span class="art-badge">{{.Kind}}</span>
 </a>
 <div class="product-body">
