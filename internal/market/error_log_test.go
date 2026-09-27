@@ -188,7 +188,7 @@ func TestErrorCauseClasses(t *testing.T) {
 // a lost connection (errorCause's db-connection class) answer the busy 503; application errors and a client
 // that went away do not.
 func TestDBBusyClasses(t *testing.T) {
-	for _, code := range []string{"57014", "55P03", "57P01", "57P02", "57P03", "53300", "08000", "08003", "08006", "08P01"} {
+	for _, code := range []string{"57014", "55P03", "57P01", "57P02", "57P03", "53300", "08000", "08001", "08003", "08004", "08006"} {
 		if !dbBusy(fmt.Errorf("x: %w", &pgconn.PgError{Code: code})) {
 			t.Errorf("SQLSTATE %s is not busy", code)
 		}
@@ -200,7 +200,7 @@ func TestDBBusyClasses(t *testing.T) {
 		}
 	}
 	for _, err := range []error{nil, sql.ErrNoRows, errors.New("x"), fail(500, "x"), context.Canceled, context.DeadlineExceeded,
-		&pgconn.PgError{Code: "23505"}, &pgconn.PgError{Code: "40001"}, &pgconn.PgError{Code: "53100"}, &pgconn.PgError{Code: "42P01"}} {
+		&pgconn.PgError{Code: "23505"}, &pgconn.PgError{Code: "40001"}, &pgconn.PgError{Code: "53100"}, &pgconn.PgError{Code: "42P01"}, &pgconn.PgError{Code: "08P01"}, &pgconn.PgError{Code: "08007"}} {
 		if dbBusy(err) {
 			t.Errorf("%#v is busy", err)
 		}

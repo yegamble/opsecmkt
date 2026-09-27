@@ -222,6 +222,7 @@ func TestAppPoolLockTimeout(t *testing.T) {
 func TestPageLoadConnectionLossIs503(t *testing.T) {
 	e := newTestApp(t)
 	_, buyer := e.user("lost_buyer", "buyer")
+	_, staff := e.user("lost_admin", "admin")
 	admin, err := OpenDB(os.Getenv("DATABASE_URL")) // no timeouts: it holds the lock for as long as needed
 	if err != nil {
 		t.Fatal(err)
@@ -229,9 +230,13 @@ func TestPageLoadConnectionLossIs503(t *testing.T) {
 	defer admin.Close()
 	for _, c := range []struct {
 		method, path, token, table string
+		form                       url.Values
 	}{
-		{"GET", "/?q=lamp", "", "products"},
-		{"POST", "/notifications", buyer, "notifications"},
+		{"GET", "/?q=lamp", "", "products", nil},
+		{"POST", "/notifications", buyer, "notifications", nil},
+		// The action's own statement succeeds; the audit row after it loses the connection, so the whole
+		// change rolls back and a retry is safe.
+		{"POST", "/admin/captcha", staff, "audit_events", url.Values{"captcha_required": {"true"}}},
 	} {
 		// The request's query queues behind an exclusive lock on table; its backend is then terminated.
 		tx, err := admin.Begin()
@@ -242,7 +247,7 @@ func TestPageLoadConnectionLossIs503(t *testing.T) {
 			t.Fatal(err)
 		}
 		done := make(chan *httptest.ResponseRecorder, 1)
-		go func() { done <- e.do(c.method, c.path, c.token, nil) }()
+		go func() { done <- e.do(c.method, c.path, c.token, c.form) }()
 		var pid int
 		for deadline := time.Now().Add(2 * time.Second); pid == 0; time.Sleep(20 * time.Millisecond) {
 			if time.Now().After(deadline) {
@@ -258,6 +263,10 @@ func TestPageLoadConnectionLossIs503(t *testing.T) {
 		if w.Code != 503 || w.Header().Get("Retry-After") != "5" || !strings.HasPrefix(w.Body.String(), errBusyMsg) {
 			t.Errorf("%s %s with its connection terminated: %d Retry-After=%q %q", c.method, c.path, w.Code, w.Header().Get("Retry-After"), w.Body.String())
 		}
+	}
+	var required string
+	if err = admin.QueryRow("SELECT coalesce((SELECT value FROM settings WHERE key='captcha_required'),'')").Scan(&required); err != nil || required == "true" {
+		t.Fatalf("setting after the audit row's connection was lost: %q %v", required, err)
 	}
 	// The pool replaces the lost connections.
 	if w := e.do("GET", "/?q=lamp", "", nil); w.Code != 200 {

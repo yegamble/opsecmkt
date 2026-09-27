@@ -175,17 +175,18 @@ func writeHTTPError(w http.ResponseWriter, r *http.Request, err error) {
 
 // dbBusy reports a statement cancelled by the application pool's statement_timeout or lock_timeout (A-177),
 // or a database that is unavailable (QA-178-2): shutting down or refusing connections (57P01-57P03, 53300),
-// a connection exception (class 08) or a lost connection (dbConnLost). The database is overloaded, restarting
-// or a row is held too long, so the request is answered 503 (retry), not 500. A client that went away or a
-// request past its deadline is not.
+// or a lost or failed connection (08000, 08001, 08003, 08004, 08006 or dbConnLost; the other class 08 codes,
+// such as 08P01 protocol_violation, point at configuration, which retrying does not fix). The database is
+// overloaded, restarting or a row is held too long, so the request is answered 503 (retry), not 500. A client
+// that went away or a request past its deadline is not.
 func dbBusy(err error) bool {
 	var pe *pgconn.PgError
 	if errors.As(err, &pe) {
 		switch pe.Code {
-		case "57014", "55P03", "57P01", "57P02", "57P03", "53300":
+		case "57014", "55P03", "57P01", "57P02", "57P03", "53300", "08000", "08001", "08003", "08004", "08006":
 			return true
 		}
-		return strings.HasPrefix(pe.Code, "08")
+		return false
 	}
 	return !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && dbConnLost(err)
 }
@@ -434,6 +435,13 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 			exec = c.Tx.ExecContext
 		}
 		if _, err = exec(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", uid, res.Audit); err != nil {
+			// Inside the action's transaction nothing is committed yet, so a busy or lost database answers
+			// the retryable 503 like the action itself. An OwnTx action has already committed its change
+			// (the row is written in autocommit), so a retry could repeat it: that stays 500.
+			if c.Tx != nil && dbBusy(err) {
+				serverError(w, r, 503, errBusyMsg, errorCause(err))
+				return
+			}
 			serverError(w, r, 500, "Unable to record change", errorCause(err))
 			return
 		}

@@ -164,6 +164,10 @@ func auditExportHandler(a *App, w http.ResponseWriter, r *http.Request, u *User)
 	}
 	export, err := auditExport(ctx, a.db, upto)
 	if err != nil {
+		if dbBusy(err) {
+			serverError(w, r, 503, errBusyMsg, errorCause(err))
+			return
+		}
 		serverError(w, r, 500, "Unable to export audit events", errorCause(err))
 		return
 	}

@@ -265,7 +265,7 @@ func TestHostCommandsRunWithoutAppTimeouts(t *testing.T) {
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		var waiting int
-		if err = db.QueryRow("SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND objid=782493 AND NOT granted").Scan(&waiting); err != nil {
+		if err = db.QueryRow("SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND objid=782493 AND NOT granted AND database=(SELECT oid FROM pg_database WHERE datname=current_database())").Scan(&waiting); err != nil {
 			t.Fatal(err)
 		}
 		if waiting >= 2 {
