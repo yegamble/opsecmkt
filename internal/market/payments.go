@@ -286,7 +286,5 @@ func (a *App) Close() {
 		a.stop()
 		a.background.Wait()
 	}
-	if a.db != nil {
-		a.db.Close()
-	}
+	a.closeDB()
 }

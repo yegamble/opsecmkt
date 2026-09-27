@@ -86,7 +86,17 @@ func settledAuditMax(ctx context.Context, db *sql.DB) (int64, error) {
 
 // auditExport renders audit_events with id <= upto as NDJSON ordered by id. Same upto, same bytes.
 func auditExport(ctx context.Context, db *sql.DB, upto int64) ([]byte, error) {
-	rows, err := db.QueryContext(ctx, `SELECT e.id, e.user_id, u.handle, e.action, e.created FROM audit_events e LEFT JOIN users u ON u.id=e.user_id WHERE e.id<=$1 ORDER BY e.id`, upto)
+	// One statement streams every row, so on a large table it runs for most of the request's bound (ctx); it
+	// is exempt from the application pool's 8 s statement_timeout (A-177): 1M rows took about 6 s.
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, "SET LOCAL statement_timeout = 0"); err != nil {
+		return nil, err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT e.id, e.user_id, u.handle, e.action, e.created FROM audit_events e LEFT JOIN users u ON u.id=e.user_id WHERE e.id<=$1 ORDER BY e.id`, upto)
 	if err != nil {
 		return nil, err
 	}

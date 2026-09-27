@@ -274,7 +274,8 @@ func TestCaptchaOnRegisterAndLogin(t *testing.T) {
 	e.check(e.do("POST", "/register", anon, url.Values{"handle": {"cap_new"}, "password": {"a-long-buyer-password"}}), 400)
 	e.check(e.do("POST", "/register", anon, reg("cap_new", id, "WRONG1")), 400)
 	e.check(e.do("POST", "/register", anon, reg("cap_new", id, e.A.captchaAnswer(id))), 400) // consumed by the wrong attempt
-	e.check(e.do("GET", "/captcha?id="+id, anon, nil), 404)
+	// A-176: the image endpoint reads no database, so a used id still shows its same image; only POST refuses it.
+	e.check(e.do("GET", "/captcha?id="+id, anon, nil), 200)
 	id = e.captcha("/register", anon)
 	e.check(e.do("POST", "/register", randomToken(), reg("cap_new", id, e.A.captchaAnswer(id))), 400) // other session
 	id = e.captcha("/register", anon)
@@ -290,8 +291,8 @@ func TestCaptchaOnRegisterAndLogin(t *testing.T) {
 	if c := login(anon, id, "WRONG1"); c != 400 {
 		t.Fatalf("wrong captcha on login: %d", c)
 	}
-	id = e.captcha("/login", anon)
-	e.DB.Exec("UPDATE captchas SET expires=now()-interval '1 second' WHERE id=$1", id)
+	id = e.A.newCaptchaID(digest(anon), time.Now().Add(-time.Second)) // A-176: the expiry is inside the id
+	e.check(e.do("GET", "/captcha?id="+id, anon, nil), 404)
 	if c := login(anon, id, e.A.captchaAnswer(id)); c != 400 {
 		t.Fatalf("expired captcha on login: %d", c)
 	}
@@ -299,14 +300,8 @@ func TestCaptchaOnRegisterAndLogin(t *testing.T) {
 	if c := login(anon, id, e.A.captchaAnswer(id)); c != 303 {
 		t.Fatalf("correct captcha on login: %d", c)
 	}
-
-	// 30 challenges per session per ten minutes; then the form says why instead of showing an image.
-	flood := randomToken()
-	for range 30 {
-		e.captcha("/login", flood)
-	}
-	if b := e.do("GET", "/login", flood, nil).Body.String(); captchaField.MatchString(b) || !strings.Contains(b, "Too many CAPTCHA images") {
-		t.Fatal("captcha issuance not rate limited")
+	if c := login(anon, id, e.A.captchaAnswer(id)); c != 400 { // replayed after a successful sign-in
+		t.Fatalf("replayed captcha on login: %d", c)
 	}
 
 	e.check(e.do("POST", "/admin/captcha", admin, url.Values{"captcha_required": {"false"}}), 303)

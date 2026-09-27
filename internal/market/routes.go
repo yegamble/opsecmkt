@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"html/template"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -116,13 +115,28 @@ func fail(code int, msg string) error { return &httpError{Code: code, Msg: msg} 
 //	http 5xx kind=page|action name=<registered route key> status=<code> ref=<8 hex> cause=<class>
 //
 // cause is a class from errorCause, never the error's text, and the line names nothing about the request or
-// its sender: no URL path or query, form value, cookie, header, address, handle or user id.
+// its sender: no URL path or query, form value, cookie, header, address, handle or user id. At most 10 such
+// lines are written a second; the rest are counted in one "http 5xx suppressed=N" line (A-178). A 503 carries
+// Retry-After.
 func serverError(w http.ResponseWriter, r *http.Request, code int, msg, cause string) {
 	ref := randomToken()[:8]
 	kind, name := routeOf(r)
-	log.Printf("http 5xx kind=%s name=%s status=%d ref=%s cause=%s", kind, name, code, ref, cause)
+	http5xxLog.Printf("http 5xx kind=%s name=%s status=%d ref=%s cause=%s", kind, name, code, ref, cause)
+	if code == http.StatusServiceUnavailable {
+		w.Header().Set("Retry-After", busyRetryAfter)
+	}
 	http.Error(w, msg+"\nReference: "+ref, code)
 }
+
+// dbBusy reports a statement cancelled by the application pool's statement_timeout or lock_timeout (A-177):
+// the database is overloaded or a row is held too long, so the request is answered 503 (retry), not 500.
+func dbBusy(err error) bool {
+	var pe *pgconn.PgError
+	return errors.As(err, &pe) && (pe.Code == "57014" || pe.Code == "55P03")
+}
+
+// errBusyMsg answers a request refused because of dbBusy.
+const errBusyMsg = "The market is busy. Try again in a few seconds."
 
 // routeOf names r's registered route: an action path, a page name or a raw handler path, else "unregistered".
 func routeOf(r *http.Request) (kind, name string) {
@@ -313,6 +327,10 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 		return
 	}
 	if err != nil {
+		if dbBusy(err) {
+			serverError(w, r, 503, errBusyMsg, errorCause(err))
+			return
+		}
 		serverError(w, r, 500, "Unable to save changes", errorCause(err))
 		return
 	}

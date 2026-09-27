@@ -2,25 +2,94 @@ package market
 
 import (
 	"crypto/hmac"
+	crand "crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/binary"
+	"encoding/hex"
 	"image"
 	"image/color"
 	"math"
 	"math/rand/v2"
 	"strings"
+	"time"
 )
 
 // Image CAPTCHA: six characters from captchaAlphabet drawn with a 5x7 bitmap font, then scaled,
 // jittered, sheared, waved and crossed with noise. Text and distortion derive from
-// HMAC(a.key, "captcha:"+id), so the server stores only a hash of the answer and a given id always
-// renders the same image (reloading cannot be used to average the noise away).
+// HMAC(a.key, "captcha:"+id), so a given id always renders the same image (reloading cannot be used to
+// average the noise away) and the server stores nothing to check an answer.
+//
+// Challenges are stateless (A-176): the id is expiry ‖ nonce ‖ MAC, where the MAC is
+// HMAC(a.captchaIDKey, expiry ‖ nonce ‖ session hash) truncated to 128 bits, so issuing one writes nothing
+// and only the issuing browser session can use it until it expires. Single use is enforced when an answer is
+// posted, by inserting the id into captcha_spent (captcha_actions.go).
 
 const (
 	captchaLen    = 6
 	captchaWidth  = 200
 	captchaHeight = 70
+	captchaTTL    = 10 * time.Minute
 )
+
+// Challenge id layout (32 bytes, 64 lowercase hex characters, the same shape as the pre-A-176 random ids):
+// 4-byte big-endian expiry in Unix seconds, 12-byte random nonce, 16-byte truncated HMAC-SHA256.
+const (
+	captchaExpiryLen = 4
+	captchaNonceLen  = 12
+	captchaMACLen    = 16
+	captchaIDLen     = captchaExpiryLen + captchaNonceLen + captchaMACLen
+)
+
+// captchaMAC authenticates expiry ‖ nonce for the session whose token hashes to sessionHash.
+func (a *App) captchaMAC(head []byte, sessionHash string) []byte {
+	m := hmac.New(sha256.New, a.captchaIDKey)
+	m.Write([]byte("captcha-id:"))
+	m.Write(head)
+	m.Write([]byte(sessionHash))
+	return m.Sum(nil)[:captchaMACLen]
+}
+
+// newCaptchaID mints a challenge for the session whose token hashes to sessionHash, valid until expires. It
+// returns "" when no challenge key is configured (never in a started App).
+func (a *App) newCaptchaID(sessionHash string, expires time.Time) string {
+	if len(a.captchaIDKey) == 0 {
+		return ""
+	}
+	b := make([]byte, captchaIDLen)
+	binary.BigEndian.PutUint32(b, uint32(expires.Unix()))
+	if _, err := crand.Read(b[captchaExpiryLen : captchaExpiryLen+captchaNonceLen]); err != nil {
+		panic(err)
+	}
+	head := b[:captchaExpiryLen+captchaNonceLen]
+	copy(b[len(head):], a.captchaMAC(head, sessionHash))
+	return hex.EncodeToString(b)
+}
+
+// captchaIDValid reports whether id was minted by this server for one of sessionHashes and has not expired
+// at now, and returns its expiry. It reads nothing but id: whether it was already used is checked at POST.
+func (a *App) captchaIDValid(id string, now time.Time, sessionHashes ...string) (time.Time, bool) {
+	if len(a.captchaIDKey) == 0 || !captchaID.MatchString(id) {
+		return time.Time{}, false
+	}
+	b, err := hex.DecodeString(id)
+	if err != nil || len(b) != captchaIDLen {
+		return time.Time{}, false
+	}
+	head, mac := b[:captchaExpiryLen+captchaNonceLen], b[captchaExpiryLen+captchaNonceLen:]
+	expires := time.Unix(int64(binary.BigEndian.Uint32(head)), 0)
+	ok := false
+	for _, h := range sessionHashes {
+		// Every candidate is checked, so the time taken does not say which session matched.
+		if subtle.ConstantTimeCompare(mac, a.captchaMAC(head, h)) == 1 {
+			ok = true
+		}
+	}
+	if !ok || !now.Before(expires) {
+		return time.Time{}, false
+	}
+	return expires, true
+}
 
 func (a *App) captchaSeed(id string) [32]byte {
 	m := hmac.New(sha256.New, a.key)
@@ -45,8 +114,9 @@ func normalizeCaptcha(s string) string {
 	return strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(s), " ", ""))
 }
 
-func captchaAnswerHash(id, answer string) string {
-	return digest("captcha:" + id + ":" + normalizeCaptcha(answer))
+// captchaMatches compares answer with id's text in constant time (case and spaces ignored).
+func (a *App) captchaMatches(id, answer string) bool {
+	return subtle.ConstantTimeCompare([]byte(normalizeCaptcha(answer)), []byte(a.captchaAnswer(id))) == 1
 }
 
 var captchaPalette = color.Palette{
