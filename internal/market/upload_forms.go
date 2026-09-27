@@ -70,6 +70,9 @@ func uploadState(v *UploadsView, st scannerState) {
 	}
 }
 
+// listingNoticeTail ends the paused copy (VendorNotice); the account page, which has no listing, drops it.
+const listingNoticeTail = " Listing details can still be saved."
+
 // quotaMB is n bytes in MB (2^20), rounded up to a tenth so a few kilobytes never read as none: "0", "0.1", "12".
 func quotaMB(n int64) string {
 	tenths := (n*10 + 1<<20 - 1) >> 20
@@ -134,7 +137,7 @@ func loadAvatarPanel(ctx context.Context, a *App, r *http.Request, d *PageData) 
 	role := d.User.Role
 	v := &UploadsView{AvatarForm: slices.Contains(uploadRoutes["/account/avatar"].roles, role), Staff: role == "admin" || role == "moderator"}
 	uploadState(v, a.scanner.State())
-	v.Notice = strings.TrimSuffix(v.Notice, " Listing details can still be saved.") // the listing panel's copy
+	v.Notice = strings.TrimSuffix(v.Notice, listingNoticeTail)
 	var id sql.NullString
 	var w, h, size sql.NullInt64
 	err := a.db.QueryRowContext(ctx, `SELECT i.id,i.width,i.height,octet_length(i."full"),u.staff_hidden FROM users u LEFT JOIN images i ON i.owner_user_id=u.id AND i.kind='avatar' WHERE u.id=$1`, d.User.ID).Scan(&id, &w, &h, &size, &v.StaffHidden)
@@ -250,5 +253,8 @@ func previewUploads(d *PageData, scanner string) {
 	}
 	v := &UploadsView{PhotoLimit: photosPerListing, Used: "0", Quota: strconv.FormatInt(uploaderQuota>>20, 10), AvatarForm: true}
 	uploadState(v, st)
+	if d.Page == "account" {
+		v.Notice = strings.TrimSuffix(v.Notice, listingNoticeTail)
+	}
 	d.Uploads = v
 }
