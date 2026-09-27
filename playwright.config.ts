@@ -51,6 +51,18 @@ export default defineConfig({
       dependencies: ['db-setup'],
       testMatch: /(^|\/)db-(?!setup)[^/]*\.spec\.ts$/,
       use: databaseUse,
+    }, {
+      // A-192 (ruling C3): photo uploads in Firefox with JavaScript off, where an upload answered before its body
+      // was read shows a connection reset instead of the page. Only db-listing-photos.spec.ts's @firefox tests.
+      // Alone (on a fresh database; db-setup runs first): npx playwright test --project=database-firefox
+      name: 'database-firefox',
+      retries: 0,
+      workers: 1,
+      fullyParallel: false,
+      dependencies: ['db-setup'],
+      testMatch: /(^|\/)db-listing-photos\.spec\.ts$/,
+      grep: /@firefox/,
+      use: { ...databaseUse, browserName: 'firefox' as const },
     }] : []),
   ],
   webServer: [
