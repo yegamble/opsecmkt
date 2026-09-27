@@ -25,6 +25,8 @@ test('desktop: register, draft, profile persistence and sign-out', async ({ page
   await expect(page.locator('.filter-details')).toBeHidden();
   await fits(page);
 
+  // The catalog shows 25 listings a page (A-181) and other specs publish more: search for the setup fixture.
+  await page.goto(`/?q=${encodeURIComponent(FIXTURE_LISTING)}`);
   await page.getByRole('link', { name: FIXTURE_LISTING, exact: true }).click();
   await fits(page);
   await page.getByRole('link', { name: 'Review order draft' }).click();

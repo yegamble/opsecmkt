@@ -59,6 +59,8 @@ type PageData struct {
 	Events                                                                    []Event
 	Settings                                                                  map[string]string
 	Preview                                                                   bool
+	// Paging: catalog only, the page shown of the matching listings (A-181, load.go).
+	Paging *CatalogPaging
 
 	// Foundation
 	Auth *AuthView

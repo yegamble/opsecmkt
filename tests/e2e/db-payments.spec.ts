@@ -13,6 +13,8 @@ test('payments are visibly disabled without a provider', async ({ page }) => {
   await expect(page.locator('footer')).toContainText('Payments disabled');
   await expect(page.locator('main')).toContainText('Order drafts only.');
 
+  // The catalog shows 25 listings a page (A-181) and other specs publish more: search for the setup fixture.
+  await page.goto(`/?q=${encodeURIComponent(FIXTURE_LISTING)}`);
   await page.getByRole('link', { name: FIXTURE_LISTING, exact: true }).click();
   await page.getByRole('link', { name: 'Review order draft' }).click();
   await expect(page.locator('main')).toContainText('UNFUNDED DRAFT ONLY.');

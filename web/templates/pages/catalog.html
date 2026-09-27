@@ -9,18 +9,28 @@
 </div>
 <form class="mobile-search" action="/" method="get" role="search">
 <label class="sr-only" for="mobile-query">Search listings</label>
-<input id="mobile-query" name="q" value="{{.Query}}" placeholder="Search listings…">
+<input id="mobile-query" name="q" value="{{.Query}}" maxlength="64" placeholder="Search listings…">
 <button type="submit">Search</button>
 </form>
 {{template "payment-status:catalog" .}}
 <div class="catalog-tools">
 <p>
-<span class="accent">{{len .Products}}</span> listings {{if .Query}}matching “{{.Query}}”{{else}}in the marketplace{{end}}{{if .Category}} / {{.Category}}{{end}}</p>
+<span class="accent">{{if .Paging}}{{.Paging.Total}}{{else}}{{len .Products}}{{end}}</span> listings {{if .Query}}matching “{{.Query}}”{{else}}in the marketplace{{end}}{{if .Category}} / {{.Category}}{{end}}{{if and .Paging (gt .Paging.Pages 1) .Products}} · showing {{.Paging.First}}–{{.Paging.Last}}{{end}}</p>
 <span class="eyebrow">Purpose-built for privacy</span>
 </div>{{template "products" .}}{{if not .Products}}<div class="empty">
 <span class="empty-icon">∅</span>
-<h2>No listings found</h2>
+{{if and .Paging (gt .Paging.Total 0)}}<h2>This page is empty</h2>
+<p>Listings changed while you were browsing.</p>
+{{if .Paging.PrevURL}}<a class="button" href="{{.Paging.PrevURL}}">Previous page</a>{{else}}<a class="button" href="/">All listings</a>{{end}}
+{{else if or .Query .Category .Region}}<h2>No listings found</h2>
 <p>Try another search term or remove a filter.</p>
 <a class="button" href="/">Clear filters</a>
-</div>{{end}}
+{{else}}<h2>No listings yet</h2>
+<p>No vendor has published a listing. Check back later.</p>
+{{end}}</div>{{end}}{{with .Paging}}{{if gt .Pages 1}}
+<nav class="pagination" aria-label="Catalog pages">
+{{if .PrevURL}}<a href="{{.PrevURL}}" rel="prev" aria-label="Previous page, page {{.PrevPage}} of {{.Pages}}"><span aria-hidden="true">←</span> Previous</a>{{end}}
+<span class="current" aria-current="page">Page {{.Page}} of {{.Pages}}</span>
+{{if .NextURL}}<a href="{{.NextURL}}" rel="next" aria-label="Next page, page {{.NextPage}} of {{.Pages}}">Next <span aria-hidden="true">→</span></a>{{end}}
+</nav>{{end}}{{end}}
 {{template "footer" .}}{{end}}
