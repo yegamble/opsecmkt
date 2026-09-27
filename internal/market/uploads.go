@@ -505,18 +505,28 @@ func (a *App) sessionUser(ctx context.Context, session string) (*User, error) {
 // storeImage stores a re-encoded upload in one transaction and returns where to redirect. It re-checks what may
 // have changed while the body arrived and the scan ran: the session still exists and the actor still has the
 // route's role; the listing (row-locked by lockListing) is the actor's, or the actor is an administrator, and is
-// neither archived nor taken down. Under the owner's users row lock and the images advisory lock it checks the
-// quotas in SQL: 4 photos a listing, 50 MB an owner (full + thumbnail bytes), IMAGE_STORAGE_LIMIT_MB in all.
-// An avatar replaces the owner's earlier one (deleted in the same transaction). A photo belongs to the
+// neither archived nor taken down. Under the images advisory lock, which one image insert holds at a time, it
+// checks the quotas in SQL: 4 photos a listing, 50 MB an owner (full + thumbnail bytes), IMAGE_STORAGE_LIMIT_MB
+// in all. An avatar replaces the owner's earlier one (deleted in the same transaction). A photo belongs to the
 // listing's vendor, whoever added it.
+//
+// Lock order: the users rows of the actor and the listing's vendor (FOR KEY SHARE, which the inserts' foreign
+// keys take anyway), then the listing, then the advisory lock. An administrator's role change, suspension or
+// takedown locks the users row and then the vendor's listings, so taking the listing first and the users rows
+// after (the foreign keys would) could deadlock with it (TestUploadStoreDoesNotDeadlockWithRoleChange). Taking
+// the users rows first also makes the role re-check wait for such a change and see its result.
 func (a *App) storeImage(ctx context.Context, r *http.Request, session string, actor *User, route uploadRoute, f uploadForm, img encodedImage) (string, error) {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", err
 	}
 	defer tx.Rollback()
+	// Row locks may wait as long as an administrator's change that waits on a checkout's listing (actions_admin.go).
+	if err = waitForWalletLocks(ctx, tx); err != nil {
+		return "", err
+	}
 	var role string
-	err = tx.QueryRowContext(ctx, `SELECT u.role FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND u.id=$2 AND s.expires>now() AND u.suspended_at IS NULL`, digest(session), actor.ID).Scan(&role)
+	err = tx.QueryRowContext(ctx, `SELECT u.role FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND u.id=$2 AND s.expires>now() AND u.suspended_at IS NULL FOR KEY SHARE OF u`, digest(session), actor.ID).Scan(&role)
 	if err == sql.ErrNoRows {
 		return "", errUploadSignedOut
 	}
@@ -531,6 +541,10 @@ func (a *App) storeImage(ctx context.Context, r *http.Request, session string, a
 	owner, audit, notify, redirect := current.ID, "", "", "/account?avatar=saved#avatar"
 	var product any
 	if route.kind == uploadListing {
+		// The listing's vendor's users row before the listing (the vendor never changes; no row: lockListing 404s).
+		if _, err = tx.ExecContext(ctx, `SELECT 1 FROM users WHERE id=(SELECT vendor_id FROM products WHERE id=$1) FOR KEY SHARE`, f.id); err != nil {
+			return "", err
+		}
 		c := &actionCtx{A: a, R: r.WithContext(ctx), Tx: tx, User: &current}
 		l, err := lockListing(c, f.id)
 		if err != nil {
@@ -552,9 +566,6 @@ func (a *App) storeImage(ctx context.Context, r *http.Request, session string, a
 		if owner != current.ID {
 			notify = "An administrator added a photo to your listing " + l.ID[:min(8, len(l.ID))] + "."
 		}
-	}
-	if _, err = tx.ExecContext(ctx, `SELECT 1 FROM users WHERE id=$1 FOR UPDATE`, owner); err != nil {
-		return "", err
 	}
 	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, imagesLock); err != nil {
 		return "", err

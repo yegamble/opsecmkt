@@ -525,3 +525,84 @@ func TestUploadConcurrentMaxSizeStaysInBudget(t *testing.T) {
 		t.Fatalf("heap grew %d MiB, budget %d MiB", grew>>20, budget>>20)
 	}
 }
+
+// Review SHOULD-2: an administrator's role change locks the vendor's users row, then archives the vendor's
+// listings. An upload's store step must not lock the listing first and then wait on that users row (explicitly,
+// or through the foreign keys of its inserts): the two would deadlock and the upload would end in a 500. Here the
+// role change holds the users row while the store step runs, then archives and commits; both must finish.
+func TestUploadStoreDoesNotDeadlockWithRoleChange(t *testing.T) {
+	for _, byAdmin := range []bool{false, true} {
+		t.Run(map[bool]string{false: "vendor's upload", true: "administrator's upload"}[byAdmin], func(t *testing.T) {
+			uploadBesideRoleChange(t, byAdmin)
+		})
+	}
+}
+
+// uploadBesideRoleChange uploads a photo to a vendor's listing, as the vendor or as an administrator, while the
+// vendor's role change holds their users row; then the role change archives the listings and commits.
+func uploadBesideRoleChange(t *testing.T, byAdmin bool) {
+	e, _ := uploadEnv(t)
+	vendorID, vendor := e.user("deadlock_vendor", "vendor")
+	listing := e.product(vendorID, "physical")
+	uploader := vendor
+	if byAdmin {
+		_, uploader = e.user("deadlock_admin", "admin")
+	}
+	ctx := t.Context()
+	tx, err := e.DB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	var role string
+	if err = tx.QueryRowContext(ctx, "SELECT role FROM users WHERE id=$1 FOR UPDATE", vendorID).Scan(&role); err != nil {
+		t.Fatal(err)
+	}
+	done := e.uploadAsync("/listings/photo", uploader, e.photoParts(uploader, listing, smallJPEG(t))...)
+	// Until the store step waits on a lock (or, if it needs none of the role change's, has finished).
+	var w *httptest.ResponseRecorder
+	waitedForRoleChange := false
+	for deadline := time.Now().Add(5 * time.Second); w == nil && time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		select {
+		case w = <-done:
+			continue
+		default:
+		}
+		var waiting int
+		e.DB.QueryRow(`SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND (query ILIKE '%users%' OR query ILIKE '%images%' OR query ILIKE '%audit_events%')`).Scan(&waiting)
+		if waiting > 0 {
+			waitedForRoleChange = true
+			break
+		}
+	}
+	// The rest of the role change: demote, archive the listings, commit.
+	if _, err = tx.ExecContext(ctx, "UPDATE users SET role='buyer' WHERE id=$1", vendorID); err != nil {
+		t.Fatalf("role change: %v", err)
+	}
+	if _, err = tx.ExecContext(ctx, "UPDATE products SET archived=true,archived_at=now(),updated=now() WHERE vendor_id=$1 AND NOT archived", vendorID); err != nil {
+		t.Fatalf("role change archiving the listings: %v", err)
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatalf("role change commit: %v", err)
+	}
+	if w == nil {
+		select {
+		case w = <-done:
+		case <-time.After(15 * time.Second):
+			t.Fatal("the upload never finished")
+		}
+	}
+	// The store step waits for the role change (its users rows come first), then sees the demotion (the vendor's
+	// own upload: 403) or the archived listing (an administrator's: 409) and refuses. Had it finished first, it
+	// would have stored the photo before the demotion; either way, never a 500.
+	t.Logf("upload %d (waited for the role change: %v)", w.Code, waitedForRoleChange)
+	refused := map[bool]int{false: 403, true: 409}[byAdmin]
+	if w.Code != 303 && w.Code != refused || waitedForRoleChange && w.Code != refused {
+		t.Fatalf("upload beside a role change: %d %s", w.Code, w.Body.String())
+	}
+	var n int
+	e.DB.QueryRow("SELECT count(*) FROM images").Scan(&n)
+	if (w.Code == 303) != (n == 1) {
+		t.Fatalf("status %d with %d rows", w.Code, n)
+	}
+}
