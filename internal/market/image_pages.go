@@ -123,7 +123,9 @@ func vendorAvatarLoader(ctx context.Context, a *App, _ *http.Request, d *PageDat
 
 // staffListPublic reads the administrator's setting: on only for the exact value "true" (a missing row or any
 // other value is off, as imagePublicWhere reads it).
-func staffListPublic(settings map[string]string) bool { return settings[settingStaffListPublic] == "true" }
+func staffListPublic(settings map[string]string) bool {
+	return settings[settingStaffListPublic] == "true"
+}
 
 // staffListLoader lists, while the setting is on, every moderator and administrator who is not suspended and has
 // not hidden themselves (users.staff_hidden, hidden by default), administrators first, with their avatar when the
