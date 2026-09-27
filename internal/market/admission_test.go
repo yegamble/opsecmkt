@@ -167,7 +167,9 @@ func TestAdmissionPostClassesAreSeparate(t *testing.T) {
 	if w := postAs(a, user, "/test/admit-signed"); w.Code != 303 || held() != [2]int{cap(anonPostWork), 1} {
 		t.Fatalf("signed-in post with the anonymous class full: %d held=%v", w.Code, held())
 	}
-	if w := postAs(a, user, "/test/admit"); w.Code != 303 || held()[1] != 1 { // a public action, signed in
+	// A public action (sign-in, registration, the sign-in challenge) skips the write:<user> budget, so a
+	// signed-in account posting it uses the anonymous class (PR #15 re-review, NEW-1).
+	if w := postAs(a, user, "/test/admit"); w.Code != 503 {
 		t.Fatalf("signed-in public post with the anonymous class full: %d held=%v", w.Code, held())
 	}
 	release()
@@ -178,9 +180,47 @@ func TestAdmissionPostClassesAreSeparate(t *testing.T) {
 	if w := postAs(a, nil, "/test/admit"); w.Code != 303 || held() != [2]int{1, cap(userPostWork)} {
 		t.Fatalf("anonymous post with the signed-in class full: %d held=%v", w.Code, held())
 	}
+	if w := postAs(a, user, "/test/admit"); w.Code != 303 || held() != [2]int{1, cap(userPostWork)} {
+		t.Fatalf("signed-in public post with the signed-in class full: %d held=%v", w.Code, held())
+	}
 	release()
 	if len(anonPostWork) != 0 || len(userPostWork) != 0 {
 		t.Fatalf("post slots leaked: anonymous=%d signed-in=%d", len(anonPostWork), len(userPostWork))
+	}
+}
+
+// PR #15 re-review (NEW-1): one signed-in account flooding public actions, which skip its write budget, fills
+// only the anonymous class; an administrator's change is still served.
+func TestSignedInPublicFloodLeavesStaffPosts(t *testing.T) {
+	a := testHTTPApp(false)
+	gate := make(chan struct{})
+	var inside sync.WaitGroup
+	withAction(t, "/test/public-slow", actionSpec{Public: true, OwnTx: true, Run: func(c *actionCtx) (actionResult, error) {
+		inside.Done()
+		<-gate
+		return actionResult{Redirect: "/done"}, nil
+	}})
+	withAction(t, "/test/admin-change", actionSpec{Roles: []string{"admin"}, OwnTx: true, Run: func(c *actionCtx) (actionResult, error) {
+		return actionResult{Redirect: "/admin"}, nil
+	}})
+	flooder := &User{ID: "flooder", Role: "buyer"}
+	n := cap(anonPostWork)
+	inside.Add(n)
+	var done sync.WaitGroup
+	for range n {
+		done.Add(1)
+		go func() { defer done.Done(); postAs(a, flooder, "/test/public-slow") }()
+	}
+	inside.Wait()
+	defer func() { close(gate); done.Wait() }()
+	if len(anonPostWork) != n || len(userPostWork) != 0 {
+		t.Fatalf("signed-in public posts hold anonymous=%d signed-in=%d", len(anonPostWork), len(userPostWork))
+	}
+	if w := postAs(a, flooder, "/test/public-slow"); w.Code != 503 {
+		t.Fatalf("one more public post from the flooder: %d", w.Code)
+	}
+	if w := postAs(a, &User{ID: "admin", Role: "admin"}, "/test/admin-change"); w.Code != 303 {
+		t.Fatalf("administrator's change during a signed-in public-post flood: %d %q", w.Code, w.Body.String())
 	}
 }
 

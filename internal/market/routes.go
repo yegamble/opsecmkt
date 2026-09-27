@@ -298,7 +298,12 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 		http.Error(w, "Unknown action", 404)
 		return
 	}
+	// Only a post that is charged to its account's write budget takes a signed-in slot: a public action (sign-in,
+	// registration, the sign-in challenge) is not, so a signed-in account posting one uses the anonymous class and
+	// cannot flood the class that staff changes use (PR #15 re-review).
+	class := anonPostWork
 	if !spec.Public || len(spec.Roles) > 0 {
+		class = userPostWork
 		if u == nil {
 			http.Error(w, "Sign in required", 401)
 			return
@@ -313,11 +318,7 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 		}
 	}
 	// The post's admission slot (A-178), taken only now: its body has been read and its CSRF, sign-in, role
-	// and write-budget checks have passed. Signed-in and anonymous posts have separate classes.
-	class := anonPostWork
-	if u != nil {
-		class = userPostWork
-	}
+	// and write-budget checks have passed.
 	release, ok := admitPost(w, class)
 	if !ok {
 		return

@@ -17,10 +17,12 @@ import (
 //     cannot starve the health probe.
 //   - A form post takes a slot only once its body has been read (at most 64 KiB) and its Origin,
 //     Sec-Fetch-Site and CSRF checks and its action's stateless checks have passed (App.post), so a client
-//     trickling a body, or posting junk, holds no slot; the server's ReadTimeout bounds the trickle. Signed-in
-//     posts (a live session) take one of userPostWork's 16 slots and anonymous posts (sign-in, registration,
-//     the sign-in challenge) one of anonPostWork's 16, so a flood of anonymous posts cannot refuse a signed-in
-//     user's or an administrator's change. A post's session lookup, a single read, takes a page slot for that
+//     trickling a body, or posting junk, holds no slot; the server's ReadTimeout bounds the trickle. A post
+//     charged to its account's write:<user> budget (every action but the public ones) takes one of
+//     userPostWork's 16 slots; a public action (sign-in, registration, the sign-in challenge), whoever posts
+//     it, takes one of anonPostWork's 16. A flood of public posts, anonymous or from a signed-in account,
+//     cannot refuse a signed-in user's or an administrator's change, and one account's own changes stop at
+//     its write budget. A post's session lookup, a single read, takes a page slot for that
 //     query only (ServeHTTP).
 //   - captchaWork (captcha_actions.go) admits 8 concurrent CAPTCHA image renders and passwordWork
 //     (actions_auth.go) 4 concurrent bcrypt checks, each inside the class slot of its request.
