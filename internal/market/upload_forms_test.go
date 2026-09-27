@@ -27,6 +27,9 @@ func sectionOf(t *testing.T, page, id string) string {
 	return rest
 }
 
+// progressiveHelp is the limits' line on the decoder's memory cap (PR #24 review R24-4).
+const progressiveHelp = "A progressive JPEG or a 16-bit PNG may have to be smaller than this to fit the market’s memory limit for processing pictures."
+
 // multipartFormFirstInput is the first <input> after the multipart form's opening tag.
 var multipartFormFirstInput = regexp.MustCompile(`<form[^>]*enctype="multipart/form-data"[^>]*>\s*<input ([^>]*)>`)
 
@@ -66,7 +69,7 @@ func TestUploadScannerDownFailsClosedWithPage(t *testing.T) {
 	photos := sectionOf(t, get(edit), "photos")
 	assertUploadForm(t, photos, "/listings/photo", vendor, e)
 	for _, want := range []string{`name="id" value="` + listing + `"`, `aria-describedby="photo-help photo-privacy"`, `id="photo-help"`, `id="photo-privacy"`,
-		"4096 pixels a side and 4096×3072 in all (about 12.6 megapixels)", "Uploading can take up to 90 seconds over Tor; press Upload once and wait for the page to change",
+		"4096 pixels a side and 4096×3072 in all (about 12.6 megapixels)", progressiveHelp, "Uploading can take up to 90 seconds over Tor; press Upload once and wait for the page to change",
 		"Each file is checked by the ClamAV malware scanner; a match is refused and nothing is stored", "Screenshots can show your clock and timezone", "0 of 4 photos"} {
 		if !strings.Contains(photos, want) {
 			t.Fatalf("photo panel lacks %q:\n%s", want, photos)
@@ -275,11 +278,14 @@ func TestAvatarFormAndRemoval(t *testing.T) {
 	if body := e.do("GET", "/account", buyer, nil).Body.String(); strings.Contains(body, `id="avatar"`) || strings.Contains(body, "/account/avatar") {
 		t.Fatal("a buyer is offered the avatar form")
 	}
-	const staffLine = "a staff photo links your identity across every dispute decision"
+	const staffLine = "to the buyer and vendor of each order and to moderators and administrators, so a staff photo links your identity across every dispute decision"
 	for _, role := range []string{"vendor", "admin", "moderator"} {
 		id, s := e.user("avatar_form_"+role, role)
 		section := sectionOf(t, e.do("GET", "/account", s, nil).Body.String(), "avatar")
 		assertUploadForm(t, section, "/account/avatar", s, e)
+		if !strings.Contains(section, html.EscapeString(progressiveHelp)) && !strings.Contains(section, progressiveHelp) {
+			t.Fatalf("%s: avatar limits lack the decoder memory line:\n%s", role, section)
+		}
 		if staff := role != "vendor"; strings.Contains(section, staffLine) != staff {
 			t.Fatalf("%s: staff privacy line shown=%v:\n%s", role, !staff, section)
 		}
@@ -388,7 +394,7 @@ func TestStaffHideChoiceAudited(t *testing.T) {
 		section := sectionOf(t, e.do("GET", "/account", s, nil).Body.String(), "staff-list")
 		if !strings.Contains(section, `action="/account/staff-list"`) || !strings.Contains(section, "Hide me from the public staff list") ||
 			!regexp.MustCompile(`name="hide" value="yes" checked`).MatchString(section) || strings.Contains(section, "multipart") ||
-			!strings.Contains(section, "hidden staff avatars are shown only to the parties of orders they decided") {
+			!strings.Contains(section, "hidden staff avatars are shown only to the parties of orders they decided and to moderators and administrators") {
 			t.Fatalf("%s: staff list choice:\n%s", role, section)
 		}
 		w := e.do("POST", "/account/staff-list", s, nil) // the box unticked: shown
