@@ -266,10 +266,6 @@ func TestDemotionArchiveIsNotATakedown(t *testing.T) {
 	}
 }
 
-// PR #24 re-check N-1: an administrator's takedown locked the listing and then, through the foreign keys of its
-// audit and notification inserts, the vendor's users row; a role change holding that row and then archiving the
-// vendor's listings deadlocked with it (40P01, a 500). The takedown now takes the users rows first, as lockListing
-// does, and waits for the role change instead.
 // PR #27 NIT-1: PostgreSQL refuses a NUL byte in text, so a takedown reason carrying one gets the reason's 400,
 // before the password is checked, not a 500 from the update.
 func TestAdminTakedownReasonWithNULRefused(t *testing.T) {
@@ -284,6 +280,10 @@ func TestAdminTakedownReasonWithNULRefused(t *testing.T) {
 	}
 }
 
+// PR #24 re-check N-1: an administrator's takedown locked the listing and then, through the foreign keys of its
+// audit and notification inserts, the vendor's users row; a role change holding that row and then archiving the
+// vendor's listings deadlocked with it (40P01, a 500). The takedown now takes the users rows first, as lockListing
+// does, and waits for the role change instead.
 func TestAdminTakedownDoesNotDeadlockWithRoleChange(t *testing.T) {
 	e := newTestApp(t)
 	_, admin := e.user("td_deadlock_admin", "admin")
