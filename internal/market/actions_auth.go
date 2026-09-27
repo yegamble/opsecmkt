@@ -19,7 +19,7 @@ func init() {
 	for _, path := range []string{"/setup", "/login", "/register"} {
 		registerAction(path, actionSpec{Public: true, OwnTx: true, Run: authAction, Precheck: authPrecheck})
 	}
-	registerAction("/challenge", actionSpec{Public: true, Run: challengeAction})
+	registerAction("/challenge", actionSpec{Public: true, Precheck: pendingPrecheck, Run: challengeAction})
 	registerPage("challenge", pageSpec{})
 	registerLoader("challenge", challengeLoader)
 }
@@ -448,6 +448,15 @@ func pendingCookie(r *http.Request) string {
 		return c.Value
 	}
 	return ""
+}
+
+// pendingPrecheck refuses a sign-in challenge without a pending cookie before it takes a post slot or opens a
+// transaction (A-178); the action makes the same check.
+func pendingPrecheck(_ *App, r *http.Request, _ string) error {
+	if pendingCookie(r) == "" {
+		return fail(401, "Sign-in verification expired. Sign in again.")
+	}
+	return nil
 }
 
 func challengeAction(c *actionCtx) (actionResult, error) {

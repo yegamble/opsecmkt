@@ -282,7 +282,8 @@ func TestFormFieldFloodIsBounded(t *testing.T) {
 }
 
 // Sign-in, registration and setup posts with a malformed handle or password, or a CAPTCHA id that is not a
-// live one issued to their session, are refused before they take a post slot (PR #15 review): a flood of
+// live one issued to their session, and sign-in challenges with no pending sign-in cookie, are refused before
+// they take a post slot (PR #15 review): a flood of
 // them cannot refuse a real sign-in as busy. A well-formed post with a live id goes on to the slot.
 func TestAdmissionAuthJunkTakesNoSlot(t *testing.T) {
 	a := testHTTPApp(false)
@@ -314,6 +315,8 @@ func TestAdmissionAuthJunkTakesNoSlot(t *testing.T) {
 		{"malformed handle", "/login", creds("x", "guess-guess-guess", live), 400, "3–32 character handle"},
 		{"short password", "/register", creds("junk_user", "short", live), 400, "3–32 character handle"},
 		{"setup, malformed handle", "/setup", url.Values{"handle": {"no spaces"}, "password": {"guess-guess-guess"}}, 400, "3–32 character handle"},
+		{"challenge without a sign-in in progress", "/challenge", url.Values{"method": {"totp"}, "code": {"123456"}}, 401, "Sign in again"},
+		{"PGP challenge without a sign-in in progress", "/challenge/pgp", url.Values{}, 401, "Sign in again"},
 		{"live id", "/login", creds("junk_user", "guess-guess-guess", live), 503, "busy"},
 		{"no id (the CAPTCHA may be off)", "/login", url.Values{"handle": {"junk_user"}, "password": {"guess-guess-guess"}}, 503, "busy"},
 	} {
