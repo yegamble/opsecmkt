@@ -1,6 +1,7 @@
 package market
 
 import (
+	"context"
 	"database/sql"
 	"strconv"
 	"strings"
@@ -87,6 +88,19 @@ func payoutConfirmation(c *actionCtx) (int64, error) {
 	return seen, nil
 }
 
+// walletLockWait replaces the application pool's 3 s lock_timeout (A-177) in a transaction that may queue for
+// the rows a payment request holds while the wallet is asked for an address: the buyer, the payment-intake
+// setting and the listing, for up to rpcTimeout (10 s). Another checkout, a stock edit or a takedown then waits
+// for a slow wallet instead of failing at 3 s. It stays below the 12 s request context, so a longer wait is
+// still refused cleanly (503, lock timeout). The wallet is asked only after every check has passed (payAction),
+// so the rows cannot be released before the call without letting refused requests create addresses.
+const walletLockWait = "11s"
+
+func waitForWalletLocks(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, "SET LOCAL lock_timeout = '"+walletLockWait+"'")
+	return err
+}
+
 // maxAwaitingPayment bounds the stock one buyer can hold in unpaid orders (the watcher also expires them).
 const maxAwaitingPayment = 3
 
@@ -95,6 +109,9 @@ const maxAwaitingPayment = 3
 // then is the live test-network wallet asked for an address, so refused requests never create wallet addresses.
 func payAction(c *actionCtx) (actionResult, error) {
 	ctx := c.Ctx()
+	if err := waitForWalletLocks(ctx, c.Tx); err != nil {
+		return actionResult{}, err
+	}
 	o, err := partyOrder(c, c.Form.Get("order_id"))
 	if err != nil {
 		return actionResult{}, err

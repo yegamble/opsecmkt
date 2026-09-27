@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -390,5 +391,83 @@ func TestPostSessionLookupTakesPageSlot(t *testing.T) {
 	e.check(e.do("POST", "/notifications", buyer, url.Values{}), 303)
 	if len(pageWork) != 0 || len(anonPostWork) != 0 || len(userPostWork) != 0 {
 		t.Fatal("slots leaked")
+	}
+}
+
+// slowWallet is a test-network wallet that takes hold to answer for the orders in slow (a wallet under load).
+type slowWallet struct {
+	hold    time.Duration
+	mu      sync.Mutex
+	slow    map[string]bool
+	entered chan string
+}
+
+func (s *slowWallet) Currency() string   { return "BTC" }
+func (s *slowWallet) Network() string    { return "regtest" }
+func (s *slowWallet) Confirmations() int { return 1 }
+func (s *slowWallet) NewAddress(ctx context.Context, orderID string) (string, error) {
+	s.mu.Lock()
+	slow := s.slow[orderID]
+	s.mu.Unlock()
+	if slow {
+		s.entered <- orderID
+		select {
+		case <-time.After(s.hold):
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
+	return "stub-" + orderID[:8], nil
+}
+func (s *slowWallet) Incoming(context.Context, []string) ([]Incoming, error) { return nil, nil }
+func (s *slowWallet) Send(context.Context, string, int64) (string, error) {
+	return "", errors.New("cannot send")
+}
+func (s *slowWallet) ValidAddress(addr string) bool { return strings.HasPrefix(addr, "stub-") }
+
+// PR #15 review: a payment request holds the buyer, payment-intake and listing rows while the wallet is asked
+// for an address (up to rpcTimeout, 10 s). A checkout, a stock edit or a takedown queued behind it waits for
+// it instead of failing at the application pool's 3 s lock_timeout.
+func TestSlowWalletDoesNotRefuseQueuedListingWriters(t *testing.T) {
+	w := newOrderWorld(t)
+	_, admin := w.e.user("slow_wallet_admin", "admin")
+	wallet := &slowWallet{hold: 4 * time.Second, slow: map[string]bool{}, entered: make(chan string, 4)}
+	w.e.A.payments["BTC"] = wallet
+	// behind runs the slow payment request for a fresh order of product and, once it is waiting on the wallet,
+	// the competing request; it returns both statuses.
+	behind := func(product string, compete func() int) (int, int) {
+		t.Helper()
+		order := w.e.order(w.buyerID, product, "BTC", stateDraft)
+		wallet.mu.Lock()
+		wallet.slow[order] = true
+		wallet.mu.Unlock()
+		first := make(chan int, 1)
+		go func() { first <- w.post("/orders/pay", w.buyer, form("order_id", order)).Code }()
+		select {
+		case <-wallet.entered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the payment request never reached the wallet")
+		}
+		second := compete()
+		return <-first, second
+	}
+	p := w.e.product(w.vendorID, "physical")
+	other := w.e.order(w.otherID, p, "BTC", stateDraft)
+	if a, b := behind(p, func() int { return w.post("/orders/pay", w.other, form("order_id", other)).Code }); a != 303 || b != 303 {
+		t.Fatalf("two checkouts of one listing, the first waiting on the wallet: %d, %d", a, b)
+	}
+	q := w.e.product(w.vendorID, "physical")
+	if a, b := behind(q, func() int {
+		return w.post("/listings/update", w.vendor, inventoryForm(q, map[string]string{"stock": "9", "stock_seen": "4"})).Code
+	}); a != 303 || b != 303 {
+		t.Fatalf("a stock edit behind a checkout waiting on the wallet: %d, %d", a, b)
+	}
+	r := w.e.product(w.vendorID, "physical")
+	take := withField(takedownForm(t, w.e.body("GET", "/listing-edit?id="+r, admin, nil, 200), "takedown", r), "reason", takedownReason)
+	if a, b := behind(r, func() int { return w.post("/admin/listing", admin, take).Code }); a != 303 || b != 303 {
+		t.Fatalf("a takedown behind a checkout waiting on the wallet: %d, %d", a, b)
+	}
+	if w.stock(p) != 3 || w.stock(q) != 9 || !func() bool { archived, _ := takenDown(w.e, r); return archived }() {
+		t.Fatalf("after the queued writers: stock p=%d q=%d", w.stock(p), w.stock(q))
 	}
 }
