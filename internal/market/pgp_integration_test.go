@@ -612,3 +612,150 @@ func TestProfileKeyStoredCanonically(t *testing.T) {
 	_, otherPub := testPGPKey(t, "canon_other_key")
 	e.check(e.do("POST", "/account", legacy, url.Values{"pgp": {otherPub}}), 400)
 }
+
+var armoredKeyPattern = regexp.MustCompile(`(?s)-----BEGIN PGP PUBLIC KEY BLOCK-----\n\n.*?-----END PGP PUBLIC KEY BLOCK-----`) // not a placeholder
+
+// shownKeys returns the decoded packets of every armored public key a page shows.
+func shownKeys(t *testing.T, page string) []string {
+	t.Helper()
+	var keys []string
+	for _, k := range armoredKeyPattern.FindAllString(page, -1) {
+		keys = append(keys, armorPackets(t, html.UnescapeString(k)))
+	}
+	return keys
+}
+
+// A-110: a key carrying a photo ID (user attribute packet) is refused on /account with a GnuPG hint to
+// delete it, before any password is checked; nothing changes. The same key without the photo is accepted
+// with its packets unchanged.
+func TestProfileKeyPhotoIDRefused(t *testing.T) {
+	e := newTestApp(t)
+	key, photo, plain := testPhotoIDKey(t, "photo_key")
+	_, fp, _ := parsePublicKey(plain)
+	uid, s := e.user("photo_owner", "vendor")
+	type row struct {
+		pgp, fp, xmpp string
+		verified      bool
+		audits, notes int
+	}
+	state := func() (r row) {
+		t.Helper()
+		if err := e.DB.QueryRow(`SELECT pgp,pgp_fingerprint,xmpp,pgp_verified_at IS NOT NULL,
+(SELECT count(*) FROM audit_events WHERE user_id=$1),(SELECT count(*) FROM notifications WHERE user_id=$1) FROM users WHERE id=$1`, uid).
+			Scan(&r.pgp, &r.fp, &r.xmpp, &r.verified, &r.audits, &r.notes); err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	refuseAs := func(form url.Values, want ...string) {
+		t.Helper()
+		before := state()
+		b := html.UnescapeString(e.body("POST", "/account", s, form, 400))
+		mustContain(t, b, want...)
+		if after := state(); after != before {
+			t.Fatalf("refused key changed the account: %+v -> %+v", before, after)
+		}
+	}
+	photoHint := []string{"PGP key rejected: it contains a photo ID", "gpg --edit-key " + fp, "deluid", "save"}
+	refuse := func(form url.Values) { t.Helper(); refuseAs(form, photoHint...) }
+	// No key yet: refused with and without the password, and in the CRLF form a browser submits.
+	refuse(url.Values{"pgp": {photo}, "password": {testPassword}, "xmpp": {"photo@example.test"}})
+	refuse(url.Values{"pgp": {photo}})
+	refuse(url.Values{"pgp": {strings.ReplaceAll(photo, "\n", "\r\n")}, "password": {testPassword}})
+	// Every placement: several photo IDs, after the subkey, partial body lengths get the photo ID hint; a photo
+	// ID hidden in a compressed or private packet is refused as an unsupported packet type.
+	for name, v := range testPhotoIDVariants(t, key) {
+		want := photoHint
+		if v.photos == 0 {
+			want = []string{"PGP key rejected: it contains an OpenPGP packet type this market does not publish", "gpg --armor --export " + fp, "photo ID"}
+		}
+		t.Log(name)
+		refuseAs(url.Values{"pgp": {v.armored}, "password": {testPassword}}, want...)
+	}
+
+	// The key without its photo is accepted and stored with its packets unchanged.
+	e.check(e.do("POST", "/account", s, url.Values{"pgp": {plain}, "password": {testPassword}}), 303)
+	if r := state(); r.fp != fp || armorPackets(t, r.pgp) != armorPackets(t, plain) {
+		t.Fatalf("plain key not stored unchanged: fp=%s", r.fp)
+	}
+	if _, err := e.DB.Exec("UPDATE users SET pgp_verified_at=now() WHERE id=$1", uid); err != nil {
+		t.Fatal(err)
+	}
+	// Pasting the same key back with its photo ID is refused too, and keeps the ownership proof.
+	refuse(url.Values{"pgp": {photo}, "xmpp": {"photo@example.test"}})
+	refuse(url.Values{"pgp": {photo}, "password": {testPassword}})
+	if !state().verified {
+		t.Fatal("refused key reset the ownership proof")
+	}
+}
+
+// A-110: a key saved with a photo ID before refusal existed is never republished with it. Every page that
+// shows the key shows it without the photo ID (the rest byte for byte) and the key keeps working; the
+// owner re-saving the account form stores the key without it and keeps the ownership proof.
+func TestStoredPhotoIDNeverShown(t *testing.T) {
+	e := newTestApp(t)
+	key, photo, plain := testPhotoIDKey(t, "legacy_photo")
+	_, fp, _ := parsePublicKey(plain)
+	vendorID, vendor := e.user("photo_vendor", "vendor")
+	buyerID, buyer := e.user("photo_buyer", "buyer")
+	// As the A-79 save path stored it: a re-armor of every pasted packet, photo ID included.
+	store := func(armored string) string {
+		t.Helper()
+		var legacy bytes.Buffer
+		w, _ := armor.Encode(&legacy, openpgp.PublicKeyType, nil)
+		w.Write([]byte(armorPackets(t, armored)))
+		w.Close()
+		if _, err := e.DB.Exec("UPDATE users SET pgp=$1,pgp_fingerprint=$2,pgp_verified_at=now() WHERE id=$3", legacy.String(), fp, vendorID); err != nil {
+			t.Fatal(err)
+		}
+		return legacy.String()
+	}
+	order := e.order(buyerID, e.product(vendorID, "physical"), "BTC", statePaid)
+	want := armorPackets(t, plain)
+	variants := testPhotoIDVariants(t, key)
+	variants["as first saved"] = photoIDVariant{armored: photo}
+	for variant, v := range variants {
+		store(v.armored)
+		for name, page := range map[string]string{
+			"vendor page": e.body("GET", "/vendor?id="+vendorID, "", nil, 200),
+			"messages":    e.body("GET", "/messages?to=photo_vendor", buyer, nil, 200),
+			"order":       e.body("GET", "/order?id="+order, buyer, nil, 200),
+			"account":     e.body("GET", "/account", vendor, nil, 200),
+		} {
+			keys := shownKeys(t, page)
+			if len(keys) != 1 || keys[0] != want || strings.Contains(keys[0], "\xff\xd8\xff") {
+				t.Fatalf("%s, %s: %d keys shown, or the key shown is not the key without its photo ID", variant, name, len(keys))
+			}
+			mustContain(t, page, formatFingerprint(fp))
+		}
+		mustContain(t, e.body("GET", "/vendor?id="+vendorID, "", nil, 200), "Ownership verified")
+	}
+	legacy := store(photo)
+
+	// The stored key still works: a message encrypted to it matches its key IDs.
+	var msg bytes.Buffer
+	mw, _ := armor.Encode(&msg, "PGP MESSAGE", nil)
+	pt, err := openpgp.Encrypt(mw, []*openpgp.Entity{key}, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.WriteString(pt, "hello")
+	pt.Close()
+	mw.Close()
+	if encrypted, match := messageStatus(msg.String(), legacy); !encrypted || match != matchYes {
+		t.Fatalf("stored photo ID key no longer matches its messages: %v %q", encrypted, match)
+	}
+
+	// The owner saves the account form as shown (the key without its photo ID, CRLF): no confirmation is
+	// needed, and the stored key loses its photo ID and keeps its proof.
+	shown := armoredKeyPattern.FindString(e.body("GET", "/account", vendor, nil, 200))
+	e.check(e.do("POST", "/account", vendor, url.Values{"pgp": {strings.ReplaceAll(html.UnescapeString(shown), "\n", "\r\n")}, "xmpp": {"v@example.test"}}), 303)
+	var stored string
+	var verified bool
+	if err = e.DB.QueryRow("SELECT pgp,pgp_verified_at IS NOT NULL FROM users WHERE id=$1", vendorID).Scan(&stored, &verified); err != nil {
+		t.Fatal(err)
+	}
+	if armorPackets(t, stored) != want || !verified {
+		t.Fatalf("re-saved key keeps its photo ID or lost its proof (verified=%v)", verified)
+	}
+}

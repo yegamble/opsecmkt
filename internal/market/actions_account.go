@@ -27,6 +27,17 @@ func accountAction(c *actionCtx) (actionResult, error) {
 	if len(pgp) > 16384 || len(xmpp) > 254 {
 		return actionResult{}, fail(400, "Profile fields too long")
 	}
+	// A-110: a photo ID (usually the owner's face) would be shown with the key to everyone who can see it, and
+	// any packet other than public keys, user IDs and signatures could carry one. Refused before any password
+	// is checked; nothing is saved.
+	if fp, photos, other := keyExtraPackets(pgp); photos > 0 {
+		return actionResult{}, fail(400, "PGP key rejected: it contains a photo ID, an image that would be shown with your key to everyone who can see it. "+
+			"Remove it: run gpg --edit-key "+fp+", then at the gpg> prompt enter uid N (N is the number of the “[jpeg image of size …]” line), deluid and save. "+
+			"Then export the key again with gpg --armor --export "+fp+" and paste it here.")
+	} else if other > 0 {
+		return actionResult{}, fail(400, "PGP key rejected: it contains an OpenPGP packet type this market does not publish. Only public keys, subkeys, user IDs and signatures are accepted; "+
+			"a compressed or private packet can hide a photo ID. Export the key again with gpg --armor --export "+fp+", without any photo ID, and paste it here.")
+	}
 	// Adding, changing or removing the key needs the current password (and TOTP code if enrolled) on every account
 	// (A-152): a session alone must not redirect buyers' shipping addresses or set up a sign-in factor.
 	var old string
