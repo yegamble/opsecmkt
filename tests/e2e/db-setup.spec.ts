@@ -36,6 +36,10 @@ test('initialize the market and publish the fixture listing', async ({ page, bro
   await anon.getByLabel('Characters in the image').fill('WRONG1');
   await anon.getByRole('button', { name: 'Create account' }).click();
   await expect(anon.locator('body')).toContainText('CAPTCHA answer incorrect');
+  // QA-3: the refusal is the form again with a fresh image, so no reload is needed without JavaScript.
+  await expect(anon.getByRole('alert')).toContainText('Enter the characters of the new image below.');
+  await expect(anon.locator('img.captcha-image')).toHaveCount(1);
+  expect(await anon.locator('img.captcha-image').getAttribute('src')).not.toBe(src);
   await visitor.close();
   // Turn it off so the other db-*.spec.ts files can register and sign in without solving images.
   await page.goto('/admin');
