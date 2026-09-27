@@ -13,6 +13,8 @@ test('admin image scanner panel: state, signature age warning and counts by sign
   await expect(panel.getByRole('status')).toContainText('./scripts/install.sh refresh-scanner');
   await expect(panel).toContainText('it does not review picture content');
   await expect(panel).toContainText('3 stored · 1 refused as infected · 0 refused because the scanner failed.');
+  // A-186: stored photos and avatars against IMAGE_STORAGE_LIMIT_MB.
+  await expect(panel).toContainText('Stored photos and avatars: 3, using 0.4 MB of the 2048 MB limit (IMAGE_STORAGE_LIMIT_MB).');
   const table = panel.getByRole('table');
   await expect(table.getByRole('columnheader')).toHaveText(['Signature', 'Uploads refused']);
   await expect(table.getByRole('row').nth(1).getByRole('cell')).toHaveText(['Sample.Signature.UNOFFICIAL', '1']);

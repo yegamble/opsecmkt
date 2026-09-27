@@ -53,6 +53,7 @@ type App struct {
 	payments         map[string]PaymentProvider      // currency -> working provider; empty = payments disabled
 	unavailable      map[string]*unavailableProvider // configured but failing its checks (retried each watcher pass)
 	scanner          *imageScanner                   // clamd client for uploads (clamd.go); nil = Disabled
+	storageLimit     int64                           // IMAGE_STORAGE_LIMIT_MB in bytes (uploads.go); 0 = the default
 	stop             context.CancelFunc
 	background       sync.WaitGroup
 }
@@ -106,6 +107,9 @@ func New(ctx context.Context, preview bool) (*App, error) {
 		return nil, err
 	}
 	a.scanner = newImageScanner(scanCfg)
+	if a.storageLimit, err = imageStorageLimitFromEnv(os.Getenv); err != nil {
+		return nil, err
+	}
 	// The application pool is opened and pinged first: its session timeouts (A-177) are startup parameters,
 	// which a connection pooler may refuse, and such a database must stop startup before the schema moves.
 	db, err := openAppPool(ctx, dsn, timeouts.connect)
@@ -364,7 +368,8 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer release()
 	w = aw
-	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+	base := r.Context() // an upload's work after its body has arrived gets its own bound (uploads.go)
+	ctx, cancel := context.WithTimeout(base, 12*time.Second)
 	defer cancel()
 	r = r.WithContext(ctx)
 	if r.URL.Path == "/healthz" {
@@ -414,6 +419,16 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "POST" {
 		// Everything here reads no database and holds no slot: a post takes its slot in a.post, after its
 		// body has been read and checked, so a client trickling a body holds only its connection (A-178).
+		// The two upload routes read their multipart body themselves, after the sender is admitted (uploads.go);
+		// any other multipart post is refused before its body is read.
+		if route, ok := uploadRoutes[r.URL.Path]; ok {
+			a.serveUpload(w, r.WithContext(context.WithValue(context.WithValue(base, sessionKey{}, token), anonKey{}, anon)), route, session, token)
+			return
+		}
+		if isMultipart(r) {
+			a.refuseMultipartElsewhere(w, r, token)
+			return
+		}
 		if a.preview {
 			http.Error(w, "Read-only preview. Start with PostgreSQL to save changes.", 403)
 			return
@@ -431,16 +446,8 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Invalid or oversized form", 400)
 			return
 		}
-		if origin := r.Header.Get("Origin"); origin != "" {
-			u, e := url.Parse(origin)
-			if e != nil || u.Host != r.Host || (u.Scheme != "http" && u.Scheme != "https") {
-				// Fixed copy naming no header value; the usual cause is a reverse proxy rewriting Host (A-138).
-				http.Error(w, "Origin does not match Host; if this market runs behind a reverse proxy, the proxy must forward the Host header.", 403)
-				return
-			}
-		}
-		if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
-			http.Error(w, "Form expired. Reload and try again.", 403)
+		if msg := postOriginError(r); msg != "" {
+			http.Error(w, msg, 403)
 			return
 		}
 		if sent := []byte(r.PostForm.Get("csrf")); subtle.ConstantTimeCompare(sent, []byte(a.csrf(token))) != 1 {
@@ -479,16 +486,13 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			defer done() // on a panic; released below as soon as the query is done
 			lookupDone = done
 		}
-		// A suspended account's sessions never authenticate (suspension also deletes them).
-		u := &User{}
-		err := a.db.QueryRowContext(ctx, `SELECT u.id,u.handle,u.role,u.pgp,u.xmpp FROM users u JOIN sessions s ON s.user_id=u.id WHERE s.token_hash=$1 AND s.expires>now() AND u.suspended_at IS NULL`, digest(session)).Scan(&u.ID, &u.Handle, &u.Role, &u.PGP, &u.XMPP)
+		u, err := a.sessionUser(ctx, session)
 		lookupDone()
-		if err == nil {
-			user = u
-		} else if err != sql.ErrNoRows {
+		if err != nil {
 			serverError(w, r, 503, "Service unavailable", errorCause(err))
 			return
 		}
+		user = u
 	}
 	if r.Method == "POST" {
 		a.post(w, r, user, token)
@@ -599,6 +603,22 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.render(w, r, d)
+}
+
+// postOriginError returns the refusal of a form post whose Origin names another host or whose Sec-Fetch-Site says
+// cross-site, or "" when neither does. Fixed copy naming no header value; the usual cause of a mismatch is a
+// reverse proxy rewriting Host (A-138).
+func postOriginError(r *http.Request) string {
+	if origin := r.Header.Get("Origin"); origin != "" {
+		u, e := url.Parse(origin)
+		if e != nil || u.Host != r.Host || (u.Scheme != "http" && u.Scheme != "https") {
+			return "Origin does not match Host; if this market runs behind a reverse proxy, the proxy must forward the Host header."
+		}
+	}
+	if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
+		return "Form expired. Reload and try again."
+	}
+	return ""
 }
 
 // pageData is the state a page render starts from, before a.load fills it.

@@ -190,6 +190,9 @@ func routeOf(r *http.Request) (kind, name string) {
 		return "page", p
 	}
 	if r.Method == "POST" {
+		if _, ok := uploadRoutes[p]; ok {
+			return "action", p
+		}
 		if _, ok := actions[p]; ok {
 			return "action", p
 		}

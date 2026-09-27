@@ -61,6 +61,10 @@ type PageData struct {
 	Preview                                                                   bool
 	// Paging: catalog only, the page shown of the matching listings (A-181, load.go).
 	Paging *CatalogPaging
+	// UploadBack and UploadBackLabel: the refusal page of an upload (A-186, uploads.go) links back here.
+	UploadBack, UploadBackLabel string
+	// ImageStorage: admin page, stored photos and avatars against IMAGE_STORAGE_LIMIT_MB (uploads.go).
+	ImageStorage *ImageStorageView
 
 	// Foundation
 	Auth *AuthView
