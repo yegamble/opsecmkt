@@ -201,6 +201,9 @@ func routeOf(r *http.Request) (kind, name string) {
 	if _, ok := raws[p]; ok {
 		return "page", p
 	}
+	if route := imageRoute(p); route != "" {
+		return "page", route // never the image id
+	}
 	page := strings.TrimPrefix(p, "/")
 	if page == "" {
 		page = "catalog"

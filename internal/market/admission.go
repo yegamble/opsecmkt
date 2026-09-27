@@ -27,6 +27,9 @@ import (
 //   - A post's session lookup (ServeHTTP), a single indexed read before its post class is known, takes one of
 //     sessionLookupWork's 16 slots for that query only, waiting its turn for up to 2 s (takeLookupSlot). Pages
 //     never take it, so a flood of pages cannot refuse a signed-in or staff post.
+//   - imageWork (image_routes.go) admits 16 concurrent requests to the public image route /img/, which read no
+//     session and take no page slot, so a page of thumbnails, or a flood of image requests, cannot refuse pages;
+//     the authenticated /desk/img/ takes a page slot like any page.
 //   - captchaWork (captcha_actions.go) admits 8 concurrent CAPTCHA image renders and passwordWork
 //     (actions_auth.go) 4 concurrent bcrypt checks, each inside the class slot of its request.
 //
@@ -64,10 +67,14 @@ func busy(w http.ResponseWriter) {
 }
 
 // admitClass returns the admission semaphore r takes on arrival, or nil when it takes none there: /healthz
-// and static files take none, and a form post takes its slot later, in App.post (admitPost).
+// and static files take none, a form post takes its slot later, in App.post (admitPost), and the public image
+// route takes imageWork (image_routes.go).
 func admitClass(r *http.Request) chan struct{} {
 	if r.Method == "POST" || r.URL.Path == "/healthz" || strings.HasPrefix(r.URL.Path, "/static/") {
 		return nil
+	}
+	if imageRoute(r.URL.Path) == "/img/" {
+		return imageWork
 	}
 	return pageWork
 }
