@@ -52,6 +52,7 @@ type App struct {
 	checkMu          sync.Mutex                      // serialises provider checks (refreshProviders)
 	payments         map[string]PaymentProvider      // currency -> working provider; empty = payments disabled
 	unavailable      map[string]*unavailableProvider // configured but failing its checks (retried each watcher pass)
+	scanner          *imageScanner                   // clamd client for uploads (clamd.go); nil = Disabled
 	stop             context.CancelFunc
 	background       sync.WaitGroup
 }
@@ -100,6 +101,11 @@ func New(ctx context.Context, preview bool) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	scanCfg, err := scannerConfigFromEnv(os.Getenv)
+	if err != nil {
+		return nil, err
+	}
+	a.scanner = newImageScanner(scanCfg)
 	// The application pool is opened and pinged first: its session timeouts (A-177) are startup parameters,
 	// which a connection pooler may refuse, and such a database must stop startup before the schema moves.
 	db, err := openAppPool(ctx, dsn, timeouts.connect)
