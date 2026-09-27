@@ -2,6 +2,9 @@ package market
 
 import (
 	"bytes"
+	"crypto"
+	"encoding/binary"
+	"image"
 	"io"
 	"slices"
 	"strings"
@@ -28,6 +31,120 @@ func testPGPKey(t *testing.T, name string) (*openpgp.Entity, string) {
 	}
 	w.Close()
 	return e, buf.String()
+}
+
+// testPhotoIDKey generates a key as GnuPG exports it after `gpg addphoto` (A-110): its user ID, then a user
+// attribute packet holding a JPEG with the owner's positive certification over it, then the subkey. photo is
+// that key armored; plain is the same key without the photo ID.
+func testPhotoIDKey(t *testing.T, name string) (key *openpgp.Entity, photo, plain string) {
+	t.Helper()
+	key, plain = testPGPKey(t, name)
+	return key, withPhotoID(t, key), plain
+}
+
+// withPhotoID armors key with a certified photo ID after its user ID, followed by the extra packets.
+func withPhotoID(t *testing.T, key *openpgp.Entity, extra ...[]byte) string {
+	t.Helper()
+	var head, full bytes.Buffer
+	withoutSubkeys := *key
+	withoutSubkeys.Subkeys = nil
+	if err := withoutSubkeys.Serialize(&head); err != nil {
+		t.Fatal(err)
+	}
+	if err := key.Serialize(&full); err != nil {
+		t.Fatal(err)
+	}
+	uat, err := packet.NewUserAttributePhoto(image.NewGray(image.Rect(0, 0, 8, 8)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body bytes.Buffer
+	for _, sp := range uat.Contents {
+		if err = sp.Serialize(&body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// RFC 9580 5.2.4: a certification of a user attribute hashes the primary key, 0xD1, a four-octet length and the body.
+	sig := &packet.Signature{Version: 4, SigType: packet.SigTypePositiveCert, PubKeyAlgo: key.PrimaryKey.PubKeyAlgo,
+		Hash: crypto.SHA256, CreationTime: time.Now(), IssuerKeyId: &key.PrimaryKey.KeyId}
+	h, err := sig.PrepareSign(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = key.PrimaryKey.SerializeForHash(h); err != nil {
+		t.Fatal(err)
+	}
+	h.Write(binary.BigEndian.AppendUint32([]byte{0xD1}, uint32(body.Len())))
+	h.Write(body.Bytes())
+	if err = sig.Sign(h, key.PrivateKey, nil); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	w, _ := armor.Encode(&buf, openpgp.PublicKeyType, nil)
+	w.Write(head.Bytes())
+	if err = uat.Serialize(w); err != nil {
+		t.Fatal(err)
+	}
+	if err = sig.Serialize(w); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range extra {
+		w.Write(p)
+	}
+	w.Write(full.Bytes()[head.Len():])
+	w.Close()
+	return buf.String()
+}
+
+// A-110: a photo ID is found in a pasted key, and the canonical form of a key that carries one - the
+// text shown to others - is the same key without it: every other packet byte for byte, same fingerprint.
+func TestPhotoIDFoundAndNeverRepublished(t *testing.T) {
+	key, photo, plain := testPhotoIDKey(t, "photo")
+	_, fp, err := parsePublicKey(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(armorPackets(t, photo), "\xff\xd8\xff") { // JPEG start-of-image marker
+		t.Fatal("fixture carries no JPEG")
+	}
+	if got, n := keyPhotoIDs(photo); got != fp || n != 1 {
+		t.Fatalf("photo key: fingerprint %q, %d photo IDs", got, n)
+	}
+	if got, n := keyPhotoIDs(plain); got != fp || n != 0 {
+		t.Fatalf("plain key: fingerprint %q, %d photo IDs", got, n)
+	}
+	if _, n := keyPhotoIDs("not a key"); n != 0 {
+		t.Fatal("garbage reported as carrying a photo ID")
+	}
+	parsed, gotFP, canonical, err := parseCanonicalPublicKey(photo)
+	if err != nil || gotFP != fp || parsed.PrimaryKey.KeyId != key.PrimaryKey.KeyId {
+		t.Fatalf("fp=%q err=%v", gotFP, err)
+	}
+	if armorPackets(t, canonical) != armorPackets(t, plain) {
+		t.Fatal("canonical form of a photo ID key is not the key without its photo ID")
+	}
+	if _, _, again, _ := parseCanonicalPublicKey(plain); armorPackets(t, again) != armorPackets(t, plain) {
+		t.Fatal("a key without a photo ID changed")
+	}
+
+	// Only the photo ID's certifications go with it: a direct-key signature placed after them applies to the
+	// whole key and stays.
+	direct := &packet.Signature{Version: 4, SigType: packet.SigTypeDirectSignature, PubKeyAlgo: key.PrimaryKey.PubKeyAlgo,
+		Hash: crypto.SHA256, CreationTime: time.Now(), IssuerKeyId: &key.PrimaryKey.KeyId}
+	if err = direct.SignDirectKeyBinding(key.PrimaryKey, key.PrivateKey, nil); err != nil {
+		t.Fatal(err)
+	}
+	var directPacket bytes.Buffer
+	if err = direct.Serialize(&directPacket); err != nil {
+		t.Fatal(err)
+	}
+	_, _, canonical, err = parseCanonicalPublicKey(withPhotoID(t, key, directPacket.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := armorPackets(t, canonical); !strings.Contains(got, directPacket.String()) || strings.Replace(got, directPacket.String(), "", 1) != armorPackets(t, plain) {
+		t.Fatal("a direct-key signature after the photo ID was dropped, or the photo ID kept")
+	}
 }
 
 func testClearsign(t *testing.T, e *openpgp.Entity, text string) string {
