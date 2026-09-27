@@ -103,7 +103,7 @@ Listing photos and vendor and staff avatars need ClamAV's malware scanner, `clam
 
 What uploaders see follows the scanner's state on `/admin#image-scanner`: *Ready* shows the upload forms; *Unavailable* or *Signatures stale* keeps them on the page but disabled, with "Photo uploads are paused: …" and the reason (never the signature date); *Disabled* (no `CLAMD_ADDRESS`) replaces them with "Photo uploads are off on this market: they require the ClamAV malware scanner, which the operator has not set up." Listing details still save in every state, and stored photos and avatars can still be removed.
 
-Moderators and administrators also choose on `/account` whether to **hide themselves from the public staff list**; everyone is hidden until they untick it, and each change is recorded in their activity log. A hidden staff member's avatar is shown only to the buyer and vendor of orders whose dispute they decided (and to moderators and administrators). The public staff list itself is off until an administrator turns it on (war room A-189).
+Moderators and administrators also choose on `/account` whether to **hide themselves from the public staff list**; everyone is hidden until they untick it, and each change is recorded in their activity log. A hidden staff member's avatar can be shown only to the buyer and vendor of orders whose dispute they decided (and to moderators and administrators). The public staff list itself is off until an administrator turns it on (war room A-189).
 
 ### Turning it on
 

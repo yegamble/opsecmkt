@@ -34,7 +34,7 @@
 <fieldset{{if .Paused}} disabled{{end}}>
 <legend>Add a photo</legend>
 <ul class="help upload-limits" id="photo-help">
-<li>JPEG or PNG, at most 4 MB, 4096 pixels a side and 4096×3072 in all (about 12.6 megapixels).</li>
+<li>JPEG or PNG, at most 4 MB, 4096 pixels a side and 4096×3072 in all (about 12.6 megapixels). A progressive JPEG or a 16-bit PNG may have to be smaller than this to fit the market’s memory limit for processing pictures.</li>
 <li>Re-encoded to a JPEG at most 1200 pixels on its longer side; location, camera and other metadata removed; the original file is not kept.</li>
 <li>At most 4 photos per listing.</li>
 {{template "uploads:limits"}}
@@ -75,13 +75,13 @@
 <fieldset{{if .Paused}} disabled{{end}}>
 <legend>{{if .Avatar}}Replace your avatar{{else}}Add an avatar{{end}}</legend>
 <ul class="help upload-limits" id="avatar-help">
-<li>JPEG or PNG, at most 4 MB, 4096 pixels a side and 4096×3072 in all (about 12.6 megapixels).</li>
+<li>JPEG or PNG, at most 4 MB, 4096 pixels a side and 4096×3072 in all (about 12.6 megapixels). A progressive JPEG or a 16-bit PNG may have to be smaller than this to fit the market’s memory limit for processing pictures.</li>
 <li>Cropped to its centre square and re-encoded to a JPEG of at most 256×256 pixels; location, camera and other metadata removed; the original file is not kept. A new avatar replaces the old one.</li>
 {{template "uploads:limits"}}
 </ul>
 <div class="notice upload-privacy" id="avatar-privacy">
 <div>
-<p><strong>Before you upload:</strong> {{if .Staff}}your avatar is shown beside your dispute decisions to the buyer and vendor of each order, so a staff photo links your identity across every dispute decision. It is public, to anyone including visitors who are not signed in, only on the public staff list, when an administrator turns that list on and you have not hidden yourself from it.{{else}}your avatar is public to anyone, including visitors who are not signed in, on your vendor page.{{end}}</p>
+<p><strong>Before you upload:</strong> {{if .Staff}}your avatar is shown beside your dispute decisions to the buyer and vendor of each order and to moderators and administrators, so a staff photo links your identity across every dispute decision. It is public, to anyone including visitors who are not signed in, only on the public staff list, when an administrator turns that list on and you have not hidden yourself from it.{{else}}your avatar is public to anyone, including visitors who are not signed in, on your vendor page.{{end}}</p>
 {{template "uploads:privacy-lists"}}
 </div>
 </div>
@@ -96,7 +96,7 @@
 <form class="stack" method="post" action="/account/staff-list">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <label class="check"><input type="checkbox" name="hide" value="yes"{{if .StaffHidden}} checked{{end}} aria-describedby="staff-list-help"> Hide me from the public staff list</label>
-<p class="help" id="staff-list-help">Hidden staff are left off the public staff list even when an administrator turns it on, and hidden staff avatars are shown only to the parties of orders they decided.</p>
+<p class="help" id="staff-list-help">Hidden staff are left off the public staff list even when an administrator turns it on, and hidden staff avatars are shown only to the parties of orders they decided and to moderators and administrators.</p>
 <button type="submit">Save choice</button>
 </form>
 </section>{{end}}{{end}}{{end}}
