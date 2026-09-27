@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/stdlib"
 	"html/template"
 	"log"
@@ -97,27 +98,28 @@ func New(ctx context.Context, preview bool) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The application pool is opened and pinged first: its session timeouts (A-177) are startup parameters,
+	// which a connection pooler may refuse, and such a database must stop startup before the schema moves.
+	db, err := openAppPool(ctx, dsn, timeouts.connect)
+	if err != nil {
+		return nil, err
+	}
 	// Migrations run on their own connection without the application pool's session timeouts (A-177): a
 	// large migration, or the wait for another instance's migration lock, is bounded by MIGRATION_TIMEOUT
 	// and MIGRATION_LOCK_TIMEOUT instead.
 	mdb, err := OpenDB(dsn)
 	if err != nil {
+		db.Close()
 		return nil, err
 	}
 	mdb.SetMaxOpenConns(2) // the migration transaction, plus pg_terminate_backend when a phase times out
 	err = prepareDatabase(ctx, mdb, timeouts)
 	mdb.Close()
 	if err != nil {
-		return nil, err
-	}
-	db, err := OpenDB(dsn, WithAppTimeouts())
-	if err != nil {
+		db.Close()
 		return nil, err
 	}
 	a.db = db
-	db.SetMaxOpenConns(12)
-	db.SetMaxIdleConns(4)
-	db.SetConnMaxLifetime(30 * time.Minute)
 	// /healthz pings on its own connection, so a saturated application pool does not make the probe wait.
 	if a.health, err = OpenDB(dsn, WithAppTimeouts()); err != nil {
 		db.Close()
@@ -140,6 +142,41 @@ func New(ctx context.Context, preview bool) (*App, error) {
 		return nil, err
 	}
 	return a, nil
+}
+
+// openAppPool opens the application pool (WithAppTimeouts) and pings it within connectTimeout. When the
+// server refuses it but accepts a plain connection, the error says the session settings were refused (a
+// connection pooler such as PgBouncer rejects startup parameters it does not know; operator-guide.md). Errors
+// name a class, never DATABASE_URL or the server's text.
+func openAppPool(ctx context.Context, dsn string, connectTimeout time.Duration) (*sql.DB, error) {
+	db, err := OpenDB(dsn, WithAppTimeouts())
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(12)
+	db.SetMaxIdleConns(4)
+	db.SetConnMaxLifetime(30 * time.Minute)
+	connectCtx, cancel := context.WithTimeout(ctx, connectTimeout)
+	defer cancel()
+	err = db.PingContext(connectCtx)
+	if err == nil {
+		return db, nil
+	}
+	db.Close()
+	if timedOut(ctx, connectCtx) {
+		return nil, fmt.Errorf("database connection timed out after %s; check DATABASE_URL and service health, or raise DATABASE_CONNECT_TIMEOUT", connectTimeout)
+	}
+	var pe *pgconn.PgError
+	if errors.As(err, &pe) {
+		if plain, perr := OpenDB(dsn); perr == nil {
+			perr = plain.PingContext(connectCtx)
+			plain.Close()
+			if perr == nil {
+				return nil, fmt.Errorf("database refused the application's session settings (SQLSTATE %s): statement_timeout, lock_timeout and idle_in_transaction_session_timeout are sent when each connection starts, and a connection pooler such as PgBouncer refuses parameters it does not know; see \"Connection poolers\" in docs/operator-guide.md. Nothing was changed", pe.Code)
+			}
+		}
+	}
+	return nil, errors.New("database connection failed: " + connectErrorClass(err))
 }
 
 // DBOption adjusts the connection settings OpenDB uses.

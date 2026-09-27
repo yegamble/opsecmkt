@@ -295,7 +295,30 @@ Startup runs in separately bounded phases, each set by an optional Go duration i
 
 When a phase runs out of time the server exits with an error naming it and the setting to raise, for example `database migration timed out after 10m0s and was rolled back; nothing was changed. Raise MIGRATION_TIMEOUT ...`. A timed-out lock wait or migration is rolled back and its database session ended before the process exits, so the next start begins from the unchanged database with the lock free. An invalid value stops startup with a message naming the variable and its accepted range.
 
-Migrations run on their own database connection. Once they finish, the application's pool opens with fixed per-connection limits (startup parameters, set by the app, not in PostgreSQL's configuration): `statement_timeout` 8 s, `lock_timeout` 3 s and `idle_in_transaction_session_timeout` 15 s, so one slow query or held row lock cannot tie up the pool for longer. Migrations, `-status`, `-bootstrap-admin`, `-reset-admin-password`, `scripts/backup.sh`, `scripts/restore.sh` and `psql` sessions do not have them. A page or form stopped by one answers 503 ("The market is busy") and logs cause `57014` (statement) or `55P03` (lock); see [Troubleshooting](#troubleshooting).
+The application's pool opens with fixed per-connection limits (startup parameters, set by the app, not in PostgreSQL's configuration): `statement_timeout` 8 s, `lock_timeout` 3 s and `idle_in_transaction_session_timeout` 15 s, so one slow query or held row lock cannot tie up the pool for longer. A payment request, and a checkout, listing edit or takedown that may queue behind one, waits up to 11 s for a row lock instead, because the payment request holds its rows while the wallet is asked for an address (up to 10 s). Startup opens this pool and checks that the database accepts it **before** migrating, so a database or pooler that refuses these parameters stops startup with nothing changed (see [Connection poolers](#connection-poolers)). Migrations then run on their own database connection without the limits; the migration transaction also lifts any that are set on the database role. `-status`, `-bootstrap-admin`, `-reset-admin-password`, `scripts/backup.sh`, `scripts/restore.sh` and `psql` sessions do not have them either. A page or form stopped by one answers 503 ("The market is busy") and logs cause `57014` (statement) or `55P03` (lock); see [Troubleshooting](#troubleshooting).
+
+### Connection poolers
+
+An external database reached through a connection pooler such as PgBouncer, or a hosted provider's pooler, may refuse startup parameters it does not know. Startup then exits with `database refused the application's session settings (SQLSTATE 08P01): ...` (the code depends on the pooler) before any migration runs. Either:
+
+- connect `DATABASE_URL` to PostgreSQL directly, or to the provider's direct (session) endpoint; or
+- let the pooler drop the parameters and set them on the application's role instead. In PgBouncer, add them to `ignore_startup_parameters` (a comma-separated list; keep any entries already there):
+
+  ```ini
+  ignore_startup_parameters = statement_timeout,lock_timeout,idle_in_transaction_session_timeout
+  ```
+
+  PgBouncer then discards them, so the limits apply only once they are set for the role the app connects as (`opsecmkt` below; use the user in your `DATABASE_URL`). They take effect for new sessions:
+
+  ```sql
+  ALTER ROLE opsecmkt SET statement_timeout = '8s';
+  ALTER ROLE opsecmkt SET lock_timeout = '3s';
+  ALTER ROLE opsecmkt SET idle_in_transaction_session_timeout = '15s';
+  ```
+
+  The migration transaction lifts these itself, and `pg_dump` and the restore script set their own. `-bootstrap-admin` and `-reset-admin-password` then run under them too, which their short transactions do not notice. Without the role settings the app runs with no statement or lock limit, as before A-177.
+
+The pool also sets `TimeZone` to UTC as a startup parameter; PgBouncer passes `TimeZone` through by itself.
 
 Migration 001 replaces the free-text order status with a checked `state` column (existing unfunded drafts become `draft`) and limits each buyer to one open draft per listing and currency.
 

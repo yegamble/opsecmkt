@@ -471,3 +471,85 @@ func TestSlowWalletDoesNotRefuseQueuedListingWriters(t *testing.T) {
 		t.Fatalf("after the queued writers: stock p=%d q=%d", w.stock(p), w.stock(q))
 	}
 }
+
+// PR #15 review: the application pool's session timeouts are startup parameters, which a connection pooler
+// such as PgBouncer may refuse. The pool is opened and pinged before migrations, so such a database stops
+// startup with a class-only error and an untouched schema. A server that refuses one of the parameters stands
+// in for the pooler here.
+func TestAppPoolRefusedBeforeMigrations(t *testing.T) {
+	dsn := testSchemaDSN(t)
+	t.Setenv("DATABASE_URL", dsn)
+	t.Setenv("SETUP_TOKEN", testSetupToken)
+	t.Setenv("APP_SECRET_KEY", "")
+	t.Setenv("COMPOSE_FILE", "")
+	t.Setenv("COOKIE_SECURE", "false")
+	defer func(v string) { appSessionTimeouts["lock_timeout"] = v }(appSessionTimeouts["lock_timeout"])
+	appSessionTimeouts["lock_timeout"] = "not-a-duration"
+	a, err := New(context.Background(), false)
+	if err == nil {
+		a.Close()
+		t.Fatal("started with a database that refuses the session settings")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "refused the application's session settings") || !strings.Contains(msg, "SQLSTATE 22023") || strings.Contains(msg, "not-a-duration") || strings.Contains(msg, "postgres://") {
+		t.Fatalf("startup error: %q", msg)
+	}
+	plain, err := OpenDB(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer plain.Close()
+	var tables int
+	if err := plain.QueryRow("SELECT count(*) FROM pg_tables WHERE schemaname=current_schema()").Scan(&tables); err != nil {
+		t.Fatal(err)
+	}
+	if tables != 0 {
+		t.Fatalf("the refused start migrated the schema: %d tables", tables)
+	}
+}
+
+// With the session timeouts set on the database role instead (the documented PgBouncer set-up), migrations
+// still run without them: the migration transaction lifts them itself.
+func TestMigrationsLiftRoleLevelTimeouts(t *testing.T) {
+	dsn := testSchemaDSN(t)
+	u, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := u.Query()
+	q.Set("statement_timeout", "1000") // as if set on the role: the plain migration connection carries it
+	q.Set("lock_timeout", "1000")
+	u.RawQuery = q.Encode()
+	got := map[string]string{}
+	defer func(f func(context.Context, *sql.Tx) error) { runMigrations = f }(runMigrations)
+	runMigrations = func(ctx context.Context, tx *sql.Tx) error {
+		for _, k := range []string{"statement_timeout", "lock_timeout", "idle_in_transaction_session_timeout"} {
+			var v string
+			if err := tx.QueryRowContext(ctx, "SHOW "+k).Scan(&v); err != nil {
+				return err
+			}
+			got[k] = v
+		}
+		if _, err := tx.ExecContext(ctx, "SELECT pg_sleep(1.5)"); err != nil {
+			return err
+		}
+		return migrate(ctx, tx)
+	}
+	db, err := OpenDB(u.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	timeouts, err := startupTimeoutsFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareDatabase(context.Background(), db, timeouts); err != nil {
+		t.Fatalf("migration under role-level timeouts: %v", err)
+	}
+	for k, v := range got {
+		if v != "0" {
+			t.Errorf("migration ran with %s=%s", k, v)
+		}
+	}
+}
