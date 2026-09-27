@@ -115,7 +115,9 @@ func prepareDatabase(ctx context.Context, db *sql.DB, t startupTimeouts) error {
 	}
 	lockCtx, cancelLock := context.WithTimeout(ctx, t.lock)
 	defer cancelLock()
-	if err = tx.QueryRowContext(lockCtx, "SELECT pg_backend_pid()").Scan(&pid); err == nil {
+	// Session timeouts an operator set on the database role (for a connection pooler that refuses them as
+	// startup parameters, operator-guide.md) are lifted here: the phases above bound this transaction.
+	if err = tx.QueryRowContext(lockCtx, "SELECT pg_backend_pid(), set_config('statement_timeout','0',true), set_config('lock_timeout','0',true), set_config('idle_in_transaction_session_timeout','0',true)").Scan(&pid, new(string), new(string), new(string)); err == nil {
 		_, err = tx.ExecContext(lockCtx, "SELECT pg_advisory_xact_lock(782493)")
 	}
 	if err != nil {

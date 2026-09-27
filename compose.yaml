@@ -1,4 +1,13 @@
 name: opsecmkt
+# Every service's logs rotate: Docker keeps at most three 10 MB logs per container (docker compose logs reads
+# them). LOG_DRIVER in .env picks the driver: json-file (default) or local, the drivers that take these options;
+# for another driver see docs/operator-guide.md#resource-limits-and-log-rotation. compose.tor.yaml and
+# compose.nodes.yaml repeat this block, because YAML anchors do not cross files.
+x-logging: &logging
+  driver: ${LOG_DRIVER:-json-file}
+  options:
+    max-size: 10m
+    max-file: '3'
 services:
   app:
     build: .
@@ -31,6 +40,9 @@ services:
       PAYMENT_POLL_INTERVAL: ${PAYMENT_POLL_INTERVAL:-30s}
       PAYMENT_EXPIRY: ${PAYMENT_EXPIRY:-24h}
       AUDIT_SIGNING_KEY: ${AUDIT_SIGNING_KEY:-}
+      # Go's garbage collector works harder as the heap nears this, below mem_limit (512m), so that load makes
+      # the app slower rather than killed mid-request. Raise both together (docs/operator-guide.md#resource-limits-and-log-rotation).
+      GOMEMLIMIT: 400MiB
     # Healthy once /healthz answers "ok" (the app is serving and reaches PostgreSQL); `up --wait` waits for it.
     # start_period covers migrations on a large database; raise it with MIGRATION_TIMEOUT if needed.
     healthcheck:
@@ -47,6 +59,14 @@ services:
     tmpfs: [/tmp]
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
+    # Resource ceilings, so a flood or a leak in one container cannot starve the host (sizes and how to change
+    # them: docs/operator-guide.md#resource-limits-and-log-rotation). CPU is capped as cpu_quota/cpu_period (here
+    # 2 CPUs), not `cpus`: Docker refuses to start a container whose `cpus` exceeds the host's CPU count.
+    mem_limit: 512m
+    cpu_period: 100000
+    cpu_quota: 200000
+    pids_limit: 512
+    logging: *logging
   db:
     image: postgres:17-alpine
     profiles: [internal-db]
@@ -62,6 +82,11 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
+    mem_limit: 1g
+    cpu_period: 100000
+    cpu_quota: 200000
+    pids_limit: 256
+    logging: *logging
 volumes:
   postgres_data:
 

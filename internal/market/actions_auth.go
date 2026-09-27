@@ -10,15 +10,16 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 )
 
 func init() {
 	for _, path := range []string{"/setup", "/login", "/register"} {
-		registerAction(path, actionSpec{Public: true, OwnTx: true, Run: authAction})
+		registerAction(path, actionSpec{Public: true, OwnTx: true, Run: authAction, Precheck: authPrecheck})
 	}
-	registerAction("/challenge", actionSpec{Public: true, Run: challengeAction})
+	registerAction("/challenge", actionSpec{Public: true, Precheck: pendingPrecheck, Run: challengeAction})
 	registerPage("challenge", pageSpec{})
 	registerLoader("challenge", challengeLoader)
 }
@@ -199,6 +200,25 @@ func notifyOwner(ctx context.Context, tx *sql.Tx, userID, event string) error {
 	return err
 }
 
+// authPrecheck refuses, before the request takes a post slot or reads the database, what authGate would
+// refuse from the form alone: a malformed handle or password, and on /login and /register a CAPTCHA id that is
+// not a live one issued to this session. A flood of junk sign-ins therefore holds no post slot a real sign-in
+// needs (A-178). An id is checked only when one is sent: whether the CAPTCHA is on is a database setting, so a
+// post without one goes on to authGate. A form shown while the CAPTCHA was on and posted after an
+// administrator turned it off carries a live id, which passes; only an id that expired or was never issued
+// to this browser is refused here even though the CAPTCHA is now off.
+func authPrecheck(a *App, r *http.Request, token string) error {
+	if !handlePattern.MatchString(strings.TrimSpace(r.PostForm.Get("handle"))) || !validPassword(r.PostForm.Get("password")) {
+		return errAuthInput
+	}
+	if id := r.PostForm.Get("captcha_id"); id != "" && r.URL.Path != "/setup" {
+		if _, ok := a.captchaIDValid(id, time.Now(), digest(token)); !ok {
+			return errCaptchaExpired
+		}
+	}
+	return nil
+}
+
 // authGate admits one password-bearing request: input bounds, CAPTCHA, a free handle for /register and the
 // per-handle rate limit, then bounded bcrypt concurrency, all before any expensive work. On success the
 // caller must defer release().
@@ -208,7 +228,7 @@ func authGate(c *actionCtx) (handle, password string, release func(), err error)
 	// Validate the input and the CAPTCHA before the rate limit, so malformed handles and failed CAPTCHAs
 	// never create or increment a limiter entry (and cannot spend a real user's sign-in budget).
 	if !handlePattern.MatchString(handle) || !validPassword(password) {
-		err = fail(400, "Use a 3–32 character handle (letters, digits, underscores) and a password of 12–72 bytes.")
+		err = errAuthInput
 	} else if path != "/setup" {
 		err = a.checkCaptcha(c) // P1: single-use image CAPTCHA unless an administrator turned it off
 	}
@@ -249,6 +269,9 @@ func authGate(c *actionCtx) (handle, password string, release func(), err error)
 	}
 	return handle, password, release, nil
 }
+
+// errAuthInput refuses a malformed handle or password.
+var errAuthInput = fail(400, "Use a 3–32 character handle (letters, digits, underscores) and a password of 12–72 bytes.")
 
 // signInKey is the limiter key of a handle's sign-in budget (case-insensitive).
 func signInKey(handle string) string { return "auth:" + strings.ToLower(handle) }
@@ -425,6 +448,15 @@ func pendingCookie(r *http.Request) string {
 		return c.Value
 	}
 	return ""
+}
+
+// pendingPrecheck refuses a sign-in challenge without a pending cookie before it takes a post slot or opens a
+// transaction (A-178); the action makes the same check.
+func pendingPrecheck(_ *App, r *http.Request, _ string) error {
+	if pendingCookie(r) == "" {
+		return fail(401, "Sign-in verification expired. Sign in again.")
+	}
+	return nil
 }
 
 func challengeAction(c *actionCtx) (actionResult, error) {

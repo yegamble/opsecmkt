@@ -220,7 +220,11 @@ func (a *App) enqueuePayout(ctx context.Context, tx *sql.Tx, o *Order) error {
 		column = "payout_xmr"
 	}
 	// FOR SHARE waits for a suspension of the recipient in progress (it locks the account row and then holds
-	// the account's payouts), so a payout queued meanwhile is either seen and held by it or queued held here.
+	// the account's payouts), so a payout queued meanwhile is either seen and held by it or queued held here. It
+	// also waits for a checkout by a refunded buyer, which holds the row while it waits on the wallet (payAction).
+	if err = waitForWalletLocks(ctx, tx); err != nil {
+		return err
+	}
 	var address string
 	var suspended bool
 	if err = tx.QueryRowContext(ctx, "SELECT "+column+",suspended_at IS NOT NULL FROM users WHERE id=$1 FOR SHARE", recipient).Scan(&address, &suspended); err != nil {

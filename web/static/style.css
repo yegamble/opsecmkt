@@ -895,18 +895,23 @@ td a {
 }
 .pagination {
   display:flex;
+  flex-wrap:wrap;
   justify-content:center;
+  align-items:center;
   gap:8px;
   margin-top:30px
 }
-.pagination a {
+.pagination a,.pagination .current {
   padding:8px 14px;
   border:1px solid var(--line);
   font:0.875rem var(--mono)
 }
 .pagination .current {
   color:var(--amber);
-  border-color:#80602c
+  border-color:#80602c;
+  min-height:44px;
+  display:inline-flex;
+  align-items:center
 }
 .vendor-avatar {
   width:58px;

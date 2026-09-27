@@ -62,6 +62,7 @@ func captureLog(t *testing.T) *lockedBuffer {
 	w, flags := log.Writer(), log.Flags()
 	log.SetOutput(buf)
 	log.SetFlags(0)
+	http5xxLog.reset() // a previous test's burst of 5xx lines must not suppress this test's
 	t.Cleanup(func() { log.SetOutput(w); log.SetFlags(flags) })
 	return buf
 }
@@ -115,10 +116,11 @@ func TestLogsContainNoSecrets(t *testing.T) {
 			}
 		}
 	}
-	// A page 500: the catalog search passes the query to PostgreSQL, which refuses a NUL byte (22021).
-	w := send("GET", "/catalog?q="+handle+"%00&category=query-secret", nil)
-	check(w, "page", "catalog", "22021")
-	if strings.Contains(logs.String(), "/catalog") || strings.Contains(logs.String(), "q=") {
+	// A page 500: the product page passes its id to PostgreSQL, which refuses a NUL byte (22021). (The catalog
+	// search drops NUL bytes and invalid UTF-8 from q, category and region since A-181.)
+	w := send("GET", "/product?id="+handle+"%00&q=query-secret", nil)
+	check(w, "page", "product", "22021")
+	if strings.Contains(logs.String(), "/product") || strings.Contains(logs.String(), "id=") || strings.Contains(logs.String(), "q=") {
 		t.Fatalf("log contains the URL path or query: %q", logs.String())
 	}
 	// An action 500: a NUL in a form value reaches the UPDATE.

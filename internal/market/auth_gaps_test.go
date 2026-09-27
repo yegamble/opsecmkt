@@ -498,6 +498,8 @@ func TestJunkCaptchaFloodLeavesSignInAndConfirmWorking(t *testing.T) {
 	}
 	_, admin := e.user("flood_admin", "admin")
 	e.user("bad_vendor", "vendor")
+	// Twice the anonymous post class (A-178): junk CAPTCHAs are refused before they take a post slot, so the
+	// flood refuses no real request as busy.
 	stop := agJunkCaptchaFlood(e, 32)
 	defer stop()
 	for i := range signIns {
@@ -1153,8 +1155,10 @@ func TestChallengeBurstDoesNotExhaustPool(t *testing.T) {
 	if byCode != 200 {
 		t.Fatalf("bystander GET /account: %d", byCode)
 	}
-	// Wrong codes are refused until a limiter trips; nothing is a timeout or a misleading 400.
-	if seen[401]+seen[429] != n || seen[401] == 0 {
+	// Wrong codes are refused until a limiter trips; nothing is a timeout or a misleading 400. The anonymous
+	// post class (A-178) admits 16 at once, so up to 4 may be refused as busy, but only while 16 others are
+	// being served: more than the pool's 12 connections always reach it.
+	if seen[401]+seen[429]+seen[503] != n || seen[401] == 0 || seen[503] > n-cap(anonPostWork) {
 		t.Fatalf("challenge burst responses: %v", seen)
 	}
 	if agUserSessions(e, id) != 1 || agInt(e, "SELECT count(*) FROM pending_logins WHERE token_hash=$1", digest(pc.Value)) != 1 {

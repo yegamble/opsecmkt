@@ -223,6 +223,19 @@ Then open the admin page. **Payment providers** shows each currency as Enabled, 
 error; retried every poll), Refused (not a test network) or Disabled. The container stop grace period is now
 60 seconds so a redeploy does not interrupt a payout that is being broadcast.
 
+**Container logs now rotate, with Docker's `json-file` driver.** Every container keeps at most three 10 MB
+log files, and for these containers this replaces a default logging driver you set in Docker's `daemon.json`
+(for example `journald`). To keep another driver, set `LOG_DRIVER` in `.env` before `up -d`: `local` works as
+is; a driver that does not take `max-size` and `max-file` (such as `journald` or `syslog`) needs the override
+file described in [Resource limits and log rotation](docs/operator-guide.md#resource-limits-and-log-rotation).
+Log lines written before the upgrade stay with the old containers' driver.
+
+**External database behind a connection pooler.** The app now sends `statement_timeout`, `lock_timeout` and
+`idle_in_transaction_session_timeout` when each database connection starts, and checks before migrating that
+the database accepts them. PgBouncer and some hosted poolers refuse such parameters: startup then stops with
+"database refused the application's session settings" and changes nothing. See
+[Connection poolers](docs/operator-guide.md#connection-poolers).
+
 ## 5. Rolling back
 
 Rolling back is **not** an image swap. Migrations are one-way, so older code must not run against the

@@ -8,12 +8,12 @@ import (
 	"fmt"
 	"html/template"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	texttemplate "text/template"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -83,7 +83,41 @@ type actionSpec struct {
 	Public bool     // allow anonymous; skips the write:<user> rate limit
 	Roles  []string // required user roles (implies signed in)
 	OwnTx  bool     // Run opens its own transactions (e.g. bcrypt before any tx); c.Tx is nil, Audit is written without a tx
-	Run    func(c *actionCtx) (actionResult, error)
+	// Precheck, when set, runs in ServeHTTP after the CSRF check and before the session lookup and the post
+	// slot: a check of the form alone (no database), so a flood of posts it refuses holds no slot (A-178).
+	// Run must still make the same checks; it is also called without Precheck (tests call post directly).
+	Precheck func(a *App, r *http.Request, token string) error
+	// OneAtATime admits at most oneAtATimeLimit requests of this action per signed-in account at once; another
+	// is refused at once with 429 and Retry-After: 5, before it takes a post slot or a database connection. For
+	// an action that may wait on a slow wallet while holding the account's row (payAction), so one account's
+	// burst cannot hold the application pool's connections queued on its own row lock (PR #15 re-review).
+	OneAtATime bool
+	Run        func(c *actionCtx) (actionResult, error)
+}
+
+// oneAtATimeLimit is the per-account limit of OneAtATime actions (tests of the database's own guards lift it).
+var oneAtATimeLimit = 1
+
+// enterOneAtATime counts a request of path by userID in, unless oneAtATimeLimit are already in progress; done
+// counts it out.
+func (a *App) enterOneAtATime(path, userID string) (done func(), ok bool) {
+	key := path + "\x00" + userID
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.inFlight[key] >= oneAtATimeLimit {
+		return nil, false
+	}
+	if a.inFlight == nil {
+		a.inFlight = map[string]int{}
+	}
+	a.inFlight[key]++
+	return sync.OnceFunc(func() {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		if a.inFlight[key]--; a.inFlight[key] <= 0 {
+			delete(a.inFlight, key)
+		}
+	}), true
 }
 
 var actions = map[string]actionSpec{}
@@ -116,13 +150,38 @@ func fail(code int, msg string) error { return &httpError{Code: code, Msg: msg} 
 //	http 5xx kind=page|action name=<registered route key> status=<code> ref=<8 hex> cause=<class>
 //
 // cause is a class from errorCause, never the error's text, and the line names nothing about the request or
-// its sender: no URL path or query, form value, cookie, header, address, handle or user id.
+// its sender: no URL path or query, form value, cookie, header, address, handle or user id. At most 10 such
+// lines are written a second; the rest are counted in one "http 5xx suppressed=N" line (A-178). A 503 carries
+// Retry-After.
 func serverError(w http.ResponseWriter, r *http.Request, code int, msg, cause string) {
 	ref := randomToken()[:8]
 	kind, name := routeOf(r)
-	log.Printf("http 5xx kind=%s name=%s status=%d ref=%s cause=%s", kind, name, code, ref, cause)
+	http5xxLog.Printf("http 5xx kind=%s name=%s status=%d ref=%s cause=%s", kind, name, code, ref, cause)
+	if code == http.StatusServiceUnavailable {
+		w.Header().Set("Retry-After", busyRetryAfter)
+	}
 	http.Error(w, msg+"\nReference: "+ref, code)
 }
+
+// writeHTTPError answers err from a check made before the action runs (actionSpec.Precheck).
+func writeHTTPError(w http.ResponseWriter, r *http.Request, err error) {
+	var he *httpError
+	if errors.As(err, &he) && he.Code < 500 {
+		http.Error(w, he.Msg, he.Code)
+		return
+	}
+	serverError(w, r, 503, "Service unavailable", errorCause(err))
+}
+
+// dbBusy reports a statement cancelled by the application pool's statement_timeout or lock_timeout (A-177):
+// the database is overloaded or a row is held too long, so the request is answered 503 (retry), not 500.
+func dbBusy(err error) bool {
+	var pe *pgconn.PgError
+	return errors.As(err, &pe) && (pe.Code == "57014" || pe.Code == "55P03")
+}
+
+// errBusyMsg answers a request refused because of dbBusy.
+const errBusyMsg = "The market is busy. Try again in a few seconds."
 
 // routeOf names r's registered route: an action path, a page name or a raw handler path, else "unregistered".
 func routeOf(r *http.Request) (kind, name string) {
@@ -270,7 +329,12 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 		http.Error(w, "Unknown action", 404)
 		return
 	}
+	// Only a post that is charged to its account's write budget takes a signed-in slot: a public action (sign-in,
+	// registration, the sign-in challenge) is not, so a signed-in account posting one uses the anonymous class and
+	// cannot flood the class that staff changes use (PR #15 re-review).
+	class := anonPostWork
 	if !spec.Public || len(spec.Roles) > 0 {
+		class = userPostWork
 		if u == nil {
 			http.Error(w, "Sign in required", 401)
 			return
@@ -284,6 +348,22 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 			return
 		}
 	}
+	if spec.OneAtATime && u != nil {
+		done, ok := a.enterOneAtATime(r.URL.Path, u.ID)
+		if !ok {
+			w.Header().Set("Retry-After", busyRetryAfter)
+			http.Error(w, "Your previous request is still being processed. Wait a few seconds, then reload the page to see its result.", http.StatusTooManyRequests)
+			return
+		}
+		defer done()
+	}
+	// The post's admission slot (A-178), taken only now: its body has been read and its CSRF, sign-in, role
+	// and write-budget checks have passed.
+	release, ok := admitPost(w, class)
+	if !ok {
+		return
+	}
+	defer release()
 	ctx := r.Context()
 	c := &actionCtx{A: a, W: w, R: r, User: u, Token: token, Form: r.PostForm}
 	if !spec.OwnTx {
@@ -313,6 +393,10 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 		return
 	}
 	if err != nil {
+		if dbBusy(err) {
+			serverError(w, r, 503, errBusyMsg, errorCause(err))
+			return
+		}
 		serverError(w, r, 500, "Unable to save changes", errorCause(err))
 		return
 	}

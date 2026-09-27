@@ -244,7 +244,7 @@ func TestHealthzWithDatabase(t *testing.T) {
 	if b := e.body("GET", "/healthz", randomToken(), nil, 200); b != "ok" {
 		t.Fatalf("healthz body %q", b)
 	}
-	e.A.db.Close() // a closed pool fails the ping exactly like an unreachable server
+	e.A.health.Close() // a closed pool fails the ping exactly like an unreachable server (A-178: its own connection)
 	w := e.do("GET", "/healthz", randomToken(), nil)
 	if w.Code != 503 {
 		t.Fatalf("healthz after the database closed: %d", w.Code)

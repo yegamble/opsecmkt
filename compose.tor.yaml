@@ -1,11 +1,20 @@
 # torrc resolves app:8080 to an IP address once, when Tor starts. `restart: true` restarts Tor whenever
 # Compose recreates or restarts the app (whose IP address can change), so the onion keeps answering.
 # Requires Docker Compose 2.17 or later.
+# Same log rotation as compose.yaml (anchors do not cross files; CI checks every service has it).
+x-logging: &logging
+  driver: ${LOG_DRIVER:-json-file}
+  options:
+    max-size: 10m
+    max-file: '3'
 services:
   tor:
     build:
       context: deploy
       dockerfile: Dockerfile.tor
+      # Unset (the default) builds the tor release pinned in Dockerfile.tor. TOR_VERSION in .env overrides it
+      # when deb.torproject.org no longer lists that release (docs/operator-guide.md#tor-image).
+      args: [TOR_VERSION]
     restart: unless-stopped
     depends_on:
       app:
@@ -22,11 +31,19 @@ services:
       start_period: 1m
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
+    mem_limit: 256m
+    cpu_period: 100000
+    cpu_quota: 100000
+    pids_limit: 64
+    logging: *logging
   tor-mirror:
     profiles: [mirror]
     build:
       context: deploy
       dockerfile: Dockerfile.tor
+      # Unset (the default) builds the tor release pinned in Dockerfile.tor. TOR_VERSION in .env overrides it
+      # when deb.torproject.org no longer lists that release (docs/operator-guide.md#tor-image).
+      args: [TOR_VERSION]
     restart: unless-stopped
     depends_on:
       app:
@@ -42,6 +59,11 @@ services:
       start_period: 1m
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
+    mem_limit: 256m
+    cpu_period: 100000
+    cpu_quota: 100000
+    pids_limit: 64
+    logging: *logging
 volumes:
   tor_mirror_identity:
   tor_identity:

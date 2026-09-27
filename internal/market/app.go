@@ -13,8 +13,10 @@ import (
 	"errors"
 	"fmt"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/stdlib"
 	"html/template"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -35,13 +37,16 @@ type bucket struct {
 }
 type App struct {
 	db               *sql.DB
+	health           *sql.DB // one connection for /healthz, apart from the application pool (A-178)
 	templates        *template.Template
 	preview, secure  bool
 	mode, setupToken string // setupToken authorizes /setup only, and only until installed
 	keyRoot          string // APP_SECRET_KEY, or SETUP_TOKEN (legacy): the root of key and the sealing keys
 	key              []byte // CSRF/CAPTCHA HMAC key, sha256("csrf:"+keyRoot)
+	captchaIDKey     []byte // CAPTCHA challenge-id MAC key, sha256("captcha-id:"+keyRoot); empty = no challenges
 	mu               sync.Mutex
 	limits           map[string]bucket
+	inFlight         map[string]int                  // OneAtATime actions in progress, by path and account (enterOneAtATime)
 	signInLogAt      time.Time                       // last "sign-in limiter refusing" log line (guarded by mu)
 	payMu            sync.RWMutex                    // guards payments and unavailable once Start has run
 	checkMu          sync.Mutex                      // serialises provider checks (refreshProviders)
@@ -95,26 +100,44 @@ func New(ctx context.Context, preview bool) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	db, err := OpenDB(dsn)
+	// The application pool is opened and pinged first: its session timeouts (A-177) are startup parameters,
+	// which a connection pooler may refuse, and such a database must stop startup before the schema moves.
+	db, err := openAppPool(ctx, dsn, timeouts.connect)
 	if err != nil {
 		return nil, err
 	}
-	a.db = db
-	db.SetMaxOpenConns(12)
-	db.SetMaxIdleConns(4)
-	db.SetConnMaxLifetime(30 * time.Minute)
-	if err = prepareDatabase(ctx, db, timeouts); err != nil {
+	// Migrations run on their own connection without the application pool's session timeouts (A-177): a
+	// large migration, or the wait for another instance's migration lock, is bounded by MIGRATION_TIMEOUT
+	// and MIGRATION_LOCK_TIMEOUT instead.
+	mdb, err := OpenDB(dsn)
+	if err != nil {
 		db.Close()
 		return nil, err
 	}
-	if err = a.checkInstallState(ctx, legacy); err != nil {
+	mdb.SetMaxOpenConns(2) // the migration transaction, plus pg_terminate_backend when a phase times out
+	err = prepareDatabase(ctx, mdb, timeouts)
+	mdb.Close()
+	if err != nil {
 		db.Close()
+		return nil, err
+	}
+	a.db = db
+	// /healthz pings on its own connection, so a saturated application pool does not make the probe wait.
+	if a.health, err = OpenDB(dsn, WithAppTimeouts()); err != nil {
+		db.Close()
+		return nil, err
+	}
+	a.health.SetMaxOpenConns(1)
+	a.health.SetMaxIdleConns(1)
+	a.health.SetConnMaxLifetime(30 * time.Minute)
+	if err = a.checkInstallState(ctx, legacy); err != nil {
+		a.closeDB()
 		return nil, err
 	}
 	payCtx, cancel := context.WithTimeout(ctx, paymentStartupTimeout)
 	defer cancel()
 	if err = a.initPayments(payCtx); err != nil {
-		db.Close()
+		a.closeDB()
 		if timedOut(ctx, payCtx) {
 			return nil, fmt.Errorf("payment provider startup timed out after %s; check the wallet and node RPC services: %w", paymentStartupTimeout, err)
 		}
@@ -123,22 +146,97 @@ func New(ctx context.Context, preview bool) (*App, error) {
 	return a, nil
 }
 
+// openAppPool opens the application pool (WithAppTimeouts) and pings it within connectTimeout. When the
+// server refuses it but accepts a plain connection, the error says the session settings were refused (a
+// connection pooler such as PgBouncer rejects startup parameters it does not know; operator-guide.md). Errors
+// name a class, never DATABASE_URL or the server's text.
+func openAppPool(ctx context.Context, dsn string, connectTimeout time.Duration) (*sql.DB, error) {
+	db, err := OpenDB(dsn, WithAppTimeouts())
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(12)
+	db.SetMaxIdleConns(4)
+	db.SetConnMaxLifetime(30 * time.Minute)
+	connectCtx, cancel := context.WithTimeout(ctx, connectTimeout)
+	defer cancel()
+	err = db.PingContext(connectCtx)
+	if err == nil {
+		return db, nil
+	}
+	db.Close()
+	if timedOut(ctx, connectCtx) {
+		return nil, fmt.Errorf("database connection timed out after %s; check DATABASE_URL and service health, or raise DATABASE_CONNECT_TIMEOUT", connectTimeout)
+	}
+	var pe *pgconn.PgError
+	if errors.As(err, &pe) {
+		if plain, perr := OpenDB(dsn); perr == nil {
+			perr = plain.PingContext(connectCtx)
+			plain.Close()
+			if perr == nil {
+				return nil, fmt.Errorf("database refused the application's session settings (SQLSTATE %s): statement_timeout, lock_timeout and idle_in_transaction_session_timeout are sent when each connection starts, and a connection pooler such as PgBouncer refuses parameters it does not know; see \"Connection poolers\" in docs/operator-guide.md. Nothing was changed", pe.Code)
+			}
+		}
+	}
+	return nil, errors.New("database connection failed: " + connectErrorClass(err))
+}
+
+// DBOption adjusts the connection settings OpenDB uses.
+type DBOption func(runtimeParams map[string]string)
+
+// appSessionTimeouts are the per-connection limits of the application pool (A-177): no statement runs longer
+// than 8 s, no lock is waited for longer than 3 s and no transaction sits idle longer than 15 s. A longer
+// operation on that pool needs a scoped SET LOCAL. Migrations and the host commands never get them.
+var appSessionTimeouts = map[string]string{
+	"statement_timeout":                   "8s",
+	"lock_timeout":                        "3s",
+	"idle_in_transaction_session_timeout": "15s",
+}
+
+// WithAppTimeouts sets appSessionTimeouts on every connection (startup parameters, beside timezone). Only the
+// server's application pool and its health probe connection use it.
+func WithAppTimeouts() DBOption {
+	return func(p map[string]string) {
+		for k, v := range appSessionTimeouts {
+			setRuntimeParam(p, k, v)
+		}
+	}
+}
+
+// setRuntimeParam sets k, replacing any spelling of it that dsn carried (setting names are case-insensitive).
+func setRuntimeParam(p map[string]string, k, v string) {
+	for existing := range p {
+		if strings.EqualFold(existing, k) {
+			delete(p, existing)
+		}
+	}
+	p[k] = v
+}
+
 // OpenDB opens the database in dsn with TimeZone pinned to UTC on every connection (a startup parameter, which
 // outranks database and role defaults), so displayed times never follow or reveal the server's zone. The
-// application pool, its migrations and the -bootstrap-admin and -reset-admin-password commands all open the
-// database here.
-func OpenDB(dsn string) (*sql.DB, error) {
+// application pool, its migrations and the -bootstrap-admin, -reset-admin-password and -status commands all
+// open the database here; only the application pool passes WithAppTimeouts.
+func OpenDB(dsn string, opts ...DBOption) (*sql.DB, error) {
 	cfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
 		return nil, errors.New("database configuration invalid")
 	}
-	for k := range cfg.RuntimeParams {
-		if strings.EqualFold(k, "timezone") {
-			delete(cfg.RuntimeParams, k)
-		}
+	setRuntimeParam(cfg.RuntimeParams, "timezone", "UTC")
+	for _, o := range opts {
+		o(cfg.RuntimeParams)
 	}
-	cfg.RuntimeParams["timezone"] = "UTC"
 	return stdlib.OpenDB(*cfg), nil
+}
+
+// closeDB closes the application pool and the health probe connection.
+func (a *App) closeDB() {
+	if a.health != nil {
+		a.health.Close()
+	}
+	if a.db != nil {
+		a.db.Close()
+	}
 }
 func randomToken() string {
 	b := make([]byte, 32)
@@ -251,12 +349,25 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", 405)
 		return
 	}
+	// Admission control (admission.go): a page finding its class full is refused here with 503, before any
+	// database work; a form post takes its slot in a.post, once its body has been read and checked and its
+	// session looked up.
+	aw, release, ok := admit(w, r)
+	if !ok {
+		return
+	}
+	defer release()
+	w = aw
 	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 	defer cancel()
 	r = r.WithContext(ctx)
 	if r.URL.Path == "/healthz" {
-		if a.db != nil {
-			if err := a.db.PingContext(ctx); err != nil {
+		probe := a.health
+		if probe == nil {
+			probe = a.db // an App built without New (tests)
+		}
+		if probe != nil {
+			if err := probe.PingContext(ctx); err != nil {
 				serverError(w, r, 503, "unavailable", errorCause(err))
 				return
 			}
@@ -284,18 +395,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie("anon"); err == nil && len(c.Value) == 64 {
 		anon = c.Value
 	}
-	var user *User
-	if token != "" && a.db != nil {
-		// A suspended account's sessions never authenticate (suspension also deletes them).
-		u := &User{}
-		err := a.db.QueryRowContext(ctx, `SELECT u.id,u.handle,u.role,u.pgp,u.xmpp FROM users u JOIN sessions s ON s.user_id=u.id WHERE s.token_hash=$1 AND s.expires>now() AND u.suspended_at IS NULL`, digest(token)).Scan(&u.ID, &u.Handle, &u.Role, &u.PGP, &u.XMPP)
-		if err == nil {
-			user = u
-		} else if err != sql.ErrNoRows {
-			serverError(w, r, 503, "Service unavailable", errorCause(err))
-			return
-		}
-	}
+	session := token // looked up below, unless a post's form turns out to have been rendered for `anon`
 	if token == "" {
 		if anon == "" {
 			anon = randomToken()
@@ -306,11 +406,21 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(context.WithValue(context.WithValue(ctx, sessionKey{}, token), anonKey{}, anon))
 	ctx = r.Context()
 	if r.Method == "POST" {
+		// Everything here reads no database and holds no slot: a post takes its slot in a.post, after its
+		// body has been read and checked, so a client trickling a body holds only its connection (A-178).
 		if a.preview {
 			http.Error(w, "Read-only preview. Start with PostgreSQL to save changes.", 403)
 			return
 		}
-		r.Body = http.MaxBytesReader(w, r.Body, 65536)
+		// The body is read first (at most 64 KiB) and its fields counted before it is parsed: parsing runs before
+		// any slot, on as many connections as the listener admits, and a body of thousands of distinct empty
+		// fields cost about 3.7 MB of allocation to parse. No form has more than maxFormFields (PR #15 re-review).
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 65536))
+		if err != nil || bytes.Count(body, []byte("&")) >= maxFormFields {
+			http.Error(w, "Invalid or oversized form", 400)
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
 		if err := r.ParseForm(); err != nil {
 			http.Error(w, "Invalid or oversized form", 400)
 			return
@@ -338,9 +448,43 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "Form expired. Reload and try again.", 403)
 				return
 			}
-			token, user = anon, nil
+			token, session = anon, ""
 			r = r.WithContext(context.WithValue(r.Context(), sessionKey{}, token)) // keeps anonKey
 		}
+		if spec, ok := actions[r.URL.Path]; ok && spec.Precheck != nil {
+			if err := spec.Precheck(a, r, token); err != nil {
+				writeHTTPError(w, r, err)
+				return
+			}
+		}
+	}
+	var user *User
+	if session != "" && a.db != nil {
+		lookupDone := func() {}
+		if r.Method == "POST" {
+			// A page holds its page slot already. A post's lookup takes a slot of its own class for this
+			// query only (takeLookupSlot), so a flood of posts with made-up session cookies is bounded, and a
+			// flood of pages, which never takes that class, cannot refuse a signed-in or staff post.
+			done, ok := takeLookupSlot(ctx)
+			if !ok {
+				busy(w)
+				return
+			}
+			defer done() // on a panic; released below as soon as the query is done
+			lookupDone = done
+		}
+		// A suspended account's sessions never authenticate (suspension also deletes them).
+		u := &User{}
+		err := a.db.QueryRowContext(ctx, `SELECT u.id,u.handle,u.role,u.pgp,u.xmpp FROM users u JOIN sessions s ON s.user_id=u.id WHERE s.token_hash=$1 AND s.expires>now() AND u.suspended_at IS NULL`, digest(session)).Scan(&u.ID, &u.Handle, &u.Role, &u.PGP, &u.XMPP)
+		lookupDone()
+		if err == nil {
+			user = u
+		} else if err != sql.ErrNoRows {
+			serverError(w, r, 503, "Service unavailable", errorCause(err))
+			return
+		}
+	}
+	if r.Method == "POST" {
 		a.post(w, r, user, token)
 		return
 	}
@@ -362,6 +506,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		d.Query = q.Get("q")
 		d.Category = q.Get("category")
 		d.Region = q.Get("region")
+		normaliseCatalogFilters(&d)
 		if q.Get("currency") == "XMR" {
 			d.Currency = "XMR"
 		}
@@ -382,6 +527,9 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				if match {
 					d.Products = append(d.Products, p)
 				}
+			}
+			if page == "catalog" {
+				d.Products = pageSlice(&d, d.Products, q.Get("page"))
 			}
 			if page == "product" || page == "checkout" {
 				if len(d.Products) == 0 {
@@ -433,6 +581,8 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case err == sql.ErrNoRows:
 			http.NotFound(w, r)
+		case dbBusy(err):
+			serverError(w, r, 503, errBusyMsg, errorCause(err))
 		case !errors.As(err, &he):
 			serverError(w, r, 500, "Unable to load this page", errorCause(err))
 		case he.Code >= 500:

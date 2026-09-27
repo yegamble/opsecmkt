@@ -10,6 +10,12 @@
 # back to cookie authentication, so nothing on the network (including the app) can use its RPC. Without
 # MONERO_WALLET_RPC_PASSWORD monero-wallet-rpc gets --rpc-login ':' (empty user name), which it rejects at
 # startup instead of running without authentication. Neither falls back to a guessable password.
+# Same log rotation as compose.yaml (anchors do not cross files; CI checks every service has it).
+x-logging: &logging
+  driver: ${LOG_DRIVER:-json-file}
+  options:
+    max-size: 10m
+    max-file: '3'
 services:
   bitcoin:
     image: ${BITCOIN_IMAGE:-bitcoin/bitcoin:31.1}
@@ -38,6 +44,13 @@ services:
       # would fail. 0.0002 tBTC/kvB (20 sat/vB) is deliberately generous so test payouts confirm.
       - -fallbackfee=0.0002
     volumes: [bitcoin_data:/data]
+    # Sized for a pruned test-network node: its database cache and mempool (at most 300 MB by default) plus
+    # headroom for the initial sync (docs/operator-guide.md#resource-limits-and-log-rotation).
+    mem_limit: 2g
+    cpu_period: 100000
+    cpu_quota: 200000
+    pids_limit: 256
+    logging: *logging
   monero:
     image: ${MONERO_IMAGE:-ghcr.io/sethforprivacy/simple-monerod:v0.18.5.1}
     profiles: [monero]
@@ -51,6 +64,12 @@ services:
       --rpc-restricted-bind-ip=0.0.0.0 --rpc-restricted-bind-port=18081 --confirm-external-bind
       ${MONERO_PRUNE_FLAGS---prune-blockchain --sync-pruned-blocks}
     volumes: [monero_data:/home/monero/.bitmonero]
+    # monerod starts a thread per core for sync and verification, so pids_limit leaves room on large hosts.
+    mem_limit: 2g
+    cpu_period: 100000
+    cpu_quota: 200000
+    pids_limit: 512
+    logging: *logging
   monero-wallet:
     # Separate wallet-RPC image; reachable only on the backend network.
     image: ${MONERO_WALLET_IMAGE:-ghcr.io/sethforprivacy/simple-monero-wallet-rpc:v0.18.5.1}
@@ -59,6 +78,11 @@ services:
     networks: [backend]
     command: ['--${MONERO_NETWORK:-stagenet}', --daemon-address, 'monero:18081', --trusted-daemon, --wallet-dir=/home/monero/wallet, --rpc-bind-port=18083, --rpc-login, 'marketplace:${MONERO_WALLET_RPC_PASSWORD:-}']
     volumes: [monero_wallet:/home/monero/wallet]
+    mem_limit: 512m
+    cpu_period: 100000
+    cpu_quota: 100000
+    pids_limit: 128
+    logging: *logging
 volumes:
   bitcoin_data:
   monero_data:

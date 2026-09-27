@@ -1,5 +1,42 @@
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends tor ca-certificates && rm -rf /var/lib/apt/lists/* && chown debian-tor:debian-tor /var/lib/tor && chmod 700 /var/lib/tor
+# Tor from the Tor Project's own Debian repository (https://support.torproject.org/little-t-tor/getting-started/installing/),
+# pinned so that a rebuild installs the same release. deb.torproject.org keeps only its newest build in the index,
+# so when the pinned build has been withdrawn the image installs the repository's current build instead, but only
+# if it is the same or newer (never older), and says so; TOR_VERSION can be bumped here, or set in .env, which
+# compose.tor.yaml passes as a build argument (docs/operator-guide.md#tor-image). Both architectures the repository
+# publishes (amd64, arm64) share the version string.
+FROM debian:bookworm-20260918-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
+ARG TOR_VERSION=0.4.9.13-1~d12.bookworm+1
+# The Tor Project archive signing key; the download is refused unless it carries this fingerprint.
+ARG TOR_ARCHIVE_FINGERPRINT=A3C4F0F979CAA22CDBA8F512EE8CBC9E886DDD89
+RUN set -eu; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl gnupg; \
+    curl --fail --show-error --silent --location --proto '=https' --tlsv1.2 \
+      "https://deb.torproject.org/torproject.org/${TOR_ARCHIVE_FINGERPRINT}.asc" -o /tmp/tor.asc; \
+    test "$(gpg --show-keys --with-colons /tmp/tor.asc | grep -c '^pub:')" = 1; \
+    fingerprint=$(gpg --show-keys --with-colons /tmp/tor.asc | awk -F: '$1 == "fpr" { print $10; exit }'); \
+    test "$fingerprint" = "$TOR_ARCHIVE_FINGERPRINT"; \
+    gpg --dearmor < /tmp/tor.asc > /usr/share/keyrings/deb.torproject.org-keyring.gpg; \
+    rm /tmp/tor.asc; \
+    printf '%s\n' 'Types: deb' 'URIs: https://deb.torproject.org/torproject.org/' 'Suites: bookworm' \
+      'Components: main' 'Signed-By: /usr/share/keyrings/deb.torproject.org-keyring.gpg' \
+      > /etc/apt/sources.list.d/tor.sources; \
+    apt-get update; \
+    if ! apt-get install -y --no-install-recommends tor="${TOR_VERSION}"; then \
+      candidate=$(apt-cache policy tor | awk '$1 == "Candidate:" { print $2 }'); \
+      if [ -z "$candidate" ] || [ "$candidate" = "(none)" ] || ! dpkg --compare-versions "$candidate" ge "$TOR_VERSION"; then \
+        echo "tor ${TOR_VERSION} is no longer published and the repository offers no newer build (${candidate:-none}); set TOR_VERSION (docs/operator-guide.md#tor-image)" >&2; exit 1; \
+      fi; \
+      echo "tor ${TOR_VERSION} is no longer published; installing the newer ${candidate} from the same signed repository" >&2; \
+      apt-get install -y --no-install-recommends tor="${candidate}"; \
+    fi; \
+    apt-get purge -y --auto-remove curl gnupg; \
+    rm -rf /var/lib/apt/lists/* /root/.gnupg; \
+    chown debian-tor:debian-tor /var/lib/tor; \
+    chmod 700 /var/lib/tor; \
+    tor --version; \
+    tor --list-modules; \
+    tor --list-modules | grep -qx 'pow: yes' || { echo 'this tor lacks the pow module (HiddenServicePoWDefensesEnabled)' >&2; exit 1; }
 COPY torrc /etc/tor/torrc
 USER debian-tor
 ENTRYPOINT ["tor", "-f", "/etc/tor/torrc"]

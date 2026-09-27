@@ -30,6 +30,9 @@ type managedListing struct {
 // Anything else is reported as not found so listing ids of other vendors are not confirmed.
 func lockListing(c *actionCtx, id string) (managedListing, error) {
 	l := managedListing{ID: id}
+	if err := waitForWalletLocks(c.Ctx(), c.Tx); err != nil { // a checkout may hold the row (payAction)
+		return l, err
+	}
 	err := c.Tx.QueryRowContext(c.Ctx(), `SELECT vendor_id,kind,stock,archived,coalesce(admin_archive_reason,'') FROM products WHERE id=$1 AND (vendor_id=$2 OR $3='admin') FOR UPDATE`, id, c.User.ID, c.User.Role).Scan(&l.VendorID, &l.Kind, &l.Stock, &l.Archived, &l.Takedown)
 	if err == sql.ErrNoRows {
 		return l, fail(404, "Listing not found")
@@ -178,6 +181,9 @@ func adminListingAction(c *actionCtx) (actionResult, error) {
 	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
 		ctx, tx := c.Ctx(), c.Tx
+		if err := waitForWalletLocks(ctx, tx); err != nil { // a checkout may hold the row (payAction)
+			return actionResult{}, err
+		}
 		var title, current, handle string
 		err := tx.QueryRowContext(ctx, `SELECT p.title,coalesce(p.admin_archive_reason,''),u.handle FROM products p JOIN users u ON u.id=p.vendor_id
 			WHERE p.id=$1 FOR UPDATE OF p`, id).Scan(&title, &current, &handle)

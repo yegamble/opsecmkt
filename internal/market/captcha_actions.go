@@ -3,11 +3,12 @@ package market
 import (
 	"bytes"
 	"context"
-	"crypto/subtle"
 	"database/sql"
 	"image/png"
+	"log"
 	"net/http"
 	"regexp"
+	"time"
 )
 
 func init() {
@@ -15,6 +16,7 @@ func init() {
 	registerLoader("login", captchaLoader)
 	registerLoader("register", captchaLoader)
 	registerAction("/admin/captcha", actionSpec{Roles: []string{"admin"}, Run: captchaToggle})
+	registerBackground(captchaSpentSweeper)
 	for _, page := range []string{"login", "register"} {
 		registerPreview(page, func(d *PageData) { d.Captcha = &CaptchaView{ID: "preview"} })
 	}
@@ -25,35 +27,26 @@ var captchaID = regexp.MustCompile(`^[0-9a-f]{64}$`)
 // captchaRequired is true unless an administrator turned the CAPTCHA off (fail closed on a missing row).
 func captchaRequired(settings map[string]string) bool { return settings["captcha_required"] != "false" }
 
-// captchaLoader issues a fresh single-use challenge bound to this browser session for every login/register view.
-func captchaLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error {
+// captchaLoader issues a fresh single-use challenge bound to this browser session for every login/register
+// view. Issuing is stateless (captcha.go) and writes nothing, so anonymous page views cannot grow a table or
+// hold a pool connection for it (A-176).
+func captchaLoader(_ context.Context, a *App, r *http.Request, d *PageData) error {
 	if !captchaRequired(d.Settings) {
 		return nil
 	}
-	d.Captcha = &CaptchaView{}
-	session := digest(sessionToken(r))
-	// Counted in PostgreSQL rather than the in-memory limiter: anonymous GETs must not be able to fill
-	// the limiter's shared key table (which would lock out sign-in for everyone).
-	if _, err := a.db.ExecContext(ctx, "DELETE FROM captchas WHERE expires<now()"); err != nil {
-		return err
+	d.Captcha = &CaptchaView{ID: a.newCaptchaID(digest(sessionToken(r)), time.Now().Add(captchaTTL))}
+	if d.Captcha.ID == "" {
+		return fail(503, "Service unavailable")
 	}
-	var recent int
-	if err := a.db.QueryRowContext(ctx, "SELECT count(*) FROM captchas WHERE session_hash=$1 AND created>now()-interval '10 minutes'", session).Scan(&recent); err != nil {
-		return err
-	}
-	if recent >= 30 {
-		d.Captcha.Error = "Too many CAPTCHA images were requested from this browser session. Wait ten minutes, then reload this page."
-		return nil
-	}
-	id := randomToken()
-	if _, err := a.db.ExecContext(ctx, "INSERT INTO captchas(id,answer_hash,session_hash,expires) VALUES($1,$2,$3,now()+interval '10 minutes')", id, captchaAnswerHash(id, a.captchaAnswer(id)), session); err != nil {
-		return err
-	}
-	d.Captcha.ID = id
 	return nil
 }
 
-// captchaPNG serves GET /captcha?id=<id>: only an unused, unexpired challenge issued to this session.
+// captchaWork bounds concurrent CAPTCHA image renders; with every slot taken a request is refused at once
+// (503 with Retry-After) instead of queueing CPU work (A-176).
+var captchaWork = make(chan struct{}, 8)
+
+// captchaPNG serves GET /captcha?id=<id>: only an unexpired challenge issued to this session. It reads no
+// database: an id already used still renders its same image, which gains nothing, since POST refuses it.
 func captchaPNG(a *App, w http.ResponseWriter, r *http.Request, _ *User) {
 	id := r.URL.Query().Get("id")
 	if !(captchaID.MatchString(id) || a.preview && id == "preview") {
@@ -61,22 +54,23 @@ func captchaPNG(a *App, w http.ResponseWriter, r *http.Request, _ *User) {
 		return
 	}
 	if !a.preview {
-		var ok bool
 		// Either cookie: a page rendered while `session` was withheld (cross-site landing) bound its
 		// challenge to `anon`, and its image request then sends both cookies.
 		anon := anonToken(r)
 		if anon == "" {
 			anon = sessionToken(r)
 		}
-		err := a.db.QueryRowContext(r.Context(), "SELECT EXISTS(SELECT 1 FROM captchas WHERE id=$1 AND session_hash IN ($2,$3) AND NOT used AND expires>now())", id, digest(sessionToken(r)), digest(anon)).Scan(&ok)
-		if err != nil {
-			serverError(w, r, 503, "Service unavailable", errorCause(err))
-			return
-		}
-		if !ok {
+		if _, ok := a.captchaIDValid(id, time.Now(), digest(sessionToken(r)), digest(anon)); !ok {
 			http.NotFound(w, r)
 			return
 		}
+	}
+	select {
+	case captchaWork <- struct{}{}:
+		defer func() { <-captchaWork }()
+	default:
+		busy(w)
+		return
 	}
 	var b bytes.Buffer
 	if err := png.Encode(&b, a.captchaImage(id)); err != nil {
@@ -88,8 +82,12 @@ func captchaPNG(a *App, w http.ResponseWriter, r *http.Request, _ *User) {
 	w.Write(b.Bytes())
 }
 
-// checkCaptcha consumes the submitted challenge (single use, even when the answer is wrong) and
-// compares the answer. It is a no-op while the CAPTCHA is turned off.
+// errCaptchaExpired refuses a challenge id that expired, was already used or was not issued to this session.
+var errCaptchaExpired = fail(400, "The CAPTCHA expired or was already used. Go back, reload the page and enter the new image's characters.")
+
+// checkCaptcha consumes the submitted challenge (single use, even when the answer is wrong) and compares the
+// answer. It is a no-op while the CAPTCHA is turned off. An id this server did not issue to this session, or
+// one that has expired, is refused before anything is written.
 func (a *App) checkCaptcha(c *actionCtx) error {
 	ctx := c.Ctx()
 	var v string
@@ -101,18 +99,52 @@ func (a *App) checkCaptcha(c *actionCtx) error {
 		return nil
 	}
 	id := c.Form.Get("captcha_id")
-	var hash string
-	err = a.db.QueryRowContext(ctx, "UPDATE captchas SET used=true WHERE id=$1 AND session_hash=$2 AND NOT used AND expires>now() RETURNING answer_hash", id, digest(c.Token)).Scan(&hash)
-	if err == sql.ErrNoRows {
-		return fail(400, "The CAPTCHA expired or was already used. Go back, reload the page and enter the new image's characters.")
+	expires, ok := a.captchaIDValid(id, time.Now(), digest(c.Token))
+	if !ok {
+		return errCaptchaExpired
 	}
+	// The primary key makes a replayed or concurrent second use insert nothing. Expiry is checked again on the
+	// database clock, which the sweep deletes by, so an id whose row was swept can never be inserted afresh.
+	res, err := a.db.ExecContext(ctx, "INSERT INTO captcha_spent(id,expires) SELECT $1,$2::timestamptz WHERE $2::timestamptz>now() ON CONFLICT(id) DO NOTHING", id, expires)
 	if err != nil {
 		return fail(503, "Service unavailable")
 	}
-	if subtle.ConstantTimeCompare([]byte(hash), []byte(captchaAnswerHash(id, c.Form.Get("captcha")))) != 1 {
+	if n, err := res.RowsAffected(); err != nil || n != 1 {
+		return errCaptchaExpired
+	}
+	if !a.captchaMatches(id, c.Form.Get("captcha")) {
 		return fail(400, "CAPTCHA answer incorrect. Go back, reload the page and enter the new image's characters.")
 	}
 	return nil
+}
+
+// captchaSpentSweepInterval is how often spent challenge ids past their expiry are deleted.
+var captchaSpentSweepInterval = time.Minute
+
+// captchaSpentSweeper deletes spent ids once they have expired. checkCaptcha refuses an expired id before
+// inserting (on the database clock), so deleting its row cannot reopen it; the one-minute margin absorbs a
+// database clock step.
+func captchaSpentSweeper(ctx context.Context, a *App) {
+	t := time.NewTimer(0)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		if err := a.sweepCaptchaSpent(ctx); err != nil && ctx.Err() == nil {
+			log.Printf("captcha spent-id sweep: %s", errorCause(err)) // a class, never the driver's text (A-170)
+		}
+		t.Reset(captchaSpentSweepInterval)
+	}
+}
+
+func (a *App) sweepCaptchaSpent(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	_, err := a.db.ExecContext(ctx, "DELETE FROM captcha_spent WHERE expires<now()-interval '1 minute'")
+	return err
 }
 
 func captchaToggle(c *actionCtx) (actionResult, error) {

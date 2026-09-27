@@ -85,6 +85,10 @@ func TestConcurrentPayRespectsPerBuyerCap(t *testing.T) {
 	vendorID, _ := e.user("cap_vendor", "vendor")
 	e.A.payments["BTC"] = newFakeProvider("BTC", 1)
 	const n = 8
+	// The in-process limit of one payment request per account at a time is lifted: this races the database's
+	// own guard (the buyer row lock), which also holds when the limit does not (another process, a restart).
+	defer func(v int) { oneAtATimeLimit = v }(oneAtATimeLimit)
+	oneAtATimeLimit = n
 	orders, products := make([]string, n), make([]string, n)
 	for i := range n {
 		products[i] = e.product(vendorID, "physical")
@@ -148,7 +152,7 @@ func TestConcurrentCaptchaIsSingleUse(t *testing.T) {
 	if got := agTally(t, rs, 303, 400); got[303] != 1 {
 		t.Fatalf("one CAPTCHA admitted %d sign-ins", got[303])
 	}
-	if agUserSessions(e, id) != 2 || agStr(e, "SELECT used::text FROM captchas WHERE id=$1", cid) != "true" {
+	if agUserSessions(e, id) != 2 || agInt(e, "SELECT count(*) FROM captcha_spent WHERE id=$1", cid) != 1 {
 		t.Fatal("CAPTCHA not consumed exactly once")
 	}
 }

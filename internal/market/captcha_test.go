@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCaptchaFontCoversAlphabet(t *testing.T) {
@@ -82,11 +83,62 @@ func TestCaptchaTextAndImage(t *testing.T) {
 	if bytes.Equal(first, encode(randomToken())) {
 		t.Error("different ids rendered identically")
 	}
-	if captchaAnswerHash(id, strings.ToLower(a.captchaAnswer(id))+" ") != captchaAnswerHash(id, a.captchaAnswer(id)) {
+	if !a.captchaMatches(id, strings.ToLower(a.captchaAnswer(id))+" ") || !a.captchaMatches(id, a.captchaAnswer(id)) {
 		t.Error("answers should be case-insensitive")
 	}
-	if captchaAnswerHash(id, a.captchaAnswer(id)) == captchaAnswerHash(randomToken(), a.captchaAnswer(id)) {
-		t.Error("answer hash not bound to the challenge id")
+	if other := randomToken(); a.captchaAnswer(other) != a.captchaAnswer(id) && a.captchaMatches(other, a.captchaAnswer(id)) {
+		t.Error("answer not bound to the challenge id")
+	}
+}
+
+// A-176: a challenge id is expiry ‖ nonce ‖ MAC bound to the issuing session; nothing is stored to check it.
+func TestCaptchaIDIsStatelessAndBound(t *testing.T) {
+	a := &App{key: []byte("captcha-test-key")}
+	a.useKeyRoot("captcha-test-root-0123456789abcdef0123456789abcdef")
+	now := time.Now()
+	s1, s2 := digest("session-one"), digest("session-two")
+	id := a.newCaptchaID(s1, now.Add(captchaTTL))
+	if !captchaID.MatchString(id) {
+		t.Fatalf("id %q is not 64 lowercase hex characters", id)
+	}
+	if other := a.newCaptchaID(s1, now.Add(captchaTTL)); other == id {
+		t.Fatal("two challenges share an id")
+	}
+	exp, ok := a.captchaIDValid(id, now, s1)
+	if !ok || exp.Unix() != now.Add(captchaTTL).Unix() {
+		t.Fatalf("valid id refused: ok=%v expires=%v", ok, exp)
+	}
+	if _, ok := a.captchaIDValid(id, now, s2); ok {
+		t.Error("id accepted for another session")
+	}
+	if _, ok := a.captchaIDValid(id, now, s2, s1); !ok {
+		t.Error("id refused when its session is one of the candidates")
+	}
+	if _, ok := a.captchaIDValid(id, now.Add(captchaTTL), s1); ok {
+		t.Error("id accepted at its expiry")
+	}
+	if _, ok := a.captchaIDValid(randomToken(), now, s1); ok {
+		t.Error("random (pre-upgrade) id accepted")
+	}
+	// Any altered byte (a later expiry, another nonce, a forged MAC) is refused.
+	for i := 0; i < len(id); i += 2 {
+		b := []byte(id)
+		if b[i] == 'f' {
+			b[i] = '0'
+		} else {
+			b[i] = 'f'
+		}
+		if _, ok := a.captchaIDValid(string(b), now, s1); ok {
+			t.Fatalf("id altered at %d accepted", i)
+		}
+	}
+	other := &App{key: a.key}
+	other.useKeyRoot("another-root-0123456789abcdef0123456789abcdef0123")
+	if _, ok := other.captchaIDValid(id, now, s1); ok {
+		t.Error("id accepted under another key root")
+	}
+	if (&App{}).newCaptchaID(s1, now.Add(captchaTTL)) != "" {
+		t.Error("id minted without a key")
 	}
 }
 

@@ -1,6 +1,7 @@
 package market
 
 import (
+	"context"
 	"database/sql"
 	"strconv"
 	"strings"
@@ -18,7 +19,7 @@ const (
 )
 
 func init() {
-	registerAction("/orders/pay", actionSpec{Run: payAction})
+	registerAction("/orders/pay", actionSpec{OneAtATime: true, Run: payAction})
 	registerAction("/orders/cancel", actionSpec{Run: cancelAction})
 	registerAction("/orders/ship", actionSpec{Run: shipAction})
 	registerAction("/orders/deliver", actionSpec{Run: deliverAction})
@@ -87,6 +88,28 @@ func payoutConfirmation(c *actionCtx) (int64, error) {
 	return seen, nil
 }
 
+// walletLockWait replaces the application pool's 3 s lock_timeout and 8 s statement_timeout (A-177) in a
+// transaction that may queue for the rows a payment request holds while the wallet is asked for an address:
+// the buyer (FOR NO KEY UPDATE), the payment-intake setting (FOR SHARE) and the listing, for up to rpcTimeout
+// (10 s). Another checkout, a stock edit, an archive or takedown, a cancellation returning stock (stockHook,
+// also the watcher's expiry), a payment-intake change, a payout to the buyer (enqueuePayout), and an
+// administrator's suspension, second-factor reset or role change then wait for a slow wallet instead of
+// failing at 3 s. The statement timeout is raised with it, since it would otherwise end the wait at 8 s. Both
+// stay below the 12 s request context, so a longer wait is still refused cleanly (503). The wallet is asked
+// only after every check has passed (payAction), so the rows cannot be released before the call without
+// letting refused requests create addresses. One account's burst of payment requests queued on its own row
+// is cut to one at a time (OneAtATime), so it cannot hold the pool's connections.
+const walletLockWait = "11s"
+
+func waitForWalletLocks(ctx context.Context, tx *sql.Tx) error {
+	for _, setting := range []string{"lock_timeout", "statement_timeout"} {
+		if _, err := tx.ExecContext(ctx, "SET LOCAL "+setting+" = '"+walletLockWait+"'"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // maxAwaitingPayment bounds the stock one buyer can hold in unpaid orders (the watcher also expires them).
 const maxAwaitingPayment = 3
 
@@ -95,6 +118,9 @@ const maxAwaitingPayment = 3
 // then is the live test-network wallet asked for an address, so refused requests never create wallet addresses.
 func payAction(c *actionCtx) (actionResult, error) {
 	ctx := c.Ctx()
+	if err := waitForWalletLocks(ctx, c.Tx); err != nil {
+		return actionResult{}, err
+	}
 	o, err := partyOrder(c, c.Form.Get("order_id"))
 	if err != nil {
 		return actionResult{}, err
@@ -108,8 +134,10 @@ func payAction(c *actionCtx) (actionResult, error) {
 		var open int
 		// The buyer row lock serialises concurrent requests so the cap cannot be raced. The count must be a
 		// separate statement: under READ COMMITTED it then takes its snapshot after the lock is held and sees
-		// the orders a concurrent request committed while this one waited.
-		if _, err = c.Tx.ExecContext(ctx, "SELECT 1 FROM users WHERE id=$1 FOR UPDATE", c.User.ID); err != nil {
+		// the orders a concurrent request committed while this one waited. FOR NO KEY UPDATE, not FOR UPDATE:
+		// it is held while the wallet is asked for an address, and inserts that reference the buyer
+		// (notifications, messages, order events by anyone) take a key-share lock that FOR UPDATE would block.
+		if _, err = c.Tx.ExecContext(ctx, "SELECT 1 FROM users WHERE id=$1 FOR NO KEY UPDATE", c.User.ID); err != nil {
 			return actionResult{}, err
 		}
 		if err = c.Tx.QueryRowContext(ctx, "SELECT count(*) FROM orders WHERE buyer_id=$1 AND state='awaiting_payment'", c.User.ID).Scan(&open); err != nil {

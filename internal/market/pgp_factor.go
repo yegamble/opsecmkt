@@ -17,7 +17,7 @@ type pgpFactor struct{}
 
 func init() {
 	registerFactor(pgpFactor{})
-	registerAction("/challenge/pgp", actionSpec{Public: true, Run: pgpLoginCodeAction})
+	registerAction("/challenge/pgp", actionSpec{Public: true, Precheck: pendingPrecheck, Run: pgpLoginCodeAction})
 	registerLoader("challenge", pgpChallengeLoader)
 	registerPreview("challenge", func(d *PageData) {
 		if d.Auth == nil {
