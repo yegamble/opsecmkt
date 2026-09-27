@@ -394,6 +394,16 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.StripPrefix("/static/", http.FileServer(http.Dir("web/static"))).ServeHTTP(w, r)
 		return
 	}
+	// The image routes (image_routes.go) branch here, before any cookie is read or set: the public one reads no
+	// session at all, the desk one only the session cookie.
+	if rest, ok := strings.CutPrefix(r.URL.Path, "/img/"); ok {
+		a.servePublicImage(w, r, rest)
+		return
+	}
+	if rest, ok := strings.CutPrefix(r.URL.Path, "/desk/img/"); ok {
+		a.serveDeskImage(w, r, rest)
+		return
+	}
 	// Two SameSite=Strict cookies: `session` holds a signed-in session and is set only at sign-in (and
 	// cleared at sign-out); `anon` holds the pre-login token that backs CSRF and CAPTCHA for anonymous
 	// requests. A cross-site link arrives with neither, so the response issues only a new `anon` and can
