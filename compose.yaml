@@ -44,6 +44,8 @@ services:
       AUDIT_SIGNING_KEY: ${AUDIT_SIGNING_KEY:-}
       # Photo uploads: clamd:3310 with compose.scanner.yaml and the scanner profile; blank keeps uploads off.
       CLAMD_ADDRESS: ${CLAMD_ADDRESS:-}
+      # Days the scanner's daily signatures may age before uploads pause; blank uses 30 (7 to 90).
+      SCANNER_MAX_SIGNATURE_AGE_DAYS: ${SCANNER_MAX_SIGNATURE_AGE_DAYS:-}
       # Go's garbage collector works harder as the heap nears this, below mem_limit (512m), so that load makes
       # the app slower rather than killed mid-request. Raise both together (docs/operator-guide.md#resource-limits-and-log-rotation).
       GOMEMLIMIT: 400MiB
