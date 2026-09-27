@@ -533,7 +533,11 @@ func (a *App) storeImage(ctx context.Context, r *http.Request, session string, a
 	if err != nil {
 		return "", err
 	}
-	if !slices.Contains(route.roles, role) {
+	// A staff avatar was admitted under the staff privacy rules (hidden unless listed); if the account is no
+	// longer staff it would be published as a vendor's avatar, so it is refused too (A-208(a),
+	// TestStaffAvatarRefusedAfterScanDemotion).
+	staff := func(r string) bool { return r == "moderator" || r == "admin" }
+	if !slices.Contains(route.roles, role) || (route.kind == uploadAvatar && staff(actor.Role) && !staff(role)) {
 		return "", &httpError{Code: http.StatusForbidden, Msg: "Photo not saved: your account's role changed while it was uploading. Nothing was stored."}
 	}
 	current := *actor
