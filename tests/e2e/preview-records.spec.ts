@@ -31,6 +31,30 @@ test('/canary#records lists what the server keeps, who reads it and that nothing
   await noScriptsNoOverflow(page);
 });
 
+// A-191: listing photos and avatars are a stored data class like any other: what is kept, who sees it, the
+// browser cache and what deleting one leaves behind, plus what the malware scanner does and does not do.
+test('records list photos and avatars', async ({ page }) => {
+  expect((await page.goto('/canary#records'))?.status()).toBe(200);
+  const item = page.locator('section#records li', { has: page.locator('strong', { hasText: /^Photos and avatars\.$/ }) });
+  await expect(item).toHaveCount(1);
+  await expect(item).toBeVisible();
+  for (const text of [
+    'only the re-encoded JPEG, its thumbnail, its dimensions, an optional description',
+    'The file you uploaded, its name and its metadata',
+    'never kept',
+    'public to anyone',
+    'public staff list',
+    'normal browser (not Tor Browser) may keep viewed images in its disk cache for a day',
+    'deletes it from the database at once',
+    'copies remain in backups made before that and, until PostgreSQL reuses the space, in its data files',
+    'ClamAV checks uploads for known malware; it does not review picture content',
+  ]) {
+    await expect(item).toContainText(text);
+  }
+  await expect(item).not.toContainText(/\b(safe|clean|virus-free|verified)\b/i);
+  await noScriptsNoOverflow(page);
+});
+
 for (const [path, where] of [['/register', 'main'], ['/account', 'main .page-head'], ['/messages', 'main .notice']]) {
   test(`${path} links to the records disclosure`, async ({ page }) => {
     expect((await page.goto(path))?.status()).toBe(200);

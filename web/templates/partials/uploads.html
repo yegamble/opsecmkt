@@ -4,7 +4,7 @@
 <p>Screenshots can show your clock and timezone, language, username, file paths, other tabs and notifications. Crop them before uploading.</p>
 <p>Never reuse a photo you have used anywhere else.</p>{{end}}
 {{define "uploads:limits"}}<li>Uploading can take up to 90 seconds over Tor; press Upload once and wait for the page to change.</li>
-<li>Each file is checked by the ClamAV malware scanner; a match is refused and nothing is stored.</li>{{end}}
+<li>Each file is checked by the ClamAV malware scanner; a match is refused and nothing is stored. ClamAV checks uploads for known malware; it does not review picture content.</li>{{end}}
 {{define "uploads:photos"}}{{with .Uploads}}<section class="panel upload-panel" id="photos" aria-labelledby="photos-title">
 <h2 id="photos-title">Photos</h2>
 <p class="upload-usage">{{.PhotoCount}} of {{.PhotoLimit}} photos · {{.Used}} MB of {{.Quota}} MB</p>{{/* A-190: staff takedowns of this listing's photos, newest first, from the vendor's audit trail (image_takedown.go) */}}{{range .StaffRemovals}}
