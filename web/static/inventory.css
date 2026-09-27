@@ -175,6 +175,9 @@ input[type=file]:disabled,input[type=file]:disabled::file-selector-button {
 .product-card>.image-takedown {
   padding:0 24px
 }
+.photo-thumbs li:has(>.image-takedown[open]) {
+  width:100%
+}
 .page-head+.image-takedown {
   margin:-8px 0 24px
 }
