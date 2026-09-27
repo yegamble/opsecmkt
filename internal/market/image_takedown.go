@@ -141,14 +141,14 @@ func imageTakedownAction(c *actionCtx) (actionResult, error) {
 		audit = "Took down a photo on listing " + shortID(listing) + ": " + reason
 		ownerAudit = photoTakedownOwnerPrefix(listing) + reason
 		note = "Staff removed a photo from your listing “" + title + "” (" + shortID(listing) + ") with the reason “" + reason +
-			"”. The photo was deleted and cannot be restored; the listing itself is unchanged. You can add another photo from the listing's edit page. If you think this is wrong, contact the market staff."
+			"”. The photo was deleted; you cannot undo this. The listing itself is unchanged. You can add another photo from the listing's edit page. If you think this is wrong, contact the market staff."
 		if c.Form.Get("from") == "product" {
 			redirect = "/product?id=" + url.QueryEscape(listing) + "&image=removed"
 		}
 	} else {
 		audit = "Took down the avatar of " + handle + ": " + reason
 		ownerAudit = "Avatar removed by staff: " + reason
-		note = "Staff removed your avatar with the reason “" + reason + "”. It was deleted and cannot be restored. If you think this is wrong, contact the market staff."
+		note = "Staff removed your avatar with the reason “" + reason + "”. It was deleted; you cannot undo this. If you think this is wrong, contact the market staff."
 		if c.Form.Get("from") == "vendor" && (ownerRole == "vendor" || ownerRole == "admin") {
 			redirect = "/vendor?id=" + url.QueryEscape(owner) + "&image=removed"
 		}

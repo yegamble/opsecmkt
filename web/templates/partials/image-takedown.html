@@ -7,7 +7,7 @@
 <input type="hidden" name="from" value="{{.From}}">{{end}}
 <label>Reason for the owner<textarea name="reason" required minlength="10" maxlength="500" rows="3"></textarea>
 </label>
-<p class="help">10–500 characters. The {{.What}} is deleted at once and cannot be restored. Its owner is notified with this reason{{if eq .What "photo"}} and sees it on the listing's edit page{{end}}; it is kept in both accounts' activity logs, never shown publicly. Never include an address, real name or tracking number.</p>
+<p class="help">10–500 characters. The {{.What}} is deleted at once; you cannot undo this. Its owner is notified with this reason{{if eq .What "photo"}} and sees it on the listing's edit page{{end}}; it is kept in both accounts' activity logs, never shown publicly. Never include an address, real name or tracking number.</p>
 <button type="submit">Remove {{.What}}</button>
 </form>
 </details>{{end}}

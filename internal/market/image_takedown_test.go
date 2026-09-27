@@ -292,7 +292,7 @@ func TestTakedownNotifiesOwnerWithReason(t *testing.T) {
 		t.Fatal("the product page after the takedown still shows the photo, or lost the other one")
 	}
 	wantNote := "Staff removed a photo from your listing “Test listing” (" + listing[:8] + ") with the reason “" + imageTakedownReason +
-		"”. The photo was deleted and cannot be restored; the listing itself is unchanged. You can add another photo from the listing's edit page. If you think this is wrong, contact the market staff."
+		"”. The photo was deleted; you cannot undo this. The listing itself is unchanged. You can add another photo from the listing's edit page. If you think this is wrong, contact the market staff."
 	if got := e.notes(vendorID); len(got) != 1 || got[0] != wantNote {
 		t.Fatalf("vendor's notifications %q, want %q", got, wantNote)
 	}
@@ -320,7 +320,7 @@ func TestTakedownNotifiesOwnerWithReason(t *testing.T) {
 	if w.Code != 303 || w.Header().Get("Location") != "/vendor?id="+vendorID+"&image=removed" {
 		t.Fatalf("takedown from the vendor page: %d %q %s", w.Code, w.Header().Get("Location"), w.Body.String())
 	}
-	wantAvatar := "Staff removed your avatar with the reason “Avatar shows a real name tag.”. It was deleted and cannot be restored. If you think this is wrong, contact the market staff."
+	wantAvatar := "Staff removed your avatar with the reason “Avatar shows a real name tag.”. It was deleted; you cannot undo this. If you think this is wrong, contact the market staff."
 	if got := last(e.notes(vendorID)); got != wantAvatar {
 		t.Fatalf("avatar notification %q, want %q", got, wantAvatar)
 	}
@@ -388,7 +388,7 @@ func TestStaffImageChangeNotifiesOwner(t *testing.T) {
 	want := []string{
 		"An administrator added a photo to your listing " + listing[:8] + ".",
 		"An administrator removed a photo from your listing " + listing[:8] + ".",
-		"Staff removed your avatar with the reason “Avatar shows a real name tag.”. It was deleted and cannot be restored. If you think this is wrong, contact the market staff.",
+		"Staff removed your avatar with the reason “Avatar shows a real name tag.”. It was deleted; you cannot undo this. If you think this is wrong, contact the market staff.",
 	}
 	if got := e.notes(vendorID); strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("vendor's notifications %q, want %q", got, want)
