@@ -176,7 +176,12 @@ func (f *fakeClamd) serve(c net.Conn) {
 			f.mu.Unlock()
 			if earlyAt > 0 && len(data) > earlyAt {
 				c.Write([]byte(earlyMsg + "\x00"))
-				return // closed with the rest of the stream unread
+				// Closed with the rest of the stream unread. A kernel sends a reset for that only when unread
+				// data is still queued at close, which depends on timing; linger 0 makes it a reset every time.
+				if tc, ok := c.(*net.TCPConn); ok {
+					tc.SetLinger(0)
+				}
+				return
 			}
 			if limit > 0 && len(data) > limit {
 				c.Write([]byte("INSTREAM size limit exceeded. ERROR\x00"))

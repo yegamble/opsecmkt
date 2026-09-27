@@ -233,6 +233,8 @@ func (s *imageScanner) stateLocked() scannerState {
 		st.Name, st.Cause = scannerStale, "signature date unreadable"
 	case s.now().Sub(s.date) > time.Duration(st.LimitDays)*24*time.Hour: // exact, as "older than N days" says
 		st.Name = scannerStale
+		// Whole days rounded up, so a stale age never reads as within the limit ("30 days, limit 30").
+		st.AgeDays = int((s.now().Sub(s.date) + 24*time.Hour - 1) / (24 * time.Hour))
 	default:
 		st.Name = scannerReady
 	}
@@ -466,7 +468,8 @@ func clamdCommand(ctx context.Context, addr, cmd string, stream []byte) (string,
 	}
 	// clamd closes the connection once it has answered (clamdscan reads to the end the same way). A reset
 	// instead of that clean end means the server closed with part of the stream unread, so its OK does not
-	// cover every byte sent; anything after the reply breaks the protocol.
+	// cover every byte sent; anything after the reply breaks the protocol. A server that has read every byte
+	// but answers OK without scanning them cannot be told apart from here: clamd itself is the trust boundary.
 	if _, err = br.ReadByte(); !errors.Is(err, io.EOF) {
 		var ne net.Error
 		if errors.As(err, &ne) && ne.Timeout() {

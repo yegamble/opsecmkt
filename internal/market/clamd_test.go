@@ -84,9 +84,10 @@ func TestClamdOnlyExactOK(t *testing.T) {
 		})
 	}
 	// A server that answers before it has read the whole stream and closes the connection with the rest unread:
-	// real clamd does this with its size error when a stream exceeds StreamMaxLength. An early "stream: OK" is not
-	// a clean scan of the bytes sent, whatever the size and however the close reaches the client. Either way the
-	// upload is refused as that request's error, not as a scanner outage: the scanner stays Ready.
+	// real clamd does this with its size error when a stream exceeds StreamMaxLength. An early "stream: OK" is
+	// refused whenever the client can see the rest went unread: a failed write, or a reset in place of a clean
+	// close (the fake forces a reset, as a close with unread data does). Either way the upload is refused as that
+	// request's error, not as a scanner outage: the scanner stays Ready.
 	for _, c := range []struct {
 		name, reply string
 		size        int
@@ -215,7 +216,7 @@ func TestClamdTimeoutRefuses(t *testing.T) {
 
 func TestClamdStaleRefuses(t *testing.T) {
 	f := newFakeClamd(t)
-	f.SetVersion(fakeClamdVersion(31*24*time.Hour + time.Hour))
+	f.SetVersion(fakeClamdVersion(31*24*time.Hour - time.Hour))
 	s := newImageScanner(scannerConfig{address: f.Addr, maxAgeDays: 30})
 	s.poll(context.Background())
 	st := s.State()
@@ -247,7 +248,8 @@ func TestClamdStaleRefuses(t *testing.T) {
 	}
 	f.SetVersion(fakeClamdVersion(7*24*time.Hour + time.Hour))
 	s7.poll(context.Background())
-	if st := s7.State(); st.Name != scannerStale || st.AgeDays != 7 || !strings.Contains(st.VendorNotice(), "older than 7 days") {
+	if st := s7.State(); st.Name != scannerStale || st.AgeDays != 8 || describeState(st) != "Signatures stale (8 days, limit 7)" ||
+		!strings.Contains(st.VendorNotice(), "older than 7 days") {
 		t.Fatalf("7 days and an hour at limit 7 = %+v", st)
 	}
 }
@@ -552,7 +554,7 @@ func TestAdminScannerPanel(t *testing.T) {
 	}
 
 	f := newFakeClamd(t)
-	f.SetVersion(fakeClamdVersion(31*24*time.Hour + time.Hour))
+	f.SetVersion(fakeClamdVersion(31*24*time.Hour - time.Hour))
 	e.withScanner(f)
 	st := e.A.scanner.State()
 	panel = scannerPanel(e.do("GET", "/admin", admin, nil).Body.String())
