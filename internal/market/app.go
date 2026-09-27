@@ -565,6 +565,9 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if page == "order" && q.Get("id") == previewPaidID {
 			previewPaidOrder(&d)
 		}
+		if page == "listing-edit" || page == "account" {
+			previewUploads(&d, q.Get("scanner"))
+		}
 		d.CSRF = a.csrf(token)
 		d.Mode = a.mode
 		applyPreviews(&d)

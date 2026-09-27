@@ -1,6 +1,7 @@
 package market
 
 import (
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -262,5 +263,24 @@ func TestDemotionArchiveIsNotATakedown(t *testing.T) {
 	agExpect(e, "/listings/restore", vendor, form("id", taken), 409, reason)
 	if archived, _ := takenDown(e, plain); archived {
 		t.Fatal("vendor restore of a demotion-archived listing failed")
+	}
+}
+
+// PR #24 re-check N-1: an administrator's takedown locked the listing and then, through the foreign keys of its
+// audit and notification inserts, the vendor's users row; a role change holding that row and then archiving the
+// vendor's listings deadlocked with it (40P01, a 500). The takedown now takes the users rows first, as lockListing
+// does, and waits for the role change instead.
+func TestAdminTakedownDoesNotDeadlockWithRoleChange(t *testing.T) {
+	e := newTestApp(t)
+	_, admin := e.user("td_deadlock_admin", "admin")
+	vendorID, _ := e.user("td_deadlock_vendor", "vendor")
+	p := e.product(vendorID, "physical")
+	take := withField(takedownForm(t, e.body("GET", "/listing-edit?id="+p, admin, nil, 200), "takedown", p), "reason", takedownReason)
+	w := besideRoleChange(t, e, vendorID, func() *httptest.ResponseRecorder { return e.do("POST", "/admin/listing", admin, take) })
+	if w.Code != 303 {
+		t.Fatalf("takedown beside a role change: %d %s", w.Code, w.Body.String())
+	}
+	if archived, reason := takenDown(e, p); !archived || reason != takedownReason {
+		t.Fatalf("after the takedown: archived=%v reason=%q", archived, reason)
 	}
 }

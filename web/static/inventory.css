@@ -40,3 +40,128 @@
 .listing-takedown form {
   margin-top:12px
 }
+/* A-188 upload forms: listing-edit's Photos panel and /account's avatar panel and staff list choice
+   (partials/uploads.html). The file input and its button keep the 44 px target and 14 px text of other
+   controls, show the amber focus ring, and shrink with the column so a 320 px screen at 200% text does not
+   scroll sideways. */
+.listing-edit-main,.account-main {
+  min-width:0
+}
+input[type=file] {
+  display:block;
+  height:auto;
+  min-height:44px;
+  max-width:100%;
+  padding:6px;
+  font-size:0.875rem;
+  line-height:1.5;
+  cursor:pointer
+}
+/* The button is a block only as wide as its words, so the chosen file's name, which the privacy notice asks the
+   uploader to check, is not cut to "…" on a narrow screen: Chromium and Firefox draw it on the line below at the
+   input's full width, WebKit beside the button (PR #24 review R24-2). */
+input[type=file]::file-selector-button {
+  display:block;
+  width:min-content;
+  height:auto;
+  min-height:44px;
+  max-width:100%;
+  margin:0 8px 8px 0;
+  padding:10px 8px;
+  border:1px solid var(--line);
+  border-radius:2px;
+  background:var(--surface);
+  color:var(--text);
+  font:700 0.875rem/1.5 var(--mono);
+  letter-spacing:0;
+  white-space:normal;
+  overflow-wrap:normal;
+  cursor:pointer
+}
+input[type=file]:hover::file-selector-button {
+  border-color:var(--amber);
+  color:var(--amber)
+}
+input[type=file]:focus-visible {
+  outline:3px solid var(--amber);
+  outline-offset:2px
+}
+input[type=file]:disabled,input[type=file]:disabled::file-selector-button {
+  cursor:not-allowed
+}
+.upload-usage {
+  font-family:var(--mono)
+}
+.upload-form fieldset {
+  display:grid;
+  gap:17px
+}
+@media(max-width:420px) {
+  /* A narrow screen gives the file input the fieldset's padding: WebKit draws the chosen name beside the button,
+     in what width is left. */
+  .upload-form fieldset {
+    padding:12px 4px
+  }
+}
+.upload-form fieldset:disabled {
+  opacity:.7
+}
+.upload-limits {
+  margin:0;
+  padding-left:1.2em
+}
+.upload-privacy {
+  margin:0
+}
+.upload-privacy p+p {
+  margin-top:8px
+}
+.upload-state {
+  margin:0 0 17px
+}
+.photo-list {
+  list-style:none;
+  margin:0 0 12px;
+  padding:0;
+  display:grid;
+  gap:14px
+}
+.photo-item {
+  display:flex;
+  flex-wrap:wrap;
+  gap:12px;
+  align-items:flex-start;
+  border:1px solid var(--line);
+  padding:12px
+}
+.photo-thumb {
+  display:block;
+  flex:0 1 160px;
+  line-height:0
+}
+.photo-thumb img,.avatar-current img {
+  display:block;
+  max-width:100%;
+  height:auto;
+  background:var(--surface)
+}
+.photo-meta {
+  flex:1 1 12rem;
+  min-width:0
+}
+.photo-meta p {
+  margin:0 0 8px;
+  overflow-wrap:anywhere
+}
+.avatar-current {
+  display:flex;
+  flex-wrap:wrap;
+  gap:14px;
+  align-items:flex-start;
+  margin-bottom:17px
+}
+.avatar-current>div {
+  flex:1 1 12rem;
+  min-width:0
+}
+/* end A-188 upload forms */

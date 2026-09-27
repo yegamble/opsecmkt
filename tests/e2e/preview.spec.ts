@@ -122,3 +122,37 @@ test('navigation accessibility structure stays stable', async ({ page }) => {
       - link "◇ Transparency"
   `);
 });
+
+// A-188: the avatar form on /account in the read-only preview (a vendor's Ready sample; ?scanner=off shows the
+// state without CLAMD_ADDRESS). Markup and layout only: db-listing-photos.spec.ts uploads a real avatar.
+test('avatar form on /account: separate, multipart, csrf first, limits and warning before the input', async ({ page }) => {
+  await page.goto('/account');
+  const panel = page.getByRole('region', { name: 'Avatar' });
+  const form = panel.locator('form[action="/account/avatar"]');
+  await expect(form).toHaveAttribute('method', 'post');
+  await expect(form).toHaveAttribute('enctype', 'multipart/form-data');
+  await expect(page.locator('form[enctype="multipart/form-data"]')).toHaveCount(1);
+  expect(await page.locator('form[action="/account"]').getAttribute('enctype')).toBeNull();
+  expect(await form.locator('input').evaluateAll(inputs => inputs.map(i => i.getAttribute('name')))).toEqual(['csrf', 'photo']);
+  await expect(form.locator('input').first()).toHaveAttribute('type', 'hidden');
+  const file = form.getByLabel('Avatar', { exact: true });
+  await expect(file).toHaveAttribute('type', 'file');
+  await expect(file).toHaveAttribute('accept', 'image/jpeg,image/png');
+  expect(await file.getAttribute('capture')).toBeNull();
+  await expect(file).toHaveAttribute('aria-describedby', 'avatar-help avatar-privacy');
+  await expect(page.locator('#avatar-help')).toContainText('4096 pixels a side and 4096×3072 in all (about 12.6 megapixels)');
+  await expect(page.locator('#avatar-help')).toContainText('Uploading can take up to 90 seconds over Tor');
+  await expect(page.locator('#avatar-privacy')).toContainText('Screenshots can show your clock and timezone');
+  await expect(page.locator('#avatar-privacy')).toContainText('public to anyone, including visitors who are not signed in, on your vendor page');
+  for (const id of ['avatar-help', 'avatar-privacy']) {
+    expect(await file.evaluate((input, before) => !!(document.getElementById(before)!.compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING), id)).toBe(true);
+  }
+  await expect(panel).toContainText('No avatar.');
+  // The sample account is not staff: no staff list choice.
+  await expect(page.getByRole('region', { name: 'Public staff list' })).toHaveCount(0);
+  await expect(page.locator('script')).toHaveCount(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()!.width);
+  await page.goto('/account?scanner=off');
+  await expect(panel).toContainText('Photo uploads are off on this market');
+  await expect(page.locator('input[type="file"]')).toHaveCount(0);
+});

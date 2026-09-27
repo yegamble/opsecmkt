@@ -28,9 +28,21 @@ type managedListing struct {
 
 // lockListing row-locks a listing the actor may manage (its vendor, or any administrator).
 // Anything else is reported as not found so listing ids of other vendors are not confirmed.
+//
+// Lock order: the users rows of the actor and the listing's vendor (FOR KEY SHARE), then the listing. An
+// administrator's role change locks the vendor's users row FOR UPDATE and then archives that vendor's listings; a
+// listing action that locked the listing first and then took a users row, which the foreign keys of its audit and
+// notification inserts do, would deadlock with it (PR #24 review R24-1; TestListingActionsDoNotDeadlockWithRoleChange,
+// TestPhotoRemoveDoesNotDeadlockWithRoleChange). Taken first, the users rows make the action wait for the change
+// instead. The vendor's row is locked only when the actor may manage the listing, so another vendor's id is not
+// held up by (and cannot probe) a change to that vendor's account. Every caller takes users rows only after this;
+// the administrator's takedown (adminListingAction) keeps the same order.
 func lockListing(c *actionCtx, id string) (managedListing, error) {
 	l := managedListing{ID: id}
 	if err := waitForWalletLocks(c.Ctx(), c.Tx); err != nil { // a checkout may hold the row (payAction)
+		return l, err
+	}
+	if _, err := c.Tx.ExecContext(c.Ctx(), `SELECT 1 FROM users WHERE id=$1 OR id=(SELECT vendor_id FROM products WHERE id=$2 AND (vendor_id=$1 OR $3='admin')) FOR KEY SHARE`, c.User.ID, id, c.User.Role); err != nil {
 		return l, err
 	}
 	err := c.Tx.QueryRowContext(c.Ctx(), `SELECT vendor_id,kind,stock,archived,coalesce(admin_archive_reason,'') FROM products WHERE id=$1 AND (vendor_id=$2 OR $3='admin') FOR UPDATE`, id, c.User.ID, c.User.Role).Scan(&l.VendorID, &l.Kind, &l.Stock, &l.Archived, &l.Takedown)
@@ -182,6 +194,11 @@ func adminListingAction(c *actionCtx) (actionResult, error) {
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
 		ctx, tx := c.Ctx(), c.Tx
 		if err := waitForWalletLocks(ctx, tx); err != nil { // a checkout may hold the row (payAction)
+			return actionResult{}, err
+		}
+		// The users rows before the listing, as lockListing takes them: a role change holds the vendor's row and then
+		// archives the listings (PR #24 re-check N-1; TestAdminTakedownDoesNotDeadlockWithRoleChange).
+		if _, err := tx.ExecContext(ctx, `SELECT 1 FROM users WHERE id=$1 OR id=$2 FOR KEY SHARE`, c.User.ID, vendorID); err != nil {
 			return actionResult{}, err
 		}
 		var title, current, handle string

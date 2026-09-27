@@ -23,6 +23,7 @@
 <p class="mono inventory-id">{{.ID}}</p>
 </div>{{if .Archived}}<span class="badge neutral">Archived</span>{{else}}<span class="badge green">Active</span>{{end}}</div>
 <div class="detail-layout">
+<div class="listing-edit-main">
 <section class="panel">
 <h2>Listing details</h2>
 <form class="stack" method="post" action="/listings/update">
@@ -69,6 +70,8 @@
 <button class="primary" type="submit">Save changes</button>
 </form>
 </section>
+{{template "uploads:photos" $}}
+</div>
 <aside>
 <section class="panel">
 <h2>Visibility</h2>{{with $.Listing}}{{if .TakedownReason}}<p><span class="badge danger">Taken down</span> Taken down by an administrator{{if .ArchivedAt}} on {{.ArchivedAt}}{{end}}. Hidden from the marketplace, the vendor page and search; new orders are refused. Existing orders continue, but paid orders are not delivered automatically: the vendor delivers or cancels them.</p>

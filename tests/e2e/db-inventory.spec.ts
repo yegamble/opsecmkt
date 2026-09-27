@@ -22,6 +22,9 @@ test('edit, archive and restore a listing without client scripts', async ({ page
   await page.getByLabel('Monero reference price').fill('0.5');
   await expect(page.locator('main')).toContainText('Automatic delivery requires a payment provider');
   await page.getByRole('button', { name: 'Publish listing' }).click();
+  await expect(page).toHaveURL(/\/listing-edit\?id=[0-9a-f]{64}&saved=1#photos$/); // A-188: lands on its Photos panel
+  await expect(page.getByLabel('Listing title')).toHaveValue(title);
+  await page.goto('/vendor-dashboard');
   await expect(page.locator('.listings-grid')).toContainText(title);
 
   await page.getByRole('link', { name: `Edit ${title}` }).click();
@@ -70,8 +73,8 @@ test('edit, archive and restore a listing without client scripts', async ({ page
   await vendor.getByLabel('Monero reference price').fill('0.5');
   await vendor.getByLabel('Automatic delivery content').fill(secret);
   await vendor.getByRole('button', { name: 'Publish listing' }).click();
-  await vendor.getByRole('link', { name: `Edit ${vendorTitle}` }).click();
-  await vendor.waitForURL(/\/listing-edit\?id=/);
+  await vendor.waitForURL(/\/listing-edit\?id=/); // A-188: publishing lands on the new listing's edit page
+  await expect(vendor.getByLabel('Listing title')).toHaveValue(vendorTitle);
   const editURL = vendor.url();
 
   await page.goto(editURL);
