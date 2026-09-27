@@ -139,6 +139,10 @@ grep -q 'Held 4 restored payout(s)' "$work/restore.log"
 grep -q 'Marked 1 restored failed payout(s) as possibly sent' "$work/restore.log"
 grep -q 'do not contain the custodial wallets' "$work/restore.log"
 grep -q 'point BACKUP_DATABASE_URL at the same database' "$work/restore.log"
+# A-190 (ruling D4): the line about images removed after the backup, with the dump's creation time; a dump
+# without an images table restores none.
+images_line() { printf '^%s images restored from a backup taken [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} [A-Z]+; photo and avatar removals made after that time are undone — check /moderator Recent photos and remove them again$' "$1"; }
+grep -Eq "$(images_line 0)" "$work/restore.log"
 
 # Restore creates a_first before colliding with z_conflict. A failure must roll
 # the entire transaction back, including that earlier successful CREATE TABLE.
@@ -230,12 +234,15 @@ INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,cre
  ('ops-order-disputed','XMR',repeat('21',32),0,'ops-restore-disputed-deposit',250000000000,12,false,false),
  ('ops-order-disputed','XMR',repeat('22',32),0,'ops-restore-disputed-deposit',1000000,12,false,true);
 INSERT INTO disputes(id,order_id,reason) VALUES ('ops-dispute','ops-order-disputed','The parcel never arrived.');
-INSERT INTO audit_events(user_id,action) VALUES ('ops-admin','Restore drill: an audit row written before the backup');"
+INSERT INTO audit_events(user_id,action) VALUES ('ops-admin','Restore drill: an audit row written before the backup');
+INSERT INTO images(id,owner_user_id,product_id,kind,\"full\",thumb,width,height) VALUES
+ (repeat('a',32),'ops-vendor','ops-product','photo','\\xffd8ff','\\xffd8ff',1,1),(repeat('b',32),'ops-vendor',NULL,'avatar','\\xffd8ff','\\xffd8ff',1,1);"
 app_backup="$work/app.dump.age"
 BACKUP_DATABASE_URL=$(connection_url "$app_source_db") scripts/backup.sh "$app_backup"
 RESTORE_DATABASE_URL=$(connection_url "$app_target_db") scripts/restore.sh "$app_backup" <<< 'RESTORE' > "$work/app-restore.log"
 grep -q 'Held 2 restored payout(s)' "$work/app-restore.log"
 grep -q 'Marked 1 restored failed payout(s) as possibly sent' "$work/app-restore.log"
+grep -Eq "$(images_line 2)" "$work/app-restore.log"
 [[ $(pg "$app_target_db" -Atq -c "SELECT value FROM settings WHERE key='payments_recovery_required'") == true ]]
 [[ $(pg "$app_source_db" -Atq -c "SELECT count(*) FROM settings WHERE key='payments_recovery_required'") == 0 ]]
 payouts="SELECT string_agg(order_id || ':' || state || ':' || (error LIKE 'Restored from backup:%') || ':' || send_ambiguous || ':' || txid, ',' ORDER BY order_id) FROM payouts"

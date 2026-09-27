@@ -96,16 +96,28 @@ SELECT :'has_settings'::boolean AND to_regclass('audit_events') IS NOT NULL AS h
 INSERT INTO audit_events(user_id,action) VALUES (NULL, 'Payout recovery gate set by scripts/restore.sh: held ' || :'held'
   || ' restored payout(s) and marked ' || :'failed' || ' restored failed payout(s) as possibly sent; all outbound payouts paused until an administrator clears the gate');
 \endif
-SELECT :'held' || ' ' || :'failed';
+SELECT to_regclass('images') IS NOT NULL AS has_images \gset
+\if :has_images
+SELECT count(*) AS images FROM images \gset
+\else
+SELECT 0 AS images \gset
+\endif
+SELECT :'held' || ' ' || :'failed' || ' ' || :'images';
 SQL
 ); then
   echo 'The database was restored, but payout recovery protection FAILED. Do not start the application on it; apply the recovery gate and holds by hand first (UPGRADING.md, section 6).' >&2
   exit 1
 fi
-read -r held failed <<< "$counts"
+read -r held failed images <<< "$counts"
 printf 'Held %s restored payout(s); release each from the admin page only after checking the wallet.\n' "$held"
 printf 'Marked %s restored failed payout(s) as possibly sent after the backup; requeue each from the admin page only after checking the wallet.\n' "$failed"
 echo 'Application databases now require payout recovery reconciliation. All outbound payouts remain paused until the recovery gate is explicitly cleared (see docs/testnet-runbook.md).'
+# A-190 (ruling D4): staff takedowns and owners' removals delete an image's row, so the restored database has every
+# photo and avatar the backup had, including those removed since. The backup time is the dump's own creation time
+# from its table of contents (pg_restore --list reads only the start of the archive; the decryption stopping early
+# is expected, hence || true).
+backup_time=$(age -d -i "$AGE_IDENTITY" "$1" 2>/dev/null | client pg_restore --list 2>/dev/null | sed -n 's/^;[[:space:]]*Archive created at //p' | head -n 1) || true
+printf '%s images restored from a backup taken %s; photo and avatar removals made after that time are undone — check /moderator Recent photos and remove them again\n' "$images" "${backup_time:-at an unknown time}"
 echo 'Restore completed. Validate the new database before switching application traffic.'
 if [[ -n ${RESTORE_INTERNAL_DATABASE:-} ]]; then
   printf 'Restored into database %s in the internal-db Compose service. To switch the application to it, change only the database name after the port in DATABASE_URL in .env (no change if it already names %s), keeping your password:\n' "$database" "$database"
