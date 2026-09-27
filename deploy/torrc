@@ -1,6 +1,33 @@
+# Shared by the tor and tor-mirror services: each container runs one onion service from its own volume.
+# The denial-of-service settings are explained in docs/operator-guide.md#onion-service-defences.
 DataDirectory /var/lib/tor
 SocksPort 0
 Log notice stdout
+# Every 30 minutes (Tor's minimum) log uptime, open circuits and the INTRODUCE2 cells and rendezvous
+# circuits the onion service handled since startup.
+HeartbeatPeriod 30 minutes
+# Past this much queued cell data Tor closes the circuits holding the most, well inside the container's 256m
+# mem_limit (compose.tor.yaml). Unset, Tor sizes it from the host's memory, and a flood would get the whole
+# process killed by the container limit instead.
+MaxMemInQueues 128 MB
+
+# Per-service options must follow their HiddenServiceDir line.
 HiddenServiceDir /var/lib/tor/marketplace
 HiddenServiceVersion 3
 HiddenServicePort 80 app:8080
+# Proof of work (tor 0.4.8+ built with the pow module; the image build checks). Under load, clients that
+# solve a bigger puzzle are served first; Tor Browser 13+ solves it without JavaScript. The queue hands
+# the app at most 60 new rendezvous circuits a second (bursts of 600). Tuned for an app that sheds excess
+# load with 503; without that admission control use 30 and 300. When the onion fails while the app is
+# idle, raise the rate rather than lower it (OnionFlation; see the operator guide).
+HiddenServicePoWDefensesEnabled 1
+HiddenServicePoWQueueRate 60
+HiddenServicePoWQueueBurst 600
+# Rate limit at each introduction point (3 by default), at Tor's defaults: 25/s and bursts of 200 per point,
+# deliberately looser than the PoW queue because introduction points cannot see puzzle effort.
+HiddenServiceEnableIntroDoSDefense 1
+HiddenServiceEnableIntroDoSRatePerSec 25
+HiddenServiceEnableIntroDoSBurstPerSec 200
+# At most 32 simultaneous connections per client circuit; a circuit that opens more is closed.
+HiddenServiceMaxStreams 32
+HiddenServiceMaxStreamsCloseCircuit 1
