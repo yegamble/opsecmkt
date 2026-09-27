@@ -84,7 +84,7 @@ type PageData struct {
 	// StaffList: then the moderators and administrators listed (User.Avatar set when it may be shown).
 	StaffListPublic bool
 	StaffList       []User
-	// A-190 (image_takedown.go). RecentImages: /moderator, the newest public photos and avatars; AvatarTakedown:
+	// A-190 (image_takedown.go). RecentImages: /moderator, the newest public photos and avatars (vendors' only for a moderator); AvatarTakedown:
 	// vendor page, the staff remove form for the vendor's avatar.
 	RecentImages   []RecentImage
 	AvatarTakedown *ImageTakedown

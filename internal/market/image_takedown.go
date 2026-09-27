@@ -10,17 +10,18 @@ import (
 	"unicode/utf8"
 )
 
-// A-190 (war room 2026-09-27, ruling D4, owner decision 1): moderators and administrators take down listing photos
-// and avatars, staff avatars included, with POST /images/remove. A takedown deletes the row (both sizes) in the
+// A-190 (war room 2026-09-27, ruling D4, owner decision 1): moderators take down vendors' listing photos and
+// avatars, and administrators any photo or avatar, staff avatars included, with POST /images/remove. A takedown deletes the row (both sizes) in the
 // action's transaction: no stub, no hidden flag, no purge log (D4). It records one audit row for the actor and one
 // for the owner (fixed copy, a photo's listing by its short id, and the reason; never the image id) and notifies
 // the owner with the reason. An owner removes their own images with A-188's forms, never here. Moderators gain no
 // other listing capability: editing, archiving, taking down and restoring listings stay the vendor's and the
 // administrator's (inventory_actions.go).
 //
-// The forms: /moderator "Recent photos" (the 50 newest images the public route serves, the list to re-check after
-// a database restore, which brings removed images back), a <details> form per photo on the product page and for
-// the avatar on the vendor page, shown to moderators and administrators for images that are not their own.
+// The forms: /moderator "Recent photos" (the 50 newest images the public route serves, vendors' only for a
+// moderator; the list to re-check after a database restore, which brings removed images back), a <details> form
+// per photo on the product page and for the avatar on the vendor page, shown only to staff who may take that image
+// down (mayTakeDown).
 // The owner sees "Photo removed by staff: <reason>" on the listing's edit page, read from their own audit row.
 
 func init() {
@@ -58,10 +59,23 @@ type StaffRemoval struct{ Reason, When string }
 // staffViewer reports whether u may take images down.
 func staffViewer(u *User) bool { return u != nil && (u.Role == "moderator" || u.Role == "admin") }
 
-// staffRemoveForm is the staff remove form for image id owned by owner on d's page, or nil when the viewer is not
-// staff or owns the image.
-func staffRemoveForm(d *PageData, id, owner, what, from, label string) *ImageTakedown {
-	if !staffViewer(d.User) || owner == d.User.ID {
+// mayTakeDown reports whether u may take down a public image of owner, whose role is ownerRole: an administrator
+// any image but their own, a moderator a vendor's only (owner decision 1). imageTakedownAction enforces the same
+// rule in SQL.
+func mayTakeDown(u *User, owner, ownerRole string) bool {
+	switch {
+	case u == nil || owner == u.ID:
+		return false
+	case u.Role == "admin":
+		return true
+	}
+	return u.Role == "moderator" && ownerRole == "vendor"
+}
+
+// staffRemoveForm is the staff remove form for image id owned by owner (whose role is ownerRole) on d's page, or
+// nil when the viewer may not take it down (mayTakeDown).
+func staffRemoveForm(d *PageData, id, owner, ownerRole, what, from, label string) *ImageTakedown {
+	if !mayTakeDown(d.User, owner, ownerRole) {
 		return nil
 	}
 	return &ImageTakedown{CSRF: d.CSRF, ID: id, What: what, From: from, Label: label}
@@ -74,25 +88,26 @@ func photoTakedownOwnerPrefix(listing string) string {
 }
 
 // imageTakedownAction deletes a photo or avatar for a moderator or administrator. The reason (10–500 characters
-// after trimming, as for a listing takedown) is checked first, so it tells nothing about the id. An administrator
-// may take down any image but their own; a moderator one they can see: one the public route serves, or a staff
-// avatar beside a dispute decision (imageDeskWhere). Anything else, the actor's own image and an unknown id get
-// the same 404.
+// after trimming, as for a listing takedown, with no NUL, which PostgreSQL text refuses) is checked first, so it
+// tells nothing about the id. An administrator may take down any image but their own; a moderator only a vendor's
+// image that the public route serves (owner decision 1: moderators take down vendors' images; staff avatars and
+// administrators' listing photos are for administrators). Anything else, the actor's own image and an unknown id
+// get the same 404.
 //
 // Lock order (lockListing's): the users rows of the actor and the owner (FOR KEY SHARE, which the audit and
-// notification inserts' foreign keys take anyway), then the image row. An administrator's role change holds the
-// owner's row and then archives listings, so this waits for it instead of deadlocking
-// (TestImageTakedownDoesNotDeadlockWithRoleChange). The actor's role is read again under that lock.
+// notification inserts' foreign keys take anyway), then the image row. The actor's role is read again under that
+// lock, so a takedown racing an administrator's demotion of the actor waits for the demotion and is then refused
+// (403; TestImageTakedownRefusedWhenActorDemotedMidRequest).
 func imageTakedownAction(c *actionCtx) (actionResult, error) {
 	reason := strings.TrimSpace(strings.ReplaceAll(c.Form.Get("reason"), "\r\n", "\n"))
-	if n := utf8.RuneCountInString(reason); !utf8.ValidString(reason) || n < minTakedownReason || n > maxTakedownReason {
+	if n := utf8.RuneCountInString(reason); !utf8.ValidString(reason) || strings.ContainsRune(reason, 0) || n < minTakedownReason || n > maxTakedownReason {
 		return actionResult{}, fail(400, "Give the owner a reason of 10–500 characters. Nothing was removed.")
 	}
 	notFound := fail(404, "Image not found. Nothing was removed.")
 	ctx, tx, id := c.Ctx(), c.Tx, c.Form.Get("id")
 	var kind, owner, handle, ownerRole, listing, title string
 	err := tx.QueryRowContext(ctx, `SELECT i.kind,i.owner_user_id,o.handle,o.role,coalesce(p.id,''),coalesce(p.title,'') FROM `+imagePublicFrom+`
-		WHERE i.id=$1 AND i.owner_user_id<>$2 AND (`+imageDeskWhere+` OR (`+imagePublicWhere+`))`, id, c.User.ID, c.User.Role).Scan(&kind, &owner, &handle, &ownerRole, &listing, &title)
+		WHERE i.id=$1 AND i.owner_user_id<>$2 AND ($3='admin' OR (o.role='vendor' AND `+imagePublicWhere+`))`, id, c.User.ID, c.User.Role).Scan(&kind, &owner, &handle, &ownerRole, &listing, &title)
 	if err == sql.ErrNoRows {
 		return actionResult{}, notFound
 	}
@@ -157,11 +172,12 @@ func takedownNoticeLoader(_ context.Context, _ *App, r *http.Request, d *PageDat
 }
 
 // recentImagesLoader lists the newest images the public route serves (imagePublicWhere), newest first, for
-// /moderator: moderators may not see other images (A-187), and these are the ones anyone can.
+// /moderator: moderators may not see other images (A-187), and these are the ones anyone can. A moderator sees
+// only vendors' images, the ones they may take down; an administrator every public image.
 func recentImagesLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 	rows, err := a.db.QueryContext(ctx, `SELECT i.id,i.kind,i.owner_user_id,o.handle,o.role,coalesce(p.id,''),coalesce(p.title,''),
-		to_char(i.created,'YYYY-MM-DD HH24:MI "UTC"') FROM `+imagePublicFrom+` WHERE `+imagePublicWhere+`
-		ORDER BY i.created DESC,i.id DESC LIMIT $1`, recentImagesLimit)
+		to_char(i.created,'YYYY-MM-DD HH24:MI "UTC"') FROM `+imagePublicFrom+` WHERE `+imagePublicWhere+` AND ($2='admin' OR o.role='vendor')
+		ORDER BY i.created DESC,i.id DESC LIMIT $1`, recentImagesLimit, d.User.Role)
 	if err != nil {
 		return err
 	}
@@ -190,7 +206,7 @@ func recentImage(d *PageData, id string, photo bool, owner, role string, im Rece
 	if role == "moderator" {
 		im.OwnerLink = "/canary#staff"
 	}
-	im.Takedown = staffRemoveForm(d, id, owner, what, "", "Remove image "+strconv.Itoa(n))
+	im.Takedown = staffRemoveForm(d, id, owner, role, what, "", "Remove image "+strconv.Itoa(n))
 	return im
 }
 

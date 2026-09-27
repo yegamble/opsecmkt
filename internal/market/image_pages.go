@@ -70,9 +70,13 @@ func productPhotosLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 	for i := range d.Products {
 		setPhotos(&d.Products[i], photos[d.Products[i].ID])
 	}
-	if d.Page == "product" && d.Product != nil { // A-190: a staff remove form per photo
+	if d.Page == "product" && d.Product != nil && len(d.Product.Photos) > 0 && staffViewer(d.User) { // A-190: a staff remove form per photo
+		var role string // moderators take down vendors' photos only (mayTakeDown)
+		if err = a.db.QueryRowContext(ctx, `SELECT role FROM users WHERE id=$1`, d.Product.VendorID).Scan(&role); err != nil {
+			return err
+		}
 		for i := range d.Product.Photos {
-			d.Product.Photos[i].Takedown = staffRemoveForm(d, d.Product.Photos[i].ID, d.Product.VendorID, "photo", "product", "Remove photo "+strconv.Itoa(i+1))
+			d.Product.Photos[i].Takedown = staffRemoveForm(d, d.Product.Photos[i].ID, d.Product.VendorID, role, "photo", "product", "Remove photo "+strconv.Itoa(i+1))
 		}
 	}
 	return nil
@@ -123,7 +127,7 @@ func vendorAvatarLoader(ctx context.Context, a *App, _ *http.Request, d *PageDat
 		return err
 	}
 	d.Users[0].Avatar = publicImageURL(id, false)
-	d.AvatarTakedown = staffRemoveForm(d, id, d.Users[0].ID, "avatar", "vendor", "Remove this avatar") // A-190
+	d.AvatarTakedown = staffRemoveForm(d, id, d.Users[0].ID, d.Users[0].Role, "avatar", "vendor", "Remove this avatar") // A-190
 	return nil
 }
 
