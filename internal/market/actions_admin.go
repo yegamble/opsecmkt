@@ -145,9 +145,11 @@ func adminSuspendAction(c *actionCtx) (actionResult, error) {
 		sessions := strconv.FormatInt(n, 10) + " session(s) and any pending sign-ins"
 		// Unsent payouts to the account are held until an administrator checks their payout address: whoever
 		// the account was suspended for may have changed it (A-102). The watcher's own hold is replaced, since the
-		// watcher lifts that one by itself. Payouts queued later start held (enqueuePayout).
-		heldRes, err := tx.ExecContext(ctx, `UPDATE payouts SET state='held',error=$2,updated=now()
-			WHERE user_id=$1 AND (state IN ('pending','blocked') OR (state='held' AND error=$3))`, target, suspendedHold, heldReason)
+		// watcher lifts that one by itself. A hold for a payout larger than the order price is kept after the
+		// suspension text, so releasing it still needs that review too. Payouts queued later start held (enqueuePayout).
+		heldRes, err := tx.ExecContext(ctx, `UPDATE payouts SET state='held',updated=now(),
+			error=CASE WHEN state='held' AND error LIKE $4 || '%' THEN $2 || ' ' || error ELSE $2 END
+			WHERE user_id=$1 AND (state IN ('pending','blocked') OR (state='held' AND (error=$3 OR error LIKE $4 || '%')))`, target, suspendedHold, heldReason, largeHoldPrefix)
 		if err != nil {
 			return actionResult{}, err
 		}

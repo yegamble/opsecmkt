@@ -309,10 +309,24 @@ func (p *moneroProvider) Incoming(ctx context.Context, addresses []string) ([]In
 
 // Send transfers from account 0 of the pooled wallet; the network fee is paid by the wallet on top of amount.
 func (p *moneroProvider) Send(ctx context.Context, to string, amt int64) (string, error) {
+	return p.transfer(ctx, to, amt, false)
+}
+
+// SendFeeFromAmount transfers amt less the network fee (transfer's subtract_fee_from_outputs, which the pinned
+// monero-wallet-rpc v0.18.5.1 passes to create_transactions_2), so the recipient bears the fee.
+func (p *moneroProvider) SendFeeFromAmount(ctx context.Context, to string, amt int64) (string, error) {
+	return p.transfer(ctx, to, amt, true)
+}
+
+func (p *moneroProvider) transfer(ctx context.Context, to string, amt int64, feeFromAmount bool) (string, error) {
 	var r struct {
 		TxHash string `json:"tx_hash"`
 	}
-	err := p.wallet.callWithin(ctx, payoutSendTimeout, "/json_rpc", "transfer", map[string]any{"destinations": []map[string]any{{"amount": amt, "address": to}}, "account_index": 0, "priority": 0}, &r)
+	params := map[string]any{"destinations": []map[string]any{{"amount": amt, "address": to}}, "account_index": 0, "priority": 0}
+	if feeFromAmount {
+		params["subtract_fee_from_outputs"] = []int{0}
+	}
+	err := p.wallet.callWithin(ctx, payoutSendTimeout, "/json_rpc", "transfer", params, &r)
 	if err == nil && r.TxHash == "" {
 		err = errors.New("monero transfer returned no transaction hash")
 	}

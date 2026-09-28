@@ -115,6 +115,11 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 		if suspendedHeld && c.Form.Get("address_checked") != "confirmed" {
 			return actionResult{}, fail(409, "This payout was held when the recipient's account was suspended, and its payout address may have been changed by someone else. Check the payout address with the account owner, then confirm that you checked it to release the payout. Nothing was changed.")
 		}
+		// A refund or return larger than the order price would let the pooled wallet be used to swap coins.
+		large := heldLarge(state, payoutErr)
+		if large && c.Form.Get("large_reviewed") != "confirmed" {
+			return actionResult{}, fail(409, "This payout is larger than the order price and was held so the market's wallet is not used to swap coins. Review the order and its deposits, then confirm that you reviewed it to release the payout. Nothing was changed.")
+		}
 		// A payout the watcher itself holds (credited deposit conflicted or re-confirming) stays held while
 		// that is still true: sendPayouts would refuse it anyway, and the watcher releases it once it re-confirms.
 		var unsettled bool
@@ -142,6 +147,10 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 				note = "Administrator confirmed the wallet shows no broadcast transaction for the " + c.A.netTag() + " payout of " + label + " (held after being restored from backup) and checked the payout address (held for an account suspension), and released it; it is queued for a single send."
 			}
 			audit += "; held for an account suspension, administrator checked the payout address " + address
+		}
+		if large {
+			note += " It is larger than the order price; an administrator reviewed it before releasing it."
+			audit += "; larger than the order price, administrator reviewed it"
 		}
 	case "requeue":
 		// A send with no definite answer may be on the network: sending again without checking could pay twice.

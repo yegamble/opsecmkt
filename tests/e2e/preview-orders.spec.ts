@@ -42,7 +42,7 @@ test('moderator desk requires an outcome and disputes explain eligibility', asyn
   await expect(page.getByRole('checkbox', { name: 'I checked the amount and who receives it for the outcome I chose. Resolving is final.' })).toHaveAttribute('required', '');
   await expect(page.locator('input[type="hidden"][name="amount_seen"]')).toHaveValue('412000');
   await expect(page.getByLabel('Decision', { exact: true })).toHaveAccessibleDescription(/^Stored unencrypted\..*Never include an address, real name or tracking number/);
-  await expect(page.locator('main')).toContainText('Resolving queues one payout of the whole counted amount to one party; the payment watcher sends it automatically. There is no split.');
+  await expect(page.locator('main')).toContainText("A refund returns the whole counted amount to the buyer; a release pays the vendor the price and returns any excess worth sending to the buyer, with the network fee deducted. A refund or return larger than the price waits for an administrator's review");
   await expect(page.locator('main')).not.toContainText('moves no funds');
   await page.goto('/disputes');
   await expect(page.locator('.order-unavailable')).toContainText('Only paid, shipped, or delivered orders qualify');

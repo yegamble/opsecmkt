@@ -33,9 +33,10 @@ type fakeProvider struct {
 }
 
 type fakeSend struct {
-	To     string
-	Amount int64
-	TxID   string
+	To            string
+	Amount        int64
+	TxID          string
+	FeeFromAmount bool // sent with SendFeeFromAmount (a refund or return)
 }
 
 func newFakeProvider(currency string, confs int) *fakeProvider {
@@ -125,7 +126,16 @@ func (f *fakeProvider) Incoming(_ context.Context, addresses []string) ([]Incomi
 	return out, nil
 }
 
+// SendFeeFromAmount records the send as one whose recipient bears the fee (refunds and returns).
+func (f *fakeProvider) SendFeeFromAmount(ctx context.Context, to string, amount int64) (string, error) {
+	return f.send(ctx, to, amount, true)
+}
+
 func (f *fakeProvider) Send(ctx context.Context, to string, amount int64) (string, error) {
+	return f.send(ctx, to, amount, false)
+}
+
+func (f *fakeProvider) send(ctx context.Context, to string, amount int64, feeFromAmount bool) (string, error) {
 	if f.sendHook != nil {
 		f.sendHook()
 	}
@@ -138,7 +148,7 @@ func (f *fakeProvider) Send(ctx context.Context, to string, amount int64) (strin
 	if !f.valid(to) {
 		return "", errors.New("fake wallet: invalid address")
 	}
-	s := fakeSend{To: to, Amount: amount, TxID: fmt.Sprintf("fake-payout-%d", len(f.sends)+1)}
+	s := fakeSend{To: to, Amount: amount, TxID: fmt.Sprintf("fake-payout-%d", len(f.sends)+1), FeeFromAmount: feeFromAmount}
 	f.sends = append(f.sends, s)
 	return s.TxID, nil
 }

@@ -8,8 +8,8 @@ import (
 )
 
 // Payout queueing on terminal transitions, inside the transition's transaction:
-// completed -> release to the vendor; cancelled -> refund to the buyer; resolved -> the dispute outcome
-// (release | refund). The amount is every credited or threshold-confirmed deposit for the order (payoutBasis);
+// completed -> release to the vendor (the price; any excess is returned to the buyer, see splitPayout);
+// cancelled -> refund to the buyer; resolved -> the dispute outcome (release | refund). The amount is every credited or threshold-confirmed deposit for the order (payoutBasis);
 // nothing is queued without one.
 
 func init() { registerTransitionHook(paymentsTransitionHook) }
@@ -27,6 +27,19 @@ const suspendedHoldPrefix = "Suspended account:"
 
 const suspendedHold = suspendedHoldPrefix + " payout held when the recipient's account was suspended; an administrator must check the payout address before releasing it."
 
+// largeHoldPrefix starts the hold on a refund or return larger than the order price (splitPayout). Only an
+// administrator who confirms the check releases it (payments_admin.go); the watcher never lifts it. It follows
+// suspendedHold when both apply, and a restore from backup keeps it after its own prefix (scripts/restore.sh).
+const largeHoldPrefix = "Larger than the order price:"
+
+const largeHold = largeHoldPrefix + " held so the market's pooled wallet is not used to swap coins; an administrator checks it before it is sent."
+
+// heldLarge reports a payout held because it is larger than the order price, including under a suspension or
+// restore hold.
+func heldLarge(state, payoutErr string) bool {
+	return state == "held" && strings.Contains(payoutErr, largeHoldPrefix)
+}
+
 // Minimum automatic payouts (A-99), in atomic units. A payout whose counted sum is below its floor is never
 // queued: enqueuePayout flags its deposits for staff review once instead (flagBelowFloor).
 //
@@ -37,12 +50,12 @@ const suspendedHold = suspendedHoldPrefix + " payout held when the recipient's a
 // class, not every failure: fees move, so a payout just above the floor can still fail and is requeued by an
 // administrator as before. Listings cannot be priced below it in BTC (validateListing).
 //
-// minAutoRefundXMR applies to Monero refunds only. monero-wallet-rpc pays the fee on top of the amount from the
-// market's pooled wallet, so any amount can be sent; a Monero transfer costs very roughly 0.00003-0.0001 XMR in
-// fees at the default priority (more for one spending many small outputs). A stray deposit to a cancelled
-// order's address below 0.001 XMR would cost the market several percent of its value or more to refund, and a
-// stream of such deposits could drain the pool in fees, so it is left to staff. Releases have no Monero floor:
-// the vendor's price was agreed and paid.
+// minAutoRefundXMR applies to Monero refunds and overpayment returns. Those are sent with the network fee taken
+// from the amount (SendFeeFromAmount), so they never cost the market's pooled wallet; a Monero transfer costs very
+// roughly 0.00003-0.0001 XMR in fees at the default priority (more for one spending many small outputs), and
+// below 0.001 XMR the fee would take several percent of the amount or more, so such a refund is left to staff
+// and such an excess goes to the vendor with the release (splitPayout). Releases have no Monero floor: the
+// vendor's price was agreed and paid, and the pooled wallet pays a release's fee on top.
 const (
 	minPayoutBTC     = 10000      // 0.0001 BTC
 	minAutoRefundXMR = 1000000000 // 0.001 XMR
@@ -53,7 +66,7 @@ func payoutFloor(currency, kind string) int64 {
 	switch {
 	case currency == "BTC":
 		return minPayoutBTC
-	case currency == "XMR" && kind == "refund":
+	case currency == "XMR" && (kind == "refund" || kind == "return"):
 		return minAutoRefundXMR
 	}
 	return 0
@@ -158,7 +171,7 @@ func (a *App) payoutBasis(ctx context.Context, q rowsQuerier, o *Order, lock boo
 	return ids, sum, holdBelow, rows.Err()
 }
 
-// enqueuePayout is idempotent (one payout per order). A resolved order whose dispute outcome is not yet set is
+// enqueuePayout is idempotent (one settlement per order: a release, with a return of any excess, or a refund). A resolved order whose dispute outcome is not yet set is
 // skipped; the watcher retries it for 24 hours after the transition. An amount the actor confirmed
 // (withPayoutSeen) must equal the amount counted here under the row locks, or the action is refused (409).
 func (a *App) enqueuePayout(ctx context.Context, tx *sql.Tx, o *Order) error {
@@ -169,12 +182,12 @@ func (a *App) enqueuePayout(ctx context.Context, tx *sql.Tx, o *Order) error {
 	if !issued {
 		return checkPayoutSeen(ctx, o, 0)
 	}
-	var kind, recipient, who string
+	var kind, who string
 	switch o.State {
 	case stateCompleted:
-		kind, recipient, who = "release", o.VendorID, "vendor"
+		kind, who = "release", "vendor"
 	case stateCancelled:
-		kind, recipient, who = "refund", o.BuyerID, "buyer"
+		kind, who = "refund", "buyer"
 	case stateResolved:
 		var outcome string
 		err := tx.QueryRowContext(ctx, "SELECT outcome FROM disputes WHERE order_id=$1", o.ID).Scan(&outcome)
@@ -186,17 +199,17 @@ func (a *App) enqueuePayout(ctx context.Context, tx *sql.Tx, o *Order) error {
 		}
 		switch outcome {
 		case "release":
-			kind, recipient, who = "release", o.VendorID, "vendor"
+			kind, who = "release", "vendor"
 		case "refund":
-			kind, recipient, who = "refund", o.BuyerID, "buyer"
+			kind, who = "refund", "buyer"
 		default:
 			return nil
 		}
 	default:
 		return nil
 	}
-	// One payout per order: once queued, later deposits are never credited here (settleOrder flags those that
-	// confirm as not paid out).
+	// One settlement per order (a release and its return, or a refund): once queued, later deposits are never
+	// credited here (settleOrder flags those that confirm as not paid out).
 	var queued bool
 	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM payouts WHERE order_id=$1)", o.ID).Scan(&queued); err != nil || queued {
 		return err
@@ -215,19 +228,10 @@ func (a *App) enqueuePayout(ctx context.Context, tx *sql.Tx, o *Order) error {
 	if below := belowFloor(o.Currency, kind, sum); below != "" {
 		return a.flagBelowFloor(ctx, tx, o, kind, who, below, ids, sum)
 	}
-	column := "payout_btc"
-	if o.Currency == "XMR" {
-		column = "payout_xmr"
-	}
 	// FOR SHARE waits for a suspension of the recipient in progress (it locks the account row and then holds
 	// the account's payouts), so a payout queued meanwhile is either seen and held by it or queued held here. It
 	// also waits for a checkout by a refunded buyer, which holds the row while it waits on the wallet (payAction).
 	if err = waitForWalletLocks(ctx, tx); err != nil {
-		return err
-	}
-	var address string
-	var suspended bool
-	if err = tx.QueryRowContext(ctx, "SELECT "+column+",suspended_at IS NOT NULL FROM users WHERE id=$1 FOR SHARE", recipient).Scan(&address, &suspended); err != nil {
 		return err
 	}
 	// Every credited deposit counted above is row-locked, so this sees the confirmations it was counted with.
@@ -235,59 +239,139 @@ func (a *App) enqueuePayout(ctx context.Context, tx *sql.Tx, o *Order) error {
 	if err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM payments WHERE order_id=$1 AND credited AND confirmations<$2)", o.ID, holdBelow).Scan(&held); err != nil {
 		return err
 	}
-	state, errText := "pending", ""
-	switch {
-	case suspended:
-		state, errText = "held", suspendedHold
-	case held:
-		state, errText = "held", heldReason
-	case address == "":
-		state = "blocked"
-	}
-	var id int64
-	err = tx.QueryRowContext(ctx, `INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state,error) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
-		ON CONFLICT (order_id) DO NOTHING RETURNING id`, o.ID, kind, recipient, o.Currency, sum, address, state, errText).Scan(&id)
-	if err == sql.ErrNoRows {
-		return nil // already queued
-	}
-	if err != nil {
-		return err
+	required, _ := parseAmount(o.Amount, currencyDecimals(o.Currency))
+	parts := splitPayout(kind, o, sum, required)
+	for _, part := range parts {
+		if err = a.queuePayout(ctx, tx, o, part, held); err != nil {
+			return err
+		}
 	}
 	// Deposits flagged earlier as below the floor are paid now: their flag closes (below_floor).
 	if _, err = tx.ExecContext(ctx, "UPDATE payments SET credited=true,below_floor=false WHERE id=ANY($1)", ids); err != nil {
 		return err
 	}
-	label := amount(sum, currencyDecimals(o.Currency)) + " " + o.Currency
-	note := "Queued " + a.netTag() + " " + kind + " of " + label + " to the " + who + " (single attempt)."
-	switch state {
-	case "blocked":
-		note = a.netTag() + " " + kind + " of " + label + " to the " + who + " is blocked until the " + who + " saves a " + o.Currency + " payout address."
-	case "held":
-		note = a.netTag() + " " + kind + " of " + label + " to the " + who + " is held: a credited deposit is conflicted or re-confirming."
-		if suspended {
-			note = a.netTag() + " " + kind + " of " + label + " to the " + who + " is held until an administrator checks the payout address."
-		}
-	}
-	// An overpayment is paid out whole to one party (no split, no automatic refund of the excess); say so.
-	required, _ := parseAmount(o.Amount, currencyDecimals(o.Currency))
-	if sum > required {
-		note += " It includes " + priceDifference(sum, required, o.Currency) + "."
-	}
-	if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, o.State, note); err != nil {
-		return err
-	}
-	if kind == "release" && sum > required {
-		body := "Order " + o.ID[:min(8, len(o.ID))] + ": the " + a.netTag() + " release of " + label + " to the vendor includes " + priceDifference(sum, required, o.Currency) + ". The whole counted amount goes to one party; the excess is not refunded automatically."
+	// An excess too small to return goes to the vendor with the release; both parties are told.
+	if len(parts) == 1 && parts[0].kind == "release" && sum > required {
+		dec := currencyDecimals(o.Currency)
+		body := "Order " + o.ID[:min(8, len(o.ID))] + ": the " + a.netTag() + " release of " + amount(sum, dec) + " " + o.Currency + " to the vendor includes " + priceDifference(sum, required, o.Currency) + ", below the minimum automatic refund of " + amount(payoutFloor(o.Currency, "return"), dec) + " " + o.Currency + ", so it is not returned."
 		for _, uid := range []string{o.BuyerID, o.VendorID} {
 			if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), uid, body); err != nil {
 				return err
 			}
 		}
 	}
-	if state == "blocked" {
-		body := "Order " + o.ID[:min(8, len(o.ID))] + ": add a " + o.Currency + " payout address on your account page to receive " + label + " (" + a.netTag() + ")."
-		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), recipient, body); err != nil {
+	return nil
+}
+
+// payoutPart is one payout of a terminal order: its kind ("release", "refund" or "return"), recipient and amount.
+// large marks a refund or return of more than the order price, held for an administrator (largeHold).
+type payoutPart struct {
+	kind, recipient, who string
+	amount               int64
+	large                bool
+}
+
+// splitPayout divides an order's counted sum (payoutBasis) into its payouts. A refund returns the whole sum to the
+// buyer. A release pays the vendor exactly the price and returns the excess to the buyer as a separate payout,
+// unless the excess is below the minimum automatic refund (it then goes to the vendor with the release: sending
+// dust back costs more than it is worth and invites fee abuse) or the price itself is below the release floor. A
+// refund or return larger than the order price is marked large: sending it back automatically would let the
+// market's pooled wallet be used to swap coins, so an administrator checks it first.
+func splitPayout(kind string, o *Order, sum, required int64) []payoutPart {
+	if kind == "refund" {
+		return []payoutPart{{kind: "refund", recipient: o.BuyerID, who: "buyer", amount: sum, large: sum > required}}
+	}
+	excess := sum - required
+	if excess <= 0 || belowFloor(o.Currency, "return", excess) != "" || belowFloor(o.Currency, "release", required) != "" {
+		return []payoutPart{{kind: "release", recipient: o.VendorID, who: "vendor", amount: sum}}
+	}
+	return []payoutPart{
+		{kind: "release", recipient: o.VendorID, who: "vendor", amount: required},
+		{kind: "return", recipient: o.BuyerID, who: "buyer", amount: excess, large: excess > required},
+	}
+}
+
+// queuePayout inserts one payout of o (at most one of each kind per order) with its starting state: held for a
+// suspended recipient (suspendedHold, plus largeHold when large), held when large (largeHold), held while a
+// credited deposit is conflicted or re-confirming (heldReason, lifted by the watcher by itself, so it never
+// replaces a hold only an administrator lifts), blocked without a payout address, otherwise pending. It writes the
+// order note and tells the recipient what happens next; a large payout is also announced to administrators.
+func (a *App) queuePayout(ctx context.Context, tx *sql.Tx, o *Order, part payoutPart, held bool) error {
+	column := "payout_btc"
+	if o.Currency == "XMR" {
+		column = "payout_xmr"
+	}
+	var address string
+	var suspended bool
+	if err := tx.QueryRowContext(ctx, "SELECT "+column+",suspended_at IS NOT NULL FROM users WHERE id=$1 FOR SHARE", part.recipient).Scan(&address, &suspended); err != nil {
+		return err
+	}
+	state, errText := "pending", ""
+	switch {
+	case suspended && part.large:
+		state, errText = "held", suspendedHold+" "+largeHold
+	case suspended:
+		state, errText = "held", suspendedHold
+	case part.large:
+		state, errText = "held", largeHold
+	case held:
+		state, errText = "held", heldReason
+	case address == "":
+		state = "blocked"
+	}
+	var id int64
+	err := tx.QueryRowContext(ctx, `INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state,error) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+		ON CONFLICT (order_id,kind) DO NOTHING RETURNING id`, o.ID, part.kind, part.recipient, o.Currency, part.amount, address, state, errText).Scan(&id)
+	if err == sql.ErrNoRows {
+		return nil // already queued
+	}
+	if err != nil {
+		return err
+	}
+	short := o.ID[:min(8, len(o.ID))]
+	label := amount(part.amount, currencyDecimals(o.Currency)) + " " + o.Currency
+	what := a.netTag() + " " + part.kind + " of " + label
+	if part.kind == "return" {
+		what = a.netTag() + " return of " + label + " (paid over the price)"
+	}
+	note := "Queued " + what + " to the " + part.who + " (single attempt)."
+	switch {
+	case suspended:
+		note = what + " to the " + part.who + " is held until an administrator checks the payout address."
+	case part.large:
+		note = what + " to the " + part.who + " is held: it is more than the order price, so an administrator checks it before it is sent."
+	case held:
+		note = what + " to the " + part.who + " is held: a credited deposit is conflicted or re-confirming."
+	case address == "":
+		note = what + " to the " + part.who + " is blocked until the " + part.who + " saves a " + o.Currency + " payout address."
+	}
+	if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, o.State, note); err != nil {
+		return err
+	}
+	var body string
+	switch {
+	case part.large:
+		body = "Order " + short + ": the " + what + " is more than the order price, so it is held until an administrator checks it."
+	case address == "" && !suspended:
+		body = "Order " + short + ": add a " + o.Currency + " payout address on your account page to receive " + label + " (" + a.netTag() + ")."
+	case part.kind == "return":
+		body = "Order " + short + ": " + label + " you paid over the price is being returned to your saved " + o.Currency + " payout address; the network fee is taken from it."
+	}
+	if body != "" {
+		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), part.recipient, body); err != nil {
 			return err
+		}
+	}
+	if part.large {
+		admins, err := collectStrings(ctx, tx, "SELECT id FROM users WHERE role='admin' AND suspended_at IS NULL AND id<>$1", part.recipient)
+		if err != nil {
+			return err
+		}
+		body = "Payout review needed for order " + short + ": " + note + " Release it on the admin page after checking it."
+		for _, uid := range admins {
+			if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), uid, body); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -321,7 +405,7 @@ func (a *App) flagBelowFloor(ctx context.Context, tx *sql.Tx, o *Order, kind, wh
 	}
 	why := "a smaller Bitcoin payout cannot cover the network fee taken from it"
 	if o.Currency == "XMR" {
-		why = "the network fee paid on top would take too large a share of it"
+		why = "the network fee would take too large a share of it"
 	}
 	payout := a.netTag() + " " + kind + " of " + amount(sum, dec) + " " + o.Currency + " to the " + who
 	note := payout + " was not queued: it is " + below + " (" + why + "). Not paid out: " + strings.Join(deposits, ", ") + ". Moderator review required."
