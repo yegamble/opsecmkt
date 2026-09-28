@@ -823,7 +823,7 @@ func TestSendSkipsOrderWhoseSettleFailed(t *testing.T) {
 	bad, badAddr := p.newOrder(stateAwaitingPayment)
 	good, goodAddr := p.newOrder(stateAwaitingPayment)
 	p.fake.Deposit(badAddr, "tx-settle-bad", 0, 100000, 3)
-	p.fake.Deposit(goodAddr, "tx-settle-good", 0, 120000, 3)
+	p.fake.Deposit(goodAddr, "tx-settle-good", 0, 105000, 3) // an excess below the refund floor: one release
 	p.poll()
 	p.complete(bad)
 	p.complete(good)
@@ -840,7 +840,7 @@ func TestSendSkipsOrderWhoseSettleFailed(t *testing.T) {
 		t.Fatalf("settle failure not reported: %v", err)
 	}
 	sends := p.fake.Sends()
-	if st, _, _, _ := p.payout(bad); st != "pending" || len(sends) != 1 || sends[0].Amount != 120000 {
+	if st, _, _, _ := p.payout(bad); st != "pending" || len(sends) != 1 || sends[0].Amount != 105000 {
 		t.Fatalf("order whose settle failed: payout %s, sends %+v", st, sends)
 	}
 	if st, _, _, _ := p.payout(good); st != "sent" {

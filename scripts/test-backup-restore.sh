@@ -340,7 +340,7 @@ record() {
 complete_again() {
   pg "$app_target_db" -Atq -c 'BEGIN' -c "WITH moved AS (UPDATE orders SET state='completed',updated=now() WHERE id='ops-order-late' AND state='delivered' RETURNING id),
     queued AS (INSERT INTO payouts(order_id,kind,user_id,currency,amount,address) SELECT id,'release','ops-vendor','BTC',150000,'tb1qopsrestorelatevendor' FROM moved
-      ON CONFLICT (order_id) DO NOTHING RETURNING 1)
+      ON CONFLICT (order_id,kind) DO NOTHING RETURNING 1)
     SELECT (SELECT count(*) FROM moved) || ':' || (SELECT count(*) FROM queued)" -c 'ROLLBACK'
 }
 payout_count="SELECT count(*) FROM payouts"
@@ -393,6 +393,33 @@ refusal='that transaction ID is already recorded on another payout' refused ops-
 [[ $(pg "$app_target_db" -Atq -c "SELECT md5(string_agg(id || ':' || coalesce(user_id,'') || ':' || action || ':' || created, ',' ORDER BY id)) FROM audit_events WHERE id <= $audit_max") == "$audit_before" ]]
 # Completing the reconciled order again changes nothing and queues nothing.
 [[ $(complete_again) == 0:0 ]]
+# An overpaid release settled after the backup was two sends (migration 064): the price to the vendor and the
+# excess back to the buyer. Both are recorded at once; the release must be the price and the two must add up to
+# the counted deposits, each with its own transaction ID.
+split_txid=$(printf '12%.0s' {1..32})
+return_txid=$(printf '34%.0s' {1..32})
+pg "$app_target_db" -q -c "
+INSERT INTO orders(id,buyer_id,product_id,currency,amount,state) VALUES ('ops-order-split','ops-buyer','ops-product','BTC',150000,'delivered');
+INSERT INTO payment_addresses(order_id,currency,address,provider) VALUES ('ops-order-split','BTC','tb1qopsrestoresplitdeposit','bitcoin');
+INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,credited,locked) VALUES ('ops-order-split','BTC',repeat('13',32),0,'tb1qopsrestoresplitdeposit',200000,6,true,false);"
+[[ $(pg "$app_target_db" -Atq -v currency=BTC -v amount=200000 -f "$work/find-order.sql") == 'ops-order-split|delivered|200000|tb1qopsrestorelatevendor|' ]]
+# record_split AMOUNT RETURN_AMOUNT RETURN_TXID yes|no
+record_split() {
+  pg "$app_target_db" -Atq -v order_id=ops-order-split -v kind=release -v state=completed -v amount="$1" -v address=tb1qopsrestorelatevendor \
+    -v txid="$split_txid" -v handle=ops_admin -v record="$4" -v return_amount="$2" -v return_address=tb1qopsrestoresplitbuyer \
+    -v return_txid="$3" -f "$work/record-payout.sql"
+}
+split_payouts="SELECT count(*) FROM payouts WHERE order_id='ops-order-split'"
+[[ $(tail -n 1 <<< "$(record_split 190000 10000 "$return_txid" yes)") == 'Refused; nothing was written: with a return, amount must be the order price' ]]
+[[ $(tail -n 1 <<< "$(record_split 150000 40000 "$return_txid" yes)") == 'Refused; nothing was written: counted deposits do not add up to the amount' ]]
+[[ $(tail -n 1 <<< "$(record_split 150000 50000 "$split_txid" yes)") == 'Refused; nothing was written: return_txid must be another 64 lower-case hexadecimal transaction ID' ]]
+[[ $(tail -n 1 <<< "$(record_split 150000 50000 "$late_txid" yes)") == 'Refused; nothing was written: that transaction ID is already recorded on another payout' ]]
+[[ $(pg "$app_target_db" -Atq -c "$split_payouts") == 0 ]]
+[[ $(tail -n 1 <<< "$(record_split 150000 50000 "$return_txid" yes)") == 'Recorded the payout as sent; committed.' ]]
+[[ $(pg "$app_target_db" -Atq -c "SELECT string_agg(kind || ':' || user_id || ':' || amount || ':' || address || ':' || state || ':' || txid, ',' ORDER BY kind) FROM payouts WHERE order_id='ops-order-split'") == "release:ops-vendor:150000:tb1qopsrestorelatevendor:sent:$split_txid,return:ops-buyer:50000:tb1qopsrestoresplitbuyer:sent:$return_txid" ]]
+[[ $(pg "$app_target_db" -Atq -c "SELECT state FROM orders WHERE id='ops-order-split'") == completed ]]
+[[ $(pg "$app_target_db" -Atq -c "SELECT note FROM order_events WHERE order_id='ops-order-split'") == "Reconciled after a restore from backup: the TESTNET release of 0.0015 BTC to the vendor was sent after the backup was taken, in transaction $split_txid, and the return of 0.0005 BTC paid over the price to the buyer in transaction $return_txid. Recorded by an administrator from the wallet; nothing was sent now." ]]
+[[ $(tail -n 1 <<< "$(record_split 150000 50000 "$return_txid" yes)") == 'Refused; nothing was written: the order already has a payout; resolve it on the admin page' ]]
 # Clear the gate with the runbook's SQL, restart the server and check that no second payout exists. An unknown or
 # non-administrator handle is refused and rolls back: the gate stays set and no audit row is added.
 gate_value="SELECT value FROM settings WHERE key='payments_recovery_required'"
@@ -416,7 +443,7 @@ done
 start_app "$app_target_db"
 stop_app
 [[ $(pg "$app_target_db" -Atq -c "SELECT string_agg(order_id || ':' || state, ',' ORDER BY order_id) FROM payouts WHERE order_id IN ('ops-order-late','ops-order-disputed')") == ops-order-disputed:sent,ops-order-late:sent ]]
-[[ $(pg "$app_target_db" -Atq -c "$payout_count") == 6 ]]
+[[ $(pg "$app_target_db" -Atq -c "$payout_count") == 8 ]]
 [[ $(complete_again) == 0:0 ]]
 # The restore's holds, including the suspension hold, outlive the cleared gate and the restart.
 [[ $(pg "$app_target_db" -Atq -c "SELECT string_agg(order_id || ':' || state, ',' ORDER BY order_id) FROM payouts WHERE order_id IN ('ops-order-queued','ops-order-suspended')") == ops-order-queued:held,ops-order-suspended:held ]]

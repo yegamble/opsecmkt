@@ -81,3 +81,21 @@
 .payout-actions form {
   margin-top:12px
 }
+.payment-qr {
+  margin:12px 0 0
+}
+.payment-qr svg {
+  display:block;
+  width:240px;
+  max-width:100%;
+  height:auto
+}
+.payment-qr .payment-uri {
+  font-family:var(--mono)
+}
+.payment-qr figcaption {
+  margin:8px 0 0;
+  color:var(--text);
+  font-size:0.875rem;
+  overflow-wrap:anywhere
+}

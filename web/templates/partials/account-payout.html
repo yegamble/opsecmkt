@@ -21,7 +21,7 @@
 </thead>
 <tbody>{{range .Unsent}}<tr>
 <td><a class="text-link mono" href="/order?id={{.OrderID}}">{{.OrderShort}}</a></td>
-<td>{{if eq .Kind "release"}}Release{{else}}Refund{{end}} of {{.Amount}} {{.Currency}} {{if $.LiveNetwork}}<span class="badge live">MAINNET</span>{{else}}<span class="badge testnet">TESTNET{{with .Network}} {{.}}{{end}}</span>{{end}}</td>
+<td>{{if eq .Kind "release"}}Release{{else if eq .Kind "return"}}Return of overpayment{{else}}Refund{{end}} of {{.Amount}} {{.Currency}} {{if $.LiveNetwork}}<span class="badge live">MAINNET</span>{{else}}<span class="badge testnet">TESTNET{{with .Network}} {{.}}{{end}}</span>{{end}}</td>
 <td>{{if .Address}}<span class="mono">{{.Address}}</span> {{if $.LiveNetwork}}<span class="badge live">MAINNET</span>{{else}}<span class="badge testnet">TESTNET{{with .Network}} {{.}}{{end}}</span>{{end}}{{else}}None yet{{end}}</td>
 <td>{{.Status}}</td>
 <td>{{.NextStep}}</td>

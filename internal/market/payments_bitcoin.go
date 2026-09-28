@@ -244,6 +244,11 @@ func (p *bitcoinProvider) Send(ctx context.Context, to string, amt int64) (strin
 	return txid, err
 }
 
+// SendFeeFromAmount is Send: Bitcoin payouts always take the network fee from the amount sent.
+func (p *bitcoinProvider) SendFeeFromAmount(ctx context.Context, to string, amt int64) (string, error) {
+	return p.Send(ctx, to, amt)
+}
+
 func (p *bitcoinProvider) ValidAddress(addr string) bool {
 	if !p.formatOK(addr) {
 		return false

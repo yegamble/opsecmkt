@@ -108,8 +108,8 @@ curl image attached to the backend network instead of `docker compose exec -T mo
 http://monero-wallet:18083/json_rpc` (the network is `<COMPOSE_PROJECT_NAME>_backend` if `.env` sets another
 project name).
 
-Fund the primary address from a stagenet faucet. Keep a small buffer: Monero payout fees are paid by the
-pooled wallet on top of each payout.
+Fund the primary address from a stagenet faucet. Keep a small buffer: Monero release fees are paid by the
+pooled wallet on top of each release (refunds and overpayment returns have the fee deducted).
 
 For an external `monero-wallet-rpc`, start it with `--rpc-login marketplace:<password>` (never
 `--disable-rpc-login`) and put the same credentials in `MONERO_WALLET_RPC_URL`.
@@ -272,7 +272,7 @@ the order is disputed.
 | Credited deposit below threshold (N of T confirmations) | A deposit counted toward payment is back at a lower depth, usually a chain reorganisation (it may sit at 0 confirmations in the mempool). | As above: order unchanged, unsent payout held until it reaches the threshold again. |
 | Credited deposit confirmed again (N confirmations) | The flagged regression ended: the deposit reached the threshold again. Listed after the open flags. | The watcher lifted its own hold; a pending payout is sent on the next pass that reads the order. Nothing to do. |
 | Locked transfer (unlock time) | A Monero transfer with a non-zero `unlock_time`. | Never counted toward payment or paid out. The buyer was told to send an ordinary transfer. |
-| Deposit confirmed after settlement, not paid out | Extra funds confirmed after the order's single release or refund was queued (completed or resolved orders, or a cancellation that already queued a refund). | Not paid out: an order has exactly one payout. |
+| Deposit confirmed after settlement, not paid out | Extra funds confirmed after the order's settlement (its release and any return, or its refund) was queued (completed or resolved orders, or a cancellation that already queued a refund). | Not paid out: an order is settled once. |
 | Below the minimum automatic payout, not paid out | The order's release or refund counted less than the minimum automatic payout: 0.0001 BTC for any Bitcoin payout (the network fee is taken from the amount, so a smaller one can never be sent), 0.001 XMR for a Monero refund (the fee is paid on top). Usually a stray deposit to a cancelled order's address. | No payout row was queued; the order kept its final state. The buyer and the vendor were told it was not sent. A later deposit that lifts the sum to the minimum is paid out with it and closes the flag. Otherwise see step 4 below. |
 
 What staff can do:
@@ -296,7 +296,7 @@ What staff can do:
 
 There is no web action to dismiss a flag or pay out a flagged deposit, and an open flag stays on the desk. A
 manual refund is recorded as a **written note** (an order-history event plus an audit row), **never as a
-payout row**: `payouts.order_id` is unique, so the order's single release or refund owns that row; do not
+payout row**: each order has at most one payout of each kind (`payouts` `UNIQUE (order_id, kind)`, migration 064), owned by its release and any return, or its refund; do not
 insert a payout and do not use *Mark sent* on the order's payout for a manual transfer. Record the note with
 `psql` (internal-db shown; replace the order ID, your staff handle and the note text):
 
@@ -462,11 +462,27 @@ Then save the recording SQL once and run it for each lost payout, first as a che
 it (`yes`). Set the variables in `record_payout` for that payout: the full order ID; `kind` and `state` as
 `release` and `completed` (the buyer completed it), `refund` and `cancelled` (cancelled after payment) or
 `release`/`refund` and `resolved` (a dispute resolved that way); the amount in satoshi or piconero; the address
-and the 64-character transaction ID from the wallet; and your administrator handle.
+and the 64-character transaction ID from the wallet; and your administrator handle. A release whose buyer
+overpaid was sent as two transactions (migration 064): the price to the vendor and the excess back to the buyer.
+Record both at once: `amount`, `address` and `txid` are the vendor's, and `return_amount`, `return_address` and
+`return_txid` the buyer's (leave them out for any other payout). When finding such an order above, search with the
+two amounts added together.
 
 <!-- runbook-sql: record-payout -->
 ```sh
 cat > record-payout.sql <<'SQL'
+\if :{?return_amount}
+\else
+\set return_amount 0
+\endif
+\if :{?return_address}
+\else
+\set return_address ''
+\endif
+\if :{?return_txid}
+\else
+\set return_txid ''
+\endif
 BEGIN;
 SELECT c.*, c.problem = 'none' AS ready FROM (
   SELECT o.id AS order_id, o.state AS restored_state, :'state' AS final_state, :'kind' AS kind, o.currency,
@@ -487,11 +503,18 @@ SELECT c.*, c.problem = 'none' AS ready FROM (
         THEN 'the dispute has another outcome'
       WHEN NOT EXISTS (SELECT 1 FROM payment_addresses WHERE order_id=o.id) THEN 'no payment address was issued for the order'
       WHEN :'amount'::bigint <= 0 THEN 'amount must be positive'
-      WHEN :'amount'::bigint <> (SELECT coalesce(sum(amount),0) FROM payments WHERE order_id=o.id AND NOT locked AND (credited OR confirmations>=0))
+      WHEN :'return_amount'::bigint < 0 THEN 'return_amount must not be negative'
+      WHEN :'return_amount'::bigint > 0 AND :'kind' <> 'release' THEN 'only a release has a return'
+      WHEN :'return_amount'::bigint > 0 AND :'amount'::bigint <> o.amount THEN 'with a return, amount must be the order price'
+      WHEN :'amount'::bigint + :'return_amount'::bigint <> (SELECT coalesce(sum(amount),0) FROM payments WHERE order_id=o.id AND NOT locked AND (credited OR confirmations>=0))
         THEN 'counted deposits do not add up to the amount'
       WHEN :'address' = '' THEN 'address is blank'
       WHEN :'txid' !~ '^[0-9a-f]{64}$' THEN 'transaction ID must be 64 lower-case hexadecimal characters'
       WHEN EXISTS (SELECT 1 FROM payouts WHERE txid=:'txid') THEN 'that transaction ID is already recorded on another payout'
+      WHEN :'return_amount'::bigint > 0 AND :'return_address' = '' THEN 'return_address is blank'
+      WHEN :'return_amount'::bigint > 0 AND (:'return_txid' !~ '^[0-9a-f]{64}$' OR :'return_txid' = :'txid')
+        THEN 'return_txid must be another 64 lower-case hexadecimal transaction ID'
+      WHEN :'return_amount'::bigint > 0 AND EXISTS (SELECT 1 FROM payouts WHERE txid=:'return_txid') THEN 'that transaction ID is already recorded on another payout'
       ELSE 'none' END AS problem
   FROM (SELECT 1) AS one LEFT JOIN orders o ON o.id=:'order_id' LEFT JOIN products p ON p.id=o.product_id
     LEFT JOIN users v ON v.id=p.vendor_id LEFT JOIN users b ON b.id=o.buyer_id) AS c;
@@ -501,16 +524,23 @@ SELECT c.*, c.problem = 'none' AS ready FROM (
 WITH ord AS (
   SELECT o.id, o.state, o.currency, o.buyer_id, o.product_id, p.vendor_id,
     (SELECT id FROM users WHERE handle=:'handle' AND role='admin') AS admin_id,
-    trim_scale(:'amount'::bigint / CASE o.currency WHEN 'BTC' THEN 1e8 ELSE 1e12 END) || ' ' || o.currency AS label
+    trim_scale(:'amount'::bigint / CASE o.currency WHEN 'BTC' THEN 1e8 ELSE 1e12 END) || ' ' || o.currency AS label,
+    trim_scale(:'return_amount'::bigint / CASE o.currency WHEN 'BTC' THEN 1e8 ELSE 1e12 END) || ' ' || o.currency AS return_label
   FROM orders o JOIN products p ON p.id=o.product_id WHERE o.id=:'order_id'),
 pay AS (
   INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state,txid)
   SELECT id, :'kind', CASE :'kind' WHEN 'release' THEN vendor_id ELSE buyer_id END, currency, :'amount'::bigint, :'address', 'sent', :'txid'
-  FROM ord ON CONFLICT (order_id) DO NOTHING RETURNING id, order_id),
+  FROM ord ON CONFLICT (order_id,kind) DO NOTHING RETURNING id, order_id),
+ret AS (
+  INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state,txid)
+  SELECT ord.id, 'return', ord.buyer_id, ord.currency, :'return_amount'::bigint, :'return_address', 'sent', :'return_txid'
+  FROM ord, pay WHERE :'return_amount'::bigint > 0 ON CONFLICT (order_id,kind) DO NOTHING RETURNING id),
 note AS (
   SELECT 'Reconciled after a restore from backup: the TESTNET ' || :'kind' || ' of ' || label || ' to the '
     || CASE :'kind' WHEN 'release' THEN 'vendor' ELSE 'buyer' END || ' was sent after the backup was taken, in transaction '
-    || :'txid' || '. Recorded by an administrator from the wallet; nothing was sent now.' AS body FROM ord),
+    || :'txid' || CASE WHEN :'return_amount'::bigint > 0 THEN ', and the return of ' || return_label
+    || ' paid over the price to the buyer in transaction ' || :'return_txid' ELSE '' END
+    || '. Recorded by an administrator from the wallet; nothing was sent now.' AS body FROM ord),
 moved AS (UPDATE orders SET state=:'state', updated=now() FROM pay WHERE orders.id=pay.order_id RETURNING 1),
 closed AS (
   UPDATE disputes SET outcome=:'kind', resolution=note.body,
@@ -528,7 +558,8 @@ event AS (
 audit AS (
   INSERT INTO audit_events(user_id,action)
   SELECT ord.admin_id, 'Recorded payout ' || pay.id || ' (' || ord.label || ', ' || :'kind' || ') sent after the backup with transaction '
-    || :'txid' || ' for order ' || left(ord.id, 8) || '; restored from backup, order ' || ord.state || ' -> ' || :'state'
+    || :'txid' || CASE WHEN :'return_amount'::bigint > 0 THEN ' and its return (' || ord.return_label || ') with transaction ' || :'return_txid' ELSE '' END
+    || ' for order ' || left(ord.id, 8) || '; restored from backup, order ' || ord.state || ' -> ' || :'state'
   FROM ord, pay RETURNING 1)
 SELECT count(*) = 1 AS recorded FROM audit
 \gset c_
@@ -557,13 +588,13 @@ record_payout no
 
 The check prints exactly one row: the order, its restored and final state, the kind, currency, recipient
 handle, your amount, the counted deposits (unlocked, not missing), existing payouts, `problem` and `ready`. Go on
-only when `problem` is `none`, `ready` is `t`, `payouts` is `0` and `deposits` equals `amount`, and it ends
+only when `problem` is `none`, `ready` is `t`, `payouts` is `0` and `deposits` equals `amount` (plus `return_amount`), and it ends
 "Check passed; nothing was written". Otherwise it ends "Refused; nothing was written:" with the reason (an order
 that already has a payout is resolved on the admin page, step 3). Then run `record_payout yes`: it repeats
 the check in one transaction and ends "Recorded the payout as sent; committed." after writing, together:
 
-- a `sent` payout row with the wallet's transaction ID (`payouts.order_id` is unique, so this refuses an order
-  that already has one, and a transaction ID already recorded is refused too);
+- a `sent` payout row with the wallet's transaction ID, and a `sent` return row with its own when you gave one
+  (an order that already has a payout is refused, and so is a transaction ID already recorded);
 - the order moved to its final state if the restored snapshot was behind, with an order-history entry by your
   account ("Reconciled after a restore from backup: ..."); a resolved dispute gets that outcome, and a
   cancellation returns the reserved unit to stock as the application would;

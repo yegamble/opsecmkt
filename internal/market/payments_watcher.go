@@ -441,7 +441,7 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 		}
 	}
 	// A deposit first recorded after funding is announced once to the order history, the buyer and the vendor. It
-	// counts toward the order's single release or refund only if it has reached the threshold by then
+	// counts toward the order's settlement (its release and any return, or its refund) only if it has reached the threshold by then
 	// (enqueuePayout); one that confirms after the payout is queued is flagged to moderators below, while the
 	// order is still watched.
 	if o.State != stateAwaitingPayment && !isTerminal(o.State) {
@@ -457,7 +457,7 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 				rows.Close()
 				return err
 			}
-			notes = append(notes, fmt.Sprintf("%s %s deposit %s:%d of %s %s received after this order was funded. If it has %d confirmations, as last recorded by the market, when the order is completed, cancelled or resolved, it is included in the order's single release or refund; otherwise it is not paid out automatically.",
+			notes = append(notes, fmt.Sprintf("%s %s deposit %s:%d of %s %s received after this order was funded. If it has %d confirmations, as last recorded by the market, when the order is completed, cancelled or resolved, it is included in the order's settlement (a release to the vendor with any excess returned to the buyer, or a refund); otherwise it is not paid out automatically.",
 				a.netTag(), p.Network(), truncate(txid, 20), idx, amount(amt, dec), o.Currency, threshold))
 		}
 		rows.Close()
@@ -655,12 +655,12 @@ func (a *App) sendPayouts(ctx context.Context, p PaymentProvider, orders []strin
 		if ctx.Err() != nil {
 			break
 		}
-		var to, order, recipient string
+		var to, order, recipient, kind string
 		var amt int64
 		err = a.db.QueryRowContext(ctx, `UPDATE payouts SET state='sending',updated=now() WHERE id=$1 AND state='pending' AND address<>''
 			AND NOT EXISTS (SELECT 1 FROM settings WHERE key='payments_recovery_required' AND value='true')
 			AND NOT EXISTS (SELECT 1 FROM payments pm WHERE pm.order_id=payouts.order_id AND pm.credited AND pm.confirmations<$2)
-			RETURNING address,amount,order_id,user_id`, id, int64(p.Confirmations())).Scan(&to, &amt, &order, &recipient)
+			RETURNING address,amount,order_id,user_id,kind`, id, int64(p.Confirmations())).Scan(&to, &amt, &order, &recipient, &kind)
 		if err == sql.ErrNoRows {
 			continue
 		}
@@ -670,7 +670,12 @@ func (a *App) sendPayouts(ctx context.Context, p PaymentProvider, orders []strin
 		// The wallet call is detached from shutdown (a redeploy must not abort a broadcast mid-flight) but
 		// bounded; Close waits for it. The outcome is recorded on a fresh bounded context for the same reason.
 		sctx, scancel := context.WithTimeout(context.WithoutCancel(ctx), payoutSendTimeout)
-		txid, serr := p.Send(sctx, to, amt)
+		// A refund or return pays its own network fee (feeFromAmountSender); a release is sent with Send.
+		send := p.Send
+		if f, ok := p.(feeFromAmountSender); ok && kind != "release" {
+			send = f.SendFeeFromAmount
+		}
+		txid, serr := send(sctx, to, amt)
 		scancel()
 		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), payoutRecordTimeout)
 		label := amount(amt, currencyDecimals(cur)) + " " + cur
