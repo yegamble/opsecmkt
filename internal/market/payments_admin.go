@@ -130,16 +130,16 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 		}
 		res, err = tx.ExecContext(ctx, `UPDATE payouts SET state=CASE WHEN address='' THEN 'blocked' ELSE 'pending' END,error='',updated=now()
 			WHERE id=$1 AND state='held'`, id)
-		note = "Administrator released the held TESTNET payout of " + label + "; it is queued for a single send."
+		note = "Administrator released the held " + c.A.netTag() + " payout of " + label + "; it is queued for a single send."
 		audit = "Released held payout " + strconv.FormatInt(id, 10) + " (" + label + ") for order " + short
 		if restored {
-			note = "Administrator confirmed the wallet shows no broadcast transaction for the TESTNET payout of " + label + " (held after being restored from backup) and released it; it is queued for a single send."
+			note = "Administrator confirmed the wallet shows no broadcast transaction for the " + c.A.netTag() + " payout of " + label + " (held after being restored from backup) and released it; it is queued for a single send."
 			audit += "; restored from backup, administrator confirmed the wallet shows no broadcast transaction"
 		}
 		if suspendedHeld {
-			note = "Administrator checked the payout address and released the held TESTNET payout of " + label + "; it is queued for a single send."
+			note = "Administrator checked the payout address and released the held " + c.A.netTag() + " payout of " + label + "; it is queued for a single send."
 			if restored {
-				note = "Administrator confirmed the wallet shows no broadcast transaction for the TESTNET payout of " + label + " (held after being restored from backup) and checked the payout address (held for an account suspension), and released it; it is queued for a single send."
+				note = "Administrator confirmed the wallet shows no broadcast transaction for the " + c.A.netTag() + " payout of " + label + " (held after being restored from backup) and checked the payout address (held for an account suspension), and released it; it is queued for a single send."
 			}
 			audit += "; held for an account suspension, administrator checked the payout address " + address
 		}
@@ -157,13 +157,13 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 		}
 		res, err = tx.ExecContext(ctx, `UPDATE payouts SET state=CASE WHEN address='' THEN 'blocked' ELSE 'pending' END,error='',txid='',send_ambiguous=false,updated=now()
 			WHERE id=$1 AND (state='failed' OR `+stuckSending+`)`, id)
-		note = "Administrator requeued the TESTNET payout of " + label + " after checking the wallet; it will be sent once more."
+		note = "Administrator requeued the " + c.A.netTag() + " payout of " + label + " after checking the wallet; it will be sent once more."
 		audit = "Requeued payout " + strconv.FormatInt(id, 10) + " (" + label + ", was " + state + ") for order " + short
 		if restored {
-			note = "Administrator confirmed the wallet shows no broadcast transaction for the TESTNET payout of " + label + " (failed, restored from backup) and requeued it; it will be sent once more."
+			note = "Administrator confirmed the wallet shows no broadcast transaction for the " + c.A.netTag() + " payout of " + label + " (failed, restored from backup) and requeued it; it will be sent once more."
 			audit += "; restored from backup, administrator confirmed the wallet shows no broadcast transaction"
 		} else if unknown {
-			note = "Administrator confirmed the wallet shows no broadcast transaction for the TESTNET payout of " + label + " (last send outcome unknown) and requeued it; it will be sent once more."
+			note = "Administrator confirmed the wallet shows no broadcast transaction for the " + c.A.netTag() + " payout of " + label + " (last send outcome unknown) and requeued it; it will be sent once more."
 			audit += "; last send outcome unknown, administrator confirmed the wallet shows no broadcast transaction"
 		}
 	case "repoint":
@@ -203,13 +203,13 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 		// second move changes one of them, and this one then changes nothing.
 		res, err = tx.ExecContext(ctx, `UPDATE payouts SET address=$2,updated=now()
 			WHERE id=$1 AND state=$3 AND address=$4 AND error=$5 AND send_ambiguous=$6 AND state IN ('held','failed')`, id, current, state, address, payoutErr, ambiguous)
-		note = "Administrator moved the TESTNET payout of " + label + " to the recipient's current payout address after checking it with them; nothing was sent and its status is unchanged."
+		note = "Administrator moved the " + c.A.netTag() + " payout of " + label + " to the recipient's current payout address after checking it with them; nothing was sent and its status is unchanged."
 		audit = "Moved payout " + strconv.FormatInt(id, 10) + " (" + label + ", " + state + ") for order " + short + " from " + address +
 			" to the account's current address " + current + "; administrator checked the address with the account owner"
 	case "sent":
 		res, err = tx.ExecContext(ctx, `UPDATE payouts SET state='sent',txid=$2,error='',send_ambiguous=false,updated=now()
 			WHERE id=$1 AND (state IN ('failed','held') OR `+stuckSending+`)`, id, txid)
-		note = "TESTNET payout of " + label + " recorded as sent by an administrator after wallet reconciliation: " + txid
+		note = c.A.netTag() + " payout of " + label + " recorded as sent by an administrator after wallet reconciliation: " + txid
 		audit = "Marked payout " + strconv.FormatInt(id, 10) + " (" + label + ", was " + state + ") sent with transaction " + txid + " for order " + short
 	}
 	if err != nil {
@@ -228,7 +228,7 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 	}
 	if op == "repoint" {
 		// The recipient hears that the destination changed (the address itself is not repeated), as for their own saves.
-		body := "Order " + short + ": an administrator moved your unsent TESTNET payout of " + label + " to your current " + cur +
+		body := "Order " + short + ": an administrator moved your unsent " + c.A.netTag() + " payout of " + label + " to your current " + cur +
 			" payout address after checking it with you; nothing was sent and its status is unchanged. If you did not confirm this, contact the market staff."
 		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), recipient, body); err != nil {
 			return actionResult{}, err

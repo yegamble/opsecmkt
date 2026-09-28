@@ -452,8 +452,8 @@ func TestGapMonerodGetInfoWithoutNettype(t *testing.T) {
 		{"no height fields", map[string]any{"stagenet": true}, "", false},
 		{"testnet flag vs stagenet wallet", map[string]any{"testnet": true}, "daemon is on testnet but the wallet is on stagenet", false},
 		{"no flags means mainnet", map[string]any{"height": 10}, `monero daemon network "mainnet" is not a test network`, false},
-		{"mainnet flag wins over nettype", map[string]any{"nettype": "stagenet", "mainnet": true}, `monero daemon network "stagenet" is not a test network`, false},
-		{"fakechain", map[string]any{"nettype": "fakechain"}, `monero daemon network "fakechain" is not a test network`, false},
+		{"mainnet flag wins over nettype", map[string]any{"nettype": "stagenet", "mainnet": true}, `monero daemon network "mainnet" is not a test network`, false},
+		{"fakechain", map[string]any{"nettype": "fakechain"}, `monero daemon network "fakechain" is not a known network`, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, ov, s := newGapMonero(t)

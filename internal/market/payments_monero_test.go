@@ -106,8 +106,8 @@ func TestMoneroRefusesMainnet(t *testing.T) {
 	if _, err = newMoneroProvider(ctx, stage.url(""), "", "testnet", 10); err == nil || !strings.Contains(err.Error(), `MONERO_NETWORK is "testnet"`) {
 		t.Fatalf("MONERO_NETWORK mismatch accepted: %v", err)
 	}
-	if _, err = newMoneroProvider(ctx, stage.url(""), "", "mainnet", 10); err == nil || !strings.Contains(err.Error(), "not a test network") {
-		t.Fatalf("MONERO_NETWORK=mainnet accepted: %v", err)
+	if _, err = newMoneroProvider(ctx, stage.url(""), "", "mainnet", 10); err == nil || !isRefusal(err) || !strings.Contains(err.Error(), `monero wallet is on stagenet but MONERO_NETWORK is "mainnet"`) {
+		t.Fatalf("MONERO_NETWORK=mainnet accepted a stagenet wallet: %v", err)
 	}
 	_, mixed := newPayMonero(t, payStagenetPrimary, "8"+payStagenetSub[1:])
 	p, err := newMoneroProvider(ctx, mixed.url(""), "", "stagenet", 10)

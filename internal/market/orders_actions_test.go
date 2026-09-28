@@ -68,7 +68,7 @@ func TestViewerTransitionsFollowTheStateTable(t *testing.T) {
 		{stateResolved, "physical", buyer, nil, nil},
 	} {
 		o := &Order{State: tc.state, Kind: tc.kind, BuyerID: "b", VendorID: "v", Currency: "BTC"}
-		got := viewerTransitions(tc.payments, o, tc.u)
+		got := viewerTransitions(tc.payments, "test-network", o, tc.u)
 		if !slices.Equal(targets(got), tc.want) {
 			t.Errorf("%s/%s as %s: got %v want %v", tc.state, tc.kind, tc.u.ID, targets(got), tc.want)
 		}
@@ -83,7 +83,7 @@ func TestViewerTransitionsFollowTheStateTable(t *testing.T) {
 		}
 	}
 	// Without a provider the payment step is shown, but as unavailable (no form action).
-	got := viewerTransitions(nil, &Order{State: stateDraft, Kind: "physical", BuyerID: "b", VendorID: "v", Currency: "XMR"}, buyer)
+	got := viewerTransitions(nil, "test-network", &Order{State: stateDraft, Kind: "physical", BuyerID: "b", VendorID: "v", Currency: "XMR"}, buyer)
 	if len(got) != 2 || got[0].To != stateAwaitingPayment || got[0].Action != "" || !strings.Contains(got[0].Label, "Payment unavailable for XMR") {
 		t.Fatalf("unavailable payment step: %+v", got)
 	}

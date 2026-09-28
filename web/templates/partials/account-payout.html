@@ -21,18 +21,18 @@
 </thead>
 <tbody>{{range .Unsent}}<tr>
 <td><a class="text-link mono" href="/order?id={{.OrderID}}">{{.OrderShort}}</a></td>
-<td>{{if eq .Kind "release"}}Release{{else}}Refund{{end}} of {{.Amount}} {{.Currency}} <span class="badge testnet">TESTNET{{with .Network}} {{.}}{{end}}</span></td>
-<td>{{if .Address}}<span class="mono">{{.Address}}</span> <span class="badge testnet">TESTNET{{with .Network}} {{.}}{{end}}</span>{{else}}None yet{{end}}</td>
+<td>{{if eq .Kind "release"}}Release{{else}}Refund{{end}} of {{.Amount}} {{.Currency}} {{if $.LiveNetwork}}<span class="badge live">MAINNET</span>{{else}}<span class="badge testnet">TESTNET{{with .Network}} {{.}}{{end}}</span>{{end}}</td>
+<td>{{if .Address}}<span class="mono">{{.Address}}</span> {{if $.LiveNetwork}}<span class="badge live">MAINNET</span>{{else}}<span class="badge testnet">TESTNET{{with .Network}} {{.}}{{end}}</span>{{end}}{{else}}None yet{{end}}</td>
 <td>{{.Status}}</td>
 <td>{{.NextStep}}</td>
 </tr>{{end}}</tbody>
 </table>
 </div>{{end}}
-<p class="help">Used for releases (vendors) and refunds (buyers). Test-network addresses only; mainnet addresses are rejected. The address is copied onto a payout when it is queued. Save an empty field to remove an address. Every change needs your current password{{if and $.Security $.Security.TOTPEnabled}} and an authenticator code{{end}}.</p>
+<p class="help">Used for releases (vendors) and refunds (buyers). {{if $.LiveNetwork}}Mainnet addresses only; test-network addresses are rejected.{{if .BTCNetwork}} Bitcoin payouts need a native SegWit (bc1) address.{{end}}{{else}}Test-network addresses only; mainnet addresses are rejected.{{end}} The address is copied onto a payout when it is queued. Save an empty field to remove an address. Every change needs your current password{{if and $.Security $.Security.TOTPEnabled}} and an authenticator code{{end}}.</p>
 {{if .BTCNetwork}}<form class="stack" method="post" action="/account/payout">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="currency" value="BTC">
-<label>Bitcoin payout address <span class="badge testnet">TESTNET {{.BTCNetwork}}</span><input name="address" value="{{.BTC}}" maxlength="128" spellcheck="false" autocomplete="off">
+<label>Bitcoin payout address {{if $.LiveNetwork}}<span class="badge live">MAINNET</span>{{else}}<span class="badge testnet">TESTNET {{.BTCNetwork}}</span>{{end}}<input name="address" value="{{.BTC}}" maxlength="128" spellcheck="false" autocomplete="off">
 </label>
 {{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button type="submit">Save BTC address</button>
@@ -46,7 +46,7 @@
 {{if .XMRNetwork}}<form class="stack" method="post" action="/account/payout">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="currency" value="XMR">
-<label>Monero payout address <span class="badge testnet">TESTNET {{.XMRNetwork}}</span><input name="address" value="{{.XMR}}" maxlength="128" spellcheck="false" autocomplete="off">
+<label>Monero payout address {{if $.LiveNetwork}}<span class="badge live">MAINNET</span>{{else}}<span class="badge testnet">TESTNET {{.XMRNetwork}}</span>{{end}}<input name="address" value="{{.XMR}}" maxlength="128" spellcheck="false" autocomplete="off">
 </label>
 {{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button type="submit">Save XMR address</button>

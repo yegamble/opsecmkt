@@ -87,8 +87,11 @@ func TestBitcoinRefusesMainnetAndMismatches(t *testing.T) {
 	if _, err = newBitcoinProvider(ctx, signet.url(""), "opsecmkt", "testnet4", 3); err == nil || !isRefusal(err) || !strings.Contains(err.Error(), `reports chain "signet" but BITCOIN_CHAIN is "testnet4"`) {
 		t.Fatalf("chain mismatch accepted: %v", err)
 	}
-	if _, err = newBitcoinProvider(ctx, signet.url(""), "opsecmkt", "main", 3); err == nil || !strings.Contains(err.Error(), "refusing to start") || signet.called("getblockchaininfo") != 1 {
-		t.Fatalf("BITCOIN_CHAIN=main must fail before connecting: %v", err)
+	if _, err = newBitcoinProvider(ctx, signet.url(""), "opsecmkt", "mainnet", 3); err == nil || !strings.Contains(err.Error(), "refusing to start") || signet.called("getblockchaininfo") != 1 {
+		t.Fatalf("an unknown BITCOIN_CHAIN must fail before connecting: %v", err)
+	}
+	if _, err = newBitcoinProvider(ctx, signet.url(""), "opsecmkt", "main", 3); err == nil || !isRefusal(err) || !strings.Contains(err.Error(), `reports chain "signet" but BITCOIN_CHAIN is "main"`) {
+		t.Fatalf("BITCOIN_CHAIN=main accepted a signet node: %v", err)
 	}
 	if _, err = newBitcoinProvider(ctx, signet.url(""), "otherwallet", "", 3); err == nil || isRefusal(err) || !strings.Contains(err.Error(), "createwallet") {
 		t.Fatalf("missing wallet: %v", err)

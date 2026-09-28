@@ -69,7 +69,7 @@ func transitionLabel(from, to string) string {
 
 // viewerTransitions lists the moves the viewer may make now, using the same table, roles and kind rules
 // as transition(). Requesting payment without a provider is listed with an empty Action (unavailable).
-func viewerTransitions(payments map[string]PaymentProvider, o *Order, u *User) []Transition {
+func viewerTransitions(payments map[string]PaymentProvider, netAdj string, o *Order, u *User) []Transition {
 	roles := actorRoles(o, u)
 	var out []Transition
 	for _, to := range orderStates {
@@ -84,7 +84,7 @@ func viewerTransitions(payments map[string]PaymentProvider, o *Order, u *User) [
 		t := Transition{To: to, Label: transitionLabel(o.State, to), Action: action}
 		if to == stateAwaitingPayment && payments[o.Currency] == nil {
 			t.Action = ""
-			t.Label = "Payment unavailable for " + o.Currency + ": no " + o.Currency + " test-network wallet is available on this server (not configured, or temporarily unreachable)."
+			t.Label = "Payment unavailable for " + o.Currency + ": no " + o.Currency + " " + netAdj + " wallet is available on this server (not configured, or temporarily unreachable)."
 		}
 		out = append(out, t)
 	}
@@ -195,7 +195,7 @@ func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) 
 	}
 	d.CanReview = u.ID == o.BuyerID && o.State == stateCompleted && len(d.Reviews) == 0
 	if d.OrderViewer != roleModerator { // reviewers resolve on the moderation desk; the order page is read-only for them
-		d.Transitions = viewerTransitions(a.providers(), o, u)
+		d.Transitions = viewerTransitions(a.providers(), a.netAdj(), o, u)
 		if err = a.orderPayouts(ctx, d); err != nil {
 			return err
 		}
@@ -222,28 +222,29 @@ func (a *App) orderPayouts(ctx context.Context, d *PageData) error {
 	for i, t := range d.Transitions {
 		switch {
 		case t.To == stateCompleted:
-			d.Transitions[i].Payout = &PayoutPreview{Seen: sum, Confirm: payoutStatement("release", o.Vendor, "the vendor", o, sum) + ". This is final."}
+			d.Transitions[i].Payout = &PayoutPreview{Seen: sum, Confirm: payoutStatement("release", o.Vendor, "the vendor", a.netName(), o, sum) + ". This is final."}
 		case t.To == stateCancelled && o.State == statePaid:
-			d.Transitions[i].Payout = &PayoutPreview{Seen: sum, Confirm: payoutStatement("refund", o.Buyer, "the buyer", o, sum) + ". This is final."}
+			d.Transitions[i].Payout = &PayoutPreview{Seen: sum, Confirm: payoutStatement("refund", o.Buyer, "the buyer", a.netName(), o, sum) + ". This is final."}
 		}
 	}
 	return nil
 }
 
-// payoutStatement states a payout of sum (payoutBasis) for o: "Release 0.01 BTC (test network) to vendor_x —
+// payoutStatement states a payout of sum (payoutBasis) for o on network net (App.netName): "Release 0.01 BTC
+// (test network) to vendor_x —
 // 0.009 BTC more than the price", saying so when sum is below the minimum automatic payout (A-99). With nothing
 // counted, later deposits go to later (the recipient's role, or "the chosen party" on the resolve form).
-func payoutStatement(kind, recipient, later string, o *Order, sum int64) string {
+func payoutStatement(kind, recipient, later, net string, o *Order, sum int64) string {
 	verb := "Release"
 	if kind == "refund" {
 		verb = "Refund"
 	}
 	if sum == 0 {
-		return verb + " (test network) to " + recipient + " — nothing counted yet; deposits confirming later go to " + later
+		return verb + " (" + net + ") to " + recipient + " — nothing counted yet; deposits confirming later go to " + later
 	}
 	dec := currencyDecimals(o.Currency)
 	required, _ := parseAmount(o.Amount, dec)
-	statement := verb + " " + amount(sum, dec) + " " + o.Currency + " (test network) to " + recipient + " — " + priceDifference(sum, required, o.Currency)
+	statement := verb + " " + amount(sum, dec) + " " + o.Currency + " (" + net + ") to " + recipient + " — " + priceDifference(sum, required, o.Currency)
 	if below := belowFloor(o.Currency, kind, sum); below != "" {
 		statement += "; " + below + ": not sent automatically, staff are asked to review it"
 	}
@@ -296,8 +297,8 @@ func (a *App) resolvePayouts(ctx context.Context, d *PageData) error {
 			return err
 		}
 		d.DisputePayouts[v.ID] = PayoutPreview{Seen: sum, Confirm: resolveConfirm,
-			Release: payoutStatement("release", o.Vendor, "the chosen party", &o, sum) + state[o.VendorID],
-			Refund:  payoutStatement("refund", o.Buyer, "the chosen party", &o, sum) + state[o.BuyerID]}
+			Release: payoutStatement("release", o.Vendor, "the chosen party", a.netName(), &o, sum) + state[o.VendorID],
+			Refund:  payoutStatement("refund", o.Buyer, "the chosen party", a.netName(), &o, sum) + state[o.BuyerID]}
 	}
 	return nil
 }
@@ -485,7 +486,7 @@ func previewOrder(d *PageData) {
 	if d.Order == nil || d.User == nil {
 		return
 	}
-	d.Transitions = viewerTransitions(nil, d.Order, d.User)
+	d.Transitions = viewerTransitions(nil, "test-network", d.Order, d.User)
 }
 
 func previewReviews(d *PageData) {
@@ -518,8 +519,8 @@ func previewDisputes(d *PageData) {
 	// A sample counted amount equal to the price; the sample buyer has no payout address.
 	sum, _ := parseAmount(o.Amount, currencyDecimals(o.Currency))
 	d.DisputePayouts = map[string]PayoutPreview{"sample-dispute": {Seen: sum, Confirm: resolveConfirm,
-		Release: payoutStatement("release", o.Vendor, "the chosen party", &o, sum),
-		Refund:  payoutStatement("refund", o.Buyer, "the chosen party", &o, sum) + "; no payout address: the payout waits for one"}}
+		Release: payoutStatement("release", o.Vendor, "the chosen party", "test network", &o, sum),
+		Refund:  payoutStatement("refund", o.Buyer, "the chosen party", "test network", &o, sum) + "; no payout address: the payout waits for one"}}
 }
 
 // paymentReviewLimit caps the other (not open) flags on the moderation desk's payment-review list.

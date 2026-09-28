@@ -126,10 +126,10 @@ func TestMainnetAtStartupIsStillFatal(t *testing.T) {
 	if err := newPaymentsApp().initPayments(ctx); err == nil || !strings.Contains(err.Error(), "refusing to start: monero wallet primary address is a mainnet address") {
 		t.Fatalf("mainnet monero wallet accepted at startup: %v", err)
 	}
-	setPaymentEnv(t, "", "", "", "", "mainnet")
+	setPaymentEnv(t, "", "", "", "", "main")
 	t.Setenv("MONERO_WALLET_RPC_URL", "http://127.0.0.1:1")
 	if err := newPaymentsApp().initPayments(ctx); err == nil || !strings.Contains(err.Error(), "MONERO_NETWORK") {
-		t.Fatalf("MONERO_NETWORK=mainnet accepted: %v", err)
+		t.Fatalf("unknown MONERO_NETWORK accepted: %v", err)
 	}
 }
 

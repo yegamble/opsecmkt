@@ -7,6 +7,14 @@
 .testnet-notice {
   border-color:#2f5a75
 }
+.badge.live {
+  color:#ffd9a0;
+  background:#2b1a06;
+  border-color:#8a5a14
+}
+.live-notice {
+  border-color:#8a5a14
+}
 .payment-address {
   margin:0 0 16px;
   padding:14px;

@@ -115,7 +115,7 @@ const maxAwaitingPayment = 3
 
 // payAction: buyer moves draft -> awaiting_payment at the current listing price. transition() refuses when
 // no provider serves the currency (409) and the stock hook reserves one unit (409 when none is left). Only
-// then is the live test-network wallet asked for an address, so refused requests never create wallet addresses.
+// then is the live wallet asked for an address, so refused requests never create wallet addresses.
 func payAction(c *actionCtx) (actionResult, error) {
 	ctx := c.Ctx()
 	if err := waitForWalletLocks(ctx, c.Tx); err != nil {
@@ -164,12 +164,12 @@ func payAction(c *actionCtx) (actionResult, error) {
 	}
 	addr, err := p.NewAddress(ctx, o.ID)
 	if err != nil || addr == "" || !p.ValidAddress(addr) {
-		return actionResult{}, fail(503, "The "+o.Currency+" test-network wallet did not return a usable address. Nothing was changed; try again later.")
+		return actionResult{}, fail(503, "The "+o.Currency+" "+c.A.netAdj()+" wallet did not return a usable address. Nothing was changed; try again later.")
 	}
 	if _, err = c.Tx.ExecContext(ctx, "INSERT INTO payment_addresses(order_id,currency,address,provider) VALUES($1,$2,$3,$4)", o.ID, o.Currency, addr, strings.ToLower(o.Currency)+"-"+p.Network()); err != nil {
 		return actionResult{}, err
 	}
-	return actionResult{Redirect: orderPage(o.ID), Audit: "Requested " + o.Currency + " test-network payment address for order " + shortID(o.ID)}, nil
+	return actionResult{Redirect: orderPage(o.ID), Audit: "Requested " + o.Currency + " " + c.A.netAdj() + " payment address for order " + shortID(o.ID)}, nil
 }
 
 // cancelAction takes the state the viewer saw ("from") so a stale or repeated form is a 409, not a new move.
