@@ -155,3 +155,24 @@ func TestCancelOrderWithoutDepositNeedsNoConfirmation(t *testing.T) {
 		t.Fatalf("state %s", s)
 	}
 }
+
+// Below the minimum automatic refund, the deadline still cancels the order, but nothing is sent: the deposit
+// is flagged for staff once, as for any refund below the floor.
+func TestUnderpaidExpiryBelowRefundFloorIsFlagged(t *testing.T) {
+	p := newPayEnv(t)
+	p.setPayoutAddress(p.buyer, "fake-testnet-buyer")
+	p.fake.Deposit(p.addr, "tx-dust", 0, minPayoutBTC-1, 3)
+	p.poll()
+	p.ageDeposits(p.order)
+	p.poll()
+	p.poll()
+	if s := p.state(p.order); s != stateCancelled {
+		t.Fatalf("dust-underpaid order: %s", s)
+	}
+	if n := p.count("SELECT count(*) FROM payouts WHERE order_id=$1", p.order); n != 0 || len(p.fake.Sends()) != 0 {
+		t.Fatalf("dust refund queued or sent: %d payout rows", n)
+	}
+	if n := p.floorFlags(p.order); n != 1 {
+		t.Fatalf("floor flags %d", n)
+	}
+}
