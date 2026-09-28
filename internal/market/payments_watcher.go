@@ -385,22 +385,41 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 	}
 	// Unpaid past PAYMENT_EXPIRY with no deposit seen (a conflicted or locked one does not count): cancel as the
 	// system actor; the stock hook returns the reserved unit. A deposit still confirming keeps the order open.
+	// Underpaid: every deposit confirmed but short of the price, the address older than PAYMENT_EXPIRY and no
+	// deposit (top-up) seen for PAYMENT_EXPIRY either: cancel the same way, and the payout hook refunds the
+	// confirmed deposits to the buyer. Without this an underpaid order and its deposits would wait forever.
 	if o.State == stateAwaitingPayment && walletRead {
 		expiry, err := paymentExpiry()
 		if err != nil {
 			expiry = 24 * time.Hour // validated at startup by the provider factories
 		}
-		var expired bool
-		if err = tx.QueryRowContext(ctx, `SELECT created < now()-make_interval(secs => $2) AND NOT EXISTS (SELECT 1 FROM payments WHERE order_id=$1 AND confirmations>=0 AND NOT locked)
-			FROM payment_addresses WHERE order_id=$1`, orderID, expiry.Seconds()).Scan(&expired); err != nil {
+		var unpaid, underpaid bool
+		var received int64
+		if err = tx.QueryRowContext(ctx, `WITH d AS (SELECT amount,confirmations,created FROM payments WHERE order_id=$1 AND confirmations>=0 AND NOT locked)
+			SELECT pa.created < now()-make_interval(secs => $2) AND NOT EXISTS (SELECT 1 FROM d),
+				pa.created < now()-make_interval(secs => $2) AND EXISTS (SELECT 1 FROM d) AND NOT EXISTS (SELECT 1 FROM d WHERE confirmations<$3)
+					AND (SELECT max(created) FROM d) < now()-make_interval(secs => $2),
+				(SELECT COALESCE(sum(amount),0) FROM d)
+			FROM payment_addresses pa WHERE pa.order_id=$1`, orderID, expiry.Seconds(), threshold).Scan(&unpaid, &underpaid, &received); err != nil {
 			return err
 		}
-		if expired {
-			next, err := a.transition(ctx, tx, orderID, stateAwaitingPayment, stateCancelled, nil, "payment window expired")
+		if unpaid || underpaid {
+			note := "payment window expired"
+			if underpaid {
+				note = fmt.Sprintf("payment window expired underpaid: %s of %s %s received", amount(received, dec), amount(total, dec), o.Currency)
+			}
+			next, err := a.transition(ctx, tx, orderID, stateAwaitingPayment, stateCancelled, nil, note)
 			if err != nil {
 				return err
 			}
 			o = *next
+			if underpaid {
+				body := fmt.Sprintf("Order %s: the payment window ended with %s of %s %s received, so the order was cancelled. What you sent is refunded to your saved %s payout address (the refund waits until you save one), unless it is below the minimum automatic refund, when staff review it. The order page shows the refund.",
+					orderID[:min(8, len(orderID))], amount(received, dec), amount(total, dec), o.Currency, o.Currency)
+				if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, body); err != nil {
+					return err
+				}
+			}
 		}
 	}
 	// A Monero transfer with an unlock time is never credited: report it once to moderators and the buyer.

@@ -205,9 +205,26 @@ func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) 
 }
 
 // orderPayouts (A-122): on a paid, shipped or delivered order the complete and paid-cancel forms state the
-// payout they queue (payoutBasis), and counted deposits above the price set Overpaid.
+// payout they queue (payoutBasis), and counted deposits above the price set Overpaid. On an order awaiting
+// payment that has received a deposit, the cancel form states the refund it queues (an underpayment).
 func (a *App) orderPayouts(ctx context.Context, d *PageData) error {
 	o := d.Order
+	if o.State == stateAwaitingPayment {
+		deposits, err := hasDeposits(ctx, a.db, o.ID)
+		if err != nil || !deposits {
+			return err
+		}
+		_, sum, _, err := a.payoutBasis(ctx, a.db, o, false)
+		if err != nil {
+			return err
+		}
+		for i, t := range d.Transitions {
+			if t.To == stateCancelled {
+				d.Transitions[i].Payout = &PayoutPreview{Seen: sum, Confirm: payoutStatement("refund", o.Buyer, "the buyer", a.netName(), o, sum) + ". This is final."}
+			}
+		}
+		return nil
+	}
 	if o.State != statePaid && o.State != stateShipped && o.State != stateDelivered {
 		return nil
 	}

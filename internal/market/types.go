@@ -217,7 +217,8 @@ type Transition struct {
 	Payout            *PayoutPreview // complete, and cancel of a paid order: the payout it queues
 }
 
-// PayoutPreview states what a form that queues a payout (complete, a vendor's cancel of a paid order, resolve)
+// PayoutPreview states what a form that queues a payout (complete, a cancel of a paid order or of an order
+// awaiting payment that has received a deposit, resolve)
 // pays now, by payoutBasis (A-161, A-122). Seen is that amount in atomic units, sent back as amount_seen;
 // Confirm labels the required confirmation checkbox. Resolve form only: Release and Refund state each outcome
 // (amount, recipient, difference from the price, the recipient's payout state).

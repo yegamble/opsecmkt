@@ -52,7 +52,7 @@ Confirmation settings (in `.env`, applied on restart):
 | `PAYMENT_CONFIRMATIONS_BTC` | 3 | Use 1 on regtest, where you mine blocks yourself. |
 | `PAYMENT_CONFIRMATIONS_XMR` | 10 | Monero outputs are spendable after 10 blocks anyway. |
 | `PAYMENT_POLL_INTERVAL` | 30s | 1s to 1h. |
-| `PAYMENT_EXPIRY` | 24h | Unpaid orders with no deposit seen are cancelled after this. |
+| `PAYMENT_EXPIRY` | 24h | Unpaid orders with no deposit seen are cancelled after this; underpaid orders are cancelled and refunded once no deposit has arrived for this long. |
 
 Wait for the nodes to sync before expecting deposits to be seen (`docker compose logs -f bitcoin monero`).
 
