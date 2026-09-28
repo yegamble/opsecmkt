@@ -334,3 +334,32 @@ func TestMoneroRefundSubtractsFee(t *testing.T) {
 	var _ feeFromAmountSender = p
 	var _ feeFromAmountSender = &bitcoinProvider{}
 }
+
+// A restore from backup keeps the large hold behind its own marker: releasing the restored payout still needs
+// the review as well as the "no broadcast" wallet check.
+func TestRestoreKeepsLargeHold(t *testing.T) {
+	p := newPayEnv(t)
+	p.setPayoutAddress(p.vendor, "fake-testnet-vendor")
+	p.setPayoutAddress(p.buyer, "fake-testnet-buyer")
+	p.paidByWatcherAmount(350000)
+	p.complete(p.order)
+	for _, q := range restorePayoutSQL {
+		if _, err := p.DB.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if st, errText, _ := p.returnPayout(p.order); st != "held" || errText != restoredHold+" "+largeHold {
+		t.Fatalf("restored return %s %q", st, errText)
+	}
+	id := p.str("SELECT id::text FROM payouts WHERE order_id=$1 AND kind='return'", p.order)
+	release := url.Values{"payout_id": {id}, "op": {"release"}, "password": {testPassword}, "not_broadcast": {"confirmed"}}
+	if w := p.do("POST", "/admin/payout", p.adminSess, release); w.Code != 409 || !strings.Contains(w.Body.String(), "larger than the order price") {
+		t.Fatalf("restored large return released without review: %d", w.Code)
+	}
+	mustContain(t, p.page("/admin", p.adminSess), `name="large_reviewed" value="confirmed" required`, `name="not_broadcast" value="confirmed" required`)
+	release.Set("large_reviewed", "confirmed")
+	p.check(p.do("POST", "/admin/payout", p.adminSess, release), 303)
+	if st, _, _ := p.returnPayout(p.order); st != "pending" {
+		t.Fatalf("state after both checks %s", st)
+	}
+}
