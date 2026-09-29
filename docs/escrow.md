@@ -65,7 +65,7 @@ the market key from signing an attacker's transaction.)
 | Digital order: vendor claims | Vendor, then the market automatically |
 | Physical order: release | Open question (see [Owner decisions](#owner-decisions-2026-09-29)) |
 | Buyer and vendor agree on a release or refund | Buyer and vendor; the market is not needed |
-| Refund (order cancelled) | Buyer and market |
+| Refund (order cancelled) | Buyer and market; a vendor's cancellation may use vendor and market instead (*being designed*) |
 | Dispute decided for the buyer | Buyer and market |
 | Dispute decided for the vendor | Vendor and market |
 | Timeouts: vendor never ships, buyer never confirms, a party never signs | *Being designed* |
@@ -76,7 +76,8 @@ design.) Buyer and vendor keep talking on the order page, as now.
 
 **Fees.** Every settlement will pay its network fee from the escrow, so the recipient receives the escrowed
 amount minus that fee. A fulfilled order's settlement will also have a market-fee output to the
-administrator's address. The fee rate, minimum amounts and what happens to amounts too small to send are *being designed*.
+administrator's address. The fee rate, minimum amounts and what happens to amounts too small to send are
+*being designed*.
 
 **What this will protect.** The server's watch-only wallet and its one key cannot move an escrow alone. A
 seized or copied server holds the market key and the public descriptors, not the funds. This holds for
@@ -109,9 +110,9 @@ transaction to the recipient (plus the market-fee output on a fulfilled order), 
 from the amount. Monero requires 10 confirmations before received funds can be spent, so a settlement can
 be sent only after that (about 20 minutes on mainnet).
 
-**This is still custodial.** The server will hold every order wallet's keys, so the operator, or anyone who takes
-over the server, can spend them. Per-order wallets keep orders apart and remove the pooled balance; they do not
-stop the operator. Monero 2-of-3 multisig is wallet-level and experimental, and is evaluated later.
+**This is still custodial.** The server will hold every order wallet's keys, so the operator, or anyone who
+takes over the server, can spend them. Per-order wallets keep orders apart and remove the pooled balance; they
+do not stop the operator. Monero 2-of-3 multisig is wallet-level and experimental, and is evaluated later.
 
 ## Until escrow ships
 
