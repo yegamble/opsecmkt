@@ -75,18 +75,25 @@
 </li>{{end}}</ol>
 <p class="help">Your latest sign-ins and account changes, as recorded in the server-side audit log.</p>
 </section>
-<div class="panel">
-<h2>Sessions</h2>
+<section class="panel" id="sessions" aria-labelledby="sessions-heading">
+<h2 id="sessions-heading">Sessions</h2>{{$n := $.SessionsTotal}}
+<p class="session-count">{{$n}} active session{{if ne $n 1}}s{{end}}</p>
+<ul class="session-list">{{range $.Sessions}}
+<li class="session-row">Started <span class="session-started">{{.Started}}</span>{{if .Current}} <span class="badge green">This session</span>{{end}}</li>{{end}}
+</ul>{{if gt $n (len $.Sessions)}}
+<p class="help session-more">Listed: this session and the newest others, {{len $.Sessions}} of {{$n}}.</p>{{end}}
+<p class="help">The market records only when each session started and when it ends (12 hours later) — not your IP address, device or browser. Changing your password starts a new session in this browser.</p>
 <form method="post" action="/logout">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <button type="submit">Sign out</button>
 </form>
 <form class="stack session-revoke" method="post" action="/revoke-sessions">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
-<p class="help">Signing out everywhere ends every session for your account, on all devices, including this one.</p>
+<p class="help">Signing out everywhere ends every session for your account, on all devices, including this one, and every sign-in still waiting for its second step.</p>
 <button type="submit">Sign out everywhere</button>
 </form>
-</div>
+<p class="help session-warning">Signing out everywhere does not stop someone who knows your password: they can sign in again (with your second step too, if you use one). Only changing your password stops them. A password change ends every other session and every sign-in in progress; this browser stays signed in.</p>
+</section>
 </section>
 </div>{{end}}
 {{template "footer" .}}{{end}}

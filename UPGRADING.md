@@ -436,6 +436,14 @@ recorded before the upgrade keep their earlier treatment. See
 [late deposits](docs/operator-guide.md#payments) and the
 [runbook](docs/testnet-runbook.md#handle-a-payment-review-flag).
 
+## 11. Sign-ins in progress restart (migration 013)
+
+Migration 013 runs at startup and adds `pending_logins.password_digest`, so a password change also ends a sign-in
+whose password was checked just before it. A sign-in that passed the password step before the upgrade and has not
+finished its second step is refused ("Sign-in verification expired. Sign in again."); the user enters the password
+again. Sessions are unchanged. `/account` now lists each account's sessions by start time only (the market records
+no IP address or browser), and *Sign out everywhere* also ends sign-ins waiting for their second step.
+
 ## Appendix: new keys by hand
 
 `./scripts/install.sh upgrade` writes these for you. To add them yourself, use your editor (values in single

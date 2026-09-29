@@ -56,6 +56,23 @@ test('account and admin state TOTP and CAPTCHA status truthfully', async ({ page
   await noScriptsNoOverflow(page);
 });
 
+// A-157: the sessions panel lists sessions by start time only and says what does and does not stop an intruder.
+test('account sessions panel lists sessions without client data and explains sign out everywhere', async ({ page }) => {
+  await page.goto('/account');
+  const sessions = page.getByRole('region', { name: 'Sessions' });
+  await expect(sessions.locator('.session-count')).toHaveText('2 active sessions');
+  await expect(sessions.locator('.session-row')).toHaveText(['Started 2026-01-02 09:30 UTC This session', 'Started 2026-01-01 21:05 UTC']);
+  await expect(sessions).toContainText('not your IP address, device or browser');
+  await expect(sessions).toContainText('every sign-in still waiting for its second step');
+  await expect(sessions).toContainText('Only changing your password stops them. A password change ends every other session and every sign-in in progress');
+  for (const action of ['/logout', '/revoke-sessions']) {
+    const form = sessions.locator(`form[action="${action}"]`);
+    await expect(form).toHaveAttribute('method', 'post');
+    await expect(form.locator('input[name="csrf"]')).toHaveCount(1);
+  }
+  await noScriptsNoOverflow(page);
+});
+
 test('password change and second-factor reset are plain POST forms and the preview refuses them', async ({ page }) => {
   await page.goto('/account');
   const password = page.locator('form[action="/account/password"]');
