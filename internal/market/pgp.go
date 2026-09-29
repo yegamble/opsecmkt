@@ -266,6 +266,67 @@ func revocationSignatures(armored string) (map[string]bool, error) {
 	}
 }
 
+// revocationsKept reports whether key, a new version of saved, keeps every revocation OpenPGP software applies in saved
+// (A-261): the primary key's, each revoked subkey's on every copy of that subkey (by fingerprint) in key, and each
+// revoked user ID's. revocationSignatures' byte comparison alone cannot tell: a subkey or user ID revocation moved
+// before the first user ID keeps its bytes but is ignored (go-crypto's ReadEntity), so encryptTo would select a
+// revoked subkey again. A revoked subkey or user ID left out of key is not kept either: a later version could add it
+// back unrevoked with nothing left to compare it with.
+func revocationsKept(saved, key *openpgp.Entity) bool {
+	if !signaturesIn(saved.Revocations, key.Revocations) {
+		return false
+	}
+	for _, s := range saved.Subkeys {
+		if len(s.Revocations) == 0 {
+			continue
+		}
+		found := false
+		for _, k := range key.Subkeys {
+			if bytes.Equal(k.PublicKey.Fingerprint, s.PublicKey.Fingerprint) {
+				if !signaturesIn(s.Revocations, k.Revocations) {
+					return false
+				}
+				found = true
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	for name, id := range saved.Identities {
+		if len(id.Revocations) == 0 {
+			continue
+		}
+		if other, ok := key.Identities[name]; !ok || !signaturesIn(id.Revocations, other.Revocations) {
+			return false
+		}
+	}
+	return true
+}
+
+// signaturesIn reports whether every signature in want is also in have, compared as serialized packets.
+func signaturesIn(want, have []*packet.Signature) bool {
+	in := map[string]bool{}
+	for _, sig := range have {
+		if b, err := signatureBytes(sig); err == nil {
+			in[b] = true
+		}
+	}
+	for _, sig := range want {
+		if b, err := signatureBytes(sig); err != nil || !in[b] {
+			return false
+		}
+	}
+	return true
+}
+
+func signatureBytes(sig *packet.Signature) (string, error) {
+	var buf bytes.Buffer
+	c := *sig // Serialize records the subpackets it writes; the parsed key stays as it was
+	err := c.Serialize(&buf)
+	return buf.String(), err
+}
+
 // entityKeyIDs lists the primary and subkey IDs, for matching encrypted-message recipients.
 func entityKeyIDs(e *openpgp.Entity) []uint64 {
 	ids := []uint64{e.PrimaryKey.KeyId}

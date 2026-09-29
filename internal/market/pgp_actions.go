@@ -88,12 +88,12 @@ func saveProfileKey(c *actionCtx, armored string, confirmed bool) (string, strin
 	}
 	fp, canonical := "", ""
 	if armored != "" {
-		key, parsed, text, err := parseCanonicalPublicKey(armored)
+		_, parsed, text, err := parseCanonicalPublicKey(armored)
 		if err != nil {
 			return "", "", fail(400, "PGP key rejected: "+err.Error()+".")
 		}
 		if p.Key != nil && parsed == p.Fingerprint {
-			return renewProfileKey(c, p, key, text)
+			return renewProfileKey(c, p, text)
 		}
 		fp, canonical = parsed, text
 	}
@@ -123,20 +123,20 @@ func saveProfileKey(c *actionCtx, armored string, confirmed bool) (string, strin
 // kept the ownership proof; the others cleared it, and give the reason for the owner's alert and notification.
 var keyOutcomes = map[string]string{
 	"renewed":    "",
-	"revocation": "the pasted key is missing a revocation signature your saved key had, so a subkey or user ID you revoked could be used again",
+	"revocation": "the pasted key is missing a revocation signature your saved key had, or has it where PGP software ignores it, so a subkey or user ID you revoked could be used again",
 	"subkey":     "with the pasted key others would encrypt to an older encryption subkey than the one your saved key uses",
 }
 
 // renewProfileKey saves a confirmed new version of the saved key p (A-155): the same fingerprint with different
 // packets, as gpg --quick-set-expire, a new user ID or subkey, or someone's certification produce. Only the primary
 // key's holder can make its self-signatures, so it keeps the ownership proof and PGP sign-in when every revocation
-// signature in the saved key is still present (an old copy of the key must not undo a revocation) and the encryption
-// subkey it selects is the saved key's or one no older (no rollback to an older subkey). Otherwise it is saved as a
-// changed key: proof, PGP sign-in and any open challenge are cleared, the change time is recorded (A-158) and the
-// outcome names why. Either way the owner is notified.
-func renewProfileKey(c *actionCtx, p *pgpAccount, key *openpgp.Entity, canonical string) (string, string, error) {
+// in the saved key is still present and still applies to what it revoked (an old or rearranged copy of the key must
+// not undo a revocation) and the encryption subkey it selects is the saved key's or one no older (no rollback to an
+// older subkey). Otherwise it is saved as a changed key: proof, PGP sign-in and any open challenge are cleared, the
+// change time is recorded (A-158) and the outcome names why. Either way the owner is notified.
+func renewProfileKey(c *actionCtx, p *pgpAccount, canonical string) (string, string, error) {
 	ctx, tx, uid := c.Ctx(), c.Tx, c.User.ID
-	why := renewalRefusal(p, key, canonical, time.Now())
+	why := renewalRefusal(p, canonical, time.Now())
 	if why == "" {
 		if _, err := tx.ExecContext(ctx, "UPDATE users SET pgp=$1 WHERE id=$2", canonical, uid); err != nil {
 			return "", "", err
@@ -162,10 +162,16 @@ func renewProfileKey(c *actionCtx, p *pgpAccount, key *openpgp.Entity, canonical
 	return "Updated PGP key (same fingerprint " + p.Fingerprint + "; ownership proof and PGP sign-in cleared: " + why + ")", why, nil
 }
 
-// renewalRefusal returns why key (canonical), a new version of the saved key p, may not keep its ownership proof:
-// "revocation" when a revocation signature in the saved key (as published, parseCanonicalPublicKey) is missing,
-// "subkey" when the encryption subkey it selects is neither the saved key's nor as new; "" when it may.
-func renewalRefusal(p *pgpAccount, key *openpgp.Entity, canonical string, now time.Time) string {
+// renewalRefusal returns why canonical, a new version of the saved key p, may not keep its ownership proof. It reads
+// the key as it would be stored and used (canonical parsed again). "revocation": a revocation signature in the saved
+// key (as published, parseCanonicalPublicKey) is missing, or a revocation of the saved key, of one of its subkeys or
+// of one of its user IDs no longer applies to it (revocationsKept, A-261); "subkey": the encryption subkey it selects
+// is neither the saved key's nor as new; "" when it may.
+func renewalRefusal(p *pgpAccount, canonical string, now time.Time) string {
+	key, _, _, err := parseCanonicalPublicKey(canonical)
+	if err != nil {
+		return "revocation"
+	}
 	had, err := revocationSignatures(p.Canonical)
 	if err != nil {
 		return "revocation"
@@ -178,6 +184,9 @@ func renewalRefusal(p *pgpAccount, key *openpgp.Entity, canonical string, now ti
 		if !has[sig] {
 			return "revocation"
 		}
+	}
+	if !revocationsKept(p.Key, key) {
+		return "revocation"
 	}
 	was, ok := encryptionSubkey(p.Key, now)
 	if !ok {
