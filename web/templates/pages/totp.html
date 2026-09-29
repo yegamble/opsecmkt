@@ -5,7 +5,8 @@
 <h1>Two-factor authentication<span class="accent">.</span>
 </h1>
 <p>Time-based one-time codes (TOTP) from an authenticator app you control.</p>
-</div>{{with .Security}}{{if .TOTPEnabled}}<span class="badge green">Enabled</span>{{else}}<span class="badge neutral">Not enrolled</span>{{end}}{{end}}</div>{{with .Security}}{{if .Error}}
+</div>{{with .Security}}{{if .TOTPEnabled}}<span class="badge green">Enabled</span>{{else}}<span class="badge neutral">Not enrolled</span>{{end}}{{end}}</div>{{with .Next}}
+<p><a class="button primary" href="{{.}}">Continue to {{$.NextTitle}}</a></p>{{end}}{{with .Security}}{{if .Error}}
 <div class="alert error" role="alert">{{.Error}}</div>{{end}}{{if .RecoveryCodes}}
 <section class="panel recovery-reveal" aria-labelledby="recovery-heading">
 <h2 id="recovery-heading">Your recovery codes</h2>

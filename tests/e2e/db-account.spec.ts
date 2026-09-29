@@ -29,7 +29,7 @@ test('register, draft, profile persistence and session boundaries', async ({ pag
   await expect(page.getByLabel('XMPP address')).toHaveValue(`${handle}@example.test`);
   await page.getByRole('button', { name: 'Sign out', exact: true }).click();
   await page.goto('/account');
-  await expect(page).toHaveURL(/\/login$/);
+  await expect(page).toHaveURL(/\/login\?next=%2Faccount$/);
   await page.getByLabel('Handle', { exact: true }).fill(handle);
   await page.getByLabel('Password', { exact: true }).fill('wrong-password-123');
   await page.getByRole('button', { name: 'Sign in' }).click();
@@ -68,8 +68,8 @@ test('register, draft, profile persistence and session boundaries', async ({ pag
   await page.getByRole('button', { name: 'Sign out everywhere' }).click();
   await expect(page).toHaveURL(/\/login$/);
   await page.goto('/account');
-  await expect(page).toHaveURL(/\/login$/);
+  await expect(page).toHaveURL(/\/login\?next=%2Faccount$/);
   await otherPage.goto('/account');
-  await expect(otherPage).toHaveURL(/\/login$/);
+  await expect(otherPage).toHaveURL(/\/login\?next=%2Faccount$/);
   await other.close();
 });

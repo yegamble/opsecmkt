@@ -50,7 +50,7 @@ test('desktop: register, draft, profile persistence and sign-out', async ({ page
   await fits(page);
   await page.getByRole('button', { name: 'Sign out', exact: true }).click();
   await page.goto('/account');
-  await expect(page).toHaveURL(/\/login$/);
+  await expect(page).toHaveURL(/\/login\?next=%2Faccount$/);
   await page.getByLabel('Handle', { exact: true }).fill(handle);
   await page.getByLabel('Password', { exact: true }).fill(password);
   await page.getByRole('button', { name: 'Sign in' }).click();

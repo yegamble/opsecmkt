@@ -63,7 +63,7 @@ test('seeded catalog discovery, role boundaries and persistent unfunded orders',
     await expect(visitor.locator('.listings-grid')).not.toContainText(hardware);
     await handbook.getByRole('link', { name: digital, exact: true }).click();
     await visitor.getByRole('link', { name: 'Review order draft' }).click();
-    await expect(visitor).toHaveURL(/\/login$/);
+    await expect(visitor).toHaveURL(/\/login\?next=%2Fcheckout%3Fid%3D[0-9a-f]{64}$/);
 
     await buyer.goto(`/?q=${encodeURIComponent(soldOut)}`);
     await buyer.getByRole('link', { name: soldOut, exact: true }).click();

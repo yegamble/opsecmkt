@@ -595,7 +595,11 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if protected(page) && user == nil {
-		http.Redirect(w, r, "/login", 303)
+		login := "/login"
+		if next := signInNext(r.URL.RequestURI()); next != "" {
+			login += "?next=" + url.QueryEscape(next) // signing in returns here (A-126)
+		}
+		http.Redirect(w, r, login, 303)
 		return
 	}
 	if !authorized(page, user) {
@@ -641,9 +645,12 @@ func postOriginError(r *http.Request) string {
 	return ""
 }
 
+// pageTitle is a page's default title, from its name ("vendor-dashboard" → "Vendor Dashboard"); loaders may replace it.
+func pageTitle(page string) string { return strings.ReplaceAll(strings.Title(page), "-", " ") }
+
 // pageData is the state a page render starts from, before a.load fills it.
 func (a *App) pageData(r *http.Request, page, token string, user *User) PageData {
-	d := PageData{Page: page, Title: strings.ReplaceAll(strings.Title(page), "-", " "), CSRF: a.csrf(token), User: user, Mode: a.mode, Query: r.URL.Query().Get("q"), Category: r.URL.Query().Get("category"), Region: r.URL.Query().Get("region"), Currency: r.URL.Query().Get("currency"), Settings: map[string]string{}}
+	d := PageData{Page: page, Title: pageTitle(page), CSRF: a.csrf(token), User: user, Mode: a.mode, Query: r.URL.Query().Get("q"), Category: r.URL.Query().Get("category"), Region: r.URL.Query().Get("region"), Currency: r.URL.Query().Get("currency"), Settings: map[string]string{}}
 	if d.Currency != "XMR" {
 		d.Currency = "BTC"
 	}

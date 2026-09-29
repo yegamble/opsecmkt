@@ -87,7 +87,7 @@ test('promoting a buyer to vendor opens the vendor desk; the listing form shows 
 
   // The account was signed out, signs in with the password alone and is told what happened.
   await locked.goto('/account');
-  await expect(locked).toHaveURL(/\/login$/);
+  await expect(locked).toHaveURL(/\/login\?next=%2Faccount$/);
   await locked.getByLabel('Handle', { exact: true }).fill(lockedHandle);
   await locked.getByLabel('Password', { exact: true }).fill(lockedPassword);
   await locked.getByRole('button', { name: 'Sign in' }).click();
@@ -217,7 +217,7 @@ test('site settings, account suspension, operator key, canary signature checks a
   // The suspended account's open page is signed out; a wrong password is answered as for any account, the
   // right one with the reason.
   await suspect.goto('/account');
-  await expect(suspect).toHaveURL(/\/login$/);
+  await expect(suspect).toHaveURL(/\/login\?next=%2Faccount$/);
   const suspectSignIn = async (password: string) => {
     await suspect.goto('/login');
     await suspect.getByLabel('Handle', { exact: true }).fill(suspectHandle);

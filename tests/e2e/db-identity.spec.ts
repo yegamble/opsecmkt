@@ -51,7 +51,7 @@ test('changing the password needs the current one, ends other sessions and keeps
 
   // The other browser was signed out; the old password no longer works, the new one does.
   await other.goto('/account');
-  await expect(other).toHaveURL(/\/login$/);
+  await expect(other).toHaveURL(/\/login\?next=%2Faccount$/);
   expect(await signIn(other, handle, first)).toBe(401);
   await expect(other.locator('body')).toHaveText('Invalid handle or password');
   expect(await signIn(other, handle, second)).toBe(303);
@@ -89,7 +89,7 @@ test('a cross-site link to the market does not sign the user out', async ({ brow
     await page.goto('http://forum.example/');
     await page.locator('#go').click();
     // The browser withheld the Strict session cookie, so the protected page redirected to sign-in.
-    await expect(page).toHaveURL(/\/login$/);
+    await expect(page).toHaveURL(/\/login\?next=%2Faccount$/);
   };
   await fromForum();
   expect(await sessionCookie()).toBe(before);

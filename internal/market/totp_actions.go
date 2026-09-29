@@ -303,6 +303,10 @@ func totpLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error
 	d.Security = s
 	if n := recoverySignInNotice(r.URL.Query().Get("signin"), s); n != "" {
 		d.Notice = n
+		// The page the sign-in was for (A-126): a link on, only beside the notice.
+		if d.Next = signInNext(r.URL.Query().Get("next")); d.Next != "" {
+			d.NextTitle = nextTitle(d.Next)
+		}
 	}
 	if s.Pending {
 		if secret, err := a.open("totp", pending); err != nil {
