@@ -163,8 +163,9 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 	dec := currencyDecimals(o.Currency)
 	// The payouts are read before the provider checks: each recipient learns what happens next even while the
 	// wallet is unavailable (A-120). Only the recipient sees a payout's destination and the reason it waits; the
-	// other party and staff reviewers see a neutral label (the full detail is on /admin). An order has a release
-	// and a return of any excess, or a refund: each viewer is the recipient of at most one of them.
+	// other party and staff reviewers see a neutral label (the full detail is on /admin). Only the recipient and
+	// staff reviewers see its transaction ID (A-214). An order has a release and a return of any excess, or a
+	// refund: each viewer is the recipient of at most one of them.
 	var payouts []PayoutRow
 	rows, err := a.db.QueryContext(ctx, "SELECT kind,state,txid,amount,currency,user_id,address,error,send_ambiguous,"+stuckSending+" FROM payouts WHERE order_id=$1 ORDER BY id", o.ID)
 	if err != nil {
@@ -187,6 +188,10 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 			}
 		} else {
 			row.Address = ""
+			// On Bitcoin the txid reveals the destination: the other party never sees it; staff reviewers do (A-214).
+			if d.User != nil && (d.User.ID == o.BuyerID || d.User.ID == o.VendorID) {
+				row.TxID = ""
+			}
 		}
 		payouts = append(payouts, row)
 	}

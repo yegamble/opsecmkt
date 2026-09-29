@@ -218,7 +218,8 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 	case "sent":
 		res, err = tx.ExecContext(ctx, `UPDATE payouts SET state='sent',txid=$2,error='',send_ambiguous=false,updated=now()
 			WHERE id=$1 AND (state IN ('failed','held') OR `+stuckSending+`)`, id, txid)
-		note = c.A.netTag() + " payout of " + label + " recorded as sent by an administrator after wallet reconciliation: " + txid
+		// The order history names no txid (both parties read it); the recipient's notification does (A-214).
+		note = c.A.netTag() + " payout of " + label + " recorded as sent by an administrator after wallet reconciliation."
 		audit = "Marked payout " + strconv.FormatInt(id, 10) + " (" + label + ", was " + state + ") sent with transaction " + txid + " for order " + short
 	}
 	if err != nil {
@@ -231,7 +232,7 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 		return actionResult{}, err
 	}
 	if op == "sent" {
-		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), recipient, "Order "+short+": "+note); err != nil {
+		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), recipient, "Order "+short+": "+note+" Transaction ID: "+txid); err != nil {
 			return actionResult{}, err
 		}
 	}

@@ -195,3 +195,107 @@ func TestSuspensionNoticesCountHeldPayouts(t *testing.T) {
 		t.Fatalf("saving a payout address added %d order events", n-events)
 	}
 }
+
+// A-214: on Bitcoin a payout's transaction ID reveals its recipient's payout address, and a vendor can force a
+// refund on demand, so only a payout's recipient and staff reviewers see its txid: never the other party, on the
+// payouts list, in the order history (including notes stored before this rule), a dispute decision or a
+// notification.
+func TestPayoutTxidShownOnlyToRecipient(t *testing.T) {
+	p := newPayEnv(t)
+	p.setPayoutAddress(p.vendor, "fake-testnet-vendor")
+	p.setPayoutAddress(p.buyer, "fake-testnet-buyer")
+	modSess := agSession(p.testEnv, p.mod.ID)
+	pages := func(order, sess string) string {
+		return html.UnescapeString(p.page("/order?id="+order, sess) + p.page("/disputes", sess) + p.page("/notifications", sess))
+	}
+	noticed := func(u *User, txid string) bool {
+		return p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND strpos(body,$2)>0", u.ID, txid) > 0
+	}
+	// shownTo checks that txid appears to the recipient and a staff reviewer and never to the other party.
+	shownTo := func(what, order, txid string, recipient, other *User, recipientSess, otherSess string) {
+		t.Helper()
+		if txid == "" {
+			t.Fatalf("%s has no txid", what)
+		}
+		// A flagged payment lets a moderator who is not a party read the order (staffReviewer).
+		if _, err := p.DB.Exec("UPDATE payments SET flagged=true WHERE order_id=$1", order); err != nil {
+			t.Fatal(err)
+		}
+		if page := html.UnescapeString(p.page("/order?id="+order, recipientSess)); !strings.Contains(page, txid) {
+			t.Fatalf("%s: the recipient's order page does not show its txid", what)
+		}
+		if !noticed(recipient, txid) {
+			t.Fatalf("%s: the recipient's notification has no txid", what)
+		}
+		if page := html.UnescapeString(p.page("/order?id="+order, modSess)); !strings.Contains(page, txid) {
+			t.Fatalf("%s: the staff reviewer does not see its txid", what)
+		}
+		page := pages(order, otherSess)
+		if strings.Contains(page, txid) || strings.Contains(page, truncate(txid, 20)) {
+			t.Fatalf("%s: the other party sees its txid %s", what, txid)
+		}
+		if noticed(other, txid) || noticed(other, truncate(txid, 20)) {
+			t.Fatalf("%s: the other party was notified of its txid %s", what, txid)
+		}
+	}
+
+	// An overpaid order completed: the release to the vendor and the return of the excess to the buyer are sent.
+	p.paidByWatcherAmount(150000)
+	p.complete(p.order)
+	p.poll()
+	release := p.str("SELECT txid FROM payouts WHERE order_id=$1 AND kind='release' AND state='sent'", p.order)
+	ret := p.str("SELECT txid FROM payouts WHERE order_id=$1 AND kind='return' AND state='sent'", p.order)
+	shownTo("release", p.order, release, p.vendor, p.buyer, p.vendorSess, p.buyerSess)
+	shownTo("return", p.order, ret, p.buyer, p.vendor, p.buyerSess, p.vendorSess)
+
+	// A vendor-forced refund: the vendor cancels an order it saw paid, and the refund is sent to the buyer.
+	forced, addr := p.newOrder(stateAwaitingPayment)
+	p.paidByWatcher(forced, addr, "tx-forced")
+	p.move(forced, statePaid, stateCancelled, p.vendor)
+	p.poll()
+	refund := p.str("SELECT txid FROM payouts WHERE order_id=$1 AND kind='refund' AND state='sent'", forced)
+	shownTo("vendor-forced refund", forced, refund, p.buyer, p.vendor, p.buyerSess, p.vendorSess)
+
+	// A release an administrator records as sent after checking the wallet, with a 64-hex txid.
+	failed, id := p.failPayout("tx-marked", &rpcError{Method: "fake RPC send", Code: -6, Message: "Insufficient funds"})
+	marked := strings.Repeat("ab", 32)
+	if code, body := p.payoutAction(p.adminSess, id, "sent", marked, testPassword); code != 303 {
+		t.Fatalf("mark sent: %d %s", code, body)
+	}
+	shownTo("release marked sent", failed, marked, p.vendor, p.buyer, p.vendorSess, p.buyerSess)
+	// New order-history notes name no payout txid at all (the watcher's sent notes and the administrator's).
+	if n := p.count("SELECT count(*) FROM order_events e JOIN payouts py ON py.order_id=e.order_id WHERE py.txid<>'' AND strpos(e.note,py.txid)>0"); n != 0 {
+		t.Fatalf("%d order-history notes name a payout txid", n)
+	}
+	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=ANY($1) AND (note LIKE '%payout of % sent.' OR note LIKE '%recorded as sent by an administrator after wallet reconciliation.')", []string{p.order, forced, failed}); n != 4 {
+		t.Fatalf("sent notes %d, want 4", n)
+	}
+
+	// Text stored before this rule named the txid in the order history (the watcher's and the administrator's
+	// notes, in full or truncated) and in a dispute decision recorded from the runbook: the other party still
+	// never sees it; the recipient does.
+	legacy := strings.Repeat("cd", 32)
+	legacyOrder := p.insertPayout(stateResolved, "refund", p.buyer.ID, "sent", "fake-testnet-buyer", "", false, "")
+	if _, err := p.DB.Exec("UPDATE payouts SET txid=$2 WHERE order_id=$1", legacyOrder, legacy); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.DB.Exec("INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,credited) VALUES($1,'BTC','tx-legacy',0,'fake-legacy',100000,3,true)", legacyOrder); err != nil {
+		t.Fatal(err)
+	}
+	for _, note := range []string{"TESTNET payout of 0.001 BTC sent: " + legacy, "TESTNET payout of 0.001 BTC recorded as sent by an administrator after wallet reconciliation: " + legacy, "Payout " + truncate(legacy, 20) + " noted."} {
+		if _, err := p.DB.Exec("INSERT INTO order_events(order_id,from_state,to_state,note) VALUES($1,'resolved','resolved',$2)", legacyOrder, note); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := p.DB.Exec("INSERT INTO disputes(id,order_id,reason,status,outcome,resolution) VALUES($1,$2,'Nothing arrived at all','Resolved — refund to buyer','refund',$3)",
+		randomToken(), legacyOrder, "Reconciled after a restore from backup: the refund was sent in transaction "+legacy+"."); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.DB.Exec("INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), p.buyer.ID, "Order "+legacyOrder[:8]+": TESTNET payout of 0.001 BTC sent: "+legacy); err != nil {
+		t.Fatal(err)
+	}
+	shownTo("refund in stored notes", legacyOrder, legacy, p.buyer, p.vendor, p.buyerSess, p.vendorSess)
+	if page := pages(legacyOrder, p.vendorSess); !strings.Contains(page, payoutTxidHidden) {
+		t.Fatal("the vendor's order history does not say the transaction ID is hidden")
+	}
+}
