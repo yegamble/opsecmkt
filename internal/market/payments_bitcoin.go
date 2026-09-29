@@ -325,6 +325,16 @@ func paymentExpiry() (time.Duration, error) {
 	return d, nil
 }
 
+// expiryWindow is the payment window the watcher's expiry (settleOrder) and the order page's cancellation time
+// both use (A-123). PAYMENT_EXPIRY is validated at startup by the provider factories; 24h if it is not.
+func expiryWindow() time.Duration {
+	d, err := paymentExpiry()
+	if err != nil {
+		return 24 * time.Hour
+	}
+	return d
+}
+
 // pollInterval reads PAYMENT_POLL_INTERVAL (Go duration, 1s to 1h; default 30s).
 func pollInterval() (time.Duration, error) {
 	s := strings.TrimSpace(os.Getenv("PAYMENT_POLL_INTERVAL"))
