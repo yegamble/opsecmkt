@@ -559,15 +559,12 @@ proven with real funds. Know these before you take a real payment:
 - **Open items** in the project's review ledger (`.claude/war-room/ledger.md`), each still unfixed:
   - A-103: no commit-pinned real-chain rerun, with a retained manifest, covers the payout changes, including
     Monero refunds with the fee deducted, overpayment returns, the large-payout review and underpaid expiry.
-  - A-174: nothing checks the Monero wallet version at runtime, so a silently upgraded wallet image could make
-    the market classify a broadcast send as "nothing sent" and allow a second send.
-  - A-211: a deposit that confirms after an order settled is shown to the buyer as counted, only staff are
-    told and nothing refunds it; a top-up more than 24 hours after an underpaid order was cancelled is not
-    recorded at all.
-  - A-213: when a credited deposit is reversed after the release was sent but before the overpayment return
-    was, the return is held silently, with no note, notice or review item.
-  - A-214: an order page shows the counterparty's payout transaction ID, and on Bitcoin that reveals the
-    buyer's or the vendor's payout address.
+  - A-226: the [runtime wallet check](#node-image-versions) treats any monero-wallet-rpc that does not report
+    RPC 1.31 from a release build as unverified, but a later release whose RPC did not change also reports
+    1.31 and is not detected. Keep `MONERO_WALLET_IMAGE` on the pinned tag until the bump checklist is done.
+  - A-232: Monero releases still pay their network fee from the pooled wallet and have no minimum, so a vendor
+    who buys their own near-free listing makes each release cost the market a fee (decided: releases will take
+    the fee from the amount, with a 0.001 XMR minimum, as on Bitcoin).
   - A-90 and A-95: the payout broadcast from the host's IP address above, and whether the nodes can run over
     Tor (not measured).
   - A-105: a wallet that disowns an issued address, or a Monero wallet behind its daemon, reads as "no

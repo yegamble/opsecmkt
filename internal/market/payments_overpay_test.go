@@ -161,10 +161,16 @@ func TestLargeReturnHeldUntilAdminReview(t *testing.T) {
 	}
 	admin := p.page("/admin", p.adminSess)
 	mustContain(t, admin, "Held: larger than the order price — review before releasing", "Return of overpayment", `name="large_reviewed" value="confirmed" required`)
+	// A-212: the hold catches likely mistakes above the price; it never claims to stop swaps (QA18-2 pins the copy,
+	// which the errText == largeHold comparisons above cannot).
+	if !strings.Contains(largeHold, "Refunds and returns up to the order price are sent automatically") || strings.Contains(largeHold, "not used to swap coins") {
+		t.Fatalf("largeHold overclaims: %q", largeHold)
+	}
+	mustContain(t, admin, "This check does not stop swaps: refunds and returns up to the order price are sent automatically")
 	id := p.str("SELECT id::text FROM payouts WHERE order_id=$1 AND kind='return'", p.order)
 	release := url.Values{"payout_id": {id}, "op": {"release"}, "password": {testPassword}}
-	if w := p.do("POST", "/admin/payout", p.adminSess, release); w.Code != 409 || !strings.Contains(w.Body.String(), "larger than the order price") {
-		t.Fatalf("release without review: %d", w.Code)
+	if w := p.do("POST", "/admin/payout", p.adminSess, release); w.Code != 409 || !strings.Contains(w.Body.String(), "larger than the order price") || !strings.Contains(w.Body.String(), "this check does not stop swaps up to a listing's price") {
+		t.Fatalf("release without review: %d %s", w.Code, w.Body.String())
 	}
 	if st, _, _ := p.returnPayout(p.order); st != "held" {
 		t.Fatalf("unreviewed release changed the return: %s", st)
