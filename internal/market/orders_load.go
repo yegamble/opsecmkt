@@ -247,7 +247,7 @@ func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) 
 		return err
 	}
 	vendorKeyGate(d)
-	return nil
+	return vendorKeyChangeGate(ctx, a, d)
 }
 
 // orderPayouts (A-122): on a paid, shipped or delivered order the complete and paid-cancel forms state the

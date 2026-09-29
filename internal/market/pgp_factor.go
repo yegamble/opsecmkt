@@ -98,10 +98,31 @@ func pgpLoginCodeAction(c *actionCtx) (actionResult, error) {
 	code := randomToken()[:32]
 	armored, err := encryptTo(p.Key, code)
 	if err != nil {
-		return actionResult{}, fail(409, "A sign-in code cannot be encrypted to your key (expired or sign-only). Use another verification method.")
+		return actionResult{}, expiredKeyRefusal(c, userID)
 	}
 	_, err = tx.ExecContext(ctx, "UPDATE pending_logins SET pgp_nonce=$1,pgp_challenge=$2 WHERE token_hash=$3", pgpLoginDigest(code, p), armored, digest(pending))
 	return actionResult{Redirect: "/challenge"}, err
+}
+
+// expiredKeyRefusal is /challenge/pgp's answer when no code can be encrypted to the verified key (A-155): usually it,
+// or its encryption subkey, expired. It names what the account can still do: its other method when TOTP is enrolled,
+// otherwise the administrator's reset of second factors (/admin, A-137's operator reset for an administrator).
+func expiredKeyRefusal(c *actionCtx, userID string) error {
+	msg := "A sign-in code cannot be encrypted to your key: it or its encryption subkey expired or was revoked, or it cannot encrypt. "
+	var totp bool
+	var role string
+	if err := c.Tx.QueryRowContext(c.Ctx(), "SELECT totp_enabled,role FROM users WHERE id=$1", userID).Scan(&totp, &role); err != nil {
+		return err
+	}
+	if totp {
+		return fail(409, msg+"Sign in with your authenticator code or a recovery code instead, then renew the key (gpg --quick-set-expire) and paste it on your account page.")
+	}
+	who := "A market administrator can turn it off for you with Reset a user's second factors"
+	if role == "admin" {
+		who = "Another administrator can turn it off for you with Reset a user's second factors, or the operator on the server with -reset-admin-factors"
+	}
+	return fail(409, msg+"PGP sign-in is the only verification method on this account, so this sign-in cannot be finished. "+who+
+		"; your password, saved key and its verification stay, and you then sign in with your password, renew the key (gpg --quick-set-expire) and paste it on your account page.")
 }
 
 // pgpChallengeLoader shows the encrypted code for this pending login, if one was requested.

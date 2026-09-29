@@ -1,5 +1,6 @@
 {{/* Contacts owns. One user's PGP public key for encrypting messages to them (input: ContactKey). */}}
-{{define "contact-key"}}<div class="contact-key">{{if .Fingerprint}}<dl class="key-values">
+{{define "contact-key"}}<div class="contact-key">{{if .Fingerprint}}{{if .ChangedAfterOrder}}<p class="contact-key-missing" role="note">
+<strong>Key changed.</strong> This key was changed or re-verified on {{.ChangedAfterOrder}} UTC, after this order was placed — confirm with the vendor before sending your address. Compare its fingerprint with one you had from them earlier or got through a channel you trust.</p>{{end}}<dl class="key-values">
 <div>
 <dt>{{.Handle}}{{if .Relation}} ({{.Relation}}){{end}} · fingerprint</dt>
 <dd class="pgp-fingerprint">{{.Fingerprint}}</dd>

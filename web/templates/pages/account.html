@@ -16,7 +16,7 @@
 <p class="help" id="pgp-visibility">Shown to every signed-in account that looks up your handle, to every vendor or buyer you trade with, and publicly on your vendor page if you sell — with its user IDs and creation date. Use a key made only for this market.</p>
 <label>PGP public key<textarea name="pgp" maxlength="32768" rows="8" spellcheck="false" placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----" aria-describedby="pgp-visibility">{{with $.PGP}}{{.Armored}}{{end}}</textarea>
 </label>
-<span class="help">Only your public key belongs here. Saving a different key clears ownership verification and PGP sign-in.</span>{{$totp := and $.Security $.Security.TOTPEnabled}}
+<span class="help">Only your public key belongs here. Saving a different key clears ownership verification and PGP sign-in. The same key renewed (same fingerprint, for example a new expiry) keeps them, unless it lacks a revocation your saved key has or would have others encrypt to an older subkey.</span>{{$totp := and $.Security $.Security.TOTPEnabled}}
 <label>Current password<input type="password" name="password" maxlength="72" autocomplete="current-password" aria-describedby="pgp-confirm-help">
 </label>{{if $totp}}
 <label>Authenticator code<input name="code" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" autocomplete="one-time-code" aria-describedby="pgp-confirm-help">
@@ -37,8 +37,9 @@
 <div>
 <dt>Ownership</dt>
 <dd>{{if .Verified}}<span class="badge green">Verified {{.VerifiedAt}}</span>{{else}}<span class="badge neutral">Not verified</span>{{end}}</dd>
-</div>
-</dl>
+</div>{{if .Fingerprint}}
+{{template "pgp-expiry:rows" .}}{{end}}
+</dl>{{template "pgp-expiry:warning" .}}
 <a class="text-link" href="/pgp">{{if .Verified}}Manage PGP verification{{else}}Prove key ownership{{end}}</a>{{end}}{{end}}
 <label>XMPP address<input name="xmpp" value="{{.XMPP}}" maxlength="254" placeholder="handle@example.org" aria-describedby="xmpp-help">
 </label>

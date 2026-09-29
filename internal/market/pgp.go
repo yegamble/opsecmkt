@@ -173,6 +173,99 @@ func canReceiveEncrypted(key *openpgp.Entity, now time.Time) bool {
 	return ok
 }
 
+// keyExpiry returns when the self-signature sig makes pk expire; zero means it never expires.
+func keyExpiry(pk *packet.PublicKey, sig *packet.Signature) time.Time {
+	if sig == nil || sig.KeyLifetimeSecs == nil || *sig.KeyLifetimeSecs == 0 {
+		return time.Time{}
+	}
+	return pk.CreationTime.Add(time.Duration(*sig.KeyLifetimeSecs) * time.Second)
+}
+
+// primaryKeyExpiry returns when key's primary key expires (zero: never, or no self-signature).
+func primaryKeyExpiry(key *openpgp.Entity) time.Time {
+	sig, _ := key.PrimarySelfSignature()
+	return keyExpiry(key.PrimaryKey, sig)
+}
+
+// encryptionKey describes the key encryptTo uses (A-155): Expires is its own expiry, Until when encryption to it
+// stops, the earlier of that and the primary key's expiry (zero: never).
+type encryptionKey struct {
+	Key            *packet.PublicKey
+	Expires, Until time.Time
+}
+
+// encryptionSubkey returns the key encryptTo selects now (canReceiveEncrypted). When none is usable now, it returns
+// the unrevoked encryption-capable key whose encryption stopped last because it or the primary key expired, so an
+// expired key still says which subkey expired and when. ok is false when neither exists: no key, a revoked key, one
+// that is signing only, or one unusable for another reason (a revoked encryption subkey or user ID).
+func encryptionSubkey(key *openpgp.Entity, now time.Time) (encryptionKey, bool) {
+	if key == nil {
+		return encryptionKey{}, false
+	}
+	primarySig, _ := key.PrimarySelfSignature()
+	if primarySig == nil {
+		return encryptionKey{}, false
+	}
+	primary := keyExpiry(key.PrimaryKey, primarySig)
+	describe := func(pk *packet.PublicKey, sig *packet.Signature) encryptionKey {
+		k := encryptionKey{Key: pk, Expires: keyExpiry(pk, sig)}
+		k.Until = k.Expires
+		if !primary.IsZero() && (k.Until.IsZero() || primary.Before(k.Until)) {
+			k.Until = primary
+		}
+		return k
+	}
+	if k, ok := key.EncryptionKey(now); ok {
+		return describe(k.PublicKey, k.SelfSignature), true
+	}
+	if key.Revoked(now) {
+		return encryptionKey{}, false
+	}
+	var last encryptionKey
+	found := false
+	consider := func(k encryptionKey) {
+		if !k.Until.IsZero() && !k.Until.After(now) && (!found || k.Until.After(last.Until)) {
+			last, found = k, true
+		}
+	}
+	for _, s := range key.Subkeys {
+		if s.Sig.FlagsValid && s.Sig.FlagEncryptCommunications && s.PublicKey.PubKeyAlgo.CanEncrypt() && !s.Revoked(now) {
+			consider(describe(s.PublicKey, s.Sig))
+		}
+	}
+	if !found && primarySig.FlagsValid && primarySig.FlagEncryptCommunications && key.PrimaryKey.PubKeyAlgo.CanEncrypt() {
+		consider(describe(key.PrimaryKey, primarySig))
+	}
+	return last, found
+}
+
+// revocationSignatures returns the body of every key, subkey and user ID revocation signature in an armored key.
+func revocationSignatures(armored string) (map[string]bool, error) {
+	_, _, data, err := decodePublicKey(armored)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]bool{}
+	packets := packet.NewOpaqueReader(bytes.NewReader(data))
+	for {
+		p, err := packets.Next()
+		if err == io.EOF {
+			return out, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		if p.Tag != signaturePacketTag {
+			continue
+		}
+		parsed, err := p.Parse()
+		if sig, ok := parsed.(*packet.Signature); err == nil && ok && (sig.SigType == packet.SigTypeKeyRevocation ||
+			sig.SigType == packet.SigTypeSubkeyRevocation || sig.SigType == packet.SigTypeCertificationRevocation) {
+			out[string(p.Contents)] = true
+		}
+	}
+}
+
 // entityKeyIDs lists the primary and subkey IDs, for matching encrypted-message recipients.
 func entityKeyIDs(e *openpgp.Entity) []uint64 {
 	ids := []uint64{e.PrimaryKey.KeyId}

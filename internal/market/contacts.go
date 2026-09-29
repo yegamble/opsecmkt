@@ -160,6 +160,24 @@ func vendorKeyGate(d *PageData) {
 	}
 }
 
+// vendorKeyChangeGate (A-158) runs after vendorKeyGate. On a paid physical order, the buyer's view of the vendor's
+// usable key says when that key was changed (users.pgp_changed_at: added, replaced or updated without keeping its
+// proof) or its ownership proved again (pgp_verified_at) after the order was placed, so the buyer confirms it with the
+// vendor before encrypting an address to it. A key last changed and proved before the order, or before migration 067
+// recorded change times without being proved since, shows nothing.
+func vendorKeyChangeGate(ctx context.Context, a *App, d *PageData) error {
+	o := d.Order
+	if d.OrderViewer != roleBuyer || o.Kind != "physical" || o.State != statePaid || len(d.Contacts) != 1 || !d.Contacts[0].Usable() {
+		return nil
+	}
+	err := a.db.QueryRowContext(ctx, `SELECT to_char(GREATEST(u.pgp_changed_at,u.pgp_verified_at) AT TIME ZONE 'UTC','YYYY-MM-DD')
+FROM orders o JOIN users u ON u.id=$2 WHERE o.id=$1 AND GREATEST(u.pgp_changed_at,u.pgp_verified_at)>o.created`, o.ID, o.VendorID).Scan(&d.Contacts[0].ChangedAfterOrder)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	return err
+}
+
 // orderContacts returns the key of the viewer's counterparty, or both parties' keys for a dispute reviewer.
 func orderContacts(ctx context.Context, a *App, o *Order, viewer string) ([]ContactKey, error) {
 	var parties [][3]string // id, handle, relation

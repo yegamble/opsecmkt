@@ -20,6 +20,21 @@
 .pgp-summary {
   margin-top:-6px
 }
+.pgp-key-warning {
+  margin:0;
+  padding:12px 14px;
+  border:1px dashed #594322;
+  background:#171209;
+  color:var(--text);
+  font-size:0.875rem;
+  overflow-wrap:anywhere
+}
+.pgp-key-warning strong {
+  color:var(--amber)
+}
+.pgp-key-warning code {
+  font-family:var(--mono)
+}
 .badge.pgp-danger {
   color:#ffc6b7;
   background:#271512;
