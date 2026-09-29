@@ -41,9 +41,10 @@ fresh address from those three keys:
 wsh(sortedmulti(2, <buyer key>, <vendor key>, <market key>))
 ```
 
-Any two of the three keys can spend; no single key can. The server will refuse duplicate keys, the market's
-own key offered as a party key and a key already used by another account, because a descriptor that repeats a
-key lets one party spend alone (shown on regtest).
+Any two of the three keys can spend; no single key can. The server will accept exactly one key per party,
+compose the descriptor itself, and refuse duplicate keys, the market's own key offered as a party key and a
+key already used by another account: on regtest, a descriptor that repeats a key, or a key field holding two
+keys, let one party spend alone. A pasted private key will be refused, with advice to replace it.
 
 **Checking the address.** The order page will show the full descriptor with its checksum, so the buyer can
 load it into their own wallet and see the same address before paying. The server will import each order's
@@ -78,7 +79,12 @@ amount minus that fee. A fulfilled order's settlement will also have a market-fe
 administrator's address. The fee rate, minimum amounts and what happens to amounts too small to send are *being designed*.
 
 **What this will protect.** The server's watch-only wallet and its one key cannot move an escrow alone. A
-seized or copied server holds the market key and the public descriptors, not the funds.
+seized or copied server holds the market key and the public descriptors, not the funds. This holds for
+escrows created while the server was honest, and only when the signers check the address and the
+transaction outputs in their own wallet: a server that has been taken over can show a buyer a descriptor
+with its own key in place of the vendor's, and then holds two of the three keys for that escrow. Checking the
+descriptor in your wallet (and, once built, the operator-signed market key and the vendor's PGP-signed escrow
+key) is what detects that.
 
 **What it will not protect.**
 
