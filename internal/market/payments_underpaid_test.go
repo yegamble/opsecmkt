@@ -45,7 +45,7 @@ func TestUnderpaidOrderExpiresAndIsRefunded(t *testing.T) {
 	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND actor_id IS NULL AND note='payment window expired underpaid: 0.0004 of 0.001 BTC received'", p.order); n != 1 {
 		t.Fatalf("expiry note rows %d", n)
 	}
-	if n := p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE '%payment window ended with 0.0004 of 0.001 BTC received%refund of 0.0004 BTC to your saved BTC payout address is queued%not refunded automatically.'", p.buyer.ID); n != 1 {
+	if n := p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE '%payment window ended with 0.0004 of 0.001 BTC received%refund of 0.0004 BTC to your saved BTC payout address is queued; the network fee is taken from it.%not refunded automatically.'", p.buyer.ID); n != 1 {
 		t.Fatalf("buyer underpayment notices %d", n)
 	}
 	if got := p.count("SELECT stock FROM products WHERE id=$1", p.productID); got != stock+1 {
@@ -89,7 +89,7 @@ func TestUnderpaidExpiryWithoutPayoutAddressBlocksRefund(t *testing.T) {
 	if st, _, _, amt := p.payout(p.order); p.state(p.order) != stateCancelled || st != "blocked" || amt != 40000 {
 		t.Fatalf("state %s payout %s %d", p.state(p.order), st, amt)
 	}
-	if n := p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE '%payment window ended with%refund of 0.0004 BTC waits until you save a BTC payout address%not refunded automatically.'", p.buyer.ID); n != 1 {
+	if n := p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE '%payment window ended with%refund of 0.0004 BTC waits until you save a BTC payout address on your account page; the network fee is taken from it.%not refunded automatically.'", p.buyer.ID); n != 1 {
 		t.Fatalf("buyer notices naming the blocked refund %d", n)
 	}
 }

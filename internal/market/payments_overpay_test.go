@@ -134,7 +134,9 @@ func TestSmallExcessStaysWithVendor(t *testing.T) {
 		t.Fatalf("payouts %d", n)
 	}
 	for _, u := range []*User{p.buyer, p.vendor} {
-		if n := p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE '%below the minimum automatic refund of 0.0001 BTC, so it is not returned%'", u.ID); n != 1 {
+		// A-250: the notice names the payout floor and says the vendor bears the release's network fee.
+		kept := "Order " + p.order[:8] + ": the TESTNET release of 0.00109999 BTC to the vendor includes 0.00009999 BTC more than the price, below the minimum automatic payout of 0.0001 BTC, so it is not returned; the network fee is taken from the release."
+		if n := p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body=$2", u.ID, kept); n != 1 {
 			t.Fatalf("%s not told the excess is kept: %d", u.Handle, n)
 		}
 	}

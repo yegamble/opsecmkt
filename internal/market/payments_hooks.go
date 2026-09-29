@@ -257,11 +257,12 @@ func (a *App) enqueuePayout(ctx context.Context, tx *sql.Tx, o *Order) error {
 	}
 	// An excess too small to return goes to the vendor with the release; both parties are told. So are they when
 	// the excess is not split off because the price itself is below the release floor, and the release is held.
+	// Every payout has the network fee taken from it (A-232), so the notice says so (A-250).
 	if len(parts) == 1 && parts[0].kind == "release" && sum > required {
 		dec := currencyDecimals(o.Currency)
-		body := "Order " + o.ID[:min(8, len(o.ID))] + ": the " + a.netTag() + " release of " + amount(sum, dec) + " " + o.Currency + " to the vendor includes " + priceDifference(sum, required, o.Currency) + ", below the minimum automatic refund of " + amount(payoutFloor(o.Currency, "return"), dec) + " " + o.Currency + ", so it is not returned."
+		body := "Order " + o.ID[:min(8, len(o.ID))] + ": the " + a.netTag() + " release of " + amount(sum, dec) + " " + o.Currency + " to the vendor includes " + priceDifference(sum, required, o.Currency) + ", below the minimum automatic payout of " + amount(payoutFloor(o.Currency, "return"), dec) + " " + o.Currency + ", so it is not returned; the network fee is taken from the release."
 		if parts[0].large {
-			body = "Order " + o.ID[:min(8, len(o.ID))] + ": the " + a.netTag() + " release of " + amount(sum, dec) + " " + o.Currency + " to the vendor includes " + priceDifference(sum, required, o.Currency) + "; " + subFloorPriceExcess(o.Currency) + ", so an administrator reviews the release before it is sent."
+			body = "Order " + o.ID[:min(8, len(o.ID))] + ": the " + a.netTag() + " release of " + amount(sum, dec) + " " + o.Currency + " to the vendor includes " + priceDifference(sum, required, o.Currency) + "; " + subFloorPriceExcess(o.Currency) + ", so an administrator reviews the release before it is sent; the network fee is taken from the release."
 		}
 		for _, uid := range []string{o.BuyerID, o.VendorID} {
 			if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), uid, body); err != nil {
@@ -283,7 +284,7 @@ type payoutPart struct {
 
 // splitPayout divides an order's counted sum (payoutBasis) into its payouts. A refund returns the whole sum to the
 // buyer. A release pays the vendor exactly the price and returns the excess to the buyer as a separate payout,
-// unless the excess is below the minimum automatic refund (it then goes to the vendor with the release: sending
+// unless the excess is below the minimum automatic payout (it then goes to the vendor with the release: sending
 // dust back costs more than it is worth and invites fee abuse) or the price itself is below the release floor. A
 // refund or return larger than the order price is marked large, a likely mistake an administrator checks first. The
 // bound is the price: a refund of up to the price (and a return of an excess up to the price, so a payment of up to
@@ -360,26 +361,30 @@ func (a *App) queuePayout(ctx context.Context, tx *sql.Tx, o *Order, part payout
 	if part.kind == "return" {
 		what = a.netTag() + " return of " + label + " (paid over the price)"
 	}
-	note := "Queued " + what + " to the " + part.who + " (single attempt)."
+	// Every payout is sent with the network fee taken from its amount (A-232): each note and notice stating the
+	// amount says so (A-250).
+	fee := "; the network fee is taken from the " + part.kind + "."
+	note := "Queued " + what + " to the " + part.who + " (single attempt)"
 	switch {
 	case suspended:
-		note = what + " to the " + part.who + " is held until an administrator checks the payout address."
+		note = what + " to the " + part.who + " is held until an administrator checks the payout address"
 	case part.large:
-		note = what + " to the " + part.who + " is held: it is more than the order price, so an administrator checks it before it is sent."
+		note = what + " to the " + part.who + " is held: it is more than the order price, so an administrator checks it before it is sent"
 	case held:
-		note = what + " to the " + part.who + " is held: a credited deposit is conflicted or re-confirming."
+		note = what + " to the " + part.who + " is held: a credited deposit is conflicted or re-confirming"
 	case address == "":
-		note = what + " to the " + part.who + " is blocked until the " + part.who + " saves a " + o.Currency + " payout address."
+		note = what + " to the " + part.who + " is blocked until the " + part.who + " saves a " + o.Currency + " payout address"
 	}
+	note += fee
 	if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, o.State, note); err != nil {
 		return err
 	}
 	var body string
 	switch {
 	case part.large:
-		body = "Order " + short + ": the " + what + " is more than the order price, so it is held until an administrator checks it."
+		body = "Order " + short + ": the " + what + " is more than the order price, so it is held until an administrator checks it" + fee
 	case address == "" && !suspended:
-		body = "Order " + short + ": add a " + o.Currency + " payout address on your account page to receive " + label + " (" + a.netTag() + ")."
+		body = "Order " + short + ": add a " + o.Currency + " payout address on your account page to receive " + label + " (" + a.netTag() + "); the network fee is taken from it."
 	case part.kind == "return":
 		body = "Order " + short + ": " + label + " you paid over the price is being returned to your saved " + o.Currency + " payout address; the network fee is taken from it."
 	}

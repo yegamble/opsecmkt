@@ -267,7 +267,7 @@ func TestPayoutTxidShownOnlyToRecipient(t *testing.T) {
 	if n := p.count("SELECT count(*) FROM order_events e JOIN payouts py ON py.order_id=e.order_id WHERE py.txid<>'' AND strpos(e.note,py.txid)>0"); n != 0 {
 		t.Fatalf("%d order-history notes name a payout txid", n)
 	}
-	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=ANY($1) AND (note LIKE '%payout of % sent.' OR note LIKE '%recorded as sent by an administrator after wallet reconciliation.')", []string{p.order, forced, failed}); n != 4 {
+	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=ANY($1) AND (note LIKE '%payout of % sent; the network fee was taken from it.' OR note LIKE '%recorded as sent by an administrator after wallet reconciliation.')", []string{p.order, forced, failed}); n != 4 {
 		t.Fatalf("sent notes %d, want 4", n)
 	}
 

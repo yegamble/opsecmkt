@@ -130,7 +130,7 @@ func TestSubFloorPriceOverpaymentIsHeld(t *testing.T) {
 		if n := p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE '%'||$2||'%'", u.ID, cause); n != 1 {
 			t.Fatalf("%s not told the price is the cause: %d", u.Handle, n)
 		}
-		if n := p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE '%below the minimum automatic refund%'", u.ID); n != 0 {
+		if n := p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE '%minimum automatic%'", u.ID); n != 0 {
 			t.Fatalf("%s told the excess is the cause", u.Handle)
 		}
 	}
@@ -174,7 +174,7 @@ func TestSubFloorPriceSmallExcessUnchanged(t *testing.T) {
 		t.Fatalf("payouts %d", n)
 	}
 	for _, u := range []*User{p.buyer, p.vendor} {
-		if n := p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE '%below the minimum automatic refund of 0.0001 BTC, so it is not returned%'", u.ID); n != 1 {
+		if n := p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE '%below the minimum automatic payout of 0.0001 BTC, so it is not returned; the network fee is taken from the release.'", u.ID); n != 1 {
 			t.Fatalf("%s not told the excess is kept: %d", u.Handle, n)
 		}
 	}

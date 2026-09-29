@@ -430,12 +430,12 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 				if err != nil && err != sql.ErrNoRows {
 					return err
 				}
-				what := fmt.Sprintf("A refund of %s %s to your saved %s payout address is queued; the order page shows its status.", amount(refund, dec), o.Currency, o.Currency)
+				what := fmt.Sprintf("A refund of %s %s to your saved %s payout address is queued; the network fee is taken from it. The order page shows its status.", amount(refund, dec), o.Currency, o.Currency)
 				switch {
 				case err == sql.ErrNoRows:
 					what = fmt.Sprintf("%s %s is below the minimum automatic refund of %s %s, so it is not refunded; market staff were notified.", amount(received, dec), o.Currency, amount(payoutFloor(o.Currency, "refund"), dec), o.Currency)
 				case refundState == "blocked":
-					what = fmt.Sprintf("The refund of %s %s waits until you save a %s payout address on your account page.", amount(refund, dec), o.Currency, o.Currency)
+					what = fmt.Sprintf("The refund of %s %s waits until you save a %s payout address on your account page; the network fee is taken from it.", amount(refund, dec), o.Currency, o.Currency)
 				}
 				body := fmt.Sprintf("Order %s: the payment window ended with %s of %s %s received, so the order was cancelled. %s Anything sent to this order's address after the cancellation is not refunded automatically.",
 					orderID[:min(8, len(orderID))], amount(received, dec), amount(total, dec), o.Currency, what)
@@ -741,9 +741,9 @@ func (a *App) sendPayouts(ctx context.Context, p PaymentProvider, orders []strin
 		// bounded; Close waits for it. The outcome is recorded on a fresh bounded context for the same reason.
 		sctx, scancel := context.WithTimeout(context.WithoutCancel(ctx), payoutSendTimeout)
 		// Every payout pays its own network fee (feeFromAmountSender, A-232): the recipient receives amt less the fee.
-		send := p.Send
+		send, feeTaken := p.Send, ""
 		if f, ok := p.(feeFromAmountSender); ok {
-			send = f.SendFeeFromAmount
+			send, feeTaken = f.SendFeeFromAmount, "; the network fee was taken from it"
 		}
 		txid, serr := send(sctx, to, amt)
 		scancel()
@@ -760,8 +760,9 @@ func (a *App) sendPayouts(ctx context.Context, p PaymentProvider, orders []strin
 			errs = append(errs, &watchError{label: fmt.Sprintf("payout %d", id), class: payoutErrorClass(cur, serr), err: serr})
 		} else {
 			// Only the recipient's notification names the txid: on Bitcoin it reveals their payout address (A-214).
-			note := a.netTag() + " payout of " + label + " sent."
-			err = a.recordPayout(rctx, id, order, recipient, "sent", txid, "", false, note, a.netTag()+" payout of "+label+" sent: "+txid)
+			// The recipient received the amount less the network fee (A-250).
+			note := a.netTag() + " payout of " + label + " sent" + feeTaken + "."
+			err = a.recordPayout(rctx, id, order, recipient, "sent", txid, "", false, note, note+" Transaction ID: "+txid)
 		}
 		cancel()
 		// Logged here, not only in the returned error: the watcher drops a pass's error once shutdown has begun,

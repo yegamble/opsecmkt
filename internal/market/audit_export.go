@@ -153,10 +153,12 @@ func auditExportHandler(a *App, w http.ResponseWriter, r *http.Request, u *User)
 		http.Error(w, "upto must be a positive audit event id", 400)
 		return
 	}
-	// A-139: the export sets its own bounds. Its build may outlast ServeHTTP's 12 s request context and the
-	// server's 15 s ReadTimeout (whose expiry cancels the request), and over Tor (0.19–0.45 MB/s measured) its
-	// download outlasts the 20 s WriteTimeout: a cut download fails verify-audit like tampering. It still stops
-	// when the client goes away. Every other route keeps the server's timeouts (each request resets them).
+	// A-139: the export sets its own bounds. Its build may outlast ServeHTTP's 12 s request context, and over Tor
+	// (0.19–0.45 MB/s measured) its download outlasts the 20 s WriteTimeout: a cut download fails verify-audit like
+	// tampering. It still stops when the client goes away. The read deadline is moved with the write deadline only
+	// defensively: net/http already clears the read deadline once a body-less request (this GET) has been read
+	// (connReader.startBackgroundRead), so the server's 15 s ReadTimeout never cancels this handler (A-251). Every
+	// other route keeps the server's timeouts (each request resets them).
 	rc := http.NewResponseController(w)
 	extend := func(d time.Duration) { // an httptest recorder has no deadlines and refuses both
 		t := time.Now().Add(d)

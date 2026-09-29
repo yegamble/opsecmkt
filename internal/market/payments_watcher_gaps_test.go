@@ -137,7 +137,7 @@ func (p *payEnv) failedPayout(order, msg string, ambiguous bool) {
 	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE '%failed and will not be retried%'", order); n != 1 {
 		p.t.Fatalf("failure events: %d", n)
 	}
-	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE '%payout of % sent.'", order); n != 0 {
+	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE '%payout of % sent; the network fee was taken from it.'", order); n != 0 {
 		p.t.Fatal("failed payout recorded as sent")
 	}
 	if admin := html.UnescapeString(p.page("/admin", p.adminSess)); !strings.Contains(admin, msg) || !strings.Contains(admin, "Failed — not retried") {
@@ -469,7 +469,7 @@ func TestGapPayoutClaimLostToAnotherSender(t *testing.T) {
 	if stA != "sent" || stB != "sent" || txA == txB || len(sends) != 2 || sends[0].TxID != txB || sends[1].TxID != txA {
 		t.Fatalf("payouts A=%s/%s B=%s/%s sends=%+v", stA, txA, stB, txB, sends)
 	}
-	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE '%payout of % sent.'", second); n != 1 {
+	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE '%payout of % sent; the network fee was taken from it.'", second); n != 1 {
 		t.Fatalf("B sent events: %d", n)
 	}
 }
@@ -986,7 +986,7 @@ func TestLateRecordDoesNotOverwriteAdminResolution(t *testing.T) {
 	if st, txid, _, _ := p.payout(order); st != "sent" || txid != adminTxid || len(p.fake.Sends()) != 1 {
 		t.Fatalf("payout %s %s sends %d: the late outcome overwrote the administrator's record", st, txid, len(p.fake.Sends()))
 	}
-	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE '%payout of % sent.'", order); n != 0 {
+	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE '%payout of % sent; the network fee was taken from it.'", order); n != 0 {
 		t.Fatalf("late send events: %d", n)
 	}
 	p.poll()
