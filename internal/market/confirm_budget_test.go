@@ -8,8 +8,9 @@ import (
 )
 
 // A-274: the per-account password-confirmation budget (confirm:<user>, used by every confirmedTx change: /resolve,
-// payment reviews, payout actions, settings, key and factor changes) is spent only by wrong passwords, as A-153 made
-// the sign-in budget; a correct confirmation spends nothing, so a moderator can resolve any number of disputes.
+// payment reviews, payout actions, settings, key and factor changes) is spent only by failed confirmations (a wrong
+// password, or a wrong code after the right one), as A-153 made the sign-in budget; a correct confirmation spends
+// nothing, so a moderator can resolve any number of disputes.
 
 const confirmPausedText = "Too many failed password confirmations"
 
@@ -102,6 +103,34 @@ func TestMixedConfirmationsCountOnlyFailures(t *testing.T) {
 	}
 	wrong(5)
 	agExpect(e, "/resolve", mod, resolveWith(open, testPassword), 429, confirmPausedText)
+}
+
+// A wrong authenticator code after a correct password is a failed confirmation too: otherwise someone holding a
+// session and the password could guess codes with no limit but the write limit. A right code spends nothing.
+func TestWrongCodeAfterCorrectPasswordSpendsConfirmBudget(t *testing.T) {
+	e := newTestApp(t)
+	id, s := e.user("a274_code", "buyer")
+	agExec(e, "UPDATE users SET pgp_2fa=true WHERE id=$1", id)
+	key, _ := agEnableTOTP(e, id)
+	off := func(code string) url.Values {
+		return url.Values{"enable": {"0"}, "password": {testPassword}, "code": {code}}
+	}
+	wrong := e.wrongTOTP(id)
+	for range 10 {
+		agExpect(e, "/pgp/2fa", s, off(wrong), 401, "Verification code incorrect")
+	}
+	agExpect(e, "/pgp/2fa", s, off(agTOTPNow(key)), 429, confirmPausedText)
+	if agStr(e, "SELECT pgp_2fa::text FROM users WHERE id=$1", id) != "true" || agInt(e, "SELECT totp_last_step::int FROM users WHERE id=$1", id) != 0 {
+		t.Fatal("a refused confirmation changed the setting or used the code")
+	}
+	// A correct password and code leave no limiter entry.
+	otherID, other := e.user("a274_code_ok", "buyer")
+	agExec(e, "UPDATE users SET pgp_2fa=true WHERE id=$1", otherID)
+	otherKey, _ := agEnableTOTP(e, otherID)
+	agExpect(e, "/pgp/2fa", other, off(agTOTPNow(otherKey)), 303, "")
+	if agLimited(e, "confirm:"+otherID) {
+		t.Fatal("a correct confirmation with a code left a limiter entry")
+	}
 }
 
 // Concurrent wrong passwords cannot spend more than the budget: each reserves its attempt before bcrypt runs.

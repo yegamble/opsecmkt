@@ -584,9 +584,10 @@ factors* (for an administrator, `-reset-admin-factors` on the host) and the staf
 once. Expect such requests after upgrading; confirm who is asking before resetting (see the
 [operator guide](docs/operator-guide.md#authentication)).
 
-The per-account limit on password-confirmed actions now counts only wrong passwords: staff are no longer paused
-after ten correct confirmations in ten minutes (for example resolving many disputes). After ten wrong passwords the
-refusal now reads "Too many failed password confirmations. Try again in ten minutes."
+The per-account limit on password-confirmed actions now counts only failed confirmations (a wrong password, or a
+wrong authenticator or recovery code after the right one): staff are no longer paused after ten correct
+confirmations in ten minutes (for example resolving many disputes). After ten failures the refusal now reads "Too
+many failed password confirmations. Try again in ten minutes."
 
 ## Appendix: new keys by hand
 
