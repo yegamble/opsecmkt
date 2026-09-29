@@ -475,27 +475,100 @@ administrator's review. When matching Monero payouts sent before the upgrade in 
 [failed-payout check](docs/testnet-runbook.md#5-recover-a-held-or-failed-payout) and [restore reconciliation](docs/testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts)), a release sent by the
 earlier version paid its fee on top: its destination amount is the payout's.
 
-## 14. One settlement per order, and resolving needs a password (migration 069)
+## 14. One settlement per order, and resolving needs a password (migrations 069 and 070)
 
-Migration 069 runs at startup and adds the unique index `payouts_one_settlement` on `payouts(order_id)` for kinds
-`release` and `refund`: the database again refuses a release and a refund for the same order (migration 064 had
-allowed it so a release could carry a `return`, which stays allowed). The application never queues both, so an
-existing database normally upgrades without change. One that already holds both for an order (only possible
-through hand-written SQL) is **not** changed: the migration stops with an error naming the orders, every migration
-of that startup rolls back, and the server does not start. Nothing is deleted, because either payout may have been
-sent. Find them with
+Migrations 069 and 070 run at startup. Migration 069 adds the unique index `payouts_one_settlement` on
+`payouts(order_id)` for kinds `release` and `refund`: the database again refuses a release and a refund for the
+same order (migration 064 had allowed it so a release could carry a `return`, which stays allowed). Migration 070
+adds `payouts_refund_or_return` for kinds `refund` and `return`: a return sends a release's excess back to the
+buyer, and a refund already sends back everything the buyer paid, so a refund beside a return would pay the excess
+twice. An order therefore has a release with at most one return, or one refund. The application never queues
+either pair, so an existing database normally upgrades without change. One that already holds a release and a
+refund, or a refund and a return, for an order (only possible through hand-written SQL) is **not** changed: the
+migration stops with an error naming the orders, every migration of that startup rolls back, and the server does
+not start. Nothing is deleted, because any of those payouts may have been sent. While the server is stopped the
+watcher sends nothing; settle each named order as below, then start the server again.
 
-```sql
-SELECT order_id, kind, state, amount, txid FROM payouts
-WHERE order_id IN (SELECT order_id FROM payouts WHERE kind IN ('release','refund') GROUP BY order_id HAVING count(*) > 1)
-ORDER BY order_id, kind;
+Run the SQL with `psql` against the application database. The internal-db service is shown; replace `opsecmkt`
+after `-d` with the database name in `DATABASE_URL`. With an external database, make `db_sql` run your own
+`psql -X -v ON_ERROR_STOP=1` connected to it, never with the password in its arguments.
+
+```sh
+db_sql() { docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d opsecmkt "$@"; }
 ```
 
-decide from the wallet's history which of the two stands (the one that was sent; if neither was, the one matching
-the order's state or dispute outcome), keep a copy of both rows (for example with `\copy`), delete the other row,
-and start the new release again. If both were sent, the order was paid twice: recover that outside the market
-before you delete either row. Rolling back past this release needs the pre-upgrade backup, as for every migration
-(section 5).
+1. **List every payout of the orders that clash, returns included, and keep the output**: it is the only record
+   left of the rows you delete (here in `settlement-clash.txt`):
+
+   ```sh
+   db_sql <<'SQL' | tee settlement-clash.txt
+   SELECT p.id, p.order_id, o.state AS order_state, p.kind, p.state, p.send_ambiguous, p.amount, p.address, p.txid, p.error
+   FROM payouts p JOIN orders o ON o.id = p.order_id
+   WHERE p.order_id IN (SELECT order_id FROM payouts GROUP BY order_id
+     HAVING count(*) FILTER (WHERE kind IN ('release','refund')) > 1
+         OR count(*) FILTER (WHERE kind IN ('refund','return')) > 1)
+   ORDER BY p.order_id, p.kind;
+   SQL
+   ```
+
+   Each listed order has two settlements: its **release together with its return** (the price to the vendor and
+   the excess to the buyer; a return belongs to its release and is kept or deleted with it, even when the release
+   row itself is gone, as after an earlier hand deletion: if such a return stands, the vendor's release has to be
+   settled by hand), and its **refund**.
+2. **Find out which rows were sent.** A row in state `sent` was sent. A row in state `sending`, a `failed` row with
+   `send_ambiguous` true, and any row whose error starts `Restored from backup:` may have been sent. Check every
+   listed row in the wallet, whatever its state (a `pending`, `blocked`, `held` or definitely failed row may have
+   been paid by hand): a transaction to its address and amount since before the row was created, with the complete
+   checks in [runbook section 5](docs/testnet-runbook.md#5-recover-a-held-or-failed-payout). A row that may have
+   been sent and that the wallet check does not clear counts as sent. Never delete a sent row, or one that may
+   have been sent, except as step 3 describes for an order paid twice.
+3. **Decide which settlement stands.**
+   - If a row of one settlement was sent and no row of the other, that settlement stands. A release stands when
+     either it or its return was sent: keeping the refund after a return was sent would pay the excess twice.
+   - If no row was sent, the settlement matching the order stands: the release for a `completed` order, the refund
+     for a `cancelled` one, and for a `resolved` one the outcome its order history records.
+   - If rows of both settlements were sent, the order was paid twice (a refund plus a release, or a refund plus a
+     return that paid the excess a second time). Recover that outside the market first; the settlement whose
+     payment you leave with its recipient stands. Only then delete the other settlement's rows, sent or not; the
+     output of step 1 is their record.
+4. **Delete the settlement that does not stand**, one order at a time with its full order ID. To keep the
+   refund, delete the release **and its return** together; deleting only the release would leave its return
+   beside the refund, and a pending return would then be sent, paying the excess a second time:
+
+   ```sh
+   db_sql -v order_id=FULL_ORDER_ID <<'SQL'
+   DELETE FROM payouts WHERE order_id = :'order_id' AND kind IN ('release','return') RETURNING id, kind, state, txid;
+   SQL
+   ```
+
+   To keep the release and its return, delete the refund:
+
+   ```sh
+   db_sql -v order_id=FULL_ORDER_ID <<'SQL'
+   DELETE FROM payouts WHERE order_id = :'order_id' AND kind = 'refund' RETURNING id, kind, state, txid;
+   SQL
+   ```
+
+   Each statement prints the rows it deleted, which must be the rows of the settlement you chose in step 1's
+   output; a mistyped order ID deletes nothing (`DELETE 0`).
+5. **Check that no order is left with a release and a refund, or a refund and a return.** This must print no
+   rows (`(0 rows)`):
+
+   ```sh
+   db_sql <<'SQL'
+   SELECT order_id, string_agg(kind, ',' ORDER BY kind) AS kinds FROM payouts GROUP BY order_id
+   HAVING count(*) FILTER (WHERE kind IN ('release','refund')) > 1
+       OR count(*) FILTER (WHERE kind IN ('refund','return')) > 1;
+   SQL
+   ```
+
+   Then start the new release again: migrations 069 and 070 apply, and the watcher sends every row you kept that
+   is `pending`. If the wallet showed in step 2 that a kept row was already sent but its state is not `sent` (it
+   was paid by hand), do not start the server as it is, or that row is sent a second time: first apply the payout
+   protection in [section 6](#6-backups-now-need-the-wallets-too), which pauses every payout behind the recovery
+   gate, then record the row with *Mark sent* and clear the gate as the
+   [runbook](docs/testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts) describes. Rolling
+   back past this release needs the pre-upgrade backup, as for every migration (section 5).
 
 Resolving a dispute on the moderation desk (or `/disputes`) now also asks for the moderator's or administrator's
 current password, and an authenticator code when TOTP is enrolled, like the other staff actions; the audit row

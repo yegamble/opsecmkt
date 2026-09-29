@@ -284,7 +284,8 @@ func TestPaymentReviewDisposition(t *testing.T) {
 	t.Run("concurrent dispositions", func(t *testing.T) {
 		// Three staff record the same flag at once (A-252): exactly one disposition is recorded; the others wait on
 		// the row locks and are refused with 409 as a later second disposition is (naming the recorded outcome),
-		// writing nothing (no second order event, audit row or buyer notification).
+		// writing nothing (no second order event, audit row or buyer notification). Without the row locks the
+		// disposition compare-and-set alone refuses them with the same body (A-277).
 		p := newPayEnv(t)
 		m1ID, m1 := p.user("xmod1_"+randomToken()[:6], "moderator")
 		m2ID, m2 := p.user("xmod2_"+randomToken()[:6], "moderator")

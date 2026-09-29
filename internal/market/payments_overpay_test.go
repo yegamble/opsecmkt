@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"net/url"
+	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -289,7 +291,8 @@ func TestRefundIsSentWithFeeFromAmount(t *testing.T) {
 	}
 }
 
-// The payout kinds are constrained by the schema: one of each per order.
+// The payout kinds are constrained by the schema: one of each per order, never a release and a refund, never a
+// refund and a return.
 func TestPayoutKindsPerOrder(t *testing.T) {
 	p := newPayEnv(t)
 	insert := func(kind string) error {
@@ -310,23 +313,108 @@ func TestPayoutKindsPerOrder(t *testing.T) {
 	}
 	// One settlement per order (A-218, migration 069): a release and a refund for one order are refused in either
 	// order, by the database itself.
-	uniqueViolation := func(err error) bool {
+	uniqueViolation := func(err error, index string) bool {
 		var pe *pgconn.PgError
-		return errors.As(err, &pe) && pe.Code == "23505" && pe.ConstraintName == "payouts_one_settlement"
+		return errors.As(err, &pe) && pe.Code == "23505" && pe.ConstraintName == index
 	}
-	if err := insert("refund"); !uniqueViolation(err) {
+	if err := insert("refund"); !uniqueViolation(err, "payouts_one_settlement") {
 		t.Fatalf("refund after a release: %v", err)
 	}
 	p.order, _ = p.newOrder(stateCancelled)
 	if err := insert("refund"); err != nil {
 		t.Fatal(err)
 	}
-	if err := insert("release"); !uniqueViolation(err) {
+	if err := insert("release"); !uniqueViolation(err, "payouts_one_settlement") {
 		t.Fatalf("release after a refund: %v", err)
+	}
+	// A refund beside a return would pay the excess twice (A-276, migration 070).
+	if err := insert("return"); !uniqueViolation(err, "payouts_refund_or_return") {
+		t.Fatalf("return after a refund: %v", err)
+	}
+	p.order, _ = p.newOrder(stateCancelled)
+	if err := insert("return"); err != nil {
+		t.Fatal(err)
+	}
+	if err := insert("refund"); !uniqueViolation(err, "payouts_refund_or_return") {
+		t.Fatalf("refund after a return: %v", err)
 	}
 	if n := p.count("SELECT count(*) FROM payouts WHERE order_id=$1", p.order); n != 1 {
 		t.Fatalf("%d payouts", n)
 	}
+}
+
+// settlementClashSQL is the SQL UPGRADING.md section 14 gives for settling a clash migration 069 or 070 refuses:
+// list every payout of the named orders (returns included), keep the refund by deleting the release together with
+// its return, or keep the release (and its return) by deleting the refund, and check that no order is left with
+// two settlements or a refund beside a return. TestSettlementClashGuide runs it, with psql's :'order_id' bound as
+// $1, and checks that UPGRADING.md carries it verbatim (whitespace aside).
+var settlementClashSQL = struct{ list, keepRefund, keepRelease, check string }{
+	list: `SELECT p.id, p.order_id, o.state AS order_state, p.kind, p.state, p.send_ambiguous, p.amount, p.address, p.txid, p.error
+FROM payouts p JOIN orders o ON o.id = p.order_id
+WHERE p.order_id IN (SELECT order_id FROM payouts GROUP BY order_id
+  HAVING count(*) FILTER (WHERE kind IN ('release','refund')) > 1
+      OR count(*) FILTER (WHERE kind IN ('refund','return')) > 1)
+ORDER BY p.order_id, p.kind;`,
+	keepRefund:  `DELETE FROM payouts WHERE order_id = :'order_id' AND kind IN ('release','return') RETURNING id, kind, state, txid;`,
+	keepRelease: `DELETE FROM payouts WHERE order_id = :'order_id' AND kind = 'refund' RETURNING id, kind, state, txid;`,
+	check: `SELECT order_id, string_agg(kind, ',' ORDER BY kind) AS kinds FROM payouts GROUP BY order_id
+HAVING count(*) FILTER (WHERE kind IN ('release','refund')) > 1
+    OR count(*) FILTER (WHERE kind IN ('refund','return')) > 1;`,
+}
+
+// unsettle removes migrations 069 and 070 (their indexes and records) so a test can insert the payouts they refuse,
+// and returns a function applying both in one transaction as a startup does, after running pre (with args) in that
+// transaction; a refused migration rolls everything back.
+func (p *payEnv) unsettle() func(pre string, args ...any) error {
+	p.t.Helper()
+	if _, err := p.DB.Exec("DROP INDEX payouts_one_settlement; DROP INDEX payouts_refund_or_return; DELETE FROM schema_migrations WHERE version IN (69,70)"); err != nil {
+		p.t.Fatal(err)
+	}
+	list, err := loadMigrations(migrationFiles)
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	var settle []migration
+	for _, m := range list {
+		if m.Version == 69 || m.Version == 70 {
+			settle = append(settle, m)
+		}
+	}
+	if len(settle) != 2 {
+		p.t.Fatalf("settlement migrations %+v", settle)
+	}
+	return func(pre string, args ...any) error {
+		tx, err := p.DB.Begin()
+		if err != nil {
+			p.t.Fatal(err)
+		}
+		defer tx.Rollback()
+		if pre != "" {
+			if _, err = tx.Exec(pre, args...); err != nil {
+				p.t.Fatal(err)
+			}
+		}
+		if err = applyMigrations(context.Background(), tx, settle); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+}
+
+func (p *payEnv) insertPayouts(order string, kinds ...string) {
+	p.t.Helper()
+	for _, kind := range kinds {
+		if _, err := p.DB.Exec("INSERT INTO payouts(order_id,kind,user_id,currency,amount) VALUES($1,$2,$3,'BTC',100000)", order, kind, p.buyer.ID); err != nil {
+			p.t.Fatal(err)
+		}
+	}
+}
+
+// settlementIndexes counts migration 069's and 070's indexes and records: 4 when both applied.
+func (p *payEnv) settlementIndexes() int {
+	p.t.Helper()
+	return p.count("SELECT count(*) FROM pg_indexes WHERE indexname IN ('payouts_one_settlement','payouts_refund_or_return')") +
+		p.count("SELECT count(*) FROM schema_migrations WHERE version IN (69,70)")
 }
 
 // A-218: migration 069 creates the one-settlement index. A database already holding a release and a refund for one
@@ -334,36 +422,9 @@ func TestPayoutKindsPerOrder(t *testing.T) {
 // migration with an error naming the order, and nothing is changed or deleted; once staff settle the clash it applies.
 func TestOneSettlementMigrationRefusesExistingClash(t *testing.T) {
 	p := newPayEnv(t)
-	if _, err := p.DB.Exec("DROP INDEX payouts_one_settlement; DELETE FROM schema_migrations WHERE version=69"); err != nil {
-		t.Fatal(err)
-	}
-	for _, kind := range []string{"release", "return", "refund"} {
-		if _, err := p.DB.Exec("INSERT INTO payouts(order_id,kind,user_id,currency,amount) VALUES($1,$2,$3,'BTC',100000)", p.order, kind, p.buyer.ID); err != nil {
-			t.Fatal(err)
-		}
-	}
-	list, err := loadMigrations(migrationFiles)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var m069 migration
-	for _, m := range list {
-		if m.Version == 69 {
-			m069 = m
-		}
-	}
-	apply := func() error {
-		tx, err := p.DB.Begin()
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer tx.Rollback()
-		if err = applyMigrations(context.Background(), tx, []migration{m069}); err != nil {
-			return err
-		}
-		return tx.Commit()
-	}
-	err = apply()
+	apply := p.unsettle()
+	p.insertPayouts(p.order, "release", "return", "refund")
+	err := apply("")
 	if err == nil || !strings.Contains(err.Error(), "migration 069_payout_one_settlement") || !strings.Contains(err.Error(), p.order) ||
 		!strings.Contains(err.Error(), "both a release and a refund") || !strings.Contains(err.Error(), "UPGRADING.md") {
 		t.Fatalf("migration over a clash: %v", err)
@@ -371,17 +432,116 @@ func TestOneSettlementMigrationRefusesExistingClash(t *testing.T) {
 	if n := p.count("SELECT count(*) FROM payouts WHERE order_id=$1", p.order); n != 3 {
 		t.Fatalf("migration changed payouts: %d left", n)
 	}
-	if n := p.count("SELECT count(*) FROM pg_indexes WHERE indexname='payouts_one_settlement'") + p.count("SELECT count(*) FROM schema_migrations WHERE version=69"); n != 0 {
+	if p.settlementIndexes() != 0 {
 		t.Fatal("a refused migration left its index or record")
 	}
-	if _, err = p.DB.Exec("DELETE FROM payouts WHERE order_id=$1 AND kind='refund'", p.order); err != nil {
+	if err = apply("DELETE FROM payouts WHERE order_id=$1 AND kind='refund'", p.order); err != nil {
 		t.Fatal(err)
 	}
-	if err = apply(); err != nil {
-		t.Fatal(err)
-	}
-	if p.count("SELECT count(*) FROM pg_indexes WHERE indexname='payouts_one_settlement'") != 1 || p.count("SELECT count(*) FROM payouts WHERE order_id=$1", p.order) != 2 {
+	if p.settlementIndexes() != 4 || p.count("SELECT count(*) FROM payouts WHERE order_id=$1", p.order) != 2 {
 		t.Fatal("migration did not apply once the clash was settled")
+	}
+}
+
+// A-276, A-268: UPGRADING.md section 14 settles a clash by deleting a whole settlement. Deleting only the release
+// of a release+return+refund order (what the guide once said, "delete the other row") leaves the refund beside the
+// release's return, which the watcher would send, paying the excess a second time: migration 070 refuses that,
+// naming the order, and changes nothing. The guide's own SQL lists the return with the clash, deletes a release
+// together with its return (or the refund alone), and its final check finds no order with a refund and a return;
+// both migrations then apply.
+func TestSettlementClashGuide(t *testing.T) {
+	p := newPayEnv(t)
+	apply := p.unsettle()
+	keepRefund, keepRelease := p.order, p.testEnv.order(p.buyer.ID, p.productID, "BTC", stateCompleted)
+	leftover := p.testEnv.order(p.buyer.ID, p.productID, "BTC", stateCancelled) // what the old guide left
+	clean := p.testEnv.order(p.buyer.ID, p.productID, "BTC", stateCompleted)
+	p.insertPayouts(keepRefund, "release", "return", "refund")
+	p.insertPayouts(keepRelease, "release", "return", "refund")
+	p.insertPayouts(leftover, "refund", "return")
+	p.insertPayouts(clean, "release", "return")
+	total := p.count("SELECT count(*) FROM payouts")
+	if err := apply(""); err == nil || !strings.Contains(err.Error(), "migration 069_payout_one_settlement") {
+		t.Fatalf("migrations over a release+refund clash: %v", err)
+	}
+	// The old guide: delete "the other row", the release only. Migration 069 then passes and 070 refuses.
+	err := apply("DELETE FROM payouts WHERE kind='release' AND order_id=ANY($1)", []string{keepRefund, keepRelease})
+	if err == nil || !strings.Contains(err.Error(), "migration 070_payout_refund_or_return") || !strings.Contains(err.Error(), "both a refund and a return") ||
+		!strings.Contains(err.Error(), keepRefund) || !strings.Contains(err.Error(), leftover) || strings.Contains(err.Error(), clean) || !strings.Contains(err.Error(), "UPGRADING.md") {
+		t.Fatalf("migrations over a refund beside a return: %v", err)
+	}
+	if p.count("SELECT count(*) FROM payouts") != total || p.settlementIndexes() != 0 {
+		t.Fatal("a refused migration changed payouts or left its index or record")
+	}
+
+	// Step 1: the listing names every payout of the clashing orders, returns included, and no other order.
+	rows, err := p.DB.Query(settlementClashSQL.list)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cols, _ := rows.Columns()
+	var listed []string
+	for rows.Next() {
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err = rows.Scan(ptrs...); err != nil {
+			t.Fatal(err)
+		}
+		listed = append(listed, vals[1].(string)+":"+vals[3].(string))
+	}
+	rows.Close()
+	want := []string{keepRefund + ":refund", keepRefund + ":release", keepRefund + ":return", keepRelease + ":refund", keepRelease + ":release", keepRelease + ":return", leftover + ":refund", leftover + ":return"}
+	sort.Strings(listed)
+	sort.Strings(want)
+	if strings.Join(listed, ",") != strings.Join(want, ",") {
+		t.Fatalf("clash listing %v, want %v", listed, want)
+	}
+	// Step 4: delete the settlement that does not stand, a release always with its return.
+	del := func(stmt, order string, want int) {
+		t.Helper()
+		res, err := p.DB.Exec(strings.ReplaceAll(stmt, ":'order_id'", "$1"), order)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n, _ := res.RowsAffected(); n != int64(want) {
+			t.Fatalf("deleted %d payouts of %s, want %d", n, order, want)
+		}
+	}
+	del(settlementClashSQL.keepRefund, keepRefund, 2)
+	del(settlementClashSQL.keepRelease, keepRelease, 1)
+	del(settlementClashSQL.keepRefund, leftover, 1)
+	// Step 5: the check finds nothing, and the migrations apply.
+	if n := p.count("SELECT count(*) FROM (" + strings.TrimSuffix(settlementClashSQL.check, ";") + ") c"); n != 0 {
+		t.Fatalf("check lists %d orders after the guide's deletions", n)
+	}
+	if n := p.count("SELECT count(*) FROM payouts f WHERE kind='refund' AND EXISTS (SELECT 1 FROM payouts r WHERE r.order_id=f.order_id AND r.kind='return')"); n != 0 {
+		t.Fatalf("%d orders keep a refund and a return", n)
+	}
+	if err = apply(""); err != nil {
+		t.Fatal(err)
+	}
+	kinds := func(order string) string {
+		var k string
+		if err := p.DB.QueryRow("SELECT coalesce(string_agg(kind, ',' ORDER BY kind), '') FROM payouts WHERE order_id=$1", order).Scan(&k); err != nil {
+			t.Fatal(err)
+		}
+		return k
+	}
+	if p.settlementIndexes() != 4 || kinds(keepRefund) != "refund" || kinds(keepRelease) != "release,return" || kinds(leftover) != "refund" || kinds(clean) != "release,return" {
+		t.Fatalf("after the guide: %s %s %s %s", kinds(keepRefund), kinds(keepRelease), kinds(leftover), kinds(clean))
+	}
+
+	doc, err := os.ReadFile("UPGRADING.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.Join(strings.Fields(string(doc)), " ")
+	for _, q := range []string{settlementClashSQL.list, settlementClashSQL.keepRefund, settlementClashSQL.keepRelease, settlementClashSQL.check} {
+		if q = strings.Join(strings.Fields(q), " "); !strings.Contains(text, q) {
+			t.Fatalf("UPGRADING.md does not carry the settlement SQL %q", q)
+		}
 	}
 }
 
