@@ -29,6 +29,10 @@ type payMoneroWallet struct {
 	transfers    map[string]any
 	nextIndex    int64
 	valid        map[string]string // address -> nettype
+	// get_version: rpcVersion 0 answers as the verified monero-wallet-rpc (moneroVerifiedWalletRPC, a release
+	// build); devBuild answers release=false.
+	rpcVersion int64
+	devBuild   bool
 }
 
 func (m *payMoneroWallet) handle(path, method string, params json.RawMessage) (any, int, string) {
@@ -37,10 +41,16 @@ func (m *payMoneroWallet) handle(path, method string, params json.RawMessage) (a
 	if path != "/json_rpc" {
 		return nil, -32601, "bad path"
 	}
-	if !m.open && method != "open_wallet" && method != "get_info" {
+	if !m.open && method != "open_wallet" && method != "get_info" && method != "get_version" {
 		return nil, -13, "No wallet file"
 	}
 	switch method {
+	case "get_version": // monero-wallet-rpc answers without an open wallet
+		v := m.rpcVersion
+		if v == 0 {
+			v = moneroVerifiedWalletRPC
+		}
+		return map[string]any{"version": v, "release": !m.devBuild}, 0, ""
 	case "get_info":
 		return map[string]any{"nettype": m.nettype, "mainnet": m.nettype == "mainnet", "stagenet": m.nettype == "stagenet", "height": m.height, "target_height": m.target}, 0, ""
 	case "open_wallet":

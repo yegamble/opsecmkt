@@ -623,7 +623,9 @@ time.sleep(60)
         # Bumping a tag means re-verifying the code tables first (docs/operator-guide.md#node-image-versions);
         # the verified version named in payments_watcher.go must change in the same commit.
         watcher = (REPOSITORY / 'internal/market/payments_watcher.go').read_text()
-        for verified in (f'Bitcoin Core (v{tags["BITCOIN_IMAGE"]} ', f'(monero {tags["MONERO_WALLET_IMAGE"]}: '):
+        # A-174: moneroVerifiedWalletRelease names the release whose get_version the running wallet must report.
+        for verified in (f'Bitcoin Core (v{tags["BITCOIN_IMAGE"]} ', f'(monero {tags["MONERO_WALLET_IMAGE"]}: ',
+                         f'moneroVerifiedWalletRelease = "{tags["MONERO_WALLET_IMAGE"]}"'):
             self.assertTrue(verified in watcher, f'payments_watcher.go does not name {verified!r} as verified')
         self.assertEqual(tags['MONERO_IMAGE'], tags['MONERO_WALLET_IMAGE'])
         example = dict(line.split('=', 1) for line in (REPOSITORY / '.env.example').read_text().splitlines()

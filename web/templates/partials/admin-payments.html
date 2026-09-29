@@ -27,6 +27,7 @@
 <th scope="col">Confirmations</th>
 <th scope="col">Last poll</th>
 <th scope="col">Last error</th>
+<th scope="col">Version</th>
 </tr>
 </thead>
 <tbody>{{range .Providers}}<tr>
@@ -36,11 +37,13 @@
 <td>{{if .Enabled}}{{.Confirmations}}{{else}}—{{end}}</td>
 <td>{{if .Enabled}}{{.LastPoll}}{{else}}—{{end}}</td>
 <td>{{if .Error}}{{.Error}}{{else}}None{{end}}</td>
+<td>{{if .Version}}{{.Version}}{{else}}—{{end}}</td>
 </tr>{{else}}<tr>
-<td colspan="6">Provider status is unavailable here. No provider is running.</td>
+<td colspan="7">Provider status is unavailable here. No provider is running.</td>
 </tr>{{end}}</tbody>
 </table>
 </div>
+{{range .Providers}}{{if .VersionWarning}}<div class="alert" role="status"><strong>{{.Currency}} wallet version not verified: {{.Version}}.</strong> {{.VersionWarning}} <code>docs/operator-guide.md#node-image-versions</code>.</div>{{end}}{{end}}
 <h3 id="payouts">Payouts</h3>
 <p>{{if eq .PayoutsAttention 0}}No payouts need attention.{{else}}<strong>{{.PayoutsAttention}} {{if eq .PayoutsAttention 1}}payout needs{{else}}payouts need{{end}} attention</strong>, listed first, oldest first.{{end}}{{if .PayoutHistoryLimit}} Showing every payout that needs attention and the {{.PayoutHistoryLimit}} most recent other payouts; older payouts that need no attention are not listed.{{end}}</p>
 <p>Each payout is attempted once. Failed or stuck payouts are never retried automatically: check the wallet before paying anything manually. A payout for which the wallet reported a pre-broadcast error was not broadcast; one whose outcome is unknown (the wallet call timed out or its reply was lost) or that is stuck in sending may have been. After checking the wallet you can release a held payout, requeue a payout that was not broadcast (confirming that explicitly when the outcome was unknown), or record one the wallet shows as sent. Saving a payout address never moves a payout that already has one: you can move a held payout, or one the wallet definitely rejected, to the recipient's current saved address after checking that address with the account owner. A payout that is being sent or may have been broadcast is never moved. Each action needs your password and is audited.</p>

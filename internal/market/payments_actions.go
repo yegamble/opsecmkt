@@ -466,6 +466,12 @@ func paymentsAdminLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 			if s.LastPoll == "" {
 				s.LastPoll = "Not polled yet"
 			}
+			if v, ok := p.(versionReporter); ok {
+				var unverified bool
+				if s.Version, unverified = v.WalletVersion(); unverified {
+					s.VersionWarning = "The rule that a failed " + cur + " send broadcast nothing was verified against monero-wallet-rpc " + moneroVerifiedWalletRelease + ", which reports " + moneroRPCVersion(moneroVerifiedWalletRPC, true) + ". Until the wallet reports that, every " + cur + " send failure is recorded as possibly broadcast, and requeueing one needs the wallet check. That refunds and overpayment returns take the network fee out of the amount sent (subtract_fee_from_outputs) is also unverified for this version. Set MONERO_WALLET_IMAGE and MONERO_IMAGE in .env to the " + moneroVerifiedWalletRelease + " tags, or follow the bump checklist before running another wallet version:"
+				}
+			}
 		} else if msg, disabled := a.unavailableError(cur); msg != "" {
 			// Configured but failing its checks in this process: payment requests are refused.
 			s.Status, s.Error = "Unavailable — retried every poll", msg

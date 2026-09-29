@@ -418,6 +418,22 @@ test('automatic digital delivery and administrator recovery of a rejected payout
     await admin.reload();
     await expect(admin.locator('tr', { has: admin.getByText(orderID, { exact: true }) })).not.toContainText('Requeue payout');
     await expect(admin.locator('main')).toContainText('Requeued payout');
+    // A-174: every check reads the wallet and node versions. The verified monero-wallet-rpc (1.31, a release
+    // build) raises no warning; another version is named with the bump checklist until the verified one is back.
+    const providers = admin.locator('.admin-payments');
+    const warning = 'XMR wallet version not verified';
+    await expect(providers).toContainText('monero-wallet-rpc RPC version 1.31, release build');
+    await expect(providers).toContainText('Bitcoin Core 31.1.0');
+    await expect(providers).not.toContainText(warning);
+    try {
+      expect((await request.post(`${rpc}/test/wallet-version`, { data: { version: (1 << 16) | 35, release: true } })).ok()).toBeTruthy();
+      await reloadUntil(admin, async () => { await expect(providers).toContainText(`${warning}: monero-wallet-rpc RPC version 1.35, release build.`, { timeout: 500 }); });
+      await expect(providers).toContainText('docs/operator-guide.md#node-image-versions');
+      await fitsAt(admin, 'unverified wallet warning');
+    } finally {
+      expect((await request.post(`${rpc}/test/wallet-version`, { data: { version: (1 << 16) | 31, release: true } })).ok()).toBeTruthy();
+    }
+    await reloadUntil(admin, async () => { await expect(providers).not.toContainText(warning, { timeout: 500 }); });
   } finally {
     await Promise.allSettled([admin.context().close(), buyer.context().close()]);
   }

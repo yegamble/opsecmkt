@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -28,6 +29,9 @@ type bitcoinProvider struct {
 	chain        string // as reported by getblockchaininfo; set by the first successful Check, never changed
 	prefix       string // bech32 HRP prefix for this chain
 	confirmation int
+
+	mu          sync.Mutex
+	nodeVersion string // getnetworkinfo, read by each successful Check and shown on /admin (A-174)
 }
 
 func bitcoinFromEnv(ctx context.Context) (PaymentProvider, error) {
@@ -127,7 +131,41 @@ func (p *bitcoinProvider) Check(ctx context.Context) (nodeStatus, error) {
 	if p.chain == "" { // first success, before the provider is published to request handlers
 		p.chain, p.prefix = info.Chain, prefix
 	}
+	p.readNodeVersion(ctx)
 	return nodeStatus{Syncing: info.IBD, Tip: tip}, nil
+}
+
+// readNodeVersion records getnetworkinfo's version (10000*major + 100*minor + build) for the admin page. The
+// Bitcoin send classification does not depend on it (walletRejected), so a failed call fails nothing.
+func (p *bitcoinProvider) readNodeVersion(ctx context.Context) {
+	var ni struct {
+		Version json.Number `json:"version"`
+	}
+	err := p.rpc.call(ctx, "", "getnetworkinfo", nil, &ni)
+	var v int64
+	if err == nil {
+		if v, err = ni.Version.Int64(); err == nil && v <= 0 {
+			err = fmt.Errorf("bad version %d", v)
+		}
+	}
+	text := fmt.Sprintf("Bitcoin Core %d.%d.%d", v/10000, v/100%100, v%100)
+	if err != nil {
+		text = "Bitcoin Core version unknown: getnetworkinfo failed: " + truncate(err.Error(), 200)
+	}
+	p.mu.Lock()
+	p.nodeVersion = text
+	p.mu.Unlock()
+}
+
+// WalletVersion is the node version the last successful check read (versionReporter). It is never unverified:
+// a Bitcoin send error is classified the same whatever the version.
+func (p *bitcoinProvider) WalletVersion() (text string, unverified bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.nodeVersion == "" {
+		return "Bitcoin Core version not read yet", false
+	}
+	return p.nodeVersion, false
 }
 
 func (p *bitcoinProvider) Currency() string { return "BTC" }
