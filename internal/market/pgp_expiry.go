@@ -57,11 +57,7 @@ func (a *App) sweepKeyExpiry(ctx context.Context, now time.Time) error {
 		return err
 	}
 	for _, k := range keys {
-		key, fp, _, err := parseCanonicalPublicKey(k.armored)
-		if err != nil {
-			continue // an unreadable key is reported on the owner's pages
-		}
-		enc, ok := encryptionSubkey(key, now)
+		fp, enc, ok := sweptKey(k.armored, now)
 		if !ok || enc.Until.IsZero() || enc.Until.Sub(now) > keyExpiryWarning {
 			continue
 		}
@@ -79,6 +75,28 @@ func (a *App) sweepKeyExpiry(ctx context.Context, now time.Time) error {
 	}
 	return nil
 }
+
+// sweptKey returns a saved key's fingerprint and the encryption subkey the sweep checks; ok is false when nothing can
+// be encrypted to it or it cannot be read. An unreadable key is reported on the owner's pages; here it is skipped with
+// a fixed log line naming neither the key nor its owner. A panic in the OpenPGP library on one stored key is treated
+// the same way (A-266), so one key stops neither the sweep nor the process: the sweep runs in a background goroutine.
+func sweptKey(armored string, now time.Time) (fp string, enc encryptionKey, ok bool) {
+	defer func() {
+		if recover() != nil {
+			log.Print(keySweepSkipped)
+			fp, enc, ok = "", encryptionKey{}, false
+		}
+	}()
+	key, fp, _, err := parseCanonicalPublicKey(armored)
+	if err != nil {
+		log.Print(keySweepSkipped)
+		return "", encryptionKey{}, false
+	}
+	enc, ok = encryptionSubkey(key, now)
+	return fp, enc, ok
+}
+
+const keySweepSkipped = "pgp expiry sweep: skipped one key that could not be read"
 
 func (a *App) sendKeyExpiryNotice(ctx context.Context, userID, armored, was, notice, body string) error {
 	tx, err := a.db.BeginTx(ctx, nil)
