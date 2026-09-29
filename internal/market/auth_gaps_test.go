@@ -425,6 +425,9 @@ func TestPasswordWorkBusyReturns503(t *testing.T) {
 		t.Fatal("busy refusal changed data")
 	}
 	drain()
+	// pgp_2fa was set above without a key, only so /pgp/2fa had something to turn off; with it on and no readable key
+	// the sign-in is refused (A-272), so it goes off before the password-only sign-in.
+	agExec(e, "UPDATE users SET pgp_2fa=false WHERE id=$1", id)
 	w := e.do("POST", "/login", randomToken(), creds)
 	e.check(w, 303)
 	e.session(w)
