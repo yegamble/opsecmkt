@@ -151,17 +151,30 @@ func payAction(c *actionCtx) (actionResult, error) {
 	if err = lockPaymentIntake(c, o.Currency); err != nil {
 		return actionResult{}, err
 	}
-	// A-83: the buyer of a physical order must be able to send the vendor an encrypted shipping address. Checked
-	// before any reservation or wallet call, after the reasons the order page gives first (paused intake, then no
-	// wallet, as transition refuses); the page shows the same reason instead of the form (vendorKeyGate).
-	if o.State == stateDraft && o.Kind == "physical" && o.BuyerID == c.User.ID {
+	// A-216: a Bitcoin listing priced below minPayoutBTC (before A-99) takes no BTC payment request on a draft saved
+	// earlier; the order would take that price. A-83: the buyer of a physical order must be able to send the vendor
+	// an encrypted shipping address. Both are checked before any reservation or wallet call, after the reasons the
+	// order page gives first (paused intake, then no wallet, as transition refuses); the page shows the key reason
+	// instead of the form (vendorKeyGate).
+	if o.State == stateDraft && (o.Kind == "physical" || o.Currency == "BTC") && o.BuyerID == c.User.ID {
 		if c.A.provider(o.Currency) == nil {
 			return actionResult{}, fail(409, "Payment unavailable for "+o.Currency)
 		}
-		if ok, err := userCanReceiveEncrypted(ctx, c.Tx, o.VendorID); err != nil {
-			return actionResult{}, err
-		} else if !ok {
-			return actionResult{}, fail(409, "Payment unavailable. "+noVendorKeyReason+" Nothing was changed.")
+		if o.Currency == "BTC" {
+			var btc int64
+			if err = c.Tx.QueryRowContext(ctx, "SELECT btc FROM products WHERE id=$1", o.ProductID).Scan(&btc); err != nil {
+				return actionResult{}, err
+			}
+			if btc < minPayoutBTC {
+				return actionResult{}, fail(400, subFloorBTCListing())
+			}
+		}
+		if o.Kind == "physical" {
+			if ok, err := userCanReceiveEncrypted(ctx, c.Tx, o.VendorID); err != nil {
+				return actionResult{}, err
+			} else if !ok {
+				return actionResult{}, fail(409, "Payment unavailable. "+noVendorKeyReason+" Nothing was changed.")
+			}
 		}
 	}
 	if _, err = c.Tx.ExecContext(ctx, "UPDATE orders o SET amount=CASE WHEN o.currency='XMR' THEN p.xmr ELSE p.btc END FROM products p WHERE o.id=$1 AND o.state='draft' AND p.id=o.product_id", o.ID); err != nil {
