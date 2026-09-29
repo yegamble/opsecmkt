@@ -41,8 +41,12 @@ func parseCanonicalPublicKey(armored string) (*openpgp.Entity, string, string, e
 	if data, _, _, err = publishablePackets(data); err != nil {
 		return nil, "", "", errors.New("the public key could not be parsed")
 	}
-	if list, err := openpgp.ReadKeyRing(bytes.NewReader(data)); err != nil || len(list) != 1 || !bytes.Equal(list[0].PrimaryKey.Fingerprint, e.PrimaryKey.Fingerprint) {
+	list, err := openpgp.ReadKeyRing(bytes.NewReader(data))
+	if err != nil || len(list) != 1 || !bytes.Equal(list[0].PrimaryKey.Fingerprint, e.PrimaryKey.Fingerprint) {
 		return nil, "", "", errors.New("the public key could not be parsed")
+	}
+	if !readableUserIDs(list[0]) { // the key as stored; dropped packets can leave a user ID with only its revocation
+		return nil, "", "", errUnreadableUserIDs
 	}
 	var buf bytes.Buffer
 	w, err := armor.Encode(&buf, openpgp.PublicKeyType, nil)
@@ -88,7 +92,32 @@ func decodePublicKey(armored string) (*openpgp.Entity, string, []byte, error) {
 	if e.Revoked(time.Now()) {
 		return nil, "", nil, errors.New("this key is revoked")
 	}
+	if !readableUserIDs(e) {
+		return nil, "", nil, errUnreadableUserIDs
+	}
 	return e, strings.ToUpper(hex.EncodeToString(e.PrimaryKey.Fingerprint)), data, nil
+}
+
+var errUnreadableUserIDs = errors.New("a revoked user ID in the key has only its revocation, without its self-signature, while another revoked user ID keeps its self-signature, so the key cannot be read safely; export the full key again with gpg --armor --export")
+
+// readableUserIDs reports whether the OpenPGP library can choose e's primary user ID (A-266). go-crypto v1.4.1's
+// PrimaryIdentity, which every expiry, encryption and signature check calls, dereferences a nil self-signature when a
+// user ID that has only its revocation has as many revocations as a user ID that keeps its self-signature, and panics
+// depending on map order. A revoked user ID with only its revocation is otherwise safe: gpg --export-options
+// export-minimal writes one that way, so it is accepted.
+func readableUserIDs(e *openpgp.Entity) bool {
+	signed := map[int]bool{} // revocation counts of user IDs that have a self-signature
+	for _, id := range e.Identities {
+		if id.SelfSignature != nil {
+			signed[len(id.Revocations)] = true
+		}
+	}
+	for _, id := range e.Identities {
+		if id.SelfSignature == nil && signed[len(id.Revocations)] {
+			return false
+		}
+	}
+	return true
 }
 
 // OpenPGP packet tags (RFC 9580 section 5).
@@ -266,6 +295,67 @@ func revocationSignatures(armored string) (map[string]bool, error) {
 	}
 }
 
+// revocationsKept reports whether key, a new version of saved, keeps every revocation OpenPGP software applies in saved
+// (A-261): the primary key's, each revoked subkey's on every copy of that subkey (by fingerprint) in key, and each
+// revoked user ID's. revocationSignatures' byte comparison alone cannot tell: a subkey or user ID revocation moved
+// before the first user ID keeps its bytes but is ignored (go-crypto's ReadEntity), so encryptTo would select a
+// revoked subkey again. A revoked subkey or user ID left out of key is not kept either: a later version could add it
+// back unrevoked with nothing left to compare it with.
+func revocationsKept(saved, key *openpgp.Entity) bool {
+	if !signaturesIn(saved.Revocations, key.Revocations) {
+		return false
+	}
+	for _, s := range saved.Subkeys {
+		if len(s.Revocations) == 0 {
+			continue
+		}
+		found := false
+		for _, k := range key.Subkeys {
+			if bytes.Equal(k.PublicKey.Fingerprint, s.PublicKey.Fingerprint) {
+				if !signaturesIn(s.Revocations, k.Revocations) {
+					return false
+				}
+				found = true
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	for name, id := range saved.Identities {
+		if len(id.Revocations) == 0 {
+			continue
+		}
+		if other, ok := key.Identities[name]; !ok || !signaturesIn(id.Revocations, other.Revocations) {
+			return false
+		}
+	}
+	return true
+}
+
+// signaturesIn reports whether every signature in want is also in have, compared as serialized packets.
+func signaturesIn(want, have []*packet.Signature) bool {
+	in := map[string]bool{}
+	for _, sig := range have {
+		if b, err := signatureBytes(sig); err == nil {
+			in[b] = true
+		}
+	}
+	for _, sig := range want {
+		if b, err := signatureBytes(sig); err != nil || !in[b] {
+			return false
+		}
+	}
+	return true
+}
+
+func signatureBytes(sig *packet.Signature) (string, error) {
+	var buf bytes.Buffer
+	c := *sig // Serialize records the subpackets it writes; the parsed key stays as it was
+	err := c.Serialize(&buf)
+	return buf.String(), err
+}
+
 // entityKeyIDs lists the primary and subkey IDs, for matching encrypted-message recipients.
 func entityKeyIDs(e *openpgp.Entity) []uint64 {
 	ids := []uint64{e.PrimaryKey.KeyId}
@@ -281,9 +371,9 @@ func verifyClearsigned(armored string, key *openpgp.Entity) (string, time.Time, 
 	if b == nil {
 		return "", time.Time{}, errors.New("not a clearsigned OpenPGP message")
 	}
-	sig, _, err := openpgp.VerifyDetachedSignature(openpgp.EntityList{key}, bytes.NewReader(b.Bytes), b.ArmoredSignature.Body, nil)
+	sig, err := verifySignature(key, bytes.NewReader(b.Bytes), b.ArmoredSignature.Body)
 	if err != nil {
-		return "", time.Time{}, errors.New("signature does not verify with the configured key")
+		return "", time.Time{}, err
 	}
 	return string(b.Plaintext), sig.CreationTime, nil
 }
@@ -294,12 +384,29 @@ func verifyDetached(signed, armoredSig string, key *openpgp.Entity) (time.Time, 
 	if err != nil || block.Type != openpgp.SignatureType {
 		return time.Time{}, errors.New("not an armored OpenPGP signature")
 	}
-	sig, _, err := openpgp.VerifyDetachedSignature(openpgp.EntityList{key}, strings.NewReader(signed), block.Body, nil)
+	sig, err := verifySignature(key, strings.NewReader(signed), block.Body)
 	if err != nil {
-		return time.Time{}, errors.New("signature does not verify with the configured key")
+		return time.Time{}, err
 	}
 	return sig.CreationTime, nil
 }
+
+// verifySignature checks a detached signature over signed with key. go-crypto v1.4.1 dereferences a nil primary
+// self-signature when a subkey made the signature and no user ID of the key has a self-signature (every one revoked
+// and exported with only its revocation, A-266); that panic is answered as a signature that does not verify.
+func verifySignature(key *openpgp.Entity, signed, signature io.Reader) (sig *packet.Signature, err error) {
+	defer func() {
+		if recover() != nil {
+			sig, err = nil, errBadSignature
+		}
+	}()
+	if sig, _, err = openpgp.VerifyDetachedSignature(openpgp.EntityList{key}, signed, signature, nil); err != nil {
+		return nil, errBadSignature
+	}
+	return sig, nil
+}
+
+var errBadSignature = errors.New("signature does not verify with the configured key")
 
 // encryptTo returns plaintext encrypted to key as an armored PGP MESSAGE.
 func encryptTo(key *openpgp.Entity, plaintext string) (string, error) {

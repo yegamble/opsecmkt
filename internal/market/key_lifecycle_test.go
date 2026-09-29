@@ -1,14 +1,20 @@
 package market
 
 import (
+	"bytes"
 	"context"
+	"crypto"
 	"html"
+	"io"
 	"net/url"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
+	"github.com/ProtonMail/go-crypto/openpgp/armor"
 	"github.com/ProtonMail/go-crypto/openpgp/packet"
 )
 
@@ -52,16 +58,8 @@ func lifecycleKey(t *testing.T, name string, created time.Time, primaryLife, sub
 // gpg --quick-set-expire does: the fingerprint is unchanged and the newest self-signatures win.
 func renewKey(t *testing.T, e *openpgp.Entity, at time.Time, primaryLife, subLife uint32) {
 	t.Helper()
+	renewPrimary(t, e, at, primaryLife)
 	cfg := &packet.Config{Time: func() time.Time { return at }}
-	for name, id := range e.Identities {
-		sig := *id.SelfSignature
-		sig.CreationTime, sig.KeyLifetimeSecs = at, &primaryLife
-		if err := sig.SignUserId(name, e.PrimaryKey, e.PrivateKey, cfg); err != nil {
-			t.Fatal(err)
-		}
-		id.Signatures = append(id.Signatures, &sig)
-		id.SelfSignature = &sig
-	}
 	for i := range e.Subkeys {
 		sub := &e.Subkeys[i]
 		sig := *sub.Sig
@@ -70,6 +68,22 @@ func renewKey(t *testing.T, e *openpgp.Entity, at time.Time, primaryLife, subLif
 			t.Fatal(err)
 		}
 		sub.Sig = &sig
+	}
+}
+
+// renewPrimary renews only the primary key (new user ID self-signatures made at "at"), as gpg --quick-set-expire
+// without '*' does.
+func renewPrimary(t *testing.T, e *openpgp.Entity, at time.Time, life uint32) {
+	t.Helper()
+	cfg := &packet.Config{Time: func() time.Time { return at }}
+	for name, id := range e.Identities {
+		sig := *id.SelfSignature
+		sig.CreationTime, sig.KeyLifetimeSecs = at, &life
+		if err := sig.SignUserId(name, e.PrimaryKey, e.PrivateKey, cfg); err != nil {
+			t.Fatal(err)
+		}
+		id.Signatures = append(id.Signatures, &sig)
+		id.SelfSignature = &sig
 	}
 }
 
@@ -101,11 +115,16 @@ func TestKeyExpiryShownAndRenewalKeepsSignIn(t *testing.T) {
 	e := newTestApp(t)
 	uid, sess := e.user("a155_renew", "vendor")
 	created := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
-	// Three minutes from expiry (A-155): the primary key at +2h3m, the encryption subkey at +2h5m.
-	key := lifecycleKey(t, "a155_renew", created, 2*3600+180, 2*3600+300)
+	// Three minutes from expiry (A-155): the primary key at +2h3m, the encryption subkey two days later (a different
+	// day, so its row really shows the subkey's own expiry).
+	const primaryLife, subLife = 2*3600 + 180, 2*86400 + 2*3600 + 180
+	key := lifecycleKey(t, "a155_renew", created, primaryLife, subLife)
 	provePGP(e, uid, sess, key, armoredPublicKey(t, key))
 	fp := agStr(e, "SELECT pgp_fingerprint FROM users WHERE id=$1", uid)
-	primaryDay, subDay := utcDay(created.Add((2*3600+180)*time.Second)), utcDay(created.Add((2*3600+300)*time.Second))
+	primaryDay, subDay := utcDay(created.Add(primaryLife*time.Second)), utcDay(created.Add(subLife*time.Second))
+	if primaryDay == subDay {
+		t.Fatal("the subkey must expire on another day than the primary key")
+	}
 	for _, page := range []string{"/account", "/pgp"} {
 		b := html.UnescapeString(e.body("GET", page, sess, nil, 200))
 		mustContain(t, b, "Primary key expires", primaryDay+" UTC", "Encryption subkey expires", subDay+" UTC", "expires within 30 days", keyRenewCommand)
@@ -176,23 +195,106 @@ func twoSubkeyKey(t *testing.T, name string, created time.Time) *openpgp.Entity 
 	return key
 }
 
-// TestKeyUpdateThatDropsRevocationOrRollsBackSubkeyClearsProof: a same-fingerprint update without a revocation the
-// saved key had, or one that would make others encrypt to an older subkey, is saved as a changed key: the proof and
-// PGP sign-in are cleared, the change time is recorded (A-158) and the owner gets an explicit alert, never plain
-// "Changes saved.".
+// revokeUserID adds the owner's revocation of user ID name, as gpg --quick-revoke-uid does.
+func revokeUserID(t *testing.T, k *openpgp.Entity, name string) {
+	t.Helper()
+	reason := packet.UserIDNotValid
+	sig := &packet.Signature{Version: k.PrimaryKey.Version, SigType: packet.SigTypeCertificationRevocation, PubKeyAlgo: k.PrimaryKey.PubKeyAlgo,
+		Hash: crypto.SHA256, CreationTime: time.Now(), IssuerKeyId: &k.PrimaryKey.KeyId, IssuerFingerprint: k.PrimaryKey.Fingerprint, RevocationReason: &reason}
+	if err := sig.SignUserId(name, k.PrimaryKey, k.PrivateKey, nil); err != nil {
+		t.Fatal(err)
+	}
+	k.Identities[name].Revocations = append(k.Identities[name].Revocations, sig)
+	k.Identities[name].Signatures = append(k.Identities[name].Signatures, sig)
+}
+
+// revocationsFirst re-armors armored with its signatures of type sigType, and extra, moved to straight after the
+// primary key. Every revocation's bytes stay in the key, but OpenPGP readers (go-crypto's ReadEntity) ignore a subkey
+// or user ID revocation there, so what it revoked reads as unrevoked (A-261).
+func revocationsFirst(t *testing.T, armored string, sigType packet.SignatureType, extra ...*packet.Signature) string {
+	t.Helper()
+	_, _, data, err := decodePublicKey(armored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var moved bytes.Buffer
+	for _, sig := range extra {
+		if err = sig.Serialize(&moved); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var primary, rest []byte
+	r := bytes.NewReader(data)
+	packets := packet.NewOpaqueReader(r)
+	for {
+		start := len(data) - r.Len()
+		p, err := packets.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw := data[start : len(data)-r.Len()]
+		var sig *packet.Signature
+		if p.Tag == signaturePacketTag {
+			parsed, _ := p.Parse()
+			sig, _ = parsed.(*packet.Signature)
+		}
+		switch {
+		case primary == nil:
+			primary = raw
+		case sig != nil && sig.SigType == sigType:
+			moved.Write(raw)
+		default:
+			rest = append(rest, raw...)
+		}
+	}
+	var buf bytes.Buffer
+	w, err := armor.Encode(&buf, openpgp.PublicKeyType, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range [][]byte{primary, moved.Bytes(), rest} {
+		if _, err = w.Write(b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.String()
+}
+
+// TestKeyUpdateThatDropsRevocationOrRollsBackSubkeyClearsProof: a same-fingerprint update that leaves a subkey or
+// user ID the saved key revoked unrevoked - its revocation dropped, or moved where OpenPGP software ignores it (A-261),
+// or the revoked subkey or user ID left out while the revocation stays - or that would make others encrypt to an older
+// subkey, is saved as a changed key: the proof and PGP sign-in are cleared, the change time is recorded again (A-158)
+// and the owner gets an explicit alert, never plain "Changes saved.". Renewing a key that has a revoked subkey and
+// user ID, renewing only the primary key and adding a newer subkey keep the proof.
 func TestKeyUpdateThatDropsRevocationOrRollsBackSubkeyClearsProof(t *testing.T) {
 	e := newTestApp(t)
 	created := time.Now().Add(-3 * time.Hour).Truncate(time.Second)
+	const second = "a155 second <second@example.test>"
+	revokeSubkey := func(k *openpgp.Entity, i int) {
+		if err := k.RevokeSubkey(&k.Subkeys[i], packet.KeyCompromised, "lost", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	addRevokedUserID := func(k *openpgp.Entity) {
+		if err := k.AddUserId("a155 second", "", "second@example.test", nil); err != nil {
+			t.Fatal(err)
+		}
+		revokeUserID(t, k, second)
+	}
 	for _, tc := range []struct {
-		name, why string
-		stored    func(*openpgp.Entity) string
-		pasted    func(*openpgp.Entity) string
+		name, outcome, why string
+		stored             func(*openpgp.Entity) string
+		pasted             func(*openpgp.Entity) string
 	}{
-		{"revocation", keyRevocationWhy,
+		{"revocation", "revocation", keyRevocationWhy,
 			func(k *openpgp.Entity) string {
-				if err := k.RevokeSubkey(&k.Subkeys[0], packet.KeyCompromised, "lost", nil); err != nil {
-					t.Fatal(err)
-				}
+				revokeSubkey(k, 0)
 				return armoredPublicKey(t, k)
 			},
 			func(k *openpgp.Entity) string {
@@ -201,7 +303,48 @@ func TestKeyUpdateThatDropsRevocationOrRollsBackSubkeyClearsProof(t *testing.T) 
 				defer func() { k.Subkeys[0].Revocations = revs }()
 				return armoredPublicKey(t, k)
 			}},
-		{"subkey", keySubkeyWhy,
+		// The newer subkey, the one encryptTo selected, revoked; with its revocation moved it would be selected again.
+		{"moved_subkey_revocation", "revocation", keyRevocationWhy,
+			func(k *openpgp.Entity) string {
+				revokeSubkey(k, 1)
+				return armoredPublicKey(t, k)
+			},
+			func(k *openpgp.Entity) string {
+				return revocationsFirst(t, armoredPublicKey(t, k), packet.SigTypeSubkeyRevocation)
+			}},
+		{"moved_uid_revocation", "revocation", keyRevocationWhy,
+			func(k *openpgp.Entity) string {
+				addRevokedUserID(k)
+				return armoredPublicKey(t, k)
+			},
+			func(k *openpgp.Entity) string {
+				return revocationsFirst(t, armoredPublicKey(t, k), packet.SigTypeCertificationRevocation)
+			}},
+		// The revoked subkey or user ID left out, its revocation kept: a later update adding it back unrevoked would
+		// otherwise have nothing to compare with.
+		{"revoked_subkey_left_out", "revocation", keyRevocationWhy,
+			func(k *openpgp.Entity) string {
+				revokeSubkey(k, 1)
+				return armoredPublicKey(t, k)
+			},
+			func(k *openpgp.Entity) string {
+				all := k.Subkeys
+				k.Subkeys = all[:1]
+				defer func() { k.Subkeys = all }()
+				return revocationsFirst(t, armoredPublicKey(t, k), packet.SigTypeSubkeyRevocation, all[1].Revocations...)
+			}},
+		{"revoked_uid_left_out", "revocation", keyRevocationWhy,
+			func(k *openpgp.Entity) string {
+				addRevokedUserID(k)
+				return armoredPublicKey(t, k)
+			},
+			func(k *openpgp.Entity) string {
+				id := k.Identities[second]
+				delete(k.Identities, second)
+				defer func() { k.Identities[second] = id }()
+				return revocationsFirst(t, armoredPublicKey(t, k), packet.SigTypeCertificationRevocation, id.Revocations...)
+			}},
+		{"subkey", "subkey", keySubkeyWhy,
 			func(k *openpgp.Entity) string { return armoredPublicKey(t, k) },
 			func(k *openpgp.Entity) string {
 				all := k.Subkeys
@@ -209,34 +352,86 @@ func TestKeyUpdateThatDropsRevocationOrRollsBackSubkeyClearsProof(t *testing.T) 
 				defer func() { k.Subkeys = all }()
 				return armoredPublicKey(t, k)
 			}},
+		{"renewed_with_revocations", "renewed", keyRenewedNotice,
+			func(k *openpgp.Entity) string {
+				revokeSubkey(k, 1)
+				addRevokedUserID(k)
+				return armoredPublicKey(t, k)
+			},
+			func(k *openpgp.Entity) string {
+				renewKey(t, k, time.Now().Truncate(time.Second), 365*86400, 365*86400)
+				return armoredPublicKey(t, k)
+			}},
+		{"renewed_primary_only", "renewed", keyRenewedNotice,
+			func(k *openpgp.Entity) string { return armoredPublicKey(t, k) },
+			func(k *openpgp.Entity) string {
+				renewPrimary(t, k, time.Now().Truncate(time.Second), 365*86400)
+				return armoredPublicKey(t, k)
+			}},
+		{"added_subkey", "renewed", keyRenewedNotice,
+			func(k *openpgp.Entity) string { return armoredPublicKey(t, k) },
+			func(k *openpgp.Entity) string {
+				later := created.Add(2 * time.Hour)
+				if err := k.AddEncryptionSubkey(&packet.Config{Algorithm: packet.PubKeyAlgoEdDSA, Time: func() time.Time { return later }}); err != nil {
+					t.Fatal(err)
+				}
+				return armoredPublicKey(t, k)
+			}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			uid, sess := e.user("a155_"+tc.name, "vendor")
 			key := twoSubkeyKey(t, "a155_"+tc.name, created)
-			provePGP(e, uid, sess, key, tc.stored(key))
+			stored := tc.stored(key)
+			provePGP(e, uid, sess, key, stored)
 			pasted := tc.pasted(key)
 			if _, _, err := parsePublicKey(pasted); err != nil {
 				t.Fatalf("the pasted variant does not parse: %v", err)
 			}
+			if strings.HasPrefix(tc.name, "moved_") || strings.HasSuffix(tc.name, "_left_out") {
+				// The byte comparison alone cannot tell: every revocation signature is still in the pasted key.
+				had, _ := revocationSignatures(stored)
+				has, _ := revocationSignatures(pasted)
+				for sig := range had {
+					if !has[sig] {
+						t.Fatal("the pasted variant lost a revocation signature's bytes")
+					}
+				}
+			}
+			if tc.name == "moved_subkey_revocation" {
+				moved, _, _ := parsePublicKey(pasted)
+				if is, ok := encryptionSubkey(moved, time.Now()); !ok || !bytes.Equal(is.Key.Fingerprint, key.Subkeys[1].PublicKey.Fingerprint) {
+					t.Fatal("with the revocation moved the revoked subkey is not the one encrypted to")
+				}
+			}
 			notes := a152Notes(e, uid, "")
+			changed := agStr(e, "SELECT COALESCE(pgp_changed_at::text,'') FROM users WHERE id=$1", uid)
 			w := e.do("POST", "/account", sess, url.Values{"pgp": {pasted}, "password": {testPassword}})
 			e.check(w, 303)
 			loc := w.Header().Get("Location")
-			if loc != "/account?key="+tc.name {
+			if loc != "/account?key="+tc.outcome {
 				t.Fatalf("redirected to %q", loc)
-			}
-			if keyProof(e, uid) != "unverified" || agStr(e, "SELECT (pgp_changed_at IS NOT NULL)::text FROM users WHERE id=$1", uid) != "true" {
-				t.Fatalf("proof kept or change time not recorded: %s", keyProof(e, uid))
 			}
 			if !sameProfileKey(agStr(e, "SELECT pgp FROM users WHERE id=$1", uid), pasted) {
 				t.Fatal("pasted key not stored")
 			}
+			b := html.UnescapeString(e.body("GET", loc, sess, nil, 200))
+			mustNotContain(t, b, "Changes saved.")
+			nowChanged := agStr(e, "SELECT COALESCE(pgp_changed_at::text,'') FROM users WHERE id=$1", uid)
+			if tc.outcome == "renewed" {
+				if keyProof(e, uid) != "verified 2fa" || nowChanged != changed {
+					t.Fatalf("renewal lost the proof or was recorded as a key change: %s", keyProof(e, uid))
+				}
+				mustContain(t, b, keyRenewedNotice)
+				mustNotContain(t, b, keyClearedAlert)
+				return
+			}
+			if keyProof(e, uid) != "unverified" || nowChanged == "" || nowChanged == changed {
+				t.Fatalf("proof kept or change time not recorded again: %s, changed %q then %q", keyProof(e, uid), changed, nowChanged)
+			}
 			if a152Notes(e, uid, "") != notes+1 || a152Notes(e, uid, "ownership proof and PGP sign-in verification were cleared") != 1 {
 				t.Fatal("clearing not notified exactly once")
 			}
-			b := html.UnescapeString(e.body("GET", loc, sess, nil, 200))
 			mustContain(t, b, `role="alert"`, keyClearedAlert, tc.why)
-			mustNotContain(t, b, "Changes saved.")
 		})
 	}
 }
@@ -300,6 +495,44 @@ func TestKeyExpiryNotifiedOnce(t *testing.T) {
 	}
 }
 
+// TestConcurrentKeyExpirySweepsNotifyOnce: sweeps running at the same time (two server processes, or a slow sweep
+// overlapping the next) send each notice once: sendKeyExpiryNotice records it with a compare-and-set.
+func TestConcurrentKeyExpirySweepsNotifyOnce(t *testing.T) {
+	e := newTestApp(t)
+	now := time.Now().Truncate(time.Second)
+	var ids []string
+	for i := range 8 {
+		name := "a155_race" + strconv.Itoa(i)
+		id, _ := e.user(name, "vendor")
+		e.setKey(id, armoredPublicKey(t, lifecycleKey(t, name, now.Add(-time.Hour), 3600+10*86400, 0)))
+		ids = append(ids, id)
+	}
+	start := make(chan struct{})
+	errs := make(chan error, 4)
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			errs <- e.A.sweepKeyExpiry(context.Background(), now)
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, id := range ids {
+		if n := a152Notes(e, id, keyExpiryNoteSoon); n != 1 {
+			t.Fatalf("concurrent sweeps sent %d near-expiry notices, want 1", n)
+		}
+	}
+}
+
 // TestKeyExpirySweepRunsInBackground: the sweep runs when the app starts.
 func TestKeyExpirySweepRunsInBackground(t *testing.T) {
 	e := newTestApp(t)
@@ -321,16 +554,16 @@ func TestKeyExpirySweepRunsInBackground(t *testing.T) {
 }
 
 // TestExpiredKeySignInPointsToLostFactorHelp: after the key expires, /challenge/pgp says why and what the account
-// can still do: another method when one is enrolled, otherwise the administrator reset; and A-225's warning shows
-// where the owner manages the key.
+// can still do: another method when one is enrolled, otherwise the administrator reset (for an administrator, another
+// administrator's or the operator's); and A-225's warning shows where the owner manages the key.
 func TestExpiredKeySignInPointsToLostFactorHelp(t *testing.T) {
 	e := newTestApp(t)
-	for _, withTOTP := range []bool{false, true} {
-		handle := "a155_expired"
-		if withTOTP {
-			handle += "_totp"
-		}
-		uid, sess := e.user(handle, "vendor")
+	for _, tc := range []struct {
+		handle, role string
+		withTOTP     bool
+	}{{"a155_expired", "vendor", false}, {"a155_expired_totp", "vendor", true}, {"a155_expired_admin", "admin", false}} {
+		handle, withTOTP := tc.handle, tc.withTOTP
+		uid, sess := e.user(handle, tc.role)
 		created := time.Now().Add(-4 * time.Hour).Truncate(time.Second)
 		key := lifecycleKey(t, handle, created, 0, 0)
 		provePGP(e, uid, sess, key, armoredPublicKey(t, key))
@@ -347,11 +580,16 @@ func TestExpiredKeySignInPointsToLostFactorHelp(t *testing.T) {
 		b := e.body("POST", "/challenge/pgp", anon, nil, 409, pc)
 		mustContain(t, b, keyExpiredRefusal)
 		mustNotContain(t, b, "Use another verification method")
-		if withTOTP {
+		switch {
+		case withTOTP:
 			mustContain(t, b, "authenticator code or a recovery code")
 			mustNotContain(t, b, keyNoOtherMethod)
-		} else {
-			mustContain(t, b, keyNoOtherMethod, "administrator", "Reset a user's second factors")
+		case tc.role == "admin":
+			mustContain(t, b, keyNoOtherMethod, "Another administrator can turn it off for you with Reset a user's second factors", "-reset-admin-factors")
+			mustNotContain(t, b, "A market administrator can turn it off")
+		default:
+			mustContain(t, b, keyNoOtherMethod, "A market administrator can turn it off for you with Reset a user's second factors")
+			mustNotContain(t, b, "Another administrator", "-reset-admin-factors")
 		}
 	}
 }
