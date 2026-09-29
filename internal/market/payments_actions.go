@@ -215,12 +215,13 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 	if pv.Open {
 		pv.Address = addr
 	}
-	rows, err = a.db.QueryContext(ctx, "SELECT txid,idx,amount,confirmations,credited,locked,regress_notice FROM payments WHERE order_id=$1 ORDER BY created,id", o.ID)
+	rows, err = a.db.QueryContext(ctx, "SELECT txid,idx,amount,confirmations,credited,locked,regress_notice,flagged,below_floor FROM payments WHERE order_id=$1 ORDER BY created,id", o.ID)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
-	var received, pending int64
+	// belowFloor: deposits of a payout below the minimum automatic payout, flagged instead of paid (A-99).
+	var received, pending, belowFloor int64
 	required, err := parseAmount(o.Amount, dec)
 	if err != nil {
 		return err
@@ -233,9 +234,12 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 	for rows.Next() {
 		var dep PaymentDeposit
 		var amt int64
-		var credited, locked, notice bool
-		if err = rows.Scan(&dep.TxID, &dep.Index, &amt, &dep.Confirmations, &credited, &locked, &notice); err != nil {
+		var credited, locked, notice, flagged, floor bool
+		if err = rows.Scan(&dep.TxID, &dep.Index, &amt, &dep.Confirmations, &credited, &locked, &notice, &flagged, &floor); err != nil {
 			return err
+		}
+		if floor && !locked && dep.Confirmations >= 0 {
+			belowFloor += amt
 		}
 		if !locked && dep.Confirmations >= 0 {
 			remaining -= min(remaining, amt)
@@ -248,6 +252,10 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 			dep.State = "Conflicted or missing — not counted"
 			conflicted = conflicted || credited
 			notified = notified || (credited && notice)
+		case isTerminal(o.State) && flagged && !credited && !floor:
+			// A-211: confirmed after the order's settlement was queued, or sent after the order closed; the watcher
+			// flagged it and notified the buyer and staff. It is not part of what was paid, so not in Confirmed.
+			dep.State = "Arrived after the order closed — not paid out; market staff notified"
 		case dep.Confirmations >= int64(pv.Threshold):
 			dep.State = "Confirmed"
 			received += amt
@@ -305,6 +313,8 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		pv.Status = "Confirmed deposits are below the required amount"
 	case o.State == stateDraft:
 		pv.Status = "Not requested"
+	case o.State == stateCancelled && belowFloor > 0:
+		pv.Status = amount(belowFloor, dec) + " " + o.Currency + " received, below the minimum automatic refund of " + amount(payoutFloor(o.Currency, "refund"), dec) + " " + o.Currency + "; not refunded; market staff were notified"
 	default:
 		pv.Status = "Deposit address closed (order " + stateLabel(o.State) + ")"
 	}

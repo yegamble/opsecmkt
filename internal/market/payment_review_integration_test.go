@@ -233,7 +233,7 @@ func TestPaymentReviewListsEveryOpenFlagOldestFirst(t *testing.T) {
 	if len(rows) != paymentReviewLimit+2+paymentReviewLimit {
 		t.Fatalf("payment-review rows: %d", len(rows))
 	}
-	mustContain(t, rows[0], "open-old:0", "Open", "Deposit confirmed after settlement, not paid out")
+	mustContain(t, rows[0], "open-old:0", "Open", "Deposit after settlement or after the order closed, not paid out")
 	for i := range paymentReviewLimit + 1 {
 		mustContain(t, rows[1+i], fmt.Sprintf("open-%03d:0", i), "Open")
 	}

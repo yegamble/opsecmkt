@@ -31,6 +31,7 @@ func TestDustBTCRefundIsFlaggedNotQueued(t *testing.T) {
 	}
 	txid := longTxid("d5")
 	p.fake.Deposit(p.addr, txid, 0, 1000, 3)
+	p.fake.Deposit(p.addr, longTxid("d6"), 0, 20000, 1)
 	p.poll()
 	p.move(p.order, stateAwaitingPayment, stateCancelled, p.buyer)
 	p.poll()
@@ -74,8 +75,9 @@ func TestDustBTCRefundIsFlaggedNotQueued(t *testing.T) {
 	desk := p.page("/moderator", p.adminSess)
 	mustContain(t, desk, "1 open flag", p.order, "Below the minimum automatic payout, not paid out")
 
-	// A later deposit that lifts the sum over the floor is refunded with the dust, once, and closes the flag.
-	p.fake.Deposit(p.addr, longTxid("d6"), 0, 20000, 3)
+	// A deposit sent before the cancellation that confirms later and lifts the sum over the floor is refunded
+	// with the dust, once, and closes the flag. (One sent after the cancellation is not counted: A-211.)
+	p.fake.SetConfirmations(longTxid("d6"), 3)
 	p.poll()
 	p.poll()
 	if st, _, addr, amt := p.payout(p.order); st != "sent" || addr != "fake-testnet-buyer" || amt != 21000 {
