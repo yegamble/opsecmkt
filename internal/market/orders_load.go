@@ -188,6 +188,10 @@ func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) 
 			rows.Close()
 			return err
 		}
+		if isDisputeReply(ev.From, ev.To, actorID, ev.Note, o) {
+			// The reply itself is shown once, under Dispute (A-124).
+			ev.Note = "Replied to the dispute; the reply is shown under Dispute."
+		}
 		ev.From, ev.To, ev.Actor = stateLabel(ev.From), stateLabel(ev.To), eventActor(handle, system, actorID, o)
 		if avatar != "" {
 			ev.Avatar = deskImageURL(avatar, false)
@@ -218,7 +222,9 @@ func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) 
 		return err
 	}
 	var disp Dispute
-	err = a.db.QueryRowContext(ctx, "SELECT id,order_id,reason,status,resolution,to_char(created,'YYYY-MM-DD HH24:MI \"UTC\"') FROM disputes WHERE order_id=$1", o.ID).Scan(&disp.ID, &disp.OrderID, &disp.Reason, &disp.Status, &disp.Resolution, &disp.Created)
+	err = a.db.QueryRowContext(ctx, `SELECT d.id,d.order_id,d.reason,d.status,d.resolution,to_char(d.created,'YYYY-MM-DD HH24:MI "UTC"'),`+disputeRecordCols+`
+		FROM disputes d JOIN orders o ON o.id=d.order_id JOIN products p ON p.id=o.product_id`+disputeReplyJoin+` WHERE d.order_id=$1`, o.ID).Scan(
+		&disp.ID, &disp.OrderID, &disp.Reason, &disp.Status, &disp.Resolution, &disp.Created, &disp.Opener, &disp.ReplyRole, &disp.Reply, &disp.ReplyCreated)
 	if err == nil {
 		d.Disputes = []Dispute{disp}
 	} else if err != sql.ErrNoRows {
@@ -512,7 +518,7 @@ func queryDisputes(ctx context.Context, a *App, query string, args ...any) ([]Di
 	var out []Dispute
 	for rows.Next() {
 		var v Dispute
-		if err = rows.Scan(&v.ID, &v.OrderID, &v.Reason, &v.Status, &v.Resolution, &v.Created, &v.NoResolver); err != nil {
+		if err = rows.Scan(&v.ID, &v.OrderID, &v.Reason, &v.Status, &v.Resolution, &v.Created, &v.NoResolver, &v.Opener, &v.ReplyRole, &v.Reply, &v.ReplyCreated); err != nil {
 			return nil, err
 		}
 		out = append(out, v)
@@ -529,7 +535,8 @@ func loadDisputes(ctx context.Context, a *App, _ *http.Request, d *PageData) err
 	if d.User == nil {
 		return nil
 	}
-	const scope = `SELECT d.id,d.order_id,d.reason,d.status,d.resolution,to_char(d.created,'YYYY-MM-DD HH24:MI "UTC"'),d.status='Open' AND NOT EXISTS(SELECT 1 FROM users s WHERE s.role IN ('moderator','admin') AND s.suspended_at IS NULL AND s.id<>o.buyer_id AND s.id<>p.vendor_id) FROM disputes d JOIN orders o ON o.id=d.order_id JOIN products p ON p.id=o.product_id WHERE (o.buyer_id=$1 OR p.vendor_id=$1 OR $2 IN ('admin','moderator'))`
+	const scope = `SELECT d.id,d.order_id,d.reason,d.status,d.resolution,to_char(d.created,'YYYY-MM-DD HH24:MI "UTC"'),d.status='Open' AND NOT EXISTS(SELECT 1 FROM users s WHERE s.role IN ('moderator','admin') AND s.suspended_at IS NULL AND s.id<>o.buyer_id AND s.id<>p.vendor_id),` +
+		disputeRecordCols + ` FROM disputes d JOIN orders o ON o.id=d.order_id JOIN products p ON p.id=o.product_id` + disputeReplyJoin + ` WHERE (o.buyer_id=$1 OR p.vendor_id=$1 OR $2 IN ('admin','moderator'))`
 	open, err := queryDisputes(ctx, a, scope+" AND d.status='Open' ORDER BY d.created,d.id", d.User.ID, d.User.Role)
 	if err != nil {
 		return err
@@ -564,7 +571,75 @@ func loadDisputes(ctx context.Context, a *App, _ *http.Request, d *PageData) err
 			}
 		}
 	}
-	return a.resolvePayouts(ctx, d)
+	if err = a.resolvePayouts(ctx, d); err != nil {
+		return err
+	}
+	return a.disputeEvidence(ctx, d)
+}
+
+// disputeReplyPrefix starts the note of the order_events row that stores a dispute reply (A-124): a disputed ->
+// disputed event whose actor is the buyer or the vendor. No state changes; the transition table is not involved.
+const disputeReplyPrefix = "Dispute reply: "
+
+// disputeRecordCols reads, for a dispute d on order o of listing p (with disputeReplyJoin), the opener's role and the
+// reply's role, text and time ("" when absent). The opener is the actor of the latest move to disputed.
+const disputeRecordCols = `COALESCE((SELECT CASE e.actor_id WHEN o.buyer_id THEN 'buyer' WHEN p.vendor_id THEN 'vendor' ELSE '' END FROM order_events e
+		WHERE e.order_id=d.order_id AND e.to_state='disputed' AND e.from_state<>'disputed' ORDER BY e.id DESC LIMIT 1),''),COALESCE(r.role,''),COALESCE(r.body,''),COALESCE(r.at,'')`
+
+const disputeReplyJoin = ` LEFT JOIN LATERAL (SELECT CASE e.actor_id WHEN o.buyer_id THEN 'buyer' ELSE 'vendor' END AS role,substr(e.note,length('Dispute reply: ')+1) AS body,
+		to_char(e.created,'YYYY-MM-DD HH24:MI "UTC"') AS at FROM order_events e WHERE e.order_id=d.order_id AND e.from_state='disputed' AND e.to_state='disputed'
+		AND e.actor_id IN (o.buyer_id,p.vendor_id) AND e.note LIKE 'Dispute reply: %' ORDER BY e.id LIMIT 1) r ON true`
+
+// isDisputeReply reports whether an order_events row (raw states) is a dispute reply on o.
+func isDisputeReply(from, to, actorID, note string, o *Order) bool {
+	return from == stateDisputed && to == stateDisputed && (actorID == o.BuyerID || actorID == o.VendorID) && strings.HasPrefix(note, disputeReplyPrefix)
+}
+
+// disputeEvidence (A-162) lists, for every open dispute a moderator or administrator viewer is not party to, how
+// many messages each party sent to each current moderator or administrator since the dispute opened, and when the
+// latest was sent. It reads only who sent a message to whom and when, never a body: a resolver learns who holds
+// encrypted evidence and asks them, without anyone but the recipient reading it.
+func (a *App) disputeEvidence(ctx context.Context, d *PageData) error {
+	d.DisputeEvidence = map[string]*DisputeEvidence{}
+	if d.User == nil || (d.User.Role != "moderator" && d.User.Role != "admin") {
+		return nil
+	}
+	var ids []string
+	for _, v := range d.Disputes[:d.OpenDisputes] {
+		o, ok := d.DisputeOrders[v.OrderID]
+		if !ok || d.User.ID == o.BuyerID || d.User.ID == o.VendorID {
+			continue
+		}
+		ids = append(ids, v.ID)
+		d.DisputeEvidence[v.ID] = &DisputeEvidence{}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	rows, err := a.db.QueryContext(ctx, `SELECT d.id,m.sender_id=o.buyer_id,s.handle,count(*),to_char(max(m.created),'YYYY-MM-DD HH24:MI "UTC"')
+		FROM disputes d JOIN orders o ON o.id=d.order_id JOIN products p ON p.id=o.product_id
+		JOIN users s ON s.role IN ('moderator','admin') AND s.id<>o.buyer_id AND s.id<>p.vendor_id
+		JOIN messages m ON m.recipient_id=s.id AND m.created>=d.created AND m.sender_id IN (o.buyer_id,p.vendor_id)
+		WHERE d.id=ANY($1) GROUP BY d.id,m.sender_id=o.buyer_id,s.handle ORDER BY s.handle`, ids)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var fromBuyer bool
+		var h EvidenceHolder
+		if err = rows.Scan(&id, &fromBuyer, &h.Handle, &h.Count, &h.Latest); err != nil {
+			return err
+		}
+		ev := d.DisputeEvidence[id]
+		if fromBuyer {
+			ev.Buyer = append(ev.Buyer, h)
+		} else {
+			ev.Vendor = append(ev.Vendor, h)
+		}
+	}
+	return rows.Err()
 }
 
 // Preview order IDs and txids have the real 64-hex shape so the read-only preview exercises the same layout
@@ -627,8 +702,10 @@ func previewDisputes(d *PageData) {
 	o := d.Orders[0]
 	o.ID, o.State, o.Status = previewDisputedID, stateDisputed, stateLabel(stateDisputed)
 	o.BuyerID, o.Buyer, o.VendorID = "sample-buyer", "sample_buyer", "sample-vendor"
-	d.Disputes, d.OpenDisputes = []Dispute{{ID: "sample-dispute", OrderID: o.ID, Reason: "Sample dispute for the read-only preview. No order or funds exist.", Status: "Open", Created: "Sample"}}, 1
+	d.Disputes, d.OpenDisputes = []Dispute{{ID: "sample-dispute", OrderID: o.ID, Reason: "Sample dispute for the read-only preview.\nNo order or funds exist.", Status: "Open", Created: "Sample",
+		Opener: roleBuyer, ReplyRole: roleVendor, Reply: "Sample reply from the vendor.\nNothing was stored.", ReplyCreated: "Sample"}}, 1
 	d.DisputeOrders = map[string]Order{o.ID: o}
+	d.DisputeEvidence = map[string]*DisputeEvidence{"sample-dispute": {Buyer: []EvidenceHolder{{Handle: "sample_moderator", Count: 1, Latest: "Sample"}}}}
 	// A sample counted amount equal to the price; the sample buyer has no payout address.
 	sum, _ := parseAmount(o.Amount, currencyDecimals(o.Currency))
 	d.DisputePayouts = map[string]PayoutPreview{"sample-dispute": {Seen: sum, Confirm: resolveConfirm,

@@ -97,7 +97,7 @@ func TestSystemAndModeratorTransitionsNotifyReason(t *testing.T) {
 
 	// A moderator's resolution names the outcome to both parties; the buyer's own dispute stays a plain notice.
 	dispute, modSess := p.disputedOrder(100000)
-	if n := notices(p.vendor, "Order "+short(p.order)+" is now Disputed"); n != 1 {
+	if n := notices(p.vendor, "Order "+short(p.order)+" is now Disputed. You may put one reply to the dispute on record from the order page before a moderator decides."); n != 1 {
 		t.Fatalf("party move notice changed: %d", n)
 	}
 	p.check(p.do("POST", "/resolve", modSess, resolveConfirmed(url.Values{"id": {dispute}, "outcome": {"refund"}, "resolution": {"Nothing was shipped; refund the buyer in full."}}, 100000)), 303)
