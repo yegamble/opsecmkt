@@ -289,4 +289,15 @@ func TestDeskShowsWhoHoldsDisputeEvidence(t *testing.T) {
 	quiet := w.e.order(w.buyerID, product, "BTC", stateShipped)
 	w.expect("/disputes", w.buyer, form("order_id", quiet, "reason", "Wrong item in the parcel, not the one listed."), 303, "")
 	mustContain(t, w.page("/moderator", modB, 200), "Neither party has messaged a moderator or administrator since this dispute opened.")
+
+	// A staff member who is a party to a dispute sees no holders list for it (whom the other party messaged).
+	own := w.e.order(w.modID, product, "BTC", stateShipped)
+	w.expect("/disputes", w.mod, form("order_id", own, "reason", "Bought as a customer; the parcel never came."), 303, "")
+	send(w.vendor, modBHandle, keyB)
+	if n := strings.Count(w.page("/moderator", w.mod, 200), `class="dispute-evidence"`); n != 2 {
+		t.Fatalf("party moderator sees %d holders lists, want 2 (not the dispute on its own order)", n)
+	}
+	if n := strings.Count(w.page("/moderator", modB, 200), `class="dispute-evidence"`); n != 3 {
+		t.Fatalf("independent moderator sees %d holders lists, want 3", n)
+	}
 }
