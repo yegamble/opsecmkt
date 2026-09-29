@@ -58,10 +58,20 @@ func TestMoneroReleaseSentWithFeeFromAmount(t *testing.T) {
 	mustContain(t, buyerPage, "Release 0.5 XMR (test network) to "+p.vendor.Handle+" — exactly the price; network fee deducted. This is final.")
 	mustNotContain(t, buyerPage, "market wallet pays")
 	p.check(p.do("POST", "/orders/complete", p.buyerSess, payoutConfirmed(url.Values{"order_id": {order}}, price)), 303)
+	// A-250: the order history says the vendor bears the fee when the release is queued and when it is sent.
+	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note='Queued TESTNET release of 0.5 XMR to the vendor (single attempt); the network fee is taken from the release.'", order); n != 1 {
+		t.Fatalf("queued release note naming the fee: %d", n)
+	}
 	p.poll()
 	s := xf.Sends()
 	if len(s) != 1 || s[0].To != "fake-testnet-xvendor" || s[0].Amount != price || !s[0].FeeFromAmount {
 		t.Fatalf("XMR release sends %+v, want one fee-from-amount send of the price", s)
+	}
+	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note='TESTNET payout of 0.5 XMR sent; the network fee was taken from it.'", order); n != 1 {
+		t.Fatalf("sent release note naming the fee: %d", n)
+	}
+	if n := p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body=$2", p.vendor.ID, "Order "+order[:8]+": TESTNET payout of 0.5 XMR sent; the network fee was taken from it. Transaction ID: "+s[0].TxID); n != 1 {
+		t.Fatalf("vendor's sent notice naming the fee: %d", n)
 	}
 	for _, sess := range []string{p.buyerSess, p.vendorSess} {
 		page := p.page("/order?id="+order, sess)
@@ -179,10 +189,27 @@ func TestSubFloorXMRPriceOverpaymentIsHeld(t *testing.T) {
 	if st, errText := p.str("SELECT state FROM payouts WHERE order_id=$1", order), p.str("SELECT error FROM payouts WHERE order_id=$1", order); st != "held" || errText != largeHold {
 		t.Fatalf("release %s %q, want held with largeHold", st, errText)
 	}
+	// A-250: both parties, the order history and the administrators are told the fee is taken from the release.
+	held := "Order " + order[:8] + ": the TESTNET release of 0.5 XMR to the vendor includes 0.499999999 XMR more than the price; " + cause +
+		", so the amount paid over it cannot be returned separately, so an administrator reviews the release before it is sent; the network fee is taken from the release."
 	for _, u := range []*User{p.buyer, p.vendor} {
 		if n := p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE '%'||$2||'%'", u.ID, cause); n != 1 {
 			t.Fatalf("%s not told the price is the cause: %d", u.Handle, n)
 		}
+		if n := p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body=$2", u.ID, held); n != 1 {
+			t.Fatalf("%s not told the fee is taken from the held release: %d", u.Handle, n)
+		}
+	}
+	note := "TESTNET release of 0.5 XMR to the vendor is held: it is more than the order price, so an administrator checks it before it is sent; the network fee is taken from the release."
+	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note=$2", order, note); n != 1 {
+		t.Fatalf("held release note naming the fee: %d", n)
+	}
+	if n := p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body=$2", p.vendor.ID, "Order "+order[:8]+": the TESTNET release of 0.5 XMR is more than the order price, so it is held until an administrator checks it; the network fee is taken from the release."); n != 1 {
+		t.Fatalf("vendor's hold notice naming the fee: %d", n)
+	}
+	adminID := p.str("SELECT id FROM users WHERE role='admin'")
+	if n := p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body=$2", adminID, "Payout review needed for order "+order[:8]+": "+note+" Release it on the admin page after checking it."); n != 1 {
+		t.Fatalf("administrator's review notice naming the fee: %d", n)
 	}
 	p.poll()
 	if s := xf.Sends(); len(s) != 0 {

@@ -62,6 +62,25 @@ func TestAuditSignatureFormat(t *testing.T) {
 	}
 }
 
+// A-139, A-251: the export's write window is 20 s plus one second per started 32 KiB, without a ceiling, so a large
+// export over Tor (0.19 MB/s and up measured) is not cut by the server's 20 s WriteTimeout.
+func TestAuditExportWriteWindowScalesWithSize(t *testing.T) {
+	for _, c := range []struct {
+		n    int
+		want time.Duration
+	}{
+		{0, 21 * time.Second},
+		{32<<10 - 1, 21 * time.Second},
+		{32 << 10, 22 * time.Second},
+		{1 << 20, 53 * time.Second},
+		{50 << 20, 1621 * time.Second},
+	} {
+		if got := auditExportWriteWindow(c.n); got != c.want {
+			t.Errorf("auditExportWriteWindow(%d) = %s, want %s", c.n, got, c.want)
+		}
+	}
+}
+
 func parseSigFile(t *testing.T, sig []byte) map[string]string {
 	t.Helper()
 	f := map[string]string{}
@@ -282,8 +301,8 @@ func (l smallBufferListener) Accept() (net.Conn, error) {
 }
 
 // A-139: over Tor (0.19–0.45 MB/s measured) a large export outlasts the server's 20 s WriteTimeout, and its build
-// may outlast the 15 s ReadTimeout (whose expiry cancels the request) and the 12 s request bound; a cut download
-// fails verify-audit like tampering. Here the server's timeouts are shortened to 200 ms and 1 s: the export waits
+// may outlast the 12 s request bound and the 15 s ReadTimeout (which net/http clears for a body-less GET, so the
+// export's own read deadline is defensive, A-251); a cut download fails verify-audit like tampering. Here the server's timeouts are shortened to 200 ms and 1 s: the export waits
 // 1.5 s behind an in-flight audit writer, then a client reading 4 KB per 5 ms still receives every byte, the same
 // bytes as for the same upto in-process (invariant 8), and they verify; a partial file fails with "sha256 does not
 // match". Another route on the same server is still cut by its WriteTimeout.

@@ -459,9 +459,17 @@ no IP address or browser), and *Sign out everywhere* also ends sign-ins waiting 
 No migration. From this release every Monero payout, releases included, is sent with the network fee taken from
 the amount (`subtract_fee_from_outputs`), as every Bitcoin payout already is: a vendor receives the price less the
 fee, and no payout costs the pooled wallet its fee. A Monero release still queued when you upgrade is sent this
-way. One Monero minimum, 0.001 XMR, now applies to every payout: a release below it is flagged for payment review
-instead of sent, like a refund. Listings cannot be priced below 0.001 XMR; a listing priced lower before the
-upgrade takes no new XMR drafts or payment requests, and saving it is refused until its vendor raises the Monero
+way, even one below the new minimum (the minimum applies when a payout is queued). The earlier version had no
+minimum for Monero releases, so a pending one may be smaller than the network fee: its send now fails before
+anything is broadcast (monero-wallet-rpc error -16, transaction not possible, recorded as a definite rejection),
+and it is shown as *Failed — not retried; the wallet reported a pre-broadcast error, nothing broadcast*. Do not
+requeue it (it would fail the same way). Settle it by hand as the runbook describes for payouts below the
+minimum ([payment-review flags](docs/testnet-runbook.md#handle-a-payment-review-flag), step 4): agree with the
+vendor whether to send it, and if so `transfer` the payout's amount from the wallet with the wallet paying the fee
+(without `subtract_fee_from_outputs`), then record it with *Mark sent* and its transaction ID
+([section 5](docs/testnet-runbook.md#5-recover-a-held-or-failed-payout)). One Monero minimum, 0.001 XMR, now
+applies to every payout: a release below it is flagged for payment review instead of sent, like a refund.
+Listings cannot be priced below 0.001 XMR; a listing priced lower before the upgrade takes no new XMR drafts or payment requests, and saving it is refused until its vendor raises the Monero
 price. On an existing order at such a price, an overpayment of more than the price is held as one release for an
 administrator's review. When matching Monero payouts sent before the upgrade in the wallet (the runbook's
 [failed-payout check](docs/testnet-runbook.md#5-recover-a-held-or-failed-payout) and [restore reconciliation](docs/testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts)), a release sent by the

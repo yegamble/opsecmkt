@@ -105,7 +105,7 @@ func TestBTCPayoutFloorBoundary(t *testing.T) {
 	if st, _, addr, amt := p.payout(p.order); st != "pending" || addr != "fake-testnet-buyer" || amt != minPayoutBTC {
 		t.Fatalf("refund at the floor: %s %s %d", st, addr, amt)
 	}
-	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note='Queued TESTNET refund of 0.0001 BTC to the buyer (single attempt).'", p.order); n != 1 {
+	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note='Queued TESTNET refund of 0.0001 BTC to the buyer (single attempt); the network fee is taken from the refund.'", p.order); n != 1 {
 		t.Fatalf("queued note: %d", n)
 	}
 	p.poll()
