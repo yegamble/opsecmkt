@@ -454,6 +454,19 @@ finished its second step is refused ("Sign-in verification expired. Sign in agai
 again. Sessions are unchanged. `/account` now lists each account's sessions by start time only (the market records
 no IP address or browser), and *Sign out everywhere* also ends sign-ins waiting for their second step.
 
+## 13. Monero releases pay their own network fee (A-232)
+
+No migration. From this release every Monero payout, releases included, is sent with the network fee taken from
+the amount (`subtract_fee_from_outputs`), as every Bitcoin payout already is: a vendor receives the price less the
+fee, and no payout costs the pooled wallet its fee. A Monero release still queued when you upgrade is sent this
+way. One Monero minimum, 0.001 XMR, now applies to every payout: a release below it is flagged for payment review
+instead of sent, like a refund. Listings cannot be priced below 0.001 XMR; a listing priced lower before the
+upgrade takes no new XMR drafts or payment requests, and saving it is refused until its vendor raises the Monero
+price. On an existing order at such a price, an overpayment of more than the price is held as one release for an
+administrator's review. When matching Monero payouts sent before the upgrade in the wallet (the runbook's
+[failed-payout check](docs/testnet-runbook.md#5-recover-a-held-or-failed-payout) and [restore reconciliation](docs/testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts)), a release sent by the
+earlier version paid its fee on top: its destination amount is the payout's.
+
 ## Appendix: new keys by hand
 
 `./scripts/install.sh upgrade` writes these for you. To add them yourself, use your editor (values in single

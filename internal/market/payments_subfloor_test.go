@@ -105,7 +105,7 @@ func TestSubFloorPriceOverpaymentIsHeld(t *testing.T) {
 	p.move(p.order, statePaid, stateShipped, p.vendor)
 	cause := "the price is below the minimum payout of 0.0001 BTC"
 	statement := "Release 1 BTC (test network) to " + p.vendor.Handle + " — 0.99995 BTC more than the price; " + cause +
-		", so the amount paid over it cannot be returned separately; an administrator reviews the release before it is sent. This is final."
+		", so the amount paid over it cannot be returned separately; an administrator reviews the release before it is sent; network fee deducted. This is final."
 	buyerPage := html.UnescapeString(p.page("/order?id="+p.order, p.buyerSess))
 	mustContain(t, buyerPage, statement)
 	mustNotContain(t, buyerPage, "below the minimum automatic refund, so it is not returned")
@@ -165,7 +165,7 @@ func TestSubFloorPriceSmallExcessUnchanged(t *testing.T) {
 	p.paidByWatcherAmount(2 * subFloorPrice)
 	p.move(p.order, statePaid, stateShipped, p.vendor)
 	mustContain(t, html.UnescapeString(p.page("/order?id="+p.order, p.buyerSess)),
-		"Release 0.0001 BTC (test network) to "+p.vendor.Handle+" — 0.00005 BTC more than the price, below the minimum automatic refund, so it is not returned. This is final.")
+		"Release 0.0001 BTC (test network) to "+p.vendor.Handle+" — 0.00005 BTC more than the price, below the minimum automatic refund, so it is not returned; network fee deducted. This is final.")
 	p.check(p.do("POST", "/orders/complete", p.buyerSess, payoutConfirmed(url.Values{"order_id": {p.order}}, 2*subFloorPrice)), 303)
 	if st, _, _, amt := p.payout(p.order); st != "pending" || amt != 2*subFloorPrice {
 		t.Fatalf("release %s %d, want pending", st, amt)
@@ -194,6 +194,25 @@ func TestSplitPayoutSubFloorPrice(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := splitPayout("release", o, tc.sum, subFloorPrice); len(got) != 1 || got[0] != tc.want {
+				t.Fatalf("got %+v want %+v", got, tc.want)
+			}
+		})
+	}
+	// A-232: the same rule for a legacy XMR price below the Monero payout floor (1000 piconero here).
+	o.Currency = "XMR"
+	const xmrSubFloor = 1000
+	for _, tc := range []struct {
+		name string
+		sum  int64
+		want payoutPart
+	}{
+		{"XMR exact price", xmrSubFloor, payoutPart{"release", "v", "vendor", xmrSubFloor, false}},
+		{"XMR excess equal to the price", 2 * xmrSubFloor, payoutPart{"release", "v", "vendor", 2 * xmrSubFloor, false}},
+		{"XMR excess above the price is held", 2*xmrSubFloor + 1, payoutPart{"release", "v", "vendor", 2*xmrSubFloor + 1, true}},
+		{"XMR excess worth returning is held, not split", xmrSubFloor + minPayoutXMR, payoutPart{"release", "v", "vendor", xmrSubFloor + minPayoutXMR, true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := splitPayout("release", o, tc.sum, xmrSubFloor); len(got) != 1 || got[0] != tc.want {
 				t.Fatalf("got %+v want %+v", got, tc.want)
 			}
 		})

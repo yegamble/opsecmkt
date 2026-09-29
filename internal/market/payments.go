@@ -43,9 +43,10 @@ func mainnetConfigured(p PaymentProvider) bool {
 	return ok && m.MainnetConfigured()
 }
 
-// feeFromAmountSender is implemented by providers that can take the network fee out of the amount sent. Refunds
-// and overpayment returns are sent this way, so a buyer who pays and is paid back bears the fee, and cannot
-// drain the market's pooled wallet in fees by repeating it. Releases use Send. A provider without it uses Send.
+// feeFromAmountSender is implemented by providers that can take the network fee out of the amount sent. Every
+// payout (release, refund or overpayment return) is sent this way (A-232), so its recipient bears the fee: a buyer
+// who pays and is paid back, or a vendor who buys its own listing, cannot drain the market's pooled wallet in fees
+// by repeating it. A provider without it uses Send.
 type feeFromAmountSender interface {
 	SendFeeFromAmount(ctx context.Context, to string, amount int64) (txid string, err error)
 }

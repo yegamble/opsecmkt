@@ -36,7 +36,7 @@ type fakeSend struct {
 	To            string
 	Amount        int64
 	TxID          string
-	FeeFromAmount bool // sent with SendFeeFromAmount (a refund or return)
+	FeeFromAmount bool // sent with SendFeeFromAmount (every payout since A-232)
 }
 
 func newFakeProvider(currency string, confs int) *fakeProvider {
@@ -126,7 +126,7 @@ func (f *fakeProvider) Incoming(_ context.Context, addresses []string) ([]Incomi
 	return out, nil
 }
 
-// SendFeeFromAmount records the send as one whose recipient bears the fee (refunds and returns).
+// SendFeeFromAmount records the send as one whose recipient bears the fee (every payout).
 func (f *fakeProvider) SendFeeFromAmount(ctx context.Context, to string, amount int64) (string, error) {
 	return f.send(ctx, to, amount, true)
 }

@@ -108,8 +108,8 @@ curl image attached to the backend network instead of `docker compose exec -T mo
 http://monero-wallet:18083/json_rpc` (the network is `<COMPOSE_PROJECT_NAME>_backend` if `.env` sets another
 project name).
 
-Fund the primary address from a stagenet faucet. Keep a small buffer: Monero release fees are paid by the
-pooled wallet on top of each release (refunds and overpayment returns have the fee deducted).
+Fund the primary address from a stagenet faucet. Every payout, releases included, has its network fee taken
+from the amount sent (`subtract_fee_from_outputs`), so the pooled wallet pays no payout's fee.
 
 For an external `monero-wallet-rpc`, start it with `--rpc-login marketplace:<password>` (never
 `--disable-rpc-login`) and put the same credentials in `MONERO_WALLET_RPC_URL`.
@@ -201,13 +201,13 @@ xmr get_transfers '{"out":true,"pending":true,"pool":true}'
 ```
 
 Look for the payout's address and amount in `destinations` of the `out`, `pending` and `pool` entries. The
-amount received is the payout's amount less the network fee when the fee was taken from it: every Bitcoin
-payout (`sendtoaddress` with `subtractfeefromamount`, so `listsinceblock` shows the payout less its `fee`)
-and Monero refunds and overpayment returns (`subtract_fee_from_outputs`); add the transaction's `fee` back
-before comparing. A Monero release pays its fee on top, so its destination amount is the payout's. A send
-the daemon relayed but the wallet reported as an error is recorded from the pool **without `destinations`**,
-with `amount` the total it spent less change (the payout plus the fee for a release; for a refund or return,
-whose fee came out of it, the payout's amount). Treat any `pending` or `out` transfer created after the failure
+amount received is the payout's amount less the network fee, which is taken from every payout: Bitcoin
+(`sendtoaddress` with `subtractfeefromamount`, so `listsinceblock` shows the payout less its `fee`) and
+Monero (`subtract_fee_from_outputs`, releases included since A-232); add the transaction's `fee` back before
+comparing. Only a Monero release sent by a version before A-232 paid its fee on top, so its destination
+amount is the payout's. A send the daemon relayed but the wallet reported as an error is recorded from the
+pool **without `destinations`**, with `amount` the total it spent less change: the payout's amount, since
+the fee came out of it (the payout plus the fee for a Monero release sent before A-232). Treat any `pending` or `out` transfer created after the failure
 (its `timestamp`) that has no destinations as **this payout** until you have proven otherwise, for example by
 matching it to another payout's transaction ID; never requeue or release while one is unexplained.
 
@@ -281,7 +281,7 @@ the order is disputed.
 | Credited deposit confirmed again (N confirmations) | The flagged regression ended: the deposit reached the threshold again. Listed after the open flags. | The watcher lifted its own hold; a pending payout is sent on the next pass that reads the order. Nothing to do. |
 | Locked transfer (unlock time) | A Monero transfer with a non-zero `unlock_time`. | Never counted toward payment or paid out. The buyer was told to send an ordinary transfer. |
 | Deposit after settlement or after the order closed, not paid out | Extra funds confirmed after the order's settlement (its release and any return, or its refund) was queued (completed or resolved orders, or a cancellation that already queued a refund), or funds first seen after the order was cancelled, completed or resolved (for example a top-up after an underpaid order was cancelled at the end of the payment window). | Not paid out or refunded: an order is settled once, and anything sent after it closed is never refunded automatically. The buyer was told the amount arrived after the order closed and was not paid out. |
-| Below the minimum automatic payout, not paid out | The order's release or refund counted less than the minimum automatic payout: 0.0001 BTC for any Bitcoin payout (the network fee is taken from the amount, so a smaller one can never be sent), 0.001 XMR for a Monero refund or overpayment return (the fee is taken from the amount, so a smaller one is not worth sending). Usually a stray deposit to a cancelled order's address. | No payout row was queued; the order kept its final state. The buyer and the vendor were told it was not sent. A deposit recorded before the order closed that confirms later and lifts the sum to the minimum is paid out with it and closes the flag; one first seen after the order closed is not counted (previous row). Otherwise see step 4 below. |
+| Below the minimum automatic payout, not paid out | The order's release or refund counted less than the minimum automatic payout: 0.0001 BTC for any Bitcoin payout (the network fee is taken from the amount, so a smaller one can never be sent), 0.001 XMR for any Monero payout (the fee is taken from the amount, so a smaller one is not worth sending). Usually a stray deposit to a cancelled order's address. | No payout row was queued; the order kept its final state. The buyer and the vendor were told it was not sent. A deposit recorded before the order closed that confirms later and lifts the sum to the minimum is paid out with it and closes the flag; one first seen after the order closed is not counted (previous row). Otherwise see step 4 below. |
 
 What staff can do:
 
@@ -298,9 +298,11 @@ What staff can do:
    send the funds back **by hand from the wallet** (`sendtoaddress` / `transfer`), and record it on the desk as
    *refunded by hand* (below).
 4. Deposits below the minimum automatic payout are too small to send on their own: a Bitcoin amount at or
-   below the fee cannot be sent with the fee taken from it. Decide with the parties whether to leave them in the
-   pooled wallet or return them by hand with the wallet paying the fee (`sendtoaddress` with
-   `subtractfeefromamount` false, or `transfer`), and record whatever you did on the desk (below). A flag stays
+   below the fee cannot be sent with the fee taken from it, and on Monero (releases included since A-232) the fee
+   would take too large a share. Decide with the parties whether to leave them in the pooled wallet or send them
+   by hand (a refund to the buyer, or for a release below the minimum the vendor) with the wallet paying the fee
+   (`sendtoaddress` with `subtractfeefromamount` false, or `transfer`), and record whatever you did on the desk
+   (below). A flag stays
    open until a payout includes the deposits or its review is recorded.
 
 **Record the review** (A-31). Each open flag on the desk has *Record the review* for a moderator or
@@ -427,9 +429,9 @@ and no web action that clears the gate or records a lost payout.
    once the market is open, with the same transaction ID; older ones were written notes with the transaction ID in
    the audit row) or a **payout the restore lost**. Find
    the order of each lost payout from the payout's amount and the address it went to, in step 6. The payout's
-   amount is the destination amount **plus the fee** for a send with the fee taken from it (every Bitcoin
-   payout, and Monero refunds and overpayment returns) and the destination amount alone for a Monero release
-   (Bitcoin: `listsinceblock` shows a send's `amount` and `fee` as negative BTC; add their absolute values and
+   amount is the destination amount **plus the fee**, because every payout on both coins has the fee taken
+   from it (only a Monero release sent by a version before A-232 paid its fee on top: its destination amount
+   alone) (Bitcoin: `listsinceblock` shows a send's `amount` and `fee` as negative BTC; add their absolute values and
    multiply by 100 000 000 for satoshi. Monero destination amounts and `fee` are already in atomic units).
    A Monero `pending` or `out` transfer after the backup with no `destinations` is an unmatched send too (its
    `amount` includes the fee): it counts as a lost payout until you prove otherwise.
@@ -465,8 +467,8 @@ db_sql() { docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d o
 ```
 
 Find the order from a lost send: the orders in that currency with no payout whose counted deposits add up to
-the payout's amount, with the vendor's and the buyer's current payout addresses. For a send with the fee taken
-from it (every Bitcoin payout; Monero refunds and returns) search with the destination amount plus the fee:
+the payout's amount, with the vendor's and the buyer's current payout addresses. Every payout has the fee taken
+from it (except a Monero release sent before A-232), so search with the destination amount plus the fee:
 a 0.0015 BTC release the wallet shows as `"amount": -0.00148590, "fee": -0.00001410` is `amount=150000`. Match
 the address the wallet sent to (a recipient may have changed their address after the backup, in which case use
 the order history and messages, and ask for help when unsure):
@@ -494,7 +496,8 @@ and the 64-character transaction ID from the wallet; and your administrator hand
 overpaid was sent as two transactions (migration 064): the price to the vendor and the excess back to the buyer.
 Record both at once: `amount`, `address` and `txid` are the vendor's, and `return_amount`, `return_address` and
 `return_txid` the buyer's (leave them out for any other payout), each the destination amount plus that
-transaction's fee where the fee was taken from it (on Bitcoin both; on Monero the return only). When finding such
+transaction's fee (on either coin both; for a Monero release sent before A-232, the vendor's destination amount
+alone). When finding such
 an order above, search with the two amounts added together. The note written to the order history names the
 network class (`MAINNET` or `TESTNET`) from the order's deposit address.
 

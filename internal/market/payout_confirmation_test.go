@@ -62,8 +62,8 @@ func TestResolveStatesPayoutAmountAndNeedsConfirmation(t *testing.T) {
 	dispute, modSess := p.disputedOrder(1000000)
 	desk := p.page("/moderator", modSess)
 	mustContain(t, desk,
-		"Release 0.001 BTC (test network) to "+p.vendor.Handle+" (the price) and return the 0.009 BTC paid over the price to "+p.buyer.Handle+", network fee deducted; the return is more than the price, so an administrator reviews it before it is sent",
-		"Refund 0.01 BTC (test network) to "+p.buyer.Handle+" — 0.009 BTC more than the price; more than the price, so an administrator reviews it before it is sent; no payout address: the payout waits for one",
+		"Release 0.001 BTC (test network) to "+p.vendor.Handle+" (the price) and return the 0.009 BTC paid over the price to "+p.buyer.Handle+"; network fee deducted from each; the return is more than the price, so an administrator reviews it before it is sent",
+		"Refund 0.01 BTC (test network) to "+p.buyer.Handle+" — 0.009 BTC more than the price; more than the price, so an administrator reviews it before it is sent; network fee deducted; no payout address: the payout waits for one",
 		`name="payout_confirmed" value="confirmed" required`,
 		"a release pays the vendor the price and returns any excess worth sending to the buyer",
 		"Never include an address, real name or tracking number",
@@ -191,7 +191,7 @@ func TestCompleteNeedsConfirmationAndUnchangedAmount(t *testing.T) {
 	p.paidByWatcher(p.order, p.addr, "tx-paid")
 	p.check(p.do("POST", "/orders/ship", p.vendorSess, url.Values{"order_id": {p.order}}), 303)
 	page := p.page("/order?id="+p.order, p.buyerSess)
-	mustContain(t, page, "Release 0.001 BTC (test network) to "+p.vendor.Handle+" — exactly the price. This is final.", `name="payout_confirmed" value="confirmed" required`)
+	mustContain(t, page, "Release 0.001 BTC (test network) to "+p.vendor.Handle+" — exactly the price; network fee deducted. This is final.", `name="payout_confirmed" value="confirmed" required`)
 	if seen := amountSeen(t, page); len(seen) != 1 || seen[0] != 100000 {
 		t.Fatalf("amount_seen %v", seen)
 	}
@@ -212,7 +212,7 @@ func TestCompleteNeedsConfirmationAndUnchangedAmount(t *testing.T) {
 	}
 	unchanged("changed amount")
 	page = p.page("/order?id="+p.order, p.buyerSess)
-	mustContain(t, page, "Release 0.001 BTC (test network) to "+p.vendor.Handle+" (the price) and return the 0.009 BTC paid over the price to "+p.buyer.Handle+", network fee deducted; the return is more than the price, so an administrator reviews it before it is sent. This is final.")
+	mustContain(t, page, "Release 0.001 BTC (test network) to "+p.vendor.Handle+" (the price) and return the 0.009 BTC paid over the price to "+p.buyer.Handle+"; network fee deducted from each; the return is more than the price, so an administrator reviews it before it is sent. This is final.")
 	p.check(p.do("POST", "/orders/complete", p.buyerSess, payoutConfirmed(url.Values{"order_id": {p.order}}, 1000000)), 303)
 	if st, _, _, amt := p.payout(p.order); st != "pending" || amt != 100000 {
 		t.Fatalf("payout %s %d", st, amt)
@@ -227,7 +227,7 @@ func TestVendorCancelOfPaidOrderNeedsConfirmation(t *testing.T) {
 	p.setPayoutAddress(p.buyer, "fake-testnet-buyer")
 	p.paidByWatcher(p.order, p.addr, "tx-paid")
 	page := p.page("/order?id="+p.order, p.vendorSess)
-	mustContain(t, page, "Refund 0.001 BTC (test network) to "+p.buyer.Handle+" — exactly the price. This is final.")
+	mustContain(t, page, "Refund 0.001 BTC (test network) to "+p.buyer.Handle+" — exactly the price; network fee deducted. This is final.")
 	unchanged := func(label string) {
 		t.Helper()
 		if st := p.state(p.order); st != statePaid || p.count("SELECT count(*) FROM payouts WHERE order_id=$1", p.order) != 0 {

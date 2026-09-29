@@ -44,34 +44,36 @@ func heldLarge(state, payoutErr string) bool {
 	return state == "held" && strings.Contains(payoutErr, largeHoldPrefix)
 }
 
-// Minimum automatic payouts (A-99), in atomic units. A payout whose counted sum is below its floor is never
-// queued: enqueuePayout flags its deposits for staff review once instead (flagBelowFloor).
+// Minimum automatic payouts (A-99, A-232), in atomic units. A payout whose counted sum is below its floor is never
+// queued: enqueuePayout flags its deposits for staff review once instead (flagBelowFloor). Every payout on both
+// coins is sent with the network fee taken from the amount (sendPayouts, SendFeeFromAmount), so no payout costs the
+// market's pooled wallet its fee; the floors keep the fee from swallowing the payout.
 //
-// minPayoutBTC applies to every Bitcoin payout (release or refund). Bitcoin Core's sendtoaddress is called with
-// subtractfeefromamount, so the network fee comes out of the amount sent and an amount at or below the fee can
-// never be sent: on regtest a 3,000-satoshi payout came out 6 satoshi negative after the fee while 5,000 was
-// sent. 10,000 satoshi (0.0001 BTC) clears that fee about three times over. It removes the never-sendable
-// class, not every failure: fees move, so a payout just above the floor can still fail and is requeued by an
-// administrator as before. Listings cannot be priced below it in BTC (validateListing).
+// minPayoutBTC applies to every Bitcoin payout (release, refund or return). Bitcoin Core's sendtoaddress is called
+// with subtractfeefromamount, so an amount at or below the fee can never be sent: on regtest a 3,000-satoshi payout
+// came out 6 satoshi negative after the fee while 5,000 was sent. 10,000 satoshi (0.0001 BTC) clears that fee about
+// three times over. It removes the never-sendable class, not every failure: fees move, so a payout just above the
+// floor can still fail and is requeued by an administrator as before. Listings cannot be priced below it in BTC
+// (validateListing).
 //
-// minAutoRefundXMR applies to Monero refunds and overpayment returns. Those are sent with the network fee taken
-// from the amount (SendFeeFromAmount), so they never cost the market's pooled wallet; a Monero transfer costs very
-// roughly 0.00003-0.0001 XMR in fees at the default priority (more for one spending many small outputs), and
-// below 0.001 XMR the fee would take several percent of the amount or more, so such a refund is left to staff
-// and such an excess goes to the vendor with the release (splitPayout). Releases have no Monero floor: the
-// vendor's price was agreed and paid, and the pooled wallet pays a release's fee on top.
+// minPayoutXMR applies to every Monero payout (release, refund or return; A-232 made releases fee-deducted too,
+// matching Bitcoin). A Monero transfer costs very roughly 0.00003-0.0001 XMR in fees at the default priority (more
+// for one spending many small outputs), and below 0.001 XMR the fee would take several percent of the amount or
+// more, so such a payout is left to staff and such an excess goes to the vendor with the release (splitPayout).
+// Listings cannot be priced below it in XMR (validateListing).
 const (
-	minPayoutBTC     = 10000      // 0.0001 BTC
-	minAutoRefundXMR = 1000000000 // 0.001 XMR
+	minPayoutBTC = 10000      // 0.0001 BTC
+	minPayoutXMR = 1000000000 // 0.001 XMR
 )
 
-// payoutFloor is the smallest sum enqueuePayout queues for a payout of kind ("release" | "refund") in currency.
+// payoutFloor is the smallest sum enqueuePayout queues for a payout of kind ("release", "refund" or "return") in
+// currency. The floor is the same for every kind.
 func payoutFloor(currency, kind string) int64 {
-	switch {
-	case currency == "BTC":
+	switch currency {
+	case "BTC":
 		return minPayoutBTC
-	case currency == "XMR" && (kind == "refund" || kind == "return"):
-		return minAutoRefundXMR
+	case "XMR":
+		return minPayoutXMR
 	}
 	return 0
 }
@@ -82,11 +84,7 @@ func belowFloor(currency, kind string, sum int64) string {
 	if sum <= 0 || sum >= floor {
 		return ""
 	}
-	what := "payout"
-	if currency == "XMR" {
-		what = "refund"
-	}
-	return "below the minimum automatic " + what + " of " + amount(floor, currencyDecimals(currency)) + " " + currency
+	return "below the minimum automatic payout of " + amount(floor, currencyDecimals(currency)) + " " + currency
 }
 
 func paymentsTransitionHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, to string) error {
@@ -292,10 +290,10 @@ type payoutPart struct {
 // twice the price) is sent automatically, so the pooled wallet can swap coins up to a listing's price without
 // review (largeHold).
 //
-// A price below the release floor exists only on Bitcoin listings priced before A-99 added the listing floor
-// (new orders on them are refused, A-216). The vendor's share alone could never be sent, so the whole sum stays
-// one release; when its excess is more than the price, that release is marked large too, so the buyer's
-// overpayment is not paid to the vendor without an administrator's review.
+// A price below the release floor exists only on listings priced before the listing floor applied (Bitcoin before
+// A-99, Monero before A-232; new orders on them are refused, A-216, A-232). The vendor's share alone would be below
+// the floor, so the whole sum stays one release; when its excess is more than the price, that release is marked
+// large too, so the buyer's overpayment is not paid to the vendor without an administrator's review.
 func splitPayout(kind string, o *Order, sum, required int64) []payoutPart {
 	if kind == "refund" {
 		return []payoutPart{{kind: "refund", recipient: o.BuyerID, who: "buyer", amount: sum, large: sum > required}}

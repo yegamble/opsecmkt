@@ -725,12 +725,12 @@ func (a *App) sendPayouts(ctx context.Context, p PaymentProvider, orders []strin
 		if ctx.Err() != nil {
 			break
 		}
-		var to, order, recipient, kind string
+		var to, order, recipient string
 		var amt int64
 		err = a.db.QueryRowContext(ctx, `UPDATE payouts SET state='sending',updated=now() WHERE id=$1 AND state='pending' AND address<>''
 			AND NOT EXISTS (SELECT 1 FROM settings WHERE key='payments_recovery_required' AND value='true')
 			AND NOT EXISTS (SELECT 1 FROM payments pm WHERE pm.order_id=payouts.order_id AND pm.credited AND pm.confirmations<$2)
-			RETURNING address,amount,order_id,user_id,kind`, id, int64(p.Confirmations())).Scan(&to, &amt, &order, &recipient, &kind)
+			RETURNING address,amount,order_id,user_id`, id, int64(p.Confirmations())).Scan(&to, &amt, &order, &recipient)
 		if err == sql.ErrNoRows {
 			continue
 		}
@@ -740,9 +740,9 @@ func (a *App) sendPayouts(ctx context.Context, p PaymentProvider, orders []strin
 		// The wallet call is detached from shutdown (a redeploy must not abort a broadcast mid-flight) but
 		// bounded; Close waits for it. The outcome is recorded on a fresh bounded context for the same reason.
 		sctx, scancel := context.WithTimeout(context.WithoutCancel(ctx), payoutSendTimeout)
-		// A refund or return pays its own network fee (feeFromAmountSender); a release is sent with Send.
+		// Every payout pays its own network fee (feeFromAmountSender, A-232): the recipient receives amt less the fee.
 		send := p.Send
-		if f, ok := p.(feeFromAmountSender); ok && kind != "release" {
+		if f, ok := p.(feeFromAmountSender); ok {
 			send = f.SendFeeFromAmount
 		}
 		txid, serr := send(sctx, to, amt)

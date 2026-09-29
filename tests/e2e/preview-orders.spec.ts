@@ -37,8 +37,8 @@ test('moderator desk requires an outcome and disputes explain eligibility', asyn
   await expect(page.getByRole('group', { name: 'Outcome' })).toBeVisible();
   // A-161: each outcome states the amount, recipient, difference from the price and the recipient's payout state
   // (sample figures); resolving needs a ticked confirmation and the decision field warns against identifying text.
-  await expect(page.getByRole('radio', { name: 'Release 0.00412 BTC (test network) to ghost_circuit — exactly the price', exact: true })).toBeVisible();
-  await expect(page.getByRole('radio', { name: 'Refund 0.00412 BTC (test network) to sample_buyer — exactly the price; no payout address: the payout waits for one', exact: true })).toBeVisible();
+  await expect(page.getByRole('radio', { name: 'Release 0.00412 BTC (test network) to ghost_circuit — exactly the price; network fee deducted', exact: true })).toBeVisible();
+  await expect(page.getByRole('radio', { name: 'Refund 0.00412 BTC (test network) to sample_buyer — exactly the price; network fee deducted; no payout address: the payout waits for one', exact: true })).toBeVisible();
   await expect(page.getByRole('checkbox', { name: 'I checked the amount and who receives it for the outcome I chose. Resolving is final.' })).toHaveAttribute('required', '');
   await expect(page.locator('input[type="hidden"][name="amount_seen"]')).toHaveValue('412000');
   await expect(page.getByLabel('Decision', { exact: true })).toHaveAccessibleDescription(/^Stored unencrypted\..*Never include an address, real name or tracking number/);
