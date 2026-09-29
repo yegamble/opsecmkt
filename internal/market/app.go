@@ -373,8 +373,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer release()
 	w = aw
-	base := r.Context() // an upload's work after its body has arrived gets its own bound (uploads.go)
-	ctx, cancel := context.WithTimeout(base, 12*time.Second)
+	// An upload's work after its body has arrived (uploads.go) and the signed audit export (audit_export.go,
+	// through arrivalContext) get their own bounds.
+	base := r.Context()
+	ctx, cancel := context.WithTimeout(context.WithValue(base, arrivalKey{}, base), 12*time.Second)
 	defer cancel()
 	r = r.WithContext(ctx)
 	if r.URL.Path == "/healthz" {
