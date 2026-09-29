@@ -190,7 +190,7 @@ func TestSuspendedAccountCannotCompleteSignIn(t *testing.T) {
 	e := newTestApp(t)
 	id, _ := e.user("susp_racer", "buyer")
 	key, _ := agEnableTOTP(e, id)
-	anon, pc := e.passwordLogin("susp_racer")
+	anon, pc := e.pendingSignIn("susp_racer")
 	agExec(e, "UPDATE users SET suspended_at=now() WHERE id=$1", id)
 	w := e.do("POST", "/challenge", anon, form("method", "totp", "code", agTOTPNow(key)), pc)
 	if w.Code != 403 || strings.TrimSpace(w.Body.String()) != suspendedMsg || e.cookie(w, "session") != "" {

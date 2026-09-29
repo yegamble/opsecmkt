@@ -140,7 +140,7 @@ func TestResetAdminFactors(t *testing.T) {
 	if agInt(e, "SELECT count(*) FROM users WHERE id=$1 AND totp_enabled", id) != 1 || agInt(e, "SELECT count(*) FROM recovery_codes WHERE user_id=$1", id) != 10 {
 		t.Fatal("TOTP re-enrolment after the reset failed")
 	}
-	e.passwordLogin("root_admin")
+	e.pendingSignIn("root_admin")
 }
 
 // A database the server has never set up is refused with a clear message instead of a relation error.
@@ -162,7 +162,7 @@ func TestResetAdminFactorsVsSignInNoDeadlock(t *testing.T) {
 	e := newTestApp(t)
 	id, _ := e.user("a137_root", "admin")
 	_, recovery := agEnableTOTP(e, id)
-	anon, pc := e.passwordLogin("a137_root")
+	anon, pc := e.pendingSignIn("a137_root")
 	var cliErr error
 	cli, ch := a154Ordered(t, e, id, func() int {
 		if _, cliErr = ResetAdminFactors(context.Background(), e.DB, "a137_root"); cliErr != nil {

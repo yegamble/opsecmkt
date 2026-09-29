@@ -18,8 +18,8 @@ func TestSignOutEverywhereEndsPendingSignIns(t *testing.T) {
 	key, _ := agEnableTOTP(e, id)
 	otherID, _ := e.user("a157_bystander", "buyer")
 	agEnableTOTP(e, otherID)
-	intruder, pc := e.passwordLogin("a157_owner") // the intruder knows the password; TOTP is still pending
-	_, bystanderPC := e.passwordLogin("a157_bystander")
+	intruder, pc := e.pendingSignIn("a157_owner") // the intruder knows the password; TOTP is still pending
+	_, bystanderPC := e.pendingSignIn("a157_bystander")
 
 	w := e.do("POST", "/revoke-sessions", owner, nil)
 	e.check(w, 303)
@@ -51,7 +51,7 @@ func TestSignOutEverywhereVsSignInLeavesNoSession(t *testing.T) {
 		handle := "a157_race_" + string(rune('a'+i))
 		id, owner := e.user(handle, "buyer")
 		key, _ := agEnableTOTP(e, id)
-		intruder, pc := e.passwordLogin(handle)
+		intruder, pc := e.pendingSignIn(handle)
 		challenge := func() int {
 			return e.do("POST", "/challenge", intruder, url.Values{"method": {"totp"}, "code": {agTOTPNow(key)}}, pc).Code
 		}
@@ -188,7 +188,7 @@ func TestPasswordChangeEndsSignInCheckedBeforeIt(t *testing.T) {
 	e := newTestApp(t)
 	id, owner := e.user("a157_pw", "buyer")
 	key, _ := agEnableTOTP(e, id)
-	intruder, pc := e.passwordLogin("a157_pw") // password accepted, second factor pending
+	intruder, pc := e.pendingSignIn("a157_pw") // password accepted, second factor pending
 	old := passwordHash(e, id)
 	e.check(e.do("POST", "/account/password", owner, pwForm(testPassword, testPassword+"-changed", "code", agTOTPNow(key))), 303)
 	// The race: a sign-in that read the old hash before the change and writes its pending row after the change

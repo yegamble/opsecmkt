@@ -922,7 +922,7 @@ func TestStolenSessionCannotAddPGPFactorToTOTPAccount(t *testing.T) {
 
 	// With the stolen session gone, the password plus mallory's key does not complete sign-in.
 	e.check(e.do("POST", "/revoke-sessions", stolen, nil), 303)
-	anon, pc := e.passwordLogin("victim_totp")
+	anon, pc := e.pendingSignIn("victim_totp")
 	e.do("POST", "/challenge/pgp", anon, nil, pc)
 	answer := "guess"
 	if armored := agStr(e, "SELECT COALESCE(pgp_challenge,'') FROM pending_logins WHERE token_hash=$1", digest(pc.Value)); armored != "" {
@@ -969,7 +969,7 @@ func TestStolenSessionCannotEnrollTOTPOnPGPAccount(t *testing.T) {
 	}
 
 	e.check(e.do("POST", "/revoke-sessions", stolen, nil), 303)
-	anon, pc := e.passwordLogin("victim_pgp")
+	anon, pc := e.pendingSignIn("victim_pgp")
 	next, _ := e.totpCodeFor(uid, 1)
 	w := e.do("POST", "/challenge", anon, url.Values{"method": {"totp"}, "code": {next}}, pc)
 	if w.Code == 303 && e.cookie(w, "session") != "" {

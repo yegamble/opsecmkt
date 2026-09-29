@@ -49,7 +49,7 @@ func TestRecoveryCodeSignInTurnsTOTPOff(t *testing.T) {
 			otherPending := agPending(e, id)
 			notes := a152Notes(e, id, "")
 
-			anon, pc := e.passwordLogin(handle)
+			anon, pc := e.pendingSignIn(handle)
 			w := e.do("POST", "/challenge", anon, url.Values{"method": {"totp"}, "recovery": {recovery}, "turn_off_totp": {"1"}}, pc)
 			e.check(w, 303)
 			if loc := w.Header().Get("Location"); loc != "/totp?signin=totp-off" {
@@ -88,7 +88,7 @@ func TestTurnOffTOTPCheckboxNeedsRecoveryCode(t *testing.T) {
 	id, _ := e.user("a154_ignored", "buyer")
 	key, recovery := agEnableTOTP(e, id)
 
-	anon, pc := e.passwordLogin("a154_ignored")
+	anon, pc := e.pendingSignIn("a154_ignored")
 	agExpect(e, "/challenge", anon, url.Values{"method": {"totp"}, "recovery": {"aaaa-bbbb-cccc-dddd"}, "turn_off_totp": {"1"}}, 401, "Recovery code incorrect", pc)
 	w := e.do("POST", "/challenge", anon, url.Values{"method": {"totp"}, "code": {agTOTPNow(key)}, "turn_off_totp": {"1"}}, pc)
 	e.check(w, 303)
@@ -112,7 +112,7 @@ func TestRecoveryCodeSignInLandsOnTOTP(t *testing.T) {
 	for i, tc := range []struct {
 		code, remain string
 	}{{recovery, "2 recovery codes remain"}, {extra[0], "1 recovery code remains"}, {extra[1], "0 recovery codes remain"}} {
-		anon, pc := e.passwordLogin("a154_land")
+		anon, pc := e.pendingSignIn("a154_land")
 		w := e.do("POST", "/challenge", anon, url.Values{"method": {"totp"}, "recovery": {tc.code}}, pc)
 		e.check(w, 303)
 		if loc := w.Header().Get("Location"); loc != "/totp?signin=recovery" {
@@ -133,7 +133,7 @@ func TestTurnOffTOTPAtSignInSuspendedRollsBack(t *testing.T) {
 	e := newTestApp(t)
 	id, _ := e.user("a154_susp", "buyer")
 	_, recovery := agEnableTOTP(e, id)
-	anon, pc := e.passwordLogin("a154_susp")
+	anon, pc := e.pendingSignIn("a154_susp")
 	agExec(e, "UPDATE users SET suspended_at=now() WHERE id=$1", id)
 	audits, notes := agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1", id), a152Notes(e, id, "")
 	agExpect(e, "/challenge", anon, url.Values{"method": {"totp"}, "recovery": {recovery}, "turn_off_totp": {"1"}}, 403, "suspended", pc)
@@ -153,12 +153,12 @@ func TestTurnOffTOTPAtSignInKeepsPGPSignIn(t *testing.T) {
 	_, recovery := agEnableTOTP(e, id)
 	_, pub := testPGPKey(t, "a154")
 	agEnablePGP(e, id, pub)
-	anon, pc := e.passwordLogin("a154_pgp")
+	anon, pc := e.pendingSignIn("a154_pgp")
 	e.check(e.do("POST", "/challenge", anon, url.Values{"method": {"totp"}, "recovery": {recovery}, "turn_off_totp": {"1"}}, pc), 303)
 	if on, _, _, _, _, _ := a154TOTP(e, id); on || agStr(e, "SELECT pgp_2fa::text FROM users WHERE id=$1", id) != "true" {
 		t.Fatal("want TOTP off and PGP sign-in still on")
 	}
-	e.passwordLogin("a154_pgp") // still asks for the second factor
+	e.pendingSignIn("a154_pgp") // still asks for the second factor
 }
 
 // a154Blocked counts sessions waiting, directly or through another waiter, on the backend pid.
@@ -208,7 +208,7 @@ func TestPasswordChangeVsRecoverySignInNoDeadlock(t *testing.T) {
 	e := newTestApp(t)
 	id, sess := e.user("a154_pw", "buyer")
 	key, recovery := agEnableTOTP(e, id)
-	anon, pc := e.passwordLogin("a154_pw")
+	anon, pc := e.pendingSignIn("a154_pw")
 	pw, ch := a154Ordered(t, e, id, func() int {
 		return e.do("POST", "/account/password", sess, pwForm(testPassword, "a154-new-password", "code", agTOTPNow(key))).Code
 	}, func() int {
@@ -227,7 +227,7 @@ func TestPasswordChangeVsTOTPSignInNoDeadlock(t *testing.T) {
 	e := newTestApp(t)
 	id, sess := e.user("a154_pw2", "buyer")
 	key, recovery := agEnableTOTP(e, id)
-	anon, pc := e.passwordLogin("a154_pw2")
+	anon, pc := e.pendingSignIn("a154_pw2")
 	// The password change is confirmed with the recovery code: consumed before the account row is locked.
 	pw, ch := a154Ordered(t, e, id, func() int {
 		return e.do("POST", "/account/password", sess, pwForm(testPassword, "a154-new-password", "code", recovery)).Code
@@ -247,7 +247,7 @@ func TestFactorResetVsSignInNoDeadlock(t *testing.T) {
 	_, admin := e.user("a154_boss", "admin")
 	id, _ := e.user("a154_reset", "buyer")
 	key, _ := agEnableTOTP(e, id)
-	anon, pc := e.passwordLogin("a154_reset")
+	anon, pc := e.pendingSignIn("a154_reset")
 	reset, ch := a154Ordered(t, e, id, func() int {
 		return e.do("POST", "/admin/reset-factors", admin, url.Values{"handle": {"a154_reset"}, "password": {testPassword}}).Code
 	}, func() int {
@@ -265,7 +265,7 @@ func TestReplaceRecoveryCodesVsRecoverySignInNoDeadlock(t *testing.T) {
 	e := newTestApp(t)
 	id, sess := e.user("a154_regen", "buyer")
 	key, recovery := agEnableTOTP(e, id)
-	anon, pc := e.passwordLogin("a154_regen")
+	anon, pc := e.pendingSignIn("a154_regen")
 	regen, ch := a154Ordered(t, e, id, func() int {
 		return e.do("POST", "/totp/recovery", sess, url.Values{"password": {testPassword}, "code": {agTOTPNow(key)}}).Code
 	}, func() int {
@@ -284,7 +284,7 @@ func TestTurnOffTOTPVsRecoverySignInNoDeadlock(t *testing.T) {
 	e := newTestApp(t)
 	id, sess := e.user("a154_disable", "buyer")
 	key, recovery := agEnableTOTP(e, id)
-	anon, pc := e.passwordLogin("a154_disable")
+	anon, pc := e.pendingSignIn("a154_disable")
 	off, ch := a154Ordered(t, e, id, func() int {
 		return e.do("POST", "/totp/disable", sess, url.Values{"password": {testPassword}, "code": {agTOTPNow(key)}}).Code
 	}, func() int {
@@ -302,7 +302,7 @@ func TestResetAdminPasswordVsSignInNoDeadlock(t *testing.T) {
 	e := newTestApp(t)
 	id, _ := e.user("a154_root", "admin")
 	key, _ := agEnableTOTP(e, id)
-	anon, pc := e.passwordLogin("a154_root")
+	anon, pc := e.pendingSignIn("a154_root")
 	var cliErr error
 	cli, ch := a154Ordered(t, e, id, func() int {
 		if cliErr = ResetAdminPassword(context.Background(), e.DB, "a154_root", "operator-chosen-password"); cliErr != nil {
@@ -328,7 +328,7 @@ func TestPasswordChangeRacesRecoverySignIn(t *testing.T) {
 		handle := "a154_race_" + string(rune('a'+i))
 		id, sess := e.user(handle, "buyer")
 		key, recovery := agEnableTOTP(e, id)
-		anon, pc := e.passwordLogin(handle)
+		anon, pc := e.pendingSignIn(handle)
 		var wg sync.WaitGroup
 		var pw, ch int
 		wg.Add(2)

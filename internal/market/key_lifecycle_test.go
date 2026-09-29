@@ -160,7 +160,7 @@ func TestKeyExpiryShownAndRenewalKeepsSignIn(t *testing.T) {
 	}
 
 	// PGP sign-in still works with the renewed key.
-	anon, pc := e.passwordLogin("a155_renew")
+	anon, pc := e.pendingSignIn("a155_renew")
 	e.check(e.do("POST", "/challenge/pgp", anon, nil, pc), 303)
 }
 
@@ -343,7 +343,7 @@ func TestExpiredKeySignInPointsToLostFactorHelp(t *testing.T) {
 		for _, page := range []string{"/account", "/pgp"} {
 			mustContain(t, html.UnescapeString(e.body("GET", page, sess, nil, 200)), keyCannotEncrypt, "Expired "+utcDay(created.Add(2*time.Hour+30*time.Minute))+" UTC")
 		}
-		anon, pc := e.passwordLogin(handle)
+		anon, pc := e.pendingSignIn(handle)
 		b := e.body("POST", "/challenge/pgp", anon, nil, 409, pc)
 		mustContain(t, b, keyExpiredRefusal)
 		mustNotContain(t, b, "Use another verification method")

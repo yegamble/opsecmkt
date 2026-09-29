@@ -184,13 +184,13 @@ func TestSignInAuditNamesMethodAndRecoverySignInNotifies(t *testing.T) {
 	}
 
 	key, recovery := agEnableTOTP(e, uid)
-	anon, pc := e.passwordLogin("a152_signin")
+	anon, pc := e.pendingSignIn("a152_signin")
 	e.check(e.do("POST", "/challenge", anon, url.Values{"method": {"totp"}, "code": {agTOTPNow(key)}}, pc), 303)
 	if a152Audits(e, uid, "Signed in with password and TOTP") != 1 {
 		t.Fatal("TOTP sign-in does not name its method")
 	}
 	notes := a152Notes(e, uid, "")
-	anon, pc = e.passwordLogin("a152_signin")
+	anon, pc = e.pendingSignIn("a152_signin")
 	e.check(e.do("POST", "/challenge", anon, url.Values{"method": {"totp"}, "recovery": {recovery}}, pc), 303)
 	if a152Audits(e, uid, "Signed in with password and recovery code") != 1 {
 		t.Fatal("recovery-code sign-in does not name its method")
@@ -200,7 +200,7 @@ func TestSignInAuditNamesMethodAndRecoverySignInNotifies(t *testing.T) {
 	alice, alicePub := testPGPKey(t, "alice")
 	agExec(e, "UPDATE users SET totp_enabled=false,totp_secret='' WHERE id=$1", uid)
 	agEnablePGP(e, uid, alicePub)
-	anon, pc = e.passwordLogin("a152_signin")
+	anon, pc = e.pendingSignIn("a152_signin")
 	e.check(e.do("POST", "/challenge/pgp", anon, nil, pc), 303)
 	armored := agStr(e, "SELECT pgp_challenge FROM pending_logins WHERE token_hash=$1", digest(pc.Value))
 	e.check(e.do("POST", "/challenge", anon, url.Values{"method": {"pgp"}, "pgp_code": {testDecrypt(t, alice, armored)}}, pc), 303)
@@ -224,7 +224,7 @@ func TestFailedSecondFactorRecordedOncePerPendingSignIn(t *testing.T) {
 	wrong := e.wrongTOTP(uid)
 	const prefix = "Correct password but failed second sign-in step"
 
-	anon, pc := e.passwordLogin("a152_fail")
+	anon, pc := e.pendingSignIn("a152_fail")
 	agExpect(e, "/challenge", anon, url.Values{"method": {"totp"}, "code": {wrong}}, 401, "Verification code incorrect", pc)
 	agExpect(e, "/challenge", anon, url.Values{"method": {"totp"}, "recovery": {"aaaa-bbbb-cccc-dddd"}}, 401, "Recovery code incorrect", pc)
 	a152Once(e, uid, 0, prefix, "Someone entered your password correctly but failed the second sign-in step", wrong, recovery)
@@ -236,7 +236,7 @@ func TestFailedSecondFactorRecordedOncePerPendingSignIn(t *testing.T) {
 	}
 
 	// A new pending sign-in records its own first failure.
-	anon, pc = e.passwordLogin("a152_fail")
+	anon, pc = e.pendingSignIn("a152_fail")
 	agExpect(e, "/challenge", anon, url.Values{"method": {"totp"}, "code": {wrong}}, 401, "", pc)
 	if a152Audits(e, uid, prefix) != 2 || a152Notes(e, uid, "failed the second sign-in step") != 2 {
 		t.Fatal("second pending sign-in's failure not recorded once")
@@ -257,7 +257,7 @@ func TestFailedPGPSecondFactorRecorded(t *testing.T) {
 	uid, _ := e.user("a152_pgpfail", "buyer")
 	_, pub := testPGPKey(t, "alice")
 	agEnablePGP(e, uid, pub)
-	anon, pc := e.passwordLogin("a152_pgpfail")
+	anon, pc := e.pendingSignIn("a152_pgpfail")
 	e.check(e.do("POST", "/challenge/pgp", anon, nil, pc), 303)
 	for range 2 {
 		agExpect(e, "/challenge", anon, url.Values{"method": {"pgp"}, "pgp_code": {"0123456789abcdef0123456789abcdef"}}, 401, "does not match", pc)
