@@ -21,7 +21,9 @@ func TestMain(m *testing.M) {
 
 func runInOwnDatabase(m *testing.M) int {
 	base := os.Getenv("TEST_DATABASE_URL")
-	if base == "" {
+	if _, helper := os.LookupEnv("OPSMKT_HELPER_ARGS"); base == "" || helper {
+		// A TestHelperServerProcess child inherits the parent's own database and exits inside main, before any
+		// DROP here would run.
 		return m.Run()
 	}
 	u, err := url.Parse(base)
