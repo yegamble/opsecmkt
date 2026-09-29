@@ -154,6 +154,13 @@ func pageSlice(d *PageData, all []Product, raw string) []Product {
 	return all[p.First-1 : p.Last]
 }
 
+// orderReadable is the order page's read rule over orders o joined to products p, for the viewer's id and role
+// (SQL placeholders): the buyer and the vendor, and a moderator or administrator while the order is disputed or
+// resolved or has a payment flagged for review. An archived listing's product page uses the same rule (A-164).
+func orderReadable(viewer, role string) string {
+	return "(o.buyer_id=" + viewer + " OR p.vendor_id=" + viewer + " OR (" + role + " IN ('moderator','admin') AND (o.state IN ('disputed','resolved') OR EXISTS(SELECT 1 FROM payments pm WHERE pm.order_id=o.id AND pm.flagged))))"
+}
+
 // load fills generic page data, then runs registered loaders (routes.go).
 func (a *App) load(r *http.Request, d *PageData) error {
 	ctx := r.Context()
@@ -223,7 +230,13 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			query += filter
 			limit = " LIMIT " + strconv.Itoa(catalogPageSize) + " OFFSET " + strconv.Itoa(paging.Offset())
 		}
-		if d.Page != "vendor-dashboard" && d.Page != "catalog" {
+		switch {
+		case d.Page == "product" && d.User != nil:
+			// A-164: an archived listing's page stays readable to whoever may read an order placed on it (the
+			// order page's rule), so the parties and reviewing staff can see what was sold; everyone else gets 404.
+			query += " AND (NOT p.archived OR EXISTS(SELECT 1 FROM orders o WHERE o.product_id=p.id AND " + orderReadable("$2", "$3") + "))"
+			args = append(args, d.User.ID, d.User.Role)
+		case d.Page != "vendor-dashboard" && d.Page != "catalog":
 			query += " AND NOT p.archived"
 		}
 		// p.id breaks ties between listings created in the same transaction, so pages never overlap.
@@ -273,7 +286,7 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			if d.Page == "order" {
 				// Moderators and administrators may also open disputed or resolved orders, and orders with a payment
 				// flagged for review, read-only (orders_load.go).
-				query = orderQuery + " WHERE (o.buyer_id=$1 OR p.vendor_id=$1 OR ($3 IN ('moderator','admin') AND (o.state IN ('disputed','resolved') OR EXISTS(SELECT 1 FROM payments pm WHERE pm.order_id=o.id AND pm.flagged)))) AND o.id=$2"
+				query = orderQuery + " WHERE " + orderReadable("$1", "$3") + " AND o.id=$2"
 				args = append(args, r.URL.Query().Get("id"), d.User.Role)
 			}
 			if d.Page == "disputes" {

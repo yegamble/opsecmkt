@@ -74,7 +74,7 @@
 </div>
 <aside>
 <section class="panel">
-<h2>Visibility</h2>{{with $.Listing}}{{if .TakedownReason}}<p><span class="badge danger">Taken down</span> Taken down by an administrator{{if .ArchivedAt}} on {{.ArchivedAt}}{{end}}. Hidden from the marketplace, the vendor page and search; new orders are refused. Existing orders continue, but paid orders are not delivered automatically: the vendor delivers or cancels them.</p>
+<h2>Visibility</h2>{{with $.Listing}}{{if .TakedownReason}}<p><span class="badge danger">Taken down</span> Taken down by an administrator{{if .ArchivedAt}} on {{.ArchivedAt}}{{end}}. Hidden from the marketplace, the vendor page and search; new orders are refused. Existing orders continue, but paid orders are not delivered automatically: the vendor delivers or cancels them. Their buyers, and staff reviewing them, can still open this listing's page from the order; the reason is not shown there.</p>
 <p class="takedown-reason"><strong>Reason:</strong> {{.TakedownReason}}</p>{{if ne $.User.Role "admin"}}
 <p>Only an administrator can restore this listing. If you think this is wrong, contact the market staff. You can still edit it.</p>{{else}}
 <form class="stack" method="post" action="/admin/listing">
@@ -84,12 +84,12 @@
 <p class="help">Restoring shows the listing in the marketplace again, clears the reason and notifies the vendor.</p>
 {{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button type="submit">Restore listing</button>
-</form>{{end}}{{else if $.Product.Archived}}<p>Archived{{if .ArchivedAt}} since {{.ArchivedAt}}{{end}}. Hidden from the marketplace, your vendor page and search; new orders are refused. Existing orders continue unchanged.</p>
+</form>{{end}}{{else if $.Product.Archived}}<p>Archived{{if .ArchivedAt}} since {{.ArchivedAt}}{{end}}. Hidden from the marketplace, your vendor page and search; new orders are refused. Existing orders continue unchanged; their buyers, and staff reviewing them, can still open this listing's page from the order.</p>
 <form method="post" action="/listings/restore">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="id" value="{{$.Product.ID}}">
 <button type="submit">Restore listing</button>
-</form>{{if not .VendorEditor}}{{template "listing-edit:takedown" $}}{{end}}{{else}}<p>Visible in the marketplace. {{if .VendorEditor}}Archiving hides it and refuses new orders; existing orders continue unchanged.{{else}}To remove another vendor's listing, take it down with a reason for the vendor.{{end}}</p>
+</form>{{if not .VendorEditor}}{{template "listing-edit:takedown" $}}{{end}}{{else}}<p>Visible in the marketplace. {{if .VendorEditor}}Archiving hides it and refuses new orders; existing orders continue unchanged, and their buyers, and staff reviewing them, can still open this page from the order.{{else}}To remove another vendor's listing, take it down with a reason for the vendor.{{end}}</p>
 <a class="text-link" href="/product?id={{$.Product.ID}}">View public listing <span class="action-icon">→</span></a>{{if .VendorEditor}}
 <form method="post" action="/listings/archive">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
