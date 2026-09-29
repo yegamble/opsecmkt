@@ -160,8 +160,9 @@ its metadata; deleting one leaves copies in older backups. The full list is in
 [what the server keeps](docs/implementation-status.md#what-the-server-keeps).
 
 **Account recovery.** There is no forgotten-password reset. Recovery codes
-replace a lost authenticator, and an administrator's password is reset from the
-host with `-reset-admin-password` (see the [operator guide](docs/operator-guide.md)).
+replace a lost authenticator, and an administrator's password and second factors
+are reset from the host with `-reset-admin-password` and `-reset-admin-factors`
+(see the [operator guide](docs/operator-guide.md#authentication)).
 
 ## Documentation
 
@@ -180,7 +181,7 @@ host with `-reset-admin-password` (see the [operator guide](docs/operator-guide.
 
 | Path | Responsibility |
 | --- | --- |
-| `cmd/server/` | HTTP server, read-only preview and the host tools (`-bootstrap-admin`, `-reset-admin-password`, `-set-role`) |
+| `cmd/server/` | HTTP server, read-only preview and the host tools (`-bootstrap-admin`, `-reset-admin-password`, `-reset-admin-factors`, `-set-role`) |
 | `cmd/verify-audit/` | Offline verifier for signed audit exports |
 | `internal/market/` | Marketplace behaviour, database access and Go tests |
 | `internal/market/migrations/` | Ordered SQL migrations; add new files, never rewrite merged ones |
