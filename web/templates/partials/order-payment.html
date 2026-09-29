@@ -5,7 +5,7 @@
 {{if $.LiveNetwork}}<span class="badge live">MAINNET deposit address</span>{{else}}<span class="badge testnet">TESTNET {{.Network}} deposit address</span>{{end}}
 <p class="mono">{{.Address}}</p>
 {{if and .QR (eq $.OrderViewer "buyer")}}<figure class="payment-qr">{{.QR}}
-<figcaption>Scan to pay exactly <strong>{{.Remaining}} {{.Currency}}</strong>, the amount still due, to this address. Payment request: <span class="payment-uri">{{.PaymentURI}}</span>. Check the address and amount your wallet shows before sending.</figcaption>
+<figcaption>Scan to pay exactly <strong>{{.Remaining}} {{.Currency}}</strong>, the amount still due, to this address. Payment request: <span class="payment-uri">{{.PaymentURI}}</span>. Check the address and amount your wallet shows before sending. If no code appears, copy the address and amount above.</figcaption>
 </figure>{{end}}
 </div>{{end}}
 <dl class="key-values payment-figures">

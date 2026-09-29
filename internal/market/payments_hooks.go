@@ -29,10 +29,14 @@ const suspendedHold = suspendedHoldPrefix + " payout held when the recipient's a
 
 // largeHoldPrefix starts the hold on a refund or return larger than the order price (splitPayout). Only an
 // administrator who confirms the check releases it (payments_admin.go); the watcher never lifts it. It follows
-// suspendedHold when both apply, and a restore from backup keeps it after its own prefix (scripts/restore.sh).
+// suspendedHold when both apply, and a restore from backup keeps it after its own prefix (scripts/restore.sh), so
+// the prefix must never change; rows written with an earlier text after it still match.
 const largeHoldPrefix = "Larger than the order price:"
 
-const largeHold = largeHoldPrefix + " held so the market's pooled wallet is not used to swap coins; an administrator checks it before it is sent."
+// largeHold catches likely mistakes, not swaps: refunds and returns up to the order price are sent automatically
+// (pay and cancel, underpaid expiry, cancel then send), so the pooled wallet can swap coins up to a listing's price
+// without review. A refund is held when it exceeds the price; a return only when the excess itself exceeds it.
+const largeHold = largeHoldPrefix + " held as a likely mistake; an administrator checks it before it is sent. Refunds and returns up to the order price are sent automatically."
 
 // heldLarge reports a payout held because it is larger than the order price, including under a suspension or
 // restore hold.
@@ -275,8 +279,10 @@ type payoutPart struct {
 // buyer. A release pays the vendor exactly the price and returns the excess to the buyer as a separate payout,
 // unless the excess is below the minimum automatic refund (it then goes to the vendor with the release: sending
 // dust back costs more than it is worth and invites fee abuse) or the price itself is below the release floor. A
-// refund or return larger than the order price is marked large: sending it back automatically would let the
-// market's pooled wallet be used to swap coins, so an administrator checks it first.
+// refund or return larger than the order price is marked large, a likely mistake an administrator checks first. The
+// bound is the price: a refund of up to the price (and a return of an excess up to the price, so a payment of up to
+// twice the price) is sent automatically, so the pooled wallet can swap coins up to a listing's price without
+// review (largeHold).
 func splitPayout(kind string, o *Order, sum, required int64) []payoutPart {
 	if kind == "refund" {
 		return []payoutPart{{kind: "refund", recipient: o.BuyerID, who: "buyer", amount: sum, large: sum > required}}

@@ -62,7 +62,18 @@ Existing user configuration and wallets are untouched.
 
 The funding wallet is named `buyer`; the marketplace wallet is `opsecmkt`.
 Monero's fee reserve is unlocked before setup reports success. Bitcoin fees are
-deducted from payouts; Monero fees are paid on top from the market reserve.
+deducted from every payout. Monero releases have their fee paid on top from the
+market reserve; Monero refunds and overpayment returns have it deducted from the
+amount (`subtract_fee_from_outputs`). `tests/e2e/chain-journey.spec.ts` still
+expects a Monero refund to arrive in full (`verifyReceipt`, and the fixture's
+`received` reports a Monero fee of 0), so its Monero refund check does not match
+the deducted fee until it is updated (war-room A-103).
+
+On this offline stagenet fork a Monero transfer costs about 0.002 XMR, more than
+the 0.001 XMR minimum automatic refund: a Monero refund or return below about
+0.002 XMR fails with wallet error -16 "tx not possible", which the market records
+as refused before broadcast (nothing sent; an administrator can requeue it). Use
+larger amounts for Monero refunds and returns on the fork.
 
 ## Run the browser journeys
 

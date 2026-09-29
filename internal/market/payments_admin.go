@@ -115,10 +115,10 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 		if suspendedHeld && c.Form.Get("address_checked") != "confirmed" {
 			return actionResult{}, fail(409, "This payout was held when the recipient's account was suspended, and its payout address may have been changed by someone else. Check the payout address with the account owner, then confirm that you checked it to release the payout. Nothing was changed.")
 		}
-		// A refund or return larger than the order price would let the pooled wallet be used to swap coins.
+		// A refund or return larger than the order price is held as a likely mistake (largeHold).
 		large := heldLarge(state, payoutErr)
 		if large && c.Form.Get("large_reviewed") != "confirmed" {
-			return actionResult{}, fail(409, "This payout is larger than the order price and was held so the market's wallet is not used to swap coins. Review the order and its deposits, then confirm that you reviewed it to release the payout. Nothing was changed.")
+			return actionResult{}, fail(409, "This payout is larger than the order price and was held as a likely mistake (refunds and returns up to the price are sent automatically, so this check does not stop swaps up to a listing's price). Review the order and its deposits, then confirm that you reviewed it to release the payout. Nothing was changed.")
 		}
 		// A payout the watcher itself holds (credited deposit conflicted or re-confirming) stays held while
 		// that is still true: sendPayouts would refuse it anyway, and the watcher releases it once it re-confirms.
