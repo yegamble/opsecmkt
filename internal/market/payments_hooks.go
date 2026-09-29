@@ -143,7 +143,9 @@ type rowsQuerier interface {
 // confirmations last recorded by the watcher, as the post-funding notice promises. With no provider, or a
 // disabled one (refused by the network guard), only deposits already credited count. Locked (unlock_time)
 // transfers never count, nor do deposits first recorded after the order closed (payments.after_close, A-211:
-// never refunded automatically; settleOrder flags them). Credited deposits below holdBelow hold the payout (conflicted; with a provider,
+// never refunded automatically; settleOrder flags them), nor do deposits staff recorded as refunded by hand (A-31:
+// payments.disposition, e.g. a deposit below the minimum automatic refund that a later deposit would otherwise
+// lift over it). Credited deposits below holdBelow hold the payout (conflicted; with a provider,
 // re-confirming). lock row-locks the counted deposits (FOR UPDATE, for enqueuePayout).
 func (a *App) payoutBasis(ctx context.Context, q rowsQuerier, o *Order, lock bool) (ids []int64, sum, holdBelow int64, err error) {
 	threshold := int64(math.MaxInt64)
@@ -157,7 +159,7 @@ func (a *App) payoutBasis(ctx context.Context, q rowsQuerier, o *Order, lock boo
 		threshold = int64(p.Confirmations())
 		holdBelow = threshold
 	}
-	query := "SELECT id,amount FROM payments WHERE order_id=$1 AND NOT locked AND NOT after_close AND (credited OR confirmations>=$2)"
+	query := "SELECT id,amount FROM payments WHERE order_id=$1 AND NOT locked AND NOT after_close AND disposition<>'refunded' AND (credited OR confirmations>=$2)"
 	if lock {
 		query += " FOR UPDATE"
 	}

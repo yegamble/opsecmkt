@@ -258,7 +258,7 @@ Each of these forms repeats the wallet check above in one line next to the check
 
 The watcher flags a deposit (`payments.flagged`): it writes a system note ending "Moderator review
 required." to the order history and notifies every moderator and administrator who is not suspended
-("Payment review needed for order <first 8 characters of the order ID>"). A locked transfer, a deposit after settlement or after the order closed, or the deposits of a payout below the minimum automatic payout are flagged once. Deposits after settlement or after the order closed are announced once per order however many arrive: one order note per watcher pass names the deposits it flagged, but the buyer (the amount, no transaction ID; the vendor is not told) and each staff member are notified only when the order has no such flag open yet. The buyer's order page shows each as "Arrived after the order closed — not paid out; market staff notified".
+("Payment review needed for order <first 8 characters of the order ID>"). A locked transfer, a deposit after settlement or after the order closed, or the deposits of a payout below the minimum automatic payout are flagged once. Deposits after settlement or after the order closed are announced once per episode however many arrive: one order note per watcher pass names the deposits it flagged, but the buyer (the amount, no transaction ID; the vendor is not told) and each staff member are notified only when the order has no such flag open yet (not yet reviewed, or escalated to an administrator; see "Record the review" below). The buyer's order page shows each as "Arrived after the order closed — not paid out; market staff notified".
 A credited deposit that falls back below the threshold (conflicted, missing, or at a lower depth after a
 reorg) is announced once per episode while the order is open or any of its payouts unsent (a release already sent with its overpayment return still unsent counts): the buyer and the vendor
 are notified too (staff who are party to the order get that notification instead of the review one), and if
@@ -266,9 +266,10 @@ it confirms again and later regresses again it is announced again. Nothing is an
 behind the highest tip recorded (a restarted node catching up). Open **Moderation desk → Payment review**
 (`/moderator#payment-review`): it lists every open flag first, oldest first and never cut, then the 100 most
 recently flagged others with their count, each with the full order ID linking to the order, amount, full
-transaction ID, reason and flag time (the latest flag note for that deposit). A flag is open while its deposit
-is a locked transfer, a deposit after settlement or after the order closed, or part of a payout below the minimum, or while a credited deposit's regression has not confirmed
-again; the reason is read from the deposit's current confirmations. A moderator or administrator who is not
+transaction ID, reason and flag time (the latest flag note for that deposit). A flag is open, until staff record
+its review (below), while its deposit is a locked transfer, a deposit after settlement or after the order closed,
+or part of a payout below the minimum, or while a credited deposit's regression has not confirmed again; the
+reason is read from the deposit's current confirmations. A moderator or administrator who is not
 party to the order can open its page read-only: history with the flag note, the deposit ledger (while the currency's wallet is configured) and any payout. No buyer or
 vendor action is offered, the order actions refuse staff, and digital delivery content stays hidden unless
 the order is disputed.
@@ -294,35 +295,44 @@ What staff can do:
    too.
 3. Locked transfers and extra funds after settlement or after the order closed sit in the pooled wallet. They normally belong to the
    buyer. Agree a return address with the buyer through Messages (ideally signed with their verified PGP key),
-   send the funds back **by hand from the wallet** (`sendtoaddress` / `transfer`), and record it.
+   send the funds back **by hand from the wallet** (`sendtoaddress` / `transfer`), and record it on the desk as
+   *refunded by hand* (below).
 4. Deposits below the minimum automatic payout are too small to send on their own: a Bitcoin amount at or
    below the fee cannot be sent with the fee taken from it. Decide with the parties whether to leave them in the
    pooled wallet or return them by hand with the wallet paying the fee (`sendtoaddress` with
-   `subtractfeefromamount` false, or `transfer`), and record whatever you did as below. A flag stays open until
-   a payout includes the deposits.
+   `subtractfeefromamount` false, or `transfer`), and record whatever you did on the desk (below). A flag stays
+   open until a payout includes the deposits or its review is recorded.
 
-There is no web action to dismiss a flag or pay out a flagged deposit, and an open flag stays on the desk. A
-manual refund is recorded as a **written note** (an order-history event plus an audit row), **never as a
-payout row**: each order has at most one payout of each kind (`payouts` `UNIQUE (order_id, kind)`, migration 064), owned by its release and any return, or its refund; do not
-insert a payout and do not use *Mark sent* on the order's payout for a manual transfer. Record the note with
-`psql` (internal-db shown; replace the order ID, your staff handle, the note text and the refund's transaction ID):
+**Record the review** (A-31). Each open flag on the desk has *Record the review* for a moderator or
+administrator who is not party to the order (a party sees who must do it instead). Choose one, confirmed with
+your password (and authenticator code when enrolled); each flag takes one review, which cannot be changed:
 
-```sh
-docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -v order_id=FULL_ORDER_ID -v handle=YOUR_HANDLE \
-  -v note='Manual refund: returned 0.0005 BTC from deposit <txid>:<n> to the buyer by hand.' \
-  -v txid=REFUND_TXID -U opsecmkt -d opsecmkt <<'SQL'
-WITH ev AS (
-  INSERT INTO order_events(order_id,from_state,to_state,actor_id,note)
-  SELECT o.id,o.state,o.state,u.id,:'note' FROM orders o JOIN users u ON u.handle=:'handle' AND u.role IN ('moderator','admin')
-  WHERE o.id=:'order_id' RETURNING order_id,actor_id)
-INSERT INTO audit_events(user_id,action) SELECT actor_id,'Order '||order_id||': '||:'note'||' Transaction '||:'txid'||'.' FROM ev;
-SQL
-```
+- **No action**, with the reason (10–1000 characters), for example a double spend that left the order unpaid or
+  funds the buyer agreed to leave in the pooled wallet.
+- **Refunded by hand**, for a deposit that is not counted toward the order's payout (a locked transfer, a deposit
+  after settlement or after the order closed, or a deposit below the minimum automatic payout), after you sent
+  the refund from the wallet as in steps 3 and 4: the refund's 64-character transaction ID and the amount sent
+  (at most the deposit), with an optional note. The market sends nothing and writes **no payout row**: each order
+  has at most one payout of each kind (`payouts` `UNIQUE (order_id, kind)`, migration 064), owned by its release
+  and any return, or its refund, so do not insert a payout and do not use *Mark sent* on the order's payout for a
+  manual transfer. A deposit recorded as refunded by hand is never counted toward a payout afterwards, even if a
+  later deposit lifts a below-minimum sum over the minimum. A credited deposit (counted toward the payout) is
+  refused (409): it is settled through that payout.
+- **Escalate to an administrator** (moderators only), with an optional note: every administrator who is not
+  party to the order is notified, the flag stays open on the desk marked "escalated to an administrator" and only
+  an administrator can then record no action or a refund by hand.
 
-It must report `INSERT 0 1`; `INSERT 0 0` means the order ID or staff handle was wrong and nothing was
-written. The note appears in the order history, which the buyer and vendor also read, so keep addresses, the
-refund's transaction ID and anything private out of it: on Bitcoin a transaction ID reveals its recipient's
-address, so the vendor would learn the buyer's. The transaction ID goes only into the audit row.
+Each review writes one order-history event (the buyer and the vendor read it, with the reason or note, so keep
+addresses and anything private out of it), one audit row and a notification to the buyer. A refund's transaction
+ID is in the event, the audit row and the buyer's notification; on the order page only the buyer and staff
+reading the order see it (the vendor reads "(transaction ID shown only to its recipient)": on Bitcoin it reveals
+the buyer's address). The buyer's order page then reads "Refunded by hand on DATE: AMOUNT, transaction TXID",
+or for a deposit after the order closed "…; reviewed by market staff on DATE: no action" or "…; escalated to an
+administrator on DATE", instead of "market staff notified". A reviewed flag (no action or refunded) leaves the
+desk; once every late-deposit flag of an order is reviewed, a later late deposit is announced to the buyer and
+staff again. A credited deposit reviewed during a regression that confirms and later regresses again is a new,
+unreviewed flag. A second review of the same flag is refused (409); so is one by staff who are party to the order
+(403).
 
 ## 6. Back up the wallets
 
@@ -410,8 +420,12 @@ and no web action that clears the gate or records a lost payout.
      -c "SELECT currency, txid, order_id, state FROM payouts WHERE txid <> '' ORDER BY currency, txid"
    ```
 
-   (`-d` names the database in `DATABASE_URL`.) A send with no payout row is either a manual refund recorded as
-   a written note (see "Handle a payment-review flag"; leave it alone) or a **payout the restore lost**. Find
+   (`-d` names the database in `DATABASE_URL`.) A send with no payout row is either a refund sent by hand for a
+   payment-review flag (see "Handle a payment-review flag"; leave it alone: those recorded on the desk are listed
+   by `SELECT currency, disposition_txid, order_id FROM payments WHERE disposition_txid <> ''`, and one recorded
+   after the backup is missing from the restored database, so its flag is open again: record it again on the desk
+   once the market is open, with the same transaction ID; older ones were written notes with the transaction ID in
+   the audit row) or a **payout the restore lost**. Find
    the order of each lost payout from the payout's amount and the address it went to, in step 6. The payout's
    amount is the destination amount **plus the fee** for a send with the fee taken from it (every Bitcoin
    payout, and Monero refunds and overpayment returns) and the destination amount alone for a Monero release

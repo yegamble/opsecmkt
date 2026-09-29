@@ -502,7 +502,8 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 	// announced once per episode while the order is open or any of its payouts is unsent (A-213: a release sent
 	// with its return still unsent counts as unsent); unsent payouts are held below and the order state is never
 	// reverted. Reaching the threshold again ends the episode (regress_notice), so a later regression is announced
-	// again. payments.flagged stays set: staff keep read access and the desk lists it.
+	// again, as a new flag with no disposition (A-31; the order history keeps the earlier one). payments.flagged
+	// stays set: staff keep read access and the desk lists it.
 	if _, err = tx.ExecContext(ctx, "UPDATE payments SET regress_notice=false WHERE order_id=$1 AND regress_notice AND confirmations>=$2", orderID, threshold); err != nil {
 		return err
 	}
@@ -511,7 +512,7 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 		return err
 	}
 	if !isTerminal(o.State) || !allSent {
-		rows, err := tx.QueryContext(ctx, "UPDATE payments SET flagged=true,regress_notice=true WHERE order_id=$1 AND credited AND confirmations<$2 AND NOT regress_notice RETURNING txid,confirmations", orderID, threshold)
+		rows, err := tx.QueryContext(ctx, "UPDATE payments SET flagged=true,regress_notice=true,disposition='',disposition_note='',disposed_at=NULL WHERE order_id=$1 AND credited AND confirmations<$2 AND NOT regress_notice RETURNING txid,confirmations", orderID, threshold)
 		if err != nil {
 			return err
 		}
@@ -590,11 +591,11 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 // (after_close), which are never counted. They are never credited or refunded automatically (A-211). Each pass
 // that flags some writes one order note naming them (the desk dates each flag from it). The buyer (the amount, no
 // transaction ID; the vendor is not told) and the staff are notified once per episode: an episode starts when
-// the order has no such flag open (flagged, not credited, not below the floor, not locked) and lasts while one is,
-// so many small deposits give one notice each. No disposition closes a late-deposit flag yet (A-31), so for now
-// that is once per order.
+// the order has no such flag open (flagged, not credited, not below the floor, not locked, and with no recorded
+// disposition, or one escalated to an administrator: A-31) and lasts while one is, so many small deposits give one
+// notice each, and a deposit after staff disposed of every earlier one is announced again.
 func (a *App) flagLateDeposits(ctx context.Context, tx *sql.Tx, o *Order, threshold int64, paidOut bool) error {
-	const open = "flagged AND NOT credited AND NOT below_floor AND NOT locked"
+	const open = "flagged AND NOT credited AND NOT below_floor AND NOT locked AND disposition IN ('','escalated')"
 	var episode bool
 	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM payments WHERE order_id=$1 AND "+open+")", o.ID).Scan(&episode); err != nil {
 		return err

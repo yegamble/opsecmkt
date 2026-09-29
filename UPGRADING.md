@@ -436,6 +436,16 @@ recorded before the upgrade keep their earlier treatment. See
 [late deposits](docs/operator-guide.md#payments) and the
 [runbook](docs/testnet-runbook.md#handle-a-payment-review-flag).
 
+## 11. Payment-review dispositions (migration 066)
+
+Migration 066 runs at startup and adds `payments.disposition`, `disposition_note`, `disposition_txid`,
+`disposition_amount` and `disposed_at`; existing flags stay open. Moderators and administrators now record the
+outcome of each payment-review flag on the moderation desk (no action with a reason, refunded by hand with the
+transaction ID and amount, or escalated to an administrator) instead of the `psql` note the runbook described
+before. Notes recorded that way earlier stay in the order history, but their flags stay open on the desk: record
+each such refund there once as *refunded by hand*, with the transaction ID from its audit row. See the
+[runbook](docs/testnet-runbook.md#handle-a-payment-review-flag).
+
 ## Appendix: new keys by hand
 
 `./scripts/install.sh upgrade` writes these for you. To add them yourself, use your editor (values in single
