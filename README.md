@@ -21,8 +21,8 @@ Server-rendered Go and PostgreSQL, PGP identity, Tor-first deployment.
 > operator configures them ([Mainnet](docs/operator-guide.md#mainnet)); a market is
 > all mainnet or all test networks. Deposits sit in
 > the operator's pooled custodial wallets: this is not escrow, and there is no
-> multisig or fee accounting. Per-order escrow (Bitcoin 2-of-3 multisig, Monero
-> wallets kept per order) is planned and not yet available: see
+> multisig or fee accounting. Per-order escrow (Bitcoin 2-of-3 multisig, a Monero
+> account per order) is planned and not yet available: see
 > [per-order escrow](docs/escrow.md). Tor protects inbound connections to the site; it
 > does not guarantee anonymity. See [implementation status](docs/implementation-status.md).
 
