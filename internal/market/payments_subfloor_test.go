@@ -109,6 +109,14 @@ func TestSubFloorPriceOverpaymentIsHeld(t *testing.T) {
 	buyerPage := html.UnescapeString(p.page("/order?id="+p.order, p.buyerSess))
 	mustContain(t, buyerPage, statement)
 	mustNotContain(t, buyerPage, "below the minimum automatic refund, so it is not returned")
+	// A-215: the Overpaid alert and the complete help say the same for both parties.
+	mustContain(t, buyerPage, "Completing releases everything to the vendor: "+cause+", so the amount paid over it cannot be returned separately. An administrator reviews the release before it is sent.",
+		"Completing queues the payouts stated below; the payment watcher sends them automatically unless the statement says otherwise.")
+	vendorPage := html.UnescapeString(p.page("/order?id="+p.order, p.vendorSess))
+	mustContain(t, vendorPage, "Completing releases everything to you: "+cause+", so the amount paid over it cannot be returned separately. An administrator reviews the release before it is sent.")
+	for _, page := range []string{buyerPage, vendorPage} {
+		mustNotContain(t, page, "below the minimum automatic refund of", "returns the excess", "whole counted amount", "the return waits")
+	}
 	p.check(p.do("POST", "/orders/complete", p.buyerSess, payoutConfirmed(url.Values{"order_id": {p.order}}, 100000000)), 303)
 
 	if n := p.count("SELECT count(*) FROM payouts WHERE order_id=$1", p.order); n != 1 {

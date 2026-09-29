@@ -249,17 +249,22 @@ func TestVendorCancelOfPaidOrderNeedsConfirmation(t *testing.T) {
 
 func TestOverpaidOrderPagesWarnBothParties(t *testing.T) {
 	p := newPayEnv(t)
-	buyerCopy := "Completing releases the price to the vendor and returns the excess to your saved payout address, with the network fee deducted."
+	// A-215: an excess larger than the price is returned only after an administrator's review, and this buyer has
+	// no BTC payout address, so the return also waits for one.
+	buyerCopy := "Completing releases the price to the vendor. The excess is more than the price, so an administrator reviews its return to you (network fee deducted) before it is sent. You have no BTC payout address saved, so the return waits until you save one:"
 	p.paidByWatcher(p.order, p.addr, "tx-paid")
 	mustNotContain(t, p.page("/order?id="+p.order, p.buyerSess), buyerCopy, "more than the price (test network)")
 	p.fake.Deposit(p.addr, "tx-extra", 0, 900000, 3)
 	p.poll()
 	buyerPage := p.page("/order?id="+p.order, p.buyerSess)
-	mustContain(t, buyerPage, "You sent 0.009 BTC more than the price (test network).", buyerCopy)
+	mustContain(t, buyerPage, "You sent 0.009 BTC more than the price (test network).", buyerCopy, `href="/account#payout">save a payout address</a>`,
+		"one resolved as a refund returns everything to you once an administrator has reviewed it")
+	mustNotContain(t, buyerPage, "your saved", "Cancelling this paid order")
 	vendorPage := p.page("/order?id="+p.order, p.vendorSess)
-	mustContain(t, vendorPage, "The buyer sent 0.009 BTC more than the price (test network).", "Completing releases the price to you and returns the excess to the buyer",
-		"Cancelling this paid order refunds every deposit to the buyer", "a return or refund larger than the price waits for an administrator's review")
-	mustNotContain(t, vendorPage, buyerCopy)
+	mustContain(t, vendorPage, "The buyer sent 0.009 BTC more than the price (test network).", "Completing releases the price to you. The excess is more than the price, so an administrator reviews its return to the buyer (network fee deducted) before it is sent.",
+		"Cancelling this paid order refunds every deposit to the buyer; the refund is more than the price, so an administrator reviews it before it is sent.",
+		"one resolved as a refund returns everything to the buyer once an administrator has reviewed it")
+	mustNotContain(t, vendorPage, buyerCopy, "your saved", "payout address saved", "returns the excess")
 }
 
 func TestNoTemplateSaysResolvingMovesNoFunds(t *testing.T) {
