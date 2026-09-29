@@ -105,29 +105,83 @@ func pgpLoginCodeAction(c *actionCtx) (actionResult, error) {
 }
 
 // expiredKeyRefusal is /challenge/pgp's answer when no code can be encrypted to the verified key (A-155): usually it,
-// or its encryption subkey, expired. It names what the account can still do: its other method when TOTP is enrolled,
-// otherwise the administrator's reset of second factors (/admin, A-137's operator reset for an administrator), and
-// how to reach the staff (the staff contact, A-119).
+// or its encryption subkey, expired.
 func expiredKeyRefusal(c *actionCtx, userID string) error {
-	msg := "A sign-in code cannot be encrypted to your key: it or its encryption subkey expired or was revoked, or it cannot encrypt. "
+	return pgpKeyRefusal(c.Ctx(), c.Tx, userID,
+		"A sign-in code cannot be encrypted to your key: it or its encryption subkey expired or was revoked, or it cannot encrypt. ",
+		"your password, saved key and its verification stay, and ", "renew the key (gpg --quick-set-expire) and paste it on your account page")
+}
+
+// unreadableKeyRefusal is /login's answer, after a correct password, for an account whose only second factor is PGP
+// sign-in and whose saved key can no longer be read (A-272): a password alone never opens such an account.
+func unreadableKeyRefusal(ctx context.Context, q rowQuerier, userID string) error {
+	return pgpKeyRefusal(ctx, q, userID,
+		"PGP sign-in is on for this account, but your saved PGP key can no longer be read (it may have been saved before this market refused keys like it), so no sign-in code can be encrypted to it. ",
+		"your password stays, and ", "paste a current export of your public key (gpg --armor --export followed by its fingerprint) on your account page and prove you own it on the PGP page again")
+}
+
+// pgpKeyRefusal refuses a PGP sign-in that cannot be finished because of the saved key (problem says why), naming what
+// the account can still do: its other method when TOTP is enrolled, otherwise the administrator's reset of second
+// factors (/admin, A-137's operator reset for an administrator; keeps says what that reset leaves), then fix; and how
+// to reach the staff (the staff contact, A-119).
+func pgpKeyRefusal(ctx context.Context, q rowQuerier, userID, problem, keeps, fix string) error {
 	var totp bool
 	var role string
-	if err := c.Tx.QueryRowContext(c.Ctx(), "SELECT totp_enabled,role FROM users WHERE id=$1", userID).Scan(&totp, &role); err != nil {
+	if err := q.QueryRowContext(ctx, "SELECT totp_enabled,role FROM users WHERE id=$1", userID).Scan(&totp, &role); err != nil {
 		return err
 	}
-	contact, err := staffContactRefusal(c.Ctx(), c.Tx)
+	contact, err := staffContactRefusal(ctx, q)
 	if err != nil {
 		return err
 	}
 	if totp {
-		return fail(409, msg+"Sign in with your authenticator code or a recovery code instead, then renew the key (gpg --quick-set-expire) and paste it on your account page. Lost your authenticator and recovery codes too? "+contact)
+		return fail(409, problem+"Sign in with your authenticator code or a recovery code instead, then "+fix+". Lost your authenticator and recovery codes too? "+contact)
 	}
 	who := "A market administrator can turn it off for you with Reset a user's second factors"
 	if role == "admin" {
 		who = "Another administrator can turn it off for you with Reset a user's second factors, or the operator on the server with -reset-admin-factors"
 	}
-	return fail(409, msg+"PGP sign-in is the only verification method on this account, so this sign-in cannot be finished. "+who+
-		"; your password, saved key and its verification stay, and you then sign in with your password, renew the key (gpg --quick-set-expire) and paste it on your account page. "+contact)
+	return fail(409, problem+"PGP sign-in is the only verification method on this account, so this sign-in cannot be finished. "+who+
+		"; "+keeps+"you then sign in with your password, "+fix+". "+contact)
+}
+
+// pgpSignInLost reports that PGP sign-in is turned on but cannot be used: the saved key cannot be read (or no longer
+// matches its ownership proof), so pgpFactor.Enrolled no longer counts it (A-272).
+func pgpSignInLost(ctx context.Context, q rowQuerier, userID string) (bool, error) {
+	p, err := loadPGPAccount(ctx, q, userID, false)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return p.TwoFactorSet && !p.TwoFactor, nil
+}
+
+// unreadableKeyNotice tells the owner, after a correct password, that PGP sign-in was lost (A-272).
+var unreadableKeyNotice = ownerNotice("Someone entered your password correctly, but PGP sign-in could not be used because your saved PGP key can no longer be read. " +
+	"With an authenticator enrolled, sign-in asks for its code or a recovery code instead; without one, sign-in is refused until a market administrator turns your second factors off. " +
+	"Then paste a current export of your public key on your account page and prove you own it again.")
+
+// notifyUnreadableKey sends unreadableKeyNotice once per saved key: not again while one sent since the key last
+// changed (users.pgp_changed_at; for a key saved before that was recorded, ever) exists. The account row is locked
+// first, so concurrent sign-ins send one.
+func (a *App) notifyUnreadableKey(ctx context.Context, userID string) error {
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var changed sql.NullTime
+	if err = tx.QueryRowContext(ctx, "SELECT pgp_changed_at FROM users WHERE id=$1 FOR NO KEY UPDATE", userID).Scan(&changed); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO notifications(id,user_id,body) SELECT $1,$2,$3
+		WHERE NOT EXISTS (SELECT 1 FROM notifications WHERE user_id=$2 AND body=$3 AND created>=COALESCE($4,'-infinity'::timestamptz))`,
+		randomToken(), userID, unreadableKeyNotice, changed); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // pgpChallengeLoader shows the encrypted code for this pending login, if one was requested.

@@ -574,6 +574,20 @@ Resolving a dispute on the moderation desk (or `/disputes`) now also asks for th
 current password, and an authenticator code when TOTP is enrolled, like the other staff actions; the audit row
 records the confirmation. Moderators still resolve disputes.
 
+## 15. PGP sign-in with an unreadable key, and failed password confirmations (A-272, A-274)
+
+No migration. An account with PGP sign-in on whose saved key this release can no longer read (for example a key
+saved before the market refused keys like it, A-266) was signed in with the password alone by the earlier version.
+It no longer is: with TOTP on it is asked for its authenticator code or a recovery code; otherwise the sign-in is
+refused after the correct password, with a message naming the problem, the administrator's *Reset a user's second
+factors* (for an administrator, `-reset-admin-factors` on the host) and the staff contact, and the owner is notified
+once. Expect such requests after upgrading; confirm who is asking before resetting (see the
+[operator guide](docs/operator-guide.md#authentication)).
+
+The per-account limit on password-confirmed actions now counts only wrong passwords: staff are no longer paused
+after ten correct confirmations in ten minutes (for example resolving many disputes). After ten wrong passwords the
+refusal now reads "Too many failed password confirmations. Try again in ten minutes."
+
 ## Appendix: new keys by hand
 
 `./scripts/install.sh upgrade` writes these for you. To add them yourself, use your editor (values in single

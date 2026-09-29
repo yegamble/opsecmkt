@@ -194,7 +194,7 @@ func TestRateLimitConfirmPassword(t *testing.T) {
 	for range 10 {
 		agExpect(e, "/pgp/2fa", s, off("wrong-password-123"), 401, "Password incorrect")
 	}
-	agExpect(e, "/pgp/2fa", s, off(testPassword), 429, "Too many attempts")
+	agExpect(e, "/pgp/2fa", s, off(testPassword), 429, confirmPausedText)
 	if agStr(e, "SELECT pgp_2fa::text FROM users WHERE id=$1", id) != "true" {
 		t.Fatal("limited confirmation changed the setting")
 	}
@@ -278,11 +278,16 @@ func TestRateLimitTOTPManagementActions(t *testing.T) {
 	}
 	code, _ := e.totpCodeFor(id, 0)
 	confirms := func() int { e.A.mu.Lock(); defer e.A.mu.Unlock(); return e.A.limits["confirm:"+id].Count }
-	spent := confirms() // the ten activations above checked the password (A-152)
+	// The ten activations above checked the (correct) password (A-152), which spends nothing (A-274); the limited
+	// requests below also send a wrong one, which would spend the confirm budget had they reached the check.
+	spent := confirms()
 	agExpect(e, "/totp/activate", s, url.Values{"code": {code}, "password": {testPassword}}, 429, "Too many attempts")
+	agExpect(e, "/totp/activate", s, url.Values{"code": {code}, "password": {"wrong-password-123"}}, 429, "Too many attempts")
 	// The same totp:<user> budget covers recovery regeneration and disabling.
 	agExpect(e, "/totp/recovery", s, url.Values{"code": {code}, "password": {testPassword}}, 429, "Too many attempts")
+	agExpect(e, "/totp/recovery", s, url.Values{"code": {code}, "password": {"wrong-password-123"}}, 429, "Too many attempts")
 	agExpect(e, "/totp/disable", s, url.Values{"password": {testPassword}, "code": {code}}, 429, "Too many attempts")
+	agExpect(e, "/totp/disable", s, url.Values{"password": {"wrong-password-123"}, "code": {code}}, 429, "Too many attempts")
 	if agStr(e, "SELECT totp_enabled::text FROM users WHERE id=$1", id) != "false" || agInt(e, "SELECT count(*) FROM recovery_codes WHERE user_id=$1", id) != 0 {
 		t.Fatal("limited activation enabled TOTP")
 	}
@@ -756,7 +761,8 @@ func TestTOTPDisableInputValidation(t *testing.T) {
 	e := newTestApp(t)
 	id, s := e.user("totp_dis", "buyer")
 	_, recovery := agEnableTOTP(e, id)
-	agExpect(e, "/totp/disable", s, url.Values{"password": {testPassword}}, 400, "Enter your password and a current code")
+	// A wrong password here: a correct one spends no confirm budget (A-274), so it could not show the check was skipped.
+	agExpect(e, "/totp/disable", s, url.Values{"password": {"wrong-password-123"}}, 400, "Enter your password and a current code")
 	agExpect(e, "/totp/disable", s, url.Values{"password": {strings.Repeat("p", 73)}, "code": {recovery}}, 400, "Enter your password and a current code")
 	if agLimited(e, "confirm:"+id) {
 		t.Fatal("malformed disable reached the password check")

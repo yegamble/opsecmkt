@@ -13,7 +13,7 @@ import (
 // free text) is the path behind every "contact the market staff". It is shown as text, never as a link, on /canary,
 // in the suspended sign-in refusal, as the lost-factors line on /challenge, under a notification that asks its
 // reader to contact the staff (the payout-address change notice among them), as "Can't read the image?" help beside
-// the CAPTCHA on /login and /register, and in the expired-key sign-in refusal (expiredKeyRefusal). When it is exactly
+// the CAPTCHA on /login and /register, and in the expired- and unreadable-key sign-in refusals (pgpKeyRefusal). When it is exactly
 // the handle of a moderator or administrator who is not suspended and whose key can receive encrypted messages
 // (canReceiveEncrypted, A-83), a signed-in reader also gets a /messages?to=<handle> link; a signed-out reader could
 // not use it. Unset, each place says "Ask the operator of this market." instead, so no page implies a channel that
