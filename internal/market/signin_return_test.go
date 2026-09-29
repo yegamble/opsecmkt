@@ -208,3 +208,38 @@ func TestSignInReturnThroughChallenge(t *testing.T) {
 		}
 	})
 }
+
+// A-269: with the CAPTCHA on, a wrong answer on /login or /register re-renders the form from the POST; it keeps the
+// posted return target (through the same check), so answering the new challenge still lands on the page.
+func TestSignInReturnAfterWrongCaptcha(t *testing.T) {
+	e := newTestApp(t)
+	e.user("a269_buyer", "buyer")
+	e.mustExec("UPDATE settings SET value='true' WHERE key='captcha_required'")
+	// /login says where the sign-in leads; /register carries the target in its link back to /login.
+	for form, carried := range map[string]string{"/login": "Sign in to see Orders.", "/register": `href="/login?next=%2forders"`} {
+		handle := map[string]string{"/login": "a269_buyer", "/register": "a269_new"}[form]
+		anon := randomToken()
+		id := e.captcha(form+"?next=%2Forders", anon)
+		w := e.do("POST", form, anon, url.Values{"handle": {handle}, "password": {testPassword}, "next": {"/orders"}, "captcha_id": {id}, "captcha": {"WRONG1"}})
+		e.check(w, 400)
+		retry := wrongCaptchaRetry(e, w, form, id)
+		if b := w.Body.String(); !strings.Contains(b, `<input type="hidden" name="next" value="/orders">`) || !strings.Contains(b, carried) {
+			t.Fatalf("wrong CAPTCHA answer on %s dropped next:\n%s", form, b)
+		}
+		w = e.do("POST", form, anon, url.Values{"handle": {handle}, "password": {testPassword}, "next": {"/orders"}, "captcha_id": {retry}, "captcha": {e.A.captchaAnswer(retry)}})
+		e.check(w, 303)
+		if loc := w.Header().Get("Location"); loc != "/orders" || e.cookie(w, "session") == "" {
+			t.Fatalf("%s after a wrong CAPTCHA answer landed on %q, want /orders with a session", form, loc)
+		}
+
+		// A refused target posted with a wrong answer renders no return target on the retry form.
+		anon = randomToken()
+		id = e.captcha(form, anon)
+		w = e.do("POST", form, anon, url.Values{"handle": {handle + "x"}, "password": {testPassword}, "next": {"//evil.test"}, "captcha_id": {id}, "captcha": {"WRONG1"}})
+		e.check(w, 400)
+		wrongCaptchaRetry(e, w, form, id)
+		if b := w.Body.String(); strings.Contains(b, `name="next"`) || strings.Contains(b, "Sign in to see") || strings.Contains(b, "evil.test") {
+			t.Fatalf("wrong CAPTCHA answer on %s carries a refused target:\n%s", form, b)
+		}
+	}
+}

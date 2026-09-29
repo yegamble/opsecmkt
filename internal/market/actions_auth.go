@@ -63,9 +63,14 @@ func signInNext(raw string) string {
 	return "/" + page + "?" + keep.Encode()
 }
 
-// signInNextLoader carries a valid ?next= on /login and /register into their forms and links (A-126).
+// signInNextLoader carries a valid ?next= on /login and /register into their forms and links (A-126). A form
+// re-rendered from its POST (a wrong CAPTCHA answer, captchaRetry) keeps the posted next field instead (A-269).
 func signInNextLoader(_ context.Context, _ *App, r *http.Request, d *PageData) error {
-	if d.Next = signInNext(r.URL.Query().Get("next")); d.Next != "" {
+	raw := r.URL.Query().Get("next")
+	if r.Method == http.MethodPost {
+		raw = r.PostForm.Get("next")
+	}
+	if d.Next = signInNext(raw); d.Next != "" {
 		d.NextTitle = nextTitle(d.Next)
 	}
 	return nil
