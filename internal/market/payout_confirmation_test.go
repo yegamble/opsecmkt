@@ -22,6 +22,13 @@ func payoutConfirmed(v url.Values, seen int64) url.Values {
 	return v
 }
 
+// resolveConfirmed is payoutConfirmed plus the resolver's current password, which /resolve needs (A-32).
+func resolveConfirmed(v url.Values, seen int64) url.Values {
+	v = payoutConfirmed(v, seen)
+	v.Set("password", testPassword)
+	return v
+}
+
 var amountSeenField = regexp.MustCompile(`name="amount_seen" value="(\d+)"`)
 
 // amountSeen returns the amount_seen values rendered on a page, in order.
@@ -90,7 +97,7 @@ func TestResolveStatesPayoutAmountAndNeedsConfirmation(t *testing.T) {
 	// A missing amount_seen is refused too.
 	missing := url.Values{"id": decision["id"], "outcome": decision["outcome"], "resolution": decision["resolution"], "payout_confirmed": {"confirmed"}}
 	p.check(p.do("POST", "/resolve", modSess, missing), 400)
-	p.check(p.do("POST", "/resolve", modSess, payoutConfirmed(decision, 1000000)), 303)
+	p.check(p.do("POST", "/resolve", modSess, resolveConfirmed(decision, 1000000)), 303)
 	// The vendor is paid the price; the excess, larger than the price, is returned only after an administrator's review.
 	if st, _, addr, amt := p.payout(p.order); st != "pending" || addr != "fake-testnet-vendor" || amt != 100000 {
 		t.Fatalf("payout %s %s %d", st, addr, amt)
@@ -111,7 +118,7 @@ func TestResolveStatesPayoutAmountAndNeedsConfirmation(t *testing.T) {
 	desk = p.page("/moderator", modSess)
 	mustContain(t, desk, "Release (test network) to "+p.vendor.Handle+" — nothing counted yet; deposits confirming later go to the chosen party",
 		"Refund (test network) to "+p.buyer.Handle+" — nothing counted yet; deposits confirming later go to the chosen party; no payout address: the payout waits for one")
-	p.check(p.do("POST", "/resolve", modSess, payoutConfirmed(url.Values{"id": {emptyDispute}, "outcome": {"refund"}, "resolution": {"Nothing was paid; close the order."}}, 0)), 303)
+	p.check(p.do("POST", "/resolve", modSess, resolveConfirmed(url.Values{"id": {emptyDispute}, "outcome": {"refund"}, "resolution": {"Nothing was paid; close the order."}}, 0)), 303)
 	if p.state(empty) != stateResolved || p.count("SELECT count(*) FROM payouts WHERE order_id=$1", empty) != 0 {
 		t.Fatal("empty resolve")
 	}
@@ -129,7 +136,7 @@ func TestResolveRefusesChangedAmount(t *testing.T) {
 	p.fake.Deposit(p.addr, "tx-extra", 0, 50000, 3)
 	p.poll()
 	decision := url.Values{"id": {dispute}, "outcome": {"refund"}, "resolution": {"No proof of shipment; refund the buyer."}}
-	w := p.do("POST", "/resolve", modSess, payoutConfirmed(decision, seen[0]))
+	w := p.do("POST", "/resolve", modSess, resolveConfirmed(decision, seen[0]))
 	p.check(w, 409)
 	if !strings.Contains(w.Body.String(), "The amount changed to 0.0015 BTC — review again") {
 		t.Fatalf("body %q", w.Body.String())
@@ -141,7 +148,7 @@ func TestResolveRefusesChangedAmount(t *testing.T) {
 	if len(seen) != 1 || seen[0] != 150000 {
 		t.Fatalf("amount_seen after the deposit %v", seen)
 	}
-	p.check(p.do("POST", "/resolve", modSess, payoutConfirmed(decision, seen[0])), 303)
+	p.check(p.do("POST", "/resolve", modSess, resolveConfirmed(decision, seen[0])), 303)
 	// 0.0015 BTC is more than the 0.001 BTC price: the refund waits for an administrator (anti-mixing).
 	if st, _, addr, amt := p.payout(p.order); st != "held" || addr != "fake-testnet-buyer" || amt != 150000 {
 		t.Fatalf("payout %s %s %d", st, addr, amt)
@@ -164,7 +171,7 @@ func TestConcurrentResolveQueuesOnePayout(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			codes <- p.do("POST", "/resolve", sess, payoutConfirmed(url.Values{"id": {dispute}, "outcome": {"release"}, "resolution": {"Shipped with proof; release to the vendor."}}, 100000)).Code
+			codes <- p.do("POST", "/resolve", sess, resolveConfirmed(url.Values{"id": {dispute}, "outcome": {"release"}, "resolution": {"Shipped with proof; release to the vendor."}}, 100000)).Code
 		}()
 	}
 	wg.Wait()
@@ -173,11 +180,13 @@ func TestConcurrentResolveQueuesOnePayout(t *testing.T) {
 	for c := range codes {
 		got[c]++
 	}
-	if got[303] != 1 || got[409] != 7 || p.count("SELECT count(*) FROM payouts WHERE order_id=$1", p.order) != 1 {
+	// The password check (A-32) admits cap(passwordWork) bcrypt checks at once and answers the rest 503 before any
+	// change, so at least that many reach the dispute: one resolves it and the others find it resolved (409).
+	if got[303] != 1 || got[409] < cap(passwordWork)-1 || got[409]+got[503] != 7 || p.count("SELECT count(*) FROM payouts WHERE order_id=$1", p.order) != 1 {
 		t.Fatalf("status counts %v", got)
 	}
 	// A repeated POST after the resolution changes nothing.
-	p.check(p.do("POST", "/resolve", modSess, payoutConfirmed(url.Values{"id": {dispute}, "outcome": {"refund"}, "resolution": {"Changed my mind; refund the buyer instead."}}, 100000)), 409)
+	p.check(p.do("POST", "/resolve", modSess, resolveConfirmed(url.Values{"id": {dispute}, "outcome": {"refund"}, "resolution": {"Changed my mind; refund the buyer instead."}}, 100000)), 409)
 	p.poll()
 	p.poll()
 	if sends := p.fake.Sends(); len(sends) != 1 || sends[0].Amount != 100000 || sends[0].To != "fake-testnet-vendor" {
@@ -280,5 +289,75 @@ func TestNoTemplateSaysResolvingMovesNoFunds(t *testing.T) {
 		if strings.Contains(string(b), "moves no funds") {
 			t.Errorf("%s still says a money-moving form moves no funds", f)
 		}
+	}
+}
+
+// A-32 (/resolve part, A-244): resolving a dispute needs the resolver's current password, and an authenticator code
+// when TOTP is enrolled; a refused resolution changes nothing (order, dispute, payouts, order history, audit,
+// notifications). Moderators keep resolving pooled disputes.
+func TestResolveNeedsPasswordStepUp(t *testing.T) {
+	p := newPayEnv(t)
+	p.setPayoutAddress(p.vendor, "fake-testnet-vendor")
+	p.fake.Deposit(p.addr, "tx-a32", 0, 100000, 3)
+	p.poll()
+	p.check(p.do("POST", "/disputes", p.buyerSess, url.Values{"order_id": {p.order}, "reason": {"The parcel never arrived; please review the order."}}), 303)
+	var dispute string
+	if err := p.DB.QueryRow("SELECT id FROM disputes WHERE order_id=$1", p.order).Scan(&dispute); err != nil {
+		t.Fatal(err)
+	}
+	modID, modSess := p.user("a32mod_"+randomToken()[:6], "moderator")
+	desk := p.page("/moderator", modSess)
+	form := desk[strings.Index(desk, `action="/resolve"`):]
+	form = form[:strings.Index(form, "</form>")]
+	mustContain(t, form, `<input type="password" name="password" required maxlength="72" autocomplete="current-password">`)
+	mustNotContain(t, form, `name="code"`)
+	decision := func() url.Values {
+		return payoutConfirmed(url.Values{"id": {dispute}, "outcome": {"release"}, "resolution": {"Shipped with proof; release to the vendor."}}, 100000)
+	}
+	snapshot := func() string {
+		return p.str(`SELECT o.state||'|'||d.status||'|'||d.outcome||'|'||(SELECT count(*) FROM payouts WHERE order_id=o.id)||'|'||(SELECT count(*) FROM order_events WHERE order_id=o.id)
+			||'|'||(SELECT count(*) FROM audit_events)||'|'||(SELECT count(*) FROM notifications) FROM orders o JOIN disputes d ON d.order_id=o.id WHERE o.id=$1`, p.order)
+	}
+	before := snapshot()
+	refused := func(v url.Values, code int, msg string) {
+		t.Helper()
+		w := p.do("POST", "/resolve", modSess, v)
+		p.check(w, code)
+		if !strings.Contains(w.Body.String(), msg) {
+			t.Fatalf("body %q, want %q", w.Body.String(), msg)
+		}
+		if after := snapshot(); after != before {
+			t.Fatalf("refused resolve changed %s -> %s", before, after)
+		}
+	}
+	refused(decision(), 400, "Enter your current password to confirm this change.")
+	wrong := decision()
+	wrong.Set("password", testPassword+"-wrong")
+	refused(wrong, 401, "Password incorrect")
+
+	// With TOTP enrolled the form asks for a code, and a password alone, or a wrong code, is refused.
+	key, _ := agEnableTOTP(p.testEnv, modID)
+	form = p.page("/moderator", modSess)
+	form = form[strings.Index(form, `action="/resolve"`):]
+	mustContain(t, form[:strings.Index(form, "</form>")], `name="code" required inputmode="numeric"`, "confirm it with your password and authenticator code")
+	disputesPage := p.page("/disputes", modSess)
+	disputesPage = disputesPage[strings.Index(disputesPage, `action="/resolve"`):]
+	mustContain(t, disputesPage[:strings.Index(disputesPage, "</form>")], `name="password" required`, `name="code" required inputmode="numeric"`)
+	withPassword := decision()
+	withPassword.Set("password", testPassword)
+	refused(withPassword, 401, "Verification code incorrect")
+	withPassword.Set("code", p.wrongTOTP(modID))
+	refused(withPassword, 401, "Verification code incorrect")
+
+	withPassword.Set("code", agTOTPNow(key))
+	p.check(p.do("POST", "/resolve", modSess, withPassword), 303)
+	if st := p.state(p.order); st != stateResolved || p.count("SELECT count(*) FROM disputes WHERE id=$1 AND status='Resolved — release to vendor' AND outcome='release'", dispute) != 1 {
+		t.Fatalf("resolve with password and code: state %s", st)
+	}
+	if st, _, addr, amt := p.payout(p.order); st != "pending" || addr != "fake-testnet-vendor" || amt != 100000 {
+		t.Fatalf("payout %s %s %d", st, addr, amt)
+	}
+	if !p.auditHas(modID, "Resolved dispute on order "+shortID(p.order)+" (outcome: release) (confirmed with password and authenticator code)") {
+		t.Fatal("resolution audit does not record the confirmation")
 	}
 }

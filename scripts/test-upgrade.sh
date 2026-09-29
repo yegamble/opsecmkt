@@ -189,6 +189,29 @@ ROLLBACK;
 SQL
 ) == 2 ]]
 
+# One settlement per order (migration 069): a release keeps its return, but a release and a refund for the same
+# order are refused by the database.
+[[ $(sql -c "SELECT indexdef FROM pg_indexes WHERE indexname='payouts_one_settlement'") == *"UNIQUE INDEX payouts_one_settlement ON public.payouts USING btree (order_id) WHERE (kind = ANY (ARRAY['release'::text, 'refund'::text]))"* ]]
+[[ $(sql <<'SQL'
+BEGIN;
+INSERT INTO payouts(order_id,kind,user_id,currency,amount) SELECT id,'release',buyer_id,currency,amount FROM orders WHERE currency='XMR';
+INSERT INTO payouts(order_id,kind,user_id,currency,amount) SELECT id,'return',buyer_id,currency,amount FROM orders WHERE currency='XMR';
+SELECT count(*) FROM payouts;
+ROLLBACK;
+SQL
+) == 2 ]]
+if sql > "$work/settlement.out" 2>&1 <<'SQL'
+BEGIN;
+INSERT INTO payouts(order_id,kind,user_id,currency,amount) SELECT id,'release',buyer_id,currency,amount FROM orders WHERE currency='XMR';
+INSERT INTO payouts(order_id,kind,user_id,currency,amount) SELECT id,'refund',buyer_id,currency,amount FROM orders WHERE currency='XMR';
+COMMIT;
+SQL
+then
+  echo 'A release and a refund for the same order were both accepted' >&2; exit 1
+fi
+grep -q 'payouts_one_settlement' "$work/settlement.out"
+[[ $(sql -c 'SELECT count(*) FROM payouts') == 0 ]]
+
 # Behaviour through the upgraded server: an alpha.1 password still signs in, the migrated draft is shown as
 # a draft, and ordering the same product and currency again returns that draft instead of a second one.
 # (Migration 010 turns the CAPTCHA on; switch it off as an operator would, so this script can sign in.)

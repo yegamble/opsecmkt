@@ -566,7 +566,7 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 		if err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM payouts WHERE order_id=$1)", orderID).Scan(&queued); err != nil {
 			return err
 		}
-		if err = a.enqueuePayout(ctx, tx, &o); err != nil {
+		if err = a.settleTerminal(ctx, tx, &o); err != nil {
 			return err
 		}
 		if err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM payouts WHERE order_id=$1)", orderID).Scan(&paidOut); err != nil {

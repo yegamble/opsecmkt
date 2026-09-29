@@ -199,7 +199,7 @@ func TestLifecycleDigitalAndDisputedPhysical(t *testing.T) {
 	if len(seen) != 1 || seen[0] != 100000 {
 		t.Fatalf("resolve form amount_seen %v", seen)
 	}
-	l.post("/resolve", mod, payoutConfirmed(form("id", disputeID, "outcome", "refund", "resolution", "No proof of shipment; refund the buyer in full."), seen[0]), 303)
+	l.post("/resolve", mod, resolveConfirmed(form("id", disputeID, "outcome", "refund", "resolution", "No proof of shipment; refund the buyer in full."), seen[0]), 303)
 	if s := l.state(order2); s != stateResolved {
 		t.Fatalf("after resolution: %s", s)
 	}

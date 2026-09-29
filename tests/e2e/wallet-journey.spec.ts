@@ -245,6 +245,8 @@ test('funded dispute: encrypted moderator evidence, independent resolution and o
   await expect(moderator.getByLabel('Decision', { exact: true })).toHaveAccessibleDescription(/^Stored unencrypted\..*Never include an address, real name or tracking number/);
   await moderator.getByLabel('Decision', { exact: true }).fill('Fixture review completed: return the confirmed test payment to the buyer.');
   await moderator.getByRole('checkbox', { name: 'I checked the amount and who receives it for the outcome I chose. Resolving is final.' }).check();
+  // A-32: resolving queues the payout, so it needs the moderator's current password.
+  await moderator.locator('form[action="/resolve"]').getByLabel('Current password', { exact: true }).fill('wallet-browser-moderator-password-123');
   await moderator.getByRole('button', { name: 'Resolve dispute' }).click();
   await buyer.goto(orderURL);
   await expect(buyer.locator('.page-head .badge')).toHaveText('Resolved');

@@ -475,6 +475,32 @@ administrator's review. When matching Monero payouts sent before the upgrade in 
 [failed-payout check](docs/testnet-runbook.md#5-recover-a-held-or-failed-payout) and [restore reconciliation](docs/testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts)), a release sent by the
 earlier version paid its fee on top: its destination amount is the payout's.
 
+## 14. One settlement per order, and resolving needs a password (migration 069)
+
+Migration 069 runs at startup and adds the unique index `payouts_one_settlement` on `payouts(order_id)` for kinds
+`release` and `refund`: the database again refuses a release and a refund for the same order (migration 064 had
+allowed it so a release could carry a `return`, which stays allowed). The application never queues both, so an
+existing database normally upgrades without change. One that already holds both for an order (only possible
+through hand-written SQL) is **not** changed: the migration stops with an error naming the orders, every migration
+of that startup rolls back, and the server does not start. Nothing is deleted, because either payout may have been
+sent. Find them with
+
+```sql
+SELECT order_id, kind, state, amount, txid FROM payouts
+WHERE order_id IN (SELECT order_id FROM payouts WHERE kind IN ('release','refund') GROUP BY order_id HAVING count(*) > 1)
+ORDER BY order_id, kind;
+```
+
+decide from the wallet's history which of the two stands (the one that was sent; if neither was, the one matching
+the order's state or dispute outcome), keep a copy of both rows (for example with `\copy`), delete the other row,
+and start the new release again. If both were sent, the order was paid twice: recover that outside the market
+before you delete either row. Rolling back past this release needs the pre-upgrade backup, as for every migration
+(section 5).
+
+Resolving a dispute on the moderation desk (or `/disputes`) now also asks for the moderator's or administrator's
+current password, and an authenticator code when TOTP is enrolled, like the other staff actions; the audit row
+records the confirmation. Moderators still resolve disputes.
+
 ## Appendix: new keys by hand
 
 `./scripts/install.sh upgrade` writes these for you. To add them yourself, use your editor (values in single

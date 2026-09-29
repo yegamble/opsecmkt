@@ -2,12 +2,14 @@ package market
 
 import (
 	"context"
+	"errors"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"rsc.io/qr"
 )
 
@@ -305,6 +307,81 @@ func TestPayoutKindsPerOrder(t *testing.T) {
 	}
 	if err := insert("bonus"); err == nil {
 		t.Fatal("unknown payout kind accepted")
+	}
+	// One settlement per order (A-218, migration 069): a release and a refund for one order are refused in either
+	// order, by the database itself.
+	uniqueViolation := func(err error) bool {
+		var pe *pgconn.PgError
+		return errors.As(err, &pe) && pe.Code == "23505" && pe.ConstraintName == "payouts_one_settlement"
+	}
+	if err := insert("refund"); !uniqueViolation(err) {
+		t.Fatalf("refund after a release: %v", err)
+	}
+	p.order, _ = p.newOrder(stateCancelled)
+	if err := insert("refund"); err != nil {
+		t.Fatal(err)
+	}
+	if err := insert("release"); !uniqueViolation(err) {
+		t.Fatalf("release after a refund: %v", err)
+	}
+	if n := p.count("SELECT count(*) FROM payouts WHERE order_id=$1", p.order); n != 1 {
+		t.Fatalf("%d payouts", n)
+	}
+}
+
+// A-218: migration 069 creates the one-settlement index. A database already holding a release and a refund for one
+// order (possible only by hand since migration 064; enqueuePayout never queues a second settlement) stops the
+// migration with an error naming the order, and nothing is changed or deleted; once staff settle the clash it applies.
+func TestOneSettlementMigrationRefusesExistingClash(t *testing.T) {
+	p := newPayEnv(t)
+	if _, err := p.DB.Exec("DROP INDEX payouts_one_settlement; DELETE FROM schema_migrations WHERE version=69"); err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []string{"release", "return", "refund"} {
+		if _, err := p.DB.Exec("INSERT INTO payouts(order_id,kind,user_id,currency,amount) VALUES($1,$2,$3,'BTC',100000)", p.order, kind, p.buyer.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	list, err := loadMigrations(migrationFiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m069 migration
+	for _, m := range list {
+		if m.Version == 69 {
+			m069 = m
+		}
+	}
+	apply := func() error {
+		tx, err := p.DB.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		if err = applyMigrations(context.Background(), tx, []migration{m069}); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+	err = apply()
+	if err == nil || !strings.Contains(err.Error(), "migration 069_payout_one_settlement") || !strings.Contains(err.Error(), p.order) ||
+		!strings.Contains(err.Error(), "both a release and a refund") || !strings.Contains(err.Error(), "UPGRADING.md") {
+		t.Fatalf("migration over a clash: %v", err)
+	}
+	if n := p.count("SELECT count(*) FROM payouts WHERE order_id=$1", p.order); n != 3 {
+		t.Fatalf("migration changed payouts: %d left", n)
+	}
+	if n := p.count("SELECT count(*) FROM pg_indexes WHERE indexname='payouts_one_settlement'") + p.count("SELECT count(*) FROM schema_migrations WHERE version=69"); n != 0 {
+		t.Fatal("a refused migration left its index or record")
+	}
+	if _, err = p.DB.Exec("DELETE FROM payouts WHERE order_id=$1 AND kind='refund'", p.order); err != nil {
+		t.Fatal(err)
+	}
+	if err = apply(); err != nil {
+		t.Fatal(err)
+	}
+	if p.count("SELECT count(*) FROM pg_indexes WHERE indexname='payouts_one_settlement'") != 1 || p.count("SELECT count(*) FROM payouts WHERE order_id=$1", p.order) != 2 {
+		t.Fatal("migration did not apply once the clash was settled")
 	}
 }
 

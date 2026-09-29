@@ -71,7 +71,7 @@ func TestModeratorViewsDisputedOrderReadOnly(t *testing.T) {
 	if err := w.e.DB.QueryRow("SELECT id FROM disputes WHERE order_id=$1", order).Scan(&disputeID); err != nil {
 		t.Fatal(err)
 	}
-	w.expect("/resolve", w.mod, payoutConfirmed(form("id", disputeID, "outcome", "refund", "resolution", "Key verified as invalid; refund the buyer."), 0), 303, "")
+	w.expect("/resolve", w.mod, resolveConfirmed(form("id", disputeID, "outcome", "refund", "resolution", "Key verified as invalid; refund the buyer."), 0), 303, "")
 	body := w.page("/order?id="+order, w.mod, 200)
 	mustContain(t, body, "Key verified as invalid; refund the buyer.", "Resolved")
 	// Parties see the dispute record on their own order page as well.

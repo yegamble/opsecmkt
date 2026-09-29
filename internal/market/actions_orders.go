@@ -1,14 +1,26 @@
 package market
 
 import (
+	"context"
 	"database/sql"
+	"net/http"
 	"strings"
 )
 
 func init() {
 	registerAction("/orders", actionSpec{Run: orderDraftAction})
 	registerAction("/disputes", actionSpec{Run: disputeAction})
-	registerAction("/resolve", actionSpec{Roles: []string{"moderator", "admin"}, Run: resolveAction})
+	registerAction("/resolve", actionSpec{Roles: []string{"moderator", "admin"}, OwnTx: true, Run: resolveAction})
+	registerLoader("disputes", resolveConfirmLoader)
+}
+
+// resolveConfirmLoader tells the resolve form on /disputes whether to ask for an authenticator code (the moderation
+// desk loads it with adminConfirmLoader). Only moderators and administrators see that form.
+func resolveConfirmLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error {
+	if d.User == nil || (d.User.Role != "moderator" && d.User.Role != "admin") {
+		return nil
+	}
+	return adminConfirmLoader(ctx, a, r, d)
 }
 
 func orderDraftAction(c *actionCtx) (actionResult, error) {
@@ -124,6 +136,8 @@ var disputeOutcomes = map[string]string{"release": "Resolved — release to vend
 // written first so transition hooks (payouts) read it in the same transaction. A moderator who is a party
 // to the order is refused by transition(). The form's payout confirmation is required (400), and the payout
 // hook refuses the whole resolution (409, the dispute stays Open) when the counted amount is not amount_seen.
+// Resolving queues a payout the watcher sends by itself, so it needs the resolver's current password, and an
+// authenticator code when TOTP is enrolled (confirmedTx, A-32); the audit row says how it was confirmed.
 func resolveAction(c *actionCtx) (actionResult, error) {
 	outcome := c.Form.Get("outcome")
 	status, ok := disputeOutcomes[outcome]
@@ -138,16 +152,18 @@ func resolveAction(c *actionCtx) (actionResult, error) {
 	if err != nil {
 		return actionResult{}, err
 	}
-	var orderID string
-	err = c.Tx.QueryRowContext(c.Ctx(), "UPDATE disputes SET resolution=$1,outcome=$2,status=$3 WHERE id=$4 AND status='Open' AND outcome='' RETURNING order_id", resolution, outcome, status, c.Form.Get("id")).Scan(&orderID)
-	if err == sql.ErrNoRows {
-		return actionResult{}, fail(409, "Open dispute not found")
-	}
-	if err != nil {
-		return actionResult{}, err
-	}
-	if _, err = c.A.transition(withPayoutSeen(c.Ctx(), orderID, seen), c.Tx, orderID, stateDisputed, stateResolved, c.User, status); err != nil {
-		return actionResult{}, err
-	}
-	return actionResult{Redirect: "/moderator?saved=1", Audit: "Resolved dispute on order " + shortID(orderID) + " (outcome: " + outcome + ")"}, nil
+	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
+		var orderID string
+		err := c.Tx.QueryRowContext(c.Ctx(), "UPDATE disputes SET resolution=$1,outcome=$2,status=$3 WHERE id=$4 AND status='Open' AND outcome='' RETURNING order_id", resolution, outcome, status, c.Form.Get("id")).Scan(&orderID)
+		if err == sql.ErrNoRows {
+			return actionResult{}, fail(409, "Open dispute not found")
+		}
+		if err != nil {
+			return actionResult{}, err
+		}
+		if _, err = c.A.transition(withPayoutSeen(c.Ctx(), orderID, seen), c.Tx, orderID, stateDisputed, stateResolved, c.User, status); err != nil {
+			return actionResult{}, err
+		}
+		return actionResult{Redirect: "/moderator?saved=1", Audit: "Resolved dispute on order " + shortID(orderID) + " (outcome: " + outcome + ")"}, nil
+	})
 }

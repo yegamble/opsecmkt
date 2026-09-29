@@ -178,3 +178,38 @@ func TestTransitionCompareAndSetIsExclusive(t *testing.T) {
 		t.Fatalf("successes=%d events=%d", ok, events)
 	}
 }
+
+// A-244 (ARCH-4): the escrow-only system edges exist in the table for the system role and are marked escrow-only,
+// and on a pooled order (Order.Escrow false, the only kind today) the system still cannot complete an order on
+// them: 403, the order and its history unchanged. The buyer's own completion is unaffected.
+func TestEscrowOnlySystemEdgesRefusedForPooledOrders(t *testing.T) {
+	for _, tc := range []struct{ kind, from string }{{"digital", stateDelivered}, {"physical", stateShipped}} {
+		if !slices.Contains(transitions[tc.from][stateCompleted], roleSystem) || !escrowOnly[[3]string{tc.from, stateCompleted, roleSystem}] {
+			t.Fatalf("%s -> completed: system edge missing or not escrow-only", tc.from)
+		}
+		f := newOrderFixture(t, tc.kind, tc.from)
+		if err := f.try(tc.from, stateCompleted, nil); !errors.Is(err, errForbidden) {
+			t.Fatalf("system completed a pooled %s order from %s: %v", tc.kind, tc.from, err)
+		}
+		var state string
+		var events int
+		if err := f.e.DB.QueryRow("SELECT state,(SELECT count(*) FROM order_events WHERE order_id=$1) FROM orders WHERE id=$1", f.order).Scan(&state, &events); err != nil {
+			t.Fatal(err)
+		}
+		if state != tc.from || events != 0 {
+			t.Fatalf("refused system completion changed the order: %s, %d events", state, events)
+		}
+		if err := f.try(tc.from, stateCompleted, f.buyer); err != nil {
+			t.Fatalf("buyer completion of a pooled %s order: %v", tc.kind, err)
+		}
+	}
+	// Every escrow-only edge is a real edge for its role; nothing else is guarded.
+	for edge := range escrowOnly {
+		if !slices.Contains(transitions[edge[0]][edge[1]], edge[2]) {
+			t.Errorf("escrow-only edge %v is not in the transition table", edge)
+		}
+	}
+	if len(escrowOnly) != 2 {
+		t.Errorf("escrowOnly has %d edges, want the two system completions", len(escrowOnly))
+	}
+}

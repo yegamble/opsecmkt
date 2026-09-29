@@ -36,6 +36,9 @@ type ProductPhoto struct {
 type Order struct {
 	ID, ProductID, Title, Buyer, Vendor, Currency, Amount, Status, Created string
 	State, Kind, BuyerID, VendorID, Updated                                string
+	// Escrow: settled through a per-order escrow instead of the pooled wallet (settleTerminal, escrowOnly). Always
+	// false until escrow is built (A-244, WR-escrow Phase 0).
+	Escrow bool
 }
 type Message struct {
 	ID, Sender, Recipient, Body, Created string
