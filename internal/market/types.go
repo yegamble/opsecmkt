@@ -99,6 +99,10 @@ type PageData struct {
 	// P1 Authentication
 	Security *SecurityView
 	Captcha  *CaptchaView
+	// Sessions: account page, the viewer's live sessions, this browser's first, then the newest others, at most
+	// sessionsListed of SessionsTotal (A-157, actions_account.go).
+	Sessions      []AccountSession
+	SessionsTotal int
 	// FactorAccounts: admin page, up to 100 non-administrator accounts with a second factor, by handle
 	// (User.Factors names them); the reset form itself takes any handle.
 	FactorAccounts []User
@@ -197,6 +201,13 @@ type SecurityView struct {
 	Pending                   bool     // enrollment started, not yet confirmed with a code
 	RecoveryRemaining         int
 	Error                     string
+}
+
+// AccountSession is one live session on /account: when it started ("2006-01-02 15:04 UTC") and whether it is
+// this browser's. The market records nothing else about a session's client.
+type AccountSession struct {
+	Started string
+	Current bool
 }
 
 // CaptchaView is set on login/register while the CAPTCHA is required; ID is empty when none could be issued (Error says why).

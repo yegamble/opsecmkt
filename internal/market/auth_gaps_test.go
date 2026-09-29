@@ -77,7 +77,7 @@ func agSession(e *testEnv, userID string) string {
 func agPending(e *testEnv, userID string) *http.Cookie {
 	e.t.Helper()
 	p := randomToken()
-	agExec(e, "INSERT INTO pending_logins(token_hash,user_id,expires) VALUES($1,$2,now()+interval '10 minutes')", digest(p), userID)
+	agExec(e, "INSERT INTO pending_logins(token_hash,user_id,expires,password_digest) VALUES($1,$2,now()+interval '10 minutes',$3)", digest(p), userID, digest(passwordHash(e, userID)))
 	return &http.Cookie{Name: "pending", Value: p}
 }
 

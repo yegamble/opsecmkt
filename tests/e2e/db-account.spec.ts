@@ -54,6 +54,17 @@ test('register, draft, profile persistence and session boundaries', async ({ pag
   await otherPage.getByRole('button', { name: 'Sign in' }).click();
   await otherPage.goto('/account');
   await expect(otherPage).toHaveURL(/\/account$/);
+  // A-157: both sessions are listed with their start time; each browser sees its own marked.
+  await page.reload();
+  const sessions = page.getByRole('region', { name: 'Sessions' });
+  await expect(sessions.locator('.session-count')).toHaveText('2 active sessions');
+  await expect(sessions.locator('.session-row')).toHaveCount(2);
+  await expect(sessions.locator('.session-row', { hasText: 'This session' })).toHaveCount(1);
+  for (const row of await sessions.locator('.session-started').allTextContents()) {
+    expect(row).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC$/);
+  }
+  await expect(sessions).toContainText('Only changing your password stops them.');
+  await expect(otherPage.getByRole('region', { name: 'Sessions' }).locator('.session-row', { hasText: 'This session' })).toHaveCount(1);
   await page.getByRole('button', { name: 'Sign out everywhere' }).click();
   await expect(page).toHaveURL(/\/login$/);
   await page.goto('/account');

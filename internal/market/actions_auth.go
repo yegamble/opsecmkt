@@ -323,7 +323,7 @@ func authAction(c *actionCtx) (actionResult, error) {
 		if suspended {
 			return actionResult{}, errSuspended
 		}
-		return a.secondFactor(c, id)
+		return a.secondFactor(c, id, stored)
 	}
 	if path == "/setup" && (installed || a.setupToken == "" || subtle.ConstantTimeCompare([]byte(f.Get("token")), []byte(a.setupToken)) != 1) {
 		return actionResult{}, fail(403, "Setup unavailable or token incorrect")
@@ -360,7 +360,7 @@ func authAction(c *actionCtx) (actionResult, error) {
 	if err = tx.Commit(); err != nil {
 		return actionResult{}, fail(500, "Unable to save account")
 	}
-	if err = a.login(ctx, w, id, c.Token); err != nil {
+	if err = a.login(ctx, w, id, c.Token, string(hash)); err != nil {
 		return actionResult{}, fail(500, "Account created; sign in to continue")
 	}
 	if path == "/setup" {
@@ -368,6 +368,9 @@ func authAction(c *actionCtx) (actionResult, error) {
 	}
 	return actionResult{Redirect: "/"}, nil
 }
+
+// errPasswordChanged refuses a sign-in whose password was checked before the account's password changed (A-157).
+var errPasswordChanged = fail(401, "Sign-in verification expired. Sign in again.")
 
 // errSetupComplete refuses first-run setup once the market is installed.
 var errSetupComplete = fail(403, "Setup already complete")
@@ -430,16 +433,17 @@ func (a *App) enrolledFactors(ctx context.Context, userID string) ([]string, err
 	return names, nil
 }
 
-// secondFactor finishes a password login: a session when no factor is enrolled, otherwise a
-// 10-minute pending login (cookie "pending") completed by POST /challenge.
-func (a *App) secondFactor(c *actionCtx, userID string) (actionResult, error) {
+// secondFactor finishes a password login checked against passwordHash: a session when no factor is enrolled,
+// otherwise a 10-minute pending login (cookie "pending") completed by POST /challenge. Either is refused once the
+// password has changed since it was checked (startSession, A-157).
+func (a *App) secondFactor(c *actionCtx, userID, passwordHash string) (actionResult, error) {
 	ctx := c.Ctx()
 	names, err := a.enrolledFactors(ctx, userID)
 	if err != nil {
 		return actionResult{}, fail(503, "Service unavailable")
 	}
 	if len(names) == 0 {
-		if err = a.login(ctx, c.W, userID, c.Token); err == errSuspended {
+		if err = a.login(ctx, c.W, userID, c.Token, passwordHash); err == errSuspended || err == errPasswordChanged {
 			return actionResult{}, err
 		} else if err != nil {
 			return actionResult{}, fail(500, "Unable to sign in")
@@ -447,7 +451,7 @@ func (a *App) secondFactor(c *actionCtx, userID string) (actionResult, error) {
 		return actionResult{Redirect: "/"}, nil
 	}
 	pending := randomToken()
-	if _, err = a.db.ExecContext(ctx, "INSERT INTO pending_logins(token_hash,user_id,expires) VALUES($1,$2,now()+interval '10 minutes')", digest(pending), userID); err != nil {
+	if _, err = a.db.ExecContext(ctx, "INSERT INTO pending_logins(token_hash,user_id,expires,password_digest) VALUES($1,$2,now()+interval '10 minutes',$3)", digest(pending), userID, digest(passwordHash)); err != nil {
 		return actionResult{}, fail(500, "Unable to sign in")
 	}
 	a.cookie(c.W, "pending", pending, 600)
@@ -478,7 +482,8 @@ func challengeAction(c *actionCtx) (actionResult, error) {
 	}
 	// The pending login must exist before a limiter entry is created, so random cookies cost nothing.
 	var userID string
-	err := c.Tx.QueryRowContext(ctx, "SELECT user_id FROM pending_logins WHERE token_hash=$1 AND expires>now() FOR UPDATE", digest(pending)).Scan(&userID)
+	var checked sql.NullString
+	err := c.Tx.QueryRowContext(ctx, "SELECT user_id,password_digest FROM pending_logins WHERE token_hash=$1 AND expires>now() FOR UPDATE", digest(pending)).Scan(&userID, &checked)
 	if err == sql.ErrNoRows {
 		return actionResult{}, fail(401, "Sign-in verification expired. Sign in again.")
 	}
@@ -506,7 +511,7 @@ func challengeAction(c *actionCtx) (actionResult, error) {
 	if _, err = c.Tx.ExecContext(ctx, "DELETE FROM pending_logins WHERE token_hash=$1 OR expires<now()", digest(pending)); err != nil {
 		return actionResult{}, err
 	}
-	token, err := a.startSession(ctx, c.Tx, userID, c.Token, "password and "+method)
+	token, err := a.startSession(ctx, c.Tx, userID, c.Token, "password and "+method, checked.String)
 	if err != nil {
 		return actionResult{}, err
 	}
@@ -591,15 +596,22 @@ func challengeLoader(ctx context.Context, a *App, r *http.Request, d *PageData) 
 
 // startSession rotates the caller's session inside tx and records the sign-in with how it was made (method, e.g.
 // "password and TOTP"); the caller sets the cookie after commit.
-// It refuses a suspended account with errSuspended. The account row is share-locked, so a suspension committing
-// concurrently either is seen here or runs after this commit and deletes the new session.
-func (a *App) startSession(ctx context.Context, tx *sql.Tx, id, old, method string) (string, error) {
+// It refuses a suspended account with errSuspended, and with errPasswordChanged a sign-in whose password was
+// checked against another hash than the account's current one (passwordDigest, the SHA-256 of that hash): a
+// password change ends every sign-in in progress, including one whose password was checked just before the change
+// committed (A-157). The account row is share-locked, so a suspension or password change committing concurrently
+// either is seen here or runs after this commit and deletes the new session.
+func (a *App) startSession(ctx context.Context, tx *sql.Tx, id, old, method, passwordDigest string) (string, error) {
 	var suspended bool
-	if err := tx.QueryRowContext(ctx, "SELECT suspended_at IS NOT NULL FROM users WHERE id=$1 FOR SHARE", id).Scan(&suspended); err != nil {
+	var hash string
+	if err := tx.QueryRowContext(ctx, "SELECT suspended_at IS NOT NULL,password_hash FROM users WHERE id=$1 FOR SHARE", id).Scan(&suspended, &hash); err != nil {
 		return "", err
 	}
 	if suspended {
 		return "", errSuspended
+	}
+	if subtle.ConstantTimeCompare([]byte(digest(hash)), []byte(passwordDigest)) != 1 {
+		return "", errPasswordChanged
 	}
 	token := randomToken()
 	if _, err := tx.ExecContext(ctx, "DELETE FROM sessions WHERE token_hash=$1 OR expires<now()", digest(old)); err != nil {
@@ -614,13 +626,14 @@ func (a *App) startSession(ctx context.Context, tx *sql.Tx, id, old, method stri
 	return token, nil
 }
 
-func (a *App) login(ctx context.Context, w http.ResponseWriter, id, old string) error {
+// login starts a password-only session for a password checked against passwordHash (startSession).
+func (a *App) login(ctx context.Context, w http.ResponseWriter, id, old, passwordHash string) error {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	token, err := a.startSession(ctx, tx, id, old, "password")
+	token, err := a.startSession(ctx, tx, id, old, "password", digest(passwordHash))
 	if err != nil {
 		return err
 	}

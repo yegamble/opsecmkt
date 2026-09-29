@@ -61,6 +61,14 @@
 .session-revoke {
   margin-top:17px
 }
+.session-list {
+  margin:0 0 14px;
+  padding-left:22px;
+  overflow-wrap:anywhere
+}
+.session-row {
+  margin:6px 0
+}
 .account-list {
   margin-top:14px
 }
