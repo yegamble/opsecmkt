@@ -3,8 +3,8 @@
 End-to-end operator steps for turning on Bitcoin (testnet4/signet/regtest) and Monero (stagenet/testnet)
 payments with the compose deployment. **Test networks: these coins have no value, and the application refuses
 mainnet unless it is configured** ([Mainnet](operator-guide.md#mainnet); the wallet, backup, restore and
-payout-recovery steps below apply unchanged to a mainnet market, with real funds). Commands run from the
-repository directory on the Docker host, where `.env` lives.
+payout-recovery steps below use the same commands on a mainnet market, with real funds, but have been exercised
+on test networks only). Commands run from the repository directory on the Docker host, where `.env` lives.
 
 What the application does on its own, so you know what to expect while following these steps:
 
@@ -200,12 +200,16 @@ xmr refresh '{}'
 xmr get_transfers '{"out":true,"pending":true,"pool":true}'
 ```
 
-Look for the payout's address and amount in `destinations` of the `out`, `pending` and `pool` entries. A send
+Look for the payout's address and amount in `destinations` of the `out`, `pending` and `pool` entries. The
+amount received is the payout's amount less the network fee when the fee was taken from it: every Bitcoin
+payout (`sendtoaddress` with `subtractfeefromamount`, so `listsinceblock` shows the payout less its `fee`)
+and Monero refunds and overpayment returns (`subtract_fee_from_outputs`); add the transaction's `fee` back
+before comparing. A Monero release pays its fee on top, so its destination amount is the payout's. A send
 the daemon relayed but the wallet reported as an error is recorded from the pool **without `destinations`**,
-with `amount` the total it spent less change (the payout plus the fee). Treat any `pending` or `out` transfer
-created after the failure (its `timestamp`) that has no destinations as **this payout** until you have proven
-otherwise, for example by matching it to another payout's transaction ID; never requeue or release while one
-is unexplained.
+with `amount` the total it spent less change (the payout plus the fee for a release; for a refund or return,
+whose fee came out of it, the payout's amount). Treat any `pending` or `out` transfer created after the failure
+(its `timestamp`) that has no destinations as **this payout** until you have proven otherwise, for example by
+matching it to another payout's transaction ID; never requeue or release while one is unexplained.
 
 Then open *Resolve payout N* on that row; its summary repeats the payout's kind, amount, recipient and short
 order ID (for example "Resolve payout 7: refund 0.001 BTC to alice, order 2d6b549f"), so check that it is the
@@ -275,7 +279,7 @@ the order is disputed.
 | Credited deposit confirmed again (N confirmations) | The flagged regression ended: the deposit reached the threshold again. Listed after the open flags. | The watcher lifted its own hold; a pending payout is sent on the next pass that reads the order. Nothing to do. |
 | Locked transfer (unlock time) | A Monero transfer with a non-zero `unlock_time`. | Never counted toward payment or paid out. The buyer was told to send an ordinary transfer. |
 | Deposit confirmed after settlement, not paid out | Extra funds confirmed after the order's settlement (its release and any return, or its refund) was queued (completed or resolved orders, or a cancellation that already queued a refund). | Not paid out: an order is settled once. |
-| Below the minimum automatic payout, not paid out | The order's release or refund counted less than the minimum automatic payout: 0.0001 BTC for any Bitcoin payout (the network fee is taken from the amount, so a smaller one can never be sent), 0.001 XMR for a Monero refund (the fee is paid on top). Usually a stray deposit to a cancelled order's address. | No payout row was queued; the order kept its final state. The buyer and the vendor were told it was not sent. A later deposit that lifts the sum to the minimum is paid out with it and closes the flag. Otherwise see step 4 below. |
+| Below the minimum automatic payout, not paid out | The order's release or refund counted less than the minimum automatic payout: 0.0001 BTC for any Bitcoin payout (the network fee is taken from the amount, so a smaller one can never be sent), 0.001 XMR for a Monero refund or overpayment return (the fee is taken from the amount, so a smaller one is not worth sending). Usually a stray deposit to a cancelled order's address. | No payout row was queued; the order kept its final state. The buyer and the vendor were told it was not sent. A later deposit that lifts the sum to the minimum is paid out with it and closes the flag. Otherwise see step 4 below. |
 
 What staff can do:
 
@@ -304,7 +308,7 @@ insert a payout and do not use *Mark sent* on the order's payout for a manual tr
 
 ```sh
 docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -v order_id=FULL_ORDER_ID -v handle=YOUR_HANDLE \
-  -v note='Manual TESTNET refund: returned 0.0005 BTC from deposit <txid>:<n> to the buyer by hand in <refund txid>.' \
+  -v note='Manual refund: returned 0.0005 BTC from deposit <txid>:<n> to the buyer by hand in <refund txid>.' \
   -U opsecmkt -d opsecmkt <<'SQL'
 WITH ev AS (
   INSERT INTO order_events(order_id,from_state,to_state,actor_id,note)
@@ -406,8 +410,11 @@ and no web action that clears the gate or records a lost payout.
 
    (`-d` names the database in `DATABASE_URL`.) A send with no payout row is either a manual refund recorded as
    a written note (see "Handle a payment-review flag"; leave it alone) or a **payout the restore lost**. Find
-   the order of each lost payout from the amount sent (Bitcoin amounts ×100 000 000 in satoshi, Monero
-   destination amounts are already in atomic units; fees are separate) and the address it went to, in step 6.
+   the order of each lost payout from the payout's amount and the address it went to, in step 6. The payout's
+   amount is the destination amount **plus the fee** for a send with the fee taken from it (every Bitcoin
+   payout, and Monero refunds and overpayment returns) and the destination amount alone for a Monero release
+   (Bitcoin: `listsinceblock` shows a send's `amount` and `fee` as negative BTC; add their absolute values and
+   multiply by 100 000 000 for satoshi. Monero destination amounts and `fee` are already in atomic units).
    A Monero `pending` or `out` transfer after the backup with no `destinations` is an unmatched send too (its
    `amount` includes the fee): it counts as a lost payout until you prove otherwise.
    If a send cannot be matched to exactly one order, an order settled after the backup is missing from the
@@ -442,9 +449,11 @@ db_sql() { docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d o
 ```
 
 Find the order from a lost send: the orders in that currency with no payout whose counted deposits add up to
-the amount sent, with the vendor's and the buyer's current payout addresses. Match the address the wallet sent
-to (a recipient may have changed their address after the backup, in which case use the order history and
-messages, and ask for help when unsure):
+the payout's amount, with the vendor's and the buyer's current payout addresses. For a send with the fee taken
+from it (every Bitcoin payout; Monero refunds and returns) search with the destination amount plus the fee:
+a 0.0015 BTC release the wallet shows as `"amount": -0.00148590, "fee": -0.00001410` is `amount=150000`. Match
+the address the wallet sent to (a recipient may have changed their address after the backup, in which case use
+the order history and messages, and ask for help when unsure):
 
 <!-- runbook-sql: find-order -->
 ```sh
@@ -463,12 +472,15 @@ SQL
 Then save the recording SQL once and run it for each lost payout, first as a check (`no`) and then to record
 it (`yes`). Set the variables in `record_payout` for that payout: the full order ID; `kind` and `state` as
 `release` and `completed` (the buyer completed it), `refund` and `cancelled` (cancelled after payment) or
-`release`/`refund` and `resolved` (a dispute resolved that way); the amount in satoshi or piconero; the address
+`release`/`refund` and `resolved` (a dispute resolved that way); the payout's amount in satoshi or piconero
+(the destination amount plus the fee for a send with the fee taken from it, as in the search above); the address
 and the 64-character transaction ID from the wallet; and your administrator handle. A release whose buyer
 overpaid was sent as two transactions (migration 064): the price to the vendor and the excess back to the buyer.
 Record both at once: `amount`, `address` and `txid` are the vendor's, and `return_amount`, `return_address` and
-`return_txid` the buyer's (leave them out for any other payout). When finding such an order above, search with the
-two amounts added together.
+`return_txid` the buyer's (leave them out for any other payout), each the destination amount plus that
+transaction's fee where the fee was taken from it (on Bitcoin both; on Monero the return only). When finding such
+an order above, search with the two amounts added together. The note written to the order history names the
+network class (`MAINNET` or `TESTNET`) from the order's deposit address.
 
 <!-- runbook-sql: record-payout -->
 ```sh
@@ -526,6 +538,8 @@ SELECT c.*, c.problem = 'none' AS ready FROM (
 WITH ord AS (
   SELECT o.id, o.state, o.currency, o.buyer_id, o.product_id, p.vendor_id,
     (SELECT id FROM users WHERE handle=:'handle' AND role='admin') AS admin_id,
+    (SELECT CASE WHEN bool_or(split_part(provider,'-',2) IN ('main','mainnet')) THEN 'MAINNET' ELSE 'TESTNET' END
+      FROM payment_addresses WHERE order_id=o.id) AS net,
     trim_scale(:'amount'::bigint / CASE o.currency WHEN 'BTC' THEN 1e8 ELSE 1e12 END) || ' ' || o.currency AS label,
     trim_scale(:'return_amount'::bigint / CASE o.currency WHEN 'BTC' THEN 1e8 ELSE 1e12 END) || ' ' || o.currency AS return_label
   FROM orders o JOIN products p ON p.id=o.product_id WHERE o.id=:'order_id'),
@@ -538,7 +552,7 @@ ret AS (
   SELECT ord.id, 'return', ord.buyer_id, ord.currency, :'return_amount'::bigint, :'return_address', 'sent', :'return_txid'
   FROM ord, pay WHERE :'return_amount'::bigint > 0 ON CONFLICT (order_id,kind) DO NOTHING RETURNING id),
 note AS (
-  SELECT 'Reconciled after a restore from backup: the TESTNET ' || :'kind' || ' of ' || label || ' to the '
+  SELECT 'Reconciled after a restore from backup: the ' || net || ' ' || :'kind' || ' of ' || label || ' to the '
     || CASE :'kind' WHEN 'release' THEN 'vendor' ELSE 'buyer' END || ' was sent after the backup was taken, in transaction '
     || :'txid' || CASE WHEN :'return_amount'::bigint > 0 THEN ', and the return of ' || return_label
     || ' paid over the price to the buyer in transaction ' || :'return_txid' ELSE '' END

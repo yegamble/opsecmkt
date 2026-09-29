@@ -11,10 +11,10 @@ import (
 	"rsc.io/qr"
 )
 
-// Overpayments are returned accurately without letting anyone profit from the market's wallet: a release pays the
-// vendor exactly the price and returns the excess to the buyer with the network fee taken from it; an excess
-// below the minimum automatic refund goes to the vendor; a refund or return larger than the price waits for an
-// administrator (the pooled wallet must not become a coin swap); refunds and returns always pay their own fee.
+// Overpayments: a release pays the vendor exactly the price and returns the excess to the buyer with the network
+// fee taken from it; an excess below the minimum automatic refund goes to the vendor; a refund or return larger
+// than the price (a likely mistake) waits for an administrator, while one up to the price is sent automatically;
+// refunds and returns are sent with the fee-from-amount call.
 
 func TestSplitPayoutRules(t *testing.T) {
 	o := &Order{BuyerID: "b", VendorID: "v", Currency: "BTC"}
@@ -195,7 +195,49 @@ func TestSuspensionKeepsLargeHold(t *testing.T) {
 	}
 }
 
-// Refunds pay their own network fee, so repeated pay-and-cancel costs the market nothing.
+// The large hold's documented bound (operator guide, "Overpayments"): a refund of up to the order price is not
+// held, whether the price was paid in full and the order cancelled by the vendor or a deposit just short of it
+// was cancelled by the buyer. Such refunds start pending and the watcher sends them without an administrator.
+func TestRefundUpToPriceIsNotHeld(t *testing.T) {
+	p := newPayEnv(t)
+	p.setPayoutAddress(p.buyer, "fake-testnet-buyer")
+	adminID := p.str("SELECT id FROM users WHERE role='admin'")
+	refund := func(order string) (state, errText string, amt int64) {
+		t.Helper()
+		if err := p.DB.QueryRow("SELECT state,error,amount FROM payouts WHERE order_id=$1 AND kind='refund'", order).Scan(&state, &errText, &amt); err != nil {
+			t.Fatalf("refund for %s: %v", order[:8], err)
+		}
+		return
+	}
+	// Equal to the price: paid in full, then cancelled by the vendor.
+	p.paidByWatcherAmount(100000)
+	p.check(p.do("POST", "/orders/cancel", p.vendorSess, payoutConfirmed(form("order_id", p.order, "from", statePaid), 100000)), 303)
+	if st, errText, amt := refund(p.order); st != "pending" || errText != "" || amt != 100000 {
+		t.Fatalf("refund of the price: %s %q %d", st, errText, amt)
+	}
+	// Just under the price: one confirmed deposit a satoshi short, then cancelled by the buyer.
+	short, addr := p.newOrder(stateAwaitingPayment)
+	p.fake.Deposit(addr, "tx-short", 0, 99999, 3)
+	p.poll()
+	if s := p.state(short); s != stateAwaitingPayment {
+		t.Fatalf("underpaid order %s", s)
+	}
+	p.check(p.do("POST", "/orders/cancel", p.buyerSess, payoutConfirmed(form("order_id", short, "from", stateAwaitingPayment), 99999)), 303)
+	if st, errText, amt := refund(short); st != "pending" || errText != "" || amt != 99999 {
+		t.Fatalf("refund just under the price: %s %q %d", st, errText, amt)
+	}
+	if n := p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE 'Payout review needed%'", adminID); n != 0 {
+		t.Fatalf("administrator review notices %d", n)
+	}
+	p.poll()
+	if s := p.fake.Sends(); len(s) != 2 || s[0].Amount+s[1].Amount != 199999 {
+		t.Fatalf("refunds up to the price not sent automatically: %+v", s)
+	}
+}
+
+// A refund is handed to the provider's fee-from-amount send (SendFeeFromAmount) for the whole counted amount. The
+// fake wallet only records the call; TestMoneroRefundSubtractsFee checks the Monero request, and Bitcoin's Send
+// already subtracts the fee. That real wallets deduct it is not shown here.
 func TestRefundIsSentWithFeeFromAmount(t *testing.T) {
 	p := newPayEnv(t)
 	p.setPayoutAddress(p.buyer, "fake-testnet-buyer")
@@ -298,7 +340,8 @@ func TestOrderPageQRForAmountDue(t *testing.T) {
 	p := newPayEnv(t)
 	uri := func(due string) string { return "bitcoin:" + p.addr + "?amount=" + due }
 	page := p.page("/order?id="+p.order, p.buyerSess)
-	mustContain(t, page, `<figure class="payment-qr"><svg`, uri("0.001"), "Scan to pay exactly <strong>0.001 BTC</strong>")
+	mustContain(t, page, `<figure class="payment-qr"><svg`, uri("0.001"), "Scan to pay exactly <strong>0.001 BTC</strong>",
+		"If no code appears, copy the address and amount above.")
 	mustNotContain(t, p.page("/order?id="+p.order, p.vendorSess), `class="payment-qr"`)
 	// A deposit seen (even unconfirmed) lowers the amount asked for.
 	p.fake.Deposit(p.addr, "tx-part", 0, 40000, 1)

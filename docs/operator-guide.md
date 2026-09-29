@@ -508,8 +508,9 @@ The buyer's order page shows a QR code for the wallet payment request of exactly
 
 - **Completing (or a dispute resolved as a release)** pays the vendor exactly the price and returns the excess to the buyer's saved payout address as a second payout, with the network fee taken from it.
 - **An excess below the minimum automatic refund** (0.0001 BTC, 0.001 XMR) is not returned: it goes to the vendor with the release, and both parties are told. Sending it back would cost more than it is worth and invite fee abuse.
-- **A refund or return larger than the order price is held** ("Held: larger than the order price") and every administrator is notified. Returned automatically, it would let someone use the market's pooled wallet to swap coins. On **Admin → Payment providers**, open the order, check that the payment looks like a genuine mistake, then release it with the *Reviewed* confirmation; otherwise leave it held (or return it by hand and mark it sent).
-- **Refunds and returns always pay their own network fee**, on both coins, so repeatedly paying and cancelling costs the market nothing.
+- **A refund or return larger than the order price is held** ("Held: larger than the order price") and every administrator is notified: it is a likely mistake. On **Admin → Payment providers**, open the order, check that the payment looks like a genuine mistake, then release it with the *Reviewed* confirmation; otherwise leave it held (or return it by hand and mark it sent). The two differ: a refund is held when it exceeds the price, a return only when the excess itself exceeds the price (the buyer paid more than twice the price and the order was completed).
+- **The hold does not stop coin swaps.** Refunds and returns up to the order price are sent automatically, with no review: a buyer who pays and has the order cancelled, lets an underpaid order expire, or has it cancelled and then sends to its address gets the deposits back. Anyone can therefore use the market's pooled wallet to swap coins up to a listing's price without review (the coins sent back are not the coins received); the hold only catches amounts above the price, and a buyer can open more orders.
+- **Refunds and returns are sent with the network fee taken from the amount**, on both coins (Bitcoin `subtractfeefromamount`; Monero `subtract_fee_from_outputs`), so repeatedly paying and cancelling does not spend the market's funds on fees. The tests check the request the market sends (fake wallet and simulated wallet RPC); no real-chain run of a Monero refund with the fee deducted or of an overpayment return is recorded yet (A-103).
 
 #### Mainnet
 
@@ -518,8 +519,10 @@ Mainnet (live Bitcoin and Monero, real funds) is off unless you name it: set `BI
 node that turns out to be on mainnet still stops startup. Once set:
 
 - **The whole market is mainnet.** If both currencies are configured, both must be mainnet; one mainnet and
-  one test-network currency stops startup. Every page, badge, order note and notification says `MAINNET` and
-  "real funds" instead of `TESTNET`.
+  one test-network currency stops startup. The pages, badges, order notes and notifications the application
+  writes say `MAINNET` and "real funds" instead of `TESTNET`. Text written by hand does not: a note you type
+  when recording a manual refund says what you write, and rows written by an earlier test-network install are
+  never rewritten (a mainnet market starts on a fresh database, below).
 - **The database must be new to mainnet.** Startup refuses a database whose deposit addresses were issued on a
   test network (and a test-network market refuses one with mainnet deposits), so a mainnet wallet never pays
   out for test coins. Start a mainnet market on a fresh database; do not repoint a test market's database.
@@ -530,9 +533,47 @@ node that turns out to be on mainnet still stops startup. Once set:
   A node that later reports another network disables that currency until the app restarts.
 - **Real money.** The pooled wallets hold every buyer's deposit until release or refund: back up the wallet
   files, protect the wallet RPC credentials and the host, and follow the backup, restore and payout-recovery
-  procedures in [docs/testnet-runbook.md](testnet-runbook.md), which apply unchanged on mainnet. Consider
-  raising `PAYMENT_CONFIRMATIONS_BTC` (default 3) for large amounts. This is still custodial holding, not
-  escrow, and the market's legal and tax obligations are the operator's.
+  procedures in [docs/testnet-runbook.md](testnet-runbook.md). They were written and exercised on test
+  networks only: the commands are the same on mainnet (with mainnet addresses and a mainnet node), the
+  runbook's SQL takes the `MAINNET`/`TESTNET` label from the order's deposit address, and none of it has been
+  run against real funds. Consider raising `PAYMENT_CONFIRMATIONS_BTC` (default 3) for large amounts. This is
+  still custodial holding, not escrow, and the market's legal and tax obligations are the operator's.
+
+**Before accepting real funds.** Mainnet support is the test-network code behind an opt-in; it has not been
+proven with real funds. Know these before you take a real payment:
+
+- **No mainnet run is recorded** ([verification: not verified](verification.md#not-verified)): the mainnet
+  refusals, labels and network-history guard are tested against fake wallets and simulated wallet RPC only.
+  No real-chain run (local or public) is recorded either for refunds and returns as they are now sent (fee
+  taken from the amount), overpayment returns, the large-payout review or underpaid-order expiry: their tests
+  use a fake wallet and simulated wallet RPC. The recorded local-chain runs predate them (a release and a
+  moderator refund, with a Monero refund's fee then paid by the market).
+- **Coin swaps up to a listing's price are not reviewed.** Refunds and returns up to the order price are sent
+  automatically (see [Overpayments](#overpayments-and-the-payment-qr-code)), so anyone can use the pooled
+  wallet to swap coins up to any listing's price without review; only a refund above the price, or a return of
+  more than the price, is held.
+- **With local nodes, payouts in Tor mode leave from the host's own IP address.** The Tor overlay hides the
+  market's web service, but the local Bitcoin and Monero nodes connect to peers and broadcast every payout directly over
+  clearnet from the host, so peers can link the market's payouts to the host's IP address. Nothing in the
+  Compose files routes the nodes through Tor; running them over Tor is not tested here.
+- **Open items** in the project's review ledger (`.claude/war-room/ledger.md`), each still unfixed:
+  - A-103: no commit-pinned real-chain rerun, with a retained manifest, covers the payout changes, including
+    Monero refunds with the fee deducted, overpayment returns, the large-payout review and underpaid expiry.
+  - A-174: nothing checks the Monero wallet version at runtime, so a silently upgraded wallet image could make
+    the market classify a broadcast send as "nothing sent" and allow a second send.
+  - A-211: a deposit that confirms after an order settled is shown to the buyer as counted, only staff are
+    told and nothing refunds it; a top-up more than 24 hours after an underpaid order was cancelled is not
+    recorded at all.
+  - A-213: when a credited deposit is reversed after the release was sent but before the overpayment return
+    was, the return is held silently, with no note, notice or review item.
+  - A-214: an order page shows the counterparty's payout transaction ID, and on Bitcoin that reveals the
+    buyer's or the vendor's payout address.
+  - A-90 and A-95: the payout broadcast from the host's IP address above, and whether the nodes can run over
+    Tor (not measured).
+  - A-105: a wallet that disowns an issued address, or a Monero wallet behind its daemon, reads as "no
+    deposits", so a part-paid order can be cancelled as expired.
+  - A-76: after a restore from backup, the watcher can queue a refund that was already sent after the backup;
+    the recovery gate stops it being sent, but nothing retires it.
 
 Administrators can pause or enable **new payment addresses** independently for
 Bitcoin and Monero under **Admin → New payment intake** after the wallet services
