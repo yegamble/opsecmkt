@@ -128,8 +128,8 @@ type PageData struct {
 	// DisputePayouts: resolve form per open dispute the viewer may resolve, keyed by dispute id.
 	DisputePayouts map[string]PayoutPreview
 	// Overpaid: order page for its buyer or vendor, a paid, shipped or delivered order whose counted deposits
-	// exceed the price by this much ("0.009 BTC"); "" otherwise.
-	Overpaid string
+	// exceed the price; nil otherwise.
+	Overpaid *OverpaidView
 	// HistoryLimit: non-zero when closed history (resolved disputes, or incoming orders not paid) was
 	// cut to this many most recent rows.
 	HistoryLimit int
@@ -230,6 +230,15 @@ type Transition struct {
 type PayoutPreview struct {
 	Seen                     int64
 	Confirm, Release, Refund string
+}
+
+// OverpaidView says what completing an overpaid order does with the excess, from the split the complete form
+// states (splitPayout, A-215). Excess: "0.009 BTC". Kept: below Floor ("0.0001 BTC", the minimum automatic
+// refund), it goes to the vendor with the release. Held: larger than the price, its return waits for an
+// administrator. NoAddress: buyer's view only, no payout address saved in the order's currency.
+type OverpaidView struct {
+	Excess, Floor         string
+	Kept, Held, NoAddress bool
 }
 type DeliveryView struct{ Content, Created string }
 type Review struct {

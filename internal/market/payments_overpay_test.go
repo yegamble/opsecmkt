@@ -62,7 +62,14 @@ func TestOverpaymentReturnedToBuyer(t *testing.T) {
 	p.setPayoutAddress(p.vendor, "fake-testnet-vendor")
 	p.setPayoutAddress(p.buyer, "fake-testnet-buyer")
 	p.paidByWatcherAmount(150000)
-	p.complete(p.order)
+	// A-215: the shipped order's page says, for this order, that completing returns the excess (fee deducted).
+	buyerPage, vendorPage := p.overpaidPages()
+	mustContain(t, buyerPage, "You sent 0.0005 BTC more than the price (test network). Completing releases the price to the vendor and returns the excess to your saved BTC payout address, with the network fee deducted.",
+		"Release 0.001 BTC (test network) to "+p.vendor.Handle+" (the price) and return the 0.0005 BTC paid over the price to "+p.buyer.Handle+", network fee deducted. This is final.")
+	mustNotContain(t, buyerPage, "the return waits", "below the minimum automatic refund", "administrator reviews its return")
+	mustContain(t, vendorPage, "The buyer sent 0.0005 BTC more than the price (test network). Completing releases the price to you and returns the excess to the buyer, with the network fee deducted.")
+	mustNotContain(t, vendorPage, "your saved", "payout address saved", "the return waits")
+	p.move(p.order, stateShipped, stateCompleted, p.buyer)
 	if st, _, addr, amt := p.payout(p.order); st != "pending" || addr != "fake-testnet-vendor" || amt != 100000 {
 		t.Fatalf("release %s %s %d", st, addr, amt)
 	}
@@ -104,7 +111,14 @@ func TestSmallExcessStaysWithVendor(t *testing.T) {
 	p := newPayEnv(t)
 	p.setPayoutAddress(p.vendor, "fake-testnet-vendor")
 	p.paidByWatcherAmount(100000 + minPayoutBTC - 1)
-	p.complete(p.order)
+	// A-215: the page names the floor and says the excess is not returned; nothing waits for a payout address.
+	buyerPage, vendorPage := p.overpaidPages()
+	mustContain(t, buyerPage, "You sent 0.00009999 BTC more than the price (test network). Completing releases everything to the vendor: the excess is below the minimum automatic refund of 0.0001 BTC, so it is not returned.",
+		"Release 0.00109999 BTC (test network) to "+p.vendor.Handle+" — 0.00009999 BTC more than the price, below the minimum automatic refund, so it is not returned. This is final.")
+	mustNotContain(t, buyerPage, "returns the excess", "the return waits", "your saved")
+	mustContain(t, vendorPage, "The buyer sent 0.00009999 BTC more than the price (test network). Completing releases everything to you: the excess is below the minimum automatic refund of 0.0001 BTC, so it is not returned.")
+	mustNotContain(t, vendorPage, "returns the excess", "your saved")
+	p.move(p.order, stateShipped, stateCompleted, p.buyer)
 	if st, _, _, amt := p.payout(p.order); st != "pending" || amt != 100000+minPayoutBTC-1 {
 		t.Fatalf("release %s %d", st, amt)
 	}
@@ -126,7 +140,14 @@ func TestLargeReturnHeldUntilAdminReview(t *testing.T) {
 	p.setPayoutAddress(p.buyer, "fake-testnet-buyer")
 	adminID := p.str("SELECT id FROM users WHERE role='admin'")
 	p.paidByWatcherAmount(350000)
-	p.complete(p.order)
+	// A-215: the page says the return waits for an administrator, not that it goes back automatically.
+	buyerPage, vendorPage := p.overpaidPages()
+	mustContain(t, buyerPage, "You sent 0.0025 BTC more than the price (test network). Completing releases the price to the vendor. The excess is more than the price, so an administrator reviews its return to your saved BTC payout address (network fee deducted) before it is sent.",
+		"return the 0.0025 BTC paid over the price to "+p.buyer.Handle+", network fee deducted; the return is more than the price, so an administrator reviews it before it is sent. This is final.")
+	mustNotContain(t, buyerPage, "returns the excess", "the return waits")
+	mustContain(t, vendorPage, "The buyer sent 0.0025 BTC more than the price (test network). Completing releases the price to you. The excess is more than the price, so an administrator reviews its return to the buyer (network fee deducted) before it is sent.")
+	mustNotContain(t, vendorPage, "returns the excess", "your saved")
+	p.move(p.order, stateShipped, stateCompleted, p.buyer)
 	if st, errText, amt := p.returnPayout(p.order); st != "held" || errText != largeHold || amt != 250000 {
 		t.Fatalf("return %s %q %d", st, errText, amt)
 	}
@@ -227,6 +248,73 @@ func TestPayoutKindsPerOrder(t *testing.T) {
 	if err := insert("bonus"); err == nil {
 		t.Fatal("unknown payout kind accepted")
 	}
+}
+
+// A-215: without a payout address in the order's currency the buyer is told the return waits until they save one;
+// the vendor is not told about the buyer's addresses.
+func TestOverpaidAlertWithoutBuyerPayoutAddress(t *testing.T) {
+	p := newPayEnv(t)
+	p.setPayoutAddress(p.vendor, "fake-testnet-vendor")
+	if _, err := p.DB.Exec("UPDATE users SET payout_xmr='fake-testnet-xmr' WHERE id=$1", p.buyer.ID); err != nil {
+		t.Fatal(err) // an address in another currency does not count
+	}
+	p.paidByWatcherAmount(150000)
+	buyerPage, vendorPage := p.overpaidPages()
+	mustContain(t, buyerPage, "Completing releases the price to the vendor and returns the excess to you, with the network fee deducted. You have no BTC payout address saved, so the return waits until you save one:",
+		`<a class="text-link" href="/account#payout">save a payout address</a>`)
+	mustNotContain(t, buyerPage, "your saved BTC payout address")
+	mustContain(t, vendorPage, "Completing releases the price to you and returns the excess to the buyer, with the network fee deducted.")
+	mustNotContain(t, vendorPage, "your saved", "payout address saved", "the return waits")
+	p.move(p.order, stateShipped, stateCompleted, p.buyer)
+	if st, _, amt := p.returnPayout(p.order); st != "blocked" || amt != 50000 {
+		t.Fatalf("return %s %d", st, amt)
+	}
+}
+
+// A-215, Monero: the alert names the XMR floor, and a Bitcoin payout address does not count for an XMR return.
+func TestOverpaidXMRAlertNamesItsFloorAndAddress(t *testing.T) {
+	p := newPayEnv(t)
+	xf := newFakeProvider("XMR", 10)
+	p.A.payments["XMR"] = xf
+	p.setPayoutAddress(p.buyer, "fake-testnet-buyer")
+	for _, tc := range []struct {
+		deposit    int64
+		want, deny string
+	}{
+		{500000000000 + minAutoRefundXMR - 1, "Completing releases everything to the vendor: the excess is below the minimum automatic refund of 0.001 XMR, so it is not returned.", "payout address saved"},
+		{500000000000 + minAutoRefundXMR, "returns the excess to you, with the network fee deducted. You have no XMR payout address saved, so the return waits until you save one:", "your saved"},
+	} {
+		id := p.testEnv.order(p.buyer.ID, p.productID, "XMR", stateAwaitingPayment)
+		addr, err := xf.NewAddress(context.Background(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = p.DB.Exec("UPDATE orders SET amount=500000000000 WHERE id=$1", id); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = p.DB.Exec("INSERT INTO payment_addresses(order_id,currency,address,provider) VALUES($1,'XMR',$2,'fake')", id, addr); err != nil {
+			t.Fatal(err)
+		}
+		xf.Deposit(addr, "xmr-"+strconv.FormatInt(tc.deposit, 10), 0, tc.deposit, 10)
+		p.poll()
+		p.move(id, statePaid, stateShipped, p.vendor)
+		page := p.page("/order?id="+id, p.buyerSess)
+		mustContain(t, page, tc.want)
+		mustNotContain(t, page, tc.deny, "whole counted amount")
+	}
+}
+
+// overpaidPages ships the paid fixture order and returns its buyer's and vendor's order pages; the buyer's shows
+// the complete form. Neither says completing releases the whole counted amount (A-215).
+func (p *payEnv) overpaidPages() (buyer, vendor string) {
+	p.t.Helper()
+	p.move(p.order, statePaid, stateShipped, p.vendor)
+	buyer, vendor = p.page("/order?id="+p.order, p.buyerSess), p.page("/order?id="+p.order, p.vendorSess)
+	mustContain(p.t, buyer, "Confirms you received the order. Completing queues the payouts stated below; the payment watcher sends them automatically unless the statement says otherwise.", `name="payout_confirmed"`)
+	for _, page := range []string{buyer, vendor} {
+		mustNotContain(p.t, page, "whole counted amount")
+	}
+	return buyer, vendor
 }
 
 // paidByWatcherAmount pays the fixture order with one confirmed deposit of amt satoshi.
