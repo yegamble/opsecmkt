@@ -139,19 +139,31 @@ func TestGapStartupFromEnvironmentRunsTheWatcher(t *testing.T) {
 	if err := e.DB.QueryRow("SELECT count(*) FROM payments WHERE (order_id=$1 AND txid='tx-startup-btc' AND idx=1 AND amount=100000) OR (order_id=$2 AND txid='tx-startup-xmr' AND idx=1 AND amount=500000000000)", btcOrder, xmrOrder).Scan(&n); err != nil || n != 2 {
 		t.Fatalf("ledger rows %d %v", n, err)
 	}
-	status := map[string]string{}
-	rows, err := e.DB.Query("SELECT currency,network,last_error FROM payment_status WHERE last_poll IS NOT NULL")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for rows.Next() {
-		var cur, network, last string
-		rows.Scan(&cur, &network, &last)
-		status[cur] = network + "|" + last
-	}
-	rows.Close()
-	if status["BTC"] != "testnet3|" || status["XMR"] != "stagenet|" {
-		t.Fatalf("payment_status %v", status)
+	// pollOnce writes a currency's payment_status row after pollCurrency returns, and pollCurrency commits the
+	// order's paid state before that, so the row can lag the state seen above by a moment: wait for it (same
+	// deadline) instead of reading it once.
+	var status map[string]string
+	for {
+		status = map[string]string{}
+		rows, err := e.DB.Query("SELECT currency,network,last_error FROM payment_status WHERE last_poll IS NOT NULL")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for rows.Next() {
+			var cur, network, last string
+			if err := rows.Scan(&cur, &network, &last); err != nil {
+				t.Fatal(err)
+			}
+			status[cur] = network + "|" + last
+		}
+		rows.Close()
+		if status["BTC"] == "testnet3|" && status["XMR"] == "stagenet|" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("payment_status %v", status)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 	if body := get("/admin", admin); !strings.Contains(body, "TESTNET testnet3") || !strings.Contains(body, "TESTNET stagenet") || strings.Contains(body, "Not polled yet") {
 		t.Fatal("admin page does not show both providers as polled")
