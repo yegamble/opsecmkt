@@ -109,10 +109,6 @@ var dummyHash = sync.OnceValue(func() []byte {
 
 var handlePattern = regexp.MustCompile(`^[a-zA-Z0-9_]{3,32}$`)
 
-// errSuspended refuses sign-in to an account an administrator suspended. It is only returned once the
-// password is correct, so it reveals nothing to someone who does not know it.
-var errSuspended = fail(403, "This account is suspended. Contact the market staff.")
-
 // errAccountChanged refuses a change whose signed-in account was given another role or suspended while the request
 // was on its way (confirmedTx).
 var errAccountChanged = fail(403, "Your account's role or status changed while this was being saved; nothing was changed. Reload the page.")
@@ -387,7 +383,7 @@ func authAction(c *actionCtx) (actionResult, error) {
 		}
 		a.refund(signInKey(handle)) // a correct password spends no sign-in budget
 		if suspended {
-			return actionResult{}, errSuspended
+			return actionResult{}, suspendedRefusal(ctx, a.db)
 		}
 		return a.secondFactor(c, id, stored, signInNext(f.Get("next")))
 	}
@@ -510,7 +506,8 @@ func (a *App) secondFactor(c *actionCtx, userID, passwordHash, next string) (act
 		return actionResult{}, fail(503, "Service unavailable")
 	}
 	if len(names) == 0 {
-		if err = a.login(ctx, c.W, userID, c.Token, passwordHash); err == errSuspended || err == errPasswordChanged {
+		var he *httpError
+		if err = a.login(ctx, c.W, userID, c.Token, passwordHash); errors.As(err, &he) { // suspended or password changed
 			return actionResult{}, err
 		} else if err != nil {
 			return actionResult{}, fail(500, "Unable to sign in")
@@ -669,7 +666,7 @@ func challengeLoader(ctx context.Context, a *App, r *http.Request, d *PageData) 
 
 // startSession rotates the caller's session inside tx and records the sign-in with how it was made (method, e.g.
 // "password and TOTP"); the caller sets the cookie after commit.
-// It refuses a suspended account with errSuspended, and with errPasswordChanged a sign-in whose password was
+// It refuses a suspended account (suspendedRefusal), and with errPasswordChanged a sign-in whose password was
 // checked against another hash than the account's current one (passwordDigest, the SHA-256 of that hash): a
 // password change ends every sign-in in progress, including one whose password was checked just before the change
 // committed (A-157). The account row is share-locked, so a suspension or password change committing concurrently
@@ -681,7 +678,7 @@ func (a *App) startSession(ctx context.Context, tx *sql.Tx, id, old, method, pas
 		return "", err
 	}
 	if suspended {
-		return "", errSuspended
+		return "", suspendedRefusal(ctx, tx)
 	}
 	if subtle.ConstantTimeCompare([]byte(digest(hash)), []byte(passwordDigest)) != 1 {
 		return "", errPasswordChanged

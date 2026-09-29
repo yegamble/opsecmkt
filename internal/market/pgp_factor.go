@@ -106,7 +106,8 @@ func pgpLoginCodeAction(c *actionCtx) (actionResult, error) {
 
 // expiredKeyRefusal is /challenge/pgp's answer when no code can be encrypted to the verified key (A-155): usually it,
 // or its encryption subkey, expired. It names what the account can still do: its other method when TOTP is enrolled,
-// otherwise the administrator's reset of second factors (/admin, A-137's operator reset for an administrator).
+// otherwise the administrator's reset of second factors (/admin, A-137's operator reset for an administrator), and
+// how to reach the staff (the staff contact, A-119).
 func expiredKeyRefusal(c *actionCtx, userID string) error {
 	msg := "A sign-in code cannot be encrypted to your key: it or its encryption subkey expired or was revoked, or it cannot encrypt. "
 	var totp bool
@@ -114,15 +115,19 @@ func expiredKeyRefusal(c *actionCtx, userID string) error {
 	if err := c.Tx.QueryRowContext(c.Ctx(), "SELECT totp_enabled,role FROM users WHERE id=$1", userID).Scan(&totp, &role); err != nil {
 		return err
 	}
+	contact, err := staffContactRefusal(c.Ctx(), c.Tx)
+	if err != nil {
+		return err
+	}
 	if totp {
-		return fail(409, msg+"Sign in with your authenticator code or a recovery code instead, then renew the key (gpg --quick-set-expire) and paste it on your account page.")
+		return fail(409, msg+"Sign in with your authenticator code or a recovery code instead, then renew the key (gpg --quick-set-expire) and paste it on your account page. Lost your authenticator and recovery codes too? "+contact)
 	}
 	who := "A market administrator can turn it off for you with Reset a user's second factors"
 	if role == "admin" {
 		who = "Another administrator can turn it off for you with Reset a user's second factors, or the operator on the server with -reset-admin-factors"
 	}
 	return fail(409, msg+"PGP sign-in is the only verification method on this account, so this sign-in cannot be finished. "+who+
-		"; your password, saved key and its verification stay, and you then sign in with your password, renew the key (gpg --quick-set-expire) and paste it on your account page.")
+		"; your password, saved key and its verification stay, and you then sign in with your password, renew the key (gpg --quick-set-expire) and paste it on your account page. "+contact)
 }
 
 // pgpChallengeLoader shows the encrypted code for this pending login, if one was requested.
