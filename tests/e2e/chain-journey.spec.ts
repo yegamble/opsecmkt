@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { signedIn, setRole } from './db-helpers';
+import { pgpFixture, signedIn, setRole } from './db-helpers';
 
 const execute = promisify(execFile);
 async function chain(...args: string[]) {
@@ -37,6 +37,14 @@ test('isolated real chains: seeded buyer/vendor partial deposits, confirmation, 
   const moderator = await signedIn(browser, baseURL, 'chain_moderator', password, true);
   await setRole(admin, 'chain_vendor', 'vendor');
   await setRole(admin, 'chain_moderator', 'moderator');
+  // A-83: buyers can pay for the physical listing only while its vendor has a key that can receive the encrypted
+  // shipping address.
+  await vendor.goto('/account');
+  const profile = vendor.locator('form', { has: vendor.getByRole('button', { name: 'Save profile' }) });
+  await profile.getByLabel('PGP public key', { exact: true }).fill(pgpFixture('recipient.pub.asc'));
+  await profile.getByLabel('Current password', { exact: true }).fill(password);
+  await Promise.all([vendor.waitForEvent('load'), profile.getByRole('button', { name: 'Save profile' }).click()]);
+  await expect(vendor).toHaveURL(/\/account\?saved=1$/);
 
   for (const currency of currencies) {
     const total = currency === 'BTC' ? 100_000 : 500_000_000_000;

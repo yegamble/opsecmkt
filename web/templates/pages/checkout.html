@@ -29,7 +29,9 @@
 {{template "payment-status:checkout" $}}
 </section>
 <section class="panel">
-<h2>Order summary</h2>
+<h2>Order summary</h2>{{if $.VendorKeyUnusable}}
+<p class="order-unavailable" role="note">
+<strong>No usable key.</strong> {{.Vendor}} has no usable encryption key, so you could not send a shipping address. You can save a draft, but payment stays unavailable until they add one.</p>{{end}}
 <form class="stack" method="post" action="/orders">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="product_id" value="{{.ID}}">

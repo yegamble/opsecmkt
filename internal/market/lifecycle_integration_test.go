@@ -95,6 +95,7 @@ func TestLifecycleDigitalAndDisputedPhysical(t *testing.T) {
 	e.A.payments["BTC"] = l.fake
 	suffix := randomToken()[:6]
 	vendorID, vendor := e.user("lvendor_"+suffix, "vendor")
+	e.usableKey(vendorID) // buyers of its physical item send the shipping address encrypted to it (A-83)
 	buyerID, buyer := e.user("lbuyer_"+suffix, "buyer")
 	_, other := e.user("lother_"+suffix, "buyer")
 	_, mod := e.user("lmod_"+suffix, "moderator")

@@ -21,6 +21,7 @@ func TestGapXMRMoneyPathEndToEnd(t *testing.T) {
 	l := &lifecycle{testEnv: e, t: t, fake: fake}
 	suffix := randomToken()[:6]
 	vendorID, vendor := e.user("xvendor_"+suffix, "vendor")
+	e.usableKey(vendorID)
 	buyerID, buyer := e.user("xbuyer_"+suffix, "buyer")
 	_, admin := e.user("xadmin_"+suffix, "admin")
 	product := e.product(vendorID, "physical")

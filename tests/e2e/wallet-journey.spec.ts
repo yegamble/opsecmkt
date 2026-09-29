@@ -1,9 +1,10 @@
 import { expect, test, type Page } from '@playwright/test';
-import { signedIn } from './db-helpers';
+import { pgpFixture, setRole, signedIn } from './db-helpers';
 
 // Real server/PostgreSQL and production RPC adapters, deterministic simulated wallet responses.
 // This proves application integration, not real-chain settlement or cryptographic address validation.
 const password = 'wallet-browser-admin-password-123';
+const vendorPassword = 'wallet-browser-vendor-password-123';
 const rpc = 'http://127.0.0.1:18083';
 // The dispute extends the marketplace and accounts initialized by the first journey.
 test.describe.configure({ mode: 'serial' });
@@ -36,36 +37,58 @@ test('BTC and XMR: partial payment, intake pause, confirmation, fulfillment and 
   await admin.locator('.admin-auth').getByRole('button', { name: 'Turn CAPTCHA off' }).click();
   const buyer = await signedIn(browser, baseURL, 'wallet_buyer', 'wallet-browser-buyer-password-123', true);
   const second = await signedIn(browser, baseURL, 'wallet_second', 'wallet-browser-second-password-123', true);
+  // The digital XMR listing belongs to wallet_vendor, so wallet_admin (the BTC vendor, which must also add a PGP key
+  // for its physical listing, A-83) stays within the ten password confirmations its window allows.
+  const vendor = await signedIn(browser, baseURL, 'wallet_vendor', vendorPassword, true);
+  await setRole(admin, 'wallet_vendor', 'vendor');
 
   for (const currency of ['BTC', 'XMR']) {
     const digital = currency === 'XMR';
+    const [seller, sellerHandle, sellerPassword] = digital ? [vendor, 'wallet_vendor', vendorPassword] : [admin, 'wallet_admin', password];
     const destination = digital ? '5' + 'a'.repeat(94) : 'bcrt1qfixturepayout000000000000';
-    await admin.goto('/account');
-    const payout = admin.locator('form', { has: admin.getByRole('button', { name: `Save ${currency} address` }) });
+    await seller.goto('/account');
+    const payout = seller.locator('form', { has: seller.getByRole('button', { name: `Save ${currency} address` }) });
     await payout.locator('input[name="address"]').fill(destination);
-    await payout.getByLabel('Current password', { exact: true }).fill(password);
+    await payout.getByLabel('Current password', { exact: true }).fill(sellerPassword);
     await payout.getByRole('button').click();
     await expect(payout.locator('input[name="address"]')).toHaveValue(destination);
-    await admin.goto('/vendor-dashboard');
-    await admin.getByText('+ Publish a new listing', { exact: true }).click();
+    await seller.goto('/vendor-dashboard');
+    await seller.getByText('+ Publish a new listing', { exact: true }).click();
     const title = `Wallet ${currency} journey`;
-    await admin.getByLabel('Listing title').fill(title);
-    await admin.getByLabel('Description', { exact: true }).fill('Deterministic RPC fixture journey; no real coins.');
-    await admin.getByLabel('Fulfillment type').selectOption(digital ? 'digital' : 'physical');
-    await admin.getByLabel('Stock', { exact: true }).fill('3');
-    await admin.getByLabel('Bitcoin reference price').fill('0.001');
-    await admin.getByLabel('Monero reference price').fill('0.5');
-    await admin.getByRole('button', { name: 'Publish listing' }).click();
+    await seller.getByLabel('Listing title').fill(title);
+    await seller.getByLabel('Description', { exact: true }).fill('Deterministic RPC fixture journey; no real coins.');
+    await seller.getByLabel('Fulfillment type').selectOption(digital ? 'digital' : 'physical');
+    await seller.getByLabel('Stock', { exact: true }).fill('3');
+    await seller.getByLabel('Bitcoin reference price').fill('0.001');
+    await seller.getByLabel('Monero reference price').fill('0.5');
+    await seller.getByRole('button', { name: 'Publish listing' }).click();
     await buyer.goto(`/?q=${encodeURIComponent(title)}`);
     await buyer.getByRole('link', { name: title, exact: true }).click();
     await buyer.waitForURL(/\/product\?id=/);
     const productURL = buyer.url();
+    // A-83: neither vendor has a PGP key yet. The physical listing says a shipping address could not be sent.
+    const noKey = 'has no usable encryption key, so you could not send a shipping address';
+    if (digital) await expect(buyer.locator('main')).not.toContainText(noKey);
+    else await expect(buyer.locator('.order-unavailable')).toContainText(`No usable key. wallet_admin ${noKey}`);
     await buyer.getByRole('link', { name: 'Review order draft' }).click();
+    if (!digital) await expect(buyer.locator('.order-unavailable')).toContainText(noKey);
     await buyer.getByLabel('Reference currency').selectOption(currency);
     await buyer.getByRole('button', { name: 'Create unfunded draft' }).click();
     // Measure the draft page, not the checkout page mid-navigation (CI 36261986487 measured 504 px unstyled).
     await buyer.waitForURL(/\/order\?id=/);
     await fitsAt(buyer, `${currency} draft`);
+    if (!digital) {
+      // No payment is offered until the vendor adds a key that can receive the encrypted address.
+      await expect(buyer.locator('.order-unavailable')).toHaveText('Unavailable. This vendor has no usable encryption key, so you could not send your shipping address. Ask them to add one.');
+      await expect(buyer.getByRole('button', { name: 'Request payment address' })).toHaveCount(0);
+      await admin.goto('/account');
+      const profile = admin.locator('form', { has: admin.getByRole('button', { name: 'Save profile' }) });
+      await profile.getByLabel('PGP public key', { exact: true }).fill(pgpFixture('recipient.pub.asc'));
+      await profile.getByLabel('Current password', { exact: true }).fill(password); // A-152
+      await submit(admin, profile.getByRole('button', { name: 'Save profile' }));
+      await buyer.reload();
+      await expect(buyer.locator('.order-unavailable')).toHaveCount(0);
+    }
     await buyer.getByRole('button', { name: 'Request payment address' }).click();
     await buyer.waitForURL(/&saved=1$/);
     const orderURL = buyer.url();
@@ -103,21 +126,23 @@ test('BTC and XMR: partial payment, intake pause, confirmation, fulfillment and 
     await submit(admin, resume.getByRole('button'));
     await second.reload();
     await expect(second.getByRole('button', { name: 'Request payment address' })).toBeVisible();
-    await admin.goto(orderURL);
-    await fitsAt(admin, `${currency} paid (vendor)`);
+    // The paid physical order asks for the address, encrypted to the vendor's key (A-83: the key is usable).
+    if (!digital) await expect(buyer.getByRole('link', { name: 'Send encrypted shipping details ↗' })).toBeVisible();
+    await seller.goto(orderURL);
+    await fitsAt(seller, `${currency} paid (vendor)`);
     if (digital) {
-      await admin.getByLabel('Delivery content', { exact: true }).fill('Fixture digital delivery token');
-      await submit(admin, admin.getByRole('button', { name: 'Deliver digital content', exact: true }));
+      await seller.getByLabel('Delivery content', { exact: true }).fill('Fixture digital delivery token');
+      await submit(seller, seller.getByRole('button', { name: 'Deliver digital content', exact: true }));
     } else {
       // A-80: the note to the buyer warns against addresses and tracking numbers in plain text.
-      await expect(admin.getByLabel('Note to the buyer (optional)')).toHaveAccessibleDescription(/^Stored unencrypted\..*Never include an address, real name or tracking number/);
-      await submit(admin, admin.getByRole('button', { name: 'Mark as shipped' }));
+      await expect(seller.getByLabel('Note to the buyer (optional)')).toHaveAccessibleDescription(/^Stored unencrypted\..*Never include an address, real name or tracking number/);
+      await submit(seller, seller.getByRole('button', { name: 'Mark as shipped' }));
     }
     await buyer.reload();
     if (digital) await expect(buyer.getByRole('region', { name: 'Digital delivery' })).toContainText('Fixture digital delivery token');
     // A-122: the complete form states the release (amount, recipient, difference from the price) and refuses
     // to complete until it is ticked.
-    const release = buyer.getByRole('checkbox', { name: `Release ${digital ? '0.5 XMR' : '0.001 BTC'} (test network) to wallet_admin — exactly the price. This is final.`, exact: true });
+    const release = buyer.getByRole('checkbox', { name: `Release ${digital ? '0.5 XMR' : '0.001 BTC'} (test network) to ${sellerHandle} — exactly the price. This is final.`, exact: true });
     await expect(release).toHaveAttribute('required', '');
     await expect(buyer.locator('input[name="amount_seen"]')).toHaveValue(String(total));
     await release.check();
@@ -149,10 +174,10 @@ test('BTC and XMR: partial payment, intake pause, confirmation, fulfillment and 
   }
   await buyer.context().close();
   await second.context().close();
+  await vendor.context().close();
 });
 
 test('funded dispute: encrypted moderator evidence, independent resolution and one buyer refund', async ({ browser, baseURL, request }) => {
-  const { setRole, pgpFixture } = await import('./db-helpers');
   const admin = await signedIn(browser, baseURL, 'wallet_admin', password, false);
   const buyer = await signedIn(browser, baseURL, 'wallet_buyer', 'wallet-browser-buyer-password-123', false);
   const moderator = await signedIn(browser, baseURL, 'wallet_moderator', 'wallet-browser-moderator-password-123', true);
@@ -273,7 +298,7 @@ test('vendor cancels a paid physical order, refunds once and restores stock', as
 
 // A-120: a refund to a buyer with no payout address waits; its recipient (only) is told why and what to do, on the
 // order page and on /account#payout, and saving an address sends it once. A fresh buyer: it has no address, and
-// wallet_admin (the vendor here) has spent its password confirmations for this window.
+// wallet_admin (the vendor here) needs its remaining password confirmations for this window.
 test('a refund waiting for a payout address tells its recipient what to do and is sent once', async ({ browser, baseURL, request }) => {
   const vendor = await signedIn(browser, baseURL, 'wallet_admin', password, false);
   const refundeePassword = 'wallet-browser-refundee-password-123';
@@ -335,13 +360,14 @@ test('a refund waiting for a payout address tells its recipient what to do and i
 
 test('automatic digital delivery and administrator recovery of a rejected payout', async ({ browser, baseURL, request }) => {
   const admin = await signedIn(browser, baseURL, 'wallet_admin', password, false);
+  const vendor = await signedIn(browser, baseURL, 'wallet_vendor', vendorPassword, false);
   const buyer = await signedIn(browser, baseURL, 'wallet_buyer', 'wallet-browser-buyer-password-123', false);
   try {
-    await admin.goto('/vendor-dashboard');
-    await admin.getByRole('link', { name: 'Edit Wallet XMR journey', exact: true }).click();
+    await vendor.goto('/vendor-dashboard');
+    await vendor.getByRole('link', { name: 'Edit Wallet XMR journey', exact: true }).click();
     const content = 'Private automatically delivered fixture download token';
-    await admin.getByLabel('Automatic delivery content').fill(content);
-    await admin.getByRole('button', { name: 'Save changes' }).click();
+    await vendor.getByLabel('Automatic delivery content').fill(content);
+    await vendor.getByRole('button', { name: 'Save changes' }).click();
     await buyer.goto('/?q=Wallet%20XMR%20journey');
     await buyer.getByRole('link', { name: 'Wallet XMR journey', exact: true }).click();
     await expect(buyer.locator('main')).not.toContainText(content);
@@ -360,7 +386,7 @@ test('automatic digital delivery and administrator recovery of a rejected payout
     await expect(buyer.getByRole('region', { name: 'Digital delivery' })).toContainText(content);
     const before = (await (await request.get(`${rpc}/test/state`)).json()).payouts.length;
     expect((await request.post(`${rpc}/test/fail-next-send`, { data: { currency: 'XMR' } })).ok()).toBeTruthy();
-    await buyer.getByRole('checkbox', { name: 'Release 0.5 XMR (test network) to wallet_admin — exactly the price. This is final.', exact: true }).check();
+    await buyer.getByRole('checkbox', { name: 'Release 0.5 XMR (test network) to wallet_vendor — exactly the price. This is final.', exact: true }).check();
     await buyer.getByRole('button', { name: 'Confirm receipt and complete' }).click();
     await reloadUntil(buyer, async () => { await expect(buyer.locator('.payment-figures div', { has: buyer.getByText('Payout status', { exact: true }) })).toContainText('Failed', { timeout: 500 }); });
     await admin.goto('/admin');
@@ -371,22 +397,23 @@ test('automatic digital delivery and administrator recovery of a rejected payout
     expect((await (await request.get(`${rpc}/test/state`)).json()).payouts).toHaveLength(before);
     // A-120: the vendor desk counts the recipient's unsent payouts and links to them; the list gives the fixed
     // copy for a definite failure, never the wallet's error text.
-    await admin.goto('/vendor-dashboard');
-    await Promise.all([admin.waitForURL(/\/account#payout$/), admin.getByRole('link', { name: '1 unsent payout(s) to you', exact: true }).click()]);
-    const unsent = admin.getByRole('region', { name: 'Payouts to you not sent yet' }).locator('tr', { has: admin.getByRole('link', { name: orderID.slice(0, 8), exact: true }) });
+    await vendor.goto('/vendor-dashboard');
+    await Promise.all([vendor.waitForURL(/\/account#payout$/), vendor.getByRole('link', { name: '1 unsent payout(s) to you', exact: true }).click()]);
+    const unsent = vendor.getByRole('region', { name: 'Payouts to you not sent yet' }).locator('tr', { has: vendor.getByRole('link', { name: orderID.slice(0, 8), exact: true }) });
     await expect(unsent).toContainText('The market wallet refused the send before broadcasting; administrators have been notified');
     await expect(unsent).not.toContainText('Fixture rejected send');
     // A-121: saving a new address leaves the failed payout on its address and names the order to its owner; the
     // administrator moves it to the current address after checking it, and the requeue below pays that address once.
-    // (With these two, wallet_admin uses all ten password confirmations its window allows.)
+    // (With the move and the two requeue attempts below, wallet_admin uses nine of the ten password confirmations its
+    // window allows.)
     const moved = '5' + 'b'.repeat(94);
-    await admin.goto('/account');
-    const save = admin.locator('form', { has: admin.getByRole('button', { name: 'Save XMR address' }) });
+    await vendor.goto('/account');
+    const save = vendor.locator('form', { has: vendor.getByRole('button', { name: 'Save XMR address' }) });
     await save.locator('input[name="address"]').fill(moved);
-    await save.getByLabel('Current password', { exact: true }).fill(password);
-    await submit(admin, save.getByRole('button'));
-    await admin.goto('/notifications');
-    await expect(admin.locator('main')).toContainText(`1 unsent payout(s) still use your previous address (order ${orderID.slice(0, 8)}); an administrator must confirm the change`);
+    await save.getByLabel('Current password', { exact: true }).fill(vendorPassword);
+    await submit(vendor, save.getByRole('button'));
+    await vendor.goto('/notifications');
+    await expect(vendor.locator('main')).toContainText(`1 unsent payout(s) still use your previous address (order ${orderID.slice(0, 8)}); an administrator must confirm the change`);
     await admin.goto('/admin');
     payout = admin.locator('tr', { has: admin.getByText(orderID, { exact: true }) });
     await payout.locator('summary').click();
@@ -419,6 +446,6 @@ test('automatic digital delivery and administrator recovery of a rejected payout
     await expect(admin.locator('tr', { has: admin.getByText(orderID, { exact: true }) })).not.toContainText('Requeue payout');
     await expect(admin.locator('main')).toContainText('Requeued payout');
   } finally {
-    await Promise.allSettled([admin.context().close(), buyer.context().close()]);
+    await Promise.allSettled([admin.context().close(), vendor.context().close(), buyer.context().close()]);
   }
 });

@@ -83,6 +83,7 @@ func TestConcurrentPayRespectsPerBuyerCap(t *testing.T) {
 	e := newTestApp(t)
 	buyerID, buyer := e.user("cap_buyer", "buyer")
 	vendorID, _ := e.user("cap_vendor", "vendor")
+	e.usableKey(vendorID)
 	e.A.payments["BTC"] = newFakeProvider("BTC", 1)
 	const n = 8
 	// The in-process limit of one payment request per account at a time is lifted: this races the database's

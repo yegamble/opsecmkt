@@ -179,6 +179,9 @@ type PageData struct {
 	MessageTo           string       // messages page: validated ?to handle for the recipient field
 	OrderViewer         string       // order page: "buyer", "vendor" or "moderator" (read-only dispute review)
 	UnreadNotifications int          // signed-in users, every page
+	// VendorKeyUnusable (A-83): a physical listing's product and checkout pages, and its buyer's order page, when the
+	// vendor has no key that can receive encrypted messages (canReceiveEncrypted), so no shipping address can be sent.
+	VendorKeyUnusable bool
 }
 
 // Foundation
@@ -368,4 +371,8 @@ type ContactKey struct {
 	Verified             bool
 	VerifiedAt           string // UTC date of the ownership proof (date only for other users, A-79)
 	Unreadable           bool   // a key is saved but no longer parses (legacy or revoked)
+	NoEncryption         bool   // a key is saved and parses, but nothing can be encrypted to it now (A-68: expired, revoked or signing-only)
 }
+
+// Usable reports whether the contact has a key that can receive encrypted messages (contactKey fills Fingerprint only then).
+func (k ContactKey) Usable() bool { return k.Fingerprint != "" }

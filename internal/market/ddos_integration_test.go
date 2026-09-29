@@ -560,6 +560,7 @@ func (s *slowWallet) ValidAddress(addr string) bool { return strings.HasPrefix(a
 // it instead of failing at the application pool's 3 s lock_timeout.
 func TestSlowWalletDoesNotRefuseQueuedListingWriters(t *testing.T) {
 	w := newOrderWorld(t)
+	w.e.usableKey(w.vendorID)
 	_, admin := w.e.user("slow_wallet_admin", "admin")
 	wallet := &slowWallet{hold: 4 * time.Second, slow: map[string]bool{}, entered: make(chan string, 4)}
 	w.e.A.payments["BTC"] = wallet
@@ -609,6 +610,7 @@ func TestSlowWalletDoesNotRefuseQueuedListingWriters(t *testing.T) {
 // (which archives the listing). A change that only notifies the buyer does not wait at all.
 func TestSlowWalletDoesNotRefuseStaffOrCancel(t *testing.T) {
 	w := newOrderWorld(t)
+	w.e.usableKey(w.vendorID)
 	// Two administrators: one administrator's confirmed actions queue on that administrator's own row.
 	_, admin := w.e.user("slow_cancel_admin", "admin")
 	_, admin2 := w.e.user("slow_cancel_admin2", "admin")
@@ -727,6 +729,7 @@ func TestResolveRefundWaitsForBuyersCheckout(t *testing.T) {
 // the checkout still succeeds.
 func TestWalletLockWaitOutlastsStatementTimeout(t *testing.T) {
 	w := newOrderWorld(t)
+	w.e.usableKey(w.vendorID)
 	wallet := &slowWallet{hold: 9 * time.Second, slow: map[string]bool{}, entered: make(chan string, 1)}
 	w.e.A.payments["BTC"] = wallet
 	p := w.e.product(w.vendorID, "physical")
@@ -750,6 +753,7 @@ func TestWalletLockWaitOutlastsStatementTimeout(t *testing.T) {
 // buyer's row for up to walletLockWait. Other users' pages and posts stay fast.
 func TestOneBuyersPayFloodLeavesPoolForOthers(t *testing.T) {
 	w := newOrderWorld(t)
+	w.e.usableKey(w.vendorID)
 	_, admin := w.e.user("pay_flood_admin", "admin")
 	wallet := &slowWallet{hold: 5 * time.Second, slow: map[string]bool{}, entered: make(chan string, 16)}
 	w.e.A.payments["BTC"] = wallet

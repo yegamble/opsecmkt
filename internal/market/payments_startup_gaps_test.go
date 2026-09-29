@@ -70,6 +70,7 @@ func TestGapStartupFromEnvironmentRunsTheWatcher(t *testing.T) {
 	}
 	suffix := randomToken()[:6]
 	vendorID, _ := e.user("svendor_"+suffix, "vendor")
+	e.usableKey(vendorID)
 	_, buyer := e.user("sbuyer_"+suffix, "buyer")
 	_, admin := e.user("sadmin_"+suffix, "admin")
 	product := e.product(vendorID, "physical")

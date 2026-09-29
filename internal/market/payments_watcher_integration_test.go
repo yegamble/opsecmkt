@@ -31,6 +31,8 @@ func newPayEnv(t *testing.T) *payEnv {
 	m, _ := e.user("pmod_"+suffix, "moderator")
 	_, as := e.user("padmin_"+suffix, "admin")
 	p := &payEnv{testEnv: e, t: t, fake: fake, buyer: e.loadUser(b), vendor: e.loadUser(v), mod: e.loadUser(m), buyerSess: bs, vendorSess: vs, adminSess: as}
+	_, key := testPGPKey(t, "pvendor_"+suffix)
+	e.setKey(v, key) // physical orders need a vendor key that can receive the shipping address (A-83)
 	p.productID = e.product(v, "physical")
 	p.order, p.addr = p.newOrder(stateAwaitingPayment)
 	return p
