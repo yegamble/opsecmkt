@@ -352,7 +352,7 @@ INSERT INTO settings(key,value) VALUES ('payments_recovery_required','true')
 ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
 UPDATE payouts SET state='held', updated=now(),
   error='Restored from backup: verify in the wallet before releasing; this payout may already have been sent.'
-    || coalesce(' ' || substring(error from 'Suspended account:.*'), '')
+    || coalesce(' ' || substring(error from '(?:Suspended account:|Larger than the order price:).*'), '')
 WHERE state IN ('pending','sending','blocked','held');
 UPDATE payouts SET send_ambiguous=true WHERE state='failed';
 UPDATE payouts SET updated=now(),
@@ -409,6 +409,16 @@ treat every failed Monero payout as possibly broadcast. Check with:
 ```sh
 docker compose config --images
 ```
+
+## 9. Overpayments are returned (migration 064)
+
+Migration 064 runs at startup: an order may now have a release **and** a return of the amount paid over the price
+(`payouts.kind` `return`, `UNIQUE (order_id, kind)` instead of `UNIQUE (order_id)`). Payouts already queued are
+unchanged; only orders that settle after the upgrade are split. A refund or return larger than the order price
+is held for an administrator (*Admin → Payment providers*), and refunds and returns now pay their own network
+fee on Monero too. The restore SQL in [section 6](#6-backups-now-need-the-wallets-too) keeps that hold's text
+after its own marker. Rolling back past this release needs the pre-upgrade backup, as for every migration
+(section 5). See [overpayments](docs/operator-guide.md#overpayments-and-the-payment-qr-code).
 
 ## Appendix: new keys by hand
 

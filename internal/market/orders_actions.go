@@ -172,8 +172,17 @@ func payAction(c *actionCtx) (actionResult, error) {
 	return actionResult{Redirect: orderPage(o.ID), Audit: "Requested " + o.Currency + " " + c.A.netAdj() + " payment address for order " + shortID(o.ID)}, nil
 }
 
+// hasDeposits reports whether an order has received a deposit that can be refunded: not conflicted and not a
+// locked transfer (those are never paid out automatically), confirmed or still confirming.
+func hasDeposits(ctx context.Context, q rowQuerier, orderID string) (bool, error) {
+	var ok bool
+	err := q.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM payments WHERE order_id=$1 AND confirmations>=0 AND NOT locked)", orderID).Scan(&ok)
+	return ok, err
+}
+
 // cancelAction takes the state the viewer saw ("from") so a stale or repeated form is a 409, not a new move.
-// Cancelling a paid order refunds every counted deposit, so it needs the payout confirmation.
+// Cancelling a paid order refunds every counted deposit, so it needs the payout confirmation; so does
+// cancelling an order awaiting payment once a deposit has arrived (an underpayment is refunded).
 func cancelAction(c *actionCtx) (actionResult, error) {
 	from := c.Form.Get("from")
 	if from != stateDraft && from != stateAwaitingPayment && from != statePaid {
@@ -194,6 +203,21 @@ func cancelAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, err
 	}
 	ctx := c.Ctx()
+	if from == stateAwaitingPayment {
+		deposits, err := hasDeposits(ctx, c.Tx, o.ID)
+		if err != nil {
+			return actionResult{}, err
+		}
+		if deposits {
+			if c.Form.Get("amount_seen") == "" {
+				return actionResult{}, fail(409, "A deposit arrived for this order after the page was shown. Reload it to review the refund cancelling queues. Nothing was changed.")
+			}
+			if seen, err = payoutConfirmation(c); err != nil {
+				return actionResult{}, err
+			}
+			ctx = withPayoutSeen(ctx, o.ID, seen)
+		}
+	}
 	if from == statePaid {
 		ctx = withPayoutSeen(ctx, o.ID, seen)
 	}

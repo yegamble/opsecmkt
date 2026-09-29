@@ -146,8 +146,9 @@ func TestGapXMRMoneyPathEndToEnd(t *testing.T) {
 	if s := l.state(second); s != stateAwaitingPayment {
 		t.Fatalf("partial deposit: %s", s)
 	}
-	mustContain(t, l.get("/order?id="+second, buyer, 200), "Confirmed deposits are below the required amount", "0.700000000001 XMR")
-	l.post("/orders/cancel", buyer, form("order_id", second, "from", stateAwaitingPayment), 303)
+	mustContain(t, l.get("/order?id="+second, buyer, 200), "Confirmed deposits are below the required amount", "0.700000000001 XMR",
+		"Refund 0.700000000001 XMR (test network)", `name="amount_seen" value="700000000001"`)
+	l.post("/orders/cancel", buyer, payoutConfirmed(form("order_id", second, "from", stateAwaitingPayment), 700000000001), 303)
 	if err := e.DB.QueryRow("SELECT kind,address,state,amount FROM payouts WHERE order_id=$1", second).Scan(&kind, &to, &state, &amt); err != nil {
 		t.Fatal(err)
 	}

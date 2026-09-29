@@ -73,6 +73,15 @@ func (p *payEnv) move(order, from, to string, actor *User) {
 	}
 }
 
+// returnPayout returns the order's return of an overpayment to the buyer.
+func (p *payEnv) returnPayout(order string) (state, errText string, amount int64) {
+	p.t.Helper()
+	if err := p.DB.QueryRow("SELECT state,error,amount FROM payouts WHERE order_id=$1 AND kind='return'", order).Scan(&state, &errText, &amount); err != nil {
+		p.t.Fatalf("return for %s: %v", order[:8], err)
+	}
+	return
+}
+
 func (p *payEnv) state(order string) string {
 	p.t.Helper()
 	var s string
@@ -91,9 +100,10 @@ func (p *payEnv) count(query string, args ...any) int {
 	return n
 }
 
+// payout returns the order's release or refund (not a return of an overpayment; see returnPayout).
 func (p *payEnv) payout(order string) (state, txid, address string, amount int64) {
 	p.t.Helper()
-	if err := p.DB.QueryRow("SELECT state,txid,address,amount FROM payouts WHERE order_id=$1", order).Scan(&state, &txid, &address, &amount); err != nil {
+	if err := p.DB.QueryRow("SELECT state,txid,address,amount FROM payouts WHERE order_id=$1 AND kind<>'return'", order).Scan(&state, &txid, &address, &amount); err != nil {
 		p.t.Fatalf("payout for %s: %v", order[:8], err)
 	}
 	return

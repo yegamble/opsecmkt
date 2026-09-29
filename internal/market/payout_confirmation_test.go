@@ -62,10 +62,10 @@ func TestResolveStatesPayoutAmountAndNeedsConfirmation(t *testing.T) {
 	dispute, modSess := p.disputedOrder(1000000)
 	desk := p.page("/moderator", modSess)
 	mustContain(t, desk,
-		"Release 0.01 BTC (test network) to "+p.vendor.Handle+" — 0.009 BTC more than the price",
-		"Refund 0.01 BTC (test network) to "+p.buyer.Handle+" — 0.009 BTC more than the price; no payout address: the payout waits for one",
+		"Release 0.001 BTC (test network) to "+p.vendor.Handle+" (the price) and return the 0.009 BTC paid over the price to "+p.buyer.Handle+", network fee deducted; the return is more than the price, so an administrator reviews it before it is sent",
+		"Refund 0.01 BTC (test network) to "+p.buyer.Handle+" — 0.009 BTC more than the price; more than the price, so an administrator reviews it before it is sent; no payout address: the payout waits for one",
 		`name="payout_confirmed" value="confirmed" required`,
-		"Resolving queues one payout of the whole counted amount to one party; the payment watcher sends it automatically. There is no split.",
+		"a release pays the vendor the price and returns any excess worth sending to the buyer",
 		"Never include an address, real name or tracking number",
 		`aria-describedby="resolution-help-`+dispute+`"`)
 	mustNotContain(t, desk, "moves no funds")
@@ -75,7 +75,7 @@ func TestResolveStatesPayoutAmountAndNeedsConfirmation(t *testing.T) {
 	if _, err := p.DB.Exec("UPDATE users SET suspended_at=now() WHERE id=$1", p.vendor.ID); err != nil {
 		t.Fatal(err)
 	}
-	mustContain(t, p.page("/moderator", modSess), "to "+p.vendor.Handle+" — 0.009 BTC more than the price; account suspended: an administrator must check the address")
+	mustContain(t, p.page("/moderator", modSess), "so an administrator reviews it before it is sent; account suspended: an administrator must check the address")
 	if _, err := p.DB.Exec("UPDATE users SET suspended_at=NULL WHERE id=$1", p.vendor.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -91,14 +91,15 @@ func TestResolveStatesPayoutAmountAndNeedsConfirmation(t *testing.T) {
 	missing := url.Values{"id": decision["id"], "outcome": decision["outcome"], "resolution": decision["resolution"], "payout_confirmed": {"confirmed"}}
 	p.check(p.do("POST", "/resolve", modSess, missing), 400)
 	p.check(p.do("POST", "/resolve", modSess, payoutConfirmed(decision, 1000000)), 303)
-	if st, _, addr, amt := p.payout(p.order); st != "pending" || addr != "fake-testnet-vendor" || amt != 1000000 {
+	// The vendor is paid the price; the excess, larger than the price, is returned only after an administrator's review.
+	if st, _, addr, amt := p.payout(p.order); st != "pending" || addr != "fake-testnet-vendor" || amt != 100000 {
 		t.Fatalf("payout %s %s %d", st, addr, amt)
 	}
-	// The release names the excess to both parties.
-	for _, u := range []*User{p.buyer, p.vendor} {
-		if p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE '%0.009 BTC more than the price%'", u.ID) != 1 {
-			t.Fatalf("release notification to %s does not name the excess", u.Handle)
-		}
+	if st, errText, amt := p.returnPayout(p.order); st != "held" || errText != largeHold || amt != 900000 {
+		t.Fatalf("return %s %q %d", st, errText, amt)
+	}
+	if p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE '%return of 0.009 BTC (paid over the price) is more than the order price, so it is held%'", p.buyer.ID) != 1 {
+		t.Fatal("buyer not told the return is held")
 	}
 
 	// Nothing counted (address issued, no deposit): the outcome says so and queues nothing.
@@ -141,7 +142,8 @@ func TestResolveRefusesChangedAmount(t *testing.T) {
 		t.Fatalf("amount_seen after the deposit %v", seen)
 	}
 	p.check(p.do("POST", "/resolve", modSess, payoutConfirmed(decision, seen[0])), 303)
-	if st, _, addr, amt := p.payout(p.order); st != "pending" || addr != "fake-testnet-buyer" || amt != 150000 {
+	// 0.0015 BTC is more than the 0.001 BTC price: the refund waits for an administrator (anti-mixing).
+	if st, _, addr, amt := p.payout(p.order); st != "held" || addr != "fake-testnet-buyer" || amt != 150000 {
 		t.Fatalf("payout %s %s %d", st, addr, amt)
 	}
 }
@@ -210,13 +212,13 @@ func TestCompleteNeedsConfirmationAndUnchangedAmount(t *testing.T) {
 	}
 	unchanged("changed amount")
 	page = p.page("/order?id="+p.order, p.buyerSess)
-	mustContain(t, page, "Release 0.01 BTC (test network) to "+p.vendor.Handle+" — 0.009 BTC more than the price. This is final.")
+	mustContain(t, page, "Release 0.001 BTC (test network) to "+p.vendor.Handle+" (the price) and return the 0.009 BTC paid over the price to "+p.buyer.Handle+", network fee deducted; the return is more than the price, so an administrator reviews it before it is sent. This is final.")
 	p.check(p.do("POST", "/orders/complete", p.buyerSess, payoutConfirmed(url.Values{"order_id": {p.order}}, 1000000)), 303)
-	if st, _, _, amt := p.payout(p.order); st != "pending" || amt != 1000000 {
+	if st, _, _, amt := p.payout(p.order); st != "pending" || amt != 100000 {
 		t.Fatalf("payout %s %d", st, amt)
 	}
-	if p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE '%0.009 BTC more than the price%'", p.vendor.ID) != 1 {
-		t.Fatal("release notification does not name the excess")
+	if st, errText, amt := p.returnPayout(p.order); st != "held" || errText != largeHold || amt != 900000 {
+		t.Fatalf("return %s %q %d", st, errText, amt)
 	}
 }
 
@@ -239,14 +241,15 @@ func TestVendorCancelOfPaidOrderNeedsConfirmation(t *testing.T) {
 	p.check(p.do("POST", "/orders/cancel", p.vendorSess, payoutConfirmed(url.Values{"order_id": {p.order}, "from": {statePaid}}, 100000)), 409)
 	unchanged("changed amount")
 	p.check(p.do("POST", "/orders/cancel", p.vendorSess, payoutConfirmed(url.Values{"order_id": {p.order}, "from": {statePaid}}, 120000)), 303)
-	if st, _, addr, amt := p.payout(p.order); st != "pending" || addr != "fake-testnet-buyer" || amt != 120000 {
+	// A refund above the price waits for an administrator's review.
+	if st, _, addr, amt := p.payout(p.order); st != "held" || addr != "fake-testnet-buyer" || amt != 120000 {
 		t.Fatalf("refund %s %s %d", st, addr, amt)
 	}
 }
 
 func TestOverpaidOrderPagesWarnBothParties(t *testing.T) {
 	p := newPayEnv(t)
-	buyerCopy := "Ask the vendor to cancel and refund everything, then order again. After shipping, a dispute sends the whole received amount to one party; there is no split."
+	buyerCopy := "Completing releases the price to the vendor and returns the excess to your saved payout address, with the network fee deducted."
 	p.paidByWatcher(p.order, p.addr, "tx-paid")
 	mustNotContain(t, p.page("/order?id="+p.order, p.buyerSess), buyerCopy, "more than the price (test network)")
 	p.fake.Deposit(p.addr, "tx-extra", 0, 900000, 3)
@@ -254,8 +257,9 @@ func TestOverpaidOrderPagesWarnBothParties(t *testing.T) {
 	buyerPage := p.page("/order?id="+p.order, p.buyerSess)
 	mustContain(t, buyerPage, "You sent 0.009 BTC more than the price (test network).", buyerCopy)
 	vendorPage := p.page("/order?id="+p.order, p.vendorSess)
-	mustContain(t, vendorPage, "The buyer sent 0.009 BTC more than the price (test network).", "Cancelling this paid order refunds every deposit to the buyer", "there is no split")
-	mustNotContain(t, vendorPage, "Ask the vendor to cancel")
+	mustContain(t, vendorPage, "The buyer sent 0.009 BTC more than the price (test network).", "Completing releases the price to you and returns the excess to the buyer",
+		"Cancelling this paid order refunds every deposit to the buyer", "a return or refund larger than the price waits for an administrator's review")
+	mustNotContain(t, vendorPage, buyerCopy)
 }
 
 func TestNoTemplateSaysResolvingMovesNoFunds(t *testing.T) {

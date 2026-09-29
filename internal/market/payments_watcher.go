@@ -385,22 +385,41 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 	}
 	// Unpaid past PAYMENT_EXPIRY with no deposit seen (a conflicted or locked one does not count): cancel as the
 	// system actor; the stock hook returns the reserved unit. A deposit still confirming keeps the order open.
+	// Underpaid: every deposit confirmed but short of the price, the address older than PAYMENT_EXPIRY and no
+	// deposit (top-up) seen for PAYMENT_EXPIRY either: cancel the same way, and the payout hook refunds the
+	// confirmed deposits to the buyer. Without this an underpaid order and its deposits would wait forever.
 	if o.State == stateAwaitingPayment && walletRead {
 		expiry, err := paymentExpiry()
 		if err != nil {
 			expiry = 24 * time.Hour // validated at startup by the provider factories
 		}
-		var expired bool
-		if err = tx.QueryRowContext(ctx, `SELECT created < now()-make_interval(secs => $2) AND NOT EXISTS (SELECT 1 FROM payments WHERE order_id=$1 AND confirmations>=0 AND NOT locked)
-			FROM payment_addresses WHERE order_id=$1`, orderID, expiry.Seconds()).Scan(&expired); err != nil {
+		var unpaid, underpaid bool
+		var received int64
+		if err = tx.QueryRowContext(ctx, `WITH d AS (SELECT amount,confirmations,created FROM payments WHERE order_id=$1 AND confirmations>=0 AND NOT locked)
+			SELECT pa.created < now()-make_interval(secs => $2) AND NOT EXISTS (SELECT 1 FROM d),
+				pa.created < now()-make_interval(secs => $2) AND EXISTS (SELECT 1 FROM d) AND NOT EXISTS (SELECT 1 FROM d WHERE confirmations<$3)
+					AND (SELECT max(created) FROM d) < now()-make_interval(secs => $2),
+				(SELECT COALESCE(sum(amount),0) FROM d)
+			FROM payment_addresses pa WHERE pa.order_id=$1`, orderID, expiry.Seconds(), threshold).Scan(&unpaid, &underpaid, &received); err != nil {
 			return err
 		}
-		if expired {
-			next, err := a.transition(ctx, tx, orderID, stateAwaitingPayment, stateCancelled, nil, "payment window expired")
+		if unpaid || underpaid {
+			note := "payment window expired"
+			if underpaid {
+				note = fmt.Sprintf("payment window expired underpaid: %s of %s %s received", amount(received, dec), amount(total, dec), o.Currency)
+			}
+			next, err := a.transition(ctx, tx, orderID, stateAwaitingPayment, stateCancelled, nil, note)
 			if err != nil {
 				return err
 			}
 			o = *next
+			if underpaid {
+				body := fmt.Sprintf("Order %s: the payment window ended with %s of %s %s received, so the order was cancelled. What you sent is refunded to your saved %s payout address (the refund waits until you save one), unless it is below the minimum automatic refund, when staff review it. The order page shows the refund.",
+					orderID[:min(8, len(orderID))], amount(received, dec), amount(total, dec), o.Currency, o.Currency)
+				if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, body); err != nil {
+					return err
+				}
+			}
 		}
 	}
 	// A Monero transfer with an unlock time is never credited: report it once to moderators and the buyer.
@@ -422,7 +441,7 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 		}
 	}
 	// A deposit first recorded after funding is announced once to the order history, the buyer and the vendor. It
-	// counts toward the order's single release or refund only if it has reached the threshold by then
+	// counts toward the order's settlement (its release and any return, or its refund) only if it has reached the threshold by then
 	// (enqueuePayout); one that confirms after the payout is queued is flagged to moderators below, while the
 	// order is still watched.
 	if o.State != stateAwaitingPayment && !isTerminal(o.State) {
@@ -438,7 +457,7 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 				rows.Close()
 				return err
 			}
-			notes = append(notes, fmt.Sprintf("%s %s deposit %s:%d of %s %s received after this order was funded. If it has %d confirmations, as last recorded by the market, when the order is completed, cancelled or resolved, it is included in the order's single release or refund; otherwise it is not paid out automatically.",
+			notes = append(notes, fmt.Sprintf("%s %s deposit %s:%d of %s %s received after this order was funded. If it has %d confirmations, as last recorded by the market, when the order is completed, cancelled or resolved, it is included in the order's settlement (a release to the vendor with any excess returned to the buyer, or a refund); otherwise it is not paid out automatically.",
 				a.netTag(), p.Network(), truncate(txid, 20), idx, amount(amt, dec), o.Currency, threshold))
 		}
 		rows.Close()
@@ -636,12 +655,12 @@ func (a *App) sendPayouts(ctx context.Context, p PaymentProvider, orders []strin
 		if ctx.Err() != nil {
 			break
 		}
-		var to, order, recipient string
+		var to, order, recipient, kind string
 		var amt int64
 		err = a.db.QueryRowContext(ctx, `UPDATE payouts SET state='sending',updated=now() WHERE id=$1 AND state='pending' AND address<>''
 			AND NOT EXISTS (SELECT 1 FROM settings WHERE key='payments_recovery_required' AND value='true')
 			AND NOT EXISTS (SELECT 1 FROM payments pm WHERE pm.order_id=payouts.order_id AND pm.credited AND pm.confirmations<$2)
-			RETURNING address,amount,order_id,user_id`, id, int64(p.Confirmations())).Scan(&to, &amt, &order, &recipient)
+			RETURNING address,amount,order_id,user_id,kind`, id, int64(p.Confirmations())).Scan(&to, &amt, &order, &recipient, &kind)
 		if err == sql.ErrNoRows {
 			continue
 		}
@@ -651,7 +670,12 @@ func (a *App) sendPayouts(ctx context.Context, p PaymentProvider, orders []strin
 		// The wallet call is detached from shutdown (a redeploy must not abort a broadcast mid-flight) but
 		// bounded; Close waits for it. The outcome is recorded on a fresh bounded context for the same reason.
 		sctx, scancel := context.WithTimeout(context.WithoutCancel(ctx), payoutSendTimeout)
-		txid, serr := p.Send(sctx, to, amt)
+		// A refund or return pays its own network fee (feeFromAmountSender); a release is sent with Send.
+		send := p.Send
+		if f, ok := p.(feeFromAmountSender); ok && kind != "release" {
+			send = f.SendFeeFromAmount
+		}
+		txid, serr := send(sctx, to, amt)
 		scancel()
 		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), payoutRecordTimeout)
 		label := amount(amt, currencyDecimals(cur)) + " " + cur

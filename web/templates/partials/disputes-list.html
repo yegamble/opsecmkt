@@ -25,7 +25,7 @@ Disputes holds every open dispute first (OpenDisputes of them, oldest first), th
 <label class="check">
 <input type="radio" name="outcome" value="refund" required> {{$p.Refund}}</label>
 </fieldset>
-<p class="help">Resolving queues one payout of the whole counted amount to one party; the payment watcher sends it automatically. There is no split.</p>
+<p class="help">A refund returns the whole counted amount to the buyer; a release pays the vendor the price and returns any excess worth sending to the buyer, with the network fee deducted. A refund or return larger than the price waits for an administrator's review; the payment watcher sends the rest automatically.</p>
 <label>Decision<textarea name="resolution" required minlength="20" maxlength="5000" aria-describedby="resolution-help-{{.ID}}">
 </textarea>
 </label>

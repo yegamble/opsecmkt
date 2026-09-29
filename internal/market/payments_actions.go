@@ -3,6 +3,7 @@ package market
 import (
 	"context"
 	"database/sql"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -160,17 +161,24 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		pv.Network, pv.Threshold = p.Network(), p.Confirmations()
 	}
 	dec := currencyDecimals(o.Currency)
-	// The payout is read before the provider checks: its recipient learns what happens next even while the
-	// wallet is unavailable (A-120). Only the recipient sees its destination and the reason it waits; the other
-	// party and staff reviewers see a neutral label (the full detail is on /admin).
-	var payout *PayoutRow
-	var row PayoutRow
-	var amt int64
-	var recipient, payoutErr string
-	var ambiguous, stuck bool
-	err := a.db.QueryRowContext(ctx, "SELECT kind,state,txid,amount,currency,user_id,address,error,send_ambiguous,"+stuckSending+" FROM payouts WHERE order_id=$1", o.ID).
-		Scan(&row.Kind, &row.State, &row.TxID, &amt, &row.Currency, &recipient, &row.Address, &payoutErr, &ambiguous, &stuck)
-	if err == nil {
+	// The payouts are read before the provider checks: each recipient learns what happens next even while the
+	// wallet is unavailable (A-120). Only the recipient sees a payout's destination and the reason it waits; the
+	// other party and staff reviewers see a neutral label (the full detail is on /admin). An order has a release
+	// and a return of any excess, or a refund: each viewer is the recipient of at most one of them.
+	var payouts []PayoutRow
+	rows, err := a.db.QueryContext(ctx, "SELECT kind,state,txid,amount,currency,user_id,address,error,send_ambiguous,"+stuckSending+" FROM payouts WHERE order_id=$1 ORDER BY id", o.ID)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var row PayoutRow
+		var amt int64
+		var recipient, payoutErr string
+		var ambiguous, stuck bool
+		if err = rows.Scan(&row.Kind, &row.State, &row.TxID, &amt, &row.Currency, &recipient, &row.Address, &payoutErr, &ambiguous, &stuck); err != nil {
+			rows.Close()
+			return err
+		}
 		row.Amount, row.StateLabel = amount(amt, dec), orderPayoutLabel(row.State, payoutErr)
 		if d.User != nil && d.User.ID == recipient {
 			if row.State != "sent" {
@@ -180,8 +188,10 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		} else {
 			row.Address = ""
 		}
-		payout = &row
-	} else if err != sql.ErrNoRows {
+		payouts = append(payouts, row)
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
 		return err
 	}
 	var addr string
@@ -205,7 +215,7 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 	if pv.Open {
 		pv.Address = addr
 	}
-	rows, err := a.db.QueryContext(ctx, "SELECT txid,idx,amount,confirmations,credited,locked,regress_notice FROM payments WHERE order_id=$1 ORDER BY created,id", o.ID)
+	rows, err = a.db.QueryContext(ctx, "SELECT txid,idx,amount,confirmations,credited,locked,regress_notice FROM payments WHERE order_id=$1 ORDER BY created,id", o.ID)
 	if err != nil {
 		return err
 	}
@@ -260,6 +270,15 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 	if remaining == 0 {
 		pv.Remaining = "0"
 	}
+	// The payment request and its QR code ask for exactly what is still due (deposits seen, confirmed or not,
+	// are already subtracted), and only while something is.
+	if pv.Open && pv.NeedsTopUp {
+		pv.PaymentURI = paymentURI(o.Currency, pv.Address, remaining)
+		if pv.QR, err = qrSVG(pv.PaymentURI, "QR code: pay "+pv.Remaining+" "+o.Currency+" to the deposit address"); err != nil {
+			log.Printf("payments: payment QR code not rendered: %v", err)
+			pv.QR = ""
+		}
+	}
 	if received == 0 {
 		pv.Received = "0"
 	}
@@ -289,7 +308,7 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 	default:
 		pv.Status = "Deposit address closed (order " + stateLabel(o.State) + ")"
 	}
-	pv.Payout = payout
+	pv.Payouts = payouts
 	return nil
 }
 
@@ -343,6 +362,8 @@ func recipientPayout(orderID, kind, cur, network, amt, address, state, payoutErr
 		r.Status, r.NextStep = "Held for a payout address check", "Held because your account was suspended; an administrator checks your payout address before releasing it."
 	case state == "held" && restored:
 		r.Status, r.NextStep = "Held for a wallet check", "Held after the market restored its records from a backup; an administrator checks the market wallet before releasing it, so it is not paid twice."
+	case heldLarge(state, payoutErr):
+		r.Status, r.NextStep = "Held for review", "It is more than the order price, so an administrator reviews it before it is sent."
 	case state == "held" && payoutErr == heldReason:
 		r.Status, r.NextStep = "Held until a deposit confirms", "A deposit for this order is re-confirming; the payment watcher releases the payout by itself once it confirms again."
 	case state == "held":
@@ -511,6 +532,12 @@ func paymentsAdminLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 			r.StateLabel, r.AddressCheck = "Held: account suspended — check the payout address before releasing", true
 			if r.Ambiguous {
 				r.StateLabel = "Held after a restore from backup and for an account suspension — may already have been sent; check the wallet and the payout address before releasing"
+			}
+		}
+		if heldLarge(r.State, r.Error) {
+			r.LargeCheck = true
+			if !r.AddressCheck && !r.Ambiguous {
+				r.StateLabel = "Held: larger than the order price — review before releasing"
 			}
 		}
 		d.Payouts = append(d.Payouts, r)

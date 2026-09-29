@@ -1,5 +1,7 @@
 package market
 
+import "html/template"
+
 // Shared view types. Each feature package appends fields only inside its own commented block.
 
 type User struct {
@@ -217,7 +219,8 @@ type Transition struct {
 	Payout            *PayoutPreview // complete, and cancel of a paid order: the payout it queues
 }
 
-// PayoutPreview states what a form that queues a payout (complete, a vendor's cancel of a paid order, resolve)
+// PayoutPreview states what a form that queues a payout (complete, a cancel of a paid order or of an order
+// awaiting payment that has received a deposit, resolve)
 // pays now, by payoutBasis (A-161, A-122). Seen is that amount in atomic units, sent back as amount_seen;
 // Confirm labels the required confirmation checkbox. Resolve form only: Release and Refund state each outcome
 // (amount, recipient, difference from the price, the recipient's payout state).
@@ -273,7 +276,11 @@ type PaymentView struct {
 	Monitored                       bool // Issued and the provider is still configured
 	Open                            bool // Monitored and the order still awaits payment (address shown)
 	Deposits                        []PaymentDeposit
-	Payout                          *PayoutRow
+	Payouts                         []PayoutRow // release and return of any excess, or refund (ORDER BY id)
+	// PaymentURI and QR: while the order is open and something is still due, the wallet payment request for
+	// exactly that amount (paymentURI) and its inline SVG QR code (qrSVG); empty otherwise.
+	PaymentURI string
+	QR         template.HTML
 }
 type PaymentDeposit struct {
 	TxID          string
@@ -318,6 +325,9 @@ type PayoutRow struct {
 	// AddressCheck: held for an account suspension (suspendedHoldPrefix); releasing needs an explicit
 	// confirmation that the payout address was checked.
 	AddressCheck bool
+	// LargeCheck: a refund or return larger than the order price (largeHoldPrefix); releasing needs an explicit
+	// confirmation that an administrator reviewed it.
+	LargeCheck bool
 	// CurrentAddress: the recipient's saved payout address for Currency now; CurrentChanged: when it was last saved
 	// ("" when not recorded). Repoint: the payout may be moved to CurrentAddress (repointable, A-121).
 	CurrentAddress, CurrentChanged string

@@ -28,7 +28,7 @@ const restoredFailed = "Restored from backup: verify in the wallet before requeu
 // restorePayoutSQL is the payout protection scripts/restore.sh and the manual SQL in UPGRADING.md apply to a
 // restored dump (TestRestoredHoldMarkerMatchesRestoreScripts keeps them identical, whitespace aside).
 var restorePayoutSQL = []string{
-	"UPDATE payouts SET state='held', updated=now(), error='" + restoredHold + "' || coalesce(' ' || substring(error from 'Suspended account:.*'), '') WHERE state IN ('pending','sending','blocked','held')",
+	"UPDATE payouts SET state='held', updated=now(), error='" + restoredHold + "' || coalesce(' ' || substring(error from '(?:Suspended account:|Larger than the order price:).*'), '') WHERE state IN ('pending','sending','blocked','held')",
 	"UPDATE payouts SET send_ambiguous=true WHERE state='failed'",
 	"UPDATE payouts SET updated=now(), error='" + restoredFailed + "' || error WHERE state='failed'",
 }
@@ -54,7 +54,7 @@ func (p *payEnv) completedWithPayout(txid string) string {
 func (p *payEnv) payoutID(order string) string {
 	p.t.Helper()
 	var id string
-	if err := p.DB.QueryRow("SELECT id::text FROM payouts WHERE order_id=$1", order).Scan(&id); err != nil {
+	if err := p.DB.QueryRow("SELECT id::text FROM payouts WHERE order_id=$1 AND kind<>'return'", order).Scan(&id); err != nil {
 		p.t.Fatal(err)
 	}
 	return id
