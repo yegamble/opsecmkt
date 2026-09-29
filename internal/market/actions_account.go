@@ -47,12 +47,16 @@ func accountAction(c *actionCtx) (actionResult, error) {
 	confirm := !sameProfileKey(old, pgp)
 	return confirmedTx(c, confirm, func(c *actionCtx) (actionResult, error) {
 		// P2: parse the key, store its fingerprint and reset ownership proof / PGP sign-in when it changes.
-		audit, err := saveProfileKey(c, pgp, confirm)
+		audit, outcome, err := saveProfileKey(c, pgp, confirm)
 		if err != nil {
 			return actionResult{}, err
 		}
+		redirect := "/account?saved=1"
+		if outcome != "" { // a new version of the saved key: say whether its ownership proof was kept (A-155)
+			redirect = "/account?key=" + outcome
+		}
 		_, err = c.Tx.ExecContext(c.Ctx(), "UPDATE users SET xmpp=$1 WHERE id=$2", xmpp, c.User.ID)
-		return actionResult{Redirect: "/account?saved=1", Audit: audit}, err
+		return actionResult{Redirect: redirect, Audit: audit}, err
 	})
 }
 

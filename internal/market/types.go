@@ -211,6 +211,12 @@ type PGPView struct {
 	UserIDs                                   []string // user IDs of the saved key, shown to the owner (A-79)
 	KeyError                                  string   // the saved key no longer parses (legacy or revoked)
 	ChallengeExpires                          string   // open ownership challenge expiry (UTC)
+	// A-155: expiry of the primary key and of the encryption subkey encryptTo selects (or the one that expired last),
+	// "Never", "YYYY-MM-DD UTC" or "Expired YYYY-MM-DD UTC"; SubkeyExpires is "" when no subkey can encrypt.
+	PrimaryExpires, SubkeyExpires string
+	StopsSoon                     string // A-155: UTC date encryption to the key stops, when that is within 30 days
+	FingerprintHex                string // unspaced fingerprint for the renewal commands
+	CannotEncrypt                 bool   // A-225: nothing can be encrypted to the saved key now (canReceiveEncrypted)
 }
 
 // P3 Orders

@@ -14,6 +14,10 @@ test('PGP page shows the fingerprint, an unverified key and a sign challenge', a
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('PGP verification.');
   await expect(page.locator('.page-head .badge')).toHaveText('Not verified');
   await expect(page.locator('.pgp-fingerprint')).toHaveText('0000 0000 0000 0000 0000 0000 0000 0000 0000 0000');
+  // A-155: the owner sees when the key and its encryption subkey expire.
+  for (const label of ['Primary key expires', 'Encryption subkey expires']) {
+    await expect(page.locator('.key-values div').filter({ hasText: label }).locator('dd')).toHaveText('Never');
+  }
   await expect(page.getByRole('heading', { name: 'Sign exactly this text' })).toBeVisible();
   await expect(page.getByLabel('Clearsigned message or armored detached signature')).toBeVisible();
   await expect(page.getByRole('radio', { name: 'Sign a text with your private key' })).toBeChecked();
