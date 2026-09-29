@@ -33,9 +33,12 @@ Read this once, before you form any opinion. Then read `CLAUDE.md`,
 3. **Orders move only through the server-side transition table**
    (`orders_state.go`) with row locks and compare-and-set; every move is logged
    in `order_events`. Nothing reports success without a recorded state change.
-4. **Payments never pay twice.** `payouts.order_id` is unique, sends are a
-   single wallet call claimed by pending→sending compare-and-set, never retried
-   automatically; the restore gate (`payments_recovery_required`) pauses payouts.
+4. **Payments never pay twice.** One settlement per order: a release plus its
+   overpayment return, or one refund (`payouts` `UNIQUE (order_id, kind)` since
+   migration 064; `enqueuePayout` returns early once any payout row exists for the
+   order). Sends are a single wallet call claimed by pending→sending
+   compare-and-set, never retried automatically; the restore gate
+   (`payments_recovery_required`) pauses payouts.
 5. **The server never decrypts messages** and never stores shipping addresses.
 6. **`SETUP_TOKEN` derives keys** (CSRF, TOTP/recovery sealing). Rotating it has
    consequences; treat it as key material.
