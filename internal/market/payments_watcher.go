@@ -476,17 +476,18 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 		}
 	}
 	// A credited deposit back below the threshold (conflicted or missing, or at a lower depth after a reorg) is
-	// announced once per episode while the order is open or its payout unsent; unsent payouts are held below and
-	// the order state is never reverted. Reaching the threshold again ends the episode (regress_notice), so a
-	// later regression is announced again. payments.flagged stays set: staff keep read access and the desk lists it.
+	// announced once per episode while the order is open or any of its payouts is unsent (A-213: a release sent
+	// with its return still unsent counts as unsent); unsent payouts are held below and the order state is never
+	// reverted. Reaching the threshold again ends the episode (regress_notice), so a later regression is announced
+	// again. payments.flagged stays set: staff keep read access and the desk lists it.
 	if _, err = tx.ExecContext(ctx, "UPDATE payments SET regress_notice=false WHERE order_id=$1 AND regress_notice AND confirmations>=$2", orderID, threshold); err != nil {
 		return err
 	}
-	var sent bool
-	if err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM payouts WHERE order_id=$1 AND state='sent')", orderID).Scan(&sent); err != nil {
+	var allSent bool
+	if err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM payouts WHERE order_id=$1) AND NOT EXISTS(SELECT 1 FROM payouts WHERE order_id=$1 AND state<>'sent')", orderID).Scan(&allSent); err != nil {
 		return err
 	}
-	if !isTerminal(o.State) || !sent {
+	if !isTerminal(o.State) || !allSent {
 		rows, err := tx.QueryContext(ctx, "UPDATE payments SET flagged=true,regress_notice=true WHERE order_id=$1 AND credited AND confirmations<$2 AND NOT regress_notice RETURNING txid,confirmations", orderID, threshold)
 		if err != nil {
 			return err

@@ -166,7 +166,7 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 	// other party and staff reviewers see a neutral label (the full detail is on /admin). An order has a release
 	// and a return of any excess, or a refund: each viewer is the recipient of at most one of them.
 	var payouts []PayoutRow
-	rows, err := a.db.QueryContext(ctx, "SELECT kind,state,txid,amount,currency,user_id,address,error,send_ambiguous,"+stuckSending+" FROM payouts WHERE order_id=$1 ORDER BY id", o.ID)
+	rows, err := a.db.QueryContext(ctx, "SELECT kind,state,txid,amount,currency,user_id,address,error,send_ambiguous,"+stuckSending+","+conflictedDeposit+" FROM payouts WHERE order_id=$1 ORDER BY id", o.ID)
 	if err != nil {
 		return err
 	}
@@ -174,15 +174,15 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		var row PayoutRow
 		var amt int64
 		var recipient, payoutErr string
-		var ambiguous, stuck bool
-		if err = rows.Scan(&row.Kind, &row.State, &row.TxID, &amt, &row.Currency, &recipient, &row.Address, &payoutErr, &ambiguous, &stuck); err != nil {
+		var ambiguous, stuck, conflicted bool
+		if err = rows.Scan(&row.Kind, &row.State, &row.TxID, &amt, &row.Currency, &recipient, &row.Address, &payoutErr, &ambiguous, &stuck, &conflicted); err != nil {
 			rows.Close()
 			return err
 		}
-		row.Amount, row.StateLabel = amount(amt, dec), orderPayoutLabel(row.State, payoutErr)
+		row.Amount, row.StateLabel = amount(amt, dec), orderPayoutLabel(row.State, payoutErr, conflicted)
 		if d.User != nil && d.User.ID == recipient {
 			if row.State != "sent" {
-				mine := recipientPayout(o.ID, row.Kind, row.Currency, pv.Network, row.Amount, row.Address, row.State, payoutErr, ambiguous, stuck)
+				mine := recipientPayout(o.ID, row.Kind, row.Currency, pv.Network, row.Amount, row.Address, row.State, payoutErr, ambiguous, stuck, conflicted)
 				row.StateLabel, d.MyPayout = mine.Status, &mine
 			}
 		} else {
@@ -330,12 +330,21 @@ func payoutStateLabel(s string) string {
 	return s
 }
 
+// conflictedDeposit selects, for a payouts row, whether a credited deposit of its order is conflicted or missing
+// from the wallet (confirmations < 0): the watcher's hold then waits for market staff, since a double-spent
+// deposit never confirms again (A-213).
+const conflictedDeposit = "EXISTS(SELECT 1 FROM payments pm WHERE pm.order_id=payouts.order_id AND pm.credited AND pm.confirmations<0)"
+
 // orderPayoutLabel is the payout status on the order page for everyone but its recipient: the other party and
 // staff reviewers. A hold other than the watcher's (whose deposit the payment panel already shows) is not
 // explained there, so neither a suspension nor a restore from backup is disclosed (A-120, A-107, A-112).
-func orderPayoutLabel(state, payoutErr string) string {
+// conflicted: a credited deposit of the order is conflicted or missing (conflictedDeposit).
+func orderPayoutLabel(state, payoutErr string, conflicted bool) string {
 	if state == "held" && payoutErr != heldReason {
 		return "Held — waiting for an administrator check"
+	}
+	if state == "held" && conflicted {
+		return "Held — a deposit is conflicted or missing; market staff review it"
 	}
 	if state == "held" {
 		return "Held — a deposit is re-confirming; released automatically once it confirms again"
@@ -347,8 +356,9 @@ func orderPayoutLabel(state, payoutErr string) string {
 // happens next. payoutErr (the wallet's text or the hold's marker) only selects the copy and is never shown.
 // stuck: a send claimed longer ago than stuckSending allows, which may have been broadcast like an ambiguous
 // failure. A definite failure says administrators were notified: recordPayout notifies every administrator in
-// the transaction that records it.
-func recipientPayout(orderID, kind, cur, network, amt, address, state, payoutErr string, ambiguous, stuck bool) RecipientPayout {
+// the transaction that records it. conflicted: a credited deposit of the order is conflicted or missing
+// (conflictedDeposit), so the watcher's hold is not described as lifting by itself (A-213).
+func recipientPayout(orderID, kind, cur, network, amt, address, state, payoutErr string, ambiguous, stuck, conflicted bool) RecipientPayout {
 	r := RecipientPayout{OrderID: orderID, OrderShort: shortID(orderID), Kind: kind, Currency: cur, Network: network, Amount: amt, Address: address}
 	restored := strings.HasPrefix(payoutErr, restoredHoldPrefix)
 	switch {
@@ -364,6 +374,8 @@ func recipientPayout(orderID, kind, cur, network, amt, address, state, payoutErr
 		r.Status, r.NextStep = "Held for a wallet check", "Held after the market restored its records from a backup; an administrator checks the market wallet before releasing it, so it is not paid twice."
 	case heldLarge(state, payoutErr):
 		r.Status, r.NextStep = "Held for review", "It is more than the order price, so an administrator reviews it before it is sent."
+	case state == "held" && payoutErr == heldReason && conflicted:
+		r.Status, r.NextStep = "Held for review", "A deposit for this order is conflicted or missing from the market wallet, so this payout is held and market staff review it."
 	case state == "held" && payoutErr == heldReason:
 		r.Status, r.NextStep = "Held until a deposit confirms", "A deposit for this order is re-confirming; the payment watcher releases the payout by itself once it confirms again."
 	case state == "held":
@@ -381,7 +393,7 @@ func recipientPayout(orderID, kind, cur, network, amt, address, state, payoutErr
 
 // unsentPayouts lists every payout to userID that is not sent, oldest first and uncapped (A-120).
 func unsentPayouts(ctx context.Context, a *App, userID string) ([]RecipientPayout, error) {
-	rows, err := a.db.QueryContext(ctx, "SELECT order_id,kind,currency,amount,address,state,error,send_ambiguous,"+stuckSending+
+	rows, err := a.db.QueryContext(ctx, "SELECT order_id,kind,currency,amount,address,state,error,send_ambiguous,"+stuckSending+","+conflictedDeposit+
 		" FROM payouts WHERE user_id=$1 AND state<>'sent' ORDER BY id", userID)
 	if err != nil {
 		return nil, err
@@ -391,14 +403,14 @@ func unsentPayouts(ctx context.Context, a *App, userID string) ([]RecipientPayou
 	for rows.Next() {
 		var order, kind, cur, address, state, payoutErr, network string
 		var amt int64
-		var ambiguous, stuck bool
-		if err = rows.Scan(&order, &kind, &cur, &amt, &address, &state, &payoutErr, &ambiguous, &stuck); err != nil {
+		var ambiguous, stuck, conflicted bool
+		if err = rows.Scan(&order, &kind, &cur, &amt, &address, &state, &payoutErr, &ambiguous, &stuck, &conflicted); err != nil {
 			return nil, err
 		}
 		if p := a.provider(cur); p != nil {
 			network = p.Network()
 		}
-		out = append(out, recipientPayout(order, kind, cur, network, amount(amt, currencyDecimals(cur)), address, state, payoutErr, ambiguous, stuck))
+		out = append(out, recipientPayout(order, kind, cur, network, amount(amt, currencyDecimals(cur)), address, state, payoutErr, ambiguous, stuck, conflicted))
 	}
 	return out, rows.Err()
 }
