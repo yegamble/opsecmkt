@@ -127,11 +127,15 @@ const payoutTxidHidden = "(transaction ID shown only to its recipient)"
 
 // hidePayoutTxids replaces in each text the transaction ID of every payout of order whose recipient is not
 // viewer, in full or as truncate(txid, 20), when viewer is the order's buyer or vendor: on Bitcoin a txid reveals
-// its recipient's payout address. New order-history notes name no txid; this covers notes and dispute decisions
-// stored before (the rows stay unchanged). Staff reviewers who are not parties read the text as stored.
+// its recipient's payout address. New order-history notes name no payout txid; this covers notes and dispute
+// decisions stored before (the rows stay unchanged). A refund staff recorded as sent to the buyer by hand (A-31,
+// payments.disposition_txid) is named in its order-history note and hidden the same way from the vendor. Staff
+// reviewers who are not parties read the text as stored.
 func hidePayoutTxids(ctx context.Context, a *App, order, viewer string, texts ...*string) error {
 	rows, err := a.db.QueryContext(ctx, `SELECT py.txid FROM payouts py JOIN orders o ON o.id=py.order_id JOIN products p ON p.id=o.product_id
-		WHERE py.order_id=$1 AND py.txid<>'' AND py.user_id<>$2 AND $2 IN (o.buyer_id,p.vendor_id)`, order, viewer)
+		WHERE py.order_id=$1 AND py.txid<>'' AND py.user_id<>$2 AND $2 IN (o.buyer_id,p.vendor_id)
+		UNION SELECT pm.disposition_txid FROM payments pm JOIN orders o ON o.id=pm.order_id JOIN products p ON p.id=o.product_id
+		WHERE pm.order_id=$1 AND pm.disposition_txid<>'' AND o.buyer_id<>$2 AND p.vendor_id=$2`, order, viewer)
 	if err != nil {
 		return err
 	}
@@ -616,26 +620,28 @@ const paymentReviewLimit = 100
 
 // loadPaymentReviews lists deposits the payment watcher flagged for staff review (payments.flagged): every open
 // flag, oldest first and never capped, then the paymentReviewLimit most recently flagged others, with their
-// count. A flag is open while it has no settling event: a locked transfer, a late deposit or a deposit of a
-// payout below the minimum automatic payout (payments.below_floor, A-99; no disposition action exists yet), or a
-// credited deposit whose regression was announced and has not confirmed again (payments.regress_notice). The
-// reason comes from the deposit's current confirmations. The flag time is the latest watcher flag event for the deposit in order_events: flagOrder writes a system note naming it
+// count. A flag is open until staff record its disposition (A-31: no action or refunded by hand; one escalated to
+// an administrator stays open) while it is a locked transfer, a late deposit or a deposit of a payout below the
+// minimum automatic payout (payments.below_floor, A-99), or a credited deposit whose regression was announced and
+// has not confirmed again (payments.regress_notice). A disposed flag is not listed (the order history and the
+// audit log keep the disposition). The reason comes from the deposit's current confirmations. The flag time is the latest watcher flag event for the deposit in order_events: flagOrder writes a system note naming it
 // (truncate(txid, 20)) and ending "Moderator review required.".
 func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 	if d.User == nil || (d.User.Role != "moderator" && d.User.Role != "admin") {
 		return nil
 	}
 	rows, err := a.db.QueryContext(ctx, `WITH v AS (SELECT pm.id,pm.order_id,o.state,pm.currency,pm.amount,pm.txid,pm.idx,pm.credited,pm.locked,pm.confirmations,
-			pm.regress_notice,pm.below_floor,(pm.locked OR NOT pm.credited OR pm.regress_notice OR pm.below_floor) AS open,f.at
-		FROM payments pm JOIN orders o ON o.id=pm.order_id
+			pm.regress_notice,pm.below_floor,(pm.locked OR NOT pm.credited OR pm.regress_notice OR pm.below_floor) AS open,f.at,
+			pm.disposition='escalated' AS escalated,COALESCE(to_char(pm.disposed_at,'YYYY-MM-DD'),'') AS disposed,(o.buyer_id=$2 OR pr.vendor_id=$2) AS party
+		FROM payments pm JOIN orders o ON o.id=pm.order_id JOIN products pr ON pr.id=o.product_id
 		LEFT JOIN LATERAL (SELECT max(e.created) AS at FROM order_events e WHERE e.order_id=pm.order_id AND e.actor_id IS NULL
 			AND e.note LIKE '%Moderator review required.%'
 			AND strpos(e.note, ' '||CASE WHEN length(pm.txid)<=20 THEN pm.txid ELSE left(pm.txid,20)||'…' END||' ')>0) f ON true
-		WHERE pm.flagged)
-		SELECT order_id,state,currency,amount,txid,idx,credited,locked,confirmations,regress_notice,below_floor,open,COALESCE(to_char(at,'YYYY-MM-DD HH24:MI "UTC"'),''),
-			(SELECT count(*) FROM v WHERE NOT open)
+		WHERE pm.flagged AND pm.disposition IN ('','escalated'))
+		SELECT id,order_id,state,currency,amount,txid,idx,credited,locked,confirmations,regress_notice,below_floor,open,COALESCE(to_char(at,'YYYY-MM-DD HH24:MI "UTC"'),''),
+			escalated,disposed,party,(SELECT count(*) FROM v WHERE NOT open)
 		FROM (SELECT * FROM v WHERE open UNION ALL (SELECT * FROM v WHERE NOT open ORDER BY at DESC NULLS LAST,id DESC LIMIT $1)) s
-		ORDER BY open DESC,CASE WHEN open THEN at END ASC NULLS FIRST,CASE WHEN open THEN id END,at DESC NULLS LAST,id DESC`, paymentReviewLimit)
+		ORDER BY open DESC,CASE WHEN open THEN at END ASC NULLS FIRST,CASE WHEN open THEN id END,at DESC NULLS LAST,id DESC`, paymentReviewLimit, d.User.ID)
 	if err != nil {
 		return err
 	}
@@ -644,9 +650,15 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 		var v PaymentReview
 		var amt, confs int64
 		var credited, locked, regressed, belowFloor bool
-		if err = rows.Scan(&v.OrderID, &v.OrderState, &v.Currency, &amt, &v.TxID, &v.Index, &credited, &locked, &confs, &regressed, &belowFloor, &v.Open, &v.Flagged, &d.PaymentReviewOthers); err != nil {
+		var disposed string
+		if err = rows.Scan(&v.ID, &v.OrderID, &v.OrderState, &v.Currency, &amt, &v.TxID, &v.Index, &credited, &locked, &confs, &regressed, &belowFloor, &v.Open, &v.Flagged,
+			&v.Escalated, &disposed, &v.Party, &d.PaymentReviewOthers); err != nil {
 			return err
 		}
+		// The disposition form (paymentReviewAction): open flags of orders the viewer is not party to; an escalated
+		// one only for an administrator. A credited deposit is never refunded by hand.
+		v.Form = v.Open && !v.Party && (!v.Escalated || d.User.Role == "admin")
+		v.Refundable = !credited
 		v.Amount, v.OrderState = amount(amt, currencyDecimals(v.Currency)), stateLabel(v.OrderState)
 		threshold := a.confirmationThreshold(v.Currency)
 		switch {
@@ -670,6 +682,9 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 			v.Reason = fmt.Sprintf("Credited deposit below threshold (%d confirmations)", confs)
 		default:
 			v.Reason = fmt.Sprintf("Credited deposit confirmed again (%d confirmations)", confs)
+		}
+		if v.Escalated {
+			v.Reason += "; escalated to an administrator on " + disposed
 		}
 		if v.Open {
 			d.PaymentReviewsOpen++

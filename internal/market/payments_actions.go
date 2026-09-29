@@ -220,7 +220,8 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 	if pv.Open {
 		pv.Address = addr
 	}
-	rows, err = a.db.QueryContext(ctx, "SELECT txid,idx,amount,confirmations,credited,locked,regress_notice,flagged,below_floor FROM payments WHERE order_id=$1 ORDER BY created,id", o.ID)
+	rows, err = a.db.QueryContext(ctx, `SELECT txid,idx,amount,confirmations,credited,locked,regress_notice,flagged,below_floor,
+		disposition,disposition_txid,disposition_amount,COALESCE(to_char(disposed_at,'YYYY-MM-DD'),'') FROM payments WHERE order_id=$1 ORDER BY created,id`, o.ID)
 	if err != nil {
 		return err
 	}
@@ -236,14 +237,26 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 	// conflicted/regressed: a credited deposit is conflicted, or back below the threshold; notified: that
 	// regression was announced to the parties and staff (settleOrder).
 	conflicted, regressed, notified := false, false, false
+	// A-31: a staff disposition of a flagged deposit. A hand refund's transaction ID is shown to its recipient (the
+	// buyer) and staff reviewers, never to the vendor (A-214).
+	showRefundTxid := d.User == nil || d.User.ID != o.VendorID
 	for rows.Next() {
 		var dep PaymentDeposit
-		var amt int64
+		var amt, refunded int64
 		var credited, locked, notice, flagged, floor bool
-		if err = rows.Scan(&dep.TxID, &dep.Index, &amt, &dep.Confirmations, &credited, &locked, &notice, &flagged, &floor); err != nil {
+		var disposition, refundTxid, disposed string
+		if err = rows.Scan(&dep.TxID, &dep.Index, &amt, &dep.Confirmations, &credited, &locked, &notice, &flagged, &floor,
+			&disposition, &refundTxid, &refunded, &disposed); err != nil {
 			return err
 		}
-		if floor && !locked && dep.Confirmations >= 0 {
+		reviewed := ""
+		switch disposition {
+		case "no_action":
+			reviewed = "; reviewed by market staff on " + disposed + ": no action"
+		case "escalated":
+			reviewed = "; escalated to an administrator on " + disposed
+		}
+		if floor && !locked && dep.Confirmations >= 0 && disposition != "refunded" {
 			belowFloor += amt
 		}
 		if !locked && dep.Confirmations >= 0 {
@@ -251,8 +264,14 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		}
 		dep.Amount = amount(amt, dec)
 		switch {
+		case disposition == "refunded":
+			// Never counted toward a payout (payoutBasis) and not part of what was paid, so not in Confirmed.
+			dep.State = "Refunded by hand on " + disposed + ": " + amount(refunded, dec) + " " + o.Currency
+			if showRefundTxid {
+				dep.State += ", transaction " + refundTxid
+			}
 		case locked:
-			dep.State = "Locked transfer — not counted"
+			dep.State = "Locked transfer — not counted" + reviewed
 		case dep.Confirmations < 0:
 			dep.State = "Conflicted or missing — not counted"
 			conflicted = conflicted || credited
@@ -260,7 +279,11 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		case isTerminal(o.State) && flagged && !credited && !floor:
 			// A-211: confirmed after the order's settlement was queued, or sent after the order closed; the watcher
 			// flagged it and notified the buyer and staff. It is not part of what was paid, so not in Confirmed.
-			dep.State = "Arrived after the order closed — not paid out; market staff notified"
+			dep.State = "Arrived after the order closed — not paid out"
+			if reviewed == "" {
+				reviewed = "; market staff notified"
+			}
+			dep.State += reviewed
 		case dep.Confirmations >= int64(pv.Threshold):
 			dep.State = "Confirmed"
 			received += amt

@@ -52,13 +52,15 @@ type Dispute struct {
 	NoResolver                                       bool // open, and every moderator and administrator is a party
 }
 
-// PaymentReview is one deposit the payment watcher flagged for staff review (payments.flagged). Open: not yet
-// settled by events (a locked transfer, a late deposit or a deposit of a payout below the minimum, which have no
-// disposition action yet, or a credited deposit in an announced regression that has not confirmed again).
+// PaymentReview is one deposit the payment watcher flagged for staff review (payments.flagged) with no recorded
+// disposition, or one escalated to an administrator (A-31). Open: a locked transfer, a late deposit or a deposit of
+// a payout below the minimum, or a credited deposit in an announced regression that has not confirmed again.
+// ID is payments.id. Party: the viewer is the order's buyer or vendor. Form: the viewer may record the disposition
+// (open, not a party, and an administrator when Escalated). Refundable: not credited, so "refunded by hand" applies.
 type PaymentReview struct {
-	OrderID, OrderState, Currency, Amount, TxID, Reason, Flagged string
-	Index                                                        int64
-	Open                                                         bool
+	ID, OrderID, OrderState, Currency, Amount, TxID, Reason, Flagged string
+	Index                                                            int64
+	Open, Escalated, Party, Form, Refundable                         bool
 }
 type Event struct{ Handle, Action, Created string } // Handle: account the audit row is recorded on ("" = system)
 
