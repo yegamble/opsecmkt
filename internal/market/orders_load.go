@@ -200,8 +200,11 @@ func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) 
 			return err
 		}
 	}
-	d.Contacts, err = orderContacts(ctx, a, o, d.OrderViewer)
-	return err
+	if d.Contacts, err = orderContacts(ctx, a, o, d.OrderViewer); err != nil {
+		return err
+	}
+	vendorKeyGate(d)
+	return nil
 }
 
 // orderPayouts (A-122): on a paid, shipped or delivered order the complete and paid-cancel forms state the

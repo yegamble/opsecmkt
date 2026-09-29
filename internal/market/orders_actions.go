@@ -113,9 +113,10 @@ func waitForWalletLocks(ctx context.Context, tx *sql.Tx) error {
 // maxAwaitingPayment bounds the stock one buyer can hold in unpaid orders (the watcher also expires them).
 const maxAwaitingPayment = 3
 
-// payAction: buyer moves draft -> awaiting_payment at the current listing price. transition() refuses when
-// no provider serves the currency (409) and the stock hook reserves one unit (409 when none is left). Only
-// then is the live wallet asked for an address, so refused requests never create wallet addresses.
+// payAction: buyer moves draft -> awaiting_payment at the current listing price. A physical order whose vendor has
+// no key that can receive encrypted messages is refused before transition (409, A-83). transition() refuses when no
+// provider serves the currency (409) and the stock hook reserves one unit (409 when none is left). Only then is the
+// live wallet asked for an address, so refused requests never create wallet addresses.
 func payAction(c *actionCtx) (actionResult, error) {
 	ctx := c.Ctx()
 	if err := waitForWalletLocks(ctx, c.Tx); err != nil {
@@ -149,6 +150,19 @@ func payAction(c *actionCtx) (actionResult, error) {
 	}
 	if err = lockPaymentIntake(c, o.Currency); err != nil {
 		return actionResult{}, err
+	}
+	// A-83: the buyer of a physical order must be able to send the vendor an encrypted shipping address. Checked
+	// before any reservation or wallet call, after the reasons the order page gives first (paused intake, then no
+	// wallet, as transition refuses); the page shows the same reason instead of the form (vendorKeyGate).
+	if o.State == stateDraft && o.Kind == "physical" && o.BuyerID == c.User.ID {
+		if c.A.provider(o.Currency) == nil {
+			return actionResult{}, fail(409, "Payment unavailable for "+o.Currency)
+		}
+		if ok, err := userCanReceiveEncrypted(ctx, c.Tx, o.VendorID); err != nil {
+			return actionResult{}, err
+		} else if !ok {
+			return actionResult{}, fail(409, "Payment unavailable. "+noVendorKeyReason+" Nothing was changed.")
+		}
 	}
 	if _, err = c.Tx.ExecContext(ctx, "UPDATE orders o SET amount=CASE WHEN o.currency='XMR' THEN p.xmr ELSE p.btc END FROM products p WHERE o.id=$1 AND o.state='draft' AND p.id=o.product_id", o.ID); err != nil {
 		return actionResult{}, err

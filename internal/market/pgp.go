@@ -160,6 +160,19 @@ func keyExtraPackets(armored string) (fp string, photos, other int) {
 	return fp, photos, other
 }
 
+// canReceiveEncrypted reports whether anything can be encrypted to key now (A-68, A-83): the key is neither
+// expired nor revoked and has an encryption-capable subkey (or primary key) that is neither expired nor revoked,
+// the key openpgp.Encrypt would use. No key (none saved, or one that does not parse) cannot. It is the one test of
+// whether a user "can receive encrypted messages": contact keys (contactKey) and physical orders (payAction, the
+// order, product and checkout pages) use it.
+func canReceiveEncrypted(key *openpgp.Entity, now time.Time) bool {
+	if key == nil {
+		return false
+	}
+	_, ok := key.EncryptionKey(now)
+	return ok
+}
+
 // entityKeyIDs lists the primary and subkey IDs, for matching encrypted-message recipients.
 func entityKeyIDs(e *openpgp.Entity) []uint64 {
 	ids := []uint64{e.PrimaryKey.KeyId}

@@ -94,6 +94,7 @@ func TestOrderPaymentRequestReservesStock(t *testing.T) {
 
 	stub := &stubProvider{currency: "BTC", broken: true}
 	w.e.A.payments["BTC"] = stub
+	w.e.usableKey(w.vendorID) // with a wallet, a physical order also needs a vendor key (A-83)
 	w.expect("/orders/pay", w.buyer, pay, 503, "did not return a usable address")
 	if w.state(order) != stateDraft || w.stock(product) != 5 {
 		t.Fatal("wallet failure left a partial change")
