@@ -227,7 +227,8 @@ test('site settings, account suspension, operator key, canary signature checks a
   expect(await suspectSignIn('wrong-suspect-password-1')).toBe(401);
   await expect(suspect.locator('body')).toHaveText('Invalid handle or password');
   expect(await suspectSignIn(suspectPassword)).toBe(403);
-  await expect(suspect.locator('body')).toHaveText('This account is suspended. Contact the market staff.');
+  // A-119: no staff contact is set in this suite at this point (db-staff-contact.spec.ts clears the one it sets).
+  await expect(suspect.locator('body')).toHaveText('This account is suspended. Ask the operator of this market.');
 
   // Restoring allows sign-in again; the account was told about both changes.
   expect(await submitSuspension(suspectHandle, 'Restore', ADMIN.password)).toBe(303);

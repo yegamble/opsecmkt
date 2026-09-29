@@ -5,6 +5,7 @@
 <input type="hidden" name="captcha_id" value="{{.ID}}">
 <label>Characters in the image<input name="captcha" required minlength="6" maxlength="6" autocomplete="off" autocapitalize="characters" spellcheck="false">
 </label>
-<span class="help">Not case-sensitive. Each image works once and expires after 10 minutes; reload the page for a new one. There is no audio alternative.</span>{{else}}
+<span class="help">Not case-sensitive. Each image works once and expires after 10 minutes; reload the page for a new one. There is no audio alternative.</span>
+<span class="help staff-contact">Can’t read the image? {{template "staff-contact" $}}</span>{{else}}
 <p class="alert error" role="alert">{{.Error}}</p>{{end}}
 </fieldset>{{end}}{{end}}

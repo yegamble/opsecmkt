@@ -30,6 +30,8 @@ for (const path of ['/login', '/register']) {
     expect(await image.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(200);
     await expect(page.getByLabel('Characters in the image')).toBeVisible();
     await expect(page.locator('.captcha')).toContainText('There is no audio alternative.');
+    // A-119: the preview has no staff contact, so the help points to the operator, not an in-app channel.
+    await expect(page.locator('.captcha .staff-contact')).toHaveText('Can’t read the image? Ask the operator of this market.');
     await noScriptsNoOverflow(page);
   });
 }
@@ -42,6 +44,9 @@ test('challenge offers an authenticator code and a recovery code', async ({ page
   await expect(page.getByLabel('Recovery code')).toBeVisible();
   // A-154: a plain, unchecked checkbox turns TOTP off with the recovery code.
   await expect(page.getByLabel('I lost my authenticator — turn two-step sign-in off')).not.toBeChecked();
+  // A-119: someone who lost every factor is told who can help; with no staff contact set, the operator.
+  await expect(page.locator('.lost-factors')).toHaveText('Lost your authenticator and recovery codes? Only a market administrator can turn your second factors off. Ask the operator of this market.');
+  await expect(page.locator('.lost-factors a')).toHaveCount(0);
   await noScriptsNoOverflow(page);
 });
 

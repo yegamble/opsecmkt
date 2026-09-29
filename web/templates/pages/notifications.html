@@ -12,7 +12,8 @@
 <time>{{.Created}}</time>
 <span>{{if .Read}}Read{{else}}Unread{{end}}</span>
 </div>
-<p>{{.Body}}</p>{{if not .Read}}<form method="post" action="/notifications">
+<p>{{.Body}}</p>{{if .AsksForStaff}}
+<p class="help staff-contact">{{template "staff-contact" $}}</p>{{end}}{{if not .Read}}<form method="post" action="/notifications">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="id" value="{{.ID}}">
 <button type="submit">Mark as read</button>

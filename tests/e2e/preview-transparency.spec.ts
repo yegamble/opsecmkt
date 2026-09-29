@@ -8,6 +8,14 @@ async function noScriptsNoOverflow(page: Page) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()!.width);
 }
 
+test('canary page names no staff contact the preview does not have (A-119)', async ({ page }) => {
+  await page.goto('/canary');
+  const contact = page.getByRole('region', { name: 'Staff contact' });
+  await expect(contact.locator('.staff-contact')).toHaveText('Ask the operator of this market.');
+  await expect(contact.locator('a')).toHaveCount(0);
+  await noScriptsNoOverflow(page);
+});
+
 test('canary page shows one verified, clearly labelled sample statement', async ({ page }) => {
   const response = await page.goto('/canary');
   expect(response?.status()).toBe(200);

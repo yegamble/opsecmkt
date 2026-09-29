@@ -50,6 +50,10 @@ type Notification struct {
 	ID, Body, Created string
 	Read              bool
 }
+
+// StaffContactView is the administrator's staff contact (A-119, staff_contact.go): Text as saved, shown escaped;
+// Handle set only when a signed-in reader may be linked to /messages?to=<Handle>.
+type StaffContactView struct{ Text, Handle string }
 type Dispute struct {
 	ID, OrderID, Reason, Status, Resolution, Created string
 	NoResolver                                       bool // open, and every moderator and administrator is a party
@@ -91,6 +95,9 @@ type PageData struct {
 	// StaffList: then the moderators and administrators listed (User.Avatar set when it may be shown).
 	StaffListPublic bool
 	StaffList       []User
+	// StaffContact: /canary, /challenge, /login, /register and /notifications, the administrator's staff contact
+	// (A-119, staff_contact.go); nil while unset.
+	StaffContact *StaffContactView
 	// A-190 (image_takedown.go). RecentImages: /moderator, the newest public photos and avatars (vendors' only for a moderator); AvatarTakedown:
 	// vendor page, the staff remove form for the vendor's avatar.
 	RecentImages   []RecentImage

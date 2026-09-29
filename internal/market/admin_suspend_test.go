@@ -10,7 +10,8 @@ import (
 // the account's sessions and pending sign-ins and blocks every path that creates a session; the counterparty's
 // open orders and the account's listings are untouched.
 
-const suspendedMsg = "This account is suspended. Contact the market staff."
+// With no staff contact set (A-119), the refusal points to the operator.
+const suspendedMsg = "This account is suspended. Ask the operator of this market."
 
 // signedOut reports whether session no longer authenticates (a protected page redirects to /login).
 func signedOut(e *testEnv, session string) bool {
