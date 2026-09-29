@@ -120,9 +120,15 @@ func recordPaymentReview(c *actionCtx, id int64, outcome, note, refundTxid strin
 			return actionResult{}, fail(409, "No administrator who is not a party to this order can take this review; record no action or a refund by hand instead. Nothing was changed.")
 		}
 	}
-	if _, err = tx.ExecContext(ctx, "UPDATE payments SET disposition=$2,disposition_note=$3,disposition_txid=$4,disposition_amount=$5,disposed_at=now() WHERE id=$1 AND disposition=$6",
-		id, outcome, note, refundTxid, refunded, disposition); err != nil {
+	// Compare-and-set on the disposition read above: under the row locks it always matches; should a concurrent
+	// disposition ever slip past them, this one is refused and nothing else is written (A-252).
+	res, err := tx.ExecContext(ctx, "UPDATE payments SET disposition=$2,disposition_note=$3,disposition_txid=$4,disposition_amount=$5,disposed_at=now() WHERE id=$1 AND disposition=$6",
+		id, outcome, note, refundTxid, refunded, disposition)
+	if err != nil {
 		return actionResult{}, err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return actionResult{}, fail(409, "This payment review was already recorded; see the order history. Nothing was changed.")
 	}
 	dec := currencyDecimals(o.Currency)
 	short := shortID(o.ID)
