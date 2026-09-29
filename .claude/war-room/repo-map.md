@@ -85,4 +85,8 @@ are **not** live-chain evidence. Merged is not released is not deployed.
   local logs under `artifacts/real-chain/` (gitignored).
 - **macOS `/bin/bash` is 3.2**: a failing `[[ ]]` does not stop a `set -e` script, so
   `scripts/test-*.sh` can pass falsely there. Run them with bash 5 (Homebrew) or rely on CI (Ubuntu).
+- **govulncheck may need the toolchain pinned locally**: when the tool binary is
+  built with an older Go than `go.mod`'s `toolchain` line, it exits 1 with
+  "requires newer Go version"; run `GOTOOLCHAIN=go1.27.1 go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...`
+  and check the exit status (a piped `tail` hides the failure).
 - Merging to `main` requires the owner; CI's **CI passed** check is required.
