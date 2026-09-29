@@ -233,11 +233,12 @@ type PayoutPreview struct {
 }
 
 // OverpaidView says what completing an overpaid order does with the excess, from the split the complete form
-// states (splitPayout, A-215). Excess: "0.009 BTC". Kept: below Floor ("0.0001 BTC", the minimum automatic
-// refund), it goes to the vendor with the release. Held: larger than the price, its return waits for an
-// administrator. NoAddress: buyer's view only, no payout address saved in the order's currency.
+// states (splitPayout, A-215). Excess: "0.009 BTC". Kept: it goes to the vendor with the release, for Reason
+// (below the minimum automatic refund, or a legacy price below the release floor, A-216). Held: larger than the
+// price, so an administrator reviews its return (or, when Kept, the release) first. NoAddress: buyer's view of a
+// return only, no payout address saved in the order's currency.
 type OverpaidView struct {
-	Excess, Floor         string
+	Excess, Reason        string
 	Kept, Held, NoAddress bool
 }
 type DeliveryView struct{ Content, Created string }

@@ -239,9 +239,15 @@ func (a *App) orderPayouts(ctx context.Context, d *PageData) error {
 	if required, _ := parseAmount(o.Amount, dec); sum > required {
 		// The split the complete form states (payoutStatement): a return (maybe held), or the excess kept.
 		parts := splitPayout("release", o, sum, required)
-		v := &OverpaidView{Excess: amount(sum-required, dec) + " " + o.Currency, Kept: len(parts) == 1,
-			Floor: amount(payoutFloor(o.Currency, "return"), dec) + " " + o.Currency}
-		v.Held = !v.Kept && parts[1].large
+		v := &OverpaidView{Excess: amount(sum-required, dec) + " " + o.Currency, Kept: len(parts) == 1}
+		switch {
+		case v.Kept && parts[0].large: // a legacy price below the release floor (A-216)
+			v.Held, v.Reason = true, subFloorPriceExcess(o.Currency)
+		case v.Kept:
+			v.Reason = "the excess is below the minimum automatic refund of " + amount(payoutFloor(o.Currency, "return"), dec) + " " + o.Currency + ", so it is not returned"
+		default:
+			v.Held = parts[1].large
+		}
 		if !v.Kept && d.OrderViewer == roleBuyer {
 			column := "payout_btc"
 			if o.Currency == "XMR" {
