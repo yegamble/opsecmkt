@@ -154,7 +154,7 @@ func TestUnverifiedMoneroWalletRecordsSendFailuresAmbiguous(t *testing.T) {
 		addr := "7gapxmrversion" + strings.Repeat(string(rune('a'+i)), 81)
 		g.subaddress(addr, int64(60+i))
 		order := p.gapOrder("XMR", addr)
-		g.deposit(addr, "xmr-version-"+string(rune('a'+i)), 100000, 1)
+		g.deposit(addr, "xmr-version-"+string(rune('a'+i)), minPayoutXMR, 1)
 		p.poll()
 		p.complete(order)
 		g.ov.fail("transfer", -17, "not enough money")

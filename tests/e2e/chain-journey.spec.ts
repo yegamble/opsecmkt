@@ -17,10 +17,9 @@ async function verifyReceipt(currency: string, address: string, total: number) {
   const receipt = await chain('received', currency, address);
   expect(receipt.transactions).toBe(1);
   expect(receipt.amount).toBeGreaterThan(0);
-  if (currency === 'BTC') {
-    expect(receipt.fee).toBeGreaterThan(0);
-    expect(receipt.amount + receipt.fee).toBe(total);
-  } else expect(receipt.amount).toBe(total);
+  // Every payout on both coins, Monero releases included (A-232), is sent with the fee taken from the amount.
+  expect(receipt.fee).toBeGreaterThan(0);
+  expect(receipt.amount + receipt.fee).toBe(total);
 }
 const password = 'local-chain-browser-password-123';
 
@@ -98,13 +97,13 @@ test('isolated real chains: seeded buyer/vendor partial deposits, confirmation, 
     }
     await buyer.reload();
     const price = currency === 'BTC' ? '0.001 BTC' : '0.5 XMR';
-    await buyer.getByRole('checkbox', { name: `Release ${price} (test network) to chain_vendor — exactly the price. This is final.`, exact: true }).check();
+    await buyer.getByRole('checkbox', { name: `Release ${price} (test network) to chain_vendor — exactly the price; network fee deducted. This is final.`, exact: true }).check();
     await buyer.getByRole('button', { name: 'Confirm receipt and complete' }).click();
     await expect(buyer.locator('.page-head .badge')).toHaveText('Completed');
     await refreshUntil(buyer, async () => {
       await expect(buyer.locator('.payment-figures div').filter({ has: buyer.getByText('Payout status', { exact: true }) })).toContainText('Sent', { timeout: 1000 });
     });
-    await expect(buyer.locator('main')).toContainText(currency === 'BTC' ? 'Bitcoin network fee is deducted' : 'market wallet pays the Monero network fee separately');
+    await expect(buyer.locator('main')).toContainText(`${currency === 'BTC' ? 'Bitcoin' : 'Monero'} network fee is deducted from this payout`);
     await chain('mine', currency, '12');
     await verifyReceipt(currency, destination, total);
 
@@ -125,7 +124,7 @@ test('isolated real chains: seeded buyer/vendor partial deposits, confirmation, 
     await expect(buyer.locator('.page-head .badge')).toHaveText('Disputed');
     await moderator.goto('/moderator');
     const resolution = moderator.locator('article.message').filter({ has: moderator.locator(`a[href="/order?id=${new URL(dispute.url).searchParams.get('id')}"]`) });
-    await resolution.getByRole('radio', { name: `Refund ${price} (test network) to chain_buyer — exactly the price`, exact: true }).check();
+    await resolution.getByRole('radio', { name: `Refund ${price} (test network) to chain_buyer — exactly the price; network fee deducted`, exact: true }).check();
     await resolution.getByLabel('Decision', { exact: true }).fill('Return this isolated test payment to the buyer.');
     await resolution.getByRole('checkbox', { name: 'I checked the amount and who receives it for the outcome I chose. Resolving is final.' }).check();
     await resolution.getByRole('button', { name: 'Resolve dispute' }).click();

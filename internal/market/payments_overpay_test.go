@@ -14,11 +14,12 @@ import (
 // Overpayments: a release pays the vendor exactly the price and returns the excess to the buyer with the network
 // fee taken from it; an excess below the minimum automatic refund goes to the vendor; a refund or return larger
 // than the price (a likely mistake) waits for an administrator, while one up to the price is sent automatically;
-// refunds and returns are sent with the fee-from-amount call.
+// every payout (release, refund or return) is sent with the fee-from-amount call (A-232).
 
 func TestSplitPayoutRules(t *testing.T) {
 	o := &Order{BuyerID: "b", VendorID: "v", Currency: "BTC"}
 	const price = 100000
+	const xmrPrice = 500000000000 // 0.5 XMR
 	for _, tc := range []struct {
 		name, kind, currency string
 		sum                  int64
@@ -32,11 +33,18 @@ func TestSplitPayoutRules(t *testing.T) {
 		{"excess above the price is held", "release", "BTC", 2*price + 1, []payoutPart{{"release", "v", "vendor", price, false}, {"return", "b", "buyer", price + 1, true}}},
 		{"refund up to the price", "refund", "BTC", price, []payoutPart{{"refund", "b", "buyer", price, false}}},
 		{"refund above the price is held", "refund", "BTC", price + 1, []payoutPart{{"refund", "b", "buyer", price + 1, true}}},
-		{"XMR excess below its floor stays with the vendor", "release", "XMR", price + minAutoRefundXMR - 1, []payoutPart{{"release", "v", "vendor", price + minAutoRefundXMR - 1, false}}},
+		{"XMR excess below its floor stays with the vendor", "release", "XMR", xmrPrice + minPayoutXMR - 1, []payoutPart{{"release", "v", "vendor", xmrPrice + minPayoutXMR - 1, false}}},
+		{"XMR excess at its floor is returned", "release", "XMR", xmrPrice + minPayoutXMR, []payoutPart{{"release", "v", "vendor", xmrPrice, false}, {"return", "b", "buyer", minPayoutXMR, false}}},
+		{"XMR excess above the price is held", "release", "XMR", 2*xmrPrice + 1, []payoutPart{{"release", "v", "vendor", xmrPrice, false}, {"return", "b", "buyer", xmrPrice + 1, true}}},
+		{"XMR refund above the price is held", "refund", "XMR", xmrPrice + 1, []payoutPart{{"refund", "b", "buyer", xmrPrice + 1, true}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			o.Currency = tc.currency
-			got := splitPayout(tc.kind, o, tc.sum, price)
+			required := int64(price)
+			if tc.currency == "XMR" {
+				required = xmrPrice
+			}
+			got := splitPayout(tc.kind, o, tc.sum, required)
 			if len(got) != len(tc.want) {
 				t.Fatalf("got %+v", got)
 			}
@@ -56,7 +64,7 @@ func TestSplitPayoutRules(t *testing.T) {
 	}
 }
 
-// An overpayment worth returning: the vendor gets the price with Send, the buyer the excess with the fee taken from it.
+// An overpayment worth returning: the vendor gets the price and the buyer the excess, each with the fee taken from it.
 func TestOverpaymentReturnedToBuyer(t *testing.T) {
 	p := newPayEnv(t)
 	p.setPayoutAddress(p.vendor, "fake-testnet-vendor")
@@ -65,7 +73,7 @@ func TestOverpaymentReturnedToBuyer(t *testing.T) {
 	// A-215: the shipped order's page says, for this order, that completing returns the excess (fee deducted).
 	buyerPage, vendorPage := p.overpaidPages()
 	mustContain(t, buyerPage, "You sent 0.0005 BTC more than the price (test network). Completing releases the price to the vendor and returns the excess to your saved BTC payout address, with the network fee deducted.",
-		"Release 0.001 BTC (test network) to "+p.vendor.Handle+" (the price) and return the 0.0005 BTC paid over the price to "+p.buyer.Handle+", network fee deducted. This is final.")
+		"Release 0.001 BTC (test network) to "+p.vendor.Handle+" (the price) and return the 0.0005 BTC paid over the price to "+p.buyer.Handle+"; network fee deducted from each. This is final.")
 	mustNotContain(t, buyerPage, "the return waits", "below the minimum automatic refund", "administrator reviews its return")
 	mustContain(t, vendorPage, "The buyer sent 0.0005 BTC more than the price (test network). Completing releases the price to you and returns the excess to the buyer, with the network fee deducted.")
 	mustNotContain(t, vendorPage, "your saved", "payout address saved", "the return waits")
@@ -87,7 +95,7 @@ func TestOverpaymentReturnedToBuyer(t *testing.T) {
 	for _, s := range sends {
 		switch s.To {
 		case "fake-testnet-vendor":
-			if s.Amount != 100000 || s.FeeFromAmount {
+			if s.Amount != 100000 || !s.FeeFromAmount {
 				t.Fatalf("release sent %+v", s)
 			}
 		case "fake-testnet-buyer":
@@ -114,7 +122,7 @@ func TestSmallExcessStaysWithVendor(t *testing.T) {
 	// A-215: the page names the floor and says the excess is not returned; nothing waits for a payout address.
 	buyerPage, vendorPage := p.overpaidPages()
 	mustContain(t, buyerPage, "You sent 0.00009999 BTC more than the price (test network). Completing releases everything to the vendor: the excess is below the minimum automatic refund of 0.0001 BTC, so it is not returned.",
-		"Release 0.00109999 BTC (test network) to "+p.vendor.Handle+" — 0.00009999 BTC more than the price, below the minimum automatic refund, so it is not returned. This is final.")
+		"Release 0.00109999 BTC (test network) to "+p.vendor.Handle+" — 0.00009999 BTC more than the price, below the minimum automatic refund, so it is not returned; network fee deducted. This is final.")
 	mustNotContain(t, buyerPage, "returns the excess", "the return waits", "your saved")
 	mustContain(t, vendorPage, "The buyer sent 0.00009999 BTC more than the price (test network). Completing releases everything to you: the excess is below the minimum automatic refund of 0.0001 BTC, so it is not returned.")
 	mustNotContain(t, vendorPage, "returns the excess", "your saved")
@@ -143,7 +151,7 @@ func TestLargeReturnHeldUntilAdminReview(t *testing.T) {
 	// A-215: the page says the return waits for an administrator, not that it goes back automatically.
 	buyerPage, vendorPage := p.overpaidPages()
 	mustContain(t, buyerPage, "You sent 0.0025 BTC more than the price (test network). Completing releases the price to the vendor. The excess is more than the price, so an administrator reviews its return to your saved BTC payout address (network fee deducted) before it is sent.",
-		"return the 0.0025 BTC paid over the price to "+p.buyer.Handle+", network fee deducted; the return is more than the price, so an administrator reviews it before it is sent. This is final.")
+		"return the 0.0025 BTC paid over the price to "+p.buyer.Handle+"; network fee deducted from each; the return is more than the price, so an administrator reviews it before it is sent. This is final.")
 	mustNotContain(t, buyerPage, "returns the excess", "the return waits")
 	mustContain(t, vendorPage, "The buyer sent 0.0025 BTC more than the price (test network). Completing releases the price to you. The excess is more than the price, so an administrator reviews its return to the buyer (network fee deducted) before it is sent.")
 	mustNotContain(t, vendorPage, "returns the excess", "your saved")
@@ -329,8 +337,8 @@ func TestOverpaidXMRAlertNamesItsFloorAndAddress(t *testing.T) {
 		deposit    int64
 		want, deny string
 	}{
-		{500000000000 + minAutoRefundXMR - 1, "Completing releases everything to the vendor: the excess is below the minimum automatic refund of 0.001 XMR, so it is not returned.", "payout address saved"},
-		{500000000000 + minAutoRefundXMR, "returns the excess to you, with the network fee deducted. You have no XMR payout address saved, so the return waits until you save one:", "your saved"},
+		{500000000000 + minPayoutXMR - 1, "Completing releases everything to the vendor: the excess is below the minimum automatic refund of 0.001 XMR, so it is not returned.", "payout address saved"},
+		{500000000000 + minPayoutXMR, "returns the excess to you, with the network fee deducted. You have no XMR payout address saved, so the return waits until you save one:", "your saved"},
 	} {
 		id := p.testEnv.order(p.buyer.ID, p.productID, "XMR", stateAwaitingPayment)
 		addr, err := xf.NewAddress(context.Background(), id)
@@ -463,10 +471,10 @@ func TestMoneroRefundSubtractsFee(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err = p.Send(ctx, payStagenetSub, 42); err != nil || strings.Contains(string(s.lastParams("transfer")), "subtract_fee_from_outputs") {
-		t.Fatalf("release subtracts the fee: %s %v", s.lastParams("transfer"), err)
+		t.Fatalf("Send (fee on top, unused for payouts) subtracts the fee: %s %v", s.lastParams("transfer"), err)
 	}
 	if _, err = p.SendFeeFromAmount(ctx, payStagenetSub, 42); err != nil || !strings.Contains(string(s.lastParams("transfer")), `"subtract_fee_from_outputs":[0]`) {
-		t.Fatalf("refund params %s %v", s.lastParams("transfer"), err)
+		t.Fatalf("SendFeeFromAmount params %s %v", s.lastParams("transfer"), err)
 	}
 	var _ feeFromAmountSender = p
 	var _ feeFromAmountSender = &bitcoinProvider{}

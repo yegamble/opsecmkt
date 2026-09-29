@@ -142,7 +142,7 @@ test('BTC and XMR: partial payment, intake pause, confirmation, fulfillment and 
     if (digital) await expect(buyer.getByRole('region', { name: 'Digital delivery' })).toContainText('Fixture digital delivery token');
     // A-122: the complete form states the release (amount, recipient, difference from the price) and refuses
     // to complete until it is ticked.
-    const release = buyer.getByRole('checkbox', { name: `Release ${digital ? '0.5 XMR' : '0.001 BTC'} (test network) to ${sellerHandle} — exactly the price. This is final.`, exact: true });
+    const release = buyer.getByRole('checkbox', { name: `Release ${digital ? '0.5 XMR' : '0.001 BTC'} (test network) to ${sellerHandle} — exactly the price; network fee deducted. This is final.`, exact: true });
     await expect(release).toHaveAttribute('required', '');
     await expect(buyer.locator('input[name="amount_seen"]')).toHaveValue(String(total));
     await release.check();
@@ -150,7 +150,11 @@ test('BTC and XMR: partial payment, intake pause, confirmation, fulfillment and 
     await expect(buyer.locator('.page-head .badge')).toHaveText('Completed');
     await expect.poll(async () => ((await (await request.get(`${rpc}/test/state`)).json()).payouts as any[]).filter(p => p.currency === currency).length).toBe(1);
     const state = await (await request.get(`${rpc}/test/state`)).json();
-    expect(state.payouts.filter((p: any) => p.currency === currency)).toEqual([expect.objectContaining({ address: destination, amount: total })]);
+    // A-232: the release, on either coin, is sent with the fee taken from it: the vendor receives the price less the fee.
+    const [sent] = state.payouts.filter((p: any) => p.currency === currency);
+    expect(sent).toEqual(expect.objectContaining({ address: destination, amount: total, fee_from_amount: true }));
+    expect(sent.fee).toBeGreaterThan(0);
+    expect(sent.received + sent.fee).toBe(total);
     await reloadUntil(buyer, async () => { await expect(buyer.locator('.payment-figures div').filter({ has: buyer.getByText('Payout status', { exact: true }) })).toContainText('Sent', { timeout: 500 }); });
     await buyer.reload();
     await fitsAt(buyer, `${currency} completed`);
@@ -236,8 +240,8 @@ test('funded dispute: encrypted moderator evidence, independent resolution and o
   await moderator.goto('/moderator');
   await fitsAt(moderator, 'moderation desk');
   // A-161: each outcome states its payout; the decision warns against identifying text; a ticked confirmation is required.
-  await expect(moderator.getByRole('radio', { name: 'Release 0.001 BTC (test network) to wallet_admin — exactly the price', exact: true })).toBeVisible();
-  await moderator.getByRole('radio', { name: 'Refund 0.001 BTC (test network) to wallet_buyer — exactly the price', exact: true }).check();
+  await expect(moderator.getByRole('radio', { name: 'Release 0.001 BTC (test network) to wallet_admin — exactly the price; network fee deducted', exact: true })).toBeVisible();
+  await moderator.getByRole('radio', { name: 'Refund 0.001 BTC (test network) to wallet_buyer — exactly the price; network fee deducted', exact: true }).check();
   await expect(moderator.getByLabel('Decision', { exact: true })).toHaveAccessibleDescription(/^Stored unencrypted\..*Never include an address, real name or tracking number/);
   await moderator.getByLabel('Decision', { exact: true }).fill('Fixture review completed: return the confirmed test payment to the buyer.');
   await moderator.getByRole('checkbox', { name: 'I checked the amount and who receives it for the outcome I chose. Resolving is final.' }).check();
@@ -279,7 +283,7 @@ test('vendor cancels a paid physical order, refunds once and restores stock', as
     await expect(vendor.getByLabel('Reason (optional)')).toHaveAccessibleDescription(/^Stored unencrypted\..*Never include an address, real name or tracking number/);
     await vendor.getByLabel('Reason (optional)').fill('Fixture vendor unable to fulfill this paid order.');
     // A-122: cancelling a paid order states the refund and needs its confirmation.
-    await vendor.getByRole('checkbox', { name: 'Refund 0.001 BTC (test network) to wallet_buyer — exactly the price. This is final.', exact: true }).check();
+    await vendor.getByRole('checkbox', { name: 'Refund 0.001 BTC (test network) to wallet_buyer — exactly the price; network fee deducted. This is final.', exact: true }).check();
     await submit(vendor, vendor.getByRole('button', { name: 'Cancel order', exact: true }));
     await buyer.reload();
     await expect(buyer.locator('.page-head .badge')).toHaveText('Cancelled');
@@ -325,7 +329,7 @@ test('a refund waiting for a payout address tells its recipient what to do and i
     expect((await request.post(`${rpc}/test/confirm`, { data: { address } })).ok()).toBeTruthy();
     await reloadUntil(refundee, async () => { await expect(refundee.locator('.page-head .badge')).toHaveText('Paid', { timeout: 500 }); });
     await vendor.goto(orderURL);
-    await vendor.getByRole('checkbox', { name: 'Refund 0.001 BTC (test network) to wallet_refundee — exactly the price. This is final.', exact: true }).check();
+    await vendor.getByRole('checkbox', { name: 'Refund 0.001 BTC (test network) to wallet_refundee — exactly the price; network fee deducted. This is final.', exact: true }).check();
     await submit(vendor, vendor.getByRole('button', { name: 'Cancel order', exact: true }));
     await expect(vendor.locator('.page-head .badge')).toHaveText('Cancelled');
     // The other party sees a closed order, not the refund's next step.
@@ -394,7 +398,7 @@ test('automatic digital delivery and administrator recovery of a rejected payout
     await expect(buyer.getByRole('region', { name: 'Digital delivery' })).toContainText(content);
     const before = (await (await request.get(`${rpc}/test/state`)).json()).payouts.length;
     expect((await request.post(`${rpc}/test/fail-next-send`, { data: { currency: 'XMR' } })).ok()).toBeTruthy();
-    await buyer.getByRole('checkbox', { name: 'Release 0.5 XMR (test network) to wallet_vendor — exactly the price. This is final.', exact: true }).check();
+    await buyer.getByRole('checkbox', { name: 'Release 0.5 XMR (test network) to wallet_vendor — exactly the price; network fee deducted. This is final.', exact: true }).check();
     await buyer.getByRole('button', { name: 'Confirm receipt and complete' }).click();
     await reloadUntil(buyer, async () => { await expect(buyer.locator('.payment-figures div', { has: buyer.getByText('Payout status', { exact: true }) })).toContainText('Failed', { timeout: 500 }); });
     await admin.goto('/admin');
@@ -449,7 +453,7 @@ test('automatic digital delivery and administrator recovery of a rejected payout
     await submit(admin, requeue.getByRole('button'));
     await reloadUntil(buyer, async () => { await expect(buyer.locator('.payment-figures div', { has: buyer.getByText('Payout status', { exact: true }) })).toContainText('Sent', { timeout: 500 }); });
     expect((await (await request.get(`${rpc}/test/state`)).json()).payouts).toHaveLength(before + 1);
-    expect(((await (await request.get(`${rpc}/test/state`)).json()).payouts as any[]).at(-1)).toEqual(expect.objectContaining({ currency: 'XMR', address: moved }));
+    expect(((await (await request.get(`${rpc}/test/state`)).json()).payouts as any[]).at(-1)).toEqual(expect.objectContaining({ currency: 'XMR', address: moved, amount: 500_000_000_000, fee_from_amount: true, received: 500_000_000_000 - 30_000_000 }));
     await admin.reload();
     await expect(admin.locator('tr', { has: admin.getByText(orderID, { exact: true }) })).not.toContainText('Requeue payout');
     await expect(admin.locator('main')).toContainText('Requeued payout');

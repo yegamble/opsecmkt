@@ -37,24 +37,29 @@ func orderDraftAction(c *actionCtx) (actionResult, error) {
 	if vendor == c.User.ID {
 		return actionResult{}, fail(400, "You cannot order your own listing")
 	}
-	if currency == "BTC" && btc < minPayoutBTC {
-		return actionResult{}, fail(400, subFloorBTCListing())
-	}
 	total := btc
 	if currency == "XMR" {
 		total = xmr
+	}
+	if total < payoutFloor(currency, "release") {
+		return actionResult{}, fail(400, subFloorListing(currency))
 	}
 	id := randomToken()
 	err = tx.QueryRowContext(ctx, `INSERT INTO orders(id,buyer_id,product_id,currency,amount) VALUES($1,$2,$3,$4,$5) ON CONFLICT(buyer_id,product_id,currency) WHERE state='draft' DO UPDATE SET amount=excluded.amount RETURNING id`, id, c.User.ID, f.Get("product_id"), currency, total).Scan(&id)
 	return actionResult{Redirect: "/order?id=" + id, Audit: "Saved unfunded order draft"}, err
 }
 
-// subFloorBTCListing refuses a Bitcoin order on a listing priced below minPayoutBTC (A-216). validateListing
-// refuses such prices since A-99, but a listing priced earlier keeps its price: its release could never be sent
-// and an overpayment on it could not be returned separately (splitPayout).
-func subFloorBTCListing() string {
-	return "This listing's Bitcoin price is below the minimum Bitcoin payout of " + amount(minPayoutBTC, 8) +
-		" BTC (it was priced before that minimum applied), so it cannot be ordered in BTC. Order in XMR, or ask the vendor to raise the Bitcoin price. Nothing was changed."
+// subFloorListing refuses an order in currency on a listing priced below that currency's payout floor (A-216 for
+// Bitcoin, A-232 for Monero). validateListing refuses such prices (Bitcoin since A-99, Monero since A-232), but a
+// listing priced earlier keeps its price: its release would never be sent automatically and an overpayment on it
+// could not be returned separately (splitPayout).
+func subFloorListing(currency string) string {
+	coin, other := "Bitcoin", "XMR"
+	if currency == "XMR" {
+		coin, other = "Monero", "BTC"
+	}
+	return "This listing's " + coin + " price is below the minimum " + coin + " payout of " + amount(payoutFloor(currency, "release"), currencyDecimals(currency)) + " " + currency +
+		" (it was priced before that minimum applied), so it cannot be ordered in " + currency + ". Order in " + other + ", or ask the vendor to raise the " + coin + " price. Nothing was changed."
 }
 
 // disputeAction opens a dispute by moving a paid, shipped or delivered order to disputed (P3).

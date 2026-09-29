@@ -86,9 +86,17 @@ class Handler(BaseHTTPRequestHandler):
                 # (not enough money), one of the codes raised before commit_tx submits (payments_watcher.go).
                 code = -6 if currency == 'BTC' else -17
                 return self.reply({'id':data.get('id'),'error':{'code':code,'message':'Fixture rejected send before broadcast'}})
-            destination = {'address':params[0], 'amount':round(params[1]*100000000)} if currency == 'BTC' else params['destinations'][0]
+            if currency == 'BTC':
+                destination = {'address':params[0], 'amount':round(params[1]*100000000)}
+                fee_from_amount = len(params) > 4 and params[4] is True  # sendtoaddress subtractfeefromamount
+            else:
+                destination = params['destinations'][0]
+                fee_from_amount = params.get('subtract_fee_from_outputs') == [0]
+            # A fixed simulated network fee: taken from the amount when the request asks for that, else paid on top.
+            fee = 141 if currency == 'BTC' else 30000000
+            received = destination['amount'] - fee if fee_from_amount else destination['amount']
             txid = format(1000+len(payouts), '064x')
-            payouts.append({'currency':currency, **destination, 'txid':txid})
+            payouts.append({'currency':currency, **destination, 'txid':txid, 'fee':fee, 'fee_from_amount':fee_from_amount, 'received':received})
             result = txid if currency == 'BTC' else {'tx_hash':txid}
         else:
             return self.reply({'id':data.get('id'),'error':{'code':-32601,'message':'Unsupported fixture method: '+method}})

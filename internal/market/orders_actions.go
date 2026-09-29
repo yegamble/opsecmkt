@@ -151,23 +151,21 @@ func payAction(c *actionCtx) (actionResult, error) {
 	if err = lockPaymentIntake(c, o.Currency); err != nil {
 		return actionResult{}, err
 	}
-	// A-216: a Bitcoin listing priced below minPayoutBTC (before A-99) takes no BTC payment request on a draft saved
-	// earlier; the order would take that price. A-83: the buyer of a physical order must be able to send the vendor
-	// an encrypted shipping address. Both are checked before any reservation or wallet call, after the reasons the
-	// order page gives first (paused intake, then no wallet, as transition refuses); the page shows the key reason
-	// instead of the form (vendorKeyGate).
-	if o.State == stateDraft && (o.Kind == "physical" || o.Currency == "BTC") && o.BuyerID == c.User.ID {
+	// A-216, A-232: a listing priced below its currency's payout floor (Bitcoin before A-99, Monero before A-232)
+	// takes no payment request in that currency on a draft saved earlier; the order would take that price. A-83: the
+	// buyer of a physical order must be able to send the vendor an encrypted shipping address. Both are checked
+	// before any reservation or wallet call, after the reasons the order page gives first (paused intake, then no
+	// wallet, as transition refuses); the page shows the key reason instead of the form (vendorKeyGate).
+	if o.State == stateDraft && o.BuyerID == c.User.ID {
 		if c.A.provider(o.Currency) == nil {
 			return actionResult{}, fail(409, "Payment unavailable for "+o.Currency)
 		}
-		if o.Currency == "BTC" {
-			var btc int64
-			if err = c.Tx.QueryRowContext(ctx, "SELECT btc FROM products WHERE id=$1", o.ProductID).Scan(&btc); err != nil {
-				return actionResult{}, err
-			}
-			if btc < minPayoutBTC {
-				return actionResult{}, fail(400, subFloorBTCListing())
-			}
+		var price int64
+		if err = c.Tx.QueryRowContext(ctx, "SELECT CASE WHEN $2='XMR' THEN xmr ELSE btc END FROM products WHERE id=$1", o.ProductID, o.Currency).Scan(&price); err != nil {
+			return actionResult{}, err
+		}
+		if price < payoutFloor(o.Currency, "release") {
+			return actionResult{}, fail(400, subFloorListing(o.Currency))
 		}
 		if o.Kind == "physical" {
 			if ok, err := userCanReceiveEncrypted(ctx, c.Tx, o.VendorID); err != nil {

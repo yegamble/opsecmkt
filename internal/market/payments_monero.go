@@ -384,6 +384,7 @@ func (p *moneroProvider) Incoming(ctx context.Context, addresses []string) ([]In
 }
 
 // Send transfers from account 0 of the pooled wallet; the network fee is paid by the wallet on top of amount.
+// Payouts never use it: sendPayouts sends every payout with SendFeeFromAmount (A-232).
 func (p *moneroProvider) Send(ctx context.Context, to string, amt int64) (string, error) {
 	return p.transfer(ctx, to, amt, false)
 }

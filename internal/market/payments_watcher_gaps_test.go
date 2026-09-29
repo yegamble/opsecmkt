@@ -88,11 +88,15 @@ func (g *gapXMRWallet) deposit(addr, txid string, piconero int64, confs int) {
 	g.w.set(func(m *payMoneroWallet) { m.transfers = map[string]any{"in": in} })
 }
 
-// gapOrder inserts an order awaiting payment in currency with deposit address addr (as /orders/pay does).
+// gapOrder inserts an order awaiting payment in currency with deposit address addr (as /orders/pay does). An XMR
+// order is priced at the Monero payout floor (minPayoutXMR), so its release is sent (A-232).
 func (p *payEnv) gapOrder(currency, addr string) string {
 	p.t.Helper()
 	id := p.testEnv.order(p.buyer.ID, p.productID, currency, stateAwaitingPayment)
 	if _, err := p.DB.Exec("INSERT INTO payment_addresses(order_id,currency,address,provider) VALUES($1,$2,$3,'gap')", id, currency, addr); err != nil {
+		p.t.Fatal(err)
+	}
+	if _, err := p.DB.Exec("UPDATE orders SET amount=$2 WHERE id=$1 AND currency='XMR'", id, minPayoutXMR); err != nil {
 		p.t.Fatal(err)
 	}
 	return id
@@ -192,7 +196,7 @@ func TestGapWalletSendFailuresRecordFailedPayouts(t *testing.T) {
 		addr := "7gapxmrsend" + strings.Repeat(string(rune('a'+i)), 84)
 		g.subaddress(addr, int64(20+i))
 		order := p.gapOrder("XMR", addr)
-		g.deposit(addr, "xmr-send-"+string(rune('a'+i)), 100000, 1)
+		g.deposit(addr, "xmr-send-"+string(rune('a'+i)), minPayoutXMR, 1)
 		p.poll()
 		p.complete(order)
 		before := g.s.called("transfer")
@@ -296,7 +300,7 @@ func TestGapMoneroRPCErrorsMidPassNeverExpireOrFlag(t *testing.T) {
 	g.subaddress(subD, 4)
 	expired := p.gapOrder("XMR", subC)
 	paid := p.gapOrder("XMR", subD)
-	g.deposit(subD, "xmr-paid", 100000, 1)
+	g.deposit(subD, "xmr-paid", minPayoutXMR, 1)
 	p.poll()
 	if s := p.state(paid); s != statePaid {
 		t.Fatalf("paid order: %s", s)

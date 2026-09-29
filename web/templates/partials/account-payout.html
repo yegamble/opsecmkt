@@ -7,7 +7,7 @@
 <h2>Payout addresses</h2>
 {{if .Blocked}}<div class="alert" role="status">{{.Blocked}} payout(s) are waiting for a payout address.</div>{{end}}
 {{if .Unsent}}<h3 id="unsent-payouts">Payouts to you not sent yet</h3>
-<p class="help">Every release or refund to you that has not been sent, oldest first: why it waits and what happens next. The destination is shown only to you.</p>
+<p class="help">Every release or refund to you that has not been sent, oldest first: why it waits and what happens next. The destination is shown only to you. Each is sent with the network fee taken from its amount.</p>
 <div class="table-wrap" tabindex="0" role="region" aria-labelledby="unsent-payouts">
 <table>
 <thead>

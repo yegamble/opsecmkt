@@ -314,11 +314,12 @@ func (a *App) orderPayouts(ctx context.Context, d *PageData) error {
 }
 
 // payoutStatement states the payouts of sum (payoutBasis) for o on network net (App.netName), as splitPayout
-// makes them: "Refund 0.01 BTC (test network) to buyer_x — exactly the price", or for a release with an excess
-// worth returning "Release 0.01 BTC (test network) to vendor_x (the price) and return the 0.009 BTC paid over the
-// price to buyer_x, network fee deducted", saying so when a refund or return waits for an administrator (larger
-// than the price), a release keeps an excess because the price is below the release floor (A-216), or the sum is
-// below the minimum automatic payout (A-99). With nothing
+// makes them: "Refund 0.01 BTC (test network) to buyer_x — exactly the price; network fee deducted", or for a
+// release with an excess worth returning "Release 0.01 BTC (test network) to vendor_x (the price) and return the
+// 0.009 BTC paid over the price to buyer_x; network fee deducted from each", saying so when a refund or return
+// waits for an administrator (larger than the price), a release keeps an excess because the price is below the
+// release floor (A-216), or the sum is below the minimum automatic payout (A-99; then nothing is sent automatically
+// and no fee is named). Every payout on both coins is sent with the fee taken from it (A-232). With nothing
 // counted, later deposits go to later (the recipient's role, or "the chosen party" on the resolve form).
 func payoutStatement(kind, recipient, later, net string, o *Order, sum int64) string {
 	verb := "Release"
@@ -334,7 +335,7 @@ func payoutStatement(kind, recipient, later, net string, o *Order, sum int64) st
 	parts := splitPayout(kind, o, sum, required)
 	if len(parts) == 2 {
 		statement := "Release " + amount(parts[0].amount, dec) + " " + o.Currency + " (" + net + ") to " + recipient + " (the price) and return the " +
-			amount(parts[1].amount, dec) + " " + o.Currency + " paid over the price to " + o.Buyer + ", network fee deducted"
+			amount(parts[1].amount, dec) + " " + o.Currency + " paid over the price to " + o.Buyer + "; network fee deducted from each"
 		if parts[1].large {
 			statement += "; the return is more than the price, so an administrator reviews it before it is sent"
 		}
@@ -350,9 +351,9 @@ func payoutStatement(kind, recipient, later, net string, o *Order, sum int64) st
 		statement += "; more than the price, so an administrator reviews it before it is sent"
 	}
 	if below := belowFloor(o.Currency, kind, sum); below != "" {
-		statement += "; " + below + ": not sent automatically, staff are asked to review it"
+		return statement + "; " + below + ": not sent automatically, staff are asked to review it"
 	}
-	return statement
+	return statement + "; network fee deducted"
 }
 
 const resolveConfirm = "I checked the amount and who receives it for the outcome I chose. Resolving is final."

@@ -31,9 +31,12 @@ func validateListing(f url.Values) (listingInput, error) {
 	if e1 != nil || e2 != nil || e3 != nil || stock < 0 || stock > 1000000 || len(in.Title) < 3 || len(in.Title) > 140 || len(in.Description) > 10000 || (in.Kind != "digital" && in.Kind != "physical") || (in.Category != "Hardware" && in.Category != "Digital" && in.Category != "Services") || len(in.Region) < 2 || len(in.Region) > 80 {
 		return listingInput{}, fail(400, "Invalid listing. Check price precision, stock, category, and required fields.")
 	}
-	// A Bitcoin payout below minPayoutBTC is never sent (A-99), so no order may be priced below it.
+	// A payout below its currency's floor is never sent (A-99, A-232), so no order may be priced below it.
 	if in.BTC < minPayoutBTC {
 		return listingInput{}, fail(400, "The Bitcoin price must be at least "+amount(minPayoutBTC, 8)+" BTC: a smaller Bitcoin payout cannot cover the network fee.")
+	}
+	if in.XMR < minPayoutXMR {
+		return listingInput{}, fail(400, "The Monero price must be at least "+amount(minPayoutXMR, 12)+" XMR: the network fee is deducted from every payout and would take too large a share of a smaller one.")
 	}
 	if strings.TrimSpace(in.DeliveryContent) == "" {
 		in.DeliveryContent = ""

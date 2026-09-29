@@ -131,7 +131,12 @@ def main():
             index = wallet('get_address_index', {'address': address})['index']['minor']
             transfers = wallet('get_transfers', {'in': True, 'pool': True, 'account_index': 0, 'subaddr_indices': [index]})
             rows = [row for kind in ('in', 'pool') for row in transfers.get(kind, [])]
-            result = {'amount': sum(row['amount'] for row in rows), 'fee': 0, 'transactions': len({row['txid'] for row in rows})}
+            txids = {row['txid'] for row in rows}
+            # Every payout is sent with subtract_fee_from_outputs (A-232): read each transaction's fee from the
+            # sending market wallet, as the Bitcoin branch does.
+            wallet('refresh', name='opsecmkt')
+            fee = sum(wallet('get_transfer_by_txid', {'txid': txid}, name='opsecmkt')['transfer']['fee'] for txid in txids)
+            result = {'amount': sum(row['amount'] for row in rows), 'fee': fee, 'transactions': len(txids)}
     else:
         raise ValueError('Use env, address, deposit, mine or received')
     print(json.dumps(result))
