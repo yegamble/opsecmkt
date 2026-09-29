@@ -112,9 +112,29 @@
   color:var(--muted);
   text-transform:uppercase
 }
+/* The table's white-space:nowrap would keep 64-character order and transaction IDs on one line (A-275). */
 .payment-reviews .mono {
+  white-space:normal;
   overflow-wrap:anywhere;
   word-break:break-all
+}
+/* A-275: a flag's review forms sit under the payment-review table (its row links here), not in a table cell, so
+   at 320 px they wrap within the page instead of widening the scrolling .table-wrap. */
+.payment-review-form {
+  margin:0 0 18px;
+  padding-bottom:18px;
+  border-bottom:1px solid var(--line);
+  overflow-wrap:anywhere
+}
+.payment-review-form>p,.payment-review-form form {
+  max-width:44rem
+}
+.payment-review-form form {
+  margin-top:18px
+}
+.payment-review-form form+form {
+  padding-top:18px;
+  border-top:1px solid var(--line)
 }
 .review-moderation form {
   margin-top:12px

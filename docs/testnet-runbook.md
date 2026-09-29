@@ -306,7 +306,8 @@ What staff can do:
    open until a payout includes the deposits or its review is recorded.
 
 **Record the review** (A-31). Each open flag on the desk has *Record the review* for a moderator or
-administrator who is not party to the order (a party sees who must do it instead). Choose one, confirmed with
+administrator who is not party to the order (a party sees who must do it instead): the link in the flag's row
+goes to its *Record the review of TXID:INDEX* section under the table, which opens the forms. Choose one, confirmed with
 your password (and authenticator code when enrolled); each flag takes one review, which cannot be changed:
 
 - **No action**, with the reason (10–1000 characters), for example a double spend that left the order unpaid or

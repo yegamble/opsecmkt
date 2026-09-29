@@ -30,8 +30,12 @@
 <td>{{.Amount}} {{.Currency}} {{if $.LiveNetwork}}<span class="badge live">MAINNET</span>{{else}}<span class="badge testnet">TESTNET</span>{{end}}</td>
 <td class="mono">{{.TxID}}:{{.Index}}</td>
 <td>{{if .Open}}<strong>Open:</strong> {{end}}{{.Reason}}</td>
-<td>{{if .Form}}<details class="payment-review-form">
-<summary>Record the review</summary>
+<td>{{if .Form}}<a class="text-link" href="#payment-review-{{.ID}}">Record the review</a>{{else if and .Open .Party}}<span class="help">You are a party to this order: another moderator or administrator records its review.</span>{{else if and .Open .Escalated}}<span class="help">An administrator records the outcome.</span>{{else}}—{{end}}</td>
+</tr>{{end}}</tbody>
+</table>
+</div>{{/* A-275: the review forms sit under the table, full width, each linked from its row. */}}{{range .PaymentReviews}}{{if .Form}}
+<details class="payment-review-form" id="payment-review-{{.ID}}">
+<summary>Record the review of <span class="mono">{{.TxID}}:{{.Index}}</span></summary>
 <p class="help">The order history shows what you record to the buyer and the vendor; never include an address, real name or tracking number. One review per flag; it cannot be changed afterwards{{if eq $.User.Role "moderator"}}, except that an administrator records the outcome of one you escalate{{end}}.</p>
 <form class="stack" method="post" action="/moderator/payment-review">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
@@ -65,10 +69,7 @@
 {{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button type="submit">Escalate to an administrator</button>
 </form>{{end}}
-</details>{{else if and .Open .Party}}<span class="help">You are a party to this order: another moderator or administrator records its review.</span>{{else if and .Open .Escalated}}<span class="help">An administrator records the outcome.</span>{{else}}—{{end}}</td>
-</tr>{{end}}</tbody>
-</table>
-</div>{{else}}<p class="muted">No payments are flagged for review.</p>{{end}}
+</details>{{end}}{{end}}{{else}}<p class="muted">No payments are flagged for review.</p>{{end}}
 </section>
 <section id="recent-photos" aria-labelledby="recent-photos-title">{{/* A-190: image_takedown.go */}}
 <h2 class="section-title" id="recent-photos-title">Recent photos</h2>
