@@ -23,9 +23,13 @@ Read this once, before you form any opinion. Then read `CLAUDE.md`,
 
 1. **No browser JavaScript.** Every workflow is an HTML form + server response.
    A design that needs client script is a BLOCKER, not a preference.
-2. **Test networks only.** Bitcoin testnet3/testnet4/signet/regtest and Monero
-   stagenet/testnet. Mainnet is refused at startup and at runtime. Never propose
-   mainnet support, custody of real funds or multisig-escrow claims.
+2. **Test networks by default; mainnet only as an operator opt-in.** Bitcoin
+   testnet3/testnet4/signet/regtest and Monero stagenet/testnet are the default.
+   Since PR #30 an operator may opt in to mainnet (`BITCOIN_CHAIN=main`,
+   `MONERO_NETWORK=mainnet`); with the setting blank a mainnet node still stops
+   startup, a market is all mainnet or all test networks, and a database whose
+   addresses were issued on the other class is refused. Development, tests and
+   war-room evidence never use mainnet. Never claim multisig escrow.
 3. **Orders move only through the server-side transition table**
    (`orders_state.go`) with row locks and compare-and-set; every move is logged
    in `order_events`. Nothing reports success without a recorded state change.

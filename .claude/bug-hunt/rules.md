@@ -9,7 +9,8 @@ design it records changes.
 ## House rules
 
 - Invariants in `.claude/war-room/repo-map.md` are binding. A change that needs
-  browser JavaScript or touches mainnet is always a finding.
+  browser JavaScript, or uses mainnet in development or tests, or reaches mainnet
+  without the operator's opt-in, is always a finding.
 - Report only what you ran or can point to at `file:line`. A failing test or a
   replayable transcript beats an argument; without one, the verdict is at
   best PLAUSIBLE.

@@ -32,7 +32,7 @@ Never write anywhere else.
    from → to → allowed-actor list.
 5. **Invariant sites.** Where each invariant in `.claude/war-room/repo-map.md`
    is enforced (payout CAS, `payouts.order_id` uniqueness, restore gate, CSRF
-   and Origin checks, mainnet refusal).
+   and Origin checks, mainnet opt-in guards).
 6. **Test coverage per handler**, by tier: Go unit, Go DB (`newTestApp`,
    `newPayEnv`), Playwright preview, Playwright DB, wallet journey, chain
    journey (manual). A handler with no DB-tier or browser-tier test is listed
