@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -277,6 +278,65 @@ func TestPaymentReviewDisposition(t *testing.T) {
 		p.lateDeposit(p.order, p.addr, longTxid("f7"), 10000)
 		if n := p.lateNotices(p.buyer.ID, p.order); n != 2 {
 			t.Fatalf("buyer late-deposit notices after every flag was disposed: %d", n)
+		}
+	})
+
+	t.Run("concurrent dispositions", func(t *testing.T) {
+		// Three staff record the same flag at once (A-252): exactly one disposition is recorded; the others wait on
+		// the row locks and are refused with 409 as a later second disposition is (naming the recorded outcome),
+		// writing nothing (no second order event, audit row or buyer notification).
+		p := newPayEnv(t)
+		m1ID, m1 := p.user("xmod1_"+randomToken()[:6], "moderator")
+		m2ID, m2 := p.user("xmod2_"+randomToken()[:6], "moderator")
+		adminID := p.adminID()
+		id := p.settledLateFlag(p.order, p.addr, longTxid("a7"), longTxid("f8"), 20000)
+		buyerBefore := p.count("SELECT count(*) FROM notifications WHERE user_id=$1", p.buyer.ID)
+		var wg sync.WaitGroup
+		codes, bodies := make([]int, 3), make([]string, 3)
+		start := make(chan struct{})
+		for i, sess := range []string{m1, m2, p.adminSess} {
+			wg.Add(1)
+			go func(i int, sess string) {
+				defer wg.Done()
+				outcome, kv := "no_action", []string{"note", "Concurrent review, reason long enough."}
+				if i == 2 {
+					outcome, kv = "refunded", []string{"txid", longTxid("9a"), "amount", "0.0002"}
+				}
+				<-start
+				codes[i], bodies[i] = p.dispose(sess, id, outcome, kv...)
+			}(i, sess)
+		}
+		close(start)
+		wg.Wait()
+		won, refused := 0, 0
+		for _, code := range codes {
+			switch code {
+			case 303:
+				won++
+			case 409:
+				refused++
+			}
+		}
+		if won != 1 || refused != 2 {
+			t.Fatalf("concurrent dispositions: codes %v, want one 303 and two 409: %q", codes, bodies)
+		}
+		d := p.disposition(id)
+		if d != "no_action" && d != "refunded" {
+			t.Fatalf("disposition %q", d)
+		}
+		for i, code := range codes {
+			if code == 409 {
+				mustContain(t, bodies[i], "already recorded ("+reviewOutcomes[d]+")", "Nothing was changed.")
+			}
+		}
+		if e := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND actor_id IN ($2,$3,$4) AND note LIKE 'Payment review%'", p.order, m1ID, m2ID, adminID); e != 1 {
+			t.Fatalf("order events of the review: %d", e)
+		}
+		if a := p.reviewAudits(m1ID) + p.reviewAudits(m2ID) + p.reviewAudits(adminID); a != 1 {
+			t.Fatalf("audit rows of the review: %d", a)
+		}
+		if n := p.count("SELECT count(*) FROM notifications WHERE user_id=$1", p.buyer.ID) - buyerBefore; n != 1 {
+			t.Fatalf("buyer notifications of the review: %d", n)
 		}
 	})
 

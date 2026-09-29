@@ -128,13 +128,15 @@ container. Run `createdb` once, then reuse this database across Go test runs:
 ```sh
 docker exec opsecmkt-dev-db createdb -U opsecmkt opsecmkt_test
 export TEST_DATABASE_URL='postgres://opsecmkt:local-dev-only@127.0.0.1:55432/opsecmkt_test?sslmode=disable'
-go test -race -count=1 ./...
+go test -race -count=1 -timeout 30m ./...
 ```
 
 Tests create isolated schemas, apply migrations, create their own fixture users,
 listings and orders, then remove their schemas. Use a dedicated database even
 though schemas are isolated. Use different databases for simultaneous Go test
-processes: the watcher uses a database-wide advisory lock. Fake RPC tests cover payment behavior; they do not
+processes: the watcher uses a database-wide advisory lock. With a database the
+`internal/market` race run takes about 7–10 minutes, close to `go test`'s default
+10-minute timeout, so the command sets `-timeout 30m`. Fake RPC tests cover payment behavior; they do not
 prove live node integration. The manual Bitcoin check is
 [`scripts/regtest-smoke.sh`](../scripts/regtest-smoke.sh).
 

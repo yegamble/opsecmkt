@@ -57,7 +57,7 @@ Read this once, before you form any opinion. Then read `CLAUDE.md`,
 
 | Change | Gate |
 |---|---|
-| Go | `"$(go env GOROOT)/bin/gofmt" -l cmd internal` empty · `go mod verify` · `go vet ./...` · `TEST_DATABASE_URL=<dedicated db> go test -race -count=1 ./...` · `go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...` |
+| Go | `"$(go env GOROOT)/bin/gofmt" -l cmd internal` empty · `go mod verify` · `go vet ./...` · `TEST_DATABASE_URL=<dedicated db> go test -race -count=1 -timeout 30m ./...` · `go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...` |
 | Templates/CSS/journeys | `npx playwright test` (preview projects) and `E2E_DATABASE_URL=<fresh db> npm run test:e2e` |
 | Payments UI journeys | `E2E_WALLET_DATABASE_URL=<fresh db> npm run test:e2e:wallet` |
 | Shell/installer/ops | `for f in scripts/*.sh; do bash -n "$f"; done` (a single `bash -n a b` checks only `a`), `python3 -m unittest discover -s tests -p 'test_*.py'`, the matching `scripts/test-*.sh` |
