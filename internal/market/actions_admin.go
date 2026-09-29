@@ -383,33 +383,10 @@ func adminAction(c *actionCtx) (actionResult, error) {
 			}
 			_, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", target, "Role changed from "+old+" to "+role+" by an administrator")
 		}
-		if err == nil && old != role && (old == "moderator" || old == "admin") && role != "moderator" {
-			// PR #28 review: a staff avatar was uploaded under the staff rules (hidden unless listed); as a
-			// vendor's it would be public. It is deleted here (D4's hard delete), after the users row lock above.
-			// The public staff list choice was made as staff too: it is reset to the default (hidden), so a later
-			// promotion starts hidden again.
-			var res sql.Result
-			if _, err = tx.ExecContext(ctx, "UPDATE users SET staff_hidden=true WHERE id=$1", target); err != nil {
-				return actionResult{}, err
-			}
-			if res, err = tx.ExecContext(ctx, "DELETE FROM images WHERE owner_user_id=$1 AND kind='avatar'", target); err == nil {
-				if n, _ := res.RowsAffected(); n > 0 {
-					action += "; removed their staff avatar"
-					if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", target, "Staff avatar removed when the role changed"); err == nil {
-						_, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), target, "Your staff avatar was removed when your role changed; upload a new one if you want one shown.")
-					}
-				}
-			}
-		}
-		if err == nil && role != "vendor" {
-			// A user who is no longer a vendor cannot manage listings, so their active listings are archived in
-			// this transaction (audited for both accounts). Existing orders are unaffected.
-			n := "0"
-			err = tx.QueryRowContext(ctx, "WITH a AS (UPDATE products SET archived=true,archived_at=now(),updated=now() WHERE vendor_id=$1 AND NOT archived RETURNING 1) SELECT count(*)::text FROM a", target).Scan(&n)
-			if err == nil && n != "0" {
-				action += "; archived " + n + " active listing(s)"
-				_, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", target, "Archived "+n+" active listing(s): role changed to "+role+" by an administrator")
-			}
+		if err == nil {
+			var more string
+			more, err = roleChanged(ctx, tx, target, old, role, "an administrator")
+			action += more
 		}
 	case "settings":
 		name := strings.TrimSpace(f.Get("site_name"))
@@ -422,4 +399,48 @@ func adminAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, fail(400, "Unknown action")
 	}
 	return actionResult{Redirect: "/admin?saved=1", Audit: action}, err
+}
+
+// roleChanged does what an account's new role entails, in tx after its users row is locked and its role set from
+// old to role. The admin form and the -set-role host command (SetRole) share it; by names who changed the role in
+// the account's audit rows ("an administrator" or "host command"). It returns what to add to the change's summary.
+func roleChanged(ctx context.Context, tx *sql.Tx, target, old, role, by string) (string, error) {
+	summary := ""
+	if old != role && (old == "moderator" || old == "admin") && role != "moderator" {
+		// PR #28 review: a staff avatar was uploaded under the staff rules (hidden unless listed); as a
+		// vendor's it would be public. It is deleted here (D4's hard delete), after the caller's users row lock.
+		// The public staff list choice was made as staff too: it is reset to the default (hidden), so a later
+		// promotion starts hidden again.
+		if _, err := tx.ExecContext(ctx, "UPDATE users SET staff_hidden=true WHERE id=$1", target); err != nil {
+			return "", err
+		}
+		res, err := tx.ExecContext(ctx, "DELETE FROM images WHERE owner_user_id=$1 AND kind='avatar'", target)
+		if err != nil {
+			return "", err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			summary += "; removed their staff avatar"
+			if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", target, "Staff avatar removed when the role changed"); err != nil {
+				return "", err
+			}
+			if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), target, "Your staff avatar was removed when your role changed; upload a new one if you want one shown."); err != nil {
+				return "", err
+			}
+		}
+	}
+	if role != "vendor" {
+		// A user who is no longer a vendor cannot manage listings, so their active listings are archived in
+		// this transaction (audited on the account). Existing orders are unaffected.
+		n := "0"
+		if err := tx.QueryRowContext(ctx, "WITH a AS (UPDATE products SET archived=true,archived_at=now(),updated=now() WHERE vendor_id=$1 AND NOT archived RETURNING 1) SELECT count(*)::text FROM a", target).Scan(&n); err != nil {
+			return "", err
+		}
+		if n != "0" {
+			summary += "; archived " + n + " active listing(s)"
+			if _, err := tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", target, "Archived "+n+" active listing(s): role changed to "+role+" by "+by); err != nil {
+				return "", err
+			}
+		}
+	}
+	return summary, nil
 }
