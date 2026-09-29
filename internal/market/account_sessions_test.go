@@ -190,7 +190,7 @@ func TestPasswordChangeEndsSignInCheckedBeforeIt(t *testing.T) {
 	key, _ := agEnableTOTP(e, id)
 	intruder, pc := e.passwordLogin("a157_pw") // password accepted, second factor pending
 	old := passwordHash(e, id)
-	e.check(e.do("POST", "/account/password", owner, pwForm(testPassword, "a157-new-password", "code", agTOTPNow(key))), 303)
+	e.check(e.do("POST", "/account/password", owner, pwForm(testPassword, testPassword+"-changed", "code", agTOTPNow(key))), 303)
 	// The race: a sign-in that read the old hash before the change and writes its pending row after the change
 	// deleted the pending sign-ins.
 	late := randomToken()
@@ -203,7 +203,7 @@ func TestPasswordChangeEndsSignInCheckedBeforeIt(t *testing.T) {
 		t.Fatalf("%d sessions, want only the owner's", n)
 	}
 	// A pending sign-in written against the current password still works.
-	w := e.do("POST", "/login", randomToken(), url.Values{"handle": {"a157_pw"}, "password": {"a157-new-password"}})
+	w := e.do("POST", "/login", randomToken(), url.Values{"handle": {"a157_pw"}, "password": {testPassword + "-changed"}})
 	e.check(w, 303)
 	fresh := &http.Cookie{Name: "pending", Value: e.cookie(w, "pending")}
 	agExec(e, "UPDATE users SET totp_last_step=0 WHERE id=$1", id)
@@ -212,7 +212,7 @@ func TestPasswordChangeEndsSignInCheckedBeforeIt(t *testing.T) {
 	// Without a second factor the session itself is refused when the password changed after it was checked.
 	noFactor, _ := e.user("a157_nofactor", "buyer")
 	stale := passwordHash(e, noFactor)
-	changed, err := hashPassword("a157-another-password")
+	changed, err := hashPassword(testPassword + "-again")
 	if err != nil {
 		t.Fatal(err)
 	}
