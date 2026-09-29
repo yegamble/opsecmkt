@@ -393,6 +393,7 @@ type ContactKey struct {
 	VerifiedAt           string // UTC date of the ownership proof (date only for other users, A-79)
 	Unreadable           bool   // a key is saved but no longer parses (legacy or revoked)
 	NoEncryption         bool   // a key is saved and parses, but nothing can be encrypted to it now (A-68: expired, revoked or signing-only)
+	ChangedAfterOrder    string // A-158: UTC date the vendor's key was changed or re-verified after the paid physical order was placed (buyer's view)
 }
 
 // Usable reports whether the contact has a key that can receive encrypted messages (contactKey fills Fingerprint only then).
