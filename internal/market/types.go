@@ -296,6 +296,8 @@ type ProviderStatus struct {
 	Error             string
 	Confirmations     int
 	LastPoll          string
+	Version           string // wallet or node version its last check read (versionReporter)
+	VersionWarning    string // set when send errors are all ambiguous because Version is not the verified one
 }
 type PayoutView struct {
 	BTC, XMR               string

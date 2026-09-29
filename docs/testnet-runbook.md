@@ -144,8 +144,10 @@ disputed or resolved order, or one with a payment flagged for review); otherwise
   error raised before the wallet submits to the daemon: -2 (wrong address), -16 (transaction not
   possible), -17 (not enough money), -18 (transaction too large), -19 (not enough outputs to mix), -20 (no
   destination) or -37 (not enough unlocked money). This list is verified for monero-wallet-rpc v0.18.5.1, the
-  pinned default image; with any other wallet version treat every Monero failure as possibly broadcast and
-  check the wallet as below ([Node image versions](operator-guide.md#node-image-versions)).
+  pinned default image. While the wallet reports another `get_version` (the *Payment providers* panel then
+  says "XMR wallet version not verified"), every Monero failure is recorded as outcome unknown instead; with a
+  wallet you know is not v0.18.5.1, treat every Monero failure as possibly broadcast and check the wallet as
+  below ([Node image versions](operator-guide.md#node-image-versions)).
 - **Failed — not retried; outcome unknown, may have been broadcast**: the wallet call ended without a
   definite answer (no reply within 30 s, a dropped connection or an unreadable reply after the request was
   sent), or monero-wallet-rpc returned any other error code. In particular -38 (no connection to daemon)

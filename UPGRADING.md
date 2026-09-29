@@ -403,12 +403,20 @@ a failed send can have been broadcast from the wallet's error, and that table is
 v0.18.5.1 only. A `BITCOIN_IMAGE`, `MONERO_IMAGE` or `MONERO_WALLET_IMAGE` in your `.env` still wins. If one of
 them ends in `:latest` (an installer run from a pre-release checkout wrote that) or is an image you chose, change
 it to the tag above, or follow the bump checklist in
-[Node image versions](docs/operator-guide.md#node-image-versions) before running another version. Until you do,
-treat every failed Monero payout as possibly broadcast. Check with:
+[Node image versions](docs/operator-guide.md#node-image-versions) before running another version. Check with:
 
 ```sh
 docker compose config --images
 ```
+
+The application also checks the running wallet (A-174): at startup and on every watcher pass it reads
+monero-wallet-rpc's `get_version`. While the wallet does not report RPC version 1.31 from a release build (what
+v0.18.5.1 reports), or the call fails, every failed Monero payout is recorded as possibly broadcast, so a requeue
+needs the wallet check, and the *Payment providers* panel of `/admin` names the version the wallet reported and
+points to the bump checklist. That panel also shows the Bitcoin Core version (`getnetworkinfo`). The RPC version
+changes only when the wallet's RPC does, so a later release with an unchanged RPC is not detected: until your
+`.env` names the pinned tag, treat every failed Monero payout as possibly broadcast even when `/admin` shows no
+warning.
 
 ## 9. Overpayments are returned (migration 064)
 

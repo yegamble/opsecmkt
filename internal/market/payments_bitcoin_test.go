@@ -37,6 +37,8 @@ func (c *payCore) handle(path, method string, params json.RawMessage) (any, int,
 	switch method {
 	case "getblockchaininfo":
 		return map[string]any{"chain": c.chain, "blocks": 100, "initialblockdownload": c.ibd}, 0, ""
+	case "getnetworkinfo":
+		return map[string]any{"version": 310100, "subversion": "/Satoshi:31.1.0/"}, 0, ""
 	case "loadwallet":
 		var p []string
 		json.Unmarshal(params, &p)

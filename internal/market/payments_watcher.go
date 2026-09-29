@@ -731,14 +731,45 @@ func payoutErrorClass(cur string, err error) string {
 //
 // Monero: monero-wallet-rpc's transfer submits through wallet2::commit_tx, whose /sendrawtransaction call can
 // fail after the daemon relayed the transaction (-38 on a timeout, -3/-4 from the daemon's reply, -1 when
-// saving the tx info after commit), so only the codes in moneroPreSubmitCodes are definite.
+// saving the tx info after commit), so only the codes in moneroPreSubmitCodes are definite, and only from the
+// wallet they were verified against: an error from any other wallet version is unverifiedWalletError (A-174).
 func walletRejected(cur string, err error) bool {
 	var re *rpcError
-	if !errors.As(err, &re) {
+	var uv *unverifiedWalletError
+	if !errors.As(err, &re) || errors.As(err, &uv) {
 		return false
 	}
 	return cur == "BTC" || (cur == "XMR" && moneroPreSubmitCodes[re.Code])
 }
+
+// moneroVerifiedWalletRelease is the monero-wallet-rpc release moneroPreSubmitCodes was verified against, the
+// tag compose.nodes.yaml, .env.example and scripts/install.sh pin (tests/test_installer.py fails if they
+// differ from it). monero-wallet-rpc does not report its release: get_version answers WALLET_RPC_VERSION, the
+// version of its RPC interface as (major<<16)|minor, and "release", whether it is a release build
+// (v0.18.5.1 src/wallet/wallet_rpc_server.cpp:4842-4847). v0.18.5.1 reports 1.31, a release build
+// (src/wallet/wallet_rpc_server_commands_defs.h:49-52); v0.18.5.0 reports 1.30, v0.18.4.1-v0.18.4.5 1.29,
+// and the release-v0.18 branch after v0.18.5.1 1.32. The minor is bumped with every change to the RPC, not
+// with every release, so a later release that leaves the RPC unchanged would also report 1.31: the check tells
+// apart every wallet whose RPC changed, not every build. Only moneroVerifiedWalletRPC with release true is
+// verified; any other answer, none, or a check that failed leaves every transfer error ambiguous (fail safe).
+const (
+	moneroVerifiedWalletRelease = "v0.18.5.1"
+	moneroVerifiedWalletRPC     = 1<<16 | 31
+)
+
+// unverifiedWalletError wraps a JSON-RPC error from a monero-wallet-rpc whose get_version is not the verified
+// one: walletRejected treats it as ambiguous, whatever its code (errors.As still finds the rpcError).
+type unverifiedWalletError struct {
+	version string // the wallet's get_version as the last check recorded it ("RPC version 1.30, release build")
+	err     error
+}
+
+func (e *unverifiedWalletError) Error() string {
+	// The wallet's error first: the recorded payout error keeps only its first 200 bytes.
+	return fmt.Sprintf("%v; monero-wallet-rpc %s is not verified (%s reports %s), so this error may follow a broadcast", e.err, e.version, moneroVerifiedWalletRelease, moneroRPCVersion(moneroVerifiedWalletRPC, true))
+}
+
+func (e *unverifiedWalletError) Unwrap() error { return e.err }
 
 // moneroPreSubmitCodes are the monero-wallet-rpc transfer error codes raised only before wallet2::commit_tx
 // submits anything (monero v0.18.5.1: codes from src/wallet/wallet_rpc_server_error_codes.h; raised by

@@ -8,6 +8,9 @@ deposits = []
 payouts = []
 checks = 0
 fail_next_send = set()
+# monero-wallet-rpc get_version: v0.18.5.1 reports RPC version 1.31 ((1 << 16) | 31) from a release build, the
+# version the Monero send-error table was verified against (payments_watcher.go moneroVerifiedWalletRPC).
+wallet_version = {'version': (1 << 16) | 31, 'release': True}
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
@@ -42,11 +45,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply({'error': 'unknown currency'}, 400)
             fail_next_send.add(data['currency'])
             return self.reply({'ok': True})
+        if self.path == '/test/wallet-version':
+            if not isinstance(data.get('version'), int) or not isinstance(data.get('release'), bool):
+                return self.reply({'error': 'version (int) and release (bool) required'}, 400)
+            wallet_version.update(version=data['version'], release=data['release'])
+            return self.reply({'ok': True})
         method, params = data['method'], data.get('params') or {}
         if method == 'getblockchaininfo':
             checks += 1
             result = {'chain':'regtest','initialblockdownload':False}
         elif method == 'getwalletinfo': result = {'walletname':'opsecmkt'}
+        elif method == 'getnetworkinfo': result = {'version':310100,'subversion':'/Satoshi:31.1.0/'}
+        elif method == 'get_version': result = dict(wallet_version)
         elif method == 'get_address': result = {'address':'5'+'a'*94}
         elif method == 'get_height': result = {'height':100}
         elif method == 'get_info': result = {'nettype':'stagenet','stagenet':True,'height':100,'target_height':100}

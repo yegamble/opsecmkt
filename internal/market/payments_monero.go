@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"math"
 	"os"
 	"strings"
 	"sync"
@@ -31,6 +33,11 @@ type moneroProvider struct {
 
 	mu    sync.Mutex
 	index map[string]int64 // subaddress -> minor index (account 0)
+	// Set by Check from get_version (A-174); read by transfer and the admin page. Unverified until a check
+	// reads moneroVerifiedWalletRPC from a release build.
+	walletVersion  string // shown on /admin; "" before the first check
+	walletVerified bool
+	versionLogged  string // the last get_version answer logged
 }
 
 func moneroFromEnv(ctx context.Context) (PaymentProvider, error) {
@@ -88,15 +95,21 @@ func newMoneroProvider(ctx context.Context, walletURL, daemonURL, wantNetwork st
 // disagree with MONERO_NETWORK or with each other, and reports the daemon as syncing while its target_height is above its
 // height. Without MONERO_RPC_URL the sync state is not checked. The tip is the wallet's own height (get_height),
 // the height its transfer confirmations are counted from; it is lower while a restarted or restored wallet
-// rescans.
-func (p *moneroProvider) Check(ctx context.Context) (nodeStatus, error) {
+// rescans. A successful check ends by reading the wallet's version (readWalletVersion); a failed one leaves the
+// wallet unverified, never the version an earlier check read.
+func (p *moneroProvider) Check(ctx context.Context) (_ nodeStatus, err error) {
+	defer func() {
+		if err != nil {
+			p.setWalletVersion("not read: the last wallet check failed before get_version", false)
+		}
+	}()
 	var addr struct {
 		Address string `json:"address"`
 	}
 	getAddress := func() error {
 		return p.wallet.call(ctx, "/json_rpc", "get_address", map[string]any{"account_index": 0}, &addr)
 	}
-	err := getAddress()
+	err = getAddress()
 	var re *rpcError
 	if errors.As(err, &re) && re.Code == -13 { // no wallet file open: try the conventional wallet once
 		if oerr := p.wallet.call(ctx, "/json_rpc", "open_wallet", map[string]any{"filename": "opsecmkt", "password": ""}, nil); oerr != nil {
@@ -178,7 +191,70 @@ func (p *moneroProvider) Check(ctx context.Context) (nodeStatus, error) {
 	if p.network == "" { // first success, before the provider is published to request handlers
 		p.network = network
 	}
+	p.readWalletVersion(ctx)
 	return nodeStatus{Syncing: syncing, Tip: tip}, nil
+}
+
+// readWalletVersion records monero-wallet-rpc's get_version (see moneroVerifiedWalletRelease). A failed call or
+// an unreadable answer is recorded as unverified; it does not fail the check.
+func (p *moneroProvider) readWalletVersion(ctx context.Context) {
+	var v struct {
+		Version json.Number `json:"version"`
+		Release *bool       `json:"release"`
+	}
+	err := p.wallet.call(ctx, "/json_rpc", "get_version", nil, &v)
+	var n int64
+	if err == nil {
+		if n, err = v.Version.Int64(); err == nil && (n < 0 || n > math.MaxUint32) {
+			err = fmt.Errorf("version %d out of range", n)
+		}
+	}
+	text, logged := "", ""
+	verified := false
+	if err != nil {
+		text, logged = "version unknown: get_version failed: "+truncate(err.Error(), 200), "unknown (get_version failed: "+watcherCause(err)+")"
+	} else {
+		release := v.Release != nil && *v.Release
+		text = moneroRPCVersion(n, release)
+		logged, verified = text, n == moneroVerifiedWalletRPC && release
+	}
+	p.setWalletVersion(text, verified)
+	p.mu.Lock()
+	changed := p.versionLogged != logged
+	p.versionLogged = logged
+	p.mu.Unlock()
+	if changed && verified {
+		log.Printf("payments: XMR monero-wallet-rpc %s is the verified %s", logged, moneroVerifiedWalletRelease)
+	} else if changed {
+		log.Printf("payments: XMR monero-wallet-rpc %s is not verified (%s reports %s); every transfer error is recorded as possibly broadcast", logged, moneroVerifiedWalletRelease, moneroRPCVersion(moneroVerifiedWalletRPC, true))
+	}
+}
+
+// moneroRPCVersion formats a get_version answer: "RPC version 1.31, release build".
+func moneroRPCVersion(n int64, release bool) string {
+	build := "release build"
+	if !release {
+		build = "not a release build"
+	}
+	return fmt.Sprintf("RPC version %d.%d, %s", n>>16, n&0xffff, build)
+}
+
+func (p *moneroProvider) setWalletVersion(text string, verified bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.walletVersion, p.walletVerified = text, verified
+}
+
+// WalletVersion is the version the last check read, and whether transfer errors are ambiguous because it is
+// not the verified one (versionReporter).
+func (p *moneroProvider) WalletVersion() (text string, unverified bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	text = p.walletVersion
+	if text == "" {
+		text = "not read yet"
+	}
+	return "monero-wallet-rpc " + text, !p.walletVerified
 }
 
 func (p *moneroProvider) Currency() string { return "XMR" }
@@ -329,6 +405,18 @@ func (p *moneroProvider) transfer(ctx context.Context, to string, amt int64, fee
 	err := p.wallet.callWithin(ctx, payoutSendTimeout, "/json_rpc", "transfer", params, &r)
 	if err == nil && r.TxHash == "" {
 		err = errors.New("monero transfer returned no transaction hash")
+	}
+	var re *rpcError
+	if errors.As(err, &re) {
+		p.mu.Lock()
+		version, verified := p.walletVersion, p.walletVerified
+		p.mu.Unlock()
+		if !verified { // moneroPreSubmitCodes does not hold for this wallet: never a definite rejection
+			if version == "" {
+				version = "not read yet"
+			}
+			err = &unverifiedWalletError{version: version, err: err}
+		}
 	}
 	return r.TxHash, err
 }

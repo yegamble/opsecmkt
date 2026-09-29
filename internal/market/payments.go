@@ -89,6 +89,13 @@ type providerChecker interface {
 	Check(ctx context.Context) (nodeStatus, error)
 }
 
+// versionReporter is implemented by node-backed providers: the wallet (Monero) or node (Bitcoin) software version
+// their checks read, shown on /admin. unverified is true while send errors from the wallet are never classified
+// as definite because it is not the version moneroPreSubmitCodes was verified against (A-174, walletRejected).
+type versionReporter interface {
+	WalletVersion() (text string, unverified bool)
+}
+
 // nodeStatus is what a provider's Check reports about its node and wallet.
 type nodeStatus struct {
 	Syncing bool
