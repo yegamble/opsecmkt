@@ -254,7 +254,8 @@ func (a *App) orderPayouts(ctx context.Context, d *PageData) error {
 // makes them: "Refund 0.01 BTC (test network) to buyer_x — exactly the price", or for a release with an excess
 // worth returning "Release 0.01 BTC (test network) to vendor_x (the price) and return the 0.009 BTC paid over the
 // price to buyer_x, network fee deducted", saying so when a refund or return waits for an administrator (larger
-// than the price) or the sum is below the minimum automatic payout (A-99). With nothing
+// than the price), a release keeps an excess because the price is below the release floor (A-216), or the sum is
+// below the minimum automatic payout (A-99). With nothing
 // counted, later deposits go to later (the recipient's role, or "the chosen party" on the resolve form).
 func payoutStatement(kind, recipient, later, net string, o *Order, sum int64) string {
 	verb := "Release"
@@ -267,7 +268,8 @@ func payoutStatement(kind, recipient, later, net string, o *Order, sum int64) st
 	dec := currencyDecimals(o.Currency)
 	required, _ := parseAmount(o.Amount, dec)
 	// The same split enqueuePayout makes: a release pays the price and returns an excess worth sending.
-	if parts := splitPayout(kind, o, sum, required); len(parts) == 2 {
+	parts := splitPayout(kind, o, sum, required)
+	if len(parts) == 2 {
 		statement := "Release " + amount(parts[0].amount, dec) + " " + o.Currency + " (" + net + ") to " + recipient + " (the price) and return the " +
 			amount(parts[1].amount, dec) + " " + o.Currency + " paid over the price to " + o.Buyer + ", network fee deducted"
 		if parts[1].large {
@@ -277,6 +279,8 @@ func payoutStatement(kind, recipient, later, net string, o *Order, sum int64) st
 	}
 	statement := verb + " " + amount(sum, dec) + " " + o.Currency + " (" + net + ") to " + recipient + " — " + priceDifference(sum, required, o.Currency)
 	switch {
+	case kind == "release" && parts[0].large:
+		statement += "; " + subFloorPriceExcess(o.Currency) + "; an administrator reviews the release before it is sent"
 	case kind == "release" && sum > required:
 		statement += ", below the minimum automatic refund, so it is not returned"
 	case kind == "refund" && sum > required:
