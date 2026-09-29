@@ -141,7 +141,7 @@ shipped phase has proven. The full rules and acceptance criteria are in the proj
 
 | Phase | Scope | Status |
 | --- | --- | --- |
-| 0 | Preparation in the current payment code: one settlement per order enforced by the database, a single settlement dispatcher, password confirmation for dispute decisions | Not started |
+| 0 | Preparation in the current payment code: one settlement per order enforced by the database, a single settlement dispatcher, password confirmation for dispute decisions | Done on the development branch, not yet released; changes nothing for users except that resolving a dispute asks for the resolver's password |
 | Wallet check | Scripted signing test with Electrum and Bitcoin Core on regtest, before any escrow database change | Done on regtest: Core signs; Electrum cannot sign this layout |
 | 1 | Bitcoin escrow for digital orders on regtest, behind a setting that is off by default | Not started |
 | Wallets | Electrum and Sparrow support (a signing test showed Electrum needs a different key layout) | Not started |
