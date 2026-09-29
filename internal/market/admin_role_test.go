@@ -221,8 +221,9 @@ func besideAccountChange(t *testing.T, e *testEnv, userID string, change []strin
 			continue
 		default:
 		}
+		// Waiting on this row: other test processes may be waiting on locks in the same database.
 		var waiting int
-		e.DB.QueryRow(`SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock'`).Scan(&waiting)
+		e.DB.QueryRow(`SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '% FROM users WHERE id=$1 FOR NO KEY UPDATE%'`).Scan(&waiting)
 		if waiting > 0 {
 			break
 		}
