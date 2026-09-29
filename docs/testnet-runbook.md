@@ -258,16 +258,16 @@ Each of these forms repeats the wallet check above in one line next to the check
 
 The watcher flags a deposit (`payments.flagged`): it writes a system note ending "Moderator review
 required." to the order history and notifies every moderator and administrator who is not suspended
-("Payment review needed for order <first 8 characters of the order ID>"). A locked transfer, a deposit after settlement or the deposits of a payout below the minimum automatic payout are flagged once.
+("Payment review needed for order <first 8 characters of the order ID>"). A locked transfer, a deposit after settlement or after the order closed, or the deposits of a payout below the minimum automatic payout are flagged once. Deposits after settlement or after the order closed are announced once per order however many arrive: one order note per watcher pass names the deposits it flagged, but the buyer (the amount, no transaction ID; the vendor is not told) and each staff member are notified only when the order has no such flag open yet. The buyer's order page shows each as "Arrived after the order closed — not paid out; market staff notified".
 A credited deposit that falls back below the threshold (conflicted, missing, or at a lower depth after a
-reorg) is announced once per episode while the order is open or its payout unsent: the buyer and the vendor
+reorg) is announced once per episode while the order is open or any of its payouts unsent (a release already sent with its overpayment return still unsent counts): the buyer and the vendor
 are notified too (staff who are party to the order get that notification instead of the review one), and if
 it confirms again and later regresses again it is announced again. Nothing is announced while the node is
 behind the highest tip recorded (a restarted node catching up). Open **Moderation desk → Payment review**
 (`/moderator#payment-review`): it lists every open flag first, oldest first and never cut, then the 100 most
 recently flagged others with their count, each with the full order ID linking to the order, amount, full
 transaction ID, reason and flag time (the latest flag note for that deposit). A flag is open while its deposit
-is a locked transfer, a deposit after settlement or part of a payout below the minimum, or while a credited deposit's regression has not confirmed
+is a locked transfer, a deposit after settlement or after the order closed, or part of a payout below the minimum, or while a credited deposit's regression has not confirmed
 again; the reason is read from the deposit's current confirmations. A moderator or administrator who is not
 party to the order can open its page read-only: history with the flag note, the deposit ledger (while the currency's wallet is configured) and any payout. No buyer or
 vendor action is offered, the order actions refuse staff, and digital delivery content stays hidden unless
@@ -279,8 +279,8 @@ the order is disputed.
 | Credited deposit below threshold (N of T confirmations) | A deposit counted toward payment is back at a lower depth, usually a chain reorganisation (it may sit at 0 confirmations in the mempool). | As above: order unchanged, unsent payout held until it reaches the threshold again. |
 | Credited deposit confirmed again (N confirmations) | The flagged regression ended: the deposit reached the threshold again. Listed after the open flags. | The watcher lifted its own hold; a pending payout is sent on the next pass that reads the order. Nothing to do. |
 | Locked transfer (unlock time) | A Monero transfer with a non-zero `unlock_time`. | Never counted toward payment or paid out. The buyer was told to send an ordinary transfer. |
-| Deposit confirmed after settlement, not paid out | Extra funds confirmed after the order's settlement (its release and any return, or its refund) was queued (completed or resolved orders, or a cancellation that already queued a refund). | Not paid out: an order is settled once. |
-| Below the minimum automatic payout, not paid out | The order's release or refund counted less than the minimum automatic payout: 0.0001 BTC for any Bitcoin payout (the network fee is taken from the amount, so a smaller one can never be sent), 0.001 XMR for a Monero refund or overpayment return (the fee is taken from the amount, so a smaller one is not worth sending). Usually a stray deposit to a cancelled order's address. | No payout row was queued; the order kept its final state. The buyer and the vendor were told it was not sent. A later deposit that lifts the sum to the minimum is paid out with it and closes the flag. Otherwise see step 4 below. |
+| Deposit after settlement or after the order closed, not paid out | Extra funds confirmed after the order's settlement (its release and any return, or its refund) was queued (completed or resolved orders, or a cancellation that already queued a refund), or funds first seen after the order was cancelled, completed or resolved (for example a top-up after an underpaid order was cancelled at the end of the payment window). | Not paid out or refunded: an order is settled once, and anything sent after it closed is never refunded automatically. The buyer was told the amount arrived after the order closed and was not paid out. |
+| Below the minimum automatic payout, not paid out | The order's release or refund counted less than the minimum automatic payout: 0.0001 BTC for any Bitcoin payout (the network fee is taken from the amount, so a smaller one can never be sent), 0.001 XMR for a Monero refund or overpayment return (the fee is taken from the amount, so a smaller one is not worth sending). Usually a stray deposit to a cancelled order's address. | No payout row was queued; the order kept its final state. The buyer and the vendor were told it was not sent. A deposit recorded before the order closed that confirms later and lifts the sum to the minimum is paid out with it and closes the flag; one first seen after the order closed is not counted (previous row). Otherwise see step 4 below. |
 
 What staff can do:
 
@@ -292,7 +292,7 @@ What staff can do:
    deposit is below the threshold, and the server refuses one) and talk to both parties through Messages. If
    either party opens a dispute, the moderator resolves it on the desk as usual; the resulting payout is held
    too.
-3. Locked transfers and extra funds after settlement sit in the pooled wallet. They normally belong to the
+3. Locked transfers and extra funds after settlement or after the order closed sit in the pooled wallet. They normally belong to the
    buyer. Agree a return address with the buyer through Messages (ideally signed with their verified PGP key),
    send the funds back **by hand from the wallet** (`sendtoaddress` / `transfer`), and record it.
 4. Deposits below the minimum automatic payout are too small to send on their own: a Bitcoin amount at or

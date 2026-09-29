@@ -658,7 +658,7 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 				v.Reason += "; now conflicted or missing"
 			}
 		case !credited:
-			v.Reason = "Deposit confirmed after settlement, not paid out"
+			v.Reason = "Deposit after settlement or after the order closed, not paid out"
 			if confs < 0 {
 				v.Reason += "; now conflicted or missing"
 			}

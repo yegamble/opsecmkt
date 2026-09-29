@@ -248,7 +248,10 @@ func TestPayoutQueuedDuringSuspensionIsHeld(t *testing.T) {
 	completed := p.order
 	p.paidByWatcher(completed, p.addr, "tx-s-race")
 	p.move(completed, statePaid, stateShipped, p.vendor)
-	refund, refundAddr := p.newOrder(stateCancelled)
+	refund, refundAddr := p.newOrder(stateAwaitingPayment)
+	p.fake.Deposit(refundAddr, "tx-s-late-refund", 0, 100000, 1)
+	p.poll()
+	p.move(refund, stateAwaitingPayment, stateCancelled, p.buyer)
 	for _, c := range []struct {
 		name, order string
 		recipient   *User
@@ -266,7 +269,7 @@ func TestPayoutQueuedDuringSuspensionIsHeld(t *testing.T) {
 			return tx.Commit()
 		}},
 		{"watcher refund", refund, p.buyer, func() error {
-			p.fake.Deposit(refundAddr, "tx-s-late-refund", 0, 100000, 3)
+			p.fake.SetConfirmations("tx-s-late-refund", 3)
 			return p.A.pollOnce(ctx)
 		}},
 	} {

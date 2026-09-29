@@ -425,6 +425,17 @@ fee on Monero too. The restore SQL in [section 6](#6-backups-now-need-the-wallet
 after its own marker. Rolling back past this release needs the pre-upgrade backup, as for every migration
 (section 5). See [overpayments](docs/operator-guide.md#overpayments-and-the-payment-qr-code).
 
+## 10. Deposits after an order closed (migration 065)
+
+Migration 065 runs at startup and adds `payments.after_close`. From this release the watcher reads every
+cancelled, completed or resolved order's deposit address until the address is 30 days old (before, only while a
+deposit was confirming or unhandled, or for 24 hours after the order changed), so each pass reads more addresses.
+A deposit first recorded after its order closed is never refunded or paid out automatically, even when the
+cancellation refunded nothing: it is flagged for payment review and the buyer is told once per order. Deposits
+recorded before the upgrade keep their earlier treatment. See
+[late deposits](docs/operator-guide.md#payments) and the
+[runbook](docs/testnet-runbook.md#handle-a-payment-review-flag).
+
 ## Appendix: new keys by hand
 
 `./scripts/install.sh upgrade` writes these for you. To add them yourself, use your editor (values in single
