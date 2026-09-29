@@ -22,6 +22,67 @@ func init() {
 	registerAction("/challenge", actionSpec{Public: true, Precheck: pendingPrecheck, Run: challengeAction})
 	registerPage("challenge", pageSpec{})
 	registerLoader("challenge", challengeLoader)
+	registerLoader("login", signInNextLoader)
+	registerLoader("register", signInNextLoader)
+}
+
+// signInNextID bounds the id query of a sign-in return target (listing, order and vendor ids are 64 hex digits).
+var signInNextID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+
+// signInNext returns the page a sign-in, registration or second sign-in step returns to (A-126), rebuilt from raw
+// (a request URI or a "next" field), or "" to land on / as before. Only a registered GET page other than the sign-in
+// pages themselves is accepted, named exactly ("/orders"; never "//host", a scheme, a backslash, an encoded or extra
+// character, or an action path), with at most its id query and /messages' recipient (to); other query parameters
+// are dropped, and a malformed, repeated or out-of-pattern id or to refuses the whole target. The result is built
+// here, never copied from raw, so it cannot lead off this market.
+func signInNext(raw string) string {
+	if len(raw) > 512 {
+		return ""
+	}
+	path, query, _ := strings.Cut(raw, "?")
+	page, ok := strings.CutPrefix(path, "/")
+	if _, known := pages[page]; !ok || !known || page == "login" || page == "register" || page == "setup" || page == "challenge" {
+		return ""
+	}
+	q, err := url.ParseQuery(query)
+	if err != nil {
+		return ""
+	}
+	keep := url.Values{}
+	for key, pattern := range map[string]*regexp.Regexp{"id": signInNextID, "to": handlePattern} {
+		switch v := q[key]; {
+		case len(v) > 1 || len(v) == 1 && !pattern.MatchString(v[0]):
+			return ""
+		case len(v) == 1:
+			keep.Set(key, v[0])
+		}
+	}
+	if len(keep) == 0 {
+		return "/" + page
+	}
+	return "/" + page + "?" + keep.Encode()
+}
+
+// signInNextLoader carries a valid ?next= on /login and /register into their forms and links (A-126).
+func signInNextLoader(_ context.Context, _ *App, r *http.Request, d *PageData) error {
+	if d.Next = signInNext(r.URL.Query().Get("next")); d.Next != "" {
+		d.NextTitle = nextTitle(d.Next)
+	}
+	return nil
+}
+
+// nextTitle names the page of a signInNext target as its page title does ("Checkout", "Vendor Dashboard").
+func nextTitle(next string) string {
+	page, _, _ := strings.Cut(strings.TrimPrefix(next, "/"), "?")
+	return pageTitle(page)
+}
+
+// orHome is next, or / when there is no return target.
+func orHome(next string) string {
+	if next == "" {
+		return "/"
+	}
+	return next
 }
 
 var passwordWork = make(chan struct{}, 4)
@@ -323,7 +384,7 @@ func authAction(c *actionCtx) (actionResult, error) {
 		if suspended {
 			return actionResult{}, errSuspended
 		}
-		return a.secondFactor(c, id, stored)
+		return a.secondFactor(c, id, stored, signInNext(f.Get("next")))
 	}
 	if path == "/setup" && (installed || a.setupToken == "" || subtle.ConstantTimeCompare([]byte(f.Get("token")), []byte(a.setupToken)) != 1) {
 		return actionResult{}, fail(403, "Setup unavailable or token incorrect")
@@ -366,7 +427,7 @@ func authAction(c *actionCtx) (actionResult, error) {
 	if path == "/setup" {
 		return actionResult{Redirect: "/admin?welcome=1"}, nil
 	}
-	return actionResult{Redirect: "/"}, nil
+	return actionResult{Redirect: orHome(signInNext(f.Get("next")))}, nil
 }
 
 // errPasswordChanged refuses a sign-in whose password was checked before the account's password changed (A-157).
@@ -435,8 +496,9 @@ func (a *App) enrolledFactors(ctx context.Context, userID string) ([]string, err
 
 // secondFactor finishes a password login checked against passwordHash: a session when no factor is enrolled,
 // otherwise a 10-minute pending login (cookie "pending") completed by POST /challenge. Either is refused once the
-// password has changed since it was checked (startSession, A-157).
-func (a *App) secondFactor(c *actionCtx, userID, passwordHash string) (actionResult, error) {
+// password has changed since it was checked (startSession, A-157). next (signInNext, "" for /) is where the sign-in
+// lands; a pending login keeps it for /challenge (A-126).
+func (a *App) secondFactor(c *actionCtx, userID, passwordHash, next string) (actionResult, error) {
 	ctx := c.Ctx()
 	names, err := a.enrolledFactors(ctx, userID)
 	if err != nil {
@@ -448,10 +510,10 @@ func (a *App) secondFactor(c *actionCtx, userID, passwordHash string) (actionRes
 		} else if err != nil {
 			return actionResult{}, fail(500, "Unable to sign in")
 		}
-		return actionResult{Redirect: "/"}, nil
+		return actionResult{Redirect: orHome(next)}, nil
 	}
 	pending := randomToken()
-	if _, err = a.db.ExecContext(ctx, "INSERT INTO pending_logins(token_hash,user_id,expires,password_digest) VALUES($1,$2,now()+interval '10 minutes',$3)", digest(pending), userID, digest(passwordHash)); err != nil {
+	if _, err = a.db.ExecContext(ctx, "INSERT INTO pending_logins(token_hash,user_id,expires,password_digest,next) VALUES($1,$2,now()+interval '10 minutes',$3,$4)", digest(pending), userID, digest(passwordHash), next); err != nil {
 		return actionResult{}, fail(500, "Unable to sign in")
 	}
 	a.cookie(c.W, "pending", pending, 600)
@@ -481,9 +543,9 @@ func challengeAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, fail(401, "Sign-in verification expired. Sign in again.")
 	}
 	// The pending login must exist before a limiter entry is created, so random cookies cost nothing.
-	var userID string
+	var userID, stored string
 	var checked sql.NullString
-	err := c.Tx.QueryRowContext(ctx, "SELECT user_id,password_digest FROM pending_logins WHERE token_hash=$1 AND expires>now() FOR UPDATE", digest(pending)).Scan(&userID, &checked)
+	err := c.Tx.QueryRowContext(ctx, "SELECT user_id,password_digest,next FROM pending_logins WHERE token_hash=$1 AND expires>now() FOR UPDATE", digest(pending)).Scan(&userID, &checked, &stored)
 	if err == sql.ErrNoRows {
 		return actionResult{}, fail(401, "Sign-in verification expired. Sign in again.")
 	}
@@ -515,12 +577,18 @@ func challengeAction(c *actionCtx) (actionResult, error) {
 	if err != nil {
 		return actionResult{}, err
 	}
-	// A recovery-code sign-in lands on /totp, which says how many codes remain or that TOTP is now off (A-154).
-	next := "/"
+	// The sign-in lands on the page /login was sent from (A-126), kept by the pending sign-in and checked again; a
+	// "next" posted here is ignored. A recovery-code sign-in lands on /totp, which says how many codes remain or that
+	// TOTP is now off (A-154), and links on to that page.
+	target := signInNext(stored)
+	next := orHome(target)
 	if method == "recovery code" {
 		next = "/totp?signin=recovery"
 		if turnOffTOTPAtSignIn(c.Form) {
 			next = "/totp?signin=totp-off"
+		}
+		if target != "" {
+			next += "&next=" + url.QueryEscape(target)
 		}
 	}
 	return actionResult{Redirect: next, AfterCommit: func(w http.ResponseWriter) {

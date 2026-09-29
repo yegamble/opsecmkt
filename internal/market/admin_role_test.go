@@ -105,7 +105,7 @@ func TestSetRole(t *testing.T) {
 		t.Fatal("a removed administrator's sessions or pending sign-ins survived")
 	}
 	for _, s := range []string{root, rootOther} {
-		if loc := e.do("GET", "/admin", s, nil).Header().Get("Location"); loc != "/login" {
+		if loc := e.do("GET", "/admin", s, nil).Header().Get("Location"); loc != "/login?next=%2Fadmin" {
 			t.Fatalf("old administrator session still authenticates (location %q)", loc)
 		}
 	}

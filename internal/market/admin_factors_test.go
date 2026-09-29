@@ -95,7 +95,7 @@ func TestResetAdminFactors(t *testing.T) {
 		t.Fatal("recovery codes, sessions or pending sign-ins survived the reset")
 	}
 	for _, s := range []string{current, other} {
-		if loc := e.do("GET", "/admin", s, nil).Header().Get("Location"); loc != "/login" {
+		if loc := e.do("GET", "/admin", s, nil).Header().Get("Location"); loc != "/login?next=%2Fadmin" {
 			t.Fatalf("old session still authenticates (location %q)", loc)
 		}
 	}

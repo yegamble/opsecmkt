@@ -99,6 +99,9 @@ type PageData struct {
 	// P1 Authentication
 	Security *SecurityView
 	Captcha  *CaptchaView
+	// Next and NextTitle: /login and /register, the page signing in returns to and its title; /totp after a
+	// recovery-code sign-in, the page it links on to (A-126, signInNext).
+	Next, NextTitle string
 	// Sessions: account page, the viewer's live sessions, this browser's first, then the newest others, at most
 	// sessionsListed of SessionsTotal (A-157, actions_account.go).
 	Sessions      []AccountSession

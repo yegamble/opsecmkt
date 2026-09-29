@@ -600,7 +600,7 @@ func TestExpiredSessionIsSignedOut(t *testing.T) {
 	agExec(e, "UPDATE sessions SET expires=now()-interval '1 second' WHERE user_id=$1", id)
 	w := e.do("GET", "/account", s, nil)
 	e.check(w, 303)
-	if w.Header().Get("Location") != "/login" {
+	if w.Header().Get("Location") != "/login?next=%2Faccount" {
 		t.Fatalf("expired session redirected to %q", w.Header().Get("Location"))
 	}
 	if strings.Contains(e.body("GET", "/", s, nil, 200), "exp_user") {
@@ -645,7 +645,7 @@ func TestLoginRotatesSessionToken(t *testing.T) {
 		t.Fatal("login kept the previous session token")
 	}
 	e.check(e.do("GET", "/account", fresh, nil), 200)
-	if loc := e.do("GET", "/account", old, nil).Header().Get("Location"); loc != "/login" {
+	if loc := e.do("GET", "/account", old, nil).Header().Get("Location"); loc != "/login?next=%2Faccount" {
 		t.Fatalf("old token still authenticates (location %q)", loc)
 	}
 	if agInt(e, "SELECT count(*) FROM sessions WHERE token_hash=$1", digest(old)) != 0 || agInt(e, "SELECT count(*) FROM sessions WHERE token_hash=$1 AND user_id=$2", digest(fresh), id) != 1 {

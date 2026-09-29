@@ -143,7 +143,7 @@ func TestPasswordChangeRevokesOtherSessions(t *testing.T) {
 	}
 	e.check(e.do("GET", "/account", rotated, nil), 200)
 	for _, s := range []string{current, other} {
-		if loc := e.do("GET", "/account", s, nil).Header().Get("Location"); loc != "/login" {
+		if loc := e.do("GET", "/account", s, nil).Header().Get("Location"); loc != "/login?next=%2Faccount" {
 			t.Fatalf("old session still authenticates (location %q)", loc)
 		}
 	}
@@ -301,7 +301,7 @@ func TestAdminResetsSecondFactors(t *testing.T) {
 		t.Fatal("recovery codes, sessions or pending sign-ins survived the reset")
 	}
 	for _, s := range []string{targetSess, second} {
-		if loc := e.do("GET", "/account", s, nil).Header().Get("Location"); loc != "/login" {
+		if loc := e.do("GET", "/account", s, nil).Header().Get("Location"); loc != "/login?next=%2Faccount" {
 			t.Fatalf("target session still authenticates (location %q)", loc)
 		}
 	}

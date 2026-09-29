@@ -16,7 +16,7 @@ const suspendedMsg = "This account is suspended. Contact the market staff."
 func signedOut(e *testEnv, session string) bool {
 	e.t.Helper()
 	w := e.do("GET", "/account", session, nil)
-	return w.Code == 303 && w.Header().Get("Location") == "/login"
+	return w.Code == 303 && w.Header().Get("Location") == "/login?next=%2Faccount"
 }
 
 func suspendForm(action, handle string, extra ...string) url.Values {
