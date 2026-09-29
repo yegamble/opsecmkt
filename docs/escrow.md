@@ -105,8 +105,10 @@ descriptor in your wallet is what detects that.
 - Your registered extended public key lets the server derive every address of that wallet account, so it
   can link your market payments to anything else that account received. Use a wallet (or account) made only
   for this market.
-- Wallet compatibility is not yet proven: Bitcoin Core was tested on regtest; Sparrow, Electrum and hardware
-  wallets have not been.
+- Wallet support is limited at first: on regtest, Bitcoin Core signed these escrow transactions and Electrum
+  (the wallet built into Tails) could not, because it only signs multisig wallets built from every cosigner's
+  extended key. The first Bitcoin phase supports Bitcoin Core. Electrum and Sparrow support will be designed and
+  decided before escrow runs on any public test network; hardware wallets have not been tested.
 
 ## Monero: one account per order
 
@@ -140,8 +142,9 @@ shipped phase has proven. The full rules and acceptance criteria are in the proj
 | Phase | Scope | Status |
 | --- | --- | --- |
 | 0 | Preparation in the current payment code: one settlement per order enforced by the database, a single settlement dispatcher, password confirmation for dispute decisions | Not started |
-| Wallet check | Scripted signing test with Electrum and Bitcoin Core on regtest, before any escrow database change | Not started |
+| Wallet check | Scripted signing test with Electrum and Bitcoin Core on regtest, before any escrow database change | Done on regtest: Core signs; Electrum cannot sign this layout |
 | 1 | Bitcoin escrow for digital orders on regtest, behind a setting that is off by default | Not started |
+| Wallets | Electrum and Sparrow support (a signing test showed Electrum needs a different key layout) | Not started |
 | 2 | Physical orders: buyer-signed release, 14-day deadline, no-ship cancellation | Not started |
 | 3 | Monero accounts in monthly escrow wallets | Not started |
 | 4 | Public test networks end to end, then escrow-only for new orders, then removal of the pooled wallet | Not started |
