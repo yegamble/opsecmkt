@@ -121,6 +121,33 @@ func staffReviewer(ctx context.Context, a *App, o *Order, u *User) (bool, error)
 // disputeVisible: the order is or was disputed, so a reviewer may also read its digital delivery.
 func disputeVisible(o *Order) bool { return o.State == stateDisputed || o.State == stateResolved }
 
+// payoutTxidHidden stands in for a payout's transaction ID in text shown to the order party who is not its
+// recipient (A-214).
+const payoutTxidHidden = "(transaction ID shown only to its recipient)"
+
+// hidePayoutTxids replaces in each text the transaction ID of every payout of order whose recipient is not
+// viewer, in full or as truncate(txid, 20), when viewer is the order's buyer or vendor: on Bitcoin a txid reveals
+// its recipient's payout address. New order-history notes name no txid; this covers notes and dispute decisions
+// stored before (the rows stay unchanged). Staff reviewers who are not parties read the text as stored.
+func hidePayoutTxids(ctx context.Context, a *App, order, viewer string, texts ...*string) error {
+	rows, err := a.db.QueryContext(ctx, `SELECT py.txid FROM payouts py JOIN orders o ON o.id=py.order_id JOIN products p ON p.id=o.product_id
+		WHERE py.order_id=$1 AND py.txid<>'' AND py.user_id<>$2 AND $2 IN (o.buyer_id,p.vendor_id)`, order, viewer)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var txid string
+		if err = rows.Scan(&txid); err != nil {
+			return err
+		}
+		for _, s := range texts {
+			*s = strings.ReplaceAll(strings.ReplaceAll(*s, txid, payoutTxidHidden), truncate(txid, 20), payoutTxidHidden)
+		}
+	}
+	return rows.Err()
+}
+
 func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) error {
 	o, u := d.Order, d.User
 	if o == nil || u == nil {
@@ -192,6 +219,18 @@ func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) 
 		d.Disputes = []Dispute{disp}
 	} else if err != sql.ErrNoRows {
 		return err
+	}
+	if d.OrderViewer != roleModerator {
+		var texts []*string
+		for i := range d.OrderEvents {
+			texts = append(texts, &d.OrderEvents[i].Note)
+		}
+		if len(d.Disputes) == 1 {
+			texts = append(texts, &d.Disputes[0].Resolution)
+		}
+		if err = hidePayoutTxids(ctx, a, o.ID, u.ID, texts...); err != nil {
+			return err
+		}
 	}
 	d.CanReview = u.ID == o.BuyerID && o.State == stateCompleted && len(d.Reviews) == 0
 	if d.OrderViewer != roleModerator { // reviewers resolve on the moderation desk; the order page is read-only for them
@@ -511,6 +550,14 @@ func loadDisputes(ctx context.Context, a *App, _ *http.Request, d *PageData) err
 	}
 	for _, o := range orders {
 		d.DisputeOrders[o.ID] = o
+	}
+	for i := range d.Disputes {
+		o := d.DisputeOrders[d.Disputes[i].OrderID]
+		if d.Disputes[i].Resolution != "" && (d.User.ID == o.BuyerID || d.User.ID == o.VendorID) {
+			if err = hidePayoutTxids(ctx, a, o.ID, d.User.ID, &d.Disputes[i].Resolution); err != nil {
+				return err
+			}
+		}
 	}
 	return a.resolvePayouts(ctx, d)
 }
