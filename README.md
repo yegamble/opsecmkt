@@ -180,7 +180,7 @@ host with `-reset-admin-password` (see the [operator guide](docs/operator-guide.
 
 | Path | Responsibility |
 | --- | --- |
-| `cmd/server/` | HTTP server, read-only preview and the `-reset-admin-password` tool |
+| `cmd/server/` | HTTP server, read-only preview and the host tools (`-bootstrap-admin`, `-reset-admin-password`, `-set-role`) |
 | `cmd/verify-audit/` | Offline verifier for signed audit exports |
 | `internal/market/` | Marketplace behaviour, database access and Go tests |
 | `internal/market/migrations/` | Ordered SQL migrations; add new files, never rewrite merged ones |

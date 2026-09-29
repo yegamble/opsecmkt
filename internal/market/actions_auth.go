@@ -47,6 +47,10 @@ var handlePattern = regexp.MustCompile(`^[a-zA-Z0-9_]{3,32}$`)
 // password is correct, so it reveals nothing to someone who does not know it.
 var errSuspended = fail(403, "This account is suspended. Contact the market staff.")
 
+// errAccountChanged refuses a change whose signed-in account was given another role or suspended while the request
+// was on its way (confirmedTx).
+var errAccountChanged = fail(403, "Your account's role or status changed while this was being saved; nothing was changed. Reload the page.")
+
 // confirmPassword checks the signed-in user's current password for a sensitive change (per-user attempt
 // limit, bounded bcrypt concurrency). Call it before opening a transaction.
 func (a *App) confirmPassword(ctx context.Context, userID, password string) error {
@@ -142,6 +146,9 @@ func confirmedTxWith(c *actionCtx, opts *confirmation, run func(c *actionCtx) (a
 	c.Tx = tx
 	defer func() { c.Tx = nil }()
 	how := "password"
+	code := c.Form.Get("code")
+	recovery := confirm && opts.Recovery && normalizeRecoveryCode(code) != ""
+	var codeErr error
 	if confirm {
 		if opts.Before != nil {
 			if err = opts.Before(c); err != nil {
@@ -150,30 +157,34 @@ func confirmedTxWith(c *actionCtx, opts *confirmation, run func(c *actionCtx) (a
 		}
 		// A recovery code is spent before the account row is locked (the lock order of confirmation.Before); it counts
 		// only when TOTP turns out to be on, and otherwise matches nothing (codes exist only while TOTP is on).
-		code := c.Form.Get("code")
-		recovery := opts.Recovery && normalizeRecoveryCode(code) != ""
-		var codeErr error
 		if recovery {
 			var he *httpError
 			if _, codeErr = a.useRecoveryCode(ctx, tx, uid, code); codeErr != nil && !errors.As(codeErr, &he) {
 				return actionResult{}, codeErr
 			}
 		}
-		var totp bool
-		if err = tx.QueryRowContext(ctx, "SELECT totp_enabled FROM users WHERE id=$1 FOR NO KEY UPDATE", uid).Scan(&totp); err != nil {
-			return actionResult{}, err
+	}
+	// The account row is locked, with or without a confirmation, and its role and suspension read again: a demotion
+	// or suspension committed after this request's session was loaded refuses the change (A-156). Either one locks
+	// this row too, so it is waited for.
+	var totp, suspended bool
+	var role string
+	if err = tx.QueryRowContext(ctx, "SELECT totp_enabled,role,suspended_at IS NOT NULL FROM users WHERE id=$1 FOR NO KEY UPDATE", uid).Scan(&totp, &role, &suspended); err != nil {
+		return actionResult{}, err
+	}
+	if role != c.User.Role || suspended {
+		return actionResult{}, errAccountChanged
+	}
+	if confirm && totp {
+		if recovery {
+			err = codeErr
+			how = "password and recovery code"
+		} else {
+			err = a.checkTOTP(ctx, tx, uid, code)
+			how = "password and authenticator code"
 		}
-		if totp {
-			if recovery {
-				err = codeErr
-				how = "password and recovery code"
-			} else {
-				err = a.checkTOTP(ctx, tx, uid, code)
-				how = "password and authenticator code"
-			}
-			if err != nil {
-				return actionResult{}, err
-			}
+		if err != nil {
+			return actionResult{}, err
 		}
 	}
 	res, err := run(c)
