@@ -9,6 +9,10 @@ test('order page shows history, unavailable payment and the buyer actions', asyn
   await expect(page.locator('.order-unavailable')).toContainText('Payment unavailable for BTC');
   await expect(page.getByRole('button', { name: 'Request payment address' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Cancel draft' })).toBeVisible();
+  // A-164: the order names its listing and links to it as it is now.
+  const listing = page.locator('.key-values > div', { has: page.getByText('Listing', { exact: true }) }).locator('dd');
+  await expect(listing.getByRole('link', { name: 'Encrypted USB Drive — 256GB', exact: true })).toHaveAttribute('href', '/product?id=encrypted-drive');
+  await expect(listing).toContainText('Listing as it is now; it may have changed since purchase.');
   await expect(page.locator('script')).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()!.width);
 });

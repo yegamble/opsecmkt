@@ -70,6 +70,8 @@ test('vendor contact, unread notifications and demotion archive', async ({ brows
   await buyer.getByRole('link', { name: 'Review order draft' }).click();
   await buyer.getByLabel('Reference currency').selectOption('BTC');
   await buyer.getByRole('button', { name: 'Create unfunded draft' }).click();
+  await buyer.waitForURL(/\/order\?id=/);
+  const orderURL = buyer.url();
   await expect(buyer.getByRole('region', { name: 'Vendor’s PGP key' })).toContainText(`${vendorHandle} has not added a PGP public key`);
   await expect(buyer.getByRole('link', { name: 'Message vendor' })).toHaveAttribute('href', `/messages?to=${vendorHandle}`);
   await buyer.getByRole('button', { name: 'Cancel draft' }).click();
@@ -83,12 +85,24 @@ test('vendor contact, unread notifications and demotion archive', async ({ brows
   await vendor.getByRole('button', { name: 'Mark as read' }).first().click();
   await expect(vendorNav.getByRole('link', { name: 'Notifications', exact: true })).toBeVisible();
 
-  // Demoting the vendor archives the listing: it leaves the catalog and the product page is gone.
+  // Demoting the vendor archives the listing: it leaves the catalog and the product page is gone for anyone who
+  // cannot read an order on it (the administrator is not a party to the draft, which is not disputed).
   await setRole(admin, vendorHandle, 'buyer');
   await expect(admin.locator('main')).toContainText(`Changed role of ${vendorHandle} from vendor to buyer; archived 1 active listing(s)`);
   await buyer.goto(`/?q=${encodeURIComponent(title)}`);
   await expect(buyer.getByRole('heading', { name: 'No listings found' })).toBeVisible();
-  expect((await buyer.goto(productURL))?.status()).toBe(404);
+  expect((await admin.goto(productURL))?.status()).toBe(404);
+
+  // A-164: the buyer's (cancelled) order still links to the listing, shown archived with no order-draft link.
+  await buyer.goto(orderURL);
+  const listingRow = buyer.locator('.key-values > div', { has: buyer.getByText('Listing', { exact: true }) });
+  await expect(listingRow).toContainText('Listing as it is now; it may have changed since purchase.');
+  await listingRow.getByRole('link', { name: title, exact: true }).click();
+  await buyer.waitForURL(/\/product\?id=/);
+  await expect(buyer.locator('.detail-copy .badge')).toHaveText('Archived');
+  await expect(buyer.locator('main')).toContainText('This listing accepts no new orders.');
+  await expect(buyer.getByRole('link', { name: 'Review order draft' })).toHaveCount(0);
+  await fits(buyer, 'archived product page at 320 px');
 
   for (const p of [vendor, buyer, admin]) await p.context().close();
 });
