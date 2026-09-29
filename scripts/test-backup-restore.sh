@@ -449,4 +449,16 @@ stop_app
 [[ $(pg "$app_target_db" -Atq -c "SELECT string_agg(order_id || ':' || state, ',' ORDER BY order_id) FROM payouts WHERE order_id IN ('ops-order-queued','ops-order-suspended')") == ops-order-queued:held,ops-order-suspended:held ]]
 [[ $(pg "$app_target_db" -Atq -c "$suspended_error") == "$restored_hold $suspended_hold" ]]
 [[ $(pg "$app_source_db" -Atq -c "SELECT count(*) FROM payouts WHERE order_id IN ('ops-order-late','ops-order-disputed')") == 0 ]]
-echo 'Encrypted backup/restore regressions passed (Unicode, overwrite refusal, wrong key, transaction rollback, payout hold, suspension hold kept, failed payouts marked possibly sent, restore audit row, application schema restore and restart, manual UPGRADING.md protection after a plain pg_dump/pg_restore copy, runbook reconciliation of payouts sent after the backup, audited gate clear refusing unknown handles).'
+# The reconciliation note takes the network class from the order's deposit address (payment_addresses.provider,
+# the rule checkNetworkHistory uses), never a fixed TESTNET: the orders above ('bitcoin') say TESTNET, a mainnet
+# address says MAINNET. A real market never mixes the classes; the gate is set again only to record once more.
+main_txid=$(printf '56%.0s' {1..32})
+pg "$app_target_db" -q -c "
+UPDATE settings SET value='true' WHERE key='payments_recovery_required';
+INSERT INTO orders(id,buyer_id,product_id,currency,amount,state) VALUES ('ops-order-main','ops-buyer','ops-product','BTC',150000,'delivered');
+INSERT INTO payment_addresses(order_id,currency,address,provider) VALUES ('ops-order-main','BTC','bc1qopsrestoremaindeposit','bitcoin-main');
+INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,credited,locked) VALUES ('ops-order-main','BTC',repeat('14',32),0,'bc1qopsrestoremaindeposit',150000,6,true,false);"
+[[ $(tail -n 1 <<< "$(record ops-order-main release completed 150000 bc1qopsrestoremainvendor "$main_txid" ops_admin yes)") == 'Recorded the payout as sent; committed.' ]]
+[[ $(pg "$app_target_db" -Atq -c "SELECT note FROM order_events WHERE order_id='ops-order-main'") == "Reconciled after a restore from backup: the MAINNET release of 0.0015 BTC to the vendor was sent after the backup was taken, in transaction $main_txid. Recorded by an administrator from the wallet; nothing was sent now." ]]
+[[ $(pg "$app_target_db" -Atq -c "SELECT count(*) FROM order_events WHERE note LIKE 'Reconciled after a restore from backup: the TESTNET %'") == 3 ]]
+echo 'Encrypted backup/restore regressions passed (Unicode, overwrite refusal, wrong key, transaction rollback, payout hold, suspension hold kept, failed payouts marked possibly sent, restore audit row, application schema restore and restart, manual UPGRADING.md protection after a plain pg_dump/pg_restore copy, runbook reconciliation of payouts sent after the backup with the network class from the deposit address, audited gate clear refusing unknown handles).'

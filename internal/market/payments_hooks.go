@@ -29,10 +29,14 @@ const suspendedHold = suspendedHoldPrefix + " payout held when the recipient's a
 
 // largeHoldPrefix starts the hold on a refund or return larger than the order price (splitPayout). Only an
 // administrator who confirms the check releases it (payments_admin.go); the watcher never lifts it. It follows
-// suspendedHold when both apply, and a restore from backup keeps it after its own prefix (scripts/restore.sh).
+// suspendedHold when both apply, and a restore from backup keeps it after its own prefix (scripts/restore.sh), so
+// the prefix must never change; rows written with an earlier text after it still match.
 const largeHoldPrefix = "Larger than the order price:"
 
-const largeHold = largeHoldPrefix + " held so the market's pooled wallet is not used to swap coins; an administrator checks it before it is sent."
+// largeHold catches likely mistakes, not swaps: refunds and returns up to the order price are sent automatically
+// (pay and cancel, underpaid expiry, cancel then send), so the pooled wallet can swap coins up to a listing's price
+// without review. A refund is held when it exceeds the price; a return only when the excess itself exceeds it.
+const largeHold = largeHoldPrefix + " held as a likely mistake; an administrator checks it before it is sent. Refunds and returns up to the order price are sent automatically."
 
 // heldLarge reports a payout held because it is larger than the order price, including under a suspension or
 // restore hold.
@@ -250,10 +254,14 @@ func (a *App) enqueuePayout(ctx context.Context, tx *sql.Tx, o *Order) error {
 	if _, err = tx.ExecContext(ctx, "UPDATE payments SET credited=true,below_floor=false WHERE id=ANY($1)", ids); err != nil {
 		return err
 	}
-	// An excess too small to return goes to the vendor with the release; both parties are told.
+	// An excess too small to return goes to the vendor with the release; both parties are told. So are they when
+	// the excess is not split off because the price itself is below the release floor, and the release is held.
 	if len(parts) == 1 && parts[0].kind == "release" && sum > required {
 		dec := currencyDecimals(o.Currency)
 		body := "Order " + o.ID[:min(8, len(o.ID))] + ": the " + a.netTag() + " release of " + amount(sum, dec) + " " + o.Currency + " to the vendor includes " + priceDifference(sum, required, o.Currency) + ", below the minimum automatic refund of " + amount(payoutFloor(o.Currency, "return"), dec) + " " + o.Currency + ", so it is not returned."
+		if parts[0].large {
+			body = "Order " + o.ID[:min(8, len(o.ID))] + ": the " + a.netTag() + " release of " + amount(sum, dec) + " " + o.Currency + " to the vendor includes " + priceDifference(sum, required, o.Currency) + "; " + subFloorPriceExcess(o.Currency) + ", so an administrator reviews the release before it is sent."
+		}
 		for _, uid := range []string{o.BuyerID, o.VendorID} {
 			if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), uid, body); err != nil {
 				return err
@@ -264,7 +272,8 @@ func (a *App) enqueuePayout(ctx context.Context, tx *sql.Tx, o *Order) error {
 }
 
 // payoutPart is one payout of a terminal order: its kind ("release", "refund" or "return"), recipient and amount.
-// large marks a refund or return of more than the order price, held for an administrator (largeHold).
+// large marks a refund or return of more than the order price, or a release that keeps an excess of more than a
+// price below the release floor (A-216), held for an administrator (largeHold).
 type payoutPart struct {
 	kind, recipient, who string
 	amount               int64
@@ -275,20 +284,36 @@ type payoutPart struct {
 // buyer. A release pays the vendor exactly the price and returns the excess to the buyer as a separate payout,
 // unless the excess is below the minimum automatic refund (it then goes to the vendor with the release: sending
 // dust back costs more than it is worth and invites fee abuse) or the price itself is below the release floor. A
-// refund or return larger than the order price is marked large: sending it back automatically would let the
-// market's pooled wallet be used to swap coins, so an administrator checks it first.
+// refund or return larger than the order price is marked large, a likely mistake an administrator checks first. The
+// bound is the price: a refund of up to the price (and a return of an excess up to the price, so a payment of up to
+// twice the price) is sent automatically, so the pooled wallet can swap coins up to a listing's price without
+// review (largeHold).
+//
+// A price below the release floor exists only on Bitcoin listings priced before A-99 added the listing floor
+// (new orders on them are refused, A-216). The vendor's share alone could never be sent, so the whole sum stays
+// one release; when its excess is more than the price, that release is marked large too, so the buyer's
+// overpayment is not paid to the vendor without an administrator's review.
 func splitPayout(kind string, o *Order, sum, required int64) []payoutPart {
 	if kind == "refund" {
 		return []payoutPart{{kind: "refund", recipient: o.BuyerID, who: "buyer", amount: sum, large: sum > required}}
 	}
 	excess := sum - required
-	if excess <= 0 || belowFloor(o.Currency, "return", excess) != "" || belowFloor(o.Currency, "release", required) != "" {
+	if belowFloor(o.Currency, "release", required) != "" {
+		return []payoutPart{{kind: "release", recipient: o.VendorID, who: "vendor", amount: sum, large: excess > required}}
+	}
+	if excess <= 0 || belowFloor(o.Currency, "return", excess) != "" {
 		return []payoutPart{{kind: "release", recipient: o.VendorID, who: "vendor", amount: sum}}
 	}
 	return []payoutPart{
 		{kind: "release", recipient: o.VendorID, who: "vendor", amount: required},
 		{kind: "return", recipient: o.BuyerID, who: "buyer", amount: excess, large: excess > required},
 	}
+}
+
+// subFloorPriceExcess says why a release whose price is below the release floor (A-216) keeps the excess.
+func subFloorPriceExcess(currency string) string {
+	return "the price is below the minimum payout of " + amount(payoutFloor(currency, "release"), currencyDecimals(currency)) + " " + currency +
+		", so the amount paid over it cannot be returned separately"
 }
 
 // queuePayout inserts one payout of o (at most one of each kind per order) with its starting state: held for a

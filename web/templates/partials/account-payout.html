@@ -28,7 +28,7 @@
 </tr>{{end}}</tbody>
 </table>
 </div>{{end}}
-<p class="help">Used for releases (vendors) and refunds (buyers). {{if $.LiveNetwork}}Mainnet addresses only; test-network addresses are rejected.{{if .BTCNetwork}} Bitcoin payouts need a native SegWit (bc1) address.{{end}}{{else}}Test-network addresses only; mainnet addresses are rejected.{{end}} The address is copied onto a payout when it is queued. Save an empty field to remove an address. Every change needs your current password{{if and $.Security $.Security.TOTPEnabled}} and an authenticator code{{end}}.</p>
+<p class="help">Used for releases (vendors), and refunds and returns of overpayment (buyers). {{if $.LiveNetwork}}Mainnet addresses only; test-network addresses are rejected.{{if .BTCNetwork}} Bitcoin payouts need a native SegWit (bc1) address.{{end}}{{else}}Test-network addresses only; mainnet addresses are rejected.{{end}} The address is copied onto a payout when it is queued. Save an empty field to remove an address. Every change needs your current password{{if and $.Security $.Security.TOTPEnabled}} and an authenticator code{{end}}.</p>
 {{if .BTCNetwork}}<form class="stack" method="post" action="/account/payout">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="currency" value="BTC">
