@@ -163,6 +163,9 @@ func TestHuntUnusableEncryptionKeyShownAsUsableContact(t *testing.T) {
 			mustContain(t, page, "No usable key.", noUsableKeyNote)
 			mustNotContain(t, page, formatFingerprint(fp))
 		}
+		// The dispute staff entry itself carries the note, not only the vendor's key on the same page.
+		staffPage := html.UnescapeString(e.body("GET", "/order?id="+disputed, buyer, nil, 200))
+		mustContain(t, staffPage, "Contact dispute staff", "hunt_mod_"+suffix+"’s saved PGP key "+noUsableKeyNote)
 	}
 	// Control: a usable key is shown with its fingerprint.
 	vendorID, _ := e.user("hunt_vendor_ok", "vendor")
