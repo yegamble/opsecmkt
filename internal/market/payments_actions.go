@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func init() {
@@ -199,8 +200,12 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 	if err = rows.Err(); err != nil {
 		return err
 	}
+	// windowFrom: the later of the address's issue time and the latest deposit that counts (not conflicted, not
+	// locked), the inputs of the watcher's expiry query (settleOrder); a deposit still confirming postpones it.
 	var addr string
-	err = a.db.QueryRowContext(ctx, "SELECT address FROM payment_addresses WHERE order_id=$1", o.ID).Scan(&addr)
+	var windowFrom time.Time
+	err = a.db.QueryRowContext(ctx, `SELECT pa.address,GREATEST(pa.created,(SELECT max(created) FROM payments WHERE order_id=$1 AND confirmations>=0 AND NOT locked))
+		FROM payment_addresses pa WHERE pa.order_id=$1`, o.ID).Scan(&addr, &windowFrom)
 	if err == sql.ErrNoRows {
 		return nil
 	}
@@ -219,6 +224,9 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 	pv.Open = o.State == stateAwaitingPayment
 	if pv.Open {
 		pv.Address = addr
+		// Truncated to the minute, so the stated time is never later than the watcher's (A-123).
+		pv.CancelAfter = windowFrom.Add(expiryWindow()).UTC().Truncate(time.Minute).Format("2006-01-02 15:04 UTC")
+		pv.RefundFloor = amount(payoutFloor(o.Currency, "refund"), dec)
 	}
 	rows, err = a.db.QueryContext(ctx, "SELECT txid,idx,amount,confirmations,credited,locked,regress_notice,flagged,below_floor FROM payments WHERE order_id=$1 ORDER BY created,id", o.ID)
 	if err != nil {

@@ -284,6 +284,9 @@ type PaymentView struct {
 	// exactly that amount (paymentURI) and its inline SVG QR code (qrSVG); empty otherwise.
 	PaymentURI string
 	QR         template.HTML
+	// CancelAfter: while the order is open, the time ("YYYY-MM-DD HH:MM UTC") from which the watcher can cancel
+	// it if still unpaid or short (A-123); RefundFloor: the minimum automatic refund in this currency.
+	CancelAfter, RefundFloor string
 }
 type PaymentDeposit struct {
 	TxID          string

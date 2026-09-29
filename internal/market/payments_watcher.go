@@ -399,10 +399,8 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 	// deposit (top-up) seen for PAYMENT_EXPIRY either: cancel the same way, and the payout hook refunds the
 	// confirmed deposits to the buyer. Without this an underpaid order and its deposits would wait forever.
 	if o.State == stateAwaitingPayment && walletRead {
-		expiry, err := paymentExpiry()
-		if err != nil {
-			expiry = 24 * time.Hour // validated at startup by the provider factories
-		}
+		// The buyer's order page states the resulting time from the same inputs (paymentsOrderLoader, A-123).
+		expiry := expiryWindow()
 		var unpaid, underpaid bool
 		var received int64
 		if err = tx.QueryRowContext(ctx, `WITH d AS (SELECT amount,confirmations,created FROM payments WHERE order_id=$1 AND confirmations>=0 AND NOT locked)

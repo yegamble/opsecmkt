@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"slices"
+	"strings"
 )
 
 // Canonical order states (orders.state). Keep in sync with the CHECK in migrations/001_foundation.sql.
@@ -148,6 +149,11 @@ func (a *App) transition(ctx context.Context, tx *sql.Tx, orderID, from, to stri
 		return nil, err
 	}
 	body := "Order " + orderID[:min(8, len(orderID))] + " is now " + stateLabel(to)
+	// A move neither party made (the watcher's, a moderator's) says why with its event note (A-123): "Cancelled —
+	// payment window expired", "Resolved — refund to buyer". A party's own note stays in the history only.
+	if note != "" && (actor == nil || (actor.ID != o.BuyerID && actor.ID != o.VendorID)) {
+		body += " — " + strings.TrimPrefix(note, stateLabel(to)+" — ")
+	}
 	for _, uid := range []string{o.BuyerID, o.VendorID} {
 		if actor != nil && uid == actor.ID {
 			continue
