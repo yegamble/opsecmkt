@@ -127,6 +127,7 @@ test('isolated real chains: seeded buyer/vendor partial deposits, confirmation, 
     await resolution.getByRole('radio', { name: `Refund ${price} (test network) to chain_buyer — exactly the price; network fee deducted`, exact: true }).check();
     await resolution.getByLabel('Decision', { exact: true }).fill('Return this isolated test payment to the buyer.');
     await resolution.getByRole('checkbox', { name: 'I checked the amount and who receives it for the outcome I chose. Resolving is final.' }).check();
+    await resolution.getByLabel('Current password', { exact: true }).fill(password); // A-32
     await resolution.getByRole('button', { name: 'Resolve dispute' }).click();
     await buyer.goto(dispute.url);
     await refreshUntil(buyer, async () => {

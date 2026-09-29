@@ -715,7 +715,7 @@ func TestResolveRefundWaitsForBuyersCheckout(t *testing.T) {
 	go func() { time.Sleep(5 * time.Second); tx.Rollback() }()
 	start := time.Now()
 	decision := url.Values{"id": {dispute}, "outcome": {"refund"}, "resolution": {"No proof of shipment; refund the buyer."}}
-	w := p.do("POST", "/resolve", modSess, payoutConfirmed(decision, seen[0]))
+	w := p.do("POST", "/resolve", modSess, resolveConfirmed(decision, seen[0]))
 	if w.Code != 303 || time.Since(start) < 4*time.Second {
 		t.Fatalf("refund behind the buyer's checkout: %d %q after %v", w.Code, w.Body.String(), time.Since(start))
 	}

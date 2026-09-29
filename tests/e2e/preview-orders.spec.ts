@@ -45,6 +45,10 @@ test('moderator desk requires an outcome and disputes explain eligibility', asyn
   await expect(page.getByRole('radio', { name: 'Refund 0.00412 BTC (test network) to sample_buyer — exactly the price; network fee deducted; no payout address: the payout waits for one', exact: true })).toBeVisible();
   await expect(page.getByRole('checkbox', { name: 'I checked the amount and who receives it for the outcome I chose. Resolving is final.' })).toHaveAttribute('required', '');
   await expect(page.locator('input[type="hidden"][name="amount_seen"]')).toHaveValue('412000');
+  // A-32: resolving queues the payout, so it needs the resolver's current password.
+  const resolve = page.locator('form[action="/resolve"]');
+  await expect(resolve.getByLabel('Current password', { exact: true })).toHaveAttribute('required', '');
+  await expect(resolve).toContainText('Resolving queues the payout, so confirm it with your password.');
   await expect(page.getByLabel('Decision', { exact: true })).toHaveAccessibleDescription(/^Stored unencrypted\..*Never include an address, real name or tracking number/);
   await expect(page.locator('main')).toContainText("A refund returns the whole counted amount to the buyer; a release pays the vendor the price and returns any excess worth sending to the buyer, with the network fee deducted. A refund or return larger than the price waits for an administrator's review");
   await expect(page.locator('main')).not.toContainText('moves no funds');

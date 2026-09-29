@@ -100,7 +100,7 @@ func TestSystemAndModeratorTransitionsNotifyReason(t *testing.T) {
 	if n := notices(p.vendor, "Order "+short(p.order)+" is now Disputed"); n != 1 {
 		t.Fatalf("party move notice changed: %d", n)
 	}
-	p.check(p.do("POST", "/resolve", modSess, payoutConfirmed(url.Values{"id": {dispute}, "outcome": {"refund"}, "resolution": {"Nothing was shipped; refund the buyer in full."}}, 100000)), 303)
+	p.check(p.do("POST", "/resolve", modSess, resolveConfirmed(url.Values{"id": {dispute}, "outcome": {"refund"}, "resolution": {"Nothing was shipped; refund the buyer in full."}}, 100000)), 303)
 	for _, u := range []*User{p.buyer, p.vendor} {
 		if n := notices(u, "Order "+short(p.order)+" is now Resolved — refund to buyer"); n != 1 {
 			t.Fatalf("%s: resolve notices with the outcome %d", u.Handle, n)
@@ -113,7 +113,7 @@ func TestSystemAndModeratorTransitionsNotifyReason(t *testing.T) {
 	if err := p.DB.QueryRow("INSERT INTO disputes(id,order_id,reason) VALUES($1,$2,'The parcel never arrived; please review it.') RETURNING id", randomToken(), released).Scan(&relDispute); err != nil {
 		t.Fatal(err)
 	}
-	p.check(p.do("POST", "/resolve", modSess, payoutConfirmed(url.Values{"id": {relDispute}, "outcome": {"release"}, "resolution": {"Tracking shows delivery; release to the vendor."}}, 100000)), 303)
+	p.check(p.do("POST", "/resolve", modSess, resolveConfirmed(url.Values{"id": {relDispute}, "outcome": {"release"}, "resolution": {"Tracking shows delivery; release to the vendor."}}, 100000)), 303)
 	if n := notices(p.buyer, "Order "+short(released)+" is now Resolved — release to vendor"); n != 1 {
 		t.Fatalf("release resolve notices %d", n)
 	}

@@ -35,8 +35,8 @@ var transitions = map[string]map[string][]string{
 	stateDraft:           {stateAwaitingPayment: {roleBuyer}, stateCancelled: {roleBuyer}},
 	stateAwaitingPayment: {statePaid: {roleSystem}, stateCancelled: {roleBuyer, roleVendor, roleSystem}}, // system: payment window expired
 	statePaid:            {stateShipped: {roleVendor}, stateDelivered: {roleVendor, roleSystem}, stateCancelled: {roleVendor}, stateDisputed: {roleBuyer, roleVendor}},
-	stateShipped:         {stateCompleted: {roleBuyer}, stateDisputed: {roleBuyer, roleVendor}},
-	stateDelivered:       {stateCompleted: {roleBuyer}, stateDisputed: {roleBuyer, roleVendor}},
+	stateShipped:         {stateCompleted: {roleBuyer, roleSystem}, stateDisputed: {roleBuyer, roleVendor}}, // system: escrowOnly
+	stateDelivered:       {stateCompleted: {roleBuyer, roleSystem}, stateDisputed: {roleBuyer, roleVendor}}, // system: escrowOnly
 	stateDisputed:        {stateResolved: {roleModerator}},
 	stateCompleted:       {},
 	stateResolved:        {},
@@ -45,6 +45,11 @@ var transitions = map[string]map[string][]string{
 
 // transitionKind restricts a move to one product kind.
 var transitionKind = map[[2]string]string{{statePaid, stateShipped}: "physical", {statePaid, stateDelivered}: "digital"}
+
+// escrowOnly restricts a move by one role to escrow orders (Order.Escrow; A-244, ARCH-4): the system completes an
+// escrow order (a digital order on funding, a physical one at its release deadline), never a pooled one, whose
+// completion stays the buyer's. No escrow orders exist yet, so these edges are refused (403) as before.
+var escrowOnly = map[[3]string]bool{{stateDelivered, stateCompleted, roleSystem}: true, {stateShipped, stateCompleted, roleSystem}: true}
 
 var (
 	errConflict  = fail(409, "This order changed or is no longer in that state. Reload and try again.")
@@ -101,6 +106,7 @@ func scanOrder(s interface{ Scan(...any) error }) (Order, error) {
 	var o Order
 	var n int64
 	err := s.Scan(&o.ID, &o.ProductID, &o.Title, &o.Buyer, &o.Vendor, &o.Currency, &n, &o.State, &o.Created, &o.Kind, &o.BuyerID, &o.VendorID, &o.Updated)
+	o.Escrow = false // no escrow table exists yet (A-244, Phase 0): every order is pooled
 	dec := 8
 	if o.Currency == "XMR" {
 		dec = 12
@@ -125,7 +131,9 @@ func (a *App) transition(ctx context.Context, tx *sql.Tx, orderID, from, to stri
 		return nil, errConflict
 	}
 	allowed, ok := transitions[from][to]
-	if !ok || !slices.ContainsFunc(actorRoles(&o, actor), func(r string) bool { return slices.Contains(allowed, r) }) {
+	if !ok || !slices.ContainsFunc(actorRoles(&o, actor), func(r string) bool {
+		return slices.Contains(allowed, r) && (o.Escrow || !escrowOnly[[3]string{from, to, r}])
+	}) {
 		return nil, errForbidden
 	}
 	if kind, ok := transitionKind[[2]string{from, to}]; ok && o.Kind != kind {
