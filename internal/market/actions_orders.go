@@ -5,11 +5,13 @@ import (
 	"database/sql"
 	"net/http"
 	"strings"
+	"unicode/utf8"
 )
 
 func init() {
 	registerAction("/orders", actionSpec{Run: orderDraftAction})
 	registerAction("/disputes", actionSpec{Run: disputeAction})
+	registerAction("/disputes/reply", actionSpec{Run: disputeReplyAction})
 	registerAction("/resolve", actionSpec{Roles: []string{"moderator", "admin"}, OwnTx: true, Run: resolveAction})
 	registerLoader("disputes", resolveConfirmLoader)
 }
@@ -98,6 +100,54 @@ func disputeAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, err
 	}
 	return actionResult{Redirect: "/disputes?saved=1", Audit: "Opened dispute on order " + shortID(o.ID)}, nil
+}
+
+// disputeReplyAction (A-124) puts the reply of the party who did not open a dispute on record: once, while the dispute
+// is open, as a disputed -> disputed order event (no state change). The dispute row is locked first, so a concurrent
+// second reply, or a resolution, waits and then sees this one (or the resolution) and is refused with 409.
+func disputeReplyAction(c *actionCtx) (actionResult, error) {
+	ctx, tx := c.Ctx(), c.Tx
+	reply := strings.TrimSpace(c.Form.Get("reply"))
+	if n := utf8.RuneCountInString(reply); n < 20 || n > 5000 {
+		return actionResult{}, fail(400, "Write your reply in 20–5000 characters. Nothing was changed.")
+	}
+	o, err := partyOrder(c, c.Form.Get("order_id"))
+	if err != nil {
+		return actionResult{}, err
+	}
+	var status string
+	err = tx.QueryRowContext(ctx, "SELECT status FROM disputes WHERE order_id=$1 FOR UPDATE", o.ID).Scan(&status)
+	if err == sql.ErrNoRows {
+		return actionResult{}, fail(409, "This order has no dispute to reply to. Nothing was changed.")
+	}
+	if err != nil {
+		return actionResult{}, err
+	}
+	if status != "Open" {
+		return actionResult{}, fail(409, "This dispute is resolved, so no reply can be added. Nothing was changed.")
+	}
+	// A new statement after the lock: it sees a reply committed by a request that held the lock before this one.
+	var d Dispute
+	if err = tx.QueryRowContext(ctx, `SELECT `+disputeRecordCols+` FROM disputes d JOIN orders o ON o.id=d.order_id JOIN products p ON p.id=o.product_id`+disputeReplyJoin+
+		` WHERE d.order_id=$1`, o.ID).Scan(&d.Opener, &d.ReplyRole, &d.Reply, &d.ReplyCreated); err != nil {
+		return actionResult{}, err
+	}
+	role := roleBuyer
+	if c.User.ID == o.VendorID {
+		role = roleVendor
+	}
+	switch {
+	case d.Opener == "":
+		return actionResult{}, fail(409, "Who opened this dispute is not recorded, so no reply can be added. Send your evidence encrypted to dispute staff. Nothing was changed.")
+	case d.Opener == role:
+		return actionResult{}, fail(403, "You opened this dispute; only the other party can reply. Send further evidence encrypted to dispute staff from the order page.")
+	case d.Reply != "":
+		return actionResult{}, fail(409, "You already replied to this dispute; a reply cannot be changed or added to. Nothing was changed.")
+	}
+	if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,$3,$4)", o.ID, stateDisputed, c.User.ID, disputeReplyPrefix+reply); err != nil {
+		return actionResult{}, err
+	}
+	return actionResult{Redirect: orderPage(o.ID), Audit: "Replied to the dispute on order " + shortID(o.ID)}, nil
 }
 
 // notifyDisputeStaff tells every moderator and administrator who is not a party to the order that a dispute

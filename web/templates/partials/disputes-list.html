@@ -11,14 +11,24 @@ Disputes holds every open dispute first (OpenDisputes of them, oldest first), th
 <strong>{{$o.Title}}</strong> · price {{$o.Amount}} {{$o.Currency}} · {{$o.Kind}}<br>
 <span class="muted">Buyer {{$o.Buyer}} · vendor {{$o.Vendor}} · order state</span> <span class="badge {{template "order-badge-class" $o.State}}">{{$o.Status}}</span>
 </p>{{end}}
-<p>{{.Reason}}</p>
-<p class="help">Opened {{.Created}}</p>{{if .Resolution}}<p>
-<strong>Resolution:</strong> {{.Resolution}}</p>{{else}}{{if $.User}}{{if or (eq $.User.Role "moderator") (eq $.User.Role "admin")}}{{if and .NoResolver (eq $.User.Role "admin")}}<p class="order-unavailable" role="note">
-<strong>No eligible resolver.</strong> Every moderator and administrator is a party to this order. Assign a moderator who is not a party on the administration page so this dispute can be resolved.</p>{{end}}{{if $party}}<p class="order-unavailable" role="note">
+<p class="dispute-text">{{.Reason}}</p>
+<p class="help">Opened {{.Created}}{{with .Opener}} by the {{.}}{{end}}</p>{{if .Reply}}<p>
+<strong>Reply from the {{.ReplyRole}}</strong> <span class="muted">{{.ReplyCreated}}</span></p>
+<p class="dispute-text">{{.Reply}}</p>{{end}}{{if .Resolution}}<p>
+<strong>Resolution:</strong></p>
+<p class="dispute-text">{{.Resolution}}</p>{{else}}{{if $.User}}{{if or (eq $.User.Role "moderator") (eq $.User.Role "admin")}}{{if and .NoResolver (eq $.User.Role "admin")}}<p class="order-unavailable" role="note">
+<strong>No eligible resolver.</strong> Every moderator and administrator is a party to this order. Assign a moderator who is not a party on the administration page so this dispute can be resolved.</p>{{end}}{{$ev := index $.DisputeEvidence .ID}}{{with $ev}}<div class="dispute-evidence" role="note">
+<p><strong>Encrypted evidence holders.</strong> Messages each party sent to a moderator or administrator since this dispute opened, counted from who sent them to whom and when; only the recipient can read them.</p>
+<ul>
+<li>Buyer → {{range $i, $h := .Buyer}}{{if $i}}, {{end}}{{$h.Handle}} ({{$h.Count}}, latest {{$h.Latest}}){{else}}none{{end}}</li>
+<li>Vendor → {{range $i, $h := .Vendor}}{{if $i}}, {{end}}{{$h.Handle}} ({{$h.Count}}, latest {{$h.Latest}}){{else}}none{{end}}</li>
+</ul>
+</div>{{end}}{{if $party}}<p class="order-unavailable" role="note">
 <strong>Unavailable.</strong> You are a party to this order; another moderator must resolve it.</p>{{else if ne $o.State "disputed"}}<p class="order-unavailable" role="note">
 <strong>Unavailable.</strong> This order is not in the Disputed state, so no outcome can be recorded.</p>{{else}}<form class="stack" method="post" action="/resolve">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="id" value="{{.ID}}">{{$p := index $.DisputePayouts .ID}}
+<p class="help" role="note">{{if .Reply}}The {{.ReplyRole}} replied; the reply is shown above.{{else if .Opener}}The {{.Responder}} has not replied; only the {{.Opener}}’s account is on record.{{else}}Who opened this dispute is not recorded, and neither party can reply.{{end}} {{if and $ev (or $ev.Buyer $ev.Vendor)}}Before deciding, ask each staff member listed under Encrypted evidence holders what the evidence they hold shows: you cannot read it.{{else}}Neither party has messaged a moderator or administrator since this dispute opened.{{end}}</p>
 <fieldset class="dispute-outcome">
 <legend>Outcome</legend>
 <label class="check">

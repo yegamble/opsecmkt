@@ -52,6 +52,13 @@ test('moderator desk requires an outcome and disputes explain eligibility', asyn
   await expect(page.getByLabel('Decision', { exact: true })).toHaveAccessibleDescription(/^Stored unencrypted\..*Never include an address, real name or tracking number/);
   await expect(page.locator('main')).toContainText("A refund returns the whole counted amount to the buyer; a release pays the vendor the price and returns any excess worth sending to the buyer, with the network fee deducted. A refund or return larger than the price waits for an administrator's review");
   await expect(page.locator('main')).not.toContainText('moves no funds');
+  // A-124 and A-162 (sample data): the reply with its role and line breaks, whom each party messaged, and the
+  // resolve help that says whether the other side replied and to ask the evidence holders first.
+  await expect(page.locator('.dispute-text').nth(1)).toHaveText('Sample reply from the vendor.\nNothing was stored.');
+  await expect(page.locator('.dispute-text').first()).toHaveCSS('white-space', 'pre-wrap');
+  await expect(page.locator('.dispute-evidence li')).toHaveText(['Buyer → sample_moderator (1, latest Sample)', 'Vendor → none']);
+  await expect(resolve).toContainText('The vendor replied; the reply is shown above. Before deciding, ask each staff member listed under Encrypted evidence holders');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()!.width);
   await page.goto('/disputes');
   await expect(page.locator('.order-unavailable')).toContainText('Only paid, shipped, or delivered orders qualify');
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()!.width);

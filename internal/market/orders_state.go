@@ -162,6 +162,10 @@ func (a *App) transition(ctx context.Context, tx *sql.Tx, orderID, from, to stri
 	if note != "" && (actor == nil || (actor.ID != o.BuyerID && actor.ID != o.VendorID)) {
 		body += " — " + strings.TrimPrefix(note, stateLabel(to)+" — ")
 	}
+	if to == stateDisputed {
+		// Only the party who did not open the dispute is notified; it may put one reply on record (A-124).
+		body += ". You may put one reply to the dispute on record from the order page before a moderator decides."
+	}
 	for _, uid := range []string{o.BuyerID, o.VendorID} {
 		if actor != nil && uid == actor.ID {
 			continue

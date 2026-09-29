@@ -57,7 +57,32 @@ type StaffContactView struct{ Text, Handle string }
 type Dispute struct {
 	ID, OrderID, Reason, Status, Resolution, Created string
 	NoResolver                                       bool // open, and every moderator and administrator is a party
+	// A-124: Opener is "buyer" or "vendor", the party who moved the order to disputed ("" when no such event is
+	// recorded). Reply is the other party's one reply (an order_events row, disputeReplyPrefix), ReplyRole its
+	// author's role and ReplyCreated its time.
+	Opener, Reply, ReplyRole, ReplyCreated string
 }
+
+// Responder is the party who may reply to the dispute: the one who did not open it ("" when the opener is unknown).
+func (d Dispute) Responder() string {
+	switch d.Opener {
+	case roleBuyer:
+		return roleVendor
+	case roleVendor:
+		return roleBuyer
+	}
+	return ""
+}
+
+// EvidenceHolder (A-162): a moderator or administrator a party messaged since the dispute opened, with how many
+// messages and the time of the latest, read from message metadata (sender, recipient, time) only.
+type EvidenceHolder struct {
+	Handle, Latest string
+	Count          int
+}
+
+// DisputeEvidence lists the staff each party of an open dispute messaged since it opened.
+type DisputeEvidence struct{ Buyer, Vendor []EvidenceHolder }
 
 // PaymentReview is one deposit the payment watcher flagged for staff review (payments.flagged) with no recorded
 // disposition, or one escalated to an administrator (A-31). Open: a locked transfer, a late deposit or a deposit of
@@ -146,6 +171,9 @@ type PageData struct {
 	OpenDisputes  int
 	// DisputePayouts: resolve form per open dispute the viewer may resolve, keyed by dispute id.
 	DisputePayouts map[string]PayoutPreview
+	// DisputeEvidence: per open dispute a staff viewer is not party to, keyed by dispute id, whom each party messaged
+	// since it opened (A-162). Absent (nil) for everyone else.
+	DisputeEvidence map[string]*DisputeEvidence
 	// Overpaid: order page for its buyer or vendor, a paid, shipped or delivered order whose counted deposits
 	// exceed the price; nil otherwise.
 	Overpaid *OverpaidView
