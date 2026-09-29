@@ -230,8 +230,8 @@ func setRuntimeParam(p map[string]string, k, v string) {
 
 // OpenDB opens the database in dsn with TimeZone pinned to UTC on every connection (a startup parameter, which
 // outranks database and role defaults), so displayed times never follow or reveal the server's zone. The
-// application pool, its migrations and the -bootstrap-admin, -reset-admin-password and -status commands all
-// open the database here; only the application pool passes WithAppTimeouts.
+// application pool, its migrations and the -bootstrap-admin, -reset-admin-password, -reset-admin-factors,
+// -set-role and -status commands all open the database here; only the application pool passes WithAppTimeouts.
 func OpenDB(dsn string, opts ...DBOption) (*sql.DB, error) {
 	cfg, err := pgx.ParseConfig(dsn)
 	if err != nil {

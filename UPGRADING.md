@@ -114,21 +114,18 @@ the value to rotate, with the consequences below. An instance that ran with the 
   stored as plain hashes and keep working), turn TOTP off on `/totp` with their password and a recovery
   code, and enrol again. For a non-administrator with no recovery code left, confirm who they are out of
   band, then use *Admin → Reset a user's second factors*, which also ends their sessions and is audited.
-  The administrator's own account, or an instance where no administrator can sign in, needs the operator
-  reset in the database (internal-db shown; replace `THE_HANDLE`):
+  An administrator with no recovery code left needs the host command, because the web reset refuses
+  administrators (and perhaps no administrator can sign in at all). Run it in the deployment directory; it
+  works with the internal or an external database (replace `THE_HANDLE`, exact and case-sensitive):
 
   ```sh
-  docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -v handle=THE_HANDLE -U opsecmkt -d opsecmkt <<'SQL'
-  BEGIN;
-  UPDATE users SET totp_enabled=false,totp_secret='',totp_pending='',totp_last_step=0,recovery_reveal='',recovery_reveal_until=NULL
-    WHERE handle=:'handle';
-  DELETE FROM recovery_codes WHERE user_id=(SELECT id FROM users WHERE handle=:'handle');
-  INSERT INTO audit_events(user_id,action) SELECT id,'TOTP reset by the operator after SETUP_TOKEN rotation' FROM users WHERE handle=:'handle';
-  COMMIT;
-  SQL
+  docker compose run --rm app -reset-admin-factors THE_HANDLE
   ```
 
-  Check that the `UPDATE` reports one row; the user then signs in with the password alone and enrols again.
+  In one audited transaction it turns off that administrator's TOTP, recovery codes and PGP sign-in and ends
+  its sessions and pending sign-ins; the administrator then signs in with the password alone and enrols again.
+  It refuses an account that is not an administrator (use the web reset above) and an unknown handle,
+  changing nothing ([details](docs/operator-guide.md#authentication)).
 
 A restored database needs the `SETUP_TOKEN` (or `APP_SECRET_KEY`, when set) that was in use when its backup
 was taken for its TOTP secrets to be readable. Keep the rotated value, not the placeholder, in any `.env` you
