@@ -265,13 +265,11 @@ func (a *App) load(r *http.Request, d *PageData) error {
 	}
 	if d.User != nil {
 		switch d.Page {
-		case "orders", "order", "admin", "disputes":
+		case "orders", "order", "disputes":
+			// No admin order list (A-127): staff see an order only while it is disputed or resolved or a payment
+			// on it is flagged (A-24, /canary#records).
 			query := orderQuery + " WHERE (o.buyer_id=$1 OR p.vendor_id=$1)"
 			args := []any{d.User.ID}
-			if d.Page == "admin" {
-				query = orderQuery + " WHERE true"
-				args = nil
-			}
 			if d.Page == "order" {
 				// Moderators and administrators may also open disputed or resolved orders, and orders with a payment
 				// flagged for review, read-only (orders_load.go).

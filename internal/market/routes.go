@@ -337,6 +337,19 @@ func sessionToken(r *http.Request) string { s, _ := r.Context().Value(sessionKey
 // anonToken returns the pre-login `anon` cookie value ("" when the request sent none and needed none).
 func anonToken(r *http.Request) string { s, _ := r.Context().Value(anonKey{}).(string); return s }
 
+// arrivalKey holds the request's context as the server created it, without ServeHTTP's 12 s bound.
+type arrivalKey struct{}
+
+// arrivalContext returns the request's context without ServeHTTP's 12 s bound: it ends only when the client
+// goes away (or the connection's read deadline passes). A handler that sets its own bound (the signed audit
+// export, A-139) derives it from here. Without ServeHTTP (tests) it is r's own context.
+func arrivalContext(r *http.Request) context.Context {
+	if c, ok := r.Context().Value(arrivalKey{}).(context.Context); ok {
+		return c
+	}
+	return r.Context()
+}
+
 func roleRequired(roles []string) string {
 	for _, r := range roles {
 		if r != "admin" {
