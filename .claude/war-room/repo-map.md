@@ -29,11 +29,18 @@ Read this once, before you form any opinion. Then read `CLAUDE.md`,
    `MONERO_NETWORK=mainnet`); with the setting blank a mainnet node still stops
    startup, a market is all mainnet or all test networks, and a database whose
    addresses were issued on the other class is refused. Development, tests and
-   war-room evidence never use mainnet. Never claim multisig escrow.
+   war-room evidence never use mainnet. **Owner directive 2026-09-29 (WR-escrow):**
+   the pooled custodial wallet is being replaced by per-order escrow — Bitcoin
+   2-of-3 multisig (buyer, vendor, market arbitrator keys; the server can never
+   spend alone), Monero per-order wallets (custodial per order until multisig is
+   validated). Until escrow ships and is verified, the pooled system stays and
+   is the only thing the product may describe as live; never claim escrow for a
+   path that is not implemented and verified.
 3. **Orders move only through the server-side transition table**
    (`orders_state.go`) with row locks and compare-and-set; every move is logged
    in `order_events`. Nothing reports success without a recorded state change.
-4. **Payments never pay twice.** One settlement per order: a release plus its
+4. **Payments never pay twice.** (Escrow mode, when built, keeps this: one
+   settlement transaction per escrow.) One settlement per order: a release plus its
    overpayment return, or one refund (`payouts` `UNIQUE (order_id, kind)` since
    migration 064; `enqueuePayout` returns early once any payout row exists for the
    order). Sends are a single wallet call claimed by pending→sending
