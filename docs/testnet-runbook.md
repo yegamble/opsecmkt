@@ -218,7 +218,8 @@ enrolled), is recorded in the audit trail and the order history, and applies onl
 the state you saw, so a double click or a second administrator cannot queue it twice:
 
 - **Mark sent** (failed, held or stuck): the wallet shows the transaction. Paste its 64-character
-  transaction ID. The recipient is notified; nothing is sent.
+  transaction ID. The recipient is notified with the transaction ID; the order history says the payout was
+  recorded as sent without it (the other party never sees it, A-214). Nothing is sent.
 - **Requeue payout** (failed or stuck): the wallet shows **no** such transaction. The payout goes back to
   the queue and the next pass sends it once. For an *outcome unknown* failure, a failure restored from
   backup or a stuck send the form also asks you to tick "I checked the wallet ... no transaction ... was
@@ -304,23 +305,24 @@ There is no web action to dismiss a flag or pay out a flagged deposit, and an op
 manual refund is recorded as a **written note** (an order-history event plus an audit row), **never as a
 payout row**: each order has at most one payout of each kind (`payouts` `UNIQUE (order_id, kind)`, migration 064), owned by its release and any return, or its refund; do not
 insert a payout and do not use *Mark sent* on the order's payout for a manual transfer. Record the note with
-`psql` (internal-db shown; replace the order ID, your staff handle and the note text):
+`psql` (internal-db shown; replace the order ID, your staff handle, the note text and the refund's transaction ID):
 
 ```sh
 docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -v order_id=FULL_ORDER_ID -v handle=YOUR_HANDLE \
-  -v note='Manual refund: returned 0.0005 BTC from deposit <txid>:<n> to the buyer by hand in <refund txid>.' \
-  -U opsecmkt -d opsecmkt <<'SQL'
+  -v note='Manual refund: returned 0.0005 BTC from deposit <txid>:<n> to the buyer by hand.' \
+  -v txid=REFUND_TXID -U opsecmkt -d opsecmkt <<'SQL'
 WITH ev AS (
   INSERT INTO order_events(order_id,from_state,to_state,actor_id,note)
   SELECT o.id,o.state,o.state,u.id,:'note' FROM orders o JOIN users u ON u.handle=:'handle' AND u.role IN ('moderator','admin')
   WHERE o.id=:'order_id' RETURNING order_id,actor_id)
-INSERT INTO audit_events(user_id,action) SELECT actor_id,'Order '||order_id||': '||:'note' FROM ev;
+INSERT INTO audit_events(user_id,action) SELECT actor_id,'Order '||order_id||': '||:'note'||' Transaction '||:'txid'||'.' FROM ev;
 SQL
 ```
 
 It must report `INSERT 0 1`; `INSERT 0 0` means the order ID or staff handle was wrong and nothing was
-written. The note appears in the order history, which the buyer and vendor also read, so keep addresses and
-anything private out of it.
+written. The note appears in the order history, which the buyer and vendor also read, so keep addresses, the
+refund's transaction ID and anything private out of it: on Bitcoin a transaction ID reveals its recipient's
+address, so the vendor would learn the buyer's. The transaction ID goes only into the audit row.
 
 ## 6. Back up the wallets
 
@@ -553,9 +555,9 @@ ret AS (
   FROM ord, pay WHERE :'return_amount'::bigint > 0 ON CONFLICT (order_id,kind) DO NOTHING RETURNING id),
 note AS (
   SELECT 'Reconciled after a restore from backup: the ' || net || ' ' || :'kind' || ' of ' || label || ' to the '
-    || CASE :'kind' WHEN 'release' THEN 'vendor' ELSE 'buyer' END || ' was sent after the backup was taken, in transaction '
-    || :'txid' || CASE WHEN :'return_amount'::bigint > 0 THEN ', and the return of ' || return_label
-    || ' paid over the price to the buyer in transaction ' || :'return_txid' ELSE '' END
+    || CASE :'kind' WHEN 'release' THEN 'vendor' ELSE 'buyer' END || ' was sent after the backup was taken'
+    || CASE WHEN :'return_amount'::bigint > 0 THEN ', and the return of ' || return_label
+    || ' paid over the price to the buyer' ELSE '' END
     || '. Recorded by an administrator from the wallet; nothing was sent now.' AS body FROM ord),
 moved AS (UPDATE orders SET state=:'state', updated=now() FROM pay WHERE orders.id=pay.order_id RETURNING 1),
 closed AS (
@@ -613,7 +615,9 @@ the check in one transaction and ends "Recorded the payout as sent; committed." 
   (an order that already has a payout is refused, and so is a transaction ID already recorded);
 - the order moved to its final state if the restored snapshot was behind, with an order-history entry by your
   account ("Reconciled after a restore from backup: ..."); a resolved dispute gets that outcome, and a
-  cancellation returns the reserved unit to stock as the application would;
+  cancellation returns the reserved unit to stock as the application would. Neither text names a transaction
+  ID: both parties read them, and on Bitcoin a payout's transaction ID reveals its recipient's address. The
+  order page shows each payout's transaction ID only to its recipient and to staff;
 - the counted deposits marked credited, so the watcher does not flag them as arriving after settlement;
 - one new audit row ("Recorded payout N ... sent after the backup"). Existing audit rows are never changed.
 

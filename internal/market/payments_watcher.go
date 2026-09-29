@@ -685,10 +685,13 @@ func (a *App) sendPayouts(ctx context.Context, p PaymentProvider, orders []strin
 			if ambiguous {
 				msg = "Wallet call failed without a definite answer; the transaction may or may not have been broadcast. Check the wallet before requeueing or paying manually. "
 			}
-			err = a.recordPayout(rctx, id, order, recipient, "failed", "", msg+truncate(serr.Error(), 200), ambiguous, a.netTag()+" payout of "+label+" failed and will not be retried automatically.")
+			note := a.netTag() + " payout of " + label + " failed and will not be retried automatically."
+			err = a.recordPayout(rctx, id, order, recipient, "failed", "", msg+truncate(serr.Error(), 200), ambiguous, note, note)
 			errs = append(errs, &watchError{label: fmt.Sprintf("payout %d", id), class: payoutErrorClass(cur, serr), err: serr})
 		} else {
-			err = a.recordPayout(rctx, id, order, recipient, "sent", txid, "", false, a.netTag()+" payout of "+label+" sent: "+txid)
+			// Only the recipient's notification names the txid: on Bitcoin it reveals their payout address (A-214).
+			note := a.netTag() + " payout of " + label + " sent."
+			err = a.recordPayout(rctx, id, order, recipient, "sent", txid, "", false, note, a.netTag()+" payout of "+label+" sent: "+txid)
 		}
 		cancel()
 		// Logged here, not only in the returned error: the watcher drops a pass's error once shutdown has begun,
@@ -786,8 +789,9 @@ var moneroPreSubmitCodes = map[int64]bool{
 }
 
 // recordPayout moves a claimed payout from sending to state. ambiguous marks a failure whose broadcast is
-// unknown: requeueing it then needs the administrator's explicit confirmation (payments_admin.go).
-func (a *App) recordPayout(ctx context.Context, id int64, orderID, recipient, state, txid, msg string, ambiguous bool, note string) error {
+// unknown: requeueing it then needs the administrator's explicit confirmation (payments_admin.go). note goes into
+// the order history, which both parties read; notice is the recipient's notification.
+func (a *App) recordPayout(ctx context.Context, id int64, orderID, recipient, state, txid, msg string, ambiguous bool, note, notice string) error {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -805,7 +809,7 @@ func (a *App) recordPayout(ctx context.Context, id int64, orderID, recipient, st
 	if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", orderID, orderState, note); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), recipient, "Order "+orderID[:min(8, len(orderID))]+": "+note); err != nil {
+	if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), recipient, "Order "+orderID[:min(8, len(orderID))]+": "+notice); err != nil {
 		return err
 	}
 	if state == "failed" {

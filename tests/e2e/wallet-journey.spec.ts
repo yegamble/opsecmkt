@@ -287,10 +287,18 @@ test('vendor cancels a paid physical order, refunds once and restores stock', as
     const payouts = (await (await request.get(`${rpc}/test/state`)).json()).payouts;
     expect(payouts).toHaveLength(beforePayouts + 1);
     expect(payouts.at(-1)).toEqual(expect.objectContaining({ currency: 'BTC', address: 'bcrt1qfixturebuyerrefund00000000', amount: 100_000 }));
+    // A-214: only the buyer sees the refund's transaction ID (on Bitcoin it reveals the buyer's payout address);
+    // the vendor who forced the refund sees neither it on the order page nor in a notification.
+    const refundTxid: string = payouts.at(-1).txid;
+    await expect(buyer.locator('.payment-figures div', { has: buyer.getByText('Payout transaction', { exact: true }) })).toContainText(refundTxid);
     await buyer.goto(productURL);
     await expect(stock.locator('dd')).toHaveText(String(before));
     await vendor.reload();
     await expect(vendor.getByRole('button', { name: 'Cancel order', exact: true })).toHaveCount(0);
+    await expect(vendor.locator('.payment-figures div', { has: vendor.getByText('Payout status', { exact: true }) })).toContainText('Sent');
+    await expect(vendor.locator('main')).not.toContainText(refundTxid);
+    await vendor.goto('/notifications');
+    await expect(vendor.locator('main')).not.toContainText(refundTxid);
   } finally {
     await Promise.allSettled([vendor.context().close(), buyer.context().close()]);
   }
