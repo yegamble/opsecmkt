@@ -211,6 +211,19 @@ then
 fi
 grep -q 'payouts_one_settlement' "$work/settlement.out"
 [[ $(sql -c 'SELECT count(*) FROM payouts') == 0 ]]
+# A refund or a return per order (migration 070): a refund beside a return would pay the excess twice.
+[[ $(sql -c "SELECT indexdef FROM pg_indexes WHERE indexname='payouts_refund_or_return'") == *"UNIQUE INDEX payouts_refund_or_return ON public.payouts USING btree (order_id) WHERE (kind = ANY (ARRAY['refund'::text, 'return'::text]))"* ]]
+if sql > "$work/refund-return.out" 2>&1 <<'SQL'
+BEGIN;
+INSERT INTO payouts(order_id,kind,user_id,currency,amount) SELECT id,'refund',buyer_id,currency,amount FROM orders WHERE currency='XMR';
+INSERT INTO payouts(order_id,kind,user_id,currency,amount) SELECT id,'return',buyer_id,currency,amount FROM orders WHERE currency='XMR';
+COMMIT;
+SQL
+then
+  echo 'A refund and a return for the same order were both accepted' >&2; exit 1
+fi
+grep -q 'payouts_refund_or_return' "$work/refund-return.out"
+[[ $(sql -c 'SELECT count(*) FROM payouts') == 0 ]]
 
 # Behaviour through the upgraded server: an alpha.1 password still signs in, the migrated draft is shown as
 # a draft, and ordering the same product and currency again returns that draft instead of a second one.

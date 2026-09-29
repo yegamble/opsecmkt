@@ -128,7 +128,15 @@ func recordPaymentReview(c *actionCtx, id int64, outcome, note, refundTxid strin
 		return actionResult{}, err
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
-		return actionResult{}, fail(409, "This payment review was already recorded; see the order history. Nothing was changed.")
+		// Name the outcome that won, as the check above does (A-277): this statement sees the committed row.
+		if err = tx.QueryRowContext(ctx, "SELECT disposition FROM payments WHERE id=$1", id).Scan(&disposition); err != nil {
+			return actionResult{}, err
+		}
+		recorded := ""
+		if r, ok := reviewOutcomes[disposition]; ok {
+			recorded = " (" + r + ")"
+		}
+		return actionResult{}, fail(409, "This payment review was already recorded"+recorded+"; see the order history. Nothing was changed.")
 	}
 	dec := currencyDecimals(o.Currency)
 	short := shortID(o.ID)
