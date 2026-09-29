@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { expect, test } from '@playwright/test';
+import { expect, test, type Locator } from '@playwright/test';
 import { uniqueHandle } from './db-fixtures';
 import { signedIn, submitAndLoad } from './db-helpers';
 
@@ -37,11 +37,27 @@ test('a moderator records payment reviews at 320 px; buyer and vendor read the o
     const desk = mod.getByRole('region', { name: 'Payment review' });
     const openCount = desk.locator('p > strong');
     await expect(openCount).toHaveText('2 open flags');
-    const noActionRow = desk.locator('.payment-review-row', { hasText: `${noActionTx}:0` });
-    await noActionRow.locator('summary', { hasText: 'Record the review' }).click();
-    await expect(noActionRow.getByLabel('Reason for taking no action')).toBeVisible();
-    expect(await mod.evaluate(() => document.documentElement.scrollWidth), '/moderator at 320 px with the review form open').toBeLessThanOrEqual(320);
-    const noAction = noActionRow.locator('form', { has: mod.getByRole('button', { name: 'Record: no action' }) });
+    // A-275: a flag's review forms are not in its table row (a cell widened the scrolling table to ~1560 px at
+    // 320 px): the row's "Record the review" link goes to its <details> under the table. After the stylesheet
+    // applies (A-228), the open form, its labels, fields and submit buttons lie within the 320 px viewport.
+    await mod.waitForLoadState('load');
+    await expect(desk.locator('.table-wrap')).toHaveCSS('overflow-x', 'auto');
+    const openReview = async (tx: string) => {
+      const id = sql(`SELECT id FROM payments WHERE order_id='${order}' AND txid='${tx}'`);
+      const details = desk.locator(`details.payment-review-form#payment-review-${id}`);
+      await desk.locator('.payment-review-row', { hasText: `${tx}:0` }).getByRole('link', { name: 'Record the review' }).click();
+      await expect(mod).toHaveURL(new RegExp(`/moderator(\\?saved=1)?#payment-review-${id}$`));
+      await expect(details.locator(`input[name="payment_id"][value="${id}"]`)).toHaveCount(3);
+      const summary = details.locator('summary');
+      await expect(summary).toHaveText(`Record the review of ${tx}:0`);
+      await summary.click();
+      await expect(details).toHaveAttribute('open', '');
+      await withinViewport(details, 320);
+      expect(await mod.evaluate(() => document.documentElement.scrollWidth), '/moderator at 320 px with the review form open').toBeLessThanOrEqual(320);
+      return details;
+    };
+    const noActionReview = await openReview(noActionTx);
+    const noAction = noActionReview.locator('form', { has: mod.getByRole('button', { name: 'Record: no action' }) });
     await noAction.getByLabel('Reason for taking no action').fill(reason);
     await noAction.getByLabel('Current password').fill(password);
     await submitAndLoad(mod, noAction.getByRole('button', { name: 'Record: no action' }));
@@ -49,9 +65,8 @@ test('a moderator records payment reviews at 320 px; buyer and vendor read the o
     await expect(openCount).toHaveText('1 open flag');
     await expect(desk.locator('.payment-review-row', { hasText: `${noActionTx}:0` })).toHaveCount(0);
 
-    const refundedRow = desk.locator('.payment-review-row', { hasText: `${refundedTx}:0` });
-    await refundedRow.locator('summary', { hasText: 'Record the review' }).click();
-    const refundForm = refundedRow.locator('form', { has: mod.getByRole('button', { name: 'Record: refunded by hand' }) });
+    const refundedReview = await openReview(refundedTx);
+    const refundForm = refundedReview.locator('form', { has: mod.getByRole('button', { name: 'Record: refunded by hand' }) });
     await refundForm.getByLabel('Refund transaction ID').fill(refundTx);
     await refundForm.getByLabel('Amount refunded (BTC, at most 0.0003)').fill('0.0003');
     await refundForm.getByLabel('Current password').fill(password);
@@ -83,3 +98,17 @@ test('a moderator records payment reviews at 320 px; buyer and vendor read the o
     for (const page of [mod, buyer, vendor]) await page.context().close();
   }
 });
+
+// A-275: an open review <details>, each of its forms, labels, fields and submit buttons lie horizontally within the
+// viewport: a form clipped inside the table's scrolling .table-wrap does not widen the document, so scrollWidth alone
+// cannot see it.
+async function withinViewport(review: Locator, width: number) {
+  const parts = review.locator('summary, form, label, input:not([type="hidden"]), textarea, button');
+  expect(await parts.count()).toBeGreaterThan(4);
+  const outside: string[] = [];
+  for (const part of await parts.all()) {
+    const box = (await part.boundingBox())!;
+    if (box.x < 0 || box.x + box.width > width) outside.push(`${await part.evaluate(e => e.outerHTML.slice(0, 60))}: x ${Math.round(box.x)} to ${Math.round(box.x + box.width)}`);
+  }
+  expect(outside, `review form parts outside 0..${width} px`).toEqual([]);
+}
