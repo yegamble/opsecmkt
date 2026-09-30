@@ -123,6 +123,7 @@ func (e *escrowBTC) buildPractice(ctx context.Context, key escrowKey, seed []byt
 	if found, _, _, err := e.txOut(ctx, pt.prevTxID, 0); err != nil {
 		return nil, err
 	} else if found {
+		log.Print("escrow: practice transaction refused: its made-up outpoint exists on the escrow node")
 		return nil, errPracticeUnsafeOut
 	}
 	// The practice transaction pays the same escrow script back, less a fee: the owner's wallet shows one input
@@ -227,7 +228,9 @@ func checkPracticePaste(pt *practiceTx, pasted string) (psbtSig, error) {
 	return *mine, nil
 }
 
-// verifyPractice checks a pasted practice PSBT; nil means the owner's key signed the practice transaction.
+// verifyPractice checks a pasted practice PSBT against pt, built in the same request (buildPractice has just
+// checked with gettxout that its outpoint does not exist); nil means the owner's key signed the practice
+// transaction.
 func (e *escrowBTC) verifyPractice(ctx context.Context, pt *practiceTx, pasted string) error {
 	sig, err := checkPracticePaste(pt, pasted)
 	if err != nil {
@@ -253,12 +256,6 @@ func (e *escrowBTC) verifyPractice(ctx context.Context, pt *practiceTx, pasted s
 	}
 	if !complete {
 		return errPracticeBadSig
-	}
-	if found, _, _, err := e.txOut(ctx, pt.prevTxID, 0); err != nil {
-		return err
-	} else if found {
-		log.Print("escrow: practice check refused: its made-up outpoint exists on the escrow node")
-		return errPracticeUnsafeOut
 	}
 	allowed, reject, err := e.testMempoolAccept(ctx, rawHex, practiceMaxFeeRate)
 	if err != nil {
