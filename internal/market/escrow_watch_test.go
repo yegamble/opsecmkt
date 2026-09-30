@@ -271,6 +271,9 @@ func TestEscrowOrderPanelWithEscrowOff(t *testing.T) {
 	addr := x.mustCheckout(x.order, "bcrt1qbuyerrefund00000000000000000000001")
 	x.core.deposit(addr, "part", 0, 40000, 1)
 	x.poll()
+	if body := x.page("/order?id="+x.order, x.buyerSess); !strings.Contains(body, "If nothing has been received by") {
+		t.Fatal("no payment window on the open escrow order with escrow on")
+	}
 	done := x.draft()
 	addr2 := x.mustCheckout(done, "bcrt1qbuyerrefund00000000000000000000002")
 	x.core.deposit(addr2, "full", 0, 100000, 3)
@@ -291,7 +294,8 @@ func TestEscrowOrderPanelWithEscrowOff(t *testing.T) {
 					t.Fatalf("escrow order with escrow off lacks %q:\n%s", want, body)
 				}
 			}
-			for _, bad := range []string{"No payment record", "no funds are held", "Payment is unavailable", "/escrow-descriptor", `name="from" value="awaiting_payment"`} {
+			// Nor a payment window: with escrow off no escrow order expires.
+			for _, bad := range []string{"No payment record", "no funds are held", "Payment is unavailable", "/escrow-descriptor", `name="from" value="awaiting_payment"`, "If nothing has been received by"} {
 				if strings.Contains(body, bad) {
 					t.Fatalf("escrow order with escrow off shows %q:\n%s", bad, body)
 				}
