@@ -485,3 +485,66 @@ func TestEscrowTerminalWritesNoPayout(t *testing.T) {
 		t.Fatal("stock")
 	}
 }
+
+// QA31-1 (ES-10): a cancelled escrow order's status never says "nothing was received" while coins may be there. With
+// escrow enabled and nothing recorded it does; a deposit recorded after the order closed gives the after-close status
+// (not counted, held at the escrow address); with escrow unavailable or switched off the escrow cannot be checked, so
+// the status says that instead.
+func TestEscrowCancelledStatus(t *testing.T) {
+	const nothing = "Cancelled; nothing was received in this escrow"
+	const afterClose = "Cancelled; a deposit arrived after the order closed. It is not counted and is held at the escrow address."
+	const unchecked = "Cancelled. This escrow cannot be checked right now because Bitcoin escrow is unavailable, so a deposit to it may not be shown here."
+	x := newEscrowEnv(t)
+	x.mustCheckout(x.order, "bcrt1qbuyerrefund00000000000000000000001")
+	late := x.draft()
+	lateAddr := x.mustCheckout(late, "bcrt1qbuyerrefund00000000000000000000002")
+	x.DB.Exec("UPDATE escrows SET created=now()-interval '25 hours'")
+	x.poll()
+	if x.state(x.order) != stateCancelled || x.state(late) != stateCancelled {
+		t.Fatalf("not cancelled at window end: %s %s", x.state(x.order), x.state(late))
+	}
+	x.core.deposit(lateAddr, "stray", 0, 40000, 1)
+	x.poll()
+	if agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND after_close", late) != 1 {
+		t.Fatal("stray deposit not recorded after close")
+	}
+	status := func(order, sess string) string {
+		body := x.page("/order?id="+order, sess)
+		for _, s := range []string{nothing, afterClose, unchecked} {
+			if strings.Contains(body, s) {
+				return s
+			}
+		}
+		return ""
+	}
+	for _, sess := range []string{x.buyerSess, x.vendorSess} {
+		if got := status(x.order, sess); got != nothing {
+			t.Fatalf("enabled, cancelled, empty: %q", got)
+		}
+		if got := status(late, sess); got != afterClose {
+			t.Fatalf("cancelled with an after-close deposit: %q", got)
+		}
+	}
+	// Escrow unavailable (its node down at startup), then switched off: never "nothing was received".
+	srvDown(x, true)
+	x.restart()
+	if x.A.escrow.Load() != nil || !x.A.escrowConfigured {
+		t.Fatal("escrow enabled with its node down")
+	}
+	for _, sess := range []string{x.buyerSess, x.vendorSess} {
+		if got := status(x.order, sess); got != unchecked {
+			t.Fatalf("unavailable, cancelled: %q", got)
+		}
+		if got := status(late, sess); got != afterClose {
+			t.Fatalf("unavailable, cancelled with an after-close deposit: %q", got)
+		}
+	}
+	srvDown(x, false)
+	t.Setenv("ESCROW_BTC", "off")
+	x.restart()
+	for _, sess := range []string{x.buyerSess, x.vendorSess} {
+		if got := status(x.order, sess); got != unchecked {
+			t.Fatalf("escrow off, cancelled: %q", got)
+		}
+	}
+}

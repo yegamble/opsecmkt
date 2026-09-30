@@ -57,7 +57,7 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 		return err
 	}
 	v.Descriptor = desc
-	var received, pending int64
+	var received, pending, afterCloseSeen int64
 	required, err := parseAmount(o.Amount, 8)
 	if err != nil {
 		return err
@@ -81,6 +81,7 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 			dep.State = "Conflicted or missing — not counted"
 		case afterClose:
 			dep.State = "Arrived after the order closed — not counted; recovering it is part of the settlement step, which this build does not have yet"
+			afterCloseSeen++
 		case dep.Confirmations >= v.Threshold:
 			dep.State, received = "Confirmed", received+amt
 		default:
@@ -119,6 +120,12 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 		v.Status, v.NextStep = "Funded", "The content could not be delivered automatically: the order completes when the vendor delivers it. "+claimLater
 	case o.State == stateCompleted:
 		v.Status, v.NextStep = "Funded and completed", claimLater
+	case o.State == stateCancelled && afterCloseSeen > 0:
+		// Coins sent after the cancellation are never counted, but they are at the escrow address (QA31-1).
+		v.Status = "Cancelled; a deposit arrived after the order closed. It is not counted and is held at the escrow address."
+	case o.State == stateCancelled && received+pending == 0 && e == nil:
+		// Nothing is read while escrow is not enabled, so an empty ledger proves nothing (QA31-1).
+		v.Status = "Cancelled. This escrow cannot be checked right now because Bitcoin escrow is unavailable, so a deposit to it may not be shown here."
 	case o.State == stateCancelled && received+pending == 0:
 		v.Status = "Cancelled; nothing was received in this escrow"
 	default:
