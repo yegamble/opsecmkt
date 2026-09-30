@@ -622,6 +622,18 @@ wrong authenticator or recovery code after the right one): staff are no longer p
 confirmations in ten minutes (for example resolving many disputes). After ten failures the refusal now reads "Too
 many failed password confirmations. Try again in ten minutes."
 
+## 16. Issued-address collisions after a wallet restore (migration 071, A-288)
+
+Migration 071 adds two columns to `payment_status` (a count and a time, 0 and empty on existing rows); nothing else
+changes and nothing needs doing. A payment request that gets an address the database already issued, which happens
+after a wallet is restored from an older backup or seed without being advanced, was answered "Unable to save
+changes" with status 500. It is now refused with 503 "BTC payment addresses are being restored on this market.
+Nothing was charged and your order is still a draft; try again later." (or XMR), logged as a `payments:` line naming
+only the currency, and shown on the *Payment providers* panel of `/admin` until an administrator dismisses it. A
+monitor that matched `cause=23505 payment_addresses payment_addresses_address_key` should match
+`cause=payment-address-already-issued` instead. What to do when it appears:
+[Restore the wallets](docs/testnet-runbook.md#restore-the-wallets).
+
 ## Appendix: new keys by hand
 
 `./scripts/install.sh upgrade` writes these for you. To add them yourself, use your editor (values in single
