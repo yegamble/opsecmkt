@@ -48,23 +48,28 @@ func TestEscrowSiteNoticesWithoutPooledProvider(t *testing.T) {
 	check("/checkout?id="+x.product, x.buyerSess, footer, "<strong>UNFUNDED DRAFT.</strong> Creating a draft collects nothing.", "send nothing until the order page shows an escrow address")
 	check("/vendor-dashboard", x.vendorSess, "<div class=\"eyebrow\">Bitcoin escrow</div>\n<strong>REGTEST</strong>", "none of your orders uses it yet")
 
-	// A funded escrow order: counted on the vendor dashboard, with escrow on, unavailable and off.
+	// A funded escrow order: counted on the vendor dashboard, with escrow on, unavailable and off. One cancelled with
+	// nothing recorded is counted only while escrow is not enabled (its deposits are then not read).
+	empty := x.draft()
+	x.mustCheckout(empty, "bcrt1qbuyerrefund00000000000000000000009")
+	x.DB.Exec("UPDATE escrows SET created=now()-interval '25 hours' WHERE order_id=$1", empty)
 	addr := x.mustCheckout(x.order, "bcrt1qbuyerrefund00000000000000000000001")
 	x.core.deposit(addr, "held", 0, 100000, 3)
 	x.poll()
-	if x.state(x.order) != stateCompleted {
-		t.Fatalf("funded order %s", x.state(x.order))
+	if x.state(x.order) != stateCompleted || x.state(empty) != stateCancelled {
+		t.Fatalf("funded order %s, empty order %s", x.state(x.order), x.state(empty))
 	}
 	const held = "1 escrow order(s) may hold coins at their own 2-of-3 escrow addresses"
+	const unread = "2 escrow order(s) may hold coins at their own 2-of-3 escrow addresses"
 	check("/vendor-dashboard", x.vendorSess, "<strong>REGTEST</strong>", held)
 	srvDown(x, true)
 	x.restart()
-	check("/vendor-dashboard", x.vendorSess, "<strong>UNAVAILABLE</strong>", held)
+	check("/vendor-dashboard", x.vendorSess, "<strong>UNAVAILABLE</strong>", unread)
 	srvDown(x, false)
 	t.Setenv("ESCROW_BTC", "off")
 	x.restart()
 	body := x.page("/vendor-dashboard", x.vendorSess)
-	for _, w := range []string{"<div class=\"eyebrow\">Bitcoin escrow</div>\n<strong>OFF</strong>", held} {
+	for _, w := range []string{"<div class=\"eyebrow\">Bitcoin escrow</div>\n<strong>OFF</strong>", unread} {
 		if !strings.Contains(body, w) {
 			t.Fatalf("vendor dashboard with escrow off and a funded escrow order lacks %q:\n%s", w, body)
 		}
