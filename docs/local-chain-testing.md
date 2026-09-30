@@ -71,9 +71,9 @@ releases included since A-232). `tests/e2e/chain-journey.spec.ts` expects every
 payout it checks (`verifyReceipt`, on both coins) to arrive as its amount less a
 non-zero fee, in exactly the transaction the market recorded, and the fixture's
 `received` reads a Monero payout's fee from the market wallet
-(`get_transfer_by_txid`). A real-chain run of these expectations is cited only once
-it is recorded in the [evidence table](verification.md#evidence-table) (war-room
-A-103).
+(`get_transfer_by_txid`). The runs of these expectations on the real local chains,
+pinned to a commit, are in the [evidence table](verification.md#evidence-table)
+(war-room A-103).
 
 On this offline stagenet fork a Monero transfer costs about 0.002 XMR, more than
 the 0.001 XMR minimum automatic payout: a Monero payout (release, refund or
@@ -160,7 +160,9 @@ test -z "$(git status --porcelain)" && git rev-parse HEAD   # the commit the man
 export GNUPGHOME="$(mktemp -d)"; gpg --import "$TOOLS/fanquake.gpg" "$TOOLS/binaryfate.asc"
 ( gpg --status-fd 1 --verify "$TOOLS/SHA256SUMS.asc" "$TOOLS/SHA256SUMS" 2>/dev/null | grep -E 'GOODSIG|VALIDSIG|BADSIG|ERRSIG'
   gpg --status-fd 1 --verify "$TOOLS/hashes.txt" 2>/dev/null | grep -E 'GOODSIG|VALIDSIG|BADSIG|ERRSIG'
-  cd "$TOOLS" && sha256sum bitcoin-31.1-*.tar.gz monero-*-v0.18.5.1.tar.bz2 bitcoin-31.1/bin/bitcoind monero-*-v0.18.5.1/monerod monero-*-v0.18.5.1/monero-wallet-rpc
+  cd "$TOOLS" && sha256sum --ignore-missing -c SHA256SUMS   # "…tar.gz: OK" against the signed Bitcoin manifest
+  gpg --decrypt hashes.txt 2>/dev/null | grep -E '^[0-9a-f]{64}  monero-' | sha256sum --ignore-missing -c   # the signed Monero body
+  sha256sum bitcoin-31.1-*.tar.gz monero-*-v0.18.5.1.tar.bz2 bitcoin-31.1/bin/bitcoind monero-*-v0.18.5.1/monerod monero-*-v0.18.5.1/monero-wallet-rpc
 ) > "$OUT/binary-verification.txt"
 
 STATE="$(mktemp -d)/chains"
@@ -169,7 +171,8 @@ python3 scripts/setup-local-chains.py --bitcoin-bin "$TOOLS/bitcoin-31.1/bin" \
 BITCOIN_REGTEST_RPC_URL="$(python3 -c 'import json,sys; b=json.load(open(sys.argv[1]))["bitcoin"]; print("http://review:%s@127.0.0.1:%d" % (b["password"], b["port"]))' "$STATE/runtime.json")" \
   scripts/regtest-smoke.sh > "$OUT/regtest-smoke.log" 2>&1
 E2E_CHAIN_DATABASE_URL="$DB_URL" LOCAL_CHAIN_RUNTIME="$STATE/runtime.json" PLAYWRIGHT_JSON_OUTPUT_FILE="$OUT/playwright-report.json" \
-  npx playwright test --config=playwright.chain.config.ts --reporter=list,json > "$OUT/chain-journey.log" 2>&1
+  PLAYWRIGHT_HTML_OUTPUT_DIR="$OUT/html-report" PLAYWRIGHT_HTML_OPEN=never \
+  npx playwright test --config=playwright.chain.config.ts --reporter=list,json,html > "$OUT/chain-journey.log" 2>&1
 psql "$DB_URL" -c "\copy (SELECT * FROM payouts ORDER BY id) TO '$OUT/payouts.tsv' WITH (FORMAT csv, DELIMITER E'\t', HEADER)"
 psql "$DB_URL" -c "\copy (SELECT * FROM payments ORDER BY id) TO '$OUT/payments.tsv' WITH (FORMAT csv, DELIMITER E'\t', HEADER)"
 python3 scripts/setup-local-chains.py --stop "$STATE"
@@ -181,6 +184,10 @@ for secret in $(python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); pri
 done
 ```
 
+The HTML report keeps its test data in a base64 zip inside `index.html`, which that
+`grep` cannot read; decode the zip and search its files too, or rely on the JSON
+report, which holds the same results, errors and output.
+
 Then write `$OUT/MANIFEST.txt` by hand or script: the full commit SHA and that
 the checkout was clean, the run's start and end (UTC), the OS (`uname -srm` and
 `/etc/os-release`), `go version`, `node --version`, `npx playwright --version`, the
@@ -190,7 +197,7 @@ status. Finish with the checksums:
 
 ```sh
 (cd "$OUT" && sha256sum MANIFEST.txt binary-verification.txt chain-setup.log regtest-smoke.log \
-  chain-journey.log playwright-report.json payouts.tsv payments.tsv > SHA256SUMS)
+  chain-journey.log playwright-report.json html-report/index.html payouts.tsv payments.tsv > SHA256SUMS)
 ```
 
 `scripts/regtest-smoke.sh` leaves a wallet backup on the node's host (the path is

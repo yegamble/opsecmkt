@@ -515,7 +515,7 @@ The buyer's order page shows a QR code for the wallet payment request of exactly
 - **An excess below the minimum automatic payout** (0.0001 BTC, 0.001 XMR) is not returned: it goes to the vendor with the release, and both parties are told. Sending it back would cost more than it is worth and invite fee abuse.
 - **A refund or return larger than the order price is held** ("Held: larger than the order price") and every administrator is notified: it is a likely mistake. On **Admin → Payment providers**, open the order, check that the payment looks like a genuine mistake, then release it with the *Reviewed* confirmation; otherwise leave it held (or return it by hand and mark it sent). The two differ: a refund is held when it exceeds the price, a return only when the excess itself exceeds the price (the buyer paid more than twice the price and the order was completed).
 - **The hold does not stop coin swaps.** Refunds and returns up to the order price are sent automatically, with no review: a buyer who pays and has the order cancelled, lets an underpaid order expire, or has it cancelled and then sends to its address gets the deposits back. Anyone can therefore use the market's pooled wallet to swap coins up to a listing's price without review (the coins sent back are not the coins received); the hold only catches amounts above the price, and a buyer can open more orders.
-- **Every payout is sent with the network fee taken from the amount**, on both coins and for every kind: releases, refunds and returns (Bitcoin `subtractfeefromamount`; Monero `subtract_fee_from_outputs`, for releases too since A-232). No payout costs the market its fee, so repeatedly paying and cancelling, or a vendor buying its own listing, does not spend the market's funds on fees. The tests check the request the market sends (fake wallet and simulated wallet RPC); no real-chain run of a fee-deducted Monero payout or of an overpayment return is recorded yet (A-103).
+- **Every payout is sent with the network fee taken from the amount**, on both coins and for every kind: releases, refunds and returns (Bitcoin `subtractfeefromamount`; Monero `subtract_fee_from_outputs`, for releases too since A-232). No payout costs the market its fee, so repeatedly paying and cancelling, or a vendor buying its own listing, does not spend the market's funds on fees. The tests check the request the market sends (fake wallet and simulated wallet RPC), and on local chains (Bitcoin regtest and an offline Monero stagenet fork, at `1c62647`) every payout, Monero releases and overpayment returns included, arrived as its amount less the fee ([evidence table](verification.md#evidence-table)); no public test network run is recorded.
 
 #### Mainnet
 
@@ -549,10 +549,10 @@ proven with real funds. Know these before you take a real payment:
 
 - **No mainnet run is recorded** ([verification: not verified](verification.md#not-verified)): the mainnet
   refusals, labels and network-history guard are tested against fake wallets and simulated wallet RPC only.
-  No real-chain run (local or public) is recorded either for payouts as they are now sent (fee taken from the
-  amount, Monero releases included), overpayment returns, the large-payout review or underpaid-order expiry: their tests
-  use a fake wallet and simulated wallet RPC. The recorded local-chain runs predate them (a release and a
-  moderator refund, with a Monero refund's fee then paid by the market).
+  Payouts as they are now sent (fee taken from the amount, Monero releases included), overpayment returns, the
+  large-payout review, underpaid cancel and expiry, and a deposit after the close have been run on local chains
+  only (Bitcoin regtest and an offline Monero stagenet fork, at `1c62647`; see the
+  [evidence table](verification.md#evidence-table)). No public test network run is recorded.
 - **Coin swaps up to a listing's price are not reviewed.** Refunds and returns up to the order price are sent
   automatically (see [Overpayments](#overpayments-and-the-payment-qr-code)), so anyone can use the pooled
   wallet to swap coins up to any listing's price without review; only a refund above the price, or a return of
@@ -562,9 +562,6 @@ proven with real funds. Know these before you take a real payment:
   clearnet from the host, so peers can link the market's payouts to the host's IP address. Nothing in the
   Compose files routes the nodes through Tor; running them over Tor is not tested here.
 - **Open items** in the project's review ledger (`.claude/war-room/ledger.md`), each still unfixed:
-  - A-103: no commit-pinned real-chain rerun, with a retained manifest, covers the payout changes, including
-    Monero releases and refunds with the fee deducted, overpayment returns, the large-payout review and
-    underpaid expiry.
   - A-226: the [runtime wallet check](#node-image-versions) treats any monero-wallet-rpc that does not report
     RPC 1.31 from a release build as unverified, but a later release whose RPC did not change also reports
     1.31 and is not detected. Keep `MONERO_WALLET_IMAGE` on the pinned tag until the bump checklist is done.
