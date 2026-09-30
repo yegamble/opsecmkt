@@ -1,8 +1,8 @@
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { expect, test, type Locator } from '@playwright/test';
+import { expect, test } from '@playwright/test';
 import { uniqueHandle } from './db-fixtures';
-import { signedIn, submitAndLoad } from './db-helpers';
+import { signedIn, submitAndLoad, withinViewport } from './db-helpers';
 
 // A-253 (A-31): the moderator's payment-review disposition forms, submitted with JavaScript disabled against a real
 // database. No wallet runs here, so the flags are seeded in SQL (as db-admin.spec.ts seeds payouts): two deposits
@@ -100,17 +100,3 @@ test('a moderator records payment reviews at 320 px; buyer and vendor read the o
     for (const page of [mod, buyer, vendor]) await page.context().close();
   }
 });
-
-// A-275: an open review <details>, each of its forms, labels, fields and submit buttons lie horizontally within the
-// viewport: a form clipped inside the table's scrolling .table-wrap does not widen the document, so scrollWidth alone
-// cannot see it.
-async function withinViewport(review: Locator, width: number) {
-  const parts = review.locator('summary, form, label, input:not([type="hidden"]), textarea, button');
-  expect(await parts.count()).toBeGreaterThan(4);
-  const outside: string[] = [];
-  for (const part of await parts.all()) {
-    const box = (await part.boundingBox())!;
-    if (box.x < 0 || box.x + box.width > width) outside.push(`${await part.evaluate(e => e.outerHTML.slice(0, 60))}: x ${Math.round(box.x)} to ${Math.round(box.x + box.width)}`);
-  }
-  expect(outside, `review form parts outside 0..${width} px`).toEqual([]);
-}

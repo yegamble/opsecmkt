@@ -72,7 +72,14 @@
 <td>{{if .Attention}}<strong>Needs attention:</strong> {{end}}{{.StateLabel}}</td>
 <td class="mono">{{if .TxID}}{{.TxID}}{{else}}{{.Error}}{{end}}</td>
 <td>{{.Updated}}</td>
-<td>{{if or (eq .State "held") (eq .State "failed") (and (eq .State "sending") .Attention)}}<details class="payout-actions">
+<td>{{if or (eq .State "held") (eq .State "failed") (and (eq .State "sending") .Attention)}}<a class="text-link" href="#resolve-payout-{{.ID}}">Resolve payout {{.ID}}</a>{{else}}—{{end}}</td>
+</tr>{{else}}<tr>
+<td colspan="8">No payouts recorded.</td>
+</tr>{{end}}</tbody>
+</table>
+</div>{{/* A-281: the resolve forms sit under the table, full width, each linked from its row (as A-275 did for
+payment reviews): in the Action cell they widened the scrolling table, so at 320 px they lay off-screen. */}}{{range .Payouts}}{{if or (eq .State "held") (eq .State "failed") (and (eq .State "sending") .Attention)}}
+<details class="payout-actions" id="resolve-payout-{{.ID}}">
 <summary>Resolve payout {{.ID}}: {{.Kind}} {{.Amount}} {{.Currency}} to {{.Recipient}}, order {{.OrderShort}}</summary>
 {{if and .AddressCheck (not .Address)}}<p class="help">This payout was held when the recipient's account was suspended and has no payout address. It can be released after the recipient saves one (once the account is restored); check that address with them first.</p>
 {{else if .Waiting}}{{$threshold := .Threshold}}<p class="help">The payment watcher holds this payout while a credited deposit of {{if .OrderLink}}<a class="text-link" href="/order?id={{.OrderID}}">this order</a>{{else}}this order{{end}} is conflicted or below the confirmation threshold, and releases it by itself once the deposit confirms again. There is nothing to release until then:</p>
@@ -119,10 +126,5 @@
 {{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button type="submit">Mark sent</button>
 </form>
-</details>{{else}}—{{end}}</td>
-</tr>{{else}}<tr>
-<td colspan="8">No payouts recorded.</td>
-</tr>{{end}}</tbody>
-</table>
-</div>
+</details>{{end}}{{end}}
 </section>{{end}}

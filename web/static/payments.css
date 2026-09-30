@@ -66,11 +66,17 @@
 .payout-attention td {
   color:#ffdc9e
 }
-/* The resolve forms' help text and confirmations wrap inside their cell, so the whole "nothing was broadcast"
-   statement is readable while its checkbox has focus (A-116). */
+/* A-281: the resolve forms sit under the payouts table (their rows link here), not in a table cell, so at 320 px
+   their help text and confirmations wrap within the page and the whole "nothing was broadcast" statement is
+   readable while its checkbox has focus (A-116). Addresses and transaction IDs break anywhere. */
 .payout-actions {
-  white-space:normal;
-  min-width:18rem
+  margin:0 0 18px;
+  padding-bottom:18px;
+  border-bottom:1px solid var(--line);
+  overflow-wrap:anywhere
+}
+.payout-actions>p,.payout-actions form {
+  max-width:44rem
 }
 .payout-actions summary {
   cursor:pointer;
