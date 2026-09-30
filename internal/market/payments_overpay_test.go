@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"html"
 	"net/url"
 	"os"
 	"regexp"
@@ -360,11 +361,12 @@ func TestPayoutKindsPerOrder(t *testing.T) {
 // list every payout of the named orders (returns included), keep the refund by deleting the release together with
 // its return, keep the release (and its return) by deleting the refund, or, for a cancelled or refund-outcome order
 // whose return alone was sent, delete the unsent release and the refund and record that sent return as the order's
-// refund in the same transaction (A-283; a return without its release is refused since migration 073, A-268), and
-// check that no order is left with two settlements, a refund beside a return or a return without a release.
-// TestSettlementClashGuide runs it, with psql's :'order_id' bound as $1, and checks that UPGRADING.md carries it
-// verbatim (whitespace aside; keepReturn and returnAsRefund inside one BEGIN/COMMIT).
-var settlementClashSQL = struct{ list, keepRefund, keepRelease, keepReturn, returnAsRefund, check string }{
+// refund in the same transaction (A-283; a return without its release is refused since migration 073, A-268), with
+// a note stating the rest sent by hand (A-312), and check that no order is left with two settlements, a refund beside
+// a return or a return without a release. TestSettlementClashGuide runs it, with psql's :'order_id' bound as $1 and
+// the keepReturn/returnAsRefund/note block through psql, and checks that UPGRADING.md carries it verbatim
+// (whitespace aside; keepReturn, returnAsRefund and note inside one BEGIN/COMMIT).
+var settlementClashSQL = struct{ list, keepRefund, keepRelease, keepReturn, returnAsRefund, note, check string }{
 	list: `SELECT p.id, p.order_id, o.state AS order_state, p.kind, p.state, p.send_ambiguous, p.currency, p.amount, p.address, p.user_id,
   p.txid, p.error, p.created, p.updated
 FROM payouts p JOIN orders o ON o.id = p.order_id
@@ -376,6 +378,7 @@ ORDER BY p.order_id, p.kind;`,
 	keepRelease:    `DELETE FROM payouts WHERE order_id = :'order_id' AND kind = 'refund' RETURNING id, kind, state, txid;`,
 	keepReturn:     `DELETE FROM payouts WHERE order_id = :'order_id' AND kind IN ('release','refund') RETURNING id, kind, state, txid;`,
 	returnAsRefund: `UPDATE payouts SET kind = 'refund', updated = now() WHERE order_id = :'order_id' AND kind = 'return' RETURNING id, kind, state, txid;`,
+	note:           strings.Replace(returnWithoutReleaseSQL.note, "(UPGRADING.md section 18)", "(UPGRADING.md section 14)", 1),
 	check: `SELECT order_id, string_agg(kind, ',' ORDER BY kind) AS kinds FROM payouts GROUP BY order_id
 HAVING count(*) FILTER (WHERE kind IN ('release','refund')) > 1
     OR count(*) FILTER (WHERE kind IN ('refund','return')) > 1
@@ -450,6 +453,7 @@ func TestOneSettlementMigrationRefusesExistingClash(t *testing.T) {
 // settles with either statement the guide offers, and a refund alone sent on a completed order keeps the refund
 // (A-286); neither leaves the watcher anything to send but the kept refund.
 func TestSettlementClashGuide(t *testing.T) {
+	requirePsql(t)
 	p := newPayEnv(t)
 	apply := p.unsettle()
 	keepRefund, keepRelease := p.order, p.testEnv.order(p.buyer.ID, p.productID, "BTC", stateCompleted)
@@ -636,22 +640,27 @@ func TestSettlementClashGuide(t *testing.T) {
 	if p.count("SELECT count(*) FROM payouts") != remaining || p.settlementIndexes() != 0 {
 		t.Fatal("a refused migration changed payouts or left its index, trigger or record")
 	}
-	// The guide now deletes the unsent release and the refund and records the sent return as the order's refund, in
-	// one transaction.
-	if tx, err = p.DB.Begin(); err != nil {
-		t.Fatal(err)
-	}
-	for i, stmt := range []string{settlementClashSQL.keepReturn, settlementClashSQL.returnAsRefund} {
-		res, err := tx.Exec(strings.ReplaceAll(stmt, ":'order_id'", "$1"), returnSent)
-		if err != nil {
-			t.Fatal(err)
+	// The guide now deletes the unsent release and the refund and records the sent return as the order's refund with
+	// a note stating the rest sent by hand, in one transaction, run through psql as written (A-312). Without the
+	// amount or transaction ID, or with a malformed one, the block stops and nothing is changed.
+	returnAsRefundBlock := "BEGIN;\n" + settlementClashSQL.keepReturn + "\n" + settlementClashSQL.returnAsRefund + "\n" + settlementClashSQL.note + "\nCOMMIT;\n"
+	for _, vars := range refusedHandRefundVars {
+		out, err := p.psqlBlock(returnAsRefundBlock, append([]string{"order_id=" + returnSent}, vars...)...)
+		if err == nil || !strings.Contains(out, "ERROR") {
+			t.Fatalf("section 14 relabel block with %q: %v\n%s", vars, err, out)
 		}
-		if n, _ := res.RowsAffected(); n != int64(2-i) {
-			t.Fatalf("%s changed %d payouts, want %d", stmt, n, 2-i)
+		if p.kinds(returnSent) != "refund,release,return" || p.handRefundNotes(returnSent) != 0 {
+			t.Fatalf("section 14 relabel block with %q changed the order: %q, %d notes", vars, p.kinds(returnSent), p.handRefundNotes(returnSent))
 		}
 	}
-	if err = tx.Commit(); err != nil {
-		t.Fatal(err)
+	handTxid := strings.Repeat("f0", 32)
+	if out, err := p.psqlBlock(returnAsRefundBlock, "order_id="+returnSent, "amount=0.001", "txid="+handTxid); err != nil ||
+		!strings.Contains(out, "DELETE 2") || !strings.Contains(out, "UPDATE 1") || !strings.Contains(out, "INSERT 0 1") || !strings.Contains(out, "COMMIT") {
+		t.Fatalf("section 14 relabel block: %v\n%s", err, out)
+	}
+	wantNote := handRefundNote("14", "0.001 BTC", handTxid)
+	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND from_state='cancelled' AND to_state='cancelled' AND actor_id IS NULL AND note=$2", returnSent, wantNote); n != 1 || p.handRefundNotes(returnSent) != 1 {
+		t.Fatalf("section 14 relabel block wrote %d notes %q", p.handRefundNotes(returnSent), p.str("SELECT string_agg(note, ' | ') FROM order_events WHERE order_id=$1", returnSent))
 	}
 	// Step 5: the check finds nothing, and the migrations apply.
 	if got := checked(p.DB.Query); len(got) != 0 {
@@ -677,6 +686,13 @@ func TestSettlementClashGuide(t *testing.T) {
 	if st, txid := p.str("SELECT state FROM payouts WHERE order_id=$1", returnSent), p.str("SELECT txid FROM payouts WHERE order_id=$1", returnSent); st != "sent" || txid != "tx-return" {
 		t.Fatalf("returnSent's refund %s %s", st, txid)
 	}
+	// Both parties read the note in the order history; the vendor's page hides the buyer's transaction ID (A-214).
+	if page := html.UnescapeString(p.page("/order?id="+returnSent, p.buyerSess)); !strings.Contains(page, wantNote) {
+		t.Fatalf("the buyer's order history lacks %q", wantNote)
+	}
+	if page := html.UnescapeString(p.page("/order?id="+returnSent, p.vendorSess)); !strings.Contains(page, handRefundNote("14", "0.001 BTC", payoutTxidHidden)) || strings.Contains(page, handTxid) {
+		t.Fatal("the vendor's order history lacks the note or shows the buyer's transaction ID")
+	}
 	// A-286: what the watcher may still send is only the kept settlement's unsent rows: the refund for the cancelled
 	// order whose sent release was deleted, nothing for the one whose sent release was kept, and nothing for the
 	// completed order whose refund was sent (the vendor's price is settled by hand).
@@ -699,7 +715,7 @@ func TestSettlementClashGuide(t *testing.T) {
 	}
 	text := strings.Join(strings.Fields(string(doc)), " ")
 	for _, q := range []string{settlementClashSQL.list, settlementClashSQL.keepRefund, settlementClashSQL.keepRelease, settlementClashSQL.check,
-		"BEGIN; " + settlementClashSQL.keepReturn + " " + settlementClashSQL.returnAsRefund + " COMMIT;"} {
+		returnAsRefundBlock} {
 		if q = strings.Join(strings.Fields(q), " "); !strings.Contains(text, q) {
 			t.Fatalf("UPGRADING.md does not carry the settlement SQL %q", q)
 		}

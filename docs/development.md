@@ -132,7 +132,9 @@ go test -race -count=1 -timeout 30m ./...
 ```
 
 Tests create isolated schemas, apply migrations, create their own fixture users,
-listings and orders, then remove their schemas. Use a dedicated database even
+listings and orders, then remove their schemas. `TestSettlementClashGuide` and
+`TestReturnWithoutReleaseGuide` run UPGRADING.md's SQL blocks through `psql`, so
+install the PostgreSQL client on the host; without `psql` they skip (on CI they fail). Use a dedicated database even
 though schemas are isolated. Use different databases for simultaneous Go test
 processes: the watcher uses a database-wide advisory lock. With a database the
 `internal/market` race run takes about 7–10 minutes, close to `go test`'s default

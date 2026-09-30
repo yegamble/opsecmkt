@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html"
 	"net/url"
 	"os"
+	"os/exec"
 	"regexp"
 	"slices"
 	"sort"
@@ -273,13 +275,78 @@ func (p *payEnv) returnGuardApplied() int {
 		p.count("SELECT count(*) FROM schema_migrations WHERE version=73")
 }
 
+// requirePsql skips a test that runs UPGRADING.md's SQL blocks through psql when psql is not installed, except on
+// CI, which must run them.
+func requirePsql(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("psql"); err != nil {
+		if os.Getenv("CI") != "" {
+			t.Fatal("psql not installed: CI must run UPGRADING.md's SQL blocks as written")
+		}
+		t.Skip("psql not installed: UPGRADING.md's SQL blocks are run with psql")
+	}
+}
+
+// psqlBlock runs an UPGRADING.md SQL block in the test's schema the way its db_sql does (psql -X -v ON_ERROR_STOP=1,
+// the block on standard input), with vars passed as psql's -v NAME=VALUE, and returns psql's output and exit error.
+func (p *payEnv) psqlBlock(block string, vars ...string) (string, error) {
+	p.t.Helper()
+	u, err := url.Parse(os.Getenv("DATABASE_URL"))
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	q := u.Query()
+	schema := q.Get("search_path")
+	q.Del("search_path") // pgx reads it from the URL; psql takes it as a server option
+	u.RawQuery = q.Encode()
+	args := []string{"-X", "-v", "ON_ERROR_STOP=1", "-d", u.String()}
+	for _, v := range vars {
+		args = append(args, "-v", v)
+	}
+	cmd := exec.Command("psql", args...)
+	cmd.Env = append(os.Environ(), "PGOPTIONS=-c search_path="+schema)
+	cmd.Stdin = strings.NewReader(block)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+// handRefundNotes counts the order-history notes the UPGRADING.md relabel blocks write for order (A-312).
+func (p *payEnv) handRefundNotes(order string) int {
+	p.t.Helper()
+	return p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE 'Refund recorded by hand (UPGRADING.md section %'", order)
+}
+
+// handRefundNote is the note a relabel block of UPGRADING.md section (14 or 18) records, as the order page shows it.
+func handRefundNote(section, amount, txid string) string {
+	return "Refund recorded by hand (UPGRADING.md section " + section + "): the overpayment returned to the buyer earlier is this order's refund, and the remaining " +
+		amount + " was sent to the buyer by hand from the market wallet in transaction " + txid + "."
+}
+
+// refusedHandRefundVars are relabel-block variables beside order_id that must stop the block with nothing changed:
+// a missing amount or transaction ID (psql leaves :'amount' in the SQL, a syntax error), an empty, non-numeric or
+// non-positive amount, and an empty or malformed transaction ID.
+var refusedHandRefundVars = [][]string{
+	nil,
+	{"amount=0.001"},
+	{"txid=" + strings.Repeat("e7", 32)},
+	{"amount=", "txid=" + strings.Repeat("e7", 32)},
+	{"amount=abc", "txid=" + strings.Repeat("e7", 32)},
+	{"amount=0", "txid=" + strings.Repeat("e7", 32)},
+	{"amount=-0.001", "txid=" + strings.Repeat("e7", 32)},
+	{"amount=0.001", "txid="},
+	{"amount=0.001", "txid=TRANSACTION_ID"},
+	{"amount=0.001", "txid=" + strings.Repeat("E7", 32)},
+	{"amount=0.001", "txid=" + strings.Repeat("e7", 31)},
+}
+
 // returnWithoutReleaseSQL is the SQL UPGRADING.md section 18 gives for settling an order migration 073 refuses:
 // list the payouts of every order with a return and no release, restore its release held for an administrator,
 // record a release paid outside the market as sent, record a sent return of a cancelled or refund-outcome order as
-// its refund, delete an unsent return, and check that no order is left with a return and no release.
-// TestReturnWithoutReleaseGuide runs it with psql's variables bound as $1 (order_id), $2 (address), $3 (txid) and
-// checks that UPGRADING.md carries it verbatim (whitespace aside).
-var returnWithoutReleaseSQL = struct{ list, restore, record, relabel, drop, check string }{
+// its refund with a note stating the rest sent by hand (relabel and note, one transaction), delete an unsent return,
+// and check that no order is left with a return and no release. TestReturnWithoutReleaseGuide runs the relabel
+// block through psql and the other statements with psql's variables bound as $1 (order_id), $2 (address), $3 (txid),
+// and checks that UPGRADING.md carries it verbatim (whitespace aside).
+var returnWithoutReleaseSQL = struct{ list, restore, record, relabel, note, drop, check string }{
 	list: `SELECT p.id, p.order_id, o.state AS order_state, d.outcome AS dispute_outcome, o.amount AS price, p.kind, p.state, p.send_ambiguous,
   p.currency, p.amount, p.address, p.user_id, p.txid, p.error, p.created, p.updated
 FROM payouts p JOIN orders o ON o.id = p.order_id LEFT JOIN disputes d ON d.order_id = p.order_id
@@ -300,6 +367,13 @@ RETURNING id, kind, state, amount, address, txid;`,
 	relabel: `UPDATE payouts SET kind = 'refund', updated = now() WHERE order_id = :'order_id' AND kind = 'return'
   AND NOT EXISTS (SELECT 1 FROM payouts l WHERE l.order_id = payouts.order_id AND l.kind = 'release')
 RETURNING id, kind, state, amount, txid;`,
+	note: `INSERT INTO order_events(order_id, from_state, to_state, note)
+SELECT o.id, o.state, o.state, 'Refund recorded by hand (UPGRADING.md section 18): the overpayment returned to the buyer earlier is this order''s refund, and the remaining '
+  || CASE WHEN :'amount'::numeric > 0 THEN trim_scale(:'amount'::numeric)::text END || ' ' || o.currency
+  || ' was sent to the buyer by hand from the market wallet in transaction ' || CASE WHEN :'txid' ~ '^[0-9a-f]{64}$' THEN :'txid' END || '.'
+FROM orders o
+WHERE o.id = :'order_id' AND EXISTS (SELECT 1 FROM payouts r WHERE r.order_id = o.id AND r.kind = 'refund' AND r.updated = now())
+RETURNING order_id, note;`,
 	drop: `DELETE FROM payouts WHERE order_id = :'order_id' AND kind = 'return' AND state <> 'sent'
   AND NOT EXISTS (SELECT 1 FROM payouts l WHERE l.order_id = payouts.order_id AND l.kind = 'release')
 RETURNING id, kind, state, txid;`,
@@ -313,6 +387,7 @@ HAVING count(*) FILTER (WHERE kind = 'return') > 0 AND count(*) FILTER (WHERE ki
 // gets its release back, held for an administrator or recorded as paid; a cancelled order's sent return becomes its
 // refund, an unsent one is deleted) and its check then finds nothing, after which the migration applies.
 func TestReturnWithoutReleaseGuide(t *testing.T) {
+	requirePsql(t)
 	p := newPayEnv(t)
 	p.setPayoutAddress(p.vendor, "fake-testnet-vendor")
 	p.setPayoutAddress(p.buyer, "fake-testnet-buyer")
@@ -426,10 +501,44 @@ func TestReturnWithoutReleaseGuide(t *testing.T) {
 	run(returnWithoutReleaseSQL.record, 0, refundOnly, "fake-testnet-vendor", "tx-release-by-hand")
 	run(returnWithoutReleaseSQL.drop, 0, cancelledSent)
 	run(returnWithoutReleaseSQL.drop, 0, clean) // a return beside its release is never touched
-	run(returnWithoutReleaseSQL.relabel, 0, clean)
+	// The relabel block runs through psql as written (A-312). A return beside its release is not relabelled and no
+	// note is written.
+	handTxid := strings.Repeat("e7", 32)
+	relabelBlock := "BEGIN;\n" + returnWithoutReleaseSQL.relabel + "\n" + returnWithoutReleaseSQL.note + "\nCOMMIT;\n"
+	if out, err := p.psqlBlock(relabelBlock, "order_id="+clean, "amount=0.001", "txid="+handTxid); err != nil || !strings.Contains(out, "UPDATE 0") || !strings.Contains(out, "INSERT 0 0") {
+		t.Fatalf("relabel block on a return beside its release: %v\n%s", err, out)
+	}
+	if p.kinds(clean) != "release,return" || p.handRefundNotes(clean) != 0 {
+		t.Fatalf("relabel block changed a return beside its release: %q, %d notes", p.kinds(clean), p.handRefundNotes(clean))
+	}
+	// Nor does an order whose refund the block did not relabel get a note (a mistyped order ID of a refunded order).
+	if out, err := p.psqlBlock(relabelBlock, "order_id="+refundOnly, "amount=0.001", "txid="+handTxid); err != nil || !strings.Contains(out, "UPDATE 0") || !strings.Contains(out, "INSERT 0 0") {
+		t.Fatalf("relabel block on a refunded order: %v\n%s", err, out)
+	}
+	if p.kinds(refundOnly) != "refund" || p.handRefundNotes(refundOnly) != 0 {
+		t.Fatalf("relabel block changed a refunded order: %q, %d notes", p.kinds(refundOnly), p.handRefundNotes(refundOnly))
+	}
 	run(returnWithoutReleaseSQL.restore, 1, owed)
 	run(returnWithoutReleaseSQL.record, 1, paid, "fake-testnet-vendor-old", "tx-release-by-hand")
-	run(returnWithoutReleaseSQL.relabel, 1, cancelledSent)
+	// Without the amount or transaction ID of the rest sent by hand, or with a malformed one, the block stops with an
+	// error and nothing is changed: no empty note, and the return is not relabelled.
+	for _, vars := range refusedHandRefundVars {
+		out, err := p.psqlBlock(relabelBlock, append([]string{"order_id=" + cancelledSent}, vars...)...)
+		if err == nil || !strings.Contains(out, "ERROR") {
+			t.Fatalf("relabel block with %q: %v\n%s", vars, err, out)
+		}
+		if p.kinds(cancelledSent) != "return" || p.handRefundNotes(cancelledSent) != 0 {
+			t.Fatalf("relabel block with %q changed the order: %q, %d notes", vars, p.kinds(cancelledSent), p.handRefundNotes(cancelledSent))
+		}
+	}
+	if out, err := p.psqlBlock(relabelBlock, "order_id="+cancelledSent, "amount=0.00100000", "txid="+handTxid); err != nil ||
+		!strings.Contains(out, "UPDATE 1") || !strings.Contains(out, "INSERT 0 1") || !strings.Contains(out, "COMMIT") {
+		t.Fatalf("relabel block: %v\n%s", err, out)
+	}
+	wantNote := handRefundNote("18", "0.001 BTC", handTxid)
+	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND from_state='cancelled' AND to_state='cancelled' AND actor_id IS NULL AND note=$2", cancelledSent, wantNote); n != 1 || p.handRefundNotes(cancelledSent) != 1 {
+		t.Fatalf("relabel block wrote %d notes %q", p.handRefundNotes(cancelledSent), p.str("SELECT string_agg(note, ' | ') FROM order_events WHERE order_id=$1", cancelledSent))
+	}
 	run(returnWithoutReleaseSQL.drop, 1, cancelledUnsent)
 	if got := checked(); len(got) != 0 {
 		t.Fatalf("check lists %v after the guide", got)
@@ -471,6 +580,13 @@ func TestReturnWithoutReleaseGuide(t *testing.T) {
 	if got := payouts(cancelledSent); len(got) != 1 || got[0].kind != "refund" || got[0].state != "sent" || got[0].txid != "tx-return" || got[0].user != p.buyer.ID {
 		t.Fatalf("cancelled order whose return was sent: %+v", got)
 	}
+	// Both parties read the note in the order history; the vendor's page hides the buyer's transaction ID (A-214).
+	if page := html.UnescapeString(p.page("/order?id="+cancelledSent, p.buyerSess)); !strings.Contains(page, wantNote) {
+		t.Fatalf("the buyer's order history lacks %q", wantNote)
+	}
+	if page := html.UnescapeString(p.page("/order?id="+cancelledSent, p.vendorSess)); !strings.Contains(page, handRefundNote("18", "0.001 BTC", payoutTxidHidden)) || strings.Contains(page, handTxid) {
+		t.Fatal("the vendor's order history lacks the note or shows the buyer's transaction ID")
+	}
 	if p.kinds(cancelledUnsent) != "" || p.kinds(clean) != "release,return" || p.kinds(releaseOnly) != "release" || p.kinds(refundOnly) != "refund" {
 		t.Fatalf("after the guide: %q %q %q %q", p.kinds(cancelledUnsent), p.kinds(clean), p.kinds(releaseOnly), p.kinds(refundOnly))
 	}
@@ -491,7 +607,7 @@ func TestReturnWithoutReleaseGuide(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := strings.Join(strings.Fields(string(doc)), " ")
-	for _, q := range []string{returnWithoutReleaseSQL.list, returnWithoutReleaseSQL.restore, returnWithoutReleaseSQL.record, returnWithoutReleaseSQL.relabel, returnWithoutReleaseSQL.drop, returnWithoutReleaseSQL.check} {
+	for _, q := range []string{returnWithoutReleaseSQL.list, returnWithoutReleaseSQL.restore, returnWithoutReleaseSQL.record, relabelBlock, returnWithoutReleaseSQL.drop, returnWithoutReleaseSQL.check} {
 		if q = strings.Join(strings.Fields(q), " "); !strings.Contains(text, q) {
 			t.Fatalf("UPGRADING.md does not carry the section 18 SQL %q", q)
 		}

@@ -485,3 +485,69 @@ test('automatic digital delivery and administrator recovery of a rejected payout
     await Promise.allSettled([admin.context().close(), vendor.context().close(), buyer.context().close()]);
   }
 });
+
+// A-313: an overpaid order completes with two payouts, the price to the vendor and the excess back to the buyer, each
+// sent once through the wallet. A fresh buyer (wallet_admin's password confirmations are spent above).
+test('an overpaid BTC order releases the price and returns the excess, each sent once', async ({ browser, baseURL, request }) => {
+  const vendor = await signedIn(browser, baseURL, 'wallet_admin', password, false);
+  const overpayerPassword = 'wallet-browser-overpayer-password-123';
+  const buyer = await signedIn(browser, baseURL, 'wallet_overpayer', overpayerPassword, true);
+  try {
+    const vendorAddress = 'bcrt1qfixturepayout000000000000';
+    const returnAddress = 'bcrt1qfixtureoverpayreturn00000';
+    await buyer.goto('/account');
+    const form = buyer.locator('form', { has: buyer.getByRole('button', { name: 'Save BTC address' }) });
+    await form.locator('input[name="address"]').fill(returnAddress);
+    await form.getByLabel('Current password', { exact: true }).fill(overpayerPassword);
+    await submit(buyer, form.getByRole('button'));
+    await expect(form.locator('input[name="address"]')).toHaveValue(returnAddress);
+    await buyer.goto('/?q=Wallet%20BTC%20journey');
+    await buyer.getByRole('link', { name: 'Wallet BTC journey', exact: true }).click();
+    await buyer.getByRole('link', { name: 'Review order draft' }).click();
+    await submit(buyer, buyer.getByRole('button', { name: 'Create unfunded draft' }));
+    await buyer.getByRole('button', { name: 'Request payment address' }).click();
+    await expectNotice(buyer, 'Payment address ready.');
+    const orderURL = buyer.url();
+    const address = (await buyer.locator('.payment-address .mono').innerText()).trim();
+    const sends = async () => ((await (await request.get(`${rpc}/test/state`)).json()).payouts as any[]);
+    const before = (await sends()).length;
+    // One deposit of one and a half times the price.
+    expect((await request.post(`${rpc}/test/deposit`, { data: { address, amount: 150_000 } })).ok()).toBeTruthy();
+    expect((await request.post(`${rpc}/test/confirm`, { data: { address } })).ok()).toBeTruthy();
+    await reloadUntil(buyer, async () => { await expect(buyer.locator('.page-head .badge')).toHaveText('Paid', { timeout: 500 }); });
+    await vendor.goto(orderURL);
+    await submit(vendor, vendor.getByRole('button', { name: 'Mark as shipped' }));
+    await buyer.reload();
+    // A-122: the complete form states both payouts.
+    const release = buyer.getByRole('checkbox', { name: 'Release 0.001 BTC (test network) to wallet_admin (the price) and return the 0.0005 BTC paid over the price to wallet_overpayer; network fee deducted from each. This is final.', exact: true });
+    await expect(buyer.locator('input[name="amount_seen"]')).toHaveValue('150000');
+    await release.check();
+    await submit(buyer, buyer.getByRole('button', { name: 'Confirm receipt and complete' }));
+    await expect(buyer.locator('.page-head .badge')).toHaveText('Completed');
+    await expect.poll(async () => (await sends()).length - before, { timeout: 30_000 }).toBe(2);
+    const sent = (await sends()).slice(before);
+    expect(sent.filter(p => p.address === vendorAddress)).toEqual([expect.objectContaining({ currency: 'BTC', amount: 100_000, fee_from_amount: true })]);
+    expect(sent.filter(p => p.address === returnAddress)).toEqual([expect.objectContaining({ currency: 'BTC', amount: 50_000, fee_from_amount: true })]);
+    const returnTxid: string = sent.find(p => p.address === returnAddress).txid;
+    const status = (kind: string) => buyer.locator('.payment-figures', { has: buyer.getByText(kind, { exact: true }) })
+      .locator('div', { has: buyer.getByText('Payout status', { exact: true }) });
+    await reloadUntil(buyer, async () => {
+      await expect(status('Release to vendor')).toContainText('Sent', { timeout: 500 });
+      await expect(status('Return to buyer')).toContainText('Sent', { timeout: 500 });
+    });
+    await expect(buyer.getByRole('heading', { name: 'Return of the amount paid over the price' })).toBeVisible();
+    await expect(buyer.locator('main')).toContainText(returnTxid);
+    await fitsAt(buyer, 'overpaid order completed');
+    // More watcher passes send nothing further.
+    const checks = (await (await request.get(`${rpc}/test/state`)).json()).checks;
+    await expect.poll(async () => (await (await request.get(`${rpc}/test/state`)).json()).checks).toBeGreaterThan(checks + 2);
+    expect((await sends()).length - before).toBe(2);
+    // A-214: the vendor sees the return's status, not its transaction ID or the buyer's address.
+    await vendor.goto(orderURL);
+    await expect(vendor.locator('.payment-figures', { has: vendor.getByText('Return to buyer', { exact: true }) })).toContainText('Sent');
+    await expect(vendor.locator('main')).not.toContainText(returnTxid);
+    await expect(vendor.locator('main')).not.toContainText(returnAddress);
+  } finally {
+    await Promise.allSettled([vendor.context().close(), buyer.context().close()]);
+  }
+});
