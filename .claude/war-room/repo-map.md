@@ -43,7 +43,9 @@ Read this once, before you form any opinion. Then read `CLAUDE.md`,
    settlement transaction per escrow.) One settlement per order: a release plus its
    overpayment return, or one refund (`payouts` `UNIQUE (order_id, kind)` since
    migration 064; `enqueuePayout` returns early once any payout row exists for the
-   order). Sends are a single wallet call claimed by pending→sending
+   order). The database refuses the other shapes: a release beside a refund (069), a
+   refund beside a return (070), and a return without its release (073, a deferred
+   constraint trigger). Sends are a single wallet call claimed by pending→sending
    compare-and-set, never retried automatically; the restore gate
    (`payments_recovery_required`) pauses payouts.
 5. **The server never decrypts messages** and never stores shipping addresses.
@@ -105,4 +107,7 @@ are **not** live-chain evidence. Merged is not released is not deployed.
   built with an older Go than `go.mod`'s `toolchain` line, it exits 1 with
   "requires newer Go version"; run `GOTOOLCHAIN=go1.27.1 go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...`
   and check the exit status (a piped `tail` hides the failure).
+- Migration 073's constraint trigger `payouts_return_needs_release` is deferred to COMMIT: a later migration
+  that writes `payouts` rows and then alters or indexes `payouts` in the same startup transaction fails with
+  "pending trigger events" unless it runs `SET CONSTRAINTS payouts_return_needs_release IMMEDIATE` first.
 - Merging to `main` requires the owner; CI's **CI passed** check is required.
