@@ -342,23 +342,32 @@ func TestResolveRefusesFormLoadedBeforeReply(t *testing.T) {
 	product := w.e.product(w.vendorID, "physical")
 	order := w.e.order(w.buyerID, product, "BTC", stateShipped)
 	w.expect("/disputes", w.buyer, form("order_id", order, "reason", "The parcel never arrived at the agreed place."), 303, "")
-	var disputeID string
-	if err := w.e.DB.QueryRow("SELECT id FROM disputes WHERE order_id=$1", order).Scan(&disputeID); err != nil {
-		t.Fatal(err)
-	}
-	replySeen := regexp.MustCompile(`name="reply_seen" value="([01])"`)
-	seen := func(page string) string {
+	disputeOf := func(order string) string {
 		t.Helper()
-		m := replySeen.FindAllStringSubmatch(page, -1)
+		var id string
+		if err := w.e.DB.QueryRow("SELECT id FROM disputes WHERE order_id=$1", order).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	disputeID := disputeOf(order)
+	// A second open dispute (A-295, R6): its form on the 409 page keeps an empty decision.
+	otherOrder := w.e.order(w.buyerID, product, "BTC", stateShipped)
+	w.expect("/disputes", w.buyer, form("order_id", otherOrder, "reason", "The second parcel never arrived either."), 303, "")
+	otherID := disputeOf(otherOrder)
+	// seen reads reply_seen from dispute id's resolve form.
+	seen := func(page, id string) string {
+		t.Helper()
+		m := regexp.MustCompile(`name="id" value="`+id+`">\n<input type="hidden" name="reply_seen" value="([01])"`).FindAllStringSubmatch(page, -1)
 		if len(m) != 1 {
-			t.Fatalf("resolve forms with reply_seen: %d", len(m))
+			t.Fatalf("resolve forms with reply_seen for %s: %d", id, len(m))
 		}
 		return m[0][1]
 	}
 	for _, path := range []string{"/moderator", "/disputes"} {
 		page := w.page(path, w.mod, 200)
 		mustContain(t, page, "The vendor has not replied")
-		if v := seen(page); v != "0" {
+		if v := seen(page, disputeID); v != "0" {
 			t.Fatalf("%s: reply_seen=%s before the reply", path, v)
 		}
 	}
@@ -377,7 +386,11 @@ func TestResolveRefusesFormLoadedBeforeReply(t *testing.T) {
 			t.Fatalf("stale resolve: status %d %q", r.Code, body)
 		}
 		mustContain(t, body, `<div class="alert error" role="alert">The vendor replied to this dispute after the form was loaded. Read the reply below and decide again. Nothing was changed.</div>`,
-			"Reply from the vendor", reply, "The vendor replied; the reply is shown above.", ">\n"+decision+"</textarea>", `name="reply_seen" value="1"`)
+			"Reply from the vendor", reply, "The vendor replied; the reply is shown above.", `aria-describedby="resolution-help-`+disputeID+`">`+"\n"+decision+"</textarea>",
+			`aria-describedby="resolution-help-`+otherID+`">`+"\n</textarea>")
+		if seen(body, disputeID) != "1" || seen(body, otherID) != "0" || strings.Count(body, decision) != 1 {
+			t.Fatal("the 409 page does not show the reply in that dispute's form, or keeps the decision in another dispute's form")
+		}
 		if w.state(order) != stateDisputed || w.count("SELECT count(*) FROM disputes WHERE id=$1 AND status='Open' AND outcome='' AND resolution=''", disputeID) != 1 ||
 			w.count("SELECT count(*) FROM order_events WHERE order_id=$1", order) != events || w.count("SELECT count(*) FROM payouts WHERE order_id=$1", order) != 0 {
 			t.Fatal("a refused resolve changed the dispute, the order or the payouts")
@@ -388,12 +401,58 @@ func TestResolveRefusesFormLoadedBeforeReply(t *testing.T) {
 	missing := resolveConfirmed(form("id", disputeID, "outcome", "refund", "resolution", decision), 0)
 	refused(missing)
 	// Another resolver's desk is unaffected: it shows the reply and its form says so.
-	if v := seen(w.page("/moderator", modB, 200)); v != "1" {
+	if v := seen(w.page("/moderator", modB, 200), disputeID); v != "1" {
 		t.Fatalf("reply_seen=%s after the reply", v)
 	}
 	// The reloaded form resolves.
 	w.expect("/resolve", w.mod, resolveConfirmed(form("id", disputeID, "outcome", "refund", "resolution", decision, "reply_seen", "1"), 0), 303, "")
 	if w.state(order) != stateResolved {
 		t.Fatalf("state %s after resolving with the reloaded form", w.state(order))
+	}
+
+	// A-295 (R5): the reply is read after the dispute row is locked, not before. The test holds that row, which the
+	// resolve's UPDATE waits on; while it waits, the reply is recorded and committed. A resolve that had read the
+	// reply before taking the lock would then accept a form that never showed it.
+	if v := seen(w.page("/moderator", w.mod, 200), otherID); v != "0" {
+		t.Fatalf("reply_seen=%s before the second dispute's reply", v)
+	}
+	otherEvents := w.count("SELECT count(*) FROM order_events WHERE order_id=$1", otherOrder)
+	hold, err := w.e.DB.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hold.Rollback()
+	if _, err = hold.Exec("SELECT 1 FROM disputes WHERE id=$1 FOR UPDATE", otherID); err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan agResult, 1)
+	go func() {
+		r := w.post("/resolve", w.mod, resolveConfirmed(form("id", otherID, "outcome", "release", "resolution", "Release: the courier record shows delivery.", "reply_seen", "0"), 0))
+		result <- agResult{r.Code, r.Body.String()}
+	}()
+	for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		var waiting int
+		if err = w.e.DB.QueryRow("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE 'UPDATE disputes%'").Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting == 1 {
+			break
+		}
+		if len(result) > 0 || time.Now().After(deadline) {
+			t.Fatalf("the resolve is not waiting on the dispute row (waiting %d, answered %d)", waiting, len(result))
+		}
+	}
+	if _, err = hold.Exec("INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,'disputed','disputed',$2,$3)", otherOrder, w.vendorID, disputeReplyPrefix+reply); err != nil {
+		t.Fatal(err)
+	}
+	if err = hold.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if r := <-result; r.code != 409 || !strings.Contains(r.body, "The vendor replied to this dispute after the form was loaded.") {
+		t.Fatalf("resolve racing the reply: status %d %q", r.code, r.body)
+	}
+	if w.state(otherOrder) != stateDisputed || w.count("SELECT count(*) FROM disputes WHERE id=$1 AND status='Open' AND outcome='' AND resolution=''", otherID) != 1 ||
+		w.count("SELECT count(*) FROM order_events WHERE order_id=$1", otherOrder) != otherEvents+1 || w.count("SELECT count(*) FROM payouts WHERE order_id=$1", otherOrder) != 0 {
+		t.Fatal("a resolve racing the reply changed the dispute, the order or the payouts")
 	}
 }
