@@ -665,8 +665,10 @@ for a market that takes real payments.
   buyer's cancel form says, before its button, that coins already sent stay at the escrow address and are not seen
   until escrow is available again, and not to cancel after sending), and coins already sent to it then arrive after
   the order closed.
-- **Deposits after an escrow order closed** (cancelled or completed) are recorded once escrow reads them, never
-  counted, and stay in the order's escrow; recovering them is part of the settlement step, not built. A confirmed
+- **Deposits after an escrow order closed** (cancelled or completed) are recorded once escrow reads them (the escrow watcher reads
+  an escrow for 30 days after checkout, and for 24 hours after its order last changed, such as when it closed; past both the
+  address is no longer watched and a later deposit is not recorded; the order page then says so instead of "nothing was
+  received"), never counted, and stay in the order's escrow; recovering them is part of the settlement step, not built. A confirmed
   one is flagged for payment review as a pooled late deposit is: one order note, the buyer told the amount once per
   episode (not the vendor) and each moderator and administrator once. The order page's escrow status reads
   "Cancelled; a deposit arrived after the order closed …". The coins are not in the pooled wallet, so do not refund
