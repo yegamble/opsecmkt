@@ -268,7 +268,8 @@ func revocationsFirst(t *testing.T, armored string, sigType packet.SignatureType
 
 // TestKeyUpdateThatDropsRevocationOrRollsBackSubkeyClearsProof: a same-fingerprint update that leaves a subkey or
 // user ID the saved key revoked unrevoked - its revocation dropped, or moved where OpenPGP software ignores it (A-261),
-// or the revoked subkey or user ID left out while the revocation stays - or that would make others encrypt to an older
+// or the revoked subkey or user ID left out while the revocation stays, or an unrevoked copy of the revoked subkey
+// added beside it - or that would make others encrypt to an older
 // subkey, is saved as a changed key: the proof and PGP sign-in are cleared, the change time is recorded again (A-158)
 // and the owner gets an explicit alert, never the plain "Profile saved." notice. Renewing a key that has a revoked subkey and
 // user ID, renewing only the primary key and adding a newer subkey keep the proof.
@@ -344,6 +345,36 @@ func TestKeyUpdateThatDropsRevocationOrRollsBackSubkeyClearsProof(t *testing.T) 
 				defer func() { k.Identities[second] = id }()
 				return revocationsFirst(t, armoredPublicKey(t, k), packet.SigTypeCertificationRevocation, id.Revocations...)
 			}},
+		// The revoked subkey kept with its revocation, plus an unrevoked copy of it (its packet and binding signature
+		// appended): OpenPGP readers see two subkeys with one fingerprint, and the copy reads as unrevoked (QA18g-1).
+		{"duplicate_unrevoked_subkey_copy", "revocation", keyRevocationWhy,
+			func(k *openpgp.Entity) string {
+				revokeSubkey(k, 1)
+				return armoredPublicKey(t, k)
+			},
+			func(k *openpgp.Entity) string {
+				_, _, data, err := decodePublicKey(armoredPublicKey(t, k))
+				if err != nil {
+					t.Fatal(err)
+				}
+				var buf bytes.Buffer
+				w, err := armor.Encode(&buf, openpgp.PublicKeyType, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err = w.Write(data); err == nil {
+					if err = k.Subkeys[1].PublicKey.Serialize(w); err == nil {
+						err = k.Subkeys[1].Sig.Serialize(w)
+					}
+				}
+				if err == nil {
+					err = w.Close()
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				return buf.String()
+			}},
 		{"subkey", "subkey", keySubkeyWhy,
 			func(k *openpgp.Entity) string { return armoredPublicKey(t, k) },
 			func(k *openpgp.Entity) string {
@@ -395,6 +426,22 @@ func TestKeyUpdateThatDropsRevocationOrRollsBackSubkeyClearsProof(t *testing.T) 
 					if !has[sig] {
 						t.Fatal("the pasted variant lost a revocation signature's bytes")
 					}
+				}
+			}
+			if tc.name == "duplicate_unrevoked_subkey_copy" {
+				dup, _, _ := parsePublicKey(pasted)
+				revoked, unrevoked := 0, 0
+				for _, s := range dup.Subkeys {
+					if bytes.Equal(s.PublicKey.Fingerprint, key.Subkeys[1].PublicKey.Fingerprint) {
+						if len(s.Revocations) > 0 {
+							revoked++
+						} else {
+							unrevoked++
+						}
+					}
+				}
+				if revoked != 1 || unrevoked != 1 {
+					t.Fatalf("the pasted variant has %d revoked and %d unrevoked copies of the subkey, want 1 and 1", revoked, unrevoked)
 				}
 			}
 			if tc.name == "moved_subkey_revocation" {
