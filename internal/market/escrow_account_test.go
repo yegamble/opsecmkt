@@ -184,6 +184,34 @@ func TestEscrowStartupDisabled(t *testing.T) {
 	if strings.Contains(logs.String(), "has no available keys") || strings.Contains(logs.String(), "127.0.0.1") {
 		t.Fatalf("log carries node text: %s", logs.String())
 	}
+	// A key registered while escrow was up, then a start with the node down: the page, practice request included,
+	// says escrow is unavailable and builds nothing (QA25-3, A-309: practice is offered only while escrow is up).
+	a.Close()
+	core.mu.Lock()
+	core.arbiterCode = 0
+	core.mu.Unlock()
+	if a, _, err = startApp(t, dsn); err != nil || a.escrow == nil {
+		t.Fatalf("escrow up: %v", err)
+	}
+	e = &testEnv{t: t, A: a, DB: a.db}
+	uid, sess2 := e.user("escrow_down_registered", "buyer")
+	if code, body := registerKey(e, sess2, testBIP48Key); code != 303 {
+		t.Fatalf("register while up: %d %s", code, body)
+	}
+	a.Close()
+	srv.down.Store(true)
+	if a, _, err = startApp(t, dsn); err != nil || a.escrow != nil {
+		t.Fatalf("node down: %v", err)
+	}
+	e = &testEnv{t: t, A: a, DB: a.db}
+	calls := len(core.methods())
+	w := e.do("GET", "/escrow-key?practice=1", sess2, nil)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "Bitcoin escrow unavailable") || strings.Contains(w.Body.String(), "escrow-psbt") || len(core.methods()) != calls {
+		t.Fatalf("practice while down: %d %s", w.Code, w.Body.String())
+	}
+	if agInt(e, "SELECT count(*) FROM user_escrow_keys WHERE user_id=$1 AND active_at IS NULL", uid) != 1 {
+		t.Fatal("key row")
+	}
 }
 
 // The arbiter fingerprint is pinned at the first start; a different one later disables escrow with a fixed line
@@ -273,6 +301,24 @@ func TestEscrowKeyRegister(t *testing.T) {
 	if w.Code != 303 || agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1", uid) != 1 {
 		t.Fatalf("unchanged: %d", w.Code)
 	}
+	// The same key with a corrected fingerprint or path is a change, not "unchanged": it needs the password, updates
+	// the origin and is audited (QA25-3, A-309).
+	for _, in := range []string{"[0000beef/48h/1h/0h/2h]" + k.XPub, "[0000beef/48h/1h/5h/2h]" + k.XPub} {
+		if code, body := registerKey(e, sess, in); code != 303 {
+			t.Fatalf("%q: %d %s", in, code, body)
+		}
+		var origin string
+		e.DB.QueryRow("SELECT '['||origin_fingerprint||origin_path||']' FROM user_escrow_keys WHERE user_id=$1", uid).Scan(&origin)
+		if origin != in[:strings.IndexByte(in, ']')+1] {
+			t.Fatalf("origin %q after %q", origin, in)
+		}
+		if audit := agStrings(t, e, "SELECT action FROM audit_events WHERE user_id=$1 ORDER BY id DESC LIMIT 1", uid); audit[0] != "Changed Bitcoin escrow key (confirmed with password)" {
+			t.Fatalf("audit %q", audit)
+		}
+	}
+	if n := agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1", uid); n != 3 {
+		t.Fatalf("%d audit lines", n)
+	}
 	// A wrong password changes nothing (a fresh account: failures spend its confirmation budget).
 	uid2, sess2 := e.user("escrow_reg_wrongpw", "vendor")
 	if w := e.do("POST", "/escrow-key", sess2, url.Values{"key": {testBIP84Key}, "dedicated": {"1"}, "password": {"not-the-password"}}); w.Code != 401 {
@@ -337,6 +383,9 @@ func TestEscrowKeyRefusedThroughForm(t *testing.T) {
 		"private descriptor": {testPrivDescriptor, "this key is exposed, replace it"},
 		"WIF":                {testWIF(true, true), "this key is exposed, replace it"},
 		"recovery words":     {"abandon ability able about above absent absorb abstract absurd abuse access accident", "this key is exposed, replace it"},
+		"empty payload":      {"3QJmnh", "needs its origin"},
+		"empty key payload":  {"[7450f935/48h/1h/0h/2h]3QJmnh", "not a valid extended public key"},
+		"JSON words":         {`["abandon","ability","able","about","above","absent","absorb","abstract","absurd","abuse","access","accident"]`, "this key is exposed, replace it"},
 		"numbered words":     {"1. Abandon 2. Ability 3. Able 4. About 5. Above 6. Absent 7. Absorb 8. Abstract 9. Absurd 10. Abuse 11. Access 12. Accident.", "this key is exposed, replace it"},
 		"comma":              {testBIP48Key + "," + testBIP84Key, "Paste exactly one key"},
 		"parentheses":        {"wsh(" + testBIP48Key + ")", "not a whole descriptor"},
@@ -365,6 +414,9 @@ func TestEscrowKeyRefusedThroughForm(t *testing.T) {
 	assertNowhereInDB(t, e, tprv[4:40])
 	if strings.Contains(logs.String(), tprv[4:40]) {
 		t.Fatal("the private key reached the log")
+	}
+	if strings.Contains(logs.String(), "panic") {
+		t.Fatalf("a refusal panicked: %s", logs.String())
 	}
 	// The refusals spent no confirmation budget: the right password still works at once.
 	if code, body := registerKey(e, sess, testBIP84Key, "dedicated", "1"); code != 303 {
