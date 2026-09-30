@@ -138,7 +138,7 @@ func TestLegacySubFloorXMRListingRefusesXMROrder(t *testing.T) {
 	// A new XMR draft is refused, naming the Monero floor; nothing is stored.
 	w := p.do("POST", "/orders", p.buyerSess, url.Values{"product_id": {p.productID}, "currency": {"XMR"}})
 	body := html.UnescapeString(w.Body.String())
-	if w.Code != 400 || !strings.Contains(body, "Monero price is below the minimum Monero payout of 0.001 XMR") || !strings.Contains(body, "cannot be ordered in XMR") {
+	if w.Code != 400 || !strings.Contains(body, "This listing's Monero price is below the minimum automatic payout of 0.001 XMR (it was priced before that minimum applied)") || !strings.Contains(body, "cannot be ordered in XMR") {
 		t.Fatalf("XMR draft: status=%d body=%q, want 400 naming 0.001 XMR", w.Code, body)
 	}
 	if n := p.count("SELECT count(*) FROM orders WHERE buyer_id=$1 AND product_id=$2 AND currency='XMR'", p.buyer.ID, p.productID); n != 0 {
@@ -176,7 +176,7 @@ func TestSubFloorXMRPriceOverpaymentIsHeld(t *testing.T) {
 	p, xf := xmrPayEnv(t)
 	const price, paid = 1000, 500000000000
 	order := p.xmrPaid(xf, price, paid)
-	cause := "the price is below the minimum payout of 0.001 XMR"
+	cause := "the price is below the minimum automatic payout of 0.001 XMR"
 	buyerPage := html.UnescapeString(p.page("/order?id="+order, p.buyerSess))
 	mustContain(t, buyerPage, "Completing releases everything to the vendor: "+cause+", so the amount paid over it cannot be returned separately. An administrator reviews the release before it is sent.",
 		"Release 0.5 XMR (test network) to "+p.vendor.Handle+" — 0.499999999 XMR more than the price; "+cause+", so the amount paid over it cannot be returned separately; an administrator reviews the release before it is sent; network fee deducted. This is final.",

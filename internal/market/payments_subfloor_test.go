@@ -36,8 +36,9 @@ func TestLegacySubFloorListingRefusesBTCOrder(t *testing.T) {
 	}
 
 	// A new BTC draft is refused, naming the floor; nothing is stored.
+	const btcRefusal = "This listing's Bitcoin price is below the minimum automatic payout of 0.0001 BTC (it was priced before that minimum applied), so it cannot be ordered in BTC."
 	w := p.do("POST", "/orders", p.buyerSess, url.Values{"product_id": {p.productID}, "currency": {"BTC"}})
-	if w.Code != 400 || !strings.Contains(html.UnescapeString(w.Body.String()), "0.0001 BTC") {
+	if w.Code != 400 || !strings.Contains(html.UnescapeString(w.Body.String()), btcRefusal) {
 		t.Fatalf("BTC draft: status=%d body=%q, want 400 naming 0.0001 BTC", w.Code, w.Body.String())
 	}
 	if n := drafts("BTC"); n != 0 {
@@ -48,7 +49,7 @@ func TestLegacySubFloorListingRefusesBTCOrder(t *testing.T) {
 	draft := p.testEnv.order(p.buyer.ID, p.productID, "BTC", stateDraft)
 	before, addresses := stock(), wallet.addresses.Load()
 	w = p.do("POST", "/orders/pay", p.buyerSess, url.Values{"order_id": {draft}})
-	if w.Code != 400 || !strings.Contains(html.UnescapeString(w.Body.String()), "0.0001 BTC") {
+	if w.Code != 400 || !strings.Contains(html.UnescapeString(w.Body.String()), btcRefusal) {
 		t.Fatalf("BTC pay: status=%d body=%q, want 400 naming 0.0001 BTC", w.Code, w.Body.String())
 	}
 	if wallet.addresses.Load() != addresses {
@@ -103,7 +104,7 @@ func TestSubFloorPriceOverpaymentIsHeld(t *testing.T) {
 	adminID := p.str("SELECT id FROM users WHERE role='admin'")
 	p.paidByWatcherAmount(100000000)
 	p.move(p.order, statePaid, stateShipped, p.vendor)
-	cause := "the price is below the minimum payout of 0.0001 BTC"
+	cause := "the price is below the minimum automatic payout of 0.0001 BTC"
 	statement := "Release 1 BTC (test network) to " + p.vendor.Handle + " — 0.99995 BTC more than the price; " + cause +
 		", so the amount paid over it cannot be returned separately; an administrator reviews the release before it is sent; network fee deducted. This is final."
 	buyerPage := html.UnescapeString(p.page("/order?id="+p.order, p.buyerSess))
@@ -115,7 +116,8 @@ func TestSubFloorPriceOverpaymentIsHeld(t *testing.T) {
 	vendorPage := html.UnescapeString(p.page("/order?id="+p.order, p.vendorSess))
 	mustContain(t, vendorPage, "Completing releases everything to you: "+cause+", so the amount paid over it cannot be returned separately. An administrator reviews the release before it is sent.")
 	for _, page := range []string{buyerPage, vendorPage} {
-		mustNotContain(t, page, "below the minimum automatic payout of", "returns the excess", "whole counted amount", "the return waits")
+		// The price, not the excess, is the cause: no excess-below-the-floor reason and no below-floor release.
+		mustNotContain(t, page, "the excess is below", "so it is not returned", "not sent automatically", "returns the excess", "whole counted amount", "the return waits")
 	}
 	p.check(p.do("POST", "/orders/complete", p.buyerSess, payoutConfirmed(url.Values{"order_id": {p.order}}, 100000000)), 303)
 
@@ -130,7 +132,7 @@ func TestSubFloorPriceOverpaymentIsHeld(t *testing.T) {
 		if n := p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE '%'||$2||'%'", u.ID, cause); n != 1 {
 			t.Fatalf("%s not told the price is the cause: %d", u.Handle, n)
 		}
-		if n := p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE '%minimum automatic%'", u.ID); n != 0 {
+		if n := p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE '%so it is not returned%'", u.ID); n != 0 {
 			t.Fatalf("%s told the excess is the cause", u.Handle)
 		}
 	}

@@ -634,6 +634,16 @@ monitor that matched `cause=23505 payment_addresses payment_addresses_address_ke
 `cause=payment-address-already-issued` instead. What to do when it appears:
 [Restore the wallets](docs/testnet-runbook.md#restore-the-wallets).
 
+## 17. An index for role changes in the audit log (migration 072, A-301)
+
+Migration 072 adds one partial index, `audit_events_role_change`, holding only the audit rows that record a role
+change. The moderation desk and `/disputes` read those rows on every load with an open dispute, to list evidence
+holders removed from staff (A-294); without the index each load read the whole audit log, which grows with every
+sign-in. No row is changed and the signed audit export is unaffected; nothing needs doing. Building the index reads
+`audit_events` once during the first start, within `MIGRATION_TIMEOUT` (default 10 minutes; about 0.1 seconds
+for a million audit rows on a test host). If your audit log is very large, raise it first as described under
+[Migrations](docs/operator-guide.md#migrations).
+
 ## Appendix: new keys by hand
 
 `./scripts/install.sh upgrade` writes these for you. To add them yourself, use your editor (values in single

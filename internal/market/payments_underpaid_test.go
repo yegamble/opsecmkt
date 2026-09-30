@@ -107,7 +107,7 @@ func TestCancelUnderpaidOrderStatesRefund(t *testing.T) {
 	}
 	// A-215: the help addresses the buyer as "you" and never says a refund left to staff is sent automatically.
 	mustContain(t, body, "queues one refund of every confirmed deposit to your saved BTC payout address (it waits until you save one)",
-		"The payment watcher sends the refund automatically unless the statement below says it is below the minimum automatic amount: then it is not sent automatically, and market staff are asked to review it.")
+		"The payment watcher sends the refund automatically unless the statement below says it is below the minimum automatic payout: then it is not sent automatically, and market staff are asked to review it.")
 	mustNotContain(t, body, "the buyer's saved", "until the buyer saves", "staff review it. The payment watcher sends it automatically")
 	vendorPage := p.page("/order?id="+p.order, p.vendorSess)
 	mustContain(t, vendorPage, "queues one refund of every confirmed deposit to the buyer's saved BTC payout address (it waits until the buyer saves one)")

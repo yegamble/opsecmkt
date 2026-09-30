@@ -402,6 +402,55 @@ func TestDeskShowsWhoHoldsDisputeEvidence(t *testing.T) {
 	}
 }
 
+// A-301: every staff desk load with an open dispute reads the role-change audit rows (A-294). audit_events grows with
+// every sign-in, so that read must go through the partial index on role-change rows (migration 072), never a scan
+// of the whole table. With sequential scans priced out, the plan names the index and no other access to the table.
+func TestDisputeEvidenceReadsRoleChangesByIndex(t *testing.T) {
+	e := newTestApp(t)
+	tx, err := e.DB.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec("SET LOCAL enable_seqscan=off"); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := tx.Query("EXPLAIN "+disputeEvidenceQuery, []string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plan []string
+	for rows.Next() {
+		var line string
+		if err = rows.Scan(&line); err != nil {
+			t.Fatal(err)
+		}
+		plan = append(plan, line)
+	}
+	if err = rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	// The index holds the role-change rows only: a full index would still be read end to end.
+	var def string
+	if err = tx.QueryRow("SELECT indexdef FROM pg_indexes WHERE schemaname=current_schema() AND indexname='audit_events_role_change'").Scan(&def); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(def, "(user_id, created) WHERE (action ~~ 'Role changed from %'::text)") {
+		t.Errorf("audit_events_role_change is not the partial index on role-change rows: %s", def)
+	}
+	// Each read of the table is an index scan of audit_events_role_change, or a bitmap heap scan fed by one.
+	text := strings.Join(plan, "\n")
+	if !strings.Contains(text, " audit_events_role_change") {
+		t.Fatalf("the plan does not use audit_events_role_change:\n%s", text)
+	}
+	for _, line := range plan {
+		line = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "->"))
+		if strings.Contains(line, " on audit_events") && !strings.Contains(line, "audit_events_role_change") && !strings.HasPrefix(line, "Bitmap Heap Scan on audit_events ") {
+			t.Errorf("audit_events read other than through the role-change index: %s\n%s", line, text)
+		}
+	}
+}
+
 // A-280: a resolve form loaded before the other party's reply said "has not replied". It carries what it showed
 // (reply_seen); once a reply is on record, a form that did not show it is refused with 409 and the desk again,
 // showing the reply and keeping the typed decision, and nothing changes. The reloaded form resolves.
