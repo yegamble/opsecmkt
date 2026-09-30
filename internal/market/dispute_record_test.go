@@ -382,6 +382,20 @@ func TestDeskShowsWhoHoldsDisputeEvidence(t *testing.T) {
 		mustNotContain(t, entry, noHolders, "Neither party has messaged a moderator")
 	}
 
+	// A-304: the leave time is the latest leave row, not the first. A holder is demoted, promoted back, messaged
+	// during the open dispute, then demoted again: the message was sent before the latest leave, so it counts.
+	rejoinOrder := w.e.order(buyer3ID, w.e.product(vendor3ID, "physical"), "BTC", stateShipped)
+	w.expect("/disputes", buyer3, form("order_id", rejoinOrder, "reason", "The parcel held a different item."), 303, "")
+	rejoinID, _ := w.e.user("a304_holder", "moderator")
+	w.expect("/admin", admin, form("action", "role", "role", "buyer", "handle", "a304_holder"), 303, "")
+	w.expect("/admin", admin, form("action", "role", "role", "moderator", "handle", "a304_holder"), 303, "")
+	message(buyer3ID, rejoinID)
+	w.expect("/admin", admin, form("action", "role", "role", "buyer", "handle", "a304_holder"), 303, "")
+	block = holders(entryFor(w.page("/moderator", modB, 200), rejoinOrder))
+	if !regexp.MustCompile(`Buyer → a304_holder \(no longer staff\) \(1` + latest + `</li>`).MatchString(block) {
+		t.Fatalf("holder messaged between two leaves not listed from the latest leave: %s", block)
+	}
+
 	// A-280: messages to a staff member who is now suspended still count, labelled "(suspended)": that account
 	// cannot sign in or answer until an administrator restores it.
 	if _, err := w.e.DB.Exec("UPDATE users SET suspended_at=now() WHERE id=$1", w.modID); err != nil {
