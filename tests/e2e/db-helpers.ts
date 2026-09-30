@@ -99,3 +99,17 @@ export async function enrollTOTP(page: Page, password: string): Promise<string> 
   await expect(page.locator('.page-head .badge')).toHaveText('Enabled');
   return secret;
 }
+
+// A-275, A-281: an open <details> of forms, and each of its forms, labels, fields and buttons, lie horizontally
+// within the viewport. A form clipped inside a table's scrolling .table-wrap does not widen the document, so
+// scrollWidth alone cannot see it. Measure after the stylesheet has applied (A-228).
+export async function withinViewport(details: Locator, width: number) {
+  const parts = details.locator('summary, form, label, input:not([type="hidden"]), textarea, button');
+  expect(await parts.count()).toBeGreaterThan(4);
+  const outside: string[] = [];
+  for (const part of await parts.all()) {
+    const box = (await part.boundingBox())!;
+    if (box.x < 0 || box.x + box.width > width) outside.push(`${await part.evaluate(e => e.outerHTML.slice(0, 60))}: x ${Math.round(box.x)} to ${Math.round(box.x + box.width)}`);
+  }
+  expect(outside, `form parts outside 0..${width} px`).toEqual([]);
+}

@@ -405,6 +405,15 @@ test('automatic digital delivery and administrator recovery of a rejected payout
     await admin.goto('/admin');
     let payout = admin.locator('tr', { has: admin.getByText(orderID, { exact: true }) });
     await expect(payout).toContainText('Fixture rejected send before broadcast');
+    // A-281: the payout's row links its resolve form, which sits under the payouts table.
+    const resolveForm = async () => {
+      const link = admin.locator('tr', { has: admin.getByText(orderID, { exact: true }) }).getByRole('link', { name: /^Resolve payout \d+$/ });
+      const target = (await link.getAttribute('href'))!;
+      await link.click();
+      const details = admin.locator(`details.payout-actions${target}`);
+      await details.locator('summary').click();
+      return details;
+    };
     const checks = (await (await request.get(`${rpc}/test/state`)).json()).checks;
     await expect.poll(async () => (await (await request.get(`${rpc}/test/state`)).json()).checks).toBeGreaterThan(checks + 2);
     expect((await (await request.get(`${rpc}/test/state`)).json()).payouts).toHaveLength(before);
@@ -426,9 +435,8 @@ test('automatic digital delivery and administrator recovery of a rejected payout
     await vendor.goto('/notifications');
     await expect(vendor.locator('main')).toContainText(`1 unsent payout(s) still use your previous address (order ${orderID.slice(0, 8)}); an administrator must confirm the change`);
     await admin.goto('/admin');
-    payout = admin.locator('tr', { has: admin.getByText(orderID, { exact: true }) });
-    await payout.locator('summary').click();
-    const move = payout.locator('form', { has: admin.getByRole('button', { name: "Use the account's current address", exact: true }) });
+    let resolve = await resolveForm();
+    const move = resolve.locator('form', { has: admin.getByRole('button', { name: "Use the account's current address", exact: true }) });
     await expect(move).toContainText(`Payout address: ${'5' + 'a'.repeat(94)}. Account's current address: ${moved} (last changed `);
     await expect(move).toContainText(/last changed \d{4}-\d\d-\d\d \d\d:\d\d UTC\)/);
     await move.getByRole('checkbox', { name: 'Current address checked: the account owner confirmed it is theirs', exact: true }).check();
@@ -437,24 +445,23 @@ test('automatic digital delivery and administrator recovery of a rejected payout
     await expect(admin.locator('main')).toContainText('Moved payout');
     payout = admin.locator('tr', { has: admin.getByText(orderID, { exact: true }) });
     await expect(payout).toContainText('Fixture rejected send before broadcast');
-    await expect(payout.getByRole('button', { name: "Use the account's current address", exact: true })).toHaveCount(0);
+    resolve = await resolveForm();
+    await expect(resolve.getByRole('button', { name: "Use the account's current address", exact: true })).toHaveCount(0);
     expect((await (await request.get(`${rpc}/test/state`)).json()).payouts).toHaveLength(before);
-    await payout.locator('summary').click();
-    let requeue = payout.locator('form', { has: admin.getByRole('button', { name: 'Requeue payout', exact: true }) });
+    let requeue = resolve.locator('form', { has: admin.getByRole('button', { name: 'Requeue payout', exact: true }) });
     await requeue.getByLabel('Current password', { exact: true }).fill('incorrect-password');
     await requeue.getByRole('button').click();
     await expect(admin.locator('body')).toContainText('Password incorrect');
     await admin.goto('/admin');
-    payout = admin.locator('tr', { has: admin.getByText(orderID, { exact: true }) });
-    await payout.locator('summary').click();
-    requeue = payout.locator('form', { has: admin.getByRole('button', { name: 'Requeue payout', exact: true }) });
+    resolve = await resolveForm();
+    requeue = resolve.locator('form', { has: admin.getByRole('button', { name: 'Requeue payout', exact: true }) });
     await requeue.getByLabel('Current password', { exact: true }).fill(password);
     await submit(admin, requeue.getByRole('button'));
     await reloadUntil(buyer, async () => { await expect(buyer.locator('.payment-figures div', { has: buyer.getByText('Payout status', { exact: true }) })).toContainText('Sent', { timeout: 500 }); });
     expect((await (await request.get(`${rpc}/test/state`)).json()).payouts).toHaveLength(before + 1);
     expect(((await (await request.get(`${rpc}/test/state`)).json()).payouts as any[]).at(-1)).toEqual(expect.objectContaining({ currency: 'XMR', address: moved, amount: 500_000_000_000, fee_from_amount: true, received: 500_000_000_000 - 30_000_000 }));
     await admin.reload();
-    await expect(admin.locator('tr', { has: admin.getByText(orderID, { exact: true }) })).not.toContainText('Requeue payout');
+    await expect(admin.locator('tr', { has: admin.getByText(orderID, { exact: true }) }).getByRole('link', { name: /^Resolve payout / })).toHaveCount(0);
     await expect(admin.locator('main')).toContainText('Requeued payout');
     // A-174: every check reads the wallet and node versions. The verified monero-wallet-rpc (1.31, a release
     // build) raises no warning; another version is named with the bump checklist until the verified one is back.

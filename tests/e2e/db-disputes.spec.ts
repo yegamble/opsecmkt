@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { expect, test, type Page } from '@playwright/test';
 import { uniqueHandle } from './db-fixtures';
-import { expectNotice, pgpFixture, signedIn, submitAndLoad } from './db-helpers';
+import { expectNotice, pgpFixture, signedIn, submitAndLoad, submitStatus } from './db-helpers';
 
 // A-124 and A-162 against a real database, JavaScript disabled, at 320 px, with fresh accounts: the party who did
 // not open a dispute puts one reply on record from the order page; the moderation desk shows the reason and the
@@ -55,6 +55,17 @@ test('the other party replies once and the desk names who holds encrypted eviden
     await expect(buyer.locator('#order-dispute').locator('..')).toContainText('The vendor may put one reply on record');
     await expect(buyer.locator('#dispute-contacts').locator('..')).toContainText('Other moderators and administrators can see which staff member you messaged and when, never what.');
 
+    // A-280: the resolver opens the desk before the vendor replies and fills in the resolve form, which says the
+    // vendor has not replied; it is submitted after the reply (below).
+    await resolver.goto('/moderator');
+    const staleForm = resolver.locator('article.message', { hasText: orderID }).locator('form[action="/resolve"]');
+    await expect(staleForm).toContainText('The vendor has not replied; only the buyer’s account is on record.');
+    const decision = 'Refund: the courier has no record of delivery at the agreed place.';
+    await staleForm.locator('input[name="outcome"][value="refund"]').check();
+    await staleForm.getByLabel('Decision').fill(decision);
+    await staleForm.locator('input[name="payout_confirmed"]').check();
+    await staleForm.getByLabel('Current password').fill('browser-dispute-resolver-123');
+
     // The vendor is told a reply exists, and puts one on record.
     await vendor.goto('/notifications');
     await expect(vendor.locator('article.message', { hasText: `Order ${orderID.slice(0, 8)} is now Disputed` })).toContainText('You may put one reply to the dispute on record from the order page before a moderator decides.');
@@ -82,6 +93,18 @@ test('the other party replies once and the desk names who holds encrypted eviden
       await expect(page.locator('.order-timeline')).not.toContainText('courier photo');
       await fitsAndNoScripts(page, 'order page with the reply at 320 px');
     }
+
+    // A-280: the form loaded before the reply is refused with 409 and the desk again: the reason in the alert, the
+    // reply shown, the decision kept; nothing is resolved.
+    expect(await submitStatus(resolver, () => staleForm.getByRole('button', { name: 'Resolve dispute' }).click())).toBe(409);
+    await expect(resolver.getByRole('alert')).toHaveText('The vendor replied to this dispute after the form was loaded. Read the reply below and decide again. Nothing was changed.');
+    await expect(resolver).toHaveTitle(/^Error: /);
+    const refreshed = resolver.locator('article.message', { hasText: orderID });
+    await expect(refreshed).toContainText('Reply from the vendor');
+    await expect(refreshed.locator('form[action="/resolve"]')).toContainText('The vendor replied; the reply is shown above.');
+    await expect(refreshed.getByLabel('Decision')).toHaveValue(decision);
+    await fitsAndNoScripts(resolver, 'refused resolve at 320 px');
+    expect(sql(`SELECT state FROM orders WHERE id='${orderID}'`)).toBe('disputed');
 
     // The resolver (who holds nothing) sees both sides and that the buyer messaged the holder once; no ciphertext.
     await resolver.goto('/moderator');

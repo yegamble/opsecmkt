@@ -118,6 +118,10 @@
   overflow-wrap:anywhere;
   word-break:break-all
 }
+/* A-265: the listing title under a flag's order ID wraps too. */
+.payment-reviews .order-listing {
+  white-space:normal
+}
 /* A-275: a flag's review forms sit under the payment-review table (its row links here), not in a table cell, so
    at 320 px they wrap within the page instead of widening the scrolling .table-wrap. */
 .payment-review-form {

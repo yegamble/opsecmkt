@@ -163,6 +163,15 @@ func TestNoticeRendersInItsSection(t *testing.T) {
 		t.Fatal("title not prefixed")
 	}
 
+	// A-291: consumed on a page without its section (the 303 unfollowed and /login loaded in another tab), the
+	// notice renders at the top of that page, once, as well as in the title.
+	w = e.do("GET", "/login", "", nil, c)
+	e.check(w, 200)
+	b = w.Body.String()
+	if !strings.Contains(b, `<div class="alert" role="status">Account suspended.</div>`) || strings.Count(b, "Account suspended.") != 2 || !strings.Contains(b, "<title>Account suspended. – ") {
+		t.Fatalf("suspend notice on /login not shown at the top:\n%s", b)
+	}
+
 	// A failing form's page says Error in its title.
 	w = e.do("POST", "/admin/suspend", admin, url.Values{"handle": {"notice_nobody"}, "action": {"suspend"}, "password": {testPassword}})
 	e.check(w, 404)
@@ -175,8 +184,13 @@ func TestNoticeRendersInItsSection(t *testing.T) {
 func TestNoticeCodesKnown(t *testing.T) {
 	code := regexp.MustCompile(`^[a-z0-9-]{1,24}$`)
 	for k, n := range notices {
-		if !code.MatchString(k) || n.text == "" || !strings.HasSuffix(n.text, ".") {
+		if !code.MatchString(k) || n.text == "" || !strings.HasSuffix(n.text, ".") || (n.section == "") != (n.pages == "") {
 			t.Errorf("notice %q = %+v", k, n)
+		}
+		for _, page := range strings.Fields(n.pages) { // A-291: the pages that render the section exist
+			if _, err := os.Stat(filepath.Join("web/templates/pages", page+".html")); err != nil {
+				t.Errorf("notice %q names page %q: %v", k, page, err)
+			}
 		}
 	}
 	files, err := filepath.Glob("internal/market/*.go")

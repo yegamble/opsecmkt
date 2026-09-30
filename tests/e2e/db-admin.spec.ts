@@ -3,7 +3,7 @@ import { createPublicKey, randomBytes, verify } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { expect, test } from '@playwright/test';
 import { ADMIN, uniqueHandle } from './db-fixtures';
-import { enrollTOTP, expectNotice, pgpFixture, RECIPIENT_FINGERPRINT, setRole, signedIn, submitStatus } from './db-helpers';
+import { enrollTOTP, expectNotice, pgpFixture, RECIPIENT_FINGERPRINT, setRole, signedIn, submitStatus, withinViewport } from './db-helpers';
 
 // Administrator forms submitted against a real database with JavaScript disabled. Each test signs the shared
 // administrator in once (the per-handle sign-in limit, 10 failed passwords per 10 minutes, no longer counts
@@ -333,12 +333,13 @@ test('site settings, account suspension, operator key, canary signature checks a
 });
 
 // A-116: the payout resolve forms are the last human check before a possible double pay. Their help text and
-// confirmation labels must wrap inside the payouts table (not run off under table{white-space:nowrap}), and each
-// summary must say which payout it resolves. No wallet runs here, so the payouts are seeded in SQL: a refund held
+// confirmation labels must wrap within the page (not run off under table{white-space:nowrap}), and each summary
+// must say which payout it resolves. A-281: the forms sit under the payouts table, each linked from its row, so at
+// 320 px they lie within the viewport instead of in a cell of the scrolling table. No wallet runs here, so the payouts are seeded in SQL: a refund held
 // by a restore from backup and an account suspension (both confirmations), an ambiguous failed release and a definite
 // failed release whose recipient has since saved another address (A-121: the move to the current address). A fresh
 // account is made administrator for this test only, so the shared administrator's sign-in budget is untouched.
-test('payout resolve forms wrap inside the payouts table and name what they resolve', async ({ browser, baseURL }) => {
+test('payout resolve forms sit under the payouts table, wrap at 320 px and name what they resolve', async ({ browser, baseURL }) => {
   const database = process.env.E2E_DATABASE_URL!;
   const sql = (query: string) => execFileSync('psql', [database, '-v', 'ON_ERROR_STOP=1', '-qtAc', query], { encoding: 'utf8' }).trim();
   const hex = (bytes: number) => randomBytes(bytes).toString('hex');
@@ -370,39 +371,53 @@ test('payout resolve forms wrap inside the payouts table and name what they reso
       `Resolve payout ${ids[2]}: release 0.5 XMR to ${vendor}, order ${movedOrder.slice(0, 8)}`,
     ];
     await admin.goto('/admin#payouts');
-    for (const [i, summary] of summaries.entries()) {
-      await expect(admin.locator('details.payout-actions > summary').filter({ hasText: new RegExp(`^Resolve payout ${ids[i]}\\b`) })).toHaveText(summary);
-      const details = admin.locator('details.payout-actions', { has: admin.getByText(summary, { exact: true }) });
-      await details.locator('summary').click();
-      const row = admin.locator('tr', { has: details });
-      // The resolve cell and the long-value cells wrap instead of widening the table.
-      expect(await details.evaluate(e => getComputedStyle(e).whiteSpace), summary).toBe('normal');
-      for (const cell of await row.locator('td.mono').all()) {
-        expect(await cell.evaluate(e => getComputedStyle(e).whiteSpace), summary).toBe('normal');
-      }
-      // Whichever control has focus (the browser scrolls it into view), every help text and label of its form lies
-      // inside the table's scroller, so the administrator reads the whole confirmation they are ticking.
-      for (const form of await details.locator('form').all()) {
-        for (const control of await form.locator('input:not([type="hidden"])').all()) {
-          await control.focus();
-          const clipped = await form.evaluate(f => {
-            const wrap = f.closest('.table-wrap')!.getBoundingClientRect();
-            return [...f.querySelectorAll('.help, label')].filter(e => {
-              const box = e.getBoundingClientRect();
-              return box.left < wrap.left - 1 || box.right > wrap.right + 1;
-            }).map(e => e.textContent!.trim().slice(0, 60));
-          });
-          expect(clipped, `${summary}: clipped with ${await control.getAttribute('name')} focused`).toEqual([]);
-        }
-      }
-    }
-    await expect(admin.locator('details.payout-actions input[name="not_broadcast"]')).toHaveCount(2);
-    await expect(admin.locator('details.payout-actions input[name="address_checked"]')).toHaveCount(2);
-    await expect(admin.locator('details.payout-actions input[name="op"][value="repoint"]')).toHaveCount(1);
-    for (const width of [1280, 390, 320]) {
+    await admin.waitForLoadState('load');
+    const payouts = admin.locator('.admin-payments');
+    const resolve = async (width: number) => {
       await admin.setViewportSize({ width, height: 900 });
+      for (const [i, summary] of summaries.entries()) {
+        // The row's link goes to its form under the table; nothing in the table is a form.
+        const row = payouts.locator('tbody tr', { has: admin.getByRole('link', { name: `Resolve payout ${ids[i]}`, exact: true }) });
+        await expect(row.locator('form, details')).toHaveCount(0);
+        // The long-value cells wrap instead of widening the table.
+        for (const cell of await row.locator('td.mono').all()) {
+          expect(await cell.evaluate(e => getComputedStyle(e).whiteSpace), summary).toBe('normal');
+        }
+        await row.getByRole('link', { name: `Resolve payout ${ids[i]}`, exact: true }).click();
+        await expect(admin).toHaveURL(new RegExp(`/admin#resolve-payout-${ids[i]}$`));
+        const details = payouts.locator(`details.payout-actions#resolve-payout-${ids[i]}`);
+        await expect(details.locator('> summary')).toHaveText(summary);
+        await expect(details.locator('xpath=ancestor::table')).toHaveCount(0);
+        if ((await details.getAttribute('open')) === null) await details.locator('summary').click();
+        await expect(details).toHaveAttribute('open', '');
+        expect(await details.evaluate(e => getComputedStyle(e).whiteSpace), summary).toBe('normal');
+        // Whichever control has focus (the browser scrolls it into view), every help text and label of its form lies
+        // within the viewport, so the administrator reads the whole confirmation they are ticking.
+        for (const form of await details.locator('form').all()) {
+          for (const control of await form.locator('input:not([type="hidden"])').all()) {
+            await control.focus();
+            const clipped = await form.evaluate(f => [...f.querySelectorAll('.help, label')].filter(e => {
+              const box = e.getBoundingClientRect();
+              return box.left < -1 || box.right > window.innerWidth + 1;
+            }).map(e => e.textContent!.trim().slice(0, 60)));
+            expect(clipped, `${summary} at ${width} px: clipped with ${await control.getAttribute('name')} focused`).toEqual([]);
+          }
+        }
+        // A-281 (after the stylesheet applied, A-228): the open form, its labels, fields and buttons lie within the
+        // viewport; in a table cell they sat at x 824 to 1112 at 320 px.
+        await withinViewport(details, width);
+      }
       expect(await admin.evaluate(() => document.documentElement.scrollWidth), `/admin at ${width}px`).toBeLessThanOrEqual(width);
-    }
+    };
+    await resolve(1280);
+    await expect(payouts.locator('details.payout-actions input[name="not_broadcast"]')).toHaveCount(2);
+    await expect(payouts.locator('details.payout-actions input[name="address_checked"]')).toHaveCount(2);
+    await expect(payouts.locator('details.payout-actions input[name="op"][value="repoint"]')).toHaveCount(1);
+    await admin.goto('/admin#payouts');
+    await admin.waitForLoadState('load');
+    await resolve(320);
+    await admin.setViewportSize({ width: 390, height: 900 });
+    expect(await admin.evaluate(() => document.documentElement.scrollWidth), '/admin at 390px').toBeLessThanOrEqual(390);
   } finally {
     // db-payments.spec.ts expects no payouts, and no other spec should meet an extra administrator.
     sql(`DELETE FROM payouts WHERE order_id IN ('${refundOrder}','${releaseOrder}','${movedOrder}');

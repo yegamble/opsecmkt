@@ -598,7 +598,8 @@ func isDisputeReply(from, to, actorID, note string, o *Order) bool {
 // disputeEvidence (A-162) lists, for every open dispute a moderator or administrator viewer is not party to, how
 // many messages each party sent to each current moderator or administrator since the dispute opened, and when the
 // latest was sent. It reads only who sent a message to whom and when, never a body: a resolver learns who holds
-// encrypted evidence and asks them, without anyone but the recipient reading it.
+// encrypted evidence and asks them, without anyone but the recipient reading it. A holder suspended since is still
+// listed, marked Suspended (A-280).
 func (a *App) disputeEvidence(ctx context.Context, d *PageData) error {
 	d.DisputeEvidence = map[string]*DisputeEvidence{}
 	if d.User == nil || (d.User.Role != "moderator" && d.User.Role != "admin") {
@@ -616,11 +617,11 @@ func (a *App) disputeEvidence(ctx context.Context, d *PageData) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	rows, err := a.db.QueryContext(ctx, `SELECT d.id,m.sender_id=o.buyer_id,s.handle,count(*),to_char(max(m.created),'YYYY-MM-DD HH24:MI "UTC"')
+	rows, err := a.db.QueryContext(ctx, `SELECT d.id,m.sender_id=o.buyer_id,s.handle,count(*),to_char(max(m.created),'YYYY-MM-DD HH24:MI "UTC"'),s.suspended_at IS NOT NULL
 		FROM disputes d JOIN orders o ON o.id=d.order_id JOIN products p ON p.id=o.product_id
 		JOIN users s ON s.role IN ('moderator','admin') AND s.id<>o.buyer_id AND s.id<>p.vendor_id
 		JOIN messages m ON m.recipient_id=s.id AND m.created>=d.created AND m.sender_id IN (o.buyer_id,p.vendor_id)
-		WHERE d.id=ANY($1) GROUP BY d.id,m.sender_id=o.buyer_id,s.handle ORDER BY s.handle`, ids)
+		WHERE d.id=ANY($1) GROUP BY d.id,m.sender_id=o.buyer_id,s.handle,s.suspended_at ORDER BY s.handle`, ids)
 	if err != nil {
 		return err
 	}
@@ -629,7 +630,7 @@ func (a *App) disputeEvidence(ctx context.Context, d *PageData) error {
 		var id string
 		var fromBuyer bool
 		var h EvidenceHolder
-		if err = rows.Scan(&id, &fromBuyer, &h.Handle, &h.Count, &h.Latest); err != nil {
+		if err = rows.Scan(&id, &fromBuyer, &h.Handle, &h.Count, &h.Latest, &h.Suspended); err != nil {
 			return err
 		}
 		ev := d.DisputeEvidence[id]
@@ -728,7 +729,7 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 	if d.User == nil || (d.User.Role != "moderator" && d.User.Role != "admin") {
 		return nil
 	}
-	rows, err := a.db.QueryContext(ctx, `WITH v AS (SELECT pm.id,pm.order_id,o.state,pm.currency,pm.amount,pm.txid,pm.idx,pm.credited,pm.locked,pm.confirmations,
+	rows, err := a.db.QueryContext(ctx, `WITH v AS (SELECT pm.id,pm.order_id,o.state,pr.id AS product_id,pr.title,pm.currency,pm.amount,pm.txid,pm.idx,pm.credited,pm.locked,pm.confirmations,
 			pm.regress_notice,pm.below_floor,(pm.locked OR NOT pm.credited OR pm.regress_notice OR pm.below_floor) AS open,f.at,
 			pm.disposition='escalated' AS escalated,COALESCE(to_char(pm.disposed_at,'YYYY-MM-DD'),'') AS disposed,(o.buyer_id=$2 OR pr.vendor_id=$2) AS party
 		FROM payments pm JOIN orders o ON o.id=pm.order_id JOIN products pr ON pr.id=o.product_id
@@ -736,7 +737,7 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 			AND e.note LIKE '%Moderator review required.%'
 			AND strpos(e.note, ' '||CASE WHEN length(pm.txid)<=20 THEN pm.txid ELSE left(pm.txid,20)||'…' END||' ')>0) f ON true
 		WHERE pm.flagged AND pm.disposition IN ('','escalated'))
-		SELECT id,order_id,state,currency,amount,txid,idx,credited,locked,confirmations,regress_notice,below_floor,open,COALESCE(to_char(at,'YYYY-MM-DD HH24:MI "UTC"'),''),
+		SELECT id,order_id,state,product_id,title,currency,amount,txid,idx,credited,locked,confirmations,regress_notice,below_floor,open,COALESCE(to_char(at,'YYYY-MM-DD HH24:MI "UTC"'),''),
 			escalated,disposed,party,(SELECT count(*) FROM v WHERE NOT open)
 		FROM (SELECT * FROM v WHERE open UNION ALL (SELECT * FROM v WHERE NOT open ORDER BY at DESC NULLS LAST,id DESC LIMIT $1)) s
 		ORDER BY open DESC,CASE WHEN open THEN at END ASC NULLS FIRST,CASE WHEN open THEN id END,at DESC NULLS LAST,id DESC`, paymentReviewLimit, d.User.ID)
@@ -749,7 +750,7 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 		var amt, confs int64
 		var credited, locked, regressed, belowFloor bool
 		var disposed string
-		if err = rows.Scan(&v.ID, &v.OrderID, &v.OrderState, &v.Currency, &amt, &v.TxID, &v.Index, &credited, &locked, &confs, &regressed, &belowFloor, &v.Open, &v.Flagged,
+		if err = rows.Scan(&v.ID, &v.OrderID, &v.OrderState, &v.ProductID, &v.Title, &v.Currency, &amt, &v.TxID, &v.Index, &credited, &locked, &confs, &regressed, &belowFloor, &v.Open, &v.Flagged,
 			&v.Escalated, &disposed, &v.Party, &d.PaymentReviewOthers); err != nil {
 			return err
 		}
@@ -796,7 +797,7 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 }
 
 func previewPaymentReviews(d *PageData) {
-	d.PaymentReviews = []PaymentReview{{OrderID: previewFlaggedID, OrderState: stateLabel(statePaid), Currency: "BTC", Amount: "0.001",
+	d.PaymentReviews = []PaymentReview{{OrderID: previewFlaggedID, OrderState: stateLabel(statePaid), Currency: "BTC", Amount: "0.001", ProductID: d.Products[0].ID, Title: d.Products[0].Title,
 		TxID: "a6fca84477376ef06de0fa66091d6435fbd7be1abe70d867cdcc06529fbc952b", Reason: "Credited deposit conflicted or missing", Flagged: "Sample", Open: true}}
 	d.PaymentReviewsOpen = 1
 }

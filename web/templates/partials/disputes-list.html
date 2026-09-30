@@ -2,13 +2,16 @@
 each outcome stating its payout from DisputePayouts (A-161) and confirmed with the resolver's password, plus an authenticator code
 when Security says TOTP is on (A-32; adminConfirmLoader on the desk, resolveConfirmLoader on /disputes);
 administrators see a "No eligible resolver" note on an open dispute whose order has every staff account as a party.
-Disputes holds every open dispute first (OpenDisputes of them, oldest first), then the most recent resolved ones. */}}
+Disputes holds every open dispute first (OpenDisputes of them, oldest first), then the most recent resolved ones.
+The resolve form's reply_seen says whether it showed the other party's reply (A-280: /resolve refuses a form that did
+not once a reply is on record). Whoever may open the order also gets its listing linked (A-265): the product page of
+an archived listing opens by the order page's rule (A-164). */}}
 {{define "disputes-list"}}{{if .Disputes}}<h2 class="section-title">Open disputes</h2>{{if .OpenDisputes}}<div class="messages-list">{{else}}<p class="help">No open disputes. Every open dispute is listed here, oldest first.</p>{{end}}{{range $i, $d := .Disputes}}{{if eq $i $.OpenDisputes}}{{if $i}}</div>{{end}}
-<h2 class="section-title">Resolved disputes</h2>{{if $.HistoryLimit}}<p class="help" role="note">Showing the {{$.HistoryLimit}} most recent resolved disputes; older resolved disputes are not listed.</p>{{end}}<div class="messages-list">{{end}}{{$o := index $.DisputeOrders .OrderID}}{{$party := and $.User $o.ID (or (eq $o.BuyerID $.User.ID) (eq $o.VendorID $.User.ID))}}<article class="message">
-<div class="message-meta">{{if or $party (and $.User $o.ID (or (eq $.User.Role "moderator") (eq $.User.Role "admin")))}}<a class="text-link" href="/order?id={{.OrderID}}">Order {{.OrderID}}</a>{{else}}<span class="mono">Order {{.OrderID}}</span>{{end}}
+<h2 class="section-title">Resolved disputes</h2>{{if $.HistoryLimit}}<p class="help" role="note">Showing the {{$.HistoryLimit}} most recent resolved disputes; older resolved disputes are not listed.</p>{{end}}<div class="messages-list">{{end}}{{$o := index $.DisputeOrders .OrderID}}{{$party := and $.User $o.ID (or (eq $o.BuyerID $.User.ID) (eq $o.VendorID $.User.ID))}}{{$readable := or $party (and $.User $o.ID (or (eq $.User.Role "moderator") (eq $.User.Role "admin")))}}<article class="message">
+<div class="message-meta">{{if $readable}}<a class="text-link" href="/order?id={{.OrderID}}">Order {{.OrderID}}</a>{{else}}<span class="mono">Order {{.OrderID}}</span>{{end}}
 <span class="badge">{{.Status}}</span>
 </div>{{if $o.ID}}<p class="dispute-order">
-<strong>{{$o.Title}}</strong> · price {{$o.Amount}} {{$o.Currency}} · {{$o.Kind}}<br>
+<strong>{{if $readable}}<a class="text-link" href="/product?id={{$o.ProductID}}">{{$o.Title}}</a>{{else}}{{$o.Title}}{{end}}</strong> · price {{$o.Amount}} {{$o.Currency}} · {{$o.Kind}}<br>
 <span class="muted">Buyer {{$o.Buyer}} · vendor {{$o.Vendor}} · order state</span> <span class="badge {{template "order-badge-class" $o.State}}">{{$o.Status}}</span>
 </p>{{end}}
 <p class="dispute-text">{{.Reason}}</p>
@@ -20,14 +23,15 @@ Disputes holds every open dispute first (OpenDisputes of them, oldest first), th
 <strong>No eligible resolver.</strong> Every moderator and administrator is a party to this order. Assign a moderator who is not a party on the administration page so this dispute can be resolved.</p>{{end}}{{$ev := index $.DisputeEvidence .ID}}{{with $ev}}<div class="dispute-evidence" role="note">
 <p><strong>Encrypted evidence holders.</strong> Messages each party sent to a moderator or administrator since this dispute opened, counted from who sent them to whom and when; only the recipient can read them.</p>
 <ul>
-<li>Buyer → {{range $i, $h := .Buyer}}{{if $i}}, {{end}}{{$h.Handle}} ({{$h.Count}}, latest {{$h.Latest}}){{else}}none{{end}}</li>
-<li>Vendor → {{range $i, $h := .Vendor}}{{if $i}}, {{end}}{{$h.Handle}} ({{$h.Count}}, latest {{$h.Latest}}){{else}}none{{end}}</li>
+<li>Buyer → {{range $i, $h := .Buyer}}{{if $i}}, {{end}}{{$h.Handle}}{{if $h.Suspended}} (suspended){{end}} ({{$h.Count}}, latest {{$h.Latest}}){{else}}none{{end}}</li>
+<li>Vendor → {{range $i, $h := .Vendor}}{{if $i}}, {{end}}{{$h.Handle}}{{if $h.Suspended}} (suspended){{end}} ({{$h.Count}}, latest {{$h.Latest}}){{else}}none{{end}}</li>
 </ul>
 </div>{{end}}{{if $party}}<p class="order-unavailable" role="note">
 <strong>Unavailable.</strong> You are a party to this order; another moderator must resolve it.</p>{{else if ne $o.State "disputed"}}<p class="order-unavailable" role="note">
 <strong>Unavailable.</strong> This order is not in the Disputed state, so no outcome can be recorded.</p>{{else}}<form class="stack" method="post" action="/resolve">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
-<input type="hidden" name="id" value="{{.ID}}">{{$p := index $.DisputePayouts .ID}}
+<input type="hidden" name="id" value="{{.ID}}">
+<input type="hidden" name="reply_seen" value="{{if .Reply}}1{{else}}0{{end}}">{{$p := index $.DisputePayouts .ID}}
 <p class="help" role="note">{{if .Reply}}The {{.ReplyRole}} replied; the reply is shown above.{{else if .Opener}}The {{.Responder}} has not replied; only the {{.Opener}}’s account is on record.{{else}}Who opened this dispute is not recorded, and neither party can reply.{{end}} {{if and $ev (or $ev.Buyer $ev.Vendor)}}Before deciding, ask each staff member listed under Encrypted evidence holders what the evidence they hold shows: you cannot read it.{{else}}Neither party has messaged a moderator or administrator since this dispute opened.{{end}}</p>
 <fieldset class="dispute-outcome">
 <legend>Outcome</legend>
@@ -38,7 +42,7 @@ Disputes holds every open dispute first (OpenDisputes of them, oldest first), th
 </fieldset>
 <p class="help">A refund returns the whole counted amount to the buyer; a release pays the vendor the price and returns any excess worth sending to the buyer, with the network fee deducted. A refund or return larger than the price waits for an administrator's review; the payment watcher sends the rest automatically.</p>
 <label>Decision<textarea name="resolution" required minlength="20" maxlength="5000" aria-describedby="resolution-help-{{.ID}}">
-</textarea>
+{{if eq $.ResolveDispute .ID}}{{$.ResolveText}}{{end}}</textarea>
 </label>
 <span class="help" id="resolution-help-{{.ID}}"><a class="text-link" href="/canary#records">Stored unencrypted.</a> The buyer and the vendor read the decision on the order and on their disputes page, as does every moderator and administrator, and the operator and anyone with a backup. Never include an address, real name or tracking number, including any a party sent you encrypted.</span>{{template "payout-confirm" $p}}
 <p class="help">Resolving queues the payout, so confirm it with your password{{if and $.Security $.Security.TOTPEnabled}} and authenticator code{{end}}.</p>

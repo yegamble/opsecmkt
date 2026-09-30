@@ -211,8 +211,8 @@ the fee came out of it (the payout plus the fee for a Monero release sent before
 (its `timestamp`) that has no destinations as **this payout** until you have proven otherwise, for example by
 matching it to another payout's transaction ID; never requeue or release while one is unexplained.
 
-Then open *Resolve payout N* on that row; its summary repeats the payout's kind, amount, recipient and short
-order ID (for example "Resolve payout 7: refund 0.001 BTC to alice, order 2d6b549f"), so check that it is the
+Then follow that row's *Resolve payout N* link to its form under the payouts table; its summary repeats the
+payout's kind, amount, recipient and short order ID (for example "Resolve payout 7: refund 0.001 BTC to alice, order 2d6b549f"), so check that it is the
 payout you reconciled before confirming. Every action asks for your password (and authenticator code when
 enrolled), is recorded in the audit trail and the order history, and applies only if the payout is still in
 the state you saw, so a double click or a second administrator cannot queue it twice:
