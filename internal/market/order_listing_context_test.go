@@ -111,3 +111,60 @@ func TestArchivedListingVisibleThroughOrder(t *testing.T) {
 		t.Fatalf("unrelated buyer, taken-down listing: status %d, want 404", w.Code)
 	}
 }
+
+// A-264: an archived listing's photos show on its product page to those who may open that page (the order's
+// parties and the staff reviewing it, orderReadable), served on the authenticated /desk/img route under the same
+// rule. The public /img route still refuses them, and nobody else gets them on either route.
+func TestArchivedListingPhotosThroughOrder(t *testing.T) {
+	e := newTestApp(t)
+	vendorID, vendor := e.user("a264_vendor", "vendor")
+	buyerID, buyer := e.user("a264_buyer", "buyer")
+	otherBuyerID, otherBuyer := e.user("a264_buyer2", "buyer")
+	_, stranger := e.user("a264_stranger", "buyer")
+	_, otherVendor := e.user("a264_vendor2", "vendor")
+	_, moderator := e.user("a264_mod", "moderator")
+	_, admin := e.user("a264_admin", "admin")
+	disputed, paid := e.titledListing(vendorID, "A264 disputed listing"), e.titledListing(vendorID, "A264 paid listing")
+	photo := e.image(vendorID, disputed, "photo")
+	second := e.image(vendorID, disputed, "photo")
+	e.mustExec("UPDATE images SET created=created+interval '1 second' WHERE id=$1", second.id)
+	paidPhoto := e.image(vendorID, paid, "photo")
+	avatar := e.image(vendorID, "", "avatar")
+	e.order(buyerID, disputed, "BTC", stateDisputed)
+	e.order(otherBuyerID, paid, "BTC", statePaid)
+
+	// Live: public route, public URLs on the page; the desk route adds nothing for the order's buyer or staff.
+	e.wantPublic(photo, "live listing")
+	mustContain(t, e.body("GET", "/product?id="+disputed, buyer, nil, 200), `<img src="/img/`+photo.id+`-f"`)
+	e.wantDeskHidden(buyer, photo, "buyer, live listing on the desk route")
+	e.wantDeskHidden(moderator, photo, "moderator, live listing on the desk route")
+
+	e.mustExec(`UPDATE products SET archived=true,archived_at=now() WHERE id=ANY($1::text[])`, "{"+disputed+","+paid+"}")
+
+	// The public route still refuses the archived listing's photos, to everyone (it reads no session).
+	e.wantHidden(photo, "archived, public route")
+	e.wantHidden(paidPhoto, "archived paid listing, public route")
+
+	// Those who may read the disputed order see its listing's photos on its product page, on /desk/img, and the
+	// desk route serves them; the page links nothing on the public route and offers no staff remove form.
+	for name, s := range map[string]string{"buyer": buyer, "vendor": vendor, "moderator": moderator, "admin": admin} {
+		body := e.body("GET", "/product?id="+disputed, s, nil, 200)
+		mustContain(t, body, archivedListingBadge, `<img src="/desk/img/`+photo.id+`-f" alt="Photo 1 of 2: A264 disputed listing"`,
+			`<a href="/desk/img/`+second.id+`-f">`, `<img src="/desk/img/`+second.id+`-t"`, "Photos are supplied by the vendor")
+		mustNotContain(t, body, `"/img/`, "ILLUSTRATION", `action="/images/remove"`)
+		e.wantDesk(s, photo, name+", archived photo of a readable order")
+		e.wantDesk(s, second, name+", second archived photo")
+	}
+	// Everyone else: the desk route answers as for an unknown id, as the public route does.
+	for name, s := range map[string]string{"unrelated buyer": stranger, "other vendor": otherVendor, "buyer of the other order": otherBuyer} {
+		e.wantDeskHidden(s, photo, name)
+	}
+	// The paid order is not open to staff (not disputed, no flagged payment): its listing's photos neither.
+	e.wantDeskHidden(moderator, paidPhoto, "moderator, archived photo of an ordinary paid order")
+	e.wantDeskHidden(buyer, paidPhoto, "buyer of another order")
+	e.wantDesk(otherBuyer, paidPhoto, "buyer of the paid order")
+	mustContain(t, e.body("GET", "/product?id="+paid, otherBuyer, nil, 200), `<img src="/desk/img/`+paidPhoto.id+`-f"`)
+	// The rule covers listing photos only: the vendor's avatar stays refused to the order's buyer and staff.
+	e.wantDeskHidden(buyer, avatar, "buyer, vendor avatar")
+	e.wantDeskHidden(moderator, avatar, "moderator, vendor avatar")
+}

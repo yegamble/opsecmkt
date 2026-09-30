@@ -17,6 +17,8 @@ import (
 //
 //   - catalog and vendor-page cards: the first public photo's thumbnail (/img/<id>-t), decorative;
 //   - the product page: every public photo, the first at full size and the others as thumbnails linking to theirs;
+//     an archived listing's page (open only to those who may read an order on it, A-164) shows its photos the
+//     same way on /desk/img, picked with that route's predicate (A-264);
 //   - the vendor page: the vendor's avatar thumbnail when it is public;
 //   - /canary: while the administrator's "Show a public staff list" is on, the moderators and administrators
 //     who have not hidden themselves, with their avatar when it is public;
@@ -40,7 +42,8 @@ func init() {
 }
 
 // productPhotosLoader sets the public photos of the listings on the page (at most 25 listings, 4 photos each),
-// oldest first, in one query.
+// oldest first, in one query. An archived listing's product page gets the photos the desk route serves the viewer
+// instead, linked there, with no staff remove form (a moderator removes only what the public route serves).
 func productPhotosLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 	if len(d.Products) == 0 {
 		return nil
@@ -49,8 +52,13 @@ func productPhotosLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 	for i, p := range d.Products {
 		ids[i] = p.ID
 	}
-	rows, err := a.db.QueryContext(ctx, `SELECT i.product_id,i.id,i.width,i.height,i.description,octet_length(i."full") FROM `+imagePublicFrom+`
-		WHERE i.product_id=ANY($1::text[]) AND `+imagePublicWhere+` ORDER BY i.product_id,i.created,i.id`, ids)
+	from, where, args, url := imagePublicFrom, imagePublicWhere, []any{ids}, publicImageURL
+	desk := d.Page == "product" && d.Product != nil && d.Product.Archived && d.User != nil
+	if desk {
+		from, where, args, url = `images i JOIN users o ON o.id=i.owner_user_id`, `i.kind='photo' AND `+imageDeskWhere, append(args, d.User.ID, d.User.Role), deskImageURL
+	}
+	rows, err := a.db.QueryContext(ctx, `SELECT i.product_id,i.id,i.width,i.height,i.description,octet_length(i."full") FROM `+from+`
+		WHERE i.product_id=ANY($1::text[]) AND `+where+` ORDER BY i.product_id,i.created,i.id`, args...)
 	if err != nil {
 		return err
 	}
@@ -68,9 +76,9 @@ func productPhotosLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		return err
 	}
 	for i := range d.Products {
-		setPhotos(&d.Products[i], photos[d.Products[i].ID])
+		setPhotos(&d.Products[i], photos[d.Products[i].ID], url)
 	}
-	if d.Page == "product" && d.Product != nil && len(d.Product.Photos) > 0 && staffViewer(d.User) { // A-190: a staff remove form per photo
+	if !desk && d.Page == "product" && d.Product != nil && len(d.Product.Photos) > 0 && staffViewer(d.User) { // A-190: a staff remove form per photo
 		var role string // moderators take down vendors' photos only (mayTakeDown)
 		if err = a.db.QueryRowContext(ctx, `SELECT role FROM users WHERE id=$1`, d.Product.VendorID).Scan(&role); err != nil {
 			return err
@@ -89,15 +97,15 @@ type storedPhoto struct {
 	size            int64 // bytes of the full-size JPEG
 }
 
-// setPhotos sets p's photos, their URLs on the public route and the text naming them: photo 1's text
-// alternative is its description or "Photo 1 of N: <title>"; the link to each other photo's full size says
-// "Photo 2 of N, full size (JPEG, 180 KB)".
-func setPhotos(p *Product, stored []storedPhoto) {
+// setPhotos sets p's photos, their URLs on the route url builds (publicImageURL, or deskImageURL for an archived
+// listing) and the text naming them: photo 1's text alternative is its description or "Photo 1 of N: <title>";
+// the link to each other photo's full size says "Photo 2 of N, full size (JPEG, 180 KB)".
+func setPhotos(p *Product, stored []storedPhoto, url func(string, bool) string) {
 	p.Photos, p.Thumb = nil, ""
 	n := strconv.Itoa(len(stored))
 	for i, s := range stored {
 		number := "Photo " + strconv.Itoa(i+1) + " of " + n
-		ph := ProductPhoto{ID: s.id, Full: publicImageURL(s.id, true), Thumb: publicImageURL(s.id, false), Description: s.description,
+		ph := ProductPhoto{ID: s.id, Full: url(s.id, true), Thumb: url(s.id, false), Description: s.description,
 			Width: s.width, Height: s.height, Alt: s.description, Label: number + ", full size (JPEG, " + kilobytes(s.size) + ")"}
 		if ph.Alt == "" {
 			ph.Alt = number + ": " + p.Title
@@ -250,7 +258,7 @@ func previewProductPhotos(d *PageData) {
 				stored = append(stored, storedPhoto{id: ph.id, description: ph.description, width: ph.width, height: ph.height, size: int64(len(ph.full))})
 			}
 		}
-		setPhotos(&d.Products[i], stored)
+		setPhotos(&d.Products[i], stored, publicImageURL)
 	}
 }
 
