@@ -1,7 +1,10 @@
-import { expect, test, type Page } from '@playwright/test';
-import { execFile } from 'node:child_process';
+import { expect, test, type Browser, type Page } from '@playwright/test';
+import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { expectNotice, pgpFixture, signedIn, setRole } from './db-helpers';
+import { expectNotice, pgpFixture, signedIn, setRole, submitAndLoad } from './db-helpers';
+
+// The legs after the first test reuse its marketplace and administrator; a failure skips them.
+test.describe.configure({ mode: 'serial' });
 
 const execute = promisify(execFile);
 async function chain(...args: string[]) {
@@ -13,13 +16,39 @@ async function refreshUntil(page: Page, assertion: () => Promise<void>) {
 }
 const currencies = (process.env.LOCAL_CHAIN_CURRENCIES || 'BTC,XMR').split(',');
 if (currencies.some(currency => !['BTC', 'XMR'].includes(currency))) throw new Error('Only BTC and XMR local chains are supported');
-async function verifyReceipt(currency: string, address: string, total: number) {
+// txid, when given, is the payout's recorded transaction: the recipient's wallet must have received exactly it.
+async function verifyReceipt(currency: string, address: string, total: number, txid?: string) {
   const receipt = await chain('received', currency, address);
   expect(receipt.transactions).toBe(1);
   expect(receipt.amount).toBeGreaterThan(0);
   // Every payout on both coins, Monero releases included (A-232), is sent with the fee taken from the amount.
   expect(receipt.fee).toBeGreaterThan(0);
   expect(receipt.amount + receipt.fee).toBe(total);
+  if (txid !== undefined) expect(receipt.txids).toEqual([txid]);
+  // The run's evidence (A-103): each payout received on chain, its fee and transaction.
+  console.log(`received on chain: ${currency} total ${total} = amount ${receipt.amount} + fee ${receipt.fee}, txid ${receipt.txids.join(',')}`);
+}
+// Read-only checks of the run's own database (payouts and the watcher's poll time); nothing is written.
+const sql = (query: string) => execFileSync('psql', [process.env.E2E_CHAIN_DATABASE_URL!, '-v', 'ON_ERROR_STOP=1', '-qtAc', query], { encoding: 'utf8' }).trim();
+type Payout = { kind: string, amount: number, state: string, txid: string, ambiguous: boolean, address: string, error: string };
+function payouts(orderID: string): Payout[] {
+  expect(orderID).toMatch(/^[0-9a-f]+$/);
+  return JSON.parse(sql(`SELECT COALESCE(json_agg(json_build_object('kind',kind,'amount',amount,'state',state,'txid',txid,'ambiguous',send_ambiguous,
+    'address',address,'error',error) ORDER BY id),'[]') FROM payouts WHERE order_id='${orderID}'`));
+}
+// No payout anywhere in the run was sent without a definite answer, failed, or is stuck in sending.
+function noAmbiguousSends() {
+  expect(sql("SELECT count(*) FROM payouts WHERE send_ambiguous OR state IN ('sending','failed')")).toBe('0');
+}
+// Waits for the payment watcher to finish at least `cycles` more polls of currency (payment_status.last_poll).
+async function watcherCycles(currency: string, cycles = 3) {
+  const poll = () => sql(`SELECT COALESCE(last_poll::text,'') FROM payment_status WHERE currency='${currency}'`);
+  let last = poll(), seen = 0;
+  await expect.poll(() => {
+    const now = poll();
+    if (now !== last) [last, seen] = [now, seen + 1];
+    return seen;
+  }, { timeout: 60_000, intervals: [250] }).toBeGreaterThanOrEqual(cycles);
 }
 const password = 'local-chain-browser-password-123';
 
@@ -139,4 +168,238 @@ test('isolated real chains: seeded buyer/vendor partial deposits, confirmation, 
     await verifyReceipt(currency, refundAddress, total);
   }
   await Promise.all([buyer.context().close(), vendor.context().close(), moderator.context().close()]);
+});
+
+// A-103: overpaid, large and underpaid legs on the same real chains, each with fresh accounts (their own password
+// confirmation budgets) and fresh recipient addresses, so every receipt below is exactly one payout.
+const priceOf = (currency: string) => currency === 'BTC' ? 100_000 : 500_000_000_000;
+// Atomic units as the pages print them: 150000 satoshi is "0.0015", 800000000000 piconero "0.8".
+function coins(currency: string, atomic: number) {
+  const decimals = currency === 'BTC' ? 8 : 12;
+  const digits = String(atomic).padStart(decimals + 1, '0');
+  const fraction = digits.slice(-decimals).replace(/0+$/, '');
+  return digits.slice(0, -decimals) + (fraction ? '.' + fraction : '');
+}
+async function legParties(browser: Browser, baseURL: string | undefined, leg: string) {
+  const admin = await signedIn(browser, baseURL, 'chain_admin', password, false);
+  const vendor = await signedIn(browser, baseURL, `chain_${leg}_vendor`, password, true);
+  const buyer = await signedIn(browser, baseURL, `chain_${leg}_buyer`, password, true);
+  await setRole(admin, `chain_${leg}_vendor`, 'vendor');
+  return { admin, vendor, buyer, close: () => Promise.allSettled([admin, vendor, buyer].map(page => page.context().close())) };
+}
+async function saveAddress(page: Page, currency: string, address: string) {
+  await page.goto('/account');
+  const form = page.locator('form', { has: page.getByRole('button', { name: `Save ${currency} address` }) });
+  await form.locator('input[name="address"]').fill(address);
+  await form.getByLabel('Current password', { exact: true }).fill(password);
+  await submitAndLoad(page, form.getByRole('button'));
+  await expect(form.locator('input[name="address"]')).toHaveValue(address);
+}
+async function publishDigitalListing(vendor: Page, title: string) {
+  await vendor.goto('/vendor-dashboard');
+  await vendor.getByText('+ Publish a new listing', { exact: true }).click();
+  await vendor.getByLabel('Listing title').fill(title);
+  await vendor.getByLabel('Description', { exact: true }).fill('Isolated real node browser test. Locally mined test coins only.');
+  await vendor.getByLabel('Fulfillment type').selectOption('digital');
+  await vendor.getByLabel('Stock', { exact: true }).fill('3');
+  await vendor.getByLabel('Bitcoin reference price').fill('0.001');
+  await vendor.getByLabel('Monero reference price').fill('0.5');
+  await submitAndLoad(vendor, vendor.getByRole('button', { name: 'Publish listing' }));
+}
+async function placeOrder(buyer: Page, title: string, currency: string) {
+  await buyer.goto(`/?q=${encodeURIComponent(title)}`);
+  await buyer.getByRole('link', { name: title, exact: true }).click();
+  await buyer.getByRole('link', { name: 'Review order draft' }).click();
+  await buyer.getByLabel('Reference currency').selectOption(currency);
+  await buyer.getByRole('button', { name: 'Create unfunded draft' }).click();
+  await buyer.getByRole('button', { name: 'Request payment address' }).click();
+  await expect(buyer.locator('.page-head .badge')).toHaveText('Awaiting payment');
+  const url = buyer.url();
+  return { url, id: new URL(url).searchParams.get('id')!, address: (await buyer.locator('.payment-address .mono').innerText()).trim() };
+}
+// Pays the order with one deposit of paid, confirms it and waits for Paid; the vendor then delivers.
+async function payAndDeliver(buyer: Page, vendor: Page, currency: string, order: { url: string, address: string }, paid: number) {
+  await chain('deposit', currency, order.address, coins(currency, paid));
+  await chain('mine', currency, '12');
+  await refreshUntil(buyer, async () => { await expect(buyer.locator('.page-head .badge')).toHaveText('Paid', { timeout: 1000 }); });
+  await vendor.goto(order.url);
+  await vendor.getByLabel('Delivery content', { exact: true }).fill('Real-chain test digital delivery');
+  await submitAndLoad(vendor, vendor.getByRole('button', { name: 'Deliver digital content', exact: true }));
+  await buyer.reload();
+  await expect(buyer.locator('.page-head .badge')).toHaveText('Delivered');
+  await expect(buyer.locator('input[name="amount_seen"]')).toHaveValue(String(paid));
+}
+const payoutStatus = (page: Page, kind: string) => page.locator('.payment-figures', { has: page.getByText(kind, { exact: true }) })
+  .locator('div', { has: page.getByText('Payout status', { exact: true }) });
+
+test('isolated real chains: an overpaid order releases the price and returns the excess, each sent once', async ({ browser, baseURL }) => {
+  test.setTimeout(900_000);
+  const { vendor, buyer, close } = await legParties(browser, baseURL, 'overpaid');
+  try {
+    for (const currency of currencies) {
+      // The excess is below the price, so its return is sent without review.
+      const paid = currency === 'BTC' ? 150_000 : 800_000_000_000, excess = paid - priceOf(currency);
+      const vendorAddress = (await chain('address', currency)).address, returnAddress = (await chain('address', currency)).address;
+      await saveAddress(vendor, currency, vendorAddress);
+      await saveAddress(buyer, currency, returnAddress);
+      const title = `Local-chain ${currency} overpaid listing`;
+      await publishDigitalListing(vendor, title);
+      const order = await placeOrder(buyer, title, currency);
+      await payAndDeliver(buyer, vendor, currency, order, paid);
+      await expect(buyer.getByRole('note').filter({ hasText: 'Overpaid.' })).toContainText(`You sent ${coins(currency, excess)} ${currency} more than the price (test network). Completing releases the price to the vendor and returns the excess to your saved ${currency} payout address, with the network fee deducted.`);
+      await buyer.getByRole('checkbox', { name: `Release ${coins(currency, priceOf(currency))} ${currency} (test network) to chain_overpaid_vendor (the price) and return the ${coins(currency, excess)} ${currency} paid over the price to chain_overpaid_buyer; network fee deducted from each. This is final.`, exact: true }).check();
+      await submitAndLoad(buyer, buyer.getByRole('button', { name: 'Confirm receipt and complete' }));
+      await expectNotice(buyer, 'Order completed.');
+      await refreshUntil(buyer, async () => {
+        await expect(buyer.locator('.page-head .badge')).toHaveText('Completed');
+        await expect(payoutStatus(buyer, 'Release to vendor')).toContainText('Sent', { timeout: 1000 });
+        await expect(payoutStatus(buyer, 'Return to buyer')).toContainText('Sent', { timeout: 1000 });
+      });
+      const rows = payouts(order.id);
+      expect(rows).toEqual([
+        expect.objectContaining({ kind: 'release', amount: priceOf(currency), state: 'sent', ambiguous: false, address: vendorAddress, error: '' }),
+        expect.objectContaining({ kind: 'return', amount: excess, state: 'sent', ambiguous: false, address: returnAddress, error: '' }),
+      ]);
+      noAmbiguousSends();
+      await expect(buyer.getByRole('heading', { name: 'Return of the amount paid over the price' })).toBeVisible();
+      await expect(buyer.locator('main')).toContainText(rows[1].txid);
+      await vendor.goto(order.url);
+      await expect(payoutStatus(vendor, 'Return to buyer')).toContainText('Sent');
+      await expect(vendor.locator('main')).not.toContainText(returnAddress);
+      await chain('mine', currency, '12');
+      await verifyReceipt(currency, vendorAddress, priceOf(currency), rows[0].txid);
+      await verifyReceipt(currency, returnAddress, excess, rows[1].txid);
+      // Further watcher passes send nothing more.
+      await watcherCycles(currency);
+      await verifyReceipt(currency, vendorAddress, priceOf(currency), rows[0].txid);
+      await verifyReceipt(currency, returnAddress, excess, rows[1].txid);
+      expect(payouts(order.id)).toEqual(rows);
+      noAmbiguousSends();
+    }
+  } finally {
+    await close();
+  }
+});
+
+test('isolated real chains: a return larger than the price is held until an administrator releases it, then sent once', async ({ browser, baseURL }) => {
+  test.setTimeout(900_000);
+  const { admin, vendor, buyer, close } = await legParties(browser, baseURL, 'large');
+  try {
+    for (const currency of currencies) {
+      // Two and a half times the price: the excess is more than the price, so its return is held (largeHold).
+      const paid = currency === 'BTC' ? 250_000 : 1_250_000_000_000, excess = paid - priceOf(currency);
+      const vendorAddress = (await chain('address', currency)).address, returnAddress = (await chain('address', currency)).address;
+      await saveAddress(vendor, currency, vendorAddress);
+      await saveAddress(buyer, currency, returnAddress);
+      const title = `Local-chain ${currency} large return listing`;
+      await publishDigitalListing(vendor, title);
+      const order = await placeOrder(buyer, title, currency);
+      await payAndDeliver(buyer, vendor, currency, order, paid);
+      await expect(buyer.getByRole('note').filter({ hasText: 'Overpaid.' })).toContainText(`You sent ${coins(currency, excess)} ${currency} more than the price (test network). Completing releases the price to the vendor. The excess is more than the price, so an administrator reviews its return to your saved ${currency} payout address (network fee deducted) before it is sent.`);
+      await buyer.getByRole('checkbox', { name: `Release ${coins(currency, priceOf(currency))} ${currency} (test network) to chain_large_vendor (the price) and return the ${coins(currency, excess)} ${currency} paid over the price to chain_large_buyer; network fee deducted from each; the return is more than the price, so an administrator reviews it before it is sent. This is final.`, exact: true }).check();
+      await submitAndLoad(buyer, buyer.getByRole('button', { name: 'Confirm receipt and complete' }));
+      await expectNotice(buyer, 'Order completed.');
+      await refreshUntil(buyer, async () => {
+        await expect(buyer.locator('.page-head .badge')).toHaveText('Completed');
+        await expect(payoutStatus(buyer, 'Release to vendor')).toContainText('Sent', { timeout: 1000 });
+        await expect(payoutStatus(buyer, 'Return to buyer')).toContainText('Held for review', { timeout: 1000 });
+      });
+      await expect(buyer.locator('main')).toContainText('has not been sent. It is more than the order price, so an administrator reviews it before it is sent.');
+      let rows = payouts(order.id);
+      expect(rows).toEqual([
+        expect.objectContaining({ kind: 'release', amount: priceOf(currency), state: 'sent', ambiguous: false, address: vendorAddress, error: '' }),
+        expect.objectContaining({ kind: 'return', amount: excess, state: 'held', ambiguous: false, address: returnAddress, txid: '' }),
+      ]);
+      expect(rows[1].error.startsWith('Larger than the order price:')).toBe(true);
+      await chain('mine', currency, '12');
+      await verifyReceipt(currency, vendorAddress, priceOf(currency), rows[0].txid);
+      // The watcher never lifts this hold: after more passes nothing has reached the buyer.
+      await watcherCycles(currency);
+      expect(payouts(order.id)).toEqual(rows);
+      expect((await chain('received', currency, returnAddress)).transactions).toBe(0);
+      noAmbiguousSends();
+
+      await admin.goto('/admin');
+      const row = () => admin.locator('tr', { has: admin.getByText(order.id, { exact: true }) }).filter({ hasText: 'Return of overpayment' });
+      await expect(row()).toContainText(`${coins(currency, excess)} ${currency}`);
+      await expect(row()).toContainText('Held: larger than the order price — review before releasing');
+      const link = row().getByRole('link', { name: /^Resolve payout \d+$/ });
+      const target = (await link.getAttribute('href'))!;
+      await link.click();
+      const details = admin.locator(`details.payout-actions${target}`);
+      await details.locator('summary').click();
+      const release = details.locator('form', { has: admin.getByRole('button', { name: 'Release held payout', exact: true }) });
+      await release.getByRole('checkbox', { name: 'Reviewed: this payment is a genuine mistake and may be returned', exact: true }).check();
+      await release.getByLabel('Current password', { exact: true }).fill(password);
+      await submitAndLoad(admin, release.getByRole('button', { name: 'Release held payout', exact: true }));
+      await expectNotice(admin, 'Payout released.');
+      await refreshUntil(buyer, async () => {
+        await expect(payoutStatus(buyer, 'Return to buyer')).toContainText('Sent', { timeout: 1000 });
+      });
+      rows = payouts(order.id);
+      expect(rows).toEqual([
+        expect.objectContaining({ kind: 'release', amount: priceOf(currency), state: 'sent', ambiguous: false }),
+        expect.objectContaining({ kind: 'return', amount: excess, state: 'sent', ambiguous: false, address: returnAddress, error: '' }),
+      ]);
+      noAmbiguousSends();
+      await expect(buyer.locator('main')).toContainText(rows[1].txid);
+      await chain('mine', currency, '12');
+      await verifyReceipt(currency, returnAddress, excess, rows[1].txid);
+      await watcherCycles(currency);
+      await verifyReceipt(currency, vendorAddress, priceOf(currency), rows[0].txid);
+      await verifyReceipt(currency, returnAddress, excess, rows[1].txid);
+      expect(payouts(order.id)).toEqual(rows);
+      noAmbiguousSends();
+      await admin.reload();
+      await expect(row()).toContainText(rows[1].txid);
+      await expect(row().getByRole('link', { name: /^Resolve payout / })).toHaveCount(0);
+    }
+  } finally {
+    await close();
+  }
+});
+
+test('isolated real chains: cancelling an underpaid order refunds the confirmed deposit once to the saved address', async ({ browser, baseURL }) => {
+  test.setTimeout(900_000);
+  const { vendor, buyer, close } = await legParties(browser, baseURL, 'underpaid');
+  try {
+    for (const currency of currencies) {
+      const paid = currency === 'BTC' ? 40_000 : 200_000_000_000, remaining = priceOf(currency) - paid;
+      const refundAddress = (await chain('address', currency)).address;
+      await saveAddress(buyer, currency, refundAddress);
+      const title = `Local-chain ${currency} underpaid listing`;
+      await publishDigitalListing(vendor, title);
+      const order = await placeOrder(buyer, title, currency);
+      await chain('deposit', currency, order.address, coins(currency, paid));
+      await chain('mine', currency, '12');
+      const refund = buyer.getByRole('checkbox', { name: `Refund ${coins(currency, paid)} ${currency} (test network) to chain_underpaid_buyer — ${coins(currency, remaining)} ${currency} less than the price; network fee deducted. This is final.`, exact: true });
+      await refreshUntil(buyer, async () => {
+        await expect(buyer.locator('.payment-figures div').filter({ has: buyer.getByText('Remaining to send', { exact: true }) }))
+          .toContainText(coins(currency, remaining), { timeout: 1000 });
+        await expect(refund).toBeVisible({ timeout: 1000 });
+      });
+      await expect(buyer.locator('.page-head .badge')).toHaveText('Awaiting payment');
+      await expect(buyer.locator('main')).toContainText(`A deposit has arrived but does not cover the price. Cancelling returns one unit of stock and queues one refund of every confirmed deposit to your saved ${currency} payout address (it waits until you save one)`);
+      await expect(buyer.locator('input[name="amount_seen"]')).toHaveValue(String(paid));
+      await refund.check();
+      await submitAndLoad(buyer, buyer.getByRole('button', { name: 'Cancel order', exact: true }));
+      await expectNotice(buyer, 'Order cancelled.');
+      await refreshUntil(buyer, async () => {
+        await expect(buyer.locator('.page-head .badge')).toHaveText('Cancelled');
+        await expect(payoutStatus(buyer, 'Refund to buyer')).toContainText('Sent', { timeout: 1000 });
+      });
+      const rows = payouts(order.id);
+      expect(rows).toEqual([expect.objectContaining({ kind: 'refund', amount: paid, state: 'sent', ambiguous: false, address: refundAddress, error: '' })]);
+      noAmbiguousSends();
+      await expect(buyer.locator('main')).toContainText(rows[0].txid);
+      await chain('mine', currency, '12');
+      await verifyReceipt(currency, refundAddress, paid, rows[0].txid);
+      await watcherCycles(currency);
+      await verifyReceipt(currency, refundAddress, paid, rows[0].txid);
+      expect(payouts(order.id)).toEqual(rows);
+      noAmbiguousSends();
+    }
+  } finally {
+    await close();
+  }
 });

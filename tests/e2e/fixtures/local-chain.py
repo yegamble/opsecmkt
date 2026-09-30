@@ -125,7 +125,7 @@ def main():
             rows = btc('listreceivedbyaddress', [0, True, True, address], 'buyer')
             txids = {txid for row in rows for txid in row.get('txids', [])}
             fee = sum(abs(Decimal(str(btc('gettransaction', [txid], 'opsecmkt').get('fee', 0)))) for txid in txids)
-            result = {'amount': int(amount * 10**8), 'fee': int(fee * 10**8), 'transactions': len(txids)}
+            result = {'amount': int(amount * 10**8), 'fee': int(fee * 10**8), 'transactions': len(txids), 'txids': sorted(txids)}
         else:
             wallet('refresh')
             index = wallet('get_address_index', {'address': address})['index']['minor']
@@ -136,7 +136,7 @@ def main():
             # sending market wallet, as the Bitcoin branch does.
             wallet('refresh', name='opsecmkt')
             fee = sum(wallet('get_transfer_by_txid', {'txid': txid}, name='opsecmkt')['transfer']['fee'] for txid in txids)
-            result = {'amount': sum(row['amount'] for row in rows), 'fee': fee, 'transactions': len(txids)}
+            result = {'amount': sum(row['amount'] for row in rows), 'fee': fee, 'transactions': len(txids), 'txids': sorted(txids)}
     else:
         raise ValueError('Use env, address, deposit, mine or received')
     print(json.dumps(result))
