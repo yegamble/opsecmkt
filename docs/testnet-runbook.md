@@ -487,8 +487,8 @@ addresses this market had already issued", with the number of refused requests a
 points here. The warning stays until an administrator dismisses it with its *Dismiss* button after following this
 section (a later collision shows it again); a payment request that succeeds does not clear it. Each refused
 request moves the wallet on by one address the database already holds, so the refusals stop by themselves once
-buyers' retries have walked the wallet past every issued address, but without the rescan below. The restored wallet also
-watches only a limited range past its own index (1000 Bitcoin keys, 200 Monero subaddresses by default), so
+buyers' retries have walked the wallet past every issued address, but without the rescan below. The restored
+wallet also watches only a limited range past its own index (1000 Bitcoin keys, 200 Monero subaddresses by default), so
 deposits made after the backup to addresses beyond it are not seen. Scanning moves the index past the highest
 address that received a deposit, but not past issued addresses that were never paid.
 
