@@ -16,7 +16,7 @@ export default defineConfig({
     timeout: 120_000, env: { ...chainEnv, ADDR: '127.0.0.1:18122', DATABASE_URL: databaseURL,
       COOKIE_SECURE: 'false', APP_MODE: 'clearnet', SETUP_TOKEN: 'local-chain-browser-test-setup-token-at-least-32',
       ESCROW_BTC: '', ESCROW_BTC_RPC_URL: '', ESCROW_BTC_ARBITER_WALLET: '', ESCROW_BTC_WATCH_WALLET: '',
-      ESCROW_BTC_FEE_BPS: '', ESCROW_BTC_FEE_ADDRESS: '',
+      ESCROW_BTC_FEE_BPS: '', ESCROW_BTC_FEE_ADDRESS: '', ESCROW_BTC_FEE_RATE: '',
       PAYMENT_CONFIRMATIONS_BTC: '3', PAYMENT_CONFIRMATIONS_XMR: '3', PAYMENT_POLL_INTERVAL: '1s',
       PAYMENT_EXPIRY: '24h', AUDIT_SIGNING_KEY: '' } },
 });
