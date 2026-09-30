@@ -91,6 +91,7 @@ type DisputeEvidence struct{ Buyer, Vendor []EvidenceHolder }
 // (open, not a party, and an administrator when Escalated). Refundable: not credited, so "refunded by hand" applies.
 type PaymentReview struct {
 	ID, OrderID, OrderState, Currency, Amount, TxID, Reason, Flagged string
+	ProductID, Title                                                 string // the order's listing, linked from the row (A-265)
 	Index                                                            int64
 	Open, Escalated, Party, Form, Refundable                         bool
 }

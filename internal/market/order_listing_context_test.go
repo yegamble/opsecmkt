@@ -168,3 +168,56 @@ func TestArchivedListingPhotosThroughOrder(t *testing.T) {
 	e.wantDeskHidden(buyer, avatar, "buyer, vendor avatar")
 	e.wantDeskHidden(moderator, avatar, "moderator, vendor avatar")
 }
+
+// A-265: the moderation desk's dispute entries and payment-review rows, the parties' /disputes entries and the
+// vendor desk's incoming-order rows link each order's listing, and each link opens for that viewer even once the
+// listing is archived (the order page's rule, A-164).
+func TestDeskOrderRowsLinkTheirListing(t *testing.T) {
+	w := newOrderWorld(t)
+	e := w.e
+	disputed, flagged := e.titledListing(w.vendorID, "A265 disputed listing"), e.titledListing(w.vendorID, "A265 flagged listing")
+	disputedOrder := e.order(w.buyerID, disputed, "BTC", stateShipped)
+	w.expect("/disputes", w.buyer, form("order_id", disputedOrder, "reason", "The parcel never arrived at the agreed place."), 303, "")
+	flaggedOrder := e.order(w.otherID, flagged, "BTC", stateCancelled)
+	e.mustExec(`INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,flagged,after_close) VALUES($1,'BTC','a265-flagged',0,'tb1qa265',1,1,true,true)`, flaggedOrder)
+	e.mustExec(`UPDATE products SET archived=true,archived_at=now() WHERE id=ANY($1::text[])`, "{"+disputed+","+flagged+"}")
+
+	// segment returns the part of page from the last start before marker to the next end after it.
+	segment := func(page, start, marker, end string) string {
+		t.Helper()
+		i := strings.Index(page, marker)
+		if i < 0 {
+			t.Fatalf("page lacks %q", marker)
+		}
+		from := strings.LastIndex(page[:i], start)
+		to := strings.Index(page[i:], end)
+		if from < 0 || to < 0 {
+			t.Fatalf("no %q…%q around %q", start, end, marker)
+		}
+		return page[from : i+to]
+	}
+	opens := func(session, product string) {
+		t.Helper()
+		mustContain(t, e.body("GET", "/product?id="+product, session, nil, 200), archivedListingBadge)
+	}
+	disputeLink := `<a class="text-link" href="/product?id=` + disputed + `">A265 disputed listing</a>`
+
+	desk := w.page("/moderator", w.mod, 200)
+	mustContain(t, segment(desk, `<article class="message">`, "Order "+disputedOrder+"<", "</article>"), disputeLink)
+	mustContain(t, segment(desk, `<tr class="payment-review-row">`, `href="/order?id=`+flaggedOrder+`"`, "</tr>"),
+		`<a class="text-link order-listing" href="/product?id=`+flagged+`">A265 flagged listing</a>`)
+	opens(w.mod, disputed)
+	opens(w.mod, flagged)
+
+	for _, s := range []string{w.buyer, w.vendor} {
+		mustContain(t, segment(w.page("/disputes", s, 200), `<article class="message">`, "Order "+disputedOrder+"<", "</article>"), disputeLink)
+		opens(s, disputed)
+	}
+
+	vendorDesk := w.page("/vendor-dashboard", w.vendor, 200)
+	for id, c := range map[string]struct{ order, title string }{disputed: {disputedOrder, "A265 disputed listing"}, flagged: {flaggedOrder, "A265 flagged listing"}} {
+		mustContain(t, segment(vendorDesk, "<tr>", `href="/order?id=`+c.order+`"`, "</tr>"),
+			`<a class="text-link" href="/product?id=`+id+`">Listing<span class="sr-only">: `+c.title+`</span></a>`)
+		opens(w.vendor, id)
+	}
+}

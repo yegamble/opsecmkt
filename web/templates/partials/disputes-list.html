@@ -2,13 +2,15 @@
 each outcome stating its payout from DisputePayouts (A-161) and confirmed with the resolver's password, plus an authenticator code
 when Security says TOTP is on (A-32; adminConfirmLoader on the desk, resolveConfirmLoader on /disputes);
 administrators see a "No eligible resolver" note on an open dispute whose order has every staff account as a party.
-Disputes holds every open dispute first (OpenDisputes of them, oldest first), then the most recent resolved ones. */}}
+Disputes holds every open dispute first (OpenDisputes of them, oldest first), then the most recent resolved ones.
+Whoever may open the order also gets its listing linked (A-265): the product page of an archived listing opens by the
+order page's rule (A-164). */}}
 {{define "disputes-list"}}{{if .Disputes}}<h2 class="section-title">Open disputes</h2>{{if .OpenDisputes}}<div class="messages-list">{{else}}<p class="help">No open disputes. Every open dispute is listed here, oldest first.</p>{{end}}{{range $i, $d := .Disputes}}{{if eq $i $.OpenDisputes}}{{if $i}}</div>{{end}}
-<h2 class="section-title">Resolved disputes</h2>{{if $.HistoryLimit}}<p class="help" role="note">Showing the {{$.HistoryLimit}} most recent resolved disputes; older resolved disputes are not listed.</p>{{end}}<div class="messages-list">{{end}}{{$o := index $.DisputeOrders .OrderID}}{{$party := and $.User $o.ID (or (eq $o.BuyerID $.User.ID) (eq $o.VendorID $.User.ID))}}<article class="message">
-<div class="message-meta">{{if or $party (and $.User $o.ID (or (eq $.User.Role "moderator") (eq $.User.Role "admin")))}}<a class="text-link" href="/order?id={{.OrderID}}">Order {{.OrderID}}</a>{{else}}<span class="mono">Order {{.OrderID}}</span>{{end}}
+<h2 class="section-title">Resolved disputes</h2>{{if $.HistoryLimit}}<p class="help" role="note">Showing the {{$.HistoryLimit}} most recent resolved disputes; older resolved disputes are not listed.</p>{{end}}<div class="messages-list">{{end}}{{$o := index $.DisputeOrders .OrderID}}{{$party := and $.User $o.ID (or (eq $o.BuyerID $.User.ID) (eq $o.VendorID $.User.ID))}}{{$readable := or $party (and $.User $o.ID (or (eq $.User.Role "moderator") (eq $.User.Role "admin")))}}<article class="message">
+<div class="message-meta">{{if $readable}}<a class="text-link" href="/order?id={{.OrderID}}">Order {{.OrderID}}</a>{{else}}<span class="mono">Order {{.OrderID}}</span>{{end}}
 <span class="badge">{{.Status}}</span>
 </div>{{if $o.ID}}<p class="dispute-order">
-<strong>{{$o.Title}}</strong> · price {{$o.Amount}} {{$o.Currency}} · {{$o.Kind}}<br>
+<strong>{{if $readable}}<a class="text-link" href="/product?id={{$o.ProductID}}">{{$o.Title}}</a>{{else}}{{$o.Title}}{{end}}</strong> · price {{$o.Amount}} {{$o.Currency}} · {{$o.Kind}}<br>
 <span class="muted">Buyer {{$o.Buyer}} · vendor {{$o.Vendor}} · order state</span> <span class="badge {{template "order-badge-class" $o.State}}">{{$o.Status}}</span>
 </p>{{end}}
 <p class="dispute-text">{{.Reason}}</p>
