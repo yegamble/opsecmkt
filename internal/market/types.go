@@ -75,10 +75,12 @@ func (d Dispute) Responder() string {
 }
 
 // EvidenceHolder (A-162): a moderator or administrator a party messaged since the dispute opened, with how many
-// messages and the time of the latest, read from message metadata (sender, recipient, time) only.
+// messages and the time of the latest, read from message metadata (sender, recipient, time) only. Suspended: that
+// account is suspended now, so it cannot sign in or answer until restored (A-280).
 type EvidenceHolder struct {
 	Handle, Latest string
 	Count          int
+	Suspended      bool
 }
 
 // DisputeEvidence lists the staff each party of an open dispute messaged since it opened.
@@ -152,6 +154,9 @@ type PageData struct {
 	// RoleHandle, RoleChoice, ResetHandle, SuspendHandle and SuspendChoice: admin page re-rendered after a
 	// handle matched no account, keeping what was typed into the role, second-factor reset or suspension form.
 	RoleHandle, RoleChoice, ResetHandle, SuspendHandle, SuspendChoice string
+	// ResolveDispute and ResolveText: the desk re-rendered after a resolve form loaded before the other party's
+	// reply was refused (A-280), keeping the decision typed for that dispute.
+	ResolveDispute, ResolveText string
 
 	// P2 PGP
 	PGP *PGPView

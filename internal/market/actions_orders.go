@@ -211,9 +211,37 @@ func resolveAction(c *actionCtx) (actionResult, error) {
 		if err != nil {
 			return actionResult{}, err
 		}
+		// A-280: the dispute row is locked (the reply takes the same lock), so a new statement sees any reply on
+		// record. A form that did not show it (reply_seen) is refused and the desk shown again with the reply.
+		var replyRole string
+		if err = c.Tx.QueryRowContext(c.Ctx(), `SELECT COALESCE(r.role,'') FROM disputes d JOIN orders o ON o.id=d.order_id JOIN products p ON p.id=o.product_id`+disputeReplyJoin+
+			` WHERE d.id=$1`, c.Form.Get("id")).Scan(&replyRole); err != nil {
+			return actionResult{}, err
+		}
+		if replyRole != "" && c.Form.Get("reply_seen") != "1" {
+			return actionResult{}, staleResolveForm(c, replyRole, resolution)
+		}
 		if _, err = c.A.transition(withPayoutSeen(c.Ctx(), orderID, seen), c.Tx, orderID, stateDisputed, stateResolved, c.User, status); err != nil {
 			return actionResult{}, err
 		}
 		return actionResult{Redirect: "/moderator", Notice: "dispute-resolved", Audit: "Resolved dispute on order " + shortID(orderID) + " (outcome: " + outcome + ")"}, nil
 	})
+}
+
+// staleResolveForm answers a resolve form loaded before the other party's reply (A-280) with 409 and the
+// moderation desk again, after the rollback: the reply shown, the reason in its error alert and the typed decision
+// kept for that dispute; the outcome and the password are chosen and typed again. When the desk cannot be
+// loaded, the answer is plain text asking for a reload.
+func staleResolveForm(c *actionCtx, replyRole, resolution string) error {
+	msg := "The " + replyRole + " replied to this dispute after the form was loaded. Read the reply below and decide again. Nothing was changed."
+	return &httpError{Code: 409, Msg: msg, Render: func(w http.ResponseWriter) {
+		a := c.A
+		d := a.pageData(c.R, "moderator", c.Token, c.User)
+		if err := a.load(c.R, &d); err != nil {
+			http.Error(w, "The "+replyRole+" replied to this dispute after the form was loaded. Reload the moderation desk, read the reply and decide again. Nothing was changed.", 409)
+			return
+		}
+		d.Error, d.ResolveDispute, d.ResolveText = msg, c.Form.Get("id"), resolution
+		a.renderStatus(w, c.R, d, 409)
+	}}
 }

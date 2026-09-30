@@ -3,6 +3,7 @@ package market
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -318,4 +319,81 @@ func TestDeskShowsWhoHoldsDisputeEvidence(t *testing.T) {
 	block = holders(entry)
 	mustContain(t, block, "Buyer → none</li>", "Vendor → none</li>")
 	mustNotContain(t, block, "a285_admin_vendor")
+
+	// A-280: messages to a staff member who is now suspended still count, labelled "(suspended)": that account
+	// cannot sign in or answer until an administrator restores it.
+	if _, err := w.e.DB.Exec("UPDATE users SET suspended_at=now() WHERE id=$1", w.modID); err != nil {
+		t.Fatal(err)
+	}
+	// (The first dispute's buyer has since messaged the administrator who sells the other listing, too.)
+	block = holders(w.page("/moderator", modB, 200))
+	if !regexp.MustCompile(`Buyer → a285_admin_vendor \(1`+latest+`, `+modA+` \(suspended\) \(2`+latest+`</li>`).MatchString(block) ||
+		!regexp.MustCompile(`Vendor → `+modBHandle+` \(2`+latest+`</li>`).MatchString(block) {
+		t.Fatalf("suspended holder not labelled, or an active one labelled: %s", block)
+	}
+}
+
+// A-280: a resolve form loaded before the other party's reply said "has not replied". It carries what it showed
+// (reply_seen); once a reply is on record, a form that did not show it is refused with 409 and the desk again,
+// showing the reply and keeping the typed decision, and nothing changes. The reloaded form resolves.
+func TestResolveRefusesFormLoadedBeforeReply(t *testing.T) {
+	w := newOrderWorld(t)
+	_, modB := w.e.user("a280_modb_"+randomToken()[:6], "moderator")
+	product := w.e.product(w.vendorID, "physical")
+	order := w.e.order(w.buyerID, product, "BTC", stateShipped)
+	w.expect("/disputes", w.buyer, form("order_id", order, "reason", "The parcel never arrived at the agreed place."), 303, "")
+	var disputeID string
+	if err := w.e.DB.QueryRow("SELECT id FROM disputes WHERE order_id=$1", order).Scan(&disputeID); err != nil {
+		t.Fatal(err)
+	}
+	replySeen := regexp.MustCompile(`name="reply_seen" value="([01])"`)
+	seen := func(page string) string {
+		t.Helper()
+		m := replySeen.FindAllStringSubmatch(page, -1)
+		if len(m) != 1 {
+			t.Fatalf("resolve forms with reply_seen: %d", len(m))
+		}
+		return m[0][1]
+	}
+	for _, path := range []string{"/moderator", "/disputes"} {
+		page := w.page(path, w.mod, 200)
+		mustContain(t, page, "The vendor has not replied")
+		if v := seen(page); v != "0" {
+			t.Fatalf("%s: reply_seen=%s before the reply", path, v)
+		}
+	}
+	decision := "Refund: the courier has no record of delivery at the agreed place."
+	stale := resolveConfirmed(form("id", disputeID, "outcome", "refund", "resolution", decision, "reply_seen", "0"), 0)
+	events := w.count("SELECT count(*) FROM order_events WHERE order_id=$1", order)
+
+	reply := "The parcel was handed over at the agreed place; the courier has a signature."
+	w.expect("/disputes/reply", w.vendor, form("order_id", order, "reply", reply), 303, "")
+	events++
+	refused := func(v url.Values) {
+		t.Helper()
+		r := w.post("/resolve", w.mod, v)
+		body := r.Body.String()
+		if r.Code != 409 {
+			t.Fatalf("stale resolve: status %d %q", r.Code, body)
+		}
+		mustContain(t, body, `<div class="alert error" role="alert">The vendor replied to this dispute after the form was loaded. Read the reply below and decide again. Nothing was changed.</div>`,
+			"Reply from the vendor", reply, "The vendor replied; the reply is shown above.", ">\n"+decision+"</textarea>", `name="reply_seen" value="1"`)
+		if w.state(order) != stateDisputed || w.count("SELECT count(*) FROM disputes WHERE id=$1 AND status='Open' AND outcome='' AND resolution=''", disputeID) != 1 ||
+			w.count("SELECT count(*) FROM order_events WHERE order_id=$1", order) != events || w.count("SELECT count(*) FROM payouts WHERE order_id=$1", order) != 0 {
+			t.Fatal("a refused resolve changed the dispute, the order or the payouts")
+		}
+	}
+	refused(stale)
+	// A post without the field counts as a form that showed no reply.
+	missing := resolveConfirmed(form("id", disputeID, "outcome", "refund", "resolution", decision), 0)
+	refused(missing)
+	// Another resolver's desk is unaffected: it shows the reply and its form says so.
+	if v := seen(w.page("/moderator", modB, 200)); v != "1" {
+		t.Fatalf("reply_seen=%s after the reply", v)
+	}
+	// The reloaded form resolves.
+	w.expect("/resolve", w.mod, resolveConfirmed(form("id", disputeID, "outcome", "refund", "resolution", decision, "reply_seen", "1"), 0), 303, "")
+	if w.state(order) != stateResolved {
+		t.Fatalf("state %s after resolving with the reloaded form", w.state(order))
+	}
 }

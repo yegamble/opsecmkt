@@ -598,7 +598,8 @@ func isDisputeReply(from, to, actorID, note string, o *Order) bool {
 // disputeEvidence (A-162) lists, for every open dispute a moderator or administrator viewer is not party to, how
 // many messages each party sent to each current moderator or administrator since the dispute opened, and when the
 // latest was sent. It reads only who sent a message to whom and when, never a body: a resolver learns who holds
-// encrypted evidence and asks them, without anyone but the recipient reading it.
+// encrypted evidence and asks them, without anyone but the recipient reading it. A holder suspended since is still
+// listed, marked Suspended (A-280).
 func (a *App) disputeEvidence(ctx context.Context, d *PageData) error {
 	d.DisputeEvidence = map[string]*DisputeEvidence{}
 	if d.User == nil || (d.User.Role != "moderator" && d.User.Role != "admin") {
@@ -616,11 +617,11 @@ func (a *App) disputeEvidence(ctx context.Context, d *PageData) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	rows, err := a.db.QueryContext(ctx, `SELECT d.id,m.sender_id=o.buyer_id,s.handle,count(*),to_char(max(m.created),'YYYY-MM-DD HH24:MI "UTC"')
+	rows, err := a.db.QueryContext(ctx, `SELECT d.id,m.sender_id=o.buyer_id,s.handle,count(*),to_char(max(m.created),'YYYY-MM-DD HH24:MI "UTC"'),s.suspended_at IS NOT NULL
 		FROM disputes d JOIN orders o ON o.id=d.order_id JOIN products p ON p.id=o.product_id
 		JOIN users s ON s.role IN ('moderator','admin') AND s.id<>o.buyer_id AND s.id<>p.vendor_id
 		JOIN messages m ON m.recipient_id=s.id AND m.created>=d.created AND m.sender_id IN (o.buyer_id,p.vendor_id)
-		WHERE d.id=ANY($1) GROUP BY d.id,m.sender_id=o.buyer_id,s.handle ORDER BY s.handle`, ids)
+		WHERE d.id=ANY($1) GROUP BY d.id,m.sender_id=o.buyer_id,s.handle,s.suspended_at ORDER BY s.handle`, ids)
 	if err != nil {
 		return err
 	}
@@ -629,7 +630,7 @@ func (a *App) disputeEvidence(ctx context.Context, d *PageData) error {
 		var id string
 		var fromBuyer bool
 		var h EvidenceHolder
-		if err = rows.Scan(&id, &fromBuyer, &h.Handle, &h.Count, &h.Latest); err != nil {
+		if err = rows.Scan(&id, &fromBuyer, &h.Handle, &h.Count, &h.Latest, &h.Suspended); err != nil {
 			return err
 		}
 		ev := d.DisputeEvidence[id]
