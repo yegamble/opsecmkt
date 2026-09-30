@@ -44,6 +44,12 @@ var notices = map[string]struct{ text, section, pages string }{
 	// A recovery-code sign-in (/challenge, A-154): /totp details it from the current state (recoverySignInNotice).
 	"signin-recovery": {"You signed in with a recovery code.", "", ""},
 	"signin-totp-off": {"You signed in with a recovery code and turned off two-step sign-in with an authenticator app (TOTP); your other recovery codes were deleted.", "", ""},
+
+	// Bitcoin escrow key (escrow_account.go)
+	"escrow-key":           {"Escrow key saved. It is inactive until you sign its practice transaction.", "", ""},
+	"escrow-key-unchanged": {"That is already your escrow key; nothing was changed.", "", ""},
+	"escrow-key-active":    {"Escrow key active: its practice transaction was signed.", "", ""},
+
 	// Messages, orders and disputes
 	"message-sent":     {"Message sent.", "", ""},
 	"payment-address":  {"Payment address ready.", "", ""},

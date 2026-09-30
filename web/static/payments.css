@@ -105,3 +105,7 @@
   font-size:0.875rem;
   overflow-wrap:anywhere
 }
+.escrow-psbt {
+  font-family:var(--mono);
+  word-break:break-all
+}

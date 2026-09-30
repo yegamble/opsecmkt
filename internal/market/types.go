@@ -218,6 +218,9 @@ type PageData struct {
 	// UnsentPayouts: vendor desk, how many payouts to the viewer are not sent (listed on /account#payout).
 	MyPayout      *RecipientPayout
 	UnsentPayouts int
+	// EscrowKey: /escrow-key and the /account status row, the viewer's Bitcoin escrow key; nil while ESCROW_BTC is off
+	// (escrow_account.go, WR-escrow Phase 1).
+	EscrowKey *EscrowKeyView
 
 	// P6 Transparency
 	Canary      *CanaryView
@@ -467,3 +470,17 @@ type ContactKey struct {
 
 // Usable reports whether the contact has a key that can receive encrypted messages (contactKey fills Fingerprint only then).
 func (k ContactKey) Usable() bool { return k.Fingerprint != "" }
+
+// EscrowKeyView is the viewer's Bitcoin escrow key (escrow_account.go). Origin is the viewer's own key origin
+// ("[fingerprint/path]"), shown only to them. Practice is the practice PSBT (base64), set only on request while
+// PracticeOffered.
+type EscrowKeyView struct {
+	Available       bool // ESCROW_BTC=on passed its startup checks
+	Registered      bool
+	Origin          string
+	ActiveAt        string // "" = inactive
+	HasEscrows      bool
+	PracticeOffered bool
+	Practice        string
+	PracticeError   string
+}
