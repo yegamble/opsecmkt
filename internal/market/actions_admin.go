@@ -379,6 +379,7 @@ func adminAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, err
 		}
 		// Both accounts get an audit row naming the change; an unchanged role is recorded for the administrator only.
+		// The account's row ("Role changed from OLD to NEW …") also tells disputeEvidence when it left staff (A-294).
 		action = "Role of " + handle + " unchanged (already " + role + ")"
 		if old != role {
 			action = "Changed role of " + handle + " from " + old + " to " + role

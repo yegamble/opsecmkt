@@ -23,8 +23,8 @@ an archived listing opens by the order page's rule (A-164). */}}
 <strong>No eligible resolver.</strong> Every moderator and administrator is a party to this order. Assign a moderator who is not a party on the administration page so this dispute can be resolved.</p>{{end}}{{$ev := index $.DisputeEvidence .ID}}{{with $ev}}<div class="dispute-evidence" role="note">
 <p><strong>Encrypted evidence holders.</strong> Messages each party sent to a moderator or administrator since this dispute opened, counted from who sent them to whom and when; only the recipient can read them.</p>
 <ul>
-<li>Buyer → {{range $i, $h := .Buyer}}{{if $i}}, {{end}}{{$h.Handle}}{{if $h.Suspended}} (suspended){{end}} ({{$h.Count}}, latest {{$h.Latest}}){{else}}none{{end}}</li>
-<li>Vendor → {{range $i, $h := .Vendor}}{{if $i}}, {{end}}{{$h.Handle}}{{if $h.Suspended}} (suspended){{end}} ({{$h.Count}}, latest {{$h.Latest}}){{else}}none{{end}}</li>
+<li>Buyer → {{range $i, $h := .Buyer}}{{if $i}}, {{end}}{{$h.Handle}}{{if $h.Suspended}} (suspended){{end}}{{if $h.Former}} (no longer staff){{end}} ({{$h.Count}}, latest {{$h.Latest}}){{else}}none{{end}}</li>
+<li>Vendor → {{range $i, $h := .Vendor}}{{if $i}}, {{end}}{{$h.Handle}}{{if $h.Suspended}} (suspended){{end}}{{if $h.Former}} (no longer staff){{end}} ({{$h.Count}}, latest {{$h.Latest}}){{else}}none{{end}}</li>
 </ul>
 </div>{{end}}{{if $party}}<p class="order-unavailable" role="note">
 <strong>Unavailable.</strong> You are a party to this order; another moderator must resolve it.</p>{{else if ne $o.State "disputed"}}<p class="order-unavailable" role="note">
@@ -32,7 +32,7 @@ an archived listing opens by the order page's rule (A-164). */}}
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="id" value="{{.ID}}">
 <input type="hidden" name="reply_seen" value="{{if .Reply}}1{{else}}0{{end}}">{{$p := index $.DisputePayouts .ID}}
-<p class="help" role="note">{{if .Reply}}The {{.ReplyRole}} replied; the reply is shown above.{{else if .Opener}}The {{.Responder}} has not replied; only the {{.Opener}}’s account is on record.{{else}}Who opened this dispute is not recorded, and neither party can reply.{{end}} {{if and $ev (or $ev.Buyer $ev.Vendor)}}Before deciding, ask each staff member listed under Encrypted evidence holders what the evidence they hold shows: you cannot read it.{{else}}Neither party has messaged a moderator or administrator since this dispute opened.{{end}}</p>
+<p class="help" role="note">{{if .Reply}}The {{.ReplyRole}} replied; the reply is shown above.{{else if .Opener}}The {{.Responder}} has not replied; only the {{.Opener}}’s account is on record.{{else}}Who opened this dispute is not recorded, and neither party can reply.{{end}} {{if and $ev (or $ev.Buyer $ev.Vendor)}}Before deciding, ask each staff member listed under Encrypted evidence holders what the evidence they hold shows: you cannot read it.{{else}}Neither party has messaged a current moderator or administrator since this dispute opened, nor one recorded as removed from staff after being messaged.{{end}}</p>
 <fieldset class="dispute-outcome">
 <legend>Outcome</legend>
 <label class="check">

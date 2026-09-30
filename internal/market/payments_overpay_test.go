@@ -416,10 +416,11 @@ func (p *payEnv) insertPayouts(order string, kinds ...string) {
 	}
 }
 
-// settlementIndexes counts migration 069's and 070's indexes and records: 4 when both applied.
+// settlementIndexes counts migration 069's and 070's indexes and records in the test's schema: 4 when both
+// applied. Other schemas in the database (another test's, or one left by a killed run) are not counted (A-297).
 func (p *payEnv) settlementIndexes() int {
 	p.t.Helper()
-	return p.count("SELECT count(*) FROM pg_indexes WHERE indexname IN ('payouts_one_settlement','payouts_refund_or_return')") +
+	return p.count("SELECT count(*) FROM pg_indexes WHERE schemaname=current_schema() AND indexname IN ('payouts_one_settlement','payouts_refund_or_return')") +
 		p.count("SELECT count(*) FROM schema_migrations WHERE version IN (69,70)")
 }
 

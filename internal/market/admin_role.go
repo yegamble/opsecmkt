@@ -81,6 +81,7 @@ func SetRole(ctx context.Context, db *sql.DB, handle, role string) (string, erro
 		n, _ := ended.RowsAffected()
 		summary += "; ended " + strconv.FormatInt(n, 10) + " session(s) and any pending sign-ins"
 	}
+	// disputeEvidence reads this row's "Role changed from OLD to NEW" to know when the account left staff (A-294).
 	if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", id, "Role changed from "+old+" to "+role+" by host command"); err != nil {
 		return "", err
 	}
