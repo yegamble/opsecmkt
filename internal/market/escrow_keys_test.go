@@ -188,6 +188,11 @@ func TestParseEscrowKeyRefusals(t *testing.T) {
 		{"words, slash joined", "abandon/ability/able/about/above/absent/absorb/abstract/absurd/abuse/access/accident", errKeyExposed.Error()},
 		{"words, underscore joined", "abandon_ability_able_about_above_absent_absorb_abstract_absurd_abuse_access_accident", errKeyExposed.Error()},
 		{"words, dot joined", "abandon.ability.able.about.above.absent.absorb.abstract.absurd.abuse.access.accident", errKeyExposed.Error()},
+		// Annotated phrases (QA29-5, A-318): a run of 12 or more words is flagged whatever comes before or after it.
+		{"labelled phrase", "BIP39 seed: abandon ability able about above absent absorb abstract absurd abuse access accident", errKeyExposed.Error()},
+		{"phrase with a passphrase", "abandon ability able about above absent absorb abstract absurd abuse access accident passphrase: correcthorsebattery", errKeyExposed.Error()},
+		{"numbered phrase with a key", "Recovery (Electrum 4.5): 1. abandon 2. ability 3. able 4. about 5. above 6. absent 7. absorb 8. abstract 9. absurd 10. abuse 11. access 12. accident " + testBIP48Key, errKeyExposed.Error()},
+		{"11 words with a label stay under the threshold", "BIP39: abandon ability able about above absent absorb abstract absurd abuse access", errKeySpace.Error()},
 		// A base58 payload of zero bytes with a valid checksum (base58CheckEncode(nil)) is refused, not a panic (A-307).
 		{"empty payload", "3QJmnh", errKeyOrigin.Error()},
 		{"empty payload with origin", "[7450f935/48h/1h/0h/2h]3QJmnh", errKeyInvalid.Error()},
@@ -252,7 +257,8 @@ func TestParseEscrowKeyRefusals(t *testing.T) {
 // Vpub, random fingerprint, account, chain code and on-curve key, with and without /0/*); every one parses.
 func TestParseEscrowKeyNoFalseExposed(t *testing.T) {
 	for _, in := range []string{testBIP48Key, testBIP84Key, testBIP48Key + "/0/*", "wpkh(" + testBIP84Key + "/0/*)#20gdjfqv",
-		"wsh(sortedmulti(2," + testBIP48Key + "/0/*," + testBIP84Key + "/0/*))", `{"desc":"wpkh(` + testBIP84Key + `/0/*)#20gdjfqv","timestamp":1,"active":true,"internal":false,"range":[0,999],"next":0}`} {
+		"wsh(sortedmulti(2," + testBIP48Key + "/0/*," + testBIP84Key + "/0/*))", `{"desc":"wpkh(` + testBIP84Key + `/0/*)#20gdjfqv","timestamp":1,"active":true,"internal":false,"range":[0,999],"next":0}`,
+		publicListDescriptors} {
 		if _, err := parseEscrowKey(in); err == errKeyExposed {
 			t.Errorf("public export called exposed: %q", in)
 		}
@@ -292,6 +298,20 @@ func TestParseEscrowKeyNoFalseExposed(t *testing.T) {
 	}
 	t.Logf("%d random valid BIP48 expressions parsed; none called exposed", checked)
 }
+
+// publicListDescriptors is a whole listdescriptors reply without private keys, as a user may paste it by mistake:
+// many short JSON words, but never 12 in a row (A-318).
+var publicListDescriptors = func() string {
+	var descs []string
+	for _, k := range []string{testBIP84Key, testBIP48Key} {
+		for _, chain := range []string{"0", "1"} {
+			for _, f := range []string{"pkh", "wpkh", "tr", "sh(wpkh"} {
+				descs = append(descs, `{"desc":"`+f+`(`+k+`/`+chain+`/*)#20gdjfqv","timestamp":1727700000,"active":true,"internal":`+map[string]string{"0": "false", "1": "true"}[chain]+`,"range":[0,999],"next":0,"next_index":0}`)
+			}
+		}
+	}
+	return "{\n  \"wallet_name\": \"market\",\n  \"descriptors\": [\n" + strings.Join(descs, ",\n") + "\n  ]\n}"
+}()
 
 // A master key (depth 0), a key whose point is not on the curve and a key with an invalid prefix byte are refused.
 func TestParseEscrowKeyRefusesBadKeyMaterial(t *testing.T) {
