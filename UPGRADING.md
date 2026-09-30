@@ -789,6 +789,19 @@ guide](docs/operator-guide.md#bitcoin-escrow-regtest-only)), and the trigger cha
 changes for users or payments. No action is needed. Rolling back past this release needs the pre-upgrade backup, as
 for every migration (section 5).
 
+## 20. Bitcoin escrow settlements (migration 075)
+
+Migration 075 runs at startup. It adds to `settlements` what the server needs to build an escrow's settlement and take
+one party's signature (the destination, requester, fee rate, network fee, amount spent, unsigned PSBT and its
+transaction ID, which party signed and when, and why a build waits), a unique index so no two vendor claims pay the
+same address, the tables `settlement_outputs` (each settlement's fixed outputs) and `settlement_signatures` (one
+party's signature per input; the pasted PSBT is never stored), and two triggers: `settlements_frozen` refuses any
+change to a settlement's transaction once a party has signed it, and `settlement_outputs_frozen` allows outputs to be
+written only while their settlement is being built. Like migration 074 it changes nothing unless `ESCROW_BTC=on`
+(regtest only, off by default); the new optional key `ESCROW_BTC_FEE_RATE` (sat/vB, default 2) sets the network fee
+rate of settlements ([operator guide](docs/operator-guide.md#bitcoin-escrow-regtest-only)). No action is needed.
+Rolling back past this release needs the pre-upgrade backup, as for every migration (section 5).
+
 ## Appendix: new keys by hand
 
 `./scripts/install.sh upgrade` writes these for you. To add them yourself, use your editor (values in single
