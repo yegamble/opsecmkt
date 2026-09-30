@@ -536,8 +536,8 @@ db_sql() { docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d o
      order or a refund outcome whose release was not sent, the price belongs to the buyer: keep only the return
      (step 4) and send the buyer the price by hand, so that the vendor is not paid.
 
-     When the sent settlement is the one the order's outcome did not owe, the party it did owe is still unpaid
-     and you choose how to settle. Record the choice for each such order, with the transaction ID of anything you
+     When the sent row is a release or a refund that the order's outcome did not owe, the party it did owe is
+     still unpaid and you choose how to settle. Record the choice for each such order, with the transaction ID of anything you
      pay by hand, beside `settlement-clash.txt`:
      - **A sent release on a `cancelled` order or a refund outcome, beside an unsent refund**, paid the vendor the
        price the buyer is owed. Either keep the refund: delete the sent release and its return (step 4), the
