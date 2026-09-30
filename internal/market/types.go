@@ -381,6 +381,10 @@ type ProviderStatus struct {
 	LastPoll          string
 	Version           string // wallet or node version its last check read (versionReporter)
 	VersionWarning    string // set when send errors are all ambiguous because Version is not the verified one
+	// AddressCollisions: payment requests refused because the wallet returned an address already issued (A-288),
+	// since an administrator last dismissed the warning; AddressCollisionLast: when the latest one was refused.
+	AddressCollisions    int
+	AddressCollisionLast string
 }
 type PayoutView struct {
 	BTC, XMR               string
