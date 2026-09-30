@@ -1,10 +1,12 @@
 import { expect, test, type Page } from '@playwright/test';
+import { waitForStyles } from './styles';
 
 // P6 Transparency in the read-only preview. The preview canary is a labelled sample signed by a throwaway key
 // generated at preview start and checked by the real verifier; signed audit export is visibly unavailable.
 
 async function noScriptsNoOverflow(page: Page) {
   await expect(page.locator('script')).toHaveCount(0);
+  await waitForStyles(page);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()!.width);
 }
 

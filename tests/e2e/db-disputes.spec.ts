@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { expect, test, type Page } from '@playwright/test';
 import { uniqueHandle } from './db-fixtures';
 import { expectNotice, pgpFixture, signedIn, submitAndLoad } from './db-helpers';
+import { waitForStyles } from './styles';
 
 // A-124 and A-162 against a real database, JavaScript disabled, at 320 px, with fresh accounts: the party who did
 // not open a dispute puts one reply on record from the order page; the moderation desk shows the reason and the
@@ -11,6 +12,7 @@ import { expectNotice, pgpFixture, signedIn, submitAndLoad } from './db-helpers'
 
 async function fitsAndNoScripts(page: Page, what: string) {
   await expect(page.locator('script')).toHaveCount(0);
+  await waitForStyles(page);
   expect(await page.evaluate(() => document.documentElement.scrollWidth), what).toBeLessThanOrEqual(page.viewportSize()!.width);
 }
 

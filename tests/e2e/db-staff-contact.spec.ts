@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { expect, test, type Page } from '@playwright/test';
 import { uniqueHandle } from './db-fixtures';
 import { expectNotice, pgpFixture, signedIn, submitAndLoad, submitStatus } from './db-helpers';
+import { waitForStyles } from './styles';
 
 // A-119: an administrator saves the "Staff contact" on /admin with their password; /canary, the suspended sign-in
 // refusal and a notification that tells its reader to contact the staff show it as text (a hostile value stays
@@ -11,6 +12,7 @@ import { expectNotice, pgpFixture, signedIn, submitAndLoad, submitStatus } from 
 
 async function noOverflow(page: Page) {
   await expect(page.locator('script')).toHaveCount(0);
+  await waitForStyles(page);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()!.width);
 }
 

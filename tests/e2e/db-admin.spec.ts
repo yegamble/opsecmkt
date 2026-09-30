@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { expect, test } from '@playwright/test';
 import { ADMIN, uniqueHandle } from './db-fixtures';
 import { enrollTOTP, expectNotice, pgpFixture, RECIPIENT_FINGERPRINT, setRole, signedIn, submitStatus } from './db-helpers';
+import { waitForStyles } from './styles';
 
 // Administrator forms submitted against a real database with JavaScript disabled. Each test signs the shared
 // administrator in once (the per-handle sign-in limit, 10 failed passwords per 10 minutes, no longer counts
@@ -82,6 +83,7 @@ test('promoting a buyer to vendor opens the vendor desk; the listing form shows 
   const resetRows = admin.locator('table').last().locator('tbody tr');
   await expect(resetRows.filter({ hasText: `Reset second factors of ${lockedHandle}: TOTP and recovery codes turned off; ended 1 session(s) (confirmed with password)` }).locator('td').first()).toHaveText(ADMIN.handle);
   await expect(resetRows.filter({ hasText: `Second factors reset by administrator ${ADMIN.handle}: TOTP and recovery codes turned off; ended 1 session(s)` }).locator('td').first()).toHaveText(lockedHandle);
+  await waitForStyles(admin);
   expect(await admin.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(admin.viewportSize()!.width);
   await admin.context().close();
 

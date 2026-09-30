@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { expectNotice, pgpFixture, setRole, signedIn } from './db-helpers';
+import { waitForStyles } from './styles';
 
 // Real server/PostgreSQL and production RPC adapters, deterministic simulated wallet responses.
 // This proves application integration, not real-chain settlement or cryptographic address validation.
@@ -22,6 +23,7 @@ async function fitsAt(page: Page, label: string) {
   const original = page.viewportSize()!;
   for (const width of [390, 320, 1280]) {
     await page.setViewportSize({ width, height: original.height });
+    await waitForStyles(page);
     expect(await page.evaluate(() => document.documentElement.scrollWidth), `${label} at ${width}px`).toBeLessThanOrEqual(width);
   }
   await page.setViewportSize(original);

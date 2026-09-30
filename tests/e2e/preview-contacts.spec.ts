@@ -1,11 +1,13 @@
 import { expect, test, type Page } from '@playwright/test';
 import { PREVIEW_DISPUTED_ID, PREVIEW_DRAFT_ID } from './preview-routes';
+import { waitForStyles } from './styles';
 
 // Contacts in the read-only preview (sample data, JavaScript disabled): notifications in the main
 // navigation at every width, counterparty PGP keys, message recipient prefill, moderator order links.
 
 async function fits(page: Page) {
   await expect(page.locator('script')).toHaveCount(0);
+  await waitForStyles(page);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()!.width);
 }
 

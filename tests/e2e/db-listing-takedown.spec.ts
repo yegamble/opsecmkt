@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { expect, test, type Page } from '@playwright/test';
 import { uniqueHandle } from './db-fixtures';
 import { expectNotice, signedIn, submitAndLoad } from './db-helpers';
+import { waitForStyles } from './styles';
 
 // A-163: an administrator takes down another vendor's listing with a reason, confirmed with their password. The
 // vendor sees the reason on the listing and the vendor desk and has no restore control; only the administrator's
@@ -11,6 +12,7 @@ import { expectNotice, signedIn, submitAndLoad } from './db-helpers';
 async function fits(page: Page, label: string) {
   for (const width of [390, 320]) {
     await page.setViewportSize({ width, height: 900 });
+    await waitForStyles(page);
     expect(await page.evaluate(() => document.documentElement.scrollWidth), `${label} at ${width}px`).toBeLessThanOrEqual(width);
   }
 }
