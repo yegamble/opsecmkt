@@ -491,6 +491,24 @@ type EscrowOrderView struct {
 	Open, NeedsTopUp                            bool
 	CancelAfter, Status, NextStep, Fee          string
 	Deposits                                    []PaymentDeposit
+	Unread                                      string                // set when nothing is read at the address: shown for the Confirmed and Unconfirmed figures (A-338)
+	Settlement                                  *EscrowSettlementView // the order's claim or refund (escrow_settle.go)
+	Claim                                       bool                  // the vendor of a completed order may request the claim
+}
+
+// EscrowSettlementView is an escrow order's settlement on its page (escrow_settle.go): its state in honest words, its
+// frozen outputs, and for a party while it awaits a signature the party's own copy (PSBT, base64) and the paste form.
+type EscrowSettlementView struct {
+	ID                                    int64
+	Title, Status, NetworkFee, InputTotal string
+	Outputs                               []SettlementOutputView
+	CanSign                               bool
+	PSBT                                  string
+}
+
+// SettlementOutputView is one expected output of a settlement: the address, the amount and whom it pays.
+type SettlementOutputView struct {
+	Address, Amount, Role string
 }
 
 // EscrowCheckoutView offers escrow checkout on a draft (escrow_create.go): Reason says why it cannot be used now

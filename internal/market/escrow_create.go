@@ -214,11 +214,12 @@ func escrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	if !valid {
 		return actionResult{}, errEscrowRefundInvalid
 	}
-	// Never an address the market already used (ES-5): an escrow address, another escrow's refund address (a
-	// settlement destination), a fee destination snapshotted or configured, or a pooled deposit address.
+	// Never an address the market already used (ES-5): an escrow address, another escrow's refund address, a
+	// settlement destination (a vendor's claim), a fee destination snapshotted or configured, or a pooled deposit
+	// address.
 	var used bool
 	if err = c.Tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM escrows WHERE address=$1 OR refund_address=$1 OR fee_destination=$1) OR $1=$2
-		OR EXISTS(SELECT 1 FROM payment_addresses WHERE address=$1)`, refund, e.feeAddress).Scan(&used); err != nil {
+		OR EXISTS(SELECT 1 FROM payment_addresses WHERE address=$1) OR EXISTS(SELECT 1 FROM settlements WHERE destination=$1)`, refund, e.feeAddress).Scan(&used); err != nil {
 		return actionResult{}, err
 	}
 	if used {

@@ -10,8 +10,9 @@ import (
 
 // The escrow on the order page (WR-escrow Phase 1, slice P1-b; ES-3, ES-10): the escrow address, the escrow
 // descriptor with its checksum (the reader's own key with its origin, the other two bare) and a download of it, the
-// honest-claim copy and the tracing notice, the funding figures and each deposit. On a draft that can use escrow the
-// buyer is offered escrow checkout beside the pooled payment request. Nothing here makes an RPC.
+// honest-claim copy and the tracing notice, the funding figures and each deposit, and the order's settlement
+// (escrowSettlementView, P1-c1). On a draft that can use escrow the buyer is offered escrow checkout beside the pooled
+// payment request. Nothing here makes an RPC.
 
 func init() {
 	registerRaw("/escrow-descriptor", escrowDescriptorDownload)
@@ -39,12 +40,12 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 	}
 	var refund string
 	var feeBps int64
-	var noted, watched bool
+	var watched bool
 	var windowFrom time.Time
-	if err := a.db.QueryRowContext(ctx, `SELECT es.address,es.refund_address,es.fee_bps,es.underpaid_noted IS NOT NULL,
+	if err := a.db.QueryRowContext(ctx, `SELECT es.address,es.refund_address,es.fee_bps,
 		GREATEST(es.created,(SELECT max(created) FROM payments WHERE order_id=es.order_id AND confirmations>=0 AND NOT locked)),
 		`+escrowWatchedSQL+`
-		FROM escrows es JOIN orders o ON o.id=es.order_id WHERE es.order_id=$1`, o.ID).Scan(&v.Address, &refund, &feeBps, &noted, &windowFrom, &watched); err != nil {
+		FROM escrows es JOIN orders o ON o.id=es.order_id WHERE es.order_id=$1`, o.ID).Scan(&v.Address, &refund, &feeBps, &windowFrom, &watched); err != nil {
 		return err
 	}
 	if v.Own == roleBuyer {
@@ -81,7 +82,7 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 		case dep.Confirmations < 0 || locked:
 			dep.State = "Conflicted or missing — not counted"
 		case afterClose:
-			dep.State = "Arrived after the order closed — not counted; recovering it is part of the settlement step, which this build does not have yet"
+			dep.State = "Arrived after the order closed — not counted; recovering it (a stray refund) is not available in this build yet"
 			afterCloseSeen++
 		case dep.Confirmations >= v.Threshold:
 			dep.State, received = "Confirmed", received+amt
@@ -106,7 +107,6 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 	if v.Open {
 		v.CancelAfter = windowFrom.Add(expiryWindow()).UTC().Truncate(time.Minute).Format("2006-01-02 15:04 UTC")
 	}
-	const claimLater = "The vendor claims the escrowed coins by signing a settlement; that step is not available in this build yet."
 	switch {
 	case o.State == stateAwaitingPayment && len(v.Deposits) == 0:
 		v.Status = "Waiting for a deposit"
@@ -114,34 +114,46 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 		v.Status = "Deposit seen. Waiting for " + strconv.FormatInt(v.Threshold, 10) + " confirmations."
 	case o.State == stateAwaitingPayment:
 		v.Status = "Confirmed deposits are below the price"
-		if noted {
-			v.NextStep = "The payment window has ended. Refunding an escrow is part of the settlement step, which this build does not have yet; a top-up to the full price still completes the order."
-		}
 	case o.State == statePaid:
-		v.Status, v.NextStep = "Funded", "The content could not be delivered automatically: the order completes when the vendor delivers it. "+claimLater
+		v.Status, v.NextStep = "Funded", "The content could not be delivered automatically: the order completes when the vendor delivers it by hand. If the vendor cancels it instead, the escrow is refunded to the buyer."
 	case o.State == stateCompleted:
-		v.Status, v.NextStep = "Funded and completed", claimLater
+		v.Status, v.NextStep = "Funded and completed", "The vendor claims the escrowed coins from this page."
+	case o.State == stateCancelled && received+pending > 0:
+		v.Status = "Cancelled; the escrow is refunded to the buyer's refund address by a settlement (below)."
 	case o.State == stateCancelled && afterCloseSeen > 0:
 		// Coins sent after the cancellation are never counted, but they are at the escrow address (QA31-1).
 		v.Status = "Cancelled; a deposit arrived after the order closed. It is not counted and is held at the escrow address."
-	case o.State == stateCancelled && received+pending == 0 && e == nil:
-		// Nothing is read while escrow is not enabled, so an empty ledger proves nothing (QA31-1).
+	case o.State == stateCancelled && e == nil:
+		// Nothing is read while escrow is not enabled, so an empty ledger proves nothing (QA31-1), nor do zero
+		// figures (A-338).
 		v.Status = "Cancelled. This escrow cannot be checked right now because Bitcoin escrow is unavailable, so a deposit to it may not be shown here."
-	case o.State == stateCancelled && received+pending == 0 && !watched:
-		// The watcher stopped reading this address (escrowWatchedSQL), so an empty ledger proves nothing (A-332).
+		v.Unread = "Not read while Bitcoin escrow is unavailable"
+	case o.State == stateCancelled && !watched:
+		// The watcher stopped reading this address (escrowWatchedSQL), so an empty ledger proves nothing (A-332), nor
+		// do zero figures (A-338).
 		v.Status = "Cancelled. This escrow address is no longer watched: deposits are watched for " + escrowCreatedWatch + " after checkout (and for " + escrowClosedWatch + " after the order closes), so a deposit to it may not be shown here."
-	case o.State == stateCancelled && received+pending == 0:
+		v.Unread = "Not watched any more"
+	case o.State == stateCancelled:
 		v.Status = "Cancelled; nothing was received in this escrow"
 	default:
 		v.Status = stateLabel(o.State)
 	}
 	d.Escrow = v
-	// Moves that would return or award the escrowed coins need a settlement (escrowTransitionHook refuses them).
-	funded := received+pending > 0 || o.State != stateAwaitingPayment
+	if err = a.escrowSettlementView(ctx, d, v); err != nil {
+		return err
+	}
+	// A dispute's decision is a settlement this build does not build yet (escrowTransitionHook refuses it). Cancelling
+	// an order that holds coins requests its refund, so the cancel form states it and carries its amount, as a pooled
+	// refund's form does (checkPayoutSeen, escrowSettleTerminal).
+	counted := received + pending
 	for i, t := range d.Transitions {
-		if t.To == stateDisputed || t.To == stateCancelled && funded {
+		switch {
+		case t.To == stateDisputed:
 			d.Transitions[i].Action, d.Transitions[i].Payout = "", nil
-			d.Transitions[i].Label = errEscrowSettlementLater.Error()
+			d.Transitions[i].Label = errEscrowDisputeLater.Error()
+		case t.To == stateCancelled && counted > 0:
+			d.Transitions[i].Payout = &PayoutPreview{Seen: counted, Confirm: "Cancelling refunds the " + amount(counted, 8) +
+				" regtest BTC in this escrow, less the network fee, to the buyer's refund address given at checkout. The market builds the refund transaction; the buyer or the vendor then signs it on this page. This is final."}
 		}
 	}
 	return nil

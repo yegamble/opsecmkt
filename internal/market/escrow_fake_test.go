@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -46,6 +47,38 @@ type fakeEscrowCore struct {
 	spk          map[string][]byte   // address -> scriptPubKey, for createpsbt outputs to escrow addresses
 	deposits     []fakeEscrowDeposit // what listreceivedbyaddress/gettransaction report
 	txErr        int                 // JSON-RPC error for listreceivedbyaddress (0 = none)
+
+	// Escrow P1-c1: settlement builds. gettxout reports each deposit as unspent (with its confirmations, value and
+	// address) until it is in spent; utxoupdatepsbt fills a witness UTXO for an input spending a deposit.
+	spent      map[string]bool      // "txid:vout" spent outpoints
+	utxoSkew   func(map[string]any) // edits a gettxout answer (a lying or reorged node)
+	createSkew func(string) string  // edits createpsbt's answer
+	updateSkew func(string) string  // edits utxoupdatepsbt's answer
+}
+
+// depositAt is the deposit the wallet reports at txid:vout.
+func (c *fakeEscrowCore) depositAt(txid string, vout int64) (fakeEscrowDeposit, bool) {
+	for _, d := range c.deposits {
+		if d.TxID == txid && d.Vout == vout {
+			return d, true
+		}
+	}
+	return fakeEscrowDeposit{}, false
+}
+
+// spend marks txid:vout spent, as a transaction spending it would.
+func (c *fakeEscrowCore) spend(txid string, vout int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.spent == nil {
+		c.spent = map[string]bool{}
+	}
+	c.spent[txid+":"+strconv.FormatInt(vout, 10)] = true
+}
+
+// count is how many times method was called.
+func (c *fakeEscrowCore) count(method string) int {
+	return len(slices.DeleteFunc(c.methods(), func(m string) bool { return m != method }))
 }
 
 // fakeEscrowDeposit is one output the watch wallet reports as received.
@@ -190,6 +223,16 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 		if c.prevoutExists {
 			return map[string]any{"confirmations": 1, "value": json.Number("0.00100000")}, 0, ""
 		}
+		// P1-c1: an escrow deposit the wallet reports is unspent until marked spent; utxoSkew lies about it.
+		var vout int64
+		json.Unmarshal(p[1], &vout)
+		if d, ok := c.depositAt(str(0), vout); ok && !c.spent[str(0)+":"+strconv.FormatInt(vout, 10)] {
+			out := map[string]any{"confirmations": d.Confs, "value": json.Number(amount(d.Sats, 8)), "scriptPubKey": map[string]any{"address": d.Address}}
+			if c.utxoSkew != nil {
+				c.utxoSkew(out)
+			}
+			return out, 0, ""
+		}
 		return nil, 0, ""
 	case "createpsbt":
 		if c.beforeCreate != nil {
@@ -197,10 +240,16 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 			c.beforeCreate()
 			c.mu.Lock()
 		}
+		if c.createSkew != nil {
+			return c.createSkew(c.createPSBT(p)), 0, ""
+		}
 		return c.createPSBT(p), 0, ""
 	case "utxoupdatepsbt":
 		var descs []string
 		json.Unmarshal(p[1], &descs)
+		if c.updateSkew != nil {
+			return c.updateSkew(c.utxoUpdate(str(0), descs[0])), 0, ""
+		}
 		return c.utxoUpdate(str(0), descs[0]), 0, ""
 	case "descriptorprocesspsbt":
 		var descs []string
@@ -374,8 +423,27 @@ var fakeMulti = regexp.MustCompile(`^wsh\(sortedmulti\(2,([^,]+),([^,]+),([^,]+)
 // with an origin: "[fp/path]tpub…/suffix" (the fake child fakeChild) and "fakepub<hex>" (its own fingerprint).
 func (c *fakeEscrowCore) utxoUpdate(b64, desc string) string {
 	pk := c.mustParse(b64)
-	if pk.Inputs[0].WitnessUTXO == nil {
-		return b64
+	raw := pk.Raw
+	add := func(i int, key, value []byte) {
+		next, err := parsePSBT(raw)
+		if err == nil {
+			raw, err = next.withInputField(i, key, value)
+		}
+		if err != nil {
+			c.t.Fatalf("fake utxoupdatepsbt: %v", err)
+		}
+	}
+	// P1-c1: as Core does from its UTXO set, the witness UTXO of an input spending an unspent output it knows (a
+	// deposit the watch wallet reports).
+	for i, in := range pk.Tx.In {
+		id := in.TxID
+		slices.Reverse(id[:])
+		d, ok := c.depositAt(hex.EncodeToString(id[:]), int64(in.Vout))
+		if pk.Inputs[i].WitnessUTXO != nil || !ok || c.spent[hex.EncodeToString(id[:])+":"+strconv.FormatInt(int64(in.Vout), 10)] || c.spk[d.Address] == nil {
+			continue
+		}
+		spk := c.spk[d.Address]
+		add(i, []byte{0x01}, append(append(binary.LittleEndian.AppendUint64(nil, uint64(d.Sats)), compactSize(len(spk))...), spk...))
 	}
 	m := fakeMulti.FindStringSubmatch(desc)
 	if m == nil {
@@ -388,20 +456,25 @@ func (c *fakeEscrowCore) utxoUpdate(b64, desc string) string {
 		entries = append(entries, entry{pub, deriv})
 	}
 	ws := fakeMultiScript(entries[0].pub, entries[1].pub, entries[2].pub)
-	raw, err := pk.withInputField(0, []byte{0x05}, ws)
-	added := map[string]bool{}
-	for _, e := range entries {
-		if err != nil || e.deriv == nil || added[string(e.pub)] {
-			continue // one derivation per key, as Core writes a repeated key once
+	sum := sha256.Sum256(ws)
+	for i := range pk.Tx.In {
+		cur, _ := parsePSBT(raw)
+		if u := cur.Inputs[i].WitnessUTXO; u == nil || !bytes.Equal(u.Script, append([]byte{0, 32}, sum[:]...)) {
+			continue // Core adds the script and derivations only to an input paying the descriptor's script
 		}
-		added[string(e.pub)] = true
-		var next *psbtPacket
-		if next, err = parsePSBT(raw); err == nil {
-			raw, err = next.withInputField(0, append([]byte{0x06}, e.pub...), e.deriv)
+		add(i, []byte{0x05}, ws)
+		added := map[string]bool{}
+		for _, e := range entries {
+			if added[string(e.pub)] {
+				continue // one derivation per key, as Core writes a repeated key once
+			}
+			added[string(e.pub)] = true
+			deriv := e.deriv
+			if deriv == nil {
+				deriv = slices.Clone(e.pub[1:5]) // a bare key: Core writes its own fingerprint (hash160) and an empty path
+			}
+			add(i, append([]byte{0x06}, e.pub...), deriv)
 		}
-	}
-	if err != nil {
-		c.t.Fatalf("fake utxoupdatepsbt: %v", err)
 	}
 	return encodePSBT(raw)
 }

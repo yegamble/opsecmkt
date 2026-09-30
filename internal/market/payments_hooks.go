@@ -98,11 +98,11 @@ func paymentsTransitionHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, f
 // and the watcher's retry (settleOrder) both call it, and it is the only caller of enqueuePayout. A pooled order
 // queues its payout as before. An escrow order (Order.Escrow) never gets a payouts row (ES-1, invariant 4; the
 // database refuses one, migration 074): its funds are in its own escrow, and a pooled payout would pay it from the
-// market's wallet while the escrow stays claimable. Its settlement, a signed transaction spending the escrow, is
-// built by the escrow settlement pipeline (Phase 1 slice P1-c), so nothing is written here.
+// market's wallet while the escrow stays claimable. Its settlement, a transaction spending the escrow, is requested
+// here when the order is cancelled holding coins (a refund, escrowSettleTerminal) and built by the escrow watcher.
 func (a *App) settleTerminal(ctx context.Context, tx *sql.Tx, o *Order) error {
 	if o.Escrow {
-		return nil
+		return a.escrowSettleTerminal(ctx, tx, o)
 	}
 	return a.enqueuePayout(ctx, tx, o)
 }

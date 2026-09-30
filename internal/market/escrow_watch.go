@@ -20,11 +20,12 @@ import (
 // order_events).
 //
 // No payouts row is ever written for an escrow order (settleTerminal; migration 074 refuses one), and nothing here
-// signs or sends. What returns coins from an escrow is a settlement, which P1-c builds: a refund (after expiry,
-// underpayment or cancellation), a dispute decision, a stray refund. Until then an escrow order holding coins is
-// never cancelled or disputed (escrowTransitionHook), an underpaid one stays open after its payment window with one
-// notice, and one that has received nothing is cancelled when its window ends, as a pooled order is. A confirmed
-// deposit first recorded after an escrow order closed is flagged for payment review (flagLateDeposits).
+// signs with the market key or sends. What returns coins from an escrow is a settlement (escrow_settle.go): the
+// watcher builds each requested claim or refund at the end of its pass (buildSettlements); the market's co-signature
+// and the broadcast are slice P1-c2, as are dispute decisions and the stray refund, so an escrow order is never
+// disputed (escrowTransitionHook). An escrow order that has received nothing when its payment window ends is
+// cancelled, as a pooled order is; one underpaid then is cancelled too and its refund requested. A confirmed deposit
+// first recorded after an escrow order closed is flagged for payment review (flagLateDeposits).
 //
 // While escrow is switched on but not enabled (its node was down at startup, say) the watcher retries the startup
 // checks each interval (retryEscrow) and does nothing else: no deposit is read and no order expires until they pass.
@@ -32,13 +33,15 @@ import (
 const escrowWatcherLock = 782495 // the pooled watcher's is 782494
 
 // The escrow watcher's horizon for a closed order, in SQL interval text: the order changed within escrowClosedWatch
-// or its escrow was created within escrowCreatedWatch (an open order is read whatever its age). escrowWatchedSQL is
-// that test on the orders row o and escrows row es; the watcher's query and the order page's status share it, so the
-// page never says "nothing was received" about an address that is no longer read (A-332).
+// or its escrow was created within escrowCreatedWatch (an open order is read whatever its age), or it has a
+// settlement not yet signed (its build waits for the ledger's confirmations, P1-c1). escrowWatchedSQL is that test on
+// the orders row o and escrows row es; the watcher's query and the order page's status share it, so the page never
+// says "nothing was received" about an address that is no longer read (A-332).
 const (
 	escrowClosedWatch  = "24 hours"
 	escrowCreatedWatch = "30 days"
-	escrowWatchedSQL   = "(o.updated > now()-interval '" + escrowClosedWatch + "' OR es.created > now()-interval '" + escrowCreatedWatch + "')"
+	escrowWatchedSQL   = "(o.updated > now()-interval '" + escrowClosedWatch + "' OR es.created > now()-interval '" + escrowCreatedWatch +
+		"' OR EXISTS (SELECT 1 FROM settlements s WHERE s.order_id=es.order_id AND s.state IN ('building','awaiting_signature')))"
 )
 
 func init() {
@@ -47,9 +50,9 @@ func init() {
 }
 
 // escrowCompletedNote is the order history note of the completion on funding.
-const escrowCompletedNote = "Completed on funding (Bitcoin escrow): the content was delivered. The vendor claims the escrowed coins by signing a settlement; that step is not available in this build yet."
+const escrowCompletedNote = "Completed on funding (Bitcoin escrow): the content was delivered. The vendor claims the escrowed coins from the order page."
 
-var errEscrowSettlementLater = fail(409, "Not available for an escrow order yet: refunds and dispute decisions are paid from the escrow by the settlement step, which this build does not have yet (Bitcoin escrow Phase 1 runs on regtest only). Nothing was changed.")
+var errEscrowDisputeLater = fail(409, "Not available for an escrow order yet: a dispute decision is paid from the escrow by a settlement this build does not build yet (Bitcoin escrow Phase 1 runs on regtest only). Nothing was changed.")
 
 // escrowWatcher runs while ESCROW_BTC=on. Until escrow is enabled (its node was down at startup, say) each pass first
 // retries its checks (retryEscrow, A-316), so escrow starts without a restart once the node answers.
@@ -157,6 +160,11 @@ func (a *App) escrowPollOnce(ctx context.Context) error {
 			errs = append(errs, &watchError{label: "escrow order " + shortID(id), err: err})
 		}
 	}
+	// Settlements requested so far (a claim, or the refund a cancellation above may just have requested) are built
+	// under the same lock, after the ledger is current.
+	if err = a.buildSettlements(ctx, e); err != nil {
+		errs = append(errs, err)
+	}
 	return errors.Join(errs...)
 }
 
@@ -202,7 +210,7 @@ func (a *App) settleEscrow(ctx context.Context, orderID string, walletRead bool)
 		}
 		if sum > total {
 			// What happens to the excess is decided by the settlement (P1-c); it is noted, never paid out here.
-			excess := priceDifference(sum, total, "BTC") + " was paid into this escrow; it stays in the escrow until its settlement, which this build does not have yet."
+			excess := priceDifference(sum, total, "BTC") + " was paid into this escrow; the vendor's claim returns it to the buyer's refund address (or adds it to the vendor's output when it is below " + amount(payoutFloor("BTC", "release"), 8) + " BTC)."
 			if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) SELECT id,state,state,NULL,$2 FROM orders WHERE id=$1", orderID, excess); err != nil {
 				return err
 			}
@@ -214,62 +222,50 @@ func (a *App) settleEscrow(ctx context.Context, orderID string, walletRead bool)
 	}
 	// The payment window, from the same inputs as a pooled order's (settleOrder): the escrow's creation and the
 	// latest deposit that counts.
-	var unpaid, underpaid, noted bool
+	var unpaid, underpaid bool
 	var received int64
 	if err = tx.QueryRowContext(ctx, `WITH d AS (SELECT amount,confirmations,created FROM payments WHERE order_id=$1 AND confirmations>=0 AND NOT locked)
 		SELECT es.created < now()-make_interval(secs => $2) AND NOT EXISTS (SELECT 1 FROM d),
 			es.created < now()-make_interval(secs => $2) AND EXISTS (SELECT 1 FROM d) AND NOT EXISTS (SELECT 1 FROM d WHERE confirmations<$3)
 				AND (SELECT max(created) FROM d) < now()-make_interval(secs => $2),
-			(SELECT COALESCE(sum(amount),0) FROM d), es.underpaid_noted IS NOT NULL
-		FROM escrows es WHERE es.order_id=$1`, orderID, expiryWindow().Seconds(), threshold).Scan(&unpaid, &underpaid, &received, &noted); err != nil {
+			(SELECT COALESCE(sum(amount),0) FROM d)
+		FROM escrows es WHERE es.order_id=$1`, orderID, expiryWindow().Seconds(), threshold).Scan(&unpaid, &underpaid, &received); err != nil {
 		return err
 	}
 	switch {
 	case unpaid:
 		// Nothing received: cancelled as a pooled order is; the stock hook returns the unit, and there is nothing to
-		// refund. Coins sent after this are a stray payment (recovered by a stray refund, P1-c).
+		// refund. Coins sent after this are a stray payment (recovered by a stray refund, P1-c2).
 		if _, err = a.transition(ctx, tx, orderID, stateAwaitingPayment, stateCancelled, nil, "payment window expired"); err != nil {
 			return err
 		}
-	case underpaid && !noted:
-		// Coins are in the escrow: the order stays open (a top-up to the price still completes it) and the parties
-		// are told once; its refund is a settlement (P1-c).
-		what := fmt.Sprintf("the payment window ended with %s of %s BTC received", amount(received, 8), amount(total, 8))
-		note := "Escrow underpaid: " + what + ". The order stays open; a top-up to the full price completes it. Its refund is handled by the escrow settlement step, which this build does not have yet."
-		if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", orderID, o.State, note); err != nil {
+	case underpaid:
+		// Every deposit confirmed, short of the price, and no top-up for a whole window: cancelled as a pooled order
+		// is, and the cancellation requests the refund of the escrow (settleTerminal), built by this watcher.
+		what := fmt.Sprintf("%s of %s BTC received", amount(received, 8), amount(total, 8))
+		if _, err = a.transition(ctx, tx, orderID, stateAwaitingPayment, stateCancelled, nil, "payment window expired underpaid: "+what); err != nil {
 			return err
 		}
-		body := "Order " + shortID(orderID) + ": " + what + " into its escrow (" + a.netTag() + " regtest). The order stays open: a top-up to the full price completes it. Refunding an escrow is part of the settlement step, which this build of the market does not have yet."
-		for _, uid := range []string{o.BuyerID, o.VendorID} {
-			if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), uid, body); err != nil {
-				return err
-			}
-		}
-		if _, err = tx.ExecContext(ctx, "UPDATE escrows SET underpaid_noted=now() WHERE order_id=$1", orderID); err != nil {
+		body := "Order " + shortID(orderID) + ": the payment window ended with " + what + " into its escrow (" + a.netTag() + " regtest), so the order was cancelled. " +
+			"The market builds a refund of the escrowed coins, less the network fee, to the refund address you gave at checkout; you or the vendor then sign it on the order page. " + settleNotSent
+		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, body); err != nil {
 			return err
 		}
 	}
 	return tx.Commit()
 }
 
-// escrowTransitionHook keeps escrow orders on the moves Phase 1 slice P1-b supports. A move that would return or
-// award the escrowed coins needs a settlement (P1-c), so it is refused while the escrow holds coins: a dispute, a
-// cancellation of a paid order, and one of an order awaiting payment that has received a deposit. A delivered escrow
-// order completes at once, by the system (the escrow-only edge; ES-4: digital orders complete on funding).
+// escrowTransitionHook keeps escrow orders on the moves Phase 1 supports so far. A dispute is refused: its decision
+// is a settlement slice P1-c2 builds. Cancelling an escrow order that holds coins requests its refund
+// (settleTerminal, P1-c1). A delivered escrow order completes at once, by the system (the escrow-only edge; ES-4:
+// digital orders complete on funding).
 func escrowTransitionHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, to string) error {
 	if !o.Escrow {
 		return nil
 	}
 	switch {
-	case to == stateDisputed, to == stateCancelled && from == statePaid:
-		return errEscrowSettlementLater
-	case to == stateCancelled && from == stateAwaitingPayment:
-		if funded, err := hasDeposits(ctx, tx, o.ID); err != nil || funded {
-			if err == nil {
-				err = errEscrowSettlementLater
-			}
-			return err
-		}
+	case to == stateDisputed:
+		return errEscrowDisputeLater
 	case to == stateDelivered:
 		next, err := a.transition(ctx, tx, o.ID, stateDelivered, stateCompleted, nil, escrowCompletedNote)
 		if err != nil {
