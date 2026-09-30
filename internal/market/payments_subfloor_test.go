@@ -108,14 +108,14 @@ func TestSubFloorPriceOverpaymentIsHeld(t *testing.T) {
 		", so the amount paid over it cannot be returned separately; an administrator reviews the release before it is sent; network fee deducted. This is final."
 	buyerPage := html.UnescapeString(p.page("/order?id="+p.order, p.buyerSess))
 	mustContain(t, buyerPage, statement)
-	mustNotContain(t, buyerPage, "below the minimum automatic refund, so it is not returned")
+	mustNotContain(t, buyerPage, "below the minimum automatic payout, so it is not returned")
 	// A-215: the Overpaid alert and the complete help say the same for both parties.
 	mustContain(t, buyerPage, "Completing releases everything to the vendor: "+cause+", so the amount paid over it cannot be returned separately. An administrator reviews the release before it is sent.",
 		"Completing queues the payouts stated below; the payment watcher sends them automatically unless the statement says otherwise.")
 	vendorPage := html.UnescapeString(p.page("/order?id="+p.order, p.vendorSess))
 	mustContain(t, vendorPage, "Completing releases everything to you: "+cause+", so the amount paid over it cannot be returned separately. An administrator reviews the release before it is sent.")
 	for _, page := range []string{buyerPage, vendorPage} {
-		mustNotContain(t, page, "below the minimum automatic refund of", "returns the excess", "whole counted amount", "the return waits")
+		mustNotContain(t, page, "below the minimum automatic payout of", "returns the excess", "whole counted amount", "the return waits")
 	}
 	p.check(p.do("POST", "/orders/complete", p.buyerSess, payoutConfirmed(url.Values{"order_id": {p.order}}, 100000000)), 303)
 
@@ -165,7 +165,7 @@ func TestSubFloorPriceSmallExcessUnchanged(t *testing.T) {
 	p.paidByWatcherAmount(2 * subFloorPrice)
 	p.move(p.order, statePaid, stateShipped, p.vendor)
 	mustContain(t, html.UnescapeString(p.page("/order?id="+p.order, p.buyerSess)),
-		"Release 0.0001 BTC (test network) to "+p.vendor.Handle+" — 0.00005 BTC more than the price, below the minimum automatic refund, so it is not returned; network fee deducted. This is final.")
+		"Release 0.0001 BTC (test network) to "+p.vendor.Handle+" — 0.00005 BTC more than the price, below the minimum automatic payout, so it is not returned; network fee deducted. This is final.")
 	p.check(p.do("POST", "/orders/complete", p.buyerSess, payoutConfirmed(url.Values{"order_id": {p.order}}, 2*subFloorPrice)), 303)
 	if st, _, _, amt := p.payout(p.order); st != "pending" || amt != 2*subFloorPrice {
 		t.Fatalf("release %s %d, want pending", st, amt)

@@ -141,7 +141,9 @@ func TestSuspensionHoldsPayoutsUntilAddressChecked(t *testing.T) {
 	// An order completed after the suspension queues its payout already held.
 	p.move(later, stateShipped, stateCompleted, p.buyer)
 	p.suspendedHeld("completed after suspension", later)
-	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE '%held until an administrator checks the payout address%'", later); n != 1 {
+	// A-271: the whole note, fee sentence included (A-250).
+	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note=$2", later,
+		"TESTNET release of 0.001 BTC to the vendor is held until an administrator checks the payout address; the network fee is taken from the release."); n != 1 {
 		t.Fatalf("order history for the held payout: %d", n)
 	}
 	p.poll()

@@ -147,6 +147,11 @@ func TestPayoutHeldWhenCreditedDepositReconfirmingWhileProviderUnavailable(t *te
 	if st, _, _, amt := p.payout(p.order); st != "held" || amt != 100000 {
 		t.Fatalf("release with a re-confirming credited deposit: %s amount=%d, want held 100000", st, amt)
 	}
+	// A-271: the whole note, fee sentence included (A-250).
+	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note=$2", p.order,
+		"TESTNET release of 0.001 BTC to the vendor is held: a credited deposit is conflicted or re-confirming; the network fee is taken from the release."); n != 1 {
+		t.Fatalf("order history for the conflicted-held payout: %d", n)
+	}
 }
 
 // A-54: a disabled or unconfigured provider has no threshold to trust, so only deposits already credited count;

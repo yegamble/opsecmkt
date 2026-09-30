@@ -293,7 +293,7 @@ func (a *App) orderPayouts(ctx context.Context, d *PageData) error {
 		case v.Kept && parts[0].large: // a legacy price below the release floor (A-216)
 			v.Held, v.Reason = true, subFloorPriceExcess(o.Currency)
 		case v.Kept:
-			v.Reason = "the excess is below the minimum automatic refund of " + amount(payoutFloor(o.Currency, "return"), dec) + " " + o.Currency + ", so it is not returned"
+			v.Reason = "the excess is below the minimum automatic payout of " + amount(payoutFloor(o.Currency, "return"), dec) + " " + o.Currency + ", so it is not returned"
 		default:
 			v.Held = parts[1].large
 		}
@@ -352,7 +352,7 @@ func payoutStatement(kind, recipient, later, net string, o *Order, sum int64) st
 	case kind == "release" && parts[0].large:
 		statement += "; " + subFloorPriceExcess(o.Currency) + "; an administrator reviews the release before it is sent"
 	case kind == "release" && sum > required:
-		statement += ", below the minimum automatic refund, so it is not returned"
+		statement += ", below the minimum automatic payout, so it is not returned"
 	case kind == "refund" && sum > required:
 		statement += "; more than the price, so an administrator reviews it before it is sent"
 	}

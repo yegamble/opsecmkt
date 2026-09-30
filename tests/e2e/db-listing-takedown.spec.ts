@@ -61,12 +61,13 @@ test('administrator takes down a listing with a reason and only an administrator
     const card = vendor.locator('.product-card', { hasText: title });
     await expect(card.locator('.badge')).toHaveText('Taken down');
     await expect(card).toContainText(reason);
-    await expect(card).toContainText('contact the market staff');
+    // A-279: the staff-contact line (unset here: db-staff-contact clears it again).
+    await expect(card.locator('.staff-contact')).toHaveText('Only an administrator can restore it. If you think this is wrong, ask an administrator to review it. Ask the operator of this market.');
     await expect(card.getByRole('button', { name: `Restore ${title}` })).toHaveCount(0);
     await fits(vendor, 'vendor desk with a taken-down listing');
     await vendor.goto(editURL);
     await expect(vendor.locator('.takedown-reason')).toContainText(reason);
-    await expect(vendor.locator('main')).toContainText('Only an administrator can restore this listing. If you think this is wrong, contact the market staff.');
+    await expect(vendor.locator('main .staff-contact')).toHaveText('Only an administrator can restore this listing; you can still edit it. If you think this is wrong, ask an administrator to review it. Ask the operator of this market.');
     await expect(vendor.getByRole('button', { name: 'Restore listing' })).toHaveCount(0);
     await fits(vendor, 'vendor edit page of a taken-down listing');
     await vendor.goto('/notifications');

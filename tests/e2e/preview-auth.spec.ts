@@ -45,7 +45,7 @@ test('challenge offers an authenticator code and a recovery code', async ({ page
   // A-154: a plain, unchecked checkbox turns TOTP off with the recovery code.
   await expect(page.getByLabel('I lost my authenticator — turn two-step sign-in off')).not.toBeChecked();
   // A-119: someone who lost every factor is told who can help; with no staff contact set, the operator.
-  await expect(page.locator('.lost-factors')).toHaveText('Lost your authenticator and recovery codes? Only a market administrator can turn your second factors off. Ask the operator of this market.');
+  await expect(page.locator('.lost-factors')).toHaveText('Lost your authenticator and recovery codes? Only a market administrator can turn your second factors off, or, for an administrator account, the operator on the server. Ask the operator of this market.');
   await expect(page.locator('.lost-factors a')).toHaveCount(0);
   await noScriptsNoOverflow(page);
 });

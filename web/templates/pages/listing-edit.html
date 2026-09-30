@@ -76,7 +76,7 @@
 <section class="panel">
 <h2>Visibility</h2>{{with $.Listing}}{{if .TakedownReason}}<p><span class="badge danger">Taken down</span> Taken down by an administrator{{if .ArchivedAt}} on {{.ArchivedAt}}{{end}}. Hidden from the marketplace, the vendor page and search; new orders are refused. Existing orders continue, but paid orders are not delivered automatically: the vendor delivers or cancels them. Their buyers, and staff reviewing them, can still open this listing's page from the order; the reason is not shown there.</p>
 <p class="takedown-reason"><strong>Reason:</strong> {{.TakedownReason}}</p>{{if ne $.User.Role "admin"}}
-<p>Only an administrator can restore this listing. If you think this is wrong, contact the market staff. You can still edit it.</p>{{else}}
+<p class="staff-contact">Only an administrator can restore this listing; you can still edit it. If you think this is wrong, ask an administrator to review it. {{template "staff-contact" $}}</p>{{else}}
 <form class="stack" method="post" action="/admin/listing">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="id" value="{{$.Product.ID}}">

@@ -260,7 +260,15 @@ func (a *App) serveUpload(w http.ResponseWriter, r *http.Request, route uploadRo
 		if refusal.Status() == http.StatusServiceUnavailable {
 			w.Header().Set("Retry-After", busyRetryAfter)
 		}
-		u.render(refusal.Status(), refusal.Message())
+		// A flagged file names the staff contact (A-279); unreadable, the line is left out rather than guessed.
+		var contact string
+		if refusal.Class == scanInfected && a.db != nil {
+			var cerr error
+			if contact, cerr = staffContactRefusal(ctx, a.db); cerr != nil {
+				http5xxLog.Printf("upload staff contact read failed cause=%s", errorCause(cerr))
+			}
+		}
+		u.render(refusal.Status(), refusal.Message(contact))
 		return
 	}
 	form.photo = nil

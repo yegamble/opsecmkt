@@ -289,15 +289,15 @@ func accountSecurityLoader(ctx context.Context, a *App, r *http.Request, d *Page
 
 // recoverySignInNotice is what /totp says after a recovery-code sign-in (/challenge lands there, A-154): how many
 // codes remain and what to do without the authenticator, or that TOTP was turned off. It matches the current state
-// only, so a stale link says nothing.
-func recoverySignInNotice(signin string, s *SecurityView) string {
+// only, so a stale link says nothing. staffContact is the staff-contact line (A-119, A-279) for the last code.
+func recoverySignInNotice(signin string, s *SecurityView, staffContact string) string {
 	switch {
 	case signin == "totp-off" && !s.TOTPEnabled:
 		return "You signed in with a recovery code and turned off two-step sign-in with an authenticator app (TOTP); your other recovery codes were deleted. Set up TOTP again below with your new authenticator."
 	case signin != "recovery" || !s.TOTPEnabled:
 		return ""
 	case s.RecoveryRemaining == 0:
-		return "You signed in with a recovery code. 0 recovery codes remain. Without your authenticator you cannot turn TOTP off yourself: contact the market staff before you sign out."
+		return "You signed in with a recovery code. 0 recovery codes remain. Without your authenticator you cannot turn TOTP off yourself: ask the market staff for help before you sign out. " + staffContact
 	case s.RecoveryRemaining == 1:
 		return "You signed in with a recovery code. 1 recovery code remains. If you lost your authenticator, turn TOTP off below with your password and that code, then set it up again."
 	}
@@ -311,7 +311,7 @@ func totpLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error
 		return err
 	}
 	d.Security = s
-	if n := recoverySignInNotice(r.URL.Query().Get("signin"), s); n != "" {
+	if n := recoverySignInNotice(r.URL.Query().Get("signin"), s, staffContactSentence(d.Settings[settingStaffContact])); n != "" {
 		d.Notice = n
 		// The page the sign-in was for (A-126): a link on, only beside the notice.
 		if d.Next = signInNext(r.URL.Query().Get("next")); d.Next != "" {

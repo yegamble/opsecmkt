@@ -144,7 +144,7 @@ func TestClamdTimeoutRefuses(t *testing.T) {
 	if d := time.Since(start); d > 2*time.Second {
 		t.Fatalf("hung scan took %s, want about the 300ms bound", d)
 	}
-	if msg := refusalOf(t, err).Message(); !strings.HasPrefix(msg, "Photo not saved: the malware scanner did not respond, so nothing was stored. Try again later. Reference: ") {
+	if msg := refusalOf(t, err).Message(askOperator); !strings.HasPrefix(msg, "Photo not saved: the malware scanner did not respond, so nothing was stored. Try again later. Reference: ") {
 		t.Fatalf("message = %q", msg)
 	}
 	// A failed scan marks the scanner unavailable until the next successful poll, and later scans are refused
@@ -228,8 +228,8 @@ func TestClamdStaleRefuses(t *testing.T) {
 	}
 	_, err := s.Scan(context.Background(), uploadListing, []byte("photo"))
 	r := refusalOf(t, err)
-	if r.Class != scanStale || r.Status() != http.StatusServiceUnavailable || r.Ref != "" || r.Message() != st.VendorNotice() {
-		t.Fatalf("stale refusal = %+v %q", r, r.Message())
+	if r.Class != scanStale || r.Status() != http.StatusServiceUnavailable || r.Ref != "" || r.Message(askOperator) != st.VendorNotice() {
+		t.Fatalf("stale refusal = %+v %q", r, r.Message(askOperator))
 	}
 	if len(f.Scans()) != 0 {
 		t.Fatal("stale signatures: the upload was sent to clamd")
@@ -333,7 +333,7 @@ func TestClamdUnsetDisablesUploads(t *testing.T) {
 			t.Fatalf("state = %+v notice %q", st, st.VendorNotice())
 		}
 		_, err := s.Scan(context.Background(), uploadAvatar, []byte("photo"))
-		if r := refusalOf(t, err); r.Class != scanDisabled || r.Status() != http.StatusServiceUnavailable || r.Message() != off || r.Ref != "" {
+		if r := refusalOf(t, err); r.Class != scanDisabled || r.Status() != http.StatusServiceUnavailable || r.Message(askOperator) != off || r.Ref != "" {
 			t.Fatalf("refusal = %+v", r)
 		}
 		s.RecordStored() // nil-safe
@@ -408,9 +408,9 @@ func TestUploadLogLineHasNoUserData(t *testing.T) {
 	if infected.Class != scanInfected || infected.Status() != http.StatusUnprocessableEntity {
 		t.Fatalf("refusal = %+v", infected)
 	}
-	want := "Photo refused: the malware scanner flagged this file. Nothing was stored. If you think this is a mistake, contact the market staff. Reference: " + infected.Ref
-	if infected.Message() != want || strings.Contains(infected.Message(), "Win.Test") || strings.Contains(infected.Error(), "Win.Test") {
-		t.Fatalf("uploader copy = %q / error %q", infected.Message(), infected.Error())
+	want := "Photo refused: the malware scanner flagged this file. Nothing was stored. If you think this is a mistake, send the market staff this reference. Ask the operator of this market. Reference: " + infected.Ref
+	if infected.Message(askOperator) != want || strings.Contains(infected.Message(askOperator), "Win.Test") || strings.Contains(infected.Error(), "Win.Test") {
+		t.Fatalf("uploader copy = %q / error %q", infected.Message(askOperator), infected.Error())
 	}
 	f.SetVerdict(func([]byte) string { return fakeClamdHang })
 	_, err = s.Scan(context.Background(), uploadAvatar, []byte("secret-avatar-bytes"))

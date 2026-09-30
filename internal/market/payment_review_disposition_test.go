@@ -399,6 +399,6 @@ func TestPaymentReviewDisposition(t *testing.T) {
 		}
 		body := p.page("/order?id="+p.order, p.buyerSess)
 		mustContain(t, body, "Refunded by hand on "+p.disposedOn(id)+": 0.00001 BTC")
-		mustNotContain(t, body, "below the minimum automatic refund")
+		mustNotContain(t, body, "BTC received, below the minimum automatic")
 	})
 }
