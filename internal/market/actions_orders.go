@@ -72,7 +72,7 @@ func subFloorListing(currency string) string {
 	if currency == "XMR" {
 		coin, other = "Monero", "BTC"
 	}
-	return "This listing's " + coin + " price is below the minimum " + coin + " payout of " + amount(payoutFloor(currency, "release"), currencyDecimals(currency)) + " " + currency +
+	return "This listing's " + coin + " price is below the minimum automatic payout of " + amount(payoutFloor(currency, "release"), currencyDecimals(currency)) + " " + currency +
 		" (it was priced before that minimum applied), so it cannot be ordered in " + currency + ". Order in " + other + ", or ask the vendor to raise the " + coin + " price. Nothing was changed."
 }
 

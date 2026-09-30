@@ -22,6 +22,30 @@ func (p *payEnv) reviewNotices(user, order string) int {
 	return p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE $2", user, "Payment review needed for order "+order[:8]+"%")
 }
 
+// A-256, A-299: the floor has one name wherever it is shown, "minimum automatic payout": the catalog notice and
+// the underpaid order's cancel help say it, and no older wording ("automatic refund", "minimum automatic amount",
+// "minimum payout") is left on either page.
+func TestPayoutFloorHasOneNameOnPages(t *testing.T) {
+	p := newPayEnv(t)
+	p.setPayoutAddress(p.buyer, "fake-testnet-buyer")
+	p.fake.Deposit(p.addr, "tx-under", 0, 40000, 3)
+	p.poll()
+	pages := map[string]string{
+		"catalog": p.page("/", p.buyerSess),
+		"order":   p.page("/order?id="+p.order, p.buyerSess),
+	}
+	mustContain(t, pages["catalog"], "A refund below the minimum automatic payout is not sent; market staff are notified instead.",
+		"is refunded to the buyer's saved payout address (the refund waits until one is saved), unless it is below the minimum automatic payout.")
+	mustContain(t, pages["order"], "The payment watcher sends the refund automatically unless the statement below says it is below the minimum automatic payout: then it is not sent automatically")
+	for name, body := range pages {
+		for _, old := range []string{"automatic refund", "minimum automatic amount", "minimum payout"} {
+			if strings.Contains(body, old) {
+				t.Errorf("%s page still says %q", name, old)
+			}
+		}
+	}
+}
+
 func TestDustBTCRefundIsFlaggedNotQueued(t *testing.T) {
 	p := newPayEnv(t)
 	p.setPayoutAddress(p.buyer, "fake-testnet-buyer")

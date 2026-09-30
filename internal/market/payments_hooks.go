@@ -330,7 +330,7 @@ func splitPayout(kind string, o *Order, sum, required int64) []payoutPart {
 
 // subFloorPriceExcess says why a release whose price is below the release floor (A-216) keeps the excess.
 func subFloorPriceExcess(currency string) string {
-	return "the price is below the minimum payout of " + amount(payoutFloor(currency, "release"), currencyDecimals(currency)) + " " + currency +
+	return "the price is below the minimum automatic payout of " + amount(payoutFloor(currency, "release"), currencyDecimals(currency)) + " " + currency +
 		", so the amount paid over it cannot be returned separately"
 }
 
