@@ -813,11 +813,14 @@ order named here as below, with `db_sql` defined as in section 14, then start th
 
 ## 19. Bitcoin escrow tables (migration 074)
 
-Migration 074 runs at startup. It adds the tables Bitcoin escrow will use (`user_escrow_keys`, `escrows`,
-`escrow_pubkeys`, `settlements`, the sequence `escrow_market_index`) and the column `payments.settlement_id`. They
-stay empty unless `ESCROW_BTC=on`, a regtest-only setting that is off by default ([operator
-guide](docs/operator-guide.md#bitcoin-escrow-regtest-only)); nothing changes for users or payments. No action is
-needed. Rolling back past this release needs the pre-upgrade backup, as for every migration (section 5).
+Migration 074 runs at startup. It adds the tables Bitcoin escrow uses (`user_escrow_keys`, `escrows` with each
+escrow's pinned refund address and market-fee snapshot, `escrow_pubkeys`, `settlements`, the sequence
+`escrow_market_index`), the column `payments.settlement_id`, and a trigger, `payouts_not_escrow`, that refuses a
+`payouts` row for an order that has an escrow (an escrow order is settled from its escrow, never by a pooled payout).
+The tables stay empty unless `ESCROW_BTC=on`, a regtest-only setting that is off by default ([operator
+guide](docs/operator-guide.md#bitcoin-escrow-regtest-only)), and the trigger changes nothing for pooled orders; nothing
+changes for users or payments. No action is needed. Rolling back past this release needs the pre-upgrade backup, as
+for every migration (section 5).
 
 ## Appendix: new keys by hand
 
