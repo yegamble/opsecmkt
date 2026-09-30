@@ -129,13 +129,17 @@ const payoutTxidHidden = "(transaction ID shown only to its recipient)"
 // viewer, in full or as truncate(txid, 20), when viewer is the order's buyer or vendor: on Bitcoin a txid reveals
 // its recipient's payout address. New order-history notes name no payout txid; this covers notes and dispute
 // decisions stored before (the rows stay unchanged). A refund staff recorded as sent to the buyer by hand (A-31,
-// payments.disposition_txid) is named in its order-history note and hidden the same way from the vendor. Staff
-// reviewers who are not parties read the text as stored.
+// payments.disposition_txid) is named in its order-history note and hidden the same way from the vendor, as is the
+// rest of a refund an operator sent to the buyer by hand and recorded with UPGRADING.md's relabel block (sections 14
+// and 18, A-312), which exists only in that system note. Staff reviewers who are not parties read the text as stored.
 func hidePayoutTxids(ctx context.Context, a *App, order, viewer string, texts ...*string) error {
 	rows, err := a.db.QueryContext(ctx, `SELECT py.txid FROM payouts py JOIN orders o ON o.id=py.order_id JOIN products p ON p.id=o.product_id
 		WHERE py.order_id=$1 AND py.txid<>'' AND py.user_id<>$2 AND $2 IN (o.buyer_id,p.vendor_id)
 		UNION SELECT pm.disposition_txid FROM payments pm JOIN orders o ON o.id=pm.order_id JOIN products p ON p.id=o.product_id
-		WHERE pm.order_id=$1 AND pm.disposition_txid<>'' AND o.buyer_id<>$2 AND p.vendor_id=$2`, order, viewer)
+		WHERE pm.order_id=$1 AND pm.disposition_txid<>'' AND o.buyer_id<>$2 AND p.vendor_id=$2
+		UNION SELECT m[1] FROM order_events e JOIN orders o ON o.id=e.order_id JOIN products p ON p.id=o.product_id
+		CROSS JOIN LATERAL regexp_matches(e.note, '^Refund recorded by hand \(UPGRADING\.md section 1[48]\): .* in transaction ([0-9a-f]{64})\.$') m
+		WHERE e.order_id=$1 AND e.actor_id IS NULL AND o.buyer_id<>$2 AND p.vendor_id=$2`, order, viewer)
 	if err != nil {
 		return err
 	}

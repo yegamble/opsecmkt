@@ -538,9 +538,9 @@ db_sql() { docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d o
    - If a row of one settlement was sent and no row of the other, that settlement stands. A release stands when
      either it or its return was sent: keeping the refund after a return was sent would pay the excess twice. A
      sent return paid the buyer only the excess; the price still follows the order's outcome. For a `cancelled`
-     order or a refund outcome whose release was not sent, the price belongs to the buyer: delete the unsent release
-     and the refund, record the sent return as the order's refund (step 4) and send the buyer the price by hand, so
-     that the vendor is not paid.
+     order or a refund outcome whose release was not sent, the price belongs to the buyer: send the buyer the price
+     by hand, then delete the unsent release and the refund and record the sent return as the order's refund, with
+     a note of the price you sent (step 4), so that the vendor is not paid.
 
      When the sent row is a release or a refund that the order's outcome did not owe, the party it did owe is
      still unpaid and you choose how to settle. Record the choice for each such order, with the transaction ID of anything you
@@ -579,23 +579,37 @@ db_sql() { docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d o
    SQL
    ```
 
-   For a `cancelled` order or a refund outcome whose return alone was sent (step 3), delete the unsent release
-   together with the refund and record the sent return as the order's refund, in one transaction (a return may not
-   stay without its release, [section 18](#18-a-return-needs-its-release-migration-073-a-268)); the row keeps its
-   amount, state and transaction ID. Then send the buyer the price by hand:
+   For a `cancelled` order or a refund outcome whose return alone was sent (step 3), first send the buyer the price
+   by hand from the wallet, and note the amount the wallet sent and its transaction ID. Then delete the unsent
+   release together with the refund and record the sent return as the order's refund, in one transaction (a return
+   may not stay without its release, [section 18](#18-a-return-needs-its-release-migration-073-a-268)); the row keeps
+   its amount, state and transaction ID, so the order page shows only the returned excess as the refund. The same
+   transaction adds a note to the order history, which the buyer and the vendor read, saying that the return is the
+   refund and naming the amount you sent by hand and its transaction ID (the vendor's page hides the transaction ID,
+   as for every payout to the buyer). Give the amount as the wallet shows it, in BTC or XMR (for example `0.001`),
+   and the 64-character transaction ID in lowercase; no address goes into the note:
 
    ```sh
-   db_sql -v order_id=FULL_ORDER_ID <<'SQL'
+   db_sql -v order_id=FULL_ORDER_ID -v amount=AMOUNT_SENT -v txid=TRANSACTION_ID <<'SQL'
    BEGIN;
    DELETE FROM payouts WHERE order_id = :'order_id' AND kind IN ('release','refund') RETURNING id, kind, state, txid;
    UPDATE payouts SET kind = 'refund', updated = now() WHERE order_id = :'order_id' AND kind = 'return' RETURNING id, kind, state, txid;
+   INSERT INTO order_events(order_id, from_state, to_state, note)
+   SELECT o.id, o.state, o.state, 'Refund recorded by hand (UPGRADING.md section 14): the overpayment returned to the buyer earlier is this order''s refund, and the remaining '
+     || CASE WHEN :'amount'::numeric > 0 THEN trim_scale(:'amount'::numeric)::text END || ' ' || o.currency
+     || ' was sent to the buyer by hand from the market wallet in transaction ' || CASE WHEN :'txid' ~ '^[0-9a-f]{64}$' THEN :'txid' END || '.'
+   FROM orders o
+   WHERE o.id = :'order_id' AND EXISTS (SELECT 1 FROM payouts r WHERE r.order_id = o.id AND r.kind = 'refund' AND r.updated = now())
+   RETURNING order_id, note;
    COMMIT;
    SQL
    ```
 
-   Each statement prints the rows it deleted or changed, which must be the rows you chose from step 1's output; a
-   mistyped order ID changes nothing (`DELETE 0`, `UPDATE 0`). If a statement fails, `psql` stops and nothing in
-   that block is changed.
+   Each statement prints the rows it deleted, changed or inserted, which must be the rows you chose from step 1's
+   output and the note you meant; a mistyped order ID changes nothing (`DELETE 0`, `UPDATE 0`, `INSERT 0 0`). The
+   note is added only when the statement before it relabelled the return. If a statement fails, `psql` stops and
+   nothing in that block is changed: a missing, empty or malformed amount or transaction ID stops it with an error
+   (for example `syntax error at or near ":"` or `null value in column "note"`).
 5. **Check that no order is left with a release and a refund, a refund and a return, or a return without a
    release.** This must print no rows (`(0 rows)`):
 
@@ -738,16 +752,35 @@ order named here as below, with `db_sql` defined as in section 14, then start th
      more (and, if the vendor's account is suspended, checking the address with the vendor); the watcher then sends
      it once. Either way the return stays as it is: if it was not sent, the watcher sends it to the buyer.
    - **A `cancelled` order, or a `resolved` one with the `refund` outcome**, owes the buyer everything it received
-     and the vendor nothing, so no release is restored. If the return was sent, record it as the order's refund; the
-     row keeps its amount, state and transaction ID:
+     and the vendor nothing, so no release is restored. If the return was sent, first send the buyer the price by
+     hand from the wallet, unless you already paid it (as section 14 said for such an order before this release),
+     and note the amount the wallet sent and its transaction ID. Then record the return as the order's refund; the
+     row keeps its amount, state and transaction ID, so the order page shows only the returned excess as the refund.
+     The same transaction adds a note to the order history, which the buyer and the vendor read, saying that the
+     return is the refund and naming the amount you sent by hand and its transaction ID (the vendor's page hides the
+     transaction ID, as for every payout to the buyer). Give the amount as the wallet shows it, in BTC or XMR (for
+     example `0.001`), and the 64-character transaction ID in lowercase; no address goes into the note:
 
      ```sh
-     db_sql -v order_id=FULL_ORDER_ID <<'SQL'
+     db_sql -v order_id=FULL_ORDER_ID -v amount=AMOUNT_SENT -v txid=TRANSACTION_ID <<'SQL'
+     BEGIN;
      UPDATE payouts SET kind = 'refund', updated = now() WHERE order_id = :'order_id' AND kind = 'return'
        AND NOT EXISTS (SELECT 1 FROM payouts l WHERE l.order_id = payouts.order_id AND l.kind = 'release')
      RETURNING id, kind, state, amount, txid;
+     INSERT INTO order_events(order_id, from_state, to_state, note)
+     SELECT o.id, o.state, o.state, 'Refund recorded by hand (UPGRADING.md section 18): the overpayment returned to the buyer earlier is this order''s refund, and the remaining '
+       || CASE WHEN :'amount'::numeric > 0 THEN trim_scale(:'amount'::numeric)::text END || ' ' || o.currency
+       || ' was sent to the buyer by hand from the market wallet in transaction ' || CASE WHEN :'txid' ~ '^[0-9a-f]{64}$' THEN :'txid' END || '.'
+     FROM orders o
+     WHERE o.id = :'order_id' AND EXISTS (SELECT 1 FROM payouts r WHERE r.order_id = o.id AND r.kind = 'refund' AND r.updated = now())
+     RETURNING order_id, note;
+     COMMIT;
      SQL
      ```
+
+     The note is added only when the statement before it relabelled the return. A missing, empty or malformed amount
+     or transaction ID stops the block with an error (for example `syntax error at or near ":"` or
+     `null value in column "note"`) and nothing is changed.
 
      If it was not sent, delete it (neither statement touches a return beside its release, and this one never
      deletes a row in state `sent`):
@@ -760,9 +793,9 @@ order named here as below, with `db_sql` defined as in section 14, then start th
      SQL
      ```
 
-     Then send the buyer the rest by hand from the wallet: the price, and the return's amount too if it was not
-     sent, unless you already paid it (as section 14 said for such an order before this release). Record the
-     transaction ID beside `return-without-release.txt`; do not insert a payout or use *Mark sent* for it.
+     Then send the buyer the price and the return's amount by hand from the wallet, unless you already paid them. In
+     either case record the transaction ID of what you sent by hand beside `return-without-release.txt`; do not
+     insert a payout or use *Mark sent* for it.
 4. **Check that no order is left with a return and no release.** This must print no rows (`(0 rows)`):
 
    ```sh
