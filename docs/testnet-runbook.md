@@ -85,7 +85,7 @@ For an external node, run the same RPCs with your own `bitcoin-cli` configuratio
 ## 3. Create the Monero wallet
 
 The app opens a wallet file named `opsecmkt` with an empty password in `monero-wallet-rpc`'s
-`--wallet-dir` (`/wallet`, the `monero_wallet` volume) when none is open. Create it once with the
+`--wallet-dir` (`/home/monero/wallet`, the `monero_wallet` volume) when none is open. Create it once with the
 `create_wallet` RPC. The wallet RPC publishes no port, so call it from inside the deployment network. The
 credentials are passed to curl on standard input, not in its arguments:
 
@@ -99,7 +99,7 @@ xmr() {  # xmr <method> '<json params>' (always pass params, '{}' for none)
 }
 xmr create_wallet '{"filename":"opsecmkt","password":"","language":"English"}'
 xmr get_address '{"account_index":0}'    # primary address: starts with 5 (stagenet) or 9/A (testnet)
-xmr get_height '{}'
+xmr get_height '{}'                      # record this height: a restore from the seed scans from it
 ```
 
 This needs `curl` in your reviewed Monero image. If it has none, run the same `curl` command from a reviewed
@@ -346,8 +346,14 @@ copies like any other secret:
 btc -rpcwallet=opsecmkt backupwallet /data/opsecmkt-wallet.bak
 btc getblockcount                          # record this height with the backup (pruned nodes, below)
 docker compose cp bitcoin:/data/opsecmkt-wallet.bak ./opsecmkt-wallet.bak
-xmr query_key '{"key_type":"mnemonic"}'   # write the seed down offline; or copy the /wallet volume while stopped
+xmr query_key '{"key_type":"mnemonic"}'   # write the seed down offline, with the height from section 3
+docker compose stop monero-wallet          # the wallet files (restored in preference to the seed), copied stopped
+docker compose cp monero-wallet:/home/monero/wallet/opsecmkt ./opsecmkt
+docker compose cp monero-wallet:/home/monero/wallet/opsecmkt.keys ./opsecmkt.keys
+docker compose start monero-wallet         # the app opens the wallet again on its next pass
 ```
+
+To bring them back, see [Restore the wallets](#restore-the-wallets).
 
 **The local Bitcoin node is pruned by default, which limits how old a restorable wallet backup can be.** A
 backup restored with `restorewallet` loads only if the height recorded with it is at or above the node's
@@ -405,6 +411,10 @@ and no web action that clears the gate or records a lost payout.
      ```
 
      Tor Browser asks for this key when you open the onion address; visitors without it cannot connect.
+
+   Then, if a wallet was lost or is older than this database (a new host, a lost `bitcoin_data` or
+   `monero_wallet` volume, a wallet or volume brought back from a copy), [restore the wallets](#restore-the-wallets)
+   and advance their address index **before the app starts**.
 2. **Start the app for yourself only** (`docker compose up -d app`) and let the watcher catch up: wait until
    *Last poll* on **Admin → Payment providers** is later than the start for every configured currency, so
    deposits made after the backup are in the ledger.
@@ -455,6 +465,119 @@ and no web action that clears the gate or records a lost payout.
      onion mirror, `up -d` starts it again only when `mirror` is in `COMPOSE_PROFILES` in `.env`; add it first if
      it is missing (see [Optional onion mirror](operator-guide.md#optional-onion-mirror)), and check that
      `docker compose ps tor-mirror` shows it running.
+
+#### Restore the wallets
+
+Part of step 1, with the app stopped, the restored database in place (`scripts/restore.sh` has set the payout
+recovery gate) and users cut off. A wallet brought back from a backup or a seed hands out addresses again from
+where the backup left off, but the database has already given the later ones to orders. `payment_addresses.address`
+is unique, so each payment request that gets one fails: the buyer reads "Unable to save changes" and a reference,
+the order stays a draft, and the app logs `http 5xx kind=action name=/orders/pay status=500 ref=<the reference>
+cause=23505 payment_addresses payment_addresses_address_key`. Each failure uses up one wallet address, so the
+failures stop only once buyers' retries have walked the wallet past every issued address. The restored wallet also
+watches only a limited range past its own index (1000 Bitcoin keys, 200 Monero subaddresses by default), so
+deposits made after the backup to addresses beyond it are not seen. Scanning moves the index past the highest
+address that received a deposit, but not past issued addresses that were never paid.
+
+A wallet that survived is at least as new as any database backup: keep it, never replace it with an older
+backup, and run only the check at the end. Use `btc` from [section 2](#2-create-the-bitcoin-wallet), `xmr` from
+[section 3](#3-create-the-monero-wallet), `HEIGHT` for the heights you recorded ([section 6](#6-back-up-the-wallets))
+and this `db_sql` for the restored database (replace `opsecmkt_restored` with the database name in
+`DATABASE_URL`; for an external database see the note in [step 6](#record-a-payout-sent-after-the-backup-step-6)):
+
+```sh
+db_sql() { docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d opsecmkt_restored "$@"; }
+```
+
+**Bitcoin.** Restore the backup file, then advance the index past what the database has issued and rescan:
+
+```sh
+btc listwalletdir                                    # "opsecmkt" listed: the wallet survived, go to the check
+docker compose cp ./opsecmkt-wallet.bak bitcoin:/data/opsecmkt-wallet.bak
+docker compose exec -T bitcoin chown bitcoin:bitcoin /data/opsecmkt-wallet.bak
+btc restorewallet opsecmkt /data/opsecmkt-wallet.bak true   # true: load it again after a node restart
+docker compose exec -T bitcoin rm /data/opsecmkt-wallet.bak
+n=$(db_sql -A -t -c "SELECT count(*) FROM payment_addresses WHERE currency='BTC'")
+for i in $(seq $((n + 100))); do btc -rpcwallet=opsecmkt getnewaddress restore-skip bech32 >/dev/null; done
+btc -rpcwallet=opsecmkt rescanblockchain HEIGHT     # the height recorded with the wallet backup
+```
+
+`restorewallet` scans from the backup's last block to the tip before it returns. On the default pruned node it
+refuses a backup older than `pruneheight` ("Prune: last wallet synchronisation goes beyond pruned data"), and
+`rescanblockchain` cannot go below it either: see [section 6](#6-back-up-the-wallets) and
+[Local node pruning](operator-guide.md#local-node-pruning). The loop asks for the issued count plus 100 more
+addresses: the margin covers addresses the wallet handed out that the database never kept (a payment request that
+failed after the wallet call) and any you made by hand since the backup; raise it if you made more. `bech32` is
+the type the app asks for; other types keep their own index. `keypoolrefill` is no substitute: it adds keys ahead
+of the index without moving it. Through `docker compose exec` the loop runs about five calls a second. The
+rescan comes last so it scans with every issued address in the wallet's range.
+
+**Monero.** Restore the wallet files when you have them: they keep the wallet's labels and the destinations of
+its sends. If `docker compose exec -T monero-wallet ls /home/monero/wallet` lists `opsecmkt.keys`, the wallet
+survived; go to the check. Otherwise:
+
+```sh
+docker compose stop monero-wallet
+docker compose cp ./opsecmkt monero-wallet:/home/monero/wallet/opsecmkt
+docker compose cp ./opsecmkt.keys monero-wallet:/home/monero/wallet/opsecmkt.keys
+docker compose start monero-wallet
+docker compose exec -T monero-wallet chown monero:monero /home/monero/wallet/opsecmkt /home/monero/wallet/opsecmkt.keys
+until xmr get_version '{}' >/dev/null 2>&1; do sleep 2; done   # the wallet RPC takes a few seconds to start
+xmr open_wallet '{"filename":"opsecmkt","password":""}'
+```
+
+Only without the files, restore from the seed. `restore_height` is the height recorded when the wallet was
+created ([section 3](#3-create-the-monero-wallet)), never a later one (scanning starts there, and deposits before
+it would be missed); 0 scans the whole chain. The seed reaches curl on standard input, not in any command's
+arguments. Then raise the subaddress lookahead above the issued count:
+
+```sh
+read -r -s -p 'Seed (25 words): ' seed; echo
+{ printf 'user = "marketplace:%s"\n' "$(sed -n "s/^MONERO_WALLET_RPC_PASSWORD='\(.*\)'$/\1/p" .env)"
+  printf 'data = "{\\"jsonrpc\\":\\"2.0\\",\\"id\\":\\"0\\",\\"method\\":\\"restore_deterministic_wallet\\",\\"params\\":{\\"filename\\":\\"opsecmkt\\",\\"password\\":\\"\\",\\"language\\":\\"English\\",\\"restore_height\\":%s,\\"seed\\":\\"%s\\"}}"\n' HEIGHT "$seed"
+} | docker compose exec -T monero-wallet curl -sS --digest --config - -H 'Content-Type: application/json' http://127.0.0.1:18083/json_rpc |
+  grep -e '"info"' -e '"message"'   # only the outcome: the reply repeats the seed
+unset seed
+n=$(db_sql -A -t -c "SELECT count(*) FROM payment_addresses WHERE currency='XMR'")
+xmr set_subaddress_lookahead "{\"major_idx\":50,\"minor_idx\":$((n + 200)),\"password\":\"\"}"
+```
+
+For either, advance account 0 (the only one the app uses) past what the database has issued, then rescan:
+
+```sh
+n=$(db_sql -A -t -c "SELECT count(*) FROM payment_addresses WHERE currency='XMR'")
+xmr create_address "{\"account_index\":0,\"count\":$((n + 100))}" >/dev/null   # at most 65536 per call
+xmr rescan_blockchain '{}'
+```
+
+The margin of 100 is the same as for Bitcoin. monero-wallet-rpc refreshes an opened wallet within seconds, before
+the lookahead or the new subaddresses exist, so only the rescan afterwards is sure to have scanned with every
+issued subaddress; it can take a while on a long chain. The rescan forgets the destinations of the wallet's
+earlier sends (`get_transfers` then lists them without `destinations`); keep the backup files, which still have
+them. A pruned Monero node serves the rescan as well (see [section 6](#6-back-up-the-wallets)).
+
+**Check before users return.** Each block prints the highest index the database has issued (with a "not in the
+wallet" line for any issued address the wallet does not know), then the index of the next address, which must be
+larger, then a count that must be 0:
+
+```sh
+keyindex() { btc -rpcwallet=opsecmkt getaddressinfo "$1" | sed -n 's|.*"hdkeypath": ".*/\([0-9]*\)".*|\1|p'; }
+db_sql -A -t -c "SELECT address FROM payment_addresses WHERE currency='BTC'" |
+  while read -r a; do keyindex "$a" | grep . || echo "not in the wallet: $a" >&2; done | sort -n | tail -n 1
+next=$(btc -rpcwallet=opsecmkt getnewaddress restore-check bech32); keyindex "$next"
+db_sql -A -t -c "SELECT count(*) FROM payment_addresses WHERE address='$next'"
+
+minor() { xmr get_address_index "{\"address\":\"$1\"}" | sed -n 's/.*"minor": *\([0-9]*\).*/\1/p'; }
+db_sql -A -t -c "SELECT address FROM payment_addresses WHERE currency='XMR'" |
+  while read -r a; do minor "$a" | grep . || echo "not in the wallet: $a" >&2; done | sort -n | tail -n 1
+next=$(xmr create_address '{"account_index":0,"label":"restore-check"}' | sed -n 's/.*"address": "\(.*\)".*/\1/p'); minor "$next"
+db_sql -A -t -c "SELECT count(*) FROM payment_addresses WHERE address='$next'"
+```
+
+If the next index is not larger (the wallet handed out more addresses than the database kept, for example in an
+earlier restore's advance), advance by the difference plus 100 (the same loop, or `create_address` with that
+`count`); if an issued address is not in the wallet, advance by another `n + 100`. Then rescan and check again; if no issued address is in the wallet, the backup or seed belongs to another wallet: stop and
+find the right one. Each check uses up one address, which is harmless.
 
 #### Record a payout sent after the backup (step 6)
 
@@ -693,7 +816,12 @@ bitcoin-cli -regtest -rpcuser=smoke -rpcpassword=smoke-pass stop
 ```
 
 The script creates or loads the `opsecmkt` wallet, mines 101 blocks to it, pays a fresh order address, mines
-one block and checks that the adapter reports the output with its confirmation. To try the whole site
+one block and checks that the adapter reports the output with its confirmation. It then runs
+`scripts/regtest-wallet-restore.py` (also runnable on its own with the same variable), which replays
+[Restore the wallets](#restore-the-wallets) with two wallets of its own: `backupwallet`, 1100 addresses issued
+after the backup, `restorewallet`, the collision the next address would cause, the runbook's step and the check.
+It leaves the backup file in the node's `/tmp` (set `BITCOIN_REGTEST_BACKUP_DIR` for another directory
+bitcoind can write). To try the whole site
 against the same node, start the app with `BITCOIN_RPC_URL=http://smoke:smoke-pass@127.0.0.1:18443`,
 `BITCOIN_CHAIN=regtest` and `PAYMENT_CONFIRMATIONS_BTC=1`, request payment on an order, pay it with
 `bitcoin-cli -regtest -rpcwallet=opsecmkt sendtoaddress <address> <amount>` and mine a block with

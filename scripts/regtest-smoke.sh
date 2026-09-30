@@ -7,6 +7,8 @@
 #
 # The test creates/loads the wallet "opsecmkt", mines 101 blocks to it, pays a fresh order address, mines one
 # block and checks the adapter reports the output with its confirmations. It refuses any non-regtest node.
+# Then scripts/regtest-wallet-restore.py replays docs/testnet-runbook.md "Restore the wallets" with wallets of
+# its own: backupwallet, issue addresses, restorewallet, the collision, the runbook's step, a fresh address.
 set -euo pipefail
 
 if [[ -z "${BITCOIN_REGTEST_RPC_URL:-}" ]]; then
@@ -15,6 +17,7 @@ if [[ -z "${BITCOIN_REGTEST_RPC_URL:-}" ]]; then
 fi
 command -v curl >/dev/null || { echo "curl is required" >&2; exit 2; }
 command -v go >/dev/null || { echo "Go is required" >&2; exit 2; }
+command -v python3 >/dev/null || { echo "Python 3 is required" >&2; exit 2; }
 
 rpc() { # rpc <path> <method> <json params>; the URL (with credentials) reaches curl on stdin, not in argv
   local base="${BITCOIN_REGTEST_RPC_URL%/}"
@@ -33,3 +36,4 @@ rpc "" loadwallet '["opsecmkt"]' >/dev/null
 
 cd "$(dirname "$0")/.."
 BITCOIN_REGTEST_RPC_URL="$BITCOIN_REGTEST_RPC_URL" go test -count=1 -run '^TestRegtestSmoke$' -v ./internal/market/
+BITCOIN_REGTEST_RPC_URL="$BITCOIN_REGTEST_RPC_URL" python3 scripts/regtest-wallet-restore.py
