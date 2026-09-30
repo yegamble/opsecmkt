@@ -159,7 +159,9 @@ func (k escrowKey) Expression() string { return "[" + k.Fingerprint + k.PathText
 
 // KeyMaterial identifies the key whatever its version bytes, depth or origin metadata: chain code and public key.
 // Cross-account reuse is refused on its HMAC (user_escrow_keys.xpub_hmac).
-func (k escrowKey) KeyMaterial() string { return hex.EncodeToString(k.ChainCode[:]) + hex.EncodeToString(k.PubKey[:]) }
+func (k escrowKey) KeyMaterial() string {
+	return hex.EncodeToString(k.ChainCode[:]) + hex.EncodeToString(k.PubKey[:])
+}
 
 const (
 	escrowKeyMaxLen     = 300 // origin (at most 10 steps) + 111-character key + "/0/*"
