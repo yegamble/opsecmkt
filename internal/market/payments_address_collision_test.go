@@ -41,6 +41,9 @@ func TestPaymentAddressCollisionRefusedAndReported(t *testing.T) {
 			if got := logs.lines("payments: " + cur + " wallet returned a payment address already issued"); len(got) != 2 || !strings.Contains(got[1], "collisions=2") || !strings.Contains(got[1], "Restore the wallets") {
 				t.Fatalf("collision log lines: %q", got)
 			}
+			if got := logs.lines("http 5xx kind=action name=/orders/pay status=503"); len(got) != 2 || !strings.HasSuffix(got[0], " cause=payment-address-already-issued") {
+				t.Fatalf("http 5xx lines: %q", got)
+			}
 			for _, raw := range []string{reissued, "payment_addresses_address_key", "duplicate key", "23505", draft[:8]} {
 				if strings.Contains(logs.String(), raw) {
 					t.Fatalf("log names %q:\n%s", raw, logs.String())
