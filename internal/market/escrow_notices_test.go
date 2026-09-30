@@ -85,6 +85,25 @@ func TestEscrowSiteNoticesWithoutPooledProvider(t *testing.T) {
 	}
 }
 
+// A pooled provider and ESCROW_BTC=on: the vendor desk's pooled tile no longer says "no multisig escrow" and an
+// escrow tile follows it; the catalog notice adds the escrow sentence after the pooled one.
+func TestEscrowNoticesBesidePooledProvider(t *testing.T) {
+	x := newEscrowEnv(t)
+	x.A.payMu.Lock()
+	x.A.payments["BTC"] = newFakeProvider("BTC", 3)
+	x.A.payMu.Unlock()
+	body := x.page("/vendor-dashboard", x.vendorSess)
+	if strings.Contains(body, "no multisig escrow") || !strings.Contains(body, "<strong>POOLED</strong>\n<span>Custodial test wallet</span>") ||
+		!strings.Contains(body, "<div class=\"eyebrow\">Bitcoin escrow</div>\n<strong>REGTEST</strong>") {
+		t.Fatalf("vendor dashboard beside a pooled provider:\n%s", body)
+	}
+	body = x.page("/", x.buyerSess)
+	if !strings.Contains(body, "This is custodial holding, not multisig escrow. A digital listing with automatic delivery can instead be paid into its own 2-of-3 Bitcoin escrow on regtest") ||
+		!strings.Contains(body, "TESTNET payments (BTC") {
+		t.Fatalf("catalog beside a pooled provider:\n%s", body)
+	}
+}
+
 // Neither a pooled provider nor escrow: every surface keeps the pooled-only wording, byte for byte.
 func TestPooledOffEscrowOffNoticesUnchanged(t *testing.T) {
 	t.Setenv("ESCROW_BTC", "")
