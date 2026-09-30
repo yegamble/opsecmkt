@@ -37,8 +37,8 @@ test('BTC and XMR: partial payment, intake pause, confirmation, fulfillment and 
   await admin.locator('.admin-auth').getByRole('button', { name: 'Turn CAPTCHA off' }).click();
   const buyer = await signedIn(browser, baseURL, 'wallet_buyer', 'wallet-browser-buyer-password-123', true);
   const second = await signedIn(browser, baseURL, 'wallet_second', 'wallet-browser-second-password-123', true);
-  // The digital XMR listing belongs to wallet_vendor, so wallet_admin (the BTC vendor, which must also add a PGP key
-  // for its physical listing, A-83) stays within the ten password confirmations its window allows.
+  // The digital XMR listing belongs to wallet_vendor; wallet_admin is the BTC vendor, which must also add a PGP key for
+  // its physical listing (A-83). (Correct password confirmations spend no per-account budget since A-274.)
   const vendor = await signedIn(browser, baseURL, 'wallet_vendor', vendorPassword, true);
   await setRole(admin, 'wallet_vendor', 'vendor');
 
@@ -311,8 +311,7 @@ test('vendor cancels a paid physical order, refunds once and restores stock', as
 });
 
 // A-120: a refund to a buyer with no payout address waits; its recipient (only) is told why and what to do, on the
-// order page and on /account#payout, and saving an address sends it once. A fresh buyer: it has no address, and
-// wallet_admin (the vendor here) needs its remaining password confirmations for this window.
+// order page and on /account#payout, and saving an address sends it once. A fresh buyer: it has no address.
 test('a refund waiting for a payout address tells its recipient what to do and is sent once', async ({ browser, baseURL, request }) => {
   const vendor = await signedIn(browser, baseURL, 'wallet_admin', password, false);
   const refundeePassword = 'wallet-browser-refundee-password-123';
@@ -418,8 +417,6 @@ test('automatic digital delivery and administrator recovery of a rejected payout
     await expect(unsent).not.toContainText('Fixture rejected send');
     // A-121: saving a new address leaves the failed payout on its address and names the order to its owner; the
     // administrator moves it to the current address after checking it, and the requeue below pays that address once.
-    // (With the move and the two requeue attempts below, wallet_admin uses nine of the ten password confirmations its
-    // window allows.)
     const moved = '5' + 'b'.repeat(94);
     await vendor.goto('/account');
     const save = vendor.locator('form', { has: vendor.getByRole('button', { name: 'Save XMR address' }) });

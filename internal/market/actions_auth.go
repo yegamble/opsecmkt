@@ -113,11 +113,21 @@ var handlePattern = regexp.MustCompile(`^[a-zA-Z0-9_]{3,32}$`)
 // was on its way (confirmedTx).
 var errAccountChanged = fail(403, "Your account's role or status changed while this was being saved; nothing was changed. Reload the page.")
 
-// confirmPassword checks the signed-in user's current password for a sensitive change (per-user attempt
-// limit, bounded bcrypt concurrency). Call it before opening a transaction.
+// errConfirmPaused refuses a password confirmation once the account's budget of failed confirmations is spent.
+var errConfirmPaused = fail(429, "Too many failed password confirmations. Try again in ten minutes.")
+
+// confirmPassword checks the signed-in user's current password for a sensitive change (bounded bcrypt concurrency).
+// Only failed confirmations spend the account's budget of 10 per ten minutes (A-274, as A-153 did for sign-in): a
+// wrong password here, or a wrong code in confirmedTxWith; a correct confirmation spends nothing. Call it before
+// opening a transaction.
 func (a *App) confirmPassword(ctx context.Context, userID, password string) error {
 	if password == "" || len(password) > 72 {
 		return fail(400, "Enter your current password to confirm this change.")
+	}
+	// A spent budget is refused before a slot is taken, so it never runs bcrypt or keeps other checks waiting.
+	key := "confirm:" + userID
+	if a.limited(key, 10) {
+		return errConfirmPaused
 	}
 	// The slot is taken before the attempt is counted, so a busy refusal spends none of the user's budget.
 	select {
@@ -126,8 +136,10 @@ func (a *App) confirmPassword(ctx context.Context, userID, password string) erro
 		return fail(503, "Authentication is busy. Try again shortly.")
 	}
 	defer func() { <-passwordWork }()
-	if !a.allow("confirm:"+userID, 10) {
-		return fail(429, "Too many attempts. Try again in ten minutes.")
+	// One attempt is reserved before bcrypt and refunded when the password is correct, so only failures spend the
+	// budget and concurrent wrong passwords still cannot exceed it.
+	if !a.allow(key, 10) {
+		return errConfirmPaused
 	}
 	var hash string
 	err := a.db.QueryRowContext(ctx, "SELECT password_hash FROM users WHERE id=$1", userID).Scan(&hash)
@@ -137,6 +149,7 @@ func (a *App) confirmPassword(ctx context.Context, userID, password string) erro
 	if err != nil {
 		return fail(401, "Password incorrect")
 	}
+	a.refund(key)
 	return nil
 }
 
@@ -238,12 +251,21 @@ func confirmedTxWith(c *actionCtx, opts *confirmation, run func(c *actionCtx) (a
 		return actionResult{}, errAccountChanged
 	}
 	if confirm && totp {
+		// A code is a guess too (A-274): it reserves one attempt of the budget the correct password gave back, under the
+		// account row lock so concurrent guesses cannot exceed it; only a wrong code (401) keeps it spent.
+		key := "confirm:" + uid
+		if !a.allow(key, 10) {
+			return actionResult{}, errConfirmPaused
+		}
 		if recovery {
 			err = codeErr
 			how = "password and recovery code"
 		} else {
 			err = a.checkTOTP(ctx, tx, uid, code)
 			how = "password and authenticator code"
+		}
+		if he := (*httpError)(nil); err == nil || !errors.As(err, &he) || he.Code != 401 {
+			a.refund(key)
 		}
 		if err != nil {
 			return actionResult{}, err
@@ -268,9 +290,13 @@ func confirmedTxWith(c *actionCtx, opts *confirmation, run func(c *actionCtx) (a
 // notifyOwner tells the account owner, inside tx, of a sign-in factor, key or recovery-code event (A-152). The text
 // is link-free and never carries a code, secret, key fingerprint or address.
 func notifyOwner(ctx context.Context, tx *sql.Tx, userID, event string) error {
-	_, err := tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), userID,
-		event+" If this was not you, someone else may know your password: change it and contact the market staff.")
+	_, err := tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), userID, ownerNotice(event))
 	return err
+}
+
+// ownerNotice is the text notifyOwner stores for event.
+func ownerNotice(event string) string {
+	return event + " If this was not you, someone else may know your password: change it and contact the market staff."
 }
 
 // authPrecheck refuses, before the request takes a post slot or reads the database, what authGate would
@@ -504,6 +530,18 @@ func (a *App) secondFactor(c *actionCtx, userID, passwordHash, next string) (act
 	names, err := a.enrolledFactors(ctx, userID)
 	if err != nil {
 		return actionResult{}, fail(503, "Service unavailable")
+	}
+	// PGP sign-in that is on but lost to an unreadable key is never dropped silently (A-272): the owner is told once,
+	// and without another factor the sign-in is refused rather than finished with the password alone.
+	lost, err := pgpSignInLost(ctx, a.db, userID)
+	if err == nil && lost {
+		err = a.notifyUnreadableKey(ctx, userID)
+	}
+	if err != nil {
+		return actionResult{}, fail(503, "Service unavailable")
+	}
+	if lost && len(names) == 0 {
+		return actionResult{}, unreadableKeyRefusal(ctx, a.db, userID)
 	}
 	if len(names) == 0 {
 		var he *httpError

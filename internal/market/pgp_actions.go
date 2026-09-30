@@ -208,7 +208,8 @@ type pgpAccount struct {
 	Verified     bool   // proof recorded for exactly this key
 	VerifiedAt   string
 	ProofVersion string // exact ownership-proof timestamp used to bind pending sign-in codes
-	TwoFactor    bool
+	TwoFactor    bool   // PGP sign-in is on and usable: the setting is on and the proven key can be read
+	TwoFactorSet bool   // users.pgp_2fa as stored; on while TwoFactor is off means PGP sign-in is lost (A-272)
 }
 
 // loadPGPAccount reads the saved key; q is a *sql.Tx (lock with forUpdate) or *sql.DB.
@@ -228,6 +229,7 @@ func loadPGPAccount(ctx context.Context, q rowQuerier, uid string, forUpdate boo
 		}
 	}
 	p.Verified = verified && p.Key != nil && p.Stored == p.Fingerprint
+	p.TwoFactorSet = p.TwoFactor
 	p.TwoFactor = p.TwoFactor && p.Verified
 	if !p.Verified {
 		p.VerifiedAt = ""
