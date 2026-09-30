@@ -56,8 +56,9 @@
 </fieldset>
 </form>{{end}}
 </section>{{end}}{{end}}
-{{define "uploads:avatar"}}{{with .Uploads}}{{if or .AvatarForm .Avatar}}<section class="panel upload-panel" id="avatar" aria-labelledby="avatar-title">
-<h2 id="avatar-title">Avatar</h2>{{with .Avatar}}
+{{define "uploads:avatar"}}{{with .Uploads}}{{if or .AvatarForm .Avatar ($.NoticeIn "avatar")}}<section class="panel upload-panel" id="avatar" aria-labelledby="avatar-title">
+<h2 id="avatar-title">Avatar</h2>{{with $.NoticeIn "avatar"}}
+<div class="alert" role="status">{{.}}</div>{{end}}{{with .Avatar}}
 <div class="avatar-current">
 <img src="{{.Full}}" alt="" width="128" height="128">
 <div>

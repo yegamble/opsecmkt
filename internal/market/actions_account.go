@@ -99,8 +99,15 @@ func accountAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, err
 		}
 		res := actionResult{Redirect: "/account", Notice: "profile", Audit: audit}
-		if outcome != "" { // a new version of the saved key: say whether its ownership proof was kept (A-155)
-			res = actionResult{Redirect: "/account?key=" + outcome, Audit: audit}
+		switch outcome { // a new version of the saved key: say whether its ownership proof was kept (A-155, A-287)
+		case "renewed-kept":
+			res.Notice = "key-renewed-kept"
+		case "renewed":
+			res.Notice = "key-renewed"
+		case "revocation":
+			res.Notice = "key-revocation"
+		case "subkey":
+			res.Notice = "key-subkey"
 		}
 		_, err = c.Tx.ExecContext(c.Ctx(), "UPDATE users SET xmpp=$1 WHERE id=$2", xmpp, c.User.ID)
 		return res, err

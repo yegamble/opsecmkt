@@ -236,6 +236,9 @@ type PageData struct {
 	// VendorKeyUnusable (A-83): a physical listing's product and checkout pages, and its buyer's order page, when the
 	// vendor has no key that can receive encrypted messages (canReceiveEncrypted), so no shipping address can be sent.
 	VendorKeyUnusable bool
+	// noticeCode: the one-shot notice this render consumed (notice.go), for a loader that details it from the
+	// current state (/totp after a recovery-code sign-in); "" without one.
+	noticeCode string
 }
 
 // Foundation

@@ -27,9 +27,6 @@ import (
 func init() {
 	registerAction("/images/remove", actionSpec{Roles: []string{"moderator", "admin"}, Run: imageTakedownAction})
 	registerLoader("moderator", recentImagesLoader)
-	for _, page := range []string{"moderator", "product", "vendor"} {
-		registerLoader(page, takedownNoticeLoader)
-	}
 	registerPreview("moderator", previewRecentImages)
 }
 
@@ -136,21 +133,21 @@ func imageTakedownAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, notFound
 	}
 	var audit, ownerAudit, note string
-	redirect := "/moderator?image=removed#recent-photos"
+	back := "" // the product or vendor page the form was on; "" for /moderator
 	if kind == "photo" {
 		audit = "Took down a photo on listing " + shortID(listing) + ": " + reason
 		ownerAudit = photoTakedownOwnerPrefix(listing) + reason
 		note = "Staff removed a photo from your listing “" + title + "” (" + shortID(listing) + ") with the reason “" + reason +
 			"”. The photo was deleted; you cannot undo this. The listing itself is unchanged. You can add another photo from the listing's edit page. If you think this is wrong, contact the market staff."
 		if c.Form.Get("from") == "product" {
-			redirect = "/product?id=" + url.QueryEscape(listing) + "&image=removed"
+			back = "/product?id=" + url.QueryEscape(listing)
 		}
 	} else {
 		audit = "Took down the avatar of " + handle + ": " + reason
 		ownerAudit = "Avatar removed by staff: " + reason
 		note = "Staff removed your avatar with the reason “" + reason + "”. It was deleted; you cannot undo this. If you think this is wrong, contact the market staff."
 		if c.Form.Get("from") == "vendor" && (ownerRole == "vendor" || ownerRole == "admin") {
-			redirect = "/vendor?id=" + url.QueryEscape(owner) + "&image=removed"
+			back = "/vendor?id=" + url.QueryEscape(owner)
 		}
 	}
 	if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", owner, ownerAudit); err != nil {
@@ -160,15 +157,12 @@ func imageTakedownAction(c *actionCtx) (actionResult, error) {
 	if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), owner, note); err != nil {
 		return actionResult{}, err
 	}
-	return actionResult{Redirect: redirect, Audit: audit}, nil
-}
-
-// takedownNoticeLoader confirms a takedown to the staff member it returned to the page.
-func takedownNoticeLoader(_ context.Context, _ *App, r *http.Request, d *PageData) error {
-	if staffViewer(d.User) && r.URL.Query().Get("image") == "removed" {
-		d.Notice = "Image removed. Its owner was notified with your reason."
+	// The one-shot notice confirms it to the staff member (A-287): in Recent photos, or at the top of the page.
+	out := actionResult{Redirect: "/moderator", Notice: "image-removed", Audit: audit}
+	if back != "" {
+		out.Notice, out.Redirect = "image-removed-page", back
 	}
-	return nil
+	return out, nil
 }
 
 // recentImagesLoader lists the newest images the public route serves (imagePublicWhere), newest first, for

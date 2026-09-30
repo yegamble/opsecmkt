@@ -83,8 +83,10 @@ test('moderator removes a photo from the desk; URL 404s; vendor sees the reason'
     await item.locator('summary').click();
     await item.getByLabel('Reason for the owner').fill(reason);
     await submitAndLoad(moderator, item.getByRole('button', { name: 'Remove photo' }));
-    await expect(moderator).toHaveURL(/\/moderator\?image=removed#recent-photos$/);
-    await expect(moderator.getByRole('status')).toHaveText('Image removed. Its owner was notified with your reason.');
+    await expect(moderator).toHaveURL(/\/moderator#recent-photos$/);
+    await expect(recent.getByRole('status')).toHaveText('Image removed. Its owner was notified with your reason.');
+    await moderator.goto('/moderator?image=removed'); // the old flag shows nothing (A-287)
+    await expect(moderator.getByRole('status')).toHaveCount(0);
     await expect(recent.getByRole('link', { name: title })).toHaveCount(0);
     expect(sql(`SELECT count(*) FROM images WHERE id='${photo}'`)).toBe('0');
 

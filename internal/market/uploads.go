@@ -287,7 +287,11 @@ func (a *App) serveUpload(w http.ResponseWriter, r *http.Request, route uploadRo
 	switch {
 	case err == nil:
 		a.scanner.RecordStored()
-		http.Redirect(w, r, redirect, http.StatusSeeOther)
+		notice := "photo-saved" // a one-shot notice, as an action's (A-117, A-287); its section is the fragment
+		if route.kind == uploadAvatar {
+			notice = "avatar-saved"
+		}
+		http.Redirect(w, r, a.setNotice(w, notice, redirect), http.StatusSeeOther)
 	case errors.As(err, &he):
 		u.render(he.Code, he.Msg)
 	case dbBusy(err):
@@ -550,7 +554,7 @@ func (a *App) storeImage(ctx context.Context, r *http.Request, session string, a
 	}
 	current := *actor
 	current.Role = role
-	owner, audit, ownerAudit, notify, redirect := current.ID, "", "", "", "/account?avatar=saved#avatar"
+	owner, audit, ownerAudit, notify, redirect := current.ID, "", "", "", "/account"
 	var product any
 	if route.kind == uploadListing {
 		// lockListing takes the listing's vendor's users row before the listing (the vendor never changes).
@@ -571,7 +575,7 @@ func (a *App) storeImage(ctx context.Context, r *http.Request, session string, a
 		}
 		owner, product = l.VendorID, l.ID
 		audit = listingAudit("Added a photo to", c, l)
-		redirect = "/listing-edit?id=" + url.QueryEscape(l.ID) + "&photo=saved#photos"
+		redirect = "/listing-edit?id=" + url.QueryEscape(l.ID)
 		if owner != current.ID { // A-190: recorded in the vendor's own audit trail too
 			notify = "An administrator added a photo to your listing " + shortID(l.ID) + "."
 			ownerAudit = "Photo added to listing " + shortID(l.ID) + " by an administrator"

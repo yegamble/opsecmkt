@@ -158,11 +158,11 @@ func TestSignInReturnThroughChallenge(t *testing.T) {
 		anon, pc, _ := a126Login(e, "a126_rec", checkout)
 		w := e.do("POST", "/challenge", anon, url.Values{"method": {"totp"}, "recovery": {recovery}}, pc)
 		e.check(w, 303)
-		want := "/totp?signin=recovery&next=" + url.QueryEscape(checkout)
-		if loc := w.Header().Get("Location"); loc != want {
+		want := "/totp?next=" + url.QueryEscape(checkout) // with the one-shot signin-recovery notice (A-287)
+		if loc := w.Header().Get("Location"); loc != want || noticeSetCookie(w) == nil || noticeSetCookie(w).Value != "signin-recovery" {
 			t.Fatalf("recovery sign-in landed on %q, want %q", loc, want)
 		}
-		body := e.body("GET", want, e.session(w), nil, 200)
+		body := e.body("GET", want, e.session(w), nil, 200, noticeSetCookie(w))
 		if !strings.Contains(body, "1 recovery code remains") || !strings.Contains(body, `<a class="button primary" href="`+strings.ReplaceAll(checkout, "&", "&amp;")+`">Continue to Checkout</a>`) {
 			t.Fatalf("/totp after a recovery sign-in lacks the notice or the continue link:\n%s", body)
 		}
@@ -170,7 +170,7 @@ func TestSignInReturnThroughChallenge(t *testing.T) {
 		if body := e.body("GET", "/totp?next="+url.QueryEscape(checkout), e.session(w), nil, 200); strings.Contains(body, "Continue to") {
 			t.Fatal("/totp shows a continue link without a recovery sign-in")
 		}
-		if body := e.body("GET", "/totp?signin=recovery&next=%2F%2Fevil.test", e.session(w), nil, 200); strings.Contains(body, "Continue to") || strings.Contains(body, "evil.test") {
+		if body := e.body("GET", "/totp?next=%2F%2Fevil.test", e.session(w), nil, 200, noticeSetCookie(w)); strings.Contains(body, "Continue to") || strings.Contains(body, "evil.test") {
 			t.Fatal("/totp shows a refused target")
 		}
 	})
@@ -180,10 +180,10 @@ func TestSignInReturnThroughChallenge(t *testing.T) {
 		anon, pc, _ := a126Login(e, "a126_off", "/orders")
 		w := e.do("POST", "/challenge", anon, url.Values{"method": {"totp"}, "recovery": {recovery}, "turn_off_totp": {"1"}}, pc)
 		e.check(w, 303)
-		if loc := w.Header().Get("Location"); loc != "/totp?signin=totp-off&next=%2Forders" {
+		if loc := w.Header().Get("Location"); loc != "/totp?next=%2Forders" || noticeSetCookie(w) == nil || noticeSetCookie(w).Value != "signin-totp-off" {
 			t.Fatalf("recovery turn-off sign-in landed on %q", loc)
 		}
-		if body := e.body("GET", "/totp?signin=totp-off&next=%2Forders", e.session(w), nil, 200); !strings.Contains(body, `href="/orders">Continue to Orders</a>`) {
+		if body := e.body("GET", "/totp?next=%2Forders", e.session(w), nil, 200, noticeSetCookie(w)); !strings.Contains(body, `href="/orders">Continue to Orders</a>`) {
 			t.Fatal("/totp after turning TOTP off lacks the continue link")
 		}
 	})

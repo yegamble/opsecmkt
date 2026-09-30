@@ -52,8 +52,8 @@ func TestRecoveryCodeSignInTurnsTOTPOff(t *testing.T) {
 			anon, pc := e.pendingSignIn(handle)
 			w := e.do("POST", "/challenge", anon, url.Values{"method": {"totp"}, "recovery": {recovery}, "turn_off_totp": {"1"}}, pc)
 			e.check(w, 303)
-			if loc := w.Header().Get("Location"); loc != "/totp?signin=totp-off" {
-				t.Fatalf("landed on %q, want /totp?signin=totp-off", loc)
+			if loc := w.Header().Get("Location"); loc != "/totp" || noticeSetCookie(w) == nil || noticeSetCookie(w).Value != "signin-totp-off" {
+				t.Fatalf("landed on %q with notice %+v, want /totp and signin-totp-off", loc, noticeSetCookie(w))
 			}
 			sess := e.session(w)
 			on, secret, pending, reveal, last, codes := a154TOTP(e, id)
@@ -69,7 +69,7 @@ func TestRecoveryCodeSignInTurnsTOTPOff(t *testing.T) {
 				agInt(e, "SELECT count(*) FROM pending_logins WHERE token_hash=$1", digest(otherPending.Value)) != 1 {
 				t.Fatal("other sessions or pending sign-ins changed")
 			}
-			body := e.body("GET", "/totp?signin=totp-off", sess, nil, 200)
+			body := e.body("GET", "/totp", sess, nil, 200, noticeSetCookie(w))
 			if !strings.Contains(body, "Not enrolled") || !strings.Contains(body, "turned off two-step sign-in with an authenticator app (TOTP)") {
 				t.Fatal("/totp does not show TOTP off with the sign-in notice")
 			}
@@ -115,10 +115,10 @@ func TestRecoveryCodeSignInLandsOnTOTP(t *testing.T) {
 		anon, pc := e.pendingSignIn("a154_land")
 		w := e.do("POST", "/challenge", anon, url.Values{"method": {"totp"}, "recovery": {tc.code}}, pc)
 		e.check(w, 303)
-		if loc := w.Header().Get("Location"); loc != "/totp?signin=recovery" {
+		if loc := w.Header().Get("Location"); loc != "/totp" || noticeSetCookie(w) == nil || noticeSetCookie(w).Value != "signin-recovery" {
 			t.Fatalf("sign-in %d landed on %q", i, loc)
 		}
-		body := e.body("GET", "/totp?signin=recovery", e.session(w), nil, 200)
+		body := e.body("GET", "/totp", e.session(w), nil, 200, noticeSetCookie(w))
 		if !strings.Contains(body, "You signed in with a recovery code. "+tc.remain) {
 			t.Fatalf("sign-in %d: /totp lacks %q", i, tc.remain)
 		}

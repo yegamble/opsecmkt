@@ -157,7 +157,7 @@ func TestVendorRemovesOwnPhoto(t *testing.T) {
 	}
 	e.upload("/listings/photo", vendor, e.photoParts(vendor, listing, smallJPEG(t))...)
 	loc, _, _ := strings.Cut(w.Header().Get("Location"), "#") // browsers never send the fragment
-	page := e.do("GET", loc, vendor, nil)
+	page := e.do("GET", loc, vendor, nil, noticeSetCookie(w)) // the one-shot notice (A-117, A-287)
 	e.check(page, 200)
 	body := page.Body.String()
 	if !strings.Contains(body, "Photo saved as a re-encoded JPEG; location, camera and other metadata were removed. Check the picture itself for anything that identifies you.") {
@@ -192,7 +192,7 @@ func TestVendorRemovesOwnPhoto(t *testing.T) {
 		}
 	}
 	w = e.do("POST", "/listings/photo/remove", vendor, url.Values{"id": {ids[0]}})
-	if w.Code != 303 || w.Header().Get("Location") != "/listing-edit?id="+listing+"&photo=removed#photos" {
+	if w.Code != 303 || w.Header().Get("Location") != "/listing-edit?id="+listing+"#photos" {
 		t.Fatalf("remove: %d %q %s", w.Code, w.Header().Get("Location"), w.Body.String())
 	}
 	var left int
@@ -210,7 +210,7 @@ func TestVendorRemovesOwnPhoto(t *testing.T) {
 			t.Fatalf("%s after removal: %d", path, w.Code)
 		}
 	}
-	after := e.do("GET", "/listing-edit?id="+listing+"&photo=removed", vendor, nil).Body.String()
+	after := e.do("GET", "/listing-edit?id="+listing, vendor, nil, noticeSetCookie(w)).Body.String()
 	if !strings.Contains(after, "Photo removed.") || strings.Contains(after, ids[0]) || !strings.Contains(after, "1 of 4 photos") {
 		t.Fatalf("page after removal:\n%s", sectionOf(t, after, "photos"))
 	}
@@ -299,7 +299,7 @@ func TestAvatarFormAndRemoval(t *testing.T) {
 		var avatar string
 		e.DB.QueryRow("SELECT id FROM images WHERE owner_user_id=$1 AND kind='avatar'", id).Scan(&avatar)
 		loc, _, _ := strings.Cut(w.Header().Get("Location"), "#")
-		page := e.do("GET", loc, s, nil).Body.String()
+		page := e.do("GET", loc, s, nil, noticeSetCookie(w)).Body.String()
 		section = sectionOf(t, page, "avatar")
 		if !strings.Contains(page, "Avatar saved as a re-encoded JPEG") || !strings.Contains(section, deskImageURL(avatar, true)) || !strings.Contains(section, `action="/account/avatar/remove"`) {
 			t.Fatalf("%s: avatar not shown after upload:\n%s", role, section)
@@ -317,7 +317,7 @@ func TestAvatarFormAndRemoval(t *testing.T) {
 		}
 	}
 	w := e.do("POST", "/account/avatar/remove", owner, url.Values{"id": {otherID}, "user_id": {otherID}})
-	if w.Code != 303 || w.Header().Get("Location") != "/account?avatar=removed#avatar" {
+	if w.Code != 303 || w.Header().Get("Location") != "/account#avatar" {
 		t.Fatalf("remove: %d %q %s", w.Code, w.Header().Get("Location"), w.Body.String())
 	}
 	count := func(uid string) (n int) {
@@ -332,7 +332,7 @@ func TestAvatarFormAndRemoval(t *testing.T) {
 	if audit != "Removed avatar" {
 		t.Fatalf("audit %q", audit)
 	}
-	page := e.do("GET", "/account?avatar=removed", owner, nil).Body.String()
+	page := e.do("GET", "/account", owner, nil, noticeSetCookie(w)).Body.String()
 	if !strings.Contains(page, "Avatar removed.") || strings.Contains(sectionOf(t, page, "avatar"), "/account/avatar/remove") {
 		t.Fatalf("page after removal:\n%s", sectionOf(t, page, "avatar"))
 	}
@@ -354,7 +354,7 @@ func TestModeratorAvatarUpload(t *testing.T) {
 	e, f := uploadEnv(t)
 	id, moderator := e.user("avatar_moderator", "moderator")
 	w := e.upload("/account/avatar", moderator, e.avatarParts(moderator, fixturePNG(t, fixturePicture(300, 200)))...)
-	if w.Code != 303 || w.Header().Get("Location") != "/account?avatar=saved#avatar" || scansOf(f) != 1 {
+	if w.Code != 303 || w.Header().Get("Location") != "/account#avatar" || scansOf(f) != 1 {
 		t.Fatalf("moderator avatar: %d %q scans %d", w.Code, w.Header().Get("Location"), scansOf(f))
 	}
 	var avatar string

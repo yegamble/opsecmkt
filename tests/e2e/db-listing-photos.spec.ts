@@ -95,10 +95,19 @@ test('uploaded photo persists after reload, re-encoded', { tag: '@firefox' }, as
   const { page: vendor } = await newVendor(browser, baseURL);
   const listing = await publish(vendor, `Photos ${uniqueHandle('keep')}`);
   expect(await uploadPhoto(vendor, png(96, 72, PLANTED), 'A grey box on a wooden table')).toBe(303);
-  await expect(vendor).toHaveURL(new RegExp(`/listing-edit\\?id=${listing}&photo=saved#photos$`));
-  await expect(vendor.getByRole('status')).toHaveText('Photo saved as a re-encoded JPEG; location, camera and other metadata were removed. Check the picture itself for anything that identifies you.');
-  await vendor.goto(`/listing-edit?id=${listing}`); // a fresh load: the list comes from the database
+  // A one-shot notice in the Photos panel (A-117, A-287): Back, a reload and the old ?photo= link show nothing.
+  await expect(vendor).toHaveURL(new RegExp(`/listing-edit\\?id=${listing}#photos$`));
   const panel = vendor.getByRole('region', { name: 'Photos' });
+  await expect(panel.getByRole('status')).toHaveText('Photo saved as a re-encoded JPEG; location, camera and other metadata were removed. Check the picture itself for anything that identifies you.');
+  await vendor.goto('/vendor-dashboard');
+  await vendor.goBack();
+  await expect(panel).toBeVisible();
+  await expect(vendor.getByRole('status')).toHaveCount(0);
+  await vendor.goto(`/listing-edit?id=${listing}&photo=saved`);
+  await expect(panel).toBeVisible();
+  await expect(vendor.getByRole('status')).toHaveCount(0);
+  await vendor.goto(`/listing-edit?id=${listing}`); // a fresh load: the list comes from the database
+  await expect(vendor.getByRole('status')).toHaveCount(0);
   await expect(panel).toContainText(/1 of 4 photos · 0\.1 MB of 50 MB/);
   const item = panel.locator('.photo-item');
   await expect(item).toHaveCount(1);
@@ -127,9 +136,10 @@ test('vendor removes own photo', async ({ browser, baseURL }) => {
   await expect(panel).toContainText('No description');
   const src = (await panel.locator('.photo-item img').getAttribute('src'))!;
   await panel.getByRole('button', { name: 'Remove photo 1' }).click();
-  await expect(vendor).toHaveURL(new RegExp(`/listing-edit\\?id=${listing}&photo=removed#photos$`));
-  await expect(vendor.getByRole('status')).toHaveText('Photo removed.');
+  await expect(vendor).toHaveURL(new RegExp(`/listing-edit\\?id=${listing}#photos$`));
+  await expect(panel.getByRole('status')).toHaveText('Photo removed.');
   await vendor.reload();
+  await expect(vendor.getByRole('status')).toHaveCount(0);
   await expect(panel).toContainText('0 of 4 photos');
   await expect(panel.locator('.photo-item')).toHaveCount(0);
   expect((await vendor.request.get(src)).status()).toBe(404);
@@ -177,8 +187,10 @@ test('staff avatar and hide choice on /account', async ({ browser, baseURL }) =>
   await expect(panel).toContainText('a staff photo links your identity across every dispute decision');
   await panel.getByLabel('Avatar', { exact: true }).setInputFiles({ name: 'me.png', mimeType: 'image/png', buffer: png(300, 200, PLANTED) });
   expect(await submitStatus(moderator, () => panel.getByRole('button', { name: 'Upload avatar' }).click())).toBe(303);
-  await expect(moderator).toHaveURL(/\/account\?avatar=saved#avatar$/);
+  await expect(moderator).toHaveURL(/\/account#avatar$/);
+  await expect(panel.getByRole('status')).toHaveText('Avatar saved as a re-encoded JPEG; location, camera and other metadata were removed. Check the picture itself for anything that identifies you.');
   await moderator.reload();
+  await expect(moderator.getByRole('status')).toHaveCount(0);
   await expect(panel).toContainText(/Your avatar: JPEG, 200×200, \d+ KB/);
   expect(await panel.locator('img').evaluate(img => (img as HTMLImageElement).naturalWidth)).toBe(200);
   const staff = moderator.getByRole('region', { name: 'Public staff list' });
@@ -191,7 +203,11 @@ test('staff avatar and hide choice on /account', async ({ browser, baseURL }) =>
   await expect(hide).not.toBeChecked();
   await expect(moderator.getByRole('region', { name: 'Recent activity' })).toContainText('Public staff list choice changed: hidden → shown');
   await panel.getByRole('button', { name: 'Remove avatar' }).click();
-  await expect(moderator).toHaveURL(/\/account\?avatar=removed#avatar$/);
+  await expect(moderator).toHaveURL(/\/account#avatar$/);
+  await expect(panel.getByRole('status')).toHaveText('Avatar removed.');
   await expect(panel).toContainText('No avatar.');
+  await moderator.goto('/account?avatar=removed');
+  await expect(panel).toContainText('No avatar.');
+  await expect(moderator.getByRole('status')).toHaveCount(0);
   await moderator.context().close();
 });

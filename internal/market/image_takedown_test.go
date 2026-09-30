@@ -106,7 +106,7 @@ func TestModeratorRemovesImageHardDelete(t *testing.T) {
 	e.wantPublic(photo, "before the takedown")
 
 	w := e.takeDown(moderator, photo.id, imageTakedownReason)
-	if w.Code != 303 || w.Header().Get("Location") != "/moderator?image=removed#recent-photos" {
+	if w.Code != 303 || w.Header().Get("Location") != "/moderator#recent-photos" {
 		t.Fatalf("takedown: %d %q %s", w.Code, w.Header().Get("Location"), w.Body.String())
 	}
 	if n := e.imageRows(photo.id); n != 0 {
@@ -283,10 +283,10 @@ func TestTakedownNotifiesOwnerWithReason(t *testing.T) {
 
 	form := imageTakedownForm(t, e.body("GET", "/product?id="+listing, moderator, nil, 200), photo.id, imageTakedownReason)
 	w := e.do("POST", "/images/remove", moderator, form)
-	if w.Code != 303 || w.Header().Get("Location") != "/product?id="+listing+"&image=removed" {
+	if w.Code != 303 || w.Header().Get("Location") != "/product?id="+listing {
 		t.Fatalf("takedown from the product page: %d %q %s", w.Code, w.Header().Get("Location"), w.Body.String())
 	}
-	back := e.body("GET", w.Header().Get("Location"), moderator, nil, 200)
+	back := e.body("GET", w.Header().Get("Location"), moderator, nil, 200, noticeSetCookie(w))
 	mustContain(t, back, "Image removed. Its owner was notified with your reason.")
 	if strings.Contains(back, photo.id) || !strings.Contains(back, kept.id) {
 		t.Fatal("the product page after the takedown still shows the photo, or lost the other one")
@@ -317,7 +317,7 @@ func TestTakedownNotifiesOwnerWithReason(t *testing.T) {
 	avatar := e.image(vendorID, "", "avatar")
 	form = imageTakedownForm(t, e.body("GET", "/vendor?id="+vendorID, moderator, nil, 200), avatar.id, "Avatar shows a real name tag.")
 	w = e.do("POST", "/images/remove", moderator, form)
-	if w.Code != 303 || w.Header().Get("Location") != "/vendor?id="+vendorID+"&image=removed" {
+	if w.Code != 303 || w.Header().Get("Location") != "/vendor?id="+vendorID {
 		t.Fatalf("takedown from the vendor page: %d %q %s", w.Code, w.Header().Get("Location"), w.Body.String())
 	}
 	wantAvatar := "Staff removed your avatar with the reason “Avatar shows a real name tag.”. It was deleted; you cannot undo this. If you think this is wrong, contact the market staff."

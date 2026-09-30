@@ -624,22 +624,25 @@ func challengeAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, err
 	}
 	// The sign-in lands on the page /login was sent from (A-126), kept by the pending sign-in and checked again; a
-	// "next" posted here is ignored. A recovery-code sign-in lands on /totp, which says how many codes remain or that
-	// TOTP is now off (A-154), and links on to that page.
+	// "next" posted here is ignored. A recovery-code sign-in lands on /totp with a one-shot notice (A-287; set here, as
+	// the request had no session when it started), which says how many codes remain or that TOTP is now off (A-154)
+	// and links on to that page: next stays in the URL, a link target shown only beside the notice.
 	target := signInNext(stored)
-	next := orHome(target)
+	next, notice := orHome(target), ""
 	if method == "recovery code" {
-		next = "/totp?signin=recovery"
+		next = "/totp"
+		notice = "signin-recovery"
 		if turnOffTOTPAtSignIn(c.Form) {
-			next = "/totp?signin=totp-off"
+			notice = "signin-totp-off"
 		}
 		if target != "" {
-			next += "&next=" + url.QueryEscape(target)
+			next += "?next=" + url.QueryEscape(target)
 		}
 	}
 	return actionResult{Redirect: next, AfterCommit: func(w http.ResponseWriter) {
 		a.cookie(w, "pending", "", -1)
 		a.cookie(w, "session", token, 43200)
+		a.setNotice(w, notice, "")
 	}}, nil
 }
 
