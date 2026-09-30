@@ -13,7 +13,7 @@ CREATE TABLE user_escrow_keys (
  xpub_sealed text NOT NULL,
  xpub_hmac text NOT NULL UNIQUE CHECK (xpub_hmac ~ '^[0-9a-f]{64}$'),
  origin_fingerprint text NOT NULL CHECK (origin_fingerprint ~ '^[0-9a-f]{8}$'),
- origin_path text NOT NULL CHECK (origin_path ~ '^(/[0-9]{1,10}h?){1,10}$'),
+ origin_path text NOT NULL CHECK (origin_path ~ '^(/(0|[1-9][0-9]{0,9})h?){1,10}$'),
  active_at timestamptz,
  created timestamptz NOT NULL DEFAULT now(),
  updated timestamptz NOT NULL DEFAULT now()
@@ -33,7 +33,8 @@ CREATE TABLE escrows (
 -- P1-b. The three child public keys of each escrow (ES-3): a key is never used by two escrows (PRIMARY KEY). Per
 -- party, its own origin: the account key's fingerprint and path and the full derivation suffix below it (e.g.
 -- /0/7, not a bare index, A-245), and an optional per-order extended key for a later wallet layout (A-255; NULL in
--- Phase 1). A party key's /0/0 child is its practice key and never an escrow key (ES-9).
+-- Phase 1). A party key's /0/0 child is its practice key and never an escrow key (ES-9). Every path here is
+-- canonical, as the Go parser writes it: no leading zeros and h for hardened, so /0/0 has no other spelling.
 CREATE TABLE escrow_pubkeys (
  pubkey text PRIMARY KEY CHECK (pubkey ~ '^0[23][0-9a-f]{64}$'),
  escrow_id bigint NOT NULL REFERENCES escrows(id),
@@ -41,8 +42,8 @@ CREATE TABLE escrow_pubkeys (
  user_id text REFERENCES users(id),
  key_hmac text CHECK (key_hmac ~ '^[0-9a-f]{64}$'),
  origin_fingerprint text NOT NULL CHECK (origin_fingerprint ~ '^[0-9a-f]{8}$'),
- origin_path text NOT NULL CHECK (origin_path ~ '^(/[0-9]{1,10}h?){1,10}$'),
- derivation_suffix text NOT NULL CHECK (derivation_suffix ~ '^(/[0-9]{1,10}h?){1,10}$'),
+ origin_path text NOT NULL CHECK (origin_path ~ '^(/(0|[1-9][0-9]{0,9})h?){1,10}$'),
+ derivation_suffix text NOT NULL CHECK (derivation_suffix ~ '^(/(0|[1-9][0-9]{0,9})h?){1,10}$'),
  per_order_xpub text,
  UNIQUE (escrow_id, party),
  CHECK ((party = 'market') = (user_id IS NULL) AND (party = 'market') = (key_hmac IS NULL)),

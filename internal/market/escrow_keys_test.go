@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -100,6 +101,35 @@ func TestParseEscrowKeyAccepts(t *testing.T) {
 	}
 }
 
+// The Go parser accepts exactly the canonical paths migration 074's CHECK constraints accept (QA-P1a-3): whatever
+// parseOriginPath reads, formatOriginPath writes in a form the SQL pattern matches, and a leading zero is refused
+// by both.
+func TestOriginPathMatchesMigration(t *testing.T) {
+	sql, err := migrationFiles.ReadFile("migrations/074_escrow_btc.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`origin_path ~ '([^']+)'`).FindSubmatch(sql)
+	if m == nil || !bytes.Contains(sql, []byte("derivation_suffix ~ '"+string(m[1])+"'")) {
+		t.Fatal("074's origin_path and derivation_suffix patterns not found or not the same")
+	}
+	pattern := regexp.MustCompile(string(m[1]))
+	for _, in := range []string{"/0", "/48h/1h/0h/2h", "/48'/1'/10'/2'", "/84H/1H/0H", "/2147483647h/0/9", "/1/2/3/4/5/6/7/8/9/10"} {
+		p, err := parseOriginPath(in)
+		if err != nil || !pattern.MatchString(formatOriginPath(p)) {
+			t.Errorf("%s: %q %v", in, formatOriginPath(p), err)
+		}
+	}
+	for _, in := range []string{"/00", "/0/00", "/00/0", "/048h", "/48h/01h", "/0h/007"} {
+		if _, err := parseOriginPath(in); err == nil {
+			t.Errorf("parseOriginPath accepted %s", in)
+		}
+		if pattern.MatchString(in) {
+			t.Errorf("074's pattern accepts %s", in)
+		}
+	}
+}
+
 func mustPath(t *testing.T, s string) []uint32 {
 	t.Helper()
 	p, err := parseOriginPath(s)
@@ -160,6 +190,8 @@ func TestParseEscrowKeyRefusals(t *testing.T) {
 		{"no path", "[7450f935]" + tpub, errKeyOriginForm.Error()},
 		{"empty step", "[7450f935/48h//0h/2h]" + tpub, errKeyOriginForm.Error()},
 		{"step too large", "[7450f935/48h/1h/0h/2147483648h]" + tpub, errKeyOriginForm.Error()},
+		{"leading zero step", "[7450f935/48h/01h/0h/2h]" + tpub, errKeyOriginForm.Error()},
+		{"zero step spelled 00", "[7450f935/48h/1h/00h/2h]" + tpub, errKeyOriginForm.Error()},
 		{"unclosed origin", "[7450f935/48h/1h/0h/2h" + tpub, errKeyOriginForm.Error()},
 		{"two origins", origin + origin + tpub, errKeyOriginForm.Error()},
 		{"path too deep", "[7450f935" + strings.Repeat("/1", 11) + "]" + tpub, errKeyOriginForm.Error()},

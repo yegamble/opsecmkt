@@ -634,6 +634,39 @@ func TestEscrowMigrationConstraints(t *testing.T) {
 	mustFail("a second escrow at the same address", "INSERT INTO escrows(order_id,address,market_index) VALUES($1,'bcrt1qa',99)", e.order(b, e.product(a, "digital"), "BTC", "awaiting_payment"))
 	pk := "INSERT INTO escrow_pubkeys(pubkey,escrow_id,party,user_id,key_hmac,origin_fingerprint,origin_path,derivation_suffix) VALUES($1,$2,$3,$4,$5,'7450f935','/48h/1h/0h/2h',$6)"
 	mustFail("the practice child in an escrow", pk, "02"+strings.Repeat("11", 32), id, "buyer", a, h, "/0/0")
+	// Paths are canonical (no leading zeros), so no other spelling of /0/0 passes that CHECK (QA-P1a-3).
+	// Each attempt runs in a transaction that is rolled back, so an accepted row cannot mask the next attempt.
+	inTx := func(q string, args ...any) error {
+		tx, err := e.DB.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		_, err = tx.Exec(q, args...)
+		return err
+	}
+	vendorPK := "INSERT INTO escrow_pubkeys(pubkey,escrow_id,party,user_id,key_hmac,origin_fingerprint,origin_path,derivation_suffix) VALUES('02'||repeat('66',32),$1,'vendor',$2,$3,'7450f935',$4,$5)"
+	keyRow := "INSERT INTO user_escrow_keys(user_id,xpub_sealed,xpub_hmac,origin_fingerprint,origin_path) VALUES($1,'s',$2,'7450f935',$3)"
+	for _, suffix := range []string{"/0/00", "/00/0", "/048h", "/0/01", "/0/00000000000"} {
+		if inTx(vendorPK, id, b, strings.Repeat("cd", 32), "/48h/1h/0h/2h", suffix) == nil {
+			t.Errorf("derivation suffix %s accepted", suffix)
+		}
+	}
+	for _, path := range []string{"/048h/1h/0h/2h", "/48h/01h/0h/2h", "/48h/1h/00h/2h"} {
+		if inTx(keyRow, b, strings.Repeat("cd", 32), path) == nil {
+			t.Errorf("account key origin path %s accepted", path)
+		}
+		if inTx(vendorPK, id, b, strings.Repeat("cd", 32), path, "/0/3") == nil {
+			t.Errorf("escrow key origin path %s accepted", path)
+		}
+	}
+	// The canonical spellings, including multi-digit steps, are accepted.
+	if err := inTx(vendorPK, id, b, strings.Repeat("cd", 32), "/48h/1h/10h/2h", "/0/10"); err != nil {
+		t.Errorf("canonical escrow key paths refused: %v", err)
+	}
+	if err := inTx(keyRow, b, strings.Repeat("cd", 32), "/48h/1h/2147483647h/2h"); err != nil {
+		t.Errorf("canonical account key path refused: %v", err)
+	}
 	mustFail("a market key with an account", pk, "02"+strings.Repeat("22", 32), id, "market", a, nil, "/0/5")
 	mustFail("a party key without an account", pk, "02"+strings.Repeat("33", 32), id, "vendor", nil, nil, "/0/5")
 	if _, err := e.DB.Exec(pk, "02"+strings.Repeat("44", 32), id, "buyer", a, h, "/0/1"); err != nil {
