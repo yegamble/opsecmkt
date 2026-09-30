@@ -22,13 +22,14 @@ import (
 // row: an escrow keeps the child keys and origins it was built with (escrow_pubkeys), so no existing escrow changes.
 //
 // Which escrows use a key is read by the account and the key's origin (escrow_pubkeys.user_id, origin_fingerprint and
-// origin_path), never by key_hmac: the HMAC derives from APP_SECRET_KEY, and rotating it must never hide an escrow or
-// change which key an escrow uses (the chair's ruling on QA25). An origin names one key of an active account: the
-// practice signature proved the owner's wallet holds the key at that fingerprint and path. After a rotation the owner
-// registers the same key again; Bitcoin Core confirms it derives the key an existing escrow holds (derivesChild), and
-// it is active again at once, since practice is never offered for a key with escrows (ES-9). Cross-account reuse is
-// refused by the HMAC, so across a rotation it is best effort: a key registered before is not recognised on another
-// account until its owner registers it again (docs/operator-guide.md).
+// origin_path), never by key_hmac alone: the HMAC derives from APP_SECRET_KEY, and rotating it must never hide an
+// escrow or change which key an escrow uses (the chair's ruling on QA25). An origin names one key of an active account:
+// the practice signature proved the owner's wallet holds the key at that fingerprint and path. Once a key has escrows
+// its origin cannot change (keyAgainstEscrows, A-314), so a key with escrows has one origin. After a rotation the
+// owner registers the same key again; Bitcoin Core confirms it derives the key an existing escrow holds
+// (derivesChild), and it is active again at once, since practice is never offered for a key with escrows (ES-9).
+// Cross-account reuse is refused by the HMAC, so across a rotation it is best effort: a key registered before is not
+// recognised on another account until its owner registers it again (docs/operator-guide.md).
 
 func init() {
 	registerPage("escrow-key", pageSpec{Protected: true, Off: escrowOff})
@@ -49,6 +50,8 @@ var (
 	errPracticeState   = fail(409, "The practice transaction is offered only for a registered key that is not active yet and has no escrows. Reload the page.")
 	errPracticeChanged = fail(409, "Your escrow key was changed or activated while the practice transaction was checked; nothing was changed. Reload the page.")
 	errKeyOtherOrigin  = &keyRefusal{"This key has the same origin as the key your escrows use, but it is a different key. Check the fingerprint and path your wallet shows for this key. Nothing was saved."}
+	errKeyOriginLocked = fail(409, "This key has escrows, so its origin (fingerprint and path) cannot be changed. Its existing escrows keep the origin they were created with. If that origin is wrong, contact the market's staff. Nothing was saved.")
+	errKeyUnchecked    = fail(503, "The key cannot be checked right now: the market's Bitcoin node did not answer. Nothing was saved; try again later.")
 )
 
 // errEscrowKeyUnreadable is shown when the stored key cannot be opened: APP_SECRET_KEY (or a legacy SETUP_TOKEN)
@@ -86,15 +89,75 @@ func loadEscrowKey(ctx context.Context, q interface {
 	return k, err
 }
 
-// escrowsOfKey selects the escrow keys of the user_escrow_keys row k: by account and origin, not by HMAC.
-const escrowsOfKey = "SELECT 1 FROM escrow_pubkeys p WHERE p.user_id=k.user_id AND p.origin_fingerprint=k.origin_fingerprint AND p.origin_path=k.origin_path"
+// escrowsOfKey selects the escrow keys of the user_escrow_keys row k: by account and origin, or by the key's HMAC. The
+// HMAC only adds matches (a rotation can hide none): a key has one origin once it has escrows (keyAgainstEscrows).
+const escrowsOfKey = "SELECT 1 FROM escrow_pubkeys p WHERE p.user_id=k.user_id AND (p.origin_fingerprint=k.origin_fingerprint AND p.origin_path=k.origin_path OR p.key_hmac=k.xpub_hmac)"
+
+// keyAgainstEscrows checks key k (HMAC h), offered for account uid, against each key the account's escrows hold (the
+// latest child key recorded under each origin), and reports whether k is the key of existing escrows at their
+// origin: restored, active at once. Whether k is a recorded key is decided by the HMAC, or, where it differs (an
+// APP_SECRET_KEY rotation changes every HMAC), by Core deriving the recorded child key from k; never by the origin
+// (A-314). A recorded key under another origin is refused (errKeyOriginLocked): its child indices continue per
+// account, but practice is never offered for a key with escrows (ES-9), and the escrows keep the origin recorded
+// with them. Another key under the origin of escrows is refused too (errKeyOtherOrigin). Before any escrow exists
+// there is nothing to check, so an origin can still be corrected (A-309).
+func (a *App) keyAgainstEscrows(ctx context.Context, e *escrowBTC, uid string, k escrowKey, h string) (bool, error) {
+	rows, err := a.db.QueryContext(ctx, `SELECT DISTINCT ON (origin_fingerprint,origin_path) origin_fingerprint,origin_path,derivation_suffix,pubkey,key_hmac
+		FROM escrow_pubkeys WHERE user_id=$1 ORDER BY origin_fingerprint,origin_path,escrow_id DESC`, uid)
+	if err != nil {
+		return false, err
+	}
+	type recorded struct{ fp, path, suffix, pub, hmac string }
+	var keys []recorded
+	for rows.Next() {
+		var r recorded
+		if err = rows.Scan(&r.fp, &r.path, &r.suffix, &r.pub, &r.hmac); err != nil {
+			rows.Close()
+			return false, err
+		}
+		keys = append(keys, r)
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
+		return false, err
+	}
+	// The HMAC first: a key recognised by it is refused or restored without asking the node.
+	restored := false
+	for _, r := range keys {
+		switch sameOrigin := r.fp == k.Fingerprint && r.path == k.PathText; {
+		case r.hmac == h && !sameOrigin:
+			return false, errKeyOriginLocked
+		case r.hmac == h:
+			restored = true
+		}
+	}
+	for _, r := range keys {
+		if r.hmac == h {
+			continue
+		}
+		same, err := e.derivesChild(ctx, k, r.suffix, r.pub)
+		if err != nil {
+			log.Printf("escrow: re-registered key not checked: %s", errorClassOf(err))
+			return false, errKeyUnchecked
+		}
+		switch sameOrigin := r.fp == k.Fingerprint && r.path == k.PathText; {
+		case same && !sameOrigin:
+			return false, errKeyOriginLocked
+		case same:
+			restored = true
+		case sameOrigin:
+			return false, fail(400, errKeyOtherOrigin.Error())
+		}
+	}
+	return restored, nil
+}
 
 // escrowKeyView fills the page view from the stored key (no RPC).
 func (a *App) escrowKeyView(ctx context.Context, userID string) (*EscrowKeyView, *storedEscrowKey, error) {
 	if !a.escrowConfigured {
 		return nil, nil, nil
 	}
-	v := &EscrowKeyView{Available: a.escrow != nil}
+	v := &EscrowKeyView{Available: a.escrow.Load() != nil}
 	k, err := loadEscrowKey(ctx, a.db, userID)
 	if err != nil || k == nil {
 		return v, nil, err
@@ -144,14 +207,15 @@ func (a *App) practiceFor(ctx context.Context, userID string, k *storedEscrowKey
 	if err != nil {
 		return nil, err
 	}
-	return a.escrow.buildPractice(ctx, key, a.practiceSeed(userID, k.hmac))
+	return a.escrow.Load().buildPractice(ctx, key, a.practiceSeed(userID, k.hmac))
 }
 
 // escrowKeyAction registers or changes the account's escrow key. The key is parsed (ES-3) before the password is
 // checked or anything else is read, so a pasted private key is refused at once and goes nowhere.
 func escrowKeyAction(c *actionCtx) (actionResult, error) {
 	a := c.A
-	if a.escrow == nil {
+	e := a.escrow.Load()
+	if e == nil {
 		return actionResult{}, errEscrowDown
 	}
 	k, err := parseEscrowKey(c.Form.Get("key"))
@@ -161,7 +225,7 @@ func escrowKeyAction(c *actionCtx) (actionResult, error) {
 	if !k.BIP48 && c.Form.Get("dedicated") != "1" {
 		return actionResult{}, fail(400, errKeyAck.Error())
 	}
-	if k.Fingerprint == a.escrow.fingerprint { // the market's own arbiter key offered as a party key
+	if k.Fingerprint == e.fingerprint { // the market's own arbiter key offered as a party key
 		return actionResult{}, fail(400, errKeyUnusable.Error())
 	}
 	h := a.escrowKeyHMAC(k)
@@ -172,24 +236,10 @@ func escrowKeyAction(c *actionCtx) (actionResult, error) {
 	if cur != nil && cur.hmac == h && cur.fingerprint == k.Fingerprint && cur.path == k.PathText {
 		return actionResult{Redirect: "/escrow-key", Notice: "escrow-key-unchanged"}, nil
 	}
-	// A key under the origin of this account's escrows must be the key they hold (after an APP_SECRET_KEY rotation,
-	// the same key registered again); it is then active at once. Checked with Core before the password is.
-	var suffix, pub string
-	err = a.db.QueryRowContext(c.Ctx(), `SELECT derivation_suffix,pubkey FROM escrow_pubkeys WHERE user_id=$1 AND origin_fingerprint=$2 AND origin_path=$3
-		ORDER BY escrow_id DESC LIMIT 1`, c.User.ID, k.Fingerprint, k.PathText).Scan(&suffix, &pub)
-	restored := err == nil
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	// Checked against the keys this account's escrows hold, before the password is.
+	restored, err := a.keyAgainstEscrows(c.Ctx(), e, c.User.ID, k, h)
+	if err != nil {
 		return actionResult{}, err
-	}
-	if restored {
-		same, err := a.escrow.derivesChild(c.Ctx(), k, suffix, pub)
-		if err != nil {
-			log.Printf("escrow: re-registered key not checked: %s", errorClassOf(err))
-			return actionResult{}, fail(503, "The key cannot be checked right now: the market's Bitcoin node did not answer. Nothing was saved; try again later.")
-		}
-		if !same {
-			return actionResult{}, fail(400, errKeyOtherOrigin.Error())
-		}
 	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
 		ctx, uid := c.Ctx(), c.User.ID
@@ -235,7 +285,8 @@ func escrowKeyAction(c *actionCtx) (actionResult, error) {
 // update then requires the same key to be still inactive and without escrows.
 func escrowPracticeAction(c *actionCtx) (actionResult, error) {
 	a, ctx, uid := c.A, c.Ctx(), c.User.ID
-	if a.escrow == nil {
+	e := a.escrow.Load()
+	if e == nil {
 		return actionResult{}, errEscrowDown
 	}
 	pasted := c.Form.Get("psbt")
@@ -251,7 +302,7 @@ func escrowPracticeAction(c *actionCtx) (actionResult, error) {
 	}
 	pt, err := a.practiceFor(ctx, uid, k)
 	if err == nil {
-		err = a.escrow.verifyPractice(ctx, pt, pasted)
+		err = e.verifyPractice(ctx, pt, pasted)
 	}
 	var kr *keyRefusal
 	var pe *psbtError

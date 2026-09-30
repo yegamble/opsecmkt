@@ -132,11 +132,13 @@ const (
 	escrowLogFingerprint  = "escrow: Bitcoin escrow disabled: the arbiter wallet's key fingerprint differs from the one pinned in this database; see docs/operator-guide.md, \"Bitcoin escrow (regtest only)\""
 	escrowLogWatch        = "escrow: Bitcoin escrow disabled: the watch-only wallet could not be read (is ESCROW_BTC_WATCH_WALLET loaded, and a descriptor wallet with private keys disabled?)"
 	escrowLogFixedFee     = "escrow: the market fee is paid to one fixed address (ESCROW_BTC_FEE_ADDRESS); allowed on test networks only"
+	escrowLogRefused      = "escrow: Bitcoin escrow disabled until the app is restarted: the escrow node is not on regtest, or it refused ESCROW_BTC_FEE_ADDRESS"
+	escrowLogUnrecorded   = "escrow: Bitcoin escrow disabled: its arbiter fingerprint could not be checked in the database"
 	escrowFingerprintPin  = "escrow_btc_arbiter_fingerprint" // settings key
 	escrowFingerprintSize = 8
 )
 
-// escrowBTC is the escrow adapter; App.escrow is nil unless ESCROW_BTC=on passed every startup check.
+// escrowBTC is the escrow adapter; App.escrow is nil until ESCROW_BTC=on has passed every check (startEscrow).
 type escrowBTC struct {
 	rpc           *rpcClient
 	arbiterName   string
@@ -162,7 +164,8 @@ func newEscrowBTC(c escrowConfig) (*escrowBTC, error) {
 
 // initEscrow runs in New after the payment providers. ESCROW_BTC=off does nothing. On, a node that answers on any
 // chain but regtest stops startup (errEscrowNotRegtest); an unreachable node, an unreadable arbiter wallet or a
-// fingerprint that differs from the pinned one leaves escrow disabled with one fixed line, and the market runs.
+// fingerprint that differs from the pinned one leaves escrow disabled with one fixed line, and the market runs; the
+// escrow watcher then retries (retryEscrow).
 func (a *App) initEscrow(ctx context.Context) error {
 	cfg, err := escrowConfigFromEnv(os.Getenv)
 	if err != nil || !cfg.on {
@@ -172,48 +175,103 @@ func (a *App) initEscrow(ctx context.Context) error {
 	if a.live {
 		return errors.New("refusing to start: ESCROW_BTC=on runs only on regtest in this release, and this market is configured for mainnet")
 	}
-	e, err := newEscrowBTC(cfg)
-	if err != nil {
+	if _, err = newEscrowBTC(cfg); err != nil {
 		return err
+	}
+	a.escrowCfg = cfg
+	state, class, err := a.startEscrow(ctx)
+	if err == nil {
+		logEscrowState(state, class)
+		a.escrowStartState = state
+	}
+	return err
+}
+
+// errEscrowFeeAddress is the fixed startup refusal for a fee address the escrow node does not accept.
+var errEscrowFeeAddress = errors.New("refusing to start: ESCROW_BTC_FEE_ADDRESS is not a valid address on the escrow node's chain (regtest)")
+
+// startEscrow runs every escrow check once and, when all pass, enables escrow (a.escrow). It reports the state as
+// one of the fixed lines (escrowLogOn when enabled) with the error class that caused it (""), or an error: a refusal
+// (errEscrowNotRegtest, errEscrowFeeAddress) or a database failure. Nothing here comes from the node's text. The
+// guards are the same at startup and on a retry: the node must be on regtest, the arbiter fingerprint must match the
+// pinned one, and the watch-only wallet must hold no private keys.
+func (a *App) startEscrow(ctx context.Context) (state, class string, err error) {
+	e, err := newEscrowBTC(a.escrowCfg)
+	if err != nil {
+		return "", "", err
 	}
 	chain, err := e.chain(ctx)
 	if err != nil {
-		log.Printf("%s (%s)", escrowLogUnchecked, errorClassOf(err))
-		return nil
+		return escrowLogUnchecked, errorClassOf(err), nil
 	}
 	if chain != "regtest" {
-		return errEscrowNotRegtest
+		return "", "", errEscrowNotRegtest
 	}
 	if err = e.readArbiter(ctx); err != nil {
-		log.Printf("%s (%s)", escrowLogArbiter, errorClassOf(err))
-		return nil
+		return escrowLogArbiter, errorClassOf(err), nil
 	}
 	ok, err := pinArbiterFingerprint(ctx, a.db, e.fingerprint)
 	if err != nil {
-		return err
+		return "", "", err
 	}
 	if !ok {
-		log.Print(escrowLogFingerprint)
-		return nil
+		return escrowLogFingerprint, "", nil
 	}
 	if err = e.checkWatchWallet(ctx); err != nil {
-		log.Printf("%s (%s)", escrowLogWatch, errorClassOf(err))
-		return nil
+		return escrowLogWatch, errorClassOf(err), nil
 	}
 	if e.feeAddress != "" {
 		valid, err := e.validAddress(ctx, e.feeAddress)
 		if err != nil {
-			log.Printf("%s (%s)", escrowLogUnchecked, errorClassOf(err))
-			return nil
+			return escrowLogUnchecked, errorClassOf(err), nil
 		}
 		if !valid {
-			return errors.New("refusing to start: ESCROW_BTC_FEE_ADDRESS is not a valid address on the escrow node's chain (regtest)")
+			return "", "", errEscrowFeeAddress
 		}
 		log.Print(escrowLogFixedFee)
 	}
-	a.escrow = e
-	log.Print(escrowLogOn)
-	return nil
+	a.escrow.Store(e)
+	return escrowLogOn, "", nil
+}
+
+// logEscrowState logs a startEscrow state line, with its error class when there is one.
+func logEscrowState(state, class string) {
+	if class != "" {
+		log.Printf("%s (%s)", state, class)
+		return
+	}
+	log.Print(state)
+}
+
+// escrowRetry is the escrow watcher's record of the last escrow state it logged, so a state is logged when it
+// changes, not on every pass.
+type escrowRetry struct {
+	last    string
+	refused bool // the node answered on another chain, or refused the fee address: no retry until a restart
+}
+
+// retryEscrow runs startEscrow again for the escrow watcher while escrow is switched on but not enabled (A-316), as
+// refreshProviders retries a pooled provider. A refusal that would stop startup cannot stop a running market: it logs
+// one fixed line and ends the retries until a restart.
+func (a *App) retryEscrow(ctx context.Context, r *escrowRetry) {
+	if r.refused || a.escrow.Load() != nil {
+		return
+	}
+	pass, cancel := context.WithTimeout(ctx, watcherPassTimeout)
+	state, class, err := a.startEscrow(pass)
+	cancel()
+	switch {
+	case ctx.Err() != nil:
+		return
+	case errors.Is(err, errEscrowNotRegtest), errors.Is(err, errEscrowFeeAddress):
+		r.refused, state = true, escrowLogRefused
+	case err != nil:
+		state, class = escrowLogUnrecorded, errorCause(err)
+	}
+	if state != r.last {
+		logEscrowState(state, class)
+		r.last = state
+	}
 }
 
 // pinArbiterFingerprint records fp as the arbiter fingerprint the first time and reports whether fp equals the

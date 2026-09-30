@@ -57,8 +57,11 @@ func autoDeliveryHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, t
 		return nil
 	}
 	if takenDown {
-		_, err := tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, statePaid,
-			"Not delivered automatically: an administrator took this listing down. The vendor can deliver by hand or cancel and refund.")
+		note := "Not delivered automatically: an administrator took this listing down. The vendor can deliver by hand or cancel and refund."
+		if o.Escrow { // a funded escrow order cannot be cancelled before the settlement step (escrowTransitionHook)
+			note = "Not delivered automatically: an administrator took this listing down. The vendor can deliver by hand; a refund of this escrow comes with the settlement step, which this build does not have yet."
+		}
+		_, err := tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, statePaid, note)
 		return err
 	}
 	next, err := a.transition(ctx, tx, o.ID, statePaid, stateDelivered, nil, "Automatic delivery after confirmed payment")

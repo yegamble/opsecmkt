@@ -37,7 +37,7 @@ func escrowTestApp(t *testing.T) (*testEnv, *fakeEscrowCore, *payRPCServer) {
 	core, srv := newFakeEscrowCore(t)
 	setEscrowEnv(t, srv.url(""))
 	e := newTestApp(t)
-	if e.A.escrow == nil {
+	if e.A.escrow.Load() == nil {
 		t.Fatal("escrow did not start against the fake regtest node")
 	}
 	return e, core, srv
@@ -96,7 +96,7 @@ func TestEscrowOffByDefault(t *testing.T) {
 	t.Setenv("ESCROW_BTC", "")
 	t.Setenv("ESCROW_BTC_RPC_URL", srv.url(""))
 	e := newTestApp(t)
-	if e.A.escrowConfigured || e.A.escrow != nil || len(core.methods()) != 0 {
+	if e.A.escrowConfigured || e.A.escrow.Load() != nil || len(core.methods()) != 0 {
 		t.Fatalf("escrow started or called the node: %v", core.methods())
 	}
 	uid, sess := e.user("escrow_off_buyer", "buyer")
@@ -162,7 +162,7 @@ func TestEscrowStartupDisabled(t *testing.T) {
 	srv.down.Store(true)
 	setEscrowEnv(t, srv.url(""))
 	a, dsn, err := startApp(t, "")
-	if err != nil || a.escrow != nil || !a.escrowConfigured {
+	if err != nil || a.escrow.Load() != nil || !a.escrowConfigured {
 		t.Fatalf("unreachable: %v %v", err, a)
 	}
 	if !strings.Contains(logs.String(), escrowLogUnchecked+" (getblockchaininfo unreachable)") {
@@ -172,7 +172,7 @@ func TestEscrowStartupDisabled(t *testing.T) {
 	srv.down.Store(false)
 	core.arbiterCode = -4
 	a, _, err = startApp(t, dsn)
-	if err != nil || a.escrow != nil || !strings.Contains(logs.String(), escrowLogArbiter+" (getrawchangeaddress rpc:-4)") {
+	if err != nil || a.escrow.Load() != nil || !strings.Contains(logs.String(), escrowLogArbiter+" (getrawchangeaddress rpc:-4)") {
 		t.Fatalf("arbiter: %v\n%s", err, logs.String())
 	}
 	e := &testEnv{t: t, A: a, DB: a.db}
@@ -195,7 +195,7 @@ func TestEscrowStartupDisabled(t *testing.T) {
 	core.mu.Lock()
 	core.arbiterCode = 0
 	core.mu.Unlock()
-	if a, _, err = startApp(t, dsn); err != nil || a.escrow == nil {
+	if a, _, err = startApp(t, dsn); err != nil || a.escrow.Load() == nil {
 		t.Fatalf("escrow up: %v", err)
 	}
 	e = &testEnv{t: t, A: a, DB: a.db}
@@ -205,7 +205,7 @@ func TestEscrowStartupDisabled(t *testing.T) {
 	}
 	a.Close()
 	srv.down.Store(true)
-	if a, _, err = startApp(t, dsn); err != nil || a.escrow != nil {
+	if a, _, err = startApp(t, dsn); err != nil || a.escrow.Load() != nil {
 		t.Fatalf("node down: %v", err)
 	}
 	e = &testEnv{t: t, A: a, DB: a.db}
@@ -226,7 +226,7 @@ func TestEscrowArbiterFingerprintPinned(t *testing.T) {
 	core, srv := newFakeEscrowCore(t)
 	setEscrowEnv(t, srv.url(""))
 	a, dsn, err := startApp(t, "")
-	if err != nil || a.escrow == nil || a.escrow.fingerprint != fakeArbiterFP {
+	if err != nil || a.escrow.Load() == nil || a.escrow.Load().fingerprint != fakeArbiterFP {
 		t.Fatalf("first start: %v", err)
 	}
 	var pinned string
@@ -236,7 +236,7 @@ func TestEscrowArbiterFingerprintPinned(t *testing.T) {
 	}
 	a.Close()
 	// Same wallet again: still on.
-	if a, _, err = startApp(t, dsn); err != nil || a.escrow == nil {
+	if a, _, err = startApp(t, dsn); err != nil || a.escrow.Load() == nil {
 		t.Fatalf("restart: %v", err)
 	}
 	a.Close()
@@ -244,7 +244,7 @@ func TestEscrowArbiterFingerprintPinned(t *testing.T) {
 	core.arbiterFP = "0badf00d"
 	core.arbiterDesc = "wpkh([0badf00d/84h/1h/0h]" + testBIP84Key[20:] + "/1/*)#x"
 	a, _, err = startApp(t, dsn)
-	if err != nil || a.escrow != nil || !strings.Contains(logs.String(), escrowLogFingerprint) {
+	if err != nil || a.escrow.Load() != nil || !strings.Contains(logs.String(), escrowLogFingerprint) {
 		t.Fatalf("mismatch: %v\n%s", err, logs.String())
 	}
 	a.db.QueryRow("SELECT value FROM settings WHERE key=$1", escrowFingerprintPin).Scan(&pinned)
@@ -319,6 +319,10 @@ func TestEscrowKeyRegister(t *testing.T) {
 		}
 		if audit := agStrings(t, e, "SELECT action FROM audit_events WHERE user_id=$1 ORDER BY id DESC LIMIT 1", uid); audit[0] != "Changed Bitcoin escrow key (confirmed with password)" {
 			t.Fatalf("audit %q", audit)
+		}
+		// Without escrows the corrected key is offered practice as before (A-314 (iii)).
+		if body := e.do("GET", "/escrow-key", sess, nil).Body.String(); !strings.Contains(body, "Show the practice transaction") {
+			t.Fatalf("practice not offered after an origin correction: %s", body)
 		}
 	}
 	if n := agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1", uid); n != 3 {

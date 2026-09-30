@@ -24,6 +24,9 @@ import (
 // underpayment or cancellation), a dispute decision, a stray refund. Until then an escrow order holding coins is
 // never cancelled or disputed (escrowTransitionHook), an underpaid one stays open after its payment window with one
 // notice, and one that has received nothing is cancelled when its window ends, as a pooled order is.
+//
+// While escrow is switched on but not enabled (its node was down at startup, say) the watcher retries the startup
+// checks each interval (retryEscrow) and does nothing else: no deposit is read and no order expires until they pass.
 
 const escrowWatcherLock = 782495 // the pooled watcher's is 782494
 
@@ -37,14 +40,17 @@ const escrowCompletedNote = "Completed on funding (Bitcoin escrow): the content 
 
 var errEscrowSettlementLater = fail(409, "Not available for an escrow order yet: refunds and dispute decisions are paid from the escrow by the settlement step, which this build does not have yet (Bitcoin escrow Phase 1 runs on regtest only). Nothing was changed.")
 
+// escrowWatcher runs while ESCROW_BTC=on. Until escrow is enabled (its node was down at startup, say) each pass first
+// retries its checks (retryEscrow, A-316), so escrow starts without a restart once the node answers.
 func escrowWatcher(ctx context.Context, a *App) {
-	if a.escrow == nil {
+	if !a.escrowConfigured {
 		return
 	}
 	interval, err := pollInterval()
 	if err != nil {
 		interval = 30 * time.Second
 	}
+	retry := &escrowRetry{last: a.escrowStartState}
 	t := time.NewTimer(0)
 	defer t.Stop()
 	for {
@@ -52,6 +58,10 @@ func escrowWatcher(ctx context.Context, a *App) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+		}
+		if a.retryEscrow(ctx, retry); a.escrow.Load() == nil {
+			t.Reset(interval)
+			continue
 		}
 		pass, cancel := context.WithTimeout(ctx, watcherPassTimeout)
 		err := a.escrowPollOnce(pass)
@@ -66,7 +76,7 @@ func escrowWatcher(ctx context.Context, a *App) {
 // escrowPollOnce runs one escrow watcher pass unless another process holds the escrow watcher lock. The node must
 // still report regtest; an order whose address could not be read in this pass never expires in it.
 func (a *App) escrowPollOnce(ctx context.Context) error {
-	e := a.escrow
+	e := a.escrow.Load()
 	if e == nil || a.db == nil {
 		return nil
 	}
@@ -157,7 +167,7 @@ func (a *App) settleEscrow(ctx context.Context, orderID string, walletRead bool)
 	if err = tx.QueryRowContext(ctx, "SELECT amount FROM orders WHERE id=$1", orderID).Scan(&total); err != nil {
 		return err
 	}
-	threshold := a.escrow.confirmations
+	threshold := a.escrow.Load().confirmations
 	var sum int64
 	var n int
 	if err = tx.QueryRowContext(ctx, "SELECT COALESCE(sum(amount),0),count(*) FROM payments WHERE order_id=$1 AND confirmations>=$2 AND NOT locked", orderID, threshold).Scan(&sum, &n); err != nil {

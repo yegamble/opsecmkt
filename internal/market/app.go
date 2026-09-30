@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -54,7 +55,9 @@ type App struct {
 	unavailable      map[string]*unavailableProvider // configured but failing its checks (retried each watcher pass)
 	live             bool                            // payment providers are configured for mainnet (initPayments)
 	escrowConfigured bool                            // ESCROW_BTC=on (escrow_rpc.go); escrow may still be disabled
-	escrow           *escrowBTC                      // the Bitcoin escrow adapter once ESCROW_BTC=on passed its startup checks; nil = no escrow
+	escrowCfg        escrowConfig                    // the ESCROW_BTC settings read at startup, for the escrow watcher's retries
+	escrowStartState string                          // the escrow state line logged at startup (escrowRetry starts from it)
+	escrow           atomic.Pointer[escrowBTC]       // the Bitcoin escrow adapter once ESCROW_BTC=on passed its checks, at startup or on a watcher retry (A-316); nil = no escrow; never cleared once set
 	scanner          *imageScanner                   // clamd client for uploads (clamd.go); nil = Disabled
 	storageLimit     int64                           // IMAGE_STORAGE_LIMIT_MB in bytes (uploads.go); 0 = the default
 	stop             context.CancelFunc

@@ -140,7 +140,7 @@ func (a *App) transition(ctx context.Context, tx *sql.Tx, orderID, from, to stri
 		return nil, fail(403, "This step is only available for "+kind+" orders.")
 	}
 	// An escrow checkout needs the escrow node (escrowCheckoutAction), not a pooled wallet for the currency.
-	if from == stateDraft && to == stateAwaitingPayment && a.provider(o.Currency) == nil && !(isEscrowCheckout(ctx) && a.escrow != nil) {
+	if from == stateDraft && to == stateAwaitingPayment && a.provider(o.Currency) == nil && !(isEscrowCheckout(ctx) && a.escrow.Load() != nil) {
 		return nil, fail(409, "Payment unavailable for "+o.Currency)
 	}
 	res, err := tx.ExecContext(ctx, "UPDATE orders SET state=$2,updated=now() WHERE id=$1 AND state=$3", orderID, to, from)

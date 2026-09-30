@@ -1,4 +1,4 @@
-{{/* WR-escrow Phase 1 (escrow_order.go, escrow_create.go). The escrow panel of an escrow order, and the escrow checkout offer on a draft. Shown only with ESCROW_BTC=on; the copy claims only regtest-verified behaviour (ES-10). */}}
+{{/* WR-escrow Phase 1 (escrow_order.go, escrow_create.go). The escrow panel of an escrow order, and the escrow checkout offer on a draft. The panel is shown for every escrow order, with ESCROW_BTC off too (A-315); the checkout offer only with it on. The copy claims only regtest-verified behaviour (ES-10). */}}
 {{define "order-escrow"}}{{with .Escrow}}<h2>Bitcoin escrow <span class="badge testnet">REGTEST</span></h2>
 <p class="alert" role="note"><strong>Regtest only.</strong> Bitcoin escrow on this market runs on regtest, a local test chain, and has not been verified on any public network; its coins have no value. The vendor's claim and refunds from an escrow are not available in this build yet.</p>{{if not .Available}}
 <p class="alert error" role="status">Bitcoin escrow is unavailable on this market right now, so deposits to this escrow are not being read and the order does not move. Coins sent to it stay in the escrow; they are recorded once the operator has fixed the escrow node.</p>{{end}}
@@ -10,7 +10,7 @@
 <h3 id="escrow-descriptor-heading">Escrow descriptor</h3>
 <p class="help">A 2-of-3 multisig: {{if eq .Own "buyer"}}your key (with its origin), the vendor's and the market's{{else if eq .Own "vendor"}}the buyer's, your key (with its origin) and the market's{{else}}the buyer's, the vendor's and the market's keys{{end}}. Any two of the three keys can spend it; no single key can. Load it into your own wallet (in Bitcoin Core, <code>getdescriptorinfo</code> and <code>deriveaddresses</code>) and check that it gives the address above{{if .Own}} and that the key with the origin is yours{{end}}.</p>
 <pre class="code-block escrow-descriptor" tabindex="0" aria-labelledby="escrow-descriptor-heading">{{.Descriptor}}</pre>
-<p><a class="button" href="/escrow-descriptor?id={{$.Order.ID}}" download>Download the descriptor</a></p>
+{{if .Download}}<p><a class="button" href="/escrow-descriptor?id={{$.Order.ID}}" download>Download the descriptor</a></p>{{end}}
 <p class="help">The market cannot spend this escrow without you or the other party, if the key shown as yours is yours. Checking the descriptor in your own wallet is what detects a substituted key: a server that was taken over could show a descriptor with its own key in place of another party's.</p>
 <p class="help">The other party knows this escrow address, so they can see on the blockchain which coins funded it and where it is paid.{{if eq .Own "buyer"}} Pay from coins you do not mind the vendor linking to you.{{else if eq .Own "vendor"}} The buyer will see the address your claim pays.{{end}}</p>
 <dl class="key-values payment-figures">

@@ -480,6 +480,7 @@ func (k ContactKey) Usable() bool { return k.Fingerprint != "" }
 // reader, who sees every key bare). RefundAddress is shown to the buyer only. Status and NextStep are fixed copy.
 type EscrowOrderView struct {
 	Available                                   bool // the escrow node is up, so the escrow is being watched
+	Download                                    bool // ESCROW_BTC=on: /escrow-descriptor exists
 	Address, Descriptor, Own, RefundAddress     string
 	Required, Confirmed, Unconfirmed, Remaining string
 	Threshold                                   int64

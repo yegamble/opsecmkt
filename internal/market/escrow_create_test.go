@@ -8,7 +8,9 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // Escrow Phase 1, slice P1-b: escrow checkout and creation. DB integration tests with the simulated Core of
@@ -20,6 +22,7 @@ type escrowEnv struct {
 	*testEnv
 	t                     *testing.T
 	core                  *fakeEscrowCore
+	srv                   *payRPCServer
 	buyer, vendor         string
 	buyerSess, vendorSess string
 	buyerKey, vendorKey   string
@@ -30,8 +33,8 @@ const escrowDelivery = "licence key ESCROW-TEST-0001"
 
 func newEscrowEnv(t *testing.T) *escrowEnv {
 	t.Helper()
-	e, core, _ := escrowTestApp(t)
-	x := &escrowEnv{testEnv: e, t: t, core: core, buyerKey: testBIP48Key, vendorKey: altEscrowKey(t, testBIP48Key, "5eed5eed", 1)}
+	e, core, srv := escrowTestApp(t)
+	x := &escrowEnv{testEnv: e, t: t, core: core, srv: srv, buyerKey: testBIP48Key, vendorKey: altEscrowKey(t, testBIP48Key, "5eed5eed", 1)}
 	s := randomToken()[:6]
 	x.buyer, x.buyerSess = e.user("ebuyer_"+s, "buyer")
 	x.vendor, x.vendorSess = e.user("evendor_"+s, "vendor")
@@ -244,12 +247,12 @@ func TestEscrowCheckoutCreatesEscrow(t *testing.T) {
 		}
 	}
 	// With the escrow node down the page says deposits are not being read, and still shows the escrow to check.
-	up := x.A.escrow
-	x.A.escrow = nil
+	up := x.A.escrow.Load()
+	x.A.escrow.Store(nil)
 	if body := x.page("/order?id="+x.order, x.buyerSess); !strings.Contains(body, "deposits to this escrow are not being read") || !strings.Contains(body, addr) {
 		t.Fatal("escrow page with the node down")
 	}
-	x.A.escrow = up
+	x.A.escrow.Store(up)
 	// A second escrow for the same parties: fresh child keys (/0/2 each) and the next market index.
 	order2 := x.draft()
 	x.mustCheckout(order2, "bcrt1qbuyerrefund00000000000000000000002")
@@ -322,9 +325,9 @@ func TestEscrowCheckoutRefusals(t *testing.T) {
 	// A fee destination, snapshotted on an escrow or configured now.
 	x.DB.Exec("UPDATE escrows SET fee_bps=100,fee_destination='bcrt1qoldfee000000000000000000000000000' WHERE order_id=$1", other)
 	refuse("a snapshotted fee destination", x.order, url.Values{"order_id": {x.order}, "refund_address": {"bcrt1qoldfee000000000000000000000000000"}}, x.buyerSess, 409, "already used on this market", true)
-	x.A.escrow.feeAddress = "bcrt1qnowfee000000000000000000000000000"
+	x.A.escrow.Load().feeAddress = "bcrt1qnowfee000000000000000000000000000"
 	refuse("the configured fee destination", x.order, url.Values{"order_id": {x.order}, "refund_address": {"bcrt1qnowfee000000000000000000000000000"}}, x.buyerSess, 409, "already used on this market", true)
-	x.A.escrow.feeAddress = ""
+	x.A.escrow.Load().feeAddress = ""
 	x.DB.Exec("INSERT INTO payment_addresses(order_id,currency,address,provider) VALUES($1,'BTC','bcrt1qpooleddeposit000000000000000000000','btc-regtest')", x.testEnv.order(x.buyer, x.testEnv.product(x.vendor, "physical"), "BTC", stateAwaitingPayment))
 	refuse("a pooled deposit address", x.order, url.Values{"order_id": {x.order}, "refund_address": {"bcrt1qpooleddeposit000000000000000000000"}}, x.buyerSess, 409, "already used on this market", true)
 
@@ -337,10 +340,10 @@ func TestEscrowCheckoutRefusals(t *testing.T) {
 	}
 
 	// Escrow switched on but down: 409; switched off: the action does not exist (as an unknown action).
-	down := x.A.escrow
-	x.A.escrow = nil
+	down := x.A.escrow.Load()
+	x.A.escrow.Store(nil)
 	refuse("escrow down", x.order, nil, x.buyerSess, 409, "Bitcoin escrow is unavailable", false)
-	x.A.escrow = down
+	x.A.escrow.Store(down)
 	x.A.escrowConfigured = false
 	unknown := x.do("POST", "/no-such-action", x.buyerSess, url.Values{"order_id": {x.order}, "refund_address": {refund}})
 	w := x.checkout(x.order, refund)
@@ -472,7 +475,8 @@ func TestEscrowLeavesPooledOrdersUnchanged(t *testing.T) {
 			t.Fatalf("%s order page mentions escrow", name)
 		}
 	}
-	x.A.escrowConfigured, x.A.escrow = false, nil
+	x.A.escrowConfigured = false
+	x.A.escrow.Store(nil)
 	for name, id := range orders {
 		if got := x.page("/order?id="+id, x.buyerSess); got != pages[name] {
 			t.Fatalf("%s order page differs with escrow off", name)
@@ -545,4 +549,227 @@ func TestEscrowSurvivesSecretRotation(t *testing.T) {
 	if s := agStrings(t, x.testEnv, "SELECT party||derivation_suffix FROM escrow_pubkeys p JOIN escrows e ON e.id=p.escrow_id WHERE e.order_id=$1 AND party<>'market' ORDER BY party", order2); !slices.Equal(s, []string{"buyer/0/2", "vendor/0/2"}) {
 		t.Fatalf("after rotation, second escrow suffixes %v", s)
 	}
+}
+
+// A-314 (QA29-1): once a key has escrows, under any origin, its origin cannot be changed. The same key re-registered
+// with another fingerprint or path is refused with 409 and nothing changes, for the buyer's key and the vendor's
+// (whose key serves every buyer of its listings); practice is not offered again; the next checkout still works on
+// the recorded origin. The same key is recognised by its HMAC, and after an APP_SECRET_KEY rotation (the HMAC no
+// longer matches) by Core deriving the recorded child key, never by the origin.
+func TestEscrowOriginLockedOnceKeyHasEscrows(t *testing.T) {
+	x := newEscrowEnv(t)
+	x.mustCheckout(x.order, "bcrt1qbuyerrefund00000000000000000000001")
+	keyRows := func() string {
+		return strings.Join(agStrings(t, x.testEnv, "SELECT k::text FROM user_escrow_keys k WHERE user_id IN ($1,$2) ORDER BY user_id", x.buyer, x.vendor), "\n")
+	}
+	before := keyRows()
+	moved := func(expr, origin string) string {
+		k, err := parseEscrowKey(expr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return "[" + origin + "]" + k.XPub
+	}
+	refused := func(name, sess, expr string) {
+		t.Helper()
+		calls := len(x.core.methods())
+		code, body := registerKey(x.testEnv, sess, expr)
+		if code != 409 || !strings.Contains(body, "This key has escrows, so its origin (fingerprint and path) cannot be changed") ||
+			!strings.Contains(body, "keep the origin they were created with") || !strings.Contains(body, "contact the market") {
+			t.Fatalf("%s: %d %s", name, code, body)
+		}
+		if got := keyRows(); got != before {
+			t.Fatalf("%s: key rows changed:\n%s\n%s", name, before, got)
+		}
+		if name != "after rotation" && len(x.core.methods()) != calls {
+			t.Fatalf("%s: node called although the HMAC matched: %v", name, x.core.methods()[calls:])
+		}
+		if body := x.page("/escrow-key", sess); strings.Contains(body, "Show the practice transaction") {
+			t.Fatalf("%s: practice offered for a key with escrows", name)
+		}
+	}
+	for _, c := range []struct{ name, sess, key, origin string }{
+		{"buyer, another fingerprint", x.buyerSess, x.buyerKey, "0000beef/48h/1h/0h/2h"},
+		{"buyer, another path", x.buyerSess, x.buyerKey, "7450f935/48h/1h/5h/2h"},
+		{"vendor, another fingerprint", x.vendorSess, x.vendorKey, "0000beef/48h/1h/0h/2h"},
+		{"vendor, another path", x.vendorSess, x.vendorKey, "5eed5eed/48h/1h/7h/2h"},
+	} {
+		refused(c.name, c.sess, moved(c.key, c.origin))
+	}
+	// Checkout still works on the recorded origins, for this buyer and for another buyer of the vendor's listings.
+	order2 := x.draft()
+	x.mustCheckout(order2, "bcrt1qbuyerrefund00000000000000000000002")
+	if s := agStrings(t, x.testEnv, "SELECT party||' '||origin_fingerprint||derivation_suffix FROM escrow_pubkeys p JOIN escrows e ON e.id=p.escrow_id WHERE e.order_id=$1 AND party<>'market' ORDER BY party", order2); !slices.Equal(s, []string{"buyer 7450f935/0/2", "vendor 5eed5eed/0/2"}) {
+		t.Fatalf("second escrow %v", s)
+	}
+	b2, sess2 := x.user("ebuyer2_"+randomToken()[:6], "buyer")
+	x.activeKey(b2, altEscrowKey(t, testBIP48Key, "0dd0dd0d", 3))
+	o3 := x.testEnv.order(b2, x.autoListing(x.vendor), "BTC", stateDraft)
+	if w := x.do("POST", "/orders/escrow", sess2, url.Values{"order_id": {o3}, "refund_address": {"bcrt1qbuyerrefund00000000000000000000003"}}); w.Code != 303 {
+		t.Fatalf("another buyer of the vendor: %d %s", w.Code, w.Body.String())
+	}
+	// After an APP_SECRET_KEY rotation the stored HMACs no longer match; Core's derivation still recognises the key.
+	t.Setenv("APP_SECRET_KEY", "3f9a1c7e5b2d8046af13c9e7b5d2f8a0c1e3b5d7f9a2c4e6b8d0f1a3c5e7b9d2")
+	x.restart()
+	before = keyRows()
+	refused("after rotation", x.buyerSess, moved(x.buyerKey, "0000beef/48h/1h/0h/2h"))
+	// At its recorded origin the same key is restored, active at once.
+	if code, body := registerKey(x.testEnv, x.buyerSess, x.buyerKey); code != 303 {
+		t.Fatalf("restore at the recorded origin: %d %s", code, body)
+	}
+	if agInt(x.testEnv, "SELECT count(*) FROM user_escrow_keys WHERE user_id=$1 AND active_at IS NOT NULL AND origin_fingerprint='7450f935'", x.buyer) != 1 {
+		t.Fatal("not restored")
+	}
+}
+
+// A-314 (i) and (iv): a party's next child index is per account, one more than the highest any of the account's
+// escrows used under any origin, so a key changed to another origin (or a key found under two origins) never reuses
+// a child key; and a child key another escrow already holds is refused with a truthful 409 and a fixed log line.
+func TestEscrowChildIndexPerAccount(t *testing.T) {
+	logs := captureLog(t)
+	x := newEscrowEnv(t)
+	x.mustCheckout(x.order, "bcrt1qbuyerrefund00000000000000000000001")
+	suffixes := func(order string) []string {
+		return agStrings(t, x.testEnv, "SELECT party||' '||origin_fingerprint||derivation_suffix FROM escrow_pubkeys p JOIN escrows e ON e.id=p.escrow_id WHERE e.order_id=$1 AND party<>'market' ORDER BY party", order)
+	}
+	// Another key under another origin: it continues after the account's highest index.
+	x.activeKey(x.buyer, altEscrowKey(t, testBIP48Key, "0badf00d", 7))
+	o2 := x.draft()
+	x.mustCheckout(o2, "bcrt1qbuyerrefund00000000000000000000002")
+	if s := suffixes(o2); !slices.Equal(s, []string{"buyer 0badf00d/0/2", "vendor 5eed5eed/0/2"}) {
+		t.Fatalf("new key's escrow %v", s)
+	}
+	// The same key found under two origins (as a database written before A-314 could hold it): the counter spans
+	// both, so the child key is fresh and the checkout succeeds instead of answering 503.
+	x.activeKey(x.buyer, x.buyerKey)
+	x.DB.Exec("UPDATE escrow_pubkeys SET origin_fingerprint='0000beef' WHERE user_id=$1 AND origin_fingerprint='7450f935'", x.buyer)
+	o3 := x.draft()
+	x.mustCheckout(o3, "bcrt1qbuyerrefund00000000000000000000003")
+	if s := suffixes(o3); !slices.Equal(s, []string{"buyer 7450f935/0/3", "vendor 5eed5eed/0/3"}) {
+		t.Fatalf("two-origin escrow %v", s)
+	}
+	// A child key already held by another escrow: 409 with a truthful message, nothing written, a fixed log line.
+	taken := childHex(x.buyerKey, "/0/4")
+	other := x.testEnv.order(x.vendor, x.testEnv.product(x.buyer, "digital"), "BTC", stateAwaitingPayment)
+	var id int64
+	if err := x.DB.QueryRow("INSERT INTO escrows(order_id,address,market_index,refund_address,fee_bps,fee_destination) VALUES($1,'bcrt1qtakenescrow0000000000',nextval('escrow_market_index'),'bcrt1qtakenrefund0000000000',0,'') RETURNING id", other).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := x.DB.Exec("INSERT INTO escrow_pubkeys(pubkey,escrow_id,party,user_id,key_hmac,origin_fingerprint,origin_path,derivation_suffix) VALUES($1,$2,'buyer',$3,repeat('e',64),'0c0c0c0c','/48h/1h/0h/2h','/0/1')", taken, id, x.vendor); err != nil {
+		t.Fatal(err)
+	}
+	x.DB.Exec("UPDATE orders SET state='completed' WHERE buyer_id=$1 AND state='awaiting_payment'", x.buyer) // under the awaiting-payment cap
+	o4 := x.draft()
+	w := x.checkout(o4, "bcrt1qbuyerrefund00000000000000000000004")
+	if w.Code != 409 || !strings.Contains(w.Body.String(), "already holds one of its keys") || strings.Contains(w.Body.String(), "did not confirm") {
+		t.Fatalf("taken child key: %d %s", w.Code, w.Body.String())
+	}
+	x.nothingWritten(o4)
+	line := "escrow: escrow for order " + o4[:8] + " not built: a child key is already held by another escrow"
+	if !strings.Contains(logs.String(), line) || strings.Contains(logs.String(), taken) || strings.Contains(logs.String(), "23505") || strings.Contains(logs.String(), "duplicate key") {
+		t.Fatalf("log:\n%s", logs.String())
+	}
+}
+
+// N11 (A-317): checkout locks both parties' key rows FOR UPDATE, so two buyers checking out on one vendor at the same
+// time take the vendor's child keys in turn (/0/1, /0/2), never the same one. Each build waits (up to a second) for
+// the other to reach its build too: with the rows locked only one ever does.
+func TestEscrowConcurrentBuyersShareVendor(t *testing.T) {
+	x := newEscrowEnv(t)
+	b2, sess2 := x.user("ebuyer2_"+randomToken()[:6], "buyer")
+	x.activeKey(b2, altEscrowKey(t, testBIP48Key, "0dd0dd0d", 3))
+	o2 := x.testEnv.order(b2, x.autoListing(x.vendor), "BTC", stateDraft)
+	var building atomic.Int32
+	x.core.beforeCreate = func() {
+		building.Add(1)
+		for end := time.Now().Add(time.Second); building.Load() < 2 && time.Now().Before(end); {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	var wg sync.WaitGroup
+	var w1, w2 *httptest.ResponseRecorder
+	wg.Add(2)
+	go func() { defer wg.Done(); w1 = x.checkout(x.order, "bcrt1qbuyerrefund00000000000000000000001") }()
+	go func() {
+		defer wg.Done()
+		w2 = x.do("POST", "/orders/escrow", sess2, url.Values{"order_id": {o2}, "refund_address": {"bcrt1qbuyerrefund00000000000000000000002"}})
+	}()
+	wg.Wait()
+	if w1.Code != 303 || w2.Code != 303 {
+		t.Fatalf("concurrent checkouts on one vendor: %d %s / %d %s", w1.Code, w1.Body.String(), w2.Code, w2.Body.String())
+	}
+	if s := agStrings(t, x.testEnv, "SELECT derivation_suffix FROM escrow_pubkeys WHERE party='vendor' ORDER BY derivation_suffix"); !slices.Equal(s, []string{"/0/1", "/0/2"}) {
+		t.Fatalf("vendor child keys %v", s)
+	}
+}
+
+// N20 (A-317): escrow checkout keeps the buyer's cap of 3 orders awaiting payment: a fourth is refused before any
+// RPC, and with one fewer the checkout goes through.
+func TestEscrowCheckoutAwaitingCap(t *testing.T) {
+	x := newEscrowEnv(t)
+	var awaiting []string
+	for range maxAwaitingPayment {
+		awaiting = append(awaiting, x.testEnv.order(x.buyer, x.autoListing(x.vendor), "BTC", stateAwaitingPayment))
+	}
+	calls := len(x.core.methods())
+	w := x.checkout(x.order, "bcrt1qbuyerrefund00000000000000000000001")
+	if w.Code != 409 || !strings.Contains(w.Body.String(), "You already have 3 orders awaiting payment") {
+		t.Fatalf("fourth awaiting order: %d %s", w.Code, w.Body.String())
+	}
+	x.nothingWritten(x.order)
+	if len(x.core.methods()) != calls {
+		t.Fatalf("node called: %v", x.core.methods()[calls:])
+	}
+	x.DB.Exec("UPDATE orders SET state='cancelled' WHERE id=$1", awaiting[0])
+	x.mustCheckout(x.order, "bcrt1qbuyerrefund00000000000000000000001")
+}
+
+// N18b (A-317): a listing priced below the minimum automatic payout cannot be bought with escrow (it could never be
+// settled); at the minimum it can.
+func TestEscrowCheckoutPriceFloor(t *testing.T) {
+	x := newEscrowEnv(t)
+	floor := payoutFloor("BTC", "release")
+	x.DB.Exec("UPDATE products SET btc=$2 WHERE id=$1", x.product, floor-1)
+	calls := len(x.core.methods())
+	w := x.checkout(x.order, "bcrt1qbuyerrefund00000000000000000000001")
+	if w.Code != 400 || !strings.Contains(w.Body.String(), "below the minimum automatic payout") {
+		t.Fatalf("sub-floor listing: %d %s", w.Code, w.Body.String())
+	}
+	x.nothingWritten(x.order)
+	if len(x.core.methods()) != calls {
+		t.Fatalf("node called: %v", x.core.methods()[calls:])
+	}
+	x.DB.Exec("UPDATE products SET btc=$2 WHERE id=$1", x.product, floor)
+	x.mustCheckout(x.order, "bcrt1qbuyerrefund00000000000000000000001")
+	if got := agInt(x.testEnv, "SELECT amount FROM orders WHERE id=$1", x.order); int64(got) != floor {
+		t.Fatalf("amount %d", got)
+	}
+}
+
+// N24 (A-317): the escrow checkout offer on an eligible draft says why escrow cannot be used, and offers no form,
+// when the vendor's key is inactive or missing, when the buyer's is (with a link to the key page), and when escrow
+// is down; with both keys active it offers the form.
+func TestEscrowCheckoutOfferCopy(t *testing.T) {
+	x := newEscrowEnv(t)
+	offered := func(name string, form bool, want string) {
+		t.Helper()
+		body := x.page("/order?id="+x.order, x.buyerSess)
+		if strings.Contains(body, `action="/orders/escrow"`) != form || !strings.Contains(body, want) {
+			t.Fatalf("%s: form=%v, want %q:\n%s", name, form, want, body)
+		}
+	}
+	offered("both active", true, "Or pay into a Bitcoin escrow")
+	x.DB.Exec("UPDATE user_escrow_keys SET active_at=NULL WHERE user_id=$1", x.vendor)
+	offered("vendor inactive", false, "<strong>Unavailable.</strong> The vendor has no active Bitcoin escrow key, so this order cannot use escrow.")
+	x.DB.Exec("DELETE FROM user_escrow_keys WHERE user_id=$1", x.vendor)
+	offered("vendor without a key", false, "<strong>Unavailable.</strong> The vendor has no active Bitcoin escrow key, so this order cannot use escrow.")
+	x.activeKey(x.vendor, x.vendorKey)
+	x.DB.Exec("UPDATE user_escrow_keys SET active_at=NULL WHERE user_id=$1", x.buyer)
+	offered("buyer inactive", false, `Activate your Bitcoin escrow key first: register it and sign its practice transaction. <a class="text-link" href="/escrow-key">Your escrow key</a>`)
+	x.activeKey(x.buyer, x.buyerKey)
+	up := x.A.escrow.Load()
+	x.A.escrow.Store(nil)
+	offered("escrow down", false, "Bitcoin escrow is unavailable on this market right now")
+	x.A.escrow.Store(up)
+	offered("both active again", true, `name="refund_address"`)
 }

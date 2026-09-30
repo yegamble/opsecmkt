@@ -496,7 +496,7 @@ Reviews are published as soon as the buyer writes them. To take one down (for ex
 
 No configuration. Vendors manage listings from the vendor desk (Edit / Archive / Restore). Automatic delivery content for digital listings is stored unencrypted in the database — include it in your threat model and backups — and is only released after a payment provider confirms payment; with payments disabled it is never released automatically. Administrators can edit other vendors' listings but cannot view or change their automatic delivery content: the editor shows only whether it is set, and only the vendor can change or remove it.
 
-To remove another vendor's listing (for example counterfeit or prohibited goods) while the vendor keeps selling everything else, open its edit page as an administrator, open *Take down listing*, give the vendor a reason of 10–500 characters and confirm with your password (and authenticator code when enrolled). The listing is archived; the vendor is notified with the reason and sees it on the listing and the vendor desk, can still edit the listing, but cannot restore it. The listing leaves the marketplace, but the buyers of its existing orders, and moderators and administrators reviewing those orders, can still open its page (marked Archived, without the reason) from the order. The reason is stored unencrypted and kept in both accounts' activity logs; it is never shown publicly, but do not put an address or real name in it. While the listing is taken down, paid orders on it are not delivered automatically: they wait for the vendor to deliver by hand or cancel and refund. *Restore listing* on the same page, confirmed the same way, undoes it. To take away all of a vendor's listings, change their role instead (that archive carries no reason and the vendor can restore those listings if made a vendor again). Migration 041 adds `products.admin_archive_reason`.
+To remove another vendor's listing (for example counterfeit or prohibited goods) while the vendor keeps selling everything else, open its edit page as an administrator, open *Take down listing*, give the vendor a reason of 10–500 characters and confirm with your password (and authenticator code when enrolled). The listing is archived; the vendor is notified with the reason and sees it on the listing and the vendor desk, can still edit the listing, but cannot restore it. The listing leaves the marketplace, but the buyers of its existing orders, and moderators and administrators reviewing those orders, can still open its page (marked Archived, without the reason) from the order. The reason is stored unencrypted and kept in both accounts' activity logs; it is never shown publicly, but do not put an address or real name in it. While the listing is taken down, paid orders on it are not delivered automatically: they wait for the vendor to deliver by hand or cancel and refund (a [Bitcoin escrow](#bitcoin-escrow-regtest-only) order cannot be cancelled once funded: the vendor delivers by hand, and its refund comes with the escrow settlement step, not built yet). *Restore listing* on the same page, confirmed the same way, undoes it. To take away all of a vendor's listings, change their role instead (that archive carries no reason and the vendor can restore those listings if made a vendor again). Migration 041 adds `products.admin_archive_reason`.
 
 ### Payments
 
@@ -619,7 +619,12 @@ for a market that takes real payments.
   `ESCROW_BTC_RPC_URL` reports chain `regtest`, and `BITCOIN_CHAIN`, when set, is `regtest`: "refusing to start:
   ESCROW_BTC=on runs only on regtest in this release …". An unreachable node or an unreadable arbiter wallet
   leaves escrow disabled with one log line starting `escrow: Bitcoin escrow disabled:`, and the market runs
-  without it.
+  without it. The escrow watcher then runs the same checks again every `PAYMENT_POLL_INTERVAL`, with the same
+  guards (regtest only, the pinned arbiter fingerprint, a watch-only wallet without private keys), and escrow
+  starts without a restart once they pass ("escrow: Bitcoin escrow on (regtest only)"). A line is logged when the
+  state changes, not on every retry. A retry that finds the node on another chain, or refusing
+  `ESCROW_BTC_FEE_ADDRESS`, cannot stop the running market: it logs "escrow: Bitcoin escrow disabled until the app
+  is restarted: …" and stops retrying.
 - `ESCROW_BTC_RPC_URL`: the regtest node's RPC URL for a user only the app's escrow code uses, restricted with
   `rpcwhitelist` as below (`http://opsecmkt-escrow:PASSWORD@bitcoin:18443`).
 - `ESCROW_BTC_ARBITER_WALLET` (default `opsecmkt-arbiter`): a Bitcoin Core descriptor wallet that holds only the
@@ -647,10 +652,18 @@ for a market that takes real payments.
   (from a fresh change address, with `getrawchangeaddress` and `getaddressinfo`) and pins it in the database
   (`settings` key `escrow_btc_arbiter_fingerprint`). If a later start finds another fingerprint, for example a
   different wallet under that name, escrow is disabled with "escrow: Bitcoin escrow disabled: the arbiter wallet's
-  key fingerprint differs from the one pinned in this database". Load the right wallet and restart. On a regtest
+  key fingerprint differs from the one pinned in this database". Load the right wallet; the watcher's next retry
+  enables escrow (or restart). On a regtest
   market where you mean to replace the arbiter key, delete that settings row first, and only while no escrow exists
   (`SELECT count(*) FROM escrows` is 0): every escrow holds a child of the arbiter key, and with another key the
   market can never co-sign for it. Neither the fingerprint nor any key is ever logged.
+- **Switching escrow off with escrow orders open.** Setting `ESCROW_BTC` back to `off` (or escrow being disabled
+  because its node is down) moves no coins and closes no order, but it stops the escrow watcher: an open escrow
+  order is not cancelled when its payment window ends, and deposits to its escrow are not recorded, so it is not
+  marked paid, until escrow is on and enabled again. The coins stay in the order's 2-of-3 escrow; the pooled wallet
+  never holds them. The order page still shows the escrow panel with its address and descriptor and "Bitcoin escrow
+  is unavailable on this market right now …", never the pooled payment panel (the descriptor download is offered
+  only with escrow on). Refunds, disputes and cancelling an escrow that holds coins stay refused either way.
 - **Compose** does not pass these variables to the app container in this release; test escrow with the app run
   outside Compose (`go run ./cmd/server` against a regtest node), as `scripts/test-escrow-regtest.sh` does.
 
@@ -688,15 +701,22 @@ can no longer be read on this market; register it again."
 A rotation never hides an escrow or changes the keys an escrow uses: escrows are attributed by account and key
 origin, not by the sealed key. A user whose key already has escrows registers the same key again; the app confirms
 with the node (`deriveaddresses`) that it derives the key the latest escrow holds, and the key is active again at
-once (practice signing is never offered for a key with escrows). Another key under that origin is refused. The check
+once (practice signing is never offered for a key with escrows). Another key under that origin is refused. Once a key
+has escrows its origin cannot be changed: the same key registered with another fingerprint or path is refused with
+"This key has escrows, so its origin (fingerprint and path) cannot be changed …", with or without a rotation (the
+same key is recognised by its HMAC or, after a rotation, by the node deriving an escrow's child key from it), and
+its escrows keep the origin recorded with them. This build has no tool to change a recorded origin, and nothing
+about an existing escrow changes. Before a key
+has escrows, its owner can still correct its fingerprint or path and sign the practice transaction again. The check
 that stops two accounts registering the same key starts again after a rotation: a key registered before it is not
 recognised on another account until its owner registers it again.
 
 On the order page of a BTC draft on a digital listing with automatic delivery, the buyer is offered *Pay into an
 escrow* beside the pooled payment request, once both the buyer's and the vendor's escrow keys are active. The buyer
 gives a refund address from their own wallet, fixed for the order; an address the market already used as an escrow,
-refund, fee or deposit address is refused. The app then builds the escrow: each party's next child key (`/0/1`, `/0/2`, … of
-the registered key; `/0/0` is the practice child) and a fresh child of the arbiter key, expanded by the node, the
+refund, fee or deposit address is refused. The app then builds the escrow: each party's next child key of the
+registered key (`/0/1`, `/0/2`, …, one more than the highest index any of that account's escrows used, under any
+key or origin; `/0/0` is the practice child) and a fresh child of the arbiter key, expanded by the node, the
 witness script checked (three distinct keys, exactly one from the arbiter wallet) and the public descriptor
 imported into the watch-only wallet, before the address exists anywhere. The order page shows the escrow address and
 the descriptor with its checksum, each party's own key with its origin and the other two as plain keys, with a
@@ -704,7 +724,11 @@ download, the claim ("the market cannot spend this escrow without you or the oth
 is yours") and the notice that the other party can trace the escrow's funding and settlement on chain. The escrow
 watcher records each deposit; at the confirmation threshold the order is paid, its content delivered and the order
 completed. No payout is ever queued for an escrow order; refunds, disputes and the cancellation of an escrow that
-holds coins are refused until settlements are built.
+holds coins are refused until settlements are built. A funded escrow order on a listing an administrator took down
+is not delivered automatically: the vendor can deliver by hand, and its refund comes with the settlement step. If
+another escrow already holds one of the child keys a checkout would use, the checkout is refused ("another escrow on
+this market already holds one of its keys …") and the log says "escrow: escrow for order … not built: a child key is
+already held by another escrow".
 
 **What was checked.** `scripts/test-escrow-regtest.sh` (manual, not in CI) runs key registration and practice
 signing end to end with a real Bitcoin Core 31.1 regtest node and the whitelist above: the app user is refused
