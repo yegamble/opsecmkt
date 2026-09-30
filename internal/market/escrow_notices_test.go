@@ -1,6 +1,7 @@
 package market
 
 import (
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -86,12 +87,17 @@ func TestEscrowSiteNoticesWithoutPooledProvider(t *testing.T) {
 }
 
 // A pooled provider and ESCROW_BTC=on: the vendor desk's pooled tile no longer says "no multisig escrow" and an
-// escrow tile follows it; the catalog notice adds the escrow sentence after the pooled one.
+// escrow tile follows it; the catalog notice adds the escrow sentence after the pooled one. The tile's count takes
+// the viewer's escrow orders as buyer too (a vendor who bought from another vendor), and with ESCROW_BTC off the pooled
+// tile still reads as the pooled provider's while the escrow tile says OFF with that count (A-335: A326-6, A326-11).
 func TestEscrowNoticesBesidePooledProvider(t *testing.T) {
 	x := newEscrowEnv(t)
-	x.A.payMu.Lock()
-	x.A.payments["BTC"] = newFakeProvider("BTC", 3)
-	x.A.payMu.Unlock()
+	pooled := func() {
+		x.A.payMu.Lock()
+		x.A.payments["BTC"] = newFakeProvider("BTC", 3)
+		x.A.payMu.Unlock()
+	}
+	pooled()
 	body := x.page("/vendor-dashboard", x.vendorSess)
 	if strings.Contains(body, "no multisig escrow") || !strings.Contains(body, "<strong>POOLED</strong>\n<span>Custodial test wallet</span>") ||
 		!strings.Contains(body, "<div class=\"eyebrow\">Bitcoin escrow</div>\n<strong>REGTEST</strong>") {
@@ -101,6 +107,30 @@ func TestEscrowNoticesBesidePooledProvider(t *testing.T) {
 	if !strings.Contains(body, "This is custodial holding, not multisig escrow. A digital listing with automatic delivery can instead be paid into its own 2-of-3 Bitcoin escrow on regtest") ||
 		!strings.Contains(body, "TESTNET payments (BTC") {
 		t.Fatalf("catalog beside a pooled provider:\n%s", body)
+	}
+	// The vendor's only escrow order is one they bought, as buyer, from another vendor (none is on their own listings).
+	other, _ := x.user("eother_"+randomToken()[:6], "vendor")
+	x.activeKey(other, altEscrowKey(t, testBIP48Key, "0dd0dd0d", 2))
+	bought := x.testEnv.order(x.vendor, x.autoListing(other), "BTC", stateDraft)
+	if w := x.do("POST", "/orders/escrow", x.vendorSess, url.Values{"order_id": {bought}, "refund_address": {"bcrt1qbuyerrefund00000000000000000000007"}}); w.Code != 303 || x.cookie(w, "notice") != "escrow-created" {
+		t.Fatalf("the vendor's escrow checkout as buyer: %d %s", w.Code, w.Body.String())
+	}
+	if n := agInt(x.testEnv, "SELECT count(*) FROM escrows es JOIN orders o ON o.id=es.order_id JOIN products p ON p.id=o.product_id WHERE p.vendor_id=$1", x.vendor); n != 0 {
+		t.Fatalf("the vendor has %d escrow orders on their own listings", n)
+	}
+	const pooledTile = "<strong>POOLED</strong>\n<span>Custodial test wallet</span>"
+	const count = "1 escrow order(s) may hold coins at their own 2-of-3 escrow addresses"
+	body = x.page("/vendor-dashboard", x.vendorSess)
+	if !strings.Contains(body, "<strong>REGTEST</strong>") || !strings.Contains(body, count) || !strings.Contains(body, pooledTile) {
+		t.Fatalf("vendor dashboard: a buyer-side escrow order is not counted:\n%s", body)
+	}
+	t.Setenv("ESCROW_BTC", "off")
+	x.restart()
+	pooled()
+	body = x.page("/vendor-dashboard", x.vendorSess)
+	if !strings.Contains(body, pooledTile) || strings.Contains(body, "no multisig escrow") || strings.Contains(body, "Pooled payments</div>") ||
+		!strings.Contains(body, "<div class=\"eyebrow\">Bitcoin escrow</div>\n<strong>OFF</strong>") || !strings.Contains(body, count) {
+		t.Fatalf("vendor dashboard with a pooled provider, escrow off and an escrow order:\n%s", body)
 	}
 }
 
