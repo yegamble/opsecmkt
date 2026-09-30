@@ -497,12 +497,17 @@ after `-d` with the database name in `DATABASE_URL`. With an external database, 
 db_sql() { docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d opsecmkt "$@"; }
 ```
 
-1. **List every payout of the orders that clash, returns included, and keep the output**: it is the only record
-   left of the rows you delete (here in `settlement-clash.txt`):
+1. **List every payout of the orders that clash, returns included, and keep the output** (here in
+   `settlement-clash.txt`): once you delete rows, it is their only record apart from the pre-upgrade backup from
+   [section 1](#1-take-a-backup-and-record-what-you-run), which holds them as they were before the upgrade;
+   restoring that backup is the way back. `amount` is in the smallest unit of `currency`: satoshi for BTC
+   (100 000 000 per BTC), piconero for XMR (10^12 per XMR). `user_id` is the recipient; `created` is when the row
+   was queued and `updated` when it last changed:
 
    ```sh
    db_sql <<'SQL' | tee settlement-clash.txt
-   SELECT p.id, p.order_id, o.state AS order_state, p.kind, p.state, p.send_ambiguous, p.amount, p.address, p.txid, p.error
+   SELECT p.id, p.order_id, o.state AS order_state, p.kind, p.state, p.send_ambiguous, p.currency, p.amount, p.address, p.user_id,
+     p.txid, p.error, p.created, p.updated
    FROM payouts p JOIN orders o ON o.id = p.order_id
    WHERE p.order_id IN (SELECT order_id FROM payouts GROUP BY order_id
      HAVING count(*) FILTER (WHERE kind IN ('release','refund')) > 1
@@ -513,8 +518,9 @@ db_sql() { docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d o
 
    Each listed order has two settlements: its **release together with its return** (the price to the vendor and
    the excess to the buyer; a return belongs to its release and is kept or deleted with it, even when the release
-   row itself is gone, as after an earlier hand deletion: if such a return stands, the vendor's release has to be
-   settled by hand), and its **refund**.
+   row itself is gone, as after an earlier hand deletion: if such a return stands, the rest of the order, the price,
+   has to be settled by hand according to the order's outcome, to the vendor for a `completed` order or a release
+   outcome, or back to the buyer for a `cancelled` order or a refund outcome), and its **refund**.
 2. **Find out which rows were sent.** A row in state `sent` was sent. A row in state `sending`, a `failed` row with
    `send_ambiguous` true, and any row whose error starts `Restored from backup:` may have been sent. Check every
    listed row in the wallet, whatever its state (a `pending`, `blocked`, `held` or definitely failed row may have
@@ -524,7 +530,10 @@ db_sql() { docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d o
    have been sent, except as step 3 describes for an order paid twice.
 3. **Decide which settlement stands.**
    - If a row of one settlement was sent and no row of the other, that settlement stands. A release stands when
-     either it or its return was sent: keeping the refund after a return was sent would pay the excess twice.
+     either it or its return was sent: keeping the refund after a return was sent would pay the excess twice. A
+     sent return paid the buyer only the excess; the price still follows the order's outcome. For a `cancelled`
+     order or a refund outcome whose release was not sent, the price belongs to the buyer: keep only the return
+     (step 4) and send the buyer the price by hand, so that the vendor is not paid.
    - If no row was sent, the settlement matching the order stands: the release for a `completed` order, the refund
      for a `cancelled` one, and for a `resolved` one the outcome its order history records.
    - If rows of both settlements were sent, the order was paid twice (a refund plus a release, or a refund plus a
@@ -549,8 +558,17 @@ db_sql() { docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d o
    SQL
    ```
 
-   Each statement prints the rows it deleted, which must be the rows of the settlement you chose in step 1's
-   output; a mistyped order ID deletes nothing (`DELETE 0`).
+   To keep only the return of a `cancelled` order or a refund outcome whose return alone was sent (step 3), delete
+   the unsent release together with the refund, then send the buyer the price by hand:
+
+   ```sh
+   db_sql -v order_id=FULL_ORDER_ID <<'SQL'
+   DELETE FROM payouts WHERE order_id = :'order_id' AND kind IN ('release','refund') RETURNING id, kind, state, txid;
+   SQL
+   ```
+
+   Each statement prints the rows it deleted, which must be the rows you chose from step 1's output; a mistyped
+   order ID deletes nothing (`DELETE 0`).
 5. **Check that no order is left with a release and a refund, or a refund and a return.** This must print no
    rows (`(0 rows)`):
 
