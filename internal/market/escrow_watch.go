@@ -23,7 +23,8 @@ import (
 // signs or sends. What returns coins from an escrow is a settlement, which P1-c builds: a refund (after expiry,
 // underpayment or cancellation), a dispute decision, a stray refund. Until then an escrow order holding coins is
 // never cancelled or disputed (escrowTransitionHook), an underpaid one stays open after its payment window with one
-// notice, and one that has received nothing is cancelled when its window ends, as a pooled order is.
+// notice, and one that has received nothing is cancelled when its window ends, as a pooled order is. A confirmed
+// deposit first recorded after an escrow order closed is flagged for payment review (flagLateDeposits).
 //
 // While escrow is switched on but not enabled (its node was down at startup, say) the watcher retries the startup
 // checks each interval (retryEscrow) and does nothing else: no deposit is read and no order expires until they pass.
@@ -160,6 +161,15 @@ func (a *App) settleEscrow(ctx context.Context, orderID string, walletRead bool)
 	if err != nil {
 		return err
 	}
+	threshold := a.escrow.Load().confirmations
+	if o.Escrow && isTerminal(o.State) {
+		// A deposit first recorded after the order closed is never counted; it is flagged for payment review, the
+		// buyer and the staff told once per episode, as a pooled one is (A-211, QA31-3). It stays in the escrow.
+		if err = a.flagLateDeposits(ctx, tx, &o, threshold, false); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
 	if !o.Escrow || o.State != stateAwaitingPayment {
 		return tx.Commit()
 	}
@@ -167,7 +177,6 @@ func (a *App) settleEscrow(ctx context.Context, orderID string, walletRead bool)
 	if err = tx.QueryRowContext(ctx, "SELECT amount FROM orders WHERE id=$1", orderID).Scan(&total); err != nil {
 		return err
 	}
-	threshold := a.escrow.Load().confirmations
 	var sum int64
 	var n int
 	if err = tx.QueryRowContext(ctx, "SELECT COALESCE(sum(amount),0),count(*) FROM payments WHERE order_id=$1 AND confirmations>=$2 AND NOT locked", orderID, threshold).Scan(&sum, &n); err != nil {
