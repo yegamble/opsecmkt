@@ -118,8 +118,8 @@ var errConfirmPaused = fail(429, "Too many failed password confirmations. Try ag
 
 // confirmPassword checks the signed-in user's current password for a sensitive change (bounded bcrypt concurrency).
 // Only failed confirmations spend the account's budget of 10 per ten minutes (A-274, as A-153 did for sign-in): a
-// wrong password here, or a wrong code in confirmedTxWith; a correct confirmation spends nothing. Call it before
-// opening a transaction.
+// wrong password here, or a wrong code after the right password (confirmCode); a correct confirmation spends nothing.
+// Call it before opening a transaction.
 func (a *App) confirmPassword(ctx context.Context, userID, password string) error {
 	if password == "" || len(password) > 72 {
 		return fail(400, "Enter your current password to confirm this change.")
@@ -151,6 +151,21 @@ func (a *App) confirmPassword(ctx context.Context, userID, password string) erro
 	}
 	a.refund(key)
 	return nil
+}
+
+// confirmCode runs check, the authenticator or recovery code of a confirmation whose password was correct. A code is
+// a guess too (A-274): it reserves one attempt of the budget the correct password gave back, and only a wrong code
+// (401) keeps it spent. Call it under the account row lock, so concurrent guesses cannot exceed the budget.
+func (a *App) confirmCode(userID string, check func() error) error {
+	key := "confirm:" + userID
+	if !a.allow(key, 10) {
+		return errConfirmPaused
+	}
+	err := check()
+	if he := (*httpError)(nil); err == nil || !errors.As(err, &he) || he.Code != 401 {
+		a.refund(key)
+	}
+	return err
 }
 
 // validPassword is the password rule for registration, setup and password changes: 12–72 bytes (bcrypt
@@ -251,21 +266,12 @@ func confirmedTxWith(c *actionCtx, opts *confirmation, run func(c *actionCtx) (a
 		return actionResult{}, errAccountChanged
 	}
 	if confirm && totp {
-		// A code is a guess too (A-274): it reserves one attempt of the budget the correct password gave back, under the
-		// account row lock so concurrent guesses cannot exceed it; only a wrong code (401) keeps it spent.
-		key := "confirm:" + uid
-		if !a.allow(key, 10) {
-			return actionResult{}, errConfirmPaused
-		}
 		if recovery {
-			err = codeErr
+			err = a.confirmCode(uid, func() error { return codeErr })
 			how = "password and recovery code"
 		} else {
-			err = a.checkTOTP(ctx, tx, uid, code)
+			err = a.confirmCode(uid, func() error { return a.checkTOTP(ctx, tx, uid, code) })
 			how = "password and authenticator code"
-		}
-		if he := (*httpError)(nil); err == nil || !errors.As(err, &he) || he.Code != 401 {
-			a.refund(key)
 		}
 		if err != nil {
 			return actionResult{}, err

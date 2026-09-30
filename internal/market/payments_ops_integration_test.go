@@ -331,8 +331,7 @@ func TestAdminPayoutActions(t *testing.T) {
 		t.Fatalf("requeue of a live send: %d", code)
 	}
 	p.DB.Exec("UPDATE payouts SET updated=now()-interval '1 hour' WHERE order_id=$1", stuck)
-	// (Refusal without the confirmation: TestPayoutSentButNotRecordedStaysSendingAndNeedsConfirmation; this
-	// test already uses all ten password confirmations the rate limit allows.)
+	// (Refusal without the confirmation: TestPayoutSentButNotRecordedStaysSendingAndNeedsConfirmation.)
 	if code, _ := p.payoutActionConfirmed(p.adminSess, stuckID, "requeue", testPassword); code != 303 {
 		t.Fatalf("requeue of a stuck send: %d", code)
 	}

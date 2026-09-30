@@ -132,7 +132,8 @@ func TestAdminMovesHeldPayoutToCurrentAddress(t *testing.T) {
 	}
 
 	// The definite failure moves and stays failed; the administrator's requeue sends it once, to the new address.
-	// (Another administrator: the first has used its ten password confirmations for this window.)
+	// (Another administrator does it: any administrator may. Correct confirmations spend no budget since A-274, so the
+	// first could have too.)
 	_, p.adminSess = p.user("padmin2_"+randomToken()[:6], "admin")
 	if code, body := p.repoint(failedID, "fake-testnet-old", "fake-testnet-new", nil); code != 303 {
 		t.Fatalf("move the failed payout: %d %s", code, body)

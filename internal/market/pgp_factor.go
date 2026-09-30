@@ -122,8 +122,8 @@ func unreadableKeyRefusal(ctx context.Context, q rowQuerier, userID string) erro
 
 // pgpKeyRefusal refuses a PGP sign-in that cannot be finished because of the saved key (problem says why), naming what
 // the account can still do: its other method when TOTP is enrolled, otherwise the administrator's reset of second
-// factors (/admin, A-137's operator reset for an administrator; keeps says what that reset leaves), then fix; and how
-// to reach the staff (the staff contact, A-119).
+// factors (/admin; for an administrator only A-137's operator reset, -reset-admin-factors; keeps says what that reset
+// leaves), then fix; and how to reach the staff (the staff contact, A-119).
 func pgpKeyRefusal(ctx context.Context, q rowQuerier, userID, problem, keeps, fix string) error {
 	var totp bool
 	var role string
@@ -139,7 +139,8 @@ func pgpKeyRefusal(ctx context.Context, q rowQuerier, userID, problem, keeps, fi
 	}
 	who := "A market administrator can turn it off for you with Reset a user's second factors"
 	if role == "admin" {
-		who = "Another administrator can turn it off for you with Reset a user's second factors, or the operator on the server with -reset-admin-factors"
+		// The web reset refuses administrator targets (adminResetFactorsAction); only the host command remains (QA19-1).
+		who = "The operator can turn it off on the server with -reset-admin-factors"
 	}
 	return fail(409, problem+"PGP sign-in is the only verification method on this account, so this sign-in cannot be finished. "+who+
 		"; "+keeps+"you then sign in with your password, "+fix+". "+contact)
@@ -160,7 +161,7 @@ func pgpSignInLost(ctx context.Context, q rowQuerier, userID string) (bool, erro
 
 // unreadableKeyNotice tells the owner, after a correct password, that PGP sign-in was lost (A-272).
 var unreadableKeyNotice = ownerNotice("Someone entered your password correctly, but PGP sign-in could not be used because your saved PGP key can no longer be read. " +
-	"With an authenticator enrolled, sign-in asks for its code or a recovery code instead; without one, sign-in is refused until a market administrator turns your second factors off. " +
+	"With an authenticator enrolled, sign-in asks for its code or a recovery code instead; without one, sign-in is refused until your second factors are turned off (by a market administrator; for an administrator account, by the operator on the server). " +
 	"Then paste a current export of your public key on your account page and prove you own it again.")
 
 // notifyUnreadableKey sends unreadableKeyNotice once per saved key: not again while one sent since the key last

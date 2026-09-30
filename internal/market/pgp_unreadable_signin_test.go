@@ -1,9 +1,12 @@
 package market
 
 import (
+	"context"
 	"html"
 	"net/url"
+	"sync"
 	"testing"
+	"time"
 )
 
 // A-272: PGP sign-in stays required while the saved key cannot be read. With pgp_2fa on and a stored key that no
@@ -16,6 +19,9 @@ const (
 	unreadableKeyNote        = "PGP sign-in could not be used because your saved PGP key can no longer be read"
 	garbageArmoredKey        = "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nbm90IGEga2V5IGF0IGFsbA==\n=AAAA\n-----END PGP PUBLIC KEY BLOCK-----\n"
 	garbageFingerprint       = "0123456789ABCDEF0123456789ABCDEF01234567"
+	// adminFactorsResetLine is the only way back named to an administrator whose sole factor is lost: the web reset
+	// (/admin/reset-factors) refuses administrator targets.
+	adminFactorsResetLine = "The operator can turn it off on the server with -reset-admin-factors"
 )
 
 // unreadableKeyShapes stores, per shape, a key /account would refuse today.
@@ -42,7 +48,9 @@ func TestUnreadableKeyRefusesPasswordOnlySignIn(t *testing.T) {
 				}
 				mustContain(t, body, unreadableKeyRefusalText, keyNoOtherMethod, askOperatorLine)
 				if role == "admin" {
-					mustContain(t, body, "Another administrator can turn it off for you with Reset a user's second factors", "-reset-admin-factors")
+					// The web reset refuses an administrator target (QA19-1): only the operator's host command is named.
+					mustContain(t, body, adminFactorsResetLine)
+					mustNotContain(t, body, "Another administrator", "Reset a user's second factors", "A market administrator can turn it off")
 				} else {
 					mustContain(t, body, "A market administrator can turn it off for you with Reset a user's second factors")
 					mustNotContain(t, body, "-reset-admin-factors")
@@ -119,5 +127,60 @@ func TestUnreadableKeyNoticeOncePerSavedKey(t *testing.T) {
 	e.check(e.do("POST", "/login", randomToken(), login), 409)
 	if n := a152Notes(e, id, unreadableKeyNote); n != 2 {
 		t.Fatalf("%d notifications, want 2", n)
+	}
+}
+
+// Concurrent sign-ins send one notice (N5): notifyUnreadableKey locks the account row before it looks for an earlier
+// notice. The calls are made directly (bcrypt slots cap concurrent /login requests at four) while the test holds the
+// row, so every call is in flight at once and none can finish before the others start; without the row lock the calls
+// do not wait, which fails the test deterministically.
+func TestUnreadableKeyNoticeConcurrentCallsSendOne(t *testing.T) {
+	e := newTestApp(t)
+	id, _ := e.user("a272_burst", "vendor")
+	storeKeyBySQL(e, id, garbageArmoredKey, garbageFingerprint)
+	const n = 6 // plus the holder and the poll below, within the application pool of 12
+	ctx := context.Background()
+	holder, err := e.DB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Rollback()
+	if _, err = holder.Exec("SELECT 1 FROM users WHERE id=$1 FOR NO KEY UPDATE", id); err != nil {
+		t.Fatal(err)
+	}
+	errs := make(chan error, n)
+	var wg sync.WaitGroup
+	for range n {
+		wg.Add(1)
+		go func() { defer wg.Done(); errs <- e.A.notifyUnreadableKey(ctx, id) }()
+	}
+	finished := make(chan struct{})
+	go func() { wg.Wait(); close(finished) }()
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		select {
+		case <-finished:
+			holder.Rollback()
+			t.Fatalf("notifyUnreadableKey finished while the account row was locked (%d notices): it does not lock the row", a152Notes(e, id, unreadableKeyNote))
+		default:
+		}
+		if agInt(e, "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type='Lock' AND query LIKE 'SELECT pgp_changed_at FROM users WHERE id=$1 FOR NO KEY UPDATE%'") == n {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the calls never waited on the account row")
+		}
+	}
+	if err = holder.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	<-finished
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := a152Notes(e, id, unreadableKeyNote); got != 1 {
+		t.Fatalf("%d concurrent calls sent %d notices, want 1", n, got)
 	}
 }

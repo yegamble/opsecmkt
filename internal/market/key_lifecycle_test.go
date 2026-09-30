@@ -601,8 +601,9 @@ func TestKeyExpirySweepRunsInBackground(t *testing.T) {
 }
 
 // TestExpiredKeySignInPointsToLostFactorHelp: after the key expires, /challenge/pgp says why and what the account
-// can still do: another method when one is enrolled, otherwise the administrator reset (for an administrator, another
-// administrator's or the operator's); and A-225's warning shows where the owner manages the key.
+// can still do: another method when one is enrolled, otherwise the administrator reset (for an administrator, only the
+// operator's -reset-admin-factors: the web reset refuses administrator targets); and A-225's warning shows where the
+// owner manages the key.
 func TestExpiredKeySignInPointsToLostFactorHelp(t *testing.T) {
 	e := newTestApp(t)
 	for _, tc := range []struct {
@@ -632,8 +633,8 @@ func TestExpiredKeySignInPointsToLostFactorHelp(t *testing.T) {
 			mustContain(t, b, "authenticator code or a recovery code")
 			mustNotContain(t, b, keyNoOtherMethod)
 		case tc.role == "admin":
-			mustContain(t, b, keyNoOtherMethod, "Another administrator can turn it off for you with Reset a user's second factors", "-reset-admin-factors")
-			mustNotContain(t, b, "A market administrator can turn it off")
+			mustContain(t, b, keyNoOtherMethod, adminFactorsResetLine)
+			mustNotContain(t, b, "Another administrator", "Reset a user's second factors", "A market administrator can turn it off")
 		default:
 			mustContain(t, b, keyNoOtherMethod, "A market administrator can turn it off for you with Reset a user's second factors")
 			mustNotContain(t, b, "Another administrator", "-reset-admin-factors")
