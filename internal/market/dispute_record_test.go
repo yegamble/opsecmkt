@@ -430,6 +430,14 @@ func TestDisputeEvidenceReadsRoleChangesByIndex(t *testing.T) {
 	if err = rows.Err(); err != nil {
 		t.Fatal(err)
 	}
+	// The index holds the role-change rows only: a full index would still be read end to end.
+	var def string
+	if err = tx.QueryRow("SELECT indexdef FROM pg_indexes WHERE schemaname=current_schema() AND indexname='audit_events_role_change'").Scan(&def); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(def, "(user_id, created) WHERE (action ~~ 'Role changed from %'::text)") {
+		t.Errorf("audit_events_role_change is not the partial index on role-change rows: %s", def)
+	}
 	// Each read of the table is an index scan of audit_events_role_change, or a bitmap heap scan fed by one.
 	text := strings.Join(plan, "\n")
 	if !strings.Contains(text, " audit_events_role_change") {
