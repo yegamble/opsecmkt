@@ -531,7 +531,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if page == "" {
 		page = "catalog"
 	}
-	if _, ok := pages[page]; !ok {
+	if !a.pageOn(page) {
 		http.NotFound(w, r)
 		return
 	}
@@ -605,7 +605,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if protected(page) && user == nil {
 		login := "/login"
-		if next := signInNext(r.URL.RequestURI()); next != "" {
+		if next := a.signInNext(r.URL.RequestURI()); next != "" {
 			login += "?next=" + url.QueryEscape(next) // signing in returns here (A-126)
 		}
 		http.Redirect(w, r, login, 303)

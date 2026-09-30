@@ -170,6 +170,12 @@ func TestPreviewRendersEveryPage(t *testing.T) {
 		}
 		w := httptest.NewRecorder()
 		a.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+		if !a.pageOn(name) { // switched off in the preview (ESCROW_BTC is never on there): an unknown page
+			if w.Code != 404 || w.Body.String() != "404 page not found\n" {
+				t.Errorf("preview %s (off): %d", path, w.Code)
+			}
+			continue
+		}
 		if w.Code != 200 || strings.Contains(w.Body.String(), "<script") || !strings.Contains(w.Body.String(), "READ-ONLY PREVIEW") {
 			t.Errorf("preview %s: %d", path, w.Code)
 		}

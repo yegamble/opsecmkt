@@ -480,6 +480,7 @@ type EscrowKeyView struct {
 	Origin          string
 	ActiveAt        string // "" = inactive
 	HasEscrows      bool
+	Unreadable      bool // the stored key cannot be opened: APP_SECRET_KEY (or a legacy SETUP_TOKEN) changed
 	PracticeOffered bool
 	Practice        string
 	PracticeError   string
