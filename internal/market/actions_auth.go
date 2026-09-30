@@ -118,8 +118,8 @@ var errConfirmPaused = fail(429, "Too many failed password confirmations. Try ag
 
 // confirmPassword checks the signed-in user's current password for a sensitive change (bounded bcrypt concurrency).
 // Only failed confirmations spend the account's budget of 10 per ten minutes (A-274, as A-153 did for sign-in): a
-// wrong password here, or a wrong code after the right password (confirmCode); a correct confirmation spends nothing. Call it before
-// opening a transaction.
+// wrong password here, or a wrong code after the right password (confirmCode); a correct confirmation spends nothing.
+// Call it before opening a transaction.
 func (a *App) confirmPassword(ctx context.Context, userID, password string) error {
 	if password == "" || len(password) > 72 {
 		return fail(400, "Enter your current password to confirm this change.")
