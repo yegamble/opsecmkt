@@ -87,6 +87,11 @@ are **not** live-chain evidence. Merged is not released is not deployed.
   that account's budget, so give such legs a fresh account.
 - Preview mode is read-only and refuses POSTs; a preview spec proves layout,
   not behaviour.
+- `scripts/ci-smoke.sh` (CI's container runtime jobs) asserts exact redirects
+  and page text against the production image. When a change renames a URL,
+  flag or message, grep `scripts/`, `deploy/` and `.github/` as well as
+  `internal`, `web`, `tests` and `docs`, and run `ci-smoke.sh internal scanner`
+  (A-117 broke it by leaving `&saved=1` in the expected listing redirect).
 - A single Playwright failure under load is not a finding until re-run
   unloaded; navigation races (click → re-query before load) have caused flakes.
 - `chain-journey` and `regtest-smoke.sh` never run in CI; their evidence is
