@@ -18,18 +18,21 @@ func init() {
 }
 
 // escrowOrder fills the escrow panel of an escrow order, or the escrow checkout offer on a draft, for loadOrderDetail
-// (which has already resolved the viewer). With ESCROW_BTC off nothing is added, so the page is as before.
+// (which has already resolved the viewer). An escrow order always gets its panel: with ESCROW_BTC switched off, or
+// escrow down, it shows the escrow address with the unavailable copy, never the pooled payment panel, which would say
+// no funds are held (A-315). Any other order with ESCROW_BTC off gets nothing, so its page is as before.
 func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 	o := d.Order
-	if !a.escrowConfigured {
-		return nil
-	}
 	if !o.Escrow {
+		if !a.escrowConfigured {
+			return nil
+		}
 		return a.escrowCheckoutOffer(ctx, d)
 	}
-	v := &EscrowOrderView{Available: a.escrow != nil, Required: o.Amount, Threshold: 3, Open: o.State == stateAwaitingPayment}
-	if a.escrow != nil {
-		v.Threshold = a.escrow.confirmations
+	e := a.escrow.Load()
+	v := &EscrowOrderView{Available: e != nil, Download: a.escrowConfigured, Required: o.Amount, Threshold: 3, Open: o.State == stateAwaitingPayment}
+	if e != nil {
+		v.Threshold = e.confirmations
 	}
 	if d.OrderViewer == roleBuyer || d.OrderViewer == roleVendor {
 		v.Own = d.OrderViewer
@@ -180,7 +183,7 @@ func (a *App) escrowCheckoutOffer(ctx context.Context, d *PageData) error {
 		return err
 	}
 	switch {
-	case a.escrow == nil:
+	case a.escrow.Load() == nil:
 		v.Reason = errEscrowDown.Error()
 	case o.BuyerID == o.VendorID:
 		v.Reason = errEscrowSelf.Error()

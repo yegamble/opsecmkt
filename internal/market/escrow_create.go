@@ -53,6 +53,7 @@ var (
 	errEscrowBuyerKey      = fail(409, "Activate your Bitcoin escrow key first: register it and sign its practice transaction on your escrow key page. Nothing was changed.")
 	errEscrowVendorKey     = fail(409, "The vendor has no active Bitcoin escrow key, so this order cannot use escrow. Nothing was changed.")
 	errEscrowBuild         = fail(503, "The escrow could not be created: the market's Bitcoin node did not confirm it. Nothing was changed; try again later.")
+	errEscrowKeyTaken      = fail(409, "The escrow could not be created: another escrow on this market already holds one of its keys. Nothing was changed. Trying again will not help; contact the market's staff.")
 )
 
 // escrowCheckoutCtx marks the draft -> awaiting_payment transition of an escrow checkout: it needs the escrow node,
@@ -84,8 +85,9 @@ type escrowParty struct {
 
 // escrowParties locks the buyer's and the vendor's key rows (in account order, so two checkouts never deadlock) and
 // returns each party's key with its next child suffix: one more than the highest this account's escrows used under
-// the same origin. The count keys off the account and origin, never the HMAC, so an APP_SECRET_KEY rotation never
-// hands out a child key twice (chair's ruling (a) on QA25).
+// any origin, never below 1 (A-314: a counter per origin restarted at /0/1 when a key's origin changed, a child key
+// an existing escrow already held). The count keys off the account, never the HMAC, so an APP_SECRET_KEY rotation
+// never hands out a child key twice (chair's ruling (a) on QA25); the key rows locked FOR UPDATE serialise it.
 func (a *App) escrowParties(ctx context.Context, tx *sql.Tx, o *Order) (buyer, vendor escrowParty, err error) {
 	rows, err := tx.QueryContext(ctx, `SELECT user_id,xpub_sealed,xpub_hmac,origin_fingerprint,origin_path,active_at IS NOT NULL FROM user_escrow_keys
 		WHERE user_id IN ($1,$2) ORDER BY user_id FOR UPDATE`, o.BuyerID, o.VendorID)
@@ -129,7 +131,7 @@ func (a *App) escrowParties(ctx context.Context, tx *sql.Tx, o *Order) (buyer, v
 		}
 		var next int64
 		if err = tx.QueryRowContext(ctx, `SELECT COALESCE(max(split_part(derivation_suffix,'/',3)::bigint),0)+1 FROM escrow_pubkeys
-			WHERE user_id=$1 AND origin_fingerprint=$2 AND origin_path=$3 AND derivation_suffix ~ '^/0/[1-9][0-9]{0,9}$'`, uid, key.Fingerprint, key.PathText).Scan(&next); err != nil {
+			WHERE user_id=$1 AND derivation_suffix ~ '^/0/[1-9][0-9]{0,9}$'`, uid).Scan(&next); err != nil {
 			return escrowParty{}, err
 		}
 		p := escrowParty{Party: name, UserID: uid, KeyHMAC: r.hmac, Key: key, Suffix: escrowChildSuffix(next)}
@@ -149,7 +151,7 @@ func (a *App) escrowParties(ctx context.Context, tx *sql.Tx, o *Order) (buyer, v
 // refusals that need no node come first and make no RPC.
 func escrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	a, ctx := c.A, c.Ctx()
-	e := a.escrow
+	e := a.escrow.Load()
 	if e == nil {
 		return actionResult{}, errEscrowDown
 	}
@@ -374,7 +376,9 @@ func insertEscrow(ctx context.Context, tx *sql.Tx, orderID, refund string, e *es
 		if _, err = tx.ExecContext(ctx, `INSERT INTO escrow_pubkeys(pubkey,escrow_id,party,user_id,key_hmac,origin_fingerprint,origin_path,derivation_suffix)
 			VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, hex.EncodeToString(b.Keys[p.Party]), id, p.Party, uid, h, p.Key.Fingerprint, p.Key.PathText, p.Suffix); err != nil {
 			if errors.As(err, &pe) && pe.Code == "23505" {
-				return errEscrowBuild // a child key already used by another escrow
+				// A child key another escrow already holds: a fixed line, never the database's text (which names the key).
+				log.Printf("escrow: escrow for order %s not built: a child key is already held by another escrow", shortID(orderID))
+				return errEscrowKeyTaken
 			}
 			return err
 		}

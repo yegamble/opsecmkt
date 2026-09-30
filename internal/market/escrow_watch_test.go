@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Escrow Phase 1, slice P1-b: the escrow watcher. Funding is recorded per output in payments (settlement_id NULL
@@ -260,6 +261,212 @@ func TestEscrowSendClaimExcludesEscrowOrders(t *testing.T) {
 	if len(fake.Sends()) != 1 {
 		t.Fatalf("%d sends, want the pooled one", len(fake.Sends()))
 	}
+}
+
+// A-315 (QA29-2): an escrow order always renders the escrow panel. With ESCROW_BTC switched off, a funded escrow
+// order shows its escrow address and the unavailable copy, never the pooled "no funds are held for it"; the moves
+// that need a settlement stay withheld, and the download (a route that does not exist with escrow off) is not offered.
+func TestEscrowOrderPanelWithEscrowOff(t *testing.T) {
+	x := newEscrowEnv(t)
+	addr := x.mustCheckout(x.order, "bcrt1qbuyerrefund00000000000000000000001")
+	x.core.deposit(addr, "part", 0, 40000, 1)
+	x.poll()
+	done := x.draft()
+	addr2 := x.mustCheckout(done, "bcrt1qbuyerrefund00000000000000000000002")
+	x.core.deposit(addr2, "full", 0, 100000, 3)
+	x.poll()
+	if x.state(done) != stateCompleted {
+		t.Fatalf("funded order %s", x.state(done))
+	}
+	t.Setenv("ESCROW_BTC", "off")
+	x.restart()
+	if x.A.escrowConfigured || x.A.escrow.Load() != nil {
+		t.Fatal("escrow still on")
+	}
+	for _, c := range []struct{ order, addr string }{{x.order, addr}, {done, addr2}} {
+		for _, sess := range []string{x.buyerSess, x.vendorSess} {
+			body := x.page("/order?id="+c.order, sess)
+			for _, want := range []string{"Bitcoin escrow", c.addr, "Bitcoin escrow is unavailable on this market right now", "Coins sent to it stay in the escrow"} {
+				if !strings.Contains(body, want) {
+					t.Fatalf("escrow order with escrow off lacks %q:\n%s", want, body)
+				}
+			}
+			for _, bad := range []string{"No payment record", "no funds are held", "Payment is unavailable", "/escrow-descriptor", `name="from" value="awaiting_payment"`} {
+				if strings.Contains(body, bad) {
+					t.Fatalf("escrow order with escrow off shows %q:\n%s", bad, body)
+				}
+			}
+		}
+	}
+	// A pooled draft is unchanged: no escrow panel, no checkout offer.
+	if body := x.page("/order?id="+x.draft(), x.buyerSess); strings.Contains(body, "escrow") {
+		t.Fatal("a pooled draft mentions escrow with escrow off")
+	}
+}
+
+// N26 (A-317): an unconfirmed deposit at the end of the payment window keeps an escrow order open: it is neither
+// cancelled as unpaid nor noted as underpaid, and completes once confirmed.
+func TestEscrowUnconfirmedDepositAtWindowEnd(t *testing.T) {
+	x := newEscrowEnv(t)
+	addr := x.mustCheckout(x.order, "bcrt1qbuyerrefund00000000000000000000001")
+	x.core.deposit(addr, "slow", 0, 100000, 0)
+	x.poll()
+	x.DB.Exec("UPDATE escrows SET created=now()-interval '25 hours' WHERE order_id=$1", x.order)
+	x.DB.Exec("UPDATE payments SET created=now()-interval '25 hours' WHERE order_id=$1", x.order)
+	x.poll()
+	if x.state(x.order) != stateAwaitingPayment || agInt(x.testEnv, "SELECT count(*) FROM escrows WHERE order_id=$1 AND underpaid_noted IS NOT NULL", x.order) != 0 {
+		t.Fatalf("unconfirmed deposit at window end: %s", x.state(x.order))
+	}
+	x.core.setConfs("slow", 3)
+	x.poll()
+	if x.state(x.order) != stateCompleted {
+		t.Fatalf("confirmed: %s", x.state(x.order))
+	}
+	x.noPayouts(x.order)
+}
+
+// A-319 (QA29-6): a funded escrow order on a listing taken down is not delivered automatically, and its history note
+// says what is possible for an escrow order: delivery by hand, refunds with the settlement step (a cancel answers
+// 409). A pooled order keeps its note.
+func TestEscrowTakedownNote(t *testing.T) {
+	x := newEscrowEnv(t)
+	addr := x.mustCheckout(x.order, "bcrt1qbuyerrefund00000000000000000000001")
+	if _, err := x.DB.Exec("UPDATE products SET archived=true,archived_at=now(),admin_archive_reason='counterfeit goods listed here' WHERE id=$1", x.product); err != nil {
+		t.Fatal(err)
+	}
+	x.core.deposit(addr, "td", 0, 100000, 3)
+	x.poll()
+	if x.state(x.order) != statePaid {
+		t.Fatalf("state %s", x.state(x.order))
+	}
+	want := "Not delivered automatically: an administrator took this listing down. The vendor can deliver by hand; a refund of this escrow comes with the settlement step, which this build does not have yet."
+	if ev := x.events(x.order); ev[len(ev)-1] != "paid>paid system "+want {
+		t.Fatalf("note %q", ev[len(ev)-1])
+	}
+	if w := x.do("POST", "/orders/cancel", x.vendorSess, url.Values{"order_id": {x.order}, "from": {statePaid}, "amount_seen": {"100000"}, "payout_confirmed": {"confirmed"}}); w.Code != 409 {
+		t.Fatalf("vendor cancel: %d", w.Code)
+	}
+	x.noPayouts(x.order)
+	// The pooled note is unchanged.
+	pooled := x.testEnv.order(x.buyer, x.product, "BTC", stateAwaitingPayment)
+	tx, _ := x.DB.Begin()
+	defer tx.Rollback()
+	if _, err := x.A.transition(context.Background(), tx, pooled, stateAwaitingPayment, statePaid, nil, "test payment"); err != nil {
+		t.Fatal(err)
+	}
+	var note string
+	tx.QueryRow("SELECT note FROM order_events WHERE order_id=$1 ORDER BY id DESC LIMIT 1", pooled).Scan(&note)
+	if note != "Not delivered automatically: an administrator took this listing down. The vendor can deliver by hand or cancel and refund." {
+		t.Fatalf("pooled note %q", note)
+	}
+}
+
+// A-316 (QA29-3): escrow that could not start (its node down at startup) is retried by the escrow watcher on its
+// interval, as pooled providers are: once the node answers, escrow is enabled without a restart, logged once, and a
+// deposit is credited. While the node stays down the disabled line is not repeated on every pass.
+func TestEscrowRetriedAfterStartupFailure(t *testing.T) {
+	x := newEscrowEnv(t)
+	logs := captureLog(t)
+	t.Setenv("PAYMENT_POLL_INTERVAL", "1s")
+	srvDown(x, true)
+	x.restart()
+	if x.A.escrow.Load() != nil || !x.A.escrowConfigured {
+		t.Fatal("escrow started with its node down")
+	}
+	x.A.Start(context.Background())
+	waitUntil(t, 3500*time.Millisecond, func() bool { return false }) // three or more watcher passes with the node down
+	if x.A.escrow.Load() != nil {
+		t.Fatal("escrow enabled while its node is down")
+	}
+	if n := strings.Count(logs.String(), escrowLogUnchecked); n != 1 {
+		t.Fatalf("disabled line logged %d times:\n%s", n, logs.String())
+	}
+	srvDown(x, false)
+	if !waitUntil(t, 10*time.Second, func() bool { return x.A.escrow.Load() != nil }) {
+		t.Fatalf("escrow not enabled after its node came back:\n%s", logs.String())
+	}
+	if n := strings.Count(logs.String(), escrowLogOn); n != 1 {
+		t.Fatalf("enabled line logged %d times:\n%s", n, logs.String())
+	}
+	addr := x.mustCheckout(x.order, "bcrt1qbuyerrefund00000000000000000000001")
+	x.core.deposit(addr, "late", 0, 100000, 3)
+	if !waitUntil(t, 10*time.Second, func() bool { return x.state(x.order) == stateCompleted }) {
+		t.Fatalf("deposit not credited by the watcher: %s", x.state(x.order))
+	}
+	if agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND credited", x.order) != 1 {
+		t.Fatal("deposit not credited")
+	}
+	x.noPayouts(x.order)
+	if n := strings.Count(logs.String(), escrowLogOn); n != 1 {
+		t.Fatalf("enabled line logged %d times:\n%s", n, logs.String())
+	}
+}
+
+// A-316: a retry keeps every startup guard. A node that comes back with another arbiter fingerprint, or a watch
+// wallet holding private keys, leaves escrow disabled (each line logged once); one on another chain ends the retries
+// until a restart, even if it later reports regtest.
+func TestEscrowRetryKeepsGuards(t *testing.T) {
+	x := newEscrowEnv(t)
+	srvDown(x, true)
+	x.restart()
+	logs := captureLog(t)
+	r := &escrowRetry{last: x.A.escrowStartState}
+	set := func(f func(c *fakeEscrowCore)) {
+		x.core.mu.Lock()
+		defer x.core.mu.Unlock()
+		f(x.core)
+	}
+	retry := func(times int) {
+		for range times {
+			x.A.retryEscrow(context.Background(), r)
+		}
+	}
+	retry(2)
+	if logs.String() != "" {
+		t.Fatalf("unchanged state logged again: %s", logs.String())
+	}
+	srvDown(x, false)
+	good := x.core.arbiterDesc
+	set(func(c *fakeEscrowCore) {
+		c.arbiterFP, c.arbiterDesc = "0badf00d", "wpkh([0badf00d/84h/1h/0h]"+testBIP84Key[20:]+"/1/*)#x"
+	})
+	retry(3)
+	if x.A.escrow.Load() != nil || strings.Count(logs.String(), escrowLogFingerprint) != 1 || strings.Contains(logs.String(), "0badf00d") {
+		t.Fatalf("other fingerprint: %s", logs.String())
+	}
+	set(func(c *fakeEscrowCore) {
+		c.arbiterFP, c.arbiterDesc, c.watchInfo["private_keys_enabled"] = fakeArbiterFP, good, true
+	})
+	retry(3)
+	if x.A.escrow.Load() != nil || strings.Count(logs.String(), escrowLogWatch) != 1 {
+		t.Fatalf("watch wallet with private keys: %s", logs.String())
+	}
+	set(func(c *fakeEscrowCore) { c.watchInfo["private_keys_enabled"], c.chain = false, "main" })
+	retry(3)
+	set(func(c *fakeEscrowCore) { c.chain = "regtest" })
+	retry(2)
+	if x.A.escrow.Load() != nil || !r.refused || strings.Count(logs.String(), escrowLogRefused) != 1 || strings.Contains(logs.String(), escrowLogOn) {
+		t.Fatalf("another chain: %s", logs.String())
+	}
+	// A restart against the good node enables escrow again.
+	x.restart()
+	if x.A.escrow.Load() == nil {
+		t.Fatal("escrow not enabled after a restart")
+	}
+}
+
+// srvDown makes the escrow env's fake node unreachable (down) or reachable again.
+func srvDown(x *escrowEnv, down bool) { x.srv.down.Store(down) }
+
+// waitUntil polls cond every 100 ms until it holds or d has passed, and reports whether it held.
+func waitUntil(t *testing.T, d time.Duration, cond func() bool) bool {
+	t.Helper()
+	for end := time.Now().Add(d); time.Now().Before(end); time.Sleep(100 * time.Millisecond) {
+		if cond() {
+			return true
+		}
+	}
+	return cond()
 }
 
 // settleTerminal: an escrow order in a terminal state never gets a payouts row and the transition succeeds.

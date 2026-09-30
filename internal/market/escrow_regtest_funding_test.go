@@ -119,7 +119,7 @@ func TestEscrowRegtestFunding(t *testing.T) {
 	t.Setenv("BITCOIN_CHAIN", "")
 	t.Setenv("MONERO_WALLET_RPC_URL", "")
 	e := newTestApp(t)
-	if e.A.escrow == nil {
+	if e.A.escrow.Load() == nil {
 		t.Fatal("escrow did not start against the regtest node (arbiter or watch-only wallet unreadable?)")
 	}
 	t.Logf("escrow on: arbiter wallet %s, watch-only wallet %s (getwalletinfo: descriptors, private keys disabled)", arbiter, watch)

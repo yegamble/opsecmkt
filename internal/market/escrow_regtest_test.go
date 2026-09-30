@@ -118,11 +118,11 @@ func TestEscrowRegtestPracticeSign(t *testing.T) {
 	t.Setenv("BITCOIN_CHAIN", "")
 	t.Setenv("MONERO_WALLET_RPC_URL", "")
 	e := newTestApp(t)
-	if e.A.escrow == nil {
+	if e.A.escrow.Load() == nil {
 		t.Fatal("escrow did not start against the regtest node")
 	}
-	t.Logf("escrow on: arbiter fingerprint pinned (%d hex digits)", len(e.A.escrow.fingerprint))
-	if err := e.A.escrow.keypoolRefill(ctx, 1100); err != nil {
+	t.Logf("escrow on: arbiter fingerprint pinned (%d hex digits)", len(e.A.escrow.Load().fingerprint))
+	if err := e.A.escrow.Load().keypoolRefill(ctx, 1100); err != nil {
 		t.Fatalf("keypoolrefill as the whitelisted app user: %v", err)
 	}
 	t.Log("whitelist: app user keypoolrefill 1100 on the arbiter wallet -> ok")
@@ -151,7 +151,7 @@ func TestEscrowRegtestPracticeSign(t *testing.T) {
 	t.Logf("practice PSBT: %d base64 chars, txid %s, spends %s:%d", len(psbt), dec.Tx.TxID, dec.Tx.Vin[0].TxID, dec.Tx.Vin[0].Vout)
 	for _, d := range dec.Inputs[0].Derivs {
 		t.Logf("practice key derivation: %s %s", d.Fingerprint, d.Path)
-		if d.Fingerprint == e.A.escrow.fingerprint {
+		if d.Fingerprint == e.A.escrow.Load().fingerprint {
 			t.Fatal("the market's key is in the practice transaction")
 		}
 	}
@@ -212,11 +212,11 @@ func TestEscrowRegtestPracticeSign(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srvSigned, err := e.A.escrow.throwawaySign(ctx, pt.PSBT, pt.signDesc)
+	srvSigned, err := e.A.escrow.Load().throwawaySign(ctx, pt.PSBT, pt.signDesc)
 	if err != nil || srvSigned.Complete {
 		t.Fatalf("throwaway sign: %v %v", srvSigned.Complete, err)
 	}
-	if _, complete, err := e.A.escrow.finalizePSBT(ctx, srvSigned.PSBT); err != nil || complete {
+	if _, complete, err := e.A.escrow.Load().finalizePSBT(ctx, srvSigned.PSBT); err != nil || complete {
 		t.Fatalf("server signature alone finalized: %v %v", complete, err)
 	}
 	t.Log("control: throwaway server signature alone -> finalizepsbt complete=false")
@@ -235,8 +235,8 @@ func TestEscrowRegtestPracticeSign(t *testing.T) {
 	withSig, _ := decodePSBT(srvSigned.PSBT)
 	sig := gp.Inputs[0].PartialSigs[0]
 	full, _ := withSig.withInputField(0, append([]byte{0x02}, sig.PubKey...), sig.Sig)
-	rawHex, complete, err := e.A.escrow.finalizePSBT(ctx, encodePSBT(full))
-	allowed, reject, err2 := e.A.escrow.testMempoolAccept(ctx, rawHex, practiceMaxFeeRate)
+	rawHex, complete, err := e.A.escrow.Load().finalizePSBT(ctx, encodePSBT(full))
+	allowed, reject, err2 := e.A.escrow.Load().testMempoolAccept(ctx, rawHex, practiceMaxFeeRate)
 	if err != nil || err2 != nil || !complete || allowed || reject != "missing-inputs" {
 		t.Fatalf("finalize complete=%v, testmempoolaccept allowed=%v %q: %v %v", complete, allowed, reject, err, err2)
 	}
