@@ -29,6 +29,7 @@ type fakeEscrowCore struct {
 	arbiterCode   int  // JSON-RPC error for getrawchangeaddress (0 = none)
 	prevoutExists bool // gettxout finds the practice outpoint
 	allowed       bool // testmempoolaccept
+	throwawayDone bool // descriptorprocesspsbt answers complete=true (a node that finalized on the server key alone)
 	reject        string
 	calls         []fakeCall
 }
@@ -140,7 +141,7 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 		if err != nil {
 			c.t.Errorf("fake descriptorprocesspsbt: %v", err)
 		}
-		return map[string]any{"psbt": encodePSBT(out), "complete": false}, 0, ""
+		return map[string]any{"psbt": encodePSBT(out), "complete": c.throwawayDone}, 0, ""
 	case "finalizepsbt":
 		pk := c.mustParse(str(0))
 		return map[string]any{"hex": "02000000" + pk.TxID(), "complete": fakeComplete(pk)}, 0, ""
