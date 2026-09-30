@@ -100,7 +100,7 @@ func TestAdminTakedownSurvivesVendorRestore(t *testing.T) {
 	// The takedown: archived with the trimmed reason, audited on both accounts and notified once, link-free.
 	w := e.do("POST", "/admin/listing", admin, withField(take, "reason", "  "+takedownReason+"\r\n"))
 	e.check(w, 303)
-	if loc := w.Header().Get("Location"); loc != edit+"&saved=1" {
+	if loc := w.Header().Get("Location"); loc != edit {
 		t.Fatalf("redirect %q", loc)
 	}
 	if archived, reason := takenDown(e, p); !archived || reason != takedownReason {

@@ -244,5 +244,14 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 			return actionResult{}, err
 		}
 	}
-	return actionResult{Redirect: "/admin?saved=1#payouts", Audit: audit}, nil
+	notice := "payout-released"
+	switch op {
+	case "requeue":
+		notice = "payout-requeued"
+	case "sent":
+		notice = "payout-sent"
+	case "repoint":
+		notice = "payout-repointed"
+	}
+	return actionResult{Redirect: "/admin", Notice: notice, Audit: audit}, nil
 }

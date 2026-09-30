@@ -108,7 +108,7 @@ func listingUpdateAction(c *actionCtx) (actionResult, error) {
 		stock = in.Stock
 	}
 	_, err = c.Tx.ExecContext(ctx, `UPDATE products SET title=$2,description=$3,category=$4,region=$5,kind=$6,btc=$7,xmr=$8,stock=$9,delivery_content=$10,updated=now() WHERE id=$1`, l.ID, in.Title, in.Description, in.Category, in.Region, in.Kind, in.BTC, in.XMR, stock, in.DeliveryContent)
-	return actionResult{Redirect: "/listing-edit?id=" + l.ID + "&saved=1", Audit: listingAudit("Updated", c, l)}, err
+	return actionResult{Redirect: "/listing-edit?id=" + l.ID, Notice: "listing-saved", Audit: listingAudit("Updated", c, l)}, err
 }
 
 // listingArchiveAction archives (hides from the catalog and refuses new drafts) or restores a listing.
@@ -145,14 +145,16 @@ func listingArchiveAction(c *actionCtx, archive bool) (actionResult, error) {
 	if _, err = c.Tx.ExecContext(c.Ctx(), `UPDATE products SET archived=$2,archived_at=CASE WHEN $2 THEN now() END,updated=now() WHERE id=$1`, l.ID, archive); err != nil {
 		return actionResult{}, err
 	}
-	action, redirect := "Restored", "/vendor-dashboard?saved=1"
+	action, res := "Restored", actionResult{Redirect: "/vendor-dashboard", Notice: "listing-restored"}
 	if archive {
 		action = "Archived"
+		res.Notice = "listing-archived"
 	}
 	if l.VendorID != c.User.ID {
-		redirect = "/listing-edit?id=" + l.ID + "&saved=1"
+		res.Redirect = "/listing-edit?id=" + l.ID
 	}
-	return actionResult{Redirect: redirect, Audit: listingAudit(action, c, l)}, nil
+	res.Audit = listingAudit(action, c, l)
+	return res, nil
 }
 
 // Takedown reasons are shown to the vendor, so they must say something and fit a notification.
@@ -243,6 +245,10 @@ func adminListingAction(c *actionCtx) (actionResult, error) {
 		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), vendorID, note); err != nil {
 			return actionResult{}, err
 		}
-		return actionResult{Redirect: "/listing-edit?id=" + id + "&saved=1", Audit: audit}, nil
+		notice := "listing-restored"
+		if takedown {
+			notice = "listing-taken-down"
+		}
+		return actionResult{Redirect: "/listing-edit?id=" + id, Notice: notice, Audit: audit}, nil
 	})
 }

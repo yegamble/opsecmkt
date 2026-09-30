@@ -129,7 +129,7 @@ func adminSuspendAction(c *actionCtx) (actionResult, error) {
 			if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), target, note); err != nil {
 				return actionResult{}, err
 			}
-			return actionResult{Redirect: "/admin?saved=1#suspend", Audit: "Restored account " + handle}, nil
+			return actionResult{Redirect: "/admin", Notice: "restored", Audit: "Restored account " + handle}, nil
 		}
 		if suspended {
 			return actionResult{}, fail(409, handle+" is already suspended; nothing was changed.")
@@ -164,7 +164,7 @@ func adminSuspendAction(c *actionCtx) (actionResult, error) {
 		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), target, note); err != nil {
 			return actionResult{}, err
 		}
-		return actionResult{Redirect: "/admin?saved=1#suspend", Audit: "Suspended account " + handle + "; ended " + sessions}, nil
+		return actionResult{Redirect: "/admin", Notice: "suspended", Audit: "Suspended account " + handle + "; ended " + sessions}, nil
 	})
 }
 
@@ -225,7 +225,11 @@ func adminReviewAction(c *actionCtx) (actionResult, error) {
 		if c.Form.Get("from") == "vendor" {
 			back = "/vendor?id=" + vendorID
 		}
-		return actionResult{Redirect: back + "&saved=1#reviews-title", Audit: verb + " review of order " + short}, nil
+		notice := "review-hidden"
+		if !hide {
+			notice = "review-shown"
+		}
+		return actionResult{Redirect: back, Notice: notice, Audit: verb + " review of order " + short}, nil
 	})
 }
 
@@ -323,7 +327,7 @@ func adminResetFactorsAction(c *actionCtx) (actionResult, error) {
 		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), target, note); err != nil {
 			return actionResult{}, err
 		}
-		return actionResult{Redirect: "/admin?saved=1#reset-factors", Audit: "Reset second factors of " + handle + ": " + off + " turned off; ended " + sessions}, nil
+		return actionResult{Redirect: "/admin", Notice: "factors-reset", Audit: "Reset second factors of " + handle + ": " + off + " turned off; ended " + sessions}, nil
 	})
 }
 
@@ -398,7 +402,11 @@ func adminAction(c *actionCtx) (actionResult, error) {
 	default:
 		return actionResult{}, fail(400, "Unknown action")
 	}
-	return actionResult{Redirect: "/admin?saved=1", Audit: action}, err
+	notice := "role"
+	if f.Get("action") == "settings" {
+		notice = "settings"
+	}
+	return actionResult{Redirect: "/admin", Notice: notice, Audit: action}, err
 }
 
 // roleChanged does what an account's new role entails, in tx after its users row is locked and its role set from

@@ -413,7 +413,7 @@ func pgpVerifyAction(c *actionCtx) (actionResult, error) {
 	if err = notifyOwner(ctx, tx, u.ID, "Ownership of the PGP key on your account was proved."); err != nil {
 		return actionResult{}, err
 	}
-	return actionResult{Redirect: "/pgp?saved=1", Audit: "Verified PGP key ownership (fingerprint " + p.Fingerprint + ", " + kind + " challenge)"}, nil
+	return actionResult{Redirect: "/pgp", Notice: "pgp-verified", Audit: "Verified PGP key ownership (fingerprint " + p.Fingerprint + ", " + kind + " challenge)"}, nil
 }
 
 // pgpTwoFactorAction turns PGP sign-in on (verified key) or off. Either needs the current password plus a TOTP
@@ -440,7 +440,7 @@ func pgpTwoFactor(c *actionCtx, enable bool) (actionResult, error) {
 		if err = notifyOwner(ctx, tx, u.ID, "PGP sign-in verification was turned off for your account."); err != nil {
 			return actionResult{}, err
 		}
-		return actionResult{Redirect: "/pgp?saved=1", Audit: "Turned off PGP sign-in verification"}, nil
+		return actionResult{Redirect: "/pgp", Notice: "pgp-2fa-off", Audit: "Turned off PGP sign-in verification"}, nil
 	}
 	if !p.Verified {
 		return actionResult{}, fail(409, "Verify ownership of your saved key before turning on PGP sign-in verification.")
@@ -454,7 +454,7 @@ func pgpTwoFactor(c *actionCtx, enable bool) (actionResult, error) {
 	if err = notifyOwner(ctx, tx, u.ID, "PGP sign-in verification was turned on for your account: sign-in now also asks for a code encrypted to its key."); err != nil {
 		return actionResult{}, err
 	}
-	return actionResult{Redirect: "/pgp?saved=1", Audit: "Turned on PGP sign-in verification (fingerprint " + p.Fingerprint + ")"}, nil
+	return actionResult{Redirect: "/pgp", Notice: "pgp-2fa-on", Audit: "Turned on PGP sign-in verification (fingerprint " + p.Fingerprint + ")"}, nil
 }
 
 func previewPGP(d *PageData) {

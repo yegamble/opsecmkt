@@ -134,7 +134,7 @@ func TestPasswordChangeRevokesOtherSessions(t *testing.T) {
 
 	w := e.do("POST", "/account/password", current, pwForm(testPassword, next))
 	e.check(w, 303)
-	if loc := w.Header().Get("Location"); loc != "/account?saved=1" {
+	if loc := w.Header().Get("Location"); loc != "/account" {
 		t.Fatalf("redirect %q", loc)
 	}
 	rotated := e.session(w)

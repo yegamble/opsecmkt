@@ -6,7 +6,8 @@
 {{define "uploads:limits"}}<li>Uploading can take up to 90 seconds over Tor; press Upload once and wait for the page to change.</li>
 <li>Each file is checked by the ClamAV malware scanner; a match is refused and nothing is stored. ClamAV checks uploads for known malware; it does not review picture content.</li>{{end}}
 {{define "uploads:photos"}}{{with .Uploads}}<section class="panel upload-panel" id="photos" aria-labelledby="photos-title">
-<h2 id="photos-title">Photos</h2>
+<h2 id="photos-title">Photos</h2>{{with $.NoticeIn "photos"}}
+<div class="alert" role="status">{{.}}</div>{{end}}
 <p class="upload-usage">{{.PhotoCount}} of {{.PhotoLimit}} photos · {{.Used}} MB of {{.Quota}} MB</p>{{/* A-190: staff takedowns of this listing's photos, newest first, from the vendor's audit trail (image_takedown.go) */}}{{range .StaffRemovals}}
 <p class="notice staff-removal"><span><strong>Photo removed by staff:</strong> {{.Reason}} <span class="muted">({{.When}})</span></span></p>{{end}}{{if .Photos}}
 <ol class="photo-list">{{range .Photos}}
@@ -93,7 +94,8 @@
 </form>{{end}}{{end}}
 </section>{{end}}{{end}}{{end}}
 {{define "uploads:staff-list"}}{{with .Uploads}}{{if .Staff}}<section class="panel" id="staff-list" aria-labelledby="staff-list-title">
-<h2 id="staff-list-title">Public staff list</h2>
+<h2 id="staff-list-title">Public staff list</h2>{{with $.NoticeIn "staff-list"}}
+<div class="alert" role="status">{{.}}</div>{{end}}
 <form class="stack" method="post" action="/account/staff-list">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <label class="check"><input type="checkbox" name="hide" value="yes"{{if .StaffHidden}} checked{{end}} aria-describedby="staff-list-help"> Hide me from the public staff list</label>

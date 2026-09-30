@@ -31,5 +31,5 @@ func messageAction(c *actionCtx) (actionResult, error) {
 	if err == nil {
 		_, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), recipient, "New message from "+u.Handle)
 	}
-	return actionResult{Redirect: "/messages?saved=1", Audit: "Sent OpenPGP-encrypted message (recipient key match: " + match + ")"}, err
+	return actionResult{Redirect: "/messages", Notice: "message-sent", Audit: "Sent OpenPGP-encrypted message (recipient key match: " + match + ")"}, err
 }

@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { expect, test, type Page } from '@playwright/test';
 import { uniqueHandle } from './db-fixtures';
-import { pgpFixture, signedIn, submitAndLoad, submitStatus } from './db-helpers';
+import { expectNotice, pgpFixture, signedIn, submitAndLoad, submitStatus } from './db-helpers';
 
 // A-119: an administrator saves the "Staff contact" on /admin with their password; /canary, the suspended sign-in
 // refusal and a notification that tells its reader to contact the staff show it as text (a hostile value stays
@@ -53,7 +53,8 @@ test('administrator publishes a staff contact that every promised page shows as 
     await profile.getByLabel('PGP public key', { exact: true }).fill(pgpFixture('recipient.pub.asc'));
     await profile.getByLabel('Current password', { exact: true }).fill(password);
     await submitAndLoad(mod, profile.getByRole('button', { name: 'Save profile' }));
-    await expect(mod).toHaveURL(/\/account\?saved=1$/);
+    await expect(mod).toHaveURL(/\/account$/);
+    await expectNotice(mod, 'Profile saved.');
 
     // Unset: the canary points to the operator.
     await visitor.goto('/canary');
@@ -65,7 +66,8 @@ test('administrator publishes a staff contact that every promised page shows as 
     await expect(panel.getByLabel('Staff contact')).toHaveAttribute('maxlength', '200');
     await noOverflow(admin);
     expect(await saveContact(hostile)).toBe(303);
-    await expect(admin).toHaveURL(/\/admin\?saved=1#staff-contact$/);
+    await expect(admin).toHaveURL(/\/admin#staff-contact$/);
+    await expect(panel.getByRole('status')).toHaveText('Staff contact saved.');
     await admin.waitForLoadState();
     await admin.reload();
     await expect(panel.getByLabel('Staff contact')).toHaveValue(hostile);

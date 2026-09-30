@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { expect, test, type Page } from '@playwright/test';
 import { uniqueHandle } from './db-fixtures';
-import { pgpFixture, signedIn, submitAndLoad } from './db-helpers';
+import { expectNotice, pgpFixture, signedIn, submitAndLoad } from './db-helpers';
 
 // A-124 and A-162 against a real database, JavaScript disabled, at 320 px, with fresh accounts: the party who did
 // not open a dispute puts one reply on record from the order page; the moderation desk shows the reason and the
@@ -42,12 +42,14 @@ test('the other party replies once and the desk names who holds encrypted eviden
     await buyer.locator('summary', { hasText: 'Open a dispute' }).click();
     await buyer.getByLabel('Describe the issue').fill('The parcel arrived empty.\nThe seal on the box was broken.');
     await submitAndLoad(buyer, buyer.getByRole('button', { name: 'Submit dispute' }));
-    await expect(buyer).toHaveURL(/\/disputes\?saved=1$/);
+    await expect(buyer).toHaveURL(/\/disputes$/);
+    await expectNotice(buyer, 'Dispute opened.');
     // Evidence to one staff member, encrypted (the fixture ciphertext; the holder has no key, so it is "recipient unknown").
     await buyer.goto(`/messages?to=${holderHandle}`);
     await buyer.getByLabel('PGP encrypted message').fill(pgpFixture('message-to-recipient.asc'));
     await submitAndLoad(buyer, buyer.getByRole('button', { name: 'Send encrypted text ↗' }));
-    await expect(buyer).toHaveURL(/\/messages\?saved=1$/);
+    await expect(buyer).toHaveURL(/\/messages$/);
+    await expectNotice(buyer, 'Message sent.');
     await buyer.goto(`/order?id=${orderID}`);
     await expect(buyer.locator('form[action="/disputes/reply"]')).toHaveCount(0);
     await expect(buyer.locator('#order-dispute').locator('..')).toContainText('The vendor may put one reply on record');
@@ -65,7 +67,7 @@ test('the other party replies once and the desk names who holds encrypted eviden
     await fitsAndNoScripts(vendor, 'vendor order page with the reply form at 320 px');
     await field.fill('The parcel left sealed.\nThe courier photo shows the box intact.');
     await submitAndLoad(vendor, vendor.getByRole('button', { name: 'Put reply on record' }));
-    await expect(vendor).toHaveURL(/saved=1/);
+    await expectNotice(vendor, 'Reply added to the dispute.');
     await expect(vendor.locator('form[action="/disputes/reply"]')).toHaveCount(0);
 
     // Both parties see the reply after reload, with its role and line breaks; the history only says a reply was made.

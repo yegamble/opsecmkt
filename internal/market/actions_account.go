@@ -10,7 +10,7 @@ import (
 func init() {
 	registerAction("/logout", actionSpec{Run: func(c *actionCtx) (actionResult, error) {
 		_, err := c.Tx.ExecContext(c.Ctx(), "DELETE FROM sessions WHERE token_hash=$1", digest(c.Token))
-		return actionResult{Redirect: "/login", Audit: "Signed out", AfterCommit: c.clearSession}, err
+		return actionResult{Redirect: "/login", Notice: "signed-out", Audit: "Signed out", AfterCommit: c.clearSession}, err
 	}})
 	registerAction("/revoke-sessions", actionSpec{Run: revokeSessionsAction})
 	registerAction("/account", actionSpec{OwnTx: true, Run: accountAction})
@@ -40,7 +40,7 @@ func revokeSessionsAction(c *actionCtx) (actionResult, error) {
 	}
 	p, _ := pending.RowsAffected()
 	s, _ := sessions.RowsAffected()
-	return actionResult{Redirect: "/login", AfterCommit: c.clearSession,
+	return actionResult{Redirect: "/login", Notice: "signed-out-all", AfterCommit: c.clearSession,
 		Audit: "Revoked all sessions: ended " + strconv.FormatInt(s, 10) + " session(s) and " + strconv.FormatInt(p, 10) + " pending sign-in(s)"}, nil
 }
 
@@ -98,12 +98,12 @@ func accountAction(c *actionCtx) (actionResult, error) {
 		if err != nil {
 			return actionResult{}, err
 		}
-		redirect := "/account?saved=1"
+		res := actionResult{Redirect: "/account", Notice: "profile", Audit: audit}
 		if outcome != "" { // a new version of the saved key: say whether its ownership proof was kept (A-155)
-			redirect = "/account?key=" + outcome
+			res = actionResult{Redirect: "/account?key=" + outcome, Audit: audit}
 		}
 		_, err = c.Tx.ExecContext(c.Ctx(), "UPDATE users SET xmpp=$1 WHERE id=$2", xmpp, c.User.ID)
-		return actionResult{Redirect: redirect, Audit: audit}, err
+		return res, err
 	})
 }
 
@@ -153,7 +153,7 @@ func passwordChangeAction(c *actionCtx) (actionResult, error) {
 		if _, err = tx.ExecContext(ctx, "INSERT INTO sessions(token_hash,user_id,expires) VALUES($1,$2,now()+interval '12 hours')", digest(token), uid); err != nil {
 			return actionResult{}, err
 		}
-		return actionResult{Redirect: "/account?saved=1", Audit: "Changed password; ended " + strconv.FormatInt(n, 10) + " other session(s) and any pending sign-ins"}, nil
+		return actionResult{Redirect: "/account", Notice: "password", Audit: "Changed password; ended " + strconv.FormatInt(n, 10) + " other session(s) and any pending sign-ins"}, nil
 	})
 	if err != nil {
 		return actionResult{}, err

@@ -88,7 +88,7 @@ func savePayoutAddress(c *actionCtx, cur, addr string, p PaymentProvider) (actio
 	if _, err := c.Tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), c.User.ID, note); err != nil {
 		return actionResult{}, err
 	}
-	return actionResult{Redirect: "/account?saved=1", Audit: audit}, nil
+	return actionResult{Redirect: "/account", Notice: "payout-address", Audit: audit}, nil
 }
 
 // previousAddressPayouts returns the short order IDs of the user's unsent payouts in cur that use an address other

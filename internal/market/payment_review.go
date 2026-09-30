@@ -177,5 +177,5 @@ func recordPaymentReview(c *actionCtx, id int64, outcome, note, refundTxid strin
 			return actionResult{}, err
 		}
 	}
-	return actionResult{Redirect: "/moderator?saved=1#payment-review", Audit: audit}, nil
+	return actionResult{Redirect: "/moderator", Notice: "payment-review", Audit: audit}, nil
 }

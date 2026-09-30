@@ -64,7 +64,7 @@ func TestListingEditOwnership(t *testing.T) {
 
 	w = e.do("POST", "/listings/update", ownerS, inventoryForm(p, nil))
 	e.check(w, 303)
-	if loc := w.Header().Get("Location"); loc != "/listing-edit?id="+p+"&saved=1" {
+	if loc := w.Header().Get("Location"); loc != "/listing-edit?id="+p {
 		t.Fatalf("redirect %q", loc)
 	}
 	var btc, xmr int64
@@ -237,7 +237,7 @@ func TestArchiveHidesListingAndRefusesDrafts(t *testing.T) {
 
 	w := e.do("POST", "/listings/archive", s, url.Values{"id": {p}})
 	e.check(w, 303)
-	if w.Header().Get("Location") != "/vendor-dashboard?saved=1" {
+	if w.Header().Get("Location") != "/vendor-dashboard" {
 		t.Fatalf("redirect %q", w.Header().Get("Location"))
 	}
 	e.check(e.do("POST", "/listings/archive", s, url.Values{"id": {p}}), 409)

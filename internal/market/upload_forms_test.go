@@ -398,7 +398,7 @@ func TestStaffHideChoiceAudited(t *testing.T) {
 			t.Fatalf("%s: staff list choice:\n%s", role, section)
 		}
 		w := e.do("POST", "/account/staff-list", s, nil) // the box unticked: shown
-		if w.Code != 303 || w.Header().Get("Location") != "/account?saved=1#staff-list" || hidden(id) {
+		if w.Code != 303 || w.Header().Get("Location") != "/account#staff-list" || hidden(id) {
 			t.Fatalf("%s show: %d %q hidden=%v", role, w.Code, w.Header().Get("Location"), hidden(id))
 		}
 		section = sectionOf(t, e.do("GET", "/account", s, nil).Body.String(), "staff-list")
@@ -465,13 +465,13 @@ func TestPublishLandsOnPhotos(t *testing.T) {
 	if err := e.DB.QueryRow("SELECT id FROM products WHERE vendor_id=$1", vendorID).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
-	if loc := w.Header().Get("Location"); loc != "/listing-edit?id="+id+"&saved=1#photos" {
+	if loc := w.Header().Get("Location"); loc != "/listing-edit?id="+id+"#photos" {
 		t.Fatalf("redirect %q", loc)
 	}
-	page := e.do("GET", "/listing-edit?id="+id+"&saved=1", vendor, nil)
+	page := e.do("GET", "/listing-edit?id="+id, vendor, nil, noticeSetCookie(w))
 	e.check(page, 200)
-	if !strings.Contains(page.Body.String(), `id="photos"`) {
-		t.Fatal("no photo panel on the new listing's edit page")
+	if !strings.Contains(sectionOf(t, page.Body.String(), "photos"), `role="status">Listing created. Add photos here.</div>`) {
+		t.Fatal("no photo panel, or no created notice in it, on the new listing's edit page")
 	}
 }
 

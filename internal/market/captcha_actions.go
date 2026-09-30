@@ -175,5 +175,5 @@ func captchaToggle(c *actionCtx) (actionResult, error) {
 	if v == "false" {
 		audit = "Turned off CAPTCHA for sign-in and registration"
 	}
-	return actionResult{Redirect: "/admin?saved=1", Audit: audit}, err
+	return actionResult{Redirect: "/admin", Notice: "captcha", Audit: audit}, err
 }

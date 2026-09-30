@@ -1,5 +1,6 @@
 {{/* P6 Transparency owns. Operator key, canary and audit export panels */}}
-{{define "admin-transparency"}}<h2 class="section-title" id="transparency">Transparency</h2>
+{{define "admin-transparency"}}<h2 class="section-title" id="transparency">Transparency</h2>{{with $.NoticeIn "transparency"}}
+<div class="alert" role="status">{{.}}</div>{{end}}
 <div class="grid-two transparency-admin">
 <section class="panel" aria-labelledby="operator-key-title">
 <h2 id="operator-key-title">Operator PGP key</h2>

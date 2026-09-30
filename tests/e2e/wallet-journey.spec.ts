@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { pgpFixture, setRole, signedIn } from './db-helpers';
+import { expectNotice, pgpFixture, setRole, signedIn } from './db-helpers';
 
 // Real server/PostgreSQL and production RPC adapters, deterministic simulated wallet responses.
 // This proves application integration, not real-chain settlement or cryptographic address validation.
@@ -90,7 +90,7 @@ test('BTC and XMR: partial payment, intake pause, confirmation, fulfillment and 
       await expect(buyer.locator('.order-unavailable')).toHaveCount(0);
     }
     await buyer.getByRole('button', { name: 'Request payment address' }).click();
-    await buyer.waitForURL(/&saved=1$/);
+    await expectNotice(buyer, 'Payment address ready.');
     const orderURL = buyer.url();
     await expect(buyer.locator('.page-head .badge')).toHaveText('Awaiting payment');
     await fitsAt(buyer, `${currency} awaiting payment`);
@@ -202,7 +202,7 @@ test('funded dispute: encrypted moderator evidence, independent resolution and o
   await buyer.getByRole('link', { name: 'Review order draft' }).click();
   await buyer.getByRole('button', { name: 'Create unfunded draft' }).click();
   await buyer.getByRole('button', { name: 'Request payment address' }).click();
-  await buyer.waitForURL(/&saved=1$/);
+  await expectNotice(buyer, 'Payment address ready.');
   const orderURL = buyer.url();
   const address = (await buyer.locator('.payment-address .mono').innerText()).trim();
   expect((await request.post(`${rpc}/test/deposit`, { data: { address, amount: 100_000 } })).ok()).toBeTruthy();
@@ -273,7 +273,7 @@ test('vendor cancels a paid physical order, refunds once and restores stock', as
     await buyer.getByRole('link', { name: 'Review order draft' }).click();
     await buyer.getByRole('button', { name: 'Create unfunded draft' }).click();
     await buyer.getByRole('button', { name: 'Request payment address' }).click();
-    await buyer.waitForURL(/&saved=1$/);
+    await expectNotice(buyer, 'Payment address ready.');
     const orderURL = buyer.url();
     const address = (await buyer.locator('.payment-address .mono').innerText()).trim();
     const beforePayouts = (await (await request.get(`${rpc}/test/state`)).json()).payouts.length;
@@ -322,7 +322,7 @@ test('a refund waiting for a payout address tells its recipient what to do and i
     await refundee.getByRole('link', { name: 'Review order draft' }).click();
     await refundee.getByRole('button', { name: 'Create unfunded draft' }).click();
     await refundee.getByRole('button', { name: 'Request payment address' }).click();
-    await refundee.waitForURL(/&saved=1$/);
+    await expectNotice(refundee, 'Payment address ready.');
     const orderURL = refundee.url();
     const orderID = new URL(orderURL).searchParams.get('id')!;
     const address = (await refundee.locator('.payment-address .mono').innerText()).trim();
@@ -388,7 +388,7 @@ test('automatic digital delivery and administrator recovery of a rejected payout
     await buyer.getByLabel('Reference currency').selectOption('XMR');
     await buyer.getByRole('button', { name: 'Create unfunded draft' }).click();
     await buyer.getByRole('button', { name: 'Request payment address' }).click();
-    await buyer.waitForURL(/&saved=1$/);
+    await expectNotice(buyer, 'Payment address ready.');
     const orderURL = buyer.url();
     const orderID = new URL(orderURL).searchParams.get('id')!;
     await expect(buyer.locator('main')).not.toContainText(content);

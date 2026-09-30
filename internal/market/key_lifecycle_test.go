@@ -141,8 +141,8 @@ func TestKeyExpiryShownAndRenewalKeepsSignIn(t *testing.T) {
 	notes, changed := a152Notes(e, uid, ""), agStr(e, "SELECT pgp_changed_at::text FROM users WHERE id=$1", uid)
 	w := e.do("POST", "/account", sess, url.Values{"pgp": {renewed}, "password": {testPassword}})
 	e.check(w, 303)
-	if loc := w.Header().Get("Location"); loc != "/account?key=renewed" {
-		t.Fatalf("renewal redirected to %q", loc)
+	if loc := w.Header().Get("Location"); loc != "/account?key=renewed" || noticeSetCookie(w) != nil {
+		t.Fatalf("renewal redirected to %q, or set the plain saved notice", loc)
 	}
 	if keyProof(e, uid) != "verified 2fa" || !sameProfileKey(agStr(e, "SELECT pgp FROM users WHERE id=$1", uid), renewed) {
 		t.Fatalf("renewal lost the proof or was not stored: %s", keyProof(e, uid))
@@ -158,7 +158,7 @@ func TestKeyExpiryShownAndRenewalKeepsSignIn(t *testing.T) {
 	}
 	b := html.UnescapeString(e.body("GET", "/account?key=renewed", sess, nil, 200))
 	mustContain(t, b, keyRenewedNotice, utcDay(created.Add(2*365*86400*time.Second))+" UTC")
-	mustNotContain(t, b, "Changes saved.", "expires within 30 days")
+	mustNotContain(t, b, "Profile saved.", "expires within 30 days")
 
 	// A-111: the same key with an extra user ID, and with a third-party certification, while PGP sign-in is on.
 	if err := key.AddUserId("a155 second", "", "second@example.test", nil); err != nil {
@@ -271,7 +271,7 @@ func revocationsFirst(t *testing.T, armored string, sigType packet.SignatureType
 // or the revoked subkey or user ID left out while the revocation stays, or an unrevoked copy of the revoked subkey
 // added beside it - or that would make others encrypt to an older
 // subkey, is saved as a changed key: the proof and PGP sign-in are cleared, the change time is recorded again (A-158)
-// and the owner gets an explicit alert, never plain "Changes saved.". Renewing a key that has a revoked subkey and
+// and the owner gets an explicit alert, never the plain "Profile saved." notice. Renewing a key that has a revoked subkey and
 // user ID, renewing only the primary key and adding a newer subkey keep the proof.
 func TestKeyUpdateThatDropsRevocationOrRollsBackSubkeyClearsProof(t *testing.T) {
 	e := newTestApp(t)
@@ -455,14 +455,14 @@ func TestKeyUpdateThatDropsRevocationOrRollsBackSubkeyClearsProof(t *testing.T) 
 			w := e.do("POST", "/account", sess, url.Values{"pgp": {pasted}, "password": {testPassword}})
 			e.check(w, 303)
 			loc := w.Header().Get("Location")
-			if loc != "/account?key="+tc.outcome {
-				t.Fatalf("redirected to %q", loc)
+			if loc != "/account?key="+tc.outcome || noticeSetCookie(w) != nil {
+				t.Fatalf("redirected to %q, or set the plain saved notice", loc)
 			}
 			if !sameProfileKey(agStr(e, "SELECT pgp FROM users WHERE id=$1", uid), pasted) {
 				t.Fatal("pasted key not stored")
 			}
 			b := html.UnescapeString(e.body("GET", loc, sess, nil, 200))
-			mustNotContain(t, b, "Changes saved.")
+			mustNotContain(t, b, "Profile saved.")
 			nowChanged := agStr(e, "SELECT COALESCE(pgp_changed_at::text,'') FROM users WHERE id=$1", uid)
 			if tc.outcome == "renewed" {
 				if keyProof(e, uid) != "verified 2fa" || nowChanged != changed {

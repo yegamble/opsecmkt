@@ -46,7 +46,7 @@ test('a moderator records payment reviews at 320 px; buyer and vendor read the o
       const id = sql(`SELECT id FROM payments WHERE order_id='${order}' AND txid='${tx}'`);
       const details = desk.locator(`details.payment-review-form#payment-review-${id}`);
       await desk.locator('.payment-review-row', { hasText: `${tx}:0` }).getByRole('link', { name: 'Record the review' }).click();
-      await expect(mod).toHaveURL(new RegExp(`/moderator(\\?saved=1)?#payment-review-${id}$`));
+      await expect(mod).toHaveURL(new RegExp(`/moderator#payment-review-${id}$`));
       await expect(details.locator(`input[name="payment_id"][value="${id}"]`)).toHaveCount(3);
       const summary = details.locator('summary');
       await expect(summary).toHaveText(`Record the review of ${tx}:0`);
@@ -61,7 +61,8 @@ test('a moderator records payment reviews at 320 px; buyer and vendor read the o
     await noAction.getByLabel('Reason for taking no action').fill(reason);
     await noAction.getByLabel('Current password').fill(password);
     await submitAndLoad(mod, noAction.getByRole('button', { name: 'Record: no action' }));
-    await expect(mod).toHaveURL(/\/moderator\?saved=1#payment-review$/);
+    await expect(mod).toHaveURL(/\/moderator#payment-review$/);
+    await expect(desk.getByRole('status')).toHaveText('Payment review recorded.');
     await expect(openCount).toHaveText('1 open flag');
     await expect(desk.locator('.payment-review-row', { hasText: `${noActionTx}:0` })).toHaveCount(0);
 
@@ -71,7 +72,8 @@ test('a moderator records payment reviews at 320 px; buyer and vendor read the o
     await refundForm.getByLabel('Amount refunded (BTC, at most 0.0003)').fill('0.0003');
     await refundForm.getByLabel('Current password').fill(password);
     await submitAndLoad(mod, refundForm.getByRole('button', { name: 'Record: refunded by hand' }));
-    await expect(mod).toHaveURL(/\/moderator\?saved=1#payment-review$/);
+    await expect(mod).toHaveURL(/\/moderator#payment-review$/);
+    await expect(desk.getByRole('status')).toHaveText('Payment review recorded.');
     await expect(desk).toContainText('No payments are flagged for review.');
     await expect(desk.locator('.payment-review-row')).toHaveCount(0);
     // Nothing is sent: a hand refund writes no payouts row.

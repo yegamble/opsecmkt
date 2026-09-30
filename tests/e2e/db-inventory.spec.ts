@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { ADMIN, uniqueHandle } from './db-fixtures';
-import { setRole, signedIn } from './db-helpers';
+import { expectNotice, setRole, signedIn } from './db-helpers';
 
 // P4 Inventory: the shared administrator publishes its own uniquely named listing, edits it,
 // archives it (hidden from the catalog, closed to new drafts) and restores it, then edits a fresh
@@ -22,7 +22,7 @@ test('edit, archive and restore a listing without client scripts', async ({ page
   await page.getByLabel('Monero reference price').fill('0.5');
   await expect(page.locator('main')).toContainText('Automatic delivery requires a payment provider');
   await page.getByRole('button', { name: 'Publish listing' }).click();
-  await expect(page).toHaveURL(/\/listing-edit\?id=[0-9a-f]{64}&saved=1#photos$/); // A-188: lands on its Photos panel
+  await expect(page).toHaveURL(/\/listing-edit\?id=[0-9a-f]{64}#photos$/); // A-188: lands on its Photos panel
   await expect(page.getByLabel('Listing title')).toHaveValue(title);
   await page.goto('/vendor-dashboard');
   await expect(page.locator('.listings-grid')).toContainText(title);
@@ -35,13 +35,14 @@ test('edit, archive and restore a listing without client scripts', async ({ page
   await page.getByLabel('Stock').fill('3');
   await page.getByLabel('Automatic delivery content').fill('download-token-e2e');
   await page.getByRole('button', { name: 'Save changes' }).click();
-  await expect(page.getByRole('status')).toHaveText('Changes saved.');
+  await expectNotice(page, 'Listing saved.');
   await expect(page.getByLabel('Listing title')).toHaveValue(`${title} v2`);
   await expect(page.getByLabel('Stock')).toHaveValue('3');
   await expect(page.getByLabel('Automatic delivery content')).toHaveValue('download-token-e2e');
 
   await page.getByRole('button', { name: 'Archive listing' }).click();
-  await expect(page).toHaveURL(/\/vendor-dashboard\?saved=1$/);
+  await expect(page).toHaveURL(/\/vendor-dashboard$/);
+  await expectNotice(page, 'Listing archived.');
   const card = page.locator('.product-card', { hasText: `${title} v2` });
   await expect(card.locator('.badge')).toHaveText('Archived');
 
@@ -50,7 +51,7 @@ test('edit, archive and restore a listing without client scripts', async ({ page
 
   await page.goto('/vendor-dashboard');
   await page.getByRole('button', { name: `Restore ${title} v2` }).click();
-  await expect(page).toHaveURL(/\/vendor-dashboard\?saved=1$/);
+  await expectNotice(page, 'Listing restored.');
   await page.goto(`/?q=${encodeURIComponent(title)}`);
   await expect(page.locator('.listings-grid .product-card')).toHaveCount(1);
   await page.getByRole('link', { name: `${title} v2`, exact: true }).click();
@@ -83,7 +84,7 @@ test('edit, archive and restore a listing without client scripts', async ({ page
   await expect(page.getByLabel('Automatic delivery content')).toHaveCount(0);
   await page.getByLabel('Listing title').fill(`${vendorTitle} admin`);
   await page.getByRole('button', { name: 'Save changes' }).click();
-  await expect(page.getByRole('status')).toHaveText('Changes saved.');
+  await expectNotice(page, 'Listing saved.');
   await expect(page.getByLabel('Listing title')).toHaveValue(`${vendorTitle} admin`);
 
   await vendor.goto(editURL);

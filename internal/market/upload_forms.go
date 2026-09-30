@@ -230,7 +230,7 @@ func staffListChoiceAction(c *actionCtx) (actionResult, error) {
 	if role != "admin" && role != "moderator" {
 		return actionResult{}, fail(403, "Only moderators and administrators appear on the staff list. Nothing was changed.")
 	}
-	res := actionResult{Redirect: "/account?saved=1#staff-list"}
+	res := actionResult{Redirect: "/account", Notice: "my-staff-list"}
 	if old == hide {
 		return res, nil
 	}

@@ -77,6 +77,7 @@ type actionResult struct {
 	Audit       string // recorded in audit_events in the same transaction when non-empty
 	AuditUserID string // default c.User.ID
 	AfterCommit func(w http.ResponseWriter)
+	Notice      string // one-shot notice code (notice.go), set on the 303 of a signed-in post; its section becomes the fragment
 }
 
 type actionSpec struct {
@@ -470,6 +471,9 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 	}
 	if res.Redirect == "" {
 		res.Redirect = "/"
+	}
+	if res.Notice != "" && u != nil {
+		res.Redirect = a.setNotice(w, res.Notice, res.Redirect)
 	}
 	http.Redirect(w, r, res.Redirect, 303)
 }
