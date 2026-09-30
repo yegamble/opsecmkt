@@ -81,6 +81,16 @@ class EscrowRegtestScriptTest(unittest.TestCase):
         self.assertEqual(code, 1)
         for leg in LEGS:
             self.assertIn('NOT RUN: %s' % leg, text)
+        # go test exits 0 when -run matches no test: that is not a pass either.
+        code, text = self.run_script(['testing: warning: no tests to run', 'PASS'], 0)
+        self.assertEqual(code, 1)
+        for leg in LEGS:
+            self.assertIn('NOT RUN: %s' % leg, text)
+
+    def test_failed_leg_fails_whatever_go_exits(self):
+        code, text = self.run_script(['--- PASS: %s (1.0s)' % LEGS[0], '--- FAIL: %s (2.0s)' % LEGS[1]], 0)
+        self.assertEqual(code, 1)
+        self.assertIn('FAILED: %s' % LEGS[1], text)
 
     def test_nonzero_go_status_fails_even_when_legs_pass(self):
         code, text = self.run_script(['--- PASS: %s (1.0s)' % l for l in LEGS], 1)
