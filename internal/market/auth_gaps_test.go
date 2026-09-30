@@ -776,8 +776,13 @@ func TestTOTPDisableInputValidation(t *testing.T) {
 		t.Fatal("rejected disable changed data")
 	}
 	// Disabling when TOTP is not enabled is a conflict after the password check.
-	_, plain := e.user("totp_none", "buyer")
+	plainID, plain := e.user("totp_none", "buyer")
 	agExpect(e, "/totp/disable", plain, url.Values{"password": {testPassword}, "code": {"123456"}}, 409, "not enabled")
+	// A recovery-shaped code too (A-292): refused as not enabled before any code check, so no confirm budget is spent.
+	agExpect(e, "/totp/disable", plain, url.Values{"password": {testPassword}, "code": {newRecoveryCode()}}, 409, "not enabled")
+	if agLimited(e, "confirm:"+plainID) {
+		t.Fatal("disable without TOTP checked the code and spent the confirm budget")
+	}
 }
 
 func TestTOTPUnreadableSecret(t *testing.T) {
