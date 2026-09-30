@@ -17,7 +17,7 @@ export default defineConfig({
         SETUP_TOKEN: 'e2e-wallet-local-setup-token-at-least-32-characters',
         BITCOIN_RPC_URL: 'http://127.0.0.1:18083', BITCOIN_CHAIN: 'regtest', BITCOIN_WALLET: 'opsecmkt',
         ESCROW_BTC: '', ESCROW_BTC_RPC_URL: '', ESCROW_BTC_ARBITER_WALLET: '', ESCROW_BTC_WATCH_WALLET: '',
-        ESCROW_BTC_FEE_BPS: '', ESCROW_BTC_FEE_ADDRESS: '',
+        ESCROW_BTC_FEE_BPS: '', ESCROW_BTC_FEE_ADDRESS: '', ESCROW_BTC_FEE_RATE: '',
         MONERO_RPC_URL: 'http://127.0.0.1:18083', MONERO_WALLET_RPC_URL: 'http://127.0.0.1:18083', MONERO_NETWORK: 'stagenet',
         PAYMENT_CONFIRMATIONS_BTC: '3', PAYMENT_CONFIRMATIONS_XMR: '3', PAYMENT_POLL_INTERVAL: '1s',
         PAYMENT_EXPIRY: '24h', AUDIT_SIGNING_KEY: '' } },
