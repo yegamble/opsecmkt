@@ -146,7 +146,7 @@ PY
   read -r status location < <(post /listings --data-urlencode "csrf=$csrf" --data-urlencode 'title=CI scanner listing' \
     --data-urlencode 'description=Listing for the malware scanner leg.' -d category=Hardware -d region=Worldwide -d kind=physical \
     -d stock=1 -d price_btc=0.001 -d price_xmr=0.5)
-  re='/listing-edit\?id=([0-9a-f]{64})&saved=1#photos$'
+  re='/listing-edit\?id=([0-9a-f]{64})#photos$'
   [[ $status == 303 && $location =~ $re ]] || fail "publishing the listing answered $status $location"
   listing=${BASH_REMATCH[1]}
   wait_ready
