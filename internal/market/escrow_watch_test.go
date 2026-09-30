@@ -548,3 +548,124 @@ func TestEscrowCancelledStatus(t *testing.T) {
 		}
 	}
 }
+
+// QA31-3a (A-211's rule for escrow): a confirmed deposit recorded after an escrow order closed is flagged for payment
+// review; the buyer (the amount, no transaction ID) and each staff member are notified once per episode, the vendor
+// is not, and nothing is paid. Staff can open the order read-only.
+func TestEscrowAfterCloseDepositFlagged(t *testing.T) {
+	x := newEscrowEnv(t)
+	_, modSess := x.user("emod_"+randomToken()[:6], "moderator")
+	mod := agStrings(t, x.testEnv, "SELECT id FROM users WHERE role='moderator' AND suspended_at IS NULL")
+	addr := x.mustCheckout(x.order, "bcrt1qbuyerrefund00000000000000000000001")
+	x.DB.Exec("UPDATE escrows SET created=now()-interval '25 hours' WHERE order_id=$1", x.order)
+	x.poll()
+	if x.state(x.order) != stateCancelled {
+		t.Fatalf("state %s", x.state(x.order))
+	}
+	notices := func(uid, like string) int {
+		return agInt(x.testEnv, "SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE $2", uid, like)
+	}
+	buyerLike := "%" + shortID(x.order) + "%after the order closed%"
+	staffLike := "Payment review needed for order " + shortID(x.order) + "%"
+	x.core.deposit(addr, "stray1aaaaaaaa", 0, 40000, 1)
+	x.poll()
+	if agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND flagged", x.order) != 0 || notices(x.buyer, buyerLike) != 0 {
+		t.Fatal("an unconfirmed after-close deposit was flagged")
+	}
+	x.core.setConfs("stray1aaaaaaaa", 3)
+	x.poll()
+	x.poll()
+	if agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND flagged AND after_close AND NOT credited", x.order) != 1 {
+		t.Fatal("after-close escrow deposit not flagged")
+	}
+	body := agStrings(t, x.testEnv, "SELECT body FROM notifications WHERE user_id=$1 AND body LIKE $2", x.buyer, buyerLike)
+	if len(body) != 1 || !strings.Contains(body[0], "0.0004 BTC") || strings.Contains(body[0], "stray1") || !strings.Contains(body[0], "escrow address") {
+		t.Fatalf("buyer notice %q", body)
+	}
+	if n := notices(x.vendor, "%"+shortID(x.order)+"%after%closed%"); n != 0 {
+		t.Fatalf("vendor told %d times", n)
+	}
+	for _, m := range mod {
+		if n := notices(m, staffLike); n != 1 {
+			t.Fatalf("staff %s told %d times", m, n)
+		}
+	}
+	// A second deposit in the same episode: flagged and noted, nobody told again.
+	x.core.deposit(addr, "stray2bbbbbbbb", 0, 20000, 3)
+	x.poll()
+	if agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND flagged", x.order) != 2 || notices(x.buyer, buyerLike) != 1 || notices(mod[0], staffLike) != 1 {
+		t.Fatal("second deposit of the episode announced again")
+	}
+	if ev := strings.Join(x.events(x.order), "\n"); strings.Count(ev, "Moderator review required.") != 2 || !strings.Contains(ev, "escrow address") {
+		t.Fatalf("order notes:\n%s", ev)
+	}
+	x.noPayouts(x.order)
+	page := x.page("/order?id="+x.order, modSess)
+	if !strings.Contains(page, "Arrived after the order closed") || !strings.Contains(page, addr) {
+		t.Fatalf("staff view of the flagged escrow order:\n%s", page)
+	}
+	// The same on a completed escrow order.
+	done := x.draft()
+	addr2 := x.mustCheckout(done, "bcrt1qbuyerrefund00000000000000000000002")
+	x.core.deposit(addr2, "full", 0, 100000, 3)
+	x.poll()
+	x.core.deposit(addr2, "extra", 0, 30000, 3)
+	x.poll()
+	if x.state(done) != stateCompleted || agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND flagged AND after_close", done) != 1 ||
+		notices(x.buyer, "%"+shortID(done)+"%after the order closed%") != 1 {
+		t.Fatal("after-close deposit on a completed escrow order not flagged once")
+	}
+	x.noPayouts(done)
+}
+
+// QA31-3b (amends A-322): while escrow is not enabled, the buyer's cancel form on an escrow order awaiting payment says,
+// before its button, that coins already sent stay at the escrow address and are not seen until escrow is available
+// again, and not to cancel after sending. The cancel stays allowed. The copy appears in no other state or view.
+func TestEscrowCancelFormWarnsWhileUnavailable(t *testing.T) {
+	const warn = "Coins you already sent to this order's escrow address stay there and are not seen until Bitcoin escrow is available again. If you already sent coins, do not cancel."
+	x := newEscrowEnv(t)
+	x.mustCheckout(x.order, "bcrt1qbuyerrefund00000000000000000000001")
+	cancelForm := func(body string) (form string, ok bool) {
+		i := strings.Index(body, `<input type="hidden" name="from" value="awaiting_payment">`)
+		if i < 0 {
+			return "", false
+		}
+		j := strings.Index(body[i:], "</form>")
+		return body[i : i+j], true
+	}
+	has := func(sess string) (bool, bool) {
+		form, ok := cancelForm(x.page("/order?id="+x.order, sess))
+		if !ok {
+			t.Fatal("no cancel form on an awaiting escrow order")
+		}
+		w := strings.Index(form, warn)
+		if w >= 0 && w > strings.Index(form, `<button`) {
+			t.Fatal("the warning follows the cancel button")
+		}
+		return w >= 0, strings.Contains(x.page("/order?id="+x.order, sess), warn)
+	}
+	if inForm, onPage := has(x.buyerSess); inForm || onPage {
+		t.Fatal("warning shown with escrow enabled")
+	}
+	srvDown(x, true)
+	x.restart()
+	if inForm, _ := has(x.buyerSess); !inForm {
+		t.Fatal("no warning on the buyer's cancel form with escrow unavailable")
+	}
+	if _, onPage := has(x.vendorSess); onPage {
+		t.Fatal("warning on the vendor's page")
+	}
+	srvDown(x, false)
+	t.Setenv("ESCROW_BTC", "off")
+	x.restart()
+	if inForm, _ := has(x.buyerSess); !inForm {
+		t.Fatal("no warning on the buyer's cancel form with escrow off")
+	}
+	if w := x.do("POST", "/orders/cancel", x.buyerSess, url.Values{"order_id": {x.order}, "from": {stateAwaitingPayment}}); w.Code != 303 || x.state(x.order) != stateCancelled {
+		t.Fatalf("cancel with escrow off: %d %s", w.Code, x.state(x.order))
+	}
+	if strings.Contains(x.page("/order?id="+x.order, x.buyerSess), warn) {
+		t.Fatal("warning on a cancelled order")
+	}
+	x.noPayouts(x.order)
+}

@@ -662,10 +662,22 @@ for a market that takes real payments.
   marked paid, until escrow is on and enabled again. The coins stay in the order's 2-of-3 escrow; the pooled wallet
   never holds them. The order page still shows the escrow panel with its address and descriptor and "Bitcoin escrow
   is unavailable on this market right now …", never the pooled payment panel (the descriptor download is offered
-  only with escrow on). Disputes, and cancelling an escrow order with a recorded deposit, stay refused either way;
-  but while deposits are not read, an order that shows no deposit can still be cancelled by its buyer or vendor,
-  and coins already sent to it then arrive after the order closed (recovering them is part of the settlement step,
-  not built).
+  only with escrow on). A cancelled escrow order then reads "This escrow cannot be checked right now …", never
+  "nothing was received". Disputes, and cancelling an escrow order with a recorded deposit, stay refused either way;
+  but while deposits are not read, an order that shows no deposit can still be cancelled by its buyer or vendor (the
+  buyer's cancel form says, before its button, that coins already sent stay at the escrow address and are not seen
+  until escrow is available again, and not to cancel after sending), and coins already sent to it then arrive after
+  the order closed.
+- **Deposits after an escrow order closed** (cancelled or completed) are recorded once escrow reads them, never
+  counted, and stay in the order's escrow; recovering them is part of the settlement step, not built. A confirmed
+  one is flagged for payment review as a pooled late deposit is: one order note, the buyer told the amount once per
+  episode (not the vendor) and each moderator and administrator once. The order page's escrow status reads
+  "Cancelled; a deposit arrived after the order closed …". The coins are not in the pooled wallet, so do not refund
+  them by hand from it; record the review as *no action* with that reason.
+- **Site-wide notices.** With escrow on, the footer, catalog, listing and draft notices say Bitcoin escrow runs on
+  regtest even when no pooled provider is configured, and the vendor desk's *Bitcoin escrow* tile counts the viewer's
+  escrow orders that may hold coins (with `ESCROW_BTC` off too), so no page says escrow is inactive or no funds are
+  held while escrow orders exist. With escrow off and no escrow orders the pooled wording is unchanged.
 - **Compose** does not pass these variables to the app container in this release; test escrow with the app run
   outside Compose (`go run ./cmd/server` against a regtest node), as `scripts/test-escrow-regtest.sh` does.
 
