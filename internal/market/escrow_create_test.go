@@ -596,6 +596,10 @@ func TestEscrowOriginLockedOnceKeyHasEscrows(t *testing.T) {
 			t.Fatalf("%s: practice offered for a key with escrows, or no word on the origin: %s", name, body)
 		}
 	}
+	// Refused before the password is asked for, so a refusal never spends the confirmation budget.
+	if w := x.do("POST", "/escrow-key", x.buyerSess, url.Values{"key": {moved(x.buyerKey, "0000beef/48h/1h/0h/2h")}}); w.Code != 409 || !strings.Contains(w.Body.String(), "This key has escrows") {
+		t.Fatalf("origin change without a password: %d %s", w.Code, w.Body.String())
+	}
 	for _, c := range []struct{ name, sess, key, origin string }{
 		{"buyer, another fingerprint", x.buyerSess, x.buyerKey, "0000beef/48h/1h/0h/2h"},
 		{"buyer, another path", x.buyerSess, x.buyerKey, "7450f935/48h/1h/5h/2h"},
