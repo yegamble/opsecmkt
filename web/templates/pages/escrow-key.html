@@ -24,7 +24,7 @@
 </dl>{{if .Unreadable}}
 <div class="alert error" role="alert">Your escrow key can no longer be read on this market; register it again.</div>{{end}}
 <p class="help">Compare the origin (your wallet's fingerprint and the key's path) with what your wallet shows. The market stores the key encrypted and never shows it to anyone else. Escrow does not run on any public network yet.</p>{{if .HasEscrows}}
-<p class="help">This key is used by escrows. Changing it affects only escrows created afterwards; existing escrows keep the keys they were built with.</p>{{end}}
+<p class="help">This key is used by escrows. Changing it affects only escrows created afterwards; existing escrows keep the keys they were built with. Its origin (fingerprint and path) can no longer be changed.</p>{{end}}
 </section>
 <section class="panel" aria-labelledby="escrow-key-form">
 <h2 id="escrow-key-form">{{if .Registered}}Change your key{{else}}Register a key{{end}}</h2>

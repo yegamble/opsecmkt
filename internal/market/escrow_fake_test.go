@@ -39,6 +39,7 @@ type fakeEscrowCore struct {
 	importFail   bool                // importdescriptors answers success=false
 	beforeImport func()              // runs when importdescriptors is called, before it answers
 	beforeCreate func()              // runs when createpsbt is called (an escrow build), before it answers
+	beforeDerive func()              // runs when deriveaddresses is called, before it answers
 	bareAddrSalt string              // a non-empty salt makes deriveaddresses of a bare-key escrow disagree (a lying node)
 	infoSkew     bool                // getdescriptorinfo answers another checksum than BIP 380's
 	imports      []string            // descriptors imported into the watch wallet, in order
@@ -171,6 +172,11 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 		}
 		return map[string]any{"descriptor": public + "#" + sum, "checksum": sum, "hasprivatekeys": public != desc}, 0, ""
 	case "deriveaddresses":
+		if c.beforeDerive != nil {
+			c.mu.Unlock()
+			c.beforeDerive()
+			c.mu.Lock()
+		}
 		desc := str(0)
 		body, sum, ok := strings.Cut(desc, "#")
 		if !ok {

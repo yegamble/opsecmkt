@@ -262,6 +262,16 @@ func escrowKeyAction(c *actionCtx) (actionResult, error) {
 		if err != nil {
 			return actionResult{}, err
 		}
+		// An escrow a checkout committed for this key since keyAgainstEscrows ran (the checkout held this key row FOR
+		// UPDATE, so the upsert above waited for it) is seen here: the origin of a key with escrows still cannot change.
+		var moved bool
+		if err = c.Tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM escrow_pubkeys WHERE user_id=$1 AND key_hmac=$2
+			AND NOT (origin_fingerprint=$3 AND origin_path=$4))`, uid, h, k.Fingerprint, k.PathText).Scan(&moved); err != nil {
+			return actionResult{}, err
+		}
+		if moved {
+			return actionResult{}, errKeyOriginLocked
+		}
 		audit, event := "Changed Bitcoin escrow key", "Your Bitcoin escrow key was changed; it is inactive until you sign its practice transaction."
 		if inserted {
 			audit, event = "Registered a Bitcoin escrow key", "A Bitcoin escrow key was registered on your account; it is inactive until you sign its practice transaction."

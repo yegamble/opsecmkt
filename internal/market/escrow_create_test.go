@@ -592,8 +592,8 @@ func TestEscrowOriginLockedOnceKeyHasEscrows(t *testing.T) {
 		if name != "after rotation" && len(x.core.methods()) != calls {
 			t.Fatalf("%s: node called although the HMAC matched: %v", name, x.core.methods()[calls:])
 		}
-		if body := x.page("/escrow-key", sess); strings.Contains(body, "Show the practice transaction") {
-			t.Fatalf("%s: practice offered for a key with escrows", name)
+		if body := x.page("/escrow-key", sess); strings.Contains(body, "Show the practice transaction") || !strings.Contains(body, "Its origin (fingerprint and path) can no longer be changed.") {
+			t.Fatalf("%s: practice offered for a key with escrows, or no word on the origin: %s", name, body)
 		}
 	}
 	for _, c := range []struct{ name, sess, key, origin string }{
@@ -616,6 +616,16 @@ func TestEscrowOriginLockedOnceKeyHasEscrows(t *testing.T) {
 	if w := x.do("POST", "/orders/escrow", sess2, url.Values{"order_id": {o3}, "refund_address": {"bcrt1qbuyerrefund00000000000000000000003"}}); w.Code != 303 {
 		t.Fatalf("another buyer of the vendor: %d %s", w.Code, w.Body.String())
 	}
+	// A key row moved to another origin by hand (as a database written before A-314 could hold it) still counts its
+	// escrows, by the key's HMAC: practice is neither offered nor accepted for it.
+	x.DB.Exec("UPDATE user_escrow_keys SET origin_fingerprint='0000beef',active_at=NULL WHERE user_id=$1", x.buyer)
+	if body := x.page("/escrow-key", x.buyerSess); !strings.Contains(body, "This key is used by escrows") || strings.Contains(body, "Show the practice transaction") {
+		t.Fatalf("moved key row: %s", body)
+	}
+	if code, body := submitPractice(x.testEnv, x.buyerSess, "cHNidP8BAA=="); code != 409 || !strings.Contains(body, "no escrows") {
+		t.Fatalf("practice for a moved key row: %d %s", code, body)
+	}
+	x.activeKey(x.buyer, x.buyerKey)
 	// After an APP_SECRET_KEY rotation the stored HMACs no longer match; Core's derivation still recognises the key.
 	t.Setenv("APP_SECRET_KEY", rotatedSecretKey())
 	x.restart()
@@ -627,6 +637,40 @@ func TestEscrowOriginLockedOnceKeyHasEscrows(t *testing.T) {
 	}
 	if agInt(x.testEnv, "SELECT count(*) FROM user_escrow_keys WHERE user_id=$1 AND active_at IS NOT NULL AND origin_fingerprint='7450f935'", x.buyer) != 1 {
 		t.Fatal("not restored")
+	}
+}
+
+// A-314: an escrow committed for the key between the pre-check and the key change (a checkout racing an origin
+// correction) is caught inside the key change's transaction: the origin is not changed.
+func TestEscrowOriginLockRecheckedInTransaction(t *testing.T) {
+	x := newEscrowEnv(t)
+	// The account's escrows so far hold another key (so the pre-check asks the node about it).
+	x.activeKey(x.buyer, altEscrowKey(t, testBIP48Key, "0badf00d", 7))
+	x.mustCheckout(x.order, "bcrt1qbuyerrefund00000000000000000000001")
+	x.activeKey(x.buyer, x.buyerKey)
+	bk, _ := parseEscrowKey(x.buyerKey)
+	var once sync.Once
+	x.core.beforeDerive = func() {
+		once.Do(func() { // a checkout with the current key commits while the node is asked
+			order := x.testEnv.order(x.buyer, x.autoListing(x.vendor), "BTC", stateAwaitingPayment)
+			var id int64
+			if err := x.DB.QueryRow("INSERT INTO escrows(order_id,address,market_index,refund_address,fee_bps,fee_destination) VALUES($1,'bcrt1qracedescrow000000000',nextval('escrow_market_index'),'bcrt1qracedrefund000000000',0,'') RETURNING id", order).Scan(&id); err != nil {
+				t.Error(err)
+				return
+			}
+			if _, err := x.DB.Exec(`INSERT INTO escrow_pubkeys(pubkey,escrow_id,party,user_id,key_hmac,origin_fingerprint,origin_path,derivation_suffix) VALUES
+				($1,$2,'buyer',$3,$4,'7450f935','/48h/1h/0h/2h','/0/2')`, childHex(x.buyerKey, "/0/2"), id, x.buyer, x.A.escrowKeyHMAC(bk)); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	before := strings.Join(agStrings(t, x.testEnv, "SELECT k::text FROM user_escrow_keys k WHERE user_id=$1", x.buyer), "")
+	code, body := registerKey(x.testEnv, x.buyerSess, "[0000beef"+bk.PathText+"]"+bk.XPub)
+	if code != 409 || !strings.Contains(body, "This key has escrows, so its origin") {
+		t.Fatalf("origin change racing a checkout: %d %s", code, body)
+	}
+	if after := strings.Join(agStrings(t, x.testEnv, "SELECT k::text FROM user_escrow_keys k WHERE user_id=$1", x.buyer), ""); after != before {
+		t.Fatalf("key row changed:\n%s\n%s", before, after)
 	}
 }
 

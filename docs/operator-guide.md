@@ -650,17 +650,19 @@ for a market that takes real payments.
   (`settings` key `escrow_btc_arbiter_fingerprint`). If a later start finds another fingerprint, for example a
   different wallet under that name, escrow is disabled with "escrow: Bitcoin escrow disabled: the arbiter wallet's
   key fingerprint differs from the one pinned in this database". Load the right wallet; the watcher's next retry
-  enables escrow (or restart). On a regtest
-  market where you mean to replace the arbiter key, delete that settings row first, and only while no escrow exists
-  (`SELECT count(*) FROM escrows` is 0): every escrow holds a child of the arbiter key, and with another key the
-  market can never co-sign for it. Neither the fingerprint nor any key is ever logged.
+  enables escrow (or restart). On a regtest market where you mean to replace the arbiter key, delete that settings
+  row first, and only while no escrow exists (`SELECT count(*) FROM escrows` is 0): every escrow holds a child of
+  the arbiter key, and with another key the market can never co-sign for it. Neither the fingerprint nor any key is ever logged.
 - **Switching escrow off with escrow orders open.** Setting `ESCROW_BTC` back to `off` (or escrow being disabled
   because its node is down) moves no coins and closes no order, but it stops the escrow watcher: an open escrow
   order is not cancelled when its payment window ends, and deposits to its escrow are not recorded, so it is not
   marked paid, until escrow is on and enabled again. The coins stay in the order's 2-of-3 escrow; the pooled wallet
   never holds them. The order page still shows the escrow panel with its address and descriptor and "Bitcoin escrow
   is unavailable on this market right now …", never the pooled payment panel (the descriptor download is offered
-  only with escrow on). Refunds, disputes and cancelling an escrow that holds coins stay refused either way.
+  only with escrow on). Disputes, and cancelling an escrow order with a recorded deposit, stay refused either way;
+  but while deposits are not read, an order that shows no deposit can still be cancelled by its buyer or vendor,
+  and coins already sent to it then arrive after the order closed (recovering them is part of the settlement step,
+  not built).
 - **Compose** does not pass these variables to the app container in this release; test escrow with the app run
   outside Compose (`go run ./cmd/server` against a regtest node), as `scripts/test-escrow-regtest.sh` does.
 
@@ -703,10 +705,9 @@ has escrows its origin cannot be changed: the same key registered with another f
 "This key has escrows, so its origin (fingerprint and path) cannot be changed …", with or without a rotation (the
 same key is recognised by its HMAC or, after a rotation, by the node deriving an escrow's child key from it), and
 its escrows keep the origin recorded with them. This build has no tool to change a recorded origin, and nothing
-about an existing escrow changes. Before a key
-has escrows, its owner can still correct its fingerprint or path and sign the practice transaction again. The check
-that stops two accounts registering the same key starts again after a rotation: a key registered before it is not
-recognised on another account until its owner registers it again.
+about an existing escrow changes. Before a key has escrows, its owner can still correct its fingerprint or path and
+sign the practice transaction again. The check that stops two accounts registering the same key starts again after a
+rotation: a key registered before it is not recognised on another account until its owner registers it again.
 
 On the order page of a BTC draft on a digital listing with automatic delivery, the buyer is offered *Pay into an
 escrow* beside the pooled payment request, once both the buyer's and the vendor's escrow keys are active. The buyer
