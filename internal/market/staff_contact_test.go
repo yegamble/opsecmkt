@@ -270,6 +270,14 @@ func TestStaffContactMessageLink(t *testing.T) {
 	mustNotContain(t, canary(buyer), `href="/messages?to=`)
 	set("sc_link_mod")
 
+	// A-279: a taken-down listing's vendor desk card and edit page carry the same link for the vendor.
+	vendorID, vendor := e.user("sc_link_vendor", "vendor")
+	listing := e.product(vendorID, "physical")
+	agExec(e, "UPDATE products SET archived=true,archived_at=now(),admin_archive_reason='Counterfeit branding shown.' WHERE id=$1", listing)
+	for _, path := range []string{"/vendor-dashboard", "/listing-edit?id=" + listing} {
+		mustContain(t, e.body("GET", path, vendor, nil, 200), "ask an administrator to review it. Contact the market staff: sc_link_mod. <a class=\"text-link\" "+link)
+	}
+
 	// The payout notice on /notifications carries the same link for its signed-in reader.
 	agExec(e, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), buyerID,
 		"Your BTC payout address was changed. If you did not make this change, someone else may know your password: change it and contact the market staff.")
