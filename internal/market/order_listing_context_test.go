@@ -121,7 +121,7 @@ func TestArchivedListingPhotosThroughOrder(t *testing.T) {
 	buyerID, buyer := e.user("a264_buyer", "buyer")
 	otherBuyerID, otherBuyer := e.user("a264_buyer2", "buyer")
 	_, stranger := e.user("a264_stranger", "buyer")
-	_, otherVendor := e.user("a264_vendor2", "vendor")
+	otherVendorID, otherVendor := e.user("a264_vendor2", "vendor")
 	_, moderator := e.user("a264_mod", "moderator")
 	_, admin := e.user("a264_admin", "admin")
 	disputed, paid := e.titledListing(vendorID, "A264 disputed listing"), e.titledListing(vendorID, "A264 paid listing")
@@ -167,6 +167,26 @@ func TestArchivedListingPhotosThroughOrder(t *testing.T) {
 	// The rule covers listing photos only: the vendor's avatar stays refused to the order's buyer and staff.
 	e.wantDeskHidden(buyer, avatar, "buyer, vendor avatar")
 	e.wantDeskHidden(moderator, avatar, "moderator, vendor avatar")
+
+	// A-296 (P2): only the listing vendor's own photos. A photo row another vendor owns that names the listing (a
+	// forged or corrupted row) is not served to the order's readers and is not on the page.
+	foreign := e.image(otherVendorID, disputed, "photo")
+	for name, s := range map[string]string{"buyer": buyer, "moderator": moderator} {
+		e.wantDeskHidden(s, foreign, name+", another vendor's photo row naming the listing")
+		body := e.body("GET", "/product?id="+disputed, s, nil, 200)
+		mustContain(t, body, `alt="Photo 1 of 2: A264 disputed listing"`)
+		mustNotContain(t, body, foreign.id)
+	}
+
+	// A-296 (P7): a listing an administrator took down (A-163) is archived too; its order's readers still see its
+	// photos on the desk route and its page.
+	e.mustExec(`UPDATE products SET admin_archive_reason='A296 takedown reason text' WHERE id=$1`, disputed)
+	for name, s := range map[string]string{"buyer": buyer, "moderator": moderator} {
+		e.wantDesk(s, photo, name+", taken-down listing's photo")
+		body := e.body("GET", "/product?id="+disputed, s, nil, 200)
+		mustContain(t, body, `<img src="/desk/img/`+photo.id+`-f"`)
+	}
+	e.wantDeskHidden(stranger, photo, "unrelated buyer, taken-down listing")
 }
 
 // A-265: the moderation desk's dispute entries and payment-review rows, the parties' /disputes entries and the
