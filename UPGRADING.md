@@ -743,15 +743,20 @@ order named here as below, with `db_sql` defined as in section 14, then start th
 
      ```sh
      db_sql -v order_id=FULL_ORDER_ID <<'SQL'
-     UPDATE payouts SET kind = 'refund', updated = now() WHERE order_id = :'order_id' AND kind = 'return' RETURNING id, kind, state, amount, txid;
+     UPDATE payouts SET kind = 'refund', updated = now() WHERE order_id = :'order_id' AND kind = 'return'
+       AND NOT EXISTS (SELECT 1 FROM payouts l WHERE l.order_id = payouts.order_id AND l.kind = 'release')
+     RETURNING id, kind, state, amount, txid;
      SQL
      ```
 
-     If it was not sent, delete it (a row in state `sent` is never deleted by this statement):
+     If it was not sent, delete it (neither statement touches a return beside its release, and this one never
+     deletes a row in state `sent`):
 
      ```sh
      db_sql -v order_id=FULL_ORDER_ID <<'SQL'
-     DELETE FROM payouts WHERE order_id = :'order_id' AND kind = 'return' AND state <> 'sent' RETURNING id, kind, state, txid;
+     DELETE FROM payouts WHERE order_id = :'order_id' AND kind = 'return' AND state <> 'sent'
+       AND NOT EXISTS (SELECT 1 FROM payouts l WHERE l.order_id = payouts.order_id AND l.kind = 'release')
+     RETURNING id, kind, state, txid;
      SQL
      ```
 

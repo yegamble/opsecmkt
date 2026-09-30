@@ -298,8 +298,12 @@ SELECT o.id, 'release', p.vendor_id, o.currency, o.amount, :'address', 'sent', :
 FROM orders o JOIN products p ON p.id = o.product_id
 WHERE o.id = :'order_id' AND EXISTS (SELECT 1 FROM payouts r WHERE r.order_id = o.id AND r.kind = 'return')
 RETURNING id, kind, state, amount, address, txid;`,
-	relabel: `UPDATE payouts SET kind = 'refund', updated = now() WHERE order_id = :'order_id' AND kind = 'return' RETURNING id, kind, state, amount, txid;`,
-	drop:    `DELETE FROM payouts WHERE order_id = :'order_id' AND kind = 'return' AND state <> 'sent' RETURNING id, kind, state, txid;`,
+	relabel: `UPDATE payouts SET kind = 'refund', updated = now() WHERE order_id = :'order_id' AND kind = 'return'
+  AND NOT EXISTS (SELECT 1 FROM payouts l WHERE l.order_id = payouts.order_id AND l.kind = 'release')
+RETURNING id, kind, state, amount, txid;`,
+	drop: `DELETE FROM payouts WHERE order_id = :'order_id' AND kind = 'return' AND state <> 'sent'
+  AND NOT EXISTS (SELECT 1 FROM payouts l WHERE l.order_id = payouts.order_id AND l.kind = 'release')
+RETURNING id, kind, state, txid;`,
 	check: `SELECT order_id FROM payouts GROUP BY order_id
 HAVING count(*) FILTER (WHERE kind = 'return') > 0 AND count(*) FILTER (WHERE kind = 'release') = 0;`,
 }
@@ -422,6 +426,8 @@ func TestReturnWithoutReleaseGuide(t *testing.T) {
 	run(returnWithoutReleaseSQL.restore, 0, refundOnly)
 	run(returnWithoutReleaseSQL.record, 0, refundOnly, "fake-testnet-vendor", "tx-release-by-hand")
 	run(returnWithoutReleaseSQL.drop, 0, cancelledSent)
+	run(returnWithoutReleaseSQL.drop, 0, clean) // a return beside its release is never touched
+	run(returnWithoutReleaseSQL.relabel, 0, clean)
 	run(returnWithoutReleaseSQL.restore, 1, owed)
 	run(returnWithoutReleaseSQL.record, 1, paid, "fake-testnet-vendor-old", "tx-release-by-hand")
 	run(returnWithoutReleaseSQL.relabel, 1, cancelledSent)
