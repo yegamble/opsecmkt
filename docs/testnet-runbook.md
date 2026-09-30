@@ -820,6 +820,8 @@ one block and checks that the adapter reports the output with its confirmation. 
 `scripts/regtest-wallet-restore.py` (also runnable on its own with the same variable), which replays
 [Restore the wallets](#restore-the-wallets) with two wallets of its own: `backupwallet`, 1100 addresses issued
 after the backup, `restorewallet`, the collision the next address would cause, the runbook's step and the check.
+The top 59 issued addresses stay unpaid, so the rescan alone does not move the index past them and the check
+fails without the step's `getnewaddress` advance.
 It leaves the backup file in the node's `/tmp` (set `BITCOIN_REGTEST_BACKUP_DIR` for another directory
 bitcoind can write). To try the whole site
 against the same node, start the app with `BITCOIN_RPC_URL=http://smoke:smoke-pass@127.0.0.1:18443`,

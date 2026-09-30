@@ -6,7 +6,9 @@ payment_addresses.address is UNIQUE, so each payment request that gets one fails
 docs/testnet-runbook.md on regtest with two wallets of its own: backupwallet, issue addresses (a list stands in
 for payment_addresses), restorewallet, show the collision, apply the runbook's step (getnewaddress N + 100
 times, then rescanblockchain from the backup height) and check that every issued address is below the next
-index and the next address is fresh. It refuses any node that is not on regtest and never prints the URL.
+index and the next address is fresh. The top issued addresses stay unpaid, as most of a real market's are: the
+rescan only moves the index past addresses that received something, so without the runbook's getnewaddress
+advance the check fails. It refuses any node that is not on regtest and never prints the URL.
 
   BITCOIN_REGTEST_RPC_URL=http://smoke:smoke-pass@127.0.0.1:18443 python3 scripts/regtest-wallet-restore.py
 
@@ -27,6 +29,9 @@ BEFORE_BACKUP = 2
 AFTER_BACKUP = 1100
 ROLLED_BACK = 20  # handed out by the wallet but never stored (a payment request that failed after the call)
 MARGIN = 100      # the runbook's margin over the issued count
+# Issued addresses above the highest paid one. The rescan moves the restored index only past paid addresses, so
+# these stay below it unless the runbook's getnewaddress advance moves it (A-290).
+UNPAID_TOP = 59
 
 
 class RPCError(Exception):
@@ -111,21 +116,22 @@ def main():
         print('backupwallet at height %d after %d issued addresses' % (backup_height, len(issued)))
         issued += issue(AFTER_BACKUP)
         node.batch('getnewaddress', [['order:rolled-back', 'bech32']] * ROLLED_BACK, wallet=name)
-        paid, last = issued[600], issued[-1]
-        # The last address is paid first: when restorewallet's scan reaches that block, the address is still
+        paid, last = issued[600], issued[-1 - UNPAID_TOP]
+        # The higher paid address is paid first: when restorewallet's scan reaches that block, the address is still
         # outside the backup's key range. The later deposit to issued[600] moves the restored index past it.
         node.call('generatetoaddress', 1, last)
         node.call('generatetoaddress', 1, paid)
         node.call('generatetoaddress', 1, miner)
-        print('issued %d addresses after the backup, handed out %d more that were never stored, paid #600 and #%d'
-              % (AFTER_BACKUP, ROLLED_BACK, len(issued) - 1))
+        print('issued %d addresses after the backup, handed out %d more that were never stored, paid #600 and #%d '
+              '(the top %d issued addresses stay unpaid)'
+              % (AFTER_BACKUP, ROLLED_BACK, issued.index(last), UNPAID_TOP))
         issued_set = set(issued)
 
         node.call('restorewallet', restored, backup, False)
         loaded.append(restored)
         received = lambda a: node.call('getreceivedbyaddress', a, 0, True, wallet=restored)
-        print('restorewallet: received by #600 %s, by the last issued address %s (0 expected with -keypool=1000)'
-              % (received(paid), received(last)))
+        print('restorewallet: received by #600 %s, by #%d %s (0 expected with -keypool=1000)'
+              % (received(paid), issued.index(last), received(last)))
 
         collision = node.call('getnewaddress', 'order:check', 'bech32', wallet=restored)
         if collision not in issued_set:
@@ -143,9 +149,9 @@ def main():
         scan = node.call('rescanblockchain', backup_height, wallet=restored)
         print('runbook step: getnewaddress %d times (%d issued + %d), rescanblockchain %d..%d'
               % (count + MARGIN, count, MARGIN, scan['start_height'], scan['stop_height']))
-        print('after the rescan: received by the last issued address %s' % received(last))
+        print('after the rescan: received by #%d %s' % (issued.index(last), received(last)))
         if not received(last) > 0:
-            print('FAIL: the rescan did not find the deposit to the last issued address', file=sys.stderr)
+            print('FAIL: the rescan did not find the deposit to #%d' % issued.index(last), file=sys.stderr)
             return 1
 
         indexes = [key_index(info) for info in node.batch('getaddressinfo', [[a] for a in issued], wallet=restored)]
