@@ -497,12 +497,16 @@ after `-d` with the database name in `DATABASE_URL`. With an external database, 
 db_sql() { docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d opsecmkt "$@"; }
 ```
 
-1. **List every payout of the orders that clash, returns included, and keep the output**: it is the only record
-   left of the rows you delete (here in `settlement-clash.txt`):
+1. **List every payout of the orders that clash, returns included, and keep the output** (here in
+   `settlement-clash.txt`): once you delete rows it is their record in the running database, and the pre-upgrade
+   backup from [section 1](#1-take-a-backup-and-record-what-you-run) is the way back to them. `amount` is in the
+   smallest unit of `currency`: satoshi for BTC (100 000 000 per BTC), piconero for XMR (10^12 per XMR). `user_id`
+   is the recipient, and `created` and `updated` bound when the row was queued and last changed:
 
    ```sh
    db_sql <<'SQL' | tee settlement-clash.txt
-   SELECT p.id, p.order_id, o.state AS order_state, p.kind, p.state, p.send_ambiguous, p.amount, p.address, p.txid, p.error
+   SELECT p.id, p.order_id, o.state AS order_state, p.kind, p.state, p.send_ambiguous, p.currency, p.amount, p.address, p.user_id,
+     p.txid, p.error, p.created, p.updated
    FROM payouts p JOIN orders o ON o.id = p.order_id
    WHERE p.order_id IN (SELECT order_id FROM payouts GROUP BY order_id
      HAVING count(*) FILTER (WHERE kind IN ('release','refund')) > 1

@@ -2,10 +2,13 @@ package market
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -349,7 +352,8 @@ func TestPayoutKindsPerOrder(t *testing.T) {
 // two settlements or a refund beside a return. TestSettlementClashGuide runs it, with psql's :'order_id' bound as
 // $1, and checks that UPGRADING.md carries it verbatim (whitespace aside).
 var settlementClashSQL = struct{ list, keepRefund, keepRelease, check string }{
-	list: `SELECT p.id, p.order_id, o.state AS order_state, p.kind, p.state, p.send_ambiguous, p.amount, p.address, p.txid, p.error
+	list: `SELECT p.id, p.order_id, o.state AS order_state, p.kind, p.state, p.send_ambiguous, p.currency, p.amount, p.address, p.user_id,
+  p.txid, p.error, p.created, p.updated
 FROM payouts p JOIN orders o ON o.id = p.order_id
 WHERE p.order_id IN (SELECT order_id FROM payouts GROUP BY order_id
   HAVING count(*) FILTER (WHERE kind IN ('release','refund')) > 1
@@ -448,29 +452,91 @@ func TestOneSettlementMigrationRefusesExistingClash(t *testing.T) {
 // release's return, which the watcher would send, paying the excess a second time: migration 070 refuses that,
 // naming the order, and changes nothing. The guide's own SQL lists the return with the clash, deletes a release
 // together with its return (or the refund alone), and its final check finds no order with a refund and a return;
-// both migrations then apply.
+// both migrations then apply. The final check names exactly the orders the migrations refuse (A-284), and the
+// listing carries what the wallet check needs (A-282).
 func TestSettlementClashGuide(t *testing.T) {
 	p := newPayEnv(t)
 	apply := p.unsettle()
 	keepRefund, keepRelease := p.order, p.testEnv.order(p.buyer.ID, p.productID, "BTC", stateCompleted)
 	leftover := p.testEnv.order(p.buyer.ID, p.productID, "BTC", stateCancelled) // what the old guide left
+	bare := p.testEnv.order(p.buyer.ID, p.productID, "BTC", stateCompleted)     // two settlements, no return
 	clean := p.testEnv.order(p.buyer.ID, p.productID, "BTC", stateCompleted)
 	p.insertPayouts(keepRefund, "release", "return", "refund")
 	p.insertPayouts(keepRelease, "release", "return", "refund")
 	p.insertPayouts(leftover, "refund", "return")
+	p.insertPayouts(bare, "release", "refund")
 	p.insertPayouts(clean, "release", "return")
 	total := p.count("SELECT count(*) FROM payouts")
-	if err := apply(""); err == nil || !strings.Contains(err.Error(), "migration 069_payout_one_settlement") {
+	// named returns the orders a refused migration names, sorted.
+	named := func(err error) []string {
+		t.Helper()
+		m := regexp.MustCompile(`order\(s\) (.+?) have both`).FindStringSubmatch(fmt.Sprint(err))
+		if m == nil {
+			t.Fatalf("no orders named in %v", err)
+		}
+		return strings.Split(m[1], ", ")
+	}
+	// checked returns the orders step 5's check lists, sorted, run through query (the database or a transaction).
+	checked := func(query func(string, ...any) (*sql.Rows, error)) []string {
+		t.Helper()
+		rows, err := query(settlementClashSQL.check)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var orders []string
+		for rows.Next() {
+			var order, kinds string
+			if err = rows.Scan(&order, &kinds); err != nil {
+				t.Fatal(err)
+			}
+			orders = append(orders, order)
+		}
+		if err = rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		sort.Strings(orders)
+		return orders
+	}
+	sorted := func(s ...string) []string { sort.Strings(s); return s }
+	err := apply("")
+	if err == nil || !strings.Contains(err.Error(), "migration 069_payout_one_settlement") {
 		t.Fatalf("migrations over a release+refund clash: %v", err)
 	}
+	if got, want := named(err), sorted(keepRefund, keepRelease, bare); !slices.Equal(got, want) {
+		t.Fatalf("069 names %v, want %v", got, want)
+	}
 	// The old guide: delete "the other row", the release only. Migration 069 then passes and 070 refuses.
-	err := apply("DELETE FROM payouts WHERE kind='release' AND order_id=ANY($1)", []string{keepRefund, keepRelease})
+	oldGuide, oldOrders := "DELETE FROM payouts WHERE kind='release' AND order_id=ANY($1)", []string{keepRefund, keepRelease, bare}
+	err = apply(oldGuide, oldOrders)
 	if err == nil || !strings.Contains(err.Error(), "migration 070_payout_refund_or_return") || !strings.Contains(err.Error(), "both a refund and a return") ||
 		!strings.Contains(err.Error(), keepRefund) || !strings.Contains(err.Error(), leftover) || strings.Contains(err.Error(), clean) || !strings.Contains(err.Error(), "UPGRADING.md") {
 		t.Fatalf("migrations over a refund beside a return: %v", err)
 	}
+	refused070 := named(err)
 	if p.count("SELECT count(*) FROM payouts") != total || p.settlementIndexes() != 0 {
 		t.Fatal("a refused migration changed payouts or left its index or record")
+	}
+	// Step 5's check over a clash lists exactly the orders the migrations refuse and no settled one (A-284): over
+	// the old guide's leftovers (release deleted, refund beside return) the orders 070 names, and over the original
+	// clash every order step 1 lists, the refund+return leftover and the release+refund order without a return
+	// included.
+	tx, err := p.DB.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(oldGuide, oldOrders); err != nil {
+		t.Fatal(err)
+	}
+	if got := checked(tx.Query); !slices.Equal(got, refused070) || slices.Contains(got, clean) || slices.Contains(got, bare) {
+		t.Fatalf("check over the old guide's leftovers lists %v, want %v (070's)", got, refused070)
+	}
+	if err = tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	clashing := sorted(keepRefund, keepRelease, leftover, bare)
+	if got := checked(p.DB.Query); !slices.Equal(got, clashing) {
+		t.Fatalf("check over the clash lists %v, want %v", got, clashing)
 	}
 
 	// Step 1: the listing names every payout of the clashing orders, returns included, and no other order.
@@ -479,6 +545,13 @@ func TestSettlementClashGuide(t *testing.T) {
 		t.Fatal(err)
 	}
 	cols, _ := rows.Columns()
+	// A-282: the listing is the record of the rows step 4 deletes, so it carries what the step-2 wallet check and
+	// rebuilding a row need: the currency (amounts are in its smallest unit), the recipient and the times.
+	for _, c := range []string{"id", "order_id", "kind", "state", "send_ambiguous", "currency", "amount", "address", "user_id", "txid", "error", "created", "updated"} {
+		if !slices.Contains(cols, c) {
+			t.Fatalf("clash listing columns %v lack %s", cols, c)
+		}
+	}
 	var listed []string
 	for rows.Next() {
 		vals := make([]any, len(cols))
@@ -492,7 +565,8 @@ func TestSettlementClashGuide(t *testing.T) {
 		listed = append(listed, vals[1].(string)+":"+vals[3].(string))
 	}
 	rows.Close()
-	want := []string{keepRefund + ":refund", keepRefund + ":release", keepRefund + ":return", keepRelease + ":refund", keepRelease + ":release", keepRelease + ":return", leftover + ":refund", leftover + ":return"}
+	want := []string{keepRefund + ":refund", keepRefund + ":release", keepRefund + ":return", keepRelease + ":refund", keepRelease + ":release", keepRelease + ":return",
+		leftover + ":refund", leftover + ":return", bare + ":refund", bare + ":release"}
 	sort.Strings(listed)
 	sort.Strings(want)
 	if strings.Join(listed, ",") != strings.Join(want, ",") {
@@ -512,9 +586,10 @@ func TestSettlementClashGuide(t *testing.T) {
 	del(settlementClashSQL.keepRefund, keepRefund, 2)
 	del(settlementClashSQL.keepRelease, keepRelease, 1)
 	del(settlementClashSQL.keepRefund, leftover, 1)
+	del(settlementClashSQL.keepRelease, bare, 1)
 	// Step 5: the check finds nothing, and the migrations apply.
-	if n := p.count("SELECT count(*) FROM (" + strings.TrimSuffix(settlementClashSQL.check, ";") + ") c"); n != 0 {
-		t.Fatalf("check lists %d orders after the guide's deletions", n)
+	if got := checked(p.DB.Query); len(got) != 0 {
+		t.Fatalf("check lists %v after the guide's deletions", got)
 	}
 	if n := p.count("SELECT count(*) FROM payouts f WHERE kind='refund' AND EXISTS (SELECT 1 FROM payouts r WHERE r.order_id=f.order_id AND r.kind='return')"); n != 0 {
 		t.Fatalf("%d orders keep a refund and a return", n)
@@ -529,8 +604,8 @@ func TestSettlementClashGuide(t *testing.T) {
 		}
 		return k
 	}
-	if p.settlementIndexes() != 4 || kinds(keepRefund) != "refund" || kinds(keepRelease) != "release,return" || kinds(leftover) != "refund" || kinds(clean) != "release,return" {
-		t.Fatalf("after the guide: %s %s %s %s", kinds(keepRefund), kinds(keepRelease), kinds(leftover), kinds(clean))
+	if p.settlementIndexes() != 4 || kinds(keepRefund) != "refund" || kinds(keepRelease) != "release,return" || kinds(leftover) != "refund" || kinds(bare) != "release" || kinds(clean) != "release,return" {
+		t.Fatalf("after the guide: %s %s %s %s %s", kinds(keepRefund), kinds(keepRelease), kinds(leftover), kinds(bare), kinds(clean))
 	}
 
 	doc, err := os.ReadFile("UPGRADING.md")
