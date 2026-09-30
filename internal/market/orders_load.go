@@ -595,6 +595,23 @@ func isDisputeReply(from, to, actorID, note string, o *Order) bool {
 	return from == stateDisputed && to == stateDisputed && (actorID == o.BuyerID || actorID == o.VendorID) && strings.HasPrefix(note, disputeReplyPrefix)
 }
 
+// disputeEvidenceQuery counts, per open dispute in $1, the messages each party sent to each moderator or administrator
+// since the dispute opened. left_staff: when each account was last recorded leaving staff, from its role-change audit
+// row (A-294; both writers, adminAction and SetRole, word it "Role changed from OLD to NEW by …"). A message counts
+// when its recipient is staff now, or left staff after the message was sent (listed as no longer staff). A-301: the
+// first LIKE is the predicate of the partial index audit_events_role_change (migration 072); without it the planner
+// cannot use the index and scans every audit row, one per sign-in. The recipients are one UNION of current and former
+// staff, not an OR on users, so the few of them are estimated as few and their messages read by messages_recipient.
+const disputeEvidenceQuery = `WITH left_staff AS (SELECT user_id,max(created) AS at FROM audit_events
+			WHERE action LIKE 'Role changed from %' AND (action LIKE 'Role changed from moderator to %' OR action LIKE 'Role changed from admin to %')
+			GROUP BY user_id)
+		SELECT d.id,m.sender_id=o.buyer_id,s.handle,count(*),to_char(max(m.created),'YYYY-MM-DD HH24:MI "UTC"'),s.suspended_at IS NOT NULL,s.role NOT IN ('moderator','admin')
+		FROM disputes d JOIN orders o ON o.id=d.order_id JOIN products p ON p.id=o.product_id
+		JOIN users s ON s.id IN (SELECT id FROM users WHERE role IN ('moderator','admin') UNION SELECT user_id FROM left_staff) AND s.id<>o.buyer_id AND s.id<>p.vendor_id
+		LEFT JOIN left_staff l ON l.user_id=s.id
+		JOIN messages m ON m.recipient_id=s.id AND m.created>=d.created AND m.sender_id IN (o.buyer_id,p.vendor_id) AND (s.role IN ('moderator','admin') OR l.at>=m.created)
+		WHERE d.id=ANY($1) GROUP BY d.id,m.sender_id=o.buyer_id,s.handle,s.suspended_at,s.role ORDER BY s.handle`
+
 // disputeEvidence (A-162) lists, for every open dispute a moderator or administrator viewer is not party to, how
 // many messages each party sent to each moderator or administrator since the dispute opened, and when the latest was
 // sent. It reads only who sent a message to whom and when, never a body: a resolver learns who holds encrypted
@@ -617,17 +634,7 @@ func (a *App) disputeEvidence(ctx context.Context, d *PageData) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	// left_staff: when each account was last recorded leaving staff, from its role-change audit row (A-294; both
-	// writers, adminAction and SetRole, word it "Role changed from OLD to NEW by …"). A message counts when its
-	// recipient is staff now, or left staff after the message was sent (listed as no longer staff).
-	rows, err := a.db.QueryContext(ctx, `WITH left_staff AS (SELECT user_id,max(created) AS at FROM audit_events
-			WHERE action LIKE 'Role changed from moderator to %' OR action LIKE 'Role changed from admin to %' GROUP BY user_id)
-		SELECT d.id,m.sender_id=o.buyer_id,s.handle,count(*),to_char(max(m.created),'YYYY-MM-DD HH24:MI "UTC"'),s.suspended_at IS NOT NULL,s.role NOT IN ('moderator','admin')
-		FROM disputes d JOIN orders o ON o.id=d.order_id JOIN products p ON p.id=o.product_id
-		JOIN users s ON (s.role IN ('moderator','admin') OR s.id IN (SELECT user_id FROM left_staff)) AND s.id<>o.buyer_id AND s.id<>p.vendor_id
-		LEFT JOIN left_staff l ON l.user_id=s.id
-		JOIN messages m ON m.recipient_id=s.id AND m.created>=d.created AND m.sender_id IN (o.buyer_id,p.vendor_id) AND (s.role IN ('moderator','admin') OR l.at>=m.created)
-		WHERE d.id=ANY($1) GROUP BY d.id,m.sender_id=o.buyer_id,s.handle,s.suspended_at,s.role ORDER BY s.handle`, ids)
+	rows, err := a.db.QueryContext(ctx, disputeEvidenceQuery, ids)
 	if err != nil {
 		return err
 	}
