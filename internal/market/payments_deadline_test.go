@@ -27,7 +27,7 @@ func TestAwaitingPageStatesCancellationTime(t *testing.T) {
 	// Unpaid: the address's issue time plus the payment window.
 	page := p.page("/order?id="+p.order, p.buyerSess)
 	mustContain(t, page, cancelAfter(issued.Add(2*time.Hour)),
-		"its confirmed deposits are refunded to your saved BTC payout address (the refund waits until one is saved); if together they are below the minimum automatic refund of 0.0001 BTC, they are not refunded automatically and market staff are notified.")
+		"its confirmed deposits are refunded to your saved BTC payout address (the refund waits until one is saved); if together they are below the minimum automatic payout of 0.0001 BTC, they are not refunded automatically and market staff are notified.")
 	// A-233(c): no unconditional refund promise (a total below the floor is flagged for staff, A-99/A-211).
 	mustNotContain(t, page, "it is cancelled and what you sent is refunded")
 	mustContain(t, p.page("/order?id="+p.order, p.vendorSess), cancelAfter(issued.Add(2*time.Hour)), "refunded to the buyer's saved BTC payout address")

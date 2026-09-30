@@ -19,7 +19,7 @@ import (
 )
 
 // Overpayments: a release pays the vendor exactly the price and returns the excess to the buyer with the network
-// fee taken from it; an excess below the minimum automatic refund goes to the vendor; a refund or return larger
+// fee taken from it; an excess below the minimum automatic payout goes to the vendor; a refund or return larger
 // than the price (a likely mistake) waits for an administrator, while one up to the price is sent automatically;
 // every payout (release, refund or return) is sent with the fee-from-amount call (A-232).
 
@@ -81,7 +81,7 @@ func TestOverpaymentReturnedToBuyer(t *testing.T) {
 	buyerPage, vendorPage := p.overpaidPages()
 	mustContain(t, buyerPage, "You sent 0.0005 BTC more than the price (test network). Completing releases the price to the vendor and returns the excess to your saved BTC payout address, with the network fee deducted.",
 		"Release 0.001 BTC (test network) to "+p.vendor.Handle+" (the price) and return the 0.0005 BTC paid over the price to "+p.buyer.Handle+"; network fee deducted from each. This is final.")
-	mustNotContain(t, buyerPage, "the return waits", "below the minimum automatic refund", "administrator reviews its return")
+	mustNotContain(t, buyerPage, "the return waits", "below the minimum automatic payout", "administrator reviews its return")
 	mustContain(t, vendorPage, "The buyer sent 0.0005 BTC more than the price (test network). Completing releases the price to you and returns the excess to the buyer, with the network fee deducted.")
 	mustNotContain(t, vendorPage, "your saved", "payout address saved", "the return waits")
 	p.move(p.order, stateShipped, stateCompleted, p.buyer)
@@ -128,10 +128,10 @@ func TestSmallExcessStaysWithVendor(t *testing.T) {
 	p.paidByWatcherAmount(100000 + minPayoutBTC - 1)
 	// A-215: the page names the floor and says the excess is not returned; nothing waits for a payout address.
 	buyerPage, vendorPage := p.overpaidPages()
-	mustContain(t, buyerPage, "You sent 0.00009999 BTC more than the price (test network). Completing releases everything to the vendor: the excess is below the minimum automatic refund of 0.0001 BTC, so it is not returned.",
-		"Release 0.00109999 BTC (test network) to "+p.vendor.Handle+" — 0.00009999 BTC more than the price, below the minimum automatic refund, so it is not returned; network fee deducted. This is final.")
+	mustContain(t, buyerPage, "You sent 0.00009999 BTC more than the price (test network). Completing releases everything to the vendor: the excess is below the minimum automatic payout of 0.0001 BTC, so it is not returned.",
+		"Release 0.00109999 BTC (test network) to "+p.vendor.Handle+" — 0.00009999 BTC more than the price, below the minimum automatic payout, so it is not returned; network fee deducted. This is final.")
 	mustNotContain(t, buyerPage, "returns the excess", "the return waits", "your saved")
-	mustContain(t, vendorPage, "The buyer sent 0.00009999 BTC more than the price (test network). Completing releases everything to you: the excess is below the minimum automatic refund of 0.0001 BTC, so it is not returned.")
+	mustContain(t, vendorPage, "The buyer sent 0.00009999 BTC more than the price (test network). Completing releases everything to you: the excess is below the minimum automatic payout of 0.0001 BTC, so it is not returned.")
 	mustNotContain(t, vendorPage, "returns the excess", "your saved")
 	p.move(p.order, stateShipped, stateCompleted, p.buyer)
 	if st, _, _, amt := p.payout(p.order); st != "pending" || amt != 100000+minPayoutBTC-1 {
@@ -663,7 +663,7 @@ func TestOverpaidXMRAlertNamesItsFloorAndAddress(t *testing.T) {
 		deposit    int64
 		want, deny string
 	}{
-		{500000000000 + minPayoutXMR - 1, "Completing releases everything to the vendor: the excess is below the minimum automatic refund of 0.001 XMR, so it is not returned.", "payout address saved"},
+		{500000000000 + minPayoutXMR - 1, "Completing releases everything to the vendor: the excess is below the minimum automatic payout of 0.001 XMR, so it is not returned.", "payout address saved"},
 		{500000000000 + minPayoutXMR, "returns the excess to you, with the network fee deducted. You have no XMR payout address saved, so the return waits until you save one:", "your saved"},
 	} {
 		id := p.testEnv.order(p.buyer.ID, p.productID, "XMR", stateAwaitingPayment)

@@ -3,6 +3,7 @@ package market
 import (
 	"html"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -81,6 +82,45 @@ func TestStaffContactShownWherePromised(t *testing.T) {
 	agEnableTOTP(e, totpID)
 	// The payout-address change notice (A-102) tells the owner to contact the market staff.
 	p.check(p.do("POST", "/account/payout", p.vendorSess, url.Values{"currency": {"BTC"}, "address": {"fake-testnet-vendor"}, "password": {testPassword}}), 303)
+	// A-279: a listing an administrator took down (vendor desk, edit page, restore refusal), a photo the malware
+	// scanner flagged, and /totp after a sign-in with the last recovery code.
+	takenDown := e.product(p.vendor.ID, "physical")
+	agExec(e, "UPDATE products SET archived=true,archived_at=now(),admin_archive_reason='Counterfeit branding shown.' WHERE id=$1", takenDown)
+	photoListing := e.product(p.vendor.ID, "physical")
+	clamd := newFakeClamd(t)
+	e.withScanner(clamd)
+	clamd.SetVerdict(func([]byte) string { return "stream: Win.Test.Staff-Contact FOUND" })
+	recoveryID, _ := e.user("sc_recovery", "buyer")
+	_, lastCode := agEnableTOTP(e, recoveryID)
+	anonRecovery, pcRecovery := e.pendingSignIn("sc_recovery")
+	w := e.do("POST", "/challenge", anonRecovery, url.Values{"method": {"totp"}, "recovery": {lastCode}}, pcRecovery)
+	if w.Code != 303 || w.Header().Get("Location") != "/totp?signin=recovery" {
+		t.Fatalf("sign-in with the last recovery code: %d %q", w.Code, w.Header().Get("Location"))
+	}
+	recoverySess := e.session(w)
+	restoreRefusal := func() string {
+		w := e.do("POST", "/listings/restore", p.vendorSess, form("id", takenDown))
+		if w.Code != 409 {
+			t.Fatalf("restore of a taken-down listing: %d %q", w.Code, w.Body.String())
+		}
+		return strings.TrimSpace(w.Body.String())
+	}
+	uploadRefusal := func() string {
+		w := e.upload("/listings/photo", p.vendorSess, e.photoParts(p.vendorSess, photoListing, smallJPEG(t))...)
+		if w.Code != 422 {
+			t.Fatalf("flagged upload: %d %q", w.Code, w.Body.String())
+		}
+		return html.UnescapeString(w.Body.String())
+	}
+	uploadRef := regexp.MustCompile(`Reference: [0-9a-f]{8}`)
+	const restoreLine = "An administrator took this listing down with the reason “Counterfeit branding shown.”. You can still edit it, but only an administrator can restore it. If you think this is wrong, ask an administrator to review it. "
+	const uploadLine = "Photo refused: the malware scanner flagged this file. Nothing was stored. If you think this is a mistake, send the market staff this reference. "
+	const totpLine = "You signed in with a recovery code. 0 recovery codes remain. Without your authenticator you cannot turn TOTP off yourself: ask the market staff for help before you sign out. "
+	const deskLine = "Only an administrator can restore it. If you think this is wrong, ask an administrator to review it. "
+	const editLine = "Only an administrator can restore this listing; you can still edit it. If you think this is wrong, ask an administrator to review it. "
+	// lostFactors is /challenge's line (A-289): the web reset serves every account but an administrator's, whose
+	// second factors only the operator resets on the server (-reset-admin-factors).
+	const lostFactors = lostFactorsLine + "? Only a market administrator can turn your second factors off, or, for an administrator account, the operator on the server. "
 
 	suspendedRefusal := func() string {
 		w := e.do("POST", "/login", randomToken(), form("handle", "sc_suspended", "password", testPassword))
@@ -111,43 +151,65 @@ func TestStaffContactShownWherePromised(t *testing.T) {
 	}
 	pages := func() map[string]string {
 		return map[string]string{
-			"/canary":    html.UnescapeString(e.body("GET", "/canary", "", nil, 200)),
-			"/login":     html.UnescapeString(captchaPage("/login")),
-			"/register":  html.UnescapeString(captchaPage("/register")),
-			"/challenge": html.UnescapeString(challenge()),
-			"notice":     notice(),
+			"/canary":           html.UnescapeString(e.body("GET", "/canary", "", nil, 200)),
+			"/login":            html.UnescapeString(captchaPage("/login")),
+			"/register":         html.UnescapeString(captchaPage("/register")),
+			"/challenge":        html.UnescapeString(challenge()),
+			"notice":            notice(),
+			"/vendor-dashboard": html.UnescapeString(e.body("GET", "/vendor-dashboard", p.vendorSess, nil, 200)),
+			"/listing-edit":     html.UnescapeString(e.body("GET", "/listing-edit?id="+takenDown, p.vendorSess, nil, 200)),
+			"/totp":             html.UnescapeString(e.body("GET", "/totp?signin=recovery", recoverySess, nil, 200)),
+			"upload":            uploadRefusal(),
+		}
+	}
+	// A-279's plain-text refusal and pages, each with its whole line (contact: the staff-contact sentence expected).
+	lines := func(b map[string]string, contact string) {
+		t.Helper()
+		if got := restoreRefusal(); got != restoreLine+contact {
+			t.Fatalf("restore refusal %q", got)
+		}
+		mustContain(t, b["/vendor-dashboard"], deskLine+contact)
+		mustContain(t, b["/listing-edit"], editLine+contact)
+		mustContain(t, b["/totp"], totpLine+contact)
+		mustContain(t, b["upload"], uploadLine+contact+" Reference: ")
+		if !uploadRef.MatchString(b["upload"]) {
+			t.Fatal("flagged upload refusal without its reference")
 		}
 	}
 
 	if got := suspendedRefusal(); got != "This account is suspended. "+askOperatorLine {
 		t.Fatalf("unset: suspended refusal %q", got)
 	}
-	for name, b := range pages() {
+	unset := pages()
+	for name, b := range unset {
 		mustContain(t, b, askOperatorLine)
 		mustNotContain(t, b, "Contact the market staff:")
 		switch name {
 		case "/login", "/register":
 			mustContain(t, b, captchaHelpLine+" "+askOperatorLine)
 		case "/challenge":
-			mustContain(t, b, lostFactorsLine+"? Only a market administrator can turn your second factors off. "+askOperatorLine)
+			mustContain(t, b, lostFactors+askOperatorLine)
 		}
 	}
+	lines(unset, askOperatorLine)
 
 	agExec(e, "INSERT INTO settings(key,value) VALUES('staff_contact',$1)", staffContactValue)
 	want := "Contact the market staff: " + staffContactValue + "."
 	if got := suspendedRefusal(); got != "This account is suspended. "+want {
 		t.Fatalf("set: suspended refusal %q", got)
 	}
-	for name, b := range pages() {
+	set := pages()
+	for name, b := range set {
 		mustContain(t, b, want)
 		mustNotContain(t, b, askOperatorLine, `href="/messages?to=`)
 		switch name {
 		case "/login", "/register":
 			mustContain(t, b, captchaHelpLine+" "+want)
 		case "/challenge":
-			mustContain(t, b, lostFactorsLine+"? Only a market administrator can turn your second factors off. "+want)
+			mustContain(t, b, lostFactors+want)
 		}
 	}
+	lines(set, want)
 	// A notification that does not ask the reader to contact the staff gets no contact line.
 	agExec(e, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,'Order 1234abcd: shipped')", randomToken(), p.buyer.ID)
 	mustNotContain(t, e.body("GET", "/notifications", p.buyerSess, nil, 200), "Contact the market staff:")
@@ -156,11 +218,16 @@ func TestStaffContactShownWherePromised(t *testing.T) {
 	hostile := `<script>alert(1)</script><a href="http://evil.example">x</a>`
 	agExec(e, "UPDATE settings SET value=$1 WHERE key='staff_contact'", hostile)
 	for _, b := range []string{e.body("GET", "/canary", "", nil, 200), captchaPage("/login"), challenge(),
-		e.body("GET", "/notifications", p.vendorSess, nil, 200)} {
+		e.body("GET", "/notifications", p.vendorSess, nil, 200), e.body("GET", "/vendor-dashboard", p.vendorSess, nil, 200),
+		e.body("GET", "/listing-edit?id="+takenDown, p.vendorSess, nil, 200), e.body("GET", "/totp?signin=recovery", recoverySess, nil, 200),
+		e.upload("/listings/photo", p.vendorSess, e.photoParts(p.vendorSess, photoListing, smallJPEG(t))...).Body.String()} {
 		mustContain(t, b, "&lt;script&gt;alert(1)&lt;/script&gt;&lt;a href=&#34;http://evil.example&#34;&gt;")
 		mustNotContain(t, b, "<script", `href="http://evil.example"`)
 	}
-	w := e.do("POST", "/login", randomToken(), form("handle", "sc_suspended", "password", testPassword))
+	if got := restoreRefusal(); got != restoreLine+"Contact the market staff: "+hostile+"." {
+		t.Fatalf("hostile contact in the restore refusal: %q", got)
+	}
+	w = e.do("POST", "/login", randomToken(), form("handle", "sc_suspended", "password", testPassword))
 	if ct := w.Header().Get("Content-Type"); w.Code != 403 || !strings.HasPrefix(ct, "text/plain") || w.Header().Get("X-Content-Type-Options") != "nosniff" ||
 		strings.TrimSpace(w.Body.String()) != "This account is suspended. Contact the market staff: "+hostile+"." {
 		t.Fatalf("hostile contact in the suspended refusal: %d %q %q", w.Code, ct, w.Body.String())

@@ -166,7 +166,7 @@ func TestCancelOrderWithoutDepositNeedsNoConfirmation(t *testing.T) {
 	}
 }
 
-// Below the minimum automatic refund, the deadline still cancels the order, but nothing is sent: the deposit
+// Below the minimum automatic payout, the deadline still cancels the order, but nothing is sent: the deposit
 // is flagged for staff once, as for any refund below the floor.
 func TestUnderpaidExpiryBelowRefundFloorIsFlagged(t *testing.T) {
 	p := newPayEnv(t)
@@ -190,7 +190,7 @@ func TestUnderpaidExpiryBelowRefundFloorIsFlagged(t *testing.T) {
 	if err := p.DB.QueryRow("SELECT body FROM notifications WHERE user_id=$1 AND body LIKE '%payment window ended with%'", p.buyer.ID).Scan(&notice); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"0.00009999 BTC", "below the minimum automatic refund of 0.0001 BTC", "not refunded", "market staff were notified", "Anything sent to this order's address after the cancellation is not refunded automatically"} {
+	for _, want := range []string{"0.00009999 BTC", "below the minimum automatic payout of 0.0001 BTC", "not refunded", "market staff were notified", "Anything sent to this order's address after the cancellation is not refunded automatically"} {
 		if !strings.Contains(notice, want) {
 			t.Fatalf("notice %q lacks %q", notice, want)
 		}
@@ -198,5 +198,5 @@ func TestUnderpaidExpiryBelowRefundFloorIsFlagged(t *testing.T) {
 	if strings.Contains(notice, "The order page shows the refund") || strings.Contains(notice, "is refunded to your saved") {
 		t.Fatalf("notice promises a refund: %q", notice)
 	}
-	mustContain(t, p.page("/order?id="+p.order, p.buyerSess), "0.00009999 BTC received, below the minimum automatic refund of 0.0001 BTC; not refunded; market staff were notified")
+	mustContain(t, p.page("/order?id="+p.order, p.buyerSess), "0.00009999 BTC received, below the minimum automatic payout of 0.0001 BTC; not refunded; market staff were notified")
 }
