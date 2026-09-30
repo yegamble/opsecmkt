@@ -39,11 +39,12 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 	}
 	var refund string
 	var feeBps int64
-	var noted bool
+	var noted, watched bool
 	var windowFrom time.Time
 	if err := a.db.QueryRowContext(ctx, `SELECT es.address,es.refund_address,es.fee_bps,es.underpaid_noted IS NOT NULL,
-		GREATEST(es.created,(SELECT max(created) FROM payments WHERE order_id=es.order_id AND confirmations>=0 AND NOT locked))
-		FROM escrows es WHERE es.order_id=$1`, o.ID).Scan(&v.Address, &refund, &feeBps, &noted, &windowFrom); err != nil {
+		GREATEST(es.created,(SELECT max(created) FROM payments WHERE order_id=es.order_id AND confirmations>=0 AND NOT locked)),
+		`+escrowWatchedSQL+`
+		FROM escrows es JOIN orders o ON o.id=es.order_id WHERE es.order_id=$1`, o.ID).Scan(&v.Address, &refund, &feeBps, &noted, &windowFrom, &watched); err != nil {
 		return err
 	}
 	if v.Own == roleBuyer {
@@ -126,6 +127,9 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 	case o.State == stateCancelled && received+pending == 0 && e == nil:
 		// Nothing is read while escrow is not enabled, so an empty ledger proves nothing (QA31-1).
 		v.Status = "Cancelled. This escrow cannot be checked right now because Bitcoin escrow is unavailable, so a deposit to it may not be shown here."
+	case o.State == stateCancelled && received+pending == 0 && !watched:
+		// The watcher stopped reading this address (escrowWatchedSQL), so an empty ledger proves nothing (A-332).
+		v.Status = "Cancelled. This escrow address is no longer watched: deposits are watched for " + escrowCreatedWatch + " after checkout (and for " + escrowClosedWatch + " after the order closes), so a deposit to it may not be shown here."
 	case o.State == stateCancelled && received+pending == 0:
 		v.Status = "Cancelled; nothing was received in this escrow"
 	default:

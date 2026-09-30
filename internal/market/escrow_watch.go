@@ -31,6 +31,16 @@ import (
 
 const escrowWatcherLock = 782495 // the pooled watcher's is 782494
 
+// The escrow watcher's horizon for a closed order, in SQL interval text: the order changed within escrowClosedWatch
+// or its escrow was created within escrowCreatedWatch (an open order is read whatever its age). escrowWatchedSQL is
+// that test on the orders row o and escrows row es; the watcher's query and the order page's status share it, so the
+// page never says "nothing was received" about an address that is no longer read (A-332).
+const (
+	escrowClosedWatch  = "24 hours"
+	escrowCreatedWatch = "30 days"
+	escrowWatchedSQL   = "(o.updated > now()-interval '" + escrowClosedWatch + "' OR es.created > now()-interval '" + escrowCreatedWatch + "')"
+)
+
 func init() {
 	registerBackground(escrowWatcher)
 	registerTransitionHook(escrowTransitionHook)
@@ -104,10 +114,10 @@ func (a *App) escrowPollOnce(ctx context.Context) error {
 			conn.Raw(func(any) error { return driver.ErrBadConn })
 		}
 	}()
-	// Open escrow orders whatever their age, and closed ones changed in the last 24 hours or created in the last 30
-	// days (their ledger stays current for the order page and P1-c's stray-refund check).
+	// Open escrow orders whatever their age, and closed ones within escrowWatchedSQL's horizon (their ledger stays
+	// current for the order page and P1-c's stray-refund check).
 	rows, err := a.db.QueryContext(ctx, `SELECT es.address,es.order_id FROM escrows es JOIN orders o ON o.id=es.order_id
-		WHERE o.state IN ('awaiting_payment',`+fundedOpenStates+`) OR o.updated > now()-interval '24 hours' OR es.created > now()-interval '30 days'
+		WHERE o.state IN ('awaiting_payment',`+fundedOpenStates+`) OR `+escrowWatchedSQL+`
 		ORDER BY o.updated`)
 	if err != nil {
 		return err
