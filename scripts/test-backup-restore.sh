@@ -138,6 +138,9 @@ scripts/restore.sh "$backup" <<< 'RESTORE' > "$work/restore.log"
 grep -q 'Held 4 restored payout(s)' "$work/restore.log"
 grep -q 'Marked 1 restored failed payout(s) as possibly sent' "$work/restore.log"
 grep -q 'do not contain the custodial wallets' "$work/restore.log"
+# A-142: the wallet reminder names the runbook section, which must exist under that heading.
+grep -q 'docs/testnet-runbook.md describes ("Restore the wallets")' "$work/restore.log"
+grep -q '^#### Restore the wallets$' docs/testnet-runbook.md
 grep -q 'point BACKUP_DATABASE_URL at the same database' "$work/restore.log"
 # A-190 (ruling D4): the line about images removed after the backup, with the dump's creation time; a dump
 # without an images table restores none.
