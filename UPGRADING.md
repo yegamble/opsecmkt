@@ -778,6 +778,14 @@ order named here as below, with `db_sql` defined as in section 14, then start th
    second time. Rolling back past this release needs the pre-upgrade backup (section 5): the earlier release refuses
    to start on a database that records migration 073.
 
+## 19. Bitcoin escrow tables (migration 074)
+
+Migration 074 runs at startup. It adds the tables Bitcoin escrow will use (`user_escrow_keys`, `escrows`,
+`escrow_pubkeys`, `settlements`, the sequence `escrow_market_index`) and the column `payments.settlement_id`. They
+stay empty unless `ESCROW_BTC=on`, a regtest-only setting that is off by default ([operator
+guide](docs/operator-guide.md#bitcoin-escrow-regtest-only)); nothing changes for users or payments. No action is
+needed. Rolling back past this release needs the pre-upgrade backup, as for every migration (section 5).
+
 ## Appendix: new keys by hand
 
 `./scripts/install.sh upgrade` writes these for you. To add them yourself, use your editor (values in single

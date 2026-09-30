@@ -160,7 +160,9 @@ func New(ctx context.Context, preview bool) (*App, error) {
 		a.closeDB()
 		return nil, err
 	}
-	if err = a.initEscrow(payCtx); err != nil {
+	escrowCtx, cancelEscrow := context.WithTimeout(ctx, paymentStartupTimeout)
+	defer cancelEscrow()
+	if err = a.initEscrow(escrowCtx); err != nil {
 		a.closeDB()
 		return nil, err
 	}
