@@ -127,7 +127,7 @@ func TestPaymentReviewDisposition(t *testing.T) {
 
 		vendorBefore := p.count("SELECT count(*) FROM notifications WHERE user_id=$1", p.vendor.ID)
 		reason := "The buyer confirmed this was a test transfer to keep."
-		if code, loc := p.dispose(modSess, id, "no_action", "note", reason); code != 303 || loc != "/moderator?saved=1#payment-review" {
+		if code, loc := p.dispose(modSess, id, "no_action", "note", reason); code != 303 || loc != "/moderator#payment-review" {
 			t.Fatalf("no action: %d %s", code, loc)
 		}
 		if d := p.disposition(id); d != "no_action" {

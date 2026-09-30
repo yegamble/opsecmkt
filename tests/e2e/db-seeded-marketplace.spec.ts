@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { ADMIN, uniqueHandle } from './db-fixtures';
-import { setRole, signedIn } from './db-helpers';
+import { expectNotice, setRole, signedIn } from './db-helpers';
 
 // All seed records below are created through public forms against PostgreSQL.
 // No wallet is configured here; funded journeys live in wallet-journey.spec.ts.
@@ -101,7 +101,7 @@ test('seeded catalog discovery, role boundaries and persistent unfunded orders',
     await expect(vendor.getByRole('button', { name: 'Cancel draft' })).toHaveCount(0);
     await buyer.goto(orderURL);
     await buyer.getByRole('button', { name: 'Cancel draft' }).click();
-    await buyer.waitForURL(/&saved=1$/);
+    await expectNotice(buyer, 'Order cancelled.');
     await vendor.reload();
     await expect(vendor.locator('.page-head .badge')).toHaveText('Cancelled');
   } finally {

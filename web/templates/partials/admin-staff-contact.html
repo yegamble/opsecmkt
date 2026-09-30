@@ -1,6 +1,7 @@
 {{/* A-119: the administrator setting "Staff contact" (staff_contact.go), shown wherever people are told to contact the staff */}}
 {{define "admin-staff-contact"}}<section class="panel" id="staff-contact" aria-labelledby="staff-contact-heading">
-<h2 id="staff-contact-heading">Staff contact</h2>
+<h2 id="staff-contact-heading">Staff contact</h2>{{with $.NoticeIn "staff-contact"}}
+<div class="alert" role="status">{{.}}</div>{{end}}
 <p>Shown on the Transparency page, to a suspended account signing in, to someone who lost their sign-in factors or whose PGP key expired, beside the CAPTCHA and under notifications that tell people to contact the market staff. Write a handle, onion address or XMPP address. It is shown as text, never as a link; when it is exactly the handle of a moderator or administrator whose key can receive encrypted messages, signed-in users also get a link to message that handle. While it is empty, those places say “Ask the operator of this market.”</p>
 <form class="stack" method="post" action="/admin/staff-contact">
 <input type="hidden" name="csrf" value="{{.CSRF}}">

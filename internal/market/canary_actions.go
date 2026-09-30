@@ -67,7 +67,7 @@ func operatorKeyAction(c *actionCtx) (actionResult, error) {
 	if err = setSetting(c, settingOperatorFingerprint, fp); err != nil {
 		return actionResult{}, err
 	}
-	return actionResult{Redirect: "/admin?saved=1#transparency", Audit: "Set operator PGP key " + fp + " for canary verification"}, nil
+	return actionResult{Redirect: "/admin", Notice: "operator-key", Audit: "Set operator PGP key " + fp + " for canary verification"}, nil
 }
 
 // canaryAction stores an operator-clearsigned statement verbatim, only if it verifies against the operator key.

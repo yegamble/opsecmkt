@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { expect, test, type Page } from '@playwright/test';
 import { uniqueHandle } from './db-fixtures';
-import { signedIn, submitAndLoad } from './db-helpers';
+import { expectNotice, signedIn, submitAndLoad } from './db-helpers';
 
 // A-163: an administrator takes down another vendor's listing with a reason, confirmed with their password. The
 // vendor sees the reason on the listing and the vendor desk and has no restore control; only the administrator's
@@ -44,7 +44,8 @@ test('administrator takes down a listing with a reason and only an administrator
     await admin.getByLabel('Current password').fill(adminPassword);
     await fits(admin, 'open takedown form');
     await submitAndLoad(admin, admin.getByRole('button', { name: 'Take down listing' }));
-    await expect(admin).toHaveURL(new RegExp(`/listing-edit\\?id=${productID}&saved=1$`));
+    await expect(admin).toHaveURL(new RegExp(`/listing-edit\\?id=${productID}$`));
+    await expectNotice(admin, 'Listing taken down.');
     await admin.reload();
     await expect(admin.locator('.badge', { hasText: 'Taken down' })).toBeVisible();
     await expect(admin.locator('.takedown-reason')).toContainText(reason);
@@ -75,7 +76,8 @@ test('administrator takes down a listing with a reason and only an administrator
     await admin.goto(editURL);
     await admin.getByLabel('Current password').fill(adminPassword);
     await submitAndLoad(admin, admin.getByRole('button', { name: 'Restore listing' }));
-    await expect(admin).toHaveURL(new RegExp(`/listing-edit\\?id=${productID}&saved=1$`));
+    await expect(admin).toHaveURL(new RegExp(`/listing-edit\\?id=${productID}$`));
+    await expectNotice(admin, 'Listing restored.');
     const restored = await visitor.goto(`/product?id=${productID}`);
     expect(restored?.status()).toBe(200);
     await vendor.goto('/vendor-dashboard');

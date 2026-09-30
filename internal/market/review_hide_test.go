@@ -98,7 +98,7 @@ func TestAdminHidesAndRestoresReview(t *testing.T) {
 	// The administrator hides it from the product page and returns there.
 	w := e.do("POST", "/admin/review", admin, hide)
 	e.check(w, 303)
-	if loc := w.Header().Get("Location"); loc != productPage+"&saved=1#reviews-title" {
+	if loc := w.Header().Get("Location"); loc != productPage+"#reviews-title" {
 		t.Fatalf("redirect %q", loc)
 	}
 	agExpect(e, "/admin/review", admin, hide, 409, "already hidden")
@@ -140,7 +140,7 @@ func TestAdminHidesAndRestoresReview(t *testing.T) {
 	restore := reviewForm(t, e.body("GET", vendorPage, admin, nil, 200), "restore", badID)
 	w = e.do("POST", "/admin/review", admin, restore)
 	e.check(w, 303)
-	if loc := w.Header().Get("Location"); loc != vendorPage+"&saved=1#reviews-title" {
+	if loc := w.Header().Get("Location"); loc != vendorPage+"#reviews-title" {
 		t.Fatalf("redirect %q", loc)
 	}
 	agExpect(e, "/admin/review", admin, restore, 409, "is not hidden")

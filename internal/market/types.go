@@ -98,6 +98,7 @@ type Event struct{ Handle, Action, Created string } // Handle: account the audit
 
 type PageData struct {
 	Page, Title, CSRF, Error, Notice, Query, Category, Region, Currency, Mode string
+	NoticeAt                                                                  string // the section a one-shot notice renders in, "" = the top (notice.go)
 	User                                                                      *User
 	Products                                                                  []Product
 	Product                                                                   *Product

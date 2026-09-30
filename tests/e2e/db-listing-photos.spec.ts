@@ -70,7 +70,7 @@ async function publish(vendor: Page, title: string): Promise<string> {
   await vendor.getByLabel('Bitcoin reference price').fill('0.001');
   await vendor.getByLabel('Monero reference price').fill('0.5');
   await vendor.getByRole('button', { name: 'Publish listing' }).click();
-  await expect(vendor).toHaveURL(/\/listing-edit\?id=[0-9a-f]{64}&saved=1#photos$/);
+  await expect(vendor).toHaveURL(/\/listing-edit\?id=[0-9a-f]{64}#photos$/);
   return new URL(vendor.url()).searchParams.get('id')!;
 }
 
@@ -84,8 +84,8 @@ async function uploadPhoto(vendor: Page, picture: Buffer, description = ''): Pro
 test('publish lands on photos', async ({ browser, baseURL }) => {
   const { page: vendor } = await newVendor(browser, baseURL);
   await publish(vendor, `Photos ${uniqueHandle('land')}`);
-  await expect(vendor.getByRole('status')).toHaveText('Changes saved.');
   const panel = vendor.getByRole('region', { name: 'Photos' });
+  await expect(panel.getByRole('status')).toHaveText('Listing created. Add photos here.'); // A-117: in the panel it lands on
   await expect(panel).toContainText('0 of 4 photos · 0 MB of 50 MB');
   await expect(panel.getByLabel('Photo', { exact: true })).toBeEnabled();
   await vendor.context().close();
@@ -186,7 +186,8 @@ test('staff avatar and hide choice on /account', async ({ browser, baseURL }) =>
   await expect(hide).toBeChecked();
   await hide.uncheck();
   await staff.getByRole('button', { name: 'Save choice' }).click();
-  await expect(moderator).toHaveURL(/\/account\?saved=1#staff-list$/);
+  await expect(moderator).toHaveURL(/\/account#staff-list$/);
+  await expect(staff.getByRole('status')).toHaveText('Staff list choice saved.');
   await expect(hide).not.toBeChecked();
   await expect(moderator.getByRole('region', { name: 'Recent activity' })).toContainText('Public staff list choice changed: hidden → shown');
   await panel.getByRole('button', { name: 'Remove avatar' }).click();

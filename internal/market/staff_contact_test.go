@@ -51,7 +51,7 @@ func TestStaffContactSettingIsPasswordConfirmedAndAudited(t *testing.T) {
 
 	w := e.do("POST", "/admin/staff-contact", admin, staffContactForm("  "+staffContactValue+"  "))
 	e.check(w, 303)
-	if loc := w.Header().Get("Location"); loc != "/admin?saved=1#staff-contact" {
+	if loc := w.Header().Get("Location"); loc != "/admin#staff-contact" {
 		t.Fatalf("redirect %q", loc)
 	}
 	if setting() != staffContactValue || !e.auditExact(adminID, "Staff contact changed from (not set) to “"+staffContactValue+"” (confirmed with password)") {

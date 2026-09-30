@@ -99,7 +99,7 @@ func disputeAction(c *actionCtx) (actionResult, error) {
 	if err = notifyDisputeStaff(c, &o); err != nil {
 		return actionResult{}, err
 	}
-	return actionResult{Redirect: "/disputes?saved=1", Audit: "Opened dispute on order " + shortID(o.ID)}, nil
+	return actionResult{Redirect: "/disputes", Notice: "dispute-opened", Audit: "Opened dispute on order " + shortID(o.ID)}, nil
 }
 
 // disputeReplyAction (A-124) puts the reply of the party who did not open a dispute on record: once, while the dispute
@@ -147,7 +147,7 @@ func disputeReplyAction(c *actionCtx) (actionResult, error) {
 	if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,$3,$4)", o.ID, stateDisputed, c.User.ID, disputeReplyPrefix+reply); err != nil {
 		return actionResult{}, err
 	}
-	return actionResult{Redirect: orderPage(o.ID), Audit: "Replied to the dispute on order " + shortID(o.ID)}, nil
+	return actionResult{Redirect: orderPage(o.ID), Notice: "dispute-reply", Audit: "Replied to the dispute on order " + shortID(o.ID)}, nil
 }
 
 // notifyDisputeStaff tells every moderator and administrator who is not a party to the order that a dispute
@@ -214,6 +214,6 @@ func resolveAction(c *actionCtx) (actionResult, error) {
 		if _, err = c.A.transition(withPayoutSeen(c.Ctx(), orderID, seen), c.Tx, orderID, stateDisputed, stateResolved, c.User, status); err != nil {
 			return actionResult{}, err
 		}
-		return actionResult{Redirect: "/moderator?saved=1", Audit: "Resolved dispute on order " + shortID(orderID) + " (outcome: " + outcome + ")"}, nil
+		return actionResult{Redirect: "/moderator", Notice: "dispute-resolved", Audit: "Resolved dispute on order " + shortID(orderID) + " (outcome: " + outcome + ")"}, nil
 	})
 }

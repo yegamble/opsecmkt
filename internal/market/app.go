@@ -578,6 +578,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		d.CSRF = a.csrf(token)
 		d.Mode = a.mode
 		applyPreviews(&d)
+		objectTitle(&d)
 		a.render(w, r, d)
 		return
 	}
@@ -607,9 +608,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d := a.pageData(r, page, token, user)
-	if r.URL.Query().Get("saved") == "1" {
-		d.Notice = "Changes saved."
-	}
+	a.takeNotice(w, r, &d)
 	if err := a.load(r, &d); err != nil {
 		var he *httpError
 		switch {
@@ -626,6 +625,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	objectTitle(&d)
 	a.render(w, r, d)
 }
 
@@ -645,8 +645,29 @@ func postOriginError(r *http.Request) string {
 	return ""
 }
 
-// pageTitle is a page's default title, from its name ("vendor-dashboard" → "Vendor Dashboard"); loaders may replace it.
-func pageTitle(page string) string { return strings.ReplaceAll(strings.Title(page), "-", " ") }
+// pageTitle is a page's default title, from its name ("vendor-dashboard" → "Vendor Dashboard"), or the name the
+// navigation gives it; loaders may replace it.
+func pageTitle(page string) string {
+	switch page {
+	case "catalog":
+		return "Marketplace"
+	case "canary":
+		return "Transparency"
+	}
+	return strings.ReplaceAll(strings.Title(page), "-", " ")
+}
+
+// objectTitle names the listing, order or vendor a page shows in its title (A-117), once the page has loaded.
+func objectTitle(d *PageData) {
+	switch {
+	case d.Page == "product" && d.Product != nil:
+		d.Title = d.Product.Title
+	case d.Page == "order" && d.Order != nil:
+		d.Title = "Order " + shortID(d.Order.ID) + " – " + d.Order.Title
+	case d.Page == "vendor" && len(d.Users) == 1:
+		d.Title = "Vendor " + d.Users[0].Handle
+	}
+}
 
 // pageData is the state a page render starts from, before a.load fills it.
 func (a *App) pageData(r *http.Request, page, token string, user *User) PageData {

@@ -192,7 +192,7 @@ func staffListAction(c *actionCtx) (actionResult, error) {
 		if err = setSetting(c, settingStaffListPublic, want); err != nil {
 			return actionResult{}, err
 		}
-		return actionResult{Redirect: "/admin?saved=1#staff-list", Audit: "Public staff list changed from " + was + " to " + now}, nil
+		return actionResult{Redirect: "/admin", Notice: "staff-list", Audit: "Public staff list changed from " + was + " to " + now}, nil
 	})
 }
 

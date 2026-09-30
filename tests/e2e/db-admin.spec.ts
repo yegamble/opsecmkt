@@ -3,7 +3,7 @@ import { createPublicKey, randomBytes, verify } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { expect, test } from '@playwright/test';
 import { ADMIN, uniqueHandle } from './db-fixtures';
-import { enrollTOTP, pgpFixture, RECIPIENT_FINGERPRINT, setRole, signedIn, submitStatus } from './db-helpers';
+import { enrollTOTP, expectNotice, pgpFixture, RECIPIENT_FINGERPRINT, setRole, signedIn, submitStatus } from './db-helpers';
 
 // Administrator forms submitted against a real database with JavaScript disabled. Each test signs the shared
 // administrator in once (the per-handle sign-in limit, 10 failed passwords per 10 minutes, no longer counts
@@ -42,7 +42,6 @@ test('promoting a buyer to vendor opens the vendor desk; the listing form shows 
   expect(await submitStatus(admin, () => roleForm.getByRole('button', { name: 'Update role' }).click())).toBe(400);
   await expect(admin.locator('body')).toHaveText('Cannot change your own administrator role');
   await setRole(admin, vendorHandle, 'vendor');
-  await expect(admin.getByRole('status')).toHaveText('Changes saved.');
   await admin.waitForLoadState();
   await admin.reload();
   await expect(newest).toHaveText(`${vendorHandle} · vendor`);
@@ -77,7 +76,8 @@ test('promoting a buyer to vendor opens the vendor desk; the listing form shows 
   await locked.goto('/account');
   await expect(locked.locator('.key-values div', { hasText: 'TOTP authentication' }).locator('dd')).toHaveText('Enabled');
   expect(await submitReset(lockedHandle, ADMIN.password)).toBe(303);
-  await expect(admin).toHaveURL(/\/admin\?saved=1#reset-factors$/);
+  await expect(admin).toHaveURL(/\/admin#reset-factors$/);
+  await expect(reset.getByRole('status')).toHaveText('Second factors reset.');
   await expect(factorList.filter({ hasText: `${lockedHandle} ·` })).toHaveCount(0);
   const resetRows = admin.locator('table').last().locator('tbody tr');
   await expect(resetRows.filter({ hasText: `Reset second factors of ${lockedHandle}: TOTP and recovery codes turned off; ended 1 session(s) (confirmed with password)` }).locator('td').first()).toHaveText(ADMIN.handle);
@@ -141,7 +141,7 @@ test('promoting a buyer to vendor opens the vendor desk; the listing form shows 
   await second.goto(editURL);
   await second.getByLabel('Stock').fill('5');
   await second.getByRole('button', { name: 'Save changes' }).click();
-  await expect(second.getByRole('status')).toHaveText('Changes saved.');
+  await expectNotice(second, 'Listing saved.');
   await vendor.getByLabel('Stock').fill('2');
   expect(await submitStatus(vendor, () => vendor.getByRole('button', { name: 'Save changes' }).click())).toBe(409);
   await expect(vendor.locator('body')).toHaveText('Stock changed to 5 while you were editing (orders reserve stock). Reload and try again.');
@@ -169,7 +169,8 @@ test('site settings, account suspension, operator key, canary signature checks a
 
   await siteName.fill(renamed);
   expect(await submitStatus(admin, saveSettings)).toBe(303);
-  await expect(admin).toHaveURL(/\/admin\?saved=1$/);
+  await expect(admin).toHaveURL(/\/admin$/);
+  await expectNotice(admin, 'Marketplace settings saved.');
   await admin.waitForLoadState();
   await admin.reload();
   await expect(siteName).toHaveValue(renamed);
@@ -200,14 +201,25 @@ test('site settings, account suspension, operator key, canary signature checks a
   const nobody = uniqueHandle('nobody');
   expect(await submitSuspension(nobody, 'Suspend', ADMIN.password)).toBe(404);
   await expect(admin.getByRole('alert')).toHaveText(`No account has the handle "${nobody}". Check the spelling: handles are case-sensitive.`);
+  await expect(admin).toHaveTitle(/^Error: Admin · /); // A-117
   await expect(suspension.getByLabel('Account handle')).toHaveValue(nobody);
   await expect(suspension.getByRole('radio', { name: /^Suspend:/ })).toBeChecked();
   expect(await submitSuspension(suspectHandle, 'Suspend', 'not-the-admin-password')).toBe(401);
   await expect(admin.locator('body')).toHaveText('Password incorrect');
   await suspect.goto('/account');
   await expect(suspect.locator('.account-name')).toHaveText(suspectHandle);
+  // A-117: the one-shot notice names the change inside the section the page returns to, in view at 320 px (and
+  // at 1280 px for the restore below) once the stylesheet applies (A-228), and prefixes the title.
+  const suspensionNotice = suspension.getByRole('status');
+  await admin.setViewportSize({ width: 320, height: 900 });
   expect(await submitSuspension(suspectHandle, 'Suspend', ADMIN.password)).toBe(303);
-  await expect(admin).toHaveURL(/\/admin\?saved=1#suspend$/);
+  await expect(admin).toHaveURL(/\/admin#suspend$/);
+  await admin.waitForLoadState('load');
+  await expect(suspensionNotice).toHaveText('Account suspended.');
+  await expect(suspensionNotice).toBeInViewport({ ratio: 1 });
+  await expect(admin).toHaveTitle(/^Account suspended\. – Admin · /);
+  expect(await admin.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
+  await admin.setViewportSize({ width: 390, height: 900 });
   await expect(suspended).toHaveText(new RegExp(`^${suspectHandle} · buyer · suspended \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2} UTC$`));
   const suspendRows = admin.locator('table').last().locator('tbody tr');
   await expect(suspendRows.filter({ hasText: `Suspended account ${suspectHandle}; ended 1 session(s) and any pending sign-ins (confirmed with password)` }).locator('td').first()).toHaveText(ADMIN.handle);
@@ -231,7 +243,13 @@ test('site settings, account suspension, operator key, canary signature checks a
   await expect(suspect.locator('body')).toHaveText('This account is suspended. Ask the operator of this market.');
 
   // Restoring allows sign-in again; the account was told about both changes.
+  await admin.setViewportSize({ width: 1280, height: 900 });
   expect(await submitSuspension(suspectHandle, 'Restore', ADMIN.password)).toBe(303);
+  await admin.waitForLoadState('load');
+  await expect(suspensionNotice).toHaveText('Account restored.');
+  await expect(suspensionNotice).toBeInViewport({ ratio: 1 });
+  await expect(admin).toHaveTitle(/^Account restored\. – Admin · /);
+  await admin.setViewportSize({ width: 390, height: 900 });
   await expect(suspended).toHaveCount(0);
   await expect(suspendRows.filter({ hasText: `Restored account ${suspectHandle} (confirmed with password)` }).locator('td').first()).toHaveText(ADMIN.handle);
   expect(await suspectSignIn(suspectPassword)).toBe(303);
@@ -251,7 +269,8 @@ test('site settings, account suspension, operator key, canary signature checks a
   await admin.goto('/admin');
   await keyPanel.getByLabel('Armored public key').fill(pgpFixture('recipient.pub.asc'));
   expect(await submitStatus(admin, () => keyPanel.getByRole('button', { name: 'Save operator key' }).click())).toBe(303);
-  await expect(admin).toHaveURL(/\/admin\?saved=1#transparency$/);
+  await expect(admin).toHaveURL(/\/admin#transparency$/);
+  await expectNotice(admin, 'Operator PGP key saved.');
   await admin.waitForLoadState();
   await admin.reload();
   await expect(keyPanel.locator('.badge')).toHaveText('Configured');

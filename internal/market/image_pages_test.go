@@ -351,7 +351,7 @@ func TestStaffListToggleAudited(t *testing.T) {
 	}
 	w := e.do("POST", "/admin/staff-list", admin, on)
 	e.check(w, 303)
-	if loc := w.Header().Get("Location"); loc != "/admin?saved=1#staff-list" {
+	if loc := w.Header().Get("Location"); loc != "/admin#staff-list" {
 		t.Fatalf("redirect %q", loc)
 	}
 	if v := setting(); v != "true" || !e.auditExact(adminID, "Public staff list changed from off to on (confirmed with password)") {

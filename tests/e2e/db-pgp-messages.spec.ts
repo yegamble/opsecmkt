@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { uniqueHandle } from './db-fixtures';
-import { enrollTOTP, pgpFixture, RECIPIENT_FINGERPRINT, setRole, signedIn, submitStatus, totp } from './db-helpers';
+import { enrollTOTP, expectNotice, pgpFixture, RECIPIENT_FINGERPRINT, setRole, signedIn, submitStatus, totp } from './db-helpers';
 
 // PGP identity, encrypted messages and message notifications against a real database, JavaScript disabled.
 // Each test registers its own accounts; keys and messages come from committed fixtures (see db-helpers.ts).
@@ -36,8 +36,8 @@ test('save a PGP key, see its fingerprint unverified, and fail ownership proofs 
   await expect(page.locator('#pgp-visibility')).toHaveText('Shown to every signed-in account that looks up your handle, to every vendor or buyer you trade with, and publicly on your vendor page if you sell — with its user IDs and creation date. Use a key made only for this market.');
   const withHeaders = 'Leading note\n' + pgpFixture('recipient.pub.asc').replace('-----BEGIN PGP PUBLIC KEY BLOCK-----\n', '-----BEGIN PGP PUBLIC KEY BLOCK-----\nComment: e2e header\n');
   expect(await saveKey(page, withHeaders, password)).toBe(303);
-  await expect(page).toHaveURL(/\/account\?saved=1$/);
-  await expect(page.getByRole('status')).toHaveText('Changes saved.');
+  await expect(page).toHaveURL(/\/account$/);
+  await expectNotice(page, 'Profile saved.');
   await page.waitForLoadState();
   await page.reload();
   await expect(page.getByLabel('PGP public key')).toHaveValue(/^-----BEGIN PGP PUBLIC KEY BLOCK-----\n\n/);
@@ -180,7 +180,7 @@ test('only OpenPGP-encrypted messages are accepted; status badges and the unread
     await s.goto(`/messages?to=${to}`);
     await body.fill(pgpFixture('message-to-recipient.asc'));
     expect(await submitStatus(s, send)).toBe(303);
-    await expect(s).toHaveURL(/\/messages\?saved=1$/);
+    await expectNotice(s, 'Message sent.');
   }
   await s.waitForLoadState();
   await s.reload();

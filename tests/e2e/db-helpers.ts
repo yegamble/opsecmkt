@@ -40,7 +40,15 @@ export async function setRole(admin: Page, handle: string, role: string) {
   await form.getByLabel('Account handle').fill(handle);
   await form.getByLabel('Role').selectOption(role);
   await form.getByRole('button', { name: 'Update role' }).click();
-  await expect(admin).toHaveURL(/\/admin\?saved=1$/);
+  await expectNotice(admin, 'Account role saved.');
+  await expect(admin).toHaveURL(/\/admin$/);
+}
+
+// A-117: the one-shot notice a successful form post leaves on the page it returns to, and the title it prefixes.
+// Waiting for it also waits for that page, since the notice is on no other.
+export async function expectNotice(page: Page, text: string): Promise<void> {
+  await expect(page.getByRole('status').filter({ hasText: text })).toHaveText(text);
+  await expect(page).toHaveTitle(new RegExp(`^${text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} – `));
 }
 
 // Clicks a submit button and returns the HTTP status of the navigation it causes. Refused actions answer
