@@ -586,7 +586,7 @@ db_sql() { docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d o
    its amount, state and transaction ID, so the order page shows only the returned excess as the refund. The same
    transaction adds a note to the order history, which the buyer and the vendor read, saying that the return is the
    refund and naming the amount you sent by hand and its transaction ID (the vendor's page hides the transaction ID,
-   as for every payout to the buyer). Give the amount as the wallet shows it, in BTC or XMR (for example `0.001`),
+   as for every payout to the buyer). Give the amount as the wallet shows it, in BTC or XMR, as plain decimal digits (for example `0.001`; the block refuses `NaN`, `Infinity` and exponent forms),
    and the 64-character transaction ID in lowercase; no address goes into the note:
 
    ```sh
@@ -596,7 +596,7 @@ db_sql() { docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d o
    UPDATE payouts SET kind = 'refund', updated = now() WHERE order_id = :'order_id' AND kind = 'return' RETURNING id, kind, state, txid;
    INSERT INTO order_events(order_id, from_state, to_state, note)
    SELECT o.id, o.state, o.state, 'Refund recorded by hand (UPGRADING.md section 14): the overpayment returned to the buyer earlier is this order''s refund, and the remaining '
-     || CASE WHEN :'amount'::numeric > 0 THEN trim_scale(:'amount'::numeric)::text END || ' ' || o.currency
+     || CASE WHEN :'amount' ~ '^[0-9]+(\.[0-9]+)?$' AND :'amount'::numeric > 0 THEN trim_scale(:'amount'::numeric)::text END || ' ' || o.currency
      || ' was sent to the buyer by hand from the market wallet in transaction ' || CASE WHEN :'txid' ~ '^[0-9a-f]{64}$' THEN :'txid' END || '.'
    FROM orders o
    WHERE o.id = :'order_id' AND EXISTS (SELECT 1 FROM payouts r WHERE r.order_id = o.id AND r.kind = 'refund' AND r.updated = now())
@@ -758,8 +758,8 @@ order named here as below, with `db_sql` defined as in section 14, then start th
      row keeps its amount, state and transaction ID, so the order page shows only the returned excess as the refund.
      The same transaction adds a note to the order history, which the buyer and the vendor read, saying that the
      return is the refund and naming the amount you sent by hand and its transaction ID (the vendor's page hides the
-     transaction ID, as for every payout to the buyer). Give the amount as the wallet shows it, in BTC or XMR (for
-     example `0.001`), and the 64-character transaction ID in lowercase; no address goes into the note:
+     transaction ID, as for every payout to the buyer). Give the amount as the wallet shows it, in BTC or XMR, as
+     plain decimal digits (for example `0.001`; the block refuses `NaN`, `Infinity` and exponent forms), and the 64-character transaction ID in lowercase; no address goes into the note:
 
      ```sh
      db_sql -v order_id=FULL_ORDER_ID -v amount=AMOUNT_SENT -v txid=TRANSACTION_ID <<'SQL'
@@ -769,7 +769,7 @@ order named here as below, with `db_sql` defined as in section 14, then start th
      RETURNING id, kind, state, amount, txid;
      INSERT INTO order_events(order_id, from_state, to_state, note)
      SELECT o.id, o.state, o.state, 'Refund recorded by hand (UPGRADING.md section 18): the overpayment returned to the buyer earlier is this order''s refund, and the remaining '
-       || CASE WHEN :'amount'::numeric > 0 THEN trim_scale(:'amount'::numeric)::text END || ' ' || o.currency
+       || CASE WHEN :'amount' ~ '^[0-9]+(\.[0-9]+)?$' AND :'amount'::numeric > 0 THEN trim_scale(:'amount'::numeric)::text END || ' ' || o.currency
        || ' was sent to the buyer by hand from the market wallet in transaction ' || CASE WHEN :'txid' ~ '^[0-9a-f]{64}$' THEN :'txid' END || '.'
      FROM orders o
      WHERE o.id = :'order_id' AND EXISTS (SELECT 1 FROM payouts r WHERE r.order_id = o.id AND r.kind = 'refund' AND r.updated = now())

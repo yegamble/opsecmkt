@@ -323,8 +323,9 @@ func handRefundNote(section, amount, txid string) string {
 }
 
 // refusedHandRefundVars are relabel-block variables beside order_id that must stop the block with nothing changed:
-// a missing amount or transaction ID (psql leaves :'amount' in the SQL, a syntax error), an empty, non-numeric or
-// non-positive amount, and an empty or malformed transaction ID.
+// a missing amount or transaction ID (psql leaves :'amount' in the SQL, a syntax error), an empty, non-numeric,
+// non-decimal (NaN, Infinity, exponent forms: numeric parses them, QA27-1) or non-positive amount, and an empty or
+// malformed transaction ID.
 var refusedHandRefundVars = [][]string{
 	nil,
 	{"amount=0.001"},
@@ -333,6 +334,10 @@ var refusedHandRefundVars = [][]string{
 	{"amount=abc", "txid=" + strings.Repeat("e7", 32)},
 	{"amount=0", "txid=" + strings.Repeat("e7", 32)},
 	{"amount=-0.001", "txid=" + strings.Repeat("e7", 32)},
+	{"amount=NaN", "txid=" + strings.Repeat("e7", 32)},
+	{"amount=Infinity", "txid=" + strings.Repeat("e7", 32)},
+	{"amount=1e400", "txid=" + strings.Repeat("e7", 32)},
+	{"amount=1e-3", "txid=" + strings.Repeat("e7", 32)},
 	{"amount=0.001", "txid="},
 	{"amount=0.001", "txid=TRANSACTION_ID"},
 	{"amount=0.001", "txid=" + strings.Repeat("E7", 32)},
@@ -369,7 +374,7 @@ RETURNING id, kind, state, amount, address, txid;`,
 RETURNING id, kind, state, amount, txid;`,
 	note: `INSERT INTO order_events(order_id, from_state, to_state, note)
 SELECT o.id, o.state, o.state, 'Refund recorded by hand (UPGRADING.md section 18): the overpayment returned to the buyer earlier is this order''s refund, and the remaining '
-  || CASE WHEN :'amount'::numeric > 0 THEN trim_scale(:'amount'::numeric)::text END || ' ' || o.currency
+  || CASE WHEN :'amount' ~ '^[0-9]+(\.[0-9]+)?$' AND :'amount'::numeric > 0 THEN trim_scale(:'amount'::numeric)::text END || ' ' || o.currency
   || ' was sent to the buyer by hand from the market wallet in transaction ' || CASE WHEN :'txid' ~ '^[0-9a-f]{64}$' THEN :'txid' END || '.'
 FROM orders o
 WHERE o.id = :'order_id' AND EXISTS (SELECT 1 FROM payouts r WHERE r.order_id = o.id AND r.kind = 'refund' AND r.updated = now())
