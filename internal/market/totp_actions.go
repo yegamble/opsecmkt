@@ -321,7 +321,7 @@ func totpLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error
 		// The page the sign-in was for (A-126): a link on, only beside the notice. next is kept in the URL: it
 		// selects the link's target (checked again by signInNext), not an outcome, and shows nothing without the
 		// notice, so a crafted or replayed /totp?next= shows no link.
-		if d.Next = signInNext(r.URL.Query().Get("next")); d.Next != "" {
+		if d.Next = a.signInNext(r.URL.Query().Get("next")); d.Next != "" {
 			d.NextTitle = nextTitle(d.Next)
 		}
 	}

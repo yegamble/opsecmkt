@@ -26,10 +26,11 @@ type fakeEscrowCore struct {
 	chain         string
 	arbiterFP     string
 	arbiterDesc   string
-	arbiterCode   int  // JSON-RPC error for getrawchangeaddress (0 = none)
-	prevoutExists bool // gettxout finds the practice outpoint
-	allowed       bool // testmempoolaccept
-	throwawayDone bool // descriptorprocesspsbt answers complete=true (a node that finalized on the server key alone)
+	arbiterCode   int    // JSON-RPC error for getrawchangeaddress (0 = none)
+	prevoutExists bool   // gettxout finds the practice outpoint
+	allowed       bool   // testmempoolaccept
+	throwawayDone bool   // descriptorprocesspsbt answers complete=true (a node that finalized on the server key alone)
+	beforeMempool func() // runs when testmempoolaccept is called: the last RPC of a practice check, before its update
 	reject        string
 	calls         []fakeCall
 }
@@ -146,6 +147,9 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 		pk := c.mustParse(str(0))
 		return map[string]any{"hex": "02000000" + pk.TxID(), "complete": fakeComplete(pk)}, 0, ""
 	case "testmempoolaccept":
+		if c.beforeMempool != nil {
+			c.beforeMempool()
+		}
 		return []map[string]any{{"txid": "t", "allowed": c.allowed, "reject-reason": c.reject}}, 0, ""
 	case "walletprocesspsbt":
 		return map[string]any{"psbt": str(0), "complete": false}, 0, ""

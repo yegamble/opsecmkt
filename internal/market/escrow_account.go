@@ -15,27 +15,37 @@ import (
 )
 
 // /escrow-key (WR-escrow Phase 1, ES-3 and ES-9): register or change the account's Bitcoin escrow key, and activate
-// it by signing the practice transaction. The page and the /account status row appear only with ESCROW_BTC=on.
+// it by signing the practice transaction. The page and the /account status row appear only with ESCROW_BTC=on; with
+// it off, /escrow-key and its actions answer exactly as unknown ones do, signed in or not (pageSpec.Off).
 // Registering or changing a key needs the current password (and authenticator code when enrolled), notifies the
 // owner and writes a fixed audit line with no key, fingerprint or path. A change replaces only this account's key
 // row: an escrow keeps the child keys and origins it was built with (escrow_pubkeys), so no existing escrow changes.
 
 func init() {
-	registerPage("escrow-key", pageSpec{Protected: true})
+	registerPage("escrow-key", pageSpec{Protected: true, Off: escrowOff})
+	registerLoader("escrow-key", accountSecurityLoader) // TOTPEnabled: the key form asks for the authenticator code
 	registerLoader("escrow-key", escrowKeyLoader)
 	registerLoader("account", escrowAccountLoader)
-	registerAction("/escrow-key", actionSpec{OwnTx: true, Run: escrowKeyAction})
-	registerAction("/escrow-key/practice", actionSpec{OwnTx: true, OneAtATime: true, Run: escrowPracticeAction})
+	registerAction("/escrow-key", actionSpec{OwnTx: true, Off: escrowOff, Run: escrowKeyAction})
+	registerAction("/escrow-key/practice", actionSpec{OwnTx: true, OneAtATime: true, Off: escrowOff, Run: escrowPracticeAction})
 }
 
+// escrowOff is ESCROW_BTC off: the escrow page and actions do not exist.
+func escrowOff(a *App) bool { return !a.escrowConfigured }
+
 var (
-	errEscrowOff       = fail(404, "Bitcoin escrow is not enabled on this market.")
 	errEscrowDown      = fail(409, "Bitcoin escrow is unavailable on this market right now: the operator must fix its Bitcoin node or arbiter wallet. Nothing was changed.")
 	errKeyAck          = &keyRefusal{"This key is not on the standard multisig path m/48h/1h/<account>h/2h. Register it only if the wallet (or wallet account) it comes from is used only for this market: tick the box and send the form again. Nothing was saved."}
 	errKeyUnusable     = &keyRefusal{"This key cannot be used here. Create a new wallet, or a new account in your wallet, used only for this market, and register its key. Nothing was saved."}
 	errPracticeState   = fail(409, "The practice transaction is offered only for a registered key that is not active yet and has no escrows. Reload the page.")
 	errPracticeChanged = fail(409, "Your escrow key was changed or activated while the practice transaction was checked; nothing was changed. Reload the page.")
 )
+
+// errEscrowKeyUnreadable is shown when the stored key cannot be opened: APP_SECRET_KEY (or a legacy SETUP_TOKEN)
+// was changed since it was registered (docs/operator-guide.md). errKeySealed is that failure inside practiceFor.
+const errEscrowKeyUnreadable = "Your escrow key can no longer be read on this market; register it again."
+
+var errKeySealed = errors.New("escrow: stored escrow key cannot be opened")
 
 // escrowKeyHMAC is user_escrow_keys.xpub_hmac: HMAC-SHA256 of the key's chain code and public key under a key derived
 // from keyRoot, so the same key registered with other version bytes or origin metadata still collides.
@@ -77,9 +87,11 @@ func (a *App) escrowKeyView(ctx context.Context, userID string) (*EscrowKeyView,
 		return v, nil, err
 	}
 	v.Registered, v.Origin, v.ActiveAt, v.HasEscrows = true, "["+k.fingerprint+k.path+"]", k.activeAt, k.hasEscrows
+	_, openErr := a.open("escrow-xpub", k.sealed)
+	v.Unreadable = openErr != nil
 	// Practice is offered only while the key is inactive and has no escrows (ES-9): once active it is never offered
 	// again, so a server taken over later cannot pass off a real spend as practice.
-	v.PracticeOffered = v.Available && !k.active && !k.hasEscrows
+	v.PracticeOffered = v.Available && !k.active && !k.hasEscrows && !v.Unreadable
 	return v, k, nil
 }
 
@@ -93,6 +105,9 @@ func escrowAccountLoader(ctx context.Context, a *App, r *http.Request, d *PageDa
 func escrowKeyLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error {
 	v, k, err := a.escrowKeyView(ctx, d.User.ID)
 	d.EscrowKey = v
+	if err == nil && v != nil && v.Unreadable {
+		log.Print(errKeySealed)
+	}
 	if err != nil || v == nil || !v.PracticeOffered || r.URL.Query().Get("practice") != "1" {
 		return err
 	}
@@ -110,7 +125,7 @@ func escrowKeyLoader(ctx context.Context, a *App, r *http.Request, d *PageData) 
 func (a *App) practiceFor(ctx context.Context, userID string, k *storedEscrowKey) (*practiceTx, error) {
 	xpub, err := a.open("escrow-xpub", k.sealed)
 	if err != nil {
-		return nil, err
+		return nil, errKeySealed
 	}
 	key, err := parseEscrowKey("[" + k.fingerprint + k.path + "]" + xpub)
 	if err != nil {
@@ -123,9 +138,6 @@ func (a *App) practiceFor(ctx context.Context, userID string, k *storedEscrowKey
 // checked or anything else is read, so a pasted private key is refused at once and goes nowhere.
 func escrowKeyAction(c *actionCtx) (actionResult, error) {
 	a := c.A
-	if !a.escrowConfigured {
-		return actionResult{}, errEscrowOff
-	}
 	if a.escrow == nil {
 		return actionResult{}, errEscrowDown
 	}
@@ -183,9 +195,6 @@ func escrowKeyAction(c *actionCtx) (actionResult, error) {
 // update then requires the same key to be still inactive and without escrows.
 func escrowPracticeAction(c *actionCtx) (actionResult, error) {
 	a, ctx, uid := c.A, c.Ctx(), c.User.ID
-	if !a.escrowConfigured {
-		return actionResult{}, errEscrowOff
-	}
 	if a.escrow == nil {
 		return actionResult{}, errEscrowDown
 	}
@@ -209,6 +218,9 @@ func escrowPracticeAction(c *actionCtx) (actionResult, error) {
 	switch {
 	case errors.As(err, &kr), errors.As(err, &pe):
 		return actionResult{}, fail(400, err.Error())
+	case errors.Is(err, errKeySealed):
+		log.Print(errKeySealed)
+		return actionResult{}, fail(409, errEscrowKeyUnreadable)
 	case errors.Is(err, errPracticeUnsafeOut):
 		return actionResult{}, fail(409, "The practice transaction could not be confirmed as unbroadcastable, so it was not accepted. Nothing was changed; the operator should check the escrow node.")
 	case err != nil:

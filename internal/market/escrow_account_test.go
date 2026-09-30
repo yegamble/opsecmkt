@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"html"
+	"net/http/httptest"
 	"net/url"
 	"regexp"
 	"slices"
@@ -82,7 +84,8 @@ func agStrings(t *testing.T, e *testEnv, q string, args ...any) []string {
 	return out
 }
 
-// ESCROW_BTC is off by default: no RPC, no page content, no account row, and the actions refuse.
+// ESCROW_BTC is off by default: no RPC, no account row, and /escrow-key and its actions answer exactly as an unknown
+// page or action does, signed in or not, so nobody can tell that the route exists (QA-P1a-4, the chair's ruling).
 func TestEscrowOffByDefault(t *testing.T) {
 	core, srv := newFakeEscrowCore(t)
 	t.Setenv("ESCROW_BTC", "")
@@ -92,21 +95,39 @@ func TestEscrowOffByDefault(t *testing.T) {
 		t.Fatalf("escrow started or called the node: %v", core.methods())
 	}
 	uid, sess := e.user("escrow_off_buyer", "buyer")
-	w := e.do("GET", "/escrow-key", sess, nil)
-	if w.Code != 200 || !strings.Contains(w.Body.String(), "Bitcoin escrow is not enabled") || strings.Contains(w.Body.String(), `action="/escrow-key"`) {
-		t.Fatalf("page: %d %s", w.Code, w.Body.String())
+	answer := func(w *httptest.ResponseRecorder) string {
+		return fmt.Sprintf("%d %q %q %q", w.Code, w.Header().Get("Location"), w.Header().Get("Content-Type"), w.Body.String())
+	}
+	for _, who := range []struct{ name, sess string }{{"signed in", sess}, {"anonymous", randomToken()}} {
+		unknownPage := answer(e.do("GET", "/no-such-page", who.sess, nil))
+		unknownAction := answer(e.do("POST", "/no-such-action", who.sess, url.Values{"key": {testBIP48Key}, "password": {testPassword}}))
+		if !strings.HasPrefix(unknownPage, "404 ") || !strings.HasPrefix(unknownAction, "404 ") {
+			t.Fatalf("%s: unknown page %s, unknown action %s", who.name, unknownPage, unknownAction)
+		}
+		for _, path := range []string{"/escrow-key", "/escrow-key?practice=1"} {
+			if got := answer(e.do("GET", path, who.sess, nil)); got != unknownPage {
+				t.Errorf("%s GET %s: %s, an unknown page: %s", who.name, path, got, unknownPage)
+			}
+		}
+		for _, path := range []string{"/escrow-key", "/escrow-key/practice"} {
+			if got := answer(e.do("POST", path, who.sess, url.Values{"key": {testBIP48Key}, "password": {testPassword}})); got != unknownAction {
+				t.Errorf("%s POST %s: %s, an unknown action: %s", who.name, path, got, unknownAction)
+			}
+		}
+		// Nor does the sign-in page offer to return to it.
+		login, control := e.do("GET", "/login?next=%2Fescrow-key", who.sess, nil), e.do("GET", "/login?next=%2Fno-such-page", who.sess, nil)
+		if login.Body.String() != control.Body.String() || strings.Contains(login.Body.String(), "escrow-key") || strings.Contains(login.Body.String(), "Escrow Key") {
+			t.Errorf("%s: /login?next=/escrow-key differs from an unknown next: %d", who.name, login.Code)
+		}
 	}
 	if body := e.do("GET", "/account", sess, nil).Body.String(); strings.Contains(body, "Bitcoin escrow key") || strings.Contains(body, "/escrow-key") {
 		t.Fatal("/account shows the escrow row with ESCROW_BTC off")
 	}
-	if code, _ := registerKey(e, sess, testBIP48Key); code != 404 {
-		t.Fatalf("register: %d", code)
-	}
-	if w := e.do("POST", "/escrow-key/practice", sess, url.Values{"psbt": {testCorePSBTSigned}}); w.Code != 404 {
-		t.Fatalf("practice: %d", w.Code)
-	}
 	if n := agInt(e, "SELECT count(*) FROM user_escrow_keys WHERE user_id=$1", uid); n != 0 {
 		t.Fatalf("%d key rows", n)
+	}
+	if len(core.methods()) != 0 {
+		t.Fatalf("the node was called: %v", core.methods())
 	}
 }
 
@@ -262,6 +283,47 @@ func TestEscrowKeyRegister(t *testing.T) {
 	}
 }
 
+// An account with an authenticator app (TOTP) gets the code field on /escrow-key, and the form posted as rendered
+// with a current code registers the key (QA-P1a-1: the field was missing, so the post was refused with 401).
+func TestEscrowKeyRegisterWithTOTP(t *testing.T) {
+	e, _, _ := escrowTestApp(t)
+	uid, sess := e.user("escrow_totp_buyer", "buyer")
+	agEnableTOTP(e, uid)
+	body := e.do("GET", "/escrow-key", sess, nil).Body.String()
+	form := regexp.MustCompile(`(?s)<form class="stack" method="post" action="/escrow-key">(.*?)</form>`).FindStringSubmatch(body)
+	if form == nil {
+		t.Fatalf("no key form: %s", body)
+	}
+	names := map[string]bool{}
+	for _, m := range regexp.MustCompile(`<input[^>]* name="([a-z]+)"`).FindAllStringSubmatch(form[1], -1) {
+		names[m[1]] = true
+	}
+	if !names["code"] || !names["password"] || !names["key"] || !names["csrf"] {
+		t.Fatalf("form fields %v", names)
+	}
+	code, _ := e.totpCodeFor(uid, 0)
+	f := url.Values{"key": {testBIP48Key}, "password": {testPassword}, "code": {code}}
+	for name := range names {
+		if f.Get(name) == "" && name != "csrf" && name != "dedicated" {
+			t.Fatalf("the form has a field %q this test does not fill", name)
+		}
+	}
+	if w := e.do("POST", "/escrow-key", sess, f); w.Code != 303 {
+		t.Fatalf("register with TOTP: %d %s", w.Code, w.Body.String())
+	}
+	audit := agStrings(t, e, "SELECT action FROM audit_events WHERE user_id=$1 ORDER BY id", uid)
+	if !slices.Equal(audit, []string{"Registered a Bitcoin escrow key (confirmed with password and authenticator code)"}) {
+		t.Fatalf("audit %q", audit)
+	}
+	if n := agInt(e, "SELECT count(*) FROM user_escrow_keys WHERE user_id=$1", uid); n != 1 {
+		t.Fatalf("%d key rows", n)
+	}
+	// The change form keeps the code field once a key is registered.
+	if body := e.do("GET", "/escrow-key", sess, nil).Body.String(); !strings.Contains(body, "Change your key") || !strings.Contains(body, `name="code"`) {
+		t.Fatal("change form without the code field")
+	}
+}
+
 // ES-3 refusals through the form: each is refused before the password is checked (a wrong password still gets the
 // refusal, not 401) and before any RPC, stores nothing and never echoes the paste.
 func TestEscrowKeyRefusedThroughForm(t *testing.T) {
@@ -275,6 +337,7 @@ func TestEscrowKeyRefusedThroughForm(t *testing.T) {
 		"private descriptor": {testPrivDescriptor, "this key is exposed, replace it"},
 		"WIF":                {testWIF(true, true), "this key is exposed, replace it"},
 		"recovery words":     {"abandon ability able about above absent absorb abstract absurd abuse access accident", "this key is exposed, replace it"},
+		"numbered words":     {"1. Abandon 2. Ability 3. Able 4. About 5. Above 6. Absent 7. Absorb 8. Abstract 9. Absurd 10. Abuse 11. Access 12. Accident.", "this key is exposed, replace it"},
 		"comma":              {testBIP48Key + "," + testBIP84Key, "Paste exactly one key"},
 		"parentheses":        {"wsh(" + testBIP48Key + ")", "not a whole descriptor"},
 		"hash":               {testBIP48Key + "#20gdjfqv", "not a whole descriptor"},
@@ -322,8 +385,26 @@ func TestEscrowKeyReuseRefused(t *testing.T) {
 		t.Fatal("A")
 	}
 	vpub := "[7450f935/48h/1h/0h/2h]" + reversion(t, testBIP48Key[23:], 0x02575483)
-	for _, in := range []string{testBIP48Key, vpub, "[0000beef/48h/1h/0h/2h]" + testBIP48Key[23:]} {
-		code, body := registerKey(e, sessB, in)
+	// The same chain code and public key serialized with another parent fingerprint, or at another depth under a
+	// matching origin: a different extended-key string, the same key (QA-P1a-6, M7c).
+	raw, err := base58CheckDecode(testBIP48Key[23:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	reencode := func(f func(b []byte)) string {
+		b := bytes.Clone(raw)
+		f(b)
+		return base58CheckEncode(b)
+	}
+	otherParent := "[7450f935/48h/1h/0h/2h]" + reencode(func(b []byte) { copy(b[5:9], []byte{0xde, 0xad, 0xbe, 0xef}) })
+	otherDepth := "[7450f935/48h/1h/0h/9/2h]" + reencode(func(b []byte) { b[4] = 5 })
+	for _, in := range []string{otherParent, otherDepth} {
+		if k, err := parseEscrowKey(in); err != nil || k.XPub == testBIP48Key[23:] {
+			t.Fatalf("re-encoded fixture %q: %+v %v", in, k, err)
+		}
+	}
+	for _, in := range []string{testBIP48Key, vpub, "[0000beef/48h/1h/0h/2h]" + testBIP48Key[23:], otherParent, otherDepth} {
+		code, body := registerKey(e, sessB, in, "dedicated", "1")
 		if code != 409 || !strings.Contains(body, "cannot be used here") || strings.Contains(body, "another account") {
 			t.Fatalf("%q: %d %s", in, code, body)
 		}
@@ -604,6 +685,116 @@ func TestEscrowPracticeRefusedWithEscrows(t *testing.T) {
 	}
 	if body := e.do("GET", "/escrow-key?practice=1", sess, nil).Body.String(); strings.Contains(body, "escrow-psbt") {
 		t.Fatal("practice offered for a key with escrows")
+	}
+}
+
+// The activation update is a compare-and-set on what the practice check used (QA-P1a-6, M8b and M5c): a key whose
+// stored origin changed, or that gained an escrow, while the node checked the paste is not activated.
+func TestEscrowPracticeKeyChangedDuringCheck(t *testing.T) {
+	e, core, _ := escrowTestApp(t)
+	for name, change := range map[string]func(uid string, escrowID int64) error{
+		"origin fingerprint changed": func(uid string, _ int64) error {
+			_, err := e.DB.Exec("UPDATE user_escrow_keys SET origin_fingerprint='0000beef' WHERE user_id=$1", uid)
+			return err
+		},
+		"origin path changed": func(uid string, _ int64) error {
+			_, err := e.DB.Exec("UPDATE user_escrow_keys SET origin_path='/48h/1h/1h/2h' WHERE user_id=$1", uid)
+			return err
+		},
+		"escrow created": func(uid string, escrowID int64) error {
+			_, err := e.DB.Exec(`INSERT INTO escrow_pubkeys(pubkey,escrow_id,party,user_id,key_hmac,origin_fingerprint,origin_path,derivation_suffix)
+				SELECT '02'||repeat('ab',32),$2,'buyer',user_id,xpub_hmac,origin_fingerprint,origin_path,'/0/1' FROM user_escrow_keys WHERE user_id=$1`, uid, escrowID)
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			uid, sess := e.user("escrow_race_"+randomToken()[:8], "buyer")
+			if code, _ := registerKey(e, sess, testBIP48Key); code != 303 {
+				t.Fatal("register")
+			}
+			// An order and escrow row without keys: the key has no escrows until the change inserts one.
+			vendorID, _ := e.user("escrow_race_vendor_"+randomToken()[:6], "vendor")
+			var escrowID int64
+			if err := e.DB.QueryRow("INSERT INTO escrows(order_id,address,market_index) VALUES($1,$2,nextval('escrow_market_index')) RETURNING id",
+				e.order(uid, e.product(vendorID, "digital"), "BTC", "awaiting_payment"), "bcrt1qrace"+randomToken()[:20]).Scan(&escrowID); err != nil {
+				t.Fatal(err)
+			}
+			signed := fakeOwnerSign(t, practicePSBT(t, e, sess), "7450f935", 1)
+			var changeErr error
+			core.mu.Lock()
+			core.beforeMempool = func() { changeErr = change(uid, escrowID) }
+			core.mu.Unlock()
+			code, body := submitPractice(e, sess, signed)
+			core.mu.Lock()
+			core.beforeMempool = nil
+			core.mu.Unlock()
+			if changeErr != nil {
+				t.Fatal(changeErr)
+			}
+			if code != 409 || !strings.Contains(body, "changed or activated while the practice transaction was checked") {
+				t.Fatalf("%d %s", code, body)
+			}
+			if agInt(e, "SELECT count(*) FROM user_escrow_keys WHERE user_id=$1 AND active_at IS NOT NULL", uid) != 0 {
+				t.Fatal("activated")
+			}
+		})
+		// Delete the fixture escrow keys: each subtest registers the same key on a new account.
+		e.DB.Exec("DELETE FROM escrow_pubkeys")
+		e.DB.Exec("DELETE FROM user_escrow_keys")
+	}
+}
+
+// A mainnet market (a payment provider configured for mainnet) with ESCROW_BTC=on stops startup before any escrow
+// RPC, even with BITCOIN_CHAIN blank (QA-P1a-6, M4c): escrow runs on regtest only in this release.
+func TestEscrowStartupRefusesMainnetMarket(t *testing.T) {
+	core, srv := newFakeEscrowCore(t)
+	setEscrowEnv(t, srv.url(""))
+	withProviderFactory(t, func(context.Context) (PaymentProvider, error) { return liveFake{newFakeProvider("BTC", 3)}, nil })
+	a, _, err := startApp(t, "")
+	if err == nil || a != nil || !strings.Contains(err.Error(), "ESCROW_BTC=on runs only on regtest") || !strings.Contains(err.Error(), "mainnet") {
+		t.Fatalf("got %v", err)
+	}
+	if m := core.methods(); len(m) != 0 {
+		t.Fatalf("escrow RPC before the refusal: %v", m)
+	}
+}
+
+// Rotating APP_SECRET_KEY (or a legacy SETUP_TOKEN) leaves a registered key unreadable: /escrow-key says so with a
+// fixed message instead of blaming the node, the practice check refuses the same way, and registering the key again
+// works (QA-P1a-5).
+func TestEscrowKeyUnreadableAfterRotation(t *testing.T) {
+	logs := captureLog(t)
+	e, core, _ := escrowTestApp(t)
+	uid, sess := e.user("escrow_rotated_buyer", "buyer")
+	if code, _ := registerKey(e, sess, testBIP48Key); code != 303 {
+		t.Fatal("register")
+	}
+	signed := fakeOwnerSign(t, practicePSBT(t, e, sess), "7450f935", 1)
+	t.Setenv("APP_SECRET_KEY", "a-rotated-app-secret-key-of-at-least-32-characters")
+	e.restart()
+	calls := len(core.methods())
+	body := html.UnescapeString(e.do("GET", "/escrow-key?practice=1", sess, nil).Body.String())
+	if !strings.Contains(body, errEscrowKeyUnreadable) || strings.Contains(body, "did not answer") || strings.Contains(body, "escrow-psbt") {
+		t.Fatalf("page after rotation: %s", body)
+	}
+	if code, body := submitPractice(e, sess, signed); code != 409 || !strings.Contains(body, errEscrowKeyUnreadable) {
+		t.Fatalf("practice after rotation: %d %s", code, body)
+	}
+	if n := len(core.methods()) - calls; n != 0 {
+		t.Fatalf("%d node calls for an unreadable key", n)
+	}
+	if !strings.Contains(logs.String(), "escrow: stored escrow key cannot be opened") || strings.Contains(logs.String(), "7450f935") {
+		t.Fatalf("log: %s", logs.String())
+	}
+	// Registering the key again (with the password) replaces the unreadable copy and practice works again.
+	if code, body := registerKey(e, sess, testBIP48Key); code != 303 {
+		t.Fatalf("re-register: %d %s", code, body)
+	}
+	if code, body := submitPractice(e, sess, fakeOwnerSign(t, practicePSBT(t, e, sess), "7450f935", 1)); code != 303 {
+		t.Fatalf("practice after re-registering: %d %s", code, body)
+	}
+	if agInt(e, "SELECT count(*) FROM user_escrow_keys WHERE user_id=$1 AND active_at IS NOT NULL", uid) != 1 {
+		t.Fatal("not active")
 	}
 }
 

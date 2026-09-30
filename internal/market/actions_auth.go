@@ -30,18 +30,18 @@ func init() {
 var signInNextID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 
 // signInNext returns the page a sign-in, registration or second sign-in step returns to (A-126), rebuilt from raw
-// (a request URI or a "next" field), or "" to land on / as before. Only a registered GET page other than the sign-in
-// pages themselves is accepted, named exactly ("/orders"; never "//host", a scheme, a backslash, an encoded or extra
-// character, or an action path), with at most its id query and /messages' recipient (to); other query parameters
-// are dropped, and a malformed, repeated or out-of-pattern id or to refuses the whole target. The result is built
-// here, never copied from raw, so it cannot lead off this market.
-func signInNext(raw string) string {
+// (a request URI or a "next" field), or "" to land on / as before. Only a registered GET page that is not switched
+// off (pageSpec.Off), other than the sign-in pages themselves, is accepted, named exactly ("/orders"; never
+// "//host", a scheme, a backslash, an encoded or extra character, or an action path), with at most its id query and
+// /messages' recipient (to); other query parameters are dropped, and a malformed, repeated or out-of-pattern id or
+// to refuses the whole target. The result is built here, never copied from raw, so it cannot lead off this market.
+func (a *App) signInNext(raw string) string {
 	if len(raw) > 512 {
 		return ""
 	}
 	path, query, _ := strings.Cut(raw, "?")
 	page, ok := strings.CutPrefix(path, "/")
-	if _, known := pages[page]; !ok || !known || page == "login" || page == "register" || page == "setup" || page == "challenge" {
+	if !ok || !a.pageOn(page) || page == "login" || page == "register" || page == "setup" || page == "challenge" {
 		return ""
 	}
 	q, err := url.ParseQuery(query)
@@ -65,12 +65,12 @@ func signInNext(raw string) string {
 
 // signInNextLoader carries a valid ?next= on /login and /register into their forms and links (A-126). A form
 // re-rendered from its POST (a wrong CAPTCHA answer, captchaRetry) keeps the posted next field instead (A-269).
-func signInNextLoader(_ context.Context, _ *App, r *http.Request, d *PageData) error {
+func signInNextLoader(_ context.Context, a *App, r *http.Request, d *PageData) error {
 	raw := r.URL.Query().Get("next")
 	if r.Method == http.MethodPost {
 		raw = r.PostForm.Get("next")
 	}
-	if d.Next = signInNext(raw); d.Next != "" {
+	if d.Next = a.signInNext(raw); d.Next != "" {
 		d.NextTitle = nextTitle(d.Next)
 	}
 	return nil
@@ -417,7 +417,7 @@ func authAction(c *actionCtx) (actionResult, error) {
 		if suspended {
 			return actionResult{}, suspendedRefusal(ctx, a.db)
 		}
-		return a.secondFactor(c, id, stored, signInNext(f.Get("next")))
+		return a.secondFactor(c, id, stored, a.signInNext(f.Get("next")))
 	}
 	if path == "/setup" && (installed || a.setupToken == "" || subtle.ConstantTimeCompare([]byte(f.Get("token")), []byte(a.setupToken)) != 1) {
 		return actionResult{}, fail(403, "Setup unavailable or token incorrect")
@@ -460,7 +460,7 @@ func authAction(c *actionCtx) (actionResult, error) {
 	if path == "/setup" {
 		return actionResult{Redirect: "/admin?welcome=1"}, nil
 	}
-	return actionResult{Redirect: orHome(signInNext(f.Get("next")))}, nil
+	return actionResult{Redirect: orHome(a.signInNext(f.Get("next")))}, nil
 }
 
 // errPasswordChanged refuses a sign-in whose password was checked before the account's password changed (A-157).
@@ -627,7 +627,7 @@ func challengeAction(c *actionCtx) (actionResult, error) {
 	// "next" posted here is ignored. A recovery-code sign-in lands on /totp with a one-shot notice (A-287; set here, as
 	// the request had no session when it started), which says how many codes remain or that TOTP is now off (A-154)
 	// and links on to that page: next stays in the URL, a link target shown only beside the notice.
-	target := signInNext(stored)
+	target := a.signInNext(stored)
 	next, notice := orHome(target), ""
 	if method == "recovery code" {
 		next = "/totp"

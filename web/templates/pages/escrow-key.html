@@ -1,4 +1,4 @@
-{{/* WR-escrow Phase 1 (escrow_account.go). The Bitcoin escrow key: registration (ES-3) and practice signing (ES-9). Shown only with ESCROW_BTC=on. */}}
+{{/* WR-escrow Phase 1 (escrow_account.go). The Bitcoin escrow key: registration (ES-3) and practice signing (ES-9). Exists only with ESCROW_BTC=on (otherwise 404). */}}
 {{define "page:escrow-key"}}{{template "header" .}}
 <div class="page-head">
 <div>
@@ -15,13 +15,14 @@
 <dl class="key-values">
 <div>
 <dt>State</dt>
-<dd>{{if .ActiveAt}}Active since {{.ActiveAt}}{{else if .Registered}}Inactive: sign the practice transaction below{{else}}No key registered{{end}}</dd>
+<dd>{{if .Unreadable}}Unreadable: register it again{{else if .ActiveAt}}Active since {{.ActiveAt}}{{else if .Registered}}Inactive: sign the practice transaction below{{else}}No key registered{{end}}</dd>
 </div>{{if .Registered}}
 <div>
 <dt>Origin</dt>
 <dd class="pgp-fingerprint">{{.Origin}}</dd>
 </div>{{end}}
-</dl>
+</dl>{{if .Unreadable}}
+<div class="alert error" role="alert">Your escrow key can no longer be read on this market; register it again.</div>{{end}}
 <p class="help">Compare the origin (your wallet's fingerprint and the key's path) with what your wallet shows. The market stores the key encrypted and never shows it to anyone else. Escrow does not run on any public network yet.</p>{{if .HasEscrows}}
 <p class="help">This key is used by escrows. Changing it affects only escrows created afterwards; existing escrows keep the keys they were built with.</p>{{end}}
 </section>
@@ -57,8 +58,5 @@
 <input type="hidden" name="practice" value="1">
 <button type="submit">Show the practice transaction</button>
 </form>{{end}}
-</section>{{end}}{{end}}{{else}}<div class="panel">
-<h2>Bitcoin escrow is not enabled</h2>
-<p>This market does not run Bitcoin escrow. Payments use the market's wallet as described on the order pages.</p>
-</div>{{end}}
+</section>{{end}}{{end}}{{end}}
 {{template "footer" .}}{{end}}
