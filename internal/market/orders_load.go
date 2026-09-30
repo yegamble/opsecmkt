@@ -245,9 +245,14 @@ func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) 
 	d.CanReview = u.ID == o.BuyerID && o.State == stateCompleted && len(d.Reviews) == 0
 	if d.OrderViewer != roleModerator { // reviewers resolve on the moderation desk; the order page is read-only for them
 		d.Transitions = viewerTransitions(a.providers(), a.netAdj(), o, u)
-		if err = a.orderPayouts(ctx, d); err != nil {
-			return err
+		if !o.Escrow { // an escrow order queues no payout (settleTerminal)
+			if err = a.orderPayouts(ctx, d); err != nil {
+				return err
+			}
 		}
+	}
+	if err = a.escrowOrder(ctx, d); err != nil {
+		return err
 	}
 	if d.Contacts, err = orderContacts(ctx, a, o, d.OrderViewer); err != nil {
 		return err

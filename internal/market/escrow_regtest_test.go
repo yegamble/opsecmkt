@@ -47,10 +47,11 @@ func TestEscrowRegtestPracticeSign(t *testing.T) {
 		}
 	}
 	s := randomToken()[:8]
-	arbiter, seed, buyer, other := "p1a-arbiter-"+s, "p1a-seed-"+s, "p1a-buyer-"+s, "p1a-other-"+s
+	arbiter, seed, buyer, other, watch := "p1a-arbiter-"+s, "p1a-seed-"+s, "p1a-buyer-"+s, "p1a-other-"+s, "p1a-watch-"+s
 	for _, w := range []string{arbiter, seed, other} {
 		call("", "createwallet", nil, w)
 	}
+	call("", "createwallet", nil, watch, true, true)  // the watch-only wallet escrow startup requires (P1-b)
 	call("", "createwallet", nil, buyer, false, true) // blank: it will hold only the BIP48 account
 	// The buyer's BIP48 account (m/48h/1h/0h/2h), imported as a private descriptor as a Core user would.
 	var priv struct {
@@ -111,6 +112,8 @@ func TestEscrowRegtestPracticeSign(t *testing.T) {
 	t.Setenv("ESCROW_BTC", "on")
 	t.Setenv("ESCROW_BTC_RPC_URL", appURL)
 	t.Setenv("ESCROW_BTC_ARBITER_WALLET", arbiter)
+	t.Setenv("ESCROW_BTC_WATCH_WALLET", watch)
+	t.Setenv("ESCROW_BTC_FEE_BPS", "")
 	t.Setenv("BITCOIN_RPC_URL", "")
 	t.Setenv("BITCOIN_CHAIN", "")
 	t.Setenv("MONERO_WALLET_RPC_URL", "")

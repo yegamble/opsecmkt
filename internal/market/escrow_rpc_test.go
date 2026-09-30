@@ -1,12 +1,16 @@
 package market
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -15,7 +19,7 @@ import (
 func testEscrowAdapter(t *testing.T) (*escrowBTC, *fakeEscrowCore, *payRPCServer) {
 	t.Helper()
 	core, srv := newFakeEscrowCore(t)
-	e, err := newEscrowBTC(escrowConfig{on: true, rpcURL: srv.url(""), arbiterWallet: "opsecmkt-arbiter"})
+	e, err := newEscrowBTC(escrowConfig{on: true, rpcURL: srv.url(""), arbiterWallet: "opsecmkt-arbiter", watchWallet: "opsecmkt-escrow-watch", confirmations: 3})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,6 +77,20 @@ func TestEscrowRPCPinsParams(t *testing.T) {
 		{"finalizepsbt", "/", `["` + psbt + `",true]`, func() error { _, _, err := e.finalizePSBT(ctx, psbt); return err }},
 		{"testmempoolaccept", "/", `[["0200"],0.001]`, func() error { _, _, err := e.testMempoolAccept(ctx, "0200", 100); return err }},
 		{"sendrawtransaction", "/", `["0200",0.00025]`, func() error { _, err := e.sendRawTransaction(ctx, "0200", 25); return err }},
+		// P1-b: the watch-only wallet (checked at startup, read by the escrow watcher), refund-address checks and the
+		// re-registration check; every wallet call goes to the watch-only wallet, never the arbiter's.
+		{"getwalletinfo", fakeWatchWallet, `[]`, func() error { return e.checkWatchWallet(ctx) }},
+		{"getdescriptorinfo", "/", `["addr(bcrt1qrefund00000000)"]`, func() error { _, err := e.validAddress(ctx, "bcrt1qrefund00000000"); return err }},
+		{"listreceivedbyaddress", fakeWatchWallet, `[0,false,true]`, func() error {
+			core.deposit("bcrt1qwatched", "txw", 1, 5000, 2)
+			_, err := e.incoming(ctx, []string{"bcrt1qwatched"})
+			return err
+		}},
+		{"gettransaction", fakeWatchWallet, `["txw",true]`, func() error { _, err := e.incoming(ctx, []string{"bcrt1qwatched"}); return err }},
+		{"deriveaddresses", "/", `["` + withChecksum("wpkh("+strings.Repeat("02", 33)+")") + `"]`, func() error {
+			_, err := e.derivesChild(ctx, mustParseKey(t, testBIP48Key), "/0/1", strings.Repeat("02", 33))
+			return err
+		}},
 	}
 	for _, s := range steps {
 		if err := s.call(); err != nil && s.method != "descriptorprocesspsbt" && s.method != "finalizepsbt" {
@@ -105,6 +123,68 @@ func TestEscrowRPCPinsParams(t *testing.T) {
 	}
 	if e.fingerprint != fakeArbiterFP || e.arbiterKey.PathText != "/84h/1h/0h" {
 		t.Fatalf("arbiter %q %+v", e.fingerprint, e.arbiterKey)
+	}
+}
+
+func mustParseKey(t *testing.T, s string) escrowKey {
+	t.Helper()
+	k, err := parseEscrowKey(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return k
+}
+
+// TestEscrowBuildPinsParams pins every RPC of an escrow build (P1-b, ES-3) with its exact params: the extended-key
+// descriptor with each party's own origin and child suffix and the market's /0/<index>, the made-up outpoint (never
+// broadcast), utxoupdatepsbt with that descriptor only, then the bare-key descriptor's checksum and address. No call
+// goes to a wallet; the import (checkout) goes to the watch-only wallet only.
+func TestEscrowBuildPinsParams(t *testing.T) {
+	ctx := context.Background()
+	e, core, _ := testEscrowAdapter(t)
+	if err := e.readArbiter(ctx); err != nil {
+		t.Fatal(err)
+	}
+	vendorKey := altEscrowKey(t, testBIP48Key, "5eed5eed", 1)
+	buyer := escrowParty{Party: "buyer", UserID: "b", KeyHMAC: "hb", Key: mustParseKey(t, testBIP48Key), Suffix: "/0/3"}
+	vendor := escrowParty{Party: "vendor", UserID: "v", KeyHMAC: "hv", Key: mustParseKey(t, vendorKey), Suffix: "/0/9"}
+	calls := len(core.methods())
+	b, err := e.buildEscrow(ctx, "order-1", 123456, buyer, vendor, 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extended := withChecksum("wsh(sortedmulti(2," + testBIP48Key + "/0/3," + vendorKey + "/0/9," + fakeArbiterExpr() + "/0/42))")
+	bp, vp, mp := childHex(testBIP48Key, "/0/3"), childHex(vendorKey, "/0/9"), childHex(fakeArbiterExpr(), "/0/42")
+	bare := "wsh(sortedmulti(2," + bp + "," + vp + "," + mp + "))"
+	if b.Descriptor != withChecksum(bare) || b.Address != core.address(bare) {
+		t.Fatalf("built %q %q", b.Descriptor, b.Address)
+	}
+	core.mu.Lock()
+	got := slices.Clone(core.calls[calls:])
+	core.mu.Unlock()
+	prev := sha256.Sum256([]byte("escrow-build:order-1"))
+	want := []struct{ method, params string }{
+		{"deriveaddresses", `["` + extended + `"]`},
+		{"createpsbt", `[[{"txid":"` + hex.EncodeToString(prev[:]) + `","vout":0}],[{"` + b.Address + `":0.00123456}],0,true]`},
+		{"utxoupdatepsbt", ""},
+		{"getdescriptorinfo", `["` + bare + `"]`},
+		{"deriveaddresses", `["` + withChecksum(bare) + `"]`},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("calls %v", core.methods()[calls:])
+	}
+	for i, w := range want {
+		if got[i].Method != w.method || got[i].Path != "/" || (w.params != "" && string(got[i].Params) != w.params) {
+			t.Errorf("call %d: %s %s %s\nwant %s %s", i, got[i].Path, got[i].Method, got[i].Params, w.method, w.params)
+		}
+	}
+	var up []json.RawMessage
+	json.Unmarshal(got[2].Params, &up)
+	if len(up) != 2 || string(up[1]) != `["`+extended+`"]` {
+		t.Fatalf("utxoupdatepsbt params %s", got[2].Params)
+	}
+	if !bytes.Equal(b.Keys["buyer"], fakeChild(testBIP48Key[23:]+"/0/3")) || !bytes.Equal(b.Keys["market"], fakeChild(testBIP84Key[20:]+"/0/42")) {
+		t.Fatal("party keys")
 	}
 }
 

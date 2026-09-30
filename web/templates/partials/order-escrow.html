@@ -1,0 +1,78 @@
+{{/* WR-escrow Phase 1 (escrow_order.go, escrow_create.go). The escrow panel of an escrow order, and the escrow checkout offer on a draft. Shown only with ESCROW_BTC=on; the copy claims only regtest-verified behaviour (ES-10). */}}
+{{define "order-escrow"}}{{with .Escrow}}<h2>Bitcoin escrow <span class="badge testnet">REGTEST</span></h2>
+<p class="alert" role="note"><strong>Regtest only.</strong> Bitcoin escrow on this market runs on regtest, a local test chain, and has not been verified on any public network; its coins have no value. The vendor's claim and refunds from an escrow are not available in this build yet.</p>{{if not .Available}}
+<p class="alert error" role="status">Bitcoin escrow is unavailable on this market right now, so deposits to this escrow are not being read and the order does not move. Coins sent to it stay in the escrow; they are recorded once the operator has fixed the escrow node.</p>{{end}}
+{{if .Open}}<p class="help">{{if .NeedsTopUp}}Send <strong>{{.Remaining}} regtest BTC</strong> to this escrow address, after checking the descriptor below in your own wallet. If you already made a partial payment, top up only this remaining amount to the same address.{{else}}The full price has been seen. Do not send another payment; wait for confirmation.{{end}} If nothing has been received by {{.CancelAfter}}, the order is cancelled. If it is underpaid then, it stays open: a top-up to the price still completes it, and refunding an escrow is not available in this build yet.</p>{{end}}
+<div class="payment-address">
+<span class="badge testnet">Escrow address</span>
+<p class="mono">{{.Address}}</p>
+</div>
+<h3 id="escrow-descriptor-heading">Escrow descriptor</h3>
+<p class="help">A 2-of-3 multisig: {{if eq .Own "buyer"}}your key (with its origin), the vendor's and the market's{{else if eq .Own "vendor"}}the buyer's, your key (with its origin) and the market's{{else}}the buyer's, the vendor's and the market's keys{{end}}. Any two of the three keys can spend it; no single key can. Load it into your own wallet (in Bitcoin Core, <code>getdescriptorinfo</code> and <code>deriveaddresses</code>) and check that it gives the address above{{if .Own}} and that the key with the origin is yours{{end}}.</p>
+<pre class="code-block escrow-descriptor" tabindex="0" aria-labelledby="escrow-descriptor-heading">{{.Descriptor}}</pre>
+<p><a class="button" href="/escrow-descriptor?id={{$.Order.ID}}" download>Download the descriptor</a></p>
+<p class="help">The market cannot spend this escrow without you or the other party, if the key shown as yours is yours. Checking the descriptor in your own wallet is what detects a substituted key: a server that was taken over could show a descriptor with its own key in place of another party's.</p>
+<p class="help">The other party knows this escrow address, so they can see on the blockchain which coins funded it and where it is paid.{{if eq .Own "buyer"}} Pay from coins you do not mind the vendor linking to you.{{else if eq .Own "vendor"}} The buyer will see the address your claim pays.{{end}}</p>
+<dl class="key-values payment-figures">
+<div>
+<dt>Required</dt>
+<dd>{{.Required}} BTC <span class="badge testnet">REGTEST</span></dd>
+</div>
+<div>
+<dt>Confirmed (at least {{.Threshold}} confirmations)</dt>
+<dd>{{.Confirmed}} BTC</dd>
+</div>
+<div>
+<dt>Unconfirmed</dt>
+<dd>{{.Unconfirmed}} BTC</dd>
+</div>{{if .Open}}
+<div>
+<dt>Remaining to send</dt>
+<dd>{{.Remaining}} BTC</dd>
+</div>{{end}}
+<div>
+<dt>Escrow status</dt>
+<dd>{{.Status}}</dd>
+</div>{{with .RefundAddress}}
+<div>
+<dt>Your refund address (fixed for this order)</dt>
+<dd class="mono">{{.}}</dd>
+</div>{{end}}{{with .Fee}}
+<div>
+<dt>Market fee</dt>
+<dd>{{.}}</dd>
+</div>{{end}}
+</dl>{{with .NextStep}}
+<p role="status">{{.}}</p>{{end}}
+{{if .Deposits}}<h3 id="escrow-deposits-heading">Deposits to this escrow</h3>
+<div class="table-wrap payment-deposits" tabindex="0" role="region" aria-labelledby="escrow-deposits-heading">
+<table>
+<thead>
+<tr>
+<th scope="col">Transaction</th>
+<th scope="col">Amount</th>
+<th scope="col">Confirmations</th>
+<th scope="col">Counted</th>
+</tr>
+</thead>
+<tbody>{{range .Deposits}}<tr>
+<td class="mono">{{.TxID}}:{{.Index}}</td>
+<td>{{.Amount}} BTC</td>
+<td>{{if lt .Confirmations 0}}Conflicted{{else}}{{.Confirmations}}{{end}}</td>
+<td>{{.State}}</td>
+</tr>{{end}}</tbody>
+</table>
+</div>{{end}}{{end}}{{end}}
+{{define "order-escrow-checkout"}}{{with .EscrowCheckout}}<section class="order-action escrow-checkout" aria-labelledby="escrow-checkout-heading">
+<h3 id="escrow-checkout-heading">Or pay into a Bitcoin escrow (regtest only)</h3>
+<p class="help">Instead of the market's pooled wallet, pay into a 2-of-3 multisig of your escrow key, the vendor's and the market's: any two can spend it, no single one can. This listing delivers its content automatically, so the order completes as soon as the escrow is funded. Regtest only; the vendor's claim and refunds from an escrow are not available in this build yet.</p>{{if .Reason}}
+<p class="order-unavailable" role="note"><strong>Unavailable.</strong> {{.Reason}}{{if .KeyLink}} <a class="text-link" href="/escrow-key">Your escrow key</a>{{end}}</p>{{else}}
+<form class="stack" method="post" action="/orders/escrow">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="order_id" value="{{$.Order.ID}}">
+<label>Refund address<input name="refund_address" required minlength="14" maxlength="90" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="escrow-refund-help">
+</label>
+<span class="help" id="escrow-refund-help">A fresh regtest address from your own wallet, used for nothing else. A refund of this escrow is paid there; it is fixed for this order and cannot be changed. An address this market already used is refused.</span>
+<button class="primary" type="submit">Pay into an escrow</button>
+</form>{{end}}
+</section>{{end}}{{end}}

@@ -33,6 +33,51 @@ type fakeEscrowCore struct {
 	beforeMempool func() // runs when testmempoolaccept is called: the last RPC of a practice check, before its update
 	reject        string
 	calls         []fakeCall
+
+	// Escrow P1-b: the watch-only wallet, its imports and the deposits it reports.
+	watchInfo    map[string]any      // getwalletinfo of the watch wallet (nil = not loaded, -18)
+	importFail   bool                // importdescriptors answers success=false
+	beforeImport func()              // runs when importdescriptors is called, before it answers
+	bareAddrSalt string              // a non-empty salt makes deriveaddresses of a bare-key escrow disagree (a lying node)
+	infoSkew     bool                // getdescriptorinfo answers another checksum than BIP 380's
+	imports      []string            // descriptors imported into the watch wallet, in order
+	spk          map[string][]byte   // address -> scriptPubKey, for createpsbt outputs to escrow addresses
+	deposits     []fakeEscrowDeposit // what listreceivedbyaddress/gettransaction report
+	txErr        int                 // JSON-RPC error for listreceivedbyaddress (0 = none)
+}
+
+// fakeEscrowDeposit is one output the watch wallet reports as received.
+type fakeEscrowDeposit struct {
+	Address, TxID string
+	Vout          int64
+	Sats          int64
+	Confs         int64
+}
+
+const fakeWatchWallet = "/wallet/opsecmkt-escrow-watch"
+
+// deposit makes the watch wallet report an output to addr.
+func (c *fakeEscrowCore) deposit(addr, txid string, vout, sats, confs int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.deposits = append(c.deposits, fakeEscrowDeposit{addr, txid, vout, sats, confs})
+}
+
+// setConfs sets the confirmations of every output of txid.
+func (c *fakeEscrowCore) setConfs(txid string, confs int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := range c.deposits {
+		if c.deposits[i].TxID == txid {
+			c.deposits[i].Confs = confs
+		}
+	}
+}
+
+func (c *fakeEscrowCore) importedDescriptors() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.imports)
 }
 
 type fakeCall struct {
@@ -43,7 +88,8 @@ type fakeCall struct {
 const fakeArbiterFP = "a1b2c3d4"
 
 func newFakeEscrowCore(t *testing.T) (*fakeEscrowCore, *payRPCServer) {
-	c := &fakeEscrowCore{t: t, chain: "regtest", arbiterFP: fakeArbiterFP, reject: "missing-inputs"}
+	c := &fakeEscrowCore{t: t, chain: "regtest", arbiterFP: fakeArbiterFP, reject: "missing-inputs", spk: map[string][]byte{},
+		watchInfo: map[string]any{"walletname": "opsecmkt-escrow-watch", "descriptors": true, "private_keys_enabled": false}}
 	c.arbiterDesc = "wpkh([" + fakeArbiterFP + "/84h/1h/0h]" + testBIP84Key[20:] + "/1/*)#fakechk0"
 	return c, newPayRPCServer(t, "escrowapp", "escrow-rpc-pass", false, c.handle)
 }
@@ -65,9 +111,14 @@ func fakePubFromTprv(tprv string) []byte {
 	return append([]byte{3}, h[:]...)
 }
 
+// fakeChild is the fake child key of "tpub…/suffix": a point on the curve, as Core's would be.
 func fakeChild(expr string) []byte {
-	h := sha256.Sum256([]byte("child:" + expr))
-	return append([]byte{2}, h[:]...)
+	for i := 0; ; i++ {
+		h := sha256.Sum256([]byte("child:" + expr + strings.Repeat("'", i)))
+		if pub := append([]byte{2}, h[:]...); onCurve(pub) {
+			return pub
+		}
+	}
 }
 
 // fakeSig is the fake Core's signature of txid by pub with sighash byte sh: valid DER shape, sighash byte last.
@@ -109,15 +160,25 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 		return map[string]any{"ismine": true, "hdmasterfingerprint": c.arbiterFP, "parent_desc": c.arbiterDesc}, 0, ""
 	case "getdescriptorinfo":
 		desc := str(0)
+		if a, ok := strings.CutPrefix(desc, "addr("); ok && !strings.HasPrefix(a, "bcrt1") {
+			return nil, -5, "Address is not valid"
+		}
 		public := fakeTprv.ReplaceAllStringFunc(desc, func(k string) string { return "fakepub" + hex.EncodeToString(fakePubFromTprv(k)) })
-		return map[string]any{"descriptor": public + "#fakechk1", "checksum": "fakechk2", "hasprivatekeys": public != desc}, 0, ""
+		sum, _ := descChecksum(public)
+		if c.infoSkew {
+			sum = "qqqqqqqq"
+		}
+		return map[string]any{"descriptor": public + "#" + sum, "checksum": sum, "hasprivatekeys": public != desc}, 0, ""
 	case "deriveaddresses":
 		desc := str(0)
-		if !strings.Contains(desc, "#") {
+		body, sum, ok := strings.Cut(desc, "#")
+		if !ok {
 			return nil, -5, "Missing checksum"
 		}
-		h := sha256.Sum256([]byte(desc))
-		return []string{"bcrt1q" + hex.EncodeToString(h[:])[:40]}, 0, ""
+		if want, _ := descChecksum(body); sum != want && sum != "y" && !(c.infoSkew && sum == "qqqqqqqq") {
+			return nil, -5, "Provided checksum does not match computed checksum"
+		}
+		return []string{c.address(body)}, 0, ""
 	case "gettxout":
 		if c.prevoutExists {
 			return map[string]any{"confirmations": 1, "value": json.Number("0.00100000")}, 0, ""
@@ -158,7 +219,64 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 	case "keypoolrefill":
 		return nil, 0, ""
 	case "importdescriptors":
+		var reqs []map[string]any
+		json.Unmarshal(p[0], &reqs)
+		if len(reqs) != 1 {
+			return nil, -8, "unexpected fake import"
+		}
+		if c.beforeImport != nil {
+			c.mu.Unlock()
+			c.beforeImport()
+			c.mu.Lock()
+		}
+		if c.importFail {
+			return []map[string]any{{"success": false, "error": map[string]any{"code": -4, "message": "fake import failure"}}}, 0, ""
+		}
+		if path == fakeWatchWallet {
+			c.imports = append(c.imports, reqs[0]["desc"].(string))
+		}
 		return []map[string]any{{"success": true}}, 0, ""
+	case "getwalletinfo":
+		if path != fakeWatchWallet || c.watchInfo == nil {
+			return nil, -18, "Requested wallet does not exist or is not loaded"
+		}
+		return c.watchInfo, 0, ""
+	case "listreceivedbyaddress":
+		if path != fakeWatchWallet {
+			return nil, -8, "unexpected fake wallet"
+		}
+		if c.txErr != 0 {
+			return nil, c.txErr, "fake wallet failure"
+		}
+		byAddr := map[string][]string{}
+		var order []string
+		for _, d := range c.deposits {
+			if _, ok := byAddr[d.Address]; !ok {
+				order = append(order, d.Address)
+			}
+			if !slices.Contains(byAddr[d.Address], d.TxID) {
+				byAddr[d.Address] = append(byAddr[d.Address], d.TxID)
+			}
+		}
+		out := []map[string]any{}
+		for _, a := range order {
+			out = append(out, map[string]any{"address": a, "txids": byAddr[a], "involvesWatchonly": true})
+		}
+		return out, 0, ""
+	case "gettransaction":
+		txid := str(0)
+		var details []map[string]any
+		confs := int64(0)
+		for _, d := range c.deposits {
+			if d.TxID == txid {
+				confs = d.Confs
+				details = append(details, map[string]any{"address": d.Address, "category": "receive", "amount": json.Number(amount(d.Sats, 8)), "vout": d.Vout, "involvesWatchonly": true})
+			}
+		}
+		if details == nil {
+			return nil, -5, "Invalid or non-wallet transaction id"
+		}
+		return map[string]any{"confirmations": confs, "details": details}, 0, ""
 	case "sendrawtransaction":
 		return "txid-broadcast", 0, ""
 	}
@@ -218,8 +336,12 @@ func (c *fakeEscrowCore) createPSBT(p []json.RawMessage) string {
 	for _, o := range outs {
 		for addr, amt := range o {
 			sats, _ := parseAmount(string(amt), 8)
-			h := sha256.Sum256([]byte(addr))
 			tx = binary.LittleEndian.AppendUint64(tx, uint64(sats))
+			if spk := c.spk[addr]; spk != nil {
+				tx = append(append(tx, byte(len(spk))), spk...)
+				continue
+			}
+			h := sha256.Sum256([]byte(addr))
 			tx = append(append(tx, 34, 0, 32), h[:]...)
 		}
 	}
@@ -250,40 +372,17 @@ func (c *fakeEscrowCore) utxoUpdate(b64, desc string) string {
 	type entry struct{ pub, deriv []byte }
 	var entries []entry
 	for _, el := range m[1:] {
-		switch {
-		case strings.HasPrefix(el, "["):
-			end := strings.IndexByte(el, ']')
-			fp, _ := hex.DecodeString(el[1:9])
-			rest := el[end+1:]
-			path, err := parseOriginPath(el[9:end] + rest[strings.IndexByte(rest, '/'):])
-			if err != nil {
-				c.t.Fatalf("fake utxoupdatepsbt: path in %q: %v", el, err)
-			}
-			d := slices.Clone(fp)
-			for _, step := range path {
-				d = binary.LittleEndian.AppendUint32(d, step)
-			}
-			entries = append(entries, entry{fakeChild(el[end+1:]), d})
-		case strings.HasPrefix(el, "fakepub"):
-			pub, _ := hex.DecodeString(el[len("fakepub"):])
-			entries = append(entries, entry{pub, pub[1:5]})
-		default:
-			pub, _ := hex.DecodeString(el)
-			entries = append(entries, entry{pub, nil})
-		}
+		pub, deriv := c.fakeKeyOf(el)
+		entries = append(entries, entry{pub, deriv})
 	}
-	keys := [][]byte{entries[0].pub, entries[1].pub, entries[2].pub}
-	slices.SortFunc(keys, bytes.Compare)
-	ws := []byte{0x52}
-	for _, k := range keys {
-		ws = append(append(ws, 33), k...)
-	}
-	ws = append(ws, 0x53, 0xae)
+	ws := fakeMultiScript(entries[0].pub, entries[1].pub, entries[2].pub)
 	raw, err := pk.withInputField(0, []byte{0x05}, ws)
+	added := map[string]bool{}
 	for _, e := range entries {
-		if err != nil || e.deriv == nil {
-			continue
+		if err != nil || e.deriv == nil || added[string(e.pub)] {
+			continue // one derivation per key, as Core writes a repeated key once
 		}
+		added[string(e.pub)] = true
 		var next *psbtPacket
 		if next, err = parsePSBT(raw); err == nil {
 			raw, err = next.withInputField(0, append([]byte{0x06}, e.pub...), e.deriv)
@@ -314,4 +413,72 @@ func fakeOwnerSign(t *testing.T, practice, fp string, sh byte) string {
 	}
 	t.Fatalf("no derivation at fingerprint %s", fp)
 	return ""
+}
+
+// fakeKeyOf is the fake's reading of one key expression in a descriptor: "[fp/path]tpub…/suffix" (the fake child
+// fakeChild, with its derivation), "fakepub<hex>" (its own fingerprint) or a bare hex key (no derivation).
+func (c *fakeEscrowCore) fakeKeyOf(el string) (pub, deriv []byte) {
+	switch {
+	case strings.HasPrefix(el, "["):
+		end := strings.IndexByte(el, ']')
+		fp, _ := hex.DecodeString(el[1:9])
+		rest := el[end+1:]
+		path, err := parseOriginPath(el[9:end] + rest[strings.IndexByte(rest, '/'):])
+		if err != nil {
+			c.t.Fatalf("fake core: path in %q: %v", el, err)
+		}
+		d := slices.Clone(fp)
+		for _, step := range path {
+			d = binary.LittleEndian.AppendUint32(d, step)
+		}
+		return fakeChild(el[end+1:]), d
+	case strings.HasPrefix(el, "fakepub"):
+		pub, _ := hex.DecodeString(el[len("fakepub"):])
+		return pub, pub[1:5]
+	}
+	pub, _ = hex.DecodeString(el)
+	return pub, nil
+}
+
+// fakeMultiScript is 2 <keys sorted> 3 CHECKMULTISIG.
+func fakeMultiScript(keys ...[]byte) []byte {
+	keys = slices.Clone(keys)
+	slices.SortFunc(keys, bytes.Compare)
+	ws := []byte{0x52}
+	for _, k := range keys {
+		ws = append(append(ws, 33), k...)
+	}
+	return append(ws, 0x53, 0xae)
+}
+
+var fakeWpkh = regexp.MustCompile(`^wpkh\(([^()]+)\)$`)
+
+// address is deriveaddresses in the fake: a wsh(sortedmulti(2,…)) pays its witness script (the same address whether
+// its keys are written as extended keys with origins or bare, as in Core; bareAddrSalt makes the bare form differ),
+// a wpkh(…) its key; anything else a hash of the descriptor. Escrow addresses remember their scriptPubKey for
+// createpsbt.
+func (c *fakeEscrowCore) address(desc string) string {
+	if m := fakeMulti.FindStringSubmatch(desc + "#"); m != nil {
+		var keys [][]byte
+		bare := true
+		for _, el := range m[1:] {
+			pub, deriv := c.fakeKeyOf(el)
+			bare = bare && deriv == nil
+			keys = append(keys, pub)
+		}
+		h := sha256.Sum256(fakeMultiScript(keys...))
+		addr := "bcrt1q" + hex.EncodeToString(h[:])
+		if bare && c.bareAddrSalt != "" {
+			addr = "bcrt1q" + c.bareAddrSalt + hex.EncodeToString(h[:])[len(c.bareAddrSalt):]
+		}
+		c.spk[addr] = append([]byte{0, 32}, h[:]...)
+		return addr
+	}
+	if m := fakeWpkh.FindStringSubmatch(desc); m != nil {
+		pub, _ := c.fakeKeyOf(m[1])
+		h := sha256.Sum256(pub)
+		return "bcrt1q" + hex.EncodeToString(h[:])[:40]
+	}
+	h := sha256.Sum256([]byte(desc))
+	return "bcrt1q" + hex.EncodeToString(h[:])[:40]
 }

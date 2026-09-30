@@ -20,6 +20,15 @@ import (
 // Registering or changing a key needs the current password (and authenticator code when enrolled), notifies the
 // owner and writes a fixed audit line with no key, fingerprint or path. A change replaces only this account's key
 // row: an escrow keeps the child keys and origins it was built with (escrow_pubkeys), so no existing escrow changes.
+//
+// Which escrows use a key is read by the account and the key's origin (escrow_pubkeys.user_id, origin_fingerprint and
+// origin_path), never by key_hmac: the HMAC derives from APP_SECRET_KEY, and rotating it must never hide an escrow or
+// change which key an escrow uses (the chair's ruling on QA25). An origin names one key of an active account: the
+// practice signature proved the owner's wallet holds the key at that fingerprint and path. After a rotation the owner
+// registers the same key again; Bitcoin Core confirms it derives the key an existing escrow holds (derivesChild), and
+// it is active again at once, since practice is never offered for a key with escrows (ES-9). Cross-account reuse is
+// refused by the HMAC, so across a rotation it is best effort: a key registered before is not recognised on another
+// account until its owner registers it again (docs/operator-guide.md).
 
 func init() {
 	registerPage("escrow-key", pageSpec{Protected: true, Off: escrowOff})
@@ -39,6 +48,7 @@ var (
 	errKeyUnusable     = &keyRefusal{"This key cannot be used here. Create a new wallet, or a new account in your wallet, used only for this market, and register its key. Nothing was saved."}
 	errPracticeState   = fail(409, "The practice transaction is offered only for a registered key that is not active yet and has no escrows. Reload the page.")
 	errPracticeChanged = fail(409, "Your escrow key was changed or activated while the practice transaction was checked; nothing was changed. Reload the page.")
+	errKeyOtherOrigin  = &keyRefusal{"This key has the same origin as the key your escrows use, but it is a different key. Check the fingerprint and path your wallet shows for this key. Nothing was saved."}
 )
 
 // errEscrowKeyUnreadable is shown when the stored key cannot be opened: APP_SECRET_KEY (or a legacy SETUP_TOKEN)
@@ -68,13 +78,16 @@ func loadEscrowKey(ctx context.Context, q interface {
 }, userID string) (*storedEscrowKey, error) {
 	k := &storedEscrowKey{}
 	err := q.QueryRowContext(ctx, `SELECT xpub_sealed,xpub_hmac,origin_fingerprint,origin_path,coalesce(to_char(active_at,'YYYY-MM-DD HH24:MI "UTC"'),''),
-		active_at IS NOT NULL,EXISTS(SELECT 1 FROM escrow_pubkeys p WHERE p.key_hmac=k.xpub_hmac)
+		active_at IS NOT NULL,EXISTS(`+escrowsOfKey+`)
 		FROM user_escrow_keys k WHERE user_id=$1`, userID).Scan(&k.sealed, &k.hmac, &k.fingerprint, &k.path, &k.activeAt, &k.active, &k.hasEscrows)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	return k, err
 }
+
+// escrowsOfKey selects the escrow keys of the user_escrow_keys row k: by account and origin, not by HMAC.
+const escrowsOfKey = "SELECT 1 FROM escrow_pubkeys p WHERE p.user_id=k.user_id AND p.origin_fingerprint=k.origin_fingerprint AND p.origin_path=k.origin_path"
 
 // escrowKeyView fills the page view from the stored key (no RPC).
 func (a *App) escrowKeyView(ctx context.Context, userID string) (*EscrowKeyView, *storedEscrowKey, error) {
@@ -159,6 +172,25 @@ func escrowKeyAction(c *actionCtx) (actionResult, error) {
 	if cur != nil && cur.hmac == h && cur.fingerprint == k.Fingerprint && cur.path == k.PathText {
 		return actionResult{Redirect: "/escrow-key", Notice: "escrow-key-unchanged"}, nil
 	}
+	// A key under the origin of this account's escrows must be the key they hold (after an APP_SECRET_KEY rotation,
+	// the same key registered again); it is then active at once. Checked with Core before the password is.
+	var suffix, pub string
+	err = a.db.QueryRowContext(c.Ctx(), `SELECT derivation_suffix,pubkey FROM escrow_pubkeys WHERE user_id=$1 AND origin_fingerprint=$2 AND origin_path=$3
+		ORDER BY escrow_id DESC LIMIT 1`, c.User.ID, k.Fingerprint, k.PathText).Scan(&suffix, &pub)
+	restored := err == nil
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return actionResult{}, err
+	}
+	if restored {
+		same, err := a.escrow.derivesChild(c.Ctx(), k, suffix, pub)
+		if err != nil {
+			log.Printf("escrow: re-registered key not checked: %s", errorClassOf(err))
+			return actionResult{}, fail(503, "The key cannot be checked right now: the market's Bitcoin node did not answer. Nothing was saved; try again later.")
+		}
+		if !same {
+			return actionResult{}, fail(400, errKeyOtherOrigin.Error())
+		}
+	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
 		ctx, uid := c.Ctx(), c.User.ID
 		sealed, err := c.A.seal("escrow-xpub", k.XPub)
@@ -166,9 +198,13 @@ func escrowKeyAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, err
 		}
 		var inserted bool
-		err = c.Tx.QueryRowContext(ctx, `INSERT INTO user_escrow_keys(user_id,xpub_sealed,xpub_hmac,origin_fingerprint,origin_path) VALUES($1,$2,$3,$4,$5)
+		var activeAt any
+		if restored {
+			activeAt = "now"
+		}
+		err = c.Tx.QueryRowContext(ctx, `INSERT INTO user_escrow_keys(user_id,xpub_sealed,xpub_hmac,origin_fingerprint,origin_path,active_at) VALUES($1,$2,$3,$4,$5,$6::timestamptz)
 			ON CONFLICT (user_id) DO UPDATE SET xpub_sealed=EXCLUDED.xpub_sealed,xpub_hmac=EXCLUDED.xpub_hmac,origin_fingerprint=EXCLUDED.origin_fingerprint,
-			origin_path=EXCLUDED.origin_path,active_at=NULL,updated=now() RETURNING xmax=0`, uid, sealed, h, k.Fingerprint, k.PathText).Scan(&inserted)
+			origin_path=EXCLUDED.origin_path,active_at=EXCLUDED.active_at,updated=now() RETURNING xmax=0`, uid, sealed, h, k.Fingerprint, k.PathText, activeAt).Scan(&inserted)
 		var pe *pgconn.PgError
 		if errors.As(err, &pe) && pe.Code == "23505" && pe.ConstraintName == "user_escrow_keys_xpub_hmac_key" {
 			return actionResult{}, fail(409, errKeyUnusable.Error()) // another account's key; which one is never said
@@ -179,6 +215,10 @@ func escrowKeyAction(c *actionCtx) (actionResult, error) {
 		audit, event := "Changed Bitcoin escrow key", "Your Bitcoin escrow key was changed; it is inactive until you sign its practice transaction."
 		if inserted {
 			audit, event = "Registered a Bitcoin escrow key", "A Bitcoin escrow key was registered on your account; it is inactive until you sign its practice transaction."
+		}
+		if restored {
+			audit += " (the key of your existing escrows; active)"
+			event = "Your Bitcoin escrow key was registered again: it is the key your existing escrows use, so it is active."
 		}
 		if !k.BIP48 {
 			audit += " (path outside BIP48; wallet used only for this market acknowledged)"
@@ -229,8 +269,8 @@ func escrowPracticeAction(c *actionCtx) (actionResult, error) {
 	}
 	return confirmedTx(c, false, func(c *actionCtx) (actionResult, error) {
 		// The key checked (the same key and origin) must still be the account's, inactive and without escrows.
-		res, err := c.Tx.ExecContext(ctx, `UPDATE user_escrow_keys SET active_at=now(),updated=now() WHERE user_id=$1 AND xpub_hmac=$2
-			AND origin_fingerprint=$3 AND origin_path=$4 AND active_at IS NULL AND NOT EXISTS (SELECT 1 FROM escrow_pubkeys WHERE key_hmac=$2)`,
+		res, err := c.Tx.ExecContext(ctx, `UPDATE user_escrow_keys k SET active_at=now(),updated=now() WHERE user_id=$1 AND xpub_hmac=$2
+			AND origin_fingerprint=$3 AND origin_path=$4 AND active_at IS NULL AND NOT EXISTS (`+escrowsOfKey+`)`,
 			uid, k.hmac, k.fingerprint, k.path)
 		if err != nil {
 			return actionResult{}, err

@@ -300,16 +300,22 @@ func (a *App) pollCurrency(ctx context.Context, p PaymentProvider) error {
 	return errors.Join(errs...)
 }
 
-// recordIncoming upserts what the wallet reports for addresses; ledger rows the wallet no longer reports
-// (replaced, conflicted or evicted transactions) are marked -1 confirmations. A new row on a funded,
-// non-terminal order is marked late_notice for settleOrder to announce; one on a closed order is marked
-// after_close: it is never counted toward the order's settlement (payoutBasis), and settleOrder flags it.
+// recordIncoming upserts what the wallet reports for addresses (applyIncoming).
 func (a *App) recordIncoming(ctx context.Context, p PaymentProvider, addresses []string, orderOf map[string]string) error {
 	incoming, err := p.Incoming(ctx, addresses)
 	if err != nil {
 		return &watchError{class: "wallet read failed: " + watcherCause(err), err: err}
 	}
-	cur := p.Currency()
+	return a.applyIncoming(ctx, p.Currency(), incoming, addresses, orderOf)
+}
+
+// applyIncoming writes what a wallet reported for addresses to the payments ledger, one row per output; ledger rows
+// the wallet no longer reports (replaced, conflicted or evicted transactions) are marked -1 confirmations. A new row
+// on a funded, non-terminal order is marked late_notice for settleOrder to announce; one on a closed order is marked
+// after_close: it is never counted toward the order's settlement (payoutBasis), and settleOrder flags it. The pooled
+// watcher and the escrow watcher (escrow_watch.go) both write the ledger through it.
+func (a *App) applyIncoming(ctx context.Context, cur string, incoming []Incoming, addresses []string, orderOf map[string]string) error {
+	var err error
 	seen := map[ledgerKey]bool{}
 	for _, in := range incoming {
 		order, ok := orderOf[in.Address]
@@ -727,7 +733,10 @@ func (a *App) sendPayouts(ctx context.Context, p PaymentProvider, orders []strin
 		}
 		var to, order, recipient string
 		var amt int64
+		// The claim never takes a payout of an escrow order (ES-1): such an order is settled from its escrow, and the
+		// database refuses to write one (migration 074), so only a row older than its order's escrow could match.
 		err = a.db.QueryRowContext(ctx, `UPDATE payouts SET state='sending',updated=now() WHERE id=$1 AND state='pending' AND address<>''
+			AND NOT EXISTS (SELECT 1 FROM escrows es WHERE es.order_id=payouts.order_id)
 			AND NOT EXISTS (SELECT 1 FROM settings WHERE key='payments_recovery_required' AND value='true')
 			AND NOT EXISTS (SELECT 1 FROM payments pm WHERE pm.order_id=payouts.order_id AND pm.credited AND pm.confirmations<$2)
 			RETURNING address,amount,order_id,user_id`, id, int64(p.Confirmations())).Scan(&to, &amt, &order, &recipient)

@@ -6,7 +6,15 @@
 # fetches the practice PSBT, signs it with walletprocesspsbt and pastes it back; the key becomes active. Before
 # that it checks the app's rpcwhitelist user cannot export or back up keys (listdescriptors, dumpwallet,
 # backupwallet refused) but can refill the arbiter keypool, and that unsigned, other-wallet, SIGHASH_NONE,
-# SIGHASH_SINGLE|ANYONECANPAY, corrupted and forged-final pastes are refused. Later slices add their legs here.
+# SIGHASH_SINGLE|ANYONECANPAY, corrupted and forged-final pastes are refused.
+#
+# Slice P1-b leg: a buyer and a vendor register BIP48 keys from their own Core wallets and activate them by practice
+# signing; the buyer creates an escrow through the real checkout form. Core checks the descriptor each party's order
+# page shows (checksum, derived address = the address shown, each party's child key at its origin), that the
+# watch-only wallet imported only the bare-key descriptor of that address, and that its witness script is the
+# 2-of-3 of the stored buyer, vendor and market keys (the market's an arbiter-wallet child). A regtest wallet funds
+# the address, 3 blocks are mined and one escrow watcher pass completes the order (content delivered, no payouts
+# row). Later slices add their legs here.
 #
 # Needs a regtest node with two RPC users: an operator user with full rights (sets up the wallets, standing in
 # for the buyer's own node) and the app's user restricted by rpcwhitelist exactly as docs/operator-guide.md
@@ -16,7 +24,7 @@
 #   docker run -d --name escrow-regtest -p 127.0.0.1:18443:18443 bitcoin/bitcoin:31.1 bitcoind -regtest \
 #     -server=1 -rpcbind=0.0.0.0 -rpcallowip=0.0.0.0/0 -rpcuser=operator -rpcpassword=operator-pass \
 #     "-rpcauth=opsecmkt-escrow:$salt\$$hash" -rpcwhitelistdefault=0 \
-#     -rpcwhitelist=opsecmkt-escrow:getblockchaininfo,getrawchangeaddress,getaddressinfo,createpsbt,utxoupdatepsbt,importdescriptors,getdescriptorinfo,deriveaddresses,gettxout,keypoolrefill,walletprocesspsbt,descriptorprocesspsbt,combinepsbt,finalizepsbt,testmempoolaccept,sendrawtransaction
+#     -rpcwhitelist=opsecmkt-escrow:getblockchaininfo,getrawchangeaddress,getaddressinfo,createpsbt,utxoupdatepsbt,importdescriptors,getdescriptorinfo,deriveaddresses,gettxout,keypoolrefill,walletprocesspsbt,descriptorprocesspsbt,combinepsbt,finalizepsbt,testmempoolaccept,sendrawtransaction,getwalletinfo,listreceivedbyaddress,gettransaction
 #   ESCROW_REGTEST_OPERATOR_RPC_URL=http://operator:operator-pass@127.0.0.1:18443 \
 #   ESCROW_REGTEST_APP_RPC_URL=http://opsecmkt-escrow:app-pass@127.0.0.1:18443 \
 #   TEST_DATABASE_URL=postgres://…/a_disposable_database ./scripts/test-escrow-regtest.sh
@@ -52,11 +60,13 @@ log="${ESCROW_REGTEST_LOG:-artifacts/real-chain/test-escrow-regtest-$(date -u +%
 mkdir -p "$(dirname "$log")"
 echo "Bitcoin escrow regtest check; transcript: $log"
 set +e
-go test -count=1 -timeout 10m -run '^TestEscrowRegtestPracticeSign$' -v ./internal/market/ 2>&1 | tee "$log"
+go test -count=1 -timeout 10m -run '^TestEscrowRegtest(PracticeSign|Funding)$' -v ./internal/market/ 2>&1 | tee "$log"
 status=${PIPESTATUS[0]}
 set -e
-if [[ $status -ne 0 ]] || ! grep -q -- '--- PASS: TestEscrowRegtestPracticeSign' "$log"; then
-  echo "FAILED (or skipped): see $log" >&2
-  exit 1
-fi
-echo "PASS: practice signing on regtest; transcript in $log"
+for leg in TestEscrowRegtestPracticeSign TestEscrowRegtestFunding; do
+  if [[ $status -ne 0 ]] || ! grep -q -- "--- PASS: $leg " "$log"; then
+    echo "FAILED (or skipped): $leg; see $log" >&2
+    exit 1
+  fi
+done
+echo "PASS: practice signing, and escrow creation and funding, on regtest; transcript in $log"
