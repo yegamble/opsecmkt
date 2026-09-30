@@ -334,14 +334,24 @@ func TestPayoutKindsPerOrder(t *testing.T) {
 	if err := insert("return"); !uniqueViolation(err, "payouts_refund_or_return") {
 		t.Fatalf("return after a refund: %v", err)
 	}
+	// A return without its release is refused at commit (A-268, migration 073; TestReturnNeedsRelease), so the
+	// refund follows the return inside one transaction, where 070's index refuses it at once.
 	p.order, _ = p.newOrder(stateCancelled)
-	if err := insert("return"); err != nil {
+	tx, err := p.DB.Begin()
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := insert("refund"); !uniqueViolation(err, "payouts_refund_or_return") {
+	defer tx.Rollback()
+	if _, err = tx.Exec("INSERT INTO payouts(order_id,kind,user_id,currency,amount) VALUES($1,'return',$2,'BTC',1000)", p.order, p.buyer.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec("INSERT INTO payouts(order_id,kind,user_id,currency,amount) VALUES($1,'refund',$2,'BTC',1000)", p.order, p.buyer.ID); !uniqueViolation(err, "payouts_refund_or_return") {
 		t.Fatalf("refund after a return: %v", err)
 	}
-	if n := p.count("SELECT count(*) FROM payouts WHERE order_id=$1", p.order); n != 1 {
+	if err = tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if n := p.count("SELECT count(*) FROM payouts WHERE order_id=$1", p.order); n != 0 {
 		t.Fatalf("%d payouts", n)
 	}
 }
@@ -349,10 +359,12 @@ func TestPayoutKindsPerOrder(t *testing.T) {
 // settlementClashSQL is the SQL UPGRADING.md section 14 gives for settling a clash migration 069 or 070 refuses:
 // list every payout of the named orders (returns included), keep the refund by deleting the release together with
 // its return, keep the release (and its return) by deleting the refund, or, for a cancelled or refund-outcome order
-// whose return alone was sent, keep that return by deleting the unsent release and the refund (A-283), and check
-// that no order is left with two settlements or a refund beside a return. TestSettlementClashGuide runs it, with
-// psql's :'order_id' bound as $1, and checks that UPGRADING.md carries it verbatim (whitespace aside).
-var settlementClashSQL = struct{ list, keepRefund, keepRelease, keepReturn, check string }{
+// whose return alone was sent, delete the unsent release and the refund and record that sent return as the order's
+// refund in the same transaction (A-283; a return without its release is refused since migration 073, A-268), and
+// check that no order is left with two settlements, a refund beside a return or a return without a release.
+// TestSettlementClashGuide runs it, with psql's :'order_id' bound as $1, and checks that UPGRADING.md carries it
+// verbatim (whitespace aside; keepReturn and returnAsRefund inside one BEGIN/COMMIT).
+var settlementClashSQL = struct{ list, keepRefund, keepRelease, keepReturn, returnAsRefund, check string }{
 	list: `SELECT p.id, p.order_id, o.state AS order_state, p.kind, p.state, p.send_ambiguous, p.currency, p.amount, p.address, p.user_id,
   p.txid, p.error, p.created, p.updated
 FROM payouts p JOIN orders o ON o.id = p.order_id
@@ -360,51 +372,26 @@ WHERE p.order_id IN (SELECT order_id FROM payouts GROUP BY order_id
   HAVING count(*) FILTER (WHERE kind IN ('release','refund')) > 1
       OR count(*) FILTER (WHERE kind IN ('refund','return')) > 1)
 ORDER BY p.order_id, p.kind;`,
-	keepRefund:  `DELETE FROM payouts WHERE order_id = :'order_id' AND kind IN ('release','return') RETURNING id, kind, state, txid;`,
-	keepRelease: `DELETE FROM payouts WHERE order_id = :'order_id' AND kind = 'refund' RETURNING id, kind, state, txid;`,
-	keepReturn:  `DELETE FROM payouts WHERE order_id = :'order_id' AND kind IN ('release','refund') RETURNING id, kind, state, txid;`,
+	keepRefund:     `DELETE FROM payouts WHERE order_id = :'order_id' AND kind IN ('release','return') RETURNING id, kind, state, txid;`,
+	keepRelease:    `DELETE FROM payouts WHERE order_id = :'order_id' AND kind = 'refund' RETURNING id, kind, state, txid;`,
+	keepReturn:     `DELETE FROM payouts WHERE order_id = :'order_id' AND kind IN ('release','refund') RETURNING id, kind, state, txid;`,
+	returnAsRefund: `UPDATE payouts SET kind = 'refund', updated = now() WHERE order_id = :'order_id' AND kind = 'return' RETURNING id, kind, state, txid;`,
 	check: `SELECT order_id, string_agg(kind, ',' ORDER BY kind) AS kinds FROM payouts GROUP BY order_id
 HAVING count(*) FILTER (WHERE kind IN ('release','refund')) > 1
-    OR count(*) FILTER (WHERE kind IN ('refund','return')) > 1;`,
+    OR count(*) FILTER (WHERE kind IN ('refund','return')) > 1
+    OR (count(*) FILTER (WHERE kind = 'return') > 0 AND count(*) FILTER (WHERE kind = 'release') = 0);`,
 }
 
-// unsettle removes migrations 069 and 070 (their indexes and records) so a test can insert the payouts they refuse,
-// and returns a function applying both in one transaction as a startup does, after running pre (with args) in that
-// transaction; a refused migration rolls everything back.
+// unsettle removes migrations 069, 070 and 073 (their indexes, trigger, function and records) so a test can insert
+// the payouts they refuse, and returns a function applying all three in one transaction as a startup from before 069
+// does, after running pre (with args) in that transaction; a refused migration rolls everything back.
 func (p *payEnv) unsettle() func(pre string, args ...any) error {
 	p.t.Helper()
+	p.unguard()
 	if _, err := p.DB.Exec("DROP INDEX payouts_one_settlement; DROP INDEX payouts_refund_or_return; DELETE FROM schema_migrations WHERE version IN (69,70)"); err != nil {
 		p.t.Fatal(err)
 	}
-	list, err := loadMigrations(migrationFiles)
-	if err != nil {
-		p.t.Fatal(err)
-	}
-	var settle []migration
-	for _, m := range list {
-		if m.Version == 69 || m.Version == 70 {
-			settle = append(settle, m)
-		}
-	}
-	if len(settle) != 2 {
-		p.t.Fatalf("settlement migrations %+v", settle)
-	}
-	return func(pre string, args ...any) error {
-		tx, err := p.DB.Begin()
-		if err != nil {
-			p.t.Fatal(err)
-		}
-		defer tx.Rollback()
-		if pre != "" {
-			if _, err = tx.Exec(pre, args...); err != nil {
-				p.t.Fatal(err)
-			}
-		}
-		if err = applyMigrations(context.Background(), tx, settle); err != nil {
-			return err
-		}
-		return tx.Commit()
-	}
+	return p.applyVersions(69, 70, 73)
 }
 
 func (p *payEnv) insertPayouts(order string, kinds ...string) {
@@ -416,12 +403,13 @@ func (p *payEnv) insertPayouts(order string, kinds ...string) {
 	}
 }
 
-// settlementIndexes counts migration 069's and 070's indexes and records in the test's schema: 4 when both
-// applied. Other schemas in the database (another test's, or one left by a killed run) are not counted (A-297).
+// settlementIndexes counts migration 069's and 070's indexes and records and migration 073's trigger, function and
+// record in the test's schema: 7 when all three applied. Other schemas in the database (another test's, or one left
+// by a killed run) are not counted (A-297).
 func (p *payEnv) settlementIndexes() int {
 	p.t.Helper()
 	return p.count("SELECT count(*) FROM pg_indexes WHERE schemaname=current_schema() AND indexname IN ('payouts_one_settlement','payouts_refund_or_return')") +
-		p.count("SELECT count(*) FROM schema_migrations WHERE version IN (69,70)")
+		p.count("SELECT count(*) FROM schema_migrations WHERE version IN (69,70)") + p.returnGuardApplied()
 }
 
 // A-218: migration 069 creates the one-settlement index. A database already holding a release and a refund for one
@@ -445,7 +433,7 @@ func TestOneSettlementMigrationRefusesExistingClash(t *testing.T) {
 	if err = apply("DELETE FROM payouts WHERE order_id=$1 AND kind='refund'", p.order); err != nil {
 		t.Fatal(err)
 	}
-	if p.settlementIndexes() != 4 || p.count("SELECT count(*) FROM payouts WHERE order_id=$1", p.order) != 2 {
+	if p.settlementIndexes() != 7 || p.count("SELECT count(*) FROM payouts WHERE order_id=$1", p.order) != 2 {
 		t.Fatal("migration did not apply once the clash was settled")
 	}
 }
@@ -455,9 +443,10 @@ func TestOneSettlementMigrationRefusesExistingClash(t *testing.T) {
 // release's return, which the watcher would send, paying the excess a second time: migration 070 refuses that,
 // naming the order, and changes nothing. The guide's own SQL lists the return with the clash, deletes a release
 // together with its return (or the refund alone), and its final check finds no order with a refund and a return;
-// both migrations then apply. The final check names exactly the orders the migrations refuse (A-284), the listing
-// carries what the wallet check needs (A-282), and a cancelled order whose return alone was sent keeps only that
-// return, so neither the vendor's release nor the refund is sent (A-283). A sent release on a cancelled order
+// the migrations then apply. The final check names exactly the orders the migrations refuse (A-284), the listing
+// carries what the wallet check needs (A-282), and a cancelled order whose return alone was sent keeps that sent
+// row as its refund, so neither the vendor's release nor a second refund is sent (A-283); keeping it as a return
+// without its release, as the guide said before, is refused by migration 073 (A-268). A sent release on a cancelled order
 // settles with either statement the guide offers, and a refund alone sent on a completed order keeps the refund
 // (A-286); neither leaves the watcher anything to send but the kept refund.
 func TestSettlementClashGuide(t *testing.T) {
@@ -620,10 +609,50 @@ func TestSettlementClashGuide(t *testing.T) {
 	del(settlementClashSQL.keepRelease, keepRelease, 1)
 	del(settlementClashSQL.keepRefund, leftover, 1)
 	del(settlementClashSQL.keepRelease, bare, 1)
-	del(settlementClashSQL.keepReturn, returnSent, 2)
 	del(settlementClashSQL.keepRefund, releaseSentRefund, 2)
 	del(settlementClashSQL.keepRelease, releaseSentKept, 1)
 	del(settlementClashSQL.keepRefund, refundSent, 2)
+	// A-268: keeping only the sent return (what the guide said before migration 073) leaves a return without a
+	// release. Step 5's check lists that order, and migration 073 refuses it by name, changing nothing.
+	oldKeepReturn := strings.ReplaceAll(settlementClashSQL.keepReturn, ":'order_id'", "$1")
+	if tx, err = p.DB.Begin(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(oldKeepReturn, returnSent); err != nil {
+		t.Fatal(err)
+	}
+	if got := checked(tx.Query); !slices.Equal(got, []string{returnSent}) {
+		t.Fatalf("check after keeping only the return lists %v", got)
+	}
+	if err = tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	remaining := p.count("SELECT count(*) FROM payouts")
+	err = apply(oldKeepReturn, returnSent)
+	if err == nil || !strings.Contains(err.Error(), "migration 073_payout_return_needs_release") ||
+		!strings.Contains(err.Error(), "order(s) "+returnSent+" have a return but no release") {
+		t.Fatalf("migrations over a return kept without its release: %v", err)
+	}
+	if p.count("SELECT count(*) FROM payouts") != remaining || p.settlementIndexes() != 0 {
+		t.Fatal("a refused migration changed payouts or left its index, trigger or record")
+	}
+	// The guide now deletes the unsent release and the refund and records the sent return as the order's refund, in
+	// one transaction.
+	if tx, err = p.DB.Begin(); err != nil {
+		t.Fatal(err)
+	}
+	for i, stmt := range []string{settlementClashSQL.keepReturn, settlementClashSQL.returnAsRefund} {
+		res, err := tx.Exec(strings.ReplaceAll(stmt, ":'order_id'", "$1"), returnSent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n, _ := res.RowsAffected(); n != int64(2-i) {
+			t.Fatalf("%s changed %d payouts, want %d", stmt, n, 2-i)
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
 	// Step 5: the check finds nothing, and the migrations apply.
 	if got := checked(p.DB.Query); len(got) != 0 {
 		t.Fatalf("check lists %v after the guide's deletions", got)
@@ -641,8 +670,12 @@ func TestSettlementClashGuide(t *testing.T) {
 		}
 		return k
 	}
-	if p.settlementIndexes() != 4 || kinds(keepRefund) != "refund" || kinds(keepRelease) != "release,return" || kinds(leftover) != "refund" || kinds(bare) != "release" || kinds(returnSent) != "return" || kinds(clean) != "release,return" {
+	if p.settlementIndexes() != 7 || kinds(keepRefund) != "refund" || kinds(keepRelease) != "release,return" || kinds(leftover) != "refund" || kinds(bare) != "release" || kinds(returnSent) != "refund" || kinds(clean) != "release,return" {
 		t.Fatalf("after the guide: %s %s %s %s %s %s", kinds(keepRefund), kinds(keepRelease), kinds(leftover), kinds(bare), kinds(returnSent), kinds(clean))
+	}
+	// The cancelled order whose return alone was sent keeps that sent row, now its refund, and nothing to send.
+	if st, txid := p.str("SELECT state FROM payouts WHERE order_id=$1", returnSent), p.str("SELECT txid FROM payouts WHERE order_id=$1", returnSent); st != "sent" || txid != "tx-return" {
+		t.Fatalf("returnSent's refund %s %s", st, txid)
 	}
 	// A-286: what the watcher may still send is only the kept settlement's unsent rows: the refund for the cancelled
 	// order whose sent release was deleted, nothing for the one whose sent release was kept, and nothing for the
@@ -665,7 +698,8 @@ func TestSettlementClashGuide(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := strings.Join(strings.Fields(string(doc)), " ")
-	for _, q := range []string{settlementClashSQL.list, settlementClashSQL.keepRefund, settlementClashSQL.keepRelease, settlementClashSQL.keepReturn, settlementClashSQL.check} {
+	for _, q := range []string{settlementClashSQL.list, settlementClashSQL.keepRefund, settlementClashSQL.keepRelease, settlementClashSQL.check,
+		"BEGIN; " + settlementClashSQL.keepReturn + " " + settlementClashSQL.returnAsRefund + " COMMIT;"} {
 		if q = strings.Join(strings.Fields(q), " "); !strings.Contains(text, q) {
 			t.Fatalf("UPGRADING.md does not carry the settlement SQL %q", q)
 		}
