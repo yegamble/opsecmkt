@@ -56,15 +56,15 @@ func TestTerminalSettlementGoesThroughOneDispatcher(t *testing.T) {
 }
 
 // settleTerminal on a pooled order queues exactly what enqueuePayout queued before (the whole payout suite runs
-// through it); an order marked escrow never gets a pooled payout (no escrow settlement exists yet, so it is
-// refused and the transaction rolls back).
+// through it); an order marked escrow never gets a pooled payout: its settlement is built from its escrow (P1-c), so
+// settleTerminal writes nothing for it and the terminal transition goes ahead (A-246 P1-b).
 func TestSettleTerminalPooledAndEscrowBranches(t *testing.T) {
 	p := newPayEnv(t)
 	p.setPayoutAddress(p.vendor, "fake-testnet-vendor")
 	p.paidByWatcherAmount(100000)
 	p.move(p.order, statePaid, stateShipped, p.vendor)
 	ctx := context.Background()
-	settle := func(escrow bool) error {
+	settle := func(escrow bool, commit bool) error {
 		tx, err := p.DB.BeginTx(ctx, nil)
 		if err != nil {
 			t.Fatal(err)
@@ -78,21 +78,27 @@ func TestSettleTerminalPooledAndEscrowBranches(t *testing.T) {
 			t.Fatal(err)
 		}
 		if o.Escrow {
-			t.Fatal("an order loaded today is marked escrow")
+			t.Fatal("an order without an escrows row is marked escrow")
 		}
 		o.Escrow = escrow
 		if err = p.A.settleTerminal(ctx, tx, &o); err != nil {
 			return err
 		}
+		if n := 0; tx.QueryRowContext(ctx, "SELECT count(*) FROM payouts WHERE order_id=$1", p.order).Scan(&n) != nil || escrow && n != 0 {
+			t.Fatalf("escrow branch queued %d payouts", n)
+		}
+		if !commit {
+			return nil
+		}
 		return tx.Commit()
 	}
-	if err := settle(true); err == nil {
-		t.Fatal("escrow order settled through the pooled wallet")
+	if err := settle(true, false); err != nil {
+		t.Fatalf("escrow branch: %v", err)
 	}
 	if n := p.count("SELECT count(*) FROM payouts WHERE order_id=$1", p.order); n != 0 || p.state(p.order) != stateShipped {
 		t.Fatalf("escrow branch queued %d payouts or moved the order", n)
 	}
-	if err := settle(false); err != nil {
+	if err := settle(false, true); err != nil {
 		t.Fatal(err)
 	}
 	if st, _, addr, amt := p.payout(p.order); st != "pending" || addr != "fake-testnet-vendor" || amt != 100000 {

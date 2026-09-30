@@ -36,8 +36,8 @@ type ProductPhoto struct {
 type Order struct {
 	ID, ProductID, Title, Buyer, Vendor, Currency, Amount, Status, Created string
 	State, Kind, BuyerID, VendorID, Updated                                string
-	// Escrow: settled through a per-order escrow instead of the pooled wallet (settleTerminal, escrowOnly). Always
-	// false until escrow is built (A-244, WR-escrow Phase 0).
+	// Escrow: settled through a per-order escrow instead of the pooled wallet (settleTerminal, escrowOnly): the order
+	// has an escrows row (WR-escrow Phase 1, escrow_create.go).
 	Escrow bool
 }
 type Message struct {
@@ -221,6 +221,10 @@ type PageData struct {
 	// EscrowKey: /escrow-key and the /account status row, the viewer's Bitcoin escrow key; nil while ESCROW_BTC is off
 	// (escrow_account.go, WR-escrow Phase 1).
 	EscrowKey *EscrowKeyView
+	// Escrow: order page of an escrow order, its escrow (escrow_order.go); EscrowCheckout: order page of the buyer's
+	// BTC draft on a listing that takes escrow, while ESCROW_BTC is on. Both nil otherwise.
+	Escrow         *EscrowOrderView
+	EscrowCheckout *EscrowCheckoutView
 
 	// P6 Transparency
 	Canary      *CanaryView
@@ -470,6 +474,26 @@ type ContactKey struct {
 
 // Usable reports whether the contact has a key that can receive encrypted messages (contactKey fills Fingerprint only then).
 func (k ContactKey) Usable() bool { return k.Fingerprint != "" }
+
+// EscrowOrderView is an escrow order's escrow on its order page (escrow_order.go). Descriptor is the bare-key
+// descriptor with its checksum, the viewer's own key with its origin (Own names the viewer's party; "" for a staff
+// reader, who sees every key bare). RefundAddress is shown to the buyer only. Status and NextStep are fixed copy.
+type EscrowOrderView struct {
+	Available                                   bool // the escrow node is up, so the escrow is being watched
+	Address, Descriptor, Own, RefundAddress     string
+	Required, Confirmed, Unconfirmed, Remaining string
+	Threshold                                   int64
+	Open, NeedsTopUp                            bool
+	CancelAfter, Status, NextStep, Fee          string
+	Deposits                                    []PaymentDeposit
+}
+
+// EscrowCheckoutView offers escrow checkout on a draft (escrow_create.go): Reason says why it cannot be used now
+// ("" = the form is offered); KeyLink adds a link to the buyer's escrow key page.
+type EscrowCheckoutView struct {
+	Reason  string
+	KeyLink bool
+}
 
 // EscrowKeyView is the viewer's Bitcoin escrow key (escrow_account.go). Origin is the viewer's own key origin
 // ("[fingerprint/path]"), shown only to them. Practice is the practice PSBT (base64), set only on request while

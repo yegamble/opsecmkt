@@ -605,9 +605,12 @@ Operational limits to accept before enabling payments:
 #### Bitcoin escrow (regtest only)
 
 **Off by default, regtest only, and not a payment mode yet.** [Per-order escrow](escrow.md) is being built in
-phases. This release contains only the start of its first phase: a user registers the key their own wallet signs
-escrow with and activates it by signing a practice transaction. No order uses escrow; every payment still goes
-through the pooled wallet above. Never switch it on for a market that takes real payments.
+phases. This build contains the first part of its first phase: a user registers the key their own wallet signs
+escrow with and activates it by signing a practice transaction, and the buyer of a digital listing with automatic
+delivery can pay into a 2-of-3 escrow instead of the pooled wallet; the order completes when the escrow is funded.
+Settlements (the vendor's claim, refunds and dispute decisions) are not built, so coins paid into an escrow cannot
+be moved through the market yet. Every other order still goes through the pooled wallet above. Never switch it on
+for a market that takes real payments.
 
 - `ESCROW_BTC=on` turns it on (blank or `off` keeps it off). The app then refuses to start unless the node at
   `ESCROW_BTC_RPC_URL` reports chain `regtest`, and `BITCOIN_CHAIN`, when set, is `regtest`: "refusing to start:
@@ -620,13 +623,31 @@ through the pooled wallet above. Never switch it on for a market that takes real
   market's arbitrator key, never `BITCOIN_WALLET`. Create it once as the operator user, loaded at every node start
   (`bitcoin-cli -regtest -named createwallet wallet_name=opsecmkt-arbiter load_on_startup=true`), and back it up
   with the operator user: its seed is the market's escrow key.
+- `ESCROW_BTC_WATCH_WALLET` (default `opsecmkt-escrow-watch`): a descriptor wallet with private keys disabled into
+  which the app imports each escrow's descriptor (public keys only) before it shows the escrow address, and from
+  which the escrow watcher reads deposits. Create it once as the operator user
+  (`bitcoin-cli -regtest -named createwallet wallet_name=opsecmkt-escrow-watch disable_private_keys=true blank=true load_on_startup=true`);
+  it must differ from the arbiter wallet and `BITCOIN_WALLET`. At startup the app checks it with `getwalletinfo`;
+  a wallet that is not loaded or holds private keys leaves escrow disabled with "escrow: Bitcoin escrow disabled:
+  the watch-only wallet could not be read …".
+- `ESCROW_BTC_FEE_BPS` (default `0`) and `ESCROW_BTC_FEE_ADDRESS`: the market fee in basis points (250 = 2.5%) and
+  the regtest address it is to be paid to, required when the fee is above 0 and checked with the node at startup.
+  Each escrow keeps the fee and destination in force at its checkout; changing them affects only later escrows. One
+  fixed address is allowed only because escrow runs on test networks (startup logs "escrow: the market fee is paid
+  to one fixed address …"); a mainnet market will need a watch-only descriptor. No fee is taken yet: it is paid by
+  the vendor's claim, which is not built.
+- `PAYMENT_CONFIRMATIONS_BTC` (default 3), `PAYMENT_EXPIRY` and `PAYMENT_POLL_INTERVAL` apply to escrows as to pooled
+  Bitcoin payments. An escrow order that has received nothing when its payment window ends is cancelled; one that is
+  underpaid then stays open (a top-up to the price completes it), and both parties are told once that refunding an
+  escrow is not built yet.
 - **Fingerprint pin.** At the first start with escrow on, the app reads the arbiter wallet's master key fingerprint
   (from a fresh change address, with `getrawchangeaddress` and `getaddressinfo`) and pins it in the database
   (`settings` key `escrow_btc_arbiter_fingerprint`). If a later start finds another fingerprint, for example a
   different wallet under that name, escrow is disabled with "escrow: Bitcoin escrow disabled: the arbiter wallet's
   key fingerprint differs from the one pinned in this database". Load the right wallet and restart. On a regtest
-  market where you mean to replace the arbiter key, delete that settings row first (no escrow uses the key yet in
-  this release). Neither the fingerprint nor any key is ever logged.
+  market where you mean to replace the arbiter key, delete that settings row first, and only while no escrow exists
+  (`SELECT count(*) FROM escrows` is 0): every escrow holds a child of the arbiter key, and with another key the
+  market can never co-sign for it. Neither the fingerprint nor any key is ever logged.
 - **Compose** does not pass these variables to the app container in this release; test escrow with the app run
   outside Compose (`go run ./cmd/server` against a regtest node), as `scripts/test-escrow-regtest.sh` does.
 
@@ -636,14 +657,15 @@ keep a separate operator user with full rights for creating and backing up walle
 ```ini
 rpcauth=opsecmkt-escrow:SALT$HASH
 rpcwhitelistdefault=0
-rpcwhitelist=opsecmkt-escrow:getblockchaininfo,getrawchangeaddress,getaddressinfo,createpsbt,utxoupdatepsbt,importdescriptors,getdescriptorinfo,deriveaddresses,gettxout,keypoolrefill,walletprocesspsbt,descriptorprocesspsbt,combinepsbt,finalizepsbt,testmempoolaccept,sendrawtransaction
+rpcwhitelist=opsecmkt-escrow:getblockchaininfo,getrawchangeaddress,getaddressinfo,createpsbt,utxoupdatepsbt,importdescriptors,getdescriptorinfo,deriveaddresses,gettxout,keypoolrefill,walletprocesspsbt,descriptorprocesspsbt,combinepsbt,finalizepsbt,testmempoolaccept,sendrawtransaction,getwalletinfo,listreceivedbyaddress,gettransaction
 ```
 
 `rpcwhitelist` allows or refuses whole methods, not their arguments, so the list leaves out every method that
 can export or copy a key: `listdescriptors` (with `private=true` it prints the arbiter's private key; probed on
 Core 31.1 regtest), `dumpprivkey`, `dumpwallet`, `backupwallet` and everything else not listed. `keypoolrefill`
 is on it: it exports nothing and lets the arbiter wallet sign for high escrow indices. `descriptorprocesspsbt`
-is used only with throwaway practice keys, never a wallet key. `rpcwhitelistdefault=0` leaves other users (the
+is used only with throwaway practice keys, never a wallet key. `getwalletinfo`, `listreceivedbyaddress` and
+`gettransaction` read the watch-only wallet (the arbiter wallet only answers them; they export nothing). `rpcwhitelistdefault=0` leaves other users (the
 operator's, the pooled wallet's) unrestricted. Make SALT and HASH with Core's `share/rpcauth/rpcauth.py`, or as
 the comment in `scripts/test-escrow-regtest.sh` shows.
 
@@ -660,11 +682,35 @@ broadcast. The server keeps the key sealed with `APP_SECRET_KEY` (see
 registered keys unreadable ([Secrets](#secrets-env-and-onion-identities)): `/escrow-key` then says "Your escrow key
 can no longer be read on this market; register it again."
 
+A rotation never hides an escrow or changes the keys an escrow uses: escrows are attributed by account and key
+origin, not by the sealed key. A user whose key already has escrows registers the same key again; the app confirms
+with the node (`deriveaddresses`) that it derives the key the latest escrow holds, and the key is active again at
+once (practice signing is never offered for a key with escrows). Another key under that origin is refused. The check
+that stops two accounts registering the same key starts again after a rotation: a key registered before it is not
+recognised on another account until its owner registers it again.
+
+On the order page of a BTC draft on a digital listing with automatic delivery, the buyer is offered *Pay into an
+escrow* beside the pooled payment request, once both the buyer's and the vendor's escrow keys are active. The buyer
+gives a refund address from their own wallet, fixed for the order; an address the market already used as an escrow,
+refund, fee or deposit address is refused. The app then builds the escrow: each party's next child key (`/0/1`, `/0/2`, … of
+the registered key; `/0/0` is the practice child) and a fresh child of the arbiter key, expanded by the node, the
+witness script checked (three distinct keys, exactly one from the arbiter wallet) and the public descriptor
+imported into the watch-only wallet, before the address exists anywhere. The order page shows the escrow address and
+the descriptor with its checksum, each party's own key with its origin and the other two as plain keys, with a
+download, the claim ("the market cannot spend this escrow without you or the other party, if the key shown as yours
+is yours") and the notice that the other party can trace the escrow's funding and settlement on chain. The escrow
+watcher records each deposit; at the confirmation threshold the order is paid, its content delivered and the order
+completed. No payout is ever queued for an escrow order; refunds, disputes and the cancellation of an escrow that
+holds coins are refused until settlements are built.
+
 **What was checked.** `scripts/test-escrow-regtest.sh` (manual, not in CI) runs key registration and practice
 signing end to end with a real Bitcoin Core 31.1 regtest node and the whitelist above: the app user is refused
 `listdescriptors`, `dumpwallet` and `backupwallet`, runs `keypoolrefill` and every call key activation makes, and
-unsigned, other-wallet, `SIGHASH_NONE`, `SIGHASH_SINGLE|ANYONECANPAY`, corrupted and forged pastes are refused.
-Nothing about escrow has run on a public test network.
+unsigned, other-wallet, `SIGHASH_NONE`, `SIGHASH_SINGLE|ANYONECANPAY`, corrupted and forged pastes are refused. Its
+second leg activates a buyer's and a vendor's keys from their own Core wallets, creates an escrow through the checkout
+form, has Core confirm the descriptor each party is shown (checksum and address), that the watch-only wallet holds
+only that escrow's public descriptor and that its script is the 2-of-3 of the stored keys, funds it from a regtest
+wallet and completes the order on funding. Nothing about escrow has run on a public test network.
 
 ### Transparency
 
@@ -734,7 +780,7 @@ second checkout on the same host needs its own `COMPOSE_PROJECT_NAME` (for examp
 
 | Secret | Kept in | Backup | Rotation |
 | --- | --- | --- | --- |
-| `APP_SECRET_KEY` | `.env` | with `.env` | Derives the CSRF/CAPTCHA key and the key that encrypts TOTP secrets. Restore a database with the key in use when it was dumped; under another key its TOTP secrets cannot be read. Changing it refuses every open form once and makes enrolled TOTP secrets unreadable. On a market running [Bitcoin escrow](#bitcoin-escrow-regtest-only) it also makes every registered escrow key unreadable (`/escrow-key` asks the user to register it again) and restarts the check that stops two accounts registering the same key: a key registered before the change is not recognised until its owner registers it again. Rotate only when it is exposed, with the consequences [UPGRADING.md](../UPGRADING.md#replace-a-placeholder-setup_token) describes. An install that predates it has none: its keys still derive from `SETUP_TOKEN` (the startup log says `keys: derived from SETUP_TOKEN (legacy)`); to move to it, set `APP_SECRET_KEY` to exactly the current `SETUP_TOKEN` value, which `./scripts/install.sh upgrade` does ([UPGRADING.md](../UPGRADING.md#app_secret_key-and-stricter-startup-checks)). |
+| `APP_SECRET_KEY` | `.env` | with `.env` | Derives the CSRF/CAPTCHA key and the key that encrypts TOTP secrets. Restore a database with the key in use when it was dumped; under another key its TOTP secrets cannot be read. Changing it refuses every open form once and makes enrolled TOTP secrets unreadable. On a market running [Bitcoin escrow](#bitcoin-escrow-regtest-only) it also makes every registered escrow key unreadable (`/escrow-key` asks the user to register it again; existing escrows keep their keys, and the same key registered again is active at once) and restarts the check that stops two accounts registering the same key: a key registered before the change is not recognised until its owner registers it again. Rotate only when it is exposed, with the consequences [UPGRADING.md](../UPGRADING.md#replace-a-placeholder-setup_token) describes. An install that predates it has none: its keys still derive from `SETUP_TOKEN` (the startup log says `keys: derived from SETUP_TOKEN (legacy)`); to move to it, set `APP_SECRET_KEY` to exactly the current `SETUP_TOKEN` value, which `./scripts/install.sh upgrade` does ([UPGRADING.md](../UPGRADING.md#app_secret_key-and-stricter-startup-checks)). |
 | `SETUP_TOKEN` | `.env` | with `.env` | Authorizes the first-run `/setup` page only. The installer prints it once at the end of `init`; `./scripts/install.sh setup-token` shows it again (and `--new` reissues it) while setup is pending. The app refuses to start without it until setup is complete, and ignores it afterwards (while it is set, startup logs a hint); `/setup` then answers 403 whatever the token. Once `APP_SECRET_KEY` is set and setup is complete, `status`, `add-mirror` and `upgrade` remove it from `.env`. Without `APP_SECRET_KEY` it is also the legacy key root above: keep it, or copy it to `APP_SECRET_KEY` first; changing it then has every consequence listed for `APP_SECRET_KEY`, escrow keys included. |
 | `AUDIT_SIGNING_KEY` | `.env` | with `.env` | Signs audit exports ([Transparency](#transparency)). A new key (`openssl rand -hex 32`, then restart the app) is a new public key on `/canary`: announce it. |
 | `POSTGRES_PASSWORD` (internal database) | `.env`, twice: `POSTGRES_PASSWORD` and the password in `DATABASE_URL`; the database keeps its own hash in the `postgres_data` volume | with `.env` | `POSTGRES_PASSWORD` is used only when an empty volume is initialized, so editing it later changes nothing. Rotate in the database first: `docker compose exec db psql -U opsecmkt -d opsecmkt -c '\password opsecmkt'` asks for the new password twice and sends `ALTER ROLE opsecmkt PASSWORD` with it already hashed, so it appears in no command line or server log. Then put it in both places in `.env` and run `docker compose up -d`. A hex password (`openssl rand -hex 24`) needs no escaping in the URL. For an external database, change it on that server and in `DATABASE_URL`. |

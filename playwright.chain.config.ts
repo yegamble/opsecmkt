@@ -22,7 +22,8 @@ export default defineConfig({
   webServer: { command: 'go run ./cmd/server', url: `http://127.0.0.1:${port}/healthz`, reuseExistingServer: false,
     timeout: 120_000, env: { ADDR: `127.0.0.1:${port}`,
       COOKIE_SECURE: 'false', APP_MODE: 'clearnet', SETUP_TOKEN: 'local-chain-browser-test-setup-token-at-least-32',
-      ESCROW_BTC: '', ESCROW_BTC_RPC_URL: '', ESCROW_BTC_ARBITER_WALLET: '',
+      ESCROW_BTC: '', ESCROW_BTC_RPC_URL: '', ESCROW_BTC_ARBITER_WALLET: '', ESCROW_BTC_WATCH_WALLET: '',
+      ESCROW_BTC_FEE_BPS: '', ESCROW_BTC_FEE_ADDRESS: '',
       // The shortest window the application accepts (paymentExpiry), so the underpaid-expiry test waits about 10
       // minutes; every other test pays its order within seconds of requesting the address.
       PAYMENT_CONFIRMATIONS_BTC: '3', PAYMENT_CONFIRMATIONS_XMR: '3', PAYMENT_POLL_INTERVAL: '1s',

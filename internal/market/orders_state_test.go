@@ -180,8 +180,9 @@ func TestTransitionCompareAndSetIsExclusive(t *testing.T) {
 }
 
 // A-244 (ARCH-4): the escrow-only system edges exist in the table for the system role and are marked escrow-only,
-// and on a pooled order (Order.Escrow false, the only kind today) the system still cannot complete an order on
-// them: 403, the order and its history unchanged. The buyer's own completion is unaffected.
+// and on a pooled order (Order.Escrow false: no escrows row) the system cannot complete an order on them: 403, the
+// order and its history unchanged. The buyer's own completion is unaffected. (An escrow order completes on funding
+// through the digital edge: TestEscrowFundingCompletesOrder.)
 func TestEscrowOnlySystemEdgesRefusedForPooledOrders(t *testing.T) {
 	for _, tc := range []struct{ kind, from string }{{"digital", stateDelivered}, {"physical", stateShipped}} {
 		if !slices.Contains(transitions[tc.from][stateCompleted], roleSystem) || !escrowOnly[[3]string{tc.from, stateCompleted, roleSystem}] {

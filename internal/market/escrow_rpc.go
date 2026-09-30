@@ -9,6 +9,8 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -30,7 +32,8 @@ import (
 var escrowRPCMethods = []string{
 	"getblockchaininfo", "getrawchangeaddress", "getaddressinfo", "createpsbt", "utxoupdatepsbt", "importdescriptors",
 	"getdescriptorinfo", "deriveaddresses", "gettxout", "keypoolrefill", "walletprocesspsbt", "descriptorprocesspsbt",
-	"combinepsbt", "finalizepsbt", "testmempoolaccept", "sendrawtransaction",
+	"combinepsbt", "finalizepsbt", "testmempoolaccept", "sendrawtransaction", "getwalletinfo", "listreceivedbyaddress",
+	"gettransaction",
 }
 
 // escrowSighash is the only sighash type the market ever signs with (ES-2): a signature made with SIGHASH_NONE let
@@ -44,10 +47,16 @@ type escrowConfig struct {
 	on            bool
 	rpcURL        string
 	arbiterWallet string
+	watchWallet   string // the watch-only wallet escrow descriptors are imported into (P1-b)
+	feeBps        int64  // the market fee in basis points, snapshotted on each escrow at checkout (ES-5)
+	feeAddress    string // where the market fee goes ("" when feeBps is 0); one fixed address, test networks only
+	confirmations int64  // PAYMENT_CONFIRMATIONS_BTC: confirmations before an escrow counts as funded
 }
 
-// escrowConfigFromEnv reads ESCROW_BTC (on/off, blank = off), ESCROW_BTC_RPC_URL and ESCROW_BTC_ARBITER_WALLET
-// (default opsecmkt-arbiter). Nothing is contacted.
+// escrowConfigFromEnv reads ESCROW_BTC (on/off, blank = off), ESCROW_BTC_RPC_URL, ESCROW_BTC_ARBITER_WALLET
+// (default opsecmkt-arbiter), ESCROW_BTC_WATCH_WALLET (default opsecmkt-escrow-watch), ESCROW_BTC_FEE_BPS (0 to
+// 10000, default 0), ESCROW_BTC_FEE_ADDRESS (needed when the fee is above 0) and PAYMENT_CONFIRMATIONS_BTC (1 to
+// 1000, default 3). Nothing is contacted.
 func escrowConfigFromEnv(getenv func(string) string) (escrowConfig, error) {
 	var c escrowConfig
 	switch v := strings.TrimSpace(getenv("ESCROW_BTC")); v {
@@ -69,6 +78,13 @@ func escrowConfigFromEnv(getenv func(string) string) (escrowConfig, error) {
 	if chain := strings.TrimSpace(getenv("BITCOIN_CHAIN")); chain != "" && chain != "regtest" {
 		return c, errors.New("refusing to start: ESCROW_BTC=on runs only on regtest in this release, and BITCOIN_CHAIN names another chain. Set ESCROW_BTC=off, or use regtest for both")
 	}
+	c.watchWallet = strings.TrimSpace(getenv("ESCROW_BTC_WATCH_WALLET"))
+	if c.watchWallet == "" {
+		c.watchWallet = "opsecmkt-escrow-watch"
+	}
+	if c.watchWallet == c.arbiterWallet {
+		return c, errors.New("ESCROW_BTC_WATCH_WALLET must name a watch-only wallet of its own, not the arbiter wallet ESCROW_BTC_ARBITER_WALLET")
+	}
 	if strings.TrimSpace(getenv("BITCOIN_RPC_URL")) != "" {
 		pooled := strings.TrimSpace(getenv("BITCOIN_WALLET"))
 		if pooled == "" {
@@ -77,6 +93,30 @@ func escrowConfigFromEnv(getenv func(string) string) (escrowConfig, error) {
 		if pooled == c.arbiterWallet {
 			return c, errors.New("ESCROW_BTC_ARBITER_WALLET must name a wallet that holds only the escrow arbiter key, not the pooled wallet BITCOIN_WALLET")
 		}
+		if pooled == c.watchWallet {
+			return c, errors.New("ESCROW_BTC_WATCH_WALLET must name a watch-only wallet of its own, not the pooled wallet BITCOIN_WALLET")
+		}
+	}
+	if v := strings.TrimSpace(getenv("ESCROW_BTC_FEE_BPS")); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 || n > 10000 {
+			return c, errors.New("ESCROW_BTC_FEE_BPS must be a whole number of basis points from 0 to 10000 (250 = 2.5%)")
+		}
+		c.feeBps = n
+	}
+	if c.feeBps > 0 {
+		var ok bool
+		if c.feeAddress, ok = escrowAddressForm(getenv("ESCROW_BTC_FEE_ADDRESS")); !ok {
+			return c, errors.New("ESCROW_BTC_FEE_BPS above 0 needs ESCROW_BTC_FEE_ADDRESS: the regtest Bitcoin address the market fee is paid to")
+		}
+	}
+	c.confirmations = 3
+	if v := strings.TrimSpace(getenv("PAYMENT_CONFIRMATIONS_BTC")); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 1 || n > 1000 {
+			return c, errors.New("PAYMENT_CONFIRMATIONS_BTC must be a whole number from 1 to 1000")
+		}
+		c.confirmations = n
 	}
 	return c, nil
 }
@@ -90,6 +130,8 @@ const (
 	escrowLogUnchecked    = "escrow: Bitcoin escrow disabled: the escrow node could not be checked at startup"
 	escrowLogArbiter      = "escrow: Bitcoin escrow disabled: the arbiter wallet could not be read (is ESCROW_BTC_ARBITER_WALLET loaded, and a descriptor wallet with private keys?)"
 	escrowLogFingerprint  = "escrow: Bitcoin escrow disabled: the arbiter wallet's key fingerprint differs from the one pinned in this database; see docs/operator-guide.md, \"Bitcoin escrow (regtest only)\""
+	escrowLogWatch        = "escrow: Bitcoin escrow disabled: the watch-only wallet could not be read (is ESCROW_BTC_WATCH_WALLET loaded, and a descriptor wallet with private keys disabled?)"
+	escrowLogFixedFee     = "escrow: the market fee is paid to one fixed address (ESCROW_BTC_FEE_ADDRESS); allowed on test networks only"
 	escrowFingerprintPin  = "escrow_btc_arbiter_fingerprint" // settings key
 	escrowFingerprintSize = 8
 )
@@ -100,7 +142,12 @@ type escrowBTC struct {
 	arbiterName   string
 	arbiterWallet string    // "/wallet/<name>"
 	fingerprint   string    // the arbiter wallet's master fingerprint, pinned in settings
-	arbiterKey    escrowKey // the arbiter's BIP84 account key; P1-b derives the market's per-escrow child keys from it
+	arbiterKey    escrowKey // the arbiter's BIP84 account key; the market's per-escrow child keys derive from it
+	watchName     string    // the watch-only wallet escrow descriptors are imported into
+	watchWallet   string    // "/wallet/<name>"
+	feeBps        int64
+	feeAddress    string
+	confirmations int64
 }
 
 func newEscrowBTC(c escrowConfig) (*escrowBTC, error) {
@@ -108,7 +155,9 @@ func newEscrowBTC(c escrowConfig) (*escrowBTC, error) {
 	if err != nil {
 		return nil, errors.New("ESCROW_BTC_RPC_URL must be http(s)://user:password@host:port")
 	}
-	return &escrowBTC{rpc: rpc, arbiterName: c.arbiterWallet, arbiterWallet: "/wallet/" + url.PathEscape(c.arbiterWallet)}, nil
+	return &escrowBTC{rpc: rpc, arbiterName: c.arbiterWallet, arbiterWallet: "/wallet/" + url.PathEscape(c.arbiterWallet),
+		watchName: c.watchWallet, watchWallet: "/wallet/" + url.PathEscape(c.watchWallet), feeBps: c.feeBps, feeAddress: c.feeAddress,
+		confirmations: c.confirmations}, nil
 }
 
 // initEscrow runs in New after the payment providers. ESCROW_BTC=off does nothing. On, a node that answers on any
@@ -146,6 +195,21 @@ func (a *App) initEscrow(ctx context.Context) error {
 	if !ok {
 		log.Print(escrowLogFingerprint)
 		return nil
+	}
+	if err = e.checkWatchWallet(ctx); err != nil {
+		log.Printf("%s (%s)", escrowLogWatch, errorClassOf(err))
+		return nil
+	}
+	if e.feeAddress != "" {
+		valid, err := e.validAddress(ctx, e.feeAddress)
+		if err != nil {
+			log.Printf("%s (%s)", escrowLogUnchecked, errorClassOf(err))
+			return nil
+		}
+		if !valid {
+			return errors.New("refusing to start: ESCROW_BTC_FEE_ADDRESS is not a valid address on the escrow node's chain (regtest)")
+		}
+		log.Print(escrowLogFixedFee)
 	}
 	a.escrow = e
 	log.Print(escrowLogOn)
@@ -249,6 +313,117 @@ func (e *escrowBTC) readArbiter(ctx context.Context) error {
 	}
 	e.fingerprint, e.arbiterKey = k.Fingerprint, k
 	return nil
+}
+
+// checkWatchWallet requires the watch-only wallet (getwalletinfo) to be a loaded descriptor wallet with private keys
+// disabled: escrow descriptors hold public keys only, and the market's one private key stays in the arbiter wallet.
+func (e *escrowBTC) checkWatchWallet(ctx context.Context) error {
+	var info struct {
+		Descriptors bool `json:"descriptors"`
+		PrivateKeys bool `json:"private_keys_enabled"`
+	}
+	if err := e.call(ctx, e.watchWallet, "getwalletinfo", []any{}, &info); err != nil {
+		return err
+	}
+	if !info.Descriptors || info.PrivateKeys {
+		return &escrowRPCError{Method: "getwalletinfo", Class: "not-watch-only"}
+	}
+	return nil
+}
+
+// validAddress asks the node whether addr (already checked by escrowAddressForm, so it cannot close the descriptor)
+// is an address on its chain: getdescriptorinfo of addr(<addr>). Core refuses an address of another network.
+func (e *escrowBTC) validAddress(ctx context.Context, addr string) (bool, error) {
+	_, err := e.descriptorInfo(ctx, "addr("+addr+")")
+	var re *escrowRPCError
+	if errors.As(err, &re) && re.Class == "rpc:-5" {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// incoming lists what the watch-only wallet received at addresses, one entry per output: listreceivedbyaddress
+// (minconf 0, watch-only included) for the transaction IDs and gettransaction for each output's amount and the
+// transaction's confirmations (negative when it conflicts), as the pooled adapter reads its wallet.
+func (e *escrowBTC) incoming(ctx context.Context, addresses []string) ([]Incoming, error) {
+	want := map[string]bool{}
+	for _, a := range addresses {
+		want[a] = true
+	}
+	var received []struct {
+		Address string   `json:"address"`
+		TxIDs   []string `json:"txids"`
+	}
+	if err := e.call(ctx, e.watchWallet, "listreceivedbyaddress", []any{0, false, true}, &received); err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	var out []Incoming
+	for _, r := range received {
+		if !want[r.Address] {
+			continue
+		}
+		for _, txid := range r.TxIDs {
+			if seen[txid] {
+				continue
+			}
+			seen[txid] = true
+			var tx struct {
+				Confirmations json.Number `json:"confirmations"`
+				Details       []struct {
+					Address  string      `json:"address"`
+					Category string      `json:"category"`
+					Amount   json.Number `json:"amount"`
+					Vout     json.Number `json:"vout"`
+				} `json:"details"`
+			}
+			if err := e.call(ctx, e.watchWallet, "gettransaction", []any{txid, true}, &tx); err != nil {
+				return nil, err
+			}
+			confs, err := tx.Confirmations.Int64()
+			if err != nil {
+				return nil, &escrowRPCError{Method: "gettransaction", Class: "bad-reply"}
+			}
+			for _, d := range tx.Details {
+				if d.Category != "receive" || !want[d.Address] {
+					continue
+				}
+				amt, err := parseAmount(string(d.Amount), 8)
+				if err != nil {
+					continue // zero or malformed outputs are not payments
+				}
+				vout, err := d.Vout.Int64()
+				if err != nil {
+					return nil, &escrowRPCError{Method: "gettransaction", Class: "bad-reply"}
+				}
+				out = append(out, Incoming{Address: d.Address, TxID: txid, Index: vout, Amount: amt, Confirmations: confs})
+			}
+		}
+	}
+	return out, nil
+}
+
+// derivesChild reports whether key derives pub at suffix: deriveaddresses of wpkh(<key><suffix>) and of wpkh(<pub>)
+// give the same address only if the child key is pub. It confirms a key registered again after an APP_SECRET_KEY
+// rotation is the key an escrow holds, without storing anything that identifies the key outside the HMAC.
+func (e *escrowBTC) derivesChild(ctx context.Context, key escrowKey, suffix, pub string) (bool, error) {
+	if !validPubKeyHex(pub) {
+		return false, nil
+	}
+	child, err := e.deriveAddresses(ctx, withChecksum("wpkh("+key.Expression()+suffix+")"), -1)
+	if err != nil {
+		return false, err
+	}
+	bare, err := e.deriveAddresses(ctx, withChecksum("wpkh("+pub+")"), -1)
+	if err != nil {
+		return false, err
+	}
+	return len(child) == 1 && slices.Equal(child, bare), nil
+}
+
+// validPubKeyHex is a compressed public key in lower-case hex, as escrow_pubkeys stores it.
+func validPubKeyHex(s string) bool {
+	return len(s) == 66 && (strings.HasPrefix(s, "02") || strings.HasPrefix(s, "03")) && isLowerHexFold(s) && strings.ToLower(s) == s
 }
 
 // escrowOutpoint and escrowPayment are createpsbt's inputs and outputs.

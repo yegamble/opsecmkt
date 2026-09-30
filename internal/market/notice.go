@@ -49,6 +49,7 @@ var notices = map[string]struct{ text, section, pages string }{
 	"escrow-key":           {"Escrow key saved. It is inactive until you sign its practice transaction.", "", ""},
 	"escrow-key-unchanged": {"That is already your escrow key; nothing was changed.", "", ""},
 	"escrow-key-active":    {"Escrow key active: its practice transaction was signed.", "", ""},
+	"escrow-created":       {"Escrow created. Check the escrow descriptor in your own wallet before you pay.", "", ""},
 
 	// Messages, orders and disputes
 	"message-sent":     {"Message sent.", "", ""},
