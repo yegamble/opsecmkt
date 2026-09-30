@@ -22,6 +22,11 @@ func setEscrowEnv(t *testing.T, rpcURL string) {
 	t.Setenv("ESCROW_BTC", "on")
 	t.Setenv("ESCROW_BTC_RPC_URL", rpcURL)
 	t.Setenv("ESCROW_BTC_ARBITER_WALLET", "")
+	t.Setenv("ESCROW_BTC_WATCH_WALLET", "")
+	t.Setenv("ESCROW_BTC_FEE_BPS", "")
+	t.Setenv("ESCROW_BTC_FEE_ADDRESS", "")
+	t.Setenv("PAYMENT_CONFIRMATIONS_BTC", "")
+	t.Setenv("PAYMENT_EXPIRY", "")
 	t.Setenv("BITCOIN_RPC_URL", "")
 	t.Setenv("BITCOIN_CHAIN", "")
 	t.Setenv("MONERO_WALLET_RPC_URL", "")
@@ -477,7 +482,8 @@ func insertEscrowFor(t *testing.T, e *testEnv, buyerID string) string {
 		t.Fatal(err)
 	}
 	var id int64
-	if err := e.DB.QueryRow("INSERT INTO escrows(order_id,address,market_index) VALUES($1,$2,nextval('escrow_market_index')) RETURNING id", order, "bcrt1qfixture"+randomToken()[:20]).Scan(&id); err != nil {
+	if err := e.DB.QueryRow("INSERT INTO escrows(order_id,address,market_index,refund_address,fee_bps,fee_destination) VALUES($1,$2,nextval('escrow_market_index'),$3,0,'') RETURNING id",
+		order, "bcrt1qfixture"+randomToken()[:20], "bcrt1qrefund"+randomToken()[:20]).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e.DB.Exec(`INSERT INTO escrow_pubkeys(pubkey,escrow_id,party,user_id,key_hmac,origin_fingerprint,origin_path,derivation_suffix) VALUES
@@ -767,8 +773,8 @@ func TestEscrowPracticeKeyChangedDuringCheck(t *testing.T) {
 			// An order and escrow row without keys: the key has no escrows until the change inserts one.
 			vendorID, _ := e.user("escrow_race_vendor_"+randomToken()[:6], "vendor")
 			var escrowID int64
-			if err := e.DB.QueryRow("INSERT INTO escrows(order_id,address,market_index) VALUES($1,$2,nextval('escrow_market_index')) RETURNING id",
-				e.order(uid, e.product(vendorID, "digital"), "BTC", "awaiting_payment"), "bcrt1qrace"+randomToken()[:20]).Scan(&escrowID); err != nil {
+			if err := e.DB.QueryRow("INSERT INTO escrows(order_id,address,market_index,refund_address,fee_bps,fee_destination) VALUES($1,$2,nextval('escrow_market_index'),$3,0,'') RETURNING id",
+				e.order(uid, e.product(vendorID, "digital"), "BTC", "awaiting_payment"), "bcrt1qrace"+randomToken()[:20], "bcrt1qrefund"+randomToken()[:20]).Scan(&escrowID); err != nil {
 				t.Fatal(err)
 			}
 			signed := fakeOwnerSign(t, practicePSBT(t, e, sess), "7450f935", 1)
@@ -871,10 +877,25 @@ func TestEscrowMigrationConstraints(t *testing.T) {
 	mustFail("a bad origin path", "INSERT INTO user_escrow_keys(user_id,xpub_sealed,xpub_hmac,origin_fingerprint,origin_path) VALUES($1,'s',$2,'7450f935','48h')", b, strings.Repeat("cd", 32))
 	order := e.order(a, e.product(b, "digital"), "BTC", "awaiting_payment")
 	var id int64
-	if err := e.DB.QueryRow("INSERT INTO escrows(order_id,address,market_index) VALUES($1,'bcrt1qa',nextval('escrow_market_index')) RETURNING id", order).Scan(&id); err != nil {
+	if err := e.DB.QueryRow("INSERT INTO escrows(order_id,address,market_index,refund_address,fee_bps,fee_destination) VALUES($1,'bcrt1qa',nextval('escrow_market_index'),'bcrt1qr',250,'bcrt1qfee') RETURNING id", order).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
-	mustFail("a second escrow at the same address", "INSERT INTO escrows(order_id,address,market_index) VALUES($1,'bcrt1qa',99)", e.order(b, e.product(a, "digital"), "BTC", "awaiting_payment"))
+	esc := "INSERT INTO escrows(order_id,address,market_index,refund_address,fee_bps,fee_destination) VALUES($1,$2,$3,$4,$5,$6)"
+	other := e.order(b, e.product(a, "digital"), "BTC", "awaiting_payment")
+	mustFail("a second escrow at the same address", esc, other, "bcrt1qa", 99, "bcrt1qr2", 0, "")
+	// P1-b: the refund address is pinned once (ES-5), never the escrow's own address; the fee is snapshotted.
+	mustFail("a refund address pinned twice", esc, other, "bcrt1qb", 99, "bcrt1qr", 0, "")
+	mustFail("the escrow address as its own refund address", esc, other, "bcrt1qb", 99, "bcrt1qb", 0, "")
+	mustFail("an empty refund address", esc, other, "bcrt1qb", 99, "", 0, "")
+	mustFail("a market fee without a destination", esc, other, "bcrt1qb", 99, "bcrt1qr2", 100, "")
+	mustFail("a market fee above 100%", esc, other, "bcrt1qb", 99, "bcrt1qr2", 10001, "bcrt1qfee")
+	mustFail("a negative market fee", esc, other, "bcrt1qb", 99, "bcrt1qr2", -1, "bcrt1qfee")
+	// No payouts row for an escrow order (ES-1, invariant 4), inserted or moved there.
+	mustFail("a payout for an escrow order", "INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state) VALUES($1,'release',$2,'BTC',1000,'x','pending')", order, b)
+	if _, err := e.DB.Exec("INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state) VALUES($1,'release',$2,'BTC',1000,'x','pending')", other, a); err != nil {
+		t.Fatalf("a payout for a pooled order: %v", err)
+	}
+	mustFail("a payout moved to an escrow order", "UPDATE payouts SET order_id=$1 WHERE order_id=$2", order, other)
 	pk := "INSERT INTO escrow_pubkeys(pubkey,escrow_id,party,user_id,key_hmac,origin_fingerprint,origin_path,derivation_suffix) VALUES($1,$2,$3,$4,$5,'7450f935','/48h/1h/0h/2h',$6)"
 	mustFail("the practice child in an escrow", pk, "02"+strings.Repeat("11", 32), id, "buyer", a, h, "/0/0")
 	// Paths are canonical (no leading zeros), so no other spelling of /0/0 passes that CHECK (QA-P1a-3).
