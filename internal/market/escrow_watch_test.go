@@ -669,3 +669,51 @@ func TestEscrowCancelFormWarnsWhileUnavailable(t *testing.T) {
 	}
 	x.noPayouts(x.order)
 }
+
+// QA31-4 (A-316): App.escrow is set once and never cleared. After escrow is enabled, watcher passes that fail (the
+// watch wallet unreadable, then the node unreachable) leave it enabled throughout and never rerun the startup checks.
+func TestEscrowNeverClearedOnceSet(t *testing.T) {
+	x := newEscrowEnv(t)
+	x.mustCheckout(x.order, "bcrt1qbuyerrefund00000000000000000000001") // an escrow for the watcher to read
+	t.Setenv("PAYMENT_POLL_INTERVAL", "1s")
+	x.restart()
+	if x.A.escrow.Load() == nil {
+		t.Fatal("escrow not enabled")
+	}
+	count := func(methods ...string) int {
+		n := 0
+		for _, m := range x.core.methods() {
+			if slices.Contains(methods, m) {
+				n++
+			}
+		}
+		return n
+	}
+	startup := func() int { return count("getrawchangeaddress", "getaddressinfo", "getwalletinfo") }
+	before := startup()
+	x.core.mu.Lock()
+	x.core.txErr = -4
+	x.core.mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	x.A.Start(ctx)
+	held := func(d time.Duration) {
+		t.Helper()
+		if waitUntil(t, d, func() bool { return x.A.escrow.Load() == nil }) {
+			t.Fatal("escrow cleared after a failed watcher pass")
+		}
+	}
+	held(3500 * time.Millisecond) // three or more failed wallet reads
+	if n := count("listreceivedbyaddress"); n < 3 {
+		t.Fatalf("%d wallet reads, want 3 or more failed passes", n)
+	}
+	if n := startup(); n != before {
+		t.Fatalf("startup checks ran again on failed passes: %d calls, %d before", n, before)
+	}
+	srvDown(x, true)
+	held(3500 * time.Millisecond) // three or more passes with the node down
+	srvDown(x, false)
+	if n := startup(); n != before {
+		t.Fatalf("startup checks ran again with the node down: %d calls, %d before", n, before)
+	}
+}
