@@ -28,7 +28,7 @@ cleanup() {
   for container in ${containers[@]+"${containers[@]}"}; do
     docker container inspect "$container" >/dev/null 2>&1 || continue  # already removed by stop_tor
     ((status == 0)) || { echo "--- logs of $container ---" >&2; docker logs "$container" 2>&1 | tail -n 20 >&2 || true; }
-    docker rm -f "$container" >/dev/null 2>&1 || true
+    docker rm -f "$container" >/dev/null 2>&1 || true  # no -v: the Tor image declares no VOLUME; the named volumes go below
   done
   for volume in $(docker volume ls -q --filter "name=^${project}_"); do docker volume rm -f "$volume" >/dev/null || true; done
   docker image rm "$project-tor" >/dev/null 2>&1 || true  # only this tag; $image stays
@@ -114,7 +114,7 @@ start_tor() {
 identity_of() {
   docker exec "$1" sh -c 'cat /var/lib/tor/marketplace/hostname; sha256sum < /var/lib/tor/marketplace/hs_ed25519_secret_key'
 }
-stop_tor() { docker rm -f "$1" >/dev/null; }
+stop_tor() { docker rm -f "$1" >/dev/null; }  # no -v: the Tor image declares no VOLUME; Tor keeps its keys in a named volume
 # list_archive [-v]: list the tar archive on stdin with the Tor image's GNU tar (host tar formats differ).
 list_archive() { docker run --rm -i --network none --entrypoint tar "$project-tor" "-t${1:+v}f" -; }
 

@@ -41,7 +41,7 @@ cleanup() {
       [[ -f $file ]] && { echo "--- $(basename "$file") ---" >&2; cat "$file" >&2; }
     done
   fi
-  docker rm -f "$db" >/dev/null 2>&1 || true
+  docker rm -f -v "$db" >/dev/null 2>&1 || true  # -v: postgres keeps its data in an anonymous VOLUME
   rm -rf "$work"
   exit "$status"
 }

@@ -92,9 +92,24 @@ func TestDisputeWithNoEligibleResolver(t *testing.T) {
 	mustNotContain(t, w.page("/disputes", buyer, 200), note)
 
 	// Once an independent moderator exists the desk note disappears; the history note stays.
-	_, mod := e.user("mod_"+suffix, "moderator")
+	modID, mod := e.user("mod_"+suffix, "moderator")
 	mustNotContain(t, w.page("/moderator", admin, 200), note)
 	mustContain(t, w.page("/moderator", mod, 200), `name="outcome" value="refund"`)
+
+	// A-306: a staff buyer is a party too. The moderator buys from the administrator, so apart from the vendor the
+	// only staff account is the buyer: that dispute is flagged, the first (which the moderator can resolve) is not.
+	staffOrder := e.order(modID, e.product(adminID, "physical"), "BTC", stateShipped)
+	w.expect("/disputes", mod, form("order_id", staffOrder, "reason", "Bought as a customer; the parcel never arrived."), 303, "")
+	desk := w.page("/moderator", admin, 200)
+	mustContain(t, desk, "Order "+staffOrder+"<", "Order "+order+"<")
+	for _, entry := range strings.Split(desk, `<article class="message">`)[1:] {
+		switch {
+		case strings.Contains(entry, "Order "+staffOrder+"<"):
+			mustContain(t, entry, note)
+		case strings.Contains(entry, "Order "+order+"<"):
+			mustNotContain(t, entry, note)
+		}
+	}
 }
 
 // A-118: a suspended moderator cannot sign in, so it is neither a resolver nor a dispute contact. With the only

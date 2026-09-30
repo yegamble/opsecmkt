@@ -24,7 +24,7 @@ cleanup() {
   trap - EXIT
   for container in ${containers[@]+"${containers[@]}"}; do
     ((status == 0)) || { echo "--- logs of $container ---" >&2; docker logs "$container" 2>&1 | tail -n 30 >&2 || true; }
-    docker rm -f "$container" >/dev/null 2>&1 || true
+    docker rm -f -v "$container" >/dev/null 2>&1 || true  # -v: CLAMAV_IMAGE may name an image that declares a VOLUME
   done
   exit "$status"
 }
