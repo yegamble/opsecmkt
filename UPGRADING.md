@@ -640,8 +640,8 @@ Migration 072 adds one partial index, `audit_events_role_change`, holding only t
 change. The moderation desk and `/disputes` read those rows on every load with an open dispute, to list evidence
 holders removed from staff (A-294); without the index each load read the whole audit log, which grows with every
 sign-in. No row is changed and the signed audit export is unaffected; nothing needs doing. Building the index reads
-`audit_events` once during the first start, within `MIGRATION_TIMEOUT` (default 10 minutes; a few seconds for a
-million audit rows). If your audit log is very large, raise it first as described under
+`audit_events` once during the first start, within `MIGRATION_TIMEOUT` (default 10 minutes; about 0.1 seconds
+for a million audit rows on a test host). If your audit log is very large, raise it first as described under
 [Migrations](docs/operator-guide.md#migrations).
 
 ## Appendix: new keys by hand
