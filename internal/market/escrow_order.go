@@ -119,7 +119,7 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 	case o.State == stateCompleted:
 		v.Status, v.NextStep = "Funded and completed", "The vendor claims the escrowed coins from this page."
 	case o.State == stateCancelled && received+pending > 0:
-		v.Status = "Cancelled; the escrow is refunded to the buyer's refund address by a settlement (below)."
+		v.Status = "Cancelled; the coins in this escrow go back to the buyer's refund address through the refund settlement below."
 	case o.State == stateCancelled && afterCloseSeen > 0:
 		// Coins sent after the cancellation are never counted, but they are at the escrow address (QA31-1).
 		v.Status = "Cancelled; a deposit arrived after the order closed. It is not counted and is held at the escrow address."
