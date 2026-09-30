@@ -312,10 +312,16 @@ func isBIP48Path(path []uint32) bool {
 
 // containsPrivateMaterial reports an extended private key (by its prefix or decoded version), a WIF private key or
 // a list of recovery words anywhere in s. Base58 runs are checked one by one, so a private descriptor or a pasted
-// listdescriptors reply is caught whatever surrounds the key.
+// listdescriptors reply is caught whatever surrounds the key. Recovery words count as written down in any case,
+// numbered ("1. abandon", "1) abandon"), joined by hyphens or followed by punctuation: at least 12 words of 3 to 8
+// letters and nothing else but numbers.
 func containsPrivateMaterial(s string) bool {
 	words, allWords := 0, true
-	for _, w := range strings.FieldsFunc(s, func(r rune) bool { return isSpaceByte(r) || r == ',' }) {
+	for _, f := range strings.FieldsFunc(s, func(r rune) bool { return isSpaceByte(r) || r == ',' || r == '-' }) {
+		w := strings.ToLower(strings.TrimRight(f, ".;:!?)"))
+		if strings.TrimLeft(w, "0123456789") == "" { // a number ("12", "1.", "1)") or bare punctuation
+			continue
+		}
 		words++
 		if len(w) < 3 || len(w) > 8 || strings.TrimLeft(w, "abcdefghijklmnopqrstuvwxyz") != "" {
 			allWords = false

@@ -133,6 +133,16 @@ func TestParseEscrowKeyRefusals(t *testing.T) {
 		{"WIF mainnet", testWIF(false, true), errKeyExposed.Error()},
 		{"12 recovery words", "abandon ability able about above absent absorb abstract absurd abuse access accident", errKeyExposed.Error()},
 		{"24 words, commas", strings.Repeat("zoo,", 23) + "wrong", errKeyExposed.Error()},
+		// Recovery words as wallets and people write them down (QA-P1a-2): case, numbering, punctuation, hyphens.
+		{"capitalised words", "Abandon Ability Able About Above Absent Absorb Abstract Absurd Abuse Access Accident", errKeyExposed.Error()},
+		{"all caps words", "ABANDON ABILITY ABLE ABOUT ABOVE ABSENT ABSORB ABSTRACT ABSURD ABUSE ACCESS ACCIDENT", errKeyExposed.Error()},
+		{"numbered words", "1. abandon 2. ability 3. able 4. about 5. above 6. absent 7. absorb 8. abstract 9. absurd 10. abuse 11. access 12. accident", errKeyExposed.Error()},
+		{"numbered words, no dots", "1 abandon 2 ability 3 able 4 about 5 above 6 absent 7 absorb 8 abstract 9 absurd 10 abuse 11 access 12 accident", errKeyExposed.Error()},
+		{"numbered words, one per line", "1) abandon\n2) ability\n3) able\n4) about\n5) above\n6) absent\n7) absorb\n8) abstract\n9) absurd\n10) abuse\n11) access\n12) accident", errKeyExposed.Error()},
+		{"words, trailing period", "abandon ability able about above absent absorb abstract absurd abuse access accident.", errKeyExposed.Error()},
+		{"words, hyphen joined", "abandon-ability-able-about-above-absent-absorb-abstract-absurd-abuse-access-accident", errKeyExposed.Error()},
+		{"11 numbered words stay under the threshold", "1. Abandon 2. Ability 3. Able 4. About 5. Above 6. Absent 7. Absorb 8. Abstract 9. Absurd 10. Abuse 11. Access", errKeySpace.Error()},
+		{"numbers alone are not words", "1 2 3 4 5 6 7 8 9 10 11 12 13", errKeySpace.Error()},
 		// One key, one line, no descriptor syntax.
 		{"inner space", origin + tpub[:20] + " " + tpub[20:], errKeySpace.Error()},
 		{"inner newline", origin + "\n" + tpub, errKeySpace.Error()},
