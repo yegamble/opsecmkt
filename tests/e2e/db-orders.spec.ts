@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { ADMIN, FIXTURE_LISTING, uniqueHandle } from './db-fixtures';
+import { waitForStyles } from './styles';
 
 // P3 order lifecycle against a real database with no payment provider configured.
 test('draft cannot be paid without a wallet, cancellation is recorded, vendor sees the order', async ({ page }) => {
@@ -19,6 +20,7 @@ test('draft cannot be paid without a wallet, cancellation is recorded, vendor se
   await expect(page).toHaveURL(/\/order\?id=/);
   const orderURL = page.url();
   // A-115: the 64-hex order ID in the page head and breadcrumb wraps instead of widening the page.
+  await waitForStyles(page);
   const viewport = page.viewportSize()!;
   for (const width of [390, 320]) {
     await page.setViewportSize({ width, height: viewport.height });

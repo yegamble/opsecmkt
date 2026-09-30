@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { FIXTURE_LISTING, uniqueHandle } from './db-fixtures';
 import { submitAndLoad } from './db-helpers';
+import { waitForStyles } from './styles';
 
 // The db-account journey (register, unfunded draft, profile persistence, sign-out) at desktop width. The
 // database project's default viewport is 390 px; a second database project would run every db spec twice
@@ -8,6 +9,7 @@ import { submitAndLoad } from './db-helpers';
 test.use({ viewport: { width: 1280, height: 900 } });
 
 async function fits(page: Page) {
+  await waitForStyles(page);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(1280);
 }
 

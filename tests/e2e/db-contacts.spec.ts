@@ -1,12 +1,14 @@
 import { expect, test, type Browser, type Page } from '@playwright/test';
 import { ADMIN, uniqueHandle } from './db-fixtures';
 import { setRole } from './db-helpers';
+import { waitForStyles } from './styles';
 
 // Contacts and vendor demotion against a real database: an administrator promotes a new account to
 // vendor, a buyer contacts it through a prefilled message form, the vendor sees an unread notification
 // in the main navigation at phone width, and demoting the vendor archives its listing.
 
 async function fits(page: Page, label: string) {
+  await waitForStyles(page);
   expect(await page.evaluate(() => document.documentElement.scrollWidth), label).toBeLessThanOrEqual(page.viewportSize()!.width);
 }
 

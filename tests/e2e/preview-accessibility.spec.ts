@@ -1,8 +1,10 @@
 import { expect, test, type Page, type Locator } from '@playwright/test';
 import { previewRoutes } from './preview-routes';
+import { waitForStyles } from './styles';
 
 async function filters(page: Page) {
   const mobile = page.locator('.filter-details');
+  await waitForStyles(page);
   if (await mobile.isVisible()) {
     if (!(await mobile.evaluate(element => (element as HTMLDetailsElement).open))) await mobile.locator('summary').click();
     return mobile;
@@ -11,6 +13,7 @@ async function filters(page: Page) {
 }
 
 async function fits(page: Page) {
+  await waitForStyles(page);
   expect(await page.evaluate(() => document.documentElement.scrollWidth), `page reflow: ${page.url()}`).toBeLessThanOrEqual(page.viewportSize()!.width);
 }
 

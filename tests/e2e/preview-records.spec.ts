@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { waitForStyles } from './styles';
 
 // A-81 records disclosure in the read-only preview (JavaScript disabled, every viewport project): /canary#records
 // says what the server keeps, who can read it and that nothing is deletable; the pages where users create
@@ -6,6 +7,7 @@ import { expect, test, type Page } from '@playwright/test';
 
 async function noScriptsNoOverflow(page: Page) {
   await expect(page.locator('script')).toHaveCount(0);
+  await waitForStyles(page);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()!.width);
 }
 

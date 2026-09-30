@@ -2,6 +2,7 @@ import { createHmac } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, type Browser, type Locator, type Page } from '@playwright/test';
+import { waitForStyles } from './styles';
 
 // Shared helpers for the database specs that submit real forms with JavaScript disabled.
 
@@ -104,6 +105,7 @@ export async function enrollTOTP(page: Page, password: string): Promise<string> 
 // within the viewport. A form clipped inside a table's scrolling .table-wrap does not widen the document, so
 // scrollWidth alone cannot see it. Measure after the stylesheet has applied (A-228).
 export async function withinViewport(details: Locator, width: number) {
+  await waitForStyles(details.page());
   const parts = details.locator('summary, form, label, input:not([type="hidden"]), textarea, button');
   expect(await parts.count()).toBeGreaterThan(4);
   const outside: string[] = [];

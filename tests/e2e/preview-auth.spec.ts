@@ -1,7 +1,9 @@
 import { expect, test, type Page } from '@playwright/test';
+import { waitForStyles } from './styles';
 
 async function noScriptsNoOverflow(page: Page) {
   await expect(page.locator('script')).toHaveCount(0);
+  await waitForStyles(page);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()!.width);
 }
 

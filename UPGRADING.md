@@ -527,13 +527,28 @@ db_sql() { docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d o
    been paid by hand): a transaction to its address and amount since before the row was created, with the complete
    checks in [runbook section 5](docs/testnet-runbook.md#5-recover-a-held-or-failed-payout). A row that may have
    been sent and that the wallet check does not clear counts as sent. Never delete a sent row, or one that may
-   have been sent, except as step 3 describes for an order paid twice.
+   have been sent, except as step 3 describes for an order paid twice or for a sent release that the order's
+   outcome did not owe.
 3. **Decide which settlement stands.**
    - If a row of one settlement was sent and no row of the other, that settlement stands. A release stands when
      either it or its return was sent: keeping the refund after a return was sent would pay the excess twice. A
      sent return paid the buyer only the excess; the price still follows the order's outcome. For a `cancelled`
      order or a refund outcome whose release was not sent, the price belongs to the buyer: keep only the return
      (step 4) and send the buyer the price by hand, so that the vendor is not paid.
+
+     When the sent row is a release or a refund that the order's outcome did not owe, the party it did owe is
+     still unpaid and you choose how to settle. Record the choice for each such order, with the transaction ID of anything you
+     pay by hand, beside `settlement-clash.txt`:
+     - **A sent release on a `cancelled` order or a refund outcome, beside an unsent refund**, paid the vendor the
+       price the buyer is owed. Either keep the refund: delete the sent release and its return (step 4), the
+       watcher sends the refund, the buyer is made whole and the market has paid the order twice. Only do this if
+       the release's return was not sent, or the refund would pay the excess a second time as well. Or delete the
+       refund, keeping the release and its return (step 4), and settle the price with the buyer by hand: pay it,
+       or recover it from the vendor outside the market and then pay the buyer.
+     - **A sent refund alone on a `completed` order or a release outcome, beside an unsent release**, paid the
+       buyer back and left the vendor owed the price. The refund stands: delete the release and its return
+       (step 4). Then either pay the vendor the price by hand, so that the market pays the order twice, or recover
+       it from the buyer outside the market and then pay the vendor.
    - If no row was sent, the settlement matching the order stands: the release for a `completed` order, the refund
      for a `cancelled` one, and for a `resolved` one the outcome its order history records.
    - If rows of both settlements were sent, the order was paid twice (a refund plus a release, or a refund plus a

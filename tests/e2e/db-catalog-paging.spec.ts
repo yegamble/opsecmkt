@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { ADMIN, uniqueHandle } from './db-fixtures';
 import { setRole, signedIn } from './db-helpers';
+import { waitForStyles } from './styles';
 
 // A-181 / A-16: the catalog shows 25 listings a page. Paging is plain links that keep the search, filters and
 // display currency, works at 320 px with scripts disabled, and marks the current page with aria-current.
@@ -46,6 +47,7 @@ test('catalog pages through search results with plain links at 320 px', async ({
     await expect(visitor.locator('.product-description').first()).not.toContainText('END-OF-DESCRIPTION');
     await expect(pager.locator('[aria-current="page"]')).toHaveText('Page 1 of 2');
     await expect(pager.getByRole('link', { name: /Previous/ })).toHaveCount(0);
+    await waitForStyles(visitor);
     expect(await visitor.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
 
     const next = pager.getByRole('link', { name: 'Next page, page 2 of 2' });
