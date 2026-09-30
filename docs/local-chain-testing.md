@@ -185,8 +185,9 @@ done
 ```
 
 The HTML report keeps its test data in a base64 zip inside `index.html`, which that
-`grep` cannot read; decode the zip and search its files too, or rely on the JSON
-report, which holds the same results, errors and output.
+`grep` cannot read: decode the zip and search its files too. The JSON report holds
+the same results, errors and console output, but not the screenshots and traces the
+HTML report can embed for a failed test.
 
 Then write `$OUT/MANIFEST.txt` by hand or script: the full commit SHA and that
 the checkout was clean, the run's start and end (UTC), the OS (`uname -srm` and
