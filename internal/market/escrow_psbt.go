@@ -448,6 +448,34 @@ func (p *psbtPacket) withInputField(i int, key, value []byte) ([]byte, error) {
 	return out, nil
 }
 
+// withoutInputFields returns a copy of the PSBT without the input fields drop selects (by input and key); every other
+// field, the global map and the output maps are kept byte for byte.
+func (p *psbtPacket) withoutInputFields(drop func(i int, key []byte) bool) ([]byte, error) {
+	r := &psbtReader{b: p.Raw, off: 5}
+	_, end, err := r.readMap()
+	if err != nil {
+		return nil, err
+	}
+	out := slices.Clone(p.Raw[:end+1])
+	for i, inEnd := range p.inputEnds {
+		entries, _, err := r.readMap()
+		if err != nil || r.off-1 != inEnd {
+			return nil, errors.New("psbt: input maps moved")
+		}
+		for _, e := range entries {
+			if drop(i, e[0]) {
+				continue
+			}
+			out = append(out, compactSize(len(e[0]))...)
+			out = append(out, e[0]...)
+			out = append(out, compactSize(len(e[1]))...)
+			out = append(out, e[1]...)
+		}
+		out = append(out, 0)
+	}
+	return append(out, p.Raw[r.off:]...), nil
+}
+
 func compactSize(n int) []byte {
 	switch {
 	case n < 0xfd:

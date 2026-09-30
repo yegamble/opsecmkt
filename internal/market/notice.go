@@ -50,6 +50,8 @@ var notices = map[string]struct{ text, section, pages string }{
 	"escrow-key-unchanged": {"That is already your escrow key; nothing was changed.", "", ""},
 	"escrow-key-active":    {"Escrow key active: its practice transaction was signed.", "", ""},
 	"escrow-created":       {"Escrow created. Check the escrow descriptor in your own wallet before you pay.", "", ""},
+	"escrow-claim":         {"Claim requested. The market builds the settlement transaction on its next pass; reload this page to sign it.", "", ""},
+	"escrow-signed":        {"Signature accepted. The settlement is signed by you; nothing has been sent yet.", "", ""},
 
 	// Messages, orders and disputes
 	"message-sent":     {"Message sent.", "", ""},

@@ -51,12 +51,14 @@ type escrowConfig struct {
 	feeBps        int64  // the market fee in basis points, snapshotted on each escrow at checkout (ES-5)
 	feeAddress    string // where the market fee goes ("" when feeBps is 0); one fixed address, test networks only
 	confirmations int64  // PAYMENT_CONFIRMATIONS_BTC: confirmations before an escrow counts as funded
+	feeRate       int64  // ESCROW_BTC_FEE_RATE: the network fee rate of every settlement, in sat/vB (P1-c)
 }
 
 // escrowConfigFromEnv reads ESCROW_BTC (on/off, blank = off), ESCROW_BTC_RPC_URL, ESCROW_BTC_ARBITER_WALLET
 // (default opsecmkt-arbiter), ESCROW_BTC_WATCH_WALLET (default opsecmkt-escrow-watch), ESCROW_BTC_FEE_BPS (0 to
-// 10000, default 0), ESCROW_BTC_FEE_ADDRESS (needed when the fee is above 0) and PAYMENT_CONFIRMATIONS_BTC (1 to
-// 1000, default 3). Nothing is contacted.
+// 10000, default 0), ESCROW_BTC_FEE_ADDRESS (needed when the fee is above 0), ESCROW_BTC_FEE_RATE (the settlement
+// network fee rate in sat/vB, 1 to escrowMaxFeeRate, default escrowDefaultFeeRate) and PAYMENT_CONFIRMATIONS_BTC (1
+// to 1000, default 3). Nothing is contacted.
 func escrowConfigFromEnv(getenv func(string) string) (escrowConfig, error) {
 	var c escrowConfig
 	switch v := strings.TrimSpace(getenv("ESCROW_BTC")); v {
@@ -110,6 +112,14 @@ func escrowConfigFromEnv(getenv func(string) string) (escrowConfig, error) {
 			return c, errors.New("ESCROW_BTC_FEE_BPS above 0 needs ESCROW_BTC_FEE_ADDRESS: the regtest Bitcoin address the market fee is paid to")
 		}
 	}
+	c.feeRate = escrowDefaultFeeRate
+	if v := strings.TrimSpace(getenv("ESCROW_BTC_FEE_RATE")); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 1 || n > escrowMaxFeeRate {
+			return c, fmt.Errorf("ESCROW_BTC_FEE_RATE must be a whole number of sat/vB from 1 to %d: the network fee rate of escrow settlements", escrowMaxFeeRate)
+		}
+		c.feeRate = n
+	}
 	c.confirmations = 3
 	if v := strings.TrimSpace(getenv("PAYMENT_CONFIRMATIONS_BTC")); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)
@@ -150,6 +160,7 @@ type escrowBTC struct {
 	feeBps        int64
 	feeAddress    string
 	confirmations int64
+	feeRate       int64 // sat/vB, for every settlement this process builds
 }
 
 func newEscrowBTC(c escrowConfig) (*escrowBTC, error) {
@@ -159,7 +170,7 @@ func newEscrowBTC(c escrowConfig) (*escrowBTC, error) {
 	}
 	return &escrowBTC{rpc: rpc, arbiterName: c.arbiterWallet, arbiterWallet: "/wallet/" + url.PathEscape(c.arbiterWallet),
 		watchName: c.watchWallet, watchWallet: "/wallet/" + url.PathEscape(c.watchWallet), feeBps: c.feeBps, feeAddress: c.feeAddress,
-		confirmations: c.confirmations}, nil
+		confirmations: c.confirmations, feeRate: c.feeRate}, nil
 }
 
 // initEscrow runs in New after the payment providers. ESCROW_BTC=off does nothing. On, a node that answers on any
@@ -575,17 +586,37 @@ func (e *escrowBTC) deriveAddresses(ctx context.Context, desc string, index int6
 
 // txOut is gettxout including the mempool: whether the outpoint is unspent, its confirmations and value.
 func (e *escrowBTC) txOut(ctx context.Context, txid string, vout uint32) (found bool, confirmations, sats int64, err error) {
+	u, err := e.utxo(ctx, txid, vout)
+	return u.Found, u.Confirmations, u.Sats, err
+}
+
+// escrowUTXO is one gettxout answer; Found is false for an outpoint that is spent (in a block or in the mempool)
+// or never existed.
+type escrowUTXO struct {
+	Found         bool
+	Confirmations int64
+	Sats          int64
+	Address       string // scriptPubKey.address ("" for a script without one)
+}
+
+// utxo is gettxout including the mempool: the outpoint's confirmations, value and address, as a settlement build
+// checks each input before it asks for a PSBT (ES-2).
+func (e *escrowBTC) utxo(ctx context.Context, txid string, vout uint32) (escrowUTXO, error) {
 	var out *struct {
 		Confirmations int64       `json:"confirmations"`
 		Value         json.Number `json:"value"`
+		ScriptPubKey  struct {
+			Address string `json:"address"`
+		} `json:"scriptPubKey"`
 	}
-	if err = e.call(ctx, "", "gettxout", []any{txid, vout, true}, &out); err != nil || out == nil {
-		return false, 0, 0, err
+	if err := e.call(ctx, "", "gettxout", []any{txid, vout, true}, &out); err != nil || out == nil {
+		return escrowUTXO{}, err
 	}
-	if sats, err = parseAmount(string(out.Value), 8); err != nil {
-		return false, 0, 0, &escrowRPCError{Method: "gettxout", Class: "bad-reply"}
+	sats, err := parseAmount(string(out.Value), 8)
+	if err != nil || out.Confirmations < 0 {
+		return escrowUTXO{}, &escrowRPCError{Method: "gettxout", Class: "bad-reply"}
 	}
-	return true, out.Confirmations, sats, nil
+	return escrowUTXO{Found: true, Confirmations: out.Confirmations, Sats: sats, Address: out.ScriptPubKey.Address}, nil
 }
 
 // keypoolRefill extends the arbiter wallet's derived key range to size keys per chain, so the arbiter can sign

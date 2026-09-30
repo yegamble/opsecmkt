@@ -312,3 +312,38 @@ func TestEscrowWhitelistDocumented(t *testing.T) {
 		}
 	}
 }
+
+// P1-c1: gettxout as a settlement build reads it (escrowBTC.utxo): the same pinned params as txOut, the outpoint's
+// confirmations, value and scriptPubKey address; a spent outpoint (null) is not found; a reply that makes no sense is
+// a bad-reply class, never Core's text.
+func TestEscrowUTXOReply(t *testing.T) {
+	ctx := context.Background()
+	e, core, _ := testEscrowAdapter(t)
+	txid := txidOf("utxo")
+	core.deposit("bcrt1qescrowaddress000000000000000000000", txid, 2, 123456, 7)
+	u, err := e.utxo(ctx, txid, 2)
+	if err != nil || u != (escrowUTXO{Found: true, Confirmations: 7, Sats: 123456, Address: "bcrt1qescrowaddress000000000000000000000"}) {
+		t.Fatalf("utxo %+v %v", u, err)
+	}
+	if path, params := core.lastCall(t, "gettxout"); path != "/" || params != `["`+txid+`",2,true]` {
+		t.Fatalf("gettxout %s %s", path, params)
+	}
+	core.spend(txid, 2)
+	if u, err := e.utxo(ctx, txid, 2); err != nil || u.Found {
+		t.Fatalf("spent outpoint %+v %v", u, err)
+	}
+	core.mu.Lock()
+	core.spent = nil
+	core.utxoSkew = func(m map[string]any) { m["confirmations"] = -1 }
+	core.mu.Unlock()
+	var re *escrowRPCError
+	if _, err := e.utxo(ctx, txid, 2); !errors.As(err, &re) || re.Class != "bad-reply" {
+		t.Fatalf("negative confirmations: %v", err)
+	}
+	core.mu.Lock()
+	core.utxoSkew = func(m map[string]any) { m["value"] = "lots" }
+	core.mu.Unlock()
+	if _, err := e.utxo(ctx, txid, 2); !errors.As(err, &re) || strings.Contains(err.Error(), "lots") {
+		t.Fatalf("bad value: %v", err)
+	}
+}

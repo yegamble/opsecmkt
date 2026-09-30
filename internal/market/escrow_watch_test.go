@@ -71,7 +71,7 @@ func TestEscrowFundingCompletesOrder(t *testing.T) {
 		t.Fatal("content not delivered")
 	}
 	body := x.page("/order?id="+x.order, x.buyerSess)
-	for _, want := range []string{escrowDelivery, "Completed", "The vendor claims the escrowed coins by signing a settlement", "not available in this build yet"} {
+	for _, want := range []string{escrowDelivery, "Completed", "The vendor claims the escrowed coins from this page"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("completed page lacks %q", want)
 		}
@@ -104,7 +104,7 @@ func TestEscrowFundingUnderOverAndSplit(t *testing.T) {
 	}
 	x.noPayouts(x.order)
 
-	// Overpayment: completes, and the excess is noted as staying in the escrow until the settlement (P1-c).
+	// Overpayment: completes, and the note says the vendor's claim returns the excess to the buyer (P1-c1).
 	order2 := x.draft()
 	addr2 := x.mustCheckout(order2, "bcrt1qbuyerrefund00000000000000000000002")
 	x.core.deposit(addr2, "o1", 0, 150000, 3)
@@ -113,16 +113,16 @@ func TestEscrowFundingUnderOverAndSplit(t *testing.T) {
 		t.Fatal("overpaid order not completed")
 	}
 	ev := strings.Join(x.events(order2), "\n")
-	if !strings.Contains(ev, "0.0005 BTC more than the price") || !strings.Contains(ev, "stays in the escrow") {
+	if !strings.Contains(ev, "0.0005 BTC more than the price") || !strings.Contains(ev, "the vendor's claim returns it to the buyer's refund address") {
 		t.Fatalf("overpayment note missing: %s", ev)
 	}
 	x.noPayouts(order2)
 }
 
 // Expiry: an escrow order with nothing received is cancelled when the payment window ends (no coins, nothing to
-// refund) and its unit returned. One underpaid past the window is not cancelled: refunding an escrow is a settlement,
-// which P1-c builds; the parties are told once, and a top-up to the price still completes it. Cancelling an escrow
-// order that holds coins, or disputing one, is refused until P1-c.
+// refund) and its unit returned. One underpaid past the window is cancelled too, and the cancellation requests the
+// refund of its escrow (P1-c1); a top-up within the window still completes an order. Disputing an escrow order is
+// refused until P1-c2.
 func TestEscrowExpiryAndRefusedSettlements(t *testing.T) {
 	x := newEscrowEnv(t)
 	x.mustCheckout(x.order, "bcrt1qbuyerrefund00000000000000000000001")
@@ -135,58 +135,49 @@ func TestEscrowExpiryAndRefusedSettlements(t *testing.T) {
 
 	order2 := x.draft()
 	addr2 := x.mustCheckout(order2, "bcrt1qbuyerrefund00000000000000000000002")
-	x.core.deposit(addr2, "short", 0, 40000, 5)
+	x.core.deposit(addr2, txidOf("short"), 0, 40000, 5)
 	x.poll()
+	// Within the window a top-up still completes an underpaid order.
+	topped := x.draft()
+	addrT := x.mustCheckout(topped, "bcrt1qbuyerrefund00000000000000000000004")
+	x.core.deposit(addrT, txidOf("part"), 0, 40000, 5)
+	x.poll()
+	x.core.deposit(addrT, txidOf("topup"), 0, 60000, 3)
+	x.poll()
+	if x.state(topped) != stateCompleted {
+		t.Fatalf("topped-up order: %s", x.state(topped))
+	}
+	x.noPayouts(topped)
+	// Past the window it is cancelled, once, and its refund requested; the buyer is told once.
 	x.DB.Exec("UPDATE escrows SET created=now()-interval '25 hours' WHERE order_id=$1", order2)
 	x.DB.Exec("UPDATE payments SET created=now()-interval '25 hours' WHERE order_id=$1", order2)
-	notes := func() int {
-		return agInt(x.testEnv, "SELECT count(*) FROM notifications WHERE body LIKE '%payment window ended with 0.0004 of 0.001 BTC%' AND user_id IN ($1,$2)", x.buyer, x.vendor)
-	}
 	x.poll()
 	x.poll()
-	if x.state(order2) != stateAwaitingPayment || notes() != 2 || agInt(x.testEnv, "SELECT count(*) FROM escrows WHERE order_id=$1 AND underpaid_noted IS NOT NULL", order2) != 1 {
-		t.Fatalf("underpaid past the window: %s, %d notices", x.state(order2), notes())
+	if x.state(order2) != stateCancelled || agInt(x.testEnv, "SELECT count(*) FROM settlements WHERE order_id=$1 AND kind='refund'", order2) != 1 ||
+		agInt(x.testEnv, "SELECT count(*) FROM notifications WHERE body LIKE '%payment window ended with 0.0004 of 0.001 BTC%so the order was cancelled%' AND user_id=$1", x.buyer) != 1 {
+		t.Fatalf("underpaid past the window: %s", x.state(order2))
 	}
-	if ev := strings.Join(x.events(order2), "\n"); strings.Count(ev, "handled by the escrow settlement step") != 1 {
-		t.Fatalf("underpaid note: %s", ev)
-	}
-	body := x.page("/order?id="+order2, x.buyerSess)
-	if !strings.Contains(body, "Refunding an escrow is part of the settlement step") || strings.Contains(body, `<input type="hidden" name="from" value="awaiting_payment">`) {
-		t.Fatalf("underpaid page offers a cancel: %s", body)
-	}
-	for _, sess := range []string{x.buyerSess, x.vendorSess} {
-		w := x.do("POST", "/orders/cancel", sess, url.Values{"order_id": {order2}, "from": {stateAwaitingPayment}, "amount_seen": {"40000"}, "payout_confirmed": {"confirmed"}})
-		if w.Code != 409 || !strings.Contains(w.Body.String(), "settlement step") {
-			t.Fatalf("cancel with coins in the escrow: %d %s", w.Code, w.Body.String())
-		}
-	}
-	// A top-up completes it.
-	x.core.deposit(addr2, "topup", 0, 60000, 3)
-	x.poll()
-	if x.state(order2) != stateCompleted {
-		t.Fatalf("topped-up order: %s", x.state(order2))
+	if ev := strings.Join(x.events(order2), "\n"); strings.Count(ev, "payment window expired underpaid: 0.0004 of 0.001 BTC received") != 1 || strings.Count(ev, "Escrow refund requested") != 1 {
+		t.Fatalf("underpaid notes: %s", ev)
 	}
 	x.noPayouts(order2)
 
-	// An escrow order whose content cannot be delivered automatically stays paid: no dispute and no cancel (P1-c);
-	// the vendor delivers by hand and it completes.
+	// An escrow order whose content cannot be delivered automatically stays paid: no dispute (P1-c2); the vendor
+	// delivers by hand and it completes (or cancels it, which requests its refund: TestEscrowRefundRoutes).
 	order3 := x.draft()
 	addr3 := x.mustCheckout(order3, "bcrt1qbuyerrefund00000000000000000000003")
 	x.DB.Exec("UPDATE products SET delivery_content='' WHERE id=(SELECT product_id FROM orders WHERE id=$1)", order3)
-	x.core.deposit(addr3, "p3", 0, 100000, 3)
+	x.core.deposit(addr3, txidOf("p3"), 0, 100000, 3)
 	x.poll()
 	if x.state(order3) != statePaid {
 		t.Fatalf("undeliverable order: %s", x.state(order3))
 	}
-	body = x.page("/order?id="+order3, x.buyerSess)
-	if strings.Contains(body, `action="/disputes"`) || !strings.Contains(body, "settlement step") {
+	body := x.page("/order?id="+order3, x.buyerSess)
+	if strings.Contains(body, `action="/disputes"`) || !strings.Contains(body, "a dispute decision is paid from the escrow") {
 		t.Fatalf("paid escrow order page offers a dispute: %s", body)
 	}
 	if w := x.do("POST", "/disputes", x.buyerSess, url.Values{"order_id": {order3}, "reason": {"The content was never delivered to me."}}); w.Code != 409 {
 		t.Fatalf("dispute: %d %s", w.Code, w.Body.String())
-	}
-	if w := x.do("POST", "/orders/cancel", x.vendorSess, url.Values{"order_id": {order3}, "from": {statePaid}, "amount_seen": {"100000"}, "payout_confirmed": {"confirmed"}}); w.Code != 409 {
-		t.Fatalf("vendor cancel of a paid escrow order: %d %s", w.Code, w.Body.String())
 	}
 	if w := x.do("POST", "/orders/deliver", x.vendorSess, url.Values{"order_id": {order3}, "content": {"by hand"}}); w.Code != 303 {
 		t.Fatalf("deliver: %d %s", w.Code, w.Body.String())
@@ -295,11 +286,19 @@ func TestEscrowOrderPanelWithEscrowOff(t *testing.T) {
 				}
 			}
 			// Nor a payment window: with escrow off no escrow order expires.
-			for _, bad := range []string{"No payment record", "no funds are held", "Payment is unavailable", "/escrow-descriptor", `name="from" value="awaiting_payment"`, "If nothing has been received by"} {
+			for _, bad := range []string{"No payment record", "no funds are held", "Payment is unavailable", "/escrow-descriptor", "If nothing has been received by", "saved BTC payout address", "/escrow-psbt"} {
 				if strings.Contains(body, bad) {
 					t.Fatalf("escrow order with escrow off shows %q:\n%s", bad, body)
 				}
 			}
+		}
+	}
+	// The part-funded order can still be cancelled (a buyer is never trapped by an outage, A-322): its form states the
+	// escrow refund, which waits in the database until escrow is back, and warns the buyer that escrow is unavailable.
+	body := x.page("/order?id="+x.order, x.buyerSess)
+	for _, want := range []string{`name="from" value="awaiting_payment"`, "Cancelling refunds the 0.0004 regtest BTC in this escrow", "Bitcoin escrow is unavailable right now."} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("part-funded escrow order with escrow off lacks %q:\n%s", want, body)
 		}
 	}
 	// A pooled draft is unchanged: no escrow panel, no checkout offer.
@@ -330,8 +329,8 @@ func TestEscrowUnconfirmedDepositAtWindowEnd(t *testing.T) {
 }
 
 // A-319 (QA29-6): a funded escrow order on a listing taken down is not delivered automatically, and its history note
-// says what is possible for an escrow order: delivery by hand, refunds with the settlement step (a cancel answers
-// 409). A pooled order keeps its note.
+// says what is possible for an escrow order: delivery by hand, or a cancel that requests the refund of the escrow
+// (P1-c1). A pooled order keeps its note.
 func TestEscrowTakedownNote(t *testing.T) {
 	x := newEscrowEnv(t)
 	addr := x.mustCheckout(x.order, "bcrt1qbuyerrefund00000000000000000000001")
@@ -343,11 +342,12 @@ func TestEscrowTakedownNote(t *testing.T) {
 	if x.state(x.order) != statePaid {
 		t.Fatalf("state %s", x.state(x.order))
 	}
-	want := "Not delivered automatically: an administrator took this listing down. The vendor can deliver by hand; a refund of this escrow comes with the settlement step, which this build does not have yet."
+	want := "Not delivered automatically: an administrator took this listing down. The vendor can deliver by hand, or cancel: the escrow is then refunded to the buyer by a settlement the buyer or the vendor signs."
 	if ev := x.events(x.order); ev[len(ev)-1] != "paid>paid system "+want {
 		t.Fatalf("note %q", ev[len(ev)-1])
 	}
-	if w := x.do("POST", "/orders/cancel", x.vendorSess, url.Values{"order_id": {x.order}, "from": {statePaid}, "amount_seen": {"100000"}, "payout_confirmed": {"confirmed"}}); w.Code != 409 {
+	if w := x.do("POST", "/orders/cancel", x.vendorSess, url.Values{"order_id": {x.order}, "from": {statePaid}, "amount_seen": {"100000"}, "payout_confirmed": {"confirmed"}}); w.Code != 303 ||
+		agInt(x.testEnv, "SELECT count(*) FROM settlements WHERE order_id=$1 AND kind='refund' AND state='building'", x.order) != 1 {
 		t.Fatalf("vendor cancel: %d", w.Code)
 	}
 	x.noPayouts(x.order)
