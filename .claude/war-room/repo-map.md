@@ -81,10 +81,10 @@ are **not** live-chain evidence. Merged is not released is not deployed.
   advisory lock is database-wide).
 - `pg_isready` over the Unix socket accepts PostgreSQL's temporary init server;
   always check readiness with `-h 127.0.0.1`.
-- Since A-153 only failed passwords spend a handle's sign-in budget, but
-  `wallet_admin` in `wallet-journey.spec.ts` uses 9 of the 10 password
-  confirmations allowed per 10 minutes (A-83 moved the digital XMR listing to
-  `wallet_vendor`) — new specs and legs must use fresh accounts.
+- Only failures spend the per-account budgets: wrong passwords at sign-in
+  (A-153), and wrong passwords or codes in a password confirmation (A-274),
+  10 per 10 minutes. A test that probes a refusal with wrong passwords spends
+  that account's budget, so give such legs a fresh account.
 - Preview mode is read-only and refuses POSTs; a preview spec proves layout,
   not behaviour.
 - A single Playwright failure under load is not a finding until re-run
