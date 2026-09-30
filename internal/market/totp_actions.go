@@ -288,8 +288,10 @@ func accountSecurityLoader(ctx context.Context, a *App, r *http.Request, d *Page
 }
 
 // recoverySignInNotice is what /totp says after a recovery-code sign-in (/challenge lands there, A-154): how many
-// codes remain and what to do without the authenticator, or that TOTP was turned off. It matches the current state
-// only, so a stale link says nothing. staffContact is the staff-contact line (A-119, A-279) for the last code.
+// codes remain and what to do without the authenticator, or that TOTP was turned off. signin is "recovery" or
+// "totp-off", from the signin- notice /totp consumed (A-287). It matches the current state only; when that changed
+// meanwhile it returns "" and the notice's own text stays. staffContact is the staff-contact line (A-119, A-279) for
+// the last code.
 func recoverySignInNotice(signin string, s *SecurityView, staffContact string) string {
 	switch {
 	case signin == "totp-off" && !s.TOTPEnabled:
@@ -311,9 +313,14 @@ func totpLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error
 		return err
 	}
 	d.Security = s
-	if n := recoverySignInNotice(r.URL.Query().Get("signin"), s, staffContactSentence(d.Settings[settingStaffContact])); n != "" {
-		d.Notice = n
-		// The page the sign-in was for (A-126): a link on, only beside the notice.
+	// A recovery-code sign-in's one-shot notice (A-287), detailed from the current state.
+	if signin, ok := strings.CutPrefix(d.noticeCode, "signin-"); ok {
+		if n := recoverySignInNotice(signin, s, staffContactSentence(d.Settings[settingStaffContact])); n != "" {
+			d.Notice = n
+		}
+		// The page the sign-in was for (A-126): a link on, only beside the notice. next is kept in the URL: it
+		// selects the link's target (checked again by signInNext), not an outcome, and shows nothing without the
+		// notice, so a crafted or replayed /totp?next= shows no link.
 		if d.Next = signInNext(r.URL.Query().Get("next")); d.Next != "" {
 			d.NextTitle = nextTitle(d.Next)
 		}

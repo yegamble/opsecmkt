@@ -94,7 +94,8 @@ func TestStaffContactShownWherePromised(t *testing.T) {
 	_, lastCode := agEnableTOTP(e, recoveryID)
 	anonRecovery, pcRecovery := e.pendingSignIn("sc_recovery")
 	w := e.do("POST", "/challenge", anonRecovery, url.Values{"method": {"totp"}, "recovery": {lastCode}}, pcRecovery)
-	if w.Code != 303 || w.Header().Get("Location") != "/totp?signin=recovery" {
+	recoveryNotice := noticeSetCookie(w) // A-287: the one-shot sign-in notice, sent with each /totp render below
+	if w.Code != 303 || w.Header().Get("Location") != "/totp" || recoveryNotice == nil || recoveryNotice.Value != "signin-recovery" {
 		t.Fatalf("sign-in with the last recovery code: %d %q", w.Code, w.Header().Get("Location"))
 	}
 	recoverySess := e.session(w)
@@ -158,7 +159,7 @@ func TestStaffContactShownWherePromised(t *testing.T) {
 			"notice":            notice(),
 			"/vendor-dashboard": html.UnescapeString(e.body("GET", "/vendor-dashboard", p.vendorSess, nil, 200)),
 			"/listing-edit":     html.UnescapeString(e.body("GET", "/listing-edit?id="+takenDown, p.vendorSess, nil, 200)),
-			"/totp":             html.UnescapeString(e.body("GET", "/totp?signin=recovery", recoverySess, nil, 200)),
+			"/totp":             html.UnescapeString(e.body("GET", "/totp", recoverySess, nil, 200, recoveryNotice)),
 			"upload":            uploadRefusal(),
 		}
 	}
@@ -219,7 +220,7 @@ func TestStaffContactShownWherePromised(t *testing.T) {
 	agExec(e, "UPDATE settings SET value=$1 WHERE key='staff_contact'", hostile)
 	for _, b := range []string{e.body("GET", "/canary", "", nil, 200), captchaPage("/login"), challenge(),
 		e.body("GET", "/notifications", p.vendorSess, nil, 200), e.body("GET", "/vendor-dashboard", p.vendorSess, nil, 200),
-		e.body("GET", "/listing-edit?id="+takenDown, p.vendorSess, nil, 200), e.body("GET", "/totp?signin=recovery", recoverySess, nil, 200),
+		e.body("GET", "/listing-edit?id="+takenDown, p.vendorSess, nil, 200), e.body("GET", "/totp", recoverySess, nil, 200, recoveryNotice),
 		e.upload("/listings/photo", p.vendorSess, e.photoParts(p.vendorSess, photoListing, smallJPEG(t))...).Body.String()} {
 		mustContain(t, b, "&lt;script&gt;alert(1)&lt;/script&gt;&lt;a href=&#34;http://evil.example&#34;&gt;")
 		mustNotContain(t, b, "<script", `href="http://evil.example"`)

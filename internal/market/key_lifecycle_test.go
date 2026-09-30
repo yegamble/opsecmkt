@@ -141,8 +141,8 @@ func TestKeyExpiryShownAndRenewalKeepsSignIn(t *testing.T) {
 	notes, changed := a152Notes(e, uid, ""), agStr(e, "SELECT pgp_changed_at::text FROM users WHERE id=$1", uid)
 	w := e.do("POST", "/account", sess, url.Values{"pgp": {renewed}, "password": {testPassword}})
 	e.check(w, 303)
-	if loc := w.Header().Get("Location"); loc != "/account?key=renewed" || noticeSetCookie(w) != nil {
-		t.Fatalf("renewal redirected to %q, or set the plain saved notice", loc)
+	if c := noticeSetCookie(w); w.Header().Get("Location") != "/account" || c == nil || c.Value != "key-renewed-kept" { // A-287: a one-shot notice
+		t.Fatalf("renewal redirected to %q with notice %+v, want /account and key-renewed-kept", w.Header().Get("Location"), c)
 	}
 	if keyProof(e, uid) != "verified 2fa" || !sameProfileKey(agStr(e, "SELECT pgp FROM users WHERE id=$1", uid), renewed) {
 		t.Fatalf("renewal lost the proof or was not stored: %s", keyProof(e, uid))
@@ -156,7 +156,7 @@ func TestKeyExpiryShownAndRenewalKeepsSignIn(t *testing.T) {
 	if a152Notes(e, uid, "") != notes+1 || a152Notes(e, uid, "renewed expiry") != 1 || a152Notes(e, uid, fp) != 0 {
 		t.Fatal("renewal not notified exactly once, or the notification names the fingerprint")
 	}
-	b := html.UnescapeString(e.body("GET", "/account?key=renewed", sess, nil, 200))
+	b := html.UnescapeString(e.body("GET", "/account", sess, nil, 200, noticeSetCookie(w)))
 	mustContain(t, b, keyRenewedNotice, utcDay(created.Add(2*365*86400*time.Second))+" UTC")
 	mustNotContain(t, b, "Profile saved.", "expires within 30 days")
 
@@ -455,13 +455,17 @@ func TestKeyUpdateThatDropsRevocationOrRollsBackSubkeyClearsProof(t *testing.T) 
 			w := e.do("POST", "/account", sess, url.Values{"pgp": {pasted}, "password": {testPassword}})
 			e.check(w, 303)
 			loc := w.Header().Get("Location")
-			if loc != "/account?key="+tc.outcome || noticeSetCookie(w) != nil {
-				t.Fatalf("redirected to %q, or set the plain saved notice", loc)
+			code := "key-" + tc.outcome // A-287: a one-shot notice; these keys were verified (provePGP)
+			if tc.outcome == "renewed" {
+				code = "key-renewed-kept"
+			}
+			if c := noticeSetCookie(w); loc != "/account" || c == nil || c.Value != code {
+				t.Fatalf("redirected to %q with notice %+v, want /account and %s", loc, noticeSetCookie(w), code)
 			}
 			if !sameProfileKey(agStr(e, "SELECT pgp FROM users WHERE id=$1", uid), pasted) {
 				t.Fatal("pasted key not stored")
 			}
-			b := html.UnescapeString(e.body("GET", loc, sess, nil, 200))
+			b := html.UnescapeString(e.body("GET", loc, sess, nil, 200, noticeSetCookie(w)))
 			mustNotContain(t, b, "Profile saved.")
 			nowChanged := agStr(e, "SELECT COALESCE(pgp_changed_at::text,'') FROM users WHERE id=$1", uid)
 			if tc.outcome == "renewed" {

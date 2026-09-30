@@ -12,7 +12,14 @@ import (
 // a code, never user text; a code not in the table shows nothing. A notice with a section renders inside that
 // section, and the 303 goes to its fragment; one without renders at the top of the page, with no fragment. pages
 // names the pages (PageData.Page, space-separated) that render the section: a notice consumed on any other page
-// (its 303 left unfollowed while another tab loaded, A-291) renders at the top there instead.
+// (its 303 left unfollowed while another tab loaded, A-291) renders at the top there instead. A code in
+// noticeErrors reports a success that needs the owner's attention and renders as the page's error alert.
+//
+// A-287 moved the other outcome flags here (?photo=, ?avatar=, ?image=removed, ?key= and ?signin=). The query
+// parameters pages still read select what to show, not what just happened: id, q, category, region, currency and
+// page (the listing, search and paging), to (the message recipient), next (where signing in returns, A-126; on
+// /totp shown only beside a signin- notice, totpLoader), scanner (the preview's upload states) and the audit
+// export's range.
 const noticeCookie, noticeMaxAge = "notice", 60
 
 var notices = map[string]struct{ text, section, pages string }{
@@ -26,6 +33,17 @@ var notices = map[string]struct{ text, section, pages string }{
 	"pgp-2fa-on":     {"PGP sign-in verification turned on.", "", ""},
 	"pgp-2fa-off":    {"PGP sign-in verification turned off.", "", ""},
 	"my-staff-list":  {"Staff list choice saved.", "staff-list", "account"},
+	"avatar-saved":   {"Avatar saved as a re-encoded JPEG; location, camera and other metadata were removed. Check the picture itself for anything that identifies you.", "avatar", "account"},
+	"avatar-removed": {"Avatar removed.", "avatar", "account"},
+	// A new version of the saved key (renewProfileKey, A-155): kept its ownership proof, renewed an unverified key,
+	// or saved as a changed key (an error alert naming why).
+	"key-renewed-kept": {"Key updated: the same key (same fingerprint) with new signatures, such as a renewed expiry; its ownership proof and PGP sign-in were kept.", "", ""},
+	"key-renewed":      {"Key updated: the same key (same fingerprint) with new signatures, such as a renewed expiry.", "", ""},
+	"key-revocation":   {keyChangedAlert("revocation"), "", ""},
+	"key-subkey":       {keyChangedAlert("subkey"), "", ""},
+	// A recovery-code sign-in (/challenge, A-154): /totp details it from the current state (recoverySignInNotice).
+	"signin-recovery": {"You signed in with a recovery code.", "", ""},
+	"signin-totp-off": {"You signed in with a recovery code and turned off two-step sign-in with an authenticator app (TOTP); your other recovery codes were deleted.", "", ""},
 	// Messages, orders and disputes
 	"message-sent":     {"Message sent.", "", ""},
 	"payment-address":  {"Payment address ready.", "", ""},
@@ -46,6 +64,11 @@ var notices = map[string]struct{ text, section, pages string }{
 	"listing-taken-down": {"Listing taken down.", "", ""},
 	"review-hidden":      {"Review hidden.", "reviews-title", "product vendor"},
 	"review-shown":       {"Review restored.", "reviews-title", "product vendor"},
+	"photo-saved":        {"Photo saved as a re-encoded JPEG; location, camera and other metadata were removed. Check the picture itself for anything that identifies you.", "photos", "listing-edit"},
+	"photo-removed":      {"Photo removed.", "photos", "listing-edit"},
+	// A staff takedown (image_takedown.go), back on /moderator's Recent photos or on the product or vendor page.
+	"image-removed":      {"Image removed. Its owner was notified with your reason.", "recent-photos", "moderator"},
+	"image-removed-page": {"Image removed. Its owner was notified with your reason.", "", ""},
 	// Administration
 	"settings":         {"Marketplace settings saved.", "", ""},
 	"role":             {"Account role saved.", "", ""},
@@ -65,8 +88,12 @@ var notices = map[string]struct{ text, section, pages string }{
 	"operator-key":     {"Operator PGP key saved.", "transparency", "admin"},
 }
 
-// setNotice sets the one-shot notice for code on a successful signed-in post's 303 and returns redirect with the
-// notice's section as its fragment. An unknown code sets nothing.
+// noticeErrors are the codes shown as the page's error alert rather than a status notice.
+var noticeErrors = map[string]bool{"key-revocation": true, "key-subkey": true}
+
+// setNotice sets the one-shot notice for code on a successful signed-in post's 303 (an action's, an upload's, or
+// the recovery-code sign-in's with the session it starts) and returns redirect with the notice's section as its
+// fragment. An unknown code sets nothing.
 func (a *App) setNotice(w http.ResponseWriter, code, redirect string) string {
 	n, ok := notices[code]
 	if !ok {
@@ -89,6 +116,11 @@ func (a *App) takeNotice(w http.ResponseWriter, r *http.Request, d *PageData) {
 	}
 	a.cookie(w, noticeCookie, "", -1)
 	if n, ok := notices[c.Value]; ok {
+		d.noticeCode = c.Value
+		if noticeErrors[c.Value] {
+			d.Error = n.text
+			return
+		}
 		d.Notice, d.NoticeAt = n.text, n.section
 		if !slices.Contains(strings.Fields(n.pages), d.Page) {
 			d.NoticeAt = ""

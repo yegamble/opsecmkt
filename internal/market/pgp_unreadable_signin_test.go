@@ -66,7 +66,8 @@ func TestUnreadableKeyRefusesPasswordOnlySignIn(t *testing.T) {
 				t.Fatalf("%s: %d notifications, want 1", handle, n)
 			}
 			note := agStr(e, "SELECT body FROM notifications WHERE user_id=$1", id)
-			mustContain(t, note, "contact the market staff")
+			// The owner notice names both ways back (A-292): the web reset and, for an administrator, the operator.
+			mustContain(t, note, "contact the market staff", "by a market administrator; for an administrator account, by the operator on the server")
 			mustNotContain(t, note, key[1], formatFingerprint(key[1]), "BEGIN PGP")
 			// The way back in for a non-administrator: the administrator's reset turns PGP sign-in off.
 			if role != "admin" {
@@ -163,7 +164,8 @@ func TestUnreadableKeyNoticeConcurrentCallsSendOne(t *testing.T) {
 			t.Fatalf("notifyUnreadableKey finished while the account row was locked (%d notices): it does not lock the row", a152Notes(e, id, unreadableKeyNote))
 		default:
 		}
-		if agInt(e, "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type='Lock' AND query LIKE 'SELECT pgp_changed_at FROM users WHERE id=$1 FOR NO KEY UPDATE%'") == n {
+		// Only this database's backends (A-293): another test process on the same server may be running this test.
+		if agInt(e, "SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE 'SELECT pgp_changed_at FROM users WHERE id=$1 FOR NO KEY UPDATE%'") >= n {
 			break
 		}
 		if time.Now().After(deadline) {

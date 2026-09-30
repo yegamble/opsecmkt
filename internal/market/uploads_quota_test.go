@@ -2,7 +2,6 @@ package market
 
 import (
 	"net/http/httptest"
-	"strings"
 	"sync"
 	"testing"
 )
@@ -171,7 +170,7 @@ func TestOneUploadPerAccount(t *testing.T) {
 	if w = <-first; w.Code != 303 {
 		t.Fatalf("first: %d", w.Code)
 	}
-	if w = e.upload("/account/avatar", vendor, e.avatarParts(vendor, smallJPEG(t))...); w.Code != 303 || !strings.Contains(w.Header().Get("Location"), "avatar=saved") {
+	if w = e.upload("/account/avatar", vendor, e.avatarParts(vendor, smallJPEG(t))...); w.Code != 303 || w.Header().Get("Location") != "/account#avatar" {
 		t.Fatalf("after the first: %d", w.Code)
 	}
 }
