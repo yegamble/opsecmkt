@@ -192,6 +192,9 @@ func payAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, fail(503, "The "+o.Currency+" "+c.A.netAdj()+" wallet did not return a usable address. Nothing was changed; try again later.")
 	}
 	if _, err = c.Tx.ExecContext(ctx, "INSERT INTO payment_addresses(order_id,currency,address,provider) VALUES($1,$2,$3,$4)", o.ID, o.Currency, addr, strings.ToLower(o.Currency)+"-"+p.Network()); err != nil {
+		if addressAlreadyIssued(err) { // A-288: a wallet restored from an older backup
+			return actionResult{}, addressCollisionRefusal(c, o.Currency, p.Network())
+		}
 		return actionResult{}, err
 	}
 	return actionResult{Redirect: orderPage(o.ID), Notice: "payment-address", Audit: "Requested " + o.Currency + " " + c.A.netAdj() + " payment address for order " + shortID(o.ID)}, nil

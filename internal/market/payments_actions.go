@@ -498,13 +498,14 @@ const payoutHistoryLimit = 50
 
 func paymentsAdminLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 	status := map[string]ProviderStatus{}
-	rows, err := a.db.QueryContext(ctx, "SELECT currency,network,COALESCE(to_char(last_poll,'YYYY-MM-DD HH24:MI:SS \"UTC\"'),''),last_error FROM payment_status")
+	rows, err := a.db.QueryContext(ctx, "SELECT currency,network,COALESCE(to_char(last_poll,'YYYY-MM-DD HH24:MI:SS \"UTC\"'),''),last_error,"+
+		"address_collisions,COALESCE(to_char(address_collision_last,'YYYY-MM-DD HH24:MI:SS \"UTC\"'),'') FROM payment_status")
 	if err != nil {
 		return err
 	}
 	for rows.Next() {
 		var s ProviderStatus
-		if err = rows.Scan(&s.Currency, &s.Network, &s.LastPoll, &s.Error); err != nil {
+		if err = rows.Scan(&s.Currency, &s.Network, &s.LastPoll, &s.Error, &s.AddressCollisions, &s.AddressCollisionLast); err != nil {
 			rows.Close()
 			return err
 		}
@@ -516,7 +517,7 @@ func paymentsAdminLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 	}
 	env := map[string]string{"BTC": "BITCOIN_RPC_URL", "XMR": "MONERO_WALLET_RPC_URL"}
 	for _, cur := range []string{"BTC", "XMR"} {
-		s := ProviderStatus{Currency: cur, Status: "Disabled"}
+		s := ProviderStatus{Currency: cur, Status: "Disabled", AddressCollisions: status[cur].AddressCollisions, AddressCollisionLast: status[cur].AddressCollisionLast}
 		if p := a.provider(cur); p != nil {
 			last := status[cur]
 			s.Enabled, s.Status, s.Network, s.Confirmations = true, "Enabled", p.Network(), p.Confirmations()

@@ -127,6 +127,11 @@ Open **Admin → Payment providers**. For each currency:
 
 The app logs the same transitions (`docker compose logs app | grep payments`).
 
+Below the table, "BTC wallet handed out payment addresses this market had already issued" (or XMR) means the wallet
+was restored from an older backup or seed without being advanced: payment requests that get such an address are
+refused and the orders stay drafts. Follow [Restore the wallets](#restore-the-wallets), then press *Dismiss the BTC
+warning*; the warning stays until then.
+
 Now request payment on a test order: the order page shows a `TESTNET <network>` deposit address. Send test
 coins; the order moves to *Paid* once the deposit reaches the confirmation threshold.
 
@@ -471,11 +476,19 @@ and no web action that clears the gate or records a lost payout.
 Part of step 1, with the app stopped, the restored database in place (`scripts/restore.sh` has set the payout
 recovery gate) and users cut off. A wallet brought back from a backup or a seed hands out addresses again from
 where the backup left off, but the database has already given the later ones to orders. `payment_addresses.address`
-is unique, so each payment request that gets one fails: the buyer reads "Unable to save changes" and a reference,
-the order stays a draft, and the app logs `http 5xx kind=action name=/orders/pay status=500 ref=<the reference>
-cause=23505 payment_addresses payment_addresses_address_key`. Each failure uses up one wallet address, so the
-failures stop only once buyers' retries have walked the wallet past every issued address. The restored wallet also
-watches only a limited range past its own index (1000 Bitcoin keys, 200 Monero subaddresses by default), so
+is unique, so each payment request that gets one is refused: the buyer reads "BTC payment addresses are being
+restored on this market. Nothing was charged and your order is still a draft; try again later." (or XMR) with a
+reference, status 503 and `Retry-After: 5`, nothing is saved, and the app logs
+`payments: BTC wallet returned a payment address already issued to another order (restored from an older backup?);
+payment request refused, order kept as a draft; collisions=<n>; see "Restore the wallets" in docs/testnet-runbook.md`
+followed by `http 5xx kind=action name=/orders/pay status=503 ref=<the reference> cause=payment-address-already-issued`
+(neither line names the address). The *Payment providers* panel of `/admin` shows "BTC wallet handed out payment
+addresses this market had already issued", with the number of refused requests and the time of the last one, and
+points here. The warning stays until an administrator dismisses it with its *Dismiss* button after following this
+section (a later collision shows it again); a payment request that succeeds does not clear it. Each refused
+request moves the wallet on by one address the database already holds, so the refusals stop by themselves once
+buyers' retries have walked the wallet past every issued address, but without the rescan below. The restored
+wallet also watches only a limited range past its own index (1000 Bitcoin keys, 200 Monero subaddresses by default), so
 deposits made after the backup to addresses beyond it are not seen. Scanning moves the index past the highest
 address that received a deposit, but not past issued addresses that were never paid.
 
