@@ -2,8 +2,11 @@ package market
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"math/rand/v2"
 	"regexp"
 	"strings"
 	"testing"
@@ -173,6 +176,21 @@ func TestParseEscrowKeyRefusals(t *testing.T) {
 		{"words, hyphen joined", "abandon-ability-able-about-above-absent-absorb-abstract-absurd-abuse-access-accident", errKeyExposed.Error()},
 		{"11 numbered words stay under the threshold", "1. Abandon 2. Ability 3. Able 4. About 5. Above 6. Absent 7. Absorb 8. Abstract 9. Absurd 10. Abuse 11. Access", errKeySpace.Error()},
 		{"numbers alone are not words", "1 2 3 4 5 6 7 8 9 10 11 12 13", errKeySpace.Error()},
+		// More written forms (QA25-2, A-308): any byte outside [A-Za-z0-9] separates words.
+		{"numbered words, (1)", "(1) abandon (2) ability (3) able (4) about (5) above (6) absent (7) absorb (8) abstract (9) absurd (10) abuse (11) access (12) accident", errKeyExposed.Error()},
+		{"numbered words, 1.word", "1.abandon 2.ability 3.able 4.about 5.above 6.absent 7.absorb 8.abstract 9.absurd 10.abuse 11.access 12.accident", errKeyExposed.Error()},
+		{"numbered words, 1:word", "1:abandon 2:ability 3:able 4:about 5:above 6:absent 7:absorb 8:abstract 9:absurd 10:abuse 11:access 12:accident", errKeyExposed.Error()},
+		{"numbered words, #1", "#1 abandon #2 ability #3 able #4 about #5 above #6 absent #7 absorb #8 abstract #9 absurd #10 abuse #11 access #12 accident", errKeyExposed.Error()},
+		{"quoted phrase", "\"abandon ability able about above absent absorb abstract absurd abuse access accident\"", errKeyExposed.Error()},
+		{"bulleted lines, *", "* abandon\n* ability\n* able\n* about\n* above\n* absent\n* absorb\n* abstract\n* absurd\n* abuse\n* access\n* accident", errKeyExposed.Error()},
+		{"bulleted lines, •", "• abandon\n• ability\n• able\n• about\n• above\n• absent\n• absorb\n• abstract\n• absurd\n• abuse\n• access\n• accident", errKeyExposed.Error()},
+		{"JSON array of words", "[\"abandon\",\"ability\",\"able\",\"about\",\"above\",\"absent\",\"absorb\",\"abstract\",\"absurd\",\"abuse\",\"access\",\"accident\"]", errKeyExposed.Error()},
+		{"words, slash joined", "abandon/ability/able/about/above/absent/absorb/abstract/absurd/abuse/access/accident", errKeyExposed.Error()},
+		{"words, underscore joined", "abandon_ability_able_about_above_absent_absorb_abstract_absurd_abuse_access_accident", errKeyExposed.Error()},
+		{"words, dot joined", "abandon.ability.able.about.above.absent.absorb.abstract.absurd.abuse.access.accident", errKeyExposed.Error()},
+		// A base58 payload of zero bytes with a valid checksum (base58CheckEncode(nil)) is refused, not a panic (A-307).
+		{"empty payload", "3QJmnh", errKeyOrigin.Error()},
+		{"empty payload with origin", "[7450f935/48h/1h/0h/2h]3QJmnh", errKeyInvalid.Error()},
 		// One key, one line, no descriptor syntax.
 		{"inner space", origin + tpub[:20] + " " + tpub[20:], errKeySpace.Error()},
 		{"inner newline", origin + "\n" + tpub, errKeySpace.Error()},
@@ -229,6 +247,52 @@ func TestParseEscrowKeyRefusals(t *testing.T) {
 	}
 }
 
+// The recovery-word check has no false positives on public key material (QA25-2, A-308): Bitcoin Core's own
+// public exports are never called exposed, and neither is any of 10,000 random valid BIP48 expressions (tpub or
+// Vpub, random fingerprint, account, chain code and on-curve key, with and without /0/*); every one parses.
+func TestParseEscrowKeyNoFalseExposed(t *testing.T) {
+	for _, in := range []string{testBIP48Key, testBIP84Key, testBIP48Key + "/0/*", "wpkh(" + testBIP84Key + "/0/*)#20gdjfqv",
+		"wsh(sortedmulti(2," + testBIP48Key + "/0/*," + testBIP84Key + "/0/*))", `{"desc":"wpkh(` + testBIP84Key + `/0/*)#20gdjfqv","timestamp":1,"active":true,"internal":false,"range":[0,999],"next":0}`} {
+		if _, err := parseEscrowKey(in); err == errKeyExposed {
+			t.Errorf("public export called exposed: %q", in)
+		}
+	}
+	rng := rand.New(rand.NewPCG(246, 308))
+	raw, err := base58CheckDecode(testBIP48Key[23:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	const n = 10000
+	checked := 0
+	for range n {
+		b := bytes.Clone(raw)
+		if rng.IntN(2) == 1 {
+			binary.BigEndian.PutUint32(b[:4], versionVpub)
+		}
+		binary.BigEndian.PutUint32(b[5:9], rng.Uint32()) // parent fingerprint
+		for i := 13; i < 78; i++ {
+			b[i] = byte(rng.Uint32())
+		}
+		b[45] = 2 + byte(rng.IntN(2))
+		for !onCurve(b[45:78]) {
+			b[77]++
+		}
+		expr := fmt.Sprintf("[%08x/48h/1h/%dh/2h]%s", rng.Uint32(), rng.IntN(1<<31), base58CheckEncode(b))
+		if rng.IntN(2) == 1 {
+			expr += "/0/*"
+		}
+		k, err := parseEscrowKey(expr)
+		if err != nil || !k.BIP48 {
+			t.Fatalf("%q: %v", expr, err)
+		}
+		checked++
+	}
+	if checked != n {
+		t.Fatalf("checked %d", checked)
+	}
+	t.Logf("%d random valid BIP48 expressions parsed; none called exposed", checked)
+}
+
 // A master key (depth 0), a key whose point is not on the curve and a key with an invalid prefix byte are refused.
 func TestParseEscrowKeyRefusesBadKeyMaterial(t *testing.T) {
 	raw, err := base58CheckDecode(testBIP48Key[23:])
@@ -264,7 +328,8 @@ func TestParseEscrowKeyRefusesBadKeyMaterial(t *testing.T) {
 // FuzzParseEscrowKey: no input panics, and whatever is accepted round-trips to a canonical expression that parses to
 // the same key.
 func FuzzParseEscrowKey(f *testing.F) {
-	for _, s := range []string{testBIP48Key, testBIP84Key, testPrivDescriptor, testBIP48Key + "/0/*", "[", "[]", "[00000000/0]", testWIF(true, true)} {
+	for _, s := range []string{testBIP48Key, testBIP84Key, testPrivDescriptor, testBIP48Key + "/0/*", "[", "[]", "[00000000/0]", testWIF(true, true),
+		base58CheckEncode(nil), "[7450f935/48h/1h/0h/2h]" + base58CheckEncode(nil)} {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, s string) {

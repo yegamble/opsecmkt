@@ -347,7 +347,10 @@ func parseUnsignedTx(b []byte) (psbtTx, error) {
 	}
 	tx.In = make([]psbtTxIn, 0, nIn)
 	for range nIn {
-		b, _ := r.bytes(36)
+		b, err := r.bytes(36)
+		if err != nil {
+			return tx, psbtErr("its transaction is malformed")
+		}
 		var in psbtTxIn
 		copy(in.TxID[:], b[:32])
 		in.Vout = binary.LittleEndian.Uint32(b[32:])
