@@ -91,8 +91,9 @@ var notices = map[string]struct{ text, section, pages string }{
 // noticeErrors are the codes shown as the page's error alert rather than a status notice.
 var noticeErrors = map[string]bool{"key-revocation": true, "key-subkey": true}
 
-// setNotice sets the one-shot notice for code on a successful signed-in post's 303 and returns redirect with the
-// notice's section as its fragment. An unknown code sets nothing.
+// setNotice sets the one-shot notice for code on a successful signed-in post's 303 (an action's, an upload's, or
+// the recovery-code sign-in's with the session it starts) and returns redirect with the notice's section as its
+// fragment. An unknown code sets nothing.
 func (a *App) setNotice(w http.ResponseWriter, code, redirect string) string {
 	n, ok := notices[code]
 	if !ok {
