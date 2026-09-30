@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -215,5 +216,19 @@ func TestEscrowConfigFromEnv(t *testing.T) {
 	}
 	if _, err := escrowConfigFromEnv(env("ESCROW_BTC", "on", "ESCROW_BTC_RPC_URL", "http://a:b@h:1", "BITCOIN_CHAIN", "regtest")); err != nil {
 		t.Fatalf("regtest chain: %v", err)
+	}
+}
+
+// The rpcwhitelist line the operator guide and scripts/test-escrow-regtest.sh give is exactly the adapter's methods.
+func TestEscrowWhitelistDocumented(t *testing.T) {
+	want := "rpcwhitelist=opsecmkt-escrow:" + strings.Join(escrowRPCMethods, ",")
+	for _, f := range []string{"docs/operator-guide.md", "scripts/test-escrow-regtest.sh"} {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n := strings.Count(string(b), "rpcwhitelist=opsecmkt-escrow:"); n != 1 || !strings.Contains(string(b), want+"\n") {
+			t.Errorf("%s: want exactly one line %q (found %d)", f, want, n)
+		}
 	}
 }

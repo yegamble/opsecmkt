@@ -143,7 +143,7 @@ shipped phase has proven. The full rules and acceptance criteria are in the proj
 | --- | --- | --- |
 | 0 | Preparation in the current payment code: one settlement per order enforced by the database, a single settlement dispatcher, password confirmation for dispute decisions | Done on the development branch, not yet released; changes nothing for users except that resolving a dispute asks for the resolver's password |
 | Wallet check | Scripted signing test with Electrum and Bitcoin Core on regtest, before any escrow database change | Done on regtest: Core signs; Electrum cannot sign this layout |
-| 1 | Bitcoin escrow for digital orders on regtest, behind a setting that is off by default | Not started |
+| 1 | Bitcoin escrow for digital orders on regtest, behind a setting that is off by default | In progress on the development branch, not released: escrow key registration and practice signing only, behind `ESCROW_BTC` (off by default, regtest only; [operator guide](operator-guide.md#bitcoin-escrow-regtest-only)). No order uses escrow yet |
 | Wallets | Electrum and Sparrow support (a signing test showed Electrum needs a different key layout) | Not started |
 | 2 | Physical orders: buyer-signed release, 14-day deadline, no-ship cancellation | Not started |
 | 3 | Monero accounts in monthly escrow wallets | Not started |

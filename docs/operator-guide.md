@@ -602,6 +602,68 @@ Operational limits to accept before enabling payments:
 
 `scripts/regtest-smoke.sh` is a manual check against a local `bitcoind -regtest` (`BITCOIN_REGTEST_RPC_URL=http://user:pass@127.0.0.1:18443`); see the [runbook](testnet-runbook.md#7-manual-regtest-check-bitcoin). It is not part of CI.
 
+#### Bitcoin escrow (regtest only)
+
+**Off by default, regtest only, and not a payment mode yet.** [Per-order escrow](escrow.md) is being built in
+phases. This release contains only the start of its first phase: a user registers the key their own wallet signs
+escrow with and activates it by signing a practice transaction. No order uses escrow; every payment still goes
+through the pooled wallet above. Never switch it on for a market that takes real payments.
+
+- `ESCROW_BTC=on` turns it on (blank or `off` keeps it off). The app then refuses to start unless the node at
+  `ESCROW_BTC_RPC_URL` reports chain `regtest`, and `BITCOIN_CHAIN`, when set, is `regtest`: "refusing to start:
+  ESCROW_BTC=on runs only on regtest in this release …". An unreachable node or an unreadable arbiter wallet
+  leaves escrow disabled with one log line starting `escrow: Bitcoin escrow disabled:`, and the market runs
+  without it.
+- `ESCROW_BTC_RPC_URL`: the regtest node's RPC URL for a user only the app's escrow code uses, restricted with
+  `rpcwhitelist` as below (`http://opsecmkt-escrow:PASSWORD@bitcoin:18443`).
+- `ESCROW_BTC_ARBITER_WALLET` (default `opsecmkt-arbiter`): a Bitcoin Core descriptor wallet that holds only the
+  market's arbitrator key, never `BITCOIN_WALLET`. Create it once as the operator user, loaded at every node start
+  (`bitcoin-cli -regtest -named createwallet wallet_name=opsecmkt-arbiter load_on_startup=true`), and back it up
+  with the operator user: its seed is the market's escrow key.
+- **Fingerprint pin.** At the first start with escrow on, the app reads the arbiter wallet's master key fingerprint
+  (from a fresh change address, with `getrawchangeaddress` and `getaddressinfo`) and pins it in the database
+  (`settings` key `escrow_btc_arbiter_fingerprint`). If a later start finds another fingerprint, for example a
+  different wallet under that name, escrow is disabled with "escrow: Bitcoin escrow disabled: the arbiter wallet's
+  key fingerprint differs from the one pinned in this database". Load the right wallet and restart. On a regtest
+  market where you mean to replace the arbiter key, delete that settings row first (no escrow uses the key yet in
+  this release). Neither the fingerprint nor any key is ever logged.
+- **Compose** does not pass these variables to the app container in this release; test escrow with the app run
+  outside Compose (`go run ./cmd/server` against a regtest node), as `scripts/test-escrow-regtest.sh` does.
+
+**The app's RPC user.** Give the escrow code its own RPC user with `rpcauth` and allow it exactly these methods;
+keep a separate operator user with full rights for creating and backing up wallets. In `bitcoin.conf`:
+
+```ini
+rpcauth=opsecmkt-escrow:SALT$HASH
+rpcwhitelistdefault=0
+rpcwhitelist=opsecmkt-escrow:getblockchaininfo,getrawchangeaddress,getaddressinfo,createpsbt,utxoupdatepsbt,importdescriptors,getdescriptorinfo,deriveaddresses,gettxout,keypoolrefill,walletprocesspsbt,descriptorprocesspsbt,combinepsbt,finalizepsbt,testmempoolaccept,sendrawtransaction
+```
+
+`rpcwhitelist` allows or refuses whole methods, not their arguments, so the list leaves out every method that
+can export or copy a key: `listdescriptors` (with `private=true` it prints the arbiter's private key; probed on
+Core 31.1 regtest), `dumpprivkey`, `dumpwallet`, `backupwallet` and everything else not listed. `keypoolrefill`
+is on it: it exports nothing and lets the arbiter wallet sign for high escrow indices. `descriptorprocesspsbt`
+is used only with throwaway practice keys, never a wallet key. `rpcwhitelistdefault=0` leaves other users (the
+operator's, the pooled wallet's) unrestricted. Make SALT and HASH with Core's `share/rpcauth/rpcauth.py`, or as
+the comment in `scripts/test-escrow-regtest.sh` shows.
+
+**What users see.** `/account` gains a *Bitcoin escrow key* row linking to `/escrow-key`. There a user registers
+one extended public key with its origin, `[fingerprint/path]tpub…`, confirmed with their password (and
+authenticator code when enrolled); keys on another path than BIP48's `m/48h/1h/<account>h/2h` also need their
+confirmation that the wallet is used only for this market. Private keys, recovery words, descriptors, several
+keys, mainnet keys and single-signature (SLIP-132 `upub`/`vpub`) keys are refused before anything is stored, and
+the same key cannot be registered on two accounts. The key stays inactive until its owner signs the page's
+practice transaction in Bitcoin Core and pastes it back; it spends a made-up output, so it can never be
+broadcast. The server keeps the key sealed with `APP_SECRET_KEY` (see
+[What the server keeps](implementation-status.md#what-the-server-keeps)); changing `APP_SECRET_KEY` makes
+registered keys unreadable.
+
+**What was checked.** `scripts/test-escrow-regtest.sh` (manual, not in CI) runs key registration and practice
+signing end to end with a real Bitcoin Core 31.1 regtest node and the whitelist above: the app user is refused
+`listdescriptors`, `dumpwallet` and `backupwallet`, runs `keypoolrefill` and every call key activation makes, and
+unsigned, other-wallet, `SIGHASH_NONE`, `SIGHASH_SINGLE|ANYONECANPAY`, corrupted and forged pastes are refused.
+Nothing about escrow has run on a public test network.
+
 ### Transparency
 
 `AUDIT_SIGNING_KEY` (64 hex characters, an Ed25519 seed generated by the installer with `openssl rand -hex 32`) enables signed audit exports. It is read only from the environment, never stored in the database; blank or malformed values leave the export visibly unavailable. Changing it changes the public key, so treat it like any long-lived signing key: back it up with `.env` and announce rotations.
