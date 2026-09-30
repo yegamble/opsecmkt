@@ -379,6 +379,63 @@ func TestEscrowClaimWaitsForLateConfirmingOutput(t *testing.T) {
 	}
 }
 
+// The node's PSBT is checked before anything is stored: another transaction from createpsbt or utxoupdatepsbt, an
+// input without the escrow's witness script, or a key origin with a path is refused (bad-reply), and the settlement
+// stays building with nothing claimed. An output claimed by another settlement while the build ran rolls it back.
+func TestEscrowBuildRefusesNodeReplies(t *testing.T) {
+	x := newEscrowEnv(t)
+	order := x.completed(refundAddr, 60000, 40000)
+	x.claim(order, x.vendorSess, claimAddr)
+	id, _, _, _ := x.settlement(order)
+	strip := func(key byte) func(string) string {
+		return func(b64 string) string {
+			p, _ := decodePSBT(b64)
+			raw, _ := p.withoutInputFields(func(_ int, k []byte) bool { return k[0] == key })
+			return encodePSBT(raw)
+		}
+	}
+	for _, c := range []struct {
+		name           string
+		create, update func(string) string
+	}{
+		{"createpsbt answers another transaction", func(string) string { return testCorePSBTUnsigned }, nil},
+		{"utxoupdatepsbt answers another transaction", nil, func(string) string { return testCorePSBTUnsigned }},
+		{"no witness script", nil, strip(0x05)},
+		{"no witness UTXO", nil, strip(0x01)},
+		{"a key origin with a path", nil, func(b64 string) string {
+			p, _ := decodePSBT(b64)
+			raw, _ := p.withoutInputFields(func(_ int, k []byte) bool { return k[0] == 0x06 })
+			vpub, _ := hex.DecodeString(x.keyHex(order, "vendor"))
+			return encodePSBT(addField(t, raw, 0, append([]byte{0x06}, vpub...), []byte{0x5e, 0xed, 0x5e, 0xed, 0, 0, 0, 0}))
+		}},
+	} {
+		x.core.mu.Lock()
+		x.core.createSkew, x.core.updateSkew = c.create, c.update
+		x.core.mu.Unlock()
+		err := x.A.escrowPollOnce(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "bad-reply") {
+			t.Fatalf("%s: pass %v", c.name, err)
+		}
+		if _, _, state, _ := x.settlement(order); state != "building" || agInt(x.testEnv, "SELECT count(*) FROM settlement_outputs")+agInt(x.testEnv, "SELECT count(*) FROM payments WHERE settlement_id IS NOT NULL") != 0 {
+			t.Fatalf("%s: stored something (%s)", c.name, state)
+		}
+	}
+	x.core.mu.Lock()
+	x.core.createSkew, x.core.updateSkew = nil, nil
+	x.core.mu.Unlock()
+	// While this build asks Core for the PSBT, one of its outputs is claimed by another settlement (as by hand).
+	x.core.beforeCreate = func() {
+		x.DB.Exec("INSERT INTO settlements(order_id,kind,destination) VALUES($1,'stray_refund',$2)", order, refundAddr)
+		x.DB.Exec("UPDATE payments SET settlement_id=(SELECT id FROM settlements WHERE order_id=$1 AND kind='stray_refund') WHERE order_id=$1 AND idx=1", order)
+	}
+	x.poll()
+	x.core.beforeCreate = nil
+	if _, _, state, _ := x.settlement(order); state != "building" || agInt(x.testEnv, "SELECT count(*) FROM settlement_outputs WHERE settlement_id=$1", id) != 0 ||
+		agInt(x.testEnv, "SELECT count(*) FROM payments WHERE settlement_id=$1", id) != 0 {
+		t.Fatalf("a build whose output was claimed meanwhile stored: %s", state)
+	}
+}
+
 // A build checks every input with gettxout first: unconfirmed, spent or not what the ledger recorded leaves the
 // settlement building (tried again on the next pass) with no PSBT asked for; a fee above the cap does too; once the
 // node agrees, it is built.
@@ -566,7 +623,7 @@ func TestEscrowPasteRefusals(t *testing.T) {
 		{"the vendor's signature pasted by the buyer", x.buyerSess, good, "a key other than your escrow key"},
 		{"a second signer's signature added", x.vendorSess, encodePSBT(sigOn(gp.Raw, 1, bpub, 1)), "a key other than your escrow key"},
 		{"a market-key signature", x.vendorSess, encodePSBT(sigOn(gp.Raw, 0, mpub, 1)), "under the market's key"},
-		{"a market-key derivation", x.vendorSess, encodePSBT(addField(t, gp.Raw, 1, append([]byte{market}, mpub...), append([]byte{0xa1, 0xb2, 0xc3, 0xd4}, 0, 0, 0, 0))), "under the market's key"},
+		{"a market-key derivation (bare, as Core writes one)", x.vendorSess, encodePSBT(addField(t, gp.Raw, 1, append([]byte{market}, mpub...), mpub[1:5])), "under the market's key"},
 		{"a derivation from the arbiter fingerprint", x.vendorSess, encodePSBT(addField(t, gp.Raw, 0, append([]byte{market}, bpub...), append([]byte{0xa1, 0xb2, 0xc3, 0xd4}, 1, 0, 0, 0))), "under the market's key"},
 		{"SIGHASH_NONE", x.vendorSess, walletSign(t, vcopy, vk.Fingerprint, 0x02), "sighash type other than ALL"},
 		{"SIGHASH_ALL|ANYONECANPAY", x.vendorSess, walletSign(t, vcopy, vk.Fingerprint, 0x81), "sighash type other than ALL"},
