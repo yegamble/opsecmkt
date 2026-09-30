@@ -138,7 +138,12 @@ func TestOutcomeFlagsAreOneShotNotices(t *testing.T) {
 		_, recovery := agEnableTOTP(e, id)
 		a154Codes(e, id, 1)
 		anon, pc := e.pendingSignIn("a287_signin")
-		w := e.do("POST", "/challenge", anon, url.Values{"method": {"totp"}, "recovery": {recovery}}, pc)
+		// A-302: a wrong recovery code is a 401 that sets no notice; only a sign-in that succeeded reports one.
+		w := e.do("POST", "/challenge", anon, url.Values{"method": {"totp"}, "recovery": {"aaaa-bbbb-cccc-dddd"}}, pc)
+		if w.Code != 401 || noticeSetCookie(w) != nil {
+			t.Fatalf("wrong recovery code: status %d, notice cookie %v; want 401 and no notice", w.Code, noticeSetCookie(w))
+		}
+		w = e.do("POST", "/challenge", anon, url.Values{"method": {"totp"}, "recovery": {recovery}}, pc)
 		sess := e.session(w)
 		oneShot(t, e, sess, w, "/totp", "signin-recovery", "You signed in with a recovery code. 1 recovery code remains.", "", 2, "/totp?signin=recovery")
 

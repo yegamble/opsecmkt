@@ -84,6 +84,10 @@ func TestPaymentAddressCollisionRefusedAndReported(t *testing.T) {
 			if p.count("SELECT count(*) FROM audit_events WHERE action=$1", "Dismissed the "+cur+" issued-address warning (2 payment requests refused)") != 1 {
 				t.Fatal("dismissal was not audited once")
 			}
+			// A-303: with the count back at 0 there is no warning to dismiss; "0" is refused, not a second dismissal.
+			if code := dismiss(p.adminSess, "0"); code != 400 {
+				t.Fatalf("dismissing a count of 0 after the dismissal: %d, want 400", code)
+			}
 			// Any other failure saving the address is still a server error, and is not counted as a collision.
 			other := p.testEnv.order(p.buyer.ID, p.productID, cur, stateDraft)
 			if _, err := p.DB.Exec("INSERT INTO payment_addresses(order_id,currency,address,provider) VALUES($1,$2,$3,'fake')", other, cur, "held-"+other[:8]); err != nil {
