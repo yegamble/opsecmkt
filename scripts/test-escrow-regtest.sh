@@ -14,7 +14,16 @@
 # watch-only wallet imported only the bare-key descriptor of that address, and that its witness script is the
 # 2-of-3 of the stored buyer, vendor and market keys (the market's an arbiter-wallet child). A regtest wallet funds
 # the address, 3 blocks are mined and one escrow watcher pass completes the order (content delivered, no payouts
-# row). Later slices add their legs here.
+# row).
+#
+# Slice P1-c1 leg: a funded, completed escrow (paid above its price, with a market fee) is claimed by its vendor; one
+# watcher pass builds the settlement (gettxout, createpsbt, utxoupdatepsbt; Core's decodepsbt agrees on its txid and
+# fee); SIGHASH_NONE and the other party's signature, both made by real Core wallets, are refused; the vendor signs
+# its own copy in its own Core wallet and pastes it (party_signed). Then an underpaid escrow is cancelled by its
+# buyer and the buyer signs the refund in their wallet. For both, Core confirms that the stored PSBT plus the market's
+# signature (the arbiter wallet's walletprocesspsbt, called by the test only) plus the stored party signatures would
+# finalize with the stored txid and outputs and pass testmempoolaccept; nothing is broadcast. Later slices add their
+# legs here.
 #
 # Needs a regtest node with two RPC users: an operator user with full rights (sets up the wallets, standing in
 # for the buyer's own node) and the app's user restricted by rpcwhitelist exactly as docs/operator-guide.md
@@ -60,12 +69,12 @@ log="${ESCROW_REGTEST_LOG:-artifacts/real-chain/test-escrow-regtest-$(date -u +%
 mkdir -p "$(dirname "$log")"
 echo "Bitcoin escrow regtest check; transcript: $log"
 set +e
-go test -count=1 -timeout 10m -run '^TestEscrowRegtest(PracticeSign|Funding)$' -v ./internal/market/ 2>&1 | tee "$log"
+go test -count=1 -timeout 10m -run '^TestEscrowRegtest(PracticeSign|Funding|Settlement)$' -v ./internal/market/ 2>&1 | tee "$log"
 status=${PIPESTATUS[0]}
 set -e
 # Each leg is reported from its own go test result line, so one failing leg never makes another read as failed.
 failed=0
-for leg in TestEscrowRegtestPracticeSign TestEscrowRegtestFunding; do
+for leg in TestEscrowRegtestPracticeSign TestEscrowRegtestFunding TestEscrowRegtestSettlement; do
   if grep -q -- "--- PASS: $leg " "$log"; then
     echo "PASS: $leg"
   elif grep -q -- "--- FAIL: $leg " "$log"; then
@@ -83,4 +92,4 @@ if [[ $status -ne 0 || $failed -ne 0 ]]; then
   echo "FAILED: go test exited $status; see $log" >&2
   exit 1
 fi
-echo "PASS: practice signing, and escrow creation and funding, on regtest; transcript in $log"
+echo "PASS: practice signing, escrow creation and funding, and settlement building and party signing, on regtest; transcript in $log"
