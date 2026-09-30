@@ -58,8 +58,7 @@ func (p *payEnv) kinds(order string) string {
 	return k
 }
 
-// inTx runs stmts (each with the order as $1 where it has a parameter) in one transaction and returns the COMMIT
-// error; a statement error fails the test.
+// inTx runs stmts in one transaction and returns the COMMIT error; a statement error fails the test.
 func (p *payEnv) inTx(stmts ...string) error {
 	p.t.Helper()
 	tx, err := p.DB.Begin()

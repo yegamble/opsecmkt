@@ -10,8 +10,9 @@
 -- committed, sees its row. It is one lock for every order: payouts are written rarely (the application writes them
 -- only when it queues a settlement, under the order's row lock), and a transaction holds that one lock however many
 -- rows it changes, where a lock per order would run out of lock-table memory on a large hand-written delete. This
--- makes the check race-free under READ COMMITTED, PostgreSQL's default, which the application and psql use
--- (SERIALIZABLE detects such a race by itself); a REPEATABLE READ transaction reads with its own earlier snapshot.
+-- makes the check race-free under READ COMMITTED, PostgreSQL's default, which the application and psql use; a
+-- REPEATABLE READ or SERIALIZABLE transaction reads with a snapshot taken before it waited, which the lock alone
+-- does not cover.
 --
 -- A later migration that writes payouts rows (INSERT, DELETE, or UPDATE of kind or order_id) and then alters or
 -- indexes payouts in the same startup transaction fails with "pending trigger events": it must run
