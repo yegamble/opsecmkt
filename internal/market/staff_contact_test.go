@@ -316,3 +316,47 @@ func TestExpiredKeyRefusalNamesStaffContact(t *testing.T) {
 		mustNotContain(t, b, askOperatorLine)
 	}
 }
+
+// A-298: on the flagged-upload path (A-279) a staff contact that cannot be read leaves the contact line out rather
+// than guessing "Ask the operator", still answers 422 with the reference, and logs only the cause class: never the
+// raw database error (which names the relation) or the setting's value.
+func TestStaffContactUnreadableOnUpload(t *testing.T) {
+	e := newTestApp(t)
+	vendorID, vs := e.user("sc_unreadable", "vendor")
+	listing := e.product(vendorID, "physical")
+	clamd := newFakeClamd(t)
+	e.withScanner(clamd)
+	clamd.SetVerdict(func([]byte) string { return "stream: Win.Test.Unreadable FOUND" })
+	const secret = "xmpp:secret-contact@staff-example.onion"
+	agExec(e, "INSERT INTO settings(key,value) VALUES('staff_contact',$1)", secret)
+	const refused = "Photo refused: the malware scanner flagged this file. Nothing was stored. If you think this is a mistake, send the market staff this reference. "
+	upload := func() string {
+		t.Helper()
+		w := e.upload("/listings/photo", vs, e.photoParts(vs, listing, smallJPEG(t))...)
+		if w.Code != 422 {
+			t.Fatalf("flagged upload: %d %q", w.Code, w.Body.String())
+		}
+		return html.UnescapeString(w.Body.String())
+	}
+	// Readable, the line names the contact, so the unreadable case below is not vacuous.
+	mustContain(t, upload(), refused+"Contact the market staff: "+secret+". Reference: ")
+
+	logs := captureLog(t)
+	agExec(e, "ALTER TABLE settings RENAME TO settings_a298")
+	defer agExec(e, "ALTER TABLE settings_a298 RENAME TO settings")
+	body := upload()
+	got := logs.String()
+	if !strings.Contains(got, "upload staff contact read failed cause=42P01\n") {
+		t.Errorf("log lacks the fixed cause class: %q", got)
+	}
+	for _, leak := range []string{secret, "settings", "does not exist", "relation"} {
+		if strings.Contains(got, leak) {
+			t.Errorf("log contains %q: %q", leak, got)
+		}
+	}
+	if !regexp.MustCompile(regexp.QuoteMeta(refused) + `Reference: [0-9a-f]{8}\b`).MatchString(body) {
+		i := max(strings.Index(body, "Photo refused"), 0)
+		t.Errorf("unreadable contact: the refusal is not followed directly by its reference: %q", body[i:min(len(body), i+300)])
+	}
+	mustNotContain(t, body, secret, askOperatorLine, "Contact the market staff")
+}
