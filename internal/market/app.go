@@ -53,6 +53,8 @@ type App struct {
 	payments         map[string]PaymentProvider      // currency -> working provider; empty = payments disabled
 	unavailable      map[string]*unavailableProvider // configured but failing its checks (retried each watcher pass)
 	live             bool                            // payment providers are configured for mainnet (initPayments)
+	escrowConfigured bool                            // ESCROW_BTC=on (escrow_rpc.go); escrow may still be disabled
+	escrow           *escrowBTC                      // the Bitcoin escrow adapter once ESCROW_BTC=on passed its startup checks; nil = no escrow
 	scanner          *imageScanner                   // clamd client for uploads (clamd.go); nil = Disabled
 	storageLimit     int64                           // IMAGE_STORAGE_LIMIT_MB in bytes (uploads.go); 0 = the default
 	stop             context.CancelFunc
@@ -155,6 +157,10 @@ func New(ctx context.Context, preview bool) (*App, error) {
 		return nil, err
 	}
 	if err = a.checkNetworkHistory(ctx); err != nil {
+		a.closeDB()
+		return nil, err
+	}
+	if err = a.initEscrow(payCtx); err != nil {
 		a.closeDB()
 		return nil, err
 	}
