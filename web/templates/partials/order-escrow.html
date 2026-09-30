@@ -79,27 +79,12 @@
 <h3 id="escrow-settlement-heading">Settlement: {{.Title}}</h3>
 <p role="status">{{.Status}}</p>{{if .Outputs}}
 <p class="help">The transaction spends {{.InputTotal}} BTC from this escrow and pays exactly these outputs; the network fee of {{.NetworkFee}} BTC is taken from the first. They are fixed: check them in your wallet before you sign.</p>
-<div class="table-wrap payment-deposits" tabindex="0" role="region" aria-labelledby="escrow-outputs-heading">
-<table>
-<caption id="escrow-outputs-heading">Expected outputs</caption>
-<thead>
-<tr>
-<th scope="col">Pays</th>
-<th scope="col">Address</th>
-<th scope="col">Amount</th>
-</tr>
-</thead>
-<tbody>{{range .Outputs}}<tr>
-<td>{{.Role}}</td>
-<td class="mono">{{.Address}}</td>
-<td>{{.Amount}} BTC</td>
-</tr>{{end}}<tr>
-<td>Network fee (to the miners)</td>
-<td>—</td>
-<td>{{.NetworkFee}} BTC</td>
-</tr></tbody>
-</table>
-</div>{{end}}{{if .CanSign}}
+<h4 id="escrow-outputs-heading">Expected outputs</h4>
+<ol class="settlement-outputs" aria-labelledby="escrow-outputs-heading">{{range .Outputs}}
+<li><span>{{.Role}}: <strong>{{.Amount}} BTC</strong></span>
+<span class="settlement-address">{{.Address}}</span></li>{{end}}
+</ol>
+<p class="help">Network fee (to the miners, not an output): <strong>{{.NetworkFee}} BTC</strong>.</p>{{end}}{{if .CanSign}}
 <h4 id="escrow-sign-heading">Sign it</h4>
 <p class="help">Your copy carries your own key's origin, so your wallet finds your key; the other two keys are bare. In Bitcoin Core, load it with File › Load PSBT from clipboard and press Sign, or run <code>walletprocesspsbt</code> with it, without finalizing, in the wallet that holds your escrow key. Check the outputs your wallet shows against the table above, then paste the signed PSBT here. Either you or the other party can sign.</p>
 <label>Your copy (PSBT)<textarea class="escrow-psbt" readonly rows="6" spellcheck="false">{{.PSBT}}</textarea>
