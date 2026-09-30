@@ -76,11 +76,12 @@ func (d Dispute) Responder() string {
 
 // EvidenceHolder (A-162): a moderator or administrator a party messaged since the dispute opened, with how many
 // messages and the time of the latest, read from message metadata (sender, recipient, time) only. Suspended: that
-// account is suspended now, so it cannot sign in or answer until restored (A-280).
+// account is suspended now, so it cannot sign in or answer until restored (A-280). Former: that account was staff
+// when messaged and has since been removed from staff, as its role-change audit row records (A-294).
 type EvidenceHolder struct {
-	Handle, Latest string
-	Count          int
-	Suspended      bool
+	Handle, Latest    string
+	Count             int
+	Suspended, Former bool
 }
 
 // DisputeEvidence lists the staff each party of an open dispute messaged since it opened.
