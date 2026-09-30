@@ -300,4 +300,22 @@ func TestDeskShowsWhoHoldsDisputeEvidence(t *testing.T) {
 	if n := strings.Count(w.page("/moderator", modB, 200), `class="dispute-evidence"`); n != 3 {
 		t.Fatalf("independent moderator sees %d holders lists, want 3", n)
 	}
+
+	// A-285: a counterparty who is staff holds no evidence. An administrator sells the listing and the buyer messages
+	// that administrator (ordinary messages to the vendor): the independent moderator's block says "Buyer → none".
+	adminVendorID, _ := w.e.user("a285_admin_vendor", "admin")
+	adminOrder := w.e.order(w.buyerID, w.e.product(adminVendorID, "physical"), "BTC", stateShipped)
+	w.expect("/disputes", w.buyer, form("order_id", adminOrder, "reason", "The administrator's parcel never arrived."), 303, "")
+	if _, err := w.e.DB.Exec("INSERT INTO messages(id,sender_id,recipient_id,body,encrypted) VALUES($1,$2,$3,'x',true)", randomToken(), w.buyerID, adminVendorID); err != nil {
+		t.Fatal(err)
+	}
+	entry := ""
+	for _, a := range strings.Split(w.page("/moderator", modB, 200), `<article class="message">`) {
+		if strings.Contains(a, "Order "+adminOrder+"<") {
+			entry = a
+		}
+	}
+	block = holders(entry)
+	mustContain(t, block, "Buyer → none</li>", "Vendor → none</li>")
+	mustNotContain(t, block, "a285_admin_vendor")
 }
