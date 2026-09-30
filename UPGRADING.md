@@ -498,11 +498,11 @@ db_sql() { docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d o
 ```
 
 1. **List every payout of the orders that clash, returns included, and keep the output** (here in
-   `settlement-clash.txt`): it is the database's only record of the rows you delete. The pre-upgrade backup from
-   [section 1](#1-take-a-backup-and-record-what-you-run) still holds them as they were before the upgrade, and
-   restoring it is the way back. `amount` is in the smallest unit of `currency`: satoshi for BTC (100 000 000 per
-   BTC), piconero for XMR (10^12 per XMR). `user_id` is the recipient; `created` is when the row was queued and
-   `updated` when it last changed:
+   `settlement-clash.txt`): once you delete rows, it is their only record apart from the pre-upgrade backup from
+   [section 1](#1-take-a-backup-and-record-what-you-run), which holds them as they were before the upgrade;
+   restoring that backup is the way back. `amount` is in the smallest unit of `currency`: satoshi for BTC
+   (100 000 000 per BTC), piconero for XMR (10^12 per XMR). `user_id` is the recipient; `created` is when the row
+   was queued and `updated` when it last changed:
 
    ```sh
    db_sql <<'SQL' | tee settlement-clash.txt

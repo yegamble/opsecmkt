@@ -482,7 +482,9 @@ func TestSettlementClashGuide(t *testing.T) {
 		if m == nil {
 			t.Fatalf("no orders named in %v", err)
 		}
-		return strings.Split(m[1], ", ")
+		orders := strings.Split(m[1], ", ")
+		sort.Strings(orders) // the migration sorts by the database's collation
+		return orders
 	}
 	// checked returns the orders step 5's check lists, sorted, run through query (the database or a transaction).
 	checked := func(query func(string, ...any) (*sql.Rows, error)) []string {
