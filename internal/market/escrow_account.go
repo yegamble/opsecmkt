@@ -216,8 +216,10 @@ func escrowPracticeAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, errPracticeNode
 	}
 	return confirmedTx(c, false, func(c *actionCtx) (actionResult, error) {
-		res, err := c.Tx.ExecContext(ctx, `UPDATE user_escrow_keys SET active_at=now(),updated=now() WHERE user_id=$1 AND xpub_hmac=$2 AND active_at IS NULL
-			AND NOT EXISTS (SELECT 1 FROM escrow_pubkeys WHERE key_hmac=$2)`, uid, k.hmac)
+		// The key checked (the same key and origin) must still be the account's, inactive and without escrows.
+		res, err := c.Tx.ExecContext(ctx, `UPDATE user_escrow_keys SET active_at=now(),updated=now() WHERE user_id=$1 AND xpub_hmac=$2
+			AND origin_fingerprint=$3 AND origin_path=$4 AND active_at IS NULL AND NOT EXISTS (SELECT 1 FROM escrow_pubkeys WHERE key_hmac=$2)`,
+			uid, k.hmac, k.fingerprint, k.path)
 		if err != nil {
 			return actionResult{}, err
 		}
