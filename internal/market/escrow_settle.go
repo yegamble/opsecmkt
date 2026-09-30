@@ -854,7 +854,10 @@ func (a *App) escrowSettlementView(ctx context.Context, d *PageData, v *EscrowOr
 	switch state {
 	case "building":
 		s.Status = "Being built: the market builds the transaction from the escrow's confirmed deposits on its next pass. Reload in a minute."
-		if t := settleErrorText(buildErr, v.Threshold); t != "" {
+		switch t := settleErrorText(buildErr, v.Threshold); {
+		case !v.Available:
+			s.Status = "Waiting: Bitcoin escrow is unavailable on this market right now, so the market builds this settlement once it is available again."
+		case t != "":
 			s.Status = "Not built yet. " + t
 		}
 	case "awaiting_signature":

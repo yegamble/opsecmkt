@@ -301,6 +301,14 @@ func TestEscrowOrderPanelWithEscrowOff(t *testing.T) {
 			t.Fatalf("part-funded escrow order with escrow off lacks %q:\n%s", want, body)
 		}
 	}
+	// Cancelling it requests the refund, which waits for escrow and says so; nothing claims to be built or sent.
+	if w := x.do("POST", "/orders/cancel", x.buyerSess, url.Values{"order_id": {x.order}, "from": {stateAwaitingPayment}, "amount_seen": {"40000"}, "payout_confirmed": {"confirmed"}}); w.Code != 303 {
+		t.Fatalf("cancel with escrow off: %d %s", w.Code, w.Body.String())
+	}
+	if body := x.page("/order?id="+x.order, x.buyerSess); !strings.Contains(body, "Waiting: Bitcoin escrow is unavailable on this market right now, so the market builds this settlement once it is available again.") ||
+		strings.Contains(body, "Reload in a minute") {
+		t.Fatalf("refund with escrow off:\n%s", body)
+	}
 	// A pooled draft is unchanged: no escrow panel, no checkout offer.
 	if body := x.page("/order?id="+x.draft(), x.buyerSess); strings.Contains(body, "escrow") {
 		t.Fatal("a pooled draft mentions escrow with escrow off")
