@@ -496,7 +496,7 @@ Reviews are published as soon as the buyer writes them. To take one down (for ex
 
 No configuration. Vendors manage listings from the vendor desk (Edit / Archive / Restore). Automatic delivery content for digital listings is stored unencrypted in the database — include it in your threat model and backups — and is only released after a payment provider confirms payment; with payments disabled it is never released automatically. Administrators can edit other vendors' listings but cannot view or change their automatic delivery content: the editor shows only whether it is set, and only the vendor can change or remove it.
 
-To remove another vendor's listing (for example counterfeit or prohibited goods) while the vendor keeps selling everything else, open its edit page as an administrator, open *Take down listing*, give the vendor a reason of 10–500 characters and confirm with your password (and authenticator code when enrolled). The listing is archived; the vendor is notified with the reason and sees it on the listing and the vendor desk, can still edit the listing, but cannot restore it. The listing leaves the marketplace, but the buyers of its existing orders, and moderators and administrators reviewing those orders, can still open its page (marked Archived, without the reason) from the order. The reason is stored unencrypted and kept in both accounts' activity logs; it is never shown publicly, but do not put an address or real name in it. While the listing is taken down, paid orders on it are not delivered automatically: they wait for the vendor to deliver by hand or cancel and refund (a [Bitcoin escrow](#bitcoin-escrow-regtest-only) order cannot be cancelled once funded: the vendor delivers by hand, and its refund comes with the escrow settlement step, not built yet). *Restore listing* on the same page, confirmed the same way, undoes it. To take away all of a vendor's listings, change their role instead (that archive carries no reason and the vendor can restore those listings if made a vendor again). Migration 041 adds `products.admin_archive_reason`.
+To remove another vendor's listing (for example counterfeit or prohibited goods) while the vendor keeps selling everything else, open its edit page as an administrator, open *Take down listing*, give the vendor a reason of 10–500 characters and confirm with your password (and authenticator code when enrolled). The listing is archived; the vendor is notified with the reason and sees it on the listing and the vendor desk, can still edit the listing, but cannot restore it. The listing leaves the marketplace, but the buyers of its existing orders, and moderators and administrators reviewing those orders, can still open its page (marked Archived, without the reason) from the order. The reason is stored unencrypted and kept in both accounts' activity logs; it is never shown publicly, but do not put an address or real name in it. While the listing is taken down, paid orders on it are not delivered automatically: they wait for the vendor to deliver by hand or cancel and refund (cancelling a funded [Bitcoin escrow](#bitcoin-escrow-regtest-only) order requests the refund of its escrow, a settlement the buyer or the vendor signs; this build does not broadcast it yet). *Restore listing* on the same page, confirmed the same way, undoes it. To take away all of a vendor's listings, change their role instead (that archive carries no reason and the vendor can restore those listings if made a vendor again). Migration 041 adds `products.admin_archive_reason`.
 
 ### Payments
 
@@ -608,8 +608,9 @@ Operational limits to accept before enabling payments:
 phases. This build contains the first part of its first phase: a user registers the key their own wallet signs
 escrow with and activates it by signing a practice transaction, and the buyer of a digital listing with automatic
 delivery can pay into a 2-of-3 escrow instead of the pooled wallet; the order completes when the escrow is funded.
-Settlements (the vendor's claim, refunds and dispute decisions) are not built, so coins paid into an escrow cannot
-be moved through the market yet. Every other order still goes through the pooled wallet above. Never switch it on
+The vendor's claim and refunds are built and signed by one party (see *Settlements* below), but the market does not
+co-sign or broadcast them yet, and dispute decisions are not built, so coins paid into an escrow cannot be moved
+through the market yet. Every other order still goes through the pooled wallet above. Never switch it on
 for a market that takes real payments.
 
 - `ESCROW_BTC=on` turns it on (blank or `off` keeps it off). The app then refuses to start unless the node at
@@ -639,12 +640,16 @@ for a market that takes real payments.
   the regtest address it is to be paid to, required when the fee is above 0 and checked with the node at startup.
   Each escrow keeps the fee and destination in force at its checkout; changing them affects only later escrows. One
   fixed address is allowed only because escrow runs on test networks (startup logs "escrow: the market fee is paid
-  to one fixed address …"); a mainnet market will need a watch-only descriptor. No fee is taken yet: it is paid by
-  the vendor's claim, which is not built.
+  to one fixed address …"); a mainnet market will need a watch-only descriptor. The fee is an output of the vendor's
+  claim (below 0.0001 BTC it is added to the vendor's output instead); no fee is collected yet, since the market
+  does not broadcast settlements yet.
+- `ESCROW_BTC_FEE_RATE` (default `2`): the network fee rate of every settlement the app builds, a whole number of
+  sat/vB from 1 to 100 (anything else stops startup). A settlement whose fee at this rate would exceed 0.001 BTC is
+  not built; lower the rate and restart.
 - `PAYMENT_CONFIRMATIONS_BTC` (default 3), `PAYMENT_EXPIRY` and `PAYMENT_POLL_INTERVAL` apply to escrows as to pooled
-  Bitcoin payments. An escrow order that has received nothing when its payment window ends is cancelled; one that is
-  underpaid then stays open (a top-up to the price completes it), and both parties are told once that refunding an
-  escrow is not built yet.
+  Bitcoin payments. An escrow order that has received nothing when its payment window ends is cancelled. One that is
+  underpaid (every deposit confirmed, short of the price, and no top-up for a whole window) is cancelled too, as a
+  pooled order is, and its refund requested; the buyer is told. A top-up within the window still completes it.
 - **Fingerprint pin.** At the first start with escrow on, the app reads the arbiter wallet's master key fingerprint
   (from a fresh change address, with `getrawchangeaddress` and `getaddressinfo`) and pins it in the database
   (`settings` key `escrow_btc_arbiter_fingerprint`). If a later start finds another fingerprint, for example a
@@ -660,15 +665,18 @@ for a market that takes real payments.
   never holds them. The order page still shows the escrow panel with its address and descriptor and "Bitcoin escrow
   is unavailable on this market right now …", never the pooled payment panel (the descriptor download is offered
   only with escrow on). A cancelled escrow order then reads "This escrow cannot be checked right now …", never
-  "nothing was received". Disputes, and cancelling an escrow order with a recorded deposit, stay refused either way;
-  but while deposits are not read, an order that shows no deposit can still be cancelled by its buyer or vendor (the
+  "nothing was received" (nor "0 BTC" for its figures, which read "Not read while Bitcoin escrow is unavailable";
+  one whose address is no longer watched reads "Not watched any more"). Disputes stay refused either way. Cancelling
+  an escrow order with a recorded deposit requests its refund, which the escrow watcher builds once escrow is enabled
+  again; while deposits are not read, an order that shows no deposit can still be cancelled by its buyer or vendor (the
   buyer's cancel form says, before its button, that coins already sent stay at the escrow address and are not seen
   until escrow is available again, and not to cancel after sending), and coins already sent to it then arrive after
   the order closed.
 - **Deposits after an escrow order closed** (cancelled or completed) are recorded once escrow reads them (the escrow watcher reads
   an escrow for 30 days after checkout, and for 24 hours after its order last changed, such as when it closed; past both the
   address is no longer watched and a later deposit is not recorded; the order page then says so instead of "nothing was
-  received"), never counted, and stay in the order's escrow; recovering them is part of the settlement step, not built. A confirmed
+  received"), never counted, never spent by the order's claim or refund, and stay in the order's escrow; recovering them
+  takes a stray refund, not built yet. A confirmed
   one is flagged for payment review as a pooled late deposit is: one order note, the buyer told the amount once per
   episode (not the vendor) and each moderator and administrator once. The order page's escrow status reads
   "Cancelled; a deposit arrived after the order closed …". The coins are not in the pooled wallet, so do not refund
@@ -735,12 +743,52 @@ the descriptor with its checksum, each party's own key with its origin and the o
 download, the claim ("the market cannot spend this escrow without you or the other party, if the key shown as yours
 is yours") and the notice that the other party can trace the escrow's funding and settlement on chain. The escrow
 watcher records each deposit; at the confirmation threshold the order is paid, its content delivered and the order
-completed. No payout is ever queued for an escrow order; refunds, disputes and the cancellation of an escrow that
-holds coins are refused until settlements are built. A funded escrow order on a listing an administrator took down
-is not delivered automatically: the vendor can deliver by hand, and its refund comes with the settlement step. If
+completed. No payout is ever queued for an escrow order: its coins leave only by a settlement (below). Disputes are
+refused until dispute decisions are built. A funded escrow order on a listing an administrator took down is not
+delivered automatically: the vendor can deliver by hand, or cancel it, which requests the refund of its escrow. If
 another escrow already holds one of the child keys a checkout would use, the checkout is refused ("another escrow on
 this market already holds one of its keys …") and the log says "escrow: escrow for order … not built: a child key is
 already held by another escrow".
+
+**Settlements (first half: building and one party's signature).** A settlement is the one transaction that spends an
+escrow: the vendor's claim on a completed order, or the buyer's refund of a cancelled one. This build builds it and
+takes one party's signature; the market does not co-sign or broadcast it yet, so no coins leave an escrow through the
+market, and every page and notice says nothing has been sent.
+
+- *Requesting.* The vendor of a completed escrow order requests the claim on the order page with a fresh regtest
+  address from their own wallet, confirmed with their password (and authenticator code when enrolled); an address the
+  market already used (an escrow, refund, fee, deposit or other claim address) is refused, and it cannot be changed
+  afterwards. A refund is requested when a funded escrow order is cancelled: by the buyer or the vendor while it
+  awaits payment with a deposit (the cancel form states the escrowed amount and needs its confirmation), by the
+  vendor once it is paid, or by the escrow watcher when every deposit has confirmed short of the price and a whole
+  payment window has passed without a top-up. It pays the refund address fixed at checkout. The database allows one
+  claim or refund per order.
+- *Building.* The escrow watcher builds each requested settlement at the end of its pass, never during a form post.
+  It waits until every deposit it recorded for the escrow before the order closed has `PAYMENT_CONFIRMATIONS_BTC`
+  confirmations (a deposit first recorded after the order closed is not spent: see below), checks each with
+  `gettxout` (unspent, confirmed, the recorded value and escrow address), and asks the node for exactly those inputs
+  and the planned outputs (`createpsbt`, no coin selection, then `utxoupdatepsbt` with the escrow's public
+  descriptor). A claim pays the vendor the escrow less the market fee fixed at checkout and less any amount paid
+  above the price, which goes back to the buyer's refund address; a refund pays everything to the buyer. The network
+  fee is `ESCROW_BTC_FEE_RATE` (sat/vB, default 2, at most 100) times an upper bound of the transaction's size, and
+  comes from the claimant's output only; the market fee is never reduced. A market fee or return below 0.0001 BTC is
+  added to the claimant's output, with an order note. The server checks the node's PSBT (inputs, output amounts,
+  each input's escrow script and value) and stores it, without any key origin, with its unsigned transaction ID; the
+  settlement then waits for a signature and both parties are notified. A build that cannot proceed yet (a deposit
+  not yet confirmed, an input the node reports spent or different, a network fee above the cap of 0.001 BTC, more
+  than 50 deposits) stays pending, is tried again on every pass and is shown on the order page; the log says
+  "escrow: settlement of order … not built yet: <class>" once per change, never a key, address or PSBT. An escrow
+  too small to pay the fee and an output of at least 0.0001 BTC fails ("not built"), with a note and a notice to both
+  parties; its coins stay in the escrow, where the buyer and the vendor can move them together from their own
+  wallets.
+- *Signing.* Each party sees the expected outputs (address, amount and whom each pays, and the network fee) and its
+  own copy of the PSBT, with its key's origin and the other keys bare, in the page and as a download. Either party
+  signs it in Bitcoin Core (`walletprocesspsbt` without finalizing, or the GUI's PSBT dialog) and pastes it back. The
+  paste is refused, with nothing stored, unless it is the stored transaction (its unsigned transaction ID), it carries
+  that party's signature on every input and no other key's, it has no entry under the market's key, every signature
+  is `SIGHASH_ALL` and nothing is finalized. Only the party's signatures are kept, never the pasted PSBT; the
+  settlement is then *signed by the buyer* (or vendor), the other party is notified, and the database refuses any
+  change to its transaction from then on. The market's co-signature and the broadcast come in the next build.
 
 **What was checked.** `scripts/test-escrow-regtest.sh` (manual, not in CI) runs key registration and practice
 signing end to end with a real Bitcoin Core 31.1 regtest node and the whitelist above: the app user is refused
@@ -749,7 +797,13 @@ unsigned, other-wallet, `SIGHASH_NONE`, `SIGHASH_SINGLE|ANYONECANPAY`, corrupted
 second leg activates a buyer's and a vendor's keys from their own Core wallets, creates an escrow through the checkout
 form, has Core confirm the descriptor each party is shown (checksum and address), that the watch-only wallet holds
 only that escrow's public descriptor and that its script is the 2-of-3 of the stored keys, funds it from a regtest
-wallet and completes the order on funding. Nothing about escrow has run on a public test network.
+wallet and completes the order on funding. Its third leg has the vendor claim a completed escrow (paid above its
+price, with a market fee): one watcher pass builds the claim, Core's `decodepsbt` agrees on its transaction ID and
+fee, real Core signatures with `SIGHASH_NONE` or from the other party's wallet are refused, and the vendor's own
+wallet signs its copy; then the buyer of an underpaid escrow cancels it and signs the refund in their wallet. For
+each, Core confirms that the stored transaction with the market's signature (made by the test, not the app) would
+finalize with the stored outputs and pass `testmempoolaccept`; nothing is broadcast. Nothing about escrow has run
+on a public test network.
 
 ### Transparency
 
