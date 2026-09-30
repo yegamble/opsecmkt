@@ -218,6 +218,10 @@ type PageData struct {
 	// UnsentPayouts: vendor desk, how many payouts to the viewer are not sent (listed on /account#payout).
 	MyPayout      *RecipientPayout
 	UnsentPayouts int
+	// EscrowOn: ESCROW_BTC=on (every page); EscrowAvailable: escrow passed its checks. EscrowOrders: vendor desk, the
+	// viewer's escrow orders that may hold coins (QA31-2): the site-wide notices never say no funds are held beside them.
+	EscrowOn, EscrowAvailable bool
+	EscrowOrders              int
 	// EscrowKey: /escrow-key and the /account status row, the viewer's Bitcoin escrow key; nil while ESCROW_BTC is off
 	// (escrow_account.go, WR-escrow Phase 1).
 	EscrowKey *EscrowKeyView
