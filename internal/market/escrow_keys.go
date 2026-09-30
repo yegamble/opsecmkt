@@ -318,22 +318,24 @@ func isBIP48Path(path []uint32) bool {
 // a list of recovery words anywhere in s. Base58 runs are checked one by one, so a private descriptor or a pasted
 // listdescriptors reply is caught whatever surrounds the key. Recovery words count however they are written down:
 // every character outside [A-Za-z0-9] separates words (numbering such as "(1)", "1." or "#1", quotes, bullets, a
-// JSON array, hyphens, slashes, underscores, dots), numbers are skipped, and at least 12 words that are all 3 to 8
-// letters (in any case) are recovery words. A key expression never qualifies: its extended key is one word of 111
-// characters.
+// JSON array, hyphens, slashes, underscores, dots), numbers are skipped, and a run of at least 12 words of 3 to 8
+// letters (in any case) is recovery words, whatever comes before or after it: a label such as "BIP39 seed:" or a
+// trailing "passphrase: …" (A-318). Any other token ends a run. A key expression never qualifies (its extended key is
+// one token of 111 characters), nor does a whole public listdescriptors reply (its fingerprints, keys and checksums
+// break its short JSON words into runs well under 12).
 func containsPrivateMaterial(s string) bool {
-	words, allWords := 0, true
+	run := 0
 	for _, w := range strings.FieldsFunc(s, func(r rune) bool { return !isASCIIAlnum(r) }) {
 		if strings.TrimLeft(w, "0123456789") == "" { // a number ("12" of "12.", "(12)", "#12")
 			continue
 		}
-		words++
 		if len(w) < 3 || len(w) > 8 || strings.TrimLeft(strings.ToLower(w), "abcdefghijklmnopqrstuvwxyz") != "" {
-			allWords = false
+			run = 0
+			continue
 		}
-	}
-	if allWords && words >= 12 {
-		return true
+		if run++; run >= 12 {
+			return true
+		}
 	}
 	for _, run := range strings.FieldsFunc(s, func(r rune) bool { return r > 0x7f || base58Index[byte(r)] < 0 }) {
 		for _, p := range privatePrefixes {
