@@ -224,6 +224,28 @@ then
 fi
 grep -q 'payouts_refund_or_return' "$work/refund-return.out"
 [[ $(sql -c 'SELECT count(*) FROM payouts') == 0 ]]
+# A return needs its release (migration 073): a deferred constraint trigger refuses, at commit, a return with no
+# release, while a release and its return inserted in one transaction are accepted in either order.
+[[ $(sql -c "SELECT pg_get_triggerdef(oid) FROM pg_trigger WHERE tgname='payouts_return_needs_release'") == 'CREATE CONSTRAINT TRIGGER payouts_return_needs_release AFTER INSERT OR DELETE OR UPDATE OF kind, order_id ON public.payouts DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION payouts_return_needs_release()' ]]
+[[ $(sql <<'SQL'
+BEGIN;
+INSERT INTO payouts(order_id,kind,user_id,currency,amount) SELECT id,'return',buyer_id,currency,amount FROM orders WHERE currency='XMR';
+INSERT INTO payouts(order_id,kind,user_id,currency,amount) SELECT id,'release',buyer_id,currency,amount FROM orders WHERE currency='XMR';
+SET CONSTRAINTS payouts_return_needs_release IMMEDIATE;
+SELECT count(*) FROM payouts;
+ROLLBACK;
+SQL
+) == 2 ]]
+if sql > "$work/return-release.out" 2>&1 <<'SQL'
+BEGIN;
+INSERT INTO payouts(order_id,kind,user_id,currency,amount) SELECT id,'return',buyer_id,currency,amount FROM orders WHERE currency='XMR';
+COMMIT;
+SQL
+then
+  echo 'A return without a release was accepted' >&2; exit 1
+fi
+grep -q 'has a return but no release' "$work/return-release.out"
+[[ $(sql -c 'SELECT count(*) FROM payouts') == 0 ]]
 
 # Behaviour through the upgraded server: an alpha.1 password still signs in, the migrated draft is shown as
 # a draft, and ordering the same product and currency again returns that draft instead of a second one.

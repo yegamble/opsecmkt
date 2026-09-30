@@ -321,7 +321,7 @@ your password (and authenticator code when enrolled); each flag takes one review
   after settlement or after the order closed, or a deposit below the minimum automatic payout), after you sent
   the refund from the wallet as in steps 3 and 4: the refund's 64-character transaction ID and the amount sent
   (at most the deposit), with an optional note. The market sends nothing and writes **no payout row**: each order
-  has at most one payout of each kind (`payouts` `UNIQUE (order_id, kind)`, migration 064) and never both a release and a refund (`payouts_one_settlement`, migration 069) or a refund and a return (`payouts_refund_or_return`, migration 070), owned by its release
+  has at most one payout of each kind (`payouts` `UNIQUE (order_id, kind)`, migration 064) and never both a release and a refund (`payouts_one_settlement`, migration 069) or a refund and a return (`payouts_refund_or_return`, migration 070), and never a return without its release (`payouts_return_needs_release`, migration 073), owned by its release
   and any return, or its refund, so do not insert a payout and do not use *Mark sent* on the order's payout for a
   manual transfer. A deposit recorded as refunded by hand is never counted toward a payout afterwards, even if a
   later deposit lifts a below-minimum sum over the minimum. A credited deposit (counted toward the payout) is
