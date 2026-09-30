@@ -143,7 +143,8 @@ func totpRegenerate(c *actionCtx) (actionResult, error) {
 	})
 }
 
-// totpDisable needs the password (bcrypt runs before any transaction) and a current code or recovery code.
+// totpDisable needs the password (bcrypt runs before any transaction) and a current code or recovery code; a wrong
+// code after the right password spends the confirmation budget, as in confirmedTxWith (A-274).
 func totpDisable(c *actionCtx) (actionResult, error) {
 	if err := totpLimit(c); err != nil {
 		return actionResult{}, err
@@ -161,16 +162,25 @@ func totpDisable(c *actionCtx) (actionResult, error) {
 		return actionResult{}, fail(503, "Service unavailable")
 	}
 	defer tx.Rollback()
-	// The recovery codes are locked before the account row (checkTOTP), in the order /challenge takes them (A-154).
+	// The recovery codes are locked before the account row, in the order /challenge takes them (A-154).
 	if err = lockRecoveryCodes(ctx, tx, uid); err != nil {
 		return actionResult{}, err
 	}
+	var enabled bool
+	if err = tx.QueryRowContext(ctx, "SELECT totp_enabled FROM users WHERE id=$1 FOR NO KEY UPDATE", uid).Scan(&enabled); err != nil {
+		return actionResult{}, err
+	}
+	if !enabled {
+		return actionResult{}, fail(409, "TOTP is not enabled for this account")
+	}
+	// The code is checked under the account row lock, as a confirmation's code is: a wrong one spends the confirmation
+	// budget the correct password gave back (A-274, QA19-2).
 	how := "authenticator code"
 	if normalizeRecoveryCode(code) != "" {
 		how = "recovery code"
-		_, err = a.useRecoveryCode(ctx, tx, uid, code)
+		err = a.confirmCode(uid, func() error { _, err := a.useRecoveryCode(ctx, tx, uid, code); return err })
 	} else {
-		err = a.checkTOTP(ctx, tx, uid, code)
+		err = a.confirmCode(uid, func() error { return a.checkTOTP(ctx, tx, uid, code) })
 	}
 	if err != nil {
 		return actionResult{}, err
