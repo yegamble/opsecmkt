@@ -586,7 +586,7 @@ db_sql() { docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d o
    its amount, state and transaction ID, so the order page shows only the returned excess as the refund. The same
    transaction adds a note to the order history, which the buyer and the vendor read, saying that the return is the
    refund and naming the amount you sent by hand and its transaction ID (the vendor's page hides the transaction ID,
-   as for every payout to the buyer). Give the amount as the wallet shows it, in BTC or XMR, as plain decimal digits (for example `0.001`; the block refuses `NaN`, `Infinity` and exponent forms),
+   as for every payout to the buyer). Give the amount as the wallet shows it, in BTC or XMR, as plain decimal digits without a sign or unit (for example `0.001`; the block refuses `NaN`, `Infinity` and exponent forms),
    and the 64-character transaction ID in lowercase; no address goes into the note:
 
    ```sh
@@ -759,7 +759,7 @@ order named here as below, with `db_sql` defined as in section 14, then start th
      The same transaction adds a note to the order history, which the buyer and the vendor read, saying that the
      return is the refund and naming the amount you sent by hand and its transaction ID (the vendor's page hides the
      transaction ID, as for every payout to the buyer). Give the amount as the wallet shows it, in BTC or XMR, as
-     plain decimal digits (for example `0.001`; the block refuses `NaN`, `Infinity` and exponent forms), and the 64-character transaction ID in lowercase; no address goes into the note:
+     plain decimal digits without a sign or unit (for example `0.001`; the block refuses `NaN`, `Infinity` and exponent forms), and the 64-character transaction ID in lowercase; no address goes into the note:
 
      ```sh
      db_sql -v order_id=FULL_ORDER_ID -v amount=AMOUNT_SENT -v txid=TRANSACTION_ID <<'SQL'
