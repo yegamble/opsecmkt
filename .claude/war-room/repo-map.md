@@ -92,6 +92,9 @@ are **not** live-chain evidence. Merged is not released is not deployed.
   flag or message, grep `scripts/`, `deploy/` and `.github/` as well as
   `internal`, `web`, `tests` and `docs`, and run `ci-smoke.sh internal scanner`
   (A-117 broke it by leaving `&saved=1` in the expected listing redirect).
+- Several agents share the host and the wr-pg cluster: kill only processes you
+  started, by PID. Never `pkill -f market.test` (or any broad pattern) — it kills
+  other agents' test runs (QA22a and QA22b each lost a race run this way).
 - A single Playwright failure under load is not a finding until re-run
   unloaded; navigation races (click → re-query before load) have caused flakes.
 - `chain-journey` and `regtest-smoke.sh` never run in CI; their evidence is
