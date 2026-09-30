@@ -564,7 +564,7 @@ func TestEscrowPracticeRefusals(t *testing.T) {
 
 // A node that does not answer: the page says so and the check answers 503, nothing changed.
 func TestEscrowPracticeNodeDown(t *testing.T) {
-	e, _, srv := escrowTestApp(t)
+	e, core, srv := escrowTestApp(t)
 	uid, sess := e.user("escrow_practice_down", "buyer")
 	if code, _ := registerKey(e, sess, testBIP48Key); code != 303 {
 		t.Fatal("register")
@@ -576,6 +576,14 @@ func TestEscrowPracticeNodeDown(t *testing.T) {
 	}
 	if code, _ := submitPractice(e, sess, fakeOwnerSign(t, psbt, "7450f935", 1)); code != 503 {
 		t.Fatalf("check: %d", code)
+	}
+	// A node whose throwaway signature alone completes the practice transaction is not trusted either.
+	srv.down.Store(false)
+	core.mu.Lock()
+	core.throwawayDone = true
+	core.mu.Unlock()
+	if code, _ := submitPractice(e, sess, fakeOwnerSign(t, psbt, "7450f935", 1)); code != 503 {
+		t.Fatalf("complete server copy: %d", code)
 	}
 	if agInt(e, "SELECT count(*) FROM user_escrow_keys WHERE user_id=$1 AND active_at IS NOT NULL", uid) != 0 {
 		t.Fatal("activated")

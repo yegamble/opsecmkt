@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -133,6 +134,7 @@ func TestParsePSBTRefusals(t *testing.T) {
 		{"tx output above 21M BTC", buildPSBT(psbtMap(kv{[]byte{0}, testTx(1, 21_000_000*100_000_000+1)}), empty, empty)},
 		{"tx input count beyond body", buildPSBT(psbtMap(kv{[]byte{0}, append([]byte{2, 0, 0, 0, 0xfe, 0xff, 0xff, 0xff, 0x0f}, tx[5:]...)}), empty, empty)},
 		{"non-canonical compact size", append([]byte("psbt\xff"), 0xfd, 1, 0)},
+		{"non-canonical key length, otherwise valid", slices.Concat([]byte("psbt\xff\xfd\x01\x00\x00"), compactSize(len(tx)), tx, []byte{0}, empty, empty)},
 		{"compact size beyond body", append([]byte("psbt\xff"), 0xff, 0, 0, 0, 0, 1, 0, 0, 0, 0)},
 		{"value length beyond body", append([]byte("psbt\xff"), 1, 0, 0xfe, 0xff, 0xff, 0xff, 0x7f)},
 		{"oversized", buildPSBT(psbtMap(kv{[]byte{0}, tx}, kv{[]byte{0x70}, make([]byte, psbtMaxBytes)}), empty, empty)},
