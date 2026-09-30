@@ -20,15 +20,35 @@ CREATE TABLE user_escrow_keys (
 );
 
 -- P1-b. One escrow per order. market_index is the arbiter key's child index for this escrow, taken from the
--- escrow_market_index counter (a sequence never hands out a value twice); the address is unique.
+-- escrow_market_index counter (a sequence never hands out a value twice); the address is unique. At checkout the
+-- buyer's refund address is pinned (unique: the market refuses an address it already used as an escrow, settlement
+-- or fee destination, ES-5) and the market fee is snapshotted: fee_bps (basis points) and fee_destination ('' when
+-- the fee is 0). underpaid_noted records when the parties were told the payment window ended short of the price:
+-- the refund of an escrow is a settlement, which P1-c builds.
 CREATE SEQUENCE escrow_market_index AS bigint MINVALUE 0 START WITH 0;
 CREATE TABLE escrows (
  id bigserial PRIMARY KEY,
  order_id text NOT NULL UNIQUE REFERENCES orders(id),
  address text NOT NULL UNIQUE,
  market_index bigint NOT NULL UNIQUE CHECK (market_index >= 0),
+ refund_address text NOT NULL UNIQUE CHECK (refund_address <> '' AND refund_address <> address),
+ fee_bps integer NOT NULL CHECK (fee_bps BETWEEN 0 AND 10000),
+ fee_destination text NOT NULL CHECK (fee_bps = 0 OR fee_destination <> ''),
+ underpaid_noted timestamptz,
  created timestamptz NOT NULL DEFAULT now()
 );
+
+-- An escrow order is settled from its escrow, never by a pooled payout (ES-1, invariant 4): the database refuses a
+-- payouts row for an order that has an escrow. The application never writes one (settleTerminal); this backs it.
+CREATE FUNCTION payouts_not_escrow() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM escrows WHERE order_id = NEW.order_id) THEN
+    RAISE EXCEPTION 'payouts: order % is an escrow order; it is settled from its escrow, never by a payout', NEW.order_id
+      USING ERRCODE = 'check_violation';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER payouts_not_escrow BEFORE INSERT OR UPDATE OF order_id ON payouts FOR EACH ROW EXECUTE FUNCTION payouts_not_escrow();
 
 -- P1-b. The three child public keys of each escrow (ES-3): a key is never used by two escrows (PRIMARY KEY). Per
 -- party, its own origin: the account key's fingerprint and path and the full derivation suffix below it (e.g.
@@ -50,6 +70,9 @@ CREATE TABLE escrow_pubkeys (
  CHECK (party = 'market' OR derivation_suffix <> '/0/0')
 );
 CREATE INDEX escrow_pubkeys_key ON escrow_pubkeys (key_hmac) WHERE key_hmac IS NOT NULL;
+-- Which escrows use an account's key is read by account and origin, not by key_hmac: an APP_SECRET_KEY rotation
+-- changes every HMAC, and must never hide an escrow or change which key it uses (chair's ruling on QA25).
+CREATE INDEX escrow_pubkeys_owner ON escrow_pubkeys (user_id, origin_fingerprint, origin_path) WHERE user_id IS NOT NULL;
 
 -- P1-c. Settlements of escrows (ES-1): no new order states; each settlement moves by compare-and-set through
 -- building -> awaiting_signature -> party_signed -> signed -> broadcast -> confirmed | external | failed. At most
