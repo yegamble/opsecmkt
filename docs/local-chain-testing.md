@@ -101,7 +101,11 @@ than 18122. The suite provisions application users and listings through real
 forms, pays with the real funding wallet, mines confirmations, checks fulfillment
 and verifies the resulting release/refund transactions in the recipient wallet.
 It does not fabricate deposits or change paid order states directly in SQL; it
-only reads the run's `payouts` rows and the watcher's last poll time.
+only reads the run's `payouts` and `payments` rows and the watcher's last poll
+time. The application runs with `PAYMENT_EXPIRY=10m`, the shortest window it
+accepts, so a full run takes about 15 minutes, most of it waiting out that window
+once in the last test. Every other test pays its order within seconds of
+requesting the address, well inside the window.
 
 The tests run in order and each later one depends on the first (which initializes
 the marketplace):
@@ -115,16 +119,83 @@ the marketplace):
    with their password, and it is sent once.
 4. An underpaid order: the buyer cancels it and the confirmed deposit is refunded
    once to their saved address.
+5. An underpaid order left alone: after the payment window the watcher cancels it,
+   tells the buyer, and refunds the confirmed deposit once. A top-up sent to the
+   same address afterwards is recorded as arriving after the close, flagged on the
+   moderation desk and announced to the buyer once (not to the vendor); it is
+   never paid out, and the order keeps its single refund.
 
 Each payout is checked on the order page after a reload, in its `payouts` row (no
 ambiguous, failed or stuck send anywhere) and in the recipient wallet, and again
 after further watcher passes, so a payout sent twice fails the run.
+
+The RPC URLs and the database URL carry passwords. The chain configuration hands
+them to the application through the test runner's environment rather than
+`webServer.env`, and the suite gives `psql` its connection through libpq's
+environment variables, so neither the JSON nor the HTML report contains them
+(war-room A-320).
 
 `tests/e2e/fixtures/local-chain.py` supplies `address`, `deposit`, `mine` and
 `received` commands to the suite. Every operation first checks that Bitcoin is
 regtest with networking off or that Monero is offline stagenet. The driver's
 `env` command is only for programmatic consumption by Playwright: **its output
 contains RPC credentials; do not print or save it in public test logs**.
+
+## Record a SHA-pinned run
+
+Release evidence (war-room A-103) is a run from a clean checkout of one commit,
+kept with a manifest under `artifacts/real-chain/<short sha>/` (gitignored, so
+it stays on the machine that ran it). From the main checkout, with verified
+binaries in `$TOOLS` (the archives, manifests and keys from
+[Obtain and verify the binaries](#obtain-and-verify-the-binaries), extracted there)
+and a fresh empty database whose URL is in `DB_URL`:
+
+```sh
+git worktree add --detach ../opsecmkt-evidence <commit>
+OUT="$PWD/artifacts/real-chain/$(git rev-parse --short=7 <commit>)"; mkdir -p "$OUT"
+cd ../opsecmkt-evidence && npm ci
+test -z "$(git status --porcelain)" && git rev-parse HEAD   # the commit the manifest names
+
+# Binaries: the signature records and hashes (isolated keyring holding fanquake.gpg and binaryfate.asc).
+export GNUPGHOME="$(mktemp -d)"; gpg --import "$TOOLS/fanquake.gpg" "$TOOLS/binaryfate.asc"
+( gpg --status-fd 1 --verify "$TOOLS/SHA256SUMS.asc" "$TOOLS/SHA256SUMS" 2>/dev/null | grep -E 'GOODSIG|VALIDSIG|BADSIG|ERRSIG'
+  gpg --status-fd 1 --verify "$TOOLS/hashes.txt" 2>/dev/null | grep -E 'GOODSIG|VALIDSIG|BADSIG|ERRSIG'
+  cd "$TOOLS" && sha256sum bitcoin-31.1-*.tar.gz monero-*-v0.18.5.1.tar.bz2 bitcoin-31.1/bin/bitcoind monero-*-v0.18.5.1/monerod monero-*-v0.18.5.1/monero-wallet-rpc
+) > "$OUT/binary-verification.txt"
+
+STATE="$(mktemp -d)/chains"
+python3 scripts/setup-local-chains.py --bitcoin-bin "$TOOLS/bitcoin-31.1/bin" \
+  --monero-bin "$TOOLS/monero-<platform>-v0.18.5.1" --state-dir "$STATE" > "$OUT/chain-setup.log" 2>&1
+BITCOIN_REGTEST_RPC_URL="$(python3 -c 'import json,sys; b=json.load(open(sys.argv[1]))["bitcoin"]; print("http://review:%s@127.0.0.1:%d" % (b["password"], b["port"]))' "$STATE/runtime.json")" \
+  scripts/regtest-smoke.sh > "$OUT/regtest-smoke.log" 2>&1
+E2E_CHAIN_DATABASE_URL="$DB_URL" LOCAL_CHAIN_RUNTIME="$STATE/runtime.json" PLAYWRIGHT_JSON_OUTPUT_FILE="$OUT/playwright-report.json" \
+  npx playwright test --config=playwright.chain.config.ts --reporter=list,json > "$OUT/chain-journey.log" 2>&1
+psql "$DB_URL" -c "\copy (SELECT * FROM payouts ORDER BY id) TO '$OUT/payouts.tsv' WITH (FORMAT csv, DELIMITER E'\t', HEADER)"
+psql "$DB_URL" -c "\copy (SELECT * FROM payments ORDER BY id) TO '$OUT/payments.tsv' WITH (FORMAT csv, DELIMITER E'\t', HEADER)"
+python3 scripts/setup-local-chains.py --stop "$STATE"
+
+# No secret in the evidence: each RPC password and the database password must have zero hits.
+for secret in $(python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); print(s["bitcoin"]["password"], s["monero"]["buyer"]["password"], s["monero"]["opsecmkt"]["password"])' "$STATE/runtime.json") \
+  "$(python3 -c 'import sys,urllib.parse; print(urllib.parse.urlsplit(sys.argv[1]).password)' "$DB_URL")"; do
+  grep -rlF "$secret" "$OUT" && echo "SECRET FOUND" >&2
+done
+```
+
+Then write `$OUT/MANIFEST.txt` by hand or script: the full commit SHA and that
+the checkout was clean, the run's start and end (UTC), the OS (`uname -srm` and
+`/etc/os-release`), `go version`, `node --version`, `npx playwright --version`, the
+archive and binary SHA-256s with each binary's `--version` and the verified signer
+fingerprints, the networks and ports used, and every command above with its exit
+status. Finish with the checksums:
+
+```sh
+(cd "$OUT" && sha256sum MANIFEST.txt binary-verification.txt chain-setup.log regtest-smoke.log \
+  chain-journey.log playwright-report.json payouts.tsv payments.tsv > SHA256SUMS)
+```
+
+`scripts/regtest-smoke.sh` leaves a wallet backup on the node's host (the path is
+the last line of its log); delete it, drop the database, and remove the state
+directory and the evidence worktree (`git worktree remove`) afterwards.
 
 ## Stop and repeat
 

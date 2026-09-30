@@ -28,8 +28,15 @@ async function verifyReceipt(currency: string, address: string, total: number, t
   // The run's evidence (A-103): each payout received on chain, its fee and transaction.
   console.log(`received on chain: ${currency} total ${total} = amount ${receipt.amount} + fee ${receipt.fee}, txid ${receipt.txids.join(',')}`);
 }
-// Read-only checks of the run's own database (payouts and the watcher's poll time); nothing is written.
-const sql = (query: string) => execFileSync('psql', [process.env.E2E_CHAIN_DATABASE_URL!, '-v', 'ON_ERROR_STOP=1', '-qtAc', query], { encoding: 'utf8' }).trim();
+// Read-only checks of the run's own database (payouts, payments and the watcher's poll time); nothing is written.
+// A-320: the connection details reach psql through libpq's environment, never its command line, so a failed query's
+// error ("Command failed: psql …", kept in the reports) carries no password. psql 16 does not expand a URI in
+// PGDATABASE, hence the separate variables.
+const database = new URL(process.env.E2E_CHAIN_DATABASE_URL!);
+const psqlEnv = { ...process.env, PGHOST: database.hostname, PGPORT: database.port || '5432', PGUSER: decodeURIComponent(database.username),
+  PGPASSWORD: decodeURIComponent(database.password), PGDATABASE: decodeURIComponent(database.pathname.slice(1)),
+  PGSSLMODE: database.searchParams.get('sslmode') || 'prefer' };
+const sql = (query: string) => execFileSync('psql', ['-v', 'ON_ERROR_STOP=1', '-qtAc', query], { encoding: 'utf8', env: psqlEnv }).trim();
 type Payout = { kind: string, amount: number, state: string, txid: string, ambiguous: boolean, address: string, error: string };
 function payouts(orderID: string): Payout[] {
   expect(orderID).toMatch(/^[0-9a-f]+$/);
@@ -401,5 +408,80 @@ test('isolated real chains: cancelling an underpaid order refunds the confirmed 
     }
   } finally {
     await close();
+  }
+});
+
+// A-103 / A-211: an underpaid order left alone is cancelled by the watcher once the payment window (PAYMENT_EXPIRY,
+// 10 minutes in this run) has passed since both the address and the last deposit, and the confirmed deposit is
+// refunded once. A top-up sent to the same address afterwards is recorded after the close and flagged for staff,
+// never paid out. Both coins' orders are funded first, so the window is waited out once.
+test('isolated real chains: an underpaid order expires with one refund, and a later top-up is flagged, not paid', async ({ browser, baseURL }) => {
+  test.setTimeout(1_800_000);
+  const moderator = await signedIn(browser, baseURL, 'chain_moderator', password, false);
+  const legs: { currency: string, parties: Awaited<ReturnType<typeof legParties>>, order: Awaited<ReturnType<typeof placeOrder>>, paid: number, refundAddress: string }[] = [];
+  try {
+    for (const currency of currencies) {
+      const parties = await legParties(browser, baseURL, `expiry_${currency.toLowerCase()}`);
+      const paid = priceOf(currency) * 2 / 5, remaining = priceOf(currency) - paid;
+      const refundAddress = (await chain('address', currency)).address;
+      await saveAddress(parties.buyer, currency, refundAddress);
+      const title = `Local-chain ${currency} underpaid expiry listing`;
+      await publishDigitalListing(parties.vendor, title);
+      const order = await placeOrder(parties.buyer, title, currency);
+      await chain('deposit', currency, order.address, coins(currency, paid));
+      await chain('mine', currency, '12');
+      await refreshUntil(parties.buyer, async () => {
+        await expect(parties.buyer.locator('.payment-figures div').filter({ has: parties.buyer.getByText('Remaining to send', { exact: true }) }))
+          .toContainText(coins(currency, remaining), { timeout: 1000 });
+      });
+      legs.push({ currency, parties, order, paid, refundAddress });
+    }
+    for (const { currency, parties: { buyer, vendor }, order, paid, refundAddress } of legs) {
+      const short = order.id.slice(0, 8);
+      // The watcher cancels it about 10 minutes after the deposit was first seen.
+      await expect(async () => {
+        await buyer.reload();
+        await expect(buyer.locator('.page-head .badge')).toHaveText('Cancelled', { timeout: 1000 });
+        await expect(payoutStatus(buyer, 'Refund to buyer')).toContainText('Sent', { timeout: 1000 });
+      }).toPass({ timeout: 900_000, intervals: [5000] });
+      const rows = payouts(order.id);
+      expect(rows).toEqual([expect.objectContaining({ kind: 'refund', amount: paid, state: 'sent', ambiguous: false, address: refundAddress, error: '' })]);
+      noAmbiguousSends();
+      await expect(buyer.locator('main')).toContainText(rows[0].txid);
+      const expired = `Order ${short}: the payment window ended with ${coins(currency, paid)} of ${coins(currency, priceOf(currency))} ${currency} received, so the order was cancelled. A refund of ${coins(currency, paid)} ${currency} to your saved ${currency} payout address is queued; the network fee is taken from it.`;
+      await buyer.goto('/notifications');
+      await expect(buyer.locator('article.message').filter({ hasText: expired })).toHaveCount(1);
+      await chain('mine', currency, '12');
+      await verifyReceipt(currency, refundAddress, paid, rows[0].txid);
+
+      // A late top-up to the same address: recorded after the close, flagged, never paid out.
+      const late = priceOf(currency) * 3 / 10;
+      const lateTxid: string = (await chain('deposit', currency, order.address, coins(currency, late))).txid;
+      expect(lateTxid).toMatch(/^[0-9a-f]{64}$/);
+      await chain('mine', currency, '12');
+      const lateRow = () => sql(`SELECT amount||'|'||after_close||'|'||flagged||'|'||credited FROM payments WHERE order_id='${order.id}' AND txid='${lateTxid}'`);
+      await expect.poll(lateRow, { timeout: 60_000, intervals: [500] }).toBe(`${late}|true|true|false`);
+      const told = `Order ${short}: ${coins(currency, late)} ${currency} (TESTNET) arrived at this order's deposit address after the order closed and was not paid out; it is not refunded automatically. Market staff were notified and review it.`;
+      await refreshUntil(buyer, async () => { await expect(buyer.locator('article.message').filter({ hasText: told })).toHaveCount(1, { timeout: 1000 }); });
+      await expect(buyer.locator('main')).not.toContainText(lateTxid);
+      await vendor.goto('/notifications');
+      await expect(vendor.locator('main')).not.toContainText('after the order closed');
+      await moderator.goto('/moderator');
+      const flag = moderator.locator('tr.payment-review-row').filter({ hasText: order.id }).filter({ hasText: lateTxid });
+      await expect(flag).toContainText('Open: Deposit after settlement or after the order closed, not paid out');
+      await expect(flag).toContainText(`${coins(currency, late)} ${currency}`);
+      expect(payouts(order.id)).toEqual(rows);
+      await verifyReceipt(currency, refundAddress, paid, rows[0].txid);
+      // Further watcher passes pay nothing more and tell the buyer nothing more.
+      await watcherCycles(currency);
+      expect(payouts(order.id)).toEqual(rows);
+      expect(lateRow()).toBe(`${late}|true|true|false`);
+      await verifyReceipt(currency, refundAddress, paid, rows[0].txid);
+      await buyer.reload();
+      await expect(buyer.locator('article.message').filter({ hasText: told })).toHaveCount(1);
+      noAmbiguousSends();
+    }
+  } finally {
+    await Promise.allSettled([moderator.context().close(), ...legs.map(leg => leg.parties.close())]);
   }
 });
