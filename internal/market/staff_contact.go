@@ -13,7 +13,9 @@ import (
 // free text) is the path behind every "contact the market staff". It is shown as text, never as a link, on /canary,
 // in the suspended sign-in refusal, as the lost-factors line on /challenge, under a notification that asks its
 // reader to contact the staff (the payout-address change notice among them), as "Can't read the image?" help beside
-// the CAPTCHA on /login and /register, and in the expired- and unreadable-key sign-in refusals (pgpKeyRefusal). When it is exactly
+// the CAPTCHA on /login and /register, in the expired- and unreadable-key sign-in refusals (pgpKeyRefusal), and (A-279)
+// with a taken-down listing on the vendor desk, its edit page and its restore refusal, with a photo the malware
+// scanner flagged, and on /totp after a sign-in with the last recovery code. When it is exactly
 // the handle of a moderator or administrator who is not suspended and whose key can receive encrypted messages
 // (canReceiveEncrypted, A-83), a signed-in reader also gets a /messages?to=<handle> link; a signed-out reader could
 // not use it. Unset, each place says "Ask the operator of this market." instead, so no page implies a channel that
@@ -27,7 +29,7 @@ const (
 
 func init() {
 	registerAction("/admin/staff-contact", actionSpec{Roles: []string{"admin"}, OwnTx: true, Run: staffContactAction})
-	for _, page := range []string{"canary", "challenge", "login", "register", "notifications"} {
+	for _, page := range []string{"canary", "challenge", "login", "register", "notifications", "vendor-dashboard", "listing-edit"} {
 		registerLoader(page, staffContactLoader)
 	}
 }

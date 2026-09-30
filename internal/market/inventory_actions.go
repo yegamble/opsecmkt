@@ -126,7 +126,12 @@ func listingArchiveAction(c *actionCtx, archive bool) (actionResult, error) {
 		if c.User.Role == "admin" {
 			return actionResult{}, fail(409, "An administrator took this listing down. Restore it with Restore listing on its edit page, confirmed with your password. Nothing was changed.")
 		}
-		return actionResult{}, fail(409, "An administrator took this listing down with the reason “"+l.Takedown+"”. Only an administrator can restore it; if you think this is wrong, contact the market staff. You can still edit it.")
+		// The staff contact (A-119, A-279) is the path to an administrator.
+		contact, err := staffContactRefusal(c.Ctx(), c.Tx)
+		if err != nil {
+			return actionResult{}, err
+		}
+		return actionResult{}, fail(409, "An administrator took this listing down with the reason “"+l.Takedown+"”. You can still edit it, but only an administrator can restore it. If you think this is wrong, ask an administrator to review it. "+contact)
 	}
 	if l.Archived == archive {
 		if archive {

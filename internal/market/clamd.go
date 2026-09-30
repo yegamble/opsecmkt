@@ -129,11 +129,15 @@ func (r *scanRefusal) Status() int {
 	return http.StatusServiceUnavailable
 }
 
-// Message is the uploader's copy.
-func (r *scanRefusal) Message() string {
+// Message is the uploader's copy. staffContact is staffContactSentence's line (A-119, A-279), shown with a
+// flagged file; "" leaves it out.
+func (r *scanRefusal) Message(staffContact string) string {
 	switch r.Class {
 	case scanInfected:
-		return "Photo refused: the malware scanner flagged this file. Nothing was stored. If you think this is a mistake, contact the market staff. Reference: " + r.Ref
+		if staffContact != "" {
+			staffContact += " "
+		}
+		return "Photo refused: the malware scanner flagged this file. Nothing was stored. If you think this is a mistake, send the market staff this reference. " + staffContact + "Reference: " + r.Ref
 	case scanStale, scanDisabled:
 		return r.notice
 	}

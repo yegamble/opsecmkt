@@ -21,7 +21,7 @@ broken-image icon in Chromium and WebKit); otherwise the CSS illustration. Thumb
 <a href="{{if .Archived}}/listing-edit?id={{.ID}}{{else}}/product?id={{.ID}}{{end}}">{{.Title}}</a>
 </h2>{{if .Archived}}<p class="inventory-state">{{if .TakedownReason}}<span class="badge danger">Taken down</span> Hidden from the marketplace by an administrator; no new orders.{{else}}<span class="badge neutral">Archived</span> Hidden from the marketplace; no new orders.{{end}}</p>{{end}}{{if and .TakedownReason (eq $.Page "vendor-dashboard")}}
 <p class="takedown-reason"><strong>Reason:</strong> {{.TakedownReason}}</p>
-<p class="help">Only an administrator can restore it. If you think this is wrong, contact the market staff.</p>{{end}}
+<p class="help staff-contact">Only an administrator can restore it. If you think this is wrong, ask an administrator to review it. {{template "staff-contact" $}}</p>{{end}}
 <p class="product-description">{{.Excerpt}}</p>
 <div class="product-bottom">
 <span class="price">{{if eq $.Currency "XMR"}}{{.PriceXMR}}<small>XMR</small>{{else}}{{.PriceBTC}}<small>BTC</small>{{end}}</span>

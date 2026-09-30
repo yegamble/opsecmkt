@@ -433,7 +433,7 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 				what := fmt.Sprintf("A refund of %s %s to your saved %s payout address is queued; the network fee is taken from it. The order page shows its status.", amount(refund, dec), o.Currency, o.Currency)
 				switch {
 				case err == sql.ErrNoRows:
-					what = fmt.Sprintf("%s %s is below the minimum automatic refund of %s %s, so it is not refunded; market staff were notified.", amount(received, dec), o.Currency, amount(payoutFloor(o.Currency, "refund"), dec), o.Currency)
+					what = fmt.Sprintf("%s %s is below the minimum automatic payout of %s %s, so it is not refunded; market staff were notified.", amount(received, dec), o.Currency, amount(payoutFloor(o.Currency, "refund"), dec), o.Currency)
 				case refundState == "blocked":
 					what = fmt.Sprintf("The refund of %s %s waits until you save a %s payout address on your account page; the network fee is taken from it.", amount(refund, dec), o.Currency, o.Currency)
 				}

@@ -121,8 +121,8 @@ type PageData struct {
 	// StaffList: then the moderators and administrators listed (User.Avatar set when it may be shown).
 	StaffListPublic bool
 	StaffList       []User
-	// StaffContact: /canary, /challenge, /login, /register and /notifications, the administrator's staff contact
-	// (A-119, staff_contact.go); nil while unset.
+	// StaffContact: /canary, /challenge, /login, /register, /notifications, /vendor-dashboard and /listing-edit (a
+	// taken-down listing, A-279), the administrator's staff contact (A-119, staff_contact.go); nil while unset.
 	StaffContact *StaffContactView
 	// A-190 (image_takedown.go). RecentImages: /moderator, the newest public photos and avatars (vendors' only for a moderator); AvatarTakedown:
 	// vendor page, the staff remove form for the vendor's avatar.
@@ -295,7 +295,7 @@ type PayoutPreview struct {
 
 // OverpaidView says what completing an overpaid order does with the excess, from the split the complete form
 // states (splitPayout, A-215). Excess: "0.009 BTC". Kept: it goes to the vendor with the release, for Reason
-// (below the minimum automatic refund, or a legacy price below the release floor, A-216). Held: larger than the
+// (below the minimum automatic payout, or a legacy price below the release floor, A-216). Held: larger than the
 // price, so an administrator reviews its return (or, when Kept, the release) first. NoAddress: buyer's view of a
 // return only, no payout address saved in the order's currency.
 type OverpaidView struct {
@@ -356,7 +356,7 @@ type PaymentView struct {
 	PaymentURI string
 	QR         template.HTML
 	// CancelAfter: while the order is open, the time ("YYYY-MM-DD HH:MM UTC") from which the watcher can cancel
-	// it if still unpaid or short (A-123); RefundFloor: the minimum automatic refund in this currency.
+	// it if still unpaid or short (A-123); RefundFloor: the minimum automatic payout in this currency.
 	CancelAfter, RefundFloor string
 }
 type PaymentDeposit struct {

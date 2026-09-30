@@ -350,7 +350,7 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 	case o.State == stateDraft:
 		pv.Status = "Not requested"
 	case o.State == stateCancelled && belowFloor > 0:
-		pv.Status = amount(belowFloor, dec) + " " + o.Currency + " received, below the minimum automatic refund of " + amount(payoutFloor(o.Currency, "refund"), dec) + " " + o.Currency + "; not refunded; market staff were notified"
+		pv.Status = amount(belowFloor, dec) + " " + o.Currency + " received, below the minimum automatic payout of " + amount(payoutFloor(o.Currency, "refund"), dec) + " " + o.Currency + "; not refunded; market staff were notified"
 	default:
 		pv.Status = "Deposit address closed (order " + stateLabel(o.State) + ")"
 	}
