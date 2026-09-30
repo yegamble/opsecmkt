@@ -21,7 +21,7 @@
 # ("Bitcoin escrow (regtest only)") describes, plus a disposable PostgreSQL database. For example:
 #
 #   salt=$(openssl rand -hex 16); hash=$(printf %s app-pass | openssl dgst -sha256 -hmac "$salt" | cut -d' ' -f2)
-#   docker run -d --name escrow-regtest -p 127.0.0.1:18443:18443 bitcoin/bitcoin:31.1 bitcoind -regtest \
+#   docker run -d --name escrow-regtest -p 127.0.0.1:18443:18443 bitcoin/bitcoin:31.1 bitcoind -regtest -fallbackfee=0.0002 \
 #     -server=1 -rpcbind=0.0.0.0 -rpcallowip=0.0.0.0/0 -rpcuser=operator -rpcpassword=operator-pass \
 #     "-rpcauth=opsecmkt-escrow:$salt\$$hash" -rpcwhitelistdefault=0 \
 #     -rpcwhitelist=opsecmkt-escrow:getblockchaininfo,getrawchangeaddress,getaddressinfo,createpsbt,utxoupdatepsbt,importdescriptors,getdescriptorinfo,deriveaddresses,gettxout,keypoolrefill,walletprocesspsbt,descriptorprocesspsbt,combinepsbt,finalizepsbt,testmempoolaccept,sendrawtransaction,getwalletinfo,listreceivedbyaddress,gettransaction
@@ -63,10 +63,24 @@ set +e
 go test -count=1 -timeout 10m -run '^TestEscrowRegtest(PracticeSign|Funding)$' -v ./internal/market/ 2>&1 | tee "$log"
 status=${PIPESTATUS[0]}
 set -e
+# Each leg is reported from its own go test result line, so one failing leg never makes another read as failed.
+failed=0
 for leg in TestEscrowRegtestPracticeSign TestEscrowRegtestFunding; do
-  if [[ $status -ne 0 ]] || ! grep -q -- "--- PASS: $leg " "$log"; then
-    echo "FAILED (or skipped): $leg; see $log" >&2
-    exit 1
+  if grep -q -- "--- PASS: $leg " "$log"; then
+    echo "PASS: $leg"
+  elif grep -q -- "--- FAIL: $leg " "$log"; then
+    echo "FAILED: $leg; see $log" >&2
+    failed=1
+  elif grep -q -- "--- SKIP: $leg " "$log"; then
+    echo "SKIPPED: $leg (a skipped leg is not a pass); see $log" >&2
+    failed=1
+  else
+    echo "NOT RUN: $leg (go test reported no result for it); see $log" >&2
+    failed=1
   fi
 done
+if [[ $status -ne 0 || $failed -ne 0 ]]; then
+  echo "FAILED: go test exited $status; see $log" >&2
+  exit 1
+fi
 echo "PASS: practice signing, and escrow creation and funding, on regtest; transcript in $log"
