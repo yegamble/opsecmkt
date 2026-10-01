@@ -125,6 +125,6 @@ func escrowFeeAction(c *actionCtx) (actionResult, error) {
 		if oldAddr != addr {
 			audit += "; fee destination changed"
 		}
-		return actionResult{Redirect: "/admin#escrow-fee", Notice: "escrow-fee", Audit: audit}, nil
+		return actionResult{Redirect: "/admin", Notice: "escrow-fee", Audit: audit}, nil
 	})
 }
