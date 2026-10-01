@@ -54,6 +54,23 @@ type fakeEscrowCore struct {
 	utxoSkew   func(map[string]any) // edits a gettxout answer (a lying or reorged node)
 	createSkew func(string) string  // edits createpsbt's answer
 	updateSkew func(string) string  // edits utxoupdatepsbt's answer
+
+	// Escrow P1-c2: the arbiter wallet's signature, the final transaction and its broadcast. walletprocesspsbt on the
+	// arbiter wallet signs each input carrying a derivation from the arbiter fingerprint (unless arbiterShort: its key
+	// range does not reach the child, until keypoolrefill); combinepsbt merges partial signatures; finalizepsbt builds
+	// the real segwit transaction from two valid signatures per input; sendrawtransaction records it and spends its
+	// inputs; gettransaction reports it with txConfs and conflicts.
+	arbiterShort     bool                // the arbiter's key range is short of the market child (getaddressinfo ismine false)
+	arbiterTxCount   int64               // getwalletinfo txcount of the arbiter wallet
+	arbiterEncrypted bool                // getwalletinfo of the arbiter wallet has unlocked_until
+	marketSkew       func(string) string // edits walletprocesspsbt's answer
+	finalSkew        func(string) string // edits finalizepsbt's raw transaction
+	mempoolReject    string              // testmempoolaccept refuses a settlement transaction with this reason
+	sendErr          int                 // JSON-RPC error for sendrawtransaction (0 = none)
+	beforeSend       func()              // runs when sendrawtransaction is called, before it answers
+	broadcast        map[string]string   // txid -> raw transaction sent
+	txConfs          map[string]int64    // txid -> confirmations of a sent transaction
+	conflicts        map[string][]string // txid -> walletconflicts of a sent transaction
 }
 
 // depositAt is the deposit the wallet reports at txid:vout.
@@ -192,6 +209,10 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 		}
 		return "bcrt1qarbiterchange000000000000000000000", 0, ""
 	case "getaddressinfo":
+		if str(0) != "bcrt1qarbiterchange000000000000000000000" {
+			// P1-c2: a market child key's address is the arbiter's while its key range reaches the child.
+			return map[string]any{"ismine": wallet && !c.arbiterShort}, 0, ""
+		}
 		return map[string]any{"ismine": true, "hdmasterfingerprint": c.arbiterFP, "parent_desc": c.arbiterDesc}, 0, ""
 	case "getdescriptorinfo":
 		desc := str(0)
@@ -267,17 +288,82 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 		return map[string]any{"psbt": encodePSBT(out), "complete": c.throwawayDone}, 0, ""
 	case "finalizepsbt":
 		pk := c.mustParse(str(0))
+		if raw, ok := fakeFinalTx(pk); ok {
+			if c.finalSkew != nil {
+				raw = c.finalSkew(raw)
+			}
+			return map[string]any{"hex": raw, "complete": true}, 0, ""
+		}
 		return map[string]any{"hex": "02000000" + pk.TxID(), "complete": fakeComplete(pk)}, 0, ""
 	case "testmempoolaccept":
 		if c.beforeMempool != nil {
 			c.beforeMempool()
 		}
+		var raws []string
+		json.Unmarshal(p[0], &raws)
+		if t := c.settlementTx(raws[0]); t != nil {
+			if c.mempoolReject != "" {
+				return []map[string]any{{"txid": t.TxID(), "allowed": false, "reject-reason": c.mempoolReject}}, 0, ""
+			}
+			if !c.unspentInputs(t) {
+				return []map[string]any{{"txid": t.TxID(), "allowed": false, "reject-reason": "missing-inputs"}}, 0, ""
+			}
+			return []map[string]any{{"txid": t.TxID(), "allowed": true}}, 0, ""
+		}
 		return []map[string]any{{"txid": "t", "allowed": c.allowed, "reject-reason": c.reject}}, 0, ""
 	case "walletprocesspsbt":
-		return map[string]any{"psbt": str(0), "complete": false}, 0, ""
+		if !wallet {
+			return nil, -8, "unexpected fake wallet"
+		}
+		pk, err := decodePSBT(str(0))
+		if err != nil {
+			return map[string]any{"psbt": str(0), "complete": false}, 0, "" // the adapter's params test sends a placeholder
+		}
+		raw := pk.Raw
+		for i, in := range pk.Inputs {
+			for _, d := range in.Derivations {
+				if c.arbiterShort || hex.EncodeToString(d.Fingerprint[:]) != c.arbiterFP || str(2) != "ALL" {
+					continue
+				}
+				next, _ := parsePSBT(raw)
+				out, err := next.withInputField(i, append([]byte{0x02}, d.PubKey...), fakeSig(d.PubKey, pk.TxID(), 1))
+				if err != nil {
+					c.t.Errorf("fake walletprocesspsbt: %v", err)
+				}
+				raw = out
+			}
+		}
+		signed := encodePSBT(raw)
+		if c.marketSkew != nil {
+			signed = c.marketSkew(signed)
+		}
+		return map[string]any{"psbt": signed, "complete": false}, 0, ""
 	case "combinepsbt":
-		return "cHNidP8combined", 0, ""
+		var all []string
+		json.Unmarshal(p[0], &all)
+		first, err := decodePSBT(all[0])
+		if err != nil {
+			return "cHNidP8combined", 0, "" // the adapter's params test sends placeholders
+		}
+		raw := first.Raw
+		for _, other := range all[1:] {
+			op := c.mustParse(other)
+			if op.TxID() != first.TxID() {
+				return nil, -22, "PSBTs not compatible (different transactions)"
+			}
+			for i, in := range op.Inputs {
+				for _, s := range in.PartialSigs {
+					cur, _ := parsePSBT(raw)
+					if slices.ContainsFunc(cur.Inputs[i].PartialSigs, func(have psbtSig) bool { return bytes.Equal(have.PubKey, s.PubKey) }) {
+						continue
+					}
+					raw, _ = cur.withInputField(i, append([]byte{0x02}, s.PubKey...), s.Sig)
+				}
+			}
+		}
+		return encodePSBT(raw), 0, ""
 	case "keypoolrefill":
+		c.arbiterShort = false
 		return nil, 0, ""
 	case "importdescriptors":
 		var reqs []map[string]any
@@ -298,6 +384,13 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 		}
 		return []map[string]any{{"success": true}}, 0, ""
 	case "getwalletinfo":
+		if wallet {
+			info := map[string]any{"walletname": "opsecmkt-arbiter", "descriptors": true, "private_keys_enabled": true, "txcount": c.arbiterTxCount}
+			if c.arbiterEncrypted {
+				info["unlocked_until"] = 0
+			}
+			return info, 0, ""
+		}
 		if path != fakeWatchWallet || c.watchInfo == nil {
 			return nil, -18, "Requested wallet does not exist or is not loaded"
 		}
@@ -326,6 +419,13 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 		return out, 0, ""
 	case "gettransaction":
 		txid := str(0)
+		if _, ok := c.broadcast[txid]; ok {
+			conflicts := c.conflicts[txid]
+			if conflicts == nil {
+				conflicts = []string{}
+			}
+			return map[string]any{"confirmations": c.txConfs[txid], "walletconflicts": conflicts, "details": []any{}}, 0, ""
+		}
 		var details []map[string]any
 		confs := int64(0)
 		for _, d := range c.deposits {
@@ -339,9 +439,125 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 		}
 		return map[string]any{"confirmations": confs, "details": details}, 0, ""
 	case "sendrawtransaction":
-		return "txid-broadcast", 0, ""
+		if c.beforeSend != nil {
+			c.mu.Unlock()
+			c.beforeSend()
+			c.mu.Lock()
+		}
+		if c.sendErr != 0 {
+			return nil, c.sendErr, "fake send failure"
+		}
+		t := c.settlementTx(str(0))
+		if t == nil {
+			return "txid-broadcast", 0, "" // the adapter's params test sends a placeholder
+		}
+		txid := t.TxID()
+		if _, ok := c.broadcast[txid]; ok {
+			if c.txConfs[txid] > 0 {
+				return nil, -27, "Transaction outputs already in utxo set"
+			}
+			return txid, 0, ""
+		}
+		if !c.unspentInputs(t) {
+			return nil, -25, "bad-txns-inputs-missingorspent"
+		}
+		for _, in := range t.In {
+			id := in.TxID
+			slices.Reverse(id[:])
+			if c.spent == nil {
+				c.spent = map[string]bool{}
+			}
+			c.spent[hex.EncodeToString(id[:])+":"+strconv.FormatInt(int64(in.Vout), 10)] = true
+		}
+		if c.broadcast == nil {
+			c.broadcast, c.txConfs = map[string]string{}, map[string]int64{}
+		}
+		c.broadcast[txid], c.txConfs[txid] = str(0), 0
+		return txid, 0, ""
 	}
 	return nil, -32601, "Method not found"
+}
+
+// settlementTx reads rawHex as a segwit transaction spending recorded escrow deposits, or nil (a practice
+// transaction, or a placeholder).
+func (c *fakeEscrowCore) settlementTx(rawHex string) *signedTx {
+	raw, err := hex.DecodeString(rawHex)
+	if err != nil {
+		return nil
+	}
+	t, err := parseSignedTx(raw)
+	if err != nil {
+		return nil
+	}
+	for _, in := range t.In {
+		id := in.TxID
+		slices.Reverse(id[:])
+		if _, ok := c.depositAt(hex.EncodeToString(id[:]), int64(in.Vout)); !ok {
+			return nil
+		}
+	}
+	return t
+}
+
+// unspentInputs reports whether every input of t spends a deposit not yet spent.
+func (c *fakeEscrowCore) unspentInputs(t *signedTx) bool {
+	for _, in := range t.In {
+		id := in.TxID
+		slices.Reverse(id[:])
+		if c.spent[hex.EncodeToString(id[:])+":"+strconv.FormatInt(int64(in.Vout), 10)] {
+			return false
+		}
+	}
+	return true
+}
+
+// setTxConfs sets the confirmations of a sent transaction (negative: conflicted, with the conflicting txid).
+func (c *fakeEscrowCore) setTxConfs(txid string, confs int64, conflict string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.txConfs[txid] = confs
+	if conflict != "" {
+		if c.conflicts == nil {
+			c.conflicts = map[string][]string{}
+		}
+		c.conflicts[txid] = []string{conflict}
+	}
+}
+
+// fakeFinalTx is finalizepsbt's raw transaction when every input of a multisig spend carries two valid signatures from
+// its witness script's keys and no invalid one: the unsigned transaction with each input's witness [empty, the
+// signatures in key order, witness script]. A PSBT with a finalized input, or any other shape, is not one (ok false).
+func fakeFinalTx(pk *psbtPacket) (string, bool) {
+	var witnesses [][]byte
+	for _, in := range pk.Inputs {
+		if in.Finalized || len(in.WitnessScript) != 105 {
+			return "", false
+		}
+		keys := [][]byte{in.WitnessScript[2:35], in.WitnessScript[36:69], in.WitnessScript[70:103]}
+		var sigs [][]byte
+		for _, k := range keys {
+			for _, s := range in.PartialSigs {
+				if !bytes.Equal(s.PubKey, k) {
+					continue
+				}
+				if !bytes.Equal(s.Sig, fakeSig(s.PubKey, pk.TxID(), s.SighashByte())) {
+					return "", false
+				}
+				sigs = append(sigs, s.Sig)
+			}
+		}
+		if len(sigs) < 2 {
+			return "", false
+		}
+		w := []byte{4, 0}
+		for _, item := range [][]byte{sigs[0], sigs[1], in.WitnessScript} {
+			w = append(append(w, compactSize(len(item))...), item...)
+		}
+		witnesses = append(witnesses, w)
+	}
+	u := pk.UnsignedTx
+	raw := slices.Concat(u[:4], []byte{0, 1}, u[4:len(u)-4], slices.Concat(witnesses...), u[len(u)-4:])
+	return hex.EncodeToString(raw), true
 }
 
 func (c *fakeEscrowCore) mustParse(b64 string) *psbtPacket {
@@ -399,6 +615,10 @@ func (c *fakeEscrowCore) createPSBT(p []json.RawMessage) string {
 			sats, _ := parseAmount(string(amt), 8)
 			tx = binary.LittleEndian.AppendUint64(tx, uint64(sats))
 			if spk := c.spk[addr]; spk != nil {
+				tx = append(append(tx, byte(len(spk))), spk...)
+				continue
+			}
+			if spk, err := regtestAddressScript(addr); err == nil { // P1-c2: a real address pays its own script
 				tx = append(append(tx, byte(len(spk))), spk...)
 				continue
 			}

@@ -19,11 +19,11 @@ import (
 // escrow-only system edge delivered -> completed. Each move goes through transition (row lock, compare-and-set,
 // order_events).
 //
-// No payouts row is ever written for an escrow order (settleTerminal; migration 074 refuses one), and nothing here
-// signs with the market key or sends. What returns coins from an escrow is a settlement (escrow_settle.go): the
-// watcher builds each requested claim or refund at the end of its pass (buildSettlements); the market's co-signature
-// and the broadcast are slice P1-c2, as are dispute decisions and the stray refund, so an escrow order is never
-// disputed (escrowTransitionHook). An escrow order that has received nothing when its payment window ends is
+// No payouts row is ever written for an escrow order (settleTerminal; migration 074 refuses one). What returns coins
+// from an escrow is a settlement (escrow_settle.go): the watcher builds each requested claim or refund at the end of
+// its pass (buildSettlements), then co-signs party-signed ones, stores and broadcasts them and follows them to their
+// confirmation (escrow_cosign.go, slice P1-c2). Dispute decisions and the stray refund are still to come, so an escrow
+// order is never disputed (escrowTransitionHook). An escrow order that has received nothing when its payment window ends is
 // cancelled, as a pooled order is; one underpaid then is cancelled too and its refund requested. A confirmed deposit
 // first recorded after an escrow order closed is flagged for payment review (flagLateDeposits).
 //
@@ -41,7 +41,7 @@ const (
 	escrowClosedWatch  = "24 hours"
 	escrowCreatedWatch = "30 days"
 	escrowWatchedSQL   = "(o.updated > now()-interval '" + escrowClosedWatch + "' OR es.created > now()-interval '" + escrowCreatedWatch +
-		"' OR EXISTS (SELECT 1 FROM settlements s WHERE s.order_id=es.order_id AND s.state IN ('building','awaiting_signature')))"
+		"' OR EXISTS (SELECT 1 FROM settlements s WHERE s.order_id=es.order_id AND s.state IN ('building','awaiting_signature','party_signed','signed','broadcast')))"
 )
 
 func init() {
@@ -160,10 +160,16 @@ func (a *App) escrowPollOnce(ctx context.Context) error {
 			errs = append(errs, &watchError{label: "escrow order " + shortID(id), err: err})
 		}
 	}
-	// Settlements requested so far (a claim, or the refund a cancellation above may just have requested) are built
-	// under the same lock, after the ledger is current.
-	if err = a.buildSettlements(ctx, e); err != nil {
-		errs = append(errs, err)
+	// Under the same lock, after the ledger is current: settlements broadcast in an earlier pass are followed to their
+	// confirmation; those requested so far (a claim, or the refund a cancellation above may just have requested) are
+	// built; party-signed ones are co-signed and stored; and stored ones are broadcast (escrow_cosign.go).
+	for _, step := range []func(context.Context, *escrowBTC) error{a.trackBroadcasts, a.buildSettlements, a.cosignSettlements, a.broadcastSettlements} {
+		if ctx.Err() != nil {
+			break
+		}
+		if err = step(ctx, e); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	return errors.Join(errs...)
 }

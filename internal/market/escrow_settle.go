@@ -19,8 +19,9 @@ import (
 
 // Escrow settlements (WR-escrow Phase 1, slice P1-c1; ES-1, ES-2, ES-4, ES-5). A settlement is the one transaction
 // that spends an escrow order's escrow: the vendor's claim on a completed order (kind release) or the buyer's
-// refund of a cancelled one (kind refund). This slice builds it and takes one party's signature; the market's
-// co-signature and the broadcast are slice P1-c2, so nothing here signs with the market key or sends anything.
+// refund of a cancelled one (kind refund). This file builds it and takes the parties' signatures; the market's
+// co-signature, the stored final transaction and its broadcast are escrow_cosign.go (slice P1-c2), so nothing here
+// signs with the market key or sends anything.
 //
 //  1. Requested in state building, RPC-free: the vendor's claim (/escrow/claim, with a fresh destination address the
 //     vendor gives then, ES-5), or a refund to the escrow's pinned refund address, written by settleTerminal in the
@@ -101,6 +102,7 @@ var (
 	errClaimTwice       = fail(409, "This escrow already has its settlement. Reload the page. Nothing was changed.")
 	errClaimNode        = fail(503, "The claim address could not be checked: the market's Bitcoin node did not answer. Nothing was changed; try again later.")
 	errSettleNotReady   = fail(409, "This settlement is not waiting for a signature (it is still being built, or it was already signed). Reload the page. Nothing was changed.")
+	errSettleSigned     = fail(409, "You already signed this settlement. Reload the page. Nothing was changed.")
 	errSettleNone       = fail(404, "Settlement not found")
 
 	// Refusals of a pasted settlement PSBT (ES-2): fixed text, never a quote of the paste.
@@ -560,7 +562,7 @@ func (a *App) storeSettlement(ctx context.Context, id int64, orderID, kind, psbt
 }
 
 // settleNotSent is the honest line on every settlement that has not been broadcast (ES-10).
-const settleNotSent = "Nothing has been sent: this build of the market does not co-sign or broadcast settlements yet, so the coins are still in the escrow."
+const settleNotSent = "Nothing has been sent yet: once one party has signed, the market co-signs the settlement on its next pass and broadcasts it to the regtest network."
 
 func settlementKind(kind string) string {
 	if kind == "release" {
@@ -725,15 +727,22 @@ func escrowSignAction(c *actionCtx) (actionResult, error) {
 	if err != nil {
 		return actionResult{}, errSettleNone
 	}
-	var state, txid, stored string
-	err = c.Tx.QueryRowContext(ctx, "SELECT state,COALESCE(txid,''),COALESCE(psbt,'') FROM settlements WHERE id=$1 AND order_id=$2 FOR UPDATE", sid, o.ID).Scan(&state, &txid, &stored)
+	var state, txid, stored, signer string
+	var signed bool
+	err = c.Tx.QueryRowContext(ctx, `SELECT state,COALESCE(txid,''),COALESCE(psbt,''),COALESCE(signer,''),EXISTS(SELECT 1 FROM settlement_signatures WHERE settlement_id=s.id AND party=$3)
+		FROM settlements s WHERE id=$1 AND order_id=$2 FOR UPDATE`, sid, o.ID, party).Scan(&state, &txid, &stored, &signer, &signed)
 	if err == sql.ErrNoRows {
 		return actionResult{}, errSettleNone
 	}
 	if err != nil {
 		return actionResult{}, err
 	}
-	if state != "awaiting_signature" {
+	// A-340 (ES-4): the other party may sign a party-signed settlement too; with both signatures the market does not.
+	second := state == "party_signed" && signer != party
+	switch {
+	case signed:
+		return actionResult{}, errSettleSigned
+	case state != "awaiting_signature" && !second:
 		return actionResult{}, errSettleNotReady
 	}
 	keys, err := escrowKeys(ctx, c.Tx, o.ID)
@@ -754,19 +763,26 @@ func escrowSignAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, err
 		}
 	}
-	res, err := c.Tx.ExecContext(ctx, "UPDATE settlements SET state='party_signed',signer=$2,signed_at=now(),updated=now() WHERE id=$1 AND state='awaiting_signature' AND txid=$3", sid, party, txid)
-	if err != nil {
-		return actionResult{}, err
-	}
-	if n, _ := res.RowsAffected(); n != 1 {
-		return actionResult{}, errSettleNotReady
+	if !second {
+		res, err := c.Tx.ExecContext(ctx, "UPDATE settlements SET state='party_signed',signer=$2,signed_at=now(),updated=now() WHERE id=$1 AND state='awaiting_signature' AND txid=$3", sid, party, txid)
+		if err != nil {
+			return actionResult{}, err
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			return actionResult{}, errSettleNotReady
+		}
 	}
 	var kind string
 	if err = c.Tx.QueryRowContext(ctx, "SELECT kind FROM settlements WHERE id=$1", sid).Scan(&kind); err != nil {
 		return actionResult{}, err
 	}
+	what, note := "the "+party+" signed its escrow settlement ("+settlementKind(kind)+"). ", "The "+party+" signed the escrow settlement ("+settlementKind(kind)+"). "
+	if second {
+		what = "the " + party + " also signed its escrow settlement (" + settlementKind(kind) + "): with both parties' signatures the market does not sign it. "
+		note = "The " + party + " also signed the escrow settlement (" + settlementKind(kind) + "): with both parties' signatures the market does not sign it. "
+	}
 	if _, err = c.Tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,$3,$4)", o.ID, o.State, c.User.ID,
-		"The "+party+" signed the escrow settlement ("+settlementKind(kind)+"). "+settleNotSent); err != nil {
+		note+settleNotSent); err != nil {
 		return actionResult{}, err
 	}
 	counterparty := o.BuyerID
@@ -774,7 +790,7 @@ func escrowSignAction(c *actionCtx) (actionResult, error) {
 		counterparty = o.VendorID
 	}
 	if _, err = c.Tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), counterparty,
-		"Order "+shortID(o.ID)+": the "+party+" signed its escrow settlement ("+settlementKind(kind)+"). "+settleNotSent); err != nil {
+		"Order "+shortID(o.ID)+": "+what+settleNotSent); err != nil {
 		return actionResult{}, err
 	}
 	return actionResult{Redirect: orderPage(o.ID) + "#escrow-settlement", Notice: "escrow-signed", Audit: "Signed the escrow settlement of order " + shortID(o.ID) + " (regtest)"}, nil
@@ -797,7 +813,14 @@ func escrowPSBTDownload(a *App, w http.ResponseWriter, r *http.Request, u *User)
 	}
 	var stored string
 	if err == nil {
-		err = a.db.QueryRowContext(ctx, "SELECT psbt FROM settlements WHERE id=$1 AND order_id=$2 AND state='awaiting_signature'", sid, o.ID).Scan(&stored)
+		// A copy is served while the settlement waits for a signature, and to the party who has not signed a
+		// party-signed one (A-340: it may sign too).
+		reader := roleVendor
+		if u.ID == o.BuyerID {
+			reader = roleBuyer
+		}
+		err = a.db.QueryRowContext(ctx, `SELECT psbt FROM settlements s WHERE id=$1 AND order_id=$2 AND (state='awaiting_signature'
+			OR state='party_signed' AND NOT EXISTS(SELECT 1 FROM settlement_signatures g WHERE g.settlement_id=s.id AND g.party=$3))`, sid, o.ID, reader).Scan(&stored)
 		if err == sql.ErrNoRows {
 			http.NotFound(w, r)
 			return
@@ -825,19 +848,19 @@ func escrowPSBTDownload(a *App, w http.ResponseWriter, r *http.Request, u *User)
 
 // escrowSettlementView fills the settlement part of the escrow panel: the settlement of order (its release or
 // refund) with its state in honest words, its frozen outputs, and for a party a copy to sign and the paste form
-// while it waits for a signature; staff see it read-only. A vendor of a completed order with no settlement yet is
-// offered the claim form.
+// while it waits for a signature (and, for the party who has not signed, while it is party-signed, A-340); staff see
+// it read-only. Its raw transaction is shown only once it was broadcast. A vendor of a completed order (or one resolved
+// for the vendor) with no settlement yet is offered the claim form.
 func (a *App) escrowSettlementView(ctx context.Context, d *PageData, v *EscrowOrderView) error {
 	o := d.Order
-	var s EscrowSettlementView
-	var kind, state, buildErr, signer, stored string
-	var fee, total sql.NullInt64
-	var signedAt sql.NullString
-	err := a.db.QueryRowContext(ctx, `SELECT id,kind,state,build_error,COALESCE(signer,''),COALESCE(psbt,''),network_fee,input_total,
-		to_char(signed_at,'YYYY-MM-DD HH24:MI "UTC"') FROM settlements WHERE order_id=$1 AND kind IN ('release','refund')`, o.ID).Scan(
-		&s.ID, &kind, &state, &buildErr, &signer, &stored, &fee, &total, &signedAt)
+	var id int64
+	err := a.db.QueryRowContext(ctx, "SELECT id FROM settlements WHERE order_id=$1 AND kind IN ('release','refund') AND state<>'superseded'", o.ID).Scan(&id)
 	if err == sql.ErrNoRows {
-		v.Claim = d.OrderViewer == roleVendor && o.State == stateCompleted && v.Available
+		var outcome string
+		if err = a.db.QueryRowContext(ctx, "SELECT COALESCE((SELECT outcome FROM disputes WHERE order_id=$1),'')", o.ID).Scan(&outcome); err != nil {
+			return err
+		}
+		v.Claim = d.OrderViewer == roleVendor && settlementFits("release", o.State, outcome) && v.Available
 		if v.Claim && d.Security == nil {
 			d.Security, _, _, err = a.securityView(ctx, d.User.ID)
 			return err
@@ -847,9 +870,52 @@ func (a *App) escrowSettlementView(ctx context.Context, d *PageData, v *EscrowOr
 	if err != nil {
 		return err
 	}
-	s.Title = "The vendor's claim"
-	if kind == "refund" {
+	if v.Settlement, err = a.settlementView(ctx, d, v, id); err != nil {
+		return err
+	}
+	v.Settlements = append(v.Settlements, v.Settlement)
+	return nil
+}
+
+// settleSendText is what the order page says about a settlement the market could not complete or send yet.
+func settleSendText(class string) string {
+	switch class {
+	case "":
+		return ""
+	case sendMarketKey:
+		return "The market's escrow key could not sign it yet."
+	case sendRejected:
+		return "The market's Bitcoin node did not accept the transaction yet."
+	}
+	return "The market's Bitcoin node returned a transaction that failed the market's checks, so nothing was sent."
+}
+
+// settlementView is one settlement of the order as the reader sees it.
+func (a *App) settlementView(ctx context.Context, d *PageData, v *EscrowOrderView, id int64) (*EscrowSettlementView, error) {
+	s := &EscrowSettlementView{ID: id}
+	var kind, state, buildErr, sendErr, signer, cosigned, stored, txid, raw, spentBy string
+	var fee, total sql.NullInt64
+	var signedAt sql.NullString
+	var readerSigned bool
+	err := a.db.QueryRowContext(ctx, `SELECT kind,state,build_error,send_error,COALESCE(signer,''),COALESCE(cosigned,''),COALESCE(psbt,''),COALESCE(txid,''),
+		COALESCE(raw_tx,''),COALESCE(spent_by,''),network_fee,input_total,to_char(signed_at,'YYYY-MM-DD HH24:MI "UTC"'),
+		EXISTS(SELECT 1 FROM settlement_signatures g WHERE g.settlement_id=s.id AND g.party=$2)
+		FROM settlements s WHERE id=$1`, id, d.OrderViewer).Scan(
+		&kind, &state, &buildErr, &sendErr, &signer, &cosigned, &stored, &txid, &raw, &spentBy, &fee, &total, &signedAt, &readerSigned)
+	if err != nil {
+		return nil, err
+	}
+	switch kind {
+	case "release":
+		s.Title = "The vendor's claim"
+	case "refund":
 		s.Title = "Refund to the buyer"
+	default:
+		s.Title = "Recovery of coins sent after the order closed (a stray refund to the buyer)"
+	}
+	pending := settleSendText(sendErr)
+	if pending != "" {
+		pending = " " + pending + " The market tries again on each pass; market staff should check it if this stays."
 	}
 	switch state {
 	case "building":
@@ -863,7 +929,23 @@ func (a *App) escrowSettlementView(ctx context.Context, d *PageData, v *EscrowOr
 	case "awaiting_signature":
 		s.Status = "Waiting for a signature from the buyer or the vendor. " + settleNotSent
 	case "party_signed":
-		s.Status = "Signed by the " + signer + " (" + signedAt.String + "). " + settleNotSent
+		s.Status = "Signed by the " + signer + " (" + signedAt.String + "). The market co-signs it and broadcasts it on its next pass. Nothing has been sent yet." + pending
+	case "signed":
+		by := "the market, with the " + signer + "'s signature"
+		if cosigned == "parties" {
+			by = "the buyer and the vendor (the market did not sign)"
+		}
+		s.Status = "Signed by " + by + ", checked and stored; the market broadcasts it on its next pass. Nothing has been sent yet." + pending
+	case "broadcast":
+		s.Status, s.TxID, s.RawTx = "Broadcast to the regtest network: transaction "+txid+". Waiting for "+strconv.FormatInt(v.Threshold, 10)+" confirmations.", txid, raw
+	case "confirmed":
+		s.Status, s.TxID, s.RawTx = "Confirmed on the regtest network: transaction "+txid+".", txid, raw
+	case "external":
+		s.Status = "Spent outside the market: the coins of this escrow were spent by a transaction this market did not make"
+		if spentBy != "" {
+			s.Status += " (" + spentBy + ")"
+		}
+		s.Status += ", so this settlement will not be sent. Market staff were notified."
 	case "failed":
 		s.Status = "Not built. " + settleErrorText(buildErr, v.Threshold)
 	default:
@@ -871,9 +953,9 @@ func (a *App) escrowSettlementView(ctx context.Context, d *PageData, v *EscrowOr
 	}
 	if fee.Valid && total.Valid {
 		s.NetworkFee, s.InputTotal = amount(fee.Int64, 8), amount(total.Int64, 8)
-		rows, err := a.db.QueryContext(ctx, "SELECT role,address,sats FROM settlement_outputs WHERE settlement_id=$1 ORDER BY n", s.ID)
+		rows, err := a.db.QueryContext(ctx, "SELECT role,address,sats FROM settlement_outputs WHERE settlement_id=$1 ORDER BY n", id)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		for rows.Next() {
 			var out SettlementOutputView
@@ -881,13 +963,13 @@ func (a *App) escrowSettlementView(ctx context.Context, d *PageData, v *EscrowOr
 			var sats int64
 			if err = rows.Scan(&role, &out.Address, &sats); err != nil {
 				rows.Close()
-				return err
+				return nil, err
 			}
 			out.Amount = amount(sats, 8)
 			switch role {
 			case "claimant":
 				out.Role = "The vendor (the claim, less the network fee)"
-				if kind == "refund" {
+				if kind != "release" {
 					out.Role = "The buyer's refund address (the refund, less the network fee)"
 				}
 			case "market_fee":
@@ -899,19 +981,19 @@ func (a *App) escrowSettlementView(ctx context.Context, d *PageData, v *EscrowOr
 		}
 		rows.Close()
 		if err = rows.Err(); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	if state == "awaiting_signature" && (d.OrderViewer == roleBuyer || d.OrderViewer == roleVendor) && a.escrowConfigured {
-		keys, err := escrowKeys(ctx, a.db, o.ID)
+	canSign := state == "awaiting_signature" || state == "party_signed" && !readerSigned
+	if canSign && (d.OrderViewer == roleBuyer || d.OrderViewer == roleVendor) && a.escrowConfigured {
+		keys, err := escrowKeys(ctx, a.db, d.Order.ID)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if s.PSBT, err = settlementCopy(stored, keys[d.OrderViewer]); err != nil {
-			return err
+			return nil, err
 		}
-		s.CanSign = true
+		s.CanSign, s.SignToo = true, state == "party_signed"
 	}
-	v.Settlement = &s
-	return nil
+	return s, nil
 }

@@ -802,6 +802,21 @@ written only while their settlement is being built. Like migration 074 it change
 rate of settlements ([operator guide](docs/operator-guide.md#bitcoin-escrow-regtest-only)). No action is needed.
 Rolling back past this release needs the pre-upgrade backup, as for every migration (section 5).
 
+## 21. Bitcoin escrow co-signing, broadcast, dispute decisions and stray refunds (migration 076)
+
+Migration 076 runs at startup. It adds to `settlements` the final transaction the market stores before it broadcasts a
+settlement (`raw_tx`, who completed it, when it was stored, broadcast and confirmed, the transaction that spent its
+coins when another one did, and why it is not sent yet), a state `superseded` for the settlement of a dispute decision
+an administrator changed (the one claim or refund per order no longer counts it), a unique index allowing one stray
+refund in progress per order, the column `payments.escrow_left_out` (an escrow output a bounded build left for a stray
+refund) and `escrows.recover_requested` (a buyer's "Recover coins at this escrow"). It replaces the function of the
+trigger `settlements_frozen`: a settlement's transaction still never changes once a party has signed it, a party
+signature that did not verify may be discarded before the final transaction exists, and the stored final transaction
+never changes and the settlement never goes back; a new trigger, `settlement_signatures_kept`, refuses any other
+change to stored signatures. Like migrations 074 and 075 it changes nothing unless `ESCROW_BTC=on` (regtest only, off
+by default). No action is needed. Rolling back past this release needs the pre-upgrade backup, as for every
+migration (section 5): the earlier release refuses to start on a database that records migration 076.
+
 ## Appendix: new keys by hand
 
 `./scripts/install.sh upgrade` writes these for you. To add them yourself, use your editor (values in single

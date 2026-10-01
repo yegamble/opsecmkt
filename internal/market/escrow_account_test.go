@@ -949,10 +949,16 @@ func TestEscrowMigrationConstraints(t *testing.T) {
 	mustFail("a refund beside a release", st, order, "refund")
 	mustFail("a second release", st, order, "release")
 	mustFail("an unknown kind", st, order, "return")
-	for range 2 {
-		if _, err := e.DB.Exec(st, order, "stray_refund"); err != nil {
-			t.Fatalf("stray refund: %v", err)
-		}
+	// Migration 076: one stray refund in progress per order at a time, and another once it has ended.
+	if _, err := e.DB.Exec(st, order, "stray_refund"); err != nil {
+		t.Fatalf("stray refund: %v", err)
+	}
+	mustFail("a second stray refund in progress", st, order, "stray_refund")
+	if _, err := e.DB.Exec("UPDATE settlements SET state='failed' WHERE order_id=$1 AND kind='stray_refund'", order); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.DB.Exec(st, order, "stray_refund"); err != nil {
+		t.Fatalf("a stray refund after one ended: %v", err)
 	}
 	mustFail("an unknown state", "UPDATE settlements SET state='sent' WHERE order_id=$1", order)
 	if n := agInt(e, "SELECT count(*) FROM payments WHERE settlement_id IS NOT NULL"); n != 0 {
