@@ -1107,7 +1107,7 @@ func (a *App) settlementView(ctx context.Context, d *PageData, v *EscrowOrderVie
 	default:
 		s.Status = state
 	}
-	a.restoreStatus(s, v, state, sendErr, signer, signedAt.String)
+	a.restoreStatus(s, v, state, sendErr, signer, signedAt.String, bothSigned)
 	if fee.Valid && total.Valid {
 		s.NetworkFee, s.InputTotal = amount(fee.Int64, 8), amount(total.Int64, 8)
 		rows, err := a.db.QueryContext(ctx, "SELECT role,address,sats FROM settlement_outputs WHERE settlement_id=$1 ORDER BY n", id)
