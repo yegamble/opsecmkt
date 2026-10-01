@@ -44,6 +44,15 @@ const (
 		"' OR EXISTS (SELECT 1 FROM settlements s WHERE s.order_id=es.order_id AND s.state IN ('building','awaiting_signature','party_signed','signed','broadcast')))"
 )
 
+// escrowNetwork is the chain the escrow node reported at startup, for the network word in escrow notes ("regtest" in
+// Phase 1; also before escrow is enabled, when no node has been read).
+func (a *App) escrowNetwork() string {
+	if e := a.escrow.Load(); e != nil && e.network != "" {
+		return e.network
+	}
+	return "regtest"
+}
+
 func init() {
 	registerBackground(escrowWatcher)
 	registerTransitionHook(escrowTransitionHook)

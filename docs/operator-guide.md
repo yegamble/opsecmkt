@@ -685,7 +685,8 @@ Nothing about escrow has run on a public test network. Never switch it on for a 
   recorded deposit requests its refund, which the escrow watcher builds once escrow is enabled again; while deposits
   are not read, an order that shows no deposit can still be cancelled by its buyer or vendor (the buyer's cancel form
   says, before its button, that coins already sent stay at the escrow address and are not seen until escrow is
-  available again, not to cancel after sending, and that they stay recoverable with *Recover coins at this escrow*),
+  available again, not to cancel after sending, and that they stay recoverable with *Recover coins at this escrow*; the
+  vendor's cancel form says that the buyer may already have sent coins that are not seen yet and can recover them),
   and coins already sent to it then arrive after the order closed: a stray refund returns them (below).
 - **Deposits after an escrow order closed** (cancelled or completed) are recorded once escrow reads them (the escrow watcher reads
   an escrow for 30 days after checkout, and for 24 hours after its order last changed, such as when it closed; past both the

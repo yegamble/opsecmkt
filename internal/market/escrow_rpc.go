@@ -161,7 +161,8 @@ type escrowBTC struct {
 	feeBps        int64
 	feeAddress    string
 	confirmations int64
-	feeRate       int64 // sat/vB, for every settlement this process builds
+	feeRate       int64  // sat/vB, for every settlement this process builds
+	network       string // the node's chain (getblockchaininfo) as startEscrow read it; names the network in notes
 }
 
 func newEscrowBTC(c escrowConfig) (*escrowBTC, error) {
@@ -219,6 +220,7 @@ func (a *App) startEscrow(ctx context.Context) (state, class string, err error) 
 	if chain != "regtest" {
 		return "", "", errEscrowNotRegtest
 	}
+	e.network = chain
 	if err = e.readArbiter(ctx); err != nil {
 		return escrowLogArbiter, errorClassOf(err), nil
 	}
