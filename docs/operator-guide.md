@@ -702,8 +702,12 @@ Nothing about escrow has run on a public test network. Never switch it on for a 
   regtest even when no pooled provider is configured, and the vendor desk's *Bitcoin escrow* tile counts the viewer's
   escrow orders that may hold coins (with `ESCROW_BTC` off too), so no page says escrow is inactive or no funds are
   held while escrow orders exist. With escrow off and no escrow orders the pooled wording is unchanged.
-- **Compose** does not pass these variables to the app container in this release; test escrow with the app run
-  outside Compose (`go run ./cmd/server` against a regtest node), as `scripts/test-escrow-regtest.sh` does.
+- **Compose** passes these variables from `.env` to the app container (`compose.yaml`; blank in `.env.example`, so
+  escrow stays off). The bundled `bitcoin` node of `compose.nodes.yaml` follows `BITCOIN_CHAIN` and has no
+  `rpcwhitelist` user for escrow, so `ESCROW_BTC_RPC_URL` must point at a regtest node you configure as below; the
+  checked set-up is still the app run outside Compose (`go run ./cmd/server` against a regtest node), as
+  `scripts/test-escrow-regtest.sh` does. Passing them through Compose was checked with `docker compose config`
+  only.
 
 **The app's RPC user.** Give the escrow code its own RPC user with `rpcauth` and allow it exactly these methods;
 keep a separate operator user with full rights for creating and backing up wallets. In `bitcoin.conf`:
