@@ -280,6 +280,69 @@ func TestEscrowCosignBroadcastConfirm(t *testing.T) {
 	x.noPayouts(order)
 }
 
+// A broadcast settlement is confirmed at PAYMENT_CONFIRMATIONS_BTC (3 by default) and not before (A-347): at 1 and 2
+// confirmations it stays broadcast and nobody is told it is confirmed.
+func TestEscrowConfirmationThreshold(t *testing.T) {
+	x := newEscrowEnv(t)
+	order, id := x.built(regtestAddr("refund-th"), regtestAddr("claim-th"), 100000)
+	x.signAs(order, roleVendor, id)
+	x.poll()
+	txid := x.settleByID(id).TxID
+	for _, confs := range []int64{1, 2} {
+		x.core.setTxConfs(txid, confs, "")
+		x.poll()
+		if r := x.settleByID(id); r.State != "broadcast" {
+			t.Fatalf("at %d confirmations: %+v", confs, r)
+		}
+		if agInt(x.testEnv, "SELECT count(*) FROM notifications WHERE body LIKE '%is confirmed on the regtest network%'") != 0 {
+			t.Fatalf("at %d confirmations a party was told it is confirmed", confs)
+		}
+	}
+	x.core.setTxConfs(txid, 3, "")
+	x.poll()
+	if r := x.settleByID(id); r.State != "confirmed" {
+		t.Fatalf("at 3 confirmations: %+v", r)
+	}
+}
+
+// A signed settlement the node refuses (-26) because its inputs are spent is not external when the watch-only wallet
+// knows the stored transaction: the node has it, so the settlement is broadcast (A-347). A wallet that does not know
+// it leaves it external.
+func TestEscrowBroadcastRefusedButOwnTransactionSpent(t *testing.T) {
+	x := newEscrowEnv(t)
+	for i, c := range []struct {
+		name  string
+		known bool
+		state string
+	}{{"the wallet knows the stored transaction", true, "broadcast"}, {"the wallet does not know it", false, "external"}} {
+		order, id := x.built(regtestAddr("refund-os"+strconv.Itoa(i)), regtestAddr("claim-os"+strconv.Itoa(i)), 100000)
+		x.signAs(order, roleVendor, id)
+		x.A.escrowPollOnce(x.killAtSend())
+		x.sendNormally()
+		r := x.settleByID(id)
+		if r.State != "signed" || r.Raw == "" {
+			t.Fatalf("%s: before the pass: %+v", c.name, r)
+		}
+		x.core.spend(txidOf(order), 0) // its inputs are spent
+		if c.known {
+			x.core.mu.Lock()
+			if x.core.broadcast == nil {
+				x.core.broadcast, x.core.txConfs = map[string]string{}, map[string]int64{}
+			}
+			x.core.broadcast[r.TxID], x.core.txConfs[r.TxID] = r.Raw, 1 // by this very transaction: the node and the wallet have it
+			x.core.mu.Unlock()
+		}
+		x.core.mu.Lock()
+		x.core.sendErr = -26
+		x.core.mu.Unlock()
+		x.poll()
+		x.sendNormally()
+		if got := x.settleByID(id); got.State != c.state {
+			t.Fatalf("%s: %+v, want %s", c.name, got, c.state)
+		}
+	}
+}
+
 // The market co-signs only a party-signed settlement whose kind fits the order's terminal state (ES-2): nothing is
 // signed while the settlement awaits a signature, nor for an order not in a terminal state, nor for a release on an
 // order resolved for the buyer.

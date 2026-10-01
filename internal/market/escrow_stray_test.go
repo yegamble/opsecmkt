@@ -150,6 +150,17 @@ func TestEscrowRecoverAction(t *testing.T) {
 	if !strings.Contains(strings.Join(x.events(x.order), "\n"), "asked the market to check this escrow") {
 		t.Fatal("no note of the request")
 	}
+	// A second request before the market has read the escrow is refused and leaves the first one as it was.
+	askedAt, notes := agStrings(t, x.testEnv, "SELECT recover_requested::text FROM escrows WHERE order_id=$1", x.order), len(x.events(x.order))
+	if len(askedAt) != 1 || askedAt[0] == "" {
+		t.Fatalf("the request was not recorded: %q", askedAt)
+	}
+	if code, body := x.recover(x.order, x.buyerSess, testPassword); code != 409 || !strings.Contains(body, "You already asked") {
+		t.Fatalf("a second request: %d %s", code, body)
+	}
+	if got := agStrings(t, x.testEnv, "SELECT recover_requested::text FROM escrows WHERE order_id=$1", x.order); !slices.Equal(got, askedAt) || len(x.events(x.order)) != notes {
+		t.Fatalf("a second request changed the first: %q, was %q (%d notes, was %d)", got, askedAt, len(x.events(x.order)), notes)
+	}
 	x.poll()
 	sid, state := x.stray(x.order)
 	if sid == 0 || state != "awaiting_signature" || agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND after_close AND settlement_id=$2", x.order, sid) != 1 ||
