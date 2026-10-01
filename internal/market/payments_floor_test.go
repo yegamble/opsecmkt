@@ -6,9 +6,9 @@ import (
 	"testing"
 )
 
-// A-99: a payout whose counted sum is below the currency's minimum automatic payout (Bitcoin: every kind,
-// because sendtoaddress subtracts the fee; Monero: refunds, because the wallet pays the fee on top) is never
-// queued. Its deposits are flagged to staff once instead; an above-floor payout is queued as before.
+// A-99, A-232: a payout whose counted sum is below the currency's minimum automatic payout (every kind on both
+// coins, because every payout is sent with the fee taken from it) is never queued. Its deposits are flagged to
+// staff once instead; an above-floor payout is queued as before.
 
 // floorFlags counts the order's system flag notes for payouts below the minimum.
 func (p *payEnv) floorFlags(order string) int {
@@ -22,6 +22,30 @@ func (p *payEnv) reviewNotices(user, order string) int {
 	return p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE $2", user, "Payment review needed for order "+order[:8]+"%")
 }
 
+// A-256, A-299: the floor has one name wherever it is shown, "minimum automatic payout": the catalog notice and
+// the underpaid order's cancel help say it, and no older wording ("automatic refund", "minimum automatic amount",
+// "minimum payout") is left on either page.
+func TestPayoutFloorHasOneNameOnPages(t *testing.T) {
+	p := newPayEnv(t)
+	p.setPayoutAddress(p.buyer, "fake-testnet-buyer")
+	p.fake.Deposit(p.addr, "tx-under", 0, 40000, 3)
+	p.poll()
+	pages := map[string]string{
+		"catalog": p.page("/", p.buyerSess),
+		"order":   p.page("/order?id="+p.order, p.buyerSess),
+	}
+	mustContain(t, pages["catalog"], "A refund below the minimum automatic payout is not sent; market staff are notified instead.",
+		"is refunded to the buyer's saved payout address (the refund waits until one is saved), unless it is below the minimum automatic payout.")
+	mustContain(t, pages["order"], "The payment watcher sends the refund automatically unless the statement below says it is below the minimum automatic payout: then it is not sent automatically")
+	for name, body := range pages {
+		for _, old := range []string{"automatic refund", "minimum automatic amount", "minimum payout"} {
+			if strings.Contains(body, old) {
+				t.Errorf("%s page still says %q", name, old)
+			}
+		}
+	}
+}
+
 func TestDustBTCRefundIsFlaggedNotQueued(t *testing.T) {
 	p := newPayEnv(t)
 	p.setPayoutAddress(p.buyer, "fake-testnet-buyer")
@@ -31,6 +55,7 @@ func TestDustBTCRefundIsFlaggedNotQueued(t *testing.T) {
 	}
 	txid := longTxid("d5")
 	p.fake.Deposit(p.addr, txid, 0, 1000, 3)
+	p.fake.Deposit(p.addr, longTxid("d6"), 0, 20000, 1)
 	p.poll()
 	p.move(p.order, stateAwaitingPayment, stateCancelled, p.buyer)
 	p.poll()
@@ -74,8 +99,9 @@ func TestDustBTCRefundIsFlaggedNotQueued(t *testing.T) {
 	desk := p.page("/moderator", p.adminSess)
 	mustContain(t, desk, "1 open flag", p.order, "Below the minimum automatic payout, not paid out")
 
-	// A later deposit that lifts the sum over the floor is refunded with the dust, once, and closes the flag.
-	p.fake.Deposit(p.addr, longTxid("d6"), 0, 20000, 3)
+	// A deposit sent before the cancellation that confirms later and lifts the sum over the floor is refunded
+	// with the dust, once, and closes the flag. (One sent after the cancellation is not counted: A-211.)
+	p.fake.SetConfirmations(longTxid("d6"), 3)
 	p.poll()
 	p.poll()
 	if st, _, addr, amt := p.payout(p.order); st != "sent" || addr != "fake-testnet-buyer" || amt != 21000 {
@@ -103,7 +129,7 @@ func TestBTCPayoutFloorBoundary(t *testing.T) {
 	if st, _, addr, amt := p.payout(p.order); st != "pending" || addr != "fake-testnet-buyer" || amt != minPayoutBTC {
 		t.Fatalf("refund at the floor: %s %s %d", st, addr, amt)
 	}
-	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note='Queued TESTNET refund of 0.0001 BTC to the buyer (single attempt).'", p.order); n != 1 {
+	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note='Queued TESTNET refund of 0.0001 BTC to the buyer (single attempt); the network fee is taken from the refund.'", p.order); n != 1 {
 		t.Fatalf("queued note: %d", n)
 	}
 	p.poll()
@@ -160,7 +186,7 @@ func TestDustBTCReleaseCompletesWithoutPayout(t *testing.T) {
 	mustContain(t, p.page("/moderator", p.adminSess), "1 open flag", "Below the minimum automatic payout, not paid out")
 }
 
-// Monero: refunds below the minimum automatic refund are flagged, not queued; releases have no floor.
+// Monero: refunds below the minimum automatic payout are flagged, not queued (releases: TestMoneroReleaseBelowFloorFlagged).
 func TestDustXMRRefundIsFlaggedNotQueued(t *testing.T) {
 	p := newPayEnv(t)
 	xf := newFakeProvider("XMR", 10)
@@ -187,7 +213,7 @@ func TestDustXMRRefundIsFlaggedNotQueued(t *testing.T) {
 	}
 
 	refund, addr := xmrOrder(500000000000)
-	xf.Deposit(addr, "xmr-dust", 0, minAutoRefundXMR-1, 10)
+	xf.Deposit(addr, "xmr-dust", 0, minPayoutXMR-1, 10)
 	p.poll()
 	p.move(refund, stateAwaitingPayment, stateCancelled, p.buyer)
 	p.poll()
@@ -202,32 +228,18 @@ func TestDustXMRRefundIsFlaggedNotQueued(t *testing.T) {
 	if err := p.DB.QueryRow("SELECT note FROM order_events WHERE order_id=$1 AND note LIKE '%below the minimum automatic%'", refund).Scan(&note); err != nil {
 		t.Fatal(err)
 	}
-	mustContain(t, note, "TESTNET refund of 0.000999999999 XMR to the buyer", "minimum automatic refund of 0.001 XMR")
+	mustContain(t, note, "TESTNET refund of 0.000999999999 XMR to the buyer", "minimum automatic payout of 0.001 XMR")
 
 	// At the refund floor the refund is queued and sent.
 	atFloor, addr2 := xmrOrder(500000000000)
-	xf.Deposit(addr2, "xmr-floor", 0, minAutoRefundXMR, 10)
+	xf.Deposit(addr2, "xmr-floor", 0, minPayoutXMR, 10)
 	p.poll()
 	p.move(atFloor, stateAwaitingPayment, stateCancelled, p.buyer)
 	p.poll()
-	if st, _, to, amt := p.payout(atFloor); st != "sent" || to != "fake-testnet-xbuyer" || amt != minAutoRefundXMR {
+	if st, _, to, amt := p.payout(atFloor); st != "sent" || to != "fake-testnet-xbuyer" || amt != minPayoutXMR {
 		t.Fatalf("XMR refund at the floor: %s %s %d", st, to, amt)
 	}
-
-	// A small XMR release is paid as before (the wallet pays the fee on top).
-	release, addr3 := xmrOrder(1000)
-	xf.Deposit(addr3, "xmr-small", 0, 1000, 10)
-	p.poll()
-	p.move(release, statePaid, stateShipped, p.vendor)
-	p.move(release, stateShipped, stateCompleted, p.buyer)
-	p.poll()
-	if st, _, to, amt := p.payout(release); st != "sent" || to != "fake-testnet-xvendor" || amt != 1000 {
-		t.Fatalf("small XMR release: %s %s %d", st, to, amt)
-	}
-	if n := p.floorFlags(release); n != 0 {
-		t.Fatalf("XMR release flagged: %d", n)
-	}
-	if s := xf.Sends(); len(s) != 2 {
+	if s := xf.Sends(); len(s) != 1 || !s[0].FeeFromAmount {
 		t.Fatalf("XMR sends %+v", s)
 	}
 }
@@ -250,6 +262,5 @@ func TestListingRefusesBTCPriceBelowPayoutFloor(t *testing.T) {
 	}
 	e.check(e.do("POST", "/listings", s, inventoryForm("", map[string]string{"price_btc": "0.0001"})), 303)
 	e.check(e.do("POST", "/listings/update", s, inventoryForm(p, map[string]string{"price_btc": "0.0001"})), 303)
-	// Monero prices have no floor: the wallet pays its fee on top of a release.
-	e.check(e.do("POST", "/listings/update", s, inventoryForm(p, map[string]string{"price_xmr": "0.000000000001"})), 303)
+	// Monero prices have their own floor: TestListingRefusesSubFloorXMRPrice.
 }

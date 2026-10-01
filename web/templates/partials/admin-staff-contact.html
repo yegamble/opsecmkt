@@ -1,0 +1,14 @@
+{{/* A-119: the administrator setting "Staff contact" (staff_contact.go), shown wherever people are told to contact the staff */}}
+{{define "admin-staff-contact"}}<section class="panel" id="staff-contact" aria-labelledby="staff-contact-heading">
+<h2 id="staff-contact-heading">Staff contact</h2>{{with $.NoticeIn "staff-contact"}}
+<div class="alert" role="status">{{.}}</div>{{end}}
+<p>Shown on the Transparency page, to a suspended account signing in, to someone who lost their sign-in factors or whose PGP key expired, beside the CAPTCHA and under notifications that tell people to contact the market staff. Write a handle, onion address or XMPP address. It is shown as text, never as a link; when it is exactly the handle of a moderator or administrator whose key can receive encrypted messages, signed-in users also get a link to message that handle. While it is empty, those places say “Ask the operator of this market.”</p>
+<form class="stack" method="post" action="/admin/staff-contact">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<label>Staff contact<input name="staff_contact" value="{{index .Settings "staff_contact"}}" maxlength="200" autocomplete="off" spellcheck="false" aria-describedby="staff-contact-help">
+</label>
+<span class="help" id="staff-contact-help">At most 200 characters on one line. Anyone can read it, including visitors who are not signed in. Save it empty to remove it. Confirm with your own password{{if and $.Security $.Security.TOTPEnabled}} and authenticator code{{end}}; the old and new values are recorded in the audit trail.</span>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
+<button type="submit">Save staff contact</button>
+</form>
+</section>{{end}}

@@ -3,8 +3,8 @@
 End-to-end operator steps for turning on Bitcoin (testnet4/signet/regtest) and Monero (stagenet/testnet)
 payments with the compose deployment. **Test networks: these coins have no value, and the application refuses
 mainnet unless it is configured** ([Mainnet](operator-guide.md#mainnet); the wallet, backup, restore and
-payout-recovery steps below apply unchanged to a mainnet market, with real funds). Commands run from the
-repository directory on the Docker host, where `.env` lives.
+payout-recovery steps below use the same commands on a mainnet market, with real funds, but have been exercised
+on test networks only). Commands run from the repository directory on the Docker host, where `.env` lives.
 
 What the application does on its own, so you know what to expect while following these steps:
 
@@ -85,7 +85,7 @@ For an external node, run the same RPCs with your own `bitcoin-cli` configuratio
 ## 3. Create the Monero wallet
 
 The app opens a wallet file named `opsecmkt` with an empty password in `monero-wallet-rpc`'s
-`--wallet-dir` (`/wallet`, the `monero_wallet` volume) when none is open. Create it once with the
+`--wallet-dir` (`/home/monero/wallet`, the `monero_wallet` volume) when none is open. Create it once with the
 `create_wallet` RPC. The wallet RPC publishes no port, so call it from inside the deployment network. The
 credentials are passed to curl on standard input, not in its arguments:
 
@@ -99,7 +99,7 @@ xmr() {  # xmr <method> '<json params>' (always pass params, '{}' for none)
 }
 xmr create_wallet '{"filename":"opsecmkt","password":"","language":"English"}'
 xmr get_address '{"account_index":0}'    # primary address: starts with 5 (stagenet) or 9/A (testnet)
-xmr get_height '{}'
+xmr get_height '{}'                      # record this height: a restore from the seed scans from it
 ```
 
 This needs `curl` in your reviewed Monero image. If it has none, run the same `curl` command from a reviewed
@@ -108,8 +108,8 @@ curl image attached to the backend network instead of `docker compose exec -T mo
 http://monero-wallet:18083/json_rpc` (the network is `<COMPOSE_PROJECT_NAME>_backend` if `.env` sets another
 project name).
 
-Fund the primary address from a stagenet faucet. Keep a small buffer: Monero release fees are paid by the
-pooled wallet on top of each release (refunds and overpayment returns have the fee deducted).
+Fund the primary address from a stagenet faucet. Every payout, releases included, has its network fee taken
+from the amount sent (`subtract_fee_from_outputs`), so the pooled wallet pays no payout's fee.
 
 For an external `monero-wallet-rpc`, start it with `--rpc-login marketplace:<password>` (never
 `--disable-rpc-login`) and put the same credentials in `MONERO_WALLET_RPC_URL`.
@@ -126,6 +126,11 @@ Open **Admin → Payment providers**. For each currency:
 | Disabled | The URL is blank. | Set it in `.env` and restart. |
 
 The app logs the same transitions (`docker compose logs app | grep payments`).
+
+Below the table, "BTC wallet handed out payment addresses this market had already issued" (or XMR) means the wallet
+was restored from an older backup or seed without being advanced: payment requests that get such an address are
+refused and the orders stay drafts. Follow [Restore the wallets](#restore-the-wallets), then press *Dismiss the BTC
+warning*; the warning stays until then.
 
 Now request payment on a test order: the order page shows a `TESTNET <network>` deposit address. Send test
 coins; the order moves to *Paid* once the deposit reaches the confirmation threshold.
@@ -144,8 +149,10 @@ disputed or resolved order, or one with a payment flagged for review); otherwise
   error raised before the wallet submits to the daemon: -2 (wrong address), -16 (transaction not
   possible), -17 (not enough money), -18 (transaction too large), -19 (not enough outputs to mix), -20 (no
   destination) or -37 (not enough unlocked money). This list is verified for monero-wallet-rpc v0.18.5.1, the
-  pinned default image; with any other wallet version treat every Monero failure as possibly broadcast and
-  check the wallet as below ([Node image versions](operator-guide.md#node-image-versions)).
+  pinned default image. While the wallet reports another `get_version` (the *Payment providers* panel then
+  says "XMR wallet version not verified"), every Monero failure is recorded as outcome unknown instead; with a
+  wallet you know is not v0.18.5.1, treat every Monero failure as possibly broadcast and check the wallet as
+  below ([Node image versions](operator-guide.md#node-image-versions)).
 - **Failed — not retried; outcome unknown, may have been broadcast**: the wallet call ended without a
   definite answer (no reply within 30 s, a dropped connection or an unreadable reply after the request was
   sent), or monero-wallet-rpc returned any other error code. In particular -38 (no connection to daemon)
@@ -198,21 +205,26 @@ xmr refresh '{}'
 xmr get_transfers '{"out":true,"pending":true,"pool":true}'
 ```
 
-Look for the payout's address and amount in `destinations` of the `out`, `pending` and `pool` entries. A send
-the daemon relayed but the wallet reported as an error is recorded from the pool **without `destinations`**,
-with `amount` the total it spent less change (the payout plus the fee). Treat any `pending` or `out` transfer
-created after the failure (its `timestamp`) that has no destinations as **this payout** until you have proven
-otherwise, for example by matching it to another payout's transaction ID; never requeue or release while one
-is unexplained.
+Look for the payout's address and amount in `destinations` of the `out`, `pending` and `pool` entries. The
+amount received is the payout's amount less the network fee, which is taken from every payout: Bitcoin
+(`sendtoaddress` with `subtractfeefromamount`, so `listsinceblock` shows the payout less its `fee`) and
+Monero (`subtract_fee_from_outputs`, releases included since A-232); add the transaction's `fee` back before
+comparing. Only a Monero release sent by a version before A-232 paid its fee on top, so its destination
+amount is the payout's. A send the daemon relayed but the wallet reported as an error is recorded from the
+pool **without `destinations`**, with `amount` the total it spent less change: the payout's amount, since
+the fee came out of it (the payout plus the fee for a Monero release sent before A-232). Treat any `pending` or `out` transfer created after the failure
+(its `timestamp`) that has no destinations as **this payout** until you have proven otherwise, for example by
+matching it to another payout's transaction ID; never requeue or release while one is unexplained.
 
-Then open *Resolve payout N* on that row; its summary repeats the payout's kind, amount, recipient and short
-order ID (for example "Resolve payout 7: refund 0.001 BTC to alice, order 2d6b549f"), so check that it is the
+Then follow that row's *Resolve payout N* link to its form under the payouts table; its summary repeats the
+payout's kind, amount, recipient and short order ID (for example "Resolve payout 7: refund 0.001 BTC to alice, order 2d6b549f"), so check that it is the
 payout you reconciled before confirming. Every action asks for your password (and authenticator code when
 enrolled), is recorded in the audit trail and the order history, and applies only if the payout is still in
 the state you saw, so a double click or a second administrator cannot queue it twice:
 
 - **Mark sent** (failed, held or stuck): the wallet shows the transaction. Paste its 64-character
-  transaction ID. The recipient is notified; nothing is sent.
+  transaction ID. The recipient is notified with the transaction ID; the order history says the payout was
+  recorded as sent without it (the other party never sees it, A-214). Nothing is sent.
 - **Requeue payout** (failed or stuck): the wallet shows **no** such transaction. The payout goes back to
   the queue and the next pass sends it once. For an *outcome unknown* failure, a failure restored from
   backup or a stuck send the form also asks you to tick "I checked the wallet ... no transaction ... was
@@ -251,17 +263,18 @@ Each of these forms repeats the wallet check above in one line next to the check
 
 The watcher flags a deposit (`payments.flagged`): it writes a system note ending "Moderator review
 required." to the order history and notifies every moderator and administrator who is not suspended
-("Payment review needed for order <first 8 characters of the order ID>"). A locked transfer, a deposit after settlement or the deposits of a payout below the minimum automatic payout are flagged once.
+("Payment review needed for order <first 8 characters of the order ID>"). A locked transfer, a deposit after settlement or after the order closed, or the deposits of a payout below the minimum automatic payout are flagged once. Deposits after settlement or after the order closed are announced once per episode however many arrive: one order note per watcher pass names the deposits it flagged, but the buyer (the amount, no transaction ID; the vendor is not told) and each staff member are notified only when the order has no such flag open yet (not yet reviewed, or escalated to an administrator; see "Record the review" below). The buyer's order page shows each as "Arrived after the order closed — not paid out; market staff notified".
 A credited deposit that falls back below the threshold (conflicted, missing, or at a lower depth after a
-reorg) is announced once per episode while the order is open or its payout unsent: the buyer and the vendor
+reorg) is announced once per episode while the order is open or any of its payouts unsent (a release already sent with its overpayment return still unsent counts): the buyer and the vendor
 are notified too (staff who are party to the order get that notification instead of the review one), and if
 it confirms again and later regresses again it is announced again. Nothing is announced while the node is
 behind the highest tip recorded (a restarted node catching up). Open **Moderation desk → Payment review**
 (`/moderator#payment-review`): it lists every open flag first, oldest first and never cut, then the 100 most
 recently flagged others with their count, each with the full order ID linking to the order, amount, full
-transaction ID, reason and flag time (the latest flag note for that deposit). A flag is open while its deposit
-is a locked transfer, a deposit after settlement or part of a payout below the minimum, or while a credited deposit's regression has not confirmed
-again; the reason is read from the deposit's current confirmations. A moderator or administrator who is not
+transaction ID, reason and flag time (the latest flag note for that deposit). A flag is open, until staff record
+its review (below), while its deposit is a locked transfer, a deposit after settlement or after the order closed,
+or part of a payout below the minimum, or while a credited deposit's regression has not confirmed again; the
+reason is read from the deposit's current confirmations. A moderator or administrator who is not
 party to the order can open its page read-only: history with the flag note, the deposit ledger (while the currency's wallet is configured) and any payout. No buyer or
 vendor action is offered, the order actions refuse staff, and digital delivery content stays hidden unless
 the order is disputed.
@@ -272,8 +285,8 @@ the order is disputed.
 | Credited deposit below threshold (N of T confirmations) | A deposit counted toward payment is back at a lower depth, usually a chain reorganisation (it may sit at 0 confirmations in the mempool). | As above: order unchanged, unsent payout held until it reaches the threshold again. |
 | Credited deposit confirmed again (N confirmations) | The flagged regression ended: the deposit reached the threshold again. Listed after the open flags. | The watcher lifted its own hold; a pending payout is sent on the next pass that reads the order. Nothing to do. |
 | Locked transfer (unlock time) | A Monero transfer with a non-zero `unlock_time`. | Never counted toward payment or paid out. The buyer was told to send an ordinary transfer. |
-| Deposit confirmed after settlement, not paid out | Extra funds confirmed after the order's settlement (its release and any return, or its refund) was queued (completed or resolved orders, or a cancellation that already queued a refund). | Not paid out: an order is settled once. |
-| Below the minimum automatic payout, not paid out | The order's release or refund counted less than the minimum automatic payout: 0.0001 BTC for any Bitcoin payout (the network fee is taken from the amount, so a smaller one can never be sent), 0.001 XMR for a Monero refund (the fee is paid on top). Usually a stray deposit to a cancelled order's address. | No payout row was queued; the order kept its final state. The buyer and the vendor were told it was not sent. A later deposit that lifts the sum to the minimum is paid out with it and closes the flag. Otherwise see step 4 below. |
+| Deposit after settlement or after the order closed, not paid out | Extra funds confirmed after the order's settlement (its release and any return, or its refund) was queued (completed or resolved orders, or a cancellation that already queued a refund), or funds first seen after the order was cancelled, completed or resolved (for example a top-up after an underpaid order was cancelled at the end of the payment window). | Not paid out or refunded: an order is settled once, and anything sent after it closed is never refunded automatically. The buyer was told the amount arrived after the order closed and was not paid out. |
+| Below the minimum automatic payout, not paid out | The order's release or refund counted less than the minimum automatic payout: 0.0001 BTC for any Bitcoin payout (the network fee is taken from the amount, so a smaller one can never be sent), 0.001 XMR for any Monero payout (the fee is taken from the amount, so a smaller one is not worth sending). Usually a stray deposit to a cancelled order's address. | No payout row was queued; the order kept its final state. The buyer and the vendor were told it was not sent. A deposit recorded before the order closed that confirms later and lifts the sum to the minimum is paid out with it and closes the flag; one first seen after the order closed is not counted (previous row). Otherwise see step 4 below. |
 
 What staff can do:
 
@@ -285,36 +298,49 @@ What staff can do:
    deposit is below the threshold, and the server refuses one) and talk to both parties through Messages. If
    either party opens a dispute, the moderator resolves it on the desk as usual; the resulting payout is held
    too.
-3. Locked transfers and extra funds after settlement sit in the pooled wallet. They normally belong to the
+3. Locked transfers and extra funds after settlement or after the order closed sit in the pooled wallet. They normally belong to the
    buyer. Agree a return address with the buyer through Messages (ideally signed with their verified PGP key),
-   send the funds back **by hand from the wallet** (`sendtoaddress` / `transfer`), and record it.
+   send the funds back **by hand from the wallet** (`sendtoaddress` / `transfer`), and record it on the desk as
+   *refunded by hand* (below).
 4. Deposits below the minimum automatic payout are too small to send on their own: a Bitcoin amount at or
-   below the fee cannot be sent with the fee taken from it. Decide with the parties whether to leave them in the
-   pooled wallet or return them by hand with the wallet paying the fee (`sendtoaddress` with
-   `subtractfeefromamount` false, or `transfer`), and record whatever you did as below. A flag stays open until
-   a payout includes the deposits.
+   below the fee cannot be sent with the fee taken from it, and on Monero (releases included since A-232) the fee
+   would take too large a share. Decide with the parties whether to leave them in the pooled wallet or send them
+   by hand (a refund to the buyer, or for a release below the minimum the vendor) with the wallet paying the fee
+   (`sendtoaddress` with `subtractfeefromamount` false, or `transfer`), and record whatever you did on the desk
+   (below). A flag stays
+   open until a payout includes the deposits or its review is recorded.
 
-There is no web action to dismiss a flag or pay out a flagged deposit, and an open flag stays on the desk. A
-manual refund is recorded as a **written note** (an order-history event plus an audit row), **never as a
-payout row**: each order has at most one payout of each kind (`payouts` `UNIQUE (order_id, kind)`, migration 064), owned by its release and any return, or its refund; do not
-insert a payout and do not use *Mark sent* on the order's payout for a manual transfer. Record the note with
-`psql` (internal-db shown; replace the order ID, your staff handle and the note text):
+**Record the review** (A-31). Each open flag on the desk has *Record the review* for a moderator or
+administrator who is not party to the order (a party sees who must do it instead): the link in the flag's row
+goes to its *Record the review of TXID:INDEX* section under the table, which opens the forms. Choose one, confirmed with
+your password (and authenticator code when enrolled); each flag takes one review, which cannot be changed:
 
-```sh
-docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -v order_id=FULL_ORDER_ID -v handle=YOUR_HANDLE \
-  -v note='Manual TESTNET refund: returned 0.0005 BTC from deposit <txid>:<n> to the buyer by hand in <refund txid>.' \
-  -U opsecmkt -d opsecmkt <<'SQL'
-WITH ev AS (
-  INSERT INTO order_events(order_id,from_state,to_state,actor_id,note)
-  SELECT o.id,o.state,o.state,u.id,:'note' FROM orders o JOIN users u ON u.handle=:'handle' AND u.role IN ('moderator','admin')
-  WHERE o.id=:'order_id' RETURNING order_id,actor_id)
-INSERT INTO audit_events(user_id,action) SELECT actor_id,'Order '||order_id||': '||:'note' FROM ev;
-SQL
-```
+- **No action**, with the reason (10–1000 characters), for example a double spend that left the order unpaid or
+  funds the buyer agreed to leave in the pooled wallet.
+- **Refunded by hand**, for a deposit that is not counted toward the order's payout (a locked transfer, a deposit
+  after settlement or after the order closed, or a deposit below the minimum automatic payout), after you sent
+  the refund from the wallet as in steps 3 and 4: the refund's 64-character transaction ID and the amount sent
+  (at most the deposit), with an optional note. The market sends nothing and writes **no payout row**: each order
+  has at most one payout of each kind (`payouts` `UNIQUE (order_id, kind)`, migration 064) and never both a release and a refund (`payouts_one_settlement`, migration 069) or a refund and a return (`payouts_refund_or_return`, migration 070), and never a return without its release (`payouts_return_needs_release`, migration 073), owned by its release
+  and any return, or its refund, so do not insert a payout and do not use *Mark sent* on the order's payout for a
+  manual transfer. A deposit recorded as refunded by hand is never counted toward a payout afterwards, even if a
+  later deposit lifts a below-minimum sum over the minimum. A credited deposit (counted toward the payout) is
+  refused (409): it is settled through that payout.
+- **Escalate to an administrator** (moderators only), with an optional note: every administrator who is not
+  party to the order is notified, the flag stays open on the desk marked "escalated to an administrator" and only
+  an administrator can then record no action or a refund by hand.
 
-It must report `INSERT 0 1`; `INSERT 0 0` means the order ID or staff handle was wrong and nothing was
-written. The note appears in the order history, which the buyer and vendor also read, so keep addresses and
-anything private out of it.
+Each review writes one order-history event (the buyer and the vendor read it, with the reason or note, so keep
+addresses and anything private out of it), one audit row and a notification to the buyer. A refund's transaction
+ID is in the event, the audit row and the buyer's notification; on the order page only the buyer and staff
+reading the order see it (the vendor reads "(transaction ID shown only to its recipient)": on Bitcoin it reveals
+the buyer's address). The buyer's order page then reads "Refunded by hand on DATE: AMOUNT, transaction TXID",
+or for a deposit after the order closed "…; reviewed by market staff on DATE: no action" or "…; escalated to an
+administrator on DATE", instead of "market staff notified". A reviewed flag (no action or refunded) leaves the
+desk; once every late-deposit flag of an order is reviewed, a later late deposit is announced to the buyer and
+staff again. A credited deposit reviewed during a regression that confirms and later regresses again is a new,
+unreviewed flag. A second review of the same flag is refused (409); so is one by staff who are party to the order
+(403).
 
 ## 6. Back up the wallets
 
@@ -325,8 +351,14 @@ copies like any other secret:
 btc -rpcwallet=opsecmkt backupwallet /data/opsecmkt-wallet.bak
 btc getblockcount                          # record this height with the backup (pruned nodes, below)
 docker compose cp bitcoin:/data/opsecmkt-wallet.bak ./opsecmkt-wallet.bak
-xmr query_key '{"key_type":"mnemonic"}'   # write the seed down offline; or copy the /wallet volume while stopped
+xmr query_key '{"key_type":"mnemonic"}'   # write the seed down offline, with the height from section 3
+docker compose stop monero-wallet          # the wallet files (restored in preference to the seed), copied stopped
+docker compose cp monero-wallet:/home/monero/wallet/opsecmkt ./opsecmkt
+docker compose cp monero-wallet:/home/monero/wallet/opsecmkt.keys ./opsecmkt.keys
+docker compose start monero-wallet         # the app opens the wallet again on its next pass
 ```
+
+To bring them back, see [Restore the wallets](#restore-the-wallets).
 
 **The local Bitcoin node is pruned by default, which limits how old a restorable wallet backup can be.** A
 backup restored with `restorewallet` loads only if the height recorded with it is at or above the node's
@@ -384,6 +416,10 @@ and no web action that clears the gate or records a lost payout.
      ```
 
      Tor Browser asks for this key when you open the onion address; visitors without it cannot connect.
+
+   Then, if a wallet was lost or is older than this database (a new host, a lost `bitcoin_data` or
+   `monero_wallet` volume, a wallet or volume brought back from a copy), [restore the wallets](#restore-the-wallets)
+   and advance their address index **before the app starts**.
 2. **Start the app for yourself only** (`docker compose up -d app`) and let the watcher catch up: wait until
    *Last poll* on **Admin → Payment providers** is later than the start for every configured currency, so
    deposits made after the backup are in the ledger.
@@ -402,10 +438,17 @@ and no web action that clears the gate or records a lost payout.
      -c "SELECT currency, txid, order_id, state FROM payouts WHERE txid <> '' ORDER BY currency, txid"
    ```
 
-   (`-d` names the database in `DATABASE_URL`.) A send with no payout row is either a manual refund recorded as
-   a written note (see "Handle a payment-review flag"; leave it alone) or a **payout the restore lost**. Find
-   the order of each lost payout from the amount sent (Bitcoin amounts ×100 000 000 in satoshi, Monero
-   destination amounts are already in atomic units; fees are separate) and the address it went to, in step 6.
+   (`-d` names the database in `DATABASE_URL`.) A send with no payout row is either a refund sent by hand for a
+   payment-review flag (see "Handle a payment-review flag"; leave it alone: those recorded on the desk are listed
+   by `SELECT currency, disposition_txid, order_id FROM payments WHERE disposition_txid <> ''`, and one recorded
+   after the backup is missing from the restored database, so its flag is open again: record it again on the desk
+   once the market is open, with the same transaction ID; older ones were written notes with the transaction ID in
+   the audit row) or a **payout the restore lost**. Find
+   the order of each lost payout from the payout's amount and the address it went to, in step 6. The payout's
+   amount is the destination amount **plus the fee**, because every payout on both coins has the fee taken
+   from it (only a Monero release sent by a version before A-232 paid its fee on top: its destination amount
+   alone) (Bitcoin: `listsinceblock` shows a send's `amount` and `fee` as negative BTC; add their absolute values and
+   multiply by 100 000 000 for satoshi. Monero destination amounts and `fee` are already in atomic units).
    A Monero `pending` or `out` transfer after the backup with no `destinations` is an unmatched send too (its
    `amount` includes the fee): it counts as a lost payout until you prove otherwise.
    If a send cannot be matched to exactly one order, an order settled after the backup is missing from the
@@ -428,6 +471,127 @@ and no web action that clears the gate or records a lost payout.
      it is missing (see [Optional onion mirror](operator-guide.md#optional-onion-mirror)), and check that
      `docker compose ps tor-mirror` shows it running.
 
+#### Restore the wallets
+
+Part of step 1, with the app stopped, the restored database in place (`scripts/restore.sh` has set the payout
+recovery gate) and users cut off. A wallet brought back from a backup or a seed hands out addresses again from
+where the backup left off, but the database has already given the later ones to orders. `payment_addresses.address`
+is unique, so each payment request that gets one is refused: the buyer reads "BTC payment addresses are being
+restored on this market. Nothing was charged and your order is still a draft; try again later." (or XMR) with a
+reference, status 503 and `Retry-After: 5`, nothing is saved, and the app logs
+`payments: BTC wallet returned a payment address already issued to another order (restored from an older backup?);
+payment request refused, order kept as a draft; collisions=<n>; see "Restore the wallets" in docs/testnet-runbook.md`
+followed by `http 5xx kind=action name=/orders/pay status=503 ref=<the reference> cause=payment-address-already-issued`
+(neither line names the address). The *Payment providers* panel of `/admin` shows "BTC wallet handed out payment
+addresses this market had already issued", with the number of refused requests and the time of the last one, and
+points here. The warning stays until an administrator dismisses it with its *Dismiss* button after following this
+section (a later collision shows it again); a payment request that succeeds does not clear it. Each refused
+request moves the wallet on by one address the database already holds, so the refusals stop by themselves once
+buyers' retries have walked the wallet past every issued address, but without the rescan below. The restored
+wallet also watches only a limited range past its own index (1000 Bitcoin keys, 200 Monero subaddresses by default), so
+deposits made after the backup to addresses beyond it are not seen. Scanning moves the index past the highest
+address that received a deposit, but not past issued addresses that were never paid.
+
+A wallet that survived is at least as new as any database backup: keep it, never replace it with an older
+backup, and run only the check at the end. Use `btc` from [section 2](#2-create-the-bitcoin-wallet), `xmr` from
+[section 3](#3-create-the-monero-wallet), `HEIGHT` for the heights you recorded ([section 6](#6-back-up-the-wallets))
+and this `db_sql` for the restored database (replace `opsecmkt_restored` with the database name in
+`DATABASE_URL`; for an external database see the note in [step 6](#record-a-payout-sent-after-the-backup-step-6)):
+
+```sh
+db_sql() { docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d opsecmkt_restored "$@"; }
+```
+
+**Bitcoin.** Restore the backup file, then advance the index past what the database has issued and rescan:
+
+```sh
+btc listwalletdir                                    # "opsecmkt" listed: the wallet survived, go to the check
+docker compose cp ./opsecmkt-wallet.bak bitcoin:/data/opsecmkt-wallet.bak
+docker compose exec -T bitcoin chown bitcoin:bitcoin /data/opsecmkt-wallet.bak
+btc restorewallet opsecmkt /data/opsecmkt-wallet.bak true   # true: load it again after a node restart
+docker compose exec -T bitcoin rm /data/opsecmkt-wallet.bak
+n=$(db_sql -A -t -c "SELECT count(*) FROM payment_addresses WHERE currency='BTC'")
+for i in $(seq $((n + 100))); do btc -rpcwallet=opsecmkt getnewaddress restore-skip bech32 >/dev/null; done
+btc -rpcwallet=opsecmkt rescanblockchain HEIGHT     # the height recorded with the wallet backup
+```
+
+`restorewallet` scans from the backup's last block to the tip before it returns. On the default pruned node it
+refuses a backup older than `pruneheight` ("Prune: last wallet synchronisation goes beyond pruned data"), and
+`rescanblockchain` cannot go below it either: see [section 6](#6-back-up-the-wallets) and
+[Local node pruning](operator-guide.md#local-node-pruning). The loop asks for the issued count plus 100 more
+addresses: the margin covers addresses the wallet handed out that the database never kept (a payment request that
+failed after the wallet call) and any you made by hand since the backup; raise it if you made more. `bech32` is
+the type the app asks for; other types keep their own index. `keypoolrefill` is no substitute: it adds keys ahead
+of the index without moving it. Through `docker compose exec` the loop runs about five calls a second. The
+rescan comes last so it scans with every issued address in the wallet's range.
+
+**Monero.** Restore the wallet files when you have them: they keep the wallet's labels and the destinations of
+its sends. If `docker compose exec -T monero-wallet ls /home/monero/wallet` lists `opsecmkt.keys`, the wallet
+survived; go to the check. Otherwise:
+
+```sh
+docker compose stop monero-wallet
+docker compose cp ./opsecmkt monero-wallet:/home/monero/wallet/opsecmkt
+docker compose cp ./opsecmkt.keys monero-wallet:/home/monero/wallet/opsecmkt.keys
+docker compose start monero-wallet
+docker compose exec -T monero-wallet chown monero:monero /home/monero/wallet/opsecmkt /home/monero/wallet/opsecmkt.keys
+until xmr get_version '{}' >/dev/null 2>&1; do sleep 2; done   # the wallet RPC takes a few seconds to start
+xmr open_wallet '{"filename":"opsecmkt","password":""}'
+```
+
+Only without the files, restore from the seed. `restore_height` is the height recorded when the wallet was
+created ([section 3](#3-create-the-monero-wallet)), never a later one (scanning starts there, and deposits before
+it would be missed); 0 scans the whole chain. The seed reaches curl on standard input, not in any command's
+arguments. Then raise the subaddress lookahead above the issued count:
+
+```sh
+read -r -s -p 'Seed (25 words): ' seed; echo
+{ printf 'user = "marketplace:%s"\n' "$(sed -n "s/^MONERO_WALLET_RPC_PASSWORD='\(.*\)'$/\1/p" .env)"
+  printf 'data = "{\\"jsonrpc\\":\\"2.0\\",\\"id\\":\\"0\\",\\"method\\":\\"restore_deterministic_wallet\\",\\"params\\":{\\"filename\\":\\"opsecmkt\\",\\"password\\":\\"\\",\\"language\\":\\"English\\",\\"restore_height\\":%s,\\"seed\\":\\"%s\\"}}"\n' HEIGHT "$seed"
+} | docker compose exec -T monero-wallet curl -sS --digest --config - -H 'Content-Type: application/json' http://127.0.0.1:18083/json_rpc |
+  grep -e '"info"' -e '"message"'   # only the outcome: the reply repeats the seed
+unset seed
+n=$(db_sql -A -t -c "SELECT count(*) FROM payment_addresses WHERE currency='XMR'")
+xmr set_subaddress_lookahead "{\"major_idx\":50,\"minor_idx\":$((n + 200)),\"password\":\"\"}"
+```
+
+For either, advance account 0 (the only one the app uses) past what the database has issued, then rescan:
+
+```sh
+n=$(db_sql -A -t -c "SELECT count(*) FROM payment_addresses WHERE currency='XMR'")
+xmr create_address "{\"account_index\":0,\"count\":$((n + 100))}" >/dev/null   # at most 65536 per call
+xmr rescan_blockchain '{}'
+```
+
+The margin of 100 is the same as for Bitcoin. monero-wallet-rpc refreshes an opened wallet within seconds, before
+the lookahead or the new subaddresses exist, so only the rescan afterwards is sure to have scanned with every
+issued subaddress; it can take a while on a long chain. The rescan forgets the destinations of the wallet's
+earlier sends (`get_transfers` then lists them without `destinations`); keep the backup files, which still have
+them. A pruned Monero node serves the rescan as well (see [section 6](#6-back-up-the-wallets)).
+
+**Check before users return.** Each block prints the highest index the database has issued (with a "not in the
+wallet" line for any issued address the wallet does not know), then the index of the next address, which must be
+larger, then a count that must be 0:
+
+```sh
+keyindex() { btc -rpcwallet=opsecmkt getaddressinfo "$1" | sed -n 's|.*"hdkeypath": ".*/\([0-9]*\)".*|\1|p'; }
+db_sql -A -t -c "SELECT address FROM payment_addresses WHERE currency='BTC'" |
+  while read -r a; do keyindex "$a" | grep . || echo "not in the wallet: $a" >&2; done | sort -n | tail -n 1
+next=$(btc -rpcwallet=opsecmkt getnewaddress restore-check bech32); keyindex "$next"
+db_sql -A -t -c "SELECT count(*) FROM payment_addresses WHERE address='$next'"
+
+minor() { xmr get_address_index "{\"address\":\"$1\"}" | sed -n 's/.*"minor": *\([0-9]*\).*/\1/p'; }
+db_sql -A -t -c "SELECT address FROM payment_addresses WHERE currency='XMR'" |
+  while read -r a; do minor "$a" | grep . || echo "not in the wallet: $a" >&2; done | sort -n | tail -n 1
+next=$(xmr create_address '{"account_index":0,"label":"restore-check"}' | sed -n 's/.*"address": "\(.*\)".*/\1/p'); minor "$next"
+db_sql -A -t -c "SELECT count(*) FROM payment_addresses WHERE address='$next'"
+```
+
+If the next index is not larger (the wallet handed out more addresses than the database kept, for example in an
+earlier restore's advance), advance by the difference plus 100 (the same loop, or `create_address` with that
+`count`); if an issued address is not in the wallet, advance by another `n + 100`. Then rescan and check again; if no issued address is in the wallet, the backup or seed belongs to another wallet: stop and
+find the right one. Each check uses up one address, which is harmless.
+
 #### Record a payout sent after the backup (step 6)
 
 Run these with `psql` against the restored database while the app is stopped. The internal-db service is
@@ -440,9 +604,11 @@ db_sql() { docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d o
 ```
 
 Find the order from a lost send: the orders in that currency with no payout whose counted deposits add up to
-the amount sent, with the vendor's and the buyer's current payout addresses. Match the address the wallet sent
-to (a recipient may have changed their address after the backup, in which case use the order history and
-messages, and ask for help when unsure):
+the payout's amount, with the vendor's and the buyer's current payout addresses. Every payout has the fee taken
+from it (except a Monero release sent before A-232), so search with the destination amount plus the fee:
+a 0.0015 BTC release the wallet shows as `"amount": -0.00148590, "fee": -0.00001410` is `amount=150000`. Match
+the address the wallet sent to (a recipient may have changed their address after the backup, in which case use
+the order history and messages, and ask for help when unsure):
 
 <!-- runbook-sql: find-order -->
 ```sh
@@ -461,12 +627,16 @@ SQL
 Then save the recording SQL once and run it for each lost payout, first as a check (`no`) and then to record
 it (`yes`). Set the variables in `record_payout` for that payout: the full order ID; `kind` and `state` as
 `release` and `completed` (the buyer completed it), `refund` and `cancelled` (cancelled after payment) or
-`release`/`refund` and `resolved` (a dispute resolved that way); the amount in satoshi or piconero; the address
+`release`/`refund` and `resolved` (a dispute resolved that way); the payout's amount in satoshi or piconero
+(the destination amount plus the fee for a send with the fee taken from it, as in the search above); the address
 and the 64-character transaction ID from the wallet; and your administrator handle. A release whose buyer
 overpaid was sent as two transactions (migration 064): the price to the vendor and the excess back to the buyer.
 Record both at once: `amount`, `address` and `txid` are the vendor's, and `return_amount`, `return_address` and
-`return_txid` the buyer's (leave them out for any other payout). When finding such an order above, search with the
-two amounts added together.
+`return_txid` the buyer's (leave them out for any other payout), each the destination amount plus that
+transaction's fee (on either coin both; for a Monero release sent before A-232, the vendor's destination amount
+alone). When finding such
+an order above, search with the two amounts added together. The note written to the order history names the
+network class (`MAINNET` or `TESTNET`) from the order's deposit address.
 
 <!-- runbook-sql: record-payout -->
 ```sh
@@ -524,6 +694,8 @@ SELECT c.*, c.problem = 'none' AS ready FROM (
 WITH ord AS (
   SELECT o.id, o.state, o.currency, o.buyer_id, o.product_id, p.vendor_id,
     (SELECT id FROM users WHERE handle=:'handle' AND role='admin') AS admin_id,
+    (SELECT CASE WHEN bool_or(split_part(provider,'-',2) IN ('main','mainnet')) THEN 'MAINNET' ELSE 'TESTNET' END
+      FROM payment_addresses WHERE order_id=o.id) AS net,
     trim_scale(:'amount'::bigint / CASE o.currency WHEN 'BTC' THEN 1e8 ELSE 1e12 END) || ' ' || o.currency AS label,
     trim_scale(:'return_amount'::bigint / CASE o.currency WHEN 'BTC' THEN 1e8 ELSE 1e12 END) || ' ' || o.currency AS return_label
   FROM orders o JOIN products p ON p.id=o.product_id WHERE o.id=:'order_id'),
@@ -536,10 +708,10 @@ ret AS (
   SELECT ord.id, 'return', ord.buyer_id, ord.currency, :'return_amount'::bigint, :'return_address', 'sent', :'return_txid'
   FROM ord, pay WHERE :'return_amount'::bigint > 0 ON CONFLICT (order_id,kind) DO NOTHING RETURNING id),
 note AS (
-  SELECT 'Reconciled after a restore from backup: the TESTNET ' || :'kind' || ' of ' || label || ' to the '
-    || CASE :'kind' WHEN 'release' THEN 'vendor' ELSE 'buyer' END || ' was sent after the backup was taken, in transaction '
-    || :'txid' || CASE WHEN :'return_amount'::bigint > 0 THEN ', and the return of ' || return_label
-    || ' paid over the price to the buyer in transaction ' || :'return_txid' ELSE '' END
+  SELECT 'Reconciled after a restore from backup: the ' || net || ' ' || :'kind' || ' of ' || label || ' to the '
+    || CASE :'kind' WHEN 'release' THEN 'vendor' ELSE 'buyer' END || ' was sent after the backup was taken'
+    || CASE WHEN :'return_amount'::bigint > 0 THEN ', and the return of ' || return_label
+    || ' paid over the price to the buyer' ELSE '' END
     || '. Recorded by an administrator from the wallet; nothing was sent now.' AS body FROM ord),
 moved AS (UPDATE orders SET state=:'state', updated=now() FROM pay WHERE orders.id=pay.order_id RETURNING 1),
 closed AS (
@@ -597,7 +769,9 @@ the check in one transaction and ends "Recorded the payout as sent; committed." 
   (an order that already has a payout is refused, and so is a transaction ID already recorded);
 - the order moved to its final state if the restored snapshot was behind, with an order-history entry by your
   account ("Reconciled after a restore from backup: ..."); a resolved dispute gets that outcome, and a
-  cancellation returns the reserved unit to stock as the application would;
+  cancellation returns the reserved unit to stock as the application would. Neither text names a transaction
+  ID: both parties read them, and on Bitcoin a payout's transaction ID reveals its recipient's address. The
+  order page shows each payout's transaction ID only to its recipient and to staff;
 - the counted deposits marked credited, so the watcher does not flag them as arriving after settlement;
 - one new audit row ("Recorded payout N ... sent after the backup"). Existing audit rows are never changed.
 
@@ -655,7 +829,14 @@ bitcoin-cli -regtest -rpcuser=smoke -rpcpassword=smoke-pass stop
 ```
 
 The script creates or loads the `opsecmkt` wallet, mines 101 blocks to it, pays a fresh order address, mines
-one block and checks that the adapter reports the output with its confirmation. To try the whole site
+one block and checks that the adapter reports the output with its confirmation. It then runs
+`scripts/regtest-wallet-restore.py` (also runnable on its own with the same variable), which replays
+[Restore the wallets](#restore-the-wallets) with two wallets of its own: `backupwallet`, 1100 addresses issued
+after the backup, `restorewallet`, the collision the next address would cause, the runbook's step and the check.
+The top 59 issued addresses stay unpaid, so the rescan alone does not move the index past them and the check
+fails without the step's `getnewaddress` advance.
+It leaves the backup file in the node's `/tmp` (set `BITCOIN_REGTEST_BACKUP_DIR` for another directory
+bitcoind can write). To try the whole site
 against the same node, start the app with `BITCOIN_RPC_URL=http://smoke:smoke-pass@127.0.0.1:18443`,
 `BITCOIN_CHAIN=regtest` and `PAYMENT_CONFIRMATIONS_BTC=1`, request payment on an order, pay it with
 `bitcoin-cli -regtest -rpcwallet=opsecmkt sendtoaddress <address> <amount>` and mine a block with

@@ -76,8 +76,15 @@ test('replacing recovery codes invalidates the old ones; TOTP turns off with pas
   await page.getByRole('button', { name: 'Use recovery code' }).click();
   await expect(page.locator('.account-name')).toHaveText(handle);
   // A recovery-code sign-in lands on /totp and says how many codes remain (A-154).
-  await expect(page).toHaveURL(/\/totp\?signin=recovery$/);
+  // A one-shot notice (A-287): a reload and the old ?signin= link show nothing.
+  await expect(page).toHaveURL(/\/totp$/);
   await expect(page.getByRole('status')).toContainText('You signed in with a recovery code. 9 recovery codes remain.');
+  await page.reload();
+  await expect(page.locator('.page-head .badge')).toHaveText('Enabled');
+  await expect(page.getByRole('status')).toHaveCount(0);
+  await page.goto('/totp?signin=recovery');
+  await expect(page.locator('.page-head .badge')).toHaveText('Enabled');
+  await expect(page.getByRole('status')).toHaveCount(0);
   await expect(page.locator('.page-head .badge')).toHaveText('Enabled');
   await expect(page.locator('.key-values div', { hasText: 'Unused recovery codes' }).locator('dd')).toHaveText('9 of 10');
   await page.goto('/notifications');
@@ -150,7 +157,7 @@ test('a recovery code with "I lost my authenticator" turns TOTP off at sign-in',
   await page.getByLabel('Recovery code').fill(codes[3]);
   await lost.check();
   await page.getByRole('button', { name: 'Use recovery code' }).click();
-  await expect(page).toHaveURL(/\/totp\?signin=totp-off$/);
+  await expect(page).toHaveURL(/\/totp$/);
   await expect(page.locator('.account-name')).toHaveText(handle);
   await expect(page.getByRole('status')).toContainText('You signed in with a recovery code and turned off two-step sign-in with an authenticator app (TOTP)');
   await expect(page.locator('.page-head .badge')).toHaveText('Not enrolled');

@@ -138,6 +138,9 @@ scripts/restore.sh "$backup" <<< 'RESTORE' > "$work/restore.log"
 grep -q 'Held 4 restored payout(s)' "$work/restore.log"
 grep -q 'Marked 1 restored failed payout(s) as possibly sent' "$work/restore.log"
 grep -q 'do not contain the custodial wallets' "$work/restore.log"
+# A-142: the wallet reminder names the runbook section, which must exist under that heading.
+grep -q 'docs/testnet-runbook.md describes ("Restore the wallets")' "$work/restore.log"
+grep -q '^#### Restore the wallets$' docs/testnet-runbook.md
 grep -q 'point BACKUP_DATABASE_URL at the same database' "$work/restore.log"
 # A-190 (ruling D4): the line about images removed after the backup, with the dump's creation time; a dump
 # without an images table restores none.
@@ -377,7 +380,7 @@ refusal='the order already has a payout; resolve it on the admin page' refused o
 [[ $(pg "$app_target_db" -Atq -c "SELECT kind || ':' || user_id || ':' || currency || ':' || amount || ':' || address || ':' || state || ':' || txid || ':' || send_ambiguous || ':' || error FROM payouts WHERE order_id='ops-order-late'") == "release:ops-vendor:BTC:150000:tb1qopsrestorelatevendor:sent:$late_txid:false:" ]]
 [[ $(pg "$app_target_db" -Atq -c "SELECT state FROM orders WHERE id='ops-order-late'") == completed ]]
 [[ $(pg "$app_target_db" -Atq -c "SELECT string_agg(credited::text, ',' ORDER BY idx) FROM payments WHERE order_id='ops-order-late'") == true,true ]]
-[[ $(pg "$app_target_db" -Atq -c "SELECT from_state || ':' || to_state || ':' || actor_id || ':' || note FROM order_events WHERE order_id='ops-order-late'") == "delivered:completed:ops-admin:Reconciled after a restore from backup: the TESTNET release of 0.0015 BTC to the vendor was sent after the backup was taken, in transaction $late_txid. Recorded by an administrator from the wallet; nothing was sent now." ]]
+[[ $(pg "$app_target_db" -Atq -c "SELECT from_state || ':' || to_state || ':' || actor_id || ':' || note FROM order_events WHERE order_id='ops-order-late'") == "delivered:completed:ops-admin:Reconciled after a restore from backup: the TESTNET release of 0.0015 BTC to the vendor was sent after the backup was taken. Recorded by an administrator from the wallet; nothing was sent now." ]]
 late_payout=$(pg "$app_target_db" -Atq -c "SELECT id FROM payouts WHERE order_id='ops-order-late'")
 [[ $(pg "$app_target_db" -Atq -c "SELECT user_id || ':' || action FROM audit_events WHERE id > $audit_max") == "ops-admin:Recorded payout $late_payout (0.0015 BTC, release) sent after the backup with transaction $late_txid for order ops-orde; restored from backup, order delivered -> completed" ]]
 # The same payout cannot be recorded twice, nor the same transaction for another order.
@@ -418,7 +421,7 @@ split_payouts="SELECT count(*) FROM payouts WHERE order_id='ops-order-split'"
 [[ $(tail -n 1 <<< "$(record_split 150000 50000 "$return_txid" yes)") == 'Recorded the payout as sent; committed.' ]]
 [[ $(pg "$app_target_db" -Atq -c "SELECT string_agg(kind || ':' || user_id || ':' || amount || ':' || address || ':' || state || ':' || txid, ',' ORDER BY kind) FROM payouts WHERE order_id='ops-order-split'") == "release:ops-vendor:150000:tb1qopsrestorelatevendor:sent:$split_txid,return:ops-buyer:50000:tb1qopsrestoresplitbuyer:sent:$return_txid" ]]
 [[ $(pg "$app_target_db" -Atq -c "SELECT state FROM orders WHERE id='ops-order-split'") == completed ]]
-[[ $(pg "$app_target_db" -Atq -c "SELECT note FROM order_events WHERE order_id='ops-order-split'") == "Reconciled after a restore from backup: the TESTNET release of 0.0015 BTC to the vendor was sent after the backup was taken, in transaction $split_txid, and the return of 0.0005 BTC paid over the price to the buyer in transaction $return_txid. Recorded by an administrator from the wallet; nothing was sent now." ]]
+[[ $(pg "$app_target_db" -Atq -c "SELECT note FROM order_events WHERE order_id='ops-order-split'") == "Reconciled after a restore from backup: the TESTNET release of 0.0015 BTC to the vendor was sent after the backup was taken, and the return of 0.0005 BTC paid over the price to the buyer. Recorded by an administrator from the wallet; nothing was sent now." ]]
 [[ $(tail -n 1 <<< "$(record_split 150000 50000 "$return_txid" yes)") == 'Refused; nothing was written: the order already has a payout; resolve it on the admin page' ]]
 # Clear the gate with the runbook's SQL, restart the server and check that no second payout exists. An unknown or
 # non-administrator handle is refused and rolls back: the gate stays set and no audit row is added.
@@ -449,4 +452,16 @@ stop_app
 [[ $(pg "$app_target_db" -Atq -c "SELECT string_agg(order_id || ':' || state, ',' ORDER BY order_id) FROM payouts WHERE order_id IN ('ops-order-queued','ops-order-suspended')") == ops-order-queued:held,ops-order-suspended:held ]]
 [[ $(pg "$app_target_db" -Atq -c "$suspended_error") == "$restored_hold $suspended_hold" ]]
 [[ $(pg "$app_source_db" -Atq -c "SELECT count(*) FROM payouts WHERE order_id IN ('ops-order-late','ops-order-disputed')") == 0 ]]
-echo 'Encrypted backup/restore regressions passed (Unicode, overwrite refusal, wrong key, transaction rollback, payout hold, suspension hold kept, failed payouts marked possibly sent, restore audit row, application schema restore and restart, manual UPGRADING.md protection after a plain pg_dump/pg_restore copy, runbook reconciliation of payouts sent after the backup, audited gate clear refusing unknown handles).'
+# The reconciliation note takes the network class from the order's deposit address (payment_addresses.provider,
+# the rule checkNetworkHistory uses), never a fixed TESTNET: the orders above ('bitcoin') say TESTNET, a mainnet
+# address says MAINNET. A real market never mixes the classes; the gate is set again only to record once more.
+main_txid=$(printf '56%.0s' {1..32})
+pg "$app_target_db" -q -c "
+UPDATE settings SET value='true' WHERE key='payments_recovery_required';
+INSERT INTO orders(id,buyer_id,product_id,currency,amount,state) VALUES ('ops-order-main','ops-buyer','ops-product','BTC',150000,'delivered');
+INSERT INTO payment_addresses(order_id,currency,address,provider) VALUES ('ops-order-main','BTC','bc1qopsrestoremaindeposit','bitcoin-main');
+INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,credited,locked) VALUES ('ops-order-main','BTC',repeat('14',32),0,'bc1qopsrestoremaindeposit',150000,6,true,false);"
+[[ $(tail -n 1 <<< "$(record ops-order-main release completed 150000 bc1qopsrestoremainvendor "$main_txid" ops_admin yes)") == 'Recorded the payout as sent; committed.' ]]
+[[ $(pg "$app_target_db" -Atq -c "SELECT note FROM order_events WHERE order_id='ops-order-main'") == "Reconciled after a restore from backup: the MAINNET release of 0.0015 BTC to the vendor was sent after the backup was taken. Recorded by an administrator from the wallet; nothing was sent now." ]]
+[[ $(pg "$app_target_db" -Atq -c "SELECT count(*) FROM order_events WHERE note LIKE 'Reconciled after a restore from backup: the TESTNET %'") == 3 ]]
+echo 'Encrypted backup/restore regressions passed (Unicode, overwrite refusal, wrong key, transaction rollback, payout hold, suspension hold kept, failed payouts marked possibly sent, restore audit row, application schema restore and restart, manual UPGRADING.md protection after a plain pg_dump/pg_restore copy, runbook reconciliation of payouts sent after the backup with the network class from the deposit address, audited gate clear refusing unknown handles).'

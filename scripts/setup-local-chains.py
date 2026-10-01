@@ -25,6 +25,24 @@ def free_port():
         return listener.getsockname()[1]
 
 
+def port_allocator(first):
+    """Return a function giving a free loopback port: the OS's choice, or the next free one from first on."""
+    if not first:
+        return free_port
+    candidates = iter(range(first, 65536))
+
+    def allocate():
+        for port in candidates:
+            with socket.socket() as listener:
+                try:
+                    listener.bind(('127.0.0.1', port))
+                except OSError:
+                    continue
+            return port
+        raise RuntimeError('No free port at or above --first-port')
+    return allocate
+
+
 def save(path, state):
     temporary = path.with_suffix('.tmp')
     temporary.write_text(json.dumps(state, indent=2) + '\n')
@@ -81,6 +99,7 @@ def setup(args):
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     directory.chmod(0o700)
     runtime = directory / 'runtime.json'
+    port = port_allocator(args.first_port)
     state = {'bitcoin': {}, 'monero': {}, 'processes': []}
     save(runtime, state)
     os.environ['LOCAL_CHAIN_RUNTIME'] = str(runtime)
@@ -105,7 +124,7 @@ def setup(args):
         btc_data = directory / 'bitcoin-data'
         btc_data.mkdir()
         node = state['bitcoin']
-        node.update(port=free_port(), password=secrets.token_hex(24))
+        node.update(port=port(), password=secrets.token_hex(24))
         config = btc_data / 'bitcoin.conf'
         config.write_text('regtest=1\nserver=1\nlisten=0\nnetworkactive=0\nfallbackfee=0.0002\n'
                           'rpcuser=review\nrpcpassword=' + node['password'] + '\n[regtest]\n'
@@ -120,17 +139,17 @@ def setup(args):
 
         monero_data = directory / 'monero-data'
         monero_data.mkdir()
-        state['monero']['daemon_port'] = free_port()
+        state['monero']['daemon_port'] = port()
         state['monero']['daemon_pid'] = start(monero / 'monerod', [
             '--stagenet', '--offline', '--fixed-difficulty', '1', '--data-dir', str(monero_data),
             '--rpc-bind-ip', '127.0.0.1', '--rpc-bind-port', str(state['monero']['daemon_port']),
-            '--p2p-bind-ip', '127.0.0.1', '--p2p-bind-port', str(free_port()), '--no-igd', '--no-zmq',
+            '--p2p-bind-ip', '127.0.0.1', '--p2p-bind-port', str(port()), '--no-igd', '--no-zmq',
             '--non-interactive', '--check-updates', 'disabled', '--max-concurrency', '2'], 'monero', str(monero_data))
         wait_for(lambda: rpc.guard('XMR'), 'offline Monero stagenet')
         for name in ('buyer', 'opsecmkt'):
             wallet_dir = directory / ('monero-wallet-' + name)
             wallet_dir.mkdir()
-            wallet = dict(port=free_port(), password=secrets.token_hex(24))
+            wallet = dict(port=port(), password=secrets.token_hex(24))
             state['monero'][name] = wallet
             config = wallet_dir / 'rpc.conf'
             config.write_text('stagenet=1\ndaemon-address=127.0.0.1:' + str(state['monero']['daemon_port']) + '\n'
@@ -169,6 +188,8 @@ def main():
     parser.add_argument('--bitcoin-bin', help='Directory containing verified bitcoind')
     parser.add_argument('--monero-bin', help='Directory containing verified monerod and monero-wallet-rpc')
     parser.add_argument('--state-dir', default='artifacts/local-chains', help='New empty directory for disposable chain data')
+    parser.add_argument('--first-port', type=int, metavar='PORT',
+                        help='Allocate loopback ports consecutively from PORT (skipping ports in use) instead of any free port')
     parser.add_argument('--stop', metavar='STATE_DIR', help='Stop registered processes without deleting their data')
     args = parser.parse_args()
     if args.stop:

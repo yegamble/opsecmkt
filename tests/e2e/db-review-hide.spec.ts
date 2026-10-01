@@ -49,7 +49,8 @@ test('administrator hides a review from the public pages and restores it', async
       expect(await admin.evaluate(() => document.documentElement.scrollWidth), `open hide form at ${width}px`).toBeLessThanOrEqual(width);
     }
     await submitAndLoad(admin, review.getByRole('button', { name: 'Hide review' }));
-    await expect(admin).toHaveURL(new RegExp(`/product\\?id=${productID}&saved=1#reviews-title$`));
+    await expect(admin).toHaveURL(new RegExp(`/product\\?id=${productID}#reviews-title$`));
+    await expect(admin.getByRole('region', { name: 'Verified reviews' }).getByRole('status')).toHaveText('Review hidden.');
     await admin.reload();
     const hidden = admin.locator('article.review', { hasText: doxx });
     await expect(hidden.locator('.badge')).toHaveText(['Verified purchase', 'Hidden by an administrator']);
@@ -72,7 +73,8 @@ test('administrator hides a review from the public pages and restores it', async
     await restore.locator('summary', { hasText: 'Restore this review: rated 1 out of 5, ' }).click();
     await restore.getByLabel('Current password').fill(password);
     await submitAndLoad(admin, restore.getByRole('button', { name: 'Restore review' }));
-    await expect(admin).toHaveURL(new RegExp(`/vendor\\?id=${vendorID}&saved=1#reviews-title$`));
+    await expect(admin).toHaveURL(new RegExp(`/vendor\\?id=${vendorID}#reviews-title$`));
+    await expect(admin.getByRole('region', { name: 'Verified reviews for this vendor' }).getByRole('status')).toHaveText('Review restored.');
     await visitor.goto(vendorURL);
     await expect(visitor.locator('main')).toContainText(doxx);
     await expect(visitor.locator('main .review-summary')).toHaveText('3.0 / 5 · 2 reviews');

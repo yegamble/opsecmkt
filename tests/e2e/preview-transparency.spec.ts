@@ -1,12 +1,22 @@
 import { expect, test, type Page } from '@playwright/test';
+import { waitForStyles } from './styles';
 
 // P6 Transparency in the read-only preview. The preview canary is a labelled sample signed by a throwaway key
 // generated at preview start and checked by the real verifier; signed audit export is visibly unavailable.
 
 async function noScriptsNoOverflow(page: Page) {
   await expect(page.locator('script')).toHaveCount(0);
+  await waitForStyles(page);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()!.width);
 }
+
+test('canary page names no staff contact the preview does not have (A-119)', async ({ page }) => {
+  await page.goto('/canary');
+  const contact = page.getByRole('region', { name: 'Staff contact' });
+  await expect(contact.locator('.staff-contact')).toHaveText('Ask the operator of this market.');
+  await expect(contact.locator('a')).toHaveCount(0);
+  await noScriptsNoOverflow(page);
+});
 
 test('canary page shows one verified, clearly labelled sample statement', async ({ page }) => {
   const response = await page.goto('/canary');

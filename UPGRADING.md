@@ -114,21 +114,18 @@ the value to rotate, with the consequences below. An instance that ran with the 
   stored as plain hashes and keep working), turn TOTP off on `/totp` with their password and a recovery
   code, and enrol again. For a non-administrator with no recovery code left, confirm who they are out of
   band, then use *Admin → Reset a user's second factors*, which also ends their sessions and is audited.
-  The administrator's own account, or an instance where no administrator can sign in, needs the operator
-  reset in the database (internal-db shown; replace `THE_HANDLE`):
+  An administrator with no recovery code left needs the host command, because the web reset refuses
+  administrators (and perhaps no administrator can sign in at all). Run it in the deployment directory; it
+  works with the internal or an external database (replace `THE_HANDLE`, exact and case-sensitive):
 
   ```sh
-  docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -v handle=THE_HANDLE -U opsecmkt -d opsecmkt <<'SQL'
-  BEGIN;
-  UPDATE users SET totp_enabled=false,totp_secret='',totp_pending='',totp_last_step=0,recovery_reveal='',recovery_reveal_until=NULL
-    WHERE handle=:'handle';
-  DELETE FROM recovery_codes WHERE user_id=(SELECT id FROM users WHERE handle=:'handle');
-  INSERT INTO audit_events(user_id,action) SELECT id,'TOTP reset by the operator after SETUP_TOKEN rotation' FROM users WHERE handle=:'handle';
-  COMMIT;
-  SQL
+  docker compose run --rm app -reset-admin-factors THE_HANDLE
   ```
 
-  Check that the `UPDATE` reports one row; the user then signs in with the password alone and enrols again.
+  In one audited transaction it turns off that administrator's TOTP, recovery codes and PGP sign-in and ends
+  its sessions and pending sign-ins; the administrator then signs in with the password alone and enrols again.
+  It refuses an account that is not an administrator (use the web reset above) and an unknown handle,
+  changing nothing ([details](docs/operator-guide.md#authentication)).
 
 A restored database needs the `SETUP_TOKEN` (or `APP_SECRET_KEY`, when set) that was in use when its backup
 was taken for its TOTP secrets to be readable. Keep the rotated value, not the placeholder, in any `.env` you
@@ -403,12 +400,20 @@ a failed send can have been broadcast from the wallet's error, and that table is
 v0.18.5.1 only. A `BITCOIN_IMAGE`, `MONERO_IMAGE` or `MONERO_WALLET_IMAGE` in your `.env` still wins. If one of
 them ends in `:latest` (an installer run from a pre-release checkout wrote that) or is an image you chose, change
 it to the tag above, or follow the bump checklist in
-[Node image versions](docs/operator-guide.md#node-image-versions) before running another version. Until you do,
-treat every failed Monero payout as possibly broadcast. Check with:
+[Node image versions](docs/operator-guide.md#node-image-versions) before running another version. Check with:
 
 ```sh
 docker compose config --images
 ```
+
+The application also checks the running wallet (A-174): at startup and on every watcher pass it reads
+monero-wallet-rpc's `get_version`. While the wallet does not report RPC version 1.31 from a release build (what
+v0.18.5.1 reports), or the call fails, every failed Monero payout is recorded as possibly broadcast, so a requeue
+needs the wallet check, and the *Payment providers* panel of `/admin` names the version the wallet reported and
+points to the bump checklist. That panel also shows the Bitcoin Core version (`getnetworkinfo`). The RPC version
+changes only when the wallet's RPC does, so a later release with an unchanged RPC is not detected: until your
+`.env` names the pinned tag, treat every failed Monero payout as possibly broadcast even when `/admin` shows no
+warning.
 
 ## 9. Overpayments are returned (migration 064)
 
@@ -419,6 +424,392 @@ is held for an administrator (*Admin → Payment providers*), and refunds and re
 fee on Monero too. The restore SQL in [section 6](#6-backups-now-need-the-wallets-too) keeps that hold's text
 after its own marker. Rolling back past this release needs the pre-upgrade backup, as for every migration
 (section 5). See [overpayments](docs/operator-guide.md#overpayments-and-the-payment-qr-code).
+
+## 10. Deposits after an order closed (migration 065)
+
+Migration 065 runs at startup and adds `payments.after_close`. From this release the watcher reads every
+cancelled, completed or resolved order's deposit address until the address is 30 days old (before, only while a
+deposit was confirming or unhandled, or for 24 hours after the order changed), so each pass reads more addresses.
+A deposit first recorded after its order closed is never refunded or paid out automatically, even when the
+cancellation refunded nothing: it is flagged for payment review and the buyer is told once per order. Deposits
+recorded before the upgrade keep their earlier treatment. See
+[late deposits](docs/operator-guide.md#payments) and the
+[runbook](docs/testnet-runbook.md#handle-a-payment-review-flag).
+
+## 11. Payment-review dispositions (migration 066)
+
+Migration 066 runs at startup and adds `payments.disposition`, `disposition_note`, `disposition_txid`,
+`disposition_amount` and `disposed_at`; existing flags stay open. Moderators and administrators now record the
+outcome of each payment-review flag on the moderation desk (no action with a reason, refunded by hand with the
+transaction ID and amount, or escalated to an administrator) instead of the `psql` note the runbook described
+before. Notes recorded that way earlier stay in the order history, but their flags stay open on the desk: record
+each such refund there once as *refunded by hand*, with the transaction ID from its audit row. See the
+[runbook](docs/testnet-runbook.md#handle-a-payment-review-flag).
+
+## 12. Sign-ins in progress restart (migration 013)
+
+Migration 013 runs at startup and adds `pending_logins.password_digest`, so a password change also ends a sign-in
+whose password was checked just before it. A sign-in that passed the password step before the upgrade and has not
+finished its second step is refused ("Sign-in verification expired. Sign in again."); the user enters the password
+again. Sessions are unchanged. `/account` now lists each account's sessions by start time only (the market records
+no IP address or browser), and *Sign out everywhere* also ends sign-ins waiting for their second step.
+
+## 13. Monero releases pay their own network fee (A-232)
+
+No migration. From this release every Monero payout, releases included, is sent with the network fee taken from
+the amount (`subtract_fee_from_outputs`), as every Bitcoin payout already is: a vendor receives the price less the
+fee, and no payout costs the pooled wallet its fee. A Monero release still queued when you upgrade is sent this
+way, even one below the new minimum (the minimum applies when a payout is queued). The earlier version had no
+minimum for Monero releases, so a pending one may be smaller than the network fee: its send now fails before
+anything is broadcast (monero-wallet-rpc error -16, transaction not possible, recorded as a definite rejection),
+and it is shown as *Failed — not retried; the wallet reported a pre-broadcast error, nothing broadcast*. Do not
+requeue it (it would fail the same way). Settle it by hand as the runbook describes for payouts below the
+minimum ([payment-review flags](docs/testnet-runbook.md#handle-a-payment-review-flag), step 4): agree with the
+vendor whether to send it, and if so `transfer` the payout's amount from the wallet with the wallet paying the fee
+(without `subtract_fee_from_outputs`), then record it with *Mark sent* and its transaction ID
+([section 5](docs/testnet-runbook.md#5-recover-a-held-or-failed-payout)). One Monero minimum, 0.001 XMR, now
+applies to every payout: a release below it is flagged for payment review instead of sent, like a refund.
+Listings cannot be priced below 0.001 XMR; a listing priced lower before the upgrade takes no new XMR drafts or payment requests, and saving it is refused until its vendor raises the Monero
+price. On an existing order at such a price, an overpayment of more than the price is held as one release for an
+administrator's review. When matching Monero payouts sent before the upgrade in the wallet (the runbook's
+[failed-payout check](docs/testnet-runbook.md#5-recover-a-held-or-failed-payout) and [restore reconciliation](docs/testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts)), a release sent by the
+earlier version paid its fee on top: its destination amount is the payout's.
+
+## 14. One settlement per order, and resolving needs a password (migrations 069 and 070)
+
+Migrations 069 and 070 run at startup. Migration 069 adds the unique index `payouts_one_settlement` on
+`payouts(order_id)` for kinds `release` and `refund`: the database again refuses a release and a refund for the
+same order (migration 064 had allowed it so a release could carry a `return`, which stays allowed). Migration 070
+adds `payouts_refund_or_return` for kinds `refund` and `return`: a return sends a release's excess back to the
+buyer, and a refund already sends back everything the buyer paid, so a refund beside a return would pay the excess
+twice. An order therefore has a release with at most one return, or one refund. The application never queues
+either pair, so an existing database normally upgrades without change. One that already holds a release and a
+refund, or a refund and a return, for an order (only possible through hand-written SQL) is **not** changed: the
+migration stops with an error naming the orders, every migration of that startup rolls back, and the server does
+not start. Nothing is deleted, because any of those payouts may have been sent. While the server is stopped the
+watcher sends nothing; settle each named order as below, then start the server again. Migration 073, in the same
+start, also refuses an order left with a return and no release
+([section 18](#18-a-return-needs-its-release-migration-073-a-268)): the steps below never leave one, and step 5
+lists any that remain.
+
+Run the SQL with `psql` against the application database. The internal-db service is shown; replace `opsecmkt`
+after `-d` with the database name in `DATABASE_URL`. With an external database, make `db_sql` run your own
+`psql -X -v ON_ERROR_STOP=1` connected to it, never with the password in its arguments.
+
+```sh
+db_sql() { docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d opsecmkt "$@"; }
+```
+
+1. **List every payout of the orders that clash, returns included, and keep the output** (here in
+   `settlement-clash.txt`): once you delete rows, it is their only record apart from the pre-upgrade backup from
+   [section 1](#1-take-a-backup-and-record-what-you-run), which holds them as they were before the upgrade;
+   restoring that backup is the way back. `amount` is in the smallest unit of `currency`: satoshi for BTC
+   (100 000 000 per BTC), piconero for XMR (10^12 per XMR). `user_id` is the recipient; `created` is when the row
+   was queued and `updated` when it last changed:
+
+   ```sh
+   db_sql <<'SQL' | tee settlement-clash.txt
+   SELECT p.id, p.order_id, o.state AS order_state, p.kind, p.state, p.send_ambiguous, p.currency, p.amount, p.address, p.user_id,
+     p.txid, p.error, p.created, p.updated
+   FROM payouts p JOIN orders o ON o.id = p.order_id
+   WHERE p.order_id IN (SELECT order_id FROM payouts GROUP BY order_id
+     HAVING count(*) FILTER (WHERE kind IN ('release','refund')) > 1
+         OR count(*) FILTER (WHERE kind IN ('refund','return')) > 1)
+   ORDER BY p.order_id, p.kind;
+   SQL
+   ```
+
+   Each listed order has two settlements: its **release together with its return** (the price to the vendor and
+   the excess to the buyer; a return belongs to its release and is kept or deleted with it, even when the release
+   row itself is gone, as after an earlier hand deletion: if such a return stands, it may not stay without a release
+   (migration 073), so once this clash is settled, settle that order as
+   [section 18](#18-a-return-needs-its-release-migration-073-a-268) describes: for a `completed` order or a release
+   outcome its release is restored or recorded as paid, and for a `cancelled` order or a refund outcome a sent return
+   is recorded as the order's refund and the rest of what the buyer is owed is sent by hand), and its **refund**.
+2. **Find out which rows were sent.** A row in state `sent` was sent. A row in state `sending`, a `failed` row with
+   `send_ambiguous` true, and any row whose error starts `Restored from backup:` may have been sent. Check every
+   listed row in the wallet, whatever its state (a `pending`, `blocked`, `held` or definitely failed row may have
+   been paid by hand): a transaction to its address and amount since before the row was created, with the complete
+   checks in [runbook section 5](docs/testnet-runbook.md#5-recover-a-held-or-failed-payout). A row that may have
+   been sent and that the wallet check does not clear counts as sent. Never delete a sent row, or one that may
+   have been sent, except as step 3 describes for an order paid twice or for a sent release that the order's
+   outcome did not owe.
+3. **Decide which settlement stands.**
+   - If a row of one settlement was sent and no row of the other, that settlement stands. A release stands when
+     either it or its return was sent: keeping the refund after a return was sent would pay the excess twice. A
+     sent return paid the buyer only the excess; the price still follows the order's outcome. For a `cancelled`
+     order or a refund outcome whose release was not sent, the price belongs to the buyer: send the buyer the price
+     by hand, then delete the unsent release and the refund and record the sent return as the order's refund, with
+     a note of the price you sent (step 4), so that the vendor is not paid.
+
+     When the sent row is a release or a refund that the order's outcome did not owe, the party it did owe is
+     still unpaid and you choose how to settle. Record the choice for each such order, with the transaction ID of anything you
+     pay by hand, beside `settlement-clash.txt`:
+     - **A sent release on a `cancelled` order or a refund outcome, beside an unsent refund**, paid the vendor the
+       price the buyer is owed. Either keep the refund: delete the sent release and its return (step 4), the
+       watcher sends the refund, the buyer is made whole and the market has paid the order twice. Only do this if
+       the release's return was not sent, or the refund would pay the excess a second time as well. Or delete the
+       refund, keeping the release and its return (step 4), and settle the price with the buyer by hand: pay it,
+       or recover it from the vendor outside the market and then pay the buyer.
+     - **A sent refund alone on a `completed` order or a release outcome, beside an unsent release**, paid the
+       buyer back and left the vendor owed the price. The refund stands: delete the release and its return
+       (step 4). Then either pay the vendor the price by hand, so that the market pays the order twice, or recover
+       it from the buyer outside the market and then pay the vendor.
+   - If no row was sent, the settlement matching the order stands: the release for a `completed` order, the refund
+     for a `cancelled` one, and for a `resolved` one the outcome its order history records.
+   - If rows of both settlements were sent, the order was paid twice (a refund plus a release, or a refund plus a
+     return that paid the excess a second time). Recover that outside the market first; the settlement whose
+     payment you leave with its recipient stands. Only then delete the other settlement's rows, sent or not; the
+     output of step 1 is their record.
+4. **Delete the settlement that does not stand**, one order at a time with its full order ID. To keep the
+   refund, delete the release **and its return** together; deleting only the release would leave its return
+   beside the refund, and a pending return would then be sent, paying the excess a second time:
+
+   ```sh
+   db_sql -v order_id=FULL_ORDER_ID <<'SQL'
+   DELETE FROM payouts WHERE order_id = :'order_id' AND kind IN ('release','return') RETURNING id, kind, state, txid;
+   SQL
+   ```
+
+   To keep the release and its return, delete the refund:
+
+   ```sh
+   db_sql -v order_id=FULL_ORDER_ID <<'SQL'
+   DELETE FROM payouts WHERE order_id = :'order_id' AND kind = 'refund' RETURNING id, kind, state, txid;
+   SQL
+   ```
+
+   For a `cancelled` order or a refund outcome whose return alone was sent (step 3), first send the buyer the price
+   by hand from the wallet, and note the amount the wallet sent and its transaction ID. Then delete the unsent
+   release together with the refund and record the sent return as the order's refund, in one transaction (a return
+   may not stay without its release, [section 18](#18-a-return-needs-its-release-migration-073-a-268)); the row keeps
+   its amount, state and transaction ID, so the order page shows only the returned excess as the refund. The same
+   transaction adds a note to the order history, which the buyer and the vendor read, saying that the return is the
+   refund and naming the amount you sent by hand and its transaction ID (the vendor's page hides the transaction ID,
+   as for every payout to the buyer). Give the amount as the wallet shows it, in BTC or XMR, as plain decimal digits without a sign or unit (for example `0.001`; the block refuses `NaN`, `Infinity` and exponent forms),
+   and the 64-character transaction ID in lowercase; no address goes into the note:
+
+   ```sh
+   db_sql -v order_id=FULL_ORDER_ID -v amount=AMOUNT_SENT -v txid=TRANSACTION_ID <<'SQL'
+   BEGIN;
+   DELETE FROM payouts WHERE order_id = :'order_id' AND kind IN ('release','refund') RETURNING id, kind, state, txid;
+   UPDATE payouts SET kind = 'refund', updated = now() WHERE order_id = :'order_id' AND kind = 'return' RETURNING id, kind, state, txid;
+   INSERT INTO order_events(order_id, from_state, to_state, note)
+   SELECT o.id, o.state, o.state, 'Refund recorded by hand (UPGRADING.md section 14): the overpayment returned to the buyer earlier is this order''s refund, and the remaining '
+     || CASE WHEN :'amount' ~ '^[0-9]+(\.[0-9]+)?$' AND :'amount'::numeric > 0 THEN trim_scale(:'amount'::numeric)::text END || ' ' || o.currency
+     || ' was sent to the buyer by hand from the market wallet in transaction ' || CASE WHEN :'txid' ~ '^[0-9a-f]{64}$' THEN :'txid' END || '.'
+   FROM orders o
+   WHERE o.id = :'order_id' AND EXISTS (SELECT 1 FROM payouts r WHERE r.order_id = o.id AND r.kind = 'refund' AND r.updated = now())
+   RETURNING order_id, note;
+   COMMIT;
+   SQL
+   ```
+
+   Each statement prints the rows it deleted, changed or inserted, which must be the rows you chose from step 1's
+   output and the note you meant; a mistyped order ID changes nothing (`DELETE 0`, `UPDATE 0`, `INSERT 0 0`). The
+   note is added only when the statement before it relabelled the return. If a statement fails, `psql` stops and
+   nothing in that block is changed: a missing, empty or malformed amount or transaction ID stops it with an error
+   (for example `syntax error at or near ":"` or `null value in column "note"`).
+5. **Check that no order is left with a release and a refund, a refund and a return, or a return without a
+   release.** This must print no rows (`(0 rows)`):
+
+   ```sh
+   db_sql <<'SQL'
+   SELECT order_id, string_agg(kind, ',' ORDER BY kind) AS kinds FROM payouts GROUP BY order_id
+   HAVING count(*) FILTER (WHERE kind IN ('release','refund')) > 1
+       OR count(*) FILTER (WHERE kind IN ('refund','return')) > 1
+       OR (count(*) FILTER (WHERE kind = 'return') > 0 AND count(*) FILTER (WHERE kind = 'release') = 0);
+   SQL
+   ```
+
+   An order it lists with only `return` has a return without its release (from an earlier hand deletion, not from
+   step 4): settle it as [section 18](#18-a-return-needs-its-release-migration-073-a-268) describes.
+
+   Then start the new release again: migrations 069, 070 and 073 apply, and the watcher sends every row you kept that
+   is `pending`. If the wallet showed in step 2 that a kept row was already sent but its state is not `sent` (it
+   was paid by hand), do not start the server as it is, or that row is sent a second time: first apply the payout
+   protection in [section 6](#6-backups-now-need-the-wallets-too), which pauses every payout behind the recovery
+   gate, then record the row with *Mark sent* and clear the gate as the
+   [runbook](docs/testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts) describes. Rolling
+   back past this release needs the pre-upgrade backup, as for every migration (section 5).
+
+Resolving a dispute on the moderation desk (or `/disputes`) now also asks for the moderator's or administrator's
+current password, and an authenticator code when TOTP is enrolled, like the other staff actions; the audit row
+records the confirmation. Moderators still resolve disputes.
+
+## 15. PGP sign-in with an unreadable key, and failed password confirmations (A-272, A-274)
+
+No migration. An account with PGP sign-in on whose saved key this release can no longer read (for example a key
+saved before the market refused keys like it, A-266) was signed in with the password alone by the earlier version.
+It no longer is: with TOTP on it is asked for its authenticator code or a recovery code; otherwise the sign-in is
+refused after the correct password, with a message naming the problem, the administrator's *Reset a user's second
+factors* (for an administrator, `-reset-admin-factors` on the host) and the staff contact, and the owner is notified
+once. Expect such requests after upgrading; confirm who is asking before resetting (see the
+[operator guide](docs/operator-guide.md#authentication)).
+
+The per-account limit on password-confirmed actions now counts only failed confirmations (a wrong password, or a
+wrong authenticator or recovery code after the right one): staff are no longer paused after ten correct
+confirmations in ten minutes (for example resolving many disputes). After ten failures the refusal now reads "Too
+many failed password confirmations. Try again in ten minutes."
+
+## 16. Issued-address collisions after a wallet restore (migration 071, A-288)
+
+Migration 071 adds two columns to `payment_status` (a count and a time, 0 and empty on existing rows); nothing else
+changes and nothing needs doing. A payment request that gets an address the database already issued, which happens
+after a wallet is restored from an older backup or seed without being advanced, was answered "Unable to save
+changes" with status 500. It is now refused with 503 "BTC payment addresses are being restored on this market.
+Nothing was charged and your order is still a draft; try again later." (or XMR), logged as a `payments:` line naming
+only the currency, and shown on the *Payment providers* panel of `/admin` until an administrator dismisses it. A
+monitor that matched `cause=23505 payment_addresses payment_addresses_address_key` should match
+`cause=payment-address-already-issued` instead. What to do when it appears:
+[Restore the wallets](docs/testnet-runbook.md#restore-the-wallets).
+
+## 17. An index for role changes in the audit log (migration 072, A-301)
+
+Migration 072 adds one partial index, `audit_events_role_change`, holding only the audit rows that record a role
+change. The moderation desk and `/disputes` read those rows on every load with an open dispute, to list evidence
+holders removed from staff (A-294); without the index each load read the whole audit log, which grows with every
+sign-in. No row is changed and the signed audit export is unaffected; nothing needs doing. Building the index reads
+`audit_events` once during the first start, within `MIGRATION_TIMEOUT` (default 10 minutes; about 0.1 seconds
+for a million audit rows on a test host). If your audit log is very large, raise it first as described under
+[Migrations](docs/operator-guide.md#migrations).
+
+## 18. A return needs its release (migration 073, A-268)
+
+Migration 073 adds the constraint trigger `payouts_return_needs_release` (and its function of the same name) on
+`payouts`. A return sends the excess of a release back to the buyer, so it is valid only beside the release of the
+same order. Before, the database accepted a return with no release; only hand-written SQL could create one, for
+example deleting a release and keeping its return while settling a clash as
+[section 14](#14-one-settlement-per-order-and-resolving-needs-a-password-migrations-069-and-070) said before this
+release. Now a transaction that leaves any order with a return and no release, whether it inserted, deleted or
+changed rows, is refused when it commits, with "payouts: order ORDER_ID has a return but no release. … so this
+transaction was rolled back and nothing was changed. Settle the order as UPGRADING.md describes (A return needs its
+release, migration 073).", and nothing of it is kept. The check runs at commit, so one transaction may insert a
+release and its return in either order, or delete both. The application queues a return only together with its
+release, so nothing it does is refused.
+
+A database that already holds a return without a release is **not** changed: the migration stops with an error
+naming the orders ("payouts: order(s) … have a return but no release. Nothing was changed. …"), every migration of
+that startup rolls back, and the server does not start. Nothing is deleted, because the return, or the release that
+is missing, may have been sent. While the server is stopped the watcher sends nothing. If the error names migration
+069 or 070 instead, settle section 14 first (its step 5 also lists the orders this section settles). Settle each
+order named here as below, with `db_sql` defined as in section 14, then start the server again.
+
+1. **List the payouts of those orders and keep the output** (here in `return-without-release.txt`). Each listed
+   order has only its return: migrations 069 and 070 refuse the other pairs first. `order_state` and
+   `dispute_outcome` (for a `resolved` order) say whom the order owes; `price`, like `amount`, is in the smallest
+   unit of `currency` (satoshi or piconero):
+
+   ```sh
+   db_sql <<'SQL' | tee return-without-release.txt
+   SELECT p.id, p.order_id, o.state AS order_state, d.outcome AS dispute_outcome, o.amount AS price, p.kind, p.state, p.send_ambiguous,
+     p.currency, p.amount, p.address, p.user_id, p.txid, p.error, p.created, p.updated
+   FROM payouts p JOIN orders o ON o.id = p.order_id LEFT JOIN disputes d ON d.order_id = p.order_id
+   WHERE p.order_id IN (SELECT order_id FROM payouts GROUP BY order_id
+     HAVING count(*) FILTER (WHERE kind = 'return') > 0 AND count(*) FILTER (WHERE kind = 'release') = 0)
+   ORDER BY p.order_id, p.kind;
+   SQL
+   ```
+
+2. **Check in the wallet whether each return was sent**, as in section 14 step 2: a row in state `sent` was sent;
+   one in state `sending`, a `failed` row with `send_ambiguous` true, or one whose error starts
+   `Restored from backup:` may have been sent; check every row in the wallet whatever its state, and count a row
+   that may have been sent and that the wallet does not clear as sent. Then find the missing release: the output
+   you kept when it was deleted (such as `settlement-clash.txt` from section 14), the pre-upgrade backup and the
+   order history ("Queued … release of …") give its address and amount. Check in the wallet whether the vendor was
+   paid the price, by that release or by hand.
+3. **Settle each order**, one at a time with its full order ID. Each statement prints the row it inserted, changed
+   or deleted; a mistyped order ID, or an order the statement does not fit, changes nothing (`INSERT 0 0`,
+   `UPDATE 0`, `DELETE 0`).
+   - **A `completed` order, or a `resolved` one with the `release` outcome**, owes the vendor the price, so its
+     return keeps a release. If the wallet shows that the vendor was paid the price, record that release as sent,
+     with the address and transaction ID the wallet shows:
+
+     ```sh
+     db_sql -v order_id=FULL_ORDER_ID -v address=VENDOR_ADDRESS -v txid=TRANSACTION_ID <<'SQL'
+     INSERT INTO payouts(order_id, kind, user_id, currency, amount, address, state, txid)
+     SELECT o.id, 'release', p.vendor_id, o.currency, o.amount, :'address', 'sent', :'txid'
+     FROM orders o JOIN products p ON p.id = o.product_id
+     WHERE o.id = :'order_id' AND EXISTS (SELECT 1 FROM payouts r WHERE r.order_id = o.id AND r.kind = 'return')
+     RETURNING id, kind, state, amount, address, txid;
+     SQL
+     ```
+
+     Otherwise restore the release of the price to the vendor's saved payout address, held for an administrator:
+
+     ```sh
+     db_sql -v order_id=FULL_ORDER_ID <<'SQL'
+     INSERT INTO payouts(order_id, kind, user_id, currency, amount, address, state, error)
+     SELECT o.id, 'release', p.vendor_id, o.currency, o.amount, CASE o.currency WHEN 'XMR' THEN v.payout_xmr ELSE v.payout_btc END, 'held',
+       'Restored by hand (UPGRADING.md section 18): check the wallet before releasing it.'
+     FROM orders o JOIN products p ON p.id = o.product_id JOIN users v ON v.id = p.vendor_id
+     WHERE o.id = :'order_id' AND EXISTS (SELECT 1 FROM payouts r WHERE r.order_id = o.id AND r.kind = 'return')
+     RETURNING id, kind, state, amount, address;
+     SQL
+     ```
+
+     Once the server runs, an administrator releases it under *Payouts* on `/admin` after checking the wallet once
+     more (and, if the vendor's account is suspended, checking the address with the vendor); the watcher then sends
+     it once. Either way the return stays as it is: if it was not sent, the watcher sends it to the buyer.
+   - **A `cancelled` order, or a `resolved` one with the `refund` outcome**, owes the buyer everything it received
+     and the vendor nothing, so no release is restored. If the return was sent, first send the buyer the price by
+     hand from the wallet, unless you already paid it (as section 14 said for such an order before this release),
+     and note the amount the wallet sent and its transaction ID. Then record the return as the order's refund; the
+     row keeps its amount, state and transaction ID, so the order page shows only the returned excess as the refund.
+     The same transaction adds a note to the order history, which the buyer and the vendor read, saying that the
+     return is the refund and naming the amount you sent by hand and its transaction ID (the vendor's page hides the
+     transaction ID, as for every payout to the buyer). Give the amount as the wallet shows it, in BTC or XMR, as
+     plain decimal digits without a sign or unit (for example `0.001`; the block refuses `NaN`, `Infinity` and exponent forms), and the 64-character transaction ID in lowercase; no address goes into the note:
+
+     ```sh
+     db_sql -v order_id=FULL_ORDER_ID -v amount=AMOUNT_SENT -v txid=TRANSACTION_ID <<'SQL'
+     BEGIN;
+     UPDATE payouts SET kind = 'refund', updated = now() WHERE order_id = :'order_id' AND kind = 'return'
+       AND NOT EXISTS (SELECT 1 FROM payouts l WHERE l.order_id = payouts.order_id AND l.kind = 'release')
+     RETURNING id, kind, state, amount, txid;
+     INSERT INTO order_events(order_id, from_state, to_state, note)
+     SELECT o.id, o.state, o.state, 'Refund recorded by hand (UPGRADING.md section 18): the overpayment returned to the buyer earlier is this order''s refund, and the remaining '
+       || CASE WHEN :'amount' ~ '^[0-9]+(\.[0-9]+)?$' AND :'amount'::numeric > 0 THEN trim_scale(:'amount'::numeric)::text END || ' ' || o.currency
+       || ' was sent to the buyer by hand from the market wallet in transaction ' || CASE WHEN :'txid' ~ '^[0-9a-f]{64}$' THEN :'txid' END || '.'
+     FROM orders o
+     WHERE o.id = :'order_id' AND EXISTS (SELECT 1 FROM payouts r WHERE r.order_id = o.id AND r.kind = 'refund' AND r.updated = now())
+     RETURNING order_id, note;
+     COMMIT;
+     SQL
+     ```
+
+     The note is added only when the statement before it relabelled the return. A missing, empty or malformed amount
+     or transaction ID stops the block with an error (for example `syntax error at or near ":"` or
+     `null value in column "note"`) and nothing is changed.
+
+     If it was not sent, delete it (neither statement touches a return beside its release, and this one never
+     deletes a row in state `sent`):
+
+     ```sh
+     db_sql -v order_id=FULL_ORDER_ID <<'SQL'
+     DELETE FROM payouts WHERE order_id = :'order_id' AND kind = 'return' AND state <> 'sent'
+       AND NOT EXISTS (SELECT 1 FROM payouts l WHERE l.order_id = payouts.order_id AND l.kind = 'release')
+     RETURNING id, kind, state, txid;
+     SQL
+     ```
+
+     Then send the buyer the price and the return's amount by hand from the wallet, unless you already paid them. In
+     either case record the transaction ID of what you sent by hand beside `return-without-release.txt`; do not
+     insert a payout or use *Mark sent* for it.
+4. **Check that no order is left with a return and no release.** This must print no rows (`(0 rows)`):
+
+   ```sh
+   db_sql <<'SQL'
+   SELECT order_id FROM payouts GROUP BY order_id
+   HAVING count(*) FILTER (WHERE kind = 'return') > 0 AND count(*) FILTER (WHERE kind = 'release') = 0;
+   SQL
+   ```
+
+   Then start the new release again: migration 073 applies. As in section 14, if a return you kept was paid by
+   hand but its state is not `sent`, apply the payout protection in
+   [section 6](#6-backups-now-need-the-wallets-too) first and record it with *Mark sent*, or the watcher sends it a
+   second time. Rolling back past this release needs the pre-upgrade backup (section 5): the earlier release refuses
+   to start on a database that records migration 073.
 
 ## Appendix: new keys by hand
 

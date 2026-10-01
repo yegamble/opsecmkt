@@ -1,0 +1,5 @@
+{{/* A-119 (staff_contact.go): the administrator's staff contact, always as text. The /messages link is added only for
+a signed-in reader when the contact is a staff handle whose key can receive encrypted messages (StaffContactView.Handle).
+Unset: "Ask the operator of this market." Call with the page data, inside an element of class "staff-contact" within a
+.panel, .message or .product-body (whose overflow-wrap breaks a long address at 320 px). */}}
+{{define "staff-contact"}}{{with .StaffContact}}Contact the market staff: {{.Text}}.{{with .Handle}} <a class="text-link" href="/messages?to={{.}}">Send {{.}} an encrypted message</a>.{{end}}{{else}}Ask the operator of this market.{{end}}{{end}}

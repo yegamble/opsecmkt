@@ -94,6 +94,7 @@ func TestOrderPaymentRequestReservesStock(t *testing.T) {
 
 	stub := &stubProvider{currency: "BTC", broken: true}
 	w.e.A.payments["BTC"] = stub
+	w.e.usableKey(w.vendorID) // with a wallet, a physical order also needs a vendor key (A-83)
 	w.expect("/orders/pay", w.buyer, pay, 503, "did not return a usable address")
 	if w.state(order) != stateDraft || w.stock(product) != 5 {
 		t.Fatal("wallet failure left a partial change")
@@ -437,8 +438,8 @@ func TestDisputeOpensAndModeratorResolves(t *testing.T) {
 		return nil
 	})
 	t.Cleanup(func() { transitionHooks = transitionHooks[:len(transitionHooks)-1] })
-	w.expect("/resolve", w.mod, payoutConfirmed(form("id", disputeID, "outcome", "refund", "resolution", decision), 0), 303, "")
-	w.expect("/resolve", w.mod, payoutConfirmed(form("id", disputeID, "outcome", "release", "resolution", decision), 0), 409, "")
+	w.expect("/resolve", w.mod, resolveConfirmed(form("id", disputeID, "outcome", "refund", "resolution", decision), 0), 303, "")
+	w.expect("/resolve", w.mod, resolveConfirmed(form("id", disputeID, "outcome", "release", "resolution", decision), 0), 409, "")
 	var outcome, status string
 	w.e.DB.QueryRow("SELECT outcome,status FROM disputes WHERE id=$1", disputeID).Scan(&outcome, &status)
 	if seen != "refund" || outcome != "refund" || status != "Resolved — refund to buyer" || w.state(order) != stateResolved {
@@ -457,7 +458,7 @@ func TestDisputeOpensAndModeratorResolves(t *testing.T) {
 	if !strings.Contains(w.page("/moderator", admin, 200), "You are a party to this order") {
 		t.Fatal("moderator desk offers a conflicted resolution")
 	}
-	w.expect("/resolve", admin, payoutConfirmed(form("id", ownDispute, "outcome", "release", "resolution", decision), 0), 403, "")
+	w.expect("/resolve", admin, resolveConfirmed(form("id", ownDispute, "outcome", "release", "resolution", decision), 0), 403, "")
 	w.e.DB.QueryRow("SELECT outcome,status FROM disputes WHERE id=$1", ownDispute).Scan(&outcome, &status)
 	if outcome != "" || status != "Open" || w.state(own) != stateDisputed {
 		t.Fatal("refused resolution was partially written")

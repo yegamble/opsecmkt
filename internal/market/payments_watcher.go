@@ -15,8 +15,9 @@ import (
 // One background watcher per deployment (PostgreSQL advisory lock): it records deposits in the idempotent
 // payments ledger, moves fully confirmed orders awaiting_payment -> paid through transition(), cancels orders
 // left unpaid past PAYMENT_EXPIRY, announces deposits received after funding to the buyer and vendor, flags
-// conflicted, locked or unexpected deposits for moderators, refunds deposits that confirm after a
-// cancellation, queues missing payouts and sends pending payouts once.
+// conflicted, locked or unexpected deposits for moderators (a deposit first recorded after its order closed is
+// flagged, never paid out), refunds deposits recorded before a cancellation that confirm after it, queues
+// missing payouts and sends pending payouts once.
 
 const paymentWatcherLock = 782494
 
@@ -230,21 +231,28 @@ type ledgerKey struct {
 func (a *App) pollCurrency(ctx context.Context, p PaymentProvider) error {
 	cur := p.Currency()
 	// Orders awaiting payment and every funded non-terminal order whatever its age (extra deposits, conflicts,
-	// reorgs), plus recently changed terminal orders (late confirmations, refunds), plus closed orders whose
-	// address was issued within 30 days and that still have a deposit below the threshold or a confirmed deposit
-	// neither credited (paid out / counted) nor flagged. Credited deposits below threshold remain watched even
-	// after a conflict was flagged. Whatever their age, orders with a payout pending (sendPayouts sends only
-	// payouts of orders read and settled in this pass) or held are watched too: the watcher's own hold resumes
-	// once the deposit re-confirms, and the ledger of a hold an administrator must release (a watcher hold
-	// converted by a suspension or a restore from backup) stays current, so the release is not refused on stale
-	// confirmations. Other older addresses of closed orders are not polled.
+	// reorgs), plus recently changed terminal orders (late confirmations, refunds), plus every closed order whose
+	// address was issued within 30 days (A-211: a deposit sent to it after the order closed is recorded, flagged
+	// and shown to the buyer, never paid out automatically; see settleOrder). Whatever their age, orders with a
+	// payout pending (sendPayouts sends only payouts of orders read and settled in this pass) or held are watched
+	// too: the watcher's own hold resumes once the deposit re-confirms, and the ledger of a hold an administrator
+	// must release (a watcher hold converted by a suspension or a restore from backup) stays current, so the
+	// release is not refused on stale confirmations. Other older addresses of closed orders are not polled.
+	//
+	// Cost: the watch set is every open order plus every order whose address was issued in the last 30 days, so
+	// about 30 days of orders (3,000 addresses at 100 orders a day). recordIncoming reads them in chunks of 200.
+	// Bitcoin: one listreceivedbyaddress per chunk (it lists every address of the wallet that has received funds,
+	// so its cost grows with the wallet as well) and one gettransaction per transaction received by the chunk's
+	// addresses, every pass. Monero: one get_address_index per address the first time this process reads it (then
+	// cached) and one get_transfers per chunk (subaddr_indices). Each watched order also takes one settleOrder
+	// transaction per pass. The work per pass (every PAYMENT_POLL_INTERVAL, default 30 s) therefore grows with the
+	// number of orders of the last 30 days and the deposits to them (not measured at volume); a pass is bounded
+	// by watcherPassTimeout, and one cut short leaves the rest to the next.
 	rows, err := a.db.QueryContext(ctx, `SELECT pa.address,pa.order_id FROM payment_addresses pa JOIN orders o ON o.id=pa.order_id
 		WHERE pa.currency=$1 AND (o.state IN ('awaiting_payment',`+fundedOpenStates+`) OR (o.state<>'draft' AND o.updated > now()-interval '24 hours')
-			OR (o.state IN ('cancelled','resolved','completed') AND pa.created > now()-interval '30 days' AND EXISTS (SELECT 1 FROM payments pm
-				WHERE pm.order_id=o.id AND ((pm.credited AND pm.confirmations<$2)
-					OR (NOT pm.flagged AND (pm.confirmations BETWEEN 0 AND $2-1 OR (pm.confirmations>=$2 AND NOT pm.credited))))))
+			OR (o.state IN ('cancelled','resolved','completed') AND pa.created > now()-interval '30 days')
 			OR EXISTS (SELECT 1 FROM payouts po WHERE po.order_id=o.id AND po.state IN ('pending','held')))
-		ORDER BY o.updated`, cur, int64(p.Confirmations()))
+		ORDER BY o.updated`, cur)
 	if err != nil {
 		return err
 	}
@@ -294,7 +302,8 @@ func (a *App) pollCurrency(ctx context.Context, p PaymentProvider) error {
 
 // recordIncoming upserts what the wallet reports for addresses; ledger rows the wallet no longer reports
 // (replaced, conflicted or evicted transactions) are marked -1 confirmations. A new row on a funded,
-// non-terminal order is marked late_notice for settleOrder to announce.
+// non-terminal order is marked late_notice for settleOrder to announce; one on a closed order is marked
+// after_close: it is never counted toward the order's settlement (payoutBasis), and settleOrder flags it.
 func (a *App) recordIncoming(ctx context.Context, p PaymentProvider, addresses []string, orderOf map[string]string) error {
 	incoming, err := p.Incoming(ctx, addresses)
 	if err != nil {
@@ -308,8 +317,9 @@ func (a *App) recordIncoming(ctx context.Context, p PaymentProvider, addresses [
 			continue
 		}
 		seen[ledgerKey{in.TxID, in.Index}] = true
-		if _, err = a.db.ExecContext(ctx, `INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,locked,late_notice)
-			VALUES($1,$2,$3,$4,$5,$6,$7,$8,EXISTS(SELECT 1 FROM orders WHERE id=$1 AND state IN (`+fundedOpenStates+`)))
+		if _, err = a.db.ExecContext(ctx, `INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,locked,late_notice,after_close)
+			VALUES($1,$2,$3,$4,$5,$6,$7,$8,EXISTS(SELECT 1 FROM orders WHERE id=$1 AND state IN (`+fundedOpenStates+`)),
+				EXISTS(SELECT 1 FROM orders WHERE id=$1 AND state IN ('cancelled','resolved','completed')))
 			ON CONFLICT (currency,txid,idx) DO UPDATE SET confirmations=excluded.confirmations, locked=excluded.locked, updated=now()
 			WHERE (payments.confirmations,payments.locked) IS DISTINCT FROM (excluded.confirmations,excluded.locked)`, order, cur, in.TxID, in.Index, in.Address, in.Amount, in.Confirmations, in.Locked); err != nil {
 			return err
@@ -389,10 +399,8 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 	// deposit (top-up) seen for PAYMENT_EXPIRY either: cancel the same way, and the payout hook refunds the
 	// confirmed deposits to the buyer. Without this an underpaid order and its deposits would wait forever.
 	if o.State == stateAwaitingPayment && walletRead {
-		expiry, err := paymentExpiry()
-		if err != nil {
-			expiry = 24 * time.Hour // validated at startup by the provider factories
-		}
+		// The buyer's order page states the resulting time from the same inputs (paymentsOrderLoader, A-123).
+		expiry := expiryWindow()
 		var unpaid, underpaid bool
 		var received int64
 		if err = tx.QueryRowContext(ctx, `WITH d AS (SELECT amount,confirmations,created FROM payments WHERE order_id=$1 AND confirmations>=0 AND NOT locked)
@@ -414,8 +422,23 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 			}
 			o = *next
 			if underpaid {
-				body := fmt.Sprintf("Order %s: the payment window ended with %s of %s %s received, so the order was cancelled. What you sent is refunded to your saved %s payout address (the refund waits until you save one), unless it is below the minimum automatic refund, when staff review it. The order page shows the refund.",
-					orderID[:min(8, len(orderID))], amount(received, dec), amount(total, dec), o.Currency, o.Currency)
+				// The transition queued the refund (payout hook) or, below the floor, flagged the deposits instead:
+				// the notification says which (A-211).
+				var refundState string
+				var refund int64
+				err = tx.QueryRowContext(ctx, "SELECT state,amount FROM payouts WHERE order_id=$1 AND kind='refund'", orderID).Scan(&refundState, &refund)
+				if err != nil && err != sql.ErrNoRows {
+					return err
+				}
+				what := fmt.Sprintf("A refund of %s %s to your saved %s payout address is queued; the network fee is taken from it. The order page shows its status.", amount(refund, dec), o.Currency, o.Currency)
+				switch {
+				case err == sql.ErrNoRows:
+					what = fmt.Sprintf("%s %s is below the minimum automatic payout of %s %s, so it is not refunded; market staff were notified.", amount(received, dec), o.Currency, amount(payoutFloor(o.Currency, "refund"), dec), o.Currency)
+				case refundState == "blocked":
+					what = fmt.Sprintf("The refund of %s %s waits until you save a %s payout address on your account page; the network fee is taken from it.", amount(refund, dec), o.Currency, o.Currency)
+				}
+				body := fmt.Sprintf("Order %s: the payment window ended with %s of %s %s received, so the order was cancelled. %s Anything sent to this order's address after the cancellation is not refunded automatically.",
+					orderID[:min(8, len(orderID))], amount(received, dec), amount(total, dec), o.Currency, what)
 				if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, body); err != nil {
 					return err
 				}
@@ -476,18 +499,20 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 		}
 	}
 	// A credited deposit back below the threshold (conflicted or missing, or at a lower depth after a reorg) is
-	// announced once per episode while the order is open or its payout unsent; unsent payouts are held below and
-	// the order state is never reverted. Reaching the threshold again ends the episode (regress_notice), so a
-	// later regression is announced again. payments.flagged stays set: staff keep read access and the desk lists it.
+	// announced once per episode while the order is open or any of its payouts is unsent (A-213: a release sent
+	// with its return still unsent counts as unsent); unsent payouts are held below and the order state is never
+	// reverted. Reaching the threshold again ends the episode (regress_notice), so a later regression is announced
+	// again, as a new flag with no disposition (A-31; the order history keeps the earlier one). payments.flagged
+	// stays set: staff keep read access and the desk lists it.
 	if _, err = tx.ExecContext(ctx, "UPDATE payments SET regress_notice=false WHERE order_id=$1 AND regress_notice AND confirmations>=$2", orderID, threshold); err != nil {
 		return err
 	}
-	var sent bool
-	if err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM payouts WHERE order_id=$1 AND state='sent')", orderID).Scan(&sent); err != nil {
+	var allSent bool
+	if err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM payouts WHERE order_id=$1) AND NOT EXISTS(SELECT 1 FROM payouts WHERE order_id=$1 AND state<>'sent')", orderID).Scan(&allSent); err != nil {
 		return err
 	}
-	if !isTerminal(o.State) || !sent {
-		rows, err := tx.QueryContext(ctx, "UPDATE payments SET flagged=true,regress_notice=true WHERE order_id=$1 AND credited AND confirmations<$2 AND NOT regress_notice RETURNING txid,confirmations", orderID, threshold)
+	if !isTerminal(o.State) || !allSent {
+		rows, err := tx.QueryContext(ctx, "UPDATE payments SET flagged=true,regress_notice=true,disposition='',disposition_note='',disposed_at=NULL WHERE order_id=$1 AND credited AND confirmations<$2 AND NOT regress_notice RETURNING txid,confirmations", orderID, threshold)
 		if err != nil {
 			return err
 		}
@@ -541,7 +566,7 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 		if err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM payouts WHERE order_id=$1)", orderID).Scan(&queued); err != nil {
 			return err
 		}
-		if err = a.enqueuePayout(ctx, tx, &o); err != nil {
+		if err = a.settleTerminal(ctx, tx, &o); err != nil {
 			return err
 		}
 		if err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM payouts WHERE order_id=$1)", orderID).Scan(&paidOut); err != nil {
@@ -554,23 +579,68 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 				return err
 			}
 		}
-		if paidOut {
-			late, err := collectStrings(ctx, tx, "SELECT txid FROM payments WHERE order_id=$1 AND NOT credited AND NOT flagged AND confirmations>=$2", orderID, threshold)
-			if err != nil {
-				return err
-			}
-			for _, txid := range late {
-				if _, err = tx.ExecContext(ctx, "UPDATE payments SET flagged=true WHERE order_id=$1 AND txid=$2 AND NOT credited", orderID, txid); err != nil {
-					return err
-				}
-				note := fmt.Sprintf("%s deposit %s arrived after this order was settled and was not paid out. Moderator review required.", a.netTag(), truncate(txid, 20))
-				if err = a.flagOrder(ctx, tx, &o, note, ""); err != nil {
-					return err
-				}
-			}
+		if err = a.flagLateDeposits(ctx, tx, &o, threshold, paidOut); err != nil {
+			return err
 		}
 	}
 	return tx.Commit()
+}
+
+// flagLateDeposits flags, on a closed order, the confirmed deposits that are not paid out: those that confirmed
+// after the order's settlement was queued (paidOut) and those first recorded after the order closed
+// (after_close), which are never counted. They are never credited or refunded automatically (A-211). Each pass
+// that flags some writes one order note naming them (the desk dates each flag from it). The buyer (the amount, no
+// transaction ID; the vendor is not told) and the staff are notified once per episode: an episode starts when
+// the order has no such flag open (flagged, not credited, not below the floor, not locked, and with no recorded
+// disposition, or one escalated to an administrator: A-31) and lasts while one is, so many small deposits give one
+// notice each, and a deposit after staff disposed of every earlier one is announced again.
+func (a *App) flagLateDeposits(ctx context.Context, tx *sql.Tx, o *Order, threshold int64, paidOut bool) error {
+	const open = "flagged AND NOT credited AND NOT below_floor AND NOT locked AND disposition IN ('','escalated')"
+	var episode bool
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM payments WHERE order_id=$1 AND "+open+")", o.ID).Scan(&episode); err != nil {
+		return err
+	}
+	rows, err := tx.QueryContext(ctx, `UPDATE payments SET flagged=true WHERE order_id=$1 AND NOT credited AND NOT flagged AND NOT locked
+		AND confirmations>=$2 AND ($3 OR after_close) RETURNING txid,amount`, o.ID, threshold, paidOut)
+	if err != nil {
+		return err
+	}
+	dec := currencyDecimals(o.Currency)
+	var deposits []string
+	var sum int64
+	for rows.Next() {
+		var txid string
+		var amt int64
+		if err = rows.Scan(&txid, &amt); err != nil {
+			rows.Close()
+			return err
+		}
+		deposits = append(deposits, "deposit "+truncate(txid, 20)+" ("+amount(amt, dec)+" "+o.Currency+")")
+		sum += amt
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil || len(deposits) == 0 {
+		return err
+	}
+	slices.Sort(deposits)
+	closed, verb := "closed", "was"
+	if paidOut {
+		closed = "settled"
+	}
+	if len(deposits) > 1 {
+		verb = "were"
+	}
+	note := a.netTag() + " " + strings.Join(deposits, ", ") + " arrived after this order was " + closed + " and " + verb + " not paid out. Moderator review required."
+	if episode {
+		_, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, o.State, note)
+		return err
+	}
+	if err = a.flagOrder(ctx, tx, o, note, ""); err != nil {
+		return err
+	}
+	body := "Order " + o.ID[:min(8, len(o.ID))] + ": " + amount(sum, dec) + " " + o.Currency + " (" + a.netTag() + ") arrived at this order's deposit address after the order closed and was not paid out; it is not refunded automatically. Market staff were notified and review it."
+	_, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, body)
+	return err
 }
 
 func collectStrings(ctx context.Context, tx *sql.Tx, query string, args ...any) ([]string, error) {
@@ -655,12 +725,12 @@ func (a *App) sendPayouts(ctx context.Context, p PaymentProvider, orders []strin
 		if ctx.Err() != nil {
 			break
 		}
-		var to, order, recipient, kind string
+		var to, order, recipient string
 		var amt int64
 		err = a.db.QueryRowContext(ctx, `UPDATE payouts SET state='sending',updated=now() WHERE id=$1 AND state='pending' AND address<>''
 			AND NOT EXISTS (SELECT 1 FROM settings WHERE key='payments_recovery_required' AND value='true')
 			AND NOT EXISTS (SELECT 1 FROM payments pm WHERE pm.order_id=payouts.order_id AND pm.credited AND pm.confirmations<$2)
-			RETURNING address,amount,order_id,user_id,kind`, id, int64(p.Confirmations())).Scan(&to, &amt, &order, &recipient, &kind)
+			RETURNING address,amount,order_id,user_id`, id, int64(p.Confirmations())).Scan(&to, &amt, &order, &recipient)
 		if err == sql.ErrNoRows {
 			continue
 		}
@@ -670,10 +740,10 @@ func (a *App) sendPayouts(ctx context.Context, p PaymentProvider, orders []strin
 		// The wallet call is detached from shutdown (a redeploy must not abort a broadcast mid-flight) but
 		// bounded; Close waits for it. The outcome is recorded on a fresh bounded context for the same reason.
 		sctx, scancel := context.WithTimeout(context.WithoutCancel(ctx), payoutSendTimeout)
-		// A refund or return pays its own network fee (feeFromAmountSender); a release is sent with Send.
-		send := p.Send
-		if f, ok := p.(feeFromAmountSender); ok && kind != "release" {
-			send = f.SendFeeFromAmount
+		// Every payout pays its own network fee (feeFromAmountSender, A-232): the recipient receives amt less the fee.
+		send, feeTaken := p.Send, ""
+		if f, ok := p.(feeFromAmountSender); ok {
+			send, feeTaken = f.SendFeeFromAmount, "; the network fee was taken from it"
 		}
 		txid, serr := send(sctx, to, amt)
 		scancel()
@@ -685,10 +755,14 @@ func (a *App) sendPayouts(ctx context.Context, p PaymentProvider, orders []strin
 			if ambiguous {
 				msg = "Wallet call failed without a definite answer; the transaction may or may not have been broadcast. Check the wallet before requeueing or paying manually. "
 			}
-			err = a.recordPayout(rctx, id, order, recipient, "failed", "", msg+truncate(serr.Error(), 200), ambiguous, a.netTag()+" payout of "+label+" failed and will not be retried automatically.")
+			note := a.netTag() + " payout of " + label + " failed and will not be retried automatically."
+			err = a.recordPayout(rctx, id, order, recipient, "failed", "", msg+truncate(serr.Error(), 200), ambiguous, note, note)
 			errs = append(errs, &watchError{label: fmt.Sprintf("payout %d", id), class: payoutErrorClass(cur, serr), err: serr})
 		} else {
-			err = a.recordPayout(rctx, id, order, recipient, "sent", txid, "", false, a.netTag()+" payout of "+label+" sent: "+txid)
+			// Only the recipient's notification names the txid: on Bitcoin it reveals their payout address (A-214).
+			// The recipient received the amount less the network fee (A-250).
+			note := a.netTag() + " payout of " + label + " sent" + feeTaken + "."
+			err = a.recordPayout(rctx, id, order, recipient, "sent", txid, "", false, note, note+" Transaction ID: "+txid)
 		}
 		cancel()
 		// Logged here, not only in the returned error: the watcher drops a pass's error once shutdown has begun,
@@ -731,14 +805,45 @@ func payoutErrorClass(cur string, err error) string {
 //
 // Monero: monero-wallet-rpc's transfer submits through wallet2::commit_tx, whose /sendrawtransaction call can
 // fail after the daemon relayed the transaction (-38 on a timeout, -3/-4 from the daemon's reply, -1 when
-// saving the tx info after commit), so only the codes in moneroPreSubmitCodes are definite.
+// saving the tx info after commit), so only the codes in moneroPreSubmitCodes are definite, and only from the
+// wallet they were verified against: an error from any other wallet version is unverifiedWalletError (A-174).
 func walletRejected(cur string, err error) bool {
 	var re *rpcError
-	if !errors.As(err, &re) {
+	var uv *unverifiedWalletError
+	if !errors.As(err, &re) || errors.As(err, &uv) {
 		return false
 	}
 	return cur == "BTC" || (cur == "XMR" && moneroPreSubmitCodes[re.Code])
 }
+
+// moneroVerifiedWalletRelease is the monero-wallet-rpc release moneroPreSubmitCodes was verified against, the
+// tag compose.nodes.yaml, .env.example and scripts/install.sh pin (tests/test_installer.py fails if they
+// differ from it). monero-wallet-rpc does not report its release: get_version answers WALLET_RPC_VERSION, the
+// version of its RPC interface as (major<<16)|minor, and "release", whether it is a release build
+// (v0.18.5.1 src/wallet/wallet_rpc_server.cpp:4842-4847). v0.18.5.1 reports 1.31, a release build
+// (src/wallet/wallet_rpc_server_commands_defs.h:49-52); v0.18.5.0 reports 1.30, v0.18.4.1-v0.18.4.5 1.29,
+// and the release-v0.18 branch after v0.18.5.1 1.32. The minor is bumped with every change to the RPC, not
+// with every release, so a later release that leaves the RPC unchanged would also report 1.31: the check tells
+// apart every wallet whose RPC changed, not every build. Only moneroVerifiedWalletRPC with release true is
+// verified; any other answer, none, or a check that failed leaves every transfer error ambiguous (fail safe).
+const (
+	moneroVerifiedWalletRelease = "v0.18.5.1"
+	moneroVerifiedWalletRPC     = 1<<16 | 31
+)
+
+// unverifiedWalletError wraps a JSON-RPC error from a monero-wallet-rpc whose get_version is not the verified
+// one: walletRejected treats it as ambiguous, whatever its code (errors.As still finds the rpcError).
+type unverifiedWalletError struct {
+	version string // the wallet's get_version as the last check recorded it ("RPC version 1.30, release build")
+	err     error
+}
+
+func (e *unverifiedWalletError) Error() string {
+	// The wallet's error first: the recorded payout error keeps only its first 200 bytes.
+	return fmt.Sprintf("%v; monero-wallet-rpc %s is not verified (%s reports %s), so this error may follow a broadcast", e.err, e.version, moneroVerifiedWalletRelease, moneroRPCVersion(moneroVerifiedWalletRPC, true))
+}
+
+func (e *unverifiedWalletError) Unwrap() error { return e.err }
 
 // moneroPreSubmitCodes are the monero-wallet-rpc transfer error codes raised only before wallet2::commit_tx
 // submits anything (monero v0.18.5.1: codes from src/wallet/wallet_rpc_server_error_codes.h; raised by
@@ -755,8 +860,9 @@ var moneroPreSubmitCodes = map[int64]bool{
 }
 
 // recordPayout moves a claimed payout from sending to state. ambiguous marks a failure whose broadcast is
-// unknown: requeueing it then needs the administrator's explicit confirmation (payments_admin.go).
-func (a *App) recordPayout(ctx context.Context, id int64, orderID, recipient, state, txid, msg string, ambiguous bool, note string) error {
+// unknown: requeueing it then needs the administrator's explicit confirmation (payments_admin.go). note goes into
+// the order history, which both parties read; notice is the recipient's notification.
+func (a *App) recordPayout(ctx context.Context, id int64, orderID, recipient, state, txid, msg string, ambiguous bool, note, notice string) error {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -774,7 +880,7 @@ func (a *App) recordPayout(ctx context.Context, id int64, orderID, recipient, st
 	if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", orderID, orderState, note); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), recipient, "Order "+orderID[:min(8, len(orderID))]+": "+note); err != nil {
+	if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), recipient, "Order "+orderID[:min(8, len(orderID))]+": "+notice); err != nil {
 		return err
 	}
 	if state == "failed" {

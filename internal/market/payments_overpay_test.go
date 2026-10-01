@@ -2,23 +2,32 @@ package market
 
 import (
 	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"html"
 	"net/url"
+	"os"
 	"regexp"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"rsc.io/qr"
 )
 
-// Overpayments are returned accurately without letting anyone profit from the market's wallet: a release pays the
-// vendor exactly the price and returns the excess to the buyer with the network fee taken from it; an excess
-// below the minimum automatic refund goes to the vendor; a refund or return larger than the price waits for an
-// administrator (the pooled wallet must not become a coin swap); refunds and returns always pay their own fee.
+// Overpayments: a release pays the vendor exactly the price and returns the excess to the buyer with the network
+// fee taken from it; an excess below the minimum automatic payout goes to the vendor; a refund or return larger
+// than the price (a likely mistake) waits for an administrator, while one up to the price is sent automatically;
+// every payout (release, refund or return) is sent with the fee-from-amount call (A-232).
 
 func TestSplitPayoutRules(t *testing.T) {
 	o := &Order{BuyerID: "b", VendorID: "v", Currency: "BTC"}
 	const price = 100000
+	const xmrPrice = 500000000000 // 0.5 XMR
 	for _, tc := range []struct {
 		name, kind, currency string
 		sum                  int64
@@ -32,11 +41,18 @@ func TestSplitPayoutRules(t *testing.T) {
 		{"excess above the price is held", "release", "BTC", 2*price + 1, []payoutPart{{"release", "v", "vendor", price, false}, {"return", "b", "buyer", price + 1, true}}},
 		{"refund up to the price", "refund", "BTC", price, []payoutPart{{"refund", "b", "buyer", price, false}}},
 		{"refund above the price is held", "refund", "BTC", price + 1, []payoutPart{{"refund", "b", "buyer", price + 1, true}}},
-		{"XMR excess below its floor stays with the vendor", "release", "XMR", price + minAutoRefundXMR - 1, []payoutPart{{"release", "v", "vendor", price + minAutoRefundXMR - 1, false}}},
+		{"XMR excess below its floor stays with the vendor", "release", "XMR", xmrPrice + minPayoutXMR - 1, []payoutPart{{"release", "v", "vendor", xmrPrice + minPayoutXMR - 1, false}}},
+		{"XMR excess at its floor is returned", "release", "XMR", xmrPrice + minPayoutXMR, []payoutPart{{"release", "v", "vendor", xmrPrice, false}, {"return", "b", "buyer", minPayoutXMR, false}}},
+		{"XMR excess above the price is held", "release", "XMR", 2*xmrPrice + 1, []payoutPart{{"release", "v", "vendor", xmrPrice, false}, {"return", "b", "buyer", xmrPrice + 1, true}}},
+		{"XMR refund above the price is held", "refund", "XMR", xmrPrice + 1, []payoutPart{{"refund", "b", "buyer", xmrPrice + 1, true}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			o.Currency = tc.currency
-			got := splitPayout(tc.kind, o, tc.sum, price)
+			required := int64(price)
+			if tc.currency == "XMR" {
+				required = xmrPrice
+			}
+			got := splitPayout(tc.kind, o, tc.sum, required)
 			if len(got) != len(tc.want) {
 				t.Fatalf("got %+v", got)
 			}
@@ -56,13 +72,20 @@ func TestSplitPayoutRules(t *testing.T) {
 	}
 }
 
-// An overpayment worth returning: the vendor gets the price with Send, the buyer the excess with the fee taken from it.
+// An overpayment worth returning: the vendor gets the price and the buyer the excess, each with the fee taken from it.
 func TestOverpaymentReturnedToBuyer(t *testing.T) {
 	p := newPayEnv(t)
 	p.setPayoutAddress(p.vendor, "fake-testnet-vendor")
 	p.setPayoutAddress(p.buyer, "fake-testnet-buyer")
 	p.paidByWatcherAmount(150000)
-	p.complete(p.order)
+	// A-215: the shipped order's page says, for this order, that completing returns the excess (fee deducted).
+	buyerPage, vendorPage := p.overpaidPages()
+	mustContain(t, buyerPage, "You sent 0.0005 BTC more than the price (test network). Completing releases the price to the vendor and returns the excess to your saved BTC payout address, with the network fee deducted.",
+		"Release 0.001 BTC (test network) to "+p.vendor.Handle+" (the price) and return the 0.0005 BTC paid over the price to "+p.buyer.Handle+"; network fee deducted from each. This is final.")
+	mustNotContain(t, buyerPage, "the return waits", "below the minimum automatic payout", "administrator reviews its return")
+	mustContain(t, vendorPage, "The buyer sent 0.0005 BTC more than the price (test network). Completing releases the price to you and returns the excess to the buyer, with the network fee deducted.")
+	mustNotContain(t, vendorPage, "your saved", "payout address saved", "the return waits")
+	p.move(p.order, stateShipped, stateCompleted, p.buyer)
 	if st, _, addr, amt := p.payout(p.order); st != "pending" || addr != "fake-testnet-vendor" || amt != 100000 {
 		t.Fatalf("release %s %s %d", st, addr, amt)
 	}
@@ -80,7 +103,7 @@ func TestOverpaymentReturnedToBuyer(t *testing.T) {
 	for _, s := range sends {
 		switch s.To {
 		case "fake-testnet-vendor":
-			if s.Amount != 100000 || s.FeeFromAmount {
+			if s.Amount != 100000 || !s.FeeFromAmount {
 				t.Fatalf("release sent %+v", s)
 			}
 		case "fake-testnet-buyer":
@@ -104,7 +127,14 @@ func TestSmallExcessStaysWithVendor(t *testing.T) {
 	p := newPayEnv(t)
 	p.setPayoutAddress(p.vendor, "fake-testnet-vendor")
 	p.paidByWatcherAmount(100000 + minPayoutBTC - 1)
-	p.complete(p.order)
+	// A-215: the page names the floor and says the excess is not returned; nothing waits for a payout address.
+	buyerPage, vendorPage := p.overpaidPages()
+	mustContain(t, buyerPage, "You sent 0.00009999 BTC more than the price (test network). Completing releases everything to the vendor: the excess is below the minimum automatic payout of 0.0001 BTC, so it is not returned.",
+		"Release 0.00109999 BTC (test network) to "+p.vendor.Handle+" — 0.00009999 BTC more than the price, below the minimum automatic payout, so it is not returned; network fee deducted. This is final.")
+	mustNotContain(t, buyerPage, "returns the excess", "the return waits", "your saved")
+	mustContain(t, vendorPage, "The buyer sent 0.00009999 BTC more than the price (test network). Completing releases everything to you: the excess is below the minimum automatic payout of 0.0001 BTC, so it is not returned.")
+	mustNotContain(t, vendorPage, "returns the excess", "your saved")
+	p.move(p.order, stateShipped, stateCompleted, p.buyer)
 	if st, _, _, amt := p.payout(p.order); st != "pending" || amt != 100000+minPayoutBTC-1 {
 		t.Fatalf("release %s %d", st, amt)
 	}
@@ -112,7 +142,9 @@ func TestSmallExcessStaysWithVendor(t *testing.T) {
 		t.Fatalf("payouts %d", n)
 	}
 	for _, u := range []*User{p.buyer, p.vendor} {
-		if n := p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE '%below the minimum automatic refund of 0.0001 BTC, so it is not returned%'", u.ID); n != 1 {
+		// A-250: the notice names the payout floor and says the vendor bears the release's network fee.
+		kept := "Order " + p.order[:8] + ": the TESTNET release of 0.00109999 BTC to the vendor includes 0.00009999 BTC more than the price, below the minimum automatic payout of 0.0001 BTC, so it is not returned; the network fee is taken from the release."
+		if n := p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body=$2", u.ID, kept); n != 1 {
 			t.Fatalf("%s not told the excess is kept: %d", u.Handle, n)
 		}
 	}
@@ -126,7 +158,14 @@ func TestLargeReturnHeldUntilAdminReview(t *testing.T) {
 	p.setPayoutAddress(p.buyer, "fake-testnet-buyer")
 	adminID := p.str("SELECT id FROM users WHERE role='admin'")
 	p.paidByWatcherAmount(350000)
-	p.complete(p.order)
+	// A-215: the page says the return waits for an administrator, not that it goes back automatically.
+	buyerPage, vendorPage := p.overpaidPages()
+	mustContain(t, buyerPage, "You sent 0.0025 BTC more than the price (test network). Completing releases the price to the vendor. The excess is more than the price, so an administrator reviews its return to your saved BTC payout address (network fee deducted) before it is sent.",
+		"return the 0.0025 BTC paid over the price to "+p.buyer.Handle+"; network fee deducted from each; the return is more than the price, so an administrator reviews it before it is sent. This is final.")
+	mustNotContain(t, buyerPage, "returns the excess", "the return waits")
+	mustContain(t, vendorPage, "The buyer sent 0.0025 BTC more than the price (test network). Completing releases the price to you. The excess is more than the price, so an administrator reviews its return to the buyer (network fee deducted) before it is sent.")
+	mustNotContain(t, vendorPage, "returns the excess", "your saved")
+	p.move(p.order, stateShipped, stateCompleted, p.buyer)
 	if st, errText, amt := p.returnPayout(p.order); st != "held" || errText != largeHold || amt != 250000 {
 		t.Fatalf("return %s %q %d", st, errText, amt)
 	}
@@ -140,10 +179,16 @@ func TestLargeReturnHeldUntilAdminReview(t *testing.T) {
 	}
 	admin := p.page("/admin", p.adminSess)
 	mustContain(t, admin, "Held: larger than the order price — review before releasing", "Return of overpayment", `name="large_reviewed" value="confirmed" required`)
+	// A-212: the hold catches likely mistakes above the price; it never claims to stop swaps (QA18-2 pins the copy,
+	// which the errText == largeHold comparisons above cannot).
+	if !strings.Contains(largeHold, "Refunds and returns up to the order price are sent automatically") || strings.Contains(largeHold, "not used to swap coins") {
+		t.Fatalf("largeHold overclaims: %q", largeHold)
+	}
+	mustContain(t, admin, "This check does not stop swaps: refunds and returns up to the order price are sent automatically")
 	id := p.str("SELECT id::text FROM payouts WHERE order_id=$1 AND kind='return'", p.order)
 	release := url.Values{"payout_id": {id}, "op": {"release"}, "password": {testPassword}}
-	if w := p.do("POST", "/admin/payout", p.adminSess, release); w.Code != 409 || !strings.Contains(w.Body.String(), "larger than the order price") {
-		t.Fatalf("release without review: %d", w.Code)
+	if w := p.do("POST", "/admin/payout", p.adminSess, release); w.Code != 409 || !strings.Contains(w.Body.String(), "larger than the order price") || !strings.Contains(w.Body.String(), "this check does not stop swaps up to a listing's price") {
+		t.Fatalf("release without review: %d %s", w.Code, w.Body.String())
 	}
 	if st, _, _ := p.returnPayout(p.order); st != "held" {
 		t.Fatalf("unreviewed release changed the return: %s", st)
@@ -195,7 +240,49 @@ func TestSuspensionKeepsLargeHold(t *testing.T) {
 	}
 }
 
-// Refunds pay their own network fee, so repeated pay-and-cancel costs the market nothing.
+// The large hold's documented bound (operator guide, "Overpayments"): a refund of up to the order price is not
+// held, whether the price was paid in full and the order cancelled by the vendor or a deposit just short of it
+// was cancelled by the buyer. Such refunds start pending and the watcher sends them without an administrator.
+func TestRefundUpToPriceIsNotHeld(t *testing.T) {
+	p := newPayEnv(t)
+	p.setPayoutAddress(p.buyer, "fake-testnet-buyer")
+	adminID := p.str("SELECT id FROM users WHERE role='admin'")
+	refund := func(order string) (state, errText string, amt int64) {
+		t.Helper()
+		if err := p.DB.QueryRow("SELECT state,error,amount FROM payouts WHERE order_id=$1 AND kind='refund'", order).Scan(&state, &errText, &amt); err != nil {
+			t.Fatalf("refund for %s: %v", order[:8], err)
+		}
+		return
+	}
+	// Equal to the price: paid in full, then cancelled by the vendor.
+	p.paidByWatcherAmount(100000)
+	p.check(p.do("POST", "/orders/cancel", p.vendorSess, payoutConfirmed(form("order_id", p.order, "from", statePaid), 100000)), 303)
+	if st, errText, amt := refund(p.order); st != "pending" || errText != "" || amt != 100000 {
+		t.Fatalf("refund of the price: %s %q %d", st, errText, amt)
+	}
+	// Just under the price: one confirmed deposit a satoshi short, then cancelled by the buyer.
+	short, addr := p.newOrder(stateAwaitingPayment)
+	p.fake.Deposit(addr, "tx-short", 0, 99999, 3)
+	p.poll()
+	if s := p.state(short); s != stateAwaitingPayment {
+		t.Fatalf("underpaid order %s", s)
+	}
+	p.check(p.do("POST", "/orders/cancel", p.buyerSess, payoutConfirmed(form("order_id", short, "from", stateAwaitingPayment), 99999)), 303)
+	if st, errText, amt := refund(short); st != "pending" || errText != "" || amt != 99999 {
+		t.Fatalf("refund just under the price: %s %q %d", st, errText, amt)
+	}
+	if n := p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE 'Payout review needed%'", adminID); n != 0 {
+		t.Fatalf("administrator review notices %d", n)
+	}
+	p.poll()
+	if s := p.fake.Sends(); len(s) != 2 || s[0].Amount+s[1].Amount != 199999 {
+		t.Fatalf("refunds up to the price not sent automatically: %+v", s)
+	}
+}
+
+// A refund is handed to the provider's fee-from-amount send (SendFeeFromAmount) for the whole counted amount. The
+// fake wallet only records the call; TestMoneroRefundSubtractsFee checks the Monero request, and Bitcoin's Send
+// already subtracts the fee. That real wallets deduct it is not shown here.
 func TestRefundIsSentWithFeeFromAmount(t *testing.T) {
 	p := newPayEnv(t)
 	p.setPayoutAddress(p.buyer, "fake-testnet-buyer")
@@ -208,7 +295,8 @@ func TestRefundIsSentWithFeeFromAmount(t *testing.T) {
 	}
 }
 
-// The payout kinds are constrained by the schema: one of each per order.
+// The payout kinds are constrained by the schema: one of each per order, never a release and a refund, never a
+// refund and a return.
 func TestPayoutKindsPerOrder(t *testing.T) {
 	p := newPayEnv(t)
 	insert := func(kind string) error {
@@ -227,6 +315,478 @@ func TestPayoutKindsPerOrder(t *testing.T) {
 	if err := insert("bonus"); err == nil {
 		t.Fatal("unknown payout kind accepted")
 	}
+	// One settlement per order (A-218, migration 069): a release and a refund for one order are refused in either
+	// order, by the database itself.
+	uniqueViolation := func(err error, index string) bool {
+		var pe *pgconn.PgError
+		return errors.As(err, &pe) && pe.Code == "23505" && pe.ConstraintName == index
+	}
+	if err := insert("refund"); !uniqueViolation(err, "payouts_one_settlement") {
+		t.Fatalf("refund after a release: %v", err)
+	}
+	p.order, _ = p.newOrder(stateCancelled)
+	if err := insert("refund"); err != nil {
+		t.Fatal(err)
+	}
+	if err := insert("release"); !uniqueViolation(err, "payouts_one_settlement") {
+		t.Fatalf("release after a refund: %v", err)
+	}
+	// A refund beside a return would pay the excess twice (A-276, migration 070).
+	if err := insert("return"); !uniqueViolation(err, "payouts_refund_or_return") {
+		t.Fatalf("return after a refund: %v", err)
+	}
+	// A return without its release is refused at commit (A-268, migration 073; TestReturnNeedsRelease), so the
+	// refund follows the return inside one transaction, where 070's index refuses it at once.
+	p.order, _ = p.newOrder(stateCancelled)
+	tx, err := p.DB.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec("INSERT INTO payouts(order_id,kind,user_id,currency,amount) VALUES($1,'return',$2,'BTC',1000)", p.order, p.buyer.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec("INSERT INTO payouts(order_id,kind,user_id,currency,amount) VALUES($1,'refund',$2,'BTC',1000)", p.order, p.buyer.ID); !uniqueViolation(err, "payouts_refund_or_return") {
+		t.Fatalf("refund after a return: %v", err)
+	}
+	if err = tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if n := p.count("SELECT count(*) FROM payouts WHERE order_id=$1", p.order); n != 0 {
+		t.Fatalf("%d payouts", n)
+	}
+}
+
+// settlementClashSQL is the SQL UPGRADING.md section 14 gives for settling a clash migration 069 or 070 refuses:
+// list every payout of the named orders (returns included), keep the refund by deleting the release together with
+// its return, keep the release (and its return) by deleting the refund, or, for a cancelled or refund-outcome order
+// whose return alone was sent, delete the unsent release and the refund and record that sent return as the order's
+// refund in the same transaction (A-283; a return without its release is refused since migration 073, A-268), with
+// a note stating the rest sent by hand (A-312), and check that no order is left with two settlements, a refund beside
+// a return or a return without a release. TestSettlementClashGuide runs it, with psql's :'order_id' bound as $1 and
+// the keepReturn/returnAsRefund/note block through psql, and checks that UPGRADING.md carries it verbatim
+// (whitespace aside; keepReturn, returnAsRefund and note inside one BEGIN/COMMIT).
+var settlementClashSQL = struct{ list, keepRefund, keepRelease, keepReturn, returnAsRefund, note, check string }{
+	list: `SELECT p.id, p.order_id, o.state AS order_state, p.kind, p.state, p.send_ambiguous, p.currency, p.amount, p.address, p.user_id,
+  p.txid, p.error, p.created, p.updated
+FROM payouts p JOIN orders o ON o.id = p.order_id
+WHERE p.order_id IN (SELECT order_id FROM payouts GROUP BY order_id
+  HAVING count(*) FILTER (WHERE kind IN ('release','refund')) > 1
+      OR count(*) FILTER (WHERE kind IN ('refund','return')) > 1)
+ORDER BY p.order_id, p.kind;`,
+	keepRefund:     `DELETE FROM payouts WHERE order_id = :'order_id' AND kind IN ('release','return') RETURNING id, kind, state, txid;`,
+	keepRelease:    `DELETE FROM payouts WHERE order_id = :'order_id' AND kind = 'refund' RETURNING id, kind, state, txid;`,
+	keepReturn:     `DELETE FROM payouts WHERE order_id = :'order_id' AND kind IN ('release','refund') RETURNING id, kind, state, txid;`,
+	returnAsRefund: `UPDATE payouts SET kind = 'refund', updated = now() WHERE order_id = :'order_id' AND kind = 'return' RETURNING id, kind, state, txid;`,
+	note:           strings.Replace(returnWithoutReleaseSQL.note, "(UPGRADING.md section 18)", "(UPGRADING.md section 14)", 1),
+	check: `SELECT order_id, string_agg(kind, ',' ORDER BY kind) AS kinds FROM payouts GROUP BY order_id
+HAVING count(*) FILTER (WHERE kind IN ('release','refund')) > 1
+    OR count(*) FILTER (WHERE kind IN ('refund','return')) > 1
+    OR (count(*) FILTER (WHERE kind = 'return') > 0 AND count(*) FILTER (WHERE kind = 'release') = 0);`,
+}
+
+// unsettle removes migrations 069, 070 and 073 (their indexes, trigger, function and records) so a test can insert
+// the payouts they refuse, and returns a function applying all three in one transaction as a startup from before 069
+// does, after running pre (with args) in that transaction; a refused migration rolls everything back.
+func (p *payEnv) unsettle() func(pre string, args ...any) error {
+	p.t.Helper()
+	p.unguard()
+	if _, err := p.DB.Exec("DROP INDEX payouts_one_settlement; DROP INDEX payouts_refund_or_return; DELETE FROM schema_migrations WHERE version IN (69,70)"); err != nil {
+		p.t.Fatal(err)
+	}
+	return p.applyVersions(69, 70, 73)
+}
+
+func (p *payEnv) insertPayouts(order string, kinds ...string) {
+	p.t.Helper()
+	for _, kind := range kinds {
+		if _, err := p.DB.Exec("INSERT INTO payouts(order_id,kind,user_id,currency,amount) VALUES($1,$2,$3,'BTC',100000)", order, kind, p.buyer.ID); err != nil {
+			p.t.Fatal(err)
+		}
+	}
+}
+
+// settlementIndexes counts migration 069's and 070's indexes and records and migration 073's trigger, function and
+// record in the test's schema: 7 when all three applied. Other schemas in the database (another test's, or one left
+// by a killed run) are not counted (A-297).
+func (p *payEnv) settlementIndexes() int {
+	p.t.Helper()
+	return p.count("SELECT count(*) FROM pg_indexes WHERE schemaname=current_schema() AND indexname IN ('payouts_one_settlement','payouts_refund_or_return')") +
+		p.count("SELECT count(*) FROM schema_migrations WHERE version IN (69,70)") + p.returnGuardApplied()
+}
+
+// A-218: migration 069 creates the one-settlement index. A database already holding a release and a refund for one
+// order (possible only by hand since migration 064; enqueuePayout never queues a second settlement) stops the
+// migration with an error naming the order, and nothing is changed or deleted; once staff settle the clash it applies.
+func TestOneSettlementMigrationRefusesExistingClash(t *testing.T) {
+	p := newPayEnv(t)
+	apply := p.unsettle()
+	p.insertPayouts(p.order, "release", "return", "refund")
+	err := apply("")
+	if err == nil || !strings.Contains(err.Error(), "migration 069_payout_one_settlement") || !strings.Contains(err.Error(), p.order) ||
+		!strings.Contains(err.Error(), "both a release and a refund") || !strings.Contains(err.Error(), "UPGRADING.md") {
+		t.Fatalf("migration over a clash: %v", err)
+	}
+	if n := p.count("SELECT count(*) FROM payouts WHERE order_id=$1", p.order); n != 3 {
+		t.Fatalf("migration changed payouts: %d left", n)
+	}
+	if p.settlementIndexes() != 0 {
+		t.Fatal("a refused migration left its index or record")
+	}
+	if err = apply("DELETE FROM payouts WHERE order_id=$1 AND kind='refund'", p.order); err != nil {
+		t.Fatal(err)
+	}
+	if p.settlementIndexes() != 7 || p.count("SELECT count(*) FROM payouts WHERE order_id=$1", p.order) != 2 {
+		t.Fatal("migration did not apply once the clash was settled")
+	}
+}
+
+// A-276, A-268: UPGRADING.md section 14 settles a clash by deleting a whole settlement. Deleting only the release
+// of a release+return+refund order (what the guide once said, "delete the other row") leaves the refund beside the
+// release's return, which the watcher would send, paying the excess a second time: migration 070 refuses that,
+// naming the order, and changes nothing. The guide's own SQL lists the return with the clash, deletes a release
+// together with its return (or the refund alone), and its final check finds no order with a refund and a return;
+// the migrations then apply. The final check names exactly the orders the migrations refuse (A-284), the listing
+// carries what the wallet check needs (A-282), and a cancelled order whose return alone was sent keeps that sent
+// row as its refund, so neither the vendor's release nor a second refund is sent (A-283); keeping it as a return
+// without its release, as the guide said before, is refused by migration 073 (A-268). A sent release on a cancelled order
+// settles with either statement the guide offers, and a refund alone sent on a completed order keeps the refund
+// (A-286); neither leaves the watcher anything to send but the kept refund.
+func TestSettlementClashGuide(t *testing.T) {
+	requirePsql(t)
+	p := newPayEnv(t)
+	apply := p.unsettle()
+	keepRefund, keepRelease := p.order, p.testEnv.order(p.buyer.ID, p.productID, "BTC", stateCompleted)
+	leftover := p.testEnv.order(p.buyer.ID, p.productID, "BTC", stateCancelled)   // what the old guide left
+	bare := p.testEnv.order(p.buyer.ID, p.productID, "BTC", stateCompleted)       // two settlements, no return
+	returnSent := p.testEnv.order(p.buyer.ID, p.productID, "BTC", stateCancelled) // only its return was sent
+	clean := p.testEnv.order(p.buyer.ID, p.productID, "BTC", stateCompleted)
+	// A-286: a sent release on a cancelled order beside a pending refund, settled either way the guide offers
+	// (keep the refund: the sent release goes with its unsent return; or keep the release and settle by hand), and a
+	// refund alone sent on a completed order beside a pending release and return (the refund stands).
+	releaseSentRefund := p.testEnv.order(p.buyer.ID, p.productID, "BTC", stateCancelled)
+	releaseSentKept := p.testEnv.order(p.buyer.ID, p.productID, "BTC", stateCancelled)
+	refundSent := p.testEnv.order(p.buyer.ID, p.productID, "BTC", stateCompleted)
+	sent := func(order, kind string) {
+		t.Helper()
+		if _, err := p.DB.Exec("UPDATE payouts SET state='sent', txid='tx-'||kind WHERE order_id=$1 AND kind=$2", order, kind); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p.insertPayouts(releaseSentRefund, "release", "return", "refund")
+	sent(releaseSentRefund, "release")
+	p.insertPayouts(releaseSentKept, "release", "refund")
+	sent(releaseSentKept, "release")
+	p.insertPayouts(refundSent, "release", "return", "refund")
+	sent(refundSent, "refund")
+	p.insertPayouts(keepRefund, "release", "return", "refund")
+	p.insertPayouts(keepRelease, "release", "return", "refund")
+	p.insertPayouts(leftover, "refund", "return")
+	p.insertPayouts(bare, "release", "refund")
+	p.insertPayouts(returnSent, "release", "return", "refund")
+	sent(returnSent, "return")
+	p.insertPayouts(clean, "release", "return")
+	total := p.count("SELECT count(*) FROM payouts")
+	// named returns the orders a refused migration names, sorted.
+	named := func(err error) []string {
+		t.Helper()
+		m := regexp.MustCompile(`order\(s\) (.+?) have both`).FindStringSubmatch(fmt.Sprint(err))
+		if m == nil {
+			t.Fatalf("no orders named in %v", err)
+		}
+		orders := strings.Split(m[1], ", ")
+		sort.Strings(orders) // the migration sorts by the database's collation
+		return orders
+	}
+	// checked returns the orders step 5's check lists, sorted, run through query (the database or a transaction).
+	checked := func(query func(string, ...any) (*sql.Rows, error)) []string {
+		t.Helper()
+		rows, err := query(settlementClashSQL.check)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var orders []string
+		for rows.Next() {
+			var order, kinds string
+			if err = rows.Scan(&order, &kinds); err != nil {
+				t.Fatal(err)
+			}
+			orders = append(orders, order)
+		}
+		if err = rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		sort.Strings(orders)
+		return orders
+	}
+	sorted := func(s ...string) []string { sort.Strings(s); return s }
+	err := apply("")
+	if err == nil || !strings.Contains(err.Error(), "migration 069_payout_one_settlement") {
+		t.Fatalf("migrations over a release+refund clash: %v", err)
+	}
+	if got, want := named(err), sorted(keepRefund, keepRelease, bare, returnSent, releaseSentRefund, releaseSentKept, refundSent); !slices.Equal(got, want) {
+		t.Fatalf("069 names %v, want %v", got, want)
+	}
+	// The old guide: delete "the other row", the release only. Migration 069 then passes and 070 refuses.
+	oldGuide, oldOrders := "DELETE FROM payouts WHERE kind='release' AND order_id=ANY($1)", []string{keepRefund, keepRelease, bare, returnSent, releaseSentRefund, releaseSentKept, refundSent}
+	err = apply(oldGuide, oldOrders)
+	if err == nil || !strings.Contains(err.Error(), "migration 070_payout_refund_or_return") || !strings.Contains(err.Error(), "both a refund and a return") ||
+		!strings.Contains(err.Error(), keepRefund) || !strings.Contains(err.Error(), leftover) ||
+		!strings.Contains(err.Error(), releaseSentRefund) || !strings.Contains(err.Error(), refundSent) || strings.Contains(err.Error(), releaseSentKept) || strings.Contains(err.Error(), clean) || !strings.Contains(err.Error(), "UPGRADING.md") {
+		t.Fatalf("migrations over a refund beside a return: %v", err)
+	}
+	refused070 := named(err)
+	if p.count("SELECT count(*) FROM payouts") != total || p.settlementIndexes() != 0 {
+		t.Fatal("a refused migration changed payouts or left its index or record")
+	}
+	// Step 5's check over a clash lists exactly the orders the migrations refuse and no settled one (A-284): over
+	// the old guide's leftovers (release deleted, refund beside return) the orders 070 names, and over the original
+	// clash every order step 1 lists, the refund+return leftover and the release+refund order without a return
+	// included.
+	tx, err := p.DB.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(oldGuide, oldOrders); err != nil {
+		t.Fatal(err)
+	}
+	if got := checked(tx.Query); !slices.Equal(got, refused070) || slices.Contains(got, clean) || slices.Contains(got, bare) {
+		t.Fatalf("check over the old guide's leftovers lists %v, want %v (070's)", got, refused070)
+	}
+	if err = tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	clashing := sorted(keepRefund, keepRelease, leftover, bare, returnSent, releaseSentRefund, releaseSentKept, refundSent)
+	if got := checked(p.DB.Query); !slices.Equal(got, clashing) {
+		t.Fatalf("check over the clash lists %v, want %v", got, clashing)
+	}
+
+	// Step 1: the listing names every payout of the clashing orders, returns included, and no other order.
+	rows, err := p.DB.Query(settlementClashSQL.list)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cols, _ := rows.Columns()
+	// A-282: the listing is the record of the rows step 4 deletes, so it carries what the step-2 wallet check and
+	// rebuilding a row need: the currency (amounts are in its smallest unit), the recipient and the times.
+	for _, c := range []string{"id", "order_id", "kind", "state", "send_ambiguous", "currency", "amount", "address", "user_id", "txid", "error", "created", "updated"} {
+		if !slices.Contains(cols, c) {
+			t.Fatalf("clash listing columns %v lack %s", cols, c)
+		}
+	}
+	var listed []string
+	for rows.Next() {
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err = rows.Scan(ptrs...); err != nil {
+			t.Fatal(err)
+		}
+		listed = append(listed, vals[1].(string)+":"+vals[3].(string))
+	}
+	rows.Close()
+	want := []string{keepRefund + ":refund", keepRefund + ":release", keepRefund + ":return", keepRelease + ":refund", keepRelease + ":release", keepRelease + ":return",
+		leftover + ":refund", leftover + ":return", bare + ":refund", bare + ":release", returnSent + ":refund", returnSent + ":release", returnSent + ":return",
+		releaseSentRefund + ":refund", releaseSentRefund + ":release", releaseSentRefund + ":return", releaseSentKept + ":refund", releaseSentKept + ":release",
+		refundSent + ":refund", refundSent + ":release", refundSent + ":return"}
+	sort.Strings(listed)
+	sort.Strings(want)
+	if strings.Join(listed, ",") != strings.Join(want, ",") {
+		t.Fatalf("clash listing %v, want %v", listed, want)
+	}
+	// Step 4: delete the settlement that does not stand, a release always with its return; for a cancelled order
+	// whose return alone was sent, the unsent release and the refund.
+	del := func(stmt, order string, want int) {
+		t.Helper()
+		res, err := p.DB.Exec(strings.ReplaceAll(stmt, ":'order_id'", "$1"), order)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n, _ := res.RowsAffected(); n != int64(want) {
+			t.Fatalf("deleted %d payouts of %s, want %d", n, order, want)
+		}
+	}
+	del(settlementClashSQL.keepRefund, keepRefund, 2)
+	del(settlementClashSQL.keepRelease, keepRelease, 1)
+	del(settlementClashSQL.keepRefund, leftover, 1)
+	del(settlementClashSQL.keepRelease, bare, 1)
+	del(settlementClashSQL.keepRefund, releaseSentRefund, 2)
+	del(settlementClashSQL.keepRelease, releaseSentKept, 1)
+	del(settlementClashSQL.keepRefund, refundSent, 2)
+	// A-268: keeping only the sent return (what the guide said before migration 073) leaves a return without a
+	// release. Step 5's check lists that order, and migration 073 refuses it by name, changing nothing.
+	oldKeepReturn := strings.ReplaceAll(settlementClashSQL.keepReturn, ":'order_id'", "$1")
+	if tx, err = p.DB.Begin(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(oldKeepReturn, returnSent); err != nil {
+		t.Fatal(err)
+	}
+	if got := checked(tx.Query); !slices.Equal(got, []string{returnSent}) {
+		t.Fatalf("check after keeping only the return lists %v", got)
+	}
+	if err = tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	remaining := p.count("SELECT count(*) FROM payouts")
+	err = apply(oldKeepReturn, returnSent)
+	if err == nil || !strings.Contains(err.Error(), "migration 073_payout_return_needs_release") ||
+		!strings.Contains(err.Error(), "order(s) "+returnSent+" have a return but no release") {
+		t.Fatalf("migrations over a return kept without its release: %v", err)
+	}
+	if p.count("SELECT count(*) FROM payouts") != remaining || p.settlementIndexes() != 0 {
+		t.Fatal("a refused migration changed payouts or left its index, trigger or record")
+	}
+	// The guide now deletes the unsent release and the refund and records the sent return as the order's refund with
+	// a note stating the rest sent by hand, in one transaction, run through psql as written (A-312). Without the
+	// amount or transaction ID, or with a malformed one, the block stops and nothing is changed.
+	returnAsRefundBlock := "BEGIN;\n" + settlementClashSQL.keepReturn + "\n" + settlementClashSQL.returnAsRefund + "\n" + settlementClashSQL.note + "\nCOMMIT;\n"
+	for _, vars := range refusedHandRefundVars {
+		out, err := p.psqlBlock(returnAsRefundBlock, append([]string{"order_id=" + returnSent}, vars...)...)
+		if err == nil || !strings.Contains(out, "ERROR") {
+			t.Fatalf("section 14 relabel block with %q: %v\n%s", vars, err, out)
+		}
+		if p.kinds(returnSent) != "refund,release,return" || p.handRefundNotes(returnSent) != 0 {
+			t.Fatalf("section 14 relabel block with %q changed the order: %q, %d notes", vars, p.kinds(returnSent), p.handRefundNotes(returnSent))
+		}
+	}
+	handTxid := strings.Repeat("f0", 32)
+	if out, err := p.psqlBlock(returnAsRefundBlock, "order_id="+returnSent, "amount=0.001", "txid="+handTxid); err != nil ||
+		!strings.Contains(out, "DELETE 2") || !strings.Contains(out, "UPDATE 1") || !strings.Contains(out, "INSERT 0 1") || !strings.Contains(out, "COMMIT") {
+		t.Fatalf("section 14 relabel block: %v\n%s", err, out)
+	}
+	wantNote := handRefundNote("14", "0.001 BTC", handTxid)
+	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND from_state='cancelled' AND to_state='cancelled' AND actor_id IS NULL AND note=$2", returnSent, wantNote); n != 1 || p.handRefundNotes(returnSent) != 1 {
+		t.Fatalf("section 14 relabel block wrote %d notes %q", p.handRefundNotes(returnSent), p.str("SELECT string_agg(note, ' | ') FROM order_events WHERE order_id=$1", returnSent))
+	}
+	// Step 5: the check finds nothing, and the migrations apply.
+	if got := checked(p.DB.Query); len(got) != 0 {
+		t.Fatalf("check lists %v after the guide's deletions", got)
+	}
+	if n := p.count("SELECT count(*) FROM payouts f WHERE kind='refund' AND EXISTS (SELECT 1 FROM payouts r WHERE r.order_id=f.order_id AND r.kind='return')"); n != 0 {
+		t.Fatalf("%d orders keep a refund and a return", n)
+	}
+	if err = apply(""); err != nil {
+		t.Fatal(err)
+	}
+	kinds := func(order string) string {
+		var k string
+		if err := p.DB.QueryRow("SELECT coalesce(string_agg(kind, ',' ORDER BY kind), '') FROM payouts WHERE order_id=$1", order).Scan(&k); err != nil {
+			t.Fatal(err)
+		}
+		return k
+	}
+	if p.settlementIndexes() != 7 || kinds(keepRefund) != "refund" || kinds(keepRelease) != "release,return" || kinds(leftover) != "refund" || kinds(bare) != "release" || kinds(returnSent) != "refund" || kinds(clean) != "release,return" {
+		t.Fatalf("after the guide: %s %s %s %s %s %s", kinds(keepRefund), kinds(keepRelease), kinds(leftover), kinds(bare), kinds(returnSent), kinds(clean))
+	}
+	// The cancelled order whose return alone was sent keeps that sent row, now its refund, and nothing to send.
+	if st, txid := p.str("SELECT state FROM payouts WHERE order_id=$1", returnSent), p.str("SELECT txid FROM payouts WHERE order_id=$1", returnSent); st != "sent" || txid != "tx-return" {
+		t.Fatalf("returnSent's refund %s %s", st, txid)
+	}
+	// Both parties read the note in the order history; the vendor's page hides the buyer's transaction ID (A-214).
+	if page := html.UnescapeString(p.page("/order?id="+returnSent, p.buyerSess)); !strings.Contains(page, wantNote) {
+		t.Fatalf("the buyer's order history lacks %q", wantNote)
+	}
+	if page := html.UnescapeString(p.page("/order?id="+returnSent, p.vendorSess)); !strings.Contains(page, handRefundNote("14", "0.001 BTC", payoutTxidHidden)) || strings.Contains(page, handTxid) {
+		t.Fatal("the vendor's order history lacks the note or shows the buyer's transaction ID")
+	}
+	// A-286: what the watcher may still send is only the kept settlement's unsent rows: the refund for the cancelled
+	// order whose sent release was deleted, nothing for the one whose sent release was kept, and nothing for the
+	// completed order whose refund was sent (the vendor's price is settled by hand).
+	unsent := func(order string) string {
+		var k string
+		if err := p.DB.QueryRow("SELECT coalesce(string_agg(kind, ',' ORDER BY kind), '') FROM payouts WHERE order_id=$1 AND state<>'sent'", order).Scan(&k); err != nil {
+			t.Fatal(err)
+		}
+		return k
+	}
+	if kinds(releaseSentRefund) != "refund" || unsent(releaseSentRefund) != "refund" || kinds(releaseSentKept) != "release" || unsent(releaseSentKept) != "" ||
+		kinds(refundSent) != "refund" || unsent(refundSent) != "" {
+		t.Fatalf("A-286 shapes after the guide: %s/%s %s/%s %s/%s", kinds(releaseSentRefund), unsent(releaseSentRefund), kinds(releaseSentKept), unsent(releaseSentKept),
+			kinds(refundSent), unsent(refundSent))
+	}
+
+	doc, err := os.ReadFile("UPGRADING.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.Join(strings.Fields(string(doc)), " ")
+	for _, q := range []string{settlementClashSQL.list, settlementClashSQL.keepRefund, settlementClashSQL.keepRelease, settlementClashSQL.check,
+		returnAsRefundBlock} {
+		if q = strings.Join(strings.Fields(q), " "); !strings.Contains(text, q) {
+			t.Fatalf("UPGRADING.md does not carry the settlement SQL %q", q)
+		}
+	}
+}
+
+// A-215: without a payout address in the order's currency the buyer is told the return waits until they save one;
+// the vendor is not told about the buyer's addresses.
+func TestOverpaidAlertWithoutBuyerPayoutAddress(t *testing.T) {
+	p := newPayEnv(t)
+	p.setPayoutAddress(p.vendor, "fake-testnet-vendor")
+	if _, err := p.DB.Exec("UPDATE users SET payout_xmr='fake-testnet-xmr' WHERE id=$1", p.buyer.ID); err != nil {
+		t.Fatal(err) // an address in another currency does not count
+	}
+	p.paidByWatcherAmount(150000)
+	buyerPage, vendorPage := p.overpaidPages()
+	mustContain(t, buyerPage, "Completing releases the price to the vendor and returns the excess to you, with the network fee deducted. You have no BTC payout address saved, so the return waits until you save one:",
+		`<a class="text-link" href="/account#payout">save a payout address</a>`)
+	mustNotContain(t, buyerPage, "your saved BTC payout address")
+	mustContain(t, vendorPage, "Completing releases the price to you and returns the excess to the buyer, with the network fee deducted.")
+	mustNotContain(t, vendorPage, "your saved", "payout address saved", "the return waits")
+	p.move(p.order, stateShipped, stateCompleted, p.buyer)
+	if st, _, amt := p.returnPayout(p.order); st != "blocked" || amt != 50000 {
+		t.Fatalf("return %s %d", st, amt)
+	}
+}
+
+// A-215, Monero: the alert names the XMR floor, and a Bitcoin payout address does not count for an XMR return.
+func TestOverpaidXMRAlertNamesItsFloorAndAddress(t *testing.T) {
+	p := newPayEnv(t)
+	xf := newFakeProvider("XMR", 10)
+	p.A.payments["XMR"] = xf
+	p.setPayoutAddress(p.buyer, "fake-testnet-buyer")
+	for _, tc := range []struct {
+		deposit    int64
+		want, deny string
+	}{
+		{500000000000 + minPayoutXMR - 1, "Completing releases everything to the vendor: the excess is below the minimum automatic payout of 0.001 XMR, so it is not returned.", "payout address saved"},
+		{500000000000 + minPayoutXMR, "returns the excess to you, with the network fee deducted. You have no XMR payout address saved, so the return waits until you save one:", "your saved"},
+	} {
+		id := p.testEnv.order(p.buyer.ID, p.productID, "XMR", stateAwaitingPayment)
+		addr, err := xf.NewAddress(context.Background(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = p.DB.Exec("UPDATE orders SET amount=500000000000 WHERE id=$1", id); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = p.DB.Exec("INSERT INTO payment_addresses(order_id,currency,address,provider) VALUES($1,'XMR',$2,'fake')", id, addr); err != nil {
+			t.Fatal(err)
+		}
+		xf.Deposit(addr, "xmr-"+strconv.FormatInt(tc.deposit, 10), 0, tc.deposit, 10)
+		p.poll()
+		p.move(id, statePaid, stateShipped, p.vendor)
+		page := p.page("/order?id="+id, p.buyerSess)
+		mustContain(t, page, tc.want)
+		mustNotContain(t, page, tc.deny, "whole counted amount")
+	}
+}
+
+// overpaidPages ships the paid fixture order and returns its buyer's and vendor's order pages; the buyer's shows
+// the complete form. Neither says completing releases the whole counted amount (A-215).
+func (p *payEnv) overpaidPages() (buyer, vendor string) {
+	p.t.Helper()
+	p.move(p.order, statePaid, stateShipped, p.vendor)
+	buyer, vendor = p.page("/order?id="+p.order, p.buyerSess), p.page("/order?id="+p.order, p.vendorSess)
+	mustContain(p.t, buyer, "Confirms you received the order. Completing queues the payouts stated below; the payment watcher sends them automatically unless the statement says otherwise.", `name="payout_confirmed"`)
+	for _, page := range []string{buyer, vendor} {
+		mustNotContain(p.t, page, "whole counted amount")
+	}
+	return buyer, vendor
 }
 
 // paidByWatcherAmount pays the fixture order with one confirmed deposit of amt satoshi.
@@ -298,7 +858,8 @@ func TestOrderPageQRForAmountDue(t *testing.T) {
 	p := newPayEnv(t)
 	uri := func(due string) string { return "bitcoin:" + p.addr + "?amount=" + due }
 	page := p.page("/order?id="+p.order, p.buyerSess)
-	mustContain(t, page, `<figure class="payment-qr"><svg`, uri("0.001"), "Scan to pay exactly <strong>0.001 BTC</strong>")
+	mustContain(t, page, `<figure class="payment-qr"><svg`, uri("0.001"), "Scan to pay exactly <strong>0.001 BTC</strong>",
+		"If no code appears, copy the address and amount above.")
 	mustNotContain(t, p.page("/order?id="+p.order, p.vendorSess), `class="payment-qr"`)
 	// A deposit seen (even unconfirmed) lowers the amount asked for.
 	p.fake.Deposit(p.addr, "tx-part", 0, 40000, 1)
@@ -326,10 +887,10 @@ func TestMoneroRefundSubtractsFee(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err = p.Send(ctx, payStagenetSub, 42); err != nil || strings.Contains(string(s.lastParams("transfer")), "subtract_fee_from_outputs") {
-		t.Fatalf("release subtracts the fee: %s %v", s.lastParams("transfer"), err)
+		t.Fatalf("Send (fee on top, unused for payouts) subtracts the fee: %s %v", s.lastParams("transfer"), err)
 	}
 	if _, err = p.SendFeeFromAmount(ctx, payStagenetSub, 42); err != nil || !strings.Contains(string(s.lastParams("transfer")), `"subtract_fee_from_outputs":[0]`) {
-		t.Fatalf("refund params %s %v", s.lastParams("transfer"), err)
+		t.Fatalf("SendFeeFromAmount params %s %v", s.lastParams("transfer"), err)
 	}
 	var _ feeFromAmountSender = p
 	var _ feeFromAmountSender = &bitcoinProvider{}

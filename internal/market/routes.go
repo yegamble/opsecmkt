@@ -77,6 +77,7 @@ type actionResult struct {
 	Audit       string // recorded in audit_events in the same transaction when non-empty
 	AuditUserID string // default c.User.ID
 	AfterCommit func(w http.ResponseWriter)
+	Notice      string // one-shot notice code (notice.go), set on the 303 of a signed-in post; its section becomes the fragment
 }
 
 type actionSpec struct {
@@ -337,6 +338,19 @@ func sessionToken(r *http.Request) string { s, _ := r.Context().Value(sessionKey
 // anonToken returns the pre-login `anon` cookie value ("" when the request sent none and needed none).
 func anonToken(r *http.Request) string { s, _ := r.Context().Value(anonKey{}).(string); return s }
 
+// arrivalKey holds the request's context as the server created it, without ServeHTTP's 12 s bound.
+type arrivalKey struct{}
+
+// arrivalContext returns the request's context without ServeHTTP's 12 s bound: it ends only when the client
+// goes away (or the connection's read deadline passes). A handler that sets its own bound (the signed audit
+// export, A-139) derives it from here. Without ServeHTTP (tests) it is r's own context.
+func arrivalContext(r *http.Request) context.Context {
+	if c, ok := r.Context().Value(arrivalKey{}).(context.Context); ok {
+		return c
+	}
+	return r.Context()
+}
+
 func roleRequired(roles []string) string {
 	for _, r := range roles {
 		if r != "admin" {
@@ -457,6 +471,9 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 	}
 	if res.Redirect == "" {
 		res.Redirect = "/"
+	}
+	if res.Notice != "" && u != nil {
+		res.Redirect = a.setNotice(w, res.Notice, res.Redirect)
 	}
 	http.Redirect(w, r, res.Redirect, 303)
 }

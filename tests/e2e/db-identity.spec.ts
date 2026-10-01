@@ -5,8 +5,8 @@ import { enrollTOTP, signedIn, submitStatus } from './db-helpers';
 // Self-service password change against a real database with JavaScript disabled, on a fresh account
 // (no administrator sign-ins). The administrator second-factor reset is exercised in db-admin.spec.ts.
 
-async function changePassword(page: Page, current: string, next: string, opts: { repeat?: string; code?: string } = {}) {
-  await page.goto('/account');
+async function changePassword(page: Page, current: string, next: string, opts: { repeat?: string; code?: string; here?: boolean } = {}) {
+  if (!opts.here) await page.goto('/account');
   const form = page.locator('form', { has: page.getByRole('button', { name: 'Change password' }) });
   await form.getByLabel('Current password').fill(current);
   if (opts.code !== undefined) await form.getByLabel('Authenticator code or recovery code').fill(opts.code);
@@ -43,15 +43,15 @@ test('changing the password needs the current one, ends other sessions and keeps
   await expect(page.locator('body')).toHaveText('The new passwords do not match.');
 
   expect(await changePassword(page, first, second)).toBe(303);
-  await expect(page).toHaveURL(/\/account\?saved=1$/);
-  await expect(page.getByRole('status')).toHaveText('Changes saved.');
+  await expect(page).toHaveURL(/\/account$/);
+  await expect(page.getByRole('status')).toHaveText('Password changed.');
   await expect(page.locator('.account-name')).toHaveText(handle);
   const activity = page.getByRole('region', { name: 'Recent activity' });
   await expect(activity).toContainText('Changed password; ended 1 other session(s) and any pending sign-ins (confirmed with password)');
 
   // The other browser was signed out; the old password no longer works, the new one does.
   await other.goto('/account');
-  await expect(other).toHaveURL(/\/login$/);
+  await expect(other).toHaveURL(/\/login\?next=%2Faccount$/);
   expect(await signIn(other, handle, first)).toBe(401);
   await expect(other.locator('body')).toHaveText('Invalid handle or password');
   expect(await signIn(other, handle, second)).toBe(303);
@@ -64,12 +64,52 @@ test('changing the password needs the current one, ends other sessions and keeps
   await page.goto('/account');
   await expect(page.getByLabel('Authenticator code or recovery code')).toBeVisible();
   expect(await changePassword(page, second, third, { code: recovery })).toBe(303);
-  await expect(page).toHaveURL(/\/account\?saved=1$/);
+  await expect(page.getByRole('status')).toHaveText('Password changed.');
   await expect(activity).toContainText('Changed password; ended 1 other session(s) and any pending sign-ins (confirmed with password and recovery code)');
   expect(await changePassword(page, third, first, { code: recovery })).toBe(401);
   await expect(page.locator('body')).toHaveText('Recovery code incorrect or already used');
   await page.goto('/totp');
   await expect(page.locator('.key-values div', { hasText: 'Unused recovery codes' }).locator('dd')).toHaveText('9 of 10');
+  await page.context().close();
+});
+
+// A-117: a success notice is one-shot (a cookie the next page clears), not a URL flag: it names what happened and
+// prefixes the title once; neither a reload nor Back after a later failed form shows it again.
+test('a success notice shows once: not on reload, not on Back after a failed change', async ({ browser, baseURL }) => {
+  const handle = uniqueHandle('notice');
+  const first = 'browser-notice-password-1';
+  const second = 'browser-notice-password-2';
+  const page = await signedIn(browser, baseURL, handle, first, true);
+  const status = page.getByRole('status');
+
+  expect(await changePassword(page, first, second)).toBe(303);
+  await expect(page).toHaveURL(/\/account$/);
+  await expect(status).toHaveText('Password changed.');
+  await expect(page).toHaveTitle(/^Password changed\. – Account · /);
+  await page.reload();
+  await expect(page.locator('.account-name')).toHaveText(handle);
+  await expect(status).toHaveCount(0);
+  await expect(page).toHaveTitle(/^Account · /);
+
+  // Save once more, then a refused change submitted from the page showing the notice: Back returns to that page
+  // without any success notice.
+  expect(await changePassword(page, second, first)).toBe(303);
+  await expect(status).toHaveText('Password changed.');
+  expect(await changePassword(page, 'not-my-password-123', second, { here: true })).toBe(401);
+  await expect(page.locator('body')).toHaveText('Password incorrect');
+  await page.goBack();
+  await expect(page).toHaveURL(/\/account$/);
+  await expect(page.locator('.account-name')).toHaveText(handle);
+  await expect(status).toHaveCount(0);
+  await expect(page.locator('main')).not.toContainText('Password changed.');
+
+  // Signing out says so on the sign-in page, once.
+  await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+  await expect(page).toHaveURL(/\/login$/);
+  await expect(status).toHaveText('Signed out.');
+  await expect(page).toHaveTitle(/^Signed out\. – Login · /);
+  await page.reload();
+  await expect(status).toHaveCount(0);
   await page.context().close();
 });
 
@@ -89,7 +129,7 @@ test('a cross-site link to the market does not sign the user out', async ({ brow
     await page.goto('http://forum.example/');
     await page.locator('#go').click();
     // The browser withheld the Strict session cookie, so the protected page redirected to sign-in.
-    await expect(page).toHaveURL(/\/login$/);
+    await expect(page).toHaveURL(/\/login\?next=%2Faccount$/);
   };
   await fromForum();
   expect(await sessionCookie()).toBe(before);

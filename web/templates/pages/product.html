@@ -20,7 +20,8 @@
 </div>{{end}}
 <div class="detail-copy">
 <div class="eyebrow">{{.Category}} / {{.Region}}</div>
-<h1>{{.Title}}</h1>
+<h1>{{.Title}}</h1>{{if .Archived}}{{/* A-164: shown only to those who may read an order on it (load.go) */}}
+<p role="note"><span class="badge neutral">Archived</span> This listing is hidden from the marketplace and accepts no new orders. You can see it because you can read an order placed on it. It shows the listing as it is now, which may differ from what was bought.</p>{{end}}
 <p class="muted">{{.Description}}</p>
 <h2 class="section-title">Listing details</h2>
 <dl class="key-values">
@@ -52,8 +53,10 @@
 </p>
 <p class="mono">{{.PriceXMR}} XMR</p>
 <hr class="divider">
-{{if lt .Stock 1}}<p><strong>Out of stock.</strong> New orders are refused until the vendor adds stock.</p>{{else}}<p>Review the listing and create an unfunded order draft. A draft requests no payment; any payment step happens later on the order page.</p>
-<a class="button primary full" href="/checkout?id={{.ID}}">Review order draft <span class="action-icon">↗</span></a>{{end}}{{if $.User}}{{if or (eq $.User.ID .VendorID) (eq $.User.Role "admin")}}
+{{if .Archived}}<p><strong>Archived.</strong> This listing accepts no new orders.</p>{{else}}{{if $.VendorKeyUnusable}}<p class="order-unavailable" role="note">
+<strong>No usable key.</strong> {{.Vendor}} has no usable encryption key, so you could not send a shipping address. You can save a draft, but payment stays unavailable until they add one.</p>
+{{end}}{{if lt .Stock 1}}<p><strong>Out of stock.</strong> New orders are refused until the vendor adds stock.</p>{{else}}<p>Review the listing and create an unfunded order draft. A draft requests no payment; any payment step happens later on the order page.</p>
+<a class="button primary full" href="/checkout?id={{.ID}}">Review order draft <span class="action-icon">↗</span></a>{{end}}{{end}}{{if $.User}}{{if or (eq $.User.ID .VendorID) (eq $.User.Role "admin")}}
 <a class="text-link" href="/listing-edit?id={{.ID}}">Edit this listing <span class="action-icon">→</span></a>{{end}}{{end}}
 </section>
 <section class="panel">

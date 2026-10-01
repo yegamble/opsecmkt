@@ -1,8 +1,10 @@
 import { expect, test, type Page } from '@playwright/test';
 import { previewRoutes as routes } from './preview-routes';
+import { waitForStyles } from './styles';
 
 async function openFilters(page: Page) {
   const mobile = page.locator('.filter-details');
+  await waitForStyles(page);
   if (await mobile.isVisible()) {
     await mobile.locator('summary').click();
     return mobile;
@@ -69,6 +71,7 @@ test('search, empty state, filter and reset work without client scripts', async 
   const resetFilters = await openFilters(page);
   await resetFilters.getByRole('link', { name: 'Reset filters' }).click();
   await expect(page.locator('.listings-grid .product-card')).toHaveCount(6);
+  await waitForStyles(page);
   const newSearch = page.locator('form[role="search"]:visible');
   await newSearch.getByRole('textbox').fill('encrypted');
   await newSearch.getByRole('button').click();

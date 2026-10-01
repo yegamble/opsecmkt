@@ -2,6 +2,7 @@ import { createHmac } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, type Browser, type Locator, type Page } from '@playwright/test';
+import { waitForStyles } from './styles';
 
 // Shared helpers for the database specs that submit real forms with JavaScript disabled.
 
@@ -40,7 +41,15 @@ export async function setRole(admin: Page, handle: string, role: string) {
   await form.getByLabel('Account handle').fill(handle);
   await form.getByLabel('Role').selectOption(role);
   await form.getByRole('button', { name: 'Update role' }).click();
-  await expect(admin).toHaveURL(/\/admin\?saved=1$/);
+  await expectNotice(admin, 'Account role saved.');
+  await expect(admin).toHaveURL(/\/admin$/);
+}
+
+// A-117: the one-shot notice a successful form post leaves on the page it returns to, and the title it prefixes.
+// Waiting for it also waits for that page, since the notice is on no other.
+export async function expectNotice(page: Page, text: string): Promise<void> {
+  await expect(page.getByRole('status').filter({ hasText: text })).toHaveText(text);
+  await expect(page).toHaveTitle(new RegExp(`^${text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} – `));
 }
 
 // Clicks a submit button and returns the HTTP status of the navigation it causes. Refused actions answer
@@ -90,4 +99,19 @@ export async function enrollTOTP(page: Page, password: string): Promise<string> 
   await page.getByRole('button', { name: 'Verify and turn on ↗' }).click();
   await expect(page.locator('.page-head .badge')).toHaveText('Enabled');
   return secret;
+}
+
+// A-275, A-281: an open <details> of forms, and each of its forms, labels, fields and buttons, lie horizontally
+// within the viewport. A form clipped inside a table's scrolling .table-wrap does not widen the document, so
+// scrollWidth alone cannot see it. Measure after the stylesheet has applied (A-228).
+export async function withinViewport(details: Locator, width: number) {
+  await waitForStyles(details.page());
+  const parts = details.locator('summary, form, label, input:not([type="hidden"]), textarea, button');
+  expect(await parts.count()).toBeGreaterThan(4);
+  const outside: string[] = [];
+  for (const part of await parts.all()) {
+    const box = (await part.boundingBox())!;
+    if (box.x < 0 || box.x + box.width > width) outside.push(`${await part.evaluate(e => e.outerHTML.slice(0, 60))}: x ${Math.round(box.x)} to ${Math.round(box.x + box.width)}`);
+  }
+  expect(outside, `form parts outside 0..${width} px`).toEqual([]);
 }

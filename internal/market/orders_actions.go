@@ -60,7 +60,7 @@ const sellerNotVendor = "The seller of this listing is no longer a vendor, so it
 
 func shortID(id string) string { return id[:min(8, len(id))] }
 
-func orderPage(id string) string { return "/order?id=" + id + "&saved=1" }
+func orderPage(id string) string { return "/order?id=" + id }
 
 // formNote reads the optional free-text note recorded in order_events.
 func formNote(c *actionCtx, fallback string) (string, error) {
@@ -113,9 +113,10 @@ func waitForWalletLocks(ctx context.Context, tx *sql.Tx) error {
 // maxAwaitingPayment bounds the stock one buyer can hold in unpaid orders (the watcher also expires them).
 const maxAwaitingPayment = 3
 
-// payAction: buyer moves draft -> awaiting_payment at the current listing price. transition() refuses when
-// no provider serves the currency (409) and the stock hook reserves one unit (409 when none is left). Only
-// then is the live wallet asked for an address, so refused requests never create wallet addresses.
+// payAction: buyer moves draft -> awaiting_payment at the current listing price. A physical order whose vendor has
+// no key that can receive encrypted messages is refused before transition (409, A-83). transition() refuses when no
+// provider serves the currency (409) and the stock hook reserves one unit (409 when none is left). Only then is the
+// live wallet asked for an address, so refused requests never create wallet addresses.
 func payAction(c *actionCtx) (actionResult, error) {
 	ctx := c.Ctx()
 	if err := waitForWalletLocks(ctx, c.Tx); err != nil {
@@ -150,6 +151,30 @@ func payAction(c *actionCtx) (actionResult, error) {
 	if err = lockPaymentIntake(c, o.Currency); err != nil {
 		return actionResult{}, err
 	}
+	// A-216, A-232: a listing priced below its currency's payout floor (Bitcoin before A-99, Monero before A-232)
+	// takes no payment request in that currency on a draft saved earlier; the order would take that price. A-83: the
+	// buyer of a physical order must be able to send the vendor an encrypted shipping address. Both are checked
+	// before any reservation or wallet call, after the reasons the order page gives first (paused intake, then no
+	// wallet, as transition refuses); the page shows the key reason instead of the form (vendorKeyGate).
+	if o.State == stateDraft && o.BuyerID == c.User.ID {
+		if c.A.provider(o.Currency) == nil {
+			return actionResult{}, fail(409, "Payment unavailable for "+o.Currency)
+		}
+		var price int64
+		if err = c.Tx.QueryRowContext(ctx, "SELECT CASE WHEN $2='XMR' THEN xmr ELSE btc END FROM products WHERE id=$1", o.ProductID, o.Currency).Scan(&price); err != nil {
+			return actionResult{}, err
+		}
+		if price < payoutFloor(o.Currency, "release") {
+			return actionResult{}, fail(400, subFloorListing(o.Currency))
+		}
+		if o.Kind == "physical" {
+			if ok, err := userCanReceiveEncrypted(ctx, c.Tx, o.VendorID); err != nil {
+				return actionResult{}, err
+			} else if !ok {
+				return actionResult{}, fail(409, "Payment unavailable. "+noVendorKeyReason+" Nothing was changed.")
+			}
+		}
+	}
 	if _, err = c.Tx.ExecContext(ctx, "UPDATE orders o SET amount=CASE WHEN o.currency='XMR' THEN p.xmr ELSE p.btc END FROM products p WHERE o.id=$1 AND o.state='draft' AND p.id=o.product_id", o.ID); err != nil {
 		return actionResult{}, err
 	}
@@ -167,9 +192,12 @@ func payAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, fail(503, "The "+o.Currency+" "+c.A.netAdj()+" wallet did not return a usable address. Nothing was changed; try again later.")
 	}
 	if _, err = c.Tx.ExecContext(ctx, "INSERT INTO payment_addresses(order_id,currency,address,provider) VALUES($1,$2,$3,$4)", o.ID, o.Currency, addr, strings.ToLower(o.Currency)+"-"+p.Network()); err != nil {
+		if addressAlreadyIssued(err) { // A-288: a wallet restored from an older backup
+			return actionResult{}, addressCollisionRefusal(c, o.Currency, p.Network())
+		}
 		return actionResult{}, err
 	}
-	return actionResult{Redirect: orderPage(o.ID), Audit: "Requested " + o.Currency + " " + c.A.netAdj() + " payment address for order " + shortID(o.ID)}, nil
+	return actionResult{Redirect: orderPage(o.ID), Notice: "payment-address", Audit: "Requested " + o.Currency + " " + c.A.netAdj() + " payment address for order " + shortID(o.ID)}, nil
 }
 
 // hasDeposits reports whether an order has received a deposit that can be refunded: not conflicted and not a
@@ -224,7 +252,7 @@ func cancelAction(c *actionCtx) (actionResult, error) {
 	if _, err = c.A.transition(ctx, c.Tx, o.ID, from, stateCancelled, c.User, note); err != nil {
 		return actionResult{}, err
 	}
-	return actionResult{Redirect: orderPage(o.ID), Audit: "Cancelled order " + shortID(o.ID) + " (was " + stateLabel(from) + ")"}, nil
+	return actionResult{Redirect: orderPage(o.ID), Notice: "order-cancelled", Audit: "Cancelled order " + shortID(o.ID) + " (was " + stateLabel(from) + ")"}, nil
 }
 
 func shipAction(c *actionCtx) (actionResult, error) {
@@ -239,7 +267,7 @@ func shipAction(c *actionCtx) (actionResult, error) {
 	if _, err = c.A.transition(c.Ctx(), c.Tx, o.ID, statePaid, stateShipped, c.User, note); err != nil {
 		return actionResult{}, err
 	}
-	return actionResult{Redirect: orderPage(o.ID), Audit: "Marked order " + shortID(o.ID) + " shipped"}, nil
+	return actionResult{Redirect: orderPage(o.ID), Notice: "order-shipped", Audit: "Marked order " + shortID(o.ID) + " shipped"}, nil
 }
 
 // deliverAction: the vendor releases digital content. The deliveries row is written in the same
@@ -259,7 +287,7 @@ func deliverAction(c *actionCtx) (actionResult, error) {
 	if err = insertDelivery(c.Ctx(), c.Tx, o.ID, content); err != nil {
 		return actionResult{}, err
 	}
-	return actionResult{Redirect: orderPage(o.ID), Audit: "Delivered digital content for order " + shortID(o.ID)}, nil
+	return actionResult{Redirect: orderPage(o.ID), Notice: "order-delivered", Audit: "Delivered digital content for order " + shortID(o.ID)}, nil
 }
 
 // completeAction: the buyer confirms receipt. The from-state follows the product kind, so a repeated or
@@ -285,7 +313,7 @@ func completeAction(c *actionCtx) (actionResult, error) {
 	if _, err = c.A.transition(withPayoutSeen(c.Ctx(), o.ID, seen), c.Tx, o.ID, from, stateCompleted, c.User, "Buyer confirmed receipt"); err != nil {
 		return actionResult{}, err
 	}
-	return actionResult{Redirect: orderPage(o.ID), Audit: "Completed order " + shortID(o.ID)}, nil
+	return actionResult{Redirect: orderPage(o.ID), Notice: "order-completed", Audit: "Completed order " + shortID(o.ID)}, nil
 }
 
 // reviewAction: one review per completed order, by its buyer. "Verified purchase" on public pages rests
@@ -316,5 +344,5 @@ func reviewAction(c *actionCtx) (actionResult, error) {
 	if n, _ := res.RowsAffected(); n != 1 {
 		return actionResult{}, fail(409, "You already reviewed this order")
 	}
-	return actionResult{Redirect: orderPage(o.ID), Audit: "Reviewed order " + shortID(o.ID)}, nil
+	return actionResult{Redirect: orderPage(o.ID), Notice: "review-saved", Audit: "Reviewed order " + shortID(o.ID)}, nil
 }

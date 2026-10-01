@@ -3,6 +3,7 @@ package market
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"math"
 	"strings"
 )
@@ -29,10 +30,14 @@ const suspendedHold = suspendedHoldPrefix + " payout held when the recipient's a
 
 // largeHoldPrefix starts the hold on a refund or return larger than the order price (splitPayout). Only an
 // administrator who confirms the check releases it (payments_admin.go); the watcher never lifts it. It follows
-// suspendedHold when both apply, and a restore from backup keeps it after its own prefix (scripts/restore.sh).
+// suspendedHold when both apply, and a restore from backup keeps it after its own prefix (scripts/restore.sh), so
+// the prefix must never change; rows written with an earlier text after it still match.
 const largeHoldPrefix = "Larger than the order price:"
 
-const largeHold = largeHoldPrefix + " held so the market's pooled wallet is not used to swap coins; an administrator checks it before it is sent."
+// largeHold catches likely mistakes, not swaps: refunds and returns up to the order price are sent automatically
+// (pay and cancel, underpaid expiry, cancel then send), so the pooled wallet can swap coins up to a listing's price
+// without review. A refund is held when it exceeds the price; a return only when the excess itself exceeds it.
+const largeHold = largeHoldPrefix + " held as a likely mistake; an administrator checks it before it is sent. Refunds and returns up to the order price are sent automatically."
 
 // heldLarge reports a payout held because it is larger than the order price, including under a suspension or
 // restore hold.
@@ -40,34 +45,36 @@ func heldLarge(state, payoutErr string) bool {
 	return state == "held" && strings.Contains(payoutErr, largeHoldPrefix)
 }
 
-// Minimum automatic payouts (A-99), in atomic units. A payout whose counted sum is below its floor is never
-// queued: enqueuePayout flags its deposits for staff review once instead (flagBelowFloor).
+// Minimum automatic payouts (A-99, A-232), in atomic units. A payout whose counted sum is below its floor is never
+// queued: enqueuePayout flags its deposits for staff review once instead (flagBelowFloor). Every payout on both
+// coins is sent with the network fee taken from the amount (sendPayouts, SendFeeFromAmount), so no payout costs the
+// market's pooled wallet its fee; the floors keep the fee from swallowing the payout.
 //
-// minPayoutBTC applies to every Bitcoin payout (release or refund). Bitcoin Core's sendtoaddress is called with
-// subtractfeefromamount, so the network fee comes out of the amount sent and an amount at or below the fee can
-// never be sent: on regtest a 3,000-satoshi payout came out 6 satoshi negative after the fee while 5,000 was
-// sent. 10,000 satoshi (0.0001 BTC) clears that fee about three times over. It removes the never-sendable
-// class, not every failure: fees move, so a payout just above the floor can still fail and is requeued by an
-// administrator as before. Listings cannot be priced below it in BTC (validateListing).
+// minPayoutBTC applies to every Bitcoin payout (release, refund or return). Bitcoin Core's sendtoaddress is called
+// with subtractfeefromamount, so an amount at or below the fee can never be sent: on regtest a 3,000-satoshi payout
+// came out 6 satoshi negative after the fee while 5,000 was sent. 10,000 satoshi (0.0001 BTC) clears that fee about
+// three times over. It removes the never-sendable class, not every failure: fees move, so a payout just above the
+// floor can still fail and is requeued by an administrator as before. Listings cannot be priced below it in BTC
+// (validateListing).
 //
-// minAutoRefundXMR applies to Monero refunds and overpayment returns. Those are sent with the network fee taken
-// from the amount (SendFeeFromAmount), so they never cost the market's pooled wallet; a Monero transfer costs very
-// roughly 0.00003-0.0001 XMR in fees at the default priority (more for one spending many small outputs), and
-// below 0.001 XMR the fee would take several percent of the amount or more, so such a refund is left to staff
-// and such an excess goes to the vendor with the release (splitPayout). Releases have no Monero floor: the
-// vendor's price was agreed and paid, and the pooled wallet pays a release's fee on top.
+// minPayoutXMR applies to every Monero payout (release, refund or return; A-232 made releases fee-deducted too,
+// matching Bitcoin). A Monero transfer costs very roughly 0.00003-0.0001 XMR in fees at the default priority (more
+// for one spending many small outputs), and below 0.001 XMR the fee would take several percent of the amount or
+// more, so such a payout is left to staff and such an excess goes to the vendor with the release (splitPayout).
+// Listings cannot be priced below it in XMR (validateListing).
 const (
-	minPayoutBTC     = 10000      // 0.0001 BTC
-	minAutoRefundXMR = 1000000000 // 0.001 XMR
+	minPayoutBTC = 10000      // 0.0001 BTC
+	minPayoutXMR = 1000000000 // 0.001 XMR
 )
 
-// payoutFloor is the smallest sum enqueuePayout queues for a payout of kind ("release" | "refund") in currency.
+// payoutFloor is the smallest sum enqueuePayout queues for a payout of kind ("release", "refund" or "return") in
+// currency. The floor is the same for every kind.
 func payoutFloor(currency, kind string) int64 {
-	switch {
-	case currency == "BTC":
+	switch currency {
+	case "BTC":
 		return minPayoutBTC
-	case currency == "XMR" && (kind == "refund" || kind == "return"):
-		return minAutoRefundXMR
+	case "XMR":
+		return minPayoutXMR
 	}
 	return 0
 }
@@ -78,16 +85,27 @@ func belowFloor(currency, kind string, sum int64) string {
 	if sum <= 0 || sum >= floor {
 		return ""
 	}
-	what := "payout"
-	if currency == "XMR" {
-		what = "refund"
-	}
-	return "below the minimum automatic " + what + " of " + amount(floor, currencyDecimals(currency)) + " " + currency
+	return "below the minimum automatic payout of " + amount(floor, currencyDecimals(currency)) + " " + currency
 }
 
 func paymentsTransitionHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, to string) error {
 	if !isTerminal(to) {
 		return nil
+	}
+	return a.settleTerminal(ctx, tx, o)
+}
+
+// errEscrowSettlement refuses to settle an escrow order: its funds are in its own escrow, so a pooled payout would
+// pay it from the market's wallet while the escrow stays claimable. No escrow settlement exists yet (A-244).
+var errEscrowSettlement = errors.New("settleTerminal: escrow settlement is not built; no pooled payout is queued for an escrow order")
+
+// settleTerminal is the one settlement dispatch for an order in a terminal state (ARCH-1): the transition hook
+// and the watcher's retry (settleOrder) both call it, and it is the only caller of enqueuePayout. A pooled order
+// queues its payout as before; an escrow order (Order.Escrow, always false until escrow is built) never gets a
+// payouts row.
+func (a *App) settleTerminal(ctx context.Context, tx *sql.Tx, o *Order) error {
+	if o.Escrow {
+		return errEscrowSettlement
 	}
 	return a.enqueuePayout(ctx, tx, o)
 }
@@ -138,7 +156,10 @@ type rowsQuerier interface {
 // that is only unavailable in this process (node down, e.g. after a restart) keeps its threshold, applied to the
 // confirmations last recorded by the watcher, as the post-funding notice promises. With no provider, or a
 // disabled one (refused by the network guard), only deposits already credited count. Locked (unlock_time)
-// transfers never count. Credited deposits below holdBelow hold the payout (conflicted; with a provider,
+// transfers never count, nor do deposits first recorded after the order closed (payments.after_close, A-211:
+// never refunded automatically; settleOrder flags them), nor do deposits staff recorded as refunded by hand (A-31:
+// payments.disposition, e.g. a deposit below the minimum automatic payout that a later deposit would otherwise
+// lift over it). Credited deposits below holdBelow hold the payout (conflicted; with a provider,
 // re-confirming). lock row-locks the counted deposits (FOR UPDATE, for enqueuePayout).
 func (a *App) payoutBasis(ctx context.Context, q rowsQuerier, o *Order, lock bool) (ids []int64, sum, holdBelow int64, err error) {
 	threshold := int64(math.MaxInt64)
@@ -152,7 +173,7 @@ func (a *App) payoutBasis(ctx context.Context, q rowsQuerier, o *Order, lock boo
 		threshold = int64(p.Confirmations())
 		holdBelow = threshold
 	}
-	query := "SELECT id,amount FROM payments WHERE order_id=$1 AND NOT locked AND (credited OR confirmations>=$2)"
+	query := "SELECT id,amount FROM payments WHERE order_id=$1 AND NOT locked AND NOT after_close AND disposition<>'refunded' AND (credited OR confirmations>=$2)"
 	if lock {
 		query += " FOR UPDATE"
 	}
@@ -250,10 +271,15 @@ func (a *App) enqueuePayout(ctx context.Context, tx *sql.Tx, o *Order) error {
 	if _, err = tx.ExecContext(ctx, "UPDATE payments SET credited=true,below_floor=false WHERE id=ANY($1)", ids); err != nil {
 		return err
 	}
-	// An excess too small to return goes to the vendor with the release; both parties are told.
+	// An excess too small to return goes to the vendor with the release; both parties are told. So are they when
+	// the excess is not split off because the price itself is below the release floor, and the release is held.
+	// Every payout has the network fee taken from it (A-232), so the notice says so (A-250).
 	if len(parts) == 1 && parts[0].kind == "release" && sum > required {
 		dec := currencyDecimals(o.Currency)
-		body := "Order " + o.ID[:min(8, len(o.ID))] + ": the " + a.netTag() + " release of " + amount(sum, dec) + " " + o.Currency + " to the vendor includes " + priceDifference(sum, required, o.Currency) + ", below the minimum automatic refund of " + amount(payoutFloor(o.Currency, "return"), dec) + " " + o.Currency + ", so it is not returned."
+		body := "Order " + o.ID[:min(8, len(o.ID))] + ": the " + a.netTag() + " release of " + amount(sum, dec) + " " + o.Currency + " to the vendor includes " + priceDifference(sum, required, o.Currency) + ", below the minimum automatic payout of " + amount(payoutFloor(o.Currency, "return"), dec) + " " + o.Currency + ", so it is not returned; the network fee is taken from the release."
+		if parts[0].large {
+			body = "Order " + o.ID[:min(8, len(o.ID))] + ": the " + a.netTag() + " release of " + amount(sum, dec) + " " + o.Currency + " to the vendor includes " + priceDifference(sum, required, o.Currency) + "; " + subFloorPriceExcess(o.Currency) + ", so an administrator reviews the release before it is sent; the network fee is taken from the release."
+		}
 		for _, uid := range []string{o.BuyerID, o.VendorID} {
 			if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), uid, body); err != nil {
 				return err
@@ -264,7 +290,8 @@ func (a *App) enqueuePayout(ctx context.Context, tx *sql.Tx, o *Order) error {
 }
 
 // payoutPart is one payout of a terminal order: its kind ("release", "refund" or "return"), recipient and amount.
-// large marks a refund or return of more than the order price, held for an administrator (largeHold).
+// large marks a refund or return of more than the order price, or a release that keeps an excess of more than a
+// price below the release floor (A-216), held for an administrator (largeHold).
 type payoutPart struct {
 	kind, recipient, who string
 	amount               int64
@@ -273,22 +300,38 @@ type payoutPart struct {
 
 // splitPayout divides an order's counted sum (payoutBasis) into its payouts. A refund returns the whole sum to the
 // buyer. A release pays the vendor exactly the price and returns the excess to the buyer as a separate payout,
-// unless the excess is below the minimum automatic refund (it then goes to the vendor with the release: sending
+// unless the excess is below the minimum automatic payout (it then goes to the vendor with the release: sending
 // dust back costs more than it is worth and invites fee abuse) or the price itself is below the release floor. A
-// refund or return larger than the order price is marked large: sending it back automatically would let the
-// market's pooled wallet be used to swap coins, so an administrator checks it first.
+// refund or return larger than the order price is marked large, a likely mistake an administrator checks first. The
+// bound is the price: a refund of up to the price (and a return of an excess up to the price, so a payment of up to
+// twice the price) is sent automatically, so the pooled wallet can swap coins up to a listing's price without
+// review (largeHold).
+//
+// A price below the release floor exists only on listings priced before the listing floor applied (Bitcoin before
+// A-99, Monero before A-232; new orders on them are refused, A-216, A-232). The vendor's share alone would be below
+// the floor, so the whole sum stays one release; when its excess is more than the price, that release is marked
+// large too, so the buyer's overpayment is not paid to the vendor without an administrator's review.
 func splitPayout(kind string, o *Order, sum, required int64) []payoutPart {
 	if kind == "refund" {
 		return []payoutPart{{kind: "refund", recipient: o.BuyerID, who: "buyer", amount: sum, large: sum > required}}
 	}
 	excess := sum - required
-	if excess <= 0 || belowFloor(o.Currency, "return", excess) != "" || belowFloor(o.Currency, "release", required) != "" {
+	if belowFloor(o.Currency, "release", required) != "" {
+		return []payoutPart{{kind: "release", recipient: o.VendorID, who: "vendor", amount: sum, large: excess > required}}
+	}
+	if excess <= 0 || belowFloor(o.Currency, "return", excess) != "" {
 		return []payoutPart{{kind: "release", recipient: o.VendorID, who: "vendor", amount: sum}}
 	}
 	return []payoutPart{
 		{kind: "release", recipient: o.VendorID, who: "vendor", amount: required},
 		{kind: "return", recipient: o.BuyerID, who: "buyer", amount: excess, large: excess > required},
 	}
+}
+
+// subFloorPriceExcess says why a release whose price is below the release floor (A-216) keeps the excess.
+func subFloorPriceExcess(currency string) string {
+	return "the price is below the minimum automatic payout of " + amount(payoutFloor(currency, "release"), currencyDecimals(currency)) + " " + currency +
+		", so the amount paid over it cannot be returned separately"
 }
 
 // queuePayout inserts one payout of o (at most one of each kind per order) with its starting state: held for a
@@ -334,26 +377,30 @@ func (a *App) queuePayout(ctx context.Context, tx *sql.Tx, o *Order, part payout
 	if part.kind == "return" {
 		what = a.netTag() + " return of " + label + " (paid over the price)"
 	}
-	note := "Queued " + what + " to the " + part.who + " (single attempt)."
+	// Every payout is sent with the network fee taken from its amount (A-232): each note and notice stating the
+	// amount says so (A-250).
+	fee := "; the network fee is taken from the " + part.kind + "."
+	note := "Queued " + what + " to the " + part.who + " (single attempt)"
 	switch {
 	case suspended:
-		note = what + " to the " + part.who + " is held until an administrator checks the payout address."
+		note = what + " to the " + part.who + " is held until an administrator checks the payout address"
 	case part.large:
-		note = what + " to the " + part.who + " is held: it is more than the order price, so an administrator checks it before it is sent."
+		note = what + " to the " + part.who + " is held: it is more than the order price, so an administrator checks it before it is sent"
 	case held:
-		note = what + " to the " + part.who + " is held: a credited deposit is conflicted or re-confirming."
+		note = what + " to the " + part.who + " is held: a credited deposit is conflicted or re-confirming"
 	case address == "":
-		note = what + " to the " + part.who + " is blocked until the " + part.who + " saves a " + o.Currency + " payout address."
+		note = what + " to the " + part.who + " is blocked until the " + part.who + " saves a " + o.Currency + " payout address"
 	}
+	note += fee
 	if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, o.State, note); err != nil {
 		return err
 	}
 	var body string
 	switch {
 	case part.large:
-		body = "Order " + short + ": the " + what + " is more than the order price, so it is held until an administrator checks it."
+		body = "Order " + short + ": the " + what + " is more than the order price, so it is held until an administrator checks it" + fee
 	case address == "" && !suspended:
-		body = "Order " + short + ": add a " + o.Currency + " payout address on your account page to receive " + label + " (" + a.netTag() + ")."
+		body = "Order " + short + ": add a " + o.Currency + " payout address on your account page to receive " + label + " (" + a.netTag() + "); the network fee is taken from it."
 	case part.kind == "return":
 		body = "Order " + short + ": " + label + " you paid over the price is being returned to your saved " + o.Currency + " payout address; the network fee is taken from it."
 	}

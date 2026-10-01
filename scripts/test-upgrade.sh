@@ -41,7 +41,7 @@ cleanup() {
       [[ -f $file ]] && { echo "--- $(basename "$file") ---" >&2; cat "$file" >&2; }
     done
   fi
-  docker rm -f "$db" >/dev/null 2>&1 || true
+  docker rm -f -v "$db" >/dev/null 2>&1 || true  # -v: postgres keeps its data in an anonymous VOLUME
   rm -rf "$work"
   exit "$status"
 }
@@ -188,6 +188,64 @@ SELECT count(*) FROM orders WHERE currency='XMR';
 ROLLBACK;
 SQL
 ) == 2 ]]
+
+# One settlement per order (migration 069): a release keeps its return, but a release and a refund for the same
+# order are refused by the database.
+[[ $(sql -c "SELECT indexdef FROM pg_indexes WHERE indexname='payouts_one_settlement'") == *"UNIQUE INDEX payouts_one_settlement ON public.payouts USING btree (order_id) WHERE (kind = ANY (ARRAY['release'::text, 'refund'::text]))"* ]]
+[[ $(sql <<'SQL'
+BEGIN;
+INSERT INTO payouts(order_id,kind,user_id,currency,amount) SELECT id,'release',buyer_id,currency,amount FROM orders WHERE currency='XMR';
+INSERT INTO payouts(order_id,kind,user_id,currency,amount) SELECT id,'return',buyer_id,currency,amount FROM orders WHERE currency='XMR';
+SELECT count(*) FROM payouts;
+ROLLBACK;
+SQL
+) == 2 ]]
+if sql > "$work/settlement.out" 2>&1 <<'SQL'
+BEGIN;
+INSERT INTO payouts(order_id,kind,user_id,currency,amount) SELECT id,'release',buyer_id,currency,amount FROM orders WHERE currency='XMR';
+INSERT INTO payouts(order_id,kind,user_id,currency,amount) SELECT id,'refund',buyer_id,currency,amount FROM orders WHERE currency='XMR';
+COMMIT;
+SQL
+then
+  echo 'A release and a refund for the same order were both accepted' >&2; exit 1
+fi
+grep -q 'payouts_one_settlement' "$work/settlement.out"
+[[ $(sql -c 'SELECT count(*) FROM payouts') == 0 ]]
+# A refund or a return per order (migration 070): a refund beside a return would pay the excess twice.
+[[ $(sql -c "SELECT indexdef FROM pg_indexes WHERE indexname='payouts_refund_or_return'") == *"UNIQUE INDEX payouts_refund_or_return ON public.payouts USING btree (order_id) WHERE (kind = ANY (ARRAY['refund'::text, 'return'::text]))"* ]]
+if sql > "$work/refund-return.out" 2>&1 <<'SQL'
+BEGIN;
+INSERT INTO payouts(order_id,kind,user_id,currency,amount) SELECT id,'refund',buyer_id,currency,amount FROM orders WHERE currency='XMR';
+INSERT INTO payouts(order_id,kind,user_id,currency,amount) SELECT id,'return',buyer_id,currency,amount FROM orders WHERE currency='XMR';
+COMMIT;
+SQL
+then
+  echo 'A refund and a return for the same order were both accepted' >&2; exit 1
+fi
+grep -q 'payouts_refund_or_return' "$work/refund-return.out"
+[[ $(sql -c 'SELECT count(*) FROM payouts') == 0 ]]
+# A return needs its release (migration 073): a deferred constraint trigger refuses, at commit, a return with no
+# release, while a release and its return inserted in one transaction are accepted in either order.
+[[ $(sql -c "SELECT pg_get_triggerdef(oid) FROM pg_trigger WHERE tgname='payouts_return_needs_release'") == 'CREATE CONSTRAINT TRIGGER payouts_return_needs_release AFTER INSERT OR DELETE OR UPDATE OF kind, order_id ON public.payouts DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION payouts_return_needs_release()' ]]
+[[ $(sql <<'SQL'
+BEGIN;
+INSERT INTO payouts(order_id,kind,user_id,currency,amount) SELECT id,'return',buyer_id,currency,amount FROM orders WHERE currency='XMR';
+INSERT INTO payouts(order_id,kind,user_id,currency,amount) SELECT id,'release',buyer_id,currency,amount FROM orders WHERE currency='XMR';
+SET CONSTRAINTS payouts_return_needs_release IMMEDIATE;
+SELECT count(*) FROM payouts;
+ROLLBACK;
+SQL
+) == 2 ]]
+if sql > "$work/return-release.out" 2>&1 <<'SQL'
+BEGIN;
+INSERT INTO payouts(order_id,kind,user_id,currency,amount) SELECT id,'return',buyer_id,currency,amount FROM orders WHERE currency='XMR';
+COMMIT;
+SQL
+then
+  echo 'A return without a release was accepted' >&2; exit 1
+fi
+grep -q 'has a return but no release' "$work/return-release.out"
+[[ $(sql -c 'SELECT count(*) FROM payouts') == 0 ]]
 
 # Behaviour through the upgraded server: an alpha.1 password still signs in, the migrated draft is shown as
 # a draft, and ordering the same product and currency again returns that draft instead of a second one.

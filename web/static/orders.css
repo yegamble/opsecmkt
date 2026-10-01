@@ -86,6 +86,15 @@
 .review + .stack {
   margin-top:18px
 }
+.dispute-text {
+  white-space:pre-wrap;
+  overflow-wrap:anywhere
+}
+.dispute-evidence ul {
+  margin:4px 0 0;
+  padding-left:18px;
+  overflow-wrap:anywhere
+}
 .dispute-order {
   font-size:0.875rem;
   overflow-wrap:anywhere
@@ -103,9 +112,33 @@
   color:var(--muted);
   text-transform:uppercase
 }
+/* The table's white-space:nowrap would keep 64-character order and transaction IDs on one line (A-275). */
 .payment-reviews .mono {
+  white-space:normal;
   overflow-wrap:anywhere;
   word-break:break-all
+}
+/* A-265: the listing title under a flag's order ID wraps too. */
+.payment-reviews .order-listing {
+  white-space:normal
+}
+/* A-275: a flag's review forms sit under the payment-review table (its row links here), not in a table cell, so
+   at 320 px they wrap within the page instead of widening the scrolling .table-wrap. */
+.payment-review-form {
+  margin:0 0 18px;
+  padding-bottom:18px;
+  border-bottom:1px solid var(--line);
+  overflow-wrap:anywhere
+}
+.payment-review-form>p,.payment-review-form form {
+  max-width:44rem
+}
+.payment-review-form form {
+  margin-top:18px
+}
+.payment-review-form form+form {
+  padding-top:18px;
+  border-top:1px solid var(--line)
 }
 .review-moderation form {
   margin-top:12px

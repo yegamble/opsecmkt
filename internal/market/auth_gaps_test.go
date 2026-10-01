@@ -77,7 +77,7 @@ func agSession(e *testEnv, userID string) string {
 func agPending(e *testEnv, userID string) *http.Cookie {
 	e.t.Helper()
 	p := randomToken()
-	agExec(e, "INSERT INTO pending_logins(token_hash,user_id,expires) VALUES($1,$2,now()+interval '10 minutes')", digest(p), userID)
+	agExec(e, "INSERT INTO pending_logins(token_hash,user_id,expires,password_digest) VALUES($1,$2,now()+interval '10 minutes',$3)", digest(p), userID, digest(passwordHash(e, userID)))
 	return &http.Cookie{Name: "pending", Value: p}
 }
 
@@ -194,7 +194,7 @@ func TestRateLimitConfirmPassword(t *testing.T) {
 	for range 10 {
 		agExpect(e, "/pgp/2fa", s, off("wrong-password-123"), 401, "Password incorrect")
 	}
-	agExpect(e, "/pgp/2fa", s, off(testPassword), 429, "Too many attempts")
+	agExpect(e, "/pgp/2fa", s, off(testPassword), 429, confirmPausedText)
 	if agStr(e, "SELECT pgp_2fa::text FROM users WHERE id=$1", id) != "true" {
 		t.Fatal("limited confirmation changed the setting")
 	}
@@ -278,11 +278,16 @@ func TestRateLimitTOTPManagementActions(t *testing.T) {
 	}
 	code, _ := e.totpCodeFor(id, 0)
 	confirms := func() int { e.A.mu.Lock(); defer e.A.mu.Unlock(); return e.A.limits["confirm:"+id].Count }
-	spent := confirms() // the ten activations above checked the password (A-152)
+	// The ten activations above checked the (correct) password (A-152), which spends nothing (A-274); the limited
+	// requests below also send a wrong one, which would spend the confirm budget had they reached the check.
+	spent := confirms()
 	agExpect(e, "/totp/activate", s, url.Values{"code": {code}, "password": {testPassword}}, 429, "Too many attempts")
+	agExpect(e, "/totp/activate", s, url.Values{"code": {code}, "password": {"wrong-password-123"}}, 429, "Too many attempts")
 	// The same totp:<user> budget covers recovery regeneration and disabling.
 	agExpect(e, "/totp/recovery", s, url.Values{"code": {code}, "password": {testPassword}}, 429, "Too many attempts")
+	agExpect(e, "/totp/recovery", s, url.Values{"code": {code}, "password": {"wrong-password-123"}}, 429, "Too many attempts")
 	agExpect(e, "/totp/disable", s, url.Values{"password": {testPassword}, "code": {code}}, 429, "Too many attempts")
+	agExpect(e, "/totp/disable", s, url.Values{"password": {"wrong-password-123"}, "code": {code}}, 429, "Too many attempts")
 	if agStr(e, "SELECT totp_enabled::text FROM users WHERE id=$1", id) != "false" || agInt(e, "SELECT count(*) FROM recovery_codes WHERE user_id=$1", id) != 0 {
 		t.Fatal("limited activation enabled TOTP")
 	}
@@ -420,6 +425,9 @@ func TestPasswordWorkBusyReturns503(t *testing.T) {
 		t.Fatal("busy refusal changed data")
 	}
 	drain()
+	// pgp_2fa was set above without a key, only so /pgp/2fa had something to turn off; with it on and no readable key
+	// the sign-in is refused (A-272), so it goes off before the password-only sign-in.
+	agExec(e, "UPDATE users SET pgp_2fa=false WHERE id=$1", id)
 	w := e.do("POST", "/login", randomToken(), creds)
 	e.check(w, 303)
 	e.session(w)
@@ -600,7 +608,7 @@ func TestExpiredSessionIsSignedOut(t *testing.T) {
 	agExec(e, "UPDATE sessions SET expires=now()-interval '1 second' WHERE user_id=$1", id)
 	w := e.do("GET", "/account", s, nil)
 	e.check(w, 303)
-	if w.Header().Get("Location") != "/login" {
+	if w.Header().Get("Location") != "/login?next=%2Faccount" {
 		t.Fatalf("expired session redirected to %q", w.Header().Get("Location"))
 	}
 	if strings.Contains(e.body("GET", "/", s, nil, 200), "exp_user") {
@@ -645,7 +653,7 @@ func TestLoginRotatesSessionToken(t *testing.T) {
 		t.Fatal("login kept the previous session token")
 	}
 	e.check(e.do("GET", "/account", fresh, nil), 200)
-	if loc := e.do("GET", "/account", old, nil).Header().Get("Location"); loc != "/login" {
+	if loc := e.do("GET", "/account", old, nil).Header().Get("Location"); loc != "/login?next=%2Faccount" {
 		t.Fatalf("old token still authenticates (location %q)", loc)
 	}
 	if agInt(e, "SELECT count(*) FROM sessions WHERE token_hash=$1", digest(old)) != 0 || agInt(e, "SELECT count(*) FROM sessions WHERE token_hash=$1 AND user_id=$2", digest(fresh), id) != 1 {
@@ -756,7 +764,8 @@ func TestTOTPDisableInputValidation(t *testing.T) {
 	e := newTestApp(t)
 	id, s := e.user("totp_dis", "buyer")
 	_, recovery := agEnableTOTP(e, id)
-	agExpect(e, "/totp/disable", s, url.Values{"password": {testPassword}}, 400, "Enter your password and a current code")
+	// A wrong password here: a correct one spends no confirm budget (A-274), so it could not show the check was skipped.
+	agExpect(e, "/totp/disable", s, url.Values{"password": {"wrong-password-123"}}, 400, "Enter your password and a current code")
 	agExpect(e, "/totp/disable", s, url.Values{"password": {strings.Repeat("p", 73)}, "code": {recovery}}, 400, "Enter your password and a current code")
 	if agLimited(e, "confirm:"+id) {
 		t.Fatal("malformed disable reached the password check")
@@ -767,8 +776,13 @@ func TestTOTPDisableInputValidation(t *testing.T) {
 		t.Fatal("rejected disable changed data")
 	}
 	// Disabling when TOTP is not enabled is a conflict after the password check.
-	_, plain := e.user("totp_none", "buyer")
+	plainID, plain := e.user("totp_none", "buyer")
 	agExpect(e, "/totp/disable", plain, url.Values{"password": {testPassword}, "code": {"123456"}}, 409, "not enabled")
+	// A recovery-shaped code too (A-292): refused as not enabled before any code check, so no confirm budget is spent.
+	agExpect(e, "/totp/disable", plain, url.Values{"password": {testPassword}, "code": {newRecoveryCode()}}, 409, "not enabled")
+	if agLimited(e, "confirm:"+plainID) {
+		t.Fatal("disable without TOTP checked the code and spent the confirm budget")
+	}
 }
 
 func TestTOTPUnreadableSecret(t *testing.T) {
@@ -922,7 +936,7 @@ func TestStolenSessionCannotAddPGPFactorToTOTPAccount(t *testing.T) {
 
 	// With the stolen session gone, the password plus mallory's key does not complete sign-in.
 	e.check(e.do("POST", "/revoke-sessions", stolen, nil), 303)
-	anon, pc := e.passwordLogin("victim_totp")
+	anon, pc := e.pendingSignIn("victim_totp")
 	e.do("POST", "/challenge/pgp", anon, nil, pc)
 	answer := "guess"
 	if armored := agStr(e, "SELECT COALESCE(pgp_challenge,'') FROM pending_logins WHERE token_hash=$1", digest(pc.Value)); armored != "" {
@@ -969,7 +983,7 @@ func TestStolenSessionCannotEnrollTOTPOnPGPAccount(t *testing.T) {
 	}
 
 	e.check(e.do("POST", "/revoke-sessions", stolen, nil), 303)
-	anon, pc := e.passwordLogin("victim_pgp")
+	anon, pc := e.pendingSignIn("victim_pgp")
 	next, _ := e.totpCodeFor(uid, 1)
 	w := e.do("POST", "/challenge", anon, url.Values{"method": {"totp"}, "code": {next}}, pc)
 	if w.Code == 303 && e.cookie(w, "session") != "" {

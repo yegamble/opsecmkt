@@ -64,7 +64,7 @@ func TestListingEditOwnership(t *testing.T) {
 
 	w = e.do("POST", "/listings/update", ownerS, inventoryForm(p, nil))
 	e.check(w, 303)
-	if loc := w.Header().Get("Location"); loc != "/listing-edit?id="+p+"&saved=1" {
+	if loc := w.Header().Get("Location"); loc != "/listing-edit?id="+p {
 		t.Fatalf("redirect %q", loc)
 	}
 	var btc, xmr int64
@@ -237,7 +237,7 @@ func TestArchiveHidesListingAndRefusesDrafts(t *testing.T) {
 
 	w := e.do("POST", "/listings/archive", s, url.Values{"id": {p}})
 	e.check(w, 303)
-	if w.Header().Get("Location") != "/vendor-dashboard?saved=1" {
+	if w.Header().Get("Location") != "/vendor-dashboard" {
 		t.Fatalf("redirect %q", w.Header().Get("Location"))
 	}
 	e.check(e.do("POST", "/listings/archive", s, url.Values{"id": {p}}), 409)
@@ -258,13 +258,19 @@ func TestArchiveHidesListingAndRefusesDrafts(t *testing.T) {
 		if strings.Contains(w.Body.String(), p) {
 			t.Fatal("search shows the archived listing")
 		}
-		e.check(e.do("GET", "/product?id="+p, sess, nil), 404)
+		// Both are parties to the existing order, so the product page stays readable to them (A-164).
+		mustContain(t, e.body("GET", "/product?id="+p, sess, nil, 200), archivedListingBadge)
 		e.check(e.do("GET", "/checkout?id="+p, sess, nil), 404)
 		w = e.do("GET", "/vendor?id="+owner, sess, nil)
 		e.check(w, 200)
 		if strings.Contains(w.Body.String(), p) {
 			t.Fatal("vendor page shows the archived listing")
 		}
+	}
+	// Anyone who cannot read an order on it gets 404, as for a missing listing.
+	_, strangerS := e.user("inv_archive_stranger", "buyer")
+	for _, sess := range []string{strangerS, adminS, ""} {
+		e.check(e.do("GET", "/product?id="+p, sess, nil), 404)
 	}
 	// The owner still sees it on the vendor desk with a badge and a restore control.
 	w = e.do("GET", "/vendor-dashboard", s, nil)
@@ -299,7 +305,7 @@ func TestArchiveHidesListingAndRefusesDrafts(t *testing.T) {
 
 	// Editing while archived keeps it archived.
 	e.check(e.do("POST", "/listings/update", s, inventoryForm(p, nil)), 303)
-	e.check(e.do("GET", "/product?id="+p, buyerS, nil), 404)
+	e.check(e.do("GET", "/product?id="+p, strangerS, nil), 404)
 
 	// Restore: visible again and drafts work.
 	e.check(e.do("POST", "/listings/restore", s, url.Values{"id": {p}}), 303)
@@ -307,7 +313,7 @@ func TestArchiveHidesListingAndRefusesDrafts(t *testing.T) {
 	if err := e.DB.QueryRow("SELECT archived,archived_at::text FROM products WHERE id=$1", p).Scan(&archived, &archivedAt); err != nil || archived || archivedAt != nil {
 		t.Fatalf("restore not stored: %v %v %v", archived, archivedAt, err)
 	}
-	e.check(e.do("GET", "/product?id="+p, buyerS, nil), 200)
+	mustNotContain(t, e.body("GET", "/product?id="+p, strangerS, nil, 200), archivedListingBadge)
 	e.check(e.do("POST", "/orders", buyerS, draft), 303)
 
 	// An administrator takes another vendor's listing down with a reason (A-163, listing_takedown_test.go); the plain

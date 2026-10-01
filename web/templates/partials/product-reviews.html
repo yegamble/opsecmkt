@@ -3,7 +3,8 @@ Administrators also see reviews they hid (A-125), labelled, and hide or restore 
 {{define "product-reviews"}}{{$admin := and $.User (eq $.User.Role "admin")}}<section class="order-reviews" aria-labelledby="reviews-title">
 <div class="order-reviews-head">
 <h2 class="section-title" id="reviews-title">{{if eq .Page "vendor"}}Verified reviews for this vendor{{else}}Verified reviews{{end}}</h2>{{with .ReviewSummary}}{{if .Count}}<p class="review-summary">
-<strong>{{.Average}}</strong> / 5 · {{.Count}} review{{if ne .Count 1}}s{{end}}</p>{{end}}{{end}}</div>{{with .ReviewSummary}}{{if .Hidden}}<p class="help">{{.Hidden}} hidden review{{if eq .Hidden 1}} is{{else}}s are{{end}} not shown to others or counted.</p>{{end}}{{end}}{{if .Reviews}}<p class="help">Only the buyer of a completed order can review it, once. Reviewer handles are not shown and dates are shown by month.</p>
+<strong>{{.Average}}</strong> / 5 · {{.Count}} review{{if ne .Count 1}}s{{end}}</p>{{end}}{{end}}</div>{{with $.NoticeIn "reviews-title"}}
+<div class="alert" role="status">{{.}}</div>{{end}}{{with .ReviewSummary}}{{if .Hidden}}<p class="help">{{.Hidden}} hidden review{{if eq .Hidden 1}} is{{else}}s are{{end}} not shown to others or counted.</p>{{end}}{{end}}{{if .Reviews}}<p class="help">Only the buyer of a completed order can review it, once. Reviewer handles are not shown and dates are shown by month.</p>
 <div class="messages-list">{{range .Reviews}}<article class="message review">
 <div class="message-meta">
 <span class="badge green">Verified purchase</span>{{if .Hidden}}

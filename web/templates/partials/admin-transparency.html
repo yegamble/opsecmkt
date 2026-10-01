@@ -1,5 +1,6 @@
 {{/* P6 Transparency owns. Operator key, canary and audit export panels */}}
-{{define "admin-transparency"}}<h2 class="section-title" id="transparency">Transparency</h2>
+{{define "admin-transparency"}}<h2 class="section-title" id="transparency">Transparency</h2>{{with $.NoticeIn "transparency"}}
+<div class="alert" role="status">{{.}}</div>{{end}}
 <div class="grid-two transparency-admin">
 <section class="panel" aria-labelledby="operator-key-title">
 <h2 id="operator-key-title">Operator PGP key</h2>
@@ -35,7 +36,7 @@
 {{if .UpTo}}<form class="stack" method="get" action="/admin/audit-export">
 <label>Include events up to id<input name="upto" type="number" min="1" max="{{.UpTo}}" value="{{.UpTo}}" required>
 </label>
-<p class="help">The same range always produces byte-identical export and signature files. Verify offline with <span class="mono">verify-audit -pub {{.PublicKey}} export.jsonl export.sig</span>. The signature proves origin from this server's key only; whoever controls the server can also sign an altered history. Limited to 10 downloads per 10 minutes.</p>
+<p class="help">The same range always produces byte-identical export and signature files. Verify offline with <span class="mono">verify-audit -pub {{.PublicKey}} export.jsonl export.sig</span>. The signature proves origin from this server's key only; whoever controls the server can also sign an altered history. A download cut short (a dropped connection or Tor circuit) leaves a partial file that fails verification with "sha256 does not match"; download the same range again. Large exports over Tor can take minutes: the server allows 20 seconds plus one second per 32 KB. Limited to 10 downloads per 10 minutes.</p>
 <div class="actions">
 <button type="submit">Download export (.jsonl)</button>
 <button type="submit" name="sig" value="1">Download signature (.sig)</button>

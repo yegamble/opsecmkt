@@ -45,7 +45,7 @@ func TestUnderpaidOrderExpiresAndIsRefunded(t *testing.T) {
 	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND actor_id IS NULL AND note='payment window expired underpaid: 0.0004 of 0.001 BTC received'", p.order); n != 1 {
 		t.Fatalf("expiry note rows %d", n)
 	}
-	if n := p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE '%payment window ended with 0.0004 of 0.001 BTC received%'", p.buyer.ID); n != 1 {
+	if n := p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE '%payment window ended with 0.0004 of 0.001 BTC received%refund of 0.0004 BTC to your saved BTC payout address is queued; the network fee is taken from it.%not refunded automatically.'", p.buyer.ID); n != 1 {
 		t.Fatalf("buyer underpayment notices %d", n)
 	}
 	if got := p.count("SELECT stock FROM products WHERE id=$1", p.productID); got != stock+1 {
@@ -89,6 +89,9 @@ func TestUnderpaidExpiryWithoutPayoutAddressBlocksRefund(t *testing.T) {
 	if st, _, _, amt := p.payout(p.order); p.state(p.order) != stateCancelled || st != "blocked" || amt != 40000 {
 		t.Fatalf("state %s payout %s %d", p.state(p.order), st, amt)
 	}
+	if n := p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE '%payment window ended with%refund of 0.0004 BTC waits until you save a BTC payout address on your account page; the network fee is taken from it.%not refunded automatically.'", p.buyer.ID); n != 1 {
+		t.Fatalf("buyer notices naming the blocked refund %d", n)
+	}
 }
 
 func TestCancelUnderpaidOrderStatesRefund(t *testing.T) {
@@ -102,6 +105,13 @@ func TestCancelUnderpaidOrderStatesRefund(t *testing.T) {
 			t.Fatalf("cancel form missing %q", want)
 		}
 	}
+	// A-215: the help addresses the buyer as "you" and never says a refund left to staff is sent automatically.
+	mustContain(t, body, "queues one refund of every confirmed deposit to your saved BTC payout address (it waits until you save one)",
+		"The payment watcher sends the refund automatically unless the statement below says it is below the minimum automatic payout: then it is not sent automatically, and market staff are asked to review it.")
+	mustNotContain(t, body, "the buyer's saved", "until the buyer saves", "staff review it. The payment watcher sends it automatically")
+	vendorPage := p.page("/order?id="+p.order, p.vendorSess)
+	mustContain(t, vendorPage, "queues one refund of every confirmed deposit to the buyer's saved BTC payout address (it waits until the buyer saves one)")
+	mustNotContain(t, vendorPage, "deposit to your saved", "until you save")
 	cancel := form("order_id", p.order, "from", stateAwaitingPayment)
 	// A form shown before the deposit arrived has no amount: refused, nothing changes.
 	w := p.do("POST", "/orders/cancel", p.buyerSess, cancel)
@@ -156,7 +166,7 @@ func TestCancelOrderWithoutDepositNeedsNoConfirmation(t *testing.T) {
 	}
 }
 
-// Below the minimum automatic refund, the deadline still cancels the order, but nothing is sent: the deposit
+// Below the minimum automatic payout, the deadline still cancels the order, but nothing is sent: the deposit
 // is flagged for staff once, as for any refund below the floor.
 func TestUnderpaidExpiryBelowRefundFloorIsFlagged(t *testing.T) {
 	p := newPayEnv(t)
@@ -175,4 +185,18 @@ func TestUnderpaidExpiryBelowRefundFloorIsFlagged(t *testing.T) {
 	if n := p.floorFlags(p.order); n != 1 {
 		t.Fatalf("floor flags %d", n)
 	}
+	// The notification says which case applies, and the order page states it (A-211).
+	var notice string
+	if err := p.DB.QueryRow("SELECT body FROM notifications WHERE user_id=$1 AND body LIKE '%payment window ended with%'", p.buyer.ID).Scan(&notice); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"0.00009999 BTC", "below the minimum automatic payout of 0.0001 BTC", "not refunded", "market staff were notified", "Anything sent to this order's address after the cancellation is not refunded automatically"} {
+		if !strings.Contains(notice, want) {
+			t.Fatalf("notice %q lacks %q", notice, want)
+		}
+	}
+	if strings.Contains(notice, "The order page shows the refund") || strings.Contains(notice, "is refunded to your saved") {
+		t.Fatalf("notice promises a refund: %q", notice)
+	}
+	mustContain(t, p.page("/order?id="+p.order, p.buyerSess), "0.00009999 BTC received, below the minimum automatic payout of 0.0001 BTC; not refunded; market staff were notified")
 }

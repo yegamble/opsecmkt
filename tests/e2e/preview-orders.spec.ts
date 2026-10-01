@@ -9,6 +9,10 @@ test('order page shows history, unavailable payment and the buyer actions', asyn
   await expect(page.locator('.order-unavailable')).toContainText('Payment unavailable for BTC');
   await expect(page.getByRole('button', { name: 'Request payment address' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Cancel draft' })).toBeVisible();
+  // A-164: the order names its listing and links to it as it is now.
+  const listing = page.locator('.key-values > div', { has: page.getByText('Listing', { exact: true }) }).locator('dd');
+  await expect(listing.getByRole('link', { name: 'Encrypted USB Drive — 256GB', exact: true })).toHaveAttribute('href', '/product?id=encrypted-drive');
+  await expect(listing).toContainText('Listing as it is now; it may have changed since purchase.');
   await expect(page.locator('script')).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()!.width);
 });
@@ -37,13 +41,24 @@ test('moderator desk requires an outcome and disputes explain eligibility', asyn
   await expect(page.getByRole('group', { name: 'Outcome' })).toBeVisible();
   // A-161: each outcome states the amount, recipient, difference from the price and the recipient's payout state
   // (sample figures); resolving needs a ticked confirmation and the decision field warns against identifying text.
-  await expect(page.getByRole('radio', { name: 'Release 0.00412 BTC (test network) to ghost_circuit — exactly the price', exact: true })).toBeVisible();
-  await expect(page.getByRole('radio', { name: 'Refund 0.00412 BTC (test network) to sample_buyer — exactly the price; no payout address: the payout waits for one', exact: true })).toBeVisible();
+  await expect(page.getByRole('radio', { name: 'Release 0.00412 BTC (test network) to ghost_circuit — exactly the price; network fee deducted', exact: true })).toBeVisible();
+  await expect(page.getByRole('radio', { name: 'Refund 0.00412 BTC (test network) to sample_buyer — exactly the price; network fee deducted; no payout address: the payout waits for one', exact: true })).toBeVisible();
   await expect(page.getByRole('checkbox', { name: 'I checked the amount and who receives it for the outcome I chose. Resolving is final.' })).toHaveAttribute('required', '');
   await expect(page.locator('input[type="hidden"][name="amount_seen"]')).toHaveValue('412000');
+  // A-32: resolving queues the payout, so it needs the resolver's current password.
+  const resolve = page.locator('form[action="/resolve"]');
+  await expect(resolve.getByLabel('Current password', { exact: true })).toHaveAttribute('required', '');
+  await expect(resolve).toContainText('Resolving queues the payout, so confirm it with your password.');
   await expect(page.getByLabel('Decision', { exact: true })).toHaveAccessibleDescription(/^Stored unencrypted\..*Never include an address, real name or tracking number/);
   await expect(page.locator('main')).toContainText("A refund returns the whole counted amount to the buyer; a release pays the vendor the price and returns any excess worth sending to the buyer, with the network fee deducted. A refund or return larger than the price waits for an administrator's review");
   await expect(page.locator('main')).not.toContainText('moves no funds');
+  // A-124 and A-162 (sample data): the reply with its role and line breaks, whom each party messaged, and the
+  // resolve help that says whether the other side replied and to ask the evidence holders first.
+  await expect(page.locator('.dispute-text').nth(1)).toHaveText('Sample reply from the vendor.\nNothing was stored.');
+  await expect(page.locator('.dispute-text').first()).toHaveCSS('white-space', 'pre-wrap');
+  await expect(page.locator('.dispute-evidence li')).toHaveText(['Buyer → sample_moderator (1, latest Sample)', 'Vendor → none']);
+  await expect(resolve).toContainText('The vendor replied; the reply is shown above. Before deciding, ask each staff member listed under Encrypted evidence holders');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()!.width);
   await page.goto('/disputes');
   await expect(page.locator('.order-unavailable')).toContainText('Only paid, shipped, or delivered orders qualify');
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()!.width);

@@ -134,7 +134,7 @@ func TestPasswordChangeRevokesOtherSessions(t *testing.T) {
 
 	w := e.do("POST", "/account/password", current, pwForm(testPassword, next))
 	e.check(w, 303)
-	if loc := w.Header().Get("Location"); loc != "/account?saved=1" {
+	if loc := w.Header().Get("Location"); loc != "/account" {
 		t.Fatalf("redirect %q", loc)
 	}
 	rotated := e.session(w)
@@ -143,7 +143,7 @@ func TestPasswordChangeRevokesOtherSessions(t *testing.T) {
 	}
 	e.check(e.do("GET", "/account", rotated, nil), 200)
 	for _, s := range []string{current, other} {
-		if loc := e.do("GET", "/account", s, nil).Header().Get("Location"); loc != "/login" {
+		if loc := e.do("GET", "/account", s, nil).Header().Get("Location"); loc != "/login?next=%2Faccount" {
 			t.Fatalf("old session still authenticates (location %q)", loc)
 		}
 	}
@@ -301,7 +301,7 @@ func TestAdminResetsSecondFactors(t *testing.T) {
 		t.Fatal("recovery codes, sessions or pending sign-ins survived the reset")
 	}
 	for _, s := range []string{targetSess, second} {
-		if loc := e.do("GET", "/account", s, nil).Header().Get("Location"); loc != "/login" {
+		if loc := e.do("GET", "/account", s, nil).Header().Get("Location"); loc != "/login?next=%2Faccount" {
 			t.Fatalf("target session still authenticates (location %q)", loc)
 		}
 	}
@@ -328,7 +328,7 @@ func TestAdminResetsSecondFactors(t *testing.T) {
 	mustContain(t, e.body("GET", "/notifications", e.session(w), nil, 200), "An administrator reset your two-factor sign-in")
 
 	// Repeating the reset finds nothing to do and records nothing.
-	// (Ten password confirmations per ten minutes: this is the administrator's eighth.)
+	// (Correct confirmations spend none of the administrator's confirmation budget, A-274.)
 	before := agInt(e, "SELECT count(*) FROM audit_events")
 	adminCode, _ := e.totpCodeFor(adminID, 1)
 	agExpect(e, "/admin/reset-factors", admin, resetForm("reset_target", "code", adminCode), 409, "no second factor enrolled")

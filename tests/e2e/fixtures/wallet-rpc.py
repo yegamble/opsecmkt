@@ -8,6 +8,9 @@ deposits = []
 payouts = []
 checks = 0
 fail_next_send = set()
+# monero-wallet-rpc get_version: v0.18.5.1 reports RPC version 1.31 ((1 << 16) | 31) from a release build, the
+# version the Monero send-error table was verified against (payments_watcher.go moneroVerifiedWalletRPC).
+wallet_version = {'version': (1 << 16) | 31, 'release': True}
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
@@ -42,11 +45,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply({'error': 'unknown currency'}, 400)
             fail_next_send.add(data['currency'])
             return self.reply({'ok': True})
+        if self.path == '/test/wallet-version':
+            if not isinstance(data.get('version'), int) or not isinstance(data.get('release'), bool):
+                return self.reply({'error': 'version (int) and release (bool) required'}, 400)
+            wallet_version.update(version=data['version'], release=data['release'])
+            return self.reply({'ok': True})
         method, params = data['method'], data.get('params') or {}
         if method == 'getblockchaininfo':
             checks += 1
             result = {'chain':'regtest','initialblockdownload':False}
         elif method == 'getwalletinfo': result = {'walletname':'opsecmkt'}
+        elif method == 'getnetworkinfo': result = {'version':310100,'subversion':'/Satoshi:31.1.0/'}
+        elif method == 'get_version': result = dict(wallet_version)
         elif method == 'get_address': result = {'address':'5'+'a'*94}
         elif method == 'get_height': result = {'height':100}
         elif method == 'get_info': result = {'nettype':'stagenet','stagenet':True,'height':100,'target_height':100}
@@ -76,9 +86,17 @@ class Handler(BaseHTTPRequestHandler):
                 # (not enough money), one of the codes raised before commit_tx submits (payments_watcher.go).
                 code = -6 if currency == 'BTC' else -17
                 return self.reply({'id':data.get('id'),'error':{'code':code,'message':'Fixture rejected send before broadcast'}})
-            destination = {'address':params[0], 'amount':round(params[1]*100000000)} if currency == 'BTC' else params['destinations'][0]
+            if currency == 'BTC':
+                destination = {'address':params[0], 'amount':round(params[1]*100000000)}
+                fee_from_amount = len(params) > 4 and params[4] is True  # sendtoaddress subtractfeefromamount
+            else:
+                destination = params['destinations'][0]
+                fee_from_amount = params.get('subtract_fee_from_outputs') == [0]
+            # A fixed simulated network fee: taken from the amount when the request asks for that, else paid on top.
+            fee = 141 if currency == 'BTC' else 30000000
+            received = destination['amount'] - fee if fee_from_amount else destination['amount']
             txid = format(1000+len(payouts), '064x')
-            payouts.append({'currency':currency, **destination, 'txid':txid})
+            payouts.append({'currency':currency, **destination, 'txid':txid, 'fee':fee, 'fee_from_amount':fee_from_amount, 'received':received})
             result = txid if currency == 'BTC' else {'tx_hash':txid}
         else:
             return self.reply({'id':data.get('id'),'error':{'code':-32601,'message':'Unsupported fixture method: '+method}})

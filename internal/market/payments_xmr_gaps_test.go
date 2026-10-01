@@ -21,6 +21,7 @@ func TestGapXMRMoneyPathEndToEnd(t *testing.T) {
 	l := &lifecycle{testEnv: e, t: t, fake: fake}
 	suffix := randomToken()[:6]
 	vendorID, vendor := e.user("xvendor_"+suffix, "vendor")
+	e.usableKey(vendorID)
 	buyerID, buyer := e.user("xbuyer_"+suffix, "buyer")
 	_, admin := e.user("xadmin_"+suffix, "admin")
 	product := e.product(vendorID, "physical")
@@ -117,7 +118,7 @@ func TestGapXMRMoneyPathEndToEnd(t *testing.T) {
 	if kind != "release" || to != "fake-testnet-xvendor" || state != "pending" || amt != xmrPrice {
 		t.Fatalf("queued release %s %s %s %d", kind, to, state, amt)
 	}
-	if n := l.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note='Queued TESTNET release of 1.234567890123 XMR to the vendor (single attempt).'", order); n != 1 {
+	if n := l.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note='Queued TESTNET release of 1.234567890123 XMR to the vendor (single attempt); the network fee is taken from the release.'", order); n != 1 {
 		t.Fatal("queue event does not carry the exact XMR amount")
 	}
 	l.poll()
@@ -126,7 +127,7 @@ func TestGapXMRMoneyPathEndToEnd(t *testing.T) {
 	if len(sends) != 1 || sends[0].To != "fake-testnet-xvendor" || sends[0].Amount != xmrPrice {
 		t.Fatalf("XMR sends %+v", sends)
 	}
-	if n := l.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE '%TESTNET payout of 1.234567890123 XMR sent: "+sends[0].TxID+"'", vendorID); n != 1 {
+	if n := l.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE '%TESTNET payout of 1.234567890123 XMR sent; the network fee was taken from it. Transaction ID: "+sends[0].TxID+"'", vendorID); n != 1 {
 		t.Fatal("vendor not notified of the exact XMR payout")
 	}
 	mustContain(t, l.get("/order?id="+order, vendor, 200), "Release to vendor", "1.234567890123 XMR", sends[0].TxID)
@@ -155,7 +156,7 @@ func TestGapXMRMoneyPathEndToEnd(t *testing.T) {
 	if kind != "refund" || to != "" || state != "blocked" || amt != 700000000001 {
 		t.Fatalf("blocked refund %s %q %s %d", kind, to, state, amt)
 	}
-	if n := l.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE '%add a XMR payout address on your account page to receive 0.700000000001 XMR (TESTNET)%'", buyerID); n != 1 {
+	if n := l.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE '%add a XMR payout address on your account page to receive 0.700000000001 XMR (TESTNET); the network fee is taken from it.'", buyerID); n != 1 {
 		t.Fatal("buyer not told to add an XMR payout address")
 	}
 	l.poll()

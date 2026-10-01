@@ -143,7 +143,8 @@ func totpRegenerate(c *actionCtx) (actionResult, error) {
 	})
 }
 
-// totpDisable needs the password (bcrypt runs before any transaction) and a current code or recovery code.
+// totpDisable needs the password (bcrypt runs before any transaction) and a current code or recovery code; a wrong
+// code after the right password spends the confirmation budget, as in confirmedTxWith (A-274).
 func totpDisable(c *actionCtx) (actionResult, error) {
 	if err := totpLimit(c); err != nil {
 		return actionResult{}, err
@@ -161,16 +162,25 @@ func totpDisable(c *actionCtx) (actionResult, error) {
 		return actionResult{}, fail(503, "Service unavailable")
 	}
 	defer tx.Rollback()
-	// The recovery codes are locked before the account row (checkTOTP), in the order /challenge takes them (A-154).
+	// The recovery codes are locked before the account row, in the order /challenge takes them (A-154).
 	if err = lockRecoveryCodes(ctx, tx, uid); err != nil {
 		return actionResult{}, err
 	}
+	var enabled bool
+	if err = tx.QueryRowContext(ctx, "SELECT totp_enabled FROM users WHERE id=$1 FOR NO KEY UPDATE", uid).Scan(&enabled); err != nil {
+		return actionResult{}, err
+	}
+	if !enabled {
+		return actionResult{}, fail(409, "TOTP is not enabled for this account")
+	}
+	// The code is checked under the account row lock, as a confirmation's code is: a wrong one spends the confirmation
+	// budget the correct password gave back (A-274, QA19-2).
 	how := "authenticator code"
 	if normalizeRecoveryCode(code) != "" {
 		how = "recovery code"
-		_, err = a.useRecoveryCode(ctx, tx, uid, code)
+		err = a.confirmCode(uid, func() error { _, err := a.useRecoveryCode(ctx, tx, uid, code); return err })
 	} else {
-		err = a.checkTOTP(ctx, tx, uid, code)
+		err = a.confirmCode(uid, func() error { return a.checkTOTP(ctx, tx, uid, code) })
 	}
 	if err != nil {
 		return actionResult{}, err
@@ -278,16 +288,18 @@ func accountSecurityLoader(ctx context.Context, a *App, r *http.Request, d *Page
 }
 
 // recoverySignInNotice is what /totp says after a recovery-code sign-in (/challenge lands there, A-154): how many
-// codes remain and what to do without the authenticator, or that TOTP was turned off. It matches the current state
-// only, so a stale link says nothing.
-func recoverySignInNotice(signin string, s *SecurityView) string {
+// codes remain and what to do without the authenticator, or that TOTP was turned off. signin is "recovery" or
+// "totp-off", from the signin- notice /totp consumed (A-287). It matches the current state only; when that changed
+// meanwhile it returns "" and the notice's own text stays. staffContact is the staff-contact line (A-119, A-279) for
+// the last code.
+func recoverySignInNotice(signin string, s *SecurityView, staffContact string) string {
 	switch {
 	case signin == "totp-off" && !s.TOTPEnabled:
 		return "You signed in with a recovery code and turned off two-step sign-in with an authenticator app (TOTP); your other recovery codes were deleted. Set up TOTP again below with your new authenticator."
 	case signin != "recovery" || !s.TOTPEnabled:
 		return ""
 	case s.RecoveryRemaining == 0:
-		return "You signed in with a recovery code. 0 recovery codes remain. Without your authenticator you cannot turn TOTP off yourself: contact the market staff before you sign out."
+		return "You signed in with a recovery code. 0 recovery codes remain. Without your authenticator you cannot turn TOTP off yourself: ask the market staff for help before you sign out. " + staffContact
 	case s.RecoveryRemaining == 1:
 		return "You signed in with a recovery code. 1 recovery code remains. If you lost your authenticator, turn TOTP off below with your password and that code, then set it up again."
 	}
@@ -301,8 +313,17 @@ func totpLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error
 		return err
 	}
 	d.Security = s
-	if n := recoverySignInNotice(r.URL.Query().Get("signin"), s); n != "" {
-		d.Notice = n
+	// A recovery-code sign-in's one-shot notice (A-287), detailed from the current state.
+	if signin, ok := strings.CutPrefix(d.noticeCode, "signin-"); ok {
+		if n := recoverySignInNotice(signin, s, staffContactSentence(d.Settings[settingStaffContact])); n != "" {
+			d.Notice = n
+		}
+		// The page the sign-in was for (A-126): a link on, only beside the notice. next is kept in the URL: it
+		// selects the link's target (checked again by signInNext), not an outcome, and shows nothing without the
+		// notice, so a crafted or replayed /totp?next= shows no link.
+		if d.Next = signInNext(r.URL.Query().Get("next")); d.Next != "" {
+			d.NextTitle = nextTitle(d.Next)
+		}
 	}
 	if s.Pending {
 		if secret, err := a.open("totp", pending); err != nil {

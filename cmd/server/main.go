@@ -55,6 +55,8 @@ func main() {
 	resetAdmin := flag.String("reset-admin-password", "", "host-only break-glass: read a new password for this administrator handle from stdin, end its sessions and exit (starts no server)")
 	bootstrap := flag.String("bootstrap-admin", "", "host-only first-run setup: create the first administrator with this handle, reading its password from stdin, mark the market installed and exit (starts no server; no setup token needed)")
 	siteName := flag.String("site-name", "", "with -bootstrap-admin: the marketplace name (default OPSMKT, at most 80 bytes)")
+	setRoleFlag := flag.String("set-role", "", "host-only: -set-role HANDLE ROLE changes that account's role to buyer, vendor, moderator or admin (the only way to add or remove an administrator; removing one ends its sessions) and exits (starts no server)")
+	resetFactors := flag.String("reset-admin-factors", "", "host-only break-glass: turn off this administrator's TOTP, recovery codes and PGP sign-in, end its sessions and exit (reads no stdin; starts no server)")
 	flag.Parse()
 	if *healthcheckFlag {
 		if err := healthcheck(os.Getenv("ADDR"), 4*time.Second); err != nil {
@@ -66,6 +68,20 @@ func main() {
 	if *statusFlag {
 		if err := status(context.Background(), os.Getenv("DATABASE_URL"), os.Getenv, os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, "status:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if flagGiven("reset-admin-factors") {
+		if err := resetAdminFactors(context.Background(), *resetFactors, flagGiven, flag.Args(), os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "reset-admin-factors:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if flagGiven("set-role") {
+		if err := setRole(context.Background(), *setRoleFlag, flagGiven, flag.Args(), os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "set-role:", err)
 			os.Exit(1)
 		}
 		return

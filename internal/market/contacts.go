@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // Contacts: the PGP keys people need to encrypt to each other (vendor page, order page, messages), the
@@ -25,6 +26,8 @@ func init() {
 	})
 	registerLoader("messages", messageRecipientLoader)
 	registerLoader("order", disputeStaffLoader)
+	registerLoader("product", vendorKeyLoader)
+	registerLoader("checkout", vendorKeyLoader)
 
 	registerPreview("*", func(d *PageData) {
 		if d.User != nil {
@@ -94,7 +97,8 @@ func previewContactKey(handle, relation string) ContactKey {
 }
 
 // contactKey reads a user's saved key. Verified comes from loadPGPAccount: an ownership proof recorded for
-// exactly the saved key. An unparseable key is reported, never shown as usable.
+// exactly the saved key. An unparseable key, or one nothing can be encrypted to now (canReceiveEncrypted: expired,
+// revoked or signing-only, A-68), is reported, never shown as usable.
 func contactKey(ctx context.Context, db *sql.DB, userID, handle, relation string) (ContactKey, error) {
 	p, err := loadPGPAccount(ctx, db, userID, false)
 	if err != nil {
@@ -102,14 +106,76 @@ func contactKey(ctx context.Context, db *sql.DB, userID, handle, relation string
 	}
 	k := ContactKey{Handle: handle, Relation: relation}
 	switch {
-	case p.Key != nil:
+	case canReceiveEncrypted(p.Key, time.Now()):
 		// Others see the canonical key (A-79) and the proof date only; the owner's pages keep the minute.
 		verifiedOn, _, _ := strings.Cut(p.VerifiedAt, " ")
 		k.Armored, k.Fingerprint, k.Verified, k.VerifiedAt = p.Canonical, formatFingerprint(p.Fingerprint), p.Verified, verifiedOn
+	case p.Key != nil:
+		k.NoEncryption = true
 	case p.Armored != "":
 		k.Unreadable = true
 	}
 	return k, nil
+}
+
+// userCanReceiveEncrypted reports whether a user's saved key can receive encrypted messages now (canReceiveEncrypted);
+// q is a *sql.Tx or *sql.DB.
+func userCanReceiveEncrypted(ctx context.Context, q rowQuerier, userID string) (bool, error) {
+	p, err := loadPGPAccount(ctx, q, userID, false)
+	if err != nil {
+		return false, err
+	}
+	return canReceiveEncrypted(p.Key, time.Now()), nil
+}
+
+// vendorKeyLoader (A-83): the product and checkout pages of a physical listing say when its vendor has no key that
+// can receive encrypted messages. A draft can still be saved, but payment is refused until the vendor adds one
+// (payAction), since the buyer could not send a shipping address.
+func vendorKeyLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
+	if d.Product == nil || d.Product.Kind != "physical" {
+		return nil
+	}
+	ok, err := userCanReceiveEncrypted(ctx, a.db, d.Product.VendorID)
+	d.VendorKeyUnusable = !ok
+	return err
+}
+
+// noVendorKeyReason is the order page's "Unavailable." reason for requesting payment on a physical order whose
+// vendor has no key that can receive encrypted messages (A-83); payAction refuses with the same words.
+const noVendorKeyReason = "This vendor has no usable encryption key, so you could not send your shipping address. Ask them to add one."
+
+// vendorKeyGate (A-83) runs once the order page's transitions and contacts are loaded. On a physical order whose
+// vendor has no key that can receive encrypted messages, its buyer's payment request is replaced by
+// noVendorKeyReason (unless payment is already unavailable for another reason), and a paid order shows a "no
+// usable key" state instead of the send-address prompt.
+func vendorKeyGate(d *PageData) {
+	if d.OrderViewer != roleBuyer || d.Order.Kind != "physical" || len(d.Contacts) != 1 || d.Contacts[0].Usable() {
+		return
+	}
+	d.VendorKeyUnusable = true
+	for i, t := range d.Transitions {
+		if t.To == stateAwaitingPayment && t.Action != "" {
+			d.Transitions[i].Action, d.Transitions[i].Label = "", noVendorKeyReason
+		}
+	}
+}
+
+// vendorKeyChangeGate (A-158) runs after vendorKeyGate. On a paid physical order, the buyer's view of the vendor's
+// usable key says when that key was changed (users.pgp_changed_at: added, replaced or updated without keeping its
+// proof) or its ownership proved again (pgp_verified_at) after the order was placed, so the buyer confirms it with the
+// vendor before encrypting an address to it. A key last changed and proved before the order, or before migration 067
+// recorded change times without being proved since, shows nothing.
+func vendorKeyChangeGate(ctx context.Context, a *App, d *PageData) error {
+	o := d.Order
+	if d.OrderViewer != roleBuyer || o.Kind != "physical" || o.State != statePaid || len(d.Contacts) != 1 || !d.Contacts[0].Usable() {
+		return nil
+	}
+	err := a.db.QueryRowContext(ctx, `SELECT to_char(GREATEST(u.pgp_changed_at,u.pgp_verified_at) AT TIME ZONE 'UTC','YYYY-MM-DD')
+FROM orders o JOIN users u ON u.id=$2 WHERE o.id=$1 AND GREATEST(u.pgp_changed_at,u.pgp_verified_at)>o.created`, o.ID, o.VendorID).Scan(&d.Contacts[0].ChangedAfterOrder)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	return err
 }
 
 // orderContacts returns the key of the viewer's counterparty, or both parties' keys for a dispute reviewer.

@@ -1,7 +1,9 @@
 import { expect, test, type Page } from '@playwright/test';
+import { waitForStyles } from './styles';
 
 async function noScriptsNoOverflow(page: Page) {
   await expect(page.locator('script')).toHaveCount(0);
+  await waitForStyles(page);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()!.width);
 }
 
@@ -30,6 +32,8 @@ for (const path of ['/login', '/register']) {
     expect(await image.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(200);
     await expect(page.getByLabel('Characters in the image')).toBeVisible();
     await expect(page.locator('.captcha')).toContainText('There is no audio alternative.');
+    // A-119: the preview has no staff contact, so the help points to the operator, not an in-app channel.
+    await expect(page.locator('.captcha .staff-contact')).toHaveText('Can’t read the image? Ask the operator of this market.');
     await noScriptsNoOverflow(page);
   });
 }
@@ -42,6 +46,9 @@ test('challenge offers an authenticator code and a recovery code', async ({ page
   await expect(page.getByLabel('Recovery code')).toBeVisible();
   // A-154: a plain, unchecked checkbox turns TOTP off with the recovery code.
   await expect(page.getByLabel('I lost my authenticator — turn two-step sign-in off')).not.toBeChecked();
+  // A-119: someone who lost every factor is told who can help; with no staff contact set, the operator.
+  await expect(page.locator('.lost-factors')).toHaveText('Lost your authenticator and recovery codes? Only a market administrator can turn your second factors off, or, for an administrator account, the operator on the server. Ask the operator of this market.');
+  await expect(page.locator('.lost-factors a')).toHaveCount(0);
   await noScriptsNoOverflow(page);
 });
 
@@ -53,6 +60,23 @@ test('account and admin state TOTP and CAPTCHA status truthfully', async ({ page
   await page.goto('/admin');
   await expect(page.locator('.admin-auth')).toContainText('Sign-in protection');
   await expect(page.locator('.admin-auth')).toContainText('no audio alternative');
+  await noScriptsNoOverflow(page);
+});
+
+// A-157: the sessions panel lists sessions by start time only and says what does and does not stop an intruder.
+test('account sessions panel lists sessions without client data and explains sign out everywhere', async ({ page }) => {
+  await page.goto('/account');
+  const sessions = page.getByRole('region', { name: 'Sessions' });
+  await expect(sessions.locator('.session-count')).toHaveText('2 active sessions');
+  await expect(sessions.locator('.session-row')).toHaveText(['Started 2026-01-02 09:30 UTC This session', 'Started 2026-01-01 21:05 UTC']);
+  await expect(sessions).toContainText('not your IP address, device or browser');
+  await expect(sessions).toContainText('every sign-in still waiting for its second step');
+  await expect(sessions).toContainText('Only changing your password stops them. A password change ends every other session and every sign-in in progress');
+  for (const action of ['/logout', '/revoke-sessions']) {
+    const form = sessions.locator(`form[action="${action}"]`);
+    await expect(form).toHaveAttribute('method', 'post');
+    await expect(form.locator('input[name="csrf"]')).toHaveCount(1);
+  }
   await noScriptsNoOverflow(page);
 });
 

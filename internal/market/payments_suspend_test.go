@@ -141,7 +141,9 @@ func TestSuspensionHoldsPayoutsUntilAddressChecked(t *testing.T) {
 	// An order completed after the suspension queues its payout already held.
 	p.move(later, stateShipped, stateCompleted, p.buyer)
 	p.suspendedHeld("completed after suspension", later)
-	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE '%held until an administrator checks the payout address%'", later); n != 1 {
+	// A-271: the whole note, fee sentence included (A-250).
+	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note=$2", later,
+		"TESTNET release of 0.001 BTC to the vendor is held until an administrator checks the payout address; the network fee is taken from the release."); n != 1 {
 		t.Fatalf("order history for the held payout: %d", n)
 	}
 	p.poll()
@@ -248,7 +250,10 @@ func TestPayoutQueuedDuringSuspensionIsHeld(t *testing.T) {
 	completed := p.order
 	p.paidByWatcher(completed, p.addr, "tx-s-race")
 	p.move(completed, statePaid, stateShipped, p.vendor)
-	refund, refundAddr := p.newOrder(stateCancelled)
+	refund, refundAddr := p.newOrder(stateAwaitingPayment)
+	p.fake.Deposit(refundAddr, "tx-s-late-refund", 0, 100000, 1)
+	p.poll()
+	p.move(refund, stateAwaitingPayment, stateCancelled, p.buyer)
 	for _, c := range []struct {
 		name, order string
 		recipient   *User
@@ -266,7 +271,7 @@ func TestPayoutQueuedDuringSuspensionIsHeld(t *testing.T) {
 			return tx.Commit()
 		}},
 		{"watcher refund", refund, p.buyer, func() error {
-			p.fake.Deposit(refundAddr, "tx-s-late-refund", 0, 100000, 3)
+			p.fake.SetConfirmations("tx-s-late-refund", 3)
 			return p.A.pollOnce(ctx)
 		}},
 	} {

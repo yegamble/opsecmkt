@@ -9,7 +9,8 @@ design it records changes.
 ## House rules
 
 - Invariants in `.claude/war-room/repo-map.md` are binding. A change that needs
-  browser JavaScript or touches mainnet is always a finding.
+  browser JavaScript, or uses mainnet in development or tests, or reaches mainnet
+  without the operator's opt-in, is always a finding.
 - Report only what you ran or can point to at `file:line`. A failing test or a
   replayable transcript beats an argument; without one, the verdict is at
   best PLAUSIBLE.
@@ -47,7 +48,7 @@ design it records changes.
 <!-- Append: YYYY-MM-DD — <rule> — (from <finding id>, rejected by opsec-bug-verifier) -->
 - 2026-09-23 — Archiving hides the listing, not its review history: completed-order reviews (with the product title) stay on the vendor page, so archiving cannot launder reputation. — (from HUNT-C-5, rejected by opsec-bug-verifier)
 - 2026-09-23 — Handles are exact, case-sensitive identifiers; case-variant or look-alike handles are not a bug — identity is the PGP key and fingerprint shown on vendor, order and message pages. — (from HUNT-D-3, rejected by opsec-bug-verifier)
-- 2026-09-23 — Row caps already documented in `docs/implementation-status.md` (orders page, admin order list, messages, notifications) are ledger A-16, not new findings; report only a cap that hides open work the docs do not mention. — (from HUNT-C-1, DUPLICATE A-16)
+- 2026-09-23 — Row caps already documented in `docs/implementation-status.md` (orders page, messages, notifications; there is no admin order list, A-127) are ledger A-16, not new findings; report only a cap that hides open work the docs do not mention. — (from HUNT-C-1, DUPLICATE A-16)
 - 2026-09-23 — Stock is returned automatically only on cancellation from awaiting_payment or paid (acceptance.md P3). A resolved dispute, whatever the outcome, never changes stock; the vendor adjusts it on /listing-edit. — (from HUNT-E-6, rejected by opsec-bug-verifier)
 - 2026-09-23 — Duplicate-submit protection is required only for order transitions and financial or delivery effects (acceptance.md); a double-submitted listing, message or other plain create producing two rows is not a bug. — (from PA-5, rejected by opsec-bug-verifier)
 - 2026-09-23 — The 10-per-10-minutes password-confirmation budget counts every attempt, including successes (implementation-status.md), and only the account's own session can spend it; running out after legitimate use is not a lockout bug. — (from B-2, rejected by opsec-bug-verifier)

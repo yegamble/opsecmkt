@@ -43,9 +43,10 @@ func mainnetConfigured(p PaymentProvider) bool {
 	return ok && m.MainnetConfigured()
 }
 
-// feeFromAmountSender is implemented by providers that can take the network fee out of the amount sent. Refunds
-// and overpayment returns are sent this way, so a buyer who pays and is paid back bears the fee, and cannot
-// drain the market's pooled wallet in fees by repeating it. Releases use Send. A provider without it uses Send.
+// feeFromAmountSender is implemented by providers that can take the network fee out of the amount sent. Every
+// payout (release, refund or overpayment return) is sent this way (A-232), so its recipient bears the fee: a buyer
+// who pays and is paid back, or a vendor who buys its own listing, cannot drain the market's pooled wallet in fees
+// by repeating it. A provider without it uses Send.
 type feeFromAmountSender interface {
 	SendFeeFromAmount(ctx context.Context, to string, amount int64) (txid string, err error)
 }
@@ -87,6 +88,13 @@ func (a *App) netAdj() string {
 // An error for which isRefusal is true means the node is not (or no longer) on the configured network.
 type providerChecker interface {
 	Check(ctx context.Context) (nodeStatus, error)
+}
+
+// versionReporter is implemented by node-backed providers: the wallet (Monero) or node (Bitcoin) software version
+// their checks read, shown on /admin. unverified is true while send errors from the wallet are never classified
+// as definite because it is not the version moneroPreSubmitCodes was verified against (A-174, walletRejected).
+type versionReporter interface {
+	WalletVersion() (text string, unverified bool)
 }
 
 // nodeStatus is what a provider's Check reports about its node and wallet.

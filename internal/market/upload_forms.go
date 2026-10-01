@@ -87,7 +87,7 @@ func storedImage(n int, id string, w, h int, size int64, desc string) StoredImag
 
 // loadPhotoPanel loads the Photos panel of the listing loadListingEdit loaded (for its vendor or an
 // administrator).
-func loadPhotoPanel(ctx context.Context, a *App, r *http.Request, d *PageData) error {
+func loadPhotoPanel(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 	if d.Product == nil {
 		return nil
 	}
@@ -126,19 +126,13 @@ func loadPhotoPanel(ctx context.Context, a *App, r *http.Request, d *PageData) e
 	case v.PhotoCount >= photosPerListing:
 		v.Blocked = "This listing has 4 photos, the most allowed. Remove one to add another."
 	}
-	switch r.URL.Query().Get("photo") {
-	case "saved":
-		d.Notice = "Photo saved as a re-encoded JPEG; location, camera and other metadata were removed. Check the picture itself for anything that identifies you."
-	case "removed":
-		d.Notice = "Photo removed."
-	}
 	d.Uploads = v
 	return nil
 }
 
 // loadAvatarPanel loads /account's avatar panel and, for staff, the public staff list choice. An account that
 // may no longer upload an avatar (a demoted vendor) still sees one it has, with its remove form.
-func loadAvatarPanel(ctx context.Context, a *App, r *http.Request, d *PageData) error {
+func loadAvatarPanel(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 	role := d.User.Role
 	v := &UploadsView{AvatarForm: slices.Contains(uploadRoutes["/account/avatar"].roles, role), Staff: role == "admin" || role == "moderator"}
 	uploadState(v, a.scanner.State())
@@ -152,12 +146,6 @@ func loadAvatarPanel(ctx context.Context, a *App, r *http.Request, d *PageData) 
 	if id.Valid {
 		img := storedImage(1, id.String, int(w.Int64), int(h.Int64), size.Int64, "")
 		v.Avatar = &img
-	}
-	switch r.URL.Query().Get("avatar") {
-	case "saved":
-		d.Notice = "Avatar saved as a re-encoded JPEG; location, camera and other metadata were removed. Check the picture itself for anything that identifies you."
-	case "removed":
-		d.Notice = "Avatar removed."
 	}
 	d.Uploads = v
 	return nil
@@ -201,7 +189,7 @@ func photoRemoveAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, err
 		}
 	}
-	return actionResult{Redirect: "/listing-edit?id=" + url.QueryEscape(l.ID) + "&photo=removed#photos", Audit: listingAudit("Removed a photo from", c, l)}, nil
+	return actionResult{Redirect: "/listing-edit?id=" + url.QueryEscape(l.ID), Notice: "photo-removed", Audit: listingAudit("Removed a photo from", c, l)}, nil
 }
 
 // avatarRemoveAction deletes the signed-in account's own avatar, whatever its role now; the form carries no id.
@@ -213,7 +201,7 @@ func avatarRemoveAction(c *actionCtx) (actionResult, error) {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return actionResult{}, fail(409, "You have no avatar to remove. Nothing was changed.")
 	}
-	return actionResult{Redirect: "/account?avatar=removed#avatar", Audit: "Removed avatar"}, nil
+	return actionResult{Redirect: "/account", Notice: "avatar-removed", Audit: "Removed avatar"}, nil
 }
 
 // staffListChoiceAction sets a moderator's or administrator's "Hide me from the public staff list" choice
@@ -230,7 +218,7 @@ func staffListChoiceAction(c *actionCtx) (actionResult, error) {
 	if role != "admin" && role != "moderator" {
 		return actionResult{}, fail(403, "Only moderators and administrators appear on the staff list. Nothing was changed.")
 	}
-	res := actionResult{Redirect: "/account?saved=1#staff-list"}
+	res := actionResult{Redirect: "/account", Notice: "my-staff-list"}
 	if old == hide {
 		return res, nil
 	}

@@ -98,6 +98,10 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 	short := orderID[:min(8, len(orderID))]
 	var res sql.Result
 	var note, audit string
+	// Every payout is sent with the network fee taken from its amount (A-232): a release, requeue or move states
+	// the amount with the fee sentence the other payout notes carry (A-250, A-270). Mark sent records a payout
+	// already paid and says nothing about the fee.
+	const feeTaken = " The network fee is taken from it."
 	switch op {
 	case "release":
 		// A payout held by a restore may have been sent after the backup was taken: releasing it without checking
@@ -115,10 +119,10 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 		if suspendedHeld && c.Form.Get("address_checked") != "confirmed" {
 			return actionResult{}, fail(409, "This payout was held when the recipient's account was suspended, and its payout address may have been changed by someone else. Check the payout address with the account owner, then confirm that you checked it to release the payout. Nothing was changed.")
 		}
-		// A refund or return larger than the order price would let the pooled wallet be used to swap coins.
+		// A refund or return larger than the order price is held as a likely mistake (largeHold).
 		large := heldLarge(state, payoutErr)
 		if large && c.Form.Get("large_reviewed") != "confirmed" {
-			return actionResult{}, fail(409, "This payout is larger than the order price and was held so the market's wallet is not used to swap coins. Review the order and its deposits, then confirm that you reviewed it to release the payout. Nothing was changed.")
+			return actionResult{}, fail(409, "This payout is larger than the order price and was held as a likely mistake (refunds and returns up to the price are sent automatically, so this check does not stop swaps up to a listing's price). Review the order and its deposits, then confirm that you reviewed it to release the payout. Nothing was changed.")
 		}
 		// A payout the watcher itself holds (credited deposit conflicted or re-confirming) stays held while
 		// that is still true: sendPayouts would refuse it anyway, and the watcher releases it once it re-confirms.
@@ -148,6 +152,7 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 			}
 			audit += "; held for an account suspension, administrator checked the payout address " + address
 		}
+		note += feeTaken
 		if large {
 			note += " It is larger than the order price; an administrator reviewed it before releasing it."
 			audit += "; larger than the order price, administrator reviewed it"
@@ -175,6 +180,7 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 			note = "Administrator confirmed the wallet shows no broadcast transaction for the " + c.A.netTag() + " payout of " + label + " (last send outcome unknown) and requeued it; it will be sent once more."
 			audit += "; last send outcome unknown, administrator confirmed the wallet shows no broadcast transaction"
 		}
+		note += feeTaken
 	case "repoint":
 		switch {
 		case state == "sending":
@@ -212,13 +218,14 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 		// second move changes one of them, and this one then changes nothing.
 		res, err = tx.ExecContext(ctx, `UPDATE payouts SET address=$2,updated=now()
 			WHERE id=$1 AND state=$3 AND address=$4 AND error=$5 AND send_ambiguous=$6 AND state IN ('held','failed')`, id, current, state, address, payoutErr, ambiguous)
-		note = "Administrator moved the " + c.A.netTag() + " payout of " + label + " to the recipient's current payout address after checking it with them; nothing was sent and its status is unchanged."
+		note = "Administrator moved the " + c.A.netTag() + " payout of " + label + " to the recipient's current payout address after checking it with them; nothing was sent and its status is unchanged." + feeTaken
 		audit = "Moved payout " + strconv.FormatInt(id, 10) + " (" + label + ", " + state + ") for order " + short + " from " + address +
 			" to the account's current address " + current + "; administrator checked the address with the account owner"
 	case "sent":
 		res, err = tx.ExecContext(ctx, `UPDATE payouts SET state='sent',txid=$2,error='',send_ambiguous=false,updated=now()
 			WHERE id=$1 AND (state IN ('failed','held') OR `+stuckSending+`)`, id, txid)
-		note = c.A.netTag() + " payout of " + label + " recorded as sent by an administrator after wallet reconciliation: " + txid
+		// The order history names no txid (both parties read it); the recipient's notification does (A-214).
+		note = c.A.netTag() + " payout of " + label + " recorded as sent by an administrator after wallet reconciliation."
 		audit = "Marked payout " + strconv.FormatInt(id, 10) + " (" + label + ", was " + state + ") sent with transaction " + txid + " for order " + short
 	}
 	if err != nil {
@@ -231,17 +238,26 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 		return actionResult{}, err
 	}
 	if op == "sent" {
-		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), recipient, "Order "+short+": "+note); err != nil {
+		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), recipient, "Order "+short+": "+note+" Transaction ID: "+txid); err != nil {
 			return actionResult{}, err
 		}
 	}
 	if op == "repoint" {
 		// The recipient hears that the destination changed (the address itself is not repeated), as for their own saves.
 		body := "Order " + short + ": an administrator moved your unsent " + c.A.netTag() + " payout of " + label + " to your current " + cur +
-			" payout address after checking it with you; nothing was sent and its status is unchanged. If you did not confirm this, contact the market staff."
+			" payout address after checking it with you; nothing was sent and its status is unchanged." + feeTaken + " If you did not confirm this, contact the market staff."
 		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), recipient, body); err != nil {
 			return actionResult{}, err
 		}
 	}
-	return actionResult{Redirect: "/admin?saved=1#payouts", Audit: audit}, nil
+	notice := "payout-released"
+	switch op {
+	case "requeue":
+		notice = "payout-requeued"
+	case "sent":
+		notice = "payout-sent"
+	case "repoint":
+		notice = "payout-repointed"
+	}
+	return actionResult{Redirect: "/admin", Notice: notice, Audit: audit}, nil
 }

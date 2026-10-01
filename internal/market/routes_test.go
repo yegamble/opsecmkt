@@ -379,16 +379,16 @@ func TestNoUploadCalledSafeOrClean(t *testing.T) {
 }
 
 // PR #28 review (SHOULD-4): the evasions the first version of the check missed are caught (a Go string such as
-// the upload notice in upload_forms.go, an alt or title attribute, "malware-free" and "harmless"), and the
+// the upload notice in notice.go, an alt or title attribute, "malware-free" and "harmless"), and the
 // legitimate uses and the out-of-scope two-sentence split stay free.
 func TestUploadClaimsCatchesEvasions(t *testing.T) {
-	src, err := os.ReadFile("internal/market/upload_forms.go")
+	src, err := os.ReadFile("internal/market/notice.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	const notice = `"Photo saved as a re-encoded JPEG;`
 	if !strings.Contains(string(src), notice) {
-		t.Fatalf("upload_forms.go no longer has the notice %s", notice)
+		t.Fatalf("notice.go no longer has the notice %s", notice)
 	}
 	for _, c := range []struct{ kind, text string }{
 		{"go", strings.Replace(string(src), notice, `"Photo saved as a clean re-encoded JPEG;`, 1)},

@@ -1,6 +1,7 @@
 package market
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"database/sql"
@@ -8,13 +9,14 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
 )
 
 // P2 PGP identity: the profile key is parsed and fingerprinted on save; ownership is "Verified" only
 // after the user signs a server nonce or decrypts a nonce encrypted to the key. Changing the key
-// resets verification and PGP sign-in. Adding, changing or removing the key and turning PGP sign-in on or off
+// resets verification and PGP sign-in; renewing the same key may keep them (A-155, renewProfileKey). Adding, changing or removing the key and turning PGP sign-in on or off
 // need the current password, plus a TOTP code when enrolled (A-47, A-152), and notify the owner. The server never
 // sees or stores private keys.
 
@@ -61,54 +63,145 @@ func sameProfileKey(stored, pasted string) bool {
 // legacy key that no longer parses must not block the profile form). The same key re-saved (sameProfileKey)
 // is stored in its canonical form and keeps its ownership proof and PGP sign-in. A changed key (added, replaced or
 // removed) must parse and needs the confirmation (confirmed: password, plus a TOTP code if enrolled) on every
-// account (A-152): buyers encrypt shipping addresses to it. It stores the canonical form and new fingerprint, clears
-// ownership proof, PGP sign-in and any open challenge, and notifies the owner. It returns the audit text for the
-// profile update.
-func saveProfileKey(c *actionCtx, armored string, confirmed bool) (string, error) {
+// account (A-152): buyers encrypt shipping addresses to it. A new version of the saved key (same fingerprint) is
+// renewProfileKey's. A different key is stored in its canonical form with its fingerprint; ownership proof, PGP
+// sign-in and any open challenge are cleared, the change time is recorded (A-158) and the owner is notified. It
+// returns the audit text for the profile update and, for a new version of the saved key, its outcome: "renewed-kept"
+// (the ownership proof kept), "renewed" (an unverified key) or the keyOutcomes reason; accountAction names its notice.
+func saveProfileKey(c *actionCtx, armored string, confirmed bool) (string, string, error) {
 	ctx, tx, uid := c.Ctx(), c.Tx, c.User.ID
-	var old string
-	if err := tx.QueryRowContext(ctx, "SELECT pgp FROM users WHERE id=$1 FOR UPDATE", uid).Scan(&old); err != nil {
-		return "", err
+	p, err := loadPGPAccount(ctx, tx, uid, true)
+	if err != nil {
+		return "", "", err
 	}
+	old := p.Armored
 	if old == armored {
-		return "Updated profile", nil
+		return "Updated profile", "", nil
 	}
 	if armored != "" && sameProfileKey(old, armored) {
 		_, _, canonical, _ := parseCanonicalPublicKey(armored)
 		_, err := tx.ExecContext(ctx, "UPDATE users SET pgp=$1 WHERE id=$2", canonical, uid)
-		return "Updated profile", err
+		return "Updated profile", "", err
 	}
 	if !confirmed { // the key changed since accountAction's unlocked read
-		return "", fail(400, "Enter your current password to add, change or remove your PGP key.")
+		return "", "", fail(400, "Enter your current password to add, change or remove your PGP key.")
 	}
 	fp, canonical := "", ""
 	if armored != "" {
 		_, parsed, text, err := parseCanonicalPublicKey(armored)
 		if err != nil {
-			return "", fail(400, "PGP key rejected: "+err.Error()+".")
+			return "", "", fail(400, "PGP key rejected: "+err.Error()+".")
+		}
+		if p.Key != nil && parsed == p.Fingerprint {
+			return renewProfileKey(c, p, text)
 		}
 		fp, canonical = parsed, text
 	}
-	if _, err := tx.ExecContext(ctx, "UPDATE users SET pgp=$1,pgp_fingerprint=$2,pgp_verified_at=NULL,pgp_2fa=false WHERE id=$3", canonical, fp, uid); err != nil {
-		return "", err
+	if _, err := tx.ExecContext(ctx, "UPDATE users SET pgp=$1,pgp_fingerprint=$2,pgp_verified_at=NULL,pgp_2fa=false,pgp_changed_at=now() WHERE id=$3", canonical, fp, uid); err != nil {
+		return "", "", err
 	}
 	if _, err := tx.ExecContext(ctx, "DELETE FROM pgp_challenges WHERE user_id=$1", uid); err != nil {
-		return "", err
+		return "", "", err
 	}
 	if fp == "" {
 		if err := notifyOwner(ctx, tx, uid, "The PGP public key on your account was removed; its ownership proof and PGP sign-in verification were cleared."); err != nil {
-			return "", err
+			return "", "", err
 		}
-		return "Removed PGP key (ownership proof and PGP sign-in cleared)", nil
+		return "Removed PGP key (ownership proof and PGP sign-in cleared)", "", nil
 	}
 	note := "The PGP public key on your account was changed; others now encrypt messages and shipping addresses to the new key."
 	if old == "" {
 		note = "A PGP public key was added to your account; others now encrypt messages and shipping addresses to it."
 	}
 	if err := notifyOwner(ctx, tx, uid, note+" Compare its fingerprint on your account page with your own PGP software."); err != nil {
-		return "", err
+		return "", "", err
 	}
-	return "Updated PGP key (fingerprint " + fp + "; ownership unverified)", nil
+	return "Updated PGP key (fingerprint " + fp + "; ownership unverified)", "", nil
+}
+
+// keyOutcomes are why saving a new version of the saved key (renewProfileKey) cleared its ownership proof: the
+// reason in the owner's notification and the key- notice (keyChangedAlert).
+var keyOutcomes = map[string]string{
+	"revocation": "the pasted key is missing a revocation signature your saved key had, or has it where PGP software ignores it, so a subkey or user ID you revoked could be used again",
+	"subkey":     "with the pasted key others would encrypt to an older encryption subkey than the one your saved key uses",
+}
+
+// keyChangedAlert is the notice text (key-revocation, key-subkey) for a new version of the saved key saved as a
+// changed key for the keyOutcomes reason why.
+func keyChangedAlert(why string) string {
+	return "Your key was saved as a changed key, not a renewal: " + keyOutcomes[why] + ". Its ownership is not verified and PGP sign-in is off until you prove ownership again on the PGP verification page. If you did not expect this, export your current key again and paste it."
+}
+
+// renewProfileKey saves a confirmed new version of the saved key p (A-155): the same fingerprint with different
+// packets, as gpg --quick-set-expire, a new user ID or subkey, or someone's certification produce. Only the primary
+// key's holder can make its self-signatures, so it keeps the ownership proof and PGP sign-in when every revocation
+// in the saved key is still present and still applies to what it revoked (an old or rearranged copy of the key must
+// not undo a revocation) and the encryption subkey it selects is the saved key's or one no older (no rollback to an
+// older subkey). Otherwise it is saved as a changed key: proof, PGP sign-in and any open challenge are cleared, the
+// change time is recorded (A-158) and the outcome names why. Either way the owner is notified.
+func renewProfileKey(c *actionCtx, p *pgpAccount, canonical string) (string, string, error) {
+	ctx, tx, uid := c.Ctx(), c.Tx, c.User.ID
+	why := renewalRefusal(p, canonical, time.Now())
+	if why == "" {
+		if _, err := tx.ExecContext(ctx, "UPDATE users SET pgp=$1 WHERE id=$2", canonical, uid); err != nil {
+			return "", "", err
+		}
+		note, audit, outcome := "The PGP public key on your account was updated with new signatures from the same key (for example a renewed expiry); its fingerprint is unchanged", "ownership unverified", "renewed"
+		if p.Verified {
+			note, audit, outcome = note+" and its ownership proof and PGP sign-in were kept", "ownership proof and PGP sign-in kept", "renewed-kept"
+		}
+		if err := notifyOwner(ctx, tx, uid, note+"."); err != nil {
+			return "", "", err
+		}
+		return "Updated PGP key (same fingerprint " + p.Fingerprint + "; " + audit + ")", outcome, nil
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE users SET pgp=$1,pgp_verified_at=NULL,pgp_2fa=false,pgp_changed_at=now() WHERE id=$2", canonical, uid); err != nil {
+		return "", "", err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM pgp_challenges WHERE user_id=$1", uid); err != nil {
+		return "", "", err
+	}
+	if err := notifyOwner(ctx, tx, uid, "The PGP public key on your account was updated, but not as a renewal of the same key: "+keyOutcomes[why]+". Its ownership proof and PGP sign-in verification were cleared."); err != nil {
+		return "", "", err
+	}
+	return "Updated PGP key (same fingerprint " + p.Fingerprint + "; ownership proof and PGP sign-in cleared: " + why + ")", why, nil
+}
+
+// renewalRefusal returns why canonical, a new version of the saved key p, may not keep its ownership proof. It reads
+// the key as it would be stored and used (canonical parsed again). "revocation": a revocation signature in the saved
+// key (as published, parseCanonicalPublicKey) is missing, or a revocation of the saved key, of one of its subkeys or
+// of one of its user IDs no longer applies to it (revocationsKept, A-261); "subkey": the encryption subkey it selects
+// is neither the saved key's nor as new; "" when it may.
+func renewalRefusal(p *pgpAccount, canonical string, now time.Time) string {
+	key, _, _, err := parseCanonicalPublicKey(canonical)
+	if err != nil {
+		return "revocation"
+	}
+	had, err := revocationSignatures(p.Canonical)
+	if err != nil {
+		return "revocation"
+	}
+	has, err := revocationSignatures(canonical)
+	if err != nil {
+		return "revocation"
+	}
+	for sig := range had {
+		if !has[sig] {
+			return "revocation"
+		}
+	}
+	if !revocationsKept(p.Key, key) {
+		return "revocation"
+	}
+	was, ok := encryptionSubkey(p.Key, now)
+	if !ok {
+		return ""
+	}
+	is, ok := encryptionSubkey(key, now)
+	if !ok || !bytes.Equal(is.Key.Fingerprint, was.Key.Fingerprint) && is.Key.CreationTime.Before(was.Key.CreationTime) {
+		return "subkey"
+	}
+	return ""
 }
 
 type pgpAccount struct {
@@ -120,7 +213,8 @@ type pgpAccount struct {
 	Verified     bool   // proof recorded for exactly this key
 	VerifiedAt   string
 	ProofVersion string // exact ownership-proof timestamp used to bind pending sign-in codes
-	TwoFactor    bool
+	TwoFactor    bool   // PGP sign-in is on and usable: the setting is on and the proven key can be read
+	TwoFactorSet bool   // users.pgp_2fa as stored; on while TwoFactor is off means PGP sign-in is lost (A-272)
 }
 
 // loadPGPAccount reads the saved key; q is a *sql.Tx (lock with forUpdate) or *sql.DB.
@@ -140,6 +234,7 @@ func loadPGPAccount(ctx context.Context, q rowQuerier, uid string, forUpdate boo
 		}
 	}
 	p.Verified = verified && p.Key != nil && p.Stored == p.Fingerprint
+	p.TwoFactorSet = p.TwoFactor
 	p.TwoFactor = p.TwoFactor && p.Verified
 	if !p.Verified {
 		p.VerifiedAt = ""
@@ -147,7 +242,7 @@ func loadPGPAccount(ctx context.Context, q rowQuerier, uid string, forUpdate boo
 	return p, nil
 }
 
-func pgpLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error {
+func pgpLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 	if d.Page == "pgp" {
 		d.Title = "PGP verification"
 	}
@@ -167,11 +262,12 @@ func pgpLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error 
 		}
 		return nil
 	}
-	v.Fingerprint, v.Armored = formatFingerprint(p.Fingerprint), p.Canonical
+	v.Fingerprint, v.Armored, v.FingerprintHex = formatFingerprint(p.Fingerprint), p.Canonical, p.Fingerprint
 	for id := range p.Key.Identities {
 		v.UserIDs = append(v.UserIDs, id)
 	}
 	slices.Sort(v.UserIDs)
+	keyDates(v, p.Key, time.Now())
 	if d.Page != "pgp" {
 		return nil
 	}
@@ -190,6 +286,35 @@ func pgpLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error 
 		v.EncryptedChallenge = challenge
 	}
 	return nil
+}
+
+// keyExpiryWarning is how long before encryption to a key stops its owner is warned (A-155): on /account and /pgp,
+// and once by the daily sweep.
+const keyExpiryWarning = 30 * 24 * time.Hour
+
+// keyExpiryText formats an expiry for the owner: "Never", "YYYY-MM-DD UTC", or "Expired YYYY-MM-DD UTC".
+func keyExpiryText(t, now time.Time) string {
+	switch {
+	case t.IsZero():
+		return "Never"
+	case !t.After(now):
+		return "Expired " + t.UTC().Format(time.DateOnly) + " UTC"
+	}
+	return t.UTC().Format(time.DateOnly) + " UTC"
+}
+
+// keyDates fills the owner's expiry fields of v for key (A-155) and whether anything can be encrypted to it (A-225).
+func keyDates(v *PGPView, key *openpgp.Entity, now time.Time) {
+	v.PrimaryExpires = keyExpiryText(primaryKeyExpiry(key), now)
+	v.CannotEncrypt = !canReceiveEncrypted(key, now)
+	enc, ok := encryptionSubkey(key, now)
+	if !ok {
+		return
+	}
+	v.SubkeyExpires = keyExpiryText(enc.Expires, now)
+	if !v.CannotEncrypt && !enc.Until.IsZero() && enc.Until.Sub(now) <= keyExpiryWarning {
+		v.StopsSoon = enc.Until.UTC().Format(time.DateOnly) + " UTC"
+	}
 }
 
 func pgpChallengeAction(c *actionCtx) (actionResult, error) {
@@ -285,7 +410,7 @@ func pgpVerifyAction(c *actionCtx) (actionResult, error) {
 	if err = notifyOwner(ctx, tx, u.ID, "Ownership of the PGP key on your account was proved."); err != nil {
 		return actionResult{}, err
 	}
-	return actionResult{Redirect: "/pgp?saved=1", Audit: "Verified PGP key ownership (fingerprint " + p.Fingerprint + ", " + kind + " challenge)"}, nil
+	return actionResult{Redirect: "/pgp", Notice: "pgp-verified", Audit: "Verified PGP key ownership (fingerprint " + p.Fingerprint + ", " + kind + " challenge)"}, nil
 }
 
 // pgpTwoFactorAction turns PGP sign-in on (verified key) or off. Either needs the current password plus a TOTP
@@ -312,7 +437,7 @@ func pgpTwoFactor(c *actionCtx, enable bool) (actionResult, error) {
 		if err = notifyOwner(ctx, tx, u.ID, "PGP sign-in verification was turned off for your account."); err != nil {
 			return actionResult{}, err
 		}
-		return actionResult{Redirect: "/pgp?saved=1", Audit: "Turned off PGP sign-in verification"}, nil
+		return actionResult{Redirect: "/pgp", Notice: "pgp-2fa-off", Audit: "Turned off PGP sign-in verification"}, nil
 	}
 	if !p.Verified {
 		return actionResult{}, fail(409, "Verify ownership of your saved key before turning on PGP sign-in verification.")
@@ -326,7 +451,7 @@ func pgpTwoFactor(c *actionCtx, enable bool) (actionResult, error) {
 	if err = notifyOwner(ctx, tx, u.ID, "PGP sign-in verification was turned on for your account: sign-in now also asks for a code encrypted to its key."); err != nil {
 		return actionResult{}, err
 	}
-	return actionResult{Redirect: "/pgp?saved=1", Audit: "Turned on PGP sign-in verification (fingerprint " + p.Fingerprint + ")"}, nil
+	return actionResult{Redirect: "/pgp", Notice: "pgp-2fa-on", Audit: "Turned on PGP sign-in verification (fingerprint " + p.Fingerprint + ")"}, nil
 }
 
 func previewPGP(d *PageData) {
@@ -336,5 +461,7 @@ func previewPGP(d *PageData) {
 		Fingerprint:      formatFingerprint("0000000000000000000000000000000000000000"),
 		Challenge:        "OPSECMKT key ownership proof for preview_user: sample-preview-nonce",
 		ChallengeExpires: "sample",
+		PrimaryExpires:   "Never",
+		SubkeyExpires:    "Never",
 	}
 }

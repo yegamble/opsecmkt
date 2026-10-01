@@ -26,8 +26,9 @@ Read `.claude/war-room/repo-map.md`, `finding-format.md`, `protocol.md`,
 4. Extra, duplicate, late, conflicted, reorged or locked funds are flagged to
    staff, never silently paid.
 5. The restore gate holds every outbound payout until reconciliation.
-6. Mainnet is refused at startup and at runtime; mainnet-prefixed addresses are
-   refused.
+6. Mainnet is an operator opt-in only (`BITCOIN_CHAIN=main`, `MONERO_NETWORK=mainnet`);
+   without it a mainnet node or mainnet-prefixed address is refused, and a market
+   never mixes mainnet with test networks. You never use mainnet yourself.
 
 ## How you work
 

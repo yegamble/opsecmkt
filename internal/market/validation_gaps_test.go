@@ -128,7 +128,7 @@ func TestResolveResolutionBounds(t *testing.T) {
 	if agStr(w.e, "SELECT status||'|'||outcome||'|'||resolution FROM disputes WHERE id=$1", dispute) != "Open||" || w.state(order) != stateDisputed {
 		t.Fatal("refused resolution changed the dispute")
 	}
-	w.expect("/resolve", w.mod, payoutConfirmed(form("id", dispute, "outcome", "refund", "resolution", strings.Repeat("r", 5000)), 0), 303, "")
+	w.expect("/resolve", w.mod, resolveConfirmed(form("id", dispute, "outcome", "refund", "resolution", strings.Repeat("r", 5000)), 0), 303, "")
 	if agStr(w.e, "SELECT outcome FROM disputes WHERE id=$1", dispute) != "refund" || w.state(order) != stateResolved {
 		t.Fatal("5000-character resolution not accepted")
 	}

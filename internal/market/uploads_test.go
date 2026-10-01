@@ -149,7 +149,7 @@ func TestUploadStoresPhotoAndAvatar(t *testing.T) {
 	vendorID, vendor := e.user("photo_vendor", "vendor")
 	listing := e.product(vendorID, "physical")
 	w := e.upload("/listings/photo", vendor, e.photoParts(vendor, listing, metadataJPEG(t, 400, 300))...)
-	if w.Code != 303 || w.Header().Get("Location") != "/listing-edit?id="+listing+"&photo=saved#photos" {
+	if w.Code != 303 || w.Header().Get("Location") != "/listing-edit?id="+listing+"#photos" {
 		t.Fatalf("photo: %d %q %s", w.Code, w.Header().Get("Location"), w.Body.String())
 	}
 	var kind, owner, product string
@@ -174,7 +174,7 @@ func TestUploadStoresPhotoAndAvatar(t *testing.T) {
 	for _, role := range []string{"vendor", "moderator", "admin"} {
 		id, s := e.user("avatar_"+role, role)
 		w = e.upload("/account/avatar", s, e.avatarParts(s, fixturePNG(t, fixturePicture(300, 200)))...)
-		if w.Code != 303 || w.Header().Get("Location") != "/account?avatar=saved#avatar" {
+		if w.Code != 303 || w.Header().Get("Location") != "/account#avatar" {
 			t.Fatalf("%s avatar: %d %s", role, w.Code, w.Body.String())
 		}
 		e.DB.QueryRow("SELECT action FROM audit_events WHERE user_id=$1 ORDER BY id DESC LIMIT 1", id).Scan(&audit)

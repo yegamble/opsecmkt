@@ -128,13 +128,22 @@ container. Run `createdb` once, then reuse this database across Go test runs:
 ```sh
 docker exec opsecmkt-dev-db createdb -U opsecmkt opsecmkt_test
 export TEST_DATABASE_URL='postgres://opsecmkt:local-dev-only@127.0.0.1:55432/opsecmkt_test?sslmode=disable'
-go test -race -count=1 ./...
+go test -race -count=1 -timeout 30m ./...
 ```
 
 Tests create isolated schemas, apply migrations, create their own fixture users,
-listings and orders, then remove their schemas. Use a dedicated database even
+listings and orders, then remove their schemas. `TestSettlementClashGuide` and
+`TestReturnWithoutReleaseGuide` run UPGRADING.md's SQL blocks through `psql`, so
+install the PostgreSQL client on the host; without `psql` they skip (on CI they fail). Use a dedicated database even
 though schemas are isolated. Use different databases for simultaneous Go test
-processes: the watcher uses a database-wide advisory lock. Fake RPC tests cover payment behavior; they do not
+processes: the watcher uses a database-wide advisory lock. The `cmd/server` tests
+create a database of their own beside it (`opsecmkt_cmd_server_<random>`, dropped
+when they finish; without the CREATEDB privilege they use `TEST_DATABASE_URL`'s
+database and log that). A run that panics, times out or is killed leaves that
+database behind: drop leftover `opsecmkt_cmd_server_*` databases that have no
+connections. With a database the
+`internal/market` race run takes about 7–10 minutes, close to `go test`'s default
+10-minute timeout, so the command sets `-timeout 30m`. Fake RPC tests cover payment behavior; they do not
 prove live node integration. The manual Bitcoin check is
 [`scripts/regtest-smoke.sh`](../scripts/regtest-smoke.sh).
 

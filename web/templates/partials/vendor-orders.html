@@ -21,6 +21,8 @@
 <a href="/order?id={{.ID}}">{{.Title}}</a>
 <br>
 <small class="muted mono">{{.ID}}</small>
+<br>{{/* A-265: the vendor opens their own listing through the order even once it is archived (A-164) */}}
+<a class="text-link" href="/product?id={{.ProductID}}">Listing<span class="sr-only">: {{.Title}}</span></a>
 </td>
 <td>{{.Buyer}}</td>
 <td class="mono">{{.Amount}} {{.Currency}}</td>

@@ -100,7 +100,7 @@ func TestAdminTakedownSurvivesVendorRestore(t *testing.T) {
 	// The takedown: archived with the trimmed reason, audited on both accounts and notified once, link-free.
 	w := e.do("POST", "/admin/listing", admin, withField(take, "reason", "  "+takedownReason+"\r\n"))
 	e.check(w, 303)
-	if loc := w.Header().Get("Location"); loc != edit+"&saved=1" {
+	if loc := w.Header().Get("Location"); loc != edit {
 		t.Fatalf("redirect %q", loc)
 	}
 	if archived, reason := takenDown(e, p); !archived || reason != takedownReason {
@@ -132,7 +132,7 @@ func TestAdminTakedownSurvivesVendorRestore(t *testing.T) {
 		}
 	}
 	vendorPage = e.body("GET", edit, vendor, nil, 200)
-	mustContain(t, vendorPage, "Taken down by an administrator", takedownReason, "contact the market staff")
+	mustContain(t, vendorPage, "Taken down by an administrator", takedownReason, "ask an administrator to review it. "+askOperatorLine)
 	mustNotContain(t, vendorPage, `action="/listings/restore"`, `action="/admin/listing"`)
 	desk := e.body("GET", "/vendor-dashboard", vendor, nil, 200)
 	mustContain(t, desk, "Taken down", takedownReason, "1 archived")
@@ -140,7 +140,7 @@ func TestAdminTakedownSurvivesVendorRestore(t *testing.T) {
 
 	// The vendor's restore is refused with the reason; editing is still allowed and keeps the takedown.
 	agExpect(e, "/listings/restore", vendor, form("id", p), 409, takedownReason)
-	agExpect(e, "/listings/restore", vendor, form("id", p), 409, "contact the market staff")
+	agExpect(e, "/listings/restore", vendor, form("id", p), 409, "ask an administrator to review it. "+askOperatorLine)
 	e.check(e.do("POST", "/listings/update", vendor, inventoryForm(p, nil)), 303)
 	if archived, reason := takenDown(e, p); !archived || reason != takedownReason {
 		t.Fatalf("vendor edit changed the takedown: archived=%v reason=%q", archived, reason)

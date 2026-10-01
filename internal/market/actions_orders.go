@@ -1,14 +1,28 @@
 package market
 
 import (
+	"context"
 	"database/sql"
+	"net/http"
 	"strings"
+	"unicode/utf8"
 )
 
 func init() {
 	registerAction("/orders", actionSpec{Run: orderDraftAction})
 	registerAction("/disputes", actionSpec{Run: disputeAction})
-	registerAction("/resolve", actionSpec{Roles: []string{"moderator", "admin"}, Run: resolveAction})
+	registerAction("/disputes/reply", actionSpec{Run: disputeReplyAction})
+	registerAction("/resolve", actionSpec{Roles: []string{"moderator", "admin"}, OwnTx: true, Run: resolveAction})
+	registerLoader("disputes", resolveConfirmLoader)
+}
+
+// resolveConfirmLoader tells the resolve form on /disputes whether to ask for an authenticator code (the moderation
+// desk loads it with adminConfirmLoader). Only moderators and administrators see that form.
+func resolveConfirmLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error {
+	if d.User == nil || (d.User.Role != "moderator" && d.User.Role != "admin") {
+		return nil
+	}
+	return adminConfirmLoader(ctx, a, r, d)
 }
 
 func orderDraftAction(c *actionCtx) (actionResult, error) {
@@ -41,9 +55,25 @@ func orderDraftAction(c *actionCtx) (actionResult, error) {
 	if currency == "XMR" {
 		total = xmr
 	}
+	if total < payoutFloor(currency, "release") {
+		return actionResult{}, fail(400, subFloorListing(currency))
+	}
 	id := randomToken()
 	err = tx.QueryRowContext(ctx, `INSERT INTO orders(id,buyer_id,product_id,currency,amount) VALUES($1,$2,$3,$4,$5) ON CONFLICT(buyer_id,product_id,currency) WHERE state='draft' DO UPDATE SET amount=excluded.amount RETURNING id`, id, c.User.ID, f.Get("product_id"), currency, total).Scan(&id)
 	return actionResult{Redirect: "/order?id=" + id, Audit: "Saved unfunded order draft"}, err
+}
+
+// subFloorListing refuses an order in currency on a listing priced below that currency's payout floor (A-216 for
+// Bitcoin, A-232 for Monero). validateListing refuses such prices (Bitcoin since A-99, Monero since A-232), but a
+// listing priced earlier keeps its price: its release would never be sent automatically and an overpayment on it
+// could not be returned separately (splitPayout).
+func subFloorListing(currency string) string {
+	coin, other := "Bitcoin", "XMR"
+	if currency == "XMR" {
+		coin, other = "Monero", "BTC"
+	}
+	return "This listing's " + coin + " price is below the minimum automatic payout of " + amount(payoutFloor(currency, "release"), currencyDecimals(currency)) + " " + currency +
+		" (it was priced before that minimum applied), so it cannot be ordered in " + currency + ". Order in " + other + ", or ask the vendor to raise the " + coin + " price. Nothing was changed."
 }
 
 // disputeAction opens a dispute by moving a paid, shipped or delivered order to disputed (P3).
@@ -69,7 +99,55 @@ func disputeAction(c *actionCtx) (actionResult, error) {
 	if err = notifyDisputeStaff(c, &o); err != nil {
 		return actionResult{}, err
 	}
-	return actionResult{Redirect: "/disputes?saved=1", Audit: "Opened dispute on order " + shortID(o.ID)}, nil
+	return actionResult{Redirect: "/disputes", Notice: "dispute-opened", Audit: "Opened dispute on order " + shortID(o.ID)}, nil
+}
+
+// disputeReplyAction (A-124) puts the reply of the party who did not open a dispute on record: once, while the dispute
+// is open, as a disputed -> disputed order event (no state change). The dispute row is locked first, so a concurrent
+// second reply, or a resolution, waits and then sees this one (or the resolution) and is refused with 409.
+func disputeReplyAction(c *actionCtx) (actionResult, error) {
+	ctx, tx := c.Ctx(), c.Tx
+	reply := strings.TrimSpace(c.Form.Get("reply"))
+	if n := utf8.RuneCountInString(reply); n < 20 || n > 5000 {
+		return actionResult{}, fail(400, "Write your reply in 20–5000 characters. Nothing was changed.")
+	}
+	o, err := partyOrder(c, c.Form.Get("order_id"))
+	if err != nil {
+		return actionResult{}, err
+	}
+	var status string
+	err = tx.QueryRowContext(ctx, "SELECT status FROM disputes WHERE order_id=$1 FOR UPDATE", o.ID).Scan(&status)
+	if err == sql.ErrNoRows {
+		return actionResult{}, fail(409, "This order has no dispute to reply to. Nothing was changed.")
+	}
+	if err != nil {
+		return actionResult{}, err
+	}
+	if status != "Open" {
+		return actionResult{}, fail(409, "This dispute is resolved, so no reply can be added. Nothing was changed.")
+	}
+	// A new statement after the lock: it sees a reply committed by a request that held the lock before this one.
+	var d Dispute
+	if err = tx.QueryRowContext(ctx, `SELECT `+disputeRecordCols+` FROM disputes d JOIN orders o ON o.id=d.order_id JOIN products p ON p.id=o.product_id`+disputeReplyJoin+
+		` WHERE d.order_id=$1`, o.ID).Scan(&d.Opener, &d.ReplyRole, &d.Reply, &d.ReplyCreated); err != nil {
+		return actionResult{}, err
+	}
+	role := roleBuyer
+	if c.User.ID == o.VendorID {
+		role = roleVendor
+	}
+	switch {
+	case d.Opener == "":
+		return actionResult{}, fail(409, "Who opened this dispute is not recorded, so no reply can be added. Send your evidence encrypted to dispute staff. Nothing was changed.")
+	case d.Opener == role:
+		return actionResult{}, fail(403, "You opened this dispute; only the other party can reply. Send further evidence encrypted to dispute staff from the order page.")
+	case d.Reply != "":
+		return actionResult{}, fail(409, "You already replied to this dispute; a reply cannot be changed or added to. Nothing was changed.")
+	}
+	if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,$3,$4)", o.ID, stateDisputed, c.User.ID, disputeReplyPrefix+reply); err != nil {
+		return actionResult{}, err
+	}
+	return actionResult{Redirect: orderPage(o.ID), Notice: "dispute-reply", Audit: "Replied to the dispute on order " + shortID(o.ID)}, nil
 }
 
 // notifyDisputeStaff tells every moderator and administrator who is not a party to the order that a dispute
@@ -108,6 +186,8 @@ var disputeOutcomes = map[string]string{"release": "Resolved — release to vend
 // written first so transition hooks (payouts) read it in the same transaction. A moderator who is a party
 // to the order is refused by transition(). The form's payout confirmation is required (400), and the payout
 // hook refuses the whole resolution (409, the dispute stays Open) when the counted amount is not amount_seen.
+// Resolving queues a payout the watcher sends by itself, so it needs the resolver's current password, and an
+// authenticator code when TOTP is enrolled (confirmedTx, A-32); the audit row says how it was confirmed.
 func resolveAction(c *actionCtx) (actionResult, error) {
 	outcome := c.Form.Get("outcome")
 	status, ok := disputeOutcomes[outcome]
@@ -122,16 +202,46 @@ func resolveAction(c *actionCtx) (actionResult, error) {
 	if err != nil {
 		return actionResult{}, err
 	}
-	var orderID string
-	err = c.Tx.QueryRowContext(c.Ctx(), "UPDATE disputes SET resolution=$1,outcome=$2,status=$3 WHERE id=$4 AND status='Open' AND outcome='' RETURNING order_id", resolution, outcome, status, c.Form.Get("id")).Scan(&orderID)
-	if err == sql.ErrNoRows {
-		return actionResult{}, fail(409, "Open dispute not found")
-	}
-	if err != nil {
-		return actionResult{}, err
-	}
-	if _, err = c.A.transition(withPayoutSeen(c.Ctx(), orderID, seen), c.Tx, orderID, stateDisputed, stateResolved, c.User, status); err != nil {
-		return actionResult{}, err
-	}
-	return actionResult{Redirect: "/moderator?saved=1", Audit: "Resolved dispute on order " + shortID(orderID) + " (outcome: " + outcome + ")"}, nil
+	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
+		var orderID string
+		err := c.Tx.QueryRowContext(c.Ctx(), "UPDATE disputes SET resolution=$1,outcome=$2,status=$3 WHERE id=$4 AND status='Open' AND outcome='' RETURNING order_id", resolution, outcome, status, c.Form.Get("id")).Scan(&orderID)
+		if err == sql.ErrNoRows {
+			return actionResult{}, fail(409, "Open dispute not found")
+		}
+		if err != nil {
+			return actionResult{}, err
+		}
+		// A-280: the dispute row is locked (the reply takes the same lock), so a new statement sees any reply on
+		// record. A form that did not show it (reply_seen) is refused and the desk shown again with the reply.
+		var replyRole string
+		if err = c.Tx.QueryRowContext(c.Ctx(), `SELECT COALESCE(r.role,'') FROM disputes d JOIN orders o ON o.id=d.order_id JOIN products p ON p.id=o.product_id`+disputeReplyJoin+
+			` WHERE d.id=$1`, c.Form.Get("id")).Scan(&replyRole); err != nil {
+			return actionResult{}, err
+		}
+		if replyRole != "" && c.Form.Get("reply_seen") != "1" {
+			return actionResult{}, staleResolveForm(c, replyRole, resolution)
+		}
+		if _, err = c.A.transition(withPayoutSeen(c.Ctx(), orderID, seen), c.Tx, orderID, stateDisputed, stateResolved, c.User, status); err != nil {
+			return actionResult{}, err
+		}
+		return actionResult{Redirect: "/moderator", Notice: "dispute-resolved", Audit: "Resolved dispute on order " + shortID(orderID) + " (outcome: " + outcome + ")"}, nil
+	})
+}
+
+// staleResolveForm answers a resolve form loaded before the other party's reply (A-280) with 409 and the
+// moderation desk again, after the rollback: the reply shown, the reason in its error alert and the typed decision
+// kept for that dispute; the outcome and the password are chosen and typed again. When the desk cannot be
+// loaded, the answer is plain text asking for a reload.
+func staleResolveForm(c *actionCtx, replyRole, resolution string) error {
+	msg := "The " + replyRole + " replied to this dispute after the form was loaded. Read the reply below and decide again. Nothing was changed."
+	return &httpError{Code: 409, Msg: msg, Render: func(w http.ResponseWriter) {
+		a := c.A
+		d := a.pageData(c.R, "moderator", c.Token, c.User)
+		if err := a.load(c.R, &d); err != nil {
+			http.Error(w, "The "+replyRole+" replied to this dispute after the form was loaded. Reload the moderation desk, read the reply and decide again. Nothing was changed.", 409)
+			return
+		}
+		d.Error, d.ResolveDispute, d.ResolveText = msg, c.Form.Get("id"), resolution
+		a.renderStatus(w, c.R, d, 409)
+	}}
 }

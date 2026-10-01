@@ -36,6 +36,9 @@ type ProductPhoto struct {
 type Order struct {
 	ID, ProductID, Title, Buyer, Vendor, Currency, Amount, Status, Created string
 	State, Kind, BuyerID, VendorID, Updated                                string
+	// Escrow: settled through a per-order escrow instead of the pooled wallet (settleTerminal, escrowOnly). Always
+	// false until escrow is built (A-244, WR-escrow Phase 0).
+	Escrow bool
 }
 type Message struct {
 	ID, Sender, Recipient, Body, Created string
@@ -47,23 +50,59 @@ type Notification struct {
 	ID, Body, Created string
 	Read              bool
 }
+
+// StaffContactView is the administrator's staff contact (A-119, staff_contact.go): Text as saved, shown escaped;
+// Handle set only when a signed-in reader may be linked to /messages?to=<Handle>.
+type StaffContactView struct{ Text, Handle string }
 type Dispute struct {
 	ID, OrderID, Reason, Status, Resolution, Created string
 	NoResolver                                       bool // open, and every moderator and administrator is a party
+	// A-124: Opener is "buyer" or "vendor", the party who moved the order to disputed ("" when no such event is
+	// recorded). Reply is the other party's one reply (an order_events row, disputeReplyPrefix), ReplyRole its
+	// author's role and ReplyCreated its time.
+	Opener, Reply, ReplyRole, ReplyCreated string
 }
 
-// PaymentReview is one deposit the payment watcher flagged for staff review (payments.flagged). Open: not yet
-// settled by events (a locked transfer, a late deposit or a deposit of a payout below the minimum, which have no
-// disposition action yet, or a credited deposit in an announced regression that has not confirmed again).
+// Responder is the party who may reply to the dispute: the one who did not open it ("" when the opener is unknown).
+func (d Dispute) Responder() string {
+	switch d.Opener {
+	case roleBuyer:
+		return roleVendor
+	case roleVendor:
+		return roleBuyer
+	}
+	return ""
+}
+
+// EvidenceHolder (A-162): a moderator or administrator a party messaged since the dispute opened, with how many
+// messages and the time of the latest, read from message metadata (sender, recipient, time) only. Suspended: that
+// account is suspended now, so it cannot sign in or answer until restored (A-280). Former: that account was staff
+// when messaged and has since been removed from staff, as its role-change audit row records (A-294).
+type EvidenceHolder struct {
+	Handle, Latest    string
+	Count             int
+	Suspended, Former bool
+}
+
+// DisputeEvidence lists the staff each party of an open dispute messaged since it opened.
+type DisputeEvidence struct{ Buyer, Vendor []EvidenceHolder }
+
+// PaymentReview is one deposit the payment watcher flagged for staff review (payments.flagged) with no recorded
+// disposition, or one escalated to an administrator (A-31). Open: a locked transfer, a late deposit or a deposit of
+// a payout below the minimum, or a credited deposit in an announced regression that has not confirmed again.
+// ID is payments.id. Party: the viewer is the order's buyer or vendor. Form: the viewer may record the disposition
+// (open, not a party, and an administrator when Escalated). Refundable: not credited, so "refunded by hand" applies.
 type PaymentReview struct {
-	OrderID, OrderState, Currency, Amount, TxID, Reason, Flagged string
-	Index                                                        int64
-	Open                                                         bool
+	ID, OrderID, OrderState, Currency, Amount, TxID, Reason, Flagged string
+	ProductID, Title                                                 string // the order's listing, linked from the row (A-265)
+	Index                                                            int64
+	Open, Escalated, Party, Form, Refundable                         bool
 }
 type Event struct{ Handle, Action, Created string } // Handle: account the audit row is recorded on ("" = system)
 
 type PageData struct {
 	Page, Title, CSRF, Error, Notice, Query, Category, Region, Currency, Mode string
+	NoticeAt                                                                  string // the section a one-shot notice renders in, "" = the top (notice.go)
 	User                                                                      *User
 	Products                                                                  []Product
 	Product                                                                   *Product
@@ -86,6 +125,9 @@ type PageData struct {
 	// StaffList: then the moderators and administrators listed (User.Avatar set when it may be shown).
 	StaffListPublic bool
 	StaffList       []User
+	// StaffContact: /canary, /challenge, /login, /register, /notifications, /vendor-dashboard and /listing-edit (a
+	// taken-down listing, A-279), the administrator's staff contact (A-119, staff_contact.go); nil while unset.
+	StaffContact *StaffContactView
 	// A-190 (image_takedown.go). RecentImages: /moderator, the newest public photos and avatars (vendors' only for a moderator); AvatarTakedown:
 	// vendor page, the staff remove form for the vendor's avatar.
 	RecentImages   []RecentImage
@@ -97,6 +139,13 @@ type PageData struct {
 	// P1 Authentication
 	Security *SecurityView
 	Captcha  *CaptchaView
+	// Next and NextTitle: /login and /register, the page signing in returns to and its title; /totp after a
+	// recovery-code sign-in, the page it links on to (A-126, signInNext).
+	Next, NextTitle string
+	// Sessions: account page, the viewer's live sessions, this browser's first, then the newest others, at most
+	// sessionsListed of SessionsTotal (A-157, actions_account.go).
+	Sessions      []AccountSession
+	SessionsTotal int
 	// FactorAccounts: admin page, up to 100 non-administrator accounts with a second factor, by handle
 	// (User.Factors names them); the reset form itself takes any handle.
 	FactorAccounts []User
@@ -106,6 +155,9 @@ type PageData struct {
 	// RoleHandle, RoleChoice, ResetHandle, SuspendHandle and SuspendChoice: admin page re-rendered after a
 	// handle matched no account, keeping what was typed into the role, second-factor reset or suspension form.
 	RoleHandle, RoleChoice, ResetHandle, SuspendHandle, SuspendChoice string
+	// ResolveDispute and ResolveText: the desk re-rendered after a resolve form loaded before the other party's
+	// reply was refused (A-280), keeping the decision typed for that dispute.
+	ResolveDispute, ResolveText string
 
 	// P2 PGP
 	PGP *PGPView
@@ -127,9 +179,12 @@ type PageData struct {
 	OpenDisputes  int
 	// DisputePayouts: resolve form per open dispute the viewer may resolve, keyed by dispute id.
 	DisputePayouts map[string]PayoutPreview
+	// DisputeEvidence: per open dispute a staff viewer is not party to, keyed by dispute id, whom each party messaged
+	// since it opened (A-162). Absent (nil) for everyone else.
+	DisputeEvidence map[string]*DisputeEvidence
 	// Overpaid: order page for its buyer or vendor, a paid, shipped or delivered order whose counted deposits
-	// exceed the price by this much ("0.009 BTC"); "" otherwise.
-	Overpaid string
+	// exceed the price; nil otherwise.
+	Overpaid *OverpaidView
 	// HistoryLimit: non-zero when closed history (resolved disputes, or incoming orders not paid) was
 	// cut to this many most recent rows.
 	HistoryLimit int
@@ -179,6 +234,12 @@ type PageData struct {
 	MessageTo           string       // messages page: validated ?to handle for the recipient field
 	OrderViewer         string       // order page: "buyer", "vendor" or "moderator" (read-only dispute review)
 	UnreadNotifications int          // signed-in users, every page
+	// VendorKeyUnusable (A-83): a physical listing's product and checkout pages, and its buyer's order page, when the
+	// vendor has no key that can receive encrypted messages (canReceiveEncrypted), so no shipping address can be sent.
+	VendorKeyUnusable bool
+	// noticeCode: the one-shot notice this render consumed (notice.go), for a loader that details it from the
+	// current state (/totp after a recovery-code sign-in); "" without one.
+	noticeCode string
 }
 
 // Foundation
@@ -192,6 +253,13 @@ type SecurityView struct {
 	Pending                   bool     // enrollment started, not yet confirmed with a code
 	RecoveryRemaining         int
 	Error                     string
+}
+
+// AccountSession is one live session on /account: when it started ("2006-01-02 15:04 UTC") and whether it is
+// this browser's. The market records nothing else about a session's client.
+type AccountSession struct {
+	Started string
+	Current bool
 }
 
 // CaptchaView is set on login/register while the CAPTCHA is required; ID is empty when none could be issued (Error says why).
@@ -208,6 +276,12 @@ type PGPView struct {
 	UserIDs                                   []string // user IDs of the saved key, shown to the owner (A-79)
 	KeyError                                  string   // the saved key no longer parses (legacy or revoked)
 	ChallengeExpires                          string   // open ownership challenge expiry (UTC)
+	// A-155: expiry of the primary key and of the encryption subkey encryptTo selects (or the one that expired last),
+	// "Never", "YYYY-MM-DD UTC" or "Expired YYYY-MM-DD UTC"; SubkeyExpires is "" when no subkey can encrypt.
+	PrimaryExpires, SubkeyExpires string
+	StopsSoon                     string // A-155: UTC date encryption to the key stops, when that is within 30 days
+	FingerprintHex                string // unspaced fingerprint for the renewal commands
+	CannotEncrypt                 bool   // A-225: nothing can be encrypted to the saved key now (canReceiveEncrypted)
 }
 
 // P3 Orders
@@ -227,6 +301,16 @@ type Transition struct {
 type PayoutPreview struct {
 	Seen                     int64
 	Confirm, Release, Refund string
+}
+
+// OverpaidView says what completing an overpaid order does with the excess, from the split the complete form
+// states (splitPayout, A-215). Excess: "0.009 BTC". Kept: it goes to the vendor with the release, for Reason
+// (below the minimum automatic payout, or a legacy price below the release floor, A-216). Held: larger than the
+// price, so an administrator reviews its return (or, when Kept, the release) first. NoAddress: buyer's view of a
+// return only, no payout address saved in the order's currency.
+type OverpaidView struct {
+	Excess, Reason        string
+	Kept, Held, NoAddress bool
 }
 type DeliveryView struct{ Content, Created string }
 type Review struct {
@@ -281,6 +365,9 @@ type PaymentView struct {
 	// exactly that amount (paymentURI) and its inline SVG QR code (qrSVG); empty otherwise.
 	PaymentURI string
 	QR         template.HTML
+	// CancelAfter: while the order is open, the time ("YYYY-MM-DD HH:MM UTC") from which the watcher can cancel
+	// it if still unpaid or short (A-123); RefundFloor: the minimum automatic payout in this currency.
+	CancelAfter, RefundFloor string
 }
 type PaymentDeposit struct {
 	TxID          string
@@ -296,6 +383,12 @@ type ProviderStatus struct {
 	Error             string
 	Confirmations     int
 	LastPoll          string
+	Version           string // wallet or node version its last check read (versionReporter)
+	VersionWarning    string // set when send errors are all ambiguous because Version is not the verified one
+	// AddressCollisions: payment requests refused because the wallet returned an address already issued (A-288),
+	// since an administrator last dismissed the warning; AddressCollisionLast: when the latest one was refused.
+	AddressCollisions    int
+	AddressCollisionLast string
 }
 type PayoutView struct {
 	BTC, XMR               string
@@ -368,4 +461,9 @@ type ContactKey struct {
 	Verified             bool
 	VerifiedAt           string // UTC date of the ownership proof (date only for other users, A-79)
 	Unreadable           bool   // a key is saved but no longer parses (legacy or revoked)
+	NoEncryption         bool   // a key is saved and parses, but nothing can be encrypted to it now (A-68: expired, revoked or signing-only)
+	ChangedAfterOrder    string // A-158: UTC date the vendor's key was changed or re-verified after the paid physical order was placed (buyer's view)
 }
+
+// Usable reports whether the contact has a key that can receive encrypted messages (contactKey fills Fingerprint only then).
+func (k ContactKey) Usable() bool { return k.Fingerprint != "" }

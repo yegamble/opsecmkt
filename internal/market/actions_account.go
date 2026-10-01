@@ -1,6 +1,7 @@
 package market
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"strings"
@@ -9,17 +10,63 @@ import (
 func init() {
 	registerAction("/logout", actionSpec{Run: func(c *actionCtx) (actionResult, error) {
 		_, err := c.Tx.ExecContext(c.Ctx(), "DELETE FROM sessions WHERE token_hash=$1", digest(c.Token))
-		return actionResult{Redirect: "/login", Audit: "Signed out", AfterCommit: c.clearSession}, err
+		return actionResult{Redirect: "/login", Notice: "signed-out", Audit: "Signed out", AfterCommit: c.clearSession}, err
 	}})
-	registerAction("/revoke-sessions", actionSpec{Run: func(c *actionCtx) (actionResult, error) {
-		_, err := c.Tx.ExecContext(c.Ctx(), "DELETE FROM sessions WHERE user_id=$1", c.User.ID)
-		return actionResult{Redirect: "/login", Audit: "Revoked all sessions", AfterCommit: c.clearSession}, err
-	}})
+	registerAction("/revoke-sessions", actionSpec{Run: revokeSessionsAction})
 	registerAction("/account", actionSpec{OwnTx: true, Run: accountAction})
 	registerAction("/account/password", actionSpec{OwnTx: true, Run: passwordChangeAction})
+	registerLoader("account", accountSessionsLoader)
+	registerPreview("account", func(d *PageData) {
+		d.Sessions = []AccountSession{{Started: "2026-01-02 09:30 UTC", Current: true}, {Started: "2026-01-01 21:05 UTC"}}
+		d.SessionsTotal = len(d.Sessions)
+	})
 }
 
 func (c *actionCtx) clearSession(w http.ResponseWriter) { c.A.cookie(w, "session", "", -1) }
+
+// revokeSessionsAction ("Sign out everywhere") ends every session of the account, this one included, and every
+// sign-in in progress, so someone parked at /challenge after the password step cannot finish (A-157). The pending
+// sign-ins go first, the order /challenge takes its locks in (A-154). It does not stop someone who knows the
+// password from signing in again; only a password change does.
+func revokeSessionsAction(c *actionCtx) (actionResult, error) {
+	ctx, uid := c.Ctx(), c.User.ID
+	pending, err := c.Tx.ExecContext(ctx, "DELETE FROM pending_logins WHERE user_id=$1", uid)
+	if err != nil {
+		return actionResult{}, err
+	}
+	sessions, err := c.Tx.ExecContext(ctx, "DELETE FROM sessions WHERE user_id=$1", uid)
+	if err != nil {
+		return actionResult{}, err
+	}
+	p, _ := pending.RowsAffected()
+	s, _ := sessions.RowsAffected()
+	return actionResult{Redirect: "/login", Notice: "signed-out-all", AfterCommit: c.clearSession,
+		Audit: "Revoked all sessions: ended " + strconv.FormatInt(s, 10) + " session(s) and " + strconv.FormatInt(p, 10) + " pending sign-in(s)"}, nil
+}
+
+// sessionsListed bounds the sessions /account lists: a correct password spends no sign-in budget, so someone who
+// knows it can open many.
+const sessionsListed = 20
+
+// accountSessionsLoader lists the account's live sessions on /account: this browser's first (marked), then the
+// newest others, at most sessionsListed, with the total in SessionsTotal. A session row holds only its token's
+// hash, the account and when it started and ends: no client data (A-157).
+func accountSessionsLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error {
+	rows, err := a.db.QueryContext(ctx, `SELECT to_char(created,'YYYY-MM-DD HH24:MI "UTC"'),token_hash=$2,count(*) OVER () FROM sessions
+		WHERE user_id=$1 AND expires>now() ORDER BY token_hash=$2 DESC,created DESC,token_hash LIMIT $3`, d.User.ID, digest(sessionToken(r)), sessionsListed)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var s AccountSession
+		if err = rows.Scan(&s.Started, &s.Current, &d.SessionsTotal); err != nil {
+			return err
+		}
+		d.Sessions = append(d.Sessions, s)
+	}
+	return rows.Err()
+}
 
 func accountAction(c *actionCtx) (actionResult, error) {
 	f := c.Form
@@ -47,12 +94,23 @@ func accountAction(c *actionCtx) (actionResult, error) {
 	confirm := !sameProfileKey(old, pgp)
 	return confirmedTx(c, confirm, func(c *actionCtx) (actionResult, error) {
 		// P2: parse the key, store its fingerprint and reset ownership proof / PGP sign-in when it changes.
-		audit, err := saveProfileKey(c, pgp, confirm)
+		audit, outcome, err := saveProfileKey(c, pgp, confirm)
 		if err != nil {
 			return actionResult{}, err
 		}
+		res := actionResult{Redirect: "/account", Notice: "profile", Audit: audit}
+		switch outcome { // a new version of the saved key: say whether its ownership proof was kept (A-155, A-287)
+		case "renewed-kept":
+			res.Notice = "key-renewed-kept"
+		case "renewed":
+			res.Notice = "key-renewed"
+		case "revocation":
+			res.Notice = "key-revocation"
+		case "subkey":
+			res.Notice = "key-subkey"
+		}
 		_, err = c.Tx.ExecContext(c.Ctx(), "UPDATE users SET xmpp=$1 WHERE id=$2", xmpp, c.User.ID)
-		return actionResult{Redirect: "/account?saved=1", Audit: audit}, err
+		return res, err
 	})
 }
 
@@ -102,7 +160,7 @@ func passwordChangeAction(c *actionCtx) (actionResult, error) {
 		if _, err = tx.ExecContext(ctx, "INSERT INTO sessions(token_hash,user_id,expires) VALUES($1,$2,now()+interval '12 hours')", digest(token), uid); err != nil {
 			return actionResult{}, err
 		}
-		return actionResult{Redirect: "/account?saved=1", Audit: "Changed password; ended " + strconv.FormatInt(n, 10) + " other session(s) and any pending sign-ins"}, nil
+		return actionResult{Redirect: "/account", Notice: "password", Audit: "Changed password; ended " + strconv.FormatInt(n, 10) + " other session(s) and any pending sign-ins"}, nil
 	})
 	if err != nil {
 		return actionResult{}, err

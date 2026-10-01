@@ -4,6 +4,7 @@ import { deflateSync } from 'node:zlib';
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { uniqueHandle } from './db-fixtures';
 import { signedIn } from './db-helpers';
+import { waitForStyles } from './styles';
 
 // A-189 (war room 2026-09-27, UI-7/UI-8, DA-10): a browser with JavaScript off requests every <img> on a page at
 // once, so a vendor page is paged at 25 listings and shows only thumbnails; the image route's D7 cache header
@@ -134,6 +135,7 @@ test('vendor page image budget and cache', async ({ browser, baseURL }) => {
     await expect(visitor.locator('.listings-grid .product-card')).toHaveCount(5);
     await expect(pager.locator('[aria-current="page"]')).toHaveText('Page 2 of 2');
     await expect(pager.getByRole('link', { name: 'Previous page, page 1 of 2' })).toHaveAttribute('href', page1);
+    await waitForStyles(visitor);
     expect(await visitor.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
   } finally {
     await vendor.context().close();
@@ -162,6 +164,7 @@ test('public staff list and decision avatar when shown', async ({ browser, baseU
   const fitsAt200 = async (page: Page, label: string) => {
     for (const scale of ['100%', '200%']) {
       await page.locator('html').evaluate((element, size) => { element.style.fontSize = size; }, scale);
+      await waitForStyles(page);
       expect(await page.evaluate(() => document.documentElement.scrollWidth), `${label} at ${scale}`).toBeLessThanOrEqual(320);
     }
   };

@@ -230,8 +230,8 @@ func setRuntimeParam(p map[string]string, k, v string) {
 
 // OpenDB opens the database in dsn with TimeZone pinned to UTC on every connection (a startup parameter, which
 // outranks database and role defaults), so displayed times never follow or reveal the server's zone. The
-// application pool, its migrations and the -bootstrap-admin, -reset-admin-password and -status commands all
-// open the database here; only the application pool passes WithAppTimeouts.
+// application pool, its migrations and the -bootstrap-admin, -reset-admin-password, -reset-admin-factors,
+// -set-role and -status commands all open the database here; only the application pool passes WithAppTimeouts.
 func OpenDB(dsn string, opts ...DBOption) (*sql.DB, error) {
 	cfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
@@ -373,8 +373,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer release()
 	w = aw
-	base := r.Context() // an upload's work after its body has arrived gets its own bound (uploads.go)
-	ctx, cancel := context.WithTimeout(base, 12*time.Second)
+	// An upload's work after its body has arrived (uploads.go) and the signed audit export (audit_export.go,
+	// through arrivalContext) get their own bounds.
+	base := r.Context()
+	ctx, cancel := context.WithTimeout(context.WithValue(base, arrivalKey{}, base), 12*time.Second)
 	defer cancel()
 	r = r.WithContext(ctx)
 	if r.URL.Path == "/healthz" {
@@ -576,6 +578,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		d.CSRF = a.csrf(token)
 		d.Mode = a.mode
 		applyPreviews(&d)
+		objectTitle(&d)
 		a.render(w, r, d)
 		return
 	}
@@ -593,7 +596,11 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if protected(page) && user == nil {
-		http.Redirect(w, r, "/login", 303)
+		login := "/login"
+		if next := signInNext(r.URL.RequestURI()); next != "" {
+			login += "?next=" + url.QueryEscape(next) // signing in returns here (A-126)
+		}
+		http.Redirect(w, r, login, 303)
 		return
 	}
 	if !authorized(page, user) {
@@ -601,9 +608,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d := a.pageData(r, page, token, user)
-	if r.URL.Query().Get("saved") == "1" {
-		d.Notice = "Changes saved."
-	}
+	a.takeNotice(w, r, &d)
 	if err := a.load(r, &d); err != nil {
 		var he *httpError
 		switch {
@@ -620,6 +625,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	objectTitle(&d)
 	a.render(w, r, d)
 }
 
@@ -639,9 +645,33 @@ func postOriginError(r *http.Request) string {
 	return ""
 }
 
+// pageTitle is a page's default title, from its name ("vendor-dashboard" → "Vendor Dashboard"), or the name the
+// navigation gives it; loaders may replace it.
+func pageTitle(page string) string {
+	switch page {
+	case "catalog":
+		return "Marketplace"
+	case "canary":
+		return "Transparency"
+	}
+	return strings.ReplaceAll(strings.Title(page), "-", " ")
+}
+
+// objectTitle names the listing, order or vendor a page shows in its title (A-117), once the page has loaded.
+func objectTitle(d *PageData) {
+	switch {
+	case d.Page == "product" && d.Product != nil:
+		d.Title = d.Product.Title
+	case d.Page == "order" && d.Order != nil:
+		d.Title = "Order " + shortID(d.Order.ID) + " – " + d.Order.Title
+	case d.Page == "vendor" && len(d.Users) == 1:
+		d.Title = "Vendor " + d.Users[0].Handle
+	}
+}
+
 // pageData is the state a page render starts from, before a.load fills it.
 func (a *App) pageData(r *http.Request, page, token string, user *User) PageData {
-	d := PageData{Page: page, Title: strings.ReplaceAll(strings.Title(page), "-", " "), CSRF: a.csrf(token), User: user, Mode: a.mode, Query: r.URL.Query().Get("q"), Category: r.URL.Query().Get("category"), Region: r.URL.Query().Get("region"), Currency: r.URL.Query().Get("currency"), Settings: map[string]string{}}
+	d := PageData{Page: page, Title: pageTitle(page), CSRF: a.csrf(token), User: user, Mode: a.mode, Query: r.URL.Query().Get("q"), Category: r.URL.Query().Get("category"), Region: r.URL.Query().Get("region"), Currency: r.URL.Query().Get("currency"), Settings: map[string]string{}}
 	if d.Currency != "XMR" {
 		d.Currency = "BTC"
 	}

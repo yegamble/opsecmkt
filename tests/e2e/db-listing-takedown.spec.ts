@@ -2,7 +2,8 @@ import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { expect, test, type Page } from '@playwright/test';
 import { uniqueHandle } from './db-fixtures';
-import { signedIn, submitAndLoad } from './db-helpers';
+import { expectNotice, signedIn, submitAndLoad } from './db-helpers';
+import { waitForStyles } from './styles';
 
 // A-163: an administrator takes down another vendor's listing with a reason, confirmed with their password. The
 // vendor sees the reason on the listing and the vendor desk and has no restore control; only the administrator's
@@ -11,6 +12,7 @@ import { signedIn, submitAndLoad } from './db-helpers';
 async function fits(page: Page, label: string) {
   for (const width of [390, 320]) {
     await page.setViewportSize({ width, height: 900 });
+    await waitForStyles(page);
     expect(await page.evaluate(() => document.documentElement.scrollWidth), `${label} at ${width}px`).toBeLessThanOrEqual(width);
   }
 }
@@ -44,7 +46,8 @@ test('administrator takes down a listing with a reason and only an administrator
     await admin.getByLabel('Current password').fill(adminPassword);
     await fits(admin, 'open takedown form');
     await submitAndLoad(admin, admin.getByRole('button', { name: 'Take down listing' }));
-    await expect(admin).toHaveURL(new RegExp(`/listing-edit\\?id=${productID}&saved=1$`));
+    await expect(admin).toHaveURL(new RegExp(`/listing-edit\\?id=${productID}$`));
+    await expectNotice(admin, 'Listing taken down.');
     await admin.reload();
     await expect(admin.locator('.badge', { hasText: 'Taken down' })).toBeVisible();
     await expect(admin.locator('.takedown-reason')).toContainText(reason);
@@ -60,12 +63,13 @@ test('administrator takes down a listing with a reason and only an administrator
     const card = vendor.locator('.product-card', { hasText: title });
     await expect(card.locator('.badge')).toHaveText('Taken down');
     await expect(card).toContainText(reason);
-    await expect(card).toContainText('contact the market staff');
+    // A-279: the staff-contact line (unset here: db-staff-contact clears it again).
+    await expect(card.locator('.staff-contact')).toHaveText('Only an administrator can restore it. If you think this is wrong, ask an administrator to review it. Ask the operator of this market.');
     await expect(card.getByRole('button', { name: `Restore ${title}` })).toHaveCount(0);
     await fits(vendor, 'vendor desk with a taken-down listing');
     await vendor.goto(editURL);
     await expect(vendor.locator('.takedown-reason')).toContainText(reason);
-    await expect(vendor.locator('main')).toContainText('Only an administrator can restore this listing. If you think this is wrong, contact the market staff.');
+    await expect(vendor.locator('main .staff-contact')).toHaveText('Only an administrator can restore this listing; you can still edit it. If you think this is wrong, ask an administrator to review it. Ask the operator of this market.');
     await expect(vendor.getByRole('button', { name: 'Restore listing' })).toHaveCount(0);
     await fits(vendor, 'vendor edit page of a taken-down listing');
     await vendor.goto('/notifications');
@@ -75,7 +79,8 @@ test('administrator takes down a listing with a reason and only an administrator
     await admin.goto(editURL);
     await admin.getByLabel('Current password').fill(adminPassword);
     await submitAndLoad(admin, admin.getByRole('button', { name: 'Restore listing' }));
-    await expect(admin).toHaveURL(new RegExp(`/listing-edit\\?id=${productID}&saved=1$`));
+    await expect(admin).toHaveURL(new RegExp(`/listing-edit\\?id=${productID}$`));
+    await expectNotice(admin, 'Listing restored.');
     const restored = await visitor.goto(`/product?id=${productID}`);
     expect(restored?.status()).toBe(200);
     await vendor.goto('/vendor-dashboard');

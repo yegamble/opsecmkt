@@ -95,6 +95,7 @@ func TestLifecycleDigitalAndDisputedPhysical(t *testing.T) {
 	e.A.payments["BTC"] = l.fake
 	suffix := randomToken()[:6]
 	vendorID, vendor := e.user("lvendor_"+suffix, "vendor")
+	e.usableKey(vendorID) // buyers of its physical item send the shipping address encrypted to it (A-83)
 	buyerID, buyer := e.user("lbuyer_"+suffix, "buyer")
 	_, other := e.user("lother_"+suffix, "buyer")
 	_, mod := e.user("lmod_"+suffix, "moderator")
@@ -198,7 +199,7 @@ func TestLifecycleDigitalAndDisputedPhysical(t *testing.T) {
 	if len(seen) != 1 || seen[0] != 100000 {
 		t.Fatalf("resolve form amount_seen %v", seen)
 	}
-	l.post("/resolve", mod, payoutConfirmed(form("id", disputeID, "outcome", "refund", "resolution", "No proof of shipment; refund the buyer in full."), seen[0]), 303)
+	l.post("/resolve", mod, resolveConfirmed(form("id", disputeID, "outcome", "refund", "resolution", "No proof of shipment; refund the buyer in full."), seen[0]), 303)
 	if s := l.state(order2); s != stateResolved {
 		t.Fatalf("after resolution: %s", s)
 	}

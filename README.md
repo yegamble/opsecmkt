@@ -21,7 +21,9 @@ Server-rendered Go and PostgreSQL, PGP identity, Tor-first deployment.
 > operator configures them ([Mainnet](docs/operator-guide.md#mainnet)); a market is
 > all mainnet or all test networks. Deposits sit in
 > the operator's pooled custodial wallets: this is not escrow, and there is no
-> multisig or fee accounting. Tor protects inbound connections to the site; it
+> multisig or fee accounting. Per-order escrow (Bitcoin 2-of-3 multisig, a Monero
+> account per order) is planned and not yet available: see
+> [per-order escrow](docs/escrow.md). Tor protects inbound connections to the site; it
 > does not guarantee anonymity. See [implementation status](docs/implementation-status.md).
 
 ## Why OPSEC Market
@@ -160,8 +162,9 @@ its metadata; deleting one leaves copies in older backups. The full list is in
 [what the server keeps](docs/implementation-status.md#what-the-server-keeps).
 
 **Account recovery.** There is no forgotten-password reset. Recovery codes
-replace a lost authenticator, and an administrator's password is reset from the
-host with `-reset-admin-password` (see the [operator guide](docs/operator-guide.md)).
+replace a lost authenticator, and an administrator's password and second factors
+are reset from the host with `-reset-admin-password` and `-reset-admin-factors`
+(see the [operator guide](docs/operator-guide.md#authentication)).
 
 ## Documentation
 
@@ -169,6 +172,7 @@ host with `-reset-admin-password` (see the [operator guide](docs/operator-guide.
 | --- | --- |
 | [Operator guide](docs/operator-guide.md) | Deployment, HTTPS and Tor, mirrors, configuration, backups, recovery, troubleshooting |
 | [Test-network payments](docs/testnet-runbook.md) | Wallet setup, funding and payout recovery |
+| [Per-order escrow (planned)](docs/escrow.md) | The escrow design replacing the pooled wallet, what it will and will not protect, and its status |
 | [Upgrading from v0.1.0-alpha.1](UPGRADING.md) | New settings and migration steps |
 | [Implementation status](docs/implementation-status.md) | What works, what is missing, and what the server keeps |
 | [Acceptance checks](docs/acceptance.md) | The checklist, and the tests that prove each ticked line |
@@ -180,7 +184,7 @@ host with `-reset-admin-password` (see the [operator guide](docs/operator-guide.
 
 | Path | Responsibility |
 | --- | --- |
-| `cmd/server/` | HTTP server, read-only preview and the `-reset-admin-password` tool |
+| `cmd/server/` | HTTP server, read-only preview and the host tools (`-bootstrap-admin`, `-reset-admin-password`, `-reset-admin-factors`, `-set-role`) |
 | `cmd/verify-audit/` | Offline verifier for signed audit exports |
 | `internal/market/` | Marketplace behaviour, database access and Go tests |
 | `internal/market/migrations/` | Ordered SQL migrations; add new files, never rewrite merged ones |

@@ -10,13 +10,14 @@ import (
 // the account's sessions and pending sign-ins and blocks every path that creates a session; the counterparty's
 // open orders and the account's listings are untouched.
 
-const suspendedMsg = "This account is suspended. Contact the market staff."
+// With no staff contact set (A-119), the refusal points to the operator.
+const suspendedMsg = "This account is suspended. Ask the operator of this market."
 
 // signedOut reports whether session no longer authenticates (a protected page redirects to /login).
 func signedOut(e *testEnv, session string) bool {
 	e.t.Helper()
 	w := e.do("GET", "/account", session, nil)
-	return w.Code == 303 && w.Header().Get("Location") == "/login"
+	return w.Code == 303 && w.Header().Get("Location") == "/login?next=%2Faccount"
 }
 
 func suspendForm(action, handle string, extra ...string) url.Values {
@@ -190,7 +191,7 @@ func TestSuspendedAccountCannotCompleteSignIn(t *testing.T) {
 	e := newTestApp(t)
 	id, _ := e.user("susp_racer", "buyer")
 	key, _ := agEnableTOTP(e, id)
-	anon, pc := e.passwordLogin("susp_racer")
+	anon, pc := e.pendingSignIn("susp_racer")
 	agExec(e, "UPDATE users SET suspended_at=now() WHERE id=$1", id)
 	w := e.do("POST", "/challenge", anon, form("method", "totp", "code", agTOTPNow(key)), pc)
 	if w.Code != 403 || strings.TrimSpace(w.Body.String()) != suspendedMsg || e.cookie(w, "session") != "" {

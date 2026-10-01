@@ -88,11 +88,15 @@ func (g *gapXMRWallet) deposit(addr, txid string, piconero int64, confs int) {
 	g.w.set(func(m *payMoneroWallet) { m.transfers = map[string]any{"in": in} })
 }
 
-// gapOrder inserts an order awaiting payment in currency with deposit address addr (as /orders/pay does).
+// gapOrder inserts an order awaiting payment in currency with deposit address addr (as /orders/pay does). An XMR
+// order is priced at the Monero payout floor (minPayoutXMR), so its release is sent (A-232).
 func (p *payEnv) gapOrder(currency, addr string) string {
 	p.t.Helper()
 	id := p.testEnv.order(p.buyer.ID, p.productID, currency, stateAwaitingPayment)
 	if _, err := p.DB.Exec("INSERT INTO payment_addresses(order_id,currency,address,provider) VALUES($1,$2,$3,'gap')", id, currency, addr); err != nil {
+		p.t.Fatal(err)
+	}
+	if _, err := p.DB.Exec("UPDATE orders SET amount=$2 WHERE id=$1 AND currency='XMR'", id, minPayoutXMR); err != nil {
 		p.t.Fatal(err)
 	}
 	return id
@@ -133,7 +137,7 @@ func (p *payEnv) failedPayout(order, msg string, ambiguous bool) {
 	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE '%failed and will not be retried%'", order); n != 1 {
 		p.t.Fatalf("failure events: %d", n)
 	}
-	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE '%sent:%'", order); n != 0 {
+	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE '%payout of % sent; the network fee was taken from it.'", order); n != 0 {
 		p.t.Fatal("failed payout recorded as sent")
 	}
 	if admin := html.UnescapeString(p.page("/admin", p.adminSess)); !strings.Contains(admin, msg) || !strings.Contains(admin, "Failed — not retried") {
@@ -192,7 +196,7 @@ func TestGapWalletSendFailuresRecordFailedPayouts(t *testing.T) {
 		addr := "7gapxmrsend" + strings.Repeat(string(rune('a'+i)), 84)
 		g.subaddress(addr, int64(20+i))
 		order := p.gapOrder("XMR", addr)
-		g.deposit(addr, "xmr-send-"+string(rune('a'+i)), 100000, 1)
+		g.deposit(addr, "xmr-send-"+string(rune('a'+i)), minPayoutXMR, 1)
 		p.poll()
 		p.complete(order)
 		before := g.s.called("transfer")
@@ -296,7 +300,7 @@ func TestGapMoneroRPCErrorsMidPassNeverExpireOrFlag(t *testing.T) {
 	g.subaddress(subD, 4)
 	expired := p.gapOrder("XMR", subC)
 	paid := p.gapOrder("XMR", subD)
-	g.deposit(subD, "xmr-paid", 100000, 1)
+	g.deposit(subD, "xmr-paid", minPayoutXMR, 1)
 	p.poll()
 	if s := p.state(paid); s != statePaid {
 		t.Fatalf("paid order: %s", s)
@@ -465,7 +469,7 @@ func TestGapPayoutClaimLostToAnotherSender(t *testing.T) {
 	if stA != "sent" || stB != "sent" || txA == txB || len(sends) != 2 || sends[0].TxID != txB || sends[1].TxID != txA {
 		t.Fatalf("payouts A=%s/%s B=%s/%s sends=%+v", stA, txA, stB, txB, sends)
 	}
-	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE '%sent:%'", second); n != 1 {
+	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE '%payout of % sent; the network fee was taken from it.'", second); n != 1 {
 		t.Fatalf("B sent events: %d", n)
 	}
 }
@@ -622,7 +626,7 @@ func TestEnqueuePayoutCreditsOnlyWhatItPays(t *testing.T) {
 	if amt != 107000 && !flagged {
 		t.Fatalf("confirmed deposit tx-extra lost: refund amount=%d, tx-extra credited=%v flagged=%v", amt, credited, flagged)
 	}
-	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE '%tx-extra arrived after this order was settled and was not paid out%'", p.order); amt != 107000 && n != 1 {
+	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE '%deposit tx-extra (%) arrived after this order was settled and was not paid out%'", p.order); amt != 107000 && n != 1 {
 		t.Fatalf("not-paid-out flag events for tx-extra: %d", n)
 	}
 }
@@ -893,8 +897,13 @@ func TestOldHeldPayoutResumesAfterReconfirm(t *testing.T) {
 func TestPayoutPendingMidPassWaitsForNextPass(t *testing.T) {
 	p := newPayEnv(t)
 	order := p.completedWithPayout("tx-midpass")
-	if _, err := p.DB.Exec("UPDATE orders SET updated=now()-interval '48 hours' WHERE id=$1", order); err != nil {
-		t.Fatal(err)
+	for _, q := range []string{
+		"UPDATE orders SET updated=now()-interval '48 hours' WHERE id=$1",
+		"UPDATE payment_addresses SET created=now()-interval '40 days' WHERE order_id=$1",
+	} {
+		if _, err := p.DB.Exec(q, order); err != nil {
+			t.Fatal(err)
+		}
 	}
 	p.fake.incomingHook = func() {
 		p.fake.incomingHook = nil
@@ -977,7 +986,7 @@ func TestLateRecordDoesNotOverwriteAdminResolution(t *testing.T) {
 	if st, txid, _, _ := p.payout(order); st != "sent" || txid != adminTxid || len(p.fake.Sends()) != 1 {
 		t.Fatalf("payout %s %s sends %d: the late outcome overwrote the administrator's record", st, txid, len(p.fake.Sends()))
 	}
-	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE '%sent: fake-payout-%'", order); n != 0 {
+	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE '%payout of % sent; the network fee was taken from it.'", order); n != 0 {
 		t.Fatalf("late send events: %d", n)
 	}
 	p.poll()

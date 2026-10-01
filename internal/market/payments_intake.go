@@ -37,11 +37,11 @@ func paymentIntakeAction(c *actionCtx) (actionResult, error) {
 		if n, _ := res.RowsAffected(); n != 1 {
 			return actionResult{}, fail(409, "Payment intake settings are unavailable; restart after applying migrations")
 		}
-		action := "Paused new " + cur + " payment addresses; existing deposits and payouts continue"
+		out := actionResult{Redirect: "/admin", Notice: "intake-paused", Audit: "Paused new " + cur + " payment addresses; existing deposits and payouts continue"}
 		if enabled == "true" {
-			action = "Enabled new " + cur + " payment addresses (" + c.A.netName() + ")"
+			out.Notice, out.Audit = "intake-enabled", "Enabled new "+cur+" payment addresses ("+c.A.netName()+")"
 		}
-		return actionResult{Redirect: "/admin?saved=1#payment-intake", Audit: action}, nil
+		return out, nil
 	})
 }
 

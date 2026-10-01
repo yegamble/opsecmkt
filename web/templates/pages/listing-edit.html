@@ -56,12 +56,12 @@
 </label>
 <label>Stock<input type="number" name="stock" required min="0" max="1000000" value="{{.Stock}}" aria-describedby="stock-help">
 </label>
-<label>Bitcoin reference price<input name="price_btc" required inputmode="decimal" value="{{.PriceBTC}}" aria-describedby="price-btc-help">
+<label>Bitcoin reference price<input name="price_btc" required inputmode="decimal" value="{{.PriceBTC}}" aria-describedby="price-floor-help">
 </label>
-<label>Monero reference price<input name="price_xmr" required inputmode="decimal" value="{{.PriceXMR}}">
+<label>Monero reference price<input name="price_xmr" required inputmode="decimal" value="{{.PriceXMR}}" aria-describedby="price-floor-help">
 </label>
 </div>
-<p class="help" id="price-btc-help">The Bitcoin price must be at least 0.0001 BTC: a smaller Bitcoin payout cannot cover the network fee.</p>
+<p class="help" id="price-floor-help">The Bitcoin price must be at least 0.0001 BTC and the Monero price at least 0.001 XMR: the network fee is deducted from every payout, and a smaller payout cannot cover it (Bitcoin) or would lose too large a share to it (Monero).</p>
 <p class="help" id="stock-help">Payment requests reserve stock. If stock changes while you edit, saving a new stock value is refused so no reservation is overwritten.</p>
 {{with $.Listing}}<p class="help" id="kind-help">{{if .OpenOrders}}{{.OpenOrders}} open order(s) depend on this listing, so the fulfillment type cannot change until they finish.{{else}}No open orders; the fulfillment type can change.{{end}} Orders that have requested payment keep their recorded amount; open drafts use the current price.</p>
 {{if .VendorEditor}}<label>Automatic delivery content<textarea name="delivery_content" maxlength="32000" rows="6" spellcheck="false" aria-describedby="delivery-help">{{.DeliveryContent}}</textarea>
@@ -74,9 +74,9 @@
 </div>
 <aside>
 <section class="panel">
-<h2>Visibility</h2>{{with $.Listing}}{{if .TakedownReason}}<p><span class="badge danger">Taken down</span> Taken down by an administrator{{if .ArchivedAt}} on {{.ArchivedAt}}{{end}}. Hidden from the marketplace, the vendor page and search; new orders are refused. Existing orders continue, but paid orders are not delivered automatically: the vendor delivers or cancels them.</p>
+<h2>Visibility</h2>{{with $.Listing}}{{if .TakedownReason}}<p><span class="badge danger">Taken down</span> Taken down by an administrator{{if .ArchivedAt}} on {{.ArchivedAt}}{{end}}. Hidden from the marketplace, the vendor page and search; new orders are refused. Existing orders continue, but paid orders are not delivered automatically: the vendor delivers or cancels them. Their buyers, and staff reviewing them, can still open this listing's page from the order; the reason is not shown there.</p>
 <p class="takedown-reason"><strong>Reason:</strong> {{.TakedownReason}}</p>{{if ne $.User.Role "admin"}}
-<p>Only an administrator can restore this listing. If you think this is wrong, contact the market staff. You can still edit it.</p>{{else}}
+<p class="staff-contact">Only an administrator can restore this listing; you can still edit it. If you think this is wrong, ask an administrator to review it. {{template "staff-contact" $}}</p>{{else}}
 <form class="stack" method="post" action="/admin/listing">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="id" value="{{$.Product.ID}}">
@@ -84,12 +84,12 @@
 <p class="help">Restoring shows the listing in the marketplace again, clears the reason and notifies the vendor.</p>
 {{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button type="submit">Restore listing</button>
-</form>{{end}}{{else if $.Product.Archived}}<p>Archived{{if .ArchivedAt}} since {{.ArchivedAt}}{{end}}. Hidden from the marketplace, your vendor page and search; new orders are refused. Existing orders continue unchanged.</p>
+</form>{{end}}{{else if $.Product.Archived}}<p>Archived{{if .ArchivedAt}} since {{.ArchivedAt}}{{end}}. Hidden from the marketplace, your vendor page and search; new orders are refused. Existing orders continue unchanged; their buyers, and staff reviewing them, can still open this listing's page from the order.</p>
 <form method="post" action="/listings/restore">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="id" value="{{$.Product.ID}}">
 <button type="submit">Restore listing</button>
-</form>{{if not .VendorEditor}}{{template "listing-edit:takedown" $}}{{end}}{{else}}<p>Visible in the marketplace. {{if .VendorEditor}}Archiving hides it and refuses new orders; existing orders continue unchanged.{{else}}To remove another vendor's listing, take it down with a reason for the vendor.{{end}}</p>
+</form>{{if not .VendorEditor}}{{template "listing-edit:takedown" $}}{{end}}{{else}}<p>Visible in the marketplace. {{if .VendorEditor}}Archiving hides it and refuses new orders; existing orders continue unchanged, and their buyers, and staff reviewing them, can still open this page from the order.{{else}}To remove another vendor's listing, take it down with a reason for the vendor.{{end}}</p>
 <a class="text-link" href="/product?id={{$.Product.ID}}">View public listing <span class="action-icon">→</span></a>{{if .VendorEditor}}
 <form method="post" action="/listings/archive">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">

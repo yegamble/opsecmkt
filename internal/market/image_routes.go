@@ -19,7 +19,8 @@ import (
 //   - GET/HEAD /desk/img/<id>-t|-f, the authenticated route, for the owner's own images whatever their state
 //     (an archived listing's on listing-edit), any image for an administrator, and a staff member's avatar for
 //     the buyer, vendor and staff of an order on which that member recorded the dispute decision (owner
-//     decision 1(c)). It takes a page slot and looks the session cookie up like a page does (under that slot),
+//     decision 1(c)), and an archived listing's photos for whoever may read an order on it (A-264). It takes a
+//     page slot and looks the session cookie up like a page does (under that slot),
 //     and it too sets no cookie.
 //
 // <id> is the 32 lowercase hex characters of the row's id (128 random bits, storeImage); -t is the thumbnail and
@@ -95,7 +96,8 @@ func parseImagePath(rest string) (imageRef, bool) {
 func publicImageURL(id string, full bool) string { return "/img/" + id + imageSuffix(full) }
 
 // deskImageURL is the relative URL of an image on the authenticated route: the owner's listing-edit and
-// account pages, and a staff avatar beside a dispute decision on the order page.
+// account pages, a staff avatar beside a dispute decision on the order page, and an archived listing's photos on
+// its product page (A-264).
 func deskImageURL(id string, full bool) string { return "/desk/img/" + id + imageSuffix(full) }
 
 func imageSuffix(full bool) string {
@@ -121,14 +123,19 @@ const (
 )
 
 // imageDeskWhere is the authenticated route's predicate over images i and owner o for viewer $2 with role $3:
-// the owner; an administrator; or, for the avatar of a moderator or administrator who is not suspended, the
+// the owner; an administrator; for the avatar of a moderator or administrator who is not suspended, the
 // buyer or vendor of an order on which that member moved the dispute to resolved, or a moderator (who may open
-// every resolved order, orders_load.go). Everyone else, moderators included for vendors' images, is refused.
-const imageDeskWhere = `(i.owner_user_id=$2 OR $3='admin'
+// every resolved order, orders_load.go); or, for a photo of an archived listing, whoever may read an order placed
+// on that listing (orderReadable, the rule that opens the archived listing's product page, A-164 and A-264).
+// Everyone else, moderators included for other vendors' images, is refused. Inside the last EXISTS, o and p are
+// the order and its listing (orderReadable's aliases), not the image's owner.
+var imageDeskWhere = `(i.owner_user_id=$2 OR $3='admin'
  OR (i.kind='avatar' AND o.role IN ('admin','moderator') AND o.suspended_at IS NULL AND EXISTS(
    SELECT 1 FROM orders od JOIN products pr ON pr.id=od.product_id
    WHERE od.state='resolved' AND (od.buyer_id=$2 OR pr.vendor_id=$2 OR $3='moderator')
-     AND EXISTS(SELECT 1 FROM order_events e WHERE e.order_id=od.id AND e.from_state='disputed' AND e.to_state='resolved' AND e.actor_id=i.owner_user_id))))`
+     AND EXISTS(SELECT 1 FROM order_events e WHERE e.order_id=od.id AND e.from_state='disputed' AND e.to_state='resolved' AND e.actor_id=i.owner_user_id)))
+ OR (i.kind='photo' AND EXISTS(SELECT 1 FROM products p JOIN orders o ON o.product_id=p.id
+   WHERE p.id=i.product_id AND p.archived AND p.vendor_id=i.owner_user_id AND ` + orderReadable("$2", "$3") + `)))`
 
 // imageSelect starts an image route's query: the length of one size of the image and, for a GET, its bytes (a
 // HEAD reads only the length). The only way a query reads image bytes; no other file may use it

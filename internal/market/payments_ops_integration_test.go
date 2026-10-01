@@ -331,8 +331,7 @@ func TestAdminPayoutActions(t *testing.T) {
 		t.Fatalf("requeue of a live send: %d", code)
 	}
 	p.DB.Exec("UPDATE payouts SET updated=now()-interval '1 hour' WHERE order_id=$1", stuck)
-	// (Refusal without the confirmation: TestPayoutSentButNotRecordedStaysSendingAndNeedsConfirmation; this
-	// test already uses all ten password confirmations the rate limit allows.)
+	// (Refusal without the confirmation: TestPayoutSentButNotRecordedStaysSendingAndNeedsConfirmation.)
 	if code, _ := p.payoutActionConfirmed(p.adminSess, stuckID, "requeue", testPassword); code != 303 {
 		t.Fatalf("requeue of a stuck send: %d", code)
 	}
@@ -576,8 +575,8 @@ func TestRestoredDefiniteFailureRequeuesOnlyAfterWalletCheck(t *testing.T) {
 	admin := html.UnescapeString(p.page("/admin", p.adminSess))
 	var row string
 	for _, r := range strings.Split(admin, "<tr") {
-		if strings.Contains(r, "Resolve payout "+id+":") {
-			row = r
+		if strings.Contains(r, `href="#resolve-payout-`+id+`"`) { // the row links its resolve form under the table (A-281)
+			row, _, _ = strings.Cut(r, "</tr>")
 		}
 	}
 	if row == "" || strings.Contains(row, "nothing broadcast") || !strings.Contains(row, "Failed after a restore from backup — may have been requeued and sent after the backup, check the wallet") {

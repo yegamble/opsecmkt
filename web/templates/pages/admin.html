@@ -44,7 +44,7 @@
 <option value="moderator"{{if eq .RoleChoice "moderator"}} selected{{end}}>Moderator</option>
 </select>
 </label>
-<p class="help">Enter the handle exactly (it is case-sensitive) and choose buyer, vendor or moderator. The first administrator is created during installation; administrator roles cannot be assigned or changed here.</p>
+<p class="help">Enter the handle exactly (it is case-sensitive) and choose buyer, vendor or moderator. The first administrator is created during installation; administrator roles cannot be assigned or changed here. The operator adds and removes administrators on the server with the <code>-set-role</code> host command.</p>
 <button type="submit">Update role</button>
 </form>{{if .Users}}
 <details class="account-list">
@@ -55,7 +55,7 @@
 </ul>
 </details>{{end}}
 </section>
-</div>{{template "admin-auth" .}}{{template "admin-staff-list" .}}{{template "admin-payments" .}}{{template "admin-scanner" .}}{{template "admin-transparency" .}}
+</div>{{template "admin-auth" .}}{{template "admin-staff-contact" .}}{{template "admin-staff-list" .}}{{template "admin-payments" .}}{{template "admin-scanner" .}}{{template "admin-transparency" .}}
 <h2 class="section-title">Audit trail</h2>
 <p class="help">Account is the account each event is recorded on. A change an administrator makes to another account is recorded on both: the administrator's row names the account, and the account's row says an administrator made it.</p>
 <div class="table-wrap">

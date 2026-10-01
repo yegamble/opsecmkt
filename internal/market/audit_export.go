@@ -86,8 +86,9 @@ func settledAuditMax(ctx context.Context, db *sql.DB) (int64, error) {
 
 // auditExport renders audit_events with id <= upto as NDJSON ordered by id. Same upto, same bytes.
 func auditExport(ctx context.Context, db *sql.DB, upto int64) ([]byte, error) {
-	// One statement streams every row, so on a large table it runs for most of the request's bound (ctx); it
-	// is exempt from the application pool's 8 s statement_timeout (A-177): 1M rows took about 6 s.
+	// One statement streams every row, so on a large table it runs for longer than the application pool's 8 s
+	// statement_timeout allows (A-177) and is exempt from it: 1M rows took about 6 s. The caller's ctx bounds it
+	// (auditExportBuildTimeout in the handler); lock_timeout and idle_in_transaction_session_timeout still apply.
 	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, err
@@ -152,7 +153,21 @@ func auditExportHandler(a *App, w http.ResponseWriter, r *http.Request, u *User)
 		http.Error(w, "upto must be a positive audit event id", 400)
 		return
 	}
-	ctx := r.Context()
+	// A-139: the export sets its own bounds. Its build may outlast ServeHTTP's 12 s request context, and over Tor
+	// (0.19–0.45 MB/s measured) its download outlasts the 20 s WriteTimeout: a cut download fails verify-audit like
+	// tampering. It still stops when the client goes away. The read deadline is moved with the write deadline only
+	// defensively: net/http already clears the read deadline once a body-less request (this GET) has been read
+	// (connReader.startBackgroundRead), so the server's 15 s ReadTimeout never cancels this handler (A-251). Every
+	// other route keeps the server's timeouts (each request resets them).
+	rc := http.NewResponseController(w)
+	extend := func(d time.Duration) { // an httptest recorder has no deadlines and refuses both
+		t := time.Now().Add(d)
+		rc.SetReadDeadline(t)
+		rc.SetWriteDeadline(t)
+	}
+	extend(auditExportBuildTimeout + auditExportWriteBase)
+	ctx, cancel := context.WithTimeout(arrivalContext(r), auditExportBuildTimeout)
+	defer cancel()
 	settled, err := settledAuditMax(ctx, a.db)
 	if err != nil {
 		serverError(w, r, 503, "Service unavailable", errorCause(err))
@@ -172,13 +187,34 @@ func auditExportHandler(a *App, w http.ResponseWriter, r *http.Request, u *User)
 		return
 	}
 	name := fmt.Sprintf("audit-events-upto-%d", upto)
+	body := export
 	if q.Get("sig") == "1" {
+		body = auditSignature(key, export)
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Header().Set("Content-Disposition", `attachment; filename="`+name+`.sig"`)
-		w.Write(auditSignature(key, export))
-		return
+	} else {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.Header().Set("Content-Disposition", `attachment; filename="`+name+`.jsonl"`)
 	}
-	w.Header().Set("Content-Type", "application/x-ndjson")
-	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`.jsonl"`)
-	w.Write(export)
+	extend(auditExportWriteWindow(len(body)))
+	w.Write(body)
+}
+
+// The signed audit export's own bounds (A-139), in place of ServeHTTP's 12 s request context and the server's
+// ReadTimeout (15 s) and WriteTimeout (20 s) set in cmd/server.
+const (
+	// auditExportBuildTimeout bounds the export's database work: one million audit rows took about 6 s.
+	auditExportBuildTimeout = time.Minute
+	// auditExportWriteBase is the time to send a small file (the signature), the server's WriteTimeout.
+	auditExportWriteBase = 20 * time.Second
+	// auditExportMinRate is the slowest download, in bytes per second, the window allows: about a sixth of the
+	// slowest onion throughput measured (0.19 MB/s).
+	auditExportMinRate = 32 << 10
+)
+
+// auditExportWriteWindow is the time allowed to send a response of n bytes: 20 s plus one second per 32 KiB,
+// without a ceiling (a 100 MB export gets about 53 minutes). Only an administrator can start one, at most 10
+// per 10 minutes, and while it is sent it holds its connection but no admission slot or database connection.
+func auditExportWriteWindow(n int) time.Duration {
+	return auditExportWriteBase + time.Duration(n/auditExportMinRate+1)*time.Second
 }

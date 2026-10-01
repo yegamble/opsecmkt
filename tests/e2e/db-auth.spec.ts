@@ -1,6 +1,7 @@
 import { createHmac } from 'node:crypto';
 import { expect, test, type Page } from '@playwright/test';
-import { uniqueHandle } from './db-fixtures';
+import { FIXTURE_LISTING, uniqueHandle } from './db-fixtures';
+import { enrollTOTP } from './db-helpers';
 
 // RFC 6238 TOTP (SHA-1, 30 s, 6 digits) computed in the test runner, not in the browser.
 function base32Decode(input: string): Buffer {
@@ -101,4 +102,52 @@ test('enroll TOTP, sign in through the challenge and spend a recovery code once'
   await page.getByLabel('Recovery code').fill(codes[0]);
   await page.getByRole('button', { name: 'Use recovery code' }).click();
   await expect(page.locator('body')).toContainText('Recovery code incorrect or already used');
+});
+
+// A-126: an anonymous buyer's "Review order draft" leads to sign-in and back to that checkout, through registration
+// and through the TOTP challenge, with JavaScript disabled.
+test('anonymous checkout returns to the checkout after registering and after the TOTP challenge', async ({ browser, baseURL }) => {
+  const handle = uniqueHandle('next');
+  const passphrase = `${handle}-long-enough`;
+  const anonymous = async () => {
+    const context = await browser.newContext({ baseURL, javaScriptEnabled: false, viewport: { width: 390, height: 900 } });
+    return context.newPage();
+  };
+
+  let page = await anonymous();
+  await page.goto(`/?q=${encodeURIComponent(FIXTURE_LISTING)}`);
+  await page.getByRole('link', { name: FIXTURE_LISTING, exact: true }).click();
+  const productID = new URL(page.url()).searchParams.get('id')!;
+  const checkout = `/checkout?id=${productID}`;
+  await page.getByRole('link', { name: 'Review order draft' }).click();
+  await expect(page).toHaveURL(`/login?next=${encodeURIComponent(checkout)}`);
+  await expect(page.locator('main')).toContainText('Sign in to see Checkout.');
+
+  await page.getByRole('link', { name: 'Create an account' }).click();
+  await expect(page).toHaveURL(/\/register\?next=/);
+  expect(new URL(page.url()).searchParams.get('next')).toBe(checkout); // html/template writes lower-case %-escapes
+  await page.getByLabel('Handle', { exact: true }).fill(handle);
+  await page.getByLabel('Password', { exact: true }).fill(passphrase);
+  await page.getByRole('button', { name: 'Create account' }).click();
+  await expect(page).toHaveURL(checkout);
+  await expect(page.getByRole('button', { name: 'Create unfunded draft' })).toBeVisible();
+
+  const secret = await enrollTOTP(page, passphrase);
+  await page.context().close();
+
+  page = await anonymous();
+  await page.goto(`/product?id=${productID}`);
+  await page.getByRole('link', { name: 'Review order draft' }).click();
+  await expect(page).toHaveURL(`/login?next=${encodeURIComponent(checkout)}`);
+  await page.getByLabel('Handle', { exact: true }).fill(handle);
+  await page.getByLabel('Password', { exact: true }).fill(passphrase);
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await expect(page).toHaveURL(/\/challenge$/);
+  // The enrollment's step is spent (replay guard); the next step's code completes sign-in.
+  await page.getByLabel('6-digit code', { exact: true }).fill(totp(secret, currentStep() + 1));
+  await page.getByRole('button', { name: 'Verify code' }).click();
+  await expect(page).toHaveURL(checkout);
+  await expect(page.locator('.account-name')).toHaveText(handle);
+  await expect(page.getByRole('button', { name: 'Create unfunded draft' })).toBeVisible();
+  await page.context().close();
 });
