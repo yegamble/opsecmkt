@@ -616,19 +616,19 @@ func TestEscrowAfterCloseDepositFlagged(t *testing.T) {
 	}
 	buyerLike := "%" + shortID(x.order) + "%after the order closed%"
 	staffLike := "Payment review needed for order " + shortID(x.order) + "%"
-	x.core.deposit(addr, "stray1aaaaaaaa", 0, 40000, 1)
+	x.core.deposit(addr, txidOf("stray1"), 0, 40000, 1)
 	x.poll()
 	if agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND flagged", x.order) != 0 || notices(x.buyer, buyerLike) != 0 {
 		t.Fatal("an unconfirmed after-close deposit was flagged")
 	}
-	x.core.setConfs("stray1aaaaaaaa", 3)
+	x.core.setConfs(txidOf("stray1"), 3)
 	x.poll()
 	x.poll()
 	if agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND flagged AND after_close AND NOT credited", x.order) != 1 {
 		t.Fatal("after-close escrow deposit not flagged")
 	}
 	body := agStrings(t, x.testEnv, "SELECT body FROM notifications WHERE user_id=$1 AND body LIKE $2", x.buyer, buyerLike)
-	if len(body) != 1 || !strings.Contains(body[0], "0.0004 BTC") || strings.Contains(body[0], "stray1") || !strings.Contains(body[0], "escrow address") {
+	if len(body) != 1 || !strings.Contains(body[0], "0.0004 BTC") || strings.Contains(body[0], txidOf("stray1")[:10]) || !strings.Contains(body[0], "escrow address") {
 		t.Fatalf("buyer notice %q", body)
 	}
 	if n := notices(x.vendor, "%"+shortID(x.order)+"%after%closed%"); n != 0 {
@@ -640,7 +640,7 @@ func TestEscrowAfterCloseDepositFlagged(t *testing.T) {
 		}
 	}
 	// A second deposit in the same episode: flagged and noted, nobody told again.
-	x.core.deposit(addr, "stray2bbbbbbbb", 0, 20000, 3)
+	x.core.deposit(addr, txidOf("stray2"), 0, 20000, 3)
 	x.poll()
 	if agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND flagged", x.order) != 2 || notices(x.buyer, buyerLike) != 1 || notices(mod[0], staffLike) != 1 {
 		t.Fatal("second deposit of the episode announced again")
@@ -658,7 +658,7 @@ func TestEscrowAfterCloseDepositFlagged(t *testing.T) {
 	addr2 := x.mustCheckout(done, "bcrt1qbuyerrefund00000000000000000000002")
 	x.core.deposit(addr2, "full", 0, 100000, 3)
 	x.poll()
-	x.core.deposit(addr2, "extra", 0, 30000, 3)
+	x.core.deposit(addr2, txidOf("extra-done"), 0, 30000, 3)
 	x.poll()
 	if x.state(done) != stateCompleted || agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND flagged AND after_close", done) != 1 ||
 		notices(x.buyer, "%"+shortID(done)+"%after the order closed%") != 1 {

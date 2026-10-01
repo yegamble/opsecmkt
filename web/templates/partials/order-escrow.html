@@ -92,7 +92,18 @@
 {{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button class="primary" type="submit">Request the claim</button>
 </form>
-</section>{{end}}{{range .Settlements}}
+</section>{{end}}{{if .Recover}}
+<section class="order-action escrow-recover" id="escrow-recover" aria-labelledby="escrow-recover-heading">
+<h3 id="escrow-recover-heading">Recover coins at this escrow</h3>
+<p class="help" id="escrow-recover-help">Coins sent to this escrow address after the order closed (including coins sent while Bitcoin escrow was unavailable) are not the order's. Ask, and the market reads this escrow on its next pass, however old it is, and returns what it finds, less the network fee, to your refund address given at checkout, by a stray refund you or the vendor sign on this page. The market also checks every escrow once a day.</p>
+<form class="stack" method="post" action="/escrow/recover">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="order_id" value="{{$.Order.ID}}">
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
+<button type="submit" aria-describedby="escrow-recover-help">Recover coins at this escrow</button>
+</form>
+</section>{{else if .RecoverAsked}}
+<p role="status" id="escrow-recover">You asked the market to recover coins at this escrow; it checks it on its next pass.</p>{{end}}{{range .Settlements}}
 <section class="escrow-settlement" id="escrow-settlement{{if .Stray}}-{{.ID}}{{end}}" aria-labelledby="escrow-settlement-heading-{{.ID}}">
 <h3 id="escrow-settlement-heading-{{.ID}}">Settlement: {{.Title}}</h3>
 <p role="status">{{.Status}}</p>{{if .Outputs}}

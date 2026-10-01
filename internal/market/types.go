@@ -91,12 +91,13 @@ type DisputeEvidence struct{ Buyer, Vendor []EvidenceHolder }
 // disposition, or one escalated to an administrator (A-31). Open: a locked transfer, a late deposit or a deposit of
 // a payout below the minimum, or a credited deposit in an announced regression that has not confirmed again.
 // ID is payments.id. Party: the viewer is the order's buyer or vendor. Form: the viewer may record the disposition
-// (open, not a party, and an administrator when Escalated). Refundable: not credited, so "refunded by hand" applies.
+// (open, not a party, and an administrator when Escalated). Refundable: not credited and not an escrow deposit, so
+// "refunded by hand" applies (A-330: an escrow deposit is returned by a stray refund). Escrow: an escrow order's deposit.
 type PaymentReview struct {
 	ID, OrderID, OrderState, Currency, Amount, TxID, Reason, Flagged string
 	ProductID, Title                                                 string // the order's listing, linked from the row (A-265)
 	Index                                                            int64
-	Open, Escalated, Party, Form, Refundable                         bool
+	Open, Escalated, Party, Form, Refundable, Escrow                 bool
 }
 type Event struct{ Handle, Action, Created string } // Handle: account the audit row is recorded on ("" = system)
 
@@ -496,6 +497,7 @@ type EscrowOrderView struct {
 	Settlements                                 []*EscrowSettlementView // Settlement (when set) then the stray refunds, newest first, as the page lists them
 	Decision                                    *EscrowDecisionView     // a resolved order's dispute decision (escrow_decision.go)
 	Claim                                       bool                    // the vendor of a completed order may request the claim
+	Recover, RecoverAsked                       bool                    // the buyer of a closed order may ask to recover coins at the escrow (or has asked; escrow_stray.go)
 }
 
 // EscrowSettlementView is an escrow order's settlement on its page (escrow_settle.go): its state in honest words, its
@@ -506,6 +508,7 @@ type EscrowSettlementView struct {
 	Title, Status, NetworkFee, InputTotal string
 	Outputs                               []SettlementOutputView
 	CanSign, SignToo, Stray               bool
+	State                                 string // the settlements.state
 	PSBT, TxID, RawTx                     string
 }
 

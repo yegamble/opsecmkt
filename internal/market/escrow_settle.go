@@ -395,15 +395,21 @@ func (a *App) buildSettlement(ctx context.Context, e *escrowBTC, id int64) error
 	if err != nil || state != "building" {
 		return err
 	}
-	if kind != "release" && kind != "refund" || dest == "" || !settlementFits(kind, orderState, outcome) {
+	if dest == "" || !settlementFits(kind, orderState, outcome) {
 		return errors.New("escrow: the settlement does not fit its order's state or dispute decision")
 	}
 	keys, err := escrowKeys(ctx, a.db, orderID)
 	if err != nil {
 		return err
 	}
-	rows, err := a.db.QueryContext(ctx, `SELECT id,txid,idx,amount,confirmations FROM payments WHERE order_id=$1 AND confirmations>=0 AND NOT locked AND NOT after_close
-		AND settlement_id IS NULL ORDER BY created,id`, orderID)
+	// A claim or refund spends the outputs that count (recorded before the order closed, not left out by a bounded
+	// build); a stray refund spends the confirmed others (escrow_stray.go).
+	query := `SELECT id,txid,idx,amount,confirmations FROM payments p WHERE order_id=$1 AND confirmations>=0 AND NOT locked AND NOT after_close AND NOT escrow_left_out
+		AND settlement_id IS NULL AND $2::bigint>0 ORDER BY created,id`
+	if kind == "stray_refund" {
+		query = `SELECT id,txid,idx,amount,confirmations FROM payments p WHERE order_id=$1 AND ` + strayEligibleSQL + ` ORDER BY created,id`
+	}
+	rows, err := a.db.QueryContext(ctx, query, orderID, e.confirmations)
 	if err != nil {
 		return err
 	}
@@ -431,6 +437,9 @@ func (a *App) buildSettlement(ctx context.Context, e *escrowBTC, id int64) error
 	switch {
 	case len(ins) == 0:
 		return a.failSettlement(ctx, id, orderID, settleNothing)
+	case kind == "stray_refund" && len(ins) > escrowMaxInputs:
+		ins, _ = boundedInputs(ins, e.confirmations) // the 50 largest; the rest wait for the next stray refund
+	case kind == "stray_refund":
 	case !bounded && len(ins) > escrowMaxInputs:
 		return a.settlementWaits(ctx, id, orderID, settleTooMany)
 	case !bounded && unconfirmed:
@@ -662,8 +671,11 @@ func leaveOut(ctx context.Context, tx *sql.Tx, orderID, kind, buyer, verb string
 const settleNotSent = "Nothing has been sent yet: once one party has signed, the market co-signs the settlement on its next pass and broadcasts it to the regtest network."
 
 func settlementKind(kind string) string {
-	if kind == "release" {
+	switch kind {
+	case "release":
 		return "the vendor's claim"
+	case "stray_refund":
+		return "a stray refund to the buyer"
 	}
 	return "a refund to the buyer"
 }
@@ -955,26 +967,27 @@ func (a *App) escrowSettlementView(ctx context.Context, d *PageData, v *EscrowOr
 	o := d.Order
 	var id int64
 	err := a.db.QueryRowContext(ctx, "SELECT id FROM settlements WHERE order_id=$1 AND kind IN ('release','refund') AND state<>'superseded'", o.ID).Scan(&id)
-	if err == sql.ErrNoRows {
-		var outcome string
-		if err = a.db.QueryRowContext(ctx, "SELECT COALESCE((SELECT outcome FROM disputes WHERE order_id=$1),'')", o.ID).Scan(&outcome); err != nil {
+	switch {
+	case err == nil:
+		if v.Settlement, err = a.settlementView(ctx, d, v, id); err != nil {
+			return err
+		}
+		v.Settlements = append(v.Settlements, v.Settlement)
+	case err == sql.ErrNoRows:
+		outcome, err := escrowDisputeOutcome(ctx, a.db, o.ID)
+		if err != nil {
 			return err
 		}
 		v.Claim = d.OrderViewer == roleVendor && settlementFits("release", o.State, outcome) && v.Available
 		if v.Claim && d.Security == nil {
-			d.Security, _, _, err = a.securityView(ctx, d.User.ID)
-			return err
+			if d.Security, _, _, err = a.securityView(ctx, d.User.ID); err != nil {
+				return err
+			}
 		}
-		return nil
-	}
-	if err != nil {
+	default:
 		return err
 	}
-	if v.Settlement, err = a.settlementView(ctx, d, v, id); err != nil {
-		return err
-	}
-	v.Settlements = append(v.Settlements, v.Settlement)
-	return nil
+	return a.escrowStrayView(ctx, d, v)
 }
 
 // settleSendText is what the order page says about a settlement the market could not complete or send yet.
@@ -1005,6 +1018,7 @@ func (a *App) settlementView(ctx context.Context, d *PageData, v *EscrowOrderVie
 	if err != nil {
 		return nil, err
 	}
+	s.State = state
 	switch kind {
 	case "release":
 		s.Title = "The vendor's claim"
