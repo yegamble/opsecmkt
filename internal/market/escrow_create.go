@@ -217,9 +217,13 @@ func escrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	// Never an address the market already used (ES-5): an escrow address, another escrow's refund address, a
 	// settlement destination (a vendor's claim), a fee destination snapshotted or configured, or a pooled deposit
 	// address.
+	feeBps, feeAddr, err := escrowFee(ctx, c.Tx, e)
+	if err != nil {
+		return actionResult{}, err
+	}
 	var used bool
 	if err = c.Tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM escrows WHERE address=$1 OR refund_address=$1 OR fee_destination=$1) OR $1=$2
-		OR EXISTS(SELECT 1 FROM payment_addresses WHERE address=$1) OR EXISTS(SELECT 1 FROM settlements WHERE destination=$1)`, refund, e.feeAddress).Scan(&used); err != nil {
+		OR EXISTS(SELECT 1 FROM payment_addresses WHERE address=$1) OR EXISTS(SELECT 1 FROM settlements WHERE destination=$1)`, refund, feeAddr).Scan(&used); err != nil {
 		return actionResult{}, err
 	}
 	if used {
@@ -245,7 +249,7 @@ func escrowCheckoutAction(c *actionCtx) (actionResult, error) {
 		log.Printf("escrow: escrow for order %s not built: %s", shortID(o.ID), errorClassOf(err))
 		return actionResult{}, errEscrowBuild
 	}
-	if err = insertEscrow(ctx, c.Tx, o.ID, refund, e, built); err != nil {
+	if err = insertEscrow(ctx, c.Tx, o.ID, refund, feeBps, feeAddr, built); err != nil {
 		return actionResult{}, err
 	}
 	// The import is the last step before commit: the address is shown only once the watch-only wallet watches it.
@@ -351,14 +355,13 @@ func (e *escrowBTC) buildEscrow(ctx context.Context, orderID string, sats int64,
 
 // insertEscrow writes the escrow row (the pinned refund address and the fee snapshot) and its three child keys, each
 // party's with its own origin (ruling (b): origin_path the exact account origin, derivation_suffix below it).
-func insertEscrow(ctx context.Context, tx *sql.Tx, orderID, refund string, e *escrowBTC, b *builtEscrow) error {
-	feeDest := ""
-	if e.feeBps > 0 {
-		feeDest = e.feeAddress
+func insertEscrow(ctx context.Context, tx *sql.Tx, orderID, refund string, feeBps int64, feeDest string, b *builtEscrow) error {
+	if feeBps == 0 {
+		feeDest = ""
 	}
 	var id int64
 	err := tx.QueryRowContext(ctx, `INSERT INTO escrows(order_id,address,market_index,refund_address,fee_bps,fee_destination)
-		VALUES($1,$2,$3,$4,$5,$6) RETURNING id`, orderID, b.Address, b.MarketIndex, refund, e.feeBps, feeDest).Scan(&id)
+		VALUES($1,$2,$3,$4,$5,$6) RETURNING id`, orderID, b.Address, b.MarketIndex, refund, feeBps, feeDest).Scan(&id)
 	var pe *pgconn.PgError
 	if errors.As(err, &pe) && pe.Code == "23505" && pe.ConstraintName == "escrows_refund_address_key" {
 		return errEscrowRefundUsed // another checkout pinned it first

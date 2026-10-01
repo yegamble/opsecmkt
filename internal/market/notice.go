@@ -53,6 +53,7 @@ var notices = map[string]struct{ text, section, pages string }{
 	"escrow-claim":         {"Claim requested. The market builds the settlement transaction on its next pass; reload this page to sign it.", "", ""},
 	"escrow-signed":        {"Signature accepted. The settlement is signed by you; nothing has been sent yet: the market co-signs and broadcasts it on its next pass.", "", ""},
 	"escrow-decision":      {"Dispute decision changed. The order page shows the settlement that pays it.", "", ""},
+	"escrow-fee":           {"Market fee saved. It applies to escrows created from now on; existing escrows keep the fee they started with.", "escrow-fee", "admin"},
 	"escrow-recover":       {"Asked. The market checks this escrow on its next pass and returns what it finds to your refund address by a stray refund; reload this page in a minute.", "", ""},
 
 	// Messages, orders and disputes

@@ -311,9 +311,13 @@ func escrowClaimAction(c *actionCtx) (actionResult, error) {
 		case !settlementFits("release", o.State, outcome):
 			return actionResult{}, errClaimState
 		}
+		_, feeAddr, err := escrowFee(ctx, c.Tx, e)
+		if err != nil {
+			return actionResult{}, err
+		}
 		var used bool
 		if err = c.Tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM escrows WHERE address=$1 OR refund_address=$1 OR fee_destination=$1) OR $1=$2
-			OR EXISTS(SELECT 1 FROM payment_addresses WHERE address=$1) OR EXISTS(SELECT 1 FROM settlements WHERE destination=$1)`, dest, e.feeAddress).Scan(&used); err != nil {
+			OR EXISTS(SELECT 1 FROM payment_addresses WHERE address=$1) OR EXISTS(SELECT 1 FROM settlements WHERE destination=$1)`, dest, feeAddr).Scan(&used); err != nil {
 			return actionResult{}, err
 		}
 		if used {
