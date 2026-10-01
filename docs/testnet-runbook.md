@@ -382,6 +382,14 @@ text behind the restore marker, so releasing it still needs the payout address c
 many payouts it held and how many failed payouts it marked, and adds one audit row recording the gate and those
 counts.
 
+On a market running [Bitcoin escrow](operator-guide.md#bitcoin-escrow-regtest-only) (regtest only), the gate also
+pauses escrow: the escrow watcher builds, co-signs and broadcasts no settlement while it is set, and the script holds
+every restored escrow settlement that has a stored final transaction (it prints how many, and the audit row counts
+them). Before step 8, check each held settlement listed under *Admin → Payment providers → Bitcoin escrow recovery
+and reconciliation* on the chain and in the escrow watch-only wallet, and confirm it there if it was not already sent
+or replaced; the market then broadcasts it once. A held settlement stays held after the gate is cleared until it is
+confirmed. The same section lists watch-only addresses with no escrow row (escrows created after the backup).
+
 **Only `scripts/restore.sh` applies this protection.** A host or volume snapshot, a managed-database
 point-in-time recovery or a manual `pg_restore` brings payouts back as `pending` with no gate, and the
 application sends them as soon as it starts, even those already paid after that point in time. After any such

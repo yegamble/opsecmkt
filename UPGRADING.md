@@ -832,18 +832,22 @@ records migration 076.
 Migration 077 runs at startup. A new trigger, `settlements_moves`, lets a settlement with a final transaction move only
 forward (signed to broadcast or external, broadcast to confirmed or external), with one step back for a reorganisation:
 confirmed to broadcast, when its transaction drops out of the chain and is sent again (confirmed to external when a
-conflicting transaction was mined instead); an external settlement never changes. It adds `settlements.reorg_safe_at`
-(a confirmed settlement is followed until its transaction has 100 confirmations), a third value `network` for
+conflicting transaction was mined instead); an external settlement never changes. It adds `settlements.reorg_safe_at` (a
+confirmed settlement is followed until its transaction has 100 confirmations), a third value `network` for
 `settlements.cosigned` (a settlement whose transaction the market found already on the network when it came to complete
 it), `payments.spent_outside` and `payments.spent_by` (an escrow deposit spent by a transaction the market did not make,
-with no settlement covering it, flagged for staff) and the table `escrow_orphans` (addresses the escrow watch-only wallet
-holds with no escrow row, listed on `/admin`). Like migrations 074–076 it changes nothing unless `ESCROW_BTC=on`
-(regtest only, off by default); pooled payments are unchanged. With escrow on, the escrow RPC user's `rpcwhitelist`
-needs one more method, `listtransactions` (it reads the watch-only wallet only; the escrow watcher uses it to name the
-transaction that spent an escrow deposit): add it before upgrading, or that lookup is refused and such a deposit is
-flagged without the transaction ID ([operator guide](docs/operator-guide.md#bitcoin-escrow-regtest-only)). No other
-action is needed. Rolling back past this release needs the pre-upgrade backup, as for every migration (section 5): the earlier release refuses to start on a
-database that records migration 077.
+with no settlement covering it, flagged for staff) and the table `escrow_orphans` (addresses the escrow watch-only
+wallet holds with no escrow row, listed on `/admin`). Like migrations 074–076 it changes nothing unless `ESCROW_BTC=on`
+(regtest only, off by default); pooled payments are unchanged. With escrow on, this release also pauses escrow
+co-signing, settlement builds and every broadcast of a stored settlement transaction while the restore gate
+(`payments_recovery_required`) is set, and `scripts/restore.sh` and the manual protection SQL in section 6 now also hold
+every restored escrow settlement that has a stored transaction, which an administrator confirms on `/admin` before the
+market broadcasts it again. The escrow RPC user's `rpcwhitelist` needs one more method, `listtransactions` (it reads the
+watch-only wallet only; the escrow watcher uses it to name the transaction that spent an escrow deposit): add it before
+upgrading, or that lookup is refused and such a deposit is flagged without the transaction ID ([operator
+guide](docs/operator-guide.md#bitcoin-escrow-regtest-only)). No other action is needed. Rolling back past this release
+needs the pre-upgrade backup, as for every migration (section 5): the earlier release refuses to start on a database
+that records migration 077.
 
 ## Appendix: new keys by hand
 
