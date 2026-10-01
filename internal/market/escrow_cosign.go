@@ -681,6 +681,11 @@ func (a *App) trackBroadcast(ctx context.Context, e *escrowBTC, id int64) error 
 			return err
 		}
 		if spent {
+			// Spent, and the wallet does not know this transaction: it is external unless the node still has it
+			// (sendrawtransaction answers its txid, or -27 for one already in a block).
+			if sent, err := sendStored(ctx, e, rawHex, txid); err != nil || sent {
+				return err
+			}
 			return a.markExternal(ctx, id, orderID, "")
 		}
 	}
