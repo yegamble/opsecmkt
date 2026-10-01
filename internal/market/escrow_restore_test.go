@@ -320,10 +320,21 @@ func TestEscrowConfirmedRebroadcastOfBroadcastSettlement(t *testing.T) {
 	if n := x.sendsOf(r.Raw) - sends; n != 1 {
 		t.Fatalf("after the confirmation: %d sends, want 1", n)
 	}
-	if got := x.settleByID(id); got.State != "broadcast" || got.Error != "" {
+	// The confirmation is used up; under the gate it is recorded as sent once (A-363).
+	if got := x.settleByID(id); got.State != "broadcast" || got.Error != sendRebroadcastSent {
 		t.Fatalf("after its one rebroadcast: %+v", got)
 	}
 	if page := html.UnescapeString(x.page("/order?id="+order, x.buyerSess)); !strings.Contains(page, "Broadcast to the regtest network: transaction "+r.TxID) ||
+		!strings.Contains(page, "the market broadcast it once; it follows its confirmations but does not send it again until the operator has finished") {
+		t.Fatalf("a broadcast settlement sent once under the gate:\n%s", page)
+	}
+	// A broadcast settlement the gate pauses with no confirmation says the market does not send it again until checked.
+	x.setGate(false)
+	orderP, idP := x.built(regtestAddr("refund-bc-p"), regtestAddr("claim-bc-p"), 100000)
+	x.signAs(orderP, roleVendor, idP)
+	x.poll()
+	x.setGate(true)
+	if page := html.UnescapeString(x.page("/order?id="+orderP, x.buyerSess)); x.settleByID(idP).State != "broadcast" ||
 		!strings.Contains(page, "so the market follows its confirmations but does not send it again until an administrator has checked") {
 		t.Fatalf("a broadcast settlement paused by the gate:\n%s", page)
 	}
