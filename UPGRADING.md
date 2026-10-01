@@ -875,7 +875,8 @@ wallet holds with no escrow row, listed on `/admin`). Like migrations 074–076 
 co-signing, settlement builds and every broadcast of a stored settlement transaction while the restore gate
 (`payments_recovery_required`) is set, and `scripts/restore.sh` and the manual protection SQL in section 6 now also hold
 every restored escrow settlement that has a stored transaction, which an administrator confirms on `/admin` before the
-market broadcasts it again. The escrow RPC user's `rpcwhitelist` needs one more method, `listtransactions` (it reads the
+market broadcasts it again. While the gate is set, escrow checkout is also refused with a fixed 503 and the order stays
+a draft. The escrow RPC user's `rpcwhitelist` needs one more method, `listtransactions` (it reads the
 watch-only wallet only; the escrow watcher uses it to name the transaction that spent an escrow deposit): add it before
 upgrading, or that lookup is refused and such a deposit is flagged without the transaction ID ([operator
 guide](docs/operator-guide.md#bitcoin-escrow-regtest-only)). No other action is needed. Rolling back past this release
@@ -891,8 +892,12 @@ PSBT, transaction ID, fee or amount), and the function of the trigger `settlemen
 waiting for a signature to store its final transaction when it moves to `signed` (the market found that exact
 transaction already on the network: the buyer and the vendor signed it and sent it themselves). Every other rule of
 migrations 075–077 is unchanged. Like them it changes nothing unless `ESCROW_BTC=on` (regtest only, off by default);
-pooled payments are unchanged. No action is needed. Rolling back past this release needs the pre-upgrade backup, as for
-every migration (section 5): the earlier release refuses to start on a database that records migration 078.
+pooled payments are unchanged. With escrow on, this release also checks a new escrow's address against the escrow
+watch-only wallet before the escrow is created: if the wallet already watches it (an escrow that a restored database no
+longer has), the next child keys are tried, at most 20 tries in all, and after the last the checkout is refused with a
+fixed 503 and the order stays a draft. Only the whole composed address is checked ([runbook](docs/testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts)).
+No action is needed. Rolling back past this release needs the pre-upgrade backup, as for every migration (section 5):
+the earlier release refuses to start on a database that records migration 078.
 
 ## Appendix: new keys by hand
 
