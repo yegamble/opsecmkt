@@ -31,12 +31,15 @@ import (
 //     pinned arbiter fingerprint, each party's key at its own origin;
 //  4. the bare-key descriptor wsh(sortedmulti(2,<buyer>,<vendor>,<market>)) must have Core's checksum and derive the
 //     same address;
-//  5. the escrow rows are written (uncommitted, so invisible) and the bare-key descriptor alone is imported into the
+//  5. the watch-only wallet must not already watch that address (getaddressinfo, A-359: an escrow a restored database
+//     no longer has); if it does, the next child keys are tried (buildUnwatchedEscrow);
+//  6. the escrow rows are written (uncommitted, so invisible) and the bare-key descriptor alone is imported into the
 //     watch-only wallet; only then does the transaction commit and the address exist anywhere a page can show it.
 //
 // A failure at any step rolls the transaction back: no order change, no escrow row. A market index a failed build
 // took is skipped, never reused; an import whose transaction then fails to commit stays in the watch-only wallet,
-// watched but never shown (reconciliation lists such orphans, P1-d).
+// watched but never shown (reconciliation lists such orphans, P1-d). While the restore gate is set, no escrow is
+// created at all (errEscrowRestoring).
 
 func init() {
 	registerAction("/orders/escrow", actionSpec{OneAtATime: true, Off: escrowOff, Run: escrowCheckoutAction})
@@ -61,7 +64,16 @@ var (
 	errEscrowVendorKey  = fail(409, "The vendor has no active Bitcoin escrow key, so this order cannot use escrow. Nothing was changed.")
 	errEscrowBuild      = fail(503, "The escrow could not be created: the market's Bitcoin node did not confirm it. Nothing was changed; try again later.")
 	errEscrowKeyTaken   = fail(409, "The escrow could not be created: another escrow on this market already holds one of its keys. Nothing was changed. Trying again will not help; contact the market's staff.")
+	// errEscrowRestoring refuses escrow checkout while the restore gate is set (A-359): the restored database does not
+	// know the escrows created after its backup, so it could hand out their child keys again.
+	errEscrowRestoring = fail(503, "Bitcoin escrow is paused while this market restores its records from a backup. Nothing was charged and your order is still a draft; try again later.")
+	// errEscrowWatched refuses a checkout whose every composed address the watch-only wallet already watches (A-359).
+	errEscrowWatched = fail(503, "The escrow could not be created: every escrow address the market composed for this order is already watched by its escrow wallet, which happens after the market restored its records from a backup. Nothing was charged and your order is still a draft; contact the market's staff.")
 )
+
+// escrowWatchedTries bounds how many composed escrow addresses one checkout tries while the watch-only wallet already
+// watches each of them (A-359).
+const escrowWatchedTries = 20
 
 // escrowCheckoutCtx marks the draft -> awaiting_payment transition of an escrow checkout: it needs the escrow node,
 // not a pooled wallet for the currency (transition).
@@ -88,6 +100,7 @@ type escrowParty struct {
 	Party, UserID, KeyHMAC string
 	Key                    escrowKey
 	Suffix                 string
+	Index                  int64 // the child index in Suffix (/0/<Index>)
 }
 
 // escrowParties locks the buyer's and the vendor's key rows (in account order, so two checkouts never deadlock) and
@@ -141,7 +154,7 @@ func (a *App) escrowParties(ctx context.Context, tx *sql.Tx, o *Order) (buyer, v
 			WHERE user_id=$1 AND derivation_suffix ~ '^/0/[1-9][0-9]{0,9}$'`, uid).Scan(&next); err != nil {
 			return escrowParty{}, err
 		}
-		p := escrowParty{Party: name, UserID: uid, KeyHMAC: r.hmac, Key: key, Suffix: escrowChildSuffix(next)}
+		p := escrowParty{Party: name, UserID: uid, KeyHMAC: r.hmac, Key: key, Suffix: escrowChildSuffix(next), Index: next}
 		if checkEscrowOrigin(key, key.PathText, p.Suffix) != nil {
 			return escrowParty{}, refused
 		}
@@ -182,6 +195,12 @@ func escrowCheckoutAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, errEscrowCurrency
 	case o.VendorID == o.BuyerID:
 		return actionResult{}, errEscrowSelf
+	}
+	// While the restore gate is set no escrow is created: the order stays a draft and nothing is asked of the node.
+	if gate, err := restoreGateSet(ctx, c.Tx); err != nil {
+		return actionResult{}, err
+	} else if gate {
+		return actionResult{}, errEscrowRestoring
 	}
 	if ok, err := sellerIsVendor(c, o.ProductID); err != nil {
 		return actionResult{}, err
@@ -247,14 +266,9 @@ func escrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	if err != nil {
 		return actionResult{}, err
 	}
-	var marketIndex int64
-	if err = c.Tx.QueryRowContext(ctx, "SELECT nextval('escrow_market_index')").Scan(&marketIndex); err != nil {
-		return actionResult{}, err
-	}
-	built, err := e.buildEscrow(ctx, o.ID, sats, buyer, vendor, marketIndex)
+	built, err := a.buildUnwatchedEscrow(ctx, c.Tx, e, o.ID, sats, buyer, vendor)
 	if err != nil {
-		log.Printf("escrow: escrow for order %s not built: %s", shortID(o.ID), errorClassOf(err))
-		return actionResult{}, errEscrowBuild
+		return actionResult{}, err
 	}
 	if err = insertEscrow(ctx, c.Tx, o.ID, refund, feeBps, feeAddr, built); err != nil {
 		return actionResult{}, err
@@ -265,6 +279,49 @@ func escrowCheckoutAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, errEscrowBuild
 	}
 	return actionResult{Redirect: orderPage(o.ID), Notice: "escrow-created", Audit: "Created Bitcoin escrow (" + c.A.escrowNetwork() + ") for order " + shortID(o.ID)}, nil
+}
+
+// buildUnwatchedEscrow builds the order's escrow (buildEscrow) at a fresh market index and checks, before anything is
+// written or imported, that the watch-only wallet does not already watch its address (A-359). A restored database
+// knows nothing of the escrows created after its backup: each party's next child index (one more than the highest
+// its escrows on record used) and the market counter are back where the backup left them, so the same buyer and
+// vendor would get an escrow address handed out after the backup, and their deposits would merge. When the wallet
+// watches the composed address, both party indices and the market index move on by one and the build is tried
+// again, at most escrowWatchedTries times. A skipped market index is never used again (a sequence); skipped party
+// indices lie below the ones the escrow stores, which the next escrow counts from. After the last try nothing is
+// written or imported and the checkout is refused with a fixed 503. Only the composed address is checked: a child key
+// a lost escrow used, combined with other keys into another address, is not detected (docs/testnet-runbook.md).
+func (a *App) buildUnwatchedEscrow(ctx context.Context, tx *sql.Tx, e *escrowBTC, orderID string, sats int64, buyer, vendor escrowParty) (*builtEscrow, error) {
+	for try := 1; ; try++ {
+		var marketIndex int64
+		if err := tx.QueryRowContext(ctx, "SELECT nextval('escrow_market_index')").Scan(&marketIndex); err != nil {
+			return nil, err
+		}
+		built, err := e.buildEscrow(ctx, orderID, sats, buyer, vendor, marketIndex)
+		var known bool
+		if err == nil {
+			known, err = e.watchKnows(ctx, built.Address)
+		}
+		if err != nil {
+			log.Printf("escrow: escrow for order %s not built: %s", shortID(orderID), errorClassOf(err))
+			return nil, errEscrowBuild
+		}
+		if !known {
+			return built, nil
+		}
+		if try == escrowWatchedTries {
+			log.Printf("escrow: escrow for order %s not built: every address tried is already in the watch-only wallet (%d tries)", shortID(orderID), escrowWatchedTries)
+			return nil, errEscrowWatched
+		}
+		log.Printf("escrow: escrow for order %s: its address is already in the watch-only wallet (a restored database?); trying the next child keys", shortID(orderID))
+		for _, p := range []*escrowParty{&buyer, &vendor} {
+			p.Index++
+			p.Suffix = escrowChildSuffix(p.Index)
+			if checkEscrowOrigin(p.Key, p.Key.PathText, p.Suffix) != nil {
+				return nil, errEscrowBuild
+			}
+		}
+	}
 }
 
 // escrowEligible reports whether o's listing takes escrow (a digital listing whose content is delivered

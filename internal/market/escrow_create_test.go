@@ -159,7 +159,7 @@ func TestEscrowCheckoutCreatesEscrow(t *testing.T) {
 	x.core.beforeImport = func() { inTx = agInt(x.testEnv, "SELECT count(*) FROM escrows WHERE order_id=$1", x.order) }
 	refund := "bcrt1qbuyerrefund00000000000000000000001"
 	addr := x.mustCheckout(x.order, refund)
-	if got := x.core.methods()[calls:]; !slices.Equal(got, []string{"getdescriptorinfo", "deriveaddresses", "createpsbt", "utxoupdatepsbt", "getdescriptorinfo", "deriveaddresses", "importdescriptors"}) {
+	if got := x.core.methods()[calls:]; !slices.Equal(got, []string{"getdescriptorinfo", "deriveaddresses", "createpsbt", "utxoupdatepsbt", "getdescriptorinfo", "deriveaddresses", "getaddressinfo", "importdescriptors"}) {
 		t.Fatalf("RPC sequence %v", got)
 	}
 	if inTx != 0 {

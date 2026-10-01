@@ -648,7 +648,11 @@ has run on a public test network. Never switch it on for a market that takes rea
   (`bitcoin-cli -regtest -named createwallet wallet_name=opsecmkt-escrow-watch disable_private_keys=true blank=true load_on_startup=true`);
   it must differ from the arbiter wallet and `BITCOIN_WALLET`. At startup the app checks it with `getwalletinfo`;
   a wallet that is not loaded or holds private keys leaves escrow disabled with "escrow: Bitcoin escrow disabled:
-  the watch-only wallet could not be read …".
+  the watch-only wallet could not be read …". Before each import the checkout asks it with `getaddressinfo` whether
+  it already holds the escrow address (Core 31.1 reports an imported one as `ismine`, with its `escrow:<order ID>`
+  label): after a database restore, an escrow created after the backup is skipped and the next child keys are tried
+  (A-359; see the [runbook](testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts) for what this
+  does and does not check). Keep this wallet when you restore the database: it is what remembers those escrows.
 - `ESCROW_BTC_FEE_BPS` (default `0`) and `ESCROW_BTC_FEE_ADDRESS`: the market fee in basis points (250 = 2.5%) and
   the regtest address it is to be paid to, required when the fee is above 0 and checked with the node at startup.
   They apply until an administrator saves the fee on `/admin` (*Payment providers → Bitcoin escrow market fee*:
@@ -726,9 +730,9 @@ rpcwhitelist=opsecmkt-escrow:getblockchaininfo,getrawchangeaddress,getaddressinf
 can export or copy a key: `listdescriptors` (with `private=true` it prints the arbiter's private key; probed on
 Core 31.1 regtest), `dumpprivkey`, `dumpwallet`, `backupwallet` and everything else not listed. `keypoolrefill`
 is on it: it exports nothing and lets the arbiter wallet sign for high escrow indices. `descriptorprocesspsbt`
-is used only with throwaway practice keys, never a wallet key. `getwalletinfo`, `listreceivedbyaddress`,
-`gettransaction` and `listtransactions` read the watch-only wallet (the arbiter wallet only answers
-`getwalletinfo`; they export nothing). `listtransactions` was added in P1-d1 (UPGRADING.md section 22): without it a
+is used only with throwaway practice keys, never a wallet key. `getwalletinfo`, `getaddressinfo`,
+`listreceivedbyaddress`, `gettransaction` and `listtransactions` read the watch-only wallet (the arbiter wallet only
+answers `getwalletinfo` and `getaddressinfo`; they export nothing). `listtransactions` was added in P1-d1 (UPGRADING.md section 22): without it a
 deposit spent outside the market is still flagged, but without the spending transaction's ID. `rpcwhitelistdefault=0` leaves other users (the
 operator's, the pooled wallet's) unrestricted. Make SALT and HASH with Core's `share/rpcauth/rpcauth.py`, or as
 the comment in `scripts/test-escrow-regtest.sh` shows.

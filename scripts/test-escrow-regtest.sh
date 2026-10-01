@@ -52,15 +52,19 @@
 # and after one pass the claim is external with that txid; once an administrator's refund decision is broadcast,
 # changing it is refused and the database refuses a second outcome; a party-signed claim is not co-signed while the
 # restore gate is set, and a stored transaction held as scripts/restore.sh holds it is broadcast only after an
-# administrator's confirmation, once; one transaction funds two escrows and each claim spends only its own output; ten
-# deposits at 100 sat/vB exceed the fee cap, so nothing is built until the rate is lowered. Every leg logs its txids.
+# administrator's confirmation, once; a restored database never re-issues an escrow address (A-359: an escrow created
+# after the backup point is lost by a restore simulated in SQL, checkout answers 503 while the restore gate is set, and
+# the same buyer and vendor then get a fresh address because the watch-only wallet still holds the lost one); one
+# transaction funds two escrows and each claim spends only its own output; ten deposits at 100 sat/vB exceed the fee
+# cap, so nothing is built until the rate is lowered. Every leg logs its txids.
 #
 # Ruled Phase 1 legs and where they run: release (Settlement, Cosign: claim), refund (Settlement, Cosign), dispute
 # (Cosign), comma injection refused (Gate), NONE paste refused (PracticeSign, Settlement), forged market slot refused
 # (Gate), conflicting outcome refused (Gate), spent-outpoint build refused (Gate), restart mid-send rebroadcasts the
 # same tx (Cosign: refund), reorg + double-spend flagged (Recovery), high index via keypoolrefill (Cosign: claim at
 # index 2501), restore gate + reconciliation (Gate; Recovery: co-spend and orphan), two escrows never mixed (Gate), fee
-# cap (Gate); also A-339, both-signed and stray refund (Cosign), A-344 and a plain reorg (Recovery), A-356 (Gate).
+# cap (Gate); also A-339, both-signed and stray refund (Cosign), A-344 and a plain reorg (Recovery), A-356 and A-359
+# (Gate).
 #
 # Needs a regtest node with two RPC users: an operator user with full rights (sets up the wallets, standing in
 # for the buyer's own node) and the app's user restricted by rpcwhitelist exactly as docs/operator-guide.md
