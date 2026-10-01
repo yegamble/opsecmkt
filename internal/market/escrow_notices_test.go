@@ -167,3 +167,40 @@ func TestPooledOffEscrowOffNoticesUnchanged(t *testing.T) {
 		}
 	}
 }
+
+// A-345 (ES-10): since P1-c2 the market co-signs and broadcasts a settlement once a party has signed it, so the
+// escrow-only payment banner and the cancel form of a funded escrow order (buyer and vendor, escrow available) say so
+// and never that this build does not co-sign or broadcast.
+func TestEscrowStatementsSayTheMarketCosignsAndBroadcasts(t *testing.T) {
+	x := newEscrowEnv(t)
+	check := func(path, sess string, want ...string) {
+		t.Helper()
+		body := x.page(path, sess)
+		for _, bad := range []string{"co-sign or broadcast", "does not co-sign", "not yet co-signed"} {
+			if strings.Contains(body, bad) {
+				t.Fatalf("%s says %q:\n%s", path, bad, body)
+			}
+		}
+		for _, w := range want {
+			if !strings.Contains(body, w) {
+				t.Fatalf("%s lacks %q:\n%s", path, w, body)
+			}
+		}
+	}
+	check("/", x.buyerSess, "the market co-signs it and broadcasts it to the regtest network. Other orders stay unfunded drafts.")
+	x.mustCheckout(x.order, "bcrt1qbuyerrefund00000000000000000000001")
+	x.fund(x.order, "partial", 3, 40000)
+	if x.state(x.order) != stateAwaitingPayment || x.A.escrow.Load() == nil {
+		t.Fatalf("order %s", x.state(x.order))
+	}
+	for _, sess := range []string{x.buyerSess, x.vendorSess} {
+		if sess == x.vendorSess {
+			// Beside a pooled provider the catalog carries the same sentence in its own notice.
+			x.A.payMu.Lock()
+			x.A.payments["BTC"] = newFakeProvider("BTC", 3)
+			x.A.payMu.Unlock()
+			check("/", x.buyerSess, "the market co-signs it and broadcasts it to the regtest network.")
+		}
+		check("/order?id="+x.order, sess, "Returns one unit of stock. The coins in this escrow go back to the buyer's refund address by a settlement: the market builds the refund transaction, the buyer or the vendor signs it on this page, and the market then co-signs it and broadcasts it to the regtest network.")
+	}
+}
