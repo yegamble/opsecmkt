@@ -81,14 +81,14 @@ func escrowFeeAction(c *actionCtx) (actionResult, error) {
 	if bps > 0 {
 		var ok bool
 		if addr, ok = escrowAddressForm(c.Form.Get("fee_address")); !ok {
-			return actionResult{}, fail(400, "Enter the regtest Bitcoin address the market fee is paid to. Nothing was changed.")
+			return actionResult{}, fail(400, "Enter the "+c.A.escrowNetwork()+" Bitcoin address the market fee is paid to. Nothing was changed.")
 		}
 		valid, err := e.validAddress(c.Ctx(), addr)
 		if err != nil {
 			return actionResult{}, fail(503, "The fee address could not be checked: the market's Bitcoin node did not answer. Nothing was changed; try again later.")
 		}
 		if !valid {
-			return actionResult{}, fail(400, "The fee address is not a valid regtest Bitcoin address. Nothing was changed.")
+			return actionResult{}, fail(400, "The fee address is not a valid "+c.A.escrowNetwork()+" Bitcoin address. Nothing was changed.")
 		}
 	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
@@ -121,7 +121,7 @@ func escrowFeeAction(c *actionCtx) (actionResult, error) {
 		if err = setSetting(c, escrowFeeAddrSetting, addr); err != nil {
 			return actionResult{}, err
 		}
-		audit := "Changed the Bitcoin escrow market fee (regtest): " + strconv.FormatInt(oldBps, 10) + " → " + strconv.FormatInt(bps, 10) + " basis points"
+		audit := "Changed the Bitcoin escrow market fee (" + c.A.escrowNetwork() + "): " + strconv.FormatInt(oldBps, 10) + " → " + strconv.FormatInt(bps, 10) + " basis points"
 		if oldAddr != addr {
 			audit += "; fee destination changed"
 		}

@@ -190,7 +190,7 @@ func escrowRecoverAction(c *actionCtx) (actionResult, error) {
 			"The buyer asked the market to check this escrow for coins sent to it after the order closed. The market reads it on its next pass and returns what it finds to the buyer's refund address by a stray refund."); err != nil {
 			return actionResult{}, err
 		}
-		return actionResult{Redirect: orderPage(o.ID) + "#escrow-recover", Notice: "escrow-recover", Audit: "Asked to recover coins at the escrow of order " + shortID(o.ID) + " (regtest)"}, nil
+		return actionResult{Redirect: orderPage(o.ID) + "#escrow-recover", Notice: "escrow-recover", Audit: "Asked to recover coins at the escrow of order " + shortID(o.ID) + " (" + c.A.escrowNetwork() + ")"}, nil
 	})
 }
 

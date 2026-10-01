@@ -110,7 +110,7 @@ func escrowDecisionAction(c *actionCtx) (actionResult, error) {
 			}
 		}
 		return actionResult{Redirect: orderPage(o.ID) + "#escrow-decision", Notice: "escrow-decision",
-			Audit: "Changed the escrow dispute decision of order " + shortID(o.ID) + " (" + current + " to " + outcome + ") (regtest)"}, nil
+			Audit: "Changed the escrow dispute decision of order " + shortID(o.ID) + " (" + current + " to " + outcome + ") (" + c.A.escrowNetwork() + ")"}, nil
 	})
 }
 
@@ -161,7 +161,7 @@ func (a *App) escrowDisputePreview(ctx context.Context, o *Order) (PayoutPreview
 	if err := a.db.QueryRowContext(ctx, `SELECT COALESCE(sum(amount),0) FROM payments WHERE order_id=$1 AND confirmations>=0 AND NOT locked AND NOT after_close`, o.ID).Scan(&sum); err != nil {
 		return PayoutPreview{}, err
 	}
-	btc := amount(sum, 8) + " regtest BTC"
+	btc := amount(sum, 8) + " " + a.escrowNetwork() + " BTC"
 	return PayoutPreview{Seen: sum, Confirm: resolveConfirm,
 		Release: "Release to " + o.Vendor + ": the vendor claims the escrowed " + btc + " by a settlement from the escrow (less the market fee and the network fee; any amount paid above the price goes back to the buyer)",
 		Refund:  "Refund to " + o.Buyer + ": the escrowed " + btc + ", less the network fee, go back to the buyer's refund address by a settlement from the escrow"}, nil
