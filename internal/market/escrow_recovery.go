@@ -98,8 +98,10 @@ func (a *App) restoreStatus(s *EscrowSettlementView, v *EscrowOrderView, state, 
 		s.Status = "Signed by the " + signer + " and the " + otherParty(signer) + " (first signature " + signedAt + "). " + settleSigChecked + " Paused: " + restoreWhy + ", so the market (which does not sign it) broadcasts the transaction the two parties signed only once the operator has finished. Nothing has been sent yet."
 	case state == "party_signed":
 		s.Status = "Signed by the " + signer + " (" + signedAt + "). " + settleSigChecked + " Paused: " + restoreWhy + ", so the market co-signs it only once the operator has finished. Nothing has been sent yet."
-	case sendable:
+	case state == "signed":
 		s.Status = stored + " Paused: " + restoreWhy + ", so the market does not broadcast it until an administrator has checked that it was not already sent or replaced."
+	case state == "broadcast":
+		s.Status = stored + " Paused: " + restoreWhy + ", so the market follows its confirmations but does not send it again until an administrator has checked that it was not already sent or replaced."
 	}
 }
 
