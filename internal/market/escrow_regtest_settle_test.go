@@ -21,9 +21,10 @@ import (
 //     SIGHASH_NONE, and the buyer's wallet's signature pasted by the vendor, are refused.
 //   - refund: an underpaid escrow is cancelled by its buyer; the refund is built and signed in the buyer's own wallet.
 //
-// For each, Core checks what the next slice will do, without the app doing it: the stored PSBT with the market's
-// signature (the arbiter wallet's walletprocesspsbt, called by this test only) combined with the stored party
-// signatures finalizes, has the stored txid and outputs, and testmempoolaccept allows it. Nothing is broadcast.
+// For each, before the App's watcher runs again, Core checks the market's half by hand: the stored PSBT with the
+// market's signature (the arbiter wallet's walletprocesspsbt, called by this test) combined with the stored party
+// signatures finalizes, has the stored txid and outputs, and testmempoolaccept allows it; the test broadcasts nothing.
+// (Since P1-c2 a later watcher pass co-signs and broadcasts such a settlement itself: TestEscrowRegtestCosign.)
 func TestEscrowRegtestSettlement(t *testing.T) {
 	appURL, opURL := os.Getenv("ESCROW_REGTEST_APP_RPC_URL"), os.Getenv("ESCROW_REGTEST_OPERATOR_RPC_URL")
 	if appURL == "" || opURL == "" {

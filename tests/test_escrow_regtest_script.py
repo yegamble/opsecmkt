@@ -11,7 +11,7 @@ import threading
 import unittest
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts' / 'test-escrow-regtest.sh'
-LEGS = ('TestEscrowRegtestPracticeSign', 'TestEscrowRegtestFunding', 'TestEscrowRegtestSettlement')
+LEGS = ('TestEscrowRegtestPracticeSign', 'TestEscrowRegtestFunding', 'TestEscrowRegtestSettlement', 'TestEscrowRegtestCosign')
 
 
 class FakeRegtest(BaseHTTPRequestHandler):

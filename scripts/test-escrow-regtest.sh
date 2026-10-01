@@ -22,8 +22,17 @@
 # its own copy in its own Core wallet and pastes it (party_signed). Then an underpaid escrow is cancelled by its
 # buyer and the buyer signs the refund in their wallet. For both, Core confirms that the stored PSBT plus the market's
 # signature (the arbiter wallet's walletprocesspsbt, called by the test only) plus the stored party signatures would
-# finalize with the stored txid and outputs and pass testmempoolaccept; nothing is broadcast. Later slices add their
-# legs here.
+# finalize with the stored txid and outputs and pass testmempoolaccept; nothing is broadcast in that leg.
+#
+# Slice P1-c2 leg: the App's escrow watcher co-signs, checks, stores, broadcasts and follows each settlement to 3
+# confirmations, every party signature made by that party's own Core wallet: a vendor claim at a market child index
+# past the arbiter wallet's initial key range (so the watcher must keypoolrefill under rpcwhitelist), with each
+# confirmed output checked against the plan (gettxout); a refund whose co-sign step runs alone, the App restarted
+# before any broadcast, then the stored transaction broadcast unchanged; a settlement both parties sign (the market
+# does not: Core finalizes the stored PSBT with the two party signatures alone to the broadcast transaction); a
+# vendor signature over a changed input amount and an r=s=1 signature, each discarded (A-339) before the good one
+# completes it; a stray refund of coins sent to a cancelled order's escrow; and an administrator's dispute decision
+# for the buyer. Later slices add their legs here.
 #
 # Needs a regtest node with two RPC users: an operator user with full rights (sets up the wallets, standing in
 # for the buyer's own node) and the app's user restricted by rpcwhitelist exactly as docs/operator-guide.md
@@ -69,12 +78,12 @@ log="${ESCROW_REGTEST_LOG:-artifacts/real-chain/test-escrow-regtest-$(date -u +%
 mkdir -p "$(dirname "$log")"
 echo "Bitcoin escrow regtest check; transcript: $log"
 set +e
-go test -count=1 -timeout 10m -run '^TestEscrowRegtest(PracticeSign|Funding|Settlement)$' -v ./internal/market/ 2>&1 | tee "$log"
+go test -count=1 -timeout 10m -run '^TestEscrowRegtest(PracticeSign|Funding|Settlement|Cosign)$' -v ./internal/market/ 2>&1 | tee "$log"
 status=${PIPESTATUS[0]}
 set -e
 # Each leg is reported from its own go test result line, so one failing leg never makes another read as failed.
 failed=0
-for leg in TestEscrowRegtestPracticeSign TestEscrowRegtestFunding TestEscrowRegtestSettlement; do
+for leg in TestEscrowRegtestPracticeSign TestEscrowRegtestFunding TestEscrowRegtestSettlement TestEscrowRegtestCosign; do
   if grep -q -- "--- PASS: $leg " "$log"; then
     echo "PASS: $leg"
   elif grep -q -- "--- FAIL: $leg " "$log"; then
@@ -92,4 +101,4 @@ if [[ $status -ne 0 || $failed -ne 0 ]]; then
   echo "FAILED: go test exited $status; see $log" >&2
   exit 1
 fi
-echo "PASS: practice signing, escrow creation and funding, and settlement building and party signing, on regtest; transcript in $log"
+echo "PASS: practice signing, escrow creation and funding, settlement building and party signing, and co-signing, broadcast and confirmation, on regtest; transcript in $log"
