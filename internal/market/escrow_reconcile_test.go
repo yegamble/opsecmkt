@@ -85,6 +85,37 @@ func TestEscrowOutsideSpendFlagged(t *testing.T) {
 	if x.core.count("createpsbt") != creates {
 		t.Fatal("a settlement was built over a deposit spent outside the market")
 	}
+	if _, _, state, class := x.settlement(order); state != "failed" {
+		t.Fatalf("the claim of an escrow whose only deposit was spent outside: %s %s", state, class)
+	}
+
+	// An order awaiting payment whose deposit the parties co-spend never counts it as funding, even once it is deep.
+	open := x.draft()
+	addrO := x.mustCheckout(open, regtestAddr("refund-cospend-open"))
+	x.core.deposit(addrO, txidOf("open-dep"), 0, 100000, 1)
+	x.poll()
+	x.coSpend(txidOf("open-dep"), 0, 1)
+	x.poll()
+	x.core.setConfs(txidOf("open-dep"), 6)
+	x.poll()
+	if st := x.state(open); st != stateAwaitingPayment || agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND spent_outside AND NOT credited", open) != 1 {
+		t.Fatalf("an awaiting order whose deposit was co-spent: %s", st)
+	}
+
+	// A deposit after the order closed that the parties co-spend gets no stray refund.
+	closed := x.completed(regtestAddr("refund-cospend-late"), 100000)
+	var addrL string
+	x.DB.QueryRow("SELECT address FROM escrows WHERE order_id=$1", closed).Scan(&addrL)
+	x.core.deposit(addrL, txidOf("late-dep"), 0, 30000, 1)
+	x.poll()
+	x.coSpend(txidOf("late-dep"), 0, 1)
+	x.core.setConfs(txidOf("late-dep"), 6)
+	x.poll()
+	x.poll()
+	if agInt(x.testEnv, "SELECT count(*) FROM settlements WHERE order_id=$1 AND kind='stray_refund'", closed) != 0 ||
+		agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND after_close AND spent_outside", closed) != 1 {
+		t.Fatal("a co-spent late deposit was given a stray refund, or not marked")
+	}
 
 	// A spend the wallet does not name (and listtransactions refused): flagged without a transaction ID.
 	order2 := x.completed(regtestAddr("refund-cospend2"), 100000)
