@@ -295,7 +295,7 @@ func (a *App) cosignSettlement(ctx context.Context, e *escrowBTC, id int64) erro
 			case verdict == acceptOK:
 				return a.storeFinal(ctx, b, rawHex, "parties", []string{b.Parties[0].Party, b.Parties[1].Party}, nil)
 			case verdict == acceptExternal:
-				return a.markExternal(ctx, id, b.OrderID, "")
+				return a.spentBeforeCosign(ctx, e, b)
 			case verdict == acceptWait:
 				return a.settlementSendWaits(ctx, id, b.OrderID, class)
 			}
@@ -352,7 +352,7 @@ func (a *App) cosignSettlement(ctx context.Context, e *escrowBTC, id int64) erro
 		case verdict == acceptBadSig:
 			bad = append(bad, party)
 		case verdict == acceptExternal:
-			return a.markExternal(ctx, id, b.OrderID, "")
+			return a.spentBeforeCosign(ctx, e, b)
 		default:
 			return a.settlementSendWaits(ctx, id, b.OrderID, class)
 		}
@@ -719,6 +719,91 @@ func (a *App) trackBroadcast(ctx context.Context, e *escrowBTC, id int64) error 
 		return err
 	}
 	return a.sentOnce(ctx, id)
+}
+
+// spentBeforeCosign settles a party-signed settlement whose escrow outputs are already spent when the market comes to
+// complete it (A-344). When the watch-only wallet holds the stored transaction itself (by its txid, in the mempool or
+// a block, not conflicted), the parties broadcast it themselves, or a restored database held an older party-signed
+// row: its hex is checked like any final transaction (checkFinalTx) and stored, and the settlement moves to broadcast
+// (storeSeen); trackBroadcast follows it from there. Only another transaction makes it external.
+func (a *App) spentBeforeCosign(ctx context.Context, e *escrowBTC, b *settleBuild) error {
+	w, err := e.walletTx(ctx, b.TxID)
+	if err != nil {
+		return err
+	}
+	if !w.Found || w.Confirmations < 0 {
+		return a.markExternal(ctx, b.ID, b.OrderID, firstTxID(w.Conflicts))
+	}
+	if class := checkFinalTx(w.Hex, b.Stored, b.TxID, b.Outputs, b.InputTotal, b.NetworkFee); class != "" {
+		// The stored txid, so the planned outputs, but a transaction that fails the market's checks: it is not recorded
+		// as the settlement's, nor called external; the order page and the log say it waits.
+		return a.settlementSendWaits(ctx, b.ID, b.OrderID, class)
+	}
+	return a.storeSeen(ctx, b, w.Hex)
+}
+
+// signersSeen is the parties whose stored signature is in every input's witness of the final transaction rawHex.
+func signersSeen(rawHex string, b *settleBuild) []string {
+	raw, err := hex.DecodeString(rawHex)
+	if err != nil {
+		return nil
+	}
+	t, err := parseSignedTx(raw)
+	if err != nil {
+		return nil
+	}
+	var seen []string
+	for _, p := range b.Parties {
+		every := len(t.Witness) == len(p.Sigs)
+		for i := 0; every && i < len(p.Sigs); i++ {
+			every = len(t.Witness[i]) == 4 && (slices.Equal(t.Witness[i][1], p.Sigs[i].Sig) || slices.Equal(t.Witness[i][2], p.Sigs[i].Sig))
+		}
+		if every {
+			seen = append(seen, p.Party)
+		}
+	}
+	return seen
+}
+
+// storeSeen records a final transaction found already on the network as a party-signed settlement's: party_signed ->
+// signed (raw_tx) -> broadcast in one transaction, by compare-and-set, cosigned 'parties' when its witnesses carry both
+// parties' stored signatures and 'network' otherwise, with an honest note and a notice to both parties.
+func (a *App) storeSeen(ctx context.Context, b *settleBuild, rawHex string) error {
+	seen := signersSeen(rawHex, b)
+	cosigned, who := "network", "who signed it is not recorded"
+	switch len(seen) {
+	case 2:
+		cosigned, who = "parties", "The buyer and the vendor both signed it (their signatures are the ones the market stored)"
+	case 1:
+		who = "it carries the " + seen[0] + "'s signature; who signed it besides the " + seen[0] + " is not recorded"
+	}
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, "UPDATE settlements SET state='signed',raw_tx=$2,cosigned=$3,final_at=now(),send_error='',updated=now() WHERE id=$1 AND state='party_signed' AND txid=$4",
+		b.ID, rawHex, cosigned, b.TxID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return nil
+	}
+	if _, err = tx.ExecContext(ctx, "UPDATE settlements SET state='broadcast',broadcast_at=now(),updated=now() WHERE id=$1 AND state='signed'", b.ID); err != nil {
+		return err
+	}
+	what, net := settlementKind(b.Kind), a.escrowNetwork()
+	if cosigned == "network" {
+		who = strings.ToUpper(who[:1]) + who[1:]
+	}
+	note := "The transaction of the escrow settlement (" + what + ") was already on the " + net + " network when the market came to complete it. " + who +
+		". The market found it in its watch-only wallet, checked it against the stored transaction and recorded it as broadcast; the market did not sign or broadcast it."
+	if err = settleNote(ctx, tx, b.OrderID, note, "its escrow settlement ("+what+") was already on the "+net+" network; the order page shows its transaction and its confirmations."); err != nil {
+		return err
+	}
+	log.Printf("escrow: settlement of order %s: its transaction was already on the network; recorded as broadcast", shortID(b.OrderID))
+	return tx.Commit()
 }
 
 // markExternal records that the escrow outputs of a settlement were spent by a transaction the market did not make
