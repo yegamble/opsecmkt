@@ -485,7 +485,7 @@ func (a *App) storeFinal(ctx context.Context, b *settleBuild, rawHex, cosigned s
 			return err
 		}
 	}
-	res, err := tx.ExecContext(ctx, "UPDATE settlements SET state='signed',raw_tx=$2,cosigned=$3,final_at=now(),send_error='',updated=now() WHERE id=$1 AND state IN ('party_signed','awaiting_signature') AND txid=$4",
+	res, err := tx.ExecContext(ctx, "UPDATE settlements SET state='signed',raw_tx=$2,cosigned=$3,final_at=now(),send_error='',updated=now() WHERE id=$1 AND state='party_signed' AND txid=$4",
 		b.ID, rawHex, cosigned, b.TxID)
 	if err != nil {
 		return err

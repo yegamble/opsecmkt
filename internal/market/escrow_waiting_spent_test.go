@@ -328,6 +328,10 @@ func TestEscrowMigration078WaitingSpent(t *testing.T) {
 			t.Fatalf("the database allowed on a never-built external settlement: %s", q)
 		}
 	}
+	// External without a PSBT means never built: no transaction ID, fee or amount either.
+	if _, err := x.DB.Exec("INSERT INTO settlements(order_id,kind,state,destination,txid) VALUES($1,'stray_refund','external',$2,$3)", order, regtestAddr("m78-insert"), txidOf("m78-insert")); err == nil || !strings.Contains(err.Error(), "settlements_built") {
+		t.Fatalf("an external settlement with a transaction ID and no PSBT: %v", err)
+	}
 
 	// Waiting for a signature: a final transaction is stored only with the move to signed.
 	_, id2 := x.built(regtestAddr("refund-m78b"), regtestAddr("claim-m78b"), 100000)
