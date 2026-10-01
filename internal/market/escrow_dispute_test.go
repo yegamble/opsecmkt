@@ -199,3 +199,57 @@ func TestEscrowDisputeDecision(t *testing.T) {
 		t.Fatalf("settlements of the order: %q", got)
 	}
 }
+
+// A-346: the decision guards. An administrator who is the order's buyer or its vendor cannot change the decision (403),
+// and a decision of an order that is not resolved cannot be changed (409); neither changes anything.
+func TestEscrowDecisionRefusesPartyAdminAndUnresolvedOrder(t *testing.T) {
+	x := newEscrowEnv(t)
+	_, admin := x.user("eadmin_"+randomToken()[:6], "admin")
+	// snapshot is everything a decision change would touch.
+	snapshot := func(order string) string {
+		return strings.Join(slices.Concat(
+			[]string{x.state(order)},
+			agStrings(t, x.testEnv, "SELECT COALESCE(string_agg(outcome||' '||status,','),'') FROM disputes WHERE order_id=$1", order),
+			agStrings(t, x.testEnv, "SELECT kind||' '||state FROM settlements WHERE order_id=$1 ORDER BY id", order),
+			agStrings(t, x.testEnv, "SELECT count(*)::text FROM order_events WHERE order_id=$1", order),
+			agStrings(t, x.testEnv, "SELECT count(*)::text FROM notifications WHERE body LIKE '%dispute decision was changed%'"),
+			agStrings(t, x.testEnv, "SELECT count(*)::text FROM audit_events WHERE action LIKE 'Changed the escrow dispute decision%'"),
+		), "|")
+	}
+
+	order, dispute := x.disputedEscrow(regtestAddr("guard-refund-1"))
+	if code, body := x.resolve(admin, dispute, "refund", testPassword); code != 303 {
+		t.Fatalf("resolve: %d %s", code, body)
+	}
+	x.poll()
+	before := snapshot(order)
+	for _, c := range []struct{ party, id, sess string }{{"buyer", x.buyer, x.buyerSess}, {"vendor", x.vendor, x.vendorSess}} {
+		if _, err := x.DB.Exec("UPDATE users SET role='admin' WHERE id=$1", c.id); err != nil {
+			t.Fatal(err)
+		}
+		code, body := x.changeDecision(c.sess, order, "release", testPassword)
+		if _, err := x.DB.Exec("UPDATE users SET role=$2 WHERE id=$1", c.id, c.party); err != nil {
+			t.Fatal(err)
+		}
+		if code != 403 || !strings.Contains(body, "You are a party to this order") {
+			t.Fatalf("an administrator who is the order's %s: %d %s", c.party, code, body)
+		}
+		if after := snapshot(order); after != before {
+			t.Fatalf("the refused change by the %s changed something:\n%s\n%s", c.party, before, after)
+		}
+	}
+	// A third administrator may change it, so the refusals above are the party guard and not another failure.
+	if code, body := x.changeDecision(admin, order, "release", testPassword); code != 303 {
+		t.Fatalf("an administrator who is not a party: %d %s", code, body)
+	}
+
+	// A disputed order nobody has resolved has no decision to change.
+	open, _ := x.disputedEscrow(regtestAddr("guard-refund-2"))
+	before = snapshot(open)
+	if code, body := x.changeDecision(admin, open, "release", testPassword); code != 409 || !strings.Contains(body, "Only the decision of a resolved escrow order") {
+		t.Fatalf("a decision on an order that is not resolved: %d %s", code, body)
+	}
+	if after := snapshot(open); after != before {
+		t.Fatalf("the refused change of an unresolved order changed something:\n%s\n%s", before, after)
+	}
+}
