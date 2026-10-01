@@ -115,3 +115,24 @@ func TestEscrowReorgRetracking(t *testing.T) {
 		t.Fatal("not sent again once the gate was cleared")
 	}
 }
+
+// A-365 (T5): a confirmed settlement whose transaction the watch-only wallet does not know (it missed it, or was
+// restored) proves nothing about a reorganisation: it stays confirmed, nothing is sent again and no note is written,
+// and it is asked about again on the next pass.
+func TestEscrowConfirmedUnknownToWalletNotReorg(t *testing.T) {
+	x := newEscrowEnv(t)
+	order, id := x.confirmedSettlement("unknown-to-wallet")
+	r := x.settleByID(id)
+	notes, sends := len(x.events(order)), x.sendsOf(r.Raw)
+	x.core.mu.Lock()
+	x.core.walletForgets = true
+	x.core.mu.Unlock()
+	x.poll()
+	x.poll()
+	if got := x.settleByID(id); got.State != "confirmed" || x.sendsOf(r.Raw) != sends || len(x.events(order)) != notes {
+		t.Fatalf("confirmed, unknown to the wallet: %+v, %d sends (was %d), %d notes (was %d)", got, x.sendsOf(r.Raw), sends, len(x.events(order)), notes)
+	}
+	if n := x.core.countWith("gettransaction", r.TxID); n < 2 {
+		t.Fatalf("not asked again on each pass: %d gettransaction calls", n)
+	}
+}

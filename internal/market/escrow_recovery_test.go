@@ -1,6 +1,7 @@
 package market
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -56,6 +57,21 @@ func TestEscrowMigration077SettlementMoves(t *testing.T) {
 		if _, err := x.DB.Exec("UPDATE settlements SET state=$2,confirmed_at=now() WHERE id=$1", id, to); err == nil {
 			t.Fatalf("the database allowed external -> %s", to)
 		}
+	}
+	// A-365 (Q6): a signed settlement (stored, not yet broadcast) never moves straight to confirmed: it is broadcast first.
+	orderQ, idQ := x.built(regtestAddr("refund-m77q"), regtestAddr("claim-m77q"), 100000)
+	x.signAs(orderQ, roleVendor, idQ)
+	x.A.escrowPollOnce(x.killAtSend())
+	x.sendNormally()
+	if r := x.settleByID(idQ); r.State != "signed" {
+		t.Fatalf("stored, its broadcast killed: %+v", r)
+	}
+	if _, err := x.DB.Exec("UPDATE settlements SET state='confirmed',broadcast_at=now(),confirmed_at=now() WHERE id=$1", idQ); err == nil ||
+		!strings.Contains(err.Error(), "cannot move from signed to confirmed") {
+		t.Fatalf("the database allowed signed -> confirmed (or refused it for another reason): %v", err)
+	}
+	if _, err := x.DB.Exec("UPDATE settlements SET state='broadcast',broadcast_at=now() WHERE id=$1", idQ); err != nil {
+		t.Fatalf("signed -> broadcast: %v", err)
 	}
 	// A settlement external before any final transaction is final too.
 	order2, id2 := x.built(regtestAddr("refund-m77b"), regtestAddr("claim-m77b"), 100000)

@@ -102,4 +102,42 @@ func TestEscrowTextsNameTheNodesChain(t *testing.T) {
 	// escrow_fee.go: the fee address error.
 	w = x.do("POST", "/admin/escrow-fee", admin, url.Values{"fee_bps": {"100"}, "fee_address": {""}, "password": {testPassword}})
 	has("fee without an address", w.Body.String(), "the signet Bitcoin address the market fee is paid to")
+
+	// A-364: escrow_cosign.go's note of a settlement's own transaction found on the network (storeSeen) and its
+	// reorganisation note; escrow_recovery.go's note of a held settlement seen on the network (seenWhilePaused) and the
+	// administrator's rebroadcast audit.
+	seen, idSeen := x.built(regtestAddr("refund-net5"), regtestAddr("claim-net5"), 100000)
+	x.signAs(seen, roleVendor, idSeen)
+	x.signAs(seen, roleBuyer, idSeen)
+	x.partiesBroadcast(idSeen, 1, x.storedSigs(idSeen, roleVendor), x.storedSigs(idSeen, roleBuyer))
+	x.poll()
+	has("found-on-the-network note", strings.Join(x.events(seen), "\n"), "was already on the signet network when the market came to complete it")
+	reorg, idReorg := x.confirmedSettlement("net6")
+	x.core.setTxConfs(x.settleByID(idReorg).TxID, 0, "")
+	x.poll()
+	has("reorganisation note", strings.Join(x.events(reorg), "\n"), "is no longer in the signet chain")
+	x.core.setTxConfs(x.settleByID(idReorg).TxID, 3, "") // confirmed again, so the next pass sends nothing for it
+	x.core.setTxConfs(x.settleByID(idSeen).TxID, 3, "")
+	x.poll()
+	held, idHeld := x.built(regtestAddr("refund-net7"), regtestAddr("claim-net7"), 100000)
+	confirmedHeld, idConfirmed := x.built(regtestAddr("refund-net8"), regtestAddr("claim-net8"), 100000)
+	x.signAs(held, roleVendor, idHeld)
+	x.signAs(confirmedHeld, roleVendor, idConfirmed)
+	x.A.escrowPollOnce(x.killAtSend()) // both co-signed and stored, neither broadcast
+	x.sendNormally()
+	if a, b := x.settleByID(idHeld), x.settleByID(idConfirmed); a.State != "signed" || b.State != "signed" {
+		t.Fatalf("stored, not broadcast: %+v %+v", a, b)
+	}
+	x.setGate(true)
+	x.restoreHold(idHeld, idConfirmed)
+	h := x.settleByID(idHeld)
+	x.core.mu.Lock()
+	x.core.broadcast[h.TxID], x.core.txConfs[h.TxID] = h.Raw, 0 // sent after the backup: in the mempool
+	x.core.mu.Unlock()
+	x.poll()
+	has("seen-while-paused note", strings.Join(x.events(held), "\n"), "is already on the signet network: the market's watch-only wallet has it")
+	if code, body := x.rebroadcast(admin, idConfirmed, url.Values{"not_sent": {"confirmed"}, "password": {testPassword}}); code != 303 {
+		t.Fatalf("rebroadcast: %d %s", code, body)
+	}
+	has("rebroadcast audit", audit("Confirmed the rebroadcast of escrow settlement%"+shortID(confirmedHeld)+"%"), "not already sent or replaced (signet)")
 }

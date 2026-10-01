@@ -245,3 +245,43 @@ func TestEscrowRPCReconciliation(t *testing.T) {
 		t.Fatalf("listtransactions error class %q", errorClassOf(err))
 	}
 }
+
+// A-365 (F2, F6): findOutsideSpends checks only deposits in a block, and only of orders whose deposits were read in this
+// pass. A deposit still in the mempool that gettxout no longer finds (evicted, or replaced before a block) is not
+// flagged; an order whose wallet read failed in this pass is not checked, and is flagged on the next pass that reads it.
+func TestEscrowOutsideSpendSkipsMempoolAndUnread(t *testing.T) {
+	x := newEscrowEnv(t)
+	// F2: a 0-confirmation deposit to an order awaiting payment, then gone from gettxout's view.
+	open := x.draft()
+	addr := x.mustCheckout(open, regtestAddr("refund-mempool"))
+	x.core.deposit(addr, txidOf("mempool-dep"), 0, 100000, 0)
+	x.poll()
+	if agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND confirmations=0", open) != 1 {
+		t.Fatal("the mempool deposit was not recorded")
+	}
+	x.core.spend(txidOf("mempool-dep"), 0)
+	x.poll()
+	x.poll()
+	if n := agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND (spent_outside OR flagged)", open); n != 0 {
+		t.Fatalf("a deposit still in the mempool was flagged as spent outside the market (%d)", n)
+	}
+	// F6: a completed order's unclaimed deposit, co-spent while the wallet read fails.
+	order := x.completed(regtestAddr("refund-unread"), 100000)
+	spender := x.coSpend(txidOf(order), 0, 1)
+	x.core.mu.Lock()
+	x.core.txErr = -1
+	x.core.mu.Unlock()
+	if err := x.A.escrowPollOnce(context.Background()); err == nil {
+		t.Fatal("the pass did not report the failed wallet read")
+	}
+	if n := agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND spent_outside", order); n != 0 {
+		t.Fatal("an order whose deposits were not read in this pass was checked for outside spends")
+	}
+	x.core.mu.Lock()
+	x.core.txErr = 0
+	x.core.mu.Unlock()
+	x.poll()
+	if agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND spent_outside AND spent_by=$2 AND flagged", order, spender) != 1 {
+		t.Fatal("the co-spent deposit was not flagged once its order was read again")
+	}
+}
