@@ -42,7 +42,25 @@
 # transaction with one paying elsewhere, which is mined: the watcher records it external with the replacing txid. The
 # parties co-spend a completed order's escrow from their own wallets with no settlement: the watcher flags the deposit
 # with the spending txid. A labelled descriptor imported into the watch-only wallet with no escrow row is listed as an
-# orphan on the daily check. Later slices add their legs here.
+# orphan on the daily check.
+#
+# Slice P1-d2 leg (the Phase 1 gate's remaining adversarial legs): a key field holding two keys (a comma) is refused
+# before any RPC, while Core reads the descriptor built from them as a 2-of-4; a vendor's Core-signed copy with a
+# signature added under the market's key is refused and changes nothing; A-356: the parties co-spend an escrow from
+# their own wallets while its claim waits for a signature, and the watcher records the claim external with the
+# co-spend's txid; the parties co-spend an escrow before its claim, the build refuses the spent input (nothing built)
+# and after one pass the claim is external with that txid; once an administrator's refund decision is broadcast,
+# changing it is refused and the database refuses a second outcome; a party-signed claim is not co-signed while the
+# restore gate is set, and a stored transaction held as scripts/restore.sh holds it is broadcast only after an
+# administrator's confirmation, once; one transaction funds two escrows and each claim spends only its own output; ten
+# deposits at 100 sat/vB exceed the fee cap, so nothing is built until the rate is lowered. Every leg logs its txids.
+#
+# Ruled Phase 1 legs and where they run: release (Settlement, Cosign: claim), refund (Settlement, Cosign), dispute
+# (Cosign), comma injection refused (Gate), NONE paste refused (PracticeSign, Settlement), forged market slot refused
+# (Gate), conflicting outcome refused (Gate), spent-outpoint build refused (Gate), restart mid-send rebroadcasts the
+# same tx (Cosign: refund), reorg + double-spend flagged (Recovery), high index via keypoolrefill (Cosign: claim at
+# index 2501), restore gate + reconciliation (Gate; Recovery: co-spend and orphan), two escrows never mixed (Gate), fee
+# cap (Gate); also A-339, both-signed and stray refund (Cosign), A-344 and a plain reorg (Recovery), A-356 (Gate).
 #
 # Needs a regtest node with two RPC users: an operator user with full rights (sets up the wallets, standing in
 # for the buyer's own node) and the app's user restricted by rpcwhitelist exactly as docs/operator-guide.md
@@ -88,12 +106,12 @@ log="${ESCROW_REGTEST_LOG:-artifacts/real-chain/test-escrow-regtest-$(date -u +%
 mkdir -p "$(dirname "$log")"
 echo "Bitcoin escrow regtest check; transcript: $log"
 set +e
-go test -count=1 -timeout 15m -run '^TestEscrowRegtest(PracticeSign|Funding|Settlement|Cosign|Recovery)$' -v ./internal/market/ 2>&1 | tee "$log"
+go test -count=1 -timeout 15m -run '^TestEscrowRegtest(PracticeSign|Funding|Settlement|Cosign|Recovery|Gate)$' -v ./internal/market/ 2>&1 | tee "$log"
 status=${PIPESTATUS[0]}
 set -e
 # Each leg is reported from its own go test result line, so one failing leg never makes another read as failed.
 failed=0
-for leg in TestEscrowRegtestPracticeSign TestEscrowRegtestFunding TestEscrowRegtestSettlement TestEscrowRegtestCosign TestEscrowRegtestRecovery; do
+for leg in TestEscrowRegtestPracticeSign TestEscrowRegtestFunding TestEscrowRegtestSettlement TestEscrowRegtestCosign TestEscrowRegtestRecovery TestEscrowRegtestGate; do
   if grep -q -- "--- PASS: $leg " "$log"; then
     echo "PASS: $leg"
   elif grep -q -- "--- FAIL: $leg " "$log"; then
@@ -111,4 +129,4 @@ if [[ $status -ne 0 || $failed -ne 0 ]]; then
   echo "FAILED: go test exited $status; see $log" >&2
   exit 1
 fi
-echo "PASS: practice signing, escrow creation and funding, settlement building and party signing, co-signing, broadcast and confirmation, and recovery and reconciliation, on regtest; transcript in $log"
+echo "PASS: practice signing, escrow creation and funding, settlement building and party signing, co-signing, broadcast and confirmation, recovery and reconciliation, and the Phase 1 gate's remaining adversarial legs, on regtest; transcript in $log"

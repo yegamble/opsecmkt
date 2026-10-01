@@ -12,7 +12,7 @@ import unittest
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts' / 'test-escrow-regtest.sh'
 LEGS = ('TestEscrowRegtestPracticeSign', 'TestEscrowRegtestFunding', 'TestEscrowRegtestSettlement', 'TestEscrowRegtestCosign',
-        'TestEscrowRegtestRecovery')
+        'TestEscrowRegtestRecovery', 'TestEscrowRegtestGate')
 
 
 class FakeRegtest(BaseHTTPRequestHandler):
