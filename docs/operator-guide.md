@@ -722,8 +722,10 @@ rpcwhitelist=opsecmkt-escrow:getblockchaininfo,getrawchangeaddress,getaddressinf
 can export or copy a key: `listdescriptors` (with `private=true` it prints the arbiter's private key; probed on
 Core 31.1 regtest), `dumpprivkey`, `dumpwallet`, `backupwallet` and everything else not listed. `keypoolrefill`
 is on it: it exports nothing and lets the arbiter wallet sign for high escrow indices. `descriptorprocesspsbt`
-is used only with throwaway practice keys, never a wallet key. `getwalletinfo`, `listreceivedbyaddress` and
-`gettransaction` read the watch-only wallet (the arbiter wallet only answers them; they export nothing). `rpcwhitelistdefault=0` leaves other users (the
+is used only with throwaway practice keys, never a wallet key. `getwalletinfo`, `listreceivedbyaddress`,
+`gettransaction` and `listtransactions` read the watch-only wallet (the arbiter wallet only answers
+`getwalletinfo`; they export nothing). `listtransactions` was added in P1-d1 (UPGRADING.md section 22): without it a
+deposit spent outside the market is still flagged, but without the spending transaction's ID. `rpcwhitelistdefault=0` leaves other users (the
 operator's, the pooled wallet's) unrestricted. Make SALT and HASH with Core's `share/rpcauth/rpcauth.py`, or as
 the comment in `scripts/test-escrow-regtest.sh` shows.
 
@@ -842,8 +844,34 @@ broadcast.
 - *Spent outside the market.* When an escrow output a settlement spends is gone before or after it was sent (spent by
   a transaction the market did not make: the wallet reports a conflict, or the node no longer has the output nor
   this transaction), the settlement is recorded *external* (with the conflicting transaction ID when the wallet names
-  it), its deposits are flagged and every moderator and administrator is notified. Reconciliation tools are a later
-  phase; check the escrow by hand.
+  it, or, failing that, the transaction the watch-only wallet lists as spending its input: `listtransactions` and
+  `gettransaction`), its deposits are flagged and every moderator and administrator is notified.
+- *Already on the network* (A-344). When a party-signed settlement's coins are already spent as the market comes to
+  complete it, the watcher first asks the watch-only wallet for the settlement's own transaction (`gettransaction` of
+  its txid). If the wallet has it, in the mempool or a block and not conflicted, the buyer and the vendor broadcast
+  the transaction they both signed themselves (or a restored database held an older party-signed row): its hex is
+  checked like any final transaction, stored, and the settlement moves to *broadcast* and on to *confirmed*, with an
+  order note saying the market did not sign or broadcast it ("completed by" both parties when its witnesses carry
+  their stored signatures, otherwise "network"). A transaction with the stored txid that fails the checks waits with
+  its class; only another transaction is *external*.
+- *Reorganisations.* A confirmed settlement is followed in the watch-only wallet until its transaction has 100
+  confirmations (a depth, not a time: a node that was down catches a reorganisation up when it returns; 100 is
+  Bitcoin's coinbase maturity). Back at 0 confirmations it returns to *broadcast*, the parties are told, and the
+  stored transaction is sent again (not while the restore gate below is set); conflicted, a conflicting transaction
+  was mined instead and it is *external*, flagged. A deeper reorganisation is not followed.
+- *Deposits spent with no settlement.* Each pass checks every confirmed escrow deposit no settlement covers
+  (`gettxout`): one that is no longer unspent was spent by a transaction the market did not make, for example the
+  buyer and the vendor co-spending it from their own wallets. It is marked, with the spending transaction's ID when
+  the watch-only wallet names it, flagged for payment review like a settlement's deposits (an order note, a notice to
+  both parties and to every moderator and administrator), never counted towards funding and never spent by a
+  settlement; the order page lists it as spent outside the market. A deposit of an order whose settlement is being
+  built is left to that build, which waits on an input that is spent.
+- *Orphan addresses.* The daily check (below) also lists, under *Admin → Payment providers → Bitcoin escrow
+  recovery and reconciliation*, every address the watch-only wallet holds with no escrow on record
+  (`listreceivedbyaddress` with `include_empty`: each escrow descriptor is imported with the label `escrow:<order
+  ID>`, which puts its address in the wallet's address book; `listdescriptors` stays off the whitelist): a descriptor
+  imported for a checkout that rolled back after the import, or an escrow created after the backup a restored
+  database came from. The market builds nothing for them; coins there move only with two of their three keys.
 - *Bounded wait* (A-342). A claim or refund whose build waits on a deposit recorded before the order closed that does
   not confirm, or on an escrow holding more than 50 deposits, waits at most 24 hours (about 144 blocks) from its
   request. It is then built without the unconfirmed deposits and beyond the 50 largest; those are left for a stray
@@ -868,6 +896,22 @@ broadcast.
   hours after escrow first runs on the database; `settings` key `escrow_btc_stray_check`), one
   `listreceivedbyaddress` per 200 escrows plus one `gettransaction` per deposit transaction.
 
+**After a restore from backup.** The pooled restore gate (`payments_recovery_required`, set by `scripts/restore.sh`
+or the manual protection SQL in [UPGRADING.md, section 6](../UPGRADING.md#6-backups-now-need-the-wallets-too)) also
+pauses escrow: while it is set the escrow watcher builds no settlement, co-signs none and broadcasts no stored
+transaction, and sends none again; it still reads deposits, follows broadcast and confirmed settlements, and records
+as broadcast (without sending it) a held settlement the watch-only wallet shows on the network. Signing on the order
+page still works. The restore also holds every restored settlement that has a stored final transaction (*signed* or
+*broadcast*; `settlements.send_error` starting `Restored from backup:`): the restored records may predate its
+broadcast or something that replaced it. Under *Admin → Payment providers → Bitcoin escrow recovery and
+reconciliation*, each held or paused settlement is listed with its transaction ID; check it on the chain and in the
+watch-only wallet (`gettransaction` of the txid, `gettxout` of its inputs), then confirm that it was not already sent
+and that no other transaction spent the escrow's coins, with your password (and authenticator code when enrolled):
+the watcher then broadcasts it exactly once, gate or not, and the confirmation is audited and noted on the order. The
+order pages and `/admin` say what is paused and why. Clearing the gate (the runbook's SQL) resumes building,
+co-signing and broadcasting; a settlement the restore held stays held until an administrator confirms it. A restore
+not done by `scripts/restore.sh` or that SQL holds nothing.
+
 **What was checked.** `scripts/test-escrow-regtest.sh` (manual, not in CI) runs key registration and practice
 signing end to end with a real Bitcoin Core 31.1 regtest node and the whitelist above: the app user is refused
 `listdescriptors`, `dumpwallet` and `backupwallet`, runs `keypoolrefill` and every call key activation makes, and
@@ -887,8 +931,18 @@ confirmed with each output on chain as planned; a refund whose co-signature is s
 the broadcast, then the stored transaction broadcast unchanged; a settlement both parties signed, which Core
 finalizes from the two party signatures alone to exactly the broadcast transaction; a vendor signature made over a
 changed input amount and an r = s = 1 signature, each discarded before the vendor's good signature completes it; a
-stray refund of coins sent to a cancelled order's escrow; and an administrator's dispute decision for the buyer.
-Nothing about escrow has run on a public test network.
+stray refund of coins sent to a cancelled order's escrow; and an administrator's dispute decision for the buyer. Its
+fifth leg (P1-d1): both parties sign a claim and broadcast it themselves before the watcher's pass, once left in the
+mempool and once mined, and the watcher records it as broadcast and confirms it; `invalidateblock` takes a
+confirmed settlement back to broadcast (sent again) and `reconsiderblock` confirms it again; a reorganisation with
+the parties' double-spend makes a confirmed settlement external with the replacing transaction's ID; a co-spend with
+no settlement is flagged with its transaction ID; and a labelled watch-only import with no escrow is listed as an
+orphan. The restore gate was checked once by hand on the real server binary against Core 31.1 regtest (not
+scripted): a backup taken with `scripts/backup.sh` before two stored settlements were broadcast, restored with
+`scripts/restore.sh`, held both; one the original market had broadcast after the backup was recorded as broadcast
+without being sent, nothing was built, co-signed or sent, the administrator's confirmation through the `/admin`
+form led to exactly one `sendrawtransaction` over 16 passes, and the runbook's clear-gate SQL resumed building and
+co-signing. Nothing about escrow has run on a public test network.
 
 ### Transparency
 
