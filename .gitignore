@@ -24,3 +24,5 @@ __pycache__/
 
 playwright-wallet-report/
 test-results-wallet/
+playwright-escrow-report/
+test-results-escrow/
