@@ -240,6 +240,17 @@ INSERT INTO disputes(id,order_id,reason) VALUES ('ops-dispute','ops-order-disput
 INSERT INTO audit_events(user_id,action) VALUES ('ops-admin','Restore drill: an audit row written before the backup');
 INSERT INTO images(id,owner_user_id,product_id,kind,\"full\",thumb,width,height) VALUES
  (repeat('a',32),'ops-vendor','ops-product','photo','\\xffd8ff','\\xffd8ff',1,1),(repeat('b',32),'ops-vendor',NULL,'avatar','\\xffd8ff','\\xffd8ff',1,1);"
+# Two Bitcoin escrow settlements with a stored final transaction (ESCROW_BTC, regtest only): one broadcast, which the
+# restore holds until an administrator confirms its rebroadcast, and one confirmed, which it leaves alone.
+pg "$app_source_db" -q -c "
+INSERT INTO orders(id,buyer_id,product_id,currency,amount,state) VALUES
+ ('ops-order-escrow-broadcast','ops-buyer','ops-product','BTC',150000,'completed'),('ops-order-escrow-confirmed','ops-buyer','ops-product','BTC',150000,'completed');
+INSERT INTO settlements(order_id,kind,state,destination,fee_rate,network_fee,input_total,psbt,txid,raw_tx,cosigned,final_at,broadcast_at,confirmed_at) VALUES
+ ('ops-order-escrow-broadcast','release','broadcast','bcrt1qopsrestoreescrowclaim01',2,300,150000,'cHNidP8',repeat('e1',32),'0200','market',now(),now(),NULL),
+ ('ops-order-escrow-confirmed','release','confirmed','bcrt1qopsrestoreescrowclaim02',2,300,150000,'cHNidP8',repeat('e2',32),'0200','market',now(),now(),now());"
+escrow_hold="Restored from backup: check that this escrow settlement's transaction was not already sent or replaced, then confirm its rebroadcast on the admin page."
+settlements="SELECT string_agg(order_id || ':' || state || ':' || (send_error LIKE 'Restored from backup:%'), ',' ORDER BY order_id) FROM settlements"
+escrow_held="ops-order-escrow-broadcast:broadcast:true,ops-order-escrow-confirmed:confirmed:false"
 app_backup="$work/app.dump.age"
 # The backup is taken in one time zone and restored in another (PR #27 SHOULD-3): the restore line must still show
 # when it was taken, in UTC. A custom-format dump keeps the wall-clock time of the zone pg_dump ran in, and
@@ -249,6 +260,7 @@ TZ=Asia/Tokyo BACKUP_DATABASE_URL=$(connection_url "$app_source_db") scripts/bac
 backup_finished=$(date -u +%s)
 TZ=America/New_York RESTORE_DATABASE_URL=$(connection_url "$app_target_db") scripts/restore.sh "$app_backup" <<< 'RESTORE' > "$work/app-restore.log"
 grep -q 'Held 2 restored payout(s)' "$work/app-restore.log"
+grep -q 'Held 1 restored Bitcoin escrow settlement(s) with a stored transaction' "$work/app-restore.log"
 grep -q 'Marked 1 restored failed payout(s) as possibly sent' "$work/app-restore.log"
 grep -Eq "$(images_line 2)" "$work/app-restore.log"
 python3 - "$work/app-restore.log" "$backup_started" "$backup_finished" <<'PY'
@@ -273,7 +285,10 @@ suspended_error="SELECT error FROM payouts WHERE order_id='ops-order-suspended'"
 audit_all="SELECT string_agg(coalesce(user_id,'-') || ':' || action, '|' ORDER BY id) FROM audit_events"
 source_audit=$(pg "$app_source_db" -Atq -c "$audit_all")
 [[ $source_audit == 'ops-admin:Restore drill: an audit row written before the backup' ]]
-restore_audit='-:Payout recovery gate set by scripts/restore.sh: held 2 restored payout(s) and marked 1 restored failed payout(s) as possibly sent; all outbound payouts paused until an administrator clears the gate'
+restore_audit='-:Payout recovery gate set by scripts/restore.sh: held 2 restored payout(s) and marked 1 restored failed payout(s) as possibly sent; held 1 restored escrow settlement(s) with a stored transaction until an administrator confirms each rebroadcast; all outbound payouts paused until an administrator clears the gate'
+[[ $(pg "$app_target_db" -Atq -c "$settlements") == "$escrow_held" ]]
+[[ $(pg "$app_target_db" -Atq -c "SELECT send_error FROM settlements WHERE order_id='ops-order-escrow-broadcast'") == "$escrow_hold" ]]
+[[ $(pg "$app_source_db" -Atq -c "SELECT count(*) FROM settlements WHERE send_error<>''") == 0 ]]
 [[ $(pg "$app_target_db" -Atq -c "$audit_all") == "$source_audit|$restore_audit" ]]
 [[ $(pg "$app_source_db" -Atq -c "SELECT string_agg(state || ':' || send_ambiguous, ',' ORDER BY order_id) FROM payouts WHERE order_id IN ('ops-order-failed','ops-order-queued')") == failed:false,pending:false ]]
 [[ $(pg "$app_target_db" -Atq -c "SELECT string_agg(version || ':' || name || '@' || applied, ',' ORDER BY version) FROM schema_migrations") == "$migrations" ]]
@@ -324,7 +339,8 @@ runbook_sql restore-protection UPGRADING.md > "$work/restore-protection.sql"
  python3 scripts/postgres-tool.py MANUAL_TARGET_URL pg_restore --dbname='' --single-transaction --exit-on-error --no-owner --no-acl < "$work/manual.dump")
 [[ $(pg "$app_manual_db" -Atq -c "SELECT count(*) FROM settings WHERE key='payments_recovery_required'") == 0 ]]
 [[ $(pg "$app_manual_db" -Atq -c "SELECT state FROM payouts WHERE order_id='ops-order-queued'") == pending ]]
-[[ $(pg "$app_manual_db" -At -f "$work/restore-protection.sql") == $'BEGIN\nINSERT 0 1\nUPDATE 2\nUPDATE 1\nUPDATE 1\nINSERT 0 1\nCOMMIT' ]]
+[[ $(pg "$app_manual_db" -At -f "$work/restore-protection.sql") == $'BEGIN\nINSERT 0 1\nUPDATE 2\nUPDATE 1\nUPDATE 1\nUPDATE 1\nINSERT 0 1\nCOMMIT' ]]
+[[ $(pg "$app_manual_db" -Atq -c "$settlements") == "$escrow_held" ]]
 [[ $(pg "$app_manual_db" -Atq -c "SELECT value FROM settings WHERE key='payments_recovery_required'") == true ]]
 [[ $(pg "$app_manual_db" -Atq -c "$payouts") == "$held" ]]
 [[ $(pg "$app_manual_db" -Atq -c "$suspended_error") == "$restored_hold $suspended_hold" ]]

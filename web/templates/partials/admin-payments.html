@@ -16,6 +16,61 @@
 <button type="submit">Save the market fee</button>
 </form>{{else}}
 <p class="order-unavailable" role="note"><strong>Unavailable.</strong> Bitcoin escrow is unavailable right now, so a fee address cannot be checked.</p>{{end}}{{end}}
+{{with $.EscrowRecovery}}<h3 id="escrow-recovery">Bitcoin escrow recovery and reconciliation (regtest)</h3>{{with $.NoticeIn "escrow-recovery"}}
+<div class="alert" role="status">{{.}}</div>{{end}}{{if .Gate}}
+<div class="alert" role="status"><strong>Bitcoin escrow paused for restore reconciliation.</strong> While the recovery lock is set the escrow watcher builds, co-signs and broadcasts no escrow settlement; it still reads deposits and follows broadcast settlements to their confirmations. Clearing the recovery lock (see the recovery runbook) resumes building and co-signing; a settlement held by the restore still waits for its check below.</div>{{end}}
+<p>A restore from backup holds every restored escrow settlement that has a stored final transaction: the restored records may predate its broadcast, or a transaction that replaced it. While the recovery lock is set, every stored transaction waits too. Check each one on the chain and in the escrow watch-only wallet (<code>gettransaction</code> of its transaction ID, <code>gettxout</code> of its inputs), then confirm it: the market broadcasts it once. One the watch-only wallet shows on the network is recorded as broadcast without being sent, and one that confirms is released by itself. Each confirmation needs your password and is audited.</p>{{if .Held}}
+<div class="table-wrap" tabindex="0" role="region" aria-labelledby="escrow-held-heading">
+<table>
+<caption id="escrow-held-heading">Escrow settlements waiting for a rebroadcast check</caption>
+<thead>
+<tr>
+<th scope="col">Order</th>
+<th scope="col">Settlement</th>
+<th scope="col">Transaction</th>
+<th scope="col">Status</th>
+<th scope="col">Action</th>
+</tr>
+</thead>
+<tbody>{{range .Held}}<tr>
+<td class="mono">{{.Short}}</td>
+<td>{{.Kind}} ({{.State}})</td>
+<td class="mono">{{.TxID}}</td>
+<td>{{if .Confirmed}}Confirmed: broadcast once on the next pass{{else if .Restored}}Held by a restore from backup{{else}}Paused by the recovery lock{{end}}</td>
+<td>{{if .Confirmed}}—{{else}}<form class="stack" method="post" action="/admin/escrow-rebroadcast">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="settlement_id" value="{{.ID}}">
+<label class="check"><input type="checkbox" name="not_sent" value="confirmed" required> I checked the chain and the escrow watch-only wallet: this transaction was not already sent, and no other transaction spent the escrow's coins</label>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
+<button type="submit">Rebroadcast once</button>
+</form>{{end}}</td>
+</tr>{{end}}</tbody>
+</table>
+</div>{{else}}
+<p>No escrow settlement is waiting for a rebroadcast check.</p>{{end}}
+<h4 id="escrow-orphans">Escrow addresses with no escrow record</h4>
+<p>Addresses the escrow watch-only wallet holds with no escrow on record, found on the escrow watcher's daily check: a descriptor imported for an escrow whose checkout did not complete, or an escrow created after the backup a restored database came from. The market never builds a settlement for them; coins at such an address can be spent only with two of its three keys. The order ID comes from the wallet's label.</p>{{if .Orphans}}
+<div class="table-wrap" tabindex="0" role="region" aria-labelledby="escrow-orphans">
+<table>
+<thead>
+<tr>
+<th scope="col">Address</th>
+<th scope="col">Order (wallet label)</th>
+<th scope="col">Received</th>
+<th scope="col">First seen</th>
+<th scope="col">Last seen</th>
+</tr>
+</thead>
+<tbody>{{range .Orphans}}<tr>
+<td class="mono">{{.Address}}</td>
+<td class="mono">{{if .OrderID}}{{.OrderID}}{{else}}—{{end}}</td>
+<td>{{.Received}} BTC</td>
+<td>{{.FirstSeen}}</td>
+<td>{{.LastSeen}}</td>
+</tr>{{end}}</tbody>
+</table>
+</div>{{else}}
+<p>None found.</p>{{end}}{{end}}
 <h3 id="payment-intake">New payment addresses</h3>{{with $.NoticeIn "payment-intake"}}
 <div class="alert" role="status">{{.}}</div>{{end}}
 <p>Enable or pause Bitcoin and Monero separately. Pausing prevents new payment addresses; existing deposit addresses, payment confirmation, refunds and payouts continue. Wallet RPC connections must be provisioned on the server first. Changes require your password and are audited.</p>

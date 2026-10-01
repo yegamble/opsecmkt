@@ -568,12 +568,19 @@ func sendStored(ctx context.Context, e *escrowBTC, rawHex, txid string) (bool, e
 }
 
 func (a *App) broadcastSettlement(ctx context.Context, e *escrowBTC, id int64) error {
-	var orderID, kind, rawHex, txid, psbt string
-	err := a.db.QueryRowContext(ctx, "SELECT order_id,kind,raw_tx,txid,psbt FROM settlements WHERE id=$1 AND state='signed'", id).Scan(&orderID, &kind, &rawHex, &txid, &psbt)
+	var orderID, kind, rawHex, txid, psbt, sendErr string
+	err := a.db.QueryRowContext(ctx, "SELECT order_id,kind,raw_tx,txid,psbt,send_error FROM settlements WHERE id=$1 AND state='signed'", id).Scan(&orderID, &kind, &rawHex, &txid, &psbt, &sendErr)
 	if err == sql.ErrNoRows {
 		return nil
 	}
 	if err != nil {
+		return err
+	}
+	may, err := a.maySend(ctx, sendErr)
+	if err != nil || !may {
+		if err == nil {
+			err = a.seenWhilePaused(ctx, e, id, orderID, kind, txid)
+		}
 		return err
 	}
 	sent, err := sendStored(ctx, e, rawHex, txid)
@@ -635,8 +642,8 @@ func (a *App) trackBroadcasts(ctx context.Context, e *escrowBTC) error {
 }
 
 func (a *App) trackBroadcast(ctx context.Context, e *escrowBTC, id int64) error {
-	var orderID, kind, rawHex, txid, psbt string
-	err := a.db.QueryRowContext(ctx, "SELECT order_id,kind,raw_tx,txid,psbt FROM settlements WHERE id=$1 AND state='broadcast'", id).Scan(&orderID, &kind, &rawHex, &txid, &psbt)
+	var orderID, kind, rawHex, txid, psbt, sendErr string
+	err := a.db.QueryRowContext(ctx, "SELECT order_id,kind,raw_tx,txid,psbt,send_error FROM settlements WHERE id=$1 AND state='broadcast'", id).Scan(&orderID, &kind, &rawHex, &txid, &psbt, &sendErr)
 	if err == sql.ErrNoRows {
 		return nil
 	}
@@ -644,6 +651,12 @@ func (a *App) trackBroadcast(ctx context.Context, e *escrowBTC, id int64) error 
 		return err
 	}
 	w, err := e.walletTx(ctx, txid)
+	if err != nil {
+		return err
+	}
+	// While a restore holds it, or the restore gate is set and no administrator confirmed it, it is followed but never
+	// sent again (escrow_recovery.go).
+	may, err := a.maySend(ctx, sendErr)
 	if err != nil {
 		return err
 	}
@@ -656,7 +669,8 @@ func (a *App) trackBroadcast(ctx context.Context, e *escrowBTC, id int64) error 
 			return err
 		}
 		defer tx.Rollback()
-		res, err := tx.ExecContext(ctx, "UPDATE settlements SET state='confirmed',confirmed_at=now(),updated=now() WHERE id=$1 AND state='broadcast'", id)
+		// Confirmed: a restore's hold on it, or a confirmation not yet used, ends here.
+		res, err := tx.ExecContext(ctx, "UPDATE settlements SET state='confirmed',confirmed_at=now(),send_error='',updated=now() WHERE id=$1 AND state='broadcast'", id)
 		if err != nil {
 			return err
 		}
@@ -682,16 +696,29 @@ func (a *App) trackBroadcast(ctx context.Context, e *escrowBTC, id int64) error 
 		}
 		if spent {
 			// Spent, and the wallet does not know this transaction: it is external unless the node still has it
-			// (sendrawtransaction answers its txid, or -27 for one already in a block).
-			if sent, err := sendStored(ctx, e, rawHex, txid); err != nil || sent {
+			// (sendrawtransaction answers its txid, or -27 for one already in a block). While sending is paused it waits.
+			if !may {
+				return nil
+			}
+			sent, err := sendStored(ctx, e, rawHex, txid)
+			if err == nil {
+				err = a.sentOnce(ctx, id)
+			}
+			if err != nil || sent {
 				return err
 			}
 			return a.markExternal(ctx, id, orderID, "")
 		}
 	}
-	// Unconfirmed (or not seen by the wallet, its inputs still unspent): the stored transaction is sent again.
-	_, err = sendStored(ctx, e, rawHex, txid)
-	return err
+	// Unconfirmed (or not seen by the wallet, its inputs still unspent): the stored transaction is sent again, unless
+	// sending is paused.
+	if !may {
+		return nil
+	}
+	if _, err = sendStored(ctx, e, rawHex, txid); err != nil {
+		return err
+	}
+	return a.sentOnce(ctx, id)
 }
 
 // markExternal records that the escrow outputs of a settlement were spent by a transaction the market did not make

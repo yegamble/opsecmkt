@@ -55,6 +55,7 @@ var notices = map[string]struct{ text, section, pages string }{
 	"escrow-signed-both":   {"Signature accepted. Both parties have now signed; the signature's validity is checked when the market finalizes the transaction. Nothing has been sent yet: the market does not sign it, and broadcasts the transaction the two parties signed on its next pass.", "", ""},
 	"escrow-decision":      {"Dispute decision changed. The order page shows the settlement that pays it.", "", ""},
 	"escrow-fee":           {"Market fee saved. It applies to escrows created from now on; existing escrows keep the fee they started with.", "escrow-fee", "admin"},
+	"escrow-rebroadcast":   {"Rebroadcast confirmed. The market broadcasts the settlement's stored transaction once on its next pass.", "escrow-recovery", "admin"},
 	"escrow-recover":       {"Asked. The market checks this escrow on its next pass and returns what it finds to your refund address by a stray refund; reload this page in a minute.", "", ""},
 
 	// Messages, orders and disputes

@@ -1,0 +1,264 @@
+package market
+
+import (
+	"context"
+	"database/sql"
+	"net/http"
+	"strconv"
+	"strings"
+)
+
+// Recovery and reconciliation of Bitcoin escrow (WR-escrow Phase 1, slice P1-d1; ES-6).
+//
+// The restore gate. A restored database knows nothing that happened after its backup: a settlement built, co-signed or
+// broadcast since then is missing or in an earlier state, and a dispute decided since then can be decided again. While
+// the pooled restore gate is set (settings payments_recovery_required, written by scripts/restore.sh or the manual
+// protection SQL in UPGRADING.md section 6, cleared only by the operator's SQL), the escrow watcher therefore builds no
+// settlement, co-signs none and broadcasts no stored transaction; it still reads deposits and follows broadcast
+// settlements to their confirmations (watching continues). The restore also holds every restored settlement that has a
+// final transaction (restoredSettlementHold): its transaction is broadcast again only after an administrator checked on
+// /admin that it was not already sent or replaced (escrowRebroadcastAction: password step-up, audited), which allows
+// exactly one broadcast (sendRebroadcastOK, consumed by that send). A held settlement stays held after the gate is
+// cleared, until an administrator confirms it; one the watch-only wallet shows on the network is recorded as
+// broadcast without being sent, and one that confirms is no longer held.
+
+func init() {
+	registerAction("/admin/escrow-rebroadcast", actionSpec{Roles: []string{"admin"}, OwnTx: true, Off: escrowOff, Run: escrowRebroadcastAction})
+	registerLoader("admin", escrowRecoveryLoader)
+}
+
+// restoredSettlementHold is the send_error scripts/restore.sh (and the manual protection SQL in UPGRADING.md section
+// 6) writes on every restored escrow settlement that has a final transaction (signed or broadcast): the restored
+// database may predate its broadcast, or something that replaced it, so it is not broadcast again until an
+// administrator checks it (escrowRebroadcastAction). It starts with restoredHoldPrefix, as the restored payouts do.
+const restoredSettlementHold = restoredHoldPrefix + " check that this escrow settlement's transaction was not already sent or replaced, then confirm its rebroadcast on the admin page."
+
+// sendRebroadcastOK is the send_error of a settlement whose rebroadcast an administrator confirmed: the watcher sends
+// its stored transaction once, gate or not, and clears it.
+const sendRebroadcastOK = "rebroadcast-confirmed"
+
+// restoreGateSet reports whether the restore gate is set, read directly as the pooled payouts read it (sendPayouts).
+func restoreGateSet(ctx context.Context, q rowQuerier) (bool, error) {
+	var on bool
+	err := q.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM settings WHERE key='payments_recovery_required' AND value='true')").Scan(&on)
+	return on, err
+}
+
+// restoreHeld reports a settlement a restore held (restoredSettlementHold).
+func restoreHeld(sendErr string) bool { return strings.HasPrefix(sendErr, restoredHoldPrefix) }
+
+// maySend reports whether the stored transaction of a settlement with send_error sendErr may be sent now: never while
+// a restore holds it, and while the gate is set only once an administrator confirmed it.
+func (a *App) maySend(ctx context.Context, sendErr string) (bool, error) {
+	if restoreHeld(sendErr) {
+		return false, nil
+	}
+	if sendErr == sendRebroadcastOK {
+		return true, nil
+	}
+	gate, err := restoreGateSet(ctx, a.db)
+	return !gate, err
+}
+
+// sentOnce clears an administrator's rebroadcast confirmation once the transaction it allowed was sent.
+func (a *App) sentOnce(ctx context.Context, id int64) error {
+	_, err := a.db.ExecContext(ctx, "UPDATE settlements SET send_error='',updated=now() WHERE id=$1 AND send_error=$2", id, sendRebroadcastOK)
+	return err
+}
+
+// Order-page lines of a settlement paused by the restore gate or held by a restore.
+const (
+	restoreWhy        = "the market restored its records from a backup and is reconciling them with the blockchain"
+	restoreHeldText   = "Held: " + restoreWhy + ", so an administrator checks that this transaction was not already sent or replaced before the market broadcasts it again."
+	restoreConfirmedT = "An administrator checked that this transaction was not already sent or replaced; the market broadcasts it once on its next pass."
+)
+
+// restoreStatus replaces a settlement's order-page status while the restore gate pauses it or a restore holds it
+// (settlementView): what is paused, why, and what happens next.
+func (a *App) restoreStatus(s *EscrowSettlementView, v *EscrowOrderView, state, sendErr, signer, signedAt string) {
+	sendable := state == "signed" || state == "broadcast"
+	stored := "Signed, checked and stored."
+	if state == "broadcast" {
+		stored = s.Status // it names its transaction, public since its broadcast
+	}
+	switch {
+	case sendable && sendErr == sendRebroadcastOK:
+		s.Status = stored + " " + restoreConfirmedT
+	case sendable && restoreHeld(sendErr):
+		s.Status = stored + " " + restoreHeldText
+	case !v.RestorePaused:
+	case state == "building":
+		s.Status = "Paused: " + restoreWhy + ", so the market builds no settlement until the operator has finished. The escrow is still watched."
+	case state == "party_signed":
+		s.Status = "Signed by the " + signer + " (" + signedAt + "). " + settleSigChecked + " Paused: " + restoreWhy + ", so the market co-signs it only once the operator has finished. Nothing has been sent yet."
+	case sendable:
+		s.Status = stored + " Paused: " + restoreWhy + ", so the market does not broadcast it until an administrator has checked that it was not already sent or replaced."
+	}
+}
+
+// EscrowRecoveryView is /admin's Bitcoin escrow recovery section: whether the restore gate pauses escrow, the
+// settlements whose stored transaction waits for an administrator's confirmation, and the reconciliation lists.
+type EscrowRecoveryView struct {
+	Gate    bool
+	Held    []EscrowHeldView
+	Orphans []EscrowOrphanView
+}
+
+// EscrowHeldView is one settlement whose stored transaction is not broadcast until an administrator confirms it.
+type EscrowHeldView struct {
+	ID             int64
+	OrderID, Short string
+	Kind, State    string
+	TxID           string
+	Restored       bool // held by a restore (else paused by the gate)
+	Confirmed      bool // already confirmed: broadcast once on the next pass
+}
+
+// EscrowOrphanView is one address the escrow watch-only wallet holds with no escrow row.
+type EscrowOrphanView struct {
+	Address, OrderID, Received, FirstSeen, LastSeen string
+}
+
+// escrowRecoveryLoader fills /admin's escrow recovery section while ESCROW_BTC is on, or while any settlement is held.
+func escrowRecoveryLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
+	if d.User == nil || d.User.Role != "admin" {
+		return nil
+	}
+	gate, err := restoreGateSet(ctx, a.db)
+	if err != nil {
+		return err
+	}
+	v := &EscrowRecoveryView{Gate: gate}
+	rows, err := a.db.QueryContext(ctx, `SELECT id,order_id,kind,state,txid,send_error FROM settlements
+		WHERE raw_tx IS NOT NULL AND state IN ('signed','broadcast') AND (send_error LIKE $1 OR send_error=$2 OR $3) ORDER BY id`, restoredHoldPrefix+"%", sendRebroadcastOK, gate)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var h EscrowHeldView
+		var sendErr string
+		if err = rows.Scan(&h.ID, &h.OrderID, &h.Kind, &h.State, &h.TxID, &sendErr); err != nil {
+			rows.Close()
+			return err
+		}
+		h.Short, h.Restored, h.Confirmed = shortID(h.OrderID), restoreHeld(sendErr), sendErr == sendRebroadcastOK
+		h.Kind = settlementKind(h.Kind)
+		v.Held = append(v.Held, h)
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	if v.Orphans, err = escrowOrphans(ctx, a.db); err != nil {
+		return err
+	}
+	if !a.escrowConfigured && !gate && len(v.Held) == 0 && len(v.Orphans) == 0 {
+		return nil
+	}
+	d.EscrowRecovery = v
+	return nil
+}
+
+// escrowOrphans lists the orphan escrow addresses the watcher recorded (escrowReconcileOrphans).
+func escrowOrphans(ctx context.Context, q rowsQuerier) ([]EscrowOrphanView, error) {
+	rows, err := q.QueryContext(ctx, `SELECT address,order_id,received,to_char(first_seen,'YYYY-MM-DD HH24:MI "UTC"'),to_char(last_seen,'YYYY-MM-DD HH24:MI "UTC"')
+		FROM escrow_orphans ORDER BY first_seen,address LIMIT 200`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []EscrowOrphanView
+	for rows.Next() {
+		var o EscrowOrphanView
+		var sats int64
+		if err = rows.Scan(&o.Address, &o.OrderID, &sats, &o.FirstSeen, &o.LastSeen); err != nil {
+			return nil, err
+		}
+		o.Received = amount(sats, 8)
+		if o.Received == "" {
+			o.Received = "0"
+		}
+		out = append(out, o)
+	}
+	return out, rows.Err()
+}
+
+// escrowRebroadcastAction is an administrator's confirmation, after checking the chain and the escrow's watch-only
+// wallet, that a held settlement's stored transaction was not already sent or replaced: the watcher then broadcasts it
+// once. Password step-up (and authenticator code when enrolled), compare-and-set on the settlement's state and
+// send_error, an order note and an audit row.
+func escrowRebroadcastAction(c *actionCtx) (actionResult, error) {
+	id, err := strconv.ParseInt(c.Form.Get("settlement_id"), 10, 64)
+	if err != nil || id <= 0 {
+		return actionResult{}, fail(400, "Unknown settlement")
+	}
+	if c.Form.Get("not_sent") != "confirmed" {
+		return actionResult{}, fail(400, "Check the blockchain and the escrow's watch-only wallet first, then confirm that this transaction was not already sent and that no other transaction spent the escrow's coins. Nothing was changed.")
+	}
+	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
+		ctx := c.Ctx()
+		var orderID, kind, state, sendErr string
+		var raw sql.NullString
+		err := c.Tx.QueryRowContext(ctx, "SELECT order_id,kind,state,send_error,raw_tx FROM settlements WHERE id=$1 FOR UPDATE", id).Scan(&orderID, &kind, &state, &sendErr, &raw)
+		if err == sql.ErrNoRows {
+			return actionResult{}, fail(404, "Settlement not found")
+		}
+		if err != nil {
+			return actionResult{}, err
+		}
+		gate, err := restoreGateSet(ctx, c.Tx)
+		if err != nil {
+			return actionResult{}, err
+		}
+		switch {
+		case !raw.Valid || state != "signed" && state != "broadcast":
+			return actionResult{}, fail(409, "This settlement has no stored transaction waiting to be broadcast. Nothing was changed.")
+		case sendErr == sendRebroadcastOK:
+			return actionResult{}, fail(409, "Its rebroadcast is already confirmed: the market broadcasts it once on its next pass. Nothing was changed.")
+		case !restoreHeld(sendErr) && !gate:
+			return actionResult{}, fail(409, "This settlement is not held: the market broadcasts it by itself. Nothing was changed.")
+		}
+		res, err := c.Tx.ExecContext(ctx, "UPDATE settlements SET send_error=$2,updated=now() WHERE id=$1 AND state=$3 AND send_error=$4", id, sendRebroadcastOK, state, sendErr)
+		if err != nil {
+			return actionResult{}, err
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			return actionResult{}, fail(409, "The settlement changed meanwhile. Reload the admin page. Nothing was changed.")
+		}
+		if _, err = c.Tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) SELECT id,state,state,$2,$3 FROM orders WHERE id=$1", orderID, c.User.ID,
+			"An administrator checked that this escrow settlement's transaction was not already sent or replaced after the market restored its records from a backup; the market broadcasts it once on its next pass."); err != nil {
+			return actionResult{}, err
+		}
+		audit := "Confirmed the rebroadcast of escrow settlement " + strconv.FormatInt(id, 10) + " (" + settlementKind(kind) + ") of order " + shortID(orderID) +
+			" after a restore from backup: the administrator checked that its transaction was not already sent or replaced (" + c.A.escrowNetwork() + ")"
+		return actionResult{Redirect: "/admin#escrow-recovery", Notice: "escrow-rebroadcast", Audit: audit}, nil
+	})
+}
+
+// seenWhilePaused follows a signed settlement whose broadcast is paused or held: when the watch-only wallet has its
+// transaction (in the mempool or a block, not conflicted), it was sent after all, so the settlement is recorded as
+// broadcast, without sending anything, and a restore's hold on it ends.
+func (a *App) seenWhilePaused(ctx context.Context, e *escrowBTC, id int64, orderID, kind, txid string) error {
+	w, err := e.walletTx(ctx, txid)
+	if err != nil || !w.Found || w.Confirmations < 0 {
+		return err
+	}
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, "UPDATE settlements SET state='broadcast',broadcast_at=now(),send_error='',updated=now() WHERE id=$1 AND state='signed'", id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return nil
+	}
+	what := settlementKind(kind)
+	if err = settleNote(ctx, tx, orderID, "The transaction of the escrow settlement ("+what+") is already on the "+a.escrowNetwork()+" network: the market's watch-only wallet has it, although the market did not send it while its broadcasts were paused. It is recorded as broadcast; the order page shows its transaction.",
+		"its escrow settlement ("+what+") is on the "+a.escrowNetwork()+" network; the order page shows its transaction and its confirmations."); err != nil {
+		return err
+	}
+	return tx.Commit()
+}

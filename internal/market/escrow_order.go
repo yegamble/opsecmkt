@@ -142,6 +142,9 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 	default:
 		v.Status = stateLabel(o.State)
 	}
+	if v.RestorePaused, err = restoreGateSet(ctx, a.db); err != nil {
+		return err
+	}
 	d.Escrow = v
 	if err = a.escrowSettlementView(ctx, d, v); err != nil {
 		return err
