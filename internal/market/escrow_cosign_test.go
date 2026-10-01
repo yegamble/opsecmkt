@@ -656,9 +656,15 @@ func TestEscrowBothPartiesSign(t *testing.T) {
 	if code, _ := x.sign(order, vsess, id, vpaste); code != 409 {
 		t.Fatalf("the vendor signing twice: %d", code)
 	}
-	x.signAs(order, roleBuyer, id)
-	if code, _ := x.sign(order, vsess, id, vpaste); code != 409 {
-		t.Fatalf("the vendor signing after both signed: %d", code)
+	bsess, bfp := x.partySess(roleBuyer)
+	bpaste := walletSign(t, x.partyCopy(order, bsess, id), bfp, 1)
+	if code, body := x.sign(order, bsess, id, bpaste); code != 303 {
+		t.Fatalf("buyer signs too: %d %s", code, body)
+	}
+	for who, c := range map[string]struct{ sess, paste string }{"vendor": {vsess, vpaste}, "buyer": {bsess, bpaste}} {
+		if code, _ := x.sign(order, c.sess, id, c.paste); code != 409 {
+			t.Fatalf("the %s signing again after both signed: %d", who, code)
+		}
 	}
 	r := x.settleByID(id)
 	if r.State != "party_signed" || r.Signer != roleVendor || agInt(x.testEnv, "SELECT count(DISTINCT party) FROM settlement_signatures WHERE settlement_id=$1", id) != 2 {
