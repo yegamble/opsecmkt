@@ -856,6 +856,21 @@ guide](docs/operator-guide.md#bitcoin-escrow-regtest-only)). No action is needed
 the pre-upgrade backup, as for every migration (section 5): the earlier release refuses to start on a database that
 records migration 076.
 
+## 22. Bitcoin escrow recovery and reconciliation (migration 077)
+
+Migration 077 runs at startup. A new trigger, `settlements_moves`, lets a settlement with a final transaction move only
+forward (signed to broadcast or external, broadcast to confirmed or external), with one step back for a reorganisation:
+confirmed to broadcast, when its transaction drops out of the chain and is sent again (confirmed to external when a
+conflicting transaction was mined instead); an external settlement never changes. It adds `settlements.reorg_safe_at`
+(a confirmed settlement is followed until its transaction has 100 confirmations), a third value `network` for
+`settlements.cosigned` (a settlement whose transaction the market found already on the network when it came to complete
+it), `payments.spent_outside` and `payments.spent_by` (an escrow deposit spent by a transaction the market did not make,
+with no settlement covering it, flagged for staff) and the table `escrow_orphans` (addresses the escrow watch-only wallet
+holds with no escrow row, listed on `/admin`). Like migrations 074–076 it changes nothing unless `ESCROW_BTC=on`
+(regtest only, off by default); pooled payments are unchanged. No action is needed. Rolling back past this
+release needs the pre-upgrade backup, as for every migration (section 5): the earlier release refuses to start on a
+database that records migration 077.
+
 ## Appendix: new keys by hand
 
 `./scripts/install.sh upgrade` writes these for you. To add them yourself, use your editor (values in single
