@@ -681,7 +681,7 @@ func leaveOut(ctx context.Context, tx *sql.Tx, orderID, kind, buyer, verb string
 // settleNotSent is the honest line on every settlement that has not been broadcast (ES-10), naming the escrow node's
 // chain (A-331).
 func (a *App) settleNotSent() string {
-	return "Nothing has been sent yet: once one party has signed, the market co-signs the settlement on its next pass and broadcasts it to the " + a.escrowNetwork() + " network."
+	return "Nothing has been sent yet: once one party has signed, the market co-signs the settlement on its next pass and broadcasts it to the " + a.escrowNetwork() + " network; once both parties have signed, the market does not sign it and broadcasts the transaction they signed."
 }
 
 // settleNotSentBoth is the same line once both parties have signed (A-350): the market does not sign, it broadcasts
@@ -1063,6 +1063,12 @@ func (a *App) settlementView(ctx context.Context, d *PageData, v *EscrowOrderVie
 	if pending != "" {
 		pending = " " + pending + " The market tries again on each pass; market staff should check it if this stays."
 	}
+	var bothSigned bool
+	if state == "party_signed" {
+		if err = a.db.QueryRowContext(ctx, "SELECT count(DISTINCT party)=2 FROM settlement_signatures WHERE settlement_id=$1", id).Scan(&bothSigned); err != nil {
+			return nil, err
+		}
+	}
 	switch state {
 	case "building":
 		s.Status = "Being built: the market builds the transaction from the escrow's confirmed deposits on its next pass. Reload in a minute."
@@ -1076,6 +1082,10 @@ func (a *App) settlementView(ctx context.Context, d *PageData, v *EscrowOrderVie
 		s.Status = "Waiting for a signature from the buyer or the vendor. " + a.settleNotSent()
 	case "party_signed":
 		s.Status = "Signed by the " + signer + " (" + signedAt.String + "). " + settleSigChecked + " The market co-signs it and broadcasts it on its next pass. Nothing has been sent yet." + pending
+		if bothSigned {
+			// A-353: with both parties' signatures the market does not sign; it broadcasts the transaction they signed.
+			s.Status = "Signed by the " + signer + " and the " + otherParty(signer) + " (first signature " + signedAt.String + "). " + settleSigChecked + " The market does not sign it, and broadcasts the transaction the two parties signed on its next pass. Nothing has been sent yet." + pending
+		}
 	case "signed":
 		by := "the market, with the " + signer + "'s signature"
 		if cosigned == "parties" {

@@ -187,7 +187,8 @@ func TestEscrowStatementsSayTheMarketCosignsAndBroadcasts(t *testing.T) {
 			}
 		}
 	}
-	check("/", x.buyerSess, "the market co-signs it and broadcasts it to the regtest network. Other orders stay unfunded drafts.")
+	// A-355: both paths, one party's signature the market co-signs and both parties' the market broadcasts unsigned.
+	check("/", x.buyerSess, "the market co-signs it and broadcasts it to the regtest network; when both have signed it, the market does not sign it and broadcasts what they signed. Other orders stay unfunded drafts.")
 	x.mustCheckout(x.order, "bcrt1qbuyerrefund00000000000000000000001")
 	x.fund(x.order, "partial", 3, 40000)
 	if x.state(x.order) != stateAwaitingPayment || x.A.escrow.Load() == nil {
@@ -199,8 +200,9 @@ func TestEscrowStatementsSayTheMarketCosignsAndBroadcasts(t *testing.T) {
 			x.A.payMu.Lock()
 			x.A.payments["BTC"] = newFakeProvider("BTC", 3)
 			x.A.payMu.Unlock()
-			check("/", x.buyerSess, "the market co-signs it and broadcasts it to the regtest network.")
+			check("/", x.buyerSess, "the market co-signs it and broadcasts it to the regtest network; when both have signed it, the market does not sign it and broadcasts what they signed.")
 		}
-		check("/order?id="+x.order, sess, "Returns one unit of stock. The coins in this escrow go back to the buyer's refund address by a settlement: the market builds the refund transaction, the buyer or the vendor signs it on this page, and the market then co-signs it and broadcasts it to the regtest network.")
+		check("/order?id="+x.order, sess, "Returns one unit of stock. The coins in this escrow go back to the buyer's refund address by a settlement: the market builds the refund transaction, the buyer or the vendor signs it on this page, and the market then co-signs it and broadcasts it to the regtest network (when both sign it, the market does not sign it and broadcasts what they signed).",
+			"Once the buyer or the vendor has signed one in their own wallet, the market co-signs it and broadcasts it to the regtest network; when both have signed it, the market does not sign it and broadcasts what they signed.")
 	}
 }
