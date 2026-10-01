@@ -849,6 +849,18 @@ guide](docs/operator-guide.md#bitcoin-escrow-regtest-only)). No other action is 
 needs the pre-upgrade backup, as for every migration (section 5): the earlier release refuses to start on a database
 that records migration 077.
 
+## 23. Bitcoin escrow settlements spent while they wait (migration 078)
+
+Migration 078 runs at startup. It changes two rules on `settlements` so the escrow watcher can close a settlement whose
+escrow deposit another transaction spent while the settlement was still being built or was waiting for a party's
+signature (A-356): the check `settlements_built` now also allows an `external` settlement that was never built (no
+PSBT, transaction ID, fee or amount), and the function of the trigger `settlements_frozen` now also allows a settlement
+waiting for a signature to store its final transaction when it moves to `signed` (the market found that exact
+transaction already on the network: the buyer and the vendor signed it and sent it themselves). Every other rule of
+migrations 075–077 is unchanged. Like them it changes nothing unless `ESCROW_BTC=on` (regtest only, off by default);
+pooled payments are unchanged. No action is needed. Rolling back past this release needs the pre-upgrade backup, as for
+every migration (section 5): the earlier release refuses to start on a database that records migration 078.
+
 ## Appendix: new keys by hand
 
 `./scripts/install.sh upgrade` writes these for you. To add them yourself, use your editor (values in single

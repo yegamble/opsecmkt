@@ -106,6 +106,19 @@ func (c *fakeEscrowCore) count(method string) int {
 	return len(slices.DeleteFunc(c.methods(), func(m string) bool { return m != method }))
 }
 
+// countWith is how many times method was called with params containing part.
+func (c *fakeEscrowCore) countWith(method, part string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	for _, call := range c.calls {
+		if call.Method == method && strings.Contains(string(call.Params), part) {
+			n++
+		}
+	}
+	return n
+}
+
 // fakeEscrowDeposit is one output the watch wallet reports as received.
 type fakeEscrowDeposit struct {
 	Address, TxID string

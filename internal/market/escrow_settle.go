@@ -396,13 +396,13 @@ func (a *App) buildSettlements(ctx context.Context, e *escrowBTC) error {
 // buildSettlement builds one settlement (step 2 of the file comment). The RPCs run outside any transaction; the
 // result is stored by compare-and-set, so of two builds of one settlement one stores and the other changes nothing.
 func (a *App) buildSettlement(ctx context.Context, e *escrowBTC, id int64) error {
-	var orderID, kind, state, dest, escrowAddr, refund, feeDest, orderState, outcome string
+	var orderID, kind, state, dest, escrowAddr, refund, feeDest, orderState, outcome, buildErr string
 	var price, feeBps int64
 	var bounded bool
 	err := a.db.QueryRowContext(ctx, `SELECT s.order_id,s.kind,s.state,COALESCE(s.destination,''),es.address,es.refund_address,es.fee_bps,es.fee_destination,o.amount,o.state,
-		s.created < now()-make_interval(secs => $2),`+disputeOutcomeSQL+`
+		s.created < now()-make_interval(secs => $2),`+disputeOutcomeSQL+`,s.build_error
 		FROM settlements s JOIN escrows es ON es.order_id=s.order_id JOIN orders o ON o.id=s.order_id WHERE s.id=$1`, id, escrowBuildWaitMax.Seconds()).Scan(
-		&orderID, &kind, &state, &dest, &escrowAddr, &refund, &feeBps, &feeDest, &price, &orderState, &bounded, &outcome)
+		&orderID, &kind, &state, &dest, &escrowAddr, &refund, &feeBps, &feeDest, &price, &orderState, &bounded, &outcome, &buildErr)
 	if err != nil || state != "building" {
 		return err
 	}
@@ -480,7 +480,7 @@ func (a *App) buildSettlement(ctx context.Context, e *escrowBTC, id int64) error
 		case err != nil:
 			return err
 		case !u.Found:
-			return a.settlementWaits(ctx, id, orderID, settleSpent)
+			return a.buildInputSpent(ctx, e, id, orderID, buildErr, ins)
 		case u.Confirmations < e.confirmations:
 			return a.settlementWaits(ctx, id, orderID, settleUnconfirmed)
 		case u.Sats != in.Sats || u.Address != escrowAddr:
@@ -525,6 +525,43 @@ func (a *App) buildSettlement(ctx context.Context, e *escrowBTC, id int64) error
 		return &escrowRPCError{Method: "utxoupdatepsbt", Class: "bad-reply"}
 	}
 	return a.storeSettlement(ctx, id, orderID, kind, encodePSBT(raw), fp.TxID(), total, e.feeRate, plan, ins, left)
+}
+
+// buildInputSpent handles a build input that is no longer unspent. The first time, the build waits (settleSpent, the
+// P1-c1 wait): a spend still in the mempool may yet be evicted or replaced. Still spent on the next pass, it was spent
+// by a transaction the market did not make (no settlement of the market spends a deposit before the settlement that
+// claims it is built), so the settlement is external (A-356): each spent deposit is marked spent outside the market,
+// with the transaction that spent it when the watch-only wallet names it (walletSpenders), and flagged for staff.
+func (a *App) buildInputSpent(ctx context.Context, e *escrowBTC, id int64, orderID, buildErr string, ins []settleInput) error {
+	if buildErr != settleSpent {
+		return a.settlementWaits(ctx, id, orderID, settleSpent)
+	}
+	want := map[string]bool{}
+	var spent []settleInput
+	for _, in := range ins {
+		u, err := e.utxo(ctx, in.TxID, in.Vout)
+		if err != nil {
+			return err
+		}
+		if !u.Found {
+			spent = append(spent, in)
+			want[in.TxID+":"+strconv.FormatUint(uint64(in.Vout), 10)] = true
+		}
+	}
+	by, err := e.walletSpenders(ctx, want)
+	if err != nil {
+		log.Printf("escrow: the transaction spending an escrow deposit could not be looked up: %s", errorClassOf(err))
+		by = map[string]string{}
+	}
+	deposits, first := map[int64]string{}, ""
+	for _, in := range spent {
+		s := by[in.TxID+":"+strconv.FormatUint(uint64(in.Vout), 10)]
+		deposits[in.ID] = s
+		if first == "" {
+			first = s
+		}
+	}
+	return a.markExternal(ctx, id, orderID, first, deposits)
 }
 
 // settlementTxMatches checks a PSBT's unsigned transaction against the build: exactly the inputs asked for, in
@@ -1097,11 +1134,15 @@ func (a *App) settlementView(ctx context.Context, d *PageData, v *EscrowOrderVie
 	case "confirmed":
 		s.Status, s.TxID, s.RawTx = "Confirmed on the "+a.escrowNetwork()+" network: transaction "+txid+".", txid, raw
 	case "external":
-		s.Status = "Spent outside the market: the coins of this escrow were spent by a transaction this market did not make"
+		by := ""
 		if spentBy != "" {
-			s.Status += " (" + spentBy + ")"
+			by = " (" + spentBy + ")"
 		}
-		s.Status += ", so this settlement will not be sent. Market staff were notified."
+		s.Status = "Spent outside the market: the coins of this escrow were spent by a transaction this market did not make" + by + ", so this settlement will not be sent. Market staff were notified."
+		if stored == "" {
+			// A-356: never built; a deposit it was to spend was spent first.
+			s.Status = "Spent outside the market: an escrow deposit this settlement was to spend was spent by a transaction this market did not make" + by + ", so the market cannot build it. Market staff were notified."
+		}
 	case "failed":
 		s.Status = "Not built. " + settleErrorText(buildErr, v.Threshold)
 	default:

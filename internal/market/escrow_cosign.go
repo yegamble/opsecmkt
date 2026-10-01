@@ -147,15 +147,16 @@ type settleBuild struct {
 	Parties                []partySigs // the parties with a signature on every input, the first signer first
 }
 
-// loadSettleBuild reads a party-signed settlement of a closed order, or nil when it is no longer one (or its kind
-// does not fit the order's outcome).
-func (a *App) loadSettleBuild(ctx context.Context, id int64) (*settleBuild, error) {
+// loadSettleBuild reads a settlement of a closed order in state want (party_signed, or awaiting_signature for
+// trackAwaiting), or nil when it is no longer in that state (or its kind does not fit the order's outcome). Only a
+// party-signed one is read with its party signatures.
+func (a *App) loadSettleBuild(ctx context.Context, id int64, want string) (*settleBuild, error) {
 	b := &settleBuild{ID: id}
 	var state, stored, orderState, outcome string
 	err := a.db.QueryRowContext(ctx, `SELECT s.order_id,s.kind,s.state,s.psbt,s.txid,COALESCE(s.signer,''),s.network_fee,s.input_total,o.state,`+disputeOutcomeSQL+`,es.market_index
 		FROM settlements s JOIN orders o ON o.id=s.order_id JOIN escrows es ON es.order_id=s.order_id WHERE s.id=$1`, id).Scan(
 		&b.OrderID, &b.Kind, &state, &stored, &b.TxID, &b.Signer, &b.NetworkFee, &b.InputTotal, &orderState, &outcome, &b.MarketIndex)
-	if err != nil || state != "party_signed" || !settlementFits(b.Kind, orderState, outcome) {
+	if err != nil || state != want || !settlementFits(b.Kind, orderState, outcome) {
 		return nil, err
 	}
 	if b.Stored, err = decodePSBT(stored); err != nil || b.Stored.TxID() != b.TxID {
@@ -179,6 +180,9 @@ func (a *App) loadSettleBuild(ctx context.Context, id int64) (*settleBuild, erro
 	rows.Close()
 	if err = rows.Err(); err != nil {
 		return nil, err
+	}
+	if want != "party_signed" {
+		return b, nil
 	}
 	sigs := map[string][]psbtSig{}
 	rows, err = a.db.QueryContext(ctx, "SELECT party,input_n,pubkey,signature FROM settlement_signatures WHERE settlement_id=$1 ORDER BY party,input_n", id)
@@ -275,7 +279,7 @@ func (a *App) inputsSpent(ctx context.Context, e *escrowBTC, stored *psbtPacket)
 
 // cosignSettlement completes one party-signed settlement (steps 1 and 2 of the file comment).
 func (a *App) cosignSettlement(ctx context.Context, e *escrowBTC, id int64) error {
-	b, err := a.loadSettleBuild(ctx, id)
+	b, err := a.loadSettleBuild(ctx, id, "party_signed")
 	if err != nil || b == nil {
 		return err
 	}
@@ -481,7 +485,7 @@ func (a *App) storeFinal(ctx context.Context, b *settleBuild, rawHex, cosigned s
 			return err
 		}
 	}
-	res, err := tx.ExecContext(ctx, "UPDATE settlements SET state='signed',raw_tx=$2,cosigned=$3,final_at=now(),send_error='',updated=now() WHERE id=$1 AND state='party_signed' AND txid=$4",
+	res, err := tx.ExecContext(ctx, "UPDATE settlements SET state='signed',raw_tx=$2,cosigned=$3,final_at=now(),send_error='',updated=now() WHERE id=$1 AND state IN ('party_signed','awaiting_signature') AND txid=$4",
 		b.ID, rawHex, cosigned, b.TxID)
 	if err != nil {
 		return err
@@ -611,7 +615,7 @@ func (a *App) broadcastSettlement(ctx context.Context, e *escrowBTC, id int64) e
 			if by == "" {
 				by = a.spenderOf(ctx, e, stored)
 			}
-			return a.markExternal(ctx, id, orderID, by)
+			return a.markExternal(ctx, id, orderID, by, nil)
 		}
 		// Its own outputs are spent by this very transaction: the node has it after all.
 	}
@@ -669,7 +673,7 @@ func (a *App) trackBroadcast(ctx context.Context, e *escrowBTC, id int64) error 
 	}
 	switch {
 	case w.Found && w.Confirmations < 0:
-		return a.markExternal(ctx, id, orderID, firstTxID(w.Conflicts))
+		return a.markExternal(ctx, id, orderID, firstTxID(w.Conflicts), nil)
 	case w.Found && w.Confirmations >= e.confirmations:
 		tx, err := a.db.BeginTx(ctx, nil)
 		if err != nil {
@@ -714,7 +718,7 @@ func (a *App) trackBroadcast(ctx context.Context, e *escrowBTC, id int64) error 
 			if err != nil || sent {
 				return err
 			}
-			return a.markExternal(ctx, id, orderID, a.spenderOf(ctx, e, stored))
+			return a.markExternal(ctx, id, orderID, a.spenderOf(ctx, e, stored), nil)
 		}
 	}
 	// Unconfirmed (or not seen by the wallet, its inputs still unspent): the stored transaction is sent again, unless
@@ -743,7 +747,7 @@ func (a *App) spentBeforeCosign(ctx context.Context, e *escrowBTC, b *settleBuil
 		if by == "" {
 			by = a.spenderOf(ctx, e, b.Stored)
 		}
-		return a.markExternal(ctx, b.ID, b.OrderID, by)
+		return a.markExternal(ctx, b.ID, b.OrderID, by, nil)
 	}
 	if class := checkFinalTx(w.Hex, b.Stored, b.TxID, b.Outputs, b.InputTotal, b.NetworkFee); class != "" {
 		// The stored txid, so the planned outputs, but a transaction that fails the market's checks: it is not recorded
@@ -776,9 +780,11 @@ func signersSeen(rawHex string, b *settleBuild) []string {
 	return seen
 }
 
-// storeSeen records a final transaction found already on the network as a party-signed settlement's: party_signed ->
-// signed (raw_tx) -> broadcast in one transaction, by compare-and-set, cosigned 'parties' when its witnesses carry both
-// parties' stored signatures and 'network' otherwise, with an honest note and a notice to both parties.
+// storeSeen records a final transaction found already on the network as a party-signed settlement's, or as one's
+// still waiting for a signature (A-356: the parties signed the copies they downloaded and sent it themselves):
+// party_signed or awaiting_signature -> signed (raw_tx) -> broadcast in one transaction, by compare-and-set, cosigned
+// 'parties' when its witnesses carry both parties' stored signatures and 'network' otherwise, with an honest note and a
+// notice to both parties.
 func (a *App) storeSeen(ctx context.Context, b *settleBuild, rawHex string) error {
 	seen := signersSeen(rawHex, b)
 	cosigned, who := "network", "who signed it is not recorded"
@@ -793,7 +799,7 @@ func (a *App) storeSeen(ctx context.Context, b *settleBuild, rawHex string) erro
 		return err
 	}
 	defer tx.Rollback()
-	res, err := tx.ExecContext(ctx, "UPDATE settlements SET state='signed',raw_tx=$2,cosigned=$3,final_at=now(),send_error='',updated=now() WHERE id=$1 AND state='party_signed' AND txid=$4",
+	res, err := tx.ExecContext(ctx, "UPDATE settlements SET state='signed',raw_tx=$2,cosigned=$3,final_at=now(),send_error='',updated=now() WHERE id=$1 AND state IN ('party_signed','awaiting_signature') AND txid=$4",
 		b.ID, rawHex, cosigned, b.TxID)
 	if err != nil {
 		return err
@@ -844,7 +850,7 @@ func (a *App) trackConfirmed(ctx context.Context, e *escrowBTC, id int64) error 
 	case !w.Found:
 		return nil // the wallet does not know it (it missed it, or was restored): nothing to conclude; asked again next pass
 	case w.Confirmations < 0:
-		return a.markExternal(ctx, id, orderID, firstTxID(w.Conflicts))
+		return a.markExternal(ctx, id, orderID, firstTxID(w.Conflicts), nil)
 	case w.Confirmations >= escrowReorgDepth:
 		_, err = a.db.ExecContext(ctx, "UPDATE settlements SET reorg_safe_at=now(),updated=now() WHERE id=$1 AND state='confirmed' AND reorg_safe_at IS NULL", id)
 		return err
@@ -885,8 +891,11 @@ func (a *App) trackConfirmed(ctx context.Context, e *escrowBTC, id int64) error 
 // markExternal records that the escrow outputs of a settlement were spent by a transaction the market did not make
 // (spentBy when the wallet names it): state external, its inputs flagged so staff can open the order, a note and a
 // notice to the parties and to the staff. A confirmed settlement becomes external when a reorganisation replaced it
-// with a conflicting transaction.
-func (a *App) markExternal(ctx context.Context, id int64, orderID, spentBy string) error {
+// with a conflicting transaction. A settlement waiting for a signature becomes external when an input it spends is
+// spent (A-356, trackAwaiting), and so does one still being built (buildInputSpent): it has claimed no deposit, so
+// deposits names the deposits the build found spent, with the transaction that spent each one ("" when the wallet
+// does not name it), and each is marked spent outside the market as markOutsideSpend marks one.
+func (a *App) markExternal(ctx context.Context, id int64, orderID, spentBy string, deposits map[int64]string) error {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -904,14 +913,26 @@ func (a *App) markExternal(ctx context.Context, id int64, orderID, spentBy strin
 	if err != nil {
 		return err
 	}
-	res, err := tx.ExecContext(ctx, `UPDATE settlements SET state='external',spent_by=$2,reorg_safe_at=NULL,updated=now() WHERE id=$1 AND state IN ('party_signed','signed','broadcast','confirmed')`, id, by)
+	res, err := tx.ExecContext(ctx, `UPDATE settlements SET state='external',spent_by=$2,reorg_safe_at=NULL,updated=now()
+		WHERE id=$1 AND state IN ('building','awaiting_signature','party_signed','signed','broadcast','confirmed')`, id, by)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
 		return nil
 	}
-	if _, err = tx.ExecContext(ctx, "UPDATE payments SET flagged=true,updated=now() WHERE settlement_id=$1", id); err != nil {
+	if was == "building" {
+		for dep, s := range deposits {
+			var depBy any
+			if s != "" {
+				depBy = s
+			}
+			if _, err = tx.ExecContext(ctx, `UPDATE payments SET spent_outside=true,spent_by=$2,flagged=true,updated=now() WHERE id=$1 AND order_id=$3
+				AND settlement_id IS NULL AND NOT spent_outside`, dep, depBy, orderID); err != nil {
+				return err
+			}
+		}
+	} else if _, err = tx.ExecContext(ctx, "UPDATE payments SET flagged=true,updated=now() WHERE settlement_id=$1", id); err != nil {
 		return err
 	}
 	o, err := scanOrder(tx.QueryRowContext(ctx, orderQuery+" WHERE o.id=$1", orderID))
@@ -919,9 +940,18 @@ func (a *App) markExternal(ctx context.Context, id int64, orderID, spentBy strin
 		return err
 	}
 	what := settlementKind(kind)
+	which := "the market's watch-only wallet does not name it"
+	if spentBy != "" {
+		which = "transaction " + spentBy
+	}
 	note := "The coins of this escrow's settlement (" + what + ") were spent by a transaction this market did not make. The settlement is recorded as spent outside the market and will not be sent. Moderator review required."
-	if was == "confirmed" {
+	switch was {
+	case "confirmed":
 		note = "The escrow settlement (" + what + ") was confirmed, but a reorganisation of the chain replaced it with a conflicting transaction this market did not make, which spent the escrow's coins instead. The settlement is recorded as spent outside the market. Moderator review required."
+	case "building":
+		note = "An escrow deposit this settlement (" + what + ") was to spend was spent by a transaction this market did not make (" + which + "), so the market cannot build it. The settlement is recorded as spent outside the market, and no settlement of the market will spend that deposit. Moderator review required."
+	case "awaiting_signature":
+		note = "An escrow deposit this settlement (" + what + ") spends was spent by a transaction this market did not make (" + which + ") before any party signed it, so the settlement can never be completed and no signature is asked for any more. The settlement is recorded as spent outside the market and will not be sent. Moderator review required."
 	}
 	if err = a.flagOrder(ctx, tx, &o, note, "Order "+shortID(orderID)+": the coins of its escrow settlement ("+what+") were spent by a transaction this market did not make. Market staff were notified."); err != nil {
 		return err
