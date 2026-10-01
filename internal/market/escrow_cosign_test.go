@@ -753,7 +753,40 @@ func TestEscrowFinalTxChecks(t *testing.T) {
 			t.Errorf("%s: %q, want %q", c.name, got, c.want)
 		}
 	}
+	// The absolute cap binds where the rate cap does not: 12 inputs make about 1,270 vB, so a fee of 110,000 sat is
+	// under 100 sat/vB but above 0.001 BTC; 90,000 sat passes both.
+	big := []byte{2, 0, 0, 0, 12}
+	maps := [][]byte{nil}
+	var witnesses [][]byte
+	for i := range 12 {
+		big = append(append(big, bytes32(byte(i))...), 0, 0, 0, 0, 0, 0xfd, 0xff, 0xff, 0xff)
+		maps = append(maps, psbtMap(in, kv{[]byte{0x05}, ws}))
+	}
+	big = append(append(append(big, 1, 0x1e, 0x85, 1, 0, 0, 0, 0, 0), byte(len(destScript))), destScript...)
+	big = append(big, 0, 0, 0, 0)
+	maps[0] = psbtMap(kv{[]byte{0}, big})
+	bigStored, err := parsePSBT(buildPSBT(append(maps, psbtMap())...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 12 {
+		w := []byte{4, 0}
+		for _, it := range [][]byte{sig, sig, ws} {
+			w = append(append(w, compactSize(len(it))...), it...)
+		}
+		witnesses = append(witnesses, w)
+	}
+	bigRaw := hex.EncodeToString(slices.Concat(big[:4], []byte{0, 1}, big[4:len(big)-4], slices.Concat(witnesses...), big[len(big)-4:]))
+	if c := checkFinalTx(bigRaw, bigStored, bigStored.TxID(), outs, 99614+110000, 110000); c != finalFee {
+		t.Fatalf("a fee above the absolute cap under the rate cap: %q", c)
+	}
+	if c := checkFinalTx(bigRaw, bigStored, bigStored.TxID(), outs, 99614+90000, 90000); c != "" {
+		t.Fatalf("a fee under both caps: %q", c)
+	}
 }
+
+// bytes32 is 32 bytes of b, a made-up outpoint txid.
+func bytes32(b byte) []byte { return slices.Repeat([]byte{b}, 32) }
 
 // TestRegtestAddressScript decodes BIP 173 and BIP 350 vectors (with their own prefixes) and regtest addresses, and
 // refuses bad checksums, mixed versions and other networks.
