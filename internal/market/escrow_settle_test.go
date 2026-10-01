@@ -490,9 +490,10 @@ func TestEscrowBuildRefusesBadInputsAndFeeCap(t *testing.T) {
 	amounts := slices.Repeat([]int64{10000}, 10)
 	order2 := x.completed("bcrt1qbuyerrefund00000000000000000000002", amounts...)
 	x.claim(order2, x.vendorSess, "bcrt1qvendorclaim000000000000000000000002")
-	creates, gets := x.core.count("createpsbt"), x.core.count("gettxout")
+	// (The claim of order, waiting for a signature, is read with gettxout on every pass, A-356; order2's outputs are not.)
+	creates, gets := x.core.count("createpsbt"), x.core.countWith("gettxout", txidOf(order2))
 	x.poll()
-	if _, _, state, class := x.settlement(order2); state != "building" || class != "fee-cap" || x.core.count("createpsbt") != creates || x.core.count("gettxout") != gets {
+	if _, _, state, class := x.settlement(order2); state != "building" || class != "fee-cap" || x.core.count("createpsbt") != creates || x.core.countWith("gettxout", txidOf(order2)) != gets {
 		t.Fatalf("fee cap: %s %s", state, class)
 	}
 	if page := x.page("/order?id="+order2, x.buyerSess); !strings.Contains(page, "exceed the market") {

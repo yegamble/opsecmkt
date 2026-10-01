@@ -308,6 +308,26 @@ func (a *App) spenderOf(ctx context.Context, e *escrowBTC, stored *psbtPacket) s
 	return ""
 }
 
+// trackAwaiting follows each settlement waiting for a party's signature (A-356). The market spends nothing before a
+// party signs, so an input of the stored transaction that is no longer unspent (gettxout, mempool included) was spent
+// without the market: when the watch-only wallet holds the stored transaction itself, the buyer and the vendor signed
+// the copies they downloaded and broadcast it, and it is checked and recorded as broadcast (spentBeforeCosign, as for a
+// party-signed one, A-344); any other transaction makes the settlement external, flagged for staff, so its order page
+// stops asking for a signature that can never complete. It runs while the restore gate is set too: it only watches.
+func (a *App) trackAwaiting(ctx context.Context, e *escrowBTC) error {
+	return a.eachSettlement(ctx, "not followed", "SELECT id FROM settlements WHERE state='awaiting_signature' ORDER BY id", func(id int64) error {
+		b, err := a.loadSettleBuild(ctx, id, "awaiting_signature")
+		if err != nil || b == nil {
+			return err
+		}
+		spent, err := a.inputsSpent(ctx, e, b.Stored)
+		if err != nil || !spent {
+			return err
+		}
+		return a.spentBeforeCosign(ctx, e, b)
+	})
+}
+
 // findOutsideSpends checks the deposits with no settlement of the orders read in this pass (the first bullet above).
 func (a *App) findOutsideSpends(ctx context.Context, e *escrowBTC, orders []string, unread map[string]bool) error {
 	rows, err := a.db.QueryContext(ctx, `SELECT p.id,p.order_id,p.txid,p.idx FROM payments p WHERE p.order_id=ANY($1) AND p.settlement_id IS NULL
