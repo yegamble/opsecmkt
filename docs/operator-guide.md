@@ -607,14 +607,14 @@ Operational limits to accept before enabling payments:
 
 #### Bitcoin escrow (regtest only)
 
-**Off by default, regtest only, and not a payment mode yet.** [Per-order escrow](escrow.md) is being built in
-phases. This build contains the first part of its first phase: a user registers the key their own wallet signs
-escrow with and activates it by signing a practice transaction, and the buyer of a digital listing with automatic
-delivery can pay into a 2-of-3 escrow instead of the pooled wallet; the order completes when the escrow is funded.
-The vendor's claim and refunds are built and signed by one party (see *Settlements* below), but the market does not
-co-sign or broadcast them yet, and dispute decisions are not built, so coins paid into an escrow cannot be moved
-through the market yet. Every other order still goes through the pooled wallet above. Never switch it on
-for a market that takes real payments.
+**Off by default, regtest only, and not released.** [Per-order escrow](escrow.md) is being built in phases. This
+build contains its first phase for Bitcoin on regtest: a user registers the key their own wallet signs escrow with
+and activates it by signing a practice transaction, and the buyer of a digital listing with automatic delivery can
+pay into a 2-of-3 escrow instead of the pooled wallet; the order completes when the escrow is funded. The vendor's
+claim, refunds, an administrator's dispute decisions and the return of coins sent after an order closed are built by
+the server, signed by the buyer or the vendor in their own wallet, and co-signed, broadcast and followed to their
+confirmations by the market (see *Settlements* below). Every other order still goes through the pooled wallet above.
+Nothing about escrow has run on a public test network. Never switch it on for a market that takes real payments.
 
 - `ESCROW_BTC=on` turns it on (blank or `off` keeps it off). The app then refuses to start unless the node at
   `ESCROW_BTC_RPC_URL` reports chain `regtest`, and `BITCOIN_CHAIN`, when set, is `regtest`: "refusing to start:
@@ -631,7 +631,16 @@ for a market that takes real payments.
 - `ESCROW_BTC_ARBITER_WALLET` (default `opsecmkt-arbiter`): a Bitcoin Core descriptor wallet that holds only the
   market's arbitrator key, never `BITCOIN_WALLET`. Create it once as the operator user, loaded at every node start
   (`bitcoin-cli -regtest -named createwallet wallet_name=opsecmkt-arbiter load_on_startup=true`), and back it up
-  with the operator user: its seed is the market's escrow key.
+  with the operator user: its seed is the market's escrow key. Use it for nothing else. At startup and on each retry
+  the app checks with `getwalletinfo` exactly this: a descriptor wallet with private keys, not encrypted (the escrow
+  watcher co-signs without a passphrase, so an encrypted wallet could never sign), and no transaction ever paid to or
+  from it (`txcount` 0: escrow coins never belong to it, so a transaction means it is also used as an ordinary
+  wallet). Otherwise escrow is disabled with "escrow: Bitcoin escrow disabled: the arbiter wallet must be used for
+  the escrow key only …". It cannot check which descriptors the wallet holds (`listdescriptors` is not on the
+  whitelist, since it can export the private key). Before it co-signs, the watcher checks that the escrow's market
+  child key is in the wallet's derived key range (`deriveaddresses` and `getaddressinfo`) and, when it is not,
+  extends the range 1000 keys past the market index with `keypoolrefill` (checked on Core 31.1 regtest under the
+  whitelist at index 2501); if it still is not, the settlement waits ("market-key-missing" in the log).
 - `ESCROW_BTC_WATCH_WALLET` (default `opsecmkt-escrow-watch`): a descriptor wallet with private keys disabled into
   which the app imports each escrow's descriptor (public keys only) before it shows the escrow address, and from
   which the escrow watcher reads deposits. Create it once as the operator user
@@ -641,11 +650,16 @@ for a market that takes real payments.
   the watch-only wallet could not be read …".
 - `ESCROW_BTC_FEE_BPS` (default `0`) and `ESCROW_BTC_FEE_ADDRESS`: the market fee in basis points (250 = 2.5%) and
   the regtest address it is to be paid to, required when the fee is above 0 and checked with the node at startup.
-  Each escrow keeps the fee and destination in force at its checkout; changing them affects only later escrows. One
-  fixed address is allowed only because escrow runs on test networks (startup logs "escrow: the market fee is paid
-  to one fixed address …"); a mainnet market will need a watch-only descriptor. The fee is an output of the vendor's
-  claim (below 0.0001 BTC it is added to the vendor's output instead); no fee is collected yet, since the market
-  does not broadcast settlements yet.
+  They apply until an administrator saves the fee on `/admin` (*Payment providers → Bitcoin escrow market fee*:
+  basis points from 0 to 10000 and, above 0, a regtest address the node accepts and the market has not used as an
+  escrow, refund, deposit or settlement address; confirmed with the administrator's password and authenticator code
+  when enrolled; the audit row names the old and new basis points, never the address); the saved values are the
+  `settings` keys `escrow_btc_fee_bps` and `escrow_btc_fee_address` and override the environment from then on. Each
+  escrow keeps the fee and destination in force at its checkout; changing them affects only later escrows. One fixed
+  address is allowed only because escrow runs on regtest (startup logs "escrow: the market fee is paid to one fixed
+  address …"); a mainnet market will need a watch-only descriptor giving a fresh fee address per settlement, which
+  this release does not have. The fee is an output of the vendor's claim (below 0.0001 BTC it is added to the
+  vendor's output instead).
 - `ESCROW_BTC_FEE_RATE` (default `2`): the network fee rate of every settlement the app builds, a whole number of
   sat/vB from 1 to 100 (anything else stops startup). A settlement whose fee at this rate would exceed 0.001 BTC is
   not built; lower the rate and restart.
@@ -669,21 +683,23 @@ for a market that takes real payments.
   is unavailable on this market right now …", never the pooled payment panel (the descriptor download is offered
   only with escrow on). A cancelled escrow order then reads "This escrow cannot be checked right now …", never
   "nothing was received" (nor "0 BTC" for its figures, which read "Not read while Bitcoin escrow is unavailable";
-  one whose address is no longer watched reads "Not watched any more"). Disputes stay refused either way. Cancelling
-  an escrow order with a recorded deposit requests its refund, which the escrow watcher builds once escrow is enabled
-  again; while deposits are not read, an order that shows no deposit can still be cancelled by its buyer or vendor (the
-  buyer's cancel form says, before its button, that coins already sent stay at the escrow address and are not seen
-  until escrow is available again, and not to cancel after sending), and coins already sent to it then arrive after
-  the order closed.
+  one whose address is no longer watched reads "Not watched any more"). Nothing is built, co-signed or broadcast
+  while escrow is not enabled; a settlement waiting then continues once it is. Cancelling an escrow order with a
+  recorded deposit requests its refund, which the escrow watcher builds once escrow is enabled again; while deposits
+  are not read, an order that shows no deposit can still be cancelled by its buyer or vendor (the buyer's cancel form
+  says, before its button, that coins already sent stay at the escrow address and are not seen until escrow is
+  available again, not to cancel after sending, and that they stay recoverable with *Recover coins at this escrow*),
+  and coins already sent to it then arrive after the order closed: a stray refund returns them (below).
 - **Deposits after an escrow order closed** (cancelled or completed) are recorded once escrow reads them (the escrow watcher reads
   an escrow for 30 days after checkout, and for 24 hours after its order last changed, such as when it closed; past both the
   address is no longer watched and a later deposit is not recorded; the order page then says so instead of "nothing was
-  received"), never counted, never spent by the order's claim or refund, and stay in the order's escrow; recovering them
-  takes a stray refund, not built yet. A confirmed
+  received"), never counted and never spent by the order's claim or refund; once confirmed, a stray refund returns
+  them to the buyer's refund address (*Stray refunds* below). A confirmed
   one is flagged for payment review as a pooled late deposit is: one order note, the buyer told the amount once per
   episode (not the vendor) and each moderator and administrator once. The order page's escrow status reads
-  "Cancelled; a deposit arrived after the order closed …". The coins are not in the pooled wallet, so do not refund
-  them by hand from it; record the review as *no action* with that reason.
+  "Cancelled; a deposit arrived after the order closed …". The coins are not in the pooled wallet: the moderation
+  desk does not offer *refunded by hand* for an escrow deposit (and refuses one, 409); record *no action* once the
+  stray refund has returned it, or escalate.
 - **Site-wide notices.** With escrow on, the footer, catalog, listing and draft notices say Bitcoin escrow runs on
   regtest even when no pooled provider is configured, and the vendor desk's *Bitcoin escrow* tile counts the viewer's
   escrow orders that may hold coins (with `ESCROW_BTC` off too), so no page says escrow is inactive or no funds are
@@ -746,17 +762,18 @@ the descriptor with its checksum, each party's own key with its origin and the o
 download, the claim ("the market cannot spend this escrow without you or the other party, if the key shown as yours
 is yours") and the notice that the other party can trace the escrow's funding and settlement on chain. The escrow
 watcher records each deposit; at the confirmation threshold the order is paid, its content delivered and the order
-completed. No payout is ever queued for an escrow order: its coins leave only by a settlement (below). Disputes are
-refused until dispute decisions are built. A funded escrow order on a listing an administrator took down is not
+completed. No payout is ever queued for an escrow order: its coins leave only by a settlement (below). A funded
+escrow order that was not delivered automatically can be disputed; only an administrator decides it (below). A funded escrow order on a listing an administrator took down is not
 delivered automatically: the vendor can deliver by hand, or cancel it, which requests the refund of its escrow. If
 another escrow already holds one of the child keys a checkout would use, the checkout is refused ("another escrow on
 this market already holds one of its keys …") and the log says "escrow: escrow for order … not built: a child key is
 already held by another escrow".
 
-**Settlements (first half: building and one party's signature).** A settlement is the one transaction that spends an
-escrow: the vendor's claim on a completed order, or the buyer's refund of a cancelled one. This build builds it and
-takes one party's signature; the market does not co-sign or broadcast it yet, so no coins leave an escrow through the
-market, and every page and notice says nothing has been sent.
+**Settlements.** A settlement is a transaction that spends an escrow: the vendor's claim on a completed order (or one
+whose dispute was decided for the vendor), the buyer's refund of a cancelled one (or one decided for the buyer), or a
+stray refund of coins that are not the order's. The server builds it, the buyer or the vendor signs it in their own
+wallet, and the market co-signs and broadcasts it; every page and notice says nothing has been sent until it is
+broadcast.
 
 - *Requesting.* The vendor of a completed escrow order requests the claim on the order page with a fresh regtest
   address from their own wallet, confirmed with their password (and authenticator code when enrolled); an address the
@@ -791,7 +808,62 @@ market, and every page and notice says nothing has been sent.
   that party's signature on every input and no other key's, it has no entry under the market's key, every signature
   is `SIGHASH_ALL` and nothing is finalized. Only the party's signatures are kept, never the pasted PSBT; the
   settlement is then *signed by the buyer* (or vendor), the other party is notified, and the database refuses any
-  change to its transaction from then on. The market's co-signature and the broadcast come in the next build.
+  change to its transaction from then on. The other party may sign it too; with both signatures the market does not
+  sign. **A pasted signature's validity is not checked when it is pasted** (the server does not verify signatures):
+  it is checked only when the market finalizes the transaction (next item).
+- *Co-signing and broadcast.* On its next pass the escrow watcher, and nothing else, completes each signed settlement
+  of an order in a closed state whose outcome it pays (a claim on a completed order or one decided for the vendor, a
+  refund on a cancelled order or one decided for the buyer, a stray refund on any closed order). The arbiter wallet
+  signs the market's own stored copy (`walletprocesspsbt` with `SIGHASH_ALL` only), which must come back carrying
+  exactly the market's signature on every input; it is combined, market copy first, with the stored party
+  signatures (`combinepsbt`) and finalized (`finalizepsbt`). With both parties' signatures the two are finalized alone.
+  The final transaction is then re-checked in Go: it is the stored transaction (same unsigned serialization and
+  transaction ID), pays exactly the stored outputs (each value, and each script decoded from its regtest address), its
+  fee is the stored one and within 0.001 BTC and 100 sat/vB, and every input's witness is the escrow's 2-of-3 with two
+  `SIGHASH_ALL` signatures; then `testmempoolaccept` must allow it at a 100 sat/vB `maxfeerate`. Only then is the raw
+  transaction stored (the settlement is *signed*) and, after that, broadcast (`sendrawtransaction`, same `maxfeerate`;
+  an answer of its transaction ID, or error -27 for one already in a block, counts as sent). Only that stored
+  transaction is ever sent again: a broadcast that failed, or a restart between storing and broadcasting, sends the
+  same stored transaction on the next pass, and a settlement with a stored transaction is never rebuilt or signed
+  again (the database refuses it). A settlement that is broadcast is followed in the watch-only wallet: still
+  unconfirmed, it is sent again (the same transaction); at `PAYMENT_CONFIRMATIONS_BTC` confirmations it is
+  *confirmed*. The market-signed PSBT is never stored or shown; the raw transaction and its ID are shown to the
+  parties (and staff reading the order) only once it is broadcast. A re-check or `testmempoolaccept` refusal for
+  any reason but a signature leaves the settlement signed by the party and waiting, with the log line "escrow:
+  settlement of order … not sent yet: <class>" once per change and a line on the order page.
+- *A signature that does not verify* (A-339): when `finalizepsbt` cannot complete the transaction although the
+  market's own signature is there, or `testmempoolaccept` refuses a script, the party's signature is discarded and
+  the settlement returns to waiting for a signature, with a fixed order note ("The vendor's signature … did not
+  verify …") and a notice to both parties; the log says "a party signature did not verify". When both parties signed
+  and the two do not complete it, the market co-signs with whichever one verifies and discards the other. Checked on
+  regtest with a signature made over a changed input amount and with r = s = 1.
+- *Spent outside the market.* When an escrow output a settlement spends is gone before or after it was sent (spent by
+  a transaction the market did not make: the wallet reports a conflict, or the node no longer has the output nor
+  this transaction), the settlement is recorded *external* (with the conflicting transaction ID when the wallet names
+  it), its deposits are flagged and every moderator and administrator is notified. Reconciliation tools are a later
+  phase; check the escrow by hand.
+- *Bounded wait* (A-342). A claim or refund whose build waits on a deposit recorded before the order closed that does
+  not confirm, or on an escrow holding more than 50 deposits, waits at most 24 hours (about 144 blocks) from its
+  request. It is then built without the unconfirmed deposits and beyond the 50 largest; those are left for a stray
+  refund, with an order note and a notice to the buyer.
+- *Disputes.* A buyer or vendor may dispute a funded escrow order that is paid, shipped or delivered, as a pooled
+  one. Only an administrator decides it: a moderator's `/resolve` of an escrow dispute is refused (403) and the desk
+  says so. The decision needs the administrator's password (and authenticator code when enrolled) and states the
+  escrowed amount; a refund to the buyer is requested at once, and after a release the vendor claims with a fresh
+  address. Until the settlement of the decision has a stored final transaction, an administrator who is not a party
+  may change the decision on the order page (*Change the decision*, with a reason and their password): the
+  settlement of the old decision is *superseded* (a party signature on it is discarded, its deposits freed) and the
+  new one requested; both parties are notified and the change is audited. Once the settlement is signed by the
+  market (or both parties), broadcast, confirmed or spent outside the market, the decision is fixed (409).
+- *Stray refunds.* Escrows stay imported in the watch-only wallet with no age limit. Coins first recorded at an escrow
+  after its order closed, and deposits a bounded build left out, go back to the buyer's refund address by a *stray
+  refund*: requested by the escrow watcher once they confirm, built, signed by either party and co-signed like any
+  settlement; one is in progress per order at a time and a later deposit gets the next one. The buyer of a closed
+  escrow order can ask on the order page (*Recover coins at this escrow*, with their password): the next pass reads
+  that escrow whatever its age, so this also covers an escrow cancelled while Bitcoin escrow was unavailable, and
+  requests the stray refund, or tells the buyer it found nothing. A daily check reads every escrow (the first one 24
+  hours after escrow first runs on the database; `settings` key `escrow_btc_stray_check`), one
+  `listreceivedbyaddress` per 200 escrows plus one `gettransaction` per deposit transaction.
 
 **What was checked.** `scripts/test-escrow-regtest.sh` (manual, not in CI) runs key registration and practice
 signing end to end with a real Bitcoin Core 31.1 regtest node and the whitelist above: the app user is refused
@@ -805,8 +877,15 @@ price, with a market fee): one watcher pass builds the claim, Core's `decodepsbt
 fee, real Core signatures with `SIGHASH_NONE` or from the other party's wallet are refused, and the vendor's own
 wallet signs its copy; then the buyer of an underpaid escrow cancels it and signs the refund in their wallet. For
 each, Core confirms that the stored transaction with the market's signature (made by the test, not the app) would
-finalize with the stored outputs and pass `testmempoolaccept`; nothing is broadcast. Nothing about escrow has run
-on a public test network.
+finalize with the stored outputs and pass `testmempoolaccept`. Its fourth leg has the app do the rest, with every
+party signature made by that party's own Core wallet: a vendor claim at a market child index past the arbiter
+wallet's initial key range, so the watcher runs `keypoolrefill` under the whitelist before it co-signs, broadcast and
+confirmed with each output on chain as planned; a refund whose co-signature is stored and the app restarted before
+the broadcast, then the stored transaction broadcast unchanged; a settlement both parties signed, which Core
+finalizes from the two party signatures alone to exactly the broadcast transaction; a vendor signature made over a
+changed input amount and an r = s = 1 signature, each discarded before the vendor's good signature completes it; a
+stray refund of coins sent to a cancelled order's escrow; and an administrator's dispute decision for the buyer.
+Nothing about escrow has run on a public test network.
 
 ### Transparency
 
