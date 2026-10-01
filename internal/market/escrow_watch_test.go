@@ -687,6 +687,80 @@ func TestEscrowAfterCloseDepositFlagged(t *testing.T) {
 	x.noPayouts(done)
 }
 
+// A-329: the vendor can also cancel an escrow order awaiting payment, so while escrow is not enabled its cancel form
+// warns, before its button, that the buyer may already have sent coins that are not seen yet. It is absent with escrow
+// enabled, never shows the buyer's wording, and the cancel stays allowed.
+func TestEscrowVendorCancelFormWarnsWhileUnavailable(t *testing.T) {
+	const warn = "The buyer may already have sent coins to this order's escrow address that are not seen until Bitcoin escrow is available again."
+	const buyerWarn = "Coins you already sent to this order's escrow address stay there"
+	x := newEscrowEnv(t)
+	x.mustCheckout(x.order, "bcrt1qbuyerrefund00000000000000000000001")
+	vendorForm := func() (string, string) {
+		body := x.page("/order?id="+x.order, x.vendorSess)
+		i := strings.Index(body, `<input type="hidden" name="from" value="awaiting_payment">`)
+		if i < 0 {
+			t.Fatal("no cancel form on the vendor's awaiting escrow order")
+		}
+		j := strings.Index(body[i:], "</form>")
+		return body[i : i+j], body
+	}
+	check := func(want bool, label string) {
+		t.Helper()
+		form, body := vendorForm()
+		w := strings.Index(form, warn)
+		if (w >= 0) != want || strings.Contains(body, warn) != want {
+			t.Fatalf("%s: warning in the vendor's cancel form %v, on the page %v, want %v", label, w >= 0, strings.Contains(body, warn), want)
+		}
+		if want && w > strings.Index(form, `<button`) {
+			t.Fatalf("%s: the warning follows the cancel button", label)
+		}
+		if strings.Contains(body, buyerWarn) || strings.Contains(x.page("/order?id="+x.order, x.buyerSess), warn) {
+			t.Fatalf("%s: one party's warning on the other's page", label)
+		}
+	}
+	check(false, "escrow enabled")
+	srvDown(x, true)
+	x.restart()
+	check(true, "escrow unavailable")
+	srvDown(x, false)
+	t.Setenv("ESCROW_BTC", "off")
+	x.restart()
+	check(true, "escrow off")
+	if w := x.do("POST", "/orders/cancel", x.vendorSess, url.Values{"order_id": {x.order}, "from": {stateAwaitingPayment}}); w.Code != 303 || x.state(x.order) != stateCancelled {
+		t.Fatalf("vendor cancel with escrow off: %d %s", w.Code, x.state(x.order))
+	}
+	if strings.Contains(x.page("/order?id="+x.order, x.vendorSess), warn) {
+		t.Fatal("warning on a cancelled order")
+	}
+}
+
+// A-331: the late-deposit note and the buyer's notice name the escrow node's chain (read at startup), as the pooled
+// notes name their provider's network, not a fixed "regtest".
+func TestEscrowLateDepositNamesTheNodesChain(t *testing.T) {
+	x := newEscrowEnv(t)
+	if e := x.A.escrow.Load(); e == nil || e.network != "regtest" {
+		t.Fatalf("the adapter did not record the node's chain at startup: %+v", e)
+	}
+	addr := x.mustCheckout(x.order, "bcrt1qbuyerrefund00000000000000000000001")
+	x.DB.Exec("UPDATE escrows SET created=now()-interval '25 hours' WHERE order_id=$1", x.order)
+	x.poll()
+	if x.state(x.order) != stateCancelled {
+		t.Fatalf("state %s", x.state(x.order))
+	}
+	x.A.escrow.Load().network = "signet"
+	x.core.deposit(addr, txidOf("strayn"), 0, 40000, 3)
+	x.poll()
+	x.poll()
+	body := agStrings(t, x.testEnv, "SELECT body FROM notifications WHERE user_id=$1 AND body LIKE $2", x.buyer, "%"+shortID(x.order)+"%after the order closed%")
+	if len(body) != 1 || !strings.Contains(body[0], "(TESTNET signet)") || strings.Contains(body[0], "regtest") {
+		t.Fatalf("buyer notice %q", body)
+	}
+	ev := strings.Join(x.events(x.order), "\n")
+	if !strings.Contains(ev, "TESTNET signet deposit ") || !strings.Contains(ev, "escrow address") || strings.Contains(ev, "regtest") {
+		t.Fatalf("order notes:\n%s", ev)
+	}
+}
+
 // QA31-3b (amends A-322): while escrow is not enabled, the buyer's cancel form on an escrow order awaiting payment says,
 // before its button, that coins already sent stay at the escrow address and are not seen until escrow is available
 // again, and not to cancel after sending. The cancel stays allowed. The copy appears in no other state or view.
