@@ -90,6 +90,8 @@ func TestEscrowRPCPinsParams(t *testing.T) {
 		// P1-d1: reconciliation reads the watch-only wallet only: the spender of an escrow deposit and its address book.
 		{"listtransactions", fakeWatchWallet, `["*",100,0,true]`, func() error { _, err := e.walletSpenders(ctx, map[string]bool{"txw:1": true}); return err }},
 		{"listreceivedbyaddress", fakeWatchWallet, `[0,true,true]`, func() error { _, err := e.watchedAddresses(ctx); return err }},
+		// P1-d3 (A-359): whether the watch-only wallet already watches an escrow address the checkout composed.
+		{"getaddressinfo", fakeWatchWallet, `["bcrt1qcomposedescrow0000"]`, func() error { _, err := e.watchKnows(ctx, "bcrt1qcomposedescrow0000"); return err }},
 		{"deriveaddresses", "/", `["` + withChecksum("wpkh("+strings.Repeat("02", 33)+")") + `"]`, func() error {
 			_, err := e.derivesChild(ctx, mustParseKey(t, testBIP48Key), "/0/1", strings.Repeat("02", 33))
 			return err
@@ -348,5 +350,44 @@ func TestEscrowUTXOReply(t *testing.T) {
 	core.mu.Unlock()
 	if _, err := e.utxo(ctx, txid, 2); !errors.As(err, &re) || strings.Contains(err.Error(), "lots") {
 		t.Fatalf("bad value: %v", err)
+	}
+}
+
+// P1-d3 (A-359): getaddressinfo on the watch-only wallet, as the escrow checkout reads it (escrowBTC.watchKnows). Core
+// 31.1 reports an imported watch-only escrow address as ismine with its label (iswatchonly is always false in a
+// descriptor wallet; probed on regtest), and an address it does not hold as ismine false with no label. Either ismine or
+// a label means the wallet knows it; a reply without ismine is a bad-reply class, never read as "not known".
+func TestEscrowWatchKnowsReply(t *testing.T) {
+	ctx := context.Background()
+	for _, c := range []struct {
+		name  string
+		reply map[string]any
+		known bool
+		class string
+	}{
+		{"imported", map[string]any{"ismine": true, "iswatchonly": false, "labels": []string{"escrow:o1"}}, true, ""},
+		{"not held", map[string]any{"ismine": false, "iswatchonly": false, "labels": []string{}}, false, ""},
+		{"labelled only", map[string]any{"ismine": false, "labels": []string{"escrow:o2"}}, true, ""},
+		{"no ismine", map[string]any{"labels": []string{}}, false, "getaddressinfo bad-reply"},
+		{"ismine not a bool", map[string]any{"ismine": "yes"}, false, "getaddressinfo bad-reply"},
+	} {
+		srv := newPayRPCServer(t, "u", "p", false, func(path, method string, params json.RawMessage) (any, int, string) {
+			if path != fakeWatchWallet || method != "getaddressinfo" || string(params) != `["bcrt1qcomposed00000000"]` {
+				return nil, -32601, "unexpected call"
+			}
+			return c.reply, 0, ""
+		})
+		e, err := newEscrowBTC(escrowConfig{on: true, rpcURL: srv.url(""), arbiterWallet: "opsecmkt-arbiter", watchWallet: "opsecmkt-escrow-watch", confirmations: 3})
+		if err != nil {
+			t.Fatal(err)
+		}
+		known, err := e.watchKnows(ctx, "bcrt1qcomposed00000000")
+		class := ""
+		if err != nil {
+			class = errorClassOf(err)
+		}
+		if known != c.known || class != c.class {
+			t.Errorf("%s: known %v, error %v", c.name, known, err)
+		}
 	}
 }

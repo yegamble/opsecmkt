@@ -808,6 +808,25 @@ func (e *escrowBTC) watchedAddresses(ctx context.Context) ([]escrowWatched, erro
 	return out, nil
 }
 
+// watchKnows reports whether the watch-only wallet already holds addr (getaddressinfo on that wallet): an escrow
+// address it watches was handed out before, by an escrow a restored database no longer has (A-359). Bitcoin Core 31.1
+// reports an imported watch-only escrow address as ismine, with the "escrow:<order ID>" label it was imported with
+// (iswatchonly is always false in a descriptor wallet), and an address it does not hold as ismine false with no label
+// (probed on regtest). Either ismine or a label counts as known; a reply without ismine is a bad-reply.
+func (e *escrowBTC) watchKnows(ctx context.Context, addr string) (bool, error) {
+	var info struct {
+		IsMine *bool    `json:"ismine"`
+		Labels []string `json:"labels"`
+	}
+	if err := e.call(ctx, e.watchWallet, "getaddressinfo", []any{addr}, &info); err != nil {
+		return false, err
+	}
+	if info.IsMine == nil {
+		return false, &escrowRPCError{Method: "getaddressinfo", Class: "bad-reply"}
+	}
+	return *info.IsMine || len(info.Labels) > 0, nil
+}
+
 // arbiterOwns reports whether the arbiter wallet holds the key of addr (getaddressinfo ismine): for the P2WPKH address
 // of a market child key, whether the wallet's derived key range covers that child, so it can sign for it.
 func (e *escrowBTC) arbiterOwns(ctx context.Context, addr string) (bool, error) {

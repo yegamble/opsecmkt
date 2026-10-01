@@ -173,8 +173,11 @@ chain `regtest`; [operator guide](operator-guide.md#bitcoin-escrow-regtest-only)
   closed), signed by the buyer or the vendor in their own wallet and pasted back; the market co-signs its own stored
   copy (or, when both parties signed, does not sign), re-checks, stores, broadcasts and follows the transaction for
   100 confirmations;
-- recovery and reconciliation: the restore gate pauses builds, co-signing and broadcasts, and a restored stored
-  transaction is broadcast again only after an administrator confirms it; a settlement whose coins another
+- recovery and reconciliation: the restore gate pauses builds, co-signing, broadcasts and escrow checkout, and a
+  restored stored transaction is broadcast again only after an administrator confirms it; every checkout first asks
+  the watch-only wallet whether it already holds the escrow address it composed (an escrow created after the backup a
+  restored database came from) and then moves to the next child keys, up to 20 addresses (A-359; only the whole
+  address is compared, so a child key of such an escrow can still be reused in another escrow address); a settlement whose coins another
   transaction spent, whether it was still being built, waiting for a signature (A-356), signed or broadcast, is
   recorded as spent outside the market with that transaction's ID when the watch-only wallet names it and flagged
   for staff, so its order page stops asking for a signature; its own transaction broadcast by the parties is
@@ -205,11 +208,12 @@ them together from their own wallets. A reorganisation deeper than 100 blocks is
   `TestEscrowClaimBuildAndSign`, `TestEscrowPasteRefusals`, `TestEscrowRefundRoutes`, `TestEscrowSettlementRaces`,
   `TestEscrowCosignBroadcastConfirm`, `TestEscrowRawStoredBeforeBroadcast`, `TestEscrowBadSignatureReverts`,
   `TestEscrowBothPartiesSign`, `TestEscrowDisputeDecision`, `TestEscrowStrayRefundAfterClose`,
-  `TestEscrowRestoreGatePausesAndAdminRebroadcasts`, `TestEscrowReorgRetracking`, `TestEscrowExternalSpend`,
+  `TestEscrowRestoreGatePausesAndAdminRebroadcasts`, `TestEscrowCheckoutSkipsAddressTheWalletWatches`,
+  `TestEscrowReorgRetracking`, `TestEscrowExternalSpend`,
   `TestEscrowOutsideSpendFlagged` and, for A-356, `TestEscrowAwaitingSignatureSpentOutside`,
   `TestEscrowAwaitingSignatureOwnTransactionSeen`, `TestEscrowBuildingSpentOutside` and `TestEscrowMigration078WaitingSpent`.
 - JSON-RPC adapter tests against an `httptest` server: exact parameters, `"ALL"` pinned, the `rpcwhitelist` methods
-  (`TestEscrowRPCPinsParams`, `TestEscrowRPCReconciliation`).
+  (`TestEscrowRPCPinsParams`, `TestEscrowRPCReconciliation`, `TestEscrowWatchKnowsReply`).
 - Real Bitcoin Core 31.1 on regtest, run by hand, not in CI (`scripts/test-escrow-regtest.sh`; the app runs inside
   the Go test against the real node, and every party signature is made by that party's own Core wallet): practice
   signing with refused `SIGHASH_NONE` and forged pastes (`TestEscrowRegtestPracticeSign`); escrow creation and funding
@@ -221,7 +225,9 @@ them together from their own wallets. A reorganisation deeper than 100 blocks is
   (`TestEscrowRegtestRecovery`); and a comma-joined key refused, a forged market-key entry refused, A-356 (the
   parties co-spending an escrow while its claim waits for a signature, and before its claim is built), a
   spent-outpoint build refused, a conflicting outcome refused, the restore gate with a restore's hold (written by the
-  test as `scripts/restore.sh` writes it) and one administrator-confirmed rebroadcast, two escrows funded by one
+  test as `scripts/restore.sh` writes it) and one administrator-confirmed rebroadcast, a restored database not
+  handing out an escrow address again (A-359; the database restore simulated in SQL, the watch-only wallet the real
+  one), two escrows funded by one
   transaction never mixed, and the fee cap
   (`TestEscrowRegtestGate`). The restore gate was also checked once by hand on the real server binary.
 - A browser journey in Chromium at 320 px with JavaScript off, every form by keyboard, against the real server and

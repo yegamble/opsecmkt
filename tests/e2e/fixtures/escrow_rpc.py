@@ -433,6 +433,10 @@ class EscrowCore:
     def rpc_getaddressinfo(self, path, p):
         if p[0] == self.change and path == ARBITER_WALLET:
             return {'ismine': True, 'hdmasterfingerprint': self.arbiter_fp, 'parent_desc': 'wpkh(' + self.arbiter_key + '/1/*)#' + desc_checksum('wpkh(' + self.arbiter_key + '/1/*)')}
+        if path == WATCH_WALLET:
+            # As Core 31.1 answers on a watch-only descriptor wallet: an imported escrow address is ismine, with its label.
+            label = self.labels.get(p[0], '')
+            return {'address': p[0], 'ismine': bool(label), 'iswatchonly': False, 'labels': [label] if label else []}
         return {'ismine': path == ARBITER_WALLET}  # the arbiter's key range covers every market child here
 
     def rpc_getwalletinfo(self, path, p):

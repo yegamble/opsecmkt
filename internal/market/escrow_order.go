@@ -216,9 +216,15 @@ func (a *App) escrowCheckoutOffer(ctx context.Context, d *PageData) error {
 		EXISTS(SELECT 1 FROM user_escrow_keys WHERE user_id=$2 AND active_at IS NOT NULL)`, o.BuyerID, o.VendorID).Scan(&buyerActive, &vendorActive); err != nil {
 		return err
 	}
+	gate, err := restoreGateSet(ctx, a.db)
+	if err != nil {
+		return err
+	}
 	switch {
 	case a.escrow.Load() == nil:
 		v.Reason = errEscrowDown.Error()
+	case gate:
+		v.Reason = "Bitcoin escrow is paused while this market restores its records from a backup, so no escrow can be created until the operator has finished. Try again later."
 	case o.BuyerID == o.VendorID:
 		v.Reason = errEscrowSelf.Error()
 	case !buyerActive:

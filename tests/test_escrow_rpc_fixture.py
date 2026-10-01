@@ -61,6 +61,16 @@ class EscrowFixtureTest(unittest.TestCase):
         self.assertEqual(info['hdmasterfingerprint'], self.core.arbiter_key[1:9])
         self.assertTrue(info['parent_desc'].startswith('wpkh(' + self.core.arbiter_key + '/1/*)#'))
 
+    def test_watch_wallet_knows_imported_addresses(self):
+        # A-359: as Core 31.1 answers getaddressinfo on a watch-only descriptor wallet: an imported escrow address is
+        # ismine with its label; one it does not hold is not, and has no label.
+        desc, addr = self.escrow()
+        before = rpc(self.core, 'getaddressinfo', addr, path=W)
+        self.assertEqual((before['ismine'], before['iswatchonly'], before['labels']), (False, False, []))
+        rpc(self.core, 'importdescriptors', [{'desc': desc, 'timestamp': 'now', 'active': False, 'label': 'escrow:o1'}], path=W)
+        after = rpc(self.core, 'getaddressinfo', addr, path=W)
+        self.assertEqual((after['ismine'], after['iswatchonly'], after['labels']), (True, False, ['escrow:o1']))
+
     def test_settlement_end_to_end(self):
         desc, addr = self.escrow()
         rpc(self.core, 'importdescriptors', [{'desc': desc, 'timestamp': 'now', 'active': False, 'label': 'escrow:o1'}], path=W)

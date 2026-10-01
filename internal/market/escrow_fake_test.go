@@ -80,6 +80,12 @@ type fakeEscrowCore struct {
 	// lists deposits as "receive" and every transaction in broadcast (the market's or anyone's) as "send".
 	labels    map[string]string // address -> label
 	listTxErr int               // JSON-RPC error for listtransactions (0 = none)
+
+	// Escrow P1-d3 (A-359): getaddressinfo on the watch-only wallet reports an address it holds (labelled by an import)
+	// as ismine with its label, as Core 31.1 does for an imported watch-only descriptor; watchAll makes it report every
+	// address so, and watchInfoErr fails the call.
+	watchAll     bool
+	watchInfoErr int
 }
 
 // depositAt is the deposit the wallet reports at txid:vout.
@@ -231,6 +237,16 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 		}
 		return "bcrt1qarbiterchange000000000000000000000", 0, ""
 	case "getaddressinfo":
+		if path == fakeWatchWallet {
+			if c.watchInfoErr != 0 {
+				return nil, c.watchInfoErr, "fake getaddressinfo failure"
+			}
+			labels := []string{}
+			if l := c.labels[str(0)]; l != "" {
+				labels = append(labels, l)
+			}
+			return map[string]any{"address": str(0), "ismine": c.watchAll || len(labels) > 0, "iswatchonly": false, "labels": labels}, 0, ""
+		}
 		if str(0) != "bcrt1qarbiterchange000000000000000000000" {
 			// P1-c2: a market child key's address is the arbiter's while its key range reaches the child.
 			return map[string]any{"ismine": wallet && !c.arbiterShort}, 0, ""

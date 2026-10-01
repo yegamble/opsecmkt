@@ -386,12 +386,27 @@ many payouts it held and how many failed payouts it marked, and adds one audit r
 counts.
 
 On a market running [Bitcoin escrow](operator-guide.md#bitcoin-escrow-regtest-only) (regtest only), the gate also
-pauses escrow: the escrow watcher builds, co-signs and broadcasts no settlement while it is set, and the script holds
-every restored escrow settlement that has a stored final transaction (it prints how many, and the audit row counts
-them). Before step 8, check each held settlement listed under *Admin → Payment providers → Bitcoin escrow recovery
-and reconciliation* on the chain and in the escrow watch-only wallet, and confirm it there if it was not already sent
+pauses escrow: the escrow watcher builds, co-signs and broadcasts no settlement while it is set, escrow checkout is
+refused ("Bitcoin escrow is paused while this market restores its records from a backup. Nothing was charged and
+your order is still a draft; try again later.", 503, the order stays a draft), and the script holds every restored
+escrow settlement that has a stored final transaction (it prints how many, and the audit row counts them). Before
+step 8, check each held settlement listed under *Admin → Payment providers → Bitcoin escrow recovery and
+reconciliation* on the chain and in the escrow watch-only wallet, and confirm it there if it was not already sent
 or replaced; the market then broadcasts it once. A held settlement stays held after the gate is cleared until it is
-confirmed. The same section lists watch-only addresses with no escrow row (escrows created after the backup).
+confirmed. On its daily check (not at once) the escrow watcher lists in the same section every address the
+watch-only wallet holds (`listreceivedbyaddress` with empty addresses included) that has no escrow row: escrows
+created after the backup, and imports whose checkout did not complete, each with the order ID of its wallet label
+and what it received. The market builds no settlement for them.
+
+Clearing the gate (step 8) lets escrow checkout run again, and the restored database counts each party's next
+escrow child key and the market's escrow key index from where the backup left them. So every checkout first asks
+the watch-only wallet (`getaddressinfo`) whether it already holds the escrow address it composed. If it does (an
+escrow created after the backup, for the same buyer and vendor), the market skips it and tries the next child keys
+of both parties and the next market index, up to 20 addresses; if all 20 are held the checkout is refused (503,
+nothing written) and the app logs "every address tried is already in the watch-only wallet". This is the only
+check: it compares the whole composed address, not the keys in it. A child key that an escrow created after the
+backup used can still be handed out again in an escrow with another buyer or vendor or another market index; that
+escrow has its own address (deposits never merge), but the reused key links the two escrows on the chain.
 
 **Only `scripts/restore.sh` applies this protection.** A host or volume snapshot, a managed-database
 point-in-time recovery or a manual `pg_restore` brings payouts back as `pending` with no gate, and the
@@ -795,7 +810,8 @@ cleared: if you find a lost payout later, stop the app and set the gate again fi
 
 Only after every step above, with the app stopped and the reconciled database backed up. Clearing the gate is
 your assertion that reconciliation is complete; it does not discover missing settlements or release individual
-holds. Give your administrator handle: the SQL clears the gate and adds one audit row naming you ("Payout
+holds. On a market running Bitcoin escrow it also lets escrow checkout run again, with only the address check
+described above under *Reconcile a restored database before enabling payouts*. Give your administrator handle: the SQL clears the gate and adds one audit row naming you ("Payout
 recovery gate cleared by ...") in one transaction, and changes nothing for a handle that is not an
 administrator or when the gate is not set.
 

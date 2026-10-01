@@ -28,6 +28,11 @@ import (
 //     release is refused, the database refuses a second outcome row, and only the refund reaches the chain;
 //   - the restore gate: a party-signed claim is not co-signed while the gate is set; a stored transaction held by a
 //     restore is not broadcast until an administrator confirms, and then exactly once;
+//   - a restored database never re-issues an escrow address (A-359, slice P1-d3): an escrow created after the backup
+//     point is lost by a restore (simulated in SQL: its rows removed and the market counter set back); checkout answers
+//     503 while the gate is set; after it, the same buyer and vendor get the next child keys and a fresh address, the
+//     lost one skipped because the real watch-only wallet still holds it, its label kept, the deposits apart and the
+//     lost escrow listed as an orphan on the daily check;
 //   - two escrows never mixed: one funding transaction pays two escrows; each claim spends only its own output;
 //   - the fee cap: ten deposits at 100 sat/vB need more than the 0.001 BTC cap, so nothing is built until the rate is
 //     lowered, and the claim then confirms.
@@ -476,6 +481,98 @@ func TestEscrowRegtestGate(t *testing.T) {
 	}
 	t.Logf("restore-gate leg: co-signed and stored (not broadcast); held as scripts/restore.sh holds it; with the gate set and then cleared it stayed unsent; after the administrator's password-confirmed check it was broadcast once: %s in the mempool, the confirmation used up", txidG)
 	t.Logf("restore-gate leg: %s confirmed", confirmed(orderG, "release"))
+
+	// A-359: a restored database never hands out an escrow address again. The backup point is the market counter and
+	// each party's highest child index on record; an escrow created after it is lost by the restore (its rows go and
+	// the counter goes back, as a restore of that backup would leave them; done in SQL here), while the watch-only
+	// wallet on the node keeps watching it. Checkout waits while the restore gate is set; once it is cleared, the next
+	// escrow for the same buyer and vendor composes the lost escrow's address first, finds it watched (getaddressinfo
+	// on the real watch-only wallet) and takes the next child keys and a fresh address.
+	childOf := func(order, party string) int64 {
+		t.Helper()
+		var suffix string
+		if err := e.DB.QueryRow("SELECT derivation_suffix FROM escrow_pubkeys p JOIN escrows es ON es.id=p.escrow_id WHERE es.order_id=$1 AND p.party=$2", order, party).Scan(&suffix); err != nil {
+			t.Fatal(err)
+		}
+		n, err := strconv.ParseInt(strings.TrimPrefix(suffix, "/0/"), 10, 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	marketOf := func(order string) int64 {
+		var n int64
+		e.DB.QueryRow("SELECT market_index FROM escrows WHERE order_id=$1", order).Scan(&n)
+		return n
+	}
+	var backupLast int64
+	var backupCalled bool
+	if err := e.DB.QueryRow("SELECT last_value,is_called FROM escrow_market_index").Scan(&backupLast, &backupCalled); err != nil {
+		t.Fatal(err)
+	}
+	orderL, addrL := escrowOrder(true) // created after the backup
+	buyerL, vendorL, marketL := childOf(orderL, "buyer"), childOf(orderL, "vendor"), marketOf(orderL)
+	for _, q := range []string{
+		"DELETE FROM escrow_pubkeys WHERE escrow_id IN (SELECT id FROM escrows WHERE order_id=$1)",
+		"DELETE FROM escrows WHERE order_id=$1",
+		"UPDATE orders SET state='cancelled' WHERE id=$1", // set aside: the restored database has no such order
+	} {
+		if _, err := e.DB.Exec(q, orderL); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := e.DB.Exec("SELECT setval('escrow_market_index',$1,$2)", backupLast, backupCalled); err != nil {
+		t.Fatal(err)
+	}
+	gateOn(true)
+	draftR := e.order(buyer, e.product(vendor, "digital"), "BTC", stateDraft)
+	if _, err := e.DB.Exec("UPDATE products SET delivery_content='regtest licence p1d3' WHERE id=(SELECT product_id FROM orders WHERE id=$1)", draftR); err != nil {
+		t.Fatal(err)
+	}
+	if w := e.do("POST", "/orders/escrow", buyerSess, url.Values{"order_id": {draftR}, "refund_address": {newAddr()}}); w.Code != 503 || !strings.Contains(w.Body.String(), "Bitcoin escrow is paused while this market restores its records from a backup") || orderState(draftR) != stateDraft {
+		t.Fatalf("escrow checkout under the restore gate: %d %s", w.Code, w.Body.String())
+	}
+	gateOn(false)
+	orderR, addrR := escrowOrder(true)
+	if addrR == addrL || childOf(orderR, "buyer") != buyerL+1 || childOf(orderR, "vendor") != vendorL+1 || marketOf(orderR) != marketL+1 {
+		t.Fatalf("the escrow after the restore: %s (lost %s), buyer /0/%d vendor /0/%d market /0/%d (lost /0/%d, /0/%d, /0/%d)",
+			addrR, addrL, childOf(orderR, "buyer"), childOf(orderR, "vendor"), marketOf(orderR), buyerL, vendorL, marketL)
+	}
+	labelOf := func(addr string) []string {
+		var info struct {
+			IsMine bool     `json:"ismine"`
+			Labels []string `json:"labels"`
+		}
+		call(watch, "getaddressinfo", &info, addr)
+		if !info.IsMine {
+			t.Fatalf("the watch-only wallet does not hold %s", addr)
+		}
+		return info.Labels
+	}
+	if l := labelOf(addrL); !slices.Equal(l, []string{"escrow:" + orderL}) {
+		t.Fatalf("the lost escrow's label: %v", l)
+	}
+	if l := labelOf(addrR); !slices.Equal(l, []string{"escrow:" + orderR}) {
+		t.Fatalf("the new escrow's label: %v", l)
+	}
+	// Coins at each address stay apart: the new order is funded by its own deposit only; the lost escrow is an orphan.
+	var fundL, fundR string
+	call(funder, "sendtoaddress", &fundL, addrL, json.Number("0.0005"))
+	call(funder, "sendtoaddress", &fundR, addrR, json.Number("0.001"))
+	mine(3)
+	poll()
+	if st := orderState(orderR); st != stateCompleted || !slices.Equal(agStrings(t, e, "SELECT txid FROM payments WHERE order_id=$1", orderR), []string{fundR}) {
+		t.Fatalf("the new escrow's order after funding: %s", st)
+	}
+	if _, err := e.DB.Exec("INSERT INTO settings(key,value) VALUES('escrow_btc_stray_check','2000-01-01T00:00:00Z') ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value"); err != nil {
+		t.Fatal(err)
+	}
+	poll() // the daily check
+	if got := agStrings(t, e, "SELECT order_id||' '||received FROM escrow_orphans WHERE address=$1", addrL); !slices.Equal(got, []string{orderL + " 50000"}) {
+		t.Fatalf("the lost escrow on the orphan list: %v", got)
+	}
+	t.Logf("restore-reissue leg (A-359): escrow %s (buyer /0/%d, vendor /0/%d, market /0/%d) created after the backup point and lost by the restore; under the gate checkout -> 503, still a draft; after it, the same buyer and vendor got %s (buyer /0/%d, vendor /0/%d, market /0/%d), the lost address skipped and its label kept", addrL, buyerL, vendorL, marketL, addrR, buyerL+1, vendorL+1, marketL+1)
+	t.Logf("restore-reissue leg (A-359): %s funded the lost address (listed as an orphan with 0.0005 BTC on the daily check), %s funded the new escrow, whose order completed on that deposit alone", fundL, fundR)
 
 	// Two escrows never mixed: one transaction funds two escrows; each claim spends only its own output.
 	orderM1, addrM1 := escrowOrder(true)
