@@ -271,11 +271,22 @@ func TestEscrowHeldSettlementSeenOnTheNetwork(t *testing.T) {
 	if got := x.settleByID(id); got.State != "signed" || x.sendsOf(r.Raw) != 1 {
 		t.Fatalf("held, unknown to the wallet: %+v, %d sends (1 is the killed attempt)", got, x.sendsOf(r.Raw))
 	}
+	// A-365 (G12): the wallet holds it but reports it conflicted (another transaction won): it was not sent after all,
+	// so it is not recorded as broadcast and stays held.
 	x.core.mu.Lock()
 	if x.core.broadcast == nil {
 		x.core.broadcast, x.core.txConfs = map[string]string{}, map[string]int64{}
 	}
-	x.core.broadcast[r.TxID], x.core.txConfs[r.TxID] = r.Raw, 0 // sent after the backup: in the mempool
+	x.core.broadcast[r.TxID], x.core.txConfs[r.TxID] = r.Raw, -1
+	x.core.conflicts = map[string][]string{r.TxID: {txidOf("the spend that won")}}
+	x.core.mu.Unlock()
+	x.poll()
+	if got := x.settleByID(id); got.State != "signed" || got.Error != restoredSettlementHold || x.sendsOf(r.Raw) != 1 ||
+		strings.Contains(strings.Join(x.events(order), "\n"), "is already on the regtest network") {
+		t.Fatalf("held, conflicted in the wallet: %+v, %d sends", got, x.sendsOf(r.Raw))
+	}
+	x.core.mu.Lock()
+	x.core.broadcast[r.TxID], x.core.txConfs[r.TxID], x.core.conflicts = r.Raw, 0, nil // sent after the backup: in the mempool
 	x.core.mu.Unlock()
 	x.poll()
 	got := x.settleByID(id)
