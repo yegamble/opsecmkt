@@ -3,6 +3,7 @@ package market
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,7 +34,7 @@ var escrowRPCMethods = []string{
 	"getblockchaininfo", "getrawchangeaddress", "getaddressinfo", "createpsbt", "utxoupdatepsbt", "importdescriptors",
 	"getdescriptorinfo", "deriveaddresses", "gettxout", "keypoolrefill", "walletprocesspsbt", "descriptorprocesspsbt",
 	"combinepsbt", "finalizepsbt", "testmempoolaccept", "sendrawtransaction", "getwalletinfo", "listreceivedbyaddress",
-	"gettransaction",
+	"gettransaction", "listtransactions",
 }
 
 // escrowSighash is the only sighash type the market ever signs with (ES-2): a signature made with SIGHASH_NONE let
@@ -728,6 +729,83 @@ func (e *escrowBTC) walletTx(ctx context.Context, txid string) (escrowWalletTx, 
 		return escrowWalletTx{}, &escrowRPCError{Method: "gettransaction", Class: "bad-reply"}
 	}
 	return escrowWalletTx{Found: true, Confirmations: confs, Conflicts: tx.Conflicts, Hex: tx.Hex}, nil
+}
+
+// escrowSpenderScan is how many of the watch-only wallet's latest entries walletSpenders reads.
+const escrowSpenderScan = 100
+
+// walletSpenders names, for each outpoint ("txid:vout") in want, the transaction in the watch-only wallet that spends
+// it. The wallet records every transaction spending an output it watches; listtransactions lists them as category
+// "send" (its latest escrowSpenderScan entries are read), and each such transaction is decoded from gettransaction's
+// hex. An outpoint no listed transaction spends is not in the answer. Both methods read the watch-only wallet only.
+func (e *escrowBTC) walletSpenders(ctx context.Context, want map[string]bool) (map[string]string, error) {
+	var list []struct {
+		TxID     string `json:"txid"`
+		Category string `json:"category"`
+	}
+	if err := e.call(ctx, e.watchWallet, "listtransactions", []any{"*", escrowSpenderScan, 0, true}, &list); err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	seen := map[string]bool{}
+	for _, l := range list {
+		if l.Category != "send" || seen[l.TxID] || firstTxID([]string{l.TxID}) == "" || len(out) == len(want) {
+			continue
+		}
+		seen[l.TxID] = true
+		w, err := e.walletTx(ctx, l.TxID)
+		if err != nil {
+			return nil, err
+		}
+		raw, err := hex.DecodeString(w.Hex)
+		if err != nil {
+			continue
+		}
+		t, err := parseSignedTx(raw)
+		if err != nil {
+			continue // not a segwit spend: not one of an escrow output
+		}
+		for _, in := range t.In {
+			id := in.TxID
+			slices.Reverse(id[:])
+			if k := hex.EncodeToString(id[:]) + ":" + strconv.FormatUint(uint64(in.Vout), 10); want[k] {
+				out[k] = l.TxID
+			}
+		}
+	}
+	return out, nil
+}
+
+// escrowWatched is one address in the watch-only wallet's address book: its label and what the wallet says it
+// received in total.
+type escrowWatched struct {
+	Address, Label string
+	Received       int64
+}
+
+// watchedAddresses lists every address the watch-only wallet holds, received anything or not: listreceivedbyaddress
+// with minconf 0, include_empty and include_watchonly. Each escrow descriptor is imported with the label
+// "escrow:<order ID>" (escrow_create.go), which puts its address in the wallet's address book, so this lists every
+// escrow the wallet watches without listdescriptors, which can export private keys (probed on Core 31.1 regtest: a
+// labelled watch-only import is listed with amount 0 before it is funded).
+func (e *escrowBTC) watchedAddresses(ctx context.Context) ([]escrowWatched, error) {
+	var list []struct {
+		Address string      `json:"address"`
+		Label   string      `json:"label"`
+		Amount  json.Number `json:"amount"`
+	}
+	if err := e.call(ctx, e.watchWallet, "listreceivedbyaddress", []any{0, true, true}, &list); err != nil {
+		return nil, err
+	}
+	out := make([]escrowWatched, 0, len(list))
+	for _, l := range list {
+		sats, err := parseAmount(string(l.Amount), 8)
+		if err != nil {
+			sats = 0 // nothing received ("0.00000000"), which parseAmount refuses
+		}
+		out = append(out, escrowWatched{Address: l.Address, Label: l.Label, Received: sats})
+	}
+	return out, nil
 }
 
 // arbiterOwns reports whether the arbiter wallet holds the key of addr (getaddressinfo ismine): for the P2WPKH address

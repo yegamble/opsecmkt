@@ -3,7 +3,12 @@ package market
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"log"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -261,4 +266,219 @@ func (a *App) seenWhilePaused(ctx context.Context, e *escrowBTC, id int64, order
 		return err
 	}
 	return tx.Commit()
+}
+
+// Reconciliation reads the chain for what the database cannot know (ES-6):
+//
+//   - findOutsideSpends: an escrow deposit with no settlement of the market covering it (payments.settlement_id NULL)
+//     that is no longer unspent (gettxout, mempool included) was spent by a transaction the market did not make: the
+//     buyer and the vendor co-spending it directly, say. It is marked (payments.spent_outside, with the spending
+//     transaction in spent_by when the watch-only wallet names it, walletSpenders) and flagged for staff as markExternal
+//     flags a settlement's deposits: one order note, a notice to both parties and to every moderator and administrator.
+//     It never counts towards funding and no settlement spends it. A deposit a settlement claims is followed by that
+//     settlement instead (external there, with the same spender lookup), and so is a deposit of an order whose
+//     settlement is being built (the build checks each input with gettxout and waits on one that is spent, P1-c1).
+//     Only deposits in a block are checked: a deposit still in the mempool is not yet in gettxout's view for certain.
+//   - reconcileOrphans, on the escrow watcher's daily check: every address the watch-only wallet holds
+//     (watchedAddresses: listreceivedbyaddress with include_empty, never listdescriptors) with no escrows row is listed
+//     in escrow_orphans for administrators: a descriptor imported for a checkout that rolled back after the import, or
+//     an escrow created after the backup a restored database came from.
+
+// spenderOf is the transaction the watch-only wallet names as spending an input of the stored settlement transaction,
+// or "" when it names none (or cannot be read: the spend is flagged without it).
+func (a *App) spenderOf(ctx context.Context, e *escrowBTC, stored *psbtPacket) string {
+	want := map[string]bool{}
+	for _, in := range stored.Tx.In {
+		id := in.TxID
+		slices.Reverse(id[:])
+		want[hex.EncodeToString(id[:])+":"+strconv.FormatUint(uint64(in.Vout), 10)] = true
+	}
+	found, err := e.walletSpenders(ctx, want)
+	if err != nil {
+		log.Printf("escrow: the spending transaction could not be looked up: %s", errorClassOf(err))
+		return ""
+	}
+	for _, by := range found {
+		return by
+	}
+	return ""
+}
+
+// findOutsideSpends checks the deposits with no settlement of the orders read in this pass (the first bullet above).
+func (a *App) findOutsideSpends(ctx context.Context, e *escrowBTC, orders []string, unread map[string]bool) error {
+	rows, err := a.db.QueryContext(ctx, `SELECT p.id,p.order_id,p.txid,p.idx FROM payments p WHERE p.order_id=ANY($1) AND p.settlement_id IS NULL
+		AND NOT p.locked AND p.confirmations>=1 AND NOT p.spent_outside
+		AND NOT EXISTS (SELECT 1 FROM settlements s WHERE s.order_id=p.order_id AND s.state='building') ORDER BY p.id`, orders)
+	if err != nil {
+		return err
+	}
+	type dep struct {
+		id            int64
+		order, txid   string
+		vout          int64
+		outpointLabel string
+	}
+	var deps []dep
+	for rows.Next() {
+		var d dep
+		if err = rows.Scan(&d.id, &d.order, &d.txid, &d.vout); err != nil {
+			rows.Close()
+			return err
+		}
+		if !unread[d.order] {
+			d.outpointLabel = d.txid + ":" + strconv.FormatInt(d.vout, 10)
+			deps = append(deps, d)
+		}
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	spent := map[string][]dep{}
+	want := map[string]bool{}
+	var order []string
+	for _, d := range deps {
+		u, err := e.utxo(ctx, d.txid, uint32(d.vout))
+		if err != nil {
+			return &watchError{label: "escrow order " + shortID(d.order), class: "deposit not checked: " + errorClassOf(err), err: err}
+		}
+		if u.Found {
+			continue
+		}
+		if spent[d.order] == nil {
+			order = append(order, d.order)
+		}
+		spent[d.order] = append(spent[d.order], d)
+		want[d.outpointLabel] = true
+	}
+	if len(want) == 0 {
+		return nil
+	}
+	by, err := e.walletSpenders(ctx, want)
+	if err != nil {
+		log.Printf("escrow: the transaction spending an escrow deposit could not be looked up: %s", errorClassOf(err))
+		by = map[string]string{}
+	}
+	var errs []error
+	for _, o := range order {
+		ids, spenders := []int64{}, map[int64]string{}
+		for _, d := range spent[o] {
+			ids = append(ids, d.id)
+			spenders[d.id] = by[d.outpointLabel]
+		}
+		if err = a.markOutsideSpend(ctx, o, ids, spenders); err != nil {
+			errs = append(errs, &watchError{label: "escrow order " + shortID(o), class: "outside spend not recorded: " + errorCause(err), err: err})
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// markOutsideSpend marks an order's deposits spent outside the market and flags them, once (the first bullet above).
+func (a *App) markOutsideSpend(ctx context.Context, orderID string, ids []int64, spenders map[int64]string) error {
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	o, err := scanOrder(tx.QueryRowContext(ctx, orderQuery+" WHERE o.id=$1 FOR UPDATE OF o", orderID))
+	if err != nil {
+		return err
+	}
+	var sum, n int64
+	var txids []string
+	for _, id := range ids {
+		var by any
+		if s := spenders[id]; s != "" {
+			by = s
+		}
+		var amt int64
+		err = tx.QueryRowContext(ctx, `UPDATE payments SET spent_outside=true,spent_by=$2,flagged=true,updated=now() WHERE id=$1 AND order_id=$3
+			AND settlement_id IS NULL AND NOT spent_outside RETURNING amount`, id, by, orderID).Scan(&amt)
+		if err == sql.ErrNoRows {
+			continue // claimed or marked meanwhile
+		}
+		if err != nil {
+			return err
+		}
+		sum, n = sum+amt, n+1
+		if s := spenders[id]; s != "" && !slices.Contains(txids, s) {
+			txids = append(txids, s)
+		}
+	}
+	if n == 0 {
+		return nil
+	}
+	which := "the market's watch-only wallet does not name it"
+	if len(txids) > 0 {
+		which = "transaction " + strings.Join(txids, ", ")
+	}
+	note := fmt.Sprintf("%d deposit(s) to this escrow (%s BTC) were spent by a transaction this market did not make (%s), with no settlement of the market covering them: those coins have left the escrow, and no settlement of the market will spend them. Moderator review required.",
+		n, amount(sum, 8), which)
+	if err = a.flagOrder(ctx, tx, &o, note, "Order "+shortID(orderID)+": coins at its escrow were spent by a transaction this market did not make. Market staff were notified."); err != nil {
+		return err
+	}
+	log.Printf("escrow: order %s: %d escrow deposit(s) spent by a transaction the market did not make", shortID(orderID), n)
+	return tx.Commit()
+}
+
+// escrowOrderLabel is the order ID in a watch-only wallet label "escrow:<order ID>", or "".
+func escrowOrderLabel(label string) string {
+	id, ok := strings.CutPrefix(label, "escrow:")
+	if !ok || id == "" || len(id) > 100 || strings.IndexFunc(id, func(r rune) bool {
+		return !(r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r == '_' || r == '-')
+	}) >= 0 {
+		return ""
+	}
+	return id
+}
+
+// reconcileOrphans lists the watch-only wallet's addresses with no escrows row (the second bullet above), replacing
+// the previous list: an address that has an escrow row again, or that the wallet no longer holds, leaves it.
+func (a *App) reconcileOrphans(ctx context.Context, e *escrowBTC) error {
+	watched, err := e.watchedAddresses(ctx)
+	if err != nil {
+		return &watchError{label: "escrow", class: "orphan check failed: " + errorClassOf(err), err: err}
+	}
+	addrs := make([]string, 0, len(watched))
+	for _, w := range watched {
+		if _, ok := escrowAddressForm(w.Address); ok {
+			addrs = append(addrs, w.Address)
+		}
+	}
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	known, err := collectStrings(ctx, tx, "SELECT address FROM escrows WHERE address=ANY($1)", addrs)
+	if err != nil {
+		return err
+	}
+	var orphans []string
+	added := 0
+	for _, w := range watched {
+		if !slices.Contains(addrs, w.Address) || slices.Contains(known, w.Address) {
+			continue
+		}
+		orphans = append(orphans, w.Address)
+		var inserted bool
+		if err = tx.QueryRowContext(ctx, `INSERT INTO escrow_orphans(address,order_id,received) VALUES($1,$2,$3)
+			ON CONFLICT (address) DO UPDATE SET order_id=EXCLUDED.order_id,received=EXCLUDED.received,last_seen=now() RETURNING (xmax=0)`,
+			w.Address, escrowOrderLabel(w.Label), max(w.Received, 0)).Scan(&inserted); err != nil {
+			return err
+		}
+		if inserted {
+			added++
+		}
+	}
+	if _, err = tx.ExecContext(ctx, "DELETE FROM escrow_orphans WHERE NOT (address=ANY($1))", orphans); err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	if added > 0 {
+		log.Printf("escrow: %d address(es) in the watch-only wallet have no escrow record; listed on the admin page", added)
+	}
+	return nil
 }

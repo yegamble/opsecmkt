@@ -416,7 +416,7 @@ func (a *App) buildSettlement(ctx context.Context, e *escrowBTC, id int64) error
 	// A claim or refund spends the outputs that count (recorded before the order closed, not left out by a bounded
 	// build); a stray refund spends the confirmed others (escrow_stray.go).
 	query := `SELECT id,txid,idx,amount,confirmations FROM payments p WHERE order_id=$1 AND confirmations>=0 AND NOT locked AND NOT after_close AND NOT escrow_left_out
-		AND settlement_id IS NULL AND $2::bigint>0 ORDER BY created,id`
+		AND NOT spent_outside AND settlement_id IS NULL AND $2::bigint>0 ORDER BY created,id`
 	if kind == "stray_refund" {
 		query = `SELECT id,txid,idx,amount,confirmations FROM payments p WHERE order_id=$1 AND ` + strayEligibleSQL + ` ORDER BY created,id`
 	}

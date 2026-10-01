@@ -29,7 +29,7 @@ const (
 	escrowStrayCheck        = 24 * time.Hour
 	escrowStrayCheckSetting = "escrow_btc_stray_check" // settings key: when the last daily check read every escrow
 	// strayEligibleSQL selects the payments rows p a stray refund returns, for a query with the threshold as $2.
-	strayEligibleSQL = "p.settlement_id IS NULL AND NOT p.locked AND p.confirmations>=$2 AND (p.after_close OR p.escrow_left_out)"
+	strayEligibleSQL = "p.settlement_id IS NULL AND NOT p.locked AND NOT p.spent_outside AND p.confirmations>=$2 AND (p.after_close OR p.escrow_left_out)"
 )
 
 var (

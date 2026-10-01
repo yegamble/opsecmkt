@@ -73,6 +73,12 @@ type fakeEscrowCore struct {
 	txConfs          map[string]int64    // txid -> confirmations of a sent transaction
 	conflicts        map[string][]string // txid -> walletconflicts of a sent transaction
 	walletForgets    bool                // gettransaction does not know sent transactions (-5), as a wallet that missed one
+
+	// Escrow P1-d1: reconciliation. The watch-only wallet's address book (label per imported address, as
+	// importdescriptors with a label writes it), listed by listreceivedbyaddress with include_empty; listtransactions
+	// lists deposits as "receive" and every transaction in broadcast (the market's or anyone's) as "send".
+	labels    map[string]string // address -> label
+	listTxErr int               // JSON-RPC error for listtransactions (0 = none)
 }
 
 // depositAt is the deposit the wallet reports at txid:vout.
@@ -383,6 +389,13 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 		}
 		if path == fakeWatchWallet {
 			c.imports = append(c.imports, reqs[0]["desc"].(string))
+			if label, _ := reqs[0]["label"].(string); label != "" {
+				if c.labels == nil {
+					c.labels = map[string]string{}
+				}
+				body, _, _ := strings.Cut(reqs[0]["desc"].(string), "#")
+				c.labels[c.address(body)] = label
+			}
 		}
 		return []map[string]any{{"success": true}}, 0, ""
 	case "getwalletinfo":
@@ -416,7 +429,43 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 		}
 		out := []map[string]any{}
 		for _, a := range order {
-			out = append(out, map[string]any{"address": a, "txids": byAddr[a], "involvesWatchonly": true})
+			out = append(out, map[string]any{"address": a, "txids": byAddr[a], "involvesWatchonly": true, "label": c.labels[a], "amount": json.Number("0.001")})
+		}
+		var includeEmpty bool
+		if len(p) > 1 {
+			json.Unmarshal(p[1], &includeEmpty)
+		}
+		if includeEmpty {
+			var empty []string
+			for a := range c.labels {
+				if _, ok := byAddr[a]; !ok {
+					empty = append(empty, a)
+				}
+			}
+			slices.Sort(empty)
+			for _, a := range empty {
+				out = append(out, map[string]any{"address": a, "txids": []string{}, "label": c.labels[a], "amount": json.Number("0.00000000")})
+			}
+		}
+		return out, 0, ""
+	case "listtransactions":
+		if path != fakeWatchWallet {
+			return nil, -8, "unexpected fake wallet"
+		}
+		if c.listTxErr != 0 {
+			return nil, c.listTxErr, "fake listtransactions failure"
+		}
+		out := []map[string]any{}
+		for _, d := range c.deposits {
+			out = append(out, map[string]any{"txid": d.TxID, "category": "receive", "address": d.Address, "vout": d.Vout})
+		}
+		var sent []string
+		for txid := range c.broadcast {
+			sent = append(sent, txid)
+		}
+		slices.Sort(sent)
+		for _, txid := range sent {
+			out = append(out, map[string]any{"txid": txid, "category": "send", "confirmations": c.txConfs[txid]})
 		}
 		return out, 0, ""
 	case "gettransaction":

@@ -607,7 +607,11 @@ func (a *App) broadcastSettlement(ctx context.Context, e *escrowBTC, id int64) e
 			return err
 		}
 		if !w.Found || w.Confirmations < 0 {
-			return a.markExternal(ctx, id, orderID, firstTxID(w.Conflicts))
+			by := firstTxID(w.Conflicts)
+			if by == "" {
+				by = a.spenderOf(ctx, e, stored)
+			}
+			return a.markExternal(ctx, id, orderID, by)
 		}
 		// Its own outputs are spent by this very transaction: the node has it after all.
 	}
@@ -710,7 +714,7 @@ func (a *App) trackBroadcast(ctx context.Context, e *escrowBTC, id int64) error 
 			if err != nil || sent {
 				return err
 			}
-			return a.markExternal(ctx, id, orderID, "")
+			return a.markExternal(ctx, id, orderID, a.spenderOf(ctx, e, stored))
 		}
 	}
 	// Unconfirmed (or not seen by the wallet, its inputs still unspent): the stored transaction is sent again, unless
@@ -735,7 +739,11 @@ func (a *App) spentBeforeCosign(ctx context.Context, e *escrowBTC, b *settleBuil
 		return err
 	}
 	if !w.Found || w.Confirmations < 0 {
-		return a.markExternal(ctx, b.ID, b.OrderID, firstTxID(w.Conflicts))
+		by := firstTxID(w.Conflicts)
+		if by == "" {
+			by = a.spenderOf(ctx, e, b.Stored)
+		}
+		return a.markExternal(ctx, b.ID, b.OrderID, by)
 	}
 	if class := checkFinalTx(w.Hex, b.Stored, b.TxID, b.Outputs, b.InputTotal, b.NetworkFee); class != "" {
 		// The stored txid, so the planned outputs, but a transaction that fails the market's checks: it is not recorded
