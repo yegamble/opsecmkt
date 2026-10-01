@@ -154,6 +154,19 @@ func TestEscrowPartiesBroadcastBeforeTheWatcher(t *testing.T) {
 		t.Fatalf("stored txid with SIGHASH_NONE witnesses: %+v", r)
 	}
 
+	// The wallet holds the stored transaction but reports it conflicted (another spend won): external, with the
+	// conflicting transaction, never recorded as broadcast.
+	orderK, idK := x.built(regtestAddr("refund-seen-conflict"), regtestAddr("claim-seen-conflict"), 100000)
+	x.signAs(orderK, roleVendor, idK)
+	x.signAs(orderK, roleBuyer, idK)
+	txidK, _ := x.partiesBroadcast(idK, 0, x.storedSigs(idK, roleVendor), x.storedSigs(idK, roleBuyer))
+	winner := txidOf("the spend that won")
+	x.core.setTxConfs(txidK, -1, winner)
+	x.poll()
+	if r := x.settleByID(idK); r.State != "external" || r.Raw != "" || r.SpentBy != winner {
+		t.Fatalf("stored txid conflicted in the wallet: %+v", r)
+	}
+
 	// Another transaction spent the escrow: external, flagged.
 	order2, id2 := x.built(regtestAddr("refund-seen-other"), regtestAddr("claim-seen-other"), 100000)
 	x.signAs(order2, roleVendor, id2)
