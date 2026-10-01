@@ -851,8 +851,9 @@ broadcast.
   address. Until the settlement of the decision has a stored final transaction, an administrator who is not a party
   may change the decision on the order page (*Change the decision*, with a reason and their password): the
   settlement of the old decision is *superseded* (it and its signatures are kept as a record and never used; its
-  deposits are freed) and the new one requested; both parties are notified and the change is audited. Once the settlement is signed by the
-  market (or both parties), broadcast, confirmed or spent outside the market, the decision is fixed (409).
+  deposits are freed) and the new one requested; both parties are notified and the change is audited. Once the
+  settlement is signed by the market (or both parties), broadcast, confirmed or spent outside the market, the
+  decision is fixed (409).
 - *Stray refunds.* Escrows stay imported in the watch-only wallet with no age limit. Coins first recorded at an escrow
   after its order closed, and deposits a bounded build left out, go back to the buyer's refund address by a *stray
   refund*: requested by the escrow watcher once they confirm, built, signed by either party and co-signed like any
