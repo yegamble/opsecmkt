@@ -63,3 +63,21 @@ func TestEscrowSignedCopySaysWhenValidityIsChecked(t *testing.T) {
 		}
 	}
 }
+
+// A-352: an administrator decides a dispute on an escrow order, so its muted state line names one; a pooled order's
+// still names a moderator.
+func TestEscrowDisputedStateLineNamesAnAdministrator(t *testing.T) {
+	x := newEscrowEnv(t)
+	escrowOrder, _ := x.disputedEscrow(regtestAddr("state-line"))
+	pooled := x.testEnv.order(x.buyer, x.testEnv.product(x.vendor, "digital"), "BTC", stateDisputed)
+	for _, sess := range []string{x.buyerSess, x.vendorSess} {
+		page := x.page("/order?id="+escrowOrder, sess)
+		if !strings.Contains(page, "An administrator will review the dispute and record an outcome.") || strings.Contains(page, "A moderator will review") {
+			t.Fatalf("a disputed escrow order's state line:\n%s", page)
+		}
+		page = x.page("/order?id="+pooled, sess)
+		if !strings.Contains(page, "A moderator will review the dispute and record an outcome.") || strings.Contains(page, "An administrator will review") {
+			t.Fatalf("a disputed pooled order's state line:\n%s", page)
+		}
+	}
+}
