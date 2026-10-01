@@ -323,6 +323,10 @@ func TestEscrowConfirmedRebroadcastOfBroadcastSettlement(t *testing.T) {
 	if got := x.settleByID(id); got.State != "broadcast" || got.Error != "" {
 		t.Fatalf("after its one rebroadcast: %+v", got)
 	}
+	if page := html.UnescapeString(x.page("/order?id="+order, x.buyerSess)); !strings.Contains(page, "Broadcast to the regtest network: transaction "+r.TxID) ||
+		!strings.Contains(page, "so the market follows its confirmations but does not send it again until an administrator has checked") {
+		t.Fatalf("a broadcast settlement paused by the gate:\n%s", page)
+	}
 }
 
 // A market that never ran escrow shows no escrow recovery section on /admin, restore gate or not.
