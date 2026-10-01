@@ -139,6 +139,16 @@ func TestEscrowAwaitingSignatureSpentOutside(t *testing.T) {
 	if r := x.settleByID(id3); r.State != "external" || r.SpentBy != spender3 {
 		t.Fatalf("an awaiting refund whose input was co-spent: %+v", r)
 	}
+
+	// While the restore gate is set the check still runs: it only watches, and sends nothing.
+	order4, id4 := x.built(regtestAddr("refund-a356-4"), regtestAddr("claim-a356-4"), 100000)
+	x.setGate(true)
+	spender4 := x.coSpend(txidOf(order4), 0, 0)
+	x.poll()
+	x.setGate(false)
+	if r := x.settleByID(id4); r.State != "external" || r.SpentBy != spender4 {
+		t.Fatalf("an awaiting settlement co-spent under the restore gate: %+v", r)
+	}
 }
 
 // partyCopyAny is party's copy of settlement id as the stored PSBT gives it, whatever the settlement's state (the
@@ -228,7 +238,7 @@ func TestEscrowBuildingSpentOutside(t *testing.T) {
 		t.Fatalf("order notes:\n%s", ev)
 	}
 	page := html.UnescapeString(x.page("/order?id="+order, x.vendorSess))
-	if !strings.Contains(page, "Spent outside the market") || !strings.Contains(page, spender) || strings.Contains(page, "Being built") {
+	if !strings.Contains(page, "Spent outside the market: an escrow deposit this settlement was to spend was spent by a transaction this market did not make ("+spender+"), so the market cannot build it.") || strings.Contains(page, "Being built") {
 		t.Fatalf("order page:\n%s", page)
 	}
 	x.poll()
@@ -252,6 +262,40 @@ func TestEscrowBuildingSpentOutside(t *testing.T) {
 	x.poll()
 	if _, _, st, _ := x.settlement(order2); st != "awaiting_signature" {
 		t.Fatalf("after the spend left the mempool: %s", st)
+	}
+
+	// A spend that leaves the mempool between the build's read and its second look: nothing is marked; the next pass
+	// builds.
+	order3 := x.completed(regtestAddr("refund-a356-build3"), 100000)
+	if code, body := x.claim(order3, x.vendorSess, regtestAddr("claim-a356-build3")); code != 303 {
+		t.Fatalf("claim: %d %s", code, body)
+	}
+	x.core.spend(txidOf(order3), 0)
+	x.poll()
+	reads := 0
+	x.core.mu.Lock()
+	x.core.beforeUTXO = func(txid string, _ int64) {
+		if txid != txidOf(order3) {
+			return
+		}
+		if reads++; reads == 2 {
+			x.core.mu.Lock()
+			delete(x.core.spent, txidOf(order3)+":0")
+			x.core.mu.Unlock()
+		}
+	}
+	x.core.mu.Unlock()
+	x.poll()
+	x.core.mu.Lock()
+	x.core.beforeUTXO = nil
+	x.core.mu.Unlock()
+	id3, _, st3, _ := x.settlement(order3)
+	if st3 != "building" || agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND (spent_outside OR flagged)", order3) != 0 || x.settleByID(id3).SpentBy != "" {
+		t.Fatalf("a spend gone before the second look: %s", st3)
+	}
+	x.poll()
+	if _, _, st, _ := x.settlement(order3); st != "awaiting_signature" {
+		t.Fatalf("the next pass: %s", st)
 	}
 	x.noPayouts(order)
 }
