@@ -84,6 +84,44 @@ func TestEscrowRebroadcastNotRepeatedUnderGate(t *testing.T) {
 	x.noPayouts(orderB)
 }
 
+// A-369: an administrator's confirmation sent once the restore gate is clear is cleared to an empty send_error
+// (sentOnceSQL), not marked sent: the marker is only for a send made while the gate is set. The confirmation is given under the gate, the
+// operator then clears it, and the one allowed send happens with the gate clear.
+func TestEscrowRebroadcastClearedWhenGateClear(t *testing.T) {
+	x := newEscrowEnv(t)
+	_, admin := x.user("gcadmin", "admin")
+	order, id := x.built(regtestAddr("refund-gc"), regtestAddr("claim-gc"), 100000)
+	x.signAs(order, roleVendor, id)
+	x.A.escrowPollOnce(x.killAtSend())
+	x.sendNormally()
+	s := x.settleByID(id)
+	if s.State != "signed" || s.Raw == "" {
+		t.Fatalf("before the restore: %+v", s)
+	}
+	x.setGate(true)
+	x.restoreHold(id)
+	sends := x.sendsOf(s.Raw)
+	if code, body := x.rebroadcast(admin, id, url.Values{"not_sent": {"confirmed"}, "password": {testPassword}}); code != 303 {
+		t.Fatalf("confirmation: %d %s", code, body)
+	}
+	if r := x.settleByID(id); r.Error != sendRebroadcastOK {
+		t.Fatalf("after the confirmation: %+v", r)
+	}
+	x.setGate(false)
+	x.poll()
+	if x.sendsOf(s.Raw) != sends+1 {
+		t.Fatalf("the confirmed transaction was sent %d times, want %d", x.sendsOf(s.Raw), sends+1)
+	}
+	if r := x.settleByID(id); r.State != "broadcast" || r.Error != "" {
+		t.Fatalf("after the confirmed send with the gate clear, send_error must be '': %+v", r)
+	}
+	x.poll()
+	x.poll()
+	if r := x.settleByID(id); r.Error != "" {
+		t.Fatalf("send_error after later passes: %+v", r)
+	}
+}
+
 // A-360: with ESCROW_BTC off the rebroadcast route is off (404), so /admin lists a held settlement without the
 // "Rebroadcast once" form and says escrow must be on to confirm it; with escrow on the form is offered.
 func TestEscrowRebroadcastFormOnlyWithEscrowOn(t *testing.T) {
