@@ -85,10 +85,19 @@ func TestEscrowDisputedStateLineNamesAnAdministrator(t *testing.T) {
 	// pooled order never says so.
 	_, mod := x.user("slmod", "moderator")
 	_, admin := x.user("sladmin", "admin")
+	// The state line itself (order.html's muted line, A-354 reopened by QA37) names an administrator as the decider on an
+	// escrow order, for both; a pooled order's keeps the moderator's line.
+	const escrowStaffLine = `<p class="muted">An administrator decides this escrow dispute and records the outcome on the moderation desk. The order page is read-only for market staff.</p>`
+	const pooledStaffLine = `<p class="muted">Record the outcome on the moderation desk. The order page is read-only for moderators.</p>`
 	for _, sess := range []string{mod, admin} {
 		page := oneSpace(html.UnescapeString(x.page("/order?id="+escrowOrder, sess)))
-		if !strings.Contains(page, "Only an administrator decides this escrow dispute") || strings.Contains(page, "record the outcome on the") {
+		if !strings.Contains(page, "Only an administrator decides this escrow dispute") || strings.Contains(page, "record the outcome on the") ||
+			!strings.Contains(page, escrowStaffLine) || strings.Contains(page, "Record the outcome on the moderation desk") {
 			t.Fatalf("a staff viewer's line on a disputed escrow order:\n%s", page)
+		}
+		page = oneSpace(html.UnescapeString(x.page("/order?id="+pooled, sess)))
+		if !strings.Contains(page, pooledStaffLine) || strings.Contains(page, "An administrator decides this escrow dispute") {
+			t.Fatalf("a staff viewer's line on a disputed pooled order:\n%s", page)
 		}
 	}
 	if page := oneSpace(x.page("/order?id="+pooled, mod)); strings.Contains(page, "Only an administrator decides") {
