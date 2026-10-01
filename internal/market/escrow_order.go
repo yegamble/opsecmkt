@@ -65,20 +65,25 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 		return err
 	}
 	remaining := required
-	rows, err := a.db.QueryContext(ctx, "SELECT txid,idx,amount,confirmations,locked,after_close,escrow_left_out FROM payments WHERE order_id=$1 ORDER BY created,id", o.ID)
+	rows, err := a.db.QueryContext(ctx, "SELECT txid,idx,amount,confirmations,locked,after_close,escrow_left_out,spent_outside,COALESCE(spent_by,'') FROM payments WHERE order_id=$1 ORDER BY created,id", o.ID)
 	if err != nil {
 		return err
 	}
 	for rows.Next() {
 		var dep PaymentDeposit
 		var amt int64
-		var locked, afterClose, leftOut bool
-		if err = rows.Scan(&dep.TxID, &dep.Index, &amt, &dep.Confirmations, &locked, &afterClose, &leftOut); err != nil {
+		var locked, afterClose, leftOut, outside bool
+		var spentBy string
+		if err = rows.Scan(&dep.TxID, &dep.Index, &amt, &dep.Confirmations, &locked, &afterClose, &leftOut, &outside, &spentBy); err != nil {
 			rows.Close()
 			return err
 		}
 		dep.Amount = amount(amt, 8)
 		switch {
+		case outside && spentBy != "":
+			dep.State = "Spent outside the market by transaction " + spentBy + ", a transaction this market did not make; market staff were notified"
+		case outside:
+			dep.State = "Spent outside the market by a transaction this market did not make; market staff were notified"
 		case dep.Confirmations < 0 || locked:
 			dep.State = "Conflicted or missing — not counted"
 		case afterClose:
@@ -91,7 +96,7 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 		default:
 			dep.State, pending = "Waiting for confirmations", pending+amt
 		}
-		if dep.Confirmations >= 0 && !locked && !afterClose {
+		if dep.Confirmations >= 0 && !locked && !afterClose && !outside {
 			remaining -= min(remaining, amt)
 		}
 		v.Deposits = append(v.Deposits, dep)

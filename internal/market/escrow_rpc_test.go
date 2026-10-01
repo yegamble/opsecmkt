@@ -87,6 +87,9 @@ func TestEscrowRPCPinsParams(t *testing.T) {
 			return err
 		}},
 		{"gettransaction", fakeWatchWallet, `["txw",true]`, func() error { _, err := e.incoming(ctx, []string{"bcrt1qwatched"}); return err }},
+		// P1-d1: reconciliation reads the watch-only wallet only: the spender of an escrow deposit and its address book.
+		{"listtransactions", fakeWatchWallet, `["*",100,0,true]`, func() error { _, err := e.walletSpenders(ctx, map[string]bool{"txw:1": true}); return err }},
+		{"listreceivedbyaddress", fakeWatchWallet, `[0,true,true]`, func() error { _, err := e.watchedAddresses(ctx); return err }},
 		{"deriveaddresses", "/", `["` + withChecksum("wpkh("+strings.Repeat("02", 33)+")") + `"]`, func() error {
 			_, err := e.derivesChild(ctx, mustParseKey(t, testBIP48Key), "/0/1", strings.Repeat("02", 33))
 			return err

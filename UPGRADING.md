@@ -871,8 +871,11 @@ conflicting transaction was mined instead); an external settlement never changes
 it), `payments.spent_outside` and `payments.spent_by` (an escrow deposit spent by a transaction the market did not make,
 with no settlement covering it, flagged for staff) and the table `escrow_orphans` (addresses the escrow watch-only wallet
 holds with no escrow row, listed on `/admin`). Like migrations 074–076 it changes nothing unless `ESCROW_BTC=on`
-(regtest only, off by default); pooled payments are unchanged. No action is needed. Rolling back past this
-release needs the pre-upgrade backup, as for every migration (section 5): the earlier release refuses to start on a
+(regtest only, off by default); pooled payments are unchanged. With escrow on, the escrow RPC user's `rpcwhitelist`
+needs one more method, `listtransactions` (it reads the watch-only wallet only; the escrow watcher uses it to name the
+transaction that spent an escrow deposit): add it before upgrading, or that lookup is refused and such a deposit is
+flagged without the transaction ID ([operator guide](docs/operator-guide.md#bitcoin-escrow-regtest-only)). No other
+action is needed. Rolling back past this release needs the pre-upgrade backup, as for every migration (section 5): the earlier release refuses to start on a
 database that records migration 077.
 
 ## Appendix: new keys by hand

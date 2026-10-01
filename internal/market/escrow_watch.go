@@ -167,6 +167,10 @@ func (a *App) escrowPollOnce(ctx context.Context) error {
 			}
 		}
 	}
+	// Deposits with no settlement that another transaction spent are flagged before they could count (escrow_recovery.go).
+	if err = a.findOutsideSpends(ctx, e, orders, unread); err != nil {
+		errs = append(errs, err)
+	}
 	for _, id := range orders {
 		if err = a.settleEscrow(ctx, id, !unread[id]); err != nil {
 			errs = append(errs, &watchError{label: "escrow order " + shortID(id), err: err})
@@ -175,6 +179,12 @@ func (a *App) escrowPollOnce(ctx context.Context) error {
 	// Coins at a closed escrow that are not the order's go back by a stray refund (escrow_stray.go).
 	if err = a.requestStrays(ctx, e.confirmations, orders, unread); err != nil {
 		errs = append(errs, err)
+	}
+	if daily {
+		// The daily check also lists the watch-only wallet's addresses with no escrow row (escrow_recovery.go).
+		if err = a.reconcileOrphans(ctx, e); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	if daily && len(unread) == 0 {
 		if err = a.strayChecked(ctx); err != nil {
@@ -235,11 +245,11 @@ func (a *App) settleEscrow(ctx context.Context, orderID string, walletRead bool)
 	}
 	var sum int64
 	var n int
-	if err = tx.QueryRowContext(ctx, "SELECT COALESCE(sum(amount),0),count(*) FROM payments WHERE order_id=$1 AND confirmations>=$2 AND NOT locked", orderID, threshold).Scan(&sum, &n); err != nil {
+	if err = tx.QueryRowContext(ctx, "SELECT COALESCE(sum(amount),0),count(*) FROM payments WHERE order_id=$1 AND confirmations>=$2 AND NOT locked AND NOT spent_outside", orderID, threshold).Scan(&sum, &n); err != nil {
 		return err
 	}
 	if n > 0 && sum >= total {
-		if _, err = tx.ExecContext(ctx, "UPDATE payments SET credited=true WHERE order_id=$1 AND confirmations>=$2 AND NOT locked", orderID, threshold); err != nil {
+		if _, err = tx.ExecContext(ctx, "UPDATE payments SET credited=true WHERE order_id=$1 AND confirmations>=$2 AND NOT locked AND NOT spent_outside", orderID, threshold); err != nil {
 			return err
 		}
 		note := fmt.Sprintf("%s %s escrow funded: %s BTC in %d output(s) with at least %d confirmations", a.netTag(), a.escrowNetwork(), amount(sum, 8), n, threshold)
