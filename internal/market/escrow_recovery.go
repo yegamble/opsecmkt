@@ -159,7 +159,7 @@ func escrowRecoveryLoader(ctx context.Context, a *App, _ *http.Request, d *PageD
 	if v.Orphans, err = escrowOrphans(ctx, a.db); err != nil {
 		return err
 	}
-	if !a.escrowConfigured && !gate && len(v.Held) == 0 && len(v.Orphans) == 0 {
+	if !a.escrowConfigured && len(v.Held) == 0 && len(v.Orphans) == 0 {
 		return nil
 	}
 	d.EscrowRecovery = v
