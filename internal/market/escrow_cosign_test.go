@@ -522,11 +522,35 @@ func TestEscrowExternalSpend(t *testing.T) {
 		t.Fatalf("staff page:\n%s", page)
 	}
 
+	// A wallet that does not know the market's own broadcast transaction (its outputs spent by it): the node still has
+	// it (its txid, or -27 once in a block), so it is not external.
+	orderW, idW := x.built(regtestAddr("refund-w"), regtestAddr("claim-w"), 100000)
+	x.signAs(orderW, roleVendor, idW)
+	x.poll()
+	x.core.mu.Lock()
+	x.core.walletForgets = true
+	x.core.mu.Unlock()
+	x.poll()
+	x.core.setTxConfs(x.settleByID(idW).TxID, 2, "")
+	x.poll()
+	if r := x.settleByID(idW); r.State != "broadcast" {
+		t.Fatalf("own transaction unknown to the wallet: %+v", r)
+	}
+	x.core.mu.Lock()
+	x.core.walletForgets = false
+	x.core.mu.Unlock()
+	x.core.setTxConfs(x.settleByID(idW).TxID, 3, "")
+	x.poll()
+	if r := x.settleByID(idW); r.State != "confirmed" {
+		t.Fatalf("own transaction, known again: %+v", r)
+	}
+	sendsBefore := x.core.count("sendrawtransaction")
+
 	order2, id2 := x.built(regtestAddr("refund-8"), regtestAddr("claim-8"), 100000)
 	x.signAs(order2, roleVendor, id2)
 	x.core.spend(txidOf(order2), 0)
 	x.poll()
-	if r := x.settleByID(id2); r.State != "external" || x.core.count("sendrawtransaction") != 1 {
+	if r := x.settleByID(id2); r.State != "external" || x.core.count("sendrawtransaction") != sendsBefore {
 		t.Fatalf("party-signed, input gone: %+v", r)
 	}
 

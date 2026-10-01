@@ -847,8 +847,14 @@ trigger `settlements_frozen`: a settlement's transaction still never changes onc
 signature that did not verify may be discarded before the final transaction exists, and the stored final transaction
 never changes and the settlement never goes back; a new trigger, `settlement_signatures_kept`, refuses any other
 change to stored signatures. Like migrations 074 and 075 it changes nothing unless `ESCROW_BTC=on` (regtest only, off
-by default). No action is needed. Rolling back past this release needs the pre-upgrade backup, as for every
-migration (section 5): the earlier release refuses to start on a database that records migration 076.
+by default). With escrow on, this release also co-signs and broadcasts settlements, lets an administrator decide
+escrow disputes, and writes three `settings` keys when used: `escrow_btc_fee_bps` and `escrow_btc_fee_address` (the
+market fee an administrator saves on `/admin`, which then overrides `ESCROW_BTC_FEE_BPS` and
+`ESCROW_BTC_FEE_ADDRESS`) and `escrow_btc_stray_check` (the daily stray-refund check). Escrow now also stays disabled
+unless the arbiter wallet is an unencrypted descriptor wallet with private keys and no transactions ([operator
+guide](docs/operator-guide.md#bitcoin-escrow-regtest-only)). No action is needed. Rolling back past this release needs
+the pre-upgrade backup, as for every migration (section 5): the earlier release refuses to start on a database that
+records migration 076.
 
 ## Appendix: new keys by hand
 

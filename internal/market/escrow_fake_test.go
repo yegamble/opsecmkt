@@ -72,6 +72,7 @@ type fakeEscrowCore struct {
 	broadcast        map[string]string   // txid -> raw transaction sent
 	txConfs          map[string]int64    // txid -> confirmations of a sent transaction
 	conflicts        map[string][]string // txid -> walletconflicts of a sent transaction
+	walletForgets    bool                // gettransaction does not know sent transactions (-5), as a wallet that missed one
 }
 
 // depositAt is the deposit the wallet reports at txid:vout.
@@ -420,7 +421,7 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 		return out, 0, ""
 	case "gettransaction":
 		txid := str(0)
-		if _, ok := c.broadcast[txid]; ok {
+		if _, ok := c.broadcast[txid]; ok && !c.walletForgets {
 			conflicts := c.conflicts[txid]
 			if conflicts == nil {
 				conflicts = []string{}
