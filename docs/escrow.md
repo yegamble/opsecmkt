@@ -1,15 +1,19 @@
-# Per-order escrow (planned)
+# Per-order escrow
 
 > [!WARNING]
-> **Not implemented yet.** No release contains escrow. Today every deposit sits in the operator's
-> pooled custodial wallet for its currency ([operator guide](operator-guide.md#payments),
-> [implementation status](implementation-status.md#p5-payments)). This page describes the escrow design
-> the project owner and its design review have settled, what it will and will not protect, and how it will
-> ship. When a phase ships, this page, the [README](../README.md), the
-> [implementation status](implementation-status.md), the [operator guide](operator-guide.md), the
-> [test-network runbook](testnet-runbook.md), the [acceptance checks](acceptance.md) and
-> [UPGRADING](../UPGRADING.md) are updated in the same change. Until a phase is listed as shipped under
-> [Phases](#phases), treat everything here as a plan.
+> **No release contains escrow, and the pooled wallet stays the default.** Every deposit sits in the
+> operator's pooled custodial wallet for its currency ([operator guide](operator-guide.md#payments),
+> [implementation status](implementation-status.md#p5-payments)) unless an operator switches on the first
+> escrow phase, which runs **on regtest only** (a local test chain whose coins have no value) and is **off
+> by default** (`ESCROW_BTC`, [operator guide](operator-guide.md#bitcoin-escrow-regtest-only)). That phase,
+> Bitcoin escrow for digital orders, is built and tested on regtest on the development branch
+> ([Phase 1](#phase-1-bitcoin-escrow-on-regtest)); it has not run on any public test network or on mainnet,
+> and it is not verified for real payments. This page describes the escrow design the project owner and its
+> design review have settled, what it will and will not protect, and how it ships. With each phase, this
+> page, the [README](../README.md), the [implementation status](implementation-status.md), the
+> [operator guide](operator-guide.md), the [test-network runbook](testnet-runbook.md), the
+> [acceptance checks](acceptance.md) and [UPGRADING](../UPGRADING.md) are updated in the same change.
+> Everything below [Phases](#phases) that no phase has built yet is a plan.
 
 ## Why
 
@@ -145,11 +149,89 @@ shipped phase has proven. The full rules and acceptance criteria are in the proj
 | --- | --- | --- |
 | 0 | Preparation in the current payment code: one settlement per order enforced by the database, a single settlement dispatcher, password confirmation for dispute decisions | Done on the development branch, not yet released; changes nothing for users except that resolving a dispute asks for the resolver's password |
 | Wallet check | Scripted signing test with Electrum and Bitcoin Core on regtest, before any escrow database change | Done on regtest: Core signs; Electrum cannot sign this layout |
-| 1 | Bitcoin escrow for digital orders on regtest, behind a setting that is off by default | In progress on the development branch, not released, behind `ESCROW_BTC` (off by default, regtest only; [operator guide](operator-guide.md#bitcoin-escrow-regtest-only)): escrow key registration and practice signing; escrow checkout for digital listings with automatic delivery (refund address pinned, market fee fixed at checkout), the escrow built and checked with Bitcoin Core and imported watch-only before its address is shown, the descriptor on the order page, the order completed on funding, and a deposit after an escrow order closed flagged for payment review (it stays in the escrow); and settlement: the vendor's claim (to a fresh address given with the vendor's password) and the refund of a cancelled funded escrow order (to the pinned refund address; cancelling by either party, or an underpaid order at the end of its payment window) are built by the server as an unsigned PSBT from the escrow's confirmed, unspent coins with an explicit, capped fee rate, shown with their expected outputs, and signed by the buyer or the vendor in their own wallet and pasted back (only their signatures are kept); the market then co-signs its own stored copy (or, if both parties signed, does not sign at all), re-checks the final transaction, stores it, broadcasts it and follows it to its confirmations; a pasted signature that does not verify is discarded when the market finalizes the transaction, and the settlement waits for a signature again; an administrator decides disputes on escrow orders and may change the decision until its settlement has a final transaction; coins sent to an escrow after its order closed are returned to the buyer by a stray refund (on the buyer's request, and by a daily check); a build waits at most 24 hours for a deposit that does not confirm; after a restore from backup the market builds, co-signs and broadcasts nothing until the operator clears the restore gate, and broadcasts each restored stored transaction again only once an administrator has confirmed it was not already sent or replaced; a settlement's own transaction the parties broadcast themselves is recorded as broadcast, not as spent elsewhere; a confirmed settlement is followed for 100 confirmations and returned to broadcast after a reorganisation; deposits spent outside the market, and watch-only addresses with no escrow, are listed for staff. Checked against Bitcoin Core 31.1 on regtest (`scripts/test-escrow-regtest.sh`): a claim, a refund, a settlement both parties signed, discarded bad signatures, a stray refund and an administrator's dispute refund, each broadcast and confirmed; a both-signed settlement the parties broadcast themselves (in the mempool and mined), a reorganisation and its reversal, a reorganisation with a double-spend, a co-spend with no settlement and an orphan address. The restore gate was checked once by hand on the real server binary. Not checked on any public test network; Electrum, Sparrow and hardware wallets are not supported |
+| 1 | Bitcoin escrow for digital orders on regtest, behind a setting that is off by default | Built and tested on regtest on the development branch, not released, behind `ESCROW_BTC` (off by default, regtest only): see [Phase 1](#phase-1-bitcoin-escrow-on-regtest) for what it does, what it protects and the tests behind it. Not run on any public test network or on mainnet; Electrum, Sparrow and hardware wallets are not supported |
 | Wallets | Electrum and Sparrow support (a signing test showed Electrum needs a different key layout) | Not started |
 | 2 | Physical orders: buyer-signed release, 14-day deadline, no-ship cancellation | Not started |
 | 3 | Monero accounts in monthly escrow wallets | Not started |
 | 4 | Public test networks end to end, then escrow-only for new orders, then removal of the pooled wallet | Not started |
+
+
+## Phase 1: Bitcoin escrow on regtest
+
+**Built and tested on regtest; not released; off by default.** The pooled wallet stays the default for every order
+and the only payment path for anything but regtest. With `ESCROW_BTC=on` (refused unless the escrow node reports
+chain `regtest`; [operator guide](operator-guide.md#bitcoin-escrow-regtest-only)) the development branch has:
+
+- escrow key registration (one `[fingerprint/path]tpub…` per account, parsed in Go before any RPC; commas, private
+  keys and recovery words refused) and activation by signing a practice transaction that can never be broadcast;
+- escrow checkout for digital listings with automatic delivery: the refund address pinned and the market fee fixed
+  at checkout, the escrow built and checked with Bitcoin Core and imported watch-only before its address is shown,
+  each party's descriptor on the order page, and the order completed on funding;
+- settlements built by the server as unsigned PSBTs from the escrow's confirmed, unspent coins with an explicit,
+  capped fee rate (the vendor's claim to a fresh address; a refund to the pinned address when a funded order is
+  cancelled or expires underpaid; an administrator's dispute decision; a stray refund of coins sent after the order
+  closed), signed by the buyer or the vendor in their own wallet and pasted back; the market co-signs its own stored
+  copy (or, when both parties signed, does not sign), re-checks, stores, broadcasts and follows the transaction for
+  100 confirmations;
+- recovery and reconciliation: the restore gate pauses builds, co-signing and broadcasts, and a restored stored
+  transaction is broadcast again only after an administrator confirms it; a settlement whose coins another
+  transaction spent, whether it was still being built, waiting for a signature (A-356), signed or broadcast, is
+  recorded as spent outside the market with that transaction's ID when the watch-only wallet names it and flagged
+  for staff, so its order page stops asking for a signature; its own transaction broadcast by the parties is
+  recorded as broadcast; deposits spent with no settlement and watch-only addresses with no escrow are listed.
+
+**What Phase 1 protects, on regtest.** The market holds one of each escrow's three keys, in an arbiter wallet used
+for nothing else, and only public descriptors in its watch-only wallet: no settlement moves without the buyer's or
+the vendor's signature. The market signs only the transaction it built and stored, only with `SIGHASH_ALL`, only from
+its watcher and only once the order has its outcome; a pasted PSBT for another transaction, carrying an entry under
+the market's key, signed with another sighash type, already finalized or signed by another key is refused before
+anything is stored, and the pasted PSBT is never kept. The database refuses a second outcome per order and any change
+to a settlement's transaction once a party has signed it, and a deposit is claimed by one settlement only
+(compare-and-set); only the stored final
+transaction is ever broadcast, so a restart mid-send sends the same transaction again. A dispute decision is fixed
+once its settlement has a final transaction. All of this is subject to the limits under *What it will not protect*
+above: a server taken over can show a substituted key, and the market key with one party's key can spend.
+
+**What Phase 1 does not do.** It runs on regtest only and has not run on a public test network or mainnet. It covers
+digital orders with automatic delivery only (physical orders are Phase 2, Monero Phase 3). It supports Bitcoin Core
+signing only. When a settlement is recorded as spent outside the market, deposits of that escrow that are still
+unspent stay there: the market builds nothing more for them, staff are told, and the buyer and the vendor can move
+them together from their own wallets. A reorganisation deeper than 100 blocks is not followed.
+
+**How it was tested.** Each tier proves only what it says:
+
+- Go tests with PostgreSQL against a fake escrow node (simulated RPC, not chain evidence) for every state change and
+  refusal, for example `TestEscrowCheckoutCreatesEscrow`, `TestEscrowPracticeActivates`, `TestEscrowFundingCompletesOrder`,
+  `TestEscrowClaimBuildAndSign`, `TestEscrowPasteRefusals`, `TestEscrowRefundRoutes`, `TestEscrowSettlementRaces`,
+  `TestEscrowCosignBroadcastConfirm`, `TestEscrowRawStoredBeforeBroadcast`, `TestEscrowBadSignatureReverts`,
+  `TestEscrowBothPartiesSign`, `TestEscrowDisputeDecision`, `TestEscrowStrayRefundAfterClose`,
+  `TestEscrowRestoreGatePausesAndAdminRebroadcasts`, `TestEscrowReorgRetracking`, `TestEscrowExternalSpend`,
+  `TestEscrowOutsideSpendFlagged` and, for A-356, `TestEscrowAwaitingSignatureSpentOutside`,
+  `TestEscrowAwaitingSignatureOwnTransactionSeen`, `TestEscrowBuildingSpentOutside` and `TestEscrowMigration078WaitingSpent`.
+- JSON-RPC adapter tests against an `httptest` server: exact parameters, `"ALL"` pinned, the `rpcwhitelist` methods
+  (`TestEscrowRPCPinsParams`, `TestEscrowRPCReconciliation`).
+- Real Bitcoin Core 31.1 on regtest, run by hand, not in CI (`scripts/test-escrow-regtest.sh`; the app runs inside
+  the Go test against the real node, and every party signature is made by that party's own Core wallet): practice
+  signing with refused `SIGHASH_NONE` and forged pastes (`TestEscrowRegtestPracticeSign`); escrow creation and funding
+  (`TestEscrowRegtestFunding`); building and party signing (`TestEscrowRegtestSettlement`); the claim at a market key
+  index past the arbiter wallet's initial range, a refund sent again unchanged after a restart, a both-signed
+  settlement, discarded bad signatures, a stray refund and an administrator's dispute refund, each broadcast and
+  confirmed (`TestEscrowRegtestCosign`); the parties broadcasting a both-signed settlement themselves, a reorganisation
+  and its reversal, a reorganisation with a double-spend, a co-spend with no settlement and an orphan address
+  (`TestEscrowRegtestRecovery`); and a comma-joined key refused, a forged market-key entry refused, A-356 (the
+  parties co-spending an escrow while its claim waits for a signature, and before its claim is built), a
+  spent-outpoint build refused, a conflicting outcome refused, the restore gate with a restore's hold (written by the
+  test as `scripts/restore.sh` writes it) and one administrator-confirmed rebroadcast, two escrows funded by one
+  transaction never mixed, and the fee cap
+  (`TestEscrowRegtestGate`). The restore gate was also checked once by hand on the real server binary.
+- A browser journey in Chromium at 320 px with JavaScript off, every form by keyboard, against the real server and
+  PostgreSQL and a **simulated** escrow node whose signed PSBTs come from the simulator, not from a wallet
+  (`tests/e2e/escrow-journey.spec.ts`, `npm run test:e2e:escrow`; [development](development.md)): key registration
+  and practice signing, checkout, funding, completion on funding, the vendor's claim with a downloaded copy, a refused
+  paste, co-signing, broadcast and confirmation, and a refund. Not chain evidence.
+
+Not tested: any public test network, mainnet, the escrow pages in Firefox or WebKit (the escrow journey runs in
+Chromium only; CI runs the preview pages in Firefox and WebKit), Electrum, Sparrow and hardware wallets.
 
 All escrow testing uses regtest and public test networks only. Mainnet stays an operator opt-in and is never
 used in development or tests.

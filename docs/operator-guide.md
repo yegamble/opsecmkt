@@ -613,8 +613,9 @@ and activates it by signing a practice transaction, and the buyer of a digital l
 pay into a 2-of-3 escrow instead of the pooled wallet; the order completes when the escrow is funded. The vendor's
 claim, refunds, an administrator's dispute decisions and the return of coins sent after an order closed are built by
 the server, signed by the buyer or the vendor in their own wallet, and co-signed, broadcast and followed to their
-confirmations by the market (see *Settlements* below). Every other order still goes through the pooled wallet above.
-Nothing about escrow has run on a public test network. Never switch it on for a market that takes real payments.
+confirmations by the market (see *Settlements* below). Every other order still goes through the pooled wallet above,
+which stays the default. It is built and tested on regtest only (see *What was checked* below); nothing about escrow
+has run on a public test network. Never switch it on for a market that takes real payments.
 
 - `ESCROW_BTC=on` turns it on (blank or `off` keeps it off). The app then refuses to start unless the node at
   `ESCROW_BTC_RPC_URL` reports chain `regtest`, and `BITCOIN_CHAIN`, when set, is `regtest`: "refusing to start:
@@ -848,7 +849,11 @@ broadcast.
   a transaction the market did not make: the wallet reports a conflict, or the node no longer has the output nor
   this transaction), the settlement is recorded *external* (with the conflicting transaction ID when the wallet names
   it, or, failing that, the transaction the watch-only wallet lists as spending its input: `listtransactions` and
-  `gettransaction`), its deposits are flagged and every moderator and administrator is notified.
+  `gettransaction`), its deposits are flagged and every moderator and administrator is notified. A settlement waiting
+  for a party's signature is checked on every pass too (A-356; `gettxout` of each input): spent by its own
+  transaction (the parties signed their copies and broadcast it themselves) it is recorded as broadcast, as below;
+  spent by any other transaction it is *external* the same way, before any party signed it, and its order page stops
+  asking for a signature.
 - *Already on the network* (A-344). When a party-signed settlement's coins are already spent as the market comes to
   complete it, the watcher first asks the watch-only wallet for the settlement's own transaction (`gettransaction` of
   its txid). If the wallet has it, in the mempool or a block and not conflicted, the buyer and the vendor broadcast
@@ -868,7 +873,10 @@ broadcast.
   the watch-only wallet names it, flagged for payment review like a settlement's deposits (an order note, a notice to
   both parties and to every moderator and administrator), never counted towards funding and never spent by a
   settlement; the order page lists it as spent outside the market. A deposit of an order whose settlement is being
-  built is left to that build, which waits on an input that is spent.
+  built is left to that build, which waits one pass on an input that is spent (a spend still in the mempool may be
+  evicted); still spent on the next pass, the settlement is *external* without being built (A-356, migration 078)
+  and the deposit is marked as above. Deposits of that escrow still unspent stay there: the market builds nothing
+  more for them, and the buyer and the vendor can move them together from their own wallets.
 - *Orphan addresses.* The daily check (below) also lists, under *Admin → Payment providers → Bitcoin escrow
   recovery and reconciliation*, every address the watch-only wallet holds with no escrow on record
   (`listreceivedbyaddress` with `include_empty`: each escrow descriptor is imported with the label `escrow:<order
@@ -945,7 +953,19 @@ scripted): a backup taken with `scripts/backup.sh` before two stored settlements
 `scripts/restore.sh`, held both; one the original market had broadcast after the backup was recorded as broadcast
 without being sent, nothing was built, co-signed or sent, the administrator's confirmation through the `/admin`
 form led to exactly one `sendrawtransaction` over 16 passes, and the runbook's clear-gate SQL resumed building and
-co-signing. Nothing about escrow has run on a public test network.
+co-signing. Its sixth leg (P1-d2, `TestEscrowRegtestGate`): a key field holding two keys is refused before any RPC
+(Core reads the descriptor built from them as a 2-of-4); a vendor's Core-signed copy with a signature added under
+the market's key is refused and changes nothing; the parties co-spend an escrow while its claim waits for a
+signature, and before its claim is built (the build refuses the spent input, then the claim is *external*), each
+recorded with the co-spend's transaction ID (A-356); once an administrator's refund decision is broadcast,
+changing it is refused and the database refuses a second outcome; a party-signed claim is not co-signed while the
+restore gate is set, and its stored transaction, held as `scripts/restore.sh` holds it (written by the test), is
+broadcast once after the administrator's confirmation; one transaction funds two escrows and each claim spends only
+its own output; ten deposits at 100 sat/vB exceed the fee cap, so nothing is built until the rate is lowered. In
+every leg the app runs inside the Go test against the real node, not as the server binary. A browser journey
+(`npm run test:e2e:escrow`, [development](development.md)) drives the escrow forms by keyboard in Chromium at 320 px
+with JavaScript off against the real server and a simulated escrow node; it is not chain evidence. Nothing about
+escrow has run on a public test network or mainnet, and the escrow pages have not been run in Firefox or WebKit.
 
 ### Transparency
 
