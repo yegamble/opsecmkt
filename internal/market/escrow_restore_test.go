@@ -205,6 +205,10 @@ func TestEscrowRestoreGatePausesAndAdminRebroadcasts(t *testing.T) {
 	if page := x.page("/order?id="+orderB, x.buyerSess); strings.Contains(page, "Paused after a restore from backup") {
 		t.Fatal("the order page still says paused after the gate was cleared")
 	}
+	// Without the gate, a settlement no restore held is not the administrator's to rebroadcast.
+	if code, body := x.rebroadcast(admin, idB, ok); code != 409 || !strings.Contains(body, "not held") {
+		t.Fatalf("rebroadcast of a settlement nothing holds: %d %s", code, body)
+	}
 
 	// A settlement a restore held still waits for its confirmation after the gate is cleared.
 	for _, id := range []int64{idB, idC} {
@@ -284,6 +288,40 @@ func TestEscrowHeldSettlementSeenOnTheNetwork(t *testing.T) {
 	x.poll()
 	if x.sendsOf(r.Raw) != 1 {
 		t.Fatal("sent under the gate after it was seen")
+	}
+}
+
+// A restored broadcast settlement still unconfirmed: under the gate it is followed but never sent again; once an
+// administrator confirms it, the watcher sends its stored transaction exactly once over several passes.
+func TestEscrowConfirmedRebroadcastOfBroadcastSettlement(t *testing.T) {
+	x := newEscrowEnv(t)
+	_, admin := x.user("bcadmin", "admin")
+	order, id := x.built(regtestAddr("refund-bc"), regtestAddr("claim-bc"), 100000)
+	x.signAs(order, roleVendor, id)
+	x.poll()
+	r := x.settleByID(id)
+	if r.State != "broadcast" {
+		t.Fatalf("before the restore: %+v", r)
+	}
+	x.setGate(true)
+	x.restoreHold(id)
+	sends := x.sendsOf(r.Raw)
+	x.poll()
+	x.poll()
+	if x.sendsOf(r.Raw) != sends {
+		t.Fatal("a held broadcast settlement was sent again under the gate")
+	}
+	if code, body := x.rebroadcast(admin, id, url.Values{"not_sent": {"confirmed"}, "password": {testPassword}}); code != 303 {
+		t.Fatalf("rebroadcast: %d %s", code, body)
+	}
+	for range 3 {
+		x.poll()
+	}
+	if n := x.sendsOf(r.Raw) - sends; n != 1 {
+		t.Fatalf("after the confirmation: %d sends, want 1", n)
+	}
+	if got := x.settleByID(id); got.State != "broadcast" || got.Error != "" {
+		t.Fatalf("after its one rebroadcast: %+v", got)
 	}
 }
 
