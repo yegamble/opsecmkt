@@ -426,7 +426,7 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 			if conflicts == nil {
 				conflicts = []string{}
 			}
-			return map[string]any{"confirmations": c.txConfs[txid], "walletconflicts": conflicts, "details": []any{}}, 0, ""
+			return map[string]any{"confirmations": c.txConfs[txid], "walletconflicts": conflicts, "details": []any{}, "hex": c.broadcast[txid]}, 0, ""
 		}
 		var details []map[string]any
 		confs := int64(0)

@@ -704,6 +704,7 @@ type escrowWalletTx struct {
 	Found         bool
 	Confirmations int64
 	Conflicts     []string
+	Hex           string // the transaction as the wallet holds it (with its witnesses)
 }
 
 // walletTx is gettransaction of txid in the watch-only wallet, which records every transaction spending an escrow
@@ -712,6 +713,7 @@ func (e *escrowBTC) walletTx(ctx context.Context, txid string) (escrowWalletTx, 
 	var tx struct {
 		Confirmations json.Number `json:"confirmations"`
 		Conflicts     []string    `json:"walletconflicts"`
+		Hex           string      `json:"hex"`
 	}
 	err := e.call(ctx, e.watchWallet, "gettransaction", []any{txid, true}, &tx)
 	var re *escrowRPCError
@@ -725,7 +727,7 @@ func (e *escrowBTC) walletTx(ctx context.Context, txid string) (escrowWalletTx, 
 	if err != nil {
 		return escrowWalletTx{}, &escrowRPCError{Method: "gettransaction", Class: "bad-reply"}
 	}
-	return escrowWalletTx{Found: true, Confirmations: confs, Conflicts: tx.Conflicts}, nil
+	return escrowWalletTx{Found: true, Confirmations: confs, Conflicts: tx.Conflicts, Hex: tx.Hex}, nil
 }
 
 // arbiterOwns reports whether the arbiter wallet holds the key of addr (getaddressinfo ismine): for the P2WPKH address
