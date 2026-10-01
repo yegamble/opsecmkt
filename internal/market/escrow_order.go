@@ -118,6 +118,8 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 		v.Status, v.NextStep = "Funded", "The content could not be delivered automatically: the order completes when the vendor delivers it by hand. If the vendor cancels it instead, the escrow is refunded to the buyer."
 	case o.State == stateCompleted:
 		v.Status, v.NextStep = "Funded and completed", "The vendor claims the escrowed coins from this page."
+	case o.State == stateDisputed:
+		v.Status, v.NextStep = "Disputed", "An administrator of this market decides the dispute. The decision is paid from this escrow by a settlement: a refund to the buyer's refund address, or the vendor's claim."
 	case o.State == stateCancelled && received+pending > 0:
 		v.Status = "Cancelled; the coins in this escrow go back to the buyer's refund address through the refund settlement below."
 	case o.State == stateCancelled && afterCloseSeen > 0:
@@ -142,15 +144,14 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 	if err = a.escrowSettlementView(ctx, d, v); err != nil {
 		return err
 	}
-	// A dispute's decision is a settlement this build does not build yet (escrowTransitionHook refuses it). Cancelling
-	// an order that holds coins requests its refund, so the cancel form states it and carries its amount, as a pooled
-	// refund's form does (checkPayoutSeen, escrowSettleTerminal).
+	if err = a.escrowDecisionView(ctx, d, v); err != nil {
+		return err
+	}
+	// Cancelling an order that holds coins requests its refund, so the cancel form states it and carries its amount,
+	// as a pooled refund's form does (checkPayoutSeen, escrowSettleTerminal).
 	counted := received + pending
 	for i, t := range d.Transitions {
 		switch {
-		case t.To == stateDisputed:
-			d.Transitions[i].Action, d.Transitions[i].Payout = "", nil
-			d.Transitions[i].Label = errEscrowDisputeLater.Error()
 		case t.To == stateCancelled && counted > 0:
 			d.Transitions[i].Payout = &PayoutPreview{Seen: counted, Confirm: "Cancelling refunds the " + amount(counted, 8) +
 				" regtest BTC in this escrow, less the network fee, to the buyer's refund address given at checkout. The market builds the refund transaction; the buyer or the vendor then signs it on this page. This is final."}

@@ -108,7 +108,7 @@ var (
 	errClaimInvalid     = fail(400, "The claim address is not a valid regtest Bitcoin address. Nothing was changed.")
 	errClaimAddressUsed = fail(409, "That address was already used on this market. Give a fresh address from your wallet. Nothing was changed.")
 	errClaimOnlyVendor  = fail(403, "Only the vendor claims the escrow of this order.")
-	errClaimState       = fail(409, "The escrow is claimed once its order is completed. Reload the page. Nothing was changed.")
+	errClaimState       = fail(409, "The escrow is claimed once its order is completed (or its dispute is decided for the vendor). Reload the page. Nothing was changed.")
 	errClaimTwice       = fail(409, "This escrow already has its settlement. Reload the page. Nothing was changed.")
 	errClaimNode        = fail(503, "The claim address could not be checked: the market's Bitcoin node did not answer. Nothing was changed; try again later.")
 	errSettleNotReady   = fail(409, "This settlement is not waiting for a signature (it is still being built, or it was already signed). Reload the page. Nothing was changed.")
@@ -232,12 +232,21 @@ func escrowKeys(ctx context.Context, q rowsQuerier, orderID string) (map[string]
 	return keys, nil
 }
 
-// escrowSettleTerminal is settleTerminal for an escrow order (ES-1). A cancelled order holding coins gets its refund
-// requested (state building, to the pinned refund address); a completed one waits for the vendor's claim; a resolved
-// one cannot exist while disputes are refused (P1-c2 builds the decision). The refund covers every deposit that
-// counts, confirmed or still confirming: the cancel form states that sum (checkPayoutSeen).
+// escrowSettleTerminal is settleTerminal for an escrow order (ES-1). A cancelled order holding coins, or one whose
+// dispute was decided for the buyer, gets its refund requested (state building, to the pinned refund address); a
+// completed one, or one decided for the vendor, waits for the vendor's claim (escrow_decision.go). The settlement
+// covers every deposit that counts, confirmed or still confirming: the cancel and resolve forms state that sum
+// (checkPayoutSeen).
 func (a *App) escrowSettleTerminal(ctx context.Context, tx *sql.Tx, o *Order) error {
-	if o.State != stateCancelled {
+	var outcome string
+	switch o.State {
+	case stateCancelled:
+	case stateResolved:
+		var err error
+		if outcome, err = escrowDisputeOutcome(ctx, tx, o.ID); err != nil {
+			return err
+		}
+	default:
 		return nil
 	}
 	var sum int64
@@ -251,8 +260,13 @@ func (a *App) escrowSettleTerminal(ctx context.Context, tx *sql.Tx, o *Order) er
 	if err := checkPayoutSeen(ctx, o, sum); err != nil {
 		return err
 	}
+	if outcome == "release" {
+		note := "Dispute decided for the vendor: the vendor claims the escrowed " + amount(sum, 8) + " BTC from the order page with a fresh address. The market builds that settlement (less the market fee and the network fee; any amount paid above the price goes back to the buyer), the buyer or the vendor signs it, and the market co-signs it. Nothing is sent yet."
+		_, err := tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, o.State, note)
+		return err
+	}
 	res, err := tx.ExecContext(ctx, `INSERT INTO settlements(order_id,kind,destination) SELECT order_id,'refund',refund_address FROM escrows WHERE order_id=$1
-		AND NOT EXISTS (SELECT 1 FROM settlements WHERE order_id=$1 AND kind IN ('release','refund'))`, o.ID)
+		AND NOT EXISTS (SELECT 1 FROM settlements WHERE order_id=$1 AND kind IN ('release','refund') AND state<>'superseded')`, o.ID)
 	if err != nil {
 		return err
 	}
@@ -260,6 +274,9 @@ func (a *App) escrowSettleTerminal(ctx context.Context, tx *sql.Tx, o *Order) er
 		return nil // requested already (a later call for the same cancelled order)
 	}
 	note := "Escrow refund requested: the market builds a transaction returning the escrowed " + amount(sum, 8) + " BTC, less the network fee, to the buyer's refund address given at checkout; the buyer or the vendor then signs it on the order page. Nothing is sent yet."
+	if outcome == "refund" {
+		note = "Dispute decided for the buyer. " + note
+	}
 	_, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, o.State, note)
 	return err
 }
@@ -282,12 +299,16 @@ func escrowClaimAction(c *actionCtx) (actionResult, error) {
 		if err != nil {
 			return actionResult{}, err
 		}
+		outcome, err := escrowDisputeOutcome(ctx, c.Tx, o.ID)
+		if err != nil {
+			return actionResult{}, err
+		}
 		switch {
 		case !o.Escrow:
 			return actionResult{}, errNoOrder
 		case o.VendorID != c.User.ID:
 			return actionResult{}, errClaimOnlyVendor
-		case o.State != stateCompleted:
+		case !settlementFits("release", o.State, outcome):
 			return actionResult{}, errClaimState
 		}
 		var used bool
@@ -364,18 +385,18 @@ func (a *App) buildSettlements(ctx context.Context, e *escrowBTC) error {
 // buildSettlement builds one settlement (step 2 of the file comment). The RPCs run outside any transaction; the
 // result is stored by compare-and-set, so of two builds of one settlement one stores and the other changes nothing.
 func (a *App) buildSettlement(ctx context.Context, e *escrowBTC, id int64) error {
-	var orderID, kind, state, dest, escrowAddr, refund, feeDest, orderState string
+	var orderID, kind, state, dest, escrowAddr, refund, feeDest, orderState, outcome string
 	var price, feeBps int64
 	var bounded bool
 	err := a.db.QueryRowContext(ctx, `SELECT s.order_id,s.kind,s.state,COALESCE(s.destination,''),es.address,es.refund_address,es.fee_bps,es.fee_destination,o.amount,o.state,
-		s.created < now()-make_interval(secs => $2)
+		s.created < now()-make_interval(secs => $2),`+disputeOutcomeSQL+`
 		FROM settlements s JOIN escrows es ON es.order_id=s.order_id JOIN orders o ON o.id=s.order_id WHERE s.id=$1`, id, escrowBuildWaitMax.Seconds()).Scan(
-		&orderID, &kind, &state, &dest, &escrowAddr, &refund, &feeBps, &feeDest, &price, &orderState, &bounded)
+		&orderID, &kind, &state, &dest, &escrowAddr, &refund, &feeBps, &feeDest, &price, &orderState, &bounded, &outcome)
 	if err != nil || state != "building" {
 		return err
 	}
-	if kind != "release" && kind != "refund" || dest == "" || !isTerminal(orderState) {
-		return errors.New("escrow: a settlement of this kind is not built in this slice")
+	if kind != "release" && kind != "refund" || dest == "" || !settlementFits(kind, orderState, outcome) {
+		return errors.New("escrow: the settlement does not fit its order's state or dispute decision")
 	}
 	keys, err := escrowKeys(ctx, a.db, orderID)
 	if err != nil {

@@ -22,9 +22,9 @@ import (
 // No payouts row is ever written for an escrow order (settleTerminal; migration 074 refuses one). What returns coins
 // from an escrow is a settlement (escrow_settle.go): the watcher builds each requested claim or refund at the end of
 // its pass (buildSettlements), then co-signs party-signed ones, stores and broadcasts them and follows them to their
-// confirmation (escrow_cosign.go, slice P1-c2). Dispute decisions and the stray refund are still to come, so an escrow
-// order is never disputed (escrowTransitionHook). An escrow order that has received nothing when its payment window ends is
-// cancelled, as a pooled order is; one underpaid then is cancelled too and its refund requested. A confirmed deposit
+// confirmation (escrow_cosign.go, slice P1-c2). A dispute on an escrow order is decided by an administrator and its
+// decision is paid by a settlement (escrow_decision.go). An escrow order that has received nothing when its payment
+// window ends is cancelled, as a pooled order is; one underpaid then is cancelled too and its refund requested. A confirmed deposit
 // first recorded after an escrow order closed is flagged for payment review (flagLateDeposits).
 //
 // While escrow is switched on but not enabled (its node was down at startup, say) the watcher retries the startup
@@ -51,8 +51,6 @@ func init() {
 
 // escrowCompletedNote is the order history note of the completion on funding.
 const escrowCompletedNote = "Completed on funding (Bitcoin escrow): the content was delivered. The vendor claims the escrowed coins from the order page."
-
-var errEscrowDisputeLater = fail(409, "Not available for an escrow order yet: a dispute decision is paid from the escrow by a settlement this build does not build yet (Bitcoin escrow Phase 1 runs on regtest only). Nothing was changed.")
 
 // escrowWatcher runs while ESCROW_BTC=on. Until escrow is enabled (its node was down at startup, say) each pass first
 // retries its checks (retryEscrow, A-316), so escrow starts without a restart once the node answers.
@@ -261,17 +259,15 @@ func (a *App) settleEscrow(ctx context.Context, orderID string, walletRead bool)
 	return tx.Commit()
 }
 
-// escrowTransitionHook keeps escrow orders on the moves Phase 1 supports so far. A dispute is refused: its decision
-// is a settlement slice P1-c2 builds. Cancelling an escrow order that holds coins requests its refund
-// (settleTerminal, P1-c1). A delivered escrow order completes at once, by the system (the escrow-only edge; ES-4:
-// digital orders complete on funding).
+// escrowTransitionHook keeps escrow orders on the moves Phase 1 supports. Cancelling an escrow order that holds coins
+// requests its refund, and resolving its dispute requests the settlement of the decision (settleTerminal); only an
+// administrator resolves it (resolveAction). A delivered escrow order completes at once, by the system (the
+// escrow-only edge; ES-4: digital orders complete on funding).
 func escrowTransitionHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, to string) error {
 	if !o.Escrow {
 		return nil
 	}
 	switch {
-	case to == stateDisputed:
-		return errEscrowDisputeLater
 	case to == stateDelivered:
 		next, err := a.transition(ctx, tx, o.ID, stateDelivered, stateCompleted, nil, escrowCompletedNote)
 		if err != nil {

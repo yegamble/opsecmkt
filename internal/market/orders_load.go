@@ -381,6 +381,14 @@ func (a *App) resolvePayouts(ctx context.Context, d *PageData) error {
 		if !ok || o.State != stateDisputed || d.User.ID == o.BuyerID || d.User.ID == o.VendorID {
 			continue
 		}
+		if o.Escrow { // decided by an administrator and paid by a settlement from the escrow (escrow_decision.go)
+			p, err := a.escrowDisputePreview(ctx, &o)
+			if err != nil {
+				return err
+			}
+			d.DisputePayouts[v.ID] = p
+			continue
+		}
 		_, sum, _, err := a.payoutBasis(ctx, a.db, &o, false)
 		if err != nil {
 			return err

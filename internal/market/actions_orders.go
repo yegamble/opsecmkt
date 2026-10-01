@@ -221,6 +221,14 @@ func resolveAction(c *actionCtx) (actionResult, error) {
 		if replyRole != "" && c.Form.Get("reply_seen") != "1" {
 			return actionResult{}, staleResolveForm(c, replyRole, resolution)
 		}
+		// An escrow order's decision moves coins from its escrow: only an administrator makes it (ES-4, SEC-8).
+		var escrow bool
+		if err = c.Tx.QueryRowContext(c.Ctx(), "SELECT EXISTS(SELECT 1 FROM escrows WHERE order_id=$1)", orderID).Scan(&escrow); err != nil {
+			return actionResult{}, err
+		}
+		if escrow && c.User.Role != "admin" {
+			return actionResult{}, errEscrowResolveAdmin
+		}
 		if _, err = c.A.transition(withPayoutSeen(c.Ctx(), orderID, seen), c.Tx, orderID, stateDisputed, stateResolved, c.User, status); err != nil {
 			return actionResult{}, err
 		}
