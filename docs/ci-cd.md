@@ -21,6 +21,8 @@ The A-178 overload load check, `TestLoadSearchFloodKeepsHealthz` (`internal/mark
 LOAD_TEST=1 LOAD_SECONDS=30 TEST_DATABASE_URL=<dedicated-test-db> go test -count=1 -run TestLoadSearchFloodKeepsHealthz -v ./internal/market
 ```
 
+The browser job uses the runner's official Ubuntu archive/security mirrors directly, bypassing the Azure mirror after a slow download exhausted the job timeout. Its 40-minute budget includes cold browser/system-dependency installation and both browser suites; all test projects and the required-check gate still run.
+
 GitHub retains coverage and browser reports/traces for 14 days. Inspect failed Actions jobs and the `playwright-results` artifact before updating a regression expectation. Runtime smoke tests isolate containers, volumes and networks with a unique project name and ignore local `.env` files.
 
 ## Release a tested version

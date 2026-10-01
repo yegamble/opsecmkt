@@ -416,7 +416,8 @@ jobs:
   browser:
     name: Playwright regressions
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    # Allow cold browser setup plus both suites even when package downloads are slow.
+    timeout-minutes: 40
     services:
       postgres:
         image: postgres:17-alpine
@@ -441,7 +442,12 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm audit --audit-level=high
-      - run: npx playwright install --with-deps chromium firefox webkit
+      - name: Install Playwright browsers and system dependencies
+        run: |
+          # The runner prefers Azure's mirror, which took 22 minutes in a main run.
+          # Use its existing official Ubuntu archive/security fallbacks directly.
+          sudo sed -i '\|^http://azure\.archive\.ubuntu\.com/ubuntu/|d' /etc/apt/apt-mirrors.txt
+          npx playwright install --with-deps chromium firefox webkit
       - run: npm run test:e2e
         env:
           E2E_DATABASE_URL: postgres://test:test-ci-only@127.0.0.1:5432/e2e?sslmode=disable
