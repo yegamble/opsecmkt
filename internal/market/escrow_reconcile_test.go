@@ -66,6 +66,10 @@ func TestEscrowOutsideSpendFlagged(t *testing.T) {
 	if page := html.UnescapeString(x.page("/order?id="+order, mod)); !strings.Contains(page, "Spent outside the market by transaction "+spender) {
 		t.Fatalf("staff order page:\n%s", page)
 	}
+	// The moderation desk lists it as an open payment review with the honest reason.
+	if desk := html.UnescapeString(x.page("/moderator", mod)); !strings.Contains(desk, "Escrow deposit spent by a transaction this market did not make, with no settlement of the market covering it (transaction "+spender+")") {
+		t.Fatalf("moderation desk:\n%s", desk)
+	}
 	// Repeated passes flag it once.
 	x.poll()
 	x.poll()

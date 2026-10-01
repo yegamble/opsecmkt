@@ -760,16 +760,16 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 		return nil
 	}
 	rows, err := a.db.QueryContext(ctx, `WITH v AS (SELECT pm.id,pm.order_id,o.state,pr.id AS product_id,pr.title,pm.currency,pm.amount,pm.txid,pm.idx,pm.credited,pm.locked,pm.confirmations,
-			pm.regress_notice,pm.below_floor,(pm.locked OR NOT pm.credited OR pm.regress_notice OR pm.below_floor) AS open,f.at,
+			pm.regress_notice,pm.below_floor,(pm.locked OR NOT pm.credited OR pm.regress_notice OR pm.below_floor OR pm.spent_outside) AS open,f.at,
 			pm.disposition='escalated' AS escalated,COALESCE(to_char(pm.disposed_at,'YYYY-MM-DD'),'') AS disposed,(o.buyer_id=$2 OR pr.vendor_id=$2) AS party,
-			EXISTS(SELECT 1 FROM escrows es WHERE es.order_id=pm.order_id) AS escrow
+			EXISTS(SELECT 1 FROM escrows es WHERE es.order_id=pm.order_id) AS escrow,pm.spent_outside,COALESCE(pm.spent_by,'') AS spent_by
 		FROM payments pm JOIN orders o ON o.id=pm.order_id JOIN products pr ON pr.id=o.product_id
 		LEFT JOIN LATERAL (SELECT max(e.created) AS at FROM order_events e WHERE e.order_id=pm.order_id AND e.actor_id IS NULL
 			AND e.note LIKE '%Moderator review required.%'
 			AND strpos(e.note, ' '||CASE WHEN length(pm.txid)<=20 THEN pm.txid ELSE left(pm.txid,20)||'…' END||' ')>0) f ON true
 		WHERE pm.flagged AND pm.disposition IN ('','escalated'))
 		SELECT id,order_id,state,product_id,title,currency,amount,txid,idx,credited,locked,confirmations,regress_notice,below_floor,open,COALESCE(to_char(at,'YYYY-MM-DD HH24:MI "UTC"'),''),
-			escalated,disposed,party,escrow,(SELECT count(*) FROM v WHERE NOT open)
+			escalated,disposed,party,escrow,spent_outside,spent_by,(SELECT count(*) FROM v WHERE NOT open)
 		FROM (SELECT * FROM v WHERE open UNION ALL (SELECT * FROM v WHERE NOT open ORDER BY at DESC NULLS LAST,id DESC LIMIT $1)) s
 		ORDER BY open DESC,CASE WHEN open THEN at END ASC NULLS FIRST,CASE WHEN open THEN id END,at DESC NULLS LAST,id DESC`, paymentReviewLimit, d.User.ID)
 	if err != nil {
@@ -779,10 +779,10 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 	for rows.Next() {
 		var v PaymentReview
 		var amt, confs int64
-		var credited, locked, regressed, belowFloor, escrow bool
-		var disposed string
+		var credited, locked, regressed, belowFloor, escrow, outside bool
+		var disposed, spentBy string
 		if err = rows.Scan(&v.ID, &v.OrderID, &v.OrderState, &v.ProductID, &v.Title, &v.Currency, &amt, &v.TxID, &v.Index, &credited, &locked, &confs, &regressed, &belowFloor, &v.Open, &v.Flagged,
-			&v.Escalated, &disposed, &v.Party, &escrow, &d.PaymentReviewOthers); err != nil {
+			&v.Escalated, &disposed, &v.Party, &escrow, &outside, &spentBy, &d.PaymentReviewOthers); err != nil {
 			return err
 		}
 		// The disposition form (paymentReviewAction): open flags of orders the viewer is not party to; an escalated
@@ -794,6 +794,12 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 		v.Amount, v.OrderState = amount(amt, currencyDecimals(v.Currency)), stateLabel(v.OrderState)
 		threshold := a.confirmationThreshold(v.Currency)
 		switch {
+		case outside:
+			// P1-d1: an escrow deposit no settlement of the market covered, spent by another transaction.
+			v.Reason = "Escrow deposit spent by a transaction this market did not make, with no settlement of the market covering it"
+			if spentBy != "" {
+				v.Reason += " (transaction " + spentBy + ")"
+			}
 		case locked:
 			v.Reason = "Locked transfer (unlock time), not counted or paid out"
 		case belowFloor && (!credited || confs >= threshold):
