@@ -548,6 +548,9 @@ func (a *App) buildInputSpent(ctx context.Context, e *escrowBTC, id int64, order
 			want[in.TxID+":"+strconv.FormatUint(uint64(in.Vout), 10)] = true
 		}
 	}
+	if len(spent) == 0 {
+		return nil // the spend left the mempool meanwhile: the next pass builds
+	}
 	by, err := e.walletSpenders(ctx, want)
 	if err != nil {
 		log.Printf("escrow: the transaction spending an escrow deposit could not be looked up: %s", errorClassOf(err))

@@ -51,6 +51,7 @@ type fakeEscrowCore struct {
 	// Escrow P1-c1: settlement builds. gettxout reports each deposit as unspent (with its confirmations, value and
 	// address) until it is in spent; utxoupdatepsbt fills a witness UTXO for an input spending a deposit.
 	spent      map[string]bool      // "txid:vout" spent outpoints
+	beforeUTXO func(string, int64)  // runs when gettxout is called (txid, vout), before it reads spent (A-356 races)
 	utxoSkew   func(map[string]any) // edits a gettxout answer (a lying or reorged node)
 	createSkew func(string) string  // edits createpsbt's answer
 	updateSkew func(string) string  // edits utxoupdatepsbt's answer
@@ -268,6 +269,11 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 		// P1-c1: an escrow deposit the wallet reports is unspent until marked spent; utxoSkew lies about it.
 		var vout int64
 		json.Unmarshal(p[1], &vout)
+		if c.beforeUTXO != nil {
+			c.mu.Unlock()
+			c.beforeUTXO(str(0), vout)
+			c.mu.Lock()
+		}
 		if d, ok := c.depositAt(str(0), vout); ok && !c.spent[str(0)+":"+strconv.FormatInt(vout, 10)] {
 			out := map[string]any{"confirmations": d.Confs, "value": json.Number(amount(d.Sats, 8)), "scriptPubKey": map[string]any{"address": d.Address}}
 			if c.utxoSkew != nil {
