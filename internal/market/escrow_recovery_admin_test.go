@@ -19,16 +19,19 @@ func TestEscrowRebroadcastNotRepeatedUnderGate(t *testing.T) {
 	_, admin := x.user("rradmin", "admin")
 	ok := url.Values{"not_sent": {"confirmed"}, "password": {testPassword}}
 	// S: co-signed and stored, its broadcast killed; B: broadcast, unconfirmed.
+	// Both are built first: building one runs a pass that would broadcast the other.
 	orderS, idS := x.built(regtestAddr("refund-rr-s"), regtestAddr("claim-rr-s"), 100000)
-	x.signAs(orderS, roleVendor, idS)
-	x.A.escrowPollOnce(x.killAtSend())
-	x.sendNormally()
-	s := x.settleByID(idS)
 	orderB, idB := x.built(regtestAddr("refund-rr-b"), regtestAddr("claim-rr-b"), 100000)
 	x.signAs(orderB, roleVendor, idB)
 	x.poll()
 	b := x.settleByID(idB)
-	if s.State != "signed" || b.State != "broadcast" {
+	x.core.setTxConfs(b.TxID, 1, "") // in a block for now, so the next pass does not send B again
+	x.signAs(orderS, roleVendor, idS)
+	x.A.escrowPollOnce(x.killAtSend())
+	x.sendNormally()
+	x.core.setTxConfs(b.TxID, 0, "") // out of the block again: unconfirmed, as a restore finds it
+	s := x.settleByID(idS)
+	if s.State != "signed" || s.Raw == "" || b.State != "broadcast" {
 		t.Fatalf("before the restore: S %+v, B %+v", s, b)
 	}
 	x.setGate(true)
