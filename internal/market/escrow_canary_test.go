@@ -49,7 +49,9 @@ func TestCanaryStatesEscrowMode(t *testing.T) {
 		for _, want := range []string{
 			"Bitcoin escrow (regtest only)",
 			"2-of-3 multisig escrow",
-			"the market cannot spend it alone",
+			// A-361 (ES-10): the claim holds only if the key each party's page shows as theirs is theirs, as the order
+			// page's escrow panel says.
+			"so the market cannot spend it alone, if the key each party's order page shows as theirs is theirs: each party checks the escrow descriptor in their own wallet",
 			"not verified on any public network",
 		} {
 			if !strings.Contains(page, want) {
