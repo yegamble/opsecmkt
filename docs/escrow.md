@@ -177,11 +177,19 @@ chain `regtest`; [operator guide](operator-guide.md#bitcoin-escrow-regtest-only)
   restored stored transaction is broadcast again only after an administrator confirms it; every checkout first asks
   the watch-only wallet whether it already holds the escrow address it composed (an escrow created after the backup a
   restored database came from) and then moves to the next child keys, up to 20 addresses (A-359; only the whole
-  address is compared, so a child key of such an escrow can still be reused in another escrow address); a settlement whose coins another
-  transaction spent, whether it was still being built, waiting for a signature (A-356), signed or broadcast, is
-  recorded as spent outside the market with that transaction's ID when the watch-only wallet names it and flagged
-  for staff, so its order page stops asking for a signature; its own transaction broadcast by the parties is
-  recorded as broadcast; deposits spent with no settlement and watch-only addresses with no escrow are listed.
+  address is compared, so a child key of such an escrow can still be reused in another escrow address); spends the
+  market did not make are recorded as spent outside the market, with the spending transaction's ID when the
+  watch-only wallet names it, and flagged for staff (an order note and a notice to the parties, moderators and
+  administrators), as follows. A settlement waiting for a signature, or signed by one party, whose input
+  `gettxout` no longer finds (mempool included) is recorded at once, unless the watch-only wallet holds the
+  settlement's own transaction, which the parties broadcast: that is checked and, if it passes, recorded as
+  broadcast (A-344, A-356). A settlement being built that finds an input spent waits one pass, and is recorded only
+  if the input is still spent at a second look on a later pass; spent no longer, it is left to build. A signed or
+  broadcast settlement is recorded when its inputs are spent and the wallet does not know its transaction (or
+  reports it conflicted), and a confirmed one when a conflicting transaction was mined in its place. An escrow deposit no settlement covers is checked only
+  once it is in a block, only for an order whose deposits were read in that pass and whose settlement is not being
+  built (the build checks it then), and is never counted or spent afterwards. Watch-only addresses with no escrow
+  row are listed for administrators on the escrow watcher's daily check.
 
 **What Phase 1 protects, on regtest.** The market holds one of each escrow's three keys, in an arbiter wallet used
 for nothing else, and only public descriptors in its watch-only wallet: no settlement moves without the buyer's or
