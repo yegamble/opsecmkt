@@ -162,8 +162,10 @@ func TestEscrowExpiryAndRefusedSettlements(t *testing.T) {
 	}
 	x.noPayouts(order2)
 
-	// An escrow order whose content cannot be delivered automatically stays paid: no dispute (P1-c2); the vendor
-	// delivers by hand and it completes (or cancels it, which requests its refund: TestEscrowRefundRoutes).
+	// An escrow order whose content cannot be delivered automatically stays paid; the vendor delivers by hand and it
+	// completes (or cancels it, which requests its refund: TestEscrowRefundRoutes). P1-c2: the buyer is offered a
+	// dispute, which an administrator decides (TestEscrowDisputeDecision); a dispute on a funded order is refused only
+	// once it is no longer paid, as for a pooled order.
 	order3 := x.draft()
 	addr3 := x.mustCheckout(order3, "bcrt1qbuyerrefund00000000000000000000003")
 	x.DB.Exec("UPDATE products SET delivery_content='' WHERE id=(SELECT product_id FROM orders WHERE id=$1)", order3)
@@ -173,17 +175,17 @@ func TestEscrowExpiryAndRefusedSettlements(t *testing.T) {
 		t.Fatalf("undeliverable order: %s", x.state(order3))
 	}
 	body := x.page("/order?id="+order3, x.buyerSess)
-	if strings.Contains(body, `action="/disputes"`) || !strings.Contains(body, "a dispute decision is paid from the escrow") {
-		t.Fatalf("paid escrow order page offers a dispute: %s", body)
-	}
-	if w := x.do("POST", "/disputes", x.buyerSess, url.Values{"order_id": {order3}, "reason": {"The content was never delivered to me."}}); w.Code != 409 {
-		t.Fatalf("dispute: %d %s", w.Code, w.Body.String())
+	if !strings.Contains(body, `action="/disputes"`) {
+		t.Fatalf("paid escrow order page offers no dispute: %s", body)
 	}
 	if w := x.do("POST", "/orders/deliver", x.vendorSess, url.Values{"order_id": {order3}, "content": {"by hand"}}); w.Code != 303 {
 		t.Fatalf("deliver: %d %s", w.Code, w.Body.String())
 	}
 	if x.state(order3) != stateCompleted {
 		t.Fatalf("delivered by hand: %s", x.state(order3))
+	}
+	if w := x.do("POST", "/disputes", x.buyerSess, url.Values{"order_id": {order3}, "reason": {"The content was never delivered to me."}}); w.Code != 409 {
+		t.Fatalf("dispute of a completed order: %d %s", w.Code, w.Body.String())
 	}
 	x.noPayouts(order3)
 }

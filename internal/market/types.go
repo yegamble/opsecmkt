@@ -494,6 +494,7 @@ type EscrowOrderView struct {
 	Unread                                      string                  // set when nothing is read at the address: shown for the Confirmed and Unconfirmed figures (A-338)
 	Settlement                                  *EscrowSettlementView   // the order's claim or refund (escrow_settle.go)
 	Settlements                                 []*EscrowSettlementView // Settlement (when set) then the stray refunds, newest first, as the page lists them
+	Decision                                    *EscrowDecisionView     // a resolved order's dispute decision (escrow_decision.go)
 	Claim                                       bool                    // the vendor of a completed order may request the claim
 }
 
@@ -506,6 +507,14 @@ type EscrowSettlementView struct {
 	Outputs                               []SettlementOutputView
 	CanSign, SignToo, Stray               bool
 	PSBT, TxID, RawTx                     string
+}
+
+// EscrowDecisionView is a resolved escrow order's dispute decision (escrow_decision.go): Outcome release or refund,
+// Text the honest sentence, CanChange for an administrator who is not a party while its settlement has no final
+// transaction.
+type EscrowDecisionView struct {
+	Outcome, Text string
+	CanChange     bool
 }
 
 // SettlementOutputView is one expected output of a settlement: the address, the amount and whom it pays.

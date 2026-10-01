@@ -742,12 +742,13 @@ func TestEscrowRefundRoutes(t *testing.T) {
 	if !strings.Contains(body, `name="amount_seen" value="40000"`) || !strings.Contains(body, "Cancelling refunds the 0.0004 regtest BTC in this escrow") {
 		t.Fatalf("cancel form of a funded escrow order:\n%s", body)
 	}
-	// A dispute is still refused.
+	// P1-c2: a dispute opens (an administrator decides it, escrow_dispute_test.go); nothing is settled by opening it.
 	paid := x.draft()
 	x.mustCheckout(paid, "bcrt1qbuyerrefund00000000000000000000016")
 	x.DB.Exec("UPDATE products SET delivery_content='' WHERE id=(SELECT product_id FROM orders WHERE id=$1)", paid)
 	x.fund(paid, paid, 3, 100000)
-	if w := x.do("POST", "/disputes", x.buyerSess, url.Values{"order_id": {paid}, "reason": {"The content was never delivered to me."}}); w.Code != 409 || !strings.Contains(w.Body.String(), "dispute decision") {
+	if w := x.do("POST", "/disputes", x.buyerSess, url.Values{"order_id": {paid}, "reason": {"The content was never delivered to me."}}); w.Code != 303 || x.state(paid) != stateDisputed ||
+		agInt(x.testEnv, "SELECT count(*) FROM settlements WHERE order_id=$1", paid) != 0 {
 		t.Fatalf("dispute: %d %s", w.Code, w.Body.String())
 	}
 }
