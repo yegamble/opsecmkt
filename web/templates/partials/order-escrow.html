@@ -1,6 +1,6 @@
 {{/* WR-escrow Phase 1 (escrow_order.go, escrow_create.go). The escrow panel of an escrow order, and the escrow checkout offer on a draft. The panel is shown for every escrow order, with ESCROW_BTC off too (A-315); the checkout offer only with it on. The copy claims only regtest-verified behaviour (ES-10). */}}
 {{define "order-escrow"}}{{with .Escrow}}<h2>Bitcoin escrow <span class="badge testnet">REGTEST</span></h2>
-<p class="alert" role="note"><strong>Regtest only.</strong> Bitcoin escrow on this market runs on regtest, a local test chain, and has not been verified on any public network; its coins have no value. This build prepares the vendor's claim and refunds and takes one party's signature on them, but it does not co-sign or broadcast them yet, so no coins leave an escrow through the market.</p>{{if not .Available}}
+<p class="alert" role="note"><strong>Regtest only.</strong> Bitcoin escrow on this market runs on regtest, a local test chain, and has not been verified on any public network; its coins have no value. Coins leave an escrow only by a settlement the market builds: the vendor's claim, a refund, a dispute decision or the recovery of coins sent after the order closed. Once the buyer or the vendor has signed one in their own wallet, the market co-signs it and broadcasts it to the regtest network.</p>{{if not .Available}}
 <p class="alert error" role="status">Bitcoin escrow is unavailable on this market right now, so deposits to this escrow are not being read and the order does not move. Coins sent to it stay in the escrow; they are recorded once the operator has fixed the escrow node.</p>{{end}}
 {{if .Open}}<p class="help">{{if .NeedsTopUp}}Send <strong>{{.Remaining}} regtest BTC</strong> to this escrow address, after checking the descriptor below in your own wallet. If you already made a partial payment, top up only this remaining amount to the same address.{{else}}The full price has been seen. Do not send another payment; wait for confirmation.{{end}}{{if .Available}} If nothing has been received by {{.CancelAfter}}, the order is cancelled. If it is underpaid then (every deposit confirmed, and no top-up for a whole payment window), it is cancelled too and the escrow is refunded to the buyer's refund address by a settlement.{{end}}</p>{{end}}
 <div class="payment-address">
@@ -74,19 +74,22 @@
 {{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button class="primary" type="submit">Request the claim</button>
 </form>
-</section>{{end}}{{with .Settlement}}
-<section class="escrow-settlement" id="escrow-settlement" aria-labelledby="escrow-settlement-heading">
-<h3 id="escrow-settlement-heading">Settlement: {{.Title}}</h3>
+</section>{{end}}{{range .Settlements}}
+<section class="escrow-settlement" id="escrow-settlement{{if .Stray}}-{{.ID}}{{end}}" aria-labelledby="escrow-settlement-heading-{{.ID}}">
+<h3 id="escrow-settlement-heading-{{.ID}}">Settlement: {{.Title}}</h3>
 <p role="status">{{.Status}}</p>{{if .Outputs}}
 <p class="help">The transaction spends {{.InputTotal}} BTC from this escrow and pays exactly these outputs; the network fee of {{.NetworkFee}} BTC is taken from the first. They are fixed: check them in your wallet before you sign.</p>
-<h4 id="escrow-outputs-heading">Expected outputs</h4>
-<ol class="settlement-outputs" aria-labelledby="escrow-outputs-heading">{{range .Outputs}}
+<h4 id="escrow-outputs-heading-{{.ID}}">Expected outputs</h4>
+<ol class="settlement-outputs" aria-labelledby="escrow-outputs-heading-{{.ID}}">{{range .Outputs}}
 <li><span>{{.Role}}: <strong>{{.Amount}} BTC</strong></span>
 <span class="settlement-address">{{.Address}}</span></li>{{end}}
 </ol>
-<p class="help">Network fee (to the miners, not an output): <strong>{{.NetworkFee}} BTC</strong>.</p>{{end}}{{if .CanSign}}
-<h4 id="escrow-sign-heading">Sign it</h4>
-<p class="help">Your copy carries your own key's origin, so your wallet finds your key; the other two keys are bare. In Bitcoin Core, load it with File › Load PSBT from clipboard and press Sign, or run <code>walletprocesspsbt</code> with it, without finalizing, in the wallet that holds your escrow key. Check the outputs your wallet shows against the table above, then paste the signed PSBT here. Either you or the other party can sign.</p>
+<p class="help">Network fee (to the miners, not an output): <strong>{{.NetworkFee}} BTC</strong>.</p>{{end}}{{if .RawTx}}
+<h4 id="escrow-raw-heading-{{.ID}}">Final transaction</h4>
+<p class="help">The signed transaction as the market broadcast it (transaction {{.TxID}}). It is public on the regtest network; you can broadcast it again from your own node (<code>sendrawtransaction</code>) if you want.</p>
+<pre class="code-block escrow-raw-tx" tabindex="0" aria-labelledby="escrow-raw-heading-{{.ID}}">{{.RawTx}}</pre>{{end}}{{if .CanSign}}
+<h4 id="escrow-sign-heading-{{.ID}}">Sign it</h4>
+<p class="help">{{if .SignToo}}The other party has signed it already, so the market co-signs it on its next pass. You may sign it too: with both your signatures the market does not sign it. {{end}}Your copy carries your own key's origin, so your wallet finds your key; the other two keys are bare. In Bitcoin Core, load it with File › Load PSBT from clipboard and press Sign, or run <code>walletprocesspsbt</code> with it, without finalizing, in the wallet that holds your escrow key. Check the outputs your wallet shows against the table above, then paste the signed PSBT here. Either you or the other party can sign. A signature is checked only when the market completes the transaction: one that does not verify is discarded then, and the settlement waits for a signature again.</p>
 <label>Your copy (PSBT)<textarea class="escrow-psbt" readonly rows="6" spellcheck="false">{{.PSBT}}</textarea>
 </label>
 <p><a class="button" href="/escrow-psbt?id={{$.Order.ID}}&amp;s={{.ID}}" download>Download your copy</a></p>
@@ -101,7 +104,7 @@
 </section>{{end}}{{end}}{{end}}
 {{define "order-escrow-checkout"}}{{with .EscrowCheckout}}<section class="order-action escrow-checkout" aria-labelledby="escrow-checkout-heading">
 <h3 id="escrow-checkout-heading">Or pay into a Bitcoin escrow (regtest only)</h3>
-<p class="help">Instead of the market's pooled wallet, pay into a 2-of-3 multisig of your escrow key, the vendor's and the market's: any two can spend it, no single one can. This listing delivers its content automatically, so the order completes as soon as the escrow is funded. Regtest only: this build prepares the vendor's claim and refunds and takes one party's signature on them, but does not co-sign or broadcast them yet.</p>{{if .Reason}}
+<p class="help">Instead of the market's pooled wallet, pay into a 2-of-3 multisig of your escrow key, the vendor's and the market's: any two can spend it, no single one can. This listing delivers its content automatically, so the order completes as soon as the escrow is funded. Regtest only: the vendor claims the escrow, or you are refunded from it, by a transaction one of you signs in your own wallet and the market co-signs and broadcasts.</p>{{if .Reason}}
 <p class="order-unavailable" role="note"><strong>Unavailable.</strong> {{.Reason}}{{if .KeyLink}} <a class="text-link" href="/escrow-key">Your escrow key</a>{{end}}</p>{{else}}
 <form class="stack" method="post" action="/orders/escrow">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">

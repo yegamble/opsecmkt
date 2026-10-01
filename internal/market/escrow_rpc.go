@@ -691,3 +691,68 @@ func (e *escrowBTC) sendRawTransaction(ctx context.Context, rawHex string, maxSa
 	err := e.call(ctx, "", "sendrawtransaction", []any{rawHex, feeRateParam(maxSatPerVByte)}, &txid)
 	return txid, err
 }
+
+// escrowWalletTx is what the watch-only wallet knows of a settlement transaction (gettransaction): whether it knows
+// it, its confirmations (negative when a transaction in the chain conflicts with it) and the conflicting txids.
+type escrowWalletTx struct {
+	Found         bool
+	Confirmations int64
+	Conflicts     []string
+}
+
+// walletTx is gettransaction of txid in the watch-only wallet, which records every transaction spending an escrow
+// output it watches. A transaction the wallet does not know (-5) is Found false.
+func (e *escrowBTC) walletTx(ctx context.Context, txid string) (escrowWalletTx, error) {
+	var tx struct {
+		Confirmations json.Number `json:"confirmations"`
+		Conflicts     []string    `json:"walletconflicts"`
+	}
+	err := e.call(ctx, e.watchWallet, "gettransaction", []any{txid, true}, &tx)
+	var re *escrowRPCError
+	if errors.As(err, &re) && re.Class == "rpc:-5" {
+		return escrowWalletTx{}, nil
+	}
+	if err != nil {
+		return escrowWalletTx{}, err
+	}
+	confs, err := tx.Confirmations.Int64()
+	if err != nil {
+		return escrowWalletTx{}, &escrowRPCError{Method: "gettransaction", Class: "bad-reply"}
+	}
+	return escrowWalletTx{Found: true, Confirmations: confs, Conflicts: tx.Conflicts}, nil
+}
+
+// arbiterOwns reports whether the arbiter wallet holds the key of addr (getaddressinfo ismine): for the P2WPKH address
+// of a market child key, whether the wallet's derived key range covers that child, so it can sign for it.
+func (e *escrowBTC) arbiterOwns(ctx context.Context, addr string) (bool, error) {
+	var info struct {
+		IsMine bool `json:"ismine"`
+	}
+	err := e.call(ctx, e.arbiterWallet, "getaddressinfo", []any{addr}, &info)
+	return info.IsMine, err
+}
+
+// checkArbiterWallet requires the arbiter wallet (getwalletinfo) to be a descriptor wallet with private keys, not
+// encrypted (the watcher co-signs without a passphrase) and used for nothing else: no transaction has ever paid or
+// spent from it (txcount 0). Escrow outputs never belong to it (the escrow descriptors are in the watch-only wallet),
+// so a transaction there means the wallet is also used as an ordinary wallet.
+func (e *escrowBTC) checkArbiterWallet(ctx context.Context) error {
+	var info struct {
+		Descriptors   bool             `json:"descriptors"`
+		PrivateKeys   bool             `json:"private_keys_enabled"`
+		TxCount       *int64           `json:"txcount"`
+		UnlockedUntil *json.RawMessage `json:"unlocked_until"`
+	}
+	if err := e.call(ctx, e.arbiterWallet, "getwalletinfo", []any{}, &info); err != nil {
+		return err
+	}
+	switch {
+	case !info.Descriptors || !info.PrivateKeys || info.TxCount == nil:
+		return &escrowRPCError{Method: "getwalletinfo", Class: "not-arbiter"}
+	case info.UnlockedUntil != nil:
+		return &escrowRPCError{Method: "getwalletinfo", Class: "encrypted"}
+	case *info.TxCount != 0:
+		return &escrowRPCError{Method: "getwalletinfo", Class: "not-dedicated"}
+	}
+	return nil
+}

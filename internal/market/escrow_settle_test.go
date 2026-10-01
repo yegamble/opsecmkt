@@ -264,18 +264,23 @@ func TestEscrowClaimBuildAndSign(t *testing.T) {
 		agInt(x.testEnv, "SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE '%the vendor signed its escrow settlement%Nothing has been sent%'", x.buyer) != 1 {
 		t.Fatal("the buyer was not told the vendor signed")
 	}
+	// P1-c2 (A-340): the buyer, who has not signed, may sign too; the vendor, who has, is not offered it again.
 	page := x.page("/order?id="+order, x.buyerSess)
-	if !strings.Contains(page, "Signed by the vendor") || !strings.Contains(page, "Nothing has been sent") || strings.Contains(page, `action="/escrow/sign"`) || strings.Contains(page, "/escrow-psbt?") {
+	if !strings.Contains(page, "Signed by the vendor") || !strings.Contains(page, "Nothing has been sent") || !strings.Contains(page, `action="/escrow/sign"`) {
 		t.Fatalf("signed page:\n%s", page)
 	}
-	if w := x.do("GET", "/escrow-psbt?id="+order+"&s="+strconv.FormatInt(id, 10), x.buyerSess, nil); w.Code != 404 {
-		t.Fatalf("copy of a signed settlement served: %d", w.Code)
+	if page := x.page("/order?id="+order, x.vendorSess); strings.Contains(page, `action="/escrow/sign"`) || strings.Contains(page, "/escrow-psbt?") {
+		t.Fatalf("the signer's page offers signing again:\n%s", page)
 	}
-	// Signing again, by either party, changes nothing.
-	for _, sess := range []string{x.vendorSess, x.buyerSess} {
-		if code, _ := x.sign(order, sess, id, pasted); code != 409 {
-			t.Fatalf("second signature: %d", code)
-		}
+	if w := x.do("GET", "/escrow-psbt?id="+order+"&s="+strconv.FormatInt(id, 10), x.vendorSess, nil); w.Code != 404 {
+		t.Fatalf("copy served to the party who signed: %d", w.Code)
+	}
+	// Signing again changes nothing: the vendor is refused, and the vendor's paste is not the buyer's signature.
+	if code, _ := x.sign(order, x.vendorSess, id, pasted); code != 409 {
+		t.Fatalf("second signature: %d", code)
+	}
+	if code, _ := x.sign(order, x.buyerSess, id, pasted); code != 400 {
+		t.Fatalf("the vendor's paste by the buyer: %d", code)
 	}
 	// The database refuses a rebuild of a signed settlement, a second outcome and a change of its outputs.
 	if _, err := x.DB.Exec("UPDATE settlements SET psbt='cHNidP8x' WHERE id=$1", id); err == nil || !strings.Contains(err.Error(), "never rebuilt") {
@@ -571,11 +576,12 @@ func TestEscrowSettlementRaces(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	slices.Sort(codes)
-	if !slices.Equal(codes, []int{303, 409}) {
+	// P1-c2 (A-340): the second signature is accepted too (the row lock orders them); both are kept, one signer.
+	if !slices.Equal(codes, []int{303, 303}) {
 		t.Fatalf("concurrent signatures: %v", codes)
 	}
-	if n := agInt(x.testEnv, "SELECT count(DISTINCT party) FROM settlement_signatures WHERE settlement_id=$1", id); n != 1 {
+	if n := agInt(x.testEnv, "SELECT count(DISTINCT party) FROM settlement_signatures WHERE settlement_id=$1", id); n != 2 ||
+		agInt(x.testEnv, "SELECT count(*) FROM settlements WHERE id=$1 AND state='party_signed' AND signer IS NOT NULL", id) != 1 {
 		t.Fatalf("%d parties' signatures kept", n)
 	}
 	// A second claim of the same outputs by another settlement is refused by the ledger's compare-and-set.
