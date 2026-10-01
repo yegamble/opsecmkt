@@ -374,8 +374,12 @@ func TestPinsAfterCloseOutputIsNeverAnInput(t *testing.T) {
 	if _, params := x.core.lastCall(t, "createpsbt"); strings.Contains(params, txidOf("late-release")) {
 		t.Fatalf("createpsbt spends the late output: %s", params)
 	}
-	if agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND after_close AND settlement_id IS NULL", order) != 1 ||
-		agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND settlement_id=$2", order, id) != 1 {
+	// P1-c2 (ES-8): the late output is returned by a stray refund of its own, never spent by the claim.
+	lateIsStray := func(order string) bool {
+		return agInt(x.testEnv, `SELECT count(*) FROM payments p WHERE p.order_id=$1 AND p.after_close
+			AND (p.settlement_id IS NULL OR EXISTS(SELECT 1 FROM settlements s WHERE s.id=p.settlement_id AND s.kind='stray_refund'))`, order) == 1
+	}
+	if !lateIsStray(order) || agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND settlement_id=$2", order, id) != 1 {
 		t.Fatal("the late output was claimed by the settlement, or the escrow output was not")
 	}
 	// A refund: cancelled with a deposit, a second deposit after the cancel, then the refund is built.
@@ -390,8 +394,8 @@ func TestPinsAfterCloseOutputIsNeverAnInput(t *testing.T) {
 	if rows := agStrings(t, x.testEnv, "SELECT role||' '||sats FROM settlement_outputs WHERE settlement_id=$1 ORDER BY n", rid); state != "awaiting_signature" || !slices.Equal(rows, []string{"claimant 39682"}) {
 		t.Fatalf("refund %s %q", state, rows)
 	}
-	if agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND after_close AND settlement_id IS NULL", refund) != 1 {
-		t.Fatal("the late output of the refunded order was claimed")
+	if !lateIsStray(refund) || agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND settlement_id=$2", refund, rid) != 1 {
+		t.Fatal("the late output of the refunded order was claimed by its refund")
 	}
 }
 

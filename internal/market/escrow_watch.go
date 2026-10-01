@@ -115,11 +115,16 @@ func (a *App) escrowPollOnce(ctx context.Context) error {
 			conn.Raw(func(any) error { return driver.ErrBadConn })
 		}
 	}()
-	// Open escrow orders whatever their age, and closed ones within escrowWatchedSQL's horizon (their ledger stays
-	// current for the order page and P1-c's stray-refund check).
+	// Open escrow orders whatever their age, closed ones within escrowWatchedSQL's horizon (their ledger stays current
+	// for the order page) and ones whose buyer asked to recover coins at them; on the daily check, every escrow
+	// (escrow_stray.go).
+	daily, err := a.strayCheckDue(ctx)
+	if err != nil {
+		return err
+	}
 	rows, err := a.db.QueryContext(ctx, `SELECT es.address,es.order_id FROM escrows es JOIN orders o ON o.id=es.order_id
-		WHERE o.state IN ('awaiting_payment',`+fundedOpenStates+`) OR `+escrowWatchedSQL+`
-		ORDER BY o.updated`)
+		WHERE o.state IN ('awaiting_payment',`+fundedOpenStates+`) OR `+escrowWatchedSQL+` OR es.recover_requested IS NOT NULL OR $1
+		ORDER BY o.updated`, daily)
 	if err != nil {
 		return err
 	}
@@ -156,6 +161,15 @@ func (a *App) escrowPollOnce(ctx context.Context) error {
 	for _, id := range orders {
 		if err = a.settleEscrow(ctx, id, !unread[id]); err != nil {
 			errs = append(errs, &watchError{label: "escrow order " + shortID(id), err: err})
+		}
+	}
+	// Coins at a closed escrow that are not the order's go back by a stray refund (escrow_stray.go).
+	if err = a.requestStrays(ctx, e.confirmations, orders, unread); err != nil {
+		errs = append(errs, err)
+	}
+	if daily && len(unread) == 0 {
+		if err = a.strayChecked(ctx); err != nil {
+			errs = append(errs, err)
 		}
 	}
 	// Under the same lock, after the ledger is current: settlements broadcast in an earlier pass are followed to their

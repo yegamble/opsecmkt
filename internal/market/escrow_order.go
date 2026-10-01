@@ -65,15 +65,15 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 		return err
 	}
 	remaining := required
-	rows, err := a.db.QueryContext(ctx, "SELECT txid,idx,amount,confirmations,locked,after_close FROM payments WHERE order_id=$1 ORDER BY created,id", o.ID)
+	rows, err := a.db.QueryContext(ctx, "SELECT txid,idx,amount,confirmations,locked,after_close,escrow_left_out FROM payments WHERE order_id=$1 ORDER BY created,id", o.ID)
 	if err != nil {
 		return err
 	}
 	for rows.Next() {
 		var dep PaymentDeposit
 		var amt int64
-		var locked, afterClose bool
-		if err = rows.Scan(&dep.TxID, &dep.Index, &amt, &dep.Confirmations, &locked, &afterClose); err != nil {
+		var locked, afterClose, leftOut bool
+		if err = rows.Scan(&dep.TxID, &dep.Index, &amt, &dep.Confirmations, &locked, &afterClose, &leftOut); err != nil {
 			rows.Close()
 			return err
 		}
@@ -82,8 +82,10 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 		case dep.Confirmations < 0 || locked:
 			dep.State = "Conflicted or missing — not counted"
 		case afterClose:
-			dep.State = "Arrived after the order closed — not counted; recovering it (a stray refund) is not available in this build yet"
+			dep.State = "Arrived after the order closed — not counted; returned to the buyer's refund address by a stray refund"
 			afterCloseSeen++
+		case leftOut:
+			dep.State = "Left out of the settlement after waiting " + escrowBuildWaitText + " — returned to the buyer's refund address by a stray refund once confirmed"
 		case dep.Confirmations >= v.Threshold:
 			dep.State, received = "Confirmed", received+amt
 		default:
