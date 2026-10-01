@@ -340,7 +340,9 @@ application stopped (`docker compose stop app`; for a volume snapshot start only
 transaction and adds one audit row ("set manually"); existing audit rows are not changed. Older databases
 without a `payouts` table need only the `settings` and `audit_events` statements; omit the `send_ambiguous`
 line if their `payouts` table has no such column, as migration 053 then marks their failed payouts ambiguous
-itself.
+itself, and omit the `settlements` line if the database has no `settlements.send_error` column (before migration
+076, when no escrow settlement could have a stored transaction). That line holds every restored Bitcoin escrow
+settlement with a stored transaction until an administrator confirms its rebroadcast on `/admin`.
 
 <!-- runbook-sql: restore-protection -->
 ```sql
@@ -355,6 +357,8 @@ UPDATE payouts SET send_ambiguous=true WHERE state='failed';
 UPDATE payouts SET updated=now(),
   error='Restored from backup: verify in the wallet before requeueing; this payout may have been requeued and sent after the backup. Last error: ' || error
 WHERE state='failed';
+UPDATE settlements SET send_error='Restored from backup: check that this escrow settlement''s transaction was not already sent or replaced, then confirm its rebroadcast on the admin page.', updated=now()
+WHERE raw_tx IS NOT NULL AND state IN ('signed','broadcast');
 INSERT INTO audit_events(user_id,action) VALUES (NULL, 'Payout recovery gate set manually (UPGRADING.md section 6); all outbound payouts paused until an administrator clears the gate');
 COMMIT;
 ```

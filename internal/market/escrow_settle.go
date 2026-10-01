@@ -1026,6 +1026,11 @@ func settleSendText(class string) string {
 		return "The market's escrow key could not sign it yet."
 	case sendRejected:
 		return "The market's Bitcoin node did not accept the transaction yet."
+	case sendRebroadcastOK:
+		return "" // restoreStatus says it
+	}
+	if restoreHeld(class) {
+		return "" // restoreStatus says it
 	}
 	return "The market's Bitcoin node returned a transaction that failed the market's checks, so nothing was sent."
 }
@@ -1092,6 +1097,7 @@ func (a *App) settlementView(ctx context.Context, d *PageData, v *EscrowOrderVie
 	default:
 		s.Status = state
 	}
+	a.restoreStatus(s, v, state, sendErr, signer, signedAt.String)
 	if fee.Valid && total.Valid {
 		s.NetworkFee, s.InputTotal = amount(fee.Int64, 8), amount(total.Int64, 8)
 		rows, err := a.db.QueryContext(ctx, "SELECT role,address,sats FROM settlement_outputs WHERE settlement_id=$1 ORDER BY n", id)
