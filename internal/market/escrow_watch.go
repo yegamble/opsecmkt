@@ -181,8 +181,9 @@ func (a *App) escrowPollOnce(ctx context.Context) error {
 			errs = append(errs, err)
 		}
 	}
-	// Under the same lock, after the ledger is current: settlements broadcast in an earlier pass are followed to their
-	// confirmation; those requested so far (a claim, or the refund a cancellation above may just have requested) are
+	// Under the same lock, after the ledger is current: confirmed settlements are followed until they are deep enough
+	// that a reorganisation is not expected (trackConfirmeds); settlements broadcast in an earlier pass are followed to
+	// their confirmation; those requested so far (a claim, or the refund a cancellation above may just have requested) are
 	// built; party-signed ones are co-signed and stored; and stored ones are broadcast (escrow_cosign.go).
 	// While the restore gate is set (escrow_recovery.go) nothing is built or co-signed, and broadcastSettlements and
 	// trackBroadcasts send only what an administrator confirmed; watching continues.
@@ -190,9 +191,9 @@ func (a *App) escrowPollOnce(ctx context.Context) error {
 	if err != nil {
 		return errors.Join(append(errs, err)...)
 	}
-	steps := []func(context.Context, *escrowBTC) error{a.trackBroadcasts, a.buildSettlements, a.cosignSettlements, a.broadcastSettlements}
+	steps := []func(context.Context, *escrowBTC) error{a.trackConfirmeds, a.trackBroadcasts, a.buildSettlements, a.cosignSettlements, a.broadcastSettlements}
 	if gate {
-		steps = []func(context.Context, *escrowBTC) error{a.trackBroadcasts, a.broadcastSettlements}
+		steps = []func(context.Context, *escrowBTC) error{a.trackConfirmeds, a.trackBroadcasts, a.broadcastSettlements}
 	}
 	for _, step := range steps {
 		if ctx.Err() != nil {

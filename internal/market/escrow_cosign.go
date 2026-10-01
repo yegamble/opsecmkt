@@ -34,6 +34,9 @@ import (
 //  4. Follows each broadcast settlement in the watch-only wallet (trackBroadcasts): enough confirmations -> confirmed;
 //     still unconfirmed -> the stored transaction is sent again (idempotent); spent by another transaction (a
 //     conflict, or its outputs gone without it) -> external, flagged for staff.
+//  5. Follows each confirmed settlement until its transaction has escrowReorgDepth confirmations (trackConfirmeds,
+//     P1-d1): back at 0 confirmations (a reorganisation took it out of the chain) -> broadcast, and step 4 sends the
+//     stored transaction again; conflicted (another transaction was mined instead) -> external.
 //
 // Nothing here runs in a form post: transitions stay RPC-free (ARCH-7).
 
@@ -806,9 +809,75 @@ func (a *App) storeSeen(ctx context.Context, b *settleBuild, rawHex string) erro
 	return tx.Commit()
 }
 
+// escrowReorgDepth is how many confirmations a confirmed settlement's transaction needs before the watcher stops
+// following it (trackConfirmeds). A depth, not a time: a reorganisation is a matter of blocks, and a node that was
+// down still catches one up when it returns. 100 is Bitcoin's own coinbase maturity, the depth Core treats as final
+// for newly mined coins; a deeper reorganisation is not handled here.
+const escrowReorgDepth = 100
+
+// trackConfirmeds follows each confirmed settlement not yet escrowReorgDepth deep (step 5 of the file comment).
+func (a *App) trackConfirmeds(ctx context.Context, e *escrowBTC) error {
+	return a.eachSettlement(ctx, "not followed", "SELECT id FROM settlements WHERE state='confirmed' AND reorg_safe_at IS NULL ORDER BY id", func(id int64) error { return a.trackConfirmed(ctx, e, id) })
+}
+
+func (a *App) trackConfirmed(ctx context.Context, e *escrowBTC, id int64) error {
+	var orderID, kind, txid string
+	err := a.db.QueryRowContext(ctx, "SELECT order_id,kind,txid FROM settlements WHERE id=$1 AND state='confirmed' AND reorg_safe_at IS NULL", id).Scan(&orderID, &kind, &txid)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	w, err := e.walletTx(ctx, txid)
+	switch {
+	case err != nil:
+		return err
+	case !w.Found:
+		return nil // the wallet does not know it (it missed it, or was restored): nothing to conclude; asked again next pass
+	case w.Confirmations < 0:
+		return a.markExternal(ctx, id, orderID, firstTxID(w.Conflicts))
+	case w.Confirmations >= escrowReorgDepth:
+		_, err = a.db.ExecContext(ctx, "UPDATE settlements SET reorg_safe_at=now(),updated=now() WHERE id=$1 AND state='confirmed' AND reorg_safe_at IS NULL", id)
+		return err
+	case w.Confirmations > 0:
+		return nil // still in a block (a shallower reorganisation may have lowered its count)
+	}
+	// Back in the mempool, or nowhere: a reorganisation took it out of the chain. The only move back a settlement with a
+	// final transaction may make (migration 077); trackBroadcast sends the same stored transaction again.
+	gate, err := restoreGateSet(ctx, a.db)
+	if err != nil {
+		return err
+	}
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, "UPDATE settlements SET state='broadcast',confirmed_at=NULL,updated=now() WHERE id=$1 AND state='confirmed' AND reorg_safe_at IS NULL", id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return nil
+	}
+	what, net := settlementKind(kind), a.escrowNetwork()
+	next := "The market sends the stored transaction again and follows it until it is confirmed again."
+	if gate {
+		next = "The market does not send it again while it reconciles its records after a restore from a backup; it follows it until it is confirmed again."
+	}
+	if err = settleNote(ctx, tx, orderID, "The transaction of the escrow settlement ("+what+") is no longer in the "+net+" chain: a reorganisation of the chain took it out of the block that confirmed it. It is the same transaction, back to waiting for confirmations. "+next,
+		"its escrow settlement ("+what+") is no longer confirmed after a reorganisation of the "+net+" chain; it is the same transaction, waiting for confirmations again."); err != nil {
+		return err
+	}
+	log.Printf("escrow: settlement of order %s: its transaction left the chain (reorganisation); back to broadcast", shortID(orderID))
+	return tx.Commit()
+}
+
 // markExternal records that the escrow outputs of a settlement were spent by a transaction the market did not make
 // (spentBy when the wallet names it): state external, its inputs flagged so staff can open the order, a note and a
-// notice to the parties and to the staff.
+// notice to the parties and to the staff. A confirmed settlement becomes external when a reorganisation replaced it
+// with a conflicting transaction.
 func (a *App) markExternal(ctx context.Context, id int64, orderID, spentBy string) error {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -819,14 +888,20 @@ func (a *App) markExternal(ctx context.Context, id int64, orderID, spentBy strin
 	if spentBy != "" {
 		by = spentBy
 	}
-	var kind string
-	err = tx.QueryRowContext(ctx, `UPDATE settlements SET state='external',spent_by=$2,updated=now() WHERE id=$1 AND state IN ('party_signed','signed','broadcast')
-		RETURNING kind`, id, by).Scan(&kind)
+	var kind, was string
+	err = tx.QueryRowContext(ctx, "SELECT kind,state FROM settlements WHERE id=$1 FOR UPDATE", id).Scan(&kind, &was)
 	if err == sql.ErrNoRows {
 		return nil
 	}
 	if err != nil {
 		return err
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE settlements SET state='external',spent_by=$2,reorg_safe_at=NULL,updated=now() WHERE id=$1 AND state IN ('party_signed','signed','broadcast','confirmed')`, id, by)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return nil
 	}
 	if _, err = tx.ExecContext(ctx, "UPDATE payments SET flagged=true,updated=now() WHERE settlement_id=$1", id); err != nil {
 		return err
@@ -837,6 +912,9 @@ func (a *App) markExternal(ctx context.Context, id int64, orderID, spentBy strin
 	}
 	what := settlementKind(kind)
 	note := "The coins of this escrow's settlement (" + what + ") were spent by a transaction this market did not make. The settlement is recorded as spent outside the market and will not be sent. Moderator review required."
+	if was == "confirmed" {
+		note = "The escrow settlement (" + what + ") was confirmed, but a reorganisation of the chain replaced it with a conflicting transaction this market did not make, which spent the escrow's coins instead. The settlement is recorded as spent outside the market. Moderator review required."
+	}
 	if err = a.flagOrder(ctx, tx, &o, note, "Order "+shortID(orderID)+": the coins of its escrow settlement ("+what+") were spent by a transaction this market did not make. Market staff were notified."); err != nil {
 		return err
 	}
