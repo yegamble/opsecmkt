@@ -157,6 +157,9 @@ func TestEscrowOrphanAddressListed(t *testing.T) {
 	x.core.mu.Lock()
 	x.core.labels[orphan] = "escrow:" + draft // a descriptor imported for a checkout that rolled back
 	x.core.labels[unlabelled] = "not an escrow label"
+	// A-365 (O3): an entry that is not in the address form the market stores is skipped, never written; it does not
+	// stop the others being listed (escrow_orphans.address refuses it, which would roll the whole list back).
+	x.core.labels["bcrt1q-not-an-address"] = "escrow:" + draft
 	x.core.mu.Unlock()
 	daily := func() {
 		x.t.Helper()
@@ -185,6 +188,17 @@ func TestEscrowOrphanAddressListed(t *testing.T) {
 	daily()
 	if got := agStrings(t, x.testEnv, "SELECT address FROM escrow_orphans"); !slices.Equal(got, []string{orphan}) {
 		t.Fatalf("after the wallet dropped one: %q", got)
+	}
+	// A-358: the last orphan gone from the wallet empties the list (the malformed entry is not one).
+	x.core.mu.Lock()
+	delete(x.core.labels, orphan)
+	x.core.mu.Unlock()
+	daily()
+	if n := agInt(x.testEnv, "SELECT count(*) FROM escrow_orphans"); n != 0 {
+		t.Fatalf("after the wallet dropped the last orphan: %d rows remain", n)
+	}
+	if page := html.UnescapeString(x.page("/admin", admin)); strings.Contains(page, orphan) {
+		t.Fatalf("/admin still lists the orphan the wallet dropped:\n%s", page)
 	}
 	// The adapter reads the address book with include_empty on the watch-only wallet, never listdescriptors.
 	if path, params := x.core.lastCall(t, "listreceivedbyaddress"); path != fakeWatchWallet || params != `[0,true,true]` {
