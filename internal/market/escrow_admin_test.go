@@ -55,8 +55,10 @@ func TestEscrowAdminMarketFee(t *testing.T) {
 	if agInt(x.testEnv, "SELECT count(*) FROM settings WHERE key LIKE 'escrow_btc_fee_%'") != 0 {
 		t.Fatal("a refused save was stored")
 	}
-	if code, body := post(admin, "1500", fee, testPassword); code != 303 {
-		t.Fatalf("save: %d %s", code, body)
+	// A-348: the notice adds its section's fragment itself, so the redirect names it once.
+	if w := x.do("POST", "/admin/escrow-fee", admin, url.Values{"fee_bps": {"1500"}, "fee_address": {fee}, "password": {testPassword}}); w.Code != 303 ||
+		w.Header().Get("Location") != "/admin#escrow-fee" || x.cookie(w, "notice") != "escrow-fee" {
+		t.Fatalf("save: %d %q %s", w.Code, w.Header().Get("Location"), w.Body.String())
 	}
 	if agInt(x.testEnv, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action LIKE 'Changed the Bitcoin escrow market fee (regtest): 0 → 1500 basis points; fee destination changed%(confirmed with password)%'", adminID) != 1 {
 		t.Fatal("audit row")
