@@ -899,12 +899,14 @@ func escrowSignAction(c *actionCtx) (actionResult, error) {
 	if err = c.Tx.QueryRowContext(ctx, "SELECT kind FROM settlements WHERE id=$1", sid).Scan(&kind); err != nil {
 		return actionResult{}, err
 	}
-	what, note, notSent, code := "the "+party+" signed its escrow settlement ("+settlementKind(kind)+"). "+settleSigChecked+" ",
-		"The "+party+" signed the escrow settlement ("+settlementKind(kind)+"). "+settleSigChecked+" ", settleNotSent, "escrow-signed"
+	what, note, notSent := "the "+party+" signed its escrow settlement ("+settlementKind(kind)+"). "+settleSigChecked+" ",
+		"The "+party+" signed the escrow settlement ("+settlementKind(kind)+"). "+settleSigChecked+" ", settleNotSent
+	res := actionResult{Redirect: orderPage(o.ID) + "#escrow-settlement", Notice: "escrow-signed", Audit: "Signed the escrow settlement of order " + shortID(o.ID) + " (regtest)"}
 	if second {
 		what = "the " + party + " also signed its escrow settlement (" + settlementKind(kind) + "): with both parties' signatures the market does not sign it. " + settleSigChecked + " "
 		note = "The " + party + " also signed the escrow settlement (" + settlementKind(kind) + "): with both parties' signatures the market does not sign it. " + settleSigChecked + " "
-		notSent, code = settleNotSentBoth, "escrow-signed-both"
+		notSent = settleNotSentBoth
+		res.Notice = "escrow-signed-both"
 	}
 	if _, err = c.Tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,$3,$4)", o.ID, o.State, c.User.ID,
 		note+notSent); err != nil {
@@ -918,7 +920,7 @@ func escrowSignAction(c *actionCtx) (actionResult, error) {
 		"Order "+shortID(o.ID)+": "+what+notSent); err != nil {
 		return actionResult{}, err
 	}
-	return actionResult{Redirect: orderPage(o.ID) + "#escrow-settlement", Notice: code, Audit: "Signed the escrow settlement of order " + shortID(o.ID) + " (regtest)"}, nil
+	return res, nil
 }
 
 // escrowPSBTDownload serves GET /escrow-psbt?id=<order>&s=<settlement>: the reader's own copy of a settlement
