@@ -80,7 +80,7 @@ const (
 
 // restoreStatus replaces a settlement's order-page status while the restore gate pauses it or a restore holds it
 // (settlementView): what is paused, why, and what happens next.
-func (a *App) restoreStatus(s *EscrowSettlementView, v *EscrowOrderView, state, sendErr, signer, signedAt string) {
+func (a *App) restoreStatus(s *EscrowSettlementView, v *EscrowOrderView, state, sendErr, signer, signedAt string, bothSigned bool) {
 	sendable := state == "signed" || state == "broadcast"
 	stored := "Signed, checked and stored."
 	if state == "broadcast" {
@@ -94,6 +94,8 @@ func (a *App) restoreStatus(s *EscrowSettlementView, v *EscrowOrderView, state, 
 	case !v.RestorePaused:
 	case state == "building":
 		s.Status = "Paused: " + restoreWhy + ", so the market builds no settlement until the operator has finished. The escrow is still watched."
+	case state == "party_signed" && bothSigned:
+		s.Status = "Signed by the " + signer + " and the " + otherParty(signer) + " (first signature " + signedAt + "). " + settleSigChecked + " Paused: " + restoreWhy + ", so the market (which does not sign it) broadcasts the transaction the two parties signed only once the operator has finished. Nothing has been sent yet."
 	case state == "party_signed":
 		s.Status = "Signed by the " + signer + " (" + signedAt + "). " + settleSigChecked + " Paused: " + restoreWhy + ", so the market co-signs it only once the operator has finished. Nothing has been sent yet."
 	case sendable:
@@ -236,7 +238,7 @@ func escrowRebroadcastAction(c *actionCtx) (actionResult, error) {
 		}
 		audit := "Confirmed the rebroadcast of escrow settlement " + strconv.FormatInt(id, 10) + " (" + settlementKind(kind) + ") of order " + shortID(orderID) +
 			" after a restore from backup: the administrator checked that its transaction was not already sent or replaced (" + c.A.escrowNetwork() + ")"
-		return actionResult{Redirect: "/admin#escrow-recovery", Notice: "escrow-rebroadcast", Audit: audit}, nil
+		return actionResult{Redirect: "/admin", Notice: "escrow-rebroadcast", Audit: audit}, nil
 	})
 }
 

@@ -161,8 +161,9 @@ func TestEscrowRestoreGatePausesAndAdminRebroadcasts(t *testing.T) {
 	if r := x.settleByID(idC); r.Error != restoredSettlementHold {
 		t.Fatalf("a refused confirmation changed C: %+v", r)
 	}
-	if code, body := x.rebroadcast(admin, idC, ok); code != 303 {
-		t.Fatalf("rebroadcast: %d %s", code, body)
+	w := x.do("POST", "/admin/escrow-rebroadcast", admin, url.Values{"settlement_id": {strconv.FormatInt(idC, 10)}, "not_sent": {"confirmed"}, "password": {testPassword}})
+	if w.Code != 303 || w.Header().Get("Location") != "/admin#escrow-recovery" {
+		t.Fatalf("rebroadcast: %d to %q: %s", w.Code, w.Header().Get("Location"), w.Body.String())
 	}
 	if code, _ := x.rebroadcast(admin, idC, ok); code != 409 {
 		t.Fatalf("a second confirmation: %d", code)

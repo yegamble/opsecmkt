@@ -117,6 +117,12 @@ func TestEscrowBothSignedStatusSaysTheMarketDoesNotSign(t *testing.T) {
 			t.Fatalf("both signed:\n%s", page)
 		}
 	}
+	// Paused by the restore gate, it still says the market does not sign it.
+	x.setGate(true)
+	if page := html.UnescapeString(x.page("/order?id="+order, x.buyerSess)); !strings.Contains(page, "Signed by the vendor and the buyer") ||
+		!strings.Contains(page, "so the market (which does not sign it) broadcasts the transaction the two parties signed only once the operator has finished") || strings.Contains(page, "co-signs it only once") {
+		t.Fatalf("both signed, paused:\n%s", page)
+	}
 }
 
 // A-355: every escrow statement of who completes a settlement covers both paths: one party's signature, which the market
