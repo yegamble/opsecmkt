@@ -5,6 +5,9 @@ payments with the compose deployment. **Test networks: these coins have no value
 mainnet unless it is configured** ([Mainnet](operator-guide.md#mainnet); the wallet, backup, restore and
 payout-recovery steps below use the same commands on a mainnet market, with real funds, but have been exercised
 on test networks only). Commands run from the repository directory on the Docker host, where `.env` lives.
+Bitcoin escrow is not part of this runbook: it runs on regtest only and is off by default (built and tested on
+regtest, never run on a public test network; [per-order escrow](escrow.md)), so leave `ESCROW_BTC` off on a
+testnet4, signet, stagenet or testnet market. Payments there go through the pooled wallets below.
 
 What the application does on its own, so you know what to expect while following these steps:
 
