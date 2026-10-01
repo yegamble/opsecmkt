@@ -2,6 +2,7 @@ package market
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -13,6 +14,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -52,6 +54,14 @@ const (
 	escrowMaxFeeRate     = 100     // sat/vB: ESCROW_BTC_FEE_RATE's ceiling and every build's rate cap
 	escrowMaxFee         = 100_000 // sats (0.001 BTC): the absolute network fee cap of one settlement
 	escrowMaxInputs      = 50      // outputs one settlement spends at most, so a signed copy fits a form post
+	// A-342: how long a claim or refund build waits, from its request, for an escrow output recorded before the order
+	// closed to confirm, or while the escrow holds more than escrowMaxInputs outputs, before it is built without them
+	// (they go to a stray refund). 24 hours is about 144 blocks: an output unconfirmed that long is stuck (a fee too
+	// low to be mined, or a transaction that will be replaced), and a buyer pushing many small outputs cannot hold the
+	// vendor's claim longer. It matches the watch horizon after an order closes (escrowClosedWatch); the plan sets no
+	// setting for it, so it is not configurable.
+	escrowBuildWaitMax  = 24 * time.Hour
+	escrowBuildWaitText = "24 hours"
 	// Upper bounds of a settlement's virtual size, so the fee is never below the rate: 11 vB of fixed fields, 105 vB
 	// per 2-of-3 P2WSH input (41 bytes outside the witness; a witness of at most 256 bytes: two 73-byte signatures,
 	// the 105-byte script, their length bytes and the empty CHECKMULTISIG item) and 43 vB per output (a script of up
@@ -356,9 +366,11 @@ func (a *App) buildSettlements(ctx context.Context, e *escrowBTC) error {
 func (a *App) buildSettlement(ctx context.Context, e *escrowBTC, id int64) error {
 	var orderID, kind, state, dest, escrowAddr, refund, feeDest, orderState string
 	var price, feeBps int64
-	err := a.db.QueryRowContext(ctx, `SELECT s.order_id,s.kind,s.state,COALESCE(s.destination,''),es.address,es.refund_address,es.fee_bps,es.fee_destination,o.amount,o.state
-		FROM settlements s JOIN escrows es ON es.order_id=s.order_id JOIN orders o ON o.id=s.order_id WHERE s.id=$1`, id).Scan(
-		&orderID, &kind, &state, &dest, &escrowAddr, &refund, &feeBps, &feeDest, &price, &orderState)
+	var bounded bool
+	err := a.db.QueryRowContext(ctx, `SELECT s.order_id,s.kind,s.state,COALESCE(s.destination,''),es.address,es.refund_address,es.fee_bps,es.fee_destination,o.amount,o.state,
+		s.created < now()-make_interval(secs => $2)
+		FROM settlements s JOIN escrows es ON es.order_id=s.order_id JOIN orders o ON o.id=s.order_id WHERE s.id=$1`, id, escrowBuildWaitMax.Seconds()).Scan(
+		&orderID, &kind, &state, &dest, &escrowAddr, &refund, &feeBps, &feeDest, &price, &orderState, &bounded)
 	if err != nil || state != "building" {
 		return err
 	}
@@ -375,7 +387,6 @@ func (a *App) buildSettlement(ctx context.Context, e *escrowBTC, id int64) error
 		return err
 	}
 	var ins []settleInput
-	var total int64
 	for rows.Next() {
 		var in settleInput
 		var idx int64
@@ -388,25 +399,35 @@ func (a *App) buildSettlement(ctx context.Context, e *escrowBTC, id int64) error
 			return errors.New("escrow: a recorded escrow output is malformed")
 		}
 		in.Vout = uint32(idx)
-		total += in.Sats
 		ins = append(ins, in)
 	}
 	rows.Close()
 	if err = rows.Err(); err != nil {
 		return err
 	}
+	unconfirmed := slices.ContainsFunc(ins, func(in settleInput) bool { return in.Confirmations < e.confirmations })
+	var left []settleInput
 	switch {
 	case len(ins) == 0:
 		return a.failSettlement(ctx, id, orderID, settleNothing)
-	case len(ins) > escrowMaxInputs:
+	case !bounded && len(ins) > escrowMaxInputs:
 		return a.settlementWaits(ctx, id, orderID, settleTooMany)
-	case slices.ContainsFunc(ins, func(in settleInput) bool { return in.Confirmations < e.confirmations }):
+	case !bounded && unconfirmed:
 		return a.settlementWaits(ctx, id, orderID, settleWaiting)
+	case bounded && (unconfirmed || len(ins) > escrowMaxInputs):
+		// A-342: the wait is over; build without what it waited on, which a stray refund returns once confirmed.
+		if ins, left = boundedInputs(ins, e.confirmations); len(ins) == 0 {
+			return a.failSettlement(ctx, id, orderID, settleNothing, left...)
+		}
+	}
+	var total int64
+	for _, in := range ins {
+		total += in.Sats
 	}
 	plan, refused := planSettlement(kind, len(ins), total, price, feeBps, feeDest, dest, refund, e.feeRate, payoutFloor("BTC", kind))
 	switch refused {
 	case settleTooSmall:
-		return a.failSettlement(ctx, id, orderID, refused)
+		return a.failSettlement(ctx, id, orderID, refused, left...)
 	case settleFeeCap:
 		return a.settlementWaits(ctx, id, orderID, refused)
 	}
@@ -462,7 +483,7 @@ func (a *App) buildSettlement(ctx context.Context, e *escrowBTC, id int64) error
 	if err != nil || pristine.TxID() != fp.TxID() || slices.ContainsFunc(pristine.Inputs, func(in psbtInput) bool { return len(in.Derivations) > 0 }) {
 		return &escrowRPCError{Method: "utxoupdatepsbt", Class: "bad-reply"}
 	}
-	return a.storeSettlement(ctx, id, orderID, kind, encodePSBT(raw), fp.TxID(), total, e.feeRate, plan, ins)
+	return a.storeSettlement(ctx, id, orderID, kind, encodePSBT(raw), fp.TxID(), total, e.feeRate, plan, ins, left)
 }
 
 // settlementTxMatches checks a PSBT's unsigned transaction against the build: exactly the inputs asked for, in
@@ -509,7 +530,7 @@ func settlementInputsFilled(p *psbtPacket, ins []settleInput, ws []byte) bool {
 // storeSettlement stores a built settlement: its outputs, the PSBT and txid (building -> awaiting_signature by
 // compare-and-set), each input's payments row claimed by compare-and-set, an order note and a notice to both parties.
 // A lost race (another build stored first, or an output already claimed) changes nothing.
-func (a *App) storeSettlement(ctx context.Context, id int64, orderID, kind, psbt, txid string, total, rate int64, plan settlePlan, ins []settleInput) error {
+func (a *App) storeSettlement(ctx context.Context, id int64, orderID, kind, psbt, txid string, total, rate int64, plan settlePlan, ins, left []settleInput) error {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -544,6 +565,9 @@ func (a *App) storeSettlement(ctx context.Context, id int64, orderID, kind, psbt
 	if n, _ := res.RowsAffected(); n != int64(len(ins)) {
 		return nil // an output was claimed meanwhile: roll back, build again next pass
 	}
+	if err = leaveOut(ctx, tx, orderID, kind, buyer, "was built without", left); err != nil {
+		return err
+	}
 	what := settlementKind(kind)
 	note := fmt.Sprintf("Escrow settlement built (%s): spends %s BTC from the escrow in %d output(s); network fee %s BTC, taken from the %s output. It waits for a signature from the buyer or the vendor. Nothing is sent yet.",
 		what, amount(total, 8), len(ins), amount(plan.NetworkFee, 8), settlementClaimant(kind))
@@ -559,6 +583,58 @@ func (a *App) storeSettlement(ctx context.Context, id int64, orderID, kind, psbt
 		}
 	}
 	return tx.Commit()
+}
+
+// boundedInputs splits a build's inputs once its wait is over (A-342): it keeps the confirmed ones, at most
+// escrowMaxInputs of the largest, in their order, and leaves out the rest.
+func boundedInputs(ins []settleInput, threshold int64) (kept, left []settleInput) {
+	var confirmed []int
+	for i, in := range ins {
+		if in.Confirmations >= threshold {
+			confirmed = append(confirmed, i)
+		} else {
+			left = append(left, in)
+		}
+	}
+	slices.SortStableFunc(confirmed, func(i, j int) int { return cmp.Compare(ins[j].Sats, ins[i].Sats) })
+	if len(confirmed) > escrowMaxInputs {
+		for _, i := range confirmed[escrowMaxInputs:] {
+			left = append(left, ins[i])
+		}
+		confirmed = confirmed[:escrowMaxInputs]
+	}
+	slices.Sort(confirmed)
+	for _, i := range confirmed {
+		kept = append(kept, ins[i])
+	}
+	return kept, left
+}
+
+// leaveOut marks the outputs a bounded build left out (A-342) for the stray refund, in the transaction that stores (or
+// fails) the settlement, with an order note and a notice to the buyer, whose refund address they are returned to.
+func leaveOut(ctx context.Context, tx *sql.Tx, orderID, kind, buyer, verb string, left []settleInput) error {
+	if len(left) == 0 {
+		return nil
+	}
+	ids := make([]int64, len(left))
+	var sum int64
+	for i, in := range left {
+		ids[i], sum = in.ID, sum+in.Sats
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE payments SET escrow_left_out=true,updated=now() WHERE order_id=$1 AND id=ANY($2) AND settlement_id IS NULL", orderID, ids); err != nil {
+		return err
+	}
+	n := "1 deposit"
+	if len(left) > 1 {
+		n = strconv.Itoa(len(left)) + " deposits"
+	}
+	note := "This escrow's settlement (" + settlementKind(kind) + ") " + verb + " " + n + " (" + amount(sum, 8) + " BTC) to this escrow: it waited " + escrowBuildWaitText +
+		" for a deposit recorded before the order closed to confirm, or for an escrow holding more deposits than one settlement spends. Those deposits stay in the escrow; once confirmed, they are returned to the buyer's refund address by a stray refund."
+	if _, err := tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) SELECT id,state,state,NULL,$2 FROM orders WHERE id=$1", orderID, note); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), buyer, "Order "+shortID(orderID)+": "+note)
+	return err
 }
 
 // settleNotSent is the honest line on every settlement that has not been broadcast (ES-10).
@@ -593,7 +669,7 @@ func (a *App) settlementWaits(ctx context.Context, id int64, orderID, class stri
 
 // failSettlement ends a settlement that can never be built (building -> failed), with an order note and a notice to
 // both parties. The coins stay in the escrow.
-func (a *App) failSettlement(ctx context.Context, id int64, orderID, class string) error {
+func (a *App) failSettlement(ctx context.Context, id int64, orderID, class string, left ...settleInput) error {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -610,14 +686,17 @@ func (a *App) failSettlement(ctx context.Context, id int64, orderID, class strin
 	if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) SELECT id,state,state,NULL,$2 FROM orders WHERE id=$1", orderID, "Escrow settlement not built: "+text); err != nil {
 		return err
 	}
-	var buyer, vendor string
-	if err = tx.QueryRowContext(ctx, "SELECT o.buyer_id,p.vendor_id FROM orders o JOIN products p ON p.id=o.product_id WHERE o.id=$1", orderID).Scan(&buyer, &vendor); err != nil {
+	var buyer, vendor, kind string
+	if err = tx.QueryRowContext(ctx, "SELECT o.buyer_id,p.vendor_id,s.kind FROM orders o JOIN products p ON p.id=o.product_id JOIN settlements s ON s.order_id=o.id WHERE s.id=$1", id).Scan(&buyer, &vendor, &kind); err != nil {
 		return err
 	}
 	for _, uid := range []string{buyer, vendor} {
 		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), uid, "Order "+shortID(orderID)+": its escrow settlement could not be built. "+text); err != nil {
 			return err
 		}
+	}
+	if err = leaveOut(ctx, tx, orderID, kind, buyer, "could not use", left); err != nil {
+		return err
 	}
 	log.Printf("escrow: settlement of order %s not built: %s", shortID(orderID), class)
 	return tx.Commit()
