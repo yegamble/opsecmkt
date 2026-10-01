@@ -4,6 +4,7 @@ import (
 	"html"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -78,6 +79,66 @@ func TestEscrowDisputedStateLineNamesAnAdministrator(t *testing.T) {
 		page = x.page("/order?id="+pooled, sess)
 		if !strings.Contains(page, "A moderator will review the dispute and record an outcome.") || strings.Contains(page, "An administrator will review") {
 			t.Fatalf("a disputed pooled order's state line:\n%s", page)
+		}
+	}
+	// A-354: every staff viewer, moderator and administrator, reads that an administrator decides an escrow dispute; a
+	// pooled order never says so.
+	_, mod := x.user("slmod", "moderator")
+	_, admin := x.user("sladmin", "admin")
+	for _, sess := range []string{mod, admin} {
+		page := oneSpace(html.UnescapeString(x.page("/order?id="+escrowOrder, sess)))
+		if !strings.Contains(page, "Only an administrator decides this escrow dispute") || strings.Contains(page, "record the outcome on the") {
+			t.Fatalf("a staff viewer's line on a disputed escrow order:\n%s", page)
+		}
+	}
+	if page := oneSpace(x.page("/order?id="+pooled, mod)); strings.Contains(page, "Only an administrator decides") {
+		t.Fatalf("a moderator's line on a disputed pooled order:\n%s", page)
+	}
+}
+
+// A-353: once both parties have signed, the party_signed status says the market does not sign and broadcasts the
+// parties' transaction, never that it co-signs; the waiting status names both paths.
+func TestEscrowBothSignedStatusSaysTheMarketDoesNotSign(t *testing.T) {
+	x := newEscrowEnv(t)
+	order, id := x.built(regtestAddr("refund-both-status"), regtestAddr("claim-both-status"), 100000)
+	waiting := html.UnescapeString(x.page("/order?id="+order, x.buyerSess))
+	if !strings.Contains(waiting, "once one party has signed, the market co-signs the settlement on its next pass and broadcasts it to the regtest network; once both parties have signed, the market does not sign it and broadcasts the transaction they signed") {
+		t.Fatalf("waiting status:\n%s", waiting)
+	}
+	x.signAs(order, roleVendor, id)
+	if page := html.UnescapeString(x.page("/order?id="+order, x.buyerSess)); !strings.Contains(page, "The market co-signs it and broadcasts it on its next pass") {
+		t.Fatalf("one signature:\n%s", page)
+	}
+	x.signAs(order, roleBuyer, id)
+	for _, sess := range []string{x.buyerSess, x.vendorSess} {
+		page := html.UnescapeString(x.page("/order?id="+order, sess))
+		if !strings.Contains(page, "Signed by the vendor and the buyer") || !strings.Contains(page, "The market does not sign it, and broadcasts the transaction the two parties signed on its next pass. Nothing has been sent yet.") ||
+			strings.Contains(page, "The market co-signs it and broadcasts it on its next pass") {
+			t.Fatalf("both signed:\n%s", page)
+		}
+	}
+}
+
+// A-355: every escrow statement of who completes a settlement covers both paths: one party's signature, which the market
+// co-signs, and both parties' signatures, which the market broadcasts without signing.
+func TestEscrowStatementsCoverBothPaths(t *testing.T) {
+	for file, want := range map[string][]string{
+		"web/templates/partials/payment-status.html": {"the market co-signs it and broadcasts it to the regtest network; when both have signed it, the market does not sign it and broadcasts what they signed"},
+		"web/templates/partials/order-escrow.html":   {"the market co-signs it and broadcasts it to the regtest network; when both have signed it, the market does not sign it and broadcasts what they signed"},
+		"web/templates/pages/order.html":             {"the market then co-signs it and broadcasts it to the regtest network (when both sign it, the market does not sign it and broadcasts what they signed)"},
+		"web/templates/partials/disputes-list.html":  {"which the buyer or the vendor signs and the market co-signs (when both sign it, the market does not sign it and broadcasts what they signed)"},
+		"docs/implementation-status.md":              {"a party signs, and the market then co-signs and broadcasts (when both parties sign it, the market broadcasts it without signing)"},
+		"docs/operator-guide.md":                     {"which the market then co-signs and broadcasts (when both sign it, the market broadcasts it without signing)"},
+	} {
+		b, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := strings.Join(strings.Fields(string(b)), " ")
+		for _, w := range want {
+			if !strings.Contains(text, w) {
+				t.Errorf("%s lacks %q", file, w)
+			}
 		}
 	}
 }
