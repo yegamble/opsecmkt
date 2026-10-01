@@ -493,10 +493,11 @@ func TestPinsMaxInputs(t *testing.T) {
 	if code, b := x.claim(many, x.vendorSess, "bcrt1qvendorclaim000000000000000000000002"); code != 303 {
 		t.Fatalf("claim: %d %s", code, b)
 	}
-	creates, gets := x.core.count("createpsbt"), x.core.count("gettxout")
+	// (The claim of fifty, waiting for a signature, is read with gettxout on every pass, A-356; many's outputs are not.)
+	creates, gets := x.core.count("createpsbt"), x.core.countWith("gettxout", txidOf(many))
 	x.poll()
 	id, _, state, class = x.settlement(many)
-	if state != "building" || class != "too-many-inputs" || x.core.count("createpsbt") != creates || x.core.count("gettxout") != gets {
+	if state != "building" || class != "too-many-inputs" || x.core.count("createpsbt") != creates || x.core.countWith("gettxout", txidOf(many)) != gets {
 		t.Fatalf("51 outputs: %s %q", state, class)
 	}
 	if agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND settlement_id IS NOT NULL", many) != 0 || agInt(x.testEnv, "SELECT count(*) FROM settlement_outputs WHERE settlement_id=$1", id) != 0 {
