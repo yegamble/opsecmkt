@@ -613,8 +613,8 @@ func (a *App) broadcastSettlement(ctx context.Context, e *escrowBTC, id int64) e
 	if n, _ := res.RowsAffected(); n != 1 {
 		return nil
 	}
-	if err = settleNote(ctx, tx, orderID, "The escrow settlement ("+settlementKind(kind)+") was broadcast to the regtest network. The order page shows its transaction.",
-		"its escrow settlement ("+settlementKind(kind)+") was broadcast to the regtest network; the order page shows its transaction and its confirmations."); err != nil {
+	if err = settleNote(ctx, tx, orderID, "The escrow settlement ("+settlementKind(kind)+") was broadcast to the "+a.escrowNetwork()+" network. The order page shows its transaction.",
+		"its escrow settlement ("+settlementKind(kind)+") was broadcast to the "+a.escrowNetwork()+" network; the order page shows its transaction and its confirmations."); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -664,8 +664,8 @@ func (a *App) trackBroadcast(ctx context.Context, e *escrowBTC, id int64) error 
 			return nil
 		}
 		what := settlementKind(kind)
-		if err = settleNote(ctx, tx, orderID, "The escrow settlement ("+what+") is confirmed on the regtest network ("+strconv.FormatInt(w.Confirmations, 10)+" confirmations).",
-			"its escrow settlement ("+what+") is confirmed on the regtest network."); err != nil {
+		if err = settleNote(ctx, tx, orderID, "The escrow settlement ("+what+") is confirmed on the "+a.escrowNetwork()+" network ("+strconv.FormatInt(w.Confirmations, 10)+" confirmations).",
+			"its escrow settlement ("+what+") is confirmed on the "+a.escrowNetwork()+" network."); err != nil {
 			return err
 		}
 		return tx.Commit()

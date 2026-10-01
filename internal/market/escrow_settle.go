@@ -103,9 +103,16 @@ func settleErrorText(class string, threshold int64) string {
 	return ""
 }
 
+// errClaimAddress and errClaimInvalid refuse a missing or invalid claim address on the escrow node's chain net.
+func errClaimAddress(net string) error {
+	return fail(400, "Enter the address the claim pays: a fresh "+net+" Bitcoin address from your own wallet, used for nothing else. Nothing was changed.")
+}
+
+func errClaimInvalid(net string) error {
+	return fail(400, "The claim address is not a valid "+net+" Bitcoin address. Nothing was changed.")
+}
+
 var (
-	errClaimAddress     = fail(400, "Enter the address the claim pays: a fresh regtest Bitcoin address from your own wallet, used for nothing else. Nothing was changed.")
-	errClaimInvalid     = fail(400, "The claim address is not a valid regtest Bitcoin address. Nothing was changed.")
 	errClaimAddressUsed = fail(409, "That address was already used on this market. Give a fresh address from your wallet. Nothing was changed.")
 	errClaimOnlyVendor  = fail(403, "Only the vendor claims the escrow of this order.")
 	errClaimState       = fail(409, "The escrow is claimed once its order is completed (or its dispute is decided for the vendor). Reload the page. Nothing was changed.")
@@ -291,7 +298,7 @@ func escrowClaimAction(c *actionCtx) (actionResult, error) {
 	}
 	dest, ok := escrowAddressForm(c.Form.Get("address"))
 	if !ok {
-		return actionResult{}, errClaimAddress
+		return actionResult{}, errClaimAddress(c.A.escrowNetwork())
 	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
 		ctx := c.Ctx()
@@ -329,7 +336,7 @@ func escrowClaimAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, errClaimNode
 		}
 		if !valid {
-			return actionResult{}, errClaimInvalid
+			return actionResult{}, errClaimInvalid(c.A.escrowNetwork())
 		}
 		_, err = c.Tx.ExecContext(ctx, "INSERT INTO settlements(order_id,kind,destination,requested_by) VALUES($1,'release',$2,$3)", o.ID, dest, c.User.ID)
 		var pe *pgconn.PgError
@@ -345,7 +352,7 @@ func escrowClaimAction(c *actionCtx) (actionResult, error) {
 			"Vendor requested the escrow claim: the market builds the settlement transaction, which the buyer or the vendor then signs. Nothing is sent yet."); err != nil {
 			return actionResult{}, err
 		}
-		return actionResult{Redirect: orderPage(o.ID) + "#escrow-settlement", Notice: "escrow-claim", Audit: "Requested the escrow claim of order " + shortID(o.ID) + " (regtest)"}, nil
+		return actionResult{Redirect: orderPage(o.ID) + "#escrow-settlement", Notice: "escrow-claim", Audit: "Requested the escrow claim of order " + shortID(o.ID) + " (" + c.A.escrowNetwork() + ")"}, nil
 	})
 }
 
@@ -610,7 +617,7 @@ func (a *App) storeSettlement(ctx context.Context, id int64, orderID, kind, psbt
 			return err
 		}
 	}
-	body := "Order " + shortID(orderID) + ": its escrow settlement (" + what + ") is ready to sign. Check its outputs on the order page, sign your copy in your own wallet and paste it there; either you or the other party can sign. " + settleNotSent
+	body := "Order " + shortID(orderID) + ": its escrow settlement (" + what + ") is ready to sign. Check its outputs on the order page, sign your copy in your own wallet and paste it there; either you or the other party can sign. " + a.settleNotSent()
 	for _, uid := range []string{buyer, vendor} {
 		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), uid, body); err != nil {
 			return err
@@ -671,12 +678,17 @@ func leaveOut(ctx context.Context, tx *sql.Tx, orderID, kind, buyer, verb string
 	return err
 }
 
-// settleNotSent is the honest line on every settlement that has not been broadcast (ES-10).
-const settleNotSent = "Nothing has been sent yet: once one party has signed, the market co-signs the settlement on its next pass and broadcasts it to the regtest network."
+// settleNotSent is the honest line on every settlement that has not been broadcast (ES-10), naming the escrow node's
+// chain (A-331).
+func (a *App) settleNotSent() string {
+	return "Nothing has been sent yet: once one party has signed, the market co-signs the settlement on its next pass and broadcasts it to the " + a.escrowNetwork() + " network."
+}
 
 // settleNotSentBoth is the same line once both parties have signed (A-350): the market does not sign, it broadcasts
 // the transaction the two signatures finalize to.
-const settleNotSentBoth = "Nothing has been sent yet: the market does not sign it, and broadcasts the transaction the two parties signed to the regtest network on its next pass."
+func (a *App) settleNotSentBoth() string {
+	return "Nothing has been sent yet: the market does not sign it, and broadcasts the transaction the two parties signed to the " + a.escrowNetwork() + " network on its next pass."
+}
 
 // settleSigChecked says when a pasted signature's validity is checked (A-343, A-349): the paste checks only its shape.
 const settleSigChecked = "A signature's validity is checked when the market finalizes the transaction."
@@ -900,12 +912,12 @@ func escrowSignAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, err
 	}
 	what, note, notSent := "the "+party+" signed its escrow settlement ("+settlementKind(kind)+"). "+settleSigChecked+" ",
-		"The "+party+" signed the escrow settlement ("+settlementKind(kind)+"). "+settleSigChecked+" ", settleNotSent
-	res := actionResult{Redirect: orderPage(o.ID) + "#escrow-settlement", Notice: "escrow-signed", Audit: "Signed the escrow settlement of order " + shortID(o.ID) + " (regtest)"}
+		"The "+party+" signed the escrow settlement ("+settlementKind(kind)+"). "+settleSigChecked+" ", c.A.settleNotSent()
+	res := actionResult{Redirect: orderPage(o.ID) + "#escrow-settlement", Notice: "escrow-signed", Audit: "Signed the escrow settlement of order " + shortID(o.ID) + " (" + c.A.escrowNetwork() + ")"}
 	if second {
 		what = "the " + party + " also signed its escrow settlement (" + settlementKind(kind) + "): with both parties' signatures the market does not sign it. " + settleSigChecked + " "
 		note = "The " + party + " also signed the escrow settlement (" + settlementKind(kind) + "): with both parties' signatures the market does not sign it. " + settleSigChecked + " "
-		notSent = settleNotSentBoth
+		notSent = c.A.settleNotSentBoth()
 		res.Notice = "escrow-signed-both"
 	}
 	if _, err = c.Tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,$3,$4)", o.ID, o.State, c.User.ID,
@@ -1056,7 +1068,7 @@ func (a *App) settlementView(ctx context.Context, d *PageData, v *EscrowOrderVie
 			s.Status = "Not built yet. " + t
 		}
 	case "awaiting_signature":
-		s.Status = "Waiting for a signature from the buyer or the vendor. " + settleNotSent
+		s.Status = "Waiting for a signature from the buyer or the vendor. " + a.settleNotSent()
 	case "party_signed":
 		s.Status = "Signed by the " + signer + " (" + signedAt.String + "). " + settleSigChecked + " The market co-signs it and broadcasts it on its next pass. Nothing has been sent yet." + pending
 	case "signed":
@@ -1066,9 +1078,9 @@ func (a *App) settlementView(ctx context.Context, d *PageData, v *EscrowOrderVie
 		}
 		s.Status = "Signed by " + by + ", checked and stored; the market broadcasts it on its next pass. Nothing has been sent yet." + pending
 	case "broadcast":
-		s.Status, s.TxID, s.RawTx = "Broadcast to the regtest network: transaction "+txid+". Waiting for "+strconv.FormatInt(v.Threshold, 10)+" confirmations.", txid, raw
+		s.Status, s.TxID, s.RawTx = "Broadcast to the "+a.escrowNetwork()+" network: transaction "+txid+". Waiting for "+strconv.FormatInt(v.Threshold, 10)+" confirmations.", txid, raw
 	case "confirmed":
-		s.Status, s.TxID, s.RawTx = "Confirmed on the regtest network: transaction "+txid+".", txid, raw
+		s.Status, s.TxID, s.RawTx = "Confirmed on the "+a.escrowNetwork()+" network: transaction "+txid+".", txid, raw
 	case "external":
 		s.Status = "Spent outside the market: the coins of this escrow were spent by a transaction this market did not make"
 		if spentBy != "" {

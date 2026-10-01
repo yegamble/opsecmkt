@@ -42,18 +42,25 @@ func init() {
 	registerAction("/orders/escrow", actionSpec{OneAtATime: true, Off: escrowOff, Run: escrowCheckoutAction})
 }
 
+// errEscrowRefund and errEscrowRefundInvalid refuse a missing or invalid refund address on the escrow node's chain net.
+func errEscrowRefund(net string) error {
+	return fail(400, "Enter a refund address: a fresh "+net+" Bitcoin address from your own wallet. A refund of this escrow is paid there, and it cannot be changed later. Nothing was changed.")
+}
+
+func errEscrowRefundInvalid(net string) error {
+	return fail(400, "The refund address is not a valid "+net+" Bitcoin address. Nothing was changed.")
+}
+
 var (
-	errEscrowRefund        = fail(400, "Enter a refund address: a fresh regtest Bitcoin address from your own wallet. A refund of this escrow is paid there, and it cannot be changed later. Nothing was changed.")
-	errEscrowRefundInvalid = fail(400, "The refund address is not a valid regtest Bitcoin address. Nothing was changed.")
-	errEscrowRefundUsed    = fail(409, "That refund address was already used on this market. Give a fresh address from your wallet. Nothing was changed.")
-	errEscrowOnlyBuyer     = fail(403, "Only the buyer can pay for this order.")
-	errEscrowKind          = fail(409, "Bitcoin escrow is available only for digital listings with automatic delivery. Nothing was changed.")
-	errEscrowCurrency      = fail(409, "Bitcoin escrow is for Bitcoin orders only. Nothing was changed.")
-	errEscrowSelf          = fail(409, "You cannot buy your own listing with escrow: an escrow needs two parties' keys. Nothing was changed.")
-	errEscrowBuyerKey      = fail(409, "Activate your Bitcoin escrow key first: register it and sign its practice transaction on your escrow key page. Nothing was changed.")
-	errEscrowVendorKey     = fail(409, "The vendor has no active Bitcoin escrow key, so this order cannot use escrow. Nothing was changed.")
-	errEscrowBuild         = fail(503, "The escrow could not be created: the market's Bitcoin node did not confirm it. Nothing was changed; try again later.")
-	errEscrowKeyTaken      = fail(409, "The escrow could not be created: another escrow on this market already holds one of its keys. Nothing was changed. Trying again will not help; contact the market's staff.")
+	errEscrowRefundUsed = fail(409, "That refund address was already used on this market. Give a fresh address from your wallet. Nothing was changed.")
+	errEscrowOnlyBuyer  = fail(403, "Only the buyer can pay for this order.")
+	errEscrowKind       = fail(409, "Bitcoin escrow is available only for digital listings with automatic delivery. Nothing was changed.")
+	errEscrowCurrency   = fail(409, "Bitcoin escrow is for Bitcoin orders only. Nothing was changed.")
+	errEscrowSelf       = fail(409, "You cannot buy your own listing with escrow: an escrow needs two parties' keys. Nothing was changed.")
+	errEscrowBuyerKey   = fail(409, "Activate your Bitcoin escrow key first: register it and sign its practice transaction on your escrow key page. Nothing was changed.")
+	errEscrowVendorKey  = fail(409, "The vendor has no active Bitcoin escrow key, so this order cannot use escrow. Nothing was changed.")
+	errEscrowBuild      = fail(503, "The escrow could not be created: the market's Bitcoin node did not confirm it. Nothing was changed; try again later.")
+	errEscrowKeyTaken   = fail(409, "The escrow could not be created: another escrow on this market already holds one of its keys. Nothing was changed. Trying again will not help; contact the market's staff.")
 )
 
 // escrowCheckoutCtx marks the draft -> awaiting_payment transition of an escrow checkout: it needs the escrow node,
@@ -157,7 +164,7 @@ func escrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	}
 	refund, ok := escrowAddressForm(c.Form.Get("refund_address"))
 	if !ok {
-		return actionResult{}, errEscrowRefund
+		return actionResult{}, errEscrowRefund(c.A.escrowNetwork())
 	}
 	if err := waitForWalletLocks(ctx, c.Tx); err != nil {
 		return actionResult{}, err
@@ -212,7 +219,7 @@ func escrowCheckoutAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, errEscrowBuild
 	}
 	if !valid {
-		return actionResult{}, errEscrowRefundInvalid
+		return actionResult{}, errEscrowRefundInvalid(c.A.escrowNetwork())
 	}
 	// Never an address the market already used (ES-5): an escrow address, another escrow's refund address, a
 	// settlement destination (a vendor's claim), a fee destination snapshotted or configured, or a pooled deposit
@@ -257,7 +264,7 @@ func escrowCheckoutAction(c *actionCtx) (actionResult, error) {
 		log.Printf("escrow: escrow for order %s not imported: %s", shortID(o.ID), errorClassOf(err))
 		return actionResult{}, errEscrowBuild
 	}
-	return actionResult{Redirect: orderPage(o.ID), Notice: "escrow-created", Audit: "Created Bitcoin escrow (regtest) for order " + shortID(o.ID)}, nil
+	return actionResult{Redirect: orderPage(o.ID), Notice: "escrow-created", Audit: "Created Bitcoin escrow (" + c.A.escrowNetwork() + ") for order " + shortID(o.ID)}, nil
 }
 
 // escrowEligible reports whether o's listing takes escrow (a digital listing whose content is delivered

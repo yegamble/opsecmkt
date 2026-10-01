@@ -156,7 +156,7 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 		switch {
 		case t.To == stateCancelled && counted > 0:
 			d.Transitions[i].Payout = &PayoutPreview{Seen: counted, Confirm: "Cancelling refunds the " + amount(counted, 8) +
-				" regtest BTC in this escrow, less the network fee, to the buyer's refund address given at checkout. The market builds the refund transaction; the buyer or the vendor then signs it on this page. This is final."}
+				" " + a.escrowNetwork() + " BTC in this escrow, less the network fee, to the buyer's refund address given at checkout. The market builds the refund transaction; the buyer or the vendor then signs it on this page. This is final."}
 		}
 	}
 	return nil
