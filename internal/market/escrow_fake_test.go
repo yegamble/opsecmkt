@@ -61,6 +61,7 @@ type fakeEscrowCore struct {
 	// the real segwit transaction from two valid signatures per input; sendrawtransaction records it and spends its
 	// inputs; gettransaction reports it with txConfs and conflicts.
 	arbiterShort     bool                // the arbiter's key range is short of the market child (getaddressinfo ismine false)
+	keypoolStuck     bool                // keypoolrefill does not extend the arbiter's key range
 	arbiterTxCount   int64               // getwalletinfo txcount of the arbiter wallet
 	arbiterEncrypted bool                // getwalletinfo of the arbiter wallet has unlocked_until
 	marketSkew       func(string) string // edits walletprocesspsbt's answer
@@ -363,7 +364,7 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 		}
 		return encodePSBT(raw), 0, ""
 	case "keypoolrefill":
-		c.arbiterShort = false
+		c.arbiterShort = c.arbiterShort && c.keypoolStuck
 		return nil, 0, ""
 	case "importdescriptors":
 		var reqs []map[string]any

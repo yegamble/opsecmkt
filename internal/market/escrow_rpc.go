@@ -141,6 +141,7 @@ const (
 	escrowLogArbiter      = "escrow: Bitcoin escrow disabled: the arbiter wallet could not be read (is ESCROW_BTC_ARBITER_WALLET loaded, and a descriptor wallet with private keys?)"
 	escrowLogFingerprint  = "escrow: Bitcoin escrow disabled: the arbiter wallet's key fingerprint differs from the one pinned in this database; see docs/operator-guide.md, \"Bitcoin escrow (regtest only)\""
 	escrowLogWatch        = "escrow: Bitcoin escrow disabled: the watch-only wallet could not be read (is ESCROW_BTC_WATCH_WALLET loaded, and a descriptor wallet with private keys disabled?)"
+	escrowLogArbiterUse   = "escrow: Bitcoin escrow disabled: the arbiter wallet must be used for the escrow key only (an unencrypted descriptor wallet with private keys and no transactions); see docs/operator-guide.md, \"Bitcoin escrow (regtest only)\""
 	escrowLogFixedFee     = "escrow: the market fee is paid to one fixed address (ESCROW_BTC_FEE_ADDRESS); allowed on test networks only"
 	escrowLogRefused      = "escrow: Bitcoin escrow disabled until the app is restarted: the escrow node is not on regtest, or it refused ESCROW_BTC_FEE_ADDRESS"
 	escrowLogUnrecorded   = "escrow: Bitcoin escrow disabled: its arbiter fingerprint could not be checked in the database"
@@ -227,6 +228,9 @@ func (a *App) startEscrow(ctx context.Context) (state, class string, err error) 
 	}
 	if !ok {
 		return escrowLogFingerprint, "", nil
+	}
+	if err = e.checkArbiterWallet(ctx); err != nil {
+		return escrowLogArbiterUse, errorClassOf(err), nil
 	}
 	if err = e.checkWatchWallet(ctx); err != nil {
 		return escrowLogWatch, errorClassOf(err), nil

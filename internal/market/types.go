@@ -226,6 +226,8 @@ type PageData struct {
 	// EscrowKey: /escrow-key and the /account status row, the viewer's Bitcoin escrow key; nil while ESCROW_BTC is off
 	// (escrow_account.go, WR-escrow Phase 1).
 	EscrowKey *EscrowKeyView
+	// EscrowFee: /admin while ESCROW_BTC is on, the Bitcoin escrow market fee in force and its form (escrow_fee.go)
+	EscrowFee *EscrowFeeView
 	// Escrow: order page of an escrow order, its escrow (escrow_order.go); EscrowCheckout: order page of the buyer's
 	// BTC draft on a listing that takes escrow, while ESCROW_BTC is on. Both nil otherwise.
 	Escrow         *EscrowOrderView
@@ -510,6 +512,14 @@ type EscrowSettlementView struct {
 	CanSign, SignToo, Stray               bool
 	State                                 string // the settlements.state
 	PSBT, TxID, RawTx                     string
+}
+
+// EscrowFeeView is the Bitcoin escrow market fee in force on /admin (escrow_fee.go): basis points, the same as a
+// percentage, the fee address ("" when the fee is 0); Available: escrow passed its checks, so the form can check an
+// address with the node.
+type EscrowFeeView struct {
+	Bps, Percent, Address string
+	Available             bool
 }
 
 // EscrowDecisionView is a resolved escrow order's dispute decision (escrow_decision.go): Outcome release or refund,
