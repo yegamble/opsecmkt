@@ -1,6 +1,7 @@
 package market
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -363,6 +364,15 @@ func TestEscrowCosignRechecksRefuse(t *testing.T) {
 			p, _ := decodePSBT(b64)
 			bpub, _ := hex.DecodeString(x.keyHex(order, "buyer"))
 			return encodePSBT(addField(t, p.Raw, 1, append([]byte{0x02}, bpub...), fakeSig(bpub, p.TxID(), 1)))
+		}, nil, ""},
+		{"a market copy whose only signature is under another key", sendBadReply, func(b64 string) string {
+			p, _ := decodePSBT(b64)
+			raw, _ := p.withoutInputFields(func(_ int, k []byte) bool { return k[0] == 0x02 })
+			bpub, _ := hex.DecodeString(x.keyHex(order, "buyer"))
+			for i := range p.Inputs {
+				raw = addField(t, raw, i, append([]byte{0x02}, bpub...), fakeSig(bpub, p.TxID(), 1))
+			}
+			return encodePSBT(raw)
 		}, nil, ""},
 		{"a market copy the arbiter did not sign", sendMarketKey, func(b64 string) string {
 			p, _ := decodePSBT(b64)
@@ -738,6 +748,11 @@ func TestEscrowFinalTxChecks(t *testing.T) {
 	other[len(other)-1] = 1
 	sigNone := slices.Clone(sig)
 	sigNone[len(sigNone)-1] = 2
+	sigBadDER := slices.Clone(sig)
+	sigBadDER[4] |= 0x80 // r negative: the right length and the 0x01 at the end, but not strict DER
+	if !bytes.HasSuffix(sigBadDER, []byte{1}) || strictDER(sigBadDER[:len(sigBadDER)-1]) {
+		t.Fatal("the test's signature is not a non-strict DER signature ending in 0x01")
+	}
 	for _, c := range []struct {
 		name, raw, want string
 		outs            []settleOutput
@@ -754,6 +769,9 @@ func TestEscrowFinalTxChecks(t *testing.T) {
 		{"a witness of three items", final(unsigned, nil, sig, ws), finalWitness, outs, 100000, 386},
 		{"another witness script", final(unsigned, nil, sig, sig, ws[:104]), finalWitness, outs, 100000, 386},
 		{"SIGHASH_NONE", final(unsigned, nil, sig, sigNone, ws), finalWitness, outs, 100000, 386},
+		{"a witness of five items", final(unsigned, nil, sig, sig, ws, []byte{1}), finalWitness, outs, 100000, 386},
+		{"a witness with a non-empty dummy", final(unsigned, []byte{1}, sig, sig, ws), finalWitness, outs, 100000, 386},
+		{"a signature ending in 0x01 that is not strict DER", final(unsigned, nil, sig, sigBadDER, ws), finalWitness, outs, 100000, 386},
 	} {
 		if got := checkFinalTx(c.raw, stored, stored.TxID(), c.outs, c.total, c.fee); got != c.want {
 			t.Errorf("%s: %q, want %q", c.name, got, c.want)
