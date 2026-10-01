@@ -478,7 +478,9 @@ func (a *App) reconcileOrphans(ctx context.Context, e *escrowBTC) error {
 	if err != nil {
 		return err
 	}
-	var orphans []string
+	// Never nil: a nil slice is sent as NULL, and NOT (address=ANY(NULL)) is NULL, so the DELETE below would keep every
+	// row once the wallet holds no orphan at all (A-358).
+	orphans := []string{}
 	added := 0
 	for _, w := range watched {
 		if !slices.Contains(addrs, w.Address) || slices.Contains(known, w.Address) {
