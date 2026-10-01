@@ -674,6 +674,13 @@ func leaveOut(ctx context.Context, tx *sql.Tx, orderID, kind, buyer, verb string
 // settleNotSent is the honest line on every settlement that has not been broadcast (ES-10).
 const settleNotSent = "Nothing has been sent yet: once one party has signed, the market co-signs the settlement on its next pass and broadcasts it to the regtest network."
 
+// settleNotSentBoth is the same line once both parties have signed (A-350): the market does not sign, it broadcasts
+// the transaction the two signatures finalize to.
+const settleNotSentBoth = "Nothing has been sent yet: the market does not sign it, and broadcasts the transaction the two parties signed to the regtest network on its next pass."
+
+// settleSigChecked says when a pasted signature's validity is checked (A-343, A-349): the paste checks only its shape.
+const settleSigChecked = "A signature's validity is checked when the market finalizes the transaction."
+
 func settlementKind(kind string) string {
 	switch kind {
 	case "release":
@@ -892,13 +899,15 @@ func escrowSignAction(c *actionCtx) (actionResult, error) {
 	if err = c.Tx.QueryRowContext(ctx, "SELECT kind FROM settlements WHERE id=$1", sid).Scan(&kind); err != nil {
 		return actionResult{}, err
 	}
-	what, note := "the "+party+" signed its escrow settlement ("+settlementKind(kind)+"). ", "The "+party+" signed the escrow settlement ("+settlementKind(kind)+"). "
+	what, note, notSent, code := "the "+party+" signed its escrow settlement ("+settlementKind(kind)+"). "+settleSigChecked+" ",
+		"The "+party+" signed the escrow settlement ("+settlementKind(kind)+"). "+settleSigChecked+" ", settleNotSent, "escrow-signed"
 	if second {
-		what = "the " + party + " also signed its escrow settlement (" + settlementKind(kind) + "): with both parties' signatures the market does not sign it. "
-		note = "The " + party + " also signed the escrow settlement (" + settlementKind(kind) + "): with both parties' signatures the market does not sign it. "
+		what = "the " + party + " also signed its escrow settlement (" + settlementKind(kind) + "): with both parties' signatures the market does not sign it. " + settleSigChecked + " "
+		note = "The " + party + " also signed the escrow settlement (" + settlementKind(kind) + "): with both parties' signatures the market does not sign it. " + settleSigChecked + " "
+		notSent, code = settleNotSentBoth, "escrow-signed-both"
 	}
 	if _, err = c.Tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,$3,$4)", o.ID, o.State, c.User.ID,
-		note+settleNotSent); err != nil {
+		note+notSent); err != nil {
 		return actionResult{}, err
 	}
 	counterparty := o.BuyerID
@@ -906,10 +915,10 @@ func escrowSignAction(c *actionCtx) (actionResult, error) {
 		counterparty = o.VendorID
 	}
 	if _, err = c.Tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), counterparty,
-		"Order "+shortID(o.ID)+": "+what+settleNotSent); err != nil {
+		"Order "+shortID(o.ID)+": "+what+notSent); err != nil {
 		return actionResult{}, err
 	}
-	return actionResult{Redirect: orderPage(o.ID) + "#escrow-settlement", Notice: "escrow-signed", Audit: "Signed the escrow settlement of order " + shortID(o.ID) + " (regtest)"}, nil
+	return actionResult{Redirect: orderPage(o.ID) + "#escrow-settlement", Notice: code, Audit: "Signed the escrow settlement of order " + shortID(o.ID) + " (regtest)"}, nil
 }
 
 // escrowPSBTDownload serves GET /escrow-psbt?id=<order>&s=<settlement>: the reader's own copy of a settlement
@@ -1047,7 +1056,7 @@ func (a *App) settlementView(ctx context.Context, d *PageData, v *EscrowOrderVie
 	case "awaiting_signature":
 		s.Status = "Waiting for a signature from the buyer or the vendor. " + settleNotSent
 	case "party_signed":
-		s.Status = "Signed by the " + signer + " (" + signedAt.String + "). The market co-signs it and broadcasts it on its next pass. Nothing has been sent yet." + pending
+		s.Status = "Signed by the " + signer + " (" + signedAt.String + "). " + settleSigChecked + " The market co-signs it and broadcasts it on its next pass. Nothing has been sent yet." + pending
 	case "signed":
 		by := "the market, with the " + signer + "'s signature"
 		if cosigned == "parties" {
