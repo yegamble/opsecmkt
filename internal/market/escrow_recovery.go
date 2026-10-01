@@ -23,9 +23,11 @@ import (
 // settlements to their confirmations (watching continues). The restore also holds every restored settlement that has a
 // final transaction (restoredSettlementHold): its transaction is broadcast again only after an administrator checked on
 // /admin that it was not already sent or replaced (escrowRebroadcastAction: password step-up, audited), which allows
-// exactly one broadcast (sendRebroadcastOK, consumed by that send). A held settlement stays held after the gate is
-// cleared, until an administrator confirms it; one the watch-only wallet shows on the network is recorded as
-// broadcast without being sent, and one that confirms is no longer held.
+// exactly one broadcast (sendRebroadcastOK, consumed by that send; while the gate is set, a second confirmation after
+// it is refused, sendRebroadcastSent). With ESCROW_BTC off the confirmation route is off and /admin offers no form for
+// it (A-360). A held settlement stays held after the gate is cleared, until an administrator confirms it; one the
+// watch-only wallet shows on the network is recorded as broadcast without being sent, and one that confirms is no
+// longer held. While the gate is set, escrow checkout is refused too (errEscrowRestoring, A-359).
 
 func init() {
 	registerAction("/admin/escrow-rebroadcast", actionSpec{Roles: []string{"admin"}, OwnTx: true, Off: escrowOff, Run: escrowRebroadcastAction})
@@ -39,13 +41,21 @@ func init() {
 const restoredSettlementHold = restoredHoldPrefix + " check that this escrow settlement's transaction was not already sent or replaced, then confirm its rebroadcast on the admin page."
 
 // sendRebroadcastOK is the send_error of a settlement whose rebroadcast an administrator confirmed: the watcher sends
-// its stored transaction once, gate or not, and clears it.
+// its stored transaction once, gate or not, and then uses it up (sentOnceSQL).
 const sendRebroadcastOK = "rebroadcast-confirmed"
 
-// restoreGateSet reports whether the restore gate is set, read directly as the pooled payouts read it (sendPayouts).
+// sendRebroadcastSent is the send_error of a settlement whose confirmed rebroadcast was sent while the restore gate was
+// set (A-363): while the gate stays set it is not sent again, and a second confirmation is refused; once the gate is
+// cleared it behaves as no send_error at all (maySend), and its confirmation clears it.
+const sendRebroadcastSent = "rebroadcast-sent"
+
+// restoreGateSQL is true while the restore gate is set, read directly as the pooled payouts read it (sendPayouts).
+const restoreGateSQL = "EXISTS(SELECT 1 FROM settings WHERE key='payments_recovery_required' AND value='true')"
+
+// restoreGateSet reports whether the restore gate is set.
 func restoreGateSet(ctx context.Context, q rowQuerier) (bool, error) {
 	var on bool
-	err := q.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM settings WHERE key='payments_recovery_required' AND value='true')").Scan(&on)
+	err := q.QueryRowContext(ctx, "SELECT "+restoreGateSQL).Scan(&on)
 	return on, err
 }
 
@@ -65,17 +75,23 @@ func (a *App) maySend(ctx context.Context, sendErr string) (bool, error) {
 	return !gate, err
 }
 
-// sentOnce clears an administrator's rebroadcast confirmation once the transaction it allowed was sent.
+// sentOnce uses up an administrator's rebroadcast confirmation once the transaction it allowed was sent: while the
+// restore gate is set it becomes sendRebroadcastSent, otherwise it is cleared.
 func (a *App) sentOnce(ctx context.Context, id int64) error {
-	_, err := a.db.ExecContext(ctx, "UPDATE settlements SET send_error='',updated=now() WHERE id=$1 AND send_error=$2", id, sendRebroadcastOK)
+	_, err := a.db.ExecContext(ctx, "UPDATE settlements SET send_error="+sentOnceSQL+",updated=now() WHERE id=$1 AND send_error=$2", id, sendRebroadcastOK, sendRebroadcastSent)
 	return err
 }
+
+// sentOnceSQL is the send_error of a settlement once a send happened: an administrator's confirmation ($2) becomes
+// sendRebroadcastSent ($3) while the restore gate is set; anything else is cleared.
+const sentOnceSQL = "CASE WHEN send_error=$2 AND " + restoreGateSQL + " THEN $3 ELSE '' END"
 
 // Order-page lines of a settlement paused by the restore gate or held by a restore.
 const (
 	restoreWhy        = "the market restored its records from a backup and is reconciling them with the blockchain"
 	restoreHeldText   = "Held: " + restoreWhy + ", so an administrator checks that this transaction was not already sent or replaced before the market broadcasts it again."
 	restoreConfirmedT = "An administrator checked that this transaction was not already sent or replaced; the market broadcasts it once on its next pass."
+	restoreSentText   = "An administrator checked that this transaction was not already sent or replaced, and the market broadcast it once; it follows its confirmations but does not send it again until the operator has finished."
 )
 
 // restoreStatus replaces a settlement's order-page status while the restore gate pauses it or a restore holds it
@@ -92,6 +108,8 @@ func (a *App) restoreStatus(s *EscrowSettlementView, v *EscrowOrderView, state, 
 	case sendable && restoreHeld(sendErr):
 		s.Status = stored + " " + restoreHeldText
 	case !v.RestorePaused:
+	case sendable && sendErr == sendRebroadcastSent:
+		s.Status = stored + " " + restoreSentText
 	case state == "building":
 		s.Status = "Paused: " + restoreWhy + ", so the market builds no settlement until the operator has finished. The escrow is still watched."
 	case state == "party_signed" && bothSigned:
@@ -109,6 +127,7 @@ func (a *App) restoreStatus(s *EscrowSettlementView, v *EscrowOrderView, state, 
 // settlements whose stored transaction waits for an administrator's confirmation, and the reconciliation lists.
 type EscrowRecoveryView struct {
 	Gate    bool
+	On      bool // ESCROW_BTC is on: the rebroadcast confirmation exists (A-360)
 	Held    []EscrowHeldView
 	Orphans []EscrowOrphanView
 }
@@ -121,6 +140,7 @@ type EscrowHeldView struct {
 	TxID           string
 	Restored       bool // held by a restore (else paused by the gate)
 	Confirmed      bool // already confirmed: broadcast once on the next pass
+	Sent           bool // its confirmed rebroadcast was sent; not sent again while the gate is set (A-363)
 }
 
 // EscrowOrphanView is one address the escrow watch-only wallet holds with no escrow row.
@@ -137,7 +157,7 @@ func escrowRecoveryLoader(ctx context.Context, a *App, _ *http.Request, d *PageD
 	if err != nil {
 		return err
 	}
-	v := &EscrowRecoveryView{Gate: gate}
+	v := &EscrowRecoveryView{Gate: gate, On: a.escrowConfigured}
 	rows, err := a.db.QueryContext(ctx, `SELECT id,order_id,kind,state,txid,send_error FROM settlements
 		WHERE raw_tx IS NOT NULL AND state IN ('signed','broadcast') AND (send_error LIKE $1 OR send_error=$2 OR $3) ORDER BY id`, restoredHoldPrefix+"%", sendRebroadcastOK, gate)
 	if err != nil {
@@ -150,7 +170,7 @@ func escrowRecoveryLoader(ctx context.Context, a *App, _ *http.Request, d *PageD
 			rows.Close()
 			return err
 		}
-		h.Short, h.Restored, h.Confirmed = shortID(h.OrderID), restoreHeld(sendErr), sendErr == sendRebroadcastOK
+		h.Short, h.Restored, h.Confirmed, h.Sent = shortID(h.OrderID), restoreHeld(sendErr), sendErr == sendRebroadcastOK, sendErr == sendRebroadcastSent
 		h.Kind = settlementKind(h.Kind)
 		v.Held = append(v.Held, h)
 	}
@@ -224,6 +244,8 @@ func escrowRebroadcastAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, fail(409, "This settlement has no stored transaction waiting to be broadcast. Nothing was changed.")
 		case sendErr == sendRebroadcastOK:
 			return actionResult{}, fail(409, "Its rebroadcast is already confirmed: the market broadcasts it once on its next pass. Nothing was changed.")
+		case sendErr == sendRebroadcastSent && gate:
+			return actionResult{}, fail(409, "Its confirmed rebroadcast was already sent: the market follows its confirmations and does not send it again while it reconciles its records after a restore. Nothing was changed.")
 		case !restoreHeld(sendErr) && !gate:
 			return actionResult{}, fail(409, "This settlement is not held: the market broadcasts it by itself. Nothing was changed.")
 		}

@@ -624,7 +624,9 @@ func (a *App) broadcastSettlement(ctx context.Context, e *escrowBTC, id int64) e
 		return err
 	}
 	defer tx.Rollback()
-	res, err := tx.ExecContext(ctx, "UPDATE settlements SET state='broadcast',broadcast_at=now(),send_error='',updated=now() WHERE id=$1 AND state='signed'", id)
+	// An administrator's confirmation is used up here (sentOnceSQL, escrow_recovery.go; A-363).
+	res, err := tx.ExecContext(ctx, "UPDATE settlements SET state='broadcast',broadcast_at=now(),send_error="+sentOnceSQL+",updated=now() WHERE id=$1 AND state='signed'",
+		id, sendRebroadcastOK, sendRebroadcastSent)
 	if err != nil {
 		return err
 	}

@@ -392,8 +392,9 @@ your order is still a draft; try again later.", 503, the order stays a draft), a
 escrow settlement that has a stored final transaction (it prints how many, and the audit row counts them). Before
 step 8, check each held settlement listed under *Admin → Payment providers → Bitcoin escrow recovery and
 reconciliation* on the chain and in the escrow watch-only wallet, and confirm it there if it was not already sent
-or replaced; the market then broadcasts it once. A held settlement stays held after the gate is cleared until it is
-confirmed. On its daily check (not at once) the escrow watcher lists in the same section every address the
+or replaced; the market then broadcasts it once, and while the gate is set it refuses a second confirmation after
+that send. The confirmation needs `ESCROW_BTC=on`: with escrow off the section lists held settlements without the
+form. A held settlement stays held after the gate is cleared until it is confirmed. On its daily check (not at once) the escrow watcher lists in the same section every address the
 watch-only wallet holds (`listreceivedbyaddress` with empty addresses included) that has no escrow row: escrows
 created after the backup, and imports whose checkout did not complete, each with the order ID of its wallet label
 and what it received. The market builds no settlement for them.

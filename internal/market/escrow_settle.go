@@ -1066,7 +1066,7 @@ func settleSendText(class string) string {
 		return "The market's escrow key could not sign it yet."
 	case sendRejected:
 		return "The market's Bitcoin node did not accept the transaction yet."
-	case sendRebroadcastOK:
+	case sendRebroadcastOK, sendRebroadcastSent:
 		return "" // restoreStatus says it
 	}
 	if restoreHeld(class) {
