@@ -200,6 +200,32 @@ Use a fresh database for every run. This suite owns loopback ports 18082 and
 18083 and writes separate `playwright-wallet-report/` and `test-results-wallet/`
 artifacts. Real-wallet network validation remains a separate runbook step.
 
+### Bitcoin escrow paste journey (simulated escrow node)
+
+`tests/e2e/escrow-journey.spec.ts` drives Bitcoin escrow (regtest only, `ESCROW_BTC=on`;
+see [escrow](escrow.md)) through the real server and PostgreSQL in Chromium at 320 px with
+JavaScript disabled, every form by keyboard alone: two escrow keys registered and activated
+by practice signing, an escrow checkout funded and completed on funding (automatic delivery),
+the vendor's claim (copy downloaded, a SIGHASH_NONE paste refused with its error, the signed
+copy pasted, co-signed by the market, broadcast and confirmed), and a refund of an underpaid
+order the buyer cancels, with the order page checked and photographed at each state. The
+escrow node is **simulated**: `tests/e2e/fixtures/escrow_rpc.py`, served by
+`wallet-rpc.py --escrow-port`, answers the escrow adapter's PSBT methods with real PSBT and
+transaction bytes but its own fake signatures, and plays each party's wallet. It knows
+regtest only and refuses mainnet and other-network addresses and keys. This is not chain
+evidence; real Bitcoin Core legs are `scripts/test-escrow-regtest.sh`.
+
+```sh
+docker exec opsecmkt-dev-db createdb -U opsecmkt opsecmkt_escrow_e2e
+export E2E_ESCROW_DATABASE_URL='postgres://opsecmkt:local-dev-only@127.0.0.1:55432/opsecmkt_escrow_e2e?sslmode=disable'
+npm run test:e2e:escrow
+```
+
+Use a fresh database for every run. It owns loopback ports 18090–18092, writes
+`playwright-escrow-report/` and `test-results-escrow/` (with one screenshot per order-page
+state), and is not part of `npm run test:e2e`. `python3 -m unittest tests.test_escrow_rpc_fixture`
+checks the simulator alone.
+
 For actual local Bitcoin Core and Monero nodes, mined test coins and real wallet
 transactions, follow [isolated real-chain browser testing](local-chain-testing.md)
 and run `npm run test:e2e:chain` with `E2E_CHAIN_DATABASE_URL` set to a fresh database. This uses Bitcoin regtest and an offline Monero

@@ -103,4 +103,17 @@ class Handler(BaseHTTPRequestHandler):
         self.reply({'jsonrpc':'2.0','id':data.get('id'),'result':result,'error':None})
 
 if __name__ == '__main__':
-    HTTPServer(('127.0.0.1',18083), Handler).serve_forever()
+    # --port moves the pooled-wallet simulator (default 18083). --escrow-port also serves the Bitcoin escrow node
+    # (escrow_rpc.py: the escrow adapter's PSBT methods, regtest only) on its own loopback port, for the escrow journey.
+    import argparse
+    import threading
+    from http.server import ThreadingHTTPServer
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--port', type=int, default=18083)
+    parser.add_argument('--escrow-port', type=int)
+    args = parser.parse_args()
+    if args.escrow_port:
+        import escrow_rpc
+        escrow = ThreadingHTTPServer(('127.0.0.1', args.escrow_port), escrow_rpc.make_handler(escrow_rpc.EscrowCore()))
+        threading.Thread(target=escrow.serve_forever, daemon=True).start()
+    HTTPServer(('127.0.0.1', args.port), Handler).serve_forever()
