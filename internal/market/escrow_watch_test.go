@@ -526,6 +526,15 @@ func TestEscrowCancelledStatus(t *testing.T) {
 	if x.state(old) != stateCancelled || x.state(recent) != stateCancelled || x.state(fresh) != stateCancelled {
 		t.Fatalf("not cancelled at window end: %s %s %s", x.state(old), x.state(recent), x.state(fresh))
 	}
+	edge := x.draft()
+	x.mustCheckout(edge, "bcrt1qbuyerrefund00000000000000000000006")
+	edgeFunded := x.draft()
+	edgeFundedAddr := x.mustCheckout(edgeFunded, "bcrt1qbuyerrefund00000000000000000000007")
+	x.DB.Exec("UPDATE escrows SET created=now()-interval '25 hours' WHERE order_id IN ($1,$2)", edge, edgeFunded)
+	x.poll()
+	if x.state(edge) != stateCancelled || x.state(edgeFunded) != stateCancelled {
+		t.Fatalf("not cancelled at window end: %s %s", x.state(edge), x.state(edgeFunded))
+	}
 	x.core.deposit(lateAddr, "stray", 0, 40000, 1)
 	x.poll()
 	if agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND after_close", late) != 1 {
@@ -548,7 +557,15 @@ func TestEscrowCancelledStatus(t *testing.T) {
 	x.DB.Exec("UPDATE orders SET updated=now()-interval '25 hours' WHERE id IN ($1,$2)", old, x.order)
 	x.core.deposit(oldAddr, "strayold", 0, 30000, 1)
 	x.core.deposit(recentAddr, "strayrecent", 0, 30000, 1)
+	// Just inside the watcher's 30 days (29 days 23 hours), closed 25 hours ago: still read, so a page horizon shorter
+	// than the watcher's (A-337) would call the empty one "no longer watched". The funded one proves it is read.
+	x.DB.Exec("UPDATE escrows SET created=now()-interval '29 days 23 hours' WHERE order_id IN ($1,$2)", edge, edgeFunded)
+	x.DB.Exec("UPDATE orders SET updated=now()-interval '25 hours' WHERE id IN ($1,$2)", edge, edgeFunded)
+	x.core.deposit(edgeFundedAddr, "strayedge", 0, 30000, 1)
 	x.poll()
+	if agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND after_close", edgeFunded) != 1 {
+		t.Fatal("the watcher did not read an escrow created 29 days 23 hours ago")
+	}
 	if agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1", old) != 0 || agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND after_close", recent) != 1 {
 		t.Fatal("the watcher's horizon is not what the status assumes")
 	}
@@ -562,10 +579,13 @@ func TestEscrowCancelledStatus(t *testing.T) {
 		if got := status(recent, sess); got != afterClose {
 			t.Fatalf("closed inside the horizon with a deposit: %q", got)
 		}
-		for _, inside := range []string{fresh, x.order} {
+		for _, inside := range []string{fresh, x.order, edge} {
 			if got := status(inside, sess); got != nothing {
 				t.Fatalf("enabled, cancelled, empty, inside the watcher's horizon: %q", got)
 			}
+		}
+		if got := status(edgeFunded, sess); got != afterClose {
+			t.Fatalf("created 29 days 23 hours ago, closed 25 hours ago, with a deposit: %q", got)
 		}
 		if got := status(late, sess); got != afterClose {
 			t.Fatalf("cancelled with an after-close deposit: %q", got)
