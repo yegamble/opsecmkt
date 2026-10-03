@@ -174,6 +174,9 @@ type PageData struct {
 	// NeedsAction counts all paid ones.
 	IncomingOrders []Order
 	NeedsAction    int
+	// DeadlineBanners: /orders, the viewer's escrow orders whose release deadline is less than 72 hours away
+	// (escrow_deadline.go, P2-R9).
+	DeadlineBanners []DeadlineBanner
 	// DisputeOrders: order summary per dispute (disputes and moderator pages), keyed by order id.
 	// OpenDisputes: how many leading entries of Disputes are open (the rest are resolved).
 	DisputeOrders map[string]Order
@@ -507,6 +510,21 @@ type EscrowOrderView struct {
 	Recover, RecoverAsked                       bool                    // the buyer of a closed order may ask to recover coins at the escrow (or has asked; escrow_stray.go)
 	RestorePaused                               bool                    // the restore gate pauses escrow builds, co-signing and broadcasts (escrow_recovery.go)
 	PartiesOnly                                 bool                    // a shipped order's release: only both parties' signatures complete it (escrow_release.go)
+	Deadline                                    *EscrowDeadlineView     // a shipped order's release deadline (escrow_deadline.go)
+}
+
+// EscrowDeadlineView is a shipped escrow order's release deadline on its page (escrow_deadline.go, P2-R9): At in UTC,
+// Left the time left when the page loaded; Due once it has passed; Rechecked when a restore from backup moved it.
+type EscrowDeadlineView struct {
+	At, Left       string
+	Due, Rechecked bool
+}
+
+// DeadlineBanner is one /orders banner (escrow_deadline.go): an escrow order of the viewer's whose release deadline At
+// (UTC) is less than 72 hours away, Left as computed when the page loaded; Buyer when the viewer is its buyer.
+type DeadlineBanner struct {
+	OrderID, Short, At, Left string
+	Buyer                    bool
 }
 
 // EscrowSettlementView is an escrow order's settlement on its page (escrow_settle.go): its state in honest words, its

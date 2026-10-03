@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"strconv"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -127,12 +128,27 @@ func escrowShipAction(c *actionCtx) (actionResult, error) {
 		case o.VendorID != c.User.ID:
 			return actionResult{}, errShipOnlyVendor
 		case o.State != statePaid:
-			return actionResult{}, errConflict
+			return actionResult{}, shipConflict(c, o.ID)
 		}
 		if err = checkClaimAddress(c, e, dest); err != nil {
 			return actionResult{}, err
 		}
-		if _, err = c.A.transition(ctx, c.Tx, o.ID, statePaid, stateShipped, c.User, note); err != nil {
+		// P2-R9: the buyer's shipped notice states the release deadline, the value release_at takes below (now() is the
+		// transaction's start).
+		var deadline time.Time
+		err = c.Tx.QueryRowContext(ctx, "SELECT now()+make_interval(days => release_days) FROM escrows WHERE order_id=$1 AND release_days IS NOT NULL AND release_at IS NULL", o.ID).Scan(&deadline)
+		if err == sql.ErrNoRows {
+			return actionResult{}, errShipNoDeadline
+		}
+		if err != nil {
+			return actionResult{}, err
+		}
+		at := utcUntil(deadline)
+		ctx = withNoticeDetail(ctx, o.ID, stateShipped, "Release deadline: "+at+". Sign the release on the order page once the goods have arrived; if they have not arrived, open a dispute before then. "+
+			"If you do neither, the order completes at that time and the market co-signs the vendor's signature on the release: if you cannot sign, you need do nothing.")
+		if _, err = c.A.transition(ctx, c.Tx, o.ID, statePaid, stateShipped, c.User, note); err == errConflict {
+			return actionResult{}, shipConflict(c, o.ID) // P2-R5: the buyer's no-ship cancel took the order row first
+		} else if err != nil {
 			return actionResult{}, err
 		}
 		res, err := c.Tx.ExecContext(ctx, "UPDATE escrows SET release_at=now()+make_interval(days => release_days) WHERE order_id=$1 AND release_days IS NOT NULL AND release_at IS NULL", o.ID)

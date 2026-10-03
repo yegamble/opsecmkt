@@ -390,7 +390,10 @@ pauses escrow: the escrow watcher builds, co-signs and broadcasts no settlement 
 refused ("Bitcoin escrow is paused while this market restores its records from a backup. Nothing was charged and
 your order is still a draft; try again later.", 503, the order stays a draft), and the script holds every restored
 escrow settlement that has a stored final transaction, and every restored fee bump of one that has (it prints how many
-of each, and the audit row counts them); while the gate is set no fee bump is built, co-signed or sent. Confirming a
+of each, and the audit row counts them); while the gate is set no fee bump is built, co-signed or sent, and no physical
+order is released at its deadline. The script also sets `escrow_release_recheck`: the escrow watcher's next pass moves
+every release deadline of a shipped physical order that has passed in the restored records to 72 hours later and
+tells each buyer. Confirming a
 held settlement also releases its fee bumps, and the market then sends only the highest-fee stored transaction. Before
 step 8, check each held settlement listed under *Admin → Payment providers → Bitcoin escrow recovery and
 reconciliation* on the chain and in the escrow watch-only wallet, and confirm it there if it was not already sent

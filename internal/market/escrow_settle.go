@@ -1178,8 +1178,12 @@ func (a *App) settlementView(ctx context.Context, d *PageData, v *EscrowOrderVie
 		}
 	case "awaiting_signature":
 		s.Status = "Waiting for a signature from the buyer or the vendor. " + a.settleNotSent()
-		if s.PartiesOnly {
+		switch {
+		case s.PartiesOnly:
 			s.Status = "Waiting for the vendor's and the buyer's signatures. " + physicalReleaseNotSent(a.escrowNetwork())
+		case kind == "release" && d.Order.Kind == "physical" && d.Order.State == stateCompleted:
+			// P2-R3: only the release deadline completes a physical order whose release nobody signed (escrow_deadline.go).
+			s.Status = "The release deadline passed with no dispute, so the order is completed. The release waits for the vendor's signature: once the vendor has signed it on this page, the market co-signs it and broadcasts it. Nothing has been sent yet."
 		}
 	case "party_signed":
 		s.Status = "Signed by the " + signer + " (" + signedAt.String + "). " + settleSigChecked + " The market co-signs it and broadcasts it on its next pass. Nothing has been sent yet." + pending

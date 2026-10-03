@@ -164,6 +164,7 @@ legacy_backup="$work/legacy.dump.age"
 scripts/backup.sh "$legacy_backup"
 scripts/restore.sh "$legacy_backup" <<< 'RESTORE' > "$work/legacy-restore.log"
 [[ $(pg "$target_db" -Atq -c "SELECT value FROM settings WHERE key='payments_recovery_required'") == true ]]
+[[ $(pg "$target_db" -Atq -c "SELECT value FROM settings WHERE key='escrow_release_recheck'") == true ]]
 [[ $(pg "$target_db" -Atq -c "SELECT to_regclass('payouts') IS NULL") == t ]]
 grep -q 'Held 0 restored payout(s)' "$work/legacy-restore.log"
 grep -q 'Marked 0 restored failed payout(s)' "$work/legacy-restore.log"
@@ -289,6 +290,10 @@ assert match.group(2) == 'UTC' and started - 1 <= taken <= finished + 1, \
 PY
 [[ $(pg "$app_target_db" -Atq -c "SELECT value FROM settings WHERE key='payments_recovery_required'") == true ]]
 [[ $(pg "$app_source_db" -Atq -c "SELECT count(*) FROM settings WHERE key='payments_recovery_required'") == 0 ]]
+# The escrow release deadline recheck is asked for (escrow_deadline.go moves passed deadlines on its next pass).
+[[ $(pg "$app_target_db" -Atq -c "SELECT value FROM settings WHERE key='escrow_release_recheck'") == true ]]
+[[ $(pg "$app_source_db" -Atq -c "SELECT count(*) FROM settings WHERE key='escrow_release_recheck'") == 0 ]]
+grep -q 'release deadlines that passed in the restored records move to 72 hours' "$work/app-restore.log"
 payouts="SELECT string_agg(order_id || ':' || state || ':' || (error LIKE 'Restored from backup:%') || ':' || send_ambiguous || ':' || txid, ',' ORDER BY order_id) FROM payouts"
 held="ops-order-failed:failed:true:true:,ops-order-queued:held:true:false:,ops-order-sent:sent:false:false:$(printf 'ab%.0s' {1..32}),ops-order-suspended:held:true:false:"
 [[ $(pg "$app_target_db" -Atq -c "$payouts") == "$held" ]]
@@ -356,7 +361,8 @@ runbook_sql restore-protection UPGRADING.md > "$work/restore-protection.sql"
  python3 scripts/postgres-tool.py MANUAL_TARGET_URL pg_restore --dbname='' --single-transaction --exit-on-error --no-owner --no-acl < "$work/manual.dump")
 [[ $(pg "$app_manual_db" -Atq -c "SELECT count(*) FROM settings WHERE key='payments_recovery_required'") == 0 ]]
 [[ $(pg "$app_manual_db" -Atq -c "SELECT state FROM payouts WHERE order_id='ops-order-queued'") == pending ]]
-[[ $(pg "$app_manual_db" -At -f "$work/restore-protection.sql") == $'BEGIN\nINSERT 0 1\nUPDATE 2\nUPDATE 1\nUPDATE 1\nUPDATE 1\nUPDATE 1\nINSERT 0 1\nCOMMIT' ]]
+[[ $(pg "$app_manual_db" -At -f "$work/restore-protection.sql") == $'BEGIN\nINSERT 0 1\nINSERT 0 1\nUPDATE 2\nUPDATE 1\nUPDATE 1\nUPDATE 1\nUPDATE 1\nINSERT 0 1\nCOMMIT' ]]
+[[ $(pg "$app_manual_db" -Atq -c "SELECT value FROM settings WHERE key='escrow_release_recheck'") == true ]]
 [[ $(pg "$app_manual_db" -Atq -c "$settlements") == "$escrow_held" ]]
 [[ $(pg "$app_manual_db" -Atq -c "$bumps") == "$bumps_held" ]]
 [[ $(pg "$app_manual_db" -Atq -c "SELECT value FROM settings WHERE key='payments_recovery_required'") == true ]]

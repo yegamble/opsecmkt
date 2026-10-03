@@ -241,6 +241,15 @@ func cancelAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, err
 	}
 	ctx := c.Ctx()
+	if from == statePaid && o.Escrow && o.BuyerID == c.User.ID {
+		// P2-R5: the buyer's no-ship cancel, checked under the order row lock the vendor's "Mark shipped" also takes.
+		if o, err = partyOrderLocked(c, o.ID); err != nil {
+			return actionResult{}, err
+		}
+		if err = noShipCancel(c, &o); err != nil {
+			return actionResult{}, err
+		}
+	}
 	if from == stateAwaitingPayment {
 		deposits, err := hasDeposits(ctx, c.Tx, o.ID)
 		if err != nil {

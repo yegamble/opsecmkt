@@ -100,7 +100,7 @@ func TestEscrowPhysicalCheckout(t *testing.T) {
 	}
 	product := physString(t, x.testEnv, "SELECT product_id FROM orders WHERE id=$1", order)
 	agExec(x.testEnv, "UPDATE products SET dispatch_days=9 WHERE id=$1", product)
-	if got := x.snapshots(order); got != "21 5 true true true false" {
+	if got := x.snapshots(order); got != "21 5 false true true false" { // paid, so ship_by is set (P2-c)
 		t.Fatalf("snapshots after the changes %q", got)
 	}
 	second := x.testEnv.order(x.buyer, product, "BTC", stateDraft)

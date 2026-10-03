@@ -103,6 +103,15 @@ func disputeAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, errDisputeSigned
 		}
 	}
+	// P2-R3: after a shipped escrow order's release deadline the release is due and no dispute is opened; before it,
+	// the other party is told the deadline no longer applies.
+	detail, err := lateDispute(c, &o)
+	if err != nil {
+		return actionResult{}, err
+	}
+	if detail != "" {
+		ctx = withNoticeDetail(ctx, o.ID, stateDisputed, detail)
+	}
 	if _, err = c.A.transition(ctx, tx, o.ID, o.State, stateDisputed, c.User, "Dispute opened"); err != nil {
 		return actionResult{}, err
 	}

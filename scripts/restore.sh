@@ -71,11 +71,16 @@ age -d -i "$AGE_IDENTITY" "$1" | client pg_restore --single-transaction --exit-o
 # internal/market/escrow_recovery.go) until an administrator confirms its rebroadcast on the admin page, and the audit
 # row counts them when there are any. A restored fee bump of a settlement (settlement_bumps, migration 080) with a stored
 # final transaction is held the same way, in settlement_bumps.send_error, until that confirmation of its settlement.
+# A physical escrow order's release deadline may have passed in the restored records: the escrow_release_recheck setting
+# asks the escrow watcher's next pass to move every passed deadline of a shipped order to 72 hours later and tell its
+# buyer (recheckReleaseDeadlines in internal/market/escrow_deadline.go, the only code that moves a deadline).
 # The same SQL runs in the same way for both destinations.
 if ! counts=$(client psql -X -q -A -t -v ON_ERROR_STOP=1 --single-transaction <<'SQL'
 SELECT to_regclass('settings') IS NOT NULL AS has_settings \gset
 \if :has_settings
 INSERT INTO settings(key,value) VALUES ('payments_recovery_required','true')
+ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
+INSERT INTO settings(key,value) VALUES ('escrow_release_recheck','true')
 ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
 \endif
 SELECT to_regclass('payouts') IS NOT NULL AS has_payouts \gset
@@ -144,6 +149,7 @@ if [[ ${bump_held:-0} != 0 ]]; then
   printf "Held %s restored Bitcoin escrow fee bump(s) with a stored transaction; confirming its settlement's rebroadcast on the admin page releases each.\n" "$bump_held"
 fi
 printf 'Marked %s restored failed payout(s) as possibly sent after the backup; requeue each from the admin page only after checking the wallet.\n' "$failed"
+echo 'Bitcoin escrow (if used): release deadlines that passed in the restored records move to 72 hours after the escrow watcher'"'"'s next pass, and each buyer is told.'
 echo 'Application databases now require payout recovery reconciliation. All outbound payouts remain paused until the recovery gate is explicitly cleared (see docs/testnet-runbook.md).'
 # A-190 (ruling D4): staff takedowns and owners' removals delete an image's row, so the restored database has every
 # photo and avatar the backup had, including those removed since. The backup time is the dump's own creation time

@@ -924,7 +924,10 @@ and that no other transaction spent the escrow's coins, with your password (and 
 the watcher then broadcasts it exactly once, gate or not, and the confirmation is audited and noted on the order. The
 order pages and `/admin` say what is paused and why. Clearing the gate (the runbook's SQL) resumes building,
 co-signing and broadcasting; a settlement the restore held stays held until an administrator confirms it. A restore
-not done by `scripts/restore.sh` or that SQL holds nothing.
+not done by `scripts/restore.sh` or that SQL holds nothing. The restore also asks for a release deadline recheck
+(`escrow_release_recheck`): on its next pass, gate or not, the escrow watcher moves every release deadline of a shipped
+physical order that has passed in the restored records to 72 hours later and tells the buyer; while the gate is set no
+order is released at its deadline.
 
 **What was checked.** `scripts/test-escrow-regtest.sh` (manual, not in CI) runs key registration and practice
 signing end to end with a real Bitcoin Core 31.1 regtest node and the whitelist above: the app user is refused

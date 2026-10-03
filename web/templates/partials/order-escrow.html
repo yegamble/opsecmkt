@@ -43,7 +43,12 @@
 <dt>Market fee</dt>
 <dd>{{.}}</dd>
 </div>{{end}}
-</dl>{{with .NextStep}}
+</dl>{{with .Deadline}}
+<section class="escrow-deadline" id="escrow-deadline" aria-labelledby="escrow-deadline-heading">
+<h3 id="escrow-deadline-heading">Release deadline</h3>
+<p><strong>{{.At}}</strong> — {{if .Due}}passed: the release is due{{else}}{{.Left}}{{end}}</p>
+<p class="help">{{if not .Due}}The time left was computed when this page loaded; reload the page to update it. {{end}}{{if .Rechecked}}This deadline was moved after the market restored its records from a backup. {{end}}If the buyer has neither signed the release nor opened a dispute by then, the order completes at that time and the market co-signs the release to the vendor with the vendor's signature (it waits for the vendor's signature if the vendor has not signed). Opening a dispute cancels the deadline: an administrator then decides the order. Once the deadline has passed, a dispute can no longer be opened.</p>
+</section>{{end}}{{with .NextStep}}
 <p role="status">{{.}}</p>{{end}}
 {{if .Deposits}}<h3 id="escrow-deposits-heading">Deposits to this escrow</h3>
 <div class="table-wrap payment-deposits" tabindex="0" role="region" aria-labelledby="escrow-deposits-heading">

@@ -40,12 +40,15 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 	}
 	var refund string
 	var feeBps int64
-	var watched bool
+	var watched, shipByOpen, rechecked bool
 	var windowFrom time.Time
+	var shipBy, releaseAt sql.NullTime
+	var releaseLeft sql.NullFloat64
 	if err := a.db.QueryRowContext(ctx, `SELECT es.address,es.refund_address,es.fee_bps,
 		GREATEST(es.created,(SELECT max(created) FROM payments WHERE order_id=es.order_id AND confirmations>=0 AND NOT locked)),
-		`+escrowWatchedSQL+`
-		FROM escrows es JOIN orders o ON o.id=es.order_id WHERE es.order_id=$1`, o.ID).Scan(&v.Address, &refund, &feeBps, &windowFrom, &watched); err != nil {
+		`+escrowWatchedSQL+`,es.ship_by,COALESCE(es.ship_by<=now(),false),es.release_at,extract(epoch FROM es.release_at-now()),es.release_recheck
+		FROM escrows es JOIN orders o ON o.id=es.order_id WHERE es.order_id=$1`, o.ID).Scan(&v.Address, &refund, &feeBps, &windowFrom, &watched,
+		&shipBy, &shipByOpen, &releaseAt, &releaseLeft, &rechecked); err != nil {
 		return err
 	}
 	if v.Own == roleBuyer {
@@ -123,11 +126,17 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 		v.Status = "Confirmed deposits are below the price"
 	case o.State == statePaid && o.Kind == "physical":
 		v.Status, v.NextStep = "Funded", "The vendor ships the goods; the order stays open until it is shipped and settled. If the vendor cancels it instead, the escrow is refunded to the buyer."
+		if shipBy.Valid {
+			// P2-R5 (escrow_deadline.go): the vendor's dispatch window plus 48 hours, from payment.
+			v.NextStep += " Ship by " + utcFrom(shipBy.Time) + " (the listing's dispatch window plus 48 hours, from payment): if the order is not marked shipped by then, the buyer may cancel it and the escrow is refunded to the buyer."
+		}
 	case o.State == statePaid:
 		v.Status, v.NextStep = "Funded", "The content could not be delivered automatically: the order completes when the vendor delivers it by hand. If the vendor cancels it instead, the escrow is refunded to the buyer."
 	case o.State == stateShipped:
 		// The release's "who acts next" line replaces this once it exists (escrowSettlementView, P2-R2).
 		v.Status, v.NextStep = "Funded and shipped", "The vendor marked the order shipped; the market builds the release to the vendor, which the vendor and the buyer each sign."
+	case o.State == stateCompleted && o.Kind == "physical":
+		v.Status, v.NextStep = "Funded and completed", "The order is completed: the release to the vendor built when it was shipped pays the escrowed coins to the vendor."
 	case o.State == stateCompleted:
 		v.Status, v.NextStep = "Funded and completed", "The vendor claims the escrowed coins from this page."
 	case o.State == stateDisputed:
@@ -155,9 +164,17 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 	if v.RestorePaused, err = restoreGateSet(ctx, a.db); err != nil {
 		return err
 	}
+	if o.State == stateShipped && releaseAt.Valid {
+		// P2-R3, P2-R9 (escrow_deadline.go): the release deadline, and the time left when this page loaded.
+		left := time.Duration(releaseLeft.Float64 * float64(time.Second))
+		v.Deadline = &EscrowDeadlineView{At: utcUntil(releaseAt.Time), Left: timeLeft(left), Due: left <= 0, Rechecked: rechecked}
+	}
 	d.Escrow = v
 	if err = a.escrowSettlementView(ctx, d, v); err != nil {
 		return err
+	}
+	if v.Deadline != nil {
+		v.NextStep += " " + deadlineNextStep(d.OrderViewer, v.Deadline, v.RestorePaused)
 	}
 	if err = a.escrowDecisionView(ctx, d, v); err != nil {
 		return err
@@ -165,6 +182,21 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 	// Cancelling an order that holds coins requests its refund, so the cancel form states it and carries its amount,
 	// as a pooled refund's form does (checkPayoutSeen, escrowSettleTerminal).
 	counted := received + pending
+	// P2-R5 (escrow_deadline.go): the buyer of a paid physical escrow order may cancel it from its ship-by time; before
+	// then the page says when. A paid digital escrow order has none, so its buyer is offered no cancel.
+	kept := d.Transitions[:0]
+	for _, t := range d.Transitions {
+		if t.To == stateCancelled && o.State == statePaid && d.OrderViewer == roleBuyer {
+			switch {
+			case !shipBy.Valid:
+				continue
+			case !shipByOpen:
+				t.Action, t.Label = "", "You can cancel from "+utcFrom(shipBy.Time)+" if the vendor has not shipped the order by then; the escrow is then refunded to your refund address."
+			}
+		}
+		kept = append(kept, t)
+	}
+	d.Transitions = kept
 	for i, t := range d.Transitions {
 		switch {
 		case t.To == stateShipped:

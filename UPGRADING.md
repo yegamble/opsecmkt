@@ -344,12 +344,16 @@ itself, and omit the `settlements` line if the database has no `settlements.send
 076, when no escrow settlement could have a stored transaction). That line holds every restored Bitcoin escrow
 settlement with a stored transaction until an administrator confirms its rebroadcast on `/admin`; the
 `settlement_bumps` line holds every restored fee bump of one with a stored transaction until that confirmation of its
-settlement (omit it if the database has no `settlement_bumps` table, before migration 080).
+settlement (omit it if the database has no `settlement_bumps` table, before migration 080). The
+`escrow_release_recheck` line asks the escrow watcher's next pass to move every release deadline of a shipped physical
+escrow order that has passed in the restored records to 72 hours later, telling each buyer.
 
 <!-- runbook-sql: restore-protection -->
 ```sql
 BEGIN;
 INSERT INTO settings(key,value) VALUES ('payments_recovery_required','true')
+ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
+INSERT INTO settings(key,value) VALUES ('escrow_release_recheck','true')
 ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
 UPDATE payouts SET state='held', updated=now(),
   error='Restored from backup: verify in the wallet before releasing; this payout may already have been sent.'

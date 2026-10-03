@@ -76,7 +76,7 @@ func viewerTransitions(payments map[string]PaymentProvider, netAdj string, o *Or
 		allowed, ok := transitions[o.State][to]
 		action := transitionActions[to]
 		if !ok || action == "" || !slices.ContainsFunc(roles, func(r string) bool {
-			return slices.Contains(allowed, r) && !(o.Escrow && pooledOnly[[3]string{o.State, to, r}])
+			return slices.Contains(allowed, r) && !(o.Escrow && pooledOnly[[3]string{o.State, to, r}]) && (o.Escrow || !escrowOnly[[3]string{o.State, to, r}])
 		}) {
 			continue
 		}

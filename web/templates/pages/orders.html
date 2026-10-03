@@ -7,5 +7,5 @@
 <p>Orders you are buying and selling, with their current state.</p>
 </div>
 <a class="button" href="/">Browse marketplace <span class="action-icon">↗</span></a>
-</div>{{template "orders-table" .}}
+</div>{{range .DeadlineBanners}}<p class="alert deadline-banner" role="note"><strong>Release deadline in under 72 hours.</strong> <a class="text-link" href="/order?id={{.OrderID}}">Order {{.Short}}</a>: {{if .Buyer}}you have until {{.At}} ({{.Left}}, computed when this page loaded) to sign the release if the goods have arrived, or to open a dispute before then if they have not. If you do neither, the order completes at that time and the market co-signs the vendor's signature.{{else}}The buyer has until {{.At}} ({{.Left}}, computed when this page loaded) to sign the release or open a dispute; after that the order completes and the market co-signs your signature on the release.{{end}}</p>{{end}}{{template "orders-table" .}}
 {{template "footer" .}}{{end}}

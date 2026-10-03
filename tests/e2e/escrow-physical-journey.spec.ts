@@ -1,5 +1,6 @@
-import { expect, test, type Page } from '@playwright/test';
-import { activateKey, context, downloadCopy, password, pressSubmit, register, reloadUntil, settlementStatus, shot, sim, simPost, tabTo, typeInto } from './escrow-helpers';
+import { execFileSync } from 'node:child_process';
+import { expect, test, type APIRequestContext, type Browser, type Page } from '@playwright/test';
+import { activateKey, check, context, downloadCopy, password, pressSubmit, register, reloadUntil, settlementStatus, shot, sim, simPost, tabTo, typeInto } from './escrow-helpers';
 import { pgpFixture } from './db-helpers';
 
 // WR-escrow Phase 2, slice P2-b (A-247; P2-R1, P2-R2): a physical escrow order released by the buyer's signature, with
@@ -140,4 +141,148 @@ test('Bitcoin escrow physical order: shipped with a claim address, the vendor si
   expect(txid).toBeTruthy();
   const state = await (await request.get(`${sim}/test/escrow/state`)).json();
   expect(Object.keys(state.sent)).toContain(txid);
+});
+
+// WR-escrow Phase 2, slice P2-c (P2-R3, P2-R5, P2-R9): the release deadline, a dispute that cancels it and the buyer's
+// no-ship cancellation, on the accounts and listing the journey above made. The clock is moved through SQL on the
+// test's own database (past migration 079's freeze trigger, inside one transaction). A-320: the connection details
+// reach psql through libpq's environment, never its command line.
+const database = new URL(process.env.E2E_ESCROW_DATABASE_URL!);
+const psqlEnv = { ...process.env, PGHOST: database.hostname, PGPORT: database.port || '5432', PGUSER: decodeURIComponent(database.username),
+  PGPASSWORD: decodeURIComponent(database.password), PGDATABASE: decodeURIComponent(database.pathname.slice(1)),
+  PGSSLMODE: database.searchParams.get('sslmode') || 'prefer' };
+const sql = (query: string) => execFileSync('psql', ['-v', 'ON_ERROR_STOP=1', '-qtAc', query], { encoding: 'utf8', env: psqlEnv }).trim();
+function moveClock(orderURL: string, set: string) {
+  const id = new URL(orderURL).searchParams.get('id')!;
+  expect(id).toMatch(/^[0-9a-f]+$/);
+  sql(`BEGIN; ALTER TABLE escrows DISABLE TRIGGER escrows_deadlines_frozen; UPDATE escrows SET ${set} WHERE order_id='${id}'; ALTER TABLE escrows ENABLE TRIGGER escrows_deadlines_frozen; COMMIT;`);
+}
+async function signIn(browser: Browser, baseURL: string | undefined, handle: string, pass: string): Promise<Page> {
+  const page = await context(browser, baseURL);
+  await page.goto('/login');
+  await typeInto(page, page.getByLabel('Handle', { exact: true }), handle);
+  await typeInto(page, page.getByLabel('Password', { exact: true }), pass);
+  await pressSubmit(page, page.getByRole('button', { name: 'Sign in' }));
+  await expect(page.locator('.account-name')).toHaveText(handle);
+  return page;
+}
+// The buyer's new escrow order on the journey's listing, funded: its order page URL.
+async function paidOrder(buyer: Page, request: APIRequestContext): Promise<string> {
+  await buyer.goto(`/?q=${encodeURIComponent(title)}`);
+  await tabTo(buyer, buyer.getByRole('link', { name: title, exact: true }));
+  await Promise.all([buyer.waitForEvent('load'), buyer.keyboard.press('Enter')]);
+  await tabTo(buyer, buyer.getByRole('link', { name: 'Review order draft' }));
+  await Promise.all([buyer.waitForEvent('load'), buyer.keyboard.press('Enter')]);
+  await pressSubmit(buyer, buyer.getByRole('button', { name: 'Create unfunded draft' }));
+  await buyer.waitForURL(/\/order\?id=/);
+  const { address: refund } = await simPost(request, '/test/escrow/address', {});
+  await typeInto(buyer, buyer.getByLabel('Refund address'), refund);
+  await pressSubmit(buyer, buyer.getByRole('button', { name: 'Pay into an escrow' }));
+  const address = (await buyer.locator('.payment-address .mono').innerText()).trim();
+  await simPost(request, '/test/escrow/deposit', { address, sats: 100_000 });
+  await simPost(request, '/test/escrow/mine', { blocks: 3 });
+  await reloadUntil(buyer, async () => { await expect(buyer.locator('.page-head .badge')).toHaveText('Paid', { timeout: 500 }); });
+  return buyer.url();
+}
+// The vendor marks the order shipped with a fresh claim address; the release is built.
+async function shipped(vendor: Page, orderURL: string, request: APIRequestContext) {
+  await vendor.goto(orderURL);
+  const ship = vendor.locator('form', { has: vendor.getByRole('button', { name: 'Mark as shipped' }) });
+  const { address: claimTo } = await simPost(request, '/test/escrow/address', {});
+  await typeInto(vendor, ship.getByLabel('Claim address'), claimTo);
+  await typeInto(vendor, ship.getByLabel('Current password'), vendorPassword);
+  expect(await pressSubmit(vendor, ship.getByRole('button', { name: 'Mark as shipped' }))).toBe(303);
+  await reloadUntil(vendor, async () => { await expect(settlementStatus(vendor)).toContainText("Waiting for the vendor's and the buyer's signatures", { timeout: 500 }); });
+}
+
+test('Bitcoin escrow physical order: released at its deadline, the market co-signing the vendor\'s signature', async ({ browser, baseURL, request }, info) => {
+  const buyer = await signIn(browser, baseURL, 'phys_buyer', buyerPassword);
+  const vendor = await signIn(browser, baseURL, 'phys_vendor', vendorPassword);
+  const { key: vendorKey } = await simPost(request, '/test/escrow/key', { name: 'pvendor' });
+  const orderURL = await paidOrder(buyer, request);
+  await shipped(vendor, orderURL, request);
+  // The deadline, in UTC with the time left when the page loaded; the buyer's "who acts next" covers it.
+  const deadline = vendor.locator('#escrow-deadline');
+  await expect(deadline).toContainText(/\d{4}-\d\d-\d\d \d\d:\d\d UTC — About 13 days \d+ h left/);
+  await expect(deadline).toContainText('computed when this page loaded');
+  await expect(deadline).toContainText('Opening a dispute cancels the deadline');
+  const vendorCopy = await downloadCopy(vendor);
+  const vendorSigned = await simPost(request, '/test/escrow/sign', { psbt: vendorCopy, fingerprint: vendorKey.slice(1, 9), sighash: 1 });
+  await typeInto(vendor, vendor.locator('.escrow-settlement').getByLabel('Signed PSBT'), vendorSigned.psbt);
+  expect(await pressSubmit(vendor, vendor.getByRole('button', { name: 'Submit signature' }))).toBe(303);
+  await expect(settlementStatus(vendor)).toContainText("Waiting for the buyer's signature");
+  await buyer.goto(orderURL);
+  await expect(buyer.locator('body')).toContainText('If you cannot sign, you need do nothing');
+  await expect(buyer.locator('body')).not.toContainText('paused');
+  await shot(buyer, info, 'p06-deadline-countdown-buyer');
+  // The clock passes the deadline: the watcher completes the order and co-signs the vendor's signature.
+  moveClock(orderURL, "release_at=now()-interval '1 minute'");
+  await reloadUntil(buyer, async () => { await expect(buyer.locator('.page-head .badge')).toHaveText('Completed', { timeout: 500 }); });
+  await expect(buyer.locator('.order-timeline')).toContainText('auto-release deadline passed');
+  await reloadUntil(buyer, async () => { await expect(settlementStatus(buyer)).toContainText('Broadcast to the regtest network: transaction', { timeout: 500 }); });
+  await shot(buyer, info, 'p07-deadline-released-buyer');
+  await buyer.goto('/notifications');
+  await expect(buyer.locator('body')).toContainText(/auto-release deadline passed \(\d{4}-\d\d-\d\d \d\d:\d\d UTC\)/);
+  await simPost(request, '/test/escrow/mine', { blocks: 3 });
+  await vendor.goto(orderURL);
+  await reloadUntil(vendor, async () => { await expect(settlementStatus(vendor)).toContainText('Confirmed on the regtest network: transaction', { timeout: 500 }); });
+  await shot(vendor, info, 'p08-deadline-confirmed-vendor');
+});
+
+test('Bitcoin escrow physical order: a dispute cancels the release deadline for good', async ({ browser, baseURL, request }, info) => {
+  const buyer = await signIn(browser, baseURL, 'phys_buyer', buyerPassword);
+  const vendor = await signIn(browser, baseURL, 'phys_vendor', vendorPassword);
+  const orderURL = await paidOrder(buyer, request);
+  await shipped(vendor, orderURL, request);
+  await buyer.goto(orderURL);
+  await tabTo(buyer, buyer.locator('summary', { hasText: 'Open a dispute' }));
+  await buyer.keyboard.press('Enter');
+  await expect(buyer.getByLabel('Describe the issue')).toHaveAccessibleDescription(/Opening a dispute cancels the deadline of \d{4}-\d\d-\d\d \d\d:\d\d UTC for good/);
+  await typeInto(buyer, buyer.getByLabel('Describe the issue'), 'The parcel never arrived at my address at all.');
+  expect(await pressSubmit(buyer, buyer.getByRole('button', { name: 'Submit dispute' }))).toBe(303);
+  // The deadline passes while the order is disputed: it is never released, and no countdown is shown.
+  moveClock(orderURL, "release_at=now()-interval '1 minute'");
+  await buyer.waitForTimeout(3_000); // three watcher passes at PAYMENT_POLL_INTERVAL=1s
+  await buyer.goto(orderURL);
+  await expect(buyer.locator('.page-head .badge')).toHaveText('Disputed');
+  await expect(buyer.locator('#escrow-deadline')).toHaveCount(0);
+  await expect(buyer.locator('.order-timeline')).not.toContainText('auto-release deadline passed');
+  await expect(buyer.locator('body')).not.toContainText('paused');
+  await shot(buyer, info, 'p09-dispute-cancels-deadline');
+  await vendor.goto('/notifications');
+  await expect(vendor.locator('body')).toContainText(/release deadline of \d{4}-\d\d-\d\d \d\d:\d\d UTC no longer applies/);
+});
+
+test('Bitcoin escrow physical order: the buyer\'s no-ship cancel, refused before the window with its date and accepted after', async ({ browser, baseURL, request }, info) => {
+  const buyer = await signIn(browser, baseURL, 'phys_buyer', buyerPassword);
+  const { key: buyerKey } = await simPost(request, '/test/escrow/key', { name: 'pbuyer' });
+  const orderURL = await paidOrder(buyer, request);
+  // Before the window opens the page says when it does, and offers no cancel form.
+  await expect(buyer.locator('.order-unavailable')).toContainText(/You can cancel from \d{4}-\d\d-\d\d \d\d:\d\d UTC if the vendor has not shipped/);
+  await expect(buyer.getByRole('button', { name: 'Cancel order' })).toHaveCount(0);
+  await shot(buyer, info, 'p10-no-ship-cancel-note');
+  // The window opens: the cancel form with the refund confirmation. If the page is stale (the window is not open
+  // after all), the server refuses with the date stated.
+  moveClock(orderURL, "ship_by=now()-interval '1 minute'");
+  await buyer.reload();
+  const cancel = buyer.locator('form', { has: buyer.getByRole('button', { name: 'Cancel order' }) });
+  await check(buyer, cancel.getByRole('checkbox'));
+  moveClock(orderURL, "ship_by=date_trunc('minute',now())+interval '2 days'");
+  const opens = sql(`SELECT to_char(ship_by AT TIME ZONE 'UTC','YYYY-MM-DD HH24:MI "UTC"') FROM escrows WHERE order_id='${new URL(orderURL).searchParams.get('id')}'`);
+  expect(await pressSubmit(buyer, cancel.getByRole('button', { name: 'Cancel order' }))).toBe(409);
+  await expect(buyer.locator('body')).toContainText(`You can cancel this order from ${opens} if the vendor has not marked it shipped by then`);
+  await shot(buyer, info, 'p11-no-ship-cancel-refused');
+  moveClock(orderURL, "ship_by=now()-interval '1 minute'");
+  await buyer.goto(orderURL);
+  await check(buyer, cancel.getByRole('checkbox'));
+  expect(await pressSubmit(buyer, cancel.getByRole('button', { name: 'Cancel order' }))).toBe(303);
+  await expect(buyer.locator('.page-head .badge')).toHaveText('Cancelled');
+  await expect(buyer.getByRole('heading', { name: 'Settlement: Refund to the buyer' })).toBeVisible();
+  await reloadUntil(buyer, async () => { await expect(settlementStatus(buyer)).toContainText('Waiting for a signature from the buyer or the vendor', { timeout: 500 }); });
+  const copy = await downloadCopy(buyer);
+  const signed = await simPost(request, '/test/escrow/sign', { psbt: copy, fingerprint: buyerKey.slice(1, 9), sighash: 1 });
+  await typeInto(buyer, buyer.locator('.escrow-settlement').getByLabel('Signed PSBT'), signed.psbt);
+  expect(await pressSubmit(buyer, buyer.getByRole('button', { name: 'Submit signature' }))).toBe(303);
+  await reloadUntil(buyer, async () => { await expect(settlementStatus(buyer)).toContainText('Broadcast to the regtest network: transaction', { timeout: 500 }); });
+  await shot(buyer, info, 'p12-no-ship-refund-broadcast');
 });
