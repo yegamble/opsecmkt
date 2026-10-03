@@ -267,7 +267,7 @@ development branch has, for physical listings:
   address from their own wallet and their password (and authenticator code when enrolled). In one transaction the
   order moves from paid to shipped, the release to the vendor is requested and the release deadline is fixed. The
   watcher builds the release at once, long before the order has an outcome, from the escrow's confirmed deposits,
-  with the same fee rules as any settlement. The pooled "Mark shipped" form and the buyer's pooled "Complete" are
+  with the same fee rules as any settlement. The pooled "Mark as shipped" form and the buyer's pooled "Confirm receipt and complete" are
   refused on an escrow order.
 - **The buyer signs it.** The buyer and the vendor each sign the release on the order page, in their own wallet, as
   for any settlement; the page lists the expected outputs and the network fee. **Signing it is the buyer's
@@ -287,14 +287,14 @@ development branch has, for physical listings:
   skipped while the restore gate is set.
 - **Reminders and the banner.** Every deadline is shown in UTC to the minute: in the shipped, reminder, release and
   dispute notices, on the order page (with the time left, computed when the page loaded) and in a banner on
-  `/orders` for any shipped escrow order of the viewer with less than 72 hours left. 72 hours before the deadline,
+  `/orders` for any shipped escrow order of the viewer with less than 72 hours left, unless its buyer has signed. 72 hours before the deadline,
   once, the buyer is reminded, unless the buyer has signed or a dispute is open, and the vendor is told the buyer's
   deadline. Notices are inside the market only; nothing is sent by email or any other channel.
 - **The no-ship cancel.** A paid physical escrow order has a ship-by time: the time its payment was confirmed plus
   the escrow's dispatch window plus 48 hours. From then on, if the vendor has not marked it shipped, the buyer may
   cancel it and the escrow is refunded to the refund address fixed at checkout, by a refund settlement the buyer or
   the vendor signs and the market co-signs. Before it, the cancel is refused (409) with the date. The vendor's
-  "Mark shipped" and the buyer's cancel lock the order and compare its state, so exactly one takes effect, and the
+  "Mark as shipped" and the buyer's cancel lock the order and compare its state, so exactly one takes effect, and the
   other is told which one did and when. A digital escrow order offers its buyer no such cancel.
 - **Late and early disputes.** A dispute opened after the deadline is refused (409): the release is due. One opened
   before it stops the clock for good, because a disputed order only moves to resolved; the other party is told the
@@ -337,8 +337,9 @@ before the order is completed, and the database refuses a market-signed final tr
 not fit. A buyer's funds therefore do not reach the vendor unless the buyer signs, or the deadline passes with no
 dispute open, or an administrator decides for the vendor. A buyer's dispute stops the deadline for good, and a
 decision for the buyer cannot be overtaken by a release that is already final, because that decision is refused. The
-deadlines are snapshotted at checkout and frozen in the database, and only the restore recheck moves one, later,
-never earlier. A fee bump never changes who is paid. All of this is subject to the limits under *What it will not
+deadline length is snapshotted at checkout, the ship-by time when the order is paid and the release deadline when
+it is marked shipped; all are frozen in the database, and only the restore recheck moves a deadline, later, never
+earlier. A fee bump never changes who is paid. All of this is subject to the limits under *What it will not
 protect* above: a server taken over can show a substituted key, and the market key with one party's key can spend.
 
 **What Phase 2 does not do.**
@@ -355,17 +356,19 @@ protect* above: a server taken over can show a substituted key, and the market k
   that has been broadcast and not mined can have one.
 - **A high `ESCROW_BTC_FEE_RATE` can leave a settlement stuck (A-388).** The network fee is the rate times an upper
   bound of the transaction's size, while completing the settlement checks the fee at the real size against 100
-  sat/vB. Near 100 sat/vB (above roughly 85 for the smallest settlements) a settlement can be built, signed and then
+  sat/vB. Near 100 sat/vB (from about 85 for a one-deposit settlement with three outputs, about 92 with one output) a settlement can be built, signed and then
   refused when the market completes it ("not sent yet: final-fee" in the log). A transaction a party has signed
   cannot be changed, so the buyer and the vendor could then only move the escrow together from their own wallets.
   Keep the rate well below 100; the default is 2. Fee bumps do not have this gap: the form stops at the rate that is
   safe at the real size.
 - **Restore limits (A-394).** An escrow created after the backup, whose address the watch-only wallet holds, is
   listed as an orphan and its keys reserved. If `getaddressinfo` cannot read an orphan's keys, escrow checkout stays
-  paused (503) until an operator deals with it
+  paused (503) until the node answers the sweep or an operator deals with it
   ([runbook](testnet-runbook.md#an-orphan-whose-keys-cannot-be-read-escrow-checkout-stays-paused)). A dump taken
-  before migration 083 gets the reservation but no index margin. A party who lost 150 or more consecutive escrows
-  gets 409 instead of a reused key: the margin skips 50 and a checkout gives up when it meets 100 held keys.
+  before migration 083 gets the reservation but no index margin. A party who lost 150 or more consecutive escrows,
+  or a market that lost 150 or more escrows in all (the market's key), gets 409 instead of a reused key: the margin
+  skips 50 and a checkout gives up when it meets 100 held keys (100 without the margin). The market-key case clears
+  on a later try; the party case does not.
   **When the watch-only wallet is restored from the same backup, an account that registered its escrow key after the
   backup is unknown to the restored database** (A-398): it has no index floor, and if it registers the same extended
   key again, its next child index starts at `/0/1` and reuses keys its lost escrows used. The market cannot detect
@@ -405,13 +408,15 @@ protect* above: a server taken over can show a substituted key, and the market k
   PostgreSQL and a **simulated** escrow node whose signed PSBTs come from the simulator, not from a wallet
   (`tests/e2e/escrow-physical-journey.spec.ts`, `npm run test:e2e:escrow`; [development](development.md)): the
   physical order shipped with a claim address and both signatures completing it; the deadline release; a dispute
-  cancelling the deadline; the no-ship cancel refused before the window and accepted after; the two races between
-  the cancel and the shipment; a buyer who never signs seeing the notices and the banner; and the administrator's 7
+  cancelling the deadline; the no-ship cancel refused before the window and accepted after; the race between
+  the cancel and the shipment, in both orders; a buyer who never signs seeing the notices and the banner; and the administrator's 7
   days applying to a new order only. Not chain evidence. The clock is moved through SQL on the test's own database.
 
 Not tested: any public test network, mainnet, the escrow pages in Firefox or WebKit, Electrum, Sparrow and hardware
 wallets, deadlines of 7 to 30 days in real time (every test moves the clock), and a restore of a real backup into a
-running market with Phase 2 orders (the Go tests run the restore SQL as `scripts/restore.sh` writes it).
+running market with Phase 2 orders on a real chain. `scripts/test-backup-restore.sh` (run in CI) restores a real dump
+through `scripts/restore.sh` with escrow settlement, fee bump and index floor rows and checks the deadline recheck,
+the sweep marker, the floors and the market's key index; the Go tests run the margin block as written.
 
 All escrow testing uses regtest and public test networks only. Mainnet stays an operator opt-in and is never
 used in development or tests.

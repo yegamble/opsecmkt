@@ -936,7 +936,9 @@ With escrow on, this release also offers escrow checkout for physical listings, 
 deadline length to `/admin` (setting `escrow_release_days`, default 14, 7 to 30 days; [operator
 guide](docs/operator-guide.md#bitcoin-escrow-regtest-only)) and a ship-by time and a release deadline to each physical
 escrow order. A physical listing that exists before the upgrade has no dispatch window and takes no escrow checkout
-until its vendor saves it. No action is needed. Rolling back past this release needs the pre-upgrade backup, as for
+until its vendor saves it; a save stores the default of 3 days even while escrow is off (the field is then hidden),
+so once escrow is turned on such a listing takes escrow checkout with a 3-day window its vendor did not choose. A
+listing that already has a window keeps it on save. No action is needed. Rolling back past this release needs the pre-upgrade backup, as for
 every migration (section 5): the earlier release refuses to start on a database that records migration 079.
 
 ## 25. Bitcoin escrow fee bumps (migration 080)

@@ -928,15 +928,18 @@ lasts needs you to look at the orphan. The app has no other way to clear it.
    The sweep then runs only on the escrow watcher's daily check, which logs the same line each day while that orphan
    stays unreadable; reserving its keys by hand (step 3) stops it.
 
-Two limits of the key protection, both stated in [per-order escrow](escrow.md#phase-2-bitcoin-escrow-for-physical-orders-on-regtest):
+Three limits of the key protection, each stated in [per-order escrow](escrow.md#phase-2-bitcoin-escrow-for-physical-orders-on-regtest):
 
 - A dump taken before migration 083 has no `escrow_index_floors` table when `scripts/restore.sh` runs, so that restore
   gets the sweep (the exact layer) but not the margin of 50 child indices per account and for the market key. If the
   watch-only wallet was also restored from an older backup, it holds none of the lost escrows, the sweep finds
   nothing to reserve, and no layer is left against a reused key beyond the check of the whole composed address.
-- With the margin, a party whose last 150 or more escrows were all lost (created after the backup) gets
-  "another escrow on this market already holds one of its keys …" (409) at checkout instead of a reused key: the margin
-  skips 50 indices and a checkout gives up when it has met 100 held keys. Trying again does not help.
+- With the margin, a party whose last 150 or more escrows were all lost (created after the backup), or a market that
+  lost 150 or more escrows in all (the market's own key index), gets "another escrow on this market already holds one
+  of its keys …" (409) at checkout instead of a reused key: the margin skips 50 indices and a checkout gives up when
+  it has met 100 held keys. Without the margin (a dump from before migration 083) the figure is 100. A refusal caused
+  by a party's own keys comes back on every try; one caused by the market's key index clears on a later try, because
+  each refused attempt moves that index on by about 100.
 - When the watch-only wallet is restored from the same backup too, an account that registered its escrow key after the
   backup (A-398) has no row in the restored database: no index floor, and if it registers the same extended key
   again its next child index starts at `/0/1`, reusing child keys its lost escrows used. The market cannot detect

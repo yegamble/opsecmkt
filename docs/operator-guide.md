@@ -666,7 +666,7 @@ has run on a public test network. Never switch it on for a market that takes rea
   sat/vB from 1 to 100 (anything else stops startup). A settlement whose fee at this rate would exceed 0.001 BTC is
   not built; lower the rate and restart. **Keep it well below 100** (A-388): the network fee is this rate times an
   upper bound of the transaction's size, while completing a settlement checks the fee at its real size against 100
-  sat/vB, so near 100 (above roughly 85 for the smallest settlements) a settlement can be built and signed and then
+  sat/vB, so near 100 (from about 85 for a one-deposit settlement with three outputs, about 92 with one output) a settlement can be built and signed and then
   refused when the market completes it (log: "settlement of order … not sent yet: final-fee"). Its transaction
   cannot change once a party has signed it, and the buyer and the vendor could then only move the escrow together
   from their own wallets. A fee bump does not have this gap (below).
@@ -922,7 +922,8 @@ lists.
 
 - *Dispatch window.* With escrow on, a vendor's listing form has *Dispatch within (days)*, 1 to 30, 3 by default. A
   physical listing without a window takes no escrow checkout; one that exists from before migration 079 has none until
-  its vendor saves it, which stores the default. Each escrow keeps the window in force at its checkout. The buyer may
+  its vendor saves it, which stores the default of 3 days even while escrow is off and the field is hidden: once escrow
+  is turned on, such a listing takes escrow checkout with a window its vendor did not choose. Each escrow keeps the window in force at its checkout. The buyer may
   cancel a paid order the vendor has not marked shipped from the payment's confirmation plus the window plus 48 hours;
   before that the cancel is refused with its date.
 - *Release deadline length.* *Admin → Payment providers → Bitcoin escrow release deadline* sets how many days after

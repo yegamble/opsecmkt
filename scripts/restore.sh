@@ -156,13 +156,13 @@ SELECT count(*) AS images FROM images \gset
 \else
 SELECT 0 AS images \gset
 \endif
-SELECT :'held' || ' ' || :'failed' || ' ' || :'images' || ' ' || :'escrow_held' || ' ' || :'bump_held';
+SELECT :'held' || ' ' || :'failed' || ' ' || :'images' || ' ' || :'escrow_held' || ' ' || :'bump_held' || ' ' || :'has_floors';
 SQL
 ); then
   echo 'The database was restored, but payout recovery protection FAILED. Do not start the application on it; apply the recovery gate and holds by hand first (UPGRADING.md, section 6).' >&2
   exit 1
 fi
-read -r held failed images escrow_held bump_held <<< "$counts"
+read -r held failed images escrow_held bump_held floors <<< "$counts"
 printf 'Held %s restored payout(s); release each from the admin page only after checking the wallet.\n' "$held"
 if [[ ${escrow_held:-0} != 0 ]]; then
   printf 'Held %s restored Bitcoin escrow settlement(s) with a stored transaction; confirm each rebroadcast from the admin page only after checking the chain and the escrow watch-only wallet.\n' "$escrow_held"
@@ -172,7 +172,11 @@ if [[ ${bump_held:-0} != 0 ]]; then
 fi
 printf 'Marked %s restored failed payout(s) as possibly sent after the backup; requeue each from the admin page only after checking the wallet.\n' "$failed"
 echo 'Bitcoin escrow (if used): release deadlines that passed in the restored records move to 72 hours after the escrow watcher'"'"'s next pass, and each buyer is told.'
-echo 'Bitcoin escrow (if used): escrow checkout waits until the escrow watcher has reserved the keys of the escrows its watch-only wallet holds and the restored records lack, and every next escrow key index moves 50 past the restored records.'
+if [[ ${floors:-f} == t ]]; then
+  echo 'Bitcoin escrow (if used): escrow checkout waits until the escrow watcher has reserved the keys of the escrows its watch-only wallet holds and the restored records lack, and every next escrow key index moves 50 past the restored records.'
+else
+  echo 'Bitcoin escrow (if used): escrow checkout waits until the escrow watcher has reserved the keys of the escrows its watch-only wallet holds and the restored records lack; this database predates migration 083, so escrow key indices get no margin (docs/testnet-runbook.md).'
+fi
 echo 'Application databases now require payout recovery reconciliation. All outbound payouts remain paused until the recovery gate is explicitly cleared (see docs/testnet-runbook.md).'
 # A-190 (ruling D4): staff takedowns and owners' removals delete an image's row, so the restored database has every
 # photo and avatar the backup had, including those removed since. The backup time is the dump's own creation time

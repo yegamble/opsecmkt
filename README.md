@@ -24,7 +24,7 @@ Server-rendered Go and PostgreSQL, PGP identity, Tor-first deployment.
 > multisig or fee accounting. Per-order escrow (Bitcoin 2-of-3 multisig, a Monero
 > account per order) is in no release: its first two phases, Bitcoin escrow for digital
 > and for physical orders, are built and tested on regtest only (a local test chain), off by default
-> (`ESCROW_BTC`), and has not run on any public network; the pooled wallet stays
+> (`ESCROW_BTC`), and have not run on any public network; the pooled wallet stays
 > the default. See [per-order escrow](docs/escrow.md). Tor protects inbound connections to the site; it
 > does not guarantee anonymity. See [implementation status](docs/implementation-status.md).
 
