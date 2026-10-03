@@ -913,3 +913,31 @@ func TestEscrowLateDisputePendingRecheck(t *testing.T) {
 		t.Fatalf("the dispute was not opened: %s", x.state(order))
 	}
 }
+
+// A-395: the who-acts-next line of a shipped order whose release both parties signed says their signatures complete
+// it and the market does not sign: only a release signed by one party before the deadline is co-signed by the market.
+func TestEscrowDeadlineNextStepBothSigned(t *testing.T) {
+	dl := &EscrowDeadlineView{At: "2026-10-17 12:00 UTC"}
+	for _, viewer := range []string{roleBuyer, roleVendor, ""} {
+		got := deadlineNextStep(viewer, dl, false, true, true)
+		if !containsAll(got, "signatures complete the release", "does not sign it") || strings.Contains(got, "co-signs") {
+			t.Fatalf("viewer %q, both signed: %q", viewer, got)
+		}
+		if got = deadlineNextStep(viewer, dl, false, true, false); !strings.Contains(got, "co-signs the buyer's signature") {
+			t.Fatalf("viewer %q, only the buyer signed: %q", viewer, got)
+		}
+	}
+	x := newEscrowEnv(t)
+	order, id := x.shippedPhysical(regtestAddr("ns-refund"), regtestAddr("ns-claim"), 100000)
+	x.signAs(order, roleVendor, id)
+	x.signAs(order, roleBuyer, id)
+	if x.state(order) != stateShipped {
+		t.Fatalf("both signed, before the watcher's pass: %s", x.state(order))
+	}
+	for _, sess := range []string{x.buyerSess, x.vendorSess} {
+		page := html.UnescapeString(x.page("/order?id="+order, sess))
+		if !containsAll(page, "Release deadline", "signatures complete the release", "does not sign it") || strings.Contains(page, "co-signs the buyer's signature") || strings.Contains(page, "co-signs the vendor's signature") {
+			t.Fatalf("the page of a release both parties signed:\n%s", page)
+		}
+	}
+}
