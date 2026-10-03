@@ -515,6 +515,22 @@ type EscrowSettlementView struct {
 	CanSign, SignToo, Stray               bool
 	State                                 string // the settlements.state
 	PSBT, TxID, RawTx                     string
+	Bumps                                 []*EscrowBumpView // its fee bumps, newest first (escrow_bump.go, P2-d)
+	CanBump                               bool              // the claimant may ask to raise the fee of the broadcast transaction
+	BumpRate, BumpMin                     string            // the highest stored fee rate (sat/vB), and the lowest a new bump may ask
+}
+
+// EscrowBumpView is one fee bump of a settlement on the order page (escrow_bump.go, P2-d): its state in honest words,
+// its outputs while it is open (only the claimant's differs from the settlement's) and, for the party it waits for,
+// that party's copy and the paste form.
+type EscrowBumpView struct {
+	ID, SettlementID    int64
+	N                   int
+	FeeRate, NetworkFee string
+	Status              string
+	Outputs             []SettlementOutputView
+	CanSign, SignToo    bool
+	PSBT                string
 }
 
 // EscrowFeeView is the Bitcoin escrow market fee in force on /admin (escrow_fee.go): basis points, the same as a

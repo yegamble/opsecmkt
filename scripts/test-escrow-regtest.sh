@@ -58,6 +58,14 @@
 # transaction funds two escrows and each claim spends only its own output; ten deposits at 100 sat/vB exceed the fee
 # cap, so nothing is built until the rate is lowered. Every leg logs its txids.
 #
+# Slice P2-d leg (Phase 2 fee bumps, P2-R7, A-375): a vendor's claim with a market fee and a buyer return is broadcast at
+# 1 sat/vB and left unmined; the buyer may not ask for a fee bump of it; the vendor asks for one at 5 sat/vB, Core's
+# decodepsbt agrees on its txid, inputs, addresses and fee; the buyer's Core-signed copy pasted before the vendor's
+# signature is refused; the vendor signs it in their own wallet and the watcher co-signs it, testmempoolaccept accepts it
+# as a replacement and it replaces the original in the mempool (another pass does not bring the original back). After 3
+# blocks the settlement and the bump are confirmed (not external), the original is conflicted in the watch-only wallet
+# by the bump, and each confirmed output (gettxout) is the plan's with only the vendor's output smaller.
+#
 # Ruled Phase 1 legs and where they run: release (Settlement, Cosign: claim), refund (Settlement, Cosign), dispute
 # (Cosign), comma injection refused (Gate), NONE paste refused (PracticeSign, Settlement), forged market slot refused
 # (Gate), conflicting outcome refused (Gate), spent-outpoint build refused (Gate), restart mid-send rebroadcasts the
@@ -110,12 +118,12 @@ log="${ESCROW_REGTEST_LOG:-artifacts/real-chain/test-escrow-regtest-$(date -u +%
 mkdir -p "$(dirname "$log")"
 echo "Bitcoin escrow regtest check; transcript: $log"
 set +e
-go test -count=1 -timeout 15m -run '^TestEscrowRegtest(PracticeSign|Funding|Settlement|Cosign|Recovery|Gate)$' -v ./internal/market/ 2>&1 | tee "$log"
+go test -count=1 -timeout 15m -run '^TestEscrowRegtest(PracticeSign|Funding|Settlement|Cosign|Recovery|Gate|Bump)$' -v ./internal/market/ 2>&1 | tee "$log"
 status=${PIPESTATUS[0]}
 set -e
 # Each leg is reported from its own go test result line, so one failing leg never makes another read as failed.
 failed=0
-for leg in TestEscrowRegtestPracticeSign TestEscrowRegtestFunding TestEscrowRegtestSettlement TestEscrowRegtestCosign TestEscrowRegtestRecovery TestEscrowRegtestGate; do
+for leg in TestEscrowRegtestPracticeSign TestEscrowRegtestFunding TestEscrowRegtestSettlement TestEscrowRegtestCosign TestEscrowRegtestRecovery TestEscrowRegtestGate TestEscrowRegtestBump; do
   if grep -q -- "--- PASS: $leg " "$log"; then
     echo "PASS: $leg"
   elif grep -q -- "--- FAIL: $leg " "$log"; then
@@ -133,4 +141,4 @@ if [[ $status -ne 0 || $failed -ne 0 ]]; then
   echo "FAILED: go test exited $status; see $log" >&2
   exit 1
 fi
-echo "PASS: practice signing, escrow creation and funding, settlement building and party signing, co-signing, broadcast and confirmation, recovery and reconciliation, and the Phase 1 gate's remaining adversarial legs, on regtest; transcript in $log"
+echo "PASS: practice signing, escrow creation and funding, settlement building and party signing, co-signing, broadcast and confirmation, recovery and reconciliation, the Phase 1 gate's remaining adversarial legs, and a same-recipient fee bump, on regtest; transcript in $log"
