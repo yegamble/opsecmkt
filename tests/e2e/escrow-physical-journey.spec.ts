@@ -271,7 +271,7 @@ test('Bitcoin escrow physical order: the buyer\'s no-ship cancel, refused before
   const opens = sql(`SELECT to_char(ship_by AT TIME ZONE 'UTC','YYYY-MM-DD HH24:MI "UTC"') FROM escrows WHERE order_id='${new URL(orderURL).searchParams.get('id')}'`);
   expect(await pressSubmit(buyer, cancel.getByRole('button', { name: 'Cancel order' }))).toBe(409);
   await expect(buyer.locator('body')).toContainText(`You can cancel this order from ${opens} if the vendor has not marked it shipped by then`);
-  await shot(buyer, info, 'p11-no-ship-cancel-refused');
+  // (A refusal is a bare text page, A-59, so it is not measured at 320 px here.)
   moveClock(orderURL, "ship_by=now()-interval '1 minute'");
   await buyer.goto(orderURL);
   await check(buyer, cancel.getByRole('checkbox'));

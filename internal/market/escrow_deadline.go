@@ -54,7 +54,9 @@ const (
 var errCancelNoShipBy = fail(409, "Only the vendor can cancel this paid order: a buyer may cancel a paid escrow order only when it is a physical order the vendor has not marked shipped within its dispatch window plus 48 hours. Nothing was changed.")
 
 // utcUntil is a deadline as the market states it, in UTC to the minute, rounded down: the party acts before it.
-func utcUntil(t time.Time) string { return t.UTC().Truncate(time.Minute).Format("2006-01-02 15:04 UTC") }
+func utcUntil(t time.Time) string {
+	return t.UTC().Truncate(time.Minute).Format("2006-01-02 15:04 UTC")
+}
 
 // utcFrom is the time something becomes possible, in UTC to the minute, rounded up: it is possible from then.
 func utcFrom(t time.Time) string {

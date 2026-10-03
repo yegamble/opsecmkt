@@ -30,11 +30,12 @@ const (
 	roleSystem    = "system"
 )
 
-// transitions[from][to] lists the actor roles allowed to make that move. Terminal states map to nothing.
+// transitions[from][to] lists the actor roles allowed to make that move. Terminal states map to nothing. The buyer's
+// paid -> cancelled is escrowOnly (the no-ship cancel, P2-R5).
 var transitions = map[string]map[string][]string{
 	stateDraft:           {stateAwaitingPayment: {roleBuyer}, stateCancelled: {roleBuyer}},
 	stateAwaitingPayment: {statePaid: {roleSystem}, stateCancelled: {roleBuyer, roleVendor, roleSystem}}, // system: payment window expired
-	statePaid:            {stateShipped: {roleVendor}, stateDelivered: {roleVendor, roleSystem}, stateCancelled: {roleVendor, roleBuyer}, stateDisputed: {roleBuyer, roleVendor}}, // buyer: escrowOnly
+	statePaid:            {stateShipped: {roleVendor}, stateDelivered: {roleVendor, roleSystem}, stateCancelled: {roleVendor, roleBuyer}, stateDisputed: {roleBuyer, roleVendor}},
 	stateShipped:         {stateCompleted: {roleBuyer, roleSystem}, stateDisputed: {roleBuyer, roleVendor}}, // system: escrowOnly
 	stateDelivered:       {stateCompleted: {roleBuyer, roleSystem}, stateDisputed: {roleBuyer, roleVendor}}, // system: escrowOnly
 	stateDisputed:        {stateResolved: {roleModerator}},

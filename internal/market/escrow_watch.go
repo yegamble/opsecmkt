@@ -212,7 +212,7 @@ func (a *App) escrowPollOnce(ctx context.Context) error {
 	if err != nil {
 		return errors.Join(append(errs, err)...)
 	}
-	steps :=[]func(context.Context, *escrowBTC) error{a.trackConfirmeds, a.trackBroadcasts, a.trackAwaiting, a.buildSettlements, a.cosignSettlements, a.broadcastSettlements,
+	steps := []func(context.Context, *escrowBTC) error{a.trackConfirmeds, a.trackBroadcasts, a.trackAwaiting, a.buildSettlements, a.cosignSettlements, a.broadcastSettlements,
 		a.buildBumps, a.cosignBumps, a.broadcastBumps}
 	if gate {
 		steps = []func(context.Context, *escrowBTC) error{a.trackConfirmeds, a.trackBroadcasts, a.trackAwaiting, a.broadcastSettlements}
