@@ -831,3 +831,85 @@ func TestEscrowDeadlineTimesInUTC(t *testing.T) {
 		t.Fatalf("the /orders banner lacks %s", release)
 	}
 }
+
+// A-391: both parties signed and the deadline passed before the next pass: the order completes, and the note and the
+// notices say the parties' signatures complete the release, not that the market co-signs. The release is stored
+// cosigned by the parties and the deadline step makes no market call.
+func TestEscrowDeadlineBothSigned(t *testing.T) {
+	x := newEscrowEnv(t)
+	order, id := x.shippedPhysical(regtestAddr("bs-refund"), regtestAddr("bs-claim"), 100000)
+	x.signAs(order, roleVendor, id)
+	x.signAs(order, roleBuyer, id)
+	x.forceDeadline(order, "release_at=now()-interval '1 minute'")
+	deadline := x.deadlineOf(order, "release_at")
+	x.poll()
+	if r := x.settleByID(id); x.state(order) != stateCompleted || r.Cosigned != "parties" || x.marketCalls() != 0 {
+		t.Fatalf("order %s, release %+v, market calls %d", x.state(order), r, x.marketCalls())
+	}
+	if ev := x.events(order); !anyContains(ev, "shipped>completed system auto-release deadline passed ("+deadline+")", "their signatures complete it") || anyContains(ev, "market co-signs") {
+		t.Fatalf("the deadline note: %q", ev)
+	}
+	for _, uid := range []string{x.buyer, x.vendor} {
+		got := x.noticesOf(uid, order)
+		if !anyContains(got, "Completed", "auto-release deadline passed ("+deadline+")", "their signatures complete it") || anyContains(got, "auto-release deadline passed", "co-signs") {
+			t.Fatalf("release notice to %s: %q", uid, got)
+		}
+	}
+}
+
+// A-392: a buyer who signed the release is told neither to sign or dispute: no reminder (to either party) when the
+// signature lands between the listing and the claim, and no /orders banner for the buyer or the vendor.
+func TestEscrowBuyerSignedNoReminderOrBanner(t *testing.T) {
+	x := newEscrowEnv(t)
+	order, id := x.shippedPhysical(regtestAddr("bsr-refund-1"), regtestAddr("bsr-claim-1"), 100000)
+	other, _ := x.shippedPhysical(regtestAddr("bsr-refund-2"), regtestAddr("bsr-claim-2"), 100000)
+	x.forceDeadline(order, "release_at=now()+interval '71 hours'")
+	x.forceDeadline(other, "release_at=now()+interval '70 hours'")
+	x.signAs(order, roleBuyer, id)
+	// The reminder was listed before the signature: its claim finds the signature.
+	if err := x.A.remindOne(context.Background(), order); err != nil {
+		t.Fatal(err)
+	}
+	if anyContains(x.noticesOf(x.buyer, order), "Reminder") || anyContains(x.noticesOf(x.vendor, order), "the buyer has until") ||
+		agInt(x.testEnv, "SELECT count(*) FROM escrows WHERE order_id=$1 AND reminded_at IS NOT NULL", order) != 0 {
+		t.Fatalf("a buyer who signed was reminded: %q %q", x.noticesOf(x.buyer, order), x.noticesOf(x.vendor, order))
+	}
+	// An unsigned order beside it is reminded and bannered: the checks are per order.
+	if err := x.A.remindOne(context.Background(), other); err != nil {
+		t.Fatal(err)
+	}
+	if !anyContains(x.noticesOf(x.buyer, other), "Reminder") {
+		t.Fatalf("an unsigned order was not reminded: %q", x.noticesOf(x.buyer, other))
+	}
+	for _, sess := range []string{x.buyerSess, x.vendorSess} {
+		page := html.UnescapeString(x.page("/orders", sess))
+		banners := regexp.MustCompile(`(?s)<p class="alert deadline-banner".*?</p>`).FindAllString(page, -1)
+		if len(banners) != 1 || !strings.Contains(banners[0], shortID(other)) || strings.Contains(banners[0], shortID(order)) {
+			t.Fatalf("banners %q, want one for %s and none for %s", banners, shortID(other), shortID(order))
+		}
+	}
+}
+
+// A-393: a restore whose deadline recheck has not been consumed yet (escrow off after the restore) counts as no
+// deadline passed: the buyer's dispute past the old deadline is accepted, because the recheck will give the buyer 72
+// hours. Without a pending recheck it is refused (TestEscrowLateDisputeRefused).
+func TestEscrowLateDisputePendingRecheck(t *testing.T) {
+	x := newEscrowEnv(t)
+	order, _ := x.shippedPhysical(regtestAddr("pend-refund"), regtestAddr("pend-claim"), 100000)
+	x.forceDeadline(order, "release_at=now()-interval '2 days'")
+	x.restoreRecheck()
+	x.A.escrowConfigured = false
+	x.A.escrow.Store(nil)
+	if err := x.A.escrowPollOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if agInt(x.testEnv, "SELECT count(*) FROM settings WHERE key='escrow_release_recheck'") != 1 {
+		t.Fatal("the recheck was consumed with escrow off")
+	}
+	if w := x.do("POST", "/disputes", x.buyerSess, url.Values{"order_id": {order}, "reason": {"The parcel never arrived at my address at all."}}); w.Code != 303 {
+		t.Fatalf("a dispute while the recheck is pending: %d %s", w.Code, html.UnescapeString(w.Body.String()))
+	}
+	if x.state(order) != stateDisputed || agInt(x.testEnv, "SELECT count(*) FROM disputes WHERE order_id=$1", order) != 1 {
+		t.Fatalf("the dispute was not opened: %s", x.state(order))
+	}
+}
