@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -53,6 +54,10 @@ type App struct {
 	payments         map[string]PaymentProvider      // currency -> working provider; empty = payments disabled
 	unavailable      map[string]*unavailableProvider // configured but failing its checks (retried each watcher pass)
 	live             bool                            // payment providers are configured for mainnet (initPayments)
+	escrowConfigured bool                            // ESCROW_BTC=on (escrow_rpc.go); escrow may still be disabled
+	escrowCfg        escrowConfig                    // the ESCROW_BTC settings read at startup, for the escrow watcher's retries
+	escrowStartState string                          // the escrow state line logged at startup (escrowRetry starts from it)
+	escrow           atomic.Pointer[escrowBTC]       // the Bitcoin escrow adapter once ESCROW_BTC=on passed its checks, at startup or on a watcher retry (A-316); nil = no escrow; never cleared once set
 	scanner          *imageScanner                   // clamd client for uploads (clamd.go); nil = Disabled
 	storageLimit     int64                           // IMAGE_STORAGE_LIMIT_MB in bytes (uploads.go); 0 = the default
 	stop             context.CancelFunc
@@ -155,6 +160,12 @@ func New(ctx context.Context, preview bool) (*App, error) {
 		return nil, err
 	}
 	if err = a.checkNetworkHistory(ctx); err != nil {
+		a.closeDB()
+		return nil, err
+	}
+	escrowCtx, cancelEscrow := context.WithTimeout(ctx, paymentStartupTimeout)
+	defer cancelEscrow()
+	if err = a.initEscrow(escrowCtx); err != nil {
 		a.closeDB()
 		return nil, err
 	}
@@ -523,7 +534,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if page == "" {
 		page = "catalog"
 	}
-	if _, ok := pages[page]; !ok {
+	if !a.pageOn(page) {
 		http.NotFound(w, r)
 		return
 	}
@@ -597,7 +608,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if protected(page) && user == nil {
 		login := "/login"
-		if next := signInNext(r.URL.RequestURI()); next != "" {
+		if next := a.signInNext(r.URL.RequestURI()); next != "" {
 			login += "?next=" + url.QueryEscape(next) // signing in returns here (A-126)
 		}
 		http.Redirect(w, r, login, 303)

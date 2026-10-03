@@ -141,6 +141,7 @@ func paymentsGlobalLoader(_ context.Context, a *App, _ *http.Request, d *PageDat
 	d.PaymentsEnabled = len(nets) > 0
 	d.PaymentNetworks = strings.Join(nets, ", ")
 	d.LiveNetwork = a.live
+	d.EscrowOn, d.EscrowAvailable = a.escrowConfigured, a.escrow.Load() != nil
 	return nil
 }
 
@@ -466,7 +467,15 @@ func unsentPayoutsLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 	if d.User == nil {
 		return nil
 	}
-	return a.db.QueryRowContext(ctx, "SELECT count(*) FROM payouts WHERE user_id=$1 AND state<>'sent'", d.User.ID).Scan(&d.UnsentPayouts)
+	if err := a.db.QueryRowContext(ctx, "SELECT count(*) FROM payouts WHERE user_id=$1 AND state<>'sent'", d.User.ID).Scan(&d.UnsentPayouts); err != nil {
+		return err
+	}
+	// The viewer's escrow orders (as buyer or vendor), whatever ESCROW_BTC says now (QA31-2): all but a cancelled one
+	// with nothing recorded, and that one too while escrow is not enabled, since its deposits are then not read.
+	return a.db.QueryRowContext(ctx, `SELECT count(*) FROM escrows es JOIN orders o ON o.id=es.order_id JOIN products p ON p.id=o.product_id
+		WHERE (o.buyer_id=$1 OR p.vendor_id=$1) AND ($2 OR o.state<>'cancelled'
+			OR EXISTS(SELECT 1 FROM payments pm WHERE pm.order_id=o.id AND pm.confirmations>=0 AND NOT pm.locked AND pm.settlement_id IS NULL))`,
+		d.User.ID, a.escrow.Load() == nil).Scan(&d.EscrowOrders)
 }
 
 func paymentsAccountLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {

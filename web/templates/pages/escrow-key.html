@@ -1,0 +1,62 @@
+{{/* WR-escrow Phase 1 (escrow_account.go). The Bitcoin escrow key: registration (ES-3) and practice signing (ES-9). Exists only with ESCROW_BTC=on (otherwise 404). */}}
+{{define "page:escrow-key"}}{{template "header" .}}
+<div class="page-head">
+<div>
+<div class="eyebrow">Bitcoin escrow · regtest only</div>
+<h1>Escrow key<span class="accent">.</span></h1>
+<p>The public key your wallet signs Bitcoin escrow with. This market holds none of your private keys.</p>
+</div>{{with .EscrowKey}}{{if .ActiveAt}}<span class="badge green">Active</span>{{else if .Registered}}<span class="badge neutral">Inactive</span>{{end}}{{end}}</div>
+{{with .EscrowKey}}{{if not .Available}}<div class="panel">
+<h2>Bitcoin escrow unavailable</h2>
+<p>Bitcoin escrow is switched on but could not start: the market could not check its Bitcoin node or arbiter wallet. Nothing can be registered or activated until the operator fixes it.</p>
+</div>{{else}}<div class="grid-two">
+<section class="panel" aria-labelledby="escrow-key-state">
+<h2 id="escrow-key-state">Your key</h2>
+<dl class="key-values">
+<div>
+<dt>State</dt>
+<dd>{{if .Unreadable}}Unreadable: register it again{{else if .ActiveAt}}Active since {{.ActiveAt}}{{else if .Registered}}Inactive: sign the practice transaction below{{else}}No key registered{{end}}</dd>
+</div>{{if .Registered}}
+<div>
+<dt>Origin</dt>
+<dd class="pgp-fingerprint">{{.Origin}}</dd>
+</div>{{end}}
+</dl>{{if .Unreadable}}
+<div class="alert error" role="alert">Your escrow key can no longer be read on this market; register it again.</div>{{end}}
+<p class="help">Compare the origin (your wallet's fingerprint and the key's path) with what your wallet shows. The market stores the key encrypted and never shows it to anyone else. Escrow does not run on any public network yet.</p>{{if .HasEscrows}}
+<p class="help">This key is used by escrows. Changing it affects only escrows created afterwards; existing escrows keep the keys they were built with. Its origin (fingerprint and path) can no longer be changed.</p>{{end}}
+</section>
+<section class="panel" aria-labelledby="escrow-key-form">
+<h2 id="escrow-key-form">{{if .Registered}}Change your key{{else}}Register a key{{end}}</h2>
+<form class="stack" method="post" action="/escrow-key">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<label>Extended public key with its origin<input name="key" required maxlength="300" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="[d34db33f/48h/1h/0h/2h]tpub…" aria-describedby="escrow-key-help">
+</label>
+<p class="help" id="escrow-key-help">Use a wallet made only for this market: this key lets the market see every address of that wallet account. In Bitcoin Core, <code>listdescriptors</code> prints lines such as <code>wpkh([d34db33f/84h/1h/0h]tpub…/0/*)</code>: paste the part from <code>[</code> up to <code>/0/*</code>. Never paste a private key (tprv), recovery words or anything from <code>listdescriptors true</code>.</p>
+<label class="check"><input type="checkbox" name="dedicated" value="1"> The wallet (or wallet account) this key comes from is used only for this market</label>
+<p class="help">Required unless the key's path is the standard multisig path m/48h/1h/&lt;account&gt;h/2h.</p>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
+<p class="help">{{if .Registered}}A new key starts inactive until you sign its practice transaction. Escrows created before the change keep the key they were built with.{{else}}The key starts inactive until you sign its practice transaction.{{end}}</p>
+<button class="primary" type="submit">{{if .Registered}}Change key{{else}}Register key{{end}}</button>
+</form>
+</section>
+</div>{{if .PracticeOffered}}
+<section class="panel pgp-challenge" id="practice" aria-labelledby="practice-heading">
+<h2 id="practice-heading">Activate: sign the practice transaction</h2>
+<p>Before any escrow uses your key, sign a practice transaction with it in your own wallet. It spends coins that do not exist, so it can never be broadcast and nothing is sent; your wallet may still show it spending 0.001 BTC. It proves your wallet can sign for this key before any money depends on it.</p>{{if .Practice}}
+<label>Practice PSBT<textarea class="escrow-psbt" readonly rows="8" spellcheck="false">{{.Practice}}</textarea>
+</label>
+<p class="help">In Bitcoin Core, load it with File › Load PSBT from clipboard and press Sign, or run <code>walletprocesspsbt</code> with it in the console, in the wallet that holds this key. Copy the signed PSBT and paste it here.</p>
+<form class="stack" method="post" action="/escrow-key/practice">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<label>Signed practice PSBT<textarea class="escrow-psbt" name="psbt" required maxlength="60000" rows="8" spellcheck="false" autocapitalize="off" placeholder="cHNidP8…"></textarea>
+</label>
+<button class="primary" type="submit">Check signature</button>
+</form>{{else if .PracticeError}}
+<div class="alert error" role="alert">{{.PracticeError}}</div>{{else}}
+<form method="get" action="/escrow-key#practice">
+<input type="hidden" name="practice" value="1">
+<button type="submit">Show the practice transaction</button>
+</form>{{end}}
+</section>{{end}}{{end}}{{end}}
+{{template "footer" .}}{{end}}

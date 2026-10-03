@@ -3,7 +3,6 @@ package market
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"math"
 	"strings"
 )
@@ -95,17 +94,15 @@ func paymentsTransitionHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, f
 	return a.settleTerminal(ctx, tx, o)
 }
 
-// errEscrowSettlement refuses to settle an escrow order: its funds are in its own escrow, so a pooled payout would
-// pay it from the market's wallet while the escrow stays claimable. No escrow settlement exists yet (A-244).
-var errEscrowSettlement = errors.New("settleTerminal: escrow settlement is not built; no pooled payout is queued for an escrow order")
-
 // settleTerminal is the one settlement dispatch for an order in a terminal state (ARCH-1): the transition hook
 // and the watcher's retry (settleOrder) both call it, and it is the only caller of enqueuePayout. A pooled order
-// queues its payout as before; an escrow order (Order.Escrow, always false until escrow is built) never gets a
-// payouts row.
+// queues its payout as before. An escrow order (Order.Escrow) never gets a payouts row (ES-1, invariant 4; the
+// database refuses one, migration 074): its funds are in its own escrow, and a pooled payout would pay it from the
+// market's wallet while the escrow stays claimable. Its settlement, a transaction spending the escrow, is requested
+// here when the order is cancelled holding coins (a refund, escrowSettleTerminal) and built by the escrow watcher.
 func (a *App) settleTerminal(ctx context.Context, tx *sql.Tx, o *Order) error {
 	if o.Escrow {
-		return errEscrowSettlement
+		return a.escrowSettleTerminal(ctx, tx, o)
 	}
 	return a.enqueuePayout(ctx, tx, o)
 }

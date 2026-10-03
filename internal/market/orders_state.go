@@ -47,8 +47,8 @@ var transitions = map[string]map[string][]string{
 var transitionKind = map[[2]string]string{{statePaid, stateShipped}: "physical", {statePaid, stateDelivered}: "digital"}
 
 // escrowOnly restricts a move by one role to escrow orders (Order.Escrow; A-244, ARCH-4): the system completes an
-// escrow order (a digital order on funding, a physical one at its release deadline), never a pooled one, whose
-// completion stays the buyer's. No escrow orders exist yet, so these edges are refused (403) as before.
+// escrow order (a digital order on funding, escrow_watch.go; a physical one at its release deadline, Phase 2), never
+// a pooled one, whose completion stays the buyer's: on a pooled order these edges are refused (403).
 var escrowOnly = map[[3]string]bool{{stateDelivered, stateCompleted, roleSystem}: true, {stateShipped, stateCompleted, roleSystem}: true}
 
 var (
@@ -100,13 +100,13 @@ func actorRoles(o *Order, u *User) []string {
 }
 
 // orderQuery selects the columns scanOrder reads; append WHERE/ORDER clauses.
-const orderQuery = `SELECT o.id,p.id,p.title,b.handle,v.handle,o.currency,o.amount,o.state,to_char(o.created,'YYYY-MM-DD HH24:MI "UTC"'),p.kind,o.buyer_id,p.vendor_id,to_char(o.updated,'YYYY-MM-DD HH24:MI "UTC"') FROM orders o JOIN products p ON p.id=o.product_id JOIN users b ON b.id=o.buyer_id JOIN users v ON v.id=p.vendor_id`
+const orderQuery = `SELECT o.id,p.id,p.title,b.handle,v.handle,o.currency,o.amount,o.state,to_char(o.created,'YYYY-MM-DD HH24:MI "UTC"'),p.kind,o.buyer_id,p.vendor_id,to_char(o.updated,'YYYY-MM-DD HH24:MI "UTC"'),EXISTS(SELECT 1 FROM escrows es WHERE es.order_id=o.id) FROM orders o JOIN products p ON p.id=o.product_id JOIN users b ON b.id=o.buyer_id JOIN users v ON v.id=p.vendor_id`
 
 func scanOrder(s interface{ Scan(...any) error }) (Order, error) {
 	var o Order
 	var n int64
-	err := s.Scan(&o.ID, &o.ProductID, &o.Title, &o.Buyer, &o.Vendor, &o.Currency, &n, &o.State, &o.Created, &o.Kind, &o.BuyerID, &o.VendorID, &o.Updated)
-	o.Escrow = false // no escrow table exists yet (A-244, Phase 0): every order is pooled
+	// Escrow: the order has an escrows row (escrow checkout, escrow_create.go); every other order is pooled.
+	err := s.Scan(&o.ID, &o.ProductID, &o.Title, &o.Buyer, &o.Vendor, &o.Currency, &n, &o.State, &o.Created, &o.Kind, &o.BuyerID, &o.VendorID, &o.Updated, &o.Escrow)
 	dec := 8
 	if o.Currency == "XMR" {
 		dec = 12
@@ -139,7 +139,8 @@ func (a *App) transition(ctx context.Context, tx *sql.Tx, orderID, from, to stri
 	if kind, ok := transitionKind[[2]string{from, to}]; ok && o.Kind != kind {
 		return nil, fail(403, "This step is only available for "+kind+" orders.")
 	}
-	if from == stateDraft && to == stateAwaitingPayment && a.provider(o.Currency) == nil {
+	// An escrow checkout needs the escrow node (escrowCheckoutAction), not a pooled wallet for the currency.
+	if from == stateDraft && to == stateAwaitingPayment && a.provider(o.Currency) == nil && !(isEscrowCheckout(ctx) && a.escrow.Load() != nil) {
 		return nil, fail(409, "Payment unavailable for "+o.Currency)
 	}
 	res, err := tx.ExecContext(ctx, "UPDATE orders SET state=$2,updated=now() WHERE id=$1 AND state=$3", orderID, to, from)

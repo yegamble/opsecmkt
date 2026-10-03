@@ -25,6 +25,9 @@ import (
 type pageSpec struct {
 	Protected bool
 	Roles     []string // empty = anyone who passes Protected; list "admin" explicitly when admins qualify
+	// Off, when set and true, makes the page answer exactly as an unknown page does, before any sign-in check, and
+	// never a sign-in return target: a feature switched off by configuration leaves no trace of its route.
+	Off func(a *App) bool
 }
 
 var pages = map[string]pageSpec{}
@@ -35,6 +38,12 @@ func registerPage(name string, s pageSpec) {
 		panic("duplicate page " + name)
 	}
 	pages[name] = s
+}
+
+// pageOn reports whether page is registered and not switched off (pageSpec.Off).
+func (a *App) pageOn(page string) bool {
+	s, ok := pages[page]
+	return ok && (s.Off == nil || !s.Off(a))
 }
 
 func protected(page string) bool { return pages[page].Protected }
@@ -93,7 +102,9 @@ type actionSpec struct {
 	// an action that may wait on a slow wallet while holding the account's row (payAction), so one account's
 	// burst cannot hold the application pool's connections queued on its own row lock (PR #15 re-review).
 	OneAtATime bool
-	Run        func(c *actionCtx) (actionResult, error)
+	// Off, when set and true, makes the action answer exactly as an unknown action does (pageSpec.Off).
+	Off func(a *App) bool
+	Run func(c *actionCtx) (actionResult, error)
 }
 
 // oneAtATimeLimit is the per-account limit of OneAtATime actions (tests of the database's own guards lift it).
@@ -362,7 +373,7 @@ func roleRequired(roles []string) string {
 
 func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string) {
 	spec, ok := actions[r.URL.Path]
-	if !ok {
+	if !ok || spec.Off != nil && spec.Off(a) {
 		http.Error(w, "Unknown action", 404)
 		return
 	}

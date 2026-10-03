@@ -36,8 +36,8 @@ type ProductPhoto struct {
 type Order struct {
 	ID, ProductID, Title, Buyer, Vendor, Currency, Amount, Status, Created string
 	State, Kind, BuyerID, VendorID, Updated                                string
-	// Escrow: settled through a per-order escrow instead of the pooled wallet (settleTerminal, escrowOnly). Always
-	// false until escrow is built (A-244, WR-escrow Phase 0).
+	// Escrow: settled through a per-order escrow instead of the pooled wallet (settleTerminal, escrowOnly): the order
+	// has an escrows row (WR-escrow Phase 1, escrow_create.go).
 	Escrow bool
 }
 type Message struct {
@@ -91,12 +91,13 @@ type DisputeEvidence struct{ Buyer, Vendor []EvidenceHolder }
 // disposition, or one escalated to an administrator (A-31). Open: a locked transfer, a late deposit or a deposit of
 // a payout below the minimum, or a credited deposit in an announced regression that has not confirmed again.
 // ID is payments.id. Party: the viewer is the order's buyer or vendor. Form: the viewer may record the disposition
-// (open, not a party, and an administrator when Escalated). Refundable: not credited, so "refunded by hand" applies.
+// (open, not a party, and an administrator when Escalated). Refundable: not credited and not an escrow deposit, so
+// "refunded by hand" applies (A-330: an escrow deposit is returned by a stray refund). Escrow: an escrow order's deposit.
 type PaymentReview struct {
 	ID, OrderID, OrderState, Currency, Amount, TxID, Reason, Flagged string
 	ProductID, Title                                                 string // the order's listing, linked from the row (A-265)
 	Index                                                            int64
-	Open, Escalated, Party, Form, Refundable                         bool
+	Open, Escalated, Party, Form, Refundable, Escrow                 bool
 }
 type Event struct{ Handle, Action, Created string } // Handle: account the audit row is recorded on ("" = system)
 
@@ -218,6 +219,21 @@ type PageData struct {
 	// UnsentPayouts: vendor desk, how many payouts to the viewer are not sent (listed on /account#payout).
 	MyPayout      *RecipientPayout
 	UnsentPayouts int
+	// EscrowOn: ESCROW_BTC=on (every page); EscrowAvailable: escrow passed its checks. EscrowOrders: vendor desk, the
+	// viewer's escrow orders that may hold coins (QA31-2): the site-wide notices never say no funds are held beside them.
+	EscrowOn, EscrowAvailable bool
+	EscrowOrders              int
+	// EscrowKey: /escrow-key and the /account status row, the viewer's Bitcoin escrow key; nil while ESCROW_BTC is off
+	// (escrow_account.go, WR-escrow Phase 1).
+	EscrowKey *EscrowKeyView
+	// EscrowFee: /admin while ESCROW_BTC is on, the Bitcoin escrow market fee in force and its form (escrow_fee.go)
+	EscrowFee *EscrowFeeView
+	// EscrowRecovery: /admin, the Bitcoin escrow restore gate, held settlements and orphan addresses (escrow_recovery.go)
+	EscrowRecovery *EscrowRecoveryView
+	// Escrow: order page of an escrow order, its escrow (escrow_order.go); EscrowCheckout: order page of the buyer's
+	// BTC draft on a listing that takes escrow, while ESCROW_BTC is on. Both nil otherwise.
+	Escrow         *EscrowOrderView
+	EscrowCheckout *EscrowCheckoutView
 
 	// P6 Transparency
 	Canary      *CanaryView
@@ -467,3 +483,79 @@ type ContactKey struct {
 
 // Usable reports whether the contact has a key that can receive encrypted messages (contactKey fills Fingerprint only then).
 func (k ContactKey) Usable() bool { return k.Fingerprint != "" }
+
+// EscrowOrderView is an escrow order's escrow on its order page (escrow_order.go). Descriptor is the bare-key
+// descriptor with its checksum, the viewer's own key with its origin (Own names the viewer's party; "" for a staff
+// reader, who sees every key bare). RefundAddress is shown to the buyer only. Status and NextStep are fixed copy.
+type EscrowOrderView struct {
+	Available                                   bool // the escrow node is up, so the escrow is being watched
+	Download                                    bool // ESCROW_BTC=on: /escrow-descriptor exists
+	Address, Descriptor, Own, RefundAddress     string
+	Required, Confirmed, Unconfirmed, Remaining string
+	Threshold                                   int64
+	Open, NeedsTopUp                            bool
+	CancelAfter, Status, NextStep, Fee          string
+	Deposits                                    []PaymentDeposit
+	Unread                                      string                  // set when nothing is read at the address: shown for the Confirmed and Unconfirmed figures (A-338)
+	Settlement                                  *EscrowSettlementView   // the order's claim or refund (escrow_settle.go)
+	Settlements                                 []*EscrowSettlementView // Settlement (when set) then the stray refunds, newest first, as the page lists them
+	Decision                                    *EscrowDecisionView     // a resolved order's dispute decision (escrow_decision.go)
+	Claim                                       bool                    // the vendor of a completed order may request the claim
+	Recover, RecoverAsked                       bool                    // the buyer of a closed order may ask to recover coins at the escrow (or has asked; escrow_stray.go)
+	RestorePaused                               bool                    // the restore gate pauses escrow builds, co-signing and broadcasts (escrow_recovery.go)
+}
+
+// EscrowSettlementView is an escrow order's settlement on its page (escrow_settle.go): its state in honest words, its
+// frozen outputs, and for a party while it awaits a signature the party's own copy (PSBT, base64) and the paste form
+// (SignToo: the other party has signed already, A-340). TxID and RawTx are set once it was broadcast (P1-c2).
+type EscrowSettlementView struct {
+	ID                                    int64
+	Title, Status, NetworkFee, InputTotal string
+	Outputs                               []SettlementOutputView
+	CanSign, SignToo, Stray               bool
+	State                                 string // the settlements.state
+	PSBT, TxID, RawTx                     string
+}
+
+// EscrowFeeView is the Bitcoin escrow market fee in force on /admin (escrow_fee.go): basis points, the same as a
+// percentage, the fee address ("" when the fee is 0); Available: escrow passed its checks, so the form can check an
+// address with the node.
+type EscrowFeeView struct {
+	Bps, Percent, Address string
+	Available             bool
+}
+
+// EscrowDecisionView is a resolved escrow order's dispute decision (escrow_decision.go): Outcome release or refund,
+// Text the honest sentence, CanChange for an administrator who is not a party while its settlement has no final
+// transaction.
+type EscrowDecisionView struct {
+	Outcome, Text string
+	CanChange     bool
+}
+
+// SettlementOutputView is one expected output of a settlement: the address, the amount and whom it pays.
+type SettlementOutputView struct {
+	Address, Amount, Role string
+}
+
+// EscrowCheckoutView offers escrow checkout on a draft (escrow_create.go): Reason says why it cannot be used now
+// ("" = the form is offered); KeyLink adds a link to the buyer's escrow key page.
+type EscrowCheckoutView struct {
+	Reason  string
+	KeyLink bool
+}
+
+// EscrowKeyView is the viewer's Bitcoin escrow key (escrow_account.go). Origin is the viewer's own key origin
+// ("[fingerprint/path]"), shown only to them. Practice is the practice PSBT (base64), set only on request while
+// PracticeOffered.
+type EscrowKeyView struct {
+	Available       bool // ESCROW_BTC=on passed its startup checks
+	Registered      bool
+	Origin          string
+	ActiveAt        string // "" = inactive
+	HasEscrows      bool
+	Unreadable      bool // the stored key cannot be opened: APP_SECRET_KEY (or a legacy SETUP_TOKEN) changed
+	PracticeOffered bool
+	Practice        string
+	PracticeError   string
+}

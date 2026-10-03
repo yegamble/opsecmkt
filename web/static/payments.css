@@ -105,3 +105,17 @@
   font-size:0.875rem;
   overflow-wrap:anywhere
 }
+.escrow-psbt {
+  font-family:var(--mono);
+  word-break:break-all
+}
+.settlement-outputs li {
+  margin:0 0 10px
+}
+.settlement-outputs li > span {
+  display:block
+}
+.settlement-address {
+  font-family:var(--mono);
+  overflow-wrap:anywhere
+}

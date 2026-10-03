@@ -110,6 +110,9 @@ func recordPaymentReview(c *actionCtx, id int64, outcome, note, refundTxid strin
 		return actionResult{}, fail(409, "This flag is no longer open: its credited deposit confirmed again. Nothing was changed.")
 	case outcome == "refunded" && credited:
 		return actionResult{}, fail(409, "This deposit is counted toward the order's payout, so it is settled through that payout and never refunded by hand (that could pay it twice). Nothing was changed.")
+	case outcome == "refunded" && o.Escrow:
+		// A-330: an escrow deposit is in the order's escrow, never in a wallet staff could refund it from.
+		return actionResult{}, fail(409, "This deposit is in the order's Bitcoin escrow, not in a market wallet, so it is never refunded by hand: a stray refund from the escrow returns it to the buyer's refund address. Record no action, or escalate. Nothing was changed.")
 	}
 	var admins []string
 	if outcome == "escalated" {

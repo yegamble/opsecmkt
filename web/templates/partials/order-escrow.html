@@ -1,0 +1,147 @@
+{{/* WR-escrow Phase 1 (escrow_order.go, escrow_create.go). The escrow panel of an escrow order, and the escrow checkout offer on a draft. The panel is shown for every escrow order, with ESCROW_BTC off too (A-315); the checkout offer only with it on. The copy claims only regtest-verified behaviour (ES-10). */}}
+{{define "order-escrow"}}{{with .Escrow}}<h2>Bitcoin escrow <span class="badge testnet">REGTEST</span></h2>
+<p class="alert" role="note"><strong>Regtest only.</strong> Bitcoin escrow on this market runs on regtest, a local test chain, and has not been verified on any public network; its coins have no value. Coins leave an escrow only by a settlement the market builds: the vendor's claim, a refund, a dispute decision or the recovery of coins sent after the order closed. Once the buyer or the vendor has signed one in their own wallet, the market co-signs it and broadcasts it to the regtest network; when both have signed it, the market does not sign it and broadcasts what they signed.</p>{{if not .Available}}
+<p class="alert error" role="status">Bitcoin escrow is unavailable on this market right now, so deposits to this escrow are not being read and the order does not move. Coins sent to it stay in the escrow; they are recorded once the operator has fixed the escrow node.</p>{{end}}{{if .RestorePaused}}
+<p class="alert" role="status"><strong>Paused after a restore from backup.</strong> The market restored its records from a backup and is reconciling them with the blockchain: until the operator has finished, it builds, co-signs and broadcasts no escrow settlement, and an administrator checks each stored transaction before it is broadcast again. Deposits to this escrow and broadcast settlements are still watched. Signing a settlement on this page still works.</p>{{end}}
+{{if .Open}}<p class="help">{{if .NeedsTopUp}}Send <strong>{{.Remaining}} regtest BTC</strong> to this escrow address, after checking the descriptor below in your own wallet. If you already made a partial payment, top up only this remaining amount to the same address.{{else}}The full price has been seen. Do not send another payment; wait for confirmation.{{end}}{{if .Available}} If nothing has been received by {{.CancelAfter}}, the order is cancelled. If it is underpaid then (every deposit confirmed, and no top-up for a whole payment window), it is cancelled too and the escrow is refunded to the buyer's refund address by a settlement.{{end}}</p>{{end}}
+<div class="payment-address">
+<span class="badge testnet">Escrow address</span>
+<p class="mono">{{.Address}}</p>
+</div>
+<h3 id="escrow-descriptor-heading">Escrow descriptor</h3>
+<p class="help">A 2-of-3 multisig: {{if eq .Own "buyer"}}your key (with its origin), the vendor's and the market's{{else if eq .Own "vendor"}}the buyer's, your key (with its origin) and the market's{{else}}the buyer's, the vendor's and the market's keys{{end}}. Any two of the three keys can spend it; no single key can. Load it into your own wallet (in Bitcoin Core, <code>getdescriptorinfo</code> and <code>deriveaddresses</code>) and check that it gives the address above{{if .Own}} and that the key with the origin is yours{{end}}.</p>
+<pre class="code-block escrow-descriptor" tabindex="0" aria-labelledby="escrow-descriptor-heading">{{.Descriptor}}</pre>
+{{if .Download}}<p><a class="button" href="/escrow-descriptor?id={{$.Order.ID}}" download>Download the descriptor</a></p>{{end}}
+<p class="help">The market cannot spend this escrow without you or the other party, if the key shown as yours is yours. Checking the descriptor in your own wallet is what detects a substituted key: a server that was taken over could show a descriptor with its own key in place of another party's.</p>
+<p class="help">The other party knows this escrow address, so they can see on the blockchain which coins funded it and where it is paid.{{if eq .Own "buyer"}} Pay from coins you do not mind the vendor linking to you.{{else if eq .Own "vendor"}} The buyer will see the address your claim pays.{{end}}</p>
+<dl class="key-values payment-figures">
+<div>
+<dt>Required</dt>
+<dd>{{.Required}} BTC <span class="badge testnet">REGTEST</span></dd>
+</div>
+<div>
+<dt>Confirmed (at least {{.Threshold}} confirmations)</dt>
+<dd>{{with .Unread}}{{.}}{{else}}{{.Confirmed}} BTC{{end}}</dd>
+</div>
+<div>
+<dt>Unconfirmed</dt>
+<dd>{{with .Unread}}{{.}}{{else}}{{.Unconfirmed}} BTC{{end}}</dd>
+</div>{{if .Open}}
+<div>
+<dt>Remaining to send</dt>
+<dd>{{.Remaining}} BTC</dd>
+</div>{{end}}
+<div>
+<dt>Escrow status</dt>
+<dd>{{.Status}}</dd>
+</div>{{with .RefundAddress}}
+<div>
+<dt>Your refund address (fixed for this order)</dt>
+<dd class="mono">{{.}}</dd>
+</div>{{end}}{{with .Fee}}
+<div>
+<dt>Market fee</dt>
+<dd>{{.}}</dd>
+</div>{{end}}
+</dl>{{with .NextStep}}
+<p role="status">{{.}}</p>{{end}}
+{{if .Deposits}}<h3 id="escrow-deposits-heading">Deposits to this escrow</h3>
+<div class="table-wrap payment-deposits" tabindex="0" role="region" aria-labelledby="escrow-deposits-heading">
+<table>
+<thead>
+<tr>
+<th scope="col">Transaction</th>
+<th scope="col">Amount</th>
+<th scope="col">Confirmations</th>
+<th scope="col">Counted</th>
+</tr>
+</thead>
+<tbody>{{range .Deposits}}<tr>
+<td class="mono">{{.TxID}}:{{.Index}}</td>
+<td>{{.Amount}} BTC</td>
+<td>{{if lt .Confirmations 0}}Conflicted{{else}}{{.Confirmations}}{{end}}</td>
+<td>{{.State}}</td>
+</tr>{{end}}</tbody>
+</table>
+</div>{{end}}{{with .Decision}}
+<section class="escrow-decision" id="escrow-decision" aria-labelledby="escrow-decision-heading">
+<h3 id="escrow-decision-heading">Dispute decision</h3>
+<p role="status">{{.Text}}</p>{{if .CanChange}}
+<form class="stack" method="post" action="/escrow/decision">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="order_id" value="{{$.Order.ID}}">
+<fieldset>
+<legend>Change the decision to</legend>
+<label class="check"><input type="radio" name="outcome" value="release" required{{if eq .Outcome "release"}} disabled{{end}}> Release to the vendor (the vendor claims the escrow)</label>
+<label class="check"><input type="radio" name="outcome" value="refund" required{{if eq .Outcome "refund"}} disabled{{end}}> Refund to the buyer (to the refund address given at checkout)</label>
+</fieldset>
+<label>Reason for the change<textarea name="reason" required minlength="20" maxlength="5000" rows="3" aria-describedby="escrow-decision-help"></textarea>
+</label>
+<span class="help" id="escrow-decision-help"><a class="text-link" href="/canary#records">Stored unencrypted.</a> The buyer and the vendor read it in the order history. Changing the decision ends the settlement of the current one (a signature on it is discarded) and requests the new one; once a settlement has a final transaction the decision is fixed.</span>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
+<button type="submit">Change the decision</button>
+</form>{{end}}
+</section>{{end}}{{if .Claim}}
+<section class="order-action escrow-claim" id="escrow-settlement" aria-labelledby="escrow-claim-heading">
+<h3 id="escrow-claim-heading">Claim the escrowed coins</h3>
+<p class="help" id="escrow-claim-help">Give a fresh regtest address from your own wallet, used for nothing else. The market builds a transaction paying it the coins in this escrow{{if .Fee}}, less the market fee,{{end}} less the network fee; any amount paid above the price goes back to the buyer's refund address. You then check the transaction's outputs and sign it in your own wallet. The address cannot be changed once the claim is requested, and an address this market already used is refused.</p>
+<form class="stack" method="post" action="/escrow/claim">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="order_id" value="{{$.Order.ID}}">
+<label>Claim address<input name="address" required minlength="14" maxlength="90" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="escrow-claim-help">
+</label>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
+<button class="primary" type="submit">Request the claim</button>
+</form>
+</section>{{end}}{{if .Recover}}
+<section class="order-action escrow-recover" id="escrow-recover" aria-labelledby="escrow-recover-heading">
+<h3 id="escrow-recover-heading">Recover coins at this escrow</h3>
+<p class="help" id="escrow-recover-help">Coins sent to this escrow address after the order closed (including coins sent while Bitcoin escrow was unavailable) are not the order's. Ask, and the market reads this escrow on its next pass, however old it is, and returns what it finds, less the network fee, to your refund address given at checkout, by a stray refund you or the vendor sign on this page. The market also checks every escrow once a day.</p>
+<form class="stack" method="post" action="/escrow/recover">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="order_id" value="{{$.Order.ID}}">
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
+<button type="submit" aria-describedby="escrow-recover-help">Recover coins at this escrow</button>
+</form>
+</section>{{else if .RecoverAsked}}
+<p role="status" id="escrow-recover">You asked the market to recover coins at this escrow; it checks it on its next pass.</p>{{end}}{{range .Settlements}}
+<section class="escrow-settlement" id="escrow-settlement{{if .Stray}}-{{.ID}}{{end}}" aria-labelledby="escrow-settlement-heading-{{.ID}}">
+<h3 id="escrow-settlement-heading-{{.ID}}">Settlement: {{.Title}}</h3>
+<p role="status">{{.Status}}</p>{{if .Outputs}}
+<p class="help">The transaction spends {{.InputTotal}} BTC from this escrow and pays exactly these outputs; the network fee of {{.NetworkFee}} BTC is taken from the first. They are fixed: check them in your wallet before you sign.</p>
+<h4 id="escrow-outputs-heading-{{.ID}}">Expected outputs</h4>
+<ol class="settlement-outputs" aria-labelledby="escrow-outputs-heading-{{.ID}}">{{range .Outputs}}
+<li><span>{{.Role}}: <strong>{{.Amount}} BTC</strong></span>
+<span class="settlement-address">{{.Address}}</span></li>{{end}}
+</ol>
+<p class="help">Network fee (to the miners, not an output): <strong>{{.NetworkFee}} BTC</strong>.</p>{{end}}{{if .RawTx}}
+<h4 id="escrow-raw-heading-{{.ID}}">Final transaction</h4>
+<p class="help">The signed transaction as the market broadcast it (transaction {{.TxID}}). It is public on the regtest network; you can broadcast it again from your own node (<code>sendrawtransaction</code>) if you want.</p>
+<pre class="code-block escrow-raw-tx" tabindex="0" aria-labelledby="escrow-raw-heading-{{.ID}}">{{.RawTx}}</pre>{{end}}{{if .CanSign}}
+<h4 id="escrow-sign-heading-{{.ID}}">Sign it</h4>
+<p class="help">{{if .SignToo}}The other party has signed it already, so the market co-signs it on its next pass. You may sign it too: with both your signatures the market does not sign it. {{end}}Your copy carries your own key's origin, so your wallet finds your key; the other two keys are bare. In Bitcoin Core, load it with File › Load PSBT from clipboard and press Sign, or run <code>walletprocesspsbt</code> with it, without finalizing, in the wallet that holds your escrow key. Check the outputs your wallet shows against the table above, then paste the signed PSBT here. Either you or the other party can sign. A signature is checked only when the market completes the transaction: one that does not verify is discarded then, and the settlement waits for a signature again.</p>
+<label>Your copy (PSBT)<textarea class="escrow-psbt" readonly rows="6" spellcheck="false">{{.PSBT}}</textarea>
+</label>
+<p><a class="button" href="/escrow-psbt?id={{$.Order.ID}}&amp;s={{.ID}}" download>Download your copy</a></p>
+<form class="stack" method="post" action="/escrow/sign">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="order_id" value="{{$.Order.ID}}">
+<input type="hidden" name="settlement_id" value="{{.ID}}">
+<label>Signed PSBT<textarea class="escrow-psbt" name="psbt" required maxlength="60000" rows="6" spellcheck="false" autocapitalize="off" placeholder="cHNidP8…"></textarea>
+</label>
+<button class="primary" type="submit">Submit signature</button>
+</form>{{end}}
+</section>{{end}}{{end}}{{end}}
+{{define "order-escrow-checkout"}}{{with .EscrowCheckout}}<section class="order-action escrow-checkout" aria-labelledby="escrow-checkout-heading">
+<h3 id="escrow-checkout-heading">Or pay into a Bitcoin escrow (regtest only)</h3>
+<p class="help">Instead of the market's pooled wallet, pay into a 2-of-3 multisig of your escrow key, the vendor's and the market's: any two can spend it, no single one can. This listing delivers its content automatically, so the order completes as soon as the escrow is funded. Regtest only: the vendor claims the escrow, or you are refunded from it, by a transaction one of you signs in your own wallet and the market co-signs and broadcasts.</p>{{if .Reason}}
+<p class="order-unavailable" role="note"><strong>Unavailable.</strong> {{.Reason}}{{if .KeyLink}} <a class="text-link" href="/escrow-key">Your escrow key</a>{{end}}</p>{{else}}
+<form class="stack" method="post" action="/orders/escrow">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="order_id" value="{{$.Order.ID}}">
+<label>Refund address<input name="refund_address" required minlength="14" maxlength="90" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="escrow-refund-help">
+</label>
+<span class="help" id="escrow-refund-help">A fresh regtest address from your own wallet, used for nothing else. A refund of this escrow is paid there; it is fixed for this order and cannot be changed. An address this market already used is refused.</span>
+<button class="primary" type="submit">Pay into an escrow</button>
+</form>{{end}}
+</section>{{end}}{{end}}

@@ -1,17 +1,24 @@
-{{/* P5 Payments owns. Slots: payment-status (footer), :catalog, :product, :checkout, :vendor-dashboard (stat tiles) */}}
-{{define "payment-status"}}{{if .PaymentsEnabled}}{{if $.LiveNetwork}}<span class="badge live">MAINNET payments ({{.PaymentNetworks}}) — real funds</span>{{else}}<span class="badge testnet">TESTNET payments ({{.PaymentNetworks}}) — no real funds</span>{{end}}{{else}}<span class="accent">Payments disabled</span>{{end}}{{end}}
+{{/* P5 Payments owns. Slots: payment-status (footer), :catalog, :product, :checkout, :vendor-dashboard (stat tiles, with :escrow-tile). With ESCROW_BTC=on (.EscrowOn) or escrow orders on the vendor desk (.EscrowOrders) no notice denies escrow or custody (QA31-2); without either the pooled-only wording is unchanged. */}}
+{{define "payment-status"}}{{if .PaymentsEnabled}}{{if $.LiveNetwork}}<span class="badge live">MAINNET payments ({{.PaymentNetworks}}) — real funds</span>{{else}}<span class="badge testnet">TESTNET payments ({{.PaymentNetworks}}) — no real funds</span>{{end}}{{else if .EscrowOn}}<span class="badge testnet">Bitcoin escrow only (regtest) — no real funds</span>{{else}}<span class="accent">Payments disabled</span>{{end}}{{end}}
 {{define "payment-status:catalog"}}{{if .PaymentsEnabled}}<div class="notice {{if $.LiveNetwork}}live-notice{{else}}testnet-notice{{end}}">
 <p>
-{{if $.LiveNetwork}}<strong>MAINNET payments ({{.PaymentNetworks}}) — real funds.</strong> Deposits go to the market's pooled mainnet wallet and{{else}}<strong>TESTNET payments ({{.PaymentNetworks}}) — no real funds.</strong> Deposits go to the market's pooled test-network wallet and{{end}} are released to the vendor on completion or refunded on cancellation. A deposit sent before a cancellation that confirms after it is refunded when the cancellation refunded nothing; otherwise it is flagged for market staff. A refund below the minimum automatic payout is not sent; market staff are notified instead. Anything sent to an order's address after the order was cancelled, completed or resolved, within 30 days of the address being issued, is recorded and shown on the order page but not refunded automatically; market staff are notified. Orders left unpaid past the payment window are cancelled; an order still underpaid when no deposit has arrived for the length of the window is cancelled and what was received is refunded to the buyer's saved payout address (the refund waits until one is saved), unless it is below the minimum automatic payout. This is custodial holding, not multisig escrow.</p>
+{{if $.LiveNetwork}}<strong>MAINNET payments ({{.PaymentNetworks}}) — real funds.</strong> Deposits go to the market's pooled mainnet wallet and{{else}}<strong>TESTNET payments ({{.PaymentNetworks}}) — no real funds.</strong> Deposits go to the market's pooled test-network wallet and{{end}} are released to the vendor on completion or refunded on cancellation. A deposit sent before a cancellation that confirms after it is refunded when the cancellation refunded nothing; otherwise it is flagged for market staff. A refund below the minimum automatic payout is not sent; market staff are notified instead. Anything sent to an order's address after the order was cancelled, completed or resolved, within 30 days of the address being issued, is recorded and shown on the order page but not refunded automatically; market staff are notified. Orders left unpaid past the payment window are cancelled; an order still underpaid when no deposit has arrived for the length of the window is cancelled and what was received is refunded to the buyer's saved payout address (the refund waits until one is saved), unless it is below the minimum automatic payout. This is custodial holding, not multisig escrow.{{if .EscrowOn}} A digital listing with automatic delivery can instead be paid into its own 2-of-3 Bitcoin escrow on regtest, a local test chain; this build prepares the vendor's claim and refunds from an escrow, and once the buyer or the vendor has signed one in their own wallet, the market co-signs it and broadcasts it to the regtest network; when both have signed it, the market does not sign it and broadcasts what they signed.{{end}}</p>
+</div>{{else if .EscrowOn}}<div class="notice testnet-notice">
+<p>
+<strong>Bitcoin escrow only (regtest) — no real funds.</strong> The market's pooled wallet is not configured. A digital listing with automatic delivery can be paid into its own 2-of-3 Bitcoin escrow on regtest, a local test chain; this build prepares the vendor's claim and refunds from an escrow, and once the buyer or the vendor has signed one in their own wallet, the market co-signs it and broadcasts it to the regtest network; when both have signed it, the market does not sign it and broadcasts what they signed. Other orders stay unfunded drafts.</p>
 </div>{{else}}<div class="notice">
 <p>
 <strong>Order drafts only.</strong> Payments and escrow are not active.</p>
 </div>{{end}}{{end}}
 {{define "payment-status:product"}}{{if .PaymentsEnabled}}<p>
-{{if $.LiveNetwork}}<span class="badge live">MAINNET payments ({{.PaymentNetworks}}) — real funds</span> Only mainnet coins are accepted.{{else}}<span class="badge testnet">TESTNET payments ({{.PaymentNetworks}}) — no real funds</span> Only test-network coins are accepted.{{end}} No protection or verification claim is implied by a listing.</p>{{else}}<p>Payments and escrow are not active. No protection or verification claim is implied by a listing.</p>{{end}}{{end}}
+{{if $.LiveNetwork}}<span class="badge live">MAINNET payments ({{.PaymentNetworks}}) — real funds</span> Only mainnet coins are accepted.{{else}}<span class="badge testnet">TESTNET payments ({{.PaymentNetworks}}) — no real funds</span> Only test-network coins are accepted.{{end}} No protection or verification claim is implied by a listing.</p>{{else if .EscrowOn}}<p>
+<span class="badge testnet">Bitcoin escrow only (regtest) — no real funds</span> The market's pooled wallet is not active; a digital listing with automatic delivery can be paid into a 2-of-3 Bitcoin escrow on regtest. No protection or verification claim is implied by a listing.</p>{{else}}<p>Payments and escrow are not active. No protection or verification claim is implied by a listing.</p>{{end}}{{end}}
 {{define "payment-status:checkout"}}{{if .PaymentsEnabled}}<div class="notice {{if $.LiveNetwork}}live-notice{{else}}testnet-notice{{end}}">
 <p>
 {{if $.LiveNetwork}}<strong>MAINNET payments ({{.PaymentNetworks}}) — real funds.</strong> Creating a draft collects nothing. Request payment on the order page to receive a mainnet deposit address; a currency without a configured provider stays an unfunded draft. Never send test-network coins.{{else}}<strong>TESTNET payments ({{.PaymentNetworks}}) — no real funds.</strong> Creating a draft collects nothing. Request payment on the order page to receive a test-network deposit address; a currency without a configured provider stays an unfunded draft. Never send mainnet coins.{{end}}</p>
+</div>{{else if .EscrowOn}}<div class="notice testnet-notice">
+<p>
+<strong>UNFUNDED DRAFT.</strong> Creating a draft collects nothing. The market's pooled wallet (Bitcoin and Monero), shipping addresses and settlement are not configured. On a digital listing with automatic delivery the order page can offer a 2-of-3 Bitcoin escrow on regtest (no real funds); send nothing until the order page shows an escrow address.</p>
 </div>{{else}}<div class="notice">
 <p>
 <strong>UNFUNDED DRAFT ONLY.</strong> Bitcoin, Monero, multisig escrow, shipping addresses, and settlement are not configured. Do not send funds.</p>
@@ -26,8 +33,12 @@
 <div class="stat">
 <div class="eyebrow">Funds holding</div>
 <strong>POOLED</strong>
-<span>Custodial {{if $.LiveNetwork}}mainnet{{else}}test{{end}} wallet; no multisig escrow</span>
-</div>{{else}}<div class="stat">
+<span>Custodial {{if $.LiveNetwork}}mainnet{{else}}test{{end}} wallet{{if not (or .EscrowOn .EscrowOrders)}}; no multisig escrow{{end}}</span>
+</div>{{template "payment-status:escrow-tile" .}}{{else if or .EscrowOn .EscrowOrders}}<div class="stat">
+<div class="eyebrow">Pooled payments</div>
+<strong>OFF</strong>
+<span>Provider not configured</span>
+</div>{{template "payment-status:escrow-tile" .}}{{else}}<div class="stat">
 <div class="eyebrow">Payments</div>
 <strong>OFF</strong>
 <span>Provider not configured</span>
@@ -36,4 +47,10 @@
 <div class="eyebrow">Escrow</div>
 <strong>OFF</strong>
 <span>No funds are held</span>
+</div>{{end}}{{end}}
+{{define "payment-status:escrow-tile"}}{{if or .EscrowOn .EscrowOrders}}
+<div class="stat">
+<div class="eyebrow">Bitcoin escrow</div>
+<strong>{{if .EscrowAvailable}}REGTEST{{else if .EscrowOn}}UNAVAILABLE{{else}}OFF{{end}}</strong>
+<span>{{if .EscrowOrders}}{{.EscrowOrders}} escrow order(s) may hold coins at their own 2-of-3 escrow addresses{{else}}2-of-3 per order, regtest only; none of your orders uses it yet{{end}}</span>
 </div>{{end}}{{end}}

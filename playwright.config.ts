@@ -88,6 +88,8 @@ export default defineConfig({
         SETUP_TOKEN: 'e2e-local-only-setup-token-at-least-32-characters',
         // Never connect disposable browser fixtures to wallets inherited from the developer's shell.
         BITCOIN_RPC_URL: '', MONERO_RPC_URL: '', MONERO_WALLET_RPC_URL: '',
+        ESCROW_BTC: '', ESCROW_BTC_RPC_URL: '', ESCROW_BTC_ARBITER_WALLET: '', ESCROW_BTC_WATCH_WALLET: '',
+        ESCROW_BTC_FEE_BPS: '', ESCROW_BTC_FEE_ADDRESS: '', ESCROW_BTC_FEE_RATE: '',
         CLAMD_ADDRESS: '127.0.0.1:18086', SCANNER_MAX_SIGNATURE_AGE_DAYS: '30',
       },
       url: 'http://127.0.0.1:18081/healthz',
