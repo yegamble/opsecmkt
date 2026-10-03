@@ -85,15 +85,8 @@ func TestEscrowCheckoutSkipsAddressTheWalletWatches(t *testing.T) {
 	}
 	// The restore: the database from before that escrow. Its rows are gone and the market counter is back; the order
 	// is set aside so nothing else reads it. The watch-only wallet keeps the escrow, labelled with its order.
-	for _, q := range []string{
-		"DELETE FROM escrow_pubkeys WHERE escrow_id IN (SELECT id FROM escrows WHERE order_id=$1)",
-		"DELETE FROM escrows WHERE order_id=$1",
-		"UPDATE orders SET state='cancelled' WHERE id=$1",
-	} {
-		if _, err := x.DB.Exec(q, x.order); err != nil {
-			t.Fatal(err)
-		}
-	}
+	forgetEscrow(t, x.DB, x.order)
+	agExec(x.testEnv, "UPDATE orders SET state='cancelled' WHERE id=$1", x.order)
 	if _, err := x.DB.Exec("SELECT setval('escrow_market_index',$1,false)", lostIdx); err != nil {
 		t.Fatal(err)
 	}

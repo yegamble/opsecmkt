@@ -512,15 +512,8 @@ func TestEscrowRegtestGate(t *testing.T) {
 	}
 	orderL, addrL := escrowOrder(true) // created after the backup
 	buyerL, vendorL, marketL := childOf(orderL, "buyer"), childOf(orderL, "vendor"), marketOf(orderL)
-	for _, q := range []string{
-		"DELETE FROM escrow_pubkeys WHERE escrow_id IN (SELECT id FROM escrows WHERE order_id=$1)",
-		"DELETE FROM escrows WHERE order_id=$1",
-		"UPDATE orders SET state='cancelled' WHERE id=$1", // set aside: the restored database has no such order
-	} {
-		if _, err := e.DB.Exec(q, orderL); err != nil {
-			t.Fatal(err)
-		}
-	}
+	forgetEscrow(t, e.DB, orderL)
+	agExec(e, "UPDATE orders SET state='cancelled' WHERE id=$1", orderL) // set aside: the restored database has no such order
 	if _, err := e.DB.Exec("SELECT setval('escrow_market_index',$1,$2)", backupLast, backupCalled); err != nil {
 		t.Fatal(err)
 	}

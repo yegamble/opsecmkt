@@ -3,6 +3,7 @@ package market
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"html"
@@ -45,20 +46,42 @@ func restoreMarginSQL(t *testing.T) string {
 func (x *escrowEnv) lose(last int64, called bool, orders ...string) {
 	x.t.Helper()
 	for _, o := range orders {
-		for _, q := range []string{
-			"DELETE FROM escrow_pubkeys WHERE escrow_id IN (SELECT id FROM escrows WHERE order_id=$1)",
-			"DELETE FROM escrows WHERE order_id=$1",
-			"UPDATE orders SET state='cancelled' WHERE id=$1",
-		} {
-			if _, err := x.DB.Exec(q, o); err != nil {
-				x.t.Fatal(err)
-			}
-		}
+		forgetEscrow(x.t, x.DB, o)
+		agExec(x.testEnv, "UPDATE orders SET state='cancelled' WHERE id=$1", o)
 	}
 	if _, err := x.DB.Exec("SELECT setval('escrow_market_index',$1,$2)", last, called); err != nil {
 		x.t.Fatal(err)
 	}
 	agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES('escrow_sweep_required','true') ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value")
+}
+
+// forgetEscrow deletes order's escrow row and its keys, as a database restored from a backup taken before the escrow was
+// created lacks them. The application never deletes an escrow (migration 084 refuses it), so the refusal is lifted only
+// inside this transaction.
+func forgetEscrow(t *testing.T, db *sql.DB, orderID string) {
+	t.Helper()
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	for _, q := range []string{
+		"ALTER TABLE escrows DISABLE TRIGGER escrows_not_deleted",
+		"DELETE FROM escrow_pubkeys WHERE escrow_id IN (SELECT id FROM escrows WHERE order_id=$1)",
+		"DELETE FROM escrows WHERE order_id=$1",
+		"ALTER TABLE escrows ENABLE TRIGGER escrows_not_deleted",
+	} {
+		var args []any
+		if strings.Contains(q, "$1") {
+			args = append(args, orderID)
+		}
+		if _, err = tx.Exec(q, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // marketCounter is the escrow_market_index sequence's state.

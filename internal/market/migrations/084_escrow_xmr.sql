@@ -16,10 +16,14 @@
 -- sealed wallet becomes active at the start of its month and closing when it ends (it takes no new order and its free
 -- slots are retired), retained once its last order closed (last_closed_at), and destroyed (its password replaced by one
 -- never stored, seed_sealed wiped) no earlier than destroy_after, 90 days after its last order closed (ES-7, P3-R9). A
--- wallet the watcher cannot open is missing; one found on the wallet-rpc with no row (after a restore from backup) is an
--- orphan. A wallet that may hold an order's coins always has its sealed seed: the name, month, primary address, restore
--- height, seal key and seal time never change once set, the seal is removed only by destruction, and a destroyed
--- wallet never changes again. id stays below 2^30 so that a Monero escrow's payments idx fits a bigint (see payments).
+-- wallet the watcher cannot open is missing (P3-R9) until it opens again; one found on the wallet-rpc with no row (after
+-- a restore from backup, P3-R10) is inserted as an orphan, re-sealed, and then retained until it is destroyed. States
+-- move only forward: creating -> sealed -> active -> closing -> retained -> destroyed, with sealed -> closing (a wallet
+-- closed before its month began, after a restore), any state but destroyed -> missing, missing back to any of sealed,
+-- active, closing or retained (it opened again), orphan -> retained, and missing or orphan -> destroyed. A wallet that may hold an order's coins always has its sealed seed: the name, month, primary address,
+-- restore height, seal key and seal time never change once set, the seal is removed only by destruction, last_closed_at
+-- and destroy_after only move later once set, and a destroyed wallet never changes again. id stays below 2^30 so that a
+-- Monero escrow's payments idx fits a bigint (see payments).
 CREATE TABLE xmr_escrow_wallets (
  id bigserial PRIMARY KEY CHECK (id < 1073741824),
  name text NOT NULL UNIQUE CHECK (name ~ '^escrow-[0-9]{6}-[0-9]{2}$'),
@@ -55,6 +59,20 @@ BEGIN
       OR (OLD.seed_sealed IS NOT NULL AND NEW.seed_sealed IS DISTINCT FROM OLD.seed_sealed AND NOT (NEW.seed_sealed IS NULL AND NEW.state = 'destroyed')) THEN
     RAISE EXCEPTION 'xmr_escrow_wallets: wallet % keeps its name, address, restore height and sealed seed; the seal is removed only when the wallet is destroyed, and a destroyed wallet never changes', OLD.id
       USING ERRCODE = 'check_violation';
+  END IF;
+  IF (OLD.last_closed_at IS NOT NULL AND NOT COALESCE(NEW.last_closed_at >= OLD.last_closed_at, false))
+      OR (OLD.destroy_after IS NOT NULL AND NOT COALESCE(NEW.destroy_after >= OLD.destroy_after, false)) THEN
+    RAISE EXCEPTION 'xmr_escrow_wallets: wallet % keeps its last close and destruction times; they only move later', OLD.id USING ERRCODE = 'check_violation';
+  END IF;
+  IF NEW.state IS DISTINCT FROM OLD.state AND NOT (
+       (OLD.state = 'creating' AND NEW.state IN ('sealed','missing'))
+    OR (OLD.state = 'sealed' AND NEW.state IN ('active','closing','missing'))
+    OR (OLD.state = 'active' AND NEW.state IN ('closing','missing'))
+    OR (OLD.state = 'closing' AND NEW.state IN ('retained','missing'))
+    OR (OLD.state = 'retained' AND NEW.state IN ('destroyed','missing'))
+    OR (OLD.state = 'missing' AND NEW.state IN ('sealed','active','closing','retained','destroyed'))
+    OR (OLD.state = 'orphan' AND NEW.state IN ('retained','missing','destroyed'))) THEN
+    RAISE EXCEPTION 'xmr_escrow_wallets: wallet % cannot move from % to %: a wallet moves only forward', OLD.id, OLD.state, NEW.state USING ERRCODE = 'check_violation';
   END IF;
   RETURN NEW;
 END $$;
@@ -145,10 +163,20 @@ CREATE TRIGGER orders_escrow_currency BEFORE UPDATE OF currency ON orders FOR EA
 -- pinned refund address, a stray refund) -> built (the transaction made with do_not_relay and stored, with its hash,
 -- metadata, blob, fee, input total and the key images it spends, before relay_tx) -> relayed -> confirmed (followed to
 -- 100 confirmations, reorg_safe_at), or external (another transaction spent its key images) or failed; an unbuilt
--- release or refund that a changed dispute decision replaces is superseded. The stored transaction never changes and
--- is never rebuilt: a relay is only ever repeated with the stored metadata, which spends the same key images, so it
--- cannot pay twice. States move only forward, apart from confirmed -> relayed when a reorganisation drops it. In a
--- custodial wallet the market signs alone, so a transaction is stored only when the order's state fits the
+-- release or refund that a changed dispute decision replaces is superseded. The stored transaction is written only by
+-- the move requested -> built, never changes and is never rebuilt automatically: a relay is only ever repeated with the
+-- stored metadata, which spends the same key images, so it cannot pay twice. States move only forward, apart from
+-- confirmed -> relayed when a reorganisation drops it.
+--
+-- The administrator's re-request (owner decision O-1, A-401, P3-R6): a built settlement that failed (the daemon refused
+-- its stored transaction for good, and no other transaction spent its key images) becomes superseded, keeping its stored
+-- transaction, and in the same transaction a new row names it in supersedes, with the same order, kind and destination.
+-- When the new row stores its transaction, its key images must be exactly the superseded row's, so at most one of the
+-- two transactions can ever be mined. That its outputs pay the stored plan (the same destinations and amounts, only the
+-- fee and the claimant's output changed by the fee) is checked in Go by the escrow watcher (X-d). A row is superseded at
+-- most once; a relayed, confirmed or external one never is.
+--
+-- In a custodial wallet the market signs alone, so a transaction is stored only when the order's state fits the
 -- settlement's kind (escrow_market_may_sign, migration 081: a release on a completed order or one decided for the
 -- vendor, a refund on a cancelled order or one decided for the buyer, a stray refund on a closed order). At most one
 -- live release or refund per order, one built transaction not yet relayed per order (two unrelayed transactions of
@@ -170,13 +198,16 @@ CREATE TABLE xmr_settlements (
  relayed_at timestamptz,
  confirmed_at timestamptz,
  reorg_safe_at timestamptz,
+ supersedes bigint UNIQUE REFERENCES xmr_settlements(id),
  created timestamptz NOT NULL DEFAULT now(),
  updated timestamptz NOT NULL DEFAULT now(),
  CONSTRAINT xmr_settlements_tx CHECK ((tx_hash IS NULL) = (tx_metadata IS NULL) AND (tx_hash IS NULL) = (tx_blob IS NULL)
    AND (tx_hash IS NULL) = (fee IS NULL) AND (tx_hash IS NULL) = (input_total IS NULL) AND (tx_hash IS NULL) = (key_images IS NULL)),
  CONSTRAINT xmr_settlements_built CHECK (state NOT IN ('built','relayed','confirmed') OR tx_hash IS NOT NULL),
- CONSTRAINT xmr_settlements_unbuilt CHECK (state NOT IN ('requested','superseded') OR tx_hash IS NULL),
- CONSTRAINT xmr_settlements_superseded CHECK (state <> 'superseded' OR kind IN ('release','refund')),
+ CONSTRAINT xmr_settlements_unbuilt CHECK (state <> 'requested' OR tx_hash IS NULL),
+ -- Superseded without a transaction: a release or refund replaced by a changed decision; with one: a failed settlement
+ -- of any kind re-requested (xmr_settlements_moves allows superseded only from requested, or from failed with a tx).
+ CONSTRAINT xmr_settlements_superseded CHECK (state <> 'superseded' OR kind IN ('release','refund') OR tx_hash IS NOT NULL),
  CONSTRAINT xmr_settlements_relayed CHECK (state NOT IN ('relayed','confirmed') OR relayed_at IS NOT NULL),
  CONSTRAINT xmr_settlements_confirmed CHECK (state <> 'confirmed' OR confirmed_at IS NOT NULL),
  CONSTRAINT xmr_settlements_reorg_safe CHECK (reorg_safe_at IS NULL OR state = 'confirmed')
@@ -184,13 +215,17 @@ CREATE TABLE xmr_settlements (
 CREATE UNIQUE INDEX xmr_settlements_one_outcome ON xmr_settlements (order_id) WHERE kind IN ('release','refund') AND state <> 'superseded';
 CREATE UNIQUE INDEX xmr_settlements_one_built ON xmr_settlements (order_id) WHERE state = 'built';
 CREATE UNIQUE INDEX xmr_settlements_one_open_stray ON xmr_settlements (order_id) WHERE kind = 'stray_refund' AND state IN ('requested','built','relayed');
-CREATE UNIQUE INDEX xmr_settlements_release_destination ON xmr_settlements (destination) WHERE kind = 'release';
+-- A re-request pays the destination of the release it supersedes (xmr_settlements_supersedes), so only the first is counted.
+CREATE UNIQUE INDEX xmr_settlements_release_destination ON xmr_settlements (destination) WHERE kind = 'release' AND supersedes IS NULL;
 
 CREATE FUNCTION xmr_settlements_frozen() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   IF NEW.order_id IS DISTINCT FROM OLD.order_id OR NEW.kind IS DISTINCT FROM OLD.kind OR NEW.destination IS DISTINCT FROM OLD.destination
-      OR NEW.requested_by IS DISTINCT FROM OLD.requested_by THEN
+      OR NEW.requested_by IS DISTINCT FROM OLD.requested_by OR NEW.supersedes IS DISTINCT FROM OLD.supersedes THEN
     RAISE EXCEPTION 'xmr_settlements: settlement % keeps its order, kind and destination', OLD.id USING ERRCODE = 'check_violation';
+  END IF;
+  IF OLD.tx_hash IS NULL AND NEW.tx_hash IS NOT NULL AND NOT (OLD.state = 'requested' AND NEW.state = 'built') THEN
+    RAISE EXCEPTION 'xmr_settlements: settlement % stores its transaction only when it is built from requested', OLD.id USING ERRCODE = 'check_violation';
   END IF;
   IF OLD.tx_hash IS NOT NULL AND (NEW.tx_hash IS DISTINCT FROM OLD.tx_hash OR NEW.tx_metadata IS DISTINCT FROM OLD.tx_metadata
       OR NEW.tx_blob IS DISTINCT FROM OLD.tx_blob OR NEW.fee IS DISTINCT FROM OLD.fee OR NEW.input_total IS DISTINCT FROM OLD.input_total
@@ -213,8 +248,9 @@ BEGIN
        (OLD.state = 'requested' AND NEW.state IN ('built','external','failed','superseded'))
     OR (OLD.state = 'built' AND NEW.state IN ('relayed','external','failed'))
     OR (OLD.state = 'relayed' AND NEW.state IN ('confirmed','external','failed'))
-    OR (OLD.state = 'confirmed' AND NEW.state IN ('relayed','external'))) THEN
-    RAISE EXCEPTION 'xmr_settlements: settlement % cannot move from % to %: a settlement moves only forward, or from confirmed back to relayed after a reorganisation', OLD.id, OLD.state, NEW.state
+    OR (OLD.state = 'confirmed' AND NEW.state IN ('relayed','external'))
+    OR (OLD.state = 'failed' AND NEW.state = 'superseded' AND OLD.tx_hash IS NOT NULL)) THEN
+    RAISE EXCEPTION 'xmr_settlements: settlement % cannot move from % to %: a settlement moves only forward, or from confirmed back to relayed after a reorganisation, or from failed to superseded when it was built and is re-requested', OLD.id, OLD.state, NEW.state
       USING ERRCODE = 'check_violation';
   END IF;
   RETURN NEW;
@@ -230,6 +266,25 @@ BEGIN
   RETURN NEW;
 END $$;
 CREATE TRIGGER xmr_settlements_market_fits BEFORE INSERT OR UPDATE ON xmr_settlements FOR EACH ROW EXECUTE FUNCTION xmr_settlements_market_fits();
+
+CREATE FUNCTION xmr_settlements_supersedes() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE s record;
+BEGIN
+  IF NEW.supersedes IS NULL THEN
+    RETURN NEW;
+  END IF;
+  SELECT order_id, kind, destination, state, tx_hash, key_images INTO s FROM xmr_settlements WHERE id = NEW.supersedes;
+  IF s.order_id IS DISTINCT FROM NEW.order_id OR s.kind IS DISTINCT FROM NEW.kind OR s.destination IS DISTINCT FROM NEW.destination
+      OR s.state IS DISTINCT FROM 'superseded' OR s.tx_hash IS NULL THEN
+    RAISE EXCEPTION 'xmr_settlements: a re-request of settlement % keeps its order, kind and destination, and follows it once it failed after it was built and is superseded', NEW.supersedes
+      USING ERRCODE = 'check_violation';
+  END IF;
+  IF NEW.tx_hash IS NOT NULL AND (TG_OP = 'INSERT' OR OLD.tx_hash IS NULL) AND NOT (NEW.key_images @> s.key_images AND NEW.key_images <@ s.key_images) THEN
+    RAISE EXCEPTION 'xmr_settlements: the re-request of settlement % spends exactly its key images', NEW.supersedes USING ERRCODE = 'check_violation';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER xmr_settlements_supersedes BEFORE INSERT OR UPDATE ON xmr_settlements FOR EACH ROW EXECUTE FUNCTION xmr_settlements_supersedes();
 
 CREATE FUNCTION xmr_settlements_xmr_only() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
@@ -270,6 +325,18 @@ BEGIN
   RETURN NEW;
 END $$;
 CREATE TRIGGER xmr_settlement_outputs_frozen BEFORE INSERT OR UPDATE OR DELETE ON xmr_settlement_outputs FOR EACH ROW EXECUTE FUNCTION xmr_settlement_outputs_frozen();
+
+-- No escrow record is ever deleted (the application deletes none): a deleted escrows row would turn its order into a
+-- pooled one, which payouts_not_escrow and the send claim no longer guard, and a deleted wallet, slot or settlement row
+-- would lose the seal, the account or the stored transaction of coins the market holds. Outputs are refused above.
+CREATE FUNCTION escrow_records_kept() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION '%: escrow records are never deleted', TG_TABLE_NAME USING ERRCODE = 'check_violation';
+END $$;
+CREATE TRIGGER escrows_not_deleted BEFORE DELETE ON escrows FOR EACH ROW EXECUTE FUNCTION escrow_records_kept();
+CREATE TRIGGER xmr_escrow_wallets_not_deleted BEFORE DELETE ON xmr_escrow_wallets FOR EACH ROW EXECUTE FUNCTION escrow_records_kept();
+CREATE TRIGGER xmr_escrow_slots_not_deleted BEFORE DELETE ON xmr_escrow_slots FOR EACH ROW EXECUTE FUNCTION escrow_records_kept();
+CREATE TRIGGER xmr_settlements_not_deleted BEFORE DELETE ON xmr_settlements FOR EACH ROW EXECUTE FUNCTION escrow_records_kept();
 
 -- payments stays the ledger for both coins (ES-1). A Monero escrow deposit is one row per transaction and account, with
 -- idx = 2^62 + wallet_id * 2^32 + account_index. A pooled Monero row's idx is its subaddress minor index (below 2^32),
