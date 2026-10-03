@@ -82,18 +82,6 @@ func (c *rpcClient) call(ctx context.Context, path, method string, params, out a
 // callWithin is call bounded by timeout instead of rpcTimeout (or the caller's earlier deadline). Payout
 // sends use payoutSendTimeout: a wallet that broadcasts after rpcTimeout must still be recorded as sent.
 func (c *rpcClient) callWithin(ctx context.Context, timeout time.Duration, path, method string, params, out any) error {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	if c.digest {
-		// Serialize the complete exchange so one connection and its nonce counter
-		// cannot be raced by the watcher and an HTTP handler using the same wallet.
-		select {
-		case c.digestGate <- struct{}{}:
-			defer func() { <-c.digestGate }()
-		case <-ctx.Done():
-			return fmt.Errorf("%s RPC unreachable: timed out waiting for authentication session", c.name)
-		}
-	}
 	req := map[string]any{"jsonrpc": c.version, "id": "opsecmkt", "method": method}
 	if params != nil {
 		req["params"] = params
@@ -104,42 +92,9 @@ func (c *rpcClient) callWithin(ctx context.Context, timeout time.Duration, path,
 	if err != nil {
 		return err
 	}
-	resp, err := c.send(ctx, path, body)
+	raw, status, err := c.exchange(ctx, timeout, path, method, body)
 	if err != nil {
 		return err
-	}
-	if resp.StatusCode == http.StatusUnauthorized && c.digest {
-		challenge := parseDigestChallenge(resp.Header.Values("WWW-Authenticate"))
-		// Monero binds the challenge to the connection. Closing an unread 401
-		// discards that connection, making even correct credentials fail on retry.
-		n, readErr := io.Copy(io.Discard, io.LimitReader(resp.Body, rpcMaxBody+1))
-		resp.Body.Close()
-		if readErr != nil {
-			return fmt.Errorf("%s RPC %s: reading authentication response failed", c.name, method)
-		}
-		if n > rpcMaxBody {
-			return fmt.Errorf("%s RPC %s: authentication response too large", c.name, method)
-		}
-		if challenge == nil {
-			return fmt.Errorf("%s RPC %s: authentication required", c.name, method)
-		}
-		c.mu.Lock()
-		c.challenge, c.nc = challenge, 0
-		c.mu.Unlock()
-		if resp, err = c.send(ctx, path, body); err != nil {
-			return err
-		}
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return fmt.Errorf("%s RPC %s: credentials rejected (HTTP %d)", c.name, method, resp.StatusCode)
-	}
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, rpcMaxBody+1))
-	if err != nil {
-		return fmt.Errorf("%s RPC %s: reading response failed", c.name, method)
-	}
-	if len(raw) > rpcMaxBody {
-		return fmt.Errorf("%s RPC %s: response too large", c.name, method)
 	}
 	var env struct {
 		Result json.RawMessage `json:"result"`
@@ -151,14 +106,14 @@ func (c *rpcClient) callWithin(ctx context.Context, timeout time.Duration, path,
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
 	if err = dec.Decode(&env); err != nil {
-		return fmt.Errorf("%s RPC %s: invalid response (HTTP %d)", c.name, method, resp.StatusCode)
+		return fmt.Errorf("%s RPC %s: invalid response (HTTP %d)", c.name, method, status)
 	}
 	if env.Error != nil {
 		code, _ := env.Error.Code.Int64()
 		return &rpcError{Method: c.name + " RPC " + method, Code: code, Message: truncate(env.Error.Message, 200)}
 	}
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("%s RPC %s: HTTP %d", c.name, method, resp.StatusCode)
+	if status != http.StatusOK {
+		return fmt.Errorf("%s RPC %s: HTTP %d", c.name, method, status)
 	}
 	if out == nil {
 		return nil
@@ -169,6 +124,63 @@ func (c *rpcClient) callWithin(ctx context.Context, timeout time.Duration, path,
 		return fmt.Errorf("%s RPC %s: unexpected result shape", c.name, method)
 	}
 	return nil
+}
+
+// exchange posts body to endpoint+path within timeout (or the caller's earlier deadline), answering one Digest
+// challenge, and returns the response body (at most rpcMaxBody) with its HTTP status; method names the request in
+// errors. callWithin wraps it in JSON-RPC; monerod's other endpoints (/get_transactions) take plain JSON
+// (escrow_xmr_rpc.go).
+func (c *rpcClient) exchange(ctx context.Context, timeout time.Duration, path, method string, body []byte) ([]byte, int, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	if c.digest {
+		// Serialize the complete exchange so one connection and its nonce counter
+		// cannot be raced by the watcher and an HTTP handler using the same wallet.
+		select {
+		case c.digestGate <- struct{}{}:
+			defer func() { <-c.digestGate }()
+		case <-ctx.Done():
+			return nil, 0, fmt.Errorf("%s RPC unreachable: timed out waiting for authentication session", c.name)
+		}
+	}
+	resp, err := c.send(ctx, path, body)
+	if err != nil {
+		return nil, 0, err
+	}
+	if resp.StatusCode == http.StatusUnauthorized && c.digest {
+		challenge := parseDigestChallenge(resp.Header.Values("WWW-Authenticate"))
+		// Monero binds the challenge to the connection. Closing an unread 401
+		// discards that connection, making even correct credentials fail on retry.
+		n, readErr := io.Copy(io.Discard, io.LimitReader(resp.Body, rpcMaxBody+1))
+		resp.Body.Close()
+		if readErr != nil {
+			return nil, 0, fmt.Errorf("%s RPC %s: reading authentication response failed", c.name, method)
+		}
+		if n > rpcMaxBody {
+			return nil, 0, fmt.Errorf("%s RPC %s: authentication response too large", c.name, method)
+		}
+		if challenge == nil {
+			return nil, 0, fmt.Errorf("%s RPC %s: authentication required", c.name, method)
+		}
+		c.mu.Lock()
+		c.challenge, c.nc = challenge, 0
+		c.mu.Unlock()
+		if resp, err = c.send(ctx, path, body); err != nil {
+			return nil, 0, err
+		}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return nil, 0, fmt.Errorf("%s RPC %s: credentials rejected (HTTP %d)", c.name, method, resp.StatusCode)
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, rpcMaxBody+1))
+	if err != nil {
+		return nil, 0, fmt.Errorf("%s RPC %s: reading response failed", c.name, method)
+	}
+	if len(raw) > rpcMaxBody {
+		return nil, 0, fmt.Errorf("%s RPC %s: response too large", c.name, method)
+	}
+	return raw, resp.StatusCode, nil
 }
 
 func (c *rpcClient) send(ctx context.Context, path string, body []byte) (*http.Response, error) {
