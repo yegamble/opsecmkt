@@ -487,6 +487,18 @@ func TestListingDispatchFieldOnlyWithEscrow(t *testing.T) {
 	off := newTestApp(t)
 	vendor, session := off.user("dispoff_vendor", "vendor")
 	listing := check(off, vendor, session, false)
+	// Off mode keeps the Phase 1 markup byte for byte around the hidden field and help (A-380): no blank lines left.
+	for page, joins := range map[string][]string{
+		"/vendor-dashboard":           {"</label>\n<label>Bitcoin reference price", "</div>\n<p class=\"help\" id=\"price-floor-help\">"},
+		"/listing-edit?id=" + listing: {"</label>\n<label>Bitcoin reference price", "</p>\n<p class=\"help\" id=\"stock-help\">"},
+	} {
+		body := off.do("GET", page, session, nil).Body.String()
+		for _, j := range joins {
+			if !strings.Contains(body, j) {
+				t.Fatalf("%s: off-mode markup changed around %q", page, j)
+			}
+		}
+	}
 	form := inventoryForm(listing, map[string]string{"kind": "physical", "category": "Hardware"})
 	if w := off.do("POST", "/listings/update", session, form); w.Code != 303 || physString(t, off, "SELECT dispatch_days::text FROM products WHERE id=$1", listing) != "12" {
 		t.Fatalf("saving without the field: %d", w.Code)
