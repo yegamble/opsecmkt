@@ -15,6 +15,14 @@
 #   TwoAccountsOneTx: one transaction pays two escrows; after 10 blocks there are two payments rows of it, one per
 #     escrow account, each its own order's, and both orders complete.
 #
+# Slice X-e leg (internal/market/escrow_xmr_regtest_physical_test.go), the App's escrow wallet-rpc behind a proxy that
+# counts each RPC method:
+#   Physical: one transaction funds four physical orders (paid after 10 blocks); three are marked shipped to real
+#     subaddresses with no spending call (transfer, relay_tx, sweep) and their releases not buildable; then Confirm
+#     receipt completes one (its release buildable), the release deadline completes one, a dispute decided for the buyer
+#     supersedes one's release and requests its refund, and the buyer's no-ship cancel requests the fourth's refund.
+#     The builder is slice X-d's: until it merges the leg stops at "requested and buildable".
+#
 # Needs a fakechain monerod and three monero-wallet-rpc instances attached to it (the App's escrow wallet-rpc, a funder
 # standing in for the buyer's wallet, and one used only to restore a sealed seed), plus a disposable PostgreSQL database.
 # The wallet-rpcs listen without RPC login on 127.0.0.1 only. For example:
@@ -72,12 +80,12 @@ log="${ESCROW_XMR_REGTEST_LOG:-artifacts/real-chain/test-escrow-xmr-regtest-$(da
 mkdir -p "$(dirname "$log")"
 echo "Monero escrow fakechain check (hard fork $version); transcript: $log"
 set +e
-go test -count=1 -timeout 15m -run '^TestXMREscrowRegtest(Wallets|Funding|TwoAccountsOneTx)$' -v ./internal/market/ 2>&1 | tee "$log"
+go test -count=1 -timeout 15m -run '^TestXMREscrowRegtest(Wallets|Funding|TwoAccountsOneTx|Physical)$' -v ./internal/market/ 2>&1 | tee "$log"
 status=${PIPESTATUS[0]}
 set -e
 # Each leg is reported from its own go test result line, so one failing leg never makes another read as failed.
 failed=0
-for leg in TestXMREscrowRegtestWallets TestXMREscrowRegtestFunding TestXMREscrowRegtestTwoAccountsOneTx; do
+for leg in TestXMREscrowRegtestWallets TestXMREscrowRegtestFunding TestXMREscrowRegtestTwoAccountsOneTx TestXMREscrowRegtestPhysical; do
   if grep -q -- "--- PASS: $leg " "$log"; then
     echo "PASS: $leg"
   elif grep -q -- "--- FAIL: $leg " "$log"; then
@@ -95,4 +103,4 @@ if [[ $status -ne 0 || $failed -ne 0 ]]; then
   echo "FAILED: go test exited $status; see $log" >&2
   exit 1
 fi
-echo "PASS: Monero escrow wallets (creation, sealed seed restored to its primary address, slots, account 0 empty, monthly rotation), funding at 10 confirmations and not at 9, and one transaction paying two escrow accounts, on a local fakechain; transcript in $log"
+echo "PASS: Monero escrow wallets (creation, sealed seed restored to its primary address, slots, account 0 empty, monthly rotation), funding at 10 confirmations and not at 9, one transaction paying two escrow accounts, and physical orders (no spending call before the outcome; Confirm receipt, the deadline, a dispute for the buyer and a no-ship cancel each request their settlement), on a local fakechain; transcript in $log"
