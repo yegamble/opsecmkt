@@ -35,9 +35,11 @@ import (
 //     testmempoolaccept at the rate cap), stores the final transaction and sends it (broadcastBumps, through
 //     trackBroadcast).
 //
-// The watcher's own transactions for a settlement are its own and every stored bump (settlementAttempts): a conflict
-// among them is not a spend outside the market (A-375), only the highest-fee one is sent again, and when a bump
-// confirms the settlement is confirmed with that bump recorded as confirmed (escrow_cosign.go). While the restore gate
+// The watcher's own transactions for a settlement are its own and every bump it built (settlementAttempts, A-382): a
+// conflict among them is not a spend outside the market (A-375), only the highest-fee stored one is sent again, a built
+// bump found on the network without a stored final transaction is checked and recorded (storeSeenBump), and when a
+// bump confirms the settlement is confirmed with that bump recorded as confirmed (escrow_cosign.go). A bump's rate is
+// capped so its fee stays within escrowMaxFeeRate at the smallest real size (bumpMaxRate, A-383). While the restore gate
 // is set no bump is built, co-signed or sent, and scripts/restore.sh holds a restored bump with a final transaction as
 // it holds a settlement (escrow_recovery.go).
 
