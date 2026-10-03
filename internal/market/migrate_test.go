@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -84,7 +85,7 @@ func TestMigrationRunnerAppliesMissingVersionsOnce(t *testing.T) {
 }
 
 func TestFreshInstallAppliesBaselineAndMigrations(t *testing.T) {
-	e := newTestApp(t)
+	e := newFreshTestApp(t)
 	list, _ := loadMigrations(migrationFiles)
 	count := func() (n int) {
 		if err := e.DB.QueryRow("SELECT count(*) FROM schema_migrations").Scan(&n); err != nil {
@@ -99,6 +100,52 @@ func TestFreshInstallAppliesBaselineAndMigrations(t *testing.T) {
 	if got := count(); got != len(list) {
 		t.Fatalf("restart changed migrations: %d", got)
 	}
+}
+
+// A-400: newTestApp's copy of the template database starts exactly where New leaves an empty schema: the same
+// relations, columns, constraints, indexes, triggers, functions, types, sequences and rows.
+func TestNewTestAppMatchesAFreshStart(t *testing.T) {
+	copied := newTestApp(t)
+	fresh := newFreshTestApp(t) // the schema path, which every database test took before the template
+	want, got := schemaSnapshot(fresh), schemaSnapshot(copied)
+	if len(got) != len(want) {
+		t.Errorf("snapshot has %d lines, a fresh start %d", len(got), len(want))
+	}
+	for i := range min(len(got), len(want)) {
+		if got[i] != want[i] {
+			t.Fatalf("first difference at line %d:\n  newTestApp:  %s\n  fresh start: %s", i, got[i], want[i])
+		}
+	}
+}
+
+// schemaSnapshot describes e's schema (its search_path) and every row in it, with the schema's own name removed
+// from the server's definitions; only schema_migrations' applied times are left out.
+func schemaSnapshot(e *testEnv) []string {
+	e.t.Helper()
+	ns := agStr(e, "SELECT current_schema()")
+	const in = "= current_schema()::regnamespace"
+	var lines []string
+	for _, q := range []string{
+		"SELECT 'relation ' || relname || ' ' || relkind::text FROM pg_class WHERE relnamespace " + in,
+		"SELECT 'column ' || table_name || '.' || column_name || ' #' || ordinal_position || ' ' || data_type || ' ' || is_nullable || ' ' || coalesce(column_default, '') FROM information_schema.columns WHERE table_schema = current_schema()",
+		"SELECT 'constraint ' || conrelid::regclass || ' ' || conname || ' ' || pg_get_constraintdef(oid) FROM pg_constraint WHERE connamespace " + in,
+		"SELECT 'index ' || indexdef FROM pg_indexes WHERE schemaname = current_schema()",
+		"SELECT 'trigger ' || pg_get_triggerdef(t.oid) FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid WHERE NOT t.tgisinternal AND c.relnamespace " + in,
+		"SELECT 'function ' || pg_get_functiondef(oid) FROM pg_proc WHERE prokind IN ('f', 'p') AND pronamespace " + in,
+		"SELECT 'type ' || typname || ' ' || typtype::text FROM pg_type WHERE typtype IN ('d', 'e') AND typnamespace " + in,
+		"SELECT 'sequence ' || sequencename || ' ' || coalesce(last_value::text, 'unused') FROM pg_sequences WHERE schemaname = current_schema()",
+		"SELECT 'migration ' || version || ' ' || name FROM schema_migrations",
+	} {
+		lines = append(lines, agStrings(e.t, e, q)...)
+	}
+	for _, table := range agStrings(e.t, e, "SELECT relname FROM pg_class WHERE relkind = 'r' AND relname <> 'schema_migrations' AND relnamespace "+in) {
+		lines = append(lines, agStrings(e.t, e, "SELECT 'row "+table+" ' || row_to_json(r) FROM "+table+" r")...)
+	}
+	for i := range lines {
+		lines[i] = strings.ReplaceAll(lines[i], ns+".", "")
+	}
+	slices.Sort(lines)
+	return lines
 }
 
 // An existing v0 database (baseline schema with free-text orders.status) upgrades in place.

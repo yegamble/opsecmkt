@@ -132,16 +132,20 @@ go test -race -count=1 -timeout 30m ./...
 ```
 
 Tests create isolated schemas, apply migrations, create their own fixture users,
-listings and orders, then remove their schemas. `TestSettlementClashGuide` and
+listings and orders, then remove their schemas. When the test role has the CREATEDB privilege,
+`internal/market` migrates one template database per test process (`opsecmkt_tmpl_<pid>_<random>`) and
+gives each database test a copy of it (`opsecmkt_copy_<random>`), which is several times faster; without
+CREATEDB it logs one line and migrates a schema per test in `TEST_DATABASE_URL`'s database instead.
+`TestSettlementClashGuide` and
 `TestReturnWithoutReleaseGuide` run UPGRADING.md's SQL blocks through `psql`, so
 install the PostgreSQL client on the host; without `psql` they skip (on CI they fail). Use a dedicated database even
 though schemas are isolated. Use different databases for simultaneous Go test
 processes: the watcher uses a database-wide advisory lock. The `cmd/server` tests
 create a database of their own beside it (`opsecmkt_cmd_server_<random>`, dropped
 when they finish; without the CREATEDB privilege they use `TEST_DATABASE_URL`'s
-database and log that). A run that panics, times out or is killed leaves that
-database behind: drop leftover `opsecmkt_cmd_server_*` databases that have no
-connections. With a database the
+database and log that). A run that panics, times out or is killed leaves these
+databases behind: drop leftover `opsecmkt_cmd_server_*`, `opsecmkt_tmpl_*` and
+`opsecmkt_copy_*` databases that have no connections (no later run uses them). With a database the
 `internal/market` race run takes about 7–10 minutes, close to `go test`'s default
 10-minute timeout, so the command sets `-timeout 30m`. Fake RPC tests cover payment behavior; they do not
 prove live node integration. The manual Bitcoin check is

@@ -3,6 +3,7 @@ package market
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -15,14 +16,17 @@ import (
 )
 
 // Shared test helpers for every package. Tests run from the repository root (templates, static files).
-// DB-backed tests call newTestApp(t); each gets its own PostgreSQL schema and must not use t.Parallel.
+// DB-backed tests call newTestApp(t); each gets its own PostgreSQL database (or, without CREATEDB, its own
+// schema) and must not use t.Parallel.
 
 func TestMain(m *testing.M) {
 	bcryptCost = bcrypt.MinCost // production cost 12 exceeds the request timeout under -race
 	if err := os.Chdir("../.."); err != nil {
 		panic(err)
 	}
-	os.Exit(m.Run())
+	code := m.Run()
+	dropTestTemplate()
+	os.Exit(code)
 }
 
 const testSetupToken = "integration-test-setup-token-5f2c9e7a1b4d8036cafe0123456789abcdef"
@@ -62,11 +66,126 @@ func testSchemaDSN(t *testing.T) string {
 	return parsed.String()
 }
 
-// newTestApp starts a real App (baseline schema + migrations) against a fresh schema. Not installed yet:
-// call e.setup() for the real /setup flow or e.user() for fast fixtures.
+// testTemplate is a database holding exactly the baseline and migrations, built once per test binary by
+// migrate (the code New runs) and copied for each newTestApp: a copy takes tens of milliseconds where
+// migrating a fresh schema takes hundreds. Nothing environment-dependent goes into it; New still runs in full
+// against each copy, under that test's environment. name is "" when the server refused CREATE DATABASE (no
+// CREATEDB privilege) or the build failed: newTestApp then migrates a fresh schema, as before.
+var testTemplate struct {
+	once  sync.Once
+	admin *sql.DB  // TEST_DATABASE_URL's database, for CREATE and DROP DATABASE
+	base  *url.URL // TEST_DATABASE_URL
+	name  string
+}
+
+// buildTestTemplate creates and migrates the template. Its name carries the process id and a random suffix:
+// cmd/server and other agents' test processes share the server, and a run that is killed leaves a template
+// no later run uses (drop leftover opsecmkt_tmpl_* and opsecmkt_copy_* databases that have no connections). It
+// is created from template0, so it starts as empty as testSchemaDSN's schema whatever template1 holds.
+func buildTestTemplate(dsn string) {
+	base, err := url.Parse(dsn)
+	if err != nil {
+		return // newTestApp's schema path reports the unusable URL
+	}
+	admin, err := sql.Open("pgx", dsn)
+	if err != nil {
+		return
+	}
+	name := fmt.Sprintf("opsecmkt_tmpl_%d_%s", os.Getpid(), randomToken()[:8])
+	if _, err = admin.Exec("CREATE DATABASE " + name + " TEMPLATE template0"); err != nil {
+		admin.Close()
+		fmt.Fprintf(os.Stderr, "internal/market tests: no template database (%v); each test migrates a schema of its own in TEST_DATABASE_URL's database instead (slower)\n", err)
+		return
+	}
+	// The migration connection is opened as New opens its own (OpenDB: TimeZone pinned, no session timeouts).
+	// migrate is called directly, not through runMigrations: the test that builds the template may have
+	// replaced runMigrations (TestMigrationsRunWithoutSessionTimeouts). Messages go to stderr, not the log
+	// package, which a test may be capturing.
+	db, err := OpenDB(testDatabaseURL(base, name))
+	if err == nil {
+		var tx *sql.Tx
+		if tx, err = db.Begin(); err == nil {
+			if err = migrate(context.Background(), tx); err == nil {
+				err = tx.Commit()
+			} else {
+				tx.Rollback()
+			}
+		}
+		db.Close()
+	}
+	if err != nil {
+		admin.Exec("DROP DATABASE " + name + " WITH (FORCE)")
+		admin.Close()
+		fmt.Fprintf(os.Stderr, "internal/market tests: template database not migrated (%v); each test migrates a schema of its own instead\n", err)
+		return
+	}
+	testTemplate.admin, testTemplate.base, testTemplate.name = admin, base, name
+}
+
+// dropTestTemplate removes the template when the test binary ends (TestMain).
+func dropTestTemplate() {
+	if testTemplate.name == "" {
+		return
+	}
+	if _, err := testTemplate.admin.Exec("DROP DATABASE " + testTemplate.name + " WITH (FORCE)"); err != nil {
+		fmt.Fprintf(os.Stderr, "internal/market tests: could not drop template database %s: %v\n", testTemplate.name, err)
+	}
+	testTemplate.admin.Close()
+}
+
+// testDatabaseURL is base pointing at database name, with search_path set to its public schema: the single
+// schema a test's DSN names, as testSchemaDSN's does (tests append "&..." to it and read search_path from it).
+func testDatabaseURL(base *url.URL, name string) string {
+	u := *base
+	u.Path = "/" + name
+	q := u.Query()
+	q.Set("search_path", "public")
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
+// testMigratedDSN returns a DSN for a fresh copy of the migrated template, dropped on cleanup (after the
+// test's App, whose Close is registered later, has closed); or a fresh empty schema when there is no template.
+func testMigratedDSN(t *testing.T) string {
+	t.Helper()
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("set TEST_DATABASE_URL for isolated PostgreSQL integration tests")
+	}
+	testTemplate.once.Do(func() { buildTestTemplate(dsn) })
+	if testTemplate.name == "" {
+		return testSchemaDSN(t)
+	}
+	// PostgreSQL 15 and later copy with STRATEGY WAL_LOG by default, the faster strategy for a small template.
+	name := "opsecmkt_copy_" + randomToken()[:16]
+	if _, err := testTemplate.admin.Exec("CREATE DATABASE " + name + " TEMPLATE " + testTemplate.name); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := testTemplate.admin.Exec("DROP DATABASE " + name + " WITH (FORCE)"); err != nil {
+			t.Logf("could not drop test database %s: %v", name, err)
+		}
+	})
+	return testDatabaseURL(testTemplate.base, name)
+}
+
+// newTestApp starts a real App against a fresh database holding the baseline schema and migrations (New
+// re-runs them, finding nothing to apply). Not installed yet: call e.setup() for the real /setup flow or
+// e.user() for fast fixtures.
 func newTestApp(t *testing.T) *testEnv {
 	t.Helper()
-	t.Setenv("DATABASE_URL", testSchemaDSN(t))
+	return startTestApp(t, testMigratedDSN(t))
+}
+
+// newFreshTestApp is newTestApp on an empty schema, where New itself applies the baseline and every migration.
+func newFreshTestApp(t *testing.T) *testEnv {
+	t.Helper()
+	return startTestApp(t, testSchemaDSN(t))
+}
+
+func startTestApp(t *testing.T, dsn string) *testEnv {
+	t.Helper()
+	t.Setenv("DATABASE_URL", dsn)
 	t.Setenv("SETUP_TOKEN", testSetupToken)
 	t.Setenv("APP_SECRET_KEY", "") // legacy key root: every DB-backed test also exercises the pre-split derivation
 	t.Setenv("COMPOSE_FILE", "")
