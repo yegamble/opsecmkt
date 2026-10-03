@@ -121,6 +121,8 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 		v.Status = "Deposit seen. Waiting for " + strconv.FormatInt(v.Threshold, 10) + " confirmations."
 	case o.State == stateAwaitingPayment:
 		v.Status = "Confirmed deposits are below the price"
+	case o.State == statePaid && o.Kind == "physical":
+		v.Status, v.NextStep = "Funded", "The vendor ships the goods; the order stays open until it is shipped and settled. If the vendor cancels it instead, the escrow is refunded to the buyer."
 	case o.State == statePaid:
 		v.Status, v.NextStep = "Funded", "The content could not be delivered automatically: the order completes when the vendor delivers it by hand. If the vendor cancels it instead, the escrow is refunded to the buyer."
 	case o.State == stateCompleted:
@@ -206,15 +208,21 @@ func (a *App) escrowCheckoutOffer(ctx context.Context, d *PageData) error {
 	if o.State != stateDraft || d.OrderViewer != roleBuyer || o.Currency != "BTC" {
 		return nil
 	}
-	eligible, _, err := escrowEligible(ctx, a.db, o)
+	eligible, _, _, err := escrowEligible(ctx, a.db, o)
 	if err != nil || !eligible {
 		return err
 	}
-	v := &EscrowCheckoutView{}
+	v := &EscrowCheckoutView{Physical: o.Kind == "physical"}
 	var buyerActive, vendorActive bool
 	if err = a.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM user_escrow_keys WHERE user_id=$1 AND active_at IS NOT NULL),
 		EXISTS(SELECT 1 FROM user_escrow_keys WHERE user_id=$2 AND active_at IS NOT NULL)`, o.BuyerID, o.VendorID).Scan(&buyerActive, &vendorActive); err != nil {
 		return err
+	}
+	vendorCanEncrypt := true
+	if v.Physical {
+		if vendorCanEncrypt, err = userCanReceiveEncrypted(ctx, a.db, o.VendorID); err != nil {
+			return err
+		}
 	}
 	gate, err := restoreGateSet(ctx, a.db)
 	if err != nil {
@@ -231,6 +239,8 @@ func (a *App) escrowCheckoutOffer(ctx context.Context, d *PageData) error {
 		v.Reason, v.KeyLink = "Activate your Bitcoin escrow key first: register it and sign its practice transaction.", true
 	case !vendorActive:
 		v.Reason = "The vendor has no active Bitcoin escrow key, so this order cannot use escrow."
+	case v.Physical && !vendorCanEncrypt:
+		v.Reason = noVendorKeyReason // A-83: the buyer could not send the vendor an encrypted shipping address
 	}
 	d.EscrowCheckout = v
 	return nil

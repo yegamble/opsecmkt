@@ -107,7 +107,12 @@ func listingUpdateAction(c *actionCtx) (actionResult, error) {
 		}
 		stock = in.Stock
 	}
-	_, err = c.Tx.ExecContext(ctx, `UPDATE products SET title=$2,description=$3,category=$4,region=$5,kind=$6,btc=$7,xmr=$8,stock=$9,delivery_content=$10,updated=now() WHERE id=$1`, l.ID, in.Title, in.Description, in.Category, in.Region, in.Kind, in.BTC, in.XMR, stock, in.DeliveryContent)
+	// The dispatch window (P2-R5): a physical listing keeps its stored window when the form sends none, and takes the
+	// default when it has none (a listing saved before migration 079, or one that was digital); a digital one has none.
+	// Orders and escrows snapshot the window, so changing it affects only later checkouts.
+	_, err = c.Tx.ExecContext(ctx, `UPDATE products SET title=$2,description=$3,category=$4,region=$5,kind=$6,btc=$7,xmr=$8,stock=$9,delivery_content=$10,
+		dispatch_days=CASE WHEN $6<>'physical' THEN NULL ELSE COALESCE(NULLIF($11,0),dispatch_days,$12) END,updated=now() WHERE id=$1`,
+		l.ID, in.Title, in.Description, in.Category, in.Region, in.Kind, in.BTC, in.XMR, stock, in.DeliveryContent, in.DispatchDays, defaultDispatchDays)
 	return actionResult{Redirect: "/listing-edit?id=" + l.ID, Notice: "listing-saved", Audit: listingAudit("Updated", c, l)}, err
 }
 

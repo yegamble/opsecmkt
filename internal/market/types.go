@@ -228,6 +228,8 @@ type PageData struct {
 	EscrowKey *EscrowKeyView
 	// EscrowFee: /admin while ESCROW_BTC is on, the Bitcoin escrow market fee in force and its form (escrow_fee.go)
 	EscrowFee *EscrowFeeView
+	// EscrowReleaseDays: /admin while ESCROW_BTC is on, the release deadline length in force and its form (escrow_release_admin.go)
+	EscrowReleaseDays *EscrowReleaseDaysView
 	// EscrowRecovery: /admin, the Bitcoin escrow restore gate, held settlements and orphan addresses (escrow_recovery.go)
 	EscrowRecovery *EscrowRecoveryView
 	// Escrow: order page of an escrow order, its escrow (escrow_order.go); EscrowCheckout: order page of the buyer's
@@ -354,6 +356,7 @@ type ListingView struct {
 	OpenOrders          int    // orders not completed, resolved or cancelled
 	AutoDelivery        string // currencies with a configured payment provider, e.g. "BTC, XMR"; "" = none
 	TakedownReason      string // an administrator's takedown reason (A-163); "" when not taken down
+	DispatchDays        int    // a physical listing's dispatch window in days (P2-R5); the default shown when none is set
 }
 type InventoryView struct {
 	Active, Archived int
@@ -525,6 +528,13 @@ type EscrowFeeView struct {
 	Available             bool
 }
 
+// EscrowReleaseDaysView is the Bitcoin escrow release deadline length in force on /admin (escrow_release_admin.go):
+// Days, and the bounds the form accepts.
+type EscrowReleaseDaysView struct {
+	Days     string
+	Min, Max int
+}
+
 // EscrowDecisionView is a resolved escrow order's dispute decision (escrow_decision.go): Outcome release or refund,
 // Text the honest sentence, CanChange for an administrator who is not a party while its settlement has no final
 // transaction.
@@ -541,8 +551,9 @@ type SettlementOutputView struct {
 // EscrowCheckoutView offers escrow checkout on a draft (escrow_create.go): Reason says why it cannot be used now
 // ("" = the form is offered); KeyLink adds a link to the buyer's escrow key page.
 type EscrowCheckoutView struct {
-	Reason  string
-	KeyLink bool
+	Reason   string
+	KeyLink  bool
+	Physical bool // the listing is shipped: the offer says the order stays open after funding (WR-escrow Phase 2)
 }
 
 // EscrowKeyView is the viewer's Bitcoin escrow key (escrow_account.go). Origin is the viewer's own key origin

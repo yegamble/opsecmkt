@@ -134,7 +134,7 @@
 </section>{{end}}{{end}}{{end}}
 {{define "order-escrow-checkout"}}{{with .EscrowCheckout}}<section class="order-action escrow-checkout" aria-labelledby="escrow-checkout-heading">
 <h3 id="escrow-checkout-heading">Or pay into a Bitcoin escrow (regtest only)</h3>
-<p class="help">Instead of the market's pooled wallet, pay into a 2-of-3 multisig of your escrow key, the vendor's and the market's: any two can spend it, no single one can. This listing delivers its content automatically, so the order completes as soon as the escrow is funded. Regtest only: the vendor claims the escrow, or you are refunded from it, by a transaction one of you signs in your own wallet and the market co-signs and broadcasts.</p>{{if .Reason}}
+<p class="help">Instead of the market's pooled wallet, pay into a 2-of-3 multisig of your escrow key, the vendor's and the market's: any two can spend it, no single one can. {{if .Physical}}This listing is shipped by the vendor, so the order stays open after the escrow is funded until the goods are sent and the funds are settled. Regtest only.{{else}}This listing delivers its content automatically, so the order completes as soon as the escrow is funded. Regtest only: the vendor claims the escrow, or you are refunded from it, by a transaction one of you signs in your own wallet and the market co-signs and broadcasts.{{end}}</p>{{if .Reason}}
 <p class="order-unavailable" role="note"><strong>Unavailable.</strong> {{.Reason}}{{if .KeyLink}} <a class="text-link" href="/escrow-key">Your escrow key</a>{{end}}</p>{{else}}
 <form class="stack" method="post" action="/orders/escrow">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">

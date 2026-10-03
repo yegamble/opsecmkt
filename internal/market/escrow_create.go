@@ -17,8 +17,11 @@ import (
 )
 
 // Escrow checkout and creation (WR-escrow Phase 1, slice P1-b; ES-3, ES-5). With ESCROW_BTC=on, the buyer of a BTC
-// draft on a digital listing with automatic delivery may pay into a 2-of-3 escrow instead of the pooled wallet,
-// once both the buyer's and the vendor's escrow keys are active (ES-9). Every other order keeps the pooled flow.
+// draft on a digital listing with automatic delivery, or on a physical listing with a dispatch window (Phase 2,
+// P2-R8), may pay into a 2-of-3 escrow instead of the pooled wallet, once both the buyer's and the vendor's escrow
+// keys are active (ES-9). Every other order keeps the pooled flow. A physical order's checkout also needs a vendor
+// who can receive an encrypted shipping address (A-83, checked before any RPC), and its escrow row snapshots the
+// release deadline length in force and the listing's dispatch window (escrows.release_days, dispatch_days).
 //
 // POST /orders/escrow takes the buyer's refund address, pinned for the order, and builds the escrow in the checkout
 // transaction, after every check has passed (as /orders/pay asks the wallet for an address only then):
@@ -57,7 +60,7 @@ func errEscrowRefundInvalid(net string) error {
 var (
 	errEscrowRefundUsed = fail(409, "That refund address was already used on this market. Give a fresh address from your wallet. Nothing was changed.")
 	errEscrowOnlyBuyer  = fail(403, "Only the buyer can pay for this order.")
-	errEscrowKind       = fail(409, "Bitcoin escrow is available only for digital listings with automatic delivery. Nothing was changed.")
+	errEscrowKind       = fail(409, "Bitcoin escrow is available only for digital listings with automatic delivery and for physical listings with a dispatch window. Nothing was changed.")
 	errEscrowCurrency   = fail(409, "Bitcoin escrow is for Bitcoin orders only. Nothing was changed.")
 	errEscrowSelf       = fail(409, "You cannot buy your own listing with escrow: an escrow needs two parties' keys. Nothing was changed.")
 	errEscrowBuyerKey   = fail(409, "Activate your Bitcoin escrow key first: register it and sign its practice transaction on your escrow key page. Nothing was changed.")
@@ -221,12 +224,29 @@ func escrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	if err = lockPaymentIntake(c, o.Currency); err != nil {
 		return actionResult{}, err
 	}
-	if eligible, price, err := escrowEligible(ctx, c.Tx, &o); err != nil {
+	eligible, price, dispatchDays, err := escrowEligible(ctx, c.Tx, &o)
+	if err != nil {
 		return actionResult{}, err
 	} else if !eligible {
 		return actionResult{}, errEscrowKind
 	} else if price < payoutFloor(o.Currency, "release") {
 		return actionResult{}, fail(400, subFloorListing(o.Currency))
+	}
+	// A physical order: the buyer must be able to send the vendor an encrypted shipping address (A-83, as payAction
+	// checks), and the escrow snapshots the release deadline length in force with the listing's dispatch window. Both
+	// are settled before the node is asked anything.
+	releaseDays := 0
+	if o.Kind == "physical" {
+		if ok, err := userCanReceiveEncrypted(ctx, c.Tx, o.VendorID); err != nil {
+			return actionResult{}, err
+		} else if !ok {
+			return actionResult{}, fail(409, "Escrow unavailable. "+noVendorKeyReason+" Nothing was changed.")
+		}
+		if releaseDays, err = escrowReleaseDays(ctx, c.Tx); err != nil {
+			return actionResult{}, err
+		}
+	} else {
+		dispatchDays = 0 // a digital escrow has no dispatch window or release deadline
 	}
 	buyer, vendor, err := a.escrowParties(ctx, c.Tx, &o)
 	if err != nil {
@@ -270,7 +290,7 @@ func escrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	if err != nil {
 		return actionResult{}, err
 	}
-	if err = insertEscrow(ctx, c.Tx, o.ID, refund, feeBps, feeAddr, built); err != nil {
+	if err = insertEscrow(ctx, c.Tx, o.ID, refund, feeBps, feeAddr, releaseDays, dispatchDays, built); err != nil {
 		return actionResult{}, err
 	}
 	// The import is the last step before commit: the address is shown only once the watch-only wallet watches it.
@@ -324,17 +344,20 @@ func (a *App) buildUnwatchedEscrow(ctx context.Context, tx *sql.Tx, e *escrowBTC
 	}
 }
 
-// escrowEligible reports whether o's listing takes escrow (a digital listing whose content is delivered
-// automatically, as autoDeliveryHook would, and not taken down) and its BTC price.
-func escrowEligible(ctx context.Context, q rowQuerier, o *Order) (bool, int64, error) {
+// escrowEligible reports whether o's listing takes escrow, its BTC price and its dispatch window in days (0 = none).
+// A digital listing takes escrow when its content is delivered automatically (as autoDeliveryHook would) and it is
+// not taken down; a physical listing, when it has a dispatch window and is not taken down.
+func escrowEligible(ctx context.Context, q rowQuerier, o *Order) (bool, int64, int, error) {
 	var content string
 	var takenDown bool
 	var price int64
-	if err := q.QueryRowContext(ctx, "SELECT delivery_content,admin_archive_reason IS NOT NULL,btc FROM products WHERE id=$1", o.ProductID).Scan(&content, &takenDown, &price); err != nil {
-		return false, 0, err
+	var dispatch sql.NullInt32
+	if err := q.QueryRowContext(ctx, "SELECT delivery_content,admin_archive_reason IS NOT NULL,btc,dispatch_days FROM products WHERE id=$1", o.ProductID).Scan(&content, &takenDown, &price, &dispatch); err != nil {
+		return false, 0, 0, err
 	}
-	ok := o.Kind == "digital" && strings.TrimSpace(content) != "" && utf8.RuneCountInString(content) <= maxDeliveryChars && !takenDown
-	return ok, price, nil
+	ok := !takenDown && (o.Kind == "digital" && strings.TrimSpace(content) != "" && utf8.RuneCountInString(content) <= maxDeliveryChars ||
+		o.Kind == "physical" && dispatch.Valid)
+	return ok, price, int(dispatch.Int32), nil
 }
 
 // builtEscrow is a checked escrow, not yet imported: its address, the bare-key descriptor with its checksum (what is
@@ -417,15 +440,16 @@ func (e *escrowBTC) buildEscrow(ctx context.Context, orderID string, sats int64,
 	return &builtEscrow{Address: addrs[0], Descriptor: public, MarketIndex: marketIndex, Parties: parties, Keys: keys}, nil
 }
 
-// insertEscrow writes the escrow row (the pinned refund address and the fee snapshot) and its three child keys, each
-// party's with its own origin (ruling (b): origin_path the exact account origin, derivation_suffix below it).
-func insertEscrow(ctx context.Context, tx *sql.Tx, orderID, refund string, feeBps int64, feeDest string, b *builtEscrow) error {
+// insertEscrow writes the escrow row (the pinned refund address, the fee snapshot and, for a physical order, the
+// release deadline length and dispatch window; 0 = none) and its three child keys, each party's with its own origin
+// (ruling (b): origin_path the exact account origin, derivation_suffix below it).
+func insertEscrow(ctx context.Context, tx *sql.Tx, orderID, refund string, feeBps int64, feeDest string, releaseDays, dispatchDays int, b *builtEscrow) error {
 	if feeBps == 0 {
 		feeDest = ""
 	}
 	var id int64
-	err := tx.QueryRowContext(ctx, `INSERT INTO escrows(order_id,address,market_index,refund_address,fee_bps,fee_destination)
-		VALUES($1,$2,$3,$4,$5,$6) RETURNING id`, orderID, b.Address, b.MarketIndex, refund, feeBps, feeDest).Scan(&id)
+	err := tx.QueryRowContext(ctx, `INSERT INTO escrows(order_id,address,market_index,refund_address,fee_bps,fee_destination,release_days,dispatch_days)
+		VALUES($1,$2,$3,$4,$5,$6,NULLIF($7,0),NULLIF($8,0)) RETURNING id`, orderID, b.Address, b.MarketIndex, refund, feeBps, feeDest, releaseDays, dispatchDays).Scan(&id)
 	var pe *pgconn.PgError
 	if errors.As(err, &pe) && pe.Code == "23505" && pe.ConstraintName == "escrows_refund_address_key" {
 		return errEscrowRefundUsed // another checkout pinned it first
