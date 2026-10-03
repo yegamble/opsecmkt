@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -182,6 +183,8 @@ func (x *xmrEscrowEnv) orderForms(order, sess string) []pageForm {
 				f.values.Set(name, attrs["value"])
 			case name == "password":
 				f.values.Set(name, testPassword)
+			case name == "address": // a Monero escrow claim address (slice X-e): fresh for each form
+				f.values.Set(name, testXMRAddr("form address "+randomToken(), true))
 			case attrs["type"] == "radio":
 				if !f.values.Has(name) {
 					f.values.Set(name, attrs["value"])
@@ -200,13 +203,17 @@ func (x *xmrEscrowEnv) orderForms(order, sess string) []pageForm {
 }
 
 // QA on X-a (chair addendum): a Monero escrow order's page offers only actions that can succeed. In awaiting payment
-// (with a deposit), paid (digital and physical) and completed, every form the buyer or the vendor is shown is submitted
-// once, each on a fresh copy of the order, and none answers 409 (or a server error): the cancel carries amount_seen, and
-// the pooled "Mark shipped" and the buyer's cancel of a paid digital order are not offered.
+// (with a deposit), paid (digital and physical), completed and, since slice X-e, shipped and resolved for the vendor,
+// every form the buyer or the vendor is shown is submitted once, each on a fresh copy of the order, and none answers
+// 409 (or a server error): the cancel carries amount_seen, and the pooled "Mark shipped" and the buyer's cancel of a
+// paid digital order are not offered. The Monero escrow forms (Mark shipped, the claim, Confirm receipt) are offered
+// exactly where they apply and each succeeds (303).
 func TestXMREscrowOrderFormsNeverConflict(t *testing.T) {
 	x := newXMREscrowEnv(t)
 	x.mustPoll()
 	physical := x.physical(x.vendor)
+	agExec(x.testEnv, "UPDATE products SET stock=100 WHERE id=$1", physical) // one order per form and viewer
+	_, adminSess := x.user("xforms_admin_"+randomToken()[:6], "admin")
 	scenarios := map[string]func() string{
 		"awaiting payment with a deposit": func() string {
 			order, addr := x.freshOrder(x.digital(x.vendor))
@@ -234,8 +241,29 @@ func TestXMREscrowOrderFormsNeverConflict(t *testing.T) {
 			x.mustPoll()
 			return order
 		},
+		// Slice X-e: the buyer's Confirm receipt and the dispute; the vendor's claim after a decision for the vendor.
+		"shipped": func() string {
+			order, _, _ := x.shippedXMR(physical)
+			return order
+		},
+		"resolved for the vendor before shipping": func() string {
+			order, sess := x.paidXMRPhysical(physical)
+			if code, body := x.xmrDispute(order, sess); code != 303 {
+				t.Fatalf("dispute: %d %s", code, body)
+			}
+			dispute := agStrings(t, x.testEnv, "SELECT id FROM disputes WHERE order_id=$1", order)[0]
+			if code, body := x.xmrPost("/resolve", adminSess, url.Values{"id": {dispute}, "outcome": {"release"}, "resolution": {"Decided from the evidence both parties sent."},
+				"payout_confirmed": {"confirmed"}, "amount_seen": {strconv.FormatInt(xmrListingPrice, 10)}, "reply_seen": {"0"}, "password": {testPassword}}); code != 303 {
+				t.Fatalf("resolve: %d %s", code, body)
+			}
+			return order
+		},
 	}
-	want := map[string]string{"awaiting payment with a deposit": stateAwaitingPayment, "paid digital": statePaid, "paid physical": statePaid, "completed": stateCompleted}
+	want := map[string]string{"awaiting payment with a deposit": stateAwaitingPayment, "paid digital": statePaid, "paid physical": statePaid, "completed": stateCompleted,
+		"shipped": stateShipped, "resolved for the vendor before shipping": stateResolved}
+	// The Monero escrow forms of slice X-e, by scenario and viewer: each is offered there, and succeeds.
+	offered := map[string]string{"paid physical/vendor": "/escrow-xmr/ship", "completed/vendor": "/escrow-xmr/claim", "shipped/buyer": "/escrow-xmr/confirm",
+		"resolved for the vendor before shipping/vendor": "/escrow-xmr/claim"}
 	for name, build := range scenarios {
 		for _, viewer := range []string{roleBuyer, roleVendor} {
 			order := build()
@@ -254,11 +282,17 @@ func TestXMREscrowOrderFormsNeverConflict(t *testing.T) {
 				}
 				w := x.do("POST", f.action, x.sessOf(fresh, viewer), f.values)
 				t.Logf("%s, %s: %s -> %d", name, viewer, f.action, w.Code)
-				if w.Code == 409 || w.Code >= 500 {
+				if w.Code == 409 || w.Code >= 500 || strings.HasPrefix(f.action, "/escrow-xmr/") && w.Code != 303 {
 					t.Errorf("%s, %s: %s answered %d %s", name, viewer, f.action, w.Code, w.Body.String())
 				}
 			}
+			if want, ok := offered[name+"/"+viewer]; ok && !slices.ContainsFunc(forms, func(f pageForm) bool { return f.action == want }) {
+				t.Errorf("%s, %s: %s is not offered", name, viewer, want)
+			}
 			for _, f := range forms {
+				if a := f.action; strings.HasPrefix(a, "/escrow-xmr/") && offered[name+"/"+viewer] != a {
+					t.Errorf("%s, %s: offered %s", name, viewer, a)
+				}
 				if f.action == "/orders/ship" || (f.action == "/orders/cancel" && f.values.Get("from") == statePaid && viewer == roleBuyer && name == "paid digital") {
 					t.Errorf("%s, %s: offered %s", name, viewer, f.action)
 				}
@@ -286,7 +320,8 @@ func (x *xmrEscrowEnv) sessOf(order, viewer string) string {
 	return sess
 }
 
-// panel is the Monero escrow panel of the order page as uid's session sees it, from its heading to its section's end.
+// panel is the Monero escrow panel of the order page as uid's session sees it, from its heading to the next steps
+// section that follows it (the panel holds sections of its own).
 func (x *xmrEscrowEnv) panel(order, sess string) string {
 	x.t.Helper()
 	body := html.UnescapeString(x.page("/order?id="+order, sess))
@@ -294,7 +329,7 @@ func (x *xmrEscrowEnv) panel(order, sess string) string {
 	if i < 0 {
 		x.t.Fatalf("no Monero escrow panel:\n%s", body)
 	}
-	j := strings.Index(body[i:], "</section>")
+	j := strings.Index(body[i:], `aria-labelledby="order-next"`)
 	return body[i : i+j]
 }
 

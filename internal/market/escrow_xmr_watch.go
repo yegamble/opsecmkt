@@ -231,6 +231,9 @@ func (a *App) xmrEscrowPollOnce(ctx context.Context) error {
 	if err = a.xmrSettleOrders(ctx, read, touched); err != nil {
 		errs = append(errs, err)
 	}
+	if err = a.xmrDeadlines(ctx); err != nil {
+		errs = append(errs, err)
+	}
 	return errors.Join(errs...)
 }
 

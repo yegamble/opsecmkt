@@ -59,6 +59,21 @@ var escrowOnly = map[[3]string]bool{{stateDelivered, stateCompleted, roleSystem}
 // refused there (409) and never offered, and "confirm receipt" can never lead to a market co-signature.
 var pooledOnly = map[[3]string]bool{{stateShipped, stateCompleted, roleBuyer}: true, {stateDelivered, stateCompleted, roleBuyer}: true}
 
+// xmrConfirmOnly is the one escrow exception to pooledOnly (P3-R7): the buyer of a shipped Monero escrow order, which has
+// no party signatures, confirms receipt with a password step-up (/escrow-xmr/confirm, escrow_xmr_release.go), and that
+// action alone marks its move (withConfirmReceipt). Every other escrow order, and a Monero one through the pooled
+// Complete form, still meets pooledOnly.
+var xmrConfirmOnly = map[[3]string]bool{{stateShipped, stateCompleted, roleBuyer}: true}
+
+type confirmReceiptCtx struct{}
+
+// withConfirmReceipt marks the buyer's Confirm receipt of a Monero escrow order (xmrConfirmOnly).
+func withConfirmReceipt(ctx context.Context) context.Context {
+	return context.WithValue(ctx, confirmReceiptCtx{}, true)
+}
+
+func isConfirmReceipt(ctx context.Context) bool { return ctx.Value(confirmReceiptCtx{}) != nil }
+
 var (
 	errConflict  = fail(409, "This order changed or is no longer in that state. Reload and try again.")
 	errForbidden = fail(403, "You cannot make that change to this order.")
@@ -129,6 +144,9 @@ func scanOrder(s interface{ Scan(...any) error }) (Order, error) {
 // code (escrow_*.go) acts only on btcEscrow orders.
 func (o Order) btcEscrow() bool { return o.Escrow && o.Currency == "BTC" }
 
+// xmrEscrow reports whether o is settled through a Monero escrow (escrow_xmr_*.go).
+func (o Order) xmrEscrow() bool { return o.Escrow && o.Currency == "XMR" }
+
 // noticeDetail is a sentence an action adds to the notice transition sends about one order's move to state to
 // (withNoticeDetail): an escrow order's release deadline in the shipped and dispute notices (P2-R9, escrow_deadline.go).
 type noticeDetail struct{ orderID, to, text string }
@@ -153,7 +171,13 @@ func (a *App) transition(ctx context.Context, tx *sql.Tx, orderID, from, to stri
 	if o.State != from {
 		return nil, errConflict
 	}
-	if o.Escrow && slices.ContainsFunc(actorRoles(&o, actor), func(r string) bool { return pooledOnly[[3]string{from, to, r}] }) {
+	if o.Escrow && slices.ContainsFunc(actorRoles(&o, actor), func(r string) bool {
+		edge := [3]string{from, to, r}
+		return pooledOnly[edge] && !(xmrConfirmOnly[edge] && o.xmrEscrow() && isConfirmReceipt(ctx))
+	}) {
+		if o.xmrEscrow() {
+			return nil, errEscrowCompleteXMR
+		}
 		return nil, errEscrowComplete
 	}
 	allowed, ok := transitions[from][to]

@@ -73,10 +73,7 @@ func xmrEscrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	if refund == "" {
 		return actionResult{}, errXMRRefundMissing
 	}
-	if _, err := parseXMRAddress(refund); err != nil {
-		if data, ok := xmrBase58Decode(refund); ok && len(data) == 77 && data[0] == xmrTagIntegrated {
-			err = errXMRAddressIntegrated // 106 characters: parseXMRAddress refuses it by its length alone
-		}
+	if err := checkXMRFormAddress(refund); err != nil {
 		return actionResult{}, fail(400, "The refund address is refused: "+err.Error()+". Nothing was changed.")
 	}
 	o, err := partyOrder(c, c.Form.Get("order_id"))
@@ -184,17 +181,8 @@ func xmrEscrowCheckoutAction(c *actionCtx) (actionResult, error) {
 // primary address, the fee address (configured or snapshotted), or an address used before as a refund, settlement
 // destination or pooled deposit address (ES-5).
 func checkXMRRefund(ctx context.Context, q rowQuerier, refund, feeAddress string) error {
-	var kind string
-	if err := q.QueryRowContext(ctx, `SELECT CASE
-		WHEN EXISTS(SELECT 1 FROM xmr_escrow_slots WHERE address=$1) OR EXISTS(SELECT 1 FROM escrows WHERE address=$1) THEN 'escrow'
-		WHEN EXISTS(SELECT 1 FROM xmr_escrow_wallets WHERE primary_address=$1) THEN 'wallet'
-		WHEN $1=$2 OR EXISTS(SELECT 1 FROM escrows WHERE fee_destination=$1) THEN 'fee'
-		WHEN EXISTS(SELECT 1 FROM escrows WHERE refund_address=$1) OR EXISTS(SELECT 1 FROM xmr_settlements WHERE destination=$1)
-			OR EXISTS(SELECT 1 FROM payment_addresses WHERE address=$1) THEN 'used'
-		ELSE '' END`, refund, feeAddress).Scan(&kind); err != nil {
-		return err
-	}
-	switch kind {
+	use, err := xmrAddressUse(ctx, q, refund, feeAddress, "")
+	switch use {
 	case "escrow":
 		return errXMRRefundEscrow
 	case "wallet":
@@ -204,5 +192,22 @@ func checkXMRRefund(ctx context.Context, q rowQuerier, refund, feeAddress string
 	case "used":
 		return errEscrowRefundUsed
 	}
-	return nil
+	return err
+}
+
+// xmrAddressUse names how this market already knows the Monero address addr: "escrow" (an escrow or slot address),
+// "wallet" (an escrow wallet's primary address), "fee" (the fee address feeAddress, or one an escrow snapshotted),
+// "refund" (the refund address of the escrow of order, when order is given), "used" (another refund address, a Monero
+// settlement's destination or a pooled deposit address), or "".
+func xmrAddressUse(ctx context.Context, q rowQuerier, addr, feeAddress, order string) (string, error) {
+	var use string
+	err := q.QueryRowContext(ctx, `SELECT CASE
+		WHEN EXISTS(SELECT 1 FROM xmr_escrow_slots WHERE address=$1) OR EXISTS(SELECT 1 FROM escrows WHERE address=$1) THEN 'escrow'
+		WHEN EXISTS(SELECT 1 FROM xmr_escrow_wallets WHERE primary_address=$1) THEN 'wallet'
+		WHEN $1=$2 OR EXISTS(SELECT 1 FROM escrows WHERE fee_destination=$1) THEN 'fee'
+		WHEN EXISTS(SELECT 1 FROM escrows WHERE order_id=$3 AND refund_address=$1) THEN 'refund'
+		WHEN EXISTS(SELECT 1 FROM escrows WHERE refund_address=$1) OR EXISTS(SELECT 1 FROM xmr_settlements WHERE destination=$1)
+			OR EXISTS(SELECT 1 FROM payment_addresses WHERE address=$1) THEN 'used'
+		ELSE '' END`, addr, feeAddress, order).Scan(&use)
+	return use, err
 }

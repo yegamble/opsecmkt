@@ -79,6 +79,16 @@ func parseXMRAddress(s string) (xmrAddress, error) {
 	return a, nil
 }
 
+// checkXMRFormAddress is parseXMRAddress for an address typed into a form (a refund or claim address): an integrated
+// address, which parseXMRAddress refuses by its length alone (106 characters), is refused as integrated.
+func checkXMRFormAddress(s string) error {
+	_, err := parseXMRAddress(s)
+	if data, ok := xmrBase58Decode(s); err != nil && ok && len(data) == 77 && data[0] == xmrTagIntegrated {
+		err = errXMRAddressIntegrated
+	}
+	return err
+}
+
 // xmrBase58Decode decodes Monero base58 (base58::decode): full 11-character blocks to 8 bytes, then a last block
 // of a length xmrBase58BlockSizes allows. A block whose value does not fit its byte count is refused.
 func xmrBase58Decode(s string) ([]byte, bool) {

@@ -322,10 +322,11 @@ type Transition struct {
 // awaiting payment that has received a deposit, resolve)
 // pays now, by payoutBasis (A-161, A-122). Seen is that amount in atomic units, sent back as amount_seen;
 // Confirm labels the required confirmation checkbox. Resolve form only: Release and Refund state each outcome
-// (amount, recipient, difference from the price, the recipient's payout state).
+// (amount, recipient, difference from the price, the recipient's payout state); Escrow, when set, how a Monero escrow
+// order's decision is paid (xmrDisputePreview).
 type PayoutPreview struct {
-	Seen                     int64
-	Confirm, Release, Refund string
+	Seen                             int64
+	Confirm, Release, Refund, Escrow string
 }
 
 // OverpaidView says what completing an overpaid order does with the excess, from the split the complete form
@@ -527,10 +528,11 @@ type EscrowDeadlineView struct {
 }
 
 // DeadlineBanner is one /orders banner (escrow_deadline.go): an escrow order of the viewer's whose release deadline At
-// (UTC) is less than 72 hours away, Left as computed when the page loaded; Buyer when the viewer is its buyer.
+// (UTC) is less than 72 hours away, Left as computed when the page loaded; Buyer when the viewer is its buyer; XMR for a
+// Monero escrow order (escrow_xmr_deadline.go).
 type DeadlineBanner struct {
 	OrderID, Short, At, Left string
-	Buyer                    bool
+	Buyer, XMR               bool
 }
 
 // EscrowSettlementView is an escrow order's settlement on its page (escrow_settle.go): its state in honest words, its
@@ -609,6 +611,10 @@ type XMREscrowOrderView struct {
 	CancelAfter, Status, NextStep, Fee          string
 	Deposits                                    []PaymentDeposit
 	Unread                                      string // set when nothing is read at the address: shown for the Confirmed and Unconfirmed figures
+	// Slice X-e (xmrReleaseView): a shipped order's release deadline, and the forms the viewer may use: the vendor's
+	// Mark shipped and claim, the buyer's Confirm receipt.
+	Deadline             *EscrowDeadlineView
+	Ship, Confirm, Claim bool
 }
 
 // XMREscrowCheckoutView offers Monero escrow checkout on an XMR draft (escrow_xmr_create.go): Reason says why it cannot

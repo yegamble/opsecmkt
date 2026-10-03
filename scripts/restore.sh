@@ -73,7 +73,9 @@ age -d -i "$AGE_IDENTITY" "$1" | client pg_restore --single-transaction --exit-o
 # final transaction is held the same way, in settlement_bumps.send_error, until that confirmation of its settlement.
 # A physical escrow order's release deadline may have passed in the restored records: the escrow_release_recheck setting
 # asks the escrow watcher's next pass to move every passed deadline of a shipped order to 72 hours later and tell its
-# buyer (recheckReleaseDeadlines in internal/market/escrow_deadline.go, the only code that moves a deadline).
+# buyer (recheckReleaseDeadlines in internal/market/escrow_deadline.go, the only code that moves a deadline);
+# escrow_xmr_release_recheck asks the same of the Monero escrow watcher for Monero escrow orders
+# (xmrRecheckReleaseDeadlines in internal/market/escrow_xmr_deadline.go), on its first pass after the restore gate is cleared.
 # The restored records also lack every escrow created after the backup, so their child keys could be handed out again
 # inside other escrow addresses (A-366): escrow_sweep_required makes escrow checkout wait until the escrow watcher's
 # orphan sweep has reserved the keys of every address its watch-only wallet holds with no escrow row (reconcileOrphans
@@ -88,6 +90,8 @@ SELECT to_regclass('settings') IS NOT NULL AS has_settings \gset
 INSERT INTO settings(key,value) VALUES ('payments_recovery_required','true')
 ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
 INSERT INTO settings(key,value) VALUES ('escrow_release_recheck','true')
+ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
+INSERT INTO settings(key,value) VALUES ('escrow_xmr_release_recheck','true')
 ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
 INSERT INTO settings(key,value) VALUES ('escrow_sweep_required','true')
 ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;

@@ -346,7 +346,9 @@ settlement with a stored transaction until an administrator confirms its rebroad
 `settlement_bumps` line holds every restored fee bump of one with a stored transaction until that confirmation of its
 settlement (omit it if the database has no `settlement_bumps` table, before migration 080). The
 `escrow_release_recheck` line asks the escrow watcher's next pass to move every release deadline of a shipped physical
-escrow order that has passed in the restored records to 72 hours later, telling each buyer. The `escrow_sweep_required`
+escrow order that has passed in the restored records to 72 hours later, telling each buyer; the
+`escrow_xmr_release_recheck` line asks the same of the Monero escrow watcher for Monero escrow orders, on its first pass
+after the restore gate is cleared (both lines act only while that escrow is on). The `escrow_sweep_required`
 line makes escrow checkout wait until the escrow watcher has reserved the keys of every escrow its watch-only wallet
 holds and the restored records lack, and the `escrow_index_floors` and `setval` lines move every account's next escrow
 child index and the market's escrow key index 50 past the restored records, so no escrow key is handed out twice (A-366;
@@ -358,6 +360,8 @@ BEGIN;
 INSERT INTO settings(key,value) VALUES ('payments_recovery_required','true')
 ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
 INSERT INTO settings(key,value) VALUES ('escrow_release_recheck','true')
+ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
+INSERT INTO settings(key,value) VALUES ('escrow_xmr_release_recheck','true')
 ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
 INSERT INTO settings(key,value) VALUES ('escrow_sweep_required','true')
 ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
