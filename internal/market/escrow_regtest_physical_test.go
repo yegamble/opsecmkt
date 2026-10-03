@@ -25,6 +25,9 @@ import (
 // buyer; the buyer signs it in their wallet, and the next pass finalizes the two signatures alone, stores the final
 // transaction (cosigned 'parties'), completes the order and broadcasts it. The arbiter wallet is never asked to sign
 // (walletprocesspsbt 0, keypoolrefill 0). Mined, the settlement is confirmed and each output on chain is the plan's.
+// Then (A-385) a second order's release is signed by the vendor through the market and by the buyer offline in their
+// own wallet; the parties combine, finalize and broadcast it themselves, and the watcher records it as broadcast,
+// completes the order and follows it to its confirmation, still with no arbiter signature.
 func TestEscrowRegtestPhysical(t *testing.T) {
 	appURL, opURL := os.Getenv("ESCROW_REGTEST_APP_RPC_URL"), os.Getenv("ESCROW_REGTEST_OPERATOR_RPC_URL")
 	if appURL == "" || opURL == "" {
@@ -327,5 +330,69 @@ func TestEscrowRegtestPhysical(t *testing.T) {
 	if n := count("/wallet/"+arbiter, "walletprocesspsbt"); n != 0 {
 		t.Fatalf("arbiter walletprocesspsbt calls at the end: %d", n)
 	}
-	t.Logf("release %s confirmed (3 blocks); each output on chain (gettxout) is the plan's; arbiter walletprocesspsbt calls over the whole leg: 0", txid)
+	t.Logf("release %s confirmed (3 blocks); each output on chain (gettxout) is the plan's; arbiter walletprocesspsbt calls so far: 0", txid)
+
+	// A-385: a second order. The vendor signs its release through the market; the buyer signs offline in their own
+	// wallet and never pastes it; the parties combine, finalize and broadcast it themselves. The watcher finds it on the
+	// network, records it as broadcast and completes the order; the market signs nothing.
+	order2 := e.order(buyer, product, "BTC", stateDraft)
+	if w := e.do("POST", "/orders/escrow", buyerSess, url.Values{"order_id": {order2}, "refund_address": {newAddr()}}); w.Code != 303 {
+		t.Fatalf("escrow checkout 2: %d %s", w.Code, w.Body.String())
+	}
+	var addr2 string
+	e.DB.QueryRow("SELECT address FROM escrows WHERE order_id=$1", order2).Scan(&addr2)
+	call(funder, "sendtoaddress", &fund, addr2, json.Number("0.001"))
+	mine(3)
+	poll()
+	if w := e.do("POST", "/escrow/ship", vendorSess, url.Values{"order_id": {order2}, "address": {newAddr()}, "password": {testPassword}}); w.Code != 303 {
+		t.Fatalf("ship 2: %d %s", w.Code, w.Body.String())
+	}
+	poll()
+	var id2 int64
+	var txid2 string
+	if err := e.DB.QueryRow("SELECT id,txid FROM settlements WHERE order_id=$1 AND kind='release' AND state='awaiting_signature'", order2).Scan(&id2, &txid2); err != nil {
+		t.Fatalf("release 2 not built: %v", err)
+	}
+	copy2 := func(sess string) string {
+		t.Helper()
+		w := e.do("GET", "/escrow-psbt?id="+order2+"&s="+strconv.FormatInt(id2, 10), sess, nil)
+		if w.Code != 200 {
+			t.Fatalf("copy 2: %d", w.Code)
+		}
+		return strings.TrimSpace(w.Body.String())
+	}
+	vendorSigned := walletSign(vendorWallet, copy2(vendorSess))
+	if w := e.do("POST", "/escrow/sign", vendorSess, url.Values{"order_id": {order2}, "settlement_id": {strconv.FormatInt(id2, 10)}, "psbt": {vendorSigned}}); w.Code != 303 {
+		t.Fatalf("vendor signs release 2: %d %s", w.Code, w.Body.String())
+	}
+	buyerSigned := walletSign(buyerWallet, copy2(buyerSess)) // offline: never pasted
+	var combined string
+	call("", "combinepsbt", &combined, []string{vendorSigned, buyerSigned})
+	var final struct {
+		Hex      string `json:"hex"`
+		Complete bool   `json:"complete"`
+	}
+	call("", "finalizepsbt", &final, combined)
+	var sent string
+	call("", "sendrawtransaction", &sent, final.Hex)
+	if !final.Complete || sent != txid2 {
+		t.Fatalf("the parties' own transaction: complete %v, txid %s (stored %s)", final.Complete, sent, txid2)
+	}
+	before := count("/wallet/"+arbiter, "walletprocesspsbt") + count("/wallet/"+arbiter, "keypoolrefill")
+	poll()
+	e.DB.QueryRow("SELECT s.state,COALESCE(s.cosigned,''),o.state FROM settlements s JOIN orders o ON o.id=s.order_id WHERE s.id=$1", id2).Scan(&state, &cosigned, &orderState)
+	if state != "broadcast" || orderState != stateCompleted {
+		t.Fatalf("the parties' own broadcast while shipped: settlement %s %s, order %s", state, cosigned, orderState)
+	}
+	t.Logf("order %s: the vendor signed through the market, the buyer offline in their own Core wallet; the parties broadcast %s themselves; one pass recorded it as broadcast (cosigned %s) and completed the order", shortID(order2), txid2, cosigned)
+	mine(3)
+	poll()
+	e.DB.QueryRow("SELECT state FROM settlements WHERE id=$1", id2).Scan(&state)
+	if state != "confirmed" {
+		t.Fatalf("release 2 after 3 blocks: %s", state)
+	}
+	if n := count("/wallet/"+arbiter, "walletprocesspsbt"); n != 0 || arbiterSigns() != before {
+		t.Fatalf("arbiter walletprocesspsbt calls at the end: %d", n)
+	}
+	t.Logf("release %s confirmed (3 blocks); arbiter walletprocesspsbt calls over the whole leg: 0", txid2)
 }

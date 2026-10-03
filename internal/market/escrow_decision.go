@@ -167,8 +167,9 @@ func (a *App) escrowDecisionView(ctx context.Context, d *PageData, v *EscrowOrde
 // escrowDisputePreview is the resolve form's statement of each outcome for an escrow order: the counted escrowed amount
 // (as escrowSettleTerminal counts it) and the settlement each outcome builds.
 func (a *App) escrowDisputePreview(ctx context.Context, o *Order) (PayoutPreview, error) {
-	var sum int64
-	if err := a.db.QueryRowContext(ctx, `SELECT COALESCE(sum(amount),0) FROM payments WHERE order_id=$1 AND confirmations>=0 AND NOT locked AND NOT after_close`, o.ID).Scan(&sum); err != nil {
+	var sum, left int64
+	if err := a.db.QueryRowContext(ctx, `SELECT COALESCE(sum(amount),0),COALESCE(sum(amount) FILTER (WHERE escrow_left_out),0) FROM payments
+		WHERE order_id=$1 AND confirmations>=0 AND NOT locked AND NOT after_close`, o.ID).Scan(&sum, &left); err != nil {
 		return PayoutPreview{}, err
 	}
 	btc := amount(sum, 8) + " " + a.escrowNetwork() + " BTC"
@@ -188,6 +189,14 @@ func (a *App) escrowDisputePreview(ctx context.Context, o *Order) (PayoutPreview
 	case release:
 		p.Release = "Release to " + o.Vendor + ": the release to the vendor built when the order was shipped pays the escrowed " + btc + " to the claim address the vendor gave then (less the market fee and the network fee; any amount paid above the price goes back to the buyer)"
 		p.Refund += "; the release to the vendor built when the order was shipped is cancelled"
+	}
+	if left > 0 && release && !final {
+		// A-374, A-387: deposits left out of the built release are not spent by the decision's settlement; a stray refund
+		// returns them to the buyer once the order is closed.
+		net := " " + a.escrowNetwork() + " BTC"
+		settled, back := amount(sum-left, 8)+net, "the "+amount(left, 8)+net+" left out of the release (deposits that arrived after it was built) goes back to the buyer's refund address by a stray refund once the order is closed"
+		p.Release = "Release to " + o.Vendor + ": the release to the vendor built when the order was shipped pays " + settled + " to the claim address the vendor gave then (less the market fee and the network fee; any amount paid above the price goes back to the buyer); " + back
+		p.Refund = "Refund to " + o.Buyer + ": the release to the vendor built when the order was shipped is cancelled, and the refund settlement goes back " + settled + ", less the network fee, to the buyer's refund address; " + back
 	}
 	return p, nil
 }

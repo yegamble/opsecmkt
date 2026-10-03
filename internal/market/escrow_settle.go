@@ -903,7 +903,9 @@ func checkSettlementPaste(pasted, txid string, party, market escrowKeyRow) ([]ps
 // full before anything is written and never stored: only the party's signature on each input is kept.
 func escrowSignAction(c *actionCtx) (actionResult, error) {
 	ctx := c.Ctx()
-	o, err := partyOrder(c, c.Form.Get("order_id"))
+	// A-386: the order row first, as the dispute action takes it, so a buyer's signature and the buyer's dispute never
+	// both take effect.
+	o, err := partyOrderLocked(c, c.Form.Get("order_id"))
 	if err != nil {
 		return actionResult{}, err
 	}
@@ -918,10 +920,10 @@ func escrowSignAction(c *actionCtx) (actionResult, error) {
 	if err != nil {
 		return actionResult{}, errSettleNone
 	}
-	var state, txid, stored, signer string
+	var kind, state, txid, stored, signer string
 	var signed bool
-	err = c.Tx.QueryRowContext(ctx, `SELECT state,COALESCE(txid,''),COALESCE(psbt,''),COALESCE(signer,''),EXISTS(SELECT 1 FROM settlement_signatures WHERE settlement_id=s.id AND party=$3)
-		FROM settlements s WHERE id=$1 AND order_id=$2 FOR UPDATE`, sid, o.ID, party).Scan(&state, &txid, &stored, &signer, &signed)
+	err = c.Tx.QueryRowContext(ctx, `SELECT kind,state,COALESCE(txid,''),COALESCE(psbt,''),COALESCE(signer,''),EXISTS(SELECT 1 FROM settlement_signatures WHERE settlement_id=s.id AND party=$3)
+		FROM settlements s WHERE id=$1 AND order_id=$2 FOR UPDATE`, sid, o.ID, party).Scan(&kind, &state, &txid, &stored, &signer, &signed)
 	if err == sql.ErrNoRows {
 		return actionResult{}, errSettleNone
 	}
@@ -935,6 +937,9 @@ func escrowSignAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, errSettleSigned
 	case state != "awaiting_signature" && !second:
 		return actionResult{}, errSettleNotReady
+	case party == roleBuyer && kind == "release" && o.State == stateDisputed:
+		// P2-R2: the buyer's signature confirms receipt; while the order is disputed the decision settles it instead.
+		return actionResult{}, errSignDisputed
 	}
 	keys, err := escrowKeys(ctx, c.Tx, o.ID)
 	if err != nil {
@@ -962,10 +967,6 @@ func escrowSignAction(c *actionCtx) (actionResult, error) {
 		if n, _ := res.RowsAffected(); n != 1 {
 			return actionResult{}, errSettleNotReady
 		}
-	}
-	var kind string
-	if err = c.Tx.QueryRowContext(ctx, "SELECT kind FROM settlements WHERE id=$1", sid).Scan(&kind); err != nil {
-		return actionResult{}, err
 	}
 	what, note, notSent := "the "+party+" signed its escrow settlement ("+settlementKind(kind)+"). "+settleSigChecked+" ",
 		"The "+party+" signed the escrow settlement ("+settlementKind(kind)+"). "+settleSigChecked+" ", c.A.settleNotSent()
@@ -1243,7 +1244,8 @@ func (a *App) settlementView(ctx context.Context, d *PageData, v *EscrowOrderVie
 	if err = a.bumpView(ctx, d, v, s, id, kind, state, txid, sendErr, fee.Int64); err != nil {
 		return nil, err
 	}
-	canSign := state == "awaiting_signature" || state == "party_signed" && !readerSigned
+	// The buyer of a disputed order does not sign its release (escrowSignAction): the decision settles it.
+	canSign := (state == "awaiting_signature" || state == "party_signed" && !readerSigned) && !(s.PartiesOnly && d.Order.State == stateDisputed && d.OrderViewer == roleBuyer)
 	if canSign && (d.OrderViewer == roleBuyer || d.OrderViewer == roleVendor) && a.escrowConfigured {
 		keys, err := escrowKeys(ctx, a.db, d.Order.ID)
 		if err != nil {

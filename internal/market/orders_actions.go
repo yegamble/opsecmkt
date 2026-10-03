@@ -37,6 +37,16 @@ func partyOrder(c *actionCtx, id string) (Order, error) {
 	return o, err
 }
 
+// partyOrderLocked is partyOrder with the order row locked until the transaction ends, before any other row of the
+// order (the lock order of transition and storeFinal), for an action whose checks must see the order as it commits.
+func partyOrderLocked(c *actionCtx, id string) (Order, error) {
+	o, err := scanOrder(c.Tx.QueryRowContext(c.Ctx(), orderQuery+" WHERE o.id=$1 AND (o.buyer_id=$2 OR p.vendor_id=$2) FOR UPDATE OF o", id, c.User.ID))
+	if err == sql.ErrNoRows {
+		return o, errNoOrder
+	}
+	return o, err
+}
+
 // sellerIsVendor reports whether a listing's owner is currently a vendor or administrator. Listings of a
 // demoted vendor accept no new drafts, payment requests or restores; existing orders continue.
 func sellerIsVendor(c *actionCtx, productID string) (bool, error) {

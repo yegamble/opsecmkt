@@ -83,7 +83,9 @@ func disputeAction(c *actionCtx) (actionResult, error) {
 	if len(reason) < 20 || len(reason) > 5000 {
 		return actionResult{}, fail(400, "Describe the issue in 20–5000 characters")
 	}
-	o, err := partyOrder(c, f.Get("order_id"))
+	// A-386: the order row first, as the sign action takes it, so the check below sees a buyer's signature committed
+	// before this dispute, and a signature after it sees the order disputed.
+	o, err := partyOrderLocked(c, f.Get("order_id"))
 	if err != nil {
 		return actionResult{}, err
 	}

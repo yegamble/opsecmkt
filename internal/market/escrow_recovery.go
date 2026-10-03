@@ -350,10 +350,19 @@ func (a *App) spenderOf(ctx context.Context, e *escrowBTC, stored *psbtPacket) s
 // without the market: when the watch-only wallet holds the stored transaction itself, the buyer and the vendor signed
 // the copies they downloaded and broadcast it, and it is checked and recorded as broadcast (spentBeforeCosign, as for a
 // party-signed one, A-344); any other transaction makes the settlement external, flagged for staff, so its order page
-// stops asking for a signature that can never complete. It runs while the restore gate is set too: it only watches.
+// stops asking for a signature that can never complete. A physical order's release before the outcome (shipped or
+// disputed) still waits for a party's signature once one party signed, and the market never spends it either, so a
+// party-signed one is followed the same way (A-385): the parties may have combined the stored signature with one made
+// offline and broadcast it. It runs while the restore gate is set too: it only watches.
 func (a *App) trackAwaiting(ctx context.Context, e *escrowBTC) error {
-	return a.eachSettlement(ctx, "not followed", "SELECT id FROM settlements WHERE state='awaiting_signature' ORDER BY id", func(id int64) error {
+	return a.eachSettlement(ctx, "not followed", `SELECT s.id FROM settlements s JOIN orders o ON o.id=s.order_id WHERE s.state='awaiting_signature'
+		OR s.state='party_signed' AND s.kind='release' AND o.state IN ('shipped','disputed') ORDER BY s.id`, func(id int64) error {
 		b, err := a.loadSettleBuild(ctx, id, "awaiting_signature")
+		if err == nil && b == nil {
+			if b, err = a.loadSettleBuild(ctx, id, "party_signed"); b != nil && !releaseBeforeOutcome(b.Kind, b.OrderState) {
+				return nil // the order reached its outcome meanwhile: cosignSettlements completes it
+			}
+		}
 		if err != nil || b == nil {
 			return err
 		}

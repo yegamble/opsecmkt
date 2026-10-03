@@ -76,7 +76,9 @@
 # leaves it waiting for the buyer; the buyer signs it in their own wallet and the next pass finalizes the two signatures
 # alone (cosigned parties), completes the order and broadcasts it. The arbiter wallet's walletprocesspsbt (and
 # keypoolrefill) call count over the whole leg is 0. After 3 blocks it is confirmed and each output (gettxout) is the
-# plan's.
+# plan's. A second order's release is signed by the vendor through the market and by the buyer offline in their own
+# wallet, and the parties combine, finalize and broadcast it (A-385): the watcher records it as broadcast, completes the
+# order and confirms it.
 #
 # Ruled Phase 1 legs and where they run: release (Settlement, Cosign: claim), refund (Settlement, Cosign), dispute
 # (Cosign), comma injection refused (Gate), NONE paste refused (PracticeSign, Settlement), forged market slot refused
