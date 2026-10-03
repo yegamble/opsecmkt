@@ -892,7 +892,9 @@ broadcast.
   one. Only an administrator decides it: a moderator's `/resolve` of an escrow dispute is refused (403) and the desk
   says so. The decision needs the administrator's password (and authenticator code when enrolled) and states the
   escrowed amount; a refund to the buyer is requested at once, and after a release the vendor claims with a fresh
-  address. Until the settlement of the decision has a stored final transaction, an administrator who is not a party
+  address. On a physical order the release built when it was marked shipped is the release of a decision for the
+  vendor (no new claim); a decision for the buyer supersedes it while it has no final transaction, and is refused
+  (409) once both parties' signatures or the network have made it final. Until the settlement of the decision has a stored final transaction, an administrator who is not a party
   may change the decision on the order page (*Change the decision*, with a reason and their password): the
   settlement of the old decision is *superseded* (it and its signatures are kept as a record and never used; its
   deposits are freed) and the new one requested; both parties are notified and the change is audited. Once the

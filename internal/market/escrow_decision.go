@@ -136,9 +136,19 @@ func (a *App) escrowDecisionView(ctx context.Context, d *PageData, v *EscrowOrde
 	} else {
 		dv.Text += " An administrator may change it until its settlement has a final transaction."
 	}
-	if outcome == "release" {
+	// P2-R4: a live release older than the dispute is the one built when the order was shipped (a claim comes after).
+	var shipped bool
+	if err = a.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM settlements s JOIN disputes d ON d.order_id=s.order_id WHERE s.order_id=$1
+		AND s.kind='release' AND s.state<>'superseded' AND s.created<d.created)`, o.ID).Scan(&shipped); err != nil {
+		return err
+	}
+	switch {
+	case outcome == "release" && shipped:
+		// P2-R4: the release built when the order was shipped is the decision's settlement; no new claim is asked for.
+		v.NextStep = "The dispute was decided for the vendor: the release to the vendor built when the order was shipped pays the vendor; it is shown below. The release deadline no longer applies."
+	case outcome == "release":
 		v.NextStep = "The dispute was decided for the vendor: the vendor claims the escrowed coins from this page."
-	} else {
+	default:
 		v.NextStep = "The dispute was decided for the buyer: the coins in this escrow go back to the buyer's refund address through the refund settlement below."
 	}
 	u := d.User
@@ -162,7 +172,22 @@ func (a *App) escrowDisputePreview(ctx context.Context, o *Order) (PayoutPreview
 		return PayoutPreview{}, err
 	}
 	btc := amount(sum, 8) + " " + a.escrowNetwork() + " BTC"
-	return PayoutPreview{Seen: sum, Confirm: resolveConfirm,
+	p := PayoutPreview{Seen: sum, Confirm: resolveConfirm,
 		Release: "Release to " + o.Vendor + ": the vendor claims the escrowed " + btc + " by a settlement from the escrow (less the market fee and the network fee; any amount paid above the price goes back to the buyer)",
-		Refund:  "Refund to " + o.Buyer + ": the escrowed " + btc + ", less the network fee, go back to the buyer's refund address by a settlement from the escrow"}, nil
+		Refund:  "Refund to " + o.Buyer + ": the escrowed " + btc + ", less the network fee, go back to the buyer's refund address by a settlement from the escrow"}
+	// P2-R4: a physical order's release built when it was shipped.
+	var release, final bool
+	if err := a.db.QueryRowContext(ctx, `SELECT count(*)>0,COALESCE(bool_or(raw_tx IS NOT NULL OR state='external'),false) FROM settlements
+		WHERE order_id=$1 AND kind='release' AND state<>'superseded'`, o.ID).Scan(&release, &final); err != nil {
+		return PayoutPreview{}, err
+	}
+	switch {
+	case final:
+		p.Release = "Release to " + o.Vendor + ": the release to the vendor built when the order was shipped is already final, so the escrow pays the vendor"
+		p.Refund = "Refund to " + o.Buyer + ": refused, because the release to the vendor built when the order was shipped is already final"
+	case release:
+		p.Release = "Release to " + o.Vendor + ": the release to the vendor built when the order was shipped pays the escrowed " + btc + " to the claim address the vendor gave then (less the market fee and the network fee; any amount paid above the price goes back to the buyer)"
+		p.Refund += "; the release to the vendor built when the order was shipped is cancelled"
+	}
+	return p, nil
 }

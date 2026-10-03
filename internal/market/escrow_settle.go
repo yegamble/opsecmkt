@@ -15,8 +15,6 @@ import (
 	"slices"
 	"strconv"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Escrow settlements (WR-escrow Phase 1, slice P1-c1; ES-1, ES-2, ES-4, ES-5). A settlement is the one transaction
@@ -243,7 +241,9 @@ func escrowKeys(ctx context.Context, q rowsQuerier, orderID string) (map[string]
 // dispute was decided for the buyer, gets its refund requested (state building, to the pinned refund address); a
 // completed one, or one decided for the vendor, waits for the vendor's claim (escrow_decision.go). The settlement
 // covers every deposit that counts, confirmed or still confirming: the cancel and resolve forms state that sum
-// (checkPayoutSeen).
+// (checkPayoutSeen). A physical order's release, requested when it was shipped (P2-R1, P2-R4), is the settlement of a
+// decision for the vendor; a decision for the buyer supersedes it while it has no final transaction, and is refused
+// (409) once it has one (A-371).
 func (a *App) escrowSettleTerminal(ctx context.Context, tx *sql.Tx, o *Order) error {
 	var outcome string
 	switch o.State {
@@ -261,31 +261,66 @@ func (a *App) escrowSettleTerminal(ctx context.Context, tx *sql.Tx, o *Order) er
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(sum(amount),0),count(*) FROM payments WHERE order_id=$1 AND confirmations>=0 AND NOT locked AND NOT after_close`, o.ID).Scan(&sum, &n); err != nil {
 		return err
 	}
-	if n == 0 {
-		return nil
+	if n > 0 {
+		if err := checkPayoutSeen(ctx, o, sum); err != nil {
+			return err
+		}
 	}
-	if err := checkPayoutSeen(ctx, o, sum); err != nil {
+	// The order's live release or refund, if any: a physical order's release was requested when it was shipped (P2-R1).
+	var liveID int64
+	var liveKind, liveState string
+	var liveFinal bool
+	err := tx.QueryRowContext(ctx, "SELECT id,kind,state,raw_tx IS NOT NULL FROM settlements WHERE order_id=$1 AND kind IN ('release','refund') AND state<>'superseded' FOR UPDATE", o.ID).Scan(
+		&liveID, &liveKind, &liveState, &liveFinal)
+	if err != nil && err != sql.ErrNoRows {
 		return err
 	}
 	if outcome == "release" {
+		if n == 0 {
+			return nil
+		}
 		note := "Dispute decided for the vendor: the vendor claims the escrowed " + amount(sum, 8) + " BTC from the order page with a fresh address. The market builds that settlement (less the market fee and the network fee; any amount paid above the price goes back to the buyer), the buyer or the vendor signs it, and the market co-signs it. Nothing is sent yet."
+		if liveKind == "release" {
+			// P2-R4: the release built at shipment is the decision's settlement; no new claim is asked for.
+			note = "Dispute decided for the vendor: the release to the vendor built when the order was shipped pays the claim address the vendor gave then (less the market fee and the network fee; any amount paid above the price goes back to the buyer). A signature already given on it counts; the buyer or the vendor signs it if neither has, and the market co-signs it. The release deadline no longer applies."
+		}
 		_, err := tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, o.State, note)
 		return err
 	}
-	res, err := tx.ExecContext(ctx, `INSERT INTO settlements(order_id,kind,destination) SELECT order_id,'refund',refund_address FROM escrows WHERE order_id=$1
-		AND NOT EXISTS (SELECT 1 FROM settlements WHERE order_id=$1 AND kind IN ('release','refund') AND state<>'superseded')`, o.ID)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n != 1 {
+	var notes []string
+	switch {
+	case liveKind == "refund":
 		return nil // requested already (a later call for the same cancelled order)
+	case liveKind == "release" && (liveFinal || liveState == "external"):
+		// A-371: a release with a final transaction (or whose coins were spent on the network) is the outcome already.
+		return errReleaseFinal
+	case liveKind == "release":
+		// A-371, P2-R4: the release built at shipment has no final transaction: it ends here (its signatures with it)
+		// and its deposits are free for the refund, in this transaction (the escrow_decision.go pattern).
+		if _, err = tx.ExecContext(ctx, "UPDATE settlements SET state='superseded',updated=now() WHERE id=$1", liveID); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, "UPDATE payments SET settlement_id=NULL,updated=now() WHERE settlement_id=$1", liveID); err != nil {
+			return err
+		}
+		notes = append(notes, "The release to the vendor built when the order was shipped is cancelled: it was not final, and any signature on it no longer counts.")
 	}
-	note := "Escrow refund requested: the market builds a transaction returning the escrowed " + amount(sum, 8) + " BTC, less the network fee, to the buyer's refund address given at checkout; the buyer or the vendor then signs it on the order page. Nothing is sent yet."
-	if outcome == "refund" {
-		note = "Dispute decided for the buyer. " + note
+	if n > 0 {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO settlements(order_id,kind,destination) SELECT order_id,'refund',refund_address FROM escrows WHERE order_id=$1`, o.ID); err != nil {
+			return err
+		}
+		note := "Escrow refund requested: the market builds a transaction returning the escrowed " + amount(sum, 8) + " BTC, less the network fee, to the buyer's refund address given at checkout; the buyer or the vendor then signs it on the order page. Nothing is sent yet."
+		if outcome == "refund" {
+			note = "Dispute decided for the buyer. " + note
+		}
+		notes = append(notes, note)
 	}
-	_, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, o.State, note)
-	return err
+	for _, n := range notes {
+		if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, o.State, n); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // escrowClaimAction: the vendor of a completed escrow order requests the claim, giving the address it pays (ES-5: a
@@ -318,34 +353,10 @@ func escrowClaimAction(c *actionCtx) (actionResult, error) {
 		case !settlementFits("release", o.State, outcome):
 			return actionResult{}, errClaimState
 		}
-		_, feeAddr, err := escrowFee(ctx, c.Tx, e)
-		if err != nil {
+		if err = checkClaimAddress(c, e, dest); err != nil {
 			return actionResult{}, err
 		}
-		var used bool
-		if err = c.Tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM escrows WHERE address=$1 OR refund_address=$1 OR fee_destination=$1) OR $1=$2
-			OR EXISTS(SELECT 1 FROM payment_addresses WHERE address=$1) OR EXISTS(SELECT 1 FROM settlements WHERE destination=$1)`, dest, feeAddr).Scan(&used); err != nil {
-			return actionResult{}, err
-		}
-		if used {
-			return actionResult{}, errClaimAddressUsed
-		}
-		valid, err := e.validAddress(ctx, dest)
-		if err != nil {
-			log.Printf("escrow: claim address not checked: %s", errorClassOf(err))
-			return actionResult{}, errClaimNode
-		}
-		if !valid {
-			return actionResult{}, errClaimInvalid(c.A.escrowNetwork())
-		}
-		_, err = c.Tx.ExecContext(ctx, "INSERT INTO settlements(order_id,kind,destination,requested_by) VALUES($1,'release',$2,$3)", o.ID, dest, c.User.ID)
-		var pe *pgconn.PgError
-		switch {
-		case errors.As(err, &pe) && pe.Code == "23505" && pe.ConstraintName == "settlements_one_outcome":
-			return actionResult{}, errClaimTwice
-		case errors.As(err, &pe) && pe.Code == "23505":
-			return actionResult{}, errClaimAddressUsed
-		case err != nil:
+		if err = insertRelease(c, o.ID, dest); err != nil {
 			return actionResult{}, err
 		}
 		if _, err = c.Tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,$3,$4)", o.ID, o.State, c.User.ID,
@@ -406,7 +417,7 @@ func (a *App) buildSettlement(ctx context.Context, e *escrowBTC, id int64) error
 	if err != nil || state != "building" {
 		return err
 	}
-	if dest == "" || !settlementFits(kind, orderState, outcome) {
+	if dest == "" || !settlementBuildable(kind, orderState, outcome) {
 		return errors.New("escrow: the settlement does not fit its order's state or dispute decision")
 	}
 	keys, err := escrowKeys(ctx, a.db, orderID)
@@ -617,9 +628,9 @@ func (a *App) storeSettlement(ctx context.Context, id int64, orderID, kind, psbt
 		return err
 	}
 	defer tx.Rollback()
-	var state, buyer, vendor string
-	if err = tx.QueryRowContext(ctx, `SELECT s.state,o.buyer_id,p.vendor_id FROM settlements s JOIN orders o ON o.id=s.order_id JOIN products p ON p.id=o.product_id
-		WHERE s.id=$1 FOR UPDATE OF s`, id).Scan(&state, &buyer, &vendor); err != nil || state != "building" {
+	var state, buyer, vendor, orderState string
+	if err = tx.QueryRowContext(ctx, `SELECT s.state,o.buyer_id,p.vendor_id,o.state FROM settlements s JOIN orders o ON o.id=s.order_id JOIN products p ON p.id=o.product_id
+		WHERE s.id=$1 FOR UPDATE OF s`, id).Scan(&state, &buyer, &vendor, &orderState); err != nil || state != "building" {
 		return err
 	}
 	for i, o := range plan.Outputs {
@@ -650,14 +661,19 @@ func (a *App) storeSettlement(ctx context.Context, id int64, orderID, kind, psbt
 		return err
 	}
 	what := settlementKind(kind)
-	note := fmt.Sprintf("Escrow settlement built (%s): spends %s BTC from the escrow in %d output(s); network fee %s BTC, taken from the %s output. It waits for a signature from the buyer or the vendor. Nothing is sent yet.",
-		what, amount(total, 8), len(ins), amount(plan.NetworkFee, 8), settlementClaimant(kind))
+	waits, body := "It waits for a signature from the buyer or the vendor.", "Order "+shortID(orderID)+": its escrow settlement ("+what+") is ready to sign. Check its outputs on the order page, sign your copy in your own wallet and paste it there; either you or the other party can sign. "+a.settleNotSent()
+	if releaseBeforeOutcome(kind, orderState) {
+		// P2-R2: a shipped order's release waits for both parties; the buyer's signature confirms receipt.
+		waits = "It waits for the vendor's and the buyer's signatures; the market never signs it before the order is completed."
+		body = "Order " + shortID(orderID) + ": its release to the vendor is ready to sign. Check its outputs on the order page: the vendor signs it now, and the buyer signs it once the goods have arrived (the buyer's signature confirms receipt and ends the right to open a dispute). " + physicalReleaseNotSent(a.escrowNetwork())
+	}
+	note := fmt.Sprintf("Escrow settlement built (%s): spends %s BTC from the escrow in %d output(s); network fee %s BTC, taken from the %s output. %s Nothing is sent yet.",
+		what, amount(total, 8), len(ins), amount(plan.NetworkFee, 8), settlementClaimant(kind), waits)
 	for _, n := range append([]string{note}, plan.Folded...) {
 		if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) SELECT id,state,state,NULL,$2 FROM orders WHERE id=$1", orderID, n); err != nil {
 			return err
 		}
 	}
-	body := "Order " + shortID(orderID) + ": its escrow settlement (" + what + ") is ready to sign. Check its outputs on the order page, sign your copy in your own wallet and paste it there; either you or the other party can sign. " + a.settleNotSent()
 	for _, uid := range []string{buyer, vendor} {
 		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), uid, body); err != nil {
 			return err
@@ -960,6 +976,15 @@ func escrowSignAction(c *actionCtx) (actionResult, error) {
 		notSent = c.A.settleNotSentBoth()
 		res.Notice = "escrow-signed-both"
 	}
+	if releaseBeforeOutcome(kind, o.State) {
+		// P2-R2: the market never signs a shipped order's release; the buyer's signature confirms receipt.
+		if !second {
+			notSent = physicalReleaseNotSent(c.A.escrowNetwork())
+		}
+		if party == roleBuyer {
+			what, note = what+"The buyer's signature confirms receipt of the order. ", note+"The buyer's signature confirms receipt of the order. "
+		}
+	}
 	if _, err = c.Tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,$3,$4)", o.ID, o.State, c.User.ID,
 		note+notSent); err != nil {
 		return actionResult{}, err
@@ -1117,10 +1142,14 @@ func (a *App) settlementView(ctx context.Context, d *PageData, v *EscrowOrderVie
 		return nil, err
 	}
 	s.State = state
-	switch kind {
-	case "release":
+	// P2-R2: a physical order's release before its outcome completes with both parties' signatures only.
+	s.PartiesOnly = releaseBeforeOutcome(kind, d.Order.State)
+	switch {
+	case kind == "release" && d.Order.Kind == "physical":
+		s.Title = "Release to the vendor"
+	case kind == "release":
 		s.Title = "The vendor's claim"
-	case "refund":
+	case kind == "refund":
 		s.Title = "Refund to the buyer"
 	default:
 		s.Title = "Recovery of coins sent after the order closed (a stray refund to the buyer)"
@@ -1129,12 +1158,14 @@ func (a *App) settlementView(ctx context.Context, d *PageData, v *EscrowOrderVie
 	if pending != "" {
 		pending = " " + pending + " The market tries again on each pass; market staff should check it if this stays."
 	}
-	var bothSigned bool
+	var buyerSigned, vendorSigned bool
 	if state == "party_signed" {
-		if err = a.db.QueryRowContext(ctx, "SELECT count(DISTINCT party)=2 FROM settlement_signatures WHERE settlement_id=$1", id).Scan(&bothSigned); err != nil {
+		if err = a.db.QueryRowContext(ctx, "SELECT COALESCE(bool_or(party='buyer'),false),COALESCE(bool_or(party='vendor'),false) FROM settlement_signatures WHERE settlement_id=$1", id).Scan(
+			&buyerSigned, &vendorSigned); err != nil {
 			return nil, err
 		}
 	}
+	bothSigned := buyerSigned && vendorSigned
 	switch state {
 	case "building":
 		s.Status = "Being built: the market builds the transaction from the escrow's confirmed deposits on its next pass. Reload in a minute."
@@ -1146,11 +1177,19 @@ func (a *App) settlementView(ctx context.Context, d *PageData, v *EscrowOrderVie
 		}
 	case "awaiting_signature":
 		s.Status = "Waiting for a signature from the buyer or the vendor. " + a.settleNotSent()
+		if s.PartiesOnly {
+			s.Status = "Waiting for the vendor's and the buyer's signatures. " + physicalReleaseNotSent(a.escrowNetwork())
+		}
 	case "party_signed":
 		s.Status = "Signed by the " + signer + " (" + signedAt.String + "). " + settleSigChecked + " The market co-signs it and broadcasts it on its next pass. Nothing has been sent yet." + pending
-		if bothSigned {
+		switch {
+		case bothSigned && s.PartiesOnly && d.Order.State == stateDisputed:
+			s.Status = "Signed by the " + signer + " and the " + otherParty(signer) + " (first signature " + signedAt.String + "). The order is disputed, so nothing is sent until an administrator decides the dispute. Nothing has been sent yet."
+		case bothSigned:
 			// A-353: with both parties' signatures the market does not sign; it broadcasts the transaction they signed.
 			s.Status = "Signed by the " + signer + " and the " + otherParty(signer) + " (first signature " + signedAt.String + "). " + settleSigChecked + " The market does not sign it, and broadcasts the transaction the two parties signed on its next pass. Nothing has been sent yet." + pending
+		case s.PartiesOnly:
+			s.Status = "Signed by the " + signer + " (" + signedAt.String + "). Waiting for the " + otherParty(signer) + "'s signature. " + settleSigChecked + " " + physicalReleaseNotSent(a.escrowNetwork()) + pending
 		}
 	case "signed":
 		by := "the market, with the " + signer + "'s signature"
@@ -1214,6 +1253,12 @@ func (a *App) settlementView(ctx context.Context, d *PageData, v *EscrowOrderVie
 			return nil, err
 		}
 		s.CanSign, s.SignToo = true, state == "party_signed"
+	}
+	if s.PartiesOnly && d.Order.State == stateShipped {
+		v.PartiesOnly = true
+		if next := releaseNextStep(state, map[string]bool{roleBuyer: buyerSigned, roleVendor: vendorSigned}); next != "" {
+			v.NextStep = next
+		}
 	}
 	return s, nil
 }

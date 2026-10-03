@@ -90,6 +90,17 @@ func disputeAction(c *actionCtx) (actionResult, error) {
 	if o.State != statePaid && o.State != stateShipped && o.State != stateDelivered {
 		return actionResult{}, fail(409, "Only paid, shipped, or delivered orders can be disputed. Draft orders contain no funds.")
 	}
+	if o.Escrow && o.BuyerID == c.User.ID {
+		// P2-R2: the buyer's signature on the release to the vendor confirms receipt and ends the buyer's right to dispute.
+		var signed bool
+		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM settlement_signatures g JOIN settlements s ON s.id=g.settlement_id
+			WHERE s.order_id=$1 AND s.kind='release' AND s.state<>'superseded' AND g.party='buyer')`, o.ID).Scan(&signed); err != nil {
+			return actionResult{}, err
+		}
+		if signed {
+			return actionResult{}, errDisputeSigned
+		}
+	}
 	if _, err = c.A.transition(ctx, tx, o.ID, o.State, stateDisputed, c.User, "Dispute opened"); err != nil {
 		return actionResult{}, err
 	}

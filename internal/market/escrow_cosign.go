@@ -27,7 +27,9 @@ import (
 //     testmempoolaccept refusing a script) is discarded and the settlement returns to awaiting a signature, with a
 //     fixed order note and a notice to both parties (A-339). When both parties signed and the two do not finalize
 //     together, the market co-signs with whichever one verifies and discards the other; only when neither does is the
-//     settlement returned.
+//     settlement returned. A physical order's release before the order's outcome (shipped) is never co-signed: only
+//     both parties' signatures complete it, and when they do not verify together both are discarded (P2-R2, A-372;
+//     finalizeParties, escrow_release.go).
 //  3. Broadcasts each signed settlement's stored raw transaction, only that one (broadcastSettlements): an answer of
 //     its txid, or -27 (already confirmed), is sent; it moves signed -> broadcast. A signed settlement is never rebuilt
 //     or signed again; a failed broadcast is tried again with the same stored transaction on the next pass.
@@ -108,10 +110,11 @@ func (a *App) eachSettlement(ctx context.Context, what, query string, step func(
 	return errors.Join(errs...)
 }
 
-// cosignSettlements completes every party-signed settlement of a closed order (step 1 of the file comment).
+// cosignSettlements completes every party-signed settlement of a closed order (step 1 of the file comment), and every
+// party-signed release of a shipped one, which only both parties' signatures complete (P2-R2, escrow_release.go).
 func (a *App) cosignSettlements(ctx context.Context, e *escrowBTC) error {
 	return a.eachSettlement(ctx, "not co-signed", `SELECT s.id FROM settlements s JOIN orders o ON o.id=s.order_id
-		WHERE s.state='party_signed' AND o.state IN ('completed','cancelled','resolved') ORDER BY s.id`, func(id int64) error { return a.cosignSettlement(ctx, e, id) })
+		WHERE s.state='party_signed' AND o.state IN ('completed','cancelled','resolved','shipped') ORDER BY s.id`, func(id int64) error { return a.cosignSettlement(ctx, e, id) })
 }
 
 // partySigs is one party's stored signature on each input of a settlement.
@@ -142,6 +145,7 @@ func withPartySigs(stored *psbtPacket, parties ...partySigs) (string, error) {
 type settleBuild struct {
 	ID                     int64
 	OrderID, Kind, TxID    string
+	OrderState, Outcome    string // the order's state and dispute outcome when it was read
 	Signer                 string
 	Stored                 *psbtPacket
 	NetworkFee, InputTotal int64
@@ -151,16 +155,17 @@ type settleBuild struct {
 	Parties                []partySigs // the parties with a signature on every input, the first signer first
 }
 
-// loadSettleBuild reads a settlement of a closed order in state want (party_signed, or awaiting_signature for
-// trackAwaiting), or nil when it is no longer in that state (or its kind does not fit the order's outcome). Only a
-// party-signed one is read with its party signatures.
+// loadSettleBuild reads a settlement in state want (party_signed, or awaiting_signature for trackAwaiting, or
+// broadcast for a fee bump) of a closed order, or the release of a shipped (or disputed) one (settlementBuildable,
+// A-376), or nil when it is no longer in that state (or its kind does not fit the order's state and outcome). Only a
+// party-signed one is read with its party signatures. The market signs only what settlementFits allows.
 func (a *App) loadSettleBuild(ctx context.Context, id int64, want string) (*settleBuild, error) {
 	b := &settleBuild{ID: id}
-	var state, stored, orderState, outcome string
+	var state, stored string
 	err := a.db.QueryRowContext(ctx, `SELECT s.order_id,s.kind,s.state,s.psbt,s.txid,COALESCE(s.signer,''),s.network_fee,s.input_total,o.state,`+disputeOutcomeSQL+`,es.market_index
 		FROM settlements s JOIN orders o ON o.id=s.order_id JOIN escrows es ON es.order_id=s.order_id WHERE s.id=$1`, id).Scan(
-		&b.OrderID, &b.Kind, &state, &stored, &b.TxID, &b.Signer, &b.NetworkFee, &b.InputTotal, &orderState, &outcome, &b.MarketIndex)
-	if err != nil || state != want || !settlementFits(b.Kind, orderState, outcome) {
+		&b.OrderID, &b.Kind, &state, &stored, &b.TxID, &b.Signer, &b.NetworkFee, &b.InputTotal, &b.OrderState, &b.Outcome, &b.MarketIndex)
+	if err != nil || state != want || !settlementBuildable(b.Kind, b.OrderState, b.Outcome) {
 		return nil, err
 	}
 	if b.Stored, err = decodePSBT(stored); err != nil || b.Stored.TxID() != b.TxID {
@@ -286,6 +291,11 @@ func (a *App) cosignSettlement(ctx context.Context, e *escrowBTC, id int64) erro
 	b, err := a.loadSettleBuild(ctx, id, "party_signed")
 	if err != nil || b == nil {
 		return err
+	}
+	if !settlementFits(b.Kind, b.OrderState, b.Outcome) {
+		// P2-R2, A-372: a release before its order's outcome completes with both parties' signatures only; the market
+		// never signs it, and nothing below (ensureArbiterKey, arbiterSign) is reached for it.
+		return a.finalizeParties(ctx, e, b)
 	}
 	candidates := []string{b.Parties[0].Party}
 	if len(b.Parties) == 2 {
@@ -461,13 +471,21 @@ func discardedNote(party, kind string) string {
 
 // storeFinal stores a checked final transaction before anything is broadcast: party_signed -> signed with raw_tx,
 // by compare-and-set, the signatures of each party in discard (A-339) removed first, one order note and a notice to
-// both parties. A lost race (the settlement changed meanwhile) changes nothing.
+// both parties. A lost race (the settlement changed meanwhile) changes nothing. A release both parties signed before
+// its order's outcome (P2-R2) is stored only while the order, locked first, is still shipped with no dispute, and the
+// order is completed in the same transaction.
 func (a *App) storeFinal(ctx context.Context, b *settleBuild, rawHex, cosigned string, used, discard []string) error {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	complete := !settlementFits(b.Kind, b.OrderState, b.Outcome)
+	if complete {
+		if ok, err := lockShipped(ctx, tx, b.OrderID); err != nil || !ok || cosigned != "parties" {
+			return err
+		}
+	}
 	var state, signer string
 	if err = tx.QueryRowContext(ctx, "SELECT state,COALESCE(signer,'') FROM settlements WHERE id=$1 FOR UPDATE", b.ID).Scan(&state, &signer); err != nil || state != "party_signed" {
 		return err
@@ -512,12 +530,27 @@ func (a *App) storeFinal(ctx context.Context, b *settleBuild, rawHex, cosigned s
 			return err
 		}
 	}
+	if complete {
+		if err = a.completeShipped(ctx, tx, b.OrderID, escrowReleasedNote); err != nil {
+			return err
+		}
+	}
 	return tx.Commit()
 }
 
 // revertSettlement returns a party-signed settlement whose party signatures did not verify to awaiting a signature
 // (A-339): those signatures are removed, the signer cleared, one fixed note per party and a notice to both parties.
 func (a *App) revertSettlement(ctx context.Context, b *settleBuild, bad []string) error {
+	var notes []string
+	for _, party := range bad {
+		notes = append(notes, discardedNote(party, b.Kind))
+	}
+	return a.revertSettlementWith(ctx, b, bad, append(notes, "The settlement waits for a signature again: the buyer or the vendor signs it on the order page. Nothing was sent."))
+}
+
+// revertSettlementWith is revertSettlement with its notes: each is an order note, and the last carries a notice of all
+// of them to both parties.
+func (a *App) revertSettlementWith(ctx context.Context, b *settleBuild, bad, notes []string) error {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -537,11 +570,6 @@ func (a *App) revertSettlement(ctx context.Context, b *settleBuild, bad []string
 	if _, err = tx.ExecContext(ctx, "UPDATE settlements SET state='awaiting_signature',signer=NULL,signed_at=NULL,send_error='',updated=now() WHERE id=$1 AND state='party_signed'", b.ID); err != nil {
 		return err
 	}
-	var notes []string
-	for _, party := range bad {
-		notes = append(notes, discardedNote(party, b.Kind))
-	}
-	notes = append(notes, "The settlement waits for a signature again: the buyer or the vendor signs it on the order page. Nothing was sent.")
 	for i, n := range notes {
 		body := ""
 		if i == len(notes)-1 {
@@ -881,6 +909,14 @@ func (a *App) storeSeen(ctx context.Context, b *settleBuild, rawHex string) erro
 		return err
 	}
 	defer tx.Rollback()
+	// A release on the network before its order's outcome (P2-R2, A-376): the order, locked first, is completed in this
+	// transaction while it is still shipped with no dispute; a disputed order stays as it is.
+	var complete bool
+	if !settlementFits(b.Kind, b.OrderState, b.Outcome) {
+		if complete, err = lockShipped(ctx, tx, b.OrderID); err != nil {
+			return err
+		}
+	}
 	res, err := tx.ExecContext(ctx, "UPDATE settlements SET state='signed',raw_tx=$2,cosigned=$3,final_at=now(),send_error='',updated=now() WHERE id=$1 AND state IN ('party_signed','awaiting_signature') AND txid=$4",
 		b.ID, rawHex, cosigned, b.TxID)
 	if err != nil {
@@ -900,6 +936,11 @@ func (a *App) storeSeen(ctx context.Context, b *settleBuild, rawHex string) erro
 		". The market found it in its watch-only wallet, checked it against the stored transaction and recorded it as broadcast; the market did not sign or broadcast it."
 	if err = settleNote(ctx, tx, b.OrderID, note, "its escrow settlement ("+what+") was already on the "+net+" network; the order page shows its transaction and its confirmations."); err != nil {
 		return err
+	}
+	if complete {
+		if err = a.completeShipped(ctx, tx, b.OrderID, escrowSeenNote); err != nil {
+			return err
+		}
 	}
 	log.Printf("escrow: settlement of order %s: its transaction was already on the network; recorded as broadcast", shortID(b.OrderID))
 	return tx.Commit()
