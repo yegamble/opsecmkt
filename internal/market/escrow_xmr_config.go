@@ -3,6 +3,7 @@ package market
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/url"
 	"os"
@@ -21,6 +22,15 @@ import (
 const (
 	xmrDefaultMaxFee = 10_000_000_000  // piconero
 	xmrMaxMaxFee     = 100_000_000_000 // piconero
+)
+
+// Startup refusals for escrow nodes that answer but fail the network check (P3-R2), as errEscrowNotRegtest does for
+// Bitcoin escrow. startupRefusal appends the fixed reason (an xmrRefusal); nothing in them comes from a node.
+var (
+	errXMRStartDaemon = errors.New("refusing to start: ESCROW_XMR=on runs only on a local Monero fakechain in this release, and the daemon at ESCROW_XMR_DAEMON_URL is not one. Set ESCROW_XMR=off, or point it at a fakechain daemon (monerod --regtest)")
+	errXMRStartWallet = errors.New("refusing to start: the escrow wallet-rpc at ESCROW_XMR_WALLET_RPC_URL is not attached to the fakechain daemon at ESCROW_XMR_DAEMON_URL. Set ESCROW_XMR=off, or start monero-wallet-rpc with --daemon-address pointing at that daemon")
+	// errXMRRefusedUntilRestart answers recheckEscrowXMRNetwork once a re-check has refused the nodes.
+	errXMRRefusedUntilRestart = errors.New("monero escrow: disabled until the app is restarted: the escrow nodes failed the network check")
 )
 
 var errXMRMainnetMarket = errors.New("refusing to start: ESCROW_XMR=on runs only on a local fakechain in this release, and this market is configured for mainnet (MONERO_NETWORK=mainnet or BITCOIN_CHAIN=main). Set ESCROW_XMR=off")
@@ -128,7 +138,8 @@ func sameRPCEndpoint(a, b string) bool {
 }
 
 // escrowXMR is Monero escrow as configured at startup: App.escrowXMR, nil while ESCROW_XMR is off. The Monero escrow
-// watcher (X-c) uses it and re-runs startEscrowXMR while it is not ready.
+// watcher (X-c) uses it: it re-runs startEscrowXMR while escrow is not ready (a node unreachable at startup) and
+// calls recheckEscrowXMRNetwork after each open_wallet.
 type escrowXMR struct {
 	rpc        *xmrEscrowRPC
 	feeBps     int64
@@ -141,12 +152,14 @@ type escrowXMR struct {
 
 	ready     atomic.Bool // the secret verifier matched and the network check passed: escrow wallets may be used
 	canCreate atomic.Bool // ESCROW_XMR_SEED_KEY is the pinned seed key: new wallets may be created and sealed
-	refused   atomic.Bool // the nodes failed the network check (P3-R2): no retry until a restart
+	refused   atomic.Bool // the nodes failed the network check after startup (P3-R2): disabled until a restart
 }
 
 // initEscrowXMR runs in New after Bitcoin escrow. ESCROW_XMR=off does nothing. On, a configuration error, an
-// unusable seed key file or a mainnet market stops startup; a changed secret, a changed seed key, a refused or an
-// unreachable node leaves Monero escrow configured but unavailable with one fixed line, and the market runs.
+// unusable seed key file, a mainnet market, or an escrow node that answers but fails the network check
+// (errXMRStartDaemon, errXMRStartWallet) stops startup. A changed secret, a changed seed key, an unreachable node, a
+// timeout or a wallet-rpc with no wallet open leaves Monero escrow configured but unavailable with one fixed line, and
+// the market runs; the watcher retries.
 func (a *App) initEscrowXMR(ctx context.Context) error {
 	cfg, err := escrowXMRConfigFromEnv(os.Getenv)
 	if err != nil || !cfg.on {
@@ -166,6 +179,10 @@ func (a *App) initEscrowXMR(ctx context.Context) error {
 	a.escrowXMR = &escrowXMR{rpc: rpc, feeBps: cfg.feeBps, feeAddress: cfg.feeAddress, slots: cfg.slots, maxFee: cfg.maxFee,
 		secret: cfg.secret, seedKey: key}
 	state, class, err := a.startEscrowXMR(ctx)
+	var refusal *xmrRefusal
+	if errors.As(err, &refusal) {
+		return startupRefusal(refusal)
+	}
 	if err != nil {
 		return err
 	}
@@ -179,10 +196,15 @@ func (a *App) initEscrowXMR(ctx context.Context) error {
 
 // startEscrowXMR runs Monero escrow's checks once: the secret verifier (a mismatch stops here, before any node is
 // contacted), the seed key pin (a mismatch clears canCreate: wallet creation only) and the network check. It reports
-// the state as one of the fixed lines (xmrLogOn when ready) with the error class that caused it, or a database
-// error. It logs nothing, so the watcher can retry it and log a state only when it changes (retryEscrow's pattern).
+// the state as one of the fixed lines (xmrLogOn when ready) with the error class that caused it, or an error: an
+// *xmrRefusal when a node answered but failed the network check (initEscrowXMR refuses to start; a watcher retry
+// passes it to refuseEscrowXMR), or a database error. It logs nothing, so the watcher can retry it and log a state
+// only when it changes (retryEscrow's pattern). Once refused it answers errXMRRefusedUntilRestart and checks nothing.
 func (a *App) startEscrowXMR(ctx context.Context) (state, class string, err error) {
 	x := a.escrowXMR
+	if x.refused.Load() {
+		return "", "", errXMRRefusedUntilRestart
+	}
 	ok, err := pinXMRSetting(ctx, a.db, xmrVerifierSetting, xmrSecretVerifier(x.secret))
 	if err != nil {
 		return "", "", err
@@ -200,11 +222,50 @@ func (a *App) startEscrowXMR(ctx context.Context) (state, class string, err erro
 	var refusal *xmrRefusal
 	switch {
 	case errors.As(err, &refusal):
-		x.refused.Store(true)
-		return xmrLogRefused + refusal.Error(), "", nil
+		return "", "", refusal
 	case err != nil:
 		return xmrLogUnchecked, xmrErrorClass(err), nil
 	}
 	x.ready.Store(true)
 	return xmrLogOn, "", nil
+}
+
+// startupRefusal is the error New returns for an escrow node that answered but failed the network check: the fixed
+// line for the daemon or the wallet-rpc, with the refusal's fixed reason.
+func startupRefusal(r *xmrRefusal) error {
+	if r.wallet {
+		return fmt.Errorf("%w (%s)", errXMRStartWallet, r.msg)
+	}
+	return fmt.Errorf("%w (%s)", errXMRStartDaemon, r.msg)
+}
+
+// recheckEscrowXMRNetwork is the Monero escrow watcher's network check after each open_wallet (X-c): the daemon
+// (checkDaemon), then the open wallet after a refresh (checkWallet). A node that answers but fails it disables Monero
+// escrow until the app is restarted (refuseEscrowXMR: sticky, one fixed line) and the refusal is returned; from then
+// on it answers errXMRRefusedUntilRestart without contacting either node. Any other error (unreachable, timeout, no
+// wallet open) is returned unchanged and changes nothing, so the next pass retries. The caller uses the open wallet
+// only when it returns nil.
+func (a *App) recheckEscrowXMRNetwork(ctx context.Context) error {
+	x := a.escrowXMR
+	if x == nil || x.refused.Load() {
+		return errXMRRefusedUntilRestart
+	}
+	h, err := x.rpc.checkDaemon(ctx)
+	if err == nil {
+		err = x.rpc.checkWallet(ctx, h)
+	}
+	var refusal *xmrRefusal
+	if errors.As(err, &refusal) {
+		x.refuseEscrowXMR(refusal)
+	}
+	return err
+}
+
+// refuseEscrowXMR disables Monero escrow until a restart after a node failed the network check, logging xmrLogRefused
+// with the fixed reason once.
+func (x *escrowXMR) refuseEscrowXMR(r *xmrRefusal) {
+	x.ready.Store(false)
+	if !x.refused.Swap(true) {
+		log.Print(xmrLogRefused + r.msg)
+	}
 }

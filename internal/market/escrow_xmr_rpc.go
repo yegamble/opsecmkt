@@ -42,16 +42,20 @@ const (
 )
 
 // xmrRefusal is a fixed refusal of the escrow nodes' network (P3-R2): it never carries anything the nodes sent.
-type xmrRefusal struct{ msg string }
+// wallet marks a refusal of the wallet-rpc (its height), as opposed to the daemon.
+type xmrRefusal struct {
+	msg    string
+	wallet bool
+}
 
 func (e *xmrRefusal) Error() string { return e.msg }
 
 var (
-	errXMRNotFakechain = &xmrRefusal{"the escrow daemon (ESCROW_XMR_DAEMON_URL) is not on a local fakechain (monerod --regtest); Monero escrow runs on a local fakechain only in this release"}
-	errXMRHardFork     = &xmrRefusal{"the escrow daemon (ESCROW_XMR_DAEMON_URL) runs a hard fork version below 16; start monerod --regtest from release 0.18 or later"}
-	errXMRDaemonHeight = &xmrRefusal{"the escrow daemon (ESCROW_XMR_DAEMON_URL) is at height 1,000,000 or more, which no local fakechain reaches; it is not a local fakechain"}
-	errXMRWalletHeight = &xmrRefusal{"the escrow wallet-rpc (ESCROW_XMR_WALLET_RPC_URL) is at height 1,000,000 or more, which no local fakechain reaches; it is attached to another network"}
-	errXMRWalletLag    = &xmrRefusal{"the escrow wallet-rpc (ESCROW_XMR_WALLET_RPC_URL) is more than 10 blocks from the escrow daemon after a refresh; it must use the daemon at ESCROW_XMR_DAEMON_URL (--daemon-address)"}
+	errXMRNotFakechain = &xmrRefusal{"the escrow daemon (ESCROW_XMR_DAEMON_URL) is not on a local fakechain (monerod --regtest); Monero escrow runs on a local fakechain only in this release", false}
+	errXMRHardFork     = &xmrRefusal{"the escrow daemon (ESCROW_XMR_DAEMON_URL) runs a hard fork version below 16; start monerod --regtest from release 0.18 or later", false}
+	errXMRDaemonHeight = &xmrRefusal{"the escrow daemon (ESCROW_XMR_DAEMON_URL) is at height 1,000,000 or more, which no local fakechain reaches; it is not a local fakechain", false}
+	errXMRWalletHeight = &xmrRefusal{"the escrow wallet-rpc (ESCROW_XMR_WALLET_RPC_URL) is at height 1,000,000 or more, which no local fakechain reaches; it is attached to another network", true}
+	errXMRWalletLag    = &xmrRefusal{"the escrow wallet-rpc (ESCROW_XMR_WALLET_RPC_URL) is more than 10 blocks from the escrow daemon after a refresh; it must use the daemon at ESCROW_XMR_DAEMON_URL (--daemon-address)", true}
 )
 
 // Offline refusals: the request is never sent.
