@@ -211,7 +211,7 @@ type escrowKeyRow struct {
 // escrowKeys reads the three keys of order's escrow, by party.
 func escrowKeys(ctx context.Context, q rowsQuerier, orderID string) (map[string]escrowKeyRow, error) {
 	rows, err := q.QueryContext(ctx, `SELECT p.party,p.pubkey,p.origin_fingerprint,p.origin_path,p.derivation_suffix FROM escrow_pubkeys p
-		JOIN escrows es ON es.id=p.escrow_id WHERE es.order_id=$1`, orderID)
+		JOIN escrows es ON es.id=p.escrow_id WHERE es.order_id=$1 AND es.coin='BTC'`, orderID)
 	if err != nil {
 		return nil, err
 	}
@@ -346,7 +346,7 @@ func escrowClaimAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, err
 		}
 		switch {
-		case !o.Escrow:
+		case !o.btcEscrow():
 			return actionResult{}, errNoOrder
 		case o.VendorID != c.User.ID:
 			return actionResult{}, errClaimOnlyVendor
@@ -412,7 +412,7 @@ func (a *App) buildSettlement(ctx context.Context, e *escrowBTC, id int64) error
 	var bounded bool
 	err := a.db.QueryRowContext(ctx, `SELECT s.order_id,s.kind,s.state,COALESCE(s.destination,''),es.address,es.refund_address,es.fee_bps,es.fee_destination,o.amount,o.state,
 		s.created < now()-make_interval(secs => $2),`+disputeOutcomeSQL+`,s.build_error
-		FROM settlements s JOIN escrows es ON es.order_id=s.order_id JOIN orders o ON o.id=s.order_id WHERE s.id=$1`, id, escrowBuildWaitMax.Seconds()).Scan(
+		FROM settlements s JOIN escrows es ON es.order_id=s.order_id AND es.coin='BTC' JOIN orders o ON o.id=s.order_id WHERE s.id=$1`, id, escrowBuildWaitMax.Seconds()).Scan(
 		&orderID, &kind, &state, &dest, &escrowAddr, &refund, &feeBps, &feeDest, &price, &orderState, &bounded, &outcome, &buildErr)
 	if err != nil || state != "building" {
 		return err
@@ -909,7 +909,7 @@ func escrowSignAction(c *actionCtx) (actionResult, error) {
 	if err != nil {
 		return actionResult{}, err
 	}
-	if !o.Escrow {
+	if !o.btcEscrow() {
 		return actionResult{}, errNoOrder
 	}
 	party := roleBuyer
@@ -1013,7 +1013,7 @@ func escrowPSBTDownload(a *App, w http.ResponseWriter, r *http.Request, u *User)
 	ctx := r.Context()
 	o, err := scanOrder(a.db.QueryRowContext(ctx, orderQuery+" WHERE o.id=$1 AND (o.buyer_id=$2 OR p.vendor_id=$2)", r.URL.Query().Get("id"), u.ID))
 	sid, perr := strconv.ParseInt(r.URL.Query().Get("s"), 10, 64)
-	if err == sql.ErrNoRows || err == nil && (!o.Escrow || perr != nil) {
+	if err == sql.ErrNoRows || err == nil && (!o.btcEscrow() || perr != nil) {
 		http.NotFound(w, r)
 		return
 	}

@@ -37,7 +37,7 @@ type Order struct {
 	ID, ProductID, Title, Buyer, Vendor, Currency, Amount, Status, Created string
 	State, Kind, BuyerID, VendorID, Updated                                string
 	// Escrow: settled through a per-order escrow instead of the pooled wallet (settleTerminal, escrowOnly): the order
-	// has an escrows row (WR-escrow Phase 1, escrow_create.go).
+	// has an escrows row (WR-escrow Phase 1, escrow_create.go), of either coin (btcEscrow).
 	Escrow bool
 }
 type Message struct {

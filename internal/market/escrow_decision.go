@@ -59,7 +59,7 @@ func escrowDecisionAction(c *actionCtx) (actionResult, error) {
 		ctx := c.Ctx()
 		o, err := scanOrder(c.Tx.QueryRowContext(ctx, orderQuery+" WHERE o.id=$1 FOR UPDATE OF o", c.Form.Get("order_id")))
 		switch {
-		case err == sql.ErrNoRows || err == nil && !o.Escrow:
+		case err == sql.ErrNoRows || err == nil && !o.btcEscrow():
 			return actionResult{}, errNoOrder
 		case err != nil:
 			return actionResult{}, err

@@ -22,7 +22,9 @@ func init() {
 // escrowOrder fills the escrow panel of an escrow order, or the escrow checkout offer on a draft, for loadOrderDetail
 // (which has already resolved the viewer). An escrow order always gets its panel: with ESCROW_BTC switched off, or
 // escrow down, it shows the escrow address with the unavailable copy, never the pooled payment panel, which would say
-// no funds are held (A-315). Any other order with ESCROW_BTC off gets nothing, so its page is as before.
+// no funds are held (A-315). Any other order with ESCROW_BTC off gets nothing, so its page is as before. A Monero
+// escrow order (migration 084) gets nothing here either: no Bitcoin escrow panel, and order.html shows it no pooled
+// payment panel.
 func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 	o := d.Order
 	if !o.Escrow {
@@ -30,6 +32,9 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 			return nil
 		}
 		return a.escrowCheckoutOffer(ctx, d)
+	}
+	if !o.btcEscrow() {
+		return nil
 	}
 	e := a.escrow.Load()
 	v := &EscrowOrderView{Available: e != nil, Download: a.escrowConfigured, Required: o.Amount, Threshold: 3, Open: o.State == stateAwaitingPayment}
@@ -48,7 +53,7 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 	if err := a.db.QueryRowContext(ctx, `SELECT es.address,es.refund_address,es.fee_bps,
 		GREATEST(es.created,(SELECT max(created) FROM payments WHERE order_id=es.order_id AND confirmations>=0 AND NOT locked)),
 		`+escrowWatchedSQL+`,es.ship_by,COALESCE(es.ship_by<=now(),false),es.release_at,extract(epoch FROM es.release_at-now()),es.release_recheck
-		FROM escrows es JOIN orders o ON o.id=es.order_id WHERE es.order_id=$1`, o.ID).Scan(&v.Address, &refund, &feeBps, &windowFrom, &watched,
+		FROM escrows es JOIN orders o ON o.id=es.order_id WHERE es.order_id=$1 AND es.coin='BTC'`, o.ID).Scan(&v.Address, &refund, &feeBps, &windowFrom, &watched,
 		&shipBy, &shipByOpen, &releaseAt, &releaseLeft, &rechecked); err != nil {
 		return err
 	}
@@ -67,7 +72,7 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 		// A party signs on this page, so the keypoolrefill advice of /escrow-key is repeated here when this escrow's
 		// child key lies past escrowRangeAdvice: past its descriptor range a Core wallet cannot sign (P2-R10, A-397).
 		var suffix string
-		err := a.db.QueryRowContext(ctx, "SELECT ep.derivation_suffix FROM escrow_pubkeys ep JOIN escrows es ON es.id=ep.escrow_id WHERE es.order_id=$1 AND ep.party=$2", o.ID, v.Own).Scan(&suffix)
+		err := a.db.QueryRowContext(ctx, "SELECT ep.derivation_suffix FROM escrow_pubkeys ep JOIN escrows es ON es.id=ep.escrow_id WHERE es.order_id=$1 AND es.coin='BTC' AND ep.party=$2", o.ID, v.Own).Scan(&suffix)
 		if err != nil && err != sql.ErrNoRows {
 			return err
 		}
@@ -241,7 +246,7 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 // wsh(sortedmulti(2, buyer, vendor, market)), the reader's own with its origin, and the checksum.
 func escrowDescriptorFor(ctx context.Context, db *sql.DB, orderID, reader string) (string, error) {
 	rows, err := db.QueryContext(ctx, `SELECT p.party,p.pubkey,p.origin_fingerprint,p.origin_path,p.derivation_suffix FROM escrow_pubkeys p JOIN escrows es ON es.id=p.escrow_id
-		WHERE es.order_id=$1 ORDER BY CASE p.party WHEN 'buyer' THEN 0 WHEN 'vendor' THEN 1 ELSE 2 END`, orderID)
+		WHERE es.order_id=$1 AND es.coin='BTC' ORDER BY CASE p.party WHEN 'buyer' THEN 0 WHEN 'vendor' THEN 1 ELSE 2 END`, orderID)
 	if err != nil {
 		return "", err
 	}
@@ -327,7 +332,7 @@ func escrowDescriptorDownload(a *App, w http.ResponseWriter, r *http.Request, u 
 	}
 	ctx := r.Context()
 	o, err := scanOrder(a.db.QueryRowContext(ctx, orderQuery+" WHERE o.id=$1 AND (o.buyer_id=$2 OR p.vendor_id=$2)", r.URL.Query().Get("id"), u.ID))
-	if err == sql.ErrNoRows || err == nil && !o.Escrow {
+	if err == sql.ErrNoRows || err == nil && !o.btcEscrow() {
 		http.NotFound(w, r)
 		return
 	}
