@@ -315,7 +315,6 @@ func (a *App) recordIncoming(ctx context.Context, p PaymentProvider, addresses [
 // after_close: it is never counted toward the order's settlement (payoutBasis), and settleOrder flags it. The pooled
 // watcher and the escrow watcher (escrow_watch.go) both write the ledger through it.
 func (a *App) applyIncoming(ctx context.Context, cur string, incoming []Incoming, addresses []string, orderOf map[string]string) error {
-	var err error
 	seen := map[ledgerKey]bool{}
 	for _, in := range incoming {
 		order, ok := orderOf[in.Address]
@@ -323,14 +322,31 @@ func (a *App) applyIncoming(ctx context.Context, cur string, incoming []Incoming
 			continue
 		}
 		seen[ledgerKey{in.TxID, in.Index}] = true
-		if _, err = a.db.ExecContext(ctx, `INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,locked,late_notice,after_close)
-			VALUES($1,$2,$3,$4,$5,$6,$7,$8,EXISTS(SELECT 1 FROM orders WHERE id=$1 AND state IN (`+fundedOpenStates+`)),
-				EXISTS(SELECT 1 FROM orders WHERE id=$1 AND state IN ('cancelled','resolved','completed')))
-			ON CONFLICT (currency,txid,idx) DO UPDATE SET confirmations=excluded.confirmations, locked=excluded.locked, updated=now()
-			WHERE (payments.confirmations,payments.locked) IS DISTINCT FROM (excluded.confirmations,excluded.locked)`, order, cur, in.TxID, in.Index, in.Address, in.Amount, in.Confirmations, in.Locked); err != nil {
+		if _, err := a.upsertIncoming(ctx, cur, order, in); err != nil {
 			return err
 		}
 	}
+	return a.markMissing(ctx, cur, addresses, seen)
+}
+
+// upsertIncoming writes one output to the payments ledger for order (applyIncoming's row) and reports whether the row
+// was inserted or changed. The Monero escrow watcher calls it row by row, so a row the database refuses is caught for
+// that row alone (escrow_xmr_watch.go).
+func (a *App) upsertIncoming(ctx context.Context, cur, order string, in Incoming) (bool, error) {
+	res, err := a.db.ExecContext(ctx, `INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,locked,late_notice,after_close)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,EXISTS(SELECT 1 FROM orders WHERE id=$1 AND state IN (`+fundedOpenStates+`)),
+			EXISTS(SELECT 1 FROM orders WHERE id=$1 AND state IN ('cancelled','resolved','completed')))
+		ON CONFLICT (currency,txid,idx) DO UPDATE SET confirmations=excluded.confirmations, locked=excluded.locked, updated=now()
+		WHERE (payments.confirmations,payments.locked) IS DISTINCT FROM (excluded.confirmations,excluded.locked)`, order, cur, in.TxID, in.Index, in.Address, in.Amount, in.Confirmations, in.Locked)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// markMissing marks -1 confirmations on the ledger rows at addresses that the wallet no longer reports (not in seen).
+func (a *App) markMissing(ctx context.Context, cur string, addresses []string, seen map[ledgerKey]bool) error {
 	rows, err := a.db.QueryContext(ctx, "SELECT id,txid,idx FROM payments WHERE currency=$1 AND address=ANY($2) AND confirmations>=0", cur, addresses)
 	if err != nil {
 		return err
@@ -640,9 +656,12 @@ func (a *App) flagLateDeposits(ctx context.Context, tx *sql.Tx, o *Order, thresh
 	body := "Order " + o.ID[:min(8, len(o.ID))] + ": " + amount(sum, dec) + " " + o.Currency + " (" + a.netTag() + ") arrived at this order's deposit address after the order closed and was not paid out; it is not refunded automatically. Market staff were notified and review it."
 	if o.Escrow {
 		// An escrow deposit is at the order's escrow address, never in a wallet staff could refund from (QA31-3).
-		net := a.escrowNetwork()
+		net, how := a.escrowNetwork(), "the market builds a stray refund returning it to your refund address, which you or the vendor sign on the order page"
+		if o.Currency == "XMR" { // a Monero escrow is custodial: the market alone builds and sends its stray refund (P3-R8)
+			net, how = xmrEscrowNetwork, "the market returns it, less the network fee, to your refund address by a stray refund from the escrow"
+		}
 		note = a.netTag() + " " + net + " " + strings.Join(deposits, ", ") + " arrived at this order's escrow address after the order closed; not counted, it is returned to the buyer's refund address by a stray refund from the escrow. Moderator review required."
-		body = "Order " + o.ID[:min(8, len(o.ID))] + ": " + amount(sum, dec) + " " + o.Currency + " (" + a.netTag() + " " + net + ") arrived at this order's escrow address after the order closed. It is not counted; the market builds a stray refund returning it to your refund address, which you or the vendor sign on the order page. Market staff were notified."
+		body = "Order " + o.ID[:min(8, len(o.ID))] + ": " + amount(sum, dec) + " " + o.Currency + " (" + a.netTag() + " " + net + ") arrived at this order's escrow address after the order closed. It is not counted; " + how + ". Market staff were notified."
 	}
 	if episode {
 		_, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, o.State, note)

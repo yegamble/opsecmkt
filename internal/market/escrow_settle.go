@@ -270,7 +270,13 @@ func (a *App) escrowSettleTerminal(ctx context.Context, tx *sql.Tx, o *Order) er
 	var liveID int64
 	var liveKind, liveState string
 	var liveFinal bool
-	err := tx.QueryRowContext(ctx, "SELECT id,kind,state,raw_tx IS NOT NULL FROM settlements WHERE order_id=$1 AND kind IN ('release','refund') AND state<>'superseded' FOR UPDATE", o.ID).Scan(
+	// A Monero escrow's settlements are xmr_settlements (migration 084): final once its transaction is stored, and its
+	// deposits claimed by payments.xmr_settlement_id.
+	table, final, claim := "settlements", "raw_tx", "settlement_id"
+	if o.Currency == "XMR" {
+		table, final, claim = "xmr_settlements", "tx_hash", "xmr_settlement_id"
+	}
+	err := tx.QueryRowContext(ctx, "SELECT id,kind,state,"+final+" IS NOT NULL FROM "+table+" WHERE order_id=$1 AND kind IN ('release','refund') AND state<>'superseded' FOR UPDATE", o.ID).Scan(
 		&liveID, &liveKind, &liveState, &liveFinal)
 	if err != nil && err != sql.ErrNoRows {
 		return err
@@ -297,19 +303,24 @@ func (a *App) escrowSettleTerminal(ctx context.Context, tx *sql.Tx, o *Order) er
 	case liveKind == "release":
 		// A-371, P2-R4: the release built at shipment has no final transaction: it ends here (its signatures with it)
 		// and its deposits are free for the refund, in this transaction (the escrow_decision.go pattern).
-		if _, err = tx.ExecContext(ctx, "UPDATE settlements SET state='superseded',updated=now() WHERE id=$1", liveID); err != nil {
+		if _, err = tx.ExecContext(ctx, "UPDATE "+table+" SET state='superseded',updated=now() WHERE id=$1", liveID); err != nil {
 			return err
 		}
-		if _, err = tx.ExecContext(ctx, "UPDATE payments SET settlement_id=NULL,updated=now() WHERE settlement_id=$1", liveID); err != nil {
+		if _, err = tx.ExecContext(ctx, "UPDATE payments SET "+claim+"=NULL,updated=now() WHERE "+claim+"=$1", liveID); err != nil {
 			return err
 		}
 		notes = append(notes, "The release to the vendor built when the order was shipped is cancelled: it was not final, and any signature on it no longer counts.")
 	}
 	if n > 0 {
-		if _, err = tx.ExecContext(ctx, `INSERT INTO settlements(order_id,kind,destination) SELECT order_id,'refund',refund_address FROM escrows WHERE order_id=$1`, o.ID); err != nil {
+		note := "Escrow refund requested: the market builds a transaction returning the escrowed " + amount(sum, 8) + " BTC, less the network fee, to the buyer's refund address given at checkout; the buyer or the vendor then signs it on the order page. Nothing is sent yet."
+		if o.Currency == "XMR" {
+			// A Monero escrow's refund is an xmr_settlements row (migration 084), built and sent by the Monero escrow
+			// watcher alone from the order's account (P3-R6, P3-R8).
+			note = "Escrow refund requested: the market builds a transaction returning the escrowed " + amount(sum, 12) + " XMR, less the network fee, from this order's escrow account to the buyer's refund address given at checkout, and sends it. Nothing is sent yet."
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO `+table+`(order_id,kind,destination) SELECT order_id,'refund',refund_address FROM escrows WHERE order_id=$1`, o.ID); err != nil {
 			return err
 		}
-		note := "Escrow refund requested: the market builds a transaction returning the escrowed " + amount(sum, 8) + " BTC, less the network fee, to the buyer's refund address given at checkout; the buyer or the vendor then signs it on the order page. Nothing is sent yet."
 		if outcome == "refund" {
 			note = "Dispute decided for the buyer. " + note
 		}
