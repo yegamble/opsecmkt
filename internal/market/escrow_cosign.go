@@ -738,6 +738,20 @@ func (a *App) trackBroadcast(ctx context.Context, e *escrowBTC, id int64) error 
 			pending = true
 		}
 	}
+	// A-382: a built fee bump with no stored final transaction whose transaction the wallet holds (the parties
+	// broadcast it, or a restore lost its final transaction) is checked and recorded as broadcast; it is then followed
+	// like any stored one.
+	for i, at := range attempts {
+		if at.Raw == "" && ws[i].Found && ws[i].Confirmations >= 0 {
+			stored, err := a.storeSeenBump(ctx, id, at.Bump, ws[i].Hex)
+			if err != nil {
+				return err
+			}
+			if stored {
+				return a.trackBroadcast(ctx, e, id)
+			}
+		}
+	}
 	// While a restore holds it, or the restore gate is set and no administrator confirmed it, it is followed but never
 	// sent again (escrow_recovery.go).
 	may, err := a.maySend(ctx, sendErr)

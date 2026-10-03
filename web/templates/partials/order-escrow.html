@@ -157,9 +157,9 @@
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="order_id" value="{{$.Order.ID}}">
 <input type="hidden" name="settlement_id" value="{{.ID}}">
-<label>New network fee rate (sat/vB)<input name="fee_rate" type="number" required min="{{.BumpMin}}" max="100" step="1" inputmode="numeric" aria-describedby="escrow-bump-help-{{.ID}}">
+<label>New network fee rate (sat/vB)<input name="fee_rate" type="number" required min="{{.BumpMin}}" max="{{.BumpMax}}" step="1" inputmode="numeric" aria-describedby="escrow-bump-help-{{.ID}}">
 </label>
-<span class="help" id="escrow-bump-help-{{.ID}}">Not confirmed yet? Ask for a fee bump: the market builds a new transaction paying the same outputs at a higher rate than the {{.BumpRate}} sat/vB already sent, with the extra fee taken from your output only. You sign it first; it replaces the transaction already sent. A new request closes a fee bump that was not sent yet.</span>
+<span class="help" id="escrow-bump-help-{{.ID}}">Not confirmed yet? Ask for a fee bump: the market builds a new transaction paying the same outputs at a higher rate than the {{.BumpRate}} sat/vB already sent, up to {{.BumpMax}} sat/vB (the market's fee cap for this transaction), with the extra fee taken from your output only. You sign it first; it replaces the transaction already sent. A new request closes a fee bump that was not sent yet.</span>
 {{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button type="submit">Raise the network fee</button>
 </form>{{end}}
