@@ -87,10 +87,11 @@ type bumpAttempt struct {
 }
 
 // settlementAttempts lists the market's own transactions for settlement id (A-375): its own final transaction, then
-// each fee bump of it with a final transaction, in order.
+// each fee bump of it the market built, in order (A-382: whether or not its final transaction is stored, Raw "" then;
+// the parties may have signed and broadcast it themselves, or a restore lost its final transaction).
 func settlementAttempts(ctx context.Context, q rowsQuerier, id int64) ([]bumpAttempt, error) {
 	rows, err := q.QueryContext(ctx, `SELECT 0,0,txid,raw_tx,network_fee,fee_rate,state,send_error FROM settlements WHERE id=$1 AND raw_tx IS NOT NULL
-		UNION ALL SELECT id,n,txid,raw_tx,network_fee,fee_rate,state,send_error FROM settlement_bumps WHERE settlement_id=$1 AND raw_tx IS NOT NULL ORDER BY 2`, id)
+		UNION ALL SELECT id,n,txid,COALESCE(raw_tx,''),network_fee,fee_rate,state,send_error FROM settlement_bumps WHERE settlement_id=$1 AND txid IS NOT NULL ORDER BY 2`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -112,12 +113,12 @@ func settlementAttempts(ctx context.Context, q rowsQuerier, id int64) ([]bumpAtt
 	return out, nil
 }
 
-// topAttempt is the index of the stored transaction with the highest fee (the latest of equal ones): the only one the
-// market sends again.
+// topAttempt is the index of the stored transaction (one with a final transaction) with the highest fee (the latest of
+// equal ones): the only one the market sends again, and the one a new bump must beat.
 func topAttempt(at []bumpAttempt) int {
 	top := 0
 	for i := range at {
-		if at[i].Fee >= at[top].Fee {
+		if at[i].Raw != "" && at[i].Fee >= at[top].Fee {
 			top = i
 		}
 	}
@@ -149,7 +150,7 @@ func planBump(outs []settleOutput, nIn int, parentFee, prevFee, prevRate, rate, 
 	switch {
 	case rate <= prevRate || fee < prevFee+escrowBumpIncrement*vsize:
 		return nil, fee, bumpFeeLow
-	case rate > escrowMaxFeeRate || fee > escrowMaxFee:
+	case rate > bumpMaxRate(nIn, outs):
 		return nil, fee, settleFeeCap
 	}
 	next := bumpOutputsAt(outs, parentFee, fee)
@@ -162,6 +163,36 @@ func planBump(outs []settleOutput, nIn int, parentFee, prevFee, prevRate, rate, 
 		}
 	}
 	return next, fee, ""
+}
+
+// settleSigMin is the shortest signature the paste checks accept: a strict-DER signature (BIP 66: at least 8 bytes)
+// and its sighash byte.
+const settleSigMin = 9
+
+// settleVSizeMin is a lower bound of the real virtual size of a settlement (or fee bump) with nIn 2-of-3 P2WSH inputs
+// and these outputs (A-383): the exact fields outside the witness (each output's script from its address; 22 bytes,
+// the shortest, when it does not decode) and each input's witness with two signatures of settleSigMin bytes, rounded
+// down. A bump's network fee is its rate on settleVSize's upper bound, so a fee within escrowMaxFeeRate at this size is
+// within it at any size the signed transaction can have, which finalize and testmempoolaccept check.
+func settleVSizeMin(nIn int, outs []settleOutput) int64 {
+	base := int64(4+4+len(compactSize(nIn))+len(compactSize(len(outs)))) + 41*int64(nIn)
+	for _, o := range outs {
+		n := 22
+		if script, err := regtestAddressScript(o.Address); err == nil {
+			n = len(script)
+		}
+		base += int64(8 + len(compactSize(n)) + n)
+	}
+	witness := 2 + int64(nIn)*(1+1+2*(1+settleSigMin)+1+105)
+	return (4*base + witness) / 4
+}
+
+// bumpMaxRate is the highest fee rate (sat/vB) a fee bump of a settlement with nIn inputs and these outputs may ask
+// for: its fee (the rate on settleVSize's bound) stays within escrowMaxFee, and within escrowMaxFeeRate at the
+// smallest real size the transaction can have (settleVSizeMin, A-383).
+func bumpMaxRate(nIn int, outs []settleOutput) int64 {
+	bound := settleVSize(nIn, len(outs))
+	return min(int64(escrowMaxFeeRate), escrowMaxFeeRate*settleVSizeMin(nIn, outs)/bound, escrowMaxFee/bound)
 }
 
 // bumpOutputsAt is a bump's outputs at network fee fee: the settlement's, the claimant's smaller by fee - parentFee
@@ -216,7 +247,7 @@ func checkBump(parent, bump psbtTx, parentOuts []settleOutput, inputTotal, prevF
 	switch {
 	case fee <= prevFee || fee-prevFee < escrowBumpIncrement*vsize:
 		return fee, bumpFeeLow
-	case fee > escrowMaxFee || fee > escrowMaxFeeRate*vsize:
+	case fee > escrowMaxFee || fee > escrowMaxFeeRate*vsize || fee > escrowMaxFeeRate*settleVSizeMin(len(parent.In), parentOuts):
 		return fee, settleFeeCap
 	case bump.Out[claimant].Value < floor:
 		return fee, settleTooSmall
@@ -279,7 +310,7 @@ func bumpErrorText(class, claimant string) string {
 	case bumpFeeLow:
 		return "The fee rate is not high enough to replace the transaction already sent."
 	case settleFeeCap:
-		return "At that rate the network fee would exceed the market's fee cap (" + amount(escrowMaxFee, 8) + " BTC, and " + strconv.Itoa(escrowMaxFeeRate) + " sat/vB)."
+		return "At that rate the network fee could exceed the market's fee cap (" + amount(escrowMaxFee, 8) + " BTC, and " + strconv.Itoa(escrowMaxFeeRate) + " sat/vB at the smallest size the signed transaction can have)."
 	case settleTooSmall:
 		return "At that rate the " + claimant + "'s output would fall below the minimum output of " + amount(minPayoutBTC, 8) + " BTC."
 	case bumpSettled:
@@ -350,6 +381,9 @@ func escrowBumpAction(c *actionCtx) (actionResult, error) {
 		case "":
 		case bumpFeeLow:
 			return actionResult{}, fail(400, "Enter a fee rate higher than the "+strconv.FormatInt(prev.Rate, 10)+" sat/vB of the transaction already sent: a replacement must pay a higher fee. Nothing was changed.")
+		case settleFeeCap:
+			// A-383: the cap holds at the smallest size the signed transaction can have, so a bump never waits forever.
+			return actionResult{}, fail(400, bumpErrorText(class, claimant)+" The highest fee rate this settlement can take is "+strconv.FormatInt(bumpMaxRate(len(sp.Tx.In), outs), 10)+" sat/vB. Nothing was changed.")
 		default:
 			return actionResult{}, fail(400, bumpErrorText(class, claimant)+" Nothing was changed.")
 		}
@@ -897,6 +931,98 @@ func (a *App) bumpSendWaits(ctx context.Context, bid int64, orderID, class strin
 	return nil
 }
 
+// storeSeenBump records a built fee bump of broadcast settlement sid whose transaction (rawHex) the watch-only wallet
+// holds although the market stored no final transaction for it (A-382, A-344 for bumps): the buyer and the vendor
+// signed the copies they downloaded and broadcast it themselves, or a restored database lost its final transaction. It
+// is checked like any final transaction (checkFinalTx against the bump's stored PSBT, its outputs and fee) and stored,
+// cosigned 'parties' when its witnesses carry both parties' stored signatures and 'network' otherwise, and the bump
+// moves to signed and broadcast in one transaction (migration 082), with an honest note. It reports whether it stored
+// it; a transaction that fails the checks is not recorded (the bump's send_error says why) and is not called external.
+func (a *App) storeSeenBump(ctx context.Context, sid, bid int64, rawHex string) (bool, error) {
+	p, err := a.loadSettleBuild(ctx, sid, "broadcast")
+	if err != nil || p == nil {
+		return false, err
+	}
+	b := &settleBuild{ID: sid, OrderID: p.OrderID, Kind: p.Kind, InputTotal: p.InputTotal, Keys: p.Keys}
+	var stored string
+	if err = a.db.QueryRowContext(ctx, "SELECT psbt,txid,network_fee FROM settlement_bumps WHERE id=$1 AND settlement_id=$2 AND raw_tx IS NULL AND txid IS NOT NULL", bid, sid).Scan(
+		&stored, &b.TxID, &b.NetworkFee); err == sql.ErrNoRows {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	if b.Stored, err = decodePSBT(stored); err != nil || b.Stored.TxID() != b.TxID {
+		return false, errors.New("escrow: the stored fee bump PSBT does not match its txid")
+	}
+	if b.Outputs = bumpOutputsAt(p.Outputs, p.NetworkFee, b.NetworkFee); b.Outputs == nil {
+		return false, errors.New("escrow: the settlement has no claimant's output")
+	}
+	if class := checkFinalTx(rawHex, b.Stored, b.TxID, b.Outputs, b.InputTotal, b.NetworkFee); class != "" {
+		return false, a.bumpSendWaits(ctx, bid, b.OrderID, class)
+	}
+	// Who signed it: the parties whose stored signatures are in its witnesses.
+	sigs := map[string][]psbtSig{}
+	rows, err := a.db.QueryContext(ctx, "SELECT party,pubkey,signature FROM settlement_bump_signatures WHERE bump_id=$1 ORDER BY party,input_n", bid)
+	if err != nil {
+		return false, err
+	}
+	for rows.Next() {
+		var party, pub, sig string
+		if err = rows.Scan(&party, &pub, &sig); err != nil {
+			rows.Close()
+			return false, err
+		}
+		pk, _ := hex.DecodeString(pub)
+		sg, _ := hex.DecodeString(sig)
+		sigs[party] = append(sigs[party], psbtSig{PubKey: pk, Sig: sg})
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
+		return false, err
+	}
+	for _, party := range []string{roleBuyer, roleVendor} {
+		if len(sigs[party]) == len(b.Stored.Inputs) {
+			b.Parties = append(b.Parties, partySigs{party, sigs[party]})
+		}
+	}
+	seen := signersSeen(rawHex, b)
+	cosigned, who := "network", "Who signed it is not recorded"
+	switch len(seen) {
+	case 2:
+		cosigned, who = "parties", "The buyer and the vendor both signed it (their signatures are the ones the market stored)"
+	case 1:
+		who = "It carries the " + seen[0] + "'s signature; who signed it besides the " + seen[0] + " is not recorded"
+	}
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	var parentState string
+	if err = tx.QueryRowContext(ctx, "SELECT state FROM settlements WHERE id=$1 FOR UPDATE", sid).Scan(&parentState); err != nil || parentState != "broadcast" {
+		return false, err
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE settlement_bumps SET state='signed',raw_tx=$2,cosigned=$3,final_at=now(),send_error='',updated=now()
+		WHERE id=$1 AND raw_tx IS NULL AND state IN ('awaiting_signature','party_signed','superseded') AND txid=$4`, bid, rawHex, cosigned, b.TxID)
+	if err != nil {
+		return false, err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return false, nil
+	}
+	if _, err = tx.ExecContext(ctx, "UPDATE settlement_bumps SET state='broadcast',broadcast_at=now(),updated=now() WHERE id=$1 AND state='signed'", bid); err != nil {
+		return false, err
+	}
+	what, net := settlementKind(b.Kind), a.escrowNetwork()
+	note := "The transaction of a fee bump of the escrow settlement (" + what + ") was already on the " + net + " network when the market came to follow it. " + who +
+		". The market found it in its watch-only wallet, checked it against the fee bump it built and recorded it as broadcast; the market did not sign or broadcast it."
+	if err = settleNote(ctx, tx, b.OrderID, note, "a fee bump of its escrow settlement ("+what+") was already on the "+net+" network; the order page shows its transaction and its confirmations."); err != nil {
+		return false, err
+	}
+	log.Printf("escrow: fee bump for order %s: its transaction was already on the network; recorded as broadcast", shortID(b.OrderID))
+	return true, tx.Commit()
+}
+
 // broadcastBumps sends each newly stored fee bump at once (trackBroadcast sends the highest-fee stored transaction).
 func (a *App) broadcastBumps(ctx context.Context, e *escrowBTC) error {
 	return a.eachSettlement(ctx, "fee bump not broadcast", `SELECT DISTINCT s.id FROM settlements s JOIN settlement_bumps b ON b.settlement_id=s.id
@@ -1058,8 +1184,16 @@ func (a *App) bumpView(ctx context.Context, d *PageData, v *EscrowOrderView, s *
 	if err != nil {
 		return err
 	}
-	top := attempts[topAttempt(attempts)].Rate
-	s.BumpRate, s.BumpMin = strconv.FormatInt(top, 10), strconv.FormatInt(min(top+1, escrowMaxFeeRate), 10)
+	var nIn int
+	if err = a.db.QueryRowContext(ctx, "SELECT count(*) FROM payments WHERE settlement_id=$1", id).Scan(&nIn); err != nil {
+		return err
+	}
+	// A-383: the form offers only rates the request accepts; none is left once the highest is already sent.
+	top, highest := attempts[topAttempt(attempts)].Rate, bumpMaxRate(nIn, outs)
+	if s.CanBump = top < highest; !s.CanBump {
+		return nil
+	}
+	s.BumpRate, s.BumpMin, s.BumpMax = strconv.FormatInt(top, 10), strconv.FormatInt(top+1, 10), strconv.FormatInt(highest, 10)
 	if d.Security == nil {
 		d.Security, _, _, err = a.securityView(ctx, d.User.ID)
 	}

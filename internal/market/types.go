@@ -522,7 +522,7 @@ type EscrowSettlementView struct {
 	PSBT, TxID, RawTx                     string
 	Bumps                                 []*EscrowBumpView // its fee bumps, newest first (escrow_bump.go, P2-d)
 	CanBump                               bool              // the claimant may ask to raise the fee of the broadcast transaction
-	BumpRate, BumpMin                     string            // the highest stored fee rate (sat/vB), and the lowest a new bump may ask
+	BumpRate, BumpMin, BumpMax            string            // the highest stored fee rate (sat/vB), and the lowest and highest a new bump may ask (A-383)
 }
 
 // EscrowBumpView is one fee bump of a settlement on the order page (escrow_bump.go, P2-d): its state in honest words,
