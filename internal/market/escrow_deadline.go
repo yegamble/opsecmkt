@@ -49,6 +49,10 @@ const (
 	releaseSoonSQL = "es.release_at > now() AND es.release_at <= now()+interval '72 hours'"
 	// noDisputeSQL: the order o has no dispute row.
 	noDisputeSQL = "NOT EXISTS (SELECT 1 FROM disputes d WHERE d.order_id=o.id)"
+	// buyerUnsignedSQL: the buyer of the order o has not signed its release (a signature confirms receipt and ends the
+	// right to dispute, so the reminders and the banner that say "sign or dispute" do not apply).
+	buyerUnsignedSQL = `NOT EXISTS (SELECT 1 FROM settlement_signatures g JOIN settlements s ON s.id=g.settlement_id
+		WHERE s.order_id=o.id AND s.kind='release' AND s.state<>'superseded' AND g.party='buyer')`
 )
 
 var errCancelNoShipBy = fail(409, "Only the vendor can cancel this paid order: a buyer may cancel a paid escrow order only when it is a physical order the vendor has not marked shipped within its dispatch window plus 48 hours. Nothing was changed.")
@@ -174,6 +178,8 @@ func (a *App) releaseIfDue(ctx context.Context, tx *sql.Tx, orderID string) (boo
 	}
 	next := "The release to the vendor waits for the vendor's signature on the order page; once the vendor has signed it, the market co-signs it and broadcasts it."
 	switch {
+	case vendorSigned && buyerSigned:
+		next = "Both the buyer and the vendor have signed the release to the vendor, so their signatures complete it, and the market broadcasts it on its next pass."
 	case vendorSigned:
 		next = "The market co-signs the vendor's signature on the release to the vendor and broadcasts it on its next pass."
 	case buyerSigned:
@@ -191,8 +197,7 @@ func (a *App) releaseIfDue(ctx context.Context, tx *sql.Tx, orderID string) (boo
 // disputed order, are not reminded.
 func (a *App) remindDeadlines(ctx context.Context) error {
 	ids, err := orderIDs(ctx, a.db, `SELECT o.id FROM orders o JOIN escrows es ON es.order_id=o.id WHERE o.state='shipped' AND es.reminded_at IS NULL AND `+releaseSoonSQL+`
-		AND `+noDisputeSQL+` AND NOT EXISTS (SELECT 1 FROM settlement_signatures g JOIN settlements s ON s.id=g.settlement_id
-			WHERE s.order_id=o.id AND s.kind='release' AND s.state<>'superseded' AND g.party='buyer') ORDER BY es.release_at`)
+		AND `+noDisputeSQL+` AND `+buyerUnsignedSQL+` ORDER BY es.release_at`)
 	if err != nil {
 		return err
 	}
@@ -216,7 +221,7 @@ func (a *App) remindOne(ctx context.Context, orderID string) error {
 	var buyer, vendor string
 	var at time.Time
 	err = tx.QueryRowContext(ctx, `UPDATE escrows es SET reminded_at=now() FROM orders o JOIN products p ON p.id=o.product_id
-		WHERE es.order_id=$1 AND o.id=es.order_id AND es.reminded_at IS NULL AND o.state='shipped' RETURNING o.buyer_id,p.vendor_id,es.release_at`, orderID).Scan(&buyer, &vendor, &at)
+		WHERE es.order_id=$1 AND o.id=es.order_id AND es.reminded_at IS NULL AND o.state='shipped' AND `+buyerUnsignedSQL+` RETURNING o.buyer_id,p.vendor_id,es.release_at`, orderID).Scan(&buyer, &vendor, &at)
 	if err == sql.ErrNoRows {
 		return nil
 	}
@@ -342,14 +347,15 @@ func shipConflict(c *actionCtx, orderID string) error {
 
 // lateDispute refuses (409) a dispute on a shipped escrow order whose release deadline has passed (owner decision
 // 2026-10-03: the release is due), in tx after the order row lock; before the deadline it returns the sentence the
-// other party's notice carries.
+// other party's notice carries. While a restore's recheck is pending (escrow off after the restore, or before the first
+// pass after startup) the passed deadline is not yet due: the recheck will give the buyer 72 hours (A-393).
 func lateDispute(c *actionCtx, o *Order) (string, error) {
 	if !o.Escrow || o.State != stateShipped {
 		return "", nil
 	}
 	var at sql.NullTime
 	var due bool
-	err := c.Tx.QueryRowContext(c.Ctx(), "SELECT es.release_at,COALESCE("+releaseDueSQL+",false) FROM escrows es WHERE es.order_id=$1", o.ID).Scan(&at, &due)
+	err := c.Tx.QueryRowContext(c.Ctx(), "SELECT es.release_at,COALESCE("+releaseDueSQL+" AND NOT EXISTS (SELECT 1 FROM settings WHERE key=$2),false) FROM escrows es WHERE es.order_id=$1", o.ID, releaseRecheckKey).Scan(&at, &due)
 	if err != nil || !at.Valid {
 		return "", err
 	}
@@ -377,13 +383,14 @@ func deadlineNextStep(viewer string, dl *EscrowDeadlineView, paused, buyerSigned
 }
 
 // deadlineBanners fills /orders' banners: the viewer's shipped escrow orders, with no dispute, whose release deadline is
-// less than 72 hours away (P2-R9, A-377).
+// less than 72 hours away (P2-R9, A-377), unless the buyer has signed the release (A-392): the banner would tell the
+// buyer to sign or dispute, and the vendor that the buyer may still do either.
 func deadlineBanners(ctx context.Context, a *App, r *http.Request, d *PageData) error {
 	if d.User == nil || a.db == nil {
 		return nil
 	}
 	rows, err := a.db.QueryContext(ctx, `SELECT o.id,o.buyer_id=$1,es.release_at,extract(epoch FROM es.release_at-now()) FROM orders o JOIN products p ON p.id=o.product_id JOIN escrows es ON es.order_id=o.id
-		WHERE (o.buyer_id=$1 OR p.vendor_id=$1) AND o.state='shipped' AND `+releaseSoonSQL+` AND `+noDisputeSQL+` ORDER BY es.release_at`, d.User.ID)
+		WHERE (o.buyer_id=$1 OR p.vendor_id=$1) AND o.state='shipped' AND `+releaseSoonSQL+` AND `+noDisputeSQL+` AND `+buyerUnsignedSQL+` ORDER BY es.release_at`, d.User.ID)
 	if err != nil {
 		return err
 	}
