@@ -69,7 +69,9 @@ age -d -i "$AGE_IDENTITY" "$1" | client pg_restore --single-transaction --exit-o
 # a restored one with a stored final transaction (signed or broadcast) may also have been sent, or replaced, after the
 # backup: each is held with the same marker in settlements.send_error (restoredSettlementHold in
 # internal/market/escrow_recovery.go) until an administrator confirms its rebroadcast on the admin page, and the audit
-# row counts them when there are any. The same SQL runs in the same way for both destinations.
+# row counts them when there are any. A restored fee bump of a settlement (settlement_bumps, migration 080) with a stored
+# final transaction is held the same way, in settlement_bumps.send_error, until that confirmation of its settlement.
+# The same SQL runs in the same way for both destinations.
 if ! counts=$(client psql -X -q -A -t -v ON_ERROR_STOP=1 --single-transaction <<'SQL'
 SELECT to_regclass('settings') IS NOT NULL AS has_settings \gset
 \if :has_settings
@@ -104,11 +106,21 @@ SELECT count(*) AS escrow_held FROM escrow_held \gset
 \else
 SELECT 0 AS escrow_held \gset
 \endif
+SELECT to_regclass('settlement_bumps') IS NOT NULL AS has_bumps \gset
+\if :has_bumps
+WITH bump_held AS (
+  UPDATE settlement_bumps SET send_error='Restored from backup: check that this escrow settlement''s transaction was not already sent or replaced, then confirm its rebroadcast on the admin page.', updated=now()
+  WHERE raw_tx IS NOT NULL AND state IN ('signed','broadcast') RETURNING 1)
+SELECT count(*) AS bump_held FROM bump_held \gset
+\else
+SELECT 0 AS bump_held \gset
+\endif
 SELECT :'has_settings'::boolean AND to_regclass('audit_events') IS NOT NULL AS has_audit \gset
 \if :has_audit
 INSERT INTO audit_events(user_id,action) VALUES (NULL, 'Payout recovery gate set by scripts/restore.sh: held ' || :'held'
   || ' restored payout(s) and marked ' || :'failed' || ' restored failed payout(s) as possibly sent'
   || CASE WHEN :'escrow_held'::int > 0 THEN '; held ' || :'escrow_held' || ' restored escrow settlement(s) with a stored transaction until an administrator confirms each rebroadcast' ELSE '' END
+  || CASE WHEN :'bump_held'::int > 0 THEN '; held ' || :'bump_held' || ' restored escrow fee bump(s) with a stored transaction until an administrator confirms its settlement''s rebroadcast' ELSE '' END
   || '; all outbound payouts paused until an administrator clears the gate');
 \endif
 SELECT to_regclass('images') IS NOT NULL AS has_images \gset
@@ -117,16 +129,19 @@ SELECT count(*) AS images FROM images \gset
 \else
 SELECT 0 AS images \gset
 \endif
-SELECT :'held' || ' ' || :'failed' || ' ' || :'images' || ' ' || :'escrow_held';
+SELECT :'held' || ' ' || :'failed' || ' ' || :'images' || ' ' || :'escrow_held' || ' ' || :'bump_held';
 SQL
 ); then
   echo 'The database was restored, but payout recovery protection FAILED. Do not start the application on it; apply the recovery gate and holds by hand first (UPGRADING.md, section 6).' >&2
   exit 1
 fi
-read -r held failed images escrow_held <<< "$counts"
+read -r held failed images escrow_held bump_held <<< "$counts"
 printf 'Held %s restored payout(s); release each from the admin page only after checking the wallet.\n' "$held"
 if [[ ${escrow_held:-0} != 0 ]]; then
   printf 'Held %s restored Bitcoin escrow settlement(s) with a stored transaction; confirm each rebroadcast from the admin page only after checking the chain and the escrow watch-only wallet.\n' "$escrow_held"
+fi
+if [[ ${bump_held:-0} != 0 ]]; then
+  printf "Held %s restored Bitcoin escrow fee bump(s) with a stored transaction; confirming its settlement's rebroadcast on the admin page releases each.\n" "$bump_held"
 fi
 printf 'Marked %s restored failed payout(s) as possibly sent after the backup; requeue each from the admin page only after checking the wallet.\n' "$failed"
 echo 'Application databases now require payout recovery reconciliation. All outbound payouts remain paused until the recovery gate is explicitly cleared (see docs/testnet-runbook.md).'

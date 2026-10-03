@@ -976,8 +976,9 @@ func escrowSignAction(c *actionCtx) (actionResult, error) {
 }
 
 // escrowPSBTDownload serves GET /escrow-psbt?id=<order>&s=<settlement>: the reader's own copy of a settlement
-// awaiting a signature (settlementCopy), as a text file of base64. With ESCROW_BTC off, for anyone but the order's
-// buyer and vendor, and for a settlement not awaiting a signature it answers as an unknown page does.
+// awaiting a signature (settlementCopy), or with &b=<bump> of a fee bump awaiting the reader's signature, as a text
+// file of base64. With ESCROW_BTC off, for anyone but the order's buyer and vendor, and for a settlement (or bump) not
+// awaiting the reader's signature it answers as an unknown page does.
 func escrowPSBTDownload(a *App, w http.ResponseWriter, r *http.Request, u *User) {
 	if !a.escrowConfigured || a.db == nil || u == nil {
 		http.NotFound(w, r)
@@ -991,23 +992,32 @@ func escrowPSBTDownload(a *App, w http.ResponseWriter, r *http.Request, u *User)
 		return
 	}
 	var stored string
-	if err == nil {
+	reader, file := roleVendor, "escrow-settlement-"
+	if u.ID == o.BuyerID {
+		reader = roleBuyer
+	}
+	bump := r.URL.Query().Get("b")
+	if err == nil && bump == "" {
 		// A copy is served while the settlement waits for a signature, and to the party who has not signed a
 		// party-signed one (A-340: it may sign too).
-		reader := roleVendor
-		if u.ID == o.BuyerID {
-			reader = roleBuyer
-		}
 		err = a.db.QueryRowContext(ctx, `SELECT psbt FROM settlements s WHERE id=$1 AND order_id=$2 AND (state='awaiting_signature'
 			OR state='party_signed' AND NOT EXISTS(SELECT 1 FROM settlement_signatures g WHERE g.settlement_id=s.id AND g.party=$3))`, sid, o.ID, reader).Scan(&stored)
-		if err == sql.ErrNoRows {
+	} else if err == nil {
+		// P2-d: a fee bump's copy is served to its claimant while it waits for a signature, and to the other party once
+		// the claimant has signed it and while the other party has not (escrow_bump.go).
+		bid, perr := strconv.ParseInt(bump, 10, 64)
+		if perr != nil {
 			http.NotFound(w, r)
 			return
 		}
+		file = "escrow-fee-bump-"
+		err = a.db.QueryRowContext(ctx, `SELECT b.psbt FROM settlement_bumps b JOIN settlements s ON s.id=b.settlement_id WHERE b.id=$1 AND s.id=$2 AND s.order_id=$3 AND s.state='broadcast'
+			AND (b.state='awaiting_signature' AND settlement_claimant(s.kind)=$4 OR b.state='party_signed' AND settlement_claimant(s.kind)<>$4 AND b.signer=settlement_claimant(s.kind)
+			AND NOT EXISTS(SELECT 1 FROM settlement_bump_signatures g WHERE g.bump_id=b.id AND g.party=$4))`, bid, sid, o.ID, reader).Scan(&stored)
 	}
-	reader := roleVendor
-	if u.ID == o.BuyerID {
-		reader = roleBuyer
+	if err == sql.ErrNoRows {
+		http.NotFound(w, r)
+		return
 	}
 	var copyText string
 	if err == nil {
@@ -1021,7 +1031,7 @@ func escrowPSBTDownload(a *App, w http.ResponseWriter, r *http.Request, u *User)
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Header().Set("Content-Disposition", `attachment; filename="escrow-settlement-`+shortID(o.ID)+`-`+reader+`.psbt.txt"`)
+	w.Header().Set("Content-Disposition", `attachment; filename="`+file+shortID(o.ID)+`-`+reader+`.psbt.txt"`)
 	w.Write([]byte(copyText + "\n"))
 }
 
@@ -1073,6 +1083,22 @@ func settleSendText(class string) string {
 		return "" // restoreStatus says it
 	}
 	return "The market's Bitcoin node returned a transaction that failed the market's checks, so nothing was sent."
+}
+
+// settlementOutputRole is whom an output of a settlement of kind pays, as the expected-outputs table says it.
+func settlementOutputRole(kind, role string) string {
+	switch role {
+	case "claimant":
+		if kind != "release" {
+			return "The buyer's refund address (the refund, less the network fee)"
+		}
+		return "The vendor (the claim, less the network fee)"
+	case "market_fee":
+		return "The market fee"
+	case "buyer_return":
+		return "The buyer's refund address (the amount paid above the price)"
+	}
+	return ""
 }
 
 // settlementView is one settlement of the order as the reader sees it.
@@ -1166,24 +1192,17 @@ func (a *App) settlementView(ctx context.Context, d *PageData, v *EscrowOrderVie
 				rows.Close()
 				return nil, err
 			}
-			out.Amount = amount(sats, 8)
-			switch role {
-			case "claimant":
-				out.Role = "The vendor (the claim, less the network fee)"
-				if kind != "release" {
-					out.Role = "The buyer's refund address (the refund, less the network fee)"
-				}
-			case "market_fee":
-				out.Role = "The market fee"
-			case "buyer_return":
-				out.Role = "The buyer's refund address (the amount paid above the price)"
-			}
+			out.Amount, out.Role = amount(sats, 8), settlementOutputRole(kind, role)
 			s.Outputs = append(s.Outputs, out)
 		}
 		rows.Close()
 		if err = rows.Err(); err != nil {
 			return nil, err
 		}
+	}
+	// P2-d: its fee bumps, and the fee bump form for the claimant of a broadcast settlement (escrow_bump.go).
+	if err = a.bumpView(ctx, d, v, s, id, kind, state, txid, sendErr, fee.Int64); err != nil {
+		return nil, err
 	}
 	canSign := state == "awaiting_signature" || state == "party_signed" && !readerSigned
 	if canSign && (d.OrderViewer == roleBuyer || d.OrderViewer == roleVendor) && a.escrowConfigured {

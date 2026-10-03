@@ -196,13 +196,15 @@ func (a *App) escrowPollOnce(ctx context.Context) error {
 	// their confirmation; those waiting for a signature are checked for an input spent without the market (trackAwaiting,
 	// A-356); those requested so far (a claim, or the refund a cancellation above may just have requested) are built;
 	// party-signed ones are co-signed and stored; and stored ones are broadcast (escrow_cosign.go).
+	// Then fee bumps of broadcast settlements are built, co-signed and sent (escrow_bump.go, P2-d).
 	// While the restore gate is set (escrow_recovery.go) nothing is built or co-signed, and broadcastSettlements and
 	// trackBroadcasts send only what an administrator confirmed; watching continues.
 	gate, err := restoreGateSet(ctx, a.db)
 	if err != nil {
 		return errors.Join(append(errs, err)...)
 	}
-	steps := []func(context.Context, *escrowBTC) error{a.trackConfirmeds, a.trackBroadcasts, a.trackAwaiting, a.buildSettlements, a.cosignSettlements, a.broadcastSettlements}
+	steps := []func(context.Context, *escrowBTC) error{a.trackConfirmeds, a.trackBroadcasts, a.trackAwaiting, a.buildSettlements, a.cosignSettlements, a.broadcastSettlements,
+		a.buildBumps, a.cosignBumps, a.broadcastBumps}
 	if gate {
 		steps = []func(context.Context, *escrowBTC) error{a.trackConfirmeds, a.trackBroadcasts, a.trackAwaiting, a.broadcastSettlements}
 	}

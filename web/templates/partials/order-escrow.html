@@ -130,6 +130,38 @@
 <label>Signed PSBT<textarea class="escrow-psbt" name="psbt" required maxlength="60000" rows="6" spellcheck="false" autocapitalize="off" placeholder="cHNidP8…"></textarea>
 </label>
 <button class="primary" type="submit">Submit signature</button>
+</form>{{end}}{{range .Bumps}}
+<section class="escrow-bump" id="escrow-bump-{{.ID}}" aria-labelledby="escrow-bump-heading-{{.ID}}">
+<h4 id="escrow-bump-heading-{{.ID}}">Fee bump {{.N}}: {{.FeeRate}} sat/vB</h4>
+<p role="status">{{.Status}}</p>{{if .Outputs}}
+<p class="help">A new transaction spending the same coins and paying the same addresses; only the first output is smaller, by the extra network fee. Check these outputs in your wallet before you sign.</p>
+<ol class="settlement-outputs" aria-label="Expected outputs of fee bump {{.N}}">{{range .Outputs}}
+<li><span>{{.Role}}: <strong>{{.Amount}} BTC</strong></span>
+<span class="settlement-address">{{.Address}}</span></li>{{end}}
+</ol>
+<p class="help">Network fee (to the miners, not an output): <strong>{{.NetworkFee}} BTC</strong>.</p>{{end}}{{if .CanSign}}
+<p class="help">{{if .SignToo}}The other party has signed it already, so the market co-signs it on its next pass. You may sign it too: with both your signatures the market does not sign it. {{end}}Sign your copy in your own wallet as you signed the settlement (in Bitcoin Core, <code>walletprocesspsbt</code> without finalizing), check its outputs against the list above and paste the signed PSBT here. A signature of the settlement does not count: this is another transaction.</p>
+<label>Your copy (PSBT)<textarea class="escrow-psbt" readonly rows="6" spellcheck="false">{{.PSBT}}</textarea>
+</label>
+<p><a class="button" href="/escrow-psbt?id={{$.Order.ID}}&amp;s={{.SettlementID}}&amp;b={{.ID}}" download>Download your copy</a></p>
+<form class="stack" method="post" action="/escrow/bump-sign">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="order_id" value="{{$.Order.ID}}">
+<input type="hidden" name="bump_id" value="{{.ID}}">
+<label>Signed PSBT<textarea class="escrow-psbt" name="psbt" required maxlength="60000" rows="6" spellcheck="false" autocapitalize="off" placeholder="cHNidP8…"></textarea>
+</label>
+<button class="primary" type="submit">Submit signature</button>
+</form>{{end}}
+</section>{{end}}{{if .CanBump}}
+<form class="stack escrow-bump-form" id="escrow-bump-form-{{.ID}}" method="post" action="/escrow/bump">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="order_id" value="{{$.Order.ID}}">
+<input type="hidden" name="settlement_id" value="{{.ID}}">
+<label>New network fee rate (sat/vB)<input name="fee_rate" type="number" required min="{{.BumpMin}}" max="100" step="1" inputmode="numeric" aria-describedby="escrow-bump-help-{{.ID}}">
+</label>
+<span class="help" id="escrow-bump-help-{{.ID}}">Not confirmed yet? Ask for a fee bump: the market builds a new transaction paying the same outputs at a higher rate than the {{.BumpRate}} sat/vB already sent, with the extra fee taken from your output only. You sign it first; it replaces the transaction already sent. A new request closes a fee bump that was not sent yet.</span>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
+<button type="submit">Raise the network fee</button>
 </form>{{end}}
 </section>{{end}}{{end}}{{end}}
 {{define "order-escrow-checkout"}}{{with .EscrowCheckout}}<section class="order-action escrow-checkout" aria-labelledby="escrow-checkout-heading">
