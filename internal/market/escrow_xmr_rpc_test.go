@@ -324,6 +324,39 @@ func TestXMREscrowRPCResults(t *testing.T) {
 	if _, found, err := r.transferByTxid(ctx, 3, hex64("settle")); err != nil || found {
 		t.Fatalf("unknown txid: %v %v", found, err)
 	}
+	// QA-XB-3: only -8 means "the wallet does not know it". Any other failure is an error, never (nil, false, nil):
+	// X-d's ambiguous-relay decision must not read a failed lookup as an absent transaction.
+	for _, code := range []int{-13, -1, -4} {
+		wallet.set("get_transfer_by_txid", func(json.RawMessage) (any, int, string) { return nil, code, "failure" })
+		var re *xmrRPCError
+		if got, found, err := r.transferByTxid(ctx, 3, hex64("settle")); !errors.As(err, &re) || re.Code != int64(code) || found || got != nil {
+			t.Fatalf("code %d: %v %v %v", code, got, found, err)
+		}
+	}
+	wallet.set("get_transfer_by_txid", func(json.RawMessage) (any, int, string) { return "not an object", 0, "" })
+	if _, found, err := r.transferByTxid(ctx, 3, hex64("settle")); err == nil || found {
+		t.Fatalf("bad reply: %v %v", found, err)
+	}
+	func() {
+		old := rpcTimeout
+		rpcTimeout = 100 * time.Millisecond
+		defer func() { rpcTimeout = old }()
+		wallet.setDelay("get_transfer_by_txid", 400*time.Millisecond)
+		defer wallet.setDelay("get_transfer_by_txid", 0)
+		var re *xmrRPCError
+		if _, found, err := r.transferByTxid(ctx, 3, hex64("settle")); !errors.As(err, &re) || re.Class != "timeout" || found {
+			t.Fatalf("timeout: %v %v", found, err)
+		}
+		down := newFakeXMRNode(t)
+		gone, err := newXMREscrowRPC(down.url(), daemon.url())
+		if err != nil {
+			t.Fatal(err)
+		}
+		down.Close()
+		if _, found, err := gone.transferByTxid(ctx, 3, hex64("settle")); !errors.As(err, &re) || re.Class != "unreachable" || found {
+			t.Fatalf("unreachable: %v %v", found, err)
+		}
+	}()
 	txs, missed, err := r.transactions(ctx, []string{hex64("settle"), hex64("gone")})
 	if err != nil || len(txs) != 1 || len(missed) != 1 || missed[0] != hex64("gone") {
 		t.Fatalf("get_transactions: %+v %v %v", txs, missed, err)
@@ -366,6 +399,8 @@ func TestXMREscrowRPCResults(t *testing.T) {
 		{"daemon status not OK", daemon, "/get_transactions", map[string]any{"status": "Failed", "txs": []any{}}, func() error { _, _, err := r.transactions(ctx, []string{hex64("x")}); return err }},
 		{"undecodable as_json", daemon, "/get_transactions", map[string]any{"status": "OK", "txs": []any{map[string]any{"tx_hash": hex64("x"), "as_json": "{"}}}, func() error { _, _, err := r.transactions(ctx, []string{hex64("x")}); return err }},
 		{"spent_status count", daemon, "/is_key_image_spent", map[string]any{"status": "OK", "spent_status": []int{0}}, func() error { _, err := r.keyImagesSpent(ctx, []string{hex64("a"), hex64("b")}); return err }},
+		{"spent_status 3", daemon, "/is_key_image_spent", map[string]any{"status": "OK", "spent_status": []int{0, 3}}, func() error { _, err := r.keyImagesSpent(ctx, []string{hex64("a"), hex64("b")}); return err }},
+		{"spent_status negative", daemon, "/is_key_image_spent", map[string]any{"status": "OK", "spent_status": []int{-1}}, func() error { _, err := r.keyImagesSpent(ctx, []string{hex64("a")}); return err }},
 	}
 	for _, b := range bad {
 		b.node.result(b.key, b.v)
@@ -451,6 +486,8 @@ func TestXMREscrowNetworkCheck(t *testing.T) {
 		{"testnet", info("testnet", false, 120), 16, 120, errXMRNotFakechain},
 		{"empty nettype", info("", false, 120), 16, 120, errXMRNotFakechain},
 		{"fakechain with the mainnet flag", info("fakechain", true, 120), 16, 120, errXMRNotFakechain},
+		{"fakechain with the stagenet flag", map[string]any{"nettype": "fakechain", "stagenet": true, "height": 120}, 16, 120, errXMRNotFakechain},
+		{"fakechain with the testnet flag", map[string]any{"nettype": "fakechain", "testnet": true, "height": 120}, 16, 120, errXMRNotFakechain},
 		{"hard fork 15", info("fakechain", false, 120), 15, 120, errXMRHardFork},
 		{"daemon height 1,000,000", info("fakechain", false, 1_000_000), 16, 1_000_000, errXMRDaemonHeight},
 		{"wallet height 1,000,000", info("fakechain", false, 999_995), 16, 1_000_000, errXMRWalletHeight},
@@ -542,7 +579,8 @@ func TestXMREscrowRPCErrorClasses(t *testing.T) {
 	}
 }
 
-// TestXMREscrowSlowCallsGetLongerTimeout: open, create, close, refresh and store run on xmrWalletSlowTimeout, not
+// TestXMREscrowSlowCallsGetLongerTimeout: open, create, close, refresh, store and change_wallet_password run on
+// xmrWalletSlowTimeout, not
 // rpcTimeout; an ordinary read still times out at rpcTimeout.
 func TestXMREscrowSlowCallsGetLongerTimeout(t *testing.T) {
 	if xmrWalletSlowTimeout != 2*time.Minute || xmrWalletSlowTimeout <= rpcTimeout {
@@ -553,15 +591,16 @@ func TestXMREscrowSlowCallsGetLongerTimeout(t *testing.T) {
 	rpcTimeout = 100 * time.Millisecond
 	t.Cleanup(func() { rpcTimeout = old })
 	wallet, _, r := happyXMRNodes(t)
-	for _, m := range []string{"create_wallet", "open_wallet", "close_wallet", "refresh", "store", "get_height"} {
+	for _, m := range []string{"create_wallet", "open_wallet", "close_wallet", "refresh", "store", "change_wallet_password", "get_height"} {
 		wallet.setDelay(m, 250*time.Millisecond)
 	}
 	for name, call := range map[string]func() error{
-		"create_wallet": func() error { return r.createWallet(ctx, "escrow-202610-01", "pw") },
-		"open_wallet":   func() error { return r.openWallet(ctx, "escrow-202610-01", "pw") },
-		"close_wallet":  func() error { return r.closeWallet(ctx) },
-		"refresh":       func() error { return r.refresh(ctx) },
-		"store":         func() error { return r.store(ctx) },
+		"create_wallet":          func() error { return r.createWallet(ctx, "escrow-202610-01", "pw") },
+		"open_wallet":            func() error { return r.openWallet(ctx, "escrow-202610-01", "pw") },
+		"close_wallet":           func() error { return r.closeWallet(ctx) },
+		"refresh":                func() error { return r.refresh(ctx) },
+		"store":                  func() error { return r.store(ctx) },
+		"change_wallet_password": func() error { return r.changeWalletPassword(ctx, "old", "new") },
 	} {
 		if err := call(); err != nil {
 			t.Errorf("%s cut short: %v", name, err)

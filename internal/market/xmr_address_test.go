@@ -129,6 +129,50 @@ func TestXMRAddressExternalVectors(t *testing.T) {
 	}
 }
 
+// TestXMRAddressMoneroClassified (QA-XB-1): real addresses whose network and kind Monero itself states, so a wrong
+// network-byte constant shared by the parser and the test encoder cannot pass. The chair's fakechain probe on
+// monero-wallet-rpc 0.18.5.1 (its primary address and a create_account subaddress), and the table in Monero's
+// tests/functional_tests/validate_address.py (nettype and kind as validate_address reports them; the openalias
+// subaddress of donate@getmonero.org). Keys are not published for these, so only the kind is checked.
+func TestXMRAddressMoneroClassified(t *testing.T) {
+	cases := []struct {
+		addr, kind string
+		err        error
+	}{
+		// fakechain probe, 2026-10-03
+		{"49JSufxNBTCLdByNX6iKuRQr3qQxrB75KCnGwtvtb28s5eE4fNJsWygBDFFMhxEAc5E2jk1o8bk8NZWMHGyR4M5ELetmAY8", xmrStandard, nil},
+		{"8C9P9WWEG9GURMVjNQ7PKMLY87A77igVc33jYpHzxewGFw1F5nkrjd8Lb6i2RUXgimL12HTkbPDf7ZSmQG9wocmrTznxVeK", xmrSubaddress, nil},
+		// validate_address.py: mainnet standard, mainnet subaddresses
+		{"42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm", xmrStandard, nil},
+		{"44Kbx4sJ7JDRDV5aAhLJzQCjDz2ViLRduE3ijDZu3osWKBjMGkV1XPk4pfDUMqt1Aiezvephdqm6YD19GKFD9ZcXVUTp6BW", xmrStandard, nil},
+		{"8AsN91rznfkBGTY8psSNkJBg9SZgxxGGRUhGwRptBhgr5XSQ1XzmA9m8QAnoxydecSh5aLJXdrgXwTDMMZ1AuXsN1EX5Mtm", xmrSubaddress, nil},
+		{"86kKnBKFqzCLxtK1Jmx2BkNBDBSMDEVaRYMMyVbeURYDWs8uNGDZURKCA5yRcyMxHzPcmCf1q2fSdhQVcaKsFrtGRsdGfNk", xmrSubaddress, nil},
+		{"888tNkZrPN6JsEgekjMnABU4TBzc2Dt29EPAvkRxbANsAnjyPbb3iQ1YBRk1UXcdRsiKc9dhwMVgN5S9cQUiyoogDavup3H", xmrSubaddress, nil},
+		// validate_address.py: the bad address (last character changed), testnet and stagenet standard and subaddresses
+		{"42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWD9", "", errXMRAddressChecksum},
+		{"9ujeXrjzf7bfeK3KZdCqnYaMwZVFuXemPU8Ubw335rj2FN1CdMiWNyFV3ksEfMFvRp9L9qum5UxkP5rN9aLcPxbH1au4WAB", "", errXMRAddressNetwork},
+		{"53teqCAESLxeJ1REzGMAat1ZeHvuajvDiXqboEocPaDRRmqWoVPzy46GLo866qRFjbNhfkNckyhST3WEvBviDwpUDd7DSzB", "", errXMRAddressNetwork},
+		{"BdKg9udkvckC5T58a8Nmtb6BNsgRAxs7uA2D49sWNNX5HPW5Us6Wxu8QMXrnSx3xPBQQ2iu9kwEcRGAoiz6EPmcZKbF62GS", "", errXMRAddressNetwork},
+		{"BcFvPa3fT4gVt5QyRDe5Vv7VtUFao9ci8NFEy3r254KF7R1N2cNB5FYhGvrHbMStv4D6VDzZ5xtxeKV8vgEPMnDcNFuwZb9", "", errXMRAddressNetwork},
+		{"73LhUiix4DVFMcKhsPRG51QmCsv8dYYbL6GcQoLwEEFvPvkVvc7BhebfA4pnEFF9Lq66hwvLqBvpHjTcqvpJMHmmNjPPBqa", "", errXMRAddressNetwork},
+		{"7A1Hr63MfgUa8pkWxueD5xBqhQczkusYiCMYMnJGcGmuQxa7aDBxN1G7iCuLCNB3VPeb2TW7U9FdxB27xKkWKfJ8VhUZthF", "", errXMRAddressNetwork},
+		// validate_address.py: integrated addresses on each network (106 characters)
+		{"4BxSHvcgTwu25WooY4BVmgdcKwZu5EksVZSZkDd6ooxSVVqQ4ubxXkhLF6hEqtw96i9cf3cVfLw8UWe95bdDKfRQeYtPwLm1Jiw7AKt2LY", "", errXMRAddressLength},
+		{"AApMA1VuhiCaHzr5X2KXi2Zc9oJ3VaGjkfChxxpRpxkyKf1NetvbRbQTbFMrGkr85DjnEH7JsBaoUFsgKwZnmtnVWnoB8MDotCsLb7eWwz", "", errXMRAddressLength},
+		{"5K8mwfjumVseCcQEjNbf59Um6R9NfVUNkHTLhhPCmNvgDLVS88YW5tScnm83rw9mfgYtchtDDTW5jEfMhygi27j1QYphX38hg6m4VMtN29", "", errXMRAddressLength},
+	}
+	for _, c := range cases {
+		a, err := parseXMRAddress(c.addr)
+		if !errors.Is(err, c.err) || a.Kind != c.kind {
+			t.Errorf("%s…: kind %q, %v; want %q, %v", c.addr[:8], a.Kind, err, c.kind, c.err)
+		}
+	}
+	// The integrated address decodes with a valid checksum and the mainnet integrated byte: refused for its kind.
+	if data, ok := xmrBase58Decode(cases[14].addr); !ok || len(data) != 77 || data[0] != 19 { // Monero's CRYPTONOTE_PUBLIC_INTEGRATED_ADDRESS_BASE58_PREFIX
+		t.Fatalf("integrated vector: %v %d", ok, len(data))
+	}
+}
+
 func TestXMRAddressRoundTrip(t *testing.T) {
 	for _, c := range []struct {
 		tag  byte
