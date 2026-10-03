@@ -125,6 +125,9 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 		v.Status, v.NextStep = "Funded", "The vendor ships the goods; the order stays open until it is shipped and settled. If the vendor cancels it instead, the escrow is refunded to the buyer."
 	case o.State == statePaid:
 		v.Status, v.NextStep = "Funded", "The content could not be delivered automatically: the order completes when the vendor delivers it by hand. If the vendor cancels it instead, the escrow is refunded to the buyer."
+	case o.State == stateShipped:
+		// The release's "who acts next" line replaces this once it exists (escrowSettlementView, P2-R2).
+		v.Status, v.NextStep = "Funded and shipped", "The vendor marked the order shipped; the market builds the release to the vendor, which the vendor and the buyer each sign."
 	case o.State == stateCompleted:
 		v.Status, v.NextStep = "Funded and completed", "The vendor claims the escrowed coins from this page."
 	case o.State == stateDisputed:
@@ -164,6 +167,16 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 	counted := received + pending
 	for i, t := range d.Transitions {
 		switch {
+		case t.To == stateShipped:
+			// P2-R1: an escrow order is marked shipped with the claim address its release pays and the password.
+			d.Transitions[i].Action = "/escrow/ship"
+			if e == nil || !a.escrowConfigured {
+				d.Transitions[i].Action, d.Transitions[i].Label = "", errEscrowDown.Error()
+			} else if d.Security == nil {
+				if d.Security, _, _, err = a.securityView(ctx, d.User.ID); err != nil {
+					return err
+				}
+			}
 		case t.To == stateCancelled && counted > 0:
 			d.Transitions[i].Payout = &PayoutPreview{Seen: counted, Confirm: "Cancelling refunds the " + amount(counted, 8) +
 				" " + a.escrowNetwork() + " BTC in this escrow, less the network fee, to the buyer's refund address given at checkout. The market builds the refund transaction; the buyer or the vendor then signs it on this page. This is final."}

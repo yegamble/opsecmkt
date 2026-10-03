@@ -231,6 +231,13 @@ func (a *App) settleEscrow(ctx context.Context, orderID string, walletRead bool)
 		return err
 	}
 	threshold := a.escrow.Load().confirmations
+	if o.Escrow && o.State != stateDraft && o.State != stateAwaitingPayment {
+		// P2-R6, A-374: a deposit no settlement spends, once the order's release or refund is built, is left out for the
+		// stray refund (escrow_release.go); an open order's top-up is otherwise never paid or flagged.
+		if err = a.leaveOutTopUps(ctx, tx, &o); err != nil {
+			return err
+		}
+	}
 	if o.Escrow && isTerminal(o.State) {
 		// A deposit first recorded after the order closed is never counted; it is flagged for payment review, the
 		// buyer and the staff told once per episode, as a pooled one is (A-211, QA31-3). It stays in the escrow.

@@ -151,7 +151,7 @@ shipped phase has proven. The full rules and acceptance criteria are in the proj
 | Wallet check | Scripted signing test with Electrum and Bitcoin Core on regtest, before any escrow database change | Done on regtest: Core signs; Electrum cannot sign this layout |
 | 1 | Bitcoin escrow for digital orders on regtest, behind a setting that is off by default | Built and tested on regtest on the development branch, not released, behind `ESCROW_BTC` (off by default, regtest only): see [Phase 1](#phase-1-bitcoin-escrow-on-regtest) for what it does, what it protects and the tests behind it. Not run on any public test network or on mainnet; Electrum, Sparrow and hardware wallets are not supported |
 | Wallets | Electrum and Sparrow support (a signing test showed Electrum needs a different key layout) | Not started |
-| 2 | Physical orders: buyer-signed release, 14-day deadline, no-ship cancellation | Not started |
+| 2 | Physical orders: buyer-signed release, 14-day deadline, no-ship cancellation | In progress on the development branch, regtest only, behind `ESCROW_BTC`: physical escrow checkout, fee bumps, and the release built when the vendor marks the order shipped, which the buyer and the vendor complete with their two signatures (the market never signs it before the order is completed; `TestEscrowPhysicalBothSign`, `TestEscrowShippedNeverMarketSigns`, real-chain leg `TestEscrowRegtestPhysical`), are built and tested. The release deadline and the no-ship cancellation are not built yet, so a buyer who never signs leaves the release waiting; nothing here is released |
 | 3 | Monero accounts in monthly escrow wallets | Not started |
 | 4 | Public test networks end to end, then escrow-only for new orders, then removal of the pooled wallet | Not started |
 

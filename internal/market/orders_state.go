@@ -51,6 +51,11 @@ var transitionKind = map[[2]string]string{{statePaid, stateShipped}: "physical",
 // a pooled one, whose completion stays the buyer's: on a pooled order these edges are refused (403).
 var escrowOnly = map[[3]string]bool{{stateDelivered, stateCompleted, roleSystem}: true, {stateShipped, stateCompleted, roleSystem}: true}
 
+// pooledOnly restricts a move by one role to pooled orders (A-373, P2-R2): the buyer's Complete queues a pooled payout;
+// on an escrow order the buyer confirms receipt only by signing the release (escrow_release.go), so these edges are
+// refused there (409) and never offered, and "confirm receipt" can never lead to a market co-signature.
+var pooledOnly = map[[3]string]bool{{stateShipped, stateCompleted, roleBuyer}: true, {stateDelivered, stateCompleted, roleBuyer}: true}
+
 var (
 	errConflict  = fail(409, "This order changed or is no longer in that state. Reload and try again.")
 	errForbidden = fail(403, "You cannot make that change to this order.")
@@ -129,6 +134,9 @@ func (a *App) transition(ctx context.Context, tx *sql.Tx, orderID, from, to stri
 	}
 	if o.State != from {
 		return nil, errConflict
+	}
+	if o.Escrow && slices.ContainsFunc(actorRoles(&o, actor), func(r string) bool { return pooledOnly[[3]string{from, to, r}] }) {
+		return nil, errEscrowComplete
 	}
 	allowed, ok := transitions[from][to]
 	if !ok || !slices.ContainsFunc(actorRoles(&o, actor), func(r string) bool {

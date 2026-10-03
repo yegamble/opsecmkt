@@ -506,6 +506,7 @@ type EscrowOrderView struct {
 	Claim                                       bool                    // the vendor of a completed order may request the claim
 	Recover, RecoverAsked                       bool                    // the buyer of a closed order may ask to recover coins at the escrow (or has asked; escrow_stray.go)
 	RestorePaused                               bool                    // the restore gate pauses escrow builds, co-signing and broadcasts (escrow_recovery.go)
+	PartiesOnly                                 bool                    // a shipped order's release: only both parties' signatures complete it (escrow_release.go)
 }
 
 // EscrowSettlementView is an escrow order's settlement on its page (escrow_settle.go): its state in honest words, its
@@ -516,6 +517,7 @@ type EscrowSettlementView struct {
 	Title, Status, NetworkFee, InputTotal string
 	Outputs                               []SettlementOutputView
 	CanSign, SignToo, Stray               bool
+	PartiesOnly                           bool   // a physical order's release before its outcome: both parties sign it, the market never does (escrow_release.go)
 	State                                 string // the settlements.state
 	PSBT, TxID, RawTx                     string
 	Bumps                                 []*EscrowBumpView // its fee bumps, newest first (escrow_bump.go, P2-d)

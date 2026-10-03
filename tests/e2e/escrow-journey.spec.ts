@@ -1,6 +1,5 @@
-import { readFileSync } from 'node:fs';
-import { expect, test, type APIRequestContext, type Browser, type Locator, type Page, type TestInfo } from '@playwright/test';
-import { waitForStyles } from './styles';
+import { expect, test } from '@playwright/test';
+import { activateKey, buyerPassword, check, context, downloadCopy, password, pressSubmit, register, reloadUntil, settlementStatus, shot, sim, simPost, tabTo, typeInto, vendorPassword } from './escrow-helpers';
 
 // WR-escrow Phase 1 (A-246): the Bitcoin escrow paste journey with JavaScript disabled at 320 px, every form driven by
 // the keyboard alone, against the real server and PostgreSQL. The escrow node is SIMULATED
@@ -8,98 +7,6 @@ import { waitForStyles } from './styles';
 // keyed hashes only the simulator accepts, the signed PSBTs pasted here come from the simulator playing each party's
 // wallet, and no chain exists. This proves the application's forms, checks, order states and pages end to end; it is
 // not chain evidence (that is scripts/test-escrow-regtest.sh, on real Bitcoin Core regtest).
-const password = 'escrow-browser-admin-password-123';
-const buyerPassword = 'escrow-browser-buyer-password-123';
-const vendorPassword = 'escrow-browser-vendor-password-123';
-const sim = process.env.E2E_ESCROW_RPC ?? 'http://127.0.0.1:18092';
-const width = 320;
-
-// Presses Tab until target has the focus (a keyboard user reaching a field or button).
-async function tabTo(page: Page, target: Locator) {
-  await expect(target).toHaveCount(1);
-  for (let i = 0; i < 400; i++) {
-    if (await target.evaluate(el => el === document.activeElement)) return;
-    await page.keyboard.press('Tab');
-  }
-  throw new Error('not reachable with the Tab key');
-}
-// Types text into a field reached with Tab. A PSBT is inserted as one paste (keyboard.insertText).
-async function typeInto(page: Page, field: Locator, text: string) {
-  await tabTo(page, field);
-  if (text.length > 120) await page.keyboard.insertText(text);
-  else await page.keyboard.type(text);
-}
-// Reaches a submit button with Tab and presses Enter; resolves with the HTTP status of the page it loads.
-async function pressSubmit(page: Page, button: Locator): Promise<number> {
-  await tabTo(page, button);
-  const [response] = await Promise.all([
-    page.waitForResponse(r => r.request().method() === 'POST' && r.request().isNavigationRequest()),
-    page.waitForEvent('load'),
-    page.keyboard.press('Enter'),
-  ]);
-  return response.status();
-}
-async function check(page: Page, box: Locator) {
-  await tabTo(page, box);
-  await page.keyboard.press('Space');
-  await expect(box).toBeChecked();
-}
-async function simPost(request: APIRequestContext, path: string, data: object): Promise<any> {
-  const r = await request.post(`${sim}${path}`, { data });
-  expect(r.ok(), `${path}: ${await r.text()}`).toBeTruthy();
-  return r.json();
-}
-async function reloadUntil(page: Page, assertion: () => Promise<void>) {
-  await expect(async () => { await page.reload(); await assertion(); }).toPass({ timeout: 30_000, intervals: [300, 700, 1000] });
-}
-// The page at 320 px: no horizontal scrolling, and a screenshot for the record.
-async function shot(page: Page, info: TestInfo, name: string) {
-  await waitForStyles(page);
-  expect(await page.evaluate(() => document.documentElement.scrollWidth), `${name} at ${width}px`).toBeLessThanOrEqual(width);
-  await page.screenshot({ path: info.outputPath(`${name}.png`), fullPage: true });
-}
-async function context(browser: Browser, baseURL: string | undefined): Promise<Page> {
-  const ctx = await browser.newContext({ baseURL, javaScriptEnabled: false, viewport: { width, height: 800 } });
-  return ctx.newPage();
-}
-async function register(page: Page, handle: string, pass: string) {
-  await page.goto('/register');
-  await typeInto(page, page.getByLabel('Handle', { exact: true }), handle);
-  await typeInto(page, page.getByLabel('Password', { exact: true }), pass);
-  await pressSubmit(page, page.getByRole('button', { name: 'Create account' }));
-  await expect(page.locator('.account-name')).toHaveText(handle);
-}
-// Registers the party's escrow key and activates it by signing the practice transaction (in the simulated wallet).
-async function activateKey(page: Page, request: APIRequestContext, name: string, pass: string, info: TestInfo) {
-  const { key } = await simPost(request, '/test/escrow/key', { name });
-  await page.goto('/escrow-key');
-  await typeInto(page, page.getByLabel('Extended public key with its origin'), key);
-  await typeInto(page, page.getByLabel('Current password'), pass);
-  expect(await pressSubmit(page, page.getByRole('button', { name: 'Register key' }))).toBe(303);
-  await expect(page.locator('.page-head .badge')).toHaveText('Inactive');
-  await pressSubmitGet(page, page.getByRole('button', { name: 'Show the practice transaction' }));
-  const practice = (await page.locator('#practice textarea[readonly]').inputValue()).trim();
-  expect(practice).toMatch(/^cHNidP8/);
-  await shot(page, info, `${name}-01-practice`);
-  const { psbt } = await simPost(request, '/test/escrow/sign', { psbt: practice, fingerprint: key.slice(1, 9), sighash: 1 });
-  await typeInto(page, page.getByLabel('Signed practice PSBT'), psbt);
-  expect(await pressSubmit(page, page.getByRole('button', { name: 'Check signature' }))).toBe(303);
-  await expect(page.locator('.page-head .badge')).toHaveText('Active');
-  await shot(page, info, `${name}-02-key-active`);
-  return key;
-}
-// A GET form submitted from the keyboard.
-async function pressSubmitGet(page: Page, button: Locator) {
-  await tabTo(page, button);
-  await Promise.all([page.waitForEvent('load'), page.keyboard.press('Enter')]);
-}
-// Downloads the reader's copy of the settlement with the keyboard and returns it.
-async function downloadCopy(page: Page): Promise<string> {
-  await tabTo(page, page.getByRole('link', { name: 'Download your copy' }));
-  const [download] = await Promise.all([page.waitForEvent('download'), page.keyboard.press('Enter')]);
-  return readFileSync((await download.path())!, 'utf8').trim();
-}
-const settlementStatus = (page: Page) => page.locator('.escrow-settlement [role="status"]').first();
 
 test('Bitcoin escrow paste journey: keys, checkout and funding, completion, the vendor\'s claim, a refused paste and a refund', async ({ page: admin, browser, baseURL, request }, info) => {
   // The marketplace, an administrator, a buyer and a vendor.
