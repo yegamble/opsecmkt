@@ -63,6 +63,13 @@ func xmrSlot(t *testing.T, e *testEnv, wallet, account int64) int64 {
 func xmrEscrow(t *testing.T, e *testEnv, wallet, account int64, buyer, product, state string) (string, string, int64) {
 	t.Helper()
 	order := e.order(buyer, product, "XMR", state)
+	addr, slot := xmrEscrowOf(t, e, wallet, account, order)
+	return order, addr, slot
+}
+
+// xmrEscrowOf gives the XMR order a Monero escrow on a new slot (account of wallet): its address and slot.
+func xmrEscrowOf(t *testing.T, e *testEnv, wallet, account int64, order string) (string, int64) {
+	t.Helper()
 	slot := xmrSlot(t, e, wallet, account)
 	var addr string
 	if err := e.DB.QueryRow("UPDATE xmr_escrow_slots SET state='claimed',order_id=$2,updated=now() WHERE id=$1 AND state='free' RETURNING address", slot, order).Scan(&addr); err != nil {
@@ -72,7 +79,7 @@ func xmrEscrow(t *testing.T, e *testEnv, wallet, account int64, buyer, product, 
 		order, addr, xmrAddr("refund-"+order), slot); err != nil {
 		t.Fatal(err)
 	}
-	return order, addr, slot
+	return addr, slot
 }
 
 // xmrRefused runs q in a transaction it rolls back, so that an accepted statement never masks the next case, and
@@ -109,11 +116,12 @@ func TestXMREscrowMigration084(t *testing.T) {
 	sealedVals := func(addr, state string) string {
 		return "'" + addr + "',1,'sealed seed',repeat('AB',20),now(),'" + state + "'"
 	}
-	if _, err := e.DB.Exec(wallet("state", "'creating'")); err != nil {
+	creating := "INSERT INTO xmr_escrow_wallets(name,month) VALUES('escrow-'||to_char(now(),'YYYYMM')||'-07',date_trunc('month',now())::date)"
+	if _, err := e.DB.Exec(creating); err != nil {
 		t.Fatalf("a wallet being created: %v", err)
 	}
-	xmrRefused(t, e, "a second wallet with the same name", "xmr_escrow_wallets_name_key", wallet("state", "'creating'"))
-	agExec(e, "DELETE FROM xmr_escrow_wallets WHERE name LIKE '%-09'")
+	xmrRefused(t, e, "a second wallet with the same name", "xmr_escrow_wallets_name_key", creating)
+	xmrRefused(t, e, "a wallet deleted", "escrow records are never deleted", "DELETE FROM xmr_escrow_wallets WHERE name LIKE '%-07'")
 	for _, c := range []struct{ what, want, q string }{
 		{"a malformed name", "xmr_escrow_wallets_name_check", "INSERT INTO xmr_escrow_wallets(name,month) VALUES('escrow-2026-10-1',date_trunc('month',now())::date)"},
 		{"a name of another month", "xmr_escrow_wallets_name_month", "INSERT INTO xmr_escrow_wallets(name,month) VALUES('escrow-202601-01','2026-02-01')"},
@@ -159,6 +167,35 @@ func TestXMREscrowMigration084(t *testing.T) {
 	}
 	xmrRefused(t, e, "a destroyed wallet back to retained", "keeps its name", "UPDATE xmr_escrow_wallets SET state='retained',seed_sealed='s',destroyed_at=NULL WHERE id=$1", retained)
 	xmrRefused(t, e, "a destroyed wallet touched", "keeps its name", "UPDATE xmr_escrow_wallets SET updated=now() WHERE id=$1", retained)
+	// States move only forward, with the missing and orphan moves of P3-R9 and P3-R10.
+	for _, to := range []string{"creating", "sealed", "retained", "orphan"} {
+		xmrRefused(t, e, "an active wallet moved to "+to, "a wallet moves only forward", "UPDATE xmr_escrow_wallets SET state=$2 WHERE id=$1", w, to)
+	}
+	walker := xmrWallet(t, e, 4, "creating")
+	for _, to := range []string{"sealed", "active", "missing", "active", "closing", "missing", "closing", "retained"} {
+		if _, err := e.DB.Exec("UPDATE xmr_escrow_wallets SET state=$2 WHERE id=$1", walker, to); err != nil {
+			t.Fatalf("a wallet moved to %s: %v", to, err)
+		}
+	}
+	for _, to := range []string{"active", "closing", "sealed", "creating", "orphan"} {
+		xmrRefused(t, e, "a retained wallet moved to "+to, "a wallet moves only forward", "UPDATE xmr_escrow_wallets SET state=$2 WHERE id=$1", walker, to)
+	}
+	orphan := xmrWallet(t, e, 6, "orphan")
+	xmrRefused(t, e, "an orphan wallet made active", "a wallet moves only forward", "UPDATE xmr_escrow_wallets SET state='active' WHERE id=$1", orphan)
+	agExec(e, "UPDATE xmr_escrow_wallets SET state='retained' WHERE id=$1", orphan)
+	// The last close and the destruction time only move later, and are never cleared.
+	agExec(e, "UPDATE xmr_escrow_wallets SET last_closed_at=now()-interval '100 days',destroy_after=now()-interval '1 day' WHERE id=$1", walker)
+	for _, c := range []struct{ what, set string }{
+		{"an earlier last close", "last_closed_at=now()-interval '101 days'"},
+		{"its last close cleared", "last_closed_at=NULL,destroy_after=NULL"},
+		{"an earlier destruction time", "destroy_after=now()-interval '2 days'"},
+		{"its destruction time cleared", "destroy_after=NULL"},
+	} {
+		xmrRefused(t, e, "a wallet given "+c.what, "only move later", "UPDATE xmr_escrow_wallets SET "+c.set+" WHERE id=$1", walker)
+	}
+	if _, err := e.DB.Exec("UPDATE xmr_escrow_wallets SET last_closed_at=now()-interval '50 days',destroy_after=now()+interval '41 days' WHERE id=$1", walker); err != nil {
+		t.Fatalf("a later last close and destruction time: %v", err)
+	}
 
 	// Slots: account 0 is never a slot; one account and one address per slot; a slot is created free and claimed, for an
 	// order, only from an active wallet; a claimed or retired slot never changes.
@@ -176,6 +213,9 @@ func TestXMREscrowMigration084(t *testing.T) {
 	xmrRefused(t, e, "a slot claimed with no order", "xmr_escrow_slots_claimed", "UPDATE xmr_escrow_slots SET state='claimed' WHERE id=$1", free)
 	notActive := xmrSlot(t, e, sealedWallet, 1)
 	xmrRefused(t, e, "a slot of a sealed wallet claimed", "only from an active wallet", "UPDATE xmr_escrow_slots SET state='claimed',order_id=$2 WHERE id=$1", notActive, pooled)
+	closingSlot := xmrSlot(t, e, xmrWallet(t, e, 5, "closing"), 1)
+	xmrRefused(t, e, "a slot of a closing wallet claimed", "only from an active wallet", "UPDATE xmr_escrow_slots SET state='claimed',order_id=$2 WHERE id=$1", closingSlot, pooled)
+	xmrRefused(t, e, "a slot deleted", "escrow records are never deleted", "DELETE FROM xmr_escrow_slots WHERE id=$1", free)
 	order, addr, claimed := xmrEscrow(t, e, w, 5, buyer, product, stateAwaitingPayment)
 	for _, c := range []struct{ what, set string }{
 		{"freed", "state='free',order_id=NULL"},
@@ -234,6 +274,8 @@ func TestXMREscrowMigration084(t *testing.T) {
 	if _, err := e.DB.Exec("UPDATE orders SET currency='BTC' WHERE id=$1", e.order(buyer, product, "XMR", stateDraft)); err != nil {
 		t.Fatalf("the currency of an order without an escrow: %v", err)
 	}
+	xmrRefused(t, e, "a Monero escrow deleted", "escrow records are never deleted", "DELETE FROM escrows WHERE order_id=$1", order)
+	xmrRefused(t, e, "a Bitcoin escrow deleted", "escrow records are never deleted", "DELETE FROM escrows WHERE id=$1", btcEscrow)
 
 	// Each settlements table takes its own coin's escrows only.
 	xmrRefused(t, e, "a Bitcoin settlement of a Monero escrow", "has a Monero escrow", "INSERT INTO settlements(order_id,kind) VALUES($1,'refund')", order)
@@ -247,6 +289,7 @@ func TestXMREscrowMigration084(t *testing.T) {
 	xmrRefused(t, e, "a Monero settlement to a Bitcoin address", "xmr_settlements_destination_check", xs, order, "refund", "bcrt1qx84dest", "requested")
 	xmrRefused(t, e, "a Monero settlement to an integrated address", "xmr_settlements_destination_check", xs, order, "refund", xmrAddr("d106")+xmrAddr("y")[:11], "requested")
 	xmrRefused(t, e, "a Monero settlement inserted built", "inserted as requested", xs, order, "refund", xmrAddr("d1"), "built")
+	xmrRefused(t, e, "a Monero settlement to a 94-character address", "xmr_settlements_destination_check", xs, order, "refund", xmrAddr("d94")[:94], "requested")
 
 	// Building, storing and following a release: the transaction is stored only once the order's state fits the kind
 	// (migration 081's function), is frozen once stored, and the settlement moves only forward.
@@ -272,7 +315,9 @@ func TestXMREscrowMigration084(t *testing.T) {
 	xmrRefused(t, e, "a transaction without its key images", "xmr_settlements_tx", "UPDATE xmr_settlements SET state='built',tx_hash=$2,tx_metadata='ab',tx_blob='cd',fee=1,input_total=2 WHERE id=$1", rel, txidOf("nk"))
 	xmrRefused(t, e, "a transaction with no key images", "xmr_settlements_key_images_check", strings.Replace(storeTx(rel, "rel"), "ARRAY['"+txidOf("rel-ki")+"']", "'{}'", 1))
 	xmrRefused(t, e, "a transaction with a malformed key image", "xmr_settlements_key_images_check", strings.Replace(storeTx(rel, "rel"), txidOf("rel-ki"), "abc", 1))
-	xmrRefused(t, e, "a transaction stored as requested", "xmr_settlements_unbuilt", strings.Replace(storeTx(rel, "rel"), "state='built'", "state='requested'", 1))
+	xmrRefused(t, e, "a transaction stored as requested", "only when it is built from requested", strings.Replace(storeTx(rel, "rel"), "state='built'", "state='requested'", 1))
+	xmrRefused(t, e, "a settlement inserted with a transaction", "xmr_settlements_unbuilt", `INSERT INTO xmr_settlements(order_id,kind,destination,tx_hash,tx_metadata,tx_blob,fee,input_total,key_images)
+		VALUES($1,'stray_refund',$2,$3,'ab','cd',1,2,ARRAY[$3])`, order, xmrAddr("refund-"+order), txidOf("ins"))
 	if _, err := e.DB.Exec(storeTx(rel, "rel")); err != nil {
 		t.Fatalf("a release's transaction stored on an order decided for the vendor: %v", err)
 	}
@@ -297,13 +342,19 @@ func TestXMREscrowMigration084(t *testing.T) {
 		if _, err := e.DB.Exec("UPDATE xmr_settlements SET "+step+" WHERE id=$1", rel); err != nil {
 			t.Fatalf("release %s (forward, or back to relayed after a reorganisation): %v", step, err)
 		}
+		if step == "state='relayed',relayed_at=now()" {
+			xmrRefused(t, e, "relayed back to built", "cannot move from relayed to built", "UPDATE xmr_settlements SET state='built' WHERE id=$1", rel)
+			xmrRefused(t, e, "relayed to superseded", "cannot move from relayed to superseded", "UPDATE xmr_settlements SET state='superseded' WHERE id=$1", rel)
+		}
 	}
+	xmrRefused(t, e, "confirmed to superseded", "cannot move from confirmed to superseded", "UPDATE xmr_settlements SET state='superseded',reorg_safe_at=NULL WHERE id=$1", rel)
 	xmrRefused(t, e, "reorg_safe_at on a relayed settlement", "xmr_settlements_reorg_safe", "UPDATE xmr_settlements SET state='relayed' WHERE id=$1", rel)
 	xmrRefused(t, e, "confirmed back to built", "cannot move from confirmed to built", "UPDATE xmr_settlements SET state='built' WHERE id=$1", rel)
 	agExec(e, "UPDATE xmr_settlements SET state='external',reorg_safe_at=NULL WHERE id=$1", rel)
-	for _, st := range []string{"relayed", "confirmed", "failed", "requested"} {
+	for _, st := range []string{"relayed", "confirmed", "failed", "requested", "superseded"} {
 		xmrRefused(t, e, "external to "+st, "cannot move from external", "UPDATE xmr_settlements SET state='"+st+"' WHERE id=$1", rel)
 	}
+	xmrRefused(t, e, "a settlement deleted", "escrow records are never deleted", "DELETE FROM xmr_settlements WHERE id=$1", rel)
 
 	// One live release or refund per order, one stray refund in progress, one built transaction not yet relayed, and a
 	// release destination paid once.
@@ -345,7 +396,74 @@ func TestXMREscrowMigration084(t *testing.T) {
 		t.Fatal(err)
 	}
 	agExec(e, "UPDATE xmr_settlements SET state='superseded' WHERE id=$1", dropped)
-	xmrRefused(t, e, "a superseded settlement's transaction stored", "xmr_settlements_unbuilt", strings.Replace(storeTx(dropped, "sup"), "state='built',", "", 1))
+	xmrRefused(t, e, "a superseded settlement's transaction stored", "only when it is built from requested", strings.Replace(storeTx(dropped, "sup"), "state='built',", "", 1))
+	// A transaction is stored only by the move requested -> built, never on a row that failed or became external unbuilt.
+	for _, st := range []string{"failed", "external"} {
+		var unbuilt int64
+		if err := e.DB.QueryRow("INSERT INTO xmr_settlements(order_id,kind,destination) VALUES($1,'stray_refund',$2) RETURNING id", cancelled, xmrAddr("refund-"+cancelled)).Scan(&unbuilt); err != nil {
+			t.Fatal(err)
+		}
+		agExec(e, "UPDATE xmr_settlements SET state=$2 WHERE id=$1", unbuilt, st)
+		xmrRefused(t, e, "a transaction stored on an unbuilt "+st+" settlement", "only when it is built from requested", strings.Replace(storeTx(unbuilt, "unbuilt-"+st), "state='built',", "", 1))
+		xmrRefused(t, e, "an unbuilt "+st+" settlement superseded", "cannot move from "+st+" to superseded", "UPDATE xmr_settlements SET state='superseded' WHERE id=$1", unbuilt)
+	}
+
+	// The administrator's re-request (O-1, A-401): a built settlement that failed is superseded, keeping its stored
+	// transaction, and in the same transaction a new row names it in supersedes, with the same order, kind and
+	// destination; the new row's transaction spends exactly the stored key images (in any order). No row is superseded
+	// twice, and only a superseded row that was built is re-requested.
+	admin, _ := e.user("x84_admin", "admin")
+	again, _, _ := xmrEscrow(t, e, w, 13, buyer, product, stateCompleted)
+	keyImages := func(labels ...string) string {
+		var q []string
+		for _, l := range labels {
+			q = append(q, "'"+txidOf(l)+"'")
+		}
+		return "ARRAY[" + strings.Join(q, ",") + "]"
+	}
+	build := func(id int64, label, images string) string {
+		return "UPDATE xmr_settlements SET state='built',tx_hash='" + txidOf(label) + "',tx_metadata='ab01',tx_blob='cd01',fee=30000000,input_total=100000,key_images=" +
+			images + " WHERE id=" + strconv.FormatInt(id, 10)
+	}
+	var first int64
+	if err := e.DB.QueryRow("INSERT INTO xmr_settlements(order_id,kind,destination,requested_by) VALUES($1,'release',$2,$3) RETURNING id", again, xmrAddr("claim-6"), vendor).Scan(&first); err != nil {
+		t.Fatal(err)
+	}
+	agExec(e, build(first, "again-1", keyImages("ki-1", "ki-2")))
+	agExec(e, "UPDATE xmr_settlements SET state='failed' WHERE id=$1", first)
+	reRequest := "INSERT INTO xmr_settlements(order_id,kind,destination,requested_by,supersedes) VALUES($1,$2,$3,$4,$5)"
+	xmrRefused(t, e, "a re-request of a settlement not superseded", "keeps its order, kind and destination", reRequest, again, "release", xmrAddr("claim-6"), admin, first)
+	tx, err := e.DB.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var second int64
+	if _, err = tx.Exec("UPDATE xmr_settlements SET state='superseded' WHERE id=$1", first); err == nil {
+		err = tx.QueryRow(reRequest+" RETURNING id", again, "release", xmrAddr("claim-6"), admin, first).Scan(&second)
+	}
+	if err != nil {
+		tx.Rollback()
+		t.Fatalf("a failed built release superseded and re-requested in one transaction: %v", err)
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	xmrRefused(t, e, "a re-request of an unbuilt superseded settlement", "keeps its order, kind and destination", reRequest, other, "refund", xmrAddr("refund-"+other), admin, refund)
+	xmrRefused(t, e, "a re-request that names another settlement", "keeps its order, kind and destination", "UPDATE xmr_settlements SET supersedes=NULL WHERE id=$1", second)
+	xmrRefused(t, e, "a re-request spending other key images", "spends exactly its key images", build(second, "again-2", keyImages("ki-1", "ki-3")))
+	xmrRefused(t, e, "a re-request spending some of the key images", "spends exactly its key images", build(second, "again-2", keyImages("ki-1")))
+	xmrRefused(t, e, "a re-request spending more key images", "spends exactly its key images", build(second, "again-2", keyImages("ki-1", "ki-2", "ki-3")))
+	if _, err = e.DB.Exec(build(second, "again-2", keyImages("ki-2", "ki-1"))); err != nil {
+		t.Fatalf("the re-request built with the stored key images: %v", err)
+	}
+	agExec(e, "UPDATE xmr_settlements SET state='failed' WHERE id=$1", second)
+	agExec(e, "UPDATE xmr_settlements SET state='superseded' WHERE id=$1", second)
+	xmrRefused(t, e, "a re-request to another destination", "keeps its order, kind and destination", reRequest, again, "release", xmrAddr("claim-7"), admin, second)
+	xmrRefused(t, e, "a re-request of another kind", "keeps its order, kind and destination", reRequest, again, "stray_refund", xmrAddr("claim-6"), admin, second)
+	xmrRefused(t, e, "a second re-request of one settlement", "xmr_settlements_supersedes_key", reRequest, again, "release", xmrAddr("claim-6"), admin, first)
+	if _, err = e.DB.Exec(reRequest, again, "release", xmrAddr("claim-6"), admin, second); err != nil {
+		t.Fatalf("a re-request of the re-request: %v", err)
+	}
 
 	// Outputs are written while their settlement is requested, then never changed.
 	var plan int64
@@ -591,8 +709,37 @@ func TestEscrowBTCIgnoresXMRRows(t *testing.T) {
 	if w := x.do("GET", "/escrow-descriptor?id="+funded, x.buyerSess, nil); w.Code != 404 {
 		t.Errorf("the Bitcoin escrow descriptor of a Monero escrow order: %d", w.Code)
 	}
-	// The Bitcoin escrow forms refuse a Monero escrow order before any check or RPC.
+	// The Bitcoin escrow forms and downloads refuse a Monero escrow order before any check or RPC. legacy holds Bitcoin
+	// settlement and fee-bump rows written before its Monero escrow existed (settlements_btc_only refuses only rows
+	// written after), so for sign, bump, bump-sign and the PSBT download nothing but the Order.btcEscrow guard refuses;
+	// decided is a resolved Monero escrow order whose changed decision would otherwise reach escrowSettleTerminal.
+	legacy := x.testEnv.order(x.buyer, x.product, "XMR", stateCompleted)
+	var legacyRel, legacyStray, legacyBump int64
+	if err := x.DB.QueryRow(`INSERT INTO settlements(order_id,kind,state,destination,fee_rate,network_fee,input_total,psbt,txid,raw_tx,cosigned,final_at,broadcast_at)
+		VALUES($1,'release','broadcast',$2,2,300,100000,'cHNidP8=',$3,'0200','market',now(),now()) RETURNING id`, legacy, regtestAddr("legacy-claim"), txidOf("legacy-rel")).Scan(&legacyRel); err != nil {
+		t.Fatal(err)
+	}
+	if err := x.DB.QueryRow(`INSERT INTO settlements(order_id,kind,state,destination,fee_rate,network_fee,input_total,psbt,txid)
+		VALUES($1,'stray_refund','awaiting_signature',$2,2,300,100000,'cHNidP8=',$3) RETURNING id`, legacy, regtestAddr("legacy-refund"), txidOf("legacy-stray")).Scan(&legacyStray); err != nil {
+		t.Fatal(err)
+	}
+	if err := x.DB.QueryRow("INSERT INTO settlement_bumps(settlement_id,n,requested_by,fee_rate) VALUES($1,1,$2,5) RETURNING id", legacyRel, x.vendor).Scan(&legacyBump); err != nil {
+		t.Fatal(err)
+	}
+	agExec(x.testEnv, "UPDATE settlement_bumps SET state='awaiting_signature',psbt='cHNidP8=',txid=$2,network_fee=900 WHERE id=$1", legacyBump, txidOf("legacy-bump"))
+	xmrEscrowOf(t, x.testEnv, w, 6, legacy)
+	decided, decidedAddr, _ := xmrEscrow(t, x.testEnv, w, 7, x.buyer, x.product, stateResolved)
+	agExec(x.testEnv, "INSERT INTO disputes(id,order_id,reason) VALUES($1,$2,'The licence key does not work at all.')", randomToken(), decided)
+	agExec(x.testEnv, "UPDATE disputes SET outcome='release',status='Resolved — release to vendor' WHERE order_id=$1", decided)
+	agExec(x.testEnv, "INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations) VALUES($1,'XMR',$2,$3,$4,100000,50)", decided, txidOf("xmr-decided"), xmrEscrowIdx(w, 7), decidedAddr)
+	_, adminSess := x.testEnv.user("ign_admin_"+randomToken()[:6], "admin")
+	guarded := func() string {
+		return strings.Join(agStrings(t, x.testEnv, `SELECT 's'||id||state FROM settlements WHERE order_id=$1 UNION ALL SELECT 'b'||id||state FROM settlement_bumps WHERE settlement_id=$2
+			UNION ALL SELECT 'd'||outcome FROM disputes WHERE order_id=$3 UNION ALL SELECT 'o'||state FROM orders WHERE id=$3 ORDER BY 1`, legacy, legacyRel, decided), ",")
+	}
+	guardedBefore, formsBefore := guarded(), snapshot()
 	calls := len(x.core.methods())
+	sid, bid := strconv.FormatInt(legacyStray, 10), strconv.FormatInt(legacyBump, 10)
 	for _, f := range []struct {
 		path string
 		sess string
@@ -601,17 +748,31 @@ func TestEscrowBTCIgnoresXMRRows(t *testing.T) {
 		{"/escrow/claim", x.vendorSess, url.Values{"order_id": {done}, "address": {regtestAddr("ign-x")}, "password": {testPassword}}},
 		{"/escrow/ship", x.vendorSess, url.Values{"order_id": {due}, "address": {regtestAddr("ign-y")}, "password": {testPassword}, "note": {"Sent."}}},
 		{"/escrow/recover", x.buyerSess, url.Values{"order_id": {closed}, "password": {testPassword}}},
-		{"/escrow/sign", x.buyerSess, url.Values{"order_id": {done}, "settlement_id": {"1"}, "psbt": {"cHNidP8="}}},
+		{"/escrow/sign", x.buyerSess, url.Values{"order_id": {legacy}, "settlement_id": {sid}, "psbt": {"cHNidP8="}}},
+		{"/escrow/bump", x.vendorSess, url.Values{"order_id": {legacy}, "settlement_id": {strconv.FormatInt(legacyRel, 10)}, "fee_rate": {"5"}, "password": {testPassword}}},
+		{"/escrow/bump-sign", x.vendorSess, url.Values{"order_id": {legacy}, "bump_id": {bid}, "psbt": {"cHNidP8="}}},
+		{"/escrow/decision", adminSess, url.Values{"order_id": {decided}, "outcome": {"refund"}, "reason": {"The buyer showed that the key never worked."}, "password": {testPassword}}},
 	} {
-		if w := x.do("POST", f.path, f.sess, f.form); w.Code != 404 {
+		if w := x.do("POST", f.path, f.sess, f.form); w.Code != 404 || !strings.Contains(w.Body.String(), "Order not found") {
 			t.Errorf("%s on a Monero escrow order: %d %.200s", f.path, w.Code, w.Body.String())
+		}
+	}
+	for _, get := range []struct{ path, sess string }{
+		{"/escrow-psbt?id=" + legacy + "&s=" + sid, x.buyerSess},
+		{"/escrow-psbt?id=" + legacy + "&s=" + strconv.FormatInt(legacyRel, 10) + "&b=" + bid, x.vendorSess},
+	} {
+		if w := x.do("GET", get.path, get.sess, nil); w.Code != 404 {
+			t.Errorf("GET %s of a Monero escrow order: %d %.200s", get.path, w.Code, w.Body.String())
 		}
 	}
 	if n := len(x.core.methods()); n != calls {
 		t.Errorf("the Bitcoin escrow forms made %d RPCs for Monero escrow orders", n-calls)
 	}
-	if after := snapshot(); after != before {
-		t.Fatalf("Bitcoin escrow forms changed Monero escrow rows:\nbefore\n%s\nafter\n%s", before, after)
+	if after := snapshot(); after != formsBefore {
+		t.Fatalf("Bitcoin escrow forms changed Monero escrow rows:\nbefore\n%s\nafter\n%s", formsBefore, after)
+	}
+	if after := guarded(); after != guardedBefore {
+		t.Fatalf("Bitcoin escrow forms changed a Monero escrow order's rows: %s, was %s", after, guardedBefore)
 	}
 
 	// The vendor desk's escrow tile counts the vendor's Bitcoin escrow orders only.
@@ -728,5 +889,34 @@ func TestXMREscrowMigration084Upgrade(t *testing.T) {
 		if _, err := db.Exec(c.q); (err == nil) != c.ok {
 			t.Errorf("%s: %v (want accepted %v)", c.q, err, c.ok)
 		}
+	}
+}
+
+// The resolve form's statement of an escrow dispute's outcomes (escrowDisputePreview, on the moderation desk) states a
+// Monero escrow's amount in XMR with its 12 decimals, never as Bitcoin.
+func TestXMREscrowDisputePreview(t *testing.T) {
+	e := newTestApp(t)
+	buyer, _ := e.user("xdp_buyer", "buyer")
+	vendor, _ := e.user("xdp_vendor", "vendor")
+	_, adminSess := e.user("xdp_admin", "admin")
+	w := xmrWallet(t, e, 1, "active")
+	order, addr, _ := xmrEscrow(t, e, w, 1, buyer, e.product(vendor, "digital"), stateDisputed)
+	agExec(e, "INSERT INTO disputes(id,order_id,reason) VALUES($1,$2,'The licence key does not work at all.')", randomToken(), order)
+	agExec(e, "INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations) VALUES($1,'XMR',$2,$3,$4,1234567890123,12)", order, txidOf("xdp"), xmrEscrowIdx(w, 1), addr)
+	o, err := scanOrder(e.DB.QueryRow(orderQuery+" WHERE o.id=$1", order))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := e.A.escrowDisputePreview(context.Background(), &o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{p.Release, p.Refund} {
+		if strings.Contains(text, "BTC") || !strings.Contains(text, "1.234567890123 fakechain XMR") {
+			t.Errorf("dispute preview of a Monero escrow order: %q", text)
+		}
+	}
+	if body := e.do("GET", "/moderator", adminSess, nil).Body.String(); !strings.Contains(body, "1.234567890123 fakechain XMR") {
+		t.Error("the moderation desk does not state the Monero escrow's amount in XMR")
 	}
 }
