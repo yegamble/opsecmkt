@@ -15,6 +15,22 @@
 #   TwoAccountsOneTx: one transaction pays two escrows; after 10 blocks there are two payments rows of it, one per
 #     escrow account, each its own order's, and both orders complete.
 #
+# Slice X-d legs (internal/market/escrow_xmr_regtest_settle_test.go): the App's escrow wallet-rpc is reached through a
+# counting proxy that can lose a call's answer after the wallet acted on it; claim and refund addresses are the
+# funder's subaddresses; every settlement the daemon has is decoded (Shape: RingCT type 6, 16 ring members per input,
+# a fee above 0, the stored one and within ESCROW_XMR_MAX_FEE).
+#   RestartMidSend: relay_tx's answer is lost, the pool is flushed, and the App and the escrow wallet-rpc container
+#     (ESCROW_XMR_REGTEST_WALLET_CONTAINER, optional) restart: the next pass relays the same stored transaction (same
+#     hash); the proxy saw transfer once; it confirms.
+#   RelayDropped: relay_tx's answer is lost; the next pass finds the transaction in the pool and records it relayed with
+#     no second relay_tx or transfer.
+#   TopUp: a top-up still confirming when the release is built is not spent by it; once confirmed it is left out and a
+#     stray refund returns it to the buyer's refund address.
+#   Reorg: a confirmed release is taken out of the chain (pop_blocks 10, flush_txpool): back to relayed, the same
+#     transaction relayed again, confirmed again.
+#   External: while the release is built but not relayed, a wallet restored from the sealed seed sweeps the escrow
+#     account outside the market; the daemon refuses the market's transaction, and it is recorded external and flagged.
+#
 # Needs a fakechain monerod and three monero-wallet-rpc instances attached to it (the App's escrow wallet-rpc, a funder
 # standing in for the buyer's wallet, and one used only to restore a sealed seed), plus a disposable PostgreSQL database.
 # The wallet-rpcs listen without RPC login on 127.0.0.1 only. For example:
@@ -31,6 +47,7 @@
 #   done
 #   ESCROW_XMR_REGTEST_DAEMON_URL=http://127.0.0.1:28381 ESCROW_XMR_REGTEST_WALLET_URL=http://127.0.0.1:28382 \
 #   ESCROW_XMR_REGTEST_FUNDER_URL=http://127.0.0.1:28383 ESCROW_XMR_REGTEST_RESTORE_URL=http://127.0.0.1:28384 \
+#   ESCROW_XMR_REGTEST_WALLET_CONTAINER=xmr-escrow-wallet-escrow \
 #   TEST_DATABASE_URL=postgres://…/a_disposable_database ./scripts/test-escrow-xmr-regtest.sh
 #   docker rm -f xmr-escrow-monerod xmr-escrow-wallet-escrow xmr-escrow-wallet-funder xmr-escrow-wallet-restore
 #   docker network rm xmr-escrow-regtest
@@ -72,12 +89,13 @@ log="${ESCROW_XMR_REGTEST_LOG:-artifacts/real-chain/test-escrow-xmr-regtest-$(da
 mkdir -p "$(dirname "$log")"
 echo "Monero escrow fakechain check (hard fork $version); transcript: $log"
 set +e
-go test -count=1 -timeout 15m -run '^TestXMREscrowRegtest(Wallets|Funding|TwoAccountsOneTx)$' -v ./internal/market/ 2>&1 | tee "$log"
+go test -count=1 -timeout 30m -run '^TestXMREscrowRegtest(Wallets|Funding|TwoAccountsOneTx|RestartMidSend|RelayDropped|TopUp|Reorg|External)$' -v ./internal/market/ 2>&1 | tee "$log"
 status=${PIPESTATUS[0]}
 set -e
 # Each leg is reported from its own go test result line, so one failing leg never makes another read as failed.
 failed=0
-for leg in TestXMREscrowRegtestWallets TestXMREscrowRegtestFunding TestXMREscrowRegtestTwoAccountsOneTx; do
+for leg in TestXMREscrowRegtestWallets TestXMREscrowRegtestFunding TestXMREscrowRegtestTwoAccountsOneTx TestXMREscrowRegtestRestartMidSend \
+  TestXMREscrowRegtestRelayDropped TestXMREscrowRegtestTopUp TestXMREscrowRegtestReorg TestXMREscrowRegtestExternal; do
   if grep -q -- "--- PASS: $leg " "$log"; then
     echo "PASS: $leg"
   elif grep -q -- "--- FAIL: $leg " "$log"; then
@@ -95,4 +113,4 @@ if [[ $status -ne 0 || $failed -ne 0 ]]; then
   echo "FAILED: go test exited $status; see $log" >&2
   exit 1
 fi
-echo "PASS: Monero escrow wallets (creation, sealed seed restored to its primary address, slots, account 0 empty, monthly rotation), funding at 10 confirmations and not at 9, and one transaction paying two escrow accounts, on a local fakechain; transcript in $log"
+echo "PASS: Monero escrow wallets (creation, sealed seed restored to its primary address, slots, account 0 empty, monthly rotation), funding at 10 confirmations and not at 9, one transaction paying two escrow accounts, and settlements (stored before relay, never rebuilt across a lost relay answer and restarts, a top-up left out and stray-refunded, relayed again after a reorganisation, an outside spend recorded external; ring 16, rct type 6, fee within the cap), on a local fakechain; transcript in $log"
