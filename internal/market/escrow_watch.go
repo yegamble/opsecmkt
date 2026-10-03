@@ -184,8 +184,12 @@ func (a *App) escrowPollOnce(ctx context.Context) error {
 	if err = a.requestStrays(ctx, e.confirmations, orders, unread); err != nil {
 		errs = append(errs, err)
 	}
-	if daily {
-		// The daily check also lists the watch-only wallet's addresses with no escrow row (escrow_recovery.go).
+	// The daily check also lists the watch-only wallet's addresses with no escrow row and reserves their keys
+	// (escrow_recovery.go); after a restore that orphan sweep runs on every pass until one completes (P2-R10, A-366).
+	sweep, err := escrowSweepRequired(ctx, a.db)
+	if err != nil {
+		errs = append(errs, err)
+	} else if daily || sweep {
 		if err = a.reconcileOrphans(ctx, e); err != nil {
 			errs = append(errs, err)
 		}

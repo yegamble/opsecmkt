@@ -346,7 +346,11 @@ settlement with a stored transaction until an administrator confirms its rebroad
 `settlement_bumps` line holds every restored fee bump of one with a stored transaction until that confirmation of its
 settlement (omit it if the database has no `settlement_bumps` table, before migration 080). The
 `escrow_release_recheck` line asks the escrow watcher's next pass to move every release deadline of a shipped physical
-escrow order that has passed in the restored records to 72 hours later, telling each buyer.
+escrow order that has passed in the restored records to 72 hours later, telling each buyer. The `escrow_sweep_required`
+line makes escrow checkout wait until the escrow watcher has reserved the keys of every escrow its watch-only wallet
+holds and the restored records lack, and the `escrow_index_floors` and `setval` lines move every account's next escrow
+child index and the market's escrow key index 50 past the restored records, so no escrow key is handed out twice (A-366;
+omit those two lines if the database has no `escrow_index_floors` table, before migration 083).
 
 <!-- runbook-sql: restore-protection -->
 ```sql
@@ -354,6 +358,8 @@ BEGIN;
 INSERT INTO settings(key,value) VALUES ('payments_recovery_required','true')
 ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
 INSERT INTO settings(key,value) VALUES ('escrow_release_recheck','true')
+ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
+INSERT INTO settings(key,value) VALUES ('escrow_sweep_required','true')
 ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
 UPDATE payouts SET state='held', updated=now(),
   error='Restored from backup: verify in the wallet before releasing; this payout may already have been sent.'
@@ -367,6 +373,14 @@ UPDATE settlements SET send_error='Restored from backup: check that this escrow 
 WHERE raw_tx IS NOT NULL AND state IN ('signed','broadcast');
 UPDATE settlement_bumps SET send_error='Restored from backup: check that this escrow settlement''s transaction was not already sent or replaced, then confirm its rebroadcast on the admin page.', updated=now()
 WHERE raw_tx IS NOT NULL AND state IN ('signed','broadcast');
+INSERT INTO escrow_index_floors(user_id,next_index)
+SELECT k.user_id, GREATEST(COALESCE(max(split_part(p.derivation_suffix,'/',3)::bigint),0)+1, COALESCE(max(f.next_index),1))+50
+FROM user_escrow_keys k
+LEFT JOIN escrow_pubkeys p ON p.user_id=k.user_id AND p.derivation_suffix ~ '^/0/[1-9][0-9]{0,9}$'
+LEFT JOIN escrow_index_floors f ON f.user_id=k.user_id
+GROUP BY k.user_id
+ON CONFLICT (user_id) DO UPDATE SET next_index=EXCLUDED.next_index;
+DO $$ BEGIN PERFORM setval('escrow_market_index', nextval('escrow_market_index')+49); END $$;
 INSERT INTO audit_events(user_id,action) VALUES (NULL, 'Payout recovery gate set manually (UPGRADING.md section 6); all outbound payouts paused until an administrator clears the gate');
 COMMIT;
 ```

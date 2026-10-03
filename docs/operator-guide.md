@@ -774,9 +774,10 @@ watcher records each deposit; at the confirmation threshold the order is paid, i
 completed. No payout is ever queued for an escrow order: its coins leave only by a settlement (below). A funded
 escrow order that was not delivered automatically can be disputed; only an administrator decides it (below). A funded escrow order on a listing an administrator took down is not
 delivered automatically: the vendor can deliver by hand, or cancel it, which requests the refund of its escrow. If
-another escrow already holds one of the child keys a checkout would use, the checkout is refused ("another escrow on
-this market already holds one of its keys …") and the log says "escrow: escrow for order … not built: a child key is
-already held by another escrow".
+another escrow already holds one of the child keys a checkout would use, or the orphan sweep reserved it after a restore
+([runbook](testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts)), the checkout skips it and uses
+that party's next index (the log says "a child key it composed is already held by an escrow or reserved by the orphan
+sweep"); after 100 such tries it is refused ("another escrow on this market already holds one of its keys …").
 
 **Settlements.** A settlement is a transaction that spends an escrow: the vendor's claim on a completed order (or one
 whose dispute was decided for the vendor), the buyer's refund of a cancelled one (or one decided for the buyer), or a

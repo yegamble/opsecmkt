@@ -92,6 +92,11 @@ type fakeEscrowCore struct {
 	// address so, and watchInfoErr fails the call.
 	watchAll     bool
 	watchInfoErr int
+
+	// Escrow P2-e (A-366): for an address an import put in the watch-only wallet, getaddressinfo also reports its
+	// scriptPubKey, its three public keys in script order and its descriptor written as multi(…) with each key's own
+	// fingerprint, as Core 31.1 does (probed on regtest); any other address it holds reports only its scriptPubKey.
+	watchPubkeys map[string][]string // address -> its keys in script order
 }
 
 // depositAt is the deposit the wallet reports at txid:vout.
@@ -252,7 +257,26 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 			if l := c.labels[str(0)]; l != "" {
 				labels = append(labels, l)
 			}
-			return map[string]any{"address": str(0), "ismine": c.watchAll || len(labels) > 0, "iswatchonly": false, "labels": labels}, 0, ""
+			info := map[string]any{"address": str(0), "ismine": c.watchAll || len(labels) > 0, "iswatchonly": false, "labels": labels}
+			if len(labels) > 0 {
+				spk := c.spk[str(0)]
+				if spk == nil {
+					spk, _ = regtestAddressScript(str(0))
+				}
+				info["scriptPubKey"] = hex.EncodeToString(spk)
+				if keys := c.watchPubkeys[str(0)]; keys != nil {
+					var parts []string
+					for _, k := range keys {
+						raw, _ := hex.DecodeString(k)
+						h := sha256.Sum256(raw)
+						parts = append(parts, "["+hex.EncodeToString(h[:4])+"]"+k)
+					}
+					desc := "wsh(multi(2," + strings.Join(parts, ",") + "))"
+					sum, _ := descChecksum(desc)
+					info["pubkeys"], info["desc"], info["solvable"], info["script"] = keys, desc+"#"+sum, true, "multisig"
+				}
+			}
+			return info, 0, ""
 		}
 		if str(0) != "bcrt1qarbiterchange000000000000000000000" {
 			// P1-c2: a market child key's address is the arbiter's while its key range reaches the child.
@@ -437,6 +461,14 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 				}
 				body, _, _ := strings.Cut(reqs[0]["desc"].(string), "#")
 				c.labels[c.address(body)] = label
+				if m := fakeMulti.FindStringSubmatch(body + "#"); m != nil {
+					keys := slices.Clone(m[1:])
+					slices.Sort(keys) // a bare-key sortedmulti: the script's order
+					if c.watchPubkeys == nil {
+						c.watchPubkeys = map[string][]string{}
+					}
+					c.watchPubkeys[c.address(body)] = keys
+				}
 			}
 		}
 		return []map[string]any{{"success": true}}, 0, ""

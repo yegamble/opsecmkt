@@ -680,7 +680,7 @@ func TestEscrowOriginLockRecheckedInTransaction(t *testing.T) {
 
 // A-314 (i) and (iv): a party's next child index is per account, one more than the highest any of the account's
 // escrows used under any origin, so a key changed to another origin (or a key found under two origins) never reuses
-// a child key; and a child key another escrow already holds is refused with a truthful 409 and a fixed log line.
+// a child key; and a child key another escrow already holds is skipped (P2-R10) with a fixed log line.
 func TestEscrowChildIndexPerAccount(t *testing.T) {
 	logs := captureLog(t)
 	x := newEscrowEnv(t)
@@ -704,7 +704,8 @@ func TestEscrowChildIndexPerAccount(t *testing.T) {
 	if s := suffixes(o3); !slices.Equal(s, []string{"buyer 7450f935/0/3", "vendor 5eed5eed/0/3"}) {
 		t.Fatalf("two-origin escrow %v", s)
 	}
-	// A child key already held by another escrow: 409 with a truthful message, nothing written, a fixed log line.
+	// A child key already held by another escrow: skipped (P2-R10, A-366; it used to refuse the checkout with 409), only
+	// that party's index moves on, with a fixed log line that names no key.
 	taken := childHex(x.buyerKey, "/0/4")
 	other := x.testEnv.order(x.vendor, x.testEnv.product(x.buyer, "digital"), "BTC", stateAwaitingPayment)
 	var id int64
@@ -716,12 +717,11 @@ func TestEscrowChildIndexPerAccount(t *testing.T) {
 	}
 	x.DB.Exec("UPDATE orders SET state='completed' WHERE buyer_id=$1 AND state='awaiting_payment'", x.buyer) // under the awaiting-payment cap
 	o4 := x.draft()
-	w := x.checkout(o4, "bcrt1qbuyerrefund00000000000000000000004")
-	if w.Code != 409 || !strings.Contains(w.Body.String(), "already holds one of its keys") || strings.Contains(w.Body.String(), "did not confirm") {
-		t.Fatalf("taken child key: %d %s", w.Code, w.Body.String())
+	x.mustCheckout(o4, "bcrt1qbuyerrefund00000000000000000000004")
+	if s := suffixes(o4); !slices.Equal(s, []string{"buyer 7450f935/0/5", "vendor 5eed5eed/0/4"}) {
+		t.Fatalf("escrow past a taken child key %v", s)
 	}
-	x.nothingWritten(o4)
-	line := "escrow: escrow for order " + o4[:8] + " not built: a child key is already held by another escrow"
+	line := "escrow: escrow for order " + o4[:8] + ": a child key it composed is already held by an escrow or reserved by the orphan sweep (a restored database?); trying that key's next index"
 	if !strings.Contains(logs.String(), line) || strings.Contains(logs.String(), taken) || strings.Contains(logs.String(), "23505") || strings.Contains(logs.String(), "duplicate key") {
 		t.Fatalf("log:\n%s", logs.String())
 	}

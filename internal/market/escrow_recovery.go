@@ -62,6 +62,18 @@ func restoreGateSet(ctx context.Context, q rowQuerier) (bool, error) {
 	return on, err
 }
 
+// escrowSweepKey is the setting scripts/restore.sh (and the manual protection SQL in UPGRADING.md section 6) writes
+// after a restore: escrow checkout waits (errEscrowSweep) until the escrow watcher's orphan sweep has read and reserved
+// the keys of every escrow the restored database lost (reconcileOrphans), which clears it (P2-R10, A-366).
+const escrowSweepKey = "escrow_sweep_required"
+
+// escrowSweepRequired reports whether a restore asked for the orphan sweep and none has completed since.
+func escrowSweepRequired(ctx context.Context, q rowQuerier) (bool, error) {
+	var on bool
+	err := q.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM settings WHERE key=$1 AND value='true')", escrowSweepKey).Scan(&on)
+	return on, err
+}
+
 // restoreHeld reports a settlement a restore held (restoredSettlementHold).
 func restoreHeld(sendErr string) bool { return strings.HasPrefix(sendErr, restoredHoldPrefix) }
 
@@ -323,7 +335,11 @@ func (a *App) seenWhilePaused(ctx context.Context, e *escrowBTC, id int64, order
 //   - reconcileOrphans, on the escrow watcher's daily check: every address the watch-only wallet holds
 //     (watchedAddresses: listreceivedbyaddress with include_empty, never listdescriptors) with no escrows row is listed
 //     in escrow_orphans for administrators: a descriptor imported for a checkout that rolled back after the import, or
-//     an escrow created after the backup a restored database came from.
+//     an escrow created after the backup a restored database came from. The orphan sweep (P2-R10, A-366) also reads
+//     the three keys of each orphan not yet swept (getaddressinfo, watchKeys) and reserves them in
+//     escrow_reserved_keys, so checkout never hands one out again inside another escrow address. After a restore
+//     (escrowSweepKey) it runs on every pass, gate or not, until a sweep has read every orphan; that sweep clears the
+//     setting in the same transaction that reserves the keys.
 
 // spenderOf is the transaction the watch-only wallet names as spending an input of the stored settlement transaction,
 // or "" when it names none (or cannot be read: the spend is flagged without it).
@@ -503,7 +519,9 @@ func escrowOrderLabel(label string) string {
 }
 
 // reconcileOrphans lists the watch-only wallet's addresses with no escrows row (the second bullet above), replacing
-// the previous list: an address that has an escrow row again, or that the wallet no longer holds, leaves it.
+// the previous list: an address that has an escrow row again, or that the wallet no longer holds, leaves it. It reserves
+// the keys of each orphan not yet in escrow_reserved_keys (the orphan sweep), and once every orphan's keys were read it
+// clears escrowSweepKey; an orphan whose keys could not be read leaves the setting as it was, and the error is returned.
 func (a *App) reconcileOrphans(ctx context.Context, e *escrowBTC) error {
 	watched, err := e.watchedAddresses(ctx)
 	if err != nil {
@@ -514,6 +532,21 @@ func (a *App) reconcileOrphans(ctx context.Context, e *escrowBTC) error {
 		if _, ok := escrowAddressForm(w.Address); ok {
 			addrs = append(addrs, w.Address)
 		}
+	}
+	// The sweep's reads come before the transaction: the orphans as the database sees them now, less those swept before.
+	unswept, err := a.unsweptOrphans(ctx, addrs)
+	if err != nil {
+		return err
+	}
+	keys := map[string][][]byte{}
+	var sweepErr error
+	for _, addr := range unswept {
+		k, err := e.watchKeys(ctx, addr)
+		if err != nil {
+			sweepErr = &watchError{label: "escrow", class: "orphan sweep incomplete: " + errorClassOf(err), err: err}
+			continue
+		}
+		keys[addr] = k
 	}
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -527,7 +560,7 @@ func (a *App) reconcileOrphans(ctx context.Context, e *escrowBTC) error {
 	// Never nil: a nil slice is sent as NULL, and NOT (address=ANY(NULL)) is NULL, so the DELETE below would keep every
 	// row once the wallet holds no orphan at all (A-358).
 	orphans := []string{}
-	added := 0
+	added, reserved := 0, int64(0)
 	for _, w := range watched {
 		if !slices.Contains(addrs, w.Address) || slices.Contains(known, w.Address) {
 			continue
@@ -542,9 +575,22 @@ func (a *App) reconcileOrphans(ctx context.Context, e *escrowBTC) error {
 		if inserted {
 			added++
 		}
+		for _, k := range keys[w.Address] {
+			res, err := tx.ExecContext(ctx, "INSERT INTO escrow_reserved_keys(pubkey,address) VALUES($1,$2) ON CONFLICT (pubkey) DO NOTHING", hex.EncodeToString(k), w.Address)
+			if err != nil {
+				return err
+			}
+			n, _ := res.RowsAffected()
+			reserved += n
+		}
 	}
 	if _, err = tx.ExecContext(ctx, "DELETE FROM escrow_orphans WHERE NOT (address=ANY($1))", orphans); err != nil {
 		return err
+	}
+	if sweepErr == nil {
+		if _, err = tx.ExecContext(ctx, "DELETE FROM settings WHERE key=$1", escrowSweepKey); err != nil {
+			return err
+		}
 	}
 	if err = tx.Commit(); err != nil {
 		return err
@@ -552,5 +598,27 @@ func (a *App) reconcileOrphans(ctx context.Context, e *escrowBTC) error {
 	if added > 0 {
 		log.Printf("escrow: %d address(es) in the watch-only wallet have no escrow record; listed on the admin page", added)
 	}
-	return nil
+	if reserved > 0 {
+		log.Printf("escrow: reserved %d child key(s) of escrow addresses with no escrow record; no new escrow uses them", reserved)
+	}
+	return sweepErr
+}
+
+// unsweptOrphans is the addresses among addrs with no escrows row whose keys the orphan sweep has not reserved yet.
+func (a *App) unsweptOrphans(ctx context.Context, addrs []string) ([]string, error) {
+	rows, err := a.db.QueryContext(ctx, `SELECT a FROM unnest($1::text[]) a WHERE NOT EXISTS (SELECT 1 FROM escrows WHERE address=a)
+		AND NOT EXISTS (SELECT 1 FROM escrow_reserved_keys WHERE address=a) ORDER BY a`, addrs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var s string
+		if err = rows.Scan(&s); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
 }

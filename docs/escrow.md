@@ -176,8 +176,9 @@ chain `regtest`; [operator guide](operator-guide.md#bitcoin-escrow-regtest-only)
 - recovery and reconciliation: the restore gate pauses builds, co-signing, broadcasts and escrow checkout, and a
   restored stored transaction is broadcast again only after an administrator confirms it; every checkout first asks
   the watch-only wallet whether it already holds the escrow address it composed (an escrow created after the backup a
-  restored database came from) and then moves to the next child keys, up to 20 addresses (A-359; only the whole
-  address is compared, so a child key of such an escrow can still be reused in another escrow address); spends the
+  restored database came from) and then moves to the next child keys, up to 20 addresses (A-359; since Phase 2 slice
+  P2-e a child key of such an escrow is not reused in another escrow address either, A-366, as the
+  [runbook](testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts) describes); spends the
   market did not make are recorded as spent outside the market, with the spending transaction's ID when the
   watch-only wallet names it, and flagged for staff (an order note and a notice to the parties, moderators and
   administrators), as follows. A settlement waiting for a signature, or signed by one party, whose input

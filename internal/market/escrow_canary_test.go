@@ -41,7 +41,9 @@ func TestCanaryStatesEscrowMode(t *testing.T) {
 			"kept until the operator removes",
 			"addresses the watch-only wallet holds with no escrow",
 			"spent by a transaction this market did not make",
-			"A fee bump of a broadcast settlement", // P2-d: settlement_bumps, migration 080
+			"A fee bump of a broadcast settlement",                              // P2-d: settlement_bumps, migration 080
+			"with their public keys kept so that no new escrow uses them again", // P2-e: escrow_reserved_keys, migration 083
+			"each account's lowest next escrow child key is kept too",           // P2-e: escrow_index_floors, migration 083
 		} {
 			if !strings.Contains(entry, want) {
 				t.Errorf("/canary#records Bitcoin escrow entry lacks %q:\n%s", want, entry)

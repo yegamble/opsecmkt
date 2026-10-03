@@ -171,6 +171,11 @@ func (a *App) escrowKeyView(ctx context.Context, userID string) (*EscrowKeyView,
 	return v, k, nil
 }
 
+// escrowRangeAdvice is the next child index past which the escrow key page advises keypoolrefill: a party's Core wallet
+// signs only keys inside its descriptor range (1000 by default), and each restore's margin (P2-R10) moves the next
+// child index on by 50.
+const escrowRangeAdvice = 900
+
 func escrowAccountLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error {
 	v, _, err := a.escrowKeyView(ctx, d.User.ID)
 	d.EscrowKey = v
@@ -183,6 +188,12 @@ func escrowKeyLoader(ctx context.Context, a *App, r *http.Request, d *PageData) 
 	d.EscrowKey = v
 	if err == nil && v != nil && v.Unreadable {
 		log.Print(errKeySealed)
+	}
+	if err == nil && v != nil && v.Registered {
+		if err = a.db.QueryRowContext(ctx, escrowNextChildSQL, d.User.ID).Scan(&v.NextChild); err != nil {
+			return err
+		}
+		v.RangeAdvice, v.KeypoolSize = v.NextChild > escrowRangeAdvice, v.NextChild+1000
 	}
 	if err != nil || v == nil || !v.PracticeOffered || r.URL.Query().Get("practice") != "1" {
 		return err
