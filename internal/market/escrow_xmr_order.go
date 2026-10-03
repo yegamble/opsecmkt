@@ -127,6 +127,9 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 	if v.RestorePaused, err = restoreGateSet(ctx, a.db); err != nil {
 		return err
 	}
+	if v.Settlements, err = a.xmrSettlementViews(ctx, d, v); err != nil {
+		return err
+	}
 	d.XMREscrow = v
 	// Only the actions a Monero escrow order can take (escrowOrder's rules): no pooled "Mark shipped" (the Monero ship
 	// form, with the claim address and a password step-up, is slice X-e's); the buyer of a paid order cancels only a

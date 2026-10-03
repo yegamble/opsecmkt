@@ -61,6 +61,7 @@ var notices = map[string]struct{ text, section, pages string }{
 	"escrow-release-days":  {"Release deadline saved. It applies to escrow orders placed from now on; existing orders keep theirs.", "escrow-release-days", "admin"},
 	"escrow-rebroadcast":   {"Rebroadcast confirmed. The market broadcasts the settlement's stored transaction once on its next pass.", "escrow-recovery", "admin"},
 	"escrow-xmr-created":   {"Monero escrow created. Send the amount shown below to its escrow address.", "", ""},
+	"escrow-xmr-rerequest": {"Re-request recorded. On its next pass the market checks that the stored transaction can no longer be mined, then builds the settlement again; reload this page in a minute.", "", ""},
 	"escrow-recover":       {"Asked. The market checks this escrow on its next pass and returns what it finds to your refund address by a stray refund; reload this page in a minute.", "", ""},
 
 	// Messages, orders and disputes

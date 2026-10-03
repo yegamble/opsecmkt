@@ -2,6 +2,7 @@ package market
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"maps"
@@ -22,10 +23,24 @@ import (
 // incoming transfers, one entry per transaction and subaddress, with their confirmations, unlock time, pool state and
 // double_spend_seen. The daemon is a fakechain at a height the test moves.
 //
+// Settlements (slice X-d). Each incoming transfer entry is one output with a key image, a frozen flag and an unlock
+// state (unlocked from 10 confirmations with no unlock time), listed by incoming_transfers until it is spent; freeze and
+// thaw set the flag. transfer from one account spends unfrozen unlocked outputs, newest first, until the destinations
+// are covered (-17 not enough money otherwise), takes the network fee (fakeXMRFee) from destination 0 alone when
+// subtract_fee_from_outputs is [0], and with do_not_relay only builds: the transaction is kept by its metadata and
+// nothing is spent. relay_tx puts a built transaction in the daemon's pool and marks its outputs spent; relaying it
+// again answers the same hash (idempotent, as monerod 0.18.5.1 does), and one whose key images another transaction
+// spent is refused (-4, rejected by the daemon). The daemon's pool and chain answer /get_transactions (missed_tx for
+// an unknown hash; decoded as ring 16, rct type 6) and /is_key_image_spent (1 on chain, 2 in the pool); mine, popBlocks
+// (a reorganisation: the popped blocks' transactions go back to the pool), flushPool and spendOutside (a wallet
+// restored from the seed spends outputs outside the market) move them. get_transfer_by_txid knows the transactions the
+// open wallet relayed (-8 otherwise).
+//
 // Faults: a call can be made to take effect and then lose its answer (the connection closes, as a timeout after the
-// wallet acted does), to answer -13 (the wallet-rpc lost its open wallet), or, for open_wallet, to open another wallet
-// file than the one asked for. A hook runs before a method's effect, so a test can change the database mid-pass.
-// Every request is recorded. Later slices add the methods they need (freeze, transfer, relay_tx) with handle.
+// wallet acted does), to answer -13 (the wallet-rpc lost its open wallet), to be refused by the daemon (-4, relay_tx)
+// or, for open_wallet, to open another wallet file than the one asked for; the daemon's /get_transactions and
+// /is_key_image_spent can lose their answer too. transferLie edits transfer's reply before it is sent (a lying wallet).
+// A hook runs before a method's effect, so a test can change the database mid-pass. Every request is recorded.
 type fakeXMREscrow struct {
 	t              *testing.T
 	wallet, daemon *httptest.Server
@@ -39,6 +54,27 @@ type fakeXMREscrow struct {
 	faults    map[string][]fakeXMRFault
 	hooks     map[string]func()
 	handlers  map[string]func(f *fakeXMREscrow, params json.RawMessage) (any, int64, string) // wallet methods, by name
+
+	txs         map[string]*fakeXMRTx // transactions the daemon knows, by hash: in the pool (height 0) or mined
+	built       map[string]*fakeXMRTx // transactions transfer built, by metadata
+	seq         int                   // numbers built transactions and key images
+	transferLie func(res map[string]any)
+}
+
+// fakeXMRTx is a settlement transaction transfer built, or one spendOutside made.
+type fakeXMRTx struct {
+	Hash, Metadata, Blob string
+	Wallet               string // the wallet file that built it ("" for an outside spend)
+	Account              int64
+	KeyImages            []string
+	Fee                  int64
+	Height               int64 // the block it was mined in; 0 while in the pool
+}
+
+// fakeXMRFee is the network fee of a transaction with nIn inputs and nOut outputs (change included): about what a young
+// fakechain charges (0.0018744 XMR for one input and two outputs, chair probe on monerod 0.18.5.1).
+func fakeXMRFee(nIn, nOut int) int64 {
+	return 1874400000 + 300000000*int64(nIn-1) + 100000000*int64(max(nOut-2, 0))
 }
 
 // fakeXMRWalletFile is one wallet file of the fake wallet-rpc.
@@ -57,6 +93,14 @@ type fakeXMRTransfer struct {
 	Pool           bool
 	UnlockTime     int64
 	DoubleSpend    bool
+	KeyImage       string
+	Frozen         bool
+	SpentBy        string // the transaction that spent it ("" while unspent)
+}
+
+// unlocked: spendable, as the wallet's 10-block lock and the unlock time decide.
+func (t *fakeXMRTransfer) unlocked() bool {
+	return !t.Pool && !t.DoubleSpend && t.Confs >= 10 && t.UnlockTime == 0
 }
 
 type fakeXMRFault int
@@ -65,12 +109,13 @@ const (
 	fakeXMRDrop        fakeXMRFault = iota + 1 // the call takes effect, then the connection closes with no answer
 	fakeXMRNotOpen                             // the call answers -13: no wallet open
 	fakeXMRWrongWallet                         // open_wallet opens another wallet file than the one asked for
+	fakeXMRRejected                            // the call answers -4: the daemon rejected the transaction (relay_tx)
 )
 
 func newFakeXMREscrow(t *testing.T) *fakeXMREscrow {
 	t.Helper()
 	f := &fakeXMREscrow{t: t, height: 120, files: map[string]*fakeXMRWalletFile{}, faults: map[string][]fakeXMRFault{}, hooks: map[string]func(){},
-		handlers: map[string]func(*fakeXMREscrow, json.RawMessage) (any, int64, string){}}
+		handlers: map[string]func(*fakeXMREscrow, json.RawMessage) (any, int64, string){}, txs: map[string]*fakeXMRTx{}, built: map[string]*fakeXMRTx{}}
 	for name, h := range fakeXMRWalletMethods {
 		f.handlers[name] = h
 	}
@@ -94,6 +139,10 @@ func (f *fakeXMREscrow) setEnv(t *testing.T, keyPath string) {
 
 func (f *fakeXMREscrow) serve(w http.ResponseWriter, r *http.Request, wallet bool) {
 	body, _ := io.ReadAll(r.Body)
+	if !wallet && r.URL.Path != "/json_rpc" {
+		f.serveDaemonOther(w, r.URL.Path, body)
+		return
+	}
 	var req struct {
 		ID     json.RawMessage `json:"id"`
 		Method string          `json:"method"`
@@ -123,6 +172,8 @@ func (f *fakeXMREscrow) serve(w http.ResponseWriter, r *http.Request, wallet boo
 		result, code, msg = f.daemonMethod(req.Method)
 	case fault == fakeXMRNotOpen:
 		code, msg = -13, "No wallet file"
+	case fault == fakeXMRRejected:
+		code, msg = -4, "transaction was rejected by daemon"
 	case fault == fakeXMRWrongWallet && req.Method == "open_wallet":
 		for _, name := range slices.Sorted(maps.Keys(f.files)) {
 			if f.open == nil || name != f.open.name {
@@ -166,6 +217,86 @@ func (f *fakeXMREscrow) daemonMethod(method string) (any, int64, string) {
 		return map[string]any{"version": 16, "enabled": true, "status": "OK"}, 0, ""
 	}
 	return nil, -32601, "Method not found"
+}
+
+// serveDaemonOther answers monerod's plain JSON endpoints /get_transactions and /is_key_image_spent.
+func (f *fakeXMREscrow) serveDaemonOther(w http.ResponseWriter, path string, body []byte) {
+	f.mu.Lock()
+	f.calls = append(f.calls, fakeXMRCall{path, path, string(body)})
+	var fault fakeXMRFault
+	if q := f.faults[path]; len(q) > 0 {
+		fault, f.faults[path] = q[0], q[1:]
+	}
+	var res map[string]any
+	switch path {
+	case "/get_transactions":
+		var q struct {
+			Hashes []string `json:"txs_hashes"`
+		}
+		json.Unmarshal(body, &q)
+		txs, missed := []any{}, []string{}
+		for _, h := range q.Hashes {
+			tx := f.txs[h]
+			if tx == nil {
+				missed = append(missed, h)
+				continue
+			}
+			e := map[string]any{"tx_hash": h, "in_pool": tx.Height == 0, "double_spend_seen": false, "as_json": testXMRTxJSON(tx.KeyImages...)}
+			if tx.Height > 0 {
+				e["block_height"], e["confirmations"] = tx.Height, f.height-tx.Height
+			}
+			txs = append(txs, e)
+		}
+		res = map[string]any{"txs": txs, "status": "OK"}
+		if len(missed) > 0 {
+			res["missed_tx"] = missed
+		}
+	case "/is_key_image_spent":
+		var q struct {
+			KeyImages []string `json:"key_images"`
+		}
+		json.Unmarshal(body, &q)
+		status := make([]int, len(q.KeyImages))
+		for i, ki := range q.KeyImages {
+			if tx := f.spender(ki); tx != nil && tx.Height > 0 {
+				status[i] = 1
+			} else if tx != nil {
+				status[i] = 2
+			}
+		}
+		res = map[string]any{"spent_status": status, "status": "OK"}
+	}
+	f.mu.Unlock()
+	if res == nil {
+		w.WriteHeader(404)
+		return
+	}
+	if fault == fakeXMRDrop {
+		if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+			conn.Close()
+		}
+		return
+	}
+	json.NewEncoder(w).Encode(res)
+}
+
+// spender is the transaction in the daemon's pool or chain that spends key image ki, or nil. f.mu is held.
+func (f *fakeXMREscrow) spender(ki string) *fakeXMRTx {
+	for _, h := range slices.Sorted(maps.Keys(f.txs)) {
+		if slices.Contains(f.txs[h].KeyImages, ki) {
+			return f.txs[h]
+		}
+	}
+	return nil
+}
+
+// keyImage is output t's key image, given one on first use. f.mu is held.
+func (f *fakeXMREscrow) keyImage(t *fakeXMRTransfer) string {
+	if t.KeyImage == "" {
+		f.seq++
+		t.KeyImage = hex64("fake key image " + strconv.Itoa(f.seq) + " " + t.TxID)
+	}
+	return t.KeyImage
 }
 
 // fakeXMRWalletMethods are the wallet-rpc methods the fake answers; they run with f.mu held.
@@ -228,7 +359,7 @@ var fakeXMRWalletMethods = map[string]func(f *fakeXMREscrow, params json.RawMess
 		for i, addr := range f.open.accounts {
 			var bal, unlocked int64
 			for _, t := range f.open.transfers {
-				if t.Account == int64(i) && !t.Pool && !t.DoubleSpend {
+				if t.Account == int64(i) && !t.Pool && !t.DoubleSpend && t.SpentBy == "" {
 					bal += t.Amount
 					if t.Confs >= 10 && t.UnlockTime == 0 {
 						unlocked += t.Amount
@@ -254,6 +385,145 @@ var fakeXMRWalletMethods = map[string]func(f *fakeXMREscrow, params json.RawMess
 		}
 		return map[string]any{"in": in, "pool": pool}, 0, ""
 	},
+	"incoming_transfers": func(f *fakeXMREscrow, p json.RawMessage) (any, int64, string) {
+		var q struct {
+			Type    string `json:"transfer_type"`
+			Account int64  `json:"account_index"`
+		}
+		json.Unmarshal(p, &q)
+		var list []any
+		for _, t := range f.open.transfers {
+			if t.Account != q.Account || t.Pool || t.SpentBy != "" || q.Type != "available" {
+				continue
+			}
+			list = append(list, map[string]any{"amount": t.Amount, "block_height": max(f.height-t.Confs, 0), "frozen": t.Frozen, "key_image": f.keyImage(t),
+				"spent": false, "tx_hash": t.TxID, "unlocked": t.unlocked(), "subaddr_index": map[string]any{"major": t.Account, "minor": t.Minor}})
+		}
+		if len(list) == 0 {
+			return map[string]any{}, 0, "" // monero-wallet-rpc omits transfers when there are none
+		}
+		return map[string]any{"transfers": list}, 0, ""
+	},
+	"freeze": func(f *fakeXMREscrow, p json.RawMessage) (any, int64, string) { return f.setFrozen(p, true) },
+	"thaw":   func(f *fakeXMREscrow, p json.RawMessage) (any, int64, string) { return f.setFrozen(p, false) },
+	"transfer": func(f *fakeXMREscrow, p json.RawMessage) (any, int64, string) {
+		var q struct {
+			Destinations []struct {
+				Address string `json:"address"`
+				Amount  int64  `json:"amount"`
+			} `json:"destinations"`
+			Account     int64 `json:"account_index"`
+			SubtractFee []int `json:"subtract_fee_from_outputs"`
+			DoNotRelay  bool  `json:"do_not_relay"`
+		}
+		json.Unmarshal(p, &q)
+		if q.Account < 1 || q.Account >= int64(len(f.open.accounts)) {
+			return nil, -14, "account index is out of bound"
+		}
+		var want, have int64
+		for _, d := range q.Destinations {
+			want += d.Amount
+		}
+		var spend []*fakeXMRTransfer
+		for _, t := range slices.Backward(f.open.transfers) { // the newest first: an output left unfrozen is spent
+			if have < want && t.Account == q.Account && t.SpentBy == "" && !t.Frozen && t.unlocked() {
+				spend, have = append(spend, t), have+t.Amount
+			}
+		}
+		if have < want || len(spend) == 0 {
+			return nil, -17, "not enough money"
+		}
+		f.seq++
+		hash := hex64("fake settlement tx " + strconv.Itoa(f.seq))
+		tx := &fakeXMRTx{Hash: hash, Metadata: hex.EncodeToString([]byte("metadata " + hash)), Blob: hex.EncodeToString([]byte("blob " + hash)),
+			Wallet: f.open.name, Account: q.Account, Fee: fakeXMRFee(len(spend), max(len(q.Destinations)+1, 2))}
+		for _, t := range spend {
+			tx.KeyImages = append(tx.KeyImages, f.keyImage(t))
+		}
+		amounts := make([]int64, len(q.Destinations))
+		var total int64
+		for i, d := range q.Destinations {
+			amounts[i] = d.Amount
+			if i == 0 && slices.Equal(q.SubtractFee, []int{0}) {
+				amounts[i] -= tx.Fee
+			}
+			total += amounts[i]
+		}
+		f.built[tx.Metadata] = tx
+		res := map[string]any{"tx_hash": hash, "fee": tx.Fee, "amount": total, "tx_metadata": tx.Metadata, "tx_blob": tx.Blob,
+			"spent_key_images": map[string]any{"key_images": slices.Clone(tx.KeyImages)}, "amounts_by_dest": map[string]any{"amounts": amounts}}
+		if f.transferLie != nil {
+			f.transferLie(res)
+		}
+		if !q.DoNotRelay {
+			f.relay(tx)
+		}
+		return res, 0, ""
+	},
+	"relay_tx": func(f *fakeXMREscrow, p json.RawMessage) (any, int64, string) {
+		var q struct {
+			Hex string `json:"hex"`
+		}
+		json.Unmarshal(p, &q)
+		tx := f.built[q.Hex]
+		if tx == nil {
+			return nil, -8, "Failed to parse tx metadata"
+		}
+		if f.txs[tx.Hash] == nil {
+			for _, ki := range tx.KeyImages {
+				if f.spender(ki) != nil {
+					return nil, -4, "transaction was rejected by daemon"
+				}
+			}
+			f.relay(tx)
+		}
+		return map[string]any{"tx_hash": tx.Hash}, 0, ""
+	},
+	"get_transfer_by_txid": func(f *fakeXMREscrow, p json.RawMessage) (any, int64, string) {
+		var q struct {
+			TxID    string `json:"txid"`
+			Account int64  `json:"account_index"`
+		}
+		json.Unmarshal(p, &q)
+		tx := f.txs[q.TxID]
+		if tx == nil || tx.Wallet != f.open.name || tx.Account != q.Account {
+			return nil, -8, "Transaction not found."
+		}
+		e := map[string]any{"txid": tx.Hash, "type": "pending", "amount": 0, "fee": tx.Fee, "unlock_time": 0, "double_spend_seen": false,
+			"subaddr_index": map[string]any{"major": tx.Account, "minor": 0}}
+		if tx.Height > 0 {
+			e["type"], e["height"], e["confirmations"] = "out", tx.Height, f.height-tx.Height
+		}
+		return map[string]any{"transfer": e, "transfers": []any{e}}, 0, ""
+	},
+}
+
+// setFrozen freezes or thaws the open wallet's output with the key image in params.
+func (f *fakeXMREscrow) setFrozen(p json.RawMessage, frozen bool) (any, int64, string) {
+	var q struct {
+		KeyImage string `json:"key_image"`
+	}
+	json.Unmarshal(p, &q)
+	for _, t := range f.open.transfers {
+		if f.keyImage(t) == q.KeyImage {
+			t.Frozen = frozen
+			return map[string]any{}, 0, ""
+		}
+	}
+	return nil, -10, "Key image not found"
+}
+
+// relay puts tx in the daemon's pool and marks the outputs it spends spent, in every wallet file. f.mu is held.
+func (f *fakeXMREscrow) relay(tx *fakeXMRTx) {
+	tx.Height = 0
+	f.txs[tx.Hash] = tx
+	for _, w := range f.files {
+		for _, t := range w.transfers {
+			if slices.Contains(tx.KeyImages, t.KeyImage) {
+				t.SpentBy = tx.Hash
+			}
+		}
+	}
 }
 
 // newFile makes wallet file name with password, its own seed and primary address, and no other account.
@@ -383,4 +653,84 @@ func (f *fakeXMREscrow) openName() string {
 		return ""
 	}
 	return f.open.name
+}
+
+// mine adds n blocks: each mines every transaction in the pool and moves the daemon (and the wallet) up one block.
+func (f *fakeXMREscrow) mine(n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for range n {
+		for _, tx := range f.txs {
+			if tx.Height == 0 {
+				tx.Height = f.height // the new block's index
+			}
+		}
+		f.height++
+	}
+}
+
+// popBlocks removes the top n blocks (a reorganisation): their transactions go back to the pool, as monerod's
+// pop_blocks returns them.
+func (f *fakeXMREscrow) popBlocks(n int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.height -= n
+	for _, tx := range f.txs {
+		if tx.Height >= f.height {
+			tx.Height = 0
+		}
+	}
+}
+
+// flushPool drops hash from the daemon's pool (flush_txpool): the outputs it spent are unspent again.
+func (f *fakeXMREscrow) flushPool(hash string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if tx := f.txs[hash]; tx == nil || tx.Height != 0 {
+		f.t.Fatalf("fake daemon: %s is not in the pool", hash)
+	}
+	delete(f.txs, hash)
+	for _, w := range f.files {
+		for _, t := range w.transfers {
+			if t.SpentBy == hash {
+				t.SpentBy = ""
+			}
+		}
+	}
+}
+
+// spendOutside puts in the pool a transaction the market did not make spending the outputs with these key images (a
+// wallet restored from the sealed seed), and returns its hash.
+func (f *fakeXMREscrow) spendOutside(keyImages ...string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.seq++
+	tx := &fakeXMRTx{Hash: hex64("fake outside spend " + strconv.Itoa(f.seq)), KeyImages: keyImages}
+	f.relay(tx)
+	return tx.Hash
+}
+
+// tx is a copy of the transaction hash in the daemon's pool or chain, or ok false.
+func (f *fakeXMREscrow) tx(hash string) (tx fakeXMRTx, ok bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if p := f.txs[hash]; p != nil {
+		return *p, true
+	}
+	return tx, false
+}
+
+// outputs lists copies of the outputs of escrow address addr's account, each with its key image.
+func (f *fakeXMREscrow) outputs(addr string) []fakeXMRTransfer {
+	name, account := f.accountOf(addr)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []fakeXMRTransfer
+	for _, t := range f.files[name].transfers {
+		if t.Account == account {
+			f.keyImage(t)
+			out = append(out, *t)
+		}
+	}
+	return out
 }

@@ -609,6 +609,8 @@ type XMREscrowOrderView struct {
 	CancelAfter, Status, NextStep, Fee          string
 	Deposits                                    []PaymentDeposit
 	Unread                                      string // set when nothing is read at the address: shown for the Confirmed and Unconfirmed figures
+	// Settlements: its settlements, newest first (escrow_xmr_settle_view.go)
+	Settlements []*XMRSettlementView
 }
 
 // XMREscrowCheckoutView offers Monero escrow checkout on an XMR draft (escrow_xmr_create.go): Reason says why it cannot
