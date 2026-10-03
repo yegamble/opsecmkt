@@ -540,7 +540,15 @@ func TestXMREscrowRecheckAfterOpen(t *testing.T) {
 	order := x.draft(x.digital(x.vendor))
 	addr := x.mustCheckout(order)
 	x.fake.payAddress(addr, hex64("drift"), xmrListingPrice, 12)
-	x.fake.edit(func(f *fakeXMREscrow) { f.newFile("escrow-209901-01", "x") })
+	// Another wallet file whose account of the same index received the price: read as this wallet, it would fund the order.
+	_, account := x.fake.accountOf(addr)
+	x.fake.edit(func(f *fakeXMREscrow) {
+		w := f.newFile("escrow-209901-01", "x")
+		for i := int64(1); i <= account; i++ {
+			w.accounts = append(w.accounts, testXMRAddr("other wallet account "+strconv.FormatInt(i, 10), true))
+		}
+		w.transfers = append(w.transfers, &fakeXMRTransfer{TxID: hex64("other"), Account: account, Amount: xmrListingPrice, Confs: 12})
+	})
 	x.fake.fault("open_wallet", fakeXMRWrongWallet)
 	if err := x.poll(); err == nil || x.state(order) != stateAwaitingPayment || agInt(x.testEnv, "SELECT count(*) FROM payments") != 0 {
 		t.Fatalf("another wallet was read: %v %s", err, x.state(order))
