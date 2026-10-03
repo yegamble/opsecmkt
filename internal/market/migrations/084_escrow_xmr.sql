@@ -17,7 +17,8 @@
 -- slots are retired), retained once its last order closed (last_closed_at), and destroyed (its password replaced by one
 -- never stored, seed_sealed wiped) no earlier than destroy_after, 90 days after its last order closed (ES-7, P3-R9). A
 -- wallet the watcher cannot open is missing (P3-R9) until it opens again; one found on the wallet-rpc with no row (after
--- a restore from backup, P3-R10) is inserted as an orphan, re-sealed, and then retained until it is destroyed. States
+-- a restore from backup, P3-R10) is an orphan, re-sealed, and then retained until it is destroyed: inserted as one, or
+-- a creating row whose name create_wallet finds already taken (creating -> orphan). States
 -- move only forward: creating -> sealed -> active -> closing -> retained -> destroyed, with sealed -> closing (a wallet
 -- closed before its month began, after a restore), any state but destroyed -> missing, missing back to any of sealed,
 -- active, closing or retained (it opened again), orphan -> retained, and missing or orphan -> destroyed. A wallet that may hold an order's coins always has its sealed seed: the name, month, primary address,
@@ -65,7 +66,7 @@ BEGIN
     RAISE EXCEPTION 'xmr_escrow_wallets: wallet % keeps its last close and destruction times; they only move later', OLD.id USING ERRCODE = 'check_violation';
   END IF;
   IF NEW.state IS DISTINCT FROM OLD.state AND NOT (
-       (OLD.state = 'creating' AND NEW.state IN ('sealed','missing'))
+       (OLD.state = 'creating' AND NEW.state IN ('sealed','missing','orphan'))
     OR (OLD.state = 'sealed' AND NEW.state IN ('active','closing','missing'))
     OR (OLD.state = 'active' AND NEW.state IN ('closing','missing'))
     OR (OLD.state = 'closing' AND NEW.state IN ('retained','missing'))

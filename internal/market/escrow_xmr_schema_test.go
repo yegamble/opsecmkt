@@ -183,6 +183,10 @@ func TestXMREscrowMigration084(t *testing.T) {
 	orphan := xmrWallet(t, e, 6, "orphan")
 	xmrRefused(t, e, "an orphan wallet made active", "a wallet moves only forward", "UPDATE xmr_escrow_wallets SET state='active' WHERE id=$1", orphan)
 	agExec(e, "UPDATE xmr_escrow_wallets SET state='retained' WHERE id=$1", orphan)
+	// A creating row whose name create_wallet finds already taken becomes an orphan (X-c, P3-R10), never sealed or used.
+	taken := xmrWallet(t, e, 42, "creating")
+	agExec(e, "UPDATE xmr_escrow_wallets SET state='orphan' WHERE id=$1", taken)
+	xmrRefused(t, e, "an orphan wallet back to creating", "a wallet moves only forward", "UPDATE xmr_escrow_wallets SET state='creating' WHERE id=$1", taken)
 	// The last close and the destruction time only move later, and are never cleared.
 	agExec(e, "UPDATE xmr_escrow_wallets SET last_closed_at=now()-interval '100 days',destroy_after=now()-interval '1 day' WHERE id=$1", walker)
 	for _, c := range []struct{ what, set string }{
