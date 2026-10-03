@@ -384,9 +384,9 @@ func TestEscrowBumpShapeRefusals(t *testing.T) {
 	for rate, want := range map[string]string{
 		"2":   "higher than the 2 sat/vB",
 		"1":   "higher than the 2 sat/vB",
-		"0":   "whole number of sat/vB from 1 to 100",
-		"x":   "whole number of sat/vB from 1 to 100",
-		"101": "whole number of sat/vB from 1 to 100",
+		"0":   "whole number of sat/vB, at least 1",
+		"x":   "whole number of sat/vB, at least 1",
+		"101": "whole number of sat/vB, at least 1",
 	} {
 		if code, body := x.requestBump(order, x.vendorSess, id, rate); code != 400 || !strings.Contains(html.UnescapeString(body), want) {
 			t.Fatalf("rate %s: %d %s", rate, code, body)

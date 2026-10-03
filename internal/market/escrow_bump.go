@@ -66,7 +66,7 @@ var (
 	errBumpNone     = fail(404, "Fee bump not found")
 	errBumpNotReady = fail(409, "This fee bump is not waiting for your signature (it is still being built, it was already signed, or it was closed). Reload the page. Nothing was changed.")
 	errBumpState    = fail(409, "The network fee of a settlement can be raised only while its transaction is broadcast and unconfirmed. Reload the page. Nothing was changed.")
-	errBumpRate     = fail(400, "Enter the new network fee rate as a whole number of sat/vB from 1 to "+strconv.Itoa(escrowMaxFeeRate)+". Nothing was changed.")
+	errBumpRate     = fail(400, "Enter the new network fee rate as a whole number of sat/vB, at least 1 and no higher than the highest rate the form shows. Nothing was changed.")
 )
 
 // claimantOf is the party whose output pays the network fee of a settlement of kind: the vendor of a release, the buyer
