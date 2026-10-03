@@ -426,15 +426,17 @@ func heldEscrowKeys(ctx context.Context, tx *sql.Tx, keys map[string][]byte) (ma
 	return held, nil
 }
 
-// escrowEligible reports whether o's listing takes escrow, its BTC price and its dispatch window in days (0 = none).
-// A digital listing takes escrow when its content is delivered automatically (as autoDeliveryHook would) and it is
-// not taken down; a physical listing, when it has a dispatch window and is not taken down.
+// escrowEligible reports whether o's listing takes escrow, its price in o's currency (BTC or XMR, in satoshi or
+// piconero) and its dispatch window in days (0 = none). A digital listing takes escrow when its content is delivered
+// automatically (as autoDeliveryHook would) and it is not taken down; a physical listing, when it has a dispatch window
+// and is not taken down.
 func escrowEligible(ctx context.Context, q rowQuerier, o *Order) (bool, int64, int, error) {
 	var content string
 	var takenDown bool
 	var price int64
 	var dispatch sql.NullInt32
-	if err := q.QueryRowContext(ctx, "SELECT delivery_content,admin_archive_reason IS NOT NULL,btc,dispatch_days FROM products WHERE id=$1", o.ProductID).Scan(&content, &takenDown, &price, &dispatch); err != nil {
+	if err := q.QueryRowContext(ctx, "SELECT delivery_content,admin_archive_reason IS NOT NULL,CASE WHEN $2='XMR' THEN xmr ELSE btc END,dispatch_days FROM products WHERE id=$1",
+		o.ProductID, o.Currency).Scan(&content, &takenDown, &price, &dispatch); err != nil {
 		return false, 0, 0, err
 	}
 	ok := !takenDown && (o.Kind == "digital" && strings.TrimSpace(content) != "" && utf8.RuneCountInString(content) <= maxDeliveryChars ||

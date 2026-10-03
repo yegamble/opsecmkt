@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 )
 
 // Monero escrow configuration and startup (WR-escrow Phase 3, P3-R2, P3-R4, P3-R13). ESCROW_XMR=on (off by
@@ -53,13 +54,15 @@ type escrowXMRConfig struct {
 	maxFee               int64  // the highest network fee a settlement may pay, in piconero (P3-R6)
 	secret               string // MONERO_WALLET_SECRET; never logged
 	seedKeyPath          string
+	confirmations        int64 // a deposit counts from max(PAYMENT_CONFIRMATIONS_XMR, xmrMinConfirmations) (P3-R5)
 }
 
 // escrowXMRConfigFromEnv reads ESCROW_XMR (on/off, blank = off), ESCROW_XMR_WALLET_RPC_URL and ESCROW_XMR_DAEMON_URL
 // (both required; the wallet-rpc must not be MONERO_WALLET_RPC_URL's), ESCROW_XMR_FEE_BPS (0 to 10000, default 0)
 // and ESCROW_XMR_FEE_ADDRESS (needed above 0: a fakechain standard address or subaddress), ESCROW_XMR_SLOTS (5 to
 // 200, default 20), ESCROW_XMR_MAX_FEE (piconero, 1 to xmrMaxMaxFee, default xmrDefaultMaxFee),
-// MONERO_WALLET_SECRET (checkXMRWalletSecret) and ESCROW_XMR_SEED_KEY (a path, read by initEscrowXMR). A market
+// PAYMENT_CONFIRMATIONS_XMR (1 to 1000; a deposit counts from at least xmrMinConfirmations), MONERO_WALLET_SECRET
+// (checkXMRWalletSecret) and ESCROW_XMR_SEED_KEY (a path, read by initEscrowXMR). A market
 // configured for mainnet (MONERO_NETWORK=mainnet, BITCOIN_CHAIN=main) is refused. Nothing is opened or contacted,
 // and with ESCROW_XMR off nothing else is read.
 func escrowXMRConfigFromEnv(getenv func(string) string) (escrowXMRConfig, error) {
@@ -113,6 +116,14 @@ func escrowXMRConfigFromEnv(getenv func(string) string) (escrowXMRConfig, error)
 		}
 		c.maxFee = n
 	}
+	c.confirmations = xmrMinConfirmations
+	if v := strings.TrimSpace(getenv("PAYMENT_CONFIRMATIONS_XMR")); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 1 || n > 1000 {
+			return c, errors.New("PAYMENT_CONFIRMATIONS_XMR must be a whole number from 1 to 1000")
+		}
+		c.confirmations = max(n, xmrMinConfirmations)
+	}
 	c.secret = getenv("MONERO_WALLET_SECRET")
 	if err := checkXMRWalletSecret(c.secret, getenv("SETUP_TOKEN"), getenv("APP_SECRET_KEY")); err != nil {
 		return c, err
@@ -142,14 +153,16 @@ func sameRPCEndpoint(a, b string) bool {
 // watcher (X-c) uses it: it re-runs startEscrowXMR while escrow is not ready (a node unreachable at startup) and
 // calls recheckEscrowXMRNetwork after each open_wallet.
 type escrowXMR struct {
-	rpc        *xmrEscrowRPC
-	feeBps     int64
-	feeAddress string
-	slots      int
-	maxFee     int64
-	secret     string // MONERO_WALLET_SECRET: wallet passwords derive from it (xmrWalletPassword); never logged
-	seedKey    *xmrSeedKey
-	startState string // the state line logged at startup
+	rpc           *xmrEscrowRPC
+	feeBps        int64
+	feeAddress    string
+	slots         int
+	maxFee        int64
+	confirmations int64  // a deposit counts from this many confirmations (P3-R5)
+	secret        string // MONERO_WALLET_SECRET: wallet passwords derive from it (xmrWalletPassword); never logged
+	seedKey       *xmrSeedKey
+	startState    string           // the state line logged at startup
+	now           func() time.Time // the watcher's clock (escrow_xmr_watch.go); nil is time.Now. Tests move it
 
 	ready     atomic.Bool // the secret verifier matched and the network check passed: escrow wallets may be used
 	canCreate atomic.Bool // ESCROW_XMR_SEED_KEY is the pinned seed key: new wallets may be created and sealed
@@ -180,7 +193,7 @@ func (a *App) initEscrowXMR(ctx context.Context) error {
 		return err
 	}
 	a.escrowXMR = &escrowXMR{rpc: rpc, feeBps: cfg.feeBps, feeAddress: cfg.feeAddress, slots: cfg.slots, maxFee: cfg.maxFee,
-		secret: cfg.secret, seedKey: key}
+		confirmations: cfg.confirmations, secret: cfg.secret, seedKey: key}
 	state, class, err := a.startEscrowXMR(ctx)
 	var refusal *xmrRefusal
 	if errors.As(err, &refusal) {

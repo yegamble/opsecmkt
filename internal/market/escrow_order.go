@@ -23,18 +23,18 @@ func init() {
 // (which has already resolved the viewer). An escrow order always gets its panel: with ESCROW_BTC switched off, or
 // escrow down, it shows the escrow address with the unavailable copy, never the pooled payment panel, which would say
 // no funds are held (A-315). Any other order with ESCROW_BTC off gets nothing, so its page is as before. A Monero
-// escrow order (migration 084) gets nothing here either: no Bitcoin escrow panel, and order.html shows it no pooled
-// payment panel.
+// escrow order (migration 084) gets its Monero escrow panel instead (xmrEscrowOrder), and an XMR draft the Monero
+// escrow checkout offer (xmrEscrowCheckoutOffer).
 func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 	o := d.Order
 	if !o.Escrow {
-		if !a.escrowConfigured {
-			return nil
+		if err := a.xmrEscrowCheckoutOffer(ctx, d); err != nil || !a.escrowConfigured {
+			return err
 		}
 		return a.escrowCheckoutOffer(ctx, d)
 	}
 	if !o.btcEscrow() {
-		return nil
+		return a.xmrEscrowOrder(ctx, d)
 	}
 	e := a.escrow.Load()
 	v := &EscrowOrderView{Available: e != nil, Download: a.escrowConfigured, Required: o.Amount, Threshold: 3, Open: o.State == stateAwaitingPayment}

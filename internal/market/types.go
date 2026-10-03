@@ -239,6 +239,10 @@ type PageData struct {
 	// BTC draft on a listing that takes escrow, while ESCROW_BTC is on. Both nil otherwise.
 	Escrow         *EscrowOrderView
 	EscrowCheckout *EscrowCheckoutView
+	// XMREscrow: order page of a Monero escrow order, its escrow (escrow_xmr_order.go); XMREscrowCheckout: order page of
+	// the buyer's XMR draft on a listing that takes escrow, while ESCROW_XMR is on. Both nil otherwise.
+	XMREscrow         *XMREscrowOrderView
+	XMREscrowCheckout *XMREscrowCheckoutView
 
 	// P6 Transparency
 	Canary      *CanaryView
@@ -592,6 +596,26 @@ type EscrowCheckoutView struct {
 	Reason   string
 	KeyLink  bool
 	Physical bool // the listing is shipped: the offer says the order stays open after funding (WR-escrow Phase 2)
+}
+
+// XMREscrowOrderView is a Monero escrow order's escrow on its page (escrow_xmr_order.go, WR-escrow Phase 3): amounts in
+// XMR; RefundAddress set for the buyer only; Custody the custody sentence (A-402).
+type XMREscrowOrderView struct {
+	Available, RestorePaused                    bool
+	Custody, Address, RefundAddress             string
+	Required, Confirmed, Unconfirmed, Remaining string
+	Threshold                                   int64
+	Open, NeedsTopUp                            bool
+	CancelAfter, Status, NextStep, Fee          string
+	Deposits                                    []PaymentDeposit
+	Unread                                      string // set when nothing is read at the address: shown for the Confirmed and Unconfirmed figures
+}
+
+// XMREscrowCheckoutView offers Monero escrow checkout on an XMR draft (escrow_xmr_create.go): Reason says why it cannot
+// be used now.
+type XMREscrowCheckoutView struct {
+	Reason, Custody string
+	Physical        bool
 }
 
 // EscrowKeyView is the viewer's Bitcoin escrow key (escrow_account.go). Origin is the viewer's own key origin

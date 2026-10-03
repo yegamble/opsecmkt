@@ -33,6 +33,10 @@ import (
 
 const escrowWatcherLock = 782495 // the pooled watcher's is 782494
 
+// xmrEscrowWatcherLock is the Monero escrow watcher's session advisory lock (escrow_xmr_watch.go), apart from both, so
+// a slow Monero wallet pass never holds up the Bitcoin escrow or the pooled watcher.
+const xmrEscrowWatcherLock = 782496
+
 // The escrow watcher's horizon for a closed order, in SQL interval text: the order changed within escrowClosedWatch
 // or its escrow was created within escrowCreatedWatch (an open order is read whatever its age), or it has a
 // settlement not yet signed (its build waits for the ledger's confirmations, P1-c1). escrowWatchedSQL is that test on
@@ -340,7 +344,11 @@ func escrowTransitionHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, fro
 		_, err := tx.ExecContext(ctx, "UPDATE escrows SET ship_by=now()+make_interval(days => dispatch_days)+interval '48 hours' WHERE order_id=$1 AND dispatch_days IS NOT NULL AND ship_by IS NULL", o.ID)
 		return err
 	case to == stateDelivered:
-		next, err := a.transition(ctx, tx, o.ID, stateDelivered, stateCompleted, nil, escrowCompletedNote)
+		note := escrowCompletedNote
+		if o.Currency == "XMR" {
+			note = xmrEscrowCompletedNote
+		}
+		next, err := a.transition(ctx, tx, o.ID, stateDelivered, stateCompleted, nil, note)
 		if err != nil {
 			return err
 		}
