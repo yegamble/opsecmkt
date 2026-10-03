@@ -189,12 +189,12 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 		return err
 	}
 	if v.Deadline != nil {
-		var buyerSigned bool
-		if err = a.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM settlement_signatures g JOIN settlements s ON s.id=g.settlement_id
-			WHERE s.order_id=$1 AND s.kind='release' AND s.state<>'superseded' AND g.party='buyer')`, o.ID).Scan(&buyerSigned); err != nil {
+		var buyerSigned, vendorSigned bool
+		if err = a.db.QueryRowContext(ctx, `SELECT COALESCE(bool_or(g.party='buyer'),false),COALESCE(bool_or(g.party='vendor'),false) FROM settlement_signatures g JOIN settlements s ON s.id=g.settlement_id
+			WHERE s.order_id=$1 AND s.kind='release' AND s.state<>'superseded'`, o.ID).Scan(&buyerSigned, &vendorSigned); err != nil {
 			return err
 		}
-		v.NextStep += " " + deadlineNextStep(d.OrderViewer, v.Deadline, v.RestorePaused, buyerSigned)
+		v.NextStep += " " + deadlineNextStep(d.OrderViewer, v.Deadline, v.RestorePaused, buyerSigned, vendorSigned)
 	}
 	if err = a.escrowDecisionView(ctx, d, v); err != nil {
 		return err

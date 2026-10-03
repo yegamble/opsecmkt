@@ -221,6 +221,14 @@ export E2E_ESCROW_DATABASE_URL='postgres://opsecmkt:local-dev-only@127.0.0.1:554
 npm run test:e2e:escrow
 ```
 
+`tests/e2e/escrow-physical-journey.spec.ts` runs after it on the same database and follows a
+physical escrow order (WR-escrow Phase 2): shipped with a claim address, signed by the vendor and
+the buyer, released at its deadline, a dispute that cancels the deadline, the buyer's no-ship
+cancel and its race with the shipment, a buyer who never signs (the shipped and 72-hour notices,
+the `/orders` banner) and the administrator's release deadline length. The test moves the release
+and ship-by clocks through SQL (with `psql` on `PATH`, using the connection in
+`E2E_ESCROW_DATABASE_URL`); the simulated node is the same, so this is not chain evidence.
+
 Use a fresh database for every run. It owns loopback ports 18090–18092, writes
 `playwright-escrow-report/` and `test-results-escrow/` (with one screenshot per order-page
 state), and is not part of `npm run test:e2e`. `python3 -m unittest tests.test_escrow_rpc_fixture`

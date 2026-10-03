@@ -40,6 +40,7 @@ func TestCanaryStatesEscrowMode(t *testing.T) {
 			"no age limit",
 			"kept until the operator removes",
 			"addresses the watch-only wallet holds with no escrow",
+			"the release deadline length and dispatch window it was created with", // P2-a, P2-c: migration 079
 			"spent by a transaction this market did not make",
 			"A fee bump of a broadcast settlement",                              // P2-d: settlement_bumps, migration 080
 			"with their public keys kept so that no new escrow uses them again", // P2-e: escrow_reserved_keys, migration 083
@@ -56,6 +57,7 @@ func TestCanaryStatesEscrowMode(t *testing.T) {
 			// page's escrow panel says.
 			"so the market cannot spend it alone, if the key each party's order page shows as theirs is theirs: each party checks the escrow descriptor in their own wallet",
 			"not verified on any public network",
+			"or a physical listing with a dispatch window, can be paid into its own 2-of-3 multisig escrow", // Phase 2
 		} {
 			if !strings.Contains(page, want) {
 				t.Errorf("/canary lacks %q with escrow on:\n%s", want, page)

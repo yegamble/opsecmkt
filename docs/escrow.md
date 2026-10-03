@@ -3,17 +3,18 @@
 > [!WARNING]
 > **No release contains escrow, and the pooled wallet stays the default.** Every deposit sits in the
 > operator's pooled custodial wallet for its currency ([operator guide](operator-guide.md#payments),
-> [implementation status](implementation-status.md#p5-payments)) unless an operator switches on the first
-> escrow phase, which runs **on regtest only** (a local test chain whose coins have no value) and is **off
-> by default** (`ESCROW_BTC`, [operator guide](operator-guide.md#bitcoin-escrow-regtest-only)). That phase,
-> Bitcoin escrow for digital orders, is built and tested on regtest on the development branch
-> ([Phase 1](#phase-1-bitcoin-escrow-on-regtest)); it has not run on any public test network or on mainnet,
-> and it is not verified for real payments. This page describes the escrow design the project owner and its
-> design review have settled, what it will and will not protect, and how it ships. With each phase, this
-> page, the [README](../README.md), the [implementation status](implementation-status.md), the
-> [operator guide](operator-guide.md), the [test-network runbook](testnet-runbook.md), the
-> [acceptance checks](acceptance.md) and [UPGRADING](../UPGRADING.md) are updated in the same change.
-> Everything below [Phases](#phases) that no phase has built yet is a plan.
+> [implementation status](implementation-status.md#p5-payments)) unless an operator switches on the escrow
+> phases built so far, which run **on regtest only** (a local test chain whose coins have no value) and are **off
+> by default** (`ESCROW_BTC`, [operator guide](operator-guide.md#bitcoin-escrow-regtest-only)). Those phases,
+> Bitcoin escrow for digital orders and for physical orders, are built and tested on regtest on the development
+> branch ([Phase 1](#phase-1-bitcoin-escrow-on-regtest), [Phase 2](#phase-2-bitcoin-escrow-for-physical-orders-on-regtest));
+> they have not run on any public test network or on mainnet, and they are not verified for real payments. This
+> page describes the escrow design the project owner and its design review have settled, what it will and will
+> not protect, and how it ships. With each phase, this page, the [README](../README.md), the
+> [implementation status](implementation-status.md), the [operator guide](operator-guide.md), the
+> [test-network runbook](testnet-runbook.md), the [acceptance checks](acceptance.md) and
+> [UPGRADING](../UPGRADING.md) are updated in the same change. Everything below [Phases](#phases) that no phase
+> has built yet is a plan.
 
 ## Why
 
@@ -151,7 +152,7 @@ shipped phase has proven. The full rules and acceptance criteria are in the proj
 | Wallet check | Scripted signing test with Electrum and Bitcoin Core on regtest, before any escrow database change | Done on regtest: Core signs; Electrum cannot sign this layout |
 | 1 | Bitcoin escrow for digital orders on regtest, behind a setting that is off by default | Built and tested on regtest on the development branch, not released, behind `ESCROW_BTC` (off by default, regtest only): see [Phase 1](#phase-1-bitcoin-escrow-on-regtest) for what it does, what it protects and the tests behind it. Not run on any public test network or on mainnet; Electrum, Sparrow and hardware wallets are not supported |
 | Wallets | Electrum and Sparrow support (a signing test showed Electrum needs a different key layout) | Not started |
-| 2 | Physical orders: buyer-signed release, 14-day deadline, no-ship cancellation | In progress on the development branch, regtest only, behind `ESCROW_BTC`: physical escrow checkout, fee bumps, and the release built when the vendor marks the order shipped, which the buyer and the vendor complete with their two signatures (the market never signs it before the order is completed; `TestEscrowPhysicalBothSign`, `TestEscrowShippedNeverMarketSigns`, real-chain leg `TestEscrowRegtestPhysical`), are built and tested. The release deadline is built and tested too: at the deadline a shipped order with no dispute is completed and the market co-signs the vendor's signature on the release (or the release waits for it); the buyer is reminded 72 hours before, a dispute after the deadline is refused, a dispute before it cancels it for good, the restore gate holds it, and after a restore from backup a passed deadline becomes 72 hours later (`TestEscrowDeadlineRelease`, `TestEscrowDeadlineDisputeRace`, `TestEscrowDeadlineGatePaused`, `TestEscrowReminderOnce`, `TestEscrowLateDisputeRefused`, `TestEscrowRestoreExtendsDeadline`, real-chain leg `TestEscrowRegtestDeadline`). So is the no-ship cancellation: the buyer may cancel a paid order once the dispatch window plus 48 hours from payment has passed without a shipment, and is refunded (`TestEscrowNoShipCancel`, `TestEscrowShipCancelRace`). Nothing here is released |
+| 2 | Physical orders: buyer-signed release, 14-day deadline, no-ship cancellation, fee bumps | Built and tested on regtest; not released; off by default (`ESCROW_BTC`, regtest only): see [Phase 2](#phase-2-bitcoin-escrow-for-physical-orders-on-regtest) for what it does, what it protects, what it does not do and the tests behind it. Not run on any public test network or on mainnet; only Bitcoin Core signing is supported |
 | 3 | Monero accounts in monthly escrow wallets | Not started |
 | 4 | Public test networks end to end, then escrow-only for new orders, then removal of the pooled wallet | Not started |
 
@@ -247,6 +248,170 @@ them together from their own wallets. A reorganisation deeper than 100 blocks is
 
 Not tested: any public test network, mainnet, the escrow pages in Firefox or WebKit (the escrow journey runs in
 Chromium only; CI runs the preview pages in Firefox and WebKit), Electrum, Sparrow and hardware wallets.
+
+## Phase 2: Bitcoin escrow for physical orders on regtest
+
+**Built and tested on regtest; not released; off by default.** Phase 2 adds to Phase 1 and is switched on and off
+by the same setting. The pooled wallet stays the default for every order. With `ESCROW_BTC=on` (refused unless the
+escrow node reports chain `regtest`; [operator guide](operator-guide.md#bitcoin-escrow-regtest-only)) the
+development branch has, for physical listings:
+
+- **Checkout.** A Bitcoin draft on a physical listing that has a dispatch window (1 to 30 whole days, 3 by default,
+  set by the vendor on the listing form while escrow is on) can pay into an escrow once both parties' escrow keys
+  are active, as for a digital listing. The vendor must also have a PGP key the buyer can encrypt to, checked before
+  any node call (A-83); the offer gives the reason when it cannot be used. The shipping address flow is unchanged:
+  the buyer encrypts it to the vendor's PGP key and the server never stores it. Checkout snapshots the release
+  deadline length and the listing's dispatch window in the escrow's row; a later change to the setting or the
+  listing never reaches it (a database trigger freezes them, migration 079).
+- **The release, built at "shipped".** The vendor marks the paid order shipped on the order page with a fresh claim
+  address from their own wallet and their password (and authenticator code when enrolled). In one transaction the
+  order moves from paid to shipped, the release to the vendor is requested and the release deadline is fixed. The
+  watcher builds the release at once, long before the order has an outcome, from the escrow's confirmed deposits,
+  with the same fee rules as any settlement. The pooled "Mark shipped" form and the buyer's pooled "Complete" are
+  refused on an escrow order.
+- **The buyer signs it.** The buyer and the vendor each sign the release on the order page, in their own wallet, as
+  for any settlement; the page lists the expected outputs and the network fee. **Signing it is the buyer's
+  confirmation that the goods arrived, and a buyer who has signed can no longer open a dispute** (409). With both
+  signatures the watcher checks the transaction, stores it as completed by the parties, moves the order from
+  shipped to completed in the same database transaction and broadcasts it. The market does not sign it, and the
+  arbiter wallet is not asked to. If the two signatures do not verify together, both are discarded and both
+  parties sign again: the market never falls back to signing alone before the outcome, and the database refuses a
+  market-signed final transaction unless the order's state fits the settlement (migration 081).
+- **The deadline release.** If the buyer has not signed and no dispute is open when the deadline passes, the order
+  completes by the system ("auto-release deadline passed") and the market co-signs the signature already stored for
+  the release (the vendor's, or the buyer's if only the buyer signed) and broadcasts it; when both signed, their
+  signatures complete it, and when nobody signed, the release waits for the vendor's signature. The deadline is the
+  time the order was marked shipped plus the release deadline length: 14 days by default, any whole number of days
+  from 7 to 30 set on `/admin` by an administrator with their password, audited, and snapshotted per escrow at
+  checkout, so a change affects only later orders. The release at the deadline makes no node call itself and is
+  skipped while the restore gate is set.
+- **Reminders and the banner.** Every deadline is shown in UTC to the minute: in the shipped, reminder, release and
+  dispute notices, on the order page (with the time left, computed when the page loaded) and in a banner on
+  `/orders` for any shipped escrow order of the viewer with less than 72 hours left. 72 hours before the deadline,
+  once, the buyer is reminded, unless the buyer has signed or a dispute is open, and the vendor is told the buyer's
+  deadline. Notices are inside the market only; nothing is sent by email or any other channel.
+- **The no-ship cancel.** A paid physical escrow order has a ship-by time: the time its payment was confirmed plus
+  the escrow's dispatch window plus 48 hours. From then on, if the vendor has not marked it shipped, the buyer may
+  cancel it and the escrow is refunded to the refund address fixed at checkout, by a refund settlement the buyer or
+  the vendor signs and the market co-signs. Before it, the cancel is refused (409) with the date. The vendor's
+  "Mark shipped" and the buyer's cancel lock the order and compare its state, so exactly one takes effect, and the
+  other is told which one did and when. A digital escrow order offers its buyer no such cancel.
+- **Late and early disputes.** A dispute opened after the deadline is refused (409): the release is due. One opened
+  before it stops the clock for good, because a disputed order only moves to resolved; the other party is told the
+  deadline no longer applies, and an administrator decides the order. A deadline that passed in restored records
+  and is waiting for the restore recheck below does not yet count as passed.
+- **A dispute decided.** For the buyer, the release built at shipment is superseded while it has no final
+  transaction, its deposits are freed and the refund is requested; if the release is already final (signed by both
+  parties, or broadcast or spent on the network) the decision for the buyer is refused (409) and the administrator
+  decides for the vendor. For the vendor, the release built at shipment is the settlement (no new claim address).
+- **Top-ups.** A deposit that arrives after the release or refund has been built is left out of it, marked, noted
+  on the order and announced to the buyer and to staff (not the vendor), and returned to the buyer's refund address
+  by a stray refund once the order has closed. A top-up that arrives before the release exists is spent by it.
+- **Fee bumps.** A settlement that was broadcast but not mined can be replaced by a transaction (BIP 125) that pays
+  the same outputs, in the same order, with only the claimant's output smaller. The claimant (the vendor for a
+  release, the buyer for a refund or stray refund) asks on the order page with a higher fee rate and their
+  password; the watcher builds it; the claimant signs it first; then the market co-signs it, or the other party
+  signs it too and the market does not. The other party's signature alone is refused, and the market never
+  completes a bump with it. The highest rate offered keeps the fee within the caps at the smallest size the
+  transaction can have: 71 sat/vB for a release of one deposit with two outputs (the form shows the exact maximum
+  for each settlement). Two transactions of the market's own for one settlement are not a spend outside the market,
+  and only the highest-fee one is sent again (migrations 080 and 082). While the restore gate is set no bump is
+  built, co-signed or sent.
+- **After a restore from backup.** `scripts/restore.sh` asks for a recheck of release deadlines: on the watcher's next
+  pass, gate or not, every deadline of a shipped order with no dispute that had already passed in the restored
+  records moves to 72 hours later, the buyer is told, and the moved deadline counts as the reminder. Nothing else
+  moves a deadline. The restore also holds restored fee bumps that have a stored transaction, as it holds
+  settlements.
+- **No escrow key is handed out twice after a restore (A-366, migration 083).** The restore also makes escrow
+  checkout wait (503) until the escrow watcher has read, with `getaddressinfo` on the watch-only wallet, the three
+  public keys of every address that wallet holds with no escrow row, and reserved them; a checkout skips any child
+  key that an escrow or a reservation holds. A restored backup of the watch-only wallet knows no lost escrow
+  either, so the restore also moves each account's next child index, and the market's key index, 50 past the
+  restored records. A party's own Core wallet signs only keys inside its descriptor range, so `/escrow-key` advises
+  `keypoolrefill` once that party's next child index passes 900, and the order page does the same for the party's
+  child key in that escrow (A-397).
+
+**What Phase 2 protects, on regtest.** Before the order has its outcome, the market key signs nothing for a
+physical order: the release needs the vendor's and the buyer's signatures, the market's stored copy is not signed
+before the order is completed, and the database refuses a market-signed final transaction when the order's state does
+not fit. A buyer's funds therefore do not reach the vendor unless the buyer signs, or the deadline passes with no
+dispute open, or an administrator decides for the vendor. A buyer's dispute stops the deadline for good, and a
+decision for the buyer cannot be overtaken by a release that is already final, because that decision is refused. The
+deadlines are snapshotted at checkout and frozen in the database, and only the restore recheck moves one, later,
+never earlier. A fee bump never changes who is paid. All of this is subject to the limits under *What it will not
+protect* above: a server taken over can show a substituted key, and the market key with one party's key can spend.
+
+**What Phase 2 does not do.**
+
+- It runs on regtest only and has not run on a public test network or on mainnet. It supports Bitcoin Core signing
+  only. Monero is Phase 3.
+- **A buyer who neither signs nor disputes before the deadline loses the choice.** The window is 14 days by default
+  (7 to 30 as the administrator sets it), and reminders reach the buyer only inside the market. A buyer who has
+  signed cannot dispute, because the signature confirms receipt. Both follow from the owner's design (ES-11).
+- It does not check that the goods exist or arrived. An administrator decides disputes from what the parties write.
+- The release at the deadline needs a stored signature: if nobody signed, the order completes at the deadline and
+  the release waits for the vendor's signature, and nothing is sent until the vendor signs.
+- A fee bump changes no output but the claimant's. It cannot be asked for by the other party, and only a settlement
+  that has been broadcast and not mined can have one.
+- **A high `ESCROW_BTC_FEE_RATE` can leave a settlement stuck (A-388).** The network fee is the rate times an upper
+  bound of the transaction's size, while completing the settlement checks the fee at the real size against 100
+  sat/vB. Near 100 sat/vB (above roughly 85 for the smallest settlements) a settlement can be built, signed and then
+  refused when the market completes it ("not sent yet: final-fee" in the log). A transaction a party has signed
+  cannot be changed, so the buyer and the vendor could then only move the escrow together from their own wallets.
+  Keep the rate well below 100; the default is 2. Fee bumps do not have this gap: the form stops at the rate that is
+  safe at the real size.
+- **Restore limits (A-394).** An escrow created after the backup, whose address the watch-only wallet holds, is
+  listed as an orphan and its keys reserved. If `getaddressinfo` cannot read an orphan's keys, escrow checkout stays
+  paused (503) until an operator deals with it
+  ([runbook](testnet-runbook.md#an-orphan-whose-keys-cannot-be-read-escrow-checkout-stays-paused)). A dump taken
+  before migration 083 gets the reservation but no index margin. A party who lost 150 or more consecutive escrows
+  gets 409 instead of a reused key: the margin skips 50 and a checkout gives up when it meets 100 held keys.
+  **When the watch-only wallet is restored from the same backup, an account that registered its escrow key after the
+  backup is unknown to the restored database** (A-398): it has no index floor, and if it registers the same extended
+  key again, its next child index starts at `/0/1` and reuses keys its lost escrows used. The market cannot detect
+  this; it is inherent to restoring records that never saw the key. A party who registers again after a restore
+  should use a fresh wallet account. A restore not made with `scripts/restore.sh` or the manual SQL in
+  [UPGRADING.md](../UPGRADING.md#6-backups-now-need-the-wallets-too) sets none of this.
+
+**How it was tested.** Each tier proves only what it says:
+
+- Go tests with PostgreSQL against a fake escrow node (simulated RPC, not chain evidence). Checkout and settings:
+  `TestEscrowPhysicalCheckout`, `TestEscrowCheckoutVendorKeyUnusable`, `TestEscrowReleaseDaysSetting`,
+  `TestEscrowReleaseDaysConcurrentFirstSaves`, `TestEscrowMigration079Frozen`, `TestListingDispatchDaysField`.
+  The release: `TestEscrowShipNeedsClaimAddress`, `TestEscrowPooledCompleteRefusedOnEscrow`, `TestEscrowPhysicalBothSign`,
+  `TestEscrowShippedNeverMarketSigns`, `TestEscrowSignDisputeSerialised`, `TestEscrowShippedReleaseBroadcastByParties`,
+  `TestEscrowMigration081Guard`. Disputes and top-ups: `TestEscrowDisputeSupersedesRelease`,
+  `TestEscrowDisputeVendorReusesRelease`, `TestEscrowTopUpWhileShipped`. The deadline and the cancel:
+  `TestEscrowDeadlineRelease`, `TestEscrowDeadlineDisputeRace`, `TestEscrowDeadlineGatePaused`, `TestEscrowReminderOnce`,
+  `TestEscrowLateDisputeRefused`, `TestEscrowRestoreExtendsDeadline`, `TestEscrowReleaseAtWriters`,
+  `TestEscrowOrdersBannerUnder72h`, `TestEscrowDeadlineBothSigned`, `TestEscrowDeadlineNextStepBothSigned`,
+  `TestEscrowNoShipCancel`, `TestEscrowShipCancelRace`. Fee bumps: `TestEscrowBumpClaimantOnly`,
+  `TestEscrowBumpConfirmsNotExternal`, `TestEscrowBumpShapeRefusals`, `TestEscrowBumpRateCapAtRealSize`,
+  `TestEscrowBumpSeenOnTheNetwork`, `TestEscrowBumpRestoreHold`, `TestEscrowMigration080Bumps`,
+  `TestEscrowMigration082Rules`. Restore keys: `TestEscrowMigration083`, `TestEscrowRestoreSkipsReservedKeys`,
+  `TestEscrowRestoreIndexFloors`, `TestEscrowCheckoutWaitsForSweep`.
+- JSON-RPC adapter test against an `httptest` server: the orphan sweep's reading of `getaddressinfo`
+  (`TestEscrowWatchKeysReply`).
+- Real Bitcoin Core 31.1 on regtest, run by hand, not in CI (`scripts/test-escrow-regtest.sh`; the app runs inside
+  the Go test against the real node, reaching it only as the `rpcwhitelist` user, and every party signature is made by
+  that party's own Core wallet): `TestEscrowRegtestPhysical` (the release built at shipment, signed by both
+  wallets, completed and broadcast with no arbiter signing call, then a release the parties broadcast
+  themselves); `TestEscrowRegtestDeadline` (no arbiter signing call before the deadline and one after, the order
+  completed, broadcast and confirmed); `TestEscrowRegtestBump` (a replacement at a higher rate mined with only the
+  vendor's output smaller, a 100 sat/vB request refused and the form's highest rate broadcast and confirmed);
+  `TestEscrowRegtestReserve` (the sweep reading the keys of lost escrows from the real watch-only wallet, and the
+  next escrows sharing no key with them, with the database restore simulated in SQL).
+- A browser journey in Chromium at 320 px with JavaScript off, every form by keyboard, against the real server and
+  PostgreSQL and a **simulated** escrow node whose signed PSBTs come from the simulator, not from a wallet
+  (`tests/e2e/escrow-physical-journey.spec.ts`, `npm run test:e2e:escrow`; [development](development.md)): the
+  physical order shipped with a claim address and both signatures completing it; the deadline release; a dispute
+  cancelling the deadline; the no-ship cancel refused before the window and accepted after; the two races between
+  the cancel and the shipment; a buyer who never signs seeing the notices and the banner; and the administrator's 7
+  days applying to a new order only. Not chain evidence. The clock is moved through SQL on the test's own database.
+
+Not tested: any public test network, mainnet, the escrow pages in Firefox or WebKit, Electrum, Sparrow and hardware
+wallets, deadlines of 7 to 30 days in real time (every test moves the clock), and a restore of a real backup into a
+running market with Phase 2 orders (the Go tests run the restore SQL as `scripts/restore.sh` writes it).
 
 All escrow testing uses regtest and public test networks only. Mainnet stays an operator opt-in and is never
 used in development or tests.
