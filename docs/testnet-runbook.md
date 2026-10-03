@@ -404,15 +404,23 @@ watch-only wallet holds (`listreceivedbyaddress` with empty addresses included) 
 created after the backup, and imports whose checkout did not complete, each with the order ID of its wallet label
 and what it received. The market builds no settlement for them.
 
-Clearing the gate (step 8) lets escrow checkout run again, and the restored database counts each party's next
-escrow child key and the market's escrow key index from where the backup left them. So every checkout first asks
-the watch-only wallet (`getaddressinfo`) whether it already holds the escrow address it composed. If it does (an
-escrow created after the backup, for the same buyer and vendor), the market skips it and tries the next child keys
-of both parties and the next market index, up to 20 addresses; if all 20 are held the checkout is refused (503,
-nothing written) and the app logs "every address tried is already in the watch-only wallet". This is the only
-check: it compares the whole composed address, not the keys in it. A child key that an escrow created after the
-backup used can still be handed out again in an escrow with another buyer or vendor or another market index; that
-escrow has its own address (deposits never merge), but the reused key links the two escrows on the chain.
+The restored database counts each party's next escrow child key and the market's escrow key index from where the
+backup left them, so a key an escrow created after the backup used could be handed out again, even inside another
+escrow address, which would link the two escrows on the chain (A-366). The script therefore also sets
+`escrow_sweep_required`: escrow checkout is refused ("Bitcoin escrow is paused until this market has checked its escrow
+wallet after restoring its records from a backup. …", 503, the order stays a draft) until the escrow watcher's orphan
+sweep has run. While the setting is there the sweep runs on every watcher pass, gate or not: it reads the three public
+keys of every address the watch-only wallet holds with no escrow row (`getaddressinfo`) and reserves them
+(`escrow_reserved_keys`), and once it has read every one it removes the setting; if a read fails, the setting stays and
+the next pass tries again (the app logs "orphan sweep incomplete"). For a watch-only wallet restored from the same
+backup, which knows no lost escrow either, the script also moves every account's next escrow child index
+(`escrow_index_floors`) and the market's escrow key index 50 past the restored records. A checkout then skips any
+child key that an escrow on record holds or the sweep reserved, moving on only that party's index (or the market
+index), up to 100 tries before it is refused (409); and it still asks the watch-only wallet whether it already holds
+the composed address, skipping up to 20 such addresses (503 after that; the app logs "every address tried is already
+in the watch-only wallet"). Clearing the gate (step 8) lets escrow checkout run again once the sweep has run. A
+party's Core wallet signs only keys inside its descriptor range: their escrow key page advises `keypoolrefill` once
+their next child index passes 900.
 
 **Only `scripts/restore.sh` applies this protection.** A host or volume snapshot, a managed-database
 point-in-time recovery or a manual `pg_restore` brings payouts back as `pending` with no gate, and the

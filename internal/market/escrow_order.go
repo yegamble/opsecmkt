@@ -278,11 +278,17 @@ func (a *App) escrowCheckoutOffer(ctx context.Context, d *PageData) error {
 	if err != nil {
 		return err
 	}
+	sweep, err := escrowSweepRequired(ctx, a.db)
+	if err != nil {
+		return err
+	}
 	switch {
 	case a.escrow.Load() == nil:
 		v.Reason = errEscrowDown.Error()
 	case gate:
 		v.Reason = "Bitcoin escrow is paused while this market restores its records from a backup, so no escrow can be created until the operator has finished. Try again later."
+	case sweep:
+		v.Reason = "Bitcoin escrow is paused until this market has checked its escrow wallet after restoring its records from a backup, so no escrow can be created yet. Try again later."
 	case o.BuyerID == o.VendorID:
 		v.Reason = errEscrowSelf.Error()
 	case !buyerActive:

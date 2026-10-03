@@ -260,6 +260,17 @@ UPDATE settlement_bumps SET state='signed',raw_tx='0201',cosigned='market',final
 UPDATE settlement_bumps SET state='broadcast',broadcast_at=now() WHERE n=1;
 INSERT INTO settlement_bumps(settlement_id,n,requested_by,fee_rate) SELECT id,2,'ops-vendor',8 FROM settlements WHERE order_id='ops-order-escrow-broadcast';
 UPDATE settlement_bumps SET state='awaiting_signature',psbt='cHNidP8',txid=repeat('b2',32),network_fee=1200 WHERE n=2;"
+# Escrow keys (A-366, migration 083): the vendor's highest child index on record is /0/7 and the buyer has a key but no
+# escrow; the market counter has issued one index. The restore moves each account's next child index to its highest + 1
+# + 50 (the buyer's to 51) and the market counter 50 on.
+pg "$app_source_db" -q -c "
+INSERT INTO user_escrow_keys(user_id,xpub_sealed,xpub_hmac,origin_fingerprint,origin_path,active_at) VALUES
+ ('ops-vendor','sealed',repeat('c',64),'a1b2c3d4','/48h/1h/0h/2h',now()),('ops-buyer','sealed',repeat('d',64),'b1b2c3d4','/48h/1h/0h/2h',now());
+INSERT INTO escrows(order_id,address,market_index,refund_address,fee_bps,fee_destination) VALUES
+ ('ops-order-escrow-broadcast','bcrt1qopsrestoreescrowaddress1',nextval('escrow_market_index'),'bcrt1qopsrestoreescrowrefund1',0,'');
+INSERT INTO escrow_pubkeys(pubkey,escrow_id,party,user_id,key_hmac,origin_fingerprint,origin_path,derivation_suffix)
+ SELECT '02'||repeat('a1',32),id,'vendor','ops-vendor',repeat('c',64),'a1b2c3d4','/48h/1h/0h/2h','/0/7' FROM escrows WHERE order_id='ops-order-escrow-broadcast';"
+floors="SELECT string_agg(user_id || ':' || next_index, ',' ORDER BY user_id) FROM escrow_index_floors"
 escrow_hold="Restored from backup: check that this escrow settlement's transaction was not already sent or replaced, then confirm its rebroadcast on the admin page."
 settlements="SELECT string_agg(order_id || ':' || state || ':' || (send_error LIKE 'Restored from backup:%'), ',' ORDER BY order_id) FROM settlements"
 escrow_held="ops-order-escrow-broadcast:broadcast:true,ops-order-escrow-confirmed:confirmed:false"
@@ -294,6 +305,14 @@ PY
 [[ $(pg "$app_target_db" -Atq -c "SELECT value FROM settings WHERE key='escrow_release_recheck'") == true ]]
 [[ $(pg "$app_source_db" -Atq -c "SELECT count(*) FROM settings WHERE key='escrow_release_recheck'") == 0 ]]
 grep -q 'release deadlines that passed in the restored records move to 72 hours' "$work/app-restore.log"
+# A-366: escrow checkout waits for the orphan sweep, and the next escrow key indices move 50 past the restored records.
+[[ $(pg "$app_target_db" -Atq -c "SELECT value FROM settings WHERE key='escrow_sweep_required'") == true ]]
+[[ $(pg "$app_source_db" -Atq -c "SELECT count(*) FROM settings WHERE key='escrow_sweep_required'") == 0 ]]
+[[ $(pg "$app_target_db" -Atq -c "$floors") == 'ops-buyer:51,ops-vendor:58' ]]
+[[ $(pg "$app_source_db" -Atq -c 'SELECT count(*) FROM escrow_index_floors') == 0 ]]
+[[ $(pg "$app_target_db" -Atq -c "SELECT last_value || ':' || is_called FROM escrow_market_index") == 50:true ]]
+[[ $(pg "$app_source_db" -Atq -c "SELECT last_value || ':' || is_called FROM escrow_market_index") == 0:true ]]
+grep -q 'every next escrow key index moves 50 past the restored records' "$work/app-restore.log"
 payouts="SELECT string_agg(order_id || ':' || state || ':' || (error LIKE 'Restored from backup:%') || ':' || send_ambiguous || ':' || txid, ',' ORDER BY order_id) FROM payouts"
 held="ops-order-failed:failed:true:true:,ops-order-queued:held:true:false:,ops-order-sent:sent:false:false:$(printf 'ab%.0s' {1..32}),ops-order-suspended:held:true:false:"
 [[ $(pg "$app_target_db" -Atq -c "$payouts") == "$held" ]]
@@ -361,8 +380,11 @@ runbook_sql restore-protection UPGRADING.md > "$work/restore-protection.sql"
  python3 scripts/postgres-tool.py MANUAL_TARGET_URL pg_restore --dbname='' --single-transaction --exit-on-error --no-owner --no-acl < "$work/manual.dump")
 [[ $(pg "$app_manual_db" -Atq -c "SELECT count(*) FROM settings WHERE key='payments_recovery_required'") == 0 ]]
 [[ $(pg "$app_manual_db" -Atq -c "SELECT state FROM payouts WHERE order_id='ops-order-queued'") == pending ]]
-[[ $(pg "$app_manual_db" -At -f "$work/restore-protection.sql") == $'BEGIN\nINSERT 0 1\nINSERT 0 1\nUPDATE 2\nUPDATE 1\nUPDATE 1\nUPDATE 1\nUPDATE 1\nINSERT 0 1\nCOMMIT' ]]
+[[ $(pg "$app_manual_db" -At -f "$work/restore-protection.sql") == $'BEGIN\nINSERT 0 1\nINSERT 0 1\nINSERT 0 1\nUPDATE 2\nUPDATE 1\nUPDATE 1\nUPDATE 1\nUPDATE 1\nINSERT 0 2\nDO\nINSERT 0 1\nCOMMIT' ]]
 [[ $(pg "$app_manual_db" -Atq -c "SELECT value FROM settings WHERE key='escrow_release_recheck'") == true ]]
+[[ $(pg "$app_manual_db" -Atq -c "SELECT value FROM settings WHERE key='escrow_sweep_required'") == true ]]
+[[ $(pg "$app_manual_db" -Atq -c "$floors") == $(pg "$app_target_db" -Atq -c "$floors") ]]
+[[ $(pg "$app_manual_db" -Atq -c "SELECT last_value || ':' || is_called FROM escrow_market_index") == 50:true ]]
 [[ $(pg "$app_manual_db" -Atq -c "$settlements") == "$escrow_held" ]]
 [[ $(pg "$app_manual_db" -Atq -c "$bumps") == "$bumps_held" ]]
 [[ $(pg "$app_manual_db" -Atq -c "SELECT value FROM settings WHERE key='payments_recovery_required'") == true ]]

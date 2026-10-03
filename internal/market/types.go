@@ -605,4 +605,7 @@ type EscrowKeyView struct {
 	PracticeOffered bool
 	Practice        string
 	PracticeError   string
+	NextChild       int64 // the child index (/0/<n>) the account's next escrow uses (escrowNextChildSQL)
+	RangeAdvice     bool  // NextChild passed escrowRangeAdvice: the page advises keypoolrefill (P2-R10)
+	KeypoolSize     int64 // the keypoolrefill size it advises: 1000 keys past NextChild
 }
