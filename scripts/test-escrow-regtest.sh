@@ -64,7 +64,11 @@
 # signature is refused; the vendor signs it in their own wallet and the watcher co-signs it, testmempoolaccept accepts it
 # as a replacement and it replaces the original in the mempool (another pass does not bring the original back). After 3
 # blocks the settlement and the bump are confirmed (not external), the original is conflicted in the watch-only wallet
-# by the bump, and each confirmed output (gettxout) is the plan's with only the vendor's output smaller.
+# by the bump, and each confirmed output (gettxout) is the plan's with only the vendor's output smaller. P2-d-fix, in the
+# same leg: a 100 sat/vB bump request is refused with the fee-cap message and a bump at the form's highest rate is
+# broadcast and confirmed (A-383); the vendor signs a bump on the market, the buyer signs its own copy, and they
+# combinepsbt, finalizepsbt and sendrawtransaction it themselves; once mined the settlement is confirmed with the bump
+# recorded as seen on the network and nothing flagged (A-382).
 #
 # Slice P2-b leg (Phase 2 physical release, P2-R1, P2-R2): the App reaches Core through a counting proxy. A funded
 # physical escrow order is marked shipped by its vendor with a fresh claim address, and its release is built while the

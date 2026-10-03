@@ -3,8 +3,10 @@ package market
 import (
 	"context"
 	"encoding/json"
+	"html"
 	"net/url"
 	"os"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -364,4 +366,131 @@ func TestEscrowRegtestBump(t *testing.T) {
 		t.Fatal("the settlement's frozen columns changed")
 	}
 	t.Logf("bump %s confirmed (3 blocks); its outputs on chain = the planned outputs with the vendor's smaller by %d sats; the settlement row is unchanged", bumpTxID, bumpFee-parentFee)
+
+	// P2-d-fix legs, each on a fresh claim broadcast at 1 sat/vB and left unmined.
+	claimBroadcast := func(label string) (string, string) {
+		t.Helper()
+		product := e.product(vendor, "digital")
+		e.DB.Exec("UPDATE products SET delivery_content='regtest licence p2d "+label+"' WHERE id=$1", product)
+		order := e.order(buyer, product, "BTC", stateDraft)
+		if w := e.do("POST", "/orders/escrow", buyerSess, url.Values{"order_id": {order}, "refund_address": {newAddr()}}); w.Code != 303 {
+			t.Fatalf("%s checkout: %d", label, w.Code)
+		}
+		var addr, fund string
+		e.DB.QueryRow("SELECT address FROM escrows WHERE order_id=$1", order).Scan(&addr)
+		call(funder, "sendtoaddress", &fund, addr, json.Number("0.0012"))
+		mine(3)
+		poll()
+		if w := e.do("POST", "/escrow/claim", vendorSess, url.Values{"order_id": {order}, "address": {newAddr()}, "password": {testPassword}}); w.Code != 303 {
+			t.Fatalf("%s claim: %d", label, w.Code)
+		}
+		poll()
+		var sid string
+		e.DB.QueryRow("SELECT id::text FROM settlements WHERE order_id=$1 AND kind='release' AND state='awaiting_signature'", order).Scan(&sid)
+		w := e.do("GET", "/escrow-psbt?id="+order+"&s="+sid, vendorSess, nil)
+		if w := e.do("POST", "/escrow/sign", vendorSess, url.Values{"order_id": {order}, "settlement_id": {sid}, "psbt": {walletSign(vendorWallet, strings.TrimSpace(w.Body.String()))}}); w.Code != 303 {
+			t.Fatalf("%s: vendor signs: %d", label, w.Code)
+		}
+		poll()
+		var state string
+		e.DB.QueryRow("SELECT state FROM settlements WHERE id=$1::bigint", sid).Scan(&state)
+		if state != "broadcast" {
+			t.Fatalf("%s: claim %s", label, state)
+		}
+		return order, sid
+	}
+	bumpRequest := func(order, sid, rate string) (int, string) {
+		w := e.do("POST", "/escrow/bump", vendorSess, url.Values{"order_id": {order}, "settlement_id": {sid}, "fee_rate": {rate}, "password": {testPassword}})
+		return w.Code, w.Body.String()
+	}
+	builtBump := func(sid string) (string, string) {
+		t.Helper()
+		var bid, txid string
+		if err := e.DB.QueryRow("SELECT id::text,txid FROM settlement_bumps WHERE settlement_id=$1::bigint AND state='awaiting_signature'", sid).Scan(&bid, &txid); err != nil {
+			t.Fatalf("bump not built: %v", err)
+		}
+		return bid, txid
+	}
+	bumpCopy := func(order, sid, bid, sess string) string {
+		t.Helper()
+		w := e.do("GET", "/escrow-psbt?id="+order+"&s="+sid+"&b="+bid, sess, nil)
+		if w.Code != 200 {
+			t.Fatalf("bump copy: %d", w.Code)
+		}
+		return strings.TrimSpace(w.Body.String())
+	}
+	settledClean := func(order, sid, bid string) (string, string) {
+		t.Helper()
+		var sstate, bstate, cosigned string
+		var spent *string
+		e.DB.QueryRow("SELECT state,spent_by FROM settlements WHERE id=$1::bigint", sid).Scan(&sstate, &spent)
+		e.DB.QueryRow("SELECT state,COALESCE(cosigned,'') FROM settlement_bumps WHERE id=$1::bigint", bid).Scan(&bstate, &cosigned)
+		if sstate != "confirmed" || bstate != "confirmed" || spent != nil || agInt(e, "SELECT count(*) FROM payments WHERE settlement_id=$1::bigint AND flagged", sid) != 0 ||
+			agInt(e, "SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE '%did not make%'", order) != 0 {
+			t.Fatalf("settlement %s %v, bump %s", sstate, spent, bstate)
+		}
+		return bstate, cosigned
+	}
+
+	// A-383: a 100 sat/vB request is refused with the fee-cap message (it could exceed 100 sat/vB at the transaction's
+	// real size); the highest rate the form offers is broadcast and confirmed, never stuck at final-fee.
+	orderM, sidM := claimBroadcast("rate cap")
+	code, body := bumpRequest(orderM, sidM, "100")
+	if code != 400 || !strings.Contains(html.UnescapeString(body), "fee cap") {
+		t.Fatalf("100 sat/vB: %d %s", code, body)
+	}
+	page := e.do("GET", "/order?id="+orderM, vendorSess, nil).Body.String()
+	maxAttr := regexp.MustCompile(`name="fee_rate" type="number" required min="\d+" max="(\d+)"`).FindStringSubmatch(page)
+	if maxAttr == nil {
+		t.Fatal("no fee bump form")
+	}
+	if code, body := bumpRequest(orderM, sidM, maxAttr[1]); code != 303 {
+		t.Fatalf("%s sat/vB: %d %s", maxAttr[1], code, body)
+	}
+	poll()
+	bidM, txidM := builtBump(sidM)
+	if w := e.do("POST", "/escrow/bump-sign", vendorSess, url.Values{"order_id": {orderM}, "bump_id": {bidM}, "psbt": {walletSign(vendorWallet, bumpCopy(orderM, sidM, bidM, vendorSess))}}); w.Code != 303 {
+		t.Fatalf("vendor signs the bump at the highest rate: %d", w.Code)
+	}
+	poll()
+	var stateM, sendErrM string
+	e.DB.QueryRow("SELECT state,send_error FROM settlement_bumps WHERE id=$1::bigint", bidM).Scan(&stateM, &sendErrM)
+	if stateM != "broadcast" || sendErrM != "" || !slices.Contains(mempool(), txidM) {
+		t.Fatalf("the bump at %s sat/vB: %s %q", maxAttr[1], stateM, sendErrM)
+	}
+	t.Logf("A-383: 100 sat/vB refused with the fee-cap message; the form's highest rate, %s sat/vB, was co-signed and broadcast: txid %s at %.2f sat/vB real", maxAttr[1], txidM, feeRateOf(txidM))
+	mine(3)
+	poll()
+	settledClean(orderM, sidM, bidM)
+
+	// A-382: the vendor signs a bump on the market, the buyer signs its own copy, and the two combine, finalize and
+	// broadcast it from their own node before the market's next pass; once mined, the settlement is confirmed, with the
+	// bump recorded as seen on the network and nothing flagged.
+	orderP, sidP := claimBroadcast("parties")
+	if code, body := bumpRequest(orderP, sidP, "5"); code != 303 {
+		t.Fatalf("bump: %d %s", code, body)
+	}
+	poll()
+	bidP, txidP := builtBump(sidP)
+	vendorSigned := walletSign(vendorWallet, bumpCopy(orderP, sidP, bidP, vendorSess))
+	if w := e.do("POST", "/escrow/bump-sign", vendorSess, url.Values{"order_id": {orderP}, "bump_id": {bidP}, "psbt": {vendorSigned}}); w.Code != 303 {
+		t.Fatalf("vendor signs: %d", w.Code)
+	}
+	buyerSigned := walletSign(buyerWallet, bumpCopy(orderP, sidP, bidP, buyerSess))
+	var combined string
+	call("", "combinepsbt", &combined, []string{vendorSigned, buyerSigned})
+	var fin struct {
+		Hex      string `json:"hex"`
+		Complete bool   `json:"complete"`
+	}
+	call("", "finalizepsbt", &fin, combined)
+	var sentP string
+	call("", "sendrawtransaction", &sentP, fin.Hex)
+	if !fin.Complete || sentP != txidP {
+		t.Fatalf("the parties' own bump: complete %v, sent %s, bump %s", fin.Complete, sentP, txidP)
+	}
+	mine(3)
+	poll()
+	_, cosignedP := settledClean(orderP, sidP, bidP)
+	t.Logf("A-382: the parties combined, finalized and broadcast bump %s themselves; mined, the settlement is confirmed, the bump recorded with cosigned %q, nothing flagged", txidP, cosignedP)
 }
