@@ -731,3 +731,103 @@ func TestEscrowOrdersBannerUnder72h(t *testing.T) {
 		}
 	}
 }
+
+// P2-R10, A-381 (A-390): the restore recheck runs before the gated release. Escrow is switched off after a restore, the
+// operator clears the restore gate meanwhile, and escrow is switched back on: the first pass moves the passed deadline
+// to now + 72 h instead of releasing the order.
+func TestEscrowRecheckBeforeGatedRelease(t *testing.T) {
+	x := newEscrowEnv(t)
+	order, id := x.shippedPhysical(regtestAddr("off-refund"), regtestAddr("off-claim"), 100000)
+	x.signAs(order, roleVendor, id)
+	x.forceDeadline(order, "release_at=now()-interval '2 days'")
+	x.restoreRecheck()
+	e := x.A.escrow.Load()
+	x.A.escrowConfigured = false
+	x.A.escrow.Store(nil)
+	if err := x.A.escrowPollOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if x.state(order) != stateShipped || agInt(x.testEnv, "SELECT count(*) FROM settings WHERE key='escrow_release_recheck'") != 1 {
+		t.Fatalf("escrow off: order %s, or the pending recheck was consumed", x.state(order))
+	}
+	x.setGate(false) // the operator clears the gate while escrow is off
+	x.A.escrowConfigured = true
+	x.A.escrow.Store(e)
+	x.poll()
+	if x.state(order) != stateShipped || agInt(x.testEnv, "SELECT count(*) FROM escrows WHERE order_id=$1 AND release_recheck AND release_at>now()+interval '71 hours'", order) != 1 {
+		t.Fatalf("escrow back on: order %s, the deadline was not moved before the release", x.state(order))
+	}
+	if r := x.settleByID(id); r.State != "party_signed" || x.marketCalls() != 0 {
+		t.Fatalf("the release moved with its deadline: %+v, market calls %d", r, x.marketCalls())
+	}
+}
+
+// P2-R9 (A-390): the reminder claim re-checks the order after it was listed: an order disputed in between gets no
+// reminder, and neither party is told a deadline.
+func TestEscrowReminderClaimGuards(t *testing.T) {
+	x := newEscrowEnv(t)
+	order, _ := x.shippedPhysical(regtestAddr("claim-refund-1"), regtestAddr("claim-claim-1"), 100000)
+	x.forceDeadline(order, "release_at=now()+interval '71 hours'")
+	if w := x.do("POST", "/disputes", x.buyerSess, url.Values{"order_id": {order}, "reason": {"The parcel never arrived at my address at all."}}); w.Code != 303 {
+		t.Fatalf("dispute: %d %s", w.Code, w.Body.String())
+	}
+	if err := x.A.remindOne(context.Background(), order); err != nil {
+		t.Fatal(err)
+	}
+	if got := x.noticesOf(x.buyer, order); anyContains(got, "Reminder") {
+		t.Fatalf("a disputed order was reminded: %q", got)
+	}
+	if got := x.noticesOf(x.vendor, order); anyContains(got, "the buyer has until") {
+		t.Fatalf("the vendor of a disputed order was told the buyer's deadline: %q", got)
+	}
+	if agInt(x.testEnv, "SELECT count(*) FROM escrows WHERE order_id=$1 AND reminded_at IS NOT NULL", order) != 0 {
+		t.Fatal("the reminder of a disputed order was claimed")
+	}
+}
+
+// P2-R3, P2-R9 (A-390): every deadline the market states is in UTC whatever the time zone of the process (the
+// database session is pinned to UTC): the ship-by time of the refused cancel, the shipped and reminder notices, the order page, the
+// /orders banner and the ship-loses message.
+func TestEscrowDeadlineTimesInUTC(t *testing.T) {
+	old := time.Local
+	time.Local = time.FixedZone("test-zone", -7*3600)
+	t.Cleanup(func() { time.Local = old })
+	x := newEscrowEnv(t)
+	// OpenDB pins the database session to UTC (a startup parameter), so the process zone is what varies here.
+	if tz := physString(t, x.testEnv, "SHOW timezone"); tz != "UTC" {
+		t.Fatalf("database session time zone %q, want UTC", tz)
+	}
+	utc := func(order, col string) string {
+		return physString(t, x.testEnv, `SELECT to_char(`+col+` AT TIME ZONE 'UTC','YYYY-MM-DD HH24:MI "UTC"') FROM escrows WHERE order_id=$1`, order)
+	}
+	order := x.paidPhysical(regtestAddr("tz-refund"), 100000)
+	// The cancel is possible from ship_by, rounded up to the minute.
+	shipBy := physString(t, x.testEnv, `SELECT to_char(date_trunc('minute',ship_by AT TIME ZONE 'UTC') + CASE WHEN date_trunc('minute',ship_by)=ship_by THEN interval '0' ELSE interval '1 minute' END,'YYYY-MM-DD HH24:MI "UTC"') FROM escrows WHERE order_id=$1`, order)
+	if code, body := x.buyerCancel(order); code != 409 || !strings.Contains(html.UnescapeString(body), shipBy) {
+		t.Fatalf("cancel before ship_by: %d, want %s in %s", code, shipBy, body)
+	}
+	if code, body := x.shipEscrow(order, x.vendorSess, regtestAddr("tz-claim"), testPassword); code != 303 {
+		t.Fatalf("ship %d %s", code, body)
+	}
+	x.poll()
+	release := utc(order, "release_at")
+	if got := x.noticesOf(x.buyer, order); !anyContains(got, "Release deadline: "+release) {
+		t.Fatalf("the shipped notice is not in UTC (%s): %q", release, got)
+	}
+	if page := html.UnescapeString(x.page("/order?id="+order, x.buyerSess)); !strings.Contains(page, release) {
+		t.Fatalf("the order page lacks %s", release)
+	}
+	shippedAt := physString(t, x.testEnv, `SELECT to_char(max(created) AT TIME ZONE 'UTC','YYYY-MM-DD HH24:MI "UTC"') FROM order_events WHERE order_id=$1 AND from_state='paid' AND to_state='shipped'`, order)
+	if _, body := x.buyerCancel(order); !strings.Contains(html.UnescapeString(body), "shipped at "+shippedAt) {
+		t.Fatalf("the ship-loses message does not say %s: %s", shippedAt, body)
+	}
+	x.forceDeadline(order, "release_at=now()+interval '71 hours'")
+	release = utc(order, "release_at")
+	x.poll()
+	if got := x.noticesOf(x.buyer, order); !anyContains(got, "Reminder", release) {
+		t.Fatalf("the reminder is not in UTC (%s): %q", release, got)
+	}
+	if page := html.UnescapeString(x.page("/orders", x.buyerSess)); !strings.Contains(page, release) {
+		t.Fatalf("the /orders banner lacks %s", release)
+	}
+}
