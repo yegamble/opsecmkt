@@ -511,6 +511,8 @@ type EscrowOrderView struct {
 	RestorePaused                               bool                    // the restore gate pauses escrow builds, co-signing and broadcasts (escrow_recovery.go)
 	PartiesOnly                                 bool                    // a shipped order's release: only both parties' signatures complete it (escrow_release.go)
 	Deadline                                    *EscrowDeadlineView     // a shipped order's release deadline (escrow_deadline.go)
+	RangePath                                   string                  // the viewer's child key in this escrow, set only past escrowRangeAdvice: the page advises keypoolrefill (A-397)
+	KeypoolSize                                 int64                   // the keypoolrefill size it advises: 1000 keys past that child
 }
 
 // EscrowDeadlineView is a shipped escrow order's release deadline on its page (escrow_deadline.go, P2-R9): At in UTC,

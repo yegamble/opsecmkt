@@ -969,7 +969,7 @@ func (c *fakeEscrowCore) address(desc string) string {
 			keys = append(keys, pub)
 		}
 		h := sha256.Sum256(fakeMultiScript(keys...))
-		addr := "bcrt1q" + hex.EncodeToString(h[:])
+		addr := segwitAddress("bcrt", 0, h[:]) // a real P2WSH address, so its script decodes as Core's would (QA-P2e-1)
 		if bare && c.bareAddrSalt != "" {
 			addr = "bcrt1q" + c.bareAddrSalt + hex.EncodeToString(h[:])[len(c.bareAddrSalt):]
 		}

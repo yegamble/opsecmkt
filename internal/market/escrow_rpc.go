@@ -833,8 +833,8 @@ func (e *escrowBTC) watchKnows(ctx context.Context, addr string) (bool, error) {
 // wallet), for the orphan sweep (P2-R10, A-366). Bitcoin Core 31.1 reports an imported bare-key wsh(sortedmulti(2,…))
 // with pubkeys (the keys in script order), desc (wsh(multi(2,[fingerprint]key,…)), in script order) and its
 // scriptPubKey (probed on regtest). The keys come from pubkeys, or else from desc, and are returned only when each is a
-// compressed key on the curve, they are distinct, and their 2-of-3 witness script hashes to the scriptPubKey: so they
-// are the address's own keys. An address the wallet does not hold (ismine false, labelled or not: the wallet has no
+// compressed key on the curve, they are distinct, and their 2-of-3 witness script hashes to the scriptPubKey, which
+// must be the asked address's own: so they are the address's own keys. An address the wallet does not hold (ismine false, labelled or not: the wallet has no
 // script to read keys from) and one that is not P2WSH (never an escrow) have none (nil, nil). Any other reply is a
 // bad-reply class, never read as "no keys".
 func (e *escrowBTC) watchKeys(ctx context.Context, addr string) ([][]byte, error) {
@@ -856,6 +856,11 @@ func (e *escrowBTC) watchKeys(ctx context.Context, addr string) ([][]byte, error
 	}
 	spk, err := hex.DecodeString(info.ScriptPubKey)
 	if err != nil || len(spk) == 0 {
+		return nil, bad
+	}
+	// The reply must be about the address asked: keys that hash to another address's script (a misrouted or lying
+	// reply) are never reserved in its place (QA-P2e-1).
+	if want, err := regtestAddressScript(addr); err != nil || !bytes.Equal(spk, want) {
 		return nil, bad
 	}
 	if len(spk) != 34 || spk[0] != 0 || spk[1] != 32 {

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -62,6 +63,20 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 		return err
 	}
 	v.Descriptor = desc
+	if v.Own != "" {
+		// A party signs on this page, so the keypoolrefill advice of /escrow-key is repeated here when this escrow's
+		// child key lies past escrowRangeAdvice: past its descriptor range a Core wallet cannot sign (P2-R10, A-397).
+		var suffix string
+		err := a.db.QueryRowContext(ctx, "SELECT ep.derivation_suffix FROM escrow_pubkeys ep JOIN escrows es ON es.id=ep.escrow_id WHERE es.order_id=$1 AND ep.party=$2", o.ID, v.Own).Scan(&suffix)
+		if err != nil && err != sql.ErrNoRows {
+			return err
+		}
+		if i := strings.LastIndexByte(suffix, '/'); i >= 0 {
+			if n, err := strconv.ParseInt(strings.TrimSuffix(suffix[i+1:], "h"), 10, 64); err == nil && n > escrowRangeAdvice {
+				v.RangePath, v.KeypoolSize = suffix, n+1000
+			}
+		}
+	}
 	var received, pending, afterCloseSeen int64
 	required, err := parseAmount(o.Amount, 8)
 	if err != nil {

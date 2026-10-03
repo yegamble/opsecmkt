@@ -2,6 +2,7 @@ package market
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"html"
@@ -387,34 +388,44 @@ func TestEscrowWatchKeysReply(t *testing.T) {
 		return r
 	}
 	with := func(r map[string]any, k string, v any) map[string]any { r[k] = v; return r }
+	program, _ := hex.DecodeString(coreWatchSPK[4:])
+	orphan := segwitAddress("bcrt", 0, program) // the address coreWatchSPK pays
+	wpkh, _ := hex.DecodeString(strings.Repeat("ab", 20))
+	other := sha256.Sum256([]byte("another escrow address"))
 	for _, c := range []struct {
 		name  string
 		reply map[string]any
 		keys  []string
 		class string
+		addr  string // the address asked about; the orphan's when empty
 	}{
-		{"Core 31.1", without(), coreWatchPubkeys, ""},
-		{"desc only", without("pubkeys"), coreWatchPubkeys, ""},
-		{"sortedmulti desc, keys in another order", with(without("pubkeys"), "desc", unsorted), coreWatchPubkeys, ""},
-		{"not held", map[string]any{"ismine": false, "labels": []string{}, "scriptPubKey": coreWatchSPK}, nil, ""},
-		{"labelled, not held", map[string]any{"ismine": false, "labels": []string{"escrow:o2"}}, nil, ""},
-		{"held, not P2WSH", map[string]any{"ismine": true, "labels": []string{"x"}, "scriptPubKey": "0014" + strings.Repeat("ab", 20)}, nil, ""},
-		{"no ismine", without("ismine"), nil, "getaddressinfo bad-reply"},
-		{"no scriptPubKey", without("scriptPubKey"), nil, "getaddressinfo bad-reply"},
-		{"neither pubkeys nor desc", without("pubkeys", "desc"), nil, "getaddressinfo bad-reply"},
-		{"two pubkeys", with(without(), "pubkeys", coreWatchPubkeys[:2]), nil, "getaddressinfo bad-reply"},
-		{"a key repeated", with(without(), "pubkeys", []string{coreWatchPubkeys[0], coreWatchPubkeys[0], coreWatchPubkeys[2]}), nil, "getaddressinfo bad-reply"},
-		{"not hex", with(without(), "pubkeys", []string{"zz", coreWatchPubkeys[1], coreWatchPubkeys[2]}), nil, "getaddressinfo bad-reply"},
-		{"uncompressed", with(without(), "pubkeys", []string{"04" + strings.Repeat("ab", 64), coreWatchPubkeys[1], coreWatchPubkeys[2]}), nil, "getaddressinfo bad-reply"},
-		{"off the curve", with(without(), "pubkeys", []string{"02" + strings.Repeat("00", 32), coreWatchPubkeys[1], coreWatchPubkeys[2]}), nil, "getaddressinfo bad-reply"},
-		{"keys of another address", with(without(), "scriptPubKey", "0020"+strings.Repeat("ab", 32)), nil, "getaddressinfo bad-reply"},
-		{"keys out of script order", with(without(), "pubkeys", []string{coreWatchPubkeys[1], coreWatchPubkeys[0], coreWatchPubkeys[2]}), nil, "getaddressinfo bad-reply"},
-		{"desc not a 2-of-3", with(without("pubkeys"), "desc", "wsh(multi(1,"+strings.Join(coreWatchPubkeys, ",")+"))"), nil, "getaddressinfo bad-reply"},
-		{"desc malformed", with(without("pubkeys"), "desc", "wsh(multi(2,"+coreWatchPubkeys[0]+"))"), nil, "getaddressinfo bad-reply"},
-		{"pubkeys not a list", with(without(), "pubkeys", "02ab"), nil, "getaddressinfo bad-reply"},
+		{"Core 31.1", without(), coreWatchPubkeys, "", ""},
+		{"desc only", without("pubkeys"), coreWatchPubkeys, "", ""},
+		{"sortedmulti desc, keys in another order", with(without("pubkeys"), "desc", unsorted), coreWatchPubkeys, "", ""},
+		{"not held", map[string]any{"ismine": false, "labels": []string{}, "scriptPubKey": coreWatchSPK}, nil, "", ""},
+		{"labelled, not held", map[string]any{"ismine": false, "labels": []string{"escrow:o2"}}, nil, "", ""},
+		{"held, not P2WSH", map[string]any{"ismine": true, "labels": []string{"x"}, "scriptPubKey": "0014" + strings.Repeat("ab", 20)}, nil, "", segwitAddress("bcrt", 0, wpkh)},
+		{"no ismine", without("ismine"), nil, "getaddressinfo bad-reply", ""},
+		{"no scriptPubKey", without("scriptPubKey"), nil, "getaddressinfo bad-reply", ""},
+		{"neither pubkeys nor desc", without("pubkeys", "desc"), nil, "getaddressinfo bad-reply", ""},
+		{"two pubkeys", with(without(), "pubkeys", coreWatchPubkeys[:2]), nil, "getaddressinfo bad-reply", ""},
+		{"a key repeated", with(without(), "pubkeys", []string{coreWatchPubkeys[0], coreWatchPubkeys[0], coreWatchPubkeys[2]}), nil, "getaddressinfo bad-reply", ""},
+		{"not hex", with(without(), "pubkeys", []string{"zz", coreWatchPubkeys[1], coreWatchPubkeys[2]}), nil, "getaddressinfo bad-reply", ""},
+		{"uncompressed", with(without(), "pubkeys", []string{"04" + strings.Repeat("ab", 64), coreWatchPubkeys[1], coreWatchPubkeys[2]}), nil, "getaddressinfo bad-reply", ""},
+		{"off the curve", with(without(), "pubkeys", []string{"02" + strings.Repeat("00", 32), coreWatchPubkeys[1], coreWatchPubkeys[2]}), nil, "getaddressinfo bad-reply", ""},
+		{"keys of another address", with(without(), "scriptPubKey", "0020"+strings.Repeat("ab", 32)), nil, "getaddressinfo bad-reply", ""},
+		{"a reply about another address", without(), nil, "getaddressinfo bad-reply", segwitAddress("bcrt", 0, other[:])},
+		{"keys out of script order", with(without(), "pubkeys", []string{coreWatchPubkeys[1], coreWatchPubkeys[0], coreWatchPubkeys[2]}), nil, "getaddressinfo bad-reply", ""},
+		{"desc not a 2-of-3", with(without("pubkeys"), "desc", "wsh(multi(1,"+strings.Join(coreWatchPubkeys, ",")+"))"), nil, "getaddressinfo bad-reply", ""},
+		{"desc malformed", with(without("pubkeys"), "desc", "wsh(multi(2,"+coreWatchPubkeys[0]+"))"), nil, "getaddressinfo bad-reply", ""},
+		{"pubkeys not a list", with(without(), "pubkeys", "02ab"), nil, "getaddressinfo bad-reply", ""},
 	} {
+		addr := c.addr
+		if addr == "" {
+			addr = orphan
+		}
 		srv := newPayRPCServer(t, "u", "p", false, func(path, method string, params json.RawMessage) (any, int, string) {
-			if path != fakeWatchWallet || method != "getaddressinfo" || string(params) != `["bcrt1qorphan00000000"]` {
+			if path != fakeWatchWallet || method != "getaddressinfo" || string(params) != `["`+addr+`"]` {
 				return nil, -32601, "unexpected call"
 			}
 			return c.reply, 0, ""
@@ -423,7 +434,7 @@ func TestEscrowWatchKeysReply(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		keys, err := e.watchKeys(ctx, "bcrt1qorphan00000000")
+		keys, err := e.watchKeys(ctx, addr)
 		class := ""
 		if err != nil {
 			class = errorClassOf(err)
@@ -435,5 +446,20 @@ func TestEscrowWatchKeysReply(t *testing.T) {
 		if !slices.Equal(got, c.keys) || class != c.class {
 			t.Errorf("%s: keys %v, error %v", c.name, got, err)
 		}
+	}
+}
+
+// A-397: the order page repeats /escrow-key's keypoolrefill advice for the reader's own child key in this escrow once
+// it lies past escrowRangeAdvice (a Core wallet signs only inside its descriptor range), and only for that party.
+func TestEscrowOrderPageKeypoolAdvice(t *testing.T) {
+	x := newEscrowEnv(t)
+	agExec(x.testEnv, "INSERT INTO escrow_index_floors(user_id,next_index) VALUES($1,950)", x.buyer)
+	x.mustCheckout(x.order, regtestAddr("range-refund"))
+	buyer := strings.NewReplacer("<code>", "", "</code>", "").Replace(html.UnescapeString(oneSpace(x.page("/order?id="+x.order, x.buyerSess))))
+	if !strings.Contains(buyer, "This escrow uses child key /0/950 of your escrow key") || !strings.Contains(buyer, "keypoolrefill 1950") {
+		t.Fatalf("buyer's order page has no keypoolrefill advice for /0/950: %s", buyer)
+	}
+	if vendor := x.page("/order?id="+x.order, x.vendorSess); strings.Contains(vendor, "keypoolrefill") {
+		t.Fatalf("vendor's order page advises keypoolrefill for a low child index")
 	}
 }
