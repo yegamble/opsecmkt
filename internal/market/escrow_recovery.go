@@ -553,7 +553,7 @@ func (a *App) reconcileOrphans(ctx context.Context, e *escrowBTC) error {
 		return err
 	}
 	defer tx.Rollback()
-	known, err := collectStrings(ctx, tx, "SELECT address FROM escrows WHERE address=ANY($1)", addrs)
+	known, err := collectStrings(ctx, tx, "SELECT address FROM escrows WHERE coin='BTC' AND address=ANY($1)", addrs)
 	if err != nil {
 		return err
 	}
@@ -606,7 +606,7 @@ func (a *App) reconcileOrphans(ctx context.Context, e *escrowBTC) error {
 
 // unsweptOrphans is the addresses among addrs with no escrows row whose keys the orphan sweep has not reserved yet.
 func (a *App) unsweptOrphans(ctx context.Context, addrs []string) ([]string, error) {
-	rows, err := a.db.QueryContext(ctx, `SELECT a FROM unnest($1::text[]) a WHERE NOT EXISTS (SELECT 1 FROM escrows WHERE address=a)
+	rows, err := a.db.QueryContext(ctx, `SELECT a FROM unnest($1::text[]) a WHERE NOT EXISTS (SELECT 1 FROM escrows WHERE coin='BTC' AND address=a)
 		AND NOT EXISTS (SELECT 1 FROM escrow_reserved_keys WHERE address=a) ORDER BY a`, addrs)
 	if err != nil {
 		return nil, err

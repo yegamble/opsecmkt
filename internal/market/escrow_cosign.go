@@ -163,7 +163,7 @@ func (a *App) loadSettleBuild(ctx context.Context, id int64, want string) (*sett
 	b := &settleBuild{ID: id}
 	var state, stored string
 	err := a.db.QueryRowContext(ctx, `SELECT s.order_id,s.kind,s.state,s.psbt,s.txid,COALESCE(s.signer,''),s.network_fee,s.input_total,o.state,`+disputeOutcomeSQL+`,es.market_index
-		FROM settlements s JOIN orders o ON o.id=s.order_id JOIN escrows es ON es.order_id=s.order_id WHERE s.id=$1`, id).Scan(
+		FROM settlements s JOIN orders o ON o.id=s.order_id JOIN escrows es ON es.order_id=s.order_id AND es.coin='BTC' WHERE s.id=$1`, id).Scan(
 		&b.OrderID, &b.Kind, &state, &stored, &b.TxID, &b.Signer, &b.NetworkFee, &b.InputTotal, &b.OrderState, &b.Outcome, &b.MarketIndex)
 	if err != nil || state != want || !settlementBuildable(b.Kind, b.OrderState, b.Outcome) {
 		return nil, err

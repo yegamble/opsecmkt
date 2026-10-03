@@ -136,7 +136,7 @@ func (a *App) escrowPollOnce(ctx context.Context) error {
 		return err
 	}
 	rows, err := a.db.QueryContext(ctx, `SELECT es.address,es.order_id FROM escrows es JOIN orders o ON o.id=es.order_id
-		WHERE o.state IN ('awaiting_payment',`+fundedOpenStates+`) OR `+escrowWatchedSQL+` OR es.recover_requested IS NOT NULL OR $1
+		WHERE es.coin='BTC' AND (o.state IN ('awaiting_payment',`+fundedOpenStates+`) OR `+escrowWatchedSQL+` OR es.recover_requested IS NOT NULL OR $1)
 		ORDER BY o.updated`, daily)
 	if err != nil {
 		return err
@@ -300,7 +300,7 @@ func (a *App) settleEscrow(ctx context.Context, orderID string, walletRead bool)
 			es.created < now()-make_interval(secs => $2) AND EXISTS (SELECT 1 FROM d) AND NOT EXISTS (SELECT 1 FROM d WHERE confirmations<$3)
 				AND (SELECT max(created) FROM d) < now()-make_interval(secs => $2),
 			(SELECT COALESCE(sum(amount),0) FROM d)
-		FROM escrows es WHERE es.order_id=$1`, orderID, expiryWindow().Seconds(), threshold).Scan(&unpaid, &underpaid, &received); err != nil {
+		FROM escrows es WHERE es.order_id=$1 AND es.coin='BTC'`, orderID, expiryWindow().Seconds(), threshold).Scan(&unpaid, &underpaid, &received); err != nil {
 		return err
 	}
 	switch {

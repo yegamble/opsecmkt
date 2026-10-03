@@ -124,6 +124,11 @@ func scanOrder(s interface{ Scan(...any) error }) (Order, error) {
 	return o, err
 }
 
+// btcEscrow reports whether o is settled through a Bitcoin escrow. An escrow's coin is its order's currency (migration
+// 084), so a Monero escrow order is Escrow but not btcEscrow: the pay-twice guards key on Escrow, and Bitcoin escrow
+// code (escrow_*.go) acts only on btcEscrow orders.
+func (o Order) btcEscrow() bool { return o.Escrow && o.Currency == "BTC" }
+
 // noticeDetail is a sentence an action adds to the notice transition sends about one order's move to state to
 // (withNoticeDetail): an escrow order's release deadline in the shipped and dispute notices (P2-R9, escrow_deadline.go).
 type noticeDetail struct{ orderID, to, text string }
