@@ -26,7 +26,8 @@ import (
 // a wallet name, path or address, and rpcClient's transport errors name the host.
 
 // xmrWalletSlowTimeout bounds the wallet calls that load, scan or rewrite a whole wallet: create_wallet, open_wallet,
-// close_wallet (which stores), refresh and store. monero-wallet-rpc answers one request at a time; opening a wallet
+// close_wallet (which stores), refresh, store and change_wallet_password (which rewrites the keys file and stores).
+// monero-wallet-rpc answers one request at a time; opening a wallet
 // rebuilds its subaddress table for every account (an escrow wallet holds one account per order, thousands a month,
 // P3-R12), refresh scans every block since the last pass and store rewrites the encrypted cache, so on a large wallet
 // each takes far longer than rpcTimeout's 10 s. Two minutes matches escrowKeypoolTimeout (the slow wallet call on the
@@ -256,8 +257,10 @@ func (r *xmrEscrowRPC) height(ctx context.Context) (int64, error) {
 	return h, nil
 }
 
+// changeWalletPassword re-encrypts the open wallet's keys file and stores the wallet, so it runs on
+// xmrWalletSlowTimeout.
 func (r *xmrEscrowRPC) changeWalletPassword(ctx context.Context, oldPassword, newPassword string) error {
-	return r.walletCall(ctx, "change_wallet_password", map[string]any{"old_password": oldPassword, "new_password": newPassword}, nil)
+	return r.walletCallWithin(ctx, xmrWalletSlowTimeout, "change_wallet_password", map[string]any{"old_password": oldPassword, "new_password": newPassword}, nil)
 }
 
 // setSubaddressLookahead sets how many accounts (major) and addresses per account (minor) a restored wallet scans

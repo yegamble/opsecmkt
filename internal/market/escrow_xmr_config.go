@@ -124,7 +124,8 @@ func escrowXMRConfigFromEnv(getenv func(string) string) (escrowXMRConfig, error)
 }
 
 // sameRPCEndpoint reports whether two RPC URLs name the same endpoint, ignoring credentials, case in the scheme and
-// host, and a trailing slash.
+// host, and a trailing slash. It compares spellings (localhost and 127.0.0.1 differ); the wallet height check backs it
+// up, since the pooled wallet-rpc follows a stagenet or testnet daemon, never the escrow's fakechain.
 func sameRPCEndpoint(a, b string) bool {
 	norm := func(raw string) string {
 		u, err := url.Parse(strings.TrimSpace(raw))
@@ -157,9 +158,11 @@ type escrowXMR struct {
 
 // initEscrowXMR runs in New after Bitcoin escrow. ESCROW_XMR=off does nothing. On, a configuration error, an
 // unusable seed key file, a mainnet market, or an escrow node that answers but fails the network check
-// (errXMRStartDaemon, errXMRStartWallet) stops startup. A changed secret, a changed seed key, an unreachable node, a
-// timeout or a wallet-rpc with no wallet open leaves Monero escrow configured but unavailable with one fixed line, and
-// the market runs; the watcher retries.
+// (errXMRStartDaemon, errXMRStartWallet) stops startup. A changed secret, a changed seed key (wallet creation only),
+// an unreachable node or a timeout leaves Monero escrow configured but unavailable with one fixed line, and the market
+// runs; the watcher retries. A wallet-rpc with no wallet open (-13) is not a failure: the daemon is checked and escrow
+// is ready; each wallet is checked by recheckEscrowXMRNetwork right after open_wallet, and no wallet call is made until
+// it returns nil.
 func (a *App) initEscrowXMR(ctx context.Context) error {
 	cfg, err := escrowXMRConfigFromEnv(os.Getenv)
 	if err != nil || !cfg.on {
