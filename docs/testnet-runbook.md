@@ -858,6 +858,91 @@ It must print `INSERT 0 1` and end "Cleared the payout recovery gate; committed.
 "Refused; nothing was changed:" gives the reason (a mistyped or non-administrator handle, or a gate already
 cleared) and rolls back.
 
+#### An orphan whose keys cannot be read: escrow checkout stays paused
+
+For a market running [Bitcoin escrow](operator-guide.md#bitcoin-escrow-regtest-only) (regtest only). After a restore
+by `scripts/restore.sh` (or the manual SQL in UPGRADING.md section 6) escrow checkout answers 503 ("Bitcoin escrow is
+paused until this market has checked its escrow wallet after restoring its records from a backup. …") until the escrow
+watcher's orphan sweep has read the keys of every address the watch-only wallet holds with no escrow row. If the node
+cannot answer for one of them, or answers in a shape the app does not accept, the setting `escrow_sweep_required`
+stays and the sweep tries again on every pass. The log then repeats, once per pass, a line like
+
+```text
+escrow watcher: escrow: orphan sweep incomplete: getaddressinfo rpc:-1
+```
+
+(the part after the colon is the failing call and its class: `rpc:<code>` for a node error, `bad-reply` for an
+answer that is not a P2WSH 2-of-3 whose three keys match its script). It names no address. A pause that lasts only
+while the node or the watch-only wallet is down ends by itself on the first pass that reads every orphan. One that
+lasts needs you to look at the orphan. The app has no other way to clear it.
+
+1. List the orphans that have no reserved key yet (the app lists orphans in `escrow_orphans`, refreshed on every pass
+   while the sweep runs):
+
+   ```sh
+   db_sql -c "SELECT address, order_id, received, first_seen FROM escrow_orphans o
+     WHERE NOT EXISTS (SELECT 1 FROM escrow_reserved_keys k WHERE k.address = o.address) ORDER BY first_seen"
+   ```
+
+   An address the watch-only wallet does not hold as its own, or whose script is not a P2WSH, is read without error
+   and never gets a reservation row, so it can appear here without being the cause.
+2. Ask the watch-only wallet about each one by hand, as the operator user (the app's RPC user is allowed the same
+   call):
+
+   ```sh
+   bitcoin-cli -regtest -rpcwallet=opsecmkt-escrow-watch getaddressinfo ADDRESS
+   ```
+
+   The app accepts the answer when `ismine` is true, `scriptPubKey` is a 34-byte witness-v0 script (`0020` and 32
+   bytes) and `pubkeys` (or the `desc` of `wsh(multi(2,…))` or `wsh(sortedmulti(2,…))`) lists three distinct
+   compressed keys whose 2-of-3 script hashes to it. An error answer (an unloaded wallet, a node still starting) is
+   a node problem to fix first; the sweep then completes on its own. An answer that is complete but still not accepted
+   is the case this section is for.
+3. When the answer shows the three keys, reserve them by hand, with the address they came from. Any key a lost escrow
+   used is then never composed into a new escrow:
+
+   ```sh
+   db_sql -c "INSERT INTO escrow_reserved_keys(pubkey, address) VALUES
+     ('KEY1_66_HEX', 'ADDRESS'), ('KEY2_66_HEX', 'ADDRESS'), ('KEY3_66_HEX', 'ADDRESS')
+     ON CONFLICT (pubkey) DO NOTHING"
+   ```
+
+   The sweep skips an address that has reserved keys, so once every unreadable orphan has some, the next pass
+   removes `escrow_sweep_required` itself and checkout resumes.
+4. When the keys cannot be had, or the address is not an escrow of this market (for example a descriptor an
+   operator imported by hand), you may instead clear the requirement. **The privacy consequence:** nothing then stops
+   a later escrow from composing a child key that a lost escrow behind this address used, or a market key index it
+   used. The two escrows do not merge funds (their addresses differ), but the repeated public key links them on the
+   blockchain for anyone who sees both, including the other party of each. Clear it only after steps 1 to 3, with
+   one audit row, and run it while the app runs or stopped:
+
+   ```sh
+   db_sql <<'SQL'
+   BEGIN;
+   DELETE FROM settings WHERE key = 'escrow_sweep_required';
+   INSERT INTO audit_events(user_id, action) VALUES (NULL, 'Escrow orphan sweep requirement cleared by hand (docs/testnet-runbook.md)');
+   COMMIT;
+   SQL
+   ```
+
+   The sweep then runs only on the escrow watcher's daily check, which logs the same line each day while that orphan
+   stays unreadable; reserving its keys by hand (step 3) stops it.
+
+Two limits of the key protection, both stated in [per-order escrow](escrow.md#phase-2-bitcoin-escrow-for-physical-orders-on-regtest):
+
+- A dump taken before migration 083 has no `escrow_index_floors` table when `scripts/restore.sh` runs, so that restore
+  gets the sweep (the exact layer) but not the margin of 50 child indices per account and for the market key. If the
+  watch-only wallet was also restored from an older backup, it holds none of the lost escrows, the sweep finds
+  nothing to reserve, and no layer is left against a reused key beyond the check of the whole composed address.
+- With the margin, a party whose last 150 or more escrows were all lost (created after the backup) gets
+  "another escrow on this market already holds one of its keys …" (409) at checkout instead of a reused key: the margin
+  skips 50 indices and a checkout gives up when it has met 100 held keys. Trying again does not help.
+- When the watch-only wallet is restored from the same backup too, an account that registered its escrow key after the
+  backup (A-398) has no row in the restored database: no index floor, and if it registers the same extended key
+  again its next child index starts at `/0/1`, reusing child keys its lost escrows used. The market cannot detect
+  this; it is inherent to restoring records that never saw the key. Tell every party who registers again after a
+  restore to use a fresh wallet account.
+
 ## 7. Manual regtest check (Bitcoin)
 
 `scripts/regtest-smoke.sh` exercises the Bitcoin adapter against a local `bitcoind -regtest` that you run

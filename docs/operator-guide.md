@@ -588,7 +588,7 @@ confirmed total reaches the required amount.
 
 Operational limits to accept before enabling payments:
 
-- Deposits for all orders sit in **one pooled custodial wallet** per currency. This is not multisig escrow. Whoever controls the node wallet controls the funds. Per-order escrow is in no release ([per-order escrow](escrow.md)): its Phase 1 is built and tested on regtest only, behind `ESCROW_BTC`, which is off by default ([Bitcoin escrow](#bitcoin-escrow-regtest-only)). The pooled wallet stays the default payment mode.
+- Deposits for all orders sit in **one pooled custodial wallet** per currency. This is not multisig escrow. Whoever controls the node wallet controls the funds. Per-order escrow is in no release ([per-order escrow](escrow.md)): its Phase 1 (digital orders) and Phase 2 (physical orders) are built and tested on regtest only, behind `ESCROW_BTC`, which is off by default ([Bitcoin escrow](#bitcoin-escrow-regtest-only)). The pooled wallet stays the default payment mode.
 - There is **no commission or fee accounting**. Every payout on both coins, releases included, deducts the network fee from the amount sent (Bitcoin `subtractfeefromamount`; Monero `subtract_fee_from_outputs`), so the recipient bears it and no payout costs the market its fee. When you pay one by hand, send it the same way. Payouts below a minimum are never queued but flagged to moderators: 0.0001 BTC for any Bitcoin payout (a smaller one cannot cover the fee) and 0.001 XMR for any Monero payout (the fee would take too large a share); listings cannot be priced below either minimum, and one priced lower before its rule (Bitcoin before A-99, Monero before A-232) takes no new orders in that currency until its vendor raises the price (an overpayment above such a price on an existing order is held for an administrator's review). The fee-from-amount rule covers the fee's amount only: how many small outputs the pooled Monero wallet accumulates, and what spending them later costs, is not measured (A-221(c)).
 - Payouts are **single-attempt**. A failed or interrupted wallet call is shown on the admin page and never retried automatically, because the transaction may already have been broadcast. After checking the wallet, an administrator can release a held payout, requeue a failed or stuck one, or record one as sent with its transaction ID (password-confirmed and audited). A failure the wallet rejected with a pre-broadcast error (nothing broadcast) requeues with the password alone; requeueing one whose outcome is unknown (timeout, dropped connection, or a Monero error such as -38 that can follow a submission; see the [runbook](testnet-runbook.md#5-recover-a-held-or-failed-payout)) or a stuck send, or releasing a payout held by (or requeueing a failed payout marked by) a restore from backup, also needs an explicit, audited confirmation that the wallet shows no broadcast transaction. A wallet send may take up to 30 seconds (ordinary wallet reads 10 seconds). A shutdown or redeploy lets an in-flight send finish and its outcome be recorded (at most 30 seconds plus 10 to record; even added to the 10-second HTTP drain this stays within the app's 60-second stop grace period).
 - The watcher never cancels an order for non-payment unless it read that order's deposit address from the wallet in the same pass, and it skips a currency entirely while its node is still syncing (Bitcoin `initialblockdownload`; Monero daemon `target_height` above `height`, when `MONERO_RPC_URL` is set) or while the node's tip is below the highest tip it has recorded for that currency (Bitcoin `blocks`; the Monero wallet's `get_height`), as after a node or wallet restarted or restored from an older state. The admin page's last error then reads "Node is behind the highest tip recorded ...". If you deliberately replace a chain with a shorter one (a reset regtest, for example), clear the record so the watcher resumes: `UPDATE payment_status SET tip_height=NULL WHERE currency='BTC';` (or `'XMR'`).
@@ -605,7 +605,7 @@ Operational limits to accept before enabling payments:
 #### Bitcoin escrow (regtest only)
 
 **Off by default, regtest only, and not released.** [Per-order escrow](escrow.md) is being built in phases. This
-build contains its first phase for Bitcoin on regtest: a user registers the key their own wallet signs escrow with
+build contains its first two phases for Bitcoin on regtest: Phase 2 (physical orders, below) adds to the first, which is: a user registers the key their own wallet signs escrow with
 and activates it by signing a practice transaction, and the buyer of a digital listing with automatic delivery can
 pay into a 2-of-3 escrow instead of the pooled wallet; the order completes when the escrow is funded. The vendor's
 claim, refunds, an administrator's dispute decisions and the return of coins sent after an order closed are built by
@@ -664,7 +664,12 @@ has run on a public test network. Never switch it on for a market that takes rea
   vendor's output instead).
 - `ESCROW_BTC_FEE_RATE` (default `2`): the network fee rate of every settlement the app builds, a whole number of
   sat/vB from 1 to 100 (anything else stops startup). A settlement whose fee at this rate would exceed 0.001 BTC is
-  not built; lower the rate and restart.
+  not built; lower the rate and restart. **Keep it well below 100** (A-388): the network fee is this rate times an
+  upper bound of the transaction's size, while completing a settlement checks the fee at its real size against 100
+  sat/vB, so near 100 (above roughly 85 for the smallest settlements) a settlement can be built and signed and then
+  refused when the market completes it (log: "settlement of order … not sent yet: final-fee"). Its transaction
+  cannot change once a party has signed it, and the buyer and the vendor could then only move the escrow together
+  from their own wallets. A fee bump does not have this gap (below).
 - `PAYMENT_CONFIRMATIONS_BTC` (default 3), `PAYMENT_EXPIRY` and `PAYMENT_POLL_INTERVAL` apply to escrows as to pooled
   Bitcoin payments. An escrow order that has received nothing when its payment window ends is cancelled. One that is
   underpaid (every deposit confirmed, short of the price, and no top-up for a whole window) is cancelled too, as a
@@ -759,7 +764,7 @@ about an existing escrow changes. Before a key has escrows, its owner can still 
 sign the practice transaction again. The check that stops two accounts registering the same key starts again after a
 rotation: a key registered before it is not recognised on another account until its owner registers it again.
 
-On the order page of a BTC draft on a digital listing with automatic delivery, the buyer is offered *Pay into an
+On the order page of a BTC draft on a digital listing with automatic delivery (or, with Phase 2 below, a physical listing with a dispatch window), the buyer is offered *Pay into an
 escrow* beside the pooled payment request, once both the buyer's and the vendor's escrow keys are active. The buyer
 gives a refund address from their own wallet, fixed for the order; an address the market already used as an escrow,
 refund, fee or deposit address is refused. The app then builds the escrow: each party's next child key of the
@@ -911,6 +916,49 @@ broadcast.
   hours after escrow first runs on the database; `settings` key `escrow_btc_stray_check`), one
   `listreceivedbyaddress` per 200 escrows plus one `gettransaction` per deposit transaction.
 
+**Physical orders (Phase 2).** Everything above applies to physical listings too, with these additions. All of it is
+regtest only, behind `ESCROW_BTC`, and tested as [per-order escrow](escrow.md#phase-2-bitcoin-escrow-for-physical-orders-on-regtest)
+lists.
+
+- *Dispatch window.* With escrow on, a vendor's listing form has *Dispatch within (days)*, 1 to 30, 3 by default. A
+  physical listing without a window takes no escrow checkout; one that exists from before migration 079 has none until
+  its vendor saves it, which stores the default. Each escrow keeps the window in force at its checkout. The buyer may
+  cancel a paid order the vendor has not marked shipped from the payment's confirmation plus the window plus 48 hours;
+  before that the cancel is refused with its date.
+- *Release deadline length.* *Admin → Payment providers → Bitcoin escrow release deadline* sets how many days after
+  "shipped" the order completes and the market co-signs the vendor's signature, if the buyer has neither signed nor
+  disputed: a whole number from 7 to 30, default 14 (setting `escrow_release_days`), confirmed with your password (and
+  authenticator code when enrolled), audited with the old and new days. It applies to escrows created after the
+  change: each escrow keeps the length in force at its checkout, so a change never moves a running deadline. Only a restore's recheck moves one, later.
+- *The flow, from the operator's side.* The vendor marks the paid order shipped with a fresh claim address and their
+  password, and the escrow watcher builds the release to that address within a pass. The vendor and the buyer sign it
+  on the order page; with both signatures the watcher completes the order and broadcasts the transaction they signed,
+  and the arbiter wallet is never asked to sign. A buyer who has signed cannot dispute. At the deadline, with no dispute,
+  the order completes and the arbiter wallet co-signs the stored signature of the vendor (or the buyer); a dispute
+  before it stops the clock for good and an administrator decides, as above. The buyer is reminded in the market 72 hours
+  before, and `/orders` shows a banner for orders under 72 hours. The market sends no email or other message, so a buyer
+  who never signs in is not reached.
+- *Fee bumps.* A broadcast settlement that is not mined can be replaced by one that pays the same outputs with only
+  the claimant's smaller (the vendor for a release, the buyer for a refund or stray refund): the claimant asks on the
+  order page with a higher rate and their password, signs the copy the watcher builds, and the market co-signs (or
+  the other party signs too and the market does not). The form's highest rate keeps the fee within the 100 sat/vB and
+  0.001 BTC caps at the transaction's smallest real size: 71 sat/vB for a release of one deposit with two outputs,
+  and the form shows the figure for each settlement. No new `rpcwhitelist` method is needed.
+- *`scripts/restore.sh` for escrow.* Besides the settlement holds above, it holds restored fee bumps that have a stored
+  transaction (`settlement_bumps.send_error`), sets `escrow_release_recheck` (the watcher's next pass, gate or not,
+  moves every passed release deadline of a shipped order with no dispute to 72 hours later and tells each buyer; held
+  while escrow is off), sets `escrow_sweep_required` (escrow checkout answers 503 until the orphan sweep has read, with
+  `getaddressinfo` on the watch-only wallet, the keys of every address it holds with no escrow row and reserved them in
+  `escrow_reserved_keys`), and, when the schema has `escrow_index_floors` (migration 083; a dump from before it does
+  not), writes each account's index floor and moves the market's escrow key index 50 past the restored records. A sweep
+  that cannot read an orphan's keys keeps checkout paused: the
+  [runbook](testnet-runbook.md#an-orphan-whose-keys-cannot-be-read-escrow-checkout-stays-paused) says how to investigate
+  and, with its privacy consequence, how to clear it.
+- *The parties' wallets.* A party's Core wallet signs only keys inside its descriptor range (1000 by default). Once an
+  account's next escrow child index passes 900, `/escrow-key` advises `keypoolrefill` in that wallet; the market does
+  not do it for them. After a restore, an account that registers its key again after the backup should use a fresh
+  wallet account (the market cannot detect a reused key then; [runbook](testnet-runbook.md#an-orphan-whose-keys-cannot-be-read-escrow-checkout-stays-paused)).
+
 **After a restore from backup.** The pooled restore gate (`payments_recovery_required`, set by `scripts/restore.sh`
 or the manual protection SQL in [UPGRADING.md, section 6](../UPGRADING.md#6-backups-now-need-the-wallets-too)) also
 pauses escrow: while it is set the escrow watcher builds no settlement, co-signs none and broadcasts no stored
@@ -976,6 +1024,14 @@ every leg the app runs inside the Go test against the real node, not as the serv
 (`npm run test:e2e:escrow`, [development](development.md)) drives the escrow forms by keyboard in Chromium at 320 px
 with JavaScript off against the real server and a simulated escrow node; it is not chain evidence. Nothing about
 escrow has run on a public test network or mainnet, and the escrow pages have not been run in Firefox or WebKit.
+The Phase 2 legs of the same script (also manual, real Core 31.1, the app reaching the node only as the whitelisted
+user, every party signature made by that party's own Core wallet): `TestEscrowRegtestPhysical` (the release built at
+shipment, signed by both wallets, completed and broadcast with no arbiter signing call; and a release the parties
+broadcast themselves), `TestEscrowRegtestDeadline` (no arbiter signing call before the deadline and one after),
+`TestEscrowRegtestBump` (a replacement at a higher rate mined, a 100 sat/vB request refused and the form's highest
+rate confirmed) and `TestEscrowRegtestReserve` (the keys of lost escrows read from the real watch-only wallet and not
+reused). The physical-order browser journey (`tests/e2e/escrow-physical-journey.spec.ts`, same command) uses the
+simulated node too and moves the clock through SQL; it is not chain evidence.
 
 ### Transparency
 

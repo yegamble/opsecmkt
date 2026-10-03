@@ -22,8 +22,8 @@ Server-rendered Go and PostgreSQL, PGP identity, Tor-first deployment.
 > all mainnet or all test networks. Deposits sit in
 > the operator's pooled custodial wallets: this is not escrow, and there is no
 > multisig or fee accounting. Per-order escrow (Bitcoin 2-of-3 multisig, a Monero
-> account per order) is in no release: its first phase, Bitcoin escrow for digital
-> orders, is built and tested on regtest only (a local test chain), off by default
+> account per order) is in no release: its first two phases, Bitcoin escrow for digital
+> and for physical orders, are built and tested on regtest only (a local test chain), off by default
 > (`ESCROW_BTC`), and has not run on any public network; the pooled wallet stays
 > the default. See [per-order escrow](docs/escrow.md). Tor protects inbound connections to the site; it
 > does not guarantee anonymity. See [implementation status](docs/implementation-status.md).
@@ -174,7 +174,7 @@ are reset from the host with `-reset-admin-password` and `-reset-admin-factors`
 | --- | --- |
 | [Operator guide](docs/operator-guide.md) | Deployment, HTTPS and Tor, mirrors, configuration, backups, recovery, troubleshooting |
 | [Test-network payments](docs/testnet-runbook.md) | Wallet setup, funding and payout recovery |
-| [Per-order escrow](docs/escrow.md) | The escrow design replacing the pooled wallet, what it will and will not protect, and its status (Phase 1: Bitcoin, regtest only, off by default) |
+| [Per-order escrow](docs/escrow.md) | The escrow design replacing the pooled wallet, what it will and will not protect, and its status (Phases 1 and 2: Bitcoin, digital and physical orders, regtest only, off by default) |
 | [Upgrading from v0.1.0-alpha.1](UPGRADING.md) | New settings and migration steps |
 | [Implementation status](docs/implementation-status.md) | What works, what is missing, and what the server keeps |
 | [Acceptance checks](docs/acceptance.md) | The checklist, and the tests that prove each ticked line |
