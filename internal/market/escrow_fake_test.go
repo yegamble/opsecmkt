@@ -75,6 +75,12 @@ type fakeEscrowCore struct {
 	conflicts        map[string][]string // txid -> walletconflicts of a sent transaction
 	walletForgets    bool                // gettransaction does not know sent transactions (-5), as a wallet that missed one
 
+	// Escrow P2-d: replacement (BIP125, as Core's mempool applies it). A sent transaction whose inputs a sent, still
+	// unconfirmed transaction spends replaces it when it pays a higher fee by at least 1 sat/vB of its size; the two
+	// then list each other in walletconflicts and the replaced one is refused if sent again (-26).
+	spentBy  map[string]string // "txid:vout" -> the sent transaction spending it
+	replaced map[string]bool   // txid -> replaced in the mempool by a sent transaction
+
 	// Escrow P1-d1: reconciliation. The watch-only wallet's address book (label per imported address, as
 	// importdescriptors with a label writes it), listed by listreceivedbyaddress with include_empty; listtransactions
 	// lists deposits as "receive" and every transaction in broadcast (the market's or anyone's) as "send".
@@ -86,6 +92,11 @@ type fakeEscrowCore struct {
 	// address so, and watchInfoErr fails the call.
 	watchAll     bool
 	watchInfoErr int
+
+	// Escrow P2-e (A-366): for an address an import put in the watch-only wallet, getaddressinfo also reports its
+	// scriptPubKey, its three public keys in script order and its descriptor written as multi(…) with each key's own
+	// fingerprint, as Core 31.1 does (probed on regtest); any other address it holds reports only its scriptPubKey.
+	watchPubkeys map[string][]string // address -> its keys in script order
 }
 
 // depositAt is the deposit the wallet reports at txid:vout.
@@ -106,6 +117,7 @@ func (c *fakeEscrowCore) spend(txid string, vout int64) {
 		c.spent = map[string]bool{}
 	}
 	c.spent[txid+":"+strconv.FormatInt(vout, 10)] = true
+	delete(c.spentBy, txid+":"+strconv.FormatInt(vout, 10)) // spent by a transaction the fake never sent
 }
 
 // count is how many times method was called.
@@ -245,7 +257,26 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 			if l := c.labels[str(0)]; l != "" {
 				labels = append(labels, l)
 			}
-			return map[string]any{"address": str(0), "ismine": c.watchAll || len(labels) > 0, "iswatchonly": false, "labels": labels}, 0, ""
+			info := map[string]any{"address": str(0), "ismine": c.watchAll || len(labels) > 0, "iswatchonly": false, "labels": labels}
+			if len(labels) > 0 {
+				spk := c.spk[str(0)]
+				if spk == nil {
+					spk, _ = regtestAddressScript(str(0))
+				}
+				info["scriptPubKey"] = hex.EncodeToString(spk)
+				if keys := c.watchPubkeys[str(0)]; keys != nil {
+					var parts []string
+					for _, k := range keys {
+						raw, _ := hex.DecodeString(k)
+						h := sha256.Sum256(raw)
+						parts = append(parts, "["+hex.EncodeToString(h[:4])+"]"+k)
+					}
+					desc := "wsh(multi(2," + strings.Join(parts, ",") + "))"
+					sum, _ := descChecksum(desc)
+					info["pubkeys"], info["desc"], info["solvable"], info["script"] = keys, desc+"#"+sum, true, "multisig"
+				}
+			}
+			return info, 0, ""
 		}
 		if str(0) != "bcrt1qarbiterchange000000000000000000000" {
 			// P1-c2: a market child key's address is the arbiter's while its key range reaches the child.
@@ -348,7 +379,7 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 			if c.mempoolReject != "" {
 				return []map[string]any{{"txid": t.TxID(), "allowed": false, "reject-reason": c.mempoolReject}}, 0, ""
 			}
-			if !c.unspentInputs(t) {
+			if _, ok := c.replaces(t); !c.unspentInputs(t) && !ok {
 				return []map[string]any{{"txid": t.TxID(), "allowed": false, "reject-reason": "missing-inputs"}}, 0, ""
 			}
 			return []map[string]any{{"txid": t.TxID(), "allowed": true}}, 0, ""
@@ -430,6 +461,14 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 				}
 				body, _, _ := strings.Cut(reqs[0]["desc"].(string), "#")
 				c.labels[c.address(body)] = label
+				if m := fakeMulti.FindStringSubmatch(body + "#"); m != nil {
+					keys := slices.Clone(m[1:])
+					slices.Sort(keys) // a bare-key sortedmulti: the script's order
+					if c.watchPubkeys == nil {
+						c.watchPubkeys = map[string][]string{}
+					}
+					c.watchPubkeys[c.address(body)] = keys
+				}
 			}
 		}
 		return []map[string]any{{"success": true}}, 0, ""
@@ -542,18 +581,40 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 			if c.txConfs[txid] > 0 {
 				return nil, -27, "Transaction outputs already in utxo set"
 			}
+			if c.replaced[txid] {
+				return nil, -26, "insufficient fee"
+			}
 			return txid, 0, ""
 		}
-		if !c.unspentInputs(t) {
+		olds, replaces := c.replaces(t)
+		if !c.unspentInputs(t) && !replaces {
+			if len(olds) > 0 {
+				return nil, -26, "insufficient fee"
+			}
 			return nil, -25, "bad-txns-inputs-missingorspent"
+		}
+		if c.conflicts == nil {
+			c.conflicts = map[string][]string{}
+		}
+		if c.replaced == nil {
+			c.replaced = map[string]bool{}
+		}
+		for _, old := range olds {
+			c.replaced[old] = true
+			c.conflicts[old] = append(c.conflicts[old], txid)
+			c.conflicts[txid] = append(c.conflicts[txid], old)
 		}
 		for _, in := range t.In {
 			id := in.TxID
 			slices.Reverse(id[:])
 			if c.spent == nil {
-				c.spent = map[string]bool{}
+				c.spent, c.spentBy = map[string]bool{}, map[string]string{}
 			}
-			c.spent[hex.EncodeToString(id[:])+":"+strconv.FormatInt(int64(in.Vout), 10)] = true
+			if c.spentBy == nil {
+				c.spentBy = map[string]string{}
+			}
+			k := hex.EncodeToString(id[:]) + ":" + strconv.FormatInt(int64(in.Vout), 10)
+			c.spent[k], c.spentBy[k] = true, txid
 		}
 		if c.broadcast == nil {
 			c.broadcast, c.txConfs = map[string]string{}, map[string]int64{}
@@ -595,6 +656,56 @@ func (c *fakeEscrowCore) unspentInputs(t *signedTx) bool {
 		}
 	}
 	return true
+}
+
+// replaces reports the sent, unconfirmed transactions that spend t's spent inputs (olds) and whether t replaces them
+// (BIP125 as Core applies it: every spent input is spent by such a transaction, and t pays a higher fee than each by at
+// least 1 sat/vB of t's size). An input spent by anything else (spend, or a confirmed transaction) makes it no
+// replacement.
+func (c *fakeEscrowCore) replaces(t *signedTx) ([]string, bool) {
+	var olds []string
+	for _, in := range t.In {
+		id := in.TxID
+		slices.Reverse(id[:])
+		k := hex.EncodeToString(id[:]) + ":" + strconv.FormatInt(int64(in.Vout), 10)
+		if !c.spent[k] {
+			continue
+		}
+		old := c.spentBy[k]
+		if old == "" || c.txConfs[old] != 0 {
+			return nil, false
+		}
+		if !slices.Contains(olds, old) {
+			olds = append(olds, old)
+		}
+	}
+	if len(olds) == 0 {
+		return nil, false
+	}
+	fee := c.txFee(t)
+	for _, old := range olds {
+		raw, _ := hex.DecodeString(c.broadcast[old])
+		ot, err := parseSignedTx(raw)
+		if err != nil || fee < c.txFee(ot)+t.VSize {
+			return olds, false
+		}
+	}
+	return olds, true
+}
+
+// txFee is t's fee: the deposits it spends less its outputs.
+func (c *fakeEscrowCore) txFee(t *signedTx) int64 {
+	var fee int64
+	for _, in := range t.In {
+		id := in.TxID
+		slices.Reverse(id[:])
+		d, _ := c.depositAt(hex.EncodeToString(id[:]), int64(in.Vout))
+		fee += d.Sats
+	}
+	for _, o := range t.Out {
+		fee -= o.Value
+	}
+	return fee
 }
 
 // setTxConfs sets the confirmations of a sent transaction (negative: conflicted, with the conflicting txid).
@@ -858,7 +969,7 @@ func (c *fakeEscrowCore) address(desc string) string {
 			keys = append(keys, pub)
 		}
 		h := sha256.Sum256(fakeMultiScript(keys...))
-		addr := "bcrt1q" + hex.EncodeToString(h[:])
+		addr := segwitAddress("bcrt", 0, h[:]) // a real P2WSH address, so its script decodes as Core's would (QA-P2e-1)
 		if bare && c.bareAddrSalt != "" {
 			addr = "bcrt1q" + c.bareAddrSalt + hex.EncodeToString(h[:])[len(c.bareAddrSalt):]
 		}

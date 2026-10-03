@@ -1,7 +1,9 @@
 package market
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -825,6 +827,97 @@ func (e *escrowBTC) watchKnows(ctx context.Context, addr string) (bool, error) {
 		return false, &escrowRPCError{Method: "getaddressinfo", Class: "bad-reply"}
 	}
 	return *info.IsMine || len(info.Labels) > 0, nil
+}
+
+// watchKeys reads the three public keys of an escrow address the watch-only wallet holds (getaddressinfo on that
+// wallet), for the orphan sweep (P2-R10, A-366). Bitcoin Core 31.1 reports an imported bare-key wsh(sortedmulti(2,…))
+// with pubkeys (the keys in script order), desc (wsh(multi(2,[fingerprint]key,…)), in script order) and its
+// scriptPubKey (probed on regtest). The keys come from pubkeys, or else from desc, and are returned only when each is a
+// compressed key on the curve, they are distinct, and their 2-of-3 witness script hashes to the scriptPubKey, which
+// must be the asked address's own: so they are the address's own keys. An address the wallet does not hold (ismine false, labelled or not: the wallet has no
+// script to read keys from) and one that is not P2WSH (never an escrow) have none (nil, nil). Any other reply is a
+// bad-reply class, never read as "no keys".
+func (e *escrowBTC) watchKeys(ctx context.Context, addr string) ([][]byte, error) {
+	var info struct {
+		IsMine       *bool    `json:"ismine"`
+		ScriptPubKey string   `json:"scriptPubKey"`
+		PubKeys      []string `json:"pubkeys"`
+		Desc         string   `json:"desc"`
+	}
+	if err := e.call(ctx, e.watchWallet, "getaddressinfo", []any{addr}, &info); err != nil {
+		return nil, err
+	}
+	bad := &escrowRPCError{Method: "getaddressinfo", Class: "bad-reply"}
+	if info.IsMine == nil {
+		return nil, bad
+	}
+	if !*info.IsMine {
+		return nil, nil
+	}
+	spk, err := hex.DecodeString(info.ScriptPubKey)
+	if err != nil || len(spk) == 0 {
+		return nil, bad
+	}
+	// The reply must be about the address asked: keys that hash to another address's script (a misrouted or lying
+	// reply) are never reserved in its place (QA-P2e-1).
+	if want, err := regtestAddressScript(addr); err != nil || !bytes.Equal(spk, want) {
+		return nil, bad
+	}
+	if len(spk) != 34 || spk[0] != 0 || spk[1] != 32 {
+		return nil, nil
+	}
+	texts, sorted := info.PubKeys, false
+	if texts == nil {
+		var ok bool
+		if texts, sorted, ok = multisigKeys(info.Desc); !ok {
+			return nil, bad
+		}
+	}
+	if len(texts) != 3 {
+		return nil, bad
+	}
+	keys := make([][]byte, 0, 3)
+	for _, s := range texts {
+		k, err := hex.DecodeString(s)
+		if err != nil || len(k) != 33 || !onCurve(k) || slices.ContainsFunc(keys, func(have []byte) bool { return bytes.Equal(have, k) }) {
+			return nil, bad
+		}
+		keys = append(keys, k)
+	}
+	if sorted {
+		slices.SortFunc(keys, bytes.Compare)
+	}
+	ws := []byte{0x52}
+	for _, k := range keys {
+		ws = append(append(ws, 33), k...)
+	}
+	sum := sha256.Sum256(append(ws, 0x53, 0xae))
+	if !bytes.Equal(spk[2:], sum[:]) {
+		return nil, bad
+	}
+	return keys, nil
+}
+
+// multisigKeys reads the three key texts of a descriptor wsh(multi(2,a,b,c)) or wsh(sortedmulti(2,a,b,c)), with or
+// without its checksum, each key's origin "[…]" dropped; sorted reports sortedmulti (the script sorts the keys).
+func multisigKeys(desc string) (keys []string, sorted, ok bool) {
+	desc, _, _ = strings.Cut(desc, "#")
+	inner, isMulti := strings.CutPrefix(desc, "wsh(multi(2,")
+	if !isMulti {
+		inner, sorted = strings.CutPrefix(desc, "wsh(sortedmulti(2,")
+	}
+	inner, closed := strings.CutSuffix(inner, "))")
+	if !isMulti && !sorted || !closed {
+		return nil, false, false
+	}
+	keys = strings.Split(inner, ",")
+	for i, k := range keys {
+		if strings.HasPrefix(k, "[") {
+			_, k, _ = strings.Cut(k, "]")
+		}
+		keys[i] = k
+	}
+	return keys, sorted, len(keys) == 3
 }
 
 // arbiterOwns reports whether the arbiter wallet holds the key of addr (getaddressinfo ismine): for the P2WPKH address

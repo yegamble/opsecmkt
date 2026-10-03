@@ -28,7 +28,8 @@ import (
 // first recorded after an escrow order closed is flagged for payment review (flagLateDeposits).
 //
 // While escrow is switched on but not enabled (its node was down at startup, say) the watcher retries the startup
-// checks each interval (retryEscrow) and does nothing else: no deposit is read and no order expires until they pass.
+// checks each interval (retryEscrow) and does nothing else but apply the release deadlines, which need no node
+// (escrow_deadline.go): no deposit is read and no order expires until they pass.
 
 const escrowWatcherLock = 782495 // the pooled watcher's is 782494
 
@@ -80,10 +81,7 @@ func escrowWatcher(ctx context.Context, a *App) {
 			return
 		case <-t.C:
 		}
-		if a.retryEscrow(ctx, retry); a.escrow.Load() == nil {
-			t.Reset(interval)
-			continue
-		}
+		a.retryEscrow(ctx, retry)
 		pass, cancel := context.WithTimeout(ctx, watcherPassTimeout)
 		err := a.escrowPollOnce(pass)
 		cancel()
@@ -95,27 +93,30 @@ func escrowWatcher(ctx context.Context, a *App) {
 }
 
 // escrowPollOnce runs one escrow watcher pass unless another process holds the escrow watcher lock. The node must
-// still report regtest; an order whose address could not be read in this pass never expires in it.
+// still report regtest; an order whose address could not be read in this pass never expires in it. While escrow is not
+// enabled, or the node check fails, the pass applies only the release deadlines, which need no node (escrow_deadline.go).
 func (a *App) escrowPollOnce(ctx context.Context) error {
 	e := a.escrow.Load()
-	if e == nil || a.db == nil {
+	if a.db == nil || e == nil && !a.escrowConfigured {
 		return nil
 	}
-	chain, err := e.chain(ctx)
-	if err != nil {
-		return &watchError{label: "escrow", class: "node check failed: " + errorClassOf(err), err: err}
-	}
-	if chain != "regtest" {
-		return &watchError{label: "escrow", class: "node is not on regtest; pass skipped", err: errEscrowNotRegtest}
+	var nodeErr error
+	if e != nil {
+		switch chain, err := e.chain(ctx); {
+		case err != nil:
+			nodeErr = &watchError{label: "escrow", class: "node check failed: " + errorClassOf(err), err: err}
+		case chain != "regtest":
+			nodeErr = &watchError{label: "escrow", class: "node is not on regtest; pass skipped", err: errEscrowNotRegtest}
+		}
 	}
 	conn, err := a.db.Conn(ctx)
 	if err != nil {
-		return err
+		return errors.Join(nodeErr, err)
 	}
 	defer conn.Close()
 	var locked bool
 	if err = conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", escrowWatcherLock).Scan(&locked); err != nil || !locked {
-		return err
+		return errors.Join(nodeErr, err)
 	}
 	defer func() {
 		uctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
@@ -124,6 +125,9 @@ func (a *App) escrowPollOnce(ctx context.Context) error {
 			conn.Raw(func(any) error { return driver.ErrBadConn })
 		}
 	}()
+	if e == nil || nodeErr != nil {
+		return errors.Join(nodeErr, a.escrowDeadlines(ctx))
+	}
 	// Open escrow orders whatever their age, closed ones within escrowWatchedSQL's horizon (their ledger stays current
 	// for the order page) and ones whose buyer asked to recover coins at them; on the daily check, every escrow
 	// (escrow_stray.go).
@@ -180,8 +184,12 @@ func (a *App) escrowPollOnce(ctx context.Context) error {
 	if err = a.requestStrays(ctx, e.confirmations, orders, unread); err != nil {
 		errs = append(errs, err)
 	}
-	if daily {
-		// The daily check also lists the watch-only wallet's addresses with no escrow row (escrow_recovery.go).
+	// The daily check also lists the watch-only wallet's addresses with no escrow row and reserves their keys
+	// (escrow_recovery.go); after a restore that orphan sweep runs on every pass until one completes (P2-R10, A-366).
+	sweep, err := escrowSweepRequired(ctx, a.db)
+	if err != nil {
+		errs = append(errs, err)
+	} else if daily || sweep {
 		if err = a.reconcileOrphans(ctx, e); err != nil {
 			errs = append(errs, err)
 		}
@@ -196,13 +204,20 @@ func (a *App) escrowPollOnce(ctx context.Context) error {
 	// their confirmation; those waiting for a signature are checked for an input spent without the market (trackAwaiting,
 	// A-356); those requested so far (a claim, or the refund a cancellation above may just have requested) are built;
 	// party-signed ones are co-signed and stored; and stored ones are broadcast (escrow_cosign.go).
+	// Then fee bumps of broadcast settlements are built, co-signed and sent (escrow_bump.go, P2-d).
 	// While the restore gate is set (escrow_recovery.go) nothing is built or co-signed, and broadcastSettlements and
 	// trackBroadcasts send only what an administrator confirmed; watching continues.
+	// The release deadlines (escrow_deadline.go) come first, so an order completed at its deadline is co-signed below in
+	// the same pass.
+	if err = a.escrowDeadlines(ctx); err != nil {
+		errs = append(errs, err)
+	}
 	gate, err := restoreGateSet(ctx, a.db)
 	if err != nil {
 		return errors.Join(append(errs, err)...)
 	}
-	steps := []func(context.Context, *escrowBTC) error{a.trackConfirmeds, a.trackBroadcasts, a.trackAwaiting, a.buildSettlements, a.cosignSettlements, a.broadcastSettlements}
+	steps := []func(context.Context, *escrowBTC) error{a.trackConfirmeds, a.trackBroadcasts, a.trackAwaiting, a.buildSettlements, a.cosignSettlements, a.broadcastSettlements,
+		a.buildBumps, a.cosignBumps, a.broadcastBumps}
 	if gate {
 		steps = []func(context.Context, *escrowBTC) error{a.trackConfirmeds, a.trackBroadcasts, a.trackAwaiting, a.broadcastSettlements}
 	}
@@ -229,6 +244,13 @@ func (a *App) settleEscrow(ctx context.Context, orderID string, walletRead bool)
 		return err
 	}
 	threshold := a.escrow.Load().confirmations
+	if o.Escrow && o.State != stateDraft && o.State != stateAwaitingPayment {
+		// P2-R6, A-374: a deposit no settlement spends, once the order's release or refund is built, is left out for the
+		// stray refund (escrow_release.go); an open order's top-up is otherwise never paid or flagged.
+		if err = a.leaveOutTopUps(ctx, tx, &o); err != nil {
+			return err
+		}
+	}
 	if o.Escrow && isTerminal(o.State) {
 		// A deposit first recorded after the order closed is never counted; it is flagged for payment review, the
 		// buyer and the staff told once per episode, as a pooled one is (A-211, QA31-3). It stays in the escrow.
@@ -307,12 +329,16 @@ func (a *App) settleEscrow(ctx context.Context, orderID string, walletRead bool)
 // escrowTransitionHook keeps escrow orders on the moves Phase 1 supports. Cancelling an escrow order that holds coins
 // requests its refund, and resolving its dispute requests the settlement of the decision (settleTerminal); only an
 // administrator resolves it (resolveAction). A delivered escrow order completes at once, by the system (the
-// escrow-only edge; ES-4: digital orders complete on funding).
+// escrow-only edge; ES-4: digital orders complete on funding). A paid physical escrow order gets its ship-by time.
 func escrowTransitionHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, to string) error {
 	if !o.Escrow {
 		return nil
 	}
 	switch {
+	case to == statePaid && o.Kind == "physical":
+		// P2-R5: the buyer may cancel from the paid time plus the escrow's dispatch window plus 48 hours (escrow_deadline.go).
+		_, err := tx.ExecContext(ctx, "UPDATE escrows SET ship_by=now()+make_interval(days => dispatch_days)+interval '48 hours' WHERE order_id=$1 AND dispatch_days IS NOT NULL AND ship_by IS NULL", o.ID)
+		return err
 	case to == stateDelivered:
 		next, err := a.transition(ctx, tx, o.ID, stateDelivered, stateCompleted, nil, escrowCompletedNote)
 		if err != nil {

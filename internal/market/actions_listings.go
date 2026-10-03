@@ -19,7 +19,17 @@ type listingInput struct {
 	Title, Description, Category, Region, Kind, DeliveryContent string
 	BTC, XMR                                                    int64
 	Stock                                                       int
+	// DispatchDays is the physical listing's dispatch window in days (1 to 30; WR-escrow P2-R5); 0 = the form sent
+	// none (a digital listing, or an omitted field), which create stores as defaultDispatchDays and update keeps.
+	DispatchDays int
 }
+
+// defaultDispatchDays is a physical listing's dispatch window when its vendor gives none; maxDispatchDays is the
+// longest window (migration 079's CHECK).
+const (
+	defaultDispatchDays = 3
+	maxDispatchDays     = 30
+)
 
 // validateListing checks every listing field. Only physical and digital fulfillment exist: the order
 // state machine has no fulfillment step for any other kind. Automatic delivery content is digital-only.
@@ -37,6 +47,16 @@ func validateListing(f url.Values) (listingInput, error) {
 	}
 	if in.XMR < minPayoutXMR {
 		return listingInput{}, fail(400, "The Monero price must be at least "+amount(minPayoutXMR, 12)+" XMR: the network fee is deducted from every payout and would take too large a share of a smaller one.")
+	}
+	if in.Kind == "physical" {
+		// Digital listings ignore the field, whatever it holds.
+		if v := strings.TrimSpace(f.Get("dispatch_days")); v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil || n < 1 || n > maxDispatchDays {
+				return listingInput{}, fail(400, "Dispatch within must be a whole number of days from 1 to "+strconv.Itoa(maxDispatchDays)+".")
+			}
+			in.DispatchDays = n
+		}
 	}
 	if strings.TrimSpace(in.DeliveryContent) == "" {
 		in.DeliveryContent = ""
@@ -66,7 +86,10 @@ func listingAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, fail(403, "Vendor access required")
 	}
 	id := randomToken()
-	_, err = c.Tx.ExecContext(c.Ctx(), `INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock,delivery_content) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, id, c.User.ID, in.Title, in.Description, in.Category, in.Region, in.Kind, in.BTC, in.XMR, in.Stock, in.DeliveryContent)
+	if in.Kind == "physical" && in.DispatchDays == 0 {
+		in.DispatchDays = defaultDispatchDays
+	}
+	_, err = c.Tx.ExecContext(c.Ctx(), `INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock,delivery_content,dispatch_days) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NULLIF($12,0))`, id, c.User.ID, in.Title, in.Description, in.Category, in.Region, in.Kind, in.BTC, in.XMR, in.Stock, in.DeliveryContent, in.DispatchDays)
 	// A-188: a new listing lands on its edit page's Photos panel, where its photos are added.
 	return actionResult{Redirect: "/listing-edit?id=" + id, Notice: "listing-created", Audit: "Created listing"}, err
 }

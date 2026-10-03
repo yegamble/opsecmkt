@@ -27,16 +27,22 @@ import (
 //     testmempoolaccept refusing a script) is discarded and the settlement returns to awaiting a signature, with a
 //     fixed order note and a notice to both parties (A-339). When both parties signed and the two do not finalize
 //     together, the market co-signs with whichever one verifies and discards the other; only when neither does is the
-//     settlement returned.
+//     settlement returned. A physical order's release before the order's outcome (shipped) is never co-signed: only
+//     both parties' signatures complete it, and when they do not verify together both are discarded (P2-R2, A-372;
+//     finalizeParties, escrow_release.go).
 //  3. Broadcasts each signed settlement's stored raw transaction, only that one (broadcastSettlements): an answer of
 //     its txid, or -27 (already confirmed), is sent; it moves signed -> broadcast. A signed settlement is never rebuilt
 //     or signed again; a failed broadcast is tried again with the same stored transaction on the next pass.
-//  4. Follows each broadcast settlement in the watch-only wallet (trackBroadcasts): enough confirmations -> confirmed;
-//     still unconfirmed -> the stored transaction is sent again (idempotent); spent by another transaction (a
-//     conflict, or its outputs gone without it) -> external, flagged for staff.
-//  5. Follows each confirmed settlement until its transaction has escrowReorgDepth confirmations (trackConfirmeds,
-//     P1-d1): back at 0 confirmations (a reorganisation took it out of the chain) -> broadcast, and step 4 sends the
-//     stored transaction again; conflicted (another transaction was mined instead) -> external.
+//  4. Follows each broadcast settlement in the watch-only wallet (trackBroadcasts) through the market's own
+//     transactions for it, its own and each stored fee bump (P2-d, A-375; escrow_bump.go): one with enough
+//     confirmations -> confirmed (a fee bump's recorded on the bump); still unconfirmed -> the highest-fee stored
+//     transaction is sent again (idempotent), never an earlier one; spent by a transaction outside that set (a
+//     conflict, or its outputs gone without it) -> external, flagged for staff. A conflict among the market's own
+//     transactions is not external.
+//  5. Follows each confirmed settlement until its confirmed transaction has escrowReorgDepth confirmations
+//     (trackConfirmeds, P1-d1): back at 0 confirmations (a reorganisation took it out of the chain), or replaced by
+//     another of the market's own transactions -> broadcast, and step 4 follows them again; conflicted (another
+//     transaction was mined instead) -> external.
 //
 // Nothing here runs in a form post: transitions stay RPC-free (ARCH-7).
 
@@ -104,10 +110,11 @@ func (a *App) eachSettlement(ctx context.Context, what, query string, step func(
 	return errors.Join(errs...)
 }
 
-// cosignSettlements completes every party-signed settlement of a closed order (step 1 of the file comment).
+// cosignSettlements completes every party-signed settlement of a closed order (step 1 of the file comment), and every
+// party-signed release of a shipped one, which only both parties' signatures complete (P2-R2, escrow_release.go).
 func (a *App) cosignSettlements(ctx context.Context, e *escrowBTC) error {
 	return a.eachSettlement(ctx, "not co-signed", `SELECT s.id FROM settlements s JOIN orders o ON o.id=s.order_id
-		WHERE s.state='party_signed' AND o.state IN ('completed','cancelled','resolved') ORDER BY s.id`, func(id int64) error { return a.cosignSettlement(ctx, e, id) })
+		WHERE s.state='party_signed' AND o.state IN ('completed','cancelled','resolved','shipped') ORDER BY s.id`, func(id int64) error { return a.cosignSettlement(ctx, e, id) })
 }
 
 // partySigs is one party's stored signature on each input of a settlement.
@@ -138,6 +145,7 @@ func withPartySigs(stored *psbtPacket, parties ...partySigs) (string, error) {
 type settleBuild struct {
 	ID                     int64
 	OrderID, Kind, TxID    string
+	OrderState, Outcome    string // the order's state and dispute outcome when it was read
 	Signer                 string
 	Stored                 *psbtPacket
 	NetworkFee, InputTotal int64
@@ -147,16 +155,17 @@ type settleBuild struct {
 	Parties                []partySigs // the parties with a signature on every input, the first signer first
 }
 
-// loadSettleBuild reads a settlement of a closed order in state want (party_signed, or awaiting_signature for
-// trackAwaiting), or nil when it is no longer in that state (or its kind does not fit the order's outcome). Only a
-// party-signed one is read with its party signatures.
+// loadSettleBuild reads a settlement in state want (party_signed, or awaiting_signature for trackAwaiting, or
+// broadcast for a fee bump) of a closed order, or the release of a shipped (or disputed) one (settlementBuildable,
+// A-376), or nil when it is no longer in that state (or its kind does not fit the order's state and outcome). Only a
+// party-signed one is read with its party signatures. The market signs only what settlementFits allows.
 func (a *App) loadSettleBuild(ctx context.Context, id int64, want string) (*settleBuild, error) {
 	b := &settleBuild{ID: id}
-	var state, stored, orderState, outcome string
+	var state, stored string
 	err := a.db.QueryRowContext(ctx, `SELECT s.order_id,s.kind,s.state,s.psbt,s.txid,COALESCE(s.signer,''),s.network_fee,s.input_total,o.state,`+disputeOutcomeSQL+`,es.market_index
 		FROM settlements s JOIN orders o ON o.id=s.order_id JOIN escrows es ON es.order_id=s.order_id WHERE s.id=$1`, id).Scan(
-		&b.OrderID, &b.Kind, &state, &stored, &b.TxID, &b.Signer, &b.NetworkFee, &b.InputTotal, &orderState, &outcome, &b.MarketIndex)
-	if err != nil || state != want || !settlementFits(b.Kind, orderState, outcome) {
+		&b.OrderID, &b.Kind, &state, &stored, &b.TxID, &b.Signer, &b.NetworkFee, &b.InputTotal, &b.OrderState, &b.Outcome, &b.MarketIndex)
+	if err != nil || state != want || !settlementBuildable(b.Kind, b.OrderState, b.Outcome) {
 		return nil, err
 	}
 	if b.Stored, err = decodePSBT(stored); err != nil || b.Stored.TxID() != b.TxID {
@@ -282,6 +291,11 @@ func (a *App) cosignSettlement(ctx context.Context, e *escrowBTC, id int64) erro
 	b, err := a.loadSettleBuild(ctx, id, "party_signed")
 	if err != nil || b == nil {
 		return err
+	}
+	if !settlementFits(b.Kind, b.OrderState, b.Outcome) {
+		// P2-R2, A-372: a release before its order's outcome completes with both parties' signatures only; the market
+		// never signs it, and nothing below (ensureArbiterKey, arbiterSign) is reached for it.
+		return a.finalizeParties(ctx, e, b)
 	}
 	candidates := []string{b.Parties[0].Party}
 	if len(b.Parties) == 2 {
@@ -457,13 +471,21 @@ func discardedNote(party, kind string) string {
 
 // storeFinal stores a checked final transaction before anything is broadcast: party_signed -> signed with raw_tx,
 // by compare-and-set, the signatures of each party in discard (A-339) removed first, one order note and a notice to
-// both parties. A lost race (the settlement changed meanwhile) changes nothing.
+// both parties. A lost race (the settlement changed meanwhile) changes nothing. A release both parties signed before
+// its order's outcome (P2-R2) is stored only while the order, locked first, is still shipped with no dispute, and the
+// order is completed in the same transaction.
 func (a *App) storeFinal(ctx context.Context, b *settleBuild, rawHex, cosigned string, used, discard []string) error {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	complete := !settlementFits(b.Kind, b.OrderState, b.Outcome)
+	if complete {
+		if ok, err := lockShipped(ctx, tx, b.OrderID); err != nil || !ok || cosigned != "parties" {
+			return err
+		}
+	}
 	var state, signer string
 	if err = tx.QueryRowContext(ctx, "SELECT state,COALESCE(signer,'') FROM settlements WHERE id=$1 FOR UPDATE", b.ID).Scan(&state, &signer); err != nil || state != "party_signed" {
 		return err
@@ -508,12 +530,27 @@ func (a *App) storeFinal(ctx context.Context, b *settleBuild, rawHex, cosigned s
 			return err
 		}
 	}
+	if complete {
+		if err = a.completeShipped(ctx, tx, b.OrderID, escrowReleasedNote); err != nil {
+			return err
+		}
+	}
 	return tx.Commit()
 }
 
 // revertSettlement returns a party-signed settlement whose party signatures did not verify to awaiting a signature
 // (A-339): those signatures are removed, the signer cleared, one fixed note per party and a notice to both parties.
 func (a *App) revertSettlement(ctx context.Context, b *settleBuild, bad []string) error {
+	var notes []string
+	for _, party := range bad {
+		notes = append(notes, discardedNote(party, b.Kind))
+	}
+	return a.revertSettlementWith(ctx, b, bad, append(notes, "The settlement waits for a signature again: the buyer or the vendor signs it on the order page. Nothing was sent."))
+}
+
+// revertSettlementWith is revertSettlement with its notes: each is an order note, and the last carries a notice of all
+// of them to both parties.
+func (a *App) revertSettlementWith(ctx context.Context, b *settleBuild, bad, notes []string) error {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -533,11 +570,6 @@ func (a *App) revertSettlement(ctx context.Context, b *settleBuild, bad []string
 	if _, err = tx.ExecContext(ctx, "UPDATE settlements SET state='awaiting_signature',signer=NULL,signed_at=NULL,send_error='',updated=now() WHERE id=$1 AND state='party_signed'", b.ID); err != nil {
 		return err
 	}
-	var notes []string
-	for _, party := range bad {
-		notes = append(notes, discardedNote(party, b.Kind))
-	}
-	notes = append(notes, "The settlement waits for a signature again: the buyer or the vendor signs it on the order page. Nothing was sent.")
 	for i, n := range notes {
 		body := ""
 		if i == len(notes)-1 {
@@ -654,18 +686,71 @@ func (a *App) trackBroadcasts(ctx context.Context, e *escrowBTC) error {
 	return a.eachSettlement(ctx, "not followed", "SELECT id FROM settlements WHERE state='broadcast' ORDER BY id", func(id int64) error { return a.trackBroadcast(ctx, e, id) })
 }
 
+// trackBroadcast follows one broadcast settlement through the market's own transactions for it (A-375): its own and
+// each stored fee bump (settlementAttempts, escrow_bump.go). One of them with enough confirmations confirms it; one in a
+// block below that is waited for; a conflict with a transaction outside that set makes it external, and a conflict
+// only with the market's own is waited for. Otherwise only the highest-fee stored transaction is sent again.
 func (a *App) trackBroadcast(ctx context.Context, e *escrowBTC, id int64) error {
-	var orderID, kind, rawHex, txid, psbt, sendErr string
-	err := a.db.QueryRowContext(ctx, "SELECT order_id,kind,raw_tx,txid,psbt,send_error FROM settlements WHERE id=$1 AND state='broadcast'", id).Scan(&orderID, &kind, &rawHex, &txid, &psbt, &sendErr)
+	var orderID, kind, psbt, sendErr string
+	err := a.db.QueryRowContext(ctx, "SELECT order_id,kind,psbt,send_error FROM settlements WHERE id=$1 AND state='broadcast'", id).Scan(&orderID, &kind, &psbt, &sendErr)
 	if err == sql.ErrNoRows {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	w, err := e.walletTx(ctx, txid)
+	attempts, err := settlementAttempts(ctx, a.db, id)
 	if err != nil {
 		return err
+	}
+	own := map[string]bool{}
+	for _, at := range attempts {
+		own[at.TxID] = true
+	}
+	ws := make([]escrowWalletTx, len(attempts))
+	mined, inBlock, conflicted, pending, listed, outside := -1, false, false, false, false, ""
+	for i, at := range attempts {
+		w, err := e.walletTx(ctx, at.TxID)
+		if err != nil {
+			return err
+		}
+		ws[i] = w
+		switch {
+		case !w.Found:
+		case w.Confirmations >= e.confirmations:
+			if mined < 0 {
+				mined = i
+			}
+		case w.Confirmations > 0:
+			inBlock = true
+		case w.Confirmations < 0:
+			conflicted = true
+			for _, c := range w.Conflicts {
+				if firstTxID([]string{c}) == "" {
+					continue
+				}
+				listed = true
+				if !own[c] && outside == "" {
+					outside = c
+				}
+			}
+		default:
+			pending = true
+		}
+	}
+	// A-382: a built fee bump with no stored final transaction whose transaction the wallet holds (the parties
+	// broadcast it, or a restore lost its final transaction) is checked and recorded as broadcast; it is then followed
+	// like any stored one.
+	for i, at := range attempts {
+		if at.Raw == "" && ws[i].Found && ws[i].Confirmations >= 0 {
+			stored, err := a.storeSeenBump(ctx, id, at.Bump, ws[i].Hex)
+			if err != nil {
+				return err
+			}
+			if stored {
+				return a.trackBroadcast(ctx, e, id)
+			}
+		}
 	}
 	// While a restore holds it, or the restore gate is set and no administrator confirmed it, it is followed but never
 	// sent again (escrow_recovery.go).
@@ -674,31 +759,18 @@ func (a *App) trackBroadcast(ctx context.Context, e *escrowBTC, id int64) error 
 		return err
 	}
 	switch {
-	case w.Found && w.Confirmations < 0:
-		return a.markExternal(ctx, id, orderID, firstTxID(w.Conflicts), nil)
-	case w.Found && w.Confirmations >= e.confirmations:
-		tx, err := a.db.BeginTx(ctx, nil)
-		if err != nil {
-			return err
-		}
-		defer tx.Rollback()
-		// Confirmed: a restore's hold on it, or a confirmation not yet used, ends here.
-		res, err := tx.ExecContext(ctx, "UPDATE settlements SET state='confirmed',confirmed_at=now(),send_error='',updated=now() WHERE id=$1 AND state='broadcast'", id)
-		if err != nil {
-			return err
-		}
-		if n, _ := res.RowsAffected(); n != 1 {
-			return nil
-		}
-		what := settlementKind(kind)
-		if err = settleNote(ctx, tx, orderID, "The escrow settlement ("+what+") is confirmed on the "+a.escrowNetwork()+" network ("+strconv.FormatInt(w.Confirmations, 10)+" confirmations).",
-			"its escrow settlement ("+what+") is confirmed on the "+a.escrowNetwork()+" network."); err != nil {
-			return err
-		}
-		return tx.Commit()
-	case w.Found && w.Confirmations > 0:
+	case mined >= 0:
+		return a.confirmSettlement(ctx, id, orderID, kind, attempts[mined], ws[mined].Confirmations)
+	case inBlock:
 		return nil
-	case !w.Found:
+	case conflicted && (outside != "" || !listed):
+		return a.markExternal(ctx, id, orderID, outside, nil)
+	case conflicted:
+		return nil // conflicted only with the market's own transactions: the one in the chain is followed (A-375)
+	}
+	top := topAttempt(attempts)
+	at := attempts[top]
+	if !ws[top].Found {
 		stored, err := decodePSBT(psbt)
 		if err != nil {
 			return err
@@ -709,29 +781,79 @@ func (a *App) trackBroadcast(ctx context.Context, e *escrowBTC, id int64) error 
 		}
 		if spent {
 			// Spent, and the wallet does not know this transaction: it is external unless the node still has it
-			// (sendrawtransaction answers its txid, or -27 for one already in a block). While sending is paused it waits.
-			if !may {
+			// (sendrawtransaction answers its txid, or -27 for one already in a block), or another of the market's own
+			// transactions spends them. While sending is paused it waits.
+			if !may || restoreHeld(at.SendErr) {
 				return nil
 			}
-			sent, err := sendStored(ctx, e, rawHex, txid)
+			sent, err := sendStored(ctx, e, at.Raw, at.TxID)
 			if err == nil {
-				err = a.sentOnce(ctx, id)
+				err = a.attemptSent(ctx, id, orderID, kind, at, sent)
 			}
 			if err != nil || sent {
 				return err
 			}
-			return a.markExternal(ctx, id, orderID, a.spenderOf(ctx, e, stored), nil)
+			if by := a.spenderOf(ctx, e, stored); !pending && !own[by] {
+				return a.markExternal(ctx, id, orderID, by, nil)
+			}
+			return nil
 		}
 	}
-	// Unconfirmed (or not seen by the wallet, its inputs still unspent): the stored transaction is sent again, unless
-	// sending is paused.
-	if !may {
+	// Unconfirmed (or not seen by the wallet, its inputs still unspent): the highest-fee stored transaction is sent
+	// again, unless sending is paused or a restore holds that transaction.
+	if !may || restoreHeld(at.SendErr) {
 		return nil
 	}
-	if _, err = sendStored(ctx, e, rawHex, txid); err != nil {
+	sent, err := sendStored(ctx, e, at.Raw, at.TxID)
+	if err != nil {
 		return err
 	}
-	return a.sentOnce(ctx, id)
+	return a.attemptSent(ctx, id, orderID, kind, at, sent)
+}
+
+// confirmSettlement records a broadcast settlement as confirmed by one of the market's own transactions for it, at
+// confirmations: broadcast -> confirmed; when that transaction is a fee bump's, the bump is recorded as confirmed (the
+// settlement's own frozen columns stay as they are); an open fee bump is closed. A restore's hold on it, or a
+// confirmation not yet used, ends here.
+func (a *App) confirmSettlement(ctx context.Context, id int64, orderID, kind string, at bumpAttempt, confirmations int64) error {
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, "UPDATE settlements SET state='confirmed',confirmed_at=now(),send_error='',updated=now() WHERE id=$1 AND state='broadcast'", id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return nil
+	}
+	what := settlementKind(kind)
+	note := "The escrow settlement (" + what + ") is confirmed on the " + a.escrowNetwork() + " network (" + strconv.FormatInt(confirmations, 10) + " confirmations)."
+	if at.Bump != 0 {
+		// A fee bump sent by someone else before the market recorded its own send is broadcast first (migration 080).
+		for _, q := range []string{"UPDATE settlement_bumps SET state='broadcast',broadcast_at=now(),updated=now() WHERE id=$1 AND state='signed'",
+			"UPDATE settlement_bumps SET state='confirmed',confirmed_at=now(),send_error='',updated=now() WHERE id=$1 AND state='broadcast'"} {
+			if _, err = tx.ExecContext(ctx, q, at.Bump); err != nil {
+				return err
+			}
+		}
+		note += " The confirmed transaction is its fee bump " + strconv.Itoa(at.N) + ", which replaced the transaction sent before; that one can no longer confirm. The order page shows it."
+	}
+	if err = closeOpenBumps(ctx, tx, id); err != nil {
+		return err
+	}
+	if err = settleNote(ctx, tx, orderID, note, "its escrow settlement ("+what+") is confirmed on the "+a.escrowNetwork()+" network."); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// closeOpenBumps closes a settlement's open fee bump (building, waiting for or with a signature, no final transaction)
+// once the settlement no longer waits to be mined.
+func closeOpenBumps(ctx context.Context, tx *sql.Tx, id int64) error {
+	_, err := tx.ExecContext(ctx, "UPDATE settlement_bumps SET state='superseded',updated=now() WHERE settlement_id=$1 AND state IN ('building','awaiting_signature','party_signed')", id)
+	return err
 }
 
 // spentBeforeCosign settles a party-signed settlement whose escrow outputs are already spent when the market comes to
@@ -801,6 +923,14 @@ func (a *App) storeSeen(ctx context.Context, b *settleBuild, rawHex string) erro
 		return err
 	}
 	defer tx.Rollback()
+	// A release on the network before its order's outcome (P2-R2, A-376): the order, locked first, is completed in this
+	// transaction while it is still shipped with no dispute; a disputed order stays as it is.
+	var complete bool
+	if !settlementFits(b.Kind, b.OrderState, b.Outcome) {
+		if complete, err = lockShipped(ctx, tx, b.OrderID); err != nil {
+			return err
+		}
+	}
 	res, err := tx.ExecContext(ctx, "UPDATE settlements SET state='signed',raw_tx=$2,cosigned=$3,final_at=now(),send_error='',updated=now() WHERE id=$1 AND state IN ('party_signed','awaiting_signature') AND txid=$4",
 		b.ID, rawHex, cosigned, b.TxID)
 	if err != nil {
@@ -821,6 +951,11 @@ func (a *App) storeSeen(ctx context.Context, b *settleBuild, rawHex string) erro
 	if err = settleNote(ctx, tx, b.OrderID, note, "its escrow settlement ("+what+") was already on the "+net+" network; the order page shows its transaction and its confirmations."); err != nil {
 		return err
 	}
+	if complete {
+		if err = a.completeShipped(ctx, tx, b.OrderID, escrowSeenNote); err != nil {
+			return err
+		}
+	}
 	log.Printf("escrow: settlement of order %s: its transaction was already on the network; recorded as broadcast", shortID(b.OrderID))
 	return tx.Commit()
 }
@@ -837,8 +972,10 @@ func (a *App) trackConfirmeds(ctx context.Context, e *escrowBTC) error {
 }
 
 func (a *App) trackConfirmed(ctx context.Context, e *escrowBTC, id int64) error {
+	// The confirmed transaction is the settlement's own, or the fee bump recorded as confirmed (P2-d).
 	var orderID, kind, txid string
-	err := a.db.QueryRowContext(ctx, "SELECT order_id,kind,txid FROM settlements WHERE id=$1 AND state='confirmed' AND reorg_safe_at IS NULL", id).Scan(&orderID, &kind, &txid)
+	err := a.db.QueryRowContext(ctx, `SELECT s.order_id,s.kind,COALESCE((SELECT b.txid FROM settlement_bumps b WHERE b.settlement_id=s.id AND b.state='confirmed'),s.txid)
+		FROM settlements s WHERE s.id=$1 AND s.state='confirmed' AND s.reorg_safe_at IS NULL`, id).Scan(&orderID, &kind, &txid)
 	if err == sql.ErrNoRows {
 		return nil
 	}
@@ -846,12 +983,24 @@ func (a *App) trackConfirmed(ctx context.Context, e *escrowBTC, id int64) error 
 		return err
 	}
 	w, err := e.walletTx(ctx, txid)
+	ownConflict := false
+	if err == nil && w.Found && w.Confirmations < 0 {
+		// A-375: replaced in the chain by another of the market's own transactions for it (the original, or another
+		// fee bump): not external. It goes back to broadcast, and trackBroadcast confirms the one that was mined.
+		attempts, aerr := settlementAttempts(ctx, a.db, id)
+		if aerr != nil {
+			return aerr
+		}
+		for _, at := range attempts {
+			ownConflict = ownConflict || at.TxID != txid && slices.Contains(w.Conflicts, at.TxID)
+		}
+	}
 	switch {
 	case err != nil:
 		return err
 	case !w.Found:
 		return nil // the wallet does not know it (it missed it, or was restored): nothing to conclude; asked again next pass
-	case w.Confirmations < 0:
+	case w.Confirmations < 0 && !ownConflict:
 		return a.markExternal(ctx, id, orderID, firstTxID(w.Conflicts), nil)
 	case w.Confirmations >= escrowReorgDepth:
 		_, err = a.db.ExecContext(ctx, "UPDATE settlements SET reorg_safe_at=now(),updated=now() WHERE id=$1 AND state='confirmed' AND reorg_safe_at IS NULL", id)
@@ -877,13 +1026,22 @@ func (a *App) trackConfirmed(ctx context.Context, e *escrowBTC, id int64) error 
 	if n, _ := res.RowsAffected(); n != 1 {
 		return nil
 	}
+	// A confirmed fee bump goes back to broadcast with it (migration 080 allows the same move).
+	if _, err = tx.ExecContext(ctx, "UPDATE settlement_bumps SET state='broadcast',confirmed_at=NULL,updated=now() WHERE settlement_id=$1 AND state='confirmed'", id); err != nil {
+		return err
+	}
 	what, net := settlementKind(kind), a.escrowNetwork()
 	next := "The market sends the stored transaction again and follows it until it is confirmed again."
 	if gate {
 		next = "The market does not send it again while it reconciles its records after a restore from a backup; it follows it until it is confirmed again."
 	}
-	if err = settleNote(ctx, tx, orderID, "The transaction of the escrow settlement ("+what+") is no longer in the "+net+" chain: a reorganisation of the chain took it out of the block that confirmed it. It is the same transaction, back to waiting for confirmations. "+next,
-		"its escrow settlement ("+what+") is no longer confirmed after a reorganisation of the "+net+" chain; it is the same transaction, waiting for confirmations again."); err != nil {
+	note := "The transaction of the escrow settlement (" + what + ") is no longer in the " + net + " chain: a reorganisation of the chain took it out of the block that confirmed it. It is the same transaction, back to waiting for confirmations. " + next
+	body := "its escrow settlement (" + what + ") is no longer confirmed after a reorganisation of the " + net + " chain; it is the same transaction, waiting for confirmations again."
+	if ownConflict {
+		note = "The transaction of the escrow settlement (" + what + ") is no longer in the " + net + " chain: a reorganisation of the chain replaced it with another of the market's own transactions for this settlement (the one sent first, or a fee bump), which the market now follows until it is confirmed."
+		body = "its escrow settlement (" + what + ") is no longer confirmed after a reorganisation of the " + net + " chain; another of the market's own transactions for it is waiting for confirmations."
+	}
+	if err = settleNote(ctx, tx, orderID, note, body); err != nil {
 		return err
 	}
 	log.Printf("escrow: settlement of order %s: its transaction left the chain (reorganisation); back to broadcast", shortID(orderID))
@@ -922,6 +1080,13 @@ func (a *App) markExternal(ctx context.Context, id int64, orderID, spentBy strin
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
 		return nil
+	}
+	// P2-d: an open fee bump is closed, and a fee bump recorded as confirmed is not any more (migration 080).
+	if err = closeOpenBumps(ctx, tx, id); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, "UPDATE settlement_bumps SET state='broadcast',confirmed_at=NULL,updated=now() WHERE settlement_id=$1 AND state='confirmed'", id); err != nil {
+		return err
 	}
 	if was == "building" {
 		for dep, s := range deposits {

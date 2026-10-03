@@ -1,14 +1,15 @@
 import { defineConfig } from '@playwright/test';
 
-// The Bitcoin escrow no-JavaScript paste journey (WR-escrow Phase 1, A-246; tests/e2e/escrow-journey.spec.ts): the real
-// server and PostgreSQL against the SIMULATED escrow node (tests/e2e/fixtures/escrow_rpc.py, served by wallet-rpc.py
-// --escrow-port). Chromium only, 320 px, JavaScript disabled. Simulated RPC: not chain evidence.
+// The Bitcoin escrow no-JavaScript paste journeys (WR-escrow Phase 1, A-246, tests/e2e/escrow-journey.spec.ts; Phase 2,
+// A-247, tests/e2e/escrow-physical-journey.spec.ts, run after it on the same database): the real server and PostgreSQL
+// against the SIMULATED escrow node (tests/e2e/fixtures/escrow_rpc.py, served by wallet-rpc.py --escrow-port). Chromium
+// only, 320 px, JavaScript disabled. Simulated RPC: not chain evidence.
 const databaseURL = process.env.E2E_ESCROW_DATABASE_URL;
 if (!databaseURL) throw new Error('E2E_ESCROW_DATABASE_URL must point to a fresh dedicated test database');
 const app = 18090, pooled = 18091, escrow = 18092;
 process.env.E2E_ESCROW_RPC = `http://127.0.0.1:${escrow}`;
 export default defineConfig({
-  testDir: './tests/e2e', testMatch: /escrow-journey\.spec\.ts$/, workers: 1, retries: 0,
+  testDir: './tests/e2e', testMatch: /escrow(-physical)?-journey\.spec\.ts$/, workers: 1, retries: 0,
   forbidOnly: !!process.env.CI,
   outputDir: 'test-results-escrow',
   reporter: [['list'], ['html', { outputFolder: 'playwright-escrow-report', open: 'never' }]],

@@ -37,6 +37,19 @@ func partyOrder(c *actionCtx, id string) (Order, error) {
 	return o, err
 }
 
+// partyOrderLocked is partyOrder with the order row locked until the transaction ends, before any other row of the
+// order (the lock order of transition and storeFinal), for an action whose checks must see the order as it commits.
+// FOR NO KEY UPDATE still serialises against another such action, transition's UPDATE and lockShipped's FOR UPDATE,
+// but not against the KEY SHARE an order_events insert's foreign key takes, so the watcher's storeSettlement and
+// storeFinal (settlement row, then an order note) never deadlock with a paste (QA-F2-1).
+func partyOrderLocked(c *actionCtx, id string) (Order, error) {
+	o, err := scanOrder(c.Tx.QueryRowContext(c.Ctx(), orderQuery+" WHERE o.id=$1 AND (o.buyer_id=$2 OR p.vendor_id=$2) FOR NO KEY UPDATE OF o", id, c.User.ID))
+	if err == sql.ErrNoRows {
+		return o, errNoOrder
+	}
+	return o, err
+}
+
 // sellerIsVendor reports whether a listing's owner is currently a vendor or administrator. Listings of a
 // demoted vendor accept no new drafts, payment requests or restores; existing orders continue.
 func sellerIsVendor(c *actionCtx, productID string) (bool, error) {
@@ -231,6 +244,15 @@ func cancelAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, err
 	}
 	ctx := c.Ctx()
+	if from == statePaid && o.Escrow && o.BuyerID == c.User.ID {
+		// P2-R5: the buyer's no-ship cancel, checked under the order row lock the vendor's "Mark shipped" also takes.
+		if o, err = partyOrderLocked(c, o.ID); err != nil {
+			return actionResult{}, err
+		}
+		if err = noShipCancel(c, &o); err != nil {
+			return actionResult{}, err
+		}
+	}
 	if from == stateAwaitingPayment {
 		deposits, err := hasDeposits(ctx, c.Tx, o.ID)
 		if err != nil {
@@ -263,6 +285,9 @@ func shipAction(c *actionCtx) (actionResult, error) {
 	o, err := partyOrder(c, c.Form.Get("order_id"))
 	if err != nil {
 		return actionResult{}, err
+	}
+	if o.Escrow { // P2-R1: an escrow order is shipped with its release's claim address (escrowShipAction)
+		return actionResult{}, errShipPooledForm
 	}
 	if _, err = c.A.transition(c.Ctx(), c.Tx, o.ID, statePaid, stateShipped, c.User, note); err != nil {
 		return actionResult{}, err

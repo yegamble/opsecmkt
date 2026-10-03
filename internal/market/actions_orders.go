@@ -83,12 +83,34 @@ func disputeAction(c *actionCtx) (actionResult, error) {
 	if len(reason) < 20 || len(reason) > 5000 {
 		return actionResult{}, fail(400, "Describe the issue in 20–5000 characters")
 	}
-	o, err := partyOrder(c, f.Get("order_id"))
+	// A-386: the order row first, as the sign action takes it, so the check below sees a buyer's signature committed
+	// before this dispute, and a signature after it sees the order disputed.
+	o, err := partyOrderLocked(c, f.Get("order_id"))
 	if err != nil {
 		return actionResult{}, err
 	}
 	if o.State != statePaid && o.State != stateShipped && o.State != stateDelivered {
 		return actionResult{}, fail(409, "Only paid, shipped, or delivered orders can be disputed. Draft orders contain no funds.")
+	}
+	if o.Escrow && o.BuyerID == c.User.ID {
+		// P2-R2: the buyer's signature on the release to the vendor confirms receipt and ends the buyer's right to dispute.
+		var signed bool
+		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM settlement_signatures g JOIN settlements s ON s.id=g.settlement_id
+			WHERE s.order_id=$1 AND s.kind='release' AND s.state<>'superseded' AND g.party='buyer')`, o.ID).Scan(&signed); err != nil {
+			return actionResult{}, err
+		}
+		if signed {
+			return actionResult{}, errDisputeSigned
+		}
+	}
+	// P2-R3: after a shipped escrow order's release deadline the release is due and no dispute is opened; before it,
+	// the other party is told the deadline no longer applies.
+	detail, err := lateDispute(c, &o)
+	if err != nil {
+		return actionResult{}, err
+	}
+	if detail != "" {
+		ctx = withNoticeDetail(ctx, o.ID, stateDisputed, detail)
 	}
 	if _, err = c.A.transition(ctx, tx, o.ID, o.State, stateDisputed, c.User, "Dispute opened"); err != nil {
 		return actionResult{}, err

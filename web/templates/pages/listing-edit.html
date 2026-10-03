@@ -56,12 +56,15 @@
 </label>
 <label>Stock<input type="number" name="stock" required min="0" max="1000000" value="{{.Stock}}" aria-describedby="stock-help">
 </label>
+{{if $.EscrowOn}}{{with $.Listing}}<label>Dispatch within (days)<input type="number" name="dispatch_days" min="1" max="30" inputmode="numeric" value="{{.DispatchDays}}" aria-describedby="dispatch-help">
+</label>{{end}}{{end -}}
 <label>Bitcoin reference price<input name="price_btc" required inputmode="decimal" value="{{.PriceBTC}}" aria-describedby="price-floor-help">
 </label>
 <label>Monero reference price<input name="price_xmr" required inputmode="decimal" value="{{.PriceXMR}}" aria-describedby="price-floor-help">
 </label>
 </div>
 <p class="help" id="price-floor-help">The Bitcoin price must be at least 0.0001 BTC and the Monero price at least 0.001 XMR: the network fee is deducted from every payout, and a smaller payout cannot cover it (Bitcoin) or would lose too large a share to it (Monero).</p>
+{{if $.EscrowOn}}<p class="help" id="dispatch-help">Physical listings only: the days you take to ship once an order is paid, 1 to 30; a digital listing ignores it. Saving a change does not alter orders already placed.</p>{{end -}}
 <p class="help" id="stock-help">Payment requests reserve stock. If stock changes while you edit, saving a new stock value is refused so no reservation is overwritten.</p>
 {{with $.Listing}}<p class="help" id="kind-help">{{if .OpenOrders}}{{.OpenOrders}} open order(s) depend on this listing, so the fulfillment type cannot change until they finish.{{else}}No open orders; the fulfillment type can change.{{end}} Orders that have requested payment keep their recorded amount; open drafts use the current price.</p>
 {{if .VendorEditor}}<label>Automatic delivery content<textarea name="delivery_content" maxlength="32000" rows="6" spellcheck="false" aria-describedby="delivery-help">{{.DeliveryContent}}</textarea>

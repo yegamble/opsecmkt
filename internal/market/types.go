@@ -174,6 +174,9 @@ type PageData struct {
 	// NeedsAction counts all paid ones.
 	IncomingOrders []Order
 	NeedsAction    int
+	// DeadlineBanners: /orders, the viewer's escrow orders whose release deadline is less than 72 hours away
+	// (escrow_deadline.go, P2-R9).
+	DeadlineBanners []DeadlineBanner
 	// DisputeOrders: order summary per dispute (disputes and moderator pages), keyed by order id.
 	// OpenDisputes: how many leading entries of Disputes are open (the rest are resolved).
 	DisputeOrders map[string]Order
@@ -228,6 +231,8 @@ type PageData struct {
 	EscrowKey *EscrowKeyView
 	// EscrowFee: /admin while ESCROW_BTC is on, the Bitcoin escrow market fee in force and its form (escrow_fee.go)
 	EscrowFee *EscrowFeeView
+	// EscrowReleaseDays: /admin while ESCROW_BTC is on, the release deadline length in force and its form (escrow_release_admin.go)
+	EscrowReleaseDays *EscrowReleaseDaysView
 	// EscrowRecovery: /admin, the Bitcoin escrow restore gate, held settlements and orphan addresses (escrow_recovery.go)
 	EscrowRecovery *EscrowRecoveryView
 	// Escrow: order page of an escrow order, its escrow (escrow_order.go); EscrowCheckout: order page of the buyer's
@@ -354,6 +359,7 @@ type ListingView struct {
 	OpenOrders          int    // orders not completed, resolved or cancelled
 	AutoDelivery        string // currencies with a configured payment provider, e.g. "BTC, XMR"; "" = none
 	TakedownReason      string // an administrator's takedown reason (A-163); "" when not taken down
+	DispatchDays        int    // a physical listing's dispatch window in days (P2-R5); the default shown when none is set
 }
 type InventoryView struct {
 	Active, Archived int
@@ -503,6 +509,24 @@ type EscrowOrderView struct {
 	Claim                                       bool                    // the vendor of a completed order may request the claim
 	Recover, RecoverAsked                       bool                    // the buyer of a closed order may ask to recover coins at the escrow (or has asked; escrow_stray.go)
 	RestorePaused                               bool                    // the restore gate pauses escrow builds, co-signing and broadcasts (escrow_recovery.go)
+	PartiesOnly                                 bool                    // a shipped order's release: only both parties' signatures complete it (escrow_release.go)
+	Deadline                                    *EscrowDeadlineView     // a shipped order's release deadline (escrow_deadline.go)
+	RangePath                                   string                  // the viewer's child key in this escrow, set only past escrowRangeAdvice: the page advises keypoolrefill (A-397)
+	KeypoolSize                                 int64                   // the keypoolrefill size it advises: 1000 keys past that child
+}
+
+// EscrowDeadlineView is a shipped escrow order's release deadline on its page (escrow_deadline.go, P2-R9): At in UTC,
+// Left the time left when the page loaded; Due once it has passed; Rechecked when a restore from backup moved it.
+type EscrowDeadlineView struct {
+	At, Left       string
+	Due, Rechecked bool
+}
+
+// DeadlineBanner is one /orders banner (escrow_deadline.go): an escrow order of the viewer's whose release deadline At
+// (UTC) is less than 72 hours away, Left as computed when the page loaded; Buyer when the viewer is its buyer.
+type DeadlineBanner struct {
+	OrderID, Short, At, Left string
+	Buyer                    bool
 }
 
 // EscrowSettlementView is an escrow order's settlement on its page (escrow_settle.go): its state in honest words, its
@@ -513,8 +537,25 @@ type EscrowSettlementView struct {
 	Title, Status, NetworkFee, InputTotal string
 	Outputs                               []SettlementOutputView
 	CanSign, SignToo, Stray               bool
+	PartiesOnly                           bool   // a physical order's release before its outcome: both parties sign it, the market never does (escrow_release.go)
 	State                                 string // the settlements.state
 	PSBT, TxID, RawTx                     string
+	Bumps                                 []*EscrowBumpView // its fee bumps, newest first (escrow_bump.go, P2-d)
+	CanBump                               bool              // the claimant may ask to raise the fee of the broadcast transaction
+	BumpRate, BumpMin, BumpMax            string            // the highest stored fee rate (sat/vB), and the lowest and highest a new bump may ask (A-383)
+}
+
+// EscrowBumpView is one fee bump of a settlement on the order page (escrow_bump.go, P2-d): its state in honest words,
+// its outputs while it is open (only the claimant's differs from the settlement's) and, for the party it waits for,
+// that party's copy and the paste form.
+type EscrowBumpView struct {
+	ID, SettlementID    int64
+	N                   int
+	FeeRate, NetworkFee string
+	Status              string
+	Outputs             []SettlementOutputView
+	CanSign, SignToo    bool
+	PSBT                string
 }
 
 // EscrowFeeView is the Bitcoin escrow market fee in force on /admin (escrow_fee.go): basis points, the same as a
@@ -523,6 +564,13 @@ type EscrowSettlementView struct {
 type EscrowFeeView struct {
 	Bps, Percent, Address string
 	Available             bool
+}
+
+// EscrowReleaseDaysView is the Bitcoin escrow release deadline length in force on /admin (escrow_release_admin.go):
+// Days, and the bounds the form accepts.
+type EscrowReleaseDaysView struct {
+	Days     string
+	Min, Max int
 }
 
 // EscrowDecisionView is a resolved escrow order's dispute decision (escrow_decision.go): Outcome release or refund,
@@ -541,8 +589,9 @@ type SettlementOutputView struct {
 // EscrowCheckoutView offers escrow checkout on a draft (escrow_create.go): Reason says why it cannot be used now
 // ("" = the form is offered); KeyLink adds a link to the buyer's escrow key page.
 type EscrowCheckoutView struct {
-	Reason  string
-	KeyLink bool
+	Reason   string
+	KeyLink  bool
+	Physical bool // the listing is shipped: the offer says the order stays open after funding (WR-escrow Phase 2)
 }
 
 // EscrowKeyView is the viewer's Bitcoin escrow key (escrow_account.go). Origin is the viewer's own key origin
@@ -558,4 +607,7 @@ type EscrowKeyView struct {
 	PracticeOffered bool
 	Practice        string
 	PracticeError   string
+	NextChild       int64 // the child index (/0/<n>) the account's next escrow uses (escrowNextChildSQL)
+	RangeAdvice     bool  // NextChild passed escrowRangeAdvice: the page advises keypoolrefill (P2-R10)
+	KeypoolSize     int64 // the keypoolrefill size it advises: 1000 keys past NextChild
 }

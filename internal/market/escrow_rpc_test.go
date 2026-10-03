@@ -92,6 +92,8 @@ func TestEscrowRPCPinsParams(t *testing.T) {
 		{"listreceivedbyaddress", fakeWatchWallet, `[0,true,true]`, func() error { _, err := e.watchedAddresses(ctx); return err }},
 		// P1-d3 (A-359): whether the watch-only wallet already watches an escrow address the checkout composed.
 		{"getaddressinfo", fakeWatchWallet, `["bcrt1qcomposedescrow0000"]`, func() error { _, err := e.watchKnows(ctx, "bcrt1qcomposedescrow0000"); return err }},
+		// P2-e (A-366): the orphan sweep reads an orphan escrow address's keys from the same wallet.
+		{"getaddressinfo", fakeWatchWallet, `["bcrt1qorphanescrow00000"]`, func() error { _, err := e.watchKeys(ctx, "bcrt1qorphanescrow00000"); return err }},
 		{"deriveaddresses", "/", `["` + withChecksum("wpkh("+strings.Repeat("02", 33)+")") + `"]`, func() error {
 			_, err := e.derivesChild(ctx, mustParseKey(t, testBIP48Key), "/0/1", strings.Repeat("02", 33))
 			return err

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -40,12 +41,15 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 	}
 	var refund string
 	var feeBps int64
-	var watched bool
+	var watched, shipByOpen, rechecked bool
 	var windowFrom time.Time
+	var shipBy, releaseAt sql.NullTime
+	var releaseLeft sql.NullFloat64
 	if err := a.db.QueryRowContext(ctx, `SELECT es.address,es.refund_address,es.fee_bps,
 		GREATEST(es.created,(SELECT max(created) FROM payments WHERE order_id=es.order_id AND confirmations>=0 AND NOT locked)),
-		`+escrowWatchedSQL+`
-		FROM escrows es JOIN orders o ON o.id=es.order_id WHERE es.order_id=$1`, o.ID).Scan(&v.Address, &refund, &feeBps, &windowFrom, &watched); err != nil {
+		`+escrowWatchedSQL+`,es.ship_by,COALESCE(es.ship_by<=now(),false),es.release_at,extract(epoch FROM es.release_at-now()),es.release_recheck
+		FROM escrows es JOIN orders o ON o.id=es.order_id WHERE es.order_id=$1`, o.ID).Scan(&v.Address, &refund, &feeBps, &windowFrom, &watched,
+		&shipBy, &shipByOpen, &releaseAt, &releaseLeft, &rechecked); err != nil {
 		return err
 	}
 	if v.Own == roleBuyer {
@@ -59,6 +63,20 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 		return err
 	}
 	v.Descriptor = desc
+	if v.Own != "" {
+		// A party signs on this page, so the keypoolrefill advice of /escrow-key is repeated here when this escrow's
+		// child key lies past escrowRangeAdvice: past its descriptor range a Core wallet cannot sign (P2-R10, A-397).
+		var suffix string
+		err := a.db.QueryRowContext(ctx, "SELECT ep.derivation_suffix FROM escrow_pubkeys ep JOIN escrows es ON es.id=ep.escrow_id WHERE es.order_id=$1 AND ep.party=$2", o.ID, v.Own).Scan(&suffix)
+		if err != nil && err != sql.ErrNoRows {
+			return err
+		}
+		if i := strings.LastIndexByte(suffix, '/'); i >= 0 {
+			if n, err := strconv.ParseInt(strings.TrimSuffix(suffix[i+1:], "h"), 10, 64); err == nil && n > escrowRangeAdvice {
+				v.RangePath, v.KeypoolSize = suffix, n+1000
+			}
+		}
+	}
 	var received, pending, afterCloseSeen int64
 	required, err := parseAmount(o.Amount, 8)
 	if err != nil {
@@ -121,8 +139,19 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 		v.Status = "Deposit seen. Waiting for " + strconv.FormatInt(v.Threshold, 10) + " confirmations."
 	case o.State == stateAwaitingPayment:
 		v.Status = "Confirmed deposits are below the price"
+	case o.State == statePaid && o.Kind == "physical":
+		v.Status, v.NextStep = "Funded", "The vendor ships the goods; the order stays open until it is shipped and settled. If the vendor cancels it instead, the escrow is refunded to the buyer."
+		if shipBy.Valid {
+			// P2-R5 (escrow_deadline.go): the vendor's dispatch window plus 48 hours, from payment.
+			v.NextStep += " Ship by " + utcFrom(shipBy.Time) + " (the listing's dispatch window plus 48 hours, from payment): if the order is not marked shipped by then, the buyer may cancel it and the escrow is refunded to the buyer."
+		}
 	case o.State == statePaid:
 		v.Status, v.NextStep = "Funded", "The content could not be delivered automatically: the order completes when the vendor delivers it by hand. If the vendor cancels it instead, the escrow is refunded to the buyer."
+	case o.State == stateShipped:
+		// The release's "who acts next" line replaces this once it exists (escrowSettlementView, P2-R2).
+		v.Status, v.NextStep = "Funded and shipped", "The vendor marked the order shipped; the market builds the release to the vendor, which the vendor and the buyer each sign."
+	case o.State == stateCompleted && o.Kind == "physical":
+		v.Status, v.NextStep = "Funded and completed", "The order is completed: the release to the vendor built when it was shipped pays the escrowed coins to the vendor."
 	case o.State == stateCompleted:
 		v.Status, v.NextStep = "Funded and completed", "The vendor claims the escrowed coins from this page."
 	case o.State == stateDisputed:
@@ -150,9 +179,22 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 	if v.RestorePaused, err = restoreGateSet(ctx, a.db); err != nil {
 		return err
 	}
+	if o.State == stateShipped && releaseAt.Valid {
+		// P2-R3, P2-R9 (escrow_deadline.go): the release deadline, and the time left when this page loaded.
+		left := time.Duration(releaseLeft.Float64 * float64(time.Second))
+		v.Deadline = &EscrowDeadlineView{At: utcUntil(releaseAt.Time), Left: timeLeft(left), Due: left <= 0, Rechecked: rechecked}
+	}
 	d.Escrow = v
 	if err = a.escrowSettlementView(ctx, d, v); err != nil {
 		return err
+	}
+	if v.Deadline != nil {
+		var buyerSigned, vendorSigned bool
+		if err = a.db.QueryRowContext(ctx, `SELECT COALESCE(bool_or(g.party='buyer'),false),COALESCE(bool_or(g.party='vendor'),false) FROM settlement_signatures g JOIN settlements s ON s.id=g.settlement_id
+			WHERE s.order_id=$1 AND s.kind='release' AND s.state<>'superseded'`, o.ID).Scan(&buyerSigned, &vendorSigned); err != nil {
+			return err
+		}
+		v.NextStep += " " + deadlineNextStep(d.OrderViewer, v.Deadline, v.RestorePaused, buyerSigned, vendorSigned)
 	}
 	if err = a.escrowDecisionView(ctx, d, v); err != nil {
 		return err
@@ -160,8 +202,33 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 	// Cancelling an order that holds coins requests its refund, so the cancel form states it and carries its amount,
 	// as a pooled refund's form does (checkPayoutSeen, escrowSettleTerminal).
 	counted := received + pending
+	// P2-R5 (escrow_deadline.go): the buyer of a paid physical escrow order may cancel it from its ship-by time; before
+	// then the page says when. A paid digital escrow order has none, so its buyer is offered no cancel.
+	kept := d.Transitions[:0]
+	for _, t := range d.Transitions {
+		if t.To == stateCancelled && o.State == statePaid && d.OrderViewer == roleBuyer {
+			switch {
+			case !shipBy.Valid:
+				continue
+			case !shipByOpen:
+				t.Action, t.Label = "", "You can cancel from "+utcFrom(shipBy.Time)+" if the vendor has not shipped the order by then; the escrow is then refunded to your refund address."
+			}
+		}
+		kept = append(kept, t)
+	}
+	d.Transitions = kept
 	for i, t := range d.Transitions {
 		switch {
+		case t.To == stateShipped:
+			// P2-R1: an escrow order is marked shipped with the claim address its release pays and the password.
+			d.Transitions[i].Action = "/escrow/ship"
+			if e == nil || !a.escrowConfigured {
+				d.Transitions[i].Action, d.Transitions[i].Label = "", errEscrowDown.Error()
+			} else if d.Security == nil {
+				if d.Security, _, _, err = a.securityView(ctx, d.User.ID); err != nil {
+					return err
+				}
+			}
 		case t.To == stateCancelled && counted > 0:
 			d.Transitions[i].Payout = &PayoutPreview{Seen: counted, Confirm: "Cancelling refunds the " + amount(counted, 8) +
 				" " + a.escrowNetwork() + " BTC in this escrow, less the network fee, to the buyer's refund address given at checkout. The market builds the refund transaction; the buyer or the vendor then signs it on this page. This is final."}
@@ -206,17 +273,27 @@ func (a *App) escrowCheckoutOffer(ctx context.Context, d *PageData) error {
 	if o.State != stateDraft || d.OrderViewer != roleBuyer || o.Currency != "BTC" {
 		return nil
 	}
-	eligible, _, err := escrowEligible(ctx, a.db, o)
+	eligible, _, _, err := escrowEligible(ctx, a.db, o)
 	if err != nil || !eligible {
 		return err
 	}
-	v := &EscrowCheckoutView{}
+	v := &EscrowCheckoutView{Physical: o.Kind == "physical"}
 	var buyerActive, vendorActive bool
 	if err = a.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM user_escrow_keys WHERE user_id=$1 AND active_at IS NOT NULL),
 		EXISTS(SELECT 1 FROM user_escrow_keys WHERE user_id=$2 AND active_at IS NOT NULL)`, o.BuyerID, o.VendorID).Scan(&buyerActive, &vendorActive); err != nil {
 		return err
 	}
+	vendorCanEncrypt := true
+	if v.Physical {
+		if vendorCanEncrypt, err = userCanReceiveEncrypted(ctx, a.db, o.VendorID); err != nil {
+			return err
+		}
+	}
 	gate, err := restoreGateSet(ctx, a.db)
+	if err != nil {
+		return err
+	}
+	sweep, err := escrowSweepRequired(ctx, a.db)
 	if err != nil {
 		return err
 	}
@@ -225,12 +302,16 @@ func (a *App) escrowCheckoutOffer(ctx context.Context, d *PageData) error {
 		v.Reason = errEscrowDown.Error()
 	case gate:
 		v.Reason = "Bitcoin escrow is paused while this market restores its records from a backup, so no escrow can be created until the operator has finished. Try again later."
+	case sweep:
+		v.Reason = "Bitcoin escrow is paused until this market has checked its escrow wallet after restoring its records from a backup, so no escrow can be created yet. Try again later."
 	case o.BuyerID == o.VendorID:
 		v.Reason = errEscrowSelf.Error()
 	case !buyerActive:
 		v.Reason, v.KeyLink = "Activate your Bitcoin escrow key first: register it and sign its practice transaction.", true
 	case !vendorActive:
 		v.Reason = "The vendor has no active Bitcoin escrow key, so this order cannot use escrow."
+	case v.Physical && !vendorCanEncrypt:
+		v.Reason = noVendorKeyReason // A-83: the buyer could not send the vendor an encrypted shipping address
 	}
 	d.EscrowCheckout = v
 	return nil

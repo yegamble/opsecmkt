@@ -16,6 +16,17 @@
 <button type="submit">Save the market fee</button>
 </form>{{else}}
 <p class="order-unavailable" role="note"><strong>Unavailable.</strong> Bitcoin escrow is unavailable right now, so a fee address cannot be checked.</p>{{end}}{{end}}
+{{with $.EscrowReleaseDays}}
+<h3 id="escrow-release-days">Bitcoin escrow release deadline (regtest)</h3>{{with $.NoticeIn "escrow-release-days"}}
+<div class="alert" role="status">{{.}}</div>{{end}}
+<p>In force: <strong>{{.Days}} days</strong>. For a shipped physical escrow order, the number of days the buyer has to sign the release or open a dispute before the market may co-sign the vendor's claim. Each escrow keeps the length in force when it was placed.</p>
+<form class="stack" method="post" action="/admin/escrow-release-days">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<label>Release deadline (whole days, {{.Min}} to {{.Max}})<input type="number" name="release_days" required min="{{.Min}}" max="{{.Max}}" inputmode="numeric" value="{{.Days}}" aria-describedby="escrow-release-days-help"></label>
+<span class="help" id="escrow-release-days-help">Applies to escrow orders placed from now on; existing orders keep theirs.</span>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
+<button type="submit">Save the release deadline</button>
+</form>{{end}}
 {{with $.EscrowRecovery}}<h3 id="escrow-recovery">Bitcoin escrow recovery and reconciliation (regtest)</h3>{{with $.NoticeIn "escrow-recovery"}}
 <div class="alert" role="status">{{.}}</div>{{end}}{{if .Gate}}
 <div class="alert" role="status"><strong>Bitcoin escrow paused for restore reconciliation.</strong> While the recovery lock is set the escrow watcher builds, co-signs and broadcasts no escrow settlement; it still reads deposits and follows broadcast settlements to their confirmations. Clearing the recovery lock (see the recovery runbook) resumes building and co-signing; a settlement held by the restore still waits for its check below.</div>{{end}}

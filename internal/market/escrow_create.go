@@ -17,8 +17,11 @@ import (
 )
 
 // Escrow checkout and creation (WR-escrow Phase 1, slice P1-b; ES-3, ES-5). With ESCROW_BTC=on, the buyer of a BTC
-// draft on a digital listing with automatic delivery may pay into a 2-of-3 escrow instead of the pooled wallet,
-// once both the buyer's and the vendor's escrow keys are active (ES-9). Every other order keeps the pooled flow.
+// draft on a digital listing with automatic delivery, or on a physical listing with a dispatch window (Phase 2,
+// P2-R8), may pay into a 2-of-3 escrow instead of the pooled wallet, once both the buyer's and the vendor's escrow
+// keys are active (ES-9). Every other order keeps the pooled flow. A physical order's checkout also needs a vendor
+// who can receive an encrypted shipping address (A-83, checked before any RPC), and its escrow row snapshots the
+// release deadline length in force and the listing's dispatch window (escrows.release_days, dispatch_days).
 //
 // POST /orders/escrow takes the buyer's refund address, pinned for the order, and builds the escrow in the checkout
 // transaction, after every check has passed (as /orders/pay asks the wallet for an address only then):
@@ -31,15 +34,17 @@ import (
 //     pinned arbiter fingerprint, each party's key at its own origin;
 //  4. the bare-key descriptor wsh(sortedmulti(2,<buyer>,<vendor>,<market>)) must have Core's checksum and derive the
 //     same address;
-//  5. the watch-only wallet must not already watch that address (getaddressinfo, A-359: an escrow a restored database
-//     no longer has); if it does, the next child keys are tried (buildUnwatchedEscrow);
+//  5. no child key may be one an escrow on record holds or the orphan sweep reserved (escrow_pubkeys,
+//     escrow_reserved_keys, A-366), and the watch-only wallet must not already watch the address (getaddressinfo,
+//     A-359: an escrow a restored database no longer has); otherwise the next keys are tried (buildUnwatchedEscrow);
 //  6. the escrow rows are written (uncommitted, so invisible) and the bare-key descriptor alone is imported into the
 //     watch-only wallet; only then does the transaction commit and the address exist anywhere a page can show it.
 //
 // A failure at any step rolls the transaction back: no order change, no escrow row. A market index a failed build
 // took is skipped, never reused; an import whose transaction then fails to commit stays in the watch-only wallet,
-// watched but never shown (reconciliation lists such orphans, P1-d). While the restore gate is set, no escrow is
-// created at all (errEscrowRestoring).
+// watched but never shown (reconciliation lists such orphans, P1-d, and reserves their keys, P2-e). While the restore
+// gate is set, or after a restore until the orphan sweep has run (escrow_sweep_required), no escrow is created at all
+// (errEscrowRestoring, errEscrowSweep).
 
 func init() {
 	registerAction("/orders/escrow", actionSpec{OneAtATime: true, Off: escrowOff, Run: escrowCheckoutAction})
@@ -57,16 +62,19 @@ func errEscrowRefundInvalid(net string) error {
 var (
 	errEscrowRefundUsed = fail(409, "That refund address was already used on this market. Give a fresh address from your wallet. Nothing was changed.")
 	errEscrowOnlyBuyer  = fail(403, "Only the buyer can pay for this order.")
-	errEscrowKind       = fail(409, "Bitcoin escrow is available only for digital listings with automatic delivery. Nothing was changed.")
+	errEscrowKind       = fail(409, "Bitcoin escrow is available only for digital listings with automatic delivery and for physical listings with a dispatch window. Nothing was changed.")
 	errEscrowCurrency   = fail(409, "Bitcoin escrow is for Bitcoin orders only. Nothing was changed.")
 	errEscrowSelf       = fail(409, "You cannot buy your own listing with escrow: an escrow needs two parties' keys. Nothing was changed.")
 	errEscrowBuyerKey   = fail(409, "Activate your Bitcoin escrow key first: register it and sign its practice transaction on your escrow key page. Nothing was changed.")
 	errEscrowVendorKey  = fail(409, "The vendor has no active Bitcoin escrow key, so this order cannot use escrow. Nothing was changed.")
 	errEscrowBuild      = fail(503, "The escrow could not be created: the market's Bitcoin node did not confirm it. Nothing was changed; try again later.")
-	errEscrowKeyTaken   = fail(409, "The escrow could not be created: another escrow on this market already holds one of its keys. Nothing was changed. Trying again will not help; contact the market's staff.")
+	errEscrowKeyTaken   = fail(409, "The escrow could not be created: another escrow on this market already holds one of its keys. Nothing was changed. Try again; if the same refusal comes back, contact the market's staff.")
 	// errEscrowRestoring refuses escrow checkout while the restore gate is set (A-359): the restored database does not
 	// know the escrows created after its backup, so it could hand out their child keys again.
 	errEscrowRestoring = fail(503, "Bitcoin escrow is paused while this market restores its records from a backup. Nothing was charged and your order is still a draft; try again later.")
+	// errEscrowSweep refuses escrow checkout after a restore until the orphan sweep has reserved the keys of the escrows
+	// the restored database lost (P2-R10, A-366).
+	errEscrowSweep = fail(503, "Bitcoin escrow is paused until this market has checked its escrow wallet after restoring its records from a backup. Nothing was charged and your order is still a draft; try again later.")
 	// errEscrowWatched refuses a checkout whose every composed address the watch-only wallet already watches (A-359).
 	errEscrowWatched = fail(503, "The escrow could not be created: every escrow address the market composed for this order is already watched by its escrow wallet, which happens after the market restored its records from a backup. Nothing was charged and your order is still a draft; contact the market's staff.")
 )
@@ -74,6 +82,10 @@ var (
 // escrowWatchedTries bounds how many composed escrow addresses one checkout tries while the watch-only wallet already
 // watches each of them (A-359).
 const escrowWatchedTries = 20
+
+// escrowReservedTries bounds how many builds one checkout tries while a child key it composed is held by an escrow on
+// record or reserved by the orphan sweep (A-366): after a restore, the lost escrows past the restore's margin of 50.
+const escrowReservedTries = 100
 
 // escrowCheckoutCtx marks the draft -> awaiting_payment transition of an escrow checkout: it needs the escrow node,
 // not a pooled wallet for the currency (transition).
@@ -104,10 +116,9 @@ type escrowParty struct {
 }
 
 // escrowParties locks the buyer's and the vendor's key rows (in account order, so two checkouts never deadlock) and
-// returns each party's key with its next child suffix: one more than the highest this account's escrows used under
-// any origin, never below 1 (A-314: a counter per origin restarted at /0/1 when a key's origin changed, a child key
-// an existing escrow already held). The count keys off the account, never the HMAC, so an APP_SECRET_KEY rotation
-// never hands out a child key twice (chair's ruling (a) on QA25); the key rows locked FOR UPDATE serialise it.
+// returns each party's key with its next child suffix (escrowNextChildSQL). The count keys off the account, never the
+// HMAC, so an APP_SECRET_KEY rotation never hands out a child key twice (chair's ruling (a) on QA25); the key rows
+// locked FOR UPDATE serialise it.
 func (a *App) escrowParties(ctx context.Context, tx *sql.Tx, o *Order) (buyer, vendor escrowParty, err error) {
 	rows, err := tx.QueryContext(ctx, `SELECT user_id,xpub_sealed,xpub_hmac,origin_fingerprint,origin_path,active_at IS NOT NULL FROM user_escrow_keys
 		WHERE user_id IN ($1,$2) ORDER BY user_id FOR UPDATE`, o.BuyerID, o.VendorID)
@@ -150,8 +161,7 @@ func (a *App) escrowParties(ctx context.Context, tx *sql.Tx, o *Order) (buyer, v
 			return escrowParty{}, refused
 		}
 		var next int64
-		if err = tx.QueryRowContext(ctx, `SELECT COALESCE(max(split_part(derivation_suffix,'/',3)::bigint),0)+1 FROM escrow_pubkeys
-			WHERE user_id=$1 AND derivation_suffix ~ '^/0/[1-9][0-9]{0,9}$'`, uid).Scan(&next); err != nil {
+		if err = tx.QueryRowContext(ctx, escrowNextChildSQL, uid).Scan(&next); err != nil {
 			return escrowParty{}, err
 		}
 		p := escrowParty{Party: name, UserID: uid, KeyHMAC: r.hmac, Key: key, Suffix: escrowChildSuffix(next), Index: next}
@@ -166,6 +176,13 @@ func (a *App) escrowParties(ctx context.Context, tx *sql.Tx, o *Order) (buyer, v
 	vendor, err = party(o.VendorID, "vendor", errEscrowVendorKey)
 	return buyer, vendor, err
 }
+
+// escrowNextChildSQL is an account's next escrow child index ($1 the user ID): one more than the highest its escrows
+// used under any origin (A-314: a counter per origin restarted at /0/1 when a key's origin changed, a child key an
+// existing escrow already held), never below the floor a restore set (escrow_index_floors, P2-R10) and never below 1.
+const escrowNextChildSQL = `SELECT GREATEST(COALESCE(max(split_part(derivation_suffix,'/',3)::bigint),0)+1,
+	COALESCE((SELECT next_index FROM escrow_index_floors WHERE user_id=$1),1)) FROM escrow_pubkeys
+	WHERE user_id=$1 AND derivation_suffix ~ '^/0/[1-9][0-9]{0,9}$'`
 
 // escrowCheckoutAction: the buyer moves a draft to awaiting_payment into a new escrow (see the file comment). The
 // refusals that need no node come first and make no RPC.
@@ -202,6 +219,12 @@ func escrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	} else if gate {
 		return actionResult{}, errEscrowRestoring
 	}
+	// After a restore, until the orphan sweep has reserved the lost escrows' keys (A-366): no node call either.
+	if sweep, err := escrowSweepRequired(ctx, c.Tx); err != nil {
+		return actionResult{}, err
+	} else if sweep {
+		return actionResult{}, errEscrowSweep
+	}
 	if ok, err := sellerIsVendor(c, o.ProductID); err != nil {
 		return actionResult{}, err
 	} else if !ok {
@@ -221,12 +244,29 @@ func escrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	if err = lockPaymentIntake(c, o.Currency); err != nil {
 		return actionResult{}, err
 	}
-	if eligible, price, err := escrowEligible(ctx, c.Tx, &o); err != nil {
+	eligible, price, dispatchDays, err := escrowEligible(ctx, c.Tx, &o)
+	if err != nil {
 		return actionResult{}, err
 	} else if !eligible {
 		return actionResult{}, errEscrowKind
 	} else if price < payoutFloor(o.Currency, "release") {
 		return actionResult{}, fail(400, subFloorListing(o.Currency))
+	}
+	// A physical order: the buyer must be able to send the vendor an encrypted shipping address (A-83, as payAction
+	// checks), and the escrow snapshots the release deadline length in force with the listing's dispatch window. Both
+	// are settled before the node is asked anything.
+	releaseDays := 0
+	if o.Kind == "physical" {
+		if ok, err := userCanReceiveEncrypted(ctx, c.Tx, o.VendorID); err != nil {
+			return actionResult{}, err
+		} else if !ok {
+			return actionResult{}, fail(409, "Escrow unavailable. "+noVendorKeyReason+" Nothing was changed.")
+		}
+		if releaseDays, err = escrowReleaseDays(ctx, c.Tx); err != nil {
+			return actionResult{}, err
+		}
+	} else {
+		dispatchDays = 0 // a digital escrow has no dispatch window or release deadline
 	}
 	buyer, vendor, err := a.escrowParties(ctx, c.Tx, &o)
 	if err != nil {
@@ -270,7 +310,7 @@ func escrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	if err != nil {
 		return actionResult{}, err
 	}
-	if err = insertEscrow(ctx, c.Tx, o.ID, refund, feeBps, feeAddr, built); err != nil {
+	if err = insertEscrow(ctx, c.Tx, o.ID, refund, feeBps, feeAddr, releaseDays, dispatchDays, built); err != nil {
 		return actionResult{}, err
 	}
 	// The import is the last step before commit: the address is shown only once the watch-only wallet watches it.
@@ -282,26 +322,58 @@ func escrowCheckoutAction(c *actionCtx) (actionResult, error) {
 }
 
 // buildUnwatchedEscrow builds the order's escrow (buildEscrow) at a fresh market index and checks, before anything is
-// written or imported, that the watch-only wallet does not already watch its address (A-359). A restored database
-// knows nothing of the escrows created after its backup: each party's next child index (one more than the highest
-// its escrows on record used) and the market counter are back where the backup left them, so the same buyer and
-// vendor would get an escrow address handed out after the backup, and their deposits would merge. When the wallet
-// watches the composed address, both party indices and the market index move on by one and the build is tried
-// again, at most escrowWatchedTries times. A skipped market index is never used again (a sequence); skipped party
-// indices lie below the ones the escrow stores, which the next escrow counts from. After the last try nothing is
-// written or imported and the checkout is refused with a fixed 503. Only the composed address is checked: a child key
-// a lost escrow used, combined with other keys into another address, is not detected (docs/testnet-runbook.md).
+// written or imported, that none of its child keys is held by an escrow on record or reserved by the orphan sweep
+// (A-366) and that the watch-only wallet does not already watch its address (A-359). A restored database knows nothing
+// of the escrows created after its backup: each party's next child index (one more than the highest its escrows on
+// record used, or the floor the restore set) and the market counter are back where the backup left them.
+//
+// A key on record or reserved (escrow_pubkeys, escrow_reserved_keys: one query, no RPC) would link this escrow on chain
+// to the escrow that used it, whatever address it is composed into: only the colliding party's index moves on by one
+// (for the market key, the next market index) and the build is tried again without asking the wallet, at most
+// escrowReservedTries times; then the checkout is refused (errEscrowKeyTaken). Normal operation finds no such key and
+// makes no extra node call.
+//
+// When the wallet watches the composed address (the same buyer and vendor would get an escrow address handed out after
+// the backup, and their deposits would merge), both party indices and the market index move on by one and the build
+// is tried again, at most escrowWatchedTries times; then the checkout is refused with a fixed 503 (errEscrowWatched).
+//
+// A skipped market index is never used again (a sequence); skipped party indices lie below the ones the escrow stores,
+// which the next escrow counts from. After the last try nothing is written or imported.
 func (a *App) buildUnwatchedEscrow(ctx context.Context, tx *sql.Tx, e *escrowBTC, orderID string, sats int64, buyer, vendor escrowParty) (*builtEscrow, error) {
-	for try := 1; ; try++ {
-		var marketIndex int64
-		if err := tx.QueryRowContext(ctx, "SELECT nextval('escrow_market_index')").Scan(&marketIndex); err != nil {
-			return nil, err
+	var marketIndex int64
+	nextMarket := true
+	for watched, reserved := 0, 0; ; {
+		if nextMarket {
+			if err := tx.QueryRowContext(ctx, "SELECT nextval('escrow_market_index')").Scan(&marketIndex); err != nil {
+				return nil, err
+			}
 		}
 		built, err := e.buildEscrow(ctx, orderID, sats, buyer, vendor, marketIndex)
-		var known bool
-		if err == nil {
-			known, err = e.watchKnows(ctx, built.Address)
+		if err != nil {
+			log.Printf("escrow: escrow for order %s not built: %s", shortID(orderID), errorClassOf(err))
+			return nil, errEscrowBuild
 		}
+		held, err := heldEscrowKeys(ctx, tx, built.Keys)
+		if err != nil {
+			return nil, err
+		}
+		if len(held) > 0 {
+			if reserved++; reserved == escrowReservedTries {
+				log.Printf("escrow: escrow for order %s not built: every child key tried is already held by an escrow or reserved (%d tries)", shortID(orderID), escrowReservedTries)
+				return nil, errEscrowKeyTaken
+			}
+			log.Printf("escrow: escrow for order %s: a child key it composed is already held by an escrow or reserved by the orphan sweep (a restored database?); trying that key's next index", shortID(orderID))
+			nextMarket = held["market"]
+			for _, p := range []*escrowParty{&buyer, &vendor} {
+				if held[p.Party] {
+					if err = p.next(); err != nil {
+						return nil, err
+					}
+				}
+			}
+			continue
+		}
+		known, err := e.watchKnows(ctx, built.Address)
 		if err != nil {
 			log.Printf("escrow: escrow for order %s not built: %s", shortID(orderID), errorClassOf(err))
 			return nil, errEscrowBuild
@@ -309,32 +381,65 @@ func (a *App) buildUnwatchedEscrow(ctx context.Context, tx *sql.Tx, e *escrowBTC
 		if !known {
 			return built, nil
 		}
-		if try == escrowWatchedTries {
+		if watched++; watched == escrowWatchedTries {
 			log.Printf("escrow: escrow for order %s not built: every address tried is already in the watch-only wallet (%d tries)", shortID(orderID), escrowWatchedTries)
 			return nil, errEscrowWatched
 		}
 		log.Printf("escrow: escrow for order %s: its address is already in the watch-only wallet (a restored database?); trying the next child keys", shortID(orderID))
+		nextMarket = true
 		for _, p := range []*escrowParty{&buyer, &vendor} {
-			p.Index++
-			p.Suffix = escrowChildSuffix(p.Index)
-			if checkEscrowOrigin(p.Key, p.Key.PathText, p.Suffix) != nil {
-				return nil, errEscrowBuild
+			if err = p.next(); err != nil {
+				return nil, err
 			}
 		}
 	}
 }
 
-// escrowEligible reports whether o's listing takes escrow (a digital listing whose content is delivered
-// automatically, as autoDeliveryHook would, and not taken down) and its BTC price.
-func escrowEligible(ctx context.Context, q rowQuerier, o *Order) (bool, int64, error) {
+// next moves the party to its next child index.
+func (p *escrowParty) next() error {
+	p.Index++
+	p.Suffix = escrowChildSuffix(p.Index)
+	if checkEscrowOrigin(p.Key, p.Key.PathText, p.Suffix) != nil {
+		return errEscrowBuild
+	}
+	return nil
+}
+
+// heldEscrowKeys reports which parties' child keys of a built escrow an escrow on record holds or the orphan sweep
+// reserved (A-366).
+func heldEscrowKeys(ctx context.Context, tx *sql.Tx, keys map[string][]byte) (map[string]bool, error) {
+	party := map[string]string{}
+	var hexes []string
+	for p, k := range keys {
+		h := hex.EncodeToString(k)
+		party[h] = p
+		hexes = append(hexes, h)
+	}
+	found, err := collectStrings(ctx, tx, "SELECT pubkey FROM escrow_pubkeys WHERE pubkey=ANY($1) UNION SELECT pubkey FROM escrow_reserved_keys WHERE pubkey=ANY($1)", hexes)
+	if err != nil {
+		return nil, err
+	}
+	held := map[string]bool{}
+	for _, k := range found {
+		held[party[k]] = true
+	}
+	return held, nil
+}
+
+// escrowEligible reports whether o's listing takes escrow, its BTC price and its dispatch window in days (0 = none).
+// A digital listing takes escrow when its content is delivered automatically (as autoDeliveryHook would) and it is
+// not taken down; a physical listing, when it has a dispatch window and is not taken down.
+func escrowEligible(ctx context.Context, q rowQuerier, o *Order) (bool, int64, int, error) {
 	var content string
 	var takenDown bool
 	var price int64
-	if err := q.QueryRowContext(ctx, "SELECT delivery_content,admin_archive_reason IS NOT NULL,btc FROM products WHERE id=$1", o.ProductID).Scan(&content, &takenDown, &price); err != nil {
-		return false, 0, err
+	var dispatch sql.NullInt32
+	if err := q.QueryRowContext(ctx, "SELECT delivery_content,admin_archive_reason IS NOT NULL,btc,dispatch_days FROM products WHERE id=$1", o.ProductID).Scan(&content, &takenDown, &price, &dispatch); err != nil {
+		return false, 0, 0, err
 	}
-	ok := o.Kind == "digital" && strings.TrimSpace(content) != "" && utf8.RuneCountInString(content) <= maxDeliveryChars && !takenDown
-	return ok, price, nil
+	ok := !takenDown && (o.Kind == "digital" && strings.TrimSpace(content) != "" && utf8.RuneCountInString(content) <= maxDeliveryChars ||
+		o.Kind == "physical" && dispatch.Valid)
+	return ok, price, int(dispatch.Int32), nil
 }
 
 // builtEscrow is a checked escrow, not yet imported: its address, the bare-key descriptor with its checksum (what is
@@ -417,15 +522,16 @@ func (e *escrowBTC) buildEscrow(ctx context.Context, orderID string, sats int64,
 	return &builtEscrow{Address: addrs[0], Descriptor: public, MarketIndex: marketIndex, Parties: parties, Keys: keys}, nil
 }
 
-// insertEscrow writes the escrow row (the pinned refund address and the fee snapshot) and its three child keys, each
-// party's with its own origin (ruling (b): origin_path the exact account origin, derivation_suffix below it).
-func insertEscrow(ctx context.Context, tx *sql.Tx, orderID, refund string, feeBps int64, feeDest string, b *builtEscrow) error {
+// insertEscrow writes the escrow row (the pinned refund address, the fee snapshot and, for a physical order, the
+// release deadline length and dispatch window; 0 = none) and its three child keys, each party's with its own origin
+// (ruling (b): origin_path the exact account origin, derivation_suffix below it).
+func insertEscrow(ctx context.Context, tx *sql.Tx, orderID, refund string, feeBps int64, feeDest string, releaseDays, dispatchDays int, b *builtEscrow) error {
 	if feeBps == 0 {
 		feeDest = ""
 	}
 	var id int64
-	err := tx.QueryRowContext(ctx, `INSERT INTO escrows(order_id,address,market_index,refund_address,fee_bps,fee_destination)
-		VALUES($1,$2,$3,$4,$5,$6) RETURNING id`, orderID, b.Address, b.MarketIndex, refund, feeBps, feeDest).Scan(&id)
+	err := tx.QueryRowContext(ctx, `INSERT INTO escrows(order_id,address,market_index,refund_address,fee_bps,fee_destination,release_days,dispatch_days)
+		VALUES($1,$2,$3,$4,$5,$6,NULLIF($7,0),NULLIF($8,0)) RETURNING id`, orderID, b.Address, b.MarketIndex, refund, feeBps, feeDest, releaseDays, dispatchDays).Scan(&id)
 	var pe *pgconn.PgError
 	if errors.As(err, &pe) && pe.Code == "23505" && pe.ConstraintName == "escrows_refund_address_key" {
 		return errEscrowRefundUsed // another checkout pinned it first

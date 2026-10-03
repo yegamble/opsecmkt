@@ -342,12 +342,24 @@ without a `payouts` table need only the `settings` and `audit_events` statements
 line if their `payouts` table has no such column, as migration 053 then marks their failed payouts ambiguous
 itself, and omit the `settlements` line if the database has no `settlements.send_error` column (before migration
 076, when no escrow settlement could have a stored transaction). That line holds every restored Bitcoin escrow
-settlement with a stored transaction until an administrator confirms its rebroadcast on `/admin`.
+settlement with a stored transaction until an administrator confirms its rebroadcast on `/admin`; the
+`settlement_bumps` line holds every restored fee bump of one with a stored transaction until that confirmation of its
+settlement (omit it if the database has no `settlement_bumps` table, before migration 080). The
+`escrow_release_recheck` line asks the escrow watcher's next pass to move every release deadline of a shipped physical
+escrow order that has passed in the restored records to 72 hours later, telling each buyer. The `escrow_sweep_required`
+line makes escrow checkout wait until the escrow watcher has reserved the keys of every escrow its watch-only wallet
+holds and the restored records lack, and the `escrow_index_floors` and `setval` lines move every account's next escrow
+child index and the market's escrow key index 50 past the restored records, so no escrow key is handed out twice (A-366;
+omit those two lines if the database has no `escrow_index_floors` table, before migration 083).
 
 <!-- runbook-sql: restore-protection -->
 ```sql
 BEGIN;
 INSERT INTO settings(key,value) VALUES ('payments_recovery_required','true')
+ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
+INSERT INTO settings(key,value) VALUES ('escrow_release_recheck','true')
+ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
+INSERT INTO settings(key,value) VALUES ('escrow_sweep_required','true')
 ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
 UPDATE payouts SET state='held', updated=now(),
   error='Restored from backup: verify in the wallet before releasing; this payout may already have been sent.'
@@ -359,6 +371,16 @@ UPDATE payouts SET updated=now(),
 WHERE state='failed';
 UPDATE settlements SET send_error='Restored from backup: check that this escrow settlement''s transaction was not already sent or replaced, then confirm its rebroadcast on the admin page.', updated=now()
 WHERE raw_tx IS NOT NULL AND state IN ('signed','broadcast');
+UPDATE settlement_bumps SET send_error='Restored from backup: check that this escrow settlement''s transaction was not already sent or replaced, then confirm its rebroadcast on the admin page.', updated=now()
+WHERE raw_tx IS NOT NULL AND state IN ('signed','broadcast');
+INSERT INTO escrow_index_floors(user_id,next_index)
+SELECT k.user_id, GREATEST(COALESCE(max(split_part(p.derivation_suffix,'/',3)::bigint),0)+1, COALESCE(max(f.next_index),1))+50
+FROM user_escrow_keys k
+LEFT JOIN escrow_pubkeys p ON p.user_id=k.user_id AND p.derivation_suffix ~ '^/0/[1-9][0-9]{0,9}$'
+LEFT JOIN escrow_index_floors f ON f.user_id=k.user_id
+GROUP BY k.user_id
+ON CONFLICT (user_id) DO UPDATE SET next_index=EXCLUDED.next_index;
+DO $$ BEGIN PERFORM setval('escrow_market_index', nextval('escrow_market_index')+49); END $$;
 INSERT INTO audit_events(user_id,action) VALUES (NULL, 'Payout recovery gate set manually (UPGRADING.md section 6); all outbound payouts paused until an administrator clears the gate');
 COMMIT;
 ```
@@ -898,6 +920,84 @@ longer has), the next child keys are tried, at most 20 tries in all, and after t
 fixed 503 and the order stays a draft. Only the whole composed address is checked ([runbook](docs/testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts)).
 No action is needed. Rolling back past this release needs the pre-upgrade backup, as for every migration (section 5):
 the earlier release refuses to start on a database that records migration 078.
+
+## 24. Bitcoin escrow for physical orders: dispatch windows and deadlines (migration 079)
+
+Migration 079 runs at startup. It adds `products.dispatch_days` (a listing's dispatch window, 1 to 30 days; empty for
+every listing that exists before the upgrade) and six columns to `escrows` (`release_days` and `dispatch_days`, the
+release deadline length and dispatch window an escrow snapshots at checkout; `ship_by`, when a buyer may cancel an
+unshipped paid order; `release_at`, the release deadline; `reminded_at`, the 72-hour reminder; `release_recheck`, set
+once a restore has moved a deadline), and a trigger, `escrows_deadlines_frozen`, that refuses any change to a snapshot
+or a deadline once it is set, except that a restore's recheck may move `release_at` later. Like migrations 074–078 it
+changes nothing unless `ESCROW_BTC=on` (regtest only, off by default): with it off nothing reads or writes the new
+escrow columns, and the only visible effect is that a physical listing created or saved from now on is stored with a
+dispatch window (3 days unless its vendor gives another; the listing form shows the field only while escrow is on).
+With escrow on, this release also offers escrow checkout for physical listings, adds the administrator's release
+deadline length to `/admin` (setting `escrow_release_days`, default 14, 7 to 30 days; [operator
+guide](docs/operator-guide.md#bitcoin-escrow-regtest-only)) and a ship-by time and a release deadline to each physical
+escrow order. A physical listing that exists before the upgrade has no dispatch window and takes no escrow checkout
+until its vendor saves it; a save stores the default of 3 days even while escrow is off (the field is then hidden),
+so once escrow is turned on such a listing takes escrow checkout with a 3-day window its vendor did not choose. A
+listing that already has a window keeps it on save. No action is needed. Rolling back past this release needs the pre-upgrade backup, as for
+every migration (section 5): the earlier release refuses to start on a database that records migration 079.
+
+## 25. Bitcoin escrow fee bumps (migration 080)
+
+Migration 080 runs at startup. It adds the tables `settlement_bumps` (a replacement of a broadcast settlement's
+transaction that pays the same outputs with a higher network fee: who asked for it, its fee rate, unsigned PSBT and
+transaction ID, which party signed first, the final transaction once stored, and its state) and
+`settlement_bump_signatures` (one party's signature per input; the pasted PSBT is never stored), the function
+`settlement_claimant`, and triggers that make a bump follow its rules in the database: requested only for a broadcast
+settlement, built only by the market, signed first by the claimant (the vendor of a release, the buyer of a refund),
+final once stored, moving only forward, and never deleted. The settlement's own row never changes. Like the earlier
+escrow migrations it changes nothing unless `ESCROW_BTC=on` (regtest only, off by default); pooled payments are
+unchanged. With escrow on, the claimant of a broadcast settlement that is not yet mined sees a form to raise its network
+fee on the order page; the escrow RPC user's `rpcwhitelist` needs no new method. `scripts/restore.sh` and the manual SQL
+in [section 6](#6-backups-now-need-the-wallets-too) hold a restored fee bump with a stored transaction until an
+administrator confirms its settlement's rebroadcast (omit the `settlement_bumps` line of that SQL if you apply it to a
+database from before this migration). No action is needed. Rolling back past this release needs the pre-upgrade
+backup, as for every migration (section 5): the earlier release refuses to start on a database that records migration
+080.
+
+## 26. Bitcoin escrow: the market signs only when the order's state fits (migration 081)
+
+Migration 081 runs at startup. It adds the function `escrow_market_may_sign` and two triggers, `settlements_market_fits`
+and `settlement_bumps_market_fits`: a final transaction the market co-signed is stored only when the order's state fits
+the settlement's kind (a release on a completed order or one decided for the vendor, a refund on a cancelled order or
+one decided for the buyer, a stray refund on any closed order). It is the database's backstop for a physical order's
+release, which is built when the order is shipped and which the buyer and the vendor complete with their own two
+signatures before the order's outcome. Rows stored before the migration are not checked again. Like the earlier escrow
+migrations it changes nothing unless `ESCROW_BTC=on` (regtest only, off by default). No action is needed. Rolling back
+past this release needs the pre-upgrade backup, as for every migration (section 5): the earlier release refuses to
+start on a database that records migration 081.
+
+## 27. Bitcoin escrow fee bumps seen on the network (migration 082)
+
+Migration 082 runs at startup. It replaces the function of the trigger `settlement_bumps_frozen` and allows a third
+value, `network`, for `settlement_bumps.cosigned`: a fee bump whose transaction is already on the network when the
+market comes to follow it (the buyer and the vendor signed it and sent it themselves, or a restored database holds an
+older row whose transaction was sent after the backup) is checked, stored and recorded as broadcast instead of being
+treated as a spend outside the market. Every other rule of migration 080 is unchanged. Like the earlier escrow
+migrations it changes nothing unless `ESCROW_BTC=on` (regtest only, off by default). No action is needed. Rolling back
+past this release needs the pre-upgrade backup, as for every migration (section 5): the earlier release refuses to
+start on a database that records migration 082.
+
+## 28. Bitcoin escrow keys after a restore (migration 083)
+
+Migration 083 runs at startup. It adds the tables `escrow_reserved_keys` (each public key of an address the escrow
+watch-only wallet holds with no escrow on record, with that address) and `escrow_index_floors` (for each account with an
+escrow key, the lowest child index its next escrow may use). Both stay empty unless the market has run Bitcoin escrow
+(`ESCROW_BTC=on`, regtest only, off by default) and has been restored from a backup. Every restore by
+`scripts/restore.sh` (and the manual SQL in [section 6](#6-backups-now-need-the-wallets-too), which already carries
+these lines together with the one that asks for a release deadline recheck) sets `escrow_release_recheck` and
+`escrow_sweep_required`, which act only while escrow is on, and writes the floors and moves the market's escrow key
+index 50 past the restored records; with escrow on, checkout then answers 503 until the escrow watcher has reserved the
+keys of every orphan address, so that no escrow key is handed out twice (A-366). A dump taken before this migration has
+no `escrow_index_floors` table when `scripts/restore.sh` runs, so that restore gets the sweep and the
+recheck but not the margin. If an orphan's keys cannot be read, checkout stays paused until an operator deals with it:
+see the [test-network runbook](docs/testnet-runbook.md#an-orphan-whose-keys-cannot-be-read-escrow-checkout-stays-paused).
+No action is needed at upgrade. Rolling back past this release needs the pre-upgrade backup, as for every migration
+(section 5): the earlier release refuses to start on a database that records migration 083.
 
 ## Appendix: new keys by hand
 

@@ -27,7 +27,10 @@ import (
 // it is refused, sendRebroadcastSent). With ESCROW_BTC off the confirmation route is off and /admin offers no form for
 // it (A-360). A held settlement stays held after the gate is cleared, until an administrator confirms it; one the
 // watch-only wallet shows on the network is recorded as broadcast without being sent, and one that confirms is no
-// longer held. While the gate is set, escrow checkout is refused too (errEscrowRestoring, A-359).
+// longer held. While the gate is set, escrow checkout is refused too (errEscrowRestoring, A-359). Fee bumps (P2-d,
+// escrow_bump.go) are not built, co-signed or sent while the gate is set; the restore holds each restored bump with a
+// final transaction as it holds a settlement, and the administrator's confirmation of the settlement covers its bumps:
+// the market then sends the highest-fee stored transaction once.
 
 func init() {
 	registerAction("/admin/escrow-rebroadcast", actionSpec{Roles: []string{"admin"}, OwnTx: true, Off: escrowOff, Run: escrowRebroadcastAction})
@@ -56,6 +59,18 @@ const restoreGateSQL = "EXISTS(SELECT 1 FROM settings WHERE key='payments_recove
 func restoreGateSet(ctx context.Context, q rowQuerier) (bool, error) {
 	var on bool
 	err := q.QueryRowContext(ctx, "SELECT "+restoreGateSQL).Scan(&on)
+	return on, err
+}
+
+// escrowSweepKey is the setting scripts/restore.sh (and the manual protection SQL in UPGRADING.md section 6) writes
+// after a restore: escrow checkout waits (errEscrowSweep) until the escrow watcher's orphan sweep has read and reserved
+// the keys of every escrow the restored database lost (reconcileOrphans), which clears it (P2-R10, A-366).
+const escrowSweepKey = "escrow_sweep_required"
+
+// escrowSweepRequired reports whether a restore asked for the orphan sweep and none has completed since.
+func escrowSweepRequired(ctx context.Context, q rowQuerier) (bool, error) {
+	var on bool
+	err := q.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM settings WHERE key=$1 AND value='true')", escrowSweepKey).Scan(&on)
 	return on, err
 }
 
@@ -158,19 +173,22 @@ func escrowRecoveryLoader(ctx context.Context, a *App, _ *http.Request, d *PageD
 		return err
 	}
 	v := &EscrowRecoveryView{Gate: gate, On: a.escrowConfigured}
-	rows, err := a.db.QueryContext(ctx, `SELECT id,order_id,kind,state,txid,send_error FROM settlements
-		WHERE raw_tx IS NOT NULL AND state IN ('signed','broadcast') AND (send_error LIKE $1 OR send_error=$2 OR $3) ORDER BY id`, restoredHoldPrefix+"%", sendRebroadcastOK, gate)
+	// A settlement is also held while a restore holds one of its fee bumps (P2-d, escrow_bump.go).
+	rows, err := a.db.QueryContext(ctx, `SELECT id,order_id,kind,state,txid,send_error,EXISTS(SELECT 1 FROM settlement_bumps b WHERE b.settlement_id=s.id AND b.send_error LIKE $1) FROM settlements s
+		WHERE raw_tx IS NOT NULL AND state IN ('signed','broadcast') AND (send_error LIKE $1 OR send_error=$2 OR $3
+		OR EXISTS(SELECT 1 FROM settlement_bumps b WHERE b.settlement_id=s.id AND b.send_error LIKE $1)) ORDER BY id`, restoredHoldPrefix+"%", sendRebroadcastOK, gate)
 	if err != nil {
 		return err
 	}
 	for rows.Next() {
 		var h EscrowHeldView
 		var sendErr string
-		if err = rows.Scan(&h.ID, &h.OrderID, &h.Kind, &h.State, &h.TxID, &sendErr); err != nil {
+		var bumpHeld bool
+		if err = rows.Scan(&h.ID, &h.OrderID, &h.Kind, &h.State, &h.TxID, &sendErr, &bumpHeld); err != nil {
 			rows.Close()
 			return err
 		}
-		h.Short, h.Restored, h.Confirmed, h.Sent = shortID(h.OrderID), restoreHeld(sendErr), sendErr == sendRebroadcastOK, sendErr == sendRebroadcastSent
+		h.Short, h.Restored, h.Confirmed, h.Sent = shortID(h.OrderID), restoreHeld(sendErr) || bumpHeld, sendErr == sendRebroadcastOK, sendErr == sendRebroadcastSent
 		h.Kind = settlementKind(h.Kind)
 		v.Held = append(v.Held, h)
 	}
@@ -239,6 +257,10 @@ func escrowRebroadcastAction(c *actionCtx) (actionResult, error) {
 		if err != nil {
 			return actionResult{}, err
 		}
+		var bumpHeld bool
+		if err = c.Tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM settlement_bumps WHERE settlement_id=$1 AND send_error LIKE $2)", id, restoredHoldPrefix+"%").Scan(&bumpHeld); err != nil {
+			return actionResult{}, err
+		}
 		switch {
 		case !raw.Valid || state != "signed" && state != "broadcast":
 			return actionResult{}, fail(409, "This settlement has no stored transaction waiting to be broadcast. Nothing was changed.")
@@ -246,7 +268,7 @@ func escrowRebroadcastAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, fail(409, "Its rebroadcast is already confirmed: the market broadcasts it once on its next pass. Nothing was changed.")
 		case sendErr == sendRebroadcastSent && gate:
 			return actionResult{}, fail(409, "Its confirmed rebroadcast was already sent: the market follows its confirmations and does not send it again while it reconciles its records after a restore. Nothing was changed.")
-		case !restoreHeld(sendErr) && !gate:
+		case !restoreHeld(sendErr) && !gate && !bumpHeld:
 			return actionResult{}, fail(409, "This settlement is not held: the market broadcasts it by itself. Nothing was changed.")
 		}
 		res, err := c.Tx.ExecContext(ctx, "UPDATE settlements SET send_error=$2,updated=now() WHERE id=$1 AND state=$3 AND send_error=$4", id, sendRebroadcastOK, state, sendErr)
@@ -255,6 +277,11 @@ func escrowRebroadcastAction(c *actionCtx) (actionResult, error) {
 		}
 		if n, _ := res.RowsAffected(); n != 1 {
 			return actionResult{}, fail(409, "The settlement changed meanwhile. Reload the admin page. Nothing was changed.")
+		}
+		// P2-d: the confirmation covers the settlement's fee bumps too; the market then sends the highest-fee stored
+		// transaction once (trackBroadcast).
+		if _, err = c.Tx.ExecContext(ctx, "UPDATE settlement_bumps SET send_error='',updated=now() WHERE settlement_id=$1 AND send_error LIKE $2", id, restoredHoldPrefix+"%"); err != nil {
+			return actionResult{}, err
 		}
 		if _, err = c.Tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) SELECT id,state,state,$2,$3 FROM orders WHERE id=$1", orderID, c.User.ID,
 			"An administrator checked that this escrow settlement's transaction was not already sent or replaced after the market restored its records from a backup; the market broadcasts it once on its next pass."); err != nil {
@@ -308,7 +335,11 @@ func (a *App) seenWhilePaused(ctx context.Context, e *escrowBTC, id int64, order
 //   - reconcileOrphans, on the escrow watcher's daily check: every address the watch-only wallet holds
 //     (watchedAddresses: listreceivedbyaddress with include_empty, never listdescriptors) with no escrows row is listed
 //     in escrow_orphans for administrators: a descriptor imported for a checkout that rolled back after the import, or
-//     an escrow created after the backup a restored database came from.
+//     an escrow created after the backup a restored database came from. The orphan sweep (P2-R10, A-366) also reads
+//     the three keys of each orphan not yet swept (getaddressinfo, watchKeys) and reserves them in
+//     escrow_reserved_keys, so checkout never hands one out again inside another escrow address. After a restore
+//     (escrowSweepKey) it runs on every pass, gate or not, until a sweep has read every orphan; that sweep clears the
+//     setting in the same transaction that reserves the keys.
 
 // spenderOf is the transaction the watch-only wallet names as spending an input of the stored settlement transaction,
 // or "" when it names none (or cannot be read: the spend is flagged without it).
@@ -335,10 +366,19 @@ func (a *App) spenderOf(ctx context.Context, e *escrowBTC, stored *psbtPacket) s
 // without the market: when the watch-only wallet holds the stored transaction itself, the buyer and the vendor signed
 // the copies they downloaded and broadcast it, and it is checked and recorded as broadcast (spentBeforeCosign, as for a
 // party-signed one, A-344); any other transaction makes the settlement external, flagged for staff, so its order page
-// stops asking for a signature that can never complete. It runs while the restore gate is set too: it only watches.
+// stops asking for a signature that can never complete. A physical order's release before the outcome (shipped or
+// disputed) still waits for a party's signature once one party signed, and the market never spends it either, so a
+// party-signed one is followed the same way (A-385): the parties may have combined the stored signature with one made
+// offline and broadcast it. It runs while the restore gate is set too: it only watches.
 func (a *App) trackAwaiting(ctx context.Context, e *escrowBTC) error {
-	return a.eachSettlement(ctx, "not followed", "SELECT id FROM settlements WHERE state='awaiting_signature' ORDER BY id", func(id int64) error {
+	return a.eachSettlement(ctx, "not followed", `SELECT s.id FROM settlements s JOIN orders o ON o.id=s.order_id WHERE s.state='awaiting_signature'
+		OR s.state='party_signed' AND s.kind='release' AND o.state IN ('shipped','disputed') ORDER BY s.id`, func(id int64) error {
 		b, err := a.loadSettleBuild(ctx, id, "awaiting_signature")
+		if err == nil && b == nil {
+			if b, err = a.loadSettleBuild(ctx, id, "party_signed"); b != nil && !releaseBeforeOutcome(b.Kind, b.OrderState) {
+				return nil // the order reached its outcome meanwhile: cosignSettlements completes it
+			}
+		}
 		if err != nil || b == nil {
 			return err
 		}
@@ -479,7 +519,9 @@ func escrowOrderLabel(label string) string {
 }
 
 // reconcileOrphans lists the watch-only wallet's addresses with no escrows row (the second bullet above), replacing
-// the previous list: an address that has an escrow row again, or that the wallet no longer holds, leaves it.
+// the previous list: an address that has an escrow row again, or that the wallet no longer holds, leaves it. It reserves
+// the keys of each orphan not yet in escrow_reserved_keys (the orphan sweep), and once every orphan's keys were read it
+// clears escrowSweepKey; an orphan whose keys could not be read leaves the setting as it was, and the error is returned.
 func (a *App) reconcileOrphans(ctx context.Context, e *escrowBTC) error {
 	watched, err := e.watchedAddresses(ctx)
 	if err != nil {
@@ -490,6 +532,21 @@ func (a *App) reconcileOrphans(ctx context.Context, e *escrowBTC) error {
 		if _, ok := escrowAddressForm(w.Address); ok {
 			addrs = append(addrs, w.Address)
 		}
+	}
+	// The sweep's reads come before the transaction: the orphans as the database sees them now, less those swept before.
+	unswept, err := a.unsweptOrphans(ctx, addrs)
+	if err != nil {
+		return err
+	}
+	keys := map[string][][]byte{}
+	var sweepErr error
+	for _, addr := range unswept {
+		k, err := e.watchKeys(ctx, addr)
+		if err != nil {
+			sweepErr = &watchError{label: "escrow", class: "orphan sweep incomplete: " + errorClassOf(err), err: err}
+			continue
+		}
+		keys[addr] = k
 	}
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -503,7 +560,7 @@ func (a *App) reconcileOrphans(ctx context.Context, e *escrowBTC) error {
 	// Never nil: a nil slice is sent as NULL, and NOT (address=ANY(NULL)) is NULL, so the DELETE below would keep every
 	// row once the wallet holds no orphan at all (A-358).
 	orphans := []string{}
-	added := 0
+	added, reserved := 0, int64(0)
 	for _, w := range watched {
 		if !slices.Contains(addrs, w.Address) || slices.Contains(known, w.Address) {
 			continue
@@ -518,9 +575,22 @@ func (a *App) reconcileOrphans(ctx context.Context, e *escrowBTC) error {
 		if inserted {
 			added++
 		}
+		for _, k := range keys[w.Address] {
+			res, err := tx.ExecContext(ctx, "INSERT INTO escrow_reserved_keys(pubkey,address) VALUES($1,$2) ON CONFLICT (pubkey) DO NOTHING", hex.EncodeToString(k), w.Address)
+			if err != nil {
+				return err
+			}
+			n, _ := res.RowsAffected()
+			reserved += n
+		}
 	}
 	if _, err = tx.ExecContext(ctx, "DELETE FROM escrow_orphans WHERE NOT (address=ANY($1))", orphans); err != nil {
 		return err
+	}
+	if sweepErr == nil {
+		if _, err = tx.ExecContext(ctx, "DELETE FROM settings WHERE key=$1", escrowSweepKey); err != nil {
+			return err
+		}
 	}
 	if err = tx.Commit(); err != nil {
 		return err
@@ -528,5 +598,27 @@ func (a *App) reconcileOrphans(ctx context.Context, e *escrowBTC) error {
 	if added > 0 {
 		log.Printf("escrow: %d address(es) in the watch-only wallet have no escrow record; listed on the admin page", added)
 	}
-	return nil
+	if reserved > 0 {
+		log.Printf("escrow: reserved %d child key(s) of escrow addresses with no escrow record; no new escrow uses them", reserved)
+	}
+	return sweepErr
+}
+
+// unsweptOrphans is the addresses among addrs with no escrows row whose keys the orphan sweep has not reserved yet.
+func (a *App) unsweptOrphans(ctx context.Context, addrs []string) ([]string, error) {
+	rows, err := a.db.QueryContext(ctx, `SELECT a FROM unnest($1::text[]) a WHERE NOT EXISTS (SELECT 1 FROM escrows WHERE address=a)
+		AND NOT EXISTS (SELECT 1 FROM escrow_reserved_keys WHERE address=a) ORDER BY a`, addrs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var s string
+		if err = rows.Scan(&s); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
 }

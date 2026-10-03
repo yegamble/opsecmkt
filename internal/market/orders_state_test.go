@@ -210,7 +210,8 @@ func TestEscrowOnlySystemEdgesRefusedForPooledOrders(t *testing.T) {
 			t.Errorf("escrow-only edge %v is not in the transition table", edge)
 		}
 	}
-	if len(escrowOnly) != 2 {
-		t.Errorf("escrowOnly has %d edges, want the two system completions", len(escrowOnly))
+	// P2-R5 added the buyer's no-ship cancel of a paid escrow order (TestEscrowNoShipCancel refuses it on a pooled one).
+	if len(escrowOnly) != 3 || !escrowOnly[[3]string{statePaid, stateCancelled, roleBuyer}] {
+		t.Errorf("escrowOnly has %d edges, want the two system completions and the buyer's no-ship cancel", len(escrowOnly))
 	}
 }

@@ -94,7 +94,7 @@ func escrowFeeAction(c *actionCtx) (actionResult, error) {
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
 		ctx := c.Ctx()
 		for _, key := range []string{escrowFeeBpsSetting, escrowFeeAddrSetting} {
-			if _, err := c.Tx.ExecContext(ctx, "SELECT 1 FROM settings WHERE key=$1 FOR UPDATE", key); err != nil {
+			if err := lockSetting(ctx, c.Tx, key); err != nil {
 				return actionResult{}, err
 			}
 		}

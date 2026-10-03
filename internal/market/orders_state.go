@@ -30,11 +30,12 @@ const (
 	roleSystem    = "system"
 )
 
-// transitions[from][to] lists the actor roles allowed to make that move. Terminal states map to nothing.
+// transitions[from][to] lists the actor roles allowed to make that move. Terminal states map to nothing. The buyer's
+// paid -> cancelled is escrowOnly (the no-ship cancel, P2-R5).
 var transitions = map[string]map[string][]string{
 	stateDraft:           {stateAwaitingPayment: {roleBuyer}, stateCancelled: {roleBuyer}},
 	stateAwaitingPayment: {statePaid: {roleSystem}, stateCancelled: {roleBuyer, roleVendor, roleSystem}}, // system: payment window expired
-	statePaid:            {stateShipped: {roleVendor}, stateDelivered: {roleVendor, roleSystem}, stateCancelled: {roleVendor}, stateDisputed: {roleBuyer, roleVendor}},
+	statePaid:            {stateShipped: {roleVendor}, stateDelivered: {roleVendor, roleSystem}, stateCancelled: {roleVendor, roleBuyer}, stateDisputed: {roleBuyer, roleVendor}},
 	stateShipped:         {stateCompleted: {roleBuyer, roleSystem}, stateDisputed: {roleBuyer, roleVendor}}, // system: escrowOnly
 	stateDelivered:       {stateCompleted: {roleBuyer, roleSystem}, stateDisputed: {roleBuyer, roleVendor}}, // system: escrowOnly
 	stateDisputed:        {stateResolved: {roleModerator}},
@@ -47,9 +48,16 @@ var transitions = map[string]map[string][]string{
 var transitionKind = map[[2]string]string{{statePaid, stateShipped}: "physical", {statePaid, stateDelivered}: "digital"}
 
 // escrowOnly restricts a move by one role to escrow orders (Order.Escrow; A-244, ARCH-4): the system completes an
-// escrow order (a digital order on funding, escrow_watch.go; a physical one at its release deadline, Phase 2), never
-// a pooled one, whose completion stays the buyer's: on a pooled order these edges are refused (403).
-var escrowOnly = map[[3]string]bool{{stateDelivered, stateCompleted, roleSystem}: true, {stateShipped, stateCompleted, roleSystem}: true}
+// escrow order (a digital order on funding, escrow_watch.go; a physical one at its release deadline, escrow_deadline.go),
+// never a pooled one, whose completion stays the buyer's; and the buyer of a paid physical escrow order cancels it once
+// the vendor has not shipped it in time (P2-R5, escrow_deadline.go). On a pooled order these edges are refused (403).
+var escrowOnly = map[[3]string]bool{{stateDelivered, stateCompleted, roleSystem}: true, {stateShipped, stateCompleted, roleSystem}: true,
+	{statePaid, stateCancelled, roleBuyer}: true}
+
+// pooledOnly restricts a move by one role to pooled orders (A-373, P2-R2): the buyer's Complete queues a pooled payout;
+// on an escrow order the buyer confirms receipt only by signing the release (escrow_release.go), so these edges are
+// refused there (409) and never offered, and "confirm receipt" can never lead to a market co-signature.
+var pooledOnly = map[[3]string]bool{{stateShipped, stateCompleted, roleBuyer}: true, {stateDelivered, stateCompleted, roleBuyer}: true}
 
 var (
 	errConflict  = fail(409, "This order changed or is no longer in that state. Reload and try again.")
@@ -116,6 +124,16 @@ func scanOrder(s interface{ Scan(...any) error }) (Order, error) {
 	return o, err
 }
 
+// noticeDetail is a sentence an action adds to the notice transition sends about one order's move to state to
+// (withNoticeDetail): an escrow order's release deadline in the shipped and dispute notices (P2-R9, escrow_deadline.go).
+type noticeDetail struct{ orderID, to, text string }
+
+type noticeDetailKey struct{}
+
+func withNoticeDetail(ctx context.Context, orderID, to, text string) context.Context {
+	return context.WithValue(ctx, noticeDetailKey{}, noticeDetail{orderID, to, text})
+}
+
 // transition moves an order from -> to inside tx: row lock, rule check, compare-and-set update,
 // order_events row, counterparty notification, then transitionHooks. actor nil = system.
 // Errors are *httpError (errConflict 409, errForbidden 403, errNoOrder 404, or a hook's) or database errors.
@@ -129,6 +147,9 @@ func (a *App) transition(ctx context.Context, tx *sql.Tx, orderID, from, to stri
 	}
 	if o.State != from {
 		return nil, errConflict
+	}
+	if o.Escrow && slices.ContainsFunc(actorRoles(&o, actor), func(r string) bool { return pooledOnly[[3]string{from, to, r}] }) {
+		return nil, errEscrowComplete
 	}
 	allowed, ok := transitions[from][to]
 	if !ok || !slices.ContainsFunc(actorRoles(&o, actor), func(r string) bool {
@@ -166,6 +187,9 @@ func (a *App) transition(ctx context.Context, tx *sql.Tx, orderID, from, to stri
 	if to == stateDisputed {
 		// Only the party who did not open the dispute is notified; it may put one reply on record (A-124).
 		body += ". You may put one reply to the dispute on record from the order page before a moderator decides."
+	}
+	if d, ok := ctx.Value(noticeDetailKey{}).(noticeDetail); ok && d.orderID == orderID && d.to == to {
+		body = strings.TrimSuffix(body, ".") + ". " + d.text
 	}
 	for _, uid := range []string{o.BuyerID, o.VendorID} {
 		if actor != nil && uid == actor.ID {
