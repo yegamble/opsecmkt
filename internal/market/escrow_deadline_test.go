@@ -202,6 +202,18 @@ func TestEscrowDeadlineRelease(t *testing.T) {
 	if x.state(order3) != stateShipped || anyContains(x.events(order3), "auto-release") {
 		t.Fatalf("an order with a dispute row was released: %s %q", x.state(order3), x.events(order3))
 	}
+	// The buyer signed and the vendor did not: the page no longer tells the buyer to do nothing, and at the deadline the
+	// market co-signs the buyer's signature.
+	order4, id4 := x.shippedPhysical(regtestAddr("dl-refund-4"), regtestAddr("dl-claim-4"), 100000)
+	x.signAs(order4, roleBuyer, id4)
+	if page := html.UnescapeString(x.page("/order?id="+order4, x.buyerSess)); strings.Contains(page, "you need do nothing") || !strings.Contains(page, "co-signs the buyer's signature") {
+		t.Fatalf("the page of a release the buyer signed:\n%s", page)
+	}
+	x.forceDeadline(order4, "release_at=now()-interval '1 minute'")
+	x.poll()
+	if r := x.settleByID(id4); x.state(order4) != stateCompleted || r.State != "broadcast" || r.Cosigned != "market" || !anyContains(x.noticesOf(x.vendor, order4), "co-signs the buyer's signature") {
+		t.Fatalf("the buyer-signed release at the deadline: order %s, %+v", x.state(order4), r)
+	}
 	// A pooled shipped order is never touched.
 	pooled := x.testEnv.order(x.buyer, x.physicalListing(x.vendor, 3), "BTC", stateShipped)
 	x.poll()

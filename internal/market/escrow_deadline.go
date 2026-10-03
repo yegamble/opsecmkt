@@ -360,12 +360,14 @@ func lateDispute(c *actionCtx, o *Order) (string, error) {
 }
 
 // deadlineNextStep is the part of a shipped order's "who acts next" line about its release deadline, for viewer.
-func deadlineNextStep(viewer string, dl *EscrowDeadlineView, paused bool) string {
+func deadlineNextStep(viewer string, dl *EscrowDeadlineView, paused, buyerSigned bool) string {
 	switch {
 	case dl.Due && paused:
 		return "The release deadline (" + dl.At + ") has passed: the release is due, and the order completes once the market has finished reconciling its restore from backup."
 	case dl.Due:
 		return "The release deadline (" + dl.At + ") has passed: the release is due, and the order completes on the market's next pass."
+	case buyerSigned:
+		return "If the release is not completed by " + dl.At + ", the order completes at that time and the market co-signs the buyer's signature on the release."
 	case viewer == roleBuyer:
 		return "If you cannot sign, you need do nothing: if you neither sign nor open a dispute by " + dl.At + ", the order completes at that time and the market co-signs the vendor's signature on the release. Open a dispute before then if the goods did not arrive."
 	case viewer == roleVendor:
