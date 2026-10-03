@@ -27,6 +27,19 @@ func init() {
 	registerLoader("admin", escrowReleaseDaysLoader)
 }
 
+// lockSetting serialises concurrent saves of a settings key until the transaction ends (A-379). SELECT … FOR UPDATE
+// on a row that was never saved locks nothing, so two first saves would both read the default as the old value and
+// the audit rows would not chain; the transaction advisory lock is taken whether or not the row exists (the hash
+// names the key, so it cannot collide with another subsystem's lock keys), and the row is locked as well when it does.
+// The old value is read after this, in a new statement, so it sees the other save once that has committed.
+func lockSetting(ctx context.Context, tx *sql.Tx, key string) error {
+	if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(hashtextextended('setting:'||$1, 0))", key); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, "SELECT 1 FROM settings WHERE key=$1 FOR UPDATE", key)
+	return err
+}
+
 // escrowReleaseDays is the release deadline length in force: the administrator's setting, or the default when none
 // was saved. A stored value outside the range is refused rather than guessed (503).
 func escrowReleaseDays(ctx context.Context, q rowQuerier) (int, error) {
@@ -67,7 +80,7 @@ func escrowReleaseDaysAction(c *actionCtx) (actionResult, error) {
 	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
 		ctx := c.Ctx()
-		if _, err := c.Tx.ExecContext(ctx, "SELECT 1 FROM settings WHERE key=$1 FOR UPDATE", escrowReleaseDaysSetting); err != nil {
+		if err := lockSetting(ctx, c.Tx, escrowReleaseDaysSetting); err != nil {
 			return actionResult{}, err
 		}
 		old, err := escrowReleaseDays(ctx, c.Tx)

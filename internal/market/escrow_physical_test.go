@@ -2,9 +2,12 @@ package market
 
 import (
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // Escrow Phase 2, slice P2-a (WR-escrow A-247, A-378; P2-R3 setting, P2-R5 field and snapshot, P2-R8): migration 079,
@@ -297,7 +300,7 @@ func TestEscrowMigration079Frozen(t *testing.T) {
 // The listing's dispatch window (A-378): a physical listing takes 1 to 30 days, 3 when none is given; a digital
 // listing ignores the field; the create and edit forms offer it and show the stored value.
 func TestListingDispatchDaysField(t *testing.T) {
-	e := newTestApp(t)
+	e, _, _ := escrowTestApp(t) // the field is shown only while escrow is on (A-380)
 	owner, s := e.user("dispatch_vendor", "vendor")
 	stored := func(id string) string {
 		return physString(t, e, "SELECT coalesce(dispatch_days::text,'none') FROM products WHERE id=$1", id)
@@ -386,4 +389,108 @@ func TestListingDispatchDaysField(t *testing.T) {
 	if w := e.do("POST", "/listings/update", s, form); w.Code != 303 || stored(old) != "3" {
 		t.Fatalf("saving a listing without a window: %d %s", w.Code, stored(old))
 	}
+}
+
+// concurrentSaves has six administrators post the same escrow setting at once, each with its own value, on a database
+// where it was never saved, and checks that the saves were serialised (A-379): every audit row's old value is the
+// previous row's new value, the first is the value in force before any save, and the stored value is the last new one.
+func (x *escrowEnv) concurrentSaves(path, auditLike string, chain *regexp.Regexp, forms []url.Values, first string) []string {
+	x.t.Helper()
+	var sessions []string
+	for range forms {
+		_, s := x.user("eadm_"+randomToken()[:6], "admin")
+		sessions = append(sessions, s)
+	}
+	var wg sync.WaitGroup
+	codes := make([]int, len(forms))
+	start := make(chan struct{})
+	for i := range forms {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			// The password check has four slots and refuses a fifth caller with 503 before anything is counted or
+			// locked; such a request is sent again, so all six reach the setting's lock.
+			for try := 0; try < 100; try++ {
+				if codes[i] = x.do("POST", path, sessions[i], forms[i]).Code; codes[i] != 503 {
+					return
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	for i, c := range codes {
+		if c != 303 {
+			x.t.Fatalf("admin %d: status %d", i, c)
+		}
+	}
+	rows := agStrings(x.t, x.testEnv, "SELECT action FROM audit_events WHERE action LIKE $1 ORDER BY id", auditLike)
+	if len(rows) != len(forms) {
+		x.t.Fatalf("%d audit rows, want %d: %q", len(rows), len(forms), rows)
+	}
+	prev := first
+	var news []string
+	for _, r := range rows {
+		m := chain.FindStringSubmatch(r)
+		if m == nil || m[1] != prev {
+			x.t.Fatalf("audit row %q: old value is not %q (the previous save's new value); rows %q", r, prev, rows)
+		}
+		prev = m[2]
+		news = append(news, prev)
+	}
+	return news
+}
+
+func TestEscrowReleaseDaysConcurrentFirstSaves(t *testing.T) {
+	x := newEscrowEnv(t)
+	var forms []url.Values
+	for _, d := range []string{"8", "9", "10", "11", "12", "13"} {
+		forms = append(forms, url.Values{"release_days": {d}, "password": {testPassword}})
+	}
+	news := x.concurrentSaves("/admin/escrow-release-days", "Changed the Bitcoin escrow release deadline%", regexp.MustCompile(`: (\d+) → (\d+) days`), forms, "14")
+	if got := physString(t, x.testEnv, "SELECT value FROM settings WHERE key='escrow_release_days'"); got != news[len(news)-1] {
+		t.Fatalf("stored %s, last audit row says %s", got, news[len(news)-1])
+	}
+}
+
+func TestEscrowFeeConcurrentFirstSaves(t *testing.T) {
+	x := newEscrowEnv(t)
+	var forms []url.Values
+	for i, bps := range []string{"100", "200", "300", "400", "500", "600"} {
+		forms = append(forms, url.Values{"fee_bps": {bps}, "fee_address": {regtestAddr("conc-fee-" + strconv.Itoa(i))}, "password": {testPassword}})
+	}
+	news := x.concurrentSaves("/admin/escrow-fee", "Changed the Bitcoin escrow market fee%", regexp.MustCompile(`: (\d+) → (\d+) basis points`), forms, "0")
+	if got := physString(t, x.testEnv, "SELECT value FROM settings WHERE key='escrow_btc_fee_bps'"); got != news[len(news)-1] {
+		t.Fatalf("stored %s, last audit row says %s", got, news[len(news)-1])
+	}
+}
+
+// A-380: the dispatch window field and its help appear on the listing forms only while ESCROW_BTC is on, since
+// nothing reads the window otherwise; saving a physical listing without the field keeps its stored window.
+func TestListingDispatchFieldOnlyWithEscrow(t *testing.T) {
+	check := func(e *testEnv, vendor, session string, want bool) string {
+		t.Helper()
+		listing := e.product(vendor, "physical")
+		agExec(e, "UPDATE products SET dispatch_days=12 WHERE id=$1", listing)
+		for _, page := range []string{"/vendor-dashboard", "/listing-edit?id=" + listing} {
+			body := e.do("GET", page, session, nil).Body.String()
+			for _, s := range []string{`name="dispatch_days"`, "Dispatch within (days)", `id="dispatch-help"`} {
+				if strings.Contains(body, s) != want {
+					t.Fatalf("%s: contains %q = %v, want %v", page, s, !want, want)
+				}
+			}
+		}
+		return listing
+	}
+	off := newTestApp(t)
+	vendor, session := off.user("dispoff_vendor", "vendor")
+	listing := check(off, vendor, session, false)
+	form := inventoryForm(listing, map[string]string{"kind": "physical", "category": "Hardware"})
+	if w := off.do("POST", "/listings/update", session, form); w.Code != 303 || physString(t, off, "SELECT dispatch_days::text FROM products WHERE id=$1", listing) != "12" {
+		t.Fatalf("saving without the field: %d", w.Code)
+	}
+	x := newEscrowEnv(t)
+	check(x.testEnv, x.vendor, x.vendorSess, true)
 }
