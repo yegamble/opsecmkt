@@ -48,8 +48,8 @@ import (
 // settlement, account 0), so its seal is never wiped on any of that evidence: a missing wallet past destroy_after is
 // listed on /admin, where an administrator who is not a party to its orders confirms its destruction with a password
 // step-up (xmrConfirmDestroyedAction, escrow_xmr_restore.go). A missing wallet is tried on every pass; one that opens
-// again is closing, except one whose destruction began: migration 086 refuses that move, so its pass fails and it waits
-// for that confirmation.
+// again is closing, or retained when its destruction had begun (its password change never took effect): it is then
+// destroyed by the usual rule, every precondition checked again, its destroy_started_at kept as it was.
 
 // xmrRetention is ES-7's retention: a wallet is destroyed no earlier than this after its last order closed. Migration
 // 084 requires it, in hours, so that it does not depend on the session's time zone.

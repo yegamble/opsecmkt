@@ -563,12 +563,12 @@ func (a *App) xmrWalletPass(ctx context.Context, w xmrWalletRow, now time.Time, 
 		return false, errXMRWrongWallet
 	}
 	if w.state == "missing" {
-		// It opens again: closing, so it takes no order, and read as any closing wallet.
-		if _, err := a.db.ExecContext(ctx, "UPDATE xmr_escrow_wallets SET state='closing',updated=now() WHERE id=$1 AND state='missing'", w.id); err != nil {
+		// It opens again: closing, so it takes no order, and read as any closing wallet; retained when the market had begun
+		// destroying it (migration 086), so its destruction re-runs every precondition (escrow_xmr_retain.go).
+		if err := a.db.QueryRowContext(ctx, "UPDATE xmr_escrow_wallets SET state=CASE WHEN destroy_started_at IS NULL THEN 'closing' ELSE 'retained' END,updated=now() WHERE id=$1 AND state='missing' RETURNING state", w.id).Scan(&w.state); err != nil {
 			return false, err
 		}
-		w.state = "closing"
-		log.Printf("escrow: Monero escrow wallet %s opens again; closing", w.name)
+		log.Printf("escrow: Monero escrow wallet %s opens again; %s", w.name, w.state)
 	}
 	if sweep {
 		if err := a.xmrLookahead(ctx, w); err != nil {

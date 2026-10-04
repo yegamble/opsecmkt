@@ -10,7 +10,9 @@
 -- password (restored with a mistyped secret, another install's file, a damaged keys file) keeps its seal until an
 -- administrator confirms its destruction. It is set once, only on a retained wallet past destroy_after whose seal is
 -- present, at a time no earlier than destroy_after; once set it never changes or clears, and the wallet then moves only
--- to destroyed or missing. A row is never inserted with it set.
+-- to destroyed or missing, or from missing back to retained: a wallet that opens again with the market's password (the
+-- password change never took effect) is retained, and its destruction re-runs every precondition. A row is never
+-- inserted with it set.
 ALTER TABLE xmr_escrow_wallets ADD COLUMN destroy_started_at timestamptz;
 
 CREATE FUNCTION xmr_escrow_wallets_destroy_started() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -31,8 +33,8 @@ BEGIN
     RETURN NEW;
   END IF;
   IF NEW.destroy_started_at IS DISTINCT FROM OLD.destroy_started_at
-      OR (NEW.state IS DISTINCT FROM OLD.state AND NEW.state NOT IN ('destroyed','missing')) THEN
-    RAISE EXCEPTION 'xmr_escrow_wallets: wallet % keeps the start of its destruction and moves only to destroyed or missing', OLD.id
+      OR (NEW.state IS DISTINCT FROM OLD.state AND NEW.state NOT IN ('destroyed','missing') AND NOT (OLD.state = 'missing' AND NEW.state = 'retained')) THEN
+    RAISE EXCEPTION 'xmr_escrow_wallets: wallet % keeps the start of its destruction and moves only to destroyed or missing, or from missing back to retained', OLD.id
       USING ERRCODE = 'check_violation';
   END IF;
   RETURN NEW;

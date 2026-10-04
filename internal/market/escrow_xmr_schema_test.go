@@ -928,11 +928,11 @@ func TestXMREscrowDisputePreview(t *testing.T) {
 
 // Migration 086, by SQL (A-419): xmr_escrow_wallets.destroy_started_at is set once, only on a retained wallet past
 // destroy_after (at a time no earlier than it), never on insert; once set it never changes or clears, and the wallet
-// moves only to destroyed or missing.
+// moves only to destroyed or missing, or from missing back to retained (it opened again with the market's password).
 func TestXMREscrowMigration086(t *testing.T) {
 	e := newTestApp(t)
 	const started = "starts its destruction only while retained past destroy_after"
-	const kept = "keeps the start of its destruction and moves only to destroyed or missing"
+	const kept = "keeps the start of its destruction and moves only to destroyed or missing, or from missing back to retained"
 	const start = "UPDATE xmr_escrow_wallets SET destroy_started_at=now() WHERE id=$1"
 	const pastDue = "UPDATE xmr_escrow_wallets SET last_closed_at=now()-interval '100 days',destroy_after=now()-interval '1 day' WHERE id=$1"
 	xmrRefused(t, e, "a wallet inserted with its destruction started", "inserted with no destruction started",
@@ -955,9 +955,12 @@ func TestXMREscrowMigration086(t *testing.T) {
 	xmrRefused(t, e, "its start moved", kept, "UPDATE xmr_escrow_wallets SET destroy_started_at=destroy_started_at+interval '1 second' WHERE id=$1", retained)
 	xmrRefused(t, e, "its start cleared", kept, "UPDATE xmr_escrow_wallets SET destroy_started_at=NULL WHERE id=$1", retained)
 	agExec(e, "UPDATE xmr_escrow_wallets SET state='missing' WHERE id=$1", retained)
-	for _, to := range []string{"sealed", "active", "closing", "retained"} {
+	for _, to := range []string{"sealed", "active", "closing"} {
 		xmrRefused(t, e, "a missing wallet whose destruction started moved to "+to, kept, "UPDATE xmr_escrow_wallets SET state=$2 WHERE id=$1", retained, to)
 	}
+	xmrRefused(t, e, "back to retained with its start cleared", kept, "UPDATE xmr_escrow_wallets SET state='retained',destroy_started_at=NULL WHERE id=$1", retained)
+	agExec(e, "UPDATE xmr_escrow_wallets SET state='retained' WHERE id=$1", retained)
+	agExec(e, "UPDATE xmr_escrow_wallets SET state='missing' WHERE id=$1", retained)
 	agExec(e, "UPDATE xmr_escrow_wallets SET state='destroyed',seed_sealed=NULL,destroyed_at=now() WHERE id=$1", retained)
 	direct := xmrWallet(t, e, 7, "retained")
 	agExec(e, pastDue, direct)

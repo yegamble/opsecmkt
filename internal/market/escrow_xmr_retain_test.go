@@ -900,6 +900,56 @@ func TestXMREscrowUnopenableKeepsSeal(t *testing.T) {
 	}
 }
 
+// A-419 (chair ruling on Y-3): a wallet whose destruction began but whose password change never took effect, then
+// missing (its file gone), opens again with the market's password: it is retained, not closing, keeps the recorded start
+// and is destroyed only by the usual rule, every precondition checked again. Coins that arrived meanwhile keep it, flagged
+// once; once they are gone it is destroyed.
+func TestXMREscrowDestroyResumedAfterMissing(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	const name = "escrow-202610-01"
+	x.mustPoll()
+	x.rotate()
+	x.days(name, 91)
+	x.fake.fault("change_wallet_password", fakeXMRNotOpen) // refused: the password stays the market's
+	if err := x.poll(); err == nil {
+		t.Fatal("a refused change_wallet_password passed")
+	}
+	started := x.now
+	if file, _ := x.fake.file(name); x.walletState(name) != "retained" || file.password != xmrWalletPassword(testXMRSecret, name) {
+		x.failWallets()
+	}
+	var file *fakeXMRWalletFile
+	x.fake.edit(func(f *fakeXMREscrow) { file = f.files[name]; delete(f.files, name) })
+	x.now = x.now.Add(time.Hour)
+	x.mustPoll()
+	if x.walletState(name) != "missing" {
+		x.failWallets()
+	}
+	x.fake.edit(func(f *fakeXMREscrow) { f.files[name] = file })
+	x.fake.pay(name, 1, hex64("arrived while missing"), 50000000000, 12)
+	x.now = x.now.Add(time.Hour)
+	x.mustPoll()
+	const flag = "is past its destruction date (90 days after its last order closed) but the market keeps it"
+	if n := agInt(x.testEnv, "SELECT count(*) FROM xmr_escrow_wallets WHERE name=$1 AND state='retained' AND seed_sealed IS NOT NULL AND destroy_started_at=$2", name, started); n != 1 || x.notified(x.admin, flag) != 1 {
+		t.Fatalf("opened again with coins: %v, %d flags", x.wallets(), x.notified(x.admin, flag))
+	}
+	if f, _ := x.fake.file(name); f.password != xmrWalletPassword(testXMRSecret, name) {
+		t.Fatal("its password was changed with coins in it")
+	}
+	x.fake.edit(func(f *fakeXMREscrow) {
+		w := f.files[name]
+		w.transfers = slices.DeleteFunc(w.transfers, func(t *fakeXMRTransfer) bool { return t.TxID == hex64("arrived while missing") })
+	})
+	x.now = x.now.Add(time.Hour)
+	x.mustPoll()
+	if n := agInt(x.testEnv, "SELECT count(*) FROM xmr_escrow_wallets WHERE name=$1 AND state='destroyed' AND seed_sealed IS NULL AND destroyed_at=$2 AND destroy_started_at=$3", name, x.now, started); n != 1 {
+		t.Fatalf("with every precondition met again: %v", x.wallets())
+	}
+	if f, _ := x.fake.file(name); f.password == xmrWalletPassword(testXMRSecret, name) {
+		t.Fatal("destroyed without its password replaced")
+	}
+}
+
 // A-419: a missing wallet past its destroy_after is listed on /admin; an administrator who is not a party to its orders
 // confirms its destruction with a password step-up and an audit row, which wipes its seal. Refused for a wallet not
 // past destroy_after or not missing, under the restore gate or the sweep marker, and for a party.
