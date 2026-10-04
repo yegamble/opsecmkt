@@ -204,7 +204,7 @@ Each package records its own acceptance checks here and edits only its subsectio
 - [ ] Every Monero escrow page and notice uses the custody sentence "held by this market in an account used only for this order, inside a wallet the market opens each month; the market can move these coins" (`TestXMREscrowOrderPanel`, `TestXMREscrowDisputeSupersedes`).
 - [ ] The Monero escrow forms work by keyboard with JavaScript off at 320 px in Chromium, against a simulated escrow wallet-rpc: added in this phase (`tests/e2e/escrow-xmr-journey.spec.ts`); the line stays unticked until its command and result are recorded. Not run in Firefox or WebKit.
 
-Not covered: stagenet, testnet and mainnet, Monero multisig, a wallet with thousands of accounts on a real chain (PAYE-E2: see [verification](verification.md)), a restore of a real backup into a running market with Phase 3 orders on a real chain, and the limits under *What Phase 3 does not protect* in [per-order escrow](escrow.md#phase-3-monero-escrow-on-a-local-fakechain).
+Not covered: stagenet, testnet and mainnet, Monero multisig, a wallet with thousands of accounts on a public network (PAYE-E2 measured one on a local fakechain: see [verification](verification.md)), a restore of a real backup into a running market with Phase 3 orders on a real chain, and the limits under *What Phase 3 does not protect* in [per-order escrow](escrow.md#phase-3-monero-escrow-on-a-local-fakechain).
 
 ### P6 Transparency
 
