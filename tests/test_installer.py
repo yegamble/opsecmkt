@@ -29,7 +29,7 @@ STATUS = 'compose exec -T app /app/server -status'
 PROBE = 'compose run --rm -T --no-deps app -status'
 # Keys whose values are secrets: upgrade never invents them and no command prints them.
 SECRET_KEYS = ('DATABASE_URL', 'POSTGRES_PASSWORD', 'APP_SECRET_KEY', 'SETUP_TOKEN', 'AUDIT_SIGNING_KEY',
-               'BITCOIN_RPC_PASSWORD', 'MONERO_WALLET_RPC_PASSWORD')
+               'BITCOIN_RPC_PASSWORD', 'MONERO_WALLET_RPC_PASSWORD', 'MONERO_WALLET_SECRET')
 PASSWORD = 'correct horse battery staple'
 # The malware scanner (A-184): what clamdscan --version prints once clamd answers, and the calls it takes.
 CLAMD_VERSION = 'ClamAV 1.5.4/28130/Mon Sep 21 06:24:29 2026'

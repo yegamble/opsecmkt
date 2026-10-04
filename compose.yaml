@@ -51,6 +51,18 @@ services:
       ESCROW_BTC_FEE_BPS: ${ESCROW_BTC_FEE_BPS:-}
       ESCROW_BTC_FEE_ADDRESS: ${ESCROW_BTC_FEE_ADDRESS:-}
       ESCROW_BTC_FEE_RATE: ${ESCROW_BTC_FEE_RATE:-}
+      # Monero escrow: a local Monero fakechain only, off unless ESCROW_XMR=on; blank values use the app defaults
+      # (docs/operator-guide.md#monero-escrow-local-fakechain-only). ESCROW_XMR_SEED_KEY is a path inside this
+      # container: mount the public key file read-only there (the app container has no volume for it by default).
+      ESCROW_XMR: ${ESCROW_XMR:-}
+      ESCROW_XMR_WALLET_RPC_URL: ${ESCROW_XMR_WALLET_RPC_URL:-}
+      ESCROW_XMR_DAEMON_URL: ${ESCROW_XMR_DAEMON_URL:-}
+      ESCROW_XMR_FEE_BPS: ${ESCROW_XMR_FEE_BPS:-}
+      ESCROW_XMR_FEE_ADDRESS: ${ESCROW_XMR_FEE_ADDRESS:-}
+      ESCROW_XMR_SLOTS: ${ESCROW_XMR_SLOTS:-}
+      ESCROW_XMR_MAX_FEE: ${ESCROW_XMR_MAX_FEE:-}
+      ESCROW_XMR_SEED_KEY: ${ESCROW_XMR_SEED_KEY:-}
+      MONERO_WALLET_SECRET: ${MONERO_WALLET_SECRET:-}
       # Photo uploads: clamd:3310 with compose.scanner.yaml and the scanner profile; blank keeps uploads off.
       CLAMD_ADDRESS: ${CLAMD_ADDRESS:-}
       # Days the scanner's daily signatures may age before uploads pause; blank uses 30 (7 to 90).

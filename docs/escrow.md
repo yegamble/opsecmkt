@@ -4,11 +4,14 @@
 > **No release contains escrow, and the pooled wallet stays the default.** Every deposit sits in the
 > operator's pooled custodial wallet for its currency ([operator guide](operator-guide.md#payments),
 > [implementation status](implementation-status.md#p5-payments)) unless an operator switches on the escrow
-> phases built so far, which run **on regtest only** (a local test chain whose coins have no value) and are **off
-> by default** (`ESCROW_BTC`, [operator guide](operator-guide.md#bitcoin-escrow-regtest-only)). Those phases,
-> Bitcoin escrow for digital orders and for physical orders, are built and tested on regtest on the development
-> branch ([Phase 1](#phase-1-bitcoin-escrow-on-regtest), [Phase 2](#phase-2-bitcoin-escrow-for-physical-orders-on-regtest));
-> they have not run on any public test network or on mainnet, and they are not verified for real payments. This
+> phases built so far, which run **on regtest only** (Bitcoin) or **on a local Monero fakechain only** (a local
+> test chain whose coins have no value) and are **off by default** (`ESCROW_BTC`,
+> [operator guide](operator-guide.md#bitcoin-escrow-regtest-only); `ESCROW_XMR`,
+> [operator guide](operator-guide.md#monero-escrow-local-fakechain-only)). Those phases, Bitcoin escrow for digital
+> orders and for physical orders, and Monero escrow for both, are built and tested on the development
+> branch ([Phase 1](#phase-1-bitcoin-escrow-on-regtest), [Phase 2](#phase-2-bitcoin-escrow-for-physical-orders-on-regtest),
+> [Phase 3](#phase-3-monero-escrow-on-a-local-fakechain)); Monero escrow is **custodial**: the market can move its
+> coins. They have not run on any public test network or on mainnet, and they are not verified for real payments. This
 > page describes the escrow design the project owner and its design review have settled, what it will and will
 > not protect, and how it ships. With each phase, this page, the [README](../README.md), the
 > [implementation status](implementation-status.md), the [operator guide](operator-guide.md), the
@@ -29,7 +32,7 @@ server alone cannot move them.
 | --- | --- |
 | Pooled wallet or escrow | Each order has its own escrow, which the buyer pays within the payment window. There is no pooled balance and no treasury. |
 | Bitcoin keys | Buyer, vendor and market each hold one key of a 2-of-3 multisig. Buyer and vendor use keys from their own wallets; the market holds only the arbitrator key. |
-| Monero | One account per order inside a monthly escrow wallet on the server (still custodial, see [Monero](#monero-one-account-per-order)). Each monthly wallet is deleted 90 days after its last order closes. 2-of-3 Monero multisig is evaluated later. |
+| Monero | One account per order inside a monthly escrow wallet on the server (still custodial, see [Monero](#monero-one-account-per-order)). Each monthly wallet is destroyed 90 days after its last order closes: the market makes it unopenable and wipes its sealed seed, and the operator deletes its files ([Phase 3](#phase-3-monero-escrow-on-a-local-fakechain)). 2-of-3 Monero multisig is evaluated later. |
 | Pooled mode | Kept, with safety fixes only, until escrow ships and is verified; then removed, with an upgrade path for orders still open. |
 | Digital (automatic-delivery) orders | Once the escrow is funded, the content is delivered and the order completes. The vendor claims the funds whenever they like by signing; the market co-signs that claim automatically. |
 | Physical orders | The buyer signs the release in their own wallet, together with the vendor. If the buyer has not signed and no dispute is open 14 days after the order is marked shipped, the market co-signs the vendor's claim. An administrator can change that default within 7–30 days; each order keeps the deadline it started with. A dispute stops the clock. Funds are never released just because an order is marked shipped. |
@@ -119,17 +122,17 @@ descriptor in your wallet is what detects that.
 
 ## Monero: one account per order
 
-Each order will get its own account inside a monthly escrow wallet on the server, which runs on its own
+Each order gets its own account inside a monthly escrow wallet on the server, which runs on its own
 wallet service. The buyer pays into that account, and it is settled in one transaction to the recipient (plus
 the market-fee output on a fulfilled order), with the network fee taken from the amount. Every payment out
 names the order's account, so one order's coins can never pay another's settlement. Monero requires 10
 confirmations before received funds can be spent, so a settlement can be sent only after that (about 20
-minutes on mainnet).
+minutes on mainnet). [Phase 3](#phase-3-monero-escrow-on-a-local-fakechain) builds this on a local fakechain only.
 
-A monthly wallet is deleted 90 days after its last order closes. Monero sent to an order's address within
+A monthly wallet is destroyed 90 days after its last order closes. Monero sent to an order's address within
 that time is refunded to the buyer automatically; after it, the order page says it cannot be recovered.
 
-**This is still custodial.** The server will hold every escrow wallet's keys, so the operator, or anyone who
+**This is still custodial.** The server holds every escrow wallet's keys, so the operator, or anyone who
 takes over the server, can spend them. Accounts keep orders apart and remove the pooled balance; they do not
 stop the operator. Monero 2-of-3 multisig is wallet-level and experimental, and is evaluated later.
 
@@ -153,7 +156,7 @@ shipped phase has proven. The full rules and acceptance criteria are in the proj
 | 1 | Bitcoin escrow for digital orders on regtest, behind a setting that is off by default | Built and tested on regtest on the development branch, not released, behind `ESCROW_BTC` (off by default, regtest only): see [Phase 1](#phase-1-bitcoin-escrow-on-regtest) for what it does, what it protects and the tests behind it. Not run on any public test network or on mainnet; Electrum, Sparrow and hardware wallets are not supported |
 | Wallets | Electrum and Sparrow support (a signing test showed Electrum needs a different key layout) | Not started |
 | 2 | Physical orders: buyer-signed release, 14-day deadline, no-ship cancellation, fee bumps | Built and tested on regtest; not released; off by default (`ESCROW_BTC`, regtest only): see [Phase 2](#phase-2-bitcoin-escrow-for-physical-orders-on-regtest) for what it does, what it protects, what it does not do and the tests behind it. Not run on any public test network or on mainnet; only Bitcoin Core signing is supported |
-| 3 | Monero accounts in monthly escrow wallets | Not started |
+| 3 | Monero accounts in monthly escrow wallets | Built and tested on a local Monero fakechain (monerod `--regtest`); not released; off by default (`ESCROW_XMR`, fakechain only): see [Phase 3](#phase-3-monero-escrow-on-a-local-fakechain) for what it does, what it protects, what it does not protect and the tests behind it. Custodial: the market can move these coins. Not run on stagenet, a public test network or mainnet; no Monero multisig |
 | 4 | Public test networks end to end, then escrow-only for new orders, then removal of the pooled wallet | Not started |
 
 
@@ -418,5 +421,241 @@ running market with Phase 2 orders on a real chain. `scripts/test-backup-restore
 through `scripts/restore.sh` with escrow settlement, fee bump and index floor rows and checks the deadline recheck,
 the sweep marker, the floors and the market's key index; the Go tests run the margin block as written.
 
-All escrow testing uses regtest and public test networks only. Mainnet stays an operator opt-in and is never
-used in development or tests.
+## Phase 3: Monero escrow on a local fakechain
+
+**Built and tested on a local fakechain; not released; off by default; custodial.** Phase 3 adds Monero to the escrow
+built in Phases 1 and 2 and is switched on and off by its own setting, `ESCROW_XMR`. The pooled wallet stays the
+default for every order. A *fakechain* is `monerod --regtest`, Monero's regtest and the counterpart of Phase 1's
+Bitcoin regtest: a local chain whose coins have no value. Its wallets use the mainnet address format, so on it a refund
+or claim address starts with 4 or 8. With `ESCROW_XMR=on` (refused when the market is configured for mainnet, and unless
+the escrow daemon reports nettype `fakechain`, a hard fork version of at least 16 and a height below 1,000,000, and the
+escrow wallet-rpc is within 10 blocks of that daemon; [operator guide](operator-guide.md#monero-escrow-local-fakechain-only))
+the development branch has, for digital listings with automatic delivery and for physical listings with a dispatch window:
+
+**The custody sentence.** Every Monero escrow page, notice and document says the same thing: the coins are *held by
+this market in an account used only for this order, inside a wallet the market opens each month; the market can move
+these coins*. Unlike Bitcoin escrow there is no key of the buyer's or the vendor's and no signature to paste: the
+market holds the wallet keys and builds, stores and sends every transaction itself.
+
+**What it does.**
+
+- **Monthly wallets, one account per order.** A watcher of its own, with its own lock and its own `monero-wallet-rpc`
+  (one that holds only escrow wallets, never the pooled wallet's URL), creates a wallet named `escrow-YYYYMM-NN` for each
+  month. Its password is derived from `MONERO_WALLET_SECRET` and its name, so the database holds no wallet password. Its
+  25-word seed is encrypted to an OpenPGP public key whose private half the operator keeps offline (`ESCROW_XMR_SEED_KEY`,
+  never the canary key) and stored with the wallet's primary address and restore height before the wallet may take an
+  order. Next month's wallet is created from 7 days before its month starts, so that a daily backup holds its seal before it
+  takes an order; it becomes active at the start of the month (UTC), and the old one becomes *closing*, with its free
+  accounts retired. A first run, or a market that was down past a month's start, creates and activates that month's wallet
+  at once, with no lead. The watcher keeps `ESCROW_XMR_SLOTS` (20 by default) free accounts ready on the active wallet.
+  Account 0 of a wallet is never an escrow and is never spent from; coins that arrive there alert the administrators, once per episode.
+- **The slot claim at checkout.** The buyer of an XMR draft on an eligible listing may pay into a Monero escrow instead
+  of the pooled wallet, giving a refund address from their own wallet (a standard address or subaddress; integrated
+  addresses, other networks, addresses whose keys are not valid, and any address this market already knows are refused;
+  it is checked in Go, with no wallet call, and cannot be changed afterwards). Checkout makes no RPC: in one
+  transaction it moves the order out of draft, claims a free account of the active wallet by compare-and-set and pins the
+  refund address, the market fee in force (`ESCROW_XMR_FEE_BPS`) and, for a physical order, the release deadline length and
+  dispatch window. With no free account, while the restore gate is set, after a restore until the sweep below has run, or
+  while Monero escrow is unavailable, it answers 503 and the order stays a draft.
+- **Funding at 10 or more confirmations.** The watcher reads each wallet's incoming transfers (`get_transfers` over all
+  accounts). A deposit counts from 10 confirmations (or `PAYMENT_CONFIRMATIONS_XMR` when that is higher) with no unlock
+  time and no double-spend seen; a locked deposit is flagged for staff and never counted. A digital order completes on
+  funding with its content delivered; a physical order becomes paid. An order that received nothing in its payment window is
+  cancelled; one that is underpaid (every deposit confirmed, together short of the price, and no top-up for a whole payment
+  window) is cancelled too, which requests its refund.
+- **Settlements: built, stored and relayed by the watcher, never rebuilt.** Only the watcher builds a settlement, and
+  only once the order has its outcome (a release on a completed order or one decided for the vendor, a refund on a
+  cancelled order or one decided for the buyer, a stray refund on any closed order). It checks that the open wallet's
+  primary address is the one on record and that the order's account has the escrow address, freezes every output of that
+  account the settlement does not claim, and asks for one transfer from that account (`account_index` is never 0 and never
+  absent) with `do_not_relay`, taking the network fee from the claimant's output alone. It then checks the wallet's
+  answer: exactly the claimed outputs' key images, amounts as planned, a fee at most `ESCROW_XMR_MAX_FEE` and the
+  claimant's output at least 0.001 XMR; otherwise the transaction is discarded unrelayed, the settlement waits and staff
+  are told. A checked transaction is **stored first** (its hash, metadata, blob, fee and key images) and only then relayed,
+  with the stored metadata. After a restart or a lost answer the watcher looks the transaction up in the daemon and the
+  wallet, and relays the same stored metadata again if neither has it: that spends the same key images, so it cannot pay
+  twice. Nothing builds a replacement automatically. A relayed settlement is *confirmed* at the confirmation threshold and
+  followed to 100 confirmations; one a reorganisation removes goes back to *relayed* and is relayed again. If another
+  transaction spent its key images it is recorded *external* and staff are told; if the daemon refuses it for good it is
+  *failed*, staff are told, and an administrator may re-request it (below).
+- **Refunds and strays.** A refund goes to the address pinned at checkout, with the network fee taken from the amount.
+  A release pays the vendor's claim address the escrow less the market fee (fixed at checkout; a fee below 0.001 XMR is
+  added to the vendor's output) and less any amount paid above the price, which goes back to the buyer's refund address
+  (also added to the vendor's output when below 0.001 XMR). A settlement spends the deposits that count when it is built; a
+  deposit still confirming then, or arriving after the build, is left out and returned to the buyer's refund address by a
+  *stray refund* once the order has closed. After a close, deposits are refunded automatically until the wallet is
+  destroyed; after that, the order page says Monero sent to its address since then cannot be recovered (ES-8).
+- **Confirm receipt and deadlines.** For a digital order the vendor claims the escrow with a fresh Monero address and their
+  password once the order has completed on funding. For a physical order the vendor's *Mark as shipped* takes the claim
+  address and their password, requests the release to it and fixes the release deadline; nothing is built until the
+  order is completed or its dispute is decided for the vendor. The buyer's **Confirm receipt**, with their password,
+  completes the order, after which it can no longer be disputed. If the buyer does neither before the deadline (14 days
+  by default; the administrator's length for Bitcoin escrow applies, see the limits) and no dispute is open, the order
+  completes by the system and the release is built. The buyer is reminded 72 hours before, in the market only, and
+  `/orders` shows a banner. The deadlines run in the Monero watcher, so they apply with `ESCROW_BTC` off, and even while the
+  escrow wallet-rpc is down. The no-ship cancel of Phase 2 is shared: a buyer may cancel a paid physical order that was not
+  shipped once the dispatch window plus 48 hours has passed, and the escrow is refunded.
+- **Disputes: decisions are final.** An administrator decides a dispute on a Monero escrow order with their password; a
+  moderator's resolve is refused. Unlike a Bitcoin escrow's, a Monero decision cannot be changed once made, because the
+  market builds and sends it on its next pass; the resolve form says so before submission. A decision for the buyer
+  supersedes a release that has no stored transaction yet and is refused (409) once the release has one.
+- **Retention and destruction.** A wallet whose orders have all closed is *retained* and is still read on every pass,
+  so a late deposit is refunded. 90 days after its last order closed, and only when no order of it is open, no settlement
+  of it is live or still followed to 100 confirmations, its balance and unlocked balance are zero across all accounts and
+  nothing of it is in the pool, the watcher replaces its password with 32 random bytes that are never stored, closes it,
+  wipes its sealed seed and records it destroyed. Only those preconditions destroy a wallet automatically, with one
+  exception: a wallet whose password the market already replaced (the wallet-rpc refuses it as "Invalid password") is recorded
+  destroyed again. A retained wallet past its 90 days that still holds coins (an unclaimed paid account, coins at account 0, a
+  failed settlement) is not destroyed, and staff are flagged once. The market cannot reach the wallet volume: `/admin`
+  lists each destroyed wallet's two files for the operator to delete.
+- **Restore holds and the orphan sweep.** `scripts/restore.sh` (or the manual SQL in
+  [UPGRADING.md](../UPGRADING.md#6-backups-now-need-the-wallets-too)) holds every restored Monero settlement that has a
+  stored transaction until an administrator confirms its relay on `/admin`; retires every free account; moves every
+  active or sealed wallet to *closing*, so no account of a restored wallet, one the restored records lack included, is
+  offered to a new order; asks for a release deadline recheck (the deadline of a shipped order that had passed in the
+  restored records moves 72 hours later, and the buyer is told); and sets `xmr_escrow_sweep_required`. Until the watcher's
+  sweep has run, checkout answers 503 and no wallet or account is created. The sweep looks for wallet names newer than the
+  database's newest row (a wallet created after the backup): one that opens with the derived password is sealed to the
+  seed key as an *orphan*, kept, never offered an account, and its funded accounts are listed to the administrators; one
+  that does not open is recorded as an orphan and never opened. It also gives a wallet older than the database a longer
+  subaddress lookahead and rescans it, so deposits to accounts it does not know are seen. Under the gate nothing is
+  built or relayed; deposits are still read.
+- **If a wallet cannot be opened.** A wallet the escrow wallet-rpc refuses to open (its file gone, or a password that no
+  longer opens it, or one another wallet program has open, which counts as temporarily unavailable) is recorded *missing*,
+  keeps its sealed seed (never wiped while the restore gate or the sweep marker is set), its free accounts are retired and
+  the administrators are told; it is tried on every pass. A missing wallet past its 90 days is listed on `/admin`, where an
+  administrator confirms its destruction (password step-up, audited) once the operator has checked that the file is gone and
+  nothing is owed. A wallet that would not open while the sweep ran counts as checked, so after its file is restored the
+  operator sets the sweep marker again for its lookahead. A changed `MONERO_WALLET_SECRET` disables Monero escrow with one fixed log line and no wallet is created or opened;
+  a changed `ESCROW_XMR_SEED_KEY` stops wallet creation only, until the operator re-pins it.
+
+**What Phase 3 protects, on a local fakechain.** Every transaction out of an order's account names that account, and the
+transaction the wallet builds is checked to spend exactly the outputs claimed to exactly the planned destinations, so one
+order's coins are not paid out in another's settlement. The database refuses a second outcome per order, a stored
+transaction that changes, a transaction stored before the order's state fits the settlement (migration 081's rule, carried
+into 084), and any deleted escrow record. A settlement is stored before it is relayed and is relayed again only as the
+same stored transaction; it is never rebuilt by the market on its own, and the administrator's re-request is allowed only
+when the stored transaction is in neither the daemon's pool nor the chain and none of its coins is spent, builds exactly
+the stored coins to the stored plan, and supersedes the old row in the same database transaction, so at most one of the two
+transactions can be mined. Seeds are sealed to a key the application only holds the public half of, and no wallet
+password is kept anywhere. The refund address is fixed at checkout. An address whose keys are not in ed25519's prime-order
+subgroup, which the wallet's own check accepts, is refused offline, because the wallet-rpc used here (0.18.5.1) crashed
+when asked to build a transfer to one. After a restore, no restored
+wallet takes an order again and no settlement is relayed until an administrator has checked it.
+
+**What Phase 3 does not protect.**
+
+- **It is custodial: the market can move these coins.** The server holds every escrow wallet's keys, opened with a
+  password it derives itself. The operator, and anyone who takes over the server or copies the wallet volume and
+  `MONERO_WALLET_SECRET`, can spend every escrow's coins. Accounts keep orders apart and remove the pooled balance; they do
+  not stop the operator. There is no Monero multisig and none is claimed.
+- **It is fakechain only.** It refuses a daemon that is not a local fakechain. It has not run on stagenet, testnet or
+  mainnet, so nothing is known about its behaviour on a real network, with real fees, ring members or reorganisations.
+- **Backups keep wallet copies until they expire.** A database dump holds each wallet's sealed seed (anyone with the
+  OpenPGP private key can open it), and a backup of the escrow wallet volume holds its files. Destroying a wallet reaches
+  neither: the dumps and volume copies taken before it stay as they are, and the operator decides how long they are kept.
+- **Destroyed wallet files must be deleted by the operator.** The market cannot reach the wallet volume. It only makes a
+  wallet unopenable (a password nobody keeps) and wipes its sealed seed from the database; the files stay on the volume
+  until the operator deletes them.
+- **A wallet created after the last backup can be lost (A-403).** If the database and the escrow wallet volume are both
+  lost before the next backup, a wallet created in between is lost with the orders it took. Losing only one of them keeps
+  the coins recoverable: the sealed seed is in the database and the files are in the volume (the restore sweep lists the
+  funded accounts of a wallet the restored database lacks), although a restored database has lost the orders recorded after
+  its backup, as with any restore. The 7-day lead means a wallet takes no order
+  before a daily backup holds its seal, but only for a wallet created ahead of its month; a first run, or a wallet created
+  after the market was down past a month's start, takes orders at once. This assumes a database backup at least daily
+  ([operator guide](operator-guide.md#monero-escrow-local-fakechain-only)).
+- **Monero dispute decisions are final.** A wrong decision cannot be undone from the market.
+- **A buyer who neither confirms receipt nor disputes before the deadline loses the choice**, as for Bitcoin escrow
+  (ES-11), and an administrator decides disputes from what the parties write; it does not check that goods exist or
+  arrived. The release deadline length is the Bitcoin escrow's setting, and its form on `/admin` exists only while
+  `ESCROW_BTC` is on: with only `ESCROW_XMR` on, new Monero escrows get the length saved earlier, or 14 days.
+- **The market fee is set only by `ESCROW_XMR_FEE_BPS` and `ESCROW_XMR_FEE_ADDRESS`** (no form on `/admin`); each escrow
+  keeps the fee in force at its checkout.
+- **One wallet is open at a time, and every wallet that may hold coins is opened on every pass**, until the wallet is
+  destroyed. PAYE-E2 measurement: see [verification](verification.md).
+- **A wallet-rpc that crashes building a settlement** (0.18.5.1 does on some destinations) is handled but not cured: a
+  settlement whose build drops the connection twice is set aside, staff are told, and an administrator must ask for the
+  build again; other settlements are not held up.
+- **The orphan sweep is bounded.** It probes wallet names month by month, from the month of the database's newest wallet
+  row or order (never more than 12 months back) to next month, and stops each month at its first name with no file; an
+  orphan's restore height is unknown (recorded as 0), so restoring one from its seed scans the whole chain.
+
+**How it was tested.** Each tier proves only what it says:
+
+- Unit and `httptest` tests, no database. The adapter's exact parameters (account index never 0 or absent) and result
+  shapes (`TestXMREscrowRPCPinsParams`, `TestXMREscrowRPCResults`, `TestXMREscrowRPCErrorClasses`,
+  `TestXMREscrowAccountZeroRefusedOffline`, `TestXMREscrowNetworkCheck`); every configuration refusal
+  (`TestXMREscrowConfigFromEnv`, `TestXMREscrowRefusedOnLiveMarket`, `TestXMREscrowFeeAddressKeysRefuseStartup`,
+  `TestXMRWalletSecretRefusals`, `TestXMRSeedKeyRefusals`); the password derivation and the seed seal
+  (`TestXMRWalletPasswordDerivation`, `TestXMRSealSeedRoundTrip`); the checks on a built transaction
+  (`TestCheckXMRBuild`); and offline address parsing against Monero's own vectors, RFC 8032 keys and small-order points
+  (`TestXMRBase58MoneroVectors`, `TestXMRAddressExternalVectors`, `TestXMRAddressRefusals`, `TestXMRAddressKeysRefused`,
+  `TestXMRPointValid`, `TestXMRPointPrimeOrder`).
+- Go tests with PostgreSQL against a **fake** escrow wallet-rpc and daemon (simulated RPC, not chain evidence), for
+  every state change and refusal. Schema: `TestXMREscrowMigration084`, `TestXMREscrowMigration085`,
+  `TestEscrowBTCIgnoresXMRRows`, `TestXMREscrowPayoutRefused`, `TestXMREscrowIdxNoCollision`. Wallets, slots and funding:
+  `TestXMREscrowFirstRun`, `TestXMREscrowWalletRotation`, `TestXMREscrowSlotClaimRace`, `TestXMREscrowNoRPCAtCheckout`,
+  `TestXMREscrowAccountZeroNeverSpent`, `TestXMREscrowFundingThreshold`, `TestXMREscrowTwoAccountsOneTx`,
+  `TestXMREscrowSecretMismatch`, `TestXMREscrowSeedKeyRepinRefused`. Settlements:
+  `TestXMREscrowStoredBeforeRelay`, `TestXMREscrowNeverRebuilt`, `TestXMREscrowAmbiguousRelay`,
+  `TestXMREscrowFreezeExcludesTopUp`, `TestXMREscrowPrimaryAddressMismatch`, `TestXMREscrowKeyImagesExact`,
+  `TestXMREscrowFeeCapAndFloor`, `TestXMREscrowReorgRelaysAgain`, `TestXMREscrowExternalSpend`,
+  `TestXMREscrowReRequestGuards`, `TestXMREscrowBuildSetAside`, `TestXMREscrowGatePauses`. Releases, deadlines and
+  disputes: `TestXMREscrowNoBuildBeforeOutcome`, `TestXMREscrowConfirmReceiptStepUp`, `TestXMREscrowShipStepUp`,
+  `TestXMREscrowDeadlineWithBTCOff`, `TestXMREscrowDisputeSupersedes`, `TestXMREscrowNoShipCancel`,
+  `TestXMREscrowRestoreExtendsDeadline`. Retention and restore: `TestXMREscrowDestroyPreconditions`,
+  `TestXMREscrowRestoredPastDestroy`, `TestXMREscrowRestoreRetiresSlots`, `TestXMREscrowRestoreNoUnrecordedSlot`,
+  `TestXMREscrowOrphanSwept`, `TestXMREscrowLookaheadForOlderWallet`, `TestXMREscrowHeldSettlementConfirm`.
+  `scripts/test-backup-restore.sh` (run in CI) restores a real dump through `scripts/restore.sh` with Monero escrow rows
+  and checks the holds, the retired slots, the closed wallets and the sweep marker.
+- Real `monerod` and `monero-wallet-rpc` 0.18.5.1 on a local fakechain, run by hand, not in CI
+  (`scripts/test-escrow-xmr-regtest.sh`, [runbook](testnet-runbook.md#9-manual-monero-escrow-fakechain-check); the app
+  runs inside the Go test against the real daemon and wallet-rpc, and the script refuses any daemon that is not a
+  fakechain). Thirteen legs, each a Go test:
+  1. `TestXMREscrowRegtestWallets`: the first pass creates the month's wallet, seals its seed (the seal decrypts, and a
+     wallet restored from it at the stored restore height has the stored primary address), activates it and keeps its free
+     accounts; account 0 holds nothing; the next month's wallet is created sealed ahead of its month and becomes active at
+     its start.
+  2. `TestXMREscrowRegtestFunding`: a deposit is recorded at 0 confirmations in the pool, counts at 10 and not at 9, and
+     completes a digital order.
+  3. `TestXMREscrowRegtestTwoAccountsOneTx`: one transaction paying two escrows becomes one payments row per account, each
+     its own order's.
+  4. `TestXMREscrowRegtestPhysical`: four physical orders funded by one transaction; the watcher makes no `transfer` or
+     `relay_tx` before an outcome; then Confirm receipt, the deadline, a dispute for the buyer and a no-ship cancel each
+     have their settlement relayed and confirmed to the right address.
+  5. `TestXMREscrowRegtestRestartMidSend`: relay's answer is lost and the app and wallet-rpc restart; the same stored
+     transaction is relayed, with one `transfer` call in all.
+  6. `TestXMREscrowRegtestRelayDropped`: a lost relay answer; the next pass finds the transaction in the pool and records
+     it relayed, with no second `relay_tx` or `transfer`.
+  7. `TestXMREscrowRegtestTopUp`: a top-up still confirming at the build is left out and returned by a stray refund.
+  8. `TestXMREscrowRegtestReorg`: a confirmed release is popped from the chain, goes back to relayed, is relayed again
+     and confirms again.
+  9. `TestXMREscrowRegtestExternal`: a wallet restored from the sealed seed sweeps the account outside the market while
+     the release is built; the daemon refuses the market's transaction and it is recorded external and flagged.
+  10. `TestXMREscrowRegtestRestore`: a restore (with `scripts/restore.sh`'s own Monero SQL) holds a built release, retires
+      the free accounts and closes the wallet; the sweep finds a wallet created after the backup and seals it as an
+      orphan; after an administrator's confirmation the held release is relayed once and confirms; the next checkout gets
+      an account of a new wallet.
+  11. `TestXMREscrowRegtestLookahead`: a deposit to account 300, unknown to the wallet, is missed with the default
+      lookahead and seen after the sweep raises it and rescans.
+  12. `TestXMREscrowRegtestWrongSecret`: with a changed `MONERO_WALLET_SECRET`, no wallet is created or opened and checkout
+      answers 503.
+  13. `TestXMREscrowRegtestDestroy`: a deposit on day 89 to a closed order's escrow is refunded; on day 91 the retained
+      wallet is destroyed and `open_wallet` with the derived password is refused.
+
+  Every settlement the daemon holds is decoded (RingCT type 6, 16 ring members per input, a fee above zero, the stored one,
+  within `ESCROW_XMR_MAX_FEE`). Each leg puts the watcher's clock in a month of its own, so the legs may run again against
+  the same nodes; no leg waits in real time for a deadline or a month.
+- A browser journey in Chromium at 320 px with JavaScript off against the real server and a **simulated** Monero escrow
+  wallet-rpc and daemon is added in this phase (`tests/e2e/escrow-xmr-journey.spec.ts`); its command and result are not
+  recorded here. A simulation is not chain evidence.
+- PAYE-E2 measurement: see [verification](verification.md).
+
+Not tested: stagenet, testnet and mainnet, Monero multisig, the escrow pages in Firefox or WebKit, deadlines of 7 to 30
+days in real time, a wallet with thousands of accounts on a real chain (PAYE-E2), a restore of a real backup into a
+running market with Phase 3 orders on a real chain (`scripts/test-backup-restore.sh` restores a real dump and checks its
+rows; the fakechain `Restore` leg simulates the database restore in SQL), and a deployment of any of it.
+
+All escrow testing uses regtest, a local Monero fakechain and public test networks only. Mainnet stays an operator opt-in
+and is never used in development or tests.

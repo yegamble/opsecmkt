@@ -1019,6 +1019,52 @@ see the [test-network runbook](docs/testnet-runbook.md#an-orphan-whose-keys-cann
 No action is needed at upgrade. Rolling back past this release needs the pre-upgrade backup, as for every migration
 (section 5): the earlier release refuses to start on a database that records migration 083.
 
+## 29. Monero escrow tables (migration 084)
+
+Migration 084 runs at startup. It adds the tables Monero escrow uses: `xmr_escrow_wallets` (each monthly escrow wallet's
+name, primary address, restore height, seed sealed to the operator's OpenPGP key with that key's fingerprint, state and
+retention dates), `xmr_escrow_slots` (each wallet account's index and address, and the order that claimed it),
+`xmr_settlements` and `xmr_settlement_outputs` (each settlement's destination and outputs, and its stored transaction).
+It adds `escrows.coin` (`BTC` for every existing row, which reads back unchanged), `escrows.xmr_slot_id` and
+`payments.xmr_settlement_id`, makes `escrows.market_index` nullable (a check requires it for exactly the Bitcoin
+escrows), and adds triggers that make the database enforce Monero escrow's rules: an escrow's coin is its order's
+currency, a Bitcoin settlement refuses a Monero escrow and the other way round, a stored transaction never changes and
+is stored only when the order's state fits (the rule of migration 081), states move only forward, and a Monero escrow
+deposit names the account its order claimed. The migration only adds: no existing row is rewritten. **One change reaches
+Bitcoin escrow too:** since this migration the database refuses to delete a row of `escrows` or of any `xmr_*` table
+(the application never deletes one; a deleted `escrows` row would turn its order into a pooled one). Otherwise it
+changes nothing while `ESCROW_XMR` is off, which is the default: the new tables stay empty and nothing writes them (the
+admin page only reads them, to list held settlements and destroyed wallets), and pooled and Bitcoin escrow payments are
+unchanged.
+
+Monero escrow is a separate, off-by-default setting that runs on a local Monero fakechain only ([operator
+guide](docs/operator-guide.md#monero-escrow-local-fakechain-only)); it adds the optional keys `ESCROW_XMR`,
+`ESCROW_XMR_WALLET_RPC_URL`, `ESCROW_XMR_DAEMON_URL`, `ESCROW_XMR_FEE_BPS`, `ESCROW_XMR_FEE_ADDRESS`,
+`ESCROW_XMR_SLOTS`, `ESCROW_XMR_MAX_FEE` and `ESCROW_XMR_SEED_KEY`, and the secret `MONERO_WALLET_SECRET` (never
+invented by `upgrade`; `openssl rand -hex 32`). Leave them blank to keep it off. `scripts/restore.sh` and the manual SQL
+in [section 6](#6-backups-now-need-the-wallets-too) now also hold restored Monero escrow settlements, retire every free
+account, move every active or sealed escrow wallet to closing and ask for the Monero escrow sweep (the restore writes
+those rows whether or not `ESCROW_XMR` is on; they matter once it is). No action is needed at upgrade. Rolling back past
+this release needs the pre-upgrade backup, as for every migration (section 5): the earlier release refuses to start on a
+database that records migration 084.
+
+## 30. Monero escrow settlement status and re-requests (migration 085)
+
+Migration 085 runs at startup. It adds `xmr_settlements.send_error` (why a settlement is not built or sent yet, why it
+failed, or that a restore holds it, as a fixed class and never text from a node) and the table
+`xmr_settlement_rerequests` (an administrator's request to build a failed settlement again: who asked, when, and how it
+was decided, refused with a fixed reason or done with the new settlement). A request is recorded only for a failed
+settlement that has a stored transaction, at most one is open per settlement, its state moves only forward, and rows are
+never deleted. Like migration 084 it only adds, and it changes nothing while `ESCROW_XMR` is off: nothing writes either.
+With Monero escrow on, an administrator who is not a party to the order may re-request a failed settlement from the
+order page (password step-up, audited), and a settlement set aside because building it made the escrow wallet-rpc stop
+responding can be built again the same way; the held settlements of a restore are listed on `/admin` and confirmed there
+([operator guide](docs/operator-guide.md#monero-escrow-local-fakechain-only)). The restore's Monero hold is written to
+`xmr_settlements.send_error`, so the three Monero lines of the SQL in [section 6](#6-backups-now-need-the-wallets-too)
+need this migration (a database with 084 but not 085 exists only on a development build of this phase). No action is
+needed at upgrade. Rolling back past this release needs the pre-upgrade backup, as for every migration (section 5): the
+earlier release refuses to start on a database that records migration 085.
+
 ## Appendix: new keys by hand
 
 `./scripts/install.sh upgrade` writes these for you. To add them yourself, use your editor (values in single

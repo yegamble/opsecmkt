@@ -243,6 +243,29 @@ transactions, follow [isolated real-chain browser testing](local-chain-testing.m
 and run `npm run test:e2e:chain` with `E2E_CHAIN_DATABASE_URL` set to a fresh database. This uses Bitcoin regtest and an offline Monero
 stagenet fork; it does not claim public-testnet validation.
 
+### Monero escrow on a local fakechain (real monerod and monero-wallet-rpc)
+
+Monero escrow (WR-escrow Phase 3, `ESCROW_XMR=on`, custodial, off by default; see [escrow](escrow.md#phase-3-monero-escrow-on-a-local-fakechain))
+has thirteen legs that run the real server code (a Go test per leg, with its own App and Monero escrow watcher) against a real
+`monerod --regtest` and three real `monero-wallet-rpc` 0.18.5.1 instances: `scripts/test-escrow-xmr-regtest.sh`. It is manual
+and not part of CI, refuses any daemon that is not a fakechain with hard fork 16 or later before any wallet call, and needs a
+disposable PostgreSQL database in `TEST_DATABASE_URL` (the legs create their own databases from it, as the other database
+tests do). The header of the script has the exact `docker` commands; the
+[runbook](testnet-runbook.md#9-manual-monero-escrow-fakechain-check) repeats them. The loopback ports it uses by default:
+
+| Port | What |
+| --- | --- |
+| 28381 | the fakechain `monerod` (`ESCROW_XMR_REGTEST_DAEMON_URL`) |
+| 28382 | the escrow wallet-rpc the App uses (`ESCROW_XMR_REGTEST_WALLET_URL`) |
+| 28383 | a funder wallet-rpc standing in for the buyer's wallet (`ESCROW_XMR_REGTEST_FUNDER_URL`) |
+| 28384 | a wallet-rpc used only to restore a sealed seed (`ESCROW_XMR_REGTEST_RESTORE_URL`) |
+
+The wallet-rpcs listen without RPC login on `127.0.0.1` only, and the transcript is written to `ESCROW_XMR_REGTEST_LOG`
+(default `artifacts/real-chain/test-escrow-xmr-regtest-<UTC time>.log`, gitignored). The Go tests of the other tiers need
+none of this: without these variables the `Regtest` legs skip, and `go test ./internal/market/` runs the unit and
+fake-wallet-rpc tests (the latter with `TEST_DATABASE_URL`). A simulated-RPC browser journey for Monero escrow is added in
+this phase; its command is recorded when it merges, and it is not chain evidence.
+
 ### Scripts, operations and CI
 
 ```sh
