@@ -239,3 +239,226 @@ func TestEscrowStrayDailyCheck(t *testing.T) {
 		t.Fatalf("left-out stray refund: %d %s", sid2, state)
 	}
 }
+
+// uncounted counts the A-428 notes on order (the "did not count" wording): order notes, the buyer's notices and the
+// staff's notices.
+func (x *escrowEnv) uncounted(order string) (notes, buyer, staff int) {
+	x.t.Helper()
+	const part = "did not count for the order when it was cancelled"
+	notes = agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND strpos(note,$2)>0", order, part)
+	buyer = agInt(x.testEnv, "SELECT count(*) FROM notifications WHERE user_id=$1 AND strpos(body,$2)>0 AND strpos(body,$3)>0", x.buyer, shortID(order), part)
+	staff = agInt(x.testEnv, "SELECT count(*) FROM notifications n JOIN users u ON u.id=n.user_id WHERE u.role IN ('moderator','admin') AND strpos(n.body,$1)>0 AND strpos(n.body,$2)>0",
+		"Payment review needed for order "+shortID(order), part)
+	return
+}
+
+// A-428 (QA's probe through expiry; the Bitcoin analogue of A-424): a deposit Core reports as conflicted (negative
+// confirmations), or no longer lists (markMissing records -1), when the payment window ends does not count, so the
+// order is cancelled unpaid and no refund is requested. When that transaction is mined after all, the deposit is left
+// out and flagged once it has the confirmations a deposit needs, the buyer and the staff are told once, and a stray
+// refund returns it, less the network fee, to the refund address pinned at checkout.
+func TestEscrowConflictedDepositThroughExpiry(t *testing.T) {
+	x := newEscrowEnv(t)
+	x.user("emod_"+randomToken()[:6], "moderator")
+	for _, c := range []struct {
+		what       string
+		lose, back func(addr, txid string)
+	}{
+		{"conflicted", func(_, txid string) { x.core.setConfs(txid, -2) }, func(_, txid string) { x.core.setConfs(txid, 1) }},
+		{"no longer listed", func(_, txid string) {
+			x.core.mu.Lock()
+			x.core.deposits = slices.DeleteFunc(x.core.deposits, func(d fakeEscrowDeposit) bool { return d.TxID == txid })
+			x.core.mu.Unlock()
+		}, func(addr, txid string) { x.core.deposit(addr, txid, 0, 100000, 1) }},
+	} {
+		refund := regtestAddr("uncounted " + c.what)
+		order := x.draft()
+		addr := x.mustCheckout(order, refund)
+		txid := txidOf("uncounted " + order)
+		x.core.deposit(addr, txid, 0, 100000, 0)
+		x.poll()
+		c.lose(addr, txid)
+		x.poll()
+		if got := agStrings(t, x.testEnv, "SELECT (confirmations<0)::text FROM payments WHERE order_id=$1", order); !slices.Equal(got, []string{"true"}) {
+			t.Fatalf("%s: deposit recorded %v", c.what, got)
+		}
+		x.DB.Exec("UPDATE escrows SET created=now()-interval '25 hours' WHERE order_id=$1", order)
+		x.DB.Exec("UPDATE payments SET created=now()-interval '25 hours' WHERE order_id=$1", order)
+		x.poll()
+		if n := agInt(x.testEnv, "SELECT count(*) FROM settlements WHERE order_id=$1", order); x.state(order) != stateCancelled || n != 0 {
+			t.Fatalf("%s: at the end of the window: %s, %d settlements", c.what, x.state(order), n)
+		}
+		// Mined, below the confirmations a deposit needs: nothing yet.
+		c.back(addr, txid)
+		x.poll()
+		if notes, buyer, staff := x.uncounted(order); notes+buyer+staff != 0 || agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND (escrow_left_out OR flagged)", order) != 0 {
+			t.Fatalf("%s: left out at 1 confirmation: notes %d, buyer %d, staff %d", c.what, notes, buyer, staff)
+		}
+		x.core.setConfs(txid, 3)
+		x.poll()
+		if got := agStrings(t, x.testEnv, "SELECT confirmations||' '||credited||' '||flagged||' '||after_close||' '||escrow_left_out FROM payments WHERE order_id=$1", order); !slices.Equal(got, []string{"3 false true false true"}) {
+			t.Fatalf("%s: mined after the cancellation: deposit %v", c.what, got)
+		}
+		if notes, buyer, staff := x.uncounted(order); notes != 1 || buyer != 1 || staff == 0 {
+			t.Fatalf("%s: notes %d, buyer notices %d, staff notices %d", c.what, notes, buyer, staff)
+		}
+		sid, state := x.stray(order)
+		if sid == 0 || state != "awaiting_signature" || agInt(x.testEnv, "SELECT count(*) FROM settlements WHERE id=$1 AND destination=$2", sid, refund) != 1 {
+			t.Fatalf("%s: stray refund %d %s", c.what, sid, state)
+		}
+		if rows := agStrings(t, x.testEnv, "SELECT role||' '||address||' '||sats FROM settlement_outputs WHERE settlement_id=$1", sid); !slices.Equal(rows, []string{"claimant " + refund + " 99682"}) ||
+			agInt(x.testEnv, "SELECT count(*) FROM payments WHERE settlement_id=$1 AND txid=$2", sid, txid) != 1 ||
+			agInt(x.testEnv, "SELECT count(*) FROM notifications WHERE user_id=$1 AND strpos(body,'Stray refund requested')>0 AND strpos(body,$2)>0", x.buyer, shortID(order)) != 1 {
+			t.Fatalf("%s: stray refund outputs %q", c.what, rows)
+		}
+		if page := x.page("/order?id="+order, x.buyerSess); !strings.Contains(page, "Cancelled; a deposit to this escrow did not count for the order. It is held at the escrow address") ||
+			!strings.Contains(page, "Left out — not counted for the order") || strings.Contains(page, "nothing was received") || strings.Contains(page, "after waiting") {
+			t.Fatalf("%s: buyer page:\n%s", c.what, page)
+		}
+		x.signAs(order, roleBuyer, sid)
+		x.poll()
+		if r := x.settleByID(sid); r.State != "broadcast" || r.Cosigned != "market" {
+			t.Fatalf("%s: stray refund after the buyer signed: %+v", c.what, r)
+		}
+		x.poll()
+		if notes, buyer, staff := x.uncounted(order); notes != 1 || buyer != 1 || agInt(x.testEnv, "SELECT count(*) FROM settlements WHERE order_id=$1", order) != 1 {
+			t.Fatalf("%s: told again (notes %d, buyer %d, staff %d), or another settlement", c.what, notes, buyer, staff)
+		}
+	}
+}
+
+// A-428's bounds: the "did not count" path leaves out only a cancelled order's deposit that no refund spends or will
+// spend. A requested refund (still building) keeps the deposit and spends it; a refund that failed as too small keeps
+// its deposits; a built refund's deposit is left out once, by leaveOutTopUps; a completed or resolved order's deposit stays the order's (the vendor's claim spends it); a
+// deposit first recorded after the order closed is flagged by flagLateDeposits alone.
+func TestEscrowUncountedDepositBounds(t *testing.T) {
+	x := newEscrowEnv(t)
+	_, admin := x.user("eadmin_"+randomToken()[:6], "admin")
+	cancel := func(order, seen string) {
+		t.Helper()
+		if w := x.do("POST", "/orders/cancel", x.buyerSess, url.Values{"order_id": {order}, "from": {stateAwaitingPayment}, "amount_seen": {seen}, "payout_confirmed": {"confirmed"}}); w.Code != 303 {
+			t.Fatalf("cancel: %d %s", w.Code, w.Body.String())
+		}
+	}
+	untouched := func(what, order, txid string) {
+		t.Helper()
+		if notes, buyer, staff := x.uncounted(order); notes+buyer+staff != 0 || agInt(x.testEnv, "SELECT count(*) FROM payments WHERE txid=$1 AND (escrow_left_out OR flagged)", txid) != 0 {
+			t.Fatalf("%s: the deposit was left out: notes %d, buyer %d, staff %d", what, notes, buyer, staff)
+		}
+	}
+
+	// A refund still building (waiting on a deposit that is confirming) keeps the deposit that was conflicted at the
+	// cancellation and has confirmed since; once built, it spends all three.
+	order := x.draft()
+	addr := x.mustCheckout(order, regtestAddr("bounds building"))
+	x.core.deposit(addr, txidOf("counted "+order), 0, 40000, 3)
+	x.core.deposit(addr, txidOf("confirming "+order), 0, 10000, 0)
+	x.core.deposit(addr, txidOf("conflicted "+order), 0, 30000, -2)
+	x.poll()
+	cancel(order, "50000")
+	x.poll()
+	if _, kind, state, class := x.settlement(order); kind != "refund" || state != "building" {
+		t.Fatalf("refund after the cancellation: %s %s %s", kind, state, class)
+	}
+	x.core.setConfs(txidOf("conflicted "+order), 3)
+	x.poll()
+	untouched("a refund building", order, txidOf("conflicted "+order))
+	x.core.setConfs(txidOf("confirming "+order), 3)
+	x.poll()
+	if id, _, state, class := x.settlement(order); state != "awaiting_signature" || agInt(x.testEnv, "SELECT count(*) FROM payments WHERE settlement_id=$1", id) != 3 {
+		t.Fatalf("the refund, built: %s %s, inputs %d", state, class, agInt(x.testEnv, "SELECT count(*) FROM payments WHERE settlement_id=$1", id))
+	}
+	untouched("a refund built", order, txidOf("conflicted "+order))
+
+	// A refund that failed because the coins are too few to pay its fee and output keeps them: they counted when the
+	// order was cancelled, and its note says they stay in the escrow. They are not called uncounted, and no stray
+	// refund (which would fail the same way on every pass) is requested.
+	order = x.draft()
+	addr = x.mustCheckout(order, regtestAddr("bounds too small"))
+	x.core.deposit(addr, txidOf("tiny "+order), 0, 5000, 3)
+	x.poll()
+	cancel(order, "5000")
+	x.poll()
+	x.poll()
+	if _, _, state, class := x.settlement(order); state != "failed" || class != settleTooSmall {
+		t.Fatalf("a too-small refund: %s %s", state, class)
+	}
+	untouched("a too-small refund", order, txidOf("tiny "+order))
+	if id, _ := x.stray(order); id != 0 {
+		t.Fatal("a stray refund of a too-small refund's deposit")
+	}
+
+	// A built refund's deposit that was conflicted at the cancellation is left out once, by leaveOutTopUps.
+	order = x.draft()
+	addr = x.mustCheckout(order, regtestAddr("bounds built"))
+	x.core.deposit(addr, txidOf("counted "+order), 0, 40000, 3)
+	x.core.deposit(addr, txidOf("conflicted "+order), 0, 30000, -2)
+	x.poll()
+	cancel(order, "40000")
+	x.poll()
+	if _, _, state, class := x.settlement(order); state != "awaiting_signature" {
+		t.Fatalf("refund after the cancellation: %s %s", state, class)
+	}
+	x.core.setConfs(txidOf("conflicted "+order), 3)
+	x.poll()
+	x.poll()
+	const topUp = "arrived at this order's escrow after its refund to the buyer was built"
+	if notes, buyer, staff := x.uncounted(order); notes+buyer+staff != 0 ||
+		agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND strpos(note,$2)>0", order, topUp) != 1 ||
+		agInt(x.testEnv, "SELECT count(*) FROM notifications WHERE user_id=$1 AND strpos(body,$2)>0 AND strpos(body,$3)>0", x.buyer, shortID(order), topUp) != 1 ||
+		agInt(x.testEnv, "SELECT count(*) FROM payments WHERE txid=$1 AND escrow_left_out AND flagged", txidOf("conflicted "+order)) != 1 {
+		t.Fatalf("a built refund's deposit: did-not-count notes %d, buyer %d, staff %d; events %q", notes, buyer, staff, x.events(order))
+	}
+
+	// A completed order's deposit, conflicted at funding and confirmed since, stays the order's: the claim spends it.
+	order = x.draft()
+	addr = x.mustCheckout(order, regtestAddr("bounds completed"))
+	x.core.deposit(addr, txidOf("counted "+order), 0, 100000, 3)
+	x.core.deposit(addr, txidOf("conflicted "+order), 0, 20000, -2)
+	x.poll()
+	if x.state(order) != stateCompleted {
+		t.Fatalf("funded: %s", x.state(order))
+	}
+	x.core.setConfs(txidOf("conflicted "+order), 3)
+	x.poll()
+	untouched("a completed order", order, txidOf("conflicted "+order))
+	if code, body := x.claim(order, x.vendorSess, regtestAddr("bounds claim")); code != 303 {
+		t.Fatalf("claim: %d %s", code, body)
+	}
+	x.poll()
+	if id, kind, state, class := x.settlement(order); kind != "release" || state != "awaiting_signature" || agInt(x.testEnv, "SELECT count(*) FROM payments WHERE settlement_id=$1", id) != 2 {
+		t.Fatalf("the claim: %s %s %s", kind, state, class)
+	}
+
+	// A resolved order decided for the vendor, whose claim is not yet given, keeps such a deposit too.
+	order = x.draft()
+	addr = x.mustCheckout(order, regtestAddr("bounds resolved"))
+	x.DB.Exec("UPDATE products SET delivery_content='' WHERE id=(SELECT product_id FROM orders WHERE id=$1)", order)
+	x.core.deposit(addr, txidOf("counted "+order), 0, 100000, 3)
+	x.core.deposit(addr, txidOf("conflicted "+order), 0, 20000, -2)
+	x.poll()
+	if w := x.do("POST", "/disputes", x.buyerSess, url.Values{"order_id": {order}, "reason": {"The content was never delivered to me at all."}}); w.Code != 303 || x.state(order) != stateDisputed {
+		t.Fatalf("dispute: %d %s (%s)", w.Code, w.Body.String(), x.state(order))
+	}
+	var dispute string
+	x.DB.QueryRow("SELECT id FROM disputes WHERE order_id=$1", order).Scan(&dispute)
+	if code, body := x.resolve(admin, dispute, "release", testPassword); code != 303 || x.state(order) != stateResolved {
+		t.Fatalf("resolve: %d %s (%s)", code, body, x.state(order))
+	}
+	x.core.setConfs(txidOf("conflicted "+order), 3)
+	x.poll()
+	untouched("a resolved order", order, txidOf("conflicted "+order))
+
+	// A deposit first recorded after an unpaid cancellation is flagged once, by flagLateDeposits, and not as uncounted.
+	order = x.draft()
+	addr = x.mustCheckout(order, regtestAddr("bounds after close"))
+	cancel(order, "")
+	x.core.deposit(addr, txidOf("late "+order), 0, 30000, 3)
+	x.poll()
+	const late = "arrived at this order's escrow address after the order closed"
+	if notes, buyer, staff := x.uncounted(order); notes+buyer+staff != 0 ||
+		agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND strpos(note,$2)>0", order, late) != 1 ||
+		agInt(x.testEnv, "SELECT count(*) FROM payments WHERE txid=$1 AND after_close AND flagged AND NOT escrow_left_out", txidOf("late "+order)) != 1 {
+		t.Fatalf("a deposit after close: did-not-count notes %d, buyer %d, staff %d; events %q", notes, buyer, staff, x.events(order))
+	}
+}

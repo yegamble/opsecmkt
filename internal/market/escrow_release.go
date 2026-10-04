@@ -272,6 +272,40 @@ func (a *App) leaveOutTopUps(ctx context.Context, tx *sql.Tx, o *Order) error {
 	return err
 }
 
+// leaveOutUncounted marks, for a cancelled Bitcoin escrow order with no refund that spends or will spend its deposits
+// (none requested, or only failed, superseded or external ones; a refund that failed because the coins were too few
+// keeps them: they counted, its note says they stay in the escrow, and a stray refund of them would fail the same
+// way), every deposit that has reached the confirmation threshold, that no settlement spends and that was neither
+// recorded after the order closed nor already left out (A-428): one Core reported as conflicted (negative
+// confirmations) or no longer listed (markMissing) when the order was cancelled, so it did not count, mined since. As
+// leaveOutTopUps does, in tx under the order row lock: one order note, a notice to the buyer and to staff, only for
+// the deposits newly marked. The stray refund returns them to the buyer's refund address. xmrLeaveOutUncounted is the
+// Monero escrow's (A-424).
+func (a *App) leaveOutUncounted(ctx context.Context, tx *sql.Tx, o *Order, threshold int64) error {
+	if o.State != stateCancelled {
+		return nil
+	}
+	var n, sum int64
+	if err := tx.QueryRowContext(ctx, `WITH m AS (UPDATE payments SET escrow_left_out=true,flagged=true,updated=now() WHERE order_id=$1 AND settlement_id IS NULL
+			AND confirmations>=$2 AND NOT locked AND NOT after_close AND NOT escrow_left_out AND NOT spent_outside
+			AND NOT EXISTS (SELECT 1 FROM settlements WHERE order_id=$1 AND kind='refund'
+				AND (state IN ('building','awaiting_signature','party_signed','signed','broadcast','confirmed') OR state='failed' AND build_error=$3)) RETURNING amount)
+		SELECT count(*),COALESCE(sum(amount),0) FROM m`, o.ID, threshold, settleTooSmall).Scan(&n, &sum); err != nil || n == 0 {
+		return err
+	}
+	count := "1 deposit"
+	if n > 1 {
+		count = strconv.FormatInt(n, 10) + " deposits"
+	}
+	note := count + " (" + amount(sum, 8) + " BTC, " + a.netTag() + " " + a.escrowNetwork() + ") to this order's escrow did not count for the order when it was cancelled (the escrow node reported them as conflicted, or no longer listed them), and no refund spends them. " +
+		"They have confirmed since and stay in the escrow; a stray refund returns them, less the network fee, to the buyer's refund address given at checkout. Do not send more coins to this escrow."
+	if err := a.flagOrder(ctx, tx, o, note, ""); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, "Order "+shortID(o.ID)+": "+note)
+	return err
+}
+
 // physicalReleaseNotSent is the honest line on a release that completes only with both parties' signatures (a
 // physical order's release before its outcome), naming the escrow node's chain.
 func physicalReleaseNotSent(net string) string {
