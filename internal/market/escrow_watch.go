@@ -186,7 +186,7 @@ func (a *App) escrowPollOnce(ctx context.Context) error {
 		}
 	}
 	// Coins at a closed escrow that are not the order's go back by a stray refund (escrow_stray.go).
-	if err = a.requestStrays(ctx, e.confirmations, orders, unread); err != nil {
+	if err = a.requestStrays(ctx, e.confirmations, e.feeRate, orders, unread); err != nil {
 		errs = append(errs, err)
 	}
 	// The daily check also lists the watch-only wallet's addresses with no escrow row and reserves their keys
