@@ -238,6 +238,42 @@ Use a fresh database for every run. It owns loopback ports 18090–18092, writes
 state), and is not part of `npm run test:e2e`. `python3 -m unittest tests.test_escrow_rpc_fixture`
 checks the simulator alone.
 
+### Monero escrow journey (simulated escrow wallet-rpc)
+
+`tests/e2e/escrow-xmr-journey.spec.ts` drives Monero escrow (local fakechain only,
+`ESCROW_XMR=on`; WR-escrow Phase 3) through the real server and PostgreSQL in Chromium at 320 px
+with JavaScript disabled, every form by keyboard alone: checkout with a refund address and the
+custody sentence, funding that waits at 9 confirmations and completes a digital order at 10, the
+vendor's claim with a password step-up (built, sent and confirmed, with its outputs and network
+fee), an underpaid order cancelled and refunded, a physical order shipped with a claim address and
+released by Confirm receipt, a release at the deadline, a dispute decided for the buyer (the resolve
+form states that the decision is final), the administrator's re-request of a failed settlement and
+retry of a set-aside one, the restore-paused and sweep states (set through SQL), and the order page
+with Monero escrow off, read on a second server that runs with `ESCROW_XMR` off on the same
+database. The retained and destroyed wallet states come with escrow Phase 3's retention slice.
+
+The escrow wallet-rpc and its daemon are **simulated**: `tests/e2e/fixtures/xmr_escrow_rpc.py`,
+served by `wallet-rpc.py --xmr-wallet-port --xmr-daemon-port`. Its keys and addresses are real
+Monero keys and addresses (prime-order ed25519 points, derived as Monero derives them), and its
+replies have monero-wallet-rpc 0.18.5.1's shapes and error codes: `xmr_record_shapes.py` recorded
+them from the real nodes into `xmr_rpc_shapes_0.18.5.1.json`, and
+`python3 -m unittest tests.test_xmr_escrow_rpc_fixture` runs the same recorder against the
+simulator and requires the same file. `TestXMREscrowFixtureAdapter` drives the app's own adapter
+against it. No chain exists and no coins move, so this is not chain evidence; real fakechain legs are
+`scripts/test-escrow-xmr-regtest.sh`, and `scripts/test-escrow-xmr-payee2.sh` measures how one
+monthly escrow wallet scales (PAYE-E2).
+
+```sh
+docker exec opsecmkt-dev-db createdb -U opsecmkt opsecmkt_escrow_xmr_e2e
+export E2E_ESCROW_XMR_DATABASE_URL='postgres://opsecmkt:local-dev-only@127.0.0.1:55432/opsecmkt_escrow_xmr_e2e?sslmode=disable'
+npm run test:e2e:escrow-xmr
+```
+
+Use a fresh database for every run; the test moves clocks and restore settings through SQL with
+`psql` on `PATH`. It owns loopback ports 18093–18097, writes `playwright-escrow-xmr-report/` and
+`test-results-escrow-xmr/` (one screenshot per order-page state), and is not part of
+`npm run test:e2e`.
+
 For actual local Bitcoin Core and Monero nodes, mined test coins and real wallet
 transactions, follow [isolated real-chain browser testing](local-chain-testing.md)
 and run `npm run test:e2e:chain` with `E2E_CHAIN_DATABASE_URL` set to a fresh database. This uses Bitcoin regtest and an offline Monero
