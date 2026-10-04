@@ -226,7 +226,7 @@ type XMREscrowHeldView struct {
 	ID                  int64
 	OrderID, Short      string
 	Kind, State, TxHash string
-	Confirmed           bool // relayed once on the next pass
+	Confirmed           bool // an administrator confirmed its relay: relayed on the next pass
 }
 
 // XMRDestroyedWalletView is one destroyed escrow wallet whose files the operator deletes from the wallet volume.
@@ -245,7 +245,8 @@ func xmrEscrowRecoveryLoader(ctx context.Context, a *App, _ *http.Request, d *Pa
 		return err
 	}
 	rows, err := a.db.QueryContext(ctx, `SELECT id,order_id,kind,state,tx_hash,send_error FROM xmr_settlements
-		WHERE state IN ('built','relayed') AND (send_error LIKE $1 OR send_error=$2) ORDER BY id LIMIT 200`, restoredHoldPrefix+"%", sendRebroadcastOK)
+		WHERE state IN ('built','relayed') AND (send_error LIKE $1 OR send_error=$2 OR send_error LIKE $3) ORDER BY id LIMIT 200`, restoredHoldPrefix+"%", sendRebroadcastOK,
+		xmrRelayRefusing+" % "+xmrRelayConfirmedMark)
 	if err != nil {
 		return err
 	}
@@ -256,7 +257,7 @@ func xmrEscrowRecoveryLoader(ctx context.Context, a *App, _ *http.Request, d *Pa
 			rows.Close()
 			return err
 		}
-		h.Short, h.Kind, h.Confirmed = shortID(h.OrderID), settlementKind(h.Kind), sendErr == sendRebroadcastOK
+		h.Short, h.Kind, h.Confirmed = shortID(h.OrderID), settlementKind(h.Kind), xmrRelayConfirmed(sendErr)
 		v.Held = append(v.Held, h)
 	}
 	rows.Close()
@@ -333,8 +334,8 @@ func xmrRebroadcastAction(c *actionCtx) (actionResult, error) {
 		switch {
 		case state != "built" && state != "relayed":
 			return actionResult{}, fail(409, "This settlement has no stored transaction waiting to be relayed. Nothing was changed.")
-		case sendErr == sendRebroadcastOK:
-			return actionResult{}, fail(409, "Its relay is already confirmed: the market relays it once on its next pass. Nothing was changed.")
+		case xmrRelayConfirmed(sendErr):
+			return actionResult{}, fail(409, "Its relay is already confirmed: the market relays it on its next pass. Nothing was changed.")
 		case !restoreHeld(sendErr):
 			return actionResult{}, fail(409, "This settlement is not held: the market relays it by itself. Nothing was changed.")
 		}

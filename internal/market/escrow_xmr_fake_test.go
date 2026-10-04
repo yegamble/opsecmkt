@@ -1,13 +1,16 @@
 package market
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -33,17 +36,21 @@ import (
 //
 // Settlements (slice X-d). Each incoming transfer entry is one output with a key image, a frozen flag and an unlock
 // state (unlocked from 10 confirmations with no unlock time), listed by incoming_transfers until it is spent; freeze
-// and thaw set the flag. transfer from one account spends unfrozen unlocked outputs, newest first, until the
-// destinations are covered (-17 not enough money otherwise), takes the network fee (fakeXMRFee) from destination 0
+// and thaw set the flag (a key image the wallet does not have is -1). transfer from one account spends unfrozen unlocked
+// outputs, newest first, until the destinations are covered (-17 not enough money when the account's unfrozen outputs
+// do not cover them, as for an account the wallet does not have; -37 not enough unlocked money when they cover them
+// only with locked ones), takes the network fee (fakeXMRFee) from destination 0
 // alone when subtract_fee_from_outputs is [0] (an address in invalid is refused, -2, as validate_address says; a
 // transfer to one in crash crashes the wallet-rpc, fakeXMRCrash), and with do_not_relay only builds: the transaction is
 // kept by its metadata and nothing is spent. relay_tx puts a built transaction in the daemon's pool and marks its
-// outputs spent; relaying it again answers the same hash (idempotent, as monerod 0.18.5.1 does), and one whose key
-// images another transaction spent is refused (-4, rejected by the daemon). The daemon's pool and chain answer
-// /get_transactions (missed_tx for an unknown hash; decoded as ring 16, rct type 6) and /is_key_image_spent (1 on
-// chain, 2 in the pool); mine, popBlocks (a reorganisation: the popped blocks' transactions go back to the pool),
-// flushPool and spendOutside (a wallet restored from the seed spends outputs outside the market) move them.
-// get_transfer_by_txid knows the transactions the open wallet relayed (-8 otherwise).
+// outputs spent; relaying it again answers the same hash (idempotent, as monerod 0.18.5.1 does), one whose key images
+// another transaction spent is refused (-4, rejected by the daemon), and metadata it did not build is -27. Each error
+// code is the one real monero-wallet-rpc 0.18.5.1 answered in the recording of tests/e2e/fixtures
+// (xmr_rpc_shapes_0.18.5.1.json, TestFakeXMREscrowErrorCodes). The daemon's pool and chain answer /get_transactions
+// (missed_tx for an unknown hash; decoded as ring 16, rct type 6) and /is_key_image_spent (1 on chain, 2 in the pool);
+// mine, popBlocks (a reorganisation: the popped blocks' transactions go back to the pool), flushPool and spendOutside
+// (a wallet restored from the seed spends outputs outside the market) move them. get_transfer_by_txid knows the
+// transactions the open wallet relayed (-8 otherwise).
 //
 // Faults: a call can be made to take effect and then lose its answer (the connection closes, as a timeout after the
 // wallet acted does), to answer -13 (the wallet-rpc lost its open wallet), to be refused by the daemon (-4, relay_tx)
@@ -542,7 +549,7 @@ var fakeXMRWalletMethods = map[string]func(f *fakeXMREscrow, params json.RawMess
 		}
 		json.Unmarshal(p, &q)
 		if q.Account < 1 || q.Account >= int64(len(f.open.accounts)) {
-			return nil, -14, "account index is out of bound"
+			return nil, -17, "not enough money" // 0.18.5.1 finds no coins at an account it does not have
 		}
 		for _, d := range q.Destinations {
 			if f.invalid[d.Address] {
@@ -553,18 +560,25 @@ var fakeXMRWalletMethods = map[string]func(f *fakeXMREscrow, params json.RawMess
 				return nil, fakeXMRCrash, ""
 			}
 		}
-		var want, have int64
+		var want, have, balance int64
 		for _, d := range q.Destinations {
 			want += d.Amount
 		}
 		var spend []*fakeXMRTransfer
 		for _, t := range slices.Backward(f.open.transfers) { // the newest first: an output left unfrozen is spent
-			if have < want && t.Account == q.Account && t.SpentBy == "" && !t.Frozen && t.unlocked() {
+			if t.Account != q.Account || t.SpentBy != "" || t.Frozen || t.Pool || t.DoubleSpend {
+				continue
+			}
+			balance += t.Amount
+			if have < want && t.unlocked() {
 				spend, have = append(spend, t), have+t.Amount
 			}
 		}
-		if have < want || len(spend) == 0 {
+		switch {
+		case balance < want:
 			return nil, -17, "not enough money"
+		case have < want:
+			return nil, -37, "not enough unlocked money"
 		}
 		f.seq++
 		hash := hex64("fake settlement tx " + strconv.Itoa(f.seq))
@@ -607,7 +621,7 @@ var fakeXMRWalletMethods = map[string]func(f *fakeXMREscrow, params json.RawMess
 		json.Unmarshal(p, &q)
 		tx := f.built[q.Hex]
 		if tx == nil {
-			return nil, -8, "Failed to parse tx metadata"
+			return nil, -27, "Failed to parse tx metadata."
 		}
 		if f.txs[tx.Hash] == nil {
 			for _, ki := range tx.KeyImages {
@@ -650,7 +664,7 @@ func (f *fakeXMREscrow) setFrozen(p json.RawMessage, frozen bool) (any, int64, s
 			return map[string]any{}, 0, ""
 		}
 	}
-	return nil, -10, "Key image not found"
+	return nil, -1, "Key image not found"
 }
 
 // relay puts tx in the daemon's pool and marks the outputs it spends spent, in every wallet file. f.mu is held.
@@ -887,4 +901,80 @@ func (f *fakeXMREscrow) outputs(addr string) []fakeXMRTransfer {
 		}
 	}
 	return out
+}
+
+// TestFakeXMREscrowErrorCodes (A-430): for each refusal the escrow code reads, the fake answers the error code real
+// monero-wallet-rpc 0.18.5.1 answered in the recording of tests/e2e/fixtures (xmr_rpc_shapes_0.18.5.1.json), through
+// the app's own adapter.
+func TestFakeXMREscrowErrorCodes(t *testing.T) {
+	raw, err := os.ReadFile("tests/e2e/fixtures/xmr_rpc_shapes_0.18.5.1.json") // TestMain runs the tests from the repository root
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recorded struct {
+		Cases map[string]struct {
+			Error *struct {
+				Code int64 `json:"code"`
+			} `json:"error"`
+		} `json:"cases"`
+	}
+	if err = json.Unmarshal(raw, &recorded); err != nil {
+		t.Fatal(err)
+	}
+	f := newFakeXMREscrow(t)
+	r, err := newXMREscrowRPC(f.wallet.URL, f.daemon.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	const name = "escrow-202610-01"
+	if err = r.createWallet(ctx, name, "pw"); err != nil {
+		t.Fatal(err)
+	}
+	young, youngAddr, err := r.createAccount(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, oldAddr, err := r.createAccount(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.payAddress(youngAddr, hex64("young deposit"), 1_000_000_000_000, 3)
+	f.payAddress(oldAddr, hex64("old deposit"), 1_000_000_000_000, 12)
+	pay := func(amount int64) []xmrDestination { return []xmrDestination{{testXMRAddr("claimant", true), amount}} }
+	built, err := r.buildTransfer(ctx, old, pay(500_000_000_000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.spendOutside(built.SpentKeyImages...)
+	build := func(account, amount int64) error { _, err := r.buildTransfer(ctx, account, pay(amount)); return err }
+	relay := func(metadata string) error { _, err := r.relayTx(ctx, metadata); return err }
+	address := func(account int64) error { _, err := r.address(ctx, account, 0); return err }
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{"wallet create_wallet (exists)", r.createWallet(ctx, name, "pw")},
+		{"wallet get_address (account out of bound)", address(old + 1)},
+		{"wallet freeze (unknown key image)", r.freeze(ctx, hex64("unknown key image"))},
+		{"wallet transfer (account out of bound)", build(old+1, 100_000_000_000)},
+		{"wallet transfer (coins locked)", build(young, 100_000_000_000)},
+		{"wallet transfer (not enough money)", build(young, 2_000_000_000_000)},
+		{"wallet relay_tx (bad metadata)", relay(hex.EncodeToString([]byte("not tx metadata")))},
+		{"wallet relay_tx (refused: key images spent)", relay(built.Metadata)},
+		{"wallet set_subaddress_lookahead (wrong password)", r.setSubaddressLookahead(ctx, "not pw", 50, 1)},
+		{"wallet change_wallet_password (wrong old password)", r.changeWalletPassword(ctx, "not pw", "new pw")},
+		{"wallet open_wallet (wrong password)", r.openWallet(ctx, name, "not pw")},
+	}
+	for _, c := range cases {
+		rec, ok := recorded.Cases[c.name]
+		if !ok || rec.Error == nil {
+			t.Errorf("%s: no recorded error", c.name)
+			continue
+		}
+		var re *xmrRPCError
+		if !errors.As(c.err, &re) || re.Code != rec.Error.Code {
+			t.Errorf("%s: the fake answers %v, real 0.18.5.1 answered %d", c.name, c.err, rec.Error.Code)
+		}
+	}
 }

@@ -125,7 +125,7 @@ func (a *App) xmrSettlementStatus(s *XMRSettlementView, o *Order, outcome string
 			s.Status = "Built, checked and stored. " + restoreHeldText
 		case s.wait == sendRebroadcastOK:
 			s.Status = "Built, checked and stored. " + xmrRelayConfirmedText
-		case v.RestorePaused:
+		case v.RestorePaused && !xmrRelayConfirmed(s.wait):
 			s.Status = "Built, checked and stored. Paused: " + restoreWhy + ", so the market does not send it until the operator has finished."
 		case why != "":
 			s.Status = "Built, checked and stored. " + why
