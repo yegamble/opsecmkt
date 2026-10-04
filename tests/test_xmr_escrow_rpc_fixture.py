@@ -233,8 +233,9 @@ class EscrowBehaviourTest(unittest.TestCase):
         params = {'destinations': [{'address': to, 'amount': 300_000_000_000}], 'account_index': 1, 'priority': 0, 'subtract_fee_from_outputs': [0],
                   'do_not_relay': True, 'get_tx_metadata': True, 'get_tx_hex': True}
         built = self.n.ok('transfer', params)
-        self.n.control('/test/xmr/refuse-relay', {'count': 1})
-        self.assertEqual(self.n.wallet('relay_tx', {'hex': built['tx_metadata']})['error'], {'code': -4, 'message': 'Failed to commit tx.'})
+        self.n.control('/test/xmr/refuse-relay', {})
+        for _ in range(3):  # the daemon refuses that transaction each time it is relayed
+            self.assertEqual(self.n.wallet('relay_tx', {'hex': built['tx_metadata']})['error'], {'code': -4, 'message': 'Failed to commit tx.'})
         self.assertEqual(self.n.other('/get_transactions', {'txs_hashes': [built['tx_hash']]})['missed_tx'], [built['tx_hash']])
         self.n.control('/test/xmr/crash-transfer', {'count': 1})
         with self.assertRaises((RemoteDisconnected, ConnectionError, urllib.error.URLError)):

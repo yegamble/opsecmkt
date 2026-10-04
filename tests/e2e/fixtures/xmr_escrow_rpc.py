@@ -36,7 +36,9 @@ Test-only controls (POST, JSON) on the escrow wallet-rpc's port, which the app n
   /test/xmr/deposit        {"address", "amount"} or {"outputs": [{"address", "amount"}]}
                                                        a transaction from outside paying them (piconero), in the pool
   /test/xmr/mine           {"blocks"}                 blocks: the first takes every pooled transaction
-  /test/xmr/refuse-relay   {"count"}                  the daemon refuses the next count transactions relayed to it
+  /test/xmr/refuse-relay   {}                         the daemon refuses the next transaction relayed to it, and that
+                                                       transaction each time it is relayed again (one monerod will not
+                                                       take); a rebuilt one, with another hash, is taken
   /test/xmr/crash-transfer {"count"}                  the next count transfer calls end the connection unanswered and
                                                        leave no wallet open (a wallet-rpc that crashed and restarted)
 GET /test/xmr/state returns the chain (height, every transaction's outputs) and the wallet-rpc's wallets.
@@ -380,7 +382,8 @@ class Chain:
         self.built = {}          # metadata -> Tx built and not relayed (transfer with do_not_relay)
         self.owners = {}         # address -> (spend public key, major, minor): who can see an output to it
         self.next_global = 1000
-        self.refuse = 0          # the next refuse relayed transactions are refused (/test/xmr/refuse-relay)
+        self.refuse_next = False  # the next transaction relayed is refused, and again each time (/test/xmr/refuse-relay)
+        self.refused = set()      # hashes the daemon refuses
         self.outside = 0
         self.wallets = 0
 
@@ -404,8 +407,9 @@ class Chain:
         image another transaction spent, or one /test/xmr/refuse-relay refuses, is rejected."""
         if tx.hash in self.txs:
             return
-        if self.refuse > 0:
-            self.refuse -= 1
+        if self.refuse_next or tx.hash in self.refused:
+            self.refuse_next = False
+            self.refused.add(tx.hash)
             raise RPCError(-4, 'Failed to commit tx.')
         if any(self.spender(ki) for ki in tx.inputs):
             raise RPCError(-4, 'Failed to commit tx.')
@@ -951,14 +955,14 @@ class WalletRPC:
                     raise ValueError('blocks: 1-1000')
                 c.mine(n)
                 return {'height': c.height}
-            if path in ('/test/xmr/refuse-relay', '/test/xmr/crash-transfer'):
+            if path == '/test/xmr/refuse-relay':
+                c.refuse_next = True
+                return {'ok': True}
+            if path == '/test/xmr/crash-transfer':
                 n = data.get('count', 1)
                 if not isinstance(n, int) or not 0 <= n <= 100:
                     raise ValueError('count: 0-100')
-                if path == '/test/xmr/refuse-relay':
-                    c.refuse = n
-                else:
-                    self.crash = n
+                self.crash = n
                 return {'ok': True}
             raise ValueError('unknown test endpoint')
 

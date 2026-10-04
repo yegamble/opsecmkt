@@ -212,7 +212,7 @@ func TestXMREscrowFixtureAdapter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sim("/test/xmr/refuse-relay", map[string]any{"count": 1})
+	sim("/test/xmr/refuse-relay", map[string]any{})
 	if _, err = r.relayTx(ctx, built.Metadata); code(err) != -4 {
 		t.Fatalf("a refused relay: %v", err)
 	}
