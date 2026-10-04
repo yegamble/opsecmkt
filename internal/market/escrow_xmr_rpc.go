@@ -25,16 +25,25 @@ import (
 // Every RPC error is reduced to a fixed class (xmrRPCError) before anyone logs it: the wallet's error text can quote
 // a wallet name, path or address, and rpcClient's transport errors name the host.
 
-// xmrWalletSlowTimeout bounds the wallet calls that load, scan or rewrite a whole wallet: create_wallet, open_wallet,
-// close_wallet (which stores), refresh, store, change_wallet_password (which rewrites the keys file and stores) and
+// xmrWalletSlowTimeout bounds the wallet calls that load or rewrite a whole wallet: create_wallet, open_wallet,
+// close_wallet (which stores), store, change_wallet_password (which rewrites the keys file and stores) and
 // rescan_blockchain.
 // monero-wallet-rpc answers one request at a time; opening a wallet
 // rebuilds its subaddress table for every account (an escrow wallet holds one account per order, thousands a month,
-// P3-R12), refresh scans every block since the last pass and store rewrites the encrypted cache, so on a large wallet
-// each takes far longer than rpcTimeout's 10 s. Two minutes matches escrowKeypoolTimeout (the slow wallet call on the
-// Bitcoin side) and still lets a watcher pass (watcherPassTimeout, 5 min) open, refresh and store one wallet. PAYE-E2
-// (P3-R12) measures these calls; this bound is revisited if it measures them near the limit.
-const xmrWalletSlowTimeout = 2 * time.Minute
+// P3-R12) and store rewrites the encrypted cache, so on a large wallet each takes far longer than rpcTimeout's 10 s.
+// Two minutes matches escrowKeypoolTimeout (the slow wallet call on the Bitcoin side). PAYE-E2 (P3-R12, on 0.18.5.1
+// fakechain) measured them on a 10,000-account wallet far inside it: open_wallet 1.7 s, store 1.0 s, a seed restore's
+// rescan 2.2 s. A variable so tests can shorten it.
+var xmrWalletSlowTimeout = 2 * time.Minute
+
+// xmrWalletRefreshTimeout bounds refresh, which scans every block since the wallet's last refresh. PAYE-E2 measured a
+// refresh over 110 blocks holding 200 deposits to one 10,000-account wallet at 2.5 minutes (747 ms per deposit
+// received), past xmrWalletSlowTimeout, so after downtime with many deposits the watcher's refresh would time out on
+// every pass. Eight minutes leaves an open_wallet (xmrWalletSlowTimeout) room inside one pass (xmrEscrowPassTimeout). A
+// refresh that times out all the same is not lost: monero-wallet-rpc goes on refreshing after the market stops waiting,
+// answering nothing else until it is done, and the next open_wallet waits for it and stores that wallet before it opens
+// one; the pass reads nothing from a wallet whose refresh failed. A variable so tests can shorten it.
+var xmrWalletRefreshTimeout = 8 * time.Minute
 
 // P3-R2: the escrow runs on a local fakechain only.
 const (
@@ -273,7 +282,7 @@ func (r *xmrEscrowRPC) store(ctx context.Context) error {
 }
 
 func (r *xmrEscrowRPC) refresh(ctx context.Context) error {
-	return r.walletCallWithin(ctx, xmrWalletSlowTimeout, "refresh", nil, nil)
+	return r.walletCallWithin(ctx, xmrWalletRefreshTimeout, "refresh", nil, nil)
 }
 
 // mnemonic is the open wallet's 25-word seed (query_key mnemonic), only for sealing it (escrow_xmr_seal.go). No

@@ -24,7 +24,7 @@ import (
 // apply: rpcTimeout for create_account, get_address, get_transfers, get_accounts and incoming_transfers;
 // xmrWalletSlowTimeout for create_wallet, open_wallet and store): create_account in total and per call; open_wallet;
 // refresh over the funding blocks, over 1,000 empty blocks and over one block with 2 deposits (each measured to its end
-// and recorded as a FINDING when it takes longer than xmrWalletSlowTimeout, the bound the watcher gives it);
+// and recorded as a FINDING when it takes longer than xmrWalletRefreshTimeout, the bound the watcher gives it);
 // get_transfers all_accounts (time and payload size); get_accounts; incoming_transfers of one funded account; the wallet
 // file's size and the wallet-rpc's resident memory (when ESCROW_XMR_PAYEE2_WALLET_CONTAINER names its container); and a
 // seed restore on the restore wallet-rpc (restore_deterministic_wallet, set_subaddress_lookahead past the highest
@@ -36,7 +36,9 @@ import (
 // compares with the poll interval (PAYMENT_POLL_INTERVAL's default) is reported. The report is written to
 // artifacts/real-chain/paye-e2-<ESCROW_XMR_PAYEE2_SHA>.txt and logged. FAKECHAIN ONLY: it refuses any other daemon
 // before a wallet call. It needs the same nodes as the X-c legs (ESCROW_XMR_REGTEST_DAEMON_URL, _WALLET_URL,
-// _FUNDER_URL and _RESTORE_URL); no database.
+// _FUNDER_URL and _RESTORE_URL); no database. The escrow wallet gets the watcher's subaddress lookahead right after
+// create_wallet (one address per account, A-429); ESCROW_XMR_PAYEE2_LOOKAHEAD_MINOR=<n> sets n addresses instead (200 is
+// wallet2's default: the wallet as the first PAYE-E2 run measured it).
 func TestXMREscrowPAYEE2(t *testing.T) {
 	if os.Getenv("ESCROW_XMR_PAYEE2") != "1" {
 		t.Skip("set ESCROW_XMR_PAYEE2=1 and the fakechain node URLs (scripts/test-escrow-xmr-payee2.sh) to measure PAYE-E2")
@@ -106,6 +108,15 @@ func TestXMREscrowPAYEE2(t *testing.T) {
 		t.Fatalf("create_wallet: %s", xmrErrorClass(err))
 	}
 	p.logf("create_wallet %s: %s", names[0], p.since(start))
+	// The lookahead xmrCreateWallet sets right after create_wallet (A-429): one address ahead in each account, the account
+	// lookahead left at 50; every later open_wallet reads it from the keys file. ESCROW_XMR_PAYEE2_LOOKAHEAD_MINOR=200
+	// measures the wallet as it was before (wallet2's default).
+	minor := int64(num("ESCROW_XMR_PAYEE2_LOOKAHEAD_MINOR", 1))
+	start = time.Now()
+	if err = r.setSubaddressLookahead(ctx, password, xmrLookaheadMajor, minor); err != nil {
+		t.Fatalf("set_subaddress_lookahead: %s", xmrErrorClass(err))
+	}
+	p.logf("set_subaddress_lookahead major %d minor %d after create_wallet: %s", xmrLookaheadMajor, minor, p.since(start))
 	// The restore height, as xmrSealWallet records it: the wallet's height after its first refresh.
 	if err = r.refresh(ctx); err != nil {
 		t.Fatalf("refresh: %s", xmrErrorClass(err))
@@ -179,11 +190,11 @@ func TestXMREscrowPAYEE2(t *testing.T) {
 		}
 		return time.Since(t0)
 	}
-	// A refresh is measured to its end (the adapter would cut it off at xmrWalletSlowTimeout); one slower than that bound
-	// is a finding: the watcher's call times out and the wallet-rpc goes on refreshing, busy, into the next pass.
+	// A refresh is measured to its end (the adapter would cut it off at xmrWalletRefreshTimeout); one slower than that
+	// bound is a finding: the watcher's call times out and the wallet-rpc goes on refreshing, busy, into the next pass.
 	refresh := func(what string) time.Duration {
 		d := p.slow(r.wallet, "refresh", nil, nil)
-		p.over(what, d, xmrWalletSlowTimeout, "xmrWalletSlowTimeout")
+		p.over(what, d, xmrWalletRefreshTimeout, "xmrWalletRefreshTimeout")
 		return d
 	}
 	d := open(names[0])
@@ -312,7 +323,7 @@ func TestXMREscrowPAYEE2(t *testing.T) {
 		step("open_wallet", xmrWalletSlowTimeout, func() error { return r.openWallet(ctx, name, password) })
 		var h int64
 		step("get_info and hard_fork_info", rpcTimeout, func() (err error) { h, err = r.checkDaemon(ctx); return })
-		step("refresh", xmrWalletSlowTimeout, func() error { return r.refresh(ctx) })
+		step("refresh", xmrWalletRefreshTimeout, func() error { return r.refresh(ctx) })
 		step("get_height", rpcTimeout, func() error {
 			got, err := r.height(ctx)
 			if err == nil && (got-h > xmrMaxWalletLag || h-got > xmrMaxWalletLag) {

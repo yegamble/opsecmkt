@@ -659,9 +659,9 @@ func TestXMREscrowRPCErrorClasses(t *testing.T) {
 	}
 }
 
-// TestXMREscrowSlowCallsGetLongerTimeout: open (and the restore sweep's probe), create, close, refresh, store,
-// change_wallet_password and rescan_blockchain run on xmrWalletSlowTimeout, not
-// rpcTimeout; an ordinary read still times out at rpcTimeout.
+// TestXMREscrowSlowCallsGetLongerTimeout: open (and the restore sweep's probe), create, close, store,
+// change_wallet_password and rescan_blockchain run on xmrWalletSlowTimeout, and refresh on the longer
+// xmrWalletRefreshTimeout, not rpcTimeout; an ordinary read still times out at rpcTimeout.
 func TestXMREscrowSlowCallsGetLongerTimeout(t *testing.T) {
 	if xmrWalletSlowTimeout != 2*time.Minute || xmrWalletSlowTimeout <= rpcTimeout {
 		t.Fatalf("slow timeout %s", xmrWalletSlowTimeout)
@@ -691,5 +691,36 @@ func TestXMREscrowSlowCallsGetLongerTimeout(t *testing.T) {
 	var re *xmrRPCError
 	if _, err := r.height(ctx); !errors.As(err, &re) || re.Class != "timeout" {
 		t.Fatalf("get_height: %v", err)
+	}
+}
+
+// TestXMREscrowRefreshOutlastsSlowTimeout (A-429): refresh runs on its own bound, xmrWalletRefreshTimeout, longer than
+// xmrWalletSlowTimeout (PAYE-E2 measured a 2.5-minute catch-up refresh) and short enough that an open_wallet and the
+// refresh fit one pass. The network check's refresh (the watcher's, after each open_wallet) runs on it too. With both
+// bounds shortened: a refresh that answers after the slow bound is waited for; one past its own bound times out.
+func TestXMREscrowRefreshOutlastsSlowTimeout(t *testing.T) {
+	if xmrWalletRefreshTimeout != 8*time.Minute || xmrWalletRefreshTimeout+xmrWalletSlowTimeout > xmrEscrowPassTimeout {
+		t.Fatalf("refresh timeout %s (slow %s, pass %s)", xmrWalletRefreshTimeout, xmrWalletSlowTimeout, xmrEscrowPassTimeout)
+	}
+	ctx := context.Background()
+	oldSlow, oldRefresh := xmrWalletSlowTimeout, xmrWalletRefreshTimeout
+	xmrWalletSlowTimeout, xmrWalletRefreshTimeout = 100*time.Millisecond, time.Second
+	t.Cleanup(func() { xmrWalletSlowTimeout, xmrWalletRefreshTimeout = oldSlow, oldRefresh })
+	wallet, _, r := happyXMRNodes(t)
+	wallet.setDelay("refresh", 300*time.Millisecond)
+	wallet.setDelay("open_wallet", 300*time.Millisecond)
+	if err := r.refresh(ctx); err != nil {
+		t.Fatalf("a refresh longer than the slow bound was cut short: %v", err)
+	}
+	if _, err := r.checkNetwork(ctx); err != nil {
+		t.Fatalf("the network check's refresh was cut short: %v", err)
+	}
+	var re *xmrRPCError
+	if err := r.openWallet(ctx, "escrow-202610-01", "pw"); !errors.As(err, &re) || re.Class != "timeout" {
+		t.Fatalf("open_wallet past the slow bound: %v", err)
+	}
+	wallet.setDelay("refresh", 1500*time.Millisecond)
+	if err := r.refresh(ctx); !errors.As(err, &re) || re.Method != "refresh" || re.Class != "timeout" {
+		t.Fatalf("a refresh past its own bound: %v", err)
 	}
 }

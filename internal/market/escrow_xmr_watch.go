@@ -96,8 +96,9 @@ const xmrLeadTime = 7 * 24 * time.Hour
 const xmrEscrowSweepKey = "xmr_escrow_sweep_required"
 
 // xmrEscrowPassTimeout bounds one Monero escrow pass. Every wallet that may hold coins is opened, refreshed and stored
-// in turn, and each of those calls may take up to xmrWalletSlowTimeout on a large wallet, so the bound is twice the
-// other watchers'; a pass cut short leaves the remaining wallets to the next one. A variable so tests can shorten it.
+// in turn: open_wallet and store may take up to xmrWalletSlowTimeout on a large wallet and a catch-up refresh up to
+// xmrWalletRefreshTimeout, so the bound is twice the other watchers'; a pass cut short leaves the remaining wallets to
+// the next one. A variable so tests can shorten it.
 var xmrEscrowPassTimeout = 2 * watcherPassTimeout
 
 // xmrEscrowCompletedNote is the order history note of a Monero escrow order's completion on funding.
@@ -416,6 +417,14 @@ func (a *App) xmrCreateWallet(ctx context.Context, id int64, name string, resume
 			return a.xmrSealOrphan(ctx, id, name)
 		}
 	} else if err != nil {
+		return err
+	}
+	// An escrow address is always an account's address 0, so the wallet looks one address ahead in each account rather
+	// than wallet2's 200; monero-wallet-rpc writes it into the keys file, and every account created later gets it. Set
+	// while the wallet has account 0 alone and before the row is sealed, so a pass cut short sets it again. PAYE-E2's
+	// variant (2,000 accounts, 200 deposits over 110 blocks, 0.18.5.1 fakechain) measured the catch-up refresh at 0.70 s
+	// with it, against 21 s without, and create_account 7 ms against 54 ms (median).
+	if err = x.rpc.setSubaddressLookahead(ctx, password, xmrLookaheadMajor, 1); err != nil {
 		return err
 	}
 	return a.xmrSealWallet(ctx, id)

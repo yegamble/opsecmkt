@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # PAYE-E2 (WR-escrow Phase 3, P3-R12): how one monthly Monero escrow wallet scales, measured on a real monerod and
-# monero-wallet-rpc 0.18.5.1 local fakechain. Manual, not run in CI; it takes about an hour at the default size.
+# monero-wallet-rpc 0.18.5.1 local fakechain. Manual, not run in CI; it takes a few minutes at the default size (over
+# an hour with ESCROW_XMR_PAYEE2_LOOKAHEAD_MINOR=200).
 # FAKECHAIN ONLY: it refuses any daemon that does not report nettype "fakechain" with hard fork version 16 or later,
 # before any wallet call, and the Go leg checks the same again.
 #
 # internal/market/escrow_xmr_payee2_test.go (TestXMREscrowPAYEE2), through the app's own adapter and its timeouts: one
-# escrow wallet gets 10,000 accounts (create_account), 200 of them chosen at random are funded two per block while it is
-# closed; then create_account (total and per call), open_wallet, refresh over the funding blocks and over 1,000 empty
-# blocks, get_transfers all_accounts (time and payload size), get_accounts, incoming_transfers of one account, the
-# wallet file's size and the wallet-rpc's resident memory, and a seed restore (restore_deterministic_wallet,
+# escrow wallet gets the watcher's subaddress lookahead (one address per account, set right after create_wallet) and
+# 10,000 accounts (create_account), 200 of them chosen at random are funded two per block while it is closed; then
+# create_account (total and per call), open_wallet, refresh over the funding blocks and over 1,000 empty blocks,
+# get_transfers all_accounts (time and payload size), get_accounts, incoming_transfers of one account, the wallet file's
+# size and the wallet-rpc's resident memory, and a seed restore (restore_deterministic_wallet,
 # set_subaddress_lookahead past the highest account, rescan_blockchain) that must find every funded account. It passes
 # when a full watcher pass over 5 such wallets (copies of the measured file) fits the Monero watcher's pass timeout and
 # every call its own timeout; the report compares the pass with the poll interval too.
@@ -33,9 +35,12 @@
 #   docker network rm xmr-payee2
 #
 # ESCROW_XMR_PAYEE2_ACCOUNTS, _FUNDED and _WALLETS change the size (defaults 10000, 200, 5; a smaller run is no
-# PAYE-E2 evidence). The report is artifacts/real-chain/paye-e2-<commit>.txt (gitignored), also printed; the go test
-# transcript is ESCROW_XMR_PAYEE2_LOG (default artifacts/real-chain/test-escrow-xmr-payee2-<UTC time>.log). No seed,
-# password or URL is printed.
+# PAYE-E2 evidence). ESCROW_XMR_PAYEE2_LOOKAHEAD_MINOR=<n> is the lookahead variant: n addresses per account instead of
+# one (200 is monero-wallet-rpc's default, the wallet before A-429; its report name ends -lookahead-minor<n>). To
+# compare, run a reduced size with and without ESCROW_XMR_PAYEE2_LOOKAHEAD_MINOR=200, e.g. ESCROW_XMR_PAYEE2_ACCOUNTS=2000
+# ESCROW_XMR_PAYEE2_WALLETS=1; docs/verification.md has the numbers. The report is
+# artifacts/real-chain/paye-e2-<commit>.txt (gitignored), also printed; the go test transcript is ESCROW_XMR_PAYEE2_LOG
+# (default artifacts/real-chain/test-escrow-xmr-payee2-<UTC time>.log). No seed, password or URL is printed.
 set -euo pipefail
 
 for v in ESCROW_XMR_REGTEST_DAEMON_URL ESCROW_XMR_REGTEST_WALLET_URL ESCROW_XMR_REGTEST_FUNDER_URL ESCROW_XMR_REGTEST_RESTORE_URL ESCROW_XMR_PAYEE2_WALLET_CONTAINER; do
@@ -69,6 +74,10 @@ cd "$(dirname "$0")/.."
 sha="$(git rev-parse --short=12 HEAD)"
 if [[ -n "$(git status --porcelain -- internal)" ]]; then
   sha="$sha-dirty"
+fi
+if [[ -n "${ESCROW_XMR_PAYEE2_LOOKAHEAD_MINOR:-}" ]]; then
+  [[ "$ESCROW_XMR_PAYEE2_LOOKAHEAD_MINOR" =~ ^[1-9][0-9]*$ ]] || { echo "ESCROW_XMR_PAYEE2_LOOKAHEAD_MINOR must be a positive whole number" >&2; exit 2; }
+  sha="$sha-lookahead-minor$ESCROW_XMR_PAYEE2_LOOKAHEAD_MINOR"
 fi
 log="${ESCROW_XMR_PAYEE2_LOG:-artifacts/real-chain/test-escrow-xmr-payee2-$(date -u +%Y%m%dT%H%M%SZ).log}"
 report="artifacts/real-chain/paye-e2-$sha.txt"

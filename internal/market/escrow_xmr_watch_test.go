@@ -320,6 +320,48 @@ func TestXMREscrowCreatingResumed(t *testing.T) {
 	}
 }
 
+// A-429 (PAYE-E2): every escrow wallet gets a per-account subaddress lookahead of 1 (an escrow address is always an
+// account's address 0; the account lookahead stays 50), set with its own password once create_wallet has made it, also
+// when a lost create_wallet answer is resumed, and before it is sealed or gets any account. A refused lookahead leaves
+// the row creating, so the next pass sets it again.
+func TestXMREscrowWalletLookaheadMinor(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.fake.fault("create_wallet", fakeXMRDrop)
+	if err := x.poll(); err == nil {
+		t.Fatal("a create_wallet with no answer passed")
+	}
+	x.fake.fault("set_subaddress_lookahead", fakeXMRNotOpen)
+	if err := x.poll(); err == nil || !slices.Equal(x.wallets(), []string{"escrow-202610-01:creating"}) {
+		t.Fatalf("a refused lookahead: %v, wallets %v", err, x.wallets())
+	}
+	x.mustPoll()
+	x.now = time.Date(2026, 10, 25, 0, 0, 0, 0, time.UTC) // next month's wallet is created new
+	x.mustPoll()
+	if got := x.wallets(); !slices.Equal(got, []string{"escrow-202610-01:active", "escrow-202611-01:sealed"}) {
+		t.Fatalf("wallets: %v", got)
+	}
+	var methods []string
+	var lookaheads []string
+	for _, c := range x.fake.callLog() {
+		methods = append(methods, c.Method)
+		if c.Method == "set_subaddress_lookahead" {
+			lookaheads = append(lookaheads, c.Params)
+		}
+	}
+	for _, name := range []string{"escrow-202610-01", "escrow-202611-01"} {
+		want := `{"major_idx":50,"minor_idx":1,"password":"` + xmrWalletPassword(testXMRSecret, name) + `"}`
+		if !slices.Contains(lookaheads, want) {
+			t.Fatalf("%s: lookaheads set %v", name, lookaheads)
+		}
+	}
+	// Each wallet's order of calls: create_wallet (answered), the lookahead, query_key (the seal), create_account.
+	set := slices.Index(methods, "set_subaddress_lookahead")
+	if created := slices.Index(methods[1:], "create_wallet") + 1; created == 0 || set < created || slices.Index(methods[created:set], "query_key") >= 0 ||
+		slices.Index(methods[created:set], "create_account") >= 0 || slices.Index(methods[set:], "query_key") < 0 {
+		t.Fatalf("calls: %v", methods)
+	}
+}
+
 // P3-R4: with MONERO_WALLET_SECRET changed from the one this database pinned, the watcher creates no wallet and reads
 // none, and the startup retry keeps Monero escrow disabled.
 func TestXMREscrowSecretMismatch(t *testing.T) {
@@ -590,6 +632,44 @@ func TestXMREscrowNotOpenMidPass(t *testing.T) {
 	if x.state(order) != stateCancelled || agInt(x.testEnv, "SELECT count(*) FROM xmr_settlements WHERE order_id=$1 AND kind='refund'", order) != 1 ||
 		x.notified(x.buyer, "payment window ended") != 1 {
 		t.Fatalf("underpaid: %s, buyer notices %d", x.state(order), x.notified(x.buyer, "payment window ended"))
+	}
+}
+
+// A-429 (PAYE-E2: a catch-up refresh after downtime outlasted its bound): a refresh that times out fails that wallet's
+// pass. Nothing more is asked of the wallet-rpc (nothing read, no store), the wallet keeps its state and no order
+// expires on what was not read. The wallet-rpc finishes the refresh on its own, and the next pass reads the wallet and
+// funds the order.
+func TestXMREscrowRefreshTimeoutCatchUp(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	order := x.draft(x.digital(x.vendor))
+	addr := x.mustCheckout(order)
+	agExec(x.testEnv, "UPDATE escrows SET created=now()-interval '3 days' WHERE order_id=$1", order)
+	x.fake.payAddress(addr, hex64("catch up"), xmrListingPrice, 12)
+	old := xmrWalletRefreshTimeout
+	xmrWalletRefreshTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { xmrWalletRefreshTimeout = old })
+	x.fake.hook("refresh", func() { time.Sleep(500 * time.Millisecond) })
+	from := len(x.fake.callLog())
+	err := x.poll()
+	var re *xmrRPCError
+	if !errors.As(err, &re) || re.Method != "refresh" || re.Class != "timeout" {
+		t.Fatalf("a refresh past its bound: %v", err)
+	}
+	var methods []string
+	for _, c := range x.fake.callLog()[from:] {
+		methods = append(methods, c.Method)
+	}
+	if len(methods) == 0 || methods[len(methods)-1] != "refresh" {
+		t.Fatalf("calls after the refresh timed out: %v", methods)
+	}
+	if x.state(order) != stateAwaitingPayment || agInt(x.testEnv, "SELECT count(*) FROM payments") != 0 || !slices.Equal(x.wallets(), []string{"escrow-202610-01:active"}) {
+		t.Fatalf("after a refresh timeout: %s, wallets %v", x.state(order), x.wallets())
+	}
+	x.fake.hook("refresh", nil)
+	x.mustPoll()
+	if x.state(order) != stateCompleted || agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND credited", order) != 1 {
+		t.Fatalf("the next pass: %s", x.state(order))
 	}
 }
 
