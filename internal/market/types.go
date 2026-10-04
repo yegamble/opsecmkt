@@ -229,6 +229,13 @@ type PageData struct {
 	// physical escrow orders snapshot (physicalEscrowOff).
 	DispatchOn   bool
 	EscrowOrders int
+	// XMREscrowOn: ESCROW_XMR=on (every page), the site-wide notices describe Monero escrow (A-423); XMREscrowAvailable:
+	// it is ready to take a checkout (xmrEscrowReady). XMRCustody is xmrCustody (every page), so a template never
+	// retypes the owner's sentence (A-402); XMREscrowOrders: vendor desk, the viewer's Monero escrow orders that may hold
+	// coins, counted like EscrowOrders.
+	XMREscrowOn, XMREscrowAvailable bool
+	XMRCustody                      string
+	XMREscrowOrders                 int
 	// EscrowKey: /escrow-key and the /account status row, the viewer's Bitcoin escrow key; nil while ESCROW_BTC is off
 	// (escrow_account.go, WR-escrow Phase 1).
 	EscrowKey *EscrowKeyView
