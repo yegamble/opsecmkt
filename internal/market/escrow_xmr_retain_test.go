@@ -244,6 +244,9 @@ func TestXMREscrowDestroyPreconditions(t *testing.T) {
 		if file, _ := x.fake.file(name); x.walletState(name) == "destroyed" || file.password != derived {
 			t.Fatalf("destroyed with %s", why)
 		}
+		if agInt(x.testEnv, "SELECT count(*) FROM xmr_escrow_wallets WHERE name=$1 AND destroy_started_at IS NOT NULL", name) != 0 {
+			t.Fatalf("its destruction recorded as started with %s", why)
+		}
 	}
 	// An open order alone (the wallet forced to retained).
 	agExec(x.testEnv, "UPDATE xmr_escrow_wallets SET state='retained' WHERE name=$1", name)
@@ -359,7 +362,7 @@ func TestXMREscrowDestroyShreds(t *testing.T) {
 	if !slices.Equal(seq, []string{"change_wallet_password", "store", "close_wallet"}) {
 		t.Fatalf("destruction calls %v", seq)
 	}
-	if n := agInt(x.testEnv, "SELECT count(*) FROM xmr_escrow_wallets WHERE name=$1 AND state='destroyed' AND seed_sealed IS NULL AND destroyed_at=$2", name, x.now); n != 1 {
+	if n := agInt(x.testEnv, "SELECT count(*) FROM xmr_escrow_wallets WHERE name=$1 AND state='destroyed' AND seed_sealed IS NULL AND destroyed_at=$2 AND destroy_started_at=$2", name, x.now); n != 1 {
 		t.Fatalf("the row: %v", agStrings(t, x.testEnv, "SELECT state||' '||COALESCE(destroyed_at::text,'-')||' '||(seed_sealed IS NULL) FROM xmr_escrow_wallets WHERE name=$1", name))
 	}
 	for _, q := range []string{"SELECT string_agg(key||value,'') FROM settings", "SELECT string_agg(action,'') FROM audit_events", "SELECT string_agg(body,'') FROM notifications",
@@ -414,20 +417,14 @@ func TestXMREscrowAfterDestroyText(t *testing.T) {
 	}
 }
 
-// P3-R9: a restored row past destroy_after whose wallet no longer opens (destroyed after the backup) is destroyed
-// again, its restored seal wiped, once the restored records allow its destruction; until they do (a live settlement)
-// it is missing and the administrators are told, once.
+// P3-R9, A-419 (amended): a restored row past destroy_after whose wallet no longer opens with the market's password
+// (destroyed after the backup the row comes from, so the row has no record that the market began destroying it) is
+// missing and keeps its restored seal, though its records allow its destruction; the administrators are told once, and
+// /admin lists it for an administrator to confirm its destruction (TestXMREscrowConfirmDestroyed).
 func TestXMREscrowRestoredPastDestroy(t *testing.T) {
 	x := newXMREscrowEnv(t)
 	x.mustPoll()
 	x.settled()
-	cancelled, _ := x.freshCheckout(x.product)
-	agExec(x.testEnv, "UPDATE escrows SET created=now()-interval '3 days' WHERE order_id=$1", cancelled)
-	x.mustPoll()
-	var live int64
-	if err := x.DB.QueryRow("INSERT INTO xmr_settlements(order_id,kind,destination) VALUES($1,'release',$2) RETURNING id", cancelled, testXMRAddr("claim restored", true)).Scan(&live); err != nil {
-		t.Fatal(err)
-	}
 	x.rotate()
 	const name = "escrow-202610-01"
 	if x.walletState(name) != "retained" {
@@ -437,13 +434,12 @@ func TestXMREscrowRestoredPastDestroy(t *testing.T) {
 	x.days(name, 91)
 	x.mustPoll()
 	x.mustPoll()
-	if got := x.walletState(name); got != "missing" || x.notified(x.admin, name) != 1 {
-		t.Fatalf("with a live settlement: %s, %d notices", got, x.notified(x.admin, name))
+	if n := agInt(x.testEnv, "SELECT count(*) FROM xmr_escrow_wallets WHERE name=$1 AND state='missing' AND seed_sealed IS NOT NULL AND destroy_started_at IS NULL", name); n != 1 || x.notified(x.admin, name) != 1 {
+		t.Fatalf("restored past its destruction: %s, %d notices", x.walletState(name), x.notified(x.admin, name))
 	}
-	agExec(x.testEnv, "UPDATE xmr_settlements SET state='superseded' WHERE id=$1", live)
-	x.mustPoll()
-	if n := agInt(x.testEnv, "SELECT count(*) FROM xmr_escrow_wallets WHERE name=$1 AND state='destroyed' AND seed_sealed IS NULL AND destroyed_at IS NOT NULL", name); n != 1 {
-		t.Fatalf("not destroyed again: %s", x.walletState(name))
+	_, adminSess := x.user("xf_admin_"+randomToken()[:6], "admin")
+	if p := html.UnescapeString(x.page("/admin", adminSess)); !strings.Contains(p, `action="/admin/escrow-xmr-destroyed"`) || !strings.Contains(p, name) {
+		t.Fatalf("/admin does not list the missing wallet:\n%s", p)
 	}
 	if f, _ := x.fake.file(name); f.password != "replaced after the backup" {
 		t.Fatal("a wallet that does not open was written to")
@@ -482,7 +478,8 @@ func TestXMREscrowMissingWalletAlerts(t *testing.T) {
 // P3-R10: the sweep probes the wallet names after the newest row. A wallet that opens with the derived password and
 // passes the network check is recorded as an orphan, its seed sealed to the pinned key, its funded accounts listed for
 // the administrators, and it is retained: never a slot. A file that does not open is recorded as an orphan and left
-// alone; the probe goes on past it.
+// alone; the probe goes on past it. A file another wallet program has open leaves the sweep incomplete, recording
+// nothing of it.
 func TestXMREscrowOrphanSwept(t *testing.T) {
 	x := newXMREscrowEnv(t)
 	x.mustPoll()
@@ -498,7 +495,17 @@ func TestXMREscrowOrphanSwept(t *testing.T) {
 	ours("escrow-202610-03", 3)
 	x.fake.pay("escrow-202610-03", 2, hex64("lost escrow"), xmrListingPrice, 12)
 	ours("escrow-202611-01", 2)
+	// A file another wallet program has open cannot be told apart yet (A-421): the sweep stops there, records nothing
+	// of it and is tried again.
+	x.fake.edit(func(f *fakeXMREscrow) { f.files["escrow-202610-03"].locked = true })
 	x.restoreBackup()
+	if err := x.poll(); err == nil {
+		t.Fatal("a probe of a file another wallet program has open passed")
+	}
+	if n := agInt(x.testEnv, "SELECT count(*) FROM xmr_escrow_wallets WHERE name IN ('escrow-202610-03','escrow-202611-01')"); n != 0 || !x.sweepRequired() || x.notified(x.admin, "escrow-202610-03") != 0 {
+		t.Fatalf("with a file locked: %v, sweep %v", x.wallets(), x.sweepRequired())
+	}
+	x.fake.edit(func(f *fakeXMREscrow) { f.files["escrow-202610-03"].locked = false })
 	x.mustPoll()
 	if got := x.wallets(); !slices.Equal(got, []string{"escrow-202610-01:retained", "escrow-202610-02:orphan", "escrow-202610-03:retained", "escrow-202611-01:retained"}) {
 		t.Fatalf("after the sweep: %v", got)
@@ -539,12 +546,20 @@ func TestXMREscrowOrphanSwept(t *testing.T) {
 
 // A-418: when create_wallet finds the file of a row left creating but open_wallet refuses it (a file left under another
 // password), the row becomes an orphan, the administrators are told once and the month's next wallet is created; a
-// transport error on open_wallet keeps the row creating and is retried.
+// transport error on open_wallet, or a file another wallet program has open (A-421), keeps the row creating and is
+// retried.
 func TestXMREscrowResumeOpenFailsOrphan(t *testing.T) {
 	x := newXMREscrowEnv(t)
 	const name = "escrow-202610-01"
-	x.fake.edit(func(f *fakeXMREscrow) { f.newFile(name, "an earlier install's password") })
+	x.fake.edit(func(f *fakeXMREscrow) { f.newFile(name, "an earlier install's password").locked = true })
 	agExec(x.testEnv, "INSERT INTO xmr_escrow_wallets(name,month) VALUES($1,'2026-10-01')", name)
+	if err := x.poll(); err == nil {
+		t.Fatal("a file another wallet program has open passed")
+	}
+	if got := x.wallets(); !slices.Equal(got, []string{name + ":creating"}) || x.notified(x.admin, name) != 0 {
+		t.Fatalf("while another wallet program has it open: %v", got)
+	}
+	x.fake.edit(func(f *fakeXMREscrow) { f.files[name].locked = false })
 	x.fake.fault("open_wallet", fakeXMRDrop)
 	if err := x.poll(); err == nil {
 		t.Fatal("a lost open_wallet answer passed")
@@ -764,7 +779,7 @@ func TestXMREscrowLookaheadForOlderWallet(t *testing.T) {
 }
 
 // pastDueWithCoins is a retained wallet (escrow-202610-01) past its destroy_after on the watcher's clock that still
-// holds coins at an account no order claimed, so the watcher keeps it.
+// holds coins at an account no order claimed, so the watcher keeps it, never starting its destruction.
 func (x *xmrEscrowEnv) pastDueWithCoins() string {
 	x.t.Helper()
 	const name = "escrow-202610-01"
@@ -774,7 +789,7 @@ func (x *xmrEscrowEnv) pastDueWithCoins() string {
 	x.fake.pay(name, account, hex64("unclaimed coins"), 50000000000, 12)
 	x.days(name, 91)
 	x.mustPoll()
-	if x.walletState(name) != "retained" {
+	if x.walletState(name) != "retained" || agInt(x.testEnv, "SELECT count(*) FROM xmr_escrow_wallets WHERE name=$1 AND destroy_started_at IS NULL", name) != 1 {
 		x.failWallets()
 	}
 	return name
@@ -796,52 +811,98 @@ func TestXMREscrowDestroyHeldFlaggedOnce(t *testing.T) {
 	}
 }
 
-// A-419: a wallet that does not open keeps its sealed seed unless open_wallet refused it with the wallet's own wrong
-// password (the evidence that the market's change_wallet_password ran), and never while the restore gate is set: a
-// missing file makes it missing, a file another wallet program has open makes it wait (A-421), each in both gate
-// states, with coins in it. The wrong-password refusal under the gate makes it missing; destroyed again once the gate is
-// cleared.
+// interruptDestroy runs the pass that destroys the retained wallet name, past its destroy_after, until its
+// change_wallet_password has taken effect and the answer is lost (a crash before the destruction is recorded): the wallet
+// is still retained, with the start of its destruction recorded, and no longer opens with the market's password.
+func (x *xmrEscrowEnv) interruptDestroy(name string) {
+	x.t.Helper()
+	x.fake.fault("change_wallet_password", fakeXMRDrop)
+	if err := x.poll(); err == nil {
+		x.t.Fatal("a destruction whose change_wallet_password answer was lost passed")
+	}
+	file, _ := x.fake.file(name)
+	if x.walletState(name) != "retained" || file.password == xmrWalletPassword(testXMRSecret, name) ||
+		agInt(x.testEnv, "SELECT count(*) FROM xmr_escrow_wallets WHERE name=$1 AND destroy_started_at=$2 AND seed_sealed IS NOT NULL", name, x.now) != 1 {
+		x.failWallets()
+	}
+}
+
+// A-419 (amended): a wallet that does not open keeps its sealed seed unless the market itself began destroying it
+// (destroy_started_at, recorded before change_wallet_password) and open_wallet then refuses it with the wallet's own
+// wrong password, with no held flag and neither the restore gate nor the sweep marker set. A wallet past its 90 days
+// that holds coins (flagged held) is missing with its seal when its file is gone or its password was changed outside
+// the market (a restore from its seed with a mistyped secret, another install's file), as is one with no coins whose
+// password was changed outside; one another wallet program has open waits (A-421). A destruction interrupted after the
+// password change ends destroyed on the next pass, or, under the gate or the sweep, missing and then destroyed once they
+// are cleared; a wallet flagged held before its destruction began stays missing.
 func TestXMREscrowUnopenableKeepsSeal(t *testing.T) {
+	const name, gate = "escrow-202610-01", "payments_recovery_required"
+	held := func(x *xmrEscrowEnv) { x.pastDueWithCoins() }
+	due := func(x *xmrEscrowEnv) { x.mustPoll(); x.rotate(); x.days(name, 91) } // past due, not yet seen so
+	begun := func(x *xmrEscrowEnv) { due(x); x.interruptDestroy(name) }
+	heldThenBegun := func(x *xmrEscrowEnv) {
+		x.pastDueWithCoins()
+		x.fake.edit(func(f *fakeXMREscrow) {
+			w := f.files[name]
+			w.transfers = slices.DeleteFunc(w.transfers, func(t *fakeXMRTransfer) bool { return t.TxID == hex64("unclaimed coins") })
+		})
+		x.interruptDestroy(name)
+	}
+	gone := func(f *fakeXMREscrow) { delete(f.files, name) }
+	locked := func(f *fakeXMREscrow) { f.files[name].locked = true }
+	replaced := func(f *fakeXMREscrow) { f.files[name].password = "replaced outside the market" }
 	for _, c := range []struct {
-		what   string
-		gate   bool
-		break_ func(f *fakeXMREscrow, name string)
-		want   string
+		what        string
+		setup       func(x *xmrEscrowEnv)
+		break_      func(f *fakeXMREscrow)
+		pause       string // the setting set before the pass: the restore gate, the sweep marker, or none
+		want, after string // the wallet's state after the pass, and after the next with the pause lifted
 	}{
-		{"file gone", false, func(f *fakeXMREscrow, name string) { delete(f.files, name) }, "missing"},
-		{"file gone, gate set", true, func(f *fakeXMREscrow, name string) { delete(f.files, name) }, "missing"},
-		{"file locked", false, func(f *fakeXMREscrow, name string) { f.files[name].locked = true }, "retained"},
-		{"file locked, gate set", true, func(f *fakeXMREscrow, name string) { f.files[name].locked = true }, "retained"},
-		{"wrong password, gate set", true, func(f *fakeXMREscrow, name string) { f.files[name].password = "replaced" }, "missing"},
-		{"wrong password", false, func(f *fakeXMREscrow, name string) { f.files[name].password = "replaced" }, "destroyed"},
+		{"file gone", held, gone, "", "missing", "missing"},
+		{"file gone, gate set", held, gone, gate, "missing", "missing"},
+		{"file gone, sweep set", held, gone, xmrEscrowSweepKey, "missing", "missing"},
+		{"file locked", held, locked, "", "retained", "retained"},
+		{"file locked, gate set", held, locked, gate, "retained", "retained"},
+		{"password changed outside", held, replaced, "", "missing", "missing"},
+		{"password changed outside, gate set", held, replaced, gate, "missing", "missing"},
+		{"password changed outside, no coins", due, replaced, "", "missing", "missing"},
+		{"destruction interrupted", begun, nil, "", "destroyed", "destroyed"},
+		{"destruction interrupted, gate set", begun, nil, gate, "missing", "destroyed"},
+		{"destruction interrupted, sweep set", begun, nil, xmrEscrowSweepKey, "missing", "destroyed"},
+		{"destruction interrupted, flagged held before", heldThenBegun, nil, "", "missing", "missing"},
 	} {
 		t.Run(c.what, func(t *testing.T) {
 			x := newXMREscrowEnv(t)
-			name := x.pastDueWithCoins()
-			x.fake.edit(func(f *fakeXMREscrow) { c.break_(f, name) })
-			if c.gate {
-				agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES('payments_recovery_required','true')")
+			c.setup(x)
+			if c.break_ != nil {
+				x.fake.edit(c.break_)
 			}
-			x.mustPoll()
-			x.mustPoll()
-			sealed := agInt(x.testEnv, "SELECT count(*) FROM xmr_escrow_wallets WHERE name=$1 AND seed_sealed IS NOT NULL", name)
-			if got := x.walletState(name); got != c.want || (sealed == 1) != (c.want != "destroyed") {
-				t.Fatalf("%s, sealed %d", got, sealed)
+			if c.pause != "" {
+				agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES($1,'true')", c.pause)
 			}
-			if c.want == "missing" && c.gate && c.what == "wrong password, gate set" {
-				x.clearGate()
-				x.mustPoll()
-				if x.walletState(name) != "destroyed" {
-					t.Fatalf("after the gate: %s", x.walletState(name))
+			check := func(when, want string) {
+				t.Helper()
+				sealed := agInt(x.testEnv, "SELECT count(*) FROM xmr_escrow_wallets WHERE name=$1 AND seed_sealed IS NOT NULL", name)
+				if got := x.walletState(name); got != want || (sealed == 1) != (want != "destroyed") {
+					t.Fatalf("%s: %s, sealed %d", when, got, sealed)
 				}
 			}
+			x.mustPoll()
+			check("after the pass", c.want)
+			if c.pause == gate {
+				x.clearGate()
+			} else if c.pause != "" && x.sweepRequired() {
+				t.Fatal("the sweep did not finish")
+			}
+			x.mustPoll()
+			check("after the next pass", c.after)
 		})
 	}
 }
 
 // A-419: a missing wallet past its destroy_after is listed on /admin; an administrator who is not a party to its orders
 // confirms its destruction with a password step-up and an audit row, which wipes its seal. Refused for a wallet not
-// past destroy_after or not missing, under the restore gate, and for a party.
+// past destroy_after or not missing, under the restore gate or the sweep marker, and for a party.
 func TestXMREscrowConfirmDestroyed(t *testing.T) {
 	x := newXMREscrowEnv(t)
 	x.mustPoll()
@@ -888,6 +949,11 @@ func TestXMREscrowConfirmDestroyed(t *testing.T) {
 		t.Fatalf("under the gate: %d", code)
 	}
 	x.clearGate()
+	agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES($1,'true')", xmrEscrowSweepKey)
+	if code := confirm(adminSess, id, nil); code != 409 {
+		t.Fatalf("with the sweep marker set: %d", code)
+	}
+	agExec(x.testEnv, "DELETE FROM settings WHERE key=$1", xmrEscrowSweepKey)
 	if x.walletState(name) != "missing" || agInt(x.testEnv, "SELECT count(*) FROM xmr_escrow_wallets WHERE name=$1 AND seed_sealed IS NOT NULL", name) != 1 {
 		t.Fatal("a refused confirmation changed the wallet")
 	}

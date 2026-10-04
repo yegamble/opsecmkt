@@ -240,14 +240,15 @@ func TestXMREscrowRegtestDestroy(t *testing.T) {
 	r.days(name, 91)
 	r.synced()
 	r.mustPoll()
-	if n := agInt(r.testEnv, "SELECT count(*) FROM xmr_escrow_wallets WHERE name=$1 AND state='destroyed' AND seed_sealed IS NULL AND destroyed_at IS NOT NULL", name); n != 1 {
+	if n := agInt(r.testEnv, "SELECT count(*) FROM xmr_escrow_wallets WHERE name=$1 AND state='destroyed' AND seed_sealed IS NULL AND destroyed_at IS NOT NULL AND destroy_started_at=destroyed_at", name); n != 1 {
 		t.Fatalf("on day 91: %s", r.walletState(name))
 	}
 	if p.count("change_wallet_password") != 1 {
 		t.Fatalf("change_wallet_password %d", p.count("change_wallet_password"))
 	}
 	// monero-wallet-rpc 0.18.5.1's refusals, as the watcher classifies them (A-419): the destroyed wallet's is its own
-	// wrong password, the only refusal that is destroyed again automatically; a name with no file is no-file.
+	// wrong password, the only refusal destroyed again automatically (and only once the market recorded the start of its
+	// destruction); a name with no file is no-file.
 	err := r.A.escrowXMR.rpc.openWallet(context.Background(), name, xmrWalletPassword(testXMRSecret, name))
 	if !xmrWalletDenied(err) || xmrOpenRefusal(err) != xmrOpenPassword {
 		t.Fatalf("open_wallet with the derived password after destruction: %v", err)

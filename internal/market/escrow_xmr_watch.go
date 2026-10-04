@@ -279,8 +279,8 @@ func (a *App) xmrEscrowPollOnce(ctx context.Context) error {
 				log.Printf("escrow: Monero escrow wallet %s is opened by another wallet program; not read until it is closed there", w.name)
 			}
 		case xmrWalletDenied(err):
-			// It did not open: recorded missing, or destroyed again on its own wrong-password refusal outside a restore
-			// (escrow_xmr_retain.go); checked, but never read.
+			// It did not open: recorded missing, or destroyed again on its own wrong-password refusal outside a restore when
+			// the market itself began destroying it (escrow_xmr_retain.go); checked, but never read.
 			if err = a.xmrWalletUnopenable(ctx, w, now, xmrOpenRefusal(err) == xmrOpenPassword && !paused); err != nil {
 				swept = false
 			}

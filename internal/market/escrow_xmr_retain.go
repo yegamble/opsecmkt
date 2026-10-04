@@ -27,24 +27,29 @@ import (
 // last one is 100 deep); get_balance over all accounts shows a zero balance and a zero unlocked balance; and no
 // transfer of the wallet is in the pool. A retained wallet past destroy_after that something keeps (coins, a transfer in
 // the pool, a settlement still in progress) is flagged to the administrators once, with the accounts that hold coins
-// (xmrDestroyHeld). Then change_wallet_password to 32 random bytes that are never stored or
-// logged, store and close_wallet; then, in one statement, the sealed seed is wiped, destroyed_at recorded and the wallet
-// is destroyed. A destroyed wallet is never opened again. The market cannot reach the wallet volume, so /admin lists the
+// (xmrDestroyHeld). Then the start of its destruction is committed (destroy_started_at, migration 086), then
+// change_wallet_password to 32 random bytes that are never stored or logged, store and close_wallet; then, in one
+// statement, the sealed seed is wiped, destroyed_at recorded and the wallet is destroyed. A destroyed wallet is never
+// opened again. The market cannot reach the wallet volume, so /admin lists the
 // destroyed wallets' files for the operator to delete (escrow_xmr_restore.go); backups keep copies until they expire.
 // After destruction, the order page of each of its orders says that Monero sent to the order's address since cannot be
 // recovered (ES-8).
 //
 // A wallet the wallet-rpc refuses to open (xmrWalletUnopenable: a definite refusal, not a transport error) is missing:
 // its free slots are retired, the administrators are told once and its seal is kept. A file another wallet program has
-// open (xmrOpenLocked) is not refused for good and only waits (escrow_xmr_watch.go). Only the wallet's own wrong-password
-// refusal (xmrOpenPassword) is destroyed again, automatically, and only when destroy_after has passed, its records allow
-// its destruction and neither the restore gate nor the sweep is set (A-419): that refusal is the one evidence that the
-// market's own change_wallet_password ran (after the backup a database was restored from, or before a crash that lost
-// its record). A file that is gone may be a volume not yet restored, and the wallet may still hold coins the records do
-// not show (an account paid with no order, a failed settlement, account 0), so its seal is never wiped on that
-// evidence: a missing wallet past destroy_after is listed on /admin, where an administrator who is not a party to its
-// orders confirms its destruction with a password step-up (xmrConfirmDestroyedAction, escrow_xmr_restore.go). A missing
-// wallet is tried on every pass; one that opens again is closing.
+// open (xmrOpenLocked) is not refused for good and only waits (escrow_xmr_watch.go). A wallet is destroyed again
+// automatically only when the market itself began destroying it (A-419, amended): its destroy_started_at is recorded,
+// open_wallet refuses it with its own wrong password (xmrOpenPassword), the administrators were never told it holds
+// something, its records allow its destruction and neither the restore gate nor the sweep is set. That is a destruction
+// interrupted between change_wallet_password and its record (a crash, or a restore from a backup taken in between).
+// "Invalid password" alone proves nothing more: a wallet restored from its seed with a mistyped secret, another
+// install's file of the same name and a damaged keys file are refused alike. A file that is gone may be a volume not
+// yet restored, and the wallet may still hold coins the records do not show (an account paid with no order, a failed
+// settlement, account 0), so its seal is never wiped on any of that evidence: a missing wallet past destroy_after is
+// listed on /admin, where an administrator who is not a party to its orders confirms its destruction with a password
+// step-up (xmrConfirmDestroyedAction, escrow_xmr_restore.go). A missing wallet is tried on every pass; one that opens
+// again is closing, except one whose destruction began: migration 086 refuses that move, so its pass fails and it waits
+// for that confirmation.
 
 // xmrRetention is ES-7's retention: a wallet is destroyed no earlier than this after its last order closed. Migration
 // 084 requires it, in hours, so that it does not depend on the session's time zone.
@@ -153,14 +158,22 @@ func (a *App) xmrDestroyHeld(ctx context.Context, w xmrWalletRow) error {
 	return nil
 }
 
-// xmrDestroy replaces the open wallet's password by 32 random bytes that are never kept, stores and closes it, then
-// records it destroyed with its seal wiped. A failure after the new password took effect leaves the wallet unopenable,
-// and the next pass destroys it again (xmrWalletUnopenable).
+// xmrDestroy records that the market began destroying the open wallet (destroy_started_at, migration 086), replaces
+// its password by 32 random bytes that are never kept, stores and closes it, then records it destroyed with its seal
+// wiped. A failure after the new password took effect leaves the wallet unopenable, and the next pass destroys it again
+// on that record (xmrWalletUnopenable).
 func (a *App) xmrDestroy(ctx context.Context, w xmrWalletRow, now time.Time) error {
 	x := a.escrowXMR
+	res, err := a.db.ExecContext(ctx, "UPDATE xmr_escrow_wallets SET destroy_started_at=COALESCE(destroy_started_at,$2),updated=now() WHERE id=$1 AND state='retained' AND destroy_after<=$2", w.id, now)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return errXMRWalletNotWritten
+	}
 	secret := make([]byte, 32)
 	rand.Read(secret)
-	err := x.rpc.changeWalletPassword(ctx, xmrWalletPassword(x.secret, w.name), hex.EncodeToString(secret))
+	err = x.rpc.changeWalletPassword(ctx, xmrWalletPassword(x.secret, w.name), hex.EncodeToString(secret))
 	clear(secret)
 	if err != nil {
 		return err
@@ -171,7 +184,7 @@ func (a *App) xmrDestroy(ctx context.Context, w xmrWalletRow, now time.Time) err
 	if err = x.rpc.closeWallet(ctx); err != nil {
 		return err
 	}
-	res, err := a.db.ExecContext(ctx, "UPDATE xmr_escrow_wallets SET state='destroyed',seed_sealed=NULL,destroyed_at=$2,updated=now() WHERE id=$1 AND state='retained' AND destroy_after<=$2", w.id, now)
+	res, err = a.db.ExecContext(ctx, "UPDATE xmr_escrow_wallets SET state='destroyed',seed_sealed=NULL,destroyed_at=$2,updated=now() WHERE id=$1 AND state='retained' AND destroy_after<=$2", w.id, now)
 	if err != nil {
 		return err
 	}
@@ -190,8 +203,10 @@ func xmrWalletDenied(err error) bool {
 }
 
 // xmrWalletUnopenable records wallet w, which the wallet-rpc refused to open: destroyed again when mayDestroy (its own
-// wrong-password refusal, with neither the restore gate nor the sweep set) and its records allow its destruction at now;
-// otherwise missing, its seal kept, its free slots retired and the administrators told once (see the file comment).
+// wrong-password refusal, with neither the restore gate nor the sweep set), the market itself began destroying it
+// (destroy_started_at), the administrators were never told it holds something (xmrDestroyHeld) and its records allow
+// its destruction at now; otherwise missing, its seal kept, its free slots retired and the administrators told once
+// (see the file comment).
 func (a *App) xmrWalletUnopenable(ctx context.Context, w xmrWalletRow, now time.Time, mayDestroy bool) error {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -200,20 +215,18 @@ func (a *App) xmrWalletUnopenable(ctx context.Context, w xmrWalletRow, now time.
 	defer tx.Rollback()
 	var state string
 	var due bool
-	if err = tx.QueryRowContext(ctx, "SELECT w.state,COALESCE("+xmrDestroyableSQL+",false) FROM xmr_escrow_wallets w WHERE w.id=$1 FOR UPDATE", w.id, now).Scan(&state, &due); err != nil {
+	if err = tx.QueryRowContext(ctx, "SELECT w.state,COALESCE("+xmrDestroyableSQL+` AND w.destroy_started_at IS NOT NULL
+		AND NOT EXISTS (SELECT 1 FROM settings WHERE key=$3),false) FROM xmr_escrow_wallets w WHERE w.id=$1 FOR UPDATE`, w.id, now, xmrDestroyHeldKey(w.id)).Scan(&state, &due); err != nil {
 		return err
 	}
 	due = due && mayDestroy
 	switch {
 	case due:
-		// Only a retained or missing wallet moves to destroyed (migration 084).
-		if _, err = tx.ExecContext(ctx, "UPDATE xmr_escrow_wallets SET state='missing',updated=now() WHERE id=$1 AND state NOT IN ('retained','missing')", w.id); err != nil {
-			return err
-		}
+		// A wallet whose destruction began is retained or missing (migration 086), and moves to destroyed.
 		if _, err = tx.ExecContext(ctx, "UPDATE xmr_escrow_wallets SET state='destroyed',seed_sealed=NULL,destroyed_at=$2,updated=now() WHERE id=$1", w.id, now); err != nil {
 			return err
 		}
-		log.Printf("escrow: Monero escrow wallet %s no longer opens with the market's password and was due for destruction: recorded destroyed again, its sealed seed wiped", w.name)
+		log.Printf("escrow: Monero escrow wallet %s no longer opens with the market's password after the market began destroying it: recorded destroyed, its sealed seed wiped", w.name)
 	case state == "missing":
 		return nil
 	default:
