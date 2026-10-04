@@ -181,7 +181,7 @@ func (c *rpcClient) exchange(ctx context.Context, timeout time.Duration, path, m
 		if ctx.Err() != nil {
 			return nil, 0, errors.New(msg) // cut short by the timeout, not by the node
 		}
-		return nil, 0, &rpcDroppedError{msg}
+		return nil, 0, &rpcDroppedError{errors.New(msg)}
 	}
 	if len(raw) > rpcMaxBody {
 		return nil, 0, fmt.Errorf("%s RPC %s: response too large", c.name, method)
@@ -218,7 +218,7 @@ func (c *rpcClient) send(ctx context.Context, path string, body []byte) (*http.R
 		}
 		msg := fmt.Sprintf("%s RPC unreachable: %s", c.name, truncate(err.Error(), 160))
 		if sent.Load() {
-			return nil, &rpcDroppedError{msg}
+			return nil, &rpcDroppedError{errors.New(msg)}
 		}
 		return nil, errors.New(msg)
 	}
@@ -226,11 +226,13 @@ func (c *rpcClient) send(ctx context.Context, path string, body []byte) (*http.R
 }
 
 // rpcDroppedError is a call whose connection ended after the whole request was written, with no answer or a cut one:
-// the node went away while it handled the call (a monero-wallet-rpc that crashed building a transaction). Its message
-// is the one any other transport error of that kind carries; a timeout is never one.
-type rpcDroppedError struct{ msg string }
+// the node went away while it handled the call (a monero-wallet-rpc that crashed building a transaction). It wraps the
+// error any other transport error of that kind is, so its message and errorCause's class (the pooled payout and
+// watcher log lines, A-427) are that error's; a timeout is never one.
+type rpcDroppedError struct{ err error }
 
-func (e *rpcDroppedError) Error() string { return e.msg }
+func (e *rpcDroppedError) Error() string { return e.err.Error() }
+func (e *rpcDroppedError) Unwrap() error { return e.err }
 
 // digestHeader answers the cached challenge (RFC 7616, MD5, qop=auth) or returns "" before the first 401.
 func (c *rpcClient) digestHeader(path string) string {

@@ -60,7 +60,8 @@ import (
 // never counted. A digital order completes on funding through the escrow-only system edge (escrowTransitionHook); a
 // physical one becomes paid with its ship-by time. An escrow that received nothing in its payment window is
 // cancelled; one underpaid then is cancelled too, which requests its refund (slice X-d). A deposit after the order
-// closed is recorded after_close and flagged (flagLateDeposits) for the stray refund.
+// closed is recorded after_close and flagged (flagLateDeposits) for the stray refund; one that did not count when the
+// order was cancelled and has confirmed since is left out for it (xmrLeaveOutUncounted, A-424).
 //
 // Settlements (slice X-d, escrow_xmr_settle.go) are built, relayed and followed in each wallet's pass, while it is open
 // and checked.
@@ -924,7 +925,8 @@ func (a *App) xmrSettleOrders(ctx context.Context, read map[int64]bool, touched 
 }
 
 // settleXMREscrow applies the ledger to one Monero escrow order in its own transaction (settleEscrow's steps): a
-// locked deposit is flagged once; a closed order's late deposits are flagged; an order awaiting payment is funded,
+// locked deposit is flagged once; a closed order's late deposits are flagged, and a cancelled one's deposits that
+// confirmed only after it was cancelled left out; an order awaiting payment is funded,
 // or, at the end of its payment window, cancelled when nothing came or noted once when it is underpaid.
 func (a *App) settleXMREscrow(ctx context.Context, orderID string, walletRead bool) error {
 	tx, err := a.db.BeginTx(ctx, nil)
@@ -951,6 +953,11 @@ func (a *App) settleXMREscrow(ctx context.Context, orderID string, walletRead bo
 		}
 	}
 	if isTerminal(o.State) {
+		// A-424: a deposit that did not count when the order was cancelled and has confirmed since is left out for the
+		// stray refund too.
+		if err = a.xmrLeaveOutUncounted(ctx, tx, &o, threshold); err != nil {
+			return err
+		}
 		// A deposit first recorded after the order closed is never counted; it is flagged for the stray refund (P3-R8).
 		if err = a.flagLateDeposits(ctx, tx, &o, threshold, false); err != nil {
 			return err

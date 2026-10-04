@@ -1004,7 +1004,7 @@ it is separate from the simulated-wallet suite and from public testnet validatio
 
 ## 9. Manual Monero escrow fakechain check
 
-`scripts/test-escrow-xmr-regtest.sh` runs the thirteen legs of Monero escrow ([per-order escrow](escrow.md#phase-3-monero-escrow-on-a-local-fakechain))
+`scripts/test-escrow-xmr-regtest.sh` runs the fourteen legs of Monero escrow ([per-order escrow](escrow.md#phase-3-monero-escrow-on-a-local-fakechain))
 against a real `monerod --regtest` and real `monero-wallet-rpc` 0.18.5.1. It is not part of CI. **It is for a local
 fakechain only**: it refuses any daemon that does not report nettype `fakechain` with hard fork version 16 or later before any
 wallet call, and each Go leg checks the same again. It needs Docker for the nodes, Go, `curl` and a disposable PostgreSQL
@@ -1018,7 +1018,7 @@ standing in for the buyer's wallet, and one used only to restore a sealed seed).
 ```sh
 docker network create xmr-escrow-regtest
 docker run -d --name xmr-escrow-monerod --network xmr-escrow-regtest -p 127.0.0.1:28381:18081 \
-  ghcr.io/sethforprivacy/simple-monerod:v0.18.5.1 --regtest --offline --fixed-difficulty 1 \
+  ghcr.io/sethforprivacy/simple-monerod:v0.18.5.1 --regtest --keep-fakechain --offline --fixed-difficulty 1 \
   --rpc-bind-ip 0.0.0.0 --rpc-bind-port 18081 --confirm-external-bind --no-igd
 for w in escrow:28382 funder:28383 restore:28384; do
   docker run -d --name "xmr-escrow-wallet-${w%%:*}" --network xmr-escrow-regtest -p "127.0.0.1:${w##*:}:18083" \
@@ -1034,19 +1034,21 @@ their own databases from it, so give it a database you can drop afterwards:
 ```sh
 ESCROW_XMR_REGTEST_DAEMON_URL=http://127.0.0.1:28381 ESCROW_XMR_REGTEST_WALLET_URL=http://127.0.0.1:28382 \
 ESCROW_XMR_REGTEST_FUNDER_URL=http://127.0.0.1:28383 ESCROW_XMR_REGTEST_RESTORE_URL=http://127.0.0.1:28384 \
-ESCROW_XMR_REGTEST_WALLET_CONTAINER=xmr-escrow-wallet-escrow \
+ESCROW_XMR_REGTEST_WALLET_CONTAINER=xmr-escrow-wallet-escrow ESCROW_XMR_REGTEST_DAEMON_CONTAINER=xmr-escrow-monerod \
 TEST_DATABASE_URL=postgres://USER:PASSWORD@HOST:PORT/a_disposable_database?sslmode=disable ./scripts/test-escrow-xmr-regtest.sh
 docker rm -f xmr-escrow-monerod xmr-escrow-wallet-escrow xmr-escrow-wallet-funder xmr-escrow-wallet-restore
 docker network rm xmr-escrow-regtest
 ```
 
-`ESCROW_XMR_REGTEST_WALLET_CONTAINER` is optional: with it, `RestartMidSend` also restarts that container. The legs run
+`ESCROW_XMR_REGTEST_WALLET_CONTAINER` is optional: with it, `RestartMidSend` also restarts that container.
+`ESCROW_XMR_REGTEST_DAEMON_CONTAINER` is required: `ReRequest` stops and starts that monerod container around each relay,
+which is why monerod runs with `--keep-fakechain` (without it, monerod deletes the fakechain when it starts). The legs run
 in sequence and took about 11 minutes in one run on a 4-CPU host (the script allows 45 minutes for the whole run); they may
 run again against the same nodes, since each puts the watcher's clock in a month of its own. The transcript is written to
 `ESCROW_XMR_REGTEST_LOG` (default `artifacts/real-chain/test-escrow-xmr-regtest-<UTC time>.log`, gitignored); no seed,
 password or URL is printed. The script reports each leg from its own result line, so a failed, skipped or missing leg is
 named and the run fails; it ends with one `PASS:` line listing what was shown. The legs are: `Wallets`, `Funding`,
-`TwoAccountsOneTx`, `Physical`, `RestartMidSend`, `RelayDropped`, `TopUp`, `Reorg`, `External`, `Restore`, `Lookahead`,
+`TwoAccountsOneTx`, `Physical`, `RestartMidSend`, `RelayDropped`, `TopUp`, `Reorg`, `External`, `ReRequest`, `Restore`, `Lookahead`,
 `WrongSecret` and `Destroy`, each `TestXMREscrowRegtest<Leg>` in `internal/market/`; what each proves is listed in
 [per-order escrow](escrow.md#phase-3-monero-escrow-on-a-local-fakechain). A pass is evidence for the code and the 0.18.5.1
 nodes on a local fakechain, not for stagenet, testnet or mainnet.

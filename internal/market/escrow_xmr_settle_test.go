@@ -179,11 +179,14 @@ func TestXMREscrowNeverRebuilt(t *testing.T) {
 		t.Fatalf("after the errors: %+v, transfer %d", s, x.fake.countOf("transfer"))
 	}
 
-	// A definite refusal of a transaction whose coins nobody spent: failed, staff told; never built again.
+	// A definite refusal of a transaction whose coins nobody spent, on xmrRelayAttempts passes in a row (A-426): failed,
+	// staff told; never built again.
 	order2, _, _ := x.completed()
 	id2, _ := x.release(order2)
-	x.fake.fault("relay_tx", fakeXMRRejected)
-	x.mustPoll()
+	for range xmrRelayAttempts {
+		x.fake.fault("relay_tx", fakeXMRRejected)
+		x.mustPoll()
+	}
 	transfers := x.fake.countOf("transfer")
 	if s := x.settlement(id2); s.State != "failed" || s.TxHash == "" || x.waitClass(id2) != xmrRelayRefused || x.staffFlags(order2) == 0 ||
 		agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND flagged AND xmr_settlement_id=$2", order2, id2) != 1 {
@@ -553,13 +556,16 @@ func TestXMREscrowExternalSpend(t *testing.T) {
 	}
 }
 
-// failedRelease is a completed order whose release the daemon refused for good (failed, its transaction stored).
+// failedRelease is a completed order whose release the daemon refused for good, on xmrRelayAttempts passes in a row
+// (failed, its transaction stored).
 func (x *xmrEscrowEnv) failedRelease() (string, int64) {
 	x.t.Helper()
 	order, _, _ := x.completed()
 	id, _ := x.release(order)
-	x.fake.fault("relay_tx", fakeXMRRejected)
-	x.mustPoll()
+	for range xmrRelayAttempts {
+		x.fake.fault("relay_tx", fakeXMRRejected)
+		x.mustPoll()
+	}
 	if x.settlement(id).State != "failed" {
 		x.t.Fatalf("refused release: %s", x.settlement(id).State)
 	}

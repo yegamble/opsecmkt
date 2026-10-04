@@ -40,6 +40,13 @@
 #     new blocks without it): back to relayed, the same transaction relayed again, confirmed again.
 #   External: while the release is built but not relayed, a wallet restored from the sealed seed sweeps the escrow
 #     account outside the market; the daemon refuses the market's transaction, and it is recorded external and flagged.
+#   ReRequest (A-426, A-401): the monerod container (ESCROW_XMR_REGTEST_DAEMON_CONTAINER) is stopped right before each
+#     relay of a release's stored transaction and started again once the escrow wallet-rpc answered, so relay_tx is
+#     refused (-4) while the transaction is stored and its key images unspent; the same stored transaction is relayed
+#     again on the next passes, with no second transfer, and the third refusal records the release failed;
+#     incoming_transfers available still lists its outputs; an administrator's re-request (password step-up) builds a
+#     transaction spending exactly the stored key images (the stored row's and the daemon's decoded inputs) to the stored
+#     plan, which is relayed and confirms.
 # Slice X-f legs (internal/market/escrow_xmr_regtest_restore_test.go), a restore simulated with scripts/restore.sh's own
 # Monero SQL:
 #   Restore: the restore holds a built release whose relay the daemon lost, retires the free slots and closes the wallet;
@@ -56,11 +63,14 @@
 #
 # Needs a fakechain monerod and three monero-wallet-rpc instances attached to it (the App's escrow wallet-rpc, a funder
 # standing in for the buyer's wallet, and one used only to restore a sealed seed), plus a disposable PostgreSQL database.
-# The wallet-rpcs listen without RPC login on 127.0.0.1 only. For example:
+# The wallet-rpcs listen without RPC login on 127.0.0.1 only. The ReRequest leg stops and starts the monerod container
+# named by ESCROW_XMR_REGTEST_DAEMON_CONTAINER (required), so it needs the docker command, and monerod must run with
+# --keep-fakechain: without it, monerod deletes the fakechain when it starts (the leg checks the height it comes back
+# at). For example:
 #
 #   docker network create xmr-escrow-regtest
 #   docker run -d --name xmr-escrow-monerod --network xmr-escrow-regtest -p 127.0.0.1:28381:18081 \
-#     ghcr.io/sethforprivacy/simple-monerod:v0.18.5.1 --regtest --offline --fixed-difficulty 1 \
+#     ghcr.io/sethforprivacy/simple-monerod:v0.18.5.1 --regtest --keep-fakechain --offline --fixed-difficulty 1 \
 #     --rpc-bind-ip 0.0.0.0 --rpc-bind-port 18081 --confirm-external-bind --no-igd
 #   for w in escrow:28382 funder:28383 restore:28384; do
 #     docker run -d --name "xmr-escrow-wallet-${w%%:*}" --network xmr-escrow-regtest -p "127.0.0.1:${w##*:}:18083" \
@@ -70,7 +80,7 @@
 #   done
 #   ESCROW_XMR_REGTEST_DAEMON_URL=http://127.0.0.1:28381 ESCROW_XMR_REGTEST_WALLET_URL=http://127.0.0.1:28382 \
 #   ESCROW_XMR_REGTEST_FUNDER_URL=http://127.0.0.1:28383 ESCROW_XMR_REGTEST_RESTORE_URL=http://127.0.0.1:28384 \
-#   ESCROW_XMR_REGTEST_WALLET_CONTAINER=xmr-escrow-wallet-escrow \
+#   ESCROW_XMR_REGTEST_WALLET_CONTAINER=xmr-escrow-wallet-escrow ESCROW_XMR_REGTEST_DAEMON_CONTAINER=xmr-escrow-monerod \
 #   TEST_DATABASE_URL=postgres://…/a_disposable_database ./scripts/test-escrow-xmr-regtest.sh
 #   docker rm -f xmr-escrow-monerod xmr-escrow-wallet-escrow xmr-escrow-wallet-funder xmr-escrow-wallet-restore
 #   docker network rm xmr-escrow-regtest
@@ -81,7 +91,7 @@
 # artifacts/real-chain/test-escrow-xmr-regtest-<UTC time>.log, gitignored); no seed, password or URL is printed.
 set -euo pipefail
 
-for v in ESCROW_XMR_REGTEST_DAEMON_URL ESCROW_XMR_REGTEST_WALLET_URL ESCROW_XMR_REGTEST_FUNDER_URL ESCROW_XMR_REGTEST_RESTORE_URL TEST_DATABASE_URL; do
+for v in ESCROW_XMR_REGTEST_DAEMON_URL ESCROW_XMR_REGTEST_WALLET_URL ESCROW_XMR_REGTEST_FUNDER_URL ESCROW_XMR_REGTEST_RESTORE_URL ESCROW_XMR_REGTEST_DAEMON_CONTAINER TEST_DATABASE_URL; do
   if [[ -z "${!v:-}" ]]; then
     echo "Set $v (see the comment at the top of this script)." >&2
     exit 2
@@ -112,13 +122,13 @@ log="${ESCROW_XMR_REGTEST_LOG:-artifacts/real-chain/test-escrow-xmr-regtest-$(da
 mkdir -p "$(dirname "$log")"
 echo "Monero escrow fakechain check (hard fork $version); transcript: $log"
 set +e
-go test -count=1 -timeout 45m -run '^TestXMREscrowRegtest(Wallets|Funding|TwoAccountsOneTx|Physical|RestartMidSend|RelayDropped|TopUp|Reorg|External|Restore|Lookahead|WrongSecret|Destroy)$' -v ./internal/market/ 2>&1 | tee "$log"
+go test -count=1 -timeout 45m -run '^TestXMREscrowRegtest(Wallets|Funding|TwoAccountsOneTx|Physical|RestartMidSend|RelayDropped|TopUp|Reorg|External|ReRequest|Restore|Lookahead|WrongSecret|Destroy)$' -v ./internal/market/ 2>&1 | tee "$log"
 status=${PIPESTATUS[0]}
 set -e
 # Each leg is reported from its own go test result line, so one failing leg never makes another read as failed.
 failed=0
 for leg in TestXMREscrowRegtestWallets TestXMREscrowRegtestFunding TestXMREscrowRegtestTwoAccountsOneTx TestXMREscrowRegtestPhysical \
-  TestXMREscrowRegtestRestartMidSend TestXMREscrowRegtestRelayDropped TestXMREscrowRegtestTopUp TestXMREscrowRegtestReorg TestXMREscrowRegtestExternal \
+  TestXMREscrowRegtestRestartMidSend TestXMREscrowRegtestRelayDropped TestXMREscrowRegtestTopUp TestXMREscrowRegtestReorg TestXMREscrowRegtestExternal TestXMREscrowRegtestReRequest \
   TestXMREscrowRegtestRestore TestXMREscrowRegtestLookahead TestXMREscrowRegtestWrongSecret TestXMREscrowRegtestDestroy; do
   if grep -q -- "--- PASS: $leg " "$log"; then
     echo "PASS: $leg"
@@ -137,4 +147,4 @@ if [[ $status -ne 0 || $failed -ne 0 ]]; then
   echo "FAILED: go test exited $status; see $log" >&2
   exit 1
 fi
-echo "PASS: Monero escrow wallets (creation, sealed seed restored to its primary address, slots, account 0 empty, monthly rotation), funding at 10 confirmations and not at 9, one transaction paying two escrow accounts, physical orders (no spending call before the outcome; after Confirm receipt, the deadline, a dispute for the buyer and a no-ship cancel, each settlement relayed and confirmed), and settlements (stored before relay, never rebuilt across a lost relay answer and restarts, a top-up left out and stray-refunded, relayed again after a reorganisation, an outside spend recorded external; ring 16, rct type 6, fee within the cap), a restore (held release relayed once after confirmation, an orphan wallet found and sealed, free slots retired, a fresh wallet after it), the lookahead of a wallet missing an account, a changed secret refused, and a wallet destroyed after its retention with a day-89 deposit refunded first, on a local fakechain; transcript in $log"
+echo "PASS: Monero escrow wallets (creation, sealed seed restored to its primary address, slots, account 0 empty, monthly rotation), funding at 10 confirmations and not at 9, one transaction paying two escrow accounts, physical orders (no spending call before the outcome; after Confirm receipt, the deadline, a dispute for the buyer and a no-ship cancel, each settlement relayed and confirmed), and settlements (stored before relay, never rebuilt across a lost relay answer and restarts, a top-up left out and stray-refunded, relayed again after a reorganisation, an outside spend recorded external, a relay refused three times while monerod was stopped then failed, and its administrator's re-request spending the same key images to the same plan and confirmed; ring 16, rct type 6, fee within the cap), a restore (held release relayed once after confirmation, an orphan wallet found and sealed, free slots retired, a fresh wallet after it), the lookahead of a wallet missing an account, a changed secret refused, and a wallet destroyed after its retention with a day-89 deposit refunded first, on a local fakechain; transcript in $log"
