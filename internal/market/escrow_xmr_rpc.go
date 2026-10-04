@@ -654,6 +654,24 @@ func (r *xmrEscrowRPC) buildTransfer(ctx context.Context, account int64, dests [
 	return tx, nil
 }
 
+// validAddress asks the open wallet whether addr is a destination it can pay (validate_address on the wallet's own
+// network type): a standard address or subaddress whose checksum and keys are valid. The settlement builder asks only
+// after transfer refused a destination (-2), to name which output it refused; parseXMRAddress checks the checksum
+// offline but not that the keys are curve points.
+func (r *xmrEscrowRPC) validAddress(ctx context.Context, addr string) (bool, error) {
+	if _, err := parseXMRAddress(addr); err != nil {
+		return false, nil
+	}
+	var res struct {
+		Valid      bool `json:"valid"`
+		Integrated bool `json:"integrated"`
+	}
+	if err := r.walletCall(ctx, "validate_address", map[string]any{"address": addr, "any_net_type": false}, &res); err != nil {
+		return false, err
+	}
+	return res.Valid && !res.Integrated, nil
+}
+
 // relayTx broadcasts a built transaction from its stored metadata and returns its hash. Relaying the same metadata
 // again spends the same key images, so it cannot pay twice. It runs on payoutSendTimeout.
 func (r *xmrEscrowRPC) relayTx(ctx context.Context, metadata string) (string, error) {

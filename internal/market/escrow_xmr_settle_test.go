@@ -78,13 +78,14 @@ func (x *xmrEscrowEnv) release(order string) (int64, string) {
 	return id, claim
 }
 
-// waitClass is settlement id's wait class ("" for none).
+// waitClass is settlement id's send_error, its wait class ("" for none).
 func (x *xmrEscrowEnv) waitClass(id int64) string {
-	got := agStrings(x.t, x.testEnv, "SELECT value FROM settings WHERE key=$1", xmrSettleWaitKey(id))
-	if len(got) == 0 {
-		return ""
-	}
-	return got[0]
+	return agStrings(x.t, x.testEnv, "SELECT send_error FROM xmr_settlements WHERE id=$1", id)[0]
+}
+
+// reRequests lists settlement id's re-requests, oldest first, as state:reason:new settlement.
+func (x *xmrEscrowEnv) reRequests(id int64) []string {
+	return agStrings(x.t, x.testEnv, "SELECT state||':'||reason||':'||COALESCE(new_settlement_id,0) FROM xmr_settlement_rerequests WHERE settlement_id=$1 ORDER BY id", id)
 }
 
 // staffFlags counts the staff notifications that name order.
@@ -596,8 +597,8 @@ func TestXMREscrowReRequestGuards(t *testing.T) {
 	if code := x.reRequest(adminSess, order, id, "not the password"); code == 303 {
 		t.Fatal("re-requested with a wrong password")
 	}
-	if n := agInt(x.testEnv, "SELECT count(*) FROM settings WHERE key=$1", xmrReRequestKey(id)); n != 0 {
-		t.Fatal("a refused form recorded a request")
+	if got := x.reRequests(id); len(got) != 0 {
+		t.Fatalf("a refused form recorded a request: %v", got)
 	}
 	// The order page offers the form to an administrator, and to nobody else.
 	if page := x.page("/order?id="+order, adminSess); !strings.Contains(page, `action="/admin/escrow-xmr-rerequest"`) {
@@ -609,13 +610,15 @@ func TestXMREscrowReRequestGuards(t *testing.T) {
 		}
 	}
 
+	var want []string
 	refused := func(class string) {
 		t.Helper()
 		if code := x.reRequest(adminSess, order, id, testPassword); code != 303 {
 			t.Fatalf("re-request: %d", code)
 		}
 		x.mustPoll()
-		if got := agStrings(t, x.testEnv, "SELECT value FROM settings WHERE key=$1", xmrReRequestKey(id)); !slices.Equal(got, []string{xmrReRequestRefusedPrefix + class}) ||
+		want = append(want, "refused:"+class+":0")
+		if got := x.reRequests(id); !slices.Equal(got, want) ||
 			x.settlement(id).State != "failed" || agInt(x.testEnv, "SELECT count(*) FROM xmr_settlements WHERE supersedes=$1", id) != 0 {
 			t.Fatalf("%s: %v %s", class, got, x.settlement(id).State)
 		}
@@ -656,9 +659,10 @@ func TestXMREscrowReRequestGuards(t *testing.T) {
 	if len(got) != len(oldOutputs) || got[1] != oldOutputs[1] || strings.Split(got[0], ":")[1] != strings.Split(oldOutputs[0], ":")[1] {
 		t.Fatalf("plan changed:\n old %v\n new %v", oldOutputs, got)
 	}
-	if agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND xmr_settlement_id=$2", order, next.ID) != 1 ||
-		agInt(x.testEnv, "SELECT count(*) FROM settings WHERE key=$1", xmrReRequestKey(id)) != 0 {
-		t.Fatal("the deposit claim did not move, or the request stayed")
+	if got := x.reRequests(id); agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND xmr_settlement_id=$2", order, next.ID) != 1 ||
+		!slices.Equal(got, append(want, "done::"+strconv.FormatInt(next.ID, 10))) ||
+		agInt(x.testEnv, "SELECT count(*) FROM xmr_settlement_rerequests r JOIN users u ON u.id=r.requested_by WHERE r.settlement_id=$1 AND u.role='admin' AND r.decided_at IS NOT NULL", id) != 4 {
+		t.Fatalf("the deposit claim did not move, or the request was not recorded done: %v", got)
 	}
 	if x.reRequest(adminSess, order, id, testPassword) != 409 {
 		t.Fatal("a superseded settlement was re-requested")
@@ -849,5 +853,100 @@ func TestXMREscrowSettlementPanel(t *testing.T) {
 	x.mustPoll()
 	if p := x.panel(order, vendorSess); !strings.Contains(p, "Confirmed on the fakechain network") || !strings.Contains(p, "At least 100 (no longer followed)") {
 		t.Fatalf("confirmed:\n%s", p)
+	}
+}
+
+// The wallet refusing a build (A-415 fix round): -2 refuses a destination for good, named by validate_address,
+// flagged once and not tried again (a refused fee address is replaced once ESCROW_XMR_FEE_ADDRESS names another the
+// wallet accepts); another wallet error is recorded with its code and flagged when it persists; a timeout is retried
+// unflagged.
+func TestXMREscrowBuildRefusals(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	badFee := testXMRAddr("market fee", false)
+	t.Setenv("ESCROW_XMR_FEE_BPS", "250")
+	t.Setenv("ESCROW_XMR_FEE_ADDRESS", badFee)
+	x.restart()
+	x.mustPoll()
+	transfers := func() int { return x.fake.countOf("transfer") }
+
+	// -2 on the fee output.
+	order, _, _ := x.completed()
+	id, _ := x.release(order)
+	x.fake.edit(func(f *fakeXMREscrow) { f.invalid[badFee] = true })
+	x.mustPoll()
+	n := transfers()
+	x.mustPoll()
+	if x.settlement(id).State != "requested" || x.waitClass(id) != xmrDestRefused+"-market_fee" || x.staffFlags(order) != 1 || transfers() != n {
+		t.Fatalf("fee refused: %s %q, staff %d, transfer %d then %d", x.settlement(id).State, x.waitClass(id), x.staffFlags(order), n, transfers())
+	}
+	if p := x.panel(order, x.sessOf(order, roleVendor)); !strings.Contains(p, "ESCROW_XMR_FEE_ADDRESS") {
+		t.Fatalf("the order page does not say why:\n%s", p)
+	}
+	// The operator sets a fee address the wallet refuses too: still not built; then one it accepts: built and sent.
+	alsoBad := testXMRAddr("market fee 2", false)
+	x.fake.edit(func(f *fakeXMREscrow) { f.invalid[alsoBad] = true })
+	t.Setenv("ESCROW_XMR_FEE_ADDRESS", alsoBad)
+	x.restart()
+	x.mustPoll()
+	if x.settlement(id).State != "requested" || transfers() != n {
+		t.Fatalf("a refused new fee address was used: %s, transfer %d", x.settlement(id).State, transfers())
+	}
+	good := testXMRAddr("market fee 3", false)
+	t.Setenv("ESCROW_XMR_FEE_ADDRESS", good)
+	x.restart()
+	x.mustPoll()
+	if out := x.outputsOf(id); x.settlement(id).State != "relayed" || len(out) != 2 || !strings.HasPrefix(out[1], "market_fee:"+good+":") || x.waitClass(id) != "" {
+		t.Fatalf("with the corrected fee address: %s %v", x.settlement(id).State, out)
+	}
+
+	// -2 on the buyer's refund address (a cancelled order's refund).
+	refunded, _, _ := x.completed()
+	agExec(x.testEnv, "UPDATE orders SET state='cancelled' WHERE id=$1", refunded)
+	var rid int64
+	if err := x.DB.QueryRow("INSERT INTO xmr_settlements(order_id,kind,destination) SELECT order_id,'refund',refund_address FROM escrows WHERE order_id=$1 RETURNING id", refunded).Scan(&rid); err != nil {
+		t.Fatal(err)
+	}
+	refund := agStrings(t, x.testEnv, "SELECT refund_address FROM escrows WHERE order_id=$1", refunded)[0]
+	x.fake.edit(func(f *fakeXMREscrow) { f.invalid[refund] = true })
+	x.mustPoll()
+	n = transfers()
+	x.mustPoll()
+	if x.waitClass(rid) != xmrDestRefused+"-claimant" || x.staffFlags(refunded) != 1 || transfers() != n {
+		t.Fatalf("refund address refused: %q, staff %d", x.waitClass(rid), x.staffFlags(refunded))
+	}
+	if p := x.panel(refunded, x.sessOf(refunded, roleBuyer)); !strings.Contains(p, "refund address given at checkout as invalid") || !strings.Contains(p, "contact the buyer") {
+		t.Fatalf("the buyer is not told:\n%s", p)
+	}
+
+	// Another wallet error (-4) twice: recorded with its code, flagged on the second pass only; then built.
+	o4, _, _ := x.completed()
+	id4, _ := x.release(o4)
+	x.fake.fault("transfer", fakeXMRRejected)
+	x.mustPoll()
+	if x.waitClass(id4) != xmrWalletRefusing+" rpc:-4" || x.staffFlags(o4) != 0 {
+		t.Fatalf("-4 once: %q, staff %d", x.waitClass(id4), x.staffFlags(o4))
+	}
+	x.fake.fault("transfer", fakeXMRRejected)
+	x.mustPoll()
+	x.fake.fault("transfer", fakeXMRRejected)
+	x.mustPoll()
+	if x.waitClass(id4) != xmrWalletRefused+" rpc:-4" || x.staffFlags(o4) != 1 {
+		t.Fatalf("-4 persisting: %q, staff %d", x.waitClass(id4), x.staffFlags(o4))
+	}
+	x.mustPoll()
+	if x.settlement(id4).State != "relayed" {
+		t.Fatalf("after -4: %s", x.settlement(id4).State)
+	}
+
+	// A timeout: an error of the pass, no wait class, no flag; the next pass builds again and sends.
+	o5, _, _ := x.completed()
+	id5, _ := x.release(o5)
+	x.fake.fault("transfer", fakeXMRDrop)
+	if err := x.poll(); err == nil || x.waitClass(id5) != "" || x.staffFlags(o5) != 0 || x.settlement(id5).State != "requested" {
+		t.Fatalf("timeout: %v %q, staff %d", err, x.waitClass(id5), x.staffFlags(o5))
+	}
+	x.mustPoll()
+	if x.settlement(id5).State != "relayed" || x.staffFlags(o5) != 0 {
+		t.Fatalf("after the timeout: %s", x.settlement(id5).State)
 	}
 }

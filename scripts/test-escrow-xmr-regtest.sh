@@ -35,8 +35,8 @@
 #     no second relay_tx or transfer.
 #   TopUp: a top-up still confirming when the release is built is not spent by it; once confirmed it is left out and a
 #     stray refund returns it to the buyer's refund address.
-#   Reorg: a confirmed release is taken out of the chain (pop_blocks 10, flush_txpool): back to relayed, the same
-#     transaction relayed again, confirmed again.
+#   Reorg: a confirmed release is taken out of the chain (pop_blocks of every block since it was relayed, flush_txpool,
+#     new blocks without it): back to relayed, the same transaction relayed again, confirmed again.
 #   External: while the release is built but not relayed, a wallet restored from the sealed seed sweeps the escrow
 #     account outside the market; the daemon refuses the market's transaction, and it is recorded external and flagged.
 #

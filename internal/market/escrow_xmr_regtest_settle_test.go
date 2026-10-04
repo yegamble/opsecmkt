@@ -20,6 +20,13 @@ import (
 // after the wallet acted on it. Claim and refund addresses are subaddresses of the funder's wallet, so every settlement
 // pays a real wallet. Each relayed settlement is decoded by the daemon (xmrShape): RingCT type 6 (CLSAG and
 // Bulletproofs+), 16 ring members per input and a fee above 0 and within ESCROW_XMR_MAX_FEE.
+//
+// A transaction a wallet-rpc just relayed may be left out of the next block (monerod holds it in its Dandelion++ stem
+// for a moment), so these legs mine xmrMineMargin blocks more than a threshold needs; X-c's Funding leg checks the
+// threshold itself.
+
+// xmrMineMargin: blocks mined beyond a confirmation threshold, for a transaction that missed the next block.
+const xmrMineMargin = 2
 
 // xmrRPCProxy forwards JSON-RPC requests to the escrow wallet-rpc, counting each method; drop[method] makes the next
 // call of method lose its answer after the wallet-rpc answered it (a timeout after the call took effect).
@@ -132,12 +139,17 @@ func (r *xmrRegtest) completedReal() (order, addr string) {
 	r.t.Helper()
 	order, addr = r.checkoutReal()
 	r.pay(map[string]int64{addr: xmrListingPrice})
-	r.mine(10)
+	r.mine(10 + xmrMineMargin)
 	r.mustPoll()
 	if r.state(order) != stateCompleted {
-		r.t.Fatalf("funded order: %s", r.state(order))
+		r.t.Fatalf("funded order: %s (deposits %v)", r.state(order), r.depositConfs(order))
 	}
 	return order, addr
+}
+
+// depositConfs lists order's deposits as txid prefix:confirmations:left out, for a failure message.
+func (r *xmrRegtest) depositConfs(order string) []string {
+	return agStrings(r.t, r.testEnv, "SELECT left(txid,12)||':'||confirmations||':'||escrow_left_out FROM payments WHERE order_id=$1 ORDER BY created,id", order)
 }
 
 // releaseReal requests order's release to a fresh funder subaddress (as the vendor's claim does, slice X-e).
@@ -191,7 +203,7 @@ func (r *xmrRegtest) xmrShape(s xmrSettlement) {
 // confirmReal mines past the threshold and checks settlement id is confirmed.
 func (r *xmrRegtest) confirmReal(id int64) {
 	r.t.Helper()
-	r.mine(10)
+	r.mine(10 + xmrMineMargin)
 	r.mustPoll()
 	if s := r.settlement(id); s.State != "confirmed" {
 		r.t.Fatalf("settlement %d after 10 blocks: %s", id, s.State)
@@ -259,12 +271,12 @@ func TestXMREscrowRegtestTopUp(t *testing.T) {
 	r, _ := newXMRSettleRegtest(t)
 	order, addr := r.checkoutReal()
 	r.pay(map[string]int64{addr: xmrListingPrice})
-	r.mine(6)
+	r.mine(6 + xmrMineMargin)
 	topUp := r.pay(map[string]int64{addr: 20000000000})
-	r.mine(4)
+	r.mine(4) // the price has at least 10 confirmations, the top-up at most 4
 	r.mustPoll()
 	if r.state(order) != stateCompleted {
-		t.Fatalf("funded: %s", r.state(order))
+		t.Fatalf("funded: %s (deposits %v)", r.state(order), r.depositConfs(order))
 	}
 	id := r.releaseReal(order)
 	r.mustPoll()
@@ -273,7 +285,7 @@ func TestXMREscrowRegtestTopUp(t *testing.T) {
 		t.Fatalf("release: %+v", release)
 	}
 	r.xmrShape(release)
-	r.mine(6)
+	r.mine(6 + xmrMineMargin)
 	r.mustPoll()
 	if agInt(r.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND txid=$2 AND escrow_left_out", order, topUp) != 1 {
 		t.Fatal("the top-up was not left out")
@@ -281,6 +293,7 @@ func TestXMREscrowRegtestTopUp(t *testing.T) {
 	r.mustPoll()
 	stray := r.settlementOf(order, "stray_refund")
 	if stray.State != "relayed" || stray.InputTotal != 20000000000 {
+		t.Logf("deposits %v", r.depositConfs(order))
 		t.Fatalf("stray refund: %+v", stray)
 	}
 	r.xmrShape(stray)
@@ -288,8 +301,10 @@ func TestXMREscrowRegtestTopUp(t *testing.T) {
 	t.Logf("order %s: release %s spent the price only; top-up %s left out and returned by stray refund %s", shortID(order), release.TxHash, topUp, stray.TxHash)
 }
 
-// TestXMREscrowRegtestReorg: a confirmed release is taken out of the chain (pop_blocks) and the daemon's pool flushed:
-// it goes back to relayed, the same stored transaction is relayed again and confirms again.
+// TestXMREscrowRegtestReorg: a reorganisation takes a confirmed release out of the chain: every block mined since it
+// was relayed is popped (pop_blocks), the daemon's pool flushed and new blocks without it mined (so the wallet-rpc stays
+// within 10 blocks of the daemon, P3-R2). It goes back to relayed, the same stored transaction is relayed again and
+// confirms again.
 func TestXMREscrowRegtestReorg(t *testing.T) {
 	r, p := newXMRSettleRegtest(t)
 	order, _ := r.completedReal()
@@ -299,9 +314,10 @@ func TestXMREscrowRegtestReorg(t *testing.T) {
 	s := r.settlement(id)
 	r.xmrShape(s)
 	var popped map[string]any
-	r.daemonPost("/pop_blocks", map[string]any{"nblocks": 10}, &popped)
+	r.daemonPost("/pop_blocks", map[string]any{"nblocks": 10 + xmrMineMargin}, &popped) // every block confirmReal mined
 	var flushed map[string]any
 	r.call(r.daemon, "flush_txpool", nil, &flushed)
+	r.mine(xmrMineMargin)
 	r.mustPoll()
 	if got := r.settlement(id).State; got != "relayed" {
 		t.Fatalf("after the reorganisation: %s", got)
@@ -315,7 +331,7 @@ func TestXMREscrowRegtestReorg(t *testing.T) {
 	if got := r.settlement(id); got.TxHash != s.TxHash {
 		t.Fatalf("another transaction: %+v", got)
 	}
-	t.Logf("order %s: transaction %s confirmed, taken out by pop_blocks 10 and a flushed pool, relayed again and confirmed again", shortID(order), s.TxHash)
+	t.Logf("order %s: transaction %s confirmed, taken out by pop_blocks (every block mined since it was relayed) and a flushed pool, relayed again and confirmed again", shortID(order), s.TxHash)
 }
 
 // TestXMREscrowRegtestExternal: a wallet restored from the sealed seed spends the escrow's output outside the market

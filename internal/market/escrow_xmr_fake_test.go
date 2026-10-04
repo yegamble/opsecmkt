@@ -27,13 +27,14 @@ import (
 // state (unlocked from 10 confirmations with no unlock time), listed by incoming_transfers until it is spent; freeze and
 // thaw set the flag. transfer from one account spends unfrozen unlocked outputs, newest first, until the destinations
 // are covered (-17 not enough money otherwise), takes the network fee (fakeXMRFee) from destination 0 alone when
-// subtract_fee_from_outputs is [0], and with do_not_relay only builds: the transaction is kept by its metadata and
-// nothing is spent. relay_tx puts a built transaction in the daemon's pool and marks its outputs spent; relaying it
-// again answers the same hash (idempotent, as monerod 0.18.5.1 does), and one whose key images another transaction
-// spent is refused (-4, rejected by the daemon). The daemon's pool and chain answer /get_transactions (missed_tx for
-// an unknown hash; decoded as ring 16, rct type 6) and /is_key_image_spent (1 on chain, 2 in the pool); mine, popBlocks
-// (a reorganisation: the popped blocks' transactions go back to the pool), flushPool and spendOutside (a wallet
-// restored from the seed spends outputs outside the market) move them. get_transfer_by_txid knows the transactions the
+// subtract_fee_from_outputs is [0] (an address in invalid is refused, -2, as validate_address says), and with
+// do_not_relay only builds: the transaction is kept by its metadata and nothing is spent. relay_tx puts a built
+// transaction in the daemon's pool and marks its outputs spent; relaying it again answers the same hash (idempotent, as
+// monerod 0.18.5.1 does), and one whose key images another transaction spent is refused (-4, rejected by the daemon).
+// The daemon's pool and chain answer /get_transactions (missed_tx for an unknown hash; decoded as ring 16, rct type 6)
+// and /is_key_image_spent (1 on chain, 2 in the pool); mine, popBlocks (a reorganisation: the popped blocks'
+// transactions go back to the pool), flushPool and spendOutside (a wallet restored from the seed spends outputs outside
+// the market) move them. get_transfer_by_txid knows the transactions the
 // open wallet relayed (-8 otherwise).
 //
 // Faults: a call can be made to take effect and then lose its answer (the connection closes, as a timeout after the
@@ -59,6 +60,7 @@ type fakeXMREscrow struct {
 	built       map[string]*fakeXMRTx // transactions transfer built, by metadata
 	seq         int                   // numbers built transactions and key images
 	transferLie func(res map[string]any)
+	invalid     map[string]bool // addresses whose keys are not curve points: transfer refuses them (-2), validate_address says invalid
 }
 
 // fakeXMRTx is a settlement transaction transfer built, or one spendOutside made.
@@ -115,7 +117,7 @@ const (
 func newFakeXMREscrow(t *testing.T) *fakeXMREscrow {
 	t.Helper()
 	f := &fakeXMREscrow{t: t, height: 120, files: map[string]*fakeXMRWalletFile{}, faults: map[string][]fakeXMRFault{}, hooks: map[string]func(){},
-		handlers: map[string]func(*fakeXMREscrow, json.RawMessage) (any, int64, string){}, txs: map[string]*fakeXMRTx{}, built: map[string]*fakeXMRTx{}}
+		handlers: map[string]func(*fakeXMREscrow, json.RawMessage) (any, int64, string){}, txs: map[string]*fakeXMRTx{}, built: map[string]*fakeXMRTx{}, invalid: map[string]bool{}}
 	for name, h := range fakeXMRWalletMethods {
 		f.handlers[name] = h
 	}
@@ -420,6 +422,11 @@ var fakeXMRWalletMethods = map[string]func(f *fakeXMREscrow, params json.RawMess
 		if q.Account < 1 || q.Account >= int64(len(f.open.accounts)) {
 			return nil, -14, "account index is out of bound"
 		}
+		for _, d := range q.Destinations {
+			if f.invalid[d.Address] {
+				return nil, -2, "WALLET_RPC_ERROR_CODE_WRONG_ADDRESS: " + d.Address
+			}
+		}
 		var want, have int64
 		for _, d := range q.Destinations {
 			want += d.Amount
@@ -459,6 +466,13 @@ var fakeXMRWalletMethods = map[string]func(f *fakeXMREscrow, params json.RawMess
 			f.relay(tx)
 		}
 		return res, 0, ""
+	},
+	"validate_address": func(f *fakeXMREscrow, p json.RawMessage) (any, int64, string) {
+		var q struct {
+			Address string `json:"address"`
+		}
+		json.Unmarshal(p, &q)
+		return map[string]any{"valid": !f.invalid[q.Address], "integrated": false, "subaddress": false, "nettype": "mainnet", "openalias_address": ""}, 0, ""
 	},
 	"relay_tx": func(f *fakeXMREscrow, p json.RawMessage) (any, int64, string) {
 		var q struct {

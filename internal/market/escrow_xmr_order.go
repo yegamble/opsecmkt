@@ -24,13 +24,13 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 	}
 	var refund string
 	var feeBps int64
-	var shipByOpen, underpaid bool
+	var shipByOpen bool
 	var windowFrom time.Time
 	var shipBy sql.NullTime
 	if err := a.db.QueryRowContext(ctx, `SELECT es.address,es.refund_address,es.fee_bps,
 		GREATEST(es.created,(SELECT max(created) FROM payments WHERE order_id=es.order_id AND confirmations>=0 AND NOT locked)),
-		es.ship_by,COALESCE(es.ship_by<=now(),false),es.underpaid_noted IS NOT NULL
-		FROM escrows es WHERE es.order_id=$1 AND es.coin='XMR'`, o.ID).Scan(&v.Address, &refund, &feeBps, &windowFrom, &shipBy, &shipByOpen, &underpaid); err != nil {
+		es.ship_by,COALESCE(es.ship_by<=now(),false)
+		FROM escrows es WHERE es.order_id=$1 AND es.coin='XMR'`, o.ID).Scan(&v.Address, &refund, &feeBps, &windowFrom, &shipBy, &shipByOpen); err != nil {
 		return err
 	}
 	if d.OrderViewer == roleBuyer {
@@ -97,8 +97,6 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 		v.Status = "Waiting for a deposit"
 	case o.State == stateAwaitingPayment && pending > 0:
 		v.Status = "Deposit seen. Waiting for " + strconv.FormatInt(v.Threshold, 10) + " confirmations."
-	case o.State == stateAwaitingPayment && underpaid:
-		v.Status = "The payment window ended with confirmed deposits below the price. Send the remaining amount to the same address to complete the order."
 	case o.State == stateAwaitingPayment:
 		v.Status = "Confirmed deposits are below the price"
 	case o.State == statePaid && o.Kind == "physical":

@@ -13,8 +13,8 @@ import (
 // O-1, A-401, P3-R6). A settlement fails when the daemon refused its stored transaction for good and no other
 // transaction spent its key images (escrow_xmr_settle.go); it is never rebuilt automatically. An administrator who is
 // not a party may ask, from the order page, with a password step-up and an audit row, that it be built again: the
-// request is recorded (xmrReRequestKey) and the Monero escrow watcher answers it under its lock, because the checks
-// need the daemon. It is carried out only while the stored transaction is in neither the daemon's pool nor its chain
+// request is recorded (xmr_settlement_rerequests, migration 085) and the Monero escrow watcher decides it under its
+// lock, because the checks need the daemon. It is carried out only while the stored transaction is in neither the daemon's pool nor its chain
 // and every stored key image is unspent (is_key_image_spent all 0); otherwise it is refused with a fixed reason, shown
 // on the order page, and may be asked again later. Carried out, in one transaction: the failed settlement becomes
 // superseded (keeping its stored transaction), a new requested settlement names it in supersedes (the same order, kind
@@ -28,13 +28,7 @@ func init() {
 	registerAction("/admin/escrow-xmr-rerequest", actionSpec{Roles: []string{"admin"}, OwnTx: true, Off: escrowXMROff, Run: xmrReRequestAction})
 }
 
-// xmrReRequestKey is the settings key of an administrator's re-request of settlement id: the administrator's user ID
-// while it waits for the watcher, xmrReRequestRefusedPrefix and a class once the watcher refused it.
-func xmrReRequestKey(id int64) string { return "escrow_xmr_rerequest_" + strconv.FormatInt(id, 10) }
-
-const xmrReRequestRefusedPrefix = "refused:"
-
-// Refusal classes of a re-request.
+// Refusal reasons of a re-request (xmr_settlement_rerequests.reason).
 const (
 	xmrReRequestInPool  = "in-pool"
 	xmrReRequestOnChain = "on-chain"
@@ -88,13 +82,16 @@ func xmrReRequestAction(c *actionCtx) (actionResult, error) {
 		case state != "failed" || !stored:
 			return actionResult{}, errReRequestState
 		}
-		res, err := c.Tx.ExecContext(ctx, `INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT (key) DO UPDATE SET value=excluded.value
-			WHERE settings.value LIKE $3`, xmrReRequestKey(id), c.User.ID, xmrReRequestRefusedPrefix+"%")
-		if err != nil {
+		// The settlement row is locked: of two requests one inserts, and the other finds it open.
+		var open bool
+		if err = c.Tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM xmr_settlement_rerequests WHERE settlement_id=$1 AND state='requested')", id).Scan(&open); err != nil {
 			return actionResult{}, err
 		}
-		if n, _ := res.RowsAffected(); n != 1 {
+		if open {
 			return actionResult{}, errReRequestPending
+		}
+		if _, err = c.Tx.ExecContext(ctx, "INSERT INTO xmr_settlement_rerequests(settlement_id,requested_by) VALUES($1,$2)", id, c.User.ID); err != nil {
+			return actionResult{}, err
 		}
 		if _, err = c.Tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,$3,$4)", o.ID, o.State, c.User.ID,
 			"An administrator asked the market to re-request the failed Monero escrow settlement "+strconv.FormatInt(id, 10)+" ("+settlementKind(kind)+"). On its next pass the market checks that its stored transaction is in neither the daemon's pool nor the chain and that none of its coins is spent; only then does it build it again, from the same coins to the same destinations (only the network fee may differ), and send it."); err != nil {
@@ -108,21 +105,22 @@ func xmrReRequestAction(c *actionCtx) (actionResult, error) {
 // xmrReRequests answers the administrators' re-requests of the failed settlements of wallet w (see the file comment).
 // The watcher calls it only while the restore gate is not set.
 func (a *App) xmrReRequests(ctx context.Context, w xmrWalletRow) error {
-	rows, err := a.db.QueryContext(ctx, `SELECT s.id,s.order_id,s.kind,s.tx_hash,array_to_string(s.key_images,','),st.value FROM xmr_settlements s
-		JOIN escrows es ON es.order_id=s.order_id AND es.coin='XMR' JOIN xmr_escrow_slots sl ON sl.id=es.xmr_slot_id JOIN settings st ON st.key='escrow_xmr_rerequest_'||s.id
-		WHERE sl.wallet_id=$1 AND s.state='failed' AND s.tx_hash IS NOT NULL AND st.value NOT LIKE $2 ORDER BY s.id`, w.id, xmrReRequestRefusedPrefix+"%")
+	rows, err := a.db.QueryContext(ctx, `SELECT r.id,r.requested_by,s.id,s.order_id,s.kind,s.tx_hash,array_to_string(s.key_images,',') FROM xmr_settlement_rerequests r
+		JOIN xmr_settlements s ON s.id=r.settlement_id JOIN escrows es ON es.order_id=s.order_id AND es.coin='XMR' JOIN xmr_escrow_slots sl ON sl.id=es.xmr_slot_id
+		WHERE sl.wallet_id=$1 AND r.state='requested' AND s.state='failed' AND s.tx_hash IS NOT NULL ORDER BY r.id`, w.id)
 	if err != nil {
 		return err
 	}
 	type request struct {
-		s     xmrSettleRow
+		id    int64
 		admin string
+		s     xmrSettleRow
 	}
 	var due []request
 	for rows.Next() {
 		var r request
 		var keyImages string
-		if err = rows.Scan(&r.s.ID, &r.s.OrderID, &r.s.Kind, &r.s.TxHash, &keyImages, &r.admin); err != nil {
+		if err = rows.Scan(&r.id, &r.admin, &r.s.ID, &r.s.OrderID, &r.s.Kind, &r.s.TxHash, &keyImages); err != nil {
 			rows.Close()
 			return err
 		}
@@ -135,42 +133,43 @@ func (a *App) xmrReRequests(ctx context.Context, w xmrWalletRow) error {
 	}
 	var errs []error
 	for _, r := range due {
-		if err = a.xmrReRequest(ctx, &r.s, r.admin); err != nil {
+		if err = a.xmrReRequest(ctx, r.id, &r.s, r.admin); err != nil {
 			errs = append(errs, &watchError{label: "monero escrow settlement " + strconv.FormatInt(r.s.ID, 10), class: "re-request: " + xmrErrorClass(err), err: err})
 		}
 	}
 	return errors.Join(errs...)
 }
 
-// xmrReRequest checks one re-request against the daemon and refuses it or carries it out.
-func (a *App) xmrReRequest(ctx context.Context, s *xmrSettleRow, admin string) error {
+// xmrReRequest checks re-request id of settlement s against the daemon and refuses it or carries it out.
+func (a *App) xmrReRequest(ctx context.Context, id int64, s *xmrSettleRow, admin string) error {
 	found, confirmations, err := a.xmrOnNetwork(ctx, s)
 	if err != nil {
 		return err
 	}
 	switch {
 	case found && confirmations == 0:
-		return a.refuseXMRReRequest(ctx, s, admin, xmrReRequestInPool)
+		return a.refuseXMRReRequest(ctx, id, s, admin, xmrReRequestInPool)
 	case found:
-		return a.refuseXMRReRequest(ctx, s, admin, xmrReRequestOnChain)
+		return a.refuseXMRReRequest(ctx, id, s, admin, xmrReRequestOnChain)
 	}
 	spent, err := a.escrowXMR.rpc.keyImagesSpent(ctx, s.KeyImages)
 	if err != nil {
 		return err
 	}
 	if slices.ContainsFunc(spent, func(n int) bool { return n != 0 }) {
-		return a.refuseXMRReRequest(ctx, s, admin, xmrReRequestSpent)
+		return a.refuseXMRReRequest(ctx, id, s, admin, xmrReRequestSpent)
 	}
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	var state, asked string
-	if err = tx.QueryRowContext(ctx, "SELECT s.state,COALESCE((SELECT value FROM settings WHERE key=$2),'') FROM xmr_settlements s WHERE s.id=$1 FOR UPDATE OF s", s.ID, xmrReRequestKey(s.ID)).Scan(&state, &asked); err != nil {
+	var state, open string
+	if err = tx.QueryRowContext(ctx, "SELECT s.state,r.state FROM xmr_settlements s JOIN xmr_settlement_rerequests r ON r.settlement_id=s.id WHERE r.id=$1 FOR UPDATE",
+		id).Scan(&state, &open); err != nil {
 		return err
 	}
-	if state != "failed" || asked != admin {
+	if state != "failed" || open != "requested" {
 		return nil // changed meanwhile
 	}
 	if _, err = tx.ExecContext(ctx, "UPDATE xmr_settlements SET state='superseded',updated=now() WHERE id=$1 AND state='failed'", s.ID); err != nil {
@@ -184,7 +183,7 @@ func (a *App) xmrReRequest(ctx context.Context, s *xmrSettleRow, admin string) e
 	if _, err = tx.ExecContext(ctx, "UPDATE payments SET xmr_settlement_id=$2,updated=now() WHERE xmr_settlement_id=$1", s.ID, next); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, "DELETE FROM settings WHERE key=$1 OR key=$2", xmrReRequestKey(s.ID), xmrSettleWaitKey(s.ID)); err != nil {
+	if _, err = tx.ExecContext(ctx, "UPDATE xmr_settlement_rerequests SET state='done',new_settlement_id=$2,decided_at=now() WHERE id=$1 AND state='requested'", id, next); err != nil {
 		return err
 	}
 	what := settlementKind(s.Kind)
@@ -201,13 +200,13 @@ func (a *App) xmrReRequest(ctx context.Context, s *xmrSettleRow, admin string) e
 
 // refuseXMRReRequest records a refused re-request with its class, an order note and a notice to the administrator who
 // asked; it may be asked again.
-func (a *App) refuseXMRReRequest(ctx context.Context, s *xmrSettleRow, admin, class string) error {
+func (a *App) refuseXMRReRequest(ctx context.Context, id int64, s *xmrSettleRow, admin, class string) error {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	res, err := tx.ExecContext(ctx, "UPDATE settings SET value=$3 WHERE key=$1 AND value=$2", xmrReRequestKey(s.ID), admin, xmrReRequestRefusedPrefix+class)
+	res, err := tx.ExecContext(ctx, "UPDATE xmr_settlement_rerequests SET state='refused',reason=$2,decided_at=now() WHERE id=$1 AND state='requested'", id, class)
 	if err != nil {
 		return err
 	}

@@ -48,11 +48,12 @@ import (
 // wallet with deposits after close or left out (with the threshold, unclaimed) gets a stray refund requested here, one
 // in progress at a time. A destroyed wallet (slice X-f, P3-R9) is never opened, so its orders get none.
 //
-// Why a settlement waits, or why it failed, is its wait class (xmrSettleWaitKey in settings; the order page says it);
-// a class staff must see is flagged once, when it is first recorded. A restore may hold a built or relayed settlement
-// by writing restoredSettlementHold there (slice X-f, P3-R10): it is then followed but never relayed.
+// Why a settlement waits, why it failed, or that a restore holds it, is its send_error (migration 085, as Bitcoin
+// escrow's settlements.send_error; the order page says it); a class staff must see is flagged once, when it is first
+// recorded. A restore holds a built or relayed settlement by writing restoredSettlementHold there (slice X-f, P3-R10):
+// it is then followed but never relayed.
 
-// Wait classes: fixed strings, recorded per settlement and shown on the order page.
+// Wait classes: the fixed strings xmr_settlements.send_error records, shown on the order page.
 const (
 	xmrWaitConfirm     = "waiting-confirmations" // no deposit it spends has the confirmation threshold yet
 	xmrWaitOutputs     = "outputs-waiting"       // the wallet's outputs do not match the deposits claimed yet (once)
@@ -63,13 +64,27 @@ const (
 	xmrBadBuild        = "build-mismatch"        // the wallet's transaction failed the market's checks: flagged
 	xmrNothing         = "nothing-to-settle"     // no deposit is left to spend: failed
 	xmrRelayRefused    = "relay-refused"         // the daemon refused the stored transaction: failed
+	// transfer refused a destination (-2, WRONG_ADDRESS), with the role of the output validate_address names
+	// (destination-refused-claimant, -market_fee or -buyer_return; no suffix when none is named): flagged, and not built
+	// again for this settlement, except a refused fee address once ESCROW_XMR_FEE_ADDRESS names another one.
+	xmrDestRefused = "destination-refused"
+	// transfer refused the build with another wallet error, recorded with its code only ("wallet-refusing rpc:-4"):
+	// waited on once, then flagged ("wallet-refused rpc:-4") when a later pass is refused the same way.
+	xmrWalletRefusing = "wallet-refusing"
+	xmrWalletRefused  = "wallet-refused"
 )
 
-// xmrWaitFlagged lists the classes staff are told of.
-var xmrWaitFlagged = []string{xmrOutputsMismatch, xmrAddressMismatch, xmrFeeCap, xmrTooSmall, xmrBadBuild}
+// xmrWaitFlagged reports whether staff are told of class.
+func xmrWaitFlagged(class string) bool {
+	switch class {
+	case xmrOutputsMismatch, xmrAddressMismatch, xmrFeeCap, xmrTooSmall, xmrBadBuild:
+		return true
+	}
+	return strings.HasPrefix(class, xmrDestRefused) || strings.HasPrefix(class, xmrWalletRefused+" ")
+}
 
-// xmrSettleWaitText is what the order page says about a settlement's wait class.
-func xmrSettleWaitText(class string, threshold int64) string {
+// xmrSettleWaitText is what the order page says about the wait class of a settlement of kind.
+func xmrSettleWaitText(class, kind string, threshold int64) string {
 	switch {
 	case class == xmrWaitConfirm:
 		return "Waiting until a deposit to this escrow has " + strconv.FormatInt(threshold, 10) + " confirmations."
@@ -89,14 +104,23 @@ func xmrSettleWaitText(class string, threshold int64) string {
 		return "No confirmed deposit of this escrow is left to spend, so there is nothing to settle."
 	case class == xmrRelayRefused:
 		return "The Monero daemon refused the stored transaction and no other transaction spent its coins, so nothing was sent. Market staff were notified; an administrator may ask the market to build it again."
+	case class == xmrDestRefused+"-claimant" && kind == "release":
+		return "The escrow wallet refuses the vendor's claim address as invalid, so the market cannot send this settlement. Market staff were notified and contact the vendor."
+	case class == xmrDestRefused+"-claimant" || class == xmrDestRefused+"-buyer_return":
+		return "The escrow wallet refuses the buyer's refund address given at checkout as invalid, so the market cannot send this settlement. Market staff were notified and contact the buyer."
+	case class == xmrDestRefused+"-market_fee":
+		return "The escrow wallet refuses the market fee address as invalid, so the market cannot send this settlement. Market staff were notified; it is built again once the operator has corrected ESCROW_XMR_FEE_ADDRESS."
+	case class == xmrDestRefused:
+		return "The escrow wallet refuses one of this settlement's destination addresses as invalid, so the market cannot send it. Market staff were notified."
+	case strings.HasPrefix(class, xmrWalletRefusing+" "):
+		return "The escrow wallet refused to build this transaction (" + strings.TrimPrefix(class, xmrWalletRefusing+" ") + "); the market tries again on its next pass."
+	case strings.HasPrefix(class, xmrWalletRefused+" "):
+		return "The escrow wallet keeps refusing to build this transaction (" + strings.TrimPrefix(class, xmrWalletRefused+" ") + "). The market tries again on each pass; market staff were notified."
 	case restoreHeld(class):
 		return restoreHeldText
 	}
 	return ""
 }
-
-// xmrSettleWaitKey is the settings key of settlement id's wait class.
-func xmrSettleWaitKey(id int64) string { return "escrow_xmr_settlement_" + strconv.FormatInt(id, 10) }
 
 // xmrStrayEligibleSQL selects the payments rows p a Monero stray refund returns (strayEligibleSQL's rule), for a query
 // with the threshold as $2.
@@ -112,7 +136,7 @@ type xmrSettleRow struct {
 	FeeBps, Price               int64
 	OrderState, Outcome         string
 	BuyerID                     string
-	TxHash, Metadata, Wait      string // Wait: the wait class (xmrSettleWaitKey)
+	TxHash, Metadata, Wait      string // Wait: its send_error
 	KeyImages                   []string
 }
 
@@ -164,7 +188,7 @@ func (a *App) xmrSettleWallet(ctx context.Context, w xmrWalletRow) error {
 func (a *App) xmrSettlements(ctx context.Context, walletID int64) ([]*xmrSettleRow, error) {
 	rows, err := a.db.QueryContext(ctx, `SELECT s.id,s.order_id,s.kind,s.state,s.destination,COALESCE(s.supersedes,0),sl.account_index,es.address,es.refund_address,
 		es.fee_destination,es.fee_bps,o.amount,o.state,`+disputeOutcomeSQL+`,o.buyer_id,COALESCE(s.tx_hash,''),COALESCE(s.tx_metadata,''),
-		COALESCE(array_to_string(s.key_images,','),''),COALESCE((SELECT value FROM settings WHERE key='escrow_xmr_settlement_'||s.id),'')
+		COALESCE(array_to_string(s.key_images,','),''),s.send_error
 		FROM xmr_settlements s JOIN escrows es ON es.order_id=s.order_id AND es.coin='XMR' JOIN xmr_escrow_slots sl ON sl.id=es.xmr_slot_id JOIN orders o ON o.id=s.order_id
 		WHERE sl.wallet_id=$1 AND (s.state IN ('requested','built','relayed') OR s.state='confirmed' AND s.reorg_safe_at IS NULL) ORDER BY s.id`, walletID)
 	if err != nil {
@@ -344,6 +368,19 @@ func (a *App) buildXMRSettlement(ctx context.Context, s *xmrSettleRow) error {
 	if !settlementFits(s.Kind, s.OrderState, s.Outcome) {
 		return nil // a release requested at shipment waits for the order's outcome: the market never signs before it (081)
 	}
+	feeReplaced := false
+	if strings.HasPrefix(s.Wait, xmrDestRefused) {
+		// A refused destination is never tried again as if the refusal were transient: the claimant's and the buyer's
+		// addresses never change for this settlement. A refused fee address is replaced by ESCROW_XMR_FEE_ADDRESS once
+		// the operator has set another one that the wallet accepts.
+		if s.Wait != xmrDestRefused+"-market_fee" || x.feeAddress == "" || x.feeAddress == s.FeeDest {
+			return nil
+		}
+		if valid, err := x.rpc.validAddress(ctx, x.feeAddress); err != nil || !valid {
+			return err
+		}
+		s.FeeDest, feeReplaced = x.feeAddress, true
+	}
 	var busy bool
 	if err := a.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM xmr_settlements WHERE order_id=$1 AND state='built')", s.OrderID).Scan(&busy); err != nil || busy {
 		return err // relayed first: two unrelayed transactions of one account could spend the same outputs
@@ -421,16 +458,15 @@ func (a *App) buildXMRSettlement(ctx context.Context, s *xmrSettleRow) error {
 		dests[i] = xmrDestination{Address: o.Address, Amount: o.Sats}
 	}
 	tx, err := x.rpc.buildTransfer(ctx, s.Account, dests)
-	var re *xmrRPCError
-	if errors.As(err, &re) && re.Code == -17 { // not enough money: the wallet sees fewer spendable coins than it listed
-		return a.xmrOutputsWait(ctx, s)
-	}
 	if err != nil {
-		return err
+		return a.xmrBuildRefused(ctx, s, plan, err)
 	}
 	if class := checkXMRBuild(tx, plan.Outputs, keyImages, x.maxFee, floor); class != "" {
 		log.Printf("escrow: Monero escrow settlement of order %s: the wallet's transaction was discarded unrelayed: %s", shortID(s.OrderID), class)
 		return a.xmrSettleWaits(ctx, s, class)
+	}
+	if feeReplaced {
+		plan.Folded = append(plan.Folded, "The escrow wallet had refused the market fee address recorded when this escrow was created, so the market fee was paid to the fee address the operator configured since.")
 	}
 	ok, err := a.storeXMRBuilt(ctx, s, tx, plan, deposits, total)
 	if err != nil || !ok {
@@ -438,6 +474,40 @@ func (a *App) buildXMRSettlement(ctx context.Context, s *xmrSettleRow) error {
 	}
 	s.State, s.TxHash, s.Metadata, s.KeyImages, s.Wait = "built", tx.TxHash, tx.Metadata, keyImages, ""
 	return a.relayXMRStored(ctx, s)
+}
+
+// xmrBuildRefused handles transfer's error for settlement s's plan. -17 (not enough money: the wallet sees fewer
+// spendable coins than it listed) is an outputs mismatch; -2 (WRONG_ADDRESS) a definite refusal of a destination,
+// named by asking validate_address about each output in turn; any other answer of the wallet a refusal recorded with
+// its code alone, flagged when it persists. A transport error (timeout, unreachable, credentials, a reply that is not
+// one) is returned and retried on the next pass, unflagged.
+func (a *App) xmrBuildRefused(ctx context.Context, s *xmrSettleRow, plan settlePlan, err error) error {
+	var re *xmrRPCError
+	if !errors.As(err, &re) || re.Service != "wallet" || !strings.HasPrefix(re.Class, "rpc:") || re.Code == -13 {
+		return err // -13: the wallet-rpc lost its open wallet; the next pass opens it again
+	}
+	switch re.Code {
+	case -17:
+		return a.xmrOutputsWait(ctx, s)
+	case -2:
+		class := xmrDestRefused
+		for _, o := range plan.Outputs {
+			valid, err := a.escrowXMR.rpc.validAddress(ctx, o.Address)
+			if err != nil {
+				return err
+			}
+			if !valid {
+				class += "-" + o.Role
+				break
+			}
+		}
+		return a.xmrSettleWaits(ctx, s, class)
+	}
+	code := re.Class
+	if s.Wait == xmrWalletRefusing+" "+code || s.Wait == xmrWalletRefused+" "+code {
+		return a.xmrSettleWaits(ctx, s, xmrWalletRefused+" "+code)
+	}
+	return a.xmrSettleWaits(ctx, s, xmrWalletRefusing+" "+code)
 }
 
 // xmrOutputsWait records that the wallet's outputs do not match the deposits claimed: the first time it waits
@@ -460,15 +530,19 @@ func (a *App) xmrSettleWaits(ctx context.Context, s *xmrSettleRow, class string)
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, "INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT (key) DO UPDATE SET value=excluded.value", xmrSettleWaitKey(s.ID), class); err != nil {
+	res, err := tx.ExecContext(ctx, "UPDATE xmr_settlements SET send_error=$2,updated=now() WHERE id=$1 AND send_error<>$2", s.ID, class)
+	if err != nil {
 		return err
 	}
-	if slices.Contains(xmrWaitFlagged, class) {
+	if n, _ := res.RowsAffected(); n != 1 {
+		return nil // recorded already (s was read before)
+	}
+	if xmrWaitFlagged(class) {
 		o, err := scanOrder(tx.QueryRowContext(ctx, orderQuery+" WHERE o.id=$1 FOR UPDATE OF o", s.OrderID))
 		if err != nil {
 			return err
 		}
-		note := fmt.Sprintf("Monero escrow settlement %d (%s) not sent: %s Moderator review required.", s.ID, settlementKind(s.Kind), xmrSettleWaitText(class, a.escrowXMR.confirmations))
+		note := fmt.Sprintf("Monero escrow settlement %d (%s) not sent: %s Moderator review required.", s.ID, settlementKind(s.Kind), xmrSettleWaitText(class, s.Kind, a.escrowXMR.confirmations))
 		if err = a.flagOrder(ctx, tx, &o, note, ""); err != nil {
 			return err
 		}
@@ -505,7 +579,7 @@ func (a *App) storeXMRBuilt(ctx context.Context, s *xmrSettleRow, built xmrBuilt
 			return false, err
 		}
 	}
-	res, err := tx.ExecContext(ctx, `UPDATE xmr_settlements SET state='built',tx_hash=$2,tx_metadata=$3,tx_blob=$4,fee=$5,input_total=$6,key_images=$7::text[],updated=now()
+	res, err := tx.ExecContext(ctx, `UPDATE xmr_settlements SET state='built',tx_hash=$2,tx_metadata=$3,tx_blob=$4,fee=$5,input_total=$6,key_images=$7::text[],send_error='',updated=now()
 		WHERE id=$1 AND state='requested'`, s.ID, built.TxHash, built.Metadata, built.Blob, built.Fee, total, built.SpentKeyImages)
 	if err != nil {
 		return false, err
@@ -530,9 +604,6 @@ func (a *App) storeXMRBuilt(ctx context.Context, s *xmrSettleRow, built xmrBuilt
 		if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) SELECT id,state,state,NULL,$2 FROM orders WHERE id=$1", s.OrderID, n); err != nil {
 			return false, err
 		}
-	}
-	if _, err = tx.ExecContext(ctx, "DELETE FROM settings WHERE key=$1", xmrSettleWaitKey(s.ID)); err != nil {
-		return false, err
 	}
 	return true, tx.Commit()
 }
@@ -633,7 +704,8 @@ func (a *App) markXMRRelayed(ctx context.Context, s *xmrSettleRow, seen bool) er
 		return err
 	}
 	defer tx.Rollback()
-	res, err := tx.ExecContext(ctx, "UPDATE xmr_settlements SET state='relayed',relayed_at=now(),updated=now() WHERE id=$1 AND state='built'", s.ID)
+	res, err := tx.ExecContext(ctx, `UPDATE xmr_settlements SET state='relayed',relayed_at=now(),send_error=CASE WHEN send_error LIKE $2 THEN send_error ELSE '' END,updated=now()
+		WHERE id=$1 AND state='built'`, s.ID, restoredHoldPrefix+"%")
 	if err != nil {
 		return err
 	}
@@ -646,9 +718,6 @@ func (a *App) markXMRRelayed(ctx context.Context, s *xmrSettleRow, seen bool) er
 		note = "The Monero escrow settlement (" + what + ") is on the " + xmrEscrowNetwork + " network: the escrow daemon has its stored transaction " + s.TxHash + ", sent before the market recorded it. The order page shows it and its confirmations."
 	}
 	if err = settleNote(ctx, tx, s.OrderID, note, "its Monero escrow settlement ("+what+") was sent to the "+xmrEscrowNetwork+" network; the order page shows its transaction and its confirmations."); err != nil {
-		return err
-	}
-	if _, err = tx.ExecContext(ctx, "DELETE FROM settings WHERE key=$1 AND value NOT LIKE $2", xmrSettleWaitKey(s.ID), restoredHoldPrefix+"%"); err != nil {
 		return err
 	}
 	if err = tx.Commit(); err != nil {
@@ -775,7 +844,7 @@ func (a *App) markXMRExternal(ctx context.Context, s *xmrSettleRow) error {
 		return err
 	}
 	defer tx.Rollback()
-	res, err := tx.ExecContext(ctx, "UPDATE xmr_settlements SET state='external',reorg_safe_at=NULL,updated=now() WHERE id=$1 AND state IN ('built','relayed','confirmed')", s.ID)
+	res, err := tx.ExecContext(ctx, "UPDATE xmr_settlements SET state='external',reorg_safe_at=NULL,send_error='',updated=now() WHERE id=$1 AND state IN ('built','relayed','confirmed')", s.ID)
 	if err != nil {
 		return err
 	}
@@ -795,9 +864,6 @@ func (a *App) markXMRExternal(ctx context.Context, s *xmrSettleRow) error {
 	if err = a.flagOrder(ctx, tx, &o, note, "Order "+shortID(s.OrderID)+": the coins of its Monero escrow settlement ("+what+") were spent by a transaction this market did not make. Market staff were notified."); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, "DELETE FROM settings WHERE key=$1", xmrSettleWaitKey(s.ID)); err != nil {
-		return err
-	}
 	if err = tx.Commit(); err != nil {
 		return err
 	}
@@ -815,15 +881,12 @@ func (a *App) failXMRSettlement(ctx context.Context, s *xmrSettleRow, class stri
 		return err
 	}
 	defer tx.Rollback()
-	res, err := tx.ExecContext(ctx, "UPDATE xmr_settlements SET state='failed',updated=now() WHERE id=$1 AND state IN ('requested','built','relayed')", s.ID)
+	res, err := tx.ExecContext(ctx, "UPDATE xmr_settlements SET state='failed',send_error=$2,updated=now() WHERE id=$1 AND state IN ('requested','built','relayed')", s.ID, class)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
 		return nil
-	}
-	if _, err = tx.ExecContext(ctx, "INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT (key) DO UPDATE SET value=excluded.value", xmrSettleWaitKey(s.ID), class); err != nil {
-		return err
 	}
 	if _, err = tx.ExecContext(ctx, "UPDATE payments SET flagged=true,updated=now() WHERE xmr_settlement_id=$1", s.ID); err != nil {
 		return err
@@ -833,7 +896,7 @@ func (a *App) failXMRSettlement(ctx context.Context, s *xmrSettleRow, class stri
 		return err
 	}
 	what := settlementKind(s.Kind)
-	text := xmrSettleWaitText(class, a.escrowXMR.confirmations)
+	text := xmrSettleWaitText(class, s.Kind, a.escrowXMR.confirmations)
 	if err = a.flagOrder(ctx, tx, &o, "Monero escrow settlement "+strconv.FormatInt(s.ID, 10)+" ("+what+") failed: "+text+" Moderator review required.",
 		"Order "+shortID(s.OrderID)+": its Monero escrow settlement ("+what+") was not sent. "+text); err != nil {
 		return err
