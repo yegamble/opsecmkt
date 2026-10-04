@@ -367,7 +367,7 @@ var fakeXMRWalletMethods = map[string]func(f *fakeXMREscrow, params json.RawMess
 		case w.locked:
 			return nil, -1, "Failed to open wallet : internal error: \"/w/" + q.Filename + ".keys\" is opened by another wallet program"
 		case w.password != q.Password:
-			return nil, -1, "Failed to open wallet : invalid password"
+			return nil, -1, "Failed to open wallet : Invalid password."
 		}
 		f.open = w
 		return map[string]any{}, 0, ""

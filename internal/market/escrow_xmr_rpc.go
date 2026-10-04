@@ -94,7 +94,7 @@ func (e *xmrRPCError) Error() string {
 const (
 	xmrOpenNoFile   = "no-file"        // wallet2 file_not_found: "file not found ..."
 	xmrOpenLocked   = "locked"         // the keys file "is opened by another wallet program" (a file lock, transient)
-	xmrOpenPassword = "wrong-password" // wallet2 invalid_password: "invalid password", the keys file did not decrypt
+	xmrOpenPassword = "wrong-password" // "Invalid password.": the keys file is there and did not decrypt with the password
 )
 
 // classifyXMROpen classifies open_wallet's error as classifyXMRRPC does, with its refusal class.
@@ -102,14 +102,15 @@ func classifyXMROpen(err error) error {
 	out := classifyXMRRPC("wallet", "open_wallet", err)
 	var re *rpcError
 	if errors.As(err, &re) && re.Code == -1 {
-		msg := strings.ToLower(re.Message)
 		refusal := ""
 		switch {
-		case strings.Contains(msg, "file not found"):
+		case strings.Contains(re.Message, "file not found"):
 			refusal = xmrOpenNoFile
-		case strings.Contains(msg, "is opened by another wallet program"):
+		case strings.Contains(re.Message, "is opened by another wallet program"):
 			refusal = xmrOpenLocked
-		case strings.HasSuffix(msg, ": invalid password"):
+		case strings.HasSuffix(re.Message, " : Invalid password."):
+			// Matched exactly, as monero-wallet-rpc 0.18.5.1 words wallet2's invalid_password (seen on the real
+			// fakechain, TestXMREscrowRegtestDestroy): the watcher destroys a wallet again on this refusal alone (A-419).
 			refusal = xmrOpenPassword
 		}
 		out.(*xmrRPCError).Refusal = refusal

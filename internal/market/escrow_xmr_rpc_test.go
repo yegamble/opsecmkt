@@ -382,7 +382,7 @@ func TestXMREscrowRPCResults(t *testing.T) {
 	if found, err := r.probeWallet(ctx, "escrow-202610-02", "pw"); err != nil || found {
 		t.Fatalf("probe of no file: %v %v", found, err)
 	}
-	wallet.set("open_wallet", func(json.RawMessage) (any, int, string) { return nil, -1, "Failed to open wallet : invalid password" })
+	wallet.set("open_wallet", func(json.RawMessage) (any, int, string) { return nil, -1, "Failed to open wallet : Invalid password." })
 	var refused *xmrRPCError
 	if found, err := r.probeWallet(ctx, "escrow-202610-02", "pw"); !errors.As(err, &refused) || refused.Class != "rpc:-1" || refused.Refusal != xmrOpenPassword || found {
 		t.Fatalf("probe of another wallet's file: %v %v", found, err)
@@ -392,8 +392,9 @@ func TestXMREscrowRPCResults(t *testing.T) {
 	for msg, want := range map[string]string{
 		`Failed to open wallet : file not found "/home/monero/wallet/escrow-202610-01.keys"`:                                      xmrOpenNoFile,
 		`Failed to open wallet : internal error: "/home/monero/wallet/escrow-202610-01.keys" is opened by another wallet program`: xmrOpenLocked,
-		"Failed to open wallet : invalid password":                                                                                xmrOpenPassword,
-		"Failed to open wallet : invalid password for the background wallet, retry":                                               "",
+		"Failed to open wallet : Invalid password.":                                                                               xmrOpenPassword,
+		"Failed to open wallet : invalid password":                                                                                "",
+		"Failed to open wallet : Invalid password. Retry with the background wallet":                                              "",
 		"Failed to open wallet : std::bad_alloc":                                                                                  "",
 	} {
 		wallet.set("open_wallet", func(json.RawMessage) (any, int, string) { return nil, -1, msg })
@@ -402,7 +403,7 @@ func TestXMREscrowRPCResults(t *testing.T) {
 			t.Errorf("open_wallet refused with %q: %v, want %q", msg, err, want)
 		}
 	}
-	wallet.set("open_wallet", func(json.RawMessage) (any, int, string) { return nil, -13, "invalid password" })
+	wallet.set("open_wallet", func(json.RawMessage) (any, int, string) { return nil, -13, "Failed to open wallet : Invalid password." })
 	if err := r.openWallet(ctx, "escrow-202610-01", "pw"); xmrOpenRefusal(err) != "" {
 		t.Errorf("a refusal other than -1 was classified: %v", err)
 	}
