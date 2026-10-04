@@ -24,7 +24,7 @@ type XMRSettlementView struct {
 	ReRequest, ReRequestPending      bool   // the administrator's form; a re-request waiting for the watcher
 	ReRequestRefused                 string // why the watcher refused the last re-request
 	reorgSafe, stored                bool
-	kind, state, wait, reRequestText string
+	kind, state, wait, reRequestText string // reRequestText: the newest re-request's state and reason
 }
 
 // xmrSettlementViews lists order d.Order's Monero settlements for the panel v.
@@ -32,7 +32,7 @@ func (a *App) xmrSettlementViews(ctx context.Context, d *PageData, v *XMREscrowO
 	o := d.Order
 	rows, err := a.db.QueryContext(ctx, `SELECT s.id,s.kind,s.state,COALESCE(s.tx_hash,''),COALESCE(s.fee,0),COALESCE(s.input_total,0),COALESCE(s.supersedes,0),
 		COALESCE((SELECT n.id FROM xmr_settlements n WHERE n.supersedes=s.id),0),s.reorg_safe_at IS NOT NULL,
-		COALESCE((SELECT value FROM settings WHERE key='escrow_xmr_settlement_'||s.id),''),COALESCE((SELECT value FROM settings WHERE key='escrow_xmr_rerequest_'||s.id),'')
+		s.send_error,COALESCE((SELECT r.state||' '||r.reason FROM xmr_settlement_rerequests r WHERE r.settlement_id=s.id ORDER BY r.id DESC LIMIT 1),'')
 		FROM xmr_settlements s WHERE s.order_id=$1 ORDER BY s.id DESC LIMIT 20`, o.ID)
 	if err != nil {
 		return nil, err
@@ -67,13 +67,14 @@ func (a *App) xmrSettlementViews(ctx context.Context, d *PageData, v *XMREscrowO
 				return nil, err
 			}
 		}
+		// The newest re-request of a failed settlement: waiting, or refused (it may be asked again), or none yet.
+		last, reason, _ := strings.Cut(s.reRequestText, " ")
 		switch {
 		case s.state != "failed" || !s.stored:
-		case strings.HasPrefix(s.reRequestText, xmrReRequestRefusedPrefix):
-			s.ReRequestRefused = xmrReRequestRefusal(strings.TrimPrefix(s.reRequestText, xmrReRequestRefusedPrefix))
-			s.ReRequest = admin
-		case s.reRequestText != "":
+		case last == "requested":
 			s.ReRequestPending = true
+		case last == "refused":
+			s.ReRequestRefused, s.ReRequest = xmrReRequestRefusal(reason), admin
 		default:
 			s.ReRequest = admin
 		}

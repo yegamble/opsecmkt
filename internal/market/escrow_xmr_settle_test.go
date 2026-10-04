@@ -78,13 +78,14 @@ func (x *xmrEscrowEnv) release(order string) (int64, string) {
 	return id, claim
 }
 
-// waitClass is settlement id's wait class ("" for none).
+// waitClass is settlement id's send_error, its wait class ("" for none).
 func (x *xmrEscrowEnv) waitClass(id int64) string {
-	got := agStrings(x.t, x.testEnv, "SELECT value FROM settings WHERE key=$1", xmrSettleWaitKey(id))
-	if len(got) == 0 {
-		return ""
-	}
-	return got[0]
+	return agStrings(x.t, x.testEnv, "SELECT send_error FROM xmr_settlements WHERE id=$1", id)[0]
+}
+
+// reRequests lists settlement id's re-requests, oldest first, as state:reason:new settlement.
+func (x *xmrEscrowEnv) reRequests(id int64) []string {
+	return agStrings(x.t, x.testEnv, "SELECT state||':'||reason||':'||COALESCE(new_settlement_id,0) FROM xmr_settlement_rerequests WHERE settlement_id=$1 ORDER BY id", id)
 }
 
 // staffFlags counts the staff notifications that name order.
@@ -596,8 +597,8 @@ func TestXMREscrowReRequestGuards(t *testing.T) {
 	if code := x.reRequest(adminSess, order, id, "not the password"); code == 303 {
 		t.Fatal("re-requested with a wrong password")
 	}
-	if n := agInt(x.testEnv, "SELECT count(*) FROM settings WHERE key=$1", xmrReRequestKey(id)); n != 0 {
-		t.Fatal("a refused form recorded a request")
+	if got := x.reRequests(id); len(got) != 0 {
+		t.Fatalf("a refused form recorded a request: %v", got)
 	}
 	// The order page offers the form to an administrator, and to nobody else.
 	if page := x.page("/order?id="+order, adminSess); !strings.Contains(page, `action="/admin/escrow-xmr-rerequest"`) {
@@ -609,13 +610,15 @@ func TestXMREscrowReRequestGuards(t *testing.T) {
 		}
 	}
 
+	var want []string
 	refused := func(class string) {
 		t.Helper()
 		if code := x.reRequest(adminSess, order, id, testPassword); code != 303 {
 			t.Fatalf("re-request: %d", code)
 		}
 		x.mustPoll()
-		if got := agStrings(t, x.testEnv, "SELECT value FROM settings WHERE key=$1", xmrReRequestKey(id)); !slices.Equal(got, []string{xmrReRequestRefusedPrefix + class}) ||
+		want = append(want, "refused:"+class+":0")
+		if got := x.reRequests(id); !slices.Equal(got, want) ||
 			x.settlement(id).State != "failed" || agInt(x.testEnv, "SELECT count(*) FROM xmr_settlements WHERE supersedes=$1", id) != 0 {
 			t.Fatalf("%s: %v %s", class, got, x.settlement(id).State)
 		}
@@ -656,9 +659,10 @@ func TestXMREscrowReRequestGuards(t *testing.T) {
 	if len(got) != len(oldOutputs) || got[1] != oldOutputs[1] || strings.Split(got[0], ":")[1] != strings.Split(oldOutputs[0], ":")[1] {
 		t.Fatalf("plan changed:\n old %v\n new %v", oldOutputs, got)
 	}
-	if agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND xmr_settlement_id=$2", order, next.ID) != 1 ||
-		agInt(x.testEnv, "SELECT count(*) FROM settings WHERE key=$1", xmrReRequestKey(id)) != 0 {
-		t.Fatal("the deposit claim did not move, or the request stayed")
+	if got := x.reRequests(id); agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND xmr_settlement_id=$2", order, next.ID) != 1 ||
+		!slices.Equal(got, append(want, "done::"+strconv.FormatInt(next.ID, 10))) ||
+		agInt(x.testEnv, "SELECT count(*) FROM xmr_settlement_rerequests r JOIN users u ON u.id=r.requested_by WHERE r.settlement_id=$1 AND u.role='admin' AND r.decided_at IS NOT NULL", id) != 4 {
+		t.Fatalf("the deposit claim did not move, or the request was not recorded done: %v", got)
 	}
 	if x.reRequest(adminSess, order, id, testPassword) != 409 {
 		t.Fatal("a superseded settlement was re-requested")
