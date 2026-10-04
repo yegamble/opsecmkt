@@ -1,6 +1,7 @@
 package market
 
 import (
+	"html"
 	"net/url"
 	"slices"
 	"strconv"
@@ -580,6 +581,10 @@ func TestEscrowStrayRefundTooSmall(t *testing.T) {
 		if code, body := x.recover(order, x.buyerSess, testPassword); code != 303 {
 			t.Fatalf("%s: recover: %d %s", c.what, code, body)
 		}
+		// The request's own note promises no return the build may refuse (QA NIT-1).
+		if ev := x.events(order); !strings.Contains(ev[len(ev)-1], "coins too few to pay the network fee stay held") || slices.ContainsFunc(ev, func(e string) bool { return strings.Contains(e, "returns what it finds") }) {
+			t.Fatalf("%s: recover note %q", c.what, ev[len(ev)-1])
+		}
 		for range 3 {
 			x.poll()
 		}
@@ -632,6 +637,14 @@ func TestEscrowStrayRefundTooSmall(t *testing.T) {
 	}
 	if n := agInt(x.testEnv, "SELECT count(*) FROM notifications WHERE user_id=$1 AND strpos(body,$2)>0 AND strpos(body,'could not be built')>0", x.vendor, shortID(order)); n != 1 {
 		t.Fatalf("51 deposits: %d vendor notices of the failure", n)
+	}
+	// A deposit still confirming on a held order is not shown as held: once confirmed it makes the market try again
+	// (QA NIT-2).
+	x.core.deposit(addr, txidOf("pending "+order), 0, 400, 1)
+	x.poll()
+	confirming := html.EscapeString("Arrived after the order closed — not counted; returned to the buyer's refund address by a stray refund")
+	if page := x.page("/order?id="+order, x.buyerSess); strings.Count(page, "Arrived after the order closed — not counted; "+heldWant) != 51 || strings.Count(page, confirming) != 1 {
+		t.Fatalf("51 deposits: held lines %d (want 51), confirming lines %d (want 1)", strings.Count(page, "Arrived after the order closed — not counted; "+heldWant), strings.Count(page, confirming))
 	}
 }
 

@@ -213,7 +213,7 @@ func escrowRecoverAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, errRecoverAsked
 		}
 		if _, err = c.Tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,$3,$4)", o.ID, o.State, c.User.ID,
-			"The buyer asked the market to check this escrow for coins sent to it after the order closed. The market reads it on its next pass and returns what it finds to the buyer's refund address by a stray refund."); err != nil {
+			"The buyer asked the market to check this escrow for coins that do not count for the order. On its next pass the market reads it and requests a stray refund of what it finds to the buyer's refund address; coins too few to pay the network fee stay held."); err != nil {
 			return actionResult{}, err
 		}
 		return actionResult{Redirect: orderPage(o.ID) + "#escrow-recover", Notice: "escrow-recover", Audit: "Asked to recover coins at the escrow of order " + shortID(o.ID) + " (" + c.A.escrowNetwork() + ")"}, nil

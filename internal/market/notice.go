@@ -67,7 +67,7 @@ var notices = map[string]struct{ text, section, pages string }{
 	"escrow-xmr-confirmed": {"Receipt confirmed. The order is completed; the market builds the release of the coins in this escrow to the vendor and sends it.", "", ""},
 	"escrow-xmr-retry":     {"Recorded. The market builds this settlement on its next pass; reload this page in a minute.", "", ""},
 	"escrow-xmr-rerequest": {"Re-request recorded. On its next pass the market checks that the stored transaction can no longer be mined, then builds the settlement again; reload this page in a minute.", "", ""},
-	"escrow-recover":       {"Asked. The market checks this escrow on its next pass and returns what it finds to your refund address by a stray refund; reload this page in a minute.", "", ""},
+	"escrow-recover":       {"Asked. On its next pass the market reads this escrow and requests a stray refund of what it finds to your refund address; coins too few to pay the network fee stay held, and this page then says so. Reload this page in a minute.", "", ""},
 
 	// Messages, orders and disputes
 	"message-sent":     {"Message sent.", "", ""},
