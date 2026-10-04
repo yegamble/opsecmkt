@@ -377,7 +377,7 @@ func xmrWalletFresh(ctx context.Context, r *xmrEscrowRPC) (bool, error) {
 	return true, nil
 }
 
-// xmrOrphanWallet marks row id orphan: its name belongs to a wallet file the database has no row for.
+// xmrOrphanWallet marks row id orphan: its name belongs to a wallet file this database did not create.
 func (a *App) xmrOrphanWallet(ctx context.Context, id int64, name string) error {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -387,13 +387,13 @@ func (a *App) xmrOrphanWallet(ctx context.Context, id int64, name string) error 
 	if _, err = tx.ExecContext(ctx, "UPDATE xmr_escrow_wallets SET state='orphan',updated=now() WHERE id=$1 AND state='creating'", id); err != nil {
 		return err
 	}
-	if err = notifyAdmins(ctx, tx, "Monero escrow wallet "+name+" already exists on the escrow wallet-rpc, but this database has no record of it (a database restored from an older backup?). The market did not use it and created the month's next wallet instead. Check that wallet for coins of orders this database lost."); err != nil {
+	if err = notifyAdmins(ctx, tx, "Monero escrow wallet "+name+" already exists on the escrow wallet-rpc, and it is not one this database created (a database restored from an older backup?). The market did not use it and created the month's next wallet instead. Check that wallet for coins of orders this database lost."); err != nil {
 		return err
 	}
 	if err = tx.Commit(); err != nil {
 		return err
 	}
-	log.Printf("escrow: Monero escrow wallet %s exists with no record; marked orphan, not used", name)
+	log.Printf("escrow: Monero escrow wallet %s exists and was not created by this database; marked orphan, not used", name)
 	return nil
 }
 
