@@ -17,7 +17,8 @@ import (
 
 // Escrow Phase 3, slice X-e: the real-chain leg of a physical Monero escrow order (scripts/test-escrow-xmr-regtest.sh;
 // not run in CI), on X-c's helpers (newXMRRegtest). The App's escrow wallet-rpc is reached through a proxy that counts
-// each JSON-RPC method, so the leg shows that nothing is built or sent before the order's outcome.
+// each JSON-RPC method, so the leg shows that nothing is built or sent before the order's outcome, and (slice X-d)
+// that each outcome's settlement is built and sent once after it.
 
 // xmrRPCCounter counts the JSON-RPC methods a proxy passed to the escrow wallet-rpc.
 type xmrRPCCounter struct {
@@ -60,13 +61,34 @@ func xmrCountingProxy(t *testing.T, target string) (*httptest.Server, *xmrRPCCou
 	return srv, c
 }
 
+// refusedAddress is an address with a valid checksum whose keys the wallet refuses (validate_address false), so
+// transfer answers -2 before it builds anything. Random keys pass the wallet's check about one time in four and may then
+// crash monero-wallet-rpc 0.18.5.1 mid-build (exit 139, seen on this leg; A-417's offline key check is to refuse those),
+// so the leg asks the funder's wallet until it finds one it refuses.
+func (r *xmrRegtest) refusedAddress(label string) string {
+	r.t.Helper()
+	for i := range 64 {
+		addr := testXMRAddr("refund "+label+" "+strconv.Itoa(i), true)
+		var res struct {
+			Valid bool `json:"valid"`
+		}
+		r.call(r.funder, "validate_address", map[string]any{"address": addr, "any_net_type": false}, &res)
+		if !res.Valid {
+			return addr
+		}
+	}
+	r.t.Fatal("no refused test address in 64 tries")
+	return ""
+}
+
 // TestXMREscrowRegtestPhysical: four physical Monero escrow orders funded in one real transaction on the fakechain
 // (10 blocks), through the real checkout form. While an order is paid and then shipped (the release requested to a
 // real subaddress of the funder's wallet), the escrow wallet-rpc gets no transfer, relay_tx or other spending call,
 // and the release is not buildable. Then: Confirm receipt completes the first order and its release becomes buildable;
 // the release deadline completes the second; a dispute decided for the buyer supersedes the third's release and
-// requests its refund; the buyer's no-ship cancel of the fourth requests its refund. No spending call at any point:
-// this branch has no builder yet.
+// requests its refund; the buyer's no-ship cancel of the fourth requests its refund. Slice X-d: each of the first three
+// outcomes' settlements is then built, sent once and confirmed; the fourth buyer's refund address has a valid checksum
+// but keys the wallet refuses, so transfer answers -2 and the refund waits, flagged for staff, and is not tried again.
 func TestXMREscrowRegtestPhysical(t *testing.T) {
 	r := newXMRRegtest(t)
 	proxy, calls := xmrCountingProxy(t, os.Getenv("ESCROW_XMR_REGTEST_WALLET_URL"))
@@ -79,16 +101,25 @@ func TestXMREscrowRegtestPhysical(t *testing.T) {
 	r.mustPoll()
 	physical := r.physical(r.vendor)
 	_, adminSess := r.user("xr_padmin_"+randomToken()[:6], "admin")
-	type leg struct{ order, buyerSess, addr string }
+	type leg struct{ order, buyerSess, addr, refund string }
 	var legs [4]leg
 	amounts := map[string]int64{}
 	for i := range legs {
-		order, addr := r.freshCheckout(physical)
-		legs[i] = leg{order, r.sessOf(order, roleBuyer), addr}
+		buyer, sess := r.user("xr_pb_"+randomToken()[:8], "buyer")
+		order := r.order(buyer, physical, "XMR", stateDraft)
+		refund := r.funderAddress() // a real subaddress of the funder's wallet: the refund can be sent there
+		if i == 3 {
+			refund = r.refusedAddress(order)
+		}
+		if w := r.checkout(sess, order, refund); w.Code != 303 {
+			t.Fatalf("checkout: %d %s", w.Code, w.Body.String())
+		}
+		addr := agStrings(t, r.testEnv, "SELECT address FROM escrows WHERE order_id=$1", order)[0]
+		legs[i] = leg{order, sess, addr, refund}
 		amounts[addr] = xmrListingPrice
 	}
 	tx := r.pay(amounts)
-	r.mine(10)
+	r.mine(10 + xmrMineMargin)
 	r.mustPoll()
 	for i, l := range legs {
 		if r.state(l.order) != statePaid {
@@ -132,9 +163,13 @@ func TestXMREscrowRegtestPhysical(t *testing.T) {
 	if r.state(first.order) != stateCompleted || !may || !xmrSettlementBuildable("release", stateCompleted, "") {
 		t.Fatalf("after Confirm receipt: %s, may sign %v", r.state(first.order), may)
 	}
-	// CHAIR: once X-d's builder merges, extend this leg here: a pass builds the first order's release (stored before
-	// relay_tx), relays it, and after 10 blocks it is confirmed; transfer and relay_tx are then counted once each.
 	t.Logf("order %s: Confirm receipt completed it; its release is requested and buildable", shortID(first.order))
+	// Slice X-d: the next pass builds the release, stores it and relays it; transfer and relay_tx run once each.
+	r.mustPoll()
+	if got := r.xmrSettlements(first.order); len(got) != 1 || !strings.HasPrefix(got[0], "release relayed ") || calls.count("transfer") != 1 || calls.count("relay_tx") != 1 {
+		t.Fatalf("after Confirm receipt and a pass: %v, transfer %d, relay_tx %d", got, calls.count("transfer"), calls.count("relay_tx"))
+	}
+	t.Logf("order %s: its release was built and relayed by the next pass (transfer 1, relay_tx 1)", shortID(first.order))
 
 	// The deadline.
 	second := legs[1]
@@ -155,7 +190,7 @@ func TestXMREscrowRegtestPhysical(t *testing.T) {
 		"payout_confirmed": {"confirmed"}, "amount_seen": {strconv.FormatInt(xmrListingPrice, 10)}, "reply_seen": {"0"}, "password": {testPassword}}); code != 303 {
 		t.Fatalf("resolve: %d %s", code, body)
 	}
-	if got := r.xmrSettlements(third.order); len(got) != 2 || !strings.HasPrefix(got[0], "release superseded ") || got[1] != "refund requested "+testXMRAddr("refund "+third.order, true) {
+	if got := r.xmrSettlements(third.order); len(got) != 2 || !strings.HasPrefix(got[0], "release superseded ") || got[1] != "refund requested "+third.refund {
 		t.Fatalf("after deciding for the buyer: %v", got)
 	}
 	t.Logf("order %s: dispute decided for the buyer; the release is superseded and the refund requested", shortID(third.order))
@@ -166,12 +201,30 @@ func TestXMREscrowRegtestPhysical(t *testing.T) {
 	if code, body := r.xmrBuyerCancel(fourth.order, fourth.buyerSess); code != 303 {
 		t.Fatalf("no-ship cancel: %d %s", code, body)
 	}
-	if got := r.xmrSettlements(fourth.order); r.state(fourth.order) != stateCancelled || len(got) != 1 || got[0] != "refund requested "+testXMRAddr("refund "+fourth.order, true) {
+	if got := r.xmrSettlements(fourth.order); r.state(fourth.order) != stateCancelled || len(got) != 1 || got[0] != "refund requested "+fourth.refund {
 		t.Fatalf("after the no-ship cancel: %s %v", r.state(fourth.order), got)
 	}
+	t.Logf("order %s: the buyer's no-ship cancel requested the refund", shortID(fourth.order))
+
+	// Slice X-d: the second's release and the third's refund are built and sent; the wallet refuses the fourth's refund
+	// address (-2), which validate_address names: the refund waits, flagged once, and is not tried again.
 	r.mustPoll()
-	if n := calls.count(spending...); n != 0 {
-		t.Fatalf("%d spending calls to the escrow wallet-rpc", n)
+	r.mustPoll()
+	r.mine(10 + xmrMineMargin)
+	r.mustPoll()
+	for _, c := range []struct{ order, want string }{{first.order, "release confirmed "}, {second.order, "release confirmed "}, {third.order, "refund confirmed " + third.refund}} {
+		got := r.xmrSettlements(c.order)
+		if last := got[len(got)-1]; !strings.HasPrefix(last, c.want) {
+			t.Fatalf("order %s: %v, want %s", shortID(c.order), got, c.want)
+		}
 	}
-	t.Logf("order %s: the buyer's no-ship cancel requested the refund; escrow wallet-rpc spending calls over the whole leg: 0", shortID(fourth.order))
+	refused := agStrings(t, r.testEnv, "SELECT state||' '||send_error FROM xmr_settlements WHERE order_id=$1", fourth.order)
+	flags := agInt(r.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND strpos(note,'not sent: The escrow wallet refuses')>0", fourth.order)
+	if len(refused) != 1 || refused[0] != "requested "+xmrDestRefused+"-claimant" || flags != 1 {
+		t.Fatalf("the refused refund: %v, staff flag notes %d", refused, flags)
+	}
+	if calls.count("transfer") != 4 || calls.count("relay_tx") != 3 || calls.count("transfer_split", "sweep_all", "sweep_single", "sweep_dust", "submit_transfer") != 0 {
+		t.Fatalf("spending calls: transfer %d, relay_tx %d", calls.count("transfer"), calls.count("relay_tx"))
+	}
+	t.Logf("three settlements built, sent and confirmed after their outcomes; the refund to an invalid address (order %s) was refused by the wallet once (-2), flagged and not tried again: transfer 4, relay_tx 3", shortID(fourth.order))
 }

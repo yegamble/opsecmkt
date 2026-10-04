@@ -20,6 +20,13 @@ import (
 // after the wallet acted on it. Claim and refund addresses are subaddresses of the funder's wallet, so every settlement
 // pays a real wallet. Each relayed settlement is decoded by the daemon (xmrShape): RingCT type 6 (CLSAG and
 // Bulletproofs+), 16 ring members per input and a fee above 0 and within ESCROW_XMR_MAX_FEE.
+//
+// A transaction a wallet-rpc just relayed may be left out of the next block (monerod holds it in its Dandelion++ stem
+// for a moment), so these legs mine xmrMineMargin blocks more than a threshold needs; X-c's Funding leg checks the
+// threshold itself.
+
+// xmrMineMargin: blocks mined beyond a confirmation threshold, for a transaction that missed the next block.
+const xmrMineMargin = 2
 
 // xmrRPCProxy forwards JSON-RPC requests to the escrow wallet-rpc, counting each method; drop[method] makes the next
 // call of method lose its answer after the wallet-rpc answered it (a timeout after the call took effect).
@@ -132,12 +139,17 @@ func (r *xmrRegtest) completedReal() (order, addr string) {
 	r.t.Helper()
 	order, addr = r.checkoutReal()
 	r.pay(map[string]int64{addr: xmrListingPrice})
-	r.mine(10)
+	r.mine(10 + xmrMineMargin)
 	r.mustPoll()
 	if r.state(order) != stateCompleted {
-		r.t.Fatalf("funded order: %s", r.state(order))
+		r.t.Fatalf("funded order: %s (deposits %v)", r.state(order), r.depositConfs(order))
 	}
 	return order, addr
+}
+
+// depositConfs lists order's deposits as txid prefix:confirmations:left out, for a failure message.
+func (r *xmrRegtest) depositConfs(order string) []string {
+	return agStrings(r.t, r.testEnv, "SELECT left(txid,12)||':'||confirmations||':'||escrow_left_out FROM payments WHERE order_id=$1 ORDER BY created,id", order)
 }
 
 // releaseReal requests order's release to a fresh funder subaddress (as the vendor's claim does, slice X-e).
@@ -191,7 +203,7 @@ func (r *xmrRegtest) xmrShape(s xmrSettlement) {
 // confirmReal mines past the threshold and checks settlement id is confirmed.
 func (r *xmrRegtest) confirmReal(id int64) {
 	r.t.Helper()
-	r.mine(10)
+	r.mine(10 + xmrMineMargin)
 	r.mustPoll()
 	if s := r.settlement(id); s.State != "confirmed" {
 		r.t.Fatalf("settlement %d after 10 blocks: %s", id, s.State)
@@ -259,12 +271,12 @@ func TestXMREscrowRegtestTopUp(t *testing.T) {
 	r, _ := newXMRSettleRegtest(t)
 	order, addr := r.checkoutReal()
 	r.pay(map[string]int64{addr: xmrListingPrice})
-	r.mine(6)
+	r.mine(6 + xmrMineMargin)
 	topUp := r.pay(map[string]int64{addr: 20000000000})
-	r.mine(4)
+	r.mine(4) // the price has at least 10 confirmations, the top-up at most 4
 	r.mustPoll()
 	if r.state(order) != stateCompleted {
-		t.Fatalf("funded: %s", r.state(order))
+		t.Fatalf("funded: %s (deposits %v)", r.state(order), r.depositConfs(order))
 	}
 	id := r.releaseReal(order)
 	r.mustPoll()
@@ -273,7 +285,7 @@ func TestXMREscrowRegtestTopUp(t *testing.T) {
 		t.Fatalf("release: %+v", release)
 	}
 	r.xmrShape(release)
-	r.mine(6)
+	r.mine(6 + xmrMineMargin)
 	r.mustPoll()
 	if agInt(r.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND txid=$2 AND escrow_left_out", order, topUp) != 1 {
 		t.Fatal("the top-up was not left out")
@@ -281,6 +293,7 @@ func TestXMREscrowRegtestTopUp(t *testing.T) {
 	r.mustPoll()
 	stray := r.settlementOf(order, "stray_refund")
 	if stray.State != "relayed" || stray.InputTotal != 20000000000 {
+		t.Logf("deposits %v", r.depositConfs(order))
 		t.Fatalf("stray refund: %+v", stray)
 	}
 	r.xmrShape(stray)
