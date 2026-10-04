@@ -863,7 +863,7 @@ func TestXMREscrowUnopenableKeepsSeal(t *testing.T) {
 		{"file gone, sweep set", held, gone, xmrEscrowSweepKey, "missing", "missing"},
 		{"file locked", held, locked, "", "retained", "retained"},
 		{"file locked, gate set", held, locked, gate, "retained", "retained"},
-		{"password changed outside", held, replaced, "", "missing", "missing"},
+		{"password changed outside (QA's repro)", held, replaced, "", "missing", "missing"},
 		{"password changed outside, gate set", held, replaced, gate, "missing", "missing"},
 		{"password changed outside, no coins", due, replaced, "", "missing", "missing"},
 		{"destruction interrupted", begun, nil, "", "destroyed", "destroyed"},
