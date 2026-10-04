@@ -924,8 +924,10 @@ broadcast.
   A stray refund whose coins are too few to pay the network fee and an output of at least 0.0001 BTC fails once
   ("not built", a note and a notice to both parties). No other is requested while the coins it could spend are worth
   no more than then (a deposit gaining confirmations changes nothing); a further deposit, once confirmed, makes them
-  more and the next pass tries again. The buyer's *Recover coins at this escrow* is answered, once per request, that
-  the coins are too few to return after the network fee (A-434).
+  more and the next pass tries again. Meanwhile the order page says the coins are held at the escrow address because
+  they are too few to return after the network fee (A-434).
+  Lowering `ESCROW_BTC_FEE_RATE` below the rate that failed, or the buyer's *Recover coins at this escrow* (one build
+  per request, whatever the coins are worth), tries again; a failure is noted and told once, as above.
   Not returned automatically (A-435): a deposit that did not count (conflicted, or no longer listed) on a cancelled
   order whose refund failed because the escrow's coins were too few. It is not left out or flagged and staff are not
   told; the order page lists it as a confirmed deposit, its status still points to the refund, whose line says the

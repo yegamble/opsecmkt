@@ -184,8 +184,9 @@ chain `regtest`; [operator guide](operator-guide.md#bitcoin-escrow-regtest-only)
   not count (conflicted, or no longer listed) and confirms later on such an order is not returned automatically
   either: it is not left out or flagged, staff are not told, and only the buyer and the vendor together can move it
   from their own wallets (A-435). A stray refund that fails because its
-  coins are too few is noted and told once; no other is requested until a further deposit makes the coins worth more,
-  and the buyer's recovery request is answered that they are too few to return (A-434);
+  coins are too few is noted and told once, and the order page says the coins are held and why; no other is requested
+  until a further deposit makes the coins worth more or a lower `ESCROW_BTC_FEE_RATE` makes them cheaper to spend,
+  and the buyer's recovery request always gets one more build, whose failure is the answer (A-434);
 - recovery and reconciliation: the restore gate pauses builds, co-signing, broadcasts and escrow checkout, and a
   restored stored transaction is broadcast again only after an administrator confirms it; every checkout first asks
   the watch-only wallet whether it already holds the escrow address it composed (an escrow created after the backup a

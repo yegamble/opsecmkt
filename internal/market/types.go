@@ -526,6 +526,7 @@ type EscrowOrderView struct {
 	Decision                                    *EscrowDecisionView     // a resolved order's dispute decision (escrow_decision.go)
 	Claim                                       bool                    // the vendor of a completed order may request the claim
 	Recover, RecoverAsked                       bool                    // the buyer of a closed order may ask to recover coins at the escrow (or has asked; escrow_stray.go)
+	Held                                        bool                    // a closed order's coins a stray refund returns are held: too few after its last one failed (strayHeldSQL, A-434)
 	RestorePaused                               bool                    // the restore gate pauses escrow builds, co-signing and broadcasts (escrow_recovery.go)
 	PartiesOnly                                 bool                    // a shipped order's release: only both parties' signatures complete it (escrow_release.go)
 	Deadline                                    *EscrowDeadlineView     // a shipped order's release deadline (escrow_deadline.go)
