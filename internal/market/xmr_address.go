@@ -3,6 +3,7 @@ package market
 import (
 	"crypto/subtle"
 	"errors"
+	"math/big"
 	"math/bits"
 	"strings"
 
@@ -13,8 +14,9 @@ import (
 // fakechain (monerod --regtest), whose wallets use the mainnet address format, so this parser accepts the mainnet
 // standard (network byte 18, "4…") and subaddress (42, "8…") forms and nothing else: integrated addresses (19) are
 // refused, and so are testnet and stagenet addresses. It is for the fakechain escrow path only; the pooled adapter
-// (payments_monero.go) asks its wallet and refuses fakechain. Curve points are not checked: the wallet refuses an
-// address whose keys are not points before it builds anything.
+// (payments_monero.go) asks its wallet and refuses fakechain. Both keys must be points of ed25519's prime-order
+// subgroup (xmrPointValid, A-417): stricter than the wallet's own check, which accepts a point with a small-order
+// component and then cannot build, or crashes building, a transfer to it.
 
 // xmrBase58Alphabet is Monero's base58 alphabet (Bitcoin's).
 const xmrBase58Alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
@@ -40,6 +42,7 @@ var (
 	errXMRAddressChecksum   = errors.New("not a Monero address: its checksum does not match (check for a typing error)")
 	errXMRAddressIntegrated = errors.New("integrated Monero addresses are not accepted; use a standard address or a subaddress")
 	errXMRAddressNetwork    = errors.New("not an address of this escrow's network: Monero escrow runs on a local fakechain, whose addresses start with 4 or 8 (testnet and stagenet addresses are refused)")
+	errXMRAddressKeys       = errors.New("not a valid Monero address: its keys are not valid (check it and paste it again from your wallet)")
 )
 
 // xmrAddress is a parsed escrow address: its kind (xmrStandard or xmrSubaddress) and its public spend and view keys.
@@ -49,7 +52,8 @@ type xmrAddress struct {
 }
 
 // parseXMRAddress parses s exactly (no trimming): 95 base58 characters decoding to the network byte, the spend and
-// view keys and the first 4 bytes of their Keccak-256 (Monero's cn_fast_hash).
+// view keys and the first 4 bytes of their Keccak-256 (Monero's cn_fast_hash). Both keys must be valid
+// (xmrPointValid).
 func parseXMRAddress(s string) (xmrAddress, error) {
 	if len(s) != xmrAddressLength {
 		return xmrAddress{}, errXMRAddressLength
@@ -76,6 +80,9 @@ func parseXMRAddress(s string) (xmrAddress, error) {
 	}
 	copy(a.Spend[:], data[1:33])
 	copy(a.View[:], data[33:65])
+	if !xmrPointValid(a.Spend) || !xmrPointValid(a.View) {
+		return xmrAddress{}, errXMRAddressKeys
+	}
 	return a, nil
 }
 
@@ -140,3 +147,98 @@ func xmrDecodeBlock(out []byte, block string, n int) ([]byte, bool) {
 	}
 	return out, true
 }
+
+// ed25519, the curve of Monero's keys (RFC 8032 §5.1): -x² + y² = 1 + d·x²·y² over the field of p = 2^255-19, with
+// d = -121665/121666, √-1 = 2^((p-1)/4), the square-root exponent (p-5)/8, and l = 2^252 +
+// 27742317777372353535851937790883648493, the prime order of the base point's subgroup.
+var (
+	edP      = new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 255), big.NewInt(19))
+	edD      = edMul(big.NewInt(-121665), new(big.Int).ModInverse(big.NewInt(121666), edP))
+	edD2     = edMul(big.NewInt(2), edD)
+	edSqrtM1 = new(big.Int).Exp(big.NewInt(2), new(big.Int).Rsh(new(big.Int).Sub(edP, big.NewInt(1)), 2), edP)
+	edRootE  = new(big.Int).Rsh(new(big.Int).Sub(edP, big.NewInt(5)), 3)
+	edL, _   = new(big.Int).SetString("1000000000000000000000000000000014def9dea2f79cd65812631a5cf5d3ed", 16)
+)
+
+// edPoint is a point in extended coordinates (X:Y:Z:T): x = X/Z, y = Y/Z, x·y = T/Z (RFC 8032 §5.1.4).
+type edPoint struct{ x, y, z, t *big.Int }
+
+// edMul is a·b mod p, in [0, p).
+func edMul(a, b *big.Int) *big.Int { return new(big.Int).Mod(new(big.Int).Mul(a, b), edP) }
+
+// edSub is a-b mod p, in [0, p).
+func edSub(a, b *big.Int) *big.Int { return new(big.Int).Mod(new(big.Int).Sub(a, b), edP) }
+
+// edMod reduces a mod p in place, to [0, p).
+func edMod(a *big.Int) *big.Int { return a.Mod(a, edP) }
+
+// xmrPointValid reports whether a public key is a point of ed25519's prime-order subgroup other than the identity:
+// it decompresses (xmrDecompress, Monero's check_key) and l times it is the identity. A real Monero key is a scalar
+// times the base point, so it always is. Monero's check_key does not check the subgroup, but monero-wallet-rpc
+// 0.18.5.1 crashed building a transfer to keys that pass check_key with a small-order (torsion) component, so this is
+// deliberately stricter. It runs once per address parsed; speed is irrelevant and nothing here is secret.
+func xmrPointValid(key [32]byte) bool {
+	p, ok := xmrDecompress(key)
+	return ok && !edIdentity(p) && edIdentity(edScalarMult(edL, p))
+}
+
+// xmrDecompress decodes a key as a point exactly as Monero's crypto::check_key (ge_frombytes_vartime) does, which is
+// RFC 8032 §5.1.3: y is the little-endian value with its top bit cleared, and must be below p; the top bit is the
+// sign of x. x = u·v³·(u·v⁷)^((p-5)/8) for u = y²-1 and v = d·y²+1; if v·x² = u that is a square root of u/v, if
+// v·x² = -u then x·√-1 is, and otherwise there is none and the key is no point. x = 0 with the sign bit set is refused.
+func xmrDecompress(key [32]byte) (edPoint, bool) {
+	var be [32]byte
+	for i, b := range key {
+		be[31-i] = b
+	}
+	sign := uint(be[0] >> 7)
+	be[0] &= 0x7f
+	y := new(big.Int).SetBytes(be[:])
+	if y.Cmp(edP) >= 0 {
+		return edPoint{}, false
+	}
+	one := big.NewInt(1)
+	y2 := edMul(y, y)
+	u := edSub(y2, one)
+	v := edMod(new(big.Int).Add(edMul(edD, y2), one))
+	v3 := edMul(edMul(v, v), v)
+	x := edMul(edMul(u, v3), new(big.Int).Exp(edMul(u, edMul(edMul(v3, v3), v)), edRootE, edP))
+	switch vx2 := edMul(v, edMul(x, x)); {
+	case vx2.Cmp(u) == 0:
+	case vx2.Cmp(edSub(big.NewInt(0), u)) == 0:
+		x = edMul(x, edSqrtM1)
+	default:
+		return edPoint{}, false
+	}
+	if x.Sign() == 0 && sign == 1 {
+		return edPoint{}, false
+	}
+	if x.Bit(0) != sign {
+		x = edSub(big.NewInt(0), x)
+	}
+	return edPoint{x, y, one, edMul(x, y)}, true
+}
+
+// edAdd is p+q by RFC 8032 §5.1.4's addition formula, which is complete on ed25519: it also doubles.
+func edAdd(p, q edPoint) edPoint {
+	a := edMul(edSub(p.y, p.x), edSub(q.y, q.x))
+	b := edMul(new(big.Int).Add(p.y, p.x), new(big.Int).Add(q.y, q.x))
+	c := edMul(edMul(p.t, edD2), q.t)
+	d := edMul(edMul(p.z, big.NewInt(2)), q.z)
+	e, f, g, h := edSub(b, a), edSub(d, c), edMod(new(big.Int).Add(d, c)), edMod(new(big.Int).Add(b, a))
+	return edPoint{edMul(e, f), edMul(g, h), edMul(f, g), edMul(e, h)}
+}
+
+// edScalarMult is k·p by double-and-add.
+func edScalarMult(k *big.Int, p edPoint) edPoint {
+	r := edPoint{big.NewInt(0), big.NewInt(1), big.NewInt(1), big.NewInt(0)}
+	for i := k.BitLen() - 1; i >= 0; i-- {
+		if r = edAdd(r, r); k.Bit(i) == 1 {
+			r = edAdd(r, p)
+		}
+	}
+	return r
+}
+
+// edIdentity reports whether p is the identity (0, 1): X = 0 and Y = Z.
+func edIdentity(p edPoint) bool { return p.x.Sign() == 0 && p.y.Cmp(p.z) == 0 }

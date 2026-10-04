@@ -34,6 +34,10 @@ var (
 	errXMRRefusedUntilRestart = errors.New("monero escrow: disabled until the app is restarted: the escrow nodes failed the network check")
 )
 
+// errXMRFeeAddressKeys (A-417): ESCROW_XMR_FEE_ADDRESS passes its checksum but its keys are not valid (xmrPointValid),
+// so the wallet could build no settlement paying it.
+var errXMRFeeAddressKeys = errors.New("ESCROW_XMR_FEE_ADDRESS is not a valid Monero address: its checksum matches but its keys are not valid, so no Monero escrow settlement could pay it. Copy the fee wallet's address again")
+
 var errXMRMainnetMarket = errors.New("refusing to start: ESCROW_XMR=on runs only on a local fakechain in this release, and this market is configured for mainnet (MONERO_NETWORK=mainnet or BITCOIN_CHAIN=main). Set ESCROW_XMR=off")
 
 // Fixed operator lines for Monero escrow's state at startup: nothing in them comes from a node.
@@ -59,8 +63,8 @@ type escrowXMRConfig struct {
 
 // escrowXMRConfigFromEnv reads ESCROW_XMR (on/off, blank = off), ESCROW_XMR_WALLET_RPC_URL and ESCROW_XMR_DAEMON_URL
 // (both required; the wallet-rpc must not be MONERO_WALLET_RPC_URL's), ESCROW_XMR_FEE_BPS (0 to 10000, default 0)
-// and ESCROW_XMR_FEE_ADDRESS (needed above 0: a fakechain standard address or subaddress), ESCROW_XMR_SLOTS (5 to
-// 200, default 20), ESCROW_XMR_MAX_FEE (piconero, 1 to xmrMaxMaxFee, default xmrDefaultMaxFee),
+// and ESCROW_XMR_FEE_ADDRESS (needed above 0: a fakechain standard address or subaddress with valid keys),
+// ESCROW_XMR_SLOTS (5 to 200, default 20), ESCROW_XMR_MAX_FEE (piconero, 1 to xmrMaxMaxFee, default xmrDefaultMaxFee),
 // PAYMENT_CONFIRMATIONS_XMR (1 to 1000; a deposit counts from at least xmrMinConfirmations), MONERO_WALLET_SECRET
 // (checkXMRWalletSecret) and ESCROW_XMR_SEED_KEY (a path, read by initEscrowXMR). A market
 // configured for mainnet (MONERO_NETWORK=mainnet, BITCOIN_CHAIN=main) is refused. Nothing is opened or contacted,
@@ -96,7 +100,9 @@ func escrowXMRConfigFromEnv(getenv func(string) string) (escrowXMRConfig, error)
 	}
 	if c.feeBps > 0 {
 		c.feeAddress = strings.TrimSpace(getenv("ESCROW_XMR_FEE_ADDRESS"))
-		if _, err := parseXMRAddress(c.feeAddress); err != nil {
+		if _, err := parseXMRAddress(c.feeAddress); errors.Is(err, errXMRAddressKeys) {
+			return c, errXMRFeeAddressKeys
+		} else if err != nil {
 			return c, errors.New("ESCROW_XMR_FEE_BPS above 0 needs ESCROW_XMR_FEE_ADDRESS: the fakechain Monero standard address or subaddress (starting with 4 or 8; not integrated) the market fee is paid to")
 		}
 	}

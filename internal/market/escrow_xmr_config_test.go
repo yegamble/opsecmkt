@@ -78,6 +78,8 @@ func TestXMREscrowConfigFromEnv(t *testing.T) {
 		"stagenet fee address":            {"ESCROW_XMR_FEE_BPS", "250", "ESCROW_XMR_FEE_ADDRESS", testXMRAddressWith(24, testXMRKey("s"), testXMRKey("v"), nil, false)},
 		"integrated fee address":          {"ESCROW_XMR_FEE_BPS", "250", "ESCROW_XMR_FEE_ADDRESS", testXMRAddressWith(19, testXMRKey("s"), testXMRKey("v"), nil, false)},
 		"fee address with a bad checksum": {"ESCROW_XMR_FEE_BPS", "250", "ESCROW_XMR_FEE_ADDRESS", testXMRAddressWith(18, testXMRKey("s"), testXMRKey("v"), nil, true)},
+		"fee address, off-curve key":      {"ESCROW_XMR_FEE_BPS", "250", "ESCROW_XMR_FEE_ADDRESS", testXMRAddressWith(18, testXMROffCurveKey(), testXMRKey("v"), nil, false)},
+		"fee address, small-order key":    {"ESCROW_XMR_FEE_BPS", "250", "ESCROW_XMR_FEE_ADDRESS", testXMRAddressWith(42, testXMRKey("s"), testXMRSmallOrderKey(), nil, false)},
 		"Bitcoin fee address":             {"ESCROW_XMR_FEE_BPS", "250", "ESCROW_XMR_FEE_ADDRESS", "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080"},
 		"4 slots":                         {"ESCROW_XMR_SLOTS", "4"},
 		"201 slots":                       {"ESCROW_XMR_SLOTS", "201"},
@@ -119,6 +121,23 @@ func TestXMREscrowRefusedOnLiveMarket(t *testing.T) {
 	a := &App{live: true}
 	if err := a.initEscrowXMR(context.Background()); !errors.Is(err, errXMRMainnetMarket) || a.escrowXMR != nil {
 		t.Fatalf("live market: %v %v", err, a.escrowXMR)
+	}
+}
+
+// A-417: a fee address whose keys are not points of the prime-order subgroup (its checksum valid) stops startup
+// before anything is read or contacted, with its own fixed refusal naming the variable and not quoting the address.
+func TestXMREscrowFeeAddressKeysRefuseStartup(t *testing.T) {
+	for _, fee := range []string{testXMRAddressWith(xmrTagStandard, testXMROffCurveKey(), testXMRKey("v"), nil, false),
+		testXMRAddressWith(xmrTagSubaddress, testXMRKey("s"), testXMRSmallOrderKey(), nil, false)} {
+		env := xmrOnEnv("/nonexistent/seed.asc", "ESCROW_XMR_FEE_BPS", "250", "ESCROW_XMR_FEE_ADDRESS", fee)
+		for i := 0; i < len(env); i += 2 {
+			t.Setenv(env[i], env[i+1])
+		}
+		a := &App{}
+		err := a.initEscrowXMR(context.Background())
+		if !errors.Is(err, errXMRFeeAddressKeys) || a.escrowXMR != nil || !strings.Contains(err.Error(), "ESCROW_XMR_FEE_ADDRESS") || strings.Contains(err.Error(), fee[:12]) {
+			t.Fatalf("fee address %s…: %v %v", fee[:8], err, a.escrowXMR)
+		}
 	}
 }
 
