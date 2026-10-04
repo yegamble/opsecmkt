@@ -286,7 +286,10 @@ func shipAction(c *actionCtx) (actionResult, error) {
 	if err != nil {
 		return actionResult{}, err
 	}
-	if o.Escrow { // P2-R1: an escrow order is shipped with its release's claim address (escrowShipAction)
+	switch { // P2-R1: an escrow order is shipped with its release's claim address (escrowShipAction, xmrEscrowShipAction)
+	case o.xmrEscrow():
+		return actionResult{}, errShipPooledFormXMR
+	case o.Escrow:
 		return actionResult{}, errShipPooledForm
 	}
 	if _, err = c.A.transition(c.Ctx(), c.Tx, o.ID, statePaid, stateShipped, c.User, note); err != nil {

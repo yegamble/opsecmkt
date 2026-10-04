@@ -176,6 +176,9 @@ func (a *App) escrowAmount(o *Order, n int64) string {
 // escrowDisputePreview is the resolve form's statement of each outcome for an escrow order: the counted escrowed amount
 // (as escrowSettleTerminal counts it) and the settlement each outcome builds.
 func (a *App) escrowDisputePreview(ctx context.Context, o *Order) (PayoutPreview, error) {
+	if o.xmrEscrow() {
+		return a.xmrDisputePreview(ctx, o)
+	}
 	var sum, left int64
 	if err := a.db.QueryRowContext(ctx, `SELECT COALESCE(sum(amount),0),COALESCE(sum(amount) FILTER (WHERE escrow_left_out),0) FROM payments
 		WHERE order_id=$1 AND confirmations>=0 AND NOT locked AND NOT after_close`, o.ID).Scan(&sum, &left); err != nil {

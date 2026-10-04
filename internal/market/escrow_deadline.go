@@ -105,7 +105,8 @@ func orderIDs(ctx context.Context, q rowsQuerier, query string, args ...any) ([]
 
 // escrowDeadlines is the deadline part of an escrow watcher pass, under the escrow watcher lock: the restore recheck
 // first, so a restored deadline is moved before it could be released, then the release (not while the restore gate is
-// set), then the reminders. None makes an RPC, so it also runs when the node check fails (escrowPollOnce).
+// set), then the reminders. None makes an RPC, so it also runs when the node check fails (escrowPollOnce). Each step
+// handles Bitcoin escrow orders only; the Monero escrow watcher runs xmrDeadlines for Monero ones (P3-R7).
 func (a *App) escrowDeadlines(ctx context.Context) error {
 	var errs []error
 	if err := a.recheckReleaseDeadlines(ctx); err != nil {
@@ -312,7 +313,11 @@ func noShipCancel(c *actionCtx, o *Order) error {
 		if err := c.Tx.QueryRowContext(ctx, "SELECT max(created) FROM order_events WHERE order_id=$1 AND from_state='paid' AND to_state='shipped'", o.ID).Scan(&at); err != nil {
 			return err
 		}
-		return fail(409, "The vendor marked this order shipped at "+utcUntil(at)+", so it can no longer be cancelled. Sign the release once the goods have arrived, or open a dispute if they do not arrive. Nothing was changed.")
+		next := "Sign the release once the goods have arrived"
+		if o.xmrEscrow() {
+			next = "Use Confirm receipt on the order page once the goods have arrived"
+		}
+		return fail(409, "The vendor marked this order shipped at "+utcUntil(at)+", so it can no longer be cancelled. "+next+", or open a dispute if they do not arrive. Nothing was changed.")
 	}
 	if o.State != statePaid {
 		return errConflict
@@ -355,7 +360,7 @@ func lateDispute(c *actionCtx, o *Order) (string, error) {
 	}
 	var at sql.NullTime
 	var due bool
-	err := c.Tx.QueryRowContext(c.Ctx(), "SELECT es.release_at,COALESCE("+releaseDueSQL+" AND NOT EXISTS (SELECT 1 FROM settings WHERE key=$2),false) FROM escrows es WHERE es.order_id=$1", o.ID, releaseRecheckKey).Scan(&at, &due)
+	err := c.Tx.QueryRowContext(c.Ctx(), "SELECT es.release_at,COALESCE("+releaseDueSQL+" AND NOT EXISTS (SELECT 1 FROM settings WHERE key=$2),false) FROM escrows es WHERE es.order_id=$1", o.ID, releaseRecheckKeyOf(o.Currency)).Scan(&at, &due)
 	if err != nil || !at.Valid {
 		return "", err
 	}
@@ -392,8 +397,10 @@ func deadlineBanners(ctx context.Context, a *App, r *http.Request, d *PageData) 
 	if d.User == nil || a.db == nil {
 		return nil
 	}
-	rows, err := a.db.QueryContext(ctx, `SELECT o.id,o.buyer_id=$1,es.release_at,extract(epoch FROM es.release_at-now()) FROM orders o JOIN products p ON p.id=o.product_id JOIN escrows es ON es.order_id=o.id
-		WHERE (o.buyer_id=$1 OR p.vendor_id=$1) AND es.coin='BTC' AND o.state='shipped' AND `+releaseSoonSQL+` AND `+noDisputeSQL+` AND `+buyerUnsignedSQL+` ORDER BY es.release_at`, d.User.ID)
+	// A Monero escrow order (P3-R7) has no signatures, so buyerUnsignedSQL always holds for it; its banner says Confirm
+	// receipt.
+	rows, err := a.db.QueryContext(ctx, `SELECT o.id,o.buyer_id=$1,es.coin='XMR',es.release_at,extract(epoch FROM es.release_at-now()) FROM orders o JOIN products p ON p.id=o.product_id JOIN escrows es ON es.order_id=o.id
+		WHERE (o.buyer_id=$1 OR p.vendor_id=$1) AND o.state='shipped' AND `+releaseSoonSQL+` AND `+noDisputeSQL+` AND `+buyerUnsignedSQL+` ORDER BY es.release_at`, d.User.ID)
 	if err != nil {
 		return err
 	}
@@ -402,7 +409,7 @@ func deadlineBanners(ctx context.Context, a *App, r *http.Request, d *PageData) 
 		var b DeadlineBanner
 		var at time.Time
 		var left float64
-		if err = rows.Scan(&b.OrderID, &b.Buyer, &at, &left); err != nil {
+		if err = rows.Scan(&b.OrderID, &b.Buyer, &b.XMR, &at, &left); err != nil {
 			return err
 		}
 		b.Short, b.At, b.Left = shortID(b.OrderID), utcUntil(at), timeLeft(time.Duration(left*float64(time.Second)))

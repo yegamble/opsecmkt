@@ -681,7 +681,8 @@ func TestEscrowBTCIgnoresXMRRows(t *testing.T) {
 	if err := x.A.remindDeadlines(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if body := x.page("/orders", x.buyerSess); strings.Contains(body, "deadline-banner") {
+	// Since X-e the Monero order has its own banner, with Monero escrow copy (TestXMREscrowOrdersBannerUnder72h).
+	if body := x.page("/orders", x.buyerSess); strings.Contains(body, "sign the release") || strings.Contains(body, "co-signs") {
 		t.Error("/orders shows a Bitcoin release deadline banner for a Monero escrow order")
 	}
 

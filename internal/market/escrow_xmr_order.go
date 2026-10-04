@@ -128,8 +128,11 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 		return err
 	}
 	d.XMREscrow = v
-	// Only the actions a Monero escrow order can take (escrowOrder's rules): no pooled "Mark shipped" (the Monero ship
-	// form, with the claim address and a password step-up, is slice X-e's); the buyer of a paid order cancels only a
+	if err = a.xmrReleaseView(ctx, d, v); err != nil {
+		return err
+	}
+	// Only the actions a Monero escrow order can take (escrowOrder's rules): no pooled "Mark shipped" (the panel has the
+	// Monero ship form, with the claim address and a password step-up); the buyer of a paid order cancels only a
 	// physical one, from its ship-by time; a cancel that refunds coins states and carries their amount.
 	counted := received + pending
 	kept := d.Transitions[:0]
@@ -189,4 +192,66 @@ func (a *App) xmrEscrowCheckoutOffer(ctx context.Context, d *PageData) error {
 	}
 	d.XMREscrowCheckout = v
 	return nil
+}
+
+// xmrReleaseView fills the release part of the Monero escrow panel (slice X-e; escrow_xmr_release.go,
+// escrow_xmr_deadline.go): the forms the viewer may use (Mark shipped, Confirm receipt, the claim), a shipped order's
+// release deadline with the time left when the page loaded, and who acts next once the order is past its ship-by time,
+// shipped, disputed, completed with no release yet, or decided.
+func (a *App) xmrReleaseView(ctx context.Context, d *PageData, v *XMREscrowOrderView) error {
+	o := d.Order
+	var releaseAt sql.NullTime
+	var left sql.NullFloat64
+	var shipByOpen, rechecked, live bool
+	if err := a.db.QueryRowContext(ctx, `SELECT COALESCE(es.ship_by<=now(),false),es.release_at,extract(epoch FROM es.release_at-now()),es.release_recheck,
+		EXISTS(SELECT 1 FROM xmr_settlements s WHERE s.order_id=es.order_id AND s.kind IN ('release','refund') AND s.state<>'superseded')
+		FROM escrows es WHERE es.order_id=$1 AND es.coin='XMR'`, o.ID).Scan(&shipByOpen, &releaseAt, &left, &rechecked, &live); err != nil {
+		return err
+	}
+	outcome, err := escrowDisputeOutcome(ctx, a.db, o.ID)
+	if err != nil {
+		return err
+	}
+	switch {
+	case o.State == statePaid && o.Kind == "physical" && shipByOpen:
+		v.NextStep += " The ship-by time has passed and the order is not marked shipped: the buyer may now cancel it, and the escrow is then refunded to the buyer's refund address."
+	case o.State == stateShipped && releaseAt.Valid:
+		remaining := time.Duration(left.Float64 * float64(time.Second))
+		v.Deadline = &EscrowDeadlineView{At: utcUntil(releaseAt.Time), Left: timeLeft(remaining), Due: remaining <= 0, Rechecked: rechecked}
+		v.NextStep = xmrDeadlineNextStep(d.OrderViewer, v.Deadline, v.RestorePaused)
+	case o.State == stateDisputed && releaseAt.Valid:
+		v.NextStep += " The release deadline of " + utcUntil(releaseAt.Time) + " no longer applies: opening the dispute cancelled it for good."
+	case o.State == stateCompleted && !live:
+		v.NextStep = "Who acts next: the vendor, who claims the escrowed coins on this page with a fresh address; the market then builds the release from this order's escrow account and sends it."
+	case o.State == stateResolved && outcome == "release" && live:
+		v.NextStep = "The dispute was decided for the vendor: the release to the vendor requested when the order was shipped pays the vendor; the market builds it from this order's escrow account and sends it. The release deadline no longer applies."
+	case o.State == stateResolved && outcome == "release":
+		v.NextStep = "The dispute was decided for the vendor: the vendor claims the escrowed coins on this page with a fresh address; the market then builds the release and sends it."
+	case o.State == stateResolved && outcome == "refund":
+		v.NextStep = "The dispute was decided for the buyer: the coins in this escrow go back to the buyer's refund address by a refund the market builds and sends."
+	}
+	v.Ship = d.OrderViewer == roleVendor && o.State == statePaid && o.Kind == "physical"
+	v.Confirm = d.OrderViewer == roleBuyer && o.State == stateShipped
+	v.Claim = d.OrderViewer == roleVendor && settlementFits("release", o.State, outcome) && !live
+	if (v.Ship || v.Confirm || v.Claim) && d.Security == nil {
+		if d.Security, _, _, err = a.securityView(ctx, d.User.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// xmrDeadlineNextStep is the "who acts next" line of a shipped Monero escrow order with its release deadline, for viewer.
+func xmrDeadlineNextStep(viewer string, dl *EscrowDeadlineView, paused bool) string {
+	switch {
+	case dl.Due && paused:
+		return "The release deadline (" + dl.At + ") has passed: the release is due, and the order completes once the market has finished reconciling its restore from backup."
+	case dl.Due:
+		return "The release deadline (" + dl.At + ") has passed: the release is due, and the order completes on the market's next pass."
+	case viewer == roleBuyer:
+		return "Who acts next: you. Use Confirm receipt below once the goods have arrived, or open a dispute before " + dl.At + " if they have not. If you cannot confirm receipt, you need do nothing: if you neither confirm receipt nor open a dispute by then, the order completes at that time and the market releases the coins to the vendor."
+	case viewer == roleVendor:
+		return "Who acts next: the buyer, who confirms receipt or opens a dispute before " + dl.At + ". If the buyer does neither, the order completes at that time and the market releases the coins to you; nothing is built or sent before the order is completed."
+	}
+	return "Who acts next: the buyer, who confirms receipt or opens a dispute before " + dl.At + ". If the buyer does neither, the order completes at that time and the market releases the coins to the vendor."
 }
