@@ -1100,8 +1100,9 @@ docker run -d --name opsecmkt-escrow-wallet --network opsecmkt_backend --restart
 ```
 
 Use the same wallet-rpc release the checks used (0.18.5.1; the image above is the one the pooled Monero service pins).
-The fakechain daemon is started as the header of `scripts/test-escrow-xmr-regtest.sh` starts one (`--regtest --offline
---fixed-difficulty 1`); it is another daemon than the pooled wallet's `MONERO_RPC_URL`. No wallet needs creating: the escrow
+The fakechain daemon is started as the header of `scripts/test-escrow-xmr-regtest.sh` starts one (`--regtest
+--keep-fakechain --offline --fixed-difficulty 1`; without `--keep-fakechain`, monerod deletes the fakechain each time it
+starts); it is another daemon than the pooled wallet's `MONERO_RPC_URL`. No wallet needs creating: the escrow
 watcher creates every wallet, named `escrow-YYYYMM-NN`, on its first pass. A wallet-rpc attached to the pooled stagenet or
 testnet daemon is refused by the height check; the URL check refuses only the pooled wallet-rpc's own address.
 
@@ -1344,7 +1345,7 @@ escrow stays off; it adds no escrow wallet-rpc, no fakechain daemon and no mount
 checked with `docker compose config` only.
 
 **What was checked.** [Per-order escrow, Phase 3](escrow.md#phase-3-monero-escrow-on-a-local-fakechain) lists each tier: unit and `httptest` tests, Go
-tests with PostgreSQL against a fake wallet-rpc, thirteen legs against a real fakechain `monerod` and `monero-wallet-rpc`
+tests with PostgreSQL against a fake wallet-rpc, fourteen legs against a real fakechain `monerod` and `monero-wallet-rpc`
 0.18.5.1 (`scripts/test-escrow-xmr-regtest.sh`, manual, not in CI;
 [runbook](testnet-runbook.md#9-manual-monero-escrow-fakechain-check)), and a simulated-RPC browser journey added in this
 phase. Nothing has run on stagenet, testnet or mainnet, with Monero multisig, or as a deployment.

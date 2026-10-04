@@ -617,7 +617,7 @@ wallet takes an order again and no settlement is relayed until an administrator 
 - Real `monerod` and `monero-wallet-rpc` 0.18.5.1 on a local fakechain, run by hand, not in CI
   (`scripts/test-escrow-xmr-regtest.sh`, [runbook](testnet-runbook.md#9-manual-monero-escrow-fakechain-check); the app
   runs inside the Go test against the real daemon and wallet-rpc, and the script refuses any daemon that is not a
-  fakechain). Thirteen legs, each a Go test:
+  fakechain). Fourteen legs, each a Go test:
   1. `TestXMREscrowRegtestWallets`: the first pass creates the month's wallet, seals its seed (the seal decrypts, and a
      wallet restored from it at the stored restore height has the stored primary address), activates it and keeps its free
      accounts; account 0 holds nothing; the next month's wallet is created sealed ahead of its month and becomes active at
@@ -638,15 +638,20 @@ wallet takes an order again and no settlement is relayed until an administrator 
      and confirms again.
   9. `TestXMREscrowRegtestExternal`: a wallet restored from the sealed seed sweeps the account outside the market while
      the release is built; the daemon refuses the market's transaction and it is recorded external and flagged.
-  10. `TestXMREscrowRegtestRestore`: a restore (with `scripts/restore.sh`'s own Monero SQL) holds a built release, retires
+  10. `TestXMREscrowRegtestReRequest`: monerod is stopped around each relay of a release, so the wallet-rpc cannot commit
+      it (-4) while it is stored and its coins unspent; the same stored transaction is relayed again on the next passes
+      with no second `transfer`, and the third refusal records it failed; the wallet still lists its outputs as
+      available; an administrator's re-request spends exactly the stored key images (the daemon's decoded inputs) to the
+      stored plan, and it confirms.
+  11. `TestXMREscrowRegtestRestore`: a restore (with `scripts/restore.sh`'s own Monero SQL) holds a built release, retires
       the free accounts and closes the wallet; the sweep finds a wallet created after the backup and seals it as an
       orphan; after an administrator's confirmation the held release is relayed once and confirms; the next checkout gets
       an account of a new wallet.
-  11. `TestXMREscrowRegtestLookahead`: a deposit to account 300, unknown to the wallet, is missed with the default
+  12. `TestXMREscrowRegtestLookahead`: a deposit to account 300, unknown to the wallet, is missed with the default
       lookahead and seen after the sweep raises it and rescans.
-  12. `TestXMREscrowRegtestWrongSecret`: with a changed `MONERO_WALLET_SECRET`, no wallet is created or opened and checkout
+  13. `TestXMREscrowRegtestWrongSecret`: with a changed `MONERO_WALLET_SECRET`, no wallet is created or opened and checkout
       answers 503.
-  13. `TestXMREscrowRegtestDestroy`: a deposit on day 89 to a closed order's escrow is refunded; on day 91 the retained
+  14. `TestXMREscrowRegtestDestroy`: a deposit on day 89 to a closed order's escrow is refunded; on day 91 the retained
       wallet is destroyed and `open_wallet` with the derived password is refused.
 
   Every settlement the daemon holds is decoded (RingCT type 6, 16 ring members per input, a fee above zero, the stored one,

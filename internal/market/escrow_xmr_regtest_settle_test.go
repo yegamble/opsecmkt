@@ -2,12 +2,15 @@ package market
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -29,17 +32,19 @@ import (
 const xmrMineMargin = 2
 
 // xmrRPCProxy forwards JSON-RPC requests to the escrow wallet-rpc, counting each method; drop[method] makes the next
-// call of method lose its answer after the wallet-rpc answered it (a timeout after the call took effect).
+// call of method lose its answer after the wallet-rpc answered it (a timeout after the call took effect), and
+// around[method] runs around the forwarding of each call of method (it must call forward once).
 type xmrRPCProxy struct {
 	*httptest.Server
 	mu     sync.Mutex
 	counts map[string]int
 	drop   map[string]bool
+	around map[string]func(forward func())
 }
 
 func newXMRRPCProxy(t *testing.T, target string) *xmrRPCProxy {
 	t.Helper()
-	p := &xmrRPCProxy{counts: map[string]int{}, drop: map[string]bool{}}
+	p := &xmrRPCProxy{counts: map[string]int{}, drop: map[string]bool{}, around: map[string]func(func()){}}
 	p.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var req struct {
@@ -50,8 +55,18 @@ func newXMRRPCProxy(t *testing.T, target string) *xmrRPCProxy {
 		p.counts[req.Method]++
 		drop := p.drop[req.Method]
 		delete(p.drop, req.Method)
+		around := p.around[req.Method]
 		p.mu.Unlock()
-		resp, err := http.Post(strings.TrimRight(target, "/")+r.URL.Path, "application/json", bytes.NewReader(body))
+		var resp *http.Response
+		var err error
+		forward := func() {
+			resp, err = http.Post(strings.TrimRight(target, "/")+r.URL.Path, "application/json", bytes.NewReader(body))
+		}
+		if around != nil {
+			around(forward)
+		} else {
+			forward()
+		}
 		if err != nil {
 			w.WriteHeader(http.StatusBadGateway)
 			return
@@ -82,6 +97,13 @@ func (p *xmrRPCProxy) dropNext(method string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.drop[method] = true
+}
+
+// wrap runs fn around the forwarding of each later call of method (nil removes it).
+func (p *xmrRPCProxy) wrap(method string, fn func(forward func())) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.around[method] = fn
 }
 
 // newXMRSettleRegtest is newXMRRegtest with the App's escrow wallet-rpc behind a counting proxy.
@@ -375,4 +397,160 @@ func TestXMREscrowRegtestExternal(t *testing.T) {
 		t.Fatalf("transfer %d, relay_tx %d (the stored transaction relayed again and refused)", p.count("transfer"), p.count("relay_tx"))
 	}
 	t.Logf("order %s: escrow output swept outside the market by a wallet restored from the sealed seed (%s); the release %s is external and flagged", shortID(order), sweep.TxHashes[0], built.TxHash)
+}
+
+// daemonStoppedAround is a proxy hook (xmrRPCProxy.wrap) that stops the monerod container name before the call is
+// forwarded and starts it again once the wallet-rpc has answered, then waits up to two minutes until monerod answers at
+// the height it had: it must run with --keep-fakechain, or its start deletes the fakechain. Idle connections to it are
+// dropped, since it may come back on another address. It runs on the proxy's goroutine, so it reports with Errorf.
+func (r *xmrRegtest) daemonStoppedAround(name string) func(forward func()) {
+	return func(forward func()) {
+		ctx := context.Background()
+		var before, after struct {
+			Height int64 `json:"height"`
+		}
+		err := r.daemon.call(ctx, "/json_rpc", "get_info", nil, &before)
+		if out, stop := exec.Command("docker", "stop", "-t", "30", name).CombinedOutput(); err != nil || stop != nil {
+			r.t.Errorf("stopping monerod (container %s): %v, %v %s", name, err, stop, out)
+		}
+		forward()
+		if out, err := exec.Command("docker", "start", name).CombinedOutput(); err != nil {
+			r.t.Errorf("docker start %s: %v %s", name, err, out)
+			return
+		}
+		r.daemon.http.CloseIdleConnections()
+		r.A.escrowXMR.rpc.daemon.http.CloseIdleConnections()
+		for range 120 {
+			if err = r.daemon.call(ctx, "/json_rpc", "get_info", nil, &after); err == nil {
+				break
+			}
+			time.Sleep(time.Second)
+		}
+		if err != nil || after.Height != before.Height {
+			r.t.Errorf("monerod (container %s) came back at height %d, it had %d (%v): run it with --keep-fakechain", name, after.Height, before.Height, err)
+		}
+	}
+}
+
+// TestXMREscrowRegtestReRequest (A-426, A-401): the monerod container (run with --keep-fakechain) is stopped right before
+// each relay of a release's stored transaction and started again once the escrow wallet-rpc has answered, so the
+// wallet-rpc cannot commit it (-4) while the transaction is stored, the daemon never saw it and its key images are
+// unspent. The watcher relays the same stored metadata again on the next passes, never calls transfer, and records the
+// release failed on the third refusal in a row. incoming_transfers available still lists the stored key images. An
+// administrator re-requests it with the password step-up: the new build spends exactly the stored key images (the
+// stored row's, and the inputs the daemon decodes) to the stored plan, is relayed and confirms.
+func TestXMREscrowRegtestReRequest(t *testing.T) {
+	container := os.Getenv("ESCROW_XMR_REGTEST_DAEMON_CONTAINER")
+	if container == "" {
+		t.Skip("set ESCROW_XMR_REGTEST_DAEMON_CONTAINER to the monerod container's name (scripts/test-escrow-xmr-regtest.sh): this leg stops and starts it")
+	}
+	r, p := newXMRSettleRegtest(t)
+	// The relay call waits for the daemon's stop and start through the proxy.
+	old := payoutSendTimeout
+	payoutSendTimeout = 5 * time.Minute
+	t.Cleanup(func() { payoutSendTimeout = old })
+	order, addr := r.completedReal()
+	id := r.releaseReal(order)
+	p.wrap("relay_tx", r.daemonStoppedAround(container))
+	for n := 1; n <= xmrRelayAttempts; n++ {
+		heights := r.synced()
+		if err := r.poll(); err != nil || t.Failed() {
+			t.Fatalf("pass %d (%s): %v", n, heights, err)
+		}
+		want, class := "built", xmrRelayRefusing+" "+strconv.Itoa(n)
+		if n == xmrRelayAttempts {
+			want, class = "failed", xmrRelayRefused
+		}
+		if s := r.settlement(id); s.State != want || r.waitClass(id) != class || p.count("relay_tx") != n || p.count("transfer") != 1 {
+			t.Fatalf("relay refused %d time(s): %+v %q, relay_tx %d, transfer %d", n, s, r.waitClass(id), p.count("relay_tx"), p.count("transfer"))
+		}
+		t.Logf("pass %d: monerod stopped for the relay; relay_tx refused, the settlement is %s (%s)", n, want, class)
+	}
+	p.wrap("relay_tx", nil)
+	failed := r.settlement(id)
+	if r.staffFlags(order) == 0 {
+		t.Fatal("staff were not told of the failed release")
+	}
+	if found, _, err := r.A.xmrOnNetwork(context.Background(), &xmrSettleRow{TxHash: failed.TxHash}); err != nil || found {
+		t.Fatalf("the daemon has the refused transaction %s (%v)", failed.TxHash, err)
+	}
+
+	// The escrow wallet still lists the refused transaction's outputs as available.
+	ctx := context.Background()
+	x := r.A.escrowXMR
+	name := r.walletName(false)
+	if err := x.rpc.openWallet(ctx, name, xmrWalletPassword(x.secret, name)); err != nil {
+		t.Fatalf("open_wallet: %s", xmrErrorClass(err))
+	}
+	var account int64
+	if err := r.DB.QueryRow("SELECT account_index FROM xmr_escrow_slots WHERE address=$1", addr).Scan(&account); err != nil {
+		t.Fatal(err)
+	}
+	outs, err := x.rpc.incomingTransfers(ctx, account)
+	if err != nil {
+		t.Fatalf("incoming_transfers: %s", xmrErrorClass(err))
+	}
+	var available []string
+	for _, o := range outs {
+		if !o.Spent {
+			available = append(available, o.KeyImage)
+		}
+	}
+	for _, ki := range failed.KeyImages {
+		if !slices.Contains(available, ki) {
+			t.Fatalf("incoming_transfers available does not list the refused transaction's key image %s (it lists %v): a re-request could not spend it", ki, available)
+		}
+	}
+	t.Logf("incoming_transfers available lists the refused transaction's %d output(s) unspent: %v", len(failed.KeyImages), failed.KeyImages)
+
+	_, adminSess := r.user("xr_admin_"+randomToken()[:6], "admin")
+	if code := r.reRequest(adminSess, order, id, testPassword); code != 303 {
+		t.Fatalf("re-request: %d", code)
+	}
+	r.synced()
+	r.mustPoll()
+	next := r.settlementOf(order, "release")
+	if next.Supersedes != id || next.State != "relayed" || r.settlement(id).State != "superseded" || p.count("transfer") != 2 ||
+		!slices.Equal(slices.Sorted(slices.Values(next.KeyImages)), slices.Sorted(slices.Values(failed.KeyImages))) || next.InputTotal != failed.InputTotal {
+		t.Fatalf("re-requested: old %+v, new %+v, transfer %d", r.settlement(id), next, p.count("transfer"))
+	}
+	oldOuts, newOuts := r.outputsOf(id), r.outputsOf(next.ID)
+	claimant := func(s string, fee int64) (string, int64) {
+		f := strings.Split(s, ":")
+		n, _ := strconv.ParseInt(f[2], 10, 64)
+		return f[0] + ":" + f[1], n + fee
+	}
+	oldTo, oldGross := claimant(oldOuts[0], failed.Fee)
+	newTo, newGross := claimant(newOuts[0], next.Fee)
+	if len(newOuts) != len(oldOuts) || oldTo != newTo || oldGross != newGross || !slices.Equal(oldOuts[1:], newOuts[1:]) {
+		t.Fatalf("the plan changed:\n old %v (fee %d)\n new %v (fee %d)", oldOuts, failed.Fee, newOuts, next.Fee)
+	}
+	// The daemon's decoding of the new transaction: its inputs are exactly the stored key images.
+	var res struct {
+		Txs []struct {
+			AsJSON string `json:"as_json"`
+		} `json:"txs"`
+	}
+	r.daemonPost("/get_transactions", map[string]any{"txs_hashes": []string{next.TxHash}, "decode_as_json": true}, &res)
+	var body struct {
+		Vin []struct {
+			Key struct {
+				KeyImage string `json:"k_image"`
+			} `json:"key"`
+		} `json:"vin"`
+	}
+	if len(res.Txs) != 1 || json.Unmarshal([]byte(res.Txs[0].AsJSON), &body) != nil {
+		t.Fatalf("the daemon does not decode %s", next.TxHash)
+	}
+	var inputs []string
+	for _, in := range body.Vin {
+		inputs = append(inputs, in.Key.KeyImage)
+	}
+	if !slices.Equal(slices.Sorted(slices.Values(inputs)), slices.Sorted(slices.Values(failed.KeyImages))) {
+		t.Fatalf("the new transaction's inputs %v are not the stored key images %v", inputs, failed.KeyImages)
+	}
+	r.xmrShape(next)
+	r.confirmReal(next.ID)
+	t.Logf("order %s: release %s refused %d times while monerod was stopped for its relay, failed; re-requested by an administrator, release %s spent the same key images %v to the same plan (fee %d, was %d) and confirmed",
+		shortID(order), failed.TxHash, xmrRelayAttempts, next.TxHash, inputs, next.Fee, failed.Fee)
 }
