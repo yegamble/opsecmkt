@@ -624,7 +624,14 @@ func TestXMREscrowHeldSettlementConfirm(t *testing.T) {
 	if x.fake.countOf("relay_tx") != relays+1 || x.fake.countOf("transfer") != transfers || x.settlement(id).State != "relayed" || x.waitClass(id) != "" {
 		t.Fatalf("after the confirmation: %d relays, %d transfers, %+v %q", x.fake.countOf("relay_tx")-relays, x.fake.countOf("transfer")-transfers, x.settlement(id), x.waitClass(id))
 	}
-	// The relayed one the daemon lost: relayed again once after its confirmation, with the same transaction.
+	// The relayed one the daemon lost stays held once the gate is cleared, until its own confirmation; it is then relayed
+	// again once, with the same transaction.
+	x.clearGate()
+	x.mustPoll()
+	x.mustPoll()
+	if x.fake.countOf("relay_tx") != relays+1 || x.waitClass(idLost) != restoredSettlementHold {
+		t.Fatalf("a held settlement was relayed once the gate was cleared: %d relays", x.fake.countOf("relay_tx")-relays)
+	}
 	if code := confirm(adminSess, idLost, nil); code != 303 {
 		t.Fatalf("confirmation of the relayed settlement: %d", code)
 	}
