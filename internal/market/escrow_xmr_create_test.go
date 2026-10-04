@@ -28,10 +28,12 @@ func TestXMREscrowSlotClaimRace(t *testing.T) {
 		uid := agStrings(t, x.testEnv, "SELECT user_id FROM sessions WHERE token_hash=$1", digest(sess))[0]
 		buyers[i] = buyer{sess, x.order(uid, x.digital(x.vendor), "XMR", stateDraft)}
 	}
-	// Room for every request at once: the admission slots would otherwise refuse most of them as busy before the claim.
-	saved := userPostWork
-	userPostWork = make(chan struct{}, n)
-	defer func() { userPostWork = saved }()
+	// Room for every request at once in both admission classes a post passes, or they refuse some as busy before the
+	// claim: userPostWork's 16 slots at once, and the session lookup's 16 once a lookup has waited postLookupWait (2 s),
+	// which a slow runner reached while the 100 checkouts shared the pool's 12 connections.
+	savedPost, savedLookup := userPostWork, sessionLookupWork
+	userPostWork, sessionLookupWork = make(chan struct{}, n), make(chan struct{}, n)
+	defer func() { userPostWork, sessionLookupWork = savedPost, savedLookup }()
 	before := x.fake.count()
 	codes := make([]int, n)
 	bodies := make([]string, n)
