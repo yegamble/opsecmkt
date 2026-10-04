@@ -18,7 +18,8 @@ import (
 
 // The Monero escrow watcher (WR-escrow Phase 3, slice X-c; P3-R3, P3-R5; ES-7: one escrow wallet per month, one
 // account per order). One per deployment (its own advisory lock, xmrEscrowWatcherLock), apart from the pooled and the
-// Bitcoin escrow watchers, and only while ESCROW_XMR=on and Monero escrow is ready (escrow_xmr_config.go). It alone
+// Bitcoin escrow watchers, while ESCROW_XMR=on. Until Monero escrow is ready (escrow_xmr_config.go) a pass runs only
+// the release deadlines (xmrDeadlines, no RPC), so a shipped order is never stranded while the node is down. It alone
 // talks to the escrow wallet-rpc; checkout makes no RPC (escrow_xmr_create.go).
 //
 // Wallets (xmr_escrow_wallets). Each wallet is created as a row in state creating first, then create_wallet with the
