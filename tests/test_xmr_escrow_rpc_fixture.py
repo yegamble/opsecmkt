@@ -262,6 +262,15 @@ class EscrowBehaviourTest(unittest.TestCase):
         status, reply = self.n.post(self.n.escrow_url + '/test/xmr/deposit', {'address': bad, 'amount': 1})
         self.assertEqual(status, 400, reply)
 
+    def test_removed_wallet_file(self):
+        self.n.ok('create_wallet', {'filename': 'escrow-209903-01', 'password': 'pw', 'language': 'English'})
+        self.n.control('/test/xmr/remove-wallet', {'name': 'escrow-209903-01'})
+        self.assertEqual(self.n.wallet('get_height')['error']['code'], -13)
+        self.assertEqual(self.n.wallet('open_wallet', {'filename': 'escrow-209903-01', 'password': 'pw'})['error'],
+                         {'code': -1, 'message': 'Failed to open wallet : file not found "/tmp/w/escrow-209903-01.keys"'})
+        status, reply = self.n.post(self.n.escrow_url + '/test/xmr/remove-wallet', {'name': 'escrow-209903-01'})
+        self.assertEqual(status, 400, reply)
+
     def test_lookahead_and_restore(self):
         self.n.ok('create_wallet', {'filename': 'escrow-209902-01', 'password': 'pw', 'language': 'English'})
         for _ in range(60):
