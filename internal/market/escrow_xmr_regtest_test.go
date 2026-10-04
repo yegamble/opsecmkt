@@ -271,8 +271,8 @@ func (r *xmrRegtest) walletName(next bool) string {
 // seed (which decrypts with the test's private seed key and restores, with restore_deterministic_wallet from the
 // stored height, to the stored primary address), activates it and keeps 5 free slots, each a real account whose address
 // 0 is the slot's; account 0 is no slot and holds nothing. The clock then reaches 6 days before the next month (its
-// wallet is created sealed, not active) and the next month's start (it is active, the first closing with its free
-// slots retired).
+// wallet is created sealed, not active) and the next month's start (it is active, the first closed with its free slots
+// retired, and retained since it has no order).
 func TestXMREscrowRegtestWallets(t *testing.T) {
 	r := newXMRRegtest(t)
 	r.mustPoll()
@@ -329,13 +329,14 @@ func TestXMREscrowRegtestWallets(t *testing.T) {
 	}
 	r.now = monthStart(r.now).AddDate(0, 1, 0)
 	r.mustPoll()
-	if got := r.wallets(); !slices.Equal(got, []string{first + ":closing", next + ":active"}) || r.slots(first, "free") != 0 || r.slots(first, "retired") != 5 || r.slots(next, "free") != 5 {
+	// Closed with no order, the first wallet is retained at once (slice X-f, P3-R9).
+	if got := r.wallets(); !slices.Equal(got, []string{first + ":retained", next + ":active"}) || r.slots(first, "free") != 0 || r.slots(first, "retired") != 5 || r.slots(next, "free") != 5 {
 		t.Fatalf("at the next month's start: %v", got)
 	}
 	if r.unseal(next) == seed {
 		t.Fatal("two wallets share a seed")
 	}
-	t.Logf("rotation: %s created sealed 6 days ahead, active at its month's start; %s closing with its 5 free slots retired", next, first)
+	t.Logf("rotation: %s created sealed 6 days ahead, active at its month's start; %s closed with its 5 free slots retired, and retained (no order)", next, first)
 }
 
 // TestXMREscrowRegtestFunding: a buyer takes a Monero escrow through the real checkout form (no RPC) and the funder pays

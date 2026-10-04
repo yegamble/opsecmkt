@@ -18,10 +18,10 @@ import (
 const a402Custody = "held by this market in an account used only for this order, inside a wallet the market opens each month; the market can move these coins"
 
 // QA F1 (P3-R10): a wallet file named like a row and opened with the market's derived password (a database restored
-// from an older backup) is never sealed or used: not on a new row, and not on a row resumed from creating when the file
-// holds anything create_wallet would not have left (another account, a past transfer). The administrators are told and
-// the month's next wallet is used. A file exactly as create_wallet leaves it (a crash after create_wallet) is resumed
-// and sealed.
+// from an older backup) is never taken as the month's wallet: not on a new row, and not on a row resumed from creating
+// when the file holds anything create_wallet would not have left (another account, a past transfer). It is sealed and
+// retained as an orphan (slice X-f), so it never offers a slot; the administrators are told and the month's next wallet
+// is used. A file exactly as create_wallet leaves it (a crash after create_wallet) is resumed and sealed.
 func TestXMREscrowOrphanFileNeverAdopted(t *testing.T) {
 	const name = "escrow-202610-01"
 	for _, c := range []struct {
@@ -51,11 +51,13 @@ func TestXMREscrowOrphanFileNeverAdopted(t *testing.T) {
 			x.mustPoll()
 			sealed := agInt(x.testEnv, "SELECT count(*) FROM xmr_escrow_wallets WHERE name=$1 AND seed_sealed IS NOT NULL", name)
 			if c.orphaned {
-				if got := x.wallets(); !slices.Equal(got, []string{name + ":orphan", "escrow-202610-02:active"}) || sealed != 0 {
+				x.mustPoll() // the orphan is read as any retained wallet
+				file, _ := x.fake.file(name)
+				if got := x.wallets(); !slices.Equal(got, []string{name + ":retained", "escrow-202610-02:active"}) || sealed != 1 || x.unseal(name) != file.mnemonic {
 					t.Fatalf("wallets %v, orphan sealed %d", got, sealed)
 				}
-				if x.notified(x.admin, name) != 1 || x.slots(name, "free")+x.slots(name, "retired") != 0 {
-					t.Fatal("the orphan was not reported, or got slots")
+				if x.notified(x.admin, "wallet "+name+" was found") != 1 || x.slots(name, "free") != 0 || x.slots(name, "claimed") != 0 {
+					t.Fatal("the orphan was not reported, or got a free slot")
 				}
 				return
 			}
@@ -152,7 +154,8 @@ func TestXMREscrowPassStores(t *testing.T) {
 }
 
 // NIT 1: a market down from the lead window until after the next month closes the wallet it sealed for a month that
-// never became active, so it is not left sealed (and read) for good.
+// never became active, so it is not left sealed (and read) for good. With no order, both closed wallets are retained
+// (slice X-f, P3-R9).
 func TestXMREscrowStrandedSealedCloses(t *testing.T) {
 	x := newXMREscrowEnv(t)
 	x.mustPoll()
@@ -160,7 +163,7 @@ func TestXMREscrowStrandedSealedCloses(t *testing.T) {
 	x.mustPoll()
 	x.now = time.Date(2026, 12, 3, 0, 0, 0, 0, time.UTC)
 	x.mustPoll()
-	if got := x.wallets(); !slices.Equal(got, []string{"escrow-202610-01:closing", "escrow-202611-01:closing", "escrow-202612-01:active"}) {
+	if got := x.wallets(); !slices.Equal(got, []string{"escrow-202610-01:retained", "escrow-202611-01:retained", "escrow-202612-01:active"}) {
 		t.Fatalf("after a gap: %v", got)
 	}
 }

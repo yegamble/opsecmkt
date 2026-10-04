@@ -51,7 +51,9 @@ import (
 // Why a settlement waits, why it failed, or that a restore holds it, is its send_error (migration 085, as Bitcoin
 // escrow's settlements.send_error; the order page says it); a class staff must see is flagged once, when it is first
 // recorded. A restore holds a built or relayed settlement by writing restoredSettlementHold there (slice X-f, P3-R10):
-// it is then followed but never relayed.
+// it is then followed but never relayed, until an administrator confirms its relay (sendRebroadcastOK,
+// escrow_xmr_restore.go); the stored metadata is then relayed once, under the restore gate too, and the confirmation is
+// used up (xmrMaySend).
 
 // Wait classes: the fixed strings xmr_settlements.send_error records, shown on the order page.
 const (
@@ -703,6 +705,13 @@ func (a *App) xmrRelayRefused(ctx context.Context, s *xmrSettleRow) error {
 	return a.failXMRSettlement(ctx, s, xmrRelayRefused)
 }
 
+// xmrMaySend reports whether the stored transaction of a settlement with send_error sendErr may be relayed now, as
+// maySend does for Bitcoin escrow: never while a restore holds it, and while the restore gate is set only once an
+// administrator confirmed it.
+func xmrMaySend(gate bool, sendErr string) bool {
+	return !restoreHeld(sendErr) && (sendErr == sendRebroadcastOK || !gate)
+}
+
 // sendXMRBuilt handles a built settlement found on a later pass (a relay whose answer was lost, or a restart mid-send):
 // the daemon has its transaction -> relayed, without sending anything (under the restore gate too); otherwise, unless
 // the gate is set or a restore holds it, the wallet is asked (an error there is never read as "not known") and the same
@@ -715,7 +724,7 @@ func (a *App) sendXMRBuilt(ctx context.Context, s *xmrSettleRow, gate bool) erro
 	if found {
 		return a.markXMRRelayed(ctx, s, true)
 	}
-	if gate || restoreHeld(s.Wait) {
+	if !xmrMaySend(gate, s.Wait) {
 		return nil
 	}
 	if _, _, err = a.escrowXMR.rpc.transferByTxid(ctx, s.Account, s.TxHash); err != nil {
@@ -776,7 +785,7 @@ func (a *App) trackXMRRelayed(ctx context.Context, s *xmrSettleRow, gate bool) e
 	if elsewhere {
 		return a.markXMRExternal(ctx, s)
 	}
-	if gate || restoreHeld(s.Wait) {
+	if !xmrMaySend(gate, s.Wait) {
 		return nil
 	}
 	got, err := a.escrowXMR.rpc.relayTx(ctx, s.Metadata)
@@ -784,7 +793,9 @@ func (a *App) trackXMRRelayed(ctx context.Context, s *xmrSettleRow, gate bool) e
 	switch {
 	case err == nil && got == s.TxHash:
 		log.Printf("escrow: Monero escrow settlement of order %s: the daemon had lost its transaction; the stored transaction was relayed again", shortID(s.OrderID))
-		return nil
+		// An administrator's confirmation allowed this one relay (escrow_xmr_restore.go).
+		_, err = a.db.ExecContext(ctx, "UPDATE xmr_settlements SET send_error='',updated=now() WHERE id=$1 AND send_error=$2", s.ID, sendRebroadcastOK)
+		return err
 	case err == nil:
 		return xmrBadReply("wallet", "relay_tx")
 	case errors.As(err, &re) && re.Service == "wallet" && re.Code == -4:

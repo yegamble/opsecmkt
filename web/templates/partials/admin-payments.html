@@ -83,6 +83,54 @@
 </table>
 </div>{{else}}
 <p>None found.</p>{{end}}{{end}}
+{{with $.XMREscrowRecovery}}<h3 id="xmr-escrow-recovery">Monero escrow recovery and retention (fakechain)</h3>{{with $.NoticeIn "xmr-escrow-recovery"}}
+<div class="alert" role="status">{{.}}</div>{{end}}{{if .Sweep}}
+<div class="alert" role="status"><strong>Monero escrow checkout is paused after a restore from backup</strong> until the Monero escrow watcher has looked for escrow wallets created after the backup and checked every escrow wallet; it reopens by itself once that check completes and the recovery lock is cleared.</div>{{end}}
+<p>A restore from backup holds every restored Monero escrow settlement with a stored transaction: the restored records may predate its relay, or a transaction that spent its coins. Check each one in the escrow daemon (<code>/get_transactions</code> of its transaction, <code>/is_key_image_spent</code> of its key images) and in the escrow wallet, then confirm it: the market relays the same stored transaction once, under the recovery lock too, and never builds it again. Each confirmation needs your password and is audited.</p>{{if not .On}}
+<p class="alert" role="status"><strong>Monero escrow is off on this market (ESCROW_XMR), so no relay can be confirmed</strong> and the Monero escrow watcher does not run.</p>{{end}}{{if .Held}}
+<div class="table-wrap" tabindex="0" role="region" aria-labelledby="xmr-escrow-held-heading">
+<table>
+<caption id="xmr-escrow-held-heading">Monero escrow settlements waiting for a relay check</caption>
+<thead>
+<tr>
+<th scope="col">Order</th>
+<th scope="col">Settlement</th>
+<th scope="col">Transaction</th>
+<th scope="col">Action</th>
+</tr>
+</thead>
+<tbody>{{range .Held}}<tr>
+<td class="mono">{{.Short}}</td>
+<td>{{.Kind}} ({{.State}})</td>
+<td class="mono">{{.TxHash}}</td>
+<td>{{if .Confirmed}}Confirmed: relayed once on the next pass{{else if not $.XMREscrowRecovery.On}}Turn Monero escrow on to confirm{{else}}<form class="stack" method="post" action="/admin/escrow-xmr-rebroadcast">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="settlement_id" value="{{.ID}}">
+<label class="check"><input type="checkbox" name="not_sent" value="confirmed" required> I checked the escrow daemon and the escrow wallet: this transaction was not already relayed, and no other transaction spent the escrow's coins</label>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
+<button type="submit">Relay once</button>
+</form>{{end}}</td>
+</tr>{{end}}</tbody>
+</table>
+</div>{{else}}
+<p>No Monero escrow settlement is waiting for a relay check.</p>{{end}}
+<h4 id="xmr-escrow-destroyed">Destroyed Monero escrow wallets</h4>
+<p>Each escrow wallet is destroyed 90 days after its last order closed, once nothing is left in it: its password is replaced by one never kept and its sealed seed wiped, so the market can never open it again. The market cannot reach the escrow wallet volume: delete each wallet's two files, <code>NAME</code> and <code>NAME.keys</code>, from it yourself. Backups of that volume keep copies until they expire.</p>{{if .Destroyed}}
+<div class="table-wrap" tabindex="0" role="region" aria-labelledby="xmr-escrow-destroyed">
+<table>
+<thead>
+<tr>
+<th scope="col">Files to delete</th>
+<th scope="col">Destroyed</th>
+</tr>
+</thead>
+<tbody>{{range .Destroyed}}<tr>
+<td class="mono">{{.Name}} {{.Name}}.keys</td>
+<td>{{.DestroyedAt}}</td>
+</tr>{{end}}</tbody>
+</table>
+</div>{{else}}
+<p>None.</p>{{end}}{{end}}
 <h3 id="payment-intake">New payment addresses</h3>{{with $.NoticeIn "payment-intake"}}
 <div class="alert" role="status">{{.}}</div>{{end}}
 <p>Enable or pause Bitcoin and Monero separately. Pausing prevents new payment addresses; existing deposit addresses, payment confirmation, refunds and payouts continue. Wallet RPC connections must be provisioned on the server first. Changes require your password and are audited.</p>

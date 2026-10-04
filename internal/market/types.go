@@ -235,6 +235,9 @@ type PageData struct {
 	EscrowReleaseDays *EscrowReleaseDaysView
 	// EscrowRecovery: /admin, the Bitcoin escrow restore gate, held settlements and orphan addresses (escrow_recovery.go)
 	EscrowRecovery *EscrowRecoveryView
+	// XMREscrowRecovery: /admin, Monero escrow settlements held by a restore and destroyed wallets' files
+	// (escrow_xmr_restore.go)
+	XMREscrowRecovery *XMREscrowRecoveryView
 	// Escrow: order page of an escrow order, its escrow (escrow_order.go); EscrowCheckout: order page of the buyer's
 	// BTC draft on a listing that takes escrow, while ESCROW_BTC is on. Both nil otherwise.
 	Escrow         *EscrowOrderView
@@ -618,6 +621,8 @@ type XMREscrowOrderView struct {
 	Ship, Confirm, Claim, Off bool
 	// Settlements: its settlements, newest first (escrow_xmr_settle_view.go)
 	Settlements []*XMRSettlementView
+	// Unrecoverable: set once the wallet that held its account was destroyed (ES-8, escrow_xmr_retain.go)
+	Unrecoverable string
 }
 
 // XMREscrowCheckoutView offers Monero escrow checkout on an XMR draft (escrow_xmr_create.go): Reason says why it cannot

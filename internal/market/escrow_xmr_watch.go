@@ -32,14 +32,20 @@ import (
 // created and activated at once. Wallet creation stops while the secret verifier or the seed key pin refuses.
 //
 // Crash safety. A row left creating is finished on the next pass: create_wallet again, and when the file exists
-// (-21, the first call took effect) open_wallet and seal it; nothing is ever created twice. A new row whose name a
-// file already has (a wallet with no row, left by a database restored from a backup) is not adopted: the row becomes
-// orphan, the administrators are told, and the month's next name is used (P3-R10's sweep deals with the file).
+// (-21, the first call took effect) open_wallet and seal it; nothing is ever created twice. A file that already has a
+// row's name is never taken as a new wallet unless the row was left creating and the file is provably as
+// create_wallet leaves it (xmrWalletFresh): one that opens with the market's password otherwise belongs to orders a
+// restored database lost, and it is sealed and retained as an orphan (xmrSealOrphan, slice X-f), never offering a
+// slot; one that does not open is an orphan left alone (A-418). Either way the administrators are told and the month's
+// next name is used.
 //
-// Each pass then works through every wallet that may hold coins (sealed, active, closing, retained), one open at a time
-// as monero-wallet-rpc requires: open_wallet; recheckEscrowXMRNetwork (it refreshes; the wallet is used only when it
-// passes); the primary address must be the row's (another wallet is never read as this one); get_transfers in, pool,
-// all_accounts; get_accounts; the slot work; store.
+// Each pass then works through every wallet that may hold coins (sealed, active, closing, retained, and missing ones
+// in case they open again), one open at a time as monero-wallet-rpc requires: open_wallet (a definite refusal records
+// the wallet missing, or destroyed again, escrow_xmr_retain.go); recheckEscrowXMRNetwork (it refreshes; the wallet is
+// used only when it passes); the primary address must be the row's (another wallet is never read as this one);
+// during the restore sweep, the lookahead of a wallet older than the database (escrow_xmr_restore.go); get_transfers in,
+// pool, all_accounts; get_accounts; the slot work; the settlements; the destruction of a retained wallet that is due
+// (escrow_xmr_retain.go); store.
 //
 // Slots (xmr_escrow_slots). The active wallet keeps ESCROW_XMR_SLOTS free slots, each made by create_account and
 // inserted only once get_address of its address 0 matches what create_account returned. An account with no row (a
@@ -59,8 +65,9 @@ import (
 // Settlements (slice X-d, escrow_xmr_settle.go) are built, relayed and followed in each wallet's pass, while it is open
 // and checked.
 //
-// Under the restore gate, and after a restore until Monero escrow's sweep (xmrEscrowSweepKey), no wallet or slot is
-// created and no wallet activated; funding is still read.
+// Under the restore gate, and after a restore until Monero escrow's sweep (xmrEscrowSweepKey, escrow_xmr_restore.go),
+// no wallet or slot is created, no wallet activated and none destroyed; funding is still read. Each pass also keeps the
+// wallets' retention dates (xmrRetain, escrow_xmr_retain.go).
 
 // xmrMinConfirmations is the least number of confirmations at which a Monero escrow deposit counts (P3-R5): the
 // 10-block lock of a received output, so a release can spend what funded it.
@@ -84,7 +91,7 @@ const xmrEscrowNetwork = "fakechain"
 const xmrLeadTime = 7 * 24 * time.Hour
 
 // xmrEscrowSweepKey is the setting a restore writes (scripts/restore.sh, slice X-f; P3-R10): checkout and wallet and
-// slot creation wait until Monero escrow's sweep has run, which clears it. Until X-f lands nothing writes it.
+// slot creation wait until Monero escrow's sweep has run in full, which clears it (escrow_xmr_restore.go).
 const xmrEscrowSweepKey = "xmr_escrow_sweep_required"
 
 // xmrEscrowPassTimeout bounds one Monero escrow pass. Every wallet that may hold coins is opened, refreshed and stored
@@ -219,18 +226,30 @@ func (a *App) xmrEscrowPollOnce(ctx context.Context) error {
 	if !x.ready.Load() {
 		return a.xmrDeadlines(ctx)
 	}
-	var paused bool
-	if err = a.db.QueryRowContext(ctx, "SELECT "+restoreGateSQL+" OR EXISTS(SELECT 1 FROM settings WHERE key=$1 AND value='true')", xmrEscrowSweepKey).Scan(&paused); err != nil {
+	var gate, sweep bool
+	if err = a.db.QueryRowContext(ctx, "SELECT "+restoreGateSQL+",EXISTS(SELECT 1 FROM settings WHERE key=$1 AND value='true')", xmrEscrowSweepKey).Scan(&gate, &sweep); err != nil {
 		return err
 	}
+	paused := gate || sweep
+	now := x.clock()
 	var errs []error
 	if !paused {
-		now := x.clock()
 		if err = a.xmrEnsureWallets(ctx, now); err != nil {
 			errs = append(errs, &watchError{label: "monero escrow", class: "wallet creation failed: " + xmrErrorClass(err), err: err})
 		}
 		if err = a.xmrActivate(ctx, now); err != nil {
 			errs = append(errs, err)
+		}
+	}
+	if err = a.xmrRetain(ctx, now); err != nil {
+		errs = append(errs, err)
+	}
+	// After a restore, the sweep (escrow_xmr_restore.go) is complete only when the probe and every wallet's check passed.
+	swept := true
+	if sweep {
+		if err = a.xmrSweepProbe(ctx, now); err != nil {
+			swept = false
+			errs = append(errs, &watchError{label: "monero escrow", class: "restore sweep incomplete: " + xmrErrorClass(err), err: err})
 		}
 	}
 	wallets, err := a.xmrWallets(ctx)
@@ -241,13 +260,33 @@ func (a *App) xmrEscrowPollOnce(ctx context.Context) error {
 	touched := map[string]bool{}
 	for _, w := range wallets {
 		if ctx.Err() != nil || x.refused.Load() {
+			swept = false
 			break
 		}
-		if err = a.xmrWalletPass(ctx, w, paused, touched); err != nil {
-			errs = append(errs, &watchError{label: "monero escrow wallet " + w.name, class: xmrErrorClass(err), err: err})
-			continue
+		err := x.rpc.openWallet(ctx, w.name, xmrWalletPassword(x.secret, w.name))
+		switch {
+		case err == nil:
+			var checked bool
+			checked, err = a.xmrWalletPass(ctx, w, now, paused, sweep, touched)
+			swept, read[w.id] = swept && checked, err == nil
+		case xmrWalletDenied(err):
+			// It did not open: recorded missing, or destroyed again (escrow_xmr_retain.go); checked, but never read.
+			if err = a.xmrWalletUnopenable(ctx, w, now); err != nil {
+				swept = false
+			}
+		default:
+			swept = false
 		}
-		read[w.id] = true
+		if err != nil {
+			errs = append(errs, &watchError{label: "monero escrow wallet " + w.name, class: xmrErrorClass(err), err: err})
+		}
+	}
+	if sweep && swept {
+		if _, err = a.db.ExecContext(ctx, "DELETE FROM settings WHERE key=$1", xmrEscrowSweepKey); err != nil {
+			errs = append(errs, err)
+		} else {
+			log.Print("escrow: Monero escrow's restore sweep is complete; Monero escrow checkout is open again once the restore gate is cleared")
+		}
 	}
 	if err = a.xmrSettleOrders(ctx, read, touched); err != nil {
 		errs = append(errs, err)
@@ -333,33 +372,38 @@ func (a *App) xmrEnsureWallets(ctx context.Context, now time.Time) error {
 	return nil
 }
 
-// xmrCreateWallet creates wallet name for row id and seals it. A new row whose name a file already has is marked orphan
-// and the administrators are told. resume is a row found creating at the start of the pass: a file of that name may be
-// the one its earlier create_wallet made (the answer was lost), but a database restored from an older backup can also
-// leave a creating row whose name a wallet of lost orders has, opened by the same derived password. So the file is
-// adopted only when it is provably as create_wallet leaves a wallet (xmrWalletFresh); anything else is an orphan too
-// and never sealed (P3-R10): its unfunded accounts would otherwise become free slots for new buyers.
+// xmrCreateWallet creates wallet name for row id and seals it. When a file of that name already exists (-21) it is
+// opened with the derived password. resume is a row found creating at the start of the pass: the file may be the one
+// its earlier create_wallet made (the answer was lost), but a database restored from an older backup can also leave a
+// creating row whose name a wallet of lost orders has, opened by the same derived password. So the file is taken as the
+// row's new wallet only when the row is resumed and the file is provably as create_wallet leaves a wallet
+// (xmrWalletFresh): its unfunded accounts would otherwise become free slots for new buyers. A file that opens but is
+// not, on a new row or a resumed one, belongs to orders this database lost: it is sealed and retained as an orphan,
+// never offering a slot (xmrSealOrphan, P3-R10). A file that open_wallet refuses (a definite refusal: a file left
+// under another password, say) is an orphan left alone, and the administrators are told once (A-418); a transport
+// error is retried. Either way the month's next name is used.
 func (a *App) xmrCreateWallet(ctx context.Context, id int64, name string, resume bool) error {
 	x := a.escrowXMR
 	password := xmrWalletPassword(x.secret, name)
 	err := x.rpc.createWallet(ctx, name, password)
 	var re *xmrRPCError
 	if errors.As(err, &re) && re.Code == -21 { // WALLET_ALREADY_EXISTS
-		if !resume {
+		if err = x.rpc.openWallet(ctx, name, password); xmrWalletDenied(err) {
 			return a.xmrOrphanWallet(ctx, id, name)
-		}
-		if err = x.rpc.openWallet(ctx, name, password); err != nil {
+		} else if err != nil {
 			return err
 		}
 		if err = a.recheckEscrowXMRNetwork(ctx); err != nil {
 			return err
 		}
-		fresh, err := xmrWalletFresh(ctx, x.rpc)
-		if err != nil {
-			return err
+		fresh := false
+		if resume {
+			if fresh, err = xmrWalletFresh(ctx, x.rpc); err != nil {
+				return err
+			}
 		}
 		if !fresh {
-			return a.xmrOrphanWallet(ctx, id, name)
+			return a.xmrSealOrphan(ctx, id, name)
 		}
 	} else if err != nil {
 		return err
@@ -389,7 +433,8 @@ func xmrWalletFresh(ctx context.Context, r *xmrEscrowRPC) (bool, error) {
 	return true, nil
 }
 
-// xmrOrphanWallet marks row id orphan: its name belongs to a wallet file this database did not create.
+// xmrOrphanWallet marks row id orphan: its name belongs to a wallet file that does not open with the market's password,
+// which the market never opens again.
 func (a *App) xmrOrphanWallet(ctx context.Context, id int64, name string) error {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -399,13 +444,13 @@ func (a *App) xmrOrphanWallet(ctx context.Context, id int64, name string) error 
 	if _, err = tx.ExecContext(ctx, "UPDATE xmr_escrow_wallets SET state='orphan',updated=now() WHERE id=$1 AND state='creating'", id); err != nil {
 		return err
 	}
-	if err = notifyAdmins(ctx, tx, "Monero escrow wallet "+name+" already exists on the escrow wallet-rpc, and it is not one this database created (a database restored from an older backup?). The market did not use it and created the month's next wallet instead. Check that wallet for coins of orders this database lost."); err != nil {
+	if err = notifyAdmins(ctx, tx, "Monero escrow wallet "+name+" already exists on the escrow wallet-rpc and does not open with the market's password (a file left by another install?). The market did not use it and created the month's next wallet instead; check that wallet yourself."); err != nil {
 		return err
 	}
 	if err = tx.Commit(); err != nil {
 		return err
 	}
-	log.Printf("escrow: Monero escrow wallet %s exists and was not created by this database; marked orphan, not used", name)
+	log.Printf("escrow: Monero escrow wallet %s exists and does not open with the market's password; marked orphan, not used", name)
 	return nil
 }
 
@@ -475,9 +520,9 @@ func (a *App) xmrActivate(ctx context.Context, now time.Time) error {
 	return tx.Commit()
 }
 
-// xmrWallets lists the wallets that may hold coins, oldest first.
+// xmrWallets lists the wallets that may hold coins, missing ones included (they are tried again), oldest first.
 func (a *App) xmrWallets(ctx context.Context) ([]xmrWalletRow, error) {
-	rows, err := a.db.QueryContext(ctx, "SELECT id,name,state,primary_address FROM xmr_escrow_wallets WHERE state IN ('sealed','active','closing','retained') ORDER BY id")
+	rows, err := a.db.QueryContext(ctx, "SELECT id,name,state,primary_address FROM xmr_escrow_wallets WHERE state IN ('sealed','active','closing','retained','missing') ORDER BY id")
 	if err != nil {
 		return nil, err
 	}
@@ -493,51 +538,63 @@ func (a *App) xmrWallets(ctx context.Context) ([]xmrWalletRow, error) {
 	return out, rows.Err()
 }
 
-// xmrWalletPass opens wallet w and does its work (see the file comment); touched collects the orders whose ledger
-// changed. paused: the restore gate or the sweep is set, so no slot is made free.
-func (a *App) xmrWalletPass(ctx context.Context, w xmrWalletRow, paused bool, touched map[string]bool) error {
+// xmrWalletPass does the work of wallet w, which is open (see the file comment); touched collects the orders whose
+// ledger changed. paused: the restore gate or the sweep is set, so no slot is made free and nothing is destroyed. sweep:
+// the restore sweep is running, so a wallet older than the database gets its lookahead. checked reports that the wallet
+// passed its checks and was read and reconciled, as the sweep requires.
+func (a *App) xmrWalletPass(ctx context.Context, w xmrWalletRow, now time.Time, paused, sweep bool, touched map[string]bool) (checked bool, err error) {
 	x := a.escrowXMR
-	if err := x.rpc.openWallet(ctx, w.name, xmrWalletPassword(x.secret, w.name)); err != nil {
-		return err
-	}
 	if err := a.recheckEscrowXMRNetwork(ctx); err != nil {
-		return err
+		return false, err
 	}
 	if primary, err := x.rpc.primaryAddress(ctx); err != nil {
-		return err
+		return false, err
 	} else if primary != w.primary {
-		return errXMRWrongWallet
+		return false, errXMRWrongWallet
+	}
+	if w.state == "missing" {
+		// It opens again: closing, so it takes no order, and read as any closing wallet.
+		if _, err := a.db.ExecContext(ctx, "UPDATE xmr_escrow_wallets SET state='closing',updated=now() WHERE id=$1 AND state='missing'", w.id); err != nil {
+			return false, err
+		}
+		w.state = "closing"
+		log.Printf("escrow: Monero escrow wallet %s opens again; closing", w.name)
+	}
+	if sweep {
+		if err := a.xmrLookahead(ctx, w); err != nil {
+			return false, err
+		}
 	}
 	// The slots are read before the wallet: a deposit is recorded for the order its slot named when the pass began.
 	slots := map[int64]*xmrSlotRow{}
 	rows, err := a.db.QueryContext(ctx, "SELECT id,account_index,state,address,COALESCE(order_id,'') FROM xmr_escrow_slots WHERE wallet_id=$1", w.id)
 	if err != nil {
-		return err
+		return false, err
 	}
 	for rows.Next() {
 		var s xmrSlotRow
 		var account int64
 		if err = rows.Scan(&s.id, &account, &s.state, &s.address, &s.order); err != nil {
 			rows.Close()
-			return err
+			return false, err
 		}
 		slots[account] = &s
 	}
 	rows.Close()
 	if err = rows.Err(); err != nil {
-		return err
+		return false, err
 	}
 	transfers, err := x.rpc.transfers(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	funded, err := a.xmrRecordTransfers(ctx, w, slots, transfers, touched)
 	if err != nil {
-		return err
+		return false, err
 	}
 	accounts, err := x.rpc.accounts(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	for _, acc := range accounts {
 		if acc.Balance > 0 {
@@ -545,20 +602,26 @@ func (a *App) xmrWalletPass(ctx context.Context, w xmrWalletRow, paused bool, to
 		}
 	}
 	if err = a.xmrAccountZero(ctx, w, funded[0]); err != nil {
-		return err
+		return false, err
 	}
 	if err = a.xmrReconcile(ctx, w, slots, accounts, funded, paused); err != nil {
-		return err
+		return false, err
 	}
 	// Settlements are built, relayed and followed only here, while this wallet is open and checked
 	// (escrow_xmr_settle.go). The wallet is stored after them whatever they found.
 	settled := a.xmrSettleWallet(ctx, w)
-	if w.state == "active" && !paused {
+	switch {
+	case w.state == "active" && !paused:
 		if err = a.xmrTopUpSlots(ctx, w); err != nil {
-			return errors.Join(settled, err)
+			return true, errors.Join(settled, err)
+		}
+	case w.state == "retained" && !paused && settled == nil:
+		// Destroyed, it is closed: nothing to store.
+		if destroyed, err := a.xmrDestroyIfDue(ctx, w, now); err != nil || destroyed {
+			return true, err
 		}
 	}
-	return errors.Join(settled, x.rpc.store(ctx))
+	return true, errors.Join(settled, x.rpc.store(ctx))
 }
 
 // xmrRecordTransfers writes the wallet's incoming transfers to the payments ledger, one row per transaction and claimed
