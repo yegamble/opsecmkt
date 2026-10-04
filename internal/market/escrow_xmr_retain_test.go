@@ -1,6 +1,7 @@
 package market
 
 import (
+	"encoding/json"
 	"html"
 	"net/url"
 	"os"
@@ -309,6 +310,12 @@ func TestXMREscrowDestroyPreconditions(t *testing.T) {
 		w := f.files[name]
 		w.transfers = slices.DeleteFunc(w.transfers, func(t *fakeXMRTransfer) bool { return t.TxID == hex64("pool coins") })
 	})
+	// An unlocked balance alone (as get_balance could report it), with a zero balance.
+	x.fake.handle("get_balance", func(*fakeXMREscrow, json.RawMessage) (any, int64, string) {
+		return map[string]any{"balance": 0, "unlocked_balance": 5, "per_subaddress": []any{}}, 0, ""
+	})
+	kept("an unlocked balance")
+	x.fake.handle("get_balance", fakeXMRWalletMethods["get_balance"])
 	x.mustPoll()
 	if got := x.walletState(name); got != "destroyed" {
 		t.Fatalf("with every precondition met: %s", got)
@@ -672,6 +679,23 @@ func TestXMREscrowSweepGatesCheckout(t *testing.T) {
 	if !x.sweepRequired() {
 		t.Fatal("the sweep marker was cleared after a failed wallet read")
 	}
+	x.fake.faultFor("open_wallet", `"escrow-202610-01"`, fakeXMRDrop) // the wallet's open, after the probes
+	x.poll()
+	if !x.sweepRequired() {
+		t.Fatal("the sweep marker was cleared after a transport error opening a wallet")
+	}
+	// A wallet that does not open, whose record as missing fails: not checked.
+	agExec(x.testEnv, `CREATE FUNCTION xf_refuse_missing() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+		IF NEW.state='missing' THEN RAISE EXCEPTION 'refused'; END IF; RETURN NEW; END $$`)
+	agExec(x.testEnv, "CREATE TRIGGER xf_refuse_missing BEFORE UPDATE ON xmr_escrow_wallets FOR EACH ROW EXECUTE FUNCTION xf_refuse_missing()")
+	var file *fakeXMRWalletFile
+	x.fake.edit(func(f *fakeXMREscrow) { file = f.files["escrow-202610-01"]; delete(f.files, "escrow-202610-01") })
+	x.poll()
+	if !x.sweepRequired() || x.walletState("escrow-202610-01") == "missing" {
+		t.Fatal("the sweep marker was cleared though a wallet that does not open was not recorded")
+	}
+	agExec(x.testEnv, "DROP TRIGGER xf_refuse_missing ON xmr_escrow_wallets")
+	x.fake.edit(func(f *fakeXMREscrow) { f.files["escrow-202610-01"] = file })
 	x.mustPoll()
 	if x.sweepRequired() {
 		t.Fatal("the sweep marker stayed after a full sweep")
@@ -728,5 +752,223 @@ func TestXMREscrowLookaheadForOlderWallet(t *testing.T) {
 	}
 	if x.sweepRequired() {
 		t.Fatal("the sweep did not finish")
+	}
+	// Outside the sweep, a lagging wallet gets no lookahead and no rescan on each pass.
+	x.fake.edit(func(f *fakeXMREscrow) { f.files[name].accounts = f.files[name].accounts[:1] })
+	sets, rescans := x.fake.countOf("set_subaddress_lookahead"), x.fake.countOf("rescan_blockchain")
+	x.mustPoll()
+	x.mustPoll()
+	if x.fake.countOf("set_subaddress_lookahead") != sets || x.fake.countOf("rescan_blockchain") != rescans {
+		t.Fatal("the lookahead or the rescan ran outside the sweep")
+	}
+}
+
+// pastDueWithCoins is a retained wallet (escrow-202610-01) past its destroy_after on the watcher's clock that still
+// holds coins at an account no order claimed, so the watcher keeps it.
+func (x *xmrEscrowEnv) pastDueWithCoins() string {
+	x.t.Helper()
+	const name = "escrow-202610-01"
+	x.mustPoll()
+	x.rotate()
+	account := int64(agInt(x.testEnv, "SELECT min(s.account_index) FROM xmr_escrow_slots s JOIN xmr_escrow_wallets w ON w.id=s.wallet_id WHERE w.name=$1", name))
+	x.fake.pay(name, account, hex64("unclaimed coins"), 50000000000, 12)
+	x.days(name, 91)
+	x.mustPoll()
+	if x.walletState(name) != "retained" {
+		x.x()
+	}
+	return name
+}
+
+// x fails the test with the wallets' states.
+func (x *xmrEscrowEnv) x() { x.t.Helper(); x.t.Fatalf("wallets: %v", x.wallets()) }
+
+// A-419: a retained wallet past its destroy_after that still holds coins is kept, and the administrators are told once,
+// with the account that holds them.
+func TestXMREscrowDestroyHeldFlaggedOnce(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	name := x.pastDueWithCoins()
+	x.mustPoll()
+	x.mustPoll()
+	const flag = "is past its destruction date (90 days after its last order closed) but the market keeps it"
+	if x.notified(x.admin, flag) != 1 || x.notified(x.admin, "account 1 (0.05 XMR)") != 1 || x.walletState(name) != "retained" {
+		t.Fatalf("notices %d, state %s", x.notified(x.admin, flag), x.walletState(name))
+	}
+}
+
+// A-419: a wallet that does not open keeps its sealed seed unless open_wallet refused it with the wallet's own wrong
+// password (the evidence that the market's change_wallet_password ran), and never while the restore gate is set: a
+// missing file makes it missing, a file another wallet program has open makes it wait (A-421), each in both gate
+// states, with coins in it. The wrong-password refusal under the gate makes it missing; destroyed again once the gate is
+// cleared.
+func TestXMREscrowUnopenableKeepsSeal(t *testing.T) {
+	for _, c := range []struct {
+		what   string
+		gate   bool
+		break_ func(f *fakeXMREscrow, name string)
+		want   string
+	}{
+		{"file gone", false, func(f *fakeXMREscrow, name string) { delete(f.files, name) }, "missing"},
+		{"file gone, gate set", true, func(f *fakeXMREscrow, name string) { delete(f.files, name) }, "missing"},
+		{"file locked", false, func(f *fakeXMREscrow, name string) { f.files[name].locked = true }, "retained"},
+		{"file locked, gate set", true, func(f *fakeXMREscrow, name string) { f.files[name].locked = true }, "retained"},
+		{"wrong password, gate set", true, func(f *fakeXMREscrow, name string) { f.files[name].password = "replaced" }, "missing"},
+		{"wrong password", false, func(f *fakeXMREscrow, name string) { f.files[name].password = "replaced" }, "destroyed"},
+	} {
+		t.Run(c.what, func(t *testing.T) {
+			x := newXMREscrowEnv(t)
+			name := x.pastDueWithCoins()
+			x.fake.edit(func(f *fakeXMREscrow) { c.break_(f, name) })
+			if c.gate {
+				agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES('payments_recovery_required','true')")
+			}
+			x.mustPoll()
+			x.mustPoll()
+			sealed := agInt(x.testEnv, "SELECT count(*) FROM xmr_escrow_wallets WHERE name=$1 AND seed_sealed IS NOT NULL", name)
+			if got := x.walletState(name); got != c.want || (sealed == 1) != (c.want != "destroyed") {
+				t.Fatalf("%s, sealed %d", got, sealed)
+			}
+			if c.want == "missing" && c.gate && c.what == "wrong password, gate set" {
+				x.clearGate()
+				x.mustPoll()
+				if x.walletState(name) != "destroyed" {
+					t.Fatalf("after the gate: %s", x.walletState(name))
+				}
+			}
+		})
+	}
+}
+
+// A-419: a missing wallet past its destroy_after is listed on /admin; an administrator who is not a party to its orders
+// confirms its destruction with a password step-up and an audit row, which wipes its seal. Refused for a wallet not
+// past destroy_after or not missing, under the restore gate, and for a party.
+func TestXMREscrowConfirmDestroyed(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	order, _ := x.settled()
+	name := "escrow-202610-01"
+	x.rotate()
+	x.fake.edit(func(f *fakeXMREscrow) { delete(f.files, name) })
+	x.mustPoll()
+	if x.walletState(name) != "missing" {
+		x.x()
+	}
+	id := strconv.Itoa(agInt(x.testEnv, "SELECT id FROM xmr_escrow_wallets WHERE name=$1", name))
+	other := strconv.Itoa(agInt(x.testEnv, "SELECT id FROM xmr_escrow_wallets WHERE name='escrow-202611-01'"))
+	adminID, adminSess := x.user("xf_admin_"+randomToken()[:6], "admin")
+	_, modSess := x.user("xf_mod_"+randomToken()[:6], "moderator")
+	agExec(x.testEnv, "UPDATE users SET role='admin' WHERE id=$1", x.vendor)
+	confirm := func(sess, wallet string, form url.Values) int {
+		f := url.Values{"wallet_id": {wallet}, "gone": {"confirmed"}, "password": {testPassword}}
+		for k, v := range form {
+			f[k] = v
+		}
+		return x.do("POST", "/admin/escrow-xmr-destroyed", sess, f).Code
+	}
+	if code := confirm(adminSess, id, nil); code != 409 {
+		t.Fatalf("before destroy_after: %d", code)
+	}
+	if p := html.UnescapeString(x.page("/admin", adminSess)); strings.Contains(p, `action="/admin/escrow-xmr-destroyed"`) {
+		t.Fatal("/admin offers the confirmation before destroy_after")
+	}
+	x.days(name, 91)
+	for what, code := range map[string]int{
+		"a moderator":          confirm(modSess, id, nil),
+		"the order's vendor":   confirm(x.sessOf(order, roleVendor), id, nil),
+		"no password":          confirm(adminSess, id, url.Values{"password": {""}}),
+		"no explicit check":    confirm(adminSess, id, url.Values{"gone": {""}}),
+		"a wallet not missing": confirm(adminSess, other, nil),
+	} {
+		if code == 303 {
+			t.Fatalf("%s confirmed", what)
+		}
+	}
+	agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES('payments_recovery_required','true')")
+	if code := confirm(adminSess, id, nil); code != 409 {
+		t.Fatalf("under the gate: %d", code)
+	}
+	x.clearGate()
+	if x.walletState(name) != "missing" || agInt(x.testEnv, "SELECT count(*) FROM xmr_escrow_wallets WHERE name=$1 AND seed_sealed IS NOT NULL", name) != 1 {
+		t.Fatal("a refused confirmation changed the wallet")
+	}
+	if p := html.UnescapeString(x.page("/admin", adminSess)); !strings.Contains(p, `action="/admin/escrow-xmr-destroyed"`) || !strings.Contains(p, name) {
+		t.Fatalf("/admin does not list the missing wallet:\n%s", p)
+	}
+	if code := confirm(adminSess, id, nil); code != 303 {
+		t.Fatalf("confirmation: %d", code)
+	}
+	if agInt(x.testEnv, "SELECT count(*) FROM xmr_escrow_wallets WHERE name=$1 AND state='destroyed' AND seed_sealed IS NULL AND destroyed_at=$2", name, x.now) != 1 {
+		t.Fatalf("after the confirmation: %s", x.walletState(name))
+	}
+	if agInt(x.testEnv, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action LIKE $2", adminID, "Confirmed the destruction of Monero escrow wallet "+name+"%") != 1 {
+		t.Fatal("no audit row")
+	}
+	if code := confirm(adminSess, id, nil); code != 409 {
+		t.Fatalf("a second confirmation: %d", code)
+	}
+}
+
+// A-420: while the sweep marker is set, the probe covers the 12 months before the current one whatever the database
+// holds: an order placed after the restore does not hide an October wallet created after the backup.
+func TestXMREscrowSweepProbesEarlierMonths(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	const lost = "escrow-202610-02"
+	x.fake.edit(func(f *fakeXMREscrow) {
+		w := f.newFile(lost, xmrWalletPassword(testXMRSecret, lost))
+		w.accounts = append(w.accounts, testXMRAddr("fake "+lost+" account 1", true))
+	})
+	x.fake.pay(lost, 1, hex64("lost deposit"), xmrListingPrice, 12)
+	x.now = time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC)
+	x.restoreBackup()
+	draft := x.draft(x.product)
+	agExec(x.testEnv, "UPDATE orders SET created=$2 WHERE id=$1", draft, x.now)
+	x.mustPoll()
+	x.mustPoll()
+	if x.walletState(lost) != "retained" || x.sweepRequired() || x.notified(x.admin, "account 1 (0.5 XMR)") != 1 {
+		t.Fatalf("after the sweep: %v, sweep %v", x.wallets(), x.sweepRequired())
+	}
+}
+
+// A-421: a markXMRRelayed of a held settlement the daemon already has (relayed after the backup) keeps the restore's
+// hold: if the daemon later loses it, it is relayed again only after an administrator's confirmation.
+func TestXMREscrowHeldSeenOnNetwork(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	order, _, _ := x.completed()
+	id, _ := x.release(order)
+	x.fake.fault("relay_tx", fakeXMRDrop) // relayed, its answer lost
+	x.poll()
+	if x.settlement(id).State != "built" {
+		t.Fatalf("before the backup: %+v", x.settlement(id))
+	}
+	x.restoreBackup()
+	relays := x.fake.countOf("relay_tx")
+	x.mustPoll()
+	if s := x.settlement(id); s.State != "relayed" || x.waitClass(id) != restoredSettlementHold || x.fake.countOf("relay_tx") != relays {
+		t.Fatalf("seen on the network: %+v %q", s, x.waitClass(id))
+	}
+}
+
+// A-421: an escrow wallet another wallet program has open (an operator inspecting it) only waits: it stays active with
+// its free slots, the administrators are not told and the line is logged once; it is read again once closed there.
+func TestXMREscrowLockedWalletWaits(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	const name = "escrow-202610-01"
+	x.fake.edit(func(f *fakeXMREscrow) { f.files[name].locked = true })
+	logs := captureLog(t)
+	x.mustPoll()
+	x.mustPoll()
+	if x.walletState(name) != "active" || x.slots(name, "free") != 5 || x.notified(x.admin, name) != 0 ||
+		strings.Count(logs.String(), "is opened by another wallet program") != 1 {
+		t.Fatalf("locked: %s, free %d, log:\n%s", x.walletState(name), x.slots(name, "free"), logs.String())
+	}
+	x.fake.edit(func(f *fakeXMREscrow) { f.files[name].locked = false })
+	order, addr := x.freshCheckout(x.product)
+	x.fake.payAddress(addr, hex64("after the lock"), xmrListingPrice, 10)
+	x.mustPoll()
+	if x.state(order) != stateCompleted {
+		t.Fatalf("after the lock: %s", x.state(order))
 	}
 }
