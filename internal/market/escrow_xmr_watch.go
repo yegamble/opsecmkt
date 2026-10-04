@@ -266,12 +266,21 @@ func (a *App) xmrEscrowPollOnce(ctx context.Context) error {
 		err := x.rpc.openWallet(ctx, w.name, xmrWalletPassword(x.secret, w.name))
 		switch {
 		case err == nil:
+			x.locked.Delete(w.name)
 			var checked bool
 			checked, err = a.xmrWalletPass(ctx, w, now, paused, sweep, touched)
 			swept, read[w.id] = swept && checked, err == nil
+		case xmrOpenRefusal(err) == xmrOpenLocked:
+			// Another wallet program has its file open (an operator inspecting it, say): it waits, keeps its state and its
+			// slots, and is tried again on the next pass (A-421). Logged once while it lasts.
+			swept, err = false, nil
+			if _, logged := x.locked.LoadOrStore(w.name, true); !logged {
+				log.Printf("escrow: Monero escrow wallet %s is opened by another wallet program; not read until it is closed there", w.name)
+			}
 		case xmrWalletDenied(err):
-			// It did not open: recorded missing, or destroyed again (escrow_xmr_retain.go); checked, but never read.
-			if err = a.xmrWalletUnopenable(ctx, w, now); err != nil {
+			// It did not open: recorded missing, or destroyed again on its own wrong-password refusal outside a restore
+			// (escrow_xmr_retain.go); checked, but never read.
+			if err = a.xmrWalletUnopenable(ctx, w, now, xmrOpenRefusal(err) == xmrOpenPassword && !paused); err != nil {
 				swept = false
 			}
 		default:
@@ -388,7 +397,7 @@ func (a *App) xmrCreateWallet(ctx context.Context, id int64, name string, resume
 	err := x.rpc.createWallet(ctx, name, password)
 	var re *xmrRPCError
 	if errors.As(err, &re) && re.Code == -21 { // WALLET_ALREADY_EXISTS
-		if err = x.rpc.openWallet(ctx, name, password); xmrWalletDenied(err) {
+		if err = x.rpc.openWallet(ctx, name, password); xmrWalletDenied(err) && xmrOpenRefusal(err) != xmrOpenLocked {
 			return a.xmrOrphanWallet(ctx, id, name)
 		} else if err != nil {
 			return err

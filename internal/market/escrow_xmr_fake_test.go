@@ -26,7 +26,7 @@ import (
 // Retention and restore (slice X-f). change_wallet_password re-encrypts a wallet (open_wallet then needs the new
 // password; a wrong old password is -22), get_balance sums every account, and get_transfers lists the transactions the
 // open wallet built that are in the pool (pending) or mined (out) when asked. open_wallet answers -1 for a file that does
-// not exist or a wrong password, with monero-wallet-rpc's message for each. A wallet knows its accounts plus a lookahead
+// not exist, one another wallet program has open (locked) or a wrong password, with monero-wallet-rpc's message for each. A wallet knows its accounts plus a lookahead
 // of 50 more (set_subaddress_lookahead, password checked, changes it): refresh scans each transfer to an account the
 // wallet does not know once, and sees it only when it is within the lookahead (the wallet then knows every account up to
 // it); one scanned outside it is missed until rescan_blockchain scans again with the lookahead in force then.
@@ -94,6 +94,7 @@ type fakeXMRWalletFile struct {
 	accounts                 []string // each account's address 0; [0] is the primary address
 	transfers                []*fakeXMRTransfer
 	lookahead                int64 // accounts scanned beyond the last one the wallet knows (set_subaddress_lookahead's major)
+	locked                   bool  // another wallet program has the file open: open_wallet refuses it
 }
 
 // visible: the wallet sees transfer t: to an account it knows, or seen by a scan within the lookahead.
@@ -197,6 +198,12 @@ func (f *fakeXMREscrow) serve(w http.ResponseWriter, r *http.Request, wallet boo
 	var fault fakeXMRFault
 	if q := f.faults[req.Method]; wallet && len(q) > 0 {
 		fault, f.faults[req.Method] = q[0], q[1:]
+	}
+	for key, q := range f.faults {
+		method, param, ok := strings.Cut(key, "\x00")
+		if ok && fault == 0 && wallet && method == req.Method && strings.Contains(string(req.Params), param) && len(q) > 0 {
+			fault, f.faults[key] = q[0], q[1:]
+		}
 	}
 	hook := f.hooks[req.Method]
 	f.mu.Unlock()
@@ -357,8 +364,10 @@ var fakeXMRWalletMethods = map[string]func(f *fakeXMREscrow, params json.RawMess
 		switch {
 		case w == nil:
 			return nil, -1, "Failed to open wallet : file not found \"/w/" + q.Filename + ".keys\""
+		case w.locked:
+			return nil, -1, "Failed to open wallet : internal error: \"/w/" + q.Filename + ".keys\" is opened by another wallet program"
 		case w.password != q.Password:
-			return nil, -1, "Failed to open wallet : invalid password"
+			return nil, -1, "Failed to open wallet : Invalid password."
 		}
 		f.open = w
 		return map[string]any{}, 0, ""
@@ -682,6 +691,13 @@ func (f *fakeXMREscrow) fault(method string, fault fakeXMRFault) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.faults[method] = append(f.faults[method], fault)
+}
+
+// faultFor queues fault for the next call of method whose params contain param (a wallet name, say).
+func (f *fakeXMREscrow) faultFor(method, param string, fault fakeXMRFault) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.faults[method+"\x00"+param] = append(f.faults[method+"\x00"+param], fault)
 }
 
 // hook runs fn before each later call of method (nil removes it).

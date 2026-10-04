@@ -114,6 +114,31 @@
 </table>
 </div>{{else}}
 <p>No Monero escrow settlement is waiting for a relay check.</p>{{end}}
+<h4 id="xmr-escrow-missing">Missing Monero escrow wallets past their destruction date</h4>
+<p>A wallet the escrow wallet-rpc cannot open is missing, and the market keeps its sealed seed: its file may be on a volume not yet restored, and it may still hold coins. Once you have checked that its files are gone from the escrow wallet volume and its backups, and that nothing in it is owed, confirm its destruction: its sealed seed is wiped and it can never be recovered. You cannot confirm a wallet holding an order of yours. Each confirmation needs your password and is audited.</p>{{if .Missing}}
+<div class="table-wrap" tabindex="0" role="region" aria-labelledby="xmr-escrow-missing">
+<table>
+<thead>
+<tr>
+<th scope="col">Wallet</th>
+<th scope="col">Destruction date</th>
+<th scope="col">Action</th>
+</tr>
+</thead>
+<tbody>{{range .Missing}}<tr>
+<td class="mono">{{.Name}}</td>
+<td>{{.DestroyAfter}}</td>
+<td>{{if not $.XMREscrowRecovery.On}}Turn Monero escrow on to confirm{{else}}<form class="stack" method="post" action="/admin/escrow-xmr-destroyed">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="wallet_id" value="{{.ID}}">
+<label class="check"><input type="checkbox" name="gone" value="confirmed" required> I checked the escrow wallet volume and its backups: this wallet's files are gone, and nothing in it is owed to anyone</label>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
+<button type="submit">Confirm destruction</button>
+</form>{{end}}</td>
+</tr>{{end}}</tbody>
+</table>
+</div>{{else}}
+<p>None.</p>{{end}}
 <h4 id="xmr-escrow-destroyed">Destroyed Monero escrow wallets</h4>
 <p>Each escrow wallet is destroyed 90 days after its last order closed, once nothing is left in it: its password is replaced by one never kept and its sealed seed wiped, so the market can never open it again. The market cannot reach the escrow wallet volume: delete each wallet's two files, <code>NAME</code> and <code>NAME.keys</code>, from it yourself. Backups of that volume keep copies until they expire.</p>{{if .Destroyed}}
 <div class="table-wrap" tabindex="0" role="region" aria-labelledby="xmr-escrow-destroyed">

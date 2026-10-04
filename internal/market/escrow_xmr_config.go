@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -173,6 +174,7 @@ type escrowXMR struct {
 	ready     atomic.Bool // the secret verifier matched and the network check passed: escrow wallets may be used
 	canCreate atomic.Bool // ESCROW_XMR_SEED_KEY is the pinned seed key: new wallets may be created and sealed
 	refused   atomic.Bool // the nodes failed the network check after startup (P3-R2): disabled until a restart
+	locked    sync.Map    // wallet names another wallet program has open, logged once while it lasts (escrow_xmr_watch.go)
 }
 
 // initEscrowXMR runs in New after Bitcoin escrow. ESCROW_XMR=off does nothing. On, a configuration error, an

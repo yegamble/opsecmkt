@@ -78,10 +78,53 @@ type xmrRPCError struct {
 	// bad-reply): the node went away while it handled the call, as a monero-wallet-rpc that crashed building a
 	// transaction does. Never set for a connection refused, a timeout or an answer that is not JSON-RPC.
 	Dropped bool
+	// Refusal: why open_wallet refused (xmrOpenNoFile, xmrOpenLocked or xmrOpenPassword), or "" when not known.
+	Refusal string
 }
 
 func (e *xmrRPCError) Error() string {
+	if e.Refusal != "" {
+		return "monero escrow " + e.Service + " RPC " + e.Method + ": " + e.Class + " (" + e.Refusal + ")"
+	}
 	return "monero escrow " + e.Service + " RPC " + e.Method + ": " + e.Class
+}
+
+// open_wallet's refusals. monero-wallet-rpc 0.18.5.1 answers every failed open_wallet with -1 and "Failed to open wallet
+// : " followed by wallet2's error text, which is read here into one of these fixed classes and never kept.
+const (
+	xmrOpenNoFile   = "no-file"        // wallet2 file_not_found: "file not found ..."
+	xmrOpenLocked   = "locked"         // the keys file "is opened by another wallet program" (a file lock, transient)
+	xmrOpenPassword = "wrong-password" // "Invalid password.": the keys file is there and did not decrypt with the password
+)
+
+// classifyXMROpen classifies open_wallet's error as classifyXMRRPC does, with its refusal class.
+func classifyXMROpen(err error) error {
+	out := classifyXMRRPC("wallet", "open_wallet", err)
+	var re *rpcError
+	if errors.As(err, &re) && re.Code == -1 {
+		refusal := ""
+		switch {
+		case strings.Contains(re.Message, "file not found"):
+			refusal = xmrOpenNoFile
+		case strings.Contains(re.Message, "is opened by another wallet program"):
+			refusal = xmrOpenLocked
+		case strings.HasSuffix(re.Message, " : Invalid password."):
+			// Matched exactly, as monero-wallet-rpc 0.18.5.1 words wallet2's invalid_password (seen on the real
+			// fakechain, TestXMREscrowRegtestDestroy): the watcher destroys a wallet again on this refusal alone (A-419).
+			refusal = xmrOpenPassword
+		}
+		out.(*xmrRPCError).Refusal = refusal
+	}
+	return out
+}
+
+// xmrOpenRefusal is the refusal class of an open_wallet error, or "".
+func xmrOpenRefusal(err error) string {
+	var re *xmrRPCError
+	if errors.As(err, &re) {
+		return re.Refusal
+	}
+	return ""
 }
 
 // classifyXMRRPC maps an rpcClient error to xmrRPCError with the Bitcoin escrow adapter's classes.
@@ -217,7 +260,7 @@ func (r *xmrEscrowRPC) openWallet(ctx context.Context, name, password string) er
 	if !xmrWalletNameOK(name) {
 		return errXMRWalletName
 	}
-	return r.walletCallWithin(ctx, xmrWalletSlowTimeout, "open_wallet", map[string]any{"filename": name, "password": password}, nil)
+	return classifyXMROpen(r.wallet.callWithin(ctx, xmrWalletSlowTimeout, "/json_rpc", "open_wallet", map[string]any{"filename": name, "password": password}, nil))
 }
 
 // closeWallet stores and closes the open wallet.
@@ -271,19 +314,17 @@ func (r *xmrEscrowRPC) changeWalletPassword(ctx context.Context, oldPassword, ne
 
 // probeWallet opens wallet name as openWallet does, for the restore sweep (P3-R10), without storing the wallet open
 // before (autosave_current false: each pass stores its wallets, and a probe of a name with no file would rewrite it
-// for nothing): found is false when no such file exists (open_wallet answers -1 for every failure; monero-wallet-rpc
-// 0.18.5.1 names wallet2's file_not_found in the message, which is read here and never kept). Any other refusal, a
-// wrong password say, is an error. A failed open_wallet leaves the wallet that was open, open.
+// for nothing): found is false when no such file exists (xmrOpenNoFile). Any other refusal, a wrong password or a
+// lock say, is an error. A failed open_wallet leaves the wallet that was open, open.
 func (r *xmrEscrowRPC) probeWallet(ctx context.Context, name, password string) (found bool, err error) {
 	if !xmrWalletNameOK(name) {
 		return false, errXMRWalletName
 	}
-	err = r.wallet.callWithin(ctx, xmrWalletSlowTimeout, "/json_rpc", "open_wallet", map[string]any{"filename": name, "password": password, "autosave_current": false}, nil)
-	var re *rpcError
-	if errors.As(err, &re) && re.Code == -1 && strings.Contains(re.Message, "file not found") {
+	err = classifyXMROpen(r.wallet.callWithin(ctx, xmrWalletSlowTimeout, "/json_rpc", "open_wallet", map[string]any{"filename": name, "password": password, "autosave_current": false}, nil))
+	if xmrOpenRefusal(err) == xmrOpenNoFile {
 		return false, nil
 	}
-	return err == nil, classifyXMRRPC("wallet", "open_wallet", err)
+	return err == nil, err
 }
 
 // setSubaddressLookahead sets how many accounts (major) and addresses per account (minor) the open wallet scans ahead
