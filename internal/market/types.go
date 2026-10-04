@@ -613,8 +613,9 @@ type XMREscrowOrderView struct {
 	Unread                                      string // set when nothing is read at the address: shown for the Confirmed and Unconfirmed figures
 	// Slice X-e (xmrReleaseView): a shipped order's release deadline, and the forms the viewer may use: the vendor's
 	// Mark shipped and claim, the buyer's Confirm receipt.
-	Deadline             *EscrowDeadlineView
-	Ship, Confirm, Claim bool
+	// Off: ESCROW_XMR is off, so none of those forms is offered.
+	Deadline                  *EscrowDeadlineView
+	Ship, Confirm, Claim, Off bool
 	// Settlements: its settlements, newest first (escrow_xmr_settle_view.go)
 	Settlements []*XMRSettlementView
 }

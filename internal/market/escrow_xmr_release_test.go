@@ -350,8 +350,8 @@ func TestXMREscrowShipStepUp(t *testing.T) {
 
 // P3-R7: nothing is built before the order is completed or resolved for the vendor. A release requested at shipment
 // is refused its transaction by the database (escrow_market_may_sign, migration 081, through 084's
-// xmr_settlements_market_fits) and is not buildable by the Go gate the Monero escrow builder reads; once the buyer
-// confirms receipt it is both.
+// xmr_settlements_market_fits) and is not buildable by settlementFits, the gate the Monero escrow builder reads; once
+// the buyer confirms receipt it is both.
 func TestXMREscrowNoBuildBeforeOutcome(t *testing.T) {
 	for _, c := range []struct {
 		kind, state, outcome string
@@ -362,8 +362,8 @@ func TestXMREscrowNoBuildBeforeOutcome(t *testing.T) {
 		{"refund", stateShipped, "", false}, {"refund", stateCancelled, "", true}, {"refund", stateResolved, "refund", true},
 		{"stray_refund", stateShipped, "", false}, {"stray_refund", stateCompleted, "", true},
 	} {
-		if got := xmrSettlementBuildable(c.kind, c.state, c.outcome); got != c.want {
-			t.Errorf("xmrSettlementBuildable(%s, %s, %q) = %v", c.kind, c.state, c.outcome, got)
+		if got := settlementFits(c.kind, c.state, c.outcome); got != c.want {
+			t.Errorf("settlementFits(%s, %s, %q) = %v", c.kind, c.state, c.outcome, got)
 		}
 	}
 	x := newXMREscrowEnv(t)
@@ -388,7 +388,7 @@ func TestXMREscrowNoBuildBeforeOutcome(t *testing.T) {
 		t.Fatalf("confirm receipt: %d %s", code, body)
 	}
 	x.DB.QueryRow("SELECT escrow_market_may_sign('release',$1)", order).Scan(&may)
-	if !may || !xmrSettlementBuildable("release", x.state(order), "") {
+	if !may || !settlementFits("release", x.state(order), "") {
 		t.Fatalf("a completed order's release is not buildable (%s)", x.state(order))
 	}
 	tx, err := x.DB.Begin()

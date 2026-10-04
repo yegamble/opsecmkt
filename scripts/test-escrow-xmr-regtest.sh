@@ -18,10 +18,10 @@
 # Slice X-e leg (internal/market/escrow_xmr_regtest_physical_test.go), the App's escrow wallet-rpc behind a proxy that
 # counts each RPC method:
 #   Physical: one transaction funds four physical orders (paid after 10 blocks); three are marked shipped to real
-#     subaddresses with no spending call (transfer, relay_tx, sweep) and their releases not buildable; then Confirm
-#     receipt completes one (its release buildable), the release deadline completes one, a dispute decided for the buyer
-#     supersedes one's release and requests its refund, and the buyer's no-ship cancel requests the fourth's refund.
-#     The builder is slice X-d's: until it merges the leg stops at "requested and buildable".
+#     subaddresses: the watcher reads the wallet (get_transfers) but makes no transfer or relay_tx, and the gate refuses
+#     each release. Then, only after each outcome: Confirm receipt and the release deadline each complete an order whose
+#     release is built, relayed and confirmed to the claim address; a dispute decided for the buyer and the buyer's
+#     no-ship cancel each have their refund relayed and confirmed to the refund address (4 transfers, 4 relays in all).
 # Slice X-d legs (internal/market/escrow_xmr_regtest_settle_test.go): the App's escrow wallet-rpc is reached through a
 # counting proxy that can lose a call's answer after the wallet acted on it; claim and refund addresses are the
 # funder's subaddresses; every settlement the daemon has is decoded (Shape: RingCT type 6, 16 ring members per input,
@@ -120,4 +120,4 @@ if [[ $status -ne 0 || $failed -ne 0 ]]; then
   echo "FAILED: go test exited $status; see $log" >&2
   exit 1
 fi
-echo "PASS: Monero escrow wallets (creation, sealed seed restored to its primary address, slots, account 0 empty, monthly rotation), funding at 10 confirmations and not at 9, one transaction paying two escrow accounts, physical orders (no spending call before the outcome; Confirm receipt, the deadline, a dispute for the buyer and a no-ship cancel each request their settlement), and settlements (stored before relay, never rebuilt across a lost relay answer and restarts, a top-up left out and stray-refunded, relayed again after a reorganisation, an outside spend recorded external; ring 16, rct type 6, fee within the cap), on a local fakechain; transcript in $log"
+echo "PASS: Monero escrow wallets (creation, sealed seed restored to its primary address, slots, account 0 empty, monthly rotation), funding at 10 confirmations and not at 9, one transaction paying two escrow accounts, physical orders (no spending call before the outcome; after Confirm receipt, the deadline, a dispute for the buyer and a no-ship cancel, each settlement relayed and confirmed), and settlements (stored before relay, never rebuilt across a lost relay answer and restarts, a top-up left out and stray-refunded, relayed again after a reorganisation, an outside spend recorded external; ring 16, rct type 6, fee within the cap), on a local fakechain; transcript in $log"

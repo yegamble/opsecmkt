@@ -19,8 +19,8 @@ import (
 //  2. Mark shipped (/escrow-xmr/ship): the vendor of a paid physical order gives the claim address and their password;
 //     in one transaction the order moves paid -> shipped, the release is requested to that address and
 //     escrows.release_at is the escrow's snapshot of release_days from now. The pooled ship form refuses the order.
-//  3. Nothing is built before the outcome: the Monero escrow watcher builds a settlement only when
-//     xmrSettlementBuildable allows it, the rule escrow_market_may_sign (migration 081) enforces when 084 stores its
+//  3. Nothing is built before the outcome: the Monero escrow watcher builds a settlement only when settlementFits
+//     allows it (escrow_xmr_settle.go), the rule escrow_market_may_sign (migration 081) enforces when 084 stores its
 //     transaction. A release requested at shipment therefore waits until the order is completed or decided for the
 //     vendor; a decision for the buyer supersedes it (escrowSettleTerminal).
 //  4. Confirm receipt (/escrow-xmr/confirm): the buyer of a shipped order gives their password; under the order row lock,
@@ -54,14 +54,6 @@ var (
 	xmrClaimNote         = "Vendor requested the escrow claim (Monero escrow): the market builds the release from this order's escrow account (less the market fee and the network fee; any amount paid above the price goes back to the buyer's refund address) and sends it. Nothing is sent yet."
 	xmrConfirmedNote     = "Receipt confirmed by the buyer (Monero escrow): the order is completed, and the market builds the release of the escrowed coins to the address the vendor gave when marking it shipped, and sends it. This cannot be undone."
 )
-
-// xmrSettlementBuildable reports whether the Monero escrow watcher may build a settlement of kind for an order in state
-// with dispute outcome (step 3 of the file comment): only once the order has the outcome the settlement pays,
-// settlementFits. The market alone spends a custodial account, so unlike a Bitcoin physical order's release
-// (settlementBuildable) a release requested at shipment is not built while the order is shipped or disputed.
-func xmrSettlementBuildable(kind, state, outcome string) bool {
-	return settlementFits(kind, state, outcome)
-}
 
 // xmrClaimForm reads a vendor's Monero claim address from the form, parsed offline (checkXMRFormAddress).
 func xmrClaimForm(c *actionCtx) (string, error) {
@@ -199,6 +191,10 @@ func xmrEscrowShipAction(c *actionCtx) (actionResult, error) {
 	})
 }
 
+// xmrResolveConfirm labels the resolve form's confirmation of a Monero escrow order: its decision is final once made
+// (chair ruling on QA-Xe F4, P3-R7), as the market builds and sends it on its next pass.
+const xmrResolveConfirm = "I checked the amount and who receives it for the outcome I chose. The market sends these coins on its next pass; this cannot be undone."
+
 // xmrDisputePreview is escrowDisputePreview for a Monero escrow order (A-405): the counted escrowed amount in XMR, the
 // transaction each outcome has the market build from the order's account, and the release requested at shipment.
 func (a *App) xmrDisputePreview(ctx context.Context, o *Order) (PayoutPreview, error) {
@@ -210,10 +206,10 @@ func (a *App) xmrDisputePreview(ctx context.Context, o *Order) (PayoutPreview, e
 		return PayoutPreview{}, err
 	}
 	escrowed := a.escrowAmount(o, sum)
-	p := PayoutPreview{Seen: sum, Confirm: resolveConfirm,
+	p := PayoutPreview{Seen: sum, Confirm: xmrResolveConfirm,
 		Release: "Release to " + o.Vendor + ": the vendor claims the escrowed " + escrowed + " with a fresh address, and the market builds the release from this order's escrow account and sends it (less the market fee and the network fee; any amount paid above the price goes back to the buyer)",
 		Refund:  "Refund to " + o.Buyer + ": the escrowed " + escrowed + ", less the network fee, go back to the buyer's refund address by a refund the market builds from this order's escrow account and sends",
-		Escrow:  "This is a Monero escrow order (fakechain): its coins are " + xmrCustody + ". The decision is paid from this order's escrow account by a transaction the market builds and sends: a refund goes to the buyer's refund address given at checkout; a release pays the address the vendor gave when marking the order shipped, or one the vendor gives afterwards to claim to. The decision cannot be changed once it is made."}
+		Escrow:  "This is a Monero escrow order (fakechain): its coins are " + xmrCustody + ". The decision is paid from this order's escrow account by a transaction the market builds and sends: a refund goes to the buyer's refund address given at checkout; a release pays the address the vendor gave when marking the order shipped, or one the vendor gives afterwards to claim to. On its next pass after you resolve, the market sends the coins to the vendor or refunds the buyer, as you decide: this cannot be undone, and the decision cannot be changed once it is made."}
 	switch {
 	case final:
 		p.Release = "Release to " + o.Vendor + ": the release to the vendor already has its transaction, so the escrow pays the vendor"

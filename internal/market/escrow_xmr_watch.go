@@ -182,7 +182,7 @@ type xmrSlotRow struct {
 // xmrEscrowPollOnce runs one Monero escrow pass unless another process holds its lock (see the file comment).
 func (a *App) xmrEscrowPollOnce(ctx context.Context) error {
 	x := a.escrowXMR
-	if a.db == nil || x == nil || !x.ready.Load() {
+	if a.db == nil || x == nil {
 		return nil
 	}
 	conn, err := a.db.Conn(ctx)
@@ -201,6 +201,11 @@ func (a *App) xmrEscrowPollOnce(ctx context.Context) error {
 			conn.Raw(func(any) error { return driver.ErrBadConn })
 		}
 	}()
+	// Monero escrow configured but not ready (its node unreachable, or refused): no wallet is touched, but the deadlines,
+	// which make no RPC, still apply, as escrowPollOnce applies Bitcoin escrow's when its node check fails (P3-R7).
+	if !x.ready.Load() {
+		return a.xmrDeadlines(ctx)
+	}
 	var paused bool
 	if err = a.db.QueryRowContext(ctx, "SELECT "+restoreGateSQL+" OR EXISTS(SELECT 1 FROM settings WHERE key=$1 AND value='true')", xmrEscrowSweepKey).Scan(&paused); err != nil {
 		return err

@@ -17,7 +17,7 @@ import (
 //  2. Shipped: from 72 hours before release_at the buyer is reminded once (reminded_at claimed by compare-and-set) and
 //     the vendor told the buyer's deadline (xmrRemindDeadlines). A dispute filed after it is refused (lateDispute).
 //  3. At release_at a shipped order with no dispute is completed by the system ("auto-release deadline passed") under
-//     the order row lock (xmrReleaseDue); the release requested at shipment is then buildable (xmrSettlementBuildable).
+//     the order row lock (xmrReleaseDue); the release requested at shipment is then buildable (settlementFits).
 //  4. After a restore from backup (scripts/restore.sh, or UPGRADING.md section 6, sets escrow_xmr_release_recheck) the
 //     pass moves every passed deadline of a shipped order to now + 72 hours and tells the buyer
 //     (xmrRecheckReleaseDeadlines), as recheckReleaseDeadlines does for Bitcoin escrow with its own setting.

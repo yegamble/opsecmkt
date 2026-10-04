@@ -233,9 +233,12 @@ func (a *App) xmrReleaseView(ctx context.Context, d *PageData, v *XMREscrowOrder
 	case o.State == stateResolved && outcome == "refund":
 		v.NextStep = "The dispute was decided for the buyer: the coins in this escrow go back to the buyer's refund address by a refund the market builds and sends."
 	}
-	v.Ship = d.OrderViewer == roleVendor && o.State == statePaid && o.Kind == "physical"
-	v.Confirm = d.OrderViewer == roleBuyer && o.State == stateShipped
-	v.Claim = d.OrderViewer == roleVendor && settlementFits("release", o.State, outcome) && !live
+	// The forms need ESCROW_XMR on (their actions do not exist otherwise), not a reachable node: they make no RPC.
+	on := a.escrowXMR != nil
+	v.Off = !on
+	v.Ship = on && d.OrderViewer == roleVendor && o.State == statePaid && o.Kind == "physical"
+	v.Confirm = on && d.OrderViewer == roleBuyer && o.State == stateShipped
+	v.Claim = on && d.OrderViewer == roleVendor && settlementFits("release", o.State, outcome) && !live
 	if (v.Ship || v.Confirm || v.Claim) && d.Security == nil {
 		if d.Security, _, _, err = a.securityView(ctx, d.User.ID); err != nil {
 			return err
