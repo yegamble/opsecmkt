@@ -2,12 +2,15 @@ package market
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"maps"
 	"math/rand/v2"
 	"os"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -29,9 +32,22 @@ type xmrRegtest struct {
 
 func (r *xmrRegtest) call(c *rpcClient, method string, params, out any) {
 	r.t.Helper()
-	if err := c.call(context.Background(), "/json_rpc", method, params, out); err != nil {
-		r.t.Fatalf("%s: %s", method, watcherCause(err))
+	// The legs' nodes are local test nodes, so their errors are printed whole (rpcClient never puts URL credentials in
+	// an error). generateblocks gets two minutes: a call cut short by rpcTimeout keeps mining in the daemon, and the next
+	// call then mines a competing chain (seen as alternative blocks and reorganisations in monerod's log).
+	if err := c.callWithin(context.Background(), 2*time.Minute, "/json_rpc", method, params, out); err != nil {
+		r.t.Fatalf("%s: %v", method, err)
 	}
+}
+
+// height is the daemon's height.
+func (r *xmrRegtest) height() int64 {
+	r.t.Helper()
+	var info struct {
+		Height int64 `json:"height"`
+	}
+	r.call(r.daemon, "get_info", nil, &info)
+	return info.Height
 }
 
 // newXMRRegtest checks the daemon, makes and funds the funder's wallet, and starts an App with ESCROW_XMR on against the
@@ -91,7 +107,21 @@ func newXMRRegtest(t *testing.T) *xmrRegtest {
 	if !r.A.xmrEscrowReady() {
 		t.Fatalf("Monero escrow did not start against the fakechain: %s", r.A.escrowXMR.startState)
 	}
-	r.now = time.Date(2200+rand.IntN(800), time.Month(1+rand.IntN(12)), 15, 12, 0, 0, 0, time.UTC)
+	// A month whose first wallet and next month's are not on the escrow wallet-rpc yet (an earlier leg or run may have
+	// drawn it): every leg derives the same passwords, so open_wallet succeeds exactly on a name already taken.
+	for try := 0; ; try++ {
+		r.now = time.Date(2200+rand.IntN(7800), time.Month(1+rand.IntN(12)), 15, 12, 0, 0, 0, time.UTC)
+		taken := false
+		for _, name := range []string{r.walletName(false), r.walletName(true)} {
+			taken = taken || r.A.escrowXMR.rpc.openWallet(ctx, name, xmrWalletPassword(testXMRSecret, name)) == nil
+		}
+		if !taken {
+			break
+		}
+		if try == 20 {
+			t.Fatal("no free month for this leg's wallets on the escrow wallet-rpc")
+		}
+	}
 	r.clock()
 	r.buyer, r.buyerSess = r.user("xr_buyer_"+randomToken()[:6], "buyer")
 	r.vendor, r.vendorSess = r.user("xr_vendor_"+randomToken()[:6], "vendor")
@@ -101,9 +131,92 @@ func newXMRRegtest(t *testing.T) *xmrRegtest {
 }
 
 // mine adds n blocks, their coinbase to the funder.
+// It mines in batches of 20 and retries a failed generateblocks (a loaded machine can make monerod answer late or
+// drop the connection) up to 5 times, each time from the height the daemon reached; then it fails with the error class
+// and both heights.
 func (r *xmrRegtest) mine(n int) {
 	r.t.Helper()
-	r.call(r.daemon, "generateblocks", map[string]any{"amount_of_blocks": n, "wallet_address": r.funderAddr}, nil)
+	want := r.height() + int64(n)
+	failures := 0
+	h := r.height()
+	for ; h < want; h = r.height() {
+		err := r.daemon.callWithin(context.Background(), 2*time.Minute, "/json_rpc", "generateblocks",
+			map[string]any{"amount_of_blocks": min(want-h, 20), "wallet_address": r.funderAddr}, nil)
+		if err == nil {
+			continue
+		}
+		class := xmrErrorClass(classifyXMRRPC("daemon", "generateblocks", err))
+		if failures++; failures > 5 {
+			r.t.Fatalf("generateblocks failed %d times (%s); the daemon is at height %d, want %d", failures, class, h, want)
+		}
+		r.t.Logf("generateblocks at height %d failed (%s); retrying from the height the daemon reached", h, class)
+		time.Sleep(2 * time.Second)
+	}
+	if h != want {
+		r.t.Fatalf("mined to height %d, want %d", h, want)
+	}
+}
+
+// TestXMRRegtestMineRetries: the legs' block generation survives transient daemon errors (QA on X-e saw a
+// generateblocks error on a loaded machine): it retries from the height the daemon reached and ends exactly at the
+// height asked for. Unit test against a simulated daemon; it needs no node.
+func TestXMRRegtestMineRetries(t *testing.T) {
+	daemon := newFakeXMRNode(t)
+	var mu sync.Mutex
+	height, calls := int64(500), 0
+	daemon.set("get_info", func(json.RawMessage) (any, int, string) {
+		mu.Lock()
+		defer mu.Unlock()
+		return map[string]any{"height": height}, 0, ""
+	})
+	daemon.set("generateblocks", func(p json.RawMessage) (any, int, string) {
+		mu.Lock()
+		defer mu.Unlock()
+		if calls++; calls == 1 || calls == 3 {
+			height += 7 // mined part of the batch, then failed
+			return nil, -1, "Busy"
+		}
+		var q struct {
+			N int64 `json:"amount_of_blocks"`
+		}
+		json.Unmarshal(p, &q)
+		height += q.N
+		return map[string]any{"height": height}, 0, ""
+	})
+	c, err := newRPCClient("fake daemon", daemon.URL, "2.0", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &xmrRegtest{xmrEscrowEnv: &xmrEscrowEnv{testEnv: &testEnv{t: t}}, daemon: c}
+	r.mine(45)
+	if height != 545 || calls < 4 {
+		t.Fatalf("height %d after %d generateblocks calls, want 545", height, calls)
+	}
+}
+
+// mineTo mines until transaction tx, mined in a block, has exactly confs confirmations, as the daemon counts them. A
+// block template made before tx reached the pool leaves it for the next block, so a fixed number of blocks after pay
+// does not fix its confirmations.
+func (r *xmrRegtest) mineTo(tx string, confs int64) {
+	r.t.Helper()
+	ctx := context.Background()
+	for range 20 {
+		txs, _, err := r.A.escrowXMR.rpc.transactions(ctx, []string{tx})
+		if err != nil {
+			r.t.Fatalf("/get_transactions: %v", err)
+		}
+		switch {
+		case len(txs) != 1 || txs[0].InPool:
+			r.mine(1)
+		case txs[0].Confirmations > confs:
+			r.t.Fatalf("transaction %s already has %d confirmations, want %d", tx, txs[0].Confirmations, confs)
+		case txs[0].Confirmations < confs:
+			r.mine(int(confs - txs[0].Confirmations))
+		default:
+			return
+		}
+	}
+	r.t.Fatalf("transaction %s did not reach %d confirmations", tx, confs)
 }
 
 // pay sends one transaction from the funder paying each address its amount (piconero) and returns its hash.
@@ -119,6 +232,30 @@ func (r *xmrRegtest) pay(amounts map[string]int64) string {
 	}
 	r.call(r.funder, "transfer", map[string]any{"destinations": dests, "account_index": 0, "priority": 0, "ring_size": 16}, &res)
 	return res.TxHash
+}
+
+// synced waits (up to 60 s) until the wallet open on the escrow wallet-rpc has refreshed to the daemon's height, so
+// the next pass reads every block mined so far, and returns both heights for a failure message.
+func (r *xmrRegtest) synced() string {
+	r.t.Helper()
+	ctx := context.Background()
+	var daemon, wallet int64
+	for range 120 {
+		daemon = r.height()
+		if err := r.A.escrowXMR.rpc.refresh(ctx); err != nil {
+			r.t.Fatalf("refresh: %s", xmrErrorClass(err))
+		}
+		h, err := r.A.escrowXMR.rpc.height(ctx)
+		if err != nil {
+			r.t.Fatalf("get_height: %s", xmrErrorClass(err))
+		}
+		if wallet = h; wallet == daemon {
+			return fmt.Sprintf("wallet height %d, daemon height %d", wallet, daemon)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	r.t.Fatalf("the escrow wallet stayed at height %d while the daemon is at %d", wallet, daemon)
+	return ""
 }
 
 // walletName is the leg's month's first wallet name, or its next month's.
@@ -218,19 +355,21 @@ func TestXMREscrowRegtestFunding(t *testing.T) {
 	if got := confs(); got != "0 false" || r.state(order) != stateAwaitingPayment {
 		t.Fatalf("in the pool: %q %s", got, r.state(order))
 	}
-	r.mine(9)
+	r.mineTo(tx, 9)
+	heights := r.synced()
 	r.mustPoll()
 	if got := confs(); got != "9 false" || r.state(order) != stateAwaitingPayment {
-		t.Fatalf("after 9 blocks: %q %s", got, r.state(order))
+		t.Fatalf("at 9 confirmations (%s): %q %s", heights, got, r.state(order))
 	}
-	t.Log("after 9 blocks: recorded at 9 confirmations, not counted, order awaiting payment")
-	r.mine(1)
+	t.Log("at 9 confirmations (daemon count):, not counted, order awaiting payment")
+	r.mineTo(tx, 10)
+	heights = r.synced()
 	r.mustPoll()
 	if got := confs(); got != "10 true" || r.state(order) != stateCompleted || agInt(r.testEnv, "SELECT count(*) FROM deliveries WHERE order_id=$1", order) != 1 ||
 		agInt(r.testEnv, "SELECT count(*) FROM payouts WHERE order_id=$1", order) != 0 {
-		t.Fatalf("after 10 blocks: %q %s", got, r.state(order))
+		t.Fatalf("at 10 confirmations (%s): %q %s", heights, got, r.state(order))
 	}
-	t.Log("after 10 blocks: credited, the digital order completed on funding, content delivered, no payout")
+	t.Log("at 10 confirmations: credited, the digital order completed on funding, content delivered, no payout")
 }
 
 // TestXMREscrowRegtestTwoAccountsOneTx: one transaction pays two escrows of the same wallet; after 10 blocks there are
@@ -242,7 +381,8 @@ func TestXMREscrowRegtestTwoAccountsOneTx(t *testing.T) {
 	a, addrA := r.freshCheckout(r.digital(r.vendor))
 	b, addrB := r.freshCheckout(r.digital(r.vendor))
 	tx := r.pay(map[string]int64{addrA: xmrListingPrice, addrB: xmrListingPrice})
-	r.mine(10)
+	r.mineTo(tx, 10)
+	heights := r.synced()
 	r.mustPoll()
 	wallet := int64(agInt(r.testEnv, "SELECT id FROM xmr_escrow_wallets WHERE name=$1", r.walletName(false)))
 	account := func(order string) int64 {
@@ -253,10 +393,11 @@ func TestXMREscrowRegtestTwoAccountsOneTx(t *testing.T) {
 	slices.Sort(want)
 	got := agStrings(t, r.testEnv, "SELECT order_id||' '||idx||' '||amount FROM payments WHERE txid=$1 ORDER BY order_id", tx)
 	if !slices.Equal(got, want) {
-		t.Fatalf("payments rows of transaction %s:\n got %v\nwant %v", tx, got, want)
+		t.Fatalf("payments rows of transaction %s (%s):\n got %v\nwant %v", tx, heights, got, want)
 	}
 	if r.state(a) != stateCompleted || r.state(b) != stateCompleted {
-		t.Fatalf("orders %s %s", r.state(a), r.state(b))
+		t.Fatalf("orders %s %s (%s; confirmations %v)", r.state(a), r.state(b), heights,
+			agStrings(t, r.testEnv, "SELECT confirmations::text FROM payments WHERE txid=$1", tx))
 	}
 	t.Logf("transaction %s paid accounts %d and %d of wallet %d: two payments rows, orders %s and %s completed", tx, account(a), account(b), wallet, shortID(a), shortID(b))
 }

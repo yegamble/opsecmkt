@@ -66,6 +66,9 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 		case afterClose:
 			dep.State = "Arrived after the order closed — not counted; returned to the buyer's refund address"
 			afterCloseSeen++
+		case dep.Confirmations >= xmrConfirmationsCeiling(v.Threshold):
+			// Stored confirmations stop at the ceiling (xmrConfirmationsCeiling).
+			dep.State, received = "Confirmed ("+strconv.FormatInt(dep.Confirmations, 10)+" confirmations or more)", received+amt
 		case dep.Confirmations >= v.Threshold:
 			dep.State, received = "Confirmed", received+amt
 		default:

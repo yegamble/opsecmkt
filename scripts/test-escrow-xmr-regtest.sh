@@ -10,9 +10,11 @@
 #     address 0 is the slot's; account 0 holds nothing. On the watcher's clock the next month's wallet is then created
 #     sealed 6 days ahead and becomes active at its month's start, the first closing with its free slots retired.
 #   Funding: a buyer takes a Monero escrow through the real checkout form; the funder pays its price; in the pool it is
-#     recorded at 0 confirmations, after 9 blocks at 9 and nothing counts, after the 10th the digital order completes on
-#     funding (content delivered, no payout).
-#   TwoAccountsOneTx: one transaction pays two escrows; after 10 blocks there are two payments rows of it, one per
+#     recorded at 0 confirmations; at 9 confirmations (as the daemon counts them) nothing counts; at 10 the digital
+#     order completes on funding (content delivered, no payout). Each leg waits until the escrow wallet has refreshed to
+#     the daemon's height before a pass, and mines in batches of 20 within a two-minute RPC bound, retrying a failed
+#     generateblocks up to 5 times from the height the daemon reached.
+#   TwoAccountsOneTx: one transaction pays two escrows; at 10 confirmations there are two payments rows of it, one per
 #     escrow account, each its own order's, and both orders complete.
 #
 # Slice X-e leg (internal/market/escrow_xmr_regtest_physical_test.go), the App's escrow wallet-rpc behind a proxy that
