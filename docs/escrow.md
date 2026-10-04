@@ -602,11 +602,13 @@ wallet takes an order again and no settlement is relayed until an administrator 
   `TestEscrowBTCIgnoresXMRRows`, `TestXMREscrowPayoutRefused`, `TestXMREscrowIdxNoCollision`. Wallets, slots and funding:
   `TestXMREscrowFirstRun`, `TestXMREscrowWalletRotation`, `TestXMREscrowSlotClaimRace`, `TestXMREscrowNoRPCAtCheckout`,
   `TestXMREscrowAccountZeroNeverSpent`, `TestXMREscrowFundingThreshold`, `TestXMREscrowTwoAccountsOneTx`,
-  `TestXMREscrowSecretMismatch`, `TestXMREscrowSeedKeyRepinRefused`. Settlements:
+  `TestXMREscrowSecretMismatch`, `TestXMREscrowSeedKeyRepinRefused`, `TestXMREscrowTopUpAddressChecked`. Settlements:
   `TestXMREscrowStoredBeforeRelay`, `TestXMREscrowNeverRebuilt`, `TestXMREscrowAmbiguousRelay`,
   `TestXMREscrowFreezeExcludesTopUp`, `TestXMREscrowPrimaryAddressMismatch`, `TestXMREscrowKeyImagesExact`,
   `TestXMREscrowFeeCapAndFloor`, `TestXMREscrowReorgRelaysAgain`, `TestXMREscrowExternalSpend`,
-  `TestXMREscrowReRequestGuards`, `TestXMREscrowBuildSetAside`, `TestXMREscrowGatePauses`. Releases, deadlines and
+  `TestXMREscrowReRequestGuards`, `TestXMREscrowReRequestWaitsForGate`, `TestXMREscrowRelayRefusalRetried`,
+  `TestXMREscrowBuildSetAside`, `TestXMREscrowGatePauses`, `TestXMREscrowConflictedDepositThroughExpiry`,
+  `TestXMREscrowStraysPerWallet`. Releases, deadlines and
   disputes: `TestXMREscrowNoBuildBeforeOutcome`, `TestXMREscrowConfirmReceiptStepUp`, `TestXMREscrowShipStepUp`,
   `TestXMREscrowDeadlineWithBTCOff`, `TestXMREscrowDisputeSupersedes`, `TestXMREscrowNoShipCancel`,
   `TestXMREscrowRestoreExtendsDeadline`. Retention and restore: `TestXMREscrowDestroyPreconditions`,
