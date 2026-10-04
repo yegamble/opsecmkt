@@ -583,11 +583,11 @@ func TestXMREscrowNotOpenMidPass(t *testing.T) {
 		agInt(x.testEnv, "SELECT count(*) FROM escrows WHERE order_id=$1 AND underpaid_noted IS NOT NULL", order) != 0 {
 		t.Fatalf("after a failed read: %v", got)
 	}
-	// Read again: the payment window ended underpaid, so the parties are told once and the order stays open (its refund
-	// is built by the settlement slice); a pooled-style cancel would request a Bitcoin settlement.
+	// Read again: the payment window ended underpaid, so the order is cancelled once, which requests its Monero refund
+	// (slice X-d), never a Bitcoin settlement.
 	x.mustPoll()
 	x.mustPoll()
-	if x.state(order) != stateAwaitingPayment || agInt(x.testEnv, "SELECT count(*) FROM escrows WHERE order_id=$1 AND underpaid_noted IS NOT NULL", order) != 1 ||
+	if x.state(order) != stateCancelled || agInt(x.testEnv, "SELECT count(*) FROM xmr_settlements WHERE order_id=$1 AND kind='refund'", order) != 1 ||
 		x.notified(x.buyer, "payment window ended") != 1 {
 		t.Fatalf("underpaid: %s, buyer notices %d", x.state(order), x.notified(x.buyer, "payment window ended"))
 	}

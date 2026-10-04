@@ -286,7 +286,14 @@ func (a *App) escrowSettleTerminal(ctx context.Context, tx *sql.Tx, o *Order) er
 			return nil
 		}
 		note := "Dispute decided for the vendor: the vendor claims the escrowed " + amount(sum, 8) + " BTC from the order page with a fresh address. The market builds that settlement (less the market fee and the network fee; any amount paid above the price goes back to the buyer), the buyer or the vendor signs it, and the market co-signs it. Nothing is sent yet."
-		if liveKind == "release" {
+		switch {
+		case o.Currency == "XMR" && liveKind == "release":
+			// P3-R7, A-405: the release requested at shipment is the decision's settlement; the Monero escrow watcher alone
+			// builds and sends it (escrow_xmr_settle.go), now that the order's outcome allows it.
+			note = "Dispute decided for the vendor: the release to the vendor requested when the order was shipped pays the claim address the vendor gave then (less the market fee and the network fee; any amount paid above the price goes back to the buyer's refund address). The market builds it from this order's Monero escrow account and sends it. The release deadline no longer applies. Nothing is sent yet."
+		case o.Currency == "XMR":
+			note = "Dispute decided for the vendor: the vendor claims the escrowed " + amount(sum, 12) + " XMR from the order page with a fresh Monero address. The market then builds that settlement from this order's escrow account (less the market fee and the network fee; any amount paid above the price goes back to the buyer's refund address) and sends it. Nothing is sent yet."
+		case liveKind == "release":
 			// P2-R4: the release built at shipment is the decision's settlement; no new claim is asked for.
 			note = "Dispute decided for the vendor: the release to the vendor built when the order was shipped pays the claim address the vendor gave then (less the market fee and the network fee; any amount paid above the price goes back to the buyer). A signature already given on it counts; the buyer or the vendor signs it if neither has, and the market co-signs it. The release deadline no longer applies."
 		}

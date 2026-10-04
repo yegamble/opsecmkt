@@ -1,0 +1,36 @@
+{{/* WR-escrow Phase 3, slice X-d (escrow_xmr_settle_view.go). The settlements of a Monero escrow order, newest first, inside the Monero escrow panel: kind, state, transaction once sent, outputs in XMR, network fee, confirmations, why it waits or failed, and for an administrator the re-request of a failed settlement (password step-up). Called with the page data. No JavaScript; the layout wraps at 320 px like the Bitcoin settlement's. */}}
+{{define "order-xmr-settlement"}}{{with .XMREscrow}}{{range .Settlements}}
+<section class="escrow-settlement" id="xmr-settlement-{{.ID}}" aria-labelledby="xmr-settlement-heading-{{.ID}}">
+<h3 id="xmr-settlement-heading-{{.ID}}">Settlement {{.ID}}: {{.Title}}</h3>
+<p role="status">{{.Status}}</p>{{if .Outputs}}
+<p class="help">The transaction spends {{.InputTotal}} XMR from this order's escrow account and pays exactly these outputs; the network fee of {{.Fee}} XMR was taken from the first.</p>
+<h4 id="xmr-outputs-heading-{{.ID}}">Outputs</h4>
+<ol class="settlement-outputs" aria-labelledby="xmr-outputs-heading-{{.ID}}">{{range .Outputs}}
+<li><span>{{.Role}}: <strong>{{.Amount}} XMR</strong></span>
+<span class="settlement-address">{{.Address}}</span></li>{{end}}
+</ol>
+<dl class="key-values">
+<div>
+<dt>Network fee (to the miners, not an output)</dt>
+<dd>{{.Fee}} XMR</dd>
+</div>{{with .Confirmations}}
+<div>
+<dt>Confirmations</dt>
+<dd>{{.}}</dd>
+</div>{{end}}{{with .TxHash}}
+<div>
+<dt>Transaction</dt>
+<dd class="mono">{{.}}</dd>
+</div>{{end}}
+</dl>{{end}}{{if .ReRequestPending}}
+<p role="status">An administrator asked the market to build this settlement again. On its next pass the market checks that its stored transaction is in neither the daemon's pool nor the chain and that none of its coins is spent, and only then builds it again.</p>{{end}}{{with .ReRequestRefused}}
+<p class="alert" role="status">The last re-request was refused: {{.}} Nothing was built or sent.</p>{{end}}{{if .ReRequest}}
+<form class="stack" method="post" action="/admin/escrow-xmr-rerequest">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="order_id" value="{{$.Order.ID}}">
+<input type="hidden" name="settlement_id" value="{{.ID}}">
+<p class="help" id="xmr-rerequest-help-{{.ID}}">Re-request this settlement: on its next pass the market builds it again only if its stored transaction is in neither the daemon's pool nor the chain and none of its coins is spent. The new transaction spends exactly the same coins to the same destinations and amounts; only the network fee, and with it the first output, may differ. At most one of the two can ever be mined.</p>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
+<button type="submit" aria-describedby="xmr-rerequest-help-{{.ID}}">Re-request settlement {{.ID}}</button>
+</form>{{end}}
+</section>{{end}}{{end}}{{end}}

@@ -615,6 +615,8 @@ type XMREscrowOrderView struct {
 	// Mark shipped and claim, the buyer's Confirm receipt.
 	Deadline             *EscrowDeadlineView
 	Ship, Confirm, Claim bool
+	// Settlements: its settlements, newest first (escrow_xmr_settle_view.go)
+	Settlements []*XMRSettlementView
 }
 
 // XMREscrowCheckoutView offers Monero escrow checkout on an XMR draft (escrow_xmr_create.go): Reason says why it cannot

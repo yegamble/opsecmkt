@@ -51,8 +51,11 @@ import (
 // escrowXMR.confirmations (at least 10) with no unlock time and no double_spend_seen; a locked one is flagged once and
 // never counted. A digital order completes on funding through the escrow-only system edge (escrowTransitionHook); a
 // physical one becomes paid with its ship-by time. An escrow that received nothing in its payment window is
-// cancelled; one underpaid then is noted to its buyer once (escrows.underpaid_noted) and stays open. A deposit after the
-// order closed is recorded after_close and flagged (flagLateDeposits) for the stray refund.
+// cancelled; one underpaid then is cancelled too, which requests its refund (slice X-d). A deposit after the order
+// closed is recorded after_close and flagged (flagLateDeposits) for the stray refund.
+//
+// Settlements (slice X-d, escrow_xmr_settle.go) are built, relayed and followed in each wallet's pass, while it is open
+// and checked.
 //
 // Under the restore gate, and after a restore until Monero escrow's sweep (xmrEscrowSweepKey), no wallet or slot is
 // created and no wallet activated; funding is still read.
@@ -489,12 +492,15 @@ func (a *App) xmrWalletPass(ctx context.Context, w xmrWalletRow, paused bool, to
 	if err = a.xmrReconcile(ctx, w, slots, accounts, funded, paused); err != nil {
 		return err
 	}
+	// Settlements are built, relayed and followed only here, while this wallet is open and checked
+	// (escrow_xmr_settle.go). The wallet is stored after them whatever they found.
+	settled := a.xmrSettleWallet(ctx, w)
 	if w.state == "active" && !paused {
 		if err = a.xmrTopUpSlots(ctx, w); err != nil {
-			return err
+			return errors.Join(settled, err)
 		}
 	}
-	return x.rpc.store(ctx)
+	return errors.Join(settled, x.rpc.store(ctx))
 }
 
 // xmrRecordTransfers writes the wallet's incoming transfers to the payments ledger, one row per transaction and claimed
@@ -805,6 +811,13 @@ func (a *App) settleXMREscrow(ctx context.Context, orderID string, walletRead bo
 	if err = a.flagLockedXMR(ctx, tx, &o); err != nil {
 		return err
 	}
+	if o.State != stateAwaitingPayment {
+		// A-374, P3-R8: a deposit no settlement spends, once the order's release or refund is built, is left out for the
+		// stray refund (escrow_xmr_settle.go).
+		if err = a.xmrLeaveOutTopUps(ctx, tx, &o); err != nil {
+			return err
+		}
+	}
 	if isTerminal(o.State) {
 		// A deposit first recorded after the order closed is never counted; it is flagged for the stray refund (P3-R8).
 		if err = a.flagLateDeposits(ctx, tx, &o, threshold, false); err != nil {
@@ -861,21 +874,15 @@ func (a *App) settleXMREscrow(ctx context.Context, orderID string, walletRead bo
 			return err
 		}
 	case underpaid:
-		// Every deposit confirmed, short of the price, and no top-up for a whole window: the parties are told once and
-		// the order stays open; returning an underpaid Monero escrow is the settlement slice's (P3-R8).
-		res, err := tx.ExecContext(ctx, "UPDATE escrows SET underpaid_noted=now() WHERE order_id=$1 AND underpaid_noted IS NULL", orderID)
-		if err != nil {
-			return err
-		}
-		if k, _ := res.RowsAffected(); k == 0 {
-			return tx.Commit()
-		}
+		// Every deposit confirmed, short of the price, and no top-up for a whole window: cancelled as a Bitcoin escrow
+		// order is, and the cancellation requests the refund of the escrow (escrowSettleTerminal), which this watcher
+		// builds and sends (P3-R8).
 		what := fmt.Sprintf("%s of %s XMR received", amount(received, 12), amount(total, 12))
-		next := "The order stays open: sending the remaining " + amount(total-received, 12) + " XMR to the same escrow address completes it. Nothing is refunded automatically yet; market staff were notified."
-		if err = a.flagOrder(ctx, tx, &o, "Payment window ended underpaid: "+what+" into this order's Monero escrow ("+a.netTag()+" "+xmrEscrowNetwork+"). "+next, ""); err != nil {
+		if _, err = a.transition(ctx, tx, orderID, stateAwaitingPayment, stateCancelled, nil, "payment window expired underpaid: "+what); err != nil {
 			return err
 		}
-		body := "Order " + shortID(orderID) + ": the payment window ended with " + what + " into its Monero escrow. " + next
+		body := "Order " + shortID(orderID) + ": the payment window ended with " + what + " into its Monero escrow (" + a.netTag() + " " + xmrEscrowNetwork + "), so the order was cancelled. " +
+			"The market returns the escrowed coins, less the network fee, to the refund address you gave at checkout: it builds and sends the refund transaction from this order's escrow account."
 		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, body); err != nil {
 			return err
 		}

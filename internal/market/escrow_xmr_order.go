@@ -127,6 +127,9 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 	if v.RestorePaused, err = restoreGateSet(ctx, a.db); err != nil {
 		return err
 	}
+	if v.Settlements, err = a.xmrSettlementViews(ctx, d, v); err != nil {
+		return err
+	}
 	d.XMREscrow = v
 	if err = a.xmrReleaseView(ctx, d, v); err != nil {
 		return err

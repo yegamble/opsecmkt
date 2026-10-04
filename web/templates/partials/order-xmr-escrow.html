@@ -78,6 +78,7 @@
 <button class="primary" type="submit">Request the claim</button>
 </form>
 </section>{{end}}
+{{template "order-xmr-settlement" $}}
 {{if .Deposits}}<h3 id="xmr-escrow-deposits-heading">Deposits to this escrow</h3>
 <div class="table-wrap payment-deposits" tabindex="0" role="region" aria-labelledby="xmr-escrow-deposits-heading">
 <table>
