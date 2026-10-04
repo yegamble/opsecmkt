@@ -1058,3 +1058,30 @@ func (a *App) xmrLeaveOutTopUps(ctx context.Context, tx *sql.Tx, o *Order) error
 	_, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, "Order "+shortID(o.ID)+": "+note)
 	return err
 }
+
+// xmrLeaveOutUncounted marks, for a cancelled Monero escrow order with no refund that spends or will spend its deposits
+// (none requested, or the one requested failed or was spent outside), every deposit that has reached the confirmation
+// threshold, that no settlement spends and that is neither after close nor left out as left out (A-424): one the wallet
+// read as conflicted (double_spend_seen) or no longer listed when the order was cancelled, so it did not count, mined
+// since. As xmrLeaveOutTopUps does, in tx under the order row lock: one order note, a notice to the buyer and to staff,
+// only for the deposits newly marked. The stray refund returns them to the buyer's refund address.
+func (a *App) xmrLeaveOutUncounted(ctx context.Context, tx *sql.Tx, o *Order, threshold int64) error {
+	if o.State != stateCancelled {
+		return nil
+	}
+	var n, sum int64
+	if err := tx.QueryRowContext(ctx, `WITH m AS (UPDATE payments SET escrow_left_out=true,flagged=true,updated=now() WHERE order_id=$1 AND xmr_settlement_id IS NULL
+			AND confirmations>=$2 AND NOT locked AND NOT after_close AND NOT escrow_left_out AND NOT spent_outside
+			AND NOT EXISTS (SELECT 1 FROM xmr_settlements WHERE order_id=$1 AND kind='refund' AND state IN ('requested','built','relayed','confirmed')) RETURNING amount)
+		SELECT count(*),COALESCE(sum(amount),0) FROM m`, o.ID, threshold).Scan(&n, &sum); err != nil || n == 0 {
+		return err
+	}
+	note := fmt.Sprintf("%d deposit(s) (%s XMR, %s %s) to this order's Monero escrow did not count for the order when it was cancelled (the escrow wallet read them as conflicted, or no longer listed them), and no refund spends them. "+
+		"They have confirmed since and stay in the escrow account; a stray refund returns them, less the network fee, to the buyer's refund address. Do not send more coins to this escrow.",
+		n, amount(sum, 12), a.netTag(), xmrEscrowNetwork)
+	if err := a.flagOrder(ctx, tx, o, note, ""); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, "Order "+shortID(o.ID)+": "+note)
+	return err
+}

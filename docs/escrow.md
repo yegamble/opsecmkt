@@ -483,7 +483,9 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   added to the vendor's output) and less any amount paid above the price, which goes back to the buyer's refund address
   (also added to the vendor's output when below 0.001 XMR). A settlement spends the deposits that count when it is built; a
   deposit still confirming then, or arriving after the build, is left out and returned to the buyer's refund address by a
-  *stray refund* once the order has closed. After a close, deposits are refunded automatically until the wallet is
+  *stray refund* once the order has closed. So is a deposit that did not count when its order was cancelled (the wallet
+  read it as a double spend, or no longer listed it) and has confirmed since, when no refund spends it: it is flagged
+  and the buyer told. After a close, deposits are refunded automatically until the wallet is
   destroyed; after that, the order page says Monero sent to its address since then cannot be recovered (ES-8).
 - **Confirm receipt and deadlines.** For a digital order the vendor claims the escrow with a fresh Monero address and their
   password once the order has completed on funding. For a physical order the vendor's *Mark as shipped* takes the claim
