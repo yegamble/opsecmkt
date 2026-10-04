@@ -327,6 +327,6 @@ func xmrRebroadcastAction(c *actionCtx) (actionResult, error) {
 		}
 		audit := "Confirmed the relay of Monero escrow settlement " + strconv.FormatInt(id, 10) + " (" + settlementKind(kind) + ") of order " + shortID(orderID) +
 			" after a restore from backup: the administrator checked that its transaction was not already relayed or replaced (" + xmrEscrowNetwork + ")"
-		return actionResult{Redirect: "/admin", Notice: "escrow-xmr-rebroadcast", Audit: audit}, nil
+		return actionResult{Redirect: "/admin", Notice: "escrow-xmr-relay", Audit: audit}, nil
 	})
 }
