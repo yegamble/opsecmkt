@@ -2,6 +2,7 @@ package market
 
 import (
 	"context"
+	"encoding/json"
 	"html"
 	"net/url"
 	"slices"
@@ -957,6 +958,87 @@ func TestXMREscrowBuildRefusals(t *testing.T) {
 	x.mustPoll()
 	if x.settlement(id5).State != "relayed" || x.waitClass(id5) != "" || x.staffFlags(o5) != 0 {
 		t.Fatalf("after the dropped connection: %s %q", x.settlement(id5).State, x.waitClass(id5))
+	}
+}
+
+// A-430: the settlement steps on monero-wallet-rpc 0.18.5.1's own refusal codes (as recorded in tests/e2e/fixtures).
+// transfer's -37 (not enough unlocked money: the claimed coins are not spendable yet, as after a reorganisation between
+// incoming_transfers and transfer) waits, unflagged however long it lasts, and the settlement is built once they unlock;
+// -17 (not enough money) is an outputs mismatch, waited on once, then flagged. relay_tx's -27 (the stored metadata does
+// not parse, which only a corrupted row explains) fails the settlement at once, flagged once and never relayed again,
+// and an administrator may re-request it.
+func TestXMREscrowRealWalletCodes(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	refuse := func(code int64, msg string) {
+		x.fake.handle("transfer", func(*fakeXMREscrow, json.RawMessage) (any, int64, string) { return nil, code, msg })
+	}
+
+	locked, _, _ := x.completed()
+	id, _ := x.release(locked)
+	refuse(-37, "not enough unlocked money")
+	for range 3 {
+		x.mustPoll()
+	}
+	if x.settlement(id).State != "requested" || x.waitClass(id) != xmrWaitOutputs || x.staffFlags(locked) != 0 {
+		t.Fatalf("-37 three times: %s %q, staff %d", x.settlement(id).State, x.waitClass(id), x.staffFlags(locked))
+	}
+	x.fake.handle("transfer", fakeXMRWalletMethods["transfer"])
+	x.mustPoll()
+	if x.settlement(id).State != "relayed" || x.waitClass(id) != "" || x.staffFlags(locked) != 0 {
+		t.Fatalf("unlocked: %s %q", x.settlement(id).State, x.waitClass(id))
+	}
+
+	short, _, _ := x.completed()
+	sid, _ := x.release(short)
+	refuse(-17, "not enough money")
+	x.mustPoll()
+	if x.waitClass(sid) != xmrWaitOutputs || x.staffFlags(short) != 0 {
+		t.Fatalf("-17 once: %q, staff %d", x.waitClass(sid), x.staffFlags(short))
+	}
+	x.mustPoll()
+	x.mustPoll()
+	if x.settlement(sid).State != "requested" || x.waitClass(sid) != xmrOutputsMismatch || x.staffFlags(short) != 1 {
+		t.Fatalf("-17 persisting: %s %q, staff %d", x.settlement(sid).State, x.waitClass(sid), x.staffFlags(short))
+	}
+	x.fake.handle("transfer", fakeXMRWalletMethods["transfer"])
+
+	corrupt, _, _ := x.completed()
+	cid, _ := x.release(corrupt)
+	x.fake.fault("relay_tx", fakeXMRNotOpen) // stored, not relayed
+	if err := x.poll(); err == nil || x.settlement(cid).State != "built" {
+		t.Fatalf("relay_tx refused -13: %v %s", err, x.settlement(cid).State)
+	}
+	// Migration 084 keeps the stored row from changing, so the wallet is made unable to parse it instead.
+	metadata := agStrings(t, x.testEnv, "SELECT tx_metadata FROM xmr_settlements WHERE id=$1", cid)[0]
+	x.fake.edit(func(f *fakeXMREscrow) { delete(f.built, metadata) })
+	x.mustPoll()
+	relays := x.fake.countOf("relay_tx")
+	x.mustPoll()
+	if x.settlement(cid).State != "failed" || x.waitClass(cid) != xmrBadMetadata || x.staffFlags(corrupt) != 1 || x.fake.countOf("relay_tx") != relays {
+		t.Fatalf("-27: %s %q, staff %d, relay_tx %d then %d", x.settlement(cid).State, x.waitClass(cid), x.staffFlags(corrupt), relays, x.fake.countOf("relay_tx"))
+	}
+	if p := x.panel(corrupt, x.sessOf(corrupt, roleVendor)); !strings.Contains(p, xmrSettleWaitText(xmrBadMetadata, "release", xmrMinConfirmations)) {
+		t.Fatalf("the order page does not say why:\n%s", p)
+	}
+	_, adminSess := x.user("xd_admin_"+randomToken()[:6], "admin")
+	if code := x.reRequest(adminSess, corrupt, cid, testPassword); code != 303 {
+		t.Fatalf("re-request: %d", code)
+	}
+	x.mustPoll()
+	again := x.settlementOf(corrupt, "release")
+	if again.Supersedes != cid || again.State != "relayed" {
+		t.Fatalf("re-requested: %+v", again)
+	}
+	// Relayed, then lost by the daemon: relaying it again meets the same -27.
+	metadata = agStrings(t, x.testEnv, "SELECT tx_metadata FROM xmr_settlements WHERE id=$1", again.ID)[0]
+	x.fake.flushPool(again.TxHash)
+	x.fake.edit(func(f *fakeXMREscrow) { delete(f.built, metadata) })
+	x.mustPoll()
+	x.mustPoll()
+	flagged := agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND strpos(note,$2)=1 AND strpos(note,') failed: ')>0", corrupt, "Monero escrow settlement "+strconv.FormatInt(again.ID, 10)+" (")
+	if x.settlement(again.ID).State != "failed" || x.waitClass(again.ID) != xmrBadMetadata || flagged != 1 {
+		t.Fatalf("-27 relaying again: %s %q, flagged %d", x.settlement(again.ID).State, x.waitClass(again.ID), flagged)
 	}
 }
 

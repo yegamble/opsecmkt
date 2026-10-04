@@ -11,9 +11,9 @@ import { pgpFixture } from './db-helpers';
 // is not chain evidence (that is scripts/test-escrow-xmr-regtest.sh, on a real fakechain). The tests run in order on
 // one fresh database (playwright.escrow-xmr.config.ts); a second server on it runs with ESCROW_XMR off.
 //
-// TODO(X-f, P3-R9 and P3-R10): the retained and destroyed wallet states (an order whose wallet is destroyed: a late
-// deposit cannot be recovered, ES-8; /admin's list of destroyed wallet files) and the restore sweep's pages land with
-// slice X-f; the chair extends this journey after X-f merges.
+// The last test covers retention (slice X-f, P3-R9): a wallet past its 90 days is destroyed and its order's page says a
+// later deposit cannot be recovered (ES-8), and a missing wallet past them is confirmed destroyed on /admin. The 90 days
+// are moved through SQL; nothing waits in real time.
 
 const sim = process.env.E2E_XMR_SIM!;
 const offURL = process.env.E2E_XMR_OFF_URL!;
@@ -458,4 +458,84 @@ test('Monero escrow switched off: the order page says so and offers no Monero es
       await shot(page, info, 'o02-off-draft');
     }
   }
+});
+
+// The wallet that holds order url's account, and a wallet's state.
+const walletOf = (url: string) => sql(`SELECT w.name FROM escrows es JOIN xmr_escrow_slots s ON s.id=es.xmr_slot_id JOIN xmr_escrow_wallets w ON w.id=s.wallet_id WHERE es.order_id='${orderID(url)}'`);
+const walletState = (name: string) => sql(`SELECT state FROM xmr_escrow_wallets WHERE name='${name}'`);
+// The active wallet is closed, as at a month's start (its free accounts retired); the watcher creates and activates the
+// month's next wallet with its free accounts, and returns the active wallet's name once checkout can claim one.
+async function nextWallet(): Promise<string> {
+  sql("BEGIN; UPDATE xmr_escrow_slots SET state='retired',updated=now() WHERE state='free'; UPDATE xmr_escrow_wallets SET state='closing',updated=now() WHERE state='active'; COMMIT;");
+  await expect.poll(() => sql("SELECT count(*) FROM xmr_escrow_slots s JOIN xmr_escrow_wallets w ON w.id=s.wallet_id WHERE w.state='active' AND s.state='free'"), { timeout: 60_000 }).not.toBe('0');
+  return sql("SELECT name FROM xmr_escrow_wallets WHERE state='active'");
+}
+// Moves retained wallet name's last order close (and so its destruction date) 91 days back.
+function past90Days(name: string) {
+  sql(`BEGIN; ALTER TABLE xmr_escrow_wallets DISABLE TRIGGER xmr_escrow_wallets_kept;
+    UPDATE xmr_escrow_wallets SET last_closed_at=last_closed_at-interval '91 days',destroy_after=destroy_after-interval '91 days' WHERE name='${name}';
+    ALTER TABLE xmr_escrow_wallets ENABLE TRIGGER xmr_escrow_wallets_kept; COMMIT;`);
+}
+
+test('Monero escrow retention: a wallet past its 90 days destroyed, a later deposit unrecoverable (ES-8), a missing wallet confirmed destroyed on /admin', async ({ browser, baseURL, request }, info) => {
+  const admin = await signIn(browser, baseURL, 'xmr_admin', password);
+  const buyer = await signIn(browser, baseURL, 'xmr_buyer', buyerPassword);
+  const vendor = await signIn(browser, baseURL, 'xmr_vendor', vendorPassword);
+
+  // An order in a wallet of its own, claimed, the claim followed to 100 confirmations; then its wallet closes.
+  const kept = await nextWallet();
+  const order = await funded(buyer, request, digitalTitle);
+  expect(walletOf(order.url)).toBe(kept);
+  await claim(vendor, request, order.url);
+  await sentAndConfirmed(vendor, request, "The vendor's claim", info, 'k01-claim');
+  await mine(request, 100);
+  await expect.poll(() => sql(`SELECT count(*) FROM xmr_settlements WHERE order_id='${orderID(order.url)}' AND reorg_safe_at IS NOT NULL`), { timeout: 60_000 }).toBe('1');
+  await nextWallet();
+  await expect.poll(() => walletState(kept), { timeout: 60_000 }).toBe('retained');
+
+  // 90 days after its last order closed (the order's history and the wallet's dates moved back), with nothing left in
+  // it, the watcher destroys it; the order page says that Monero sent to its address since cannot be recovered.
+  sql(`UPDATE order_events SET created=created-interval '91 days' WHERE order_id='${orderID(order.url)}'`);
+  past90Days(kept);
+  await expect.poll(() => walletState(kept), { timeout: 60_000 }).toBe('destroyed');
+  await buyer.goto(order.url);
+  const lost = buyer.getByRole('status').filter({ hasText: 'Do not send anything to this escrow address.' });
+  await expect(lost).toContainText(/Monero sent to this order's address after \d{4}-\d\d-\d\d \d\d:\d\d UTC cannot be recovered: the escrow wallet that held its account was destroyed, 90 days after its last order closed\.$/);
+  const deposits = await buyer.locator('.payment-deposits tbody tr').count();
+  await deposit(request, order.escrow, 100_000_000_000);
+  await mine(request, 10);
+  await buyer.waitForTimeout(3_000); // three watcher passes at PAYMENT_POLL_INTERVAL=1s: a destroyed wallet is never opened
+  await buyer.reload();
+  await expect(lost).toContainText('cannot be recovered: the escrow wallet that held its account was destroyed');
+  await expect(buyer.locator('.payment-deposits tbody tr')).toHaveCount(deposits);
+  await shot(buyer, info, 'k02-destroyed-order');
+
+  // A wallet with no order, retained when it closes, whose files are gone: missing. Past its 90 days, /admin lists it,
+  // and an administrator confirms its destruction by keyboard with the password.
+  const gone = await nextWallet();
+  await nextWallet();
+  await expect.poll(() => walletState(gone), { timeout: 60_000 }).toBe('retained');
+  await simPost(request, '/test/xmr/remove-wallet', { name: gone });
+  await expect.poll(() => walletState(gone), { timeout: 60_000 }).toBe('missing');
+  past90Days(gone);
+  await admin.goto('/admin');
+  const missing = admin.locator('[aria-labelledby="xmr-escrow-missing"] tbody tr', { hasText: gone });
+  await expect(missing).toBeVisible();
+  const destroyed = admin.locator('[aria-labelledby="xmr-escrow-destroyed"] tbody tr');
+  await expect(destroyed.filter({ hasText: `${kept} ${kept}.keys` })).toBeVisible();
+  await shot(admin, info, 'k03-admin-missing');
+  const confirm = missing.locator('form[action="/admin/escrow-xmr-destroyed"]');
+  await check(admin, confirm.getByRole('checkbox', { name: /this wallet's files are gone, and nothing in it is owed to anyone$/ }));
+  await typeInto(admin, confirm.getByLabel('Current password'), 'not-the-admin-password');
+  expect(await pressSubmit(admin, confirm.getByRole('button', { name: 'Confirm destruction' }))).toBe(401);
+  expect(walletState(gone)).toBe('missing');
+  await admin.goto('/admin');
+  await check(admin, confirm.getByRole('checkbox', { name: /this wallet's files are gone, and nothing in it is owed to anyone$/ }));
+  await typeInto(admin, confirm.getByLabel('Current password'), password);
+  expect(await pressSubmit(admin, confirm.getByRole('button', { name: 'Confirm destruction' }))).toBe(303);
+  expect(walletState(gone)).toBe('destroyed');
+  await expect(admin.locator('[aria-labelledby="xmr-escrow-missing"]')).toHaveCount(0);
+  await expect(destroyed.filter({ hasText: `${gone} ${gone}.keys` })).toBeVisible();
+  await expect(destroyed.filter({ hasText: `${kept} ${kept}.keys` })).toBeVisible();
+  await shot(admin, info, 'k04-admin-destroyed');
 });

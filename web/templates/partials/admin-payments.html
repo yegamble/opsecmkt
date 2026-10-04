@@ -103,7 +103,7 @@
 <td class="mono">{{.Short}}</td>
 <td>{{.Kind}} ({{.State}})</td>
 <td class="mono">{{.TxHash}}</td>
-<td>{{if .Confirmed}}Confirmed: relayed once on the next pass{{else if not $.XMREscrowRecovery.On}}Turn Monero escrow on to confirm{{else}}<form class="stack" method="post" action="/admin/escrow-xmr-rebroadcast">
+<td>{{if .Confirmed}}Confirmed: the market relays it on its next pass{{else if not $.XMREscrowRecovery.On}}Turn Monero escrow on to confirm{{else}}<form class="stack" method="post" action="/admin/escrow-xmr-rebroadcast">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="settlement_id" value="{{.ID}}">
 <label class="check"><input type="checkbox" name="not_sent" value="confirmed" required> I checked the escrow daemon and the escrow wallet: this transaction was not already relayed, and no other transaction spent the escrow's coins</label>

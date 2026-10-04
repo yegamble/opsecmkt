@@ -479,7 +479,12 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   transaction spent its key images it is recorded *external* and staff are told, at once. Otherwise a refusal is
   relayed again, as the same stored metadata, on the next pass (`monero-wallet-rpc` gives the same answer when it lost its
   connection to the daemon), and only after 3 refusals in a row is the settlement *failed*; staff are then told, and an
-  administrator may re-request it (below).
+  administrator may re-request it (below). A held settlement whose relay an administrator confirmed after a restore keeps
+  that confirmation through those refusals, so it is relayed again while the restore gate is still set. Stored metadata
+  the wallet cannot parse (-27, which only a damaged record explains) fails the settlement at once, flagged once, and is
+  never relayed again. When building, the wallet's -37 (the coins are not unlocked yet) only waits, never flagged; -17
+  (not enough money) waits once and is flagged if it persists. These are the codes `monero-wallet-rpc` 0.18.5.1 gave
+  when recorded (`tests/e2e/fixtures/xmr_rpc_shapes_0.18.5.1.json`).
 - **Refunds and strays.** A refund goes to the address pinned at checkout, with the network fee taken from the amount.
   A release pays the vendor's claim address the escrow less the market fee (fixed at checkout; a fee below 0.001 XMR is
   added to the vendor's output) and less any amount paid above the price, which goes back to the buyer's refund address
@@ -578,7 +583,13 @@ wallet takes an order again and no settlement is relayed until an administrator 
 - **The market fee is set only by `ESCROW_XMR_FEE_BPS` and `ESCROW_XMR_FEE_ADDRESS`** (no form on `/admin`); each escrow
   keeps the fee in force at its checkout.
 - **One wallet is open at a time, and every wallet that may hold coins is opened on every pass**, until the wallet is
-  destroyed. PAYE-E2 measurement: see [verification](verification.md).
+  destroyed. PAYE-E2 measured this on one host, on a local fakechain only ([verification](verification.md#monero-escrow-wallet-scale-paye-e2-war-room-a-429-p3-r12--2026-10-04)):
+  a pass over 5 wallets of 10,000 accounts each took 27.6 s against the 10-minute pass timeout, but a catch-up refresh
+  over 110 blocks holding 200 deposits took 2.5 minutes, past the 2-minute bound it then had. Refresh now has its own
+  8-minute bound, a refresh that times out is finished by the wallet-rpc and stored by the next `open_wallet`, and each
+  new wallet looks one address ahead per account instead of 200: with that, the same catch-up took 1.0 s and
+  `create_account` 7.5 ms instead of 390 ms (median). A month with far more orders, a slower host or a public network has
+  not been measured.
 - **A wallet-rpc that crashes building a settlement** (0.18.5.1 does on some destinations) is handled but not cured: a
   settlement whose build drops the connection twice is set aside, staff are told, and an administrator must ask for the
   build again; other settlements are not held up.
@@ -660,12 +671,16 @@ wallet takes an order again and no settlement is relayed until an administrator 
   within `ESCROW_XMR_MAX_FEE`). Each leg puts the watcher's clock in a month of its own, so the legs may run again against
   the same nodes; no leg waits in real time for a deadline or a month.
 - A browser journey in Chromium at 320 px with JavaScript off against the real server and a **simulated** Monero escrow
-  wallet-rpc and daemon is added in this phase (`tests/e2e/escrow-xmr-journey.spec.ts`); its command and result are not
-  recorded here. A simulation is not chain evidence.
-- PAYE-E2 measurement: see [verification](verification.md).
+  wallet-rpc and daemon is added in this phase (`tests/e2e/escrow-xmr-journey.spec.ts`), its last test covering a wallet
+  destroyed after its retention (the order page's ES-8 line) and a missing wallet confirmed destroyed on `/admin`; its
+  command and result are not recorded here. A simulation is not chain evidence.
+- PAYE-E2 (`scripts/test-escrow-xmr-payee2.sh`, manual) on a real `monerod` and `monero-wallet-rpc` 0.18.5.1 local
+  fakechain, one host: one wallet of 10,000 accounts with 200 funded, its calls timed through the app's adapter, a seed
+  restore that finds every funded account, and a watcher pass over 5 such wallets within the pass timeout. The numbers
+  and their limits are in [verification](verification.md#monero-escrow-wallet-scale-paye-e2-war-room-a-429-p3-r12--2026-10-04).
 
 Not tested: stagenet, testnet and mainnet, Monero multisig, the escrow pages in Firefox or WebKit, deadlines of 7 to 30
-days in real time, a wallet with thousands of accounts on a real chain (PAYE-E2), a restore of a real backup into a
+days in real time, a wallet with thousands of accounts on a public network (PAYE-E2 measured one on a local fakechain), a restore of a real backup into a
 running market with Phase 3 orders on a real chain (`scripts/test-backup-restore.sh` restores a real dump and checks its
 rows; the fakechain `Restore` leg simulates the database restore in SQL), and a deployment of any of it.
 

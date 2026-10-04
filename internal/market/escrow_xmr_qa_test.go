@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"html"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -191,6 +192,46 @@ func TestXMREscrowRelayRefusalRetried(t *testing.T) {
 	if x.settlement(id).State != "external" || x.staffFlags(order) != 1 {
 		t.Fatalf("spent outside after a refusal: %s, staff flags %d", x.settlement(id).State, x.staffFlags(order))
 	}
+
+	// Closing QA F7: under the restore gate, a held settlement whose relay an administrator confirmed and that the daemon
+	// then refuses keeps the confirmation with its count: still listed confirmed on /admin (not confirmable again), and
+	// relayed again on the next pass, the gate still set.
+	order, _, _ = x.completed()
+	id, _ = x.release(order)
+	x.fake.fault("relay_tx", fakeXMRNotOpen)
+	if err := x.poll(); err == nil || x.settlement(id).State != "built" {
+		t.Fatalf("relay_tx refused -13: %v %s", err, x.settlement(id).State)
+	}
+	agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES('payments_recovery_required','true') ON CONFLICT (key) DO UPDATE SET value='true'")
+	agExec(x.testEnv, "UPDATE xmr_settlements SET send_error=$2 WHERE id=$1", id, restoredSettlementHold)
+	_, adminSess := x.user("xq_admin_"+randomToken()[:6], "admin")
+	confirm := func() (int, string) {
+		w := x.do("POST", "/admin/escrow-xmr-rebroadcast", adminSess, url.Values{"settlement_id": {strconv.FormatInt(id, 10)}, "not_sent": {"confirmed"}, "password": {testPassword}})
+		return w.Code, w.Body.String()
+	}
+	if code, _ := confirm(); code != 303 || x.waitClass(id) != sendRebroadcastOK {
+		t.Fatalf("confirming the held relay: %d %q", code, x.waitClass(id))
+	}
+	relays = len(relayed())
+	x.fake.fault("relay_tx", fakeXMRRejected)
+	x.mustPoll()
+	if s := x.settlement(id); s.State != "built" || !strings.HasPrefix(x.waitClass(id), xmrRelayRefusing+" 1") || !xmrRelayConfirmed(x.waitClass(id)) || len(relayed()) != relays+1 {
+		t.Fatalf("a confirmed relay refused once under the gate: %s %q, relay_tx %d", s.State, x.waitClass(id), len(relayed())-relays)
+	}
+	if page := html.UnescapeString(x.page("/admin", adminSess)); !strings.Contains(page, shortID(order)) || !strings.Contains(page, "Confirmed: the market relays it") {
+		t.Fatal("the confirmed settlement left the /admin held list")
+	}
+	if code, body := confirm(); code != 409 || !strings.Contains(body, "already confirmed") {
+		t.Fatalf("confirmed again: %d %s", code, body)
+	}
+	if p := html.UnescapeString(x.panel(order, x.sessOf(order, roleBuyer))); !strings.Contains(p, xmrSettleWaitText(x.waitClass(id), "release", 10)) {
+		t.Fatalf("the order page:\n%s", p)
+	}
+	x.mustPoll()
+	if s := x.settlement(id); s.State != "relayed" || x.waitClass(id) != "" || len(relayed()) != relays+2 || relayed()[relays] != relayed()[relays+1] {
+		t.Fatalf("the confirmed relay under the gate after a refusal: %s %q, relay_tx %d", s.State, x.waitClass(id), len(relayed())-relays)
+	}
+	agExec(x.testEnv, "DELETE FROM settings WHERE key='payments_recovery_required'")
 }
 
 // A-425 (M22): a free slot is written only when get_address of the new account's address 0 is the address

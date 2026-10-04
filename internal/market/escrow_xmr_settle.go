@@ -68,6 +68,7 @@ const (
 	xmrBadBuild        = "build-mismatch"        // the wallet's transaction failed the market's checks: flagged
 	xmrNothing         = "nothing-to-settle"     // no deposit is left to spend: failed
 	xmrRelayRefused    = "relay-refused"         // the daemon refused the stored transaction xmrRelayAttempts times in a row: failed
+	xmrBadMetadata     = "bad-metadata"          // relay_tx cannot parse the stored metadata (-27; only a corrupted row): failed
 	// relay_tx refused the stored transaction (-4) while the daemon does not have it and no other transaction spent its
 	// coins, recorded with the count of refusals in a row ("relay-refusing 1"): monero-wallet-rpc answers -4 for any
 	// failure of commit_tx, a lost connection to its daemon included, so the same stored metadata is relayed again on
@@ -127,8 +128,15 @@ func xmrSettleWaitText(class, kind string, threshold int64) string {
 		return "No confirmed deposit of this escrow is left to spend, so there is nothing to settle."
 	case class == xmrRelayRefused:
 		return "The Monero daemon refused the stored transaction and no other transaction spent its coins, so nothing was sent. Market staff were notified; an administrator may ask the market to build it again."
+	case class == xmrBadMetadata:
+		return "The escrow wallet cannot read the stored transaction (its record is damaged), so nothing was sent. Market staff were notified; an administrator may ask the market to build it again."
 	case strings.HasPrefix(class, xmrRelayRefusing+" "):
-		return "The Monero daemon refused this transaction (" + strings.TrimPrefix(class, xmrRelayRefusing+" ") + " time(s) in a row); no other transaction spent its coins. The market sends the same stored transaction again on its next pass, and records it as not sent if it is refused " + strconv.Itoa(xmrRelayAttempts) + " times in a row."
+		refusals, confirmed := xmrRelayRefusals(class)
+		text := "The Monero daemon refused this transaction (" + strconv.Itoa(refusals) + " time(s) in a row); no other transaction spent its coins. The market sends the same stored transaction again on its next pass, and records it as not sent if it is refused " + strconv.Itoa(xmrRelayAttempts) + " times in a row."
+		if confirmed {
+			text += " An administrator confirmed its relay after the market restored its records from a backup, so it is sent while the market reconciles them too."
+		}
+		return text
 	case class == xmrDestRefused+"-claimant" && kind == "release":
 		return "The escrow wallet refuses the vendor's claim address as invalid, so the market cannot send this settlement. Market staff were notified and contact the vendor."
 	case class == xmrDestRefused+"-claimant" || class == xmrDestRefused+"-buyer_return":
@@ -508,12 +516,14 @@ func (a *App) buildXMRSettlement(ctx context.Context, s *xmrSettleRow) error {
 	return a.relayXMRStored(ctx, s)
 }
 
-// xmrBuildRefused handles transfer's error for settlement s's plan. -17 (not enough money: the wallet sees fewer
-// spendable coins than it listed) is an outputs mismatch; -2 (WRONG_ADDRESS) a definite refusal of a destination,
-// named by asking validate_address about each output in turn; any other answer of the wallet a refusal recorded with
-// its code alone, flagged when it persists. A connection that ended after the whole request was sent (the wallet-rpc
-// went away while it built) is xmrBuildDropped, then xmrBuildSetAside. Any other transport error (refused, timeout,
-// credentials, a reply that is not one) is returned and retried on the next pass, unflagged and not counted.
+// xmrBuildRefused handles transfer's error for settlement s's plan (monero-wallet-rpc 0.18.5.1's codes). -17 (not
+// enough money: the wallet sees fewer spendable coins than it listed) is an outputs mismatch; -37 (not enough unlocked
+// money: they are not spendable yet, as after a reorganisation since incoming_transfers) a wait, never flagged; -2
+// (WRONG_ADDRESS) a definite refusal of a destination, named by asking validate_address about each output in turn; any
+// other answer of the wallet a refusal recorded with its code alone, flagged when it persists. A connection that ended
+// after the whole request was sent (the wallet-rpc went away while it built) is xmrBuildDropped, then
+// xmrBuildSetAside. Any other transport error (refused, timeout, credentials, a reply that is not one) is returned and
+// retried on the next pass, unflagged and not counted.
 func (a *App) xmrBuildRefused(ctx context.Context, s *xmrSettleRow, plan settlePlan, err error) error {
 	var re *xmrRPCError
 	if errors.As(err, &re) && re.Service == "wallet" && re.Dropped {
@@ -528,6 +538,8 @@ func (a *App) xmrBuildRefused(ctx context.Context, s *xmrSettleRow, plan settleP
 	switch re.Code {
 	case -17:
 		return a.xmrOutputsWait(ctx, s)
+	case -37:
+		return a.xmrSettleWaits(ctx, s, xmrWaitOutputs)
 	case -2:
 		class := xmrDestRefused
 		for _, o := range plan.Outputs {
@@ -653,8 +665,10 @@ func (a *App) storeXMRBuilt(ctx context.Context, s *xmrSettleRow, built xmrBuilt
 }
 
 // relayXMRStored relays settlement s's stored transaction (its metadata), and only that one: the same hash answered
-// is relayed; a definite refusal is resolved by xmrRelayRefused; any other error (a timeout, say) leaves it as it is,
-// and the next pass looks it up before it relays the same metadata again.
+// is relayed; a definite refusal is resolved by xmrRelayRefused; metadata the wallet cannot parse (-27, which only a
+// corrupted row explains, since the wallet made it) fails the settlement at once rather than being relayed again on
+// every pass; any other error (a timeout, say) leaves it as it is, and the next pass looks it up before it relays the
+// same metadata again.
 func (a *App) relayXMRStored(ctx context.Context, s *xmrSettleRow) error {
 	got, err := a.escrowXMR.rpc.relayTx(ctx, s.Metadata)
 	var re *xmrRPCError
@@ -665,6 +679,8 @@ func (a *App) relayXMRStored(ctx context.Context, s *xmrSettleRow) error {
 		return xmrBadReply("wallet", "relay_tx")
 	case errors.As(err, &re) && re.Service == "wallet" && re.Code == -4:
 		return a.xmrRelayRefused(ctx, s)
+	case errors.As(err, &re) && re.Service == "wallet" && re.Code == -27:
+		return a.failXMRSettlement(ctx, s, xmrBadMetadata)
 	}
 	return err
 }
@@ -718,22 +734,46 @@ func (a *App) xmrRelayRefused(ctx context.Context, s *xmrSettleRow) error {
 	if elsewhere {
 		return a.markXMRExternal(ctx, s)
 	}
-	refusals := 1
-	if n, ok := strings.CutPrefix(s.Wait, xmrRelayRefusing+" "); ok {
-		before, _ := strconv.Atoi(n)
-		refusals += before
-	}
-	if refusals < xmrRelayAttempts {
-		return a.xmrSettleWaits(ctx, s, xmrRelayRefusing+" "+strconv.Itoa(refusals))
+	before, confirmed := xmrRelayRefusals(s.Wait)
+	if refusals := before + 1; refusals < xmrRelayAttempts {
+		class := xmrRelayRefusing + " " + strconv.Itoa(refusals)
+		if confirmed {
+			class += " " + xmrRelayConfirmedMark
+		}
+		return a.xmrSettleWaits(ctx, s, class)
 	}
 	return a.failXMRSettlement(ctx, s, xmrRelayRefused)
 }
 
+// xmrRelayConfirmedMark ends the wait class of a counted refusal (xmrRelayRefusing) of a held settlement whose relay an
+// administrator confirmed (sendRebroadcastOK): "relay-refusing 1 confirmed". The confirmation then lasts through the
+// count, so the same stored metadata is still relayed under the restore gate until it takes effect or fails (closing
+// QA F7).
+const xmrRelayConfirmedMark = "confirmed"
+
+// xmrRelayRefusals reads a send_error: the refusals in a row it counts (xmrRelayRefusing; 0 for any other class), and
+// whether it carries an administrator's confirmation of the relay (sendRebroadcastOK, alone or with the count).
+func xmrRelayRefusals(sendErr string) (refusals int, confirmed bool) {
+	rest, ok := strings.CutPrefix(sendErr, xmrRelayRefusing+" ")
+	if !ok {
+		return 0, sendErr == sendRebroadcastOK
+	}
+	rest, confirmed = strings.CutSuffix(rest, " "+xmrRelayConfirmedMark)
+	refusals, _ = strconv.Atoi(rest)
+	return refusals, confirmed
+}
+
+// xmrRelayConfirmed reports whether send_error sendErr carries an administrator's confirmation of the relay.
+func xmrRelayConfirmed(sendErr string) bool {
+	_, confirmed := xmrRelayRefusals(sendErr)
+	return confirmed
+}
+
 // xmrMaySend reports whether the stored transaction of a settlement with send_error sendErr may be relayed now, as
 // maySend does for Bitcoin escrow: never while a restore holds it, and while the restore gate is set only once an
-// administrator confirmed it.
+// administrator confirmed it (that confirmation lasts through counted refusals, xmrRelayConfirmedMark).
 func xmrMaySend(gate bool, sendErr string) bool {
-	return !restoreHeld(sendErr) && (sendErr == sendRebroadcastOK || !gate)
+	return !restoreHeld(sendErr) && (xmrRelayConfirmed(sendErr) || !gate)
 }
 
 // sendXMRBuilt handles a built settlement found on a later pass (a relay whose answer was lost, or a restart mid-send):
@@ -791,7 +831,7 @@ func (a *App) markXMRRelayed(ctx context.Context, s *xmrSettleRow, seen bool) er
 // trackXMRRelayed follows a relayed settlement (step 3 of the file comment): mined with the confirmation threshold ->
 // confirmed; in the pool or a block below it -> waited for; unknown to the daemon -> external when another
 // transaction spent a stored key image, else the same stored metadata is relayed again (not under the restore gate or
-// a restore's hold).
+// a restore's hold), with relayXMRStored's handling of a refusal.
 func (a *App) trackXMRRelayed(ctx context.Context, s *xmrSettleRow, gate bool) error {
 	found, confirmations, err := a.xmrOnNetwork(ctx, s)
 	if err == nil && found && strings.HasPrefix(s.Wait, xmrRelayRefusing+" ") {
@@ -831,6 +871,8 @@ func (a *App) trackXMRRelayed(ctx context.Context, s *xmrSettleRow, gate bool) e
 		return xmrBadReply("wallet", "relay_tx")
 	case errors.As(err, &re) && re.Service == "wallet" && re.Code == -4:
 		return a.xmrRelayRefused(ctx, s)
+	case errors.As(err, &re) && re.Service == "wallet" && re.Code == -27:
+		return a.failXMRSettlement(ctx, s, xmrBadMetadata)
 	}
 	return err
 }

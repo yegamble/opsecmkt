@@ -41,6 +41,9 @@ Test-only controls (POST, JSON) on the escrow wallet-rpc's port, which the app n
                                                        take); a rebuilt one, with another hash, is taken
   /test/xmr/crash-transfer {"count"}                  the next count transfer calls end the connection unanswered and
                                                        leave no wallet open (a wallet-rpc that crashed and restarted)
+  /test/xmr/remove-wallet  {"name"}                   wallet file name is gone from the wallet directory (open_wallet
+                                                       then answers 0.18.5.1's file-not-found refusal); if it was open,
+                                                       no wallet is open (a wallet-rpc restarted on a volume without it)
 GET /test/xmr/state returns the chain (height, every transaction's outputs) and the wallet-rpc's wallets.
 """
 import json
@@ -963,6 +966,13 @@ class WalletRPC:
                 if not isinstance(n, int) or not 0 <= n <= 100:
                     raise ValueError('count: 0-100')
                 self.crash = n
+                return {'ok': True}
+            if path == '/test/xmr/remove-wallet':
+                w = self.files.pop(data.get('name'), None)
+                if w is None:
+                    raise ValueError('no such wallet')
+                if self.open is w:
+                    self.open = None
                 return {'ok': True}
             raise ValueError('unknown test endpoint')
 
