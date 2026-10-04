@@ -319,7 +319,7 @@ func TestXMREscrowOrderPanel(t *testing.T) {
 	x.mustPoll()
 	order := x.draft(x.digital(x.vendor))
 	draft := html.UnescapeString(x.page("/order?id="+order, x.buyerSess))
-	for _, want := range []string{xmrCustody, `action="/orders/escrow-xmr"`, `name="refund_address"`, "Or pay into a Monero escrow"} {
+	for _, want := range []string{a402Custody, `action="/orders/escrow-xmr"`, `name="refund_address"`, "Or pay into a Monero escrow"} {
 		if !strings.Contains(draft, want) {
 			t.Fatalf("the draft's checkout offer lacks %q:\n%s", want, draft)
 		}
@@ -328,7 +328,7 @@ func TestXMREscrowOrderPanel(t *testing.T) {
 	x.fake.payAddress(addr, hex64("panel-dep"), 123456789012, 4)
 	x.mustPoll()
 	buyer := x.panel(order, x.buyerSess)
-	for _, want := range []string{xmrCustody, addr, "0.5 XMR", "0.123456789012 XMR", "at least 10 confirmations", hex64("panel-dep"),
+	for _, want := range []string{a402Custody, addr, "0.5 XMR", "0.123456789012 XMR", "at least 10 confirmations", hex64("panel-dep"),
 		testXMRAddr("refund "+order, true), "2.5% of the price", `<div class="payment-address">`, `<p class="mono">` + addr,
 		`class="table-wrap payment-deposits" tabindex="0" role="region"`, "Waiting for confirmations"} {
 		if !strings.Contains(buyer, want) {
@@ -341,7 +341,7 @@ func TestXMREscrowOrderPanel(t *testing.T) {
 		}
 	}
 	vendor := x.panel(order, x.vendorSess)
-	if strings.Contains(vendor, testXMRAddr("refund "+order, true)) || !strings.Contains(vendor, xmrCustody) {
+	if strings.Contains(vendor, testXMRAddr("refund "+order, true)) || !strings.Contains(vendor, a402Custody) {
 		t.Fatalf("vendor's panel:\n%s", vendor)
 	}
 	if page := x.page("/order?id="+order, x.buyerSess); strings.Contains(page, "Request payment address") || strings.Contains(page, "Bitcoin escrow") {

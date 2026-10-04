@@ -58,7 +58,10 @@ func autoDeliveryHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, t
 	}
 	if takenDown {
 		note := "Not delivered automatically: an administrator took this listing down. The vendor can deliver by hand or cancel and refund."
-		if o.Escrow { // cancelling a funded escrow order requests its refund, a settlement (escrowSettleTerminal)
+		switch {
+		case o.Escrow && o.Currency == "XMR": // a Monero escrow's refund is built and sent by the market alone (P3-R8)
+			note = "Not delivered automatically: an administrator took this listing down. The vendor can deliver by hand, or cancel: the escrow is then refunded to the buyer's refund address by a transaction the market builds and sends."
+		case o.Escrow: // cancelling a funded escrow order requests its refund, a settlement (escrowSettleTerminal)
 			note = "Not delivered automatically: an administrator took this listing down. The vendor can deliver by hand, or cancel: the escrow is then refunded to the buyer by a settlement the buyer or the vendor signs."
 		}
 		_, err := tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, statePaid, note)

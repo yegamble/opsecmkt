@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -60,6 +61,17 @@ import (
 // xmrMinConfirmations is the least number of confirmations at which a Monero escrow deposit counts (P3-R5): the
 // 10-block lock of a received output, so a release can spend what funded it.
 const xmrMinConfirmations = 10
+
+// xmrReorgSafeDepth is the depth at which a Monero escrow deposit is no longer expected to move (the 100 confirmations a
+// settlement is followed to, P3-R6). A deposit's stored confirmations stop there (xmrConfirmationsCeiling), so a row
+// whose transaction is that deep is not rewritten, nor its order settled again, on every block.
+const xmrReorgSafeDepth = 100
+
+// xmrConfirmationsCeiling is the most confirmations stored for a Monero escrow deposit: xmrReorgSafeDepth, or the
+// deposit threshold when PAYMENT_CONFIRMATIONS_XMR sets it higher. Nothing reads a deposit's confirmations against a
+// number above it: funding and the payment window compare them with the threshold, and the order page says "or more"
+// at the ceiling. A shallower reading (a reorganisation) is still stored.
+func xmrConfirmationsCeiling(threshold int64) int64 { return max(xmrReorgSafeDepth, threshold) }
 
 // xmrEscrowNetwork names Monero escrow's chain in notes ("TESTNET fakechain").
 const xmrEscrowNetwork = "fakechain"
@@ -309,9 +321,12 @@ func (a *App) xmrEnsureWallets(ctx context.Context, now time.Time) error {
 	return nil
 }
 
-// xmrCreateWallet creates wallet name for row id and seals it. resume is a row found creating at the start of the pass:
-// a file of that name is the one its earlier create_wallet made (the answer was lost), so it is opened and sealed. A
-// new row whose name a file already has is marked orphan instead and the administrators are told.
+// xmrCreateWallet creates wallet name for row id and seals it. A new row whose name a file already has is marked orphan
+// and the administrators are told. resume is a row found creating at the start of the pass: a file of that name may be
+// the one its earlier create_wallet made (the answer was lost), but a database restored from an older backup can also
+// leave a creating row whose name a wallet of lost orders has, opened by the same derived password. So the file is
+// adopted only when it is provably as create_wallet leaves a wallet (xmrWalletFresh); anything else is an orphan too
+// and never sealed (P3-R10): its unfunded accounts would otherwise become free slots for new buyers.
 func (a *App) xmrCreateWallet(ctx context.Context, id int64, name string, resume bool) error {
 	x := a.escrowXMR
 	password := xmrWalletPassword(x.secret, name)
@@ -321,12 +336,45 @@ func (a *App) xmrCreateWallet(ctx context.Context, id int64, name string, resume
 		if !resume {
 			return a.xmrOrphanWallet(ctx, id, name)
 		}
-		err = x.rpc.openWallet(ctx, name, password)
-	}
-	if err != nil {
+		if err = x.rpc.openWallet(ctx, name, password); err != nil {
+			return err
+		}
+		if err = a.recheckEscrowXMRNetwork(ctx); err != nil {
+			return err
+		}
+		fresh, err := xmrWalletFresh(ctx, x.rpc)
+		if err != nil {
+			return err
+		}
+		if !fresh {
+			return a.xmrOrphanWallet(ctx, id, name)
+		}
+	} else if err != nil {
 		return err
 	}
 	return a.xmrSealWallet(ctx, id)
+}
+
+// xmrWalletFresh reports whether the open wallet is as create_wallet leaves it: account 0 alone, a zero balance, and
+// no transfer in, out, pending, failed or in the pool on any account.
+func xmrWalletFresh(ctx context.Context, r *xmrEscrowRPC) (bool, error) {
+	accounts, err := r.accounts(ctx)
+	if err != nil {
+		return false, err
+	}
+	if len(accounts) != 1 || accounts[0].Index != 0 || accounts[0].Balance != 0 || accounts[0].Unlocked != 0 {
+		return false, nil
+	}
+	var res map[string][]json.RawMessage
+	if err = r.walletCall(ctx, "get_transfers", map[string]any{"in": true, "out": true, "pending": true, "failed": true, "pool": true, "all_accounts": true}, &res); err != nil {
+		return false, err
+	}
+	for _, list := range res {
+		if len(list) > 0 {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // xmrOrphanWallet marks row id orphan: its name belongs to a wallet file the database has no row for.
@@ -383,8 +431,9 @@ func (a *App) xmrSealWallet(ctx context.Context, id int64) error {
 	return x.rpc.store(ctx)
 }
 
-// xmrActivate makes the newest sealed wallet whose month has started active, and every other active wallet closing
-// with its free slots retired, in one transaction. An active wallet stays active until a newer one is sealed.
+// xmrActivate makes the newest sealed wallet whose month has started active, and every other active wallet (and any
+// older sealed one) closing with its free slots retired, in one transaction. An active wallet stays active until a newer
+// one is sealed.
 func (a *App) xmrActivate(ctx context.Context, now time.Time) error {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -401,8 +450,11 @@ func (a *App) xmrActivate(ctx context.Context, now time.Time) error {
 	if err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, `WITH closed AS (UPDATE xmr_escrow_wallets SET state='closing',updated=now() WHERE state='active' RETURNING id)
-		UPDATE xmr_escrow_slots SET state='retired',updated=now() WHERE state='free' AND wallet_id IN (SELECT id FROM closed)`); err != nil {
+	// An older sealed wallet that was never activated (the market was down through its month) closes too, so it is not
+	// left sealed and read on every pass for good.
+	if _, err = tx.ExecContext(ctx, `WITH closed AS (UPDATE xmr_escrow_wallets SET state='closing',updated=now()
+			WHERE id<>$1 AND (state='active' OR state='sealed' AND month <= (SELECT month FROM xmr_escrow_wallets WHERE id=$1)) RETURNING id)
+		UPDATE xmr_escrow_slots SET state='retired',updated=now() WHERE state='free' AND wallet_id IN (SELECT id FROM closed)`, id); err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, "UPDATE xmr_escrow_wallets SET state='active',updated=now() WHERE id=$1", id); err != nil {
@@ -506,6 +558,7 @@ func (a *App) xmrRecordTransfers(ctx context.Context, w xmrWalletRow, slots map[
 	var keys []key
 	funded := map[int64]bool{}
 	mined := map[key]bool{}
+	ceiling := xmrConfirmationsCeiling(a.escrowXMR.confirmations)
 	for _, pool := range []bool{false, true} {
 		for _, t := range transfers {
 			if (t.Type == "pool") != pool || t.Amount <= 0 {
@@ -524,6 +577,7 @@ func (a *App) xmrRecordTransfers(ctx context.Context, w xmrWalletRow, slots map[
 			if t.DoubleSpendSeen {
 				confs = -1 // as the pooled adapter reads it: conflicted, never counted
 			}
+			confs = min(confs, ceiling)
 			in := sums[k]
 			if in == nil {
 				in = &Incoming{TxID: t.TxID, Index: xmrPaymentIdx(w.id, t.Account), Confirmations: confs}
