@@ -352,7 +352,17 @@ after the restore gate is cleared (both lines act only while that escrow is on).
 line makes escrow checkout wait until the escrow watcher has reserved the keys of every escrow its watch-only wallet
 holds and the restored records lack, and the `escrow_index_floors` and `setval` lines move every account's next escrow
 child index and the market's escrow key index 50 past the restored records, so no escrow key is handed out twice (A-366;
-omit those two lines if the database has no `escrow_index_floors` table, before migration 083).
+omit those two lines if the database has no `escrow_index_floors` table, before migration 083). For Monero escrow
+(`ESCROW_XMR`, local fakechain only), the `xmr_settlements` line holds every restored Monero escrow settlement with a
+stored transaction (built or relayed) with the same marker until an administrator confirms its relay on `/admin`, the
+`xmr_escrow_slots` line retires every free Monero escrow account and the `xmr_escrow_wallets` line moves every active or
+sealed Monero escrow wallet to closing, so no restored wallet takes an order again (omit those three lines if the
+database has no `xmr_settlements.send_error` column, before migration 085); the `xmr_escrow_sweep_required` line makes
+Monero escrow checkout wait until the Monero escrow watcher has found the escrow wallets created after the backup
+(each is sealed to the seed key and kept, never offered to a new order) and checked every escrow wallet. After restoring
+only the escrow wallet volume from an older backup, run that settings line alone: the watcher then also raises the
+subaddress lookahead of each escrow wallet older than the database and rescans it, so deposits to the accounts it does
+not know are seen.
 
 <!-- runbook-sql: restore-protection -->
 ```sql
@@ -364,6 +374,8 @@ ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
 INSERT INTO settings(key,value) VALUES ('escrow_xmr_release_recheck','true')
 ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
 INSERT INTO settings(key,value) VALUES ('escrow_sweep_required','true')
+ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
+INSERT INTO settings(key,value) VALUES ('xmr_escrow_sweep_required','true')
 ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
 UPDATE payouts SET state='held', updated=now(),
   error='Restored from backup: verify in the wallet before releasing; this payout may already have been sent.'
@@ -377,6 +389,10 @@ UPDATE settlements SET send_error='Restored from backup: check that this escrow 
 WHERE raw_tx IS NOT NULL AND state IN ('signed','broadcast');
 UPDATE settlement_bumps SET send_error='Restored from backup: check that this escrow settlement''s transaction was not already sent or replaced, then confirm its rebroadcast on the admin page.', updated=now()
 WHERE raw_tx IS NOT NULL AND state IN ('signed','broadcast');
+UPDATE xmr_settlements SET send_error='Restored from backup: check that this escrow settlement''s transaction was not already sent or replaced, then confirm its rebroadcast on the admin page.', updated=now()
+WHERE state IN ('built','relayed');
+UPDATE xmr_escrow_slots SET state='retired', updated=now() WHERE state='free';
+UPDATE xmr_escrow_wallets SET state='closing', updated=now() WHERE state IN ('active','sealed');
 INSERT INTO escrow_index_floors(user_id,next_index)
 SELECT k.user_id, GREATEST(COALESCE(max(split_part(p.derivation_suffix,'/',3)::bigint),0)+1, COALESCE(max(f.next_index),1))+50
 FROM user_escrow_keys k
