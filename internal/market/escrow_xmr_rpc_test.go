@@ -264,7 +264,7 @@ func TestXMREscrowRPCPinsParams(t *testing.T) {
 		{wallet, "/json_rpc", "change_wallet_password", `{"new_password":"new","old_password":"old"}`, func() error { return r.changeWalletPassword(ctx, "old", "new") }},
 		{wallet, "/json_rpc", "set_subaddress_lookahead", `{"major_idx":60,"minor_idx":5,"password":"pw"}`, func() error { return r.setSubaddressLookahead(ctx, "pw", 60, 5) }},
 		{wallet, "/json_rpc", "rescan_blockchain", `{"hard":false}`, func() error { return r.rescan(ctx) }},
-		{wallet, "/json_rpc", "open_wallet", `{"filename":"escrow-202610-02","password":"pw"}`, func() error { _, err := r.probeWallet(ctx, "escrow-202610-02", "pw"); return err }},
+		{wallet, "/json_rpc", "open_wallet", `{"autosave_current":false,"filename":"escrow-202610-02","password":"pw"}`, func() error { _, err := r.probeWallet(ctx, "escrow-202610-02", "pw"); return err }},
 		{wallet, "/json_rpc", "get_transfers", `{"all_accounts":true,"pending":true,"pool":true}`, func() error { _, err := r.inPool(ctx); return err }},
 		{daemon, "/json_rpc", "get_info", ``, func() error { _, err := r.daemonInfo(ctx); return err }},
 		{daemon, "/json_rpc", "hard_fork_info", ``, func() error { _, err := r.hardForkVersion(ctx); return err }},

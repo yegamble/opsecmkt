@@ -8,7 +8,8 @@
 #     OpenPGP key (the seal decrypts with the test's private key, and restore_deterministic_wallet from it at the stored
 #     restore height gives the stored primary address), activates it and keeps 5 free slots, each a real account whose
 #     address 0 is the slot's; account 0 holds nothing. On the watcher's clock the next month's wallet is then created
-#     sealed 6 days ahead and becomes active at its month's start, the first closing with its free slots retired.
+#     sealed 6 days ahead and becomes active at its month's start, the first closed with its free slots retired (and
+#     retained, having no order).
 #   Funding: a buyer takes a Monero escrow through the real checkout form; the funder pays its price; in the pool it is
 #     recorded at 0 confirmations; at 9 confirmations (as the daemon counts them) nothing counts; at 10 the digital
 #     order completes on funding (content delivered, no payout). Each leg waits until the escrow wallet has refreshed to
@@ -39,6 +40,19 @@
 #     new blocks without it): back to relayed, the same transaction relayed again, confirmed again.
 #   External: while the release is built but not relayed, a wallet restored from the sealed seed sweeps the escrow
 #     account outside the market; the daemon refuses the market's transaction, and it is recorded external and flagged.
+# Slice X-f legs (internal/market/escrow_xmr_regtest_restore_test.go), a restore simulated with scripts/restore.sh's own
+# Monero SQL:
+#   Restore: the restore holds a built release whose relay the daemon lost, retires the free slots and closes the wallet;
+#     under the gate nothing is built or relayed; the sweep finds a wallet created after the "backup" (it opens with the
+#     derived password), seals it as an orphan (the seal restores to its primary address) and lists its funded account;
+#     after an administrator's confirmation the held release is relayed once (same transaction, no transfer) and
+#     confirms; once the gate is cleared the next checkout gets a new wallet's account, no address reused.
+#   Lookahead: a deposit to account 300, which the wallet does not know, is missed by its refresh with the default
+#     lookahead (the negative leg); the sweep raises the lookahead past it and rescans, and it funds the order.
+#   WrongSecret: with MONERO_WALLET_SECRET changed from the pinned one, Monero escrow is disabled, no wallet is created
+#     or opened, checkout answers 503.
+#   Destroy: a deposit on day 89 to a closed order's escrow is returned by a stray refund; on day 91 the retained wallet
+#     is destroyed (password replaced, seal wiped) and open_wallet with the derived password is refused.
 #
 # Needs a fakechain monerod and three monero-wallet-rpc instances attached to it (the App's escrow wallet-rpc, a funder
 # standing in for the buyer's wallet, and one used only to restore a sealed seed), plus a disposable PostgreSQL database.
@@ -98,13 +112,14 @@ log="${ESCROW_XMR_REGTEST_LOG:-artifacts/real-chain/test-escrow-xmr-regtest-$(da
 mkdir -p "$(dirname "$log")"
 echo "Monero escrow fakechain check (hard fork $version); transcript: $log"
 set +e
-go test -count=1 -timeout 30m -run '^TestXMREscrowRegtest(Wallets|Funding|TwoAccountsOneTx|Physical|RestartMidSend|RelayDropped|TopUp|Reorg|External)$' -v ./internal/market/ 2>&1 | tee "$log"
+go test -count=1 -timeout 45m -run '^TestXMREscrowRegtest(Wallets|Funding|TwoAccountsOneTx|Physical|RestartMidSend|RelayDropped|TopUp|Reorg|External|Restore|Lookahead|WrongSecret|Destroy)$' -v ./internal/market/ 2>&1 | tee "$log"
 status=${PIPESTATUS[0]}
 set -e
 # Each leg is reported from its own go test result line, so one failing leg never makes another read as failed.
 failed=0
 for leg in TestXMREscrowRegtestWallets TestXMREscrowRegtestFunding TestXMREscrowRegtestTwoAccountsOneTx TestXMREscrowRegtestPhysical \
-  TestXMREscrowRegtestRestartMidSend TestXMREscrowRegtestRelayDropped TestXMREscrowRegtestTopUp TestXMREscrowRegtestReorg TestXMREscrowRegtestExternal; do
+  TestXMREscrowRegtestRestartMidSend TestXMREscrowRegtestRelayDropped TestXMREscrowRegtestTopUp TestXMREscrowRegtestReorg TestXMREscrowRegtestExternal \
+  TestXMREscrowRegtestRestore TestXMREscrowRegtestLookahead TestXMREscrowRegtestWrongSecret TestXMREscrowRegtestDestroy; do
   if grep -q -- "--- PASS: $leg " "$log"; then
     echo "PASS: $leg"
   elif grep -q -- "--- FAIL: $leg " "$log"; then
@@ -122,4 +137,4 @@ if [[ $status -ne 0 || $failed -ne 0 ]]; then
   echo "FAILED: go test exited $status; see $log" >&2
   exit 1
 fi
-echo "PASS: Monero escrow wallets (creation, sealed seed restored to its primary address, slots, account 0 empty, monthly rotation), funding at 10 confirmations and not at 9, one transaction paying two escrow accounts, physical orders (no spending call before the outcome; after Confirm receipt, the deadline, a dispute for the buyer and a no-ship cancel, each settlement relayed and confirmed), and settlements (stored before relay, never rebuilt across a lost relay answer and restarts, a top-up left out and stray-refunded, relayed again after a reorganisation, an outside spend recorded external; ring 16, rct type 6, fee within the cap), on a local fakechain; transcript in $log"
+echo "PASS: Monero escrow wallets (creation, sealed seed restored to its primary address, slots, account 0 empty, monthly rotation), funding at 10 confirmations and not at 9, one transaction paying two escrow accounts, physical orders (no spending call before the outcome; after Confirm receipt, the deadline, a dispute for the buyer and a no-ship cancel, each settlement relayed and confirmed), and settlements (stored before relay, never rebuilt across a lost relay answer and restarts, a top-up left out and stray-refunded, relayed again after a reorganisation, an outside spend recorded external; ring 16, rct type 6, fee within the cap), a restore (held release relayed once after confirmation, an orphan wallet found and sealed, free slots retired, a fresh wallet after it), the lookahead of a wallet missing an account, a changed secret refused, and a wallet destroyed after its retention with a day-89 deposit refunded first, on a local fakechain; transcript in $log"

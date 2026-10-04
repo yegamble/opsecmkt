@@ -15,7 +15,7 @@ import (
 //
 // Retention (xmrRetain, each pass). A wallet's last_closed_at is the latest close (completed, cancelled or resolved) of
 // an order whose account it holds, and destroy_after 90 days later; both only move later (migration 084). A closing
-// wallet with no open order is retained (from the time it is retained when none of its orders ever closed). A retained
+// wallet with no open order is retained (from that time on the watcher's clock when none of its orders closed). A retained
 // wallet is still read on every pass, so a deposit to a closed order's escrow within those 90 days is returned to the
 // order's refund address by a stray refund (escrow_xmr_settle.go).
 //
@@ -50,9 +50,9 @@ const xmrDestroyableSQL = `w.destroy_after <= $2
 	AND NOT EXISTS (SELECT 1 FROM xmr_escrow_slots s JOIN xmr_settlements x ON x.order_id=s.order_id WHERE s.wallet_id=w.id
 		AND (x.state IN ('requested','built','relayed') OR x.state='confirmed' AND x.reorg_safe_at IS NULL))`
 
-// xmrRetain records each wallet's last order close and retains each closing wallet with no open order (see the file
-// comment).
-func (a *App) xmrRetain(ctx context.Context) error {
+// xmrRetain records each wallet's last order close and retains each closing wallet with no open order at now (see the
+// file comment).
+func (a *App) xmrRetain(ctx context.Context, now time.Time) error {
 	if _, err := a.db.ExecContext(ctx, `WITH closed AS (SELECT s.wallet_id,max(e.created) AS at FROM xmr_escrow_slots s
 			JOIN orders o ON o.id=s.order_id AND o.state IN `+xmrClosedSQL+`
 			JOIN order_events e ON e.order_id=o.id AND e.to_state=o.state AND e.from_state IS DISTINCT FROM e.to_state
@@ -61,9 +61,9 @@ func (a *App) xmrRetain(ctx context.Context) error {
 		WHERE w.id=closed.wallet_id AND w.state IN ('active','closing','retained','missing') AND (w.last_closed_at IS NULL OR w.last_closed_at<closed.at)`); err != nil {
 		return err
 	}
-	_, err := a.db.ExecContext(ctx, `UPDATE xmr_escrow_wallets w SET state='retained',last_closed_at=COALESCE(last_closed_at,now()),
-		destroy_after=COALESCE(destroy_after,now()+`+xmrRetention+`),updated=now()
-		WHERE state='closing' AND NOT EXISTS (SELECT 1 FROM xmr_escrow_slots s JOIN orders o ON o.id=s.order_id WHERE s.wallet_id=w.id AND o.state NOT IN `+xmrClosedSQL+`)`)
+	_, err := a.db.ExecContext(ctx, `UPDATE xmr_escrow_wallets w SET state='retained',last_closed_at=COALESCE(last_closed_at,$1),
+		destroy_after=COALESCE(destroy_after,$1::timestamptz+`+xmrRetention+`),updated=now()
+		WHERE state='closing' AND NOT EXISTS (SELECT 1 FROM xmr_escrow_slots s JOIN orders o ON o.id=s.order_id WHERE s.wallet_id=w.id AND o.state NOT IN `+xmrClosedSQL+`)`, now)
 	return err
 }
 

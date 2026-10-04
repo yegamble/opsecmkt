@@ -264,15 +264,16 @@ func (r *xmrEscrowRPC) changeWalletPassword(ctx context.Context, oldPassword, ne
 	return r.walletCallWithin(ctx, xmrWalletSlowTimeout, "change_wallet_password", map[string]any{"old_password": oldPassword, "new_password": newPassword}, nil)
 }
 
-// probeWallet opens wallet name as openWallet does, for the restore sweep (P3-R10): found is false when no such file
-// exists (open_wallet answers -1 for every failure; monero-wallet-rpc 0.18.5.1 names wallet2's file_not_found in the
-// message, which is read here and never kept). Any other refusal, a wrong password say, is an error. A failed
-// open_wallet leaves the wallet that was open, open.
+// probeWallet opens wallet name as openWallet does, for the restore sweep (P3-R10), without storing the wallet open
+// before (autosave_current false: each pass stores its wallets, and a probe of a name with no file would rewrite it
+// for nothing): found is false when no such file exists (open_wallet answers -1 for every failure; monero-wallet-rpc
+// 0.18.5.1 names wallet2's file_not_found in the message, which is read here and never kept). Any other refusal, a
+// wrong password say, is an error. A failed open_wallet leaves the wallet that was open, open.
 func (r *xmrEscrowRPC) probeWallet(ctx context.Context, name, password string) (found bool, err error) {
 	if !xmrWalletNameOK(name) {
 		return false, errXMRWalletName
 	}
-	err = r.wallet.callWithin(ctx, xmrWalletSlowTimeout, "/json_rpc", "open_wallet", map[string]any{"filename": name, "password": password}, nil)
+	err = r.wallet.callWithin(ctx, xmrWalletSlowTimeout, "/json_rpc", "open_wallet", map[string]any{"filename": name, "password": password, "autosave_current": false}, nil)
 	var re *rpcError
 	if errors.As(err, &re) && re.Code == -1 && strings.Contains(re.Message, "file not found") {
 		return false, nil

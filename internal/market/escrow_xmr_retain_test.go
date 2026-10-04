@@ -33,9 +33,9 @@ func restoreXMRSQL(t *testing.T) string {
 	return block
 }
 
-// restore does to this database what scripts/restore.sh does to a restored one for Monero escrow: the restore gate and
+// restoreBackup does to this database what scripts/restore.sh does to a restored one for Monero escrow: the restore gate and
 // the sweep marker its settings block writes, then its Monero escrow block, whose counts it returns.
-func (x *xmrEscrowEnv) restore() (held, retired, closed int) {
+func (x *xmrEscrowEnv) restoreBackup() (held, retired, closed int) {
 	x.t.Helper()
 	for _, key := range []string{"payments_recovery_required", xmrEscrowSweepKey} {
 		agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES($1,'true') ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value", key)
@@ -134,7 +134,7 @@ func TestXMREscrowRestoreRetiresSlots(t *testing.T) {
 		t.Fatalf("before the restore: %v", got)
 	}
 	free := x.slots("escrow-202610-01", "free")
-	held, retired, closed := x.restore()
+	held, retired, closed := x.restoreBackup()
 	if held != 2 || retired != free || closed != 2 {
 		t.Fatalf("restore counts: held %d retired %d (of %d free) closed %d", held, retired, free, closed)
 	}
@@ -200,7 +200,7 @@ func TestXMREscrowRestoreNoUnrecordedSlot(t *testing.T) {
 		}
 	})
 	x.fake.pay("escrow-202610-01", 7, hex64("lost order"), xmrListingPrice, 12)
-	x.restore()
+	x.restoreBackup()
 	x.clearGate()
 	agExec(x.testEnv, "DELETE FROM settings WHERE key=$1", xmrEscrowSweepKey)
 	x.mustPoll()
@@ -491,7 +491,7 @@ func TestXMREscrowOrphanSwept(t *testing.T) {
 	ours("escrow-202610-03", 3)
 	x.fake.pay("escrow-202610-03", 2, hex64("lost escrow"), xmrListingPrice, 12)
 	ours("escrow-202611-01", 2)
-	x.restore()
+	x.restoreBackup()
 	x.mustPoll()
 	if got := x.wallets(); !slices.Equal(got, []string{"escrow-202610-01:retained", "escrow-202610-02:orphan", "escrow-202610-03:retained", "escrow-202611-01:retained"}) {
 		t.Fatalf("after the sweep: %v", got)
@@ -577,7 +577,7 @@ func TestXMREscrowHeldSettlementConfirm(t *testing.T) {
 	if x.settlement(id).State != "built" || x.settlement(idLost).State != "relayed" {
 		t.Fatalf("before the restore: %+v %+v", x.settlement(id), x.settlement(idLost))
 	}
-	x.restore()
+	x.restoreBackup()
 	transfers, relays := x.fake.countOf("transfer"), x.fake.countOf("relay_tx")
 	x.mustPoll()
 	x.mustPoll()
@@ -643,7 +643,7 @@ func TestXMREscrowHeldSettlementConfirm(t *testing.T) {
 func TestXMREscrowSweepGatesCheckout(t *testing.T) {
 	x := newXMREscrowEnv(t)
 	x.mustPoll()
-	x.restore()
+	x.restoreBackup()
 	x.clearGate()
 	draft := x.draft(x.product)
 	refused := func(when string) {
@@ -690,7 +690,7 @@ func TestXMREscrowLookaheadForOlderWallet(t *testing.T) {
 	if got := x.mustCheckout(order); got != addr {
 		t.Fatalf("checkout took %s", got)
 	}
-	x.restore()
+	x.restoreBackup()
 	// The wallet file is an older copy: it knows account 0 only.
 	x.fake.edit(func(f *fakeXMREscrow) { f.files[name].accounts = f.files[name].accounts[:1] })
 	x.fake.pay(name, 300, hex64("deep account"), xmrListingPrice, 12)

@@ -25,7 +25,7 @@ import (
 // once one pass did all of it:
 //
 //   - xmrSweepProbe opens the wallet names escrow-YYYYMM-NN after the newest row of each month from the month of the
-//     newest wallet row or order (the backup is no older) to next month. A wallet that opens with the derived password
+//     newest wallet row or order (the backup is no older), or 12 months back at most, to next month. A wallet that opens with the derived password
 //     and passes the network check is a wallet created after the backup: xmrSealOrphan records it as an orphan with
 //     its seed sealed to the pinned key (restore height 0, since its true one is unknown), lists its funded accounts to
 //     the administrators and retains it, so it never offers a slot and is destroyed by the usual rule (its accounts are
@@ -63,6 +63,9 @@ func (a *App) xmrSweepProbe(ctx context.Context, now time.Time) error {
 	from := monthStart(now)
 	if newest.Valid && newest.Time.Before(from) {
 		from = monthStart(newest.Time.UTC())
+	}
+	if oldest := monthStart(now).AddDate(-1, 0, 0); from.Before(oldest) {
+		from = oldest
 	}
 	for m := from; !m.After(monthStart(now).AddDate(0, 1, 0)); m = m.AddDate(0, 1, 0) {
 		var n int
@@ -165,7 +168,7 @@ func (a *App) xmrSealOrphan(ctx context.Context, id int64, name string) error {
 	if err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, "UPDATE xmr_escrow_wallets SET state='retained',last_closed_at=now(),destroy_after=now()+"+xmrRetention+",updated=now() WHERE id=$1", id); err != nil {
+	if _, err = tx.ExecContext(ctx, "UPDATE xmr_escrow_wallets SET state='retained',last_closed_at=$2,destroy_after=$2::timestamptz+"+xmrRetention+",updated=now() WHERE id=$1", id, x.clock()); err != nil {
 		return err
 	}
 	coins := "None of its accounts holds coins."

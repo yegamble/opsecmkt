@@ -241,7 +241,7 @@ func (a *App) xmrEscrowPollOnce(ctx context.Context) error {
 			errs = append(errs, err)
 		}
 	}
-	if err = a.xmrRetain(ctx); err != nil {
+	if err = a.xmrRetain(ctx, now); err != nil {
 		errs = append(errs, err)
 	}
 	// After a restore, the sweep (escrow_xmr_restore.go) is complete only when the probe and every wallet's check passed.
