@@ -676,7 +676,8 @@ has run on a public test network. Never switch it on for a market that takes rea
   pooled order is, and its refund requested; the buyer is told. A top-up within the window still completes it. A
   deposit Core reports as conflicted (negative confirmations), or no longer lists, does not count, so it does not keep
   the order open; if it confirms after the order was cancelled and no refund spends it, it is returned by a stray
-  refund (*Stray refunds* below; A-428).
+  refund (*Stray refunds* below; A-428), except on an order whose refund failed because the escrow's coins were too
+  few: there it stays in the escrow and is not returned automatically (see *Stray refunds*; A-435).
 - **Fingerprint pin.** At the first start with escrow on, the app reads the arbiter wallet's master key fingerprint
   (from a fresh change address, with `getrawchangeaddress` and `getaddressinfo`) and pins it in the database
   (`settings` key `escrow_btc_arbiter_fingerprint`). If a later start finds another fingerprint, for example a
@@ -920,6 +921,17 @@ broadcast.
   requests the stray refund, or tells the buyer it found nothing. A daily check reads every escrow (the first one 24
   hours after escrow first runs on the database; `settings` key `escrow_btc_stray_check`), one
   `listreceivedbyaddress` per 200 escrows plus one `gettransaction` per deposit transaction.
+  A stray refund whose coins are too few to pay the network fee and an output of at least 0.0001 BTC fails once
+  ("not built", a note and a notice to both parties). No other is requested while the coins it could spend are worth
+  no more than then (a deposit gaining confirmations changes nothing); a further deposit, once confirmed, makes them
+  more and the next pass tries again. The buyer's *Recover coins at this escrow* is answered, once per request, that
+  the coins are too few to return after the network fee (A-434).
+  Not returned automatically (A-435): a deposit that did not count (conflicted, or no longer listed) on a cancelled
+  order whose refund failed because the escrow's coins were too few. It is not left out or flagged and staff are not
+  told; the order page lists it as a confirmed deposit, its status still points to the refund, whose line says the
+  coins stay in the escrow, and the buyer's *Recover coins at this escrow* reports that no coins were found. The
+  market cannot move it on its own (it holds one of the three keys): the buyer and the vendor can move the escrow's
+  coins together from their own wallets, as the refund's note says.
 
 **Physical orders (Phase 2).** Everything above applies to physical listings too, with these additions. All of it is
 regtest only, behind `ESCROW_BTC`, and tested as [per-order escrow](escrow.md#phase-2-bitcoin-escrow-for-physical-orders-on-regtest)

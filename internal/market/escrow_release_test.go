@@ -471,6 +471,10 @@ func TestEscrowTopUpWhileShipped(t *testing.T) {
 	if page := x.page("/order?id="+order, modSess); !strings.Contains(page, txidOf("topup-shipped")) {
 		t.Fatal("the moderator told of the top-up cannot read the order")
 	}
+	// The order is open, so its page says the stray refund comes once it is closed (QA428-5).
+	if page := x.page("/order?id="+order, x.buyerSess); !strings.Contains(page, "by a stray refund once the order is closed and it is confirmed") {
+		t.Fatalf("buyer page of the open order with a top-up:\n%s", page)
+	}
 	// The order completes by both signatures; the stray refund then returns the top-up to the refund address.
 	x.signAs(order, roleVendor, id)
 	x.signAs(order, roleBuyer, id)

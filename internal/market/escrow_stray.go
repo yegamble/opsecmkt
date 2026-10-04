@@ -97,6 +97,15 @@ func (a *App) requestStrays(ctx context.Context, threshold int64, orders []strin
 
 // requestStray requests one order's stray refund (state building, to the pinned refund address), or answers the
 // buyer's request when there is nothing to return, in one transaction under the escrow row's lock.
+//
+// A-434: when the order's latest stray refund failed too-small and the deposits it could spend now are worth no more
+// than the ones it could spend then (its input_total, failSettlement), no other is requested: the same coins would fail
+// the same way, with a note and notices on every pass. Only a deposit newly eligible since (sent, confirmed, or left
+// out after that failure) makes them worth more and tries again. The comparison is by value, not by timestamp:
+// payments.updated moves with every confirmation a deposit gains, so a deposit the failed refund could already spend
+// would look new at each block, and payments.created misses a deposit recorded before the failure that confirmed or
+// was left out after it (A-428's conflicted deposit). A failure stored before A-434 has no input_total and is tried
+// once more, which records it.
 func (a *App) requestStray(ctx context.Context, threshold int64, orderID string) error {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -106,19 +115,30 @@ func (a *App) requestStray(ctx context.Context, threshold int64, orderID string)
 	var requested, open bool
 	var buyer, state string
 	var sum, n, pending int64
+	var tooSmall sql.NullInt64
 	if err = tx.QueryRowContext(ctx, `SELECT es.recover_requested IS NOT NULL,o.buyer_id,o.state,
 			EXISTS(SELECT 1 FROM settlements s WHERE s.order_id=es.order_id AND s.kind='stray_refund' AND s.state IN ('building','awaiting_signature','party_signed','signed','broadcast')),
 			(SELECT COALESCE(sum(p.amount),0) FROM payments p WHERE p.order_id=es.order_id AND `+strayEligibleSQL+`),
 			(SELECT count(*) FROM payments p WHERE p.order_id=es.order_id AND `+strayEligibleSQL+`),
-			(SELECT count(*) FROM payments p WHERE p.order_id=es.order_id AND p.settlement_id IS NULL AND NOT p.locked AND p.confirmations BETWEEN 0 AND $2-1 AND (p.after_close OR p.escrow_left_out))
-		FROM escrows es JOIN orders o ON o.id=es.order_id WHERE es.order_id=$1 AND es.coin='BTC' FOR UPDATE OF es`, orderID, threshold).Scan(&requested, &buyer, &state, &open, &sum, &n, &pending); err != nil {
+			(SELECT count(*) FROM payments p WHERE p.order_id=es.order_id AND p.settlement_id IS NULL AND NOT p.locked AND p.confirmations BETWEEN 0 AND $2-1 AND (p.after_close OR p.escrow_left_out)),
+			(SELECT CASE WHEN s.state='failed' AND s.build_error=$3 THEN s.input_total END FROM settlements s WHERE s.order_id=es.order_id AND s.kind='stray_refund' ORDER BY s.id DESC LIMIT 1)
+		FROM escrows es JOIN orders o ON o.id=es.order_id WHERE es.order_id=$1 AND es.coin='BTC' FOR UPDATE OF es`, orderID, threshold, settleTooSmall).Scan(
+		&requested, &buyer, &state, &open, &sum, &n, &pending, &tooSmall); err != nil {
 		return err
 	}
 	if !isTerminal(state) {
 		return nil
 	}
+	held := n > 0 && tooSmall.Valid && sum <= tooSmall.Int64
 	note, body := "", ""
 	switch {
+	case held && requested && !open:
+		note = "The market checked this escrow at the buyer's request. The " + amount(sum, 8) + " BTC in " + strconv.FormatInt(n, 10) + " deposit(s) at it that do not count for the order are too few to return after the network fee: its last stray refund could not be built for that reason, and no other was requested. Nothing was changed. The coins stay in the escrow; the buyer and the vendor can move them together from their own wallets."
+		if pending > 0 {
+			note += " A deposit to it is still confirming; once it has " + strconv.FormatInt(threshold, 10) + " confirmations the market tries a stray refund again."
+		}
+		body = note
+	case held:
 	case n > 0 && !open:
 		var by any
 		if requested {

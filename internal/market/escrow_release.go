@@ -277,9 +277,11 @@ func (a *App) leaveOutTopUps(ctx context.Context, tx *sql.Tx, o *Order) error {
 // keeps them: they counted, its note says they stay in the escrow, and a stray refund of them would fail the same
 // way), every deposit that has reached the confirmation threshold, that no settlement spends and that was neither
 // recorded after the order closed nor already left out (A-428): one Core reported as conflicted (negative
-// confirmations) or no longer listed (markMissing) when the order was cancelled, so it did not count, mined since. As
-// leaveOutTopUps does, in tx under the order row lock: one order note, a notice to the buyer and to staff, only for
-// the deposits newly marked. The stray refund returns them to the buyer's refund address. xmrLeaveOutUncounted is the
+// confirmations) or no longer listed (markMissing) when the order was cancelled, so it did not count, mined since; or
+// one a refund did not spend because Core reported it so while the refund was being built (which then failed with
+// nothing to settle), or because that refund ended external before it was built (QA428-4). As leaveOutTopUps does,
+// in tx under the order row lock: one order note, a notice to the buyer and to staff, only for the deposits newly
+// marked. The stray refund returns them to the buyer's refund address. xmrLeaveOutUncounted is the
 // Monero escrow's (A-424).
 func (a *App) leaveOutUncounted(ctx context.Context, tx *sql.Tx, o *Order, threshold int64) error {
 	if o.State != stateCancelled {
@@ -293,12 +295,12 @@ func (a *App) leaveOutUncounted(ctx context.Context, tx *sql.Tx, o *Order, thres
 		SELECT count(*),COALESCE(sum(amount),0) FROM m`, o.ID, threshold, settleTooSmall).Scan(&n, &sum); err != nil || n == 0 {
 		return err
 	}
-	count := "1 deposit"
+	count, is, it, stays := "1 deposit", "is", "it", "It stays"
 	if n > 1 {
-		count = strconv.FormatInt(n, 10) + " deposits"
+		count, is, it, stays = strconv.FormatInt(n, 10)+" deposits", "are", "them", "They stay"
 	}
-	note := count + " (" + amount(sum, 8) + " BTC, " + a.netTag() + " " + a.escrowNetwork() + ") to this order's escrow did not count for the order when it was cancelled (the escrow node reported them as conflicted, or no longer listed them), and no refund spends them. " +
-		"They have confirmed since and stay in the escrow; a stray refund returns them, less the network fee, to the buyer's refund address given at checkout. Do not send more coins to this escrow."
+	note := count + " (" + amount(sum, 8) + " BTC, " + a.netTag() + " " + a.escrowNetwork() + ") to this order's escrow, now confirmed, " + is + " not spent by any refund of this order: the escrow node reported " + it + " as conflicted, or no longer listed " + it + ", when the order was cancelled or while its refund was being built, or that refund ended without spending " + it + ". " +
+		stays + " in the escrow; a stray refund returns " + it + ", less the network fee, to the buyer's refund address given at checkout. Do not send more coins to this escrow."
 	if err := a.flagOrder(ctx, tx, o, note, ""); err != nil {
 		return err
 	}
