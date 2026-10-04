@@ -2,6 +2,7 @@ package market
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"math/rand/v2"
@@ -9,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -152,6 +154,43 @@ func (r *xmrRegtest) mine(n int) {
 	}
 	if h != want {
 		r.t.Fatalf("mined to height %d, want %d", h, want)
+	}
+}
+
+// TestXMRRegtestMineRetries: the legs' block generation survives transient daemon errors (QA on X-e saw a
+// generateblocks error on a loaded machine): it retries from the height the daemon reached and ends exactly at the
+// height asked for. Unit test against a simulated daemon; it needs no node.
+func TestXMRRegtestMineRetries(t *testing.T) {
+	daemon := newFakeXMRNode(t)
+	var mu sync.Mutex
+	height, calls := int64(500), 0
+	daemon.set("get_info", func(json.RawMessage) (any, int, string) {
+		mu.Lock()
+		defer mu.Unlock()
+		return map[string]any{"height": height}, 0, ""
+	})
+	daemon.set("generateblocks", func(p json.RawMessage) (any, int, string) {
+		mu.Lock()
+		defer mu.Unlock()
+		if calls++; calls == 1 || calls == 3 {
+			height += 7 // mined part of the batch, then failed
+			return nil, -1, "Busy"
+		}
+		var q struct {
+			N int64 `json:"amount_of_blocks"`
+		}
+		json.Unmarshal(p, &q)
+		height += q.N
+		return map[string]any{"height": height}, 0, ""
+	})
+	c, err := newRPCClient("fake daemon", daemon.URL, "2.0", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &xmrRegtest{xmrEscrowEnv: &xmrEscrowEnv{testEnv: &testEnv{t: t}}, daemon: c}
+	r.mine(45)
+	if height != 545 || calls < 4 {
+		t.Fatalf("height %d after %d generateblocks calls, want 545", height, calls)
 	}
 }
 
