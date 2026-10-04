@@ -73,6 +73,10 @@ var (
 type xmrRPCError struct {
 	Service, Method, Class string // Service: "wallet" or "daemon"
 	Code                   int64  // the JSON-RPC error code for class rpc:<code>
+	// Dropped: the connection ended after the whole request was sent, with no answer or a cut one (class unreachable or
+	// bad-reply): the node went away while it handled the call, as a monero-wallet-rpc that crashed building a
+	// transaction does. Never set for a connection refused, a timeout or an answer that is not JSON-RPC.
+	Dropped bool
 }
 
 func (e *xmrRPCError) Error() string {
@@ -86,7 +90,8 @@ func classifyXMRRPC(service, method string, err error) error {
 	}
 	var be *escrowRPCError
 	errors.As(classifyEscrowRPC(method, err), &be)
-	return &xmrRPCError{Service: service, Method: method, Class: be.Class, Code: be.Code}
+	var dropped *rpcDroppedError
+	return &xmrRPCError{Service: service, Method: method, Class: be.Class, Code: be.Code, Dropped: errors.As(err, &dropped)}
 }
 
 func xmrBadReply(service, method string) error {

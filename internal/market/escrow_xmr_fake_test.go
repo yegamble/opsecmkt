@@ -24,18 +24,18 @@ import (
 // double_spend_seen. The daemon is a fakechain at a height the test moves.
 //
 // Settlements (slice X-d). Each incoming transfer entry is one output with a key image, a frozen flag and an unlock
-// state (unlocked from 10 confirmations with no unlock time), listed by incoming_transfers until it is spent; freeze and
-// thaw set the flag. transfer from one account spends unfrozen unlocked outputs, newest first, until the destinations
-// are covered (-17 not enough money otherwise), takes the network fee (fakeXMRFee) from destination 0 alone when
-// subtract_fee_from_outputs is [0] (an address in invalid is refused, -2, as validate_address says), and with
-// do_not_relay only builds: the transaction is kept by its metadata and nothing is spent. relay_tx puts a built
-// transaction in the daemon's pool and marks its outputs spent; relaying it again answers the same hash (idempotent, as
-// monerod 0.18.5.1 does), and one whose key images another transaction spent is refused (-4, rejected by the daemon).
-// The daemon's pool and chain answer /get_transactions (missed_tx for an unknown hash; decoded as ring 16, rct type 6)
-// and /is_key_image_spent (1 on chain, 2 in the pool); mine, popBlocks (a reorganisation: the popped blocks'
-// transactions go back to the pool), flushPool and spendOutside (a wallet restored from the seed spends outputs outside
-// the market) move them. get_transfer_by_txid knows the transactions the
-// open wallet relayed (-8 otherwise).
+// state (unlocked from 10 confirmations with no unlock time), listed by incoming_transfers until it is spent; freeze
+// and thaw set the flag. transfer from one account spends unfrozen unlocked outputs, newest first, until the
+// destinations are covered (-17 not enough money otherwise), takes the network fee (fakeXMRFee) from destination 0
+// alone when subtract_fee_from_outputs is [0] (an address in invalid is refused, -2, as validate_address says; a
+// transfer to one in crash crashes the wallet-rpc, fakeXMRCrash), and with do_not_relay only builds: the transaction is
+// kept by its metadata and nothing is spent. relay_tx puts a built transaction in the daemon's pool and marks its
+// outputs spent; relaying it again answers the same hash (idempotent, as monerod 0.18.5.1 does), and one whose key
+// images another transaction spent is refused (-4, rejected by the daemon). The daemon's pool and chain answer
+// /get_transactions (missed_tx for an unknown hash; decoded as ring 16, rct type 6) and /is_key_image_spent (1 on
+// chain, 2 in the pool); mine, popBlocks (a reorganisation: the popped blocks' transactions go back to the pool),
+// flushPool and spendOutside (a wallet restored from the seed spends outputs outside the market) move them.
+// get_transfer_by_txid knows the transactions the open wallet relayed (-8 otherwise).
 //
 // Faults: a call can be made to take effect and then lose its answer (the connection closes, as a timeout after the
 // wallet acted does), to answer -13 (the wallet-rpc lost its open wallet), to be refused by the daemon (-4, relay_tx)
@@ -61,6 +61,7 @@ type fakeXMREscrow struct {
 	seq         int                   // numbers built transactions and key images
 	transferLie func(res map[string]any)
 	invalid     map[string]bool // addresses whose keys are not curve points: transfer refuses them (-2), validate_address says invalid
+	crash       map[string]bool // addresses a transfer to which crashes the wallet-rpc (fakeXMRCrash)
 }
 
 // fakeXMRTx is a settlement transaction transfer built, or one spendOutside made.
@@ -107,6 +108,11 @@ func (t *fakeXMRTransfer) unlocked() bool {
 
 type fakeXMRFault int
 
+// fakeXMRCrash is the code a handler returns for a wallet-rpc that crashed handling the call (monero-wallet-rpc
+// 0.18.5.1 building a transfer to some checksum-valid addresses whose keys are not usable): the connection closes with
+// no answer and the wallet-rpc comes back with no wallet open.
+const fakeXMRCrash = -1 << 40
+
 const (
 	fakeXMRDrop        fakeXMRFault = iota + 1 // the call takes effect, then the connection closes with no answer
 	fakeXMRNotOpen                             // the call answers -13: no wallet open
@@ -117,7 +123,7 @@ const (
 func newFakeXMREscrow(t *testing.T) *fakeXMREscrow {
 	t.Helper()
 	f := &fakeXMREscrow{t: t, height: 120, files: map[string]*fakeXMRWalletFile{}, faults: map[string][]fakeXMRFault{}, hooks: map[string]func(){},
-		handlers: map[string]func(*fakeXMREscrow, json.RawMessage) (any, int64, string){}, txs: map[string]*fakeXMRTx{}, built: map[string]*fakeXMRTx{}, invalid: map[string]bool{}}
+		handlers: map[string]func(*fakeXMREscrow, json.RawMessage) (any, int64, string){}, txs: map[string]*fakeXMRTx{}, built: map[string]*fakeXMRTx{}, invalid: map[string]bool{}, crash: map[string]bool{}}
 	for name, h := range fakeXMRWalletMethods {
 		f.handlers[name] = h
 	}
@@ -196,7 +202,7 @@ func (f *fakeXMREscrow) serve(w http.ResponseWriter, r *http.Request, wallet boo
 		}
 	}
 	f.mu.Unlock()
-	if fault == fakeXMRDrop {
+	if fault == fakeXMRDrop || code == fakeXMRCrash {
 		if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
 			conn.Close()
 		}
@@ -425,6 +431,10 @@ var fakeXMRWalletMethods = map[string]func(f *fakeXMREscrow, params json.RawMess
 		for _, d := range q.Destinations {
 			if f.invalid[d.Address] {
 				return nil, -2, "WALLET_RPC_ERROR_CODE_WRONG_ADDRESS: " + d.Address
+			}
+			if f.crash[d.Address] {
+				f.open = nil // restarted, as by a container restart policy: no wallet open
+				return nil, fakeXMRCrash, ""
 			}
 		}
 		var want, have int64

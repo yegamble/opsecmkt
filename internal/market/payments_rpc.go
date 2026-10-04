@@ -10,9 +10,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -175,7 +177,11 @@ func (c *rpcClient) exchange(ctx context.Context, timeout time.Duration, path, m
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, rpcMaxBody+1))
 	if err != nil {
-		return nil, 0, fmt.Errorf("%s RPC %s: reading response failed", c.name, method)
+		msg := fmt.Sprintf("%s RPC %s: reading response failed", c.name, method)
+		if ctx.Err() != nil {
+			return nil, 0, errors.New(msg) // cut short by the timeout, not by the node
+		}
+		return nil, 0, &rpcDroppedError{msg}
 	}
 	if len(raw) > rpcMaxBody {
 		return nil, 0, fmt.Errorf("%s RPC %s: response too large", c.name, method)
@@ -184,7 +190,9 @@ func (c *rpcClient) exchange(ctx context.Context, timeout time.Duration, path, m
 }
 
 func (c *rpcClient) send(ctx context.Context, path string, body []byte) (*http.Response, error) {
-	r, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint+path, bytes.NewReader(body))
+	var sent atomic.Bool // the whole request was written: an error after it is an rpcDroppedError
+	trace := &httptrace.ClientTrace{WroteRequest: func(w httptrace.WroteRequestInfo) { sent.Store(w.Err == nil) }}
+	r, err := http.NewRequestWithContext(httptrace.WithClientTrace(ctx, trace), http.MethodPost, c.endpoint+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("%s RPC: invalid request path", c.name)
 	}
@@ -208,10 +216,21 @@ func (c *rpcClient) send(ctx context.Context, path string, body []byte) (*http.R
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("%s RPC unreachable: timed out", c.name)
 		}
-		return nil, fmt.Errorf("%s RPC unreachable: %s", c.name, truncate(err.Error(), 160))
+		msg := fmt.Sprintf("%s RPC unreachable: %s", c.name, truncate(err.Error(), 160))
+		if sent.Load() {
+			return nil, &rpcDroppedError{msg}
+		}
+		return nil, errors.New(msg)
 	}
 	return resp, nil
 }
+
+// rpcDroppedError is a call whose connection ended after the whole request was written, with no answer or a cut one:
+// the node went away while it handled the call (a monero-wallet-rpc that crashed building a transaction). Its message
+// is the one any other transport error of that kind carries; a timeout is never one.
+type rpcDroppedError struct{ msg string }
+
+func (e *rpcDroppedError) Error() string { return e.msg }
 
 // digestHeader answers the cached challenge (RFC 7616, MD5, qop=auth) or returns "" before the first 401.
 func (c *rpcClient) digestHeader(path string) string {
