@@ -140,6 +140,7 @@ func (a *App) xmrSettleWallet(ctx context.Context, w xmrWalletRow) error {
 		if ctx.Err() != nil {
 			break
 		}
+		var err error
 		switch s.State {
 		case "requested":
 			if !gate {
