@@ -26,7 +26,8 @@ import (
 // a wallet name, path or address, and rpcClient's transport errors name the host.
 
 // xmrWalletSlowTimeout bounds the wallet calls that load, scan or rewrite a whole wallet: create_wallet, open_wallet,
-// close_wallet (which stores), refresh, store and change_wallet_password (which rewrites the keys file and stores).
+// close_wallet (which stores), refresh, store, change_wallet_password (which rewrites the keys file and stores) and
+// rescan_blockchain.
 // monero-wallet-rpc answers one request at a time; opening a wallet
 // rebuilds its subaddress table for every account (an escrow wallet holds one account per order, thousands a month,
 // P3-R12), refresh scans every block since the last pass and store rewrites the encrypted cache, so on a large wallet
@@ -263,13 +264,37 @@ func (r *xmrEscrowRPC) changeWalletPassword(ctx context.Context, oldPassword, ne
 	return r.walletCallWithin(ctx, xmrWalletSlowTimeout, "change_wallet_password", map[string]any{"old_password": oldPassword, "new_password": newPassword}, nil)
 }
 
-// setSubaddressLookahead sets how many accounts (major) and addresses per account (minor) a restored wallet scans
-// ahead of the last used one (P3-R10).
-func (r *xmrEscrowRPC) setSubaddressLookahead(ctx context.Context, major, minor int64) error {
+// probeWallet opens wallet name as openWallet does, for the restore sweep (P3-R10): found is false when no such file
+// exists (open_wallet answers -1 for every failure; monero-wallet-rpc 0.18.5.1 names wallet2's file_not_found in the
+// message, which is read here and never kept). Any other refusal, a wrong password say, is an error. A failed
+// open_wallet leaves the wallet that was open, open.
+func (r *xmrEscrowRPC) probeWallet(ctx context.Context, name, password string) (found bool, err error) {
+	if !xmrWalletNameOK(name) {
+		return false, errXMRWalletName
+	}
+	err = r.wallet.callWithin(ctx, xmrWalletSlowTimeout, "/json_rpc", "open_wallet", map[string]any{"filename": name, "password": password}, nil)
+	var re *rpcError
+	if errors.As(err, &re) && re.Code == -1 && strings.Contains(re.Message, "file not found") {
+		return false, nil
+	}
+	return err == nil, classifyXMRRPC("wallet", "open_wallet", err)
+}
+
+// setSubaddressLookahead sets how many accounts (major) and addresses per account (minor) the open wallet scans ahead
+// of the last one it knows, so a wallet older than the database sees deposits to accounts the database has (P3-R10).
+// monero-wallet-rpc checks the wallet's password and writes the lookahead into its keys file.
+func (r *xmrEscrowRPC) setSubaddressLookahead(ctx context.Context, password string, major, minor int64) error {
 	if major < 1 || minor < 1 || major > math.MaxUint32 || minor > math.MaxUint32 {
 		return errXMRLookahead
 	}
-	return r.walletCall(ctx, "set_subaddress_lookahead", map[string]any{"major": major, "minor": minor}, nil)
+	return r.walletCall(ctx, "set_subaddress_lookahead", map[string]any{"password": password, "major_idx": major, "minor_idx": minor}, nil)
+}
+
+// rescan scans the chain again from the open wallet's restore height (rescan_blockchain, not hard), so blocks already
+// scanned are read with the lookahead now in force. It forgets what the chain cannot tell (frozen outputs, the
+// destinations of earlier sends); the settlement builder freezes and thaws before each build.
+func (r *xmrEscrowRPC) rescan(ctx context.Context) error {
+	return r.walletCallWithin(ctx, xmrWalletSlowTimeout, "rescan_blockchain", map[string]any{"hard": false}, nil)
 }
 
 // --- accounts and addresses ---
@@ -489,6 +514,16 @@ func (r *xmrEscrowRPC) transfers(ctx context.Context) ([]xmrTransfer, error) {
 		out = append(out, p)
 	}
 	return out, nil
+}
+
+// inPool reports whether any transfer of the open wallet, to or from any account, is in the daemon's pool (get_transfers
+// pool and pending, all_accounts): a wallet is destroyed only with nothing there (P3-R9).
+func (r *xmrEscrowRPC) inPool(ctx context.Context) (bool, error) {
+	var res map[string][]json.RawMessage
+	if err := r.walletCall(ctx, "get_transfers", map[string]any{"pool": true, "pending": true, "all_accounts": true}, &res); err != nil {
+		return false, err
+	}
+	return len(res["pool"])+len(res["pending"]) > 0, nil
 }
 
 // transferByTxid is the open wallet's record of txid in escrow account account (get_transfer_by_txid); found is false

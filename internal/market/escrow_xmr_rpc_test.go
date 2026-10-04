@@ -262,7 +262,10 @@ func TestXMREscrowRPCPinsParams(t *testing.T) {
 		{wallet, "/json_rpc", "relay_tx", `{"hex":"0a0b0c"}`, func() error { _, err := r.relayTx(ctx, "0a0b0c"); return err }},
 		{wallet, "/json_rpc", "get_transfer_by_txid", `{"account_index":3,"txid":"` + txid + `"}`, func() error { _, _, err := r.transferByTxid(ctx, 3, txid); return err }},
 		{wallet, "/json_rpc", "change_wallet_password", `{"new_password":"new","old_password":"old"}`, func() error { return r.changeWalletPassword(ctx, "old", "new") }},
-		{wallet, "/json_rpc", "set_subaddress_lookahead", `{"major":60,"minor":5}`, func() error { return r.setSubaddressLookahead(ctx, 60, 5) }},
+		{wallet, "/json_rpc", "set_subaddress_lookahead", `{"major_idx":60,"minor_idx":5,"password":"pw"}`, func() error { return r.setSubaddressLookahead(ctx, "pw", 60, 5) }},
+		{wallet, "/json_rpc", "rescan_blockchain", `{"hard":false}`, func() error { return r.rescan(ctx) }},
+		{wallet, "/json_rpc", "open_wallet", `{"filename":"escrow-202610-02","password":"pw"}`, func() error { _, err := r.probeWallet(ctx, "escrow-202610-02", "pw"); return err }},
+		{wallet, "/json_rpc", "get_transfers", `{"all_accounts":true,"pending":true,"pool":true}`, func() error { _, err := r.inPool(ctx); return err }},
 		{daemon, "/json_rpc", "get_info", ``, func() error { _, err := r.daemonInfo(ctx); return err }},
 		{daemon, "/json_rpc", "hard_fork_info", ``, func() error { _, err := r.hardForkVersion(ctx); return err }},
 		{daemon, "/get_transactions", "", `{"decode_as_json":true,"txs_hashes":["` + txid + `"]}`, func() error { _, _, err := r.transactions(ctx, []string{txid}); return err }},
@@ -368,6 +371,30 @@ func TestXMREscrowRPCResults(t *testing.T) {
 	if s, err := r.keyImagesSpent(ctx, []string{hex64("a"), hex64("b"), hex64("c")}); err != nil || len(s) != 3 || s[0] != 0 || s[1] != 1 || s[2] != 2 {
 		t.Fatalf("is_key_image_spent: %v %v", s, err)
 	}
+	// The restore sweep's probe (P3-R10): open_wallet's -1 for a file that does not exist is no wallet there; any other
+	// refusal (a wrong password, monero-wallet-rpc 0.18.5.1's words) is an error with its class, never the message.
+	if found, err := r.probeWallet(ctx, "escrow-202610-02", "pw"); err != nil || !found {
+		t.Fatalf("probe of a wallet that opens: %v %v", found, err)
+	}
+	wallet.set("open_wallet", func(json.RawMessage) (any, int, string) {
+		return nil, -1, `Failed to open wallet : file not found "/home/monero/wallet/escrow-202610-02.keys"`
+	})
+	if found, err := r.probeWallet(ctx, "escrow-202610-02", "pw"); err != nil || found {
+		t.Fatalf("probe of no file: %v %v", found, err)
+	}
+	wallet.set("open_wallet", func(json.RawMessage) (any, int, string) { return nil, -1, "Failed to open wallet : invalid password" })
+	var refused *xmrRPCError
+	if found, err := r.probeWallet(ctx, "escrow-202610-02", "pw"); !errors.As(err, &refused) || refused.Class != "rpc:-1" || found || strings.Contains(err.Error(), "password") {
+		t.Fatalf("probe of another wallet's file: %v %v", found, err)
+	}
+	wallet.result("get_transfers", map[string]any{})
+	if busy, err := r.inPool(ctx); err != nil || busy {
+		t.Fatalf("an empty pool: %v %v", busy, err)
+	}
+	wallet.result("get_transfers", map[string]any{"pending": []any{map[string]any{"txid": hex64("out"), "type": "pending"}}})
+	if busy, err := r.inPool(ctx); err != nil || !busy {
+		t.Fatalf("a pending transfer: %v %v", busy, err)
+	}
 
 	// Replies the adapter refuses: each becomes a bad-reply class, never the reply's text.
 	bad := []struct {
@@ -449,7 +476,8 @@ func TestXMREscrowAccountZeroRefusedOffline(t *testing.T) {
 		"non-hex key image":   func() error { return r.thaw(ctx, strings.Repeat("zz", 32)) },
 		"bad txid":            func() error { _, _, err := r.transferByTxid(ctx, 3, "x"); return err },
 		"empty metadata":      func() error { _, err := r.relayTx(ctx, ""); return err },
-		"no lookahead":        func() error { return r.setSubaddressLookahead(ctx, 0, 0) },
+		"no lookahead":        func() error { return r.setSubaddressLookahead(ctx, "pw", 0, 0) },
+		"probe pooled wallet": func() error { _, err := r.probeWallet(ctx, "opsecmkt", ""); return err },
 		"bad tx hash":         func() error { _, _, err := r.transactions(ctx, []string{"x"}); return err },
 		"no key images":       func() error { _, err := r.keyImagesSpent(ctx, nil); return err },
 	} {
@@ -579,8 +607,8 @@ func TestXMREscrowRPCErrorClasses(t *testing.T) {
 	}
 }
 
-// TestXMREscrowSlowCallsGetLongerTimeout: open, create, close, refresh, store and change_wallet_password run on
-// xmrWalletSlowTimeout, not
+// TestXMREscrowSlowCallsGetLongerTimeout: open (and the restore sweep's probe), create, close, refresh, store,
+// change_wallet_password and rescan_blockchain run on xmrWalletSlowTimeout, not
 // rpcTimeout; an ordinary read still times out at rpcTimeout.
 func TestXMREscrowSlowCallsGetLongerTimeout(t *testing.T) {
 	if xmrWalletSlowTimeout != 2*time.Minute || xmrWalletSlowTimeout <= rpcTimeout {
@@ -591,7 +619,7 @@ func TestXMREscrowSlowCallsGetLongerTimeout(t *testing.T) {
 	rpcTimeout = 100 * time.Millisecond
 	t.Cleanup(func() { rpcTimeout = old })
 	wallet, _, r := happyXMRNodes(t)
-	for _, m := range []string{"create_wallet", "open_wallet", "close_wallet", "refresh", "store", "change_wallet_password", "get_height"} {
+	for _, m := range []string{"create_wallet", "open_wallet", "close_wallet", "refresh", "store", "change_wallet_password", "rescan_blockchain", "get_height"} {
 		wallet.setDelay(m, 250*time.Millisecond)
 	}
 	for name, call := range map[string]func() error{
@@ -601,6 +629,8 @@ func TestXMREscrowSlowCallsGetLongerTimeout(t *testing.T) {
 		"refresh":                func() error { return r.refresh(ctx) },
 		"store":                  func() error { return r.store(ctx) },
 		"change_wallet_password": func() error { return r.changeWalletPassword(ctx, "old", "new") },
+		"rescan_blockchain":      func() error { return r.rescan(ctx) },
+		"probe (open_wallet)":    func() error { _, err := r.probeWallet(ctx, "escrow-202610-01", "pw"); return err },
 	} {
 		if err := call(); err != nil {
 			t.Errorf("%s cut short: %v", name, err)

@@ -23,6 +23,14 @@ import (
 // incoming transfers, one entry per transaction and subaddress, with their confirmations, unlock time, pool state and
 // double_spend_seen. The daemon is a fakechain at a height the test moves.
 //
+// Retention and restore (slice X-f). change_wallet_password re-encrypts a wallet (open_wallet then needs the new
+// password; a wrong old password is -22), get_balance sums every account, and get_transfers lists the transactions the
+// open wallet built that are in the pool (pending) or mined (out) when asked. open_wallet answers -1 for a file that does
+// not exist or a wrong password, with monero-wallet-rpc's message for each. A wallet knows its accounts plus a lookahead
+// of 50 more (set_subaddress_lookahead, password checked, changes it): refresh scans each transfer to an account the
+// wallet does not know once, and sees it only when it is within the lookahead (the wallet then knows every account up to
+// it); one scanned outside it is missed until rescan_blockchain scans again with the lookahead in force then.
+//
 // Settlements (slice X-d). Each incoming transfer entry is one output with a key image, a frozen flag and an unlock
 // state (unlocked from 10 confirmations with no unlock time), listed by incoming_transfers until it is spent; freeze and
 // thaw set the flag. transfer from one account spends unfrozen unlocked outputs, newest first, until the destinations
@@ -84,6 +92,29 @@ type fakeXMRWalletFile struct {
 	name, password, mnemonic string
 	accounts                 []string // each account's address 0; [0] is the primary address
 	transfers                []*fakeXMRTransfer
+	lookahead                int64 // accounts scanned beyond the last one the wallet knows (set_subaddress_lookahead's major)
+}
+
+// visible: the wallet sees transfer t: to an account it knows, or seen by a scan within the lookahead.
+func (w *fakeXMRWalletFile) visible(t *fakeXMRTransfer) bool {
+	return t.Account < int64(len(w.accounts)) || t.seen
+}
+
+// scan is a refresh (again false: each transfer to an unknown account is scanned once) or a rescan_blockchain (again
+// true): a transfer within the lookahead is seen, and the wallet then knows every account up to its own.
+func (w *fakeXMRWalletFile) scan(again bool) {
+	for _, t := range w.transfers {
+		if w.visible(t) || t.scanned && !again {
+			continue
+		}
+		t.scanned = true
+		if t.Account < int64(len(w.accounts))-1+w.lookahead {
+			t.seen = true
+			for n := len(w.accounts); int64(n) <= t.Account; n++ {
+				w.accounts = append(w.accounts, testXMRAddr("fake "+w.name+" account "+strconv.Itoa(n), true))
+			}
+		}
+	}
 }
 
 // fakeXMRTransfer is one incoming transfer entry: a transaction's outputs to one subaddress, as get_transfers lists it.
@@ -98,6 +129,7 @@ type fakeXMRTransfer struct {
 	KeyImage       string
 	Frozen         bool
 	SpentBy        string // the transaction that spent it ("" while unspent)
+	scanned, seen  bool   // to an account the wallet did not know: scanned by a refresh, and seen by it (scan)
 }
 
 // unlocked: spendable, as the wallet's 10-block lock and the unlock time decide.
@@ -316,8 +348,11 @@ var fakeXMRWalletMethods = map[string]func(f *fakeXMREscrow, params json.RawMess
 		var q struct{ Filename, Password string }
 		json.Unmarshal(p, &q)
 		w := f.files[q.Filename]
-		if w == nil || w.password != q.Password {
-			return nil, -1, "Failed to open wallet"
+		switch {
+		case w == nil:
+			return nil, -1, "Failed to open wallet : file not found \"/w/" + q.Filename + ".keys\""
+		case w.password != q.Password:
+			return nil, -1, "Failed to open wallet : invalid password"
 		}
 		f.open = w
 		return map[string]any{}, 0, ""
@@ -327,8 +362,57 @@ var fakeXMRWalletMethods = map[string]func(f *fakeXMREscrow, params json.RawMess
 		return map[string]any{}, 0, ""
 	},
 	"store": func(*fakeXMREscrow, json.RawMessage) (any, int64, string) { return map[string]any{}, 0, "" },
-	"refresh": func(*fakeXMREscrow, json.RawMessage) (any, int64, string) {
+	"refresh": func(f *fakeXMREscrow, _ json.RawMessage) (any, int64, string) {
+		f.open.scan(false)
 		return map[string]any{"blocks_fetched": 0}, 0, ""
+	},
+	"rescan_blockchain": func(f *fakeXMREscrow, _ json.RawMessage) (any, int64, string) {
+		f.open.scan(true)
+		return map[string]any{}, 0, ""
+	},
+	"set_subaddress_lookahead": func(f *fakeXMREscrow, p json.RawMessage) (any, int64, string) {
+		var q struct {
+			Password string `json:"password"`
+			Major    int64  `json:"major_idx"`
+			Minor    int64  `json:"minor_idx"`
+		}
+		json.Unmarshal(p, &q)
+		switch {
+		case q.Password != f.open.password:
+			return nil, -22, "Invalid password."
+		case q.Major == 0 || q.Minor == 0:
+			return nil, -1, "Subaddress lookahead may not be zero"
+		}
+		f.open.lookahead = q.Major
+		return map[string]any{}, 0, ""
+	},
+	"change_wallet_password": func(f *fakeXMREscrow, p json.RawMessage) (any, int64, string) {
+		var q struct {
+			Old string `json:"old_password"`
+			New string `json:"new_password"`
+		}
+		json.Unmarshal(p, &q)
+		if q.Old != f.open.password {
+			return nil, -22, "Invalid original password."
+		}
+		f.open.password = q.New
+		return map[string]any{}, 0, ""
+	},
+	"get_balance": func(f *fakeXMREscrow, _ json.RawMessage) (any, int64, string) {
+		var bal, unlocked int64
+		per := []any{}
+		for _, t := range f.open.transfers {
+			if !f.open.visible(t) || t.Pool || t.DoubleSpend || t.SpentBy != "" {
+				continue
+			}
+			u := int64(0)
+			if t.unlocked() {
+				u = t.Amount
+			}
+			bal, unlocked = bal+t.Amount, unlocked+u
+			per = append(per, map[string]any{"account_index": t.Account, "address_index": t.Minor, "balance": t.Amount, "unlocked_balance": u})
+		}
+		return map[string]any{"balance": bal, "unlocked_balance": unlocked, "per_subaddress": per}, 0, ""
 	},
 	"get_height": func(f *fakeXMREscrow, _ json.RawMessage) (any, int64, string) {
 		return map[string]any{"height": f.height + f.walletLag}, 0, ""
@@ -372,9 +456,25 @@ var fakeXMRWalletMethods = map[string]func(f *fakeXMREscrow, params json.RawMess
 		}
 		return map[string]any{"subaddress_accounts": list}, 0, ""
 	},
-	"get_transfers": func(f *fakeXMREscrow, _ json.RawMessage) (any, int64, string) {
-		in, pool := []any{}, []any{}
+	"get_transfers": func(f *fakeXMREscrow, p json.RawMessage) (any, int64, string) {
+		var q struct{ Out, Pending bool }
+		json.Unmarshal(p, &q)
+		in, pool, out, pending := []any{}, []any{}, []any{}, []any{}
+		for _, h := range slices.Sorted(maps.Keys(f.txs)) {
+			if tx := f.txs[h]; tx.Wallet == f.open.name {
+				e := map[string]any{"txid": tx.Hash, "type": "pending", "amount": 0, "fee": tx.Fee, "unlock_time": 0, "subaddr_index": map[string]any{"major": tx.Account, "minor": 0}}
+				if tx.Height == 0 {
+					pending = append(pending, e)
+				} else {
+					e["type"], e["height"], e["confirmations"] = "out", tx.Height, f.height-tx.Height
+					out = append(out, e)
+				}
+			}
+		}
 		for _, t := range f.open.transfers {
+			if !f.open.visible(t) {
+				continue
+			}
 			e := map[string]any{"txid": t.TxID, "type": "in", "amount": t.Amount, "fee": 30000000, "confirmations": t.Confs, "height": max(f.height-t.Confs, 0),
 				"unlock_time": t.UnlockTime, "double_spend_seen": t.DoubleSpend, "subaddr_index": map[string]any{"major": t.Account, "minor": t.Minor}}
 			if t.Pool {
@@ -385,7 +485,14 @@ var fakeXMRWalletMethods = map[string]func(f *fakeXMREscrow, params json.RawMess
 				in = append(in, e)
 			}
 		}
-		return map[string]any{"in": in, "pool": pool}, 0, ""
+		res := map[string]any{"in": in, "pool": pool}
+		if q.Out {
+			res["out"] = out
+		}
+		if q.Pending {
+			res["pending"] = pending
+		}
+		return res, 0, ""
 	},
 	"incoming_transfers": func(f *fakeXMREscrow, p json.RawMessage) (any, int64, string) {
 		var q struct {
@@ -395,7 +502,7 @@ var fakeXMRWalletMethods = map[string]func(f *fakeXMREscrow, params json.RawMess
 		json.Unmarshal(p, &q)
 		var list []any
 		for _, t := range f.open.transfers {
-			if t.Account != q.Account || t.Pool || t.SpentBy != "" || q.Type != "available" {
+			if t.Account != q.Account || !f.open.visible(t) || t.Pool || t.SpentBy != "" || q.Type != "available" {
 				continue
 			}
 			list = append(list, map[string]any{"amount": t.Amount, "block_height": max(f.height-t.Confs, 0), "frozen": t.Frozen, "key_image": f.keyImage(t),
@@ -548,7 +655,7 @@ func (f *fakeXMREscrow) newFile(name, password string) *fakeXMRWalletFile {
 		h := sha256.Sum256([]byte(name + "/" + strconv.Itoa(i)))
 		seed = append(seed, words[int(h[0])%len(words)])
 	}
-	w := &fakeXMRWalletFile{name: name, password: password, mnemonic: strings.Join(seed, " "), accounts: []string{testXMRAddr("fake "+name+" primary", false)}}
+	w := &fakeXMRWalletFile{name: name, password: password, mnemonic: strings.Join(seed, " "), accounts: []string{testXMRAddr("fake "+name+" primary", false)}, lookahead: 50}
 	f.files[name] = w
 	return w
 }
