@@ -26,12 +26,16 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 	var feeBps int64
 	var shipByOpen bool
 	var windowFrom time.Time
-	var shipBy sql.NullTime
+	var shipBy, destroyed sql.NullTime
 	if err := a.db.QueryRowContext(ctx, `SELECT es.address,es.refund_address,es.fee_bps,
 		GREATEST(es.created,(SELECT max(created) FROM payments WHERE order_id=es.order_id AND confirmations>=0 AND NOT locked)),
-		es.ship_by,COALESCE(es.ship_by<=now(),false)
-		FROM escrows es WHERE es.order_id=$1 AND es.coin='XMR'`, o.ID).Scan(&v.Address, &refund, &feeBps, &windowFrom, &shipBy, &shipByOpen); err != nil {
+		es.ship_by,COALESCE(es.ship_by<=now(),false),w.destroyed_at
+		FROM escrows es JOIN xmr_escrow_slots s ON s.id=es.xmr_slot_id JOIN xmr_escrow_wallets w ON w.id=s.wallet_id
+		WHERE es.order_id=$1 AND es.coin='XMR'`, o.ID).Scan(&v.Address, &refund, &feeBps, &windowFrom, &shipBy, &shipByOpen, &destroyed); err != nil {
 		return err
+	}
+	if destroyed.Valid {
+		v.Unrecoverable = xmrAfterDestroyText(destroyed.Time)
 	}
 	if d.OrderViewer == roleBuyer {
 		v.RefundAddress = refund

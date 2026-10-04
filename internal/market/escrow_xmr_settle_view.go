@@ -120,11 +120,19 @@ func (a *App) xmrSettlementStatus(s *XMRSettlementView, o *Order, outcome string
 		switch {
 		case restoreHeld(s.wait):
 			s.Status = "Built, checked and stored. " + restoreHeldText
+		case s.wait == sendRebroadcastOK:
+			s.Status = "Built, checked and stored. " + xmrRelayConfirmedText
 		case v.RestorePaused:
 			s.Status = "Built, checked and stored. Paused: " + restoreWhy + ", so the market does not send it until the operator has finished."
 		}
 	case "relayed":
 		s.Status, s.Confirmations = sent+" Waiting for "+threshold+" confirmations.", "Fewer than "+threshold
+		switch {
+		case restoreHeld(s.wait):
+			s.Status += " " + restoreHeldText
+		case s.wait == sendRebroadcastOK:
+			s.Status += " " + xmrRelayConfirmedText
+		}
 	case "confirmed":
 		s.Status, s.Confirmations = "Confirmed on the "+xmrEscrowNetwork+" network: transaction "+s.TxHash+".", "At least "+threshold+"; followed to "+strconv.Itoa(escrowReorgDepth)
 		if s.reorgSafe {
@@ -152,6 +160,9 @@ func (a *App) xmrSettlementStatus(s *XMRSettlementView, o *Order, outcome string
 		s.TxHash = "" // not sent yet
 	}
 }
+
+// xmrRelayConfirmedText follows a held settlement's status once an administrator confirmed its relay.
+const xmrRelayConfirmedText = "An administrator checked that this transaction was not already relayed or replaced; the market relays it once on its next pass if the daemon does not have it."
 
 // xmrSettlementOutputs reads s's outputs; an address is shown to the party it pays and to staff only.
 func (a *App) xmrSettlementOutputs(ctx context.Context, s *XMRSettlementView, viewer string) error {

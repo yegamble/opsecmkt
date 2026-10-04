@@ -747,6 +747,13 @@ func (f *fakeXMREscrow) payAddress(addr, txid string, amount, confs int64) {
 	f.pay(name, account, txid, amount, confs)
 }
 
+// callLog is a copy of every request either node received, in order.
+func (f *fakeXMREscrow) callLog() []fakeXMRCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.calls)
+}
+
 // count is the number of requests either node received; countOf those of one wallet method.
 func (f *fakeXMREscrow) count() int {
 	f.mu.Lock()

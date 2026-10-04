@@ -1,0 +1,329 @@
+package market
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"log"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// Monero escrow after a restore from backup (WR-escrow Phase 3, slice X-f; P3-R10), as Bitcoin escrow's recovery
+// (escrow_recovery.go). A restored database knows nothing that happened after its backup: escrow wallets and accounts
+// created since, settlements built or relayed since. scripts/restore.sh (and the manual protection SQL in UPGRADING.md
+// section 6) therefore sets the restore gate, holds every built or relayed Monero settlement with
+// restoredSettlementHold in xmr_settlements.send_error, retires every free slot, moves every active or sealed wallet to
+// closing (no restored wallet ever offers an account to a new order again; the reconcile adds an account the records
+// lack as retired to a wallet that is not active) and sets xmrEscrowSweepKey, which makes Monero escrow checkout answer
+// 503 and pauses wallet and slot creation until the sweep below has run.
+//
+// The sweep runs in the Monero escrow watcher's pass while xmrEscrowSweepKey is set, gate or not, and clears it only
+// once one pass did all of it:
+//
+//   - xmrSweepProbe opens the wallet names escrow-YYYYMM-NN after the newest row of each month from the month of the
+//     newest wallet row or order (the backup is no older) to next month. A wallet that opens with the derived password
+//     and passes the network check is a wallet created after the backup: xmrSealOrphan records it as an orphan with
+//     its seed sealed to the pinned key (restore height 0, since its true one is unknown), lists its funded accounts to
+//     the administrators and retains it, so it never offers a slot and is destroyed by the usual rule (its accounts are
+//     added as retired slots when it is read). A file that does not open is recorded as an orphan, never opened again,
+//     and the administrators are told; the probe goes on past it. A month's probe ends at the first name with no file.
+//   - every wallet that may hold coins is opened and read (escrow_xmr_watch.go), and one that does not open is recorded
+//     missing or destroyed (escrow_xmr_retain.go); a wallet older than the database (fewer accounts than the highest slot
+//     names) gets a subaddress lookahead past that slot and a rescan (xmrLookahead), so deposits to the accounts it does
+//     not know are seen.
+//
+// A held settlement is listed on /admin; an administrator who checked the escrow daemon and wallet confirms, with a
+// password step-up and an audit row, that its stored transaction was not already relayed or replaced
+// (xmrRebroadcastAction). Its send_error becomes sendRebroadcastOK, and the watcher relays the stored metadata once,
+// under the gate too, then clears it (escrow_xmr_settle.go); nothing is rebuilt. /admin also lists the destroyed
+// wallets' files for the operator to delete.
+
+func init() {
+	registerAction("/admin/escrow-xmr-rebroadcast", actionSpec{Roles: []string{"admin"}, OwnTx: true, Off: escrowXMROff, Run: xmrRebroadcastAction})
+	registerLoader("admin", xmrEscrowRecoveryLoader)
+}
+
+// xmrLookaheadMajor is monero-wallet-rpc's default account lookahead, never lowered; minor lookahead 1 is enough, since
+// every escrow address is an account's address 0.
+const xmrLookaheadMajor = 50
+
+var errXMRSweepSeedKey = errors.New("monero escrow: a wallet created after the backup was found, and its seed cannot be sealed while ESCROW_XMR_SEED_KEY is not the pinned seed key")
+
+// xmrSweepProbe probes the wallet names that may have been created after the backup (see the file comment).
+func (a *App) xmrSweepProbe(ctx context.Context, now time.Time) error {
+	x := a.escrowXMR
+	var newest sql.NullTime
+	if err := a.db.QueryRowContext(ctx, "SELECT GREATEST((SELECT max(created) FROM xmr_escrow_wallets),(SELECT max(created) FROM orders))").Scan(&newest); err != nil {
+		return err
+	}
+	from := monthStart(now)
+	if newest.Valid && newest.Time.Before(from) {
+		from = monthStart(newest.Time.UTC())
+	}
+	for m := from; !m.After(monthStart(now).AddDate(0, 1, 0)); m = m.AddDate(0, 1, 0) {
+		var n int
+		if err := a.db.QueryRowContext(ctx, "SELECT COALESCE(max(substr(name,15,2)::int),0) FROM xmr_escrow_wallets WHERE month=$1::date", m.Format("2006-01-02")).Scan(&n); err != nil {
+			return err
+		}
+	month:
+		for n++; n <= 99; n++ {
+			name := fmt.Sprintf("escrow-%s-%02d", m.Format("200601"), n)
+			found, err := x.rpc.probeWallet(ctx, name, xmrWalletPassword(x.secret, name))
+			switch {
+			case err == nil && !found:
+				break month
+			case xmrWalletDenied(err):
+				err = a.xmrForeignWallet(ctx, name)
+			case err == nil:
+				err = a.xmrSealOrphan(ctx, 0, name)
+			}
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// xmrForeignWallet records wallet file name, which the sweep found but which does not open with the market's password,
+// as an orphan (never opened again; the next wallet takes another name) and tells the administrators.
+func (a *App) xmrForeignWallet(ctx context.Context, name string) error {
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, "INSERT INTO xmr_escrow_wallets(name,month,state) VALUES($1,to_date(substr($1,8,6),'YYYYMM'),'orphan')", name); err != nil {
+		return err
+	}
+	if err = notifyAdmins(ctx, tx, "Monero escrow wallet "+name+" exists on the escrow wallet-rpc but does not open with the market's password (a file left by another install?). The market recorded it as an orphan and never uses it; check that wallet yourself."); err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	log.Printf("escrow: Monero escrow wallet %s exists but does not open with the market's password; recorded as an orphan, not used", name)
+	return nil
+}
+
+// xmrSealOrphan records the open wallet name, which opened with the market's password and which this database did not
+// create (a wallet created after the backup it was restored from), as an orphan sealed to the pinned seed key, lists
+// its funded accounts to the administrators and retains it: it never offers a slot. id is its row, left creating or
+// orphan, or 0 when it has none.
+func (a *App) xmrSealOrphan(ctx context.Context, id int64, name string) error {
+	x := a.escrowXMR
+	if !x.canCreate.Load() {
+		return errXMRSweepSeedKey
+	}
+	if err := a.recheckEscrowXMRNetwork(ctx); err != nil {
+		return err
+	}
+	primary, err := x.rpc.primaryAddress(ctx)
+	if err != nil {
+		return err
+	}
+	mnemonic, err := x.rpc.mnemonic(ctx)
+	if err != nil {
+		return err
+	}
+	accounts, err := x.rpc.accounts(ctx)
+	if err != nil {
+		return err
+	}
+	sealed, fpr, err := x.seedKey.sealSeed(mnemonic)
+	if err != nil {
+		return err
+	}
+	var funded []string
+	for _, acc := range accounts {
+		if acc.Balance > 0 {
+			funded = append(funded, "account "+strconv.FormatInt(acc.Index, 10)+" ("+amount(acc.Balance, 12)+" XMR)")
+		}
+	}
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	// Restore height 0: the wallet's own is unknown, and a restore from its seed then scans the whole chain.
+	if id == 0 {
+		err = tx.QueryRowContext(ctx, `INSERT INTO xmr_escrow_wallets(name,month,primary_address,restore_height,seed_sealed,seed_key_fpr,sealed_at,state)
+			VALUES($1,to_date(substr($1,8,6),'YYYYMM'),$2,0,$3,$4,now(),'orphan') RETURNING id`, name, primary, sealed, fpr).Scan(&id)
+	} else {
+		var res sql.Result
+		if res, err = tx.ExecContext(ctx, `UPDATE xmr_escrow_wallets SET primary_address=$2,restore_height=0,seed_sealed=$3,seed_key_fpr=$4,sealed_at=now(),state='orphan',updated=now()
+			WHERE id=$1 AND state IN ('creating','orphan') AND seed_sealed IS NULL`, id, primary, sealed, fpr); err == nil {
+			if n, _ := res.RowsAffected(); n != 1 {
+				err = errXMRWalletNotWritten
+			}
+		}
+	}
+	if err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, "UPDATE xmr_escrow_wallets SET state='retained',last_closed_at=now(),destroy_after=now()+"+xmrRetention+",updated=now() WHERE id=$1", id); err != nil {
+		return err
+	}
+	coins := "None of its accounts holds coins."
+	if len(funded) > 0 {
+		coins = "Funded accounts: " + strings.Join(funded, ", ") + ". Check them for coins of orders this database lost."
+	}
+	if err = notifyAdmins(ctx, tx, "Monero escrow wallet "+name+" was found on the escrow wallet-rpc with no record in this database (created after the backup it was restored from?). "+
+		"The market sealed its seed to the seed key and keeps it, but never takes an order into it; it is destroyed by the usual rule once nothing is left in it. "+coins); err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	log.Printf("escrow: Monero escrow wallet %s, which this database did not create, recorded as an orphan, its seed sealed; %d funded account(s) listed for the administrators", name, len(funded))
+	return x.rpc.store(ctx)
+}
+
+// xmrLookahead gives the open wallet w, when it knows fewer accounts than its highest slot names (a wallet older than
+// the database), a subaddress lookahead past that slot and rescans, so a deposit to an account it does not know is
+// seen (see the file comment). The lookahead is written into the wallet's keys file, so later refreshes keep it.
+func (a *App) xmrLookahead(ctx context.Context, w xmrWalletRow) error {
+	x := a.escrowXMR
+	var highest int64
+	if err := a.db.QueryRowContext(ctx, "SELECT COALESCE(max(account_index),0) FROM xmr_escrow_slots WHERE wallet_id=$1", w.id).Scan(&highest); err != nil {
+		return err
+	}
+	accounts, err := x.rpc.accounts(ctx)
+	if err != nil {
+		return err
+	}
+	known := int64(len(accounts)) - 1
+	if highest <= known {
+		return nil
+	}
+	if err = x.rpc.setSubaddressLookahead(ctx, xmrWalletPassword(x.secret, w.name), max(highest-known+1, xmrLookaheadMajor), 1); err != nil {
+		return err
+	}
+	log.Printf("escrow: Monero escrow wallet %s knows %d account(s) and its slots name account %d: lookahead raised past it, rescanning", w.name, known, highest)
+	return x.rpc.rescan(ctx)
+}
+
+// XMREscrowRecoveryView is /admin's Monero escrow recovery section (escrow_xmr_restore.go, escrow_xmr_retain.go).
+type XMREscrowRecoveryView struct {
+	On        bool // ESCROW_XMR is on: the relay confirmation exists
+	Sweep     bool // a restore asked for the sweep, which has not completed
+	Held      []XMREscrowHeldView
+	Destroyed []XMRDestroyedWalletView
+}
+
+// XMREscrowHeldView is one Monero settlement a restore holds, or whose relay an administrator confirmed.
+type XMREscrowHeldView struct {
+	ID                  int64
+	OrderID, Short      string
+	Kind, State, TxHash string
+	Confirmed           bool // relayed once on the next pass
+}
+
+// XMRDestroyedWalletView is one destroyed escrow wallet whose files the operator deletes from the wallet volume.
+type XMRDestroyedWalletView struct {
+	Name, DestroyedAt string
+}
+
+// xmrEscrowRecoveryLoader fills /admin's Monero escrow recovery section while ESCROW_XMR is on, or while a settlement
+// is held or a wallet was destroyed.
+func xmrEscrowRecoveryLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
+	if d.User == nil || d.User.Role != "admin" {
+		return nil
+	}
+	v := &XMREscrowRecoveryView{On: a.escrowXMR != nil}
+	if err := a.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM settings WHERE key=$1 AND value='true')", xmrEscrowSweepKey).Scan(&v.Sweep); err != nil {
+		return err
+	}
+	rows, err := a.db.QueryContext(ctx, `SELECT id,order_id,kind,state,tx_hash,send_error FROM xmr_settlements
+		WHERE state IN ('built','relayed') AND (send_error LIKE $1 OR send_error=$2) ORDER BY id LIMIT 200`, restoredHoldPrefix+"%", sendRebroadcastOK)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var h XMREscrowHeldView
+		var sendErr string
+		if err = rows.Scan(&h.ID, &h.OrderID, &h.Kind, &h.State, &h.TxHash, &sendErr); err != nil {
+			rows.Close()
+			return err
+		}
+		h.Short, h.Kind, h.Confirmed = shortID(h.OrderID), settlementKind(h.Kind), sendErr == sendRebroadcastOK
+		v.Held = append(v.Held, h)
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	rows, err = a.db.QueryContext(ctx, `SELECT name,to_char(destroyed_at AT TIME ZONE 'UTC','YYYY-MM-DD HH24:MI "UTC"') FROM xmr_escrow_wallets
+		WHERE state='destroyed' ORDER BY destroyed_at DESC,name LIMIT 200`)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var w XMRDestroyedWalletView
+		if err = rows.Scan(&w.Name, &w.DestroyedAt); err != nil {
+			rows.Close()
+			return err
+		}
+		v.Destroyed = append(v.Destroyed, w)
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	if !v.On && len(v.Held) == 0 && len(v.Destroyed) == 0 {
+		return nil
+	}
+	d.XMREscrowRecovery = v
+	return nil
+}
+
+// xmrRebroadcastAction is an administrator's confirmation, after checking the escrow daemon and the escrow wallet, that
+// a held Monero settlement's stored transaction was not already relayed or replaced: the watcher then relays it once.
+// Password step-up (and authenticator code when enrolled), compare-and-set on the settlement's state and send_error, an
+// order note and an audit row, as escrowRebroadcastAction for Bitcoin escrow.
+func xmrRebroadcastAction(c *actionCtx) (actionResult, error) {
+	id, err := strconv.ParseInt(c.Form.Get("settlement_id"), 10, 64)
+	if err != nil || id <= 0 {
+		return actionResult{}, fail(400, "Unknown settlement")
+	}
+	if c.Form.Get("not_sent") != "confirmed" {
+		return actionResult{}, fail(400, "Check the escrow daemon and the escrow wallet first, then confirm that this transaction was not already relayed and that no other transaction spent the escrow's coins. Nothing was changed.")
+	}
+	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
+		ctx := c.Ctx()
+		var orderID, kind, state, sendErr string
+		err := c.Tx.QueryRowContext(ctx, "SELECT order_id,kind,state,send_error FROM xmr_settlements WHERE id=$1 FOR UPDATE", id).Scan(&orderID, &kind, &state, &sendErr)
+		if err == sql.ErrNoRows {
+			return actionResult{}, fail(404, "Settlement not found")
+		}
+		if err != nil {
+			return actionResult{}, err
+		}
+		switch {
+		case state != "built" && state != "relayed":
+			return actionResult{}, fail(409, "This settlement has no stored transaction waiting to be relayed. Nothing was changed.")
+		case sendErr == sendRebroadcastOK:
+			return actionResult{}, fail(409, "Its relay is already confirmed: the market relays it once on its next pass. Nothing was changed.")
+		case !restoreHeld(sendErr):
+			return actionResult{}, fail(409, "This settlement is not held: the market relays it by itself. Nothing was changed.")
+		}
+		res, err := c.Tx.ExecContext(ctx, "UPDATE xmr_settlements SET send_error=$2,updated=now() WHERE id=$1 AND state=$3 AND send_error=$4", id, sendRebroadcastOK, state, sendErr)
+		if err != nil {
+			return actionResult{}, err
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			return actionResult{}, fail(409, "The settlement changed meanwhile. Reload the admin page. Nothing was changed.")
+		}
+		if _, err = c.Tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) SELECT id,state,state,$2,$3 FROM orders WHERE id=$1", orderID, c.User.ID,
+			"An administrator checked that this Monero escrow settlement's transaction was not already relayed or replaced after the market restored its records from a backup; the market relays it once on its next pass."); err != nil {
+			return actionResult{}, err
+		}
+		audit := "Confirmed the relay of Monero escrow settlement " + strconv.FormatInt(id, 10) + " (" + settlementKind(kind) + ") of order " + shortID(orderID) +
+			" after a restore from backup: the administrator checked that its transaction was not already relayed or replaced (" + xmrEscrowNetwork + ")"
+		return actionResult{Redirect: "/admin", Notice: "escrow-xmr-rebroadcast", Audit: audit}, nil
+	})
+}
