@@ -74,7 +74,7 @@ func TestXMREscrowDeadlineWithBTCOff(t *testing.T) {
 		}
 		noBitcoinWords(t, "the notices", strings.Join(got, "\n"))
 	}
-	if got := x.xmrSettlements(order); len(got) != 1 || got[0] != "release requested "+claim || !xmrSettlementBuildable("release", x.state(order), "") {
+	if got := x.xmrSettlements(order); len(got) != 1 || got[0] != "release requested "+claim || !settlementFits("release", x.state(order), "") {
 		t.Fatalf("the release after the deadline: %v", got)
 	}
 
@@ -115,6 +115,25 @@ func TestXMREscrowDeadlineWithBTCOff(t *testing.T) {
 	x.mustPoll()
 	if x.state(pooled) != stateShipped {
 		t.Fatalf("a pooled shipped order moved: %s", x.state(pooled))
+	}
+}
+
+// QA-Xe F2 (A-416): with Monero escrow configured but not ready (its node unreachable, or refused until a restart), a
+// pass touches no wallet but still applies the deadlines, which make no RPC, as Bitcoin escrow does when its node check
+// fails: a shipped order past its deadline is completed, not left neither released nor disputable.
+func TestXMREscrowDeadlineWhileNotReady(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	order, _, _ := x.shippedXMR(x.physical(x.vendor))
+	x.forceDeadline(order, "release_at=now()-interval '1 minute'")
+	x.A.escrowXMR.ready.Store(false)
+	calls := x.fake.count()
+	x.mustPoll()
+	if x.state(order) != stateCompleted || !anyContains(x.events(order), "auto-release deadline passed") {
+		t.Fatalf("a due order while Monero escrow is not ready: %s", x.state(order))
+	}
+	if x.fake.count() != calls {
+		t.Fatal("a pass made an RPC while Monero escrow was not ready")
 	}
 }
 
@@ -263,7 +282,7 @@ func TestXMREscrowOrdersBannerUnder72h(t *testing.T) {
 	physical := x.physical(x.vendor)
 	soon, buyerSess, _ := x.shippedXMR(physical)
 	later, laterSess, _ := x.shippedXMR(physical)
-	x.forceDeadline(soon, "release_at=now()+interval '10 hours'")
+	x.forceDeadline(soon, "release_at=now()+interval '71 hours'")
 	deadline := x.deadlineOf(soon)
 	banner := func(sess string) string {
 		body := html.UnescapeString(x.page("/orders", sess))
@@ -418,6 +437,13 @@ func TestXMREscrowRestoreExtendsDeadline(t *testing.T) {
 		t.Fatalf("the buyer's restore notice: %q", notices)
 	}
 	noBitcoinWords(t, "the restore notice", strings.Join(notices, "\n"))
+	// The moved deadline is 72 hours away, inside the reminder window: the restore notice counts as the reminder, so no
+	// second notice follows it (reminded_at is set by the recheck).
+	x.mustPoll()
+	if notices = x.noticesOf(x.partyOf(passed, roleBuyer), passed); anyContains(notices, "Reminder") ||
+		agInt(x.testEnv, "SELECT count(*) FROM escrows WHERE order_id=$1 AND reminded_at IS NOT NULL", passed) != 1 {
+		t.Fatalf("a reminder straight after the restore notice: %q", notices)
+	}
 	if panel := x.panel(passed, x.vendorSess); !containsAll(panel, utcUntil(got), "moved after the market restored its records from a backup") {
 		t.Fatalf("the panel after the recheck:\n%s", panel)
 	}
@@ -513,7 +539,8 @@ func TestXMREscrowDisputeSupersedes(t *testing.T) {
 		t.Fatalf("the desk does not list the order:\n%s", desk)
 	}
 	article := desk[i : i+strings.Index(desk[i:], "</article>")]
-	if !containsAll(article, "Monero escrow order", "0.5 fakechain XMR", xmrCustody, "the release to the vendor requested when the order was shipped is cancelled") {
+	if !containsAll(article, "Monero escrow order", "0.5 fakechain XMR", xmrCustody, "the release to the vendor requested when the order was shipped is cancelled",
+		"On its next pass after you resolve, the market sends the coins to the vendor or refunds the buyer", "cannot be undone", xmrResolveConfirm) {
 		t.Fatalf("the desk's view of a Monero escrow dispute:\n%s", article)
 	}
 	noBitcoinWords(t, "the desk's view of a Monero escrow dispute", article)
@@ -533,7 +560,7 @@ func TestXMREscrowDisputeSupersedes(t *testing.T) {
 		t.Fatalf("resolve for the vendor: %d %s", code, body)
 	}
 	if got := x.xmrSettlements(vendorOrder); x.state(vendorOrder) != stateResolved || len(got) != 1 || got[0] != "release requested "+vendorClaim ||
-		!xmrSettlementBuildable("release", stateResolved, "release") {
+		!settlementFits("release", stateResolved, "release") {
 		t.Fatalf("after deciding for the vendor: order %s, settlements %v", x.state(vendorOrder), got)
 	}
 	vendorPage := x.panel(vendorOrder, x.vendorSess)

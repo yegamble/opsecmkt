@@ -113,7 +113,7 @@ func TestXMREscrowRegtestPhysical(t *testing.T) {
 	r.mustPoll()
 	for i, l := range legs[:3] {
 		if got := r.xmrSettlements(l.order); r.state(l.order) != stateShipped || len(got) != 1 || !strings.HasPrefix(got[0], "release requested ") ||
-			xmrSettlementBuildable("release", stateShipped, "") {
+			settlementFits("release", stateShipped, "") {
 			t.Fatalf("order %d after shipping: %s %v", i, r.state(l.order), got)
 		}
 	}
@@ -129,7 +129,7 @@ func TestXMREscrowRegtestPhysical(t *testing.T) {
 	}
 	var may bool
 	r.DB.QueryRow("SELECT escrow_market_may_sign('release',$1)", first.order).Scan(&may)
-	if r.state(first.order) != stateCompleted || !may || !xmrSettlementBuildable("release", stateCompleted, "") {
+	if r.state(first.order) != stateCompleted || !may || !settlementFits("release", stateCompleted, "") {
 		t.Fatalf("after Confirm receipt: %s, may sign %v", r.state(first.order), may)
 	}
 	// CHAIR: once X-d's builder merges, extend this leg here: a pass builds the first order's release (stored before

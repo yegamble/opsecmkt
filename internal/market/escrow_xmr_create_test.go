@@ -302,6 +302,46 @@ func TestXMREscrowOrderFormsNeverConflict(t *testing.T) {
 			}
 		}
 	}
+
+	// QA-Xe F1 (A-416): with ESCROW_XMR off after a restart, the panel says Monero escrow is switched off, no Monero
+	// escrow form is offered, and no form rendered answers 404, 409 or a server error. The orders are made while it is
+	// on, enough for one per form.
+	offStates := []string{"paid physical", "shipped", "completed"}
+	pool := map[string][]string{}
+	for _, name := range offStates {
+		for range 6 {
+			pool[name] = append(pool[name], scenarios[name]())
+		}
+	}
+	t.Setenv("ESCROW_XMR", "off")
+	x.restart()
+	if x.A.escrowXMR != nil {
+		t.Fatal("ESCROW_XMR=off did not switch Monero escrow off")
+	}
+	for _, name := range offStates {
+		for _, viewer := range []string{roleBuyer, roleVendor} {
+			order := pool[name][0]
+			if panel := x.panel(order, x.sessOf(order, viewer)); !strings.Contains(panel, "Monero escrow is switched off on this market") {
+				t.Errorf("ESCROW_XMR off, %s, %s: the panel does not say so:\n%s", name, viewer, panel)
+			}
+			for i := range x.orderForms(order, x.sessOf(order, viewer)) {
+				fresh := pool[name][0]
+				pool[name] = pool[name][1:]
+				f := x.orderForms(fresh, x.sessOf(fresh, viewer))[i]
+				if f.action == "/logout" {
+					continue
+				}
+				if strings.HasPrefix(f.action, "/escrow-xmr/") {
+					t.Errorf("ESCROW_XMR off, %s, %s: offered %s", name, viewer, f.action)
+				}
+				w := x.do("POST", f.action, x.sessOf(fresh, viewer), f.values)
+				t.Logf("ESCROW_XMR off, %s, %s: %s -> %d", name, viewer, f.action, w.Code)
+				if w.Code == 404 || w.Code == 409 || w.Code >= 500 {
+					t.Errorf("ESCROW_XMR off, %s, %s: %s answered %d %s", name, viewer, f.action, w.Code, w.Body.String())
+				}
+			}
+		}
+	}
 }
 
 // freshOrder takes a Monero escrow for a new buyer's draft on product and returns the order and the escrow address.
