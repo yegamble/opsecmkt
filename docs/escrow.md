@@ -568,8 +568,9 @@ wallet takes an order again and no settlement is relayed until an administrator 
 - **Monero dispute decisions are final.** A wrong decision cannot be undone from the market.
 - **A buyer who neither confirms receipt nor disputes before the deadline loses the choice**, as for Bitcoin escrow
   (ES-11), and an administrator decides disputes from what the parties write; it does not check that goods exist or
-  arrived. The release deadline length is the Bitcoin escrow's setting, and its form on `/admin` exists only while
-  `ESCROW_BTC` is on: with only `ESCROW_XMR` on, new Monero escrows get the length saved earlier, or 14 days.
+  arrived. The release deadline length is one setting for both coins: its form on `/admin`, like a physical listing's
+  dispatch window, is offered while `ESCROW_BTC` or `ESCROW_XMR` is on, and each escrow keeps the length in force at
+  its checkout.
 - **The market fee is set only by `ESCROW_XMR_FEE_BPS` and `ESCROW_XMR_FEE_ADDRESS`** (no form on `/admin`); each escrow
   keeps the fee in force at its checkout.
 - **One wallet is open at a time, and every wallet that may hold coins is opened on every pass**, until the wallet is
