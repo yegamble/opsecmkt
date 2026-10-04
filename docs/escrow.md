@@ -176,7 +176,11 @@ chain `regtest`; [operator guide](operator-guide.md#bitcoin-escrow-regtest-only)
   cancelled or expires underpaid; an administrator's dispute decision; a stray refund of coins sent after the order
   closed), signed by the buyer or the vendor in their own wallet and pasted back; the market co-signs its own stored
   copy (or, when both parties signed, does not sign), re-checks, stores, broadcasts and follows the transaction for
-  100 confirmations;
+  100 confirmations. A deposit that does not count when the payment window ends (Core reports it conflicted, or no
+  longer lists it) does not keep the order open, so an order with nothing else is cancelled unpaid and no refund is
+  requested; if that deposit confirms later and no refund spends it, it is left out, flagged, noted on the order with
+  the buyer and staff told, and returned to the buyer's refund address by a stray refund (A-428). A refund that could
+  not be built because the escrow's coins were too few keeps them in the escrow, as its note says;
 - recovery and reconciliation: the restore gate pauses builds, co-signing, broadcasts and escrow checkout, and a
   restored stored transaction is broadcast again only after an administrator confirms it; every checkout first asks
   the watch-only wallet whether it already holds the escrow address it composed (an escrow created after the backup a
@@ -221,6 +225,7 @@ them together from their own wallets. A reorganisation deeper than 100 blocks is
   `TestEscrowClaimBuildAndSign`, `TestEscrowPasteRefusals`, `TestEscrowRefundRoutes`, `TestEscrowSettlementRaces`,
   `TestEscrowCosignBroadcastConfirm`, `TestEscrowRawStoredBeforeBroadcast`, `TestEscrowBadSignatureReverts`,
   `TestEscrowBothPartiesSign`, `TestEscrowDisputeDecision`, `TestEscrowStrayRefundAfterClose`,
+  `TestEscrowConflictedDepositThroughExpiry`, `TestEscrowUncountedDepositBounds`,
   `TestEscrowRestoreGatePausesAndAdminRebroadcasts`, `TestEscrowCheckoutSkipsAddressTheWalletWatches`,
   `TestEscrowReorgRetracking`, `TestEscrowExternalSpend`,
   `TestEscrowOutsideSpendFlagged` and, for A-356, `TestEscrowAwaitingSignatureSpentOutside`,
@@ -235,7 +240,11 @@ them together from their own wallets. A reorganisation deeper than 100 blocks is
   settlement, discarded bad signatures, a stray refund and an administrator's dispute refund, each broadcast and
   confirmed (`TestEscrowRegtestCosign`); the parties broadcasting a both-signed settlement themselves, a reorganisation
   and its reversal, a reorganisation with a double-spend, a co-spend with no settlement and an orphan address
-  (`TestEscrowRegtestRecovery`); and a comma-joined key refused, a forged market-key entry refused, A-356 (the
+  (`TestEscrowRegtestRecovery`); a deposit replaced by a conflicting transaction that was mined (Core's
+  `gettransaction` reports it with -1 confirmations and `listreceivedbyaddress` no longer lists it), the order
+  cancelled unpaid at the end of its window, then the replacement's block invalidated and the deposit mined after all
+  and returned by a stray refund the buyer's wallet signed, broadcast and confirmed (`TestEscrowRegtestConflicted`,
+  A-428); and a comma-joined key refused, a forged market-key entry refused, A-356 (the
   parties co-spending an escrow while its claim waits for a signature, and before its claim is built), a
   spent-outpoint build refused, a conflicting outcome refused, the restore gate with a restore's hold (written by the
   test as `scripts/restore.sh` writes it) and one administrator-confirmed rebroadcast, a restored database not

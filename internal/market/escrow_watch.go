@@ -25,7 +25,8 @@ import (
 // confirmation (escrow_cosign.go, slice P1-c2). A dispute on an escrow order is decided by an administrator and its
 // decision is paid by a settlement (escrow_decision.go). An escrow order that has received nothing when its payment
 // window ends is cancelled, as a pooled order is; one underpaid then is cancelled too and its refund requested. A confirmed deposit
-// first recorded after an escrow order closed is flagged for payment review (flagLateDeposits).
+// first recorded after an escrow order closed is flagged for payment review (flagLateDeposits); one that did not count
+// when the order was cancelled and has confirmed since is left out for the stray refund (leaveOutUncounted, A-428).
 //
 // While escrow is switched on but not enabled (its node was down at startup, say) the watcher retries the startup
 // checks each interval (retryEscrow) and does nothing else but apply the release deadlines, which need no node
@@ -236,7 +237,10 @@ func (a *App) escrowPollOnce(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// settleEscrow applies the ledger to one escrow order in its own transaction: funding, then the payment window.
+// settleEscrow applies the ledger to one escrow order in its own transaction: deposits its release or refund does not
+// spend are left out (leaveOutTopUps; on a cancelled order also leaveOutUncounted) or, on a closed order, flagged
+// (flagLateDeposits) for the stray refund; an order awaiting payment is funded, or cancelled at the end of its payment
+// window (unpaid, or underpaid).
 func (a *App) settleEscrow(ctx context.Context, orderID string, walletRead bool) error {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -256,6 +260,11 @@ func (a *App) settleEscrow(ctx context.Context, orderID string, walletRead bool)
 		}
 	}
 	if o.Escrow && isTerminal(o.State) {
+		// A-428: a deposit that did not count when the order was cancelled (conflicted, or no longer listed) and has
+		// confirmed since is left out for the stray refund, unless the order's refund spends it.
+		if err = a.leaveOutUncounted(ctx, tx, &o, threshold); err != nil {
+			return err
+		}
 		// A deposit first recorded after the order closed is never counted; it is flagged for payment review, the
 		// buyer and the staff told once per episode, as a pooled one is (A-211, QA31-3). It stays in the escrow.
 		if err = a.flagLateDeposits(ctx, tx, &o, threshold, false); err != nil {

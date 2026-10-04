@@ -82,7 +82,7 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 			}
 		}
 	}
-	var received, pending, afterCloseSeen int64
+	var received, pending, afterCloseSeen, leftOutSeen int64
 	required, err := parseAmount(o.Amount, 8)
 	if err != nil {
 		return err
@@ -113,7 +113,10 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 			dep.State = "Arrived after the order closed — not counted; returned to the buyer's refund address by a stray refund"
 			afterCloseSeen++
 		case leftOut:
-			dep.State = "Left out of the settlement after waiting " + escrowBuildWaitText + " — returned to the buyer's refund address by a stray refund once confirmed"
+			// Left out of a bounded build (A-342), of a release or refund built before it arrived (A-374), or not counted
+			// when the order was cancelled and confirmed since (A-428).
+			dep.State = "Left out — not counted for the order; returned to the buyer's refund address by a stray refund once confirmed"
+			leftOutSeen++
 		case dep.Confirmations >= v.Threshold:
 			dep.State, received = "Confirmed", received+amt
 		default:
@@ -166,6 +169,9 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 	case o.State == stateCancelled && afterCloseSeen > 0:
 		// Coins sent after the cancellation are never counted, but they are at the escrow address (QA31-1).
 		v.Status = "Cancelled; a deposit arrived after the order closed. It is not counted and is held at the escrow address."
+	case o.State == stateCancelled && leftOutSeen > 0:
+		// A-428: a deposit that did not count when the order was cancelled, confirmed since and left out.
+		v.Status = "Cancelled; a deposit to this escrow did not count for the order. It is held at the escrow address and returned to the buyer's refund address by a stray refund."
 	case o.State == stateCancelled && e == nil:
 		// Nothing is read while escrow is not enabled, so an empty ledger proves nothing (QA31-1), nor do zero
 		// figures (A-338).
