@@ -508,35 +508,41 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   moderator's resolve is refused. Unlike a Bitcoin escrow's, a Monero decision cannot be changed once made, because the
   market builds and sends it on its next pass; the resolve form says so before submission. A decision for the buyer
   supersedes a release that has no stored transaction yet and is refused (409) once the release has one.
-- **Retention and destruction.** A wallet whose orders have all closed is *retained* and is still read on every pass,
-  so a late deposit is refunded. 90 days after its last order closed, and only when no order of it is open, no settlement
-  of it is live or still followed to 100 confirmations, its balance and unlocked balance are zero across all accounts and
-  nothing of it is in the pool, the watcher replaces its password with 32 random bytes that are never stored, closes it,
-  wipes its sealed seed and records it destroyed. Only those preconditions destroy a wallet automatically, with one
-  exception: a wallet whose password the market already replaced (the wallet-rpc refuses it as "Invalid password") is recorded
-  destroyed again. A retained wallet past its 90 days that still holds coins (an unclaimed paid account, coins at account 0, a
-  failed settlement) is not destroyed, and staff are flagged once. The market cannot reach the wallet volume: `/admin`
-  lists each destroyed wallet's two files for the operator to delete.
+- **Retention and destruction.** A wallet whose orders have all closed is *retained* and is still read on every pass, so
+  a late deposit is refunded. 90 days after its last order closed, and only when no order of it is open, no settlement
+  of it is live or still followed to 100 confirmations, its balance and unlocked balance are zero across all accounts
+  and nothing of it is in the pool, the watcher replaces its password with 32 random bytes that are never stored, closes
+  it, wipes its sealed seed and records it destroyed. Only those preconditions destroy a wallet automatically. The
+  watcher records that it began destroying a wallet (migration 086) before it replaces the password, so a destruction
+  interrupted after the new password took effect (a crash, or a restore from a backup taken in between) ends destroyed
+  on a later pass, once the wallet-rpc refuses that wallet as "Invalid password", provided staff were never flagged that
+  it holds something and neither the restore gate nor the sweep marker is set. A retained wallet past its 90 days that
+  still holds coins (an unclaimed paid account, coins at account 0, a failed settlement) is not destroyed, and staff are
+  flagged once. The market cannot reach the wallet volume: `/admin` lists each destroyed wallet's two files for the
+  operator to delete.
 - **Restore holds and the orphan sweep.** `scripts/restore.sh` (or the manual SQL in
   [UPGRADING.md](../UPGRADING.md#6-backups-now-need-the-wallets-too)) holds every restored Monero settlement that has a
   stored transaction until an administrator confirms its relay on `/admin`; retires every free account; moves every
   active or sealed wallet to *closing*, so no account of a restored wallet, one the restored records lack included, is
   offered to a new order; asks for a release deadline recheck (the deadline of a shipped order that had passed in the
-  restored records moves 72 hours later, and the buyer is told); and sets `xmr_escrow_sweep_required`. Until the watcher's
-  sweep has run, checkout answers 503 and no wallet or account is created. The sweep looks for wallet names newer than the
-  database's newest row (a wallet created after the backup): one that opens with the derived password is sealed to the
-  seed key as an *orphan*, kept, never offered an account, and its funded accounts are listed to the administrators; one
-  that does not open is recorded as an orphan and never opened. It also gives a wallet older than the database a longer
-  subaddress lookahead and rescans it, so deposits to accounts it does not know are seen. Under the gate nothing is
-  built or relayed; deposits are still read.
+  restored records moves 72 hours later, and the buyer is told); and sets `xmr_escrow_sweep_required`. Until the
+  watcher's sweep has run, checkout answers 503 and no wallet or account is created. The sweep looks for wallets created
+  after the backup: in each month from 12 months back through next month, the names after that month's newest row. One
+  that opens with the derived password is sealed to the seed key as an *orphan*, kept, never offered an account, and its
+  funded accounts are listed to the administrators; one that does not open is recorded as an orphan and never opened. It
+  also gives a wallet older than the database a longer subaddress lookahead and rescans it, so deposits to accounts it
+  does not know are seen. Under the gate nothing is built or relayed; deposits are still read.
 - **If a wallet cannot be opened.** A wallet the escrow wallet-rpc refuses to open (its file gone, or a password that no
-  longer opens it, or one another wallet program has open, which counts as temporarily unavailable) is recorded *missing*,
-  keeps its sealed seed (never wiped while the restore gate or the sweep marker is set), its free accounts are retired and
-  the administrators are told; it is tried on every pass. A missing wallet past its 90 days is listed on `/admin`, where an
-  administrator confirms its destruction (password step-up, audited) once the operator has checked that the file is gone and
-  nothing is owed. A wallet that would not open while the sweep ran counts as checked, so after its file is restored the
-  operator sets the sweep marker again for its lookahead. A changed `MONERO_WALLET_SECRET` disables Monero escrow with one fixed log line and no wallet is created or opened;
-  a changed `ESCROW_XMR_SEED_KEY` stops wallet creation only, until the operator re-pins it.
+  longer opens it) is recorded *missing*, keeps its sealed seed, its free accounts are retired and the administrators
+  are told; it is tried on every pass. "Invalid password" alone never wipes a seal: a wallet restored from its seed with
+  a mistyped secret, another install's file of the same name and a damaged keys file are refused alike, so only a
+  destruction the market itself began (above) ends destroyed without an administrator. A wallet another wallet program
+  has open is temporarily unavailable: it keeps its state and its accounts, waits, and is logged once until it is closed
+  there. A missing wallet past its 90 days is listed on `/admin`, where an administrator confirms its destruction
+  (password step-up, audited) once the operator has checked that the file is gone and nothing is owed. A wallet that
+  would not open while the sweep ran counts as checked, so after its file is restored the operator sets the sweep marker
+  again for its lookahead. A changed `MONERO_WALLET_SECRET` disables Monero escrow with one fixed log line and no wallet
+  is created or opened; a changed `ESCROW_XMR_SEED_KEY` stops wallet creation only, until the operator re-pins it.
 
 **What Phase 3 protects, on a local fakechain.** Every transaction out of an order's account names that account, and the
 transaction the wallet builds is checked to spend exactly the outputs claimed to exactly the planned destinations, so one
@@ -593,9 +599,10 @@ wallet takes an order again and no settlement is relayed until an administrator 
 - **A wallet-rpc that crashes building a settlement** (0.18.5.1 does on some destinations) is handled but not cured: a
   settlement whose build drops the connection twice is set aside, staff are told, and an administrator must ask for the
   build again; other settlements are not held up.
-- **The orphan sweep is bounded.** It probes wallet names month by month, from the month of the database's newest wallet
-  row or order (never more than 12 months back) to next month, and stops each month at its first name with no file; an
-  orphan's restore height is unknown (recorded as 0), so restoring one from its seed scans the whole chain.
+- **The orphan sweep is bounded.** It probes wallet names month by month, from 12 months before the current month
+  through next month, starting after each month's newest wallet row, and stops each month at its first name with no
+  file, so a wallet of an earlier month is not found; an orphan's restore height is unknown (recorded as 0), so
+  restoring one from its seed scans the whole chain.
 
 **How it was tested.** Each tier proves only what it says:
 
@@ -609,7 +616,7 @@ wallet takes an order again and no settlement is relayed until an administrator 
   (`TestXMRBase58MoneroVectors`, `TestXMRAddressExternalVectors`, `TestXMRAddressRefusals`, `TestXMRAddressKeysRefused`,
   `TestXMRPointValid`, `TestXMRPointPrimeOrder`).
 - Go tests with PostgreSQL against a **fake** escrow wallet-rpc and daemon (simulated RPC, not chain evidence), for
-  every state change and refusal. Schema: `TestXMREscrowMigration084`, `TestXMREscrowMigration085`,
+  every state change and refusal. Schema: `TestXMREscrowMigration084`, `TestXMREscrowMigration085`, `TestXMREscrowMigration086`,
   `TestEscrowBTCIgnoresXMRRows`, `TestXMREscrowPayoutRefused`, `TestXMREscrowIdxNoCollision`. Wallets, slots and funding:
   `TestXMREscrowFirstRun`, `TestXMREscrowWalletRotation`, `TestXMREscrowSlotClaimRace`, `TestXMREscrowNoRPCAtCheckout`,
   `TestXMREscrowAccountZeroNeverSpent`, `TestXMREscrowFundingThreshold`, `TestXMREscrowTwoAccountsOneTx`,
@@ -623,7 +630,8 @@ wallet takes an order again and no settlement is relayed until an administrator 
   disputes: `TestXMREscrowNoBuildBeforeOutcome`, `TestXMREscrowConfirmReceiptStepUp`, `TestXMREscrowShipStepUp`,
   `TestXMREscrowDeadlineWithBTCOff`, `TestXMREscrowDisputeSupersedes`, `TestXMREscrowNoShipCancel`,
   `TestXMREscrowRestoreExtendsDeadline`. Retention and restore: `TestXMREscrowDestroyPreconditions`,
-  `TestXMREscrowRestoredPastDestroy`, `TestXMREscrowRestoreRetiresSlots`, `TestXMREscrowRestoreNoUnrecordedSlot`,
+  `TestXMREscrowRestoredPastDestroy`, `TestXMREscrowUnopenableKeepsSeal`, `TestXMREscrowConfirmDestroyed`,
+  `TestXMREscrowRestoreRetiresSlots`, `TestXMREscrowRestoreNoUnrecordedSlot`,
   `TestXMREscrowOrphanSwept`, `TestXMREscrowLookaheadForOlderWallet`, `TestXMREscrowHeldSettlementConfirm`.
   `scripts/test-backup-restore.sh` (run in CI) restores a real dump through `scripts/restore.sh` with Monero escrow rows
   and checks the holds, the retired slots, the closed wallets and the sweep marker.

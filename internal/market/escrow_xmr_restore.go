@@ -34,9 +34,9 @@ import (
 //     and the administrators are told; the probe goes on past it. A month's probe ends at the first name with no file;
 //     a file another wallet program has open leaves the sweep incomplete, to be probed again.
 //   - every wallet that may hold coins is opened and read (escrow_xmr_watch.go), and one that does not open is recorded
-//     missing or destroyed (escrow_xmr_retain.go); a wallet older than the database (fewer accounts than the highest slot
-//     names) gets a subaddress lookahead past that slot and a rescan (xmrLookahead), so deposits to the accounts it does
-//     not know are seen.
+//     missing (escrow_xmr_retain.go; nothing is destroyed during the sweep); a wallet older than the database (fewer
+//     accounts than the highest slot names) gets a subaddress lookahead past that slot and a rescan (xmrLookahead), so
+//     deposits to the accounts it does not know are seen.
 //
 // A held settlement is listed on /admin; an administrator who checked the escrow daemon and wallet confirms, with a
 // password step-up and an audit row, that its stored transaction was not already relayed or replaced

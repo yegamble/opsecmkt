@@ -394,6 +394,7 @@ func TestXMREscrowRPCResults(t *testing.T) {
 		`Failed to open wallet : internal error: "/home/monero/wallet/escrow-202610-01.keys" is opened by another wallet program`: xmrOpenLocked,
 		"Failed to open wallet : Invalid password.":                                                                               xmrOpenPassword,
 		"Failed to open wallet : invalid password":                                                                                "",
+		"Failed to open wallet : invalid password.":                                                                               "",
 		"Failed to open wallet : Invalid password. Retry with the background wallet":                                              "",
 		"Failed to open wallet : std::bad_alloc":                                                                                  "",
 	} {

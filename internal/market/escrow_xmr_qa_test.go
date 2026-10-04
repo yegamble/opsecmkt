@@ -19,7 +19,9 @@ import (
 // A-424 (QA's probe through expiry): a deposit the wallet reads as conflicted (double_spend_seen), or no longer lists,
 // when the payment window ends does not count, so the order is cancelled unpaid and no refund is requested. When that
 // transaction is mined after all, the deposit is left out and flagged, the buyer and the staff are told, and a stray
-// refund returns it, less the network fee, to the refund address pinned at checkout.
+// refund returns it, less the network fee, to the refund address pinned at checkout. A requested refund keeps the
+// deposits for itself, but a failed one spends nothing more, so it does not; a deposit mined with an unlock time
+// (locked) never counts and is never left out.
 func TestXMREscrowConflictedDepositThroughExpiry(t *testing.T) {
 	x := newXMREscrowEnv(t)
 	x.mustPoll()
@@ -96,6 +98,44 @@ func TestXMREscrowConflictedDepositThroughExpiry(t *testing.T) {
 		agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND escrow_left_out", order) != 0 {
 		t.Fatalf("a requested refund's deposit: %s, settlements %v, deposits %v", x.state(order), got,
 			agStrings(t, x.testEnv, "SELECT confirmations||' '||escrow_left_out FROM payments WHERE order_id=$1", order))
+	}
+
+	// expired is an order cancelled at the end of its window with its one deposit read as conflicted, and that deposit.
+	expired := func() (string, string) {
+		t.Helper()
+		order, addr := x.freshCheckout(x.digital(x.vendor))
+		txid := hex64("expired " + order)
+		x.fake.payAddress(addr, txid, xmrListingPrice, 0)
+		x.mustPoll()
+		x.fake.setTransfer(txid, func(t *fakeXMRTransfer) { t.DoubleSpend = true })
+		x.mustPoll()
+		agExec(x.testEnv, "UPDATE escrows SET created=now()-interval '3 days' WHERE order_id=$1", order)
+		x.mustPoll()
+		if x.state(order) != stateCancelled {
+			t.Fatalf("at the end of the window: %s", x.state(order))
+		}
+		return order, txid
+	}
+	// A deposit mined with an unlock time (locked) never counts, so it is neither left out nor refunded.
+	order, txid = expired()
+	x.fake.setTransfer(txid, func(t *fakeXMRTransfer) { t.DoubleSpend, t.Confs, t.Pool, t.UnlockTime = false, 20, false, 1000000 })
+	x.mustPoll()
+	x.mustPoll()
+	if got := agStrings(t, x.testEnv, "SELECT locked||' '||escrow_left_out FROM payments WHERE order_id=$1", order); !slices.Equal(got, []string{"true false"}) || len(x.xmrSettlements(order)) != 0 {
+		t.Fatalf("a locked deposit: %v, settlements %v", got, x.xmrSettlements(order))
+	}
+	// A refund that failed spends nothing more: the deposit mined after it is left out and stray-refunded.
+	order, txid = expired()
+	var failed int64
+	if err := x.DB.QueryRow("INSERT INTO xmr_settlements(order_id,kind,destination) SELECT order_id,'refund',refund_address FROM escrows WHERE order_id=$1 RETURNING id", order).Scan(&failed); err != nil {
+		t.Fatal(err)
+	}
+	agExec(x.testEnv, "UPDATE xmr_settlements SET state='failed' WHERE id=$1", failed)
+	x.fake.setTransfer(txid, func(t *fakeXMRTransfer) { t.DoubleSpend, t.Confs, t.Pool = false, 20, false })
+	x.mustPoll()
+	x.mustPoll()
+	if got := agStrings(t, x.testEnv, "SELECT escrow_left_out::text FROM payments WHERE order_id=$1", order); !slices.Equal(got, []string{"true"}) || x.settlementOf(order, "stray_refund").State != "relayed" {
+		t.Fatalf("after a failed refund: deposit left out %v, settlements %v", got, x.xmrSettlements(order))
 	}
 }
 
