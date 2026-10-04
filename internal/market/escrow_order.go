@@ -114,8 +114,12 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 			afterCloseSeen++
 		case leftOut:
 			// Left out of a bounded build (A-342), of a release or refund built before it arrived (A-374), or not counted
-			// when the order was cancelled and confirmed since (A-428).
+			// when the order was cancelled and confirmed since (A-428). A stray refund is requested only once the order
+			// is closed (QA428-5).
 			dep.State = "Left out — not counted for the order; returned to the buyer's refund address by a stray refund once confirmed"
+			if !isTerminal(o.State) {
+				dep.State = "Left out — not counted for the order; returned to the buyer's refund address by a stray refund once the order is closed and it is confirmed"
+			}
 			leftOutSeen++
 		case dep.Confirmations >= v.Threshold:
 			dep.State, received = "Confirmed", received+amt

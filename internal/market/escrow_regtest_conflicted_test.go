@@ -167,7 +167,7 @@ func TestEscrowRegtestConflicted(t *testing.T) {
 		}
 		return got[0]
 	}
-	const uncounted = "did not count for the order when it was cancelled"
+	const uncounted = "not spent by any refund of this order"
 	told := func(order string) (notes, buyerNotices, staff int) {
 		t.Helper()
 		notes = agInt(e, "SELECT count(*) FROM order_events WHERE order_id=$1 AND strpos(note,$2)>0", order, uncounted)
@@ -319,7 +319,7 @@ func TestEscrowRegtestConflicted(t *testing.T) {
 	if sstate != "awaiting_signature" || dest != refund || agInt(e, "SELECT count(*) FROM payments WHERE settlement_id=$1 AND txid=$2", sid, deposit) != 1 {
 		t.Fatalf("stray refund %d: %s to %s", sid, sstate, dest)
 	}
-	t.Logf("left out: at 3 confirmations the ledger row is %q; %d order note, %d buyer notice, %d staff notices (did not count when cancelled); stray refund %d requested to the refund address pinned at checkout", ledger(order), notes, b, staff, sid)
+	t.Logf("left out: at 3 confirmations the ledger row is %q; %d order note, %d buyer notice, %d staff notices (not spent by any refund); stray refund %d requested to the refund address pinned at checkout", ledger(order), notes, b, staff, sid)
 
 	// The buyer's own wallet signs the stray refund; the market co-signs, broadcasts and follows it.
 	w := e.do("GET", "/escrow-psbt?id="+order+"&s="+strconv.FormatInt(sid, 10), buyerSess, nil)

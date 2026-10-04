@@ -180,7 +180,12 @@ chain `regtest`; [operator guide](operator-guide.md#bitcoin-escrow-regtest-only)
   longer lists it) does not keep the order open, so an order with nothing else is cancelled unpaid and no refund is
   requested; if that deposit confirms later and no refund spends it, it is left out, flagged, noted on the order with
   the buyer and staff told, and returned to the buyer's refund address by a stray refund (A-428). A refund that could
-  not be built because the escrow's coins were too few keeps them in the escrow, as its note says;
+  not be built because the escrow's coins were too few keeps them in the escrow, as its note says; a deposit that did
+  not count (conflicted, or no longer listed) and confirms later on such an order is not returned automatically
+  either: it is not left out or flagged, staff are not told, and only the buyer and the vendor together can move it
+  from their own wallets (A-435). A stray refund that fails because its
+  coins are too few is noted and told once; no other is requested until a further deposit makes the coins worth more,
+  and the buyer's recovery request is answered that they are too few to return (A-434);
 - recovery and reconciliation: the restore gate pauses builds, co-signing, broadcasts and escrow checkout, and a
   restored stored transaction is broadcast again only after an administrator confirms it; every checkout first asks
   the watch-only wallet whether it already holds the escrow address it composed (an escrow created after the backup a
@@ -225,7 +230,7 @@ them together from their own wallets. A reorganisation deeper than 100 blocks is
   `TestEscrowClaimBuildAndSign`, `TestEscrowPasteRefusals`, `TestEscrowRefundRoutes`, `TestEscrowSettlementRaces`,
   `TestEscrowCosignBroadcastConfirm`, `TestEscrowRawStoredBeforeBroadcast`, `TestEscrowBadSignatureReverts`,
   `TestEscrowBothPartiesSign`, `TestEscrowDisputeDecision`, `TestEscrowStrayRefundAfterClose`,
-  `TestEscrowConflictedDepositThroughExpiry`, `TestEscrowUncountedDepositBounds`,
+  `TestEscrowConflictedDepositThroughExpiry`, `TestEscrowUncountedDepositBounds`, `TestEscrowStrayRefundTooSmall`,
   `TestEscrowRestoreGatePausesAndAdminRebroadcasts`, `TestEscrowCheckoutSkipsAddressTheWalletWatches`,
   `TestEscrowReorgRetracking`, `TestEscrowExternalSpend`,
   `TestEscrowOutsideSpendFlagged` and, for A-356, `TestEscrowAwaitingSignatureSpentOutside`,
