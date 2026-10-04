@@ -301,8 +301,10 @@ func TestXMREscrowRegtestTopUp(t *testing.T) {
 	t.Logf("order %s: release %s spent the price only; top-up %s left out and returned by stray refund %s", shortID(order), release.TxHash, topUp, stray.TxHash)
 }
 
-// TestXMREscrowRegtestReorg: a confirmed release is taken out of the chain (pop_blocks) and the daemon's pool flushed:
-// it goes back to relayed, the same stored transaction is relayed again and confirms again.
+// TestXMREscrowRegtestReorg: a reorganisation takes a confirmed release out of the chain: every block mined since it
+// was relayed is popped (pop_blocks), the daemon's pool flushed and new blocks without it mined (so the wallet-rpc stays
+// within 10 blocks of the daemon, P3-R2). It goes back to relayed, the same stored transaction is relayed again and
+// confirms again.
 func TestXMREscrowRegtestReorg(t *testing.T) {
 	r, p := newXMRSettleRegtest(t)
 	order, _ := r.completedReal()
@@ -312,9 +314,10 @@ func TestXMREscrowRegtestReorg(t *testing.T) {
 	s := r.settlement(id)
 	r.xmrShape(s)
 	var popped map[string]any
-	r.daemonPost("/pop_blocks", map[string]any{"nblocks": 10}, &popped)
+	r.daemonPost("/pop_blocks", map[string]any{"nblocks": 10 + xmrMineMargin}, &popped) // every block confirmReal mined
 	var flushed map[string]any
 	r.call(r.daemon, "flush_txpool", nil, &flushed)
+	r.mine(xmrMineMargin)
 	r.mustPoll()
 	if got := r.settlement(id).State; got != "relayed" {
 		t.Fatalf("after the reorganisation: %s", got)
@@ -328,7 +331,7 @@ func TestXMREscrowRegtestReorg(t *testing.T) {
 	if got := r.settlement(id); got.TxHash != s.TxHash {
 		t.Fatalf("another transaction: %+v", got)
 	}
-	t.Logf("order %s: transaction %s confirmed, taken out by pop_blocks 10 and a flushed pool, relayed again and confirmed again", shortID(order), s.TxHash)
+	t.Logf("order %s: transaction %s confirmed, taken out by pop_blocks (every block mined since it was relayed) and a flushed pool, relayed again and confirmed again", shortID(order), s.TxHash)
 }
 
 // TestXMREscrowRegtestExternal: a wallet restored from the sealed seed spends the escrow's output outside the market
