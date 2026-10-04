@@ -882,28 +882,28 @@ class WalletRPC:
                 break
             picked.append(o)
             have += o.amount
-        n_out = len(dests) + 1
-        fee = tx_fee(max(len(picked), 1), n_out)
-        need = want + (0 if subtract else fee)
+        need = want + (0 if subtract else tx_fee(max(len(picked), 1), len(dests) + 1))
         if not picked or have < need:
             if sum(o.amount for o in mine) >= need:
                 raise RPCError(-37, 'not enough unlocked money')
             raise RPCError(-17, 'not enough money')
-        change = have - need
-        n_out = max(2, len(dests) + (1 if change else 0))
-        fee = tx_fee(len(picked), n_out)
+        # The fee is the weight's of the outputs built: the destinations and a change output to the account's address 0,
+        # which is left out only when the fee comes from the destinations and nothing is left over (two outputs at least,
+        # so a single destination gets an empty change output, as wallet2 adds).
         amounts = [d['amount'] for d in dests]
         if subtract:
+            change = have - want
+            fee = tx_fee(len(picked), max(2, len(dests) + (1 if change else 0)))
             share, rest = divmod(fee, len(subtract))
             for k, i in enumerate(subtract):
                 amounts[i] -= share + (rest if k == 0 else 0)
             if any(a <= 0 for a in amounts):
-                raise RPCError(-4, 'transaction amount too small to pay the fee')
-            change = have - want
+                raise RPCError(-4, 'transaction amount too small to pay the fee')  # not recorded from the real wallet
         else:
+            fee = tx_fee(len(picked), len(dests) + 1)
             change = have - want - fee
         outputs = [{'address': d['address'], 'amount': a} for d, a in zip(dests, amounts)]
-        if change or len(outputs) < 2:
+        if change or len(outputs) < 2 or not subtract:
             outputs.append({'address': w.address(self.chain, account, 0), 'amount': change})
         tx = Tx(self.chain, [o.key_image for o in picked], outputs, fee)
         tx.account, tx.wallet = account, w.name

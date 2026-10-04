@@ -22,12 +22,14 @@ import (
 // ESCROW_XMR_PAYEE2_FUNDED of them (default 200, chosen at random) are funded by the funder wallet, two per block over
 // half as many blocks, while the escrow wallet is closed. It measures, through the app's own adapter (so its timeouts
 // apply: rpcTimeout for create_account, get_address, get_transfers, get_accounts and incoming_transfers;
-// xmrWalletSlowTimeout for create_wallet, open_wallet, refresh and store): create_account in total and per call;
-// open_wallet; refresh over the funding blocks and over 1,000 empty blocks; get_transfers all_accounts (time and payload
-// size); get_accounts; incoming_transfers of one funded account; the wallet file's size and the wallet-rpc's resident
-// memory (when ESCROW_XMR_PAYEE2_WALLET_CONTAINER names its container); and a seed restore on the restore wallet-rpc
-// (restore_deterministic_wallet, set_subaddress_lookahead past the highest account, rescan_blockchain), which must find
-// every funded account. Then a full watcher pass (xmrWalletPass's calls: open_wallet, the network check with its
+// xmrWalletSlowTimeout for create_wallet, open_wallet and store): create_account in total and per call; open_wallet;
+// refresh over the funding blocks, over 1,000 empty blocks and over one block with 2 deposits (each measured to its end
+// and recorded as a FINDING when it takes longer than xmrWalletSlowTimeout, the bound the watcher gives it);
+// get_transfers all_accounts (time and payload size); get_accounts; incoming_transfers of one funded account; the wallet
+// file's size and the wallet-rpc's resident memory (when ESCROW_XMR_PAYEE2_WALLET_CONTAINER names its container); and a
+// seed restore on the restore wallet-rpc (restore_deterministic_wallet, set_subaddress_lookahead past the highest
+// account, rescan_blockchain, also a FINDING beyond xmrWalletSlowTimeout), which must find every funded account. Then a
+// full watcher pass (xmrWalletPass's calls: open_wallet, the network check with its
 // refresh, get_address of account 0, get_transfers, get_accounts, store) over ESCROW_XMR_PAYEE2_WALLETS such wallets
 // (default 5: the container's copies of the measured wallet file, so each is a real open of a full wallet). It passes
 // when that pass fits the Monero watcher's pass timeout (xmrEscrowPassTimeout) and every call its own timeout; how it
@@ -177,17 +179,19 @@ func TestXMREscrowPAYEE2(t *testing.T) {
 		}
 		return time.Since(t0)
 	}
-	refresh := func() time.Duration {
-		t0 := time.Now()
-		if err := r.refresh(ctx); err != nil {
-			t.Fatalf("refresh: %s", xmrErrorClass(err))
-		}
-		return time.Since(t0)
+	// A refresh is measured to its end (the adapter would cut it off at xmrWalletSlowTimeout); one slower than that bound
+	// is a finding: the watcher's call times out and the wallet-rpc goes on refreshing, busy, into the next pass.
+	refresh := func(what string) time.Duration {
+		d := p.slow(r.wallet, "refresh", nil, nil)
+		p.over(what, d, xmrWalletSlowTimeout, "xmrWalletSlowTimeout")
+		return d
 	}
 	d := open(names[0])
 	p.logf("open_wallet with %d accounts: %s (xmrWalletSlowTimeout %s)", nAccounts, p.dur(d), p.dur(xmrWalletSlowTimeout))
 	p.memory("after open_wallet")
-	p.logf("refresh over the %d funding blocks (%d deposits): %s", nFunded/2+10, nFunded, p.dur(refresh()))
+	what := fmt.Sprintf("refresh over the %d funding blocks (%d deposits)", nFunded/2+10, nFunded)
+	d = refresh(what)
+	p.logf("%s: %s, %s per deposit received", what, p.dur(d), p.dur(d/time.Duration(nFunded)))
 	start = time.Now()
 	list, err := r.transfers(ctx)
 	d = time.Since(start)
@@ -228,7 +232,7 @@ func TestXMREscrowPAYEE2(t *testing.T) {
 	reg.mine(1000)
 	d = open(names[0])
 	p.logf("open_wallet again: %s", p.dur(d))
-	p.logf("refresh over 1000 empty blocks: %s", p.dur(refresh()))
+	p.logf("refresh over 1000 empty blocks: %s", p.dur(refresh("refresh over 1000 empty blocks")))
 	start = time.Now()
 	if err = r.closeWallet(ctx); err != nil {
 		t.Fatalf("close_wallet: %s", xmrErrorClass(err))
@@ -236,6 +240,21 @@ func TestXMREscrowPAYEE2(t *testing.T) {
 	p.logf("close_wallet (stores): %s", p.since(start))
 	p.files(names[0], "after 1000 more blocks")
 	p.memory("after 1000 more blocks")
+
+	// What one pass reads on a busy day: two new deposits in one new block.
+	pay := map[string]int64{}
+	for _, a := range rng.Perm(nAccounts) { // two accounts not funded yet, so the restore below counts nFunded+2
+		if _, ok := amounts[a+1]; !ok && len(pay) < 2 {
+			pay[addresses[a+1]] = 50_000_000_000
+		}
+	}
+	reg.pay(pay)
+	reg.mine(1)
+	open(names[0])
+	p.logf("refresh over one block with 2 deposits: %s", p.dur(refresh("refresh over one block with 2 deposits")))
+	if err = r.closeWallet(ctx); err != nil {
+		t.Fatalf("close_wallet: %s", xmrErrorClass(err))
+	}
 
 	// A seed restore on the restore wallet-rpc: the lookahead past the highest account, then a rescan.
 	restored := "payee2-restored-" + randomToken()[:10]
@@ -246,6 +265,7 @@ func TestXMREscrowPAYEE2(t *testing.T) {
 	d = p.slow(reg.restore, "set_subaddress_lookahead", map[string]any{"password": password, "major_idx": nAccounts + 1, "minor_idx": 1}, nil)
 	p.logf("set_subaddress_lookahead major %d minor 1: %s", nAccounts+1, p.dur(d))
 	d = p.slow(reg.restore, "rescan_blockchain", map[string]any{"hard": false}, nil)
+	p.over("rescan_blockchain of the restored wallet", d, xmrWalletSlowTimeout, "xmrWalletSlowTimeout, the bound slice X-f gives it")
 	p.logf("rescan_blockchain: %s (slice X-f bounds it by xmrWalletSlowTimeout, %s)", p.dur(d), p.dur(xmrWalletSlowTimeout))
 	p.slow(reg.restore, "refresh", nil, nil)
 	var bal struct {
@@ -255,8 +275,8 @@ func TestXMREscrowPAYEE2(t *testing.T) {
 		} `json:"per_subaddress"`
 	}
 	reg.call(reg.restore, "get_balance", map[string]any{"all_accounts": true}, &bal)
-	p.logf("the restored wallet finds %d funded accounts holding %s XMR (want %d and %s)", len(bal.Per), amount(bal.Balance, 12), nFunded, amount(fundedTotal, 12))
-	if len(bal.Per) != nFunded || bal.Balance != fundedTotal {
+	p.logf("the restored wallet finds %d funded accounts holding %s XMR (want %d and %s)", len(bal.Per), amount(bal.Balance, 12), nFunded+2, amount(fundedTotal+100_000_000_000, 12))
+	if len(bal.Per) != nFunded+2 || bal.Balance != fundedTotal+100_000_000_000 {
 		t.Errorf("the seed restore did not find every funded account")
 	}
 	reg.call(reg.restore, "close_wallet", nil, nil)
@@ -315,6 +335,9 @@ func TestXMREscrowPAYEE2(t *testing.T) {
 	}
 	p.logf("slowest call of each kind in the pass: %s", strings.Join(worstLines, ", "))
 	p.logf("Monero watcher pass timeout (xmrEscrowPassTimeout): %s; poll interval (PAYMENT_POLL_INTERVAL default): %s", p.dur(xmrEscrowPassTimeout), p.dur(poll))
+	for _, f := range p.findings {
+		p.logf("FINDING: %s", f)
+	}
 	switch {
 	case t.Failed():
 		p.logf("VERDICT: FAIL (see the errors above)")
@@ -334,7 +357,15 @@ type payee2 struct {
 	t         *testing.T
 	container string
 	lines     []string
-	verdict   bool // the verdict line was written
+	findings  []string // calls that took longer than the bound the app gives them, outside the watcher pass
+	verdict   bool     // the verdict line was written
+}
+
+// over records a finding when what took d, longer than limit (named limitName).
+func (p *payee2) over(what string, d, limit time.Duration, limitName string) {
+	if d > limit {
+		p.findings = append(p.findings, fmt.Sprintf("%s took %s, longer than %s (%s)", what, p.dur(d), limitName, p.dur(limit)))
+	}
 }
 
 // write writes the report to artifacts/real-chain/paye-e2-<ESCROW_XMR_PAYEE2_SHA>.txt.
@@ -358,19 +389,15 @@ func (p *payee2) write() {
 	p.t.Logf("report written to %s", out)
 }
 
-// slow calls a restore wallet-rpc method with a long bound and reports it against xmrWalletSlowTimeout, the bound slice
-// X-f's restore sweep gives such calls.
+// slow calls a wallet-rpc method with a long bound (30 minutes) rather than the adapter's, so a call slower than the
+// bound the app gives it is measured to its end; the caller records it with over.
 func (p *payee2) slow(c *rpcClient, method string, params, out any) time.Duration {
 	p.t.Helper()
 	t0 := time.Now()
 	if err := c.callWithin(context.Background(), 30*time.Minute, "/json_rpc", method, params, out); err != nil {
 		p.t.Fatalf("%s: %v", method, err)
 	}
-	d := time.Since(t0)
-	if d > xmrWalletSlowTimeout {
-		p.t.Errorf("%s took %s, over xmrWalletSlowTimeout %s", method, p.dur(d), p.dur(xmrWalletSlowTimeout))
-	}
-	return d
+	return time.Since(t0)
 }
 
 func (p *payee2) logf(format string, args ...any) {

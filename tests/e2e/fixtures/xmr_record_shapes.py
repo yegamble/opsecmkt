@@ -15,7 +15,7 @@ or later before any wallet call. It needs a monerod --regtest and two monero-wal
     --wallet http://127.0.0.1:29082 --funder http://127.0.0.1:29083 \\
     --out tests/e2e/fixtures/xmr_rpc_shapes_0.18.5.1.json
 
-It mines about 200 blocks and creates wallets named escrow-2099MM-NN (a random month) on the escrow wallet-rpc.
+It mines about 150 blocks and creates wallets named escrow-2099MM-NN (a random month) on the escrow wallet-rpc.
 """
 import argparse
 import json
