@@ -1291,17 +1291,21 @@ password, for it to be built again. If the wallet-rpc stops twice more, it is se
 
 **Destruction, and deleting the files.** A wallet whose orders have all closed is retained; 90 days after its last order
 closed, and only when no order of it is open, no settlement of it is live or still followed to 100 confirmations, its balance
-and unlocked balance are zero across all accounts and nothing of it is in the pool, the watcher replaces its password with 32
-random bytes that are never kept, closes it, wipes its sealed seed from the database and records it destroyed (log: `escrow:
-Monero escrow wallet … destroyed`). Automatic destruction happens only when those preconditions hold. A wallet whose password
-the market already replaced (the wallet-rpc refuses to open it with "Invalid password") is recorded destroyed again. A retained
-wallet past its 90 days that still holds coins (an unclaimed paid account, coins at account 0, a failed settlement) is not
-destroyed, and staff are flagged once. A wallet that is missing, locked or otherwise will not open keeps its sealed seed and
-is recorded missing; its seal is never wiped while the restore gate or the sweep marker is set. A missing wallet past its 90
-days is listed on `/admin`, where an administrator confirms its destruction (password step-up, audited) once you have checked
-that its file is gone and nothing is owed on it. **Do not keep an escrow wallet open in another wallet program** (for example
-`monero-wallet-cli` on the same files): a wallet "opened by another wallet program" is treated as temporarily unavailable and
-the market cannot use it. **The market cannot reach the wallet volume, so the files stay until you delete them.**
+and unlocked balance are zero across all accounts and nothing of it is in the pool, the watcher records that it began
+destroying the wallet, replaces its password with 32 random bytes that are never kept, closes it, wipes its sealed seed from
+the database and records it destroyed (log: `escrow: Monero escrow wallet … destroyed`). Automatic destruction happens only
+when those preconditions hold. If the watcher stops after the new password took effect (a crash, or a restore from a backup
+taken in between), the wallet-rpc refuses that wallet with "Invalid password" and it is recorded destroyed on a later pass,
+unless staff were flagged that it holds something or the restore gate or the sweep marker is set. A retained wallet past its 90
+days that still holds coins (an unclaimed paid account, coins at account 0, a failed settlement) is not destroyed, and staff
+are flagged once. Any other wallet that will not open keeps its sealed seed and is recorded missing: its file gone, or "Invalid
+password" when the market did not begin destroying it (for example a wallet you restored from its seed with a mistyped
+`MONERO_WALLET_SECRET`, another install's file of the same name, or a damaged keys file). A missing wallet past its 90 days is
+listed on `/admin`, where an administrator confirms its destruction (password step-up, audited) once you have checked that its
+file is gone and nothing is owed on it; that is refused while the restore gate or the sweep marker is set. **Do not keep an
+escrow wallet open in another wallet program** (for example `monero-wallet-cli` on the same files): a wallet "opened by another
+wallet program" keeps its state and its accounts, but the market cannot read its deposits or send its settlements until you
+close it there (logged once). **The market cannot reach the wallet volume, so the files stay until you delete them.**
 *Admin → Payment providers → Monero escrow recovery and retention (fakechain)* lists *Destroyed Monero escrow wallets* with
 their two files, `NAME` and `NAME.keys`. Delete each pair from the escrow wallet volume:
 

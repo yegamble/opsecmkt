@@ -1065,6 +1065,21 @@ need this migration (a database with 084 but not 085 exists only on a developmen
 needed at upgrade. Rolling back past this release needs the pre-upgrade backup, as for every migration (section 5): the
 earlier release refuses to start on a database that records migration 085.
 
+## 31. Monero escrow destruction record (migration 086)
+
+Migration 086 runs at startup. It adds `xmr_escrow_wallets.destroy_started_at`: when the Monero escrow watcher began
+destroying a wallet, recorded before it replaces the wallet's password. A trigger makes the database enforce it: it is
+set once, only on a retained wallet past its destruction date that still has its sealed seed, never changes or clears,
+and the wallet then moves only to destroyed or missing. With it, a wallet that no longer opens with the market's password
+("Invalid password") is destroyed again automatically only when the market itself began destroying it (a crash, or a
+restore from a backup taken in between); any other such wallet keeps its sealed seed, is recorded missing and waits for
+an administrator's confirmation on `/admin`
+([operator guide](docs/operator-guide.md#monero-escrow-local-fakechain-only)). So a wallet destroyed after the backup
+a database is restored from is recorded missing, not destroyed again, unless that backup already recorded the start of
+its destruction (never one taken before this migration). Like migrations 084 and 085 it only adds, and it changes nothing while `ESCROW_XMR` is off: nothing writes the
+column. No action is needed at upgrade. Rolling back past this release needs the pre-upgrade backup, as for every
+migration (section 5): the earlier release refuses to start on a database that records migration 086.
+
 ## Appendix: new keys by hand
 
 `./scripts/install.sh upgrade` writes these for you. To add them yourself, use your editor (values in single
