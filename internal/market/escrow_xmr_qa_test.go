@@ -1,11 +1,14 @@
 package market
 
 import (
+	"encoding/json"
+	"errors"
 	"html"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Escrow Phase 3, final cross-slice QA (WR-escrow A-248; A-424 to A-426): DB integration tests against the simulated
@@ -187,5 +190,86 @@ func TestXMREscrowRelayRefusalRetried(t *testing.T) {
 	x.mustPoll()
 	if x.settlement(id).State != "external" || x.staffFlags(order) != 1 {
 		t.Fatalf("spent outside after a refusal: %s, staff flags %d", x.settlement(id).State, x.staffFlags(order))
+	}
+}
+
+// A-425 (M22): a free slot is written only when get_address of the new account's address 0 is the address
+// create_account returned; otherwise no slot row is written and the pass reports the mismatch.
+func TestXMREscrowTopUpAddressChecked(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	lie := testXMRAddr("not the new account", true)
+	created := fakeXMRWalletMethods["create_account"]
+	x.fake.handle("create_account", func(f *fakeXMREscrow, p json.RawMessage) (any, int64, string) {
+		res, code, msg := created(f, p)
+		res.(map[string]any)["address"] = lie
+		return res, code, msg
+	})
+	agExec(x.testEnv, "UPDATE xmr_escrow_slots SET state='retired' WHERE id=(SELECT min(id) FROM xmr_escrow_slots WHERE state='free')")
+	if err := x.poll(); !errors.Is(err, errXMRAccountMismatch) {
+		t.Fatalf("a create_account address that get_address does not give: %v", err)
+	}
+	if n := agInt(x.testEnv, "SELECT count(*) FROM xmr_escrow_slots WHERE address=$1", lie); n != 0 || x.slots("escrow-202610-01", "free") != 4 {
+		t.Fatalf("%d slots written at create_account's address, %d free", n, x.slots("escrow-202610-01", "free"))
+	}
+}
+
+// A-425 (M14): an administrator's re-request waits while the restore gate is set: it is not decided and nothing is
+// superseded or requested; once the gate is cleared it is carried out.
+func TestXMREscrowReRequestWaitsForGate(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	order, id := x.failedRelease()
+	_, adminSess := x.user("xq_admin_"+randomToken()[:6], "admin")
+	if code := x.reRequest(adminSess, order, id, testPassword); code != 303 {
+		t.Fatalf("re-request: %d", code)
+	}
+	agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES('payments_recovery_required','true') ON CONFLICT (key) DO UPDATE SET value='true'")
+	x.mustPoll()
+	if got := x.reRequests(id); !slices.Equal(got, []string{"requested::0"}) || x.settlement(id).State != "failed" || len(x.xmrSettlements(order)) != 1 {
+		t.Fatalf("under the restore gate: re-requests %v, settlement %s, settlements %v", got, x.settlement(id).State, x.xmrSettlements(order))
+	}
+	agExec(x.testEnv, "DELETE FROM settings WHERE key='payments_recovery_required'")
+	x.mustPoll()
+	if next := x.settlementOf(order, "release"); next.Supersedes != id || next.State != "relayed" || x.settlement(id).State != "superseded" {
+		t.Fatalf("after the gate: old %s, new %+v", x.settlement(id).State, next)
+	}
+}
+
+// A-425 (M6): each wallet's pass requests the stray refunds of its own orders only. Here an order's deposit becomes
+// due for a stray refund after its wallet's pass (left out at the end of a pass, A-424), and on the next pass that
+// wallet does not open: the other wallet's pass requests nothing for it, which the market could not build there, and
+// tells the buyer nothing; its own wallet's next pass requests, builds and relays it.
+func TestXMREscrowStraysPerWallet(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	order, addr := x.freshCheckout(x.digital(x.vendor))
+	buyer := agStrings(t, x.testEnv, "SELECT buyer_id FROM orders WHERE id=$1", order)[0]
+	txid := hex64("conflicted " + order)
+	x.fake.payAddress(addr, txid, xmrListingPrice, 0)
+	x.fake.setTransfer(txid, func(t *fakeXMRTransfer) { t.DoubleSpend = true })
+	x.mustPoll()
+	agExec(x.testEnv, "UPDATE escrows SET created=now()-interval '3 days' WHERE order_id=$1", order)
+	x.now = time.Date(2026, 11, 2, 0, 0, 0, 0, time.UTC)
+	x.mustPoll()
+	if got := agStrings(t, x.testEnv, "SELECT name FROM xmr_escrow_wallets WHERE state IN ('active','closing','retained') ORDER BY id"); x.state(order) != stateCancelled ||
+		!slices.Equal(got, []string{"escrow-202610-01", "escrow-202611-01"}) {
+		t.Fatalf("cancelled %s, wallets %v", x.state(order), x.wallets())
+	}
+	x.fake.setTransfer(txid, func(t *fakeXMRTransfer) { t.DoubleSpend, t.Confs, t.Pool = false, 20, false })
+	x.mustPoll()
+	if agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND escrow_left_out", order) != 1 || len(x.xmrSettlements(order)) != 0 {
+		t.Fatalf("left out at the end of the pass: settlements %v", x.xmrSettlements(order))
+	}
+	x.fake.fault("open_wallet", fakeXMRDrop) // October's wallet, the first one opened
+	if err := x.poll(); err == nil {
+		t.Fatal("a wallet that did not open passed")
+	}
+	if got := x.xmrSettlements(order); len(got) != 0 || x.notified(buyer, "Stray refund requested") != 0 {
+		t.Fatalf("another wallet's pass requested a stray refund: %v", got)
+	}
+	x.mustPoll()
+	if s := x.settlementOf(order, "stray_refund"); s.State != "relayed" || x.notified(buyer, "Stray refund requested") != 1 {
+		t.Fatalf("its own wallet's pass: %+v", s)
 	}
 }
