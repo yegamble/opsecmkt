@@ -1296,7 +1296,11 @@ destroying the wallet, replaces its password with 32 random bytes that are never
 the database and records it destroyed (log: `escrow: Monero escrow wallet … destroyed`). Automatic destruction happens only
 when those preconditions hold. If the watcher stops after the new password took effect (a crash, or a restore from a backup
 taken in between), the wallet-rpc refuses that wallet with "Invalid password" and it is recorded destroyed on a later pass,
-unless staff were flagged that it holds something or the restore gate or the sweep marker is set. A retained wallet past its 90
+unless staff were flagged that it holds something or the restore gate or the sweep marker is set. A database restored from
+a backup taken after the market began destroying a wallet keeps that start: restore such a wallet from its seed only with
+the derived password from the unchanged `MONERO_WALLET_SECRET` (the `openssl` line above), because with a mistyped one it is
+refused alike and recorded destroyed once the gate and the sweep marker clear, and check in a scratch wallet restored from
+the seed (step 3 above) that it holds nothing before you delete the files `/admin` then lists. A retained wallet past its 90
 days that still holds coins (an unclaimed paid account, coins at account 0, a failed settlement) is not destroyed, and staff
 are flagged once. Any other wallet that will not open keeps its sealed seed and is recorded missing: its file gone, or "Invalid
 password" when the market did not begin destroying it (for example a wallet you restored from its seed with a mistyped
@@ -1328,8 +1332,9 @@ the market (the order page says so); a destroyed wallet is never opened again.
   and the wallet accepts the new one; the order notes that the fee went to the address configured since.
 - *A wallet goes missing* (its file is gone from the volume, or it no longer opens with the derived password): every
   administrator is notified ("Monero escrow wallet … cannot be opened on the escrow wallet-rpc …"), its free accounts are
-  retired and it takes no order, and its sealed seed is kept. The market tries it again on every pass and it is closing again
-  once it opens. Restore its files from a backup of the volume, or restore it from its sealed seed as above, then set the sweep
+  retired and it takes no order, and its sealed seed is kept. The market tries it again on every pass; once it opens it is
+  closing again, or retained when the market had begun destroying it, to be destroyed once every precondition holds again.
+  Restore its files from a backup of the volume, or restore it from its sealed seed as above, then set the sweep
   marker again (*Restore*, above) so that the sweep raises its lookahead. Past its 90 days it is listed on `/admin` for an
   administrator to confirm its destruction, as under *Destruction* above. A file the market did not create that is
   found under a wallet's name, and does not open with the derived password, is recorded as an orphan, never opened, and

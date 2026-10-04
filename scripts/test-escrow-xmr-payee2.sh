@@ -36,10 +36,11 @@
 #
 # ESCROW_XMR_PAYEE2_ACCOUNTS, _FUNDED and _WALLETS change the size (defaults 10000, 200, 5; a smaller run is no
 # PAYE-E2 evidence). ESCROW_XMR_PAYEE2_LOOKAHEAD_MINOR=<n> is the lookahead variant: n addresses per account instead of
-# one (200 is monero-wallet-rpc's default, the wallet before A-429; its report name ends -lookahead-minor<n>). To
+# one (200 is monero-wallet-rpc's default, the wallet before A-429; its report name adds -lookahead-minor<n>). To
 # compare, run a reduced size with and without ESCROW_XMR_PAYEE2_LOOKAHEAD_MINOR=200, e.g. ESCROW_XMR_PAYEE2_ACCOUNTS=2000
 # ESCROW_XMR_PAYEE2_WALLETS=1; docs/verification.md has the numbers. The report is
-# artifacts/real-chain/paye-e2-<commit>.txt (gitignored), also printed; the go test transcript is ESCROW_XMR_PAYEE2_LOG
+# artifacts/real-chain/paye-e2-<commit>.txt (gitignored; a size other than the default adds -a<accounts>-f<funded>-w<wallets>),
+# also printed; the go test transcript is ESCROW_XMR_PAYEE2_LOG
 # (default artifacts/real-chain/test-escrow-xmr-payee2-<UTC time>.log). No seed, password or URL is printed.
 set -euo pipefail
 
@@ -78,6 +79,13 @@ fi
 if [[ -n "${ESCROW_XMR_PAYEE2_LOOKAHEAD_MINOR:-}" ]]; then
   [[ "$ESCROW_XMR_PAYEE2_LOOKAHEAD_MINOR" =~ ^[1-9][0-9]*$ ]] || { echo "ESCROW_XMR_PAYEE2_LOOKAHEAD_MINOR must be a positive whole number" >&2; exit 2; }
   sha="$sha-lookahead-minor$ESCROW_XMR_PAYEE2_LOOKAHEAD_MINOR"
+fi
+for v in ESCROW_XMR_PAYEE2_ACCOUNTS ESCROW_XMR_PAYEE2_FUNDED ESCROW_XMR_PAYEE2_WALLETS; do
+  [[ -z "${!v:-}" || "${!v}" =~ ^[1-9][0-9]*$ ]] || { echo "$v must be a positive whole number" >&2; exit 2; }
+done
+size="a${ESCROW_XMR_PAYEE2_ACCOUNTS:-10000}-f${ESCROW_XMR_PAYEE2_FUNDED:-200}-w${ESCROW_XMR_PAYEE2_WALLETS:-5}"
+if [[ "$size" != a10000-f200-w5 ]]; then
+  sha="$sha-$size" # a reduced run never overwrites a full-size report of the same commit
 fi
 log="${ESCROW_XMR_PAYEE2_LOG:-artifacts/real-chain/test-escrow-xmr-payee2-$(date -u +%Y%m%dT%H%M%SZ).log}"
 report="artifacts/real-chain/paye-e2-$sha.txt"

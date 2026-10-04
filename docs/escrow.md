@@ -536,7 +536,11 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   longer opens it) is recorded *missing*, keeps its sealed seed, its free accounts are retired and the administrators
   are told; it is tried on every pass. "Invalid password" alone never wipes a seal: a wallet restored from its seed with
   a mistyped secret, another install's file of the same name and a damaged keys file are refused alike, so only a
-  destruction the market itself began (above) ends destroyed without an administrator. A wallet another wallet program
+  destruction the market itself began (above) ends destroyed without an administrator. A database restored from a
+  backup taken after that start keeps it, so such a wallet restored from its seed with a mistyped secret is recorded
+  destroyed too once the gate and the sweep marker clear: the operator restores it only with the password derived from
+  the unchanged secret and checks in a scratch wallet restored from the seed that it holds nothing before deleting the
+  files listed on `/admin`. A wallet another wallet program
   has open is temporarily unavailable: it keeps its state and its accounts, waits, and is logged once until it is closed
   there. A missing wallet past its 90 days is listed on `/admin`, where an administrator confirms its destruction
   (password step-up, audited) once the operator has checked that the file is gone and nothing is owed. A wallet that

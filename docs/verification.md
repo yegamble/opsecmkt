@@ -66,7 +66,10 @@ next `open_wallet` stores the wallet before opening one; the pass reads nothing 
 wallet now looks one address ahead per account (`set_subaddress_lookahead` major 50, minor 1, right after
 `create_wallet`; it persists in the keys file, `TestXMREscrowWalletLookaheadMinor`), since an escrow address is always an
 account's address 0. Reduced runs of 2,000 accounts and 200 deposits over 110 blocks, on the same nodes at commit
-`b3d3057` with the change in the working tree (`artifacts/real-chain/paye-e2-b3d305767b11-dirty*.txt`):
+`b3d3057` with the change in the working tree (`artifacts/real-chain/paye-e2-b3d305767b11-dirty-lookahead-minor200.txt`
+and `-lookahead-minor1.txt`; the default-lookahead run's report, `paye-e2-b3d305767b11-dirty.txt`, was later overwritten
+by a full-size run of the same name, so its numbers below are copied from that report before it was overwritten; the
+script now adds a reduced size to the report name):
 
 | 2,000 accounts | Default lookahead (no call) | Minor 200 set (`ESCROW_XMR_PAYEE2_LOOKAHEAD_MINOR=200`) | Minor 1 |
 |---|---|---|---|
