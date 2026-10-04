@@ -476,8 +476,10 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   wallet, and relays the same stored metadata again if neither has it: that spends the same key images, so it cannot pay
   twice. Nothing builds a replacement automatically. A relayed settlement is *confirmed* at the confirmation threshold and
   followed to 100 confirmations; one a reorganisation removes goes back to *relayed* and is relayed again. If another
-  transaction spent its key images it is recorded *external* and staff are told; if the daemon refuses it for good it is
-  *failed*, staff are told, and an administrator may re-request it (below).
+  transaction spent its key images it is recorded *external* and staff are told, at once. Otherwise a refusal is
+  relayed again, as the same stored metadata, on the next pass (`monero-wallet-rpc` gives the same answer when it lost its
+  connection to the daemon), and only after 3 refusals in a row is the settlement *failed*; staff are then told, and an
+  administrator may re-request it (below).
 - **Refunds and strays.** A refund goes to the address pinned at checkout, with the network fee taken from the amount.
   A release pays the vendor's claim address the escrow less the market fee (fixed at checkout; a fee below 0.001 XMR is
   added to the vendor's output) and less any amount paid above the price, which goes back to the buyer's refund address

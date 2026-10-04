@@ -1,8 +1,10 @@
 package market
 
 import (
+	"html"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -90,5 +92,100 @@ func TestXMREscrowConflictedDepositThroughExpiry(t *testing.T) {
 		agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND escrow_left_out", order) != 0 {
 		t.Fatalf("a requested refund's deposit: %s, settlements %v, deposits %v", x.state(order), got,
 			agStrings(t, x.testEnv, "SELECT confirmations||' '||escrow_left_out FROM payments WHERE order_id=$1", order))
+	}
+}
+
+// A-426: monero-wallet-rpc answers -4 for any failure of commit_tx, a lost connection to its daemon included, so a
+// refusal of a stored transaction that the daemon does not have and whose coins nobody spent is relayed again, with
+// the same stored metadata, on the next passes; only xmrRelayAttempts refusals in a row record it failed, flagged once.
+// transfer is never called again. A stored key image spent by another transaction is external at once.
+func TestXMREscrowRelayRefusalRetried(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	relayed := func() []string {
+		var metas []string
+		for _, c := range x.fake.callLog() {
+			if c.Method == "relay_tx" {
+				metas = append(metas, c.Params)
+			}
+		}
+		return metas
+	}
+
+	// Refused once, then relayed on the next pass, and confirmed.
+	order, _, _ := x.completed()
+	id, _ := x.release(order)
+	x.fake.fault("relay_tx", fakeXMRRejected)
+	x.mustPoll()
+	if s := x.settlement(id); s.State != "built" || x.waitClass(id) != xmrRelayRefusing+" 1" || x.staffFlags(order) != 0 {
+		t.Fatalf("refused once: %s %q, staff flags %d", s.State, x.waitClass(id), x.staffFlags(order))
+	}
+	if p := html.UnescapeString(x.panel(order, x.sessOf(order, roleBuyer))); !strings.Contains(p, xmrSettleWaitText(xmrRelayRefusing+" 1", "release", 10)) {
+		t.Fatalf("the order page does not say the relay is tried again:\n%s", p)
+	}
+	x.mustPoll()
+	if s := x.settlement(id); s.State != "relayed" || x.waitClass(id) != "" || x.fake.countOf("transfer") != 1 || len(relayed()) != 2 || relayed()[0] != relayed()[1] {
+		t.Fatalf("relayed on the next pass: %s %q, transfer %d, relay_tx %v", s.State, x.waitClass(id), x.fake.countOf("transfer"), relayed())
+	}
+	x.fake.mine(10)
+	x.mustPoll()
+	if x.settlement(id).State != "confirmed" || x.staffFlags(order) != 0 {
+		t.Fatalf("after 10 blocks: %s", x.settlement(id).State)
+	}
+
+	// The daemon lost a relayed transaction and refuses it once: still relayed. The count ends when the daemon has it
+	// again (here it arrived meanwhile, so nothing is relayed), or when the next relay takes effect.
+	order, _, _ = x.completed()
+	id, _ = x.release(order)
+	x.mustPoll()
+	hash := x.settlement(id).TxHash
+	for _, back := range []bool{true, false} {
+		x.fake.flushPool(hash)
+		x.fake.fault("relay_tx", fakeXMRRejected)
+		x.mustPoll()
+		if x.settlement(id).State != "relayed" || x.waitClass(id) != xmrRelayRefusing+" 1" {
+			t.Fatalf("a relayed transaction refused once: %s %q", x.settlement(id).State, x.waitClass(id))
+		}
+		relays := len(relayed())
+		if back {
+			x.fake.edit(func(f *fakeXMREscrow) { f.relay(f.built[hexMeta(f, hash)]) })
+		}
+		x.mustPoll()
+		if _, ok := x.fake.tx(hash); x.settlement(id).State != "relayed" || x.waitClass(id) != "" || !ok || (len(relayed()) == relays) != back {
+			t.Fatalf("in the daemon again (it arrived itself: %v): %s %q, in the daemon %v, relay_tx %d", back, x.settlement(id).State, x.waitClass(id), ok, len(relayed())-relays)
+		}
+	}
+
+	// Refused on xmrRelayAttempts passes in a row: failed and flagged once; the same metadata each time, transfer once.
+	order, _, _ = x.completed()
+	id, _ = x.release(order)
+	transfers, relays := x.fake.countOf("transfer"), len(relayed())
+	for range xmrRelayAttempts {
+		x.fake.fault("relay_tx", fakeXMRRejected)
+	}
+	for n := 1; n < xmrRelayAttempts; n++ {
+		x.mustPoll()
+		if s := x.settlement(id); s.State != "built" || x.waitClass(id) != xmrRelayRefusing+" "+strconv.Itoa(n) || x.staffFlags(order) != 0 {
+			t.Fatalf("refused %d times: %s %q, staff flags %d", n, s.State, x.waitClass(id), x.staffFlags(order))
+		}
+	}
+	x.mustPoll()
+	x.mustPoll()
+	metas := relayed()[relays:]
+	if s := x.settlement(id); s.State != "failed" || x.waitClass(id) != xmrRelayRefused || x.staffFlags(order) != 1 || x.fake.countOf("transfer") != transfers+1 ||
+		len(metas) != xmrRelayAttempts || metas[0] != metas[1] || metas[1] != metas[2] {
+		t.Fatalf("refused %d times: %s %q, staff flags %d, transfer %d, relay_tx %d", xmrRelayAttempts, s.State, x.waitClass(id), x.staffFlags(order),
+			x.fake.countOf("transfer")-transfers, len(metas))
+	}
+
+	// Refused once, then its coins spent by another transaction: external at the next refusal, not counted.
+	order, _, _ = x.completed()
+	id, _ = x.release(order)
+	x.fake.fault("relay_tx", fakeXMRRejected)
+	x.mustPoll()
+	x.fake.spendOutside(x.settlement(id).KeyImages...)
+	x.mustPoll()
+	if x.settlement(id).State != "external" || x.staffFlags(order) != 1 {
+		t.Fatalf("spent outside after a refusal: %s, staff flags %d", x.settlement(id).State, x.staffFlags(order))
 	}
 }

@@ -36,9 +36,11 @@ import (
 //     restart mid-send) is looked up first: the daemon has it -> relayed; otherwise the wallet is asked
 //     (get_transfer_by_txid; only -8 means it does not know it) and the same stored metadata is relayed again. relay_tx
 //     is idempotent and the metadata spends the same key images, so it cannot pay twice. transfer is never called for a
-//     settlement that has a transaction. A definite refusal (-4, rejected by the daemon) of a transaction the daemon
-//     does not have: a stored key image spent -> external; otherwise failed. Both alert staff; an administrator may
-//     re-request a failed one (escrow_xmr_rerequest.go, A-401).
+//     settlement that has a transaction. A refusal (-4) of a transaction the daemon does not have: a stored key image
+//     spent -> external, at once; otherwise, since monero-wallet-rpc answers -4 for any failure to commit, a lost
+//     connection to its daemon included, the same stored metadata is relayed again on the next passes, and only
+//     xmrRelayAttempts refusals in a row -> failed (A-426). Both alert staff; an administrator may re-request a failed
+//     one (escrow_xmr_rerequest.go, A-401).
 //  3. Follow: relayed -> confirmed at the escrow's confirmation threshold, then until escrowReorgDepth (100)
 //     confirmations (reorg_safe_at). A confirmed transaction a reorganisation took out of the chain goes back to
 //     relayed, and the relayed step relays it again when the daemon lost it. A relayed transaction the daemon does not
@@ -65,7 +67,13 @@ const (
 	xmrTooSmall        = "too-small"             // the claimant's output would be below the Monero floor: flagged
 	xmrBadBuild        = "build-mismatch"        // the wallet's transaction failed the market's checks: flagged
 	xmrNothing         = "nothing-to-settle"     // no deposit is left to spend: failed
-	xmrRelayRefused    = "relay-refused"         // the daemon refused the stored transaction: failed
+	xmrRelayRefused    = "relay-refused"         // the daemon refused the stored transaction xmrRelayAttempts times in a row: failed
+	// relay_tx refused the stored transaction (-4) while the daemon does not have it and no other transaction spent its
+	// coins, recorded with the count of refusals in a row ("relay-refusing 1"): monero-wallet-rpc answers -4 for any
+	// failure of commit_tx, a lost connection to its daemon included, so the same stored metadata is relayed again on
+	// the next pass, and the xmrRelayAttempts-th refusal in a row is xmrRelayRefused. A relay that takes effect, or the
+	// daemon found to have the transaction, ends the count; an error that is not recorded (a timeout) leaves it.
+	xmrRelayRefusing = "relay-refusing"
 	// transfer refused a destination (-2, WRONG_ADDRESS), with the role of the output validate_address names
 	// (destination-refused-claimant, -market_fee or -buyer_return; no suffix when none is named): flagged, and not built
 	// again for this settlement, except a refused fee address once ESCROW_XMR_FEE_ADDRESS names another one.
@@ -84,6 +92,10 @@ const (
 	xmrBuildDropped  = "build-dropped"
 	xmrBuildSetAside = "build-set-aside"
 )
+
+// xmrRelayAttempts is the number of passes in a row on which relay_tx may refuse a stored transaction before it is
+// recorded failed (xmrRelayRefusing).
+const xmrRelayAttempts = 3
 
 // xmrWaitFlagged reports whether staff are told of class.
 func xmrWaitFlagged(class string) bool {
@@ -115,6 +127,8 @@ func xmrSettleWaitText(class, kind string, threshold int64) string {
 		return "No confirmed deposit of this escrow is left to spend, so there is nothing to settle."
 	case class == xmrRelayRefused:
 		return "The Monero daemon refused the stored transaction and no other transaction spent its coins, so nothing was sent. Market staff were notified; an administrator may ask the market to build it again."
+	case strings.HasPrefix(class, xmrRelayRefusing+" "):
+		return "The Monero daemon refused this transaction (" + strings.TrimPrefix(class, xmrRelayRefusing+" ") + " time(s) in a row); no other transaction spent its coins. The market sends the same stored transaction again on its next pass, and records it as not sent if it is refused " + strconv.Itoa(xmrRelayAttempts) + " times in a row."
 	case class == xmrDestRefused+"-claimant" && kind == "release":
 		return "The escrow wallet refuses the vendor's claim address as invalid, so the market cannot send this settlement. Market staff were notified and contact the vendor."
 	case class == xmrDestRefused+"-claimant" || class == xmrDestRefused+"-buyer_return":
@@ -686,7 +700,9 @@ func (a *App) xmrSpentElsewhere(ctx context.Context, s *xmrSettleRow) (bool, err
 }
 
 // xmrRelayRefused resolves a definite refusal of s's stored transaction: the daemon has it after all -> relayed;
-// another transaction spent a stored key image -> external; otherwise failed. Both of the last alert staff.
+// another transaction spent a stored key image -> external, at once; otherwise the refusal is counted (xmrRelayRefusing)
+// and the same stored metadata relayed again on the next pass, until the xmrRelayAttempts-th refusal in a row ->
+// failed. External and failed alert staff.
 func (a *App) xmrRelayRefused(ctx context.Context, s *xmrSettleRow) error {
 	found, _, err := a.xmrOnNetwork(ctx, s)
 	if err != nil {
@@ -701,6 +717,14 @@ func (a *App) xmrRelayRefused(ctx context.Context, s *xmrSettleRow) error {
 	}
 	if elsewhere {
 		return a.markXMRExternal(ctx, s)
+	}
+	refusals := 1
+	if n, ok := strings.CutPrefix(s.Wait, xmrRelayRefusing+" "); ok {
+		before, _ := strconv.Atoi(n)
+		refusals += before
+	}
+	if refusals < xmrRelayAttempts {
+		return a.xmrSettleWaits(ctx, s, xmrRelayRefusing+" "+strconv.Itoa(refusals))
 	}
 	return a.failXMRSettlement(ctx, s, xmrRelayRefused)
 }
@@ -770,6 +794,12 @@ func (a *App) markXMRRelayed(ctx context.Context, s *xmrSettleRow, seen bool) er
 // a restore's hold).
 func (a *App) trackXMRRelayed(ctx context.Context, s *xmrSettleRow, gate bool) error {
 	found, confirmations, err := a.xmrOnNetwork(ctx, s)
+	if err == nil && found && strings.HasPrefix(s.Wait, xmrRelayRefusing+" ") {
+		// The daemon has it after all: the count of refusals ends.
+		if _, err = a.db.ExecContext(ctx, "UPDATE xmr_settlements SET send_error='',updated=now() WHERE id=$1 AND send_error=$2", s.ID, s.Wait); err != nil {
+			return err
+		}
+	}
 	switch {
 	case err != nil:
 		return err
@@ -793,8 +823,9 @@ func (a *App) trackXMRRelayed(ctx context.Context, s *xmrSettleRow, gate bool) e
 	switch {
 	case err == nil && got == s.TxHash:
 		log.Printf("escrow: Monero escrow settlement of order %s: the daemon had lost its transaction; the stored transaction was relayed again", shortID(s.OrderID))
-		// An administrator's confirmation allowed this one relay (escrow_xmr_restore.go).
-		_, err = a.db.ExecContext(ctx, "UPDATE xmr_settlements SET send_error='',updated=now() WHERE id=$1 AND send_error=$2", s.ID, sendRebroadcastOK)
+		// An administrator's confirmation allowed this one relay (escrow_xmr_restore.go); a relay that took effect ends a
+		// count of refusals.
+		_, err = a.db.ExecContext(ctx, "UPDATE xmr_settlements SET send_error='',updated=now() WHERE id=$1 AND (send_error=$2 OR send_error LIKE $3)", s.ID, sendRebroadcastOK, xmrRelayRefusing+" %")
 		return err
 	case err == nil:
 		return xmrBadReply("wallet", "relay_tx")

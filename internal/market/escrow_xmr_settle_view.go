@@ -127,6 +127,8 @@ func (a *App) xmrSettlementStatus(s *XMRSettlementView, o *Order, outcome string
 			s.Status = "Built, checked and stored. " + xmrRelayConfirmedText
 		case v.RestorePaused:
 			s.Status = "Built, checked and stored. Paused: " + restoreWhy + ", so the market does not send it until the operator has finished."
+		case why != "":
+			s.Status = "Built, checked and stored. " + why
 		}
 	case "relayed":
 		s.Status, s.Confirmations = sent+" Waiting for "+threshold+" confirmations.", "Fewer than "+threshold
@@ -135,6 +137,8 @@ func (a *App) xmrSettlementStatus(s *XMRSettlementView, o *Order, outcome string
 			s.Status += " " + restoreHeldText
 		case s.wait == sendRebroadcastOK:
 			s.Status += " " + xmrRelayConfirmedText
+		case why != "":
+			s.Status += " " + why
 		}
 	case "confirmed":
 		s.Status, s.Confirmations = "Confirmed on the "+xmrEscrowNetwork+" network: transaction "+s.TxHash+".", "At least "+threshold+"; followed to "+strconv.Itoa(escrowReorgDepth)
