@@ -529,7 +529,8 @@ func TestXMREscrowNetworkCheck(t *testing.T) {
 }
 
 // TestXMREscrowRPCErrorClasses: failures become fixed classes that never carry the node's message, its URL or the
-// credentials in it.
+// credentials in it; a connection that ends after the whole request was sent (a wallet-rpc that crashed while it
+// answered) is marked Dropped, a connection refused or a timeout is not.
 func TestXMREscrowRPCErrorClasses(t *testing.T) {
 	ctx := context.Background()
 	old := rpcTimeout
@@ -551,21 +552,52 @@ func TestXMREscrowRPCErrorClasses(t *testing.T) {
 		t.Fatal(err)
 	}
 	down.Close()
+	// A wallet-rpc that goes away while it answers (it crashed building a transaction): it reads the whole request, then
+	// closes the connection with no answer, or after the start of one.
+	// stall: the start of an answer, then nothing until the client's timeout (not a drop).
+	crash := func(partial, stall bool) *xmrEscrowRPC {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			io.Copy(io.Discard, req.Body)
+			if partial {
+				w.Header().Set("Content-Length", "4096")
+				w.WriteHeader(http.StatusOK)
+				io.WriteString(w, `{"jsonrpc":"2.0","id":"0","result":{"hei`)
+				w.(http.Flusher).Flush()
+			}
+			if stall {
+				time.Sleep(time.Second)
+			}
+			if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+				conn.Close()
+			}
+		}))
+		t.Cleanup(srv.Close)
+		c, err := newXMREscrowRPC(srv.URL, daemon.url())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	dropped, cut, stalled := crash(false, false), crash(true, false), crash(true, true)
 	cases := []struct {
 		name, class string
+		dropped     bool // the connection ended after the whole request was sent (xmrRPCError.Dropped)
 		call        func() error
 	}{
-		{"rpc error", "rpc:-1", func() error { _, err := r.height(ctx); return err }},
-		{"bad reply", "bad-reply", func() error { _, err := r.accounts(ctx); return err }},
-		{"timeout", "timeout", func() error { _, err := r.daemonInfo(ctx); return err }},
-		{"credentials", "credentials", func() error { _, err := wrong.height(ctx); return err }},
-		{"unreachable", "unreachable", func() error { _, err := gone.height(ctx); return err }},
+		{"rpc error", "rpc:-1", false, func() error { _, err := r.height(ctx); return err }},
+		{"bad reply", "bad-reply", false, func() error { _, err := r.accounts(ctx); return err }},
+		{"timeout", "timeout", false, func() error { _, err := r.daemonInfo(ctx); return err }},
+		{"credentials", "credentials", false, func() error { _, err := wrong.height(ctx); return err }},
+		{"unreachable", "unreachable", false, func() error { _, err := gone.height(ctx); return err }},
+		{"dropped", "unreachable", true, func() error { _, err := dropped.height(ctx); return err }},
+		{"cut mid-answer", "bad-reply", true, func() error { _, err := cut.height(ctx); return err }},
+		{"timeout mid-answer", "bad-reply", false, func() error { _, err := stalled.height(ctx); return err }},
 	}
 	for _, c := range cases {
 		err := c.call()
 		var re *xmrRPCError
-		if !errors.As(err, &re) || re.Class != c.class {
-			t.Errorf("%s: got %v, want class %s", c.name, err, c.class)
+		if !errors.As(err, &re) || re.Class != c.class || re.Dropped != c.dropped {
+			t.Errorf("%s: got %v (dropped %v), want class %s, dropped %v", c.name, err, re != nil && re.Dropped, c.class, c.dropped)
 			continue
 		}
 		for _, leak := range []string{"127.0.0.1", "s3cret", "wrong-escrow", "escrowuser", "password", "e9c16b29", "/wallet"} {

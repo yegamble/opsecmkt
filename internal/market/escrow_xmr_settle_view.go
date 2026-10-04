@@ -11,7 +11,8 @@ import (
 // words, its transaction once it was sent, its outputs in XMR and its network fee, how far it was followed, and why it
 // waits or failed. An output's address is shown to the party it pays and to staff only. An administrator who is not a
 // party is offered the re-request of a failed settlement (escrow_xmr_rerequest.go), and sees a re-request waiting, its
-// refusal or the settlement that superseded it. Nothing here makes an RPC.
+// refusal or the settlement that superseded it; and the retry of a settlement set aside because building it made the
+// escrow wallet stop responding. Nothing here makes an RPC.
 
 // XMRSettlementView is one Monero escrow settlement on the order page.
 type XMRSettlementView struct {
@@ -23,6 +24,7 @@ type XMRSettlementView struct {
 	Supersedes, SupersededBy         int64
 	ReRequest, ReRequestPending      bool   // the administrator's form; a re-request waiting for the watcher
 	ReRequestRefused                 string // why the watcher refused the last re-request
+	RetryBuild                       bool   // the administrator's form for a settlement set aside (xmrBuildSetAside)
 	reorgSafe, stored                bool
 	kind, state, wait, reRequestText string // reRequestText: the newest re-request's state and reason
 }
@@ -78,7 +80,8 @@ func (a *App) xmrSettlementViews(ctx context.Context, d *PageData, v *XMREscrowO
 		default:
 			s.ReRequest = admin
 		}
-		if s.ReRequest && d.Security == nil {
+		s.RetryBuild = admin && s.state == "requested" && s.wait == xmrBuildSetAside
+		if (s.ReRequest || s.RetryBuild) && d.Security == nil {
 			if d.Security, _, _, err = a.securityView(ctx, d.User.ID); err != nil {
 				return nil, err
 			}

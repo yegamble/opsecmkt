@@ -26,6 +26,7 @@ import (
 
 func init() {
 	registerAction("/admin/escrow-xmr-rerequest", actionSpec{Roles: []string{"admin"}, OwnTx: true, Off: escrowXMROff, Run: xmrReRequestAction})
+	registerAction("/admin/escrow-xmr-retry-build", actionSpec{Roles: []string{"admin"}, OwnTx: true, Off: escrowXMROff, Run: xmrRetryBuildAction})
 }
 
 // Refusal reasons of a re-request (xmr_settlement_rerequests.reason).
@@ -53,6 +54,7 @@ var (
 	errReRequestParty   = fail(403, "You are a party to this order, so you cannot re-request its settlement.")
 	errReRequestState   = fail(409, "Only a Monero escrow settlement that failed after its transaction was built can be re-requested. Reload the page. Nothing was changed.")
 	errReRequestPending = fail(409, "A re-request of this settlement is already waiting for the market's next pass. Reload the page in a minute. Nothing was changed.")
+	errRetryBuildState  = fail(409, "Only a Monero escrow settlement set aside because building it made the escrow wallet stop responding can be built again this way. Reload the page. Nothing was changed.")
 )
 
 // xmrReRequestAction records an administrator's re-request of a failed Monero escrow settlement (see the file comment).
@@ -99,6 +101,47 @@ func xmrReRequestAction(c *actionCtx) (actionResult, error) {
 		}
 		return actionResult{Redirect: orderPage(o.ID) + "#xmr-settlement-" + strconv.FormatInt(id, 10), Notice: "escrow-xmr-rerequest",
 			Audit: "Re-requested the failed Monero escrow settlement " + strconv.FormatInt(id, 10) + " (" + settlementKind(kind) + ") of order " + shortID(o.ID) + " (" + xmrEscrowNetwork + ")"}, nil
+	})
+}
+
+// xmrRetryBuildAction is an administrator's request that a set-aside settlement be built again: a settlement whose
+// builds twice in a row made the escrow wallet-rpc stop responding is skipped by the watcher (xmrBuildSetAside,
+// escrow_xmr_settle.go) until an administrator who is not a party, with a password step-up and an audit row, clears it.
+// Nothing was built for it, so nothing needs the daemon: the next pass builds it like any requested settlement.
+func xmrRetryBuildAction(c *actionCtx) (actionResult, error) {
+	id, err := strconv.ParseInt(c.Form.Get("settlement_id"), 10, 64)
+	if err != nil || id <= 0 {
+		return actionResult{}, errReRequestNone
+	}
+	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
+		ctx := c.Ctx()
+		var orderID, kind, state, wait string
+		err := c.Tx.QueryRowContext(ctx, "SELECT order_id,kind,state,send_error FROM xmr_settlements WHERE id=$1 FOR UPDATE", id).Scan(&orderID, &kind, &state, &wait)
+		if err == sql.ErrNoRows {
+			return actionResult{}, errReRequestNone
+		}
+		if err != nil {
+			return actionResult{}, err
+		}
+		o, err := scanOrder(c.Tx.QueryRowContext(ctx, orderQuery+" WHERE o.id=$1", orderID))
+		if err != nil {
+			return actionResult{}, err
+		}
+		switch {
+		case c.User.ID == o.BuyerID || c.User.ID == o.VendorID:
+			return actionResult{}, errReRequestParty
+		case state != "requested" || wait != xmrBuildSetAside:
+			return actionResult{}, errRetryBuildState
+		}
+		if _, err = c.Tx.ExecContext(ctx, "UPDATE xmr_settlements SET send_error='',updated=now() WHERE id=$1", id); err != nil {
+			return actionResult{}, err
+		}
+		if _, err = c.Tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,$3,$4)", o.ID, o.State, c.User.ID,
+			"An administrator asked the market to build the Monero escrow settlement "+strconv.FormatInt(id, 10)+" ("+settlementKind(kind)+") again; it had been set aside because building it made the escrow wallet stop responding. The market builds it on its next pass; if the wallet stops responding twice more, it is set aside again."); err != nil {
+			return actionResult{}, err
+		}
+		return actionResult{Redirect: orderPage(o.ID) + "#xmr-settlement-" + strconv.FormatInt(id, 10), Notice: "escrow-xmr-retry",
+			Audit: "Asked the market to build the set-aside Monero escrow settlement " + strconv.FormatInt(id, 10) + " (" + settlementKind(kind) + ") of order " + shortID(o.ID) + " again (" + xmrEscrowNetwork + ")"}, nil
 	})
 }
 

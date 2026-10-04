@@ -72,12 +72,21 @@ const (
 	// waited on once, then flagged ("wallet-refused rpc:-4") when a later pass is refused the same way.
 	xmrWalletRefusing = "wallet-refusing"
 	xmrWalletRefused  = "wallet-refused"
+	// the escrow wallet-rpc went away while it built this settlement (the connection ended after the whole request
+	// was sent, xmrRPCError.Dropped: monero-wallet-rpc 0.18.5.1 crashes on some destinations): waited on once; if the
+	// next transfer call for it drops too, it is set aside, flagged, and skipped until an administrator asks for it
+	// again (/admin/escrow-xmr-retry-build), so one settlement cannot stop every other one of its wallet. A recorded
+	// outcome in between (a build stored, another wait class) ends the count; an error that is not recorded (a refused
+	// connection, a timeout) leaves it. Timeouts are not counted: a wallet-rpc busy with one build makes the next
+	// settlements' calls time out too.
+	xmrBuildDropped  = "build-dropped"
+	xmrBuildSetAside = "build-set-aside"
 )
 
 // xmrWaitFlagged reports whether staff are told of class.
 func xmrWaitFlagged(class string) bool {
 	switch class {
-	case xmrOutputsMismatch, xmrAddressMismatch, xmrFeeCap, xmrTooSmall, xmrBadBuild:
+	case xmrOutputsMismatch, xmrAddressMismatch, xmrFeeCap, xmrTooSmall, xmrBadBuild, xmrBuildSetAside:
 		return true
 	}
 	return strings.HasPrefix(class, xmrDestRefused) || strings.HasPrefix(class, xmrWalletRefused+" ")
@@ -116,6 +125,10 @@ func xmrSettleWaitText(class, kind string, threshold int64) string {
 		return "The escrow wallet refused to build this transaction (" + strings.TrimPrefix(class, xmrWalletRefusing+" ") + "); the market tries again on its next pass."
 	case strings.HasPrefix(class, xmrWalletRefused+" "):
 		return "The escrow wallet keeps refusing to build this transaction (" + strings.TrimPrefix(class, xmrWalletRefused+" ") + "). The market tries again on each pass; market staff were notified."
+	case class == xmrBuildDropped:
+		return "The escrow wallet stopped responding while it built this transaction; the market tries again on its next pass."
+	case class == xmrBuildSetAside:
+		return "Building this settlement made the escrow wallet stop responding; it is set aside until an administrator asks the market to build it again, so the market goes on with the other settlements. Market staff were notified."
 	case restoreHeld(class):
 		return restoreHeldText
 	}
@@ -368,6 +381,9 @@ func (a *App) buildXMRSettlement(ctx context.Context, s *xmrSettleRow) error {
 	if !settlementFits(s.Kind, s.OrderState, s.Outcome) {
 		return nil // a release requested at shipment waits for the order's outcome: the market never signs before it (081)
 	}
+	if s.Wait == xmrBuildSetAside {
+		return nil // until an administrator asks for it again (xmrRetryBuildAction)
+	}
 	feeReplaced := false
 	if strings.HasPrefix(s.Wait, xmrDestRefused) {
 		// A refused destination is never tried again as if the refusal were transient: the claimant's and the buyer's
@@ -479,10 +495,17 @@ func (a *App) buildXMRSettlement(ctx context.Context, s *xmrSettleRow) error {
 // xmrBuildRefused handles transfer's error for settlement s's plan. -17 (not enough money: the wallet sees fewer
 // spendable coins than it listed) is an outputs mismatch; -2 (WRONG_ADDRESS) a definite refusal of a destination,
 // named by asking validate_address about each output in turn; any other answer of the wallet a refusal recorded with
-// its code alone, flagged when it persists. A transport error (timeout, unreachable, credentials, a reply that is not
-// one) is returned and retried on the next pass, unflagged.
+// its code alone, flagged when it persists. A connection that ended after the whole request was sent (the wallet-rpc
+// went away while it built) is xmrBuildDropped, then xmrBuildSetAside. Any other transport error (refused, timeout,
+// credentials, a reply that is not one) is returned and retried on the next pass, unflagged and not counted.
 func (a *App) xmrBuildRefused(ctx context.Context, s *xmrSettleRow, plan settlePlan, err error) error {
 	var re *xmrRPCError
+	if errors.As(err, &re) && re.Service == "wallet" && re.Dropped {
+		if s.Wait == xmrBuildDropped {
+			return a.xmrSettleWaits(ctx, s, xmrBuildSetAside)
+		}
+		return a.xmrSettleWaits(ctx, s, xmrBuildDropped)
+	}
 	if !errors.As(err, &re) || re.Service != "wallet" || !strings.HasPrefix(re.Class, "rpc:") || re.Code == -13 {
 		return err // -13: the wallet-rpc lost its open wallet; the next pass opens it again
 	}
@@ -540,6 +563,11 @@ func (a *App) xmrSettleWaits(ctx context.Context, s *xmrSettleRow, class string)
 	if xmrWaitFlagged(class) {
 		o, err := scanOrder(tx.QueryRowContext(ctx, orderQuery+" WHERE o.id=$1 FOR UPDATE OF o", s.OrderID))
 		if err != nil {
+			return err
+		}
+		// The deposits it would spend are flagged so staff can open the order (staffReviewer), as markXMRExternal
+		// does; an escrow deposit is never refunded by hand (A-330).
+		if _, err = tx.ExecContext(ctx, "UPDATE payments SET flagged=true,updated=now() WHERE order_id=$1 AND (xmr_settlement_id IS NULL OR xmr_settlement_id=$2) AND NOT flagged", s.OrderID, s.ID); err != nil {
 			return err
 		}
 		note := fmt.Sprintf("Monero escrow settlement %d (%s) not sent: %s Moderator review required.", s.ID, settlementKind(s.Kind), xmrSettleWaitText(class, s.Kind, a.escrowXMR.confirmations))

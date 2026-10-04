@@ -1,6 +1,7 @@
 package market
 
 import (
+	"context"
 	"html"
 	"net/url"
 	"slices"
@@ -938,15 +939,116 @@ func TestXMREscrowBuildRefusals(t *testing.T) {
 		t.Fatalf("after -4: %s", x.settlement(id4).State)
 	}
 
-	// A timeout: an error of the pass, no wait class, no flag; the next pass builds again and sends.
+	// The connection dropped once after the request was sent: recorded, not flagged; the next pass builds, sends and
+	// clears it (TestXMREscrowBuildSetAside: twice in a row).
 	o5, _, _ := x.completed()
 	id5, _ := x.release(o5)
 	x.fake.fault("transfer", fakeXMRDrop)
-	if err := x.poll(); err == nil || x.waitClass(id5) != "" || x.staffFlags(o5) != 0 || x.settlement(id5).State != "requested" {
-		t.Fatalf("timeout: %v %q, staff %d", err, x.waitClass(id5), x.staffFlags(o5))
+	x.mustPoll()
+	if x.waitClass(id5) != xmrBuildDropped || x.staffFlags(o5) != 0 || x.settlement(id5).State != "requested" {
+		t.Fatalf("dropped once: %q, staff %d", x.waitClass(id5), x.staffFlags(o5))
 	}
 	x.mustPoll()
-	if x.settlement(id5).State != "relayed" || x.staffFlags(o5) != 0 {
-		t.Fatalf("after the timeout: %s", x.settlement(id5).State)
+	if x.settlement(id5).State != "relayed" || x.waitClass(id5) != "" || x.staffFlags(o5) != 0 {
+		t.Fatalf("after the dropped connection: %s %q", x.settlement(id5).State, x.waitClass(id5))
+	}
+}
+
+// retryBuild posts the administrator's retry of set-aside settlement id from the order page.
+func (x *xmrEscrowEnv) retryBuild(sess, order string, id int64, password string) int {
+	return x.do("POST", "/admin/escrow-xmr-retry-build", sess, url.Values{"order_id": {order}, "settlement_id": {strconv.FormatInt(id, 10)}, "password": {password}}).Code
+}
+
+// A build that crashes the escrow wallet-rpc (the connection ends after the whole request was sent; monero-wallet-rpc
+// 0.18.5.1 does so on some checksum-valid addresses): once is waited on, twice in a row sets the settlement aside,
+// flagged once and skipped, so the other settlements of the wallet build; an administrator's retry (password step-up,
+// audited) has it built again. A refused connection, a timeout or bad credentials are never counted.
+func TestXMREscrowBuildSetAside(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	transfers := func() int { return x.fake.countOf("transfer") }
+	flags := func(order string) int {
+		return agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND strpos(note,'not sent: Building this settlement made the escrow wallet stop responding')>0", order)
+	}
+	crasher, _, _ := x.completed()
+	other, _, _ := x.completed()
+	third, _, _ := x.completed()
+	a, claim := x.release(crasher) // requested after the passes completed() runs, so neither is built yet
+	b, _ := x.release(other)
+	if n := agInt(x.testEnv, "SELECT count(DISTINCT sl.wallet_id) FROM escrows es JOIN xmr_escrow_slots sl ON sl.id=es.xmr_slot_id WHERE es.order_id IN ($1,$2)", crasher, other); n != 1 {
+		t.Fatalf("the two orders are in %d wallets", n)
+	}
+	x.fake.edit(func(f *fakeXMREscrow) { f.crash[claim] = true })
+
+	// Two passes: settlement a crashes the wallet-rpc, which comes back with no wallet open, so b cannot build either.
+	for pass, want := range []string{xmrBuildDropped, xmrBuildSetAside} {
+		if err := x.poll(); err == nil {
+			t.Fatalf("pass %d: no error", pass+1)
+		}
+		if x.settlement(a).State != "requested" || x.waitClass(a) != want || x.settlement(b).State != "requested" || flags(crasher) != pass {
+			t.Fatalf("pass %d: a %s %q, b %s, flags %d", pass+1, x.settlement(a).State, x.waitClass(a), x.settlement(b).State, flags(crasher))
+		}
+	}
+	// Set aside: a is skipped, b builds and is sent; a is not tried again and staff were told once.
+	x.mustPoll()
+	x.mustPoll()
+	if x.settlement(b).State != "relayed" || x.settlement(a).State != "requested" || transfers() != 3 || flags(crasher) != 1 || x.staffFlags(other) != 0 {
+		t.Fatalf("set aside: a %s, b %s, transfer %d, flags %d", x.settlement(a).State, x.settlement(b).State, transfers(), flags(crasher))
+	}
+	if p := x.panel(crasher, x.sessOf(crasher, roleBuyer)); !strings.Contains(p, "Building this settlement made the escrow wallet stop responding") {
+		t.Fatalf("the buyer is not told:\n%s", p)
+	}
+
+	// The administrator's retry: administrators only, with the password, audited; then a is built and sent.
+	_, adminSess := x.user("xd_radmin_"+randomToken()[:6], "admin")
+	_, modSess := x.user("xd_rmod_"+randomToken()[:6], "moderator")
+	if page := x.page("/order?id="+crasher, adminSess); !strings.Contains(page, `action="/admin/escrow-xmr-retry-build"`) {
+		t.Fatal("no retry form for the administrator")
+	}
+	for _, viewer := range []string{roleBuyer, roleVendor} {
+		if strings.Contains(x.page("/order?id="+crasher, x.sessOf(crasher, viewer)), "/admin/escrow-xmr-retry-build") {
+			t.Fatal("a party is offered the retry")
+		}
+	}
+	if code := x.retryBuild(modSess, crasher, a, testPassword); code != 403 {
+		t.Fatalf("a moderator: %d", code)
+	}
+	if code := x.retryBuild(x.vendorSess, crasher, a, testPassword); code != 403 {
+		t.Fatalf("the vendor: %d", code)
+	}
+	for _, pw := range []string{"", "not the password"} {
+		if code := x.retryBuild(adminSess, crasher, a, pw); code == 303 {
+			t.Fatalf("retried with password %q", pw)
+		}
+	}
+	if code := x.retryBuild(adminSess, other, b, testPassword); code != 409 {
+		t.Fatalf("retry of a settlement not set aside: %d", code)
+	}
+	if x.waitClass(a) != xmrBuildSetAside {
+		t.Fatalf("a refused retry changed the settlement: %q", x.waitClass(a))
+	}
+	x.fake.edit(func(f *fakeXMREscrow) { delete(f.crash, claim) })
+	if code := x.retryBuild(adminSess, crasher, a, testPassword); code != 303 {
+		t.Fatalf("retry: %d", code)
+	}
+	if x.waitClass(a) != "" || agInt(x.testEnv, "SELECT count(*) FROM audit_events WHERE strpos(action,$1)>0", "set-aside Monero escrow settlement "+strconv.FormatInt(a, 10)) != 1 {
+		t.Fatalf("after the retry: %q", x.waitClass(a))
+	}
+	if strings.Contains(x.page("/order?id="+crasher, adminSess), "/admin/escrow-xmr-retry-build") {
+		t.Fatal("the retry is still offered once the settlement is no longer set aside")
+	}
+	x.mustPoll()
+	if x.settlement(a).State != "relayed" || x.waitClass(a) != "" {
+		t.Fatalf("after the retry and a pass: %s %q", x.settlement(a).State, x.waitClass(a))
+	}
+
+	// A wallet error that is not a dropped connection is returned and never counted.
+	c, _ := x.release(third)
+	s := &xmrSettleRow{ID: c, OrderID: third, Kind: "release"}
+	for _, class := range []string{"unreachable", "timeout", "credentials", "forbidden", "bad-reply"} {
+		err := x.A.xmrBuildRefused(context.Background(), s, settlePlan{}, &xmrRPCError{Service: "wallet", Method: "transfer", Class: class})
+		if err == nil || x.waitClass(c) != "" {
+			t.Fatalf("%s: %v, recorded %q", class, err, x.waitClass(c))
+		}
 	}
 }
