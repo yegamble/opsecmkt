@@ -177,6 +177,8 @@ func TestXMREscrowDigitalClaim(t *testing.T) {
 		{"an integrated address", testXMRAddressWith(xmrTagIntegrated, testXMRKey("s"), testXMRKey("v"), testXMRKey("p")[:8], false), testPassword, 400, errXMRAddressIntegrated.Error()},
 		{"a bad checksum", testXMRAddressWith(xmrTagSubaddress, testXMRKey("s"), testXMRKey("v"), nil, true), testPassword, 400, errXMRAddressChecksum.Error()},
 		{"a stagenet address", testXMRAddressWith(24, testXMRKey("s"), testXMRKey("v"), nil, false), testPassword, 400, errXMRAddressNetwork.Error()},
+		{"an off-curve view key (A-417)", testXMRAddressWith(xmrTagSubaddress, testXMRKey("s"), testXMROffCurveKey(), nil, false), testPassword, 400, errXMRAddressKeys.Error()},
+		{"a small-order spend key (A-417)", testXMRAddressWith(xmrTagSubaddress, testXMRSmallOrderKey(), testXMRKey("v"), nil, false), testPassword, 400, errXMRAddressKeys.Error()},
 		{"this order's escrow address", escrowAddr, testPassword, 409, errXMRRefundEscrow.Error()},
 		{"a free slot's address", freeSlot, testPassword, 409, errXMRRefundEscrow.Error()},
 		{"an escrow wallet's primary address", primary, testPassword, 409, errXMRRefundWallet.Error()},
@@ -256,13 +258,16 @@ func TestXMREscrowShipStepUp(t *testing.T) {
 	for _, c := range []struct {
 		name, sess, addr, password string
 		code                       int
+		want                       string
 	}{
-		{"no password", x.vendorSess, claim, "", 400},
-		{"the buyer", buyerSess, claim, testPassword, 403},
-		{"an integrated address", x.vendorSess, testXMRAddressWith(xmrTagIntegrated, testXMRKey("s"), testXMRKey("v"), testXMRKey("p")[:8], false), testPassword, 400},
-		{"the buyer's refund address", x.vendorSess, testXMRAddr("refund "+order, true), testPassword, 409},
+		{"no password", x.vendorSess, claim, "", 400, ""},
+		{"the buyer", buyerSess, claim, testPassword, 403, ""},
+		{"an integrated address", x.vendorSess, testXMRAddressWith(xmrTagIntegrated, testXMRKey("s"), testXMRKey("v"), testXMRKey("p")[:8], false), testPassword, 400, ""},
+		{"an off-curve spend key (A-417)", x.vendorSess, testXMRAddressWith(xmrTagSubaddress, testXMROffCurveKey(), testXMRKey("v"), nil, false), testPassword, 400, errXMRAddressKeys.Error()},
+		{"a small-order view key (A-417)", x.vendorSess, testXMRAddressWith(xmrTagSubaddress, testXMRKey("s"), testXMRSmallOrderKey(), nil, false), testPassword, 400, errXMRAddressKeys.Error()},
+		{"the buyer's refund address", x.vendorSess, testXMRAddr("refund "+order, true), testPassword, 409, ""},
 	} {
-		if code, body := x.xmrShip(order, c.sess, c.addr, c.password); code != c.code {
+		if code, body := x.xmrShip(order, c.sess, c.addr, c.password); code != c.code || !strings.Contains(body, c.want) {
 			t.Errorf("%s: %d %s", c.name, code, body)
 		}
 	}

@@ -128,6 +128,8 @@ func TestXMREscrowRefundAddressRefusals(t *testing.T) {
 		{"bad checksum", testXMRAddressWith(xmrTagSubaddress, testXMRKey("s"), testXMRKey("v"), nil, true), 400, errXMRAddressChecksum.Error()},
 		{"integrated", testXMRAddressWith(xmrTagIntegrated, testXMRKey("s"), testXMRKey("v"), testXMRKey("p")[:8], false), 400, errXMRAddressIntegrated.Error()},
 		{"stagenet", testXMRAddressWith(24, testXMRKey("s"), testXMRKey("v"), nil, false), 400, errXMRAddressNetwork.Error()},
+		{"an off-curve spend key (A-417)", testXMRAddressWith(xmrTagSubaddress, testXMROffCurveKey(), testXMRKey("v"), nil, false), 400, errXMRAddressKeys.Error()},
+		{"a small-order view key (A-417)", testXMRAddressWith(xmrTagStandard, testXMRKey("s"), testXMRSmallOrderKey(), nil, false), 400, errXMRAddressKeys.Error()},
 		{"a Bitcoin address", "bcrt1qbuyerrefund00000000000000000000001", 400, errXMRAddressLength.Error()},
 		{"the escrow address of another order", escrowAddr, 409, "an escrow address of this market"},
 		{"a free slot's address", slotAddr, 409, "an escrow address of this market"},
