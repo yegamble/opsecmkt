@@ -775,13 +775,13 @@ func (x *xmrEscrowEnv) pastDueWithCoins() string {
 	x.days(name, 91)
 	x.mustPoll()
 	if x.walletState(name) != "retained" {
-		x.x()
+		x.failWallets()
 	}
 	return name
 }
 
-// x fails the test with the wallets' states.
-func (x *xmrEscrowEnv) x() { x.t.Helper(); x.t.Fatalf("wallets: %v", x.wallets()) }
+// failWallets fails the test with the wallets' states.
+func (x *xmrEscrowEnv) failWallets() { x.t.Helper(); x.t.Fatalf("wallets: %v", x.wallets()) }
 
 // A-419: a retained wallet past its destroy_after that still holds coins is kept, and the administrators are told once,
 // with the account that holds them.
@@ -851,7 +851,7 @@ func TestXMREscrowConfirmDestroyed(t *testing.T) {
 	x.fake.edit(func(f *fakeXMREscrow) { delete(f.files, name) })
 	x.mustPoll()
 	if x.walletState(name) != "missing" {
-		x.x()
+		x.failWallets()
 	}
 	id := strconv.Itoa(agInt(x.testEnv, "SELECT id FROM xmr_escrow_wallets WHERE name=$1", name))
 	other := strconv.Itoa(agInt(x.testEnv, "SELECT id FROM xmr_escrow_wallets WHERE name='escrow-202611-01'"))
