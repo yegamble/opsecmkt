@@ -6,11 +6,11 @@
 -- nothing open, followed or left in the wallet), began destroying the wallet. It is committed before the wallet's
 -- password is replaced (change_wallet_password), so a wallet that then refuses to open as "Invalid password" is known
 -- to be one the market itself was destroying (a crash, or a lost record, between the new password and the record of
--- the destruction) and is destroyed again automatically. Any other wallet that refuses its password (restored with a
--- mistyped secret, another install's file, a damaged keys file) keeps its seal until an administrator confirms its
--- destruction. It is set once, only on a retained wallet past destroy_after whose seal is present, at a time no
--- earlier than destroy_after; once set it never changes or clears, and the wallet then moves only to destroyed or
--- missing (a missing one never opens again for orders). A row is never inserted with it set.
+-- the destruction), and the watcher may destroy it again (escrow_xmr_retain.go). Any other wallet that refuses its
+-- password (restored with a mistyped secret, another install's file, a damaged keys file) keeps its seal until an
+-- administrator confirms its destruction. It is set once, only on a retained wallet past destroy_after whose seal is
+-- present, at a time no earlier than destroy_after; once set it never changes or clears, and the wallet then moves only
+-- to destroyed or missing. A row is never inserted with it set.
 ALTER TABLE xmr_escrow_wallets ADD COLUMN destroy_started_at timestamptz;
 
 CREATE FUNCTION xmr_escrow_wallets_destroy_started() RETURNS trigger LANGUAGE plpgsql AS $$

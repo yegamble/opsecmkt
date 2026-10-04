@@ -475,11 +475,11 @@ func TestXMREscrowMissingWalletAlerts(t *testing.T) {
 	}
 }
 
-// P3-R10: the sweep probes the wallet names after the newest row. A wallet that opens with the derived password and
-// passes the network check is recorded as an orphan, its seed sealed to the pinned key, its funded accounts listed for
-// the administrators, and it is retained: never a slot. A file that does not open is recorded as an orphan and left
-// alone; the probe goes on past it. A file another wallet program has open leaves the sweep incomplete, recording
-// nothing of it.
+// P3-R10: the sweep probes the wallet names after each month's newest row. A wallet that opens with the derived
+// password and passes the network check is recorded as an orphan, its seed sealed to the pinned key, its funded
+// accounts listed for the administrators, and it is retained: never a slot. A file that does not open is recorded as an
+// orphan and left alone; the probe goes on past it. A file another wallet program has open leaves the sweep
+// incomplete, recording nothing of it.
 func TestXMREscrowOrphanSwept(t *testing.T) {
 	x := newXMREscrowEnv(t)
 	x.mustPoll()

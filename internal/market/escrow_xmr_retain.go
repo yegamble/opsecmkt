@@ -30,8 +30,8 @@ import (
 // (xmrDestroyHeld). Then the start of its destruction is committed (destroy_started_at, migration 086), then
 // change_wallet_password to 32 random bytes that are never stored or logged, store and close_wallet; then, in one
 // statement, the sealed seed is wiped, destroyed_at recorded and the wallet is destroyed. A destroyed wallet is never
-// opened again. The market cannot reach the wallet volume, so /admin lists the
-// destroyed wallets' files for the operator to delete (escrow_xmr_restore.go); backups keep copies until they expire.
+// opened again. The market cannot reach the wallet volume, so /admin lists the destroyed wallets' files for the
+// operator to delete (escrow_xmr_restore.go); backups keep copies until they expire.
 // After destruction, the order page of each of its orders says that Monero sent to the order's address since cannot be
 // recovered (ES-8).
 //
