@@ -123,7 +123,7 @@ func escrowShipAction(c *actionCtx) (actionResult, error) {
 		switch {
 		case err != nil:
 			return actionResult{}, err
-		case !o.Escrow:
+		case !o.btcEscrow():
 			return actionResult{}, errNoOrder
 		case o.VendorID != c.User.ID:
 			return actionResult{}, errShipOnlyVendor
@@ -136,7 +136,7 @@ func escrowShipAction(c *actionCtx) (actionResult, error) {
 		// P2-R9: the buyer's shipped notice states the release deadline, the value release_at takes below (now() is the
 		// transaction's start).
 		var deadline time.Time
-		err = c.Tx.QueryRowContext(ctx, "SELECT now()+make_interval(days => release_days) FROM escrows WHERE order_id=$1 AND release_days IS NOT NULL AND release_at IS NULL", o.ID).Scan(&deadline)
+		err = c.Tx.QueryRowContext(ctx, "SELECT now()+make_interval(days => release_days) FROM escrows WHERE order_id=$1 AND coin='BTC' AND release_days IS NOT NULL AND release_at IS NULL", o.ID).Scan(&deadline)
 		if err == sql.ErrNoRows {
 			return actionResult{}, errShipNoDeadline
 		}
@@ -151,7 +151,7 @@ func escrowShipAction(c *actionCtx) (actionResult, error) {
 		} else if err != nil {
 			return actionResult{}, err
 		}
-		res, err := c.Tx.ExecContext(ctx, "UPDATE escrows SET release_at=now()+make_interval(days => release_days) WHERE order_id=$1 AND release_days IS NOT NULL AND release_at IS NULL", o.ID)
+		res, err := c.Tx.ExecContext(ctx, "UPDATE escrows SET release_at=now()+make_interval(days => release_days) WHERE order_id=$1 AND coin='BTC' AND release_days IS NOT NULL AND release_at IS NULL", o.ID)
 		if err != nil {
 			return actionResult{}, err
 		}

@@ -1,0 +1,1362 @@
+{
+ "cases": {
+  "daemon /get_transactions (mined)": {
+   "method": "/get_transactions",
+   "params": [
+    "decode_as_json",
+    "txs_hashes"
+   ],
+   "result": {
+    "credits": "integer",
+    "status": "string",
+    "top_hash": "string",
+    "txs": [
+     {
+      "as_hex": "string",
+      "as_json": "string",
+      "block_height": "integer",
+      "block_timestamp": "integer",
+      "confirmations": "integer",
+      "double_spend_seen": "boolean",
+      "in_pool": "boolean",
+      "output_indices": [
+       "integer"
+      ],
+      "prunable_as_hex": "string",
+      "prunable_hash": "string",
+      "pruned_as_hex": "string",
+      "tx_hash": "string"
+     }
+    ],
+    "txs_as_hex": [
+     "string"
+    ],
+    "txs_as_json": [
+     "string"
+    ],
+    "untrusted": "boolean"
+   }
+  },
+  "daemon /get_transactions (mined) as_json": {
+   "method": "/get_transactions",
+   "params": [
+    "decode_as_json"
+   ],
+   "result": {
+    "extra": [
+     "integer"
+    ],
+    "rct_signatures": {
+     "ecdhInfo": [
+      {
+       "amount": "string"
+      }
+     ],
+     "outPk": [
+      "string"
+     ],
+     "txnFee": "integer",
+     "type": "integer"
+    },
+    "rctsig_prunable": {
+     "CLSAGs": [
+      {
+       "D": "string",
+       "c1": "string",
+       "s": [
+        "string"
+       ]
+      }
+     ],
+     "bpp": [
+      {
+       "A": "string",
+       "A1": "string",
+       "B": "string",
+       "L": [
+        "string"
+       ],
+       "R": [
+        "string"
+       ],
+       "d1": "string",
+       "r1": "string",
+       "s1": "string"
+      }
+     ],
+     "nbp": "integer",
+     "pseudoOuts": [
+      "string"
+     ]
+    },
+    "unlock_time": "integer",
+    "version": "integer",
+    "vin": [
+     {
+      "key": {
+       "amount": "integer",
+       "k_image": "string",
+       "key_offsets": [
+        "integer"
+       ]
+      }
+     }
+    ],
+    "vout": [
+     {
+      "amount": "integer",
+      "target": {
+       "tagged_key": {
+        "key": "string",
+        "view_tag": "string"
+       }
+      }
+     }
+    ]
+   }
+  },
+  "daemon /get_transactions (missed)": {
+   "method": "/get_transactions",
+   "params": [
+    "decode_as_json",
+    "txs_hashes"
+   ],
+   "result": {
+    "credits": "integer",
+    "missed_tx": [
+     "string"
+    ],
+    "status": "string",
+    "top_hash": "string",
+    "untrusted": "boolean"
+   }
+  },
+  "daemon /get_transactions (pool)": {
+   "method": "/get_transactions",
+   "params": [
+    "decode_as_json",
+    "txs_hashes"
+   ],
+   "result": {
+    "credits": "integer",
+    "status": "string",
+    "top_hash": "string",
+    "txs": [
+     {
+      "as_hex": "string",
+      "as_json": "string",
+      "double_spend_seen": "boolean",
+      "in_pool": "boolean",
+      "prunable_as_hex": "string",
+      "prunable_hash": "string",
+      "pruned_as_hex": "string",
+      "received_timestamp": "integer",
+      "relayed": "boolean",
+      "tx_hash": "string"
+     }
+    ],
+    "txs_as_hex": [
+     "string"
+    ],
+    "txs_as_json": [
+     "string"
+    ],
+    "untrusted": "boolean"
+   }
+  },
+  "daemon /get_transactions (pool) as_json": {
+   "method": "/get_transactions",
+   "params": [
+    "decode_as_json"
+   ],
+   "result": {
+    "extra": [
+     "integer"
+    ],
+    "rct_signatures": {
+     "ecdhInfo": [
+      {
+       "amount": "string"
+      }
+     ],
+     "outPk": [
+      "string"
+     ],
+     "txnFee": "integer",
+     "type": "integer"
+    },
+    "rctsig_prunable": {
+     "CLSAGs": [
+      {
+       "D": "string",
+       "c1": "string",
+       "s": [
+        "string"
+       ]
+      }
+     ],
+     "bpp": [
+      {
+       "A": "string",
+       "A1": "string",
+       "B": "string",
+       "L": [
+        "string"
+       ],
+       "R": [
+        "string"
+       ],
+       "d1": "string",
+       "r1": "string",
+       "s1": "string"
+      }
+     ],
+     "nbp": "integer",
+     "pseudoOuts": [
+      "string"
+     ]
+    },
+    "unlock_time": "integer",
+    "version": "integer",
+    "vin": [
+     {
+      "key": {
+       "amount": "integer",
+       "k_image": "string",
+       "key_offsets": [
+        "integer"
+       ]
+      }
+     }
+    ],
+    "vout": [
+     {
+      "amount": "integer",
+      "target": {
+       "tagged_key": {
+        "key": "string",
+        "view_tag": "string"
+       }
+      }
+     }
+    ]
+   }
+  },
+  "daemon /is_key_image_spent": {
+   "method": "/is_key_image_spent",
+   "params": [
+    "key_images"
+   ],
+   "result": {
+    "credits": "integer",
+    "spent_status": [
+     "integer"
+    ],
+    "status": "string",
+    "top_hash": "string",
+    "untrusted": "boolean"
+   }
+  },
+  "daemon generateblocks": {
+   "method": "generateblocks",
+   "params": [
+    "amount_of_blocks",
+    "wallet_address"
+   ],
+   "result": {
+    "blocks": [
+     "string"
+    ],
+    "height": "integer",
+    "status": "string",
+    "untrusted": "boolean"
+   }
+  },
+  "daemon get_info": {
+   "method": "get_info",
+   "params": [],
+   "result": {
+    "adjusted_time": "integer",
+    "alt_blocks_count": "integer",
+    "block_size_limit": "integer",
+    "block_size_median": "integer",
+    "block_weight_limit": "integer",
+    "block_weight_median": "integer",
+    "bootstrap_daemon_address": "string",
+    "busy_syncing": "boolean",
+    "credits": "integer",
+    "cumulative_difficulty": "integer",
+    "cumulative_difficulty_top64": "integer",
+    "database_size": "integer",
+    "difficulty": "integer",
+    "difficulty_top64": "integer",
+    "free_space": "integer",
+    "grey_peerlist_size": "integer",
+    "height": "integer",
+    "height_without_bootstrap": "integer",
+    "incoming_connections_count": "integer",
+    "mainnet": "boolean",
+    "nettype": "string",
+    "offline": "boolean",
+    "outgoing_connections_count": "integer",
+    "restricted": "boolean",
+    "rpc_connections_count": "integer",
+    "stagenet": "boolean",
+    "start_time": "integer",
+    "status": "string",
+    "synchronized": "boolean",
+    "target": "integer",
+    "target_height": "integer",
+    "testnet": "boolean",
+    "top_block_hash": "string",
+    "top_hash": "string",
+    "tx_count": "integer",
+    "tx_pool_size": "integer",
+    "untrusted": "boolean",
+    "update_available": "boolean",
+    "version": "string",
+    "was_bootstrap_ever_used": "boolean",
+    "white_peerlist_size": "integer",
+    "wide_cumulative_difficulty": "string",
+    "wide_difficulty": "string"
+   }
+  },
+  "daemon hard_fork_info": {
+   "method": "hard_fork_info",
+   "params": [],
+   "result": {
+    "credits": "integer",
+    "earliest_height": "integer",
+    "enabled": "boolean",
+    "state": "integer",
+    "status": "string",
+    "threshold": "integer",
+    "top_hash": "string",
+    "untrusted": "boolean",
+    "version": "integer",
+    "votes": "integer",
+    "voting": "integer",
+    "window": "integer"
+   }
+  },
+  "wallet change_wallet_password": {
+   "method": "change_wallet_password",
+   "params": [
+    "new_password",
+    "old_password"
+   ],
+   "result": {}
+  },
+  "wallet change_wallet_password (wrong old password)": {
+   "error": {
+    "code": -22,
+    "message": "Invalid original password."
+   },
+   "method": "change_wallet_password",
+   "params": [
+    "new_password",
+    "old_password"
+   ]
+  },
+  "wallet close_wallet": {
+   "method": "close_wallet",
+   "params": [],
+   "result": {}
+  },
+  "wallet create_account": {
+   "method": "create_account",
+   "params": [],
+   "result": {
+    "account_index": "integer",
+    "address": "string"
+   }
+  },
+  "wallet create_address": {
+   "method": "create_address",
+   "params": [
+    "account_index"
+   ],
+   "result": {
+    "address": "string",
+    "address_index": "integer",
+    "address_indices": [
+     "integer"
+    ],
+    "addresses": [
+     "string"
+    ]
+   }
+  },
+  "wallet create_wallet": {
+   "method": "create_wallet",
+   "params": [
+    "filename",
+    "language",
+    "password"
+   ],
+   "result": {}
+  },
+  "wallet create_wallet (exists)": {
+   "error": {
+    "code": -21,
+    "message": "Cannot create wallet. Already exists."
+   },
+   "method": "create_wallet",
+   "params": [
+    "filename",
+    "language",
+    "password"
+   ]
+  },
+  "wallet freeze": {
+   "method": "freeze",
+   "params": [
+    "key_image"
+   ],
+   "result": {}
+  },
+  "wallet freeze (unknown key image)": {
+   "error": {
+    "code": -1,
+    "message": "Key image not found"
+   },
+   "method": "freeze",
+   "params": [
+    "key_image"
+   ]
+  },
+  "wallet get_accounts": {
+   "method": "get_accounts",
+   "params": [],
+   "result": {
+    "subaddress_accounts": [
+     {
+      "account_index": "integer",
+      "balance": "integer",
+      "base_address": "string",
+      "label": "string",
+      "tag": "string",
+      "unlocked_balance": "integer"
+     }
+    ],
+    "total_balance": "integer",
+    "total_unlocked_balance": "integer"
+   }
+  },
+  "wallet get_address (account out of bound)": {
+   "error": {
+    "code": -14,
+    "message": "account index is out of bound"
+   },
+   "method": "get_address",
+   "params": [
+    "account_index",
+    "address_index"
+   ]
+  },
+  "wallet get_address (address out of bound)": {
+   "error": {
+    "code": -15,
+    "message": "address index is out of bound"
+   },
+   "method": "get_address",
+   "params": [
+    "account_index",
+    "address_index"
+   ]
+  },
+  "wallet get_address account 0": {
+   "method": "get_address",
+   "params": [
+    "account_index",
+    "address_index"
+   ],
+   "result": {
+    "address": "string",
+    "addresses": [
+     {
+      "address": "string",
+      "address_index": "integer",
+      "label": "string",
+      "used": "boolean"
+     }
+    ]
+   }
+  },
+  "wallet get_address account 1": {
+   "method": "get_address",
+   "params": [
+    "account_index",
+    "address_index"
+   ],
+   "result": {
+    "address": "string",
+    "addresses": [
+     {
+      "address": "string",
+      "address_index": "integer",
+      "label": "string",
+      "used": "boolean"
+     }
+    ]
+   }
+  },
+  "wallet get_balance all_accounts": {
+   "method": "get_balance",
+   "params": [
+    "all_accounts"
+   ],
+   "result": {
+    "balance": "integer",
+    "blocks_to_unlock": "integer",
+    "multisig_import_needed": "boolean",
+    "per_subaddress": [
+     {
+      "account_index": "integer",
+      "address": "string",
+      "address_index": "integer",
+      "balance": "integer",
+      "blocks_to_unlock": "integer",
+      "label": "string",
+      "num_unspent_outputs": "integer",
+      "time_to_unlock": "integer",
+      "unlocked_balance": "integer"
+     }
+    ],
+    "time_to_unlock": "integer",
+    "unlocked_balance": "integer"
+   }
+  },
+  "wallet get_height": {
+   "method": "get_height",
+   "params": [],
+   "result": {
+    "height": "integer"
+   }
+  },
+  "wallet get_height (after a failed open_wallet)": {
+   "method": "get_height",
+   "params": [],
+   "result": {
+    "height": "integer"
+   }
+  },
+  "wallet get_height (closed)": {
+   "error": {
+    "code": -13,
+    "message": "No wallet file"
+   },
+   "method": "get_height",
+   "params": []
+  },
+  "wallet get_height (no wallet open)": {
+   "error": {
+    "code": -13,
+    "message": "No wallet file"
+   },
+   "method": "get_height",
+   "params": []
+  },
+  "wallet get_transfer_by_txid (in)": {
+   "method": "get_transfer_by_txid",
+   "params": [
+    "account_index",
+    "txid"
+   ],
+   "result": {
+    "transfer": {
+     "address": "string",
+     "amount": "integer",
+     "amounts": [
+      "integer"
+     ],
+     "confirmations": "integer",
+     "double_spend_seen": "boolean",
+     "fee": "integer",
+     "height": "integer",
+     "locked": "boolean",
+     "note": "string",
+     "payment_id": "string",
+     "subaddr_index": {
+      "major": "integer",
+      "minor": "integer"
+     },
+     "subaddr_indices": [
+      {
+       "major": "integer",
+       "minor": "integer"
+      }
+     ],
+     "suggested_confirmations_threshold": "integer",
+     "timestamp": "integer",
+     "txid": "string",
+     "type": "string",
+     "unlock_time": "integer"
+    },
+    "transfers": [
+     {
+      "address": "string",
+      "amount": "integer",
+      "amounts": [
+       "integer"
+      ],
+      "confirmations": "integer",
+      "double_spend_seen": "boolean",
+      "fee": "integer",
+      "height": "integer",
+      "locked": "boolean",
+      "note": "string",
+      "payment_id": "string",
+      "subaddr_index": {
+       "major": "integer",
+       "minor": "integer"
+      },
+      "subaddr_indices": [
+       {
+        "major": "integer",
+        "minor": "integer"
+       }
+      ],
+      "suggested_confirmations_threshold": "integer",
+      "timestamp": "integer",
+      "txid": "string",
+      "type": "string",
+      "unlock_time": "integer"
+     }
+    ]
+   }
+  },
+  "wallet get_transfer_by_txid (out)": {
+   "method": "get_transfer_by_txid",
+   "params": [
+    "account_index",
+    "txid"
+   ],
+   "result": {
+    "transfer": {
+     "address": "string",
+     "amount": "integer",
+     "confirmations": "integer",
+     "destinations": [
+      {
+       "address": "string",
+       "amount": "integer"
+      }
+     ],
+     "double_spend_seen": "boolean",
+     "fee": "integer",
+     "height": "integer",
+     "locked": "boolean",
+     "note": "string",
+     "payment_id": "string",
+     "subaddr_index": {
+      "major": "integer",
+      "minor": "integer"
+     },
+     "subaddr_indices": [
+      {
+       "major": "integer",
+       "minor": "integer"
+      }
+     ],
+     "suggested_confirmations_threshold": "integer",
+     "timestamp": "integer",
+     "txid": "string",
+     "type": "string",
+     "unlock_time": "integer"
+    },
+    "transfers": [
+     {
+      "address": "string",
+      "amount": "integer",
+      "confirmations": "integer",
+      "destinations": [
+       {
+        "address": "string",
+        "amount": "integer"
+       }
+      ],
+      "double_spend_seen": "boolean",
+      "fee": "integer",
+      "height": "integer",
+      "locked": "boolean",
+      "note": "string",
+      "payment_id": "string",
+      "subaddr_index": {
+       "major": "integer",
+       "minor": "integer"
+      },
+      "subaddr_indices": [
+       {
+        "major": "integer",
+        "minor": "integer"
+       }
+      ],
+      "suggested_confirmations_threshold": "integer",
+      "timestamp": "integer",
+      "txid": "string",
+      "type": "string",
+      "unlock_time": "integer"
+     }
+    ]
+   }
+  },
+  "wallet get_transfer_by_txid (pending)": {
+   "method": "get_transfer_by_txid",
+   "params": [
+    "account_index",
+    "txid"
+   ],
+   "result": {
+    "transfer": {
+     "address": "string",
+     "amount": "integer",
+     "destinations": [
+      {
+       "address": "string",
+       "amount": "integer"
+      }
+     ],
+     "double_spend_seen": "boolean",
+     "fee": "integer",
+     "height": "integer",
+     "locked": "boolean",
+     "note": "string",
+     "payment_id": "string",
+     "subaddr_index": {
+      "major": "integer",
+      "minor": "integer"
+     },
+     "subaddr_indices": [
+      {
+       "major": "integer",
+       "minor": "integer"
+      }
+     ],
+     "suggested_confirmations_threshold": "integer",
+     "timestamp": "integer",
+     "txid": "string",
+     "type": "string",
+     "unlock_time": "integer"
+    },
+    "transfers": [
+     {
+      "address": "string",
+      "amount": "integer",
+      "destinations": [
+       {
+        "address": "string",
+        "amount": "integer"
+       }
+      ],
+      "double_spend_seen": "boolean",
+      "fee": "integer",
+      "height": "integer",
+      "locked": "boolean",
+      "note": "string",
+      "payment_id": "string",
+      "subaddr_index": {
+       "major": "integer",
+       "minor": "integer"
+      },
+      "subaddr_indices": [
+       {
+        "major": "integer",
+        "minor": "integer"
+       }
+      ],
+      "suggested_confirmations_threshold": "integer",
+      "timestamp": "integer",
+      "txid": "string",
+      "type": "string",
+      "unlock_time": "integer"
+     }
+    ]
+   }
+  },
+  "wallet get_transfer_by_txid (unknown)": {
+   "error": {
+    "code": -8,
+    "message": "Transaction not found."
+   },
+   "method": "get_transfer_by_txid",
+   "params": [
+    "account_index",
+    "txid"
+   ]
+  },
+  "wallet get_transfers (every kind)": {
+   "method": "get_transfers",
+   "params": [
+    "all_accounts",
+    "failed",
+    "in",
+    "out",
+    "pending",
+    "pool"
+   ],
+   "result": {
+    "in": [
+     {
+      "address": "string",
+      "amount": "integer",
+      "amounts": [
+       "integer"
+      ],
+      "confirmations": "integer",
+      "double_spend_seen": "boolean",
+      "fee": "integer",
+      "height": "integer",
+      "locked": "boolean",
+      "note": "string",
+      "payment_id": "string",
+      "subaddr_index": {
+       "major": "integer",
+       "minor": "integer"
+      },
+      "subaddr_indices": [
+       {
+        "major": "integer",
+        "minor": "integer"
+       }
+      ],
+      "suggested_confirmations_threshold": "integer",
+      "timestamp": "integer",
+      "txid": "string",
+      "type": "string",
+      "unlock_time": "integer"
+     }
+    ],
+    "pending": [
+     {
+      "address": "string",
+      "amount": "integer",
+      "destinations": [
+       {
+        "address": "string",
+        "amount": "integer"
+       }
+      ],
+      "double_spend_seen": "boolean",
+      "fee": "integer",
+      "height": "integer",
+      "locked": "boolean",
+      "note": "string",
+      "payment_id": "string",
+      "subaddr_index": {
+       "major": "integer",
+       "minor": "integer"
+      },
+      "subaddr_indices": [
+       {
+        "major": "integer",
+        "minor": "integer"
+       }
+      ],
+      "suggested_confirmations_threshold": "integer",
+      "timestamp": "integer",
+      "txid": "string",
+      "type": "string",
+      "unlock_time": "integer"
+     }
+    ]
+   }
+  },
+  "wallet get_transfers (every kind, mined)": {
+   "method": "get_transfers",
+   "params": [
+    "all_accounts",
+    "failed",
+    "in",
+    "out",
+    "pending",
+    "pool"
+   ],
+   "result": {
+    "in": [
+     {
+      "address": "string",
+      "amount": "integer",
+      "amounts": [
+       "integer"
+      ],
+      "confirmations": "integer",
+      "double_spend_seen": "boolean",
+      "fee": "integer",
+      "height": "integer",
+      "locked": "boolean",
+      "note": "string",
+      "payment_id": "string",
+      "subaddr_index": {
+       "major": "integer",
+       "minor": "integer"
+      },
+      "subaddr_indices": [
+       {
+        "major": "integer",
+        "minor": "integer"
+       }
+      ],
+      "suggested_confirmations_threshold": "integer",
+      "timestamp": "integer",
+      "txid": "string",
+      "type": "string",
+      "unlock_time": "integer"
+     }
+    ],
+    "out": [
+     {
+      "address": "string",
+      "amount": "integer",
+      "confirmations": "integer",
+      "destinations": [
+       {
+        "address": "string",
+        "amount": "integer"
+       }
+      ],
+      "double_spend_seen": "boolean",
+      "fee": "integer",
+      "height": "integer",
+      "locked": "boolean",
+      "note": "string",
+      "payment_id": "string",
+      "subaddr_index": {
+       "major": "integer",
+       "minor": "integer"
+      },
+      "subaddr_indices": [
+       {
+        "major": "integer",
+        "minor": "integer"
+       }
+      ],
+      "suggested_confirmations_threshold": "integer",
+      "timestamp": "integer",
+      "txid": "string",
+      "type": "string",
+      "unlock_time": "integer"
+     }
+    ]
+   }
+  },
+  "wallet get_transfers (in)": {
+   "method": "get_transfers",
+   "params": [
+    "all_accounts",
+    "in",
+    "pool"
+   ],
+   "result": {
+    "in": [
+     {
+      "address": "string",
+      "amount": "integer",
+      "amounts": [
+       "integer"
+      ],
+      "confirmations": "integer",
+      "double_spend_seen": "boolean",
+      "fee": "integer",
+      "height": "integer",
+      "locked": "boolean",
+      "note": "string",
+      "payment_id": "string",
+      "subaddr_index": {
+       "major": "integer",
+       "minor": "integer"
+      },
+      "subaddr_indices": [
+       {
+        "major": "integer",
+        "minor": "integer"
+       }
+      ],
+      "suggested_confirmations_threshold": "integer",
+      "timestamp": "integer",
+      "txid": "string",
+      "type": "string",
+      "unlock_time": "integer"
+     }
+    ]
+   }
+  },
+  "wallet get_transfers (none)": {
+   "method": "get_transfers",
+   "params": [
+    "all_accounts",
+    "in",
+    "pool"
+   ],
+   "result": {}
+  },
+  "wallet get_transfers (pool)": {
+   "method": "get_transfers",
+   "params": [
+    "all_accounts",
+    "in",
+    "pool"
+   ],
+   "result": {
+    "pool": [
+     {
+      "address": "string",
+      "amount": "integer",
+      "amounts": [
+       "integer"
+      ],
+      "double_spend_seen": "boolean",
+      "fee": "integer",
+      "height": "integer",
+      "locked": "boolean",
+      "note": "string",
+      "payment_id": "string",
+      "subaddr_index": {
+       "major": "integer",
+       "minor": "integer"
+      },
+      "subaddr_indices": [
+       {
+        "major": "integer",
+        "minor": "integer"
+       }
+      ],
+      "suggested_confirmations_threshold": "integer",
+      "timestamp": "integer",
+      "txid": "string",
+      "type": "string",
+      "unlock_time": "integer"
+     }
+    ]
+   }
+  },
+  "wallet get_version": {
+   "method": "get_version",
+   "params": [],
+   "result": {
+    "release": "boolean",
+    "version": "integer"
+   }
+  },
+  "wallet incoming_transfers": {
+   "method": "incoming_transfers",
+   "params": [
+    "account_index",
+    "transfer_type",
+    "verbose"
+   ],
+   "result": {
+    "transfers": [
+     {
+      "amount": "integer",
+      "block_height": "integer",
+      "frozen": "boolean",
+      "global_index": "integer",
+      "key_image": "string",
+      "pubkey": "string",
+      "spent": "boolean",
+      "subaddr_index": {
+       "major": "integer",
+       "minor": "integer"
+      },
+      "tx_hash": "string",
+      "unlocked": "boolean"
+     }
+    ]
+   }
+  },
+  "wallet incoming_transfers (none)": {
+   "method": "incoming_transfers",
+   "params": [
+    "account_index",
+    "transfer_type",
+    "verbose"
+   ],
+   "result": {}
+  },
+  "wallet open_wallet": {
+   "method": "open_wallet",
+   "params": [
+    "filename",
+    "password"
+   ],
+   "result": {}
+  },
+  "wallet open_wallet (no such file)": {
+   "error": {
+    "code": -1,
+    "message": "Failed to open wallet : file not found \"/tmp/w/<missing wallet>.keys\""
+   },
+   "method": "open_wallet",
+   "params": [
+    "filename",
+    "password"
+   ]
+  },
+  "wallet open_wallet (wrong password)": {
+   "error": {
+    "code": -1,
+    "message": "Failed to open wallet : Invalid password."
+   },
+   "method": "open_wallet",
+   "params": [
+    "filename",
+    "password"
+   ]
+  },
+  "wallet query_key mnemonic": {
+   "method": "query_key",
+   "params": [
+    "key_type"
+   ],
+   "result": {
+    "key": "string"
+   }
+  },
+  "wallet refresh": {
+   "method": "refresh",
+   "params": [],
+   "result": {
+    "blocks_fetched": "integer",
+    "received_money": "boolean"
+   }
+  },
+  "wallet relay_tx": {
+   "method": "relay_tx",
+   "params": [
+    "hex"
+   ],
+   "result": {
+    "tx_hash": "string"
+   }
+  },
+  "wallet relay_tx (again)": {
+   "method": "relay_tx",
+   "params": [
+    "hex"
+   ],
+   "result": {
+    "tx_hash": "string"
+   }
+  },
+  "wallet relay_tx (bad metadata)": {
+   "error": {
+    "code": -27,
+    "message": "Failed to parse tx metadata."
+   },
+   "method": "relay_tx",
+   "params": [
+    "hex"
+   ]
+  },
+  "wallet relay_tx (refused: key images spent)": {
+   "error": {
+    "code": -4,
+    "message": "Failed to commit tx."
+   },
+   "method": "relay_tx",
+   "params": [
+    "hex"
+   ]
+  },
+  "wallet rescan_blockchain": {
+   "method": "rescan_blockchain",
+   "params": [
+    "hard"
+   ],
+   "result": {}
+  },
+  "wallet restore_deterministic_wallet": {
+   "method": "restore_deterministic_wallet",
+   "params": [
+    "autosave_current",
+    "filename",
+    "language",
+    "password",
+    "restore_height",
+    "seed"
+   ],
+   "result": {
+    "address": "string",
+    "info": "string",
+    "seed": "string",
+    "was_deprecated": "boolean"
+   }
+  },
+  "wallet restore_deterministic_wallet (exists)": {
+   "error": {
+    "code": -1,
+    "message": "Wallet already exists."
+   },
+   "method": "restore_deterministic_wallet",
+   "params": [
+    "autosave_current",
+    "filename",
+    "language",
+    "password",
+    "restore_height",
+    "seed"
+   ]
+  },
+  "wallet set_subaddress_lookahead": {
+   "method": "set_subaddress_lookahead",
+   "params": [
+    "major_idx",
+    "minor_idx",
+    "password"
+   ],
+   "result": {}
+  },
+  "wallet set_subaddress_lookahead (wrong password)": {
+   "error": {
+    "code": -22,
+    "message": "Invalid password."
+   },
+   "method": "set_subaddress_lookahead",
+   "params": [
+    "major_idx",
+    "minor_idx",
+    "password"
+   ]
+  },
+  "wallet store": {
+   "method": "store",
+   "params": [],
+   "result": {}
+  },
+  "wallet thaw": {
+   "method": "thaw",
+   "params": [
+    "key_image"
+   ],
+   "result": {}
+  },
+  "wallet transfer (account out of bound)": {
+   "error": {
+    "code": -17,
+    "message": "not enough money"
+   },
+   "method": "transfer",
+   "params": [
+    "account_index",
+    "destinations",
+    "do_not_relay",
+    "get_tx_hex",
+    "get_tx_metadata",
+    "priority",
+    "subtract_fee_from_outputs"
+   ]
+  },
+  "wallet transfer (coins locked)": {
+   "error": {
+    "code": -37,
+    "message": "not enough unlocked money"
+   },
+   "method": "transfer",
+   "params": [
+    "account_index",
+    "destinations",
+    "do_not_relay",
+    "get_tx_hex",
+    "get_tx_metadata",
+    "priority",
+    "subtract_fee_from_outputs"
+   ]
+  },
+  "wallet transfer (invalid destination)": {
+   "error": {
+    "code": -2,
+    "message": "WALLET_RPC_ERROR_CODE_WRONG_ADDRESS: <destination>"
+   },
+   "method": "transfer",
+   "params": [
+    "account_index",
+    "destinations",
+    "do_not_relay",
+    "get_tx_hex",
+    "get_tx_metadata",
+    "priority",
+    "subtract_fee_from_outputs"
+   ]
+  },
+  "wallet transfer (not enough money)": {
+   "error": {
+    "code": -17,
+    "message": "not enough money"
+   },
+   "method": "transfer",
+   "params": [
+    "account_index",
+    "destinations",
+    "do_not_relay",
+    "get_tx_hex",
+    "get_tx_metadata",
+    "priority",
+    "subtract_fee_from_outputs"
+   ]
+  },
+  "wallet transfer do_not_relay": {
+   "method": "transfer",
+   "params": [
+    "account_index",
+    "destinations",
+    "do_not_relay",
+    "get_tx_hex",
+    "get_tx_metadata",
+    "priority",
+    "subtract_fee_from_outputs"
+   ],
+   "result": {
+    "amount": "integer",
+    "amounts_by_dest": {
+     "amounts": [
+      "integer"
+     ]
+    },
+    "fee": "integer",
+    "multisig_txset": "string",
+    "spent_key_images": {
+     "key_images": [
+      "string"
+     ]
+    },
+    "tx_blob": "string",
+    "tx_hash": "string",
+    "tx_key": "string",
+    "tx_metadata": "string",
+    "unsigned_txset": "string",
+    "weight": "integer"
+   }
+  },
+  "wallet validate_address": {
+   "method": "validate_address",
+   "params": [
+    "address",
+    "any_net_type"
+   ],
+   "result": {
+    "integrated": "boolean",
+    "nettype": "string",
+    "openalias_address": "string",
+    "subaddress": "boolean",
+    "valid": "boolean"
+   }
+  },
+  "wallet validate_address (invalid)": {
+   "method": "validate_address",
+   "params": [
+    "address",
+    "any_net_type"
+   ],
+   "result": {
+    "integrated": "boolean",
+    "nettype": "string",
+    "openalias_address": "string",
+    "subaddress": "boolean",
+    "valid": "boolean"
+   }
+  }
+ },
+ "monero": "0.18.5.1-release",
+ "wallet_rpc_version": 65567
+}

@@ -23,7 +23,7 @@ const (
 )
 
 func init() {
-	registerAction("/admin/escrow-release-days", actionSpec{Roles: []string{"admin"}, OwnTx: true, Off: escrowOff, Run: escrowReleaseDaysAction})
+	registerAction("/admin/escrow-release-days", actionSpec{Roles: []string{"admin"}, OwnTx: true, Off: physicalEscrowOff, Run: escrowReleaseDaysAction})
 	registerLoader("admin", escrowReleaseDaysLoader)
 }
 
@@ -57,9 +57,9 @@ func escrowReleaseDays(ctx context.Context, q rowQuerier) (int, error) {
 	return n, nil
 }
 
-// escrowReleaseDaysLoader shows the length in force and its form on /admin while ESCROW_BTC is on.
+// escrowReleaseDaysLoader shows the length in force and its form on /admin while ESCROW_BTC or ESCROW_XMR is on.
 func escrowReleaseDaysLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
-	if !a.escrowConfigured || d.User == nil || d.User.Role != "admin" {
+	if physicalEscrowOff(a) || d.User == nil || d.User.Role != "admin" {
 		return nil
 	}
 	n, err := escrowReleaseDays(ctx, a.db)

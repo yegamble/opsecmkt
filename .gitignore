@@ -26,3 +26,5 @@ playwright-wallet-report/
 test-results-wallet/
 playwright-escrow-report/
 test-results-escrow/
+playwright-escrow-xmr-report/
+test-results-escrow-xmr/

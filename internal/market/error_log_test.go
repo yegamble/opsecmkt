@@ -261,6 +261,37 @@ func TestPayoutErrorClass(t *testing.T) {
 	}
 }
 
+// A-427: a call whose connection ended after the whole request was sent (rpcDroppedError, which Monero escrow's build
+// classes tell apart) logs the class any other transport error has, the one it had before that type existed, so the
+// pooled payout and watcher log lines are unchanged.
+func TestErrorCauseDroppedConnection(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+			conn.Close()
+		}
+	}))
+	defer srv.Close()
+	c, err := newRPCClient("monero wallet", srv.URL, "2.0", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = c.call(context.Background(), "/json_rpc", "transfer", map[string]any{}, nil)
+	var dropped *rpcDroppedError
+	if !errors.As(err, &dropped) {
+		t.Fatalf("not a dropped connection: %v", err)
+	}
+	for _, c := range []struct{ what, got, want string }{
+		{"errorCause", errorCause(err), "*errors.errorString"},
+		{"payout", payoutErrorClass("XMR", err), "ambiguous/*errors.errorString"},
+		{"watcher", watcherCause(&watchError{label: "XMR", err: fmt.Errorf("wallet read: %w", err)}), "XMR: *errors.errorString"},
+	} {
+		if c.got != c.want {
+			t.Errorf("%s class of a dropped connection = %q, want %q", c.what, c.got, c.want)
+		}
+	}
+}
+
 // watcherCause keeps a pass's labels (currency, order short id, payout id) and replaces every error text by
 // its class, on one line; Error() keeps the text for payment_status and the admin pages.
 func TestWatcherCause(t *testing.T) {

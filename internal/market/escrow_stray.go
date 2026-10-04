@@ -69,7 +69,7 @@ func (a *App) requestStrays(ctx context.Context, threshold int64, orders []strin
 		return nil
 	}
 	rows, err := a.db.QueryContext(ctx, `SELECT es.order_id FROM escrows es JOIN orders o ON o.id=es.order_id
-		WHERE es.order_id=ANY($1) AND o.state IN ('completed','cancelled','resolved')
+		WHERE es.order_id=ANY($1) AND es.coin='BTC' AND o.state IN ('completed','cancelled','resolved')
 		AND (es.recover_requested IS NOT NULL OR EXISTS (SELECT 1 FROM payments p WHERE p.order_id=es.order_id AND `+strayEligibleSQL+`)) ORDER BY es.id`, read, threshold)
 	if err != nil {
 		return err
@@ -111,7 +111,7 @@ func (a *App) requestStray(ctx context.Context, threshold int64, orderID string)
 			(SELECT COALESCE(sum(p.amount),0) FROM payments p WHERE p.order_id=es.order_id AND `+strayEligibleSQL+`),
 			(SELECT count(*) FROM payments p WHERE p.order_id=es.order_id AND `+strayEligibleSQL+`),
 			(SELECT count(*) FROM payments p WHERE p.order_id=es.order_id AND p.settlement_id IS NULL AND NOT p.locked AND p.confirmations BETWEEN 0 AND $2-1 AND (p.after_close OR p.escrow_left_out))
-		FROM escrows es JOIN orders o ON o.id=es.order_id WHERE es.order_id=$1 FOR UPDATE OF es`, orderID, threshold).Scan(&requested, &buyer, &state, &open, &sum, &n, &pending); err != nil {
+		FROM escrows es JOIN orders o ON o.id=es.order_id WHERE es.order_id=$1 AND es.coin='BTC' FOR UPDATE OF es`, orderID, threshold).Scan(&requested, &buyer, &state, &open, &sum, &n, &pending); err != nil {
 		return err
 	}
 	if !isTerminal(state) {
@@ -137,7 +137,7 @@ func (a *App) requestStray(ctx context.Context, threshold int64, orderID string)
 		body = note
 	}
 	if requested {
-		if _, err = tx.ExecContext(ctx, "UPDATE escrows SET recover_requested=NULL WHERE order_id=$1", orderID); err != nil {
+		if _, err = tx.ExecContext(ctx, "UPDATE escrows SET recover_requested=NULL WHERE order_id=$1 AND coin='BTC'", orderID); err != nil {
 			return err
 		}
 	}
@@ -164,7 +164,7 @@ func escrowRecoverAction(c *actionCtx) (actionResult, error) {
 		switch {
 		case err != nil:
 			return actionResult{}, err
-		case !o.Escrow:
+		case !o.btcEscrow():
 			return actionResult{}, errNoOrder
 		case o.BuyerID != c.User.ID:
 			return actionResult{}, errRecoverOnlyBuyer
@@ -179,7 +179,7 @@ func escrowRecoverAction(c *actionCtx) (actionResult, error) {
 		if open {
 			return actionResult{}, errRecoverOpen
 		}
-		res, err := c.Tx.ExecContext(ctx, "UPDATE escrows SET recover_requested=now() WHERE order_id=$1 AND recover_requested IS NULL", o.ID)
+		res, err := c.Tx.ExecContext(ctx, "UPDATE escrows SET recover_requested=now() WHERE order_id=$1 AND coin='BTC' AND recover_requested IS NULL", o.ID)
 		if err != nil {
 			return actionResult{}, err
 		}
@@ -232,7 +232,7 @@ func (a *App) escrowStrayView(ctx context.Context, d *PageData, v *EscrowOrderVi
 		return nil
 	}
 	var asked sql.NullTime
-	if err = a.db.QueryRowContext(ctx, "SELECT recover_requested FROM escrows WHERE order_id=$1", o.ID).Scan(&asked); err != nil {
+	if err = a.db.QueryRowContext(ctx, "SELECT recover_requested FROM escrows WHERE order_id=$1 AND coin='BTC'", o.ID).Scan(&asked); err != nil {
 		return err
 	}
 	switch {

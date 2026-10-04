@@ -168,6 +168,8 @@ scripts/restore.sh "$legacy_backup" <<< 'RESTORE' > "$work/legacy-restore.log"
 [[ $(pg "$target_db" -Atq -c "SELECT to_regclass('payouts') IS NULL") == t ]]
 grep -q 'Held 0 restored payout(s)' "$work/legacy-restore.log"
 grep -q 'Marked 0 restored failed payout(s)' "$work/legacy-restore.log"
+# A database without the Monero escrow tables (before migrations 084 and 085) restores, and the script says nothing of it.
+if grep -q 'Monero escrow' "$work/legacy-restore.log"; then echo 'restore.sh reported Monero escrow for a database without it' >&2; exit 1; fi
 
 # The same round trip on the real application schema. The server migrates an empty database itself; a
 # release payout is queued (pending), another already sent and a third failed with a definite wallet rejection;
@@ -270,6 +272,23 @@ INSERT INTO escrows(order_id,address,market_index,refund_address,fee_bps,fee_des
  ('ops-order-escrow-broadcast','bcrt1qopsrestoreescrowaddress1',nextval('escrow_market_index'),'bcrt1qopsrestoreescrowrefund1',0,'');
 INSERT INTO escrow_pubkeys(pubkey,escrow_id,party,user_id,key_hmac,origin_fingerprint,origin_path,derivation_suffix)
  SELECT '02'||repeat('a1',32),id,'vendor','ops-vendor',repeat('c',64),'a1b2c3d4','/48h/1h/0h/2h','/0/7' FROM escrows WHERE order_id='ops-order-escrow-broadcast';"
+# Monero escrow (migrations 084 and 085; ESCROW_XMR, local fakechain only): an active monthly escrow wallet with a
+# free account and one claimed by a completed order whose release is built (its transaction stored, not relayed yet).
+# The restore holds the built release, retires the free account, moves the wallet to closing and asks for the sweep.
+pg "$app_source_db" -q -c "
+INSERT INTO xmr_escrow_wallets(name,month,primary_address,restore_height,seed_sealed,seed_key_fpr,sealed_at,state) VALUES
+ ('escrow-202610-01','2026-10-01','4'||repeat('A',94),100,'-----BEGIN PGP MESSAGE-----','0123456789ABCDEF0123456789ABCDEF01234567',now(),'sealed');
+UPDATE xmr_escrow_wallets SET state='active' WHERE name='escrow-202610-01';
+INSERT INTO xmr_escrow_slots(wallet_id,account_index,address) SELECT id,n,'8'||repeat(chr(65+n),94) FROM xmr_escrow_wallets, generate_series(1,2) n;
+INSERT INTO orders(id,buyer_id,product_id,currency,amount,state) VALUES ('ops-order-xmr-escrow','ops-buyer','ops-product','XMR',250000000000,'completed');
+UPDATE xmr_escrow_slots SET state='claimed',order_id='ops-order-xmr-escrow' WHERE account_index=1;
+INSERT INTO escrows(order_id,address,coin,xmr_slot_id,refund_address,fee_bps,fee_destination)
+ SELECT order_id,address,'XMR',id,'8'||repeat('D',94),0,'' FROM xmr_escrow_slots WHERE account_index=1;
+INSERT INTO xmr_settlements(order_id,kind,destination) VALUES ('ops-order-xmr-escrow','release','8'||repeat('E',94));
+UPDATE xmr_settlements SET state='built',tx_hash=repeat('f1',32),tx_metadata='0a0b',tx_blob='0c0d',fee=1874400000,input_total=250000000000,key_images=ARRAY[repeat('a2',32)];"
+xmr_state="SELECT (SELECT string_agg(state || ':' || (send_error LIKE 'Restored from backup:%'), ',') FROM xmr_settlements) || ' ' ||
+ (SELECT string_agg(account_index || ':' || state, ',' ORDER BY account_index) FROM xmr_escrow_slots) || ' ' || (SELECT string_agg(name || ':' || state, ',') FROM xmr_escrow_wallets)"
+xmr_restored='built:true 1:claimed,2:retired escrow-202610-01:closing'
 floors="SELECT string_agg(user_id || ':' || next_index, ',' ORDER BY user_id) FROM escrow_index_floors"
 escrow_hold="Restored from backup: check that this escrow settlement's transaction was not already sent or replaced, then confirm its rebroadcast on the admin page."
 settlements="SELECT string_agg(order_id || ':' || state || ':' || (send_error LIKE 'Restored from backup:%'), ',' ORDER BY order_id) FROM settlements"
@@ -287,6 +306,8 @@ TZ=America/New_York RESTORE_DATABASE_URL=$(connection_url "$app_target_db") scri
 grep -q 'Held 2 restored payout(s)' "$work/app-restore.log"
 grep -q 'Held 1 restored Bitcoin escrow settlement(s) with a stored transaction' "$work/app-restore.log"
 grep -q 'Held 1 restored Bitcoin escrow fee bump(s) with a stored transaction' "$work/app-restore.log"
+grep -q 'Held 1 restored Monero escrow settlement(s) with a stored transaction' "$work/app-restore.log"
+grep -q 'Monero escrow (if used): retired 1 free escrow account(s) and moved 1 escrow wallet(s) to closing' "$work/app-restore.log"
 grep -q 'Marked 1 restored failed payout(s) as possibly sent' "$work/app-restore.log"
 grep -Eq "$(images_line 2)" "$work/app-restore.log"
 python3 - "$work/app-restore.log" "$backup_started" "$backup_finished" <<'PY'
@@ -304,6 +325,7 @@ PY
 # The escrow release deadline recheck is asked for (escrow_deadline.go moves passed deadlines on its next pass).
 [[ $(pg "$app_target_db" -Atq -c "SELECT value FROM settings WHERE key='escrow_release_recheck'") == true ]]
 [[ $(pg "$app_source_db" -Atq -c "SELECT count(*) FROM settings WHERE key='escrow_release_recheck'") == 0 ]]
+[[ $(pg "$app_target_db" -Atq -c "SELECT value FROM settings WHERE key='escrow_xmr_release_recheck'") == true ]]
 grep -q 'release deadlines that passed in the restored records move to 72 hours' "$work/app-restore.log"
 # A-366: escrow checkout waits for the orphan sweep, and the next escrow key indices move 50 past the restored records.
 [[ $(pg "$app_target_db" -Atq -c "SELECT value FROM settings WHERE key='escrow_sweep_required'") == true ]]
@@ -313,6 +335,11 @@ grep -q 'release deadlines that passed in the restored records move to 72 hours'
 [[ $(pg "$app_target_db" -Atq -c "SELECT last_value || ':' || is_called FROM escrow_market_index") == 50:true ]]
 [[ $(pg "$app_source_db" -Atq -c "SELECT last_value || ':' || is_called FROM escrow_market_index") == 0:true ]]
 grep -q 'every next escrow key index moves 50 past the restored records' "$work/app-restore.log"
+# P3-R10: the restored Monero escrow is held, its free account retired, its wallet closing, and the sweep asked for.
+[[ $(pg "$app_target_db" -Atq -c "$xmr_state") == "$xmr_restored" ]]
+[[ $(pg "$app_source_db" -Atq -c "$xmr_state") == 'built:false 1:claimed,2:free escrow-202610-01:active' ]]
+[[ $(pg "$app_target_db" -Atq -c "SELECT value FROM settings WHERE key='xmr_escrow_sweep_required'") == true ]]
+[[ $(pg "$app_source_db" -Atq -c "SELECT count(*) FROM settings WHERE key='xmr_escrow_sweep_required'") == 0 ]]
 payouts="SELECT string_agg(order_id || ':' || state || ':' || (error LIKE 'Restored from backup:%') || ':' || send_ambiguous || ':' || txid, ',' ORDER BY order_id) FROM payouts"
 held="ops-order-failed:failed:true:true:,ops-order-queued:held:true:false:,ops-order-sent:sent:false:false:$(printf 'ab%.0s' {1..32}),ops-order-suspended:held:true:false:"
 [[ $(pg "$app_target_db" -Atq -c "$payouts") == "$held" ]]
@@ -323,7 +350,7 @@ suspended_error="SELECT error FROM payouts WHERE order_id='ops-order-suspended'"
 audit_all="SELECT string_agg(coalesce(user_id,'-') || ':' || action, '|' ORDER BY id) FROM audit_events"
 source_audit=$(pg "$app_source_db" -Atq -c "$audit_all")
 [[ $source_audit == 'ops-admin:Restore drill: an audit row written before the backup' ]]
-restore_audit="-:Payout recovery gate set by scripts/restore.sh: held 2 restored payout(s) and marked 1 restored failed payout(s) as possibly sent; held 1 restored escrow settlement(s) with a stored transaction until an administrator confirms each rebroadcast; held 1 restored escrow fee bump(s) with a stored transaction until an administrator confirms its settlement's rebroadcast; all outbound payouts paused until an administrator clears the gate"
+restore_audit="-:Payout recovery gate set by scripts/restore.sh: held 2 restored payout(s) and marked 1 restored failed payout(s) as possibly sent; held 1 restored escrow settlement(s) with a stored transaction until an administrator confirms each rebroadcast; held 1 restored escrow fee bump(s) with a stored transaction until an administrator confirms its settlement's rebroadcast; held 1 restored Monero escrow settlement(s) with a stored transaction until an administrator confirms each relay; all outbound payouts paused until an administrator clears the gate"
 [[ $(pg "$app_target_db" -Atq -c "$settlements") == "$escrow_held" ]]
 [[ $(pg "$app_target_db" -Atq -c "SELECT send_error FROM settlements WHERE order_id='ops-order-escrow-broadcast'") == "$escrow_hold" ]]
 [[ $(pg "$app_source_db" -Atq -c "SELECT count(*) FROM settlements WHERE send_error<>''") == 0 ]]
@@ -380,9 +407,12 @@ runbook_sql restore-protection UPGRADING.md > "$work/restore-protection.sql"
  python3 scripts/postgres-tool.py MANUAL_TARGET_URL pg_restore --dbname='' --single-transaction --exit-on-error --no-owner --no-acl < "$work/manual.dump")
 [[ $(pg "$app_manual_db" -Atq -c "SELECT count(*) FROM settings WHERE key='payments_recovery_required'") == 0 ]]
 [[ $(pg "$app_manual_db" -Atq -c "SELECT state FROM payouts WHERE order_id='ops-order-queued'") == pending ]]
-[[ $(pg "$app_manual_db" -At -f "$work/restore-protection.sql") == $'BEGIN\nINSERT 0 1\nINSERT 0 1\nINSERT 0 1\nUPDATE 2\nUPDATE 1\nUPDATE 1\nUPDATE 1\nUPDATE 1\nINSERT 0 2\nDO\nINSERT 0 1\nCOMMIT' ]]
+[[ $(pg "$app_manual_db" -At -f "$work/restore-protection.sql") == $'BEGIN\nINSERT 0 1\nINSERT 0 1\nINSERT 0 1\nINSERT 0 1\nINSERT 0 1\nUPDATE 2\nUPDATE 1\nUPDATE 1\nUPDATE 1\nUPDATE 1\nUPDATE 1\nUPDATE 1\nUPDATE 1\nINSERT 0 2\nDO\nINSERT 0 1\nCOMMIT' ]]
 [[ $(pg "$app_manual_db" -Atq -c "SELECT value FROM settings WHERE key='escrow_release_recheck'") == true ]]
+[[ $(pg "$app_manual_db" -Atq -c "SELECT value FROM settings WHERE key='escrow_xmr_release_recheck'") == true ]]
 [[ $(pg "$app_manual_db" -Atq -c "SELECT value FROM settings WHERE key='escrow_sweep_required'") == true ]]
+[[ $(pg "$app_manual_db" -Atq -c "SELECT value FROM settings WHERE key='xmr_escrow_sweep_required'") == true ]]
+[[ $(pg "$app_manual_db" -Atq -c "$xmr_state") == "$xmr_restored" ]]
 [[ $(pg "$app_manual_db" -Atq -c "$floors") == $(pg "$app_target_db" -Atq -c "$floors") ]]
 [[ $(pg "$app_manual_db" -Atq -c "SELECT last_value || ':' || is_called FROM escrow_market_index") == 50:true ]]
 [[ $(pg "$app_manual_db" -Atq -c "$settlements") == "$escrow_held" ]]
@@ -526,4 +556,4 @@ INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,cre
 [[ $(tail -n 1 <<< "$(record ops-order-main release completed 150000 bc1qopsrestoremainvendor "$main_txid" ops_admin yes)") == 'Recorded the payout as sent; committed.' ]]
 [[ $(pg "$app_target_db" -Atq -c "SELECT note FROM order_events WHERE order_id='ops-order-main'") == "Reconciled after a restore from backup: the MAINNET release of 0.0015 BTC to the vendor was sent after the backup was taken. Recorded by an administrator from the wallet; nothing was sent now." ]]
 [[ $(pg "$app_target_db" -Atq -c "SELECT count(*) FROM order_events WHERE note LIKE 'Reconciled after a restore from backup: the TESTNET %'") == 3 ]]
-echo 'Encrypted backup/restore regressions passed (Unicode, overwrite refusal, wrong key, transaction rollback, payout hold, suspension hold kept, failed payouts marked possibly sent, restore audit row, application schema restore and restart, manual UPGRADING.md protection after a plain pg_dump/pg_restore copy, runbook reconciliation of payouts sent after the backup with the network class from the deposit address, audited gate clear refusing unknown handles).'
+echo 'Encrypted backup/restore regressions passed (Unicode, overwrite refusal, wrong key, transaction rollback, payout hold, suspension hold kept, failed payouts marked possibly sent, Monero escrow held, its free accounts retired, its wallets closed and its sweep asked for, restore audit row, application schema restore and restart, manual UPGRADING.md protection after a plain pg_dump/pg_restore copy, runbook reconciliation of payouts sent after the backup with the network class from the deposit address, audited gate clear refusing unknown handles).'

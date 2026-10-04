@@ -5,9 +5,11 @@ payments with the compose deployment. **Test networks: these coins have no value
 mainnet unless it is configured** ([Mainnet](operator-guide.md#mainnet); the wallet, backup, restore and
 payout-recovery steps below use the same commands on a mainnet market, with real funds, but have been exercised
 on test networks only). Commands run from the repository directory on the Docker host, where `.env` lives.
-Bitcoin escrow is not part of this runbook: it runs on regtest only and is off by default (built and tested on
-regtest, never run on a public test network; [per-order escrow](escrow.md)), so leave `ESCROW_BTC` off on a
-testnet4, signet, stagenet or testnet market. Payments there go through the pooled wallets below.
+Per-order escrow is not part of this runbook, apart from its restore steps and the manual fakechain check in
+[section 9](#9-manual-monero-escrow-fakechain-check): Bitcoin escrow runs on regtest only and Monero escrow on a local
+Monero fakechain only, both are off by default (built and tested on those local chains, never run on a public test
+network; [per-order escrow](escrow.md)), so leave `ESCROW_BTC` and `ESCROW_XMR` off on a testnet4, signet, stagenet or
+testnet market. Payments there go through the pooled wallets below.
 
 What the application does on its own, so you know what to expect while following these steps:
 
@@ -421,6 +423,23 @@ the composed address, skipping up to 20 such addresses (503 after that; the app 
 in the watch-only wallet"). Clearing the gate (step 8) lets escrow checkout run again once the sweep has run. A
 party's Core wallet signs only keys inside its descriptor range: their escrow key page advises `keypoolrefill` once
 their next child index passes 900, and the order page does the same for their child key in that escrow.
+
+On a market running [Monero escrow](operator-guide.md#monero-escrow-local-fakechain-only) (a local fakechain only,
+`ESCROW_XMR=on`), the gate also pauses it: the Monero escrow watcher builds and relays no settlement while it is set, and
+Monero escrow checkout is refused ("Monero escrow is paused while this market restores its records from a backup. Nothing
+was charged and your order is still a draft; try again later.", 503, the order stays a draft). The script holds every
+restored Monero settlement with a stored transaction, built or relayed (it prints how many, and the audit row counts them),
+retires every free escrow account, moves every active or sealed escrow wallet to closing so that no account of a restored
+wallet takes an order again, and sets `escrow_xmr_release_recheck` and `xmr_escrow_sweep_required`. Before step 8, check each
+held settlement listed under *Admin → Payment providers → Monero escrow recovery and retention (fakechain)* in the escrow
+daemon and the escrow wallet and confirm it there if it was not already relayed or replaced; the market then relays the same
+stored transaction once. Checkout stays refused ("Monero escrow is paused until this market has checked its escrow wallets
+after restoring its records from a backup. …") until the Monero escrow watcher's sweep has probed for escrow wallets created
+after the backup (each found is sealed to the seed key and kept, never offered to a new order, and its funded accounts are
+listed to the administrators), read every wallet and raised the subaddress lookahead of any wallet older than the database;
+the sweep needs the escrow wallet-rpc and the seed key and logs `escrow: Monero escrow's restore sweep is complete …` when it
+has run. If only the escrow wallet volume was restored from an older backup, set the sweep marker by hand
+([operator guide](operator-guide.md#monero-escrow-local-fakechain-only)).
 
 **Only `scripts/restore.sh` applies this protection.** A host or volume snapshot, a managed-database
 point-in-time recovery or a manual `pg_restore` brings payouts back as `pending` with no gate, and the
@@ -981,3 +1000,55 @@ see [real isolated-chain browser tests](local-chain-testing.md). The maintained
 setup script starts verified native nodes, mines disposable coins and funds the
 market wallets. The browser suite uses real RPC adapters and wallet transactions;
 it is separate from the simulated-wallet suite and from public testnet validation.
+
+
+## 9. Manual Monero escrow fakechain check
+
+`scripts/test-escrow-xmr-regtest.sh` runs the fourteen legs of Monero escrow ([per-order escrow](escrow.md#phase-3-monero-escrow-on-a-local-fakechain))
+against a real `monerod --regtest` and real `monero-wallet-rpc` 0.18.5.1. It is not part of CI. **It is for a local
+fakechain only**: it refuses any daemon that does not report nettype `fakechain` with hard fork version 16 or later before any
+wallet call, and each Go leg checks the same again. It needs Docker for the nodes, Go, `curl` and a disposable PostgreSQL
+database (never a real deployment's). The legs run the app inside the Go test: this is not a deployment check.
+
+Start a fakechain daemon and three wallet-rpc instances on one Docker network (the app's escrow wallet-rpc, a funder
+standing in for the buyer's wallet, and one used only to restore a sealed seed). The wallet-rpcs listen without RPC login on
+`127.0.0.1` only; the image's entrypoint adds `--non-interactive` and the bind address itself, and
+`RPC_EXPOSE_UNAUTHENTICATED=1` lets the wallet-rpc answer on the published loopback port:
+
+```sh
+docker network create xmr-escrow-regtest
+docker run -d --name xmr-escrow-monerod --network xmr-escrow-regtest -p 127.0.0.1:28381:18081 \
+  ghcr.io/sethforprivacy/simple-monerod:v0.18.5.1 --regtest --keep-fakechain --offline --fixed-difficulty 1 \
+  --rpc-bind-ip 0.0.0.0 --rpc-bind-port 18081 --confirm-external-bind --no-igd
+for w in escrow:28382 funder:28383 restore:28384; do
+  docker run -d --name "xmr-escrow-wallet-${w%%:*}" --network xmr-escrow-regtest -p "127.0.0.1:${w##*:}:18083" \
+    -e RPC_EXPOSE_UNAUTHENTICATED=1 ghcr.io/sethforprivacy/simple-monero-wallet-rpc:v0.18.5.1 \
+    --daemon-address xmr-escrow-monerod:18081 --trusted-daemon --wallet-dir /tmp/w --disable-rpc-login \
+    --rpc-bind-port 18083 --allow-mismatched-daemon-version
+done
+```
+
+Wait until the four containers report healthy (`docker ps`), then run the script with a disposable database. The legs create
+their own databases from it, so give it a database you can drop afterwards:
+
+```sh
+ESCROW_XMR_REGTEST_DAEMON_URL=http://127.0.0.1:28381 ESCROW_XMR_REGTEST_WALLET_URL=http://127.0.0.1:28382 \
+ESCROW_XMR_REGTEST_FUNDER_URL=http://127.0.0.1:28383 ESCROW_XMR_REGTEST_RESTORE_URL=http://127.0.0.1:28384 \
+ESCROW_XMR_REGTEST_WALLET_CONTAINER=xmr-escrow-wallet-escrow ESCROW_XMR_REGTEST_DAEMON_CONTAINER=xmr-escrow-monerod \
+TEST_DATABASE_URL=postgres://USER:PASSWORD@HOST:PORT/a_disposable_database?sslmode=disable ./scripts/test-escrow-xmr-regtest.sh
+docker rm -f xmr-escrow-monerod xmr-escrow-wallet-escrow xmr-escrow-wallet-funder xmr-escrow-wallet-restore
+docker network rm xmr-escrow-regtest
+```
+
+`ESCROW_XMR_REGTEST_WALLET_CONTAINER` is optional: with it, `RestartMidSend` also restarts that container.
+`ESCROW_XMR_REGTEST_DAEMON_CONTAINER` is required: `ReRequest` stops and starts that monerod container around each relay,
+which is why monerod runs with `--keep-fakechain` (without it, monerod deletes the fakechain when it starts). The legs run
+in sequence and took about 11 minutes in one run on a 4-CPU host (the script allows 45 minutes for the whole run); they may
+run again against the same nodes, since each puts the watcher's clock in a month of its own. The transcript is written to
+`ESCROW_XMR_REGTEST_LOG` (default `artifacts/real-chain/test-escrow-xmr-regtest-<UTC time>.log`, gitignored); no seed,
+password or URL is printed. The script reports each leg from its own result line, so a failed, skipped or missing leg is
+named and the run fails; it ends with one `PASS:` line listing what was shown. The legs are: `Wallets`, `Funding`,
+`TwoAccountsOneTx`, `Physical`, `RestartMidSend`, `RelayDropped`, `TopUp`, `Reorg`, `External`, `ReRequest`, `Restore`, `Lookahead`,
+`WrongSecret` and `Destroy`, each `TestXMREscrowRegtest<Leg>` in `internal/market/`; what each proves is listed in
+[per-order escrow](escrow.md#phase-3-monero-escrow-on-a-local-fakechain). A pass is evidence for the code and the 0.18.5.1
+nodes on a local fakechain, not for stagenet, testnet or mainnet.

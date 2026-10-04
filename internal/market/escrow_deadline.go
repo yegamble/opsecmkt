@@ -105,7 +105,8 @@ func orderIDs(ctx context.Context, q rowsQuerier, query string, args ...any) ([]
 
 // escrowDeadlines is the deadline part of an escrow watcher pass, under the escrow watcher lock: the restore recheck
 // first, so a restored deadline is moved before it could be released, then the release (not while the restore gate is
-// set), then the reminders. None makes an RPC, so it also runs when the node check fails (escrowPollOnce).
+// set), then the reminders. None makes an RPC, so it also runs when the node check fails (escrowPollOnce). Each step
+// handles Bitcoin escrow orders only; the Monero escrow watcher runs xmrDeadlines for Monero ones (P3-R7).
 func (a *App) escrowDeadlines(ctx context.Context) error {
 	var errs []error
 	if err := a.recheckReleaseDeadlines(ctx); err != nil {
@@ -129,7 +130,7 @@ func (a *App) escrowDeadlines(ctx context.Context) error {
 // releaseDue completes every shipped escrow order whose release deadline has passed with no dispute, each in its own
 // transaction (step 3 of the file comment).
 func (a *App) releaseDue(ctx context.Context) error {
-	ids, err := orderIDs(ctx, a.db, `SELECT o.id FROM orders o JOIN escrows es ON es.order_id=o.id WHERE o.state='shipped' AND `+releaseDueSQL+` AND `+noDisputeSQL+` ORDER BY es.release_at`)
+	ids, err := orderIDs(ctx, a.db, `SELECT o.id FROM orders o JOIN escrows es ON es.order_id=o.id WHERE es.coin='BTC' AND o.state='shipped' AND `+releaseDueSQL+` AND `+noDisputeSQL+` ORDER BY es.release_at`)
 	if err != nil {
 		return err
 	}
@@ -164,7 +165,7 @@ func (a *App) releaseIfDue(ctx context.Context, tx *sql.Tx, orderID string) (boo
 	var due bool
 	var at time.Time
 	err := tx.QueryRowContext(ctx, `SELECT o.state='shipped' AND `+noDisputeSQL+` AND `+releaseDueSQL+`,es.release_at
-		FROM orders o JOIN escrows es ON es.order_id=o.id WHERE o.id=$1 AND es.release_at IS NOT NULL`, orderID).Scan(&due, &at)
+		FROM orders o JOIN escrows es ON es.order_id=o.id WHERE o.id=$1 AND es.coin='BTC' AND es.release_at IS NOT NULL`, orderID).Scan(&due, &at)
 	if err == sql.ErrNoRows || err == nil && !due {
 		return false, nil
 	}
@@ -196,7 +197,7 @@ func (a *App) releaseIfDue(ctx context.Context, tx *sql.Tx, orderID string) (boo
 // once, and tells the vendor the buyer's deadline (step 2 of the file comment). A buyer who signed the release, and a
 // disputed order, are not reminded.
 func (a *App) remindDeadlines(ctx context.Context) error {
-	ids, err := orderIDs(ctx, a.db, `SELECT o.id FROM orders o JOIN escrows es ON es.order_id=o.id WHERE o.state='shipped' AND es.reminded_at IS NULL AND `+releaseSoonSQL+`
+	ids, err := orderIDs(ctx, a.db, `SELECT o.id FROM orders o JOIN escrows es ON es.order_id=o.id WHERE es.coin='BTC' AND o.state='shipped' AND es.reminded_at IS NULL AND `+releaseSoonSQL+`
 		AND `+noDisputeSQL+` AND `+buyerUnsignedSQL+` ORDER BY es.release_at`)
 	if err != nil {
 		return err
@@ -221,7 +222,7 @@ func (a *App) remindOne(ctx context.Context, orderID string) error {
 	var buyer, vendor string
 	var at time.Time
 	err = tx.QueryRowContext(ctx, `UPDATE escrows es SET reminded_at=now() FROM orders o JOIN products p ON p.id=o.product_id
-		WHERE es.order_id=$1 AND o.id=es.order_id AND es.reminded_at IS NULL AND o.state='shipped' AND `+buyerUnsignedSQL+` RETURNING o.buyer_id,p.vendor_id,es.release_at`, orderID).Scan(&buyer, &vendor, &at)
+		WHERE es.order_id=$1 AND es.coin='BTC' AND o.id=es.order_id AND es.reminded_at IS NULL AND o.state='shipped' AND `+buyerUnsignedSQL+` RETURNING o.buyer_id,p.vendor_id,es.release_at`, orderID).Scan(&buyer, &vendor, &at)
 	if err == sql.ErrNoRows {
 		return nil
 	}
@@ -258,7 +259,7 @@ func (a *App) recheckReleaseDeadlines(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	ids, err := orderIDs(ctx, tx, `SELECT o.id FROM orders o JOIN escrows es ON es.order_id=o.id WHERE o.state='shipped' AND `+releaseDueSQL+` ORDER BY o.id`)
+	ids, err := orderIDs(ctx, tx, `SELECT o.id FROM orders o JOIN escrows es ON es.order_id=o.id WHERE es.coin='BTC' AND o.state='shipped' AND `+releaseDueSQL+` ORDER BY o.id`)
 	if err != nil {
 		return err
 	}
@@ -268,7 +269,7 @@ func (a *App) recheckReleaseDeadlines(ctx context.Context) error {
 			return err
 		}
 		var due bool
-		if err = tx.QueryRowContext(ctx, `SELECT o.state='shipped' AND `+releaseDueSQL+` AND `+noDisputeSQL+` FROM orders o JOIN escrows es ON es.order_id=o.id WHERE o.id=$1`, id).Scan(&due); err != nil {
+		if err = tx.QueryRowContext(ctx, `SELECT o.state='shipped' AND `+releaseDueSQL+` AND `+noDisputeSQL+` FROM orders o JOIN escrows es ON es.order_id=o.id WHERE o.id=$1 AND es.coin='BTC'`, id).Scan(&due); err != nil {
 			return err
 		}
 		if !due {
@@ -276,13 +277,13 @@ func (a *App) recheckReleaseDeadlines(ctx context.Context) error {
 		}
 		// Migration 079's trigger moves release_at only later, and only in the statement that sets release_recheck from
 		// false to true: an escrow rechecked after an earlier restore is reset first.
-		if _, err = tx.ExecContext(ctx, "UPDATE escrows SET release_recheck=false WHERE order_id=$1 AND release_recheck", id); err != nil {
+		if _, err = tx.ExecContext(ctx, "UPDATE escrows SET release_recheck=false WHERE order_id=$1 AND coin='BTC' AND release_recheck", id); err != nil {
 			return err
 		}
 		var at time.Time
 		var buyer string
 		if err = tx.QueryRowContext(ctx, `UPDATE escrows es SET release_at=now()+interval '72 hours',release_recheck=true,reminded_at=COALESCE(es.reminded_at,now())
-			FROM orders o WHERE o.id=es.order_id AND es.order_id=$1 RETURNING es.release_at,o.buyer_id`, id).Scan(&at, &buyer); err != nil {
+			FROM orders o WHERE o.id=es.order_id AND es.order_id=$1 AND es.coin='BTC' RETURNING es.release_at,o.buyer_id`, id).Scan(&at, &buyer); err != nil {
 			return err
 		}
 		until := utcUntil(at)
@@ -312,7 +313,11 @@ func noShipCancel(c *actionCtx, o *Order) error {
 		if err := c.Tx.QueryRowContext(ctx, "SELECT max(created) FROM order_events WHERE order_id=$1 AND from_state='paid' AND to_state='shipped'", o.ID).Scan(&at); err != nil {
 			return err
 		}
-		return fail(409, "The vendor marked this order shipped at "+utcUntil(at)+", so it can no longer be cancelled. Sign the release once the goods have arrived, or open a dispute if they do not arrive. Nothing was changed.")
+		next := "Sign the release once the goods have arrived"
+		if o.xmrEscrow() {
+			next = "Use Confirm receipt on the order page once the goods have arrived"
+		}
+		return fail(409, "The vendor marked this order shipped at "+utcUntil(at)+", so it can no longer be cancelled. "+next+", or open a dispute if they do not arrive. Nothing was changed.")
 	}
 	if o.State != statePaid {
 		return errConflict
@@ -355,7 +360,7 @@ func lateDispute(c *actionCtx, o *Order) (string, error) {
 	}
 	var at sql.NullTime
 	var due bool
-	err := c.Tx.QueryRowContext(c.Ctx(), "SELECT es.release_at,COALESCE("+releaseDueSQL+" AND NOT EXISTS (SELECT 1 FROM settings WHERE key=$2),false) FROM escrows es WHERE es.order_id=$1", o.ID, releaseRecheckKey).Scan(&at, &due)
+	err := c.Tx.QueryRowContext(c.Ctx(), "SELECT es.release_at,COALESCE("+releaseDueSQL+" AND NOT EXISTS (SELECT 1 FROM settings WHERE key=$2),false) FROM escrows es WHERE es.order_id=$1", o.ID, releaseRecheckKeyOf(o.Currency)).Scan(&at, &due)
 	if err != nil || !at.Valid {
 		return "", err
 	}
@@ -392,7 +397,9 @@ func deadlineBanners(ctx context.Context, a *App, r *http.Request, d *PageData) 
 	if d.User == nil || a.db == nil {
 		return nil
 	}
-	rows, err := a.db.QueryContext(ctx, `SELECT o.id,o.buyer_id=$1,es.release_at,extract(epoch FROM es.release_at-now()) FROM orders o JOIN products p ON p.id=o.product_id JOIN escrows es ON es.order_id=o.id
+	// A Monero escrow order (P3-R7) has no signatures, so buyerUnsignedSQL always holds for it; its banner says Confirm
+	// receipt.
+	rows, err := a.db.QueryContext(ctx, `SELECT o.id,o.buyer_id=$1,es.coin='XMR',es.release_at,extract(epoch FROM es.release_at-now()) FROM orders o JOIN products p ON p.id=o.product_id JOIN escrows es ON es.order_id=o.id
 		WHERE (o.buyer_id=$1 OR p.vendor_id=$1) AND o.state='shipped' AND `+releaseSoonSQL+` AND `+noDisputeSQL+` AND `+buyerUnsignedSQL+` ORDER BY es.release_at`, d.User.ID)
 	if err != nil {
 		return err
@@ -402,7 +409,7 @@ func deadlineBanners(ctx context.Context, a *App, r *http.Request, d *PageData) 
 		var b DeadlineBanner
 		var at time.Time
 		var left float64
-		if err = rows.Scan(&b.OrderID, &b.Buyer, &at, &left); err != nil {
+		if err = rows.Scan(&b.OrderID, &b.Buyer, &b.XMR, &at, &left); err != nil {
 			return err
 		}
 		b.Short, b.At, b.Left = shortID(b.OrderID), utcUntil(at), timeLeft(time.Duration(left*float64(time.Second)))

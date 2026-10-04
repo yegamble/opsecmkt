@@ -503,7 +503,7 @@ To remove another vendor's listing (for example counterfeit or prohibited goods)
 **Test networks by default; these payments move no real funds.** The application refuses to start if a node or wallet is on mainnet without `BITCOIN_CHAIN=main`/`MONERO_NETWORK=mainnet`, or disagrees with `BITCOIN_CHAIN`/`MONERO_NETWORK` (blank accepts whichever test network the node reports). To take real payments see [Mainnet](#mainnet). A node that is unreachable, still syncing or has no wallet loaded does **not** stop the site: that currency shows as unavailable on the admin page, payment requests for it are refused, and every watcher pass checks it again (reloading the Bitcoin wallet or reopening the Monero wallet after a node restart). A node that reports another network after startup disables its currency until the app is restarted. A currency with a blank URL stays disabled, and the site then says "Payments disabled". Step-by-step setup, wallet creation and payout recovery: [docs/testnet-runbook.md](testnet-runbook.md). Upgrading from v0.1.0-alpha.1: [UPGRADING.md](../UPGRADING.md).
 
 - Bitcoin: `BITCOIN_RPC_URL` is a wallet-enabled Bitcoin Core RPC. Credentials go in the URL userinfo (`http://marketplace:PASSWORD@bitcoin:8332`); they are sent as HTTP Basic auth and never logged. `BITCOIN_WALLET` (default `opsecmkt`) must exist; the app loads it if needed. Create it once as shown in the [runbook](testnet-runbook.md#2-create-the-bitcoin-wallet) (inside the compose container `bitcoin-cli` needs `-rpcport=8332 -rpcuser=marketplace`). `BITCOIN_CHAIN` (blank, `testnet4`, `signet`, `regtest`, or `main` for mainnet) must match the node when set; the local node service runs `testnet4` when it is blank. `PAYMENT_CONFIRMATIONS_BTC` defaults to 3; use 1 for regtest.
-- Monero: `MONERO_WALLET_RPC_URL` is monero-wallet-rpc with its `--rpc-login` credentials as userinfo (for example `http://marketplace:PASSWORD@monero-wallet:18083`), sent as HTTP Digest auth. The local `monero-wallet` service requires `MONERO_WALLET_RPC_PASSWORD` (the installer generates it) and no longer runs with `--disable-rpc-login`. The app uses account 0 and opens a wallet file named `opsecmkt` (empty password) if none is open. Create it first with the `create_wallet` RPC ([runbook](testnet-runbook.md#3-create-the-monero-wallet)). `MONERO_RPC_URL` (the daemon) is optional; when set, its network and sync state are checked too. `MONERO_NETWORK` (blank, `stagenet`, `testnet`, or `mainnet`) must match when set. `PAYMENT_CONFIRMATIONS_XMR` defaults to 10.
+- Monero: `MONERO_WALLET_RPC_URL` is monero-wallet-rpc with its `--rpc-login` credentials as userinfo (for example `http://marketplace:PASSWORD@monero-wallet:18083`), sent as HTTP Digest auth. The local `monero-wallet` service requires `MONERO_WALLET_RPC_PASSWORD` (the installer generates it) and no longer runs with `--disable-rpc-login`. The app uses account 0 and opens a wallet file named `opsecmkt` (empty password) if none is open. Create it first with the `create_wallet` RPC ([runbook](testnet-runbook.md#3-create-the-monero-wallet)). `MONERO_RPC_URL` (the daemon) is optional; when set, its network and sync state are checked too. `MONERO_NETWORK` (blank, `stagenet`, `testnet`, or `mainnet`) must match when set. `PAYMENT_CONFIRMATIONS_XMR` defaults to 10. Per-order Monero escrow (off by default, a local fakechain only, custodial) has its own wallet-rpc and settings: [Monero escrow](#monero-escrow-local-fakechain-only).
 - `PAYMENT_POLL_INTERVAL` (default `30s`, from 1s to 1h) sets how often the single background watcher polls wallets and sends queued payouts. Several app instances can share a database; only one polls at a time.
 - `PAYMENT_EXPIRY` (Go duration, default `24h`, from 10m to 720h) is the payment window. An order still awaiting payment that long after its address was issued, with no deposit seen, is cancelled by the watcher and its reserved stock is returned. An order with a deposit still confirming stays open. An underpaid order (every deposit confirmed, together short of the price) is cancelled the same way once its address is older than the window and no deposit has arrived for the window either; its confirmed deposits are refunded to the buyer's saved payout address (blocked until the buyer saves one; below the minimum automatic payout, flagged for staff) and the buyer is notified. The order page states the time from which the order can be cancelled (address issue time or latest deposit, whichever is later, plus the window), which a new deposit moves; changing `PAYMENT_EXPIRY` moves it for every open order. A buyer or vendor who cancels an order awaiting payment after a deposit arrived sees the refund it queues and must confirm it. A buyer can hold at most 3 orders awaiting payment at once. Requesting payment records the listing's current price.
 
@@ -588,7 +588,7 @@ confirmed total reaches the required amount.
 
 Operational limits to accept before enabling payments:
 
-- Deposits for all orders sit in **one pooled custodial wallet** per currency. This is not multisig escrow. Whoever controls the node wallet controls the funds. Per-order escrow is in no release ([per-order escrow](escrow.md)): its Phase 1 (digital orders) and Phase 2 (physical orders) are built and tested on regtest only, behind `ESCROW_BTC`, which is off by default ([Bitcoin escrow](#bitcoin-escrow-regtest-only)). The pooled wallet stays the default payment mode.
+- Deposits for all orders sit in **one pooled custodial wallet** per currency. This is not multisig escrow. Whoever controls the node wallet controls the funds. Per-order escrow is in no release ([per-order escrow](escrow.md)): its Phase 1 (digital orders) and Phase 2 (physical orders) are built and tested on regtest only, behind `ESCROW_BTC`, which is off by default ([Bitcoin escrow](#bitcoin-escrow-regtest-only)), and its Phase 3 (Monero, custodial) on a local fakechain only, behind `ESCROW_XMR`, which is off by default ([Monero escrow](#monero-escrow-local-fakechain-only)). The pooled wallet stays the default payment mode.
 - There is **no commission or fee accounting**. Every payout on both coins, releases included, deducts the network fee from the amount sent (Bitcoin `subtractfeefromamount`; Monero `subtract_fee_from_outputs`), so the recipient bears it and no payout costs the market its fee. When you pay one by hand, send it the same way. Payouts below a minimum are never queued but flagged to moderators: 0.0001 BTC for any Bitcoin payout (a smaller one cannot cover the fee) and 0.001 XMR for any Monero payout (the fee would take too large a share); listings cannot be priced below either minimum, and one priced lower before its rule (Bitcoin before A-99, Monero before A-232) takes no new orders in that currency until its vendor raises the price (an overpayment above such a price on an existing order is held for an administrator's review). The fee-from-amount rule covers the fee's amount only: how many small outputs the pooled Monero wallet accumulates, and what spending them later costs, is not measured (A-221(c)).
 - Payouts are **single-attempt**. A failed or interrupted wallet call is shown on the admin page and never retried automatically, because the transaction may already have been broadcast. After checking the wallet, an administrator can release a held payout, requeue a failed or stuck one, or record one as sent with its transaction ID (password-confirmed and audited). A failure the wallet rejected with a pre-broadcast error (nothing broadcast) requeues with the password alone; requeueing one whose outcome is unknown (timeout, dropped connection, or a Monero error such as -38 that can follow a submission; see the [runbook](testnet-runbook.md#5-recover-a-held-or-failed-payout)) or a stuck send, or releasing a payout held by (or requeueing a failed payout marked by) a restore from backup, also needs an explicit, audited confirmation that the wallet shows no broadcast transaction. A wallet send may take up to 30 seconds (ordinary wallet reads 10 seconds). A shutdown or redeploy lets an in-flight send finish and its outcome be recorded (at most 30 seconds plus 10 to record; even added to the 10-second HTTP drain this stays within the app's 60-second stop grace period).
 - The watcher never cancels an order for non-payment unless it read that order's deposit address from the wallet in the same pass, and it skips a currency entirely while its node is still syncing (Bitcoin `initialblockdownload`; Monero daemon `target_height` above `height`, when `MONERO_RPC_URL` is set) or while the node's tip is below the highest tip it has recorded for that currency (Bitcoin `blocks`; the Monero wallet's `get_height`), as after a node or wallet restarted or restored from an older state. The admin page's last error then reads "Node is behind the highest tip recorded ...". If you deliberately replace a chain with a shorter one (a reset regtest, for example), clear the record so the watcher resumes: `UPDATE payment_status SET tip_height=NULL WHERE currency='BTC';` (or `'XMR'`).
@@ -1034,6 +1034,331 @@ rate confirmed) and `TestEscrowRegtestReserve` (the keys of lost escrows read fr
 reused). The physical-order browser journey (`tests/e2e/escrow-physical-journey.spec.ts`, same command) uses the
 simulated node too and moves the clock through SQL; it is not chain evidence.
 
+#### Monero escrow (local fakechain only)
+
+**Off by default, custodial, a local test chain only, and not released.** [Per-order escrow](escrow.md) Phase 3 lets the
+buyer of an XMR draft on a digital listing with automatic delivery, or on a physical listing with a dispatch window, pay into
+an account of a monthly escrow wallet the market holds, instead of the pooled wallet. **The market holds the keys and can
+move these coins**: unlike [Bitcoin escrow](#bitcoin-escrow-regtest-only) there is no 2-of-3, no key of the buyer's or
+vendor's and nothing for them to sign. It runs only against a local Monero fakechain (`monerod --regtest`, whose coins have no
+value) and refuses anything else; it has not run on stagenet, testnet or mainnet. Never switch it on for a market that takes
+real payments. Every order not paid into a Monero escrow still goes through the pooled wallet. What it does, protects and does
+not protect, and the tests behind it, are in [per-order escrow, Phase 3](escrow.md#phase-3-monero-escrow-on-a-local-fakechain).
+
+You need four things before switching it on: a fakechain daemon, a monero-wallet-rpc of its own, an OpenPGP key whose private
+half stays offline, and a secret. A regtest chain makes a block only when something mines one (the checks use the daemon's
+`generateblocks`); the market never does, so on a fakechain nothing confirms a deposit until you mine.
+
+**Settings.** All are read at startup, from `.env` through Compose. With `ESCROW_XMR` blank or `off` nothing below is read, no
+file is opened, no node is contacted and no setting or Monero escrow table is written: the pooled Monero wallet and everything
+else run as before. (`/admin` still lists, from those tables, any settlement a restore holds and any wallet that was destroyed,
+so a market that ran Monero escrow and turned it off keeps seeing them.)
+
+| Setting | Default | What it takes |
+| --- | --- | --- |
+| `ESCROW_XMR` | blank (off) | `on` or `off`; any other value stops startup. A market configured for mainnet (`MONERO_NETWORK=mainnet` or `BITCOIN_CHAIN=main`) stops startup too. |
+| `ESCROW_XMR_WALLET_RPC_URL` | none; required when on | `http(s)://[user:password@]host:port` of the monero-wallet-rpc that holds only escrow wallets (credentials are answered with HTTP Digest). It must differ from `MONERO_WALLET_RPC_URL` (same scheme, host, port and path, credentials ignored, is refused; the spellings are compared, so `localhost` and `127.0.0.1` differ, and the wallet height check is the backstop): monero-wallet-rpc holds one wallet open at a time. |
+| `ESCROW_XMR_DAEMON_URL` | none; required when on | The same form, for the fakechain `monerod` that wallet-rpc is attached to. |
+| `ESCROW_XMR_FEE_BPS` | `0` | The market fee on a fulfilled order, a whole number of basis points from 0 to 10000 (250 = 2.5%). Each escrow keeps the fee in force at its checkout. There is no form for it on `/admin`. |
+| `ESCROW_XMR_FEE_ADDRESS` | none | Required above 0 basis points, ignored at 0: a standard address or subaddress (95 characters starting with 4 or 8; integrated addresses are refused) whose keys are valid, checked in Go at startup. A fee below 0.001 XMR is added to the vendor's output instead. |
+| `ESCROW_XMR_SLOTS` | `20` | The free accounts the watcher keeps ready on the active wallet, a whole number from 5 to 200. Checkout takes one; none free is a 503 until the watcher makes more. |
+| `ESCROW_XMR_MAX_FEE` | `10000000000` (0.01 XMR) | The highest network fee a settlement may pay, in piconero, a whole number from 1 to `100000000000` (0.1 XMR). A transaction the wallet builds above it is discarded unrelayed and its settlement waits. A young fakechain charged about 0.0018 XMR for a one-input, two-output transfer. |
+| `MONERO_WALLET_SECRET` | none; required when on | At least 32 characters, random (not a placeholder, at least 8 distinct characters, no repeating pattern), and different from `SETUP_TOKEN` and `APP_SECRET_KEY`: `openssl rand -hex 32`. Each wallet's password derives from it. |
+| `ESCROW_XMR_SEED_KEY` | none; required when on | The path, inside the app container, of a file holding one armored OpenPGP public key (at most 64 KiB). A private key block, several keys, a revoked key or one with no encryption key usable now (signing-only, expired) stops startup. |
+| `PAYMENT_CONFIRMATIONS_XMR` | `10` | A whole number from 1 to 1000 (shared with the pooled wallet). A Monero escrow deposit counts from the larger of it and 10. |
+
+`PAYMENT_EXPIRY` (the payment window) and `PAYMENT_POLL_INTERVAL` apply to Monero escrows as to pooled payments. The refusal
+messages name the setting and never quote its value.
+
+**At startup.** A configuration error, an unusable seed key file, a mainnet market, or an escrow node that answers but is
+not what Monero escrow needs stops startup with a message that names the setting (for a node: "refusing to start:
+ESCROW_XMR=on runs only on a local Monero fakechain in this release, and the daemon at ESCROW_XMR_DAEMON_URL is not one …", or
+the same for the wallet-rpc). The daemon must report nettype `fakechain`, a hard fork version of at least 16 and a height below 1,000,000,
+and the escrow wallet-rpc must, after a refresh, be below height 1,000,000 and within 10 blocks of that daemon (so a
+wallet-rpc attached to another daemon is refused). A wallet-rpc with no wallet open is not a failure. A node that cannot be
+reached leaves Monero escrow disabled with `escrow: Monero escrow disabled: the escrow daemon or wallet-rpc could not be
+checked at startup (<class>)` while the market runs; the escrow watcher checks again every `PAYMENT_POLL_INTERVAL` and logs
+`escrow: Monero escrow on (local fakechain only)` when it passes. A line is logged when the state changes. A node that answers
+as another chain after startup disables Monero escrow until the app is restarted. Two more lines mean the pins below have
+refused: `escrow: Monero escrow disabled: MONERO_WALLET_SECRET differs from the secret this database was first started with
+…` (nothing is created or opened) and `escrow: Monero escrow wallet creation stopped: ESCROW_XMR_SEED_KEY is not the seed key
+pinned in this database …` (existing wallets are still read and their orders funded; no wallet is created).
+
+**The dedicated escrow wallet-rpc.** Run a `monero-wallet-rpc` that holds only escrow wallets, attached to the fakechain
+daemon, with its own login and its own volume. The Compose files of this repository have no service for it or for the
+fakechain daemon: the example below is a plain `docker run` on the Compose backend network
+(`<COMPOSE_PROJECT_NAME>_backend`, `opsecmkt_backend` by default), run (with other names and a throwaway password) against a
+fakechain `monerod`, and not checked as a Compose service. Use a long random password without a single quote; put the same credentials in `ESCROW_XMR_WALLET_RPC_URL`
+(`http://marketplace:PASSWORD@opsecmkt-escrow-wallet:18083`).
+
+```sh
+docker run -d --name opsecmkt-escrow-wallet --network opsecmkt_backend --restart unless-stopped \
+  -v opsecmkt_escrow_wallets:/home/monero/wallet \
+  ghcr.io/sethforprivacy/simple-monero-wallet-rpc:v0.18.5.1 \
+  --daemon-address FAKECHAIN_MONEROD_HOST:18081 --trusted-daemon --allow-mismatched-daemon-version \
+  --wallet-dir=/home/monero/wallet --rpc-bind-port=18083 --rpc-login 'marketplace:PASSWORD'
+```
+
+Use the same wallet-rpc release the checks used (0.18.5.1; the image above is the one the pooled Monero service pins).
+The fakechain daemon is started as the header of `scripts/test-escrow-xmr-regtest.sh` starts one (`--regtest
+--keep-fakechain --offline --fixed-difficulty 1`; without `--keep-fakechain`, monerod deletes the fakechain each time it
+starts); it is another daemon than the pooled wallet's `MONERO_RPC_URL`. No wallet needs creating: the escrow
+watcher creates every wallet, named `escrow-YYYYMM-NN`, on its first pass. A wallet-rpc attached to the pooled stagenet or
+testnet daemon is refused by the height check; the URL check refuses only the pooled wallet-rpc's own address.
+
+**The seed key.** Every wallet's 25-word seed is encrypted to this key when the wallet is created, so that the database never
+holds a seed in the clear. Generate it **offline**, on a machine that never runs the market, and keep its private half offline.
+It must never be the canary's operator key: that key can be changed from `/admin`, and taking over an administrator account
+must not be able to redirect future seeds. The app reads only a file, so only the public half goes to the server.
+
+```sh
+gpg --quick-generate-key 'Monero escrow seeds' default default never   # asks for a passphrase; creates a signing key and an encryption subkey
+gpg --list-keys --with-colons 'Monero escrow seeds' | sed -n 's/^fpr:::::::::\([0-9A-F]*\):$/\1/p' | head -n 1
+gpg --armor --export FINGERPRINT > escrow-xmr-seed-key.pub.asc
+```
+
+Choose a key without an expiry: once its encryption key has expired the app refuses to start. Extending an expiry keeps the
+fingerprint and needs no re-pin. Copy only `escrow-xmr-seed-key.pub.asc` to the server and mount it read-only into the app
+container at the path `ESCROW_XMR_SEED_KEY` names, for example in a Compose file you add to `COMPOSE_FILE` (a
+`compose.override.yaml` is not read once `COMPOSE_FILE` is set):
+
+```yaml
+services:
+  app:
+    volumes:
+      - ./escrow-xmr-seed-key.pub.asc:/run/escrow-xmr-seed-key.pub.asc:ro
+```
+
+and `ESCROW_XMR_SEED_KEY=/run/escrow-xmr-seed-key.pub.asc` in `.env`. The app seals each seed once, when it creates or finds
+the wallet, and never re-seals it to a later key.
+
+**The pins.** On its first start with Monero escrow on, the app records two values in `settings` and checks them on every
+start and every watcher pass. `escrow_xmr_secret_verifier` is an HMAC of a fixed label under `MONERO_WALLET_SECRET` (never a
+password): with another secret Monero escrow stays disabled rather than create wallets nobody could open with the old one,
+and **no tool re-keys the existing wallets**, so keep the secret with `.env`
+([Secrets](#secrets-env-and-onion-identities)) and restore the original if it is lost or changed.
+`escrow_xmr_seed_key_fingerprint` is the key's fingerprint: with another key the app still reads existing wallets but creates
+none, until you re-pin it. Replace the key only when the old one must go. Wallets already sealed to the old key stay sealed
+to it, so keep the old private key until every wallet sealed to it has been destroyed. List them, then pin the new key's
+fingerprint (uppercase hex, no spaces; the SQL changes nothing else and the audit row names no key):
+
+<!-- runbook-sql: xmr-seed-key-repin -->
+```sh
+db_sql -v new_fingerprint=NEW_FINGERPRINT_IN_UPPERCASE_HEX <<'SQL'
+SELECT name, state, seed_key_fpr FROM xmr_escrow_wallets WHERE seed_sealed IS NOT NULL ORDER BY id;
+BEGIN;
+UPDATE settings SET value=:'new_fingerprint' WHERE key='escrow_xmr_seed_key_fingerprint';
+INSERT INTO audit_events(user_id,action) VALUES (NULL, 'Monero escrow seed key re-pinned by hand (docs/operator-guide.md)');
+COMMIT;
+SQL
+```
+
+(`db_sql` is the helper of the [runbook](testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts)
+step: `docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d opsecmkt "$@"` with your database name.) Set
+`ESCROW_XMR_SEED_KEY` to the new key's file first and restart the app; the next watcher pass then creates wallets again.
+On a database that has never pinned a key (Monero escrow never started on it) the `UPDATE` reports `UPDATE 0`: the first start pins
+the key it finds.
+
+**The offline seed check.** Do this once after the first wallet is created, and again after a change of key, to prove that a
+seed can be recovered. It uses only the database, the private key and a scratch wallet-rpc that is not the escrow one.
+
+1. Copy one wallet's sealed seed, its primary address and its restore height out of the database:
+
+   ```sh
+   db_sql -X -At -c "SELECT seed_sealed FROM xmr_escrow_wallets WHERE name = 'escrow-YYYYMM-NN'" > seed.asc
+   db_sql -X -At -F ' ' -c "SELECT restore_height, primary_address FROM xmr_escrow_wallets WHERE name = 'escrow-YYYYMM-NN'"
+   ```
+
+2. On the offline machine with the private key: `gpg --decrypt seed.asc` prints the 25 words. Do not paste them anywhere
+   else; delete `seed.asc` and the terminal history afterwards.
+3. Restore them in a scratch wallet (a separate wallet-rpc on the same fakechain, never the escrow wallet-rpc) from that
+   restore height, and compare the `address` it answers with the primary address from step 1; they must be equal (add
+   `--digest -u USER:PASSWORD` to `curl` if the scratch wallet-rpc has a login):
+
+   ```sh
+   curl -s -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":"0","method":"restore_deterministic_wallet","params":{"filename":"seed-check","password":"","seed":"THE 25 WORDS","restore_height":RESTORE_HEIGHT,"language":"English","autosave_current":false}}' http://SCRATCH_WALLET_RPC/json_rpc
+   ```
+
+   Then delete the scratch wallet's files. A wallet restored this way has your own password, not the derived one; to put it
+   back under the escrow wallet-rpc after a loss, use the same call on the escrow wallet-rpc with `"filename"` the
+   wallet's name and `"password"` the derived password, which is the hex HMAC-SHA256 of the name:
+
+   ```sh
+   printf 'opsecmkt xmr escrow wallet\0%s' escrow-YYYYMM-NN | openssl dgst -sha256 -hmac "$MONERO_WALLET_SECRET" -r | cut -d' ' -f1
+   ```
+
+**Backups.** Two things are backed up, and a wallet is lost only if both are lost:
+
+- **The database** holds each wallet's sealed seed, its primary address and every slot, order and settlement. Take a database
+  backup (`scripts/backup.sh`, [Backups and recovery](#backups-and-recovery)) **at least once a day**; nothing in this
+  repository schedules it. That interval is what the 7-day lead assumes (A-403): the watcher creates next month's wallet at least
+  7 days before its month, so that a daily backup holds the wallet's seal before it takes an order. The lead does not apply to
+  a first run, or after the market was down past a month's start: that month's wallet is created and takes orders at once,
+  and if the database and the wallet volume are both lost before the next backup, the wallet and the orders in it are lost.
+- **The escrow wallet volume** holds the wallet files. Back it up at least as often, with the wallet-rpc stopped so the files
+  are consistent (the watcher stores each wallet at the end of its work), encrypted like any secret. With the example above:
+
+  ```sh
+  umask 077
+  mkdir -p backups
+  docker stop opsecmkt-escrow-wallet
+  docker run --rm --network none -v opsecmkt_escrow_wallets:/wallets:ro --entrypoint tar \
+    ghcr.io/sethforprivacy/simple-monero-wallet-rpc:v0.18.5.1 -C /wallets -cf - . | age -r "$AGE_RECIPIENT" -o "backups/escrow-wallets-$(date -u +%Y%m%dT%H%M%SZ).tar.age"
+  docker start opsecmkt-escrow-wallet
+  ```
+
+Check that the file is not empty before you rely on it. While it is stopped, deposits are not read and nothing is built or sent; the watcher carries on when it is back. To restore the
+volume from such a copy into an empty one (set `AGE_IDENTITY` to your age identity file and `backup` to the copy), with the
+wallet-rpc stopped or not yet started:
+
+```sh
+docker volume create opsecmkt_escrow_wallets
+age -d -i "$AGE_IDENTITY" "$backup" | docker run --rm -i --network none --user 0 -v opsecmkt_escrow_wallets:/wallets --entrypoint tar \
+  ghcr.io/sethforprivacy/simple-monero-wallet-rpc:v0.18.5.1 -C /wallets -xf -
+```
+
+Backups keep wallet copies until they expire. A database dump holds sealed seeds and a volume copy holds wallet files, also of
+wallets the market has since destroyed; destruction reaches neither. Decide how long copies live, and delete them with the
+rest of a destroyed wallet's records.
+
+**Restore.** Follow [Backups and recovery](#backups-and-recovery) and the
+[reconciliation procedure](testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts), with the app stopped and
+the `.env` (the same `MONERO_WALLET_SECRET`, `ESCROW_XMR_SEED_KEY`) from the backup set. `scripts/restore.sh` then, for
+Monero escrow: holds every restored settlement that has a stored transaction (built or relayed) until you confirm it on
+`/admin` (below); retires every free account; moves every active or sealed wallet to closing, so that no account of a
+restored wallet, one the restored records lack included, is offered to a new order; asks for the release deadline recheck
+(`escrow_xmr_release_recheck`: on the watcher's first pass after the gate is cleared, every passed deadline of a shipped
+order moves 72 hours later and its buyer is told); and sets `xmr_escrow_sweep_required`, which makes Monero escrow checkout
+answer 503 ("Monero escrow is paused until this market has checked its escrow wallets after restoring its records from a
+backup …"), and creates no wallet or account, until the watcher's **sweep** has run. The sweep needs the escrow wallet-rpc and
+the seed key; it runs on every pass, gate or not, and only a pass that did all of it clears the marker (`escrow: Monero
+escrow's restore sweep is complete; Monero escrow checkout is open again once the restore gate is cleared`). It
+probes for wallets created after the backup and seals each it can open to the seed key as an *orphan* (its funded accounts are
+listed to the administrators, who check them for coins of orders the database lost), records any it cannot open as an orphan
+too, reads every wallet that may hold coins, and gives a wallet older than the database a longer subaddress lookahead and a
+rescan so that deposits to accounts it does not know are seen. Then clear the gate as the runbook describes.
+
+If you restored **only the escrow wallet volume** from an older backup and the database is current, no restore script ran,
+so set the marker yourself before the app starts; the sweep then probes, reads and raises the lookahead as above. Set it
+again **whenever you later restore a missing wallet's file** (from a backup or from its seed): a wallet that would not open
+while the sweep ran counted as checked and got no lookahead, so the sweep must run again once its file is back:
+
+<!-- runbook-sql: xmr-sweep-marker -->
+```sh
+db_sql <<'SQL'
+INSERT INTO settings(key,value) VALUES ('xmr_escrow_sweep_required','true')
+ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
+SQL
+```
+
+A wallet created after that backup is not in the volume: it is marked missing (below) until you restore it from its sealed seed
+(the offline seed check above, with `"filename"` the wallet's name and the derived password), and then the sweep marker must be
+set again: the sweep is the only thing that raises a restored wallet's subaddress lookahead, and the wallet-rpc's default reaches 50
+accounts, so without the sweep a deposit to a later account is not seen (the `Lookahead` leg of the fakechain script shows
+this for account 300). A restore not done by `scripts/restore.sh` or the SQL of [UPGRADING.md, section 6](../UPGRADING.md#6-backups-now-need-the-wallets-too)
+holds nothing.
+
+**Held settlements.** Under *Admin → Payment providers → Monero escrow recovery and retention (fakechain)*, each restored
+settlement with a stored transaction is listed with its order, kind, state and transaction hash. The restored records may
+predate its relay, or a transaction that spent its coins, so check it first in the escrow daemon and the escrow wallet, for
+example with the daemon's own RPC (a daemon started with a login needs `--digest -u USER:PASSWORD`):
+
+```sh
+db_sql -X -At -c "SELECT tx_hash, array_to_string(key_images, ' ') FROM xmr_settlements WHERE id = SETTLEMENT_ID"
+curl -s http://ESCROW_DAEMON/get_transactions -d '{"txs_hashes":["TX_HASH"],"decode_as_json":false}'   # "missed_tx" names the hash when the daemon has no such transaction
+curl -s http://ESCROW_DAEMON/is_key_image_spent -d '{"key_images":["KEY_IMAGE"]}'                      # spent_status: 0 unspent, 1 spent in a block, 2 spent in the pool
+```
+
+then tick that it was not already relayed and that nothing else spent the coins and confirm with your password (and
+authenticator code when enrolled). The market then relays the same stored transaction once on its next pass, under the gate
+too, and never builds it again; the confirmation is audited and noted on the order. Until then the settlement is followed but
+never relayed, whether or not the gate has been cleared. The form exists only while `ESCROW_XMR` is on.
+
+**A failed settlement: the administrator's re-request (A-401).** A settlement is *failed* when the escrow daemon refused its
+stored transaction for good and no other transaction spent its coins; staff are told and the order page says so. Nothing
+rebuilds it automatically. An administrator who is **not** a party to the order may ask on the order page, with their password
+(and authenticator code when enrolled), for it to be built again; the request is audited. On its next pass the watcher
+checks that the stored transaction is in neither the daemon's pool nor its chain and that none of its coins is spent. If one
+is, the request is refused with the reason on the order page and in a notice to you, and may be asked again later. If none is,
+the failed settlement becomes *superseded* and a new one is built from exactly the same coins to exactly the same destinations
+(only the network fee, and so the claimant's output, may differ) and sent; the database refuses any other coins, so at most one
+of the two transactions can ever be mined.
+
+**A set-aside settlement.** A settlement whose build makes the escrow wallet-rpc stop responding twice (monero-wallet-rpc
+0.18.5.1 crashes on some destinations) is set aside and flagged, and the watcher skips it so that others are not held up. Find
+out why the wallet-rpc stops (its container logs), then an administrator who is not a party asks on the order page, with a
+password, for it to be built again. If the wallet-rpc stops twice more, it is set aside again.
+
+**Destruction, and deleting the files.** A wallet whose orders have all closed is retained; 90 days after its last order
+closed, and only when no order of it is open, no settlement of it is live or still followed to 100 confirmations, its balance
+and unlocked balance are zero across all accounts and nothing of it is in the pool, the watcher records that it began
+destroying the wallet, replaces its password with 32 random bytes that are never kept, closes it, wipes its sealed seed from
+the database and records it destroyed (log: `escrow: Monero escrow wallet … destroyed`). Automatic destruction happens only
+when those preconditions hold. If the watcher stops after the new password took effect (a crash, or a restore from a backup
+taken in between), the wallet-rpc refuses that wallet with "Invalid password" and it is recorded destroyed on a later pass,
+unless staff were flagged that it holds something or the restore gate or the sweep marker is set. A database restored from
+a backup taken after the market began destroying a wallet keeps that start: restore such a wallet from its seed only with
+the derived password from the unchanged `MONERO_WALLET_SECRET` (the `openssl` line above), because with a mistyped one it is
+refused alike and recorded destroyed once the gate and the sweep marker clear, and check in a scratch wallet restored from
+the seed (step 3 above) that it holds nothing before you delete the files `/admin` then lists. A retained wallet past its 90
+days that still holds coins (an unclaimed paid account, coins at account 0, a failed settlement) is not destroyed, and staff
+are flagged once. Any other wallet that will not open keeps its sealed seed and is recorded missing: its file gone, or "Invalid
+password" when the market did not begin destroying it (for example a wallet you restored from its seed with a mistyped
+`MONERO_WALLET_SECRET`, another install's file of the same name, or a damaged keys file). A missing wallet past its 90 days is
+listed on `/admin`, where an administrator confirms its destruction (password step-up, audited) once you have checked that its
+file is gone and nothing is owed on it; that is refused while the restore gate or the sweep marker is set. **Do not keep an
+escrow wallet open in another wallet program** (for example `monero-wallet-cli` on the same files): a wallet "opened by another
+wallet program" keeps its state and its accounts, but the market cannot read its deposits or send its settlements until you
+close it there (logged once). **The market cannot reach the wallet volume, so the files stay until you delete them.**
+*Admin → Payment providers → Monero escrow recovery and retention (fakechain)* lists *Destroyed Monero escrow wallets* with
+their two files, `NAME` and `NAME.keys`. Delete each pair from the escrow wallet volume:
+
+```sh
+docker exec opsecmkt-escrow-wallet sh -c 'rm -v -- /home/monero/wallet/escrow-YYYYMM-NN /home/monero/wallet/escrow-YYYYMM-NN.keys'
+```
+
+and delete the copies in your backups when they expire. A deposit sent to a destroyed wallet's address cannot be recovered by
+the market (the order page says so); a destroyed wallet is never opened again.
+
+**What staff see.** Each of these shows staff what needs attention.
+
+- *A refused address at checkout, claim or ship* tells the user at once, with the reason and nothing changed: an integrated
+  address, another network's, keys that are not valid, or an address this market already knows (an escrow, slot or wallet
+  primary address, the fee address, or one used before).
+- *The wallet refuses a settlement's address when it builds* (`destination-refused`): the order is flagged for moderator review
+  with a note naming whose address it was, the deposits are flagged and the settlement waits. A refused vendor claim or buyer
+  refund address is never tried again for that settlement and this build has no tool to change it, so contact the user; the
+  coins stay in the escrow account. A refused fee address is replaced by `ESCROW_XMR_FEE_ADDRESS` once you correct it and restart
+  and the wallet accepts the new one; the order notes that the fee went to the address configured since.
+- *A wallet goes missing* (its file is gone from the volume, or it no longer opens with the derived password): every
+  administrator is notified ("Monero escrow wallet … cannot be opened on the escrow wallet-rpc …"), its free accounts are
+  retired and it takes no order, and its sealed seed is kept. The market tries it again on every pass; once it opens it is
+  closing again, or retained when the market had begun destroying it, to be destroyed once every precondition holds again.
+  Restore its files from a backup of the volume, or restore it from its sealed seed as above, then set the sweep
+  marker again (*Restore*, above) so that the sweep raises its lookahead. Past its 90 days it is listed on `/admin` for an
+  administrator to confirm its destruction, as under *Destruction* above. A file the market did not create that is
+  found under a wallet's name, and does not open with the derived password, is recorded as an orphan, never opened, and
+  announced the same way.
+- *Other flags*, each noted on the order or sent to the administrators once: a retained wallet past its 90 days that still holds
+  coins (it is not destroyed), a deposit with an unlock time (never counted), a
+  deposit the database refused as another order's account, coins at an account no order claimed or at account 0 (which the
+  market never spends), a settlement whose build failed a check (the fee above `ESCROW_XMR_MAX_FEE`, a claimant output below
+  0.001 XMR, a transaction that does not match its plan, an address mismatch) and a settlement spent outside the market.
+
+**Switching it off with orders open.** Setting `ESCROW_XMR` back to `off` moves no coins and closes no order, but it stops the
+Monero escrow watcher: deposits are not read, nothing is built or sent, and each order page says so. Release deadlines are
+applied again once it is on. The coins stay in their accounts.
+
+**Compose.** `compose.yaml` passes these variables from `.env` to the app container, blank in `.env.example` so that Monero
+escrow stays off; it adds no escrow wallet-rpc, no fakechain daemon and no mount for the seed key. Passing the variables was
+checked with `docker compose config` only.
+
+**What was checked.** [Per-order escrow, Phase 3](escrow.md#phase-3-monero-escrow-on-a-local-fakechain) lists each tier: unit and `httptest` tests, Go
+tests with PostgreSQL against a fake wallet-rpc, fourteen legs against a real fakechain `monerod` and `monero-wallet-rpc`
+0.18.5.1 (`scripts/test-escrow-xmr-regtest.sh`, manual, not in CI;
+[runbook](testnet-runbook.md#9-manual-monero-escrow-fakechain-check)), and a simulated-RPC browser journey added in this
+phase. Nothing has run on stagenet, testnet or mainnet, with Monero multisig, or as a deployment.
+
 ### Transparency
 
 `AUDIT_SIGNING_KEY` (64 hex characters, an Ed25519 seed generated by the installer with `openssl rand -hex 32`) enables signed audit exports. It is read only from the environment, never stored in the database; blank or malformed values leave the export visibly unavailable. Changing it changes the public key, so treat it like any long-lived signing key: back it up with `.env` and announce rotations.
@@ -1104,6 +1429,7 @@ second checkout on the same host needs its own `COMPOSE_PROJECT_NAME` (for examp
 | --- | --- | --- | --- |
 | `APP_SECRET_KEY` | `.env` | with `.env` | Derives the CSRF/CAPTCHA key and the key that encrypts TOTP secrets. Restore a database with the key in use when it was dumped; under another key its TOTP secrets cannot be read. Changing it refuses every open form once and makes enrolled TOTP secrets unreadable. On a market running [Bitcoin escrow](#bitcoin-escrow-regtest-only) it also makes every registered escrow key unreadable (`/escrow-key` asks the user to register it again; existing escrows keep their keys, and the same key registered again is active at once) and restarts the check that stops two accounts registering the same key: a key registered before the change is not recognised until its owner registers it again. Rotate only when it is exposed, with the consequences [UPGRADING.md](../UPGRADING.md#replace-a-placeholder-setup_token) describes. An install that predates it has none: its keys still derive from `SETUP_TOKEN` (the startup log says `keys: derived from SETUP_TOKEN (legacy)`); to move to it, set `APP_SECRET_KEY` to exactly the current `SETUP_TOKEN` value, which `./scripts/install.sh upgrade` does ([UPGRADING.md](../UPGRADING.md#app_secret_key-and-stricter-startup-checks)). |
 | `SETUP_TOKEN` | `.env` | with `.env` | Authorizes the first-run `/setup` page only. The installer prints it once at the end of `init`; `./scripts/install.sh setup-token` shows it again (and `--new` reissues it) while setup is pending. The app refuses to start without it until setup is complete, and ignores it afterwards (while it is set, startup logs a hint); `/setup` then answers 403 whatever the token. Once `APP_SECRET_KEY` is set and setup is complete, `status`, `add-mirror` and `upgrade` remove it from `.env`. Without `APP_SECRET_KEY` it is also the legacy key root above: keep it, or copy it to `APP_SECRET_KEY` first; changing it then has every consequence listed for `APP_SECRET_KEY`, escrow keys included. |
+| `MONERO_WALLET_SECRET` (only with [Monero escrow](#monero-escrow-local-fakechain-only)) | `.env` | with `.env` | Every escrow wallet's password derives from it (HMAC-SHA256 with the wallet's name), so no wallet password is stored. It must be its own secret, not `SETUP_TOKEN` or `APP_SECRET_KEY`, so rotating those never locks wallets. A verifier of it is pinned in the database on the first start; with another secret Monero escrow stays disabled and opens or creates no wallet. **No tool re-keys existing wallets**: restore the original secret. Never change it while wallets exist. |
 | `AUDIT_SIGNING_KEY` | `.env` | with `.env` | Signs audit exports ([Transparency](#transparency)). A new key (`openssl rand -hex 32`, then restart the app) is a new public key on `/canary`: announce it. |
 | `POSTGRES_PASSWORD` (internal database) | `.env`, twice: `POSTGRES_PASSWORD` and the password in `DATABASE_URL`; the database keeps its own hash in the `postgres_data` volume | with `.env` | `POSTGRES_PASSWORD` is used only when an empty volume is initialized, so editing it later changes nothing. Rotate in the database first: `docker compose exec db psql -U opsecmkt -d opsecmkt -c '\password opsecmkt'` asks for the new password twice and sends `ALTER ROLE opsecmkt PASSWORD` with it already hashed, so it appears in no command line or server log. Then put it in both places in `.env` and run `docker compose up -d`. A hex password (`openssl rand -hex 24`) needs no escaping in the URL. For an external database, change it on that server and in `DATABASE_URL`. |
 | `BITCOIN_RPC_PASSWORD`, `MONERO_WALLET_RPC_PASSWORD` (local nodes) | `.env`, each repeated in `BITCOIN_RPC_URL` / `MONERO_WALLET_RPC_URL` | with `.env` | Change a password and the same value in its URL together, then `docker compose up -d`. The wallets behind them are separate backups ([runbook](testnet-runbook.md#6-back-up-the-wallets)). |
@@ -1193,7 +1519,7 @@ for script in scripts/install.sh scripts/backup.sh scripts/restore.sh; do bash -
 
 `check` ends with `docker compose config --quiet`, which reads `.env`. `docker compose ps` shows each service's health: the app is healthy once `/healthz` answers `ok` (its healthcheck runs `/app/server -healthcheck` inside the container), and each Tor service once it has written its onion address (the descriptor can take 1–3 more minutes to reach the network). `docker compose up -d --wait` returns when every service is healthy. `docker compose exec app /app/server -status` prints `installed=true|false schema=NNN keyroot=app_secret_key|setup_token` (setup complete, highest applied migration, and whether the app's keys derive from `APP_SECRET_KEY` or, on a legacy install, `SETUP_TOKEN`) and nothing secret. Startup logs show database connection/migration errors (see [Troubleshooting](#troubleshooting)). Review dependencies and rebuild periodically. The Compose examples use official [Go](https://hub.docker.com/_/golang) and [PostgreSQL](https://hub.docker.com/_/postgres) image families; production operators should pin reviewed image digests and plan PostgreSQL major-version upgrades explicitly. Tor is installed at a pinned version from the Tor Project's Debian repository ([Tor image](#tor-image)); the onion-service configuration follows the [Tor Project setup guide](https://community.torproject.org/onion-services/setup/) and adds the [denial-of-service defences](#onion-service-defences).
 
-GitHub Actions repeats the race tests, vet, dependency verification, govulncheck and Compose validation using the Go toolchain pinned in `go.mod` (`toolchain` directive), the same version the Docker image builds with. CI supplies PostgreSQL 17 to the integration tests, which use an isolated schema. Locally set `TEST_DATABASE_URL` to a dedicated test database to include those tests. These checks do not substitute for a live Docker/Tor deployment test.
+GitHub Actions repeats the race tests, vet, dependency verification, govulncheck and Compose validation using the Go toolchain pinned in `go.mod` (`toolchain` directive), the same version the Docker image builds with. CI supplies PostgreSQL 17 to the integration tests, which use an isolated database or schema per test. Locally set `TEST_DATABASE_URL` to a dedicated test database to include those tests. These checks do not substitute for a live Docker/Tor deployment test.
 
 Backup/restore URLs require an explicit host and database. The helper decodes credentials into libpq environment variables so they are not included in process arguments. Standard TLS options are supported; unsupported query options fail closed. Environment variables remain visible to privileged host processes.
 

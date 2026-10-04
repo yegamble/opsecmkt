@@ -344,7 +344,7 @@ func escrowBumpAction(c *actionCtx) (actionResult, error) {
 		if err != nil {
 			return actionResult{}, err
 		}
-		if !o.Escrow {
+		if !o.btcEscrow() {
 			return actionResult{}, errNoOrder
 		}
 		var kind, state, stored string
@@ -454,7 +454,7 @@ func escrowBumpSignAction(c *actionCtx) (actionResult, error) {
 	if err != nil {
 		return actionResult{}, err
 	}
-	if !o.Escrow {
+	if !o.btcEscrow() {
 		return actionResult{}, errNoOrder
 	}
 	party := roleBuyer

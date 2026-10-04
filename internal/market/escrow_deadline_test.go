@@ -676,12 +676,14 @@ func TestEscrowRestoreExtendsDeadline(t *testing.T) {
 // by the shipment (escrow_release.go, from NULL); scripts/restore.sh only asks for the recheck.
 func TestEscrowReleaseAtWriters(t *testing.T) {
 	writes := regexp.MustCompile(`(?i)(release_at|release_recheck)\s*=[^=]`)
-	files, err := filepath.Glob("*.go")
-	if err != nil {
-		t.Fatal(err)
+	// TestMain runs the tests from the repository root.
+	files, err := filepath.Glob("internal/market/*.go")
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no Go files found: %v", err)
 	}
-	scripts, _ := filepath.Glob("../../scripts/*.sh")
-	allowed := map[string]string{"escrow_release.go": "release_at", "escrow_deadline.go": "both"}
+	scripts, _ := filepath.Glob("scripts/*.sh")
+	// The Monero escrow's shipment and recheck (slice X-e) follow the same rules for Monero escrow orders.
+	allowed := map[string]string{"escrow_release.go": "release_at", "escrow_deadline.go": "both", "escrow_xmr_release.go": "release_at", "escrow_xmr_deadline.go": "both"}
 	for _, f := range append(files, scripts...) {
 		if strings.HasSuffix(f, "_test.go") {
 			continue

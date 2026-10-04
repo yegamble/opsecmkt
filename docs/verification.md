@@ -40,6 +40,52 @@ Reading the real-chain rows:
 
 No row exists, so nothing is claimed, for: a public test network (testnet4, signet, stagenet or testnet), a deployed instance, Tor onion reachability, or a release. The only tag is `v0.1.0-alpha.1`, still a draft GitHub release. Monero behaviour when the daemon is killed mid-send is untested (war-room A-45).
 
+## Monero escrow wallet scale, PAYE-E2 (war-room A-429, P3-R12) — 2026-10-04
+
+Local runs on one host, not CI and not public-network evidence: real `monerod` and `monero-wallet-rpc` 0.18.5.1
+(`ghcr.io/sethforprivacy/simple-monerod:v0.18.5.1`, `simple-monero-wallet-rpc:v0.18.5.1`) on a local fakechain, driven
+by `scripts/test-escrow-xmr-payee2.sh` (`TestXMREscrowPAYEE2`) through the app's own adapter and its timeouts. One escrow
+wallet gets 10,000 accounts; 200 chosen at random are funded two per block over 110 blocks while it is closed; then a
+watcher pass runs over 5 copies of that wallet. Reports are gitignored.
+
+The first run, `artifacts/real-chain/paye-e2-2a93cf716406.txt` (run at commit `2a93cf7` by the journey slice), measured
+the wallet as the market then created it (monero-wallet-rpc's default lookahead of 200 addresses per account):
+`create_account` ×10,000 took 71.7 min (median 390 ms per call, rising from 15 ms to 806 ms); the wallet cache was 78.8 MiB;
+peak wallet-rpc memory 429 MB, and 574 MB during the 5-wallet pass; `open_wallet` 1.7 s; `get_accounts` 1.8 s with a
+2.4 MiB reply; a refresh over 1,000 empty blocks 311 ms; a seed restore with `set_subaddress_lookahead` (minor 1) and a
+rescan about 4 s in all, finding all 202 funded accounts; and the 5-wallet watcher pass 27.6 s, against the 10-minute
+pass timeout and the 30 s default poll interval. Verdict PASS, with one finding: the catch-up refresh over the 110 funding
+blocks (200 deposits) took 2.5 min (747 ms per deposit received), longer than the 2-minute bound refresh then had, so
+after downtime with many deposits the watcher's refresh would have timed out on every pass.
+
+Fix (A-429). Refresh got its own 8-minute bound (`xmrWalletRefreshTimeout`), leaving an `open_wallet` room inside the pass.
+A refresh that still times out is not lost: on the same nodes a `rescan_blockchain` whose client gave up after 2 s held a
+following `get_version` for 15.7 s more, so monero-wallet-rpc finishes the call and answers nothing else meanwhile, and the
+next `open_wallet` stores the wallet before opening one; the pass reads nothing from a wallet whose refresh failed
+(`TestXMREscrowRefreshOutlastsSlowTimeout`, `TestXMREscrowRefreshTimeoutCatchUp`, simulated RPC). And each new escrow
+wallet now looks one address ahead per account (`set_subaddress_lookahead` major 50, minor 1, right after
+`create_wallet`; it persists in the keys file, `TestXMREscrowWalletLookaheadMinor`), since an escrow address is always an
+account's address 0. Reduced runs of 2,000 accounts and 200 deposits over 110 blocks, on the same nodes at commit
+`b3d3057` with the change in the working tree (`artifacts/real-chain/paye-e2-b3d305767b11-dirty-lookahead-minor200.txt`
+and `-lookahead-minor1.txt`; the default-lookahead run's report, `paye-e2-b3d305767b11-dirty.txt`, was later overwritten
+by a full-size run of the same name, so its numbers below are copied from that report before it was overwritten; the
+script now adds a reduced size to the report name):
+
+| 2,000 accounts | Default lookahead (no call) | Minor 200 set (`ESCROW_XMR_PAYEE2_LOOKAHEAD_MINOR=200`) | Minor 1 |
+|---|---|---|---|
+| Catch-up refresh, 200 deposits | 20.95 s (104.8 ms per deposit) | 24.22 s (121.1 ms) | 0.70 s (3.5 ms) |
+| `create_account` ×2,000 | 2.1 min (median 54.2 ms) | 2.1 min (median 55.1 ms) | 14.9 s (median 6.8 ms) |
+| Wallet cache | 16.0 MiB | 16.1 MiB | 0.5 MiB |
+| Seed restore finds every funded account | 202 of 202 | 202 of 202 | 202 of 202 |
+
+The full size as the watcher now creates wallets (minor 1), `artifacts/real-chain/paye-e2-b19d406ca6b1.txt` (commit
+`b19d406`, about 4 minutes in all): `create_account` ×10,000 took 1.3 min (median 7.5 ms per call); the wallet cache
+1.0 MiB; `open_wallet` 0.62 s; the catch-up refresh over 110 blocks with 200 deposits 1.03 s (5.1 ms per deposit); a
+refresh over 1,000 empty blocks 302 ms; `get_accounts` 1.9 s with the same 2.4 MiB reply; the seed restore found all 202
+funded accounts; the 5-wallet pass 18.6 s. Verdict PASS, no finding. Peak memory was not measured cleanly in these runs (the wallet-rpc
+container had served the earlier runs; its resident memory stayed near 35 MB). Not measured: more than 10,000 accounts or
+200 deposits a month, another host, and any public network (stagenet repeat: Phase 4).
+
 ## Onion-mirror commands with the installer's `.env` (war-room A-140) — 2026-09-24
 
 Local Compose configuration check, not a running stack: Docker 29.8.0, Compose 5.5.1, a scratch `.env` in the

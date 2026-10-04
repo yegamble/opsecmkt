@@ -105,15 +105,24 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == '__main__':
     # --port moves the pooled-wallet simulator (default 18083). --escrow-port also serves the Bitcoin escrow node
     # (escrow_rpc.py: the escrow adapter's PSBT methods, regtest only) on its own loopback port, for the escrow journey.
+    # --xmr-wallet-port and --xmr-daemon-port also serve the Monero escrow wallet-rpc and its fakechain daemon
+    # (xmr_escrow_rpc.py, SIMULATED: not chain evidence) on their own loopback ports, for the Monero escrow journey.
     import argparse
     import threading
     from http.server import ThreadingHTTPServer
     parser = argparse.ArgumentParser()
     parser.add_argument('--port', type=int, default=18083)
     parser.add_argument('--escrow-port', type=int)
+    parser.add_argument('--xmr-wallet-port', type=int)
+    parser.add_argument('--xmr-daemon-port', type=int)
     args = parser.parse_args()
+    if (args.xmr_wallet_port is None) != (args.xmr_daemon_port is None):
+        parser.error('--xmr-wallet-port and --xmr-daemon-port go together')
     if args.escrow_port:
         import escrow_rpc
         escrow = ThreadingHTTPServer(('127.0.0.1', args.escrow_port), escrow_rpc.make_handler(escrow_rpc.EscrowCore()))
         threading.Thread(target=escrow.serve_forever, daemon=True).start()
+    if args.xmr_wallet_port:
+        import xmr_escrow_rpc
+        xmr_escrow_rpc.serve(args.xmr_wallet_port, args.xmr_daemon_port)
     HTTPServer(('127.0.0.1', args.port), Handler).serve_forever()

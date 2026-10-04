@@ -234,15 +234,8 @@ func TestEscrowRegtestReserve(t *testing.T) {
 	restore := func(last int64, called bool, orders ...string) {
 		t.Helper()
 		for _, o := range orders {
-			for _, q := range []string{
-				"DELETE FROM escrow_pubkeys WHERE escrow_id IN (SELECT id FROM escrows WHERE order_id=$1)",
-				"DELETE FROM escrows WHERE order_id=$1",
-				"UPDATE orders SET state='cancelled' WHERE id=$1",
-			} {
-				if _, err := e.DB.Exec(q, o); err != nil {
-					t.Fatal(err)
-				}
-			}
+			forgetEscrow(t, e.DB, o)
+			agExec(e, "UPDATE orders SET state='cancelled' WHERE id=$1", o)
 		}
 		if _, err := e.DB.Exec("SELECT setval('escrow_market_index',$1,$2)", last, called); err != nil {
 			t.Fatal(err)

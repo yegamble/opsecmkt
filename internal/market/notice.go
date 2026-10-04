@@ -60,6 +60,13 @@ var notices = map[string]struct{ text, section, pages string }{
 	"escrow-fee":           {"Market fee saved. It applies to escrows created from now on; existing escrows keep the fee they started with.", "escrow-fee", "admin"},
 	"escrow-release-days":  {"Release deadline saved. It applies to escrow orders placed from now on; existing orders keep theirs.", "escrow-release-days", "admin"},
 	"escrow-rebroadcast":   {"Rebroadcast confirmed. The market broadcasts the settlement's stored transaction once on its next pass.", "escrow-recovery", "admin"},
+	"escrow-xmr-gone":      {"Destruction confirmed. The wallet's sealed seed was wiped; delete its files from the escrow wallet volume if any are left.", "xmr-escrow-recovery", "admin"},
+	"escrow-xmr-relay":     {"Relay confirmed. The market relays the settlement's stored transaction once on its next pass.", "xmr-escrow-recovery", "admin"},
+	"escrow-xmr-created":   {"Monero escrow created. Send the amount shown below to its escrow address.", "", ""},
+	"escrow-xmr-claim":     {"Claim requested. The market builds the release from this order's escrow account and sends it; nothing is sent yet.", "", ""},
+	"escrow-xmr-confirmed": {"Receipt confirmed. The order is completed; the market builds the release of the coins in this escrow to the vendor and sends it.", "", ""},
+	"escrow-xmr-retry":     {"Recorded. The market builds this settlement on its next pass; reload this page in a minute.", "", ""},
+	"escrow-xmr-rerequest": {"Re-request recorded. On its next pass the market checks that the stored transaction can no longer be mined, then builds the settlement again; reload this page in a minute.", "", ""},
 	"escrow-recover":       {"Asked. The market checks this escrow on its next pass and returns what it finds to your refund address by a stray refund; reload this page in a minute.", "", ""},
 
 	// Messages, orders and disputes

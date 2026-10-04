@@ -4,7 +4,7 @@
 {{define "admin-payments"}}<section class="panel admin-payments">
 <h2 id="payment-providers">Payment providers</h2>
 {{if eq (index .Settings "payments_recovery_required") "true"}}<div class="alert" role="status"><strong>Outbound payments paused for restore reconciliation.</strong> All payouts, including newly queued ones, stay unsent until the operator reconciles restored orders and payments with the wallets and clears the recovery lock. See the recovery runbook; releasing an individual payout does not clear this lock.</div>{{end}}
-<p>{{if $.LiveNetwork}}<strong>Mainnet: deposits and payouts move real funds.</strong> The server was configured for mainnet (<code>BITCOIN_CHAIN=main</code>, <code>MONERO_NETWORK=mainnet</code>) and disables a provider whose node later reports another network.{{else}}Test networks. The server refuses to start against mainnet unless the operator configures it (<code>BITCOIN_CHAIN=main</code>, <code>MONERO_NETWORK=mainnet</code>) and disables a provider whose node later reports another network.{{end}} An unreachable node or a wallet that is not loaded does not stop the site: that currency shows as unavailable, payment requests for it are refused, and the check is retried every poll. {{if $.EscrowOn}}Deposits of pooled orders sit in one pooled wallet per currency. Bitcoin escrow orders (regtest only) never pay into that wallet: each one's coins stay in its own 2-of-3 escrow until a settlement spends them. Apart from the escrow market fee below, there is no commission or fee accounting.{{else}}Deposits sit in one pooled wallet per currency. There is no commission or fee accounting.{{end}}</p>{{with $.EscrowFee}}
+<p>{{if $.LiveNetwork}}<strong>Mainnet: deposits and payouts move real funds.</strong> The server was configured for mainnet (<code>BITCOIN_CHAIN=main</code>, <code>MONERO_NETWORK=mainnet</code>) and disables a provider whose node later reports another network.{{else}}Test networks. The server refuses to start against mainnet unless the operator configures it (<code>BITCOIN_CHAIN=main</code>, <code>MONERO_NETWORK=mainnet</code>) and disables a provider whose node later reports another network.{{end}} An unreachable node or a wallet that is not loaded does not stop the site: that currency shows as unavailable, payment requests for it are refused, and the check is retried every poll. {{if or $.EscrowOn $.XMREscrowOn}}Deposits of pooled orders sit in one pooled wallet per currency. {{if $.EscrowOn}}Bitcoin escrow orders (regtest only) never pay into that wallet: each one's coins stay in its own 2-of-3 escrow until a settlement spends them. {{end}}{{if $.XMREscrowOn}}Monero escrow orders (local fakechain only) never pay into that wallet either: each one's coins are {{$.XMRCustody}}. {{end}}{{if $.EscrowOn}}Apart from the escrow market fee below{{if $.XMREscrowOn}} and the Monero escrow fee set in the server's configuration (<code>ESCROW_XMR_FEE_BPS</code>){{end}}{{else}}Apart from the Monero escrow fee set in the server's configuration (<code>ESCROW_XMR_FEE_BPS</code>){{end}}, there is no commission or fee accounting.{{else}}Deposits sit in one pooled wallet per currency. There is no commission or fee accounting.{{end}}</p>{{with $.EscrowFee}}
 <h3 id="escrow-fee">Bitcoin escrow market fee (regtest)</h3>{{with $.NoticeIn "escrow-fee"}}
 <div class="alert" role="status">{{.}}</div>{{end}}
 <p>In force: <strong>{{.Bps}} basis points ({{.Percent}}% of the price)</strong>{{if .Address}}, paid to <span class="mono">{{.Address}}</span>{{end}}. Each escrow keeps the fee and destination in force at its checkout; a change applies only to later escrows. The fee is an output of the vendor's claim (below 0.0001 BTC it is added to the vendor's output). One fixed destination address is allowed only because escrow runs on regtest: a mainnet market will need a watch-only descriptor that gives a fresh fee address for every settlement, which this release does not have.</p>{{if .Available}}
@@ -83,6 +83,79 @@
 </table>
 </div>{{else}}
 <p>None found.</p>{{end}}{{end}}
+{{with $.XMREscrowRecovery}}<h3 id="xmr-escrow-recovery">Monero escrow recovery and retention (fakechain)</h3>{{with $.NoticeIn "xmr-escrow-recovery"}}
+<div class="alert" role="status">{{.}}</div>{{end}}{{if .Sweep}}
+<div class="alert" role="status"><strong>Monero escrow checkout is paused after a restore from backup</strong> until the Monero escrow watcher has looked for escrow wallets created after the backup and checked every escrow wallet; it reopens by itself once that check completes and the recovery lock is cleared.</div>{{end}}
+<p>A restore from backup holds every restored Monero escrow settlement with a stored transaction: the restored records may predate its relay, or a transaction that spent its coins. Check each one in the escrow daemon (<code>/get_transactions</code> of its transaction, <code>/is_key_image_spent</code> of its key images) and in the escrow wallet, then confirm it: the market relays the same stored transaction once, under the recovery lock too, and never builds it again. Each confirmation needs your password and is audited.</p>{{if not .On}}
+<p class="alert" role="status"><strong>Monero escrow is off on this market (ESCROW_XMR), so no relay can be confirmed</strong> and the Monero escrow watcher does not run.</p>{{end}}{{if .Held}}
+<div class="table-wrap" tabindex="0" role="region" aria-labelledby="xmr-escrow-held-heading">
+<table>
+<caption id="xmr-escrow-held-heading">Monero escrow settlements waiting for a relay check</caption>
+<thead>
+<tr>
+<th scope="col">Order</th>
+<th scope="col">Settlement</th>
+<th scope="col">Transaction</th>
+<th scope="col">Action</th>
+</tr>
+</thead>
+<tbody>{{range .Held}}<tr>
+<td class="mono">{{.Short}}</td>
+<td>{{.Kind}} ({{.State}})</td>
+<td class="mono">{{.TxHash}}</td>
+<td>{{if .Confirmed}}Confirmed: the market relays it on its next pass{{else if not $.XMREscrowRecovery.On}}Turn Monero escrow on to confirm{{else}}<form class="stack" method="post" action="/admin/escrow-xmr-rebroadcast">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="settlement_id" value="{{.ID}}">
+<label class="check"><input type="checkbox" name="not_sent" value="confirmed" required> I checked the escrow daemon and the escrow wallet: this transaction was not already relayed, and no other transaction spent the escrow's coins</label>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
+<button type="submit">Relay once</button>
+</form>{{end}}</td>
+</tr>{{end}}</tbody>
+</table>
+</div>{{else}}
+<p>No Monero escrow settlement is waiting for a relay check.</p>{{end}}
+<h4 id="xmr-escrow-missing">Missing Monero escrow wallets past their destruction date</h4>
+<p>A wallet the escrow wallet-rpc cannot open is missing, and the market keeps its sealed seed: its file may be on a volume not yet restored, and it may still hold coins. Once you have checked that its files are gone from the escrow wallet volume and its backups, and that nothing in it is owed, confirm its destruction: its sealed seed is wiped and it can never be recovered. You cannot confirm a wallet holding an order of yours. Each confirmation needs your password and is audited.</p>{{if .Missing}}
+<div class="table-wrap" tabindex="0" role="region" aria-labelledby="xmr-escrow-missing">
+<table>
+<thead>
+<tr>
+<th scope="col">Wallet</th>
+<th scope="col">Destruction date</th>
+<th scope="col">Action</th>
+</tr>
+</thead>
+<tbody>{{range .Missing}}<tr>
+<td class="mono">{{.Name}}</td>
+<td>{{.DestroyAfter}}</td>
+<td>{{if not $.XMREscrowRecovery.On}}Turn Monero escrow on to confirm{{else}}<form class="stack" method="post" action="/admin/escrow-xmr-destroyed">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="wallet_id" value="{{.ID}}">
+<label class="check"><input type="checkbox" name="gone" value="confirmed" required> I checked the escrow wallet volume and its backups: this wallet's files are gone, and nothing in it is owed to anyone</label>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
+<button type="submit">Confirm destruction</button>
+</form>{{end}}</td>
+</tr>{{end}}</tbody>
+</table>
+</div>{{else}}
+<p>None.</p>{{end}}
+<h4 id="xmr-escrow-destroyed">Destroyed Monero escrow wallets</h4>
+<p>Each escrow wallet is destroyed 90 days after its last order closed, once nothing is left in it: its password is replaced by one never kept and its sealed seed wiped, so the market can never open it again. The market cannot reach the escrow wallet volume: delete each wallet's two files, <code>NAME</code> and <code>NAME.keys</code>, from it yourself. Backups of that volume keep copies until they expire.</p>{{if .Destroyed}}
+<div class="table-wrap" tabindex="0" role="region" aria-labelledby="xmr-escrow-destroyed">
+<table>
+<thead>
+<tr>
+<th scope="col">Files to delete</th>
+<th scope="col">Destroyed</th>
+</tr>
+</thead>
+<tbody>{{range .Destroyed}}<tr>
+<td class="mono">{{.Name}} {{.Name}}.keys</td>
+<td>{{.DestroyedAt}}</td>
+</tr>{{end}}</tbody>
+</table>
+</div>{{else}}
+<p>None.</p>{{end}}{{end}}
 <h3 id="payment-intake">New payment addresses</h3>{{with $.NoticeIn "payment-intake"}}
 <div class="alert" role="status">{{.}}</div>{{end}}
 <p>Enable or pause Bitcoin and Monero separately. Pausing prevents new payment addresses; existing deposit addresses, payment confirmation, refunds and payouts continue. Wallet RPC connections must be provisioned on the server first. Changes require your password and are audited.</p>

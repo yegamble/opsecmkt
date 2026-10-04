@@ -37,7 +37,7 @@ type Order struct {
 	ID, ProductID, Title, Buyer, Vendor, Currency, Amount, Status, Created string
 	State, Kind, BuyerID, VendorID, Updated                                string
 	// Escrow: settled through a per-order escrow instead of the pooled wallet (settleTerminal, escrowOnly): the order
-	// has an escrows row (WR-escrow Phase 1, escrow_create.go).
+	// has an escrows row (WR-escrow Phase 1, escrow_create.go), of either coin (btcEscrow).
 	Escrow bool
 }
 type Message struct {
@@ -225,7 +225,17 @@ type PageData struct {
 	// EscrowOn: ESCROW_BTC=on (every page); EscrowAvailable: escrow passed its checks. EscrowOrders: vendor desk, the
 	// viewer's escrow orders that may hold coins (QA31-2): the site-wide notices never say no funds are held beside them.
 	EscrowOn, EscrowAvailable bool
-	EscrowOrders              int
+	// DispatchOn: ESCROW_BTC or ESCROW_XMR on (every page): the listing forms offer the dispatch window, which both coins'
+	// physical escrow orders snapshot (physicalEscrowOff).
+	DispatchOn   bool
+	EscrowOrders int
+	// XMREscrowOn: ESCROW_XMR=on (every page), the site-wide notices describe Monero escrow (A-423); XMREscrowAvailable:
+	// it is ready to take a checkout (xmrEscrowReady). XMRCustody is xmrCustody (every page), so a template never
+	// retypes the owner's sentence (A-402); XMREscrowOrders: vendor desk, the viewer's Monero escrow orders that may hold
+	// coins, counted like EscrowOrders.
+	XMREscrowOn, XMREscrowAvailable bool
+	XMRCustody                      string
+	XMREscrowOrders                 int
 	// EscrowKey: /escrow-key and the /account status row, the viewer's Bitcoin escrow key; nil while ESCROW_BTC is off
 	// (escrow_account.go, WR-escrow Phase 1).
 	EscrowKey *EscrowKeyView
@@ -235,10 +245,17 @@ type PageData struct {
 	EscrowReleaseDays *EscrowReleaseDaysView
 	// EscrowRecovery: /admin, the Bitcoin escrow restore gate, held settlements and orphan addresses (escrow_recovery.go)
 	EscrowRecovery *EscrowRecoveryView
+	// XMREscrowRecovery: /admin, Monero escrow settlements held by a restore and destroyed wallets' files
+	// (escrow_xmr_restore.go)
+	XMREscrowRecovery *XMREscrowRecoveryView
 	// Escrow: order page of an escrow order, its escrow (escrow_order.go); EscrowCheckout: order page of the buyer's
 	// BTC draft on a listing that takes escrow, while ESCROW_BTC is on. Both nil otherwise.
 	Escrow         *EscrowOrderView
 	EscrowCheckout *EscrowCheckoutView
+	// XMREscrow: order page of a Monero escrow order, its escrow (escrow_xmr_order.go); XMREscrowCheckout: order page of
+	// the buyer's XMR draft on a listing that takes escrow, while ESCROW_XMR is on. Both nil otherwise.
+	XMREscrow         *XMREscrowOrderView
+	XMREscrowCheckout *XMREscrowCheckoutView
 
 	// P6 Transparency
 	Canary      *CanaryView
@@ -318,10 +335,11 @@ type Transition struct {
 // awaiting payment that has received a deposit, resolve)
 // pays now, by payoutBasis (A-161, A-122). Seen is that amount in atomic units, sent back as amount_seen;
 // Confirm labels the required confirmation checkbox. Resolve form only: Release and Refund state each outcome
-// (amount, recipient, difference from the price, the recipient's payout state).
+// (amount, recipient, difference from the price, the recipient's payout state); Escrow, when set, how a Monero escrow
+// order's decision is paid (xmrDisputePreview).
 type PayoutPreview struct {
-	Seen                     int64
-	Confirm, Release, Refund string
+	Seen                             int64
+	Confirm, Release, Refund, Escrow string
 }
 
 // OverpaidView says what completing an overpaid order does with the excess, from the split the complete form
@@ -523,10 +541,11 @@ type EscrowDeadlineView struct {
 }
 
 // DeadlineBanner is one /orders banner (escrow_deadline.go): an escrow order of the viewer's whose release deadline At
-// (UTC) is less than 72 hours away, Left as computed when the page loaded; Buyer when the viewer is its buyer.
+// (UTC) is less than 72 hours away, Left as computed when the page loaded; Buyer when the viewer is its buyer; XMR for a
+// Monero escrow order (escrow_xmr_deadline.go).
 type DeadlineBanner struct {
 	OrderID, Short, At, Left string
-	Buyer                    bool
+	Buyer, XMR               bool
 }
 
 // EscrowSettlementView is an escrow order's settlement on its page (escrow_settle.go): its state in honest words, its
@@ -592,6 +611,35 @@ type EscrowCheckoutView struct {
 	Reason   string
 	KeyLink  bool
 	Physical bool // the listing is shipped: the offer says the order stays open after funding (WR-escrow Phase 2)
+}
+
+// XMREscrowOrderView is a Monero escrow order's escrow on its page (escrow_xmr_order.go, WR-escrow Phase 3): amounts in
+// XMR; RefundAddress set for the buyer only; Custody the custody sentence (A-402).
+type XMREscrowOrderView struct {
+	Available, RestorePaused                    bool
+	Custody, Address, RefundAddress             string
+	Required, Confirmed, Unconfirmed, Remaining string
+	Threshold                                   int64
+	Open, NeedsTopUp                            bool
+	CancelAfter, Status, NextStep, Fee          string
+	Deposits                                    []PaymentDeposit
+	Unread                                      string // set when nothing is read at the address: shown for the Confirmed and Unconfirmed figures
+	// Slice X-e (xmrReleaseView): a shipped order's release deadline, and the forms the viewer may use: the vendor's
+	// Mark shipped and claim, the buyer's Confirm receipt.
+	// Off: ESCROW_XMR is off, so none of those forms is offered.
+	Deadline                  *EscrowDeadlineView
+	Ship, Confirm, Claim, Off bool
+	// Settlements: its settlements, newest first (escrow_xmr_settle_view.go)
+	Settlements []*XMRSettlementView
+	// Unrecoverable: set once the wallet that held its account was destroyed (ES-8, escrow_xmr_retain.go)
+	Unrecoverable string
+}
+
+// XMREscrowCheckoutView offers Monero escrow checkout on an XMR draft (escrow_xmr_create.go): Reason says why it cannot
+// be used now.
+type XMREscrowCheckoutView struct {
+	Reason, Custody string
+	Physical        bool
 }
 
 // EscrowKeyView is the viewer's Bitcoin escrow key (escrow_account.go). Origin is the viewer's own key origin

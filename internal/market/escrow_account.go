@@ -43,6 +43,10 @@ func init() {
 // escrowOff is ESCROW_BTC off: the escrow page and actions do not exist.
 func escrowOff(a *App) bool { return !a.escrowConfigured }
 
+// physicalEscrowOff is escrowOff for what both coins' physical escrow orders use: the release deadline length and a
+// listing's dispatch window (P2-R3, P2-R5, P3-R7). Either ESCROW_BTC or ESCROW_XMR on offers them.
+func physicalEscrowOff(a *App) bool { return !a.escrowConfigured && a.escrowXMR == nil }
+
 var (
 	errEscrowDown      = fail(409, "Bitcoin escrow is unavailable on this market right now: the operator must fix its Bitcoin node or arbiter wallet. Nothing was changed.")
 	errKeyAck          = &keyRefusal{"This key is not on the standard multisig path m/48h/1h/<account>h/2h. Register it only if the wallet (or wallet account) it comes from is used only for this market: tick the box and send the form again. Nothing was saved."}

@@ -244,14 +244,21 @@ func resolveAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, staleResolveForm(c, replyRole, resolution)
 		}
 		// An escrow order's decision moves coins from its escrow: only an administrator makes it (ES-4, SEC-8).
-		var escrow bool
-		if err = c.Tx.QueryRowContext(c.Ctx(), "SELECT EXISTS(SELECT 1 FROM escrows WHERE order_id=$1)", orderID).Scan(&escrow); err != nil {
+		var coin string
+		if err = c.Tx.QueryRowContext(c.Ctx(), "SELECT COALESCE((SELECT coin FROM escrows WHERE order_id=$1),'')", orderID).Scan(&coin); err != nil {
 			return actionResult{}, err
 		}
-		if escrow && c.User.Role != "admin" {
+		switch {
+		case coin == "XMR" && c.User.Role != "admin":
+			return actionResult{}, errXMREscrowResolveAdmin
+		case coin != "" && c.User.Role != "admin":
 			return actionResult{}, errEscrowResolveAdmin
 		}
-		if _, err = c.A.transition(withPayoutSeen(c.Ctx(), orderID, seen), c.Tx, orderID, stateDisputed, stateResolved, c.User, status); err != nil {
+		_, err = c.A.transition(withPayoutSeen(c.Ctx(), orderID, seen), c.Tx, orderID, stateDisputed, stateResolved, c.User, status)
+		if err == errReleaseFinal && coin == "XMR" {
+			return actionResult{}, errXMRReleaseFinal // escrowSettleTerminal: the release requested at shipment has its transaction
+		}
+		if err != nil {
 			return actionResult{}, err
 		}
 		return actionResult{Redirect: "/moderator", Notice: "dispute-resolved", Audit: "Resolved dispute on order " + shortID(orderID) + " (outcome: " + outcome + ")"}, nil

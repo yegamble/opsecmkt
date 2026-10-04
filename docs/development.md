@@ -132,16 +132,20 @@ go test -race -count=1 -timeout 30m ./...
 ```
 
 Tests create isolated schemas, apply migrations, create their own fixture users,
-listings and orders, then remove their schemas. `TestSettlementClashGuide` and
+listings and orders, then remove their schemas. When the test role has the CREATEDB privilege,
+`internal/market` migrates one template database per test process (`opsecmkt_tmpl_<pid>_<random>`) and
+gives each database test a copy of it (`opsecmkt_copy_<random>`), which is several times faster; without
+CREATEDB it logs one line and migrates a schema per test in `TEST_DATABASE_URL`'s database instead.
+`TestSettlementClashGuide` and
 `TestReturnWithoutReleaseGuide` run UPGRADING.md's SQL blocks through `psql`, so
 install the PostgreSQL client on the host; without `psql` they skip (on CI they fail). Use a dedicated database even
 though schemas are isolated. Use different databases for simultaneous Go test
 processes: the watcher uses a database-wide advisory lock. The `cmd/server` tests
 create a database of their own beside it (`opsecmkt_cmd_server_<random>`, dropped
 when they finish; without the CREATEDB privilege they use `TEST_DATABASE_URL`'s
-database and log that). A run that panics, times out or is killed leaves that
-database behind: drop leftover `opsecmkt_cmd_server_*` databases that have no
-connections. With a database the
+database and log that). A run that panics, times out or is killed leaves these
+databases behind: drop leftover `opsecmkt_cmd_server_*`, `opsecmkt_tmpl_*` and
+`opsecmkt_copy_*` databases that have no connections (no later run uses them). With a database the
 `internal/market` race run takes about 7–10 minutes, close to `go test`'s default
 10-minute timeout, so the command sets `-timeout 30m`. Fake RPC tests cover payment behavior; they do not
 prove live node integration. The manual Bitcoin check is
@@ -234,10 +238,69 @@ Use a fresh database for every run. It owns loopback ports 18090–18092, writes
 state), and is not part of `npm run test:e2e`. `python3 -m unittest tests.test_escrow_rpc_fixture`
 checks the simulator alone.
 
+### Monero escrow journey (simulated escrow wallet-rpc)
+
+`tests/e2e/escrow-xmr-journey.spec.ts` drives Monero escrow (local fakechain only,
+`ESCROW_XMR=on`; WR-escrow Phase 3) through the real server and PostgreSQL in Chromium at 320 px
+with JavaScript disabled, every form by keyboard alone: checkout with a refund address and the
+custody sentence, funding that waits at 9 confirmations and completes a digital order at 10, the
+vendor's claim with a password step-up (built, sent and confirmed, with its outputs and network
+fee), an underpaid order cancelled and refunded, a physical order shipped with a claim address and
+released by Confirm receipt, a release at the deadline, a dispute decided for the buyer (the resolve
+form states that the decision is final), the administrator's re-request of a failed settlement and
+retry of a set-aside one, the restore-paused and sweep states (set through SQL), and the order page
+with Monero escrow off, read on a second server that runs with `ESCROW_XMR` off on the same
+database. The retained and destroyed wallet states come with escrow Phase 3's retention slice.
+
+The escrow wallet-rpc and its daemon are **simulated**: `tests/e2e/fixtures/xmr_escrow_rpc.py`,
+served by `wallet-rpc.py --xmr-wallet-port --xmr-daemon-port`. Its keys and addresses are real
+Monero keys and addresses (prime-order ed25519 points, derived as Monero derives them), and its
+replies have monero-wallet-rpc 0.18.5.1's shapes and error codes: `xmr_record_shapes.py` recorded
+them from the real nodes into `xmr_rpc_shapes_0.18.5.1.json`, and
+`python3 -m unittest tests.test_xmr_escrow_rpc_fixture` runs the same recorder against the
+simulator and requires the same file. `TestXMREscrowFixtureAdapter` drives the app's own adapter
+against it. No chain exists and no coins move, so this is not chain evidence; real fakechain legs are
+`scripts/test-escrow-xmr-regtest.sh`, and `scripts/test-escrow-xmr-payee2.sh` measures how one
+monthly escrow wallet scales (PAYE-E2).
+
+```sh
+docker exec opsecmkt-dev-db createdb -U opsecmkt opsecmkt_escrow_xmr_e2e
+export E2E_ESCROW_XMR_DATABASE_URL='postgres://opsecmkt:local-dev-only@127.0.0.1:55432/opsecmkt_escrow_xmr_e2e?sslmode=disable'
+npm run test:e2e:escrow-xmr
+```
+
+Use a fresh database for every run; the test moves clocks and restore settings through SQL with
+`psql` on `PATH`. It owns loopback ports 18093–18097, writes `playwright-escrow-xmr-report/` and
+`test-results-escrow-xmr/` (one screenshot per order-page state), and is not part of
+`npm run test:e2e`.
+
 For actual local Bitcoin Core and Monero nodes, mined test coins and real wallet
 transactions, follow [isolated real-chain browser testing](local-chain-testing.md)
 and run `npm run test:e2e:chain` with `E2E_CHAIN_DATABASE_URL` set to a fresh database. This uses Bitcoin regtest and an offline Monero
 stagenet fork; it does not claim public-testnet validation.
+
+### Monero escrow on a local fakechain (real monerod and monero-wallet-rpc)
+
+Monero escrow (WR-escrow Phase 3, `ESCROW_XMR=on`, custodial, off by default; see [escrow](escrow.md#phase-3-monero-escrow-on-a-local-fakechain))
+has fourteen legs that run the real server code (a Go test per leg, with its own App and Monero escrow watcher) against a real
+`monerod --regtest` and three real `monero-wallet-rpc` 0.18.5.1 instances: `scripts/test-escrow-xmr-regtest.sh`. It is manual
+and not part of CI, refuses any daemon that is not a fakechain with hard fork 16 or later before any wallet call, and needs a
+disposable PostgreSQL database in `TEST_DATABASE_URL` (the legs create their own databases from it, as the other database
+tests do). The header of the script has the exact `docker` commands; the
+[runbook](testnet-runbook.md#9-manual-monero-escrow-fakechain-check) repeats them. The loopback ports it uses by default:
+
+| Port | What |
+| --- | --- |
+| 28381 | the fakechain `monerod` (`ESCROW_XMR_REGTEST_DAEMON_URL`) |
+| 28382 | the escrow wallet-rpc the App uses (`ESCROW_XMR_REGTEST_WALLET_URL`) |
+| 28383 | a funder wallet-rpc standing in for the buyer's wallet (`ESCROW_XMR_REGTEST_FUNDER_URL`) |
+| 28384 | a wallet-rpc used only to restore a sealed seed (`ESCROW_XMR_REGTEST_RESTORE_URL`) |
+
+The wallet-rpcs listen without RPC login on `127.0.0.1` only, and the transcript is written to `ESCROW_XMR_REGTEST_LOG`
+(default `artifacts/real-chain/test-escrow-xmr-regtest-<UTC time>.log`, gitignored). The Go tests of the other tiers need
+none of this: without these variables the `Regtest` legs skip, and `go test ./internal/market/` runs the unit and
+fake-wallet-rpc tests (the latter with `TEST_DATABASE_URL`). A simulated-RPC browser journey for Monero escrow is added in
+this phase; its command is recorded when it merges, and it is not chain evidence.
 
 ### Scripts, operations and CI
 

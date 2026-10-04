@@ -73,7 +73,9 @@ age -d -i "$AGE_IDENTITY" "$1" | client pg_restore --single-transaction --exit-o
 # final transaction is held the same way, in settlement_bumps.send_error, until that confirmation of its settlement.
 # A physical escrow order's release deadline may have passed in the restored records: the escrow_release_recheck setting
 # asks the escrow watcher's next pass to move every passed deadline of a shipped order to 72 hours later and tell its
-# buyer (recheckReleaseDeadlines in internal/market/escrow_deadline.go, the only code that moves a deadline).
+# buyer (recheckReleaseDeadlines in internal/market/escrow_deadline.go, the only code that moves a deadline);
+# escrow_xmr_release_recheck asks the same of the Monero escrow watcher for Monero escrow orders
+# (xmrRecheckReleaseDeadlines in internal/market/escrow_xmr_deadline.go), on its first pass after the restore gate is cleared.
 # The restored records also lack every escrow created after the backup, so their child keys could be handed out again
 # inside other escrow addresses (A-366): escrow_sweep_required makes escrow checkout wait until the escrow watcher's
 # orphan sweep has reserved the keys of every address its watch-only wallet holds with no escrow row (reconcileOrphans
@@ -81,6 +83,15 @@ age -d -i "$AGE_IDENTITY" "$1" | client pg_restore --single-transaction --exit-o
 # block moves each account's next escrow child index (escrow_index_floors) and the market's escrow key index 50 past the
 # restored records (a database from before migration 083, development builds only, gets no margin). The block between
 # its markers is plain SQL: internal/market/escrow_reserve_test.go runs it as written here.
+# Monero escrow (ESCROW_XMR, local fakechain only; migrations 084 and 085) is held the same way: every restored Monero
+# settlement with a stored transaction (built or relayed) gets the same marker in xmr_settlements.send_error, so the
+# Monero escrow watcher relays it again only after an administrator confirms it on the admin page; every free slot is
+# retired and every active or sealed escrow wallet moves to closing, so no account of a restored wallet (one the
+# restored records lack included) is ever offered to a new order; and xmr_escrow_sweep_required makes Monero escrow
+# checkout wait until the watcher's sweep has found the escrow wallets created after the backup and checked every wallet
+# (escrow_xmr_restore.go). The block between its xmr-escrow-restore markers is plain SQL: internal/market/
+# escrow_xmr_retain_test.go runs it as written here. A database from before migration 085 (development builds only)
+# gets none of it.
 # The same SQL runs in the same way for both destinations.
 if ! counts=$(client psql -X -q -A -t -v ON_ERROR_STOP=1 --single-transaction <<'SQL'
 SELECT to_regclass('settings') IS NOT NULL AS has_settings \gset
@@ -89,7 +100,11 @@ INSERT INTO settings(key,value) VALUES ('payments_recovery_required','true')
 ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
 INSERT INTO settings(key,value) VALUES ('escrow_release_recheck','true')
 ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
+INSERT INTO settings(key,value) VALUES ('escrow_xmr_release_recheck','true')
+ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
 INSERT INTO settings(key,value) VALUES ('escrow_sweep_required','true')
+ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
+INSERT INTO settings(key,value) VALUES ('xmr_escrow_sweep_required','true')
 ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
 \endif
 SELECT to_regclass('escrow_index_floors') IS NOT NULL AS has_floors \gset
@@ -142,12 +157,27 @@ SELECT count(*) AS bump_held FROM bump_held \gset
 \else
 SELECT 0 AS bump_held \gset
 \endif
+SELECT EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid=to_regclass('xmr_settlements') AND attname='send_error' AND NOT attisdropped) AS has_xmr \gset
+\if :has_xmr
+-- xmr-escrow-restore: begin
+WITH held AS (
+  UPDATE xmr_settlements SET send_error='Restored from backup: check that this escrow settlement''s transaction was not already sent or replaced, then confirm its rebroadcast on the admin page.', updated=now()
+  WHERE state IN ('built','relayed') RETURNING 1),
+retired AS (UPDATE xmr_escrow_slots SET state='retired', updated=now() WHERE state='free' RETURNING 1),
+closed AS (UPDATE xmr_escrow_wallets SET state='closing', updated=now() WHERE state IN ('active','sealed') RETURNING 1)
+SELECT (SELECT count(*) FROM held) AS xmr_held, (SELECT count(*) FROM retired) AS xmr_retired, (SELECT count(*) FROM closed) AS xmr_closed
+-- xmr-escrow-restore: end
+\gset
+\else
+SELECT 0 AS xmr_held, 0 AS xmr_retired, 0 AS xmr_closed \gset
+\endif
 SELECT :'has_settings'::boolean AND to_regclass('audit_events') IS NOT NULL AS has_audit \gset
 \if :has_audit
 INSERT INTO audit_events(user_id,action) VALUES (NULL, 'Payout recovery gate set by scripts/restore.sh: held ' || :'held'
   || ' restored payout(s) and marked ' || :'failed' || ' restored failed payout(s) as possibly sent'
   || CASE WHEN :'escrow_held'::int > 0 THEN '; held ' || :'escrow_held' || ' restored escrow settlement(s) with a stored transaction until an administrator confirms each rebroadcast' ELSE '' END
   || CASE WHEN :'bump_held'::int > 0 THEN '; held ' || :'bump_held' || ' restored escrow fee bump(s) with a stored transaction until an administrator confirms its settlement''s rebroadcast' ELSE '' END
+  || CASE WHEN :'xmr_held'::int > 0 THEN '; held ' || :'xmr_held' || ' restored Monero escrow settlement(s) with a stored transaction until an administrator confirms each relay' ELSE '' END
   || '; all outbound payouts paused until an administrator clears the gate');
 \endif
 SELECT to_regclass('images') IS NOT NULL AS has_images \gset
@@ -156,13 +186,14 @@ SELECT count(*) AS images FROM images \gset
 \else
 SELECT 0 AS images \gset
 \endif
-SELECT :'held' || ' ' || :'failed' || ' ' || :'images' || ' ' || :'escrow_held' || ' ' || :'bump_held' || ' ' || :'has_floors';
+SELECT :'held' || ' ' || :'failed' || ' ' || :'images' || ' ' || :'escrow_held' || ' ' || :'bump_held' || ' ' || :'has_floors'
+  || ' ' || :'has_xmr' || ' ' || :'xmr_held' || ' ' || :'xmr_retired' || ' ' || :'xmr_closed';
 SQL
 ); then
   echo 'The database was restored, but payout recovery protection FAILED. Do not start the application on it; apply the recovery gate and holds by hand first (UPGRADING.md, section 6).' >&2
   exit 1
 fi
-read -r held failed images escrow_held bump_held floors <<< "$counts"
+read -r held failed images escrow_held bump_held floors xmr xmr_held xmr_retired xmr_closed <<< "$counts"
 printf 'Held %s restored payout(s); release each from the admin page only after checking the wallet.\n' "$held"
 if [[ ${escrow_held:-0} != 0 ]]; then
   printf 'Held %s restored Bitcoin escrow settlement(s) with a stored transaction; confirm each rebroadcast from the admin page only after checking the chain and the escrow watch-only wallet.\n' "$escrow_held"
@@ -170,12 +201,18 @@ fi
 if [[ ${bump_held:-0} != 0 ]]; then
   printf "Held %s restored Bitcoin escrow fee bump(s) with a stored transaction; confirming its settlement's rebroadcast on the admin page releases each.\n" "$bump_held"
 fi
+if [[ ${xmr_held:-0} != 0 ]]; then
+  printf 'Held %s restored Monero escrow settlement(s) with a stored transaction; confirm each relay from the admin page only after checking the escrow daemon and the escrow wallet.\n' "$xmr_held"
+fi
 printf 'Marked %s restored failed payout(s) as possibly sent after the backup; requeue each from the admin page only after checking the wallet.\n' "$failed"
 echo 'Bitcoin escrow (if used): release deadlines that passed in the restored records move to 72 hours after the escrow watcher'"'"'s next pass, and each buyer is told.'
 if [[ ${floors:-f} == t ]]; then
   echo 'Bitcoin escrow (if used): escrow checkout waits until the escrow watcher has reserved the keys of the escrows its watch-only wallet holds and the restored records lack, and every next escrow key index moves 50 past the restored records.'
 else
   echo 'Bitcoin escrow (if used): escrow checkout waits until the escrow watcher has reserved the keys of the escrows its watch-only wallet holds and the restored records lack; this database predates migration 083, so escrow key indices get no margin (docs/testnet-runbook.md).'
+fi
+if [[ ${xmr:-f} == t ]]; then
+  printf 'Monero escrow (if used): retired %s free escrow account(s) and moved %s escrow wallet(s) to closing, so no restored wallet takes an order again; Monero escrow checkout waits until the Monero escrow watcher has found the escrow wallets created after the backup and checked every wallet.\n' "$xmr_retired" "$xmr_closed"
 fi
 echo 'Application databases now require payout recovery reconciliation. All outbound payouts remain paused until the recovery gate is explicitly cleared (see docs/testnet-runbook.md).'
 # A-190 (ruling D4): staff takedowns and owners' removals delete an image's row, so the restored database has every

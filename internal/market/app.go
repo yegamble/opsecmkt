@@ -58,6 +58,7 @@ type App struct {
 	escrowCfg        escrowConfig                    // the ESCROW_BTC settings read at startup, for the escrow watcher's retries
 	escrowStartState string                          // the escrow state line logged at startup (escrowRetry starts from it)
 	escrow           atomic.Pointer[escrowBTC]       // the Bitcoin escrow adapter once ESCROW_BTC=on passed its checks, at startup or on a watcher retry (A-316); nil = no escrow; never cleared once set
+	escrowXMR        *escrowXMR                      // Monero escrow while ESCROW_XMR=on (escrow_xmr_config.go), ready or not; nil = off; set once in New
 	scanner          *imageScanner                   // clamd client for uploads (clamd.go); nil = Disabled
 	storageLimit     int64                           // IMAGE_STORAGE_LIMIT_MB in bytes (uploads.go); 0 = the default
 	stop             context.CancelFunc
@@ -166,6 +167,12 @@ func New(ctx context.Context, preview bool) (*App, error) {
 	escrowCtx, cancelEscrow := context.WithTimeout(ctx, paymentStartupTimeout)
 	defer cancelEscrow()
 	if err = a.initEscrow(escrowCtx); err != nil {
+		a.closeDB()
+		return nil, err
+	}
+	xmrCtx, cancelXMR := context.WithTimeout(ctx, paymentStartupTimeout)
+	defer cancelXMR()
+	if err = a.initEscrowXMR(xmrCtx); err != nil {
 		a.closeDB()
 		return nil, err
 	}

@@ -1,0 +1,115 @@
+{{/* WR-escrow Phase 3 (escrow_xmr_order.go, escrow_xmr_create.go; slice X-e: escrow_xmr_release.go, escrow_xmr_deadline.go). The Monero escrow panel of a Monero escrow order, with its release deadline and the Mark shipped, Confirm receipt and claim forms, and the Monero escrow checkout offer on an XMR draft. The panel is shown for every Monero escrow order, with ESCROW_XMR off too; the checkout offer only with it on. Custody copy: owner decision O-2 (A-402). The copy claims only fakechain-verified behaviour. */}}
+{{define "order-xmr-escrow"}}{{with .XMREscrow}}<h2>Monero escrow <span class="badge testnet">FAKECHAIN</span></h2>
+<p class="alert" role="note"><strong>Local test chain only.</strong> Monero escrow on this market runs on a Monero fakechain, a local test chain, and has not been verified on any public network; its coins have no value. The coins in this escrow are {{.Custody}}. They leave it only by a transaction the market builds and sends: the release to the vendor, a refund to the buyer's refund address, a dispute decision or the return of coins sent after the order closed.</p>{{if .Off}}
+<p class="alert error" role="status"><strong>Monero escrow is switched off on this market.</strong> The operator has turned it off, so until it is switched on again nothing in this order moves through the escrow: deposits to it are not read, the order cannot be marked shipped, receipt cannot be confirmed, the escrowed coins cannot be claimed and nothing is sent, and the release deadline is applied only once it is on again. Coins in this escrow, and coins sent to it, stay there.</p>{{else if not .Available}}
+<p class="alert error" role="status">Monero escrow is unavailable on this market right now, so deposits to this escrow are not being read and no escrow transaction is built or sent. Coins sent to it stay in the escrow; they are recorded once the operator has fixed the escrow wallet. Marking the order shipped, confirming receipt, a claim, a dispute and the release deadline still apply.</p>{{end}}{{with .Unrecoverable}}
+<p class="alert error" role="status"><strong>Do not send anything to this escrow address.</strong> {{.}}</p>{{end}}{{if .RestorePaused}}
+<p class="alert" role="status"><strong>Paused after a restore from backup.</strong> The market restored its records from a backup and is reconciling them with its escrow wallets: until the operator has finished, it builds and sends no escrow transaction. Deposits to this escrow are still watched.</p>{{end}}
+{{if .Open}}<p class="help">{{if .NeedsTopUp}}Send <strong>{{.Remaining}} XMR</strong> to this escrow address. If you already made a partial payment, top up only this remaining amount to the same address.{{else}}The full price has been seen. Do not send another payment; wait for confirmation.{{end}}{{if .Available}} If nothing has been received by {{.CancelAfter}}, the order is cancelled.{{end}} A deposit counts once it has {{.Threshold}} confirmations; a transfer with an unlock time never counts.</p>{{end}}
+<div class="payment-address">
+<span class="badge testnet">Escrow address</span>
+<p class="mono">{{.Address}}</p>
+</div>
+<dl class="key-values payment-figures">
+<div>
+<dt>Required</dt>
+<dd>{{.Required}} XMR <span class="badge testnet">FAKECHAIN</span></dd>
+</div>
+<div>
+<dt>Confirmed (at least {{.Threshold}} confirmations)</dt>
+<dd>{{with .Unread}}{{.}}{{else}}{{.Confirmed}} XMR{{end}}</dd>
+</div>
+<div>
+<dt>Unconfirmed</dt>
+<dd>{{with .Unread}}{{.}}{{else}}{{.Unconfirmed}} XMR{{end}}</dd>
+</div>{{if .Open}}
+<div>
+<dt>Remaining to send</dt>
+<dd>{{.Remaining}} XMR</dd>
+</div>{{end}}
+<div>
+<dt>Escrow status</dt>
+<dd>{{.Status}}</dd>
+</div>{{with .RefundAddress}}
+<div>
+<dt>Your refund address (fixed for this order)</dt>
+<dd class="mono">{{.}}</dd>
+</div>{{end}}{{with .Fee}}
+<div>
+<dt>Market fee</dt>
+<dd>{{.}}</dd>
+</div>{{end}}
+</dl>{{with .Deadline}}
+<section class="escrow-deadline" id="xmr-escrow-deadline" aria-labelledby="xmr-escrow-deadline-heading">
+<h3 id="xmr-escrow-deadline-heading">Release deadline</h3>
+<p><strong>{{.At}}</strong> — {{if .Due}}passed: the release is due{{else}}{{.Left}}{{end}}</p>
+<p class="help">{{if not .Due}}The time left was computed when this page loaded; reload the page to update it. {{end}}{{if .Rechecked}}This deadline was moved after the market restored its records from a backup. {{end}}If the buyer has neither confirmed receipt nor opened a dispute by then, the order completes at that time and the market releases the coins in this escrow to the vendor. Opening a dispute cancels the deadline: an administrator then decides the order. Once the deadline has passed, a dispute can no longer be opened.</p>
+</section>{{end}}{{with .NextStep}}
+<p role="status">{{.}}</p>{{end}}{{if .Ship}}
+<section class="order-action" id="xmr-escrow-ship" aria-labelledby="xmr-escrow-ship-heading">
+<h3 id="xmr-escrow-ship-heading">Mark shipped</h3>
+<p class="help" id="xmr-escrow-ship-help">Once you have sent the goods, give a fresh Monero address from your own wallet (a standard address or subaddress, 95 characters), used for nothing else. Marking the order shipped requests the release to you of the coins in this escrow{{if .Fee}}, less the market fee,{{end}} less the network fee, paid to this address; any amount paid above the price goes back to the buyer's refund address. Nothing is built or sent before the buyer confirms receipt or the release deadline passes. The address cannot be changed afterwards; integrated addresses and addresses this market already used are refused.</p>
+<form class="stack" method="post" action="/escrow-xmr/ship">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="order_id" value="{{$.Order.ID}}">
+<label>Claim address<input name="address" required minlength="95" maxlength="110" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="xmr-escrow-ship-help">
+</label>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
+<button class="primary" type="submit">Mark shipped</button>
+</form>
+</section>{{end}}{{if .Confirm}}
+<section class="order-action" id="xmr-escrow-confirm" aria-labelledby="xmr-escrow-confirm-heading">
+<h3 id="xmr-escrow-confirm-heading">Confirm receipt</h3>
+<p class="help" id="xmr-escrow-confirm-help">Confirm receipt only once the goods have arrived. Confirming receipt completes the order and releases the coins in this escrow to the vendor: the market builds the release to the address the vendor gave and sends it. This cannot be undone, and the order can then no longer be disputed. If the goods did not arrive, open a dispute instead.</p>
+<form class="stack" method="post" action="/escrow-xmr/confirm" aria-describedby="xmr-escrow-confirm-help">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="order_id" value="{{$.Order.ID}}">
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
+<button class="primary" type="submit">Confirm receipt</button>
+</form>
+</section>{{end}}{{if .Claim}}
+<section class="order-action escrow-claim" id="xmr-escrow-claim" aria-labelledby="xmr-escrow-claim-heading">
+<h3 id="xmr-escrow-claim-heading">Claim the escrowed coins</h3>
+<p class="help" id="xmr-escrow-claim-help">Give a fresh Monero address from your own wallet (a standard address or subaddress, 95 characters), used for nothing else. The market builds a transaction from this order's escrow account paying it the coins in this escrow{{if .Fee}}, less the market fee,{{end}} less the network fee, and sends it; any amount paid above the price goes back to the buyer's refund address. The address cannot be changed once the claim is requested; integrated addresses and addresses this market already used are refused.</p>
+<form class="stack" method="post" action="/escrow-xmr/claim">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="order_id" value="{{$.Order.ID}}">
+<label>Claim address<input name="address" required minlength="95" maxlength="110" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="xmr-escrow-claim-help">
+</label>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
+<button class="primary" type="submit">Request the claim</button>
+</form>
+</section>{{end}}
+{{template "order-xmr-settlement" $}}
+{{if .Deposits}}<h3 id="xmr-escrow-deposits-heading">Deposits to this escrow</h3>
+<div class="table-wrap payment-deposits" tabindex="0" role="region" aria-labelledby="xmr-escrow-deposits-heading">
+<table>
+<thead>
+<tr>
+<th scope="col">Transaction</th>
+<th scope="col">Amount</th>
+<th scope="col">Confirmations</th>
+<th scope="col">Counted</th>
+</tr>
+</thead>
+<tbody>{{range .Deposits}}<tr>
+<td class="mono">{{.TxID}}</td>
+<td>{{.Amount}} XMR</td>
+<td>{{if lt .Confirmations 0}}Conflicted{{else}}{{.Confirmations}}{{end}}</td>
+<td>{{.State}}</td>
+</tr>{{end}}</tbody>
+</table>
+</div>{{end}}{{end}}{{end}}
+{{define "order-xmr-escrow-checkout"}}{{with .XMREscrowCheckout}}<section class="order-action escrow-checkout" aria-labelledby="xmr-escrow-checkout-heading">
+<h3 id="xmr-escrow-checkout-heading">Or pay into a Monero escrow (local test chain only)</h3>
+<p class="help">Instead of the market's pooled wallet, pay into a Monero escrow: the coins are {{.Custody}}. {{if .Physical}}This listing is shipped by the vendor, so the order stays open after the escrow is funded until the goods are sent and the coins are released.{{else}}This listing delivers its content automatically, so the order completes as soon as the escrow is funded.{{end}} Monero escrow on this market runs on a local test chain (a Monero fakechain) only.</p>{{if .Reason}}
+<p class="order-unavailable" role="note"><strong>Unavailable.</strong> {{.Reason}}</p>{{else}}
+<form class="stack" method="post" action="/orders/escrow-xmr">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="order_id" value="{{$.Order.ID}}">
+<label>Refund address<input name="refund_address" required minlength="95" maxlength="110" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="xmr-escrow-refund-help">
+</label>
+<span class="help" id="xmr-escrow-refund-help">A Monero standard address or subaddress from your own wallet (95 characters, starting with 4 or 8 on this test chain), used for nothing else. A refund of this escrow is paid there; it is fixed for this order and cannot be changed. Integrated addresses and addresses this market already used are refused.</span>
+<button class="primary" type="submit">Pay into a Monero escrow</button>
+</form>{{end}}
+</section>{{end}}{{end}}

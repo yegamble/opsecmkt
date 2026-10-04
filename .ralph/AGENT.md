@@ -16,7 +16,8 @@ values into logs or reports.
 - Documentation/config-only changes: validate examples, local links, JSON and
   shell syntax; test hook control flow if changed. Do not claim unrun CI gates.
 
-Database tests create and clean isolated schemas. Concurrent test processes must
+Database tests copy a migrated template into a per-test database and drop it afterwards (the role needs CREATEDB;
+without it they fall back to isolated schemas). Concurrent test processes must
 use separate databases because watcher advisory locks are database-wide. Browser database setup needs a
 fresh database on each run and leaves fixtures behind. Preview is read-only and
 never seeds PostgreSQL. Never use a real deployment database for any test.

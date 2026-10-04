@@ -9,14 +9,12 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// withDatabaseTimeZone sets the test database's default TimeZone (as an operator's host PostgreSQL might have
-// it) for connections opened from now on and restores the previous database-level setting on cleanup.
+// withDatabaseTimeZone sets the default TimeZone of the test's own database (DATABASE_URL, from newTestApp), as an
+// operator's host PostgreSQL might have it, for connections opened from now on and restores the previous
+// database-level setting on cleanup.
 func withDatabaseTimeZone(t *testing.T, zone string) {
 	t.Helper()
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set TEST_DATABASE_URL for isolated PostgreSQL integration tests")
-	}
+	dsn := os.Getenv("DATABASE_URL")
 	admin, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatal(err)
@@ -55,8 +53,9 @@ func withDatabaseTimeZone(t *testing.T, zone string) {
 // A-82: rendered times must not reveal the database server's zone (and so the operator's UTC offset). The app
 // pins TimeZone=UTC on every connection and labels displayed times " UTC".
 func TestDisplayedTimesAreUTCWhateverTheDatabaseZone(t *testing.T) {
-	withDatabaseTimeZone(t, "Pacific/Chatham") // UTC+12:45 or +13:45: never equal to UTC wall-clock time
 	e := newTestApp(t)
+	withDatabaseTimeZone(t, "Pacific/Chatham") // UTC+12:45 or +13:45: never equal to UTC wall-clock time
+	e.restart()                                // the App's connections open under the database's new zone
 	var zone string
 	if err := e.DB.QueryRow("SHOW timezone").Scan(&zone); err != nil || zone != "UTC" {
 		t.Errorf("app connection TimeZone=%q err=%v, want UTC", zone, err)
