@@ -673,7 +673,11 @@ has run on a public test network. Never switch it on for a market that takes rea
 - `PAYMENT_CONFIRMATIONS_BTC` (default 3), `PAYMENT_EXPIRY` and `PAYMENT_POLL_INTERVAL` apply to escrows as to pooled
   Bitcoin payments. An escrow order that has received nothing when its payment window ends is cancelled. One that is
   underpaid (every deposit confirmed, short of the price, and no top-up for a whole window) is cancelled too, as a
-  pooled order is, and its refund requested; the buyer is told. A top-up within the window still completes it.
+  pooled order is, and its refund requested; the buyer is told. A top-up within the window still completes it. A
+  deposit Core reports as conflicted (negative confirmations), or no longer lists, does not count, so it does not keep
+  the order open; if it confirms after the order was cancelled and no refund spends it, it is returned by a stray
+  refund (*Stray refunds* below; A-428), except on an order whose refund failed because the escrow's coins were too
+  few: there it stays in the escrow and is not returned automatically (see *Stray refunds*; A-435).
 - **Fingerprint pin.** At the first start with escrow on, the app reads the arbiter wallet's master key fingerprint
   (from a fresh change address, with `getrawchangeaddress` and `getaddressinfo`) and pins it in the database
   (`settings` key `escrow_btc_arbiter_fingerprint`). If a later start finds another fingerprint, for example a
@@ -907,14 +911,29 @@ broadcast.
   settlement is signed by the market (or both parties), broadcast, confirmed or spent outside the market, the
   decision is fixed (409).
 - *Stray refunds.* Escrows stay imported in the watch-only wallet with no age limit. Coins first recorded at an escrow
-  after its order closed, and deposits a bounded build left out, go back to the buyer's refund address by a *stray
-  refund*: requested by the escrow watcher once they confirm, built, signed by either party and co-signed like any
+  after its order closed, deposits a bounded build left out, and a deposit that did not count when its order was
+  cancelled (conflicted, or no longer listed) and has confirmed since, when no refund spends it (flagged once: an
+  order note, the buyer and staff told, and the order page reads "Cancelled; a deposit to this escrow did not count
+  for the order …"; A-428), go back to the buyer's refund address by a *stray refund*: requested by the escrow watcher once they confirm, built, signed by either party and co-signed like any
   settlement; one is in progress per order at a time and a later deposit gets the next one. The buyer of a closed
   escrow order can ask on the order page (*Recover coins at this escrow*, with their password): the next pass reads
   that escrow whatever its age, so this also covers an escrow cancelled while Bitcoin escrow was unavailable, and
   requests the stray refund, or tells the buyer it found nothing. A daily check reads every escrow (the first one 24
   hours after escrow first runs on the database; `settings` key `escrow_btc_stray_check`), one
   `listreceivedbyaddress` per 200 escrows plus one `gettransaction` per deposit transaction.
+  A stray refund whose coins are too few to pay the network fee and an output of at least 0.0001 BTC fails once
+  ("not built", a note and a notice to both parties). No other is requested while the coins it could spend are worth
+  no more than then (a deposit gaining confirmations changes nothing); a further deposit, once confirmed, makes them
+  more and the next pass tries again. Meanwhile the order page says the coins are held at the escrow address because
+  they are too few to return after the network fee (A-434).
+  Lowering `ESCROW_BTC_FEE_RATE` below the rate that failed, or the buyer's *Recover coins at this escrow* (one build
+  per request, whatever the coins are worth), tries again; if that fails too it is noted and told like the first.
+  Not returned automatically (A-435): a deposit that did not count (conflicted, or no longer listed) on a cancelled
+  order whose refund failed because the escrow's coins were too few. It is not left out or flagged and staff are not
+  told; the order page lists it as a confirmed deposit, its status still points to the refund, whose line says the
+  coins stay in the escrow, and the buyer's *Recover coins at this escrow* reports that no coins were found. The
+  market cannot move it on its own (it holds one of the three keys): the buyer and the vendor can move the escrow's
+  coins together from their own wallets, as the refund's note says.
 
 **Physical orders (Phase 2).** Everything above applies to physical listings too, with these additions. All of it is
 regtest only, behind `ESCROW_BTC`, and tested as [per-order escrow](escrow.md#phase-2-bitcoin-escrow-for-physical-orders-on-regtest)
@@ -1020,8 +1039,12 @@ broadcast once after the administrator's confirmation; one transaction funds two
 its own output; ten deposits at 100 sat/vB exceed the fee cap, so nothing is built until the rate is lowered; and a
 restored database never re-issues an escrow address (A-359): an escrow created after a backup is lost by a restore simulated in SQL,
 escrow checkout answers 503 while the restore gate is set, and once it is clear the same buyer and vendor get a fresh
-address, because the real watch-only wallet still holds the lost one; the lost escrow is listed as an orphan. In
-every leg the app runs inside the Go test against the real node, not as the server binary. A browser journey
+address, because the real watch-only wallet still holds the lost one; the lost escrow is listed as an orphan. Its
+A-428 leg (`TestEscrowRegtestConflicted`): a deposit replaced by a conflicting transaction that is mined (Core's
+`gettransaction` reports it with -1 confirmations and `listreceivedbyaddress` no longer lists it) does not count, so
+the order is cancelled unpaid at the end of its window; once `invalidateblock` removes the replacement's block and the
+deposit is mined after all, it is flagged once and returned by a stray refund the buyer's wallet signs, broadcast and
+confirmed to the refund address. In every leg the app runs inside the Go test against the real node, not as the server binary. A browser journey
 (`npm run test:e2e:escrow`, [development](development.md)) drives the escrow forms by keyboard in Chromium at 320 px
 with JavaScript off against the real server and a simulated escrow node; it is not chain evidence. Nothing about
 escrow has run on a public test network or mainnet, and the escrow pages have not been run in Firefox or WebKit.

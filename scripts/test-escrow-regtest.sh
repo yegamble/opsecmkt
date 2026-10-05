@@ -96,13 +96,23 @@
 # scripts/restore.sh's own margin SQL and the sweep, the next escrow's indices are at or above the floors (market at
 # least 50 past the backup point) and it shares no key with any lost escrow.
 #
+# A-428 leg (a deposit that did not count when its order was cancelled, TestEscrowRegtestConflicted): a regtest wallet
+# pays an escrow and the watcher records the deposit unconfirmed; the payer replaces it with a transaction spending the
+# same inputs to an address of its own, which is mined, so Core reports the deposit conflicted (the leg logs
+# gettransaction's confirmations on the watch-only wallet and whether listreceivedbyaddress still lists it) and the
+# ledger row goes negative. The payment window ends (the clock moved in SQL): the order is cancelled unpaid with no
+# refund. invalidateblock takes the replacement's block out of the chain, the original deposit is sent again
+# (prioritisetransaction lets it replace the replacement in the mempool) and mined to 3 confirmations: the deposit is
+# left out and flagged once (an order note, the buyer and staff told), and a stray refund to the refund address pinned
+# at checkout is requested, signed by the buyer's own wallet, co-signed, broadcast and confirmed (gettxout).
+#
 # Ruled Phase 1 legs and where they run: release (Settlement, Cosign: claim), refund (Settlement, Cosign), dispute
 # (Cosign), comma injection refused (Gate), NONE paste refused (PracticeSign, Settlement), forged market slot refused
 # (Gate), conflicting outcome refused (Gate), spent-outpoint build refused (Gate), restart mid-send rebroadcasts the
 # same tx (Cosign: refund), reorg + double-spend flagged (Recovery), high index via keypoolrefill (Cosign: claim at
 # index 2501), restore gate + reconciliation (Gate; Recovery: co-spend and orphan), two escrows never mixed (Gate), fee
 # cap (Gate); also A-339, both-signed and stray refund (Cosign), A-344 and a plain reorg (Recovery), A-356 and A-359
-# (Gate).
+# (Gate); A-428, a deposit conflicted at an unpaid cancellation and mined afterwards (Conflicted).
 #
 # Needs a regtest node with two RPC users: an operator user with full rights (sets up the wallets, standing in
 # for the buyer's own node) and the app's user restricted by rpcwhitelist exactly as docs/operator-guide.md
@@ -148,12 +158,12 @@ log="${ESCROW_REGTEST_LOG:-artifacts/real-chain/test-escrow-regtest-$(date -u +%
 mkdir -p "$(dirname "$log")"
 echo "Bitcoin escrow regtest check; transcript: $log"
 set +e
-go test -count=1 -timeout 15m -run '^TestEscrowRegtest(PracticeSign|Funding|Settlement|Cosign|Recovery|Gate|Bump|Physical|Deadline|Reserve)$' -v ./internal/market/ 2>&1 | tee "$log"
+go test -count=1 -timeout 15m -run '^TestEscrowRegtest(PracticeSign|Funding|Settlement|Cosign|Recovery|Gate|Bump|Physical|Deadline|Reserve|Conflicted)$' -v ./internal/market/ 2>&1 | tee "$log"
 status=${PIPESTATUS[0]}
 set -e
 # Each leg is reported from its own go test result line, so one failing leg never makes another read as failed.
 failed=0
-for leg in TestEscrowRegtestPracticeSign TestEscrowRegtestFunding TestEscrowRegtestSettlement TestEscrowRegtestCosign TestEscrowRegtestRecovery TestEscrowRegtestGate TestEscrowRegtestBump TestEscrowRegtestPhysical TestEscrowRegtestDeadline TestEscrowRegtestReserve; do
+for leg in TestEscrowRegtestPracticeSign TestEscrowRegtestFunding TestEscrowRegtestSettlement TestEscrowRegtestCosign TestEscrowRegtestRecovery TestEscrowRegtestGate TestEscrowRegtestBump TestEscrowRegtestPhysical TestEscrowRegtestDeadline TestEscrowRegtestReserve TestEscrowRegtestConflicted; do
   if grep -q -- "--- PASS: $leg " "$log"; then
     echo "PASS: $leg"
   elif grep -q -- "--- FAIL: $leg " "$log"; then
@@ -171,4 +181,4 @@ if [[ $status -ne 0 || $failed -ne 0 ]]; then
   echo "FAILED: go test exited $status; see $log" >&2
   exit 1
 fi
-echo "PASS: practice signing, escrow creation and funding, settlement building and party signing, co-signing, broadcast and confirmation, recovery and reconciliation, the Phase 1 gate's remaining adversarial legs, a same-recipient fee bump, a physical order's release signed by the buyer and the vendor with no arbiter signature, one released at its deadline with the vendor's signature co-signed by the market, and no escrow key handed out again after a restore, on regtest; transcript in $log"
+echo "PASS: practice signing, escrow creation and funding, settlement building and party signing, co-signing, broadcast and confirmation, recovery and reconciliation, the Phase 1 gate's remaining adversarial legs, a same-recipient fee bump, a physical order's release signed by the buyer and the vendor with no arbiter signature, one released at its deadline with the vendor's signature co-signed by the market, no escrow key handed out again after a restore, and a deposit conflicted at an unpaid cancellation and mined afterwards returned by a stray refund, on regtest; transcript in $log"

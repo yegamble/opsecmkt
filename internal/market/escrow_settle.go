@@ -474,9 +474,16 @@ func (a *App) buildSettlement(ctx context.Context, e *escrowBTC, id int64) error
 	}
 	unconfirmed := slices.ContainsFunc(ins, func(in settleInput) bool { return in.Confirmations < e.confirmations })
 	var left []settleInput
+	// could is the value of every deposit it could spend (for a stray refund, all of strayEligibleSQL's, also beyond
+	// the 50 it spends), recorded with the fee rate if it fails too-small: strayHeldSQL compares them with what it
+	// could spend now and the current rate (A-434).
+	var could int64
+	for _, in := range ins {
+		could += in.Sats
+	}
 	switch {
 	case len(ins) == 0:
-		return a.failSettlement(ctx, id, orderID, settleNothing)
+		return a.failSettlement(ctx, id, orderID, settleNothing, 0, 0)
 	case kind == "stray_refund" && len(ins) > escrowMaxInputs:
 		ins, _ = boundedInputs(ins, e.confirmations) // the 50 largest; the rest wait for the next stray refund
 	case kind == "stray_refund":
@@ -487,7 +494,7 @@ func (a *App) buildSettlement(ctx context.Context, e *escrowBTC, id int64) error
 	case bounded && (unconfirmed || len(ins) > escrowMaxInputs):
 		// A-342: the wait is over; build without what it waited on, which a stray refund returns once confirmed.
 		if ins, left = boundedInputs(ins, e.confirmations); len(ins) == 0 {
-			return a.failSettlement(ctx, id, orderID, settleNothing, left...)
+			return a.failSettlement(ctx, id, orderID, settleNothing, 0, 0, left...)
 		}
 	}
 	var total int64
@@ -497,7 +504,7 @@ func (a *App) buildSettlement(ctx context.Context, e *escrowBTC, id int64) error
 	plan, refused := planSettlement(kind, len(ins), total, price, feeBps, feeDest, dest, refund, e.feeRate, payoutFloor("BTC", kind))
 	switch refused {
 	case settleTooSmall:
-		return a.failSettlement(ctx, id, orderID, refused, left...)
+		return a.failSettlement(ctx, id, orderID, refused, could, e.feeRate, left...)
 	case settleFeeCap:
 		return a.settlementWaits(ctx, id, orderID, refused)
 	}
@@ -798,14 +805,17 @@ func (a *App) settlementWaits(ctx context.Context, id int64, orderID, class stri
 }
 
 // failSettlement ends a settlement that can never be built (building -> failed), with an order note and a notice to
-// both parties. The coins stay in the escrow.
-func (a *App) failSettlement(ctx context.Context, id int64, orderID, class string, left ...settleInput) error {
+// both parties. The coins stay in the escrow. could, when not 0, is the value of every deposit the settlement could
+// spend, and rate, when not 0, the fee rate (sat/vB) it failed at; they are stored as the failed settlement's
+// input_total and fee_rate (never shown: a failed settlement has no fee; settlements_built allows both on a failed
+// row), which a stray refund that failed too-small is compared with before another is requested (strayHeldSQL, A-434).
+func (a *App) failSettlement(ctx context.Context, id int64, orderID, class string, could, rate int64, left ...settleInput) error {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	res, err := tx.ExecContext(ctx, "UPDATE settlements SET state='failed',build_error=$2,updated=now() WHERE id=$1 AND state='building'", id, class)
+	res, err := tx.ExecContext(ctx, "UPDATE settlements SET state='failed',build_error=$2,input_total=NULLIF($3::bigint,0),fee_rate=NULLIF($4::bigint,0),updated=now() WHERE id=$1 AND state='building'", id, class, could, rate)
 	if err != nil {
 		return err
 	}

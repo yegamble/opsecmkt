@@ -30,6 +30,14 @@ const (
 	escrowStrayCheckSetting = "escrow_btc_stray_check" // settings key: when the last daily check read every escrow
 	// strayEligibleSQL selects the payments rows p a stray refund returns, for a query with the threshold as $2.
 	strayEligibleSQL = "p.settlement_id IS NULL AND NOT p.locked AND NOT p.spent_outside AND p.confirmations>=$2 AND (p.after_close OR p.escrow_left_out)"
+	// strayHeldSQL is true while the coins a stray refund of escrow es would return are held (A-434): there are some,
+	// the order's latest stray refund failed too-small ($3), they are worth no more than the ones it could spend (its
+	// input_total) and the current fee rate ($4, sat/vB; 0 when unknown) is not lower than the one it failed at (its
+	// fee_rate). For a query with the threshold as $2. requestStray requests no stray refund while it holds, except at
+	// the buyer's request; the order page says why the coins stay (escrowOrder).
+	strayHeldSQL = `COALESCE((SELECT e.n>0 AND s.state='failed' AND s.build_error=$3 AND e.sum<=s.input_total AND NOT COALESCE($4::bigint BETWEEN 1 AND s.fee_rate-1,false)
+		FROM settlements s,(SELECT count(*) AS n,COALESCE(sum(p.amount),0) AS sum FROM payments p WHERE p.order_id=es.order_id AND ` + strayEligibleSQL + `) e
+		WHERE s.order_id=es.order_id AND s.kind='stray_refund' ORDER BY s.id DESC LIMIT 1),false)`
 )
 
 var (
@@ -57,8 +65,8 @@ func (a *App) strayChecked(ctx context.Context) error {
 }
 
 // requestStrays requests a stray refund for each closed escrow order of this pass (read without error) that has coins
-// to return or a buyer's request to answer.
-func (a *App) requestStrays(ctx context.Context, threshold int64, orders []string, unread map[string]bool) error {
+// to return or a buyer's request to answer; rate is the fee rate this process builds at (ESCROW_BTC_FEE_RATE, sat/vB).
+func (a *App) requestStrays(ctx context.Context, threshold, rate int64, orders []string, unread map[string]bool) error {
 	var read []string
 	for _, id := range orders {
 		if !unread[id] {
@@ -88,7 +96,7 @@ func (a *App) requestStrays(ctx context.Context, threshold int64, orders []strin
 		return err
 	}
 	for _, id := range due {
-		if err = a.requestStray(ctx, threshold, id); err != nil {
+		if err = a.requestStray(ctx, threshold, rate, id); err != nil {
 			return &watchError{label: "escrow order " + shortID(id), class: "stray refund not requested: " + errorCause(err), err: err}
 		}
 	}
@@ -97,21 +105,35 @@ func (a *App) requestStrays(ctx context.Context, threshold int64, orders []strin
 
 // requestStray requests one order's stray refund (state building, to the pinned refund address), or answers the
 // buyer's request when there is nothing to return, in one transaction under the escrow row's lock.
-func (a *App) requestStray(ctx context.Context, threshold int64, orderID string) error {
+//
+// A-434: while the coins are held (strayHeldSQL: the order's latest stray refund failed too-small, the deposits it
+// could spend now are worth no more than the ones it could spend then, and the fee rate is not lower), no other is
+// requested on a pass: the same coins would fail the same way, with a note and notices on every pass. A deposit newly
+// eligible since (sent, confirmed, or left out after that failure) makes them worth more, and a lower
+// ESCROW_BTC_FEE_RATE makes them cheaper to spend; either tries again once, and a failure records the new value and
+// rate. The comparison is by value, not by timestamp: payments.updated moves with every confirmation a deposit gains,
+// so a deposit the failed refund could already spend would look new at each block, and payments.created misses a
+// deposit recorded before the failure that confirmed or was left out after it (A-428's conflicted deposit). Coins can
+// also become refundable without either (fewer inputs of equal value, after others were spent outside the market), so
+// the buyer's request always gets one stray refund when there are eligible deposits: its build decides, and its
+// failure is the answer. A failure stored before A-434 has no input_total and is tried once more, which records it.
+func (a *App) requestStray(ctx context.Context, threshold, rate int64, orderID string) error {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	var requested, open bool
+	var requested, open, held bool
 	var buyer, state string
 	var sum, n, pending int64
 	if err = tx.QueryRowContext(ctx, `SELECT es.recover_requested IS NOT NULL,o.buyer_id,o.state,
 			EXISTS(SELECT 1 FROM settlements s WHERE s.order_id=es.order_id AND s.kind='stray_refund' AND s.state IN ('building','awaiting_signature','party_signed','signed','broadcast')),
 			(SELECT COALESCE(sum(p.amount),0) FROM payments p WHERE p.order_id=es.order_id AND `+strayEligibleSQL+`),
 			(SELECT count(*) FROM payments p WHERE p.order_id=es.order_id AND `+strayEligibleSQL+`),
-			(SELECT count(*) FROM payments p WHERE p.order_id=es.order_id AND p.settlement_id IS NULL AND NOT p.locked AND p.confirmations BETWEEN 0 AND $2-1 AND (p.after_close OR p.escrow_left_out))
-		FROM escrows es JOIN orders o ON o.id=es.order_id WHERE es.order_id=$1 AND es.coin='BTC' FOR UPDATE OF es`, orderID, threshold).Scan(&requested, &buyer, &state, &open, &sum, &n, &pending); err != nil {
+			(SELECT count(*) FROM payments p WHERE p.order_id=es.order_id AND p.settlement_id IS NULL AND NOT p.locked AND p.confirmations BETWEEN 0 AND $2-1 AND (p.after_close OR p.escrow_left_out)),
+			`+strayHeldSQL+`
+		FROM escrows es JOIN orders o ON o.id=es.order_id WHERE es.order_id=$1 AND es.coin='BTC' FOR UPDATE OF es`, orderID, threshold, settleTooSmall, rate).Scan(
+		&requested, &buyer, &state, &open, &sum, &n, &pending, &held); err != nil {
 		return err
 	}
 	if !isTerminal(state) {
@@ -119,7 +141,7 @@ func (a *App) requestStray(ctx context.Context, threshold int64, orderID string)
 	}
 	note, body := "", ""
 	switch {
-	case n > 0 && !open:
+	case n > 0 && !open && (!held || requested):
 		var by any
 		if requested {
 			by = buyer
@@ -128,7 +150,11 @@ func (a *App) requestStray(ctx context.Context, threshold int64, orderID string)
 			return err
 		}
 		note = "Stray refund requested: " + amount(sum, 8) + " BTC in " + strconv.FormatInt(n, 10) + " deposit(s) at this escrow that do not count for the order (sent once it had closed, or left out of its settlement) go back, less the network fee, to the buyer's refund address given at checkout. The market builds the transaction; the buyer or the vendor signs it on the order page and the market co-signs it. Nothing is sent yet."
+		if held {
+			note = "At the buyer's request the market tries again: the last stray refund could not be built because the coins were too few to return after the network fee. " + note
+		}
 		body = note
+	case held:
 	case requested && !open:
 		note = "The market checked this escrow at the buyer's request and found no coins to recover."
 		if pending > 0 {
@@ -187,7 +213,7 @@ func escrowRecoverAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, errRecoverAsked
 		}
 		if _, err = c.Tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,$3,$4)", o.ID, o.State, c.User.ID,
-			"The buyer asked the market to check this escrow for coins sent to it after the order closed. The market reads it on its next pass and returns what it finds to the buyer's refund address by a stray refund."); err != nil {
+			"The buyer asked the market to check this escrow for coins that do not count for the order. On its next pass the market reads it and requests a stray refund of what it finds to the buyer's refund address; coins too few to pay the network fee stay held."); err != nil {
 			return actionResult{}, err
 		}
 		return actionResult{Redirect: orderPage(o.ID) + "#escrow-recover", Notice: "escrow-recover", Audit: "Asked to recover coins at the escrow of order " + shortID(o.ID) + " (" + c.A.escrowNetwork() + ")"}, nil

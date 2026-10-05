@@ -19,6 +19,10 @@ func init() {
 	registerRaw("/escrow-descriptor", escrowDescriptorDownload)
 }
 
+// strayHeldLine ends a deposit line or the status of an order whose coins a stray refund returns are held (A-434): why
+// they stay, and what tries again (requestStray; the operator guide's Stray refunds).
+const strayHeldLine = "held at the escrow address, because the coins there are too few to return after the network fee. The buyer's recover request, more coins, or a lower network fee rate set by the market tries again."
+
 // escrowOrder fills the escrow panel of an escrow order, or the escrow checkout offer on a draft, for loadOrderDetail
 // (which has already resolved the viewer). An escrow order always gets its panel: with ESCROW_BTC switched off, or
 // escrow down, it shows the escrow address with the unavailable copy, never the pooled payment panel, which would say
@@ -50,11 +54,18 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 	var windowFrom time.Time
 	var shipBy, releaseAt sql.NullTime
 	var releaseLeft sql.NullFloat64
+	// A-434: held is requestStray's rule (strayHeldSQL), so the deposit lines and the status say the coins a stray
+	// refund returns are held, and why, rather than promise one. The fee rate is unknown (0) while escrow is down.
+	var rate int64
+	if e != nil {
+		rate = e.feeRate
+	}
 	if err := a.db.QueryRowContext(ctx, `SELECT es.address,es.refund_address,es.fee_bps,
 		GREATEST(es.created,(SELECT max(created) FROM payments WHERE order_id=es.order_id AND confirmations>=0 AND NOT locked)),
-		`+escrowWatchedSQL+`,es.ship_by,COALESCE(es.ship_by<=now(),false),es.release_at,extract(epoch FROM es.release_at-now()),es.release_recheck
-		FROM escrows es JOIN orders o ON o.id=es.order_id WHERE es.order_id=$1 AND es.coin='BTC'`, o.ID).Scan(&v.Address, &refund, &feeBps, &windowFrom, &watched,
-		&shipBy, &shipByOpen, &releaseAt, &releaseLeft, &rechecked); err != nil {
+		`+escrowWatchedSQL+`,es.ship_by,COALESCE(es.ship_by<=now(),false),es.release_at,extract(epoch FROM es.release_at-now()),es.release_recheck,
+		o.state IN ('completed','cancelled','resolved') AND `+strayHeldSQL+`
+		FROM escrows es JOIN orders o ON o.id=es.order_id WHERE es.order_id=$1 AND es.coin='BTC'`, o.ID, v.Threshold, settleTooSmall, rate).Scan(&v.Address, &refund, &feeBps, &windowFrom, &watched,
+		&shipBy, &shipByOpen, &releaseAt, &releaseLeft, &rechecked, &v.Held); err != nil {
 		return err
 	}
 	if v.Own == roleBuyer {
@@ -82,26 +93,28 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 			}
 		}
 	}
-	var received, pending, afterCloseSeen int64
+	var received, pending, afterCloseSeen, leftOutSeen int64
 	required, err := parseAmount(o.Amount, 8)
 	if err != nil {
 		return err
 	}
 	remaining := required
-	rows, err := a.db.QueryContext(ctx, "SELECT txid,idx,amount,confirmations,locked,after_close,escrow_left_out,spent_outside,COALESCE(spent_by,'') FROM payments WHERE order_id=$1 ORDER BY created,id", o.ID)
+	rows, err := a.db.QueryContext(ctx, "SELECT txid,idx,amount,confirmations,locked,after_close,escrow_left_out,spent_outside,COALESCE(spent_by,''),settlement_id IS NOT NULL FROM payments WHERE order_id=$1 ORDER BY created,id", o.ID)
 	if err != nil {
 		return err
 	}
 	for rows.Next() {
 		var dep PaymentDeposit
 		var amt int64
-		var locked, afterClose, leftOut, outside bool
+		var locked, afterClose, leftOut, outside, settled bool
 		var spentBy string
-		if err = rows.Scan(&dep.TxID, &dep.Index, &amt, &dep.Confirmations, &locked, &afterClose, &leftOut, &outside, &spentBy); err != nil {
+		if err = rows.Scan(&dep.TxID, &dep.Index, &amt, &dep.Confirmations, &locked, &afterClose, &leftOut, &outside, &spentBy, &settled); err != nil {
 			rows.Close()
 			return err
 		}
 		dep.Amount = amount(amt, 8)
+		// One of the deposits a stray refund would return while they are held (A-434).
+		held := v.Held && !settled && dep.Confirmations >= v.Threshold
 		switch {
 		case outside && spentBy != "":
 			dep.State = "Spent outside the market by transaction " + spentBy + ", a transaction this market did not make; market staff were notified"
@@ -109,11 +122,24 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 			dep.State = "Spent outside the market by a transaction this market did not make; market staff were notified"
 		case dep.Confirmations < 0 || locked:
 			dep.State = "Conflicted or missing — not counted"
+		case afterClose && held:
+			dep.State = "Arrived after the order closed — not counted; " + strayHeldLine
+			afterCloseSeen++
 		case afterClose:
 			dep.State = "Arrived after the order closed — not counted; returned to the buyer's refund address by a stray refund"
 			afterCloseSeen++
 		case leftOut:
-			dep.State = "Left out of the settlement after waiting " + escrowBuildWaitText + " — returned to the buyer's refund address by a stray refund once confirmed"
+			// Left out of a bounded build (A-342), of a release or refund built before it arrived (A-374), or not counted
+			// when the order was cancelled and confirmed since (A-428). A stray refund is requested only once the order
+			// is closed (QA428-5).
+			dep.State = "Left out — not counted for the order; returned to the buyer's refund address by a stray refund once confirmed"
+			switch {
+			case held:
+				dep.State = "Left out — not counted for the order; " + strayHeldLine
+			case !isTerminal(o.State):
+				dep.State = "Left out — not counted for the order; returned to the buyer's refund address by a stray refund once the order is closed and it is confirmed"
+			}
+			leftOutSeen++
 		case dep.Confirmations >= v.Threshold:
 			dep.State, received = "Confirmed", received+amt
 		default:
@@ -166,6 +192,11 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 	case o.State == stateCancelled && afterCloseSeen > 0:
 		// Coins sent after the cancellation are never counted, but they are at the escrow address (QA31-1).
 		v.Status = "Cancelled; a deposit arrived after the order closed. It is not counted and is held at the escrow address."
+	case o.State == stateCancelled && leftOutSeen > 0 && v.Held:
+		v.Status = "Cancelled; a deposit to this escrow did not count for the order. It is " + strayHeldLine
+	case o.State == stateCancelled && leftOutSeen > 0:
+		// A-428: a deposit that did not count when the order was cancelled, confirmed since and left out.
+		v.Status = "Cancelled; a deposit to this escrow did not count for the order. It is held at the escrow address and returned to the buyer's refund address by a stray refund."
 	case o.State == stateCancelled && e == nil:
 		// Nothing is read while escrow is not enabled, so an empty ledger proves nothing (QA31-1), nor do zero
 		// figures (A-338).
