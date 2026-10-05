@@ -936,7 +936,8 @@ broadcast.
   close) was requested and built while the refund still waited, so those coins fail too-small once. A stray refund
   requested while the refund waited but still being built when the refund fails (both in the same pass) adds those
   coins to its own: built, it returns them, and the refund's failure then holds nothing more (a later deposit gets its
-  own stray refund); failing too-small, it makes the same coins fail a second time, at the grown value, after which
+  own stray refund; a coin of the refund's it leaves out, beyond the 50 largest or worth less than its own spending
+  cost, gets one more try, failing too-small once if it is still too few, and is then held); failing too-small, it makes the same coins fail a second time, at the grown value, after which
   they are held. A later deposit left out on that order (one that did not count at the cancellation and has
   confirmed since, noted as above) makes them worth more: the next pass requests a stray refund of them all. The order page reads "Cancelled; the market could not build
   the refund …". On a database upgraded from before A-435, the deposits of a cancelled order whose refund had already

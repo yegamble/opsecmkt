@@ -186,7 +186,8 @@ chain `regtest`; [operator guide](operator-guide.md#bitcoin-escrow-regtest-only)
   together with any deposit left out later, such as one that did not count at the cancellation and confirms since,
   once together they can pay the network fee (A-435). A stray refund still being built when the refund fails (both
   in the same pass) adds those coins to its own: once it is built and spends them, the refund's failure holds nothing
-  more; if it fails too-small, the same coins fail a second time, at the grown value, and are then held. A stray
+  more (a coin of the refund's it leaves out, beyond the 50 largest or worth less than its own spending cost, gets one
+  more try and is then held); if it fails too-small, the same coins fail a second time, at the grown value, and are then held. A stray
   refund that fails because its coins are too few is noted and told once, and the order page says the coins are held and why; no other is requested
   until a further deposit makes the coins worth more or a lower `ESCROW_BTC_FEE_RATE` makes them cheaper to spend,
   and the buyer's recovery request always gets one more build, whose failure is the answer (A-434). A stray refund
