@@ -33,11 +33,13 @@ const (
 	// strayHeldSQL is true while the coins a stray refund of escrow es would return are held (A-434): there are some,
 	// the order's latest stray refund failed too-small ($3), they are worth no more than the ones it could spend (its
 	// input_total) and the current fee rate ($4, sat/vB; 0 when unknown) is not lower than the one it failed at (its
-	// fee_rate). For a query with the threshold as $2. requestStray requests no stray refund while it holds, except at
-	// the buyer's request; the order page says why the coins stay (escrowOrder).
+	// fee_rate). On a cancelled order (orders row o) with no stray refund yet, its refund's too-small failure counts as
+	// the latest (A-435): leaveOutTooFew left its coins out for a stray refund, which would fail the same way. For a query
+	// with the threshold as $2. requestStray requests no stray refund while it holds, except at the buyer's request; the
+	// order page says why the coins stay (escrowOrder).
 	strayHeldSQL = `COALESCE((SELECT e.n>0 AND s.state='failed' AND s.build_error=$3 AND e.sum<=s.input_total AND NOT COALESCE($4::bigint BETWEEN 1 AND s.fee_rate-1,false)
 		FROM settlements s,(SELECT count(*) AS n,COALESCE(sum(p.amount),0) AS sum FROM payments p WHERE p.order_id=es.order_id AND ` + strayEligibleSQL + `) e
-		WHERE s.order_id=es.order_id AND s.kind='stray_refund' ORDER BY s.id DESC LIMIT 1),false)`
+		WHERE s.order_id=es.order_id AND (s.kind='stray_refund' OR s.kind='refund' AND o.state='cancelled') ORDER BY s.id DESC LIMIT 1),false)`
 )
 
 var (
@@ -117,23 +119,26 @@ func (a *App) requestStrays(ctx context.Context, threshold, rate int64, orders [
 // also become refundable without either (fewer inputs of equal value, after others were spent outside the market), so
 // the buyer's request always gets one stray refund when there are eligible deposits: its build decides, and its
 // failure is the answer. A failure stored before A-434 has no input_total and is tried once more, which records it.
+// A-435: on a cancelled order whose refund failed too-small, that failure holds the coins it left out the same way
+// until the order has a stray refund.
 func (a *App) requestStray(ctx context.Context, threshold, rate int64, orderID string) error {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	var requested, open, held bool
+	var requested, open, held, noStray bool
 	var buyer, state string
 	var sum, n, pending int64
 	if err = tx.QueryRowContext(ctx, `SELECT es.recover_requested IS NOT NULL,o.buyer_id,o.state,
+			NOT EXISTS(SELECT 1 FROM settlements s WHERE s.order_id=es.order_id AND s.kind='stray_refund'),
 			EXISTS(SELECT 1 FROM settlements s WHERE s.order_id=es.order_id AND s.kind='stray_refund' AND s.state IN ('building','awaiting_signature','party_signed','signed','broadcast')),
 			(SELECT COALESCE(sum(p.amount),0) FROM payments p WHERE p.order_id=es.order_id AND `+strayEligibleSQL+`),
 			(SELECT count(*) FROM payments p WHERE p.order_id=es.order_id AND `+strayEligibleSQL+`),
 			(SELECT count(*) FROM payments p WHERE p.order_id=es.order_id AND p.settlement_id IS NULL AND NOT p.locked AND p.confirmations BETWEEN 0 AND $2-1 AND (p.after_close OR p.escrow_left_out)),
 			`+strayHeldSQL+`
 		FROM escrows es JOIN orders o ON o.id=es.order_id WHERE es.order_id=$1 AND es.coin='BTC' FOR UPDATE OF es`, orderID, threshold, settleTooSmall, rate).Scan(
-		&requested, &buyer, &state, &open, &sum, &n, &pending, &held); err != nil {
+		&requested, &buyer, &state, &noStray, &open, &sum, &n, &pending, &held); err != nil {
 		return err
 	}
 	if !isTerminal(state) {
@@ -150,7 +155,11 @@ func (a *App) requestStray(ctx context.Context, threshold, rate int64, orderID s
 			return err
 		}
 		note = "Stray refund requested: " + amount(sum, 8) + " BTC in " + strconv.FormatInt(n, 10) + " deposit(s) at this escrow that do not count for the order (sent once it had closed, or left out of its settlement) go back, less the network fee, to the buyer's refund address given at checkout. The market builds the transaction; the buyer or the vendor signs it on the order page and the market co-signs it. Nothing is sent yet."
-		if held {
+		switch {
+		case held && noStray:
+			// A-435: held by the cancelled order's refund, which failed too-small (strayHeldSQL).
+			note = "At the buyer's request the market tries again: the refund could not be built because the coins were too few to return after the network fee. " + note
+		case held:
 			note = "At the buyer's request the market tries again: the last stray refund could not be built because the coins were too few to return after the network fee. " + note
 		}
 		body = note

@@ -100,7 +100,7 @@ func (a *App) xmrSettlementStatus(s *XMRSettlementView, o *Order, outcome string
 	case s.kind == "refund":
 		s.Title = "Refund to the buyer"
 	default:
-		s.Title = "Return of coins sent after the order closed or left out of its settlement (a stray refund to the buyer)"
+		s.Title = "Return of coins that do not count for the order: sent after it closed, left out of its settlement, or not counted when it was cancelled (a stray refund to the buyer)"
 	}
 	threshold := strconv.FormatInt(v.Threshold, 10)
 	why := xmrSettleWaitText(s.wait, s.kind, v.Threshold)
