@@ -272,25 +272,28 @@ func (a *App) leaveOutTopUps(ctx context.Context, tx *sql.Tx, o *Order) error {
 	return err
 }
 
-// leaveOutUncounted marks, for a cancelled Bitcoin escrow order with no refund that spends or will spend its deposits
-// (none requested, or only failed, superseded or external ones), every deposit that has reached the confirmation
-// threshold, that no settlement spends and that was neither recorded after the order closed nor already left out
-// (A-428): one Core reported as conflicted (negative confirmations) or no longer listed (markMissing) when the order
-// was cancelled, so it did not count, mined since; or one a refund did not spend because Core reported it so while the
-// refund was being built (which then failed with nothing to settle, or too-small: A-435, whose own deposits
-// leaveOutTooFew left out when it failed), or because that refund ended external before it was built (QA428-4). As
-// leaveOutTopUps does, in tx under the order row lock: one order note, a notice to the buyer and to staff, only for the
-// deposits newly marked. The stray refund returns them to the buyer's refund address, with a too-small refund's coins.
+// leaveOutUncounted marks, for a Bitcoin escrow order whose coins go back to the buyer (coinsToBuyer: cancelled, or
+// resolved for the buyer, A-437) with no refund that spends or will spend its deposits (none requested, or only failed,
+// superseded or external ones), every deposit that has reached the confirmation threshold, that no settlement spends
+// and that was neither recorded after the order closed nor already left out (A-428): one Core reported as conflicted
+// (negative confirmations) or no longer listed (markMissing) when the order was cancelled or its dispute decided, so it
+// did not count, mined since; or one a refund did not spend because Core reported it so while the refund was being
+// built (which then failed with nothing to settle, or too-small: A-435, whose own deposits leaveOutTooFew left out when
+// it failed), or because that refund ended external before it was built (QA428-4). As leaveOutTopUps does, in tx under
+// the order row lock: one order note, a notice to the buyer and to staff, only for the deposits newly marked. The stray
+// refund returns them to the buyer's refund address, with a too-small refund's coins. A release's coins are the
+// vendor's, so on an order completed or resolved for the vendor such a deposit counts for the release as before.
 // xmrLeaveOutUncounted is the Monero escrow's (A-424).
 //
-// On a database upgraded from before A-435, a refund that failed too-small left the deposits it tried counted, not
-// left out (QA NIT-1). They did count, so they are left out here with leaveOutTooFew's note instead. Such a failure is
-// known by the order having no deposit left out and flagged other than after the order closed: since A-435 the failure
-// itself leaves its deposits out and flags them, and before it nothing else on such an order did (leaveOutTopUps acts
-// on a built refund only; a bounded build's leaveOut does not flag).
+// On a database upgraded from before A-435 (a cancelled order) or A-437 (resolved for the buyer), a refund that failed
+// too-small left the deposits it tried counted, not left out (QA NIT-1). They did count, so they are left out here with
+// leaveOutTooFew's note instead. Such a failure is known by the order having no deposit left out and flagged other
+// than after the order closed: since then the failure itself leaves its deposits out and flags them, and before it
+// nothing else on such an order did (leaveOutTopUps acts on a built refund only; a bounded build's leaveOut does not
+// flag).
 func (a *App) leaveOutUncounted(ctx context.Context, tx *sql.Tx, o *Order, threshold int64) error {
-	if o.State != stateCancelled {
-		return nil
+	if back, err := coinsToBuyer(ctx, tx, o); err != nil || !back {
+		return err
 	}
 	var n, sum int64
 	var upgraded bool
@@ -307,10 +310,14 @@ func (a *App) leaveOutUncounted(ctx context.Context, tx *sql.Tx, o *Order, thres
 	if n > 1 {
 		count, is, it, stays = strconv.FormatInt(n, 10)+" deposits", "are", "them", "They stay"
 	}
-	note := count + " (" + amount(sum, 8) + " BTC, " + a.netTag() + " " + a.escrowNetwork() + ") to this order's escrow, now confirmed, " + is + " not spent by any refund of this order: the escrow node reported " + it + " as conflicted, or no longer listed " + it + ", when the order was cancelled or while its refund was being built, or that refund ended without spending " + it + ". " +
+	when := "when the order was cancelled"
+	if o.State == stateResolved {
+		when = "when the dispute was decided"
+	}
+	note := count + " (" + amount(sum, 8) + " BTC, " + a.netTag() + " " + a.escrowNetwork() + ") to this order's escrow, now confirmed, " + is + " not spent by any refund of this order: the escrow node reported " + it + " as conflicted, or no longer listed " + it + ", " + when + " or while its refund was being built, or that refund ended without spending " + it + ". " +
 		stays + " in the escrow; a stray refund returns " + it + ", less the network fee, to the buyer's refund address given at checkout. Do not send more coins to this escrow."
 	if upgraded {
-		note = a.tooFewNote(n, sum)
+		note = a.tooFewNote(o, n, sum)
 	}
 	if err := a.flagOrder(ctx, tx, o, note, ""); err != nil {
 		return err
@@ -319,14 +326,19 @@ func (a *App) leaveOutUncounted(ctx context.Context, tx *sql.Tx, o *Order, thres
 	return err
 }
 
-// leaveOutTooFew marks tried, the deposits a cancelled Bitcoin escrow order's refund could not spend because they were
-// too few to pay the network fee and the minimum output, as left out and flagged (A-435), in tx with that refund's
-// failure (failSettlement): one order note, a notice to the buyer and to staff, only for the deposits newly marked. A
-// stray refund returns them with any deposit left out later (leaveOutUncounted); until the coins grow, the fee rate
-// falls or the buyer asks, the refund's failure holds them (strayHeldSQL), so the same coins are not tried again.
+// leaveOutTooFew marks tried, the deposits a Bitcoin escrow order's refund could not spend because they were too few
+// to pay the network fee and the minimum output, as left out and flagged, in tx with that refund's failure
+// (failSettlement), on an order cancelled (A-435) or resolved for the buyer (A-437; the refund that fails is the live
+// decision's: a superseded one is never built): one order note, a notice to the buyer and to staff, only for the
+// deposits newly marked. A stray refund returns them with any deposit left out later (leaveOutUncounted); until the
+// coins grow, the fee rate falls or the buyer asks, the refund's failure holds them (strayHeldSQL), so the same coins
+// are not tried again. A release that fails too-small leaves its deposits counted: they are the vendor's.
 func (a *App) leaveOutTooFew(ctx context.Context, tx *sql.Tx, o *Order, tried []settleInput) error {
-	if o.State != stateCancelled || len(tried) == 0 {
+	if len(tried) == 0 {
 		return nil
+	}
+	if back, err := coinsToBuyer(ctx, tx, o); err != nil || !back {
+		return err
 	}
 	ids := make([]int64, len(tried))
 	for i, in := range tried {
@@ -338,7 +350,7 @@ func (a *App) leaveOutTooFew(ctx context.Context, tx *sql.Tx, o *Order, tried []
 		SELECT count(*),COALESCE(sum(amount),0) FROM m`, o.ID, ids).Scan(&n, &sum); err != nil || n == 0 {
 		return err
 	}
-	note := a.tooFewNote(n, sum)
+	note := a.tooFewNote(o, n, sum)
 	if err := a.flagOrder(ctx, tx, o, note, ""); err != nil {
 		return err
 	}
@@ -346,15 +358,36 @@ func (a *App) leaveOutTooFew(ctx context.Context, tx *sql.Tx, o *Order, tried []
 	return err
 }
 
-// tooFewNote is the order note on n deposits worth sum sats that a cancelled order's refund could not spend because
-// they were too few (leaveOutTooFew, and leaveOutUncounted on a database upgraded from before A-435).
-func (a *App) tooFewNote(n, sum int64) string {
+// tooFewNote is the order note on n deposits worth sum sats that o's refund could not spend because they were too few
+// (leaveOutTooFew, and leaveOutUncounted on a database upgraded from before A-435 or A-437), worded for a cancelled
+// order's refund or a dispute decision's.
+func (a *App) tooFewNote(o *Order, n, sum int64) string {
 	count, is, it, stays := "1 deposit", "is", "it", "It stays"
 	if n > 1 {
 		count, is, it, stays = strconv.FormatInt(n, 10)+" deposits", "are", "them", "They stay"
 	}
-	return count + " (" + amount(sum, 8) + " BTC, " + a.netTag() + " " + a.escrowNetwork() + ") to this order's escrow " + is + " not spent by its refund: the market could not build the refund because the coins were too few to pay the network fee and an output of at least 0.0001 BTC. " +
+	refund := "its refund"
+	if o.State == stateResolved {
+		refund = "the refund its dispute decision requested"
+	}
+	return count + " (" + amount(sum, 8) + " BTC, " + a.netTag() + " " + a.escrowNetwork() + ") to this order's escrow " + is + " not spent by " + refund + ": the market could not build the refund because the coins were too few to pay the network fee and an output of at least 0.0001 BTC. " +
 		stays + " in the escrow; a stray refund returns " + it + ", together with any later deposit to this escrow, less the network fee, to the buyer's refund address given at checkout once together they can pay the network fee."
+}
+
+// coinsToBuyer reports whether o's escrowed coins go back to the buyer by its refund: o is cancelled, or resolved with
+// its dispute's live decision for the buyer (A-437). Then a refund that fails too-small leaves its deposits out for the
+// stray refund, and so does a deposit that did not count and confirms later (leaveOutTooFew, leaveOutUncounted,
+// xmrLeaveOutUncounted). On an order completed or resolved for the vendor the coins are the vendor's, paid by the
+// release.
+func coinsToBuyer(ctx context.Context, q rowQuerier, o *Order) (bool, error) {
+	switch o.State {
+	case stateCancelled:
+		return true, nil
+	case stateResolved:
+		outcome, err := escrowDisputeOutcome(ctx, q, o.ID)
+		return outcome == "refund", err
+	}
+	return false, nil
 }
 
 // physicalReleaseNotSent is the honest line on a release that completes only with both parties' signatures (a

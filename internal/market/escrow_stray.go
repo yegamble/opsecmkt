@@ -31,10 +31,13 @@ const (
 	// strayEligibleSQL selects the payments rows p a stray refund returns, for a query with the threshold as $2.
 	strayEligibleSQL = "p.settlement_id IS NULL AND NOT p.locked AND NOT p.spent_outside AND p.confirmations>=$2 AND (p.after_close OR p.escrow_left_out)"
 	// strayLatestSQL picks, as settlements s, the latest word on the coins a stray refund of escrow es (orders row o)
-	// returns: the order's stray refunds and, on a cancelled order, its refund, whose too-small failure left its coins out
-	// for a stray refund (leaveOutTooFew, A-435). Each counts from when it took up the coins it spends or failed on: a
-	// failed one from its failure (updated; a failed row never changes again), any other from its request (created;
-	// from then on no other stray refund is requested, and its build spends the deposits eligible when it is built).
+	// returns: the order's stray refunds and, on an order cancelled or resolved for the buyer, its refund once it failed,
+	// whose too-small failure left its coins out for a stray refund (leaveOutTooFew, A-435, A-437). A refund that has not
+	// failed left nothing out, and on a resolved order one requested by a changed decision (or superseded by one: only
+	// a built settlement is, migration 078) may be newer than a stray refund's failure, which it must not hide. Each
+	// counts from when it took up the coins it spends or failed on: a failed one from its failure (updated; a failed row
+	// never changes again), any other from its request (created; from then on no other stray refund is requested, and
+	// its build spends the deposits eligible when it is built).
 	// Not by id: a stray refund requested while the refund still waited (for a deposit to confirm, A-342) has the
 	// higher id, but if it was built before the refund failed it never saw the coins the refund left out, so a stray
 	// refund of them would fail the same way a second time (QA SHOULD-1). Nor by updated alone, which moves when a
@@ -45,7 +48,7 @@ const (
 	// (leaveOutTooFew, and leaveOutUncounted's later deposits, which a stray refund built after the failure spends with
 	// them). A bounded build's leaveOut does not flag, and leaveOutTopUps acts only on a built refund, which never fails
 	// too-small. A stray refund keeps the deposits it spends (only a release or refund is superseded), so this is final.
-	strayLatestSQL = `s.order_id=es.order_id AND (s.kind='stray_refund' OR s.kind='refund' AND o.state='cancelled'
+	strayLatestSQL = `s.order_id=es.order_id AND (s.kind='stray_refund' OR s.kind='refund' AND s.state='failed' AND o.state IN ('cancelled','resolved')
 			AND NOT EXISTS(SELECT 1 FROM payments p JOIN settlements t ON t.id=p.settlement_id WHERE p.order_id=es.order_id AND t.kind='stray_refund' AND p.escrow_left_out AND p.flagged AND NOT p.after_close))
 		ORDER BY CASE WHEN s.state='failed' THEN s.updated ELSE s.created END DESC,s.id DESC LIMIT 1`
 	// strayHeldSQL is true while the coins a stray refund of escrow es would return are held (A-434): there are some,
@@ -135,8 +138,9 @@ func (a *App) requestStrays(ctx context.Context, threshold, rate int64, orders [
 // also become refundable without either (fewer inputs of equal value, after others were spent outside the market), so
 // the buyer's request always gets one stray refund when there are eligible deposits: its build decides, and its
 // failure is the answer. A failure stored before A-434 has no input_total and is tried once more, which records it.
-// A-435: on a cancelled order whose refund failed too-small, that failure holds the coins it left out the same way
-// until a stray refund requested after it, or one that spends a deposit it left out (strayLatestSQL).
+// A-435, A-437: on an order cancelled or resolved for the buyer whose refund failed too-small, that failure holds the
+// coins it left out the same way until a stray refund requested after it, or one that spends a deposit it left out
+// (strayLatestSQL).
 func (a *App) requestStray(ctx context.Context, threshold, rate int64, orderID string) error {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {

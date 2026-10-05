@@ -179,12 +179,14 @@ chain `regtest`; [operator guide](operator-guide.md#bitcoin-escrow-regtest-only)
   100 confirmations. A deposit that does not count when the payment window ends (Core reports it conflicted, or no
   longer lists it) does not keep the order open, so an order with nothing else is cancelled unpaid and no refund is
   requested; if that deposit confirms later and no refund spends it, it is left out, flagged, noted on the order with
-  the buyer and staff told, and returned to the buyer's refund address by a stray refund (A-428). A cancelled order's
-  refund that cannot be built because the escrow's coins are too few leaves those coins out for a stray refund (left
-  out, flagged, noted on the order with the buyer and staff told); they are held, as a too-small stray refund's coins
-  are (below), also when a stray refund of other coins was requested and built before the refund failed, and returned
-  together with any deposit left out later, such as one that did not count at the cancellation and confirms since,
-  once together they can pay the network fee (A-435). A stray refund still being built when the refund fails (both
+  the buyer and staff told, and returned to the buyer's refund address by a stray refund (A-428). A refund that
+  cannot be built because the escrow's coins are too few, on a cancelled order (A-435) or one whose dispute was decided
+  for the buyer (A-437), leaves those coins out for a stray refund (left out, flagged, noted on the order with the
+  buyer and staff told); they are held, as a too-small stray refund's coins are (below), also when a stray refund of
+  other coins was requested and built before the refund failed, and returned together with any deposit left out later,
+  such as one that did not count at the cancellation or the decision and confirms since, once together they can pay
+  the network fee. A release that fails so (a completed order, or one decided for the vendor) leaves its coins counted:
+  they are the vendor's. A stray refund still being built when the refund fails (both
   in the same pass) adds those coins to its own: once it is built and spends them, the refund's failure holds nothing
   more (a coin of the refund's it leaves out, beyond the 50 largest or worth less than its own spending cost, gets one
   more try and is then held); if it fails too-small, the same coins fail a second time, at the grown value, and are then held. A stray
@@ -193,7 +195,8 @@ chain `regtest`; [operator guide](operator-guide.md#bitcoin-escrow-regtest-only)
   and the buyer's recovery request always gets one more build, whose failure is the answer (A-434). A stray refund
   leaves out of its build a deposit worth no more than its own spending cost at the current fee rate (105 vB times
   the rate) while another remains; that deposit stays for a later stray refund (A-436). A cancelled order's status
-  follows its stray refund: held, awaiting signatures, broadcast or confirmed (A-435);
+  follows its stray refund: held, awaiting signatures, broadcast or confirmed (A-435); on an order decided for the
+  buyer whose refund failed so, the next step says the refund could not be built and a stray refund returns the coins (A-437);
 - recovery and reconciliation: the restore gate pauses builds, co-signing, broadcasts and escrow checkout, and a
   restored stored transaction is broadcast again only after an administrator confirms it; every checkout first asks
   the watch-only wallet whether it already holds the escrow address it composed (an escrow created after the backup a
@@ -519,7 +522,12 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   order's status follows the stray refund that returns it: requested or built, sent, confirmed (A-435). A
   stray refund whose coins are too few for the network fee and an output of at least 0.001 XMR stays requested,
   staff told once (the status of a deposit that did not count then says the market cannot send it), and is built once
-  a further deposit makes the coins enough. After a close, deposits are refunded automatically until the wallet is
+  a further deposit makes the coins enough. A refund too few so, on a cancelled order or one decided for the buyer,
+  ends instead once no deposit it would spend is still confirming (failed, too-small): its deposits are left out and
+  flagged, with one note and the parties and staff told, so the one stray refund returns them together with a later
+  deposit, or one that did not count at the cancellation or the decision and has confirmed since, once together they
+  pay the fee. Before, the refund waited for good while a later deposit's stray refund waited too or paid without its
+  coins (A-437). A release too few still waits: the coins are the vendor's. After a close, deposits are refunded automatically until the wallet is
   destroyed; after that, the order page says Monero sent to its address since then cannot be recovered (ES-8).
 - **Confirm receipt and deadlines.** For a digital order the vendor claims the escrow with a fresh Monero address and their
   password once the order has completed on funding. For a physical order the vendor's *Mark as shipped* takes the claim

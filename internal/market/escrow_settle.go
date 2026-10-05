@@ -821,8 +821,9 @@ func (a *App) settlementWaits(ctx context.Context, id int64, orderID, class stri
 // spend, and rate, when not 0, the fee rate (sat/vB) it failed at; they are stored as the failed settlement's
 // input_total and fee_rate (never shown: a failed settlement has no fee; settlements_built allows both on a failed
 // row), which a stray refund that failed too-small is compared with before another is requested (strayHeldSQL, A-434).
-// A cancelled order's refund that fails too-small leaves out tried, the deposits it could not spend (leaveOutTooFew,
-// A-435), and its failure holds them as a stray refund's would.
+// A refund that fails too-small on an order cancelled or resolved for the buyer leaves out tried, the deposits it could
+// not spend (leaveOutTooFew, A-435, A-437), and its failure holds them as a stray refund's would; a release's deposits
+// stay counted.
 func (a *App) failSettlement(ctx context.Context, id int64, orderID, class string, could, rate int64, tried []settleInput, left ...settleInput) error {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {

@@ -677,7 +677,7 @@ has run on a public test network. Never switch it on for a market that takes rea
   deposit Core reports as conflicted (negative confirmations), or no longer lists, does not count, so it does not keep
   the order open; if it confirms after the order was cancelled and no refund spends it, it is returned by a stray
   refund (*Stray refunds* below; A-428), on an order whose refund failed because the escrow's coins were too few
-  together with those coins (A-435).
+  together with those coins (A-435; on an order decided for the buyer too, A-437).
 - **Fingerprint pin.** At the first start with escrow on, the app reads the arbiter wallet's master key fingerprint
   (from a fresh change address, with `getrawchangeaddress` and `getaddressinfo`) and pins it in the database
   (`settings` key `escrow_btc_arbiter_fingerprint`). If a later start finds another fingerprint, for example a
@@ -819,8 +819,10 @@ broadcast.
   "escrow: settlement of order … not built yet: <class>" once per change, never a key, address or PSBT. An escrow
   too small to pay the fee and an output of at least 0.0001 BTC fails ("not built"), with a note and a notice to both
   parties; its coins stay in the escrow, where the buyer and the vendor can move them together from their own
-  wallets. A cancelled order's refund that fails so also leaves those coins out for a stray refund (flagged, one note,
-  the buyer and staff told; *Stray refunds* below, A-435).
+  wallets. A refund that fails so, on a cancelled order or one whose dispute was decided for the buyer, also leaves
+  those coins out for a stray refund (flagged, one note, the buyer and staff told; *Stray refunds* below, A-435,
+  A-437). A release that fails so (a completed order, or one decided for the vendor) leaves them counted: they are
+  the vendor's, and only the two parties are told.
 - *Signing.* Each party sees the expected outputs (address, amount and whom each pays, and the network fee) and its
   own copy of the PSBT, with its key's origin and the other keys bare, in the page and as a download. Either party
   signs it in Bitcoin Core (`walletprocesspsbt` without finalizing, or the GUI's PSBT dialog) and pastes it back. The
@@ -929,8 +931,8 @@ broadcast.
   they are too few to return after the network fee (A-434).
   Lowering `ESCROW_BTC_FEE_RATE` below the rate that failed, or the buyer's *Recover coins at this escrow* (one build
   per request, whatever the coins are worth), tries again; if that fails too it is noted and told like the first.
-  A cancelled order whose refund failed because the escrow's coins were too few (A-435): the failure leaves those
-  coins out (flagged once: an order note saying the refund could not be built because they were too few, the buyer
+  An order cancelled (A-435), or decided for the buyer (A-437), whose refund failed because the escrow's coins were
+  too few: the failure leaves those coins out (flagged once: an order note saying the refund could not be built because they were too few, the buyer
   and staff told) and holds them as a failed stray refund's coins are held, so no stray refund of the same coins is
   requested; the failure is the latest word on them also when a stray refund of other coins (a deposit after the
   close) was requested and built while the refund still waited, so those coins fail too-small once. A stray refund
@@ -938,9 +940,11 @@ broadcast.
   coins to its own: built, it returns them, and the refund's failure then holds nothing more (a later deposit gets its
   own stray refund; a coin of the refund's it leaves out, beyond the 50 largest or worth less than its own spending
   cost, gets one more try, failing too-small once if it is still too few, and is then held); failing too-small, it makes the same coins fail a second time, at the grown value, after which
-  they are held. A later deposit left out on that order (one that did not count at the cancellation and has
-  confirmed since, noted as above) makes them worth more: the next pass requests a stray refund of them all. The order page reads "Cancelled; the market could not build
-  the refund …". On a database upgraded from before A-435, the deposits of a cancelled order whose refund had already
+  they are held. A later deposit left out on that order (one that did not count at the cancellation or the decision
+  and has confirmed since, noted as above) makes them worth more: the next pass requests a stray refund of them all.
+  The order page reads "Cancelled; the market could not build the refund …", or on an order decided for the buyer
+  "The dispute was decided for the buyer, but the market could not build the refund …". On a database upgraded from
+  before A-435 (a cancelled order) or A-437 (decided for the buyer), the deposits of an order whose refund had already
   failed so are left out, with the same note, by the first pass that reads its escrow (at the latest the daily
   check). A stray refund leaves out of its build a deposit worth no more
   than its own spending cost at the current fee rate (105 vB times `ESCROW_BTC_FEE_RATE`) while another deposit
@@ -1379,6 +1383,10 @@ the market (the order page says so); a destroyed wallet is never opened again.
   deposit the database refused as another order's account, coins at an account no order claimed or at account 0 (which the
   market never spends), a settlement whose build failed a check (the fee above `ESCROW_XMR_MAX_FEE`, a claimant output below
   0.001 XMR, a transaction that does not match its plan, an address mismatch) and a settlement spent outside the market.
+  A refund whose claimant output would be below 0.001 XMR (on a cancelled order or one decided for the buyer, with no
+  deposit it would spend still confirming) does not wait: it ends (failed, too-small) and its deposits are left out for
+  the stray refund, which returns them with any later deposit once together they pay the fee; the parties and staff
+  are told once (A-437). A refund already waiting so when you upgrade ends on the next pass.
 
 **Switching it off with orders open.** Setting `ESCROW_XMR` back to `off` moves no coins and closes no order, but it stops the
 Monero escrow watcher: deposits are not read, nothing is built or sent, and each order page says so. Release deadlines are
