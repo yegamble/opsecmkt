@@ -357,7 +357,8 @@ func TestXMREscrowStraysPerWallet(t *testing.T) {
 
 // A-435 (4): on the Monero order page a left-out deposit has its own line and is not counted as received: one that did
 // not count when the order was cancelled and was mined since (A-424), and a top-up left out of a release already built
-// (xmrLeaveOutTopUps). The cancelled order's status neither promises the order's refund nor says nothing was received.
+// (xmrLeaveOutTopUps). The cancelled order's status neither promises the order's refund nor says nothing was received,
+// and follows the stray refund that returns the deposit: requested or built, relayed, confirmed.
 func TestXMREscrowLeftOutDepositLine(t *testing.T) {
 	x := newXMREscrowEnv(t)
 	x.mustPoll()
@@ -369,10 +370,12 @@ func TestXMREscrowLeftOutDepositLine(t *testing.T) {
 
 	order, addr := x.freshCheckout(x.digital(x.vendor))
 	bsess := x.sessOf(order, roleBuyer)
-	txid := hex64("left out line " + order)
+	txid, later := hex64("left out line "+order), hex64("left out later "+order)
 	x.fake.payAddress(addr, txid, xmrListingPrice, 0)
+	x.fake.payAddress(addr, later, xmrListingPrice, 0)
 	x.mustPoll()
 	x.fake.setTransfer(txid, func(t *fakeXMRTransfer) { t.DoubleSpend = true })
+	x.fake.setTransfer(later, func(t *fakeXMRTransfer) { t.DoubleSpend = true })
 	x.mustPoll()
 	agExec(x.testEnv, "UPDATE escrows SET created=now()-interval '3 days' WHERE order_id=$1", order)
 	x.mustPoll()
@@ -380,22 +383,69 @@ func TestXMREscrowLeftOutDepositLine(t *testing.T) {
 		t.Fatalf("at the end of the window: %s", x.state(order))
 	}
 	x.fake.setTransfer(txid, func(t *fakeXMRTransfer) { t.DoubleSpend, t.Confs, t.Pool = false, 20, false })
-	for pass := range 2 { // left out at the end of the first pass; the stray refund is requested and relayed on the next
-		x.mustPoll()
+	// Left out at the end of the first pass; the stray refund is requested on the next, then built (its relay refused
+	// once here), relayed and confirmed. The status follows it (QA NIT-2), and the panel names it (QA NIT-3).
+	const didNotCount = "Cancelled; a deposit to this escrow did not count for the order. It "
+	const strayTitle = "Return of coins that do not count for the order: sent after it closed, left out of its settlement, or not counted when it was cancelled (a stray refund to the buyer)"
+	for _, c := range []struct{ stray, status string }{
+		{"", "stays in the escrow account until a stray refund returns it, less the network fee, to the buyer's refund address."},
+		{"requested", "stays in the escrow account until the market sends the stray refund below, which returns it, less the network fee, to the buyer's refund address."},
+		{"built", "stays in the escrow account until the market sends the stray refund below, which returns it, less the network fee, to the buyer's refund address."},
+		{"relayed", "is being returned, less the network fee, to the buyer's refund address by the stray refund below, which is sent and waits for confirmations."},
+		{"confirmed", "is back at the buyer's refund address: the stray refund below that returned it is confirmed."},
+	} {
+		switch c.stray {
+		case "":
+			x.mustPoll()
+		case "requested":
+			x.fake.fault("transfer", fakeXMRNotOpen)
+			if err := x.poll(); err == nil {
+				t.Fatal("a refused build passed")
+			}
+		case "built":
+			x.fake.fault("relay_tx", fakeXMRNotOpen)
+			if err := x.poll(); err == nil {
+				t.Fatal("a refused relay passed")
+			}
+		case "confirmed":
+			x.fake.mine(10)
+			x.mustPoll()
+		default:
+			x.mustPoll()
+		}
+		if c.stray == "" {
+			if got := x.xmrSettlements(order); len(got) != 0 {
+				t.Fatalf("settlements %v, want none yet", got)
+			}
+		} else if s := x.settlementOf(order, "stray_refund"); s.State != c.stray {
+			t.Fatalf("stray refund: %+v, want %q", s, c.stray)
+		}
 		panel := x.panel(order, bsess)
-		for _, want := range []string{line, confirmed("0"), "Cancelled; a deposit to this escrow did not count for the order. It stays in the escrow account until a stray refund returns it, less the network fee, to the buyer's refund address."} {
+		for _, want := range []string{line, confirmed("0"), didNotCount + c.status} {
 			if !strings.Contains(panel, want) {
-				t.Fatalf("pass %d: panel lacks %q:\n%s", pass, want, panel)
+				t.Fatalf("stray refund %q: panel lacks %q:\n%s", c.stray, want, panel)
 			}
 		}
 		for _, not := range []string{"nothing was received", "refund the market builds and sends", "Confirmed (20 confirmations or more)"} {
 			if strings.Contains(panel, not) {
-				t.Fatalf("pass %d: panel says %q:\n%s", pass, not, panel)
+				t.Fatalf("stray refund %q: panel says %q:\n%s", c.stray, not, panel)
 			}
 		}
+		if c.stray != "" && !strings.Contains(panel, strayTitle) {
+			t.Fatalf("stray refund %q: panel lacks its title:\n%s", c.stray, panel)
+		}
 	}
-	if s := x.settlementOf(order, "stray_refund"); s.State != "relayed" {
-		t.Fatalf("stray refund: %+v", s)
+	// The other conflicted deposit is mined too: left out at the end of the pass, not spent by the confirmed stray
+	// refund, so the status says it stays until a stray refund returns it; the next pass returns it.
+	x.fake.setTransfer(later, func(t *fakeXMRTransfer) { t.DoubleSpend, t.Confs, t.Pool = false, 20, false })
+	x.mustPoll()
+	if panel := x.panel(order, bsess); !strings.Contains(panel, didNotCount+"stays in the escrow account until a stray refund returns it, less the network fee, to the buyer's refund address.") ||
+		strings.Contains(panel, "the stray refund below that returned it is confirmed") || len(x.xmrSettlements(order)) != 1 {
+		t.Fatalf("a deposit left out after the stray refund confirmed: settlements %v, panel:\n%s", x.xmrSettlements(order), panel)
+	}
+	x.mustPoll()
+	if got := x.xmrSettlements(order); len(got) != 2 || !strings.HasPrefix(got[1], "stray_refund relayed ") {
+		t.Fatalf("the next pass: settlements %v", got)
 	}
 
 	// A top-up left out of the release built before it confirmed: its own line; the price alone counts.
@@ -413,6 +463,18 @@ func TestXMREscrowLeftOutDepositLine(t *testing.T) {
 	panel := x.panel(order, x.sessOf(order, roleBuyer))
 	if !strings.Contains(panel, line) || !strings.Contains(panel, confirmed("0.5")) || !strings.Contains(panel, "Funded and completed") {
 		t.Fatalf("a top-up left out: panel:\n%s", panel)
+	}
+
+	// A deposit left out while the order is still open says it is returned once the order is closed (QA NIT-3, mutant
+	// C3). No Monero build leaves a deposit out before its order closes today, so the row is set here.
+	order, bsess = x.undeliveredXMR()
+	topUp := hex64("open top-up " + order)
+	x.fake.payAddress(agStrings(t, x.testEnv, "SELECT address FROM escrows WHERE order_id=$1", order)[0], topUp, 3000000000, 12)
+	x.mustPoll()
+	agExec(x.testEnv, "UPDATE payments SET escrow_left_out=true,flagged=true WHERE txid=$1", topUp)
+	panel = x.panel(order, bsess)
+	if open := "Left out — not counted for the order; returned to the buyer's refund address by a stray refund once the order is closed and it is confirmed"; !strings.Contains(panel, open) || strings.Contains(panel, line) || x.state(order) != statePaid {
+		t.Fatalf("left out on an open order (%s): panel:\n%s", x.state(order), panel)
 	}
 }
 

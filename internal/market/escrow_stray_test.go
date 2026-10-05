@@ -938,8 +938,8 @@ func TestEscrowTooSmallRefundReturned(t *testing.T) {
 
 // A-435 (QA428-5): a cancelled order's status follows its stray refund (requested or awaiting signatures, broadcast,
 // confirmed) instead of always saying the coins are held and returned: for a deposit after the order closed and for
-// one that did not count when it was cancelled (A-428). A later deposit the stray refund does not spend brings back
-// the held wording.
+// one that did not count when it was cancelled (A-428). A later conflicted deposit changes nothing; a later deposit the
+// stray refund does not spend brings back the held wording.
 func TestEscrowStrayStatusFollowsState(t *testing.T) {
 	x := newEscrowEnv(t)
 	const afterClose = "Cancelled; a deposit arrived after the order closed. It is not counted and is "
@@ -977,15 +977,26 @@ func TestEscrowStrayStatusFollowsState(t *testing.T) {
 		addr := x.mustCheckout(order, regtestAddr("status "+c.what))
 		txid := txidOf("status " + order)
 		c.setup(order, addr, txid)
-		x.poll()
 		status := func(want string) {
 			t.Helper()
 			if page := html.UnescapeString(x.page("/order?id="+order, x.buyerSess)); !strings.Contains(page, want) {
 				t.Fatalf("%s: page lacks %q:\n%s", c.what, want, page)
 			}
 		}
+		// Still building (here its fee rate is above the cap, so it waits): it claims its deposit only once built, and
+		// the page says it holds the coins until it is signed (QA NIT-3, mutant B5).
+		e := x.A.escrow.Load()
+		t.Cleanup(func() { e.feeRate = escrowDefaultFeeRate })
+		e.feeRate = escrowMaxFeeRate + 1
+		x.poll()
+		e.feeRate = escrowDefaultFeeRate
 		sid, state := x.stray(order)
-		if state != "awaiting_signature" {
+		if state != "building" {
+			t.Fatalf("%s: stray refund over the fee cap: %d %s", c.what, sid, state)
+		}
+		status(c.status + strayTail(state, "it"))
+		x.poll()
+		if sid, state = x.stray(order); state != "awaiting_signature" {
 			t.Fatalf("%s: stray refund %d %s", c.what, sid, state)
 		}
 		status(c.status + strayTail(state, "it"))
@@ -994,6 +1005,14 @@ func TestEscrowStrayStatusFollowsState(t *testing.T) {
 		status(c.status + strayTail("broadcast", "it"))
 		x.core.setTxConfs(x.settleByID(sid).TxID, 3, "")
 		x.poll()
+		status(c.status + strayTail("confirmed", "it"))
+		// A deposit more that the escrow node reports conflicted: not counted and not returnable, so it changes nothing
+		// (QA NIT-3, mutant B3).
+		x.core.deposit(addr, txidOf("status conflicted "+order), 0, 20000, -2)
+		x.poll()
+		if agInt(x.testEnv, "SELECT count(*) FROM payments WHERE txid=$1 AND after_close AND confirmations<0 AND settlement_id IS NULL", txidOf("status conflicted "+order)) != 1 {
+			t.Fatalf("%s: the conflicted deposit is not recorded", c.what)
+		}
 		status(c.status + strayTail("confirmed", "it"))
 		// A deposit more, still confirming: the stray refund does not spend it, so the page says it is held, as before.
 		x.core.deposit(addr, txidOf("status more "+order), 0, 20000, 1)

@@ -932,9 +932,13 @@ broadcast.
   A cancelled order whose refund failed because the escrow's coins were too few (A-435): the failure leaves those
   coins out (flagged once: an order note saying the refund could not be built because they were too few, the buyer
   and staff told) and holds them as a failed stray refund's coins are held, so no stray refund of the same coins is
-  requested. A later deposit left out on that order (one that did not count at the cancellation and has confirmed
-  since, noted as above) makes them worth more: the next pass requests a stray refund of them all. The order page reads
-  "Cancelled; the market could not build the refund …". A stray refund leaves out of its build a deposit worth no more
+  requested; the failure is the latest word on them also when a stray refund of other coins (a deposit after the
+  close) was requested while the refund still waited, so those coins fail too-small once. A later deposit left out on
+  that order (one that did not count at the cancellation and has confirmed since, noted as above) makes them worth
+  more: the next pass requests a stray refund of them all. The order page reads "Cancelled; the market could not build
+  the refund …". On a database upgraded from before A-435, the deposits of a cancelled order whose refund had already
+  failed so are left out, with the same note, by the first pass that reads its escrow (at the latest the daily
+  check). A stray refund leaves out of its build a deposit worth no more
   than its own spending cost at the current fee rate (105 vB times `ESCROW_BTC_FEE_RATE`) while another deposit
   remains; the deposit left out stays for a later stray refund (A-436). A cancelled order's status follows its stray
   refund: held, awaiting signatures, broadcast, then confirmed.

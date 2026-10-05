@@ -22,16 +22,17 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 	if a.escrowXMR != nil {
 		v.Threshold = a.escrowXMR.confirmations
 	}
-	var refund string
+	var refund, strayState string
 	var feeBps int64
 	var shipByOpen bool
 	var windowFrom time.Time
 	var shipBy, destroyed sql.NullTime
 	if err := a.db.QueryRowContext(ctx, `SELECT es.address,es.refund_address,es.fee_bps,
 		GREATEST(es.created,(SELECT max(created) FROM payments WHERE order_id=es.order_id AND confirmations>=0 AND NOT locked)),
-		es.ship_by,COALESCE(es.ship_by<=now(),false),w.destroyed_at
+		es.ship_by,COALESCE(es.ship_by<=now(),false),w.destroyed_at,
+		COALESCE((SELECT x.state FROM xmr_settlements x WHERE x.order_id=es.order_id AND x.kind='stray_refund' ORDER BY x.id DESC LIMIT 1),'')
 		FROM escrows es JOIN xmr_escrow_slots s ON s.id=es.xmr_slot_id JOIN xmr_escrow_wallets w ON w.id=s.wallet_id
-		WHERE es.order_id=$1 AND es.coin='XMR'`, o.ID).Scan(&v.Address, &refund, &feeBps, &windowFrom, &shipBy, &shipByOpen, &destroyed); err != nil {
+		WHERE es.order_id=$1 AND es.coin='XMR'`, o.ID).Scan(&v.Address, &refund, &feeBps, &windowFrom, &shipBy, &shipByOpen, &destroyed, &strayState); err != nil {
 		return err
 	}
 	if destroyed.Valid {
@@ -47,17 +48,18 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 	if err != nil {
 		return err
 	}
-	var received, pending, afterCloseSeen, leftOutSeen int64
+	// unspent counts the deposits that do not count for the order and that no settlement spends yet (A-435).
+	var received, pending, afterCloseSeen, leftOutSeen, unspent int64
 	remaining := required
-	rows, err := a.db.QueryContext(ctx, "SELECT txid,amount,confirmations,locked,after_close,escrow_left_out FROM payments WHERE order_id=$1 ORDER BY created,id", o.ID)
+	rows, err := a.db.QueryContext(ctx, "SELECT txid,amount,confirmations,locked,after_close,escrow_left_out,spent_outside,xmr_settlement_id IS NOT NULL FROM payments WHERE order_id=$1 ORDER BY created,id", o.ID)
 	if err != nil {
 		return err
 	}
 	for rows.Next() {
 		var dep PaymentDeposit
 		var amt int64
-		var locked, afterClose, leftOut bool
-		if err = rows.Scan(&dep.TxID, &amt, &dep.Confirmations, &locked, &afterClose, &leftOut); err != nil {
+		var locked, afterClose, leftOut, outside, settled bool
+		if err = rows.Scan(&dep.TxID, &amt, &dep.Confirmations, &locked, &afterClose, &leftOut, &outside, &settled); err != nil {
 			rows.Close()
 			return err
 		}
@@ -88,6 +90,9 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 		}
 		if dep.Confirmations >= 0 && !locked && !afterClose {
 			remaining -= min(remaining, amt)
+		}
+		if (afterClose || leftOut) && !settled && !outside && !locked && dep.Confirmations >= 0 {
+			unspent++
 		}
 		v.Deposits = append(v.Deposits, dep)
 	}
@@ -129,7 +134,12 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 	case o.State == stateCancelled && afterCloseSeen > 0:
 		v.Status = "Cancelled; a deposit arrived after the order closed. It is not counted and is returned to the buyer's refund address."
 	case o.State == stateCancelled && leftOutSeen > 0:
-		v.Status = "Cancelled; a deposit to this escrow did not count for the order. It stays in the escrow account until a stray refund returns it, less the network fee, to the buyer's refund address."
+		v.Status = "Cancelled; a deposit to this escrow did not count for the order. It "
+		if tail := xmrStrayStatus(strayState, unspent); tail != "" {
+			v.Status += tail
+		} else {
+			v.Status += "stays in the escrow account until a stray refund returns it, less the network fee, to the buyer's refund address."
+		}
 	case o.State == stateCancelled && !v.Available:
 		// Nothing is read while Monero escrow is unavailable, so an empty ledger proves nothing.
 		v.Status = "Cancelled. This escrow cannot be checked right now because Monero escrow is unavailable, so a deposit to it may not be shown here."
@@ -169,6 +179,27 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 	}
 	d.Transitions = kept
 	return nil
+}
+
+// xmrStrayStatus ends a cancelled Monero order's status about a deposit that did not count (A-435), after "It", by the
+// state of the order's latest stray refund, as strayStatus does for a Bitcoin one: requested or built (the market sends
+// it), relayed (sent), confirmed. It is "" when there is none of these, or when a deposit that does not count is not
+// spent by it yet (unspent; a requested stray refund claims its deposits only once built), so the status says what it
+// said before: the deposit stays until a stray refund returns it.
+func xmrStrayStatus(state string, unspent int64) string {
+	switch {
+	case state == "requested":
+	case unspent > 0:
+		return ""
+	case state == "built":
+	case state == "relayed":
+		return "is being returned, less the network fee, to the buyer's refund address by the stray refund below, which is sent and waits for confirmations."
+	case state == "confirmed":
+		return "is back at the buyer's refund address: the stray refund below that returned it is confirmed."
+	default:
+		return ""
+	}
+	return "stays in the escrow account until the market sends the stray refund below, which returns it, less the network fee, to the buyer's refund address."
 }
 
 // xmrEscrowCheckoutOffer offers Monero escrow checkout to the buyer of an XMR draft on a listing that takes escrow, or
