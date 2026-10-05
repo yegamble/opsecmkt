@@ -447,6 +447,10 @@ func TestXMREscrowLeftOutDepositLine(t *testing.T) {
 	if got := x.xmrSettlements(order); len(got) != 2 || !strings.HasPrefix(got[1], "stray_refund relayed ") {
 		t.Fatalf("the next pass: settlements %v", got)
 	}
+	// The status follows the latest stray refund (relayed), not the first one (confirmed) (QA435B-5).
+	if panel := x.panel(order, bsess); !strings.Contains(panel, didNotCount+"is being returned, less the network fee, to the buyer's refund address by the stray refund below, which is sent and waits for confirmations.") {
+		t.Fatalf("the next pass: panel:\n%s", panel)
+	}
 
 	// A top-up left out of the release built before it confirmed: its own line; the price alone counts.
 	order, addr = x.freshCheckout(x.digital(x.vendor))
@@ -475,6 +479,39 @@ func TestXMREscrowLeftOutDepositLine(t *testing.T) {
 	panel = x.panel(order, bsess)
 	if open := "Left out — not counted for the order; returned to the buyer's refund address by a stray refund once the order is closed and it is confirmed"; !strings.Contains(panel, open) || strings.Contains(panel, line) || x.state(order) != statePaid {
 		t.Fatalf("left out on an open order (%s): panel:\n%s", x.state(order), panel)
+	}
+}
+
+// A-435 (QA435B-6): a deposit that did not count at the cancellation (A-424), mined since and too few for a stray
+// refund: the stray refund stays requested with the too-small wait, whose text says the market cannot send it. The
+// cancelled status says the same, not that it stays until the market sends the stray refund.
+func TestXMREscrowLeftOutTooFewStatus(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	order, addr := x.freshCheckout(x.digital(x.vendor))
+	bsess := x.sessOf(order, roleBuyer)
+	txid := hex64("left out too few " + order)
+	x.fake.payAddress(addr, txid, minPayoutXMR/2, 0)
+	x.mustPoll()
+	x.fake.setTransfer(txid, func(t *fakeXMRTransfer) { t.DoubleSpend = true })
+	x.mustPoll()
+	agExec(x.testEnv, "UPDATE escrows SET created=now()-interval '3 days' WHERE order_id=$1", order)
+	x.mustPoll()
+	if x.state(order) != stateCancelled {
+		t.Fatalf("at the end of the window: %s", x.state(order))
+	}
+	x.fake.setTransfer(txid, func(t *fakeXMRTransfer) { t.DoubleSpend, t.Confs, t.Pool = false, 20, false })
+	for range 3 {
+		x.mustPoll()
+	}
+	s := x.settlementOf(order, "stray_refund")
+	if s.State != "requested" || x.waitClass(s.ID) != xmrTooSmall || agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND escrow_left_out AND NOT after_close", order) != 1 {
+		t.Fatalf("the stray refund of too few coins: %+v wait %q", s, x.waitClass(s.ID))
+	}
+	panel := x.panel(order, bsess)
+	want := "Cancelled; a deposit to this escrow did not count for the order. It stays in the escrow account, because the coins there are too few to pay the network fee and an output of at least " + amount(minPayoutXMR, 12) + " XMR, so the market cannot send the stray refund below."
+	if !strings.Contains(panel, want) || !strings.Contains(panel, xmrSettleWaitText(xmrTooSmall, "stray_refund", x.A.escrowXMR.confirmations)) || strings.Contains(panel, "until the market sends the stray refund below") {
+		t.Fatalf("too few for a stray refund: panel:\n%s", panel)
 	}
 }
 

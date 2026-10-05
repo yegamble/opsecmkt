@@ -933,9 +933,12 @@ broadcast.
   coins out (flagged once: an order note saying the refund could not be built because they were too few, the buyer
   and staff told) and holds them as a failed stray refund's coins are held, so no stray refund of the same coins is
   requested; the failure is the latest word on them also when a stray refund of other coins (a deposit after the
-  close) was requested while the refund still waited, so those coins fail too-small once. A later deposit left out on
-  that order (one that did not count at the cancellation and has confirmed since, noted as above) makes them worth
-  more: the next pass requests a stray refund of them all. The order page reads "Cancelled; the market could not build
+  close) was requested and built while the refund still waited, so those coins fail too-small once. A stray refund
+  requested while the refund waited but still being built when the refund fails (both in the same pass) adds those
+  coins to its own: built, it returns them, and the refund's failure then holds nothing more (a later deposit gets its
+  own stray refund); failing too-small, it makes the same coins fail a second time, at the grown value, after which
+  they are held. A later deposit left out on that order (one that did not count at the cancellation and has
+  confirmed since, noted as above) makes them worth more: the next pass requests a stray refund of them all. The order page reads "Cancelled; the market could not build
   the refund …". On a database upgraded from before A-435, the deposits of a cancelled order whose refund had already
   failed so are left out, with the same note, by the first pass that reads its escrow (at the latest the daily
   check). A stray refund leaves out of its build a deposit worth no more

@@ -39,8 +39,14 @@ const (
 	// higher id, but if it was built before the refund failed it never saw the coins the refund left out, so a stray
 	// refund of them would fail the same way a second time (QA SHOULD-1). Nor by updated alone, which moves when a
 	// built stray refund is signed, broadcast or confirmed. A stray refund requested before the refund failed and built
-	// after it did see those coins: its own failure, if any, is the later one.
-	strayLatestSQL = `s.order_id=es.order_id AND (s.kind='stray_refund' OR s.kind='refund' AND o.state='cancelled')
+	// after it did see those coins: its own failure, if any, is the later one; built, it spends them, so the refund's
+	// failure is no longer the word on any coins (QA435B-1), though its created is older. The refund counts only while
+	// no stray refund spends a deposit it left out: one left out and flagged, not recorded after the close
+	// (leaveOutTooFew, and leaveOutUncounted's later deposits, which a stray refund built after the failure spends with
+	// them). A bounded build's leaveOut does not flag, and leaveOutTopUps acts only on a built refund, which never fails
+	// too-small. A stray refund keeps the deposits it spends (only a release or refund is superseded), so this is final.
+	strayLatestSQL = `s.order_id=es.order_id AND (s.kind='stray_refund' OR s.kind='refund' AND o.state='cancelled'
+			AND NOT EXISTS(SELECT 1 FROM payments p JOIN settlements t ON t.id=p.settlement_id WHERE p.order_id=es.order_id AND t.kind='stray_refund' AND p.escrow_left_out AND p.flagged AND NOT p.after_close))
 		ORDER BY CASE WHEN s.state='failed' THEN s.updated ELSE s.created END DESC,s.id DESC LIMIT 1`
 	// strayHeldSQL is true while the coins a stray refund of escrow es would return are held (A-434): there are some,
 	// the latest word on them (strayLatestSQL) is a failure too-small ($3), they are worth no more than the ones it could
@@ -130,7 +136,7 @@ func (a *App) requestStrays(ctx context.Context, threshold, rate int64, orders [
 // the buyer's request always gets one stray refund when there are eligible deposits: its build decides, and its
 // failure is the answer. A failure stored before A-434 has no input_total and is tried once more, which records it.
 // A-435: on a cancelled order whose refund failed too-small, that failure holds the coins it left out the same way
-// until a stray refund requested after it (strayLatestSQL).
+// until a stray refund requested after it, or one that spends a deposit it left out (strayLatestSQL).
 func (a *App) requestStray(ctx context.Context, threshold, rate int64, orderID string) error {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
