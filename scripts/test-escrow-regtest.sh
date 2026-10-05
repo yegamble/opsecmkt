@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Manual Bitcoin escrow check on a real Bitcoin Core regtest node (WR-escrow Phase 1, A-246). Not run in CI.
+# Bitcoin escrow check on a real Bitcoin Core regtest node (WR-escrow Phase 1, A-246). Run by hand, and in CI by the escrow-regtest
+# job (A-438, .github/workflows/ci.yaml, docs/ci-cd.md), which starts a node like the one below with generated passwords.
 # REGTEST ONLY: it refuses any node that does not report chain "regtest", before any wallet call.
 #
 # Slice P1-a leg: a buyer's Core wallet holding a BIP48 account registers its tpub with origin on a real App,
