@@ -1,0 +1,39 @@
+{
+ "note": "Signed escrow settlement PSBTs from scripts/test-escrow-wallets.sh: regtest, throwaway keys, public keys only.",
+ "generated_by": "scripts/test-escrow-wallets.sh at commit cf6a8a0fdbb4bb79d1a2056619778393f129fc99 (uncommitted changes under internal/ or scripts/)",
+ "entries": [
+  {
+   "file": "electrum-shape-b-bare.psbt",
+   "wallet": "Electrum 4.8.2",
+   "shape": "b",
+   "variant": "bare cosigners, no derivation at all",
+   "party_pubkey": "03d2d9447a1886df34448a3ab8711187c463b3c486343c087ee22db85fdbfe2edc",
+   "market_pubkey": "034109ca75196acd4226ebefb162575f32db00bde2acca25075d8b06f1dd6c4cbd",
+   "market_fingerprint": "6fe05790",
+   "txid": "c8949f321bca265bccd49a06cb99b8f11b39a6bca3cf7fc615028998a1aed8b4",
+   "want": "refused"
+  },
+  {
+   "file": "electrum-shape-b-own-origin.psbt",
+   "wallet": "Electrum 4.8.2",
+   "shape": "b",
+   "variant": "the party's own origin only, as the market serves its copies today",
+   "party_pubkey": "03d2d9447a1886df34448a3ab8711187c463b3c486343c087ee22db85fdbfe2edc",
+   "market_pubkey": "034109ca75196acd4226ebefb162575f32db00bde2acca25075d8b06f1dd6c4cbd",
+   "market_fingerprint": "6fe05790",
+   "txid": "c8949f321bca265bccd49a06cb99b8f11b39a6bca3cf7fc615028998a1aed8b4",
+   "want": "refused"
+  },
+  {
+   "file": "electrum-shape-b-all-derivations-global-xpubs.psbt",
+   "wallet": "Electrum 4.8.2",
+   "shape": "b",
+   "variant": "a derivation for every key and rooted global xpubs",
+   "party_pubkey": "03d2d9447a1886df34448a3ab8711187c463b3c486343c087ee22db85fdbfe2edc",
+   "market_pubkey": "034109ca75196acd4226ebefb162575f32db00bde2acca25075d8b06f1dd6c4cbd",
+   "market_fingerprint": "6fe05790",
+   "txid": "c8949f321bca265bccd49a06cb99b8f11b39a6bca3cf7fc615028998a1aed8b4",
+   "want": "refused"
+  }
+ ]
+}
