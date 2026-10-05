@@ -217,18 +217,19 @@ func TestEscrowChainPinRules(t *testing.T) {
 			t.Fatalf("no escrow, %s: %q %v %v (stored %v)", id, pinned, ok, err, pin())
 		}
 	}
-	if escrowChainID("signet", "51") != "signet:51" || escrowChainID("regtest", "51") != "regtest" {
-		t.Fatalf("chain IDs %q %q", escrowChainID("signet", "51"), escrowChainID("regtest", "51"))
+	// The database is pinned to a signet (challenge 51) while no escrow exists, then gets an escrow: the same challenge
+	// matches, another challenge or chain does not, and nothing is written.
+	signet51 := escrowChainID("signet", "51")
+	if _, ok, err := pinEscrowChain(ctx, x.DB, signet51); err != nil || !ok {
+		t.Fatalf("re-pin to %s: %v %v", signet51, ok, err)
 	}
 	x.mustCheckout(x.order, regtestAddr("rules-refund"))
-	// Escrows exist, pinned to a signet: the same challenge matches, another one does not, and nothing is written.
-	x.DB.Exec("UPDATE settings SET value='signet:51' WHERE key=$1", escrowChainPin)
-	if pinned, ok, err := pinEscrowChain(ctx, x.DB, "signet:51"); err != nil || !ok || pinned != "signet:51" {
+	if pinned, ok, err := pinEscrowChain(ctx, x.DB, escrowChainID("signet", "51")); err != nil || !ok || pinned != signet51 {
 		t.Fatalf("same signet: %q %v %v", pinned, ok, err)
 	}
-	for _, id := range []string{escrowChainID("signet", "5121deadbeef51ae"), "regtest", "testnet4", "signet"} {
-		if pinned, ok, err := pinEscrowChain(ctx, x.DB, id); err != nil || ok || pinned != "signet:51" || strings.Join(pin(), ",") != "signet:51" {
-			t.Fatalf("escrows on signet:51, node %s: %q %v %v (stored %v)", id, pinned, ok, err, pin())
+	for _, id := range []string{escrowChainID("signet", "5121deadbeef51ae"), escrowChainID("signet", ""), "regtest", "testnet4"} {
+		if pinned, ok, err := pinEscrowChain(ctx, x.DB, id); err != nil || ok || pinned != signet51 || strings.Join(pin(), ",") != signet51 {
+			t.Fatalf("escrows on %s, node %s: %q %v %v (stored %v)", signet51, id, pinned, ok, err, pin())
 		}
 	}
 	// Escrows exist and no pin (a database from before A-439): a signet node is refused and nothing is written; a
@@ -245,5 +246,9 @@ func TestEscrowChainPinRules(t *testing.T) {
 	x.restart()
 	if x.A.escrow.Load() == nil || strings.Join(pin(), ",") != "regtest" {
 		t.Fatalf("backfill at startup: %v %v", x.A.escrow.Load() != nil, pin())
+	}
+	// The identity itself: chain name, plus signet_challenge on signet only.
+	if escrowChainID("signet", "51") != "signet:51" || escrowChainID("regtest", "51") != "regtest" {
+		t.Fatalf("chain IDs %q %q", escrowChainID("signet", "51"), escrowChainID("regtest", "51"))
 	}
 }
