@@ -282,16 +282,25 @@ func (a *App) leaveOutTopUps(ctx context.Context, tx *sql.Tx, o *Order) error {
 // leaveOutTopUps does, in tx under the order row lock: one order note, a notice to the buyer and to staff, only for the
 // deposits newly marked. The stray refund returns them to the buyer's refund address, with a too-small refund's coins.
 // xmrLeaveOutUncounted is the Monero escrow's (A-424).
+//
+// On a database upgraded from before A-435, a refund that failed too-small left the deposits it tried counted, not
+// left out (QA NIT-1). They did count, so they are left out here with leaveOutTooFew's note instead. Such a failure is
+// known by the order having no deposit left out and flagged other than after the order closed: since A-435 the failure
+// itself leaves its deposits out and flags them, and before it nothing else on such an order did (leaveOutTopUps acts
+// on a built refund only; a bounded build's leaveOut does not flag).
 func (a *App) leaveOutUncounted(ctx context.Context, tx *sql.Tx, o *Order, threshold int64) error {
 	if o.State != stateCancelled {
 		return nil
 	}
 	var n, sum int64
+	var upgraded bool
 	if err := tx.QueryRowContext(ctx, `WITH m AS (UPDATE payments SET escrow_left_out=true,flagged=true,updated=now() WHERE order_id=$1 AND settlement_id IS NULL
 			AND confirmations>=$2 AND NOT locked AND NOT after_close AND NOT escrow_left_out AND NOT spent_outside
 			AND NOT EXISTS (SELECT 1 FROM settlements WHERE order_id=$1 AND kind='refund'
 				AND state IN ('building','awaiting_signature','party_signed','signed','broadcast','confirmed')) RETURNING amount)
-		SELECT count(*),COALESCE(sum(amount),0) FROM m`, o.ID, threshold).Scan(&n, &sum); err != nil || n == 0 {
+		SELECT count(*),COALESCE(sum(amount),0),
+			EXISTS(SELECT 1 FROM settlements WHERE order_id=$1 AND kind='refund' AND state='failed' AND build_error=$3)
+			AND NOT EXISTS(SELECT 1 FROM payments WHERE order_id=$1 AND escrow_left_out AND flagged AND NOT after_close) FROM m`, o.ID, threshold, settleTooSmall).Scan(&n, &sum, &upgraded); err != nil || n == 0 {
 		return err
 	}
 	count, is, it, stays := "1 deposit", "is", "it", "It stays"
@@ -300,6 +309,9 @@ func (a *App) leaveOutUncounted(ctx context.Context, tx *sql.Tx, o *Order, thres
 	}
 	note := count + " (" + amount(sum, 8) + " BTC, " + a.netTag() + " " + a.escrowNetwork() + ") to this order's escrow, now confirmed, " + is + " not spent by any refund of this order: the escrow node reported " + it + " as conflicted, or no longer listed " + it + ", when the order was cancelled or while its refund was being built, or that refund ended without spending " + it + ". " +
 		stays + " in the escrow; a stray refund returns " + it + ", less the network fee, to the buyer's refund address given at checkout. Do not send more coins to this escrow."
+	if upgraded {
+		note = a.tooFewNote(n, sum)
+	}
 	if err := a.flagOrder(ctx, tx, o, note, ""); err != nil {
 		return err
 	}
@@ -326,17 +338,23 @@ func (a *App) leaveOutTooFew(ctx context.Context, tx *sql.Tx, o *Order, tried []
 		SELECT count(*),COALESCE(sum(amount),0) FROM m`, o.ID, ids).Scan(&n, &sum); err != nil || n == 0 {
 		return err
 	}
-	count, is, it, stays := "1 deposit", "is", "it", "It stays"
-	if n > 1 {
-		count, is, it, stays = strconv.FormatInt(n, 10)+" deposits", "are", "them", "They stay"
-	}
-	note := count + " (" + amount(sum, 8) + " BTC, " + a.netTag() + " " + a.escrowNetwork() + ") to this order's escrow " + is + " not spent by its refund: the market could not build the refund because the coins were too few to pay the network fee and an output of at least 0.0001 BTC. " +
-		stays + " in the escrow; a stray refund returns " + it + ", together with any later deposit to this escrow, less the network fee, to the buyer's refund address given at checkout once together they can pay the network fee."
+	note := a.tooFewNote(n, sum)
 	if err := a.flagOrder(ctx, tx, o, note, ""); err != nil {
 		return err
 	}
 	_, err := tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, "Order "+shortID(o.ID)+": "+note)
 	return err
+}
+
+// tooFewNote is the order note on n deposits worth sum sats that a cancelled order's refund could not spend because
+// they were too few (leaveOutTooFew, and leaveOutUncounted on a database upgraded from before A-435).
+func (a *App) tooFewNote(n, sum int64) string {
+	count, is, it, stays := "1 deposit", "is", "it", "It stays"
+	if n > 1 {
+		count, is, it, stays = strconv.FormatInt(n, 10)+" deposits", "are", "them", "They stay"
+	}
+	return count + " (" + amount(sum, 8) + " BTC, " + a.netTag() + " " + a.escrowNetwork() + ") to this order's escrow " + is + " not spent by its refund: the market could not build the refund because the coins were too few to pay the network fee and an output of at least 0.0001 BTC. " +
+		stays + " in the escrow; a stray refund returns " + it + ", together with any later deposit to this escrow, less the network fee, to the buyer's refund address given at checkout once together they can pay the network fee."
 }
 
 // physicalReleaseNotSent is the honest line on a release that completes only with both parties' signatures (a
