@@ -47,17 +47,17 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 	if err != nil {
 		return err
 	}
-	var received, pending, afterCloseSeen int64
+	var received, pending, afterCloseSeen, leftOutSeen int64
 	remaining := required
-	rows, err := a.db.QueryContext(ctx, "SELECT txid,amount,confirmations,locked,after_close FROM payments WHERE order_id=$1 ORDER BY created,id", o.ID)
+	rows, err := a.db.QueryContext(ctx, "SELECT txid,amount,confirmations,locked,after_close,escrow_left_out FROM payments WHERE order_id=$1 ORDER BY created,id", o.ID)
 	if err != nil {
 		return err
 	}
 	for rows.Next() {
 		var dep PaymentDeposit
 		var amt int64
-		var locked, afterClose bool
-		if err = rows.Scan(&dep.TxID, &amt, &dep.Confirmations, &locked, &afterClose); err != nil {
+		var locked, afterClose, leftOut bool
+		if err = rows.Scan(&dep.TxID, &amt, &dep.Confirmations, &locked, &afterClose, &leftOut); err != nil {
 			rows.Close()
 			return err
 		}
@@ -70,6 +70,14 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 		case afterClose:
 			dep.State = "Arrived after the order closed — not counted; returned to the buyer's refund address"
 			afterCloseSeen++
+		case leftOut:
+			// A-435: left out after a build (xmrLeaveOutTopUps), or not counted when the order was cancelled and mined
+			// since (A-424): a stray refund returns it, never the order's settlement.
+			dep.State = "Left out — not counted for the order; returned to the buyer's refund address by a stray refund once confirmed"
+			if !isTerminal(o.State) {
+				dep.State = "Left out — not counted for the order; returned to the buyer's refund address by a stray refund once the order is closed and it is confirmed"
+			}
+			leftOutSeen++
 		case dep.Confirmations >= xmrConfirmationsCeiling(v.Threshold):
 			// Stored confirmations stop at the ceiling (xmrConfirmationsCeiling).
 			dep.State, received = "Confirmed ("+strconv.FormatInt(dep.Confirmations, 10)+" confirmations or more)", received+amt
@@ -120,6 +128,8 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 		v.Status = "Cancelled; the coins in this escrow go back to the buyer's refund address by a refund the market builds and sends."
 	case o.State == stateCancelled && afterCloseSeen > 0:
 		v.Status = "Cancelled; a deposit arrived after the order closed. It is not counted and is returned to the buyer's refund address."
+	case o.State == stateCancelled && leftOutSeen > 0:
+		v.Status = "Cancelled; a deposit to this escrow did not count for the order. It stays in the escrow account until a stray refund returns it, less the network fee, to the buyer's refund address."
 	case o.State == stateCancelled && !v.Available:
 		// Nothing is read while Monero escrow is unavailable, so an empty ledger proves nothing.
 		v.Status = "Cancelled. This escrow cannot be checked right now because Monero escrow is unavailable, so a deposit to it may not be shown here."

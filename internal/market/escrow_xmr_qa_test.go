@@ -354,3 +354,104 @@ func TestXMREscrowStraysPerWallet(t *testing.T) {
 		t.Fatalf("its own wallet's pass: %+v", s)
 	}
 }
+
+// A-435 (4): on the Monero order page a left-out deposit has its own line and is not counted as received: one that did
+// not count when the order was cancelled and was mined since (A-424), and a top-up left out of a release already built
+// (xmrLeaveOutTopUps). The cancelled order's status neither promises the order's refund nor says nothing was received.
+func TestXMREscrowLeftOutDepositLine(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	threshold := strconv.FormatInt(x.A.escrowXMR.confirmations, 10)
+	confirmed := func(sum string) string {
+		return "Confirmed (at least " + threshold + " confirmations)</dt>\n<dd>" + sum + " XMR</dd>"
+	}
+	const line = "Left out — not counted for the order; returned to the buyer's refund address by a stray refund once confirmed"
+
+	order, addr := x.freshCheckout(x.digital(x.vendor))
+	bsess := x.sessOf(order, roleBuyer)
+	txid := hex64("left out line " + order)
+	x.fake.payAddress(addr, txid, xmrListingPrice, 0)
+	x.mustPoll()
+	x.fake.setTransfer(txid, func(t *fakeXMRTransfer) { t.DoubleSpend = true })
+	x.mustPoll()
+	agExec(x.testEnv, "UPDATE escrows SET created=now()-interval '3 days' WHERE order_id=$1", order)
+	x.mustPoll()
+	if x.state(order) != stateCancelled {
+		t.Fatalf("at the end of the window: %s", x.state(order))
+	}
+	x.fake.setTransfer(txid, func(t *fakeXMRTransfer) { t.DoubleSpend, t.Confs, t.Pool = false, 20, false })
+	for pass := range 2 { // left out at the end of the first pass; the stray refund is requested and relayed on the next
+		x.mustPoll()
+		panel := x.panel(order, bsess)
+		for _, want := range []string{line, confirmed("0"), "Cancelled; a deposit to this escrow did not count for the order. It stays in the escrow account until a stray refund returns it, less the network fee, to the buyer's refund address."} {
+			if !strings.Contains(panel, want) {
+				t.Fatalf("pass %d: panel lacks %q:\n%s", pass, want, panel)
+			}
+		}
+		for _, not := range []string{"nothing was received", "refund the market builds and sends", "Confirmed (20 confirmations or more)"} {
+			if strings.Contains(panel, not) {
+				t.Fatalf("pass %d: panel says %q:\n%s", pass, not, panel)
+			}
+		}
+	}
+	if s := x.settlementOf(order, "stray_refund"); s.State != "relayed" {
+		t.Fatalf("stray refund: %+v", s)
+	}
+
+	// A top-up left out of the release built before it confirmed: its own line; the price alone counts.
+	order, addr = x.freshCheckout(x.digital(x.vendor))
+	x.fake.payAddress(addr, hex64("price "+order), xmrListingPrice, 10)
+	x.fake.payAddress(addr, hex64("top-up "+order), 3000000000, 4)
+	x.mustPoll()
+	release, _ := x.release(order)
+	x.mustPoll()
+	if s := x.settlement(release); s.State != "relayed" {
+		t.Fatalf("release: %+v", s)
+	}
+	x.fake.setConfs(hex64("top-up "+order), 12)
+	x.mustPoll()
+	panel := x.panel(order, x.sessOf(order, roleBuyer))
+	if !strings.Contains(panel, line) || !strings.Contains(panel, confirmed("0.5")) || !strings.Contains(panel, "Funded and completed") {
+		t.Fatalf("a top-up left out: panel:\n%s", panel)
+	}
+}
+
+// A-435 (5), the probe: a Monero stray refund whose coins are too few for the minimum output does not repeat on every
+// pass (the Bitcoin A-434 loop). Its too-small is a wait class: the stray refund stays requested, staff are told once,
+// and no other is requested while it is; a deposit more lets the same stray refund build and send both.
+func TestXMREscrowStrayTooSmallOnce(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	order, addr := x.freshCheckout(x.digital(x.vendor))
+	buyer := agStrings(t, x.testEnv, "SELECT buyer_id FROM orders WHERE id=$1", order)[0]
+	agExec(x.testEnv, "UPDATE escrows SET created=now()-interval '3 days' WHERE order_id=$1", order)
+	x.mustPoll()
+	if x.state(order) != stateCancelled {
+		t.Fatalf("at the end of the window: %s", x.state(order))
+	}
+	x.fake.payAddress(addr, hex64("tiny "+order), minPayoutXMR/2, 20)
+	x.mustPoll()
+	x.mustPoll()
+	refund := agStrings(t, x.testEnv, "SELECT refund_address FROM escrows WHERE order_id=$1", order)[0]
+	stray := x.settlementOf(order, "stray_refund")
+	if stray.State != "requested" || x.waitClass(stray.ID) != xmrTooSmall {
+		t.Fatalf("the stray refund of too few coins: %+v %s", stray, x.waitClass(stray.ID))
+	}
+	counts := func() []int {
+		return []int{agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1", order), x.notified(buyer, shortID(order)), x.staffFlags(order),
+			agInt(x.testEnv, "SELECT count(*) FROM xmr_settlements WHERE order_id=$1", order)}
+	}
+	before := counts()
+	for range 3 {
+		x.mustPoll()
+	}
+	if after := counts(); !slices.Equal(after, before) || !slices.Equal(x.xmrSettlements(order), []string{"stray_refund requested " + refund}) {
+		t.Fatalf("over three passes: notes, buyer notices, staff notices, settlements %v (were %v); settlements %v", after, before, x.xmrSettlements(order))
+	}
+	x.fake.payAddress(addr, hex64("more "+order), 10*minPayoutXMR, 20)
+	x.mustPoll()
+	if s := x.settlement(stray.ID); s.State != "relayed" || s.InputTotal != minPayoutXMR/2+10*minPayoutXMR || len(x.xmrSettlements(order)) != 1 {
+		t.Fatalf("a deposit more: %+v (wait %q), settlements %v; deposits %v", s, x.waitClass(stray.ID), x.xmrSettlements(order),
+			agStrings(t, x.testEnv, "SELECT amount||' '||confirmations||' '||after_close||' '||COALESCE(xmr_settlement_id,0) FROM payments WHERE order_id=$1 ORDER BY id", order))
+	}
+}

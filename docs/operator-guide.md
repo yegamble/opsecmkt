@@ -676,8 +676,8 @@ has run on a public test network. Never switch it on for a market that takes rea
   pooled order is, and its refund requested; the buyer is told. A top-up within the window still completes it. A
   deposit Core reports as conflicted (negative confirmations), or no longer lists, does not count, so it does not keep
   the order open; if it confirms after the order was cancelled and no refund spends it, it is returned by a stray
-  refund (*Stray refunds* below; A-428), except on an order whose refund failed because the escrow's coins were too
-  few: there it stays in the escrow and is not returned automatically (see *Stray refunds*; A-435).
+  refund (*Stray refunds* below; A-428), on an order whose refund failed because the escrow's coins were too few
+  together with those coins (A-435).
 - **Fingerprint pin.** At the first start with escrow on, the app reads the arbiter wallet's master key fingerprint
   (from a fresh change address, with `getrawchangeaddress` and `getaddressinfo`) and pins it in the database
   (`settings` key `escrow_btc_arbiter_fingerprint`). If a later start finds another fingerprint, for example a
@@ -819,7 +819,8 @@ broadcast.
   "escrow: settlement of order … not built yet: <class>" once per change, never a key, address or PSBT. An escrow
   too small to pay the fee and an output of at least 0.0001 BTC fails ("not built"), with a note and a notice to both
   parties; its coins stay in the escrow, where the buyer and the vendor can move them together from their own
-  wallets.
+  wallets. A cancelled order's refund that fails so also leaves those coins out for a stray refund (flagged, one note,
+  the buyer and staff told; *Stray refunds* below, A-435).
 - *Signing.* Each party sees the expected outputs (address, amount and whom each pays, and the network fee) and its
   own copy of the PSBT, with its key's origin and the other keys bare, in the page and as a download. Either party
   signs it in Bitcoin Core (`walletprocesspsbt` without finalizing, or the GUI's PSBT dialog) and pastes it back. The
@@ -928,12 +929,15 @@ broadcast.
   they are too few to return after the network fee (A-434).
   Lowering `ESCROW_BTC_FEE_RATE` below the rate that failed, or the buyer's *Recover coins at this escrow* (one build
   per request, whatever the coins are worth), tries again; if that fails too it is noted and told like the first.
-  Not returned automatically (A-435): a deposit that did not count (conflicted, or no longer listed) on a cancelled
-  order whose refund failed because the escrow's coins were too few. It is not left out or flagged and staff are not
-  told; the order page lists it as a confirmed deposit, its status still points to the refund, whose line says the
-  coins stay in the escrow, and the buyer's *Recover coins at this escrow* reports that no coins were found. The
-  market cannot move it on its own (it holds one of the three keys): the buyer and the vendor can move the escrow's
-  coins together from their own wallets, as the refund's note says.
+  A cancelled order whose refund failed because the escrow's coins were too few (A-435): the failure leaves those
+  coins out (flagged once: an order note saying the refund could not be built because they were too few, the buyer
+  and staff told) and holds them as a failed stray refund's coins are held, so no stray refund of the same coins is
+  requested. A later deposit left out on that order (one that did not count at the cancellation and has confirmed
+  since, noted as above) makes them worth more: the next pass requests a stray refund of them all. The order page reads
+  "Cancelled; the market could not build the refund …". A stray refund leaves out of its build a deposit worth no more
+  than its own spending cost at the current fee rate (105 vB times `ESCROW_BTC_FEE_RATE`) while another deposit
+  remains; the deposit left out stays for a later stray refund (A-436). A cancelled order's status follows its stray
+  refund: held, awaiting signatures, broadcast, then confirmed.
 
 **Physical orders (Phase 2).** Everything above applies to physical listings too, with these additions. All of it is
 regtest only, behind `ESCROW_BTC`, and tested as [per-order escrow](escrow.md#phase-2-bitcoin-escrow-for-physical-orders-on-regtest)
