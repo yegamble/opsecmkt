@@ -52,6 +52,12 @@ func regtestAddr(label string) string {
 	return segwitAddress("bcrt", 0, h[:20])
 }
 
+// netAddr is regtestAddr's address on the escrow node's chain (escrowChains, A-439): the same address on regtest.
+func (x *escrowEnv) netAddr(label string) string {
+	h := sha256.Sum256([]byte("addr:" + label))
+	return segwitAddress(escrowChains[x.A.escrowNetwork()], 0, h[:20])
+}
+
 type settleRow struct {
 	ID                                              int64
 	Kind, State, Signer, TxID, Raw, Cosigned, Error string
@@ -230,7 +236,7 @@ func TestEscrowCosignBroadcastConfirm(t *testing.T) {
 		t.Fatalf("outputs %q", outs)
 	}
 	for i, o := range final.Out {
-		script, _ := regtestAddressScript(strings.Fields(outs[i])[1])
+		script, _ := escrowAddressScript("regtest", strings.Fields(outs[i])[1])
 		if !slices.Equal(o.Script, script) {
 			t.Fatalf("output %d script", i)
 		}
@@ -783,7 +789,7 @@ func TestEscrowFinalTxChecks(t *testing.T) {
 	ws := sortedMultisigScript(fakeChild("a"), fakeChild("b"), fakeChild("c"))
 	sum := sha256.Sum256(ws)
 	dest := regtestAddr("final-check")
-	destScript, _ := regtestAddressScript(dest)
+	destScript, _ := escrowAddressScript("regtest", dest)
 	in := kv{[]byte{0x01}, append(append([]byte{0xa0, 0x86, 1, 0, 0, 0, 0, 0}, 34, 0, 32), sum[:]...)}
 	unsigned := []byte{2, 0, 0, 0, 1}
 	unsigned = append(unsigned, make([]byte, 32)...)
@@ -804,7 +810,7 @@ func TestEscrowFinalTxChecks(t *testing.T) {
 	}
 	outs := []settleOutput{{"claimant", dest, 99614}}
 	good := final(unsigned, nil, sig, sig, ws)
-	if c := checkFinalTx(good, stored, stored.TxID(), outs, 100000, 386); c != "" {
+	if c := checkFinalTx("regtest", good, stored, stored.TxID(), outs, 100000, 386); c != "" {
 		t.Fatalf("the stored transaction: %s", c)
 	}
 	other := slices.Clone(unsigned)
@@ -836,7 +842,7 @@ func TestEscrowFinalTxChecks(t *testing.T) {
 		{"a witness with a non-empty dummy", final(unsigned, []byte{1}, sig, sig, ws), finalWitness, outs, 100000, 386},
 		{"a signature ending in 0x01 that is not strict DER", final(unsigned, nil, sig, sigBadDER, ws), finalWitness, outs, 100000, 386},
 	} {
-		if got := checkFinalTx(c.raw, stored, stored.TxID(), c.outs, c.total, c.fee); got != c.want {
+		if got := checkFinalTx("regtest", c.raw, stored, stored.TxID(), c.outs, c.total, c.fee); got != c.want {
 			t.Errorf("%s: %q, want %q", c.name, got, c.want)
 		}
 	}
@@ -864,10 +870,10 @@ func TestEscrowFinalTxChecks(t *testing.T) {
 		witnesses = append(witnesses, w)
 	}
 	bigRaw := hex.EncodeToString(slices.Concat(big[:4], []byte{0, 1}, big[4:len(big)-4], slices.Concat(witnesses...), big[len(big)-4:]))
-	if c := checkFinalTx(bigRaw, bigStored, bigStored.TxID(), outs, 99614+110000, 110000); c != finalFee {
+	if c := checkFinalTx("regtest", bigRaw, bigStored, bigStored.TxID(), outs, 99614+110000, 110000); c != finalFee {
 		t.Fatalf("a fee above the absolute cap under the rate cap: %q", c)
 	}
-	if c := checkFinalTx(bigRaw, bigStored, bigStored.TxID(), outs, 99614+90000, 90000); c != "" {
+	if c := checkFinalTx("regtest", bigRaw, bigStored, bigStored.TxID(), outs, 99614+90000, 90000); c != "" {
 		t.Fatalf("a fee under both caps: %q", c)
 	}
 }
@@ -906,18 +912,18 @@ func TestRegtestAddressScript(t *testing.T) {
 		}
 	}
 	addr := regtestAddr("x")
-	if s, err := regtestAddressScript(addr); err != nil || len(s) != 22 || s[0] != 0 {
+	if s, err := escrowAddressScript("regtest", addr); err != nil || len(s) != 22 || s[0] != 0 {
 		t.Fatalf("%s: %x %v", addr, s, err)
 	}
 	for _, other := range []string{"bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4", "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx", "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2"} {
-		if _, err := regtestAddressScript(other); err == nil {
+		if _, err := escrowAddressScript("regtest", other); err == nil {
 			t.Errorf("%s accepted as a regtest address", other)
 		}
 	}
-	if s, err := regtestAddressScript(base58CheckEncode(append([]byte{0xc4}, make([]byte, 20)...))); err != nil || s[0] != 0xa9 {
+	if s, err := escrowAddressScript("regtest", base58CheckEncode(append([]byte{0xc4}, make([]byte, 20)...))); err != nil || s[0] != 0xa9 {
 		t.Fatalf("P2SH: %x %v", s, err)
 	}
-	if s, err := regtestAddressScript(base58CheckEncode(append([]byte{0x6f}, make([]byte, 20)...))); err != nil || s[0] != 0x76 {
+	if s, err := escrowAddressScript("regtest", base58CheckEncode(append([]byte{0x6f}, make([]byte, 20)...))); err != nil || s[0] != 0x76 {
 		t.Fatalf("P2PKH: %x %v", s, err)
 	}
 }

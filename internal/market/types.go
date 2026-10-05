@@ -241,6 +241,8 @@ type PageData struct {
 	EscrowKey *EscrowKeyView
 	// EscrowFee: /admin while ESCROW_BTC is on, the Bitcoin escrow market fee in force and its form (escrow_fee.go)
 	EscrowFee *EscrowFeeView
+	// EscrowNode: /admin while ESCROW_BTC is on and the escrow node is not synced or not on the pinned chain (A-439)
+	EscrowNode *EscrowNodeView
 	// EscrowReleaseDays: /admin while ESCROW_BTC is on, the release deadline length in force and its form (escrow_release_admin.go)
 	EscrowReleaseDays *EscrowReleaseDaysView
 	// EscrowRecovery: /admin, the Bitcoin escrow restore gate, held settlements and orphan addresses (escrow_recovery.go)
@@ -584,6 +586,19 @@ type EscrowBumpView struct {
 type EscrowFeeView struct {
 	Bps, Percent, Address string
 	Available             bool
+}
+
+// EscrowChainMismatch is the escrow chain pin (escrow_btc_chain) and the escrow node's chain identity startEscrow
+// refused against it (A-439); Pinned is "" when the database holds escrows and no pin.
+type EscrowChainMismatch struct {
+	Pinned, Reported string
+}
+
+// EscrowNodeView is the line under Payment providers on /admin about the Bitcoin escrow node (escrow_watch.go): the
+// reason class it is not synced for, or the chain it was refused for.
+type EscrowNodeView struct {
+	NotSynced string
+	Mismatch  *EscrowChainMismatch
 }
 
 // EscrowReleaseDaysView is the Bitcoin escrow release deadline length in force on /admin (escrow_release_admin.go):

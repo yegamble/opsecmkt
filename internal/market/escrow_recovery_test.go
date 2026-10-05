@@ -12,7 +12,7 @@ import (
 // settlement.
 func (x *escrowEnv) confirmedSettlement(label string) (string, int64) {
 	x.t.Helper()
-	order, id := x.built(regtestAddr("refund-"+label), regtestAddr("claim-"+label), 100000)
+	order, id := x.built(x.netAddr("refund-"+label), x.netAddr("claim-"+label), 100000)
 	x.signAs(order, roleVendor, id)
 	x.poll()
 	x.core.setTxConfs(x.settleByID(id).TxID, 3, "")

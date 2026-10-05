@@ -457,6 +457,7 @@ func TestEscrowWatchKeysReply(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		e.network = "regtest" // as startEscrow reads it from the node (the chain table keys on it, A-439)
 		keys, err := e.watchKeys(ctx, addr)
 		class := ""
 		if err != nil {

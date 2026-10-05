@@ -146,13 +146,13 @@ func (a *App) attemptsUnconfirmed(ctx context.Context, e *escrowBTC, at []bumpAt
 // nIn inputs and network fee parentFee, replacing a stored transaction with fee prevFee at prevRate: the outputs with
 // only the claimant's smaller by the extra fee, and the fee. It refuses (a class) a rate not above prevRate or a fee
 // short of BIP125's increment over prevFee, a fee above the caps and a claimant's output below floor.
-func planBump(outs []settleOutput, nIn int, parentFee, prevFee, prevRate, rate, floor int64) ([]settleOutput, int64, string) {
+func planBump(chain string, outs []settleOutput, nIn int, parentFee, prevFee, prevRate, rate, floor int64) ([]settleOutput, int64, string) {
 	vsize := settleVSize(nIn, len(outs))
 	fee := rate * vsize
 	switch {
 	case rate <= prevRate || fee < prevFee+escrowBumpIncrement*vsize:
 		return nil, fee, bumpFeeLow
-	case rate > bumpMaxRate(nIn, outs):
+	case rate > bumpMaxRate(chain, nIn, outs):
 		return nil, fee, settleFeeCap
 	}
 	next := bumpOutputsAt(outs, parentFee, fee)
@@ -176,11 +176,11 @@ const settleSigMin = 9
 // the shortest, when it does not decode) and each input's witness with two signatures of settleSigMin bytes, rounded
 // down. A bump's network fee is its rate on settleVSize's upper bound, so a fee within escrowMaxFeeRate at this size is
 // within it at any size the signed transaction can have, which finalize and testmempoolaccept check.
-func settleVSizeMin(nIn int, outs []settleOutput) int64 {
+func settleVSizeMin(chain string, nIn int, outs []settleOutput) int64 {
 	base := int64(4+4+len(compactSize(nIn))+len(compactSize(len(outs)))) + 41*int64(nIn)
 	for _, o := range outs {
 		n := 22
-		if script, err := regtestAddressScript(o.Address); err == nil {
+		if script, err := escrowAddressScript(chain, o.Address); err == nil {
 			n = len(script)
 		}
 		base += int64(8 + len(compactSize(n)) + n)
@@ -192,9 +192,9 @@ func settleVSizeMin(nIn int, outs []settleOutput) int64 {
 // bumpMaxRate is the highest fee rate (sat/vB) a fee bump of a settlement with nIn inputs and these outputs may ask
 // for: its fee (the rate on settleVSize's bound) stays within escrowMaxFee, and within escrowMaxFeeRate at the
 // smallest real size the transaction can have (settleVSizeMin, A-383).
-func bumpMaxRate(nIn int, outs []settleOutput) int64 {
+func bumpMaxRate(chain string, nIn int, outs []settleOutput) int64 {
 	bound := settleVSize(nIn, len(outs))
-	return min(int64(escrowMaxFeeRate), escrowMaxFeeRate*settleVSizeMin(nIn, outs)/bound, escrowMaxFee/bound)
+	return min(int64(escrowMaxFeeRate), escrowMaxFeeRate*settleVSizeMin(chain, nIn, outs)/bound, escrowMaxFee/bound)
 }
 
 // bumpOutputsAt is a bump's outputs at network fee fee: the settlement's, the claimant's smaller by fee - parentFee
@@ -215,7 +215,7 @@ func bumpOutputsAt(outs []settleOutput, parentFee, fee int64) []settleOutput {
 // smaller; a fee (inputTotal less the outputs) higher than prevFee, the stored transaction it replaces, by BIP125's
 // increment on the settlement's size bound; within escrowMaxFee and escrowMaxFeeRate; the claimant's output at or above
 // floor. It returns the fee and a fixed class ("" when it passes).
-func checkBump(parent, bump psbtTx, parentOuts []settleOutput, inputTotal, prevFee, floor int64) (int64, string) {
+func checkBump(chain string, parent, bump psbtTx, parentOuts []settleOutput, inputTotal, prevFee, floor int64) (int64, string) {
 	if bump.Version != parent.Version || bump.LockTime != parent.LockTime || !slices.Equal(bump.In, parent.In) {
 		return 0, bumpInputs
 	}
@@ -249,7 +249,7 @@ func checkBump(parent, bump psbtTx, parentOuts []settleOutput, inputTotal, prevF
 	switch {
 	case fee <= prevFee || fee-prevFee < escrowBumpIncrement*vsize:
 		return fee, bumpFeeLow
-	case fee > escrowMaxFee || fee > escrowMaxFeeRate*vsize || fee > escrowMaxFeeRate*settleVSizeMin(len(parent.In), parentOuts):
+	case fee > escrowMaxFee || fee > escrowMaxFeeRate*vsize || fee > escrowMaxFeeRate*settleVSizeMin(chain, len(parent.In), parentOuts):
 		return fee, settleFeeCap
 	case bump.Out[claimant].Value < floor:
 		return fee, settleTooSmall
@@ -379,13 +379,13 @@ func escrowBumpAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, err
 		}
 		prev := attempts[topAttempt(attempts)]
-		switch _, _, class := planBump(outs, len(sp.Tx.In), parentFee, prev.Fee, prev.Rate, rate, payoutFloor("BTC", kind)); class {
+		switch _, _, class := planBump(c.A.escrowNetwork(), outs, len(sp.Tx.In), parentFee, prev.Fee, prev.Rate, rate, payoutFloor("BTC", kind)); class {
 		case "":
 		case bumpFeeLow:
 			return actionResult{}, fail(400, "Enter a fee rate higher than the "+strconv.FormatInt(prev.Rate, 10)+" sat/vB of the transaction already sent: a replacement must pay a higher fee. Nothing was changed.")
 		case settleFeeCap:
 			// A-383: the cap holds at the smallest size the signed transaction can have, so a bump never waits forever.
-			return actionResult{}, fail(400, bumpErrorText(class, claimant)+" The highest fee rate this settlement can take is "+strconv.FormatInt(bumpMaxRate(len(sp.Tx.In), outs), 10)+" sat/vB. Nothing was changed.")
+			return actionResult{}, fail(400, bumpErrorText(class, claimant)+" The highest fee rate this settlement can take is "+strconv.FormatInt(bumpMaxRate(c.A.escrowNetwork(), len(sp.Tx.In), outs), 10)+" sat/vB. Nothing was changed.")
 		default:
 			return actionResult{}, fail(400, bumpErrorText(class, claimant)+" Nothing was changed.")
 		}
@@ -568,7 +568,7 @@ func (a *App) buildBump(ctx context.Context, e *escrowBTC, sid int64) error {
 		return err
 	}
 	prev, floor := attempts[topAttempt(attempts)], payoutFloor("BTC", p.Kind)
-	outs, fee, class := planBump(p.Outputs, len(p.Stored.Tx.In), p.NetworkFee, prev.Fee, prev.Rate, rate, floor)
+	outs, fee, class := planBump(e.network, p.Outputs, len(p.Stored.Tx.In), p.NetworkFee, prev.Fee, prev.Rate, rate, floor)
 	if class != "" {
 		return a.failBump(ctx, bid, orderID, class)
 	}
@@ -580,7 +580,7 @@ func (a *App) buildBump(ctx context.Context, e *escrowBTC, sid int64) error {
 	if err != nil {
 		return err
 	}
-	if got, class := checkBump(p.Stored.Tx, bp.Tx, p.Outputs, p.InputTotal, prev.Fee, floor); class != "" || got != fee {
+	if got, class := checkBump(e.network, p.Stored.Tx, bp.Tx, p.Outputs, p.InputTotal, prev.Fee, floor); class != "" || got != fee {
 		return errors.New("escrow: a built fee bump failed its own check: " + class)
 	}
 	tx, err := a.db.BeginTx(ctx, nil)
@@ -722,7 +722,7 @@ func (a *App) cosignBump(ctx context.Context, e *escrowBTC, sid int64) error {
 		return err
 	}
 	// P2-R7 at finalize: the bump's shape and fee again, and every stored transaction of the settlement still unconfirmed.
-	if _, class := checkBump(b.Parent.Stored.Tx, b.Stored.Tx, b.Parent.Outputs, b.InputTotal, b.PrevFee, payoutFloor("BTC", b.Kind)); class != "" {
+	if _, class := checkBump(e.network, b.Parent.Stored.Tx, b.Stored.Tx, b.Parent.Outputs, b.InputTotal, b.PrevFee, payoutFloor("BTC", b.Kind)); class != "" {
 		return a.bumpSendWaits(ctx, b.BumpID, b.OrderID, class)
 	}
 	if ok, err := a.attemptsUnconfirmed(ctx, e, b.Attempts); err != nil || !ok {
@@ -805,7 +805,7 @@ func (a *App) cosignBump(ctx context.Context, e *escrowBTC, sid int64) error {
 // within the caps, every witness signature SIGHASH_ALL), then asks the node with testmempoolaccept at the rate cap,
 // which applies the replacement rules against the transaction already sent. It never broadcasts.
 func (a *App) acceptBump(ctx context.Context, e *escrowBTC, b *bumpBuild, rawHex string) (acceptVerdict, string, error) {
-	if class := checkFinalTx(rawHex, b.Stored, b.TxID, b.Outputs, b.InputTotal, b.NetworkFee); class != "" {
+	if class := checkFinalTx(e.network, rawHex, b.Stored, b.TxID, b.Outputs, b.InputTotal, b.NetworkFee); class != "" {
 		return acceptWait, class, nil
 	}
 	allowed, reject, err := e.testMempoolAccept(ctx, rawHex, escrowMaxFeeRate)
@@ -959,7 +959,7 @@ func (a *App) storeSeenBump(ctx context.Context, sid, bid int64, rawHex string) 
 	if b.Outputs = bumpOutputsAt(p.Outputs, p.NetworkFee, b.NetworkFee); b.Outputs == nil {
 		return false, errors.New("escrow: the settlement has no claimant's output")
 	}
-	if class := checkFinalTx(rawHex, b.Stored, b.TxID, b.Outputs, b.InputTotal, b.NetworkFee); class != "" {
+	if class := checkFinalTx(a.escrowNetwork(), rawHex, b.Stored, b.TxID, b.Outputs, b.InputTotal, b.NetworkFee); class != "" {
 		return false, a.bumpSendWaits(ctx, bid, b.OrderID, class)
 	}
 	// Who signed it: the parties whose stored signatures are in its witnesses.
@@ -1191,7 +1191,7 @@ func (a *App) bumpView(ctx context.Context, d *PageData, v *EscrowOrderView, s *
 		return err
 	}
 	// A-383: the form offers only rates the request accepts; none is left once the highest is already sent.
-	top, highest := attempts[topAttempt(attempts)].Rate, bumpMaxRate(nIn, outs)
+	top, highest := attempts[topAttempt(attempts)].Rate, bumpMaxRate(a.escrowNetwork(), nIn, outs)
 	if s.CanBump = top < highest; !s.CanBump {
 		return nil
 	}

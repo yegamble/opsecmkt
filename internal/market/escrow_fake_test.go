@@ -24,8 +24,16 @@ type fakeEscrowCore struct {
 	t  *testing.T
 	mu sync.Mutex
 
-	chain         string
-	arbiterFP     string
+	chain     string
+	arbiterFP string
+	// A-439: what the sync guard reads. getblockchaininfo reports ibd, headers (0 = blocks), tipTime (0 = omitted) and
+	// challenge (signet_challenge, omitted when ""); getnetworkinfo reports peers as connections.
+	ibd           bool
+	headers       int64
+	tipTime       int64
+	challenge     string
+	peers         int64
+	blocks        int64 // getblockchaininfo blocks (0 = 200)
 	arbiterDesc   string
 	arbiterCode   int    // JSON-RPC error for getrawchangeaddress (0 = none)
 	prevoutExists bool   // gettxout finds the practice outpoint
@@ -239,7 +247,20 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 	wallet := path == "/wallet/opsecmkt-arbiter"
 	switch method {
 	case "getblockchaininfo":
-		return map[string]any{"chain": c.chain, "blocks": 200}, 0, ""
+		blocks := c.blocks
+		if blocks == 0 {
+			blocks = 200
+		}
+		info := map[string]any{"chain": c.chain, "blocks": blocks, "headers": max(c.headers, blocks), "initialblockdownload": c.ibd}
+		if c.tipTime != 0 {
+			info["time"] = c.tipTime
+		}
+		if c.challenge != "" {
+			info["signet_challenge"] = c.challenge
+		}
+		return info, 0, ""
+	case "getnetworkinfo":
+		return map[string]any{"version": 310100, "connections": c.peers}, 0, ""
 	case "getrawchangeaddress":
 		if !wallet {
 			return nil, -18, "Requested wallet does not exist or is not loaded"
@@ -261,7 +282,7 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 			if len(labels) > 0 {
 				spk := c.spk[str(0)]
 				if spk == nil {
-					spk, _ = regtestAddressScript(str(0))
+					spk, _ = escrowAddressScript(c.chain, str(0))
 				}
 				info["scriptPubKey"] = hex.EncodeToString(spk)
 				if keys := c.watchPubkeys[str(0)]; keys != nil {
@@ -285,7 +306,7 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 		return map[string]any{"ismine": true, "hdmasterfingerprint": c.arbiterFP, "parent_desc": c.arbiterDesc}, 0, ""
 	case "getdescriptorinfo":
 		desc := str(0)
-		if a, ok := strings.CutPrefix(desc, "addr("); ok && !strings.HasPrefix(a, "bcrt1") {
+		if a, ok := strings.CutPrefix(desc, "addr("); ok && !strings.HasPrefix(a, escrowChains[c.chain]+"1") {
 			return nil, -5, "Address is not valid"
 		}
 		public := fakeTprv.ReplaceAllStringFunc(desc, func(k string) string { return "fakepub" + hex.EncodeToString(fakePubFromTprv(k)) })
@@ -815,7 +836,7 @@ func (c *fakeEscrowCore) createPSBT(p []json.RawMessage) string {
 				tx = append(append(tx, byte(len(spk))), spk...)
 				continue
 			}
-			if spk, err := regtestAddressScript(addr); err == nil { // P1-c2: a real address pays its own script
+			if spk, err := escrowAddressScript(c.chain, addr); err == nil { // P1-c2: a real address pays its own script
 				tx = append(append(tx, byte(len(spk))), spk...)
 				continue
 			}

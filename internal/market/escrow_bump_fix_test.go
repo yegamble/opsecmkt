@@ -146,7 +146,7 @@ func TestEscrowBumpRateCapAtRealSize(t *testing.T) {
 	// One input and one P2WPKH output: smallest real size (4+4+1+1+41+31)*4 + 2+1+1+2*10+1+105 = 458 weight, 114 vB;
 	// the fee is the rate on the 159 vB bound, so 100*114/159 = 71 sat/vB is the highest.
 	outs := []settleOutput{{"claimant", regtestAddr("claim-brc"), 99682}}
-	if v, max := settleVSizeMin(1, outs), bumpMaxRate(1, outs); v != 114 || max != 71 {
+	if v, max := settleVSizeMin("regtest", 1, outs), bumpMaxRate("regtest", 1, outs); v != 114 || max != 71 {
 		t.Fatalf("settleVSizeMin %d, bumpMaxRate %d", v, max)
 	}
 	if page := x.page("/order?id="+order, x.vendorSess); !strings.Contains(page, `min="3" max="71"`) {
@@ -174,7 +174,7 @@ func TestEscrowBumpRateCapAtRealSize(t *testing.T) {
 	bump := sp.Tx
 	bump.Out = slices.Clone(bump.Out)
 	bump.Out[0].Value -= 72*159 - 318
-	if _, class := checkBump(sp.Tx, bump, outs, 100000, 318, 10000); class != settleFeeCap {
+	if _, class := checkBump("regtest", sp.Tx, bump, outs, 100000, 318, 10000); class != settleFeeCap {
 		t.Fatalf("72 sat/vB on the bound (under 100 sat/vB on it): %q", class)
 	}
 }
@@ -195,26 +195,26 @@ func TestEscrowBumpConflictUnlistedExternal(t *testing.T) {
 // too small.
 func TestEscrowBumpFloorBoundary(t *testing.T) {
 	addr := regtestAddr("claim-floor")
-	script, err := regtestAddressScript(addr)
+	script, err := escrowAddressScript("regtest", addr)
 	if err != nil {
 		t.Fatal(err)
 	}
 	const claim, parentFee, fee = 100000, 2 * 159, 5 * 159
 	outs := []settleOutput{{"claimant", addr, claim}}
 	floor := int64(claim - (fee - parentFee))
-	if next, got, class := planBump(outs, 1, parentFee, parentFee, 2, 5, floor); class != "" || got != fee || next[0].Sats != floor {
+	if next, got, class := planBump("regtest", outs, 1, parentFee, parentFee, 2, 5, floor); class != "" || got != fee || next[0].Sats != floor {
 		t.Fatalf("planBump at the floor: %v %d %q", next, got, class)
 	}
-	if _, _, class := planBump(outs, 1, parentFee, parentFee, 2, 5, floor+1); class != settleTooSmall {
+	if _, _, class := planBump("regtest", outs, 1, parentFee, parentFee, 2, 5, floor+1); class != settleTooSmall {
 		t.Fatalf("planBump one below the floor: %q", class)
 	}
 	parent := psbtTx{Version: 2, In: []psbtTxIn{{Vout: 0, Sequence: 0xfffffffd}}, Out: []psbtTxOut{{Value: claim, Script: script}}}
 	bump := parent
 	bump.Out = []psbtTxOut{{Value: floor, Script: script}}
-	if got, class := checkBump(parent, bump, outs, claim+parentFee, parentFee, floor); class != "" || got != fee {
+	if got, class := checkBump("regtest", parent, bump, outs, claim+parentFee, parentFee, floor); class != "" || got != fee {
 		t.Fatalf("checkBump at the floor: %d %q", got, class)
 	}
-	if _, class := checkBump(parent, bump, outs, claim+parentFee, parentFee, floor+1); class != settleTooSmall {
+	if _, class := checkBump("regtest", parent, bump, outs, claim+parentFee, parentFee, floor+1); class != settleTooSmall {
 		t.Fatalf("checkBump one below the floor: %q", class)
 	}
 }

@@ -248,7 +248,7 @@ const (
 // checkAndAccept re-checks a finalized transaction in Go (checkFinalTx), then asks the node with testmempoolaccept at
 // the rate cap. It never broadcasts.
 func (a *App) checkAndAccept(ctx context.Context, e *escrowBTC, b *settleBuild, rawHex string) (acceptVerdict, string, error) {
-	if class := checkFinalTx(rawHex, b.Stored, b.TxID, b.Outputs, b.InputTotal, b.NetworkFee); class != "" {
+	if class := checkFinalTx(e.network, rawHex, b.Stored, b.TxID, b.Outputs, b.InputTotal, b.NetworkFee); class != "" {
 		return acceptWait, class, nil
 	}
 	allowed, reject, err := e.testMempoolAccept(ctx, rawHex, escrowMaxFeeRate)
@@ -873,7 +873,7 @@ func (a *App) spentBeforeCosign(ctx context.Context, e *escrowBTC, b *settleBuil
 		}
 		return a.markExternal(ctx, b.ID, b.OrderID, by, nil)
 	}
-	if class := checkFinalTx(w.Hex, b.Stored, b.TxID, b.Outputs, b.InputTotal, b.NetworkFee); class != "" {
+	if class := checkFinalTx(e.network, w.Hex, b.Stored, b.TxID, b.Outputs, b.InputTotal, b.NetworkFee); class != "" {
 		// The stored txid, so the planned outputs, but a transaction that fails the market's checks: it is not recorded
 		// as the settlement's, nor called external; the order page and the log say it waits.
 		return a.settlementSendWaits(ctx, b.ID, b.OrderID, class)

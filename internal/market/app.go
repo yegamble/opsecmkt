@@ -63,6 +63,11 @@ type App struct {
 	storageLimit     int64                           // IMAGE_STORAGE_LIMIT_MB in bytes (uploads.go); 0 = the default
 	stop             context.CancelFunc
 	background       sync.WaitGroup
+
+	// The Bitcoin node sync guard and escrow chain pin (A-439, bitcoin_sync.go), in memory only.
+	syncLogged     map[string]string                   // currency -> the pooled not-synced reason last logged ("" = synced); guarded by checkMu
+	escrowSync     atomic.Value                        // string: the reason class the escrow watcher last found its node not synced for ("" or unset = synced)
+	escrowMismatch atomic.Pointer[EscrowChainMismatch] // set while startEscrow refuses the node's chain against the escrow chain pin; nil = none
 }
 
 // parseTemplates loads layout (web/templates/*.html), pages/<page>.html ("page:<page>") and partials/<hook>.html.

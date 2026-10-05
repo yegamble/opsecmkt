@@ -91,7 +91,7 @@ func (o *rpcOverride) wrap(next rpcHandler) rpcHandler {
 
 // newGapCore is newPayCore with an override in front of the scripted Bitcoin Core.
 func newGapCore(t *testing.T, chain string) (*payCore, *rpcOverride, *payRPCServer) {
-	c := &payCore{chain: chain, newAddr: "tb1qorderaddress000000000000000000000", walletLoaded: true, txs: map[string]map[string]any{}, invalid: map[string]bool{}}
+	c := &payCore{chain: chain, newAddr: "tb1qorderaddress000000000000000000000", walletLoaded: true, peers: 8, txs: map[string]map[string]any{}, invalid: map[string]bool{}}
 	o := newRPCOverride()
 	s := newPayRPCServer(t, "marketplace", "rpc-secret", false, o.wrap(c.handle))
 	o.releaseAtEnd(t)

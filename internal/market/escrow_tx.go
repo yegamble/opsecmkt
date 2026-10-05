@@ -112,12 +112,23 @@ func parseSignedTx(raw []byte) (*signedTx, error) {
 	return t, nil
 }
 
-// regtestAddressScript is the scriptPubKey a regtest address pays: a bech32 (witness version 0) or bech32m (versions
-// 1 to 16) address with the bcrt prefix, or a base58check P2PKH (version 0x6f) or P2SH (0xc4) address. Anything else
-// is refused: escrow runs on regtest only in this release.
-func regtestAddressScript(addr string) ([]byte, error) {
-	if strings.HasPrefix(addr, "bcrt1") {
-		version, program, err := decodeSegwitAddress("bcrt", addr)
+// escrowChains is the one chain table of Bitcoin escrow (A-439, P4-R5): each chain escrow can run on, keyed by the
+// node's getblockchaininfo chain, and the human-readable part of its segwit addresses. Mainnet ("main") and testnet3
+// ("test") are not escrow chains (escrow hard-codes test-network key versions and coin type 1). startEscrow still
+// accepts regtest only in this release (A-443 opens signet and testnet4).
+var escrowChains = map[string]string{"regtest": "bcrt", "signet": "tb", "testnet4": "tb"}
+
+// escrowAddressScript is the scriptPubKey an address of chain pays: a bech32 (witness version 0: P2WPKH or P2WSH) or
+// bech32m (versions 1 to 16) address with the chain's human-readable part (escrowChains), or a base58check P2PKH
+// (version 0x6f) or P2SH (0xc4) address, the test-network versions all three chains share. Anything else, and any
+// chain not in the table, is refused.
+func escrowAddressScript(chain, addr string) ([]byte, error) {
+	hrp, ok := escrowChains[chain]
+	if !ok {
+		return nil, errors.New("escrow: not an escrow chain")
+	}
+	if strings.HasPrefix(addr, hrp+"1") {
+		version, program, err := decodeSegwitAddress(hrp, addr)
 		if err != nil {
 			return nil, err
 		}
@@ -129,7 +140,7 @@ func regtestAddressScript(addr string) ([]byte, error) {
 	}
 	payload, err := base58CheckDecode(addr)
 	if err != nil || len(payload) != 21 {
-		return nil, errors.New("escrow: not a regtest address")
+		return nil, errors.New("escrow: not an address of the escrow chain")
 	}
 	switch payload[0] {
 	case 0x6f:
@@ -137,7 +148,7 @@ func regtestAddressScript(addr string) ([]byte, error) {
 	case 0xc4:
 		return slices.Concat([]byte{0xa9, 20}, payload[1:], []byte{0x87}), nil
 	}
-	return nil, errors.New("escrow: not a regtest address")
+	return nil, errors.New("escrow: not an address of the escrow chain")
 }
 
 const bech32Charset = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
@@ -211,10 +222,11 @@ func decodeSegwitAddress(hrp, addr string) (byte, []byte, error) {
 }
 
 // checkFinalTx re-checks a finalized settlement transaction (rawHex, from finalizepsbt) against the stored build: the
-// stored unsigned transaction and txid, the frozen outputs, the stored network fee within escrowMaxFee and
-// escrowMaxFeeRate, and on every input the 2-of-3 witness [empty, signature, signature, witness script] with the
-// input's stored witness script and two DER signatures ending in SIGHASH_ALL. It returns a fixed class, or "".
-func checkFinalTx(rawHex string, stored *psbtPacket, txid string, outs []settleOutput, inputTotal, networkFee int64) string {
+// stored unsigned transaction and txid, the frozen outputs (each address read as an address of chain, the escrow
+// node's: escrowAddressScript), the stored network fee within escrowMaxFee and escrowMaxFeeRate, and on every input the
+// 2-of-3 witness [empty, signature, signature, witness script] with the input's stored witness script and two DER
+// signatures ending in SIGHASH_ALL. It returns a fixed class, or "".
+func checkFinalTx(chain, rawHex string, stored *psbtPacket, txid string, outs []settleOutput, inputTotal, networkFee int64) string {
 	raw, err := hex.DecodeString(rawHex)
 	if err != nil {
 		return finalUnreadable
@@ -231,7 +243,7 @@ func checkFinalTx(rawHex string, stored *psbtPacket, txid string, outs []settleO
 	}
 	var paid int64
 	for i, o := range outs {
-		script, err := regtestAddressScript(o.Address)
+		script, err := escrowAddressScript(chain, o.Address)
 		if err != nil || t.Out[i].Value != o.Sats || !bytes.Equal(t.Out[i].Script, script) {
 			return finalOutputs
 		}
