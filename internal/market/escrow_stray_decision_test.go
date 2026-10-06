@@ -95,6 +95,13 @@ func TestEscrowTooSmallRefundResolved(t *testing.T) {
 	if notes, buyer, staff := told(order); notes != 1 || buyer != 1 || staff == 0 {
 		t.Fatalf("told of the coins left out: notes %d, buyer %d, staff %d; events %q", notes, buyer, staff, x.events(order))
 	}
+	// Exactly one payment-review notice per staff member, the one on the coins left out: a refund's too-small failure
+	// itself does not tell staff (only a release's does, A-461; QA462-2).
+	if staff, reviews, reviewed := agInt(x.testEnv, "SELECT count(*) FROM users WHERE role IN ('moderator','admin') AND suspended_at IS NULL"),
+		agInt(x.testEnv, "SELECT count(*) FROM notifications WHERE strpos(body,$1)>0", "Payment review needed for order "+shortID(order)),
+		agInt(x.testEnv, "SELECT count(DISTINCT n.user_id) FROM notifications n JOIN users u ON u.id=n.user_id WHERE u.role IN ('moderator','admin') AND strpos(n.body,$1)>0", "Payment review needed for order "+shortID(order)); staff < 2 || reviews != staff || reviewed != staff {
+		t.Fatalf("payment-review notices: %d to %d of %d staff; events %q", reviews, reviewed, staff, x.events(order))
+	}
 	const note = "1 deposit (0.0001 BTC, TESTNET regtest) to this order's escrow is not spent by the refund its dispute decision requested: the market could not build the refund because the coins were too few to pay the network fee and an output of at least 0.0001 BTC. " +
 		"It stays in the escrow; a stray refund returns it, together with any later deposit to this escrow, less the network fee, to the buyer's refund address given at checkout once together they can pay the network fee."
 	if agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND note=$2", order, note) != 1 {

@@ -658,7 +658,8 @@ func settlementInputsFilled(p *psbtPacket, ins []settleInput, ws []byte) bool {
 
 // storeSettlement stores a built settlement: its outputs, the PSBT and txid (building -> awaiting_signature by
 // compare-and-set), each input's payments row claimed by compare-and-set, an order note and a notice to both parties.
-// A lost race (another build stored first, or an output already claimed) changes nothing.
+// A lost race (another build stored first, an output already claimed, or a stray refund's input counted for the order
+// again meanwhile) changes nothing.
 func (a *App) storeSettlement(ctx context.Context, id int64, orderID, kind, psbt, txid string, total, rate int64, plan settlePlan, ins, left []settleInput) error {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -687,7 +688,13 @@ func (a *App) storeSettlement(ctx context.Context, id int64, orderID, kind, psbt
 	for i, in := range ins {
 		claimed[i] = in.ID
 	}
-	res, err = tx.ExecContext(ctx, "UPDATE payments SET settlement_id=$1,updated=now() WHERE order_id=$2 AND id=ANY($3) AND settlement_id IS NULL", id, orderID, claimed)
+	// A stray refund claims only deposits still eligible for one (after the close or left out, strayEligibleSQL): a
+	// changed decision may have counted one for the order again since its build chose it (countAgain, QA462-1).
+	claim := "UPDATE payments SET settlement_id=$1,updated=now() WHERE order_id=$2 AND id=ANY($3) AND settlement_id IS NULL"
+	if kind == "stray_refund" {
+		claim += " AND (after_close OR escrow_left_out)"
+	}
+	res, err = tx.ExecContext(ctx, claim, id, orderID, claimed)
 	if err != nil {
 		return err
 	}
@@ -823,7 +830,8 @@ func (a *App) settlementWaits(ctx context.Context, id int64, orderID, class stri
 // row), which a stray refund that failed too-small is compared with before another is requested (strayHeldSQL, A-434).
 // A refund that fails too-small on an order cancelled or resolved for the buyer leaves out tried, the deposits it could
 // not spend (leaveOutTooFew, A-435, A-437), and its failure holds them as a stray refund's would; a release's deposits
-// stay counted, and its too-small failure also tells staff (A-461).
+// stay counted, and its too-small failure also tells staff (A-461), flagging the deposits it tried so staff can open
+// the order (QA462-3).
 func (a *App) failSettlement(ctx context.Context, id int64, orderID, class string, could, rate int64, tried []settleInput, left ...settleInput) error {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -844,9 +852,18 @@ func (a *App) failSettlement(ctx context.Context, id int64, orderID, class strin
 	}
 	if kind == "release" && class == settleTooSmall {
 		// A-461: the same note also tells staff, once, as a Monero release too few does (xmrSettleWaits): the vendor's
-		// coins stay in the escrow, counted, and an administrator may change a dispute's decision.
+		// coins stay in the escrow, counted, and an administrator may change a dispute's decision. The deposits it
+		// tried are flagged so staff can open the order (staffReviewer), also one never disputed (QA462-3); they stay
+		// counted, and the desk offers no action on a counted deposit's flag (A-330).
 		o, err := scanOrder(tx.QueryRowContext(ctx, orderQuery+" WHERE o.id=$1", orderID))
 		if err != nil {
+			return err
+		}
+		ids := make([]int64, len(tried))
+		for i, in := range tried {
+			ids[i] = in.ID
+		}
+		if _, err = tx.ExecContext(ctx, "UPDATE payments SET flagged=true,updated=now() WHERE order_id=$1 AND id=ANY($2) AND settlement_id IS NULL AND NOT flagged", orderID, ids); err != nil {
 			return err
 		}
 		if err = a.flagOrder(ctx, tx, &o, "Escrow settlement not built: "+text, ""); err != nil {

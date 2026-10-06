@@ -382,7 +382,8 @@ func (a *App) tooFewNote(o *Order, n, sum int64) string {
 // leaveOutUncounted on an upgraded database) when a changed decision supersedes refund (A-462): no longer left out or
 // flagged, so no stray refund returns them and the release includes them. A deposit left out for any other reason (by a
 // bounded build, as a top-up, or because it did not count when the dispute was decided), one a stray refund already
-// spends and one spent outside the market stay as they are. It returns the order note on those it counted ("" if none).
+// spends and one spent outside the market stay as they are; a stray refund being built from one meanwhile does not
+// claim it (storeSettlement, QA462-1). It returns the order note on those it counted ("" if none).
 func (a *App) countAgain(ctx context.Context, tx *sql.Tx, o *Order, refund int64) (string, error) {
 	var n, sum int64
 	if err := tx.QueryRowContext(ctx, `WITH m AS (UPDATE payments SET escrow_left_out=false,flagged=false,escrow_too_few_by=NULL,updated=now()
