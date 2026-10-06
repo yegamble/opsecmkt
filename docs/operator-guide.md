@@ -1136,6 +1136,10 @@ What it does and refuses (ruling P4-R17):
   P2WSH of that script (`witness-utxo`); inputs of more than one escrow (`mixed-scripts`); a script without its key for
   the requested index (`key-not-found`) or with two of them (`two-signer-keys`). Core's result must differ from the
   request only by one added signature per input under its key, otherwise nothing is returned (`result-mismatch`).
+  The other classes are `bad-psbt` (not base64, or a PSBT Core cannot decode or that is not version 0),
+  `core-refused` (Core answered `descriptorprocesspsbt` with an error) and `core-unavailable` (the node did not
+  answer, or the signer's user may not call the method); the protocol's own are `version`, `malformed`,
+  `unknown-op`, `bad-index` and `too-large`. The signer's log names the class and the order index, nothing else.
   It keeps no memory of what it signed, so a script holding its keys of two different order indexes is not detected
   by the signer: the app must never build one.
 
