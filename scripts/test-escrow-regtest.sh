@@ -107,6 +107,42 @@
 # left out and flagged once (an order note, the buyer and staff told), and a stray refund to the refund address pinned
 # at checkout is requested, signed by the buyer's own wallet, co-signed, broadcast and confirmed (gettxout).
 #
+# A-453 leg (shape (b) per-order key derivation, TestEscrowRegtestBIP32; no product caller yet): three Core wallets each
+# hold a BIP48 account of their own seed; for per-order indexes 2, 3, 17, 1000 and 2^31-1 the Go derivation
+# (escrow_bip32.go) derives each account's child and serializes it rooted (depth 0, fingerprint 0, child 0); as the
+# app's whitelisted user, Core's deriveaddresses gives the same address from the account key at <index>/0/0 and from
+# the rooted key at /0/0, for each key (wpkh) and the three together (wsh(sortedmulti(2,…))), and the operator's
+# derivation from each private root along m/48h/1h/0h/2h/<index>/0/0 agrees; a rooted key checked at another index, or
+# with one chain-code byte changed, is refused.
+#
+# A-454 leg (shape (b) escrow signer, TestEscrowRegtestSigner; no order uses it yet): cmd/escrow-signer is built from this
+# tree, given a fresh seed in a temporary directory and started against the node as its own RPC user (whitelisted to
+# decodepsbt and descriptorprocesspsbt; the leg checks getblockchaininfo is refused); the App pins its fingerprint and key
+# HMAC at startup. A hand-built shape-(b) escrow (two Core wallets' BIP48 per-order keys, rooted, and the signer's
+# account/5/0/0) is funded, co-signed through the socket, signed by the buyer with Core, combined, finalized, accepted
+# by testmempoolaccept, broadcast and mined. Refused with nothing signed: an input the buyer signed SIGHASH_NONE,
+# another index, a script holding two of the signer's keys, and two escrows in one request. The seed is backed up to a
+# throwaway PGP key and restored; a signer from the restored seed gives the identical signature (break-glass
+# rehearsal). Restarted against a signer with another seed the App reports the pin mismatch (shape (a) stays on, the
+# pins unchanged); with the signer stopped, waiting. No database column, signer log or transcript line holds the seed
+# or a tprv.
+#
+# A-440 legs (market key protection, P4-R6). TestEscrowRegtestPooled: the pooled RPC user, restricted to the rpcwhitelist
+# line below (docs/operator-guide.md, "The pooled RPC user"), is refused listdescriptors (true and false), dumpwallet and
+# backupwallet on the arbiter wallet with HTTP 403 while the operator user is not (a count, never printed); an App with
+# escrow and the pooled provider on the same node starts escrow (its startup self-check got Core's real 403), and the
+# pooled provider still works through every whitelisted method: the check reloads an unloaded pooled wallet
+# (loadwallet), a deposit address is issued, the deposit is credited by a watcher pass, and a payout is sent by the
+# watcher (validateaddress, sendtoaddress) and confirmed; restarted with the unrestricted operator user as the pooled
+# URL, the self-check gets an answer and escrow stays disabled. TestEscrowRegtestArbiterRestore: the arbiter wallet is backed up
+# as the operator user (backupwallet, height recorded; the private descriptors exported for the fallback, never
+# printed); a claim is built and signed by the vendor's Core wallet; the arbiter wallet is unloaded (the harness cannot
+# delete files inside the node, so it restores under a new name, as onto a fresh node) and a watcher pass co-signs
+# nothing; restorewallet brings it back and, after a restart with the fingerprint pin unchanged, the watcher co-signs,
+# broadcasts and confirms the claim; a blank wallet given the exported descriptors with importdescriptors (timestamp
+# "now") co-signs a second claim the same way. Encryption to the operator's key (docs/testnet-runbook.md) happens off
+# the node and is not exercised here.
+#
 # Ruled Phase 1 legs and where they run: release (Settlement, Cosign: claim), refund (Settlement, Cosign), dispute
 # (Cosign), comma injection refused (Gate), NONE paste refused (PracticeSign, Settlement), forged market slot refused
 # (Gate), conflicting outcome refused (Gate), spent-outpoint build refused (Gate), restart mid-send rebroadcasts the
@@ -115,24 +151,34 @@
 # cap (Gate); also A-339, both-signed and stray refund (Cosign), A-344 and a plain reorg (Recovery), A-356 and A-359
 # (Gate); A-428, a deposit conflicted at an unpaid cancellation and mined afterwards (Conflicted).
 #
-# Needs a regtest node with two RPC users: an operator user with full rights (sets up the wallets, standing in
-# for the buyer's own node) and the app's user restricted by rpcwhitelist exactly as docs/operator-guide.md
-# ("Bitcoin escrow (regtest only)") describes, plus a disposable PostgreSQL database. For example:
+# Needs a regtest node with four RPC users: an operator user with full rights (sets up the wallets, standing in
+# for the buyer's own node), the app's user restricted by rpcwhitelist exactly as docs/operator-guide.md
+# ("Bitcoin escrow (regtest only)") describes, the pooled user restricted to the pooled methods ("The pooled RPC
+# user") and the escrow signer's user restricted to decodepsbt and descriptorprocesspsbt ("Escrow signer"), plus a
+# disposable PostgreSQL database. For example:
 #
 #   salt=$(openssl rand -hex 16); hash=$(printf %s app-pass | openssl dgst -sha256 -hmac "$salt" | cut -d' ' -f2)
+#   psalt=$(openssl rand -hex 16); phash=$(printf %s pooled-pass | openssl dgst -sha256 -hmac "$psalt" | cut -d' ' -f2)
+#   ssalt=$(openssl rand -hex 16); shash=$(printf %s signer-pass | openssl dgst -sha256 -hmac "$ssalt" | cut -d' ' -f2)
 #   docker run -d --name escrow-regtest -p 127.0.0.1:18443:18443 bitcoin/bitcoin:31.1 bitcoind -regtest -fallbackfee=0.0002 \
 #     -server=1 -rpcbind=0.0.0.0 -rpcallowip=0.0.0.0/0 -rpcuser=operator -rpcpassword=operator-pass \
-#     "-rpcauth=opsecmkt-escrow:$salt\$$hash" -rpcwhitelistdefault=0 \
+#     "-rpcauth=opsecmkt-escrow:$salt\$$hash" "-rpcauth=opsecmkt-pooled:$psalt\$$phash" \
+#     "-rpcauth=opsecmkt-signer:$ssalt\$$shash" -rpcwhitelistdefault=0 \
+#     -rpcwhitelist=opsecmkt-signer:decodepsbt,descriptorprocesspsbt \
+#     -rpcwhitelist=opsecmkt-pooled:getblockchaininfo,getwalletinfo,loadwallet,getnetworkinfo,getnewaddress,listreceivedbyaddress,gettransaction,sendtoaddress,validateaddress \
 #     -rpcwhitelist=opsecmkt-escrow:getblockchaininfo,getnetworkinfo,getrawchangeaddress,getaddressinfo,createpsbt,utxoupdatepsbt,importdescriptors,getdescriptorinfo,deriveaddresses,gettxout,keypoolrefill,walletprocesspsbt,descriptorprocesspsbt,combinepsbt,finalizepsbt,testmempoolaccept,sendrawtransaction,getwalletinfo,listreceivedbyaddress,gettransaction,listtransactions
 #   ESCROW_REGTEST_OPERATOR_RPC_URL=http://operator:operator-pass@127.0.0.1:18443 \
 #   ESCROW_REGTEST_APP_RPC_URL=http://opsecmkt-escrow:app-pass@127.0.0.1:18443 \
+#   ESCROW_REGTEST_POOLED_RPC_URL=http://opsecmkt-pooled:pooled-pass@127.0.0.1:18443 \
+#   ESCROW_REGTEST_SIGNER_RPC_URL=http://opsecmkt-signer:signer-pass@127.0.0.1:18443 \
 #   TEST_DATABASE_URL=postgres://…/a_disposable_database ./scripts/test-escrow-regtest.sh
 #
 # The transcript is written to ESCROW_REGTEST_LOG (default artifacts/real-chain/test-escrow-regtest-<UTC time>.log,
-# gitignored). URLs reach curl on stdin and are never printed.
+# gitignored). URLs reach curl on stdin and are never printed. A transcript holding a serialized tprv fails the run
+# (A-454: no leg prints private key material).
 set -euo pipefail
 
-for v in ESCROW_REGTEST_OPERATOR_RPC_URL ESCROW_REGTEST_APP_RPC_URL TEST_DATABASE_URL; do
+for v in ESCROW_REGTEST_OPERATOR_RPC_URL ESCROW_REGTEST_APP_RPC_URL ESCROW_REGTEST_POOLED_RPC_URL ESCROW_REGTEST_SIGNER_RPC_URL TEST_DATABASE_URL; do
   if [[ -z "${!v:-}" ]]; then
     echo "Set $v (see the comment at the top of this script)." >&2
     exit 2
@@ -147,7 +193,7 @@ chain_of() { # chain_of <url>: the chain getblockchaininfo reports, or nothing
     --data '{"jsonrpc":"1.0","id":"escrow","method":"getblockchaininfo","params":[]}' --config - 2>/dev/null |
     sed -n 's/.*"chain":"\([a-z0-9]*\)".*/\1/p' || true
 }
-for v in ESCROW_REGTEST_OPERATOR_RPC_URL ESCROW_REGTEST_APP_RPC_URL; do
+for v in ESCROW_REGTEST_OPERATOR_RPC_URL ESCROW_REGTEST_APP_RPC_URL ESCROW_REGTEST_POOLED_RPC_URL; do
   if [[ "$(chain_of "${!v}")" != regtest ]]; then
     echo "Refusing: the node at $v is not on regtest (or is unreachable)." >&2
     exit 1
@@ -159,12 +205,12 @@ log="${ESCROW_REGTEST_LOG:-artifacts/real-chain/test-escrow-regtest-$(date -u +%
 mkdir -p "$(dirname "$log")"
 echo "Bitcoin escrow regtest check; transcript: $log"
 set +e
-go test -count=1 -timeout 15m -run '^TestEscrowRegtest(PracticeSign|Funding|Settlement|Cosign|Recovery|Gate|Bump|Physical|Deadline|Reserve|Conflicted)$' -v ./internal/market/ 2>&1 | tee "$log"
+go test -count=1 -timeout 15m -run '^TestEscrowRegtest(PracticeSign|Funding|Settlement|Cosign|Recovery|Gate|Bump|Physical|Deadline|Reserve|Conflicted|BIP32|Signer|Pooled|ArbiterRestore)$' -v ./internal/market/ 2>&1 | tee "$log"
 status=${PIPESTATUS[0]}
 set -e
 # Each leg is reported from its own go test result line, so one failing leg never makes another read as failed.
 failed=0
-for leg in TestEscrowRegtestPracticeSign TestEscrowRegtestFunding TestEscrowRegtestSettlement TestEscrowRegtestCosign TestEscrowRegtestRecovery TestEscrowRegtestGate TestEscrowRegtestBump TestEscrowRegtestPhysical TestEscrowRegtestDeadline TestEscrowRegtestReserve TestEscrowRegtestConflicted; do
+for leg in TestEscrowRegtestPracticeSign TestEscrowRegtestFunding TestEscrowRegtestSettlement TestEscrowRegtestCosign TestEscrowRegtestRecovery TestEscrowRegtestGate TestEscrowRegtestBump TestEscrowRegtestPhysical TestEscrowRegtestDeadline TestEscrowRegtestReserve TestEscrowRegtestConflicted TestEscrowRegtestBIP32 TestEscrowRegtestSigner TestEscrowRegtestPooled TestEscrowRegtestArbiterRestore; do
   if grep -q -- "--- PASS: $leg " "$log"; then
     echo "PASS: $leg"
   elif grep -q -- "--- FAIL: $leg " "$log"; then
@@ -178,8 +224,12 @@ for leg in TestEscrowRegtestPracticeSign TestEscrowRegtestFunding TestEscrowRegt
     failed=1
   fi
 done
+if grep -qE 'tprv[1-9A-HJ-NP-Za-km-z]{100,}' "$log"; then
+  echo "FAILED: the transcript holds a serialized tprv (private key material); see $log" >&2
+  failed=1
+fi
 if [[ $status -ne 0 || $failed -ne 0 ]]; then
   echo "FAILED: go test exited $status; see $log" >&2
   exit 1
 fi
-echo "PASS: practice signing, escrow creation and funding, settlement building and party signing, co-signing, broadcast and confirmation, recovery and reconciliation, the Phase 1 gate's remaining adversarial legs, a same-recipient fee bump, a physical order's release signed by the buyer and the vendor with no arbiter signature, one released at its deadline with the vendor's signature co-signed by the market, no escrow key handed out again after a restore, and a deposit conflicted at an unpaid cancellation and mined afterwards returned by a stray refund, on regtest; transcript in $log"
+echo "PASS: practice signing, escrow creation and funding, settlement building and party signing, co-signing, broadcast and confirmation, recovery and reconciliation, the Phase 1 gate's remaining adversarial legs, a same-recipient fee bump, a physical order's release signed by the buyer and the vendor with no arbiter signature, one released at its deadline with the vendor's signature co-signed by the market, no escrow key handed out again after a restore, a deposit conflicted at an unpaid cancellation and mined afterwards returned by a stray refund, the Go per-order key derivation agreeing with Core, the escrow signer co-signing a shape-(b) escrow and refusing what it must, the whitelisted pooled user refused the arbiter wallet's descriptors while pooled payments still work, and the arbiter wallet backed up, wiped, restored (restorewallet, then the importdescriptors fallback) and co-signing with its fingerprint pin unchanged, on regtest; transcript in $log"

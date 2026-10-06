@@ -247,6 +247,8 @@ type PageData struct {
 	// XMREscrowNode: /admin while ESCROW_XMR is on and the escrow daemon is not synced or not on the pinned network
 	// (A-449; Mismatch names networks, not chains)
 	XMREscrowNode *EscrowNodeView
+	// EscrowSigner: /admin while ESCROW_SIGNER_SOCKET is set and the escrow signer is not ready (A-454)
+	EscrowSigner *EscrowSignerView
 	// EscrowReleaseDays: /admin while ESCROW_BTC is on, the release deadline length in force and its form (escrow_release_admin.go)
 	EscrowReleaseDays *EscrowReleaseDaysView
 	// EscrowRecovery: /admin, the Bitcoin escrow restore gate, held settlements and orphan addresses (escrow_recovery.go)
@@ -524,6 +526,7 @@ type EscrowOrderView struct {
 	Required, Confirmed, Unconfirmed, Remaining string
 	Threshold                                   int64
 	Open, NeedsTopUp                            bool
+	WindowPassed                                bool // Open, CancelAfter has passed and no deposit waits for confirmations: the watcher has not acted yet (QA4W1-5)
 	CancelAfter, Status, NextStep, Fee          string
 	Deposits                                    []PaymentDeposit
 	Unread                                      string                  // set when nothing is read at the address: shown for the Confirmed and Unconfirmed figures (A-338)
@@ -599,10 +602,21 @@ type EscrowChainMismatch struct {
 }
 
 // EscrowNodeView is the line under Payment providers on /admin about the Bitcoin escrow node (escrow_watch.go): the
-// reason class it is not synced for, or the chain it was refused for.
+// reason class it is not synced for and the remedy when the reason does not say it (syncRemedy), the chain it was
+// refused for, or the class of the answer the pooled user got to the market key self-check (PooledKey, A-440) with the
+// pooled rpcwhitelist methods it should be restricted to.
 type EscrowNodeView struct {
-	NotSynced string
-	Mismatch  *EscrowChainMismatch
+	NotSynced       string
+	Remedy          string
+	Mismatch        *EscrowChainMismatch
+	PooledKey       string
+	PooledWhitelist string
+}
+
+// EscrowSignerView is the line under Payment providers on /admin about the escrow signer (escrow_signer.go): State is
+// signerWaiting, signerMismatch or signerBadReply.
+type EscrowSignerView struct {
+	State string
 }
 
 // EscrowReleaseDaysView is the Bitcoin escrow release deadline length in force on /admin (escrow_release_admin.go):

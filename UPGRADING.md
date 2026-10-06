@@ -1088,13 +1088,29 @@ No migration. The pooled Bitcoin watcher now also skips its pass while the node'
 on a public test network, while the node has no peers or its tip block is older than the new optional key
 `BITCOIN_MAX_TIP_AGE` (default `2h`, 30m to 24h; an invalid value stops startup): a node that lost its peers used to
 look synced, and an order paid while it was cut off could be cancelled for non-payment. The admin page's last error
-then reads "Node is not synced (…)". A regtest node is unaffected. With `ESCROW_BTC=on` the escrow watcher applies the
+then reads "Node is not synced (…)". A public-network node whose `getblockchaininfo` has no `time` field counts as
+not synced too ("tip time unreadable: this Bitcoin Core is too old for the sync guard; use Bitcoin Core 31.1 or
+later"): the guard needs Bitcoin Core 31.1 (the version the installer pins; earlier versions untested). A regtest
+node is unaffected. With `ESCROW_BTC=on` the escrow watcher applies the
 same rule, the app pins the escrow node's chain in `settings` (`escrow_btc_chain`; an existing regtest escrow database
 is pinned at the first start), and the escrow user's `rpcwhitelist` gains `getnetworkinfo`
 ([operator guide](docs/operator-guide.md#bitcoin-escrow-regtest-only)); on regtest the app does not call it, so the old
 whitelist keeps working, but add it. No action is needed otherwise.
 
-## 33. Monero daemon sync guard, Monero escrow on stagenet and its network pin (A-449)
+## 33. Bitcoin escrow refuses a pooled RPC user that can read the arbiter wallet (A-440)
+
+No migration. Only with `ESCROW_BTC=on` and `BITCOIN_RPC_URL` set: at startup and on each retry escrow calls
+`listdescriptors` (private=false) on the arbiter wallet's path as the pooled RPC user, and starts only when that call is
+refused with HTTP 403 or the pooled node has no such wallet (another node). A pooled user without an `rpcwhitelist`
+line on the escrow node (unrestricted under `rpcwhitelistdefault=0`, as the guide used to leave it) could export the
+market's escrow key, so escrow now stays disabled with "escrow: Bitcoin escrow disabled: the pooled Bitcoin RPC user
+(BITCOIN_RPC_URL) was not refused listdescriptors on the arbiter wallet, …" and a line on `/admin`. Before upgrading,
+give that user the pooled whitelist line of the [operator guide](docs/operator-guide.md#bitcoin-escrow-regtest-only)
+(*The pooled RPC user*) and restart bitcoind, or move escrow to a node of its own. The guide and the
+[runbook](docs/testnet-runbook.md#back-up-and-restore-the-escrow-arbiter-and-watch-only-wallets) now also describe the
+arbiter and watch-only wallet backup and restore. Pooled payments are unaffected.
+
+## 34. Monero daemon sync guard, Monero escrow on stagenet and its network pin (A-449)
 
 No migration. With `MONERO_RPC_URL` set, the pooled Monero watcher now also skips its pass while the daemon reports
 `synchronized` false, has no peers (`offline`, or no connections on an unrestricted RPC) or its top block is older than
@@ -1139,8 +1155,8 @@ quotes, as the installer writes them). Blank values keep a feature off.
 | `PAYMENT_CONFIRMATIONS_BTC` / `PAYMENT_CONFIRMATIONS_XMR` | Defaults 3 and 10. |
 | `PAYMENT_POLL_INTERVAL` / `PAYMENT_EXPIRY` | Defaults `30s` and `24h`. |
 | `BITCOIN_MAX_TIP_AGE` | Default `2h` (30m to 24h): a public-network Bitcoin node whose tip is older counts as not synced (section 32). |
-| `MONERO_MAX_TIP_AGE` | Default `1h` (20m to 24h): a public-network Monero daemon whose top block is older counts as not synced (section 33). |
-| `ESCROW_XMR_WALLET_RPC_PASSWORD` | Only for the `monero-escrow-wallet` service (Monero escrow on stagenet): `openssl rand -hex 24` output, the same value as the password in `ESCROW_XMR_WALLET_RPC_URL` (section 33). Blank, the service refuses to start. |
+| `MONERO_MAX_TIP_AGE` | Default `1h` (20m to 24h): a public-network Monero daemon whose top block is older counts as not synced (section 34). |
+| `ESCROW_XMR_WALLET_RPC_PASSWORD` | Only for the `monero-escrow-wallet` service (Monero escrow on stagenet): `openssl rand -hex 24` output, the same value as the password in `ESCROW_XMR_WALLET_RPC_URL` (section 34). Blank, the service refuses to start. |
 | `BITCOIN_PRUNE_MB` / `MONERO_PRUNE_FLAGS` | Local nodes only. Absent keys mean **pruned** (`2000` and `'--prune-blockchain --sync-pruned-blocks'`); `BITCOIN_PRUNE_MB='0'` and `MONERO_PRUNE_FLAGS=''` keep a full node. Read [section 7](#7-local-nodes-are-now-pruned) before deploying if you run a local node. |
 | `BITCOIN_IMAGE` / `MONERO_IMAGE` / `MONERO_WALLET_IMAGE` | Local nodes only. Absent keys mean the pinned release images the payout code was verified against; the images alpha.1 made you choose stay in use until you remove or change them (`upgrade` pins the default images left on `latest`). Read [section 8](#8-node-images-are-pinned-to-release-tags). |
 | `COMPOSE_PROJECT_NAME` | Not needed: absent means `opsecmkt`, which is what your containers and volumes are named after. Never set another value on this install, or Compose starts it on new, empty volumes. A second checkout on the same host needs its own name; see [Backups and recovery](docs/operator-guide.md#backups-and-recovery). |

@@ -53,6 +53,8 @@ services:
       ESCROW_BTC_FEE_BPS: ${ESCROW_BTC_FEE_BPS:-}
       ESCROW_BTC_FEE_ADDRESS: ${ESCROW_BTC_FEE_ADDRESS:-}
       ESCROW_BTC_FEE_RATE: ${ESCROW_BTC_FEE_RATE:-}
+      # The escrow signer's socket, as compose.nodes.yaml mounts it (/run/escrow-signer/signer.sock); blank = no signer.
+      ESCROW_SIGNER_SOCKET: ${ESCROW_SIGNER_SOCKET:-}
       # Monero escrow: a local Monero fakechain or stagenet only, off unless ESCROW_XMR=on; blank values use the app defaults
       # (docs/operator-guide.md#monero-escrow-fakechain-or-stagenet). ESCROW_XMR_SEED_KEY is a path inside this
       # container: mount the public key file read-only there (the app container has no volume for it by default).

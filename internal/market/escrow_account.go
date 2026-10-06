@@ -2,10 +2,7 @@ package market
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"errors"
 	"log"
 	"net/http"
@@ -66,13 +63,7 @@ var errKeySealed = errors.New("escrow: stored escrow key cannot be opened")
 
 // escrowKeyHMAC is user_escrow_keys.xpub_hmac: HMAC-SHA256 of the key's chain code and public key under a key derived
 // from keyRoot, so the same key registered with other version bytes or origin metadata still collides.
-func (a *App) escrowKeyHMAC(k escrowKey) string {
-	key := sha256.Sum256([]byte("escrow-xpub-hmac:" + a.keyRoot))
-	m := hmac.New(sha256.New, key[:])
-	m.Write(k.ChainCode[:])
-	m.Write(k.PubKey[:])
-	return hex.EncodeToString(m.Sum(nil))
-}
+func (a *App) escrowKeyHMAC(k escrowKey) string { return a.escrowXPubHMAC(k.ChainCode, k.PubKey) }
 
 // storedEscrowKey is the viewer's user_escrow_keys row.
 type storedEscrowKey struct {

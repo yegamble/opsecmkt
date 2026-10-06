@@ -13,7 +13,8 @@ import (
 // orders that were paid. The rule is stateless (nothing is stored, unlike a high-water mark, which stalls when a chain
 // is legitimately replaced: A-147): a node is not synced when it is in initial block download, or its headers are
 // ahead of its blocks, or, on a public chain (anything but regtest), it has no peers or its tip block is older than
-// BITCOIN_MAX_TIP_AGE. A lone regtest node has no peers and an old tip by design, so regtest is exempt from both.
+// BITCOIN_MAX_TIP_AGE. A lone regtest node has no peers and an old tip by design, so regtest is exempt from both. A
+// public-chain node whose getblockchaininfo has no tip time fails closed with its own reason (notSyncedTipUnread).
 
 // bitcoinNode is what the guard reads: getblockchaininfo, and getnetworkinfo's connections (read on public chains
 // only, so a regtest rpcwhitelist written before A-439 keeps working).
@@ -34,7 +35,25 @@ const (
 	notSyncedPeers       = "no peers"
 	notSyncedPeersUnread = "peer count unreadable"
 	notSyncedTip         = "tip older than BITCOIN_MAX_TIP_AGE"
+	// notSyncedTipUnread: getblockchaininfo has no time (0), so the tip's age is unknown and the node fails closed. The
+	// minimum is the Core the installer pins; earlier versions are untested (QA4W1-3).
+	notSyncedTipUnread = "tip time unreadable: this Bitcoin Core is too old for the sync guard; use Bitcoin Core 31.1 or later"
 )
+
+// regtestIBDRemedy is what the operator does about a regtest node in initial block download (QA4W1-2): Core reports it
+// at height 0 and after a restart whose tip is older than its -maxtipage (24 hours), and a regtest node has no peers to
+// sync from. The check stays (P4-R19(a)); /admin gives this after the reason, pooled and escrow.
+const regtestIBDRemedy = "On regtest Bitcoin Core reports initial block download at height 0 and after a restart when its tip is older than 24 hours, " +
+	"and with no peers waiting does not end it: mine one block (bitcoin-cli -regtest generatetoaddress 1 <address>) or restart bitcoind with a larger -maxtipage."
+
+// syncRemedy is the remedy /admin gives for a node on chain not synced for why (a reason class), or "" when the
+// reason's own advice (wait for the node to sync, or give it peers) applies.
+func syncRemedy(chain, why string) string {
+	if chain == "regtest" && why == notSyncedIBD {
+		return regtestIBDRemedy
+	}
+	return ""
+}
 
 // notSynced is the reason class the node is not synced for at now, or "" when it is synced.
 func (n bitcoinNode) notSynced(now time.Time, maxAge time.Duration) string {
@@ -49,6 +68,8 @@ func (n bitcoinNode) notSynced(now time.Time, maxAge time.Duration) string {
 		return notSyncedPeersUnread
 	case n.Connections == 0:
 		return notSyncedPeers
+	case n.Time == 0:
+		return notSyncedTipUnread
 	case now.Sub(time.Unix(n.Time, 0)) > maxAge:
 		return notSyncedTip
 	}

@@ -12,6 +12,7 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -57,13 +58,16 @@ type escrowConfig struct {
 	feeAddress    string // where the market fee goes ("" when feeBps is 0); one fixed address, test networks only
 	confirmations int64  // PAYMENT_CONFIRMATIONS_BTC: confirmations before an escrow counts as funded
 	feeRate       int64  // ESCROW_BTC_FEE_RATE: the network fee rate of every settlement, in sat/vB (P1-c)
+	signerSocket  string // ESCROW_SIGNER_SOCKET (A-454): the escrow signer's Unix socket; "" = no signer
+	pooledURL     string // BITCOIN_RPC_URL: the pooled client the market key self-check goes through (A-440); "" = none
 }
 
 // escrowConfigFromEnv reads ESCROW_BTC (on/off, blank = off), ESCROW_BTC_RPC_URL, ESCROW_BTC_ARBITER_WALLET
 // (default opsecmkt-arbiter), ESCROW_BTC_WATCH_WALLET (default opsecmkt-escrow-watch), ESCROW_BTC_FEE_BPS (0 to
 // 10000, default 0), ESCROW_BTC_FEE_ADDRESS (needed when the fee is above 0), ESCROW_BTC_FEE_RATE (the settlement
-// network fee rate in sat/vB, 1 to escrowMaxFeeRate, default escrowDefaultFeeRate) and PAYMENT_CONFIRMATIONS_BTC (1
-// to 1000, default 3). Nothing is contacted.
+// network fee rate in sat/vB, 1 to escrowMaxFeeRate, default escrowDefaultFeeRate), PAYMENT_CONFIRMATIONS_BTC (1
+// to 1000, default 3) and ESCROW_SIGNER_SOCKET (the escrow signer's socket, an absolute path; blank = none, A-454).
+// Nothing is contacted.
 func escrowConfigFromEnv(getenv func(string) string) (escrowConfig, error) {
 	var c escrowConfig
 	switch v := strings.TrimSpace(getenv("ESCROW_BTC")); v {
@@ -92,7 +96,7 @@ func escrowConfigFromEnv(getenv func(string) string) (escrowConfig, error) {
 	if c.watchWallet == c.arbiterWallet {
 		return c, errors.New("ESCROW_BTC_WATCH_WALLET must name a watch-only wallet of its own, not the arbiter wallet ESCROW_BTC_ARBITER_WALLET")
 	}
-	if strings.TrimSpace(getenv("BITCOIN_RPC_URL")) != "" {
+	if c.pooledURL = strings.TrimSpace(getenv("BITCOIN_RPC_URL")); c.pooledURL != "" {
 		pooled := strings.TrimSpace(getenv("BITCOIN_WALLET"))
 		if pooled == "" {
 			pooled = "opsecmkt"
@@ -136,6 +140,12 @@ func escrowConfigFromEnv(getenv func(string) string) (escrowConfig, error) {
 	if _, err := parseMaxTipAge(getenv("BITCOIN_MAX_TIP_AGE")); err != nil {
 		return c, err
 	}
+	if v := strings.TrimSpace(getenv("ESCROW_SIGNER_SOCKET")); v != "" {
+		if !filepath.IsAbs(v) {
+			return c, errors.New("ESCROW_SIGNER_SOCKET must be the absolute path of the escrow signer's Unix socket, as mounted in the app's container (docs/operator-guide.md, \"Escrow signer\")")
+		}
+		c.signerSocket = v
+	}
 	return c, nil
 }
 
@@ -154,6 +164,7 @@ const (
 	escrowLogRefused      = "escrow: Bitcoin escrow disabled until the app is restarted: the escrow node is not on regtest, or it refused ESCROW_BTC_FEE_ADDRESS"
 	escrowLogUnrecorded   = "escrow: Bitcoin escrow disabled: its arbiter fingerprint could not be checked in the database"
 	escrowLogChain        = "escrow: Bitcoin escrow disabled: the escrow node is not on the chain this database's escrows are on (escrow_btc_chain); the admin page names both; see docs/operator-guide.md, \"Bitcoin escrow (regtest only)\""
+	escrowLogPooledKey    = "escrow: Bitcoin escrow disabled: the pooled Bitcoin RPC user (BITCOIN_RPC_URL) was not refused listdescriptors on the arbiter wallet, so it may be able to export the market's escrow key; give that user the pooled rpcwhitelist line, or run escrow on a node of its own; see docs/operator-guide.md, \"The pooled RPC user\""
 	escrowFingerprintPin  = "escrow_btc_arbiter_fingerprint" // settings key
 	escrowChainPin        = "escrow_btc_chain"               // settings key: escrowChainID of the node the database's escrows are on (A-439)
 	escrowFingerprintSize = 8
@@ -208,6 +219,10 @@ func (a *App) initEscrow(ctx context.Context) error {
 	if err == nil {
 		logEscrowState(state, class)
 		a.escrowStartState = state
+		if cfg.signerSocket != "" {
+			a.escrowSigner = &escrowSignerClient{socket: cfg.signerSocket}
+			a.checkEscrowSigner(ctx) // a signer that does not answer is "waiting": startup goes on
+		}
 	}
 	return err
 }
@@ -226,7 +241,8 @@ func (a *App) startEscrow(ctx context.Context) (state, class string, err error) 
 	if err != nil {
 		return "", "", err
 	}
-	a.escrowMismatch.Store(nil) // shown on /admin only while the latest attempt found the node on another chain
+	a.escrowMismatch.Store(nil)  // shown on /admin only while the latest attempt found the node on another chain
+	a.escrowPooledKey.Store(nil) // likewise, while the latest attempt found the pooled user not refused (A-440)
 	node, err := e.blockchainInfo(ctx)
 	if err != nil {
 		return escrowLogUnchecked, errorClassOf(err), nil
@@ -242,6 +258,10 @@ func (a *App) startEscrow(ctx context.Context) (state, class string, err error) 
 	if !ok {
 		a.escrowMismatch.Store(&EscrowChainMismatch{Pinned: pinned, Reported: e.chainID})
 		return escrowLogChain, "", nil
+	}
+	if class := e.pooledKeyCheck(ctx, a.escrowCfg.pooledURL); class != "" {
+		a.escrowPooledKey.Store(&class)
+		return escrowLogPooledKey, "listdescriptors " + class, nil
 	}
 	if err = e.readArbiter(ctx); err != nil {
 		return escrowLogArbiter, errorClassOf(err), nil
@@ -270,6 +290,35 @@ func (a *App) startEscrow(ctx context.Context) (state, class string, err error) 
 	}
 	a.escrow.Store(e)
 	return escrowLogOn, "", nil
+}
+
+// pooledKeyCheck is the market key protection self-check (P4-R6, A-440). rpcwhitelist is per user, not per wallet,
+// and Core selects the wallet by the URL path, so a pooled user allowed listdescriptors could call it with
+// private=true on the arbiter wallet's path and print the market's escrow key (probed on Core 31.1 regtest). Through
+// the pooled client (pooledURL, BITCOIN_RPC_URL) it calls listdescriptors with private=false, which exports nothing,
+// on that path, and reports "" when the pooled user is refused: HTTP 403 (the method is not on its rpcwhitelist) or
+// RPC -18 (no such wallet: the pooled node is another node). Anything else is the class escrow stays disabled with:
+// "answered" for a success, otherwise the escrowRPCError class (credentials, timeout, rpc:<code>, ...), never Core's
+// text. With no pooled client configured there is nothing to check.
+func (e *escrowBTC) pooledKeyCheck(ctx context.Context, pooledURL string) string {
+	if pooledURL == "" {
+		return ""
+	}
+	rpc, err := newRPCClient("bitcoin", pooledURL, "1.0", false)
+	if err != nil {
+		return "bad-url"
+	}
+	err = classifyEscrowRPC("listdescriptors", rpc.call(ctx, e.arbiterWallet, "listdescriptors", []any{false}, nil))
+	var re *escrowRPCError
+	switch {
+	case err == nil:
+		return "answered"
+	case !errors.As(err, &re):
+		return errorCause(err)
+	case re.Class == "forbidden" || re.Class == "rpc:-18":
+		return ""
+	}
+	return re.Class
 }
 
 // logEscrowState logs a startEscrow state line, with its error class when there is one.

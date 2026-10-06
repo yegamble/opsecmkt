@@ -13,7 +13,8 @@ import unittest
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts' / 'test-escrow-regtest.sh'
 LEGS = ('TestEscrowRegtestPracticeSign', 'TestEscrowRegtestFunding', 'TestEscrowRegtestSettlement', 'TestEscrowRegtestCosign',
         'TestEscrowRegtestRecovery', 'TestEscrowRegtestGate', 'TestEscrowRegtestBump', 'TestEscrowRegtestPhysical',
-        'TestEscrowRegtestDeadline', 'TestEscrowRegtestReserve', 'TestEscrowRegtestConflicted')
+        'TestEscrowRegtestDeadline', 'TestEscrowRegtestReserve', 'TestEscrowRegtestConflicted', 'TestEscrowRegtestBIP32',
+        'TestEscrowRegtestSigner', 'TestEscrowRegtestPooled', 'TestEscrowRegtestArbiterRestore')
 
 
 class FakeRegtest(BaseHTTPRequestHandler):
@@ -51,7 +52,8 @@ class EscrowRegtestScriptTest(unittest.TestCase):
             out.write_text(''.join(line + '\n' for line in output))
             env = dict(os.environ, PATH=tmp + os.pathsep + os.environ['PATH'], FAKE_GO_OUTPUT=str(out),
                        FAKE_GO_STATUS=str(status), ESCROW_REGTEST_OPERATOR_RPC_URL=self.url,
-                       ESCROW_REGTEST_APP_RPC_URL=self.url, TEST_DATABASE_URL='postgres://unused/none',
+                       ESCROW_REGTEST_APP_RPC_URL=self.url, ESCROW_REGTEST_POOLED_RPC_URL=self.url,
+                       ESCROW_REGTEST_SIGNER_RPC_URL=self.url, TEST_DATABASE_URL='postgres://unused/none',
                        ESCROW_REGTEST_LOG=str(Path(tmp, 'transcript.log')))
             env.pop('NO_PROXY', None)
             r = subprocess.run(['bash', str(SCRIPT)], env=env, capture_output=True, text=True, timeout=60)
@@ -99,9 +101,31 @@ class EscrowRegtestScriptTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn('go test exited 1', text)
 
+    def test_transcript_with_a_tprv_fails(self):
+        tprv = 'tprv8ZgxMBicQKsPd' + 'A' * 94  # shaped like a serialized test-network private key (not a real one)
+        code, text = self.run_script(['--- PASS: %s (1.0s)' % l for l in LEGS] + ['    leg.go:1: root ' + tprv, 'PASS'], 0)
+        self.assertEqual(code, 1)
+        self.assertIn('holds a serialized tprv', text)
+
+    def test_signer_and_pooled_urls_are_required(self):
+        for missing in ('ESCROW_REGTEST_SIGNER_RPC_URL', 'ESCROW_REGTEST_POOLED_RPC_URL'):
+            with tempfile.TemporaryDirectory() as tmp:
+                env = dict(os.environ, ESCROW_REGTEST_OPERATOR_RPC_URL=self.url, ESCROW_REGTEST_APP_RPC_URL=self.url,
+                           ESCROW_REGTEST_POOLED_RPC_URL=self.url, ESCROW_REGTEST_SIGNER_RPC_URL=self.url,
+                           TEST_DATABASE_URL='postgres://unused/none', ESCROW_REGTEST_LOG=str(Path(tmp, 't.log')))
+                env.pop(missing)
+                r = subprocess.run(['bash', str(SCRIPT)], env=env, capture_output=True, text=True, timeout=60)
+                self.assertEqual(r.returncode, 2, missing)
+                self.assertIn(missing, r.stderr)
+
     def test_documented_node_has_fallbackfee(self):
         head = SCRIPT.read_text().split('set -euo pipefail')[0]
         self.assertIn('bitcoind -regtest -fallbackfee=0.0002', head)
+        # The escrow signer's own user, whitelisted to exactly what it calls (A-454).
+        self.assertIn('-rpcwhitelist=opsecmkt-signer:decodepsbt,descriptorprocesspsbt', head)
+        # The pooled user, whitelisted to the pooled methods only (A-440; the Go test pins the list to the code).
+        self.assertIn('"-rpcauth=opsecmkt-pooled:', head)
+        self.assertRegex(head, r'-rpcwhitelist=opsecmkt-pooled:[a-z,]+ \\\n')
 
 
 if __name__ == '__main__':

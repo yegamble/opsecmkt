@@ -1,5 +1,5 @@
 {
- "note": "Signed escrow settlement PSBTs from scripts/test-escrow-wallets.sh: regtest, throwaway keys, public keys only.",
+ "note": "Signed escrow settlement PSBTs from scripts/test-escrow-wallets.sh: regtest, throwaway keys, public keys only. These files come from its --update-fixtures run at cf6a8a0fdbb4 with uncommitted changes (QA4W1-6), logged in artifacts/real-chain/a450-cf6a8a0fdbb4-dirty-fixtures-wallets.log (gitignored, local). The clean evidence run at 52eb99f7aba5 (artifacts/real-chain/a450-52eb99f7aba5-wallets.log) used different throwaway keys, so its log does not contain these transactions or keys.",
  "generated_by": "scripts/test-escrow-wallets.sh at commit cf6a8a0fdbb4bb79d1a2056619778393f129fc99 (uncommitted changes under internal/ or scripts/)",
  "entries": [
   {

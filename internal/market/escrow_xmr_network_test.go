@@ -428,7 +428,7 @@ func TestMoneroPooledGuardPeersAndTipAge(t *testing.T) {
 		{func(m *payMoneroWallet) { m.unsynced = true }, func(m *payMoneroWallet) { m.unsynced = false }, "daemon not synchronized"},
 	} {
 		w.set(tc.set)
-		want := syncSkipReason(tc.why)
+		want := syncSkipReason(tc.why, "")
 		if skip, _, _ := a.refreshProviders(ctx); skip["XMR"] != want || a.provider("XMR") == nil || !strings.Contains(want, tc.why) {
 			t.Fatalf("%s: skip %q, want %q", tc.why, skip["XMR"], want)
 		}
@@ -451,11 +451,11 @@ func TestMoneroPooledGuardPeersAndTipAge(t *testing.T) {
 		t.Fatalf("a restricted RPC with a fresh tip: %v", skip)
 	}
 	w.set(func(m *payMoneroWallet) { m.offline = true })
-	if skip, _, _ := a.refreshProviders(ctx); skip["XMR"] != syncSkipReason("no peers") {
+	if skip, _, _ := a.refreshProviders(ctx); skip["XMR"] != syncSkipReason("no peers", "") {
 		t.Fatalf("an offline restricted RPC: %v", skip)
 	}
 	w.set(func(m *payMoneroWallet) { m.offline, m.tipAge = false, 2*time.Hour })
-	if skip, _, _ := a.refreshProviders(ctx); skip["XMR"] != syncSkipReason("tip older than MONERO_MAX_TIP_AGE") {
+	if skip, _, _ := a.refreshProviders(ctx); skip["XMR"] != syncSkipReason("tip older than MONERO_MAX_TIP_AGE", "") {
 		t.Fatalf("a restricted RPC with a stale tip: %v", skip)
 	}
 	w.set(func(m *payMoneroWallet) { m.restricted, m.tipAge = false, 0 })
@@ -503,7 +503,7 @@ func TestMoneroPooledNoPeersHoldsExpiry(t *testing.T) {
 	}
 	r := e.do("GET", "/admin", as, nil)
 	e.check(r, 200)
-	if page := html.UnescapeString(r.Body.String()); !strings.Contains(page, syncSkipReason("no peers")) {
+	if page := html.UnescapeString(r.Body.String()); !strings.Contains(page, syncSkipReason("no peers", "")) {
 		t.Fatalf("admin page lacks the reason:\n%s", page)
 	}
 	w.set(func(m *payMoneroWallet) { m.peers = 8 })

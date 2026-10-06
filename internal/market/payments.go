@@ -100,10 +100,12 @@ type versionReporter interface {
 
 // nodeStatus is what a provider's Check reports about its node and wallet. Syncing is true while the node is not
 // synced; Why is the reason class when the check names one (Bitcoin: bitcoinNode.notSynced, A-439; Monero:
-// moneroNode.notSynced, A-449).
+// moneroNode.notSynced, A-449) and Remedy what the operator does about it when the reason's words do not say
+// (Bitcoin: syncRemedy, QA4W1-2; Monero names none).
 type nodeStatus struct {
 	Syncing bool
 	Why     string
+	Remedy  string
 	Tip     int64
 }
 
@@ -344,7 +346,7 @@ func (a *App) refreshProviders(ctx context.Context) (skip map[string]string, tip
 		if err != nil {
 			skip[cur] = u.err
 		} else if st.Syncing {
-			skip[cur] = syncSkipReason(st.Why)
+			skip[cur] = syncSkipReason(st.Why, st.Remedy)
 		} else if st.Tip > 0 {
 			tips[cur] = st.Tip
 		}
@@ -374,7 +376,7 @@ func (a *App) refreshProviders(ctx context.Context) (skip map[string]string, tip
 			skip[cur] = "Wallet check failed; watcher pass skipped (no deposits read, no expiry, no payouts): " + truncate(err.Error(), 300)
 			why[cur] = "wallet check failed: " + watcherCause(err)
 		case st.Syncing:
-			skip[cur] = syncSkipReason(st.Why)
+			skip[cur] = syncSkipReason(st.Why, st.Remedy)
 		case st.Tip > 0:
 			tips[cur] = st.Tip
 		}
@@ -417,13 +419,17 @@ const syncingReason = "Node is still syncing; watcher pass skipped (no deposits 
 const notSyncedPrefix = "Node is not synced"
 
 // syncSkipReason is the admin page's reason for a pass skipped while the node is not synced for why (a bitcoinNode or
-// moneroNode reason class, or "" when the check names none): initial block download, and a Monero target height above
-// the height (A-449), keep syncingReason's words.
-func syncSkipReason(why string) string {
+// moneroNode reason class, or "" when the check names none), followed by remedy when there is one: initial block
+// download, and a Monero target height above the height (A-449), keep syncingReason's words.
+func syncSkipReason(why, remedy string) string {
+	reason := notSyncedPrefix + " (" + why + "); watcher pass skipped (no deposits read, no expiry, no payouts) until it is."
 	if why == "" || why == notSyncedIBD || why == xmrNotSyncedTarget {
-		return syncingReason
+		reason = syncingReason
 	}
-	return notSyncedPrefix + " (" + why + "); watcher pass skipped (no deposits read, no expiry, no payouts) until it is."
+	if remedy != "" {
+		reason += " " + remedy
+	}
+	return reason
 }
 
 // tipBehindPrefix starts the reason a pass is skipped because the node's tip is below the highest tip recorded

@@ -505,7 +505,7 @@ To remove another vendor's listing (for example counterfeit or prohibited goods)
 - Bitcoin: `BITCOIN_RPC_URL` is a wallet-enabled Bitcoin Core RPC. Credentials go in the URL userinfo (`http://marketplace:PASSWORD@bitcoin:8332`); they are sent as HTTP Basic auth and never logged. `BITCOIN_WALLET` (default `opsecmkt`) must exist; the app loads it if needed. Create it once as shown in the [runbook](testnet-runbook.md#2-create-the-bitcoin-wallet) (inside the compose container `bitcoin-cli` needs `-rpcport=8332 -rpcuser=marketplace`). `BITCOIN_CHAIN` (blank, `testnet4`, `signet`, `regtest`, or `main` for mainnet) must match the node when set; the local node service runs `testnet4` when it is blank. `PAYMENT_CONFIRMATIONS_BTC` defaults to 3; use 1 for regtest.
 - Monero: `MONERO_WALLET_RPC_URL` is monero-wallet-rpc with its `--rpc-login` credentials as userinfo (for example `http://marketplace:PASSWORD@monero-wallet:18083`), sent as HTTP Digest auth. The local `monero-wallet` service requires `MONERO_WALLET_RPC_PASSWORD` (the installer generates it) and no longer runs with `--disable-rpc-login`. The app uses account 0 and opens a wallet file named `opsecmkt` (empty password) if none is open. Create it first with the `create_wallet` RPC ([runbook](testnet-runbook.md#3-create-the-monero-wallet)). `MONERO_RPC_URL` (the daemon) is optional; when set, its network and sync state are checked too. `MONERO_NETWORK` (blank, `stagenet`, `testnet`, or `mainnet`) must match when set. `PAYMENT_CONFIRMATIONS_XMR` defaults to 10. Per-order Monero escrow (off by default, a local fakechain or stagenet, custodial) has its own wallet-rpc and settings: [Monero escrow](#monero-escrow-fakechain-or-stagenet).
 - `PAYMENT_POLL_INTERVAL` (default `30s`, from 1s to 1h) sets how often the single background watcher polls wallets and sends queued payouts. Several app instances can share a database; only one polls at a time.
-- `BITCOIN_MAX_TIP_AGE` (Go duration, default `2h`, from 30m to 24h; anything else stops startup) is how old the tip block of a Bitcoin node on a public test network (testnet4, signet, testnet3; and mainnet) may be before the node counts as not synced (A-439). Core's `initialblockdownload` turns false once and stays false, so a node that lost its peers or stopped receiving blocks still reports itself synced while new deposits are invisible to it. The pooled Bitcoin watcher, and the escrow watcher, therefore skip their pass (no deposits read, no expiry, no payouts or settlements) while the node is in initial block download, its headers are ahead of its blocks, or, on a public chain, it has no peers (`getnetworkinfo` `connections` 0) or its tip is older than this. Nothing is stored for this check; it is made again on every pass. A regtest node is exempt from the peer and tip-age checks (a lone regtest node has neither). Raise it only if your chain's blocks are often slower than this (testnet4 can be); a false alarm only delays a cancellation, never a payment.
+- `BITCOIN_MAX_TIP_AGE` (Go duration, default `2h`, from 30m to 24h; anything else stops startup) is how old the tip block of a Bitcoin node on a public test network (testnet4, signet, testnet3; and mainnet) may be before the node counts as not synced (A-439). Core's `initialblockdownload` turns false once and stays false, so a node that lost its peers or stopped receiving blocks still reports itself synced while new deposits are invisible to it. The pooled Bitcoin watcher, and the escrow watcher, therefore skip their pass (no deposits read, no expiry, no payouts or settlements) while the node is in initial block download, its headers are ahead of its blocks, or, on a public chain, it has no peers (`getnetworkinfo` `connections` 0) or its tip is older than this. Raise it only if your chain's blocks are often slower than this (testnet4 can be); a false alarm only delays a cancellation, never a payment. A public-chain node whose `getblockchaininfo` has no `time` field (the tip block's time) also counts as not synced, with its own reason, "tip time unreadable: this Bitcoin Core is too old for the sync guard; use Bitcoin Core 31.1 or later": the guard needs Bitcoin Core 31.1 (the version the installer pins; earlier versions untested). Nothing is stored for this check; it is made again on every pass. A regtest node is exempt from the peer and tip-age checks (a lone regtest node has neither). A regtest node still reports initial block download at height 0 and after a restart when its tip is older than 24 hours (Core's `-maxtipage`); with no peers, waiting does not end it: mine one block (`bitcoin-cli -regtest generatetoaddress 1 <address>`) or restart bitcoind with a larger `-maxtipage`. The admin page says so on regtest.
 - `MONERO_MAX_TIP_AGE` (Go duration, default `1h`, from 20m to 24h; anything else stops startup) is the same bound for a Monero daemon on a public network (stagenet, testnet; and mainnet) (A-449). A monerod that lost its peers can keep reporting `synchronized` with `target_height` not above its height while new deposits are invisible to it, so the pooled Monero watcher (when `MONERO_RPC_URL` is set) and the [Monero escrow](#monero-escrow-fakechain-or-stagenet) watcher skip their pass (no deposits read, no expiry, no payouts or settlements) while `get_info` reports `synchronized` false or a `target_height` above its height, or, on a public network, no connections (`outgoing_connections_count` plus `incoming_connections_count` 0) or a top block (`get_last_block_header`) older than this. Nothing is stored for this check; it is made again on every pass. A local fakechain (Monero escrow's test chain) is exempt from the connection and tip-age checks, and `get_last_block_header` is not called on it. Both calls are on monerod's restricted RPC, so the bundled `monero` service (which serves restricted RPC) answers them. A Monero block is due every 2 minutes; raise this only if your network's blocks are often slower (stagenet can be).
 - `PAYMENT_EXPIRY` (Go duration, default `24h`, from 10m to 720h) is the payment window. An order still awaiting payment that long after its address was issued, with no deposit seen, is cancelled by the watcher and its reserved stock is returned. An order with a deposit still confirming stays open. An underpaid order (every deposit confirmed, together short of the price) is cancelled the same way once its address is older than the window and no deposit has arrived for the window either; its confirmed deposits are refunded to the buyer's saved payout address (blocked until the buyer saves one; below the minimum automatic payout, flagged for staff) and the buyer is notified. The order page states the time from which the order can be cancelled (address issue time or latest deposit, whichever is later, plus the window), which a new deposit moves; changing `PAYMENT_EXPIRY` moves it for every open order. A buyer or vendor who cancels an order awaiting payment after a deposit arrived sees the refund it queues and must confirm it. A buyer can hold at most 3 orders awaiting payment at once. Requesting payment records the listing's current price.
 
@@ -593,7 +593,7 @@ Operational limits to accept before enabling payments:
 - Deposits for all orders sit in **one pooled custodial wallet** per currency. This is not multisig escrow. Whoever controls the node wallet controls the funds. Per-order escrow is in no release ([per-order escrow](escrow.md)): its Phase 1 (digital orders) and Phase 2 (physical orders) are built and tested on regtest only, behind `ESCROW_BTC`, which is off by default ([Bitcoin escrow](#bitcoin-escrow-regtest-only)), and its Phase 3 (Monero, custodial) on a local fakechain, and since A-449 on stagenet too (no public stagenet run is recorded), behind `ESCROW_XMR`, which is off by default ([Monero escrow](#monero-escrow-fakechain-or-stagenet)). The pooled wallet stays the default payment mode.
 - There is **no commission or fee accounting**. Every payout on both coins, releases included, deducts the network fee from the amount sent (Bitcoin `subtractfeefromamount`; Monero `subtract_fee_from_outputs`), so the recipient bears it and no payout costs the market its fee. When you pay one by hand, send it the same way. Payouts below a minimum are never queued but flagged to moderators: 0.0001 BTC for any Bitcoin payout (a smaller one cannot cover the fee) and 0.001 XMR for any Monero payout (the fee would take too large a share); listings cannot be priced below either minimum, and one priced lower before its rule (Bitcoin before A-99, Monero before A-232) takes no new orders in that currency until its vendor raises the price (an overpayment above such a price on an existing order is held for an administrator's review). The fee-from-amount rule covers the fee's amount only: how many small outputs the pooled Monero wallet accumulates, and what spending them later costs, is not measured (A-221(c)).
 - Payouts are **single-attempt**. A failed or interrupted wallet call is shown on the admin page and never retried automatically, because the transaction may already have been broadcast. After checking the wallet, an administrator can release a held payout, requeue a failed or stuck one, or record one as sent with its transaction ID (password-confirmed and audited). A failure the wallet rejected with a pre-broadcast error (nothing broadcast) requeues with the password alone; requeueing one whose outcome is unknown (timeout, dropped connection, or a Monero error such as -38 that can follow a submission; see the [runbook](testnet-runbook.md#5-recover-a-held-or-failed-payout)) or a stuck send, or releasing a payout held by (or requeueing a failed payout marked by) a restore from backup, also needs an explicit, audited confirmation that the wallet shows no broadcast transaction. A wallet send may take up to 30 seconds (ordinary wallet reads 10 seconds). A shutdown or redeploy lets an in-flight send finish and its outcome be recorded (at most 30 seconds plus 10 to record; even added to the 10-second HTTP drain this stays within the app's 60-second stop grace period).
-- The watcher never cancels an order for non-payment unless it read that order's deposit address from the wallet in the same pass, and it skips a currency entirely while its node is still syncing (Bitcoin `initialblockdownload`; Monero daemon `target_height` above `height`, when `MONERO_RPC_URL` is set), while a Bitcoin node is otherwise not synced (headers ahead of blocks, or on a public chain no peers or a tip older than `BITCOIN_MAX_TIP_AGE`, above; the admin page's last error then reads "Node is not synced (no peers) ...", "(tip older than BITCOIN_MAX_TIP_AGE)", "(headers ahead of blocks)" or, when `getnetworkinfo` fails on a public chain, "(peer count unreadable)", and one `payments: BTC node not synced (...)` line is logged when it starts and one `payments: BTC node synced; watcher passes resumed` when it ends), while a Monero daemon is otherwise not synced (when `MONERO_RPC_URL` is set: `synchronized` false, no connections, or a top block older than `MONERO_MAX_TIP_AGE`, above; the last error then reads "Node is not synced (daemon not synchronized) ...", "(no peers)", "(tip older than MONERO_MAX_TIP_AGE)" or, when `get_last_block_header` fails, "(tip time unreadable)", logged as `payments: XMR node not synced (...)` once and `payments: XMR node synced; watcher passes resumed` once), or while the node's tip is below the highest tip it has recorded for that currency (Bitcoin `blocks`; the Monero wallet's `get_height`), as after a node or wallet restarted or restored from an older state. The admin page's last error then reads "Node is behind the highest tip recorded ...". If you deliberately replace a chain with a shorter one (a reset regtest, for example), clear the record so the watcher resumes: `UPDATE payment_status SET tip_height=NULL WHERE currency='BTC';` (or `'XMR'`).
+- The watcher never cancels an order for non-payment unless it read that order's deposit address from the wallet in the same pass, and it skips a currency entirely while its node is still syncing (Bitcoin `initialblockdownload`; Monero daemon `target_height` above `height`, when `MONERO_RPC_URL` is set), while a Bitcoin node is otherwise not synced (headers ahead of blocks, or on a public chain no peers or a tip older than `BITCOIN_MAX_TIP_AGE`, above; the admin page's last error then reads "Node is not synced (no peers) ...", "(tip older than BITCOIN_MAX_TIP_AGE)", "(headers ahead of blocks)", "(tip time unreadable: this Bitcoin Core is too old for the sync guard; use Bitcoin Core 31.1 or later)" or, when `getnetworkinfo` fails on a public chain, "(peer count unreadable)"; on regtest, "Node is still syncing ..." is followed by the regtest remedy above; and one `payments: BTC node not synced (...)` line is logged when it starts and one `payments: BTC node synced; watcher passes resumed` when it ends), while a Monero daemon is otherwise not synced (when `MONERO_RPC_URL` is set: `synchronized` false, no connections, or a top block older than `MONERO_MAX_TIP_AGE`, above; the last error then reads "Node is not synced (daemon not synchronized) ...", "(no peers)", "(tip older than MONERO_MAX_TIP_AGE)" or, when `get_last_block_header` fails, "(tip time unreadable)", logged as `payments: XMR node not synced (...)` once and `payments: XMR node synced; watcher passes resumed` once), or while the node's tip is below the highest tip it has recorded for that currency (Bitcoin `blocks`; the Monero wallet's `get_height`), as after a node or wallet restarted or restored from an older state. The admin page's last error then reads "Node is behind the highest tip recorded ...". If you deliberately replace a chain with a shorter one (a reset regtest, for example), clear the record so the watcher resumes: `UPDATE payment_status SET tip_height=NULL WHERE currency='BTC';` (or `'XMR'`).
 - A credited deposit that later conflicts, disappears or drops below the confirmation threshold (a reorg) holds the order's unsent payout and, while the order is open or any of its payouts is unsent (including an overpayment return after the release was sent), is announced once per episode to the order history, the buyer, the vendor and every moderator and administrator not party to the order and not suspended; staff can then read the order and find it under *Payment review*. The payout resumes automatically once the deposit confirms again, however old the order, which ends the episode; a later regression is announced again. The order state is never reverted automatically. On *Payouts* such a held payout shows the deposit, its address and confirmations instead of a *Release* form.
 - A payout is sent only in a watcher pass that has just read its order's deposit address from the wallet, so a deposit reversed while the payout waited (blocked, held or failed, then released or requeued) is caught before the send. Orders with a payout waiting to be sent are watched whatever their age, so a released payout normally goes out on the next pass.
 - Funded orders that are not yet completed, cancelled or resolved stay watched for as long as they are open. A deposit first seen after an order was funded is noted once in the order history and to the buyer and vendor; it is part of the order's settlement (a release with any excess returned to the buyer, or a refund) if it has the confirmation threshold when the order settles; otherwise it is not paid out automatically (see late deposits below).
@@ -621,7 +621,8 @@ has run on a public test network. Never switch it on for a market that takes rea
   ESCROW_BTC=on runs only on regtest in this release …". An unreachable node or an unreadable arbiter wallet
   leaves escrow disabled with one log line starting `escrow: Bitcoin escrow disabled:`, and the market runs
   without it. The escrow watcher then runs the same checks again every `PAYMENT_POLL_INTERVAL`, with the same
-  guards (regtest only, the chain pin and the pinned arbiter fingerprint below, a watch-only wallet without private keys), and escrow
+  guards (regtest only, the chain pin and the pinned arbiter fingerprint below, the pooled user refused the arbiter wallet as
+  *The pooled RPC user* below describes, a watch-only wallet without private keys), and escrow
   starts without a restart once they pass ("escrow: Bitcoin escrow on (regtest only)"). A line is logged when the
   state changes, not on every retry. A retry that finds the node on another chain, or refusing
   `ESCROW_BTC_FEE_ADDRESS`, cannot stop the running market: it logs "escrow: Bitcoin escrow disabled until the app
@@ -631,7 +632,9 @@ has run on a public test network. Never switch it on for a market that takes rea
 - `ESCROW_BTC_ARBITER_WALLET` (default `opsecmkt-arbiter`): a Bitcoin Core descriptor wallet that holds only the
   market's arbitrator key, never `BITCOIN_WALLET`. Create it once as the operator user, loaded at every node start
   (`bitcoin-cli -regtest -named createwallet wallet_name=opsecmkt-arbiter load_on_startup=true`), and back it up
-  with the operator user: its seed is the market's escrow key. Use it for nothing else. At startup and on each retry
+  as the operator user, encrypted, as the runbook's
+  [arbiter and watch-only wallet backup](testnet-runbook.md#back-up-and-restore-the-escrow-arbiter-and-watch-only-wallets)
+  describes: its seed is the market's escrow key, and `scripts/backup.sh` does not hold it. Use it for nothing else. At startup and on each retry
   the app checks with `getwalletinfo` exactly this: a descriptor wallet with private keys, not encrypted (the escrow
   watcher co-signs without a passphrase, so an encrypted wallet could never sign), and no transaction ever paid to or
   from it (`txcount` 0: escrow coins never belong to it, so a transaction means it is also used as an ordinary
@@ -681,9 +684,16 @@ has run on a public test network. Never switch it on for a market that takes rea
   escrow watcher passes resumed", and `/admin` shows "Bitcoin escrow node not synced: <reason>." under *Payment
   providers* until it is synced. The reason is one of `initial block download`, `headers ahead of blocks`, `no peers`
   or `tip older than BITCOIN_MAX_TIP_AGE`: wait for the node to sync, or give it peers (a `getnetworkinfo` the node
-  refuses is a failed node check instead, logged on every pass as `escrow watcher: escrow: node check failed: …`). Nothing is stored for it. On
-  regtest (the only chain escrow accepts in this release) only the first two apply, and `getnetworkinfo` is never
-  called, so a whitelist without it keeps working there.
+  refuses is a failed node check instead, logged on every pass as `escrow watcher: escrow: node check failed: …`). On
+  a public chain it can also be `tip time unreadable: this Bitcoin Core is too old for the sync guard; use Bitcoin
+  Core 31.1 or later`: the node's `getblockchaininfo` has no `time`, so the tip's age is unknown and the pass is
+  skipped until the node is upgraded (the guard needs Bitcoin Core 31.1, the version the installer pins; earlier
+  versions untested). Nothing is stored for it. On regtest (the only chain escrow accepts in this release) only the
+  first two apply, and `getnetworkinfo` is never called, so a whitelist without it keeps working there. Waiting does
+  not help a regtest node in initial block download: Core reports it at height 0 and after a restart when its tip is
+  older than 24 hours (`-maxtipage`), and a regtest node has no peers to sync from. Mine one block
+  (`bitcoin-cli -regtest generatetoaddress 1 <address>`) or restart bitcoind with a larger `-maxtipage`; on regtest
+  the `/admin` line says so.
 - **Chain pin (A-439).** At startup (and on each retry) the app pins the escrow node's chain in the database
   (`settings` key `escrow_btc_chain`: the chain name, such as `regtest`, followed by `:` and the node's
   `signet_challenge` on signet, so two signets are told apart). **A database never changes chain once it holds an
@@ -767,9 +777,40 @@ is on it: it exports nothing and lets the arbiter wallet sign for high escrow in
 is used only with throwaway practice keys, never a wallet key. `getwalletinfo`, `getaddressinfo`,
 `listreceivedbyaddress`, `gettransaction` and `listtransactions` read the watch-only wallet (the arbiter wallet only
 answers `getwalletinfo` and `getaddressinfo`; they export nothing). `listtransactions` was added in P1-d1 (UPGRADING.md section 22): without it a
-deposit spent outside the market is still flagged, but without the spending transaction's ID. `rpcwhitelistdefault=0` leaves other users (the
-operator's, the pooled wallet's) unrestricted. Make SALT and HASH with Core's `share/rpcauth/rpcauth.py`, or as
+deposit spent outside the market is still flagged, but without the spending transaction's ID. `rpcwhitelistdefault=0`
+leaves a user with no `rpcwhitelist` line unrestricted: keep that for the operator user alone, and give each user the
+app connects as its own line (the pooled user below included). With `rpcwhitelistdefault` unset instead, Core gives every
+user without its own line an empty list once any `rpcwhitelist` is set: the operator user could then call nothing.
+Make SALT and HASH with Core's `share/rpcauth/rpcauth.py`, or as
 the comment in `scripts/test-escrow-regtest.sh` shows.
+
+**The pooled RPC user.** `rpcwhitelist` is per user, not per wallet: Core picks the wallet from the URL path
+(`/wallet/<name>`), so any user allowed `listdescriptors` can call it with `private=true` on the arbiter wallet and
+print the market's escrow key. Probed on Core 31.1 regtest: with only the escrow user whitelisted, the escrow user got
+HTTP 403 and an unrestricted pooled user got the `tprv`. When the pooled wallet (`BITCOIN_RPC_URL`) and escrow share a
+node, restrict the pooled user to exactly the methods the pooled adapter calls (`internal/market/payments_bitcoin.go`,
+kept equal to this line by a Go test):
+
+```ini
+rpcauth=opsecmkt-pooled:SALT$HASH
+rpcwhitelist=opsecmkt-pooled:getblockchaininfo,getwalletinfo,loadwallet,getnetworkinfo,getnewaddress,listreceivedbyaddress,gettransaction,sendtoaddress,validateaddress
+```
+
+Use the user name your `BITCOIN_RPC_URL` carries (on the bundled Compose node it is `marketplace`, set with
+`-rpcuser`; that node has no escrow user, above, so this matters there only if you add escrow's wallets to it). None of
+these methods exports or copies a key. Or put escrow on a node of its own, which no pooled user can reach. Escrow and the pooled
+wallet on one node share one failure domain: a node that is down, out of sync, out of disk or lost stops both, and
+whoever controls the node controls both wallets.
+
+The app checks this at startup and on each retry: through `BITCOIN_RPC_URL` it calls `listdescriptors` with
+`private=false` (which exports nothing) on the arbiter wallet's path. Only HTTP 403 (the method is not on the pooled
+user's whitelist) or "wallet not found" (RPC -18: the pooled node is another node) passes. Anything else (an answer, another
+error, wrong credentials, an unreachable pooled node or a timeout) leaves escrow disabled with "escrow: Bitcoin escrow disabled: the pooled Bitcoin
+RPC user (BITCOIN_RPC_URL) was not refused listdescriptors on the arbiter wallet, …" followed by the answer's class
+(`answered`, `credentials`, `unreachable`, `timeout`, `rpc:<code>`; never Core's text), and `/admin` shows the same under *Payment
+providers* with the line to add. Escrow starts by itself once the check passes. Another pooled node that happens to hold a
+wallet with the arbiter wallet's name also answers, and keeps escrow off until its pooled user is whitelisted too. Without
+`BITCOIN_RPC_URL` there is nothing to check. Checked on Core 31.1 regtest by `TestEscrowRegtestPooled` (below).
 
 **What users see.** With `ESCROW_BTC` off, `/escrow-key` does not exist: it answers 404 like any unknown page,
 signed in or not. With it on, `/account` gains a *Bitcoin escrow key* row linking to `/escrow-key`. There a user registers
@@ -1088,7 +1129,23 @@ A-428 leg (`TestEscrowRegtestConflicted`): a deposit replaced by a conflicting t
 `gettransaction` reports it with -1 confirmations and `listreceivedbyaddress` no longer lists it) does not count, so
 the order is cancelled unpaid at the end of its window; once `invalidateblock` removes the replacement's block and the
 deposit is mined after all, it is flagged once and returned by a stray refund the buyer's wallet signs, broadcast and
-confirmed to the refund address. In every leg the app runs inside the Go test against the real node, not as the server binary. A browser journey
+confirmed to the refund address. Its A-453 leg (`TestEscrowRegtestBIP32`, no product caller yet): the Go per-order key
+derivation of [per-order escrow](escrow.md#per-order-key-derivation-a-453-shape-b-groundwork) agrees with Core's
+`deriveaddresses` for three wallets' BIP48 accounts at several indexes, and a wrong index or a changed chain code is
+refused. Its A-454 leg (`TestEscrowRegtestSigner`, no order uses it yet; needs the signer's RPC user, below): the
+[escrow signer](#escrow-signer), built from the tree and started with a fresh seed, co-signs a hand-built per-order
+escrow through its socket, which the buyer's Core wallet signs too and which is broadcast and mined; it refuses a
+SIGHASH_NONE input, another index, two of its keys in one script and two escrows in one request; the seed is backed up,
+restored and signs identically; the app reports a pin mismatch and a signer that is down. Its A-440 legs (needs the
+pooled RPC user above): `TestEscrowRegtestPooled`, where the pooled user under its whitelist gets HTTP 403 for
+`listdescriptors` (true and false), `dumpwallet` and `backupwallet` on the arbiter wallet, escrow starts beside the
+pooled provider on the same node, and the pooled provider still reloads its wallet, issues an address, credits a deposit
+and sends a payout that confirms, while an unrestricted user as `BITCOIN_RPC_URL` keeps escrow off; and
+`TestEscrowRegtestArbiterRestore`, where the arbiter wallet, backed up as the operator user before any escrow, is
+unloaded with a vendor-signed claim waiting (nothing is co-signed), restored with `restorewallet` under a new name (the
+harness cannot delete files inside the node) and co-signs that claim to confirmation with the fingerprint pin unchanged,
+and a blank wallet given the operator-exported descriptors (`importdescriptors`, timestamp `now`) co-signs a second
+claim the same way; the encryption step of the runbook is not part of it. In every leg the app runs inside the Go test against the real node, not as the server binary. A browser journey
 (`npm run test:e2e:escrow`, [development](development.md)) drives the escrow forms by keyboard in Chromium at 320 px
 with JavaScript off against the real server and a simulated escrow node; it is not chain evidence. Nothing about
 escrow has run on a public test network or mainnet, and the escrow pages have not been run in Firefox or WebKit.
@@ -1100,6 +1157,123 @@ broadcast themselves), `TestEscrowRegtestDeadline` (no arbiter signing call befo
 rate confirmed) and `TestEscrowRegtestReserve` (the keys of lost escrows read from the real watch-only wallet and not
 reused). The physical-order browser journey (`tests/e2e/escrow-physical-journey.spec.ts`, same command) uses the
 simulated node too and moves the clock through SQL; it is not chain evidence.
+
+#### Escrow signer
+
+**Development branch, regtest only, and no order uses it yet.** Per-order (shape (b)) Bitcoin escrows, being built
+for wallets that cannot sign with a key Bitcoin Core derives from the market's account (ruling P4-R2; see
+[per-order escrow](escrow.md#escrow-signer-a-454-shape-b)), need a market key that is not in the Core arbiter wallet.
+The escrow signer, `/app/escrow-signer` in the app's image (`cmd/escrow-signer`), holds that key. Until the
+settlement flow uses it (a later slice), the app only checks it and pins it, as below; nothing else depends on it, and
+the Core arbiter wallet above stays the market's key for every escrow this release creates.
+
+What it does and refuses (ruling P4-R17):
+
+- Its seed is a fresh one of its own (never the arbiter wallet's, never derived from `APP_SECRET_KEY` or
+  `SETUP_TOKEN`): 32 random bytes in a mode-0400 file in its own volume (`escrow_signer_seed`). The seed is never in
+  `.env`, the database, `scripts/backup.sh`'s output, the signer's arguments, environment, logs or errors. Its
+  account is `m/48h/1h/0h/2h` of that seed; the market key of the escrow with per-order index `i` is `account/i/0/0`,
+  and it also signs for that order wallet's sibling keys `account/i/0/k` and `account/i/1/k` (k < 20), so coins sent
+  to a sibling address can be returned.
+- It listens only on a Unix socket (mode 0660; no TCP listener), shared with the app through the
+  `escrow_signer_socket` volume. Requests are JSON lines with a `version` field (`{"version":1,"op":"info"}`,
+  `{"version":1,"op":"sign","psbt":"<base64>","index":<i>}`); `info` answers the protocol version, the account key
+  (rooted: depth 0, no parent) and its fingerprint, and a refusal answers only a fixed class (`{"error":"sighash"}`).
+- It signs through the escrow node's `descriptorprocesspsbt` as its own RPC user, with `ALL` hard-coded, and hands
+  Core its key only inside that call's descriptor (Core logs the method and user, never the key, with `-debug=rpc`;
+  checked on Core 31.1 regtest). Before anything is signed it refuses (each with its class, nothing returned): an
+  input with any sighash type but ALL (`sighash`); an input whose witness script is not exactly
+  `2 <three sorted distinct compressed keys> 3 CHECKMULTISIG` (`not-escrow-script`) or whose `witness_utxo` does not pay
+  P2WSH of that script (`witness-utxo`); inputs of more than one escrow (`mixed-scripts`); a script without its key for
+  the requested index (`key-not-found`) or with two of them (`two-signer-keys`). Core's result must differ from the
+  request only by one added signature per input under its key, otherwise nothing is returned (`result-mismatch`).
+  The other classes are `bad-psbt` (not base64, or a PSBT Core cannot decode or that is not version 0),
+  `core-refused` (Core answered `descriptorprocesspsbt` with an error) and `core-unavailable` (the node did not
+  answer, or the signer's user may not call the method); the protocol's own are `version`, `malformed`,
+  `unknown-op`, `bad-index` and `too-large`. The signer's log names the class and the order index, nothing else.
+  It keeps no memory of what it signed, so a script holding its keys of two different order indexes is not detected
+  by the signer: the app must never build one.
+
+**Set-up** (Compose, `compose.nodes.yaml`'s `escrow-signer` profile; checked with `docker compose config` only, not
+yet run under Compose):
+
+1. Give the signer its own RPC user on the escrow node, allowed exactly the two methods it calls, beside the app's
+   user (`rpcwhitelistdefault=0` is already set):
+
+   ```ini
+   rpcauth=opsecmkt-signer:SALT$HASH
+   rpcwhitelist=opsecmkt-signer:decodepsbt,descriptorprocesspsbt
+   ```
+
+2. In `.env`: `ESCROW_SIGNER_RPC_URL=http://opsecmkt-signer:PASSWORD@<escrow node>:<port>` (given to the signer
+   service only, never the app), `ESCROW_SIGNER_SOCKET=/run/escrow-signer/signer.sock` (the app's side), and
+   `escrow-signer` added to `COMPOSE_PROFILES` (comma-separated, keeping the profiles already there; a
+   `--profile` flag would replace them for that command). The signer joins the `backend` network only to reach that
+   RPC URL; it publishes no port.
+3. Make the seed: `docker compose run --rm --no-deps escrow-signer init`. It refuses a seed file that exists, and
+   prints the account key and its fingerprint: write the fingerprint down.
+4. Back the seed up now (below), then start it with `docker compose up -d escrow-signer` and restart the app
+   (`docker compose up -d app`). The app logs "escrow: escrow signer ready (shape (b); its account key matches the
+   pins in this database)".
+
+Outside Compose, build it with `go build ./cmd/escrow-signer`, run `escrow-signer serve` as its own user whose group
+the app shares (the socket is mode 0660), with `ESCROW_SIGNER_RPC_URL` in its environment and `-seed` and `-socket`
+(or `ESCROW_SIGNER_SEED_FILE`, `ESCROW_SIGNER_SOCKET`) naming the seed file and socket path; `serve` refuses a seed
+file its group or others can read.
+
+**Pins and what the app shows.** With `ESCROW_BTC=on` and `ESCROW_SIGNER_SOCKET` set, the app asks the signer for its
+account key at startup and on every escrow watcher pass. At first contact it pins the key's fingerprint and an HMAC of
+the key (keyed from `APP_SECRET_KEY`, as registered escrow keys are) in `settings` (`escrow_signer_fingerprint`,
+`escrow_signer_xpub_hmac`); a pin is never rewritten. Each state change logs one line and, until the signer is ready,
+`/admin` shows a line under *Payment providers*:
+
+- A signer whose key differs from the pins: "escrow: shape (b) unavailable: the escrow signer's account key differs
+  from the one pinned in this database …". Nothing else changes: escrow with the Core arbiter wallet stays on, and the
+  pins and every order stay as they are. Check that `ESCROW_SIGNER_SOCKET` reaches the signer whose seed this market
+  pinned (compare `escrow-signer info` with the pinned fingerprint), or restore that seed from its backup. Rotating
+  `APP_SECRET_KEY` changes the HMAC, so the right signer then reads as a mismatch too. Only while no per-order escrow
+  exists (none in this release) may an administrator delete the two rows to pin another signer:
+  `DELETE FROM settings WHERE key IN ('escrow_signer_fingerprint','escrow_signer_xpub_hmac')`.
+- A signer that does not answer: "escrow: escrow signer not reachable at ESCROW_SIGNER_SOCKET; anything that needs it
+  waits (nothing is rebuilt)". Start the service; the next pass finds it.
+- A reply the app does not understand, such as another protocol version: "escrow: shape (b) unavailable: the escrow
+  signer's reply was not understood …".
+
+**Backup and restore.** The seed is a second backup item beside the database: `scripts/backup.sh` never sees it.
+Encrypt it to the operator's OpenPGP public key (the file holds that one key) and keep the result off the server:
+
+```sh
+docker compose run --rm -T --no-deps -v "$PWD/operator.asc:/operator.asc:ro" \
+  escrow-signer backup -key /operator.asc > escrow-signer-seed.asc
+```
+
+To restore into an empty seed volume (it refuses to overwrite a seed file), decrypt on the operator's machine and pipe
+it straight in, checking the pinned fingerprint before anything is written:
+
+```sh
+gpg --decrypt escrow-signer-seed.asc | docker compose run --rm -T --no-deps \
+  escrow-signer restore -fingerprint <escrow_signer_fingerprint>
+```
+
+Rehearsed on regtest by `TestEscrowRegtestSigner` (`scripts/test-escrow-regtest.sh`): a backup to a throwaway key,
+decrypted, restored with `-fingerprint`, and a signer from the restored seed gave the identical signature.
+
+**Break-glass** (the signer host is lost and a settlement is queued): on a machine without network access, restore the
+seed as above into a new directory, start a Bitcoin Core 31.1 node of a test network with no peers (for example
+`bitcoind -regtest -networkactive=0`) with the signer's `rpcauth` and `rpcwhitelist` lines, run `escrow-signer serve`
+against it, and send the queued PSBT and its order index through the socket:
+
+```sh
+python3 -c 'import json,socket,sys; s=socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); s.sendall((json.dumps({"version":1,"op":"sign","psbt":open(sys.argv[2]).read().strip(),"index":int(sys.argv[3])})+"\n").encode()); print(s.makefile().readline())' \
+  /path/to/signer.sock queued.psbt <index>
+```
+
+The reply's `psbt` carries the market's signature; the refusals above still apply. The rehearsal signed against the
+same regtest node; signing on an offline node was not rehearsed. Delete the restored seed copy afterwards.
+
+**Upgrade order.** Upgrade the signer first, then the app: each request carries the protocol `version` (1), and the
+signer refuses any other (`{"error":"version"}`), which the app reports as a reply it does not understand. A release
+that changes the protocol says so in `UPGRADING.md`.
 
 #### Monero escrow (fakechain or stagenet)
 
