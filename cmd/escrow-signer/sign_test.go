@@ -5,12 +5,16 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -20,15 +24,21 @@ import (
 )
 
 // fakeCore is a simulated Bitcoin Core JSON-RPC server (not chain evidence; the real one is the regtest leg,
-// internal/market TestEscrowRegtestSigner): decodepsbt answers the decoded form registered for a PSBT string, and
-// descriptorprocesspsbt answers the PSBT string the test set, recording every call.
+// internal/market TestEscrowRegtestSigner): decodepsbt answers the decoded form registered for a PSBT string,
+// descriptorprocesspsbt answers the PSBT string the test set, and getdescriptorinfo answers wpkh(<tprv>/0/*) with the
+// tprv's public key in its place, as Core 31.1 does (the simulation computes it; TestSignerAccountFromCore pins the
+// answer for testSeed to real Core's). It records every call and every request body.
 type fakeCore struct {
-	mu      sync.Mutex
-	decoded map[string]any // PSBT string -> decodepsbt result
-	result  string         // descriptorprocesspsbt's PSBT
-	refuse  map[string]bool
-	calls   []fakeCall
-	srv     *httptest.Server
+	mu        sync.Mutex
+	decoded   map[string]any // PSBT string -> decodepsbt result
+	result    string         // descriptorprocesspsbt's PSBT
+	refuse    map[string]bool
+	descInfo  func(desc string) any // when set, getdescriptorinfo's result instead of the simulation's
+	downAt    int                   // > 0: that call (1-based) gets no JSON-RPC answer, as from a node gone away
+	forbidden map[string]bool       // methods answered 403, as if not on the signer user's rpcwhitelist
+	calls     []fakeCall
+	bodies    []string
+	srv       *httptest.Server
 }
 
 type fakeCall struct {
@@ -48,12 +58,23 @@ func newFakeCore(t *testing.T) *fakeCore {
 			Method string            `json:"method"`
 			Params []json.RawMessage `json:"params"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		body, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(body, &req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
 		f.mu.Lock()
 		f.calls = append(f.calls, fakeCall{req.Method, req.Params})
+		f.bodies = append(f.bodies, string(body))
+		if down := len(f.calls) == f.downAt; down || f.forbidden[req.Method] {
+			f.mu.Unlock()
+			if down {
+				w.WriteHeader(http.StatusServiceUnavailable)
+			} else {
+				w.WriteHeader(http.StatusForbidden)
+			}
+			return
+		}
 		refuse := f.refuse[req.Method]
 		var result any
 		code, msg := 0, ""
@@ -68,6 +89,14 @@ func newFakeCore(t *testing.T) *fakeCore {
 			result = d
 		case "descriptorprocesspsbt":
 			result = map[string]any{"psbt": f.result, "complete": false}
+		case "getdescriptorinfo":
+			var desc string
+			json.Unmarshal(req.Params[0], &desc)
+			if f.descInfo != nil {
+				result = f.descInfo(desc)
+			} else if result = simulatedDescriptorInfo(desc); result == nil {
+				code, msg = -5, "fake: not a wpkh(tprv/0/*) descriptor"
+			}
 		default:
 			w.WriteHeader(http.StatusForbidden) // not on the signer user's rpcwhitelist
 			f.mu.Unlock()
@@ -86,6 +115,51 @@ func newFakeCore(t *testing.T) *fakeCore {
 	}))
 	t.Cleanup(f.srv.Close)
 	return f
+}
+
+// simulatedDescriptorInfo is getdescriptorinfo of wpkh(<tprv>/0/*) as Core 31.1 answers it: the descriptor with the
+// tprv replaced by its tpub (same depth, parent fingerprint, child number and chain code) and its checksum; nil for
+// anything else. It stands in for Core, and is the only place the package computes a public key from a private one.
+func simulatedDescriptorInfo(desc string) any {
+	m := regexp.MustCompile(`^wpkh\((tprv[1-9A-HJ-NP-Za-km-z]+)/0/\*\)$`).FindStringSubmatch(desc)
+	if m == nil {
+		return nil
+	}
+	raw, err := btc.Base58CheckDecode(m[1])
+	if err != nil || len(raw) != 78 || raw[45] != 0 {
+		return nil
+	}
+	k := btc.ExtKey{Depth: raw[4], Child: binary.BigEndian.Uint32(raw[9:13])}
+	copy(k.ParentFP[:], raw[5:9])
+	copy(k.ChainCode[:], raw[13:45])
+	k.PubKey = btc.Compress(btc.Mul(new(big.Int).SetBytes(raw[46:78]), btc.G))
+	cs, _ := btc.DescriptorChecksum(desc) // Core's checksum field is the input descriptor's
+	return map[string]any{"descriptor": btc.WithChecksum("wpkh(" + k.Serialize(btc.VersionTpub) + "/0/*)"), "checksum": cs, "isrange": true, "issolvable": true, "hasprivatekeys": true}
+}
+
+// noBodyHolds fails the test if any request body sent to the fake Core contains needle (named by label, never printed).
+func (f *fakeCore) noBodyHolds(t *testing.T, needle, label string) {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if needle == "" {
+		t.Fatalf("empty %s", label)
+	}
+	for _, b := range f.bodies {
+		if strings.Contains(b, needle) {
+			t.Fatalf("a request body sent to Core holds the %s", label)
+		}
+	}
+}
+
+// masterTprv is the seed's BIP32 master key serialized as a tprv: what no RPC body may hold (QA4W2-1).
+func masterTprv(t *testing.T, seed []byte) string {
+	t.Helper()
+	m, err := masterKey(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m.serialize(tprvVersion)
 }
 
 func (f *fakeCore) url() string {
@@ -212,6 +286,12 @@ func newSignEnv(t *testing.T) *signEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := keys.loadAccount(context.Background(), c); err != nil { // as serve does at startup
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	f.calls = nil // the tests count the calls a request makes; the bodies are kept for noSecrets
+	f.mu.Unlock()
 	logs := &bytes.Buffer{}
 	return &signEnv{t: t, keys: keys, core: f, s: newSigner(keys, c, log.New(logs, "", 0)), logs: logs, party: partyKeys(t),
 		before: base64.StdEncoding.EncodeToString([]byte("psbt\xff before"))}
@@ -237,17 +317,20 @@ func (e *signEnv) run(before, after map[string]any, index uint32) (string, error
 	return e.s.sign(context.Background(), e.before, index)
 }
 
-// noSecrets fails the test if the signer's log holds the seed or any tprv.
+// noSecrets fails the test if the signer's log holds the seed or any tprv, or if any request body sent to Core holds
+// the master tprv or the seed (QA4W2-1: Core is given the account tprv only).
 func (e *signEnv) noSecrets() {
 	e.t.Helper()
 	if l := e.logs.String(); strings.Contains(l, "tprv") || strings.Contains(l, hex.EncodeToString(testSeed)) {
 		e.t.Fatalf("signer log holds key material: %q", l)
 	}
+	e.core.noBodyHolds(e.t, masterTprv(e.t, testSeed), "master tprv")
+	e.core.noBodyHolds(e.t, hex.EncodeToString(testSeed), "seed (hex)")
 }
 
 // TestSignerSignHappyPath (fake Core): a one-escrow PSBT whose script holds the signer's key at /0/k or /1/k (k < 20)
 // of the requested index is signed through descriptorprocesspsbt called with the escrow's exact descriptor (the other
-// two keys as hex, the signer's as the master tprv and full path, with its checksum), "ALL", bip32derivs false and
+// two keys as hex, the signer's as the account tprv and its path, with its checksum), "ALL", bip32derivs false and
 // finalize false; Core's result, which adds one signature under the signer's key to every input, is returned as is.
 // A party signature already in the request, and a sighash field of ALL, are fine.
 func TestSignerSignHappyPath(t *testing.T) {
@@ -257,10 +340,12 @@ func TestSignerSignHappyPath(t *testing.T) {
 		withParty   bool
 		sighashALL  bool
 		inputs      int
+		nonWitness  bool // the input carries a non_witness_utxo that agrees with its prevout and witness_utxo
 	}{
-		{"/0/0, one input", 0, 0, false, false, 1},
-		{"/1/19 sibling, two inputs", 1, 19, false, false, 2},
-		{"/0/3 with a party signature and sighash ALL", 0, 3, true, true, 1},
+		{"/0/0, one input", 0, 0, false, false, 1, false},
+		{"/1/19 sibling, two inputs", 1, 19, false, false, 2, false},
+		{"/0/3 with a party signature and sighash ALL", 0, 3, true, true, 1, false},
+		{"/0/0 with a matching non_witness_utxo", 0, 0, false, false, 1, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			e := newSignEnv(t)
@@ -277,6 +362,12 @@ func TestSignerSignHappyPath(t *testing.T) {
 			}
 			if c.sighashALL {
 				input(before, 0)["sighash"] = "ALL"
+			}
+			if c.nonWitness {
+				vin := before["tx"].(map[string]any)["vin"].([]any)[0].(map[string]any)
+				input(before, 0)["non_witness_utxo"] = map[string]any{"txid": vin["txid"], "vout": []any{
+					map[string]any{"n": 0, "value": json.Number("0.10000000"), "scriptPubKey": map[string]any{"hex": "0014" + strings.Repeat("22", 20)}},
+					map[string]any{"n": 1, "value": json.Number("0.50000000"), "scriptPubKey": map[string]any{"hex": p2wsh(script)}}}}
 			}
 			after := before
 			for i := range scripts {
@@ -366,6 +457,12 @@ func TestSignerRefusals(t *testing.T) {
 		{"a key off the curve", refScript, func(e *signEnv) map[string]any { return decoded(multisig(offCurve, mine, p[1])) }, index},
 		{"CHECKMULTISIGVERIFY", refScript, func(e *signEnv) map[string]any { return decoded(good[:len(good)-2] + "af") }, index},
 		{"a byte after CHECKMULTISIG", refScript, func(e *signEnv) map[string]any { return decoded(good + "00") }, index},
+		// QA4W2-4: 2 <3 keys> 4 CHECKMULTISIG (the n byte), and a script of the right length whose second key is
+		// pushed with 0x20 instead of 0x21 (the push byte; the key bytes still sit where a 0x21 push would put them).
+		{"2 <3 keys> 4 CHECKMULTISIG", refScript, func(e *signEnv) map[string]any { return decoded(good[:len(good)-4] + "54ae") }, index},
+		{"a key pushed with 0x20, length preserved", refScript, func(e *signEnv) map[string]any {
+			return decoded("52" + "21" + hex.EncodeToString(desc[0][:]) + "20" + hex.EncodeToString(desc[1][:]) + "21" + hex.EncodeToString(desc[2][:]) + "53ae")
+		}, index},
 		{"no witness script", refScript, func(e *signEnv) map[string]any {
 			d := decoded(good)
 			delete(input(d, 0), "witness_script")
@@ -392,6 +489,14 @@ func TestSignerRefusals(t *testing.T) {
 			input(d, 0)["non_witness_utxo"] = map[string]any{"txid": vin["txid"], "vout": []any{
 				map[string]any{"n": 0, "value": json.Number("0.50000000"), "scriptPubKey": map[string]any{"hex": p2wsh(good)}},
 				map[string]any{"n": 1, "value": json.Number("0.50000000"), "scriptPubKey": map[string]any{"hex": "0014" + strings.Repeat("22", 20)}}}}
+			return d
+		}, index},
+		// QA4W2-4: the output itself agrees with witness_utxo, but it belongs to another transaction than the prevout.
+		{"non_witness_utxo is another transaction", refWitnessUTXO, func(e *signEnv) map[string]any {
+			d := decoded(good)
+			input(d, 0)["non_witness_utxo"] = map[string]any{"txid": strings.Repeat("ef", 32), "vout": []any{
+				map[string]any{"n": 0, "value": json.Number("0.10000000"), "scriptPubKey": map[string]any{"hex": "0014" + strings.Repeat("22", 20)}},
+				map[string]any{"n": 1, "value": json.Number("0.50000000"), "scriptPubKey": map[string]any{"hex": p2wsh(good)}}}}
 			return d
 		}, index},
 		{"two escrow scripts in one request", refMixed, func(e *signEnv) map[string]any {
@@ -498,6 +603,36 @@ func TestSignerResultChecked(t *testing.T) {
 			var r refusal
 			if got != "" || !errors.As(err, &r) || r != refResult {
 				t.Fatalf("got %q, %v (want %q)", got, err, refResult)
+			}
+			if m := e.core.methods(); !slices.Equal(m, []string{"decodepsbt", "descriptorprocesspsbt", "decodepsbt"}) {
+				t.Fatalf("calls %v", m)
+			}
+			e.noSecrets()
+		})
+	}
+	// QA4W2-2: Core signed, but its result cannot be checked: decodepsbt refuses it (-22), or the node answers nothing
+	// to that second decodepsbt. Core's PSBT is not returned either way.
+	for _, c := range []struct {
+		name   string
+		downAt int // the call (1-based, after set-up) that gets no answer; 0 = none
+	}{
+		{"result not decodable", 0},
+		{"node down after signing", 3},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := newSignEnv(t)
+			mine := e.key(index, 0, 0)
+			script := multisig(e.party[0], mine, e.party[1])
+			before := decoded(script)
+			var after map[string]any // nil: decodepsbt refuses Core's result with -22
+			if c.downAt != 0 {
+				after = withSig(before, 0, mine, goodSig) // decodable, had the node answered
+				e.core.downAt = c.downAt
+			}
+			got, err := e.run(before, after, index)
+			var r refusal
+			if got != "" || !errors.As(err, &r) || r != refResult {
+				t.Fatalf("got %q, %v (want %q and nothing returned)", got, err, refResult)
 			}
 			if m := e.core.methods(); !slices.Equal(m, []string{"decodepsbt", "descriptorprocesspsbt", "decodepsbt"}) {
 				t.Fatalf("calls %v", m)

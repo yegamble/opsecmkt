@@ -1224,39 +1224,47 @@ What it does and refuses (ruling P4-R17):
   `escrow_signer_socket` volume. Requests are JSON lines with a `version` field (`{"version":1,"op":"info"}`,
   `{"version":1,"op":"sign","psbt":"<base64>","index":<i>}`); `info` answers the protocol version, the account key
   (rooted: depth 0, no parent) and its fingerprint, and a refusal answers only a fixed class (`{"error":"sighash"}`).
-- It signs through the escrow node's `descriptorprocesspsbt` as its own RPC user, with `ALL` hard-coded, and hands
-  Core its key only inside that call's descriptor (Core logs the method and user, never the key, with `-debug=rpc`;
-  checked on Core 31.1 regtest). Before anything is signed it refuses (each with its class, nothing returned): an
-  input with any sighash type but ALL (`sighash`); an input whose witness script is not exactly
-  `2 <three sorted distinct compressed keys> 3 CHECKMULTISIG` (`not-escrow-script`) or whose `witness_utxo` does not pay
-  P2WSH of that script (`witness-utxo`); inputs of more than one escrow (`mixed-scripts`); a script without its key for
-  the requested index (`key-not-found`) or with two of them (`two-signer-keys`). Core's result must differ from the
-  request only by one added signature per input under its key, otherwise nothing is returned (`result-mismatch`).
-  The other classes are `bad-psbt` (not base64, or a PSBT Core cannot decode or that is not version 0),
-  `core-refused` (Core answered `descriptorprocesspsbt` with an error) and `core-unavailable` (the node did not
-  answer, or the signer's user may not call the method); the protocol's own are `version`, `malformed`,
-  `unknown-op`, `bad-index` and `too-large`. The signer's log names the class and the order index, nothing else.
-  It keeps no memory of what it signed, so a script holding its keys of two different order indexes is not detected
-  by the signer: the app must never build one.
+- It does no elliptic-curve arithmetic with its private key: the escrow node computes its account's public key
+  (`getdescriptorinfo`, at every start of `init`, `info`, `restore` and `serve`) and every signing key. It signs through
+  the escrow node's `descriptorprocesspsbt` as its own RPC user, with `ALL` hard-coded, and hands Core its account key
+  (`m/48h/1h/0h/2h`, never the seed's master key) only inside the descriptors of those two calls (Core logs the method
+  and user, never the key, with `-debug=rpc`; checked on Core 31.1 regtest). Before anything is signed it refuses (each
+  with its class, nothing returned): an input with any sighash type but ALL (`sighash`); an input whose witness script
+  is not exactly `2 <three sorted distinct compressed keys> 3 CHECKMULTISIG` (`not-escrow-script`) or whose
+  `witness_utxo` does not pay P2WSH of that script (`witness-utxo`); inputs of more than one escrow (`mixed-scripts`); a
+  script without its key for the requested index (`key-not-found`) or with two of them (`two-signer-keys`). Core's
+  result must differ from the request only by one added signature per input under its key, otherwise nothing is returned
+  (`result-mismatch`). The other classes are `bad-psbt` (not base64, or a PSBT Core cannot decode or that is not version
+  0), `core-refused` (Core answered `descriptorprocesspsbt` with an error) and `core-unavailable` (the node did not
+  answer, or the signer's user may not call the method); the protocol's own are `version`, `malformed`, `unknown-op`,
+  `bad-index` and `too-large`. The signer's log names the class and the order index, nothing else. It keeps no memory of
+  what it signed, so a script holding its keys of two different order indexes is not detected by the signer: the app
+  must never build one.
 
 **Set-up** (Compose, `compose.nodes.yaml`'s `escrow-signer` profile; checked with `docker compose config` only, not
 yet run under Compose):
 
-1. Give the signer its own RPC user on the escrow node, allowed exactly the two methods it calls, beside the app's
+1. Give the signer its own RPC user on the escrow node, allowed exactly the three methods it calls, beside the app's
    user (`rpcwhitelistdefault=0` is already set):
 
    ```ini
    rpcauth=opsecmkt-signer:SALT$HASH
-   rpcwhitelist=opsecmkt-signer:decodepsbt,descriptorprocesspsbt
+   rpcwhitelist=opsecmkt-signer:decodepsbt,descriptorprocesspsbt,getdescriptorinfo
    ```
+
+   A signer from before QA4W2-1 needed only the first two; without `getdescriptorinfo` every command but `backup`
+   now stops with "getdescriptorinfo: the escrow node did not answer (… whitelisted to decodepsbt,
+   descriptorprocesspsbt and getdescriptorinfo)".
 
 2. In `.env`: `ESCROW_SIGNER_RPC_URL=http://opsecmkt-signer:PASSWORD@<escrow node>:<port>` (given to the signer
    service only, never the app), `ESCROW_SIGNER_SOCKET=/run/escrow-signer/signer.sock` (the app's side), and
    `escrow-signer` added to `COMPOSE_PROFILES` (comma-separated, keeping the profiles already there; a
    `--profile` flag would replace them for that command). The signer joins the `backend` network only to reach that
    RPC URL; it publishes no port.
-3. Make the seed: `docker compose run --rm --no-deps escrow-signer init`. It refuses a seed file that exists, and
-   prints the account key and its fingerprint: write the fingerprint down.
+3. Make the seed, with the escrow node running: `docker compose run --rm --no-deps escrow-signer init`. It refuses a
+   seed file that exists, asks the node for the account key (it writes nothing if the node does not answer), and
+   prints the account key and its fingerprint: write the fingerprint down. `info`, `restore` and `serve` ask the node
+   the same way at every start; `serve` exits if it cannot, and Compose restarts it.
 4. Back the seed up now (below), then start it with `docker compose up -d escrow-signer` and restart the app
    (`docker compose up -d app`). The app logs "escrow: escrow signer ready (shape (b); its account key matches the
    pins in this database)".
@@ -1292,8 +1300,9 @@ docker compose run --rm -T --no-deps -v "$PWD/operator.asc:/operator.asc:ro" \
   escrow-signer backup -key /operator.asc > escrow-signer-seed.asc
 ```
 
-To restore into an empty seed volume (it refuses to overwrite a seed file), decrypt on the operator's machine and pipe
-it straight in, checking the pinned fingerprint before anything is written:
+To restore into an empty seed volume (it refuses to overwrite a seed file), with the escrow node running, decrypt on
+the operator's machine and pipe it straight in. `-fingerprint` is required: restore asks the node for the account key
+and writes nothing unless its fingerprint is the pinned one:
 
 ```sh
 gpg --decrypt escrow-signer-seed.asc | docker compose run --rm -T --no-deps \
@@ -1303,10 +1312,11 @@ gpg --decrypt escrow-signer-seed.asc | docker compose run --rm -T --no-deps \
 Rehearsed on regtest by `TestEscrowRegtestSigner` (`scripts/test-escrow-regtest.sh`): a backup to a throwaway key,
 decrypted, restored with `-fingerprint`, and a signer from the restored seed gave the identical signature.
 
-**Break-glass** (the signer host is lost and a settlement is queued): on a machine without network access, restore the
-seed as above into a new directory, start a Bitcoin Core 31.1 node of a test network with no peers (for example
-`bitcoind -regtest -networkactive=0`) with the signer's `rpcauth` and `rpcwhitelist` lines, run `escrow-signer serve`
-against it, and send the queued PSBT and its order index through the socket:
+**Break-glass** (the signer host is lost and a settlement is queued): on a machine without network access, start a
+Bitcoin Core 31.1 node of a test network with no peers (for example `bitcoind -regtest -networkactive=0`) with the
+signer's `rpcauth` and `rpcwhitelist` lines, restore the seed as above into a new directory with
+`ESCROW_SIGNER_RPC_URL` naming that node, run `escrow-signer serve` against it, and send the queued PSBT and its order
+index through the socket:
 
 ```sh
 python3 -c 'import json,socket,sys; s=socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); s.sendall((json.dumps({"version":1,"op":"sign","psbt":open(sys.argv[2]).read().strip(),"index":int(sys.argv[3])})+"\n").encode()); print(s.makefile().readline())' \

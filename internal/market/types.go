@@ -526,7 +526,7 @@ type EscrowOrderView struct {
 	Required, Confirmed, Unconfirmed, Remaining string
 	Threshold                                   int64
 	Open, NeedsTopUp                            bool
-	WindowPassed                                bool // Open, CancelAfter has passed and no deposit waits for confirmations: the watcher has not acted yet (QA4W1-5)
+	WindowPassed                                bool // Open, CancelAfter has passed, no deposit waits for confirmations and the escrow node is not synced: the watcher holds the order (QA4W1-5)
 	CancelAfter, Status, NextStep, Fee          string
 	Deposits                                    []PaymentDeposit
 	Unread                                      string                  // set when nothing is read at the address: shown for the Confirmed and Unconfirmed figures (A-338)

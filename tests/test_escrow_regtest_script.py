@@ -127,7 +127,7 @@ class EscrowRegtestScriptTest(unittest.TestCase):
         head = SCRIPT.read_text().split('set -euo pipefail')[0]
         self.assertIn('bitcoind -regtest -fallbackfee=0.0002', head)
         # The escrow signer's own user, whitelisted to exactly what it calls (A-454).
-        self.assertIn('-rpcwhitelist=opsecmkt-signer:decodepsbt,descriptorprocesspsbt', head)
+        self.assertIn('-rpcwhitelist=opsecmkt-signer:decodepsbt,descriptorprocesspsbt,getdescriptorinfo \\\n', head)
         # The pooled user, whitelisted to the pooled methods only (A-440; the Go test pins the list to the code).
         self.assertIn('"-rpcauth=opsecmkt-pooled:', head)
         self.assertRegex(head, r'-rpcwhitelist=opsecmkt-pooled:[a-z,]+ \\\n')

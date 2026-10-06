@@ -103,8 +103,9 @@ func Add(a, b Point) Point {
 	return Point{x, y}
 }
 
-// Mul is k·pt by double-and-add. It is not constant-time: the app uses it on public data only; the escrow signer uses
-// it once at startup on its account private key (cmd/escrow-signer/keys.go says why that is acceptable there).
+// Mul is k·pt by double-and-add. It is not constant-time, so it is used on public data only (BIP32 public derivation,
+// the public-key checks); never call it with a private key. The escrow signer has Bitcoin Core compute its public key
+// instead (cmd/escrow-signer/keys.go; TestSignerNoPointMultiplication).
 func Mul(k *big.Int, pt Point) Point {
 	var r Point
 	for i := k.BitLen() - 1; i >= 0; i-- {

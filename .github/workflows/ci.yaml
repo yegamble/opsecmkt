@@ -128,8 +128,8 @@ jobs:
           cache: true
       # The same node the script's header documents: an operator user with full rights (the buyer's and vendor's own
       # nodes), the app's user restricted by rpcwhitelist to what docs/operator-guide.md lists, the pooled user
-      # restricted to the pooled methods it lists (A-440) and the escrow signer's user restricted to decodepsbt and
-      # descriptorprocesspsbt (A-454). The passwords are generated for this run,
+      # restricted to the pooled methods it lists (A-440) and the escrow signer's user restricted to decodepsbt,
+      # descriptorprocesspsbt and getdescriptorinfo (A-454, QA4W2-1). The passwords are generated for this run,
       # masked before they reach any output and handed to the next step only through GITHUB_ENV inside the URLs;
       # bitcoind learns them as salted HMACs (-rpcauth), so no password is on a command line or in the repository.
       # A second node with the same users (A-441) runs -privatebroadcast through a proxy nobody answers
@@ -160,7 +160,7 @@ jobs:
               "-rpcauth=$(rpcauth operator "$operator_pass")" "-rpcauth=$(rpcauth opsecmkt-escrow "$app_pass")" \
               "-rpcauth=$(rpcauth opsecmkt-pooled "$pooled_pass")" "-rpcauth=$(rpcauth opsecmkt-signer "$signer_pass")" \
               -rpcwhitelistdefault=0 "-rpcwhitelist=opsecmkt-escrow:$whitelist" "-rpcwhitelist=opsecmkt-pooled:$pooled_whitelist" \
-              -rpcwhitelist=opsecmkt-signer:decodepsbt,descriptorprocesspsbt
+              -rpcwhitelist=opsecmkt-signer:decodepsbt,descriptorprocesspsbt,getdescriptorinfo
           }
           node "$BITCOIN_CONTAINER" "$BITCOIN_RPC_PORT"
           node "$BITCOIN_PRIVATE_CONTAINER" "$BITCOIN_PRIVATE_RPC_PORT" -privatebroadcast -proxy=127.0.0.1:9 -listen=0
