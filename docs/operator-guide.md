@@ -689,7 +689,7 @@ has run on a public test network. Never switch it on for a market that takes rea
   Core 31.1 or later`: the node's `getblockchaininfo` has no `time`, so the tip's age is unknown and the pass is
   skipped until the node is upgraded (the guard needs Bitcoin Core 31.1, the version the installer pins; earlier
   versions untested). Nothing is stored for it. On regtest (the only chain escrow accepts in this release) only the
-  first two apply, and `getnetworkinfo` is never called, so a whitelist without it keeps working there. Waiting does
+  first two apply, and in clearnet mode `getnetworkinfo` is never called, so a whitelist without it keeps working there. Waiting does
   not help a regtest node in initial block download: Core reports it at height 0 and after a restart when its tip is
   older than 24 hours (`-maxtipage`), and a regtest node has no peers to sync from. Mine one block
   (`bitcoin-cli -regtest generatetoaddress 1 <address>`) or restart bitcoind with a larger `-maxtipage`; on regtest

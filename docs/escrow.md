@@ -766,7 +766,7 @@ regtest only (A-443 opens signet and testnet4); the guard also protects pooled B
   the remedy (mine one block, or restart bitcoind with a larger `-maxtipage`), since a regtest node has no peers to
   sync from. Past its payment window, an open escrow order's page says the order stays open while the market waits for
   its node, instead of a cancellation time already gone. A lone regtest node is exempt from the peer and tip-age
-  checks, and `getnetworkinfo` is called only on a public chain.
+  checks, and `getnetworkinfo` is called only on a public chain (or, since A-441, in `APP_MODE=tor`).
 - **Chain pin.** The database pins the escrow node's chain (`settings` key `escrow_btc_chain`: the chain name, plus the
   `signet_challenge` on signet, since a private signet shares public signet's genesis block). A database never changes
   chain once it holds an escrow: a node on another chain leaves escrow disabled, changes nothing and is named on
