@@ -186,9 +186,11 @@ chain `regtest`; [operator guide](operator-guide.md#bitcoin-escrow-regtest-only)
   other coins was requested and built before the refund failed, and returned together with any deposit left out later,
   such as one that did not count at the cancellation or the decision and confirms since, once together they can pay
   the network fee. A release that fails so (a completed order, or one decided for the vendor) leaves its coins counted:
-  they are the vendor's; staff are told once (A-461), and the deposits it tried are flagged so staff can open the
-  order, also one never disputed (they stay counted). A stray refund still being built when the refund fails (both
-  in the same pass) adds those coins to its own: once it is built and spends them, the refund's failure holds nothing
+  they are the vendor's; staff are told once (A-461), with an order note naming the deposits it tried, and the
+  credited ones are flagged so staff can open the order, also one never disputed (they stay counted; the desk dates
+  the flag from that note and offers no action on it). A counted deposit not credited at funding (still confirming or
+  conflicted then) is not flagged, and the desk offers no action on one flagged by another check (QA462B). A stray
+  refund still being built when the refund fails (both in the same pass) adds those coins to its own: once it is built and spends them, the refund's failure holds nothing
   more (a coin of the refund's it leaves out, beyond the 50 largest or worth less than its own spending cost, gets one
   more try and is then held); if it fails too-small, the same coins fail a second time, at the grown value, and are then held. A stray
   refund that fails because its coins are too few is noted and told once, and the order page says the coins are held and why; no other is requested

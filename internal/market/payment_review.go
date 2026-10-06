@@ -95,9 +95,9 @@ func recordPaymentReview(c *actionCtx, id int64, outcome, note, refundTxid strin
 	}
 	var txid, disposition string
 	var idx, deposit int64
-	var credited, locked, regressed, belowFloor bool
-	if err = tx.QueryRowContext(ctx, "SELECT txid,idx,amount,credited,locked,regress_notice,below_floor,disposition FROM payments WHERE id=$1 AND order_id=$2 FOR UPDATE", id, o.ID).
-		Scan(&txid, &idx, &deposit, &credited, &locked, &regressed, &belowFloor, &disposition); err != nil {
+	var credited, locked, regressed, belowFloor, counted bool
+	if err = tx.QueryRowContext(ctx, "SELECT txid,idx,amount,credited,locked,regress_notice,below_floor,disposition,$3 AND NOT after_close AND NOT escrow_left_out AND NOT spent_outside FROM payments WHERE id=$1 AND order_id=$2 FOR UPDATE", id, o.ID, o.Escrow).
+		Scan(&txid, &idx, &deposit, &credited, &locked, &regressed, &belowFloor, &disposition, &counted); err != nil {
 		return actionResult{}, err
 	}
 	switch {
@@ -105,6 +105,10 @@ func recordPaymentReview(c *actionCtx, id int64, outcome, note, refundTxid strin
 		return actionResult{}, fail(409, "This payment review was already recorded ("+reviewOutcomes[disposition]+"); see the order history. Nothing was changed.")
 	case disposition == "escalated" && c.User.Role != "admin":
 		return actionResult{}, fail(409, "This payment review was escalated to an administrator, who records the outcome. Nothing was changed.")
+	case !credited && counted && !locked && !regressed && !belowFloor:
+		// QA462B-1: the desk's open-flag rule (loadPaymentReviews) never opens the flag of an escrow deposit counted for
+		// the order, credited or not.
+		return actionResult{}, fail(409, "This flag is not open: its escrow deposit counts for the order, so there is nothing to review. Nothing was changed.")
 	case !(locked || !credited || regressed || belowFloor):
 		// The desk's open-flag rule (loadPaymentReviews): a credited deposit that confirmed again closed its flag.
 		return actionResult{}, fail(409, "This flag is no longer open: its credited deposit confirmed again. Nothing was changed.")

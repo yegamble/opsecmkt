@@ -917,9 +917,12 @@ broadcast.
   order note says so) and the vendor's release includes them; no stray refund returns them. Deposits left out for any
   other reason (by the bounded wait, or one that did not count when the dispute was decided) stay for a stray refund
   to the buyer. A release that fails because the coins are too few tells staff once ("Payment review needed", A-461),
-  as a refund that fails so does, and flags the deposits it tried, so staff can open the order (also a completed
-  order never disputed) and the moderation desk lists them after the open flags, as credited deposits with no action
-  offered; its coins stay counted for the vendor until the decision is changed. Once the
+  as a refund that fails so does, with an order note naming the deposits it tried, and flags the credited ones (those
+  the order was funded with), so staff can open the order (also a completed order never disputed) and the moderation
+  desk lists them, dated by that note, after the open flags, as credited deposits with no action offered; a deposit it
+  tried that counts for the order but was not credited (still confirming, or conflicted, when the escrow was funded,
+  and mined since) is not flagged, and should another check flag one, the desk says it is counted for the order and
+  offers no action either. Its coins stay counted for the vendor until the decision is changed. Once the
   settlement is signed by the market (or both parties), broadcast, confirmed or spent outside the market, the
   decision is fixed (409).
 - *Stray refunds.* Escrows stay imported in the watch-only wallet with no age limit. Coins first recorded at an escrow

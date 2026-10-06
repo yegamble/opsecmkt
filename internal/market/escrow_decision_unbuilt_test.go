@@ -116,8 +116,10 @@ func TestEscrowDecisionChangeUnbuilt(t *testing.T) {
 		t.Fatalf("A: the deposit mined since was left out for the buyer: notes %d, buyer %d, staff %d", n, b, s)
 	}
 	// The release tries both deposits; the vendor's output (the 10000-sat price less the fees; the rest goes back to
-	// the buyer) is below the floor, so it fails too-small in turn, and both stay counted for the vendor (flagged so
-	// staff can open the order, QA462-3).
+	// the buyer) is below the floor, so it fails too-small in turn, and both stay counted for the vendor. Only the
+	// credited one is flagged (so staff can open the order, QA462-3): the 500000-sat one, conflicted at funding, is
+	// counted but not credited, and the desk neither lists it as an open flag "after the order closed" nor offers an
+	// action on it (QA462B-1).
 	if code, body := x.claim(order, x.vendorSess, regtestAddr("unbuilt claim A")); code != 303 {
 		t.Fatalf("A: claim: %d %s", code, strings.TrimSpace(body))
 	}
@@ -125,8 +127,13 @@ func TestEscrowDecisionChangeUnbuilt(t *testing.T) {
 	if got := x.decisionRows(order); !slices.Equal(got, []string{"refund superseded " + settleTooSmall + " 10000 false", "release failed " + settleTooSmall + " 510000 false"}) {
 		t.Fatalf("A: the release: %q", got)
 	}
-	if got := x.decisionDeposits(order); !slices.Equal(got, []string{"4000 true false false", "10000 true false false", "500000 true false false"}) {
+	if got := x.decisionDeposits(order); !slices.Equal(got, []string{"4000 true false false", "10000 true false false", "500000 false false false"}) {
 		t.Fatalf("A: after the release: deposits %q", got)
+	}
+	desk := x.page("/moderator", admin)
+	bigID := agStrings(t, x.testEnv, "SELECT id::text FROM payments WHERE order_id=$1 AND txid=$2", order, big)[0]
+	if row := deskRow(desk, big); strings.Contains(row, "Open:") || strings.Contains(row, "after the order closed") || strings.Contains(desk, `name="payment_id" value="`+bigID+`"`) {
+		t.Fatalf("A: the counted 500000-sat deposit on the desk: %s\n%s", row, desk)
 	}
 
 	// A3: the same at 100 sat/vB, where 25000 sats are too few for the refund; back at the default rate, the change
