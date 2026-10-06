@@ -8,7 +8,7 @@ import (
 )
 
 // The clocks of a physical Monero escrow order (WR-escrow Phase 3, slice X-e; P3-R7 with the Phase 2 rules P2-R3, P2-R5,
-// P2-R9 and P2-R10's restore recheck). Behind ESCROW_XMR (off by default); fakechain only. They are escrow_deadline.go's,
+// P2-R9 and P2-R10's restore recheck). Behind ESCROW_XMR (off by default); fakechain or stagenet (A-449). They are escrow_deadline.go's,
 // run by the Monero escrow watcher for Monero escrow orders (xmrDeadlines, the last step of its pass), so they apply with
 // ESCROW_BTC off; the Bitcoin escrow watcher's escrowDeadlines handles Bitcoin escrow orders only.
 //

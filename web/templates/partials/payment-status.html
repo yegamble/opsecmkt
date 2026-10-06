@@ -1,6 +1,6 @@
-{{/* P5 Payments owns. Slots: payment-status (footer), :catalog, :product, :checkout, :vendor-dashboard (stat tiles, with :escrow-tile). With ESCROW_BTC=on (.EscrowOn), ESCROW_XMR=on (.XMREscrowOn) or escrow orders on the vendor desk (.EscrowOrders, .XMREscrowOrders) no notice denies escrow or custody (QA31-2); without any of them the pooled-only wording is unchanged. Monero escrow is custodial and runs on a local fakechain: its notices carry .XMRCustody (xmrCustody, A-402) and never call it multisig (A-423). */}}
-{{define "payment-status:escrow-only"}}{{if and .EscrowOn .XMREscrowOn}}Bitcoin and Monero escrow only (local test chains) — no real funds{{else if .XMREscrowOn}}Monero escrow only (local fakechain) — no real funds{{else}}Bitcoin escrow only (regtest) — no real funds{{end}}{{end}}
-{{define "payment-status:xmr-notice"}}A listing paid by Monero escrow pays into an account of its own, on a local fakechain with no real funds. The coins are {{.XMRCustody}}.{{end}}
+{{/* P5 Payments owns. Slots: payment-status (footer), :catalog, :product, :checkout, :vendor-dashboard (stat tiles, with :escrow-tile). With ESCROW_BTC=on (.EscrowOn), ESCROW_XMR=on (.XMREscrowOn) or escrow orders on the vendor desk (.EscrowOrders, .XMREscrowOrders) no notice denies escrow or custody (QA31-2); without any of them the pooled-only wording is unchanged. Monero escrow is custodial and runs on a local fakechain or on stagenet (.XMREscrowNet names which, A-449): its notices carry .XMRCustody (xmrCustody, A-402) and never call it multisig (A-423). */}}
+{{define "payment-status:escrow-only"}}{{if and .EscrowOn .XMREscrowOn}}Bitcoin and Monero escrow only (local test chains) — no real funds{{else if .XMREscrowOn}}Monero escrow only ({{if eq .XMREscrowNet "stagenet"}}Monero stagenet{{else}}local fakechain{{end}}) — no real funds{{else}}Bitcoin escrow only (regtest) — no real funds{{end}}{{end}}
+{{define "payment-status:xmr-notice"}}A listing paid by Monero escrow pays into an account of its own, on {{if eq .XMREscrowNet "stagenet"}}Monero stagenet, a public test network{{else}}a local fakechain{{end}} with no real funds. The coins are {{.XMRCustody}}.{{end}}
 {{define "payment-status"}}{{if .PaymentsEnabled}}{{if $.LiveNetwork}}<span class="badge live">MAINNET payments ({{.PaymentNetworks}}) — real funds</span>{{else}}<span class="badge testnet">TESTNET payments ({{.PaymentNetworks}}) — no real funds</span>{{end}}{{else if or .EscrowOn .XMREscrowOn}}<span class="badge testnet">{{template "payment-status:escrow-only" .}}</span>{{else}}<span class="accent">Payments disabled</span>{{end}}{{end}}
 {{define "payment-status:catalog"}}{{if .PaymentsEnabled}}<div class="notice {{if $.LiveNetwork}}live-notice{{else}}testnet-notice{{end}}">
 <p>
@@ -58,6 +58,6 @@
 </div>{{end}}{{if or .XMREscrowOn .XMREscrowOrders}}
 <div class="stat">
 <div class="eyebrow">Monero escrow</div>
-<strong>{{if .XMREscrowAvailable}}FAKECHAIN{{else if .XMREscrowOn}}UNAVAILABLE{{else}}OFF{{end}}</strong>
-<span>{{if .XMREscrowOrders}}{{.XMREscrowOrders}} Monero escrow order(s) may hold fakechain coins, {{.XMRCustody}}{{else}}One account per order, local fakechain only; none of your orders uses it yet. Coins are {{.XMRCustody}}{{end}}</span>
+<strong>{{if .XMREscrowAvailable}}{{if eq .XMREscrowNet "stagenet"}}STAGENET{{else}}FAKECHAIN{{end}}{{else if .XMREscrowOn}}UNAVAILABLE{{else}}OFF{{end}}</strong>
+<span>{{if .XMREscrowOrders}}{{.XMREscrowOrders}} Monero escrow order(s) may hold {{.XMREscrowNet}} coins, {{.XMRCustody}}{{else}}One account per order, {{if eq .XMREscrowNet "stagenet"}}Monero stagenet{{else}}local fakechain{{end}} only; none of your orders uses it yet. Coins are {{.XMRCustody}}{{end}}</span>
 </div>{{end}}{{end}}

@@ -1038,7 +1038,7 @@ admin page only reads them, to list held settlements and destroyed wallets), and
 unchanged.
 
 Monero escrow is a separate, off-by-default setting that runs on a local Monero fakechain only ([operator
-guide](docs/operator-guide.md#monero-escrow-local-fakechain-only)); it adds the optional keys `ESCROW_XMR`,
+guide](docs/operator-guide.md#monero-escrow-fakechain-or-stagenet)); it adds the optional keys `ESCROW_XMR`,
 `ESCROW_XMR_WALLET_RPC_URL`, `ESCROW_XMR_DAEMON_URL`, `ESCROW_XMR_FEE_BPS`, `ESCROW_XMR_FEE_ADDRESS`,
 `ESCROW_XMR_SLOTS`, `ESCROW_XMR_MAX_FEE` and `ESCROW_XMR_SEED_KEY`, and the secret `MONERO_WALLET_SECRET` (never
 invented by `upgrade`; `openssl rand -hex 32`). Leave them blank to keep it off. `scripts/restore.sh` and the manual SQL
@@ -1059,7 +1059,7 @@ never deleted. Like migration 084 it only adds, and it changes nothing while `ES
 With Monero escrow on, an administrator who is not a party to the order may re-request a failed settlement from the
 order page (password step-up, audited), and a settlement set aside because building it made the escrow wallet-rpc stop
 responding can be built again the same way; the held settlements of a restore are listed on `/admin` and confirmed there
-([operator guide](docs/operator-guide.md#monero-escrow-local-fakechain-only)). The restore's Monero hold is written to
+([operator guide](docs/operator-guide.md#monero-escrow-fakechain-or-stagenet)). The restore's Monero hold is written to
 `xmr_settlements.send_error`, so the three Monero lines of the SQL in [section 6](#6-backups-now-need-the-wallets-too)
 need this migration (a database with 084 but not 085 exists only on a development build of this phase). No action is
 needed at upgrade. Rolling back past this release needs the pre-upgrade backup, as for every migration (section 5): the
@@ -1075,7 +1075,7 @@ password (its password change never took effect), to be destroyed once every pre
 that no longer opens with the market's password ("Invalid password") is destroyed again automatically only when the
 market itself began destroying it (a crash, or a restore from a backup taken in between); any other such wallet keeps
 its sealed seed, is recorded missing and waits for an administrator's confirmation on `/admin` ([operator
-guide](docs/operator-guide.md#monero-escrow-local-fakechain-only)). So a wallet destroyed after the backup a database is
+guide](docs/operator-guide.md#monero-escrow-fakechain-or-stagenet)). So a wallet destroyed after the backup a database is
 restored from is recorded missing, not destroyed again, unless that backup already recorded the start of its destruction
 (never one taken before this migration). Like migrations 084 and 085 it only adds, and it changes nothing while
 `ESCROW_XMR` is off: nothing writes the column. No action is needed at upgrade. Rolling back past this release needs the
@@ -1110,6 +1110,44 @@ give that user the pooled whitelist line of the [operator guide](docs/operator-g
 [runbook](docs/testnet-runbook.md#back-up-and-restore-the-escrow-arbiter-and-watch-only-wallets) now also describe the
 arbiter and watch-only wallet backup and restore. Pooled payments are unaffected.
 
+## 34. Monero daemon sync guard, Monero escrow on stagenet and its network pin (A-449)
+
+No migration. With `MONERO_RPC_URL` set, the pooled Monero watcher now also skips its pass while the daemon reports
+`synchronized` false, has no peers (`offline`, or no connections on an unrestricted RPC) or its top block is older than
+the new optional key `MONERO_MAX_TIP_AGE` (default `1h`, 20m to 24h; an invalid value stops startup): before, only a
+`target_height` above the height counted, so a daemon that lost its peers looked synced and an order paid while it was
+cut off could be cancelled for non-payment. The admin page's last error then reads "Node is not synced (…)". The app now
+also calls `get_last_block_header` on the daemon; it is on monerod's restricted RPC, so the bundled `monero` service
+answers it. A restricted RPC (the bundled service) hides the connection counts, so there only `offline` and the tip's age
+are read. A market whose daemon is synced and receiving blocks sees no change.
+
+With `ESCROW_XMR=on`: Monero escrow also accepts a stagenet daemon (the escrow wallet-rpc then runs with `--stagenet`),
+the accepted address forms follow the daemon's network, the height check (below 1,000,000) is gone, and the app pins the
+daemon's network in `settings` (`escrow_xmr_network`). An existing fakechain escrow database is pinned `fakechain` at the
+first start; pointed at a stagenet daemon instead it stays disabled and changes nothing, with a line under *Payment
+providers* naming both networks: a database never changes network once it holds a Monero escrow or escrow wallet. The
+startup line is now `escrow: Monero escrow on (fakechain)` (or `(stagenet)`) instead of `… on (local fakechain only)`; a
+log filter on the old text needs updating. The Monero escrow watcher skips its pass while its daemon is not synced (as
+above; a fakechain is exempt from the peer and tip-age checks)
+([operator guide](docs/operator-guide.md#monero-escrow-fakechain-or-stagenet)). No action is needed otherwise.
+
+`compose.nodes.yaml` gains an optional `monero-escrow-wallet` service (Monero escrow's own stagenet wallet-rpc on the
+bundled `monero` daemon: profile `monero-escrow-wallet`, volume `monero_escrow_wallet`, login password
+`ESCROW_XMR_WALLET_RPC_PASSWORD`), and a new overlay `compose.escrow-xmr.yaml` mounts the seed key file
+`escrow-xmr-seed-key.asc` into the app. Nothing starts unless the profile is in `COMPOSE_PROFILES`; a new install gets
+them from `./scripts/install.sh --monero-escrow yes` (or its question), and an existing one can add them by hand as the
+operator guide describes. `upgrade` derives the profile from `ESCROW_XMR_WALLET_RPC_URL` and the overlay from
+`ESCROW_XMR_SEED_KEY` only when `.env` has no `COMPOSE_PROFILES` or `COMPOSE_FILE` line.
+
+Compose now refuses a blank wallet-rpc password (A-466): with the `monero-wallet` profile active and
+`MONERO_WALLET_RPC_PASSWORD` blank or missing, every `docker compose` command stops with `env file
+…/MONERO_WALLET_RPC_PASSWORD-is-blank not found`, and likewise for `monero-escrow-wallet` and
+`ESCROW_XMR_WALLET_RPC_PASSWORD`. Before, the bundled `monero-wallet` service started with the login `marketplace:` (an
+empty password). The installer generates the password, so mainly a hand-made `.env` is affected: before
+upgrading, set it (`openssl rand -hex 24`) in `.env` and as the password in `MONERO_WALLET_RPC_URL`
+(`http://marketplace:PASSWORD@monero-wallet:18083`). `./scripts/install.sh check` names the missing key. An install
+without these profiles needs neither key.
+
 ## Appendix: new keys by hand
 
 `./scripts/install.sh upgrade` writes these for you. To add them yourself, use your editor (values in single
@@ -1122,10 +1160,12 @@ quotes, as the installer writes them). Blank values keep a feature off.
 | `BITCOIN_WALLET` | Wallet name, default `opsecmkt`. |
 | `MONERO_NETWORK` | Blank, `stagenet` or `testnet`; `mainnet` configures mainnet (a local node also needs `MONERO_NETWORK_FLAG=`). |
 | `MONERO_WALLET_RPC_URL` | monero-wallet-rpc URL with credentials, for example `http://marketplace:PASSWORD@monero-wallet:18083`. Blank keeps Monero payments off. A daemon URL alone (`MONERO_RPC_URL`, which alpha.1 wrote) does **not** enable them. |
-| `MONERO_WALLET_RPC_PASSWORD` | For the local `monero-wallet` service only: `openssl rand -hex 24` output, the same value as the password in `MONERO_WALLET_RPC_URL`. The service refuses to start without it. |
+| `MONERO_WALLET_RPC_PASSWORD` | For the local `monero-wallet` service only: `openssl rand -hex 24` output, the same value as the password in `MONERO_WALLET_RPC_URL`. Compose refuses the `monero-wallet` profile without it (section 34). |
 | `PAYMENT_CONFIRMATIONS_BTC` / `PAYMENT_CONFIRMATIONS_XMR` | Defaults 3 and 10. |
 | `PAYMENT_POLL_INTERVAL` / `PAYMENT_EXPIRY` | Defaults `30s` and `24h`. |
 | `BITCOIN_MAX_TIP_AGE` | Default `2h` (30m to 24h): a public-network Bitcoin node whose tip is older counts as not synced (section 32). |
+| `MONERO_MAX_TIP_AGE` | Default `1h` (20m to 24h): a public-network Monero daemon whose top block is older counts as not synced (section 34). |
+| `ESCROW_XMR_WALLET_RPC_PASSWORD` | Only for the `monero-escrow-wallet` service (Monero escrow on stagenet): `openssl rand -hex 24` output, the same value as the password in `ESCROW_XMR_WALLET_RPC_URL` (section 34). Blank, Compose refuses the `monero-escrow-wallet` profile. |
 | `BITCOIN_PRUNE_MB` / `MONERO_PRUNE_FLAGS` | Local nodes only. Absent keys mean **pruned** (`2000` and `'--prune-blockchain --sync-pruned-blocks'`); `BITCOIN_PRUNE_MB='0'` and `MONERO_PRUNE_FLAGS=''` keep a full node. Read [section 7](#7-local-nodes-are-now-pruned) before deploying if you run a local node. |
 | `BITCOIN_IMAGE` / `MONERO_IMAGE` / `MONERO_WALLET_IMAGE` | Local nodes only. Absent keys mean the pinned release images the payout code was verified against; the images alpha.1 made you choose stay in use until you remove or change them (`upgrade` pins the default images left on `latest`). Read [section 8](#8-node-images-are-pinned-to-release-tags). |
 | `COMPOSE_PROJECT_NAME` | Not needed: absent means `opsecmkt`, which is what your containers and volumes are named after. Never set another value on this install, or Compose starts it on new, empty volumes. A second checkout on the same host needs its own name; see [Backups and recovery](docs/operator-guide.md#backups-and-recovery). |

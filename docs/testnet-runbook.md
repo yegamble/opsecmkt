@@ -6,10 +6,10 @@ mainnet unless it is configured** ([Mainnet](operator-guide.md#mainnet); the wal
 payout-recovery steps below use the same commands on a mainnet market, with real funds, but have been exercised
 on test networks only). Commands run from the repository directory on the Docker host, where `.env` lives.
 Per-order escrow is not part of this runbook, apart from its restore steps and the manual fakechain check in
-[section 9](#9-manual-monero-escrow-fakechain-check): Bitcoin escrow runs on regtest only and Monero escrow on a local
-Monero fakechain only, both are off by default (built and tested on those local chains, never run on a public test
-network; [per-order escrow](escrow.md)), so leave `ESCROW_BTC` and `ESCROW_XMR` off on a testnet4, signet, stagenet or
-testnet market. Payments there go through the pooled wallets below.
+[section 9](#9-manual-monero-escrow-fakechain-check) and [section 10](#10-monero-escrow-on-stagenet): Bitcoin escrow runs on regtest only and Monero escrow on a local
+Monero fakechain or, since A-449, stagenet; both are off by default (built and tested on local chains, never run on a public test
+network; [per-order escrow](escrow.md)), so leave `ESCROW_BTC` off on a testnet4 or signet market, and `ESCROW_XMR` off on a
+testnet market and on a stagenet market unless you are trying Monero escrow there (section 10). Payments otherwise go through the pooled wallets below.
 
 What the application does on its own, so you know what to expect while following these steps:
 
@@ -30,9 +30,13 @@ What the application does on its own, so you know what to expect while following
   node that lost its peers would otherwise look synced while deposits are invisible to it (A-439). The admin page
   then shows "Node is not synced (no peers) …" (or the other reason) and one log line marks the start and the end;
   give the node peers or wait for it to catch up. The Monero sync check needs `MONERO_RPC_URL`; without
-  it only the wallet is checked. Only `target_height` above `height` counts as syncing (monerod reports a
-  target of 0 once it considers itself synchronized), so a daemon that reports no target never blocks
-  payments; other signals such as `synchronized` are deliberately not used.
+  it only the wallet is checked. With it, the Monero watcher skips its pass the same way while the daemon
+  reports `synchronized` false, has no peers (`offline`, or no connections on an unrestricted RPC; the bundled
+  `monero` service's restricted RPC hides the counts, so there only `offline` and the tip's age are read) or
+  its top block is older than `MONERO_MAX_TIP_AGE` (default 1h; A-449: before it, only `target_height` above
+  `height` counted, so a daemon that lost its peers looked synced). The admin page then shows "Node is not
+  synced (no peers) …", "(daemon not synchronized)", "(tip older than MONERO_MAX_TIP_AGE)" or
+  "(tip time unreadable)"; `target_height` above `height` still shows "Node is still syncing".
 - If reading the wallet fails during a pass, orders whose addresses were not read do not expire in that pass.
 
 ## 1. Configure
@@ -64,6 +68,7 @@ Confirmation settings (in `.env`, applied on restart):
 | `PAYMENT_POLL_INTERVAL` | 30s | 1s to 1h. |
 | `PAYMENT_EXPIRY` | 24h | Unpaid orders with no deposit seen are cancelled after this; underpaid orders are cancelled and refunded once no deposit has arrived for this long. |
 | `BITCOIN_MAX_TIP_AGE` | 2h | 30m to 24h. On a public test network a Bitcoin node whose tip block is older counts as not synced and the Bitcoin watcher skips its pass. |
+| `MONERO_MAX_TIP_AGE` | 1h | 20m to 24h. A Monero daemon on stagenet or testnet (`MONERO_RPC_URL`) whose top block is older, or that has no peers, counts as not synced and the Monero watchers skip their pass. |
 
 Wait for the nodes to sync before expecting deposits to be seen (`docker compose logs -f bitcoin monero`).
 
@@ -514,14 +519,14 @@ in the watch-only wallet"). Clearing the gate (step 8) lets escrow checkout run 
 party's Core wallet signs only keys inside its descriptor range: their escrow key page advises `keypoolrefill` once
 their next child index passes 900, and the order page does the same for their child key in that escrow.
 
-On a market running [Monero escrow](operator-guide.md#monero-escrow-local-fakechain-only) (a local fakechain only,
+On a market running [Monero escrow](operator-guide.md#monero-escrow-fakechain-or-stagenet) (a local fakechain or stagenet,
 `ESCROW_XMR=on`), the gate also pauses it: the Monero escrow watcher builds and relays no settlement while it is set, and
 Monero escrow checkout is refused ("Monero escrow is paused while this market restores its records from a backup. Nothing
 was charged and your order is still a draft; try again later.", 503, the order stays a draft). The script holds every
 restored Monero settlement with a stored transaction, built or relayed (it prints how many, and the audit row counts them),
 retires every free escrow account, moves every active or sealed escrow wallet to closing so that no account of a restored
 wallet takes an order again, and sets `escrow_xmr_release_recheck` and `xmr_escrow_sweep_required`. Before step 8, check each
-held settlement listed under *Admin → Payment providers → Monero escrow recovery and retention (fakechain)* in the escrow
+held settlement listed under *Admin → Payment providers → Monero escrow recovery and retention (fakechain* or *stagenet)* in the escrow
 daemon and the escrow wallet and confirm it there if it was not already relayed or replaced; the market then relays the same
 stored transaction once. Checkout stays refused ("Monero escrow is paused until this market has checked its escrow wallets
 after restoring its records from a backup. …") until the Monero escrow watcher's sweep has probed for escrow wallets created
@@ -529,7 +534,7 @@ after the backup (each found is sealed to the seed key and kept, never offered t
 listed to the administrators), read every wallet and raised the subaddress lookahead of any wallet older than the database;
 the sweep needs the escrow wallet-rpc and the seed key and logs `escrow: Monero escrow's restore sweep is complete …` when it
 has run. If only the escrow wallet volume was restored from an older backup, set the sweep marker by hand
-([operator guide](operator-guide.md#monero-escrow-local-fakechain-only)).
+([operator guide](operator-guide.md#monero-escrow-fakechain-or-stagenet)).
 
 **Only `scripts/restore.sh` applies this protection.** A host or volume snapshot, a managed-database
 point-in-time recovery or a manual `pg_restore` brings payouts back as `pending` with no gate, and the
@@ -1085,7 +1090,8 @@ reachable.
 
 ## 8. Isolated real-chain browser testing
 
-For a reproducible local Bitcoin regtest and offline Monero stagenet environment,
+For a reproducible local Bitcoin regtest and isolated Monero stagenet environment (two stagenet daemons peered only with
+each other over loopback, since A-449's sync guard counts a daemon with no peers as not synced),
 see [real isolated-chain browser tests](local-chain-testing.md). The maintained
 setup script starts verified native nodes, mines disposable coins and funds the
 market wallets. The browser suite uses real RPC adapters and wallet transactions;
@@ -1142,3 +1148,24 @@ named and the run fails; it ends with one `PASS:` line listing what was shown. T
 `WrongSecret` and `Destroy`, each `TestXMREscrowRegtest<Leg>` in `internal/market/`; what each proves is listed in
 [per-order escrow](escrow.md#phase-3-monero-escrow-on-a-local-fakechain). A pass is evidence for the code and the 0.18.5.1
 nodes on a local fakechain, not for stagenet, testnet or mainnet.
+
+## 10. Monero escrow on stagenet
+
+Since A-449, Monero escrow (`ESCROW_XMR=on`, off by default, custodial) may run on Monero stagenet as well as on a local
+fakechain: the escrow daemon must report nettype `stagenet` with hard fork 16 or later, the escrow wallet-rpc must run with
+`--stagenet` against the same daemon, and refund, claim and fee addresses must be stagenet ones (5… or 7…). Setup, the
+network pin and the sync guard are in the [operator guide](operator-guide.md#monero-escrow-fakechain-or-stagenet). **No run
+on the public stagenet is recorded yet**: nothing here is evidence that Monero escrow works with the public network's peers,
+fees, ring members or reorganisations.
+
+`scripts/test-escrow-xmr-stagenet.sh` (manual, not CI) runs the legs an **offline stagenet fork, not the public stagenet**,
+can run: stagenet daemons built from the genesis block with the local monerod 0.18.5.1 image, peered only with each other
+on a Docker network with no route out, mining locally at fixed difficulty, plus one `--offline` daemon and a stagenet
+wallet-rpc. It refuses any daemon that is not stagenet below height 10,000 (the public stagenet is past 1,900,000). Such a
+chain is at hard fork version 1 (version 2 starts at height 32,000, 16 at 1,151,720), so Monero escrow refuses to start on
+it, as it must; the fourteen fakechain legs of section 9 need escrow to start and cannot run on it. The script's legs show
+that refusal names the hard fork rather than the network, that a real stagenet wallet's addresses are accepted under the
+stagenet tags and refused under the fakechain's, and that the escrow and pooled sync guards read a restricted stagenet
+daemon (as the bundled `monero` service serves) as synced with a peer and a fresh tip and an `--offline` one as having no
+peers. The commands are in the script's header comment; the transcript goes to `ESCROW_XMR_STAGENET_LOG` (default
+`artifacts/real-chain/test-escrow-xmr-stagenet-<UTC time>.log`, gitignored).

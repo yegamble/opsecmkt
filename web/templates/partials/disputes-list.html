@@ -29,7 +29,7 @@ an archived listing opens by the order page's rule (A-164). */}}
 </div>{{end}}{{if $party}}<p class="order-unavailable" role="note">
 <strong>Unavailable.</strong> You are a party to this order; another moderator must resolve it.</p>{{else if ne $o.State "disputed"}}<p class="order-unavailable" role="note">
 <strong>Unavailable.</strong> This order is not in the Disputed state, so no outcome can be recorded.</p>{{else if and $o.Escrow (ne $.User.Role "admin")}}<p class="order-unavailable" role="note">
-<strong>Unavailable.</strong> Only an administrator decides a dispute on a {{if eq $o.Currency "XMR"}}Monero escrow order (fakechain){{else}}Bitcoin escrow order (regtest){{end}}: the decision moves coins from the escrow.</p>{{else}}<form class="stack" method="post" action="/resolve">
+<strong>Unavailable.</strong> Only an administrator decides a dispute on a {{if eq $o.Currency "XMR"}}Monero escrow order ({{$.XMREscrowNet}}){{else}}Bitcoin escrow order (regtest){{end}}: the decision moves coins from the escrow.</p>{{else}}<form class="stack" method="post" action="/resolve">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="id" value="{{.ID}}">
 <input type="hidden" name="reply_seen" value="{{if .Reply}}1{{else}}0{{end}}">{{$p := index $.DisputePayouts .ID}}

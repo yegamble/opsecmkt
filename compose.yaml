@@ -42,6 +42,7 @@ services:
       PAYMENT_POLL_INTERVAL: ${PAYMENT_POLL_INTERVAL:-30s}
       PAYMENT_EXPIRY: ${PAYMENT_EXPIRY:-24h}
       BITCOIN_MAX_TIP_AGE: ${BITCOIN_MAX_TIP_AGE:-2h}
+      MONERO_MAX_TIP_AGE: ${MONERO_MAX_TIP_AGE:-1h}
       AUDIT_SIGNING_KEY: ${AUDIT_SIGNING_KEY:-}
       # Bitcoin escrow: regtest only, off unless ESCROW_BTC=on; blank values use the app defaults
       # (docs/operator-guide.md#bitcoin-escrow-regtest-only).
@@ -54,8 +55,8 @@ services:
       ESCROW_BTC_FEE_RATE: ${ESCROW_BTC_FEE_RATE:-}
       # The escrow signer's socket, as compose.nodes.yaml mounts it (/run/escrow-signer/signer.sock); blank = no signer.
       ESCROW_SIGNER_SOCKET: ${ESCROW_SIGNER_SOCKET:-}
-      # Monero escrow: a local Monero fakechain only, off unless ESCROW_XMR=on; blank values use the app defaults
-      # (docs/operator-guide.md#monero-escrow-local-fakechain-only). ESCROW_XMR_SEED_KEY is a path inside this
+      # Monero escrow: a local Monero fakechain or stagenet only, off unless ESCROW_XMR=on; blank values use the app defaults
+      # (docs/operator-guide.md#monero-escrow-fakechain-or-stagenet). ESCROW_XMR_SEED_KEY is a path inside this
       # container: mount the public key file read-only there (the app container has no volume for it by default).
       ESCROW_XMR: ${ESCROW_XMR:-}
       ESCROW_XMR_WALLET_RPC_URL: ${ESCROW_XMR_WALLET_RPC_URL:-}
