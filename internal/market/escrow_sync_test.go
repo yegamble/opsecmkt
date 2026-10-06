@@ -31,18 +31,23 @@ func (x *escrowEnv) adminPage() string {
 // While the escrow node is not synced the escrow Bitcoin pass is skipped: no deposit is read, no order expires, no
 // deposit is flagged spent outside the market and no settlement is built; one log line names the reason class and the
 // admin page says so. Nothing is persisted for the guard. The next synced pass does the work, even when the node's
-// height is now below what the unsynced node reported (no high-water mark, A-147).
+// height is now below what the unsynced node reported (no high-water mark, A-147). On a public chain a getnetworkinfo
+// that fails (refused by the rpcwhitelist with HTTP 403, or an unknown method) skips the pass the same way, as a node
+// check error and not as a node with peers (QA4W1-1).
 func TestEscrowWatcherSkipsWhileNotSynced(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		signet bool
-		set    func(c *fakeEscrowCore)
-		why    string
+		name    string
+		signet  bool
+		set     func(c *fakeEscrowCore)
+		why     string // the not-synced reason class, "" for a node check error
+		nodeErr string // the pass's error (watcherCause), "" for a node that is not synced
 	}{
-		{"ibd", false, func(c *fakeEscrowCore) { c.ibd = true }, notSyncedIBD},
-		{"headers ahead", false, func(c *fakeEscrowCore) { c.headers = 305 }, notSyncedHeaders},
-		{"no peers on signet", true, func(c *fakeEscrowCore) { c.peers = 0 }, notSyncedPeers},
-		{"stale tip on signet", true, func(c *fakeEscrowCore) { c.tipTime = time.Now().Add(-3 * time.Hour).Unix() }, notSyncedTip},
+		{"ibd", false, func(c *fakeEscrowCore) { c.ibd = true }, notSyncedIBD, ""},
+		{"headers ahead", false, func(c *fakeEscrowCore) { c.headers = 305 }, notSyncedHeaders, ""},
+		{"no peers on signet", true, func(c *fakeEscrowCore) { c.peers = 0 }, notSyncedPeers, ""},
+		{"stale tip on signet", true, func(c *fakeEscrowCore) { c.tipTime = time.Now().Add(-3 * time.Hour).Unix() }, notSyncedTip, ""},
+		{"getnetworkinfo forbidden on signet", true, func(c *fakeEscrowCore) { c.netInfoForbidden = true }, "", "escrow: node check failed: getnetworkinfo forbidden"},
+		{"getnetworkinfo unknown on signet", true, func(c *fakeEscrowCore) { c.netInfoErr = -32601 }, "", "escrow: node check failed: getnetworkinfo rpc:-32601"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			x := newEscrowEnv(t)
@@ -60,6 +65,8 @@ func TestEscrowWatcherSkipsWhileNotSynced(t *testing.T) {
 				x.onSignet()
 			}
 			settings := agStrings(t, x.testEnv, "SELECT key||'='||value FROM settings ORDER BY key")
+			written := "SELECT (SELECT count(*) FROM order_events)||' '||(SELECT count(*) FROM payments)||' '||(SELECT count(*) FROM notifications)"
+			before := agStrings(t, x.testEnv, written)
 			creates, reads := x.core.count("createpsbt"), x.core.count("listreceivedbyaddress")
 			logs := captureLog(t)
 			x.core.mu.Lock()
@@ -67,8 +74,12 @@ func TestEscrowWatcherSkipsWhileNotSynced(t *testing.T) {
 			x.core.blocks = 300 // the unsynced node reports a higher tip than the synced one below
 			x.core.mu.Unlock()
 
-			x.poll()
-			x.poll()
+			for range 2 {
+				err := x.A.escrowPollOnce(context.Background())
+				if tc.nodeErr == "" && err != nil || tc.nodeErr != "" && (err == nil || watcherCause(err) != tc.nodeErr) {
+					t.Fatalf("pass while not synced: %v, want %q", err, tc.nodeErr)
+				}
+			}
 			if s := x.state(x.order); s != stateAwaitingPayment {
 				t.Fatalf("an order expired while the node was not synced: %s", s)
 			}
@@ -82,18 +93,28 @@ func TestEscrowWatcherSkipsWhileNotSynced(t *testing.T) {
 				t.Fatalf("claim %s while the node was not synced", state)
 			}
 			line := "escrow: Bitcoin escrow node not synced (" + tc.why + "); escrow watcher passes skipped until it is"
-			if got := logs.String(); strings.Count(got, line) != 1 || strings.Contains(got, "escrow watcher:") {
-				t.Fatalf("log while not synced:\n%s", got)
+			if tc.why == "" {
+				line = "escrow: Bitcoin escrow node not synced"
+				if got := logs.String(); strings.Contains(got, line) {
+					t.Fatalf("a node check error logged as not synced:\n%s", got)
+				}
+			} else {
+				if got := logs.String(); strings.Count(got, line) != 1 || strings.Contains(got, "escrow watcher:") {
+					t.Fatalf("log while not synced:\n%s", got)
+				}
+				if page := x.adminPage(); !strings.Contains(page, "Bitcoin escrow node not synced: "+tc.why+".") {
+					t.Fatalf("admin page lacks the not-synced line:\n%s", page)
+				}
 			}
-			if page := x.adminPage(); !strings.Contains(page, "Bitcoin escrow node not synced: "+tc.why+".") {
-				t.Fatalf("admin page lacks the not-synced line:\n%s", page)
+			if got := agStrings(t, x.testEnv, written); strings.Join(got, ",") != strings.Join(before, ",") {
+				t.Fatalf("order events, payments or notifications written while not synced: %v -> %v", before, got)
 			}
 			if got := agStrings(t, x.testEnv, "SELECT key||'='||value FROM settings WHERE key NOT LIKE 'installed' ORDER BY key"); strings.Join(got, ",") != strings.Join(withoutInstalled(settings), ",") {
 				t.Fatalf("settings changed by the guard: %v -> %v", settings, got)
 			}
 
 			x.core.mu.Lock()
-			x.core.ibd, x.core.headers, x.core.blocks = false, 0, 0
+			x.core.ibd, x.core.headers, x.core.blocks, x.core.netInfoForbidden, x.core.netInfoErr = false, 0, 0, false, 0
 			if tc.signet {
 				x.core.peers, x.core.tipTime = 8, time.Now().Unix()
 			}
@@ -111,7 +132,11 @@ func TestEscrowWatcherSkipsWhileNotSynced(t *testing.T) {
 			if _, _, state, class := x.settlement(claimed); state != "awaiting_signature" {
 				t.Fatalf("claim after the synced pass: %s %s", state, class)
 			}
-			if got := logs.String(); strings.Count(got, "escrow: Bitcoin escrow node synced; escrow watcher passes resumed") != 1 || strings.Count(got, line) != 1 {
+			resumed := 1
+			if tc.why == "" {
+				resumed = 0 // the node was never reported not synced
+			}
+			if got := logs.String(); strings.Count(got, "escrow: Bitcoin escrow node synced; escrow watcher passes resumed") != resumed || strings.Count(got, line) != resumed {
 				t.Fatalf("log after the synced pass:\n%s", got)
 			}
 			if page := x.adminPage(); strings.Contains(page, "Bitcoin escrow node not synced") {
