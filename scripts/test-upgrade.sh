@@ -247,6 +247,13 @@ fi
 grep -q 'has a return but no release' "$work/return-release.out"
 [[ $(sql -c 'SELECT count(*) FROM payouts') == 0 ]]
 
+# Bitcoin escrow, migration 087 (A-462): a never-built release or refund may be superseded as it stands (the check
+# settlements_built and the trigger settlements_supersede_keeps), and a deposit names the refund whose too-small failure
+# left it out only while it is left out.
+[[ $(sql -c "SELECT count(*) FROM pg_trigger WHERE tgname='settlements_supersede_keeps' AND NOT tgisinternal") == 1 ]]
+[[ $(sql -c "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname='settlements_built'") == *"'superseded'"* ]]
+[[ $(sql -c "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname='payments_too_few_left_out'") == 'CHECK (((escrow_too_few_by IS NULL) OR escrow_left_out))' ]]
+
 # Behaviour through the upgraded server: an alpha.1 password still signs in, the migrated draft is shown as
 # a draft, and ordering the same product and currency again returns that draft instead of a second one.
 # (Migration 010 turns the CAPTCHA on; switch it off as an operator would, so this script can sign in.)

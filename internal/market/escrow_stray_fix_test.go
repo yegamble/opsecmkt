@@ -27,14 +27,13 @@ func (x *escrowEnv) escrowAddr(order string) string {
 //     for it (A-437 changed this leg, which expected it counted, unflagged; TestEscrowTooSmallRefundResolved has the
 //     whole journey). A deposit sent after that order closed makes the coins worth more: a stray refund is requested.
 //   - Decided for the vendor, the release too few (it fails like a refund): its deposit stays counted and unflagged,
-//     the parties are told; a deposit Core reported as conflicted when the dispute was decided and mined since stays
+//     the parties are told, and staff once (A-461); a deposit Core reported as conflicted when the dispute was decided and mined since stays
 //     counted for the release (no A-428 note); a deposit after the close gets its stray refund, since a release's
 //     failure holds nothing (new leg).
 //   - Decided for the vendor, then for the buyer, then for the vendor again: a stray refund of a deposit after the
 //     close fails too-small and holds its coins; neither the refund the second decision requests (newer than that
 //     failure) nor, once the third decision supersedes it, that refund hides the failure, so the same coins are not
-//     tried again (new leg; a decision is changed only while its settlement is built, so a superseded refund never
-//     failed and left nothing out).
+//     tried again (new leg; a refund that failed and was then superseded is TestEscrowDecisionChangeUnbuilt's, A-462).
 func TestEscrowTooSmallRefundCancelledOnly(t *testing.T) {
 	x := newEscrowEnv(t)
 	_, admin := x.user("eadmin_"+randomToken()[:6], "admin")
@@ -112,6 +111,14 @@ func TestEscrowTooSmallRefundCancelledOnly(t *testing.T) {
 	}
 	if id, state := x.stray(order); id != 0 {
 		t.Fatalf("release: stray refund %d %s", id, state)
+	}
+	// A-461: staff are told once, with the note (one), as a Monero release too few is.
+	tooFew := "Escrow settlement not built: " + settleErrorText(settleTooSmall, 0)
+	if staff, told, notes := agInt(x.testEnv, "SELECT count(*) FROM users WHERE role IN ('moderator','admin') AND suspended_at IS NULL"),
+		agInt(x.testEnv, "SELECT count(*) FROM notifications n JOIN users u ON u.id=n.user_id WHERE u.role IN ('moderator','admin') AND n.body=$1", "Payment review needed for order "+shortID(order)+": "+tooFew),
+		agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND note=$2", order, tooFew); staff == 0 || told != staff || notes != 1 ||
+		agInt(x.testEnv, "SELECT count(*) FROM notifications n JOIN users u ON u.id=n.user_id WHERE u.role NOT IN ('moderator','admin') AND strpos(n.body,'Payment review needed')>0") != 0 {
+		t.Fatalf("release: staff %d told %d times, %d notes; events %q", staff, told, notes, x.events(order))
 	}
 	x.core.deposit(addr, txidOf("release after close "+order), 0, 4000, 3)
 	x.poll()
@@ -349,7 +356,7 @@ func TestEscrowTooSmallRefundUpgraded(t *testing.T) {
 		t.Fatalf("the refund: %s %s", state, class)
 	}
 	// The rows as a database from before A-435 has them: the refund failed too-small and its deposit still counts.
-	x.DB.Exec("UPDATE payments SET escrow_left_out=false,flagged=false WHERE order_id=$1", order)
+	x.DB.Exec("UPDATE payments SET escrow_left_out=false,flagged=false,escrow_too_few_by=NULL WHERE order_id=$1", order)
 	const counted = "not spent by its refund: the market could not build the refund because the coins were too few"
 	told := func() (notes, buyer, staff int) {
 		t.Helper()
@@ -412,7 +419,7 @@ func TestEscrowTooSmallRefundUpgraded(t *testing.T) {
 	if _, _, state, class := x.settlement(order); state != "failed" || class != settleTooSmall {
 		t.Fatalf("bounded: the refund: %s %s", state, class)
 	}
-	x.DB.Exec("UPDATE payments SET escrow_left_out=false,flagged=false WHERE txid=$1", tiny)
+	x.DB.Exec("UPDATE payments SET escrow_left_out=false,flagged=false,escrow_too_few_by=NULL WHERE txid=$1", tiny)
 	n0, b0, _ = told()
 	x.poll()
 	if got := deposits(); !slices.Equal(got, []string{"5000 true true", "50000 true false"}) {

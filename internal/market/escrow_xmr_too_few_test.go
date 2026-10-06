@@ -132,8 +132,41 @@ func TestXMREscrowTooSmallRefundReturned(t *testing.T) {
 		// Mined after all: it did not count when the dispute was decided, so it is left out (A-424) and joins the stray refund.
 		x.fake.setTransfer(conflicted, func(t *fakeXMRTransfer) { t.DoubleSpend, t.Confs, t.Pool = false, 20, false })
 	})
-	if n := agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND strpos(note,'did not count for the order when its dispute was decided')>0", order); n != 1 {
-		t.Fatalf("decided: %d did-not-count notes; events %q", n, x.events(order))
+	// A-464 (QA437-3): exactly one did-not-count note, on the conflicted deposit alone (1 deposit, 0.002 XMR): the
+	// deposit the refund too few left out already is not counted in it again.
+	uncounted := "1 deposit(s) (" + amount(2000000000, 12) + " XMR, TESTNET fakechain) to this order's Monero escrow did not count for the order when its dispute was decided (the escrow wallet read them as conflicted, or no longer listed them), and no refund spends them. " +
+		"They have confirmed since and stay in the escrow account; a stray refund returns them, less the network fee, to the buyer's refund address. Do not send more coins to this escrow."
+	if n, exact := agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND strpos(note,'did not count for the order when its dispute was decided')>0", order),
+		agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND note=$2", order, uncounted); n != 1 || exact != 1 {
+		t.Fatalf("decided: %d did-not-count notes, %d exactly as expected; events %q", n, exact, x.events(order))
+	}
+}
+
+// A-464 (QA437-4): the Monero decision line says the coins were too few only for a refund that ended too few. A refund
+// decided for the buyer that failed for another reason (here nothing to settle: the wallet reads the deposit as
+// conflicted before the refund is built, so no deposit counts) gets the ordinary line, never the too-few one.
+func TestXMREscrowDecidedRefundFailedOtherwise(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	p := x.physical(x.vendor)
+	agExec(x.testEnv, "UPDATE products SET xmr=2000000000 WHERE id=$1", p)
+	order, addr := x.freshCheckout(p)
+	paid := hex64("decided nothing " + order)
+	x.fake.payAddress(addr, paid, 2000000000, 10)
+	x.mustPoll()
+	if x.state(order) != statePaid {
+		t.Fatalf("funded order %s", x.state(order))
+	}
+	x.disputeAndResolve(order, "refund")
+	x.fake.setTransfer(paid, func(t *fakeXMRTransfer) { t.DoubleSpend = true })
+	x.mustPoll()
+	x.mustPoll()
+	if r := x.settlementOf(order, "refund"); r.State != "failed" || x.waitClass(r.ID) != xmrNothing {
+		t.Fatalf("the refund %+v wait %q; settlements %v; events %q", r, x.waitClass(r.ID), x.xmrSettlements(order), x.events(order))
+	}
+	panel := x.panel(order, x.sessOf(order, roleBuyer))
+	if strings.Contains(panel, "too few") || !strings.Contains(panel, "The dispute was decided for the buyer: the coins in this escrow go back to the buyer's refund address by a refund the market builds and sends.") {
+		t.Fatalf("the decision line of a refund that failed with nothing to settle:\n%s", panel)
 	}
 }
 
