@@ -558,6 +558,10 @@ func TestEscrowReleaseTooFewStaffOpen(t *testing.T) {
 	if row := deskRow(desk, funded); !flaggedAt.MatchString(row) {
 		t.Fatalf("the flag time is not shown: %s\nevents %q", row, x.events(order))
 	}
+	// QA462D-3: the deposit never regressed, so the desk never says it "confirmed again".
+	if row := deskRow(desk, funded); strings.Contains(row, "confirmed again") || !strings.Contains(row, "settles it") {
+		t.Fatalf("the credited deposit's reason: %s", row)
+	}
 	if got := agStrings(t, x.testEnv, "SELECT amount||' '||flagged||' '||escrow_left_out||' '||credited||' '||(settlement_id IS NOT NULL) FROM payments WHERE order_id=$1 ORDER BY amount", order); !slices.Equal(got, []string{"2000 false false false false", "3000 true false true false"}) {
 		t.Fatalf("the deposits: %q", got)
 	}

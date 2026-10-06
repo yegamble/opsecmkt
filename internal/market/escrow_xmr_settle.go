@@ -559,12 +559,28 @@ func (a *App) xmrRefundTooFew(ctx context.Context, s *xmrSettleRow, deposits []x
 	for i, d := range deposits {
 		ids[i] = d.ID
 	}
-	var n, sum int64
-	if err = tx.QueryRowContext(ctx, `WITH m AS (UPDATE payments SET escrow_left_out=true,flagged=true,updated=now() WHERE order_id=$1 AND id=ANY($2) AND xmr_settlement_id IS NULL
-			AND NOT after_close AND NOT escrow_left_out AND NOT spent_outside RETURNING amount)
-		SELECT count(*),COALESCE(sum(amount),0) FROM m`, s.OrderID, ids).Scan(&n, &sum); err != nil {
+	rows, err := tx.QueryContext(ctx, `UPDATE payments SET escrow_left_out=true,flagged=true,updated=now() WHERE order_id=$1 AND id=ANY($2) AND xmr_settlement_id IS NULL
+		AND NOT after_close AND NOT escrow_left_out AND NOT spent_outside RETURNING txid,amount`, s.OrderID, ids)
+	if err != nil {
 		return err
 	}
+	// The note names each deposit as flagLateDeposits does, so the desk dates its flag from it (QA462D-4).
+	var n, sum int64
+	var named []string
+	for rows.Next() {
+		var txid string
+		var amt int64
+		if err = rows.Scan(&txid, &amt); err != nil {
+			rows.Close()
+			return err
+		}
+		n, sum, named = n+1, sum+amt, append(named, "deposit "+truncate(txid, 20)+" ("+amount(amt, 12)+" XMR)")
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	slices.Sort(named)
 	refund := "its refund"
 	if o.State == stateResolved {
 		refund = "the refund its dispute decision requested"
@@ -572,7 +588,12 @@ func (a *App) xmrRefundTooFew(ctx context.Context, s *xmrSettleRow, deposits []x
 	note := fmt.Sprintf("%d deposit(s) (%s XMR, %s %s) to this order's Monero escrow are not spent by %s: the coins were too few to pay the network fee and an output of at least %s XMR, so the market could not send the refund, which ends. "+
 		"They stay in the escrow account; a stray refund returns them, together with any later deposit to this escrow, less the network fee, to the buyer's refund address given at checkout once together they can pay the network fee.",
 		n, amount(sum, 12), a.netTag(), xmrEscrowNetwork, refund, amount(minPayoutXMR, 12))
-	if err = a.flagOrder(ctx, tx, &o, note, "Order "+shortID(s.OrderID)+": "+note); err != nil {
+	if len(named) > 0 {
+		note += " The deposits: " + strings.Join(named, ", ") + "."
+	}
+	// Named and marked for review, so the desk dates the flags from the order note (QA462D-4); the parties are told
+	// the same without the request to staff.
+	if err = a.flagOrder(ctx, tx, &o, note+" Moderator review required.", "Order "+shortID(s.OrderID)+": "+note); err != nil {
 		return err
 	}
 	if err = tx.Commit(); err != nil {

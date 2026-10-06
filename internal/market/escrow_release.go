@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"log"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -295,17 +297,32 @@ func (a *App) leaveOutUncounted(ctx context.Context, tx *sql.Tx, o *Order, thres
 	if back, err := coinsToBuyer(ctx, tx, o); err != nil || !back {
 		return err
 	}
-	var n, sum int64
-	var upgraded bool
 	// f is the upgraded case, read before the update: the refund's too-small failure, with no deposit left out and
 	// flagged yet. Its deposits then name that refund (escrow_too_few_by, A-462), as leaveOutTooFew's do.
-	if err := tx.QueryRowContext(ctx, `WITH f AS (SELECT (SELECT id FROM settlements WHERE order_id=$1 AND kind='refund' AND state='failed' AND build_error=$3) AS id,
+	rows, err := tx.QueryContext(ctx, `WITH f AS (SELECT (SELECT id FROM settlements WHERE order_id=$1 AND kind='refund' AND state='failed' AND build_error=$3) AS id,
 			NOT EXISTS(SELECT 1 FROM payments WHERE order_id=$1 AND escrow_left_out AND flagged AND NOT after_close) AS unflagged),
 		m AS (UPDATE payments SET escrow_left_out=true,flagged=true,escrow_too_few_by=(SELECT CASE WHEN unflagged THEN id END FROM f),updated=now() WHERE order_id=$1 AND settlement_id IS NULL
 			AND confirmations>=$2 AND NOT locked AND NOT after_close AND NOT escrow_left_out AND NOT spent_outside
 			AND NOT EXISTS (SELECT 1 FROM settlements WHERE order_id=$1 AND kind='refund'
-				AND state IN ('building','awaiting_signature','party_signed','signed','broadcast','confirmed')) RETURNING amount)
-		SELECT count(*),COALESCE(sum(amount),0),(SELECT id IS NOT NULL AND unflagged FROM f) FROM m`, o.ID, threshold, settleTooSmall).Scan(&n, &sum, &upgraded); err != nil || n == 0 {
+				AND state IN ('building','awaiting_signature','party_signed','signed','broadcast','confirmed')) RETURNING txid,amount)
+		SELECT txid,amount,(SELECT id IS NOT NULL AND unflagged FROM f) FROM m`, o.ID, threshold, settleTooSmall)
+	if err != nil {
+		return err
+	}
+	var n, sum int64
+	var upgraded bool
+	var named []string
+	for rows.Next() {
+		var txid string
+		var sats int64
+		if err = rows.Scan(&txid, &sats, &upgraded); err != nil {
+			rows.Close()
+			return err
+		}
+		n, sum, named = n+1, sum+sats, append(named, "deposit "+truncate(txid, 20)+" ("+amount(sats, 8)+" BTC)")
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil || n == 0 {
 		return err
 	}
 	count, is, it, stays := "1 deposit", "is", "it", "It stays"
@@ -318,13 +335,16 @@ func (a *App) leaveOutUncounted(ctx context.Context, tx *sql.Tx, o *Order, thres
 	}
 	note := count + " (" + amount(sum, 8) + " BTC, " + a.netTag() + " " + a.escrowNetwork() + ") to this order's escrow, now confirmed, " + is + " not spent by any refund of this order: the escrow node reported " + it + " as conflicted, or no longer listed " + it + ", " + when + " or while its refund was being built, or that refund ended without spending " + it + ". " +
 		stays + " in the escrow; a stray refund returns " + it + ", less the network fee, to the buyer's refund address given at checkout. Do not send more coins to this escrow."
+	staffNote := note
 	if upgraded {
-		note = a.tooFewNote(o, n, sum)
+		// Named and marked for review, so the desk dates the flags from the note (QA462D-4).
+		note = a.tooFewNote(o, sum, named)
+		staffNote = note + " Moderator review required."
 	}
-	if err := a.flagOrder(ctx, tx, o, note, ""); err != nil {
+	if err = a.flagOrder(ctx, tx, o, staffNote, ""); err != nil {
 		return err
 	}
-	_, err := tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, "Order "+shortID(o.ID)+": "+note)
+	_, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, "Order "+shortID(o.ID)+": "+note)
 	return err
 }
 
@@ -348,34 +368,53 @@ func (a *App) leaveOutTooFew(ctx context.Context, tx *sql.Tx, o *Order, refund i
 	for i, in := range tried {
 		ids[i] = in.ID
 	}
-	var n, sum int64
-	if err := tx.QueryRowContext(ctx, `WITH m AS (UPDATE payments SET escrow_left_out=true,flagged=true,escrow_too_few_by=$3,updated=now() WHERE order_id=$1 AND id=ANY($2) AND settlement_id IS NULL
-			AND NOT after_close AND NOT escrow_left_out AND NOT spent_outside RETURNING amount)
-		SELECT count(*),COALESCE(sum(amount),0) FROM m`, o.ID, ids, refund).Scan(&n, &sum); err != nil || n == 0 {
+	rows, err := tx.QueryContext(ctx, `UPDATE payments SET escrow_left_out=true,flagged=true,escrow_too_few_by=$3,updated=now() WHERE order_id=$1 AND id=ANY($2) AND settlement_id IS NULL
+		AND NOT after_close AND NOT escrow_left_out AND NOT spent_outside RETURNING txid,amount`, o.ID, ids, refund)
+	if err != nil {
 		return err
 	}
-	note := a.tooFewNote(o, n, sum)
-	if err := a.flagOrder(ctx, tx, o, note, ""); err != nil {
+	var sum int64
+	var named []string
+	for rows.Next() {
+		var txid string
+		var sats int64
+		if err = rows.Scan(&txid, &sats); err != nil {
+			rows.Close()
+			return err
+		}
+		sum, named = sum+sats, append(named, "deposit "+truncate(txid, 20)+" ("+amount(sats, 8)+" BTC)")
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil || len(named) == 0 {
 		return err
 	}
-	_, err := tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, "Order "+shortID(o.ID)+": "+note)
+	// The order note names the deposits and asks for review, so the desk dates their flags from it (QA462D-4); the
+	// buyer's notice says the same without the request to staff.
+	note := a.tooFewNote(o, sum, named)
+	if err = a.flagOrder(ctx, tx, o, note+" Moderator review required.", ""); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, "Order "+shortID(o.ID)+": "+note)
 	return err
 }
 
-// tooFewNote is the order note on n deposits worth sum sats that o's refund could not spend because they were too few
-// (leaveOutTooFew, and leaveOutUncounted on a database upgraded from before A-435 or A-437), worded for a cancelled
-// order's refund or a dispute decision's.
-func (a *App) tooFewNote(o *Order, n, sum int64) string {
+// tooFewNote is the order note on the deposits named (each "deposit <truncate(txid, 20)> (<amount> BTC)", as
+// flagLateDeposits names them, so the desk dates their flags from it: QA462D-4), worth sum sats, that o's refund could
+// not spend because they were too few (leaveOutTooFew, and leaveOutUncounted on a database upgraded from before A-435
+// or A-437), worded for a cancelled order's refund or a dispute decision's.
+func (a *App) tooFewNote(o *Order, sum int64, named []string) string {
 	count, is, it, stays := "1 deposit", "is", "it", "It stays"
-	if n > 1 {
-		count, is, it, stays = strconv.FormatInt(n, 10)+" deposits", "are", "them", "They stay"
+	if n := len(named); n > 1 {
+		count, is, it, stays = strconv.Itoa(n)+" deposits", "are", "them", "They stay"
 	}
+	slices.Sort(named)
 	refund := "its refund"
 	if o.State == stateResolved {
 		refund = "the refund its dispute decision requested"
 	}
 	return count + " (" + amount(sum, 8) + " BTC, " + a.netTag() + " " + a.escrowNetwork() + ") to this order's escrow " + is + " not spent by " + refund + ": the market could not build the refund because the coins were too few to pay the network fee and an output of at least 0.0001 BTC. " +
-		stays + " in the escrow; a stray refund returns " + it + ", together with any later deposit to this escrow, less the network fee, to the buyer's refund address given at checkout once together they can pay the network fee."
+		stays + " in the escrow; a stray refund returns " + it + ", together with any later deposit to this escrow, less the network fee, to the buyer's refund address given at checkout once together they can pay the network fee. " +
+		"The deposits: " + strings.Join(named, ", ") + "."
 }
 
 // countAgain counts for o again, in tx, the deposits refund's too-small failure left out (leaveOutTooFew, and

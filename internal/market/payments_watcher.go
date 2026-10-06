@@ -616,14 +616,16 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 // the order has no late flag open and lasts while one is, so many small deposits give one notice each, and a deposit
 // after staff disposed of every earlier late flag is announced again. A late flag is one open by paymentFlagOpenRule
 // (the rule the moderation desk and the review handler read, so staff can always record a flag that holds an episode,
-// A-31) of a deposit not credited, not below the floor and not locked: a counted escrow deposit's flag is never open,
-// so it never holds an episode (QA462C-1), and an open locked, below-floor, regressed or credited spent-outside flag
-// does not silence the notice of a new deposit after the close. Only this function flags a deposit after the close of
+// A-31) of a deposit not credited, not below the floor, not locked and not spent outside the market: a counted escrow
+// deposit's flag is never open, so it never holds an episode (QA462C-1), and an open locked, below-floor, regressed or
+// spent-outside flag does not silence the notice of a new deposit after the close (QA462D-1: coins spent outside are
+// gone, and their own notice told the parties). An uncredited deposit left out of its settlement holds it: the buyer
+// and the staff were told of it, and the one stray refund returns a later deposit with it. Only this function flags a deposit after the close of
 // an escrow order before it confirms or is announced (xmrSettleWaits leaves such a deposit to it), so each is
 // announced once.
 func (a *App) flagLateDeposits(ctx context.Context, tx *sql.Tx, o *Order, threshold int64, paidOut bool) error {
 	var episode bool
-	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM payments p WHERE p.order_id=$1 AND "+paymentFlagOpen("p")+" AND NOT p.credited AND NOT p.below_floor AND NOT p.locked)", o.ID).Scan(&episode); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM payments p WHERE p.order_id=$1 AND "+paymentFlagOpen("p")+" AND NOT p.credited AND NOT p.below_floor AND NOT p.locked AND NOT p.spent_outside)", o.ID).Scan(&episode); err != nil {
 		return err
 	}
 	rows, err := tx.QueryContext(ctx, `UPDATE payments SET flagged=true WHERE order_id=$1 AND NOT credited AND NOT flagged AND NOT locked

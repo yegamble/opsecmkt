@@ -837,9 +837,10 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 			if confs < 0 {
 				v.Reason += "; now conflicted or missing"
 			}
-		case !credited && escrow && leftOut:
+		case escrow && leftOut:
 			// Left out of its settlement before the close (a top-up after it was built, one that did not count when the
-			// order was cancelled, one a refund too few could not spend): not a deposit after the close.
+			// order was cancelled, one a refund too few could not spend, credited or not: QA462D-2): not a deposit after
+			// the close, and no longer counted.
 			v.Reason = "Escrow deposit left out of its settlement, not counted; a stray refund from the escrow returns it to the buyer"
 			if confs < 0 {
 				v.Reason += "; now conflicted or missing"
@@ -853,6 +854,15 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 			v.Reason = "Deposit after settlement or after the order closed, not paid out"
 			if confs < 0 {
 				v.Reason += "; now conflicted or missing"
+			}
+		case escrow && !regressed:
+			// QA462D-3: a credited escrow deposit flagged with no regression (a release too few, A-461; an external
+			// settlement's deposits) counts for the order: its flag is not open, and it never "confirmed again".
+			v.Reason = "Escrow deposit counted for the order (credited toward its funding); the order's release or refund settles it"
+			if confs < 0 {
+				v.Reason += "; now conflicted or missing"
+			} else if confs < threshold {
+				v.Reason += fmt.Sprintf("; now %d of %d confirmations", confs, threshold)
 			}
 		case confs < 0:
 			v.Reason = "Credited deposit conflicted or missing"
