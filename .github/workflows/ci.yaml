@@ -38,12 +38,15 @@ jobs:
           cache: true
       - name: Install cjpeg (progressive, RGB and 4:4:4 JPEGs for TestDecodeAllocationWithinEstimate)
         run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends libjpeg-turbo-progs
-      - name: Formatting, modules, vet and races (including real PostgreSQL)
+      # A-465: the Go tests run as two parallel jobs, this one and `go-escrow` below. Their patterns must be the same
+      # string, -skip here and -run there, so together they run every top-level test exactly once
+      # (tests/test_ci_go_split.py checks that). Never edit one without the other.
+      - name: Formatting, modules, vet and races (including real PostgreSQL), without the escrow and Monero tests
         run: |
           test -z "$(gofmt -l cmd internal)"
           go mod verify
           go vet ./...
-          go test -race -count=1 -timeout 17m -coverprofile=coverage.out ./...
+          go test -race -count=1 -timeout 17m -skip '^(TestEscrow|TestXMR|FuzzEscrow)' -coverprofile=coverage.out ./...
       - name: Validate workflow definitions
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
       - name: Reachable Go vulnerabilities
@@ -52,6 +55,42 @@ jobs:
         with:
           name: go-coverage
           path: coverage.out
+          retention-days: 14
+  # A-465: the other half of the Go tests. The `go` job alone took 14m42s of its test step on a 20-minute job and Phase 4
+  # adds tests to internal/market, so the escrow and Monero tests (the -run pattern below, the exact complement of the
+  # -skip pattern in `go`) run here, in parallel, on their own runner and PostgreSQL. Nothing is skipped or weakened and
+  # no timeout is raised. Only TestDecodeAllocationWithinEstimate needs cjpeg and it stays in `go`.
+  go-escrow:
+    name: Go escrow and Monero tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test-ci-only
+          POSTGRES_DB: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U test -d postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgres://test:test-ci-only@127.0.0.1:5432/postgres?sslmode=disable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Escrow and Monero races (including real PostgreSQL)
+        run: go test -race -count=1 -timeout 17m -run '^(TestEscrow|TestXMR|FuzzEscrow)' -coverprofile=coverage-escrow.out ./...
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: go-escrow-coverage
+          path: coverage-escrow.out
           retention-days: 14
   # A-438 (P4-R11): the real-chain Bitcoin escrow legs. scripts/test-escrow-regtest.sh runs the app, inside go test,
   # against a real Bitcoin Core 31.1 node on regtest (a local chain nobody else can reach) and a disposable PostgreSQL.
@@ -562,7 +601,7 @@ jobs:
   required:
     name: CI passed
     if: always()
-    needs: [go, escrow-regtest, operations, installer, upgrade, compose, container, tor-image, browser]
+    needs: [go, go-escrow, escrow-regtest, operations, installer, upgrade, compose, container, tor-image, browser]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
