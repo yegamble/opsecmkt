@@ -1192,9 +1192,23 @@ A-444 refuses every intake value other than `true` (its `lockPaymentIntake` comp
 escrow checkouts call the same check), so it treats that coin as **paused for pooled requests and escrow checkouts
 alike**. Its admin page still reads "Enabled when wallet is available" (with a *Pause* button when that coin's pooled
 wallet is configured) and its order page still offers *Request payment address*, which is refused with the paused
-message. Set the coin back to on (or paused) with
-that build's admin form, or before rolling back. A release older than this database's migrations does not start
-against it at all ([Rolling back](#5-rolling-back)).
+message. When that coin's pooled wallet is configured, set the coin back to **On** before rolling back (this build's
+form), or with the older build's form afterwards.
+
+When that coin has **no pooled wallet configured**, neither form can do it: the older build shows its intake form only
+for a configured provider and its action refuses one that is not, and this build refuses **On** without a pooled
+wallet. Escrow checkouts in that coin then stay refused on the older build until the setting reads `true`, which, with
+no pooled wallet, admits escrow checkouts and still issues no pooled address. Run this once per escrow-only coin
+(`BTC` or `XMR`) after stopping this build and before starting the older one:
+
+```sh
+docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d opsecmkt \
+  -c "UPDATE settings SET value='true' WHERE key='payment_intake_BTC' AND value='escrow'"
+```
+
+For Monero use `payment_intake_XMR`. It prints `UPDATE 1` for a coin that was escrow only and `UPDATE 0` otherwise
+(`settings` has two columns, `key` and `value`). Coming back to this build later, set the coin to **Escrow only** again with its form. A release older than
+this database's migrations does not start against it at all ([Rolling back](#5-rolling-back)).
 
 ## 37. Bitcoin escrow: a payment to the arbiter wallet no longer disables escrow (A-471)
 

@@ -189,10 +189,11 @@ type escrowXMR struct {
 	startState    string           // the state line logged at startup
 	now           func() time.Time // the watcher's clock (escrow_xmr_watch.go); nil is time.Now. Tests move it
 
-	ready     atomic.Bool // the secret verifier matched and the network check passed: escrow wallets may be used
-	canCreate atomic.Bool // ESCROW_XMR_SEED_KEY is the pinned seed key: new wallets may be created and sealed
-	refused   atomic.Bool // the nodes failed the network check after startup (P3-R2): disabled until a restart
-	locked    sync.Map    // wallet names another wallet program has open, logged once while it lasts (escrow_xmr_watch.go)
+	state     atomic.Pointer[xmrState] // the latest startup check's state (initEscrowXMR, retryEscrowXMR, refuseEscrowXMR), for /admin (notReady)
+	ready     atomic.Bool              // the secret verifier matched and the network check passed: escrow wallets may be used
+	canCreate atomic.Bool              // ESCROW_XMR_SEED_KEY is the pinned seed key: new wallets may be created and sealed
+	refused   atomic.Bool              // the nodes failed the network check after startup (P3-R2): disabled until a restart
+	locked    sync.Map                 // wallet names another wallet program has open, logged once while it lasts (escrow_xmr_watch.go)
 
 	// The network pin and the sync guard (A-449), in memory only.
 	pinned   atomic.Value                        // string: the network pin as initEscrowXMR read it, for display before the daemon is verified
@@ -273,7 +274,51 @@ func (a *App) initEscrowXMR(ctx context.Context) error {
 		log.Print(xmrLogSeedKey)
 	}
 	a.escrowXMR.startState = state
+	a.escrowXMR.state.Store(&xmrState{state, class})
 	return nil
+}
+
+// xmrState is one of the fixed state lines of Monero escrow's startup checks with its error class ("" for none; for
+// xmrLogRefused, the refusal's fixed reason). Nothing in it comes from a node.
+type xmrState struct{ line, class string }
+
+// notReady says, while Monero escrow is configured but not ready, which fixed state its latest startup check left it in,
+// in plain words with the error class, and what the operator does about it ("" while ready). /admin shows both under
+// Payment providers (xmrEscrowNodeLoader) and the state in the escrow-only readiness panel (QA4W4B-1).
+func (x *escrowXMR) notReady() (state, remedy string) {
+	if x.ready.Load() {
+		return "", ""
+	}
+	s := x.state.Load()
+	if s == nil {
+		s = &xmrState{}
+	}
+	const retried = " The check is retried every poll; Monero escrow starts once it passes, without a restart."
+	withClass := func(words string) string {
+		if s.class != "" {
+			return words + " (" + s.class + ")"
+		}
+		return words
+	}
+	switch s.line {
+	case xmrLogPooledWait:
+		return "waiting for the pooled Monero wallet's first check",
+			"The pooled Monero wallet-rpc (MONERO_WALLET_RPC_URL) has not passed a check since the app started, so the wallet open in the escrow wallet-rpc cannot yet be compared with it, and Monero escrow makes no wallet call until it can. Start the pooled monero-wallet-rpc, or correct MONERO_WALLET_RPC_URL." + retried
+	case xmrLogUnchecked:
+		return withClass("the escrow daemon or wallet-rpc could not be checked"),
+			"Check that the monerod at ESCROW_XMR_DAEMON_URL is running and synced, and that the monero-wallet-rpc at ESCROW_XMR_WALLET_RPC_URL is running and reachable from the app." + retried
+	case xmrLogNetwork:
+		return "the escrow daemon is not on the network this database's Monero escrows are on",
+			"Point ESCROW_XMR_DAEMON_URL and the escrow wallet-rpc back at a daemon on that network; a new network needs a new database." + retried
+	case xmrLogSecret:
+		return "MONERO_WALLET_SECRET is not the secret this database was first started with",
+			"No escrow wallet can be opened or created with it. Restore the original secret and restart the app."
+	case xmrLogUnrecorded:
+		return withClass("its secret verifier or seed key could not be checked in the database"), "Check the database and its connection." + retried
+	case xmrLogRefused:
+		return "refused until the app is restarted", "Reason: " + s.class + ". Correct what it describes, then restart the app; nothing is retried until then."
+	}
+	return "its startup checks have not passed yet", "The server log names the state." + retried
 }
 
 // startEscrowXMR runs Monero escrow's checks once: the secret verifier (a mismatch stops here, before any node is
@@ -469,6 +514,7 @@ func (a *App) recheckEscrowXMRNetwork(ctx context.Context) error {
 // refuseEscrowXMR disables Monero escrow until a restart after a node failed the network check, logging xmrLogRefused
 // with the fixed reason once.
 func (x *escrowXMR) refuseEscrowXMR(r *xmrRefusal) {
+	x.state.Store(&xmrState{xmrLogRefused, r.msg})
 	x.ready.Store(false)
 	if !x.refused.Swap(true) {
 		log.Print(xmrLogRefused + r.msg)

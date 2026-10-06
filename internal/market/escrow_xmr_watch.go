@@ -170,6 +170,7 @@ func (a *App) retryEscrowXMR(ctx context.Context, r *escrowRetry) {
 	case err != nil:
 		state, class = xmrLogUnrecorded, errorCause(err)
 	}
+	x.state.Store(&xmrState{state, class})
 	if state != r.last {
 		logEscrowState(state, class)
 		if state == xmrLogOn && !x.canCreate.Load() {
@@ -339,8 +340,9 @@ func (a *App) noteXMREscrowSync(why string) {
 	}
 }
 
-// xmrEscrowNodeLoader shows on /admin, under Payment providers, why the Monero escrow daemon is not used: the reason
-// class it is not synced for, or the pinned network and the daemon's when startEscrowXMR refused it (A-449).
+// xmrEscrowNodeLoader shows on /admin, under Payment providers, why the Monero escrow daemon is not used: the pinned
+// network and the daemon's when startEscrowXMR refused it (A-449), any other state that leaves Monero escrow configured
+// but not ready, with what to do (notReady, QA4W4B-1), or, once ready, the reason class it is not synced for.
 func xmrEscrowNodeLoader(_ context.Context, a *App, _ *http.Request, d *PageData) error {
 	x := a.escrowXMR
 	if x == nil || d.User == nil || d.User.Role != "admin" {
@@ -349,8 +351,10 @@ func xmrEscrowNodeLoader(_ context.Context, a *App, _ *http.Request, d *PageData
 	v := &EscrowNodeView{Mismatch: x.mismatch.Load()}
 	if x.ready.Load() {
 		v.NotSynced, _ = x.sync.Load().(string)
+	} else {
+		v.NotReady, v.Remedy = x.notReady()
 	}
-	if v.NotSynced != "" || v.Mismatch != nil {
+	if v.NotSynced != "" || v.Mismatch != nil || v.NotReady != "" {
 		d.XMREscrowNode = v
 	}
 	return nil

@@ -139,7 +139,15 @@ func purchaseGateLoader(ctx context.Context, a *App, _ *http.Request, d *PageDat
 func escrowReadinessLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 	v := &EscrowReadinessView{Limit: readinessListLimit}
 	for _, coin := range []string{"BTC", "XMR"} {
-		v.Coins = append(v.Coins, ReadinessCoin{Currency: coin, Intake: d.Settings[paymentIntakeKey(coin)], EscrowOn: a.escrowOn(coin), Pooled: a.pooledConfigured(coin)})
+		c := ReadinessCoin{Currency: coin, Intake: d.Settings[paymentIntakeKey(coin)], EscrowOn: a.escrowOn(coin), Pooled: a.pooledConfigured(coin)}
+		switch {
+		case !c.EscrowOn || a.escrowReady(coin):
+		case coin == "XMR":
+			c.NotReady, _ = a.escrowXMR.notReady()
+		default:
+			c.NotReady = "its node or wallets have not passed the startup checks; the server log names which"
+		}
+		v.Coins = append(v.Coins, c)
 	}
 	rows, err := a.db.QueryContext(ctx, `SELECT p.id,p.title,u.handle,p.kind,count(*) OVER() FROM products p JOIN users u ON u.id=p.vendor_id
 		WHERE NOT p.archived AND NOT `+escrowEligibleSQL+` ORDER BY u.handle,p.title,p.id LIMIT $2`, goSpaces, readinessListLimit)

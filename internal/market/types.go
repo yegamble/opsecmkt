@@ -233,10 +233,11 @@ type PageData struct {
 	// it is ready to take a checkout (xmrEscrowReady). XMRCustody is xmrCustody (every page), so a template never
 	// retypes the owner's sentence (A-402); XMREscrowOrders: vendor desk, the viewer's Monero escrow orders that may hold
 	// coins, counted like EscrowOrders. XMREscrowNet: Monero escrow's network, "fakechain" or "stagenet"
-	// (App.xmrEscrowNetwork, A-449), so the notices name it.
-	XMREscrowOn, XMREscrowAvailable bool
-	XMRCustody, XMREscrowNet        string
-	XMREscrowOrders                 int
+	// (App.xmrEscrowNetwork, A-449), so the notices name it. XMREscrowNetKnown: that network was verified (escrowXMR.formNet
+	// is not ""), so /admin's Payment providers text never names a network no daemon was verified on (QA4W4B-1).
+	XMREscrowOn, XMREscrowAvailable, XMREscrowNetKnown bool
+	XMRCustody, XMREscrowNet                           string
+	XMREscrowOrders                                    int
 	// EscrowKey: /escrow-key and the /account status row, the viewer's Bitcoin escrow key; nil while ESCROW_BTC is off
 	// (escrow_account.go, WR-escrow Phase 1).
 	EscrowKey *EscrowKeyView
@@ -245,7 +246,7 @@ type PageData struct {
 	// EscrowNode: /admin while ESCROW_BTC is on and the escrow node is not synced or not on the pinned chain (A-439)
 	EscrowNode *EscrowNodeView
 	// XMREscrowNode: /admin while ESCROW_XMR is on and the escrow daemon is not synced or not on the pinned network
-	// (A-449; Mismatch names networks, not chains)
+	// (A-449; Mismatch names networks, not chains), or Monero escrow is not ready for another reason (NotReady, QA4W4B-1)
 	XMREscrowNode *EscrowNodeView
 	// EscrowSigner: /admin while ESCROW_SIGNER_SOCKET is set and the escrow signer is not ready (A-454)
 	EscrowSigner *EscrowSignerView
@@ -448,10 +449,11 @@ type EscrowReadinessView struct {
 	Limit                     int
 }
 
-// ReadinessCoin: Intake is payment_intake_<COIN>; Pooled, the coin's pooled wallet is configured.
+// ReadinessCoin: Intake is payment_intake_<COIN>; Pooled, the coin's pooled wallet is configured; NotReady, why the
+// coin's escrow, on, is not ready ("" when it is, QA4W4B-1).
 type ReadinessCoin struct {
-	Currency, Intake string
-	EscrowOn, Pooled bool
+	Currency, Intake, NotReady string
+	EscrowOn, Pooled           bool
 }
 type ReadinessListing struct{ ID, Title, Vendor, Kind, Reason string }
 type ReadinessVendor struct {
@@ -645,6 +647,7 @@ type EscrowChainMismatch struct {
 // broadcasts and the settlements queued or stuck.
 type EscrowNodeView struct {
 	NotSynced       string
+	NotReady        string // Monero escrow only: the state its startup checks left it in while not ready (escrowXMR.notReady), with Remedy
 	Remedy          string
 	Mismatch        *EscrowChainMismatch
 	PooledKey       string

@@ -26,6 +26,40 @@ func (x *xmrEscrowEnv) adminPage() string {
 	return html.UnescapeString(x.page("/admin", as))
 }
 
+// xmrAdminLines reads, from an /admin page, the alert under Payment providers about the Monero escrow daemon ("" when
+// there is none), the XMR line of the escrow-only readiness panel and the Payment providers paragraph (QA4W4B-1).
+func xmrAdminLines(t *testing.T, page string) (alert, readiness, providers string) {
+	t.Helper()
+	cut := func(from, to string) string {
+		i := strings.Index(page, from)
+		if i < 0 {
+			return ""
+		}
+		j := strings.Index(page[i:], to)
+		if j < 0 {
+			t.Fatalf("no %q after %q", to, from)
+		}
+		return page[i : i+j]
+	}
+	alert, readiness, providers = cut(`id="xmr-escrow-node"`, "</div>"), cut("<li>XMR escrow: ", "</li>"), cut("Deposits of pooled orders", "</p>")
+	if readiness == "" || providers == "" {
+		t.Fatalf("/admin lacks the readiness line or the Payment providers paragraph:\n%s", page)
+	}
+	return alert, readiness, providers
+}
+
+// adminOf is /admin, unescaped, as a new administrator of a's market.
+func adminOf(t *testing.T, a *App) string {
+	t.Helper()
+	e := &testEnv{t: t, A: a, DB: a.db}
+	_, sess := e.user("xwaitadmin_"+randomToken()[:6], "admin")
+	w := e.do("GET", "/admin", sess, nil)
+	if w.Code != 200 {
+		t.Fatalf("GET /admin: %d", w.Code)
+	}
+	return html.UnescapeString(w.Body.String())
+}
+
 func (x *xmrEscrowEnv) networkPin() []string {
 	return agStrings(x.t, x.testEnv, "SELECT value FROM settings WHERE key='escrow_xmr_network'")
 }
@@ -622,6 +656,13 @@ func TestXMREscrowRefusesPooledWalletOpen(t *testing.T) {
 			t.Fatalf("Monero escrow called %s while waiting for the pooled check", c.Method)
 		}
 	}
+	// The administrator reads the waiting state, not a plain "on" (QA4W4B-1).
+	alert, readiness, _ := xmrAdminLines(t, adminOf(t, a))
+	waiting := "waiting for the pooled Monero wallet's first check"
+	if !strings.Contains(alert, "Monero escrow not ready: "+waiting) || !strings.Contains(alert, "MONERO_WALLET_RPC_URL") ||
+		!strings.Contains(readiness, "XMR escrow: on (not ready: "+waiting+")") {
+		t.Fatalf("/admin while waiting for the pooled check: alert %q, readiness %q", alert, readiness)
+	}
 	pooled.down.Store(false)
 	if a.refreshProviders(ctx); a.provider("XMR") == nil {
 		t.Fatal("the pooled Monero provider did not come up")
@@ -631,6 +672,11 @@ func TestXMREscrowRefusesPooledWalletOpen(t *testing.T) {
 	refusedLine := xmrLogRefused + errXMRPooledWallet.msg
 	if !retry.refused || a.escrowXMR.ready.Load() || strings.Count(logs.String(), refusedLine) != 1 {
 		t.Fatalf("retry once the pooled check passed: refused %v, ready %v\n%s", retry.refused, a.escrowXMR.ready.Load(), logs.String())
+	}
+	alert, readiness, _ = xmrAdminLines(t, adminOf(t, a))
+	if !strings.Contains(alert, "Monero escrow not ready: refused until the app is restarted") || !strings.Contains(alert, errXMRPooledWallet.msg) ||
+		strings.Contains(alert, waiting) || !strings.Contains(readiness, "XMR escrow: on (not ready: refused until the app is restarted)") {
+		t.Fatalf("/admin after the refusal: alert %q, readiness %q", alert, readiness)
 	}
 	// It sticks: with an escrow wallet open instead, a retry checks nothing and stays refused.
 	fake.edit(func(f *fakeXMREscrow) {
