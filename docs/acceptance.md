@@ -217,6 +217,19 @@ Not covered: stagenet, testnet and mainnet, Monero multisig, a wallet with thous
 
 Not covered: the public stagenet, a funded Monero escrow on any stagenet (the offline fork's hard fork 1 is refused, as it must be), and a daemon that loses its peers on a public network.
 
+### Escrow-only cutover (A-444; development branch)
+
+[Cutting over to escrow only](operator-guide.md#cutting-over-to-escrow-only). None of these lines is ticked until its command and result are recorded in the evidence table. Tiers: DB integration with the fake pooled wallet and simulated escrow nodes, and the browser DB spec.
+
+- [ ] With a coin's intake set to escrow only, `POST /orders/pay` on a draft answers 409 before any wallet call and writes no `payment_addresses` row, the bare draft to awaiting-payment transition refuses a pooled request, and BTC and XMR escrow checkouts succeed; paused refuses both; any other value reads as paused (`TestPaymentIntakeLockByKind`, `TestPaymentIntakeEscrowOnlyRefusesPooled`, `TestEscrowOnlyIntakeWithoutPooledWallet`, `TestXMREscrowCheckoutUnderEscrowOnly`).
+- [ ] A pooled order opened before the switch is still credited and paid out (`TestPaymentIntakeEscrowOnlyRefusesPooled`).
+- [ ] The form sets on, escrow only and paused with the administrator's password, audits each change and is reversible; with no pooled wallet it offers and sets escrow only and paused and refuses on (`TestPaymentIntakeEscrowOnlyRefusesPooled`, `TestEscrowOnlyIntakeWithoutPooledWallet`).
+- [ ] The readiness panel's counts equal escrowEligible's and SQL's over the active listings, and it lists them with the reason (`TestEscrowReadinessPanelCounts`).
+- [ ] Under escrow only, a listing that cannot use escrow shows "not available for purchase" with the reason, offers no buy form or draft form in that coin, refuses a draft in it, tells its vendor the fix, and a draft saved before says why it cannot be paid (`TestEscrowOnlyListingNotAvailable`).
+- [ ] The form and the panel work with JavaScript off at 320 px in Chromium, within the viewport (`tests/e2e/db-escrow-cutover.spec.ts`).
+
+Not covered: a cutover on a real chain or public network, and the removal of the pooled wallet that follows it (A-448).
+
 ### P6 Transparency
 
 - [x] `/canary` shows exactly one of: no statement, verified (fingerprint and dates), or invalid with a reason (`TestCanaryView`, `TestCanaryIntegration`).

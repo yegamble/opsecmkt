@@ -578,13 +578,17 @@ proven with real funds. Know these before you take a real payment:
   - A-76: after a restore from backup, the watcher can queue a refund that was already sent after the backup;
     the recovery gate stops it being sent, but nothing retires it.
 
-Administrators can pause or enable **new payment addresses** independently for
-Bitcoin and Monero under **Admin → New payment intake** after the wallet services
-are configured. Each change requires the administrator's password (and TOTP when
-enrolled), is audited, and takes effect without restarting. Pausing intake never
-stops monitoring existing addresses, partial-payment top-ups, fulfillment,
-refunds or payouts. It does not turn off the wallet daemon or bypass network
-validation. Migration 052 supplies the persisted per-currency policy.
+Administrators set **new payment addresses** independently for Bitcoin and
+Monero under **Admin → New payment addresses**: **On** (pooled payment addresses
+and escrow checkouts), **Escrow only** (escrow checkouts only; see
+[Cutting over to escrow only](#cutting-over-to-escrow-only)) or **Paused** (no
+new payment address and no escrow checkout). On needs that coin's pooled wallet
+configured; escrow only and paused do not. Each change requires the
+administrator's password (and TOTP when enrolled), is audited, and takes effect
+without restarting. No setting stops monitoring existing addresses,
+partial-payment top-ups, fulfillment, refunds or payouts. It does not turn off
+the wallet daemon or bypass network validation. Migration 052 supplies the
+persisted per-currency policy.
 
 On an open order, **Remaining to send** subtracts both confirmed and unconfirmed
 valid deposits from the required amount. Send only the remainder to the same
@@ -1721,6 +1725,51 @@ tests with PostgreSQL against a fake wallet-rpc, fourteen legs against a real fa
 0.18.5.1 (`scripts/test-escrow-xmr-regtest.sh`, manual, not in CI;
 [runbook](testnet-runbook.md#9-manual-monero-escrow-fakechain-check)), and a simulated-RPC browser journey added in this
 phase. Nothing has run on stagenet, testnet or mainnet, with Monero multisig, or as a deployment.
+
+#### Cutting over to escrow only
+
+A-444 (war-room ruling P4-R8), on the development branch and in no release. Escrow itself runs only where the sections
+above say (Bitcoin escrow on regtest, Monero escrow on a fakechain or stagenet); setting a coin to escrow only does not
+change that, and no cutover has been run on a public network. The cutover is an administrator's choice per coin on
+`/admin`, not a release and not a configuration change: **Escrow only** under *New payment addresses*. With it, buyers
+can still pay new orders in that coin through escrow checkout, and the pooled wallet issues no new payment address
+(`POST /orders/pay` answers 409 and nothing is written). Pooled orders opened before the switch are not affected.
+
+Before switching a coin:
+
+1. Turn its escrow on (`ESCROW_BTC=on` or `ESCROW_XMR=on`, sections above) and check that `/admin` shows it working. With
+   a coin's escrow off, escrow only means nothing can be bought in that coin; the readiness panel says so.
+2. Read *Escrow-only readiness* under the intake forms. It counts and lists the active listings that cannot use escrow
+   (a digital listing without automatic delivery content, a physical listing without a dispatch window, a service
+   listing) and the vendors with active listings but no active Bitcoin escrow key (Bitcoin escrow needs one from each
+   party; Monero escrow needs none). Ask those vendors to fix their listings and register their keys first: until they
+   do, their listings cannot be bought in that coin.
+3. Keep the pooled wallet configured (`BITCOIN_RPC_URL`, `MONERO_WALLET_RPC_URL`) after the switch, until every pooled
+   order is settled and paid out. The pooled watcher, which credits deposits and sends payouts, runs only while its
+   provider is configured; removing it strands orders that are still open. Pausing intake would not do instead: paused
+   also refuses escrow checkouts.
+
+What buyers and vendors see while a coin is escrow only:
+
+- A listing that can use escrow is bought as before; its draft's order page says new payments use escrow only and
+  offers escrow checkout, not *Request payment address*.
+- A listing that cannot use escrow stays visible in the catalog. Its page says "Not available for purchase in BTC" (or
+  XMR) with the reason, and the checkout page offers only the coins it can still be bought in; with every coin blocked
+  there is no buy link and no draft form, and a draft posted anyway is refused (409). Its vendor reads the same on the
+  listing page, with what to do: add delivery content, set a dispatch window, register an escrow key, or (when the
+  coin's escrow is off) that only the operator can change it.
+- A draft saved before the switch says why it cannot be paid through the pooled wallet and, when its listing cannot use
+  escrow, why it cannot be paid at all; the buyer can cancel it.
+
+Rolling back: set the coin back to **On** (needs its pooled wallet configured) with the same form. Pooled payment
+requests are accepted again at once; escrow orders opened meanwhile carry on as escrow orders. Rolling back the binary
+instead is covered in UPGRADING.md (section 36): an older build reads escrow only as paused, for escrow checkouts too.
+
+How it was tested: `TestPaymentIntakeLockByKind`, `TestPaymentIntakeEscrowOnlyRefusesPooled`,
+`TestEscrowOnlyIntakeWithoutPooledWallet`, `TestXMREscrowCheckoutUnderEscrowOnly`, `TestEscrowReadinessPanelCounts` and
+`TestEscrowOnlyListingNotAvailable` (PostgreSQL with the fake pooled wallet and the simulated escrow nodes; simulated RPC,
+not chain evidence), and `tests/e2e/db-escrow-cutover.spec.ts` (the form and the panel in Chromium at 320 px with
+JavaScript off, on a market with no pooled wallet and no escrow).
 
 ### Transparency
 

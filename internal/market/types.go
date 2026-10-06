@@ -283,6 +283,14 @@ type PageData struct {
 	// VendorKeyUnusable (A-83): a physical listing's product and checkout pages, and its buyer's order page, when the
 	// vendor has no key that can receive encrypted messages (canReceiveEncrypted), so no shipping address can be sent.
 	VendorKeyUnusable bool
+	// PurchaseBlocks (A-444): a listing's product and checkout pages, each coin whose intake is escrow only while the
+	// listing cannot use its escrow (escrow_readiness.go), PurchaseBlocked the same by coin, and NoPurchase when every
+	// coin is blocked: the listing is not available for purchase.
+	PurchaseBlocks  []PurchaseBlock
+	PurchaseBlocked map[string]bool
+	NoPurchase      bool
+	// EscrowReadiness (A-444): /admin, the escrow-only readiness panel (escrow_readiness.go).
+	EscrowReadiness *EscrowReadinessView
 	// noticeCode: the one-shot notice this render consumed (notice.go), for a loader that details it from the
 	// current state (/totp after a recovery-code sign-in); "" without one.
 	noticeCode string
@@ -424,9 +432,37 @@ type PaymentDeposit struct {
 	Confirmations int64
 	State         string
 }
+
+// PurchaseBlock (A-444) is why a listing cannot be bought in Currency while its intake is escrow only, and Fix what
+// its vendor can do (shown to the vendor only).
+type PurchaseBlock struct{ Currency, Reason, Fix string }
+
+// EscrowReadinessView is /admin's escrow-only readiness panel (A-444): per coin its intake and whether its escrow is
+// on, the active listings that cannot use escrow and the vendors with active listings but no active Bitcoin escrow
+// key. ListingCount and VendorCount are uncapped; Listings and Vendors hold at most Limit rows.
+type EscrowReadinessView struct {
+	Coins                     []ReadinessCoin
+	Listings                  []ReadinessListing
+	Vendors                   []ReadinessVendor
+	ListingCount, VendorCount int
+	Limit                     int
+}
+
+// ReadinessCoin: Intake is payment_intake_<COIN>; Pooled, the coin's pooled wallet is configured.
+type ReadinessCoin struct {
+	Currency, Intake string
+	EscrowOn, Pooled bool
+}
+type ReadinessListing struct{ ID, Title, Vendor, Kind, Reason string }
+type ReadinessVendor struct {
+	Handle   string
+	Listings int
+}
+
 type ProviderStatus struct {
 	Currency, Network string
 	Enabled           bool
+	Configured        bool   // the pooled wallet is configured in this process, available or not (pooledConfigured)
 	Status            string // Enabled, Unavailable (retried), Refused, Disabled
 	Error             string
 	Confirmations     int

@@ -168,17 +168,54 @@ Check the escrow node: its peers (<code>getconnectioncount</code>), and with <co
 <p>None.</p>{{end}}{{end}}
 <h3 id="payment-intake">New payment addresses</h3>{{with $.NoticeIn "payment-intake"}}
 <div class="alert" role="status">{{.}}</div>{{end}}
-<p>Enable or pause Bitcoin and Monero separately. Pausing prevents new payment addresses; existing deposit addresses, payment confirmation, refunds and payouts continue. Wallet RPC connections must be provisioned on the server first. Changes require your password and are audited.</p>
-{{range .Providers}}<div class="order-action">
-<h4>{{.Currency}} intake: {{if eq (index $.Settings (printf "payment_intake_%s" .Currency)) "false"}}Paused{{else}}Enabled when wallet is available{{end}}</h4>
-{{if or .Enabled (eq .Status "Unavailable — retried every poll") (eq .Status "Refused — not a test network" "Refused — not mainnet")}}<form class="stack" method="post" action="/admin/payment-intake">
+<p>Set Bitcoin and Monero separately. <strong>On</strong>: buyers can request a pooled payment address, or use escrow checkout where it is offered. <strong>Escrow only</strong>: escrow checkouts continue and the pooled wallet issues no new payment address. <strong>Paused</strong>: no new payment address and no escrow checkout. In every case existing deposit addresses, payment confirmation, refunds and payouts continue, so keep a pooled wallet configured while pooled orders are open. On needs the currency's pooled wallet RPC provisioned on the server; escrow only and paused do not. Changes require your password and are audited, and each can be changed back.</p>
+{{range .Providers}}{{$v := index $.Settings (printf "payment_intake_%s" .Currency)}}<div class="order-action">
+<h4>{{.Currency}} intake: {{if eq $v "false"}}Paused{{else if eq $v "escrow"}}Escrow only{{else if eq $v "true"}}{{if .Configured}}Enabled when wallet is available{{else}}On, but no pooled wallet is configured{{end}}{{else}}Paused (unknown value){{end}}</h4>
+<form class="stack" method="post" action="/admin/payment-intake">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="currency" value="{{.Currency}}">
-<input type="hidden" name="enabled" value="{{if eq (index $.Settings (printf "payment_intake_%s" .Currency)) "false"}}true{{else}}false{{end}}">
+<fieldset>
+<legend>New {{.Currency}} payments</legend>{{if .Configured}}
+<label class="check">
+<input type="radio" name="enabled" value="true" required{{if eq $v "true"}} checked{{end}}> On: pooled payment addresses and escrow checkouts</label>{{end}}
+<label class="check">
+<input type="radio" name="enabled" value="escrow" required{{if eq $v "escrow"}} checked{{end}}> Escrow only: escrow checkouts, no new pooled payment addresses</label>
+<label class="check">
+<input type="radio" name="enabled" value="false" required{{if eq $v "false"}} checked{{end}}> Paused: no new payment addresses or escrow checkouts</label>
+</fieldset>{{if not .Configured}}
+<span class="help">On is not offered: configure the {{.Currency}} wallet RPC on the server first.</span>{{end}}
 {{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
-<button type="submit">{{if eq (index $.Settings (printf "payment_intake_%s" .Currency)) "false"}}Enable{{else}}Pause{{end}} new {{.Currency}} payments</button>
-</form>{{else}}<p class="help">Configure the {{.Currency}} wallet RPC on the server to enable payments.</p>{{end}}
+<button type="submit">Save new {{.Currency}} payments</button>
+</form>
 </div>{{end}}
+<h3 id="escrow-readiness">Escrow-only readiness</h3>{{with $.EscrowReadiness}}
+<p>Check this before setting a coin to escrow only. While a coin is escrow only, a listing that cannot use its escrow stays visible but is not available for purchase in that coin: its page gives buyers the reason and no buy form, its vendor reads how to fix it, and no draft can be saved in that coin. Orders already awaiting a pooled payment are not affected.</p>
+<ul>{{range .Coins}}
+<li>{{.Currency}} escrow: {{if .EscrowOn}}on{{else}}off{{end}} · {{.Currency}} intake: {{if eq .Intake "false"}}paused{{else if eq .Intake "escrow"}}escrow only{{else if eq .Intake "true"}}on{{else}}paused (unknown value){{end}} · pooled wallet: {{if .Pooled}}configured{{else}}not configured{{end}}{{if and (not .EscrowOn) (eq .Intake "escrow")}}. <strong>Nothing can be bought in {{.Currency}}: its escrow is off.</strong>{{end}}</li>{{end}}
+</ul>
+<p id="escrow-readiness-listings"><strong>{{.ListingCount}}</strong> active {{if eq .ListingCount 1}}listing cannot{{else}}listings cannot{{end}} use escrow in any coin.</p>{{if .Listings}}
+<div class="table-wrap" tabindex="0" role="region" aria-labelledby="escrow-readiness-listings">
+<table>
+<thead>
+<tr>
+<th scope="col">Listing</th>
+<th scope="col">Vendor</th>
+<th scope="col">Why</th>
+</tr>
+</thead>
+<tbody>{{range .Listings}}<tr>
+<td><a class="text-link" href="/product?id={{.ID}}">{{.Title}}</a></td>
+<td>{{.Vendor}}</td>
+<td>{{.Reason}}</td>
+</tr>{{end}}</tbody>
+</table>
+</div>{{if gt .ListingCount (len .Listings)}}
+<p class="help">Showing the first {{.Limit}} by vendor and title.</p>{{end}}{{end}}
+<p id="escrow-readiness-vendors"><strong>{{.VendorCount}}</strong> {{if eq .VendorCount 1}}vendor has{{else}}vendors have{{end}} active listings but no active Bitcoin escrow key, so none of their listings can be bought in BTC while BTC is escrow only.{{if $.XMREscrowOn}} Monero escrow needs no vendor key.{{end}}</p>{{if .Vendors}}
+<ul>{{range .Vendors}}
+<li>{{.Handle}}: {{.Listings}} active {{if eq .Listings 1}}listing{{else}}listings{{end}}</li>{{end}}
+</ul>{{if gt .VendorCount (len .Vendors)}}
+<p class="help">Showing the first {{.Limit}} by handle.</p>{{end}}{{end}}{{end}}
 <div class="table-wrap">
 <table>
 <thead>

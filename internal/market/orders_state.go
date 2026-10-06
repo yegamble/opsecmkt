@@ -194,6 +194,17 @@ func (a *App) transition(ctx context.Context, tx *sql.Tx, orderID, from, to stri
 	if from == stateDraft && to == stateAwaitingPayment && a.provider(o.Currency) == nil && !(isEscrowCheckout(ctx) && a.escrowReady(o.Currency)) {
 		return nil, fail(409, "Payment unavailable for "+o.Currency)
 	}
+	// A pooled payment request while the currency's intake is escrow only (P4-R8): payAction's lockPaymentIntake
+	// refuses it first; this refuses any other pooled path to awaiting_payment.
+	if from == stateDraft && to == stateAwaitingPayment && !isEscrowCheckout(ctx) {
+		var intake string
+		if err = tx.QueryRowContext(ctx, "SELECT value FROM settings WHERE key=$1", paymentIntakeKey(o.Currency)).Scan(&intake); err != nil && err != sql.ErrNoRows {
+			return nil, err
+		}
+		if intake == intakeEscrow {
+			return nil, fail(409, escrowOnlyRefusal(o.Currency))
+		}
+	}
 	res, err := tx.ExecContext(ctx, "UPDATE orders SET state=$2,updated=now() WHERE id=$1 AND state=$3", orderID, to, from)
 	if err != nil {
 		return nil, err
