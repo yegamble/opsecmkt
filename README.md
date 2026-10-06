@@ -194,7 +194,7 @@ are reset from the host with `-reset-admin-password` and `-reset-admin-factors`
 | `web/` | Server-rendered templates and static CSS |
 | `deploy/` | Tor image and `torrc`, the malware scanner's `clamd.conf` |
 | `scripts/` | Installer, backup and restore, and operations checks |
-| `tests/` | Playwright journeys (`tests/e2e/`) and installer tests |
+| `tests/` | Playwright journeys (`tests/e2e/`: preview, database, wallet and, in the `browser-escrow` CI job, Bitcoin and Monero escrow against simulated nodes) and installer tests |
 | `docs/` | Status, acceptance, operator runbooks and README assets |
 
 ## Contributing
