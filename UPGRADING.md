@@ -1097,6 +1097,19 @@ is pinned at the first start), and the escrow user's `rpcwhitelist` gains `getne
 ([operator guide](docs/operator-guide.md#bitcoin-escrow-regtest-only)); on regtest the app does not call it, so the old
 whitelist keeps working, but add it. No action is needed otherwise.
 
+## 33. Bitcoin escrow refuses a pooled RPC user that can read the arbiter wallet (A-440)
+
+No migration. Only with `ESCROW_BTC=on` and `BITCOIN_RPC_URL` set: at startup and on each retry escrow calls
+`listdescriptors` (private=false) on the arbiter wallet's path as the pooled RPC user, and starts only when that call is
+refused with HTTP 403 or the pooled node has no such wallet (another node). A pooled user without an `rpcwhitelist`
+line on the escrow node (unrestricted under `rpcwhitelistdefault=0`, as the guide used to leave it) could export the
+market's escrow key, so escrow now stays disabled with "escrow: Bitcoin escrow disabled: the pooled Bitcoin RPC user
+(BITCOIN_RPC_URL) was not refused listdescriptors on the arbiter wallet, …" and a line on `/admin`. Before upgrading,
+give that user the pooled whitelist line of the [operator guide](docs/operator-guide.md#bitcoin-escrow-regtest-only)
+(*The pooled RPC user*) and restart bitcoind, or move escrow to a node of its own. The guide and the
+[runbook](docs/testnet-runbook.md#back-up-and-restore-the-escrow-arbiter-and-watch-only-wallets) now also describe the
+arbiter and watch-only wallet backup and restore. Pooled payments are unaffected.
+
 ## Appendix: new keys by hand
 
 `./scripts/install.sh upgrade` writes these for you. To add them yourself, use your editor (values in single

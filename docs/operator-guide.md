@@ -620,7 +620,8 @@ has run on a public test network. Never switch it on for a market that takes rea
   ESCROW_BTC=on runs only on regtest in this release …". An unreachable node or an unreadable arbiter wallet
   leaves escrow disabled with one log line starting `escrow: Bitcoin escrow disabled:`, and the market runs
   without it. The escrow watcher then runs the same checks again every `PAYMENT_POLL_INTERVAL`, with the same
-  guards (regtest only, the chain pin and the pinned arbiter fingerprint below, a watch-only wallet without private keys), and escrow
+  guards (regtest only, the chain pin and the pinned arbiter fingerprint below, the pooled user refused the arbiter wallet as
+  *The pooled RPC user* below describes, a watch-only wallet without private keys), and escrow
   starts without a restart once they pass ("escrow: Bitcoin escrow on (regtest only)"). A line is logged when the
   state changes, not on every retry. A retry that finds the node on another chain, or refusing
   `ESCROW_BTC_FEE_ADDRESS`, cannot stop the running market: it logs "escrow: Bitcoin escrow disabled until the app
@@ -630,7 +631,9 @@ has run on a public test network. Never switch it on for a market that takes rea
 - `ESCROW_BTC_ARBITER_WALLET` (default `opsecmkt-arbiter`): a Bitcoin Core descriptor wallet that holds only the
   market's arbitrator key, never `BITCOIN_WALLET`. Create it once as the operator user, loaded at every node start
   (`bitcoin-cli -regtest -named createwallet wallet_name=opsecmkt-arbiter load_on_startup=true`), and back it up
-  with the operator user: its seed is the market's escrow key. Use it for nothing else. At startup and on each retry
+  as the operator user, encrypted, as the runbook's
+  [arbiter and watch-only wallet backup](testnet-runbook.md#back-up-and-restore-the-escrow-arbiter-and-watch-only-wallets)
+  describes: its seed is the market's escrow key, and `scripts/backup.sh` does not hold it. Use it for nothing else. At startup and on each retry
   the app checks with `getwalletinfo` exactly this: a descriptor wallet with private keys, not encrypted (the escrow
   watcher co-signs without a passphrase, so an encrypted wallet could never sign), and no transaction ever paid to or
   from it (`txcount` 0: escrow coins never belong to it, so a transaction means it is also used as an ordinary
@@ -773,9 +776,40 @@ is on it: it exports nothing and lets the arbiter wallet sign for high escrow in
 is used only with throwaway practice keys, never a wallet key. `getwalletinfo`, `getaddressinfo`,
 `listreceivedbyaddress`, `gettransaction` and `listtransactions` read the watch-only wallet (the arbiter wallet only
 answers `getwalletinfo` and `getaddressinfo`; they export nothing). `listtransactions` was added in P1-d1 (UPGRADING.md section 22): without it a
-deposit spent outside the market is still flagged, but without the spending transaction's ID. `rpcwhitelistdefault=0` leaves other users (the
-operator's, the pooled wallet's) unrestricted. Make SALT and HASH with Core's `share/rpcauth/rpcauth.py`, or as
+deposit spent outside the market is still flagged, but without the spending transaction's ID. `rpcwhitelistdefault=0`
+leaves a user with no `rpcwhitelist` line unrestricted: keep that for the operator user alone, and give each user the
+app connects as its own line (the pooled user below included). With `rpcwhitelistdefault` unset instead, Core gives every
+user without its own line an empty list once any `rpcwhitelist` is set: the operator user could then call nothing.
+Make SALT and HASH with Core's `share/rpcauth/rpcauth.py`, or as
 the comment in `scripts/test-escrow-regtest.sh` shows.
+
+**The pooled RPC user.** `rpcwhitelist` is per user, not per wallet: Core picks the wallet from the URL path
+(`/wallet/<name>`), so any user allowed `listdescriptors` can call it with `private=true` on the arbiter wallet and
+print the market's escrow key. Probed on Core 31.1 regtest: with only the escrow user whitelisted, the escrow user got
+HTTP 403 and an unrestricted pooled user got the `tprv`. When the pooled wallet (`BITCOIN_RPC_URL`) and escrow share a
+node, restrict the pooled user to exactly the methods the pooled adapter calls (`internal/market/payments_bitcoin.go`,
+kept equal to this line by a Go test):
+
+```ini
+rpcauth=opsecmkt-pooled:SALT$HASH
+rpcwhitelist=opsecmkt-pooled:getblockchaininfo,getwalletinfo,loadwallet,getnetworkinfo,getnewaddress,listreceivedbyaddress,gettransaction,sendtoaddress,validateaddress
+```
+
+Use the user name your `BITCOIN_RPC_URL` carries (on the bundled Compose node it is `marketplace`, set with
+`-rpcuser`; that node has no escrow user, above, so this matters there only if you add escrow's wallets to it). None of
+these methods exports or copies a key. Or put escrow on a node of its own, which no pooled user can reach. Escrow and the pooled
+wallet on one node share one failure domain: a node that is down, out of sync, out of disk or lost stops both, and
+whoever controls the node controls both wallets.
+
+The app checks this at startup and on each retry: through `BITCOIN_RPC_URL` it calls `listdescriptors` with
+`private=false` (which exports nothing) on the arbiter wallet's path. Only HTTP 403 (the method is not on the pooled
+user's whitelist) or "wallet not found" (RPC -18: the pooled node is another node) passes. Anything else (an answer, another
+error, wrong credentials, an unreachable pooled node or a timeout) leaves escrow disabled with "escrow: Bitcoin escrow disabled: the pooled Bitcoin
+RPC user (BITCOIN_RPC_URL) was not refused listdescriptors on the arbiter wallet, …" followed by the answer's class
+(`answered`, `credentials`, `unreachable`, `timeout`, `rpc:<code>`; never Core's text), and `/admin` shows the same under *Payment
+providers* with the line to add. Escrow starts by itself once the check passes. Another pooled node that happens to hold a
+wallet with the arbiter wallet's name also answers, and keeps escrow off until its pooled user is whitelisted too. Without
+`BITCOIN_RPC_URL` there is nothing to check. Checked on Core 31.1 regtest by `TestEscrowRegtestPooled` (below).
 
 **What users see.** With `ESCROW_BTC` off, `/escrow-key` does not exist: it answers 404 like any unknown page,
 signed in or not. With it on, `/account` gains a *Bitcoin escrow key* row linking to `/escrow-key`. There a user registers
@@ -1101,7 +1135,16 @@ refused. Its A-454 leg (`TestEscrowRegtestSigner`, no order uses it yet; needs t
 [escrow signer](#escrow-signer), built from the tree and started with a fresh seed, co-signs a hand-built per-order
 escrow through its socket, which the buyer's Core wallet signs too and which is broadcast and mined; it refuses a
 SIGHASH_NONE input, another index, two of its keys in one script and two escrows in one request; the seed is backed up,
-restored and signs identically; the app reports a pin mismatch and a signer that is down. In every leg the app runs inside the Go test against the real node, not as the server binary. A browser journey
+restored and signs identically; the app reports a pin mismatch and a signer that is down. Its A-440 legs (needs the
+pooled RPC user above): `TestEscrowRegtestPooled`, where the pooled user under its whitelist gets HTTP 403 for
+`listdescriptors` (true and false), `dumpwallet` and `backupwallet` on the arbiter wallet, escrow starts beside the
+pooled provider on the same node, and the pooled provider still reloads its wallet, issues an address, credits a deposit
+and sends a payout that confirms, while an unrestricted user as `BITCOIN_RPC_URL` keeps escrow off; and
+`TestEscrowRegtestArbiterRestore`, where the arbiter wallet, backed up as the operator user before any escrow, is
+unloaded with a vendor-signed claim waiting (nothing is co-signed), restored with `restorewallet` under a new name (the
+harness cannot delete files inside the node) and co-signs that claim to confirmation with the fingerprint pin unchanged,
+and a blank wallet given the operator-exported descriptors (`importdescriptors`, timestamp `now`) co-signs a second
+claim the same way; the encryption step of the runbook is not part of it. In every leg the app runs inside the Go test against the real node, not as the server binary. A browser journey
 (`npm run test:e2e:escrow`, [development](development.md)) drives the escrow forms by keyboard in Chromium at 320 px
 with JavaScript off against the real server and a simulated escrow node; it is not chain evidence. Nothing about
 escrow has run on a public test network or mainnet, and the escrow pages have not been run in Firefox or WebKit.

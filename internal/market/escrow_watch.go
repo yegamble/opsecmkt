@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -267,18 +268,21 @@ func (a *App) noteEscrowSync(why string) {
 }
 
 // escrowNodeLoader shows on /admin, under Payment providers, why the Bitcoin escrow node is not used: the reason class
-// it is not synced for (with syncRemedy's advice when there is one), or the pinned chain and the node's when
-// startEscrow refused it.
+// it is not synced for (with syncRemedy's advice when there is one), the pinned chain and the node's when
+// startEscrow refused it, or the pooled user's answer to the market key self-check (A-440).
 func escrowNodeLoader(_ context.Context, a *App, _ *http.Request, d *PageData) error {
 	if !a.escrowConfigured || d.User == nil || d.User.Role != "admin" {
 		return nil
 	}
 	v := &EscrowNodeView{Mismatch: a.escrowMismatch.Load()}
+	if class := a.escrowPooledKey.Load(); class != nil {
+		v.PooledKey, v.PooledWhitelist = *class, strings.Join(pooledRPCMethods, ",")
+	}
 	if e := a.escrow.Load(); e != nil {
 		v.NotSynced, _ = a.escrowSync.Load().(string)
 		v.Remedy = syncRemedy(e.network, v.NotSynced)
 	}
-	if v.NotSynced != "" || v.Mismatch != nil {
+	if v.NotSynced != "" || v.Mismatch != nil || v.PooledKey != "" {
 		d.EscrowNode = v
 	}
 	return nil
