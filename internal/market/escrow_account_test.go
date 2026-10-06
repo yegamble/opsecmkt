@@ -25,6 +25,7 @@ func setEscrowEnv(t *testing.T, rpcURL string) {
 	t.Setenv("ESCROW_BTC_WATCH_WALLET", "")
 	t.Setenv("ESCROW_BTC_FEE_BPS", "")
 	t.Setenv("ESCROW_BTC_FEE_ADDRESS", "")
+	t.Setenv("ESCROW_SIGNER_SOCKET", "")
 	t.Setenv("PAYMENT_CONFIRMATIONS_BTC", "")
 	t.Setenv("PAYMENT_EXPIRY", "")
 	t.Setenv("BITCOIN_MAX_TIP_AGE", "")
@@ -33,10 +34,15 @@ func setEscrowEnv(t *testing.T, rpcURL string) {
 	t.Setenv("MONERO_WALLET_RPC_URL", "")
 }
 
-func escrowTestApp(t *testing.T) (*testEnv, *fakeEscrowCore, *payRPCServer) {
+// escrowTestApp starts the test app with escrow on against a fake regtest node; env is extra name, value pairs set
+// after setEscrowEnv's (ESCROW_SIGNER_SOCKET, say).
+func escrowTestApp(t *testing.T, env ...string) (*testEnv, *fakeEscrowCore, *payRPCServer) {
 	t.Helper()
 	core, srv := newFakeEscrowCore(t)
 	setEscrowEnv(t, srv.url(""))
+	for i := 0; i+1 < len(env); i += 2 {
+		t.Setenv(env[i], env[i+1])
+	}
 	e := newTestApp(t)
 	if e.A.escrow.Load() == nil {
 		t.Fatal("escrow did not start against the fake regtest node")

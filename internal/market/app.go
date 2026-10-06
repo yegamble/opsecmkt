@@ -68,6 +68,9 @@ type App struct {
 	syncLogged     map[string]string                   // currency -> the pooled not-synced reason last logged ("" = synced); guarded by checkMu
 	escrowSync     atomic.Value                        // string: the reason class the escrow watcher last found its node not synced for ("" or unset = synced)
 	escrowMismatch atomic.Pointer[EscrowChainMismatch] // set while startEscrow refuses the node's chain against the escrow chain pin; nil = none
+	// The escrow signer (A-454, escrow_signer.go): nil without ESCROW_SIGNER_SOCKET; its state is in memory only.
+	escrowSigner       *escrowSignerClient
+	escrowSignerStatus atomic.Value // string: the state checkEscrowSigner last found (signerReady, signerWaiting, …)
 }
 
 // parseTemplates loads layout (web/templates/*.html), pages/<page>.html ("page:<page>") and partials/<hook>.html.

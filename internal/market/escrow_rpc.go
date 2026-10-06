@@ -12,6 +12,7 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -57,13 +58,15 @@ type escrowConfig struct {
 	feeAddress    string // where the market fee goes ("" when feeBps is 0); one fixed address, test networks only
 	confirmations int64  // PAYMENT_CONFIRMATIONS_BTC: confirmations before an escrow counts as funded
 	feeRate       int64  // ESCROW_BTC_FEE_RATE: the network fee rate of every settlement, in sat/vB (P1-c)
+	signerSocket  string // ESCROW_SIGNER_SOCKET (A-454): the escrow signer's Unix socket; "" = no signer
 }
 
 // escrowConfigFromEnv reads ESCROW_BTC (on/off, blank = off), ESCROW_BTC_RPC_URL, ESCROW_BTC_ARBITER_WALLET
 // (default opsecmkt-arbiter), ESCROW_BTC_WATCH_WALLET (default opsecmkt-escrow-watch), ESCROW_BTC_FEE_BPS (0 to
 // 10000, default 0), ESCROW_BTC_FEE_ADDRESS (needed when the fee is above 0), ESCROW_BTC_FEE_RATE (the settlement
-// network fee rate in sat/vB, 1 to escrowMaxFeeRate, default escrowDefaultFeeRate) and PAYMENT_CONFIRMATIONS_BTC (1
-// to 1000, default 3). Nothing is contacted.
+// network fee rate in sat/vB, 1 to escrowMaxFeeRate, default escrowDefaultFeeRate), PAYMENT_CONFIRMATIONS_BTC (1
+// to 1000, default 3) and ESCROW_SIGNER_SOCKET (the escrow signer's socket, an absolute path; blank = none, A-454).
+// Nothing is contacted.
 func escrowConfigFromEnv(getenv func(string) string) (escrowConfig, error) {
 	var c escrowConfig
 	switch v := strings.TrimSpace(getenv("ESCROW_BTC")); v {
@@ -135,6 +138,12 @@ func escrowConfigFromEnv(getenv func(string) string) (escrowConfig, error) {
 	}
 	if _, err := parseMaxTipAge(getenv("BITCOIN_MAX_TIP_AGE")); err != nil {
 		return c, err
+	}
+	if v := strings.TrimSpace(getenv("ESCROW_SIGNER_SOCKET")); v != "" {
+		if !filepath.IsAbs(v) {
+			return c, errors.New("ESCROW_SIGNER_SOCKET must be the absolute path of the escrow signer's Unix socket, as mounted in the app's container (docs/operator-guide.md, \"Escrow signer\")")
+		}
+		c.signerSocket = v
 	}
 	return c, nil
 }
@@ -208,6 +217,10 @@ func (a *App) initEscrow(ctx context.Context) error {
 	if err == nil {
 		logEscrowState(state, class)
 		a.escrowStartState = state
+		if cfg.signerSocket != "" {
+			a.escrowSigner = &escrowSignerClient{socket: cfg.signerSocket}
+			a.checkEscrowSigner(ctx) // a signer that does not answer is "waiting": startup goes on
+		}
 	}
 	return err
 }

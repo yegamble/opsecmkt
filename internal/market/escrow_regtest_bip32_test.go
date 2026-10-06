@@ -140,11 +140,11 @@ func TestEscrowRegtestBIP32(t *testing.T) {
 			if err != nil || used != i {
 				t.Fatalf("%s index %d: Go derivation used %d: %v", p.name, i, used, err)
 			}
-			k := perOrderKey{Account: p.key, Index: used, Rooted: child.rooted(versionVpub)}
+			k := perOrderKey{Account: p.key, Index: used, Rooted: child.Rooted(versionVpub)}
 			if err := esc.checkPerOrderDerivation(ctx, []perOrderKey{k}); err != nil {
 				t.Fatalf("%s index %d: Core cross-check (wpkh): %v", p.name, i, err)
 			}
-			rooted, err := esc.deriveAddresses(ctx, withChecksum("wpkh("+child.rooted(versionTpub)+"/0/0)"), -1)
+			rooted, err := esc.deriveAddresses(ctx, withChecksum("wpkh("+child.Rooted(versionTpub)+"/0/0)"), -1)
 			if err != nil || len(rooted) != 1 {
 				t.Fatalf("%s index %d: deriveaddresses of the rooted key: %q %v", p.name, i, rooted, err)
 			}
@@ -153,7 +153,7 @@ func TestEscrowRegtestBIP32(t *testing.T) {
 				t.Fatalf("%s index %d: private root path gives %s, Go rooted key %s", p.name, i, full, rooted[0])
 			}
 			t.Logf("index %d %-6s: Go child %s… rooted %s…; wpkh /0/0 = %s from the account path, the rooted key and the private root", i,
-				strings.Split(p.name, "-")[1], child.serialize(versionTpub)[:20], k.Rooted[:20], full)
+				strings.Split(p.name, "-")[1], child.Serialize(versionTpub)[:20], k.Rooted[:20], full)
 			all = append(all, k)
 		}
 		if err := esc.checkPerOrderDerivation(ctx, all); err != nil {
@@ -173,14 +173,14 @@ func TestEscrowRegtestBIP32(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wrong := perOrderKey{Account: p.key, Index: 6, Rooted: child.rooted(versionVpub)}
+	wrong := perOrderKey{Account: p.key, Index: 6, Rooted: child.Rooted(versionVpub)}
 	if err := esc.checkPerOrderDerivation(ctx, []perOrderKey{wrong}); !errors.Is(err, errPerOrderMismatch) {
 		t.Fatalf("rooted index 5 checked as index 6: %v (want refused)", err)
 	}
 	t.Log("refused: rooted child 5 checked as index 6 -> per-order-derivation-mismatch")
 	flipped := child
 	flipped.ChainCode[7] ^= 1
-	bad := perOrderKey{Account: p.key, Index: 5, Rooted: flipped.rooted(versionVpub)}
+	bad := perOrderKey{Account: p.key, Index: 5, Rooted: flipped.Rooted(versionVpub)}
 	if err := esc.checkPerOrderDerivation(ctx, []perOrderKey{bad}); !errors.Is(err, errPerOrderMismatch) {
 		t.Fatalf("chain-code byte flipped: %v (want refused)", err)
 	}
@@ -191,7 +191,7 @@ func TestEscrowRegtestBIP32(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		three[j].Rooted = c.rooted(versionVpub)
+		three[j].Rooted = c.Rooted(versionVpub)
 	}
 	if err := esc.checkPerOrderDerivation(ctx, three); !errors.Is(err, errPerOrderMismatch) {
 		t.Fatalf("2-of-3 with one bad rooted key: %v (want refused)", err)

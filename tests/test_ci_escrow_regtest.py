@@ -36,8 +36,8 @@ class EscrowRegtestJobTest(unittest.TestCase):
         self.assertNotIn(':latest', block)
         self.assertIn('image: postgres:17-alpine', block)
         self.assertRegex(block, r'(?m)^    timeout-minutes: \d+$')
-        # The script refuses to start without all three; the job must hand it each.
-        for name in ('ESCROW_REGTEST_OPERATOR_RPC_URL', 'ESCROW_REGTEST_APP_RPC_URL', 'TEST_DATABASE_URL'):
+        # The script refuses to start without each of these; the job must hand it each.
+        for name in ('ESCROW_REGTEST_OPERATOR_RPC_URL', 'ESCROW_REGTEST_APP_RPC_URL', 'ESCROW_REGTEST_SIGNER_RPC_URL', 'TEST_DATABASE_URL'):
             self.assertIn(name, block)
 
     def test_job_gives_the_app_user_the_documented_whitelist_and_nothing_else(self):
@@ -49,11 +49,16 @@ class EscrowRegtestJobTest(unittest.TestCase):
         self.assertIn('-rpcwhitelistdefault=0', block)
         self.assertIn('-regtest', block)
         self.assertIn('-fallbackfee=0.0002', block)
+        # The escrow signer's user (A-454): the script's documented whitelist, exactly.
+        signer = re.search(r'-rpcwhitelist=opsecmkt-signer:(\S+)', SCRIPT.split('set -euo pipefail')[0])
+        self.assertTrue(signer)
+        self.assertEqual(signer.group(1), 'decodepsbt,descriptorprocesspsbt')
+        self.assertIn('-rpcwhitelist=opsecmkt-signer:%s\n' % signer.group(1), block)
 
     def test_rpc_passwords_are_generated_masked_and_never_committed_or_on_a_command_line(self):
         block = job_block(WORKFLOW, JOB)
         self.assertIn('openssl rand', block)
-        for name in ('operator_pass', 'app_pass'):
+        for name in ('operator_pass', 'app_pass', 'signer_pass'):
             self.assertIn('echo "::add-mask::$%s"' % name, block)
         self.assertNotIn('-rpcpassword', block)
         self.assertNotRegex(block, r'http://\w+:[^$@%\s]+@')  # an RPC URL with a literal password

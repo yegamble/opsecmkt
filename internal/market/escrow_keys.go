@@ -1,14 +1,12 @@
 package market
 
 import (
-	"bytes"
-	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
-	"errors"
-	"math/big"
 	"strconv"
 	"strings"
+
+	"opsecmkt/internal/btc"
 )
 
 // Escrow keys (WR-escrow ES-3, A-246 Phase 1). A party registers one extended public key with its key origin,
@@ -16,101 +14,20 @@ import (
 // are decoded in Go (stdlib only). Child keys of escrows are derived by Bitcoin Core (utxoupdatepsbt), never here; the
 // shape-(b) per-order derivation (escrow_bip32.go, no product caller yet) is cross-checked against Core.
 
-const base58Alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-
-var base58Index = func() (t [256]int8) {
-	for i := range t {
-		t[i] = -1
-	}
-	for i := 0; i < len(base58Alphabet); i++ {
-		t[base58Alphabet[i]] = int8(i)
-	}
-	return t
-}()
-
-// base58MaxLen bounds a decoded string: an extended key is 111 characters, a WIF 52.
-const base58MaxLen = 128
-
-// base58CheckDecode decodes s and checks its 4-byte double-SHA256 checksum, returning the payload.
-func base58CheckDecode(s string) ([]byte, error) {
-	if len(s) == 0 || len(s) > base58MaxLen {
-		return nil, errors.New("base58: bad length")
-	}
-	zeros := 0
-	for zeros < len(s) && s[zeros] == '1' {
-		zeros++
-	}
-	// Big-endian base-256 accumulator; at most len(s)*log(58)/log(256)+1 bytes.
-	out := make([]byte, 0, len(s))
-	for i := 0; i < len(s); i++ {
-		v := int(base58Index[s[i]])
-		if v < 0 {
-			return nil, errors.New("base58: invalid character")
-		}
-		carry := v
-		for j := len(out) - 1; j >= 0; j-- {
-			carry += int(out[j]) * 58
-			out[j] = byte(carry)
-			carry >>= 8
-		}
-		for carry > 0 {
-			out = append([]byte{byte(carry)}, out...)
-			carry >>= 8
-		}
-	}
-	raw := append(make([]byte, zeros, zeros+len(out)), out...)
-	if len(raw) < 4 {
-		return nil, errors.New("base58: too short")
-	}
-	payload, sum := raw[:len(raw)-4], raw[len(raw)-4:]
-	want := doubleSHA256(payload)
-	if !bytes.Equal(sum, want[:4]) {
-		return nil, errors.New("base58: checksum mismatch")
-	}
-	return payload, nil
-}
-
-// base58CheckEncode appends the checksum to payload and encodes it.
-func base58CheckEncode(payload []byte) string {
-	sum := doubleSHA256(payload)
-	raw := append(bytes.Clone(payload), sum[:4]...)
-	zeros := 0
-	for zeros < len(raw) && raw[zeros] == 0 {
-		zeros++
-	}
-	digits := make([]byte, 0, len(raw)*2)
-	for _, b := range raw[zeros:] {
-		carry := int(b)
-		for j := range digits {
-			carry += int(digits[j]) << 8
-			digits[j] = byte(carry % 58)
-			carry /= 58
-		}
-		for carry > 0 {
-			digits = append(digits, byte(carry%58))
-			carry /= 58
-		}
-	}
-	var sb strings.Builder
-	for range zeros {
-		sb.WriteByte('1')
-	}
-	for i := len(digits) - 1; i >= 0; i-- {
-		sb.WriteByte(base58Alphabet[digits[i]])
-	}
-	return sb.String()
-}
-
-func doubleSHA256(b []byte) [32]byte {
-	first := sha256.Sum256(b)
-	return sha256.Sum256(first[:])
-}
+// The base58check, curve and extended-key helpers live in internal/btc (A-454: shared with cmd/escrow-signer).
+var (
+	base58CheckDecode = btc.Base58CheckDecode
+	base58CheckEncode = btc.Base58CheckEncode
+	doubleSHA256      = btc.DoubleSHA256
+	onCurve           = btc.OnCurve
+	secpN             = btc.N // the secp256k1 group order
+)
 
 // Extended-key version bytes (BIP32 and SLIP-132). Only tpub and Vpub (a test-network P2WSH multisig key) are
 // accepted while escrow runs on regtest; every private version is "exposed".
 const (
-	versionTpub = 0x043587cf
-	versionVpub = 0x02575483 // SLIP-132 multisig P2WSH, test networks
+	versionTpub = btc.VersionTpub
+	versionVpub = btc.VersionVpub // SLIP-132 multisig P2WSH, test networks
 )
 
 var (
@@ -338,13 +255,13 @@ func containsPrivateMaterial(s string) bool {
 			return true
 		}
 	}
-	for _, run := range strings.FieldsFunc(s, func(r rune) bool { return r > 0x7f || base58Index[byte(r)] < 0 }) {
+	for _, run := range strings.FieldsFunc(s, func(r rune) bool { return r > 0x7f || !btc.IsBase58Char(byte(r)) }) {
 		for _, p := range privatePrefixes {
 			if strings.HasPrefix(run, p) {
 				return true
 			}
 		}
-		if len(run) > base58MaxLen {
+		if len(run) > btc.Base58MaxLen {
 			continue
 		}
 		raw, err := base58CheckDecode(run)
@@ -361,30 +278,4 @@ func containsPrivateMaterial(s string) bool {
 		}
 	}
 	return false
-}
-
-// secp256k1 field prime and group order.
-var (
-	secpP, _ = new(big.Int).SetString("fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f", 16)
-	secpN, _ = new(big.Int).SetString("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141", 16)
-)
-
-// onCurve reports whether a 33-byte compressed key's x coordinate has a point on secp256k1 (x < p and x³+7 a
-// quadratic residue mod p, by Euler's criterion). Bitcoin Core would refuse the key later; this refuses it before
-// anything is stored.
-func onCurve(compressed []byte) bool {
-	if len(compressed) != 33 || compressed[0] != 2 && compressed[0] != 3 {
-		return false
-	}
-	x := new(big.Int).SetBytes(compressed[1:])
-	if x.Cmp(secpP) >= 0 {
-		return false
-	}
-	rhs := new(big.Int).Exp(x, big.NewInt(3), secpP)
-	rhs.Add(rhs, big.NewInt(7)).Mod(rhs, secpP)
-	if rhs.Sign() == 0 {
-		return true
-	}
-	e := new(big.Int).Rsh(new(big.Int).Sub(secpP, big.NewInt(1)), 1)
-	return new(big.Int).Exp(rhs, e, secpP).Cmp(big.NewInt(1)) == 0
 }
