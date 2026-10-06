@@ -1139,6 +1139,15 @@ them from `./scripts/install.sh --monero-escrow yes` (or its question), and an e
 operator guide describes. `upgrade` derives the profile from `ESCROW_XMR_WALLET_RPC_URL` and the overlay from
 `ESCROW_XMR_SEED_KEY` only when `.env` has no `COMPOSE_PROFILES` or `COMPOSE_FILE` line.
 
+Compose now refuses a blank wallet-rpc password (A-466): with the `monero-wallet` profile active and
+`MONERO_WALLET_RPC_PASSWORD` blank or missing, every `docker compose` command stops with `env file
+…/MONERO_WALLET_RPC_PASSWORD-is-blank not found`, and likewise for `monero-escrow-wallet` and
+`ESCROW_XMR_WALLET_RPC_PASSWORD`. Before, the bundled `monero-wallet` service started with the login `marketplace:` (an
+empty password). The installer generates the password, so mainly a hand-made `.env` is affected: before
+upgrading, set it (`openssl rand -hex 24`) in `.env` and as the password in `MONERO_WALLET_RPC_URL`
+(`http://marketplace:PASSWORD@monero-wallet:18083`). `./scripts/install.sh check` names the missing key. An install
+without these profiles needs neither key.
+
 ## Appendix: new keys by hand
 
 `./scripts/install.sh upgrade` writes these for you. To add them yourself, use your editor (values in single
@@ -1151,12 +1160,12 @@ quotes, as the installer writes them). Blank values keep a feature off.
 | `BITCOIN_WALLET` | Wallet name, default `opsecmkt`. |
 | `MONERO_NETWORK` | Blank, `stagenet` or `testnet`; `mainnet` configures mainnet (a local node also needs `MONERO_NETWORK_FLAG=`). |
 | `MONERO_WALLET_RPC_URL` | monero-wallet-rpc URL with credentials, for example `http://marketplace:PASSWORD@monero-wallet:18083`. Blank keeps Monero payments off. A daemon URL alone (`MONERO_RPC_URL`, which alpha.1 wrote) does **not** enable them. |
-| `MONERO_WALLET_RPC_PASSWORD` | For the local `monero-wallet` service only: `openssl rand -hex 24` output, the same value as the password in `MONERO_WALLET_RPC_URL`. The service refuses to start without it. |
+| `MONERO_WALLET_RPC_PASSWORD` | For the local `monero-wallet` service only: `openssl rand -hex 24` output, the same value as the password in `MONERO_WALLET_RPC_URL`. Compose refuses the `monero-wallet` profile without it (section 34). |
 | `PAYMENT_CONFIRMATIONS_BTC` / `PAYMENT_CONFIRMATIONS_XMR` | Defaults 3 and 10. |
 | `PAYMENT_POLL_INTERVAL` / `PAYMENT_EXPIRY` | Defaults `30s` and `24h`. |
 | `BITCOIN_MAX_TIP_AGE` | Default `2h` (30m to 24h): a public-network Bitcoin node whose tip is older counts as not synced (section 32). |
 | `MONERO_MAX_TIP_AGE` | Default `1h` (20m to 24h): a public-network Monero daemon whose top block is older counts as not synced (section 34). |
-| `ESCROW_XMR_WALLET_RPC_PASSWORD` | Only for the `monero-escrow-wallet` service (Monero escrow on stagenet): `openssl rand -hex 24` output, the same value as the password in `ESCROW_XMR_WALLET_RPC_URL` (section 34). Blank, the service refuses to start. |
+| `ESCROW_XMR_WALLET_RPC_PASSWORD` | Only for the `monero-escrow-wallet` service (Monero escrow on stagenet): `openssl rand -hex 24` output, the same value as the password in `ESCROW_XMR_WALLET_RPC_URL` (section 34). Blank, Compose refuses the `monero-escrow-wallet` profile. |
 | `BITCOIN_PRUNE_MB` / `MONERO_PRUNE_FLAGS` | Local nodes only. Absent keys mean **pruned** (`2000` and `'--prune-blockchain --sync-pruned-blocks'`); `BITCOIN_PRUNE_MB='0'` and `MONERO_PRUNE_FLAGS=''` keep a full node. Read [section 7](#7-local-nodes-are-now-pruned) before deploying if you run a local node. |
 | `BITCOIN_IMAGE` / `MONERO_IMAGE` / `MONERO_WALLET_IMAGE` | Local nodes only. Absent keys mean the pinned release images the payout code was verified against; the images alpha.1 made you choose stay in use until you remove or change them (`upgrade` pins the default images left on `latest`). Read [section 8](#8-node-images-are-pinned-to-release-tags). |
 | `COMPOSE_PROJECT_NAME` | Not needed: absent means `opsecmkt`, which is what your containers and volumes are named after. Never set another value on this install, or Compose starts it on new, empty volumes. A second checkout on the same host needs its own name; see [Backups and recovery](docs/operator-guide.md#backups-and-recovery). |

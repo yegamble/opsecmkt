@@ -2196,8 +2196,9 @@ time.sleep(60)
             with self.subTest(mode=mode):
                 files = f'compose.yaml:compose.{mode}.yaml:compose.nodes.yaml:compose.internal-db.yaml:compose.scanner.yaml'
                 environment = {key: value for key, value in os.environ.items() if not key.startswith('COMPOSE_')}
+                # Compose refuses the monero-wallet profile without its password (A-466).
                 environment.update(COMPOSE_FILE=files, COMPOSE_PROFILES='internal-db,scanner,bitcoin,monero,monero-wallet',
-                                   DATABASE_URL='postgres://unused@db/unused')
+                                   DATABASE_URL='postgres://unused@db/unused', MONERO_WALLET_RPC_PASSWORD='unused')
                 rendered = subprocess.run(['docker', 'compose', '--env-file', os.devnull, 'config'], cwd=REPOSITORY,
                                           env=environment, capture_output=True, text=True, check=True).stdout
                 values = scanner_env(COMPOSE_FILE=files)

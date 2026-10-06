@@ -9,9 +9,13 @@
 # also sets MONERO_NETWORK_FLAG= (blank) to drop the flag. RPC ports are pinned so the installer's URLs do not
 # depend on the chain.
 # RPC credentials come from .env (the installer generates them). Without BITCOIN_RPC_PASSWORD bitcoind falls
-# back to cookie authentication, so nothing on the network (including the app) can use its RPC. Without
-# MONERO_WALLET_RPC_PASSWORD monero-wallet-rpc gets --rpc-login ':' (empty user name), which it rejects at
-# startup instead of running without authentication. Neither falls back to a guessable password.
+# back to cookie authentication, so nothing on the network (including the app) can use its RPC. Compose refuses
+# to create or start monero-wallet without MONERO_WALLET_RPC_PASSWORD, and monero-escrow-wallet without
+# ESCROW_XMR_WALLET_RPC_PASSWORD (A-466): every command with that service's profile active stops with "env file
+# .../<KEY>-is-blank not found" (see their env_file). An install whose COMPOSE_PROFILES leaves a wallet out needs
+# neither password. Were a wallet started anyway, its --rpc-login would be ':' (the user name follows the password's
+# presence), which monero-wallet-rpc 0.18.5.1 rejects at startup. None runs without authentication or falls back to
+# a guessable password.
 # Same log rotation as compose.yaml (anchors do not cross files; CI checks every service has it).
 x-logging: &logging
   driver: ${LOG_DRIVER:-json-file}
@@ -83,7 +87,16 @@ services:
     # single quote (the installer generates a hex one).
     command: >-
       ${MONERO_NETWORK_FLAG---${MONERO_NETWORK:-stagenet}} --daemon-address monero:18081 --trusted-daemon
-      --wallet-dir=/home/monero/wallet --rpc-bind-port=18083 --rpc-login 'marketplace:${MONERO_WALLET_RPC_PASSWORD:-}'
+      --wallet-dir=/home/monero/wallet --rpc-bind-port=18083
+      --rpc-login '${MONERO_WALLET_RPC_PASSWORD:+marketplace}:${MONERO_WALLET_RPC_PASSWORD:-}'
+    # The refusal of a blank password (A-466). A ${VAR:?} would stop every Compose command of every install, since
+    # interpolation ignores profiles; a missing env file stops only those with this profile active. Blank, the path is
+    # the missing file MONERO_WALLET_RPC_PASSWORD-is-blank in the project directory; set, the ".." steps (Compose
+    # cleans a relative path; enough for a project directory up to 31 levels deep) lead to /dev/null, which adds
+    # nothing to the environment. The short form: an env file Compose cannot find is an error in every version (the
+    # long form's `required` needs Compose 2.24).
+    env_file:
+      - MONERO_WALLET_RPC_PASSWORD-is-blank${MONERO_WALLET_RPC_PASSWORD:+/../../../../../../../../../../../../../../../../../../../../../../../../../../../../../../../../dev/null}
     volumes: [monero_wallet:/home/monero/wallet]
     mem_limit: 512m
     cpu_period: 100000
@@ -95,9 +108,11 @@ services:
     # stagenet only, attached to the monero service, which must then run stagenet (MONERO_NETWORK=stagenet). It holds
     # only escrow wallets, in its own volume, behind its own login: never the monero-wallet service, whose wallet it
     # would close (monero-wallet-rpc holds one wallet open at a time). The installer generates
-    # ESCROW_XMR_WALLET_RPC_PASSWORD. Without it the login is ':' (the user name follows the password's presence), which
-    # monero-wallet-rpc 0.18.5.1 refuses at startup; 'escrow:' would start it with an empty password (probed, A-449).
-    # Reachable only on the backend network. Back the volume up yourself: scripts/backup.sh does not copy wallet volumes.
+    # ESCROW_XMR_WALLET_RPC_PASSWORD; Compose refuses this service without it (A-466, env_file below, as for
+    # monero-wallet). Were it started anyway, the login would be ':' (the user name follows the password's presence),
+    # which monero-wallet-rpc 0.18.5.1 refuses at startup; 'escrow:' would start it with an empty password (probed,
+    # A-449). Reachable only on the backend network. Back the volume up yourself: scripts/backup.sh does not copy
+    # wallet volumes.
     image: ${MONERO_WALLET_IMAGE:-ghcr.io/sethforprivacy/simple-monero-wallet-rpc:v0.18.5.1}
     profiles: [monero-escrow-wallet]
     restart: unless-stopped
@@ -105,6 +120,8 @@ services:
     command: >-
       --stagenet --daemon-address monero:18081 --trusted-daemon --wallet-dir=/home/monero/wallet
       --rpc-bind-port=18083 --rpc-login '${ESCROW_XMR_WALLET_RPC_PASSWORD:+escrow}:${ESCROW_XMR_WALLET_RPC_PASSWORD:-}'
+    env_file:
+      - ESCROW_XMR_WALLET_RPC_PASSWORD-is-blank${ESCROW_XMR_WALLET_RPC_PASSWORD:+/../../../../../../../../../../../../../../../../../../../../../../../../../../../../../../../../dev/null}
     volumes: [monero_escrow_wallet:/home/monero/wallet]
     # An escrow wallet holds one account per order; PAYE-E2 measured 574 MB at peak over five 10,000-account wallets
     # (docs/verification.md), so this is twice the pooled wallet's limit.

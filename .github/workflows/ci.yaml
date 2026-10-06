@@ -267,6 +267,10 @@ jobs:
           MIRROR: ${{ matrix.mirror }}
           DATABASE_URL: postgres://test:test@db/test
           SETUP_TOKEN: ci-validation-only-not-a-real-bootstrap-secret
+          # Compose refuses either Monero wallet-rpc's profile with a blank password (A-466;
+          # tests/test_compose_wallet_passwords.py checks the refusal).
+          MONERO_WALLET_RPC_PASSWORD: ci-validation-only
+          ESCROW_XMR_WALLET_RPC_PASSWORD: ci-validation-only
         run: |
           files=(-f compose.yaml -f "compose.$MODE.yaml" -f compose.nodes.yaml)
           profiles=(--profile bitcoin --profile monero --profile monero-wallet --profile escrow-signer)
