@@ -31,6 +31,7 @@ type payMoneroWallet struct {
 	peers               int64
 	restricted, offline bool // get_info restricted (the counts then read 0, as monerod hides them) and offline
 	tipAge              time.Duration
+	tipErr              bool // get_last_block_header fails (QA4W3-3)
 	// walletHeight: monero-wallet-rpc get_height (the tip Check reports; 0 = unknown)
 	walletHeight int64
 	transfers    map[string]any
@@ -63,6 +64,9 @@ func (m *payMoneroWallet) handle(path, method string, params json.RawMessage) (a
 			"synchronized": !m.unsynced, "outgoing_connections_count": map[bool]int64{false: m.peers}[m.restricted], "incoming_connections_count": 0,
 			"restricted": m.restricted, "offline": m.offline}, 0, ""
 	case "get_last_block_header":
+		if m.tipErr {
+			return nil, -5, "Internal error: can't get last block header"
+		}
 		return map[string]any{"block_header": map[string]any{"height": m.height - 1, "timestamp": time.Now().Add(-m.tipAge).Unix()}, "status": "OK"}, 0, ""
 	case "open_wallet":
 		var p struct{ Filename string }

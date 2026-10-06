@@ -72,7 +72,8 @@ func init() {
 const escrowCompletedNote = "Completed on funding (Bitcoin escrow): the content was delivered. The vendor claims the escrowed coins from the order page."
 
 // escrowWatcher runs while ESCROW_BTC=on. Until escrow is enabled (its node was down at startup, say) each pass first
-// retries its checks (retryEscrow, A-316), so escrow starts without a restart once the node answers.
+// retries its checks (retryEscrow, A-316), so escrow starts without a restart once the node answers; while it is
+// enabled, retryEscrow runs the pooled key self-check again once a day (QA4W3-8).
 func escrowWatcher(ctx context.Context, a *App) {
 	if !a.escrowConfigured {
 		return

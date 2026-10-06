@@ -214,14 +214,20 @@ func (p *moneroProvider) Check(ctx context.Context) (_ nodeStatus, err error) {
 		why = node.notSynced(time.Now(), moneroMaxTipAge())
 	}
 	if p.network == "" { // first success, before the provider is published to request handlers
+		p.mu.Lock() // the Monero escrow watcher may read primary meanwhile (pooledMonero, QA4W3-2)
 		p.network, p.primary = network, addr.Address
+		p.mu.Unlock()
 	}
 	p.readWalletVersion(ctx)
 	return nodeStatus{Syncing: why != "", Why: why, Tip: tip}, nil
 }
 
 // primaryAddress is the wallet's primary address as the first successful check read it ("" before).
-func (p *moneroProvider) primaryAddress() string { return p.primary }
+func (p *moneroProvider) primaryAddress() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.primary
+}
 
 // readWalletVersion records monero-wallet-rpc's get_version (see moneroVerifiedWalletRelease). A failed call or
 // an unreadable answer is recorded as unverified; it does not fail the check.

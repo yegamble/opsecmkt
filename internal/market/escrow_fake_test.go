@@ -87,7 +87,8 @@ type fakeEscrowCore struct {
 	// inputs; gettransaction reports it with txConfs and conflicts.
 	arbiterShort     bool                // the arbiter's key range is short of the market child (getaddressinfo ismine false)
 	keypoolStuck     bool                // keypoolrefill does not extend the arbiter's key range
-	arbiterTxCount   int64               // getwalletinfo txcount of the arbiter wallet
+	arbiterTxs       []string            // the arbiter wallet's listtransactions categories, oldest first; getwalletinfo txcount is their number (A-471)
+	arbiterListErr   int                 // JSON-RPC error for listtransactions on the arbiter wallet (0 = none)
 	arbiterEncrypted bool                // getwalletinfo of the arbiter wallet has unlocked_until
 	marketSkew       func(string) string // edits walletprocesspsbt's answer
 	finalSkew        func(string) string // edits finalizepsbt's raw transaction
@@ -531,7 +532,7 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 		return []map[string]any{{"success": true}}, 0, ""
 	case "getwalletinfo":
 		if wallet {
-			info := map[string]any{"walletname": "opsecmkt-arbiter", "descriptors": true, "private_keys_enabled": true, "txcount": c.arbiterTxCount}
+			info := map[string]any{"walletname": "opsecmkt-arbiter", "descriptors": true, "private_keys_enabled": true, "txcount": len(c.arbiterTxs)}
 			if c.arbiterEncrypted {
 				info["unlocked_until"] = 0
 			}
@@ -580,6 +581,22 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 		}
 		return out, 0, ""
 	case "listtransactions":
+		if wallet { // A-471: Core's paging: count entries after skipping the skip most recent, oldest first
+			if c.arbiterListErr != 0 {
+				return nil, c.arbiterListErr, "fake listtransactions failure"
+			}
+			var count, skip int
+			if len(p) > 2 {
+				json.Unmarshal(p[1], &count)
+				json.Unmarshal(p[2], &skip)
+			}
+			end := max(len(c.arbiterTxs)-skip, 0)
+			out := []map[string]any{}
+			for i, cat := range c.arbiterTxs[max(end-count, 0):end] {
+				out = append(out, map[string]any{"txid": txidOf("arbiter " + strconv.Itoa(i)), "category": cat, "amount": json.Number("0.00001")})
+			}
+			return out, 0, ""
+		}
 		if path != fakeWatchWallet {
 			return nil, -8, "unexpected fake wallet"
 		}
