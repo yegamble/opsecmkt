@@ -1172,7 +1172,7 @@ peers. The commands are in the script's header comment; the transcript goes to `
 
 **What the offline fork cannot prove (A-449 acceptance).** No funded Monero escrow leg can run on it: a stagenet built
 from genesis is at hard fork version 1, which Monero escrow refuses, and the fakechain legs mine with `generateblocks`,
-which monerod answers only on a fakechain (`--regtest`), so the fork's blocks come from slow local mining at most. Funded
+which monerod answers only on a fakechain (`--regtest`), so the fork has only the blocks its local miner finds. Funded
 Monero escrow on stagenet (a deposit seen, an order funded, a settlement built, relayed and confirmed) is therefore proven
 only by the owner's run on the public stagenet (A-447), and until that run is recorded nothing here is that evidence. The
 offline fork proves the stagenet address formats, the refusal of an old hard fork and the escrow and pooled sync guards

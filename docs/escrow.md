@@ -893,8 +893,8 @@ refusal and the sync guards, and the network pin rests on the simulated-daemon d
 public stagenet (its peers, fees, ring members, reorganisations and a funded escrow end to end), a daemon that loses its
 peers on a public network, and `ESCROW_XMR_MAX_FEE` against stagenet fees. On a restricted RPC a daemon cut off from its
 peers looks synced until its tip is older than `MONERO_MAX_TIP_AGE` (QA4W3-5, accepted and documented in the
-[operator guide](operator-guide.md#payments): a deposit made in that window is not seen and can arrive after its order was
-cancelled, then returned by a stray refund or, pooled, by hand). Since QA4W3-2 Monero escrow waits until a configured
+[operator guide](operator-guide.md#payments): a deposit made in that window is not seen, its order can be cancelled as
+unpaid, and the deposit is then returned by a stray refund, or by hand on a pooled order). Since QA4W3-2 Monero escrow waits until a configured
 pooled Monero wallet has passed one check, so the open-wallet comparison always has the pooled address
 (`TestXMREscrowRefusesPooledWalletOpen`); since QA4W3-3 an unreadable tip is tested as not synced on both paths
 (`TestXMREscrowSkipsWhileTipUnreadable`, `TestMoneroPooledGuardPeersAndTipAge`).
