@@ -1184,16 +1184,36 @@ daemon check failed: <class>`.
 
 **Stagenet.** Point `ESCROW_XMR_DAEMON_URL` at a synced stagenet `monerod` (the bundled `monero` service with
 `MONERO_NETWORK=stagenet`, `http://monero:18081`, is one; its restricted RPC answers every call escrow makes) and run the
-escrow wallet-rpc with `--stagenet` against the same daemon. The pooled Monero wallet may share that daemon, never its
+escrow wallet-rpc with `--stagenet` against the same daemon (the `monero-escrow-wallet` Compose service below does, and the
+installer sets it up). The pooled Monero wallet may share that daemon, never its
 wallet-rpc. Give buyers' refund and vendors' claim addresses from stagenet wallets (5… or 7…), and an `ESCROW_XMR_FEE_ADDRESS`
 on stagenet. Stagenet coins come from the public faucet or your own mining; they have no value. Keep `ESCROW_XMR_MAX_FEE`
 in mind: the default 0.01 XMR cap was sized for a fakechain and is not measured on stagenet.
 
-**The dedicated escrow wallet-rpc.** Run a `monero-wallet-rpc` that holds only escrow wallets, attached to the fakechain
-daemon, with its own login and its own volume. The Compose files of this repository have no service for it or for the
-fakechain daemon: the example below is a plain `docker run` on the Compose backend network
-(`<COMPOSE_PROJECT_NAME>_backend`, `opsecmkt_backend` by default), run (with other names and a throwaway password) against a
-fakechain `monerod`, and not checked as a Compose service. Use a long random password without a single quote; put the same credentials in `ESCROW_XMR_WALLET_RPC_URL`
+**The dedicated escrow wallet-rpc.** Run a `monero-wallet-rpc` that holds only escrow wallets, attached to the escrow
+daemon, with its own login and its own volume, never the pooled wallet's (monero-wallet-rpc holds one wallet open at a
+time, and opening an escrow wallet would close the pooled one).
+
+*On stagenet, with the bundled nodes (A-449).* `compose.nodes.yaml` has a `monero-escrow-wallet` service for it, in its
+own profile (`monero-escrow-wallet`) and volume (`monero_escrow_wallet`), with its own login (`escrow`,
+`ESCROW_XMR_WALLET_RPC_PASSWORD`), run with `--stagenet` against the bundled `monero` daemon, which must then run stagenet
+(`MONERO_NETWORK=stagenet`, the installer's default). Its memory limit is 1 GiB (PAYE-E2 measured 574 MB at peak over five
+10,000-account wallets). With a blank `ESCROW_XMR_WALLET_RPC_PASSWORD` the service's login is `:`, which monero-wallet-rpc
+refuses at startup (a login of `escrow:` would start it with an empty password; probed on 0.18.5.1). The installer sets it
+all up: `./scripts/install.sh --monero local --monero-network stagenet --monero-escrow yes --monero-escrow-seed-key FILE`,
+or answer yes where it asks about Monero. It generates `ESCROW_XMR_WALLET_RPC_PASSWORD` and `MONERO_WALLET_SECRET` (never a
+default), writes `ESCROW_XMR=on`, `ESCROW_XMR_WALLET_RPC_URL=http://escrow:PASSWORD@monero-escrow-wallet:18083`,
+`ESCROW_XMR_DAEMON_URL=http://monero:18081` and `ESCROW_XMR_SEED_KEY=/etc/opsecmkt/escrow-xmr-seed-key.asc`, adds the
+profile, copies the public key you give (an armored `-----BEGIN PGP PUBLIC KEY BLOCK-----`; a private key block is refused)
+to `escrow-xmr-seed-key.asc` in the checkout (gitignored) and adds `compose.escrow-xmr.yaml`, which mounts it read-only into
+the app. `./scripts/install.sh check` refuses the profile without its password and the overlay without the key file. Back
+up `.env` (it holds `MONERO_WALLET_SECRET`) and the `monero_escrow_wallet` volume yourself: `scripts/backup.sh` copies the
+database, not wallet volumes. To turn it on for an existing install, add the same keys, profile, file and overlay by hand.
+
+*On a local fakechain.* The Compose files have no service for a fakechain daemon or its wallet-rpc: the example below is a
+plain `docker run` on the Compose backend network (`<COMPOSE_PROJECT_NAME>_backend`, `opsecmkt_backend` by default), run
+(with other names and a throwaway password) against a fakechain `monerod`, and not checked as a Compose service. Use a long
+random password without a single quote; put the same credentials in `ESCROW_XMR_WALLET_RPC_URL`
 (`http://marketplace:PASSWORD@opsecmkt-escrow-wallet:18083`).
 
 ```sh
@@ -1208,8 +1228,8 @@ Use the same wallet-rpc release the checks used (0.18.5.1; the image above is th
 The fakechain daemon is started as the header of `scripts/test-escrow-xmr-regtest.sh` starts one (`--regtest
 --keep-fakechain --offline --fixed-difficulty 1`; without `--keep-fakechain`, monerod deletes the fakechain each time it
 starts); it is another daemon than the pooled wallet's `MONERO_RPC_URL`. No wallet needs creating: the escrow
-watcher creates every wallet, named `escrow-YYYYMM-NN`, on its first pass. A wallet-rpc attached to the pooled stagenet or
-testnet daemon is refused by the height check; the URL check refuses only the pooled wallet-rpc's own address.
+watcher creates every wallet, named `escrow-YYYYMM-NN`, on its first pass. An escrow wallet-rpc whose open wallet is the
+pooled one is refused at startup; the URL check refuses only the pooled wallet-rpc's own address.
 
 **The seed key.** Every wallet's 25-word seed is encrypted to this key when the wallet is created, so that the database never
 holds a seed in the clear. Generate it **offline**, on a machine that never runs the market, and keep its private half offline.
@@ -1492,7 +1512,7 @@ Install [age](https://age-encryption.org/) and generate an identity offline (`ag
 AGE_RECIPIENT=age1YOUR_PUBLIC_RECIPIENT ./scripts/backup.sh backups/market.dump.age
 ```
 
-For external databases also set `BACKUP_DATABASE_URL`, install Python 3 and PostgreSQL client tools matching or newer than the server. `./scripts/install.sh upgrade` backs up through this script too, so on an external database give it both: `BACKUP_DATABASE_URL=YOUR_EXTERNAL_DATABASE_URL AGE_RECIPIENT=age1YOUR_PUBLIC_RECIPIENT ./scripts/install.sh upgrade` (the value of `DATABASE_URL` in `.env` serves when this host can reach that server; quote it in single quotes); without `BACKUP_DATABASE_URL` it refuses before changing anything. The script streams a custom-format dump directly into encryption, uses restrictive file permissions, refuses overwrite and fails if either command fails. Back up `.env`, deployment settings and the Tor identity separately in encrypted storage ([commands below](#secrets-env-and-onion-identities)). Database dumps do not include onion keys or blockchain volumes, and in particular **not the custodial payment wallets** (the `bitcoin_data` and `monero_wallet` volumes, or your external wallets): back those up on their own (see the [runbook](testnet-runbook.md#6-back-up-the-wallets)). Maintain offline copies and rehearse recovery.
+For external databases also set `BACKUP_DATABASE_URL`, install Python 3 and PostgreSQL client tools matching or newer than the server. `./scripts/install.sh upgrade` backs up through this script too, so on an external database give it both: `BACKUP_DATABASE_URL=YOUR_EXTERNAL_DATABASE_URL AGE_RECIPIENT=age1YOUR_PUBLIC_RECIPIENT ./scripts/install.sh upgrade` (the value of `DATABASE_URL` in `.env` serves when this host can reach that server; quote it in single quotes); without `BACKUP_DATABASE_URL` it refuses before changing anything. The script streams a custom-format dump directly into encryption, uses restrictive file permissions, refuses overwrite and fails if either command fails. Back up `.env`, deployment settings and the Tor identity separately in encrypted storage ([commands below](#secrets-env-and-onion-identities)). Database dumps do not include onion keys or blockchain volumes, and in particular **not the custodial payment wallets** (the `bitcoin_data`, `monero_wallet` and, with Monero escrow, `monero_escrow_wallet` volumes, or your external wallets): back those up on their own (see the [runbook](testnet-runbook.md#6-back-up-the-wallets)). Maintain offline copies and rehearse recovery.
 
 Rehearse recovery on another host, or in a second checkout with its **own Compose project name**. Compose names containers, volumes and networks after the project (`opsecmkt` unless `.env` sets `COMPOSE_PROJECT_NAME`), not the directory: a second checkout under the same name recreates the live containers with its own secrets, and its `docker compose down --volumes` deletes the live volumes. Install the rehearsal copy with, for example, `COMPOSE_PROJECT_NAME=opsecmkt-rehearsal APP_PORT=8081 ./scripts/install.sh` (add `--local` for a quick local copy); the installer saves the name in that checkout's `.env`, so its later `docker compose`, `backup.sh` and `restore.sh` commands stay on the rehearsal project, and it refuses to install when containers of the chosen project were created from another directory, or when any of that project's volumes exist. If you copy a `.env` into the rehearsal checkout instead, change `COMPOSE_PROJECT_NAME` (add the line if it is missing) and `APP_PORT` in the copy before running any `docker compose` command there. Never change `COMPOSE_PROJECT_NAME` on an existing install: it would start on new, empty volumes (`<project>_postgres_data` and the others).
 
@@ -1538,7 +1558,8 @@ second checkout on the same host needs its own `COMPOSE_PROJECT_NAME` (for examp
 | --- | --- | --- | --- |
 | `APP_SECRET_KEY` | `.env` | with `.env` | Derives the CSRF/CAPTCHA key and the key that encrypts TOTP secrets. Restore a database with the key in use when it was dumped; under another key its TOTP secrets cannot be read. Changing it refuses every open form once and makes enrolled TOTP secrets unreadable. On a market running [Bitcoin escrow](#bitcoin-escrow-regtest-only) it also makes every registered escrow key unreadable (`/escrow-key` asks the user to register it again; existing escrows keep their keys, and the same key registered again is active at once) and restarts the check that stops two accounts registering the same key: a key registered before the change is not recognised until its owner registers it again. Rotate only when it is exposed, with the consequences [UPGRADING.md](../UPGRADING.md#replace-a-placeholder-setup_token) describes. An install that predates it has none: its keys still derive from `SETUP_TOKEN` (the startup log says `keys: derived from SETUP_TOKEN (legacy)`); to move to it, set `APP_SECRET_KEY` to exactly the current `SETUP_TOKEN` value, which `./scripts/install.sh upgrade` does ([UPGRADING.md](../UPGRADING.md#app_secret_key-and-stricter-startup-checks)). |
 | `SETUP_TOKEN` | `.env` | with `.env` | Authorizes the first-run `/setup` page only. The installer prints it once at the end of `init`; `./scripts/install.sh setup-token` shows it again (and `--new` reissues it) while setup is pending. The app refuses to start without it until setup is complete, and ignores it afterwards (while it is set, startup logs a hint); `/setup` then answers 403 whatever the token. Once `APP_SECRET_KEY` is set and setup is complete, `status`, `add-mirror` and `upgrade` remove it from `.env`. Without `APP_SECRET_KEY` it is also the legacy key root above: keep it, or copy it to `APP_SECRET_KEY` first; changing it then has every consequence listed for `APP_SECRET_KEY`, escrow keys included. |
-| `MONERO_WALLET_SECRET` (only with [Monero escrow](#monero-escrow-fakechain-or-stagenet)) | `.env` | with `.env` | Every escrow wallet's password derives from it (HMAC-SHA256 with the wallet's name), so no wallet password is stored. It must be its own secret, not `SETUP_TOKEN` or `APP_SECRET_KEY`, so rotating those never locks wallets. A verifier of it is pinned in the database on the first start; with another secret Monero escrow stays disabled and opens or creates no wallet. **No tool re-keys existing wallets**: restore the original secret. Never change it while wallets exist. |
+| `MONERO_WALLET_SECRET` (only with [Monero escrow](#monero-escrow-fakechain-or-stagenet)) | `.env` | with `.env` | Every escrow wallet's password derives from it (HMAC-SHA256 with the wallet's name), so no wallet password is stored. It must be its own secret, not `SETUP_TOKEN` or `APP_SECRET_KEY`, so rotating those never locks wallets. A verifier of it is pinned in the database on the first start; with another secret Monero escrow stays disabled and opens or creates no wallet. **No tool re-keys existing wallets**: restore the original secret. Never change it while wallets exist. The installer generates it with `--monero-escrow yes`. |
+| `ESCROW_XMR_WALLET_RPC_PASSWORD` (only with the `monero-escrow-wallet` service) | `.env` | with `.env` | The escrow wallet-rpc's `--rpc-login` password, the same as in `ESCROW_XMR_WALLET_RPC_URL`; generated by the installer. Rotating it means changing both and restarting the service and the app. |
 | `AUDIT_SIGNING_KEY` | `.env` | with `.env` | Signs audit exports ([Transparency](#transparency)). A new key (`openssl rand -hex 32`, then restart the app) is a new public key on `/canary`: announce it. |
 | `POSTGRES_PASSWORD` (internal database) | `.env`, twice: `POSTGRES_PASSWORD` and the password in `DATABASE_URL`; the database keeps its own hash in the `postgres_data` volume | with `.env` | `POSTGRES_PASSWORD` is used only when an empty volume is initialized, so editing it later changes nothing. Rotate in the database first: `docker compose exec db psql -U opsecmkt -d opsecmkt -c '\password opsecmkt'` asks for the new password twice and sends `ALTER ROLE opsecmkt PASSWORD` with it already hashed, so it appears in no command line or server log. Then put it in both places in `.env` and run `docker compose up -d`. A hex password (`openssl rand -hex 24`) needs no escaping in the URL. For an external database, change it on that server and in `DATABASE_URL`. |
 | `BITCOIN_RPC_PASSWORD`, `MONERO_WALLET_RPC_PASSWORD` (local nodes) | `.env`, each repeated in `BITCOIN_RPC_URL` / `MONERO_WALLET_RPC_URL` | with `.env` | Change a password and the same value in its URL together, then `docker compose up -d`. The wallets behind them are separate backups ([runbook](testnet-runbook.md#6-back-up-the-wallets)). |

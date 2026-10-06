@@ -90,10 +90,34 @@ services:
     cpu_quota: 100000
     pids_limit: 128
     logging: *logging
+  monero-escrow-wallet:
+    # Monero escrow's own wallet-RPC (ESCROW_XMR=on, A-449; docs/operator-guide.md#monero-escrow-fakechain-or-stagenet):
+    # stagenet only, attached to the monero service, which must then run stagenet (MONERO_NETWORK=stagenet). It holds
+    # only escrow wallets, in its own volume, behind its own login: never the monero-wallet service, whose wallet it
+    # would close (monero-wallet-rpc holds one wallet open at a time). The installer generates
+    # ESCROW_XMR_WALLET_RPC_PASSWORD. Without it the login is ':' (the user name follows the password's presence), which
+    # monero-wallet-rpc 0.18.5.1 refuses at startup; 'escrow:' would start it with an empty password (probed, A-449).
+    # Reachable only on the backend network. Back the volume up yourself: scripts/backup.sh does not copy wallet volumes.
+    image: ${MONERO_WALLET_IMAGE:-ghcr.io/sethforprivacy/simple-monero-wallet-rpc:v0.18.5.1}
+    profiles: [monero-escrow-wallet]
+    restart: unless-stopped
+    networks: [backend]
+    command: >-
+      --stagenet --daemon-address monero:18081 --trusted-daemon --wallet-dir=/home/monero/wallet
+      --rpc-bind-port=18083 --rpc-login '${ESCROW_XMR_WALLET_RPC_PASSWORD:+escrow}:${ESCROW_XMR_WALLET_RPC_PASSWORD:-}'
+    volumes: [monero_escrow_wallet:/home/monero/wallet]
+    # An escrow wallet holds one account per order; PAYE-E2 measured 574 MB at peak over five 10,000-account wallets
+    # (docs/verification.md), so this is twice the pooled wallet's limit.
+    mem_limit: 1g
+    cpu_period: 100000
+    cpu_quota: 100000
+    pids_limit: 128
+    logging: *logging
 volumes:
   bitcoin_data:
   monero_data:
   monero_wallet:
+  monero_escrow_wallet:
 
 networks:
   node_egress:

@@ -1115,6 +1115,14 @@ log filter on the old text needs updating. The Monero escrow watcher skips its p
 above; a fakechain is exempt from the peer and tip-age checks)
 ([operator guide](docs/operator-guide.md#monero-escrow-fakechain-or-stagenet)). No action is needed otherwise.
 
+`compose.nodes.yaml` gains an optional `monero-escrow-wallet` service (Monero escrow's own stagenet wallet-rpc on the
+bundled `monero` daemon: profile `monero-escrow-wallet`, volume `monero_escrow_wallet`, login password
+`ESCROW_XMR_WALLET_RPC_PASSWORD`), and a new overlay `compose.escrow-xmr.yaml` mounts the seed key file
+`escrow-xmr-seed-key.asc` into the app. Nothing starts unless the profile is in `COMPOSE_PROFILES`; a new install gets
+them from `./scripts/install.sh --monero-escrow yes` (or its question), and an existing one can add them by hand as the
+operator guide describes. `upgrade` derives the profile from `ESCROW_XMR_WALLET_RPC_URL` and the overlay from
+`ESCROW_XMR_SEED_KEY` only when `.env` has no `COMPOSE_PROFILES` or `COMPOSE_FILE` line.
+
 ## Appendix: new keys by hand
 
 `./scripts/install.sh upgrade` writes these for you. To add them yourself, use your editor (values in single
@@ -1132,6 +1140,7 @@ quotes, as the installer writes them). Blank values keep a feature off.
 | `PAYMENT_POLL_INTERVAL` / `PAYMENT_EXPIRY` | Defaults `30s` and `24h`. |
 | `BITCOIN_MAX_TIP_AGE` | Default `2h` (30m to 24h): a public-network Bitcoin node whose tip is older counts as not synced (section 32). |
 | `MONERO_MAX_TIP_AGE` | Default `1h` (20m to 24h): a public-network Monero daemon whose top block is older counts as not synced (section 33). |
+| `ESCROW_XMR_WALLET_RPC_PASSWORD` | Only for the `monero-escrow-wallet` service (Monero escrow on stagenet): `openssl rand -hex 24` output, the same value as the password in `ESCROW_XMR_WALLET_RPC_URL` (section 33). Blank, the service refuses to start. |
 | `BITCOIN_PRUNE_MB` / `MONERO_PRUNE_FLAGS` | Local nodes only. Absent keys mean **pruned** (`2000` and `'--prune-blockchain --sync-pruned-blocks'`); `BITCOIN_PRUNE_MB='0'` and `MONERO_PRUNE_FLAGS=''` keep a full node. Read [section 7](#7-local-nodes-are-now-pruned) before deploying if you run a local node. |
 | `BITCOIN_IMAGE` / `MONERO_IMAGE` / `MONERO_WALLET_IMAGE` | Local nodes only. Absent keys mean the pinned release images the payout code was verified against; the images alpha.1 made you choose stay in use until you remove or change them (`upgrade` pins the default images left on `latest`). Read [section 8](#8-node-images-are-pinned-to-release-tags). |
 | `COMPOSE_PROJECT_NAME` | Not needed: absent means `opsecmkt`, which is what your containers and volumes are named after. Never set another value on this install, or Compose starts it on new, empty volumes. A second checkout on the same host needs its own name; see [Backups and recovery](docs/operator-guide.md#backups-and-recovery). |

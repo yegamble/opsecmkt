@@ -30,6 +30,10 @@ monero_wallet_image_default='ghcr.io/sethforprivacy/simple-monero-wallet-rpc:v0.
 clamav_image_default='clamav/clamav:1.5.4-debian'
 # The only scanner address the app is given: compose.scanner.yaml's clamd, on the internal scanner network.
 clamd_address='clamd:3310'
+# Monero escrow's seed key: the installer copies the operator's public key to escrow_seed_key_file, and
+# compose.escrow-xmr.yaml mounts it read-only at xmr_seed_key_path inside the app (ESCROW_XMR_SEED_KEY).
+escrow_seed_key_file=escrow-xmr-seed-key.asc
+xmr_seed_key_path=/etc/opsecmkt/escrow-xmr-seed-key.asc
 # Local nodes are pruned unless the operator says no. Keep these equal to compose.nodes.yaml's defaults.
 bitcoin_prune_default=2000
 monero_prune_default='--prune-blockchain --sync-pruned-blocks'
@@ -47,7 +51,7 @@ MONERO_IMAGE MONERO_WALLET_IMAGE BITCOIN_PRUNE_MB MONERO_PRUNE_FLAGS BITCOIN_RPC
 CLAMD_ADDRESS CLAMAV_IMAGE SCANNER_MAX_SIGNATURE_AGE_DAYS IMAGE_STORAGE_LIMIT_MB ESCROW_BTC ESCROW_BTC_RPC_URL
 ESCROW_BTC_ARBITER_WALLET ESCROW_BTC_WATCH_WALLET ESCROW_BTC_FEE_BPS ESCROW_BTC_FEE_ADDRESS ESCROW_BTC_FEE_RATE
 ESCROW_XMR ESCROW_XMR_WALLET_RPC_URL ESCROW_XMR_DAEMON_URL ESCROW_XMR_FEE_BPS ESCROW_XMR_FEE_ADDRESS ESCROW_XMR_SLOTS
-ESCROW_XMR_MAX_FEE ESCROW_XMR_SEED_KEY MONERO_WALLET_SECRET'
+ESCROW_XMR_MAX_FEE ESCROW_XMR_SEED_KEY MONERO_WALLET_SECRET ESCROW_XMR_WALLET_RPC_PASSWORD'
 # What `upgrade` writes for a key missing from .env: the value Compose already uses when the key is absent, so
 # adding it changes nothing but makes it visible. APP_MODE, APP_PORT, COMPOSE_PROJECT_NAME, COMPOSE_PROFILES and
 # COMPOSE_FILE are derived from the install instead; secrets are never invented (APP_SECRET_KEY is copied from
@@ -130,6 +134,8 @@ init options (each answers one question; a question without its option is asked)
   --bitcoin-prune yes|no           --bitcoin-rpc-url URL
   --monero local|external|disabled   --monero-image IMAGE   --monero-network stagenet|testnet
   --monero-prune yes|no            --monero-rpc-url URL   --monero-wallet-rpc-url URL
+  --monero-escrow yes|no           Monero escrow on the local stagenet node (custodial; default no)
+  --monero-escrow-seed-key FILE    with it: the armored OpenPGP public key its wallet seeds are sealed to
   --admin HANDLE [--site-name NAME]  create the first administrator here (password asked twice, never shown)
                                    instead of printing a setup token for the browser
   --uploads yes|no                 photo uploads with the ClamAV malware scanner (needs 3 GiB of memory; default no)
@@ -514,6 +520,12 @@ run_check() {
   if has_item "$profiles" monero-wallet && [[ -z $(env_value MONERO_WALLET_RPC_PASSWORD) ]]; then
     problems="$problems  - the local Monero wallet (monero-wallet profile) needs MONERO_WALLET_RPC_PASSWORD"$'\n'
   fi
+  if has_item "$profiles" monero-escrow-wallet && [[ -z $(env_value ESCROW_XMR_WALLET_RPC_PASSWORD) ]]; then
+    problems="$problems  - the Monero escrow wallet (monero-escrow-wallet profile) needs ESCROW_XMR_WALLET_RPC_PASSWORD"$'\n'
+  fi
+  if [[ -n $files ]] && compose_has compose.escrow-xmr.yaml && ! [[ -f $escrow_seed_key_file && ! -L $escrow_seed_key_file ]]; then
+    problems="$problems  - COMPOSE_FILE includes compose.escrow-xmr.yaml but $escrow_seed_key_file (the Monero escrow seed key it mounts) is missing"$'\n'
+  fi
   for key in BITCOIN_IMAGE MONERO_IMAGE MONERO_WALLET_IMAGE; do
     value=$(env_value "$key")
     if [[ -n $value ]] && ! image_pinned "$value"; then
@@ -673,6 +685,7 @@ cmd_init() {
   local bare=true local_mode=false mode='' database='' proxy='' nodes='' admin='' site_name='' site_given=false
   local btc='' xmr='' btc_image='' xmr_image='' btc_network='' xmr_network='' btc_prune='' xmr_prune=''
   local btc_rpc='' xmr_rpc='' xmr_wallet_rpc='' detail=false local_http='' password1='' password2='' uploads=''
+  local xmr_escrow='' xmr_seed_key=''
   (($# == 0)) || bare=false
   while (($#)); do
     case $1 in
@@ -680,7 +693,7 @@ cmd_init() {
       --tor|--clearnet) [[ -z $mode ]] || usage; mode=${1#--} ;;
       --external-db|--behind-proxy|--nodes|--bitcoin|--monero|--bitcoin-image|--monero-image|--bitcoin-network|\
       --monero-network|--bitcoin-prune|--monero-prune|--bitcoin-rpc-url|--monero-rpc-url|--monero-wallet-rpc-url|\
-      --admin|--site-name|--uploads)
+      --monero-escrow|--monero-escrow-seed-key|--admin|--site-name|--uploads)
         (($# >= 2)) || usage
         case $1 in
           --external-db) database=$2; [[ -n $database ]] || usage ;;
@@ -697,6 +710,8 @@ cmd_init() {
           --bitcoin-rpc-url) btc_rpc=$2 ;;
           --monero-rpc-url) xmr_rpc=$2 ;;
           --monero-wallet-rpc-url) xmr_wallet_rpc=$2 ;;
+          --monero-escrow) xmr_escrow=$(one_of "$1" "$2" yes no) ;;
+          --monero-escrow-seed-key) xmr_seed_key=$2; [[ -n $xmr_seed_key ]] || usage ;;
           --admin) admin=$2 ;;
           --site-name) site_name=$2; site_given=true ;;
           --uploads) uploads=$(one_of "$1" "$2" yes no) ;;
@@ -706,7 +721,8 @@ cmd_init() {
     esac
     shift
   done
-  if [[ $local_mode == true && -n $mode$database$proxy$nodes$btc$xmr$btc_image$xmr_image$btc_network$xmr_network$btc_prune$xmr_prune$btc_rpc$xmr_rpc$xmr_wallet_rpc$uploads ]]; then
+  if [[ -n $xmr_seed_key && $xmr_escrow != yes ]]; then echo '--monero-escrow-seed-key needs --monero-escrow yes.' >&2; exit 2; fi
+  if [[ $local_mode == true && -n $mode$database$proxy$nodes$btc$xmr$btc_image$xmr_image$btc_network$xmr_network$btc_prune$xmr_prune$btc_rpc$xmr_rpc$xmr_wallet_rpc$uploads$xmr_escrow ]]; then
     echo '--local answers every question itself; combine it only with --admin and --site-name.' >&2
     exit 2
   fi
@@ -878,6 +894,27 @@ cmd_init() {
       die 'Choose live for both Bitcoin and Monero, or disable the other coin: one market cannot mix mainnet and test networks. Nothing was written.'
     fi
   fi
+  # Monero escrow (A-449): only beside the local Monero node on stagenet, whose daemon its own wallet-RPC service
+  # (monero-escrow-wallet) shares. Off unless chosen; asked where the Monero questions are asked. Its secret and its
+  # wallet-RPC password are generated below; the seed key (a public key whose private half the operator keeps offline)
+  # is asked for, never defaulted.
+  if [[ -z $xmr_escrow && $detail == true && $xmr_choice == local && $monero_network == stagenet ]]; then
+    printf '%s\n' "MONERO escrow (off by default): each order paid by Monero escrow gets an account of its own in a monthly escrow wallet on stagenet, run by a separate wallet-RPC service. It is custodial: the market holds every escrow wallet's keys and can move these coins. It needs an OpenPGP public key whose private half you keep offline; every wallet seed is sealed to it (docs/operator-guide.md#monero-escrow-fakechain-or-stagenet)."
+    ask xmr_escrow 'Turn on Monero escrow? (yes/no) [no]: '
+  fi
+  case ${xmr_escrow:-no} in yes|no) xmr_escrow=${xmr_escrow:-no} ;; *) die 'Answer yes or no.' ;; esac
+  if [[ $xmr_escrow == yes ]]; then
+    [[ $xmr_choice == local && $monero_network == stagenet ]] ||
+      die 'Monero escrow needs the local Monero node on stagenet (--monero local --monero-network stagenet). Nothing was written.'
+    if [[ -z $xmr_seed_key ]]; then ask xmr_seed_key 'Path of the armored OpenPGP public key every escrow wallet seed is sealed to: '; fi
+    [[ -n $xmr_seed_key ]] || die 'Monero escrow needs the OpenPGP public key file its wallet seeds are sealed to. Nothing was written.'
+    [[ -f $xmr_seed_key && -r $xmr_seed_key ]] || die 'The Monero escrow seed key file does not exist or cannot be read. Nothing was written.'
+    (($(LC_ALL=C wc -c < "$xmr_seed_key") <= 65536)) || die 'The Monero escrow seed key file is larger than 64 KiB. Nothing was written.'
+    ! grep -q 'PRIVATE KEY BLOCK' "$xmr_seed_key" ||
+      die 'That file holds a private key: give the public key only, and keep the private key offline. Nothing was written.'
+    grep -q -- '-----BEGIN PGP PUBLIC KEY BLOCK-----' "$xmr_seed_key" ||
+      die 'The Monero escrow seed key file is not an armored OpenPGP public key (-----BEGIN PGP PUBLIC KEY BLOCK-----). Nothing was written.'
+  fi
   if [[ -n $admin ]]; then
     # Asked last, before anything is written or built. Kept in an unexported variable: it reaches the server
     # only through a pipe on stdin, never argv, the environment, the output or .env.
@@ -904,6 +941,13 @@ cmd_init() {
   audit_key=$(secret 32) || exit 1
   if [[ $btc_choice == local ]]; then rpc_password=$(secret 24) || exit 1; fi
   if [[ $xmr_choice == local ]]; then wallet_password=$(secret 24) || exit 1; fi
+  local escrow_wallet_password='' wallet_secret=''
+  if [[ $xmr_escrow == yes ]]; then
+    escrow_wallet_password=$(secret 24) || exit 1
+    # MONERO_WALLET_SECRET: every escrow wallet's password derives from it; 64 hex characters, unlike SETUP_TOKEN and
+    # APP_SECRET_KEY (the app refuses it equal to either).
+    wallet_secret=$(secret 32) || exit 1
+  fi
   if [[ -z $database ]]; then
     database="postgres://opsecmkt:${password}@db:5432/opsecmkt?sslmode=disable"
     profiles=internal-db
@@ -969,6 +1013,17 @@ cmd_init() {
       put MONERO_WALLET_IMAGE "${caller_wallet_image:-$monero_wallet_image_default}"
       profiles="${profiles:+$profiles,}monero,monero-wallet" ;;
   esac
+  if [[ $xmr_escrow == yes ]]; then
+    put ESCROW_XMR on
+    put ESCROW_XMR_WALLET_RPC_PASSWORD "$escrow_wallet_password"
+    put ESCROW_XMR_WALLET_RPC_URL "http://escrow:${escrow_wallet_password}@monero-escrow-wallet:18083"
+    put ESCROW_XMR_DAEMON_URL 'http://monero:18081'
+    put ESCROW_XMR_SEED_KEY "$xmr_seed_key_path"
+    put MONERO_WALLET_SECRET "$wallet_secret"
+    profiles="${profiles:+$profiles,}monero-escrow-wallet"
+    compose_files="${compose_files}:compose.escrow-xmr.yaml"
+    echo 'Monero escrow is on (stagenet, custodial: the market holds every escrow wallet'"'"'s keys). Back up .env (MONERO_WALLET_SECRET) and the monero_escrow_wallet volume; keep the seed key'"'"'s private half offline (docs/operator-guide.md#monero-escrow-fakechain-or-stagenet).'
+  fi
   put BITCOIN_CHAIN "$bitcoin_chain"
   put MONERO_NETWORK "$monero_network"
   # monerod and monero-wallet-rpc have no --mainnet flag: a blank MONERO_NETWORK_FLAG drops the network flag
@@ -993,6 +1048,11 @@ cmd_init() {
   fi
   put COMPOSE_FILE "$compose_files"
   put COMPOSE_PROFILES "$profiles"
+  if [[ $xmr_escrow == yes ]]; then
+    # A public key: readable by the app's user through the read-only mount (compose.escrow-xmr.yaml).
+    cp -- "$xmr_seed_key" "$escrow_seed_key_file" && chmod 0644 "$escrow_seed_key_file" ||
+      die 'Could not copy the Monero escrow seed key beside compose.escrow-xmr.yaml; nothing was started.'
+  fi
   mv "$config" .env
   run_check || die 'Nothing was started; .env was kept for diagnosis. Fix it (or remove it and run the installer again).'
   if [[ $external_database == true ]]; then
@@ -1451,6 +1511,7 @@ cmd_upgrade() {
     if [[ $(url_host "$(env_value BITCOIN_RPC_URL)") == bitcoin ]]; then profiles="${profiles:+$profiles,}bitcoin"; fi
     if [[ $(url_host "$(env_value MONERO_RPC_URL)") == monero ]]; then profiles="${profiles:+$profiles,}monero"; fi
     if [[ $(url_host "$(env_value MONERO_WALLET_RPC_URL)") == monero-wallet ]]; then profiles="${profiles:+$profiles,}monero-wallet"; fi
+    if [[ $(url_host "$(env_value ESCROW_XMR_WALLET_RPC_URL)") == monero-escrow-wallet ]]; then profiles="${profiles:+$profiles,}monero-escrow-wallet"; fi
     env_set COMPOSE_PROFILES "$profiles"
     changes="$changes  added COMPOSE_PROFILES (from the database and node URLs)"$'\n'
   fi
@@ -1458,6 +1519,7 @@ cmd_upgrade() {
   if [[ -z $files ]] && ! env_get COMPOSE_FILE >/dev/null; then
     files="compose.yaml:compose.$mode.yaml:compose.nodes.yaml"
     if has_item "$profiles" internal-db; then files="$files:compose.internal-db.yaml"; fi
+    if [[ $(env_value ESCROW_XMR_SEED_KEY) == "$xmr_seed_key_path" ]]; then files="$files:compose.escrow-xmr.yaml"; fi
     # Tor with an external database or wallet RPC needs direct egress, as init writes it.
     if [[ $mode == tor ]]; then
       egress=false

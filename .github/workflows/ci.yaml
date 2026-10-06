@@ -235,6 +235,8 @@ jobs:
           files+=(-f compose.scanner.yaml)
           profiles+=(--profile scanner)
           docker compose "${files[@]}" "${profiles[@]}" config --quiet
+          # Monero escrow on stagenet (A-449): its own wallet-rpc service and the overlay mounting its seed key.
+          docker compose "${files[@]}" -f compose.escrow-xmr.yaml "${profiles[@]}" --profile monero-escrow-wallet config --quiet
           # `up --wait` needs a healthcheck on the app (its -healthcheck flag) and, in Tor mode, on each Tor service
           # (the onion hostname file exists).
           docker compose "${files[@]}" "${profiles[@]}" config --format json | python3 -c '

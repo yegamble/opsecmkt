@@ -815,6 +815,12 @@ recorded**: the evidence below is simulated RPC and an offline stagenet fork.
   and builds, relays or follows no settlement (deadlines still apply); the pooled Monero pass is skipped as while syncing.
   Stateless; one log line per change and a line under *Payment providers*. A fakechain is exempt from the peer and tip-age
   checks and `get_last_block_header` is not called on it.
+- **Compose service (INFRA-11).** `compose.nodes.yaml` has a `monero-escrow-wallet` service: the escrow wallet-rpc on
+  stagenet, sharing the bundled `monero` daemon, in its own profile and volume with its own login password; the installer's
+  `--monero-escrow yes` (or its question beside the Monero questions) generates that password and `MONERO_WALLET_SECRET`,
+  asks for the seed key file and mounts it through `compose.escrow-xmr.yaml`
+  ([operator guide](operator-guide.md#monero-escrow-fakechain-or-stagenet)). Checked with `docker compose config` and the
+  installer's tests (a stub Docker); the service has not been started against a public stagenet daemon.
 
 How it was tested. Simulated RPC and PostgreSQL, not chain evidence: `TestXMRAddressTagsPerNettype`,
 `TestXMRAddressStagenetVectors` (real stagenet addresses from a disposable wallet and Monero's own test table),
