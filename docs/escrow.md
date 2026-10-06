@@ -229,8 +229,8 @@ once its settlement has a final transaction. Until then an administrator may cha
 is still being built or after it failed (migration 087, A-462): the old settlement is superseded as it stands (the
 database refuses a superseded row that gains or loses a build), and when it was a refund whose too-small failure left
 its deposits out for a stray refund, those deposits count for the order again, so the vendor's release includes them
-and no stray refund returns them; deposits left out for any other reason stay for a stray refund. All of this is subject to the limits under *What it will not protect*
-above: a server taken over can show a substituted key, and the market key with one party's key can spend.
+and no stray refund returns them; deposits left out for any other reason stay for a stray refund. All of this is
+subject to the limits under *What it will not protect* above: a server taken over can show a substituted key, and the market key with one party's key can spend.
 
 **What Phase 1 does not do.** It runs on regtest only and has not run on a public test network or mainnet. It covers
 digital orders with automatic delivery only (physical orders are Phase 2, Monero Phase 3). It supports Bitcoin Core
