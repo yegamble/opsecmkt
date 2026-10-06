@@ -518,7 +518,8 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   absent) with `do_not_relay`, taking the network fee from the claimant's output alone. It then checks the wallet's
   answer: exactly the claimed outputs' key images, amounts as planned, a fee at most `ESCROW_XMR_MAX_FEE` and the
   claimant's output at least 0.001 XMR; otherwise the transaction is discarded unrelayed, the settlement waits and staff
-  are told, with the deposits it could spend flagged so they can open the order; a deposit recorded after the order
+  are told, with the deposits it could spend flagged so they can open the order (the note names them, so the desk
+  dates the flags: QA462E-3); a deposit recorded after the order
   closed is left to the late-deposit check, which flags it when it announces it to the buyer and staff, so a waiting
   stray refund never silences that notice (QA462C-4). A checked transaction is **stored first** (its hash, metadata, blob, fee and key images) and only then relayed,
   with the stored metadata. After a restart or a lost answer the watcher looks the transaction up in the daemon and the

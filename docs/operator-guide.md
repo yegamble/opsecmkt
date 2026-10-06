@@ -923,7 +923,9 @@ broadcast.
   for a settlement never built too: one still being built (waiting for a deposit to confirm, or not yet tried) or one
   that failed, for example because the coins were too few (migration 087, A-462). When the old decision was a refund
   whose too-small failure left its deposits out for a stray refund, those deposits count for the order again (an
-  order note says so) and the vendor's release includes them; no stray refund returns them. Deposits left out for any
+  order note says so) and the vendor's release includes them; no stray refund returns them. Their flag and any review
+  recorded on it are cleared (the order history keeps the review): should a later change leave them out again, that is
+  a new, open flag to record (QA462E-1). Deposits left out for any
   other reason (by the bounded wait, or one that did not count when the dispute was decided) stay for a stray refund
   to the buyer. A release that fails because the coins are too few tells staff once ("Payment review needed", A-461),
   as a refund that fails so does, with an order note naming the deposits it tried and any other credited deposit it

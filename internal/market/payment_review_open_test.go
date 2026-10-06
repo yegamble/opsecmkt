@@ -4,6 +4,7 @@ import (
 	"context"
 	"html"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -145,6 +146,7 @@ func TestPaymentReviewEscrowMatrix(t *testing.T) {
 			// QA462D-3: a credited escrow flag that never regressed (a release too few, an external settlement).
 			{"credited_confirmed", "confirmations,credited", "3,true", "Escrow deposit counted for the order (credited toward its funding); the order's release or refund settles it", false},
 			{"credited_conflicted", "confirmations,credited", "-2,true", "Escrow deposit counted for the order (credited toward its funding); the order's release or refund settles it; now conflicted or missing", false},
+			{"credited_confirming", "confirmations,credited", "1,true", "Escrow deposit counted for the order (credited toward its funding); the order's release or refund settles it; now 1 of 3 confirmations", false},
 		} {
 			order := x.completed(regtestAddr("flag matrix "+c.name), 100000)
 			addr := agStrings(t, x.testEnv, "SELECT address FROM escrows WHERE order_id=$1", order)[0]
@@ -466,5 +468,105 @@ func TestLateDepositAnnouncedAfterOutsideSpentLateDeposit(t *testing.T) {
 	x.poll()
 	if n := lateNotices(t, x.testEnv, order); n.buyer != before.buyer+1 || n.staff <= before.staff {
 		t.Fatalf("the next deposit after the close: buyer told %d then %d, staff %d then %d; rows %q; events %q", before.buyer, n.buyer, before.staff, n.staff, rows(), x.events(order))
+	}
+}
+
+// QA462E-1: a deposit a refund too few left out, whose review staff recorded (no action, or escalated to an
+// administrator), counts again when the decision changes to a release (countAgain); a second change back to a refund
+// that fails too few again leaves it out again. That is a new flag: open, dated, with a form the moderator can use, and
+// recorded with 303; the order history keeps the first review.
+func TestEscrowLeftOutAgainIsANewFlag(t *testing.T) {
+	for _, first := range []string{"no_action", "escalated"} {
+		t.Run(first, func(t *testing.T) {
+			x := newEscrowEnv(t)
+			_, mod := x.user("lamod_"+randomToken()[:6], "moderator")
+			_, admin := x.user("laadm_"+randomToken()[:6], "admin")
+			_, admin2 := x.user("laadm2_"+randomToken()[:6], "admin")
+			order, dispute, _, _ := x.smallDispute(regtestAddr("left out again "+first), 10000, 0)
+			x.decide(admin, dispute, "refund", 10000)
+			x.poll()
+			tiny := txidOf("small dispute tiny " + order)
+			pid := agStrings(t, x.testEnv, "SELECT id::text FROM payments WHERE order_id=$1 AND txid=$2", order, tiny)[0]
+			if w := x.do("POST", "/moderator/payment-review", mod, url.Values{"payment_id": {pid}, "outcome": {first}, "note": {"Recorded before the decision changed."}, "password": {testPassword}}); w.Code != 303 {
+				t.Fatalf("first review: %d %s", w.Code, w.Body.String())
+			}
+			if code, body := x.changeDecision(admin2, order, "release", testPassword); code != 303 {
+				t.Fatalf("change to release: %d %s", code, strings.TrimSpace(body))
+			}
+			x.poll()
+			if got := agStrings(t, x.testEnv, "SELECT flagged||' '||escrow_left_out||' '||disposition FROM payments WHERE id=$1", pid); got[0] != "false false " {
+				t.Fatalf("counted again: flagged, left out, disposition %q", got)
+			}
+			if code, body := x.claim(order, x.vendorSess, regtestAddr("left out again claim "+first)); code != 303 {
+				t.Fatalf("claim: %d %s", code, body)
+			}
+			x.poll()
+			x.poll()
+			if code, body := x.changeDecision(admin2, order, "refund", testPassword); code != 303 {
+				t.Fatalf("change back to refund: %d %s", code, strings.TrimSpace(body))
+			}
+			x.poll()
+			x.poll()
+			desk := html.UnescapeString(x.page("/moderator", mod))
+			row := deskRow(desk, tiny)
+			if !flaggedAt.MatchString(row) || !strings.Contains(row, "<strong>Open:</strong> Escrow deposit left out of its settlement") || strings.Contains(row, "escalated") ||
+				!strings.Contains(desk, `name="payment_id" value="`+pid+`"`) {
+				t.Fatalf("left out again: %s; deposit %q; events %q", row, agStrings(t, x.testEnv, "SELECT flagged||' '||escrow_left_out||' '||disposition FROM payments WHERE id=$1", pid), x.events(order))
+			}
+			if w := x.do("POST", "/moderator/payment-review", mod, url.Values{"payment_id": {pid}, "outcome": {"no_action"}, "note": {"Recorded after it was left out again."}, "password": {testPassword}}); w.Code != 303 {
+				t.Fatalf("second review: %d %s", w.Code, w.Body.String())
+			}
+			if n := agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND actor_id IS NOT NULL AND strpos(note,'Payment review of')=1", order); n != 2 {
+				t.Fatalf("%d review events in the order history, want both", n)
+			}
+		})
+	}
+}
+
+// QA462D-4, QA462E-5: a refund too few that leaves out two credited deposits names both in one note; each desk row is
+// dated and open; no party notice asks for a moderator review.
+func TestEscrowTooFewNamesEveryDeposit(t *testing.T) {
+	x := newEscrowEnv(t)
+	_, mod := x.user("tfmod_"+randomToken()[:6], "moderator")
+	_, admin := x.user("tfadm_"+randomToken()[:6], "admin")
+	order := x.draft()
+	x.DB.Exec("UPDATE products SET btc=10000 WHERE id=(SELECT product_id FROM orders WHERE id=$1)", order)
+	addr := x.mustCheckout(order, regtestAddr("too few two"))
+	x.DB.Exec("UPDATE products SET delivery_content='' WHERE id=(SELECT product_id FROM orders WHERE id=$1)", order)
+	a1, a2 := txidOf("too few two a "+order), txidOf("too few two b "+order)
+	x.core.deposit(addr, a1, 0, 6000, 3)
+	x.core.deposit(addr, a2, 0, 4000, 3)
+	x.poll()
+	if x.state(order) != statePaid {
+		t.Fatalf("state %s", x.state(order))
+	}
+	if w := x.do("POST", "/disputes", x.buyerSess, url.Values{"order_id": {order}, "reason": {"The content was never delivered to me at all."}}); w.Code != 303 {
+		t.Fatalf("dispute: %d", w.Code)
+	}
+	var dispute string
+	x.DB.QueryRow("SELECT id FROM disputes WHERE order_id=$1", order).Scan(&dispute)
+	x.decide(admin, dispute, "refund", 10000)
+	x.poll()
+	if _, kind, state, class := x.settlement(order); kind != "refund" || state != "failed" || class != settleTooSmall {
+		t.Fatalf("the refund: %s %s %s; deposits %q", kind, state, class, x.decisionDeposits(order))
+	}
+	desk := html.UnescapeString(x.page("/moderator", mod))
+	for _, tx := range []string{a1, a2} {
+		if row := deskRow(desk, tx); !flaggedAt.MatchString(row) || !strings.Contains(row, "<strong>Open:</strong> Escrow deposit left out") {
+			t.Errorf("desk row of %s: %s", tx[:8], row)
+		}
+	}
+	names := []string{"deposit " + truncate(a1, 20) + " (0.00006 BTC)", "deposit " + truncate(a2, 20) + " (0.00004 BTC)"}
+	slices.Sort(names)
+	notes := agStrings(t, x.testEnv, "SELECT note FROM order_events WHERE order_id=$1 AND strpos(note,'The deposits:')>0", order)
+	if len(notes) != 1 || !strings.Contains(notes[0], "2 deposits") || !strings.Contains(notes[0], "The deposits: "+strings.Join(names, ", ")+". Moderator review required.") {
+		t.Errorf("the note does not name both: %q", notes)
+	}
+	for _, uid := range []string{x.buyer, x.vendor} {
+		for _, b := range agStrings(t, x.testEnv, "SELECT body FROM notifications WHERE user_id=$1 AND strpos(body,$2)=1", uid, "Order "+shortID(order)) {
+			if strings.Contains(b, "Moderator review required") {
+				t.Errorf("a party's notice asks for a moderator review: %q", b)
+			}
+		}
 	}
 }

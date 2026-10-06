@@ -34,7 +34,7 @@ func xmrTooFewNote(n int, sum int64, decided bool, left string) string {
 //     decided, too few on its own, is mined since: it is left out (A-424, as on a cancelled order) and joins them.
 func TestXMREscrowTooSmallRefundReturned(t *testing.T) {
 	x := newXMREscrowEnv(t)
-	x.user("xmod_"+randomToken()[:6], "moderator")
+	_, mod := x.user("xmod_"+randomToken()[:6], "moderator")
 	x.mustPoll()
 	refundOf := func(order string) string {
 		return agStrings(t, x.testEnv, "SELECT refund_address FROM escrows WHERE order_id=$1", order)[0]
@@ -145,10 +145,19 @@ func TestXMREscrowTooSmallRefundReturned(t *testing.T) {
 	// A-464 (QA437-3): exactly one did-not-count note, on the conflicted deposit alone (1 deposit, 0.002 XMR): the
 	// deposit the refund too few left out already is not counted in it again.
 	uncounted := "1 deposit(s) (" + amount(2000000000, 12) + " XMR, TESTNET fakechain) to this order's Monero escrow did not count for the order when its dispute was decided (the escrow wallet read them as conflicted, or no longer listed them), and no refund spends them. " +
-		"They have confirmed since and stay in the escrow account; a stray refund returns them, less the network fee, to the buyer's refund address. Do not send more coins to this escrow."
+		"They have confirmed since and stay in the escrow account; a stray refund returns them, less the network fee, to the buyer's refund address. Do not send more coins to this escrow. " +
+		"The deposits: deposit " + truncate(conflicted, 20) + " (" + amount(2000000000, 12) + " XMR). Moderator review required."
 	if n, exact := agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND strpos(note,'did not count for the order when its dispute was decided')>0", order),
 		agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND note=$2", order, uncounted); n != 1 || exact != 1 {
 		t.Fatalf("decided: %d did-not-count notes, %d exactly as expected; events %q", n, exact, x.events(order))
+	}
+	// QA462E-2: the note names the deposit, so the desk dates its flag (the stray refund spends it: not open).
+	if row := flagRow(x.page("/moderator", mod), conflicted); !flaggedAt.MatchString(row) {
+		t.Fatalf("decided: the deposit mined since on the desk: %s", row)
+	}
+	// QA462E-5: the request to staff is in the order note and the staff notice only, never in a party's notice.
+	if n := agInt(x.testEnv, "SELECT count(*) FROM notifications n JOIN users u ON u.id=n.user_id WHERE u.role NOT IN ('moderator','admin') AND strpos(n.body,'Moderator review required')>0"); n != 0 {
+		t.Fatalf("%d party notices ask for a moderator review", n)
 	}
 }
 

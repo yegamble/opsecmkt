@@ -1094,12 +1094,12 @@ func (a *App) markExternal(ctx context.Context, id int64, orderID, spentBy strin
 			if s != "" {
 				depBy = s
 			}
-			if _, err = tx.ExecContext(ctx, `UPDATE payments SET spent_outside=true,spent_by=$2,flagged=true,updated=now() WHERE id=$1 AND order_id=$3
+			if _, err = tx.ExecContext(ctx, `UPDATE payments SET spent_outside=true,spent_by=$2,`+newFlagSQL+`,updated=now() WHERE id=$1 AND order_id=$3
 				AND settlement_id IS NULL AND NOT spent_outside`, dep, depBy, orderID); err != nil {
 				return err
 			}
 		}
-	} else if _, err = tx.ExecContext(ctx, "UPDATE payments SET flagged=true,updated=now() WHERE settlement_id=$1", id); err != nil {
+	} else if _, err = tx.ExecContext(ctx, "UPDATE payments SET "+newFlagSQL+",updated=now() WHERE settlement_id=$1", id); err != nil {
 		return err
 	}
 	o, err := scanOrder(tx.QueryRowContext(ctx, orderQuery+" WHERE o.id=$1", orderID))
