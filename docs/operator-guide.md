@@ -910,7 +910,14 @@ broadcast.
   (409) once both parties' signatures or the network have made it final. Until the settlement of the decision has a stored final transaction, an administrator who is not a party
   may change the decision on the order page (*Change the decision*, with a reason and their password): the
   settlement of the old decision is *superseded* (it and its signatures are kept as a record and never used; its
-  deposits are freed) and the new one requested; both parties are notified and the change is audited. Once the
+  deposits are freed) and the new one requested; both parties are notified and the change is audited. This holds
+  for a settlement never built too: one still being built (waiting for a deposit to confirm, or not yet tried) or one
+  that failed, for example because the coins were too few (migration 087, A-462). When the old decision was a refund
+  whose too-small failure left its deposits out for a stray refund, those deposits count for the order again (an
+  order note says so) and the vendor's release includes them; no stray refund returns them. Deposits left out for any
+  other reason (by the bounded wait, or one that did not count when the dispute was decided) stay for a stray refund
+  to the buyer. A release that fails because the coins are too few tells staff once ("Payment review needed", A-461),
+  as a refund that fails so does; its coins stay counted for the vendor until the decision is changed. Once the
   settlement is signed by the market (or both parties), broadcast, confirmed or spent outside the market, the
   decision is fixed (409).
 - *Stray refunds.* Escrows stay imported in the watch-only wallet with no age limit. Coins first recorded at an escrow

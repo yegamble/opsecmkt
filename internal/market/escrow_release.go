@@ -297,13 +297,15 @@ func (a *App) leaveOutUncounted(ctx context.Context, tx *sql.Tx, o *Order, thres
 	}
 	var n, sum int64
 	var upgraded bool
-	if err := tx.QueryRowContext(ctx, `WITH m AS (UPDATE payments SET escrow_left_out=true,flagged=true,updated=now() WHERE order_id=$1 AND settlement_id IS NULL
+	// f is the upgraded case, read before the update: the refund's too-small failure, with no deposit left out and
+	// flagged yet. Its deposits then name that refund (escrow_too_few_by, A-462), as leaveOutTooFew's do.
+	if err := tx.QueryRowContext(ctx, `WITH f AS (SELECT (SELECT id FROM settlements WHERE order_id=$1 AND kind='refund' AND state='failed' AND build_error=$3) AS id,
+			NOT EXISTS(SELECT 1 FROM payments WHERE order_id=$1 AND escrow_left_out AND flagged AND NOT after_close) AS unflagged),
+		m AS (UPDATE payments SET escrow_left_out=true,flagged=true,escrow_too_few_by=(SELECT CASE WHEN unflagged THEN id END FROM f),updated=now() WHERE order_id=$1 AND settlement_id IS NULL
 			AND confirmations>=$2 AND NOT locked AND NOT after_close AND NOT escrow_left_out AND NOT spent_outside
 			AND NOT EXISTS (SELECT 1 FROM settlements WHERE order_id=$1 AND kind='refund'
 				AND state IN ('building','awaiting_signature','party_signed','signed','broadcast','confirmed')) RETURNING amount)
-		SELECT count(*),COALESCE(sum(amount),0),
-			EXISTS(SELECT 1 FROM settlements WHERE order_id=$1 AND kind='refund' AND state='failed' AND build_error=$3)
-			AND NOT EXISTS(SELECT 1 FROM payments WHERE order_id=$1 AND escrow_left_out AND flagged AND NOT after_close) FROM m`, o.ID, threshold, settleTooSmall).Scan(&n, &sum, &upgraded); err != nil || n == 0 {
+		SELECT count(*),COALESCE(sum(amount),0),(SELECT id IS NOT NULL AND unflagged FROM f) FROM m`, o.ID, threshold, settleTooSmall).Scan(&n, &sum, &upgraded); err != nil || n == 0 {
 		return err
 	}
 	count, is, it, stays := "1 deposit", "is", "it", "It stays"
@@ -326,14 +328,16 @@ func (a *App) leaveOutUncounted(ctx context.Context, tx *sql.Tx, o *Order, thres
 	return err
 }
 
-// leaveOutTooFew marks tried, the deposits a Bitcoin escrow order's refund could not spend because they were too few
-// to pay the network fee and the minimum output, as left out and flagged, in tx with that refund's failure
-// (failSettlement), on an order cancelled (A-435) or resolved for the buyer (A-437; the refund that fails is the live
-// decision's: a superseded one is never built): one order note, a notice to the buyer and to staff, only for the
+// leaveOutTooFew marks tried, the deposits a Bitcoin escrow order's refund (settlement refund) could not spend because
+// they were too few to pay the network fee and the minimum output, as left out and flagged, in tx with that refund's
+// failure (failSettlement), on an order cancelled (A-435) or resolved for the buyer (A-437; the refund that fails is the
+// live decision's: a superseded one is never built): one order note, a notice to the buyer and to staff, only for the
 // deposits newly marked. A stray refund returns them with any deposit left out later (leaveOutUncounted); until the
 // coins grow, the fee rate falls or the buyer asks, the refund's failure holds them (strayHeldSQL), so the same coins
-// are not tried again. A release that fails too-small leaves its deposits counted: they are the vendor's.
-func (a *App) leaveOutTooFew(ctx context.Context, tx *sql.Tx, o *Order, tried []settleInput) error {
+// are not tried again. Each names the refund (escrow_too_few_by): if a changed decision supersedes it, they count for
+// the order again (countAgain, A-462). A release that fails too-small leaves its deposits counted: they are the
+// vendor's.
+func (a *App) leaveOutTooFew(ctx context.Context, tx *sql.Tx, o *Order, refund int64, tried []settleInput) error {
 	if len(tried) == 0 {
 		return nil
 	}
@@ -345,9 +349,9 @@ func (a *App) leaveOutTooFew(ctx context.Context, tx *sql.Tx, o *Order, tried []
 		ids[i] = in.ID
 	}
 	var n, sum int64
-	if err := tx.QueryRowContext(ctx, `WITH m AS (UPDATE payments SET escrow_left_out=true,flagged=true,updated=now() WHERE order_id=$1 AND id=ANY($2) AND settlement_id IS NULL
+	if err := tx.QueryRowContext(ctx, `WITH m AS (UPDATE payments SET escrow_left_out=true,flagged=true,escrow_too_few_by=$3,updated=now() WHERE order_id=$1 AND id=ANY($2) AND settlement_id IS NULL
 			AND NOT after_close AND NOT escrow_left_out AND NOT spent_outside RETURNING amount)
-		SELECT count(*),COALESCE(sum(amount),0) FROM m`, o.ID, ids).Scan(&n, &sum); err != nil || n == 0 {
+		SELECT count(*),COALESCE(sum(amount),0) FROM m`, o.ID, ids, refund).Scan(&n, &sum); err != nil || n == 0 {
 		return err
 	}
 	note := a.tooFewNote(o, n, sum)
@@ -372,6 +376,26 @@ func (a *App) tooFewNote(o *Order, n, sum int64) string {
 	}
 	return count + " (" + amount(sum, 8) + " BTC, " + a.netTag() + " " + a.escrowNetwork() + ") to this order's escrow " + is + " not spent by " + refund + ": the market could not build the refund because the coins were too few to pay the network fee and an output of at least 0.0001 BTC. " +
 		stays + " in the escrow; a stray refund returns " + it + ", together with any later deposit to this escrow, less the network fee, to the buyer's refund address given at checkout once together they can pay the network fee."
+}
+
+// countAgain counts for o again, in tx, the deposits refund's too-small failure left out (leaveOutTooFew, and
+// leaveOutUncounted on an upgraded database) when a changed decision supersedes refund (A-462): no longer left out or
+// flagged, so no stray refund returns them and the release includes them. A deposit left out for any other reason (by a
+// bounded build, as a top-up, or because it did not count when the dispute was decided), one a stray refund already
+// spends and one spent outside the market stay as they are. It returns the order note on those it counted ("" if none).
+func (a *App) countAgain(ctx context.Context, tx *sql.Tx, o *Order, refund int64) (string, error) {
+	var n, sum int64
+	if err := tx.QueryRowContext(ctx, `WITH m AS (UPDATE payments SET escrow_left_out=false,flagged=false,escrow_too_few_by=NULL,updated=now()
+			WHERE order_id=$1 AND escrow_too_few_by=$2 AND settlement_id IS NULL AND NOT spent_outside RETURNING amount)
+		SELECT count(*),COALESCE(sum(amount),0) FROM m`, o.ID, refund).Scan(&n, &sum); err != nil || n == 0 {
+		return "", err
+	}
+	count, is, it := "1 deposit", "is", "it"
+	if n > 1 {
+		count, is, it = strconv.FormatInt(n, 10)+" deposits", "are", "them"
+	}
+	return count + " (" + amount(sum, 8) + " BTC, " + a.netTag() + " " + a.escrowNetwork() + ") to this order's escrow, left out for a stray refund when the refund of the earlier decision could not be built because the coins were too few, " +
+		is + " counted for the order again: the release to the vendor includes " + it + ", and no stray refund returns " + it + ".", nil
 }
 
 // coinsToBuyer reports whether o's escrowed coins go back to the buyer by its refund: o is cancelled, or resolved with

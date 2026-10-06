@@ -164,7 +164,7 @@ func TestEscrowTooSmallRefundResolved(t *testing.T) {
 	order, dispute, _, _ = x.smallDispute(regtestAddr("too few decided upgraded"), 10000, 0)
 	x.decide(admin, dispute, "refund", 10000)
 	x.poll()
-	x.DB.Exec("UPDATE payments SET escrow_left_out=false,flagged=false WHERE order_id=$1", order)
+	x.DB.Exec("UPDATE payments SET escrow_left_out=false,flagged=false,escrow_too_few_by=NULL WHERE order_id=$1", order)
 	n0, b0, _ := told(order)
 	for range 3 {
 		x.poll()
@@ -180,5 +180,27 @@ func TestEscrowTooSmallRefundResolved(t *testing.T) {
 	}
 	if id, state := x.stray(order); id != 0 {
 		t.Fatalf("upgraded: stray refund %d %s", id, state)
+	}
+}
+
+// A-464 (QA437-4): the decision line says the coins were too few only for a refund that failed too-small. A refund
+// decided for the buyer that failed for another reason (here nothing to settle: Core reports the deposit as conflicted
+// before the refund is built, so no deposit counts) gets the ordinary line, never the too-few one.
+func TestEscrowDecidedRefundFailedOtherwise(t *testing.T) {
+	x := newEscrowEnv(t)
+	_, admin := x.user("eadmin_"+randomToken()[:6], "admin")
+	order, dispute, _, _ := x.smallDispute(regtestAddr("decided nothing"), 100000, 0)
+	x.decide(admin, dispute, "refund", 100000)
+	x.core.setConfs(txidOf("small dispute tiny "+order), -2)
+	x.poll()
+	if _, kind, state, class := x.settlement(order); kind != "refund" || state != "failed" || class != settleNothing {
+		t.Fatalf("the refund: %s %s %s; events %q", kind, state, class, x.events(order))
+	}
+	for _, sess := range []string{x.buyerSess, admin} {
+		page := html.UnescapeString(x.page("/order?id="+order, sess))
+		if strings.Contains(page, decidedTooFew) || strings.Contains(page, "too few") ||
+			!strings.Contains(page, "The dispute was decided for the buyer: the coins in this escrow go back to the buyer's refund address through the refund settlement below.") {
+			t.Fatalf("the decision line of a refund that failed with nothing to settle:\n%s", page)
+		}
 	}
 }

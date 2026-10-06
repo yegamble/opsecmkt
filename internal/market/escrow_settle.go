@@ -823,7 +823,7 @@ func (a *App) settlementWaits(ctx context.Context, id int64, orderID, class stri
 // row), which a stray refund that failed too-small is compared with before another is requested (strayHeldSQL, A-434).
 // A refund that fails too-small on an order cancelled or resolved for the buyer leaves out tried, the deposits it could
 // not spend (leaveOutTooFew, A-435, A-437), and its failure holds them as a stray refund's would; a release's deposits
-// stay counted.
+// stay counted, and its too-small failure also tells staff (A-461).
 func (a *App) failSettlement(ctx context.Context, id int64, orderID, class string, could, rate int64, tried []settleInput, left ...settleInput) error {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -838,11 +838,21 @@ func (a *App) failSettlement(ctx context.Context, id int64, orderID, class strin
 		return nil
 	}
 	text := settleErrorText(class, 0)
-	if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) SELECT id,state,state,NULL,$2 FROM orders WHERE id=$1", orderID, "Escrow settlement not built: "+text); err != nil {
-		return err
-	}
 	var buyer, vendor, kind string
 	if err = tx.QueryRowContext(ctx, "SELECT o.buyer_id,p.vendor_id,s.kind FROM orders o JOIN products p ON p.id=o.product_id JOIN settlements s ON s.order_id=o.id WHERE s.id=$1", id).Scan(&buyer, &vendor, &kind); err != nil {
+		return err
+	}
+	if kind == "release" && class == settleTooSmall {
+		// A-461: the same note also tells staff, once, as a Monero release too few does (xmrSettleWaits): the vendor's
+		// coins stay in the escrow, counted, and an administrator may change a dispute's decision.
+		o, err := scanOrder(tx.QueryRowContext(ctx, orderQuery+" WHERE o.id=$1", orderID))
+		if err != nil {
+			return err
+		}
+		if err = a.flagOrder(ctx, tx, &o, "Escrow settlement not built: "+text, ""); err != nil {
+			return err
+		}
+	} else if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) SELECT id,state,state,NULL,$2 FROM orders WHERE id=$1", orderID, "Escrow settlement not built: "+text); err != nil {
 		return err
 	}
 	for _, uid := range []string{buyer, vendor} {
@@ -858,7 +868,7 @@ func (a *App) failSettlement(ctx context.Context, id int64, orderID, class strin
 		if err != nil {
 			return err
 		}
-		if err = a.leaveOutTooFew(ctx, tx, &o, tried); err != nil {
+		if err = a.leaveOutTooFew(ctx, tx, &o, id, tried); err != nil {
 			return err
 		}
 	}

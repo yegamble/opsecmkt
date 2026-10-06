@@ -12,8 +12,10 @@ import (
 // the escrow by a settlement (escrowSettleTerminal): a refund to the pinned refund address at once, or a release the
 // vendor claims with a fresh address. An administrator may change the decision on the order page
 // (/escrow/decision) until its settlement has a final transaction (a market co-signature, or both parties'
-// signatures): the settlement of the decision it replaces is then superseded and its outputs freed for the new one.
-// Once the settlement is signed, broadcast, confirmed or spent outside the market, the decision is fixed.
+// signatures): the settlement of the decision it replaces is then superseded and its outputs freed for the new one,
+// whether it was built or not (still building, or failed: migration 087, A-462); the deposits a refund's too-small
+// failure left out for a stray refund count for the order again (countAgain). Once the settlement is signed,
+// broadcast, confirmed or spent outside the market, the decision is fixed.
 
 func init() {
 	registerAction("/escrow/decision", actionSpec{Roles: []string{"admin"}, OwnTx: true, Off: escrowOff, Run: escrowDecisionAction})
@@ -76,7 +78,7 @@ func escrowDecisionAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, errDecisionSame
 		}
 		var sid int64
-		var state string
+		var state, again string
 		err = c.Tx.QueryRowContext(ctx, "SELECT id,state FROM settlements WHERE order_id=$1 AND kind IN ('release','refund') AND state<>'superseded' FOR UPDATE", o.ID).Scan(&sid, &state)
 		switch {
 		case err == sql.ErrNoRows:
@@ -85,11 +87,15 @@ func escrowDecisionAction(c *actionCtx) (actionResult, error) {
 		case state == "signed" || state == "broadcast" || state == "confirmed" || state == "external":
 			return actionResult{}, errDecisionFixed
 		default:
-			// The settlement of the old decision ends; its outputs are free for the new one.
+			// The settlement of the old decision ends, built or not (migration 087); its outputs are free for the new
+			// one, and so are the deposits its too-small failure left out for a stray refund (A-462).
 			if _, err = c.Tx.ExecContext(ctx, "UPDATE settlements SET state='superseded',updated=now() WHERE id=$1", sid); err != nil {
 				return actionResult{}, err
 			}
 			if _, err = c.Tx.ExecContext(ctx, "UPDATE payments SET settlement_id=NULL,updated=now() WHERE settlement_id=$1", sid); err != nil {
+				return actionResult{}, err
+			}
+			if again, err = c.A.countAgain(ctx, c.Tx, &o, sid); err != nil {
 				return actionResult{}, err
 			}
 		}
@@ -99,6 +105,11 @@ func escrowDecisionAction(c *actionCtx) (actionResult, error) {
 		note := "An administrator changed the dispute decision from " + decisionText(current) + " to " + decisionText(outcome) + ": " + reason
 		if _, err = c.Tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,$3,$4)", o.ID, o.State, c.User.ID, note); err != nil {
 			return actionResult{}, err
+		}
+		if again != "" {
+			if _, err = c.Tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, o.State, again); err != nil {
+				return actionResult{}, err
+			}
 		}
 		if err = c.A.escrowSettleTerminal(ctx, c.Tx, &o); err != nil {
 			return actionResult{}, err
@@ -137,8 +148,8 @@ func (a *App) escrowDecisionView(ctx context.Context, d *PageData, v *EscrowOrde
 		dv.Text += " An administrator may change it until its settlement has a final transaction."
 	}
 	// P2-R4: a live release older than the dispute is the one built when the order was shipped (a claim comes after).
-	// A-437: a failed refund is the decision's: a changed decision supersedes only a built settlement (migration 078's
-	// settlements_built refuses a superseded row with no transaction).
+	// A-437: a failed refund is the live decision's (a refund a changed decision superseded, built or not, is in state
+	// superseded: migration 087), and only its too-small failure left the coins out.
 	var shipped, tooFew bool
 	if err = a.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM settlements s JOIN disputes d ON d.order_id=s.order_id WHERE s.order_id=$1
 		AND s.kind='release' AND s.state<>'superseded' AND s.created<d.created),

@@ -1082,6 +1082,25 @@ restored from is recorded missing, not destroyed again, unless that backup alrea
 pre-upgrade backup, as for every migration (section 5): the earlier release refuses to start on a database that records
 migration 086.
 
+## 32. Bitcoin escrow: changing a decision whose settlement was never built (migration 087)
+
+Migration 087 runs at startup. It lets a Bitcoin escrow release or refund that was never built (still building, or
+failed, with no PSBT) be superseded when an administrator changes the dispute decision; before it, that change failed
+with a server error (`settlements_built`, A-462) and the decision could not be changed at all. It replaces the check
+`settlements_built` with one that also accepts such a superseded row (no PSBT, transaction ID, network fee or signer;
+a failed row keeps the value and fee rate it failed at) and adds the trigger `settlements_supersede_keeps`: superseding
+a settlement never changes its build, destination or signer, so a built one keeps its whole PSBT and an unbuilt one
+never gains one. Every other rule of migrations 075 to 078 is unchanged, and no existing row is rewritten. It also
+adds `payments.escrow_too_few_by`, the refund whose too-small failure left a deposit out for a stray refund, set only
+with `escrow_left_out`: when a changed decision supersedes that refund, those deposits count for the order again.
+Deposits a too-small refund left out before this migration on an order decided for the buyer (only a development build
+with A-437 and without this migration wrote them) do not name their refund, so a change of that decision leaves them
+for the stray refund to the buyer; an order whose refund failed so before A-437, with its deposits still counted, is
+handled by the next escrow pass, which names the refund. Like the earlier escrow migrations it changes nothing unless
+`ESCROW_BTC=on` (regtest only, off by default). No action is needed. Rolling back past this release needs the
+pre-upgrade backup, as for every migration (section 5): the earlier release refuses to start on a database that
+records migration 087.
+
 ## Appendix: new keys by hand
 
 `./scripts/install.sh upgrade` writes these for you. To add them yourself, use your editor (values in single
