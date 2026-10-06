@@ -1021,17 +1021,35 @@ func (r *xmrEscrowRPC) checkDaemon(ctx context.Context) (xmrDaemonInfo, error) {
 	return info, nil
 }
 
-// checkWallet refreshes the open wallet and requires its height to be within 10 blocks of daemonHeight: a wallet-rpc
-// attached to another daemon is refused. The watcher runs it after each open_wallet.
+// checkWallet refreshes the open wallet and requires its height to be within 10 blocks of the daemon's
+// (checkWalletHeight): a wallet-rpc attached to another daemon is refused. The watcher runs it after each open_wallet.
 func (r *xmrEscrowRPC) checkWallet(ctx context.Context, daemonHeight int64) error {
 	if err := r.refresh(ctx); err != nil {
 		return err
 	}
+	return r.checkWalletHeight(ctx, daemonHeight)
+}
+
+// checkWalletHeight requires the refreshed wallet's height to be within 10 blocks of the daemon's. daemonHeight was
+// read before the refresh, which can take minutes (xmrWalletRefreshTimeout): a daemon that gained (or popped) more
+// than 10 blocks meanwhile leaves a wallet synced to it that far from daemonHeight. So a wallet more than 10 blocks
+// from daemonHeight is compared with the daemon's height read again (A-475), and refused only when it is more than 10
+// blocks outside the span of the two readings: the daemon may move again between the refresh and the second reading,
+// and a height between our daemon's own two readings is one it had meanwhile. A wallet on another daemon more than 10
+// blocks from both is refused on the same pass. A failed second reading is the daemon's error, retried, never a refusal.
+func (r *xmrEscrowRPC) checkWalletHeight(ctx context.Context, daemonHeight int64) error {
 	h, err := r.height(ctx)
 	if err != nil {
 		return err
 	}
-	if h-daemonHeight > xmrMaxWalletLag || daemonHeight-h > xmrMaxWalletLag {
+	if h >= daemonHeight-xmrMaxWalletLag && h <= daemonHeight+xmrMaxWalletLag {
+		return nil
+	}
+	info, err := r.daemonInfo(ctx)
+	if err != nil {
+		return err
+	}
+	if h < min(daemonHeight, info.Height)-xmrMaxWalletLag || h > max(daemonHeight, info.Height)+xmrMaxWalletLag {
 		return errXMRWalletLag
 	}
 	return nil

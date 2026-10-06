@@ -1455,7 +1455,10 @@ failed that check …", or the same for the wallet-rpc). The daemon must report 
 the height it has reached, so a lower version is not refused while `get_info` says it is syncing: Monero escrow stays
 disabled with `… could not be checked at startup (hard_fork_info daemon-syncing)` and is checked again every poll, so a
 fresh stagenet node delays Monero escrow, not the market), and the escrow wallet-rpc must, after a refresh,
-be within 10 blocks of that daemon (so a wallet-rpc attached to another chain is refused). Before A-449 the daemon also had to
+be within 10 blocks of that daemon (so a wallet-rpc attached to another chain is refused). The daemon's height is read
+again after the refresh before a wallet more than 10 blocks from it is refused, and a wallet within 10 blocks of the span
+between the two readings passes (A-475), so a daemon that gains blocks while the wallet refreshes (catching up after
+downtime, say) does not disable Monero escrow. Before A-449 the daemon also had to
 be below height 1,000,000 (no fakechain gets there; every public network is past it): that heuristic is gone, and the network
 pin below tells networks apart instead. An escrow wallet-rpc whose open wallet is the pooled Monero wallet (the pooled
 wallet-rpc under another address) stops startup, or, found on a retry, disables Monero escrow until a restart. The pooled
