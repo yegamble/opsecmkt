@@ -23,6 +23,7 @@ type payCore struct {
 	// old its tip time is, and peers is getnetworkinfo connections (8 from newPayCore).
 	headersAhead int64
 	tipAge       time.Duration
+	noTime       bool // getblockchaininfo omits time, as a Bitcoin Core too old for the sync guard (QA4W1-3)
 	peers        int64
 	received     []map[string]any
 	txs          map[string]map[string]any
@@ -41,7 +42,11 @@ func (c *payCore) handle(path, method string, params json.RawMessage) (any, int,
 	}
 	switch method {
 	case "getblockchaininfo":
-		return map[string]any{"chain": c.chain, "blocks": 100, "headers": 100 + c.headersAhead, "time": time.Now().Add(-c.tipAge).Unix(), "initialblockdownload": c.ibd}, 0, ""
+		info := map[string]any{"chain": c.chain, "blocks": 100, "headers": 100 + c.headersAhead, "time": time.Now().Add(-c.tipAge).Unix(), "initialblockdownload": c.ibd}
+		if c.noTime {
+			delete(info, "time")
+		}
+		return info, 0, ""
 	case "getnetworkinfo":
 		return map[string]any{"version": 310100, "subversion": "/Satoshi:31.1.0/", "connections": c.peers}, 0, ""
 	case "loadwallet":

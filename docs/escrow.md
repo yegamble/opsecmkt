@@ -126,7 +126,11 @@ descriptor in your wallet is what detects that.
   market's signature-paste check refuses that signature anyway, because Electrum adds an entry for every key,
   the market's included. The refusal protects nothing that is stored: only the signer's own signatures are ever
   kept, whatever else a pasted copy carries (`TestEscrowPasteForeignFieldsInert`; `TestEscrowWalletFixtures`
-  checks the refusal on the signed files in `internal/market/testdata/escrow-wallets/`). Electrum's own seed type, what "Create a new seed" makes and the
+  checks the refusal on the signed files in `internal/market/testdata/escrow-wallets/`; those files come from the
+  script's `--update-fixtures` run at `cf6a8a0` with uncommitted changes, logged in
+  `artifacts/real-chain/a450-cf6a8a0fdbb4-dirty-fixtures-wallets.log`, and the clean evidence run at `52eb99f`
+  (`artifacts/real-chain/a450-52eb99f7aba5-wallets.log`) used different throwaway keys, so its log does not contain
+  them; both logs are local and gitignored). Electrum's own seed type, what "Create a new seed" makes and the
   default in Tails, cannot follow a per-order key path at all: Electrum fixes its multisig keys at `m/1'` and
   takes no path for that seed type (`from_seed` in Electrum's `keystore.py`; the script's `electrum-seed-type`
   leg records it).
@@ -751,13 +755,18 @@ regtest only (A-443 opens signet and testnet4); the guard also protects pooled B
   reports itself synced while deposits sent since are invisible to it; a watcher trusting it would cancel a paid order
   "payment window expired". A node now counts as not synced while it is in initial block download, its headers are
   ahead of its blocks, or, on a public chain (anything but regtest), it has no peers (`getnetworkinfo`) or its tip block
-  is older than `BITCOIN_MAX_TIP_AGE` (default 2h, 30m to 24h). While it is not synced the escrow watcher's Bitcoin
+  is older than `BITCOIN_MAX_TIP_AGE` (default 2h, 30m to 24h), or its `getblockchaininfo` has no tip `time` (reported
+  as "tip time unreadable": the guard needs Bitcoin Core 31.1, the version the installer pins; earlier versions
+  untested). While it is not synced the escrow watcher's Bitcoin
   pass reads no deposit, expires no order, flags nothing and builds, co-signs or broadcasts no settlement (the release
   deadlines, which need no node, still apply), and the pooled Bitcoin pass is skipped as it is during initial block
   download. The rule is stateless: nothing is stored, so a legitimately replaced chain never stalls it (A-147). One
   log line per change and a line under *Payment providers* on `/admin` name the reason
-  ([operator guide](operator-guide.md#bitcoin-escrow-regtest-only)). A lone regtest node is exempt from the peer and
-  tip-age checks, and `getnetworkinfo` is called only on a public chain.
+  ([operator guide](operator-guide.md#bitcoin-escrow-regtest-only)); on regtest the initial block download line adds
+  the remedy (mine one block, or restart bitcoind with a larger `-maxtipage`), since a regtest node has no peers to
+  sync from. Past its payment window, an open escrow order's page says the order stays open while the market waits for
+  its node, instead of a cancellation time already gone. A lone regtest node is exempt from the peer and tip-age
+  checks, and `getnetworkinfo` is called only on a public chain.
 - **Chain pin.** The database pins the escrow node's chain (`settings` key `escrow_btc_chain`: the chain name, plus the
   `signet_challenge` on signet, since a private signet shares public signet's genesis block). A database never changes
   chain once it holds an escrow: a node on another chain leaves escrow disabled, changes nothing and is named on
@@ -770,10 +779,12 @@ regtest only (A-443 opens signet and testnet4); the guard also protects pooled B
 
 How it was tested (simulated RPC and PostgreSQL, not chain evidence): `TestBitcoinNodeNotSynced`,
 `TestBitcoinMaxTipAgeSetting`, `TestEscrowAddressTable` (unit); `TestEscrowWatcherSkipsWhileNotSynced` (each condition,
-the two public-chain ones with the escrow put on signet by hand: no cancel, no spent-outside flag, no build, no deposit
-read, then the work on the next synced pass), `TestEscrowRegtestExemptFromPeerAndTipChecks`,
+the public-chain ones with the escrow put on signet by hand, including a `getnetworkinfo` refused with HTTP 403 or
+error -32601 and a node omitting the tip time: no cancel, no spent-outside flag, no build, no deposit read, nothing written,
+the held order page, then the work on the next synced pass), `TestEscrowRegtestExemptFromPeerAndTipChecks`,
 `TestEscrowChainPinMismatchDisables`, `TestEscrowChainPinRules`, `TestBitcoinPooledGuardPeersAndTipAge`,
-`TestBitcoinPooledGuardRegtestExempt` and `TestBitcoinPooledNoPeersHoldsExpiry`. The real regtest legs of
+`TestBitcoinPooledGuardRegtestExempt`, `TestBitcoinPooledRegtestIBDNamesRemedy` and
+`TestBitcoinPooledNoPeersHoldsExpiry`. The real regtest legs of
 `scripts/test-escrow-regtest.sh` were run again against Core 31.1 with `getnetworkinfo` on the whitelist. Not tested: a
 real node that lost its peers or stalled on a public network.
 

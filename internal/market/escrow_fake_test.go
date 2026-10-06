@@ -43,6 +43,11 @@ type fakeEscrowCore struct {
 	reject        string
 	calls         []fakeCall
 
+	// QA4W1-1: getnetworkinfo fails with netInfoErr (a JSON-RPC error, 0 = none) or, with netInfoForbidden, HTTP 403 (a
+	// node whose rpcwhitelist lacks it).
+	netInfoErr       int
+	netInfoForbidden bool
+
 	// Escrow P1-b: the watch-only wallet, its imports and the deposits it reports.
 	watchInfo    map[string]any      // getwalletinfo of the watch wallet (nil = not loaded, -18)
 	importFail   bool                // importdescriptors answers success=false
@@ -191,7 +196,15 @@ func newFakeEscrowCore(t *testing.T) (*fakeEscrowCore, *payRPCServer) {
 	c := &fakeEscrowCore{t: t, chain: "regtest", arbiterFP: fakeArbiterFP, reject: "missing-inputs", spk: map[string][]byte{},
 		watchInfo: map[string]any{"walletname": "opsecmkt-escrow-watch", "descriptors": true, "private_keys_enabled": false}}
 	c.arbiterDesc = "wpkh([" + fakeArbiterFP + "/84h/1h/0h]" + testBIP84Key[20:] + "/1/*)#fakechk0"
-	return c, newPayRPCServer(t, "escrowapp", "escrow-rpc-pass", false, c.handle)
+	srv := newPayRPCServer(t, "escrowapp", "escrow-rpc-pass", false, c.handle)
+	srv.mu.Lock()
+	srv.forbid = func(method string) bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return method == "getnetworkinfo" && c.netInfoForbidden
+	}
+	srv.mu.Unlock()
+	return c, srv
 }
 
 func (c *fakeEscrowCore) methods() []string {
@@ -260,6 +273,9 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 		}
 		return info, 0, ""
 	case "getnetworkinfo":
+		if c.netInfoErr != 0 {
+			return nil, c.netInfoErr, "Method not found"
+		}
 		return map[string]any{"version": 310100, "connections": c.peers}, 0, ""
 	case "getrawchangeaddress":
 		if !wallet {

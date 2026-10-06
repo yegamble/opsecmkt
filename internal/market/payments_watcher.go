@@ -188,7 +188,7 @@ func (a *App) pollOnce(ctx context.Context) error {
 			ON CONFLICT(currency) DO UPDATE SET last_error=excluded.last_error`, cur, network, reason); err != nil {
 			errs = append(errs, err)
 		}
-		if reason != syncingReason && !strings.HasPrefix(reason, notSyncedPrefix) && !strings.HasPrefix(reason, tipBehindPrefix) {
+		if !strings.HasPrefix(reason, syncingReason) && !strings.HasPrefix(reason, notSyncedPrefix) && !strings.HasPrefix(reason, tipBehindPrefix) {
 			class := "pass skipped"
 			if why[cur] != "" {
 				class += ": " + why[cur]

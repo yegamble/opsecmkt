@@ -31,18 +31,24 @@ func (x *escrowEnv) adminPage() string {
 // While the escrow node is not synced the escrow Bitcoin pass is skipped: no deposit is read, no order expires, no
 // deposit is flagged spent outside the market and no settlement is built; one log line names the reason class and the
 // admin page says so. Nothing is persisted for the guard. The next synced pass does the work, even when the node's
-// height is now below what the unsynced node reported (no high-water mark, A-147).
+// height is now below what the unsynced node reported (no high-water mark, A-147). On a public chain a getnetworkinfo
+// that fails (refused by the rpcwhitelist with HTTP 403, or an unknown method) skips the pass the same way, as a node
+// check error and not as a node with peers (QA4W1-1).
 func TestEscrowWatcherSkipsWhileNotSynced(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		signet bool
-		set    func(c *fakeEscrowCore)
-		why    string
+		name    string
+		signet  bool
+		set     func(c *fakeEscrowCore)
+		why     string // the not-synced reason class, "" for a node check error
+		nodeErr string // the pass's error (watcherCause), "" for a node that is not synced
 	}{
-		{"ibd", false, func(c *fakeEscrowCore) { c.ibd = true }, notSyncedIBD},
-		{"headers ahead", false, func(c *fakeEscrowCore) { c.headers = 305 }, notSyncedHeaders},
-		{"no peers on signet", true, func(c *fakeEscrowCore) { c.peers = 0 }, notSyncedPeers},
-		{"stale tip on signet", true, func(c *fakeEscrowCore) { c.tipTime = time.Now().Add(-3 * time.Hour).Unix() }, notSyncedTip},
+		{"ibd", false, func(c *fakeEscrowCore) { c.ibd = true }, notSyncedIBD, ""},
+		{"headers ahead", false, func(c *fakeEscrowCore) { c.headers = 305 }, notSyncedHeaders, ""},
+		{"no peers on signet", true, func(c *fakeEscrowCore) { c.peers = 0 }, notSyncedPeers, ""},
+		{"stale tip on signet", true, func(c *fakeEscrowCore) { c.tipTime = time.Now().Add(-3 * time.Hour).Unix() }, notSyncedTip, ""},
+		{"tip time omitted on signet", true, func(c *fakeEscrowCore) { c.tipTime = 0 }, notSyncedTipUnread, ""},
+		{"getnetworkinfo forbidden on signet", true, func(c *fakeEscrowCore) { c.netInfoForbidden = true }, "", "escrow: node check failed: getnetworkinfo forbidden"},
+		{"getnetworkinfo unknown on signet", true, func(c *fakeEscrowCore) { c.netInfoErr = -32601 }, "", "escrow: node check failed: getnetworkinfo rpc:-32601"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			x := newEscrowEnv(t)
@@ -60,6 +66,8 @@ func TestEscrowWatcherSkipsWhileNotSynced(t *testing.T) {
 				x.onSignet()
 			}
 			settings := agStrings(t, x.testEnv, "SELECT key||'='||value FROM settings ORDER BY key")
+			written := "SELECT (SELECT count(*) FROM order_events)||' '||(SELECT count(*) FROM payments)||' '||(SELECT count(*) FROM notifications)"
+			before := agStrings(t, x.testEnv, written)
 			creates, reads := x.core.count("createpsbt"), x.core.count("listreceivedbyaddress")
 			logs := captureLog(t)
 			x.core.mu.Lock()
@@ -67,8 +75,12 @@ func TestEscrowWatcherSkipsWhileNotSynced(t *testing.T) {
 			x.core.blocks = 300 // the unsynced node reports a higher tip than the synced one below
 			x.core.mu.Unlock()
 
-			x.poll()
-			x.poll()
+			for range 2 {
+				err := x.A.escrowPollOnce(context.Background())
+				if tc.nodeErr == "" && err != nil || tc.nodeErr != "" && (err == nil || watcherCause(err) != tc.nodeErr) {
+					t.Fatalf("pass while not synced: %v, want %q", err, tc.nodeErr)
+				}
+			}
 			if s := x.state(x.order); s != stateAwaitingPayment {
 				t.Fatalf("an order expired while the node was not synced: %s", s)
 			}
@@ -82,18 +94,45 @@ func TestEscrowWatcherSkipsWhileNotSynced(t *testing.T) {
 				t.Fatalf("claim %s while the node was not synced", state)
 			}
 			line := "escrow: Bitcoin escrow node not synced (" + tc.why + "); escrow watcher passes skipped until it is"
-			if got := logs.String(); strings.Count(got, line) != 1 || strings.Contains(got, "escrow watcher:") {
-				t.Fatalf("log while not synced:\n%s", got)
+			if tc.why == "" {
+				line = "escrow: Bitcoin escrow node not synced"
+				if got := logs.String(); strings.Contains(got, line) {
+					t.Fatalf("a node check error logged as not synced:\n%s", got)
+				}
+			} else {
+				if got := logs.String(); strings.Count(got, line) != 1 || strings.Contains(got, "escrow watcher:") {
+					t.Fatalf("log while not synced:\n%s", got)
+				}
+				page := x.adminPage()
+				if !strings.Contains(page, "Bitcoin escrow node not synced: "+tc.why+".") {
+					t.Fatalf("admin page lacks the not-synced line:\n%s", page)
+				}
+				// QA4W1-2: a regtest node in initial block download has no peers to sync from; the line says what to do.
+				remedy := "Bitcoin escrow node not synced: initial block download.</strong> On regtest " + regtestIBDText + " Until it is,"
+				if strings.Contains(page, remedy) != (tc.why == notSyncedIBD && !tc.signet) || strings.Contains(page, regtestIBDText) != strings.Contains(page, remedy) {
+					t.Fatalf("admin page and the regtest remedy (%s):\n%s", tc.why, page)
+				}
 			}
-			if page := x.adminPage(); !strings.Contains(page, "Bitcoin escrow node not synced: "+tc.why+".") {
-				t.Fatalf("admin page lacks the not-synced line:\n%s", page)
+			if got := agStrings(t, x.testEnv, written); strings.Join(got, ",") != strings.Join(before, ",") {
+				t.Fatalf("order events, payments or notifications written while not synced: %v -> %v", before, got)
+			}
+			// QA4W1-5: the buyer's page does not promise a cancellation at a time already past; it says why the order
+			// is still open.
+			var created time.Time
+			if err := x.DB.QueryRow("SELECT created FROM escrows WHERE order_id=$1", x.order).Scan(&created); err != nil {
+				t.Fatal(err)
+			}
+			held := "The payment window ended at " + created.Add(expiryWindow()).UTC().Truncate(time.Minute).Format("2006-01-02 15:04 UTC") +
+				", but the order stays open for now: the market is waiting for its Bitcoin node before it checks this escrow again and acts on the payment window."
+			if body := html.UnescapeString(x.page("/order?id="+x.order, x.buyerSess)); !strings.Contains(body, held) || strings.Contains(body, "If nothing has been received by") {
+				t.Fatalf("buyer's page while expiry is held:\n%s", body)
 			}
 			if got := agStrings(t, x.testEnv, "SELECT key||'='||value FROM settings WHERE key NOT LIKE 'installed' ORDER BY key"); strings.Join(got, ",") != strings.Join(withoutInstalled(settings), ",") {
 				t.Fatalf("settings changed by the guard: %v -> %v", settings, got)
 			}
 
 			x.core.mu.Lock()
-			x.core.ibd, x.core.headers, x.core.blocks = false, 0, 0
+			x.core.ibd, x.core.headers, x.core.blocks, x.core.netInfoForbidden, x.core.netInfoErr = false, 0, 0, false, 0
 			if tc.signet {
 				x.core.peers, x.core.tipTime = 8, time.Now().Unix()
 			}
@@ -111,7 +150,11 @@ func TestEscrowWatcherSkipsWhileNotSynced(t *testing.T) {
 			if _, _, state, class := x.settlement(claimed); state != "awaiting_signature" {
 				t.Fatalf("claim after the synced pass: %s %s", state, class)
 			}
-			if got := logs.String(); strings.Count(got, "escrow: Bitcoin escrow node synced; escrow watcher passes resumed") != 1 || strings.Count(got, line) != 1 {
+			resumed := 1
+			if tc.why == "" {
+				resumed = 0 // the node was never reported not synced
+			}
+			if got := logs.String(); strings.Count(got, "escrow: Bitcoin escrow node synced; escrow watcher passes resumed") != resumed || strings.Count(got, line) != resumed {
 				t.Fatalf("log after the synced pass:\n%s", got)
 			}
 			if page := x.adminPage(); strings.Contains(page, "Bitcoin escrow node not synced") {
@@ -120,6 +163,10 @@ func TestEscrowWatcherSkipsWhileNotSynced(t *testing.T) {
 		})
 	}
 }
+
+// regtestIBDText is the remedy /admin gives for a regtest node in initial block download (QA4W1-2), pooled and escrow.
+const regtestIBDText = "Bitcoin Core reports initial block download at height 0 and after a restart when its tip is older than 24 hours, " +
+	"and with no peers waiting does not end it: mine one block (bitcoin-cli -regtest generatetoaddress 1 <address>) or restart bitcoind with a larger -maxtipage."
 
 func withoutInstalled(s []string) []string {
 	var out []string

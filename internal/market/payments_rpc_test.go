@@ -22,6 +22,7 @@ type payRPCServer struct {
 	down       atomic.Bool // drop every connection, as an unreachable or restarting node does
 
 	mu         sync.Mutex
+	forbid     func(method string) bool // answers HTTP 403 with no body for a method, as Core's rpcwhitelist refuses one
 	nonce      string
 	calls      []string
 	params     map[string]json.RawMessage
@@ -122,7 +123,12 @@ func (s *payRPCServer) serve(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.calls = append(s.calls, req.Method)
 	s.params[req.Method] = req.Params
+	forbid := s.forbid
 	s.mu.Unlock()
+	if forbid != nil && forbid(req.Method) {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
 	result, code, msg := s.handle(r.URL.Path, req.Method, req.Params)
 	resp := map[string]any{"id": req.ID}
 	if req.JSONRPC == "2.0" {

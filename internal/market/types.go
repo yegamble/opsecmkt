@@ -520,6 +520,7 @@ type EscrowOrderView struct {
 	Required, Confirmed, Unconfirmed, Remaining string
 	Threshold                                   int64
 	Open, NeedsTopUp                            bool
+	WindowPassed                                bool // Open, CancelAfter has passed and no deposit waits for confirmations: the watcher has not acted yet (QA4W1-5)
 	CancelAfter, Status, NextStep, Fee          string
 	Deposits                                    []PaymentDeposit
 	Unread                                      string                  // set when nothing is read at the address: shown for the Confirmed and Unconfirmed figures (A-338)
@@ -595,9 +596,11 @@ type EscrowChainMismatch struct {
 }
 
 // EscrowNodeView is the line under Payment providers on /admin about the Bitcoin escrow node (escrow_watch.go): the
-// reason class it is not synced for, or the chain it was refused for.
+// reason class it is not synced for and the remedy when the reason does not say it (syncRemedy), or the chain it was
+// refused for.
 type EscrowNodeView struct {
 	NotSynced string
+	Remedy    string
 	Mismatch  *EscrowChainMismatch
 }
 
