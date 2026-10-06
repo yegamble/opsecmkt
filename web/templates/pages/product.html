@@ -30,7 +30,11 @@
 <dd>
 <a class="text-link" href="/vendor?id={{.VendorID}}">{{.Vendor}}</a>
 </dd>
-</div>
+</div>{{with $.VendorEscrowKey}}{{/* A-455, P4-R18: the vendor's key type, before checkout */}}
+<div>
+<dt>Vendor's Bitcoin escrow key</dt>
+<dd>{{template "vendor-escrow-key" .}}</dd>
+</div>{{end}}
 <div>
 <dt>Fulfillment</dt>
 <dd>{{.Kind}}</dd>

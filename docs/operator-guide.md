@@ -1203,7 +1203,11 @@ and sends a payout that confirms, while an unrestricted user as `BITCOIN_RPC_URL
 unloaded with a vendor-signed claim waiting (nothing is co-signed), restored with `restorewallet` under a new name (the
 harness cannot delete files inside the node) and co-signs that claim to confirmation with the fingerprint pin unchanged,
 and a blank wallet given the operator-exported descriptors (`importdescriptors`, timestamp `now`) co-signs a second
-claim the same way; the encryption step of the runbook is not part of it. In every leg the app runs inside the Go test against the real node, not as the server binary. A browser journey
+claim the same way; the encryption step of the runbook is not part of it. Its A-455 leg
+(`TestEscrowRegtestPerOrderPractice`, no escrow uses a per-order wallet yet): a per-order wallet key's practice
+transaction is signed by Core from the seed and what the practice page shows ([per-order
+escrow](escrow.md#per-order-key-layout-registration-and-practice-a-455-shape-b)), and the key is active; the same seed's
+Core wallet cannot sign it. In every leg the app runs inside the Go test against the real node, not as the server binary. A browser journey
 (`npm run test:e2e:escrow`, [development](development.md)) drives the escrow forms by keyboard in Chromium at 320 px
 with JavaScript off against the real server and a simulated escrow node; it is not chain evidence. Nothing about
 escrow has run on a public test network or mainnet, and the escrow pages have not been run in Firefox or WebKit.

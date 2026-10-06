@@ -361,9 +361,11 @@ func (a *App) escrowCheckoutOffer(ctx context.Context, d *PageData) error {
 		return err
 	}
 	v := &EscrowCheckoutView{Physical: o.Kind == "physical"}
-	var buyerActive, vendorActive bool
+	var buyerActive, vendorActive, buyerPerOrder, vendorPerOrder bool
 	if err = a.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM user_escrow_keys WHERE user_id=$1 AND active_at IS NOT NULL),
-		EXISTS(SELECT 1 FROM user_escrow_keys WHERE user_id=$2 AND active_at IS NOT NULL)`, o.BuyerID, o.VendorID).Scan(&buyerActive, &vendorActive); err != nil {
+		EXISTS(SELECT 1 FROM user_escrow_keys WHERE user_id=$2 AND active_at IS NOT NULL),
+		EXISTS(SELECT 1 FROM user_escrow_keys WHERE user_id=$1 AND layout<>'core'),EXISTS(SELECT 1 FROM user_escrow_keys WHERE user_id=$2 AND layout<>'core')`,
+		o.BuyerID, o.VendorID).Scan(&buyerActive, &vendorActive, &buyerPerOrder, &vendorPerOrder); err != nil {
 		return err
 	}
 	vendorCanEncrypt := true
@@ -393,6 +395,10 @@ func (a *App) escrowCheckoutOffer(ctx context.Context, d *PageData) error {
 		v.Reason, v.KeyLink = "Activate your Bitcoin escrow key first: register it and sign its practice transaction.", true
 	case !vendorActive:
 		v.Reason = "The vendor has no active Bitcoin escrow key, so this order cannot use escrow."
+	case buyerPerOrder: // A-455: escrowParties refuses it the same way until per-order escrows exist (A-456)
+		v.Reason = strings.TrimSuffix(errEscrowBuyerPerOrder.Error(), " Nothing was changed.")
+	case vendorPerOrder:
+		v.Reason = strings.TrimSuffix(errEscrowVendorPerOrder.Error(), " Nothing was changed.")
 	case v.Physical && !vendorCanEncrypt:
 		v.Reason = noVendorKeyReason // A-83: the buyer could not send the vendor an encrypted shipping address
 	}

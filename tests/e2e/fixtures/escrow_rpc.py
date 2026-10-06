@@ -4,7 +4,9 @@ Simulated RPC, never chain evidence: no node, no real coins, no real signatures.
 methods (internal/market/escrow_rpc.go, escrowRPCMethods) with Core's shapes where the app depends on them, as the Go
 fake escrow Core (internal/market/escrow_fake_test.go) does: real PSBT and transaction bytes, real BIP 380 descriptor
 checksums and bech32 regtest addresses, child keys that are points on secp256k1 (derived from a hash, not BIP32), and
-"signatures" that are keyed hashes shaped as DER (fake_sig), which only this simulator accepts. It knows regtest only:
+"signatures" that are keyed hashes shaped as DER (fake_sig), which only this simulator accepts. An extended key with no
+origin (a rooted per-order cosigner "tpub.../0/0", or a throwaway tprv followed by a path) derives by real BIP32 public
+derivation (A-455), so the keys the app derives in Go and the ones this node derives agree as Core's would. It knows regtest only:
 getblockchaininfo reports chain "regtest", and a mainnet or other-network address, or a mainnet extended key, is
 refused as Core refuses an address of another network (-5).
 
@@ -20,6 +22,7 @@ GET /test/escrow/state returns the deposits and broadcast transactions.
 import base64
 from decimal import Decimal
 import hashlib
+import hmac
 import json
 import re
 import struct
@@ -57,6 +60,83 @@ def point(label):
         if on_curve(pub):
             return pub
         i += 1
+
+
+# --- secp256k1 and BIP32 public derivation (A-455: rooted per-order keys) -------------------------------------------
+
+N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
+G = (0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798,
+     0x483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8)
+
+
+def ec_add(a, b):
+    if a is None:
+        return b
+    if b is None:
+        return a
+    if a[0] == b[0] and (a[1] + b[1]) % P == 0:
+        return None
+    if a == b:
+        m = 3 * a[0] * a[0] * pow(2 * a[1], P - 2, P) % P
+    else:
+        m = (b[1] - a[1]) * pow(b[0] - a[0], P - 2, P) % P
+    x = (m * m - a[0] - b[0]) % P
+    return (x, (m * (a[0] - x) - a[1]) % P)
+
+
+def ec_mul(k, pt):
+    out = None
+    while k:
+        if k & 1:
+            out = ec_add(out, pt)
+        pt = ec_add(pt, pt)
+        k >>= 1
+    return out
+
+
+def compress(pt):
+    return bytes([2 + (pt[1] & 1)]) + pt[0].to_bytes(32, 'big')
+
+
+def decompress(pub):
+    x = int.from_bytes(pub[1:], 'big')
+    y = pow((pow(x, 3, P) + 7) % P, (P + 1) // 4, P)
+    if y & 1 != pub[0] & 1:
+        y = P - y
+    return (x, y)
+
+
+def fingerprint(pub):
+    """BIP32's key fingerprint (HASH160). Where this Python lacks RIPEMD-160, a stand-in: the app never checks a
+    cosigner's fingerprint, only the owner's (which is the registered origin's)."""
+    try:
+        return hashlib.new('ripemd160', sha256(pub)).digest()[:4]
+    except ValueError:
+        return sha256(b'fingerprint' + pub)[:4]
+
+
+def ckd_pub(chain, pub, i):
+    """BIP32 CKDpub of (chain code, compressed key) at unhardened index i (an invalid child is not handled: 2^-127)."""
+    mac = hmac.new(chain, pub + struct.pack('>I', i), hashlib.sha512).digest()
+    return mac[32:], compress(ec_add(ec_mul(int.from_bytes(mac[:32], 'big'), G), decompress(pub)))
+
+
+def real_tpub(tprv):
+    """The depth-0 tpub of a depth-0 tprv (k*G, same chain code), as Core's getdescriptorinfo writes it."""
+    raw = b58decode_check(tprv)
+    return b58check(bytes.fromhex('043587cf') + bytes(9) + raw[13:45] + compress(ec_mul(int.from_bytes(raw[46:78], 'big'), G)))
+
+
+def real_child(el):
+    """(pubkey, derivation value) of "tpub...[/a/b...]" with no origin: Core's derivation and its derivation entry."""
+    xpub, _, path = el.partition('/')
+    raw = b58decode_check(xpub)
+    chain, pub = raw[13:45], raw[45:78]
+    deriv = fingerprint(pub)
+    for step in [s for s in path.split('/') if s]:
+        chain, pub = ckd_pub(chain, pub, int(step))
+        deriv += struct.pack('<I', int(step))
+    return pub, deriv
 
 
 # --- base58check, bech32, BIP 380 descriptor checksums -------------------------------------------------------------
@@ -349,6 +429,7 @@ class RPCError(Exception):
 
 
 TPRV = re.compile(r'tprv[1-9A-HJ-NP-Za-km-z]+')
+TPRV_PATH = re.compile(r'(tprv[1-9A-HJ-NP-Za-km-z]+)(/[0-9/]+)')
 MULTI = re.compile(r'^wsh\(sortedmulti\(2,([^,()]+),([^,()]+),([^,()]+)\)\)$')
 WPKH = re.compile(r'^wpkh\(([^()]+)\)$')
 
@@ -385,6 +466,8 @@ class EscrowCore:
                 hard = s.endswith(('h', "'"))
                 steps.append(int(s.rstrip("h'")) | (0x80000000 if hard else 0))
             return point('child:' + rest), bytes.fromhex(fp) + b''.join(struct.pack('<I', s) for s in steps)
+        if el.startswith('tpub'):  # A-455: an extended key with no origin, derived as Core derives it
+            return real_child(el)
         if el.startswith('fakepub'):
             pub = bytes.fromhex(el[7:])
             return pub, pub[1:5]
@@ -393,6 +476,7 @@ class EscrowCore:
         return bytes.fromhex(el), None
 
     def public(self, desc):
+        desc = TPRV_PATH.sub(lambda m: real_tpub(m.group(1)) + m.group(2), desc)  # A-455: a throwaway key's child
         return TPRV.sub(lambda m: 'fakepub' + point('pub:' + m.group(0)).hex(), desc)
 
     def derive(self, body):
@@ -535,6 +619,9 @@ class EscrowCore:
         if not m or p[2] != 'ALL':
             raise RPCError(-8, 'the simulator signs only a throwaway descriptor key with ALL')
         pub = point('pub:' + m.group(0))
+        mp = TPRV_PATH.search(p[1][0])
+        if mp:  # A-455: the throwaway key's child along its path (a per-order practice)
+            pub = real_child(real_tpub(mp.group(1)) + mp.group(2))[0]
         for i in range(len(ps.ins)):
             ps.add(i, b'\x02' + pub, fake_sig(pub, ps.txid(), 1))
         return {'psbt': ps.encode(), 'complete': False}

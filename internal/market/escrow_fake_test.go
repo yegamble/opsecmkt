@@ -7,12 +7,15 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"math/big"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
+
+	"opsecmkt/internal/btc"
 )
 
 // fakeEscrowCore is a scripted Bitcoin Core for escrow DB tests (simulated RPC, not chain evidence). It keeps
@@ -35,10 +38,14 @@ type fakeEscrowCore struct {
 	peers         int64
 	blocks        int64 // getblockchaininfo blocks (0 = 200)
 	arbiterDesc   string
-	arbiterCode   int    // JSON-RPC error for getrawchangeaddress (0 = none)
-	prevoutExists bool   // gettxout finds the practice outpoint
-	allowed       bool   // testmempoolaccept
-	throwawayDone bool   // descriptorprocesspsbt answers complete=true (a node that finalized on the server key alone)
+	arbiterCode   int  // JSON-RPC error for getrawchangeaddress (0 = none)
+	prevoutExists bool // gettxout finds the practice outpoint
+	allowed       bool // testmempoolaccept
+	throwawayDone bool // descriptorprocesspsbt answers complete=true (a node that finalized on the server key alone)
+	// A-455: an extended key with no origin ("tpub…/0/0", a rooted per-order cosigner, or a throwaway tprv followed by a
+	// path) derives by real BIP32 public derivation, as Core's does; ckdSkew flips one chain-code bit first (a node whose
+	// derivation disagrees with Go's).
+	ckdSkew       bool
 	beforeMempool func() // runs when testmempoolaccept is called: the last RPC of a practice check, before its update
 	reject        string
 	calls         []fakeCall
@@ -229,7 +236,50 @@ func (c *fakeEscrowCore) methods() []string {
 	return m
 }
 
-var fakeTprv = regexp.MustCompile(`tprv[1-9A-HJ-NP-Za-km-z]+`)
+var (
+	fakeTprv     = regexp.MustCompile(`tprv[1-9A-HJ-NP-Za-km-z]+`)
+	fakeTprvPath = regexp.MustCompile(`tprv[1-9A-HJ-NP-Za-km-z]+/?`)
+)
+
+// fakeRealTpub is the real public key (k·G, same chain code, depth 0) of a depth-0 tprv, as Core's getdescriptorinfo
+// writes it (A-455: the per-order practice signs with the throwaway key's child at the practice index).
+func fakeRealTpub(t *testing.T, tprv string) string {
+	raw, err := base58CheckDecode(tprv)
+	if err != nil || len(raw) != 78 || raw[4] != 0 || raw[45] != 0 {
+		t.Fatalf("fake core: not a depth-0 tprv")
+	}
+	k := bip32Key{PubKey: btc.Compress(btc.Mul(new(big.Int).SetBytes(raw[46:78]), btc.G))}
+	copy(k.ChainCode[:], raw[13:45])
+	return k.Serialize(versionTpub)
+}
+
+// fakeRealChild is Core's public derivation of "tpub…/a/b…" (no origin): the child key and its derivation value, the
+// key's own fingerprint followed by the steps (as Core writes an extended key without an origin).
+func (c *fakeEscrowCore) fakeRealChild(el string) (pub, deriv []byte) {
+	xpub, rest, _ := strings.Cut(el, "/")
+	k, err := parseBIP32Pub(xpub, versionTpub)
+	if err != nil {
+		c.t.Fatalf("fake core: extended key in %q: %v", el, err)
+	}
+	fp := k.Fingerprint()
+	deriv = slices.Clone(fp[:])
+	if c.ckdSkew {
+		k.ChainCode[0] ^= 1
+	}
+	if rest != "" {
+		steps, err := parseOriginPath("/" + rest)
+		if err != nil {
+			c.t.Fatalf("fake core: path in %q: %v", el, err)
+		}
+		for _, step := range steps {
+			if k, _, err = ckdPub(k, step); err != nil {
+				c.t.Fatalf("fake core: derivation in %q: %v", el, err)
+			}
+			deriv = binary.LittleEndian.AppendUint32(deriv, step)
+		}
+	}
+	return k.PubKey[:], deriv
+}
 
 func fakePubFromTprv(tprv string) []byte {
 	h := sha256.Sum256([]byte("pub:" + tprv))
@@ -346,7 +396,12 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 		if a, ok := strings.CutPrefix(desc, "addr("); ok && !strings.HasPrefix(a, escrowChains[c.chain]+"1") {
 			return nil, -5, "Address is not valid"
 		}
-		public := fakeTprv.ReplaceAllStringFunc(desc, func(k string) string { return "fakepub" + hex.EncodeToString(fakePubFromTprv(k)) })
+		public := fakeTprvPath.ReplaceAllStringFunc(desc, func(k string) string {
+			if tprv, ok := strings.CutSuffix(k, "/"); ok { // A-455: a throwaway key with a path keeps it, as its real tpub
+				return fakeRealTpub(c.t, tprv) + "/"
+			}
+			return "fakepub" + hex.EncodeToString(fakePubFromTprv(k))
+		})
 		sum, _ := descChecksum(public)
 		if c.infoSkew {
 			sum = "qqqqqqqq"
@@ -413,6 +468,11 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 			return nil, -8, "unexpected fake call"
 		}
 		pub := fakePubFromTprv(tprv)
+		if path := fakeTprvPath.FindString(descs[0]); strings.HasSuffix(path, "/") { // A-455: the throwaway key's child
+			el := descs[0][strings.Index(descs[0], tprv):]
+			el = el[:strings.IndexAny(el, ",)")]
+			pub, _ = c.fakeRealChild(fakeRealTpub(c.t, tprv) + strings.TrimPrefix(el, tprv))
+		}
 		out, err := pk.withInputField(0, append([]byte{0x02}, pub...), fakeSig(pub, pk.TxID(), 1))
 		if err != nil {
 			c.t.Errorf("fake descriptorprocesspsbt: %v", err)
@@ -1018,6 +1078,8 @@ func (c *fakeEscrowCore) fakeKeyOf(el string) (pub, deriv []byte) {
 	case strings.HasPrefix(el, "fakepub"):
 		pub, _ := hex.DecodeString(el[len("fakepub"):])
 		return pub, pub[1:5]
+	case strings.HasPrefix(el, "tpub"): // A-455: an extended key with no origin, derived as Core derives it
+		return c.fakeRealChild(el)
 	}
 	pub, _ = hex.DecodeString(el)
 	return pub, nil

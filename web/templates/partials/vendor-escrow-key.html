@@ -1,0 +1,2 @@
+{{/* Escrow owns (A-455, P4-R18; escrow_account.go vendorEscrowKeyLoader). The vendor's Bitcoin escrow key type on the product and vendor pages (input: "core", "per_order" or "none"). */}}
+{{define "vendor-escrow-key"}}{{if eq . "per_order"}}Per-order wallet (Electrum with a BIP39 seed, or Sparrow). Escrows with per-order wallets are not available on this market yet.{{else if eq . "core"}}Bitcoin Core{{else}}None active: this vendor cannot take a Bitcoin escrow yet.{{end}}{{end}}

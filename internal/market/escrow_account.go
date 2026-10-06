@@ -27,12 +27,20 @@ import (
 // (derivesChild), and it is active again at once, since practice is never offered for a key with escrows (ES-9).
 // Cross-account reuse is refused by the HMAC, so across a rotation it is best effort: a key registered before is not
 // recognised on another account until its owner registers it again (docs/operator-guide.md).
+//
+// A key has a layout (A-455, rulings P4-R2 and P4-R18; migration 088): core, a Bitcoin Core wallet whose escrows use the
+// account key's child /0/<i> (shape (a)), or per_order, a BIP39-seed Electrum or Sparrow wallet built for each order
+// from the account key's child <i> (shape (b)), which must be the BIP48 multisig account m/48h/1h/<account>h/2h. The
+// owner chooses it when registering; registering the same key with the other layout is a change (inactive until the
+// practice transaction of the new layout is signed, ES-9). A key that is the key of existing escrows keeps their layout.
 
 func init() {
 	registerPage("escrow-key", pageSpec{Protected: true, Off: escrowOff})
 	registerLoader("escrow-key", accountSecurityLoader) // TOTPEnabled: the key form asks for the authenticator code
 	registerLoader("escrow-key", escrowKeyLoader)
 	registerLoader("account", escrowAccountLoader)
+	registerLoader("product", vendorEscrowKeyLoader)
+	registerLoader("vendor", vendorEscrowKeyLoader)
 	registerAction("/escrow-key", actionSpec{OwnTx: true, Off: escrowOff, Run: escrowKeyAction})
 	registerAction("/escrow-key/practice", actionSpec{OwnTx: true, OneAtATime: true, Off: escrowOff, Run: escrowPracticeAction})
 }
@@ -53,7 +61,36 @@ var (
 	errKeyOtherOrigin  = &keyRefusal{"This key has the same origin as the key your escrows use, but it is a different key. Check the fingerprint and path your wallet shows for this key. Nothing was saved."}
 	errKeyOriginLocked = fail(409, "This key has escrows, so its origin (fingerprint and path) cannot be changed. Its existing escrows keep the origin they were created with. If that origin is wrong, contact the market's staff. Nothing was saved.")
 	errKeyUnchecked    = fail(503, "The key cannot be checked right now: the market's Bitcoin node did not answer. Nothing was saved; try again later.")
+	errKeyLayout       = &keyRefusal{"Choose the kind of wallet the key comes from: Bitcoin Core, or a per-order wallet. Nothing was saved."}
+	errKeyPerOrderPath = &keyRefusal{"A per-order wallet key must be the wallet's multisig account key, on the path m/48h/1h/0h/2h (another account number may replace 0h). In Electrum with a BIP39 seed or in Sparrow, export the key of a native SegWit (P2WSH) multisig wallet. Nothing was saved."}
+	errKeyLayoutLocked = fail(409, "This key is the key of your existing escrows, which were made for the other kind of wallet, so it keeps that kind. To use the other kind, register a key from a different wallet. Nothing was saved.")
 )
+
+// The layouts of user_escrow_keys.layout (migration 088).
+const (
+	layoutCore     = "core"
+	layoutPerOrder = "per_order"
+)
+
+// keyLayout reads the registration form's layout choice: core when absent.
+func keyLayout(v string) (string, bool) {
+	switch v {
+	case "", layoutCore:
+		return layoutCore, true
+	case layoutPerOrder:
+		return layoutPerOrder, true
+	}
+	return "", false
+}
+
+// suffixLayout is the layout an escrow key's derivation suffix belongs to: three steps (/<i>/0/0) are per_order, the
+// two of shape (a) (/0/<i>) core (migration 088).
+func suffixLayout(suffix string) string {
+	if strings.Count(suffix, "/") == 3 {
+		return layoutPerOrder
+	}
+	return layoutCore
+}
 
 // errEscrowKeyUnreadable is shown when the stored key cannot be opened: APP_SECRET_KEY (or a legacy SETUP_TOKEN)
 // was changed since it was registered (docs/operator-guide.md). errKeySealed is that failure inside practiceFor.
@@ -67,8 +104,8 @@ func (a *App) escrowKeyHMAC(k escrowKey) string { return a.escrowXPubHMAC(k.Chai
 
 // storedEscrowKey is the viewer's user_escrow_keys row.
 type storedEscrowKey struct {
-	sealed, hmac, fingerprint, path, activeAt string
-	active, hasEscrows                        bool
+	sealed, hmac, fingerprint, path, activeAt, layout string
+	active, hasEscrows                                bool
 }
 
 func loadEscrowKey(ctx context.Context, q interface {
@@ -76,8 +113,8 @@ func loadEscrowKey(ctx context.Context, q interface {
 }, userID string) (*storedEscrowKey, error) {
 	k := &storedEscrowKey{}
 	err := q.QueryRowContext(ctx, `SELECT xpub_sealed,xpub_hmac,origin_fingerprint,origin_path,coalesce(to_char(active_at,'YYYY-MM-DD HH24:MI "UTC"'),''),
-		active_at IS NOT NULL,EXISTS(`+escrowsOfKey+`)
-		FROM user_escrow_keys k WHERE user_id=$1`, userID).Scan(&k.sealed, &k.hmac, &k.fingerprint, &k.path, &k.activeAt, &k.active, &k.hasEscrows)
+		layout,active_at IS NOT NULL,EXISTS(`+escrowsOfKey+`)
+		FROM user_escrow_keys k WHERE user_id=$1`, userID).Scan(&k.sealed, &k.hmac, &k.fingerprint, &k.path, &k.activeAt, &k.layout, &k.active, &k.hasEscrows)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -95,8 +132,10 @@ const escrowsOfKey = "SELECT 1 FROM escrow_pubkeys p WHERE p.user_id=k.user_id A
 // (A-314). A recorded key under another origin is refused (errKeyOriginLocked): its child indices continue per
 // account, but practice is never offered for a key with escrows (ES-9), and the escrows keep the origin recorded
 // with them. Another key under the origin of escrows is refused too (errKeyOtherOrigin). Before any escrow exists
-// there is nothing to check, so an origin can still be corrected (A-309).
-func (a *App) keyAgainstEscrows(ctx context.Context, e *escrowBTC, uid string, k escrowKey, h string) (bool, error) {
+// there is nothing to check, so an origin can still be corrected (A-309). A recorded key offered with another layout
+// than its escrows' (suffixLayout) is refused (errKeyLayoutLocked): restored, it would be active at once in a layout
+// its practice never proved.
+func (a *App) keyAgainstEscrows(ctx context.Context, e *escrowBTC, uid string, k escrowKey, h, layout string) (bool, error) {
 	rows, err := a.db.QueryContext(ctx, `SELECT DISTINCT ON (origin_fingerprint,origin_path) origin_fingerprint,origin_path,derivation_suffix,pubkey,key_hmac
 		FROM escrow_pubkeys WHERE user_id=$1 ORDER BY origin_fingerprint,origin_path,escrow_id DESC`, uid)
 	if err != nil {
@@ -122,6 +161,8 @@ func (a *App) keyAgainstEscrows(ctx context.Context, e *escrowBTC, uid string, k
 		switch sameOrigin := r.fp == k.Fingerprint && r.path == k.PathText; {
 		case r.hmac == h && !sameOrigin:
 			return false, errKeyOriginLocked
+		case r.hmac == h && suffixLayout(r.suffix) != layout:
+			return false, errKeyLayoutLocked
 		case r.hmac == h:
 			restored = true
 		}
@@ -138,6 +179,8 @@ func (a *App) keyAgainstEscrows(ctx context.Context, e *escrowBTC, uid string, k
 		switch sameOrigin := r.fp == k.Fingerprint && r.path == k.PathText; {
 		case same && !sameOrigin:
 			return false, errKeyOriginLocked
+		case same && suffixLayout(r.suffix) != layout:
+			return false, errKeyLayoutLocked
 		case same:
 			restored = true
 		case sameOrigin:
@@ -157,7 +200,7 @@ func (a *App) escrowKeyView(ctx context.Context, userID string) (*EscrowKeyView,
 	if err != nil || k == nil {
 		return v, nil, err
 	}
-	v.Registered, v.Origin, v.ActiveAt, v.HasEscrows = true, "["+k.fingerprint+k.path+"]", k.activeAt, k.hasEscrows
+	v.Registered, v.Origin, v.ActiveAt, v.HasEscrows, v.PerOrder = true, "["+k.fingerprint+k.path+"]", k.activeAt, k.hasEscrows, k.layout == layoutPerOrder
 	_, openErr := a.open("escrow-xpub", k.sealed)
 	v.Unreadable = openErr != nil
 	// Practice is offered only while the key is inactive and has no escrows (ES-9): once active it is never offered
@@ -177,6 +220,28 @@ func escrowAccountLoader(ctx context.Context, a *App, r *http.Request, d *PageDa
 	return err
 }
 
+// vendorEscrowKeyLoader (A-455, P4-R18): while Bitcoin escrow is on, the product and vendor pages name the vendor's
+// escrow key type, so a buyer knows it before checkout: core, per_order, or none (no active key).
+func vendorEscrowKeyLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
+	if !a.escrowConfigured {
+		return nil
+	}
+	var vendor string
+	switch {
+	case d.Product != nil:
+		vendor = d.Product.VendorID
+	case len(d.Users) == 1:
+		vendor = d.Users[0].ID
+	default:
+		return nil
+	}
+	err := a.db.QueryRowContext(ctx, "SELECT layout FROM user_escrow_keys WHERE user_id=$1 AND active_at IS NOT NULL", vendor).Scan(&d.VendorEscrowKey)
+	if errors.Is(err, sql.ErrNoRows) {
+		d.VendorEscrowKey, err = "none", nil
+	}
+	return err
+}
+
 // escrowKeyLoader also builds the practice PSBT when ?practice=1 asks for it (a few node RPCs, none to a wallet).
 func escrowKeyLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error {
 	v, k, err := a.escrowKeyView(ctx, d.User.ID)
@@ -188,7 +253,7 @@ func escrowKeyLoader(ctx context.Context, a *App, r *http.Request, d *PageData) 
 		if err = a.db.QueryRowContext(ctx, escrowNextChildSQL, d.User.ID).Scan(&v.NextChild); err != nil {
 			return err
 		}
-		v.RangeAdvice, v.KeypoolSize = v.NextChild > escrowRangeAdvice, v.NextChild+1000
+		v.RangeAdvice, v.KeypoolSize = !v.PerOrder && v.NextChild > escrowRangeAdvice, v.NextChild+1000 // Core wallets only
 	}
 	if err != nil || v == nil || !v.PracticeOffered || r.URL.Query().Get("practice") != "1" {
 		return err
@@ -200,6 +265,9 @@ func escrowKeyLoader(ctx context.Context, a *App, r *http.Request, d *PageData) 
 		return nil
 	}
 	v.Practice = pt.PSBT
+	if pt.PerOrder {
+		v.PracticePath, v.PracticeDerivation, v.PracticeCosigners, v.PracticeAddress = pt.OwnPath, pt.OwnDeriv, pt.Cosigners[:], pt.Address
+	}
 	return nil
 }
 
@@ -213,7 +281,7 @@ func (a *App) practiceFor(ctx context.Context, userID string, k *storedEscrowKey
 	if err != nil {
 		return nil, err
 	}
-	return a.escrow.Load().buildPractice(ctx, key, a.practiceSeed(userID, k.hmac))
+	return a.escrow.Load().buildPractice(ctx, key, a.practiceSeed(userID, k.hmac), k.layout == layoutPerOrder)
 }
 
 // escrowKeyAction registers or changes the account's escrow key. The key is parsed (ES-3) before the password is
@@ -228,7 +296,13 @@ func escrowKeyAction(c *actionCtx) (actionResult, error) {
 	if err != nil {
 		return actionResult{}, fail(400, err.Error())
 	}
-	if !k.BIP48 && c.Form.Get("dedicated") != "1" {
+	layout, ok := keyLayout(c.Form.Get("layout"))
+	switch {
+	case !ok:
+		return actionResult{}, fail(400, errKeyLayout.Error())
+	case layout == layoutPerOrder && !k.BIP48: // the per-order paths are built on the BIP48 account
+		return actionResult{}, fail(400, errKeyPerOrderPath.Error())
+	case !k.BIP48 && c.Form.Get("dedicated") != "1":
 		return actionResult{}, fail(400, errKeyAck.Error())
 	}
 	if k.Fingerprint == e.fingerprint { // the market's own arbiter key offered as a party key
@@ -239,11 +313,11 @@ func escrowKeyAction(c *actionCtx) (actionResult, error) {
 	if err != nil {
 		return actionResult{}, err
 	}
-	if cur != nil && cur.hmac == h && cur.fingerprint == k.Fingerprint && cur.path == k.PathText {
+	if cur != nil && cur.hmac == h && cur.fingerprint == k.Fingerprint && cur.path == k.PathText && cur.layout == layout {
 		return actionResult{Redirect: "/escrow-key", Notice: "escrow-key-unchanged"}, nil
 	}
 	// Checked against the keys this account's escrows hold, before the password is.
-	restored, err := a.keyAgainstEscrows(c.Ctx(), e, c.User.ID, k, h)
+	restored, err := a.keyAgainstEscrows(c.Ctx(), e, c.User.ID, k, h, layout)
 	if err != nil {
 		return actionResult{}, err
 	}
@@ -258,9 +332,9 @@ func escrowKeyAction(c *actionCtx) (actionResult, error) {
 		if restored {
 			activeAt = "now"
 		}
-		err = c.Tx.QueryRowContext(ctx, `INSERT INTO user_escrow_keys(user_id,xpub_sealed,xpub_hmac,origin_fingerprint,origin_path,active_at) VALUES($1,$2,$3,$4,$5,$6::timestamptz)
+		err = c.Tx.QueryRowContext(ctx, `INSERT INTO user_escrow_keys(user_id,xpub_sealed,xpub_hmac,origin_fingerprint,origin_path,active_at,layout) VALUES($1,$2,$3,$4,$5,$6::timestamptz,$7)
 			ON CONFLICT (user_id) DO UPDATE SET xpub_sealed=EXCLUDED.xpub_sealed,xpub_hmac=EXCLUDED.xpub_hmac,origin_fingerprint=EXCLUDED.origin_fingerprint,
-			origin_path=EXCLUDED.origin_path,active_at=EXCLUDED.active_at,updated=now() RETURNING xmax=0`, uid, sealed, h, k.Fingerprint, k.PathText, activeAt).Scan(&inserted)
+			origin_path=EXCLUDED.origin_path,active_at=EXCLUDED.active_at,layout=EXCLUDED.layout,updated=now() RETURNING xmax=0`, uid, sealed, h, k.Fingerprint, k.PathText, activeAt, layout).Scan(&inserted)
 		var pe *pgconn.PgError
 		if errors.As(err, &pe) && pe.Code == "23505" && pe.ConstraintName == "user_escrow_keys_xpub_hmac_key" {
 			return actionResult{}, fail(409, errKeyUnusable.Error()) // another account's key; which one is never said
@@ -281,6 +355,9 @@ func escrowKeyAction(c *actionCtx) (actionResult, error) {
 		audit, event := "Changed Bitcoin escrow key", "Your Bitcoin escrow key was changed; it is inactive until you sign its practice transaction."
 		if inserted {
 			audit, event = "Registered a Bitcoin escrow key", "A Bitcoin escrow key was registered on your account; it is inactive until you sign its practice transaction."
+		}
+		if layout == layoutPerOrder {
+			audit += " (per-order wallet)"
 		}
 		if restored {
 			audit += " (the key of your existing escrows; active)"
@@ -335,10 +412,10 @@ func escrowPracticeAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, errPracticeNode
 	}
 	return confirmedTx(c, false, func(c *actionCtx) (actionResult, error) {
-		// The key checked (the same key and origin) must still be the account's, inactive and without escrows.
+		// The key checked (the same key, origin and layout) must still be the account's, inactive and without escrows.
 		res, err := c.Tx.ExecContext(ctx, `UPDATE user_escrow_keys k SET active_at=now(),updated=now() WHERE user_id=$1 AND xpub_hmac=$2
-			AND origin_fingerprint=$3 AND origin_path=$4 AND active_at IS NULL AND NOT EXISTS (`+escrowsOfKey+`)`,
-			uid, k.hmac, k.fingerprint, k.path)
+			AND origin_fingerprint=$3 AND origin_path=$4 AND layout=$5 AND active_at IS NULL AND NOT EXISTS (`+escrowsOfKey+`)`,
+			uid, k.hmac, k.fingerprint, k.path, k.layout)
 		if err != nil {
 			return actionResult{}, err
 		}
