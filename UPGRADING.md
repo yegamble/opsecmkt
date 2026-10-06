@@ -1176,8 +1176,9 @@ runs only while the provider is configured.
 Rolling back the binary while a coin is set to escrow only: a build that knows this database's migrations but predates
 A-444 refuses every intake value other than `true` (its `lockPaymentIntake` compares the value with `true`, and its
 escrow checkouts call the same check), so it treats that coin as **paused for pooled requests and escrow checkouts
-alike**. Its admin page still reads "Enabled when wallet is available" with a *Pause* button and its order page still
-offers *Request payment address*, which is refused with the paused message. Set the coin back to on (or paused) with
+alike**. Its admin page still reads "Enabled when wallet is available" (with a *Pause* button when that coin's pooled
+wallet is configured) and its order page still offers *Request payment address*, which is refused with the paused
+message. Set the coin back to on (or paused) with
 that build's admin form, or before rolling back. A release older than this database's migrations does not start
 against it at all ([Rolling back](#5-rolling-back)).
 
