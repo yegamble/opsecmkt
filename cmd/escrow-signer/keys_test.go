@@ -30,7 +30,12 @@ import (
 // double-and-add in math/big through, so the package is type-checked and everything it uses is held to allow-lists:
 // the packages it imports, the internal/btc identifiers and the math/big functions and *big.Int methods (no Mul, Exp,
 // ModInverse, Lsh, Sub or Bit: none is needed for an addition mod n). A new use is added here deliberately, with the
-// reason it handles no private key or does no point arithmetic.
+// reason it handles no private key or does no point arithmetic. QA4W5-1: two more ways round the method allow-list are
+// closed. reflect is held to DeepEqual (MethodByName would call any *big.Int method by name), and an interface or type
+// constraint written in the package that *big.Int implements or satisfies may list only allowed *big.Int methods (a
+// local interface would otherwise carry Mul, ModInverse and Bit past the scan: its calls name the interface's methods,
+// not math/big's). Limit: a static scan cannot tell multi-precision arithmetic written in plain Go (limbs in a uint64
+// slice, say) from any other code; that is left to review of the diff.
 func TestSignerNoPointMultiplication(t *testing.T) {
 	allowedImports := map[string]bool{"bufio": true, "bytes": true, "context": true, "crypto/hmac": true, "crypto/rand": true,
 		"crypto/sha256": true, "crypto/sha512": true, "encoding/base64": true, "encoding/binary": true, "encoding/hex": true,
@@ -45,6 +50,8 @@ func TestSignerNoPointMultiplication(t *testing.T) {
 		"ExtKey": true, "Fingerprint": true, "Hardened": true, "N": true, "OnCurve": true, "ParseExtPub": true, "Rooted": true, "VersionTpub": true, "WithChecksum": true}
 	// math/big: what hardened CKDpriv needs (a key from bytes, a range check, an addition mod n, its bytes back).
 	allowedBig := map[string]bool{"Int": true, "Add": true, "Cmp": true, "FillBytes": true, "Mod": true, "SetBytes": true, "Sign": true}
+	// reflect: DeepEqual compares decodepsbt trees (sign.go), and nothing else, so no method is called by name.
+	allowedReflect := map[string]bool{"DeepEqual": true}
 
 	fset := token.NewFileSet()
 	files, err := filepath.Glob("*.go")
@@ -74,7 +81,8 @@ func TestSignerNoPointMultiplication(t *testing.T) {
 	if len(parsed) < 5 {
 		t.Fatalf("only %d source files checked", len(parsed))
 	}
-	info := &types.Info{Uses: map[*ast.Ident]types.Object{}, Selections: map[*ast.SelectorExpr]*types.Selection{}}
+	info := &types.Info{Uses: map[*ast.Ident]types.Object{}, Selections: map[*ast.SelectorExpr]*types.Selection{},
+		Types: map[ast.Expr]types.TypeAndValue{}, Defs: map[*ast.Ident]types.Object{}}
 	// The imports' export data, as go build compiles them (cached), is much faster than type-checking them from source.
 	out, err := exec.Command("go", "list", "-export", "-deps", "-f", "{{.ImportPath}}\t{{.Export}}", ".").Output()
 	if err != nil {
@@ -95,14 +103,14 @@ func TestSignerNoPointMultiplication(t *testing.T) {
 	if _, err := conf.Check("main", fset, parsed, info); err != nil {
 		t.Fatalf("type-checking the signer: %v", err)
 	}
-	used := map[string]map[string]bool{"opsecmkt/internal/btc": {}, "math/big": {}}
+	used := map[string]map[string]bool{"opsecmkt/internal/btc": {}, "math/big": {}, "reflect": {}}
 	told := map[token.Pos]bool{}
 	note := func(pos token.Pos, obj types.Object) {
 		if v, ok := obj.(*types.Var); obj == nil || obj.Pkg() == nil || ok && v.IsField() {
 			return // a field (btc.ExtKey's PubKey, say) is data, not arithmetic
 		}
 		path, name := obj.Pkg().Path(), obj.Name()
-		allowed := map[string]map[string]bool{"opsecmkt/internal/btc": allowedBTC, "math/big": allowedBig}[path]
+		allowed := map[string]map[string]bool{"opsecmkt/internal/btc": allowedBTC, "math/big": allowedBig, "reflect": allowedReflect}[path]
 		if allowed == nil {
 			return
 		}
@@ -118,7 +126,41 @@ func TestSignerNoPointMultiplication(t *testing.T) {
 	for sel, s := range info.Selections {
 		note(sel.Sel.Pos(), s.Obj()) // methods (also promoted through an embedded *big.Int) and fields
 	}
-	if !used["math/big"]["SetBytes"] || !used["opsecmkt/internal/btc"]["CKDPub"] {
+	// QA4W5-1: interfaces and type constraints of the package. Every type expression (a named interface's declaration,
+	// an inline constraint, an interface literal in a conversion or type assertion) and every declared type name.
+	var bigInt types.Type
+	for _, obj := range info.Uses {
+		if tn, ok := obj.(*types.TypeName); ok && tn.Pkg() != nil && tn.Pkg().Path() == "math/big" && tn.Name() == "Int" {
+			bigInt = types.NewPointer(tn.Type())
+		}
+	}
+	if bigInt == nil {
+		t.Fatal("the scan saw no use of big.Int")
+	}
+	checkIface := func(pos token.Pos, typ types.Type) {
+		iface, ok := typ.Underlying().(*types.Interface)
+		if !ok || iface.NumMethods() == 0 || told[pos] || !types.Implements(bigInt, iface) && !types.Satisfies(bigInt, iface) {
+			return
+		}
+		for i := 0; i < iface.NumMethods(); i++ {
+			if name := iface.Method(i).Name(); !allowedBig[name] {
+				told[pos] = true
+				t.Errorf("%s: an interface or constraint that *big.Int implements lists %s, which is not on the signer's allow-list for math/big (its calls reach big.Int's %s)", fset.Position(pos), name, name)
+				return
+			}
+		}
+	}
+	for e, tv := range info.Types {
+		if tv.IsType() {
+			checkIface(e.Pos(), tv.Type)
+		}
+	}
+	for id, obj := range info.Defs {
+		if tn, ok := obj.(*types.TypeName); ok {
+			checkIface(id.Pos(), tn.Type())
+		}
+	}
+	if !used["math/big"]["SetBytes"] || !used["opsecmkt/internal/btc"]["CKDPub"] || !used["reflect"]["DeepEqual"] {
 		t.Fatalf("the scan saw none of the uses it should: %v", used)
 	}
 }

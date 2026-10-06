@@ -613,6 +613,48 @@ func TestXMREscrowWindowPassedWhileNotSynced(t *testing.T) {
 	}
 }
 
+// QA4W5-5: the watcher's retry of Monero escrow's startup checks records the state it reached, so /admin follows it:
+// started with the escrow daemon unchecked (get_info past startup's budget) and the pooled wallet-rpc down, then
+// retried once the daemon answers, the alert says Monero escrow waits for the pooled wallet's first check, no longer
+// that the daemon could not be checked.
+func TestXMREscrowRetryRecordsState(t *testing.T) {
+	ctx := context.Background()
+	fake := newFakeXMREscrow(t)
+	fake.edit(onStagenet)
+	fake.hook("get_info", func() { time.Sleep(time.Second) })
+	_, pub := testSeedKey(t, nil)
+	fake.setEnv(t, writeSeedKey(t, pub))
+	_, pooled := newPayMonero(t, payStagenetPrimary, payStagenetSub)
+	t.Setenv("MONERO_WALLET_RPC_URL", pooled.url(""))
+	t.Setenv("MONERO_RPC_URL", pooled.url(""))
+	t.Setenv("MONERO_NETWORK", "stagenet")
+	t.Setenv("MONERO_MAX_TIP_AGE", "")
+	pooled.down.Store(true)
+	saved := paymentStartupTimeout
+	paymentStartupTimeout = 300 * time.Millisecond
+	a, _, err := startApp(t, "")
+	paymentStartupTimeout = saved
+	if err != nil || a.escrowXMR == nil || a.escrowXMR.ready.Load() || a.escrowXMR.startState != xmrLogUnchecked {
+		t.Fatalf("startup with the escrow daemon unchecked: %v %q", err, a.escrowXMR.startState)
+	}
+	t.Cleanup(a.Close)
+	unchecked := "the escrow daemon or wallet-rpc could not be checked"
+	if alert, _, _ := xmrAdminLines(t, adminOf(t, a)); !strings.Contains(alert, "Monero escrow not ready: "+unchecked) {
+		t.Fatalf("/admin with the daemon unchecked: alert %q", alert)
+	}
+	fake.hook("get_info", nil)
+	retry := &escrowRetry{last: a.escrowXMR.startState}
+	a.retryEscrowXMR(ctx, retry)
+	if a.escrowXMR.ready.Load() || retry.last != xmrLogPooledWait {
+		t.Fatalf("retry with the daemon answering and the pooled wallet-rpc down: ready %v, state %q", a.escrowXMR.ready.Load(), retry.last)
+	}
+	waiting := "waiting for the pooled Monero wallet's first check"
+	if alert, readiness, _ := xmrAdminLines(t, adminOf(t, a)); !strings.Contains(alert, "Monero escrow not ready: "+waiting) || strings.Contains(alert, unchecked) ||
+		!strings.Contains(readiness, "(not ready: "+waiting+")") {
+		t.Fatalf("/admin after the retry: alert %q, readiness %q", alert, readiness)
+	}
+}
+
 // QA4W3-2: the wallet open in the escrow wallet-rpc is compared with the pooled Monero wallet's primary address
 // (pooledXMRWalletOpen), which backs up sameRPCEndpoint now that both wallet-rpcs may follow one stagenet daemon. When
 // the escrow wallet-rpc answers get_address with the pooled primary, startup is refused (errXMRStartWallet). When the

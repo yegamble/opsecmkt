@@ -149,7 +149,7 @@ func escrowReadinessLoader(ctx context.Context, a *App, _ *http.Request, d *Page
 		case coin == "XMR":
 			c.NotReady, _ = a.escrowXMR.notReady()
 		default:
-			c.NotReady = "its node or wallets have not passed the startup checks; the server log names which"
+			c.NotReady = "its startup checks have not passed; the server log names which" // QA4W5-9: not always a node or wallet
 		}
 		v.Coins = append(v.Coins, c)
 	}

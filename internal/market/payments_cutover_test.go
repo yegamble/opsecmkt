@@ -318,7 +318,7 @@ func TestEscrowReadinessPanelCounts(t *testing.T) {
 	x.A.escrow.Store(nil)
 	notReady := html.UnescapeString(x.page("/admin", admin))
 	x.A.escrow.Store(ready)
-	if !strings.Contains(notReady, "BTC escrow: on (not ready: its node or wallets have not passed the startup checks; the server log names which) · ") {
+	if !strings.Contains(notReady, "BTC escrow: on (not ready: its startup checks have not passed; the server log names which) · ") {
 		t.Fatal("the readiness panel says plain on while Bitcoin escrow is not ready")
 	}
 }
