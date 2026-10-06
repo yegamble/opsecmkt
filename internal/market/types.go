@@ -279,6 +279,9 @@ type PageData struct {
 	// VendorKeyUnusable (A-83): a physical listing's product and checkout pages, and its buyer's order page, when the
 	// vendor has no key that can receive encrypted messages (canReceiveEncrypted), so no shipping address can be sent.
 	VendorKeyUnusable bool
+	// VendorEscrowKey (A-455, P4-R18): the product and vendor pages' vendor's Bitcoin escrow key type while ESCROW_BTC is
+	// on: "core", "per_order" or "none" (no active key); "" with escrow off.
+	VendorEscrowKey string
 	// noticeCode: the one-shot notice this render consumed (notice.go), for a loader that details it from the
 	// current state (/totp after a recovery-code sign-in); "" without one.
 	noticeCode string
@@ -679,10 +682,17 @@ type EscrowKeyView struct {
 	ActiveAt        string // "" = inactive
 	HasEscrows      bool
 	Unreadable      bool // the stored key cannot be opened: APP_SECRET_KEY (or a legacy SETUP_TOKEN) changed
+	PerOrder        bool // layout per_order: a per-order wallet key (A-455); otherwise a Bitcoin Core key
 	PracticeOffered bool
 	Practice        string
 	PracticeError   string
-	NextChild       int64 // the child index (/0/<n>) the account's next escrow uses (escrowNextChildSQL)
-	RangeAdvice     bool  // NextChild passed escrowRangeAdvice: the page advises keypoolrefill (P2-R10)
-	KeypoolSize     int64 // the keypoolrefill size it advises: 1000 keys past NextChild
+	// A per-order wallet key's practice (A-455): the owner's key origin for the practice wallet, the two cosigner keys
+	// (rooted Vpubs) and the practice wallet's first receiving address, set with Practice.
+	PracticePath       string
+	PracticeDerivation string
+	PracticeCosigners  []string
+	PracticeAddress    string
+	NextChild          int64 // the child index (/0/<n>) the account's next escrow uses (escrowNextChildSQL)
+	RangeAdvice        bool  // NextChild passed escrowRangeAdvice: the page advises keypoolrefill (P2-R10)
+	KeypoolSize        int64 // the keypoolrefill size it advises: 1000 keys past NextChild
 }

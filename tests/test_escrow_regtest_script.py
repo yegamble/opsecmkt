@@ -14,7 +14,7 @@ SCRIPT = Path(__file__).resolve().parents[1] / 'scripts' / 'test-escrow-regtest.
 LEGS = ('TestEscrowRegtestPracticeSign', 'TestEscrowRegtestFunding', 'TestEscrowRegtestSettlement', 'TestEscrowRegtestCosign',
         'TestEscrowRegtestRecovery', 'TestEscrowRegtestGate', 'TestEscrowRegtestBump', 'TestEscrowRegtestPhysical',
         'TestEscrowRegtestDeadline', 'TestEscrowRegtestReserve', 'TestEscrowRegtestConflicted', 'TestEscrowRegtestBIP32',
-        'TestEscrowRegtestSigner')
+        'TestEscrowRegtestSigner', 'TestEscrowRegtestPerOrderPractice')
 
 
 class FakeRegtest(BaseHTTPRequestHandler):

@@ -1101,7 +1101,11 @@ refused. Its A-454 leg (`TestEscrowRegtestSigner`, no order uses it yet; needs t
 [escrow signer](#escrow-signer), built from the tree and started with a fresh seed, co-signs a hand-built per-order
 escrow through its socket, which the buyer's Core wallet signs too and which is broadcast and mined; it refuses a
 SIGHASH_NONE input, another index, two of its keys in one script and two escrows in one request; the seed is backed up,
-restored and signs identically; the app reports a pin mismatch and a signer that is down. In every leg the app runs inside the Go test against the real node, not as the server binary. A browser journey
+restored and signs identically; the app reports a pin mismatch and a signer that is down. Its A-455 leg
+(`TestEscrowRegtestPerOrderPractice`, no escrow uses a per-order wallet yet): a per-order wallet key's practice
+transaction is signed by Core from the seed and what the practice page shows ([per-order
+escrow](escrow.md#per-order-key-layout-registration-and-practice-a-455-shape-b)), and the key is active; the same seed's
+Core wallet cannot sign it. In every leg the app runs inside the Go test against the real node, not as the server binary. A browser journey
 (`npm run test:e2e:escrow`, [development](development.md)) drives the escrow forms by keyboard in Chromium at 320 px
 with JavaScript off against the real server and a simulated escrow node; it is not chain evidence. Nothing about
 escrow has run on a public test network or mainnet, and the escrow pages have not been run in Firefox or WebKit.

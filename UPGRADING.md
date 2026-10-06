@@ -1097,6 +1097,22 @@ is pinned at the first start), and the escrow user's `rpcwhitelist` gains `getne
 ([operator guide](docs/operator-guide.md#bitcoin-escrow-regtest-only)); on regtest the app does not call it, so the old
 whitelist keeps working, but add it. No action is needed otherwise.
 
+## 33. Bitcoin escrow key layout (migration 088, A-455)
+
+Migration 088 runs at startup. It adds `user_escrow_keys.layout`, `core` (a Bitcoin Core wallet, as every key so far)
+or `per_order` (a per-order wallet: Electrum with a BIP39 seed, or Sparrow), with `core` as the default, so every
+existing key stays a Core key and stays active. It also adds two checks on `escrow_pubkeys`: a derivation suffix of
+three or more steps (a per-order wallet's key, `/<i>/0/0`) may not start with `/0` or `/1`, for any party, and a
+buyer's or vendor's may not use the reserved practice index `/2147483647`. Shape (a)'s two-step suffixes (`/0/<i>`) are
+untouched. Both checks are added `NOT VALID` and then validated in the same migration; no release before this one
+writes a suffix of three steps, so validation finds nothing to refuse. With `ESCROW_BTC=on`, the escrow key page then
+lets a user register a per-order wallet key (the BIP48 multisig account key, `m/48h/1h/0h/2h`) and sign its practice
+transaction in a per-order practice wallet, and listings and vendor profiles show the vendor's key type. Escrows with
+per-order wallets are not built yet: a checkout where either party's active key is a per-order wallet key is refused
+with nothing written ([per-order escrow](docs/escrow.md#per-order-key-layout-registration-and-practice-a-455-shape-b)).
+No action is needed at upgrade. Rolling back past this release needs the pre-upgrade backup, as for every migration
+(section 5): the earlier release refuses to start on a database that records migration 088.
+
 ## Appendix: new keys by hand
 
 `./scripts/install.sh upgrade` writes these for you. To add them yourself, use your editor (values in single

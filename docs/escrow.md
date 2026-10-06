@@ -133,7 +133,9 @@ descriptor in your wallet is what detects that.
   them; both logs are local and gitignored). Electrum's own seed type, what "Create a new seed" makes and the
   default in Tails, cannot follow a per-order key path at all: Electrum fixes its multisig keys at `m/1'` and
   takes no path for that seed type (`from_seed` in Electrum's `keystore.py`; the script's `electrum-seed-type`
-  leg records it).
+  leg records it). On the development branch a user can now register a per-order wallet key and sign its practice
+  transaction ([A-455](#per-order-key-layout-registration-and-practice-a-455-shape-b)); escrows with per-order
+  wallets are not built yet.
 
 ## Monero: one account per order
 
@@ -169,7 +171,7 @@ shipped phase has proven. The full rules and acceptance criteria are in the proj
 | 0 | Preparation in the current payment code: one settlement per order enforced by the database, a single settlement dispatcher, password confirmation for dispute decisions | Done on the development branch, not yet released; changes nothing for users except that resolving a dispute asks for the resolver's password |
 | Wallet check | Scripted signing test with Electrum and Bitcoin Core on regtest, before any escrow database change | Done on regtest: Core signs; Electrum cannot sign this layout. Repeatable with `scripts/test-escrow-wallets.sh` (real local chain plus a real Electrum, run by hand, not CI); Electrum's own seed type cannot follow a per-order key path |
 | 1 | Bitcoin escrow for digital orders on regtest, behind a setting that is off by default | Built and tested on regtest on the development branch, not released, behind `ESCROW_BTC` (off by default, regtest only): see [Phase 1](#phase-1-bitcoin-escrow-on-regtest) for what it does, what it protects and the tests behind it. Not run on any public test network or on mainnet; Electrum, Sparrow and hardware wallets are not supported |
-| Wallets | Electrum and Sparrow support (a signing test showed Electrum needs a different key layout) | Not started |
+| Wallets | Electrum and Sparrow support (a signing test showed Electrum needs a different key layout) | In progress on the development branch: per-order key derivation (A-453), the escrow signer (A-454), and per-order wallet keys with their practice signature (A-455); no escrow uses a per-order wallet yet |
 | 2 | Physical orders: buyer-signed release, 14-day deadline, no-ship cancellation, fee bumps | Built and tested on regtest; not released; off by default (`ESCROW_BTC`, regtest only): see [Phase 2](#phase-2-bitcoin-escrow-for-physical-orders-on-regtest) for what it does, what it protects, what it does not do and the tests behind it. Not run on any public test network or on mainnet; only Bitcoin Core signing is supported |
 | 3 | Monero accounts in monthly escrow wallets | Built and tested on a local Monero fakechain (monerod `--regtest`); not released; off by default (`ESCROW_XMR`, fakechain only): see [Phase 3](#phase-3-monero-escrow-on-a-local-fakechain) for what it does, what it protects, what it does not protect and the tests behind it. Custodial: the market can move these coins. Not run on stagenet, a public test network or mainnet; no Monero multisig |
 | 4 | Public test networks end to end, then escrow-only for new orders, then removal of the pooled wallet | Groundwork only: the node sync guard, the escrow chain pin and the chain table (A-439, [below](#node-sync-guard-chain-pin-and-chain-table-a-439)) are on the development branch; escrow still accepts regtest only and nothing has run on a public test network |
@@ -830,6 +832,48 @@ refusals; backup, restore and an identical signature from the restored seed; a p
 seed or tprv in the database, the signers' logs or the transcript). Not tested: the Compose service running (checked
 with `docker compose config` only), break-glass signing on an offline node, any wallet other than Bitcoin Core, and any
 public network.
+
+## Per-order key layout, registration and practice (A-455, shape (b))
+
+The third piece of per-order wallets (rulings P4-R2 and P4-R18, owner decision 2026-10-05), on the development branch
+behind `ESCROW_BTC` (off by default, regtest only). No escrow uses a per-order wallet yet: a checkout where the buyer's
+or the vendor's active key is a per-order wallet key is refused with nothing written, and the order page says why
+(escrows with per-order wallets are A-456).
+
+- **Layout.** Each account still has one escrow key, now with a layout (`user_escrow_keys.layout`, migration 088):
+  `core`, a Bitcoin Core wallet whose escrows use the account key's child `/0/<i>` (every key registered before), or
+  `per_order`, a wallet made for each order from the account key's child `<i>`. The escrow key page asks which wallet
+  the key comes from. A per-order wallet key must be the BIP48 multisig account key (`m/48h/1h/<account>h/2h`, a `tpub`
+  or `Vpub`, parsed by the same strict parser). Registering the same key with the other layout is a change: the key is
+  inactive until the practice transaction of the new layout is signed. A key that is the key of existing escrows
+  cannot change layout. The page says plainly that Electrum's own seed type (Electrum's default, also on Tails) cannot
+  make per-order wallets: a BIP39 seed in Electrum, or Sparrow, is needed. The database refuses an escrow key whose
+  suffix has three or more steps (a per-order key, `/<i>/0/0`) starting with 0 or 1, for any party, and a buyer's or
+  vendor's at the practice index 2^31-1; shape (a)'s two-step suffixes are not affected.
+- **Practice (ES-9) for a per-order wallet key.** The practice escrow is the 2-of-3 of the owner's key at the reserved
+  index (`account/2147483647/0/0`) and the `/0/0` children of two cosigner keys served rooted (depth 0, parent
+  fingerprint 0, child 0, as `Vpub`): the server's throwaway key's child at that index and an unsignable key's. Go
+  derives the cosigner keys; Core must derive the same address from the throwaway key's own path, or no practice is
+  served. The page shows the derivation path for the practice wallet, the two cosigner keys, its first receiving
+  address and the PSBT; the owner builds the practice wallet from the seed, checks the address, signs and pastes. Only
+  the owner's signature is taken from the paste (the practice check never read derivation entries, so the entries
+  Electrum writes for every key need no relaxation), and activation needs a signature from the registered key's
+  per-order practice key: a signature from its Core practice child (`/0/0`) is refused. Its made-up outpoint is
+  checked absent and `testmempoolaccept` must report missing-inputs, as for a Core key.
+- **Key type on the listing and the vendor page.** While Bitcoin escrow is on, a listing and a vendor's profile name
+  the vendor's active key type: Bitcoin Core, a per-order wallet, or none active.
+
+How it was tested: DB integration with a simulated node that derives rooted keys by real BIP32 public derivation
+(`TestEscrowKeyLayoutMigration`, `TestEscrowKeyLayoutRegistration`, `TestEscrowPerOrderPractice`,
+`TestEscrowPerOrderPracticeCrossCheck`, `TestEscrowKeyLayoutSwitchNeedsPractice`, `TestEscrowKeyWithEscrowsKeepsLayout`,
+`TestEscrowPracticeKeyChangedDuringCheck`, `TestEscrowPerOrderKeyNotUsedForCheckout`,
+`TestEscrowVendorKeyTypeShown`); a browser journey with JavaScript off at 320 px against the simulated node
+(`tests/e2e/escrow-per-order-journey.spec.ts`, `npm run test:e2e:escrow`; not chain evidence); and on a real local
+chain, Core 31.1 on regtest (`TestEscrowRegtestPerOrderPractice` in `scripts/test-escrow-regtest.sh`: from a Core
+wallet's seed standing in for a BIP39 seed and the practice page alone, the operator builds the per-order practice
+wallet as a private descriptor, Core derives the address shown and signs the PSBT, and the signature activates the key;
+the unsigned PSBT, the same seed's Core wallet holding the shape-(a) range and a SIGHASH_NONE signature are refused).
+Not tested: a real Electrum or Sparrow signing the practice (A-457 and A-458), hardware wallets, and any public network.
 
 All escrow testing uses regtest, a local Monero fakechain and public test networks only. Mainnet stays an operator opt-in
 and is never used in development or tests.
