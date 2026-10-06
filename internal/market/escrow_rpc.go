@@ -1114,14 +1114,14 @@ var escrowArbiterReadTimeout = 5 * time.Minute
 // listsinceblock reported, for the wallet it read (its name and getwalletinfo birthtime). A later check of the same
 // wallet reads only what is newer than that block (and anything unconfirmed); with no checkpoint, one for another
 // wallet (a different name or birthtime: another wallet, or one rebuilt with importdescriptors), a wallet that reports
-// no birthtime, or a block the node does not know (-5: another node or chain), it reads everything, in one call. From
-// a block no longer in the active chain Core itself lists every entry from the fork point on. The read goes on in the
-// background (arbiterScan): when the caller's context ends first (startup's budget) escrow stays off with
-// escrowLogArbiterWait, and the next check of the same wallet from the same checkpoint (the escrow watcher's retry)
-// takes that read's answer instead of starting again. It reports the state line and class startEscrow returns ("" when
-// the wallet passes): escrowLogArbiterUse for a wallet that is not an arbiter's or has spent, escrowLogArbiterRead
-// when its entries could not be read (a timeout, an unreachable node, an RPC error: never taken as a pass, and never
-// reported as a wallet used for something else), or a database error.
+// no birthtime, a block the node does not know (-5: another node or chain) or one that is not a block hash (QA4W5-8;
+// Core refuses it, -8), it reads everything, in one call. From a block no longer in the active chain Core itself lists
+// every entry from the fork point on. The read goes on in the background (arbiterScan): when the caller's context ends
+// first (startup's budget) escrow stays off with escrowLogArbiterWait, and the next check of the same wallet from the
+// same checkpoint (the escrow watcher's retry) takes that read's answer instead of starting again. It reports the state
+// line and class startEscrow returns ("" when the wallet passes): escrowLogArbiterUse for a wallet that is not an
+// arbiter's or has spent, escrowLogArbiterRead when its entries could not be read (a timeout, an unreachable node, an
+// RPC error: never taken as a pass, and never reported as a wallet used for something else), or a database error.
 func (a *App) checkArbiterWallet(ctx context.Context, e *escrowBTC) (state, class string, err error) {
 	var info struct {
 		WalletName    string           `json:"walletname"`
@@ -1154,7 +1154,10 @@ func (a *App) checkArbiterWallet(ctx context.Context, e *escrowBTC) (state, clas
 		return "", "", err
 	default:
 		var pinned arbiterCheckpoint
-		if info.BirthTime != nil && json.Unmarshal([]byte(raw), &pinned) == nil && pinned.Wallet == mark.Wallet && pinned.BirthTime == mark.BirthTime {
+		// QA4W5-8: a block that is not a block hash (64 hex characters) is no checkpoint; Core would refuse it (-8) on
+		// every retry.
+		if info.BirthTime != nil && json.Unmarshal([]byte(raw), &pinned) == nil && pinned.Wallet == mark.Wallet && pinned.BirthTime == mark.BirthTime &&
+			xmrHex64(pinned.Block) {
 			from = pinned.Block
 		}
 	}
@@ -1216,8 +1219,9 @@ type escrowArbiterScan struct {
 }
 
 // arbiterScan returns the read in progress (or finished and not yet taken) for key, or starts one: arbiterSends from
-// from, and when the node does not know that block (-5) from the start. It runs on its own context, bounded only by
-// escrowArbiterReadTimeout per call, so a check whose context ends first leaves it running for the next check.
+// from, and when the node does not know that block (-5) or refuses it as malformed (-8, QA4W5-8) from the start. It
+// runs on its own context, bounded only by escrowArbiterReadTimeout per call, so a check whose context ends first
+// leaves it running for the next check.
 func (a *App) arbiterScan(e *escrowBTC, key, from string) *escrowArbiterScan {
 	a.escrowScanMu.Lock()
 	defer a.escrowScanMu.Unlock()
@@ -1230,7 +1234,7 @@ func (a *App) arbiterScan(e *escrowBTC, key, from string) *escrowArbiterScan {
 		defer close(s.done)
 		s.block, s.sent, s.err = e.arbiterSends(context.Background(), from)
 		var re *escrowRPCError
-		if from != "" && errors.As(s.err, &re) && re.Class == "rpc:-5" {
+		if from != "" && errors.As(s.err, &re) && (re.Class == "rpc:-5" || re.Class == "rpc:-8") {
 			s.block, s.sent, s.err = e.arbiterSends(context.Background(), "")
 		}
 	}()

@@ -42,7 +42,7 @@ func TestEscrowRegtestPracticeSign(t *testing.T) {
 		if wallet != "" {
 			path = "/wallet/" + wallet
 		}
-		if err := op.call(ctx, path, method, params, out); err != nil {
+		if err := op.callWithin(ctx, regtestOperatorTimeout, path, method, params, out); err != nil {
 			t.Fatalf("operator %s: %v", method, err)
 		}
 	}

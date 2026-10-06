@@ -664,6 +664,9 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 		}
 		from := 0 // QA4W4A-1: entry i is in block arbiterBlock(i+1); the entries after a block, as Core lists them
 		if h := str(0); h != "" {
+			if _, err := hex.DecodeString(h); len(h) != 64 || err != nil { // Core's ParseHashV refuses it before any lookup
+				return nil, -8, "blockhash must be of length 64 (not " + strconv.Itoa(len(h)) + ", for '" + h + "')"
+			}
 			from = -1
 			for i := 0; i <= len(c.arbiterTxs); i++ {
 				if arbiterBlock(i) == h {

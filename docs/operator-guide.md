@@ -658,13 +658,31 @@ has run on a public test network. Never switch it on for a market that takes rea
   newer than that block, plus anything unconfirmed (100,000 entries: about 5 s for the one full read on a loaded host,
   under 0.2 s after it). The whole wallet is read once, in one call, when there is no checkpoint, when the checkpoint
   belongs to another wallet (another name, or another birthtime, as a wallet rebuilt with `importdescriptors` has; one
-  restored from its backup file keeps both) or names a block the node does not know, and every time for a Core that
-  reports no birthtime. When that read takes longer than startup allows, escrow stays off with "escrow: Bitcoin escrow
+  restored from its backup file keeps both) or names a block the node does not know (or one that is not a block hash),
+  and every time for a Core that reports no birthtime.
+
+  The checkpoint misses one case (QA4W5-3): `importdescriptors` into the arbiter wallet it was recorded for keeps the
+  wallet's name and birthtime, so the checkpoint still applies, and if the imported descriptor's keys have spent
+  before, those old spends sit at or below the checkpoint block, where the next check does not read. **After importing
+  any descriptor into the arbiter wallet**, delete the checkpoint, so that the next check reads the whole wallet once:
+
+  ```sh
+  docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d opsecmkt \
+    -c "DELETE FROM settings WHERE key='escrow_btc_arbiter_checked'"
+  ```
+
+  It prints `DELETE 1` (or `DELETE 0` when there was none); then restart the app, whose start runs the check. A wallet
+  rebuilt blank with `importdescriptors` (the runbook's fallback) gets a new birthtime and is read whole without this
+  step, but running it does no harm.
+
+  When that read takes longer than startup allows, escrow stays off with "escrow: Bitcoin escrow
   off while the arbiter wallet is checked: …" and `/admin` says so; the read goes on, and the escrow watcher starts
   escrow once it has passed, without reading again. A read that fails (a timeout, an unreachable node, an RPC error
-  such as `listsinceblock` missing from the whitelist) is never a pass: escrow stays disabled with "escrow: Bitcoin
-  escrow disabled: the arbiter wallet's transactions could not be read …" (and an `/admin` line naming the class), and
-  the check is retried every poll. What the check cannot tell apart: `rpcwhitelist` allows methods, not wallets, so
+  such as `listsinceblock` missing from the whitelist, or an answer with one entry or other single value longer than
+  64 KiB, where Core's entries are about 700 bytes: `bad-reply`) is never a pass: escrow stays disabled with "escrow:
+  Bitcoin escrow disabled: the arbiter wallet's transactions could not be read …" (and an `/admin` line naming the
+  class), and the check is retried every poll. The answer as a whole has no size limit (100,000 entries are about
+  71 MB), only the read's 5-minute timeout. What the check cannot tell apart: `rpcwhitelist` allows methods, not wallets, so
   where the pooled payments share this node, a pooled user allowed `sendtoaddress` can spend coins paid to the arbiter
   wallet by naming its path, and that spend turns escrow off at the next check (no key is exported). Run escrow on a
   node of its own to rule that out. It cannot check which descriptors the wallet holds (`listdescriptors` is not on the
