@@ -26,7 +26,8 @@ export DATABASE_URL='postgres://opsecmkt:local-dev-only@127.0.0.1:55432/opsecmkt
 export SETUP_TOKEN="$(openssl rand -hex 32)"
 export ADDR='127.0.0.1:8080'
 export COOKIE_SECURE=false
-# Optional: must be clearnet (default) or tor, otherwise startup stops; it changes no behaviour.
+# Optional: must be clearnet (default) or tor, otherwise startup stops; tor also holds Bitcoin escrow broadcasts
+# unless the escrow node sends through a proxy (A-441, docs/operator-guide.md).
 export APP_MODE=clearnet
 # Keep local development independent of any configured wallets:
 unset BITCOIN_RPC_URL MONERO_RPC_URL MONERO_WALLET_RPC_URL

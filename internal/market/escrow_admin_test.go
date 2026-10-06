@@ -183,7 +183,7 @@ func TestEscrowRPCPinsCosign(t *testing.T) {
 		{"getwalletinfo", arb, `[]`, func() error { return e.checkArbiterWallet(ctx) }},
 		{"walletprocesspsbt", arb, `["` + testCorePSBTUnsigned + `",true,"ALL",true,false]`, func() error { _, err := e.arbiterSign(ctx, testCorePSBTUnsigned); return err }},
 		{"testmempoolaccept", "/", `[["00"],0.001]`, func() error { _, _, err := e.testMempoolAccept(ctx, "00", escrowMaxFeeRate); return err }},
-		{"sendrawtransaction", "/", `["00",0.001]`, func() error { _, err := sendStored(ctx, e, "00", "txid-broadcast"); return err }},
+		{"sendrawtransaction", "/", `["00",0.001]`, func() error { _, err := (&App{}).sendStored(ctx, e, "00", "txid-broadcast"); return err }},
 	}
 	for _, s := range steps {
 		if err := s.call(); err != nil {
@@ -204,14 +204,14 @@ func TestEscrowRPCPinsCosign(t *testing.T) {
 		t.Fatalf("conflicted: %+v %v", w, err)
 	}
 	// sendrawtransaction: another txid is a bad reply; -27 is sent; -26 and -25 are refusals; others are errors.
-	if sent, err := sendStored(ctx, e, "00", "another"); sent || err == nil {
+	if sent, err := (&App{}).sendStored(ctx, e, "00", "another"); sent || err == nil {
 		t.Fatal("another txid accepted")
 	}
 	for code, want := range map[int]string{-27: "sent", -26: "refused", -25: "refused", -1: "error"} {
 		core.mu.Lock()
 		core.sendErr = code
 		core.mu.Unlock()
-		sent, err := sendStored(ctx, e, "00", "txid-broadcast")
+		sent, err := (&App{}).sendStored(ctx, e, "00", "txid-broadcast")
 		got := "error"
 		switch {
 		case err == nil && sent:

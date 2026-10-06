@@ -48,6 +48,17 @@ type fakeEscrowCore struct {
 	netInfoErr       int
 	netInfoForbidden bool
 
+	// A-441: getnetworkinfo's version (0 = 310100) and, per network (ipv4, ipv6, onion, i2p, cjdns), its proxy ("" = none)
+	// and whether onion is reachable, as Core 31.1 reports them: -proxy sets the proxy of every network and makes onion
+	// reachable; -onion alone sets only onion's. With private set, sendrawtransaction answers the txid and keeps the
+	// transaction queued, as -privatebroadcast does with a dead proxy (probed on Core 31.1 regtest): it is not in the
+	// mempool, so gettransaction does not know it and its inputs stay unspent; a resend answers the txid again.
+	netVersion     int64
+	netProxy       map[string]string
+	onionReachable bool
+	private        bool
+	queued         map[string]string // txid -> raw transaction queued by a private broadcast
+
 	// Escrow P1-b: the watch-only wallet, its imports and the deposits it reports.
 	watchInfo    map[string]any      // getwalletinfo of the watch wallet (nil = not loaded, -18)
 	importFail   bool                // importdescriptors answers success=false
@@ -276,7 +287,16 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 		if c.netInfoErr != 0 {
 			return nil, c.netInfoErr, "Method not found"
 		}
-		return map[string]any{"version": 310100, "connections": c.peers}, 0, ""
+		version := c.netVersion
+		if version == 0 {
+			version = 310100
+		}
+		var networks []map[string]any
+		for _, n := range []string{"ipv4", "ipv6", "onion", "i2p", "cjdns"} {
+			reachable := n == "ipv4" || n == "ipv6" || n == "onion" && c.onionReachable
+			networks = append(networks, map[string]any{"name": n, "limited": !reachable, "reachable": reachable, "proxy": c.netProxy[n], "proxy_randomize_credentials": c.netProxy[n] != ""})
+		}
+		return map[string]any{"version": version, "connections": c.peers, "networks": networks}, 0, ""
 	case "getrawchangeaddress":
 		if !wallet {
 			return nil, -18, "Requested wallet does not exist or is not loaded"
@@ -614,6 +634,13 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 			return "txid-broadcast", 0, "" // the adapter's params test sends a placeholder
 		}
 		txid := t.TxID()
+		if _, ok := c.broadcast[txid]; !ok && c.private {
+			if c.queued == nil {
+				c.queued = map[string]string{}
+			}
+			c.queued[txid] = str(0)
+			return txid, 0, ""
+		}
 		if _, ok := c.broadcast[txid]; ok {
 			if c.txConfs[txid] > 0 {
 				return nil, -27, "Transaction outputs already in utxo set"

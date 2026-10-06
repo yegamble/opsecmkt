@@ -38,7 +38,8 @@ class EscrowRegtestJobTest(unittest.TestCase):
         self.assertRegex(block, r'(?m)^    timeout-minutes: \d+$')
         # The script refuses to start without each of these; the job must hand it each.
         for name in ('ESCROW_REGTEST_OPERATOR_RPC_URL', 'ESCROW_REGTEST_APP_RPC_URL', 'ESCROW_REGTEST_POOLED_RPC_URL',
-                     'ESCROW_REGTEST_SIGNER_RPC_URL', 'TEST_DATABASE_URL'):
+                     'ESCROW_REGTEST_SIGNER_RPC_URL', 'ESCROW_REGTEST_PRIVATE_OPERATOR_RPC_URL',
+                     'ESCROW_REGTEST_PRIVATE_APP_RPC_URL', 'TEST_DATABASE_URL'):
             self.assertIn(name, block)
 
     def test_job_gives_the_app_user_the_documented_whitelist_and_nothing_else(self):
@@ -74,7 +75,19 @@ class EscrowRegtestJobTest(unittest.TestCase):
 
     def test_node_is_published_on_loopback_only(self):
         block = job_block(WORKFLOW, JOB)
-        self.assertRegex(block, r'-p "127\.0\.0\.1:\$BITCOIN_RPC_PORT:18443"')
+        # Both nodes are started by one docker run line (node()), published on loopback only.
+        self.assertRegex(block, r'-p "127\.0\.0\.1:\$port:18443"')
+        self.assertEqual(block.count('docker run '), 1)
+
+    def test_private_broadcast_node_matches_the_script_and_never_reaches_the_network(self):
+        # A-441: the second node runs the documented flags (a proxy nobody answers), started by the same node()
+        # helper with the same users and whitelists, and is collected and removed with the first.
+        block = job_block(WORKFLOW, JOB)
+        self.assertIn('node "$BITCOIN_CONTAINER" "$BITCOIN_RPC_PORT"\n', block)
+        self.assertIn('node "$BITCOIN_PRIVATE_CONTAINER" "$BITCOIN_PRIVATE_RPC_PORT" -privatebroadcast -proxy=127.0.0.1:9 -listen=0\n', block)
+        self.assertIn('-privatebroadcast -proxy=127.0.0.1:9 -listen=0', SCRIPT.split('set -euo pipefail')[0])
+        self.assertNotRegex(block, r'-(connect|onlynet|addnode|seednode)=')
+        self.assertIn('docker rm -f -v "$BITCOIN_CONTAINER" "$BITCOIN_PRIVATE_CONTAINER"', block)
 
     def test_node_is_removed_with_its_volume_even_when_a_step_fails(self):
         block = job_block(WORKFLOW, JOB)

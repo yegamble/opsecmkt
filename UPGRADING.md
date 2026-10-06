@@ -1148,6 +1148,18 @@ upgrading, set it (`openssl rand -hex 24`) in `.env` and as the password in `MON
 (`http://marketplace:PASSWORD@monero-wallet:18083`). `./scripts/install.sh check` names the missing key. An install
 without these profiles needs neither key.
 
+## 35. Bitcoin escrow broadcast honesty and the Tor-mode gate (A-441)
+
+No migration, no new key. Only with `ESCROW_BTC=on`. A settlement recorded broadcast whose transaction the escrow
+watch-only wallet has not seen 6 blocks later now tells staff once ("Queued or stuck: not seen by the network", an
+order note and a "Payment review needed" notification) and is listed on `/admin` until the wallet sees it. With
+`APP_MODE=tor`, escrow settlements are now broadcast only while the escrow node's `getnetworkinfo` shows a proxy for
+IPv4 and IPv6 on Bitcoin Core 31.1 or later; otherwise they wait, with a line on `/admin`. A Tor-mode market using escrow
+therefore needs `getnetworkinfo` on the escrow user's `rpcwhitelist` (it is called on regtest too in Tor mode) and the
+escrow node started with `-proxy=<Tor SOCKS address>`, never `-connect` or `-onlynet`
+([operator guide](docs/operator-guide.md#bitcoin-escrow-regtest-only), *Tor mode*). Clearnet mode and pooled payouts
+are unchanged.
+
 ## Appendix: new keys by hand
 
 `./scripts/install.sh upgrade` writes these for you. To add them yourself, use your editor (values in single

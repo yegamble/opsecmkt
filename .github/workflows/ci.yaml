@@ -115,6 +115,8 @@ jobs:
       TEST_DATABASE_URL: postgres://test:test-ci-only@127.0.0.1:5432/postgres?sslmode=disable
       BITCOIN_CONTAINER: escrow-regtest
       BITCOIN_RPC_PORT: '18443'
+      BITCOIN_PRIVATE_CONTAINER: escrow-regtest-private
+      BITCOIN_PRIVATE_RPC_PORT: '18453'
       BITCOIN_IMAGE: bitcoin/bitcoin:31.1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -130,6 +132,8 @@ jobs:
       # descriptorprocesspsbt and getdescriptorinfo (A-454, QA4W2-1). The passwords are generated for this run,
       # masked before they reach any output and handed to the next step only through GITHUB_ENV inside the URLs;
       # bitcoind learns them as salted HMACs (-rpcauth), so no password is on a command line or in the repository.
+      # A second node with the same users (A-441) runs -privatebroadcast through a proxy nobody answers
+      # (-proxy=127.0.0.1:9 inside its container) for the private-broadcast leg; the two nodes are not connected.
       - name: Start Bitcoin Core on regtest
         run: |
           whitelist=getblockchaininfo,getnetworkinfo,getrawchangeaddress,getaddressinfo,createpsbt,utxoupdatepsbt,importdescriptors,getdescriptorinfo,deriveaddresses,gettxout,keypoolrefill,walletprocesspsbt,descriptorprocesspsbt,combinepsbt,finalizepsbt,testmempoolaccept,sendrawtransaction,getwalletinfo,listreceivedbyaddress,gettransaction,listtransactions
@@ -148,30 +152,45 @@ jobs:
             hash=$(printf %s "$2" | openssl dgst -sha256 -hmac "$salt" | sed 's/^.* //')
             printf '%s:%s$%s' "$1" "$salt" "$hash"
           }
-          docker run -d --name "$BITCOIN_CONTAINER" -p "127.0.0.1:$BITCOIN_RPC_PORT:18443" "$BITCOIN_IMAGE" \
-            bitcoind -regtest -fallbackfee=0.0002 -server=1 -rpcbind=0.0.0.0 -rpcallowip=0.0.0.0/0 \
-            "-rpcauth=$(rpcauth operator "$operator_pass")" "-rpcauth=$(rpcauth opsecmkt-escrow "$app_pass")" \
-            "-rpcauth=$(rpcauth opsecmkt-pooled "$pooled_pass")" "-rpcauth=$(rpcauth opsecmkt-signer "$signer_pass")" \
-            -rpcwhitelistdefault=0 "-rpcwhitelist=opsecmkt-escrow:$whitelist" "-rpcwhitelist=opsecmkt-pooled:$pooled_whitelist" \
-            -rpcwhitelist=opsecmkt-signer:decodepsbt,descriptorprocesspsbt,getdescriptorinfo
+          node() { # node <container> <port> [extra bitcoind arguments]
+            local name=$1 port=$2
+            shift 2
+            docker run -d --name "$name" -p "127.0.0.1:$port:18443" "$BITCOIN_IMAGE" \
+              bitcoind -regtest -fallbackfee=0.0002 -server=1 -rpcbind=0.0.0.0 -rpcallowip=0.0.0.0/0 "$@" \
+              "-rpcauth=$(rpcauth operator "$operator_pass")" "-rpcauth=$(rpcauth opsecmkt-escrow "$app_pass")" \
+              "-rpcauth=$(rpcauth opsecmkt-pooled "$pooled_pass")" "-rpcauth=$(rpcauth opsecmkt-signer "$signer_pass")" \
+              -rpcwhitelistdefault=0 "-rpcwhitelist=opsecmkt-escrow:$whitelist" "-rpcwhitelist=opsecmkt-pooled:$pooled_whitelist" \
+              -rpcwhitelist=opsecmkt-signer:decodepsbt,descriptorprocesspsbt,getdescriptorinfo
+          }
+          node "$BITCOIN_CONTAINER" "$BITCOIN_RPC_PORT"
+          node "$BITCOIN_PRIVATE_CONTAINER" "$BITCOIN_PRIVATE_RPC_PORT" -privatebroadcast -proxy=127.0.0.1:9 -listen=0
           {
             echo "ESCROW_REGTEST_OPERATOR_RPC_URL=http://operator:$operator_pass@127.0.0.1:$BITCOIN_RPC_PORT"
             echo "ESCROW_REGTEST_APP_RPC_URL=http://opsecmkt-escrow:$app_pass@127.0.0.1:$BITCOIN_RPC_PORT"
             echo "ESCROW_REGTEST_POOLED_RPC_URL=http://opsecmkt-pooled:$pooled_pass@127.0.0.1:$BITCOIN_RPC_PORT"
             echo "ESCROW_REGTEST_SIGNER_RPC_URL=http://opsecmkt-signer:$signer_pass@127.0.0.1:$BITCOIN_RPC_PORT"
+            echo "ESCROW_REGTEST_PRIVATE_OPERATOR_RPC_URL=http://operator:$operator_pass@127.0.0.1:$BITCOIN_PRIVATE_RPC_PORT"
+            echo "ESCROW_REGTEST_PRIVATE_APP_RPC_URL=http://opsecmkt-escrow:$app_pass@127.0.0.1:$BITCOIN_PRIVATE_RPC_PORT"
           } >> "$GITHUB_ENV"
-          for _ in $(seq 60); do
-            if printf 'url = "http://operator:%s@127.0.0.1:%s"\n' "$operator_pass" "$BITCOIN_RPC_PORT" |
-              curl -sS --max-time 5 --noproxy '*' -H 'Content-Type: application/json' --config - \
-                --data '{"jsonrpc":"1.0","id":"ci","method":"getblockchaininfo","params":[]}' 2>/dev/null |
-              grep -q '"chain":"regtest"'; then
-              exit 0
+          for port in "$BITCOIN_RPC_PORT" "$BITCOIN_PRIVATE_RPC_PORT"; do
+            up=no
+            for _ in $(seq 60); do
+              if printf 'url = "http://operator:%s@127.0.0.1:%s"\n' "$operator_pass" "$port" |
+                curl -sS --max-time 5 --noproxy '*' -H 'Content-Type: application/json' --config - \
+                  --data '{"jsonrpc":"1.0","id":"ci","method":"getblockchaininfo","params":[]}' 2>/dev/null |
+                grep -q '"chain":"regtest"'; then
+                up=yes
+                break
+              fi
+              sleep 1
+            done
+            if [ "$up" != yes ]; then
+              echo "bitcoind on port $port did not answer on regtest within 60 seconds" >&2
+              docker logs --tail 50 "$BITCOIN_CONTAINER" >&2
+              docker logs --tail 50 "$BITCOIN_PRIVATE_CONTAINER" >&2
+              exit 1
             fi
-            sleep 1
           done
-          echo 'bitcoind did not answer on regtest within 60 seconds' >&2
-          docker logs --tail 50 "$BITCOIN_CONTAINER" >&2
-          exit 1
       - name: Escrow legs on a real regtest node (scripts/test-escrow-regtest.sh)
         run: bash scripts/test-escrow-regtest.sh
         env:
@@ -181,6 +200,7 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/escrow-regtest"
           docker logs "$BITCOIN_CONTAINER" > "$RUNNER_TEMP/escrow-regtest/bitcoind.log" 2>&1 || true
+          docker logs "$BITCOIN_PRIVATE_CONTAINER" > "$RUNNER_TEMP/escrow-regtest/bitcoind-private.log" 2>&1 || true
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
@@ -188,9 +208,9 @@ jobs:
           path: ${{ runner.temp }}/escrow-regtest/
           if-no-files-found: ignore
           retention-days: 14
-      - name: Remove the node and its volume
+      - name: Remove the nodes and their volumes
         if: always()
-        run: docker rm -f -v "$BITCOIN_CONTAINER"
+        run: docker rm -f -v "$BITCOIN_CONTAINER" "$BITCOIN_PRIVATE_CONTAINER"
   operations:
     name: Operations and encrypted restore
     runs-on: ubuntu-24.04
