@@ -1,6 +1,6 @@
-{{/* WR-escrow Phase 3 (escrow_xmr_order.go, escrow_xmr_create.go; slice X-e: escrow_xmr_release.go, escrow_xmr_deadline.go). The Monero escrow panel of a Monero escrow order, with its release deadline and the Mark shipped, Confirm receipt and claim forms, and the Monero escrow checkout offer on an XMR draft. The panel is shown for every Monero escrow order, with ESCROW_XMR off too; the checkout offer only with it on. Custody copy: owner decision O-2 (A-402). The copy claims only fakechain-verified behaviour. */}}
-{{define "order-xmr-escrow"}}{{with .XMREscrow}}<h2>Monero escrow <span class="badge testnet">FAKECHAIN</span></h2>
-<p class="alert" role="note"><strong>Local test chain only.</strong> Monero escrow on this market runs on a Monero fakechain, a local test chain, and has not been verified on any public network; its coins have no value. The coins in this escrow are {{.Custody}}. They leave it only by a transaction the market builds and sends: the release to the vendor, a refund to the buyer's refund address, a dispute decision or the return of coins sent after the order closed.</p>{{if .Off}}
+{{/* WR-escrow Phase 3 (escrow_xmr_order.go, escrow_xmr_create.go; slice X-e: escrow_xmr_release.go, escrow_xmr_deadline.go). The Monero escrow panel of a Monero escrow order, with its release deadline and the Mark shipped, Confirm receipt and claim forms, and the Monero escrow checkout offer on an XMR draft. The panel is shown for every Monero escrow order, with ESCROW_XMR off too; the checkout offer only with it on. Custody copy: owner decision O-2 (A-402). The copy claims only behaviour verified on local test chains; on stagenet (.Net, A-449) it says no public-stagenet run is recorded. */}}
+{{define "order-xmr-escrow"}}{{with .XMREscrow}}<h2>Monero escrow <span class="badge testnet">{{if eq .Net "stagenet"}}STAGENET{{else}}FAKECHAIN{{end}}</span></h2>
+<p class="alert" role="note">{{if eq .Net "stagenet"}}<strong>Test network only.</strong> Monero escrow on this market runs on Monero stagenet, a public test network, and has been tested only on local test chains, not yet on the public stagenet; its coins have no value.{{else}}<strong>Local test chain only.</strong> Monero escrow on this market runs on a Monero fakechain, a local test chain, and has not been verified on any public network; its coins have no value.{{end}} The coins in this escrow are {{.Custody}}. They leave it only by a transaction the market builds and sends: the release to the vendor, a refund to the buyer's refund address, a dispute decision or the return of coins sent after the order closed.</p>{{if .Off}}
 <p class="alert error" role="status"><strong>Monero escrow is switched off on this market.</strong> The operator has turned it off, so until it is switched on again nothing in this order moves through the escrow: deposits to it are not read, the order cannot be marked shipped, receipt cannot be confirmed, the escrowed coins cannot be claimed and nothing is sent, and the release deadline is applied only once it is on again. Coins in this escrow, and coins sent to it, stay there.</p>{{else if not .Available}}
 <p class="alert error" role="status">Monero escrow is unavailable on this market right now, so deposits to this escrow are not being read and no escrow transaction is built or sent. Coins sent to it stay in the escrow; they are recorded once the operator has fixed the escrow wallet. Marking the order shipped, confirming receipt, a claim, a dispute and the release deadline still apply.</p>{{end}}{{with .Unrecoverable}}
 <p class="alert error" role="status"><strong>Do not send anything to this escrow address.</strong> {{.}}</p>{{end}}{{if .RestorePaused}}
@@ -13,7 +13,7 @@
 <dl class="key-values payment-figures">
 <div>
 <dt>Required</dt>
-<dd>{{.Required}} XMR <span class="badge testnet">FAKECHAIN</span></dd>
+<dd>{{.Required}} XMR <span class="badge testnet">{{if eq .Net "stagenet"}}STAGENET{{else}}FAKECHAIN{{end}}</span></dd>
 </div>
 <div>
 <dt>Confirmed (at least {{.Threshold}} confirmations)</dt>
@@ -101,15 +101,15 @@
 </table>
 </div>{{end}}{{end}}{{end}}
 {{define "order-xmr-escrow-checkout"}}{{with .XMREscrowCheckout}}<section class="order-action escrow-checkout" aria-labelledby="xmr-escrow-checkout-heading">
-<h3 id="xmr-escrow-checkout-heading">Or pay into a Monero escrow (local test chain only)</h3>
-<p class="help">Instead of the market's pooled wallet, pay into a Monero escrow: the coins are {{.Custody}}. {{if .Physical}}This listing is shipped by the vendor, so the order stays open after the escrow is funded until the goods are sent and the coins are released.{{else}}This listing delivers its content automatically, so the order completes as soon as the escrow is funded.{{end}} Monero escrow on this market runs on a local test chain (a Monero fakechain) only.</p>{{if .Reason}}
+<h3 id="xmr-escrow-checkout-heading">Or pay into a Monero escrow ({{if eq .Net "stagenet"}}test network only{{else}}local test chain only{{end}})</h3>
+<p class="help">Instead of the market's pooled wallet, pay into a Monero escrow: the coins are {{.Custody}}. {{if .Physical}}This listing is shipped by the vendor, so the order stays open after the escrow is funded until the goods are sent and the coins are released.{{else}}This listing delivers its content automatically, so the order completes as soon as the escrow is funded.{{end}} {{if eq .Net "stagenet"}}Monero escrow on this market runs on Monero stagenet, a public test network, only.{{else}}Monero escrow on this market runs on a local test chain (a Monero fakechain) only.{{end}}</p>{{if .Reason}}
 <p class="order-unavailable" role="note"><strong>Unavailable.</strong> {{.Reason}}</p>{{else}}
 <form class="stack" method="post" action="/orders/escrow-xmr">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="order_id" value="{{$.Order.ID}}">
 <label>Refund address<input name="refund_address" required minlength="95" maxlength="110" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="xmr-escrow-refund-help">
 </label>
-<span class="help" id="xmr-escrow-refund-help">A Monero standard address or subaddress from your own wallet (95 characters, starting with 4 or 8 on this test chain), used for nothing else. A refund of this escrow is paid there; it is fixed for this order and cannot be changed. Integrated addresses and addresses this market already used are refused.</span>
+<span class="help" id="xmr-escrow-refund-help">A Monero standard address or subaddress from your own wallet (95 characters, starting with {{.Prefixes}} on this {{if eq .Net "stagenet"}}test network{{else}}test chain{{end}}), used for nothing else. A refund of this escrow is paid there; it is fixed for this order and cannot be changed. Integrated addresses and addresses this market already used are refused.</span>
 <button class="primary" type="submit">Pay into a Monero escrow</button>
 </form>{{end}}
 </section>{{end}}{{end}}

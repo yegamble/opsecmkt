@@ -36,7 +36,17 @@ type xmrEscrowEnv struct {
 
 func newXMREscrowEnv(t *testing.T) *xmrEscrowEnv {
 	t.Helper()
+	return newXMREscrowEnvWith(t, nil)
+}
+
+// newXMREscrowEnvWith is newXMREscrowEnv with edit applied to the fake before the market starts (its daemon's network,
+// say: A-449).
+func newXMREscrowEnvWith(t *testing.T, edit func(f *fakeXMREscrow)) *xmrEscrowEnv {
+	t.Helper()
 	fake := newFakeXMREscrow(t)
+	if edit != nil {
+		edit(fake)
+	}
 	key, pub := testSeedKey(t, nil)
 	x := &xmrEscrowEnv{fake: fake, seedKey: key, keyPath: writeSeedKey(t, pub), now: time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)}
 	fake.setEnv(t, x.keyPath)
@@ -103,16 +113,25 @@ func (x *xmrEscrowEnv) freshCheckout(product string) (string, string) {
 	x.t.Helper()
 	buyer, sess := x.user("xb_"+randomToken()[:8], "buyer")
 	order := x.order(buyer, product, "XMR", stateDraft)
-	if w := x.checkout(sess, order, testXMRAddr("refund "+order, true)); w.Code != 303 {
+	if w := x.checkout(sess, order, testXMRAddrOn(x.refundNet(), "refund "+order, true)); w.Code != 303 {
 		x.t.Fatalf("checkout: %d %s", w.Code, w.Body.String())
 	}
 	return order, agStrings(x.t, x.testEnv, "SELECT address FROM escrows WHERE order_id=$1 AND coin='XMR'", order)[0]
 }
 
+// refundNet is the network type the helpers' refund addresses are of: the fake daemon's, or the fakechain for the
+// real-chain legs (escrow_xmr_regtest_test.go), which have no fake.
+func (x *xmrEscrowEnv) refundNet() string {
+	if x.fake == nil {
+		return "fakechain"
+	}
+	return x.fake.network()
+}
+
 // mustCheckout takes a Monero escrow for the buyer's draft order and returns its address.
 func (x *xmrEscrowEnv) mustCheckout(order string) string {
 	x.t.Helper()
-	if w := x.checkout(x.buyerSess, order, testXMRAddr("refund "+order, true)); w.Code != 303 {
+	if w := x.checkout(x.buyerSess, order, testXMRAddrOn(x.refundNet(), "refund "+order, true)); w.Code != 303 {
 		x.t.Fatalf("checkout: %d %s", w.Code, w.Body.String())
 	}
 	return agStrings(x.t, x.testEnv, "SELECT address FROM escrows WHERE order_id=$1 AND coin='XMR'", order)[0]

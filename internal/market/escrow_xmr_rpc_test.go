@@ -223,7 +223,21 @@ func happyXMRNodes(t *testing.T) (wallet, daemon *fakeXMRNode, r *xmrEscrowRPC) 
 	if r, err = newXMREscrowRPC(wallet.url(), daemon.url()); err != nil {
 		t.Fatal(err)
 	}
+	r.net.Store("fakechain") // as startEscrowXMR leaves it once the daemon is verified (A-449)
 	return wallet, daemon, r
+}
+
+// testXMRCheckNetwork is startEscrowXMR's network check without the database: checkDaemon, then checkOpenWallet. It
+// returns the daemon's network type and whether a wallet was open.
+func testXMRCheckNetwork(ctx context.Context, r *xmrEscrowRPC) (nettype string, walletOpen bool, err error) {
+	info, err := r.checkDaemon(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	if walletOpen, err = r.checkOpenWallet(ctx, info.Height); err != nil {
+		return "", false, err
+	}
+	return info.NetType, walletOpen, nil
 }
 
 // TestXMREscrowRPCPinsParams pins the path, method and exact JSON params of every adapter call (P3-R3, R6, R9, R10):
@@ -530,16 +544,17 @@ func TestXMREscrowNetworkCheck(t *testing.T) {
 		{"wallet 10 ahead", info("fakechain", false, 120), 16, 130, nil},
 		{"hard fork 17", info("fakechain", false, 120), 17, 120, nil},
 		{"height 999,999", info("fakechain", false, 999_999), 16, 999_999, nil},
-		{"mainnet", info("mainnet", true, 120), 16, 120, errXMRNotFakechain},
-		{"stagenet", info("stagenet", false, 120), 16, 120, errXMRNotFakechain},
-		{"testnet", info("testnet", false, 120), 16, 120, errXMRNotFakechain},
-		{"empty nettype", info("", false, 120), 16, 120, errXMRNotFakechain},
-		{"fakechain with the mainnet flag", info("fakechain", true, 120), 16, 120, errXMRNotFakechain},
-		{"fakechain with the stagenet flag", map[string]any{"nettype": "fakechain", "stagenet": true, "height": 120}, 16, 120, errXMRNotFakechain},
-		{"fakechain with the testnet flag", map[string]any{"nettype": "fakechain", "testnet": true, "height": 120}, 16, 120, errXMRNotFakechain},
+		{"mainnet", info("mainnet", true, 120), 16, 120, errXMRDaemonNetwork},
+		{"stagenet", info("stagenet", false, 120), 16, 120, nil},
+		{"stagenet with the stagenet flag missing", map[string]any{"nettype": "stagenet", "height": 120}, 16, 120, errXMRDaemonNetwork},
+		{"stagenet past height 1,000,000", info("stagenet", false, 1_900_000), 16, 1_900_000, nil},
+		{"testnet", info("testnet", false, 120), 16, 120, errXMRDaemonNetwork},
+		{"empty nettype", info("", false, 120), 16, 120, errXMRDaemonNetwork},
+		{"fakechain with the mainnet flag", info("fakechain", true, 120), 16, 120, errXMRDaemonNetwork},
+		{"fakechain with the stagenet flag", map[string]any{"nettype": "fakechain", "stagenet": true, "height": 120}, 16, 120, errXMRDaemonNetwork},
+		{"fakechain with the testnet flag", map[string]any{"nettype": "fakechain", "testnet": true, "height": 120}, 16, 120, errXMRDaemonNetwork},
 		{"hard fork 15", info("fakechain", false, 120), 15, 120, errXMRHardFork},
-		{"daemon height 1,000,000", info("fakechain", false, 1_000_000), 16, 1_000_000, errXMRDaemonHeight},
-		{"wallet height 1,000,000", info("fakechain", false, 999_995), 16, 1_000_000, errXMRWalletHeight},
+		{"fakechain past height 1,000,000", info("fakechain", false, 1_000_000), 16, 1_000_000, nil},
 		{"wallet 11 behind", info("fakechain", false, 120), 16, 109, errXMRWalletLag},
 		{"wallet 11 ahead", info("fakechain", false, 120), 16, 131, errXMRWalletLag},
 	}
@@ -549,9 +564,9 @@ func TestXMREscrowNetworkCheck(t *testing.T) {
 			daemon.result("get_info", c.info)
 			daemon.result("hard_fork_info", map[string]any{"version": c.hardFork, "enabled": true})
 			wallet.result("get_height", map[string]any{"height": c.walletHeight})
-			open, err := r.checkNetwork(ctx)
-			if !errors.Is(err, c.want) || (err == nil && !open) {
-				t.Fatalf("got %v (open %v), want %v", err, open, c.want)
+			net, open, err := testXMRCheckNetwork(ctx, r)
+			if !errors.Is(err, c.want) || (err == nil && (!open || net != c.info["nettype"])) {
+				t.Fatalf("got %v (open %v, network %q), want %v", err, open, net, c.want)
 			}
 			if err != nil && (strings.Contains(err.Error(), "127.0.0.1") || strings.Contains(err.Error(), "s3cret")) {
 				t.Fatalf("refusal names the node: %v", err)
@@ -560,7 +575,7 @@ func TestXMREscrowNetworkCheck(t *testing.T) {
 	}
 	// The wallet is refreshed before its height is read.
 	wallet, _, r := happyXMRNodes(t)
-	if _, err := r.checkNetwork(ctx); err != nil {
+	if _, _, err := testXMRCheckNetwork(ctx, r); err != nil {
 		t.Fatal(err)
 	}
 	if order := strings.Join(wallet.methods(), ","); order != "refresh,get_height" {
@@ -569,7 +584,7 @@ func TestXMREscrowNetworkCheck(t *testing.T) {
 	// No wallet open: the daemon passes, the wallet is not checked, and that is not an error.
 	wallet, _, r = happyXMRNodes(t)
 	wallet.set("refresh", func(json.RawMessage) (any, int, string) { return nil, -13, "No wallet file" })
-	if open, err := r.checkNetwork(ctx); err != nil || open {
+	if _, open, err := testXMRCheckNetwork(ctx, r); err != nil || open {
 		t.Fatalf("no wallet open: %v %v", open, err)
 	}
 	if wallet.count() != 1 {
@@ -713,7 +728,7 @@ func TestXMREscrowRefreshOutlastsSlowTimeout(t *testing.T) {
 	if err := r.refresh(ctx); err != nil {
 		t.Fatalf("a refresh longer than the slow bound was cut short: %v", err)
 	}
-	if _, err := r.checkNetwork(ctx); err != nil {
+	if _, _, err := testXMRCheckNetwork(ctx, r); err != nil {
 		t.Fatalf("the network check's refresh was cut short: %v", err)
 	}
 	var re *xmrRPCError

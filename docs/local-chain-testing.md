@@ -5,8 +5,16 @@ local blocks and transactions. It is separate from `test:e2e:wallet`, which uses
 simulated JSON-RPC responses. No public blockchain, faucet, mainnet funds or
 existing wallet is used.
 
-Bitcoin uses regtest with peer networking disabled. Monero uses an **offline
-stagenet fork**, fixed difficulty 1 and one mining thread. It retains genuine
+Bitcoin uses regtest with peer networking disabled. Monero uses an **isolated
+stagenet fork**, fixed difficulty 1 and one mining thread: two stagenet daemons
+peered only with each other over loopback (`--add-exclusive-node`, so no seed
+node or other peer; no DNS checkpoints, no UPnP, peer ports bound to 127.0.0.1).
+Since A-449 they are no longer `--offline`: the application's Monero sync guard
+counts a daemon with no peers as not synced, so a single offline daemon would
+hold every Monero watcher pass. The market and both wallets use the first
+daemon; the second only peers. The recorded runs in the evidence table predate
+this and used one `--offline` daemon; the two-daemon setup has not yet been run
+through this suite. It retains genuine
 stagenet addresses and the application's network checks. It is not the public
 stagenet, and its old-height protocol rules do not prove current public-network
 compatibility. Monero `--regtest` is deliberately not used: it uses fakechain
@@ -75,7 +83,7 @@ non-zero fee, in exactly the transaction the market recorded, and the fixture's
 pinned to a commit, are in the [evidence table](verification.md#evidence-table)
 (war-room A-103).
 
-On this offline stagenet fork a Monero transfer costs about 0.002 XMR, more than
+On this stagenet fork a Monero transfer costs about 0.002 XMR, more than
 the 0.001 XMR minimum automatic payout: a Monero payout (release, refund or
 return) below about 0.002 XMR fails with wallet error -16 "tx not possible", which
 the market records as refused before broadcast (nothing sent; an administrator can
@@ -137,7 +145,8 @@ environment variables, so neither the JSON nor the HTML report contains them
 
 `tests/e2e/fixtures/local-chain.py` supplies `address`, `deposit`, `mine` and
 `received` commands to the suite. Every operation first checks that Bitcoin is
-regtest with networking off or that Monero is offline stagenet. The driver's
+regtest with networking off or that Monero is stagenet with every connection on
+loopback (and, at setup, that it has reached its peer). The driver's
 `env` command is only for programmatic consumption by Playwright: **its output
 contains RPC credentials; do not print or save it in public test logs**.
 

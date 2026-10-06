@@ -176,7 +176,7 @@ func TestXMREscrowDigitalClaim(t *testing.T) {
 		{"no address", "", testPassword, 400, "Monero"},
 		{"an integrated address", testXMRAddressWith(xmrTagIntegrated, testXMRKey("s"), testXMRKey("v"), testXMRKey("p")[:8], false), testPassword, 400, errXMRAddressIntegrated.Error()},
 		{"a bad checksum", testXMRAddressWith(xmrTagSubaddress, testXMRKey("s"), testXMRKey("v"), nil, true), testPassword, 400, errXMRAddressChecksum.Error()},
-		{"a stagenet address", testXMRAddressWith(24, testXMRKey("s"), testXMRKey("v"), nil, false), testPassword, 400, errXMRAddressNetwork.Error()},
+		{"a stagenet address", testXMRAddressWith(24, testXMRKey("s"), testXMRKey("v"), nil, false), testPassword, 400, xmrNets["fakechain"].refusal.Error()},
 		{"an off-curve view key (A-417)", testXMRAddressWith(xmrTagSubaddress, testXMRKey("s"), testXMROffCurveKey(), nil, false), testPassword, 400, errXMRAddressKeys.Error()},
 		{"a small-order spend key (A-417)", testXMRAddressWith(xmrTagSubaddress, testXMRSmallOrderKey(), testXMRKey("v"), nil, false), testPassword, 400, errXMRAddressKeys.Error()},
 		{"this order's escrow address", escrowAddr, testPassword, 409, errXMRRefundEscrow.Error()},

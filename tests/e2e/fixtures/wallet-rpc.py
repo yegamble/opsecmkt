@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Loopback-only deterministic RPC simulator. No chain, real coins, or production mode."""
 import json
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 addresses = {}
@@ -59,7 +60,9 @@ class Handler(BaseHTTPRequestHandler):
         elif method == 'get_version': result = dict(wallet_version)
         elif method == 'get_address': result = {'address':'5'+'a'*94}
         elif method == 'get_height': result = {'height':100}
-        elif method == 'get_info': result = {'nettype':'stagenet','stagenet':True,'height':100,'target_height':100}
+        # A synced stagenet daemon with peers and a fresh top block (the pooled Monero sync guard, A-449).
+        elif method == 'get_info': result = {'nettype':'stagenet','stagenet':True,'height':100,'target_height':100,'synchronized':True,'outgoing_connections_count':8,'incoming_connections_count':0}
+        elif method == 'get_last_block_header': result = {'block_header':{'height':99,'timestamp':int(time.time())},'status':'OK'}
         elif method in ('getnewaddress','create_address'):
             index = len(addresses)+1
             address = ('bcrt1qfixture' + str(index).zfill(20)) if method == 'getnewaddress' else ('7' + str(index).zfill(94))

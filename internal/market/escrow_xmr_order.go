@@ -40,6 +40,9 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 	if destroyed.Valid {
 		v.Unrecoverable = xmrAfterDestroyText(destroyed.Time)
 	}
+	if v.Net = xmrAddressNet(v.Address); v.Net == "" {
+		v.Net = a.xmrEscrowNetwork()
+	}
 	if d.OrderViewer == roleBuyer {
 		v.RefundAddress = refund
 	}
@@ -226,7 +229,8 @@ func (a *App) xmrEscrowCheckoutOffer(ctx context.Context, d *PageData) error {
 	if err != nil || !eligible {
 		return err
 	}
-	v := &XMREscrowCheckoutView{Physical: o.Kind == "physical", Custody: xmrCustody}
+	net := a.xmrEscrowNetwork()
+	v := &XMREscrowCheckoutView{Physical: o.Kind == "physical", Custody: xmrCustody, Net: net, Prefixes: xmrPrefixes(net)}
 	vendorCanEncrypt := true
 	if v.Physical {
 		if vendorCanEncrypt, err = userCanReceiveEncrypted(ctx, a.db, o.VendorID); err != nil {

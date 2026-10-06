@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 )
 
 // monero-wallet-rpc adapter (stagenet, testnet, and mainnet). Mainnet wallets and daemons are used only when
@@ -29,6 +30,7 @@ type moneroProvider struct {
 	daemon       *rpcClient // nil unless MONERO_RPC_URL is set
 	wantNetwork  string     // MONERO_NETWORK ("" = any test network the wallet reports; "mainnet" is never implied)
 	network      string     // from the wallet's primary address; set by the first successful Check, never changed
+	primary      string     // the wallet's primary address, set with network (Monero escrow refuses this wallet, A-449)
 	confirmation int
 
 	mu    sync.Mutex
@@ -49,6 +51,9 @@ func moneroFromEnv(ctx context.Context) (PaymentProvider, error) {
 		return nil, err
 	}
 	if _, err := paymentExpiry(); err != nil {
+		return nil, err
+	}
+	if _, err := parseMoneroMaxTipAge(os.Getenv("MONERO_MAX_TIP_AGE")); err != nil {
 		return nil, err
 	}
 	confs, err := envConfirmations("PAYMENT_CONFIRMATIONS_XMR", 10)
@@ -92,8 +97,10 @@ func newMoneroProvider(ctx context.Context, walletURL, daemonURL, wantNetwork st
 
 // Check opens the conventional wallet when monero-wallet-rpc has none open (for example after the wallet
 // service restarted), refuses mainnet wallets and daemons unless MONERO_NETWORK=mainnet, refuses ones that
-// disagree with MONERO_NETWORK or with each other, and reports the daemon as syncing while its target_height is above its
-// height. Without MONERO_RPC_URL the sync state is not checked. The tip is the wallet's own height (get_height),
+// disagree with MONERO_NETWORK or with each other, and reports the daemon as syncing while it is not synced
+// (moneroNode.notSynced, A-449: synchronized false, target_height above its height, no peers (offline, or no
+// connections on an unrestricted RPC), or a top block older than MONERO_MAX_TIP_AGE; get_last_block_header is read for
+// the last, and a failed one counts as not synced: the tip's age is unknown). Without MONERO_RPC_URL the sync state is not checked. The tip is the wallet's own height (get_height),
 // the height its transfer confirmations are counted from; it is lower while a restarted or restored wallet
 // rescans. A successful check ends by reading the wallet's version (readWalletVersion); a failed one leaves the
 // wallet unverified, never the version an earlier check read.
@@ -150,7 +157,7 @@ func (p *moneroProvider) Check(ctx context.Context) (_ nodeStatus, err error) {
 			return nodeStatus{}, fmt.Errorf("monero wallet height check failed: bad height %q", truncate(string(wh.Height), 20))
 		}
 	}
-	syncing := false
+	why := ""
 	if p.daemon != nil {
 		var info struct {
 			NetType      string      `json:"nettype"`
@@ -159,6 +166,11 @@ func (p *moneroProvider) Check(ctx context.Context) (_ nodeStatus, err error) {
 			Testnet      bool        `json:"testnet"`
 			Height       json.Number `json:"height"`
 			TargetHeight json.Number `json:"target_height"`
+			Synchronized bool        `json:"synchronized"`
+			Offline      bool        `json:"offline"`
+			Restricted   bool        `json:"restricted"`
+			Outgoing     int64       `json:"outgoing_connections_count"`
+			Incoming     int64       `json:"incoming_connections_count"`
 		}
 		if err = p.daemon.call(ctx, "/json_rpc", "get_info", nil, &info); err != nil {
 			return nodeStatus{}, fmt.Errorf("monero daemon check failed: %w", err)
@@ -186,14 +198,30 @@ func (p *moneroProvider) Check(ctx context.Context) (_ nodeStatus, err error) {
 		}
 		height, herr := info.Height.Int64()
 		target, terr := info.TargetHeight.Int64()
-		syncing = herr == nil && terr == nil && target > height
+		node := moneroNode{NetType: nt, Synchronized: info.Synchronized, Offline: info.Offline, Restricted: info.Restricted, Connections: info.Outgoing + info.Incoming}
+		if herr == nil && terr == nil {
+			node.Height, node.TargetHeight = height, target
+		}
+		var last struct {
+			Header struct {
+				Timestamp int64 `json:"timestamp"`
+			} `json:"block_header"`
+		}
+		node.TipTime = -1 // unknown unless get_last_block_header answers: the daemon then counts as not synced
+		if p.daemon.call(ctx, "/json_rpc", "get_last_block_header", nil, &last) == nil && last.Header.Timestamp >= 0 {
+			node.TipTime = last.Header.Timestamp
+		}
+		why = node.notSynced(time.Now(), moneroMaxTipAge())
 	}
 	if p.network == "" { // first success, before the provider is published to request handlers
-		p.network = network
+		p.network, p.primary = network, addr.Address
 	}
 	p.readWalletVersion(ctx)
-	return nodeStatus{Syncing: syncing, Tip: tip}, nil
+	return nodeStatus{Syncing: why != "", Why: why, Tip: tip}, nil
 }
+
+// primaryAddress is the wallet's primary address as the first successful check read it ("" before).
+func (p *moneroProvider) primaryAddress() string { return p.primary }
 
 // readWalletVersion records monero-wallet-rpc's get_version (see moneroVerifiedWalletRelease). A failed call or
 // an unreadable answer is recorded as unverified; it does not fail the check.

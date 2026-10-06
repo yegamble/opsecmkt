@@ -232,9 +232,10 @@ type PageData struct {
 	// XMREscrowOn: ESCROW_XMR=on (every page), the site-wide notices describe Monero escrow (A-423); XMREscrowAvailable:
 	// it is ready to take a checkout (xmrEscrowReady). XMRCustody is xmrCustody (every page), so a template never
 	// retypes the owner's sentence (A-402); XMREscrowOrders: vendor desk, the viewer's Monero escrow orders that may hold
-	// coins, counted like EscrowOrders.
+	// coins, counted like EscrowOrders. XMREscrowNet: Monero escrow's network, "fakechain" or "stagenet"
+	// (App.xmrEscrowNetwork, A-449), so the notices name it.
 	XMREscrowOn, XMREscrowAvailable bool
-	XMRCustody                      string
+	XMRCustody, XMREscrowNet        string
 	XMREscrowOrders                 int
 	// EscrowKey: /escrow-key and the /account status row, the viewer's Bitcoin escrow key; nil while ESCROW_BTC is off
 	// (escrow_account.go, WR-escrow Phase 1).
@@ -243,6 +244,9 @@ type PageData struct {
 	EscrowFee *EscrowFeeView
 	// EscrowNode: /admin while ESCROW_BTC is on and the escrow node is not synced or not on the pinned chain (A-439)
 	EscrowNode *EscrowNodeView
+	// XMREscrowNode: /admin while ESCROW_XMR is on and the escrow daemon is not synced or not on the pinned network
+	// (A-449; Mismatch names networks, not chains)
+	XMREscrowNode *EscrowNodeView
 	// EscrowReleaseDays: /admin while ESCROW_BTC is on, the release deadline length in force and its form (escrow_release_admin.go)
 	EscrowReleaseDays *EscrowReleaseDaysView
 	// EscrowRecovery: /admin, the Bitcoin escrow restore gate, held settlements and orphan addresses (escrow_recovery.go)
@@ -649,13 +653,16 @@ type XMREscrowOrderView struct {
 	Settlements []*XMRSettlementView
 	// Unrecoverable: set once the wallet that held its account was destroyed (ES-8, escrow_xmr_retain.go)
 	Unrecoverable string
+	// Net: the network of its escrow address, "fakechain" or "stagenet" (A-449)
+	Net string
 }
 
 // XMREscrowCheckoutView offers Monero escrow checkout on an XMR draft (escrow_xmr_create.go): Reason says why it cannot
-// be used now.
+// be used now; Net is Monero escrow's network and Prefixes the first characters of its addresses (A-449).
 type XMREscrowCheckoutView struct {
 	Reason, Custody string
 	Physical        bool
+	Net, Prefixes   string
 }
 
 // EscrowKeyView is the viewer's Bitcoin escrow key (escrow_account.go). Origin is the viewer's own key origin

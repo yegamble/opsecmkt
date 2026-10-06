@@ -10,10 +10,14 @@ import (
 	"golang.org/x/crypto/sha3"
 )
 
-// Offline Monero address parsing for Monero escrow (WR-escrow Phase 3, P3-R2). Monero escrow runs on a local
-// fakechain (monerod --regtest), whose wallets use the mainnet address format, so this parser accepts the mainnet
-// standard (network byte 18, "4…") and subaddress (42, "8…") forms and nothing else: integrated addresses (19) are
-// refused, and so are testnet and stagenet addresses. It is for the fakechain escrow path only; the pooled adapter
+// Offline Monero address parsing for Monero escrow (WR-escrow Phase 3, P3-R2; A-449, P4-R15). Monero escrow runs on a
+// local fakechain (monerod --regtest) or on stagenet, and the address tags it accepts follow the network type the
+// escrow daemon was verified on (xmrEscrowRPC.nettype, set by startEscrowXMR after checkDaemon and the network pin),
+// never a configured or guessed one: on stagenet the standard (network byte 24, "5…") and subaddress (36, "7…") forms,
+// on a fakechain, whose wallets use the mainnet address format, the mainnet standard (18, "4…") and subaddress (42,
+// "8…") forms. Every other tag is refused: integrated addresses of the network as integrated, anything else (testnet,
+// mainnet on stagenet, stagenet on a fakechain) as another network's, and before the network is verified ("") every
+// address. Mainnet and testnet are no escrow network. It is for the escrow path only; the pooled adapter
 // (payments_monero.go) asks its wallet and refuses fakechain. Both keys must be points of ed25519's prime-order
 // subgroup (xmrPointValid, A-417): stricter than the wallet's own check, which accepts a point with a small-order
 // component and then cannot build, or crashes building, a transfer to it.
@@ -41,9 +45,54 @@ var (
 	errXMRAddressEncoding   = errors.New("not a Monero address: it has characters outside Monero's base58 alphabet (no spaces) or is not base58-encoded")
 	errXMRAddressChecksum   = errors.New("not a Monero address: its checksum does not match (check for a typing error)")
 	errXMRAddressIntegrated = errors.New("integrated Monero addresses are not accepted; use a standard address or a subaddress")
-	errXMRAddressNetwork    = errors.New("not an address of this escrow's network: Monero escrow runs on a local fakechain, whose addresses start with 4 or 8 (testnet and stagenet addresses are refused)")
 	errXMRAddressKeys       = errors.New("not a valid Monero address: its keys are not valid (check it and paste it again from your wallet)")
+	// errXMRAddressNetwork matches (errors.Is) every refusal of another network's address (each xmrNets refusal); as
+	// itself it refuses every address while Monero escrow has not verified its daemon's network.
+	errXMRAddressNetwork = errors.New("not an address Monero escrow can check yet: it has not verified its daemon's network (the escrow daemon is unavailable); try again later")
 )
+
+// xmrNetRefusal is one escrow network's refusal of another network's address: fixed text naming its own prefixes,
+// matched by errors.Is(err, errXMRAddressNetwork).
+type xmrNetRefusal struct{ text string }
+
+func (e *xmrNetRefusal) Error() string { return e.text }
+func (e *xmrNetRefusal) Unwrap() error { return errXMRAddressNetwork }
+
+// xmrNet is one escrow network type's address tags (Monero's cryptonote_config.h) and its refusal of other networks'.
+type xmrNet struct {
+	standard, integrated, subaddress byte
+	refusal                          error
+}
+
+// xmrNets are the network types Monero escrow runs on (checkDaemon refuses the others), by get_info's nettype.
+var xmrNets = map[string]xmrNet{
+	"fakechain": {xmrTagStandard, xmrTagIntegrated, xmrTagSubaddress, &xmrNetRefusal{"not an address of this escrow's network: Monero escrow on this market runs on a local fakechain, whose addresses start with 4 or 8 (stagenet and testnet addresses are refused)"}},
+	"stagenet":  {24, 25, 36, &xmrNetRefusal{"not an address of this escrow's network: Monero escrow on this market runs on Monero stagenet, whose addresses start with 5 or 7 (mainnet, fakechain and testnet addresses are refused)"}},
+}
+
+// xmrPrefixes names the first characters of nettype's standard addresses and subaddresses, for help text: "5 or 7" on
+// stagenet, "4 or 8" on a fakechain (and for any other value: the only network Monero escrow ran on before A-449).
+func xmrPrefixes(nettype string) string {
+	if nettype == "stagenet" {
+		return "5 or 7"
+	}
+	return "4 or 8"
+}
+
+// xmrAddressNet is the escrow network type an address's tag belongs to (xmrNets), or "" for none. For display only (an
+// order page names the network of its escrow's address); no address is accepted by it.
+func xmrAddressNet(addr string) string {
+	data, ok := xmrBase58Decode(addr)
+	if !ok || len(data) == 0 {
+		return ""
+	}
+	for name, n := range xmrNets {
+		if data[0] == n.standard || data[0] == n.subaddress || data[0] == n.integrated {
+			return name
+		}
+	}
+	return ""
+}
 
 // xmrAddress is a parsed escrow address: its kind (xmrStandard or xmrSubaddress) and its public spend and view keys.
 type xmrAddress struct {
@@ -51,10 +100,10 @@ type xmrAddress struct {
 	Spend, View [32]byte
 }
 
-// parseXMRAddress parses s exactly (no trimming): 95 base58 characters decoding to the network byte, the spend and
-// view keys and the first 4 bytes of their Keccak-256 (Monero's cn_fast_hash). Both keys must be valid
-// (xmrPointValid).
-func parseXMRAddress(s string) (xmrAddress, error) {
+// parseXMRAddress parses s exactly (no trimming) as an address of network type nettype (the verified one; see the file
+// comment): 95 base58 characters decoding to the network byte, the spend and view keys and the first 4 bytes of their
+// Keccak-256 (Monero's cn_fast_hash). Both keys must be valid (xmrPointValid).
+func parseXMRAddress(s, nettype string) (xmrAddress, error) {
 	if len(s) != xmrAddressLength {
 		return xmrAddress{}, errXMRAddressLength
 	}
@@ -67,16 +116,20 @@ func parseXMRAddress(s string) (xmrAddress, error) {
 	if subtle.ConstantTimeCompare(h.Sum(nil)[:4], data[65:]) != 1 {
 		return xmrAddress{}, errXMRAddressChecksum
 	}
+	net, ok := xmrNets[nettype]
+	if !ok {
+		return xmrAddress{}, errXMRAddressNetwork
+	}
 	var a xmrAddress
 	switch data[0] { // a one-byte varint; a multi-byte tag (high bit set) is no network this escrow accepts
-	case xmrTagStandard:
+	case net.standard:
 		a.Kind = xmrStandard
-	case xmrTagSubaddress:
+	case net.subaddress:
 		a.Kind = xmrSubaddress
-	case xmrTagIntegrated:
+	case net.integrated:
 		return xmrAddress{}, errXMRAddressIntegrated
 	default:
-		return xmrAddress{}, errXMRAddressNetwork
+		return xmrAddress{}, net.refusal
 	}
 	copy(a.Spend[:], data[1:33])
 	copy(a.View[:], data[33:65])
@@ -86,11 +139,13 @@ func parseXMRAddress(s string) (xmrAddress, error) {
 	return a, nil
 }
 
-// checkXMRFormAddress is parseXMRAddress for an address typed into a form (a refund or claim address): an integrated
-// address, which parseXMRAddress refuses by its length alone (106 characters), is refused as integrated.
-func checkXMRFormAddress(s string) error {
-	_, err := parseXMRAddress(s)
-	if data, ok := xmrBase58Decode(s); err != nil && ok && len(data) == 77 && data[0] == xmrTagIntegrated {
+// checkXMRFormAddress is parseXMRAddress for an address typed into a form (a refund or claim address) on network type
+// nettype: an integrated address of that network, which parseXMRAddress refuses by its length alone (106 characters),
+// is refused as integrated.
+func checkXMRFormAddress(s, nettype string) error {
+	_, err := parseXMRAddress(s, nettype)
+	net, known := xmrNets[nettype]
+	if data, ok := xmrBase58Decode(s); err != nil && known && ok && len(data) == 77 && data[0] == net.integrated {
 		err = errXMRAddressIntegrated
 	}
 	return err

@@ -57,14 +57,20 @@ def wallet(method, params=None, name='buyer'):
     return call('http://127.0.0.1:' + str(node['port']), method, params, node['password'], digest=True)
 
 
-def guard(currency):
+def guard(currency, peered=False):
+    """Refuse anything but the isolated chains: Bitcoin regtest with networking off; a Monero stagenet daemon whose
+    every connection is a loopback one (its exclusive peer, scripts/setup-local-chains.py), and with peered at least
+    one (the market's sync guard needs a peer, A-449)."""
     if currency == 'BTC':
         if btc('getblockchaininfo')['chain'] != 'regtest' or btc('getnetworkinfo')['networkactive']:
             raise RuntimeError('Only Bitcoin regtest with networking disabled is allowed')
     elif currency == 'XMR':
         info = daemon('get_info')
-        if info.get('nettype') != 'stagenet' or not info.get('offline'):
-            raise RuntimeError('Only an offline Monero stagenet chain is allowed')
+        peers = daemon('get_connections').get('connections') or []
+        if info.get('nettype') != 'stagenet' or any(peer.get('host') != '127.0.0.1' for peer in peers):
+            raise RuntimeError('Only an isolated Monero stagenet chain (peered over loopback only) is allowed')
+        if peered and not peers:
+            raise RuntimeError('The isolated Monero stagenet daemon has not reached its loopback peer yet')
     else:
         raise ValueError('Currency must be BTC or XMR')
 

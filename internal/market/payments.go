@@ -99,7 +99,8 @@ type versionReporter interface {
 }
 
 // nodeStatus is what a provider's Check reports about its node and wallet. Syncing is true while the node is not
-// synced; Why is the reason class when the check names one (Bitcoin: bitcoinNode.notSynced, A-439).
+// synced; Why is the reason class when the check names one (Bitcoin: bitcoinNode.notSynced, A-439; Monero:
+// moneroNode.notSynced, A-449).
 type nodeStatus struct {
 	Syncing bool
 	Why     string
@@ -415,10 +416,11 @@ const syncingReason = "Node is still syncing; watcher pass skipped (no deposits 
 // block download (A-439: no peers, a stale tip, headers ahead of blocks); like syncing, it is not reported as an error.
 const notSyncedPrefix = "Node is not synced"
 
-// syncSkipReason is the admin page's reason for a pass skipped while the node is not synced for why (a bitcoinNode
-// reason class, or "" when the check names none): initial block download keeps syncingReason's words.
+// syncSkipReason is the admin page's reason for a pass skipped while the node is not synced for why (a bitcoinNode or
+// moneroNode reason class, or "" when the check names none): initial block download, and a Monero target height above
+// the height (A-449), keep syncingReason's words.
 func syncSkipReason(why string) string {
-	if why == "" || why == notSyncedIBD {
+	if why == "" || why == notSyncedIBD || why == xmrNotSyncedTarget {
 		return syncingReason
 	}
 	return notSyncedPrefix + " (" + why + "); watcher pass skipped (no deposits read, no expiry, no payouts) until it is."

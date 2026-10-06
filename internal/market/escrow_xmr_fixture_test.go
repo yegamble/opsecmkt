@@ -83,9 +83,10 @@ func TestXMREscrowFixtureAdapter(t *testing.T) {
 		return re.Code
 	}
 
-	if open, err := r.checkNetwork(ctx); err != nil || open {
-		t.Fatalf("network check with no wallet open: %v %v", open, err)
+	if net, open, err := testXMRCheckNetwork(ctx, r); err != nil || open || net != "fakechain" {
+		t.Fatalf("network check with no wallet open: %s %v %v", net, open, err)
 	}
+	r.net.Store("fakechain") // as startEscrowXMR leaves it once the daemon is verified (A-449)
 	const name = "escrow-209901-01"
 	if err = r.createWallet(ctx, name, "first password"); err != nil {
 		t.Fatal(err)
@@ -93,7 +94,7 @@ func TestXMREscrowFixtureAdapter(t *testing.T) {
 	if c := code(r.createWallet(ctx, name, "first password")); c != -21 {
 		t.Fatalf("second create_wallet: code %d", c)
 	}
-	if open, err := r.checkNetwork(ctx); err != nil || !open {
+	if _, open, err := testXMRCheckNetwork(ctx, r); err != nil || !open {
 		t.Fatalf("network check: %v %v", open, err)
 	}
 	seed, err := r.mnemonic(ctx)
@@ -157,7 +158,7 @@ func TestXMREscrowFixtureAdapter(t *testing.T) {
 	claimant := sim("/test/xmr/address", map[string]any{})["address"].(string)
 	feeTo := sim("/test/xmr/address", map[string]any{"label": "market fee"})["address"].(string)
 	for _, a := range []string{claimant, feeTo} {
-		if err := checkXMRFormAddress(a); err != nil {
+		if err := checkXMRFormAddress(a, "fakechain"); err != nil {
 			t.Fatalf("the simulator's address %s: %v", a, err)
 		}
 	}

@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeXMREscrow is a monero-wallet-rpc and a monerod for Monero escrow DB tests (simulated RPC, not chain evidence). It
@@ -64,12 +65,22 @@ type fakeXMREscrow struct {
 	mu        sync.Mutex
 	height    int64 // the daemon's height; the open wallet's too after a refresh, plus walletLag
 	walletLag int64
-	files     map[string]*fakeXMRWalletFile
-	open      *fakeXMRWalletFile // nil while no wallet is open
-	calls     []fakeXMRCall
-	faults    map[string][]fakeXMRFault
-	hooks     map[string]func()
-	handlers  map[string]func(f *fakeXMREscrow, params json.RawMessage) (any, int64, string) // wallet methods, by name
+	// The daemon's network and sync state (A-449): get_info's nettype (fakechain unless a test sets another; wallets
+	// created after it give addresses of that network), synchronized (false while unsynced), target_height (height plus
+	// targetAhead), outgoing_connections_count (peers; 0 on a restricted RPC, as monerod hides it there), offline,
+	// restricted, and get_last_block_header's timestamp (now less tipAge).
+	nettype             string
+	unsynced            bool
+	targetAhead         int64
+	peers               int64
+	offline, restricted bool
+	tipAge              time.Duration
+	files               map[string]*fakeXMRWalletFile
+	open                *fakeXMRWalletFile // nil while no wallet is open
+	calls               []fakeXMRCall
+	faults              map[string][]fakeXMRFault
+	hooks               map[string]func()
+	handlers            map[string]func(f *fakeXMREscrow, params json.RawMessage) (any, int64, string) // wallet methods, by name
 
 	txs         map[string]*fakeXMRTx // transactions the daemon knows, by hash: in the pool (height 0) or mined
 	built       map[string]*fakeXMRTx // transactions transfer built, by metadata
@@ -100,8 +111,9 @@ type fakeXMRWalletFile struct {
 	name, password, mnemonic string
 	accounts                 []string // each account's address 0; [0] is the primary address
 	transfers                []*fakeXMRTransfer
-	lookahead                int64 // accounts scanned beyond the last one the wallet knows (set_subaddress_lookahead's major)
-	locked                   bool  // another wallet program has the file open: open_wallet refuses it
+	lookahead                int64  // accounts scanned beyond the last one the wallet knows (set_subaddress_lookahead's major)
+	nettype                  string // the network type its addresses are of (the daemon's when it was created)
+	locked                   bool   // another wallet program has the file open: open_wallet refuses it
 }
 
 // visible: the wallet sees transfer t: to an account it knows, or seen by a scan within the lookahead.
@@ -120,7 +132,7 @@ func (w *fakeXMRWalletFile) scan(again bool) {
 		if t.Account < int64(len(w.accounts))-1+w.lookahead {
 			t.seen = true
 			for n := len(w.accounts); int64(n) <= t.Account; n++ {
-				w.accounts = append(w.accounts, testXMRAddr("fake "+w.name+" account "+strconv.Itoa(n), true))
+				w.accounts = append(w.accounts, testXMRAddrOn(w.nettype, "fake "+w.name+" account "+strconv.Itoa(n), true))
 			}
 		}
 	}
@@ -162,7 +174,7 @@ const (
 
 func newFakeXMREscrow(t *testing.T) *fakeXMREscrow {
 	t.Helper()
-	f := &fakeXMREscrow{t: t, height: 120, files: map[string]*fakeXMRWalletFile{}, faults: map[string][]fakeXMRFault{}, hooks: map[string]func(){},
+	f := &fakeXMREscrow{t: t, height: 120, nettype: "fakechain", files: map[string]*fakeXMRWalletFile{}, faults: map[string][]fakeXMRFault{}, hooks: map[string]func(){},
 		handlers: map[string]func(*fakeXMREscrow, json.RawMessage) (any, int64, string){}, txs: map[string]*fakeXMRTx{}, built: map[string]*fakeXMRTx{}, invalid: map[string]bool{}, crash: map[string]bool{}}
 	for name, h := range fakeXMRWalletMethods {
 		f.handlers[name] = h
@@ -266,7 +278,19 @@ func (f *fakeXMREscrow) serve(w http.ResponseWriter, r *http.Request, wallet boo
 func (f *fakeXMREscrow) daemonMethod(method string) (any, int64, string) {
 	switch method {
 	case "get_info":
-		return map[string]any{"nettype": "fakechain", "mainnet": false, "stagenet": false, "testnet": false, "height": f.height, "status": "OK"}, 0, ""
+		target := int64(0) // monerod reports 0 once synchronized
+		if f.targetAhead > 0 {
+			target = f.height + f.targetAhead
+		}
+		peers := f.peers
+		if f.restricted {
+			peers = 0
+		}
+		return map[string]any{"nettype": f.nettype, "mainnet": f.nettype == "mainnet", "stagenet": f.nettype == "stagenet", "testnet": f.nettype == "testnet",
+			"height": f.height, "target_height": target, "synchronized": !f.unsynced, "outgoing_connections_count": peers, "incoming_connections_count": 0,
+			"offline": f.offline, "restricted": f.restricted, "status": "OK"}, 0, ""
+	case "get_last_block_header":
+		return map[string]any{"block_header": map[string]any{"height": f.height - 1, "timestamp": time.Now().Add(-f.tipAge).Unix()}, "status": "OK"}, 0, ""
 	case "hard_fork_info":
 		return map[string]any{"version": 16, "enabled": true, "status": "OK"}, 0, ""
 	}
@@ -444,7 +468,7 @@ var fakeXMRWalletMethods = map[string]func(f *fakeXMREscrow, params json.RawMess
 	},
 	"create_account": func(f *fakeXMREscrow, _ json.RawMessage) (any, int64, string) {
 		n := len(f.open.accounts)
-		f.open.accounts = append(f.open.accounts, testXMRAddr("fake "+f.open.name+" account "+strconv.Itoa(n), true))
+		f.open.accounts = append(f.open.accounts, testXMRAddrOn(f.open.nettype, "fake "+f.open.name+" account "+strconv.Itoa(n), true))
 		return map[string]any{"account_index": n, "address": f.open.accounts[n]}, 0, ""
 	},
 	"get_address": func(f *fakeXMREscrow, p json.RawMessage) (any, int64, string) {
@@ -458,7 +482,7 @@ var fakeXMRWalletMethods = map[string]func(f *fakeXMREscrow, params json.RawMess
 		}
 		addr := f.open.accounts[q.Account]
 		if q.Minor[0] != 0 {
-			addr = testXMRAddr("fake "+f.open.name+" account "+strconv.FormatInt(q.Account, 10)+" minor "+strconv.FormatInt(q.Minor[0], 10), true)
+			addr = testXMRAddrOn(f.open.nettype, "fake "+f.open.name+" account "+strconv.FormatInt(q.Account, 10)+" minor "+strconv.FormatInt(q.Minor[0], 10), true)
 		}
 		return map[string]any{"address": addr, "addresses": []any{map[string]any{"address": addr, "address_index": q.Minor[0], "label": "", "used": false}}}, 0, ""
 	},
@@ -688,9 +712,16 @@ func (f *fakeXMREscrow) newFile(name, password string) *fakeXMRWalletFile {
 		h := sha256.Sum256([]byte(name + "/" + strconv.Itoa(i)))
 		seed = append(seed, words[int(h[0])%len(words)])
 	}
-	w := &fakeXMRWalletFile{name: name, password: password, mnemonic: strings.Join(seed, " "), accounts: []string{testXMRAddr("fake "+name+" primary", false)}, lookahead: 50}
+	w := &fakeXMRWalletFile{name: name, password: password, mnemonic: strings.Join(seed, " "), accounts: []string{testXMRAddrOn(f.nettype, "fake "+name+" primary", false)}, lookahead: 50, nettype: f.nettype}
 	f.files[name] = w
 	return w
+}
+
+// network is the daemon's network type (get_info's nettype).
+func (f *fakeXMREscrow) network() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.nettype
 }
 
 // handle adds or replaces a wallet method (a later slice's freeze, transfer or relay_tx).
@@ -926,6 +957,7 @@ func TestFakeXMREscrowErrorCodes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	r.net.Store("fakechain") // as startEscrowXMR leaves it once the daemon is verified (A-449)
 	ctx := context.Background()
 	const name = "escrow-202610-01"
 	if err = r.createWallet(ctx, name, "pw"); err != nil {
