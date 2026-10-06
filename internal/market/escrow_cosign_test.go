@@ -782,6 +782,133 @@ func TestEscrowBothPartiesSign(t *testing.T) {
 	}
 }
 
+// withGlobalField adds one field to the global map of a raw PSBT.
+func withGlobalField(t *testing.T, raw, key, value []byte) []byte {
+	t.Helper()
+	r := &psbtReader{b: raw, off: 5}
+	_, end, err := r.readMap()
+	if err != nil {
+		t.Fatal(err)
+	}
+	field := slices.Concat(compactSize(len(key)), key, compactSize(len(value)), value)
+	return slices.Concat(raw[:end], field, raw[end:])
+}
+
+// P4-R13 (A-450): the ES-2 refusal of a derivation under the market's key is inert, because nothing of a paste but the
+// party's signatures is ever kept. The vendor pastes its copy carrying what a non-Core wallet adds (Electrum writes a
+// derivation for every key and may add global xpubs, scripts/test-escrow-wallets.sh): a derivation of the buyer's key
+// from a foreign fingerprint on every input (allowed today: only the market's key and fingerprint are refused), global
+// xpubs with origins, and a proprietary field, then its signature. It is accepted; settlement_signatures holds only
+// the vendor's signature per input; the stored PSBT is byte for byte unchanged; and the market co-signs its own copy
+// of the stored PSBT and combines it with the stored PSBT plus only those signatures, so none of the pasted fields
+// reaches the signer, the database or the broadcast.
+func TestEscrowPasteForeignFieldsInert(t *testing.T) {
+	x := newEscrowEnv(t)
+	order, id := x.built(regtestAddr("refund-inert"), regtestAddr("claim-inert"), 60000, 40000)
+	var stored, txid string
+	if err := x.DB.QueryRow("SELECT psbt,txid FROM settlements WHERE id=$1", id).Scan(&stored, &txid); err != nil {
+		t.Fatal(err)
+	}
+	sess, fp := x.partySess(roleVendor)
+	cp, err := decodePSBT(x.partyCopy(order, sess, id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bpub, _ := hex.DecodeString(x.keyHex(order, "buyer"))
+	vpub, _ := hex.DecodeString(x.keyHex(order, "vendor"))
+	foreignFP := []byte{0x50, 0x60, 0x21, 0x2d}                        // a per-order xpub's own fingerprint, as Electrum writes for a cosigner
+	foreign := append(slices.Clone(foreignFP), 0, 0, 0, 0, 0, 0, 0, 0) // …/0/0
+	proprietary := []byte("\xfcA-450-foreign-field")
+	raw := cp.Raw
+	for i := range cp.Inputs {
+		raw = addField(t, raw, i, append([]byte{0x06}, bpub...), foreign)
+		raw = addField(t, raw, i, proprietary, []byte("kept-nowhere"))
+	}
+	xpub := func(depth byte, pub []byte, cc byte) []byte { // a BIP32 serialization (tpub version bytes)
+		return slices.Concat([]byte{0x04, 0x35, 0x87, 0xcf, depth}, make([]byte, 8), bytes.Repeat([]byte{cc}, 32), pub)
+	}
+	globals := [][2][]byte{
+		{append([]byte{0x01}, xpub(0, bpub, 0x11)...), foreignFP},                                                   // a cosigner's, rooted
+		{append([]byte{0x01}, xpub(4, vpub, 0x22)...), append([]byte{0x5c, 0xfa, 0xba, 0x73}, 48|0x80, 0, 0, 0x80)}, // the party's own
+	}
+	for _, g := range globals {
+		raw = withGlobalField(t, raw, g[0], g[1])
+	}
+	paste := walletSign(t, encodePSBT(raw), fp, 1)
+	pp, err := decodePSBT(paste)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys, err := escrowKeys(context.Background(), x.DB, order)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := checkSettlementPaste(paste, txid, keys[roleVendor], keys["market"]); err != nil {
+		t.Fatalf("the paste with foreign fields is refused today (the test no longer exercises inertness): %v", err)
+	}
+	calls := len(x.core.methods())
+	if code, body := x.sign(order, sess, id, paste); code != 303 {
+		t.Fatalf("vendor signs: %d %s", code, body)
+	}
+	if got := x.cosignCalls(calls); len(got) != 0 {
+		t.Fatalf("the paste itself called %v", got)
+	}
+	// The database: only the vendor's signature per input, and the stored PSBT unchanged.
+	var want []string
+	for _, in := range pp.Inputs {
+		want = append(want, "vendor "+hex.EncodeToString(vpub)+" "+hex.EncodeToString(in.PartialSigs[0].Sig))
+	}
+	if got := agStrings(t, x.testEnv, "SELECT party||' '||pubkey||' '||signature FROM settlement_signatures WHERE settlement_id=$1 ORDER BY input_n", id); !slices.Equal(got, want) {
+		t.Fatalf("settlement_signatures %q\nwant only the vendor's signatures %q", got, want)
+	}
+	var after string
+	if err := x.DB.QueryRow("SELECT psbt FROM settlements WHERE id=$1", id).Scan(&after); err != nil || after != stored {
+		t.Fatalf("the stored PSBT changed with the paste (%v)", err)
+	}
+	pasted := [][]byte{foreignFP, proprietary, globals[0][0][1:], globals[1][0][1:]}
+	assertNowhereInDB(t, x.testEnv, paste)
+	for _, needle := range pasted {
+		assertNowhereInDB(t, x.testEnv, hex.EncodeToString(needle))
+	}
+	// The market's combine: its own copy of the stored PSBT first, then the stored PSBT with only the vendor's
+	// signatures, built here field by field from the stored copy (not with withPartySigs).
+	var marketSigned string
+	x.core.mu.Lock()
+	x.core.marketSkew = func(s string) string { marketSigned = s; return s }
+	x.core.mu.Unlock()
+	x.poll()
+	marketCopy, _ := settlementCopy(stored, keys["market"])
+	if _, params := x.core.lastCall(t, "walletprocesspsbt"); params != `["`+marketCopy+`",true,"ALL",true,false]` {
+		t.Fatalf("walletprocesspsbt was not given the market's copy of the stored PSBT: %s", params)
+	}
+	sp, _ := decodePSBT(stored)
+	expected := sp.Raw
+	for i, in := range pp.Inputs {
+		expected = addField(t, expected, i, append([]byte{0x02}, vpub...), in.PartialSigs[0].Sig)
+	}
+	_, params := x.core.lastCall(t, "combinepsbt")
+	if params != `[["`+marketSigned+`","`+encodePSBT(expected)+`"]]` {
+		t.Fatalf("combinepsbt is not the market copy and the stored PSBT plus only the vendor's signatures:\n%s", params)
+	}
+	for _, b64 := range []string{marketCopy, marketSigned, encodePSBT(expected)} {
+		p, err := decodePSBT(b64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, needle := range pasted {
+			if bytes.Contains(p.Raw, needle) {
+				t.Fatalf("a pasted field reached the signer or the combine: %x", needle)
+			}
+		}
+	}
+	if r := x.settleByID(id); r.State != "broadcast" || r.Cosigned != "market" || r.Signer != roleVendor {
+		t.Fatalf("after the pass: %+v", r)
+	}
+	if err := x.DB.QueryRow("SELECT psbt FROM settlements WHERE id=$1", id).Scan(&after); err != nil || after != stored {
+		t.Fatalf("the stored PSBT changed with the co-signature (%v)", err)
+	}
+}
+
 // TestEscrowFinalTxChecks pins checkFinalTx on a transaction built by hand: the stored one passes; another lock time,
 // another output value, a fee above the rate cap, a witness with three items or a signature not ending in 0x01 fail
 // with their classes.

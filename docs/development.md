@@ -217,7 +217,9 @@ escrow node is **simulated**: `tests/e2e/fixtures/escrow_rpc.py`, served by
 `wallet-rpc.py --escrow-port`, answers the escrow adapter's PSBT methods with real PSBT and
 transaction bytes but its own fake signatures, and plays each party's wallet. It knows
 regtest only and refuses mainnet and other-network addresses and keys. This is not chain
-evidence; real Bitcoin Core legs are `scripts/test-escrow-regtest.sh`.
+evidence; real Bitcoin Core legs are `scripts/test-escrow-regtest.sh`, and
+`scripts/test-escrow-wallets.sh` checks which real wallets (Bitcoin Core, Electrum 4.8.2) sign the
+escrow transactions, by hand on a regtest node with no network.
 
 ```sh
 docker exec opsecmkt-dev-db createdb -U opsecmkt opsecmkt_escrow_e2e

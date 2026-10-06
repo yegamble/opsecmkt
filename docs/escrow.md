@@ -119,6 +119,17 @@ descriptor in your wallet is what detects that.
   (the wallet built into Tails) could not, because it only signs multisig wallets built from every cosigner's
   extended key. The first Bitcoin phase supports Bitcoin Core. Electrum and Sparrow support will be designed and
   decided before escrow runs on any public test network; hardware wallets have not been tested.
+  `scripts/test-escrow-wallets.sh` repeats this check (real local chain plus a real Electrum, run by hand, not CI:
+  Bitcoin Core 31.1 on regtest with no network, Electrum 4.8.2 checked against its release signature and used
+  offline). A Bitcoin Core wallet signs the transaction the market serves today. An Electrum wallet restored from a
+  BIP39 seed at a key path made for one order signs a per-order layout that the market does not offer, and the
+  market's signature-paste check refuses that signature anyway, because Electrum adds an entry for every key,
+  the market's included. The refusal protects nothing that is stored: only the signer's own signatures are ever
+  kept, whatever else a pasted copy carries (`TestEscrowPasteForeignFieldsInert`; `TestEscrowWalletFixtures`
+  checks the refusal on the signed files in `internal/market/testdata/escrow-wallets/`). Electrum's own seed type, what "Create a new seed" makes and the
+  default in Tails, cannot follow a per-order key path at all: Electrum fixes its multisig keys at `m/1'` and
+  takes no path for that seed type (`from_seed` in Electrum's `keystore.py`; the script's `electrum-seed-type`
+  leg records it).
 
 ## Monero: one account per order
 
@@ -152,7 +163,7 @@ shipped phase has proven. The full rules and acceptance criteria are in the proj
 | Phase | Scope | Status |
 | --- | --- | --- |
 | 0 | Preparation in the current payment code: one settlement per order enforced by the database, a single settlement dispatcher, password confirmation for dispute decisions | Done on the development branch, not yet released; changes nothing for users except that resolving a dispute asks for the resolver's password |
-| Wallet check | Scripted signing test with Electrum and Bitcoin Core on regtest, before any escrow database change | Done on regtest: Core signs; Electrum cannot sign this layout |
+| Wallet check | Scripted signing test with Electrum and Bitcoin Core on regtest, before any escrow database change | Done on regtest: Core signs; Electrum cannot sign this layout. Repeatable with `scripts/test-escrow-wallets.sh` (real local chain plus a real Electrum, run by hand, not CI); Electrum's own seed type cannot follow a per-order key path |
 | 1 | Bitcoin escrow for digital orders on regtest, behind a setting that is off by default | Built and tested on regtest on the development branch, not released, behind `ESCROW_BTC` (off by default, regtest only): see [Phase 1](#phase-1-bitcoin-escrow-on-regtest) for what it does, what it protects and the tests behind it. Not run on any public test network or on mainnet; Electrum, Sparrow and hardware wallets are not supported |
 | Wallets | Electrum and Sparrow support (a signing test showed Electrum needs a different key layout) | Not started |
 | 2 | Physical orders: buyer-signed release, 14-day deadline, no-ship cancellation, fee bumps | Built and tested on regtest; not released; off by default (`ESCROW_BTC`, regtest only): see [Phase 2](#phase-2-bitcoin-escrow-for-physical-orders-on-regtest) for what it does, what it protects, what it does not do and the tests behind it. Not run on any public test network or on mainnet; only Bitcoin Core signing is supported |
