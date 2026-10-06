@@ -40,12 +40,7 @@ func TestEscrowRegtestDeadline(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, c := range map[string]*rpcClient{"operator": op, "app": app} {
-		var info struct {
-			Chain string `json:"chain"`
-		}
-		if err := c.call(ctx, "", "getblockchaininfo", []any{}, &info); err != nil || info.Chain != "regtest" {
-			t.Fatalf("refusing: the %s node URL is not on regtest (or is unreachable)", name)
-		}
+		checkRealChain(t, ctx, name, c)
 	}
 	call := func(wallet, method string, out any, params ...any) {
 		t.Helper()
@@ -183,8 +178,8 @@ func TestEscrowRegtestDeadline(t *testing.T) {
 	e.setKey(vendor, pgpPub)
 	var mineTo string
 	call(funder, "getnewaddress", &mineTo)
-	call("", "generatetoaddress", nil, 101, mineTo)
-	mine := func(n int) { t.Helper(); call("", "generatetoaddress", nil, n, mineTo) }
+	matureFunds(t, ctx, op, mineTo)
+	mine := func(n int) { t.Helper(); mustMine(t, ctx, op, n, mineTo) }
 	poll := func() {
 		t.Helper()
 		if err := e.A.escrowPollOnce(ctx); err != nil {

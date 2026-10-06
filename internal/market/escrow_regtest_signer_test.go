@@ -136,12 +136,7 @@ func TestEscrowRegtestSigner(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, c := range map[string]*rpcClient{"operator": op, "app": app} {
-		var info struct {
-			Chain string `json:"chain"`
-		}
-		if err := c.call(ctx, "", "getblockchaininfo", []any{}, &info); err != nil || info.Chain != "regtest" {
-			t.Fatalf("refusing: the %s node URL is not on regtest (or is unreachable)", name)
-		}
+		checkRealChain(t, ctx, name, c)
 	}
 	// The signer's user is whitelisted to decodepsbt, descriptorprocesspsbt and getdescriptorinfo only: getblockchaininfo
 	// is refused.
@@ -359,20 +354,19 @@ func TestEscrowRegtestSigner(t *testing.T) {
 	// Fund A twice, B and C in one transaction.
 	var mine string
 	call(miner, "getnewaddress", &mine)
-	var mined []string
-	call("", "generatetoaddress", &mined, 101, mine)
+	matureFunds(t, ctx, op, mine)
 	// The regtest subsidy halves every 150 blocks and the other legs mine many: mine until the wallet can pay.
 	for range 40 {
 		var balance float64
 		if call(miner, "getbalance", &balance); balance >= 0.02 {
 			break
 		}
-		call("", "generatetoaddress", &mined, 25, mine)
+		mustMine(t, ctx, op, 25, mine)
 	}
 	var fundTxid string
 	call(miner, "sendmany", &fundTxid, "", map[string]any{addrA: 0.005, addrB: 0.003, addrC: 0.002})
 	call(miner, "sendtoaddress", nil, addrA, 0.004)
-	call("", "generatetoaddress", &mined, 1, mine)
+	mustMine(t, ctx, op, 1, mine)
 	var unspent []struct {
 		Txid    string  `json:"txid"`
 		Vout    int     `json:"vout"`
@@ -514,7 +508,7 @@ func TestEscrowRegtestSigner(t *testing.T) {
 	}
 	var txid string
 	call("", "sendrawtransaction", &txid, fin.Hex)
-	call("", "generatetoaddress", &mined, 1, mine)
+	mined := mustMine(t, ctx, op, 1, mine)
 	var block struct {
 		Tx []string `json:"tx"`
 	}

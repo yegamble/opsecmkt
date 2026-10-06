@@ -12,7 +12,7 @@ import (
 )
 
 // The release of a physical escrow order (WR-escrow Phase 2, slice P2-b; P2-R1, P2-R2, P2-R6; owner decision ES-11:
-// the buyer signs the release). Behind ESCROW_BTC (off by default); regtest only.
+// the buyer signs the release). Behind ESCROW_BTC (off by default); test networks only.
 //
 //  1. Mark shipped (/escrow/ship): the vendor gives a fresh claim address (the claim action's checks) and their
 //     password; in one transaction the order moves paid -> shipped, the release is requested to that address (kind
@@ -113,7 +113,7 @@ func escrowShipAction(c *actionCtx) (actionResult, error) {
 	if err != nil {
 		return actionResult{}, err
 	}
-	dest, ok := escrowAddressForm(c.Form.Get("address"))
+	dest, ok := escrowAddressForm(e.network, c.Form.Get("address"))
 	if !ok {
 		return actionResult{}, errClaimAddress(c.A.escrowNetwork())
 	}

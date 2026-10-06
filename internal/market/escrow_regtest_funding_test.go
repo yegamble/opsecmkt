@@ -34,12 +34,7 @@ func TestEscrowRegtestFunding(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, c := range map[string]*rpcClient{"operator": op, "app": app} {
-		var info struct {
-			Chain string `json:"chain"`
-		}
-		if err := c.call(ctx, "", "getblockchaininfo", []any{}, &info); err != nil || info.Chain != "regtest" {
-			t.Fatalf("refusing: the %s node URL is not on regtest (or is unreachable)", name)
-		}
+		checkRealChain(t, ctx, name, c)
 	}
 	call := func(wallet, method string, out any, params ...any) {
 		t.Helper()
@@ -238,7 +233,7 @@ func TestEscrowRegtestFunding(t *testing.T) {
 	// Fund the escrow from a regtest wallet, mine, and let the escrow watcher complete the order.
 	var mineTo string
 	call(funder, "getnewaddress", &mineTo)
-	call("", "generatetoaddress", nil, 101, mineTo)
+	matureFunds(t, ctx, op, mineTo)
 	var txid string
 	call(funder, "sendtoaddress", &txid, addr, json.Number("0.001"))
 	if err := e.A.escrowPollOnce(ctx); err != nil {
@@ -250,7 +245,7 @@ func TestEscrowRegtestFunding(t *testing.T) {
 		t.Fatalf("unconfirmed funding: %s", st)
 	}
 	t.Logf("funded %s with 0.001 BTC (txid %s); watcher pass at 0 confirmations -> order %s, 1 ledger row", addr, txid, st)
-	call("", "generatetoaddress", nil, 3, mineTo)
+	mustMine(t, ctx, op, 3, mineTo)
 	if err := e.A.escrowPollOnce(ctx); err != nil {
 		t.Fatalf("watcher pass: %v", err)
 	}

@@ -23,9 +23,10 @@ import (
 // on a loaded host; the operator's own bitcoin-cli waits as long as Core takes.
 const regtestOperatorTimeout = 120 * time.Second
 
-// regtestOperator checks that every URL in urls reports chain regtest (before any wallet call) and returns a helper
-// that calls Core as the operator user (full rights, standing in for the operator's own bitcoin-cli).
-func regtestOperator(t *testing.T, opURL string, urls map[string]string) func(wallet, method string, out any, params ...any) {
+// regtestOperator checks that every URL in urls reports the legs' chain (checkRealChain, before any wallet call) and
+// returns a helper that calls Core as the operator user (full rights, standing in for the operator's own bitcoin-cli),
+// and that user's client (for mustMine and matureFunds).
+func regtestOperator(t *testing.T, opURL string, urls map[string]string) (func(wallet, method string, out any, params ...any), *rpcClient) {
 	t.Helper()
 	ctx := context.Background()
 	op, err := newRPCClient("regtest operator", opURL, "1.0", false)
@@ -38,12 +39,7 @@ func regtestOperator(t *testing.T, opURL string, urls map[string]string) func(wa
 		if err != nil {
 			t.Fatal(err)
 		}
-		var info struct {
-			Chain string `json:"chain"`
-		}
-		if err := c.call(ctx, "", "getblockchaininfo", []any{}, &info); err != nil || info.Chain != "regtest" {
-			t.Fatalf("refusing: the %s node URL is not on regtest (or is unreachable)", name)
-		}
+		checkRealChain(t, ctx, name, c)
 	}
 	return func(wallet, method string, out any, params ...any) {
 		t.Helper()
@@ -57,7 +53,7 @@ func regtestOperator(t *testing.T, opURL string, urls map[string]string) func(wa
 		if err := op.callWithin(ctx, regtestOperatorTimeout, path, method, params, out); err != nil {
 			t.Fatalf("operator %s: %v", method, err)
 		}
-	}
+	}, op
 }
 
 // TestEscrowRegtestPooled is A-440's leg (a): the pooled RPC user, restricted with the rpcwhitelist line the operator
@@ -74,7 +70,7 @@ func TestEscrowRegtestPooled(t *testing.T) {
 		t.Skip("set ESCROW_REGTEST_APP_RPC_URL, ESCROW_REGTEST_OPERATOR_RPC_URL and ESCROW_REGTEST_POOLED_RPC_URL (scripts/test-escrow-regtest.sh) to run against bitcoind -regtest")
 	}
 	ctx := context.Background()
-	call := regtestOperator(t, opURL, map[string]string{"app": appURL, "pooled": pooledURL})
+	call, op := regtestOperator(t, opURL, map[string]string{"app": appURL, "pooled": pooledURL})
 	pooledRPC, err := newRPCClient("regtest pooled", pooledURL, "1.0", false)
 	if err != nil {
 		t.Fatal(err)
@@ -143,7 +139,7 @@ func TestEscrowRegtestPooled(t *testing.T) {
 	t.Setenv("ESCROW_SIGNER_SOCKET", "")
 	t.Setenv("BITCOIN_RPC_URL", pooledURL)
 	t.Setenv("BITCOIN_WALLET", poolW)
-	t.Setenv("BITCOIN_CHAIN", "regtest")
+	t.Setenv("BITCOIN_CHAIN", realChainNet())
 	t.Setenv("PAYMENT_CONFIRMATIONS_BTC", "1")
 	t.Setenv("PAYMENT_EXPIRY", "")
 	t.Setenv("MONERO_WALLET_RPC_URL", "")
@@ -179,15 +175,15 @@ func TestEscrowRegtestPooled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.DB.Exec("INSERT INTO payment_addresses(order_id,currency,address,provider) VALUES($1,'BTC',$2,'btc-regtest')", order, addr); err != nil {
+	if _, err := e.DB.Exec("INSERT INTO payment_addresses(order_id,currency,address,provider) VALUES($1,'BTC',$2,$3)", order, addr, "btc-"+realChainNet()); err != nil {
 		t.Fatal(err)
 	}
 	var mineTo string
 	call(funder, "getnewaddress", &mineTo)
-	call("", "generatetoaddress", nil, 101, mineTo)
+	matureFunds(t, ctx, op, mineTo)
 	var deposit string
 	call(funder, "sendtoaddress", &deposit, addr, json.Number("0.00100000"))
-	call("", "generatetoaddress", nil, 1, mineTo)
+	mustMine(t, ctx, op, 1, mineTo)
 	if err := e.A.pollOnce(ctx); err != nil {
 		t.Fatalf("pooled watcher pass: %v", err)
 	}
@@ -218,7 +214,7 @@ func TestEscrowRegtestPooled(t *testing.T) {
 	if payState != "sent" || txid == "" {
 		t.Fatalf("payout %s %q", payState, txid)
 	}
-	call("", "generatetoaddress", nil, 1, mineTo)
+	mustMine(t, ctx, op, 1, mineTo)
 	var got struct {
 		Confirmations int64       `json:"confirmations"`
 		Amount        json.Number `json:"amount"`
@@ -254,7 +250,7 @@ func TestEscrowRegtestArbiterRestore(t *testing.T) {
 		t.Skip("set ESCROW_REGTEST_APP_RPC_URL and ESCROW_REGTEST_OPERATOR_RPC_URL (scripts/test-escrow-regtest.sh) to run against bitcoind -regtest")
 	}
 	ctx := context.Background()
-	call := regtestOperator(t, opURL, map[string]string{"app": appURL})
+	call, op := regtestOperator(t, opURL, map[string]string{"app": appURL})
 	s := randomToken()[:8]
 	arbiter, watch, funder := "a440r-arbiter-"+s, "a440r-watch-"+s, "a440r-funder-"+s
 	call("", "createwallet", nil, arbiter)
@@ -374,8 +370,8 @@ func TestEscrowRegtestArbiterRestore(t *testing.T) {
 	vendor, vendorSess := activate("a440r_vendor", "vendor", vendorKey, vendorWallet)
 	var mineTo string
 	call(funder, "getnewaddress", &mineTo)
-	call("", "generatetoaddress", nil, 101, mineTo)
-	mine := func(n int) { t.Helper(); call("", "generatetoaddress", nil, n, mineTo) }
+	matureFunds(t, ctx, op, mineTo)
+	mine := func(n int) { t.Helper(); mustMine(t, ctx, op, n, mineTo) }
 	poll := func() {
 		t.Helper()
 		if err := e.A.escrowPollOnce(ctx); err != nil {
@@ -524,7 +520,7 @@ func TestEscrowRegtestArbiterDeposit(t *testing.T) {
 		t.Skip("set ESCROW_REGTEST_APP_RPC_URL and ESCROW_REGTEST_OPERATOR_RPC_URL (scripts/test-escrow-regtest.sh) to run against bitcoind -regtest")
 	}
 	ctx := context.Background()
-	call := regtestOperator(t, opURL, map[string]string{"app": appURL})
+	call, op := regtestOperator(t, opURL, map[string]string{"app": appURL})
 	s := randomToken()[:8]
 	arbiter, watch, funder := "a471-arbiter-"+s, "a471-watch-"+s, "a471-funder-"+s
 	call("", "createwallet", nil, arbiter)
@@ -651,10 +647,10 @@ func TestEscrowRegtestArbiterDeposit(t *testing.T) {
 	}
 
 	// The payment: any party could make it from the descriptor on its order page.
-	call("", "generatetoaddress", nil, 101, mineTo)
+	matureFunds(t, ctx, op, mineTo)
 	var paid string
 	call(funder, "sendtoaddress", &paid, marketAddr[0], json.Number("0.0001"))
-	call("", "generatetoaddress", nil, 1, mineTo)
+	mustMine(t, ctx, op, 1, mineTo)
 	n, cats := arbiterTxs()
 	if n != 1 || strings.Join(cats, ",") != "receive" {
 		t.Fatalf("arbiter wallet after the payment: txcount %d, listtransactions %v", n, cats)
@@ -695,7 +691,7 @@ func TestEscrowRegtestArbiterDeposit(t *testing.T) {
 	}
 	var fundTx string
 	call(funder, "sendmany", &fundTx, "", coins)
-	call("", "generatetoaddress", nil, 1, mineTo)
+	mustMine(t, ctx, op, 1, mineTo)
 	type coin struct {
 		TxID   string      `json:"txid"`
 		Vout   uint32      `json:"vout"`
@@ -735,7 +731,7 @@ func TestEscrowRegtestArbiterDeposit(t *testing.T) {
 	if len(dustIDs) != dustTxs {
 		t.Fatalf("%d dust transactions built, want %d", len(dustIDs), dustTxs)
 	}
-	call("", "generatetoaddress", nil, 1, mineTo)
+	mustMine(t, ctx, op, 1, mineTo)
 	var tip string
 	call("", "getbestblockhash", &tip)
 	n, _ = arbiterTxs()
@@ -776,7 +772,7 @@ func TestEscrowRegtestArbiterDeposit(t *testing.T) {
 	call(arbiter, "signrawtransactionwithwallet", &signed, unsigned)
 	var spent string
 	call("", "sendrawtransaction", &spent, signed.Hex)
-	call("", "generatetoaddress", nil, 1, mineTo)
+	mustMine(t, ctx, op, 1, mineTo)
 	type entry struct {
 		TxID     string `json:"txid"`
 		Category string `json:"category"`

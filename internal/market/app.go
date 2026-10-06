@@ -69,6 +69,7 @@ type App struct {
 	escrowSync      atomic.Value                        // string: the reason class the escrow watcher last found its node not synced for ("" or unset = synced)
 	escrowMismatch  atomic.Pointer[EscrowChainMismatch] // set while startEscrow refuses the node's chain against the escrow chain pin; nil = none
 	escrowPooledKey atomic.Pointer[string]              // set while startEscrow's pooled key self-check (A-440) got no refusal: the answer's class; nil = none
+	escrowNet       atomic.Pointer[string]              // the escrow chain escrowNetwork names while escrow is not enabled (A-443); nil = not known yet
 	// The arbiter wallet check (QA4W4A-1, checkArbiterWallet), in memory only; the checkpoint is in settings.
 	escrowArbiterRead atomic.Pointer[string] // set while startEscrow could not finish reading the arbiter wallet's entries: "waiting" (the read goes on) or the read failure's class; nil = none
 	escrowScanMu      sync.Mutex             // guards escrowScan

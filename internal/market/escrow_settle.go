@@ -349,7 +349,7 @@ func escrowClaimAction(c *actionCtx) (actionResult, error) {
 	if e == nil {
 		return actionResult{}, errEscrowDown
 	}
-	dest, ok := escrowAddressForm(c.Form.Get("address"))
+	dest, ok := escrowAddressForm(e.network, c.Form.Get("address"))
 	if !ok {
 		return actionResult{}, errClaimAddress(c.A.escrowNetwork())
 	}

@@ -99,14 +99,20 @@ func isEscrowCheckout(ctx context.Context) bool { return ctx.Value(escrowCheckou
 
 // escrowAddressForm is the offline check of an address the market will pay or refuse (a refund or fee address): 14 to
 // 90 ASCII letters and digits, so it can never close or extend the addr(…) descriptor the node checks it with; bech32
-// in lower case, the one spelling the market stores and compares.
-func escrowAddressForm(s string) (string, bool) {
+// in lower case, the one spelling the market stores and compares. An address with the human-readable part of chain's
+// segwit addresses (the chain table, escrowChains: bcrt on regtest, tb on signet and testnet4) in any case is lowered
+// (QA4W1-4: a TB1… address in capitals settles on signet as a BCRT1… one does on regtest); anything else is kept as
+// given and left to the node. chain "" (ESCROW_BTC_FEE_ADDRESS, read before any node answers) lowers nothing; startEscrow
+// forms that address again with the node's chain.
+func escrowAddressForm(chain, s string) (string, bool) {
 	s = strings.TrimSpace(s)
 	if len(s) < 14 || len(s) > 90 || strings.ContainsFunc(s, func(r rune) bool { return !isASCIIAlnum(r) }) {
 		return "", false
 	}
-	if lower := strings.ToLower(s); strings.HasPrefix(lower, "bcrt1") {
-		s = lower
+	if hrp := escrowChains[chain]; hrp != "" {
+		if lower := strings.ToLower(s); strings.HasPrefix(lower, hrp+"1") {
+			s = lower
+		}
 	}
 	return s, true
 }
@@ -199,7 +205,7 @@ func escrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	if e == nil {
 		return actionResult{}, errEscrowDown
 	}
-	refund, ok := escrowAddressForm(c.Form.Get("refund_address"))
+	refund, ok := escrowAddressForm(e.network, c.Form.Get("refund_address"))
 	if !ok {
 		return actionResult{}, errEscrowRefund(c.A.escrowNetwork())
 	}
