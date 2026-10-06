@@ -145,7 +145,7 @@ func (p *bitcoinProvider) Check(ctx context.Context) (nodeStatus, error) {
 	}
 	node := bitcoinNode{Chain: info.Chain, IBD: info.IBD, Headers: info.Headers, Blocks: tip, Time: info.Time, Connections: peers}
 	why := node.notSynced(time.Now(), maxTipAge())
-	return nodeStatus{Syncing: why != "", Why: why, Tip: tip}, nil
+	return nodeStatus{Syncing: why != "", Why: why, Remedy: syncRemedy(info.Chain, why), Tip: tip}, nil
 }
 
 // readNodeVersion records getnetworkinfo's version (10000*major + 100*minor + build) for the admin page and returns

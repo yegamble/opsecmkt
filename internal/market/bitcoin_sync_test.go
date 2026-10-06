@@ -24,7 +24,9 @@ func TestBitcoinNodeNotSynced(t *testing.T) {
 		{"peer count unread", bitcoinNode{Chain: "testnet4", Headers: 9, Blocks: 9, Time: fresh, Connections: -1}, notSyncedPeersUnread},
 		{"regtest peer count unread", bitcoinNode{Chain: "regtest", Connections: -1}, ""},
 		{"stale tip", bitcoinNode{Chain: "test", Headers: 9, Blocks: 9, Time: stale, Connections: 3}, notSyncedTip},
-		{"no tip time", bitcoinNode{Chain: "main", Headers: 9, Blocks: 9, Connections: 3}, notSyncedTip},
+		// QA4W1-3: a node that omits getblockchaininfo's time fails closed with its own reason, not as a stale tip.
+		{"no tip time", bitcoinNode{Chain: "main", Headers: 9, Blocks: 9, Connections: 3}, notSyncedTipUnread},
+		{"regtest no tip time", bitcoinNode{Chain: "regtest", Headers: 9, Blocks: 9}, ""},
 		{"regtest ibd", bitcoinNode{Chain: "regtest", IBD: true}, notSyncedIBD},
 		{"regtest headers ahead", bitcoinNode{Chain: "regtest", Headers: 3, Blocks: 2}, notSyncedHeaders},
 		// Regtest is exempt from the peer and tip-age checks: a lone regtest node has no peers and an old tip.
@@ -33,6 +35,9 @@ func TestBitcoinNodeNotSynced(t *testing.T) {
 		if got := tc.n.notSynced(now, 2*time.Hour); got != tc.want {
 			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
 		}
+	}
+	if notSyncedTipUnread != "tip time unreadable: this Bitcoin Core is too old for the sync guard; use Bitcoin Core 31.1 or later" {
+		t.Fatalf("tip time reason %q", notSyncedTipUnread)
 	}
 	// The bound is the configured age, not a constant.
 	n := bitcoinNode{Chain: "signet", Headers: 9, Blocks: 9, Time: stale, Connections: 1}

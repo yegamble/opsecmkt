@@ -46,6 +46,7 @@ func TestEscrowWatcherSkipsWhileNotSynced(t *testing.T) {
 		{"headers ahead", false, func(c *fakeEscrowCore) { c.headers = 305 }, notSyncedHeaders, ""},
 		{"no peers on signet", true, func(c *fakeEscrowCore) { c.peers = 0 }, notSyncedPeers, ""},
 		{"stale tip on signet", true, func(c *fakeEscrowCore) { c.tipTime = time.Now().Add(-3 * time.Hour).Unix() }, notSyncedTip, ""},
+		{"tip time omitted on signet", true, func(c *fakeEscrowCore) { c.tipTime = 0 }, notSyncedTipUnread, ""},
 		{"getnetworkinfo forbidden on signet", true, func(c *fakeEscrowCore) { c.netInfoForbidden = true }, "", "escrow: node check failed: getnetworkinfo forbidden"},
 		{"getnetworkinfo unknown on signet", true, func(c *fakeEscrowCore) { c.netInfoErr = -32601 }, "", "escrow: node check failed: getnetworkinfo rpc:-32601"},
 	} {
@@ -102,8 +103,14 @@ func TestEscrowWatcherSkipsWhileNotSynced(t *testing.T) {
 				if got := logs.String(); strings.Count(got, line) != 1 || strings.Contains(got, "escrow watcher:") {
 					t.Fatalf("log while not synced:\n%s", got)
 				}
-				if page := x.adminPage(); !strings.Contains(page, "Bitcoin escrow node not synced: "+tc.why+".") {
+				page := x.adminPage()
+				if !strings.Contains(page, "Bitcoin escrow node not synced: "+tc.why+".") {
 					t.Fatalf("admin page lacks the not-synced line:\n%s", page)
+				}
+				// QA4W1-2: a regtest node in initial block download has no peers to sync from; the line says what to do.
+				remedy := "Bitcoin escrow node not synced: initial block download.</strong> On regtest " + regtestIBDText + " Until it is,"
+				if strings.Contains(page, remedy) != (tc.why == notSyncedIBD && !tc.signet) || strings.Contains(page, regtestIBDText) != strings.Contains(page, remedy) {
+					t.Fatalf("admin page and the regtest remedy (%s):\n%s", tc.why, page)
 				}
 			}
 			if got := agStrings(t, x.testEnv, written); strings.Join(got, ",") != strings.Join(before, ",") {
@@ -145,6 +152,10 @@ func TestEscrowWatcherSkipsWhileNotSynced(t *testing.T) {
 		})
 	}
 }
+
+// regtestIBDText is the remedy /admin gives for a regtest node in initial block download (QA4W1-2), pooled and escrow.
+const regtestIBDText = "Bitcoin Core reports initial block download at height 0 and after a restart when its tip is older than 24 hours, " +
+	"and with no peers waiting does not end it: mine one block (bitcoin-cli -regtest generatetoaddress 1 <address>) or restart bitcoind with a larger -maxtipage."
 
 func withoutInstalled(s []string) []string {
 	var out []string

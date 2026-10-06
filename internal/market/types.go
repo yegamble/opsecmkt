@@ -595,9 +595,11 @@ type EscrowChainMismatch struct {
 }
 
 // EscrowNodeView is the line under Payment providers on /admin about the Bitcoin escrow node (escrow_watch.go): the
-// reason class it is not synced for, or the chain it was refused for.
+// reason class it is not synced for and the remedy when the reason does not say it (syncRemedy), or the chain it was
+// refused for.
 type EscrowNodeView struct {
 	NotSynced string
+	Remedy    string
 	Mismatch  *EscrowChainMismatch
 }
 

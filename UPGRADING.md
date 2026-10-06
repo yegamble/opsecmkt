@@ -1088,7 +1088,10 @@ No migration. The pooled Bitcoin watcher now also skips its pass while the node'
 on a public test network, while the node has no peers or its tip block is older than the new optional key
 `BITCOIN_MAX_TIP_AGE` (default `2h`, 30m to 24h; an invalid value stops startup): a node that lost its peers used to
 look synced, and an order paid while it was cut off could be cancelled for non-payment. The admin page's last error
-then reads "Node is not synced (…)". A regtest node is unaffected. With `ESCROW_BTC=on` the escrow watcher applies the
+then reads "Node is not synced (…)". A public-network node whose `getblockchaininfo` has no `time` field counts as
+not synced too ("tip time unreadable: this Bitcoin Core is too old for the sync guard; use Bitcoin Core 31.1 or
+later"): the guard needs Bitcoin Core 31.1 (the version the installer pins; earlier versions untested). A regtest
+node is unaffected. With `ESCROW_BTC=on` the escrow watcher applies the
 same rule, the app pins the escrow node's chain in `settings` (`escrow_btc_chain`; an existing regtest escrow database
 is pinned at the first start), and the escrow user's `rpcwhitelist` gains `getnetworkinfo`
 ([operator guide](docs/operator-guide.md#bitcoin-escrow-regtest-only)); on regtest the app does not call it, so the old
