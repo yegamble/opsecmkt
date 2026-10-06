@@ -128,8 +128,18 @@ container. Run `createdb` once, then reuse this database across Go test runs:
 ```sh
 docker exec opsecmkt-dev-db createdb -U opsecmkt opsecmkt_test
 export TEST_DATABASE_URL='postgres://opsecmkt:local-dev-only@127.0.0.1:55432/opsecmkt_test?sslmode=disable'
-go test -race -count=1 -timeout 30m ./...
+go test -race -count=1 -timeout 30m -run '^(TestEscrow|TestXMR|FuzzEscrow)' ./...
+go test -race -count=1 -timeout 30m -skip '^(TestEscrow|TestXMR|FuzzEscrow)' ./...
 ```
+
+The two commands are CI's two Go jobs (see [CI and release delivery](ci-cd.md)): with the same pattern, one as `-run`
+and one as `-skip`, they run every test exactly once between them. Run them one after the other against the same
+database, or at the same time against two different databases (below). They replace the single
+`go test -race -count=1 -timeout 30m ./...`: `-timeout` is per package, and `internal/market` in one race process no
+longer finishes within 30 minutes on a loaded 4-CPU host (QA4W2-E1). Measured on 2026-10-06 on the shared 4-CPU
+development host with other suites running (load average 6 to 11), one after the other against one database: the
+`-run` half took 1021 s wall (`internal/market` 941 s) and the `-skip` half 958 s (`internal/market` 953 s,
+`cmd/server` 113 s).
 
 Tests create isolated schemas, apply migrations, create their own fixture users,
 listings and orders, then remove their schemas. When the test role has the CREATEDB privilege,
@@ -145,11 +155,9 @@ create a database of their own beside it (`opsecmkt_cmd_server_<random>`, droppe
 when they finish; without the CREATEDB privilege they use `TEST_DATABASE_URL`'s
 database and log that). A run that panics, times out or is killed leaves these
 databases behind: drop leftover `opsecmkt_cmd_server_*`, `opsecmkt_tmpl_*` and
-`opsecmkt_copy_*` databases that have no connections (no later run uses them). With a database the
-`internal/market` race run takes about 7–10 minutes, close to `go test`'s default
-10-minute timeout, so the command sets `-timeout 30m`. CI runs this suite as two parallel jobs split by test
-name (`-skip` and `-run` with `'^(TestEscrow|TestXMR|FuzzEscrow)'`; see [CI and release delivery](ci-cd.md)); to
-reproduce one half locally use that flag with the same pattern. Fake RPC tests cover payment behavior; they do not
+`opsecmkt_copy_*` databases that have no connections (no later run uses them). Each half of the
+`internal/market` race run takes longer than `go test`'s default 10-minute timeout on a busy host, so both commands
+set `-timeout 30m`. Fake RPC tests cover payment behavior; they do not
 prove live node integration. The manual Bitcoin check is
 [`scripts/regtest-smoke.sh`](../scripts/regtest-smoke.sh).
 
