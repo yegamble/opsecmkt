@@ -172,7 +172,7 @@ shipped phase has proven. The full rules and acceptance criteria are in the proj
 | Wallets | Electrum and Sparrow support (a signing test showed Electrum needs a different key layout) | Not started |
 | 2 | Physical orders: buyer-signed release, 14-day deadline, no-ship cancellation, fee bumps | Built and tested on regtest; not released; off by default (`ESCROW_BTC`, regtest only): see [Phase 2](#phase-2-bitcoin-escrow-for-physical-orders-on-regtest) for what it does, what it protects, what it does not do and the tests behind it. Not run on any public test network or on mainnet; only Bitcoin Core signing is supported |
 | 3 | Monero accounts in monthly escrow wallets | Built and tested on a local Monero fakechain (monerod `--regtest`); not released; off by default (`ESCROW_XMR`, fakechain only): see [Phase 3](#phase-3-monero-escrow-on-a-local-fakechain) for what it does, what it protects, what it does not protect and the tests behind it. Custodial: the market can move these coins. Not run on stagenet, a public test network or mainnet; no Monero multisig |
-| 4 | Public test networks end to end, then escrow-only for new orders, then removal of the pooled wallet | Groundwork only: the node sync guard, the escrow chain pin and the chain table (A-439, [below](#node-sync-guard-chain-pin-and-chain-table-a-439)) are on the development branch; escrow still accepts regtest only and nothing has run on a public test network |
+| 4 | Public test networks end to end, then escrow-only for new orders, then removal of the pooled wallet | Groundwork only: the node sync guard, the escrow chain pin and the chain table (A-439, [below](#node-sync-guard-chain-pin-and-chain-table-a-439)) and the market key protection (A-440, [below](#market-key-protection-a-440)) are on the development branch; escrow still accepts regtest only and nothing has run on a public test network |
 
 
 ## Phase 1: Bitcoin escrow on regtest
@@ -787,6 +787,28 @@ the held order page, then the work on the next synced pass), `TestEscrowRegtestE
 `TestBitcoinPooledNoPeersHoldsExpiry`. The real regtest legs of
 `scripts/test-escrow-regtest.sh` were run again against Core 31.1 with `getnetworkinfo` on the whitelist. Not tested: a
 real node that lost its peers or stalled on a public network.
+
+## Market key protection (A-440)
+
+Phase 4 groundwork (war-room ruling P4-R6), on the development branch and not released. `rpcwhitelist` is per user,
+not per wallet, so a pooled RPC user on the escrow node that may call `listdescriptors` can print the arbiter wallet's
+private key (probed on Core 31.1 regtest). With `BITCOIN_RPC_URL` set, escrow starts only when the pooled user is
+refused `listdescriptors` (private=false) on the arbiter wallet's path with HTTP 403, or that node has no such wallet;
+any other answer, error or timeout leaves escrow disabled with a fixed log line and a line on `/admin`, retried like
+the other escrow checks. The operator guide whitelists the pooled user to the nine methods the pooled adapter calls
+(*The pooled RPC user*; a Go test keeps the line equal to the list in code) or puts escrow on its own node, and states
+that escrow and the pooled wallet on one node share one failure domain; the
+[runbook](testnet-runbook.md#back-up-and-restore-the-escrow-arbiter-and-watch-only-wallets) backs up and restores the
+arbiter and watch-only wallets (operator user, encrypted to the operator's `age` key, height recorded,
+`importdescriptors` fallback, fingerprint pin check), never inside the database backup.
+
+How it was tested: `TestEscrowPooledKeyCheck` (simulated RPC and PostgreSQL: 403 and -18 pass; an answer, error -4,
+HTTP 401 and a timeout disable, with the log and admin lines; a retry starts escrow once the user is refused) and
+`TestBitcoinPooledRPCMethods`; on Core 31.1 regtest `TestEscrowRegtestPooled` (the whitelisted pooled user refused,
+escrow on beside a working pooled provider, an unrestricted user keeping escrow off) and
+`TestEscrowRegtestArbiterRestore` (backup, wipe, `restorewallet` and the `importdescriptors` fallback, each co-signing a
+claim with the fingerprint pin unchanged). Not tested: the watch-only wallet's restore steps in the runbook, and any
+public network.
 
 ## Per-order key derivation (A-453, shape (b) groundwork)
 

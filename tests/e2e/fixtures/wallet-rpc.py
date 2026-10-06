@@ -51,6 +51,13 @@ class Handler(BaseHTTPRequestHandler):
             wallet_version.update(version=data['version'], release=data['release'])
             return self.reply({'ok': True})
         method, params = data['method'], data.get('params') or {}
+        if method == 'listdescriptors':
+            # Not on the pooled user's rpcwhitelist (docs/operator-guide.md, "The pooled RPC user"): Core refuses it with
+            # HTTP 403 and no body. Bitcoin escrow starts only after that refusal (A-440's self-check).
+            self.send_response(403)
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return
         if method == 'getblockchaininfo':
             checks += 1
             result = {'chain':'regtest','initialblockdownload':False}

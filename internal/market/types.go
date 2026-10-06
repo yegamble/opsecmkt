@@ -598,12 +598,15 @@ type EscrowChainMismatch struct {
 }
 
 // EscrowNodeView is the line under Payment providers on /admin about the Bitcoin escrow node (escrow_watch.go): the
-// reason class it is not synced for and the remedy when the reason does not say it (syncRemedy), or the chain it was
-// refused for.
+// reason class it is not synced for and the remedy when the reason does not say it (syncRemedy), the chain it was
+// refused for, or the class of the answer the pooled user got to the market key self-check (PooledKey, A-440) with the
+// pooled rpcwhitelist methods it should be restricted to.
 type EscrowNodeView struct {
-	NotSynced string
-	Remedy    string
-	Mismatch  *EscrowChainMismatch
+	NotSynced       string
+	Remedy          string
+	Mismatch        *EscrowChainMismatch
+	PooledKey       string
+	PooledWhitelist string
 }
 
 // EscrowSignerView is the line under Payment providers on /admin about the escrow signer (escrow_signer.go): State is
