@@ -147,7 +147,9 @@ database and log that). A run that panics, times out or is killed leaves these
 databases behind: drop leftover `opsecmkt_cmd_server_*`, `opsecmkt_tmpl_*` and
 `opsecmkt_copy_*` databases that have no connections (no later run uses them). With a database the
 `internal/market` race run takes about 7–10 minutes, close to `go test`'s default
-10-minute timeout, so the command sets `-timeout 30m`. Fake RPC tests cover payment behavior; they do not
+10-minute timeout, so the command sets `-timeout 30m`. CI runs this suite as two parallel jobs split by test
+name (`-skip` and `-run` with `'^(TestEscrow|TestXMR|FuzzEscrow)'`; see [CI and release delivery](ci-cd.md)); to
+reproduce one half locally use that flag with the same pattern. Fake RPC tests cover payment behavior; they do not
 prove live node integration. The manual Bitcoin check is
 [`scripts/regtest-smoke.sh`](../scripts/regtest-smoke.sh).
 
