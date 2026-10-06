@@ -1007,7 +1007,8 @@ public network.
 The third piece of per-order wallets (rulings P4-R2 and P4-R18, owner decision 2026-10-05), on the development branch
 behind `ESCROW_BTC` (off by default, regtest only). No escrow uses a per-order wallet yet: a checkout where the buyer's
 or the vendor's active key is a per-order wallet key is refused with nothing written, and the order page says why
-(escrows with per-order wallets are A-456). While Bitcoin intake is escrow only (A-444), a listing whose vendor's active
+(escrows with per-order wallets are A-456); a buyer is told to register a Bitcoin Core escrow key and linked to the
+escrow key page. While Bitcoin intake is escrow only (A-444), a listing whose vendor's active
 key is a per-order wallet key is therefore not available for purchase in BTC, with that reason, and the readiness panel
 on `/admin` counts and lists the vendor.
 
@@ -1018,7 +1019,11 @@ on `/admin` counts and lists the vendor.
   or `Vpub`, parsed by the same strict parser). Registering the same key with the other layout is a change: the key is
   inactive until the practice transaction of the new layout is signed. A key that is the key of existing escrows
   cannot change layout. The page says plainly that Electrum's own seed type (Electrum's default, also on Tails) cannot
-  make per-order wallets: a BIP39 seed in Electrum, or Sparrow, is needed. The database refuses an escrow key whose
+  make per-order wallets: a BIP39 seed in Electrum, or Sparrow, is needed. The registration copy says that a per-order
+  key replaces the account's Bitcoin Core key, which until A-456 stops Bitcoin escrow buying and, for a vendor under
+  escrow-only intake, Bitcoin escrow sales; the pages carry that the steps have not yet been tried with a real Electrum
+  or Sparrow wallet (A-457, A-458), and the practice page tells the owner never to send coins to the practice wallet's
+  first receiving address. The database refuses an escrow key whose
   suffix has three or more steps (a per-order key, `/<i>/0/0`) starting with 0 or 1, for any party, and a buyer's or
   vendor's at the practice index 2^31-1; shape (a)'s two-step suffixes are not affected.
 - **Practice (ES-9) for a per-order wallet key.** The practice escrow is the 2-of-3 of the owner's key at the reserved
