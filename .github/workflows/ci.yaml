@@ -86,17 +86,19 @@ jobs:
           go-version-file: go.mod
           cache: true
       # The same node the script's header documents: an operator user with full rights (the buyer's and vendor's own
-      # nodes) and the app's user restricted by rpcwhitelist to what docs/operator-guide.md lists. Both passwords are
-      # generated for this run, masked before they reach any output and handed to the next step only through
-      # GITHUB_ENV inside the two URLs; bitcoind learns them as salted HMACs (-rpcauth), so no password is on a
-      # command line or in the repository.
+      # nodes), the app's user restricted by rpcwhitelist to what docs/operator-guide.md lists and the escrow signer's
+      # user restricted to decodepsbt and descriptorprocesspsbt (A-454). The passwords are generated for this run,
+      # masked before they reach any output and handed to the next step only through GITHUB_ENV inside the URLs;
+      # bitcoind learns them as salted HMACs (-rpcauth), so no password is on a command line or in the repository.
       - name: Start Bitcoin Core on regtest
         run: |
           whitelist=getblockchaininfo,getnetworkinfo,getrawchangeaddress,getaddressinfo,createpsbt,utxoupdatepsbt,importdescriptors,getdescriptorinfo,deriveaddresses,gettxout,keypoolrefill,walletprocesspsbt,descriptorprocesspsbt,combinepsbt,finalizepsbt,testmempoolaccept,sendrawtransaction,getwalletinfo,listreceivedbyaddress,gettransaction,listtransactions
           operator_pass=$(openssl rand -hex 24)
           app_pass=$(openssl rand -hex 24)
+          signer_pass=$(openssl rand -hex 24)
           echo "::add-mask::$operator_pass"
           echo "::add-mask::$app_pass"
+          echo "::add-mask::$signer_pass"
           rpcauth() { # rpcauth <user> <password>: user:salt$HMAC-SHA256(salt, password), the form bitcoind reads
             local salt hash
             salt=$(openssl rand -hex 16)
@@ -106,10 +108,12 @@ jobs:
           docker run -d --name "$BITCOIN_CONTAINER" -p "127.0.0.1:$BITCOIN_RPC_PORT:18443" "$BITCOIN_IMAGE" \
             bitcoind -regtest -fallbackfee=0.0002 -server=1 -rpcbind=0.0.0.0 -rpcallowip=0.0.0.0/0 \
             "-rpcauth=$(rpcauth operator "$operator_pass")" "-rpcauth=$(rpcauth opsecmkt-escrow "$app_pass")" \
-            -rpcwhitelistdefault=0 "-rpcwhitelist=opsecmkt-escrow:$whitelist"
+            "-rpcauth=$(rpcauth opsecmkt-signer "$signer_pass")" -rpcwhitelistdefault=0 "-rpcwhitelist=opsecmkt-escrow:$whitelist" \
+            -rpcwhitelist=opsecmkt-signer:decodepsbt,descriptorprocesspsbt
           {
             echo "ESCROW_REGTEST_OPERATOR_RPC_URL=http://operator:$operator_pass@127.0.0.1:$BITCOIN_RPC_PORT"
             echo "ESCROW_REGTEST_APP_RPC_URL=http://opsecmkt-escrow:$app_pass@127.0.0.1:$BITCOIN_RPC_PORT"
+            echo "ESCROW_REGTEST_SIGNER_RPC_URL=http://opsecmkt-signer:$signer_pass@127.0.0.1:$BITCOIN_RPC_PORT"
           } >> "$GITHUB_ENV"
           for _ in $(seq 60); do
             if printf 'url = "http://operator:%s@127.0.0.1:%s"\n' "$operator_pass" "$BITCOIN_RPC_PORT" |
@@ -220,7 +224,7 @@ jobs:
           SETUP_TOKEN: ci-validation-only-not-a-real-bootstrap-secret
         run: |
           files=(-f compose.yaml -f "compose.$MODE.yaml" -f compose.nodes.yaml)
-          profiles=(--profile bitcoin --profile monero --profile monero-wallet)
+          profiles=(--profile bitcoin --profile monero --profile monero-wallet --profile escrow-signer)
           if [ "$DATABASE" = internal ]; then
             files+=(-f compose.internal-db.yaml)
             profiles+=(--profile internal-db)
@@ -261,7 +265,7 @@ jobs:
           # container whose cpus exceed the host CPU count, which would break 1-CPU hosts.
           limits = {"app": ("512m", 2, 512), "db": ("1g", 2, 256), "tor": ("256m", 1, 64), "tor-mirror": ("256m", 1, 64),
                     "bitcoin": ("2g", 2, 256), "monero": ("2g", 2, 512), "monero-wallet": ("512m", 1, 128),
-                    "clamd": ("3g", 2, 256)}
+                    "clamd": ("3g", 2, 256), "escrow-signer": ("128m", 1, 64)}
           logging = {"driver": sys.argv[1] or "json-file", "options": {"max-size": "10m", "max-file": "3"}}
           for name, service in sorted(services.items()):
               if name not in limits:
@@ -326,6 +330,34 @@ jobs:
           if not (re.fullmatch(r"\d+\.\d+\.\d+(-debian)?", tag) or (digest and "_base" not in tag)):
               sys.exit(f"clamd image must be one ClamAV release with signatures, not {image!r}")
           print("scanner:", image, "on the internal scanner network with", ", ".join(members))
+          '
+          # The escrow signer (A-454): its own user in the app's group, hardened, publishing nothing; its seed volume is
+          # mounted in it alone and its socket volume only in it and the app; the seed is never in any environment.
+          docker compose "${files[@]}" "${profiles[@]}" config --format json | python3 -c '
+          import json, sys
+          services = json.load(sys.stdin)["services"]
+          signer = services["escrow-signer"]
+          want = {"user": "65533:65532", "read_only": True, "cap_drop": ["ALL"], "security_opt": ["no-new-privileges:true"],
+                  "entrypoint": ["/app/escrow-signer"], "command": ["serve"], "profiles": ["escrow-signer"], "restart": "unless-stopped"}
+          for key, value in want.items():
+              if signer.get(key) != value:
+                  sys.exit(f"escrow-signer must have {key} {value!r}, got {signer.get(key)!r}")
+          if any(key in signer for key in ("ports", "expose", "network_mode")):
+              sys.exit("escrow-signer must publish nothing")
+          mounts = {name: sorted((v.get("source"), v["target"]) for v in service.get("volumes", []) if v.get("type") == "volume")
+                    for name, service in services.items()}
+          seed = sorted(name for name, m in mounts.items() if any(src == "escrow_signer_seed" for src, _ in m))
+          socket = sorted(name for name, m in mounts.items() if any(src == "escrow_signer_socket" for src, _ in m))
+          if seed != ["escrow-signer"] or socket != ["app", "escrow-signer"]:
+              sys.exit(f"the seed volume must be mounted only in escrow-signer and the socket volume only in it and app; got {seed!r}, {socket!r}")
+          allowed = {"app": {"ESCROW_SIGNER_SOCKET"}, "escrow-signer": {"ESCROW_SIGNER_SOCKET", "ESCROW_SIGNER_SEED_FILE", "ESCROW_SIGNER_RPC_URL"}}
+          for name, service in services.items():
+              for key in (service.get("environment") or {}):
+                  if key.startswith("ESCROW_SIGNER") and key not in allowed.get(name, set()):
+                      sys.exit(f"{name} must not take {key} (the signer seed is never in an environment; its RPC URL is for the signer only)")
+          if signer["environment"].get("ESCROW_SIGNER_SOCKET") != "/run/escrow-signer/signer.sock":
+              sys.exit("escrow-signer must listen on /run/escrow-signer/signer.sock")
+          print("escrow-signer: user", signer["user"], "seed volume in", seed, "socket volume in", socket)
           '
           # Local nodes are pruned by default; BITCOIN_PRUNE_MB=0 and a blank MONERO_PRUNE_FLAGS run full nodes.
           check_nodes() {

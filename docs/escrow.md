@@ -781,7 +781,8 @@ real node that lost its peers or stalled on a public network.
 
 Groundwork for per-order wallets (ruling P4-R2, owner decision 2026-10-05), on the development branch with no product
 caller: nothing in the market uses it yet, and escrows still take their child keys from Bitcoin Core. The Go code
-(`internal/market/escrow_bip32.go`, standard library `math/big` on secp256k1, no new dependency) derives the unhardened
+(`internal/btc`, shared with the escrow signer since A-454, and `internal/market/escrow_bip32.go`; standard library
+`math/big` on secp256k1, no new dependency) derives the unhardened
 child `<i>` of a registered account key by BIP32 public derivation, refuses hardened indexes, moves to the next index
 when BIP32 calls a child invalid and reports the index it used, and serializes the child rooted (depth 0, parent
 fingerprint 0, child number 0) as a `tpub` or a SLIP-132 `Vpub`, so an order wallet holds no link to the account. A
@@ -792,6 +793,32 @@ round trip, `FuzzCKDPub`; the helper against a simulated node), and on a real lo
 (`TestEscrowRegtestBIP32` in `scripts/test-escrow-regtest.sh`: indexes 2, 3, 17, 1000 and 2^31-1 for three wallets'
 BIP48 accounts agree with Core, and with Core's own derivation from each private root; a wrong index or a changed chain
 code is refused). Not tested: any wallet other than Bitcoin Core, and any public network.
+
+## Escrow signer (A-454, shape (b))
+
+The second piece of per-order wallets (ruling P4-R17), on the development branch with no product caller: no order uses
+it yet, and every escrow this release creates is still co-signed by the Core arbiter wallet. `cmd/escrow-signer` holds
+the market's key for per-order escrows in a fresh seed of its own (a mode-0400 file in its own volume, never in `.env`,
+the database or `scripts/backup.sh`'s output), listens only on a Unix socket the app's container mounts, and signs one
+escrow's PSBT per request through Core's `descriptorprocesspsbt` under its own RPC user (whitelisted to `decodepsbt` and
+`descriptorprocesspsbt`) with `ALL` hard-coded. It refuses, with nothing signed, any sighash but ALL, any input that is
+not the same `2 <three sorted keys> 3 CHECKMULTISIG` P2WSH escrow with a matching `witness_utxo`, a script without its
+key for the requested order index (`account/i/0/k` or `account/i/1/k`, k < 20) or with two of them, and any result from
+Core that differs from the request by more than one signature per input under its key. Its account key is computed in
+Go once at startup (Core's `getdescriptorinfo` does not give the public key at the end of a hardened private path);
+to sign, Core gets the master key and path inside the descriptor and derives the key itself. The app pins the signer's
+fingerprint and an HMAC of its account key at first contact; a different key makes shape (b) unavailable and changes
+nothing else, and a signer that does not answer is "waiting". `escrow-signer backup` writes the seed encrypted to the
+operator's OpenPGP key and `restore` reads it back; the [operator guide](operator-guide.md#escrow-signer) covers set-up,
+the pins, backup, break-glass signing and the upgrade order. How it was tested: unit (BIP32 vectors through the private
+path; every refusal, the result check and the happy path against a simulated Core; the socket protocol; init, backup and
+restore), DB integration (the pins, a mismatch, a signer that is down, replies the app cannot use, against a simulated
+signer), and on a real local chain, Core 31.1 on regtest (`TestEscrowRegtestSigner` in `scripts/test-escrow-regtest.sh`:
+a per-order escrow co-signed through the socket, signed by the buyer's Core wallet, broadcast and mined; the four
+refusals; backup, restore and an identical signature from the restored seed; a pin mismatch and a stopped signer; no
+seed or tprv in the database, the signers' logs or the transcript). Not tested: the Compose service running (checked
+with `docker compose config` only), break-glass signing on an offline node, any wallet other than Bitcoin Core, and any
+public network.
 
 All escrow testing uses regtest, a local Monero fakechain and public test networks only. Mainnet stays an operator opt-in
 and is never used in development or tests.

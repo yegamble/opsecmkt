@@ -90,6 +90,7 @@ func escrowWatcher(ctx context.Context, a *App) {
 		case <-t.C:
 		}
 		a.retryEscrow(ctx, retry)
+		a.checkEscrowSigner(ctx) // A-454: its state and pins; a signer that does not answer is "waiting"
 		pass, cancel := context.WithTimeout(ctx, watcherPassTimeout)
 		err := a.escrowPollOnce(pass)
 		cancel()

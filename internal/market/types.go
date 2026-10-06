@@ -243,6 +243,8 @@ type PageData struct {
 	EscrowFee *EscrowFeeView
 	// EscrowNode: /admin while ESCROW_BTC is on and the escrow node is not synced or not on the pinned chain (A-439)
 	EscrowNode *EscrowNodeView
+	// EscrowSigner: /admin while ESCROW_SIGNER_SOCKET is set and the escrow signer is not ready (A-454)
+	EscrowSigner *EscrowSignerView
 	// EscrowReleaseDays: /admin while ESCROW_BTC is on, the release deadline length in force and its form (escrow_release_admin.go)
 	EscrowReleaseDays *EscrowReleaseDaysView
 	// EscrowRecovery: /admin, the Bitcoin escrow restore gate, held settlements and orphan addresses (escrow_recovery.go)
@@ -599,6 +601,12 @@ type EscrowChainMismatch struct {
 type EscrowNodeView struct {
 	NotSynced string
 	Mismatch  *EscrowChainMismatch
+}
+
+// EscrowSignerView is the line under Payment providers on /admin about the escrow signer (escrow_signer.go): State is
+// signerWaiting, signerMismatch or signerBadReply.
+type EscrowSignerView struct {
+	State string
 }
 
 // EscrowReleaseDaysView is the Bitcoin escrow release deadline length in force on /admin (escrow_release_admin.go):

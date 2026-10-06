@@ -1090,7 +1090,11 @@ deposit is mined after all, it is flagged once and returned by a stray refund th
 confirmed to the refund address. Its A-453 leg (`TestEscrowRegtestBIP32`, no product caller yet): the Go per-order key
 derivation of [per-order escrow](escrow.md#per-order-key-derivation-a-453-shape-b-groundwork) agrees with Core's
 `deriveaddresses` for three wallets' BIP48 accounts at several indexes, and a wrong index or a changed chain code is
-refused. In every leg the app runs inside the Go test against the real node, not as the server binary. A browser journey
+refused. Its A-454 leg (`TestEscrowRegtestSigner`, no order uses it yet; needs the signer's RPC user, below): the
+[escrow signer](#escrow-signer), built from the tree and started with a fresh seed, co-signs a hand-built per-order
+escrow through its socket, which the buyer's Core wallet signs too and which is broadcast and mined; it refuses a
+SIGHASH_NONE input, another index, two of its keys in one script and two escrows in one request; the seed is backed up,
+restored and signs identically; the app reports a pin mismatch and a signer that is down. In every leg the app runs inside the Go test against the real node, not as the server binary. A browser journey
 (`npm run test:e2e:escrow`, [development](development.md)) drives the escrow forms by keyboard in Chromium at 320 px
 with JavaScript off against the real server and a simulated escrow node; it is not chain evidence. Nothing about
 escrow has run on a public test network or mainnet, and the escrow pages have not been run in Firefox or WebKit.
@@ -1102,6 +1106,119 @@ broadcast themselves), `TestEscrowRegtestDeadline` (no arbiter signing call befo
 rate confirmed) and `TestEscrowRegtestReserve` (the keys of lost escrows read from the real watch-only wallet and not
 reused). The physical-order browser journey (`tests/e2e/escrow-physical-journey.spec.ts`, same command) uses the
 simulated node too and moves the clock through SQL; it is not chain evidence.
+
+#### Escrow signer
+
+**Development branch, regtest only, and no order uses it yet.** Per-order (shape (b)) Bitcoin escrows, being built
+for wallets that cannot sign with a key Bitcoin Core derives from the market's account (ruling P4-R2; see
+[per-order escrow](escrow.md#escrow-signer-a-454-shape-b)), need a market key that is not in the Core arbiter wallet.
+The escrow signer, `/app/escrow-signer` in the app's image (`cmd/escrow-signer`), holds that key. Until the
+settlement flow uses it (a later slice), the app only checks it and pins it, as below; nothing else depends on it, and
+the Core arbiter wallet above stays the market's key for every escrow this release creates.
+
+What it does and refuses (ruling P4-R17):
+
+- Its seed is a fresh one of its own (never the arbiter wallet's, never derived from `APP_SECRET_KEY` or
+  `SETUP_TOKEN`): 32 random bytes in a mode-0400 file in its own volume (`escrow_signer_seed`). The seed is never in
+  `.env`, the database, `scripts/backup.sh`'s output, the signer's arguments, environment, logs or errors. Its
+  account is `m/48h/1h/0h/2h` of that seed; the market key of the escrow with per-order index `i` is `account/i/0/0`,
+  and it also signs for that order wallet's sibling keys `account/i/0/k` and `account/i/1/k` (k < 20), so coins sent
+  to a sibling address can be returned.
+- It listens only on a Unix socket (mode 0660; no TCP listener), shared with the app through the
+  `escrow_signer_socket` volume. Requests are JSON lines with a `version` field (`{"version":1,"op":"info"}`,
+  `{"version":1,"op":"sign","psbt":"<base64>","index":<i>}`); `info` answers the protocol version, the account key
+  (rooted: depth 0, no parent) and its fingerprint, and a refusal answers only a fixed class (`{"error":"sighash"}`).
+- It signs through the escrow node's `descriptorprocesspsbt` as its own RPC user, with `ALL` hard-coded, and hands
+  Core its key only inside that call's descriptor (Core logs the method and user, never the key, with `-debug=rpc`;
+  checked on Core 31.1 regtest). Before anything is signed it refuses (each with its class, nothing returned): an
+  input with any sighash type but ALL (`sighash`); an input whose witness script is not exactly
+  `2 <three sorted distinct compressed keys> 3 CHECKMULTISIG` (`not-escrow-script`) or whose `witness_utxo` does not pay
+  P2WSH of that script (`witness-utxo`); inputs of more than one escrow (`mixed-scripts`); a script without its key for
+  the requested index (`key-not-found`) or with two of them (`two-signer-keys`). Core's result must differ from the
+  request only by one added signature per input under its key, otherwise nothing is returned (`result-mismatch`).
+  It keeps no memory of what it signed, so a script holding its keys of two different order indexes is not detected
+  by the signer: the app must never build one.
+
+**Set-up** (Compose, `compose.nodes.yaml`'s `escrow-signer` profile; checked with `docker compose config` only, not
+yet run under Compose):
+
+1. Give the signer its own RPC user on the escrow node, allowed exactly the two methods it calls, beside the app's
+   user (`rpcwhitelistdefault=0` is already set):
+
+   ```ini
+   rpcauth=opsecmkt-signer:SALT$HASH
+   rpcwhitelist=opsecmkt-signer:decodepsbt,descriptorprocesspsbt
+   ```
+
+2. In `.env`: `ESCROW_SIGNER_RPC_URL=http://opsecmkt-signer:PASSWORD@<escrow node>:<port>` (given to the signer
+   service only, never the app), `ESCROW_SIGNER_SOCKET=/run/escrow-signer/signer.sock` (the app's side), and
+   `escrow-signer` added to `COMPOSE_PROFILES` (comma-separated, keeping the profiles already there; a
+   `--profile` flag would replace them for that command). The signer joins the `backend` network only to reach that
+   RPC URL; it publishes no port.
+3. Make the seed: `docker compose run --rm --no-deps escrow-signer init`. It refuses a seed file that exists, and
+   prints the account key and its fingerprint: write the fingerprint down.
+4. Back the seed up now (below), then start it with `docker compose up -d escrow-signer` and restart the app
+   (`docker compose up -d app`). The app logs "escrow: escrow signer ready (shape (b); its account key matches the
+   pins in this database)".
+
+Outside Compose, build it with `go build ./cmd/escrow-signer`, run `escrow-signer serve` as its own user whose group
+the app shares (the socket is mode 0660), with `ESCROW_SIGNER_RPC_URL` in its environment and `-seed` and `-socket`
+(or `ESCROW_SIGNER_SEED_FILE`, `ESCROW_SIGNER_SOCKET`) naming the seed file and socket path; `serve` refuses a seed
+file its group or others can read.
+
+**Pins and what the app shows.** With `ESCROW_BTC=on` and `ESCROW_SIGNER_SOCKET` set, the app asks the signer for its
+account key at startup and on every escrow watcher pass. At first contact it pins the key's fingerprint and an HMAC of
+the key (keyed from `APP_SECRET_KEY`, as registered escrow keys are) in `settings` (`escrow_signer_fingerprint`,
+`escrow_signer_xpub_hmac`); a pin is never rewritten. Each state change logs one line and, until the signer is ready,
+`/admin` shows a line under *Payment providers*:
+
+- A signer whose key differs from the pins: "escrow: shape (b) unavailable: the escrow signer's account key differs
+  from the one pinned in this database …". Nothing else changes: escrow with the Core arbiter wallet stays on, and the
+  pins and every order stay as they are. Check that `ESCROW_SIGNER_SOCKET` reaches the signer whose seed this market
+  pinned (compare `escrow-signer info` with the pinned fingerprint), or restore that seed from its backup. Rotating
+  `APP_SECRET_KEY` changes the HMAC, so the right signer then reads as a mismatch too. Only while no per-order escrow
+  exists (none in this release) may an administrator delete the two rows to pin another signer:
+  `DELETE FROM settings WHERE key IN ('escrow_signer_fingerprint','escrow_signer_xpub_hmac')`.
+- A signer that does not answer: "escrow: escrow signer not reachable at ESCROW_SIGNER_SOCKET; anything that needs it
+  waits (nothing is rebuilt)". Start the service; the next pass finds it.
+- A reply the app does not understand, such as another protocol version: "escrow: shape (b) unavailable: the escrow
+  signer's reply was not understood …".
+
+**Backup and restore.** The seed is a second backup item beside the database: `scripts/backup.sh` never sees it.
+Encrypt it to the operator's OpenPGP public key (the file holds that one key) and keep the result off the server:
+
+```sh
+docker compose run --rm -T --no-deps -v "$PWD/operator.asc:/operator.asc:ro" \
+  escrow-signer backup -key /operator.asc > escrow-signer-seed.asc
+```
+
+To restore into an empty seed volume (it refuses to overwrite a seed file), decrypt on the operator's machine and pipe
+it straight in, checking the pinned fingerprint before anything is written:
+
+```sh
+gpg --decrypt escrow-signer-seed.asc | docker compose run --rm -T --no-deps \
+  escrow-signer restore -fingerprint <escrow_signer_fingerprint>
+```
+
+Rehearsed on regtest by `TestEscrowRegtestSigner` (`scripts/test-escrow-regtest.sh`): a backup to a throwaway key,
+decrypted, restored with `-fingerprint`, and a signer from the restored seed gave the identical signature.
+
+**Break-glass** (the signer host is lost and a settlement is queued): on a machine without network access, restore the
+seed as above into a new directory, start a Bitcoin Core 31.1 node of a test network with no peers (for example
+`bitcoind -regtest -networkactive=0`) with the signer's `rpcauth` and `rpcwhitelist` lines, run `escrow-signer serve`
+against it, and send the queued PSBT and its order index through the socket:
+
+```sh
+python3 -c 'import json,socket,sys; s=socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); s.sendall((json.dumps({"version":1,"op":"sign","psbt":open(sys.argv[2]).read().strip(),"index":int(sys.argv[3])})+"\n").encode()); print(s.makefile().readline())' \
+  /path/to/signer.sock queued.psbt <index>
+```
+
+The reply's `psbt` carries the market's signature; the refusals above still apply. The rehearsal signed against the
+same regtest node; signing on an offline node was not rehearsed. Delete the restored seed copy afterwards.
+
+**Upgrade order.** Upgrade the signer first, then the app: each request carries the protocol `version` (1), and the
+signer refuses any other (`{"error":"version"}`), which the app reports as a reply it does not understand. A release
+that changes the protocol says so in `UPGRADING.md`.
 
 #### Monero escrow (local fakechain only)
 

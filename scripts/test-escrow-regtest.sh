@@ -115,6 +115,18 @@
 # derivation from each private root along m/48h/1h/0h/2h/<index>/0/0 agrees; a rooted key checked at another index, or
 # with one chain-code byte changed, is refused.
 #
+# A-454 leg (shape (b) escrow signer, TestEscrowRegtestSigner; no order uses it yet): cmd/escrow-signer is built from this
+# tree, given a fresh seed in a temporary directory and started against the node as its own RPC user (whitelisted to
+# decodepsbt and descriptorprocesspsbt; the leg checks getblockchaininfo is refused); the App pins its fingerprint and key
+# HMAC at startup. A hand-built shape-(b) escrow (two Core wallets' BIP48 per-order keys, rooted, and the signer's
+# account/5/0/0) is funded, co-signed through the socket, signed by the buyer with Core, combined, finalized, accepted
+# by testmempoolaccept, broadcast and mined. Refused with nothing signed: an input the buyer signed SIGHASH_NONE,
+# another index, a script holding two of the signer's keys, and two escrows in one request. The seed is backed up to a
+# throwaway PGP key and restored; a signer from the restored seed gives the identical signature (break-glass
+# rehearsal). Restarted against a signer with another seed the App reports the pin mismatch (shape (a) stays on, the
+# pins unchanged); with the signer stopped, waiting. No database column, signer log or transcript line holds the seed
+# or a tprv.
+#
 # Ruled Phase 1 legs and where they run: release (Settlement, Cosign: claim), refund (Settlement, Cosign), dispute
 # (Cosign), comma injection refused (Gate), NONE paste refused (PracticeSign, Settlement), forged market slot refused
 # (Gate), conflicting outcome refused (Gate), spent-outpoint build refused (Gate), restart mid-send rebroadcasts the
@@ -123,24 +135,29 @@
 # cap (Gate); also A-339, both-signed and stray refund (Cosign), A-344 and a plain reorg (Recovery), A-356 and A-359
 # (Gate); A-428, a deposit conflicted at an unpaid cancellation and mined afterwards (Conflicted).
 #
-# Needs a regtest node with two RPC users: an operator user with full rights (sets up the wallets, standing in
-# for the buyer's own node) and the app's user restricted by rpcwhitelist exactly as docs/operator-guide.md
-# ("Bitcoin escrow (regtest only)") describes, plus a disposable PostgreSQL database. For example:
+# Needs a regtest node with three RPC users: an operator user with full rights (sets up the wallets, standing in
+# for the buyer's own node), the app's user restricted by rpcwhitelist exactly as docs/operator-guide.md
+# ("Bitcoin escrow (regtest only)") describes, and the escrow signer's user restricted to decodepsbt and
+# descriptorprocesspsbt ("Escrow signer"), plus a disposable PostgreSQL database. For example:
 #
 #   salt=$(openssl rand -hex 16); hash=$(printf %s app-pass | openssl dgst -sha256 -hmac "$salt" | cut -d' ' -f2)
+#   ssalt=$(openssl rand -hex 16); shash=$(printf %s signer-pass | openssl dgst -sha256 -hmac "$ssalt" | cut -d' ' -f2)
 #   docker run -d --name escrow-regtest -p 127.0.0.1:18443:18443 bitcoin/bitcoin:31.1 bitcoind -regtest -fallbackfee=0.0002 \
 #     -server=1 -rpcbind=0.0.0.0 -rpcallowip=0.0.0.0/0 -rpcuser=operator -rpcpassword=operator-pass \
-#     "-rpcauth=opsecmkt-escrow:$salt\$$hash" -rpcwhitelistdefault=0 \
+#     "-rpcauth=opsecmkt-escrow:$salt\$$hash" "-rpcauth=opsecmkt-signer:$ssalt\$$shash" -rpcwhitelistdefault=0 \
+#     -rpcwhitelist=opsecmkt-signer:decodepsbt,descriptorprocesspsbt \
 #     -rpcwhitelist=opsecmkt-escrow:getblockchaininfo,getnetworkinfo,getrawchangeaddress,getaddressinfo,createpsbt,utxoupdatepsbt,importdescriptors,getdescriptorinfo,deriveaddresses,gettxout,keypoolrefill,walletprocesspsbt,descriptorprocesspsbt,combinepsbt,finalizepsbt,testmempoolaccept,sendrawtransaction,getwalletinfo,listreceivedbyaddress,gettransaction,listtransactions
 #   ESCROW_REGTEST_OPERATOR_RPC_URL=http://operator:operator-pass@127.0.0.1:18443 \
 #   ESCROW_REGTEST_APP_RPC_URL=http://opsecmkt-escrow:app-pass@127.0.0.1:18443 \
+#   ESCROW_REGTEST_SIGNER_RPC_URL=http://opsecmkt-signer:signer-pass@127.0.0.1:18443 \
 #   TEST_DATABASE_URL=postgres://…/a_disposable_database ./scripts/test-escrow-regtest.sh
 #
 # The transcript is written to ESCROW_REGTEST_LOG (default artifacts/real-chain/test-escrow-regtest-<UTC time>.log,
-# gitignored). URLs reach curl on stdin and are never printed.
+# gitignored). URLs reach curl on stdin and are never printed. A transcript holding a serialized tprv fails the run
+# (A-454: no leg prints private key material).
 set -euo pipefail
 
-for v in ESCROW_REGTEST_OPERATOR_RPC_URL ESCROW_REGTEST_APP_RPC_URL TEST_DATABASE_URL; do
+for v in ESCROW_REGTEST_OPERATOR_RPC_URL ESCROW_REGTEST_APP_RPC_URL ESCROW_REGTEST_SIGNER_RPC_URL TEST_DATABASE_URL; do
   if [[ -z "${!v:-}" ]]; then
     echo "Set $v (see the comment at the top of this script)." >&2
     exit 2
@@ -167,12 +184,12 @@ log="${ESCROW_REGTEST_LOG:-artifacts/real-chain/test-escrow-regtest-$(date -u +%
 mkdir -p "$(dirname "$log")"
 echo "Bitcoin escrow regtest check; transcript: $log"
 set +e
-go test -count=1 -timeout 15m -run '^TestEscrowRegtest(PracticeSign|Funding|Settlement|Cosign|Recovery|Gate|Bump|Physical|Deadline|Reserve|Conflicted|BIP32)$' -v ./internal/market/ 2>&1 | tee "$log"
+go test -count=1 -timeout 15m -run '^TestEscrowRegtest(PracticeSign|Funding|Settlement|Cosign|Recovery|Gate|Bump|Physical|Deadline|Reserve|Conflicted|BIP32|Signer)$' -v ./internal/market/ 2>&1 | tee "$log"
 status=${PIPESTATUS[0]}
 set -e
 # Each leg is reported from its own go test result line, so one failing leg never makes another read as failed.
 failed=0
-for leg in TestEscrowRegtestPracticeSign TestEscrowRegtestFunding TestEscrowRegtestSettlement TestEscrowRegtestCosign TestEscrowRegtestRecovery TestEscrowRegtestGate TestEscrowRegtestBump TestEscrowRegtestPhysical TestEscrowRegtestDeadline TestEscrowRegtestReserve TestEscrowRegtestConflicted TestEscrowRegtestBIP32; do
+for leg in TestEscrowRegtestPracticeSign TestEscrowRegtestFunding TestEscrowRegtestSettlement TestEscrowRegtestCosign TestEscrowRegtestRecovery TestEscrowRegtestGate TestEscrowRegtestBump TestEscrowRegtestPhysical TestEscrowRegtestDeadline TestEscrowRegtestReserve TestEscrowRegtestConflicted TestEscrowRegtestBIP32 TestEscrowRegtestSigner; do
   if grep -q -- "--- PASS: $leg " "$log"; then
     echo "PASS: $leg"
   elif grep -q -- "--- FAIL: $leg " "$log"; then
@@ -186,8 +203,12 @@ for leg in TestEscrowRegtestPracticeSign TestEscrowRegtestFunding TestEscrowRegt
     failed=1
   fi
 done
+if grep -qE 'tprv[1-9A-HJ-NP-Za-km-z]{100,}' "$log"; then
+  echo "FAILED: the transcript holds a serialized tprv (private key material); see $log" >&2
+  failed=1
+fi
 if [[ $status -ne 0 || $failed -ne 0 ]]; then
   echo "FAILED: go test exited $status; see $log" >&2
   exit 1
 fi
-echo "PASS: practice signing, escrow creation and funding, settlement building and party signing, co-signing, broadcast and confirmation, recovery and reconciliation, the Phase 1 gate's remaining adversarial legs, a same-recipient fee bump, a physical order's release signed by the buyer and the vendor with no arbiter signature, one released at its deadline with the vendor's signature co-signed by the market, no escrow key handed out again after a restore, a deposit conflicted at an unpaid cancellation and mined afterwards returned by a stray refund, and the Go per-order key derivation agreeing with Core, on regtest; transcript in $log"
+echo "PASS: practice signing, escrow creation and funding, settlement building and party signing, co-signing, broadcast and confirmation, recovery and reconciliation, the Phase 1 gate's remaining adversarial legs, a same-recipient fee bump, a physical order's release signed by the buyer and the vendor with no arbiter signature, one released at its deadline with the vendor's signature co-signed by the market, no escrow key handed out again after a restore, a deposit conflicted at an unpaid cancellation and mined afterwards returned by a stray refund, the Go per-order key derivation agreeing with Core, and the escrow signer co-signing a shape-(b) escrow and refusing what it must, on regtest; transcript in $log"

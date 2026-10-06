@@ -32,9 +32,9 @@ type escrowEnv struct {
 
 const escrowDelivery = "licence key ESCROW-TEST-0001"
 
-func newEscrowEnv(t *testing.T) *escrowEnv {
+func newEscrowEnv(t *testing.T, env ...string) *escrowEnv {
 	t.Helper()
-	e, core, srv := escrowTestApp(t)
+	e, core, srv := escrowTestApp(t, env...)
 	x := &escrowEnv{testEnv: e, t: t, core: core, srv: srv, buyerKey: testBIP48Key, vendorKey: altEscrowKey(t, testBIP48Key, "5eed5eed", 1)}
 	s := randomToken()[:6]
 	x.buyer, x.buyerSess = e.user("ebuyer_"+s, "buyer")

@@ -90,10 +90,46 @@ services:
     cpu_quota: 100000
     pids_limit: 128
     logging: *logging
+  escrow-signer:
+    # The market's dedicated signer for per-order (shape (b)) Bitcoin escrows (A-454; no order uses it yet). Same image
+    # as the app, run as its own user (65533, in the app's group 65532 so the app can open its mode-0660 socket). Its
+    # seed lives only in escrow_signer_seed, mounted nowhere else (never in .env, the database or scripts/backup.sh's
+    # output: back it up with `escrow-signer backup`). It publishes no port and listens on no network; it joins backend
+    # only to reach the escrow node's RPC as its own whitelisted user (ESCROW_SIGNER_RPC_URL). The app reaches it through
+    # the escrow_signer_socket volume alone. docs/operator-guide.md#escrow-signer.
+    build: .
+    profiles: [escrow-signer]
+    restart: unless-stopped
+    networks: [backend]
+    user: '65533:65532'
+    entrypoint: [/app/escrow-signer]
+    command: [serve]
+    environment:
+      ESCROW_SIGNER_SEED_FILE: /var/lib/escrow-signer/seed
+      ESCROW_SIGNER_SOCKET: /run/escrow-signer/signer.sock
+      ESCROW_SIGNER_RPC_URL: ${ESCROW_SIGNER_RPC_URL:-}
+    volumes:
+      - escrow_signer_seed:/var/lib/escrow-signer
+      - escrow_signer_socket:/run/escrow-signer
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 128m
+    cpu_period: 100000
+    cpu_quota: 100000
+    pids_limit: 64
+    logging: *logging
+  app:
+    # The escrow signer's socket (ESCROW_SIGNER_SOCKET=/run/escrow-signer/signer.sock); an empty volume until the
+    # escrow-signer profile runs.
+    volumes:
+      - escrow_signer_socket:/run/escrow-signer
 volumes:
   bitcoin_data:
   monero_data:
   monero_wallet:
+  escrow_signer_seed:
+  escrow_signer_socket:
 
 networks:
   node_egress:
