@@ -806,7 +806,9 @@ sign=false) on the arbiter wallet's path with HTTP 403, or that node has no such
 timeout leaves escrow disabled with a fixed log line naming the method and a line on `/admin`, retried like the other
 escrow checks, and while escrow is on the watcher repeats the check daily and disables escrow on a failure (QA4W3-8).
 The arbiter wallet's dedication check counts only a spend from it, never coins paid to it (A-471: anyone can pay the
-market child key an order's descriptor shows). The operator guide whitelists the pooled user to the nine methods the pooled adapter calls
+market child key an order's descriptor shows); a passing check records a checkpoint (the block `listsinceblock`
+reported, for the wallet's name and birthtime), so later checks read only newer entries and mass payments to that key
+cannot keep escrow off by slowing the read (QA4W4A-1). The operator guide whitelists the pooled user to the nine methods the pooled adapter calls
 (*The pooled RPC user*; a Go test keeps the line equal to the list in code) or puts escrow on its own node, and states
 that escrow and the pooled wallet on one node share one failure domain; the
 [runbook](testnet-runbook.md#back-up-and-restore-the-escrow-arbiter-and-watch-only-wallets) backs up and restores the
@@ -817,13 +819,17 @@ How it was tested: `TestEscrowPooledKeyCheck` (simulated RPC and PostgreSQL: 403
 answer, error -4, HTTP 401 and a timeout of `listdescriptors`, a `gethdkeys` answer and an allowed `walletprocesspsbt`
 (-22) disable, with the log and admin lines; a retry starts escrow once the user is refused; the daily re-check disables
 escrow on a widened whitelist, logs once and starts it again once refused), `TestBitcoinPooledRPCMethods` and
-`TestEscrowArbiterWalletDedicated` (receives only, over two `listtransactions` pages: on; one spend behind a full page:
-off; an unreadable list: off); on Core 31.1 regtest `TestEscrowRegtestPooled` (the whitelisted pooled user refused
+`TestEscrowArbiterWalletDedicated` (receives only: on, after one full `listsinceblock`; 5000 more receives: on, read
+from the checkpoint in one call; one spend behind 2000 more receives: off; another wallet or an unknown checkpoint block:
+read whole once; an answer beyond the 16 MiB reply limit: read as it arrives; an unreadable list: off with the
+read-failure line), `TestEscrowArbiterReadOutlivesStartup` (a read longer than startup allows: off with its own line and
+admin text, then on at the watcher's retry with no second read; a read that times out: the read-failure line); on Core
+31.1 regtest `TestEscrowRegtestPooled` (the whitelisted pooled user refused
 `listdescriptors`, `gethdkeys` and `walletprocesspsbt`, escrow on beside a working pooled provider, an unrestricted user
 keeping escrow off), `TestEscrowRegtestArbiterRestore` (backup, wipe, `restorewallet` and the `importdescriptors`
 fallback, each co-signing a claim with the fingerprint pin unchanged) and `TestEscrowRegtestArbiterDeposit` (a payment to
-an escrow's market child address leaves escrow on after a restart and a retry; a spend from the arbiter wallet turns it
-off). Not tested: the watch-only wallet's restore steps in the runbook, and any
+an escrow's market child address leaves escrow on after a restart and a retry, and so do three more of 2000 outputs each
+across two restarts; a spend from the arbiter wallet to its own change address, behind them, turns it off). Not tested: the watch-only wallet's restore steps in the runbook, and any
 public network.
 
 ## Monero escrow on stagenet (A-449)

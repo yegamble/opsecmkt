@@ -655,6 +655,7 @@ type EscrowNodeView struct {
 	Mismatch        *EscrowChainMismatch
 	PooledKey       string
 	PooledWhitelist string
+	ArbiterRead     string // why the arbiter wallet's entries are not read (QA4W4A-1): "waiting" while the read goes on, or the failure's class
 	TorHold         string
 	Stalled         []EscrowStallView
 	StallN          int // escrowStallBlocks

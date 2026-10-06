@@ -2,6 +2,8 @@ package market
 
 import (
 	"context"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/url"
@@ -10,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A-440 (P4-R6) real-chain legs (scripts/test-escrow-regtest.sh; CI's escrow-regtest job): the market key protection
@@ -500,8 +503,16 @@ func TestEscrowRegtestArbiterRestore(t *testing.T) {
 // Before A-471 the start check refused an arbiter wallet with any transaction (getwalletinfo txcount), so such a
 // payment disabled escrow from the next restart on. Here a regtest wallet pays that address and it is mined (the arbiter
 // wallet's txcount is then 1, its one listtransactions entry a "receive"); a restart starts escrow, and so does a
-// watcher retry's check. Control: the operator spends from the arbiter wallet (sendtoaddress as the operator user), and
-// a restart leaves escrow disabled as not dedicated.
+// watcher retry's check. QA4W4A-1: three transactions of 2000 outputs each then pay the same address (6000 entries); a
+// restart reads only what is newer than the last passing check's block (the checkpoint, now the tip) and escrow stays
+// on, and so does another restart. Control, behind the dust: the operator spends the first payment from the arbiter
+// wallet to the wallet's own change address (createrawtransaction and signrawtransactionwithwallet as the operator
+// user; listtransactions lists no send for it, listsinceblock with include_change does), and a restart leaves escrow
+// disabled as not dedicated. What "never spent" can and cannot see: the check reads the wallet's own entries, so a
+// spend is any transaction spending its coins, change-only ones included; but rpcwhitelist is per method, not per
+// wallet, so where the pooled payments share this node a pooled user allowed sendtoaddress can spend coins paid to the
+// arbiter wallet (by naming its path) and so turn escrow off at the next check: the operator guide recommends a node of
+// escrow's own.
 func TestEscrowRegtestArbiterDeposit(t *testing.T) {
 	appURL, opURL := os.Getenv("ESCROW_REGTEST_APP_RPC_URL"), os.Getenv("ESCROW_REGTEST_OPERATOR_RPC_URL")
 	if appURL == "" || opURL == "" {
@@ -656,19 +667,125 @@ func TestEscrowRegtestArbiterDeposit(t *testing.T) {
 	}
 	t.Log("restart: escrow on (the start check refuses only a wallet that has spent); a watcher retry's check: escrow on")
 
-	// Control: a spend from the arbiter wallet, which only its keys (the operator) can make, still disables escrow.
-	var spent string
-	call(arbiter, "sendtoaddress", &spent, refund, json.Number("0.00005"))
+	// QA4W4A-1: mass dust. Three transactions of 2000 outputs each (1000 sat) pay the market child's address, 6000 more
+	// arbiter entries; each check reads only what is newer than the last passing one's block, so restarts keep escrow on.
+	var before arbiterCheckpoint
+	if v := agStrings(t, e, "SELECT value FROM settings WHERE key=$1", escrowArbiterChecked); len(v) != 1 || json.Unmarshal([]byte(v[0]), &before) != nil || before.Wallet != arbiter {
+		t.Fatalf("no checkpoint after the passing checks: %v", v)
+	}
+	var addrInfo struct {
+		ScriptPubKey string `json:"scriptPubKey"`
+	}
+	call(arbiter, "getaddressinfo", &addrInfo, marketAddr[0])
+	script, err := hex.DecodeString(addrInfo.ScriptPubKey)
+	if err != nil || len(script) != 22 {
+		t.Fatalf("market child scriptPubKey %q", addrInfo.ScriptPubKey)
+	}
+	const dustOuts, dustTxs = 2000, 3
+	coins := map[string]any{}
+	for range dustTxs {
+		var a string
+		call(funder, "getnewaddress", &a)
+		coins[a] = json.Number("0.0213") // 2000 x 1000 sat and a 130000 sat fee (about 2 sat/vB): no change output
+	}
+	var fundTx string
+	call(funder, "sendmany", &fundTx, "", coins)
 	call("", "generatetoaddress", nil, 1, mineTo)
-	n, cats = arbiterTxs()
-	if !slices.Contains(cats, "send") {
-		t.Fatalf("arbiter wallet after the operator's spend: txcount %d, listtransactions %v", n, cats)
+	type coin struct {
+		TxID   string      `json:"txid"`
+		Vout   uint32      `json:"vout"`
+		Amount json.Number `json:"amount"`
+	}
+	var fundOuts []coin
+	call(funder, "listunspent", &fundOuts, 1)
+	var dustIDs []string
+	for _, u := range fundOuts {
+		if u.TxID != fundTx || u.Amount.String() != "0.02130000" {
+			continue
+		}
+		prev, _ := hex.DecodeString(u.TxID)
+		slices.Reverse(prev)
+		raw := binary.LittleEndian.AppendUint32(nil, 2)
+		raw = append(append(raw, 1), prev...)
+		raw = binary.LittleEndian.AppendUint32(raw, u.Vout)
+		raw = append(raw, 0, 0xfd, 0xff, 0xff, 0xff) // no scriptSig; sequence 0xfffffffd
+		raw = binary.LittleEndian.AppendUint16(append(raw, 0xfd), dustOuts)
+		for range dustOuts {
+			raw = append(binary.LittleEndian.AppendUint64(raw, 1000), byte(len(script)))
+			raw = append(raw, script...)
+		}
+		raw = binary.LittleEndian.AppendUint32(raw, 0)
+		var signed struct {
+			Hex      string `json:"hex"`
+			Complete bool   `json:"complete"`
+		}
+		call(funder, "signrawtransactionwithwallet", &signed, hex.EncodeToString(raw))
+		if !signed.Complete {
+			t.Fatal("the funder could not sign a dust transaction")
+		}
+		var id string
+		call("", "sendrawtransaction", &id, signed.Hex)
+		dustIDs = append(dustIDs, id)
+	}
+	if len(dustIDs) != dustTxs {
+		t.Fatalf("%d dust transactions built, want %d", len(dustIDs), dustTxs)
+	}
+	call("", "generatetoaddress", nil, 1, mineTo)
+	var tip string
+	call("", "getbestblockhash", &tip)
+	n, _ = arbiterTxs()
+	restarted := time.Now()
+	e.restart()
+	took := time.Since(restarted)
+	var checked arbiterCheckpoint
+	if e.A.escrow.Load() == nil || e.A.escrowStartState != escrowLogOn {
+		t.Fatalf("escrow after a restart behind %d dust entries: %q", dustOuts*dustTxs, e.A.escrowStartState)
+	}
+	if v := agStrings(t, e, "SELECT value FROM settings WHERE key=$1", escrowArbiterChecked); len(v) != 1 || json.Unmarshal([]byte(v[0]), &checked) != nil || checked.Block != tip || checked.Wallet != arbiter {
+		t.Fatalf("checkpoint after the dust %v, want the tip %s", v, tip)
+	}
+	restarted = time.Now()
+	e.restart()
+	if e.A.escrow.Load() == nil {
+		t.Fatalf("escrow after a second restart: %q", e.A.escrowStartState)
+	}
+	t.Logf("dust: %d transactions of %d outputs (1000 sat) to %s, mined (txids %v; arbiter txcount %d); a restart read them from the checkpoint block %s and kept escrow on in %s (checkpoint now the tip %s, birthtime %d); another restart (nothing newer) in %s",
+		dustTxs, dustOuts, marketAddr[0], dustIDs, n, before.Block, took.Round(time.Millisecond), tip, checked.BirthTime, time.Since(restarted).Round(time.Millisecond))
+
+	// Control, behind the dust: a spend from the arbiter wallet, which only its keys (the operator) can make, still
+	// disables escrow, even one whose only output goes to the wallet's own change address (listtransactions lists no
+	// send for it; listsinceblock with include_change does).
+	var arbCoins []coin
+	call(arbiter, "listunspent", &arbCoins, 1)
+	i := slices.IndexFunc(arbCoins, func(c coin) bool { return c.TxID == paid })
+	if i < 0 {
+		t.Fatal("the 0.0001 BTC payment is not among the arbiter wallet's coins")
+	}
+	var own, unsigned string
+	call(arbiter, "getrawchangeaddress", &own)
+	call("", "createrawtransaction", &unsigned, []any{map[string]any{"txid": paid, "vout": arbCoins[i].Vout}}, []any{map[string]any{own: json.Number("0.00009")}})
+	var signed struct {
+		Hex      string `json:"hex"`
+		Complete bool   `json:"complete"`
+	}
+	call(arbiter, "signrawtransactionwithwallet", &signed, unsigned)
+	var spent string
+	call("", "sendrawtransaction", &spent, signed.Hex)
+	call("", "generatetoaddress", nil, 1, mineTo)
+	type entry struct {
+		TxID     string `json:"txid"`
+		Category string `json:"category"`
+	}
+	var listed []entry
+	call(arbiter, "listtransactions", &listed, "*", 10, 0, true)
+	if slices.ContainsFunc(listed, func(l entry) bool { return l.TxID == spent && l.Category == "send" }) {
+		t.Fatalf("listtransactions lists a send for the change-only spend %s", spent)
 	}
 	e.restart()
 	if e.A.escrow.Load() != nil || e.A.escrowStartState != escrowLogArbiterUse {
 		t.Fatalf("escrow after the arbiter wallet spent: on %v, %q", e.A.escrow.Load() != nil, e.A.escrowStartState)
 	}
-	t.Logf("control: the operator sent 0.00005 BTC from the arbiter wallet (txid %s; listtransactions %v); a restart leaves escrow disabled (%q, not-dedicated)", spent, cats, escrowLogArbiterUse)
+	t.Logf("control: the operator spent the 0.0001 BTC payment from the arbiter wallet to its own change address %s (txid %s; listtransactions lists no send for it); behind %d dust entries, a restart leaves escrow disabled (%q, listsinceblock not-dedicated)", own, spent, dustOuts*dustTxs, escrowLogArbiterUse)
 }
 
 func errorCauseOrNone(err error) string {

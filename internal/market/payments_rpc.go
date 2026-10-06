@@ -128,11 +128,97 @@ func (c *rpcClient) callWithin(ctx context.Context, timeout time.Duration, path,
 	return nil
 }
 
+// callStream is callWithin for a result too large to hold (QA4W4A-1: Core's listsinceblock over a wallet of 100,000
+// entries answered 71 MB, beyond rpcMaxBody): read is handed the decoder at the start of "result" (numbers as
+// json.Number) and must consume exactly that value, null included (Core's answer to an error), as it arrives; the body
+// is never held whole, and only the timeout bounds it. Errors read as callWithin's do; a read cut short by the
+// timeout says "timed out".
+func (c *rpcClient) callStream(ctx context.Context, timeout time.Duration, path, method string, params any, read func(*json.Decoder) error) error {
+	body, err := json.Marshal(map[string]any{"jsonrpc": c.version, "id": "opsecmkt", "method": method, "params": params})
+	if err != nil {
+		return err
+	}
+	return c.exchangeWith(ctx, timeout, path, method, body, func(ctx context.Context, resp *http.Response) error {
+		var rerr *struct {
+			Code    json.Number `json:"code"`
+			Message string      `json:"message"`
+		}
+		result := false
+		dec := json.NewDecoder(resp.Body)
+		dec.UseNumber()
+		err := func() error {
+			if t, err := dec.Token(); err != nil || t != json.Delim('{') {
+				return errors.New("not an object")
+			}
+			for dec.More() {
+				key, err := dec.Token()
+				if err != nil {
+					return err
+				}
+				switch key {
+				case "result":
+					result, err = true, read(dec)
+				case "error":
+					err = dec.Decode(&rerr)
+				default:
+					var skip json.RawMessage
+					err = dec.Decode(&skip)
+				}
+				if err != nil {
+					return err
+				}
+			}
+			_, err := dec.Token()
+			return err
+		}()
+		switch {
+		case rerr != nil:
+			code, _ := rerr.Code.Int64()
+			return &rpcError{Method: c.name + " RPC " + method, Code: code, Message: truncate(rerr.Message, 200)}
+		case err != nil && ctx.Err() != nil:
+			return fmt.Errorf("%s RPC %s: reading response timed out", c.name, method)
+		case err != nil:
+			return fmt.Errorf("%s RPC %s: invalid response (HTTP %d)", c.name, method, resp.StatusCode)
+		case resp.StatusCode != http.StatusOK:
+			return fmt.Errorf("%s RPC %s: HTTP %d", c.name, method, resp.StatusCode)
+		case !result:
+			return fmt.Errorf("%s RPC %s: unexpected result shape", c.name, method)
+		}
+		return nil
+	})
+}
+
 // exchange posts body to endpoint+path within timeout (or the caller's earlier deadline), answering one Digest
 // challenge, and returns the response body (at most rpcMaxBody) with its HTTP status; method names the request in
 // errors. callWithin wraps it in JSON-RPC; monerod's other endpoints (/get_transactions) take plain JSON
 // (escrow_xmr_rpc.go).
 func (c *rpcClient) exchange(ctx context.Context, timeout time.Duration, path, method string, body []byte) ([]byte, int, error) {
+	var raw []byte
+	var status int
+	err := c.exchangeWith(ctx, timeout, path, method, body, func(ctx context.Context, resp *http.Response) error {
+		var err error
+		status = resp.StatusCode
+		if raw, err = io.ReadAll(io.LimitReader(resp.Body, rpcMaxBody+1)); err != nil {
+			msg := fmt.Sprintf("%s RPC %s: reading response failed", c.name, method)
+			if ctx.Err() != nil {
+				return errors.New(msg) // cut short by the timeout, not by the node
+			}
+			return &rpcDroppedError{errors.New(msg)}
+		}
+		if len(raw) > rpcMaxBody {
+			return fmt.Errorf("%s RPC %s: response too large", c.name, method)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	return raw, status, nil
+}
+
+// exchangeWith is exchange with the response handed to read (its body open, within the same timeout and Digest
+// session) instead of read whole: callStream reads an answer too large to hold as it arrives.
+func (c *rpcClient) exchangeWith(ctx context.Context, timeout time.Duration, path, method string, body []byte, read func(context.Context, *http.Response) error) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	if c.digest {
@@ -142,12 +228,12 @@ func (c *rpcClient) exchange(ctx context.Context, timeout time.Duration, path, m
 		case c.digestGate <- struct{}{}:
 			defer func() { <-c.digestGate }()
 		case <-ctx.Done():
-			return nil, 0, fmt.Errorf("%s RPC unreachable: timed out waiting for authentication session", c.name)
+			return fmt.Errorf("%s RPC unreachable: timed out waiting for authentication session", c.name)
 		}
 	}
 	resp, err := c.send(ctx, path, body)
 	if err != nil {
-		return nil, 0, err
+		return err
 	}
 	if resp.StatusCode == http.StatusUnauthorized && c.digest {
 		challenge := parseDigestChallenge(resp.Header.Values("WWW-Authenticate"))
@@ -156,37 +242,26 @@ func (c *rpcClient) exchange(ctx context.Context, timeout time.Duration, path, m
 		n, readErr := io.Copy(io.Discard, io.LimitReader(resp.Body, rpcMaxBody+1))
 		resp.Body.Close()
 		if readErr != nil {
-			return nil, 0, fmt.Errorf("%s RPC %s: reading authentication response failed", c.name, method)
+			return fmt.Errorf("%s RPC %s: reading authentication response failed", c.name, method)
 		}
 		if n > rpcMaxBody {
-			return nil, 0, fmt.Errorf("%s RPC %s: authentication response too large", c.name, method)
+			return fmt.Errorf("%s RPC %s: authentication response too large", c.name, method)
 		}
 		if challenge == nil {
-			return nil, 0, fmt.Errorf("%s RPC %s: authentication required", c.name, method)
+			return fmt.Errorf("%s RPC %s: authentication required", c.name, method)
 		}
 		c.mu.Lock()
 		c.challenge, c.nc = challenge, 0
 		c.mu.Unlock()
 		if resp, err = c.send(ctx, path, body); err != nil {
-			return nil, 0, err
+			return err
 		}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return nil, 0, fmt.Errorf("%s RPC %s: credentials rejected (HTTP %d)", c.name, method, resp.StatusCode)
+		return fmt.Errorf("%s RPC %s: credentials rejected (HTTP %d)", c.name, method, resp.StatusCode)
 	}
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, rpcMaxBody+1))
-	if err != nil {
-		msg := fmt.Sprintf("%s RPC %s: reading response failed", c.name, method)
-		if ctx.Err() != nil {
-			return nil, 0, errors.New(msg) // cut short by the timeout, not by the node
-		}
-		return nil, 0, &rpcDroppedError{errors.New(msg)}
-	}
-	if len(raw) > rpcMaxBody {
-		return nil, 0, fmt.Errorf("%s RPC %s: response too large", c.name, method)
-	}
-	return raw, resp.StatusCode, nil
+	return read(ctx, resp)
 }
 
 func (c *rpcClient) send(ctx context.Context, path string, body []byte) (*http.Response, error) {

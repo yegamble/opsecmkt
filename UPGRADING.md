@@ -1212,14 +1212,31 @@ this database's migrations does not start against it at all ([Rolling back](#5-r
 
 ## 37. Bitcoin escrow: a payment to the arbiter wallet no longer disables escrow (A-471)
 
-No migration, no new key. Only with `ESCROW_BTC=on`. The start check used to refuse an arbiter wallet with any
-transaction (`getwalletinfo` `txcount` above 0), but every escrow order's descriptor shows the market's child key, whose
-address the arbiter wallet owns: any party could pay it a few satoshis and escrow stayed disabled from the next restart
-on. Now only a spend from the arbiter wallet (a `listtransactions` entry of category `send`, which only its keys can make)
-counts as using it as an ordinary wallet; coins paid to it are ignored and stay there. A market whose escrow was
-disabled this way ("escrow: Bitcoin escrow disabled: the arbiter wallet must be used for the escrow key only …
-(getwalletinfo not-dedicated)") starts escrow at its first start after the upgrade, unless the wallet has spent.
-`listtransactions` is already on the escrow user's `rpcwhitelist`.
+No migration, no new key. Only with `ESCROW_BTC=on`. **Action: add `listsinceblock` to the escrow user's
+`rpcwhitelist`** (the line in the [operator guide](docs/operator-guide.md#bitcoin-escrow-regtest-only) ends
+`…,gettransaction,listtransactions,listsinceblock`) and restart bitcoind; without it escrow stays disabled with
+"escrow: Bitcoin escrow disabled: the arbiter wallet's transactions could not be read …" and a line on `/admin`. It is
+read-only and exports nothing.
+
+The start check used to refuse an arbiter wallet with any transaction (`getwalletinfo` `txcount` above 0), but every
+escrow order's descriptor shows the market's child key, whose address the arbiter wallet owns: any party could pay it a
+few satoshis and escrow stayed disabled from the next restart on. Now only a spend from the arbiter wallet (an entry of
+category `send`, which only its keys can make; `listsinceblock` with `include_change`, so a spend to the wallet's own
+change addresses counts too) counts as using it as an ordinary wallet; coins paid to it are ignored and stay there. A
+market whose escrow was disabled this way ("escrow: Bitcoin escrow disabled: the arbiter wallet must be used for the
+escrow key only … (getwalletinfo not-dedicated)") starts escrow at its first start after the upgrade, unless the wallet
+has spent; a spend is now logged as `(listsinceblock not-dedicated)`.
+
+Reading every entry on every start let mass payments to that address keep escrow off instead (QA4W4A-1: 100,000 entries
+outlasted startup). So the first passing check reads the whole wallet once, in one call, and records a checkpoint, the
+`settings` key `escrow_btc_arbiter_checked` (the block `listsinceblock` reported, for the wallet's name and
+`getwalletinfo` birthtime); later checks read only newer entries. A first read longer than startup allows leaves escrow
+off with "escrow: Bitcoin escrow off while the arbiter wallet is checked: …" until the escrow watcher finishes it. A
+different arbiter wallet, or one rebuilt with `importdescriptors`, is read whole again.
+
+What "never spent" cannot tell apart: `rpcwhitelist` allows methods, not wallets, so where the pooled payments share the
+escrow node, a pooled user allowed `sendtoaddress` can spend coins paid to the arbiter wallet by naming its path, and
+escrow then stays off from the next check (no key is exported). A node of escrow's own rules that out.
 
 ## 38. Bitcoin escrow key layout (migration 088, A-455)
 

@@ -148,7 +148,10 @@
 # A-471 leg (a payment to the arbiter wallet cannot disable escrow, TestEscrowRegtestArbiterDeposit): a regtest wallet pays
 # the wpkh address of an escrow's market child key (shown in the buyer's descriptor; the arbiter wallet owns it), so the
 # arbiter wallet has a transaction (txcount 1, one "receive"); a restart and a watcher retry's check both start escrow.
-# Control: the operator spends from the arbiter wallet and a restart leaves escrow disabled (not dedicated).
+# QA4W4A-1: three transactions of 2000 outputs each pay the same address; a restart reads only what is newer than the
+# checkpoint the last passing check left (now the tip) and escrow stays on, as after another restart. Control, behind
+# them: the operator spends from the arbiter wallet to its own change address (listtransactions lists no send for it)
+# and a restart leaves escrow disabled (not dedicated).
 #
 # A-441 leg (broadcast honesty, TestEscrowRegtestPrivateBroadcast): on a second regtest node started with -privatebroadcast
 # -proxy=127.0.0.1:9 -listen=0 (a proxy nobody answers; same users and whitelists), the Tor-mode gate reads real
@@ -193,7 +196,7 @@
 #     "-rpcauth=opsecmkt-signer:$ssalt\$$shash" -rpcwhitelistdefault=0 \
 #     -rpcwhitelist=opsecmkt-signer:decodepsbt,descriptorprocesspsbt,getdescriptorinfo \
 #     -rpcwhitelist=opsecmkt-pooled:getblockchaininfo,getwalletinfo,loadwallet,getnetworkinfo,getnewaddress,listreceivedbyaddress,gettransaction,sendtoaddress,validateaddress \
-#     -rpcwhitelist=opsecmkt-escrow:getblockchaininfo,getnetworkinfo,getrawchangeaddress,getaddressinfo,createpsbt,utxoupdatepsbt,importdescriptors,getdescriptorinfo,deriveaddresses,gettxout,keypoolrefill,walletprocesspsbt,descriptorprocesspsbt,combinepsbt,finalizepsbt,testmempoolaccept,sendrawtransaction,getwalletinfo,listreceivedbyaddress,gettransaction,listtransactions
+#     -rpcwhitelist=opsecmkt-escrow:getblockchaininfo,getnetworkinfo,getrawchangeaddress,getaddressinfo,createpsbt,utxoupdatepsbt,importdescriptors,getdescriptorinfo,deriveaddresses,gettxout,keypoolrefill,walletprocesspsbt,descriptorprocesspsbt,combinepsbt,finalizepsbt,testmempoolaccept,sendrawtransaction,getwalletinfo,listreceivedbyaddress,gettransaction,listtransactions,listsinceblock
 #   # the same command again as escrow-regtest-private, published on 127.0.0.1:18453, ending in:
 #   #   -privatebroadcast -proxy=127.0.0.1:9 -listen=0
 #   ESCROW_REGTEST_OPERATOR_RPC_URL=http://operator:operator-pass@127.0.0.1:18443 \
@@ -263,4 +266,4 @@ if [[ $status -ne 0 || $failed -ne 0 ]]; then
   echo "FAILED: go test exited $status; see $log" >&2
   exit 1
 fi
-echo "PASS: practice signing, escrow creation and funding, settlement building and party signing, co-signing, broadcast and confirmation, recovery and reconciliation, the Phase 1 gate's remaining adversarial legs, a same-recipient fee bump, a physical order's release signed by the buyer and the vendor with no arbiter signature, one released at its deadline with the vendor's signature co-signed by the market, no escrow key handed out again after a restore, a deposit conflicted at an unpaid cancellation and mined afterwards returned by a stray refund, the Go per-order key derivation agreeing with Core, the escrow signer co-signing a shape-(b) escrow and refusing what it must, the whitelisted pooled user refused the arbiter wallet's descriptors while pooled payments still work, and the arbiter wallet backed up, wiped, restored (restorewallet, then the importdescriptors fallback) and co-signing with its fingerprint pin unchanged, a payment to the arbiter wallet leaving escrow on while a spend from it disables escrow, and a settlement queued by -privatebroadcast behind a dead proxy reported queued or stuck after 6 blocks and cleared once mined, and a per-order wallet key's practice signed by Core from the seed and the practice page, on regtest; transcript in $log"
+echo "PASS: practice signing, escrow creation and funding, settlement building and party signing, co-signing, broadcast and confirmation, recovery and reconciliation, the Phase 1 gate's remaining adversarial legs, a same-recipient fee bump, a physical order's release signed by the buyer and the vendor with no arbiter signature, one released at its deadline with the vendor's signature co-signed by the market, no escrow key handed out again after a restore, a deposit conflicted at an unpaid cancellation and mined afterwards returned by a stray refund, the Go per-order key derivation agreeing with Core, the escrow signer co-signing a shape-(b) escrow and refusing what it must, the whitelisted pooled user refused the arbiter wallet's descriptors while pooled payments still work, and the arbiter wallet backed up, wiped, restored (restorewallet, then the importdescriptors fallback) and co-signing with its fingerprint pin unchanged, a payment to the arbiter wallet (and 6000 dust outputs) leaving escrow on while a spend from it disables escrow, and a settlement queued by -privatebroadcast behind a dead proxy reported queued or stuck after 6 blocks and cleared once mined, and a per-order wallet key's practice signed by Core from the seed and the practice page, on regtest; transcript in $log"

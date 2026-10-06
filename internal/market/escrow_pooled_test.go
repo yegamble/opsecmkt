@@ -206,6 +206,18 @@ func TestEscrowPooledKeyCheck(t *testing.T) {
 	if x.A.escrow.Load() == nil || strings.Contains(x.adminPage(), `id="escrow-node"`) {
 		t.Fatalf("escrow did not start again once the pooled user was refused:\n%s", logs.String())
 	}
+
+	// QA4W4A-5: a passing daily re-check restarts the day: the retry right after it runs no self-check.
+	retry.pooledAt = time.Now().Add(-escrowPooledRecheck - time.Minute)
+	calls = pooled.called("gethdkeys")
+	x.A.retryEscrow(ctx, retry)
+	if x.A.escrow.Load() == nil || pooled.called("gethdkeys") != calls+1 {
+		t.Fatalf("the daily self-check with the pooled user refused: escrow on %v, gethdkeys calls %d", x.A.escrow.Load() != nil, pooled.called("gethdkeys")-calls)
+	}
+	x.A.retryEscrow(ctx, retry)
+	if n := pooled.called("gethdkeys") - calls; n != 1 {
+		t.Fatalf("the retry right after a passing daily re-check ran the self-check again (%d gethdkeys calls)", n)
+	}
 }
 
 // escrowLines is the escrow: lines of a log.
