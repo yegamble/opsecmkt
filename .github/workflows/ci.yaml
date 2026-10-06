@@ -662,10 +662,74 @@ jobs:
             test-results-wallet/
           if-no-files-found: ignore
           retention-days: 14
+  browser-escrow:
+    name: Escrow browser journeys (simulated nodes, real application)
+    runs-on: ubuntu-24.04
+    # Two suites (each test allows 4 to 5 minutes), a cold `go run` build per server and a Chromium-only install.
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test-ci-only
+          POSTGRES_DB: e2e
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U test -d e2e"
+          --health-interval 5s --health-retries 20 --health-timeout 5s
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Install Chromium and system dependencies
+        run: |
+          # The runner prefers Azure's mirror, which took 22 minutes in a main run.
+          # Use its existing official Ubuntu archive/security fallbacks directly.
+          sudo sed -i '\|^http://azure\.archive\.ubuntu\.com/ubuntu/|d' /etc/apt/apt-mirrors.txt
+          npx playwright install --with-deps chromium
+      # Each suite owns a fresh database: both move clocks through SQL and the Bitcoin suites share one setup.
+      - name: Create the escrow databases
+        env:
+          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+        run: |
+          docker exec "$POSTGRES_CONTAINER" createdb -U test e2e_escrow
+          docker exec "$POSTGRES_CONTAINER" createdb -U test e2e_escrow_xmr
+      # Simulated escrow nodes (tests/e2e/fixtures): application integration evidence, not chain evidence.
+      - name: Bitcoin escrow journeys (simulated escrow node)
+        env:
+          E2E_ESCROW_DATABASE_URL: postgres://test:test-ci-only@127.0.0.1:5432/e2e_escrow?sslmode=disable
+        run: npm run test:e2e:escrow
+      - name: Monero escrow journey (simulated escrow wallet-rpc)
+        # Run even when the Bitcoin suite failed, so one run reports both.
+        if: ${{ !cancelled() }}
+        env:
+          E2E_ESCROW_XMR_DATABASE_URL: postgres://test:test-ci-only@127.0.0.1:5432/e2e_escrow_xmr?sslmode=disable
+        run: npm run test:e2e:escrow-xmr
+      - name: Preserve escrow browser reports and failure traces
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-escrow-results
+          path: |
+            playwright-escrow-report/
+            test-results-escrow/
+            playwright-escrow-xmr-report/
+            test-results-escrow-xmr/
+          if-no-files-found: ignore
+          retention-days: 14
   required:
     name: CI passed
     if: always()
-    needs: [go, go-escrow, escrow-regtest, operations, installer, upgrade, compose, container, tor-image, browser]
+    needs: [go, go-escrow, escrow-regtest, operations, installer, upgrade, compose, container, tor-image, browser, browser-escrow]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:

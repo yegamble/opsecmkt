@@ -252,7 +252,9 @@ and ship-by clocks through SQL (with `psql` on `PATH`, using the connection in
 
 Use a fresh database for every run. It owns loopback ports 18090–18092, writes
 `playwright-escrow-report/` and `test-results-escrow/` (with one screenshot per order-page
-state), and is not part of `npm run test:e2e`. `python3 -m unittest tests.test_escrow_rpc_fixture`
+state), and is not part of `npm run test:e2e`. CI runs it, with the Monero suite below, in the
+`browser-escrow` job ("Escrow browser journeys (simulated nodes, real application)", A-474; see
+[CI and release delivery](ci-cd.md)). `python3 -m unittest tests.test_escrow_rpc_fixture`
 checks the simulator alone.
 
 ### Monero escrow journey (simulated escrow wallet-rpc)
@@ -289,7 +291,8 @@ npm run test:e2e:escrow-xmr
 Use a fresh database for every run; the test moves clocks and restore settings through SQL with
 `psql` on `PATH`. It owns loopback ports 18093–18097, writes `playwright-escrow-xmr-report/` and
 `test-results-escrow-xmr/` (one screenshot per order-page state), and is not part of
-`npm run test:e2e`.
+`npm run test:e2e`; the `browser-escrow` CI job runs it after the Bitcoin escrow suite, each on its
+own database.
 
 For actual local Bitcoin Core and Monero nodes, mined test coins and real wallet
 transactions, follow [isolated real-chain browser testing](local-chain-testing.md)
@@ -329,6 +332,7 @@ go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 
 [CI](../.github/workflows/ci.yaml) also validates Compose profiles, container startup,
 upgrades, encrypted backup/restore, dependencies and browser regressions with
-PostgreSQL. See [operations tests](operations-tests.md) for local rehearsals
+PostgreSQL (the `browser` job: preview, database and wallet journeys; the `browser-escrow` job:
+the Bitcoin and Monero escrow journeys). See [operations tests](operations-tests.md) for local rehearsals
 and [CI/release instructions](ci-cd.md). Version tags produce CI-gated
 draft release artifacts; they do not deploy a live instance.
