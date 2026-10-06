@@ -50,7 +50,11 @@ const (
 	// no stray refund spends a deposit it left out: one left out and flagged, not recorded after the close
 	// (leaveOutTooFew, and leaveOutUncounted's later deposits, which a stray refund built after the failure spends with
 	// them). A bounded build's leaveOut does not flag, and leaveOutTopUps acts only on a built refund, which never fails
-	// too-small. A stray refund keeps the deposits it spends (only a release or refund is superseded), so this is final.
+	// too-small. A deposit flagged without being left out is one a release that failed too-small tried, and only a
+	// credited one (failSettlement, QA462-3, QA462B-1; the order's other flags come with leaving out, or are on
+	// deposits after the close or spent outside, which no refund spends): only if a changed decision's refund then
+	// leaves such a deposit out in a bounded build is it left out and flagged here without leaveOutTooFew. A stray
+	// refund keeps the deposits it spends (only a release or refund is superseded), so this is final.
 	strayLatestSQL = `s.order_id=es.order_id AND (s.kind='stray_refund' OR s.kind='refund' AND s.state='failed' AND o.state IN ('cancelled','resolved')
 			AND NOT EXISTS(SELECT 1 FROM payments p JOIN settlements t ON t.id=p.settlement_id WHERE p.order_id=es.order_id AND t.kind='stray_refund' AND p.escrow_left_out AND p.flagged AND NOT p.after_close))
 		ORDER BY CASE WHEN s.state='failed' THEN s.updated ELSE s.created END DESC,s.id DESC LIMIT 1`

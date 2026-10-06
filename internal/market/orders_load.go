@@ -754,7 +754,9 @@ const paymentReviewLimit = 100
 // count. A flag is open until staff record its disposition (A-31: no action or refunded by hand; one escalated to
 // an administrator stays open) while it is a locked transfer, a late deposit or a deposit of a payout below the
 // minimum automatic payout (payments.below_floor, A-99), or a credited deposit whose regression was announced and
-// has not confirmed again (payments.regress_notice). A disposed flag is not listed (the order history and the
+// has not confirmed again (payments.regress_notice), or an escrow deposit spent outside the market. An uncredited escrow
+// deposit that still counts for the order (not after the close, not left out: QA462B-1) is not a late deposit, and
+// its flag is not open, as a credited one's is not. A disposed flag is not listed (the order history and the
 // audit log keep the disposition). The reason comes from the deposit's current confirmations. The flag time is the latest watcher flag event for the deposit in order_events: flagOrder writes a system note naming it
 // (truncate(txid, 20)) and ending "Moderator review required.".
 func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
@@ -762,16 +764,18 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 		return nil
 	}
 	rows, err := a.db.QueryContext(ctx, `WITH v AS (SELECT pm.id,pm.order_id,o.state,pr.id AS product_id,pr.title,pm.currency,pm.amount,pm.txid,pm.idx,pm.credited,pm.locked,pm.confirmations,
-			pm.regress_notice,pm.below_floor,(pm.locked OR NOT pm.credited OR pm.regress_notice OR pm.below_floor OR pm.spent_outside) AS open,f.at,
+			pm.regress_notice,pm.below_floor,(pm.locked OR NOT pm.credited AND NOT c.counted OR pm.regress_notice OR pm.below_floor OR pm.spent_outside) AS open,f.at,
 			pm.disposition='escalated' AS escalated,COALESCE(to_char(pm.disposed_at,'YYYY-MM-DD'),'') AS disposed,(o.buyer_id=$2 OR pr.vendor_id=$2) AS party,
-			EXISTS(SELECT 1 FROM escrows es WHERE es.order_id=pm.order_id) AS escrow,pm.spent_outside,COALESCE(pm.spent_by,'') AS spent_by
+			c.escrow,pm.spent_outside,COALESCE(pm.spent_by,'') AS spent_by,c.counted
 		FROM payments pm JOIN orders o ON o.id=pm.order_id JOIN products pr ON pr.id=o.product_id
+		CROSS JOIN LATERAL (SELECT e.escrow,e.escrow AND NOT pm.after_close AND NOT pm.escrow_left_out AND NOT pm.spent_outside AS counted
+			FROM (SELECT EXISTS(SELECT 1 FROM escrows es WHERE es.order_id=pm.order_id) AS escrow) e) c
 		LEFT JOIN LATERAL (SELECT max(e.created) AS at FROM order_events e WHERE e.order_id=pm.order_id AND e.actor_id IS NULL
 			AND e.note LIKE '%Moderator review required.%'
 			AND strpos(e.note, ' '||CASE WHEN length(pm.txid)<=20 THEN pm.txid ELSE left(pm.txid,20)||'…' END||' ')>0) f ON true
 		WHERE pm.flagged AND pm.disposition IN ('','escalated'))
 		SELECT id,order_id,state,product_id,title,currency,amount,txid,idx,credited,locked,confirmations,regress_notice,below_floor,open,COALESCE(to_char(at,'YYYY-MM-DD HH24:MI "UTC"'),''),
-			escalated,disposed,party,escrow,spent_outside,spent_by,(SELECT count(*) FROM v WHERE NOT open)
+			escalated,disposed,party,escrow,spent_outside,spent_by,counted,(SELECT count(*) FROM v WHERE NOT open)
 		FROM (SELECT * FROM v WHERE open UNION ALL (SELECT * FROM v WHERE NOT open ORDER BY at DESC NULLS LAST,id DESC LIMIT $1)) s
 		ORDER BY open DESC,CASE WHEN open THEN at END ASC NULLS FIRST,CASE WHEN open THEN id END,at DESC NULLS LAST,id DESC`, paymentReviewLimit, d.User.ID)
 	if err != nil {
@@ -781,10 +785,10 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 	for rows.Next() {
 		var v PaymentReview
 		var amt, confs int64
-		var credited, locked, regressed, belowFloor, escrow, outside bool
+		var credited, locked, regressed, belowFloor, escrow, outside, counted bool
 		var disposed, spentBy string
 		if err = rows.Scan(&v.ID, &v.OrderID, &v.OrderState, &v.ProductID, &v.Title, &v.Currency, &amt, &v.TxID, &v.Index, &credited, &locked, &confs, &regressed, &belowFloor, &v.Open, &v.Flagged,
-			&v.Escalated, &disposed, &v.Party, &escrow, &outside, &spentBy, &d.PaymentReviewOthers); err != nil {
+			&v.Escalated, &disposed, &v.Party, &escrow, &outside, &spentBy, &counted, &d.PaymentReviewOthers); err != nil {
 			return err
 		}
 		// The disposition form (paymentReviewAction): open flags of orders the viewer is not party to; an escalated
@@ -806,6 +810,14 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 			v.Reason = "Locked transfer (unlock time), not counted or paid out"
 		case belowFloor && (!credited || confs >= threshold):
 			v.Reason = "Below the minimum automatic payout, not paid out"
+			if confs < 0 {
+				v.Reason += "; now conflicted or missing"
+			}
+		case !credited && counted:
+			// QA462B-1: an escrow deposit recorded before the order closed but not credited at funding (still
+			// confirming, or conflicted and mined since) counts for the order, as a credited one does: its flag is not
+			// open and the desk offers no action on it (A-330).
+			v.Reason = "Escrow deposit counted for the order, though not credited toward its funding (recorded before the order closed); no stray refund returns it"
 			if confs < 0 {
 				v.Reason += "; now conflicted or missing"
 			}
