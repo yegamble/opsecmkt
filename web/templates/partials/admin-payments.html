@@ -212,7 +212,7 @@ Check the escrow node: its peers (<code>getconnectioncount</code>), and with <co
 </table>
 </div>{{if gt .ListingCount (len .Listings)}}
 <p class="help">Showing the first {{.Limit}} by vendor and title.</p>{{end}}{{end}}
-<p id="escrow-readiness-vendors"><strong>{{.VendorCount}}</strong> {{if eq .VendorCount 1}}vendor has{{else}}vendors have{{end}} active listings but no active Bitcoin escrow key, so none of their listings can be bought in BTC while BTC is escrow only.{{if $.XMREscrowOn}} Monero escrow needs no vendor key.{{end}}</p>{{if .Vendors}}
+<p id="escrow-readiness-vendors"><strong>{{.VendorCount}}</strong> {{if eq .VendorCount 1}}vendor has{{else}}vendors have{{end}} active listings but no active Bitcoin escrow key (or only a per-order wallet key, which cannot take an escrow yet), so none of their listings can be bought in BTC while BTC is escrow only.{{if $.XMREscrowOn}} Monero escrow needs no vendor key.{{end}}</p>{{if .Vendors}}
 <ul>{{range .Vendors}}
 <li>{{.Handle}}: {{.Listings}} active {{if eq .Listings 1}}listing{{else}}listings{{end}}</li>{{end}}
 </ul>{{if gt .VendorCount (len .Vendors)}}

@@ -1007,7 +1007,9 @@ public network.
 The third piece of per-order wallets (rulings P4-R2 and P4-R18, owner decision 2026-10-05), on the development branch
 behind `ESCROW_BTC` (off by default, regtest only). No escrow uses a per-order wallet yet: a checkout where the buyer's
 or the vendor's active key is a per-order wallet key is refused with nothing written, and the order page says why
-(escrows with per-order wallets are A-456).
+(escrows with per-order wallets are A-456). While Bitcoin intake is escrow only (A-444), a listing whose vendor's active
+key is a per-order wallet key is therefore not available for purchase in BTC, with that reason, and the readiness panel
+on `/admin` counts and lists the vendor.
 
 - **Layout.** Each account still has one escrow key, now with a layout (`user_escrow_keys.layout`, migration 088):
   `core`, a Bitcoin Core wallet whose escrows use the account key's child `/0/<i>` (every key registered before), or
@@ -1035,7 +1037,7 @@ or the vendor's active key is a per-order wallet key is refused with nothing wri
 How it was tested: DB integration with a simulated node that derives rooted keys by real BIP32 public derivation
 (`TestEscrowKeyLayoutMigration`, `TestEscrowKeyLayoutRegistration`, `TestEscrowPerOrderPractice`,
 `TestEscrowPerOrderPracticeCrossCheck`, `TestEscrowKeyLayoutSwitchNeedsPractice`, `TestEscrowKeyWithEscrowsKeepsLayout`,
-`TestEscrowPracticeKeyChangedDuringCheck`, `TestEscrowPerOrderKeyNotUsedForCheckout`,
+`TestEscrowPracticeKeyChangedDuringCheck`, `TestEscrowPerOrderKeyNotUsedForCheckout`, `TestEscrowOnlyPerOrderVendorNotPurchasable`,
 `TestEscrowVendorKeyTypeShown`); a browser journey with JavaScript off at 320 px against the simulated node
 (`tests/e2e/escrow-per-order-journey.spec.ts`, `npm run test:e2e:escrow`; not chain evidence); and on a real local
 chain, Core 31.1 on regtest (`TestEscrowRegtestPerOrderPractice` in `scripts/test-escrow-regtest.sh`: from a Core

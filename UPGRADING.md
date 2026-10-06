@@ -1233,7 +1233,8 @@ writes a suffix of three steps, so validation finds nothing to refuse. With `ESC
 lets a user register a per-order wallet key (the BIP48 multisig account key, `m/48h/1h/0h/2h`) and sign its practice
 transaction in a per-order practice wallet, and listings and vendor profiles show the vendor's key type. Escrows with
 per-order wallets are not built yet: a checkout where either party's active key is a per-order wallet key is refused
-with nothing written ([per-order escrow](docs/escrow.md#per-order-key-layout-registration-and-practice-a-455-shape-b)).
+with nothing written, and while BTC intake is escrow only (section 36) such a vendor's listings are not available for
+purchase in BTC and the readiness panel lists the vendor ([per-order escrow](docs/escrow.md#per-order-key-layout-registration-and-practice-a-455-shape-b)).
 No action is needed at upgrade. Rolling back past this release needs the pre-upgrade backup, as for every migration
 (section 5): the earlier release refuses to start on a database that records migration 088.
 

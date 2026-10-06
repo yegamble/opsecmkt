@@ -13,7 +13,7 @@ import (
 // listing is bought in that coin only through escrow. listingEscrowBlock says why a listing cannot be: the listing
 // itself (escrowEligible's rule: a digital listing without automatic delivery content, a physical one without a
 // dispatch window, a service listing), the coin's escrow being off on this market, or, for Bitcoin, its vendor having
-// no active escrow key. Such a listing stays visible with a plain "not available for purchase" reason and no buy form
+// no active escrow key, or only a per-order wallet key (A-455: no escrow is made with one until A-456). Such a listing stays visible with a plain "not available for purchase" reason and no buy form
 // in that coin (purchaseGateLoader), drafts in that coin are refused (orderDraftAction), and the administrator's
 // readiness panel on /admin counts and lists the active listings that cannot use escrow and the vendors with active
 // listings but no active Bitcoin escrow key (escrowReadinessLoader).
@@ -74,9 +74,10 @@ func (a *App) listingEscrowBlock(ctx context.Context, q rowQuerier, productID, c
 		return "Escrow for " + coin + " is not enabled on this market.", "Only the market's operator can enable it.", nil
 	}
 	var kind string
-	var vendorKey bool
-	if err = q.QueryRowContext(ctx, `SELECT p.kind,EXISTS(SELECT 1 FROM user_escrow_keys k WHERE k.user_id=p.vendor_id AND k.active_at IS NOT NULL)
-		FROM products p WHERE p.id=$1`, productID).Scan(&kind, &vendorKey); err != nil {
+	var vendorKey, perOrder bool
+	if err = q.QueryRowContext(ctx, `SELECT p.kind,EXISTS(SELECT 1 FROM user_escrow_keys k WHERE k.user_id=p.vendor_id AND k.active_at IS NOT NULL),
+		EXISTS(SELECT 1 FROM user_escrow_keys k WHERE k.user_id=p.vendor_id AND k.active_at IS NOT NULL AND k.layout<>'core')
+		FROM products p WHERE p.id=$1`, productID).Scan(&kind, &vendorKey, &perOrder); err != nil {
 		return "", "", err
 	}
 	ok, _, _, err := escrowEligible(ctx, q, &Order{ProductID: productID, Kind: kind, Currency: coin})
@@ -87,6 +88,9 @@ func (a *App) listingEscrowBlock(ctx context.Context, q rowQuerier, productID, c
 		reason, fix = escrowIneligibleReason(kind)
 	case coin == "BTC" && !vendorKey:
 		reason, fix = "The vendor has no active Bitcoin escrow key.", "Register your Bitcoin escrow key and sign its practice transaction on your escrow key page."
+	case coin == "BTC" && perOrder: // escrowParties refuses it the same way
+		reason, fix = "The vendor's Bitcoin escrow key is for a per-order wallet, and escrows with per-order wallets are not available on this market yet.",
+			"Register a Bitcoin Core escrow key and sign its practice transaction on your escrow key page."
 	}
 	return reason, fix, nil
 }
@@ -168,7 +172,7 @@ func escrowReadinessLoader(ctx context.Context, a *App, _ *http.Request, d *Page
 	}
 	rows.Close()
 	rows, err = a.db.QueryContext(ctx, `SELECT u.handle,count(*),count(*) OVER() FROM products p JOIN users u ON u.id=p.vendor_id
-		WHERE NOT p.archived AND NOT EXISTS(SELECT 1 FROM user_escrow_keys k WHERE k.user_id=p.vendor_id AND k.active_at IS NOT NULL)
+		WHERE NOT p.archived AND NOT EXISTS(SELECT 1 FROM user_escrow_keys k WHERE k.user_id=p.vendor_id AND k.active_at IS NOT NULL AND k.layout='core')
 		GROUP BY u.id,u.handle ORDER BY u.handle LIMIT $1`, readinessListLimit)
 	if err != nil {
 		return err

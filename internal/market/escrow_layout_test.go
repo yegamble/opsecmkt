@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"html"
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
@@ -468,6 +469,38 @@ func TestEscrowPerOrderKeyNotUsedForCheckout(t *testing.T) {
 				t.Fatalf("%d node calls for a refused checkout", n)
 			}
 		})
+	}
+}
+
+// A-444 with A-455: while BTC intake is escrow only, a listing whose vendor's only active key is a per-order wallet key
+// cannot be bought in BTC (no escrow can be made with it until A-456): the product page says why without the
+// vendor's fix, a BTC draft is refused, and the readiness panel counts and lists the vendor.
+func TestEscrowOnlyPerOrderVendorNotPurchasable(t *testing.T) {
+	x := newEscrowEnv(t)
+	_, admin := x.user("po_ready_admin_"+randomToken()[:6], "admin")
+	agExec(x.testEnv, "UPDATE user_escrow_keys SET layout='per_order' WHERE user_id=$1", x.vendor)
+	agExec(x.testEnv, "UPDATE settings SET value='escrow' WHERE key='payment_intake_BTC'")
+	reason := "The vendor's Bitcoin escrow key is for a per-order wallet"
+	buyer := html.UnescapeString(x.page("/product?id="+x.product, x.buyerSess))
+	if !strings.Contains(buyer, "Not available for purchase in BTC") || !strings.Contains(buyer, reason) || strings.Contains(buyer, "Register a Bitcoin Core escrow key") {
+		t.Fatalf("buyer's view:\n%s", buyer)
+	}
+	if v := html.UnescapeString(x.page("/product?id="+x.product, x.vendorSess)); !strings.Contains(v, "Register a Bitcoin Core escrow key") {
+		t.Fatal("the vendor does not read the fix")
+	}
+	w := x.do("POST", "/orders", x.buyerSess, url.Values{"product_id": {x.product}, "currency": {"BTC"}})
+	if w.Code != 409 || !strings.Contains(html.UnescapeString(w.Body.String()), reason) {
+		t.Fatalf("BTC draft from a per-order vendor under BTC escrow only: %d %s", w.Code, w.Body.String())
+	}
+	page := html.UnescapeString(x.page("/admin", admin))
+	handle := agStrings(t, x.testEnv, "SELECT handle FROM users WHERE id=$1", x.vendor)[0]
+	if got := readinessCounts(page); got["escrow-readiness-vendors"] != 1 || !strings.Contains(page, "<li>"+handle+":") {
+		t.Fatalf("readiness panel counts %v; vendor %s listed: %v", got, handle, strings.Contains(page, "<li>"+handle+":"))
+	}
+	// Back to a Bitcoin Core key: the gate lifts.
+	agExec(x.testEnv, "UPDATE user_escrow_keys SET layout='core' WHERE user_id=$1", x.vendor)
+	if b := html.UnescapeString(x.page("/product?id="+x.product, x.buyerSess)); strings.Contains(b, "Not available for purchase") {
+		t.Fatal("a Core key did not lift the gate")
 	}
 }
 
