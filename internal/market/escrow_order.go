@@ -396,7 +396,7 @@ func (a *App) escrowCheckoutOffer(ctx context.Context, d *PageData) error {
 	case !vendorActive:
 		v.Reason = "The vendor has no active Bitcoin escrow key, so this order cannot use escrow."
 	case buyerPerOrder: // A-455: escrowParties refuses it the same way until per-order escrows exist (A-456)
-		v.Reason = strings.TrimSuffix(errEscrowBuyerPerOrder.Error(), " Nothing was changed.")
+		v.Reason, v.KeyLink = strings.TrimSuffix(errEscrowBuyerPerOrder.Error(), " Nothing was changed.")+" Register a Bitcoin Core escrow key and sign its practice transaction to use escrow.", true
 	case vendorPerOrder:
 		v.Reason = strings.TrimSuffix(errEscrowVendorPerOrder.Error(), " Nothing was changed.")
 	case v.Physical && !vendorCanEncrypt:

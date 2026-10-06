@@ -158,6 +158,9 @@ var (
 	practicePath = regexp.MustCompile(`<pre class="code-block escrow-practice-path"[^>]*>([^<]+)</pre>`)
 )
 
+// untriedWallets is the phrase the pages carry until a real Electrum or Sparrow has signed the practice (A-457, A-458).
+const untriedWallets = "have not yet been tried with a real Electrum or Sparrow wallet"
+
 // perOrderPractice reads the shape-(b) practice material of the viewer's page: the PSBT, the two cosigner keys, the
 // practice wallet's first address and the owner's path.
 func perOrderPractice(t *testing.T, e *testEnv, sess string) (psbt string, cosigners []string, addr, path string) {
@@ -183,8 +186,23 @@ func TestEscrowPerOrderPractice(t *testing.T) {
 	logs := captureLog(t)
 	e, core, _ := escrowTestApp(t)
 	uid, sess := e.user("per_order_practice", "buyer")
+	// QA4W5K-3b, QA4W5K-2: the registration copy says a per-order key replaces the working Bitcoin Core key and what
+	// that stops, and that the steps have not been tried with a real Electrum or Sparrow.
+	form := html.UnescapeString(e.do("GET", "/escrow-key", sess, nil).Body.String())
+	for _, want := range []string{"replaces the Bitcoin Core key this account uses now", "stops Bitcoin escrow buying", "stops Bitcoin escrow sales too", untriedWallets} {
+		if !strings.Contains(form, want) {
+			t.Errorf("registration page lacks %q", want)
+		}
+	}
 	if code, body := registerKey(e, sess, testBIP48Key, "layout", "per_order"); code != 303 {
 		t.Fatalf("register: %d %s", code, body)
+	}
+	// QA4W5K-1, QA4W5K-2: the first receiving address is shown with a warning, and the steps say they are untried.
+	practicePage := html.UnescapeString(e.do("GET", "/escrow-key?practice=1", sess, nil).Body.String())
+	for _, want := range []string{"Never send coins to this address.", untriedWallets} {
+		if !strings.Contains(practicePage, want) {
+			t.Errorf("practice page lacks %q", want)
+		}
 	}
 	psbt, cosigners, addr, path := perOrderPractice(t, e, sess)
 	if path != "[7450f935/48h/1h/0h/2h/2147483647]" {
@@ -460,6 +478,13 @@ func TestEscrowPerOrderKeyNotUsedForCheckout(t *testing.T) {
 			if !strings.Contains(page, "per-order wallet") || strings.Contains(page, "Pay into an escrow</button>") {
 				t.Fatalf("order page offers escrow with a per-order key: %s", page)
 			}
+			// QA4W5K-5: each party's wording on the order page, so that swapping the two flags is noticed.
+			own, vendors := strings.Contains(page, "Your Bitcoin escrow key is for a per-order wallet"), strings.Contains(page, "The vendor's Bitcoin escrow key is for a per-order wallet")
+			// QA4W5K-3a: the buyer is told how to fix it and linked to the key page; the vendor's fix is the vendor's to make.
+			fix := strings.Contains(page, "Register a Bitcoin Core escrow key and sign its practice transaction to use escrow") && strings.Contains(page, `href="/escrow-key">Your escrow key</a>`)
+			if who == "buyer" && (!own || vendors || !fix) || who == "vendor" && (own || !vendors || fix) {
+				t.Fatalf("%s's key is per-order: own wording %v, vendor's wording %v, buyer's fix and link %v: %s", who, own, vendors, fix, page)
+			}
 			w := x.checkout(x.order, "bcrt1qbuyerrefund00000000000000000000001")
 			if w.Code != 409 || !strings.Contains(html.UnescapeString(w.Body.String()), "per-order wallet") {
 				t.Fatalf("checkout: %d %s", w.Code, w.Body.String())
@@ -521,6 +546,10 @@ func TestEscrowVendorKeyTypeShown(t *testing.T) {
 			body := html.UnescapeString(x.page(path, other))
 			if !strings.Contains(body, "Bitcoin escrow key") || !strings.Contains(body, c.want) {
 				t.Errorf("%s with a %s key (active %s) lacks %q", path, c.layout, c.active, c.want)
+			}
+			// QA4W5K-2: the per-order wallet's wallet advice says it is untried.
+			if c.layout == "per_order" && !strings.Contains(body, untriedWallets) {
+				t.Errorf("%s with a per-order key lacks %q", path, untriedWallets)
 			}
 		}
 	}
