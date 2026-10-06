@@ -352,9 +352,17 @@ func TestEscrowRegtestSigner(t *testing.T) {
 	call(miner, "getnewaddress", &mine)
 	var mined []string
 	call("", "generatetoaddress", &mined, 101, mine)
+	// The regtest subsidy halves every 150 blocks and the other legs mine many: mine until the wallet can pay.
+	for range 40 {
+		var balance float64
+		if call(miner, "getbalance", &balance); balance >= 0.02 {
+			break
+		}
+		call("", "generatetoaddress", &mined, 25, mine)
+	}
 	var fundTxid string
-	call(miner, "sendmany", &fundTxid, "", map[string]any{addrA: 0.5, addrB: 0.3, addrC: 0.2})
-	call(miner, "sendtoaddress", nil, addrA, 0.4)
+	call(miner, "sendmany", &fundTxid, "", map[string]any{addrA: 0.005, addrB: 0.003, addrC: 0.002})
+	call(miner, "sendtoaddress", nil, addrA, 0.004)
 	call("", "generatetoaddress", &mined, 1, mine)
 	var unspent []struct {
 		Txid    string  `json:"txid"`
@@ -398,7 +406,7 @@ func TestEscrowRegtestSigner(t *testing.T) {
 		lg.Fatalf("no %v BTC output at %s", amount, addr)
 		return "", 0
 	}
-	lg.Logf("funded on regtest: A 0.5 and 0.4, B 0.3, C 0.2 BTC (txid %s and one more), 1 confirmation", fundTxid)
+	lg.Logf("funded on regtest: A 0.005 and 0.004, B 0.003, C 0.002 BTC (txid %s and one more), 1 confirmation", fundTxid)
 
 	// psbt spends the given outputs to the miner, with each escrow's descriptor for utxoupdatepsbt (public keys only).
 	psbt := func(descs []string, ins ...[2]any) string {
@@ -451,7 +459,7 @@ func TestEscrowRegtestSigner(t *testing.T) {
 
 	// The happy path: the signer co-signs A through the socket, the buyer signs with Core, combine, finalize, accept,
 	// broadcast, mine.
-	pA := psbt([]string{descA}, [2]any{addrA, 0.5})
+	pA := psbt([]string{descA}, [2]any{addrA, 0.005})
 	signed, err := e.A.escrowSigner.sign(ctx, pA, index)
 	if err != nil {
 		lg.Fatalf("sign A: %v", err)
@@ -513,7 +521,7 @@ func TestEscrowRegtestSigner(t *testing.T) {
 
 	// Refusals on real Core, nothing signed.
 	scan()
-	pA2 := psbt([]string{descA}, [2]any{addrA, 0.4})
+	pA2 := psbt([]string{descA}, [2]any{addrA, 0.004})
 	var noneSigned struct {
 		PSBT string `json:"psbt"`
 	}
@@ -523,8 +531,8 @@ func TestEscrowRegtestSigner(t *testing.T) {
 	}
 	refused("an input marked SIGHASH_NONE (the buyer signed NONE with Core)", noneSigned.PSBT, index, "sighash")
 	refused("another index (6 for an escrow of index 5)", pA2, index+1, "key-not-found")
-	refused("a script holding the signer's account/5/0/0 and account/5/0/1", psbt([]string{descB}, [2]any{addrB, 0.3}), index, "two-signer-keys")
-	refused("two escrows (A and its sibling C) in one request", psbt([]string{descA, descC}, [2]any{addrA, 0.4}, [2]any{addrC, 0.2}), index, "mixed-scripts")
+	refused("a script holding the signer's account/5/0/0 and account/5/0/1", psbt([]string{descB}, [2]any{addrB, 0.003}), index, "two-signer-keys")
+	refused("two escrows (A and its sibling C) in one request", psbt([]string{descA, descC}, [2]any{addrA, 0.004}, [2]any{addrC, 0.002}), index, "mixed-scripts")
 
 	// Backup to a throwaway operator key, decrypt, restore into a new seed file; a signer from the restored seed signs A2
 	// with the same signature as signer1 (RFC 6979: the same key and message give the same signature).
