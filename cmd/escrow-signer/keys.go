@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha512"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"math/big"
+	"regexp"
 	"strconv"
 
 	"opsecmkt/internal/btc"
@@ -17,17 +20,17 @@ import (
 // index i is account/i/0/0, and its per-order wallet's siblings account/i/0/k and account/i/1/k (k < 20) may be signed
 // for too (P4-R2: a top-up to a sibling address is refunded, not stranded).
 //
-// Go does as little private-key arithmetic as possible. To sign, the signer hands Bitcoin Core the master tprv with the
-// full path, tprv…/48h/1h/0h/2h/i/c/k, inside the descriptor of one descriptorprocesspsbt call, and Core derives the
-// key. Go derives the account's public key once at startup, because Core cannot: getdescriptorinfo of a private
-// descriptor answers the master tpub with the hardened steps still to walk (wpkh(tpub…/48h/1h/0h/2h/*), probed on Core
-// 31.1 regtest), which no public derivation can follow, and only a wallet's listdescriptors would show the account key
-// (the key would then sit in a Core wallet file). That costs the master key from the seed (HMAC-SHA512), four hardened
-// CKDpriv steps (HMAC-SHA512 and an addition mod n) and one scalar multiplication for the account public key, done with
-// internal/btc's Mul, which is not constant-time: it runs once per process start on a key no request can choose, and
-// the signer answers no timing-observable request with it, so no attacker can repeat or time it. A mismatch between
-// Go's account key and Core's derivation cannot sign anything: the signer only names a key Go derived from that account
-// key, and Core adds no signature for it, which the result check refuses.
+// Go does no elliptic-curve arithmetic with a private key (QA4W2-1): internal/btc's point multiplication is math/big
+// code and not constant-time. From the seed Go computes the master key (HMAC-SHA512) and the four hardened CKDpriv
+// steps to the account (HMAC-SHA512 and an addition mod n), and serializes the account's private key as a root (depth
+// 0, no parent): the account tprv. Bitcoin Core does the rest. At startup getdescriptorinfo of wpkh(<account
+// tprv>/0/*) answers the descriptor with the account's tpub in its place (checked on Core 31.1 regtest), which is
+// parsed and checked against Go's chain code; every per-order public key is derived from that tpub in Go (CKDpub, on
+// public data only). To sign, the account tprv and the per-order path, tprv…/i/c/k, go into the descriptor of one
+// descriptorprocesspsbt call and Core derives the key (the same key as master/48h/1h/0h/2h/i/c/k: a root's metadata
+// takes no part in derivation). The master key is never serialized and never leaves the process. A mismatch between
+// Core's account key and Go's derivation cannot sign anything: the signer only names a key derived from that account
+// key, and Core adds no signature for any other, which the result check refuses.
 
 const (
 	tprvVersion = 0x04358394 // BIP32 test-network private key version
@@ -39,12 +42,13 @@ const (
 var accountPath = []uint32{48, 1, 0, 2}
 
 var (
-	errSeedSize   = errors.New("the seed must be exactly 32 or 64 bytes")
-	errSeedMaster = errors.New("this seed gives an invalid BIP32 master key (probability about 2^-127); make a new one with init")
+	errSeedSize    = errors.New("the seed must be exactly 32 or 64 bytes")
+	errSeedMaster  = errors.New("this seed gives an invalid BIP32 master key (probability about 2^-127); make a new one with init")
+	errAccountCore = errors.New("the escrow node's getdescriptorinfo did not answer this seed's account key")
 )
 
 // extPriv is a BIP32 extended private key: the key and the chain code (no metadata: the signer serializes only the
-// master key, whose depth, parent fingerprint and child number are 0).
+// account key, as a root whose depth, parent fingerprint and child number are 0).
 type extPriv struct {
 	key   *big.Int
 	chain [32]byte
@@ -93,13 +97,8 @@ func hardenedChild(p extPriv, i uint32) (extPriv, error) {
 
 func (p extPriv) hardenedChild(i uint32) (extPriv, error) { return hardenedChild(p, i) }
 
-// public is the key's extended public key, rooted (depth 0, parent fingerprint 0, child 0).
-func (p extPriv) public() btc.ExtKey {
-	return btc.ExtKey{ChainCode: p.chain, PubKey: btc.Compress(btc.Mul(p.key, btc.G))}
-}
-
-// serialize is the key's BIP32 serialization as a root (depth 0, parent fingerprint 0, child 0) under version. Only
-// the master key is serialized, and only into the descriptor handed to Core.
+// serialize is the key's BIP32 serialization as a root (depth 0, parent fingerprint 0, child number 0) under version.
+// Only the account key is serialized, and only into the descriptors handed to Core.
 func (p extPriv) serialize(version uint32) string {
 	raw := binary.BigEndian.AppendUint32(make([]byte, 0, 78), version)
 	raw = append(raw, make([]byte, 9)...) // depth, parent fingerprint, child number
@@ -109,29 +108,56 @@ func (p extPriv) serialize(version uint32) string {
 	return btc.Base58CheckEncode(raw)
 }
 
-// signerKeys is what the signer keeps in memory for its lifetime: the master tprv (only ever placed in a descriptor
-// sent to Core over its RPC) and the account's public key.
+// signerKeys is what the signer keeps in memory for its lifetime: the account tprv (only ever placed in a descriptor
+// sent to Core over its RPC), its chain code, and the account's public key as Core gave it (loadAccount).
 type signerKeys struct {
-	masterTprv string
-	account    btc.ExtKey // m/48h/1h/0h/2h, rooted
+	accountTprv string     // m/48h/1h/0h/2h, rooted
+	chain       [32]byte   // the account's chain code, to check Core's answer
+	account     btc.ExtKey // m/48h/1h/0h/2h, rooted; zero until loadAccount
 }
 
-// keysFromSeed derives the signer's keys from a 32- or 64-byte seed. Errors name no key material.
+// keysFromSeed derives the signer's account tprv from a 32- or 64-byte seed; loadAccount then asks Core for its public
+// key. Errors name no key material.
 func keysFromSeed(seed []byte) (*signerKeys, error) {
 	if len(seed) != 32 && len(seed) != 64 {
 		return nil, errSeedSize
 	}
-	m, err := masterKey(seed)
+	acct, err := masterKey(seed)
 	if err != nil {
 		return nil, err
 	}
-	acct := m
 	for _, step := range accountPath {
 		if acct, err = hardenedChild(acct, step); err != nil {
 			return nil, err
 		}
 	}
-	return &signerKeys{masterTprv: m.serialize(tprvVersion), account: acct.public()}, nil
+	return &signerKeys{accountTprv: acct.serialize(tprvVersion), chain: acct.chain}, nil
+}
+
+// coreTpubDescriptor is getdescriptorinfo's descriptor for wpkh(<account tprv>/0/*): the same with the tpub, and its
+// checksum.
+var coreTpubDescriptor = regexp.MustCompile(`^wpkh\((tpub[1-9A-HJ-NP-Za-km-z]+)/0/\*\)#[0-9a-z]{8}$`)
+
+// loadAccount has Core compute the account's public key: getdescriptorinfo of wpkh(<account tprv>/0/*) answers the
+// descriptor with the account tpub in the tprv's place. The tpub must parse as a rooted tpub (a valid point) with Go's
+// chain code. The error names no key material.
+func (k *signerKeys) loadAccount(ctx context.Context, c rpcCaller) error {
+	var res struct {
+		Descriptor string `json:"descriptor"`
+	}
+	if err := c.call(ctx, "getdescriptorinfo", []any{"wpkh(" + k.accountTprv + "/0/*)"}, &res); err != nil {
+		return fmt.Errorf("getdescriptorinfo: %w (the node must be running and the signer's RPC user whitelisted to decodepsbt, descriptorprocesspsbt and getdescriptorinfo)", err)
+	}
+	m := coreTpubDescriptor.FindStringSubmatch(res.Descriptor)
+	if m == nil {
+		return errAccountCore
+	}
+	pub, err := btc.ParseExtPub(m[1], btc.VersionTpub)
+	if err != nil || pub.Depth != 0 || pub.ChainCode != k.chain {
+		return errAccountCore
+	}
+	k.account = pub
+	return nil
 }
 
 // accountTpub is the account key rooted, as a tpub: what info answers and the app pins (by HMAC).
@@ -183,10 +209,10 @@ func (k *signerKeys) siblingKeys(index, n uint32) map[[33]byte][2]uint32 {
 	return out
 }
 
-// descriptorKey is the key expression of account/index/chain/i that Core derives from: the master tprv and the full
-// path. It goes into exactly one place, the descriptor of a descriptorprocesspsbt call.
+// descriptorKey is the key expression of account/index/chain/i that Core derives from: the account tprv and the
+// per-order path. It goes into exactly one place, the descriptor of a descriptorprocesspsbt call.
 func (k *signerKeys) descriptorKey(index, chain, i uint32) string {
-	return k.masterTprv + "/48h/1h/0h/2h/" + itoa(index) + "/" + itoa(chain) + "/" + itoa(i)
+	return k.accountTprv + "/" + itoa(index) + "/" + itoa(chain) + "/" + itoa(i)
 }
 
 func itoa(n uint32) string { return strconv.FormatUint(uint64(n), 10) }

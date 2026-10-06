@@ -248,7 +248,7 @@ func escrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	if open >= maxAwaitingPayment {
 		return actionResult{}, fail(409, "You already have "+strconv.Itoa(maxAwaitingPayment)+" orders awaiting payment. Pay or cancel one before requesting another payment address.")
 	}
-	if err = lockPaymentIntake(c, o.Currency); err != nil {
+	if err = lockPaymentIntake(c, o.Currency, kindEscrow); err != nil {
 		return actionResult{}, err
 	}
 	eligible, price, dispatchDays, err := escrowEligible(ctx, c.Tx, &o)

@@ -12,9 +12,9 @@ import (
 )
 
 // core is a minimal Bitcoin Core JSON-RPC client for the signer's own RPC user, which the operator whitelists to exactly
-// what it calls: decodepsbt and descriptorprocesspsbt (docs/operator-guide.md, "Escrow signer"). Every failure is one
-// of two fixed errors; Core's error text is never kept, logged or returned, because it could quote the descriptor and
-// with it the tprv.
+// what it calls: decodepsbt, descriptorprocesspsbt and getdescriptorinfo (docs/operator-guide.md, "Escrow signer").
+// Every failure is one of two fixed errors; Core's error text is never kept, logged or returned, because it could quote
+// the descriptor and with it the account tprv.
 type core struct {
 	endpoint   string // the URL without its user information
 	user, pass string

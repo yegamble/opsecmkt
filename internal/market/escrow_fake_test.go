@@ -55,6 +55,17 @@ type fakeEscrowCore struct {
 	netInfoErr       int
 	netInfoForbidden bool
 
+	// A-441: getnetworkinfo's version (0 = 310100) and, per network (ipv4, ipv6, onion, i2p, cjdns), its proxy ("" = none)
+	// and whether onion is reachable, as Core 31.1 reports them: -proxy sets the proxy of every network and makes onion
+	// reachable; -onion alone sets only onion's. With private set, sendrawtransaction answers the txid and keeps the
+	// transaction queued, as -privatebroadcast does with a dead proxy (probed on Core 31.1 regtest): it is not in the
+	// mempool, so gettransaction does not know it and its inputs stay unspent; a resend answers the txid again.
+	netVersion     int64
+	netProxy       map[string]string
+	onionReachable bool
+	private        bool
+	queued         map[string]string // txid -> raw transaction queued by a private broadcast
+
 	// Escrow P1-b: the watch-only wallet, its imports and the deposits it reports.
 	watchInfo    map[string]any      // getwalletinfo of the watch wallet (nil = not loaded, -18)
 	importFail   bool                // importdescriptors answers success=false
@@ -83,7 +94,8 @@ type fakeEscrowCore struct {
 	// inputs; gettransaction reports it with txConfs and conflicts.
 	arbiterShort     bool                // the arbiter's key range is short of the market child (getaddressinfo ismine false)
 	keypoolStuck     bool                // keypoolrefill does not extend the arbiter's key range
-	arbiterTxCount   int64               // getwalletinfo txcount of the arbiter wallet
+	arbiterTxs       []string            // the arbiter wallet's listtransactions categories, oldest first; getwalletinfo txcount is their number (A-471)
+	arbiterListErr   int                 // JSON-RPC error for listtransactions on the arbiter wallet (0 = none)
 	arbiterEncrypted bool                // getwalletinfo of the arbiter wallet has unlocked_until
 	marketSkew       func(string) string // edits walletprocesspsbt's answer
 	finalSkew        func(string) string // edits finalizepsbt's raw transaction
@@ -326,7 +338,16 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 		if c.netInfoErr != 0 {
 			return nil, c.netInfoErr, "Method not found"
 		}
-		return map[string]any{"version": 310100, "connections": c.peers}, 0, ""
+		version := c.netVersion
+		if version == 0 {
+			version = 310100
+		}
+		var networks []map[string]any
+		for _, n := range []string{"ipv4", "ipv6", "onion", "i2p", "cjdns"} {
+			reachable := n == "ipv4" || n == "ipv6" || n == "onion" && c.onionReachable
+			networks = append(networks, map[string]any{"name": n, "limited": !reachable, "reachable": reachable, "proxy": c.netProxy[n], "proxy_randomize_credentials": c.netProxy[n] != ""})
+		}
+		return map[string]any{"version": version, "connections": c.peers, "networks": networks}, 0, ""
 	case "getrawchangeaddress":
 		if !wallet {
 			return nil, -18, "Requested wallet does not exist or is not loaded"
@@ -571,7 +592,7 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 		return []map[string]any{{"success": true}}, 0, ""
 	case "getwalletinfo":
 		if wallet {
-			info := map[string]any{"walletname": "opsecmkt-arbiter", "descriptors": true, "private_keys_enabled": true, "txcount": c.arbiterTxCount}
+			info := map[string]any{"walletname": "opsecmkt-arbiter", "descriptors": true, "private_keys_enabled": true, "txcount": len(c.arbiterTxs)}
 			if c.arbiterEncrypted {
 				info["unlocked_until"] = 0
 			}
@@ -620,6 +641,22 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 		}
 		return out, 0, ""
 	case "listtransactions":
+		if wallet { // A-471: Core's paging: count entries after skipping the skip most recent, oldest first
+			if c.arbiterListErr != 0 {
+				return nil, c.arbiterListErr, "fake listtransactions failure"
+			}
+			var count, skip int
+			if len(p) > 2 {
+				json.Unmarshal(p[1], &count)
+				json.Unmarshal(p[2], &skip)
+			}
+			end := max(len(c.arbiterTxs)-skip, 0)
+			out := []map[string]any{}
+			for i, cat := range c.arbiterTxs[max(end-count, 0):end] {
+				out = append(out, map[string]any{"txid": txidOf("arbiter " + strconv.Itoa(i)), "category": cat, "amount": json.Number("0.00001")})
+			}
+			return out, 0, ""
+		}
 		if path != fakeWatchWallet {
 			return nil, -8, "unexpected fake wallet"
 		}
@@ -674,6 +711,13 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 			return "txid-broadcast", 0, "" // the adapter's params test sends a placeholder
 		}
 		txid := t.TxID()
+		if _, ok := c.broadcast[txid]; !ok && c.private {
+			if c.queued == nil {
+				c.queued = map[string]string{}
+			}
+			c.queued[txid] = str(0)
+			return txid, 0, ""
+		}
 		if _, ok := c.broadcast[txid]; ok {
 			if c.txConfs[txid] > 0 {
 				return nil, -27, "Transaction outputs already in utxo set"

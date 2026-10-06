@@ -137,15 +137,24 @@ def setup(args):
         save(runtime, state)
         mine('BTC', 120)
 
-        monero_data = directory / 'monero-data'
+        # Two stagenet daemons peered only with each other over loopback (--add-exclusive-node: no seed nodes, no
+        # other peers; no DNS checkpoints, no UPnP), never --offline: the market's Monero sync guard counts a daemon
+        # with no connections as not synced (A-449). The market and both wallets use the first; the second only peers.
+        monero_data, peer_data = directory / 'monero-data', directory / 'monero-peer-data'
         monero_data.mkdir()
+        peer_data.mkdir()
         state['monero']['daemon_port'] = port()
+        p2p, peer_p2p, peer_rpc = port(), port(), port()
+        isolated = ['--stagenet', '--fixed-difficulty', '1', '--p2p-bind-ip', '127.0.0.1', '--rpc-bind-ip', '127.0.0.1',
+                    '--no-igd', '--no-zmq', '--hide-my-port', '--disable-dns-checkpoints', '--non-interactive',
+                    '--check-updates', 'disabled', '--max-concurrency', '2']
         state['monero']['daemon_pid'] = start(monero / 'monerod', [
-            '--stagenet', '--offline', '--fixed-difficulty', '1', '--data-dir', str(monero_data),
-            '--rpc-bind-ip', '127.0.0.1', '--rpc-bind-port', str(state['monero']['daemon_port']),
-            '--p2p-bind-ip', '127.0.0.1', '--p2p-bind-port', str(port()), '--no-igd', '--no-zmq',
-            '--non-interactive', '--check-updates', 'disabled', '--max-concurrency', '2'], 'monero', str(monero_data))
-        wait_for(lambda: rpc.guard('XMR'), 'offline Monero stagenet')
+            *isolated, '--data-dir', str(monero_data), '--rpc-bind-port', str(state['monero']['daemon_port']),
+            '--p2p-bind-port', str(p2p), '--add-exclusive-node', '127.0.0.1:' + str(peer_p2p)], 'monero', str(monero_data))
+        state['monero']['peer_pid'] = start(monero / 'monerod', [
+            *isolated, '--data-dir', str(peer_data), '--rpc-bind-port', str(peer_rpc),
+            '--p2p-bind-port', str(peer_p2p), '--add-exclusive-node', '127.0.0.1:' + str(p2p)], 'monero-peer', str(peer_data))
+        wait_for(lambda: rpc.guard('XMR', peered=True), 'isolated Monero stagenet with its loopback peer')
         for name in ('buyer', 'opsecmkt'):
             wallet_dir = directory / ('monero-wallet-' + name)
             wallet_dir.mkdir()
@@ -170,7 +179,8 @@ def setup(args):
             raise RuntimeError('Monero market fee reserve is not unlocked')
         evidence = {'bitcoin': rpc.btc('getblockchaininfo')['chain'],
                     'bitcoin_height': rpc.btc('getblockcount'),
-                    'monero': rpc.daemon('get_info')['nettype'], 'monero_offline': True,
+                    'monero': rpc.daemon('get_info')['nettype'], 'monero_isolation': 'one exclusive loopback peer',
+                    'monero_connections': len(rpc.daemon('get_connections').get('connections') or []),
                     'monero_height': rpc.daemon('get_info')['height'],
                     'monero_market_unlocked_atomic': balance['unlocked_balance']}
         (directory / 'setup-result.json').write_text(json.dumps(evidence, indent=2) + '\n')

@@ -116,16 +116,13 @@ func TestEscrowWatcherSkipsWhileNotSynced(t *testing.T) {
 			if got := agStrings(t, x.testEnv, written); strings.Join(got, ",") != strings.Join(before, ",") {
 				t.Fatalf("order events, payments or notifications written while not synced: %v -> %v", before, got)
 			}
-			// QA4W1-5: the buyer's page does not promise a cancellation at a time already past; it says why the order
-			// is still open.
-			var created time.Time
-			if err := x.DB.QueryRow("SELECT created FROM escrows WHERE order_id=$1", x.order).Scan(&created); err != nil {
-				t.Fatal(err)
-			}
-			held := "The payment window ended at " + created.Add(expiryWindow()).UTC().Truncate(time.Minute).Format("2006-01-02 15:04 UTC") +
-				", but the order stays open for now: the market is waiting for its Bitcoin node before it checks this escrow again and acts on the payment window."
-			if body := html.UnescapeString(x.page("/order?id="+x.order, x.buyerSess)); !strings.Contains(body, held) || strings.Contains(body, "If nothing has been received by") {
-				t.Fatalf("buyer's page while expiry is held:\n%s", body)
+			// QA4W1-5: while the node is not synced the buyer's page does not promise a cancellation at a time already
+			// past; it says why the order is still open. A node check error is not "not synced" (QA4W2 observation):
+			// the page keeps the usual wording, as in the gap before a watcher pass.
+			held, usual := windowPassedWording(t, x)
+			body := html.UnescapeString(x.page("/order?id="+x.order, x.buyerSess))
+			if tc.why != "" && (!strings.Contains(body, held) || strings.Contains(body, usual)) || tc.why == "" && (strings.Contains(body, held) || !strings.Contains(body, usual)) {
+				t.Fatalf("buyer's page while expiry is held (%q):\n%s", tc.why, body)
 			}
 			if got := agStrings(t, x.testEnv, "SELECT key||'='||value FROM settings WHERE key NOT LIKE 'installed' ORDER BY key"); strings.Join(got, ",") != strings.Join(withoutInstalled(settings), ",") {
 				t.Fatalf("settings changed by the guard: %v -> %v", settings, got)
@@ -162,6 +159,42 @@ func TestEscrowWatcherSkipsWhileNotSynced(t *testing.T) {
 			}
 		})
 	}
+}
+
+// windowPassedWording is the escrow order page's sentence for x.order past its payment window while the escrow node is
+// not synced (held), and the start of the usual one (usual), which names the same past time.
+func windowPassedWording(t *testing.T, x *escrowEnv) (held, usual string) {
+	t.Helper()
+	var created time.Time
+	if err := x.DB.QueryRow("SELECT created FROM escrows WHERE order_id=$1", x.order).Scan(&created); err != nil {
+		t.Fatal(err)
+	}
+	at := created.Add(expiryWindow()).UTC().Truncate(time.Minute).Format("2006-01-02 15:04 UTC")
+	return "The payment window ended at " + at + ", but the order stays open for now: the market is waiting for its Bitcoin node before it checks this escrow again and acts on the payment window.",
+		"If nothing has been received by " + at + ", the order is cancelled."
+}
+
+// TestEscrowWindowPassedWhileSynced (QA4W2 observation on QA4W1-5): between the end of the payment window and the next
+// watcher pass, with the escrow node synced, the page keeps the usual wording; only a node the watcher found not synced
+// (the state A-439 records) shows the "waiting for its Bitcoin node" sentence, and a synced pass afterwards takes it
+// away again.
+func TestEscrowWindowPassedWhileSynced(t *testing.T) {
+	x := newEscrowEnv(t)
+	x.mustCheckout(x.order, regtestAddr("window-synced-refund"))
+	x.DB.Exec("UPDATE escrows SET created=now()-interval '25 hours' WHERE order_id=$1", x.order)
+	held, usual := windowPassedWording(t, x)
+	check := func(when string, wantHeld bool) {
+		t.Helper()
+		body := html.UnescapeString(x.page("/order?id="+x.order, x.buyerSess))
+		if strings.Contains(body, held) != wantHeld || strings.Contains(body, usual) == wantHeld {
+			t.Fatalf("buyer's page %s (want the not-synced wording: %v):\n%s", when, wantHeld, body)
+		}
+	}
+	check("before any watcher pass, node synced", false)
+	x.A.noteEscrowSync(notSyncedIBD)
+	check("with the node not synced", true)
+	x.A.noteEscrowSync("")
+	check("with the node synced again, before the pass acts", false)
 }
 
 // regtestIBDText is the remedy /admin gives for a regtest node in initial block download (QA4W1-2), pooled and escrow.

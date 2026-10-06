@@ -3,6 +3,7 @@ package market
 import (
 	"context"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -134,19 +135,47 @@ func TestEscrowKeypoolRefillBeforeSigning(t *testing.T) {
 	}
 }
 
-// The arbiter wallet must be dedicated to the escrow key: a wallet with transactions, or an encrypted one, leaves
-// escrow disabled with one fixed line, and the market runs.
+// The arbiter wallet must be dedicated to the escrow key: a wallet that has ever spent (a listtransactions entry of
+// category "send"), or an encrypted one, leaves escrow disabled with one fixed line, and the market runs. A-471: coins
+// paid to it do not count. Anyone can pay the wpkh address of the market child key an order page's descriptor shows,
+// and the arbiter wallet owns it, so a refusal on getwalletinfo's txcount let any escrow party disable escrow at the
+// next restart with a dust payment. A wallet that only received, over more entries than one listtransactions page,
+// is dedicated; a single spend behind a full page of receives is found; a wallet whose entries cannot be read is not
+// taken as dedicated.
 func TestEscrowArbiterWalletDedicated(t *testing.T) {
 	logs := captureLog(t)
 	core, srv := newFakeEscrowCore(t)
 	setEscrowEnv(t, srv.url(""))
-	core.arbiterTxCount = 3
+	core.arbiterTxs = []string{"receive", "receive", "immature"} // deposits to market child keys, a coinbase to one
 	a, dsn, err := startApp(t, "")
-	if err != nil || a.escrow.Load() != nil || !strings.Contains(logs.String(), escrowLogArbiterUse+" (getwalletinfo not-dedicated)") {
-		t.Fatalf("arbiter with transactions: %v\n%s", err, logs.String())
+	if err != nil || a.escrow.Load() == nil || strings.Contains(logs.String(), escrowLogArbiterUse) {
+		t.Fatalf("arbiter that only received: %v\n%s", err, logs.String())
+	}
+	if path, params := core.lastCall(t, "listtransactions"); path != "/wallet/opsecmkt-arbiter" || params != `["*",1000,0,true]` {
+		t.Fatalf("listtransactions %s %s", path, params)
 	}
 	a.Close()
-	core.arbiterTxCount, core.arbiterEncrypted = 0, true
+	core.arbiterTxs = append([]string{"receive", "send"}, slices.Repeat([]string{"receive"}, escrowArbiterTxPage)...)
+	before := core.countWith("listtransactions", `"*",1000,1000,true`)
+	if a, _, err = startApp(t, dsn); err != nil || a.escrow.Load() != nil || !strings.Contains(logs.String(), escrowLogArbiterUse+" (getwalletinfo not-dedicated)") {
+		t.Fatalf("arbiter that spent once, behind a full page of receives: %v\n%s", err, logs.String())
+	}
+	if core.countWith("listtransactions", `"*",1000,1000,true`) != before+1 {
+		t.Fatal("the second listtransactions page was not read")
+	}
+	// A retry runs the same check: once the spend is gone (another wallet), escrow starts without a restart.
+	core.arbiterTxs = slices.Repeat([]string{"receive"}, escrowArbiterTxPage+1)
+	retry := &escrowRetry{last: a.escrowStartState}
+	if a.retryEscrow(context.Background(), retry); a.escrow.Load() == nil {
+		t.Fatalf("retry with a wallet that only received:\n%s", logs.String())
+	}
+	a.Close()
+	core.arbiterTxs, core.arbiterListErr = []string{"receive"}, -1
+	if a, _, err = startApp(t, dsn); err != nil || a.escrow.Load() != nil || !strings.Contains(logs.String(), escrowLogArbiterUse+" (listtransactions rpc:-1)") {
+		t.Fatalf("arbiter whose entries cannot be read: %v\n%s", err, logs.String())
+	}
+	a.Close()
+	core.arbiterTxs, core.arbiterListErr, core.arbiterEncrypted = nil, 0, true
 	if a, _, err = startApp(t, dsn); err != nil || a.escrow.Load() != nil || !strings.Contains(logs.String(), escrowLogArbiterUse+" (getwalletinfo encrypted)") {
 		t.Fatalf("encrypted arbiter: %v\n%s", err, logs.String())
 	}
@@ -183,7 +212,7 @@ func TestEscrowRPCPinsCosign(t *testing.T) {
 		{"getwalletinfo", arb, `[]`, func() error { return e.checkArbiterWallet(ctx) }},
 		{"walletprocesspsbt", arb, `["` + testCorePSBTUnsigned + `",true,"ALL",true,false]`, func() error { _, err := e.arbiterSign(ctx, testCorePSBTUnsigned); return err }},
 		{"testmempoolaccept", "/", `[["00"],0.001]`, func() error { _, _, err := e.testMempoolAccept(ctx, "00", escrowMaxFeeRate); return err }},
-		{"sendrawtransaction", "/", `["00",0.001]`, func() error { _, err := sendStored(ctx, e, "00", "txid-broadcast"); return err }},
+		{"sendrawtransaction", "/", `["00",0.001]`, func() error { _, err := (&App{}).sendStored(ctx, e, "00", "txid-broadcast"); return err }},
 	}
 	for _, s := range steps {
 		if err := s.call(); err != nil {
@@ -204,14 +233,14 @@ func TestEscrowRPCPinsCosign(t *testing.T) {
 		t.Fatalf("conflicted: %+v %v", w, err)
 	}
 	// sendrawtransaction: another txid is a bad reply; -27 is sent; -26 and -25 are refusals; others are errors.
-	if sent, err := sendStored(ctx, e, "00", "another"); sent || err == nil {
+	if sent, err := (&App{}).sendStored(ctx, e, "00", "another"); sent || err == nil {
 		t.Fatal("another txid accepted")
 	}
 	for code, want := range map[int]string{-27: "sent", -26: "refused", -25: "refused", -1: "error"} {
 		core.mu.Lock()
 		core.sendErr = code
 		core.mu.Unlock()
-		sent, err := sendStored(ctx, e, "00", "txid-broadcast")
+		sent, err := (&App{}).sendStored(ctx, e, "00", "txid-broadcast")
 		got := "error"
 		switch {
 		case err == nil && sent:

@@ -100,7 +100,7 @@ func xmrReRequestAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, err
 		}
 		return actionResult{Redirect: orderPage(o.ID) + "#xmr-settlement-" + strconv.FormatInt(id, 10), Notice: "escrow-xmr-rerequest",
-			Audit: "Re-requested the failed Monero escrow settlement " + strconv.FormatInt(id, 10) + " (" + settlementKind(kind) + ") of order " + shortID(o.ID) + " (" + xmrEscrowNetwork + ")"}, nil
+			Audit: "Re-requested the failed Monero escrow settlement " + strconv.FormatInt(id, 10) + " (" + settlementKind(kind) + ") of order " + shortID(o.ID) + " (" + c.A.xmrEscrowNetwork() + ")"}, nil
 	})
 }
 
@@ -141,7 +141,7 @@ func xmrRetryBuildAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, err
 		}
 		return actionResult{Redirect: orderPage(o.ID) + "#xmr-settlement-" + strconv.FormatInt(id, 10), Notice: "escrow-xmr-retry",
-			Audit: "Asked the market to build the set-aside Monero escrow settlement " + strconv.FormatInt(id, 10) + " (" + settlementKind(kind) + ") of order " + shortID(o.ID) + " again (" + xmrEscrowNetwork + ")"}, nil
+			Audit: "Asked the market to build the set-aside Monero escrow settlement " + strconv.FormatInt(id, 10) + " (" + settlementKind(kind) + ") of order " + shortID(o.ID) + " again (" + c.A.xmrEscrowNetwork() + ")"}, nil
 	})
 }
 

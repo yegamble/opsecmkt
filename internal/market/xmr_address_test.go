@@ -76,6 +76,24 @@ func testXMRAddr(label string, sub bool) string {
 	return testXMRAddressWith(tag, testXMRKey(label+"/spend"), testXMRKey(label+"/view"), nil, false)
 }
 
+// testXMRTags are Monero's address tags per network type (cryptonote_config.h: standard, integrated, subaddress), kept
+// apart from the market's table so a wrong constant there cannot pass. A fakechain uses the mainnet tags.
+var testXMRTags = map[string][3]byte{
+	"mainnet":   {18, 19, 42},
+	"fakechain": {18, 19, 42},
+	"stagenet":  {24, 25, 36},
+	"testnet":   {53, 54, 63},
+}
+
+// testXMRAddrOn is a valid address of network type nettype: a subaddress, or a standard address.
+func testXMRAddrOn(nettype, label string, sub bool) string {
+	tag := testXMRTags[nettype][0]
+	if sub {
+		tag = testXMRTags[nettype][2]
+	}
+	return testXMRAddressWith(tag, testXMRKey(label+"/spend"), testXMRKey(label+"/view"), nil, false)
+}
+
 func mustHex(t *testing.T, s string) []byte {
 	t.Helper()
 	b, err := hex.DecodeString(s)
@@ -135,7 +153,7 @@ func TestXMRAddressExternalVectors(t *testing.T) {
 	const moneroTest = "4AzKEX4gXdJdNeM6dfiBFL7kqund3HYGvMBF3ttsNd9SfzgYB6L7ep1Yg1osYJzLdaKAYSLVh6e6jKnAuzj3bw1oGy9kXCb"
 	spend := "f724bc5c6cfbb9d97602c300423a2f28641874513a035778a0c1778d833201e9"
 	view := "220939689edf1abd5bc1d031f73ecd6c993add66d6808870456afeb8e7eeb68d"
-	a, err := parseXMRAddress(moneroTest)
+	a, err := parseXMRAddress(moneroTest, "fakechain")
 	if err != nil || a.Kind != xmrStandard || hex.EncodeToString(a.Spend[:]) != spend || hex.EncodeToString(a.View[:]) != view {
 		t.Fatalf("Monero test address: %+v %v", a, err)
 	}
@@ -143,7 +161,7 @@ func TestXMRAddressExternalVectors(t *testing.T) {
 		t.Fatalf("test encoder: %s", got)
 	}
 	const generalFund = "44AFFq5kSiGBoZ4NMDwYtN18obc8AemS33DBLWs3H7otXft3XjrpDtQGv7SqSsaBYBb98uNbr2VBBEt7f2wfn3RVGQBEP3A"
-	if a, err := parseXMRAddress(generalFund); err != nil || a.Kind != xmrStandard {
+	if a, err := parseXMRAddress(generalFund, "fakechain"); err != nil || a.Kind != xmrStandard {
 		t.Fatalf("general fund address: %+v %v", a, err)
 	}
 }
@@ -181,7 +199,7 @@ func TestXMRAddressMoneroClassified(t *testing.T) {
 		{"5K8mwfjumVseCcQEjNbf59Um6R9NfVUNkHTLhhPCmNvgDLVS88YW5tScnm83rw9mfgYtchtDDTW5jEfMhygi27j1QYphX38hg6m4VMtN29", "", errXMRAddressLength},
 	}
 	for _, c := range cases {
-		a, err := parseXMRAddress(c.addr)
+		a, err := parseXMRAddress(c.addr, "fakechain")
 		if !errors.Is(err, c.err) || a.Kind != c.kind {
 			t.Errorf("%s…: kind %q, %v; want %q, %v", c.addr[:8], a.Kind, err, c.kind, c.err)
 		}
@@ -200,7 +218,7 @@ func TestXMRAddressRoundTrip(t *testing.T) {
 		for _, label := range []string{"a", "b", "escrow-202610-01/3"} {
 			spend, view := testXMRKey(label+"/s"), testXMRKey(label+"/v")
 			s := testXMRAddressWith(c.tag, spend, view, nil, false)
-			a, err := parseXMRAddress(s)
+			a, err := parseXMRAddress(s, "fakechain")
 			if err != nil || a.Kind != c.kind || string(a.Spend[:]) != string(spend) || string(a.View[:]) != string(view) {
 				t.Fatalf("%d %s: %+v %v", c.tag, label, a, err)
 			}
@@ -244,7 +262,7 @@ func TestXMRAddressRefusals(t *testing.T) {
 		{"block overflow", good[:88] + "zzzzzzz", errXMRAddressEncoding},
 	}
 	for _, c := range cases {
-		_, err := parseXMRAddress(c.addr)
+		_, err := parseXMRAddress(c.addr, "fakechain")
 		if !errors.Is(err, c.want) {
 			t.Errorf("%s: got %v, want %v", c.name, err, c.want)
 		}
@@ -431,11 +449,11 @@ func TestXMRAddressKeysRefused(t *testing.T) {
 			"small-order view key":  {good, testXMRSmallOrderKey()},
 		} {
 			s := testXMRAddressWith(tag, keys[0], keys[1], nil, false)
-			if _, err := parseXMRAddress(s); !errors.Is(err, errXMRAddressKeys) || strings.Contains(err.Error(), s[:12]) {
+			if _, err := parseXMRAddress(s, "fakechain"); !errors.Is(err, errXMRAddressKeys) || strings.Contains(err.Error(), s[:12]) {
 				t.Errorf("%d, %s: %v", tag, name, err)
 			}
 		}
-		if _, err := parseXMRAddress(testXMRAddressWith(tag, good, good, nil, false)); err != nil {
+		if _, err := parseXMRAddress(testXMRAddressWith(tag, good, good, nil, false), "fakechain"); err != nil {
 			t.Fatalf("%d, valid keys: %v", tag, err)
 		}
 	}

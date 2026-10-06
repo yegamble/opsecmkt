@@ -1,8 +1,8 @@
 """The CI job that runs scripts/test-escrow-regtest.sh against a real Bitcoin Core regtest node (A-438, P4-R11).
 
 Static checks on .github/workflows/ci.yaml (text only, so no YAML library is needed on the runner): the job exists,
-runs the script, uses the node image the installer pins, passes the app user the whitelist the script documents,
-generates its RPC passwords per run and masks them, and is in the `required` aggregator, which must list every job
+runs the script, uses the node image the installer pins, passes the app user and the pooled user (A-440) the whitelists
+the script documents, generates its RPC passwords per run and masks them, and is in the `required` aggregator, which must list every job
 (a job missing from it could fail without blocking the merge).
 """
 from pathlib import Path
@@ -37,7 +37,9 @@ class EscrowRegtestJobTest(unittest.TestCase):
         self.assertIn('image: postgres:17-alpine', block)
         self.assertRegex(block, r'(?m)^    timeout-minutes: \d+$')
         # The script refuses to start without each of these; the job must hand it each.
-        for name in ('ESCROW_REGTEST_OPERATOR_RPC_URL', 'ESCROW_REGTEST_APP_RPC_URL', 'ESCROW_REGTEST_SIGNER_RPC_URL', 'TEST_DATABASE_URL'):
+        for name in ('ESCROW_REGTEST_OPERATOR_RPC_URL', 'ESCROW_REGTEST_APP_RPC_URL', 'ESCROW_REGTEST_POOLED_RPC_URL',
+                     'ESCROW_REGTEST_SIGNER_RPC_URL', 'ESCROW_REGTEST_PRIVATE_OPERATOR_RPC_URL',
+                     'ESCROW_REGTEST_PRIVATE_APP_RPC_URL', 'TEST_DATABASE_URL'):
             self.assertIn(name, block)
 
     def test_job_gives_the_app_user_the_documented_whitelist_and_nothing_else(self):
@@ -52,13 +54,20 @@ class EscrowRegtestJobTest(unittest.TestCase):
         # The escrow signer's user (A-454): the script's documented whitelist, exactly.
         signer = re.search(r'-rpcwhitelist=opsecmkt-signer:(\S+)', SCRIPT.split('set -euo pipefail')[0])
         self.assertTrue(signer)
-        self.assertEqual(signer.group(1), 'decodepsbt,descriptorprocesspsbt')
+        self.assertEqual(signer.group(1), 'decodepsbt,descriptorprocesspsbt,getdescriptorinfo')
         self.assertIn('-rpcwhitelist=opsecmkt-signer:%s\n' % signer.group(1), block)
+        # The pooled user (A-440): the script's documented whitelist, exactly, and never a key-export method.
+        pooled = re.search(r'-rpcwhitelist=opsecmkt-pooled:(\S+)', SCRIPT.split('set -euo pipefail')[0])
+        self.assertTrue(pooled)
+        self.assertIn('pooled_whitelist=%s\n' % pooled.group(1), block)
+        self.assertIn('"-rpcwhitelist=opsecmkt-pooled:$pooled_whitelist"', block)
+        for method in ('listdescriptors', 'dumpwallet', 'backupwallet', 'dumpprivkey'):
+            self.assertNotIn(method, pooled.group(1).split(','))
 
     def test_rpc_passwords_are_generated_masked_and_never_committed_or_on_a_command_line(self):
         block = job_block(WORKFLOW, JOB)
         self.assertIn('openssl rand', block)
-        for name in ('operator_pass', 'app_pass', 'signer_pass'):
+        for name in ('operator_pass', 'app_pass', 'pooled_pass', 'signer_pass'):
             self.assertIn('echo "::add-mask::$%s"' % name, block)
         self.assertNotIn('-rpcpassword', block)
         self.assertNotRegex(block, r'http://\w+:[^$@%\s]+@')  # an RPC URL with a literal password
@@ -66,7 +75,19 @@ class EscrowRegtestJobTest(unittest.TestCase):
 
     def test_node_is_published_on_loopback_only(self):
         block = job_block(WORKFLOW, JOB)
-        self.assertRegex(block, r'-p "127\.0\.0\.1:\$BITCOIN_RPC_PORT:18443"')
+        # Both nodes are started by one docker run line (node()), published on loopback only.
+        self.assertRegex(block, r'-p "127\.0\.0\.1:\$port:18443"')
+        self.assertEqual(block.count('docker run '), 1)
+
+    def test_private_broadcast_node_matches_the_script_and_never_reaches_the_network(self):
+        # A-441: the second node runs the documented flags (a proxy nobody answers), started by the same node()
+        # helper with the same users and whitelists, and is collected and removed with the first.
+        block = job_block(WORKFLOW, JOB)
+        self.assertIn('node "$BITCOIN_CONTAINER" "$BITCOIN_RPC_PORT"\n', block)
+        self.assertIn('node "$BITCOIN_PRIVATE_CONTAINER" "$BITCOIN_PRIVATE_RPC_PORT" -privatebroadcast -proxy=127.0.0.1:9 -listen=0\n', block)
+        self.assertIn('-privatebroadcast -proxy=127.0.0.1:9 -listen=0', SCRIPT.split('set -euo pipefail')[0])
+        self.assertNotRegex(block, r'-(connect|onlynet|addnode|seednode)=')
+        self.assertIn('docker rm -f -v "$BITCOIN_CONTAINER" "$BITCOIN_PRIVATE_CONTAINER"', block)
 
     def test_node_is_removed_with_its_volume_even_when_a_step_fails(self):
         block = job_block(WORKFLOW, JOB)

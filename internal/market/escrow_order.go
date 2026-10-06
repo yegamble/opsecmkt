@@ -169,8 +169,10 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 	if v.Open {
 		v.CancelAfter = windowFrom.Add(expiryWindow()).UTC().Truncate(time.Minute).Format("2006-01-02 15:04 UTC")
 		// QA4W1-5: past the window with no deposit waiting for confirmations, only a watcher pass that read the node
-		// cancels the order; until then (its node not synced or not readable) the page says the order stays open.
-		v.WindowPassed = pending == 0 && time.Now().After(windowFrom.Add(expiryWindow()))
+		// cancels the order. While the watcher last found the node not synced (A-439's state) the page says the order
+		// stays open; in the usual gap before the next pass of a synced node it keeps the usual wording.
+		notSynced, _ := a.escrowSync.Load().(string)
+		v.WindowPassed = notSynced != "" && pending == 0 && time.Now().After(windowFrom.Add(expiryWindow()))
 	}
 	switch {
 	case o.State == stateAwaitingPayment && len(v.Deposits) == 0:

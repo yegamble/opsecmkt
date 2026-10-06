@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 const (
@@ -24,6 +25,13 @@ type payMoneroWallet struct {
 	nettype string // daemon get_info
 	height  int64  // daemon get_info height / target_height (target > height = syncing)
 	target  int64
+	// The daemon's sync state (A-449): synchronized is false while unsynced; peers is outgoing_connections_count;
+	// get_last_block_header's timestamp is now less tipAge.
+	unsynced            bool
+	peers               int64
+	restricted, offline bool // get_info restricted (the counts then read 0, as monerod hides them) and offline
+	tipAge              time.Duration
+	tipErr              bool // get_last_block_header fails (QA4W3-3)
 	// walletHeight: monero-wallet-rpc get_height (the tip Check reports; 0 = unknown)
 	walletHeight int64
 	transfers    map[string]any
@@ -41,7 +49,7 @@ func (m *payMoneroWallet) handle(path, method string, params json.RawMessage) (a
 	if path != "/json_rpc" {
 		return nil, -32601, "bad path"
 	}
-	if !m.open && method != "open_wallet" && method != "get_info" && method != "get_version" {
+	if !m.open && method != "open_wallet" && method != "get_info" && method != "get_last_block_header" && method != "get_version" {
 		return nil, -13, "No wallet file"
 	}
 	switch method {
@@ -52,7 +60,14 @@ func (m *payMoneroWallet) handle(path, method string, params json.RawMessage) (a
 		}
 		return map[string]any{"version": v, "release": !m.devBuild}, 0, ""
 	case "get_info":
-		return map[string]any{"nettype": m.nettype, "mainnet": m.nettype == "mainnet", "stagenet": m.nettype == "stagenet", "height": m.height, "target_height": m.target}, 0, ""
+		return map[string]any{"nettype": m.nettype, "mainnet": m.nettype == "mainnet", "stagenet": m.nettype == "stagenet", "height": m.height, "target_height": m.target,
+			"synchronized": !m.unsynced, "outgoing_connections_count": map[bool]int64{false: m.peers}[m.restricted], "incoming_connections_count": 0,
+			"restricted": m.restricted, "offline": m.offline}, 0, ""
+	case "get_last_block_header":
+		if m.tipErr {
+			return nil, -5, "Internal error: can't get last block header"
+		}
+		return map[string]any{"block_header": map[string]any{"height": m.height - 1, "timestamp": time.Now().Add(-m.tipAge).Unix()}, "status": "OK"}, 0, ""
 	case "open_wallet":
 		var p struct{ Filename string }
 		json.Unmarshal(params, &p)
@@ -89,7 +104,7 @@ func (m *payMoneroWallet) handle(path, method string, params json.RawMessage) (a
 }
 
 func newPayMonero(t *testing.T, primary, sub string) (*payMoneroWallet, *payRPCServer) {
-	m := &payMoneroWallet{primary: primary, sub: sub, open: true, nettype: "stagenet", valid: map[string]string{}}
+	m := &payMoneroWallet{primary: primary, sub: sub, open: true, nettype: "stagenet", peers: 8, valid: map[string]string{}}
 	return m, newPayRPCServer(t, "wallet", "wallet-secret", true, m.handle)
 }
 

@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -71,7 +72,8 @@ func init() {
 const escrowCompletedNote = "Completed on funding (Bitcoin escrow): the content was delivered. The vendor claims the escrowed coins from the order page."
 
 // escrowWatcher runs while ESCROW_BTC=on. Until escrow is enabled (its node was down at startup, say) each pass first
-// retries its checks (retryEscrow, A-316), so escrow starts without a restart once the node answers.
+// retries its checks (retryEscrow, A-316), so escrow starts without a restart once the node answers; while it is
+// enabled, retryEscrow runs the pooled key self-check again once a day (QA4W3-8).
 func escrowWatcher(ctx context.Context, a *App) {
 	if !a.escrowConfigured {
 		return
@@ -106,7 +108,9 @@ func escrowWatcher(ctx context.Context, a *App) {
 // A-439); an order whose address could not be read in this pass never expires in it. While escrow is not enabled, the
 // node check fails or the node is not synced, the pass applies only the release deadlines, which need no node
 // (escrow_deadline.go): no deposit is read, no order expires, nothing is flagged and no settlement is built, co-signed
-// or broadcast. A node that is not synced is not an error: its state is logged once per change (noteEscrowSync).
+// or broadcast. A node that is not synced is not an error: its state is logged once per change (noteEscrowSync). In
+// APP_MODE=tor the same node check evaluates the Tor-mode gate for the pass (torGate, A-441): while it holds, nothing is
+// sent, and everything else in the pass goes on.
 func (a *App) escrowPollOnce(ctx context.Context) error {
 	e := a.escrow.Load()
 	if a.db == nil || e == nil && !a.escrowConfigured {
@@ -116,8 +120,15 @@ func (a *App) escrowPollOnce(ctx context.Context) error {
 	notSynced := false
 	if e != nil {
 		node, err := e.blockchainInfo(ctx)
-		if err == nil && node.Chain != "regtest" {
-			node.Connections, err = e.connections(ctx)
+		// getnetworkinfo, read at most once per pass: on a public chain for the sync guard (its failure fails the node
+		// check), and in APP_MODE=tor for the Tor-mode gate (its failure holds broadcasts, A-441).
+		var netInfo escrowNetInfo
+		var netErr error
+		if err == nil && (node.Chain != "regtest" || a.mode == "tor") {
+			netInfo, netErr = e.networkInfo(ctx)
+			if node.Chain != "regtest" {
+				node.Connections, err = netInfo.Connections, netErr
+			}
 		}
 		switch {
 		case err != nil:
@@ -128,6 +139,10 @@ func (a *App) escrowPollOnce(ctx context.Context) error {
 			why := node.notSynced(time.Now(), maxTipAge())
 			a.noteEscrowSync(why)
 			notSynced = why != ""
+			a.escrowTip.Store(node.Blocks)
+			if a.mode == "tor" {
+				a.noteTorGate(torGate(netInfo, netErr))
+			}
 		}
 	}
 	conn, err := a.db.Conn(ctx)
@@ -267,18 +282,27 @@ func (a *App) noteEscrowSync(why string) {
 }
 
 // escrowNodeLoader shows on /admin, under Payment providers, why the Bitcoin escrow node is not used: the reason class
-// it is not synced for (with syncRemedy's advice when there is one), or the pinned chain and the node's when
-// startEscrow refused it.
-func escrowNodeLoader(_ context.Context, a *App, _ *http.Request, d *PageData) error {
+// it is not synced for (with syncRemedy's advice when there is one), the pinned chain and the node's when
+// startEscrow refused it, or the pooled user's answer to the market key self-check (A-440); in APP_MODE=tor why the
+// Tor-mode gate holds broadcasts; and the settlements queued or stuck (A-441, escrow_stall.go).
+func escrowNodeLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 	if !a.escrowConfigured || d.User == nil || d.User.Role != "admin" {
 		return nil
 	}
-	v := &EscrowNodeView{Mismatch: a.escrowMismatch.Load()}
+	v := &EscrowNodeView{Mismatch: a.escrowMismatch.Load(), StallN: escrowStallBlocks}
+	if class := a.escrowPooledKey.Load(); class != nil {
+		v.PooledKey, v.PooledWhitelist = *class, strings.Join(pooledRPCMethods, ",")
+	}
 	if e := a.escrow.Load(); e != nil {
 		v.NotSynced, _ = a.escrowSync.Load().(string)
 		v.Remedy = syncRemedy(e.network, v.NotSynced)
+		v.TorHold = a.broadcastHold()
 	}
-	if v.NotSynced != "" || v.Mismatch != nil {
+	var err error
+	if v.Stalled, err = a.escrowStalls(ctx); err != nil {
+		return err
+	}
+	if v.NotSynced != "" || v.Mismatch != nil || v.PooledKey != "" || v.TorHold != "" || len(v.Stalled) > 0 {
 		d.EscrowNode = v
 	}
 	return nil

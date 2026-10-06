@@ -11,7 +11,7 @@ import (
 )
 
 // The release of a Monero escrow order (WR-escrow Phase 3, slice X-e; P3-R7, the Phase 2 rules P2-R1 to P2-R4 mapped to
-// a custodial account: there are no party signatures). Behind ESCROW_XMR (off by default); fakechain only.
+// a custodial account: there are no party signatures). Behind ESCROW_XMR (off by default); fakechain or stagenet (A-449).
 //
 //  1. Digital claim (/escrow-xmr/claim): the vendor of a completed digital order, or of any order whose dispute was
 //     decided for the vendor with no release yet, gives a fresh Monero address and their password, as escrowClaimAction
@@ -58,7 +58,7 @@ var (
 // xmrClaimForm reads a vendor's Monero claim address from the form, parsed offline (checkXMRFormAddress).
 func xmrClaimForm(c *actionCtx) (string, error) {
 	addr := strings.TrimSpace(c.Form.Get("address"))
-	if err := checkXMRFormAddress(addr); err != nil {
+	if err := checkXMRFormAddress(addr, c.A.escrowXMR.formNet()); err != nil {
 		return "", fail(400, "The claim address is refused: "+err.Error()+". Nothing was changed.")
 	}
 	return addr, nil
@@ -131,7 +131,7 @@ func xmrEscrowClaimAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, err
 		}
 		return actionResult{Redirect: orderPage(o.ID), Notice: "escrow-xmr-claim",
-			Audit: "Requested the escrow claim of order " + shortID(o.ID) + " (Monero escrow, " + xmrEscrowNetwork + ")"}, nil
+			Audit: "Requested the escrow claim of order " + shortID(o.ID) + " (Monero escrow, " + c.A.xmrEscrowNetwork() + ")"}, nil
 	})
 }
 
@@ -187,7 +187,7 @@ func xmrEscrowShipAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, err
 		}
 		return actionResult{Redirect: orderPage(o.ID) + "#xmr-escrow-deadline", Notice: "order-shipped",
-			Audit: "Marked order " + shortID(o.ID) + " shipped (Monero escrow, " + xmrEscrowNetwork + ")"}, nil
+			Audit: "Marked order " + shortID(o.ID) + " shipped (Monero escrow, " + c.A.xmrEscrowNetwork() + ")"}, nil
 	})
 }
 
@@ -250,6 +250,6 @@ func xmrConfirmReceiptAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, err
 		}
 		return actionResult{Redirect: orderPage(o.ID), Notice: "escrow-xmr-confirmed",
-			Audit: "Confirmed receipt of order " + shortID(o.ID) + " (Monero escrow, " + xmrEscrowNetwork + ")"}, nil
+			Audit: "Confirmed receipt of order " + shortID(o.ID) + " (Monero escrow, " + c.A.xmrEscrowNetwork() + ")"}, nil
 	})
 }

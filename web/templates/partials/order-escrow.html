@@ -113,7 +113,8 @@
 <p role="status" id="escrow-recover">You asked the market to recover coins at this escrow; it checks it on its next pass.</p>{{end}}{{range .Settlements}}
 <section class="escrow-settlement" id="escrow-settlement{{if .Stray}}-{{.ID}}{{end}}" aria-labelledby="escrow-settlement-heading-{{.ID}}">
 <h3 id="escrow-settlement-heading-{{.ID}}">Settlement: {{.Title}}</h3>
-<p role="status">{{.Status}}</p>{{if .Outputs}}
+<p role="status">{{.Status}}</p>{{if .Stalled}}
+<p class="alert" role="status"><strong>Staff: queued or stuck: not seen by the network.</strong> The market broadcast this transaction, but the market&#39;s watch-only wallet has not seen it since: the escrow node may have queued it behind a proxy that does not answer, or has no peers. The market sends it again on each pass. An administrator checks the escrow node (Payment providers on the administration page).</p>{{end}}{{if .Outputs}}
 <p class="help">The transaction spends {{.InputTotal}} BTC from this escrow and pays exactly these outputs; the network fee of {{.NetworkFee}} BTC is taken from the first. They are fixed: check them in your wallet before you sign.</p>
 <h4 id="escrow-outputs-heading-{{.ID}}">Expected outputs</h4>
 <ol class="settlement-outputs" aria-labelledby="escrow-outputs-heading-{{.ID}}">{{range .Outputs}}

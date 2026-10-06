@@ -64,7 +64,7 @@ class EscrowSignerDeployTests(unittest.TestCase):
     def test_operator_guide_documents_the_signer(self):
         guide = (REPOSITORY / 'docs' / 'operator-guide.md').read_text()
         section = guide.split('#### Escrow signer', 1)[1].split('\n#### ', 1)[0]
-        for text in ('escrow-signer init', 'escrow-signer backup', 'escrow-signer restore', 'rpcwhitelist=opsecmkt-signer:decodepsbt,descriptorprocesspsbt',
+        for text in ('escrow-signer init', 'escrow-signer backup', 'escrow-signer restore', 'rpcwhitelist=opsecmkt-signer:decodepsbt,descriptorprocesspsbt,getdescriptorinfo\n',
                      'escrow_signer_fingerprint', 'escrow_signer_xpub_hmac', 'Break-glass', 'Upgrade order'):
             self.assertIn(text, section)
 

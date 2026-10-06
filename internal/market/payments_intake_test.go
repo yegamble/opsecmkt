@@ -36,7 +36,7 @@ func TestPaymentIntakePolicyPreservesExistingSettlement(t *testing.T) {
 			if !strings.Contains(page, "New payments paused") || strings.Contains(page, `action="/orders/pay"`) || !strings.Contains(page, "TESTNET payments") {
 				t.Fatal("paused draft does not explain intake policy separately from wallet operation")
 			}
-			if !strings.Contains(p.page("/admin", p.adminSess), "Enable new "+cur+" payments") {
+			if admin := p.page("/admin", p.adminSess); !strings.Contains(admin, cur+" intake: Paused") || !strings.Contains(admin, `name="enabled" value="true"`) {
 				t.Fatal("administrator cannot re-enable currency")
 			}
 			other := "BTC"

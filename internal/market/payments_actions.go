@@ -143,7 +143,8 @@ func paymentsGlobalLoader(_ context.Context, a *App, _ *http.Request, d *PageDat
 	d.LiveNetwork = a.live
 	d.EscrowOn, d.EscrowAvailable = a.escrowConfigured, a.escrow.Load() != nil
 	d.DispatchOn = !physicalEscrowOff(a)
-	d.XMREscrowOn, d.XMREscrowAvailable, d.XMRCustody = a.escrowXMR != nil, a.xmrEscrowReady(), xmrCustody
+	d.XMREscrowOn, d.XMREscrowAvailable, d.XMRCustody, d.XMREscrowNet = a.escrowXMR != nil, a.xmrEscrowReady(), xmrCustody, a.xmrEscrowNetwork()
+	d.XMREscrowNetKnown = a.escrowXMR != nil && a.escrowXMR.formNet() != ""
 	return nil
 }
 
@@ -535,7 +536,7 @@ func paymentsAdminLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 	}
 	env := map[string]string{"BTC": "BITCOIN_RPC_URL", "XMR": "MONERO_WALLET_RPC_URL"}
 	for _, cur := range []string{"BTC", "XMR"} {
-		s := ProviderStatus{Currency: cur, Status: "Disabled", AddressCollisions: status[cur].AddressCollisions, AddressCollisionLast: status[cur].AddressCollisionLast}
+		s := ProviderStatus{Currency: cur, Status: "Disabled", Configured: a.pooledConfigured(cur), AddressCollisions: status[cur].AddressCollisions, AddressCollisionLast: status[cur].AddressCollisionLast}
 		if p := a.provider(cur); p != nil {
 			last := status[cur]
 			s.Enabled, s.Status, s.Network, s.Confirmations = true, "Enabled", p.Network(), p.Confirmations()

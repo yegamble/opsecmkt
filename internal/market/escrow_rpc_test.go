@@ -53,7 +53,7 @@ func TestEscrowRPCPinsParams(t *testing.T) {
 		call                 func() error
 	}{
 		{"getblockchaininfo", "/", `[]`, func() error { _, err := e.blockchainInfo(ctx); return err }},
-		{"getnetworkinfo", "/", `[]`, func() error { _, err := e.connections(ctx); return err }},
+		{"getnetworkinfo", "/", `[]`, func() error { _, err := e.networkInfo(ctx); return err }},
 		{"getrawchangeaddress", arb, `["bech32"]`, func() error { return e.readArbiter(ctx) }},
 		{"getaddressinfo", arb, `["bcrt1qarbiterchange000000000000000000000"]`, func() error { return e.readArbiter(ctx) }},
 		{"createpsbt", "/", `[[{"txid":"` + testCorePSBTTxID + `","vout":1}],[{"bcrt1qdest":0.00099},{"bcrt1qfee":0.00000546}],0,true]`, func() error {

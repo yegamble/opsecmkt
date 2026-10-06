@@ -29,7 +29,7 @@ STATUS = 'compose exec -T app /app/server -status'
 PROBE = 'compose run --rm -T --no-deps app -status'
 # Keys whose values are secrets: upgrade never invents them and no command prints them.
 SECRET_KEYS = ('DATABASE_URL', 'POSTGRES_PASSWORD', 'APP_SECRET_KEY', 'SETUP_TOKEN', 'AUDIT_SIGNING_KEY',
-               'BITCOIN_RPC_PASSWORD', 'MONERO_WALLET_RPC_PASSWORD', 'MONERO_WALLET_SECRET')
+               'BITCOIN_RPC_PASSWORD', 'MONERO_WALLET_RPC_PASSWORD', 'MONERO_WALLET_SECRET', 'ESCROW_XMR_WALLET_RPC_PASSWORD')
 PASSWORD = 'correct horse battery staple'
 # The malware scanner (A-184): what clamdscan --version prints once clamd answers, and the calls it takes.
 CLAMD_VERSION = 'ClamAV 1.5.4/28130/Mon Sep 21 06:24:29 2026'
@@ -553,7 +553,7 @@ time.sleep(60)
     def test_internal_clearnet_defaults(self):
         # Every question answered with Enter: mode, database, local HTTP, then for each coin the node
         # choice, image, network and pruning. The defaults are pruned local test-network nodes.
-        result = self.run_installer([''] * 11)
+        result = self.run_installer([''] * 12)
         self.assert_started(result)
         config = self.config()
         self.assertEqual(config['APP_MODE'], 'clearnet')
@@ -670,7 +670,7 @@ time.sleep(60)
                 self.assertRegex(line, r'^[A-Z0-9_]+=[^#]*$')
 
     def test_local_node_prune_answer_yes_is_pruned(self):
-        result = self.run_installer(['tor', '', 'local', '', '', 'yes', 'local', '', '', 'yes'])
+        result = self.run_installer(['tor', '', 'local', '', '', 'yes', 'local', '', '', 'yes', ''])
         self.assert_started(result)
         config = self.config()
         self.assertEqual(config['BITCOIN_PRUNE_MB'], self.compose_bitcoin_prune_default())
@@ -755,9 +755,9 @@ time.sleep(60)
         script = (REPOSITORY / 'scripts' / 'test-mirror-commands.sh').read_text()
         external = 'postgres://test@database/scratch'
         cases = [
-            ('internal', ['tor', ''] + [''] * 8, 'internal-db,bitcoin,monero,monero-wallet'),
+            ('internal', ['tor', ''] + [''] * 9, 'internal-db,bitcoin,monero,monero-wallet'),
             ('internal', ['tor', '', 'disabled', 'disabled'], 'internal-db'),
-            ('external', ['tor', external] + [''] * 8, 'bitcoin,monero,monero-wallet'),
+            ('external', ['tor', external] + [''] * 9, 'bitcoin,monero,monero-wallet'),
             ('external', ['tor', external, 'disabled', 'disabled'], ''),
         ]
         for database, answers, profiles in cases:
@@ -797,7 +797,7 @@ time.sleep(60)
     def test_local_node_profiles_and_images(self):
         result = self.run_installer([
             'tor', '', 'local', 'reviewed-bitcoin:test', 'testnet4', 'yes',
-            'local', 'reviewed-monero:test', 'stagenet', 'yes',
+            'local', 'reviewed-monero:test', 'stagenet', 'yes', '',
         ])
         self.assert_started(result)
         config = self.config()
@@ -835,7 +835,7 @@ time.sleep(60)
         self.assertEqual(self.config()['BITCOIN_IMAGE'], digest_image)
 
     def test_local_node_defaults_to_current_trusted_images(self):
-        result = self.run_installer(['tor', '', 'local', '', 'testnet4', '', 'local', '', 'stagenet', ''])
+        result = self.run_installer(['tor', '', 'local', '', 'testnet4', '', 'local', '', 'stagenet', '', ''])
         self.assert_started(result)
         config = self.config()
         self.assertEqual({key: config[key] for key in ('BITCOIN_IMAGE', 'MONERO_IMAGE', 'MONERO_WALLET_IMAGE')},
@@ -885,6 +885,101 @@ time.sleep(60)
         # Nothing in the app would use the daemon, so Tor mode opens no direct egress for it.
         self.assertNotIn('compose.external-egress.yaml', config['COMPOSE_FILE'])
 
+    def seed_key(self, text=None):
+        path = self.root / 'operator-seed-key.asc'
+        path.write_text(text or '-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmDMEZtest\n-----END PGP PUBLIC KEY BLOCK-----\n')
+        return path
+
+    def assert_monero_escrow(self, result, key):
+        self.assert_started(result)
+        config = self.config()
+        self.assertEqual(config['ESCROW_XMR'], 'on')
+        self.assertRegex(config['ESCROW_XMR_WALLET_RPC_PASSWORD'], '^[0-9a-f]{48}$')
+        self.assertEqual(config['ESCROW_XMR_WALLET_RPC_URL'],
+                         'http://escrow:' + config['ESCROW_XMR_WALLET_RPC_PASSWORD'] + '@monero-escrow-wallet:18083')
+        self.assertEqual(config['ESCROW_XMR_DAEMON_URL'], 'http://monero:18081')
+        self.assertRegex(config['MONERO_WALLET_SECRET'], '^[0-9a-f]{64}$')
+        for other in ('APP_SECRET_KEY', 'SETUP_TOKEN', 'MONERO_WALLET_RPC_PASSWORD', 'ESCROW_XMR_WALLET_RPC_PASSWORD'):
+            self.assertNotEqual(config['MONERO_WALLET_SECRET'], config[other])
+        self.assertNotEqual(config['ESCROW_XMR_WALLET_RPC_PASSWORD'], config['MONERO_WALLET_RPC_PASSWORD'])
+        self.assertEqual(config['ESCROW_XMR_SEED_KEY'], '/etc/opsecmkt/escrow-xmr-seed-key.asc')
+        self.assertEqual(config['COMPOSE_PROFILES'].split(',')[-3:], ['monero', 'monero-wallet', 'monero-escrow-wallet'])
+        self.assertTrue(config['COMPOSE_FILE'].endswith(':compose.escrow-xmr.yaml'), config['COMPOSE_FILE'])
+        copy = self.root / 'escrow-xmr-seed-key.asc'
+        self.assertEqual(copy.read_text(), key.read_text())
+        self.assertEqual(stat.S_IMODE(copy.stat().st_mode), 0o644)
+        self.assert_no_secret_printed(result, config, allow_token=True)
+        self.assertIn('Monero escrow is on (stagenet, custodial', result.stdout)
+
+    def test_monero_escrow_on_stagenet_is_asked_with_the_monero_questions(self):
+        key = self.seed_key()
+        result = self.run_installer(['tor', '', 'disabled', 'local', '', 'stagenet', '', 'yes', str(key)])
+        self.assert_monero_escrow(result, key)
+        self.assertIn('custodial', result.stdout)
+
+    def test_monero_escrow_flags_need_no_prompt(self):
+        key = self.seed_key()
+        result = self.run_installer(None, arguments=['--tor', '--bitcoin', 'disabled', '--monero', 'local', '--monero-image', 'reviewed-monero:test',
+                                                     '--monero-network', 'stagenet', '--monero-prune', 'yes',
+                                                     '--monero-escrow', 'yes', '--monero-escrow-seed-key', str(key)])
+        self.assert_monero_escrow(result, key)
+
+    def test_monero_escrow_off_by_default_and_never_defaulted(self):
+        # The default answer is no, and nothing of Monero escrow is written.
+        result = self.run_installer(['tor', '', 'disabled', 'local', '', 'stagenet', '', ''])
+        self.assert_started(result)
+        config = self.config()
+        for key in ('ESCROW_XMR', 'ESCROW_XMR_WALLET_RPC_PASSWORD', 'MONERO_WALLET_SECRET', 'ESCROW_XMR_SEED_KEY'):
+            self.assertNotIn(key, config)
+        self.assertNotIn('monero-escrow-wallet', config['COMPOSE_PROFILES'])
+        self.assertNotIn('compose.escrow-xmr.yaml', config['COMPOSE_FILE'])
+        self.assertFalse((self.root / 'escrow-xmr-seed-key.asc').exists())
+        # Turned on with the flag but no seed key: it is asked, never defaulted (every other question has its flag, and
+        # bash prints no prompt without a terminal), so empty input stops the installer before anything is written.
+        (self.root / '.env').unlink()
+        self.log.unlink()
+        result = self.run_installer(None, arguments=['--tor', '--bitcoin', 'disabled', '--monero', 'local', '--monero-image', 'reviewed-monero:test',
+                                                     '--monero-network', 'stagenet', '--monero-prune', 'yes',
+                                                     '--monero-escrow', 'yes'])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('end of input', result.stderr)
+        self.assertFalse((self.root / '.env').exists())
+
+    def test_monero_escrow_refusals_write_nothing(self):
+        key = self.seed_key()
+        private = self.root / 'private.asc'
+        private.write_text('-----BEGIN PGP PRIVATE KEY BLOCK-----\nxx\n-----END PGP PRIVATE KEY BLOCK-----\n')
+        not_a_key = self.root / 'notes.txt'
+        not_a_key.write_text('not a key\n')
+        base = ['--tor', '--bitcoin', 'disabled', '--monero-image', 'reviewed-monero:test', '--monero-prune', 'yes', '--monero-escrow', 'yes']
+        cases = [
+            (['--monero', 'local', '--monero-network', 'testnet', '--monero-escrow-seed-key', str(key)], 'needs the local Monero node on stagenet'),
+            (['--monero', 'external', '--monero-rpc-url', 'https://monerod.example.test', '--monero-wallet-rpc-url',
+              'http://user:pass@wallet.example.test:18083', '--monero-escrow-seed-key', str(key)], 'needs the local Monero node on stagenet'),
+            (['--monero', 'local', '--monero-network', 'stagenet', '--monero-escrow-seed-key', str(private)], 'holds a private key'),
+            (['--monero', 'local', '--monero-network', 'stagenet', '--monero-escrow-seed-key', str(not_a_key)], 'not an armored OpenPGP public key'),
+            (['--monero', 'local', '--monero-network', 'stagenet', '--monero-escrow-seed-key', str(self.root / 'missing.asc')], 'does not exist'),
+        ]
+        for extra, message in cases:
+            with self.subTest(message=message, extra=extra):
+                self.log.unlink(missing_ok=True)
+                result = self.run_installer(None, arguments=[*base, *extra])
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(message, result.stderr)
+                self.assertEqual(self.calls(), PREFLIGHT)
+                self.assertFalse((self.root / '.env').exists())
+                self.assertFalse((self.root / 'escrow-xmr-seed-key.asc').exists())
+        result = self.run_installer(None, arguments=['--tor', '--monero-escrow-seed-key', str(key)])
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('needs --monero-escrow yes', result.stderr)
+
+    def test_check_refuses_monero_escrow_without_its_password_or_key(self):
+        self.check_env(installed_env(COMPOSE_PROFILES='internal-db,monero,monero-wallet,monero-escrow-wallet',
+                                     MONERO_WALLET_RPC_PASSWORD='b' * 48),
+                       'needs ESCROW_XMR_WALLET_RPC_PASSWORD')
+        self.check_env(installed_env(COMPOSE_FILE='compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.internal-db.yaml:compose.escrow-xmr.yaml'),
+                       'escrow-xmr-seed-key.asc (the Monero escrow seed key it mounts) is missing')
+
     def test_secret_generation_failure_starts_nothing(self):
         # openssl calls: 1 database password, 2 APP_SECRET_KEY, 3 setup token, 4 audit key, then one per local node.
         scenarios = [
@@ -892,9 +987,9 @@ time.sleep(60)
             (2, ['clearnet', '', '', 'disabled', 'disabled']),
             (3, ['clearnet', '', '', 'disabled', 'disabled']),
             (5, ['tor', '', 'local', 'reviewed-bitcoin:test', 'testnet4', '', 'disabled']),
-            (5, ['tor', '', 'disabled', 'local', 'reviewed-monero:test', 'stagenet', '']),
+            (5, ['tor', '', 'disabled', 'local', 'reviewed-monero:test', 'stagenet', '', '']),
             (6, ['tor', '', 'local', 'reviewed-bitcoin:test', 'testnet4', '',
-                 'local', 'reviewed-monero:test', 'stagenet', '']),
+                 'local', 'reviewed-monero:test', 'stagenet', '', '']),
         ]
         for call, answers in scenarios:
             with self.subTest(call=call, answers=answers):
@@ -910,7 +1005,7 @@ time.sleep(60)
         # A second checkout under the same project name would recreate the other installation's containers
         # with new secrets, and its `docker compose down -v` would delete that installation's volumes.
         other = '/srv/live-opsecmkt'
-        result = self.run_installer([''] * 11, extra_env={
+        result = self.run_installer([''] * 12, extra_env={
             'INSTALLER_TEST_CONTAINERS': f'{other}\n{self.root}\n{other}\n',
         })
         self.assert_refused_before_writing(result, PREFLIGHT[:2])
@@ -947,7 +1042,7 @@ time.sleep(60)
     def test_project_volumes_without_containers_are_refused(self):
         # `docker compose down` (README's normal stop) removes the containers, so their labels are gone, but
         # keeps the volumes. Their checkout cannot be identified; starting on them here is refused too.
-        result = self.run_installer([''] * 11, extra_env={
+        result = self.run_installer([''] * 12, extra_env={
             'INSTALLER_TEST_VOLUMES': 'opsecmkt_postgres_data\nopsecmkt_bitcoin_data\n',
         })
         self.assert_refused_before_writing(result, PREFLIGHT)
@@ -1056,7 +1151,7 @@ time.sleep(60)
 
     def test_init_prints_no_secret_but_the_setup_token(self):
         cases = [
-            ([''] * 11, []),
+            ([''] * 12, []),
             (['tor', '', 'local', '', '', '', 'external', 'https://monerod.example.test',
               'http://user:wallet-secret@wallet.example.test:18083'], []),
             ([], ['--local']),
@@ -1152,7 +1247,7 @@ time.sleep(60)
             self.assert_started(result)
             return {key: ('<secret>' if key in SECRET_KEYS or key.endswith('_RPC_URL') and value else value)
                     for key, value in self.config().items()}, self.calls()
-        self.assertEqual(written([''] * 11, []), written([''] * 11, ['init']))
+        self.assertEqual(written([''] * 12, []), written([''] * 12, ['init']))
         self.assertEqual(written(None, ['--local']), written(None, ['init', '--local']))
 
     # ---- init --admin (terminal bootstrap) ------------------------------------------------------------
@@ -2101,8 +2196,9 @@ time.sleep(60)
             with self.subTest(mode=mode):
                 files = f'compose.yaml:compose.{mode}.yaml:compose.nodes.yaml:compose.internal-db.yaml:compose.scanner.yaml'
                 environment = {key: value for key, value in os.environ.items() if not key.startswith('COMPOSE_')}
+                # Compose refuses the monero-wallet profile without its password (A-466).
                 environment.update(COMPOSE_FILE=files, COMPOSE_PROFILES='internal-db,scanner,bitcoin,monero,monero-wallet',
-                                   DATABASE_URL='postgres://unused@db/unused')
+                                   DATABASE_URL='postgres://unused@db/unused', MONERO_WALLET_RPC_PASSWORD='unused')
                 rendered = subprocess.run(['docker', 'compose', '--env-file', os.devnull, 'config'], cwd=REPOSITORY,
                                           env=environment, capture_output=True, text=True, check=True).stdout
                 values = scanner_env(COMPOSE_FILE=files)
@@ -2316,7 +2412,7 @@ time.sleep(60)
         # No command runs git, nc or ssh (messages may mention `git pull` for the operator to run).
         for line in text.splitlines():
             self.assertNotRegex(line.split(' #')[0], r'''(^|[;&|(`]|\$\(|then|do)\s*(git|nc|ssh|scp)\s''', line)
-        self.assertEqual(self.run_installer([''] * 11).returncode, 0)
+        self.assertEqual(self.run_installer([''] * 12).returncode, 0)
         self.assertFalse(Path(str(self.log) + '.fetch').exists())
 
     def test_no_literal_password_pattern(self):
