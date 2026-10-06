@@ -568,6 +568,7 @@ type EscrowSettlementView struct {
 	Bumps                                 []*EscrowBumpView // its fee bumps, newest first (escrow_bump.go, P2-d)
 	CanBump                               bool              // the claimant may ask to raise the fee of the broadcast transaction
 	BumpRate, BumpMin, BumpMax            string            // the highest stored fee rate (sat/vB), and the lowest and highest a new bump may ask (A-383)
+	Stalled                               bool              // staff only: broadcast, and its stall alert is open (A-441, escrow_stall.go)
 }
 
 // EscrowBumpView is one fee bump of a settlement on the order page (escrow_bump.go, P2-d): its state in honest words,
@@ -599,11 +600,20 @@ type EscrowChainMismatch struct {
 
 // EscrowNodeView is the line under Payment providers on /admin about the Bitcoin escrow node (escrow_watch.go): the
 // reason class it is not synced for and the remedy when the reason does not say it (syncRemedy), or the chain it was
-// refused for.
+// refused for; and (A-441, escrow_stall.go) why the Tor-mode gate holds broadcasts and the settlements queued or stuck.
 type EscrowNodeView struct {
 	NotSynced string
 	Remedy    string
 	Mismatch  *EscrowChainMismatch
+	TorHold   string
+	Stalled   []EscrowStallView
+	StallN    int // escrowStallBlocks
+}
+
+// EscrowStallView is a broadcast settlement whose transaction the watch-only wallet has not seen (escrow_stall.go): the
+// order's short ID, what the settlement pays and its transaction ID.
+type EscrowStallView struct {
+	Order, What, TxID string
 }
 
 // EscrowSignerView is the line under Payment providers on /admin about the escrow signer (escrow_signer.go): State is

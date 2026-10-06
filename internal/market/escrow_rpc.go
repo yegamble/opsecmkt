@@ -33,8 +33,9 @@ import (
 // a descriptor or a key (A-170, ES-10).
 
 // escrowRPCMethods is every method the adapter calls: the rpcwhitelist line the operator guide documents.
-// getnetworkinfo (read-only: the peer count for the sync guard, A-439) is called only on a public chain, so a
-// regtest whitelist written before it keeps working.
+// getnetworkinfo (read-only: the peer count for the sync guard, A-439, and the proxies and version for the Tor-mode
+// gate, A-441) is called only on a public chain or in APP_MODE=tor, so a clearnet regtest whitelist written before it
+// keeps working.
 var escrowRPCMethods = []string{
 	"getblockchaininfo", "getnetworkinfo", "getrawchangeaddress", "getaddressinfo", "createpsbt", "utxoupdatepsbt",
 	"importdescriptors", "getdescriptorinfo", "deriveaddresses", "gettxout", "keypoolrefill", "walletprocesspsbt",
@@ -434,13 +435,12 @@ func (e *escrowBTC) blockchainInfo(ctx context.Context) (bitcoinNode, error) {
 	return info, err
 }
 
-// connections is getnetworkinfo's connections: the node's peer count, for the sync guard on a public chain.
-func (e *escrowBTC) connections(ctx context.Context) (int64, error) {
-	var info struct {
-		Connections int64 `json:"connections"`
-	}
+// networkInfo is getnetworkinfo: the node's peer count, for the sync guard on a public chain, and its version and
+// proxies, for the Tor-mode gate (A-441, escrow_stall.go).
+func (e *escrowBTC) networkInfo(ctx context.Context) (escrowNetInfo, error) {
+	var info escrowNetInfo
 	err := e.call(ctx, "", "getnetworkinfo", []any{}, &info)
-	return info.Connections, err
+	return info, err
 }
 
 // readArbiter reads the arbiter wallet's master fingerprint and BIP84 account key without any key export: a

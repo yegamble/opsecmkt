@@ -172,7 +172,7 @@ shipped phase has proven. The full rules and acceptance criteria are in the proj
 | Wallets | Electrum and Sparrow support (a signing test showed Electrum needs a different key layout) | Not started |
 | 2 | Physical orders: buyer-signed release, 14-day deadline, no-ship cancellation, fee bumps | Built and tested on regtest; not released; off by default (`ESCROW_BTC`, regtest only): see [Phase 2](#phase-2-bitcoin-escrow-for-physical-orders-on-regtest) for what it does, what it protects, what it does not do and the tests behind it. Not run on any public test network or on mainnet; only Bitcoin Core signing is supported |
 | 3 | Monero accounts in monthly escrow wallets | Built and tested on a local Monero fakechain (monerod `--regtest`); not released; off by default (`ESCROW_XMR`, fakechain only): see [Phase 3](#phase-3-monero-escrow-on-a-local-fakechain) for what it does, what it protects, what it does not protect and the tests behind it. Custodial: the market can move these coins. Not run on stagenet, a public test network or mainnet; no Monero multisig |
-| 4 | Public test networks end to end, then escrow-only for new orders, then removal of the pooled wallet | Groundwork only: the node sync guard, the escrow chain pin and the chain table (A-439, [below](#node-sync-guard-chain-pin-and-chain-table-a-439)) are on the development branch; escrow still accepts regtest only and nothing has run on a public test network |
+| 4 | Public test networks end to end, then escrow-only for new orders, then removal of the pooled wallet | Groundwork only: the node sync guard, the escrow chain pin and the chain table (A-439, [below](#node-sync-guard-chain-pin-and-chain-table-a-439)) and broadcast honesty (A-441, [below](#broadcast-honesty-a-441)) are on the development branch; escrow still accepts regtest only and nothing has run on a public test network |
 
 
 ## Phase 1: Bitcoin escrow on regtest
@@ -787,6 +787,42 @@ the held order page, then the work on the next synced pass), `TestEscrowRegtestE
 `TestBitcoinPooledNoPeersHoldsExpiry`. The real regtest legs of
 `scripts/test-escrow-regtest.sh` were run again against Core 31.1 with `getnetworkinfo` on the whitelist. Not tested: a
 real node that lost its peers or stalled on a public network.
+
+## Broadcast honesty (A-441)
+
+Phase 4 groundwork (war-room ruling P4-R7 (a) and (b)), on the development branch and not released. Bitcoin Core 31.1's
+`-privatebroadcast` with a proxy that does not answer accepts `sendrawtransaction`, answers the transaction ID and keeps
+the transaction in a private queue: it never reaches the node's mempool, a resend is idempotent, and the market recorded
+it as broadcast (probed on Core 31.1 regtest by the A-255/A-249 council and again by this slice's real-chain leg).
+
+- **Stall alert, every mode.** A settlement in state broadcast none of whose transactions (its own and its fee bumps')
+  the watch-only wallet has seen 6 blocks after the broadcast tells staff once (an order note and a "Payment review
+  needed" notification to each moderator and administrator) and shows "queued or stuck: not seen by the network" on
+  `/admin` under *Payment providers* and to staff on the order page, until the wallet sees one: then one order note
+  clears it. Six blocks: a transaction the node accepted into its mempool is in the wallet at once and one sent
+  privately comes back from the network within minutes, so six (about an hour on a public test network, twice the
+  default confirmation threshold) is well past either and still within the hour. No settlement state is added
+  (migration 074's CHECK is unchanged); the settlement stays broadcast and its stored transaction is sent again on each
+  pass as before. Which alert is open is read from the two order notes; the height a transaction went unseen from is in
+  memory only, so a restart starts the count again (later, never twice). `getprivatebroadcastinfo` stays off the app's
+  whitelist and `abortprivatebroadcast` is never on it.
+- **Tor-mode gate.** With `APP_MODE=tor` only, the escrow watcher reads `getnetworkinfo` once per pass and sends a
+  settlement only while it shows a proxy for both IPv4 and IPv6 (what `-proxy` sets; `-onion` alone does not) and
+  Bitcoin Core 31.1 or later (version 310100); otherwise, or when `getnetworkinfo` fails, no `sendrawtransaction` is
+  issued and no settlement changes state, with one log line per change and an `/admin` line saying what to configure
+  (`-proxy=<Tor SOCKS address>`, never `-connect` or `-onlynet`). Onion `reachable` is not read: it reflects
+  configuration, not liveness. The gate checks configuration; the stall alert covers a proxy that is configured but
+  down. Pooled payouts are wallet sends and are never private. Clearnet mode is unchanged. See the
+  [operator guide](operator-guide.md#bitcoin-escrow-regtest-only) (*Tor mode*, *Queued or stuck*).
+
+How it was tested: `TestEscrowBroadcastStallAlert`, `TestEscrowBroadcastStallSeenNeverAlerts` and
+`TestEscrowTorBroadcastGate` (simulated RPC and PostgreSQL, not chain evidence: not before 6 blocks however many passes
+run at one height, once, cleared on sighting, the resend unchanged; the gate per condition, including `-onion` only with
+onion reachable, Core 31.0, a failed or refused `getnetworkinfo`, and clearnet mode); `TestEscrowRegtestPrivateBroadcast`
+in `scripts/test-escrow-regtest.sh` against a second Core 31.1 regtest node started with `-privatebroadcast
+-proxy=127.0.0.1:9 -listen=0`: the gate on real `getnetworkinfo` answers (that node passes, the main node without a proxy
+holds), a co-signed claim queued and never in the mempool or the wallet, the alert at 6 blocks and not before or twice,
+and cleared once `generateblock` mined the stored transaction. Not tested: a node over real Tor, or a public network.
 
 ## Per-order key derivation (A-453, shape (b) groundwork)
 

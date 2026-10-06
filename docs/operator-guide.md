@@ -53,7 +53,7 @@ server {
 
 `$host` drops the port. If visitors reach the proxy on a non-default port (for example `https://market.example.com:8443`), use `proxy_set_header Host $http_host;` so the forwarded `Host` keeps the port their browser puts in `Origin`. Other proxies need their equivalent setting (for example `ProxyPreserveHost On` in Apache). The onion services (including the mirror) need nothing: Tor's `HiddenServicePort` forwards the connection unchanged, so the app receives the `.onion` `Host` the browser sent.
 
-`APP_MODE` in `.env` (`clearnet` or `tor`, set by the installer) is only checked at startup: any other value stops the server, but it changes no behaviour. The Compose overlay in `COMPOSE_FILE` decides exposure, and `COOKIE_SECURE` decides whether cookies are marked Secure. Compose passes `COMPOSE_FILE` to the app, which refuses to start when it disagrees with `APP_MODE`: `tor` needs `compose.tor.yaml` in it, `clearnet` needs `compose.clearnet.yaml`, and never both (a blank `COMPOSE_FILE` skips this check). `COOKIE_SECURE` must be exactly `true` or `false` (unset means `true`); `APP_MODE=tor` with `COOKIE_SECURE=true` only logs a warning: the onion is served over plain HTTP, so the Secure session cookie works only in browsers that treat `.onion` addresses as secure (the installer writes `false` for Tor).
+`APP_MODE` in `.env` (`clearnet` or `tor`, set by the installer) must be one of those two: any other value stops the server. It changes one behaviour: with `APP_MODE=tor` and [Bitcoin escrow](#bitcoin-escrow-regtest-only) on, a settlement is broadcast only through an escrow node that sends through a proxy for both IPv4 and IPv6 on Bitcoin Core 31.1 or later (*Tor mode* under Bitcoin escrow, A-441); otherwise escrow broadcasts wait. It routes nothing itself, and pooled payouts are unaffected (they are never private, below). The Compose overlay in `COMPOSE_FILE` decides exposure, and `COOKIE_SECURE` decides whether cookies are marked Secure. Compose passes `COMPOSE_FILE` to the app, which refuses to start when it disagrees with `APP_MODE`: `tor` needs `compose.tor.yaml` in it, `clearnet` needs `compose.clearnet.yaml`, and never both (a blank `COMPOSE_FILE` skips this check). `COOKIE_SECURE` must be exactly `true` or `false` (unset means `true`); `APP_MODE=tor` with `COOKIE_SECURE=true` only logs a warning: the onion is served over plain HTTP, so the Secure session cookie works only in browsers that treat `.onion` addresses as secure (the installer writes `false` for Tor).
 
 Configure DNS, firewall and the certificate issuer for your domain. A proxy in another container needs a private shared network instead of this host-loopback configuration. Never expose the database or node RPC ports.
 
@@ -561,7 +561,11 @@ proven with real funds. Know these before you take a real payment:
 - **With local nodes, payouts in Tor mode leave from the host's own IP address.** The Tor overlay hides the
   market's web service, but the local Bitcoin and Monero nodes connect to peers and broadcast every payout directly over
   clearnet from the host, so peers can link the market's payouts to the host's IP address. Nothing in the
-  Compose files routes the nodes through Tor; running them over Tor is not tested here.
+  Compose files routes the nodes through Tor; running them over Tor is not tested here. **Pooled payouts are never
+  private**, whatever the node's flags: they are wallet sends (`sendtoaddress`), which Bitcoin Core relays as ordinary
+  transactions even with `-privatebroadcast` (that flag covers `sendrawtransaction` only; probed on Core 31.1 regtest).
+  The one thing `APP_MODE=tor` changes is Bitcoin escrow: it broadcasts a settlement only through an escrow node set up
+  with `-proxy` (*Tor mode* under [Bitcoin escrow](#bitcoin-escrow-regtest-only), A-441).
 - **Open items** in the project's review ledger (`.claude/war-room/ledger.md`), each still unfixed:
   - A-226: the [runtime wallet check](#node-image-versions) treats any monero-wallet-rpc that does not report
     RPC 1.31 from a release build as unverified, but a later release whose RPC did not change also reports
@@ -689,7 +693,26 @@ has run on a public test network. Never switch it on for a market that takes rea
   not help a regtest node in initial block download: Core reports it at height 0 and after a restart when its tip is
   older than 24 hours (`-maxtipage`), and a regtest node has no peers to sync from. Mine one block
   (`bitcoin-cli -regtest generatetoaddress 1 <address>`) or restart bitcoind with a larger `-maxtipage`; on regtest
-  the `/admin` line says so.
+  the `/admin` line says so. In `APP_MODE=tor` the same check also reads `getnetworkinfo` on regtest, for the Tor-mode
+  gate below.
+- **Tor mode (A-441): broadcasts wait for a proxied node.** With `APP_MODE=tor` the escrow watcher reads
+  `getnetworkinfo` once per pass and broadcasts a settlement (`sendrawtransaction`, first send or resend) only while it
+  shows a proxy for both `ipv4` and `ipv6` and a `version` of at least 310100 (Bitcoin Core 31.1, the first with
+  `-privatebroadcast`). Otherwise, and when `getnetworkinfo` fails (a whitelist without it, say), nothing is sent and no
+  settlement changes state (co-signing still stores the final transaction; deposits, builds and everything else go on);
+  the log says once per change "escrow: APP_MODE=tor: escrow broadcasts wait (<reason>); start the escrow node with
+  -proxy=<Tor SOCKS address> on Bitcoin Core 31.1 or later, never -connect or -onlynet" and, when it passes again,
+  "… escrow broadcasts resumed", and `/admin` shows "Bitcoin escrow broadcasts wait (APP_MODE=tor): <reason>." under
+  *Payment providers*. The reason is `no proxy for IPv4 or IPv6`, `no proxy for IPv4`, `no proxy for IPv6`, `Bitcoin Core
+  older than 31.1` or `getnetworkinfo failed: <class>`. Configure the escrow node with `-proxy=<Tor SOCKS address>` (it
+  sets the proxy of every network) and `-privatebroadcast`; never `-connect` or `-onlynet`, which stall the node's
+  sync. `-onion` alone does not pass: it proxies onion peers only, and `getnetworkinfo`'s onion `reachable` reports
+  configuration, not whether Tor answers, so the gate reads neither. The gate checks configuration only: a proxy that
+  is configured but down still accepts the broadcast into a private queue, which the stall alert under *Settlements*
+  (*Queued or stuck*) reports. What is private then: a settlement's transaction leaves only through the proxy. What is
+  not: pooled payouts (wallet sends, [never private](#mainnet)), deposits the buyer sends from their own wallet, and the
+  node's own block and peer traffic beyond what `-proxy` covers. Clearnet mode is unaffected. Checked against Core 31.1
+  regtest nodes with and without `-proxy` (`TestEscrowRegtestPrivateBroadcast`); no node has run over real Tor here.
 - **Chain pin (A-439).** At startup (and on each retry) the app pins the escrow node's chain in the database
   (`settings` key `escrow_btc_chain`: the chain name, such as `regtest`, followed by `:` and the node's
   `signet_challenge` on signet, so two signets are told apart). **A database never changes chain once it holds an
@@ -763,8 +786,11 @@ rpcwhitelistdefault=0
 rpcwhitelist=opsecmkt-escrow:getblockchaininfo,getnetworkinfo,getrawchangeaddress,getaddressinfo,createpsbt,utxoupdatepsbt,importdescriptors,getdescriptorinfo,deriveaddresses,gettxout,keypoolrefill,walletprocesspsbt,descriptorprocesspsbt,combinepsbt,finalizepsbt,testmempoolaccept,sendrawtransaction,getwalletinfo,listreceivedbyaddress,gettransaction,listtransactions
 ```
 
-`getnetworkinfo` (read-only: the node's peer count for the sync guard above) was added in A-439; the app calls it only
-on a public chain, so a regtest node whose whitelist predates it keeps working, but add it now.
+`getnetworkinfo` (read-only: the node's peer count for the sync guard above, and its proxies and version for the
+Tor-mode gate) was added in A-439; the app calls it only on a public chain or with `APP_MODE=tor`, so a clearnet regtest
+node whose whitelist predates it keeps working, but add it now. `getprivatebroadcastinfo` and `abortprivatebroadcast`
+are not on the list: the app never reads or cancels the private broadcast queue (a user allowed to abort could suppress
+the market's broadcasts); use the operator user to inspect it.
 
 `rpcwhitelist` allows or refuses whole methods, not their arguments, so the list leaves out every method that
 can export or copy a key: `listdescriptors` (with `private=true` it prints the arbiter's private key; probed on
@@ -887,6 +913,25 @@ broadcast.
   parties (and staff reading the order) only once it is broadcast. A re-check or `testmempoolaccept` refusal for
   any reason but a signature leaves the settlement signed by the party and waiting, with the log line "escrow:
   settlement of order … not sent yet: <class>" once per change and a line on the order page.
+- *Queued or stuck* (A-441). A settlement recorded broadcast means the node accepted the transaction, not that the
+  network has it: with `-privatebroadcast` and a proxy that does not answer, Core answers the transaction ID, keeps it
+  in a private queue and never puts it in its mempool (probed on Core 31.1 regtest). In every mode, when none of the
+  settlement's transactions (its own and any fee bump's) is in the watch-only wallet 6 blocks after it was broadcast,
+  staff are told once: an order note "Queued or stuck: not seen by the network. …" and a "Payment review needed"
+  notification to each moderator and administrator, and the log says "escrow: settlement of order … queued or stuck,
+  not seen by the network after 6 blocks; staff notified". `/admin` lists it under *Payment providers* ("Bitcoin escrow
+  settlements queued or stuck: not seen by the network.", with the order and the transaction ID) and the order page, as
+  staff reading the order see it, carries a staff line (staff can open an order only while it is or was disputed or
+  has a flagged deposit; otherwise the `/admin` list is where they see it). The settlement stays broadcast (no new
+  state), and the market keeps sending the same stored transaction on each pass as before. When the wallet sees the transaction, one order
+  note ("Seen by the network: …") clears the alert and the lines go. Blocks are counted from the broadcast, in memory:
+  after a restart the count starts again at the first pass, so the notice can come up to 6 blocks later, and never
+  twice. What staff do: an administrator checks the escrow node as the operator user: its peers
+  (`getconnectioncount`), with `-privatebroadcast` whether its Tor proxy answers (`getprivatebroadcastinfo` lists each
+  queued transaction and the peers it reached), and whether the transaction is in its mempool (`getmempoolentry`).
+  Restore the proxy or the peers and the next resend goes out. The buyer and the vendor can also broadcast the final
+  transaction the order page shows from their own node. Never abort the queue entry with `abortprivatebroadcast` to
+  "retry": the market only ever resends the same transaction.
 - *A signature that does not verify* (A-339): when `finalizepsbt` cannot complete the transaction although the
   market's own signature is there, or `testmempoolaccept` refuses a script, the party's signature is discarded and
   the settlement returns to waiting for a signature, with a fixed order note ("The vendor's signature … did not
