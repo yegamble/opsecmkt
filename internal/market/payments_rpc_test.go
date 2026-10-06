@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // payRPCServer is an httptest JSON-RPC server for adapter tests: Basic or Digest (MD5, qop=auth) auth,
@@ -147,6 +148,71 @@ func (s *payRPCServer) serve(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	json.NewEncoder(w).Encode(resp)
+}
+
+// QA4W4A-1: callStream hands the result to its reader as the body arrives. Core writes "result" before "error", so an
+// RPC error reaches the reader as a null result first and is still reported as the rpcError (-5 here, as listsinceblock
+// answers an unknown block); an answer beyond rpcMaxBody is read whole; a body cut short by the timeout says "timed
+// out"; a 403 is "credentials rejected (HTTP 403)", as call reports it.
+func TestRPCCallStream(t *testing.T) {
+	const bigEntries = rpcMaxBody/1000 + 100
+	var mode atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch mode.Load() {
+		case "error":
+			w.WriteHeader(500)
+			w.Write([]byte(`{"result":null,"error":{"code":-5,"message":"Block not found"},"id":"opsecmkt"}`))
+		case "big": // rpcMaxBody/1000+100 strings of 1000 bytes: past the limit, in one write
+			w.Write([]byte(`{"result":[` + strings.Repeat(`"`+strings.Repeat("x", 998)+`",`, bigEntries-1) + `"x"],"error":null,"id":"opsecmkt"}`))
+		case "slow":
+			w.Write([]byte(`{"result":["a",`))
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+		case "forbidden":
+			w.WriteHeader(403)
+		}
+	}))
+	defer srv.Close()
+	c, err := newRPCClient("bitcoin escrow", srv.URL, "1.0", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	count := func(dec *json.Decoder) (n int, err error) {
+		tok, err := dec.Token()
+		if err != nil || tok == nil {
+			return 0, err
+		}
+		for dec.More() {
+			var s string
+			if err = dec.Decode(&s); err != nil {
+				return n, err
+			}
+			n++
+		}
+		_, err = dec.Token()
+		return n, err
+	}
+	var n int
+	read := func(dec *json.Decoder) (err error) { n, err = count(dec); return err }
+
+	mode.Store("error")
+	var re *rpcError
+	if err := c.callStream(ctx, time.Second, "/wallet/w", "listsinceblock", []any{"x"}, read); !errors.As(err, &re) || re.Code != -5 {
+		t.Fatalf("error answer: %v", err)
+	}
+	mode.Store("big")
+	if err := c.callStream(ctx, time.Minute, "/wallet/w", "listsinceblock", []any{""}, read); err != nil || n != bigEntries {
+		t.Fatalf("answer beyond rpcMaxBody: %d entries, %v", n, err)
+	}
+	mode.Store("slow")
+	if err := c.callStream(ctx, 300*time.Millisecond, "/wallet/w", "listsinceblock", []any{""}, read); err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("cut short by the timeout: %v", err)
+	}
+	mode.Store("forbidden")
+	if err := c.callStream(ctx, time.Second, "/wallet/w", "listsinceblock", []any{""}, read); err == nil || !strings.Contains(err.Error(), "(HTTP 403)") {
+		t.Fatalf("refused by the whitelist: %v", err)
+	}
 }
 
 func TestRPCBasicAuthNumbersAndErrors(t *testing.T) {

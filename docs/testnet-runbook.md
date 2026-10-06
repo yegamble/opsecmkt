@@ -439,7 +439,9 @@ age -d -i operator-key.txt arbiter-descriptors.json.age |
   opcli -stdin -rpcwallet=opsecmkt-arbiter importdescriptors           # every entry must say "success": true
 ```
 
-`-stdin` keeps the descriptors off the command line, where other users of the machine could read them.
+`-stdin` keeps the descriptors off the command line, where other users of the machine could read them. A wallet rebuilt
+this way has another `birthtime`, so the app's next start reads it whole once to check it has never spent (the
+checkpoint in `escrow_btc_arbiter_checked` belongs to the old wallet); a `restorewallet` copy keeps the checkpoint.
 
 **Check the fingerprint pin.** Start the app. The arbiter wallet must have the fingerprint this database pinned at its
 first escrow start (`escrow_btc_arbiter_fingerprint` in `settings`): the log says "escrow: Bitcoin escrow on (regtest

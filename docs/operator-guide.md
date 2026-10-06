@@ -645,11 +645,29 @@ has run on a public test network. Never switch it on for a market that takes rea
   describes: its seed is the market's escrow key, and `scripts/backup.sh` does not hold it. Use it for nothing else. At startup and on each retry
   the app checks with `getwalletinfo` exactly this: a descriptor wallet with private keys, not encrypted (the escrow
   watcher co-signs without a passphrase, so an encrypted wallet could never sign), and, when `txcount` is above 0, with
-  `listtransactions` that it has never spent: escrow coins never belong to it and the market never sends from it, so a
+  `listsinceblock` that it has never spent: escrow coins never belong to it and the market never sends from it, so a
   spend (an entry of category `send`, which only the wallet's keys can make) means it is also used as an ordinary wallet.
-  Coins paid to it do not count (A-471): every escrow order's descriptor shows the market's child key, whose address the
-  arbiter wallet owns, so anyone can pay it; such coins stay in the wallet and change nothing. Otherwise escrow is
-  disabled with "escrow: Bitcoin escrow disabled: the arbiter wallet must be used for the escrow key only …". It cannot check which descriptors the wallet holds (`listdescriptors` is not on the
+  The read sets `include_change`, so a spend whose outputs all go to the wallet's own change addresses counts too (it
+  leaves no `send` entry in `listtransactions`; probed on Core 31.1). Coins paid to it do not count (A-471): every
+  escrow order's descriptor shows the market's child key, whose address the arbiter wallet owns, so anyone can pay it;
+  such coins stay in the wallet and change nothing. Otherwise escrow is disabled with "escrow: Bitcoin escrow disabled:
+  the arbiter wallet must be used for the escrow key only …". So that mass payments to that address cannot keep escrow
+  off by making the read slow (QA4W4A-1: 100,000 entries took longer than startup allows when every start read them all),
+  a passing check records a checkpoint in the database (`settings` key `escrow_btc_arbiter_checked`: the block
+  `listsinceblock` reported, for the wallet's name and `getwalletinfo` birthtime), and later checks read only what is
+  newer than that block, plus anything unconfirmed (100,000 entries: about 5 s for the one full read on a loaded host,
+  under 0.2 s after it). The whole wallet is read once, in one call, when there is no checkpoint, when the checkpoint
+  belongs to another wallet (another name, or another birthtime, as a wallet rebuilt with `importdescriptors` has; one
+  restored from its backup file keeps both) or names a block the node does not know, and every time for a Core that
+  reports no birthtime. When that read takes longer than startup allows, escrow stays off with "escrow: Bitcoin escrow
+  off while the arbiter wallet is checked: …" and `/admin` says so; the read goes on, and the escrow watcher starts
+  escrow once it has passed, without reading again. A read that fails (a timeout, an unreachable node, an RPC error
+  such as `listsinceblock` missing from the whitelist) is never a pass: escrow stays disabled with "escrow: Bitcoin
+  escrow disabled: the arbiter wallet's transactions could not be read …" (and an `/admin` line naming the class), and
+  the check is retried every poll. What the check cannot tell apart: `rpcwhitelist` allows methods, not wallets, so
+  where the pooled payments share this node, a pooled user allowed `sendtoaddress` can spend coins paid to the arbiter
+  wallet by naming its path, and that spend turns escrow off at the next check (no key is exported). Run escrow on a
+  node of its own to rule that out. It cannot check which descriptors the wallet holds (`listdescriptors` is not on the
   whitelist, since it can export the private key). Before it co-signs, the watcher checks that the escrow's market
   child key is in the wallet's derived key range (`deriveaddresses` and `getaddressinfo`) and, when it is not,
   extends the range 1000 keys past the market index with `keypoolrefill` (checked on Core 31.1 regtest under the
@@ -793,7 +811,7 @@ keep a separate operator user with full rights for creating and backing up walle
 ```ini
 rpcauth=opsecmkt-escrow:SALT$HASH
 rpcwhitelistdefault=0
-rpcwhitelist=opsecmkt-escrow:getblockchaininfo,getnetworkinfo,getrawchangeaddress,getaddressinfo,createpsbt,utxoupdatepsbt,importdescriptors,getdescriptorinfo,deriveaddresses,gettxout,keypoolrefill,walletprocesspsbt,descriptorprocesspsbt,combinepsbt,finalizepsbt,testmempoolaccept,sendrawtransaction,getwalletinfo,listreceivedbyaddress,gettransaction,listtransactions
+rpcwhitelist=opsecmkt-escrow:getblockchaininfo,getnetworkinfo,getrawchangeaddress,getaddressinfo,createpsbt,utxoupdatepsbt,importdescriptors,getdescriptorinfo,deriveaddresses,gettxout,keypoolrefill,walletprocesspsbt,descriptorprocesspsbt,combinepsbt,finalizepsbt,testmempoolaccept,sendrawtransaction,getwalletinfo,listreceivedbyaddress,gettransaction,listtransactions,listsinceblock
 ```
 
 `getnetworkinfo` (read-only: the node's peer count for the sync guard above, and its proxies and version for the
@@ -807,9 +825,13 @@ can export or copy a key: `listdescriptors` (with `private=true` it prints the a
 Core 31.1 regtest), `dumpprivkey`, `dumpwallet`, `backupwallet` and everything else not listed. `keypoolrefill`
 is on it: it exports nothing and lets the arbiter wallet sign for high escrow indices. `descriptorprocesspsbt`
 is used only with throwaway practice keys, never a wallet key. `getwalletinfo`, `getaddressinfo`,
-`listreceivedbyaddress`, `gettransaction` and `listtransactions` read the watch-only wallet (the arbiter wallet only
-answers `getwalletinfo` and `getaddressinfo`; they export nothing). `listtransactions` was added in P1-d1 (UPGRADING.md section 22): without it a
-deposit spent outside the market is still flagged, but without the spending transaction's ID. `rpcwhitelistdefault=0`
+`listreceivedbyaddress`, `gettransaction` and `listtransactions` read the watch-only wallet; on the arbiter wallet the
+app reads with `getwalletinfo`, `getaddressinfo` and `listsinceblock` (its start check, above; until QA4W4A-1 that check
+paged through the wallet with `listtransactions`, which now reads only the watch-only wallet), besides
+`getrawchangeaddress`, `keypoolrefill` and the signing `walletprocesspsbt`; none of them exports a key. `listtransactions` was added in P1-d1 (UPGRADING.md section 22): without it a
+deposit spent outside the market is still flagged, but without the spending transaction's ID. `listsinceblock` was added
+with the arbiter wallet's checkpoint (UPGRADING.md section 37): without it the start check cannot read the arbiter
+wallet, and escrow stays disabled with the read-failure line. `rpcwhitelistdefault=0`
 leaves a user with no `rpcwhitelist` line unrestricted: keep that for the operator user alone, and give each user the
 app connects as its own line (the pooled user below included). With `rpcwhitelistdefault` unset instead, Core gives every
 user without its own line an empty list once any `rpcwhitelist` is set: the operator user could then call nothing.

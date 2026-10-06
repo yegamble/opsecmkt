@@ -87,9 +87,12 @@ type fakeEscrowCore struct {
 	// inputs; gettransaction reports it with txConfs and conflicts.
 	arbiterShort     bool                // the arbiter's key range is short of the market child (getaddressinfo ismine false)
 	keypoolStuck     bool                // keypoolrefill does not extend the arbiter's key range
-	arbiterTxs       []string            // the arbiter wallet's listtransactions categories, oldest first; getwalletinfo txcount is their number (A-471)
-	arbiterListErr   int                 // JSON-RPC error for listtransactions on the arbiter wallet (0 = none)
+	arbiterTxs       []string            // the arbiter wallet's entry categories, oldest first, each in a block of its own (arbiterBlock); getwalletinfo txcount is their number (A-471)
+	arbiterListErr   int                 // JSON-RPC error for listtransactions and listsinceblock on the arbiter wallet (0 = none)
 	arbiterEncrypted bool                // getwalletinfo of the arbiter wallet has unlocked_until
+	arbiterBirth     int64               // getwalletinfo birthtime of the arbiter wallet (0 = not reported)
+	arbiterPad       int                 // bytes of label on each entry listsinceblock lists (a large answer)
+	beforeSince      func()              // runs when listsinceblock is called on the arbiter wallet, before it answers
 	marketSkew       func(string) string // edits walletprocesspsbt's answer
 	finalSkew        func(string) string // edits finalizepsbt's raw transaction
 	mempoolReject    string              // testmempoolaccept refuses a settlement transaction with this reason
@@ -205,7 +208,7 @@ type fakeCall struct {
 const fakeArbiterFP = "a1b2c3d4"
 
 func newFakeEscrowCore(t *testing.T) (*fakeEscrowCore, *payRPCServer) {
-	c := &fakeEscrowCore{t: t, chain: "regtest", arbiterFP: fakeArbiterFP, reject: "missing-inputs", spk: map[string][]byte{},
+	c := &fakeEscrowCore{t: t, chain: "regtest", arbiterFP: fakeArbiterFP, reject: "missing-inputs", spk: map[string][]byte{}, arbiterBirth: 1700000000,
 		watchInfo: map[string]any{"walletname": "opsecmkt-escrow-watch", "descriptors": true, "private_keys_enabled": false}}
 	c.arbiterDesc = "wpkh([" + fakeArbiterFP + "/84h/1h/0h]" + testBIP84Key[20:] + "/1/*)#fakechk0"
 	srv := newPayRPCServer(t, "escrowapp", "escrow-rpc-pass", false, c.handle)
@@ -218,6 +221,10 @@ func newFakeEscrowCore(t *testing.T) (*fakeEscrowCore, *payRPCServer) {
 	srv.mu.Unlock()
 	return c, srv
 }
+
+// arbiterBlock is the fake hash of the block holding the arbiter wallet's n-th entry (arbiterTxs[n-1]); arbiterBlock(0)
+// is a block before them all.
+func arbiterBlock(n int) string { return txidOf("arbiter block " + strconv.Itoa(n)) }
 
 func (c *fakeEscrowCore) methods() []string {
 	c.mu.Lock()
@@ -533,6 +540,9 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 	case "getwalletinfo":
 		if wallet {
 			info := map[string]any{"walletname": "opsecmkt-arbiter", "descriptors": true, "private_keys_enabled": true, "txcount": len(c.arbiterTxs)}
+			if c.arbiterBirth != 0 {
+				info["birthtime"] = c.arbiterBirth
+			}
 			if c.arbiterEncrypted {
 				info["unlocked_until"] = 0
 			}
@@ -580,6 +590,35 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 			}
 		}
 		return out, 0, ""
+	case "listsinceblock":
+		if !wallet {
+			return nil, -8, "unexpected fake wallet"
+		}
+		if c.beforeSince != nil {
+			c.mu.Unlock()
+			c.beforeSince()
+			c.mu.Lock()
+		}
+		if c.arbiterListErr != 0 {
+			return nil, c.arbiterListErr, "fake listsinceblock failure"
+		}
+		from := 0 // QA4W4A-1: entry i is in block arbiterBlock(i+1); the entries after a block, as Core lists them
+		if h := str(0); h != "" {
+			from = -1
+			for i := 0; i <= len(c.arbiterTxs); i++ {
+				if arbiterBlock(i) == h {
+					from = i
+				}
+			}
+			if from < 0 {
+				return nil, -5, "Block not found"
+			}
+		}
+		out := []map[string]any{}
+		for i, cat := range c.arbiterTxs[from:] {
+			out = append(out, map[string]any{"txid": txidOf("arbiter " + strconv.Itoa(from+i)), "category": cat, "amount": json.Number("0.00001"), "label": strings.Repeat("x", c.arbiterPad)})
+		}
+		return map[string]any{"transactions": out, "lastblock": arbiterBlock(len(c.arbiterTxs))}, 0, ""
 	case "listtransactions":
 		if wallet { // A-471: Core's paging: count entries after skipping the skip most recent, oldest first
 			if c.arbiterListErr != 0 {

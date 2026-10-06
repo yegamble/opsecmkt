@@ -146,6 +146,49 @@ func TestEscrowBroadcastStallSeenNeverAlerts(t *testing.T) {
 	}
 }
 
+// QA4W4A-3 (from QA's scratch probe): the stall count is in memory, so it starts again with the process: a restart
+// halfway reports the stall escrowStallBlocks blocks after the restart's first pass, not after the broadcast ("later",
+// never early); and an alert raised before a restart is not raised again after it, however many blocks pass ("never
+// twice": the open alert is read from the database, not from memory).
+func TestEscrowBroadcastStallAcrossRestart(t *testing.T) {
+	x := newEscrowEnv(t)
+	x.user("stallrestartmod_"+randomToken()[:6], "moderator")
+	order, id := x.built(regtestAddr("stall-restart-refund"), regtestAddr("stall-restart-claim"), 100000)
+	x.core.mu.Lock()
+	x.core.private = true
+	x.core.mu.Unlock()
+	const base, half = 200, escrowStallBlocks / 2
+	x.setBlocks(base)
+	x.signAs(order, roleVendor, id)
+	x.poll()
+	if s := x.settleByID(id); s.State != "broadcast" {
+		t.Fatalf("not broadcast: %+v", s)
+	}
+	x.setBlocks(base + half)
+	x.poll()
+	x.restart()
+	x.poll() // the restart's first pass, half the count after the broadcast
+	x.setBlocks(base + escrowStallBlocks)
+	x.poll()
+	if _, notes, _ := x.stallNotices(order); notes != 0 {
+		t.Fatalf("alert %d blocks after the broadcast despite the restart in between: %d notes", escrowStallBlocks, notes)
+	}
+	x.setBlocks(base + half + escrowStallBlocks)
+	x.poll()
+	staff, notes, _ := x.stallNotices(order)
+	if notes != 1 || staff == 0 {
+		t.Fatalf("no alert %d blocks after the restart's first pass: %d notes, %d staff notices", escrowStallBlocks, notes, staff)
+	}
+	x.restart()
+	x.poll()
+	x.setBlocks(base + half + 4*escrowStallBlocks)
+	x.poll()
+	x.poll()
+	if s2, n2, _ := x.stallNotices(order); n2 != 1 || s2 != staff {
+		t.Fatalf("told again after a restart: %d notes, %d staff notices (before %d)", n2, s2, staff)
+	}
+}
+
 // torNode sets what the fake node's getnetworkinfo reports: each network's proxy, whether onion is reachable and the
 // version.
 func torNode(c *fakeEscrowCore, ipv4, ipv6, onion string, onionReachable bool, version int64) {

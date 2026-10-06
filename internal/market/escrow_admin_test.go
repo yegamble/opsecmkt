@@ -2,11 +2,14 @@ package market
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"net/url"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Escrow Phase 1, slice P1-c2: the A-246 carry-overs (the administrator's market fee, the arbiter key range refilled
@@ -135,44 +138,152 @@ func TestEscrowKeypoolRefillBeforeSigning(t *testing.T) {
 	}
 }
 
-// The arbiter wallet must be dedicated to the escrow key: a wallet that has ever spent (a listtransactions entry of
-// category "send"), or an encrypted one, leaves escrow disabled with one fixed line, and the market runs. A-471: coins
-// paid to it do not count. Anyone can pay the wpkh address of the market child key an order page's descriptor shows,
-// and the arbiter wallet owns it, so a refusal on getwalletinfo's txcount let any escrow party disable escrow at the
-// next restart with a dust payment. A wallet that only received, over more entries than one listtransactions page,
-// is dedicated; a single spend behind a full page of receives is found; a wallet whose entries cannot be read is not
-// taken as dedicated.
+// The arbiter wallet must be dedicated to the escrow key: a wallet that has ever spent (an entry of category "send"),
+// or an encrypted one, leaves escrow disabled with one fixed line, and the market runs. A-471: coins paid to it do not
+// count. Anyone can pay the wpkh address of the market child key an order page's descriptor shows, and the arbiter
+// wallet owns it, so a refusal on getwalletinfo's txcount let any escrow party disable escrow at the next restart with
+// a dust payment.
+//
+// QA4W4A-1: reading every entry on every start (listtransactions, a page at a time) let mass dust keep escrow off. The
+// call pattern now: the first check reads everything with one listsinceblock (no block hash, no paging); a passing check
+// leaves a checkpoint (the lastblock Core answered, for the wallet's name and birthtime); the next start reads only what
+// is newer, in one listsinceblock from that block. A send behind thousands of paid-in entries is still found and leaves
+// the checkpoint where it was; a checkpoint for another wallet (another birthtime), or a block the node does not know
+// (-5), reads everything once; a wallet that reports no birthtime is read whole and leaves no checkpoint; an answer far
+// beyond rpcMaxBody is read as it arrives; a read that fails has its own line, never the "used for the escrow key
+// only" one.
 func TestEscrowArbiterWalletDedicated(t *testing.T) {
 	logs := captureLog(t)
 	core, srv := newFakeEscrowCore(t)
 	setEscrowEnv(t, srv.url(""))
+	const arb = "/wallet/opsecmkt-arbiter"
+	full := `["",1,true,false,true]`
+	from := func(n int) string { return `["` + arbiterBlock(n) + `",1,true,false,true]` }
+	seen := 0
+	reads := func() []string { // the listsinceblock params on the arbiter wallet since the last look
+		t.Helper()
+		core.mu.Lock()
+		defer core.mu.Unlock()
+		var all []string
+		for _, c := range core.calls {
+			if c.Method == "listsinceblock" && c.Path == arb {
+				all = append(all, string(c.Params))
+			}
+			if c.Method == "listtransactions" && c.Path == arb {
+				t.Fatalf("listtransactions paged the arbiter wallet: %s", c.Params)
+			}
+		}
+		defer func() { seen = len(all) }()
+		return all[seen:]
+	}
+	checkpoint := func(dsn string) string {
+		t.Helper()
+		db, err := OpenDB(dsn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		var v string
+		if err = db.QueryRow("SELECT value FROM settings WHERE key=$1", escrowArbiterChecked).Scan(&v); err != nil && err != sql.ErrNoRows {
+			t.Fatal(err)
+		}
+		return v
+	}
+	mark := func(birth int64, n int) string {
+		return `{"wallet":"opsecmkt-arbiter","birthtime":` + strconv.FormatInt(birth, 10) + `,"block":"` + arbiterBlock(n) + `"}`
+	}
+
 	core.arbiterTxs = []string{"receive", "receive", "immature"} // deposits to market child keys, a coinbase to one
 	a, dsn, err := startApp(t, "")
 	if err != nil || a.escrow.Load() == nil || strings.Contains(logs.String(), escrowLogArbiterUse) {
 		t.Fatalf("arbiter that only received: %v\n%s", err, logs.String())
 	}
-	if path, params := core.lastCall(t, "listtransactions"); path != "/wallet/opsecmkt-arbiter" || params != `["*",1000,0,true]` {
-		t.Fatalf("listtransactions %s %s", path, params)
+	if r := reads(); !slices.Equal(r, []string{full}) {
+		t.Fatalf("first check: listsinceblock %v, want one call %s", r, full)
+	}
+	if c := checkpoint(dsn); c != mark(1700000000, 3) {
+		t.Fatalf("checkpoint %s", c)
 	}
 	a.Close()
-	core.arbiterTxs = append([]string{"receive", "send"}, slices.Repeat([]string{"receive"}, escrowArbiterTxPage)...)
-	before := core.countWith("listtransactions", `"*",1000,1000,true`)
-	if a, _, err = startApp(t, dsn); err != nil || a.escrow.Load() != nil || !strings.Contains(logs.String(), escrowLogArbiterUse+" (getwalletinfo not-dedicated)") {
-		t.Fatalf("arbiter that spent once, behind a full page of receives: %v\n%s", err, logs.String())
+
+	// Mass dust since the checkpoint: one read from it, escrow on, the checkpoint moved to the new lastblock.
+	core.arbiterTxs = append(core.arbiterTxs, slices.Repeat([]string{"receive"}, 5000)...)
+	if a, _, err = startApp(t, dsn); err != nil || a.escrow.Load() == nil {
+		t.Fatalf("arbiter that received 5000 more: %v\n%s", err, logs.String())
 	}
-	if core.countWith("listtransactions", `"*",1000,1000,true`) != before+1 {
-		t.Fatal("the second listtransactions page was not read")
+	if r := reads(); !slices.Equal(r, []string{from(3)}) {
+		t.Fatalf("after a passing check: listsinceblock %v, want one call %s", r, from(3))
 	}
-	// A retry runs the same check: once the spend is gone (another wallet), escrow starts without a restart.
-	core.arbiterTxs = slices.Repeat([]string{"receive"}, escrowArbiterTxPage+1)
+	if c := checkpoint(dsn); c != mark(1700000000, 5003) {
+		t.Fatalf("checkpoint %s", c)
+	}
+	a.Close()
+
+	// One send behind 2000 more paid-in entries is found from the checkpoint; the checkpoint stays.
+	core.arbiterTxs = append(append(core.arbiterTxs, slices.Repeat([]string{"receive"}, 2000)...), "send", "receive")
+	if a, _, err = startApp(t, dsn); err != nil || a.escrow.Load() != nil || a.escrowStartState != escrowLogArbiterUse ||
+		!strings.Contains(logs.String(), escrowLogArbiterUse+" (listsinceblock not-dedicated)") {
+		t.Fatalf("arbiter that spent once, behind 2000 receives: %v %q\n%s", err, a.escrowStartState, logs.String())
+	}
+	if r := reads(); !slices.Equal(r, []string{from(5003)}) {
+		t.Fatalf("spend check: listsinceblock %v, want one call %s", r, from(5003))
+	}
+	if c := checkpoint(dsn); c != mark(1700000000, 5003) {
+		t.Fatalf("checkpoint moved past a spend: %s", c)
+	}
+
+	// A retry runs the same check: another wallet (another birthtime) that only received is read whole and passes.
+	core.arbiterTxs, core.arbiterBirth = slices.Repeat([]string{"receive"}, 2500), 1700000500
 	retry := &escrowRetry{last: a.escrowStartState}
 	if a.retryEscrow(context.Background(), retry); a.escrow.Load() == nil {
-		t.Fatalf("retry with a wallet that only received:\n%s", logs.String())
+		t.Fatalf("retry with another wallet that only received:\n%s", logs.String())
+	}
+	if r := reads(); !slices.Equal(r, []string{full}) {
+		t.Fatalf("another wallet: listsinceblock %v, want one call %s", r, full)
+	}
+	if c := checkpoint(dsn); c != mark(1700000500, 2500) {
+		t.Fatalf("checkpoint %s", c)
 	}
 	a.Close()
-	core.arbiterTxs, core.arbiterListErr = []string{"receive"}, -1
-	if a, _, err = startApp(t, dsn); err != nil || a.escrow.Load() != nil || !strings.Contains(logs.String(), escrowLogArbiterUse+" (listtransactions rpc:-1)") {
-		t.Fatalf("arbiter whose entries cannot be read: %v\n%s", err, logs.String())
+
+	// A checkpoint block the node does not know (-5: another node or chain): from it, then everything once.
+	core.arbiterTxs = slices.Repeat([]string{"receive"}, 10)
+	if a, _, err = startApp(t, dsn); err != nil || a.escrow.Load() == nil {
+		t.Fatalf("unknown checkpoint block: %v\n%s", err, logs.String())
+	}
+	if r := reads(); !slices.Equal(r, []string{from(2500), full}) {
+		t.Fatalf("unknown checkpoint block: listsinceblock %v", r)
+	}
+	a.Close()
+
+	// No birthtime: read whole every time, no checkpoint written.
+	core.arbiterBirth = 0
+	for range 2 {
+		if a, _, err = startApp(t, dsn); err != nil || a.escrow.Load() == nil {
+			t.Fatalf("no birthtime: %v\n%s", err, logs.String())
+		}
+		a.Close()
+	}
+	if r := reads(); !slices.Equal(r, []string{full, full}) {
+		t.Fatalf("no birthtime: listsinceblock %v", r)
+	}
+	if c := checkpoint(dsn); c != mark(1700000500, 10) {
+		t.Fatalf("checkpoint without a birthtime: %s", c)
+	}
+
+	// An answer beyond rpcMaxBody (20,000 entries of about 1 KB) is read as it arrives.
+	core.arbiterBirth, core.arbiterTxs, core.arbiterPad = 1700000900, slices.Repeat([]string{"receive"}, 20000), 1000
+	if a, _, err = startApp(t, dsn); err != nil || a.escrow.Load() == nil {
+		t.Fatalf("answer beyond rpcMaxBody: %v\n%s", err, logs.String())
+	}
+	a.Close()
+	core.arbiterPad = 0
+
+	// A read that fails is not a pass, and is not reported as a wallet used for something else.
+	core.arbiterBirth, core.arbiterListErr = 1700001000, -1
+	if a, _, err = startApp(t, dsn); err != nil || a.escrow.Load() != nil || a.escrowStartState != escrowLogArbiterRead ||
+		!strings.Contains(logs.String(), escrowLogArbiterRead+" (listsinceblock rpc:-1)") || strings.Contains(logs.String(), escrowLogArbiterUse+" (listsinceblock rpc") {
+		t.Fatalf("arbiter whose entries cannot be read: %v %q\n%s", err, a.escrowStartState, logs.String())
 	}
 	a.Close()
 	core.arbiterTxs, core.arbiterListErr, core.arbiterEncrypted = nil, 0, true
@@ -188,6 +299,59 @@ func TestEscrowArbiterWalletDedicated(t *testing.T) {
 		t.Fatalf("getwalletinfo %s", params)
 	}
 	a.Close()
+}
+
+// QA4W4A-1: a read of the arbiter wallet longer than startup allows leaves escrow off with its own line and admin text
+// ("off while the arbiter wallet is checked"), never the "used for the escrow key only" one; the read goes on, and the
+// escrow watcher's retry takes its answer without reading again (one listsinceblock in all) and starts escrow. A read
+// that times out on its own has the read-failure line and admin text.
+func TestEscrowArbiterReadOutlivesStartup(t *testing.T) {
+	x := newEscrowEnv(t)
+	logs := captureLog(t)
+	release := make(chan struct{})
+	x.core.mu.Lock()
+	x.core.arbiterTxs, x.core.arbiterBirth = []string{"receive"}, 1700000700 // another wallet: no checkpoint for it
+	x.core.beforeSince = func() { <-release }
+	x.core.mu.Unlock()
+	saved := paymentStartupTimeout
+	paymentStartupTimeout = 2 * time.Second
+	t.Cleanup(func() { paymentStartupTimeout = saved })
+	before := x.core.count("listsinceblock")
+	x.restart()
+	if x.A.escrow.Load() != nil || x.A.escrowStartState != escrowLogArbiterWait || strings.Contains(logs.String(), escrowLogArbiterUse) {
+		t.Fatalf("startup with a slow arbiter read: %q\n%s", x.A.escrowStartState, logs.String())
+	}
+	if page := x.adminPage(); !strings.Contains(page, "Bitcoin escrow off while the arbiter wallet is checked.") {
+		t.Fatal("the admin page does not say the arbiter wallet is being checked")
+	}
+	close(release)
+	retry := &escrowRetry{last: x.A.escrowStartState}
+	if x.A.retryEscrow(context.Background(), retry); x.A.escrow.Load() == nil || retry.last != escrowLogOn {
+		t.Fatalf("retry after the read finished: %q\n%s", retry.last, logs.String())
+	}
+	if n := x.core.count("listsinceblock") - before; n != 1 {
+		t.Fatalf("listsinceblock called %d times: the retry read again", n)
+	}
+	if strings.Contains(x.adminPage(), `id="escrow-node"`) {
+		t.Fatal("the admin line stayed after escrow started")
+	}
+
+	// A read that times out on its own (escrowArbiterReadTimeout) is a read failure.
+	savedRead := escrowArbiterReadTimeout
+	escrowArbiterReadTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { escrowArbiterReadTimeout = savedRead })
+	paymentStartupTimeout = saved
+	x.core.mu.Lock()
+	x.core.arbiterBirth = 1700000800
+	x.core.beforeSince = func() { time.Sleep(time.Second) }
+	x.core.mu.Unlock()
+	x.restart()
+	if x.A.escrow.Load() != nil || x.A.escrowStartState != escrowLogArbiterRead || !strings.Contains(logs.String(), escrowLogArbiterRead+" (listsinceblock timeout)") {
+		t.Fatalf("a read that timed out: %q\n%s", x.A.escrowStartState, logs.String())
+	}
+	if page := x.adminPage(); !strings.Contains(page, "the arbiter wallet's transactions could not be read (listsinceblock timeout)") {
+		t.Fatal("the admin page does not say the read failed")
+	}
 }
 
 // TestEscrowRPCPinsCosign pins the path and exact params of the RPCs slice P1-c2 added, and how their answers map:
@@ -209,7 +373,12 @@ func TestEscrowRPCPinsCosign(t *testing.T) {
 			return err
 		}},
 		{"getaddressinfo", arb, `["bcrt1qmarketchild"]`, func() error { _, err := e.arbiterOwns(ctx, "bcrt1qmarketchild"); return err }},
-		{"getwalletinfo", arb, `[]`, func() error { return e.checkArbiterWallet(ctx) }},
+		{"getwalletinfo", arb, `[]`, func() error {
+			if state, class, err := (&App{}).checkArbiterWallet(ctx, e); state != "" || err != nil { // txcount 0: nothing read, no database
+				return fmt.Errorf("%s (%s) %v", state, class, err)
+			}
+			return nil
+		}},
 		{"walletprocesspsbt", arb, `["` + testCorePSBTUnsigned + `",true,"ALL",true,false]`, func() error { _, err := e.arbiterSign(ctx, testCorePSBTUnsigned); return err }},
 		{"testmempoolaccept", "/", `[["00"],0.001]`, func() error { _, _, err := e.testMempoolAccept(ctx, "00", escrowMaxFeeRate); return err }},
 		{"sendrawtransaction", "/", `["00",0.001]`, func() error { _, err := (&App{}).sendStored(ctx, e, "00", "txid-broadcast"); return err }},

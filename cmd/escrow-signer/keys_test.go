@@ -7,8 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"go/ast"
+	"go/importer"
 	"go/parser"
 	"go/token"
+	"go/types"
+	"io"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -17,18 +22,36 @@ import (
 	"opsecmkt/internal/btc"
 )
 
-// TestSignerNoPointMultiplication (QA4W2-1): no non-test file of the package does elliptic-curve point arithmetic
-// (internal/btc's Mul, Add or G, or any ScalarMult or ScalarBaseMult), whose math/big code is not constant-time. The
-// signer's private keys only get HMAC-SHA512 and an addition mod n (hardened CKDpriv); Core computes the account's
-// public key (getdescriptorinfo) and derives every private child. btc.CKDPub, which multiplies by a scalar computed
-// from the public account key and chain code, is public data only and allowed.
+// TestSignerNoPointMultiplication (QA4W2-1, QA4W4A-2): no non-test file of the package does elliptic-curve point
+// arithmetic, whose math/big code is not constant-time. The signer's private keys only get HMAC-SHA512 and an addition
+// mod n (hardened CKDpriv); Core computes the account's public key (getdescriptorinfo) and derives every private child.
+// btc.CKDPub, which multiplies by a scalar computed from the public account key and chain code, is public data only and
+// allowed. QA4W4A-2: a deny-list of internal/btc's Mul, Add and G let a new btc helper (btc.PubKeyOf) or a local
+// double-and-add in math/big through, so the package is type-checked and everything it uses is held to allow-lists:
+// the packages it imports, the internal/btc identifiers and the math/big functions and *big.Int methods (no Mul, Exp,
+// ModInverse, Lsh, Sub or Bit: none is needed for an addition mod n). A new use is added here deliberately, with the
+// reason it handles no private key or does no point arithmetic.
 func TestSignerNoPointMultiplication(t *testing.T) {
+	allowedImports := map[string]bool{"bufio": true, "bytes": true, "context": true, "crypto/hmac": true, "crypto/rand": true,
+		"crypto/sha256": true, "crypto/sha512": true, "encoding/base64": true, "encoding/binary": true, "encoding/hex": true,
+		"encoding/json": true, "errors": true, "flag": true, "fmt": true, "github.com/ProtonMail/go-crypto/openpgp": true,
+		"github.com/ProtonMail/go-crypto/openpgp/armor": true, "github.com/ProtonMail/go-crypto/openpgp/packet": true, "io": true,
+		"io/fs": true, "log": true, "math/big": true, "net": true, "net/http": true, "net/url": true, "opsecmkt/internal/btc": true,
+		"os": true, "os/signal": true, "path/filepath": true, "reflect": true, "regexp": true, "strconv": true, "strings": true,
+		"sync": true, "syscall": true, "time": true}
+	// internal/btc: encodings, the public derivation (CKDPub of public keys), the public-key and curve-order checks, and
+	// ExtKey (a public extended key) with its Rooted serialization and Fingerprint (HASH160 of the public key).
+	allowedBTC := map[string]bool{"Base58CheckDecode": true, "Base58CheckEncode": true, "CKDPub": true, "DescriptorChecksum": true,
+		"ExtKey": true, "Fingerprint": true, "Hardened": true, "N": true, "OnCurve": true, "ParseExtPub": true, "Rooted": true, "VersionTpub": true, "WithChecksum": true}
+	// math/big: what hardened CKDpriv needs (a key from bytes, a range check, an addition mod n, its bytes back).
+	allowedBig := map[string]bool{"Int": true, "Add": true, "Cmp": true, "FillBytes": true, "Mod": true, "SetBytes": true, "Sign": true}
+
+	fset := token.NewFileSet()
 	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	fset := token.NewFileSet()
-	checked := 0
+	var parsed []*ast.File
 	for _, name := range files {
 		if strings.HasSuffix(name, "_test.go") {
 			continue
@@ -37,43 +60,66 @@ func TestSignerNoPointMultiplication(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		checked++
-		local := ""
+		parsed = append(parsed, f)
 		for _, imp := range f.Imports {
 			path, _ := strconv.Unquote(imp.Path.Value)
-			if path == "crypto/elliptic" || path == "crypto/ecdh" {
-				t.Errorf("%s imports %s", name, path)
+			if !allowedImports[path] {
+				t.Errorf("%s imports %s, which is not on the signer's import allow-list", name, path)
 			}
-			if path != "opsecmkt/internal/btc" {
-				continue
-			}
-			local = "btc"
-			if imp.Name != nil {
-				local = imp.Name.Name
-			}
-			if local == "." || local == "_" {
-				t.Errorf("%s imports internal/btc as %q, which this check cannot follow", name, local)
+			if imp.Name != nil && (imp.Name.Name == "." || imp.Name.Name == "_") {
+				t.Errorf("%s imports %s as %q", name, path, imp.Name.Name)
 			}
 		}
-		ast.Inspect(f, func(n ast.Node) bool {
-			sel, ok := n.(*ast.SelectorExpr)
-			if !ok {
-				return true
-			}
-			if x, ok := sel.X.(*ast.Ident); ok && local != "" && x.Name == local {
-				switch sel.Sel.Name {
-				case "Mul", "Add", "G":
-					t.Errorf("%s: %s.%s: point arithmetic in the signer", fset.Position(sel.Pos()), local, sel.Sel.Name)
-				}
-			}
-			if sel.Sel.Name == "ScalarMult" || sel.Sel.Name == "ScalarBaseMult" {
-				t.Errorf("%s: %s: point multiplication in the signer", fset.Position(sel.Pos()), sel.Sel.Name)
-			}
-			return true
-		})
 	}
-	if checked < 5 {
-		t.Fatalf("only %d source files checked", checked)
+	if len(parsed) < 5 {
+		t.Fatalf("only %d source files checked", len(parsed))
+	}
+	info := &types.Info{Uses: map[*ast.Ident]types.Object{}, Selections: map[*ast.SelectorExpr]*types.Selection{}}
+	// The imports' export data, as go build compiles them (cached), is much faster than type-checking them from source.
+	out, err := exec.Command("go", "list", "-export", "-deps", "-f", "{{.ImportPath}}\t{{.Export}}", ".").Output()
+	if err != nil {
+		t.Fatalf("go list -export: %v", err)
+	}
+	exports := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if path, file, ok := strings.Cut(line, "\t"); ok && file != "" {
+			exports[path] = file
+		}
+	}
+	conf := types.Config{Importer: importer.ForCompiler(fset, "gc", func(path string) (io.ReadCloser, error) {
+		if exports[path] == "" {
+			return nil, errors.New("no export data for " + path)
+		}
+		return os.Open(exports[path])
+	})}
+	if _, err := conf.Check("main", fset, parsed, info); err != nil {
+		t.Fatalf("type-checking the signer: %v", err)
+	}
+	used := map[string]map[string]bool{"opsecmkt/internal/btc": {}, "math/big": {}}
+	told := map[token.Pos]bool{}
+	note := func(pos token.Pos, obj types.Object) {
+		if v, ok := obj.(*types.Var); obj == nil || obj.Pkg() == nil || ok && v.IsField() {
+			return // a field (btc.ExtKey's PubKey, say) is data, not arithmetic
+		}
+		path, name := obj.Pkg().Path(), obj.Name()
+		allowed := map[string]map[string]bool{"opsecmkt/internal/btc": allowedBTC, "math/big": allowedBig}[path]
+		if allowed == nil {
+			return
+		}
+		used[path][name] = true
+		if !allowed[name] && !told[pos] {
+			told[pos] = true
+			t.Errorf("%s: %s.%s is not on the signer's allow-list for %s (point arithmetic, or a scalar multiplication by a private key, must stay out)", fset.Position(pos), path, name, path)
+		}
+	}
+	for id, obj := range info.Uses {
+		note(id.Pos(), obj)
+	}
+	for sel, s := range info.Selections {
+		note(sel.Sel.Pos(), s.Obj()) // methods (also promoted through an embedded *big.Int) and fields
+	}
+	if !used["math/big"]["SetBytes"] || !used["opsecmkt/internal/btc"]["CKDPub"] {
+		t.Fatalf("the scan saw none of the uses it should: %v", used)
 	}
 }
 
