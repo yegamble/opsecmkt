@@ -248,6 +248,40 @@ func TestBIP32RootedSerializer(t *testing.T) {
 	}
 }
 
+// TestBIP32VersionBytesPinned (QA4W2-3): the version bytes are the published ones, not just bytes that happen to print
+// the right prefix. tpub is BIP32's test-network public version 0x043587CF; Vpub is SLIP-0132's "P2WSH multi-signature,
+// testnet" public version 0x02575483 (https://github.com/satoshilabs/slips/blob/master/slip-0132.md, "Registered HD
+// version bytes"; 0x02575484 would still print "Vpub"). The expected strings were made outside Go (Python base58check
+// of those version bytes, depth/fingerprint/child zero, and vector 1's m/0H/1/2H/2 chain code and key), and the rooted
+// Vpub and the rooted tpub of that key decode to the same key and chain code.
+func TestBIP32VersionBytesPinned(t *testing.T) {
+	if VersionTpub != 0x043587cf || VersionVpub != 0x02575483 {
+		t.Fatalf("version bytes tpub %#08x, Vpub %#08x", VersionTpub, VersionVpub)
+	}
+	const (
+		wantTpub = "tpubD6NzVbkrYhZ4YQZok3axzJ6sKYpqKyL3h7S9ztNtMm19HQzQvz2f5pcJw9FN6WWEb4M6HHWqbcMTX6b5C85Tw6gvaEQMya8ccBkwkFNBxPa"
+		wantVpub = "Vpub5dEvVGKn7251zbA6ZoVcCGvJNHUYfhXadXT5zooWdcKu47GA7rEinNV8TQCt8dU4DLeZ3Loy2QCpBWV6f6Z9bfz6cRNcXdJQNWK7o2hcyo3"
+	)
+	k, err := ParseExtPub(bip32Vectors[0].pubs[4], bip32VectorVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := k.Rooted(VersionTpub); got != wantTpub {
+		t.Fatalf("rooted tpub %s", got)
+	}
+	if got := k.Rooted(VersionVpub); got != wantVpub {
+		t.Fatalf("rooted Vpub %s", got)
+	}
+	tp, err1 := ParseExtPub(wantTpub, VersionTpub)
+	vp, err2 := ParseExtPub(wantVpub, VersionVpub)
+	if err1 != nil || err2 != nil || tp.PubKey != vp.PubKey || tp.ChainCode != vp.ChainCode || tp.PubKey != k.PubKey || tp.ChainCode != k.ChainCode {
+		t.Fatalf("rooted tpub and Vpub decode differently: %v, %v", err1, err2)
+	}
+	if _, err := ParseExtPub(wantVpub, VersionTpub); !errors.Is(err, ErrVersion) {
+		t.Fatalf("a Vpub accepted as a tpub: %v", err)
+	}
+}
+
 // FuzzCKDPub: no parent key, chain code or index panics CKDpub or the parser; a derived child is a valid compressed
 // point at the requested index or a later unhardened one, one level deeper, and its rooted forms parse back to it.
 func FuzzCKDPub(f *testing.F) {

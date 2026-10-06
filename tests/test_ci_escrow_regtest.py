@@ -53,7 +53,7 @@ class EscrowRegtestJobTest(unittest.TestCase):
         # The escrow signer's user (A-454): the script's documented whitelist, exactly.
         signer = re.search(r'-rpcwhitelist=opsecmkt-signer:(\S+)', SCRIPT.split('set -euo pipefail')[0])
         self.assertTrue(signer)
-        self.assertEqual(signer.group(1), 'decodepsbt,descriptorprocesspsbt')
+        self.assertEqual(signer.group(1), 'decodepsbt,descriptorprocesspsbt,getdescriptorinfo')
         self.assertIn('-rpcwhitelist=opsecmkt-signer:%s\n' % signer.group(1), block)
         # The pooled user (A-440): the script's documented whitelist, exactly, and never a key-export method.
         pooled = re.search(r'-rpcwhitelist=opsecmkt-pooled:(\S+)', SCRIPT.split('set -euo pipefail')[0])

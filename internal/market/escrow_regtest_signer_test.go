@@ -102,7 +102,9 @@ func assertSecretNowhereInDB(t *testing.T, e *testEnv, needle []byte, label stri
 // TestEscrowRegtestSigner is A-454's real-chain leg (scripts/test-escrow-regtest.sh; not run in CI unless the job's
 // node has the signer's user): the escrow signer (cmd/escrow-signer), built from this tree and started with a fresh
 // seed in a temporary directory against the regtest node as its own whitelisted RPC user (decodepsbt,
-// descriptorprocesspsbt), co-signs a hand-built shape-(b) escrow through its socket, using the App's client. Two Core
+// descriptorprocesspsbt, getdescriptorinfo), co-signs a hand-built shape-(b) escrow through its socket, using the App's
+// client. Its account key, which Core computed from the signer's account tprv (getdescriptorinfo, QA4W2-1), agrees with
+// Core's derivation from the seed's master key along m/48h/1h/0h/2h (Go's hardened CKDpriv is Core's). Two Core
 // wallets hold the parties' BIP48 accounts; the escrow at per-order index 5 is wsh(sortedmulti(2,…)) of the buyer's and
 // the vendor's per-order keys (A-453's Go derivation, served rooted) and the signer's account/5/0/0 (its rooted account
 // key from info). It is funded on regtest; the signer's signature plus the buyer's (Core descriptorprocesspsbt with the
@@ -141,9 +143,10 @@ func TestEscrowRegtestSigner(t *testing.T) {
 			t.Fatalf("refusing: the %s node URL is not on regtest (or is unreachable)", name)
 		}
 	}
-	// The signer's user is whitelisted to decodepsbt and descriptorprocesspsbt only: getblockchaininfo is refused.
+	// The signer's user is whitelisted to decodepsbt, descriptorprocesspsbt and getdescriptorinfo only: getblockchaininfo
+	// is refused.
 	if err := classifyEscrowRPC("getblockchaininfo", sig.call(ctx, "", "getblockchaininfo", []any{}, nil)); err == nil || !strings.Contains(err.Error(), "forbidden") {
-		t.Fatalf("the signer's RPC user may call getblockchaininfo (%v): whitelist it to decodepsbt,descriptorprocesspsbt", err)
+		t.Fatalf("the signer's RPC user may call getblockchaininfo (%v): whitelist it to decodepsbt,descriptorprocesspsbt,getdescriptorinfo", err)
 	}
 	lg.Logf("whitelist: the signer's RPC user is refused getblockchaininfo (forbidden)")
 	call := func(wallet, method string, out any, params ...any) {
@@ -168,7 +171,13 @@ func TestEscrowRegtestSigner(t *testing.T) {
 		t.Fatalf("go build ./cmd/escrow-signer: %v\n%s", err, out)
 	}
 	seedPath := filepath.Join(dir, "seed1", "seed")
-	initOut, err := exec.Command(bin, "init", "-seed", seedPath).CombinedOutput()
+	// init, restore and serve ask Core for the account key (getdescriptorinfo) as the signer's RPC user.
+	signerCmd := func(args ...string) *exec.Cmd {
+		c := exec.Command(bin, args...)
+		c.Env = []string{"ESCROW_SIGNER_RPC_URL=" + signerURL}
+		return c
+	}
+	initOut, err := signerCmd("init", "-seed", seedPath).CombinedOutput()
 	if err != nil {
 		t.Fatalf("escrow-signer init: %v\n%s", err, initOut)
 	}
@@ -199,8 +208,7 @@ func TestEscrowRegtestSigner(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		p.cmd = exec.Command(bin, "serve", "-seed", seedFile, "-socket", p.socket)
-		p.cmd.Env = []string{"ESCROW_SIGNER_RPC_URL=" + signerURL}
+		p.cmd = signerCmd("serve", "-seed", seedFile, "-socket", p.socket)
 		p.cmd.Stdout, p.cmd.Stderr = logf, logf
 		if err := p.cmd.Start(); err != nil {
 			t.Fatal(err)
@@ -258,7 +266,8 @@ func TestEscrowRegtestSigner(t *testing.T) {
 	signerTpub := info.Key.Rooted(btc.VersionTpub)
 	lg.Logf("App startup: signer ready; pinned %s and %s (64 hex); signer account %s… fingerprint %s", pins[0], escrowSignerXPubPin, signerTpub[:24], info.Fingerprint)
 
-	// Go's account key (from info) agrees with Core's derivation from the master tprv along m/48h/1h/0h/2h.
+	// The signer's account key (from info: Core's getdescriptorinfo of the account tprv Go derived with hardened
+	// CKDpriv) agrees with Core's own derivation from the seed's master tprv along m/48h/1h/0h/2h.
 	const index = 5
 	esc := e.A.escrow.Load()
 	derive := func(desc string, operator bool) string {
@@ -562,7 +571,7 @@ func TestEscrowRegtestSigner(t *testing.T) {
 	}
 	plain, _ := io.ReadAll(md.UnverifiedBody)
 	restoredPath := filepath.Join(dir, "seed3", "seed")
-	restore := exec.Command(bin, "restore", "-seed", restoredPath, "-fingerprint", info.Fingerprint)
+	restore := signerCmd("restore", "-seed", restoredPath, "-fingerprint", info.Fingerprint)
 	restore.Stdin = bytes.NewReader(plain)
 	restoreOut, err := restore.CombinedOutput()
 	if err != nil {
@@ -583,7 +592,7 @@ func TestEscrowRegtestSigner(t *testing.T) {
 
 	// Pin mismatch: the App restarted against a second signer with another seed.
 	seed2 := filepath.Join(dir, "seed2", "seed")
-	if out, err := exec.Command(bin, "init", "-seed", seed2).CombinedOutput(); err != nil {
+	if out, err := signerCmd("init", "-seed", seed2).CombinedOutput(); err != nil {
 		lg.Fatalf("init seed2: %v %s", err, out)
 	}
 	signer2 := start("signer2", seed2)
