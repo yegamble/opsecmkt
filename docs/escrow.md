@@ -249,7 +249,7 @@ them together from their own wallets. A reorganisation deeper than 100 blocks is
   `TestEscrowAwaitingSignatureOwnTransactionSeen`, `TestEscrowBuildingSpentOutside` and `TestEscrowMigration078WaitingSpent`.
 - JSON-RPC adapter tests against an `httptest` server: exact parameters, `"ALL"` pinned, the `rpcwhitelist` methods
   (`TestEscrowRPCPinsParams`, `TestEscrowRPCReconciliation`, `TestEscrowWatchKnowsReply`).
-- Real Bitcoin Core 31.1 on regtest, run by hand, not in CI (`scripts/test-escrow-regtest.sh`; the app runs inside
+- Real Bitcoin Core 31.1 on regtest, run by hand and in CI by the `escrow-regtest` job, [CI and release delivery](ci-cd.md) (`scripts/test-escrow-regtest.sh`; the app runs inside
   the Go test against the real node, and every party signature is made by that party's own Core wallet): practice
   signing with refused `SIGHASH_NONE` and forged pastes (`TestEscrowRegtestPracticeSign`); escrow creation and funding
   (`TestEscrowRegtestFunding`); building and party signing (`TestEscrowRegtestSettlement`); the claim at a market key
@@ -424,7 +424,7 @@ protect* above: a server taken over can show a substituted key, and the market k
   `TestEscrowRestoreIndexFloors`, `TestEscrowCheckoutWaitsForSweep`.
 - JSON-RPC adapter test against an `httptest` server: the orphan sweep's reading of `getaddressinfo`
   (`TestEscrowWatchKeysReply`).
-- Real Bitcoin Core 31.1 on regtest, run by hand, not in CI (`scripts/test-escrow-regtest.sh`; the app runs inside
+- Real Bitcoin Core 31.1 on regtest, run by hand and in CI by the `escrow-regtest` job, [CI and release delivery](ci-cd.md) (`scripts/test-escrow-regtest.sh`; the app runs inside
   the Go test against the real node, reaching it only as the `rpcwhitelist` user, and every party signature is made by
   that party's own Core wallet): `TestEscrowRegtestPhysical` (the release built at shipment, signed by both
   wallets, completed and broadcast with no arbiter signing call, then a release the parties broadcast

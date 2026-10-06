@@ -1014,7 +1014,7 @@ not done by `scripts/restore.sh` or that SQL holds nothing. The restore also ask
 physical order that has passed in the restored records to 72 hours later and tells the buyer; while the gate is set no
 order is released at its deadline.
 
-**What was checked.** `scripts/test-escrow-regtest.sh` (manual, not in CI) runs key registration and practice
+**What was checked.** `scripts/test-escrow-regtest.sh` (by hand, and in CI by the `escrow-regtest` job, [CI and release delivery](ci-cd.md)) runs key registration and practice
 signing end to end with a real Bitcoin Core 31.1 regtest node and the whitelist above: the app user is refused
 `listdescriptors`, `dumpwallet` and `backupwallet`, runs `keypoolrefill` and every call key activation makes, and
 unsigned, other-wallet, `SIGHASH_NONE`, `SIGHASH_SINGLE|ANYONECANPAY`, corrupted and forged pastes are refused. Its

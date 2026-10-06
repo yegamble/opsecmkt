@@ -53,6 +53,95 @@ jobs:
           name: go-coverage
           path: coverage.out
           retention-days: 14
+  # A-438 (P4-R11): the real-chain Bitcoin escrow legs. scripts/test-escrow-regtest.sh runs the app, inside go test,
+  # against a real Bitcoin Core 31.1 node on regtest (a local chain nobody else can reach) and a disposable PostgreSQL.
+  # bitcoind is started with docker run because a service container cannot take command arguments. Parallel to `go`,
+  # so the Go job's time is unchanged. No public network: the script refuses any node that is not on regtest.
+  escrow-regtest:
+    name: Bitcoin escrow on a real regtest node
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test-ci-only
+          POSTGRES_DB: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U test -d postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgres://test:test-ci-only@127.0.0.1:5432/postgres?sslmode=disable
+      BITCOIN_CONTAINER: escrow-regtest
+      BITCOIN_RPC_PORT: '18443'
+      BITCOIN_IMAGE: bitcoin/bitcoin:31.1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      # The same node the script's header documents: an operator user with full rights (the buyer's and vendor's own
+      # nodes) and the app's user restricted by rpcwhitelist to what docs/operator-guide.md lists. Both passwords are
+      # generated for this run, masked before they reach any output and handed to the next step only through
+      # GITHUB_ENV inside the two URLs; bitcoind learns them as salted HMACs (-rpcauth), so no password is on a
+      # command line or in the repository.
+      - name: Start Bitcoin Core on regtest
+        run: |
+          whitelist=getblockchaininfo,getrawchangeaddress,getaddressinfo,createpsbt,utxoupdatepsbt,importdescriptors,getdescriptorinfo,deriveaddresses,gettxout,keypoolrefill,walletprocesspsbt,descriptorprocesspsbt,combinepsbt,finalizepsbt,testmempoolaccept,sendrawtransaction,getwalletinfo,listreceivedbyaddress,gettransaction,listtransactions
+          operator_pass=$(openssl rand -hex 24)
+          app_pass=$(openssl rand -hex 24)
+          echo "::add-mask::$operator_pass"
+          echo "::add-mask::$app_pass"
+          rpcauth() { # rpcauth <user> <password>: user:salt$HMAC-SHA256(salt, password), the form bitcoind reads
+            local salt hash
+            salt=$(openssl rand -hex 16)
+            hash=$(printf %s "$2" | openssl dgst -sha256 -hmac "$salt" | sed 's/^.* //')
+            printf '%s:%s$%s' "$1" "$salt" "$hash"
+          }
+          docker run -d --name "$BITCOIN_CONTAINER" -p "127.0.0.1:$BITCOIN_RPC_PORT:18443" "$BITCOIN_IMAGE" \
+            bitcoind -regtest -fallbackfee=0.0002 -server=1 -rpcbind=0.0.0.0 -rpcallowip=0.0.0.0/0 \
+            "-rpcauth=$(rpcauth operator "$operator_pass")" "-rpcauth=$(rpcauth opsecmkt-escrow "$app_pass")" \
+            -rpcwhitelistdefault=0 "-rpcwhitelist=opsecmkt-escrow:$whitelist"
+          {
+            echo "ESCROW_REGTEST_OPERATOR_RPC_URL=http://operator:$operator_pass@127.0.0.1:$BITCOIN_RPC_PORT"
+            echo "ESCROW_REGTEST_APP_RPC_URL=http://opsecmkt-escrow:$app_pass@127.0.0.1:$BITCOIN_RPC_PORT"
+          } >> "$GITHUB_ENV"
+          for _ in $(seq 60); do
+            if printf 'url = "http://operator:%s@127.0.0.1:%s"\n' "$operator_pass" "$BITCOIN_RPC_PORT" |
+              curl -sS --max-time 5 --noproxy '*' -H 'Content-Type: application/json' --config - \
+                --data '{"jsonrpc":"1.0","id":"ci","method":"getblockchaininfo","params":[]}' 2>/dev/null |
+              grep -q '"chain":"regtest"'; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo 'bitcoind did not answer on regtest within 60 seconds' >&2
+          docker logs --tail 50 "$BITCOIN_CONTAINER" >&2
+          exit 1
+      - name: Escrow legs on a real regtest node (scripts/test-escrow-regtest.sh)
+        run: bash scripts/test-escrow-regtest.sh
+        env:
+          ESCROW_REGTEST_LOG: ${{ runner.temp }}/escrow-regtest/transcript.log
+      - name: Collect the node's log
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/escrow-regtest"
+          docker logs "$BITCOIN_CONTAINER" > "$RUNNER_TEMP/escrow-regtest/bitcoind.log" 2>&1 || true
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: escrow-regtest-results
+          path: ${{ runner.temp }}/escrow-regtest/
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Remove the node and its volume
+        if: always()
+        run: docker rm -f -v "$BITCOIN_CONTAINER"
   operations:
     name: Operations and encrypted restore
     runs-on: ubuntu-24.04
@@ -473,7 +562,7 @@ jobs:
   required:
     name: CI passed
     if: always()
-    needs: [go, operations, installer, upgrade, compose, container, tor-image, browser]
+    needs: [go, escrow-regtest, operations, installer, upgrade, compose, container, tor-image, browser]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
