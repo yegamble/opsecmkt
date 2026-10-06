@@ -1169,3 +1169,12 @@ stagenet tags and refused under the fakechain's, and that the escrow and pooled 
 daemon (as the bundled `monero` service serves) as synced with a peer and a fresh tip and an `--offline` one as having no
 peers. The commands are in the script's header comment; the transcript goes to `ESCROW_XMR_STAGENET_LOG` (default
 `artifacts/real-chain/test-escrow-xmr-stagenet-<UTC time>.log`, gitignored).
+
+**What the offline fork cannot prove (A-449 acceptance).** No funded Monero escrow leg can run on it: a stagenet built
+from genesis is at hard fork version 1, which Monero escrow refuses, and the fakechain legs mine with `generateblocks`,
+which monerod answers only on a fakechain (`--regtest`), so the fork's blocks come from slow local mining at most. Funded
+Monero escrow on stagenet (a deposit seen, an order funded, a settlement built, relayed and confirmed) is therefore proven
+only by the owner's run on the public stagenet (A-447), and until that run is recorded nothing here is that evidence. The
+offline fork proves the stagenet address formats, the refusal of an old hard fork and the escrow and pooled sync guards
+against real daemons; the network pin is covered by the database tests against the simulated daemon
+(`TestXMREscrowNetworkPinMismatch`, `TestXMREscrowNetworkPinBackfillAndRepin`), not by the fork.

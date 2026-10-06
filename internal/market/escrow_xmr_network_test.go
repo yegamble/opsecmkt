@@ -5,6 +5,7 @@ import (
 	"errors"
 	"html"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -403,8 +404,39 @@ func TestXMREscrowFakechainExemptFromPeerAndTipChecks(t *testing.T) {
 	}
 }
 
+// QA4W3-3: on stagenet a top block get_last_block_header cannot read is not taken as fresh: the Monero escrow pass is
+// skipped as for a daemon that cannot be checked (an error naming the daemon check, no wallet call, nothing funded or
+// expired), and the next pass that reads the tip does the work.
+func TestXMREscrowSkipsWhileTipUnreadable(t *testing.T) {
+	t.Setenv("MONERO_MAX_TIP_AGE", "")
+	x := newXMREscrowEnvWith(t, onStagenet)
+	x.mustPoll()
+	unpaid, _ := x.freshCheckoutOn("stagenet")
+	agExec(x.testEnv, "UPDATE escrows SET created=now()-interval '3 days' WHERE order_id=$1", unpaid)
+	paid, paidAddr := x.freshCheckoutOn("stagenet")
+	x.fake.edit(func(f *fakeXMREscrow) { f.tipErr = true })
+	x.fake.payAddress(paidAddr, hex64("tip unreadable "+paid), xmrListingPrice, 10)
+	from := x.fake.count()
+	if err := x.poll(); err == nil || !strings.Contains(watcherCause(err), "monero escrow: daemon check failed: ") || !strings.Contains(watcherCause(err), "get_last_block_header") {
+		t.Fatalf("a pass with the tip unreadable: %v (logged as %q)", err, errorCauseOrNone(err))
+	}
+	if x.state(unpaid) != stateAwaitingPayment || x.state(paid) != stateAwaitingPayment {
+		t.Fatalf("orders moved while the tip was unreadable: %s %s", x.state(unpaid), x.state(paid))
+	}
+	for _, c := range x.fake.callLog()[from:] {
+		if c.Method != "get_info" && c.Method != "get_last_block_header" {
+			t.Fatalf("the pass called %s while the tip was unreadable", c.Method)
+		}
+	}
+	x.fake.edit(func(f *fakeXMREscrow) { f.tipErr = false })
+	x.mustPoll()
+	if x.state(unpaid) != stateCancelled || x.state(paid) != stateCompleted {
+		t.Fatalf("after a pass that read the tip: %s %s", x.state(unpaid), x.state(paid))
+	}
+}
+
 // The pooled Monero check applies the same rule (A-439 found pooled Monero read only target_height): on stagenet no
-// peers, a stale tip or synchronized false count as not synced, each logged once and named on the admin page; target
+// peers, a stale tip, a tip get_last_block_header cannot read, or synchronized false count as not synced, each logged once and named on the admin page; target
 // above height keeps the "still syncing" reason; MONERO_MAX_TIP_AGE moves the bound.
 func TestMoneroPooledGuardPeersAndTipAge(t *testing.T) {
 	ctx := context.Background()
@@ -426,6 +458,8 @@ func TestMoneroPooledGuardPeersAndTipAge(t *testing.T) {
 		{func(m *payMoneroWallet) { m.peers = 0 }, func(m *payMoneroWallet) { m.peers = 8 }, "no peers"},
 		{func(m *payMoneroWallet) { m.tipAge = 2 * time.Hour }, func(m *payMoneroWallet) { m.tipAge = 0 }, "tip older than MONERO_MAX_TIP_AGE"},
 		{func(m *payMoneroWallet) { m.unsynced = true }, func(m *payMoneroWallet) { m.unsynced = false }, "daemon not synchronized"},
+		// QA4W3-3: a tip that cannot be read is not taken as fresh.
+		{func(m *payMoneroWallet) { m.tipErr = true }, func(m *payMoneroWallet) { m.tipErr = false }, "tip time unreadable"},
 	} {
 		w.set(tc.set)
 		want := syncSkipReason(tc.why, "")
@@ -441,7 +475,7 @@ func TestMoneroPooledGuardPeersAndTipAge(t *testing.T) {
 			t.Fatalf("%s: synced again but skipped: %v", tc.why, skip)
 		}
 	}
-	if n := strings.Count(logs.String(), "payments: XMR node synced; watcher passes resumed"); n != 3 {
+	if n := strings.Count(logs.String(), "payments: XMR node synced; watcher passes resumed"); n != 4 {
 		t.Fatalf("%d resumed lines:\n%s", n, logs.String())
 	}
 	// A restricted RPC (the bundled monero service) reports 0 connections whatever its peers: with a fresh tip it is
@@ -542,5 +576,70 @@ func TestXMREscrowWindowPassedWhileNotSynced(t *testing.T) {
 	x.mustPoll()
 	if s := x.state(order); s != stateCancelled {
 		t.Fatalf("after a synced pass: %s", s)
+	}
+}
+
+// QA4W3-2: the wallet open in the escrow wallet-rpc is compared with the pooled Monero wallet's primary address
+// (pooledXMRWalletOpen), which backs up sameRPCEndpoint now that both wallet-rpcs may follow one stagenet daemon. When
+// the escrow wallet-rpc answers get_address with the pooled primary, startup is refused (errXMRStartWallet). When the
+// pooled provider has not passed a check yet (its wallet-rpc down at startup), the comparison has nothing to compare
+// with, so Monero escrow waits, making no escrow wallet call, instead of starting unchecked; once the pooled check
+// passes, the next retry compares and refuses, and later retries stay refused (until a restart) whatever wallet the
+// escrow wallet-rpc then has open.
+func TestXMREscrowRefusesPooledWalletOpen(t *testing.T) {
+	ctx := context.Background()
+	fake := newFakeXMREscrow(t)
+	pooledFile := &fakeXMRWalletFile{name: "opsecmkt", accounts: []string{payStagenetPrimary}, nettype: "stagenet"}
+	fake.edit(func(f *fakeXMREscrow) {
+		onStagenet(f)
+		f.files[pooledFile.name], f.open = pooledFile, pooledFile
+	})
+	_, pub := testSeedKey(t, nil)
+	fake.setEnv(t, writeSeedKey(t, pub))
+	_, pooled := newPayMonero(t, payStagenetPrimary, payStagenetSub)
+	t.Setenv("MONERO_WALLET_RPC_URL", pooled.url(""))
+	t.Setenv("MONERO_RPC_URL", pooled.url(""))
+	t.Setenv("MONERO_NETWORK", "stagenet")
+	t.Setenv("MONERO_MAX_TIP_AGE", "")
+	a, dsn, err := startApp(t, "")
+	if !errors.Is(err, errXMRStartWallet) || !strings.Contains(err.Error(), errXMRPooledWallet.msg) {
+		t.Fatalf("startup with the pooled wallet open in the escrow wallet-rpc: %v", err)
+	}
+	if a != nil {
+		a.Close()
+	}
+
+	// The pooled wallet-rpc down at startup: no primary address to compare with yet.
+	pooled.down.Store(true)
+	logs := captureLog(t)
+	from := fake.count()
+	a, _, err = startApp(t, dsn)
+	if err != nil || a.escrowXMR == nil || a.escrowXMR.ready.Load() || a.escrowXMR.startState != xmrLogPooledWait || !strings.Contains(logs.String(), xmrLogPooledWait) {
+		t.Fatalf("startup with the pooled provider unchecked: %v\n%s", err, logs.String())
+	}
+	for _, c := range fake.callLog()[from:] {
+		if !slices.Contains([]string{"get_info", "get_last_block_header", "hard_fork_info"}, c.Method) {
+			t.Fatalf("Monero escrow called %s while waiting for the pooled check", c.Method)
+		}
+	}
+	pooled.down.Store(false)
+	if a.refreshProviders(ctx); a.provider("XMR") == nil {
+		t.Fatal("the pooled Monero provider did not come up")
+	}
+	retry := &escrowRetry{last: a.escrowXMR.startState}
+	a.retryEscrowXMR(ctx, retry)
+	refusedLine := xmrLogRefused + errXMRPooledWallet.msg
+	if !retry.refused || a.escrowXMR.ready.Load() || strings.Count(logs.String(), refusedLine) != 1 {
+		t.Fatalf("retry once the pooled check passed: refused %v, ready %v\n%s", retry.refused, a.escrowXMR.ready.Load(), logs.String())
+	}
+	// It sticks: with an escrow wallet open instead, a retry checks nothing and stays refused.
+	fake.edit(func(f *fakeXMREscrow) {
+		other := &fakeXMRWalletFile{name: "escrow-other", accounts: []string{testXMRAddrOn("stagenet", "escrow other", false)}, nettype: "stagenet"}
+		f.files[other.name], f.open = other, other
+	})
+	from = fake.count()
+	a.retryEscrowXMR(ctx, &escrowRetry{last: xmrLogUnchecked})
+	if _, _, err := a.startEscrowXMR(ctx); !errors.Is(err, errXMRRefusedUntilRestart) || a.escrowXMR.ready.Load() || fake.count() != from || strings.Count(logs.String(), refusedLine) != 1 {
+		t.Fatalf("after the refusal: %v, ready %v, %d calls\n%s", err, a.escrowXMR.ready.Load(), fake.count()-from, logs.String())
 	}
 }

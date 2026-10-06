@@ -12,14 +12,20 @@ import (
 )
 
 // A-440 (P4-R6): the market key protection self-check. Through the pooled Bitcoin client (BITCOIN_RPC_URL) escrow
-// calls listdescriptors (private=false) on the arbiter wallet's path; only HTTP 403 (the method is not on the pooled
-// user's rpcwhitelist) or wallet-not-found (RPC -18: the pooled node is another node) lets escrow start. Against the
-// fake escrow Core and a fake pooled Core (httptest; simulated RPC, not chain evidence: scripts/test-escrow-regtest.sh
-// has the real regtest legs).
+// calls listdescriptors (private=false), and since QA4W3-1 gethdkeys (private=false) and walletprocesspsbt (an empty
+// PSBT, sign=false), on the arbiter wallet's path; only HTTP 403 (the method is not on the pooled user's rpcwhitelist)
+// or wallet-not-found (RPC -18: the pooled node is another node) from each lets escrow start. Against the fake escrow
+// Core and a fake pooled Core (httptest; simulated RPC, not chain evidence: scripts/test-escrow-regtest.sh has the real
+// regtest legs).
 
-// pooledCore is a fake pooled Bitcoin Core: enough for the pooled provider's startup check, and listdescriptors
-// answered as reply (a string) says: "forbidden" (HTTP 403, as Core's rpcwhitelist refuses), "notfound", "answered",
-// "error" or "slow" (one second: longer than the rpcTimeout the timeout case sets).
+// pooledKeyMethods are the key methods the self-check probes, in its order.
+var pooledKeyMethods = []string{"listdescriptors", "gethdkeys", "walletprocesspsbt"}
+
+// pooledCore is a fake pooled Bitcoin Core: enough for the pooled provider's startup check, and the key methods
+// answered as reply (a string) says: "forbidden" (each HTTP 403, as Core's rpcwhitelist refuses), "notfound" (each
+// -18), "answered", "error" or "slow" (listdescriptors; one second: longer than the rpcTimeout the timeout case sets),
+// "gethdkeys" (listdescriptors refused, gethdkeys answers its xpubs) or "walletprocesspsbt" (the other two refused;
+// walletprocesspsbt allowed, so Core decodes the empty PSBT and answers -22).
 func pooledCore(t *testing.T, reply *atomic.Value) *payRPCServer {
 	t.Helper()
 	srv := newPayRPCServer(t, "pooled", "pooled-pass", false, func(path, method string, params json.RawMessage) (any, int, string) {
@@ -40,13 +46,31 @@ func pooledCore(t *testing.T, reply *atomic.Value) *payRPCServer {
 				time.Sleep(time.Second)
 			}
 			return map[string]any{"wallet_name": "opsecmkt-arbiter", "descriptors": []any{map[string]any{"desc": "wpkh([d34db33f/84h/1h/0h]tpubPOOLEDLEAK/0/*)#leakleak"}}}, 0, ""
+		case "gethdkeys":
+			if r, _ := reply.Load().(string); r == "notfound" {
+				return nil, -18, "Requested wallet does not exist or is not loaded"
+			}
+			return []any{map[string]any{"xpub": "tpubPOOLEDLEAK", "has_private": true, "descriptors": []any{}}}, 0, ""
+		case "walletprocesspsbt":
+			if r, _ := reply.Load().(string); r == "notfound" {
+				return nil, -18, "Requested wallet does not exist or is not loaded"
+			}
+			return nil, -22, "TX decode failed core-said-secret"
 		}
 		return nil, -32601, "Method not found"
 	})
 	srv.mu.Lock()
 	srv.forbid = func(method string) bool {
 		r, _ := reply.Load().(string)
-		return method == "listdescriptors" && r == "forbidden"
+		switch r {
+		case "forbidden":
+			return slices.Contains(pooledKeyMethods, method)
+		case "gethdkeys":
+			return method == "listdescriptors"
+		case "walletprocesspsbt":
+			return method == "listdescriptors" || method == "gethdkeys"
+		}
+		return false
 	}
 	srv.mu.Unlock()
 	return srv
@@ -69,6 +93,9 @@ func TestEscrowPooledKeyCheck(t *testing.T) {
 		{"another error", "error", false, false, "listdescriptors rpc:-4"},
 		{"credentials rejected 401", "forbidden", true, false, "listdescriptors credentials"},
 		{"timeout", "slow", false, false, "listdescriptors timeout"},
+		// QA4W3-1: Core 31.1 also exports keys with gethdkeys {"private":true} and signs with walletprocesspsbt.
+		{"gethdkeys answered", "gethdkeys", false, false, "gethdkeys answered"},
+		{"walletprocesspsbt allowed (-22)", "walletprocesspsbt", false, false, "walletprocesspsbt rpc:-22"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			reply.Store(tc.reply)
@@ -82,11 +109,14 @@ func TestEscrowPooledKeyCheck(t *testing.T) {
 				rpcTimeout = 300 * time.Millisecond
 				t.Cleanup(func() { rpcTimeout = old })
 			}
-			before := pooled.called("listdescriptors")
+			before := map[string]int{}
+			for _, m := range pooledKeyMethods {
+				before[m] = pooled.called(m)
+			}
 			logs := captureLog(t)
 			x.restart()
-			if n := pooled.called("listdescriptors"); n != before+1 && !tc.badPass {
-				t.Fatalf("listdescriptors through the pooled client called %d times, want 1", n-before)
+			if n := pooled.called("listdescriptors"); n != before["listdescriptors"]+1 && !tc.badPass {
+				t.Fatalf("listdescriptors through the pooled client called %d times, want 1", n-before["listdescriptors"])
 			}
 			if !tc.badPass {
 				if got := string(pooled.lastParams("listdescriptors")); got != "[false]" {
@@ -98,10 +128,16 @@ func TestEscrowPooledKeyCheck(t *testing.T) {
 				if x.A.escrow.Load() == nil || strings.Contains(logs.String(), escrowLogPooledKey) || strings.Contains(page, `id="escrow-node"`) {
 					t.Fatalf("escrow on %v\nlog:\n%s", x.A.escrow.Load() != nil, logs.String())
 				}
+				// Each key method was asked once, exporting nothing and signing nothing.
+				for m, want := range map[string]string{"listdescriptors": `[false]`, "gethdkeys": `[{"private":false}]`, "walletprocesspsbt": `["",false]`} {
+					if n, got := pooled.called(m)-before[m], string(pooled.lastParams(m)); n != 1 || got != want {
+						t.Fatalf("%s through the pooled client: %d calls, params %s; want 1 call with %s", m, n, got, want)
+					}
+				}
 				return
 			}
 			if x.A.escrow.Load() != nil || !x.A.escrowConfigured {
-				t.Fatal("escrow enabled although the pooled user was not refused listdescriptors on the arbiter wallet")
+				t.Fatal("escrow enabled although the pooled user was not refused a key method on the arbiter wallet")
 			}
 			if strings.Count(logs.String(), escrowLogPooledKey+" ("+tc.class+")\n") != 1 {
 				t.Fatalf("want one line %q\nlog:\n%s", escrowLogPooledKey+" ("+tc.class+")", logs.String())
@@ -114,7 +150,7 @@ func TestEscrowPooledKeyCheck(t *testing.T) {
 					t.Fatalf("the admin page holds %q", leak)
 				}
 			}
-			want := "Bitcoin escrow disabled: the pooled Bitcoin RPC user (BITCOIN_RPC_URL) was not refused listdescriptors on the arbiter wallet (" + strings.TrimPrefix(tc.class, "listdescriptors ") + ")."
+			want := "Bitcoin escrow disabled: the pooled Bitcoin RPC user (BITCOIN_RPC_URL) was not refused listdescriptors, gethdkeys or walletprocesspsbt on the arbiter wallet (" + tc.class + ")."
 			if !strings.Contains(page, want) || !strings.Contains(page, "rpcwhitelist="+"USER:"+strings.Join(pooledRPCMethods, ",")) {
 				t.Fatalf("admin page lacks %q and the whitelist line:\n%s", want, page)
 			}
@@ -139,6 +175,36 @@ func TestEscrowPooledKeyCheck(t *testing.T) {
 	}
 	if page := x.adminPage(); strings.Contains(page, "was not refused listdescriptors") {
 		t.Fatal("the admin line outlived the exposure")
+	}
+
+	// QA4W3-8: once escrow is on, the watcher runs the self-check again a day after the last one, so a pooled whitelist
+	// widened later is found within a day. It disables escrow (the safer default: the key may be exportable), with the
+	// same log line and admin alert, logged once; escrow starts again by itself once the pooled user is refused.
+	ctx := context.Background()
+	reply.Store("gethdkeys")
+	calls := pooled.called("gethdkeys")
+	retry.pooledAt = time.Now().Add(-escrowPooledRecheck + time.Minute)
+	x.A.retryEscrow(ctx, retry)
+	if x.A.escrow.Load() == nil || pooled.called("gethdkeys") != calls {
+		t.Fatal("the self-check ran again before a day had passed")
+	}
+	retry.pooledAt = time.Now().Add(-escrowPooledRecheck - time.Minute)
+	x.A.retryEscrow(ctx, retry)
+	line := escrowLogPooledKey + " (gethdkeys answered)\n"
+	if x.A.escrow.Load() != nil || pooled.called("gethdkeys") != calls+1 || strings.Count(logs.String(), line) != 1 {
+		t.Fatalf("daily self-check with a widened whitelist: escrow on %v\n%s", x.A.escrow.Load() != nil, logs.String())
+	}
+	if page := x.adminPage(); !strings.Contains(page, "was not refused listdescriptors, gethdkeys or walletprocesspsbt on the arbiter wallet (gethdkeys answered).") {
+		t.Fatalf("the admin page lacks the alert after the daily self-check:\n%s", page)
+	}
+	x.A.retryEscrow(ctx, retry)
+	if x.A.escrow.Load() != nil || strings.Count(logs.String(), line) != 1 {
+		t.Fatalf("retry while still widened: escrow on %v\n%s", x.A.escrow.Load() != nil, logs.String())
+	}
+	reply.Store("forbidden")
+	x.A.retryEscrow(ctx, retry)
+	if x.A.escrow.Load() == nil || strings.Contains(x.adminPage(), `id="escrow-node"`) {
+		t.Fatalf("escrow did not start again once the pooled user was refused:\n%s", logs.String())
 	}
 }
 
@@ -215,7 +281,7 @@ func TestBitcoinPooledRPCMethods(t *testing.T) {
 			t.Errorf("%s is called by the pooled adapter but missing from pooledRPCMethods", m)
 		}
 	}
-	for _, forbidden := range []string{"listdescriptors", "dumpprivkey", "dumpwallet", "backupwallet", "importdescriptors", "walletprocesspsbt", "signrawtransactionwithwallet", "unloadwallet", "createwallet"} {
+	for _, forbidden := range []string{"listdescriptors", "gethdkeys", "dumpprivkey", "dumpwallet", "backupwallet", "importdescriptors", "walletprocesspsbt", "signrawtransactionwithwallet", "unloadwallet", "createwallet"} {
 		if slices.Contains(pooledRPCMethods, forbidden) {
 			t.Errorf("%s must never be on the pooled user's whitelist", forbidden)
 		}

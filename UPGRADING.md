@@ -897,7 +897,7 @@ by default). With escrow on, this release also co-signs and broadcasts settlemen
 escrow disputes, and writes three `settings` keys when used: `escrow_btc_fee_bps` and `escrow_btc_fee_address` (the
 market fee an administrator saves on `/admin`, which then overrides `ESCROW_BTC_FEE_BPS` and
 `ESCROW_BTC_FEE_ADDRESS`) and `escrow_btc_stray_check` (the daily stray-refund check). Escrow now also stays disabled
-unless the arbiter wallet is an unencrypted descriptor wallet with private keys and no transactions ([operator
+unless the arbiter wallet is an unencrypted descriptor wallet with private keys that has never spent (A-471, section 36; [operator
 guide](docs/operator-guide.md#bitcoin-escrow-regtest-only)). No action is needed. Rolling back past this release needs
 the pre-upgrade backup, as for every migration (section 5): the earlier release refuses to start on a database that
 records migration 076.
@@ -1100,11 +1100,14 @@ whitelist keeps working, but add it. No action is needed otherwise.
 ## 33. Bitcoin escrow refuses a pooled RPC user that can read the arbiter wallet (A-440)
 
 No migration. Only with `ESCROW_BTC=on` and `BITCOIN_RPC_URL` set: at startup and on each retry escrow calls
-`listdescriptors` (private=false) on the arbiter wallet's path as the pooled RPC user, and starts only when that call is
-refused with HTTP 403 or the pooled node has no such wallet (another node). A pooled user without an `rpcwhitelist`
+`listdescriptors` (private=false), `gethdkeys` (private=false) and `walletprocesspsbt` (an empty PSBT, sign=false) on the
+arbiter wallet's path as the pooled RPC user, and starts only when each call is refused with HTTP 403 or the pooled node
+has no such wallet (another node); while escrow is on, the escrow watcher repeats the check once a day and disables
+escrow if a call is no longer refused (QA4W3-1, QA4W3-8). A pooled user without an `rpcwhitelist`
 line on the escrow node (unrestricted under `rpcwhitelistdefault=0`, as the guide used to leave it) could export the
 market's escrow key, so escrow now stays disabled with "escrow: Bitcoin escrow disabled: the pooled Bitcoin RPC user
-(BITCOIN_RPC_URL) was not refused listdescriptors on the arbiter wallet, …" and a line on `/admin`. Before upgrading,
+(BITCOIN_RPC_URL) was not refused listdescriptors, gethdkeys or walletprocesspsbt on the arbiter wallet, …" (with the
+method that answered and its class, such as `(gethdkeys answered)`) and a line on `/admin`. Before upgrading,
 give that user the pooled whitelist line of the [operator guide](docs/operator-guide.md#bitcoin-escrow-regtest-only)
 (*The pooled RPC user*) and restart bitcoind, or move escrow to a node of its own. The guide and the
 [runbook](docs/testnet-runbook.md#back-up-and-restore-the-escrow-arbiter-and-watch-only-wallets) now also describe the
@@ -1119,7 +1122,14 @@ the new optional key `MONERO_MAX_TIP_AGE` (default `1h`, 20m to 24h; an invalid 
 cut off could be cancelled for non-payment. The admin page's last error then reads "Node is not synced (…)". The app now
 also calls `get_last_block_header` on the daemon; it is on monerod's restricted RPC, so the bundled `monero` service
 answers it. A restricted RPC (the bundled service) hides the connection counts, so there only `offline` and the tip's age
-are read. A market whose daemon is synced and receiving blocks sees no change.
+are read. A market whose daemon is synced and receiving blocks sees no change. What this leaves (QA4W3-5): on a
+restricted RPC `synchronized` stays true once set, `target_height` reads 0 and `offline` means only `--offline`, so a
+daemon cut off from its peers looks synced until its top block is older than `MONERO_MAX_TIP_AGE` (default 1 hour, at
+least 20 minutes). A deposit made in that window is not seen, and an order whose payment window ends in it can be
+cancelled as unpaid; once the daemon sees the deposit it is recorded after the order closed: flagged for payment review
+and returned by hand on a pooled order, returned to the buyer's refund address by a stray refund on a Monero escrow order.
+Set a lower `MONERO_MAX_TIP_AGE` (down to `20m`) to narrow the window. A top block the daemon cannot report
+(`get_last_block_header` fails) counts as not synced on the pooled check and skips the Monero escrow pass.
 
 With `ESCROW_XMR=on`: Monero escrow also accepts a stagenet daemon (the escrow wallet-rpc then runs with `--stagenet`),
 the accepted address forms follow the daemon's network, the height check (below 1,000,000) is gone, and the app pins the
@@ -1129,7 +1139,11 @@ providers* naming both networks: a database never changes network once it holds 
 startup line is now `escrow: Monero escrow on (fakechain)` (or `(stagenet)`) instead of `… on (local fakechain only)`; a
 log filter on the old text needs updating. The Monero escrow watcher skips its pass while its daemon is not synced (as
 above; a fakechain is exempt from the peer and tip-age checks)
-([operator guide](docs/operator-guide.md#monero-escrow-fakechain-or-stagenet)). No action is needed otherwise.
+([operator guide](docs/operator-guide.md#monero-escrow-fakechain-or-stagenet)). With the pooled Monero wallet configured
+too (`MONERO_WALLET_RPC_URL`), Monero escrow now also waits until the pooled check has passed once, logging "escrow:
+Monero escrow waiting: the pooled Monero wallet (MONERO_WALLET_RPC_URL) has not passed a check yet, …" (QA4W3-2): only
+then is the pooled wallet's address known, and an escrow wallet-rpc whose open wallet has that address is the pooled one
+under another URL, which is refused. No action is needed otherwise.
 
 `compose.nodes.yaml` gains an optional `monero-escrow-wallet` service (Monero escrow's own stagenet wallet-rpc on the
 bundled `monero` daemon: profile `monero-escrow-wallet`, volume `monero_escrow_wallet`, login password
@@ -1159,6 +1173,17 @@ therefore needs `getnetworkinfo` on the escrow user's `rpcwhitelist` (it is call
 escrow node started with `-proxy=<Tor SOCKS address>`, never `-connect` or `-onlynet`
 ([operator guide](docs/operator-guide.md#bitcoin-escrow-regtest-only), *Tor mode*). Clearnet mode and pooled payouts
 are unchanged.
+
+## 36. Bitcoin escrow: a payment to the arbiter wallet no longer disables escrow (A-471)
+
+No migration, no new key. Only with `ESCROW_BTC=on`. The start check used to refuse an arbiter wallet with any
+transaction (`getwalletinfo` `txcount` above 0), but every escrow order's descriptor shows the market's child key, whose
+address the arbiter wallet owns: any party could pay it a few satoshis and escrow stayed disabled from the next restart
+on. Now only a spend from the arbiter wallet (a `listtransactions` entry of category `send`, which only its keys can make)
+counts as using it as an ordinary wallet; coins paid to it are ignored and stay there. A market whose escrow was
+disabled this way ("escrow: Bitcoin escrow disabled: the arbiter wallet must be used for the escrow key only …
+(getwalletinfo not-dedicated)") starts escrow at its first start after the upgrade, unless the wallet has spent.
+`listtransactions` is already on the escrow user's `rpcwhitelist`.
 
 ## Appendix: new keys by hand
 

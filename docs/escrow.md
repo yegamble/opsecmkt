@@ -797,22 +797,31 @@ real node that lost its peers or stalled on a public network.
 
 Phase 4 groundwork (war-room ruling P4-R6), on the development branch and not released. `rpcwhitelist` is per user,
 not per wallet, so a pooled RPC user on the escrow node that may call `listdescriptors` can print the arbiter wallet's
-private key (probed on Core 31.1 regtest). With `BITCOIN_RPC_URL` set, escrow starts only when the pooled user is
-refused `listdescriptors` (private=false) on the arbiter wallet's path with HTTP 403, or that node has no such wallet;
-any other answer, error or timeout leaves escrow disabled with a fixed log line and a line on `/admin`, retried like
-the other escrow checks. The operator guide whitelists the pooled user to the nine methods the pooled adapter calls
+private key (probed on Core 31.1 regtest), as can one that may call `gethdkeys` (`{"private":true}`), and one that may
+call `walletprocesspsbt` can sign with it (QA4W3-1). With `BITCOIN_RPC_URL` set, escrow starts only when the pooled user
+is refused each of `listdescriptors` (private=false), `gethdkeys` (private=false) and `walletprocesspsbt` (an empty PSBT,
+sign=false) on the arbiter wallet's path with HTTP 403, or that node has no such wallet; any other answer, error or
+timeout leaves escrow disabled with a fixed log line naming the method and a line on `/admin`, retried like the other
+escrow checks, and while escrow is on the watcher repeats the check daily and disables escrow on a failure (QA4W3-8).
+The arbiter wallet's dedication check counts only a spend from it, never coins paid to it (A-471: anyone can pay the
+market child key an order's descriptor shows). The operator guide whitelists the pooled user to the nine methods the pooled adapter calls
 (*The pooled RPC user*; a Go test keeps the line equal to the list in code) or puts escrow on its own node, and states
 that escrow and the pooled wallet on one node share one failure domain; the
 [runbook](testnet-runbook.md#back-up-and-restore-the-escrow-arbiter-and-watch-only-wallets) backs up and restores the
 arbiter and watch-only wallets (operator user, encrypted to the operator's `age` key, height recorded,
 `importdescriptors` fallback, fingerprint pin check), never inside the database backup.
 
-How it was tested: `TestEscrowPooledKeyCheck` (simulated RPC and PostgreSQL: 403 and -18 pass; an answer, error -4,
-HTTP 401 and a timeout disable, with the log and admin lines; a retry starts escrow once the user is refused) and
-`TestBitcoinPooledRPCMethods`; on Core 31.1 regtest `TestEscrowRegtestPooled` (the whitelisted pooled user refused,
-escrow on beside a working pooled provider, an unrestricted user keeping escrow off) and
-`TestEscrowRegtestArbiterRestore` (backup, wipe, `restorewallet` and the `importdescriptors` fallback, each co-signing a
-claim with the fingerprint pin unchanged). Not tested: the watch-only wallet's restore steps in the runbook, and any
+How it was tested: `TestEscrowPooledKeyCheck` (simulated RPC and PostgreSQL: 403 and -18 from each method pass; an
+answer, error -4, HTTP 401 and a timeout of `listdescriptors`, a `gethdkeys` answer and an allowed `walletprocesspsbt`
+(-22) disable, with the log and admin lines; a retry starts escrow once the user is refused; the daily re-check disables
+escrow on a widened whitelist, logs once and starts it again once refused), `TestBitcoinPooledRPCMethods` and
+`TestEscrowArbiterWalletDedicated` (receives only, over two `listtransactions` pages: on; one spend behind a full page:
+off; an unreadable list: off); on Core 31.1 regtest `TestEscrowRegtestPooled` (the whitelisted pooled user refused
+`listdescriptors`, `gethdkeys` and `walletprocesspsbt`, escrow on beside a working pooled provider, an unrestricted user
+keeping escrow off), `TestEscrowRegtestArbiterRestore` (backup, wipe, `restorewallet` and the `importdescriptors`
+fallback, each co-signing a claim with the fingerprint pin unchanged) and `TestEscrowRegtestArbiterDeposit` (a payment to
+an escrow's market child address leaves escrow on after a restart and a retry; a spend from the arbiter wallet turns it
+off). Not tested: the watch-only wallet's restore steps in the runbook, and any
 public network.
 
 ## Monero escrow on stagenet (A-449)
@@ -877,9 +886,18 @@ refuses to start on it, as it must, and none of the fourteen legs can run there;
 the hard fork, not the network; that a real stagenet wallet's primary address, subaddress and integrated address are read
 under the stagenet tags (the integrated one refused) and refused under the fakechain's, by the parser and by the adapter;
 and that the escrow and pooled sync guards read a restricted stagenet daemon with a peer and a fresh tip as synced and an
-`--offline` daemon as having no peers. Not tested: the public stagenet (its peers, fees, ring members, reorganisations
-and a funded escrow end to end), a daemon that loses its peers on a public network, and `ESCROW_XMR_MAX_FEE` against
-stagenet fees.
+`--offline` daemon as having no peers. No funded escrow leg can run on that fork (hard fork 1, and `generateblocks`, which
+the fakechain legs mine with, works only on a fakechain), so **funded Monero escrow on stagenet is proven only by the
+owner's public stagenet run (A-447)**, not recorded yet; the offline fork proves the stagenet address formats, the old-fork
+refusal and the sync guards, and the network pin rests on the simulated-daemon database tests above. Not tested: the
+public stagenet (its peers, fees, ring members, reorganisations and a funded escrow end to end), a daemon that loses its
+peers on a public network, and `ESCROW_XMR_MAX_FEE` against stagenet fees. On a restricted RPC a daemon cut off from its
+peers looks synced until its tip is older than `MONERO_MAX_TIP_AGE` (QA4W3-5, accepted and documented in the
+[operator guide](operator-guide.md#payments): a deposit made in that window is not seen and can arrive after its order was
+cancelled, then returned by a stray refund or, pooled, by hand). Since QA4W3-2 Monero escrow waits until a configured
+pooled Monero wallet has passed one check, so the open-wallet comparison always has the pooled address
+(`TestXMREscrowRefusesPooledWalletOpen`); since QA4W3-3 an unreadable tip is tested as not synced on both paths
+(`TestXMREscrowSkipsWhileTipUnreadable`, `TestMoneroPooledGuardPeersAndTipAge`).
 
 ## Broadcast honesty (A-441)
 

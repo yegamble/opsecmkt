@@ -77,6 +77,7 @@ type fakeXMREscrow struct {
 	offline, restricted bool
 	hardFork            int64 // hard_fork_info version; 0 is 16
 	tipAge              time.Duration
+	tipErr              bool // get_last_block_header fails (QA4W3-3)
 	files               map[string]*fakeXMRWalletFile
 	open                *fakeXMRWalletFile // nil while no wallet is open
 	calls               []fakeXMRCall
@@ -292,6 +293,9 @@ func (f *fakeXMREscrow) daemonMethod(method string) (any, int64, string) {
 			"height": f.height, "target_height": target, "synchronized": !f.unsynced, "outgoing_connections_count": peers, "incoming_connections_count": 0,
 			"offline": f.offline, "restricted": f.restricted, "status": "OK"}, 0, ""
 	case "get_last_block_header":
+		if f.tipErr {
+			return nil, -5, "Internal error: can't get last block header"
+		}
 		return map[string]any{"block_header": map[string]any{"height": f.height - 1, "timestamp": time.Now().Add(-f.tipAge).Unix()}, "status": "OK"}, 0, ""
 	case "hard_fork_info":
 		return map[string]any{"version": cmp.Or(f.hardFork, 16), "enabled": true, "status": "OK"}, 0, ""
