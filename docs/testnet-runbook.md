@@ -24,7 +24,12 @@ What the application does on its own, so you know what to expect while following
   market) until the node is fixed and the app restarted.
 - While the Bitcoin node is in initial block download, or the Monero daemon's `target_height` is above its
   `height`, the watcher skips that currency entirely: no deposits are read, no order expires and no payout is
-  sent. The admin page shows "Node is still syncing". The Monero sync check needs `MONERO_RPC_URL`; without
+  sent. The admin page shows "Node is still syncing". The same happens while the Bitcoin node's headers are ahead
+  of its blocks, or, on a public test network, while it has no peers or its tip block is older than
+  `BITCOIN_MAX_TIP_AGE` (default 2h): Core stops reporting initial block download once and never again, so a
+  node that lost its peers would otherwise look synced while deposits are invisible to it (A-439). The admin page
+  then shows "Node is not synced (no peers) …" (or the other reason) and one log line marks the start and the end;
+  give the node peers or wait for it to catch up. The Monero sync check needs `MONERO_RPC_URL`; without
   it only the wallet is checked. Only `target_height` above `height` counts as syncing (monerod reports a
   target of 0 once it considers itself synchronized), so a daemon that reports no target never blocks
   payments; other signals such as `synchronized` are deliberately not used.
@@ -58,6 +63,7 @@ Confirmation settings (in `.env`, applied on restart):
 | `PAYMENT_CONFIRMATIONS_XMR` | 10 | Monero outputs are spendable after 10 blocks anyway. |
 | `PAYMENT_POLL_INTERVAL` | 30s | 1s to 1h. |
 | `PAYMENT_EXPIRY` | 24h | Unpaid orders with no deposit seen are cancelled after this; underpaid orders are cancelled and refunded once no deposit has arrived for this long. |
+| `BITCOIN_MAX_TIP_AGE` | 2h | 30m to 24h. On a public test network a Bitcoin node whose tip block is older counts as not synced and the Bitcoin watcher skips its pass. |
 
 Wait for the nodes to sync before expecting deposits to be seen (`docker compose logs -f bitcoin monero`).
 
@@ -125,7 +131,7 @@ Open **Admin → Payment providers**. For each currency:
 
 | Status | Meaning | What to do |
 | --- | --- | --- |
-| Enabled | Checks passed; *Last poll* updates after every completed pass. *Last error* shows the latest wallet error, "Wallet check failed; watcher pass skipped …" when the node or wallet stopped answering, or "Node is still syncing". | Nothing, unless the error persists. |
+| Enabled | Checks passed; *Last poll* updates after every completed pass. *Last error* shows the latest wallet error, "Wallet check failed; watcher pass skipped …" when the node or wallet stopped answering, "Node is still syncing", or "Node is not synced (no peers)" (or "(tip older than BITCOIN_MAX_TIP_AGE)", "(headers ahead of blocks)", "(peer count unreadable)"). | Nothing, unless the error persists; for "not synced", check the node's peers and its sync. |
 | Unavailable — retried every poll | Configured, but the node is unreachable, the credentials are rejected or the wallet cannot be loaded/opened. Payment requests are refused. | Fix the node or create the wallet; it is picked up within one poll interval, no restart needed. |
 | Refused — not a test network (or not mainnet) | The node or wallet reported another network (or a different chain than before) after startup. The currency is off. | Fix the node configuration, then restart the app. |
 | Disabled | The URL is blank. | Set it in `.env` and restart. |

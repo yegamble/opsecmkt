@@ -420,10 +420,10 @@ func TestEscrowBumpShapeRefusals(t *testing.T) {
 		f(&c)
 		return c
 	}
-	if fee, class := checkBump(sp.Tx, mut(func(*psbtTx) {}), outs, total, parentFee, 10000); class != "" || fee != 3*vsize {
+	if fee, class := checkBump("regtest", sp.Tx, mut(func(*psbtTx) {}), outs, total, parentFee, 10000); class != "" || fee != 3*vsize {
 		t.Fatalf("a valid bump: %d %q", fee, class)
 	}
-	other, _ := regtestAddressScript(regtestAddr("elsewhere"))
+	other, _ := escrowAddressScript("regtest", regtestAddr("elsewhere"))
 	for name, c := range map[string]struct {
 		f    func(*psbtTx)
 		want string
@@ -447,14 +447,14 @@ func TestEscrowBumpShapeRefusals(t *testing.T) {
 		"lock time changed":           {func(tx *psbtTx) { tx.LockTime = 1 }, bumpInputs},
 		"version changed":             {func(tx *psbtTx) { tx.Version = 1 }, bumpInputs},
 	} {
-		if _, class := checkBump(sp.Tx, mut(c.f), outs, total, parentFee, 10000); class != c.want {
+		if _, class := checkBump("regtest", sp.Tx, mut(c.f), outs, total, parentFee, 10000); class != c.want {
 			t.Errorf("%s: %q, want %q", name, class, c.want)
 		}
 	}
-	if _, class := checkBump(sp.Tx, mut(func(*psbtTx) {}), outs, total, 3*vsize, 10000); class != bumpFeeLow {
+	if _, class := checkBump("regtest", sp.Tx, mut(func(*psbtTx) {}), outs, total, 3*vsize, 10000); class != bumpFeeLow {
 		t.Errorf("not above an earlier bump at the same rate: %q", class)
 	}
-	if _, class := checkBump(sp.Tx, mut(func(*psbtTx) {}), outs, total, parentFee, outs[0].Sats); class != settleTooSmall {
+	if _, class := checkBump("regtest", sp.Tx, mut(func(*psbtTx) {}), outs, total, parentFee, outs[0].Sats); class != settleTooSmall {
 		t.Errorf("claimant below the floor: %q", class)
 	}
 	// The absolute cap: ten inputs at 88 sat/vB pay more than escrowMaxFee.

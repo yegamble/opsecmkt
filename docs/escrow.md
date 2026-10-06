@@ -157,7 +157,7 @@ shipped phase has proven. The full rules and acceptance criteria are in the proj
 | Wallets | Electrum and Sparrow support (a signing test showed Electrum needs a different key layout) | Not started |
 | 2 | Physical orders: buyer-signed release, 14-day deadline, no-ship cancellation, fee bumps | Built and tested on regtest; not released; off by default (`ESCROW_BTC`, regtest only): see [Phase 2](#phase-2-bitcoin-escrow-for-physical-orders-on-regtest) for what it does, what it protects, what it does not do and the tests behind it. Not run on any public test network or on mainnet; only Bitcoin Core signing is supported |
 | 3 | Monero accounts in monthly escrow wallets | Built and tested on a local Monero fakechain (monerod `--regtest`); not released; off by default (`ESCROW_XMR`, fakechain only): see [Phase 3](#phase-3-monero-escrow-on-a-local-fakechain) for what it does, what it protects, what it does not protect and the tests behind it. Custodial: the market can move these coins. Not run on stagenet, a public test network or mainnet; no Monero multisig |
-| 4 | Public test networks end to end, then escrow-only for new orders, then removal of the pooled wallet | Not started |
+| 4 | Public test networks end to end, then escrow-only for new orders, then removal of the pooled wallet | Groundwork only: the node sync guard, the escrow chain pin and the chain table (A-439, [below](#node-sync-guard-chain-pin-and-chain-table-a-439)) are on the development branch; escrow still accepts regtest only and nothing has run on a public test network |
 
 
 ## Phase 1: Bitcoin escrow on regtest
@@ -730,6 +730,41 @@ Not tested: stagenet, testnet and mainnet, Monero multisig, the escrow pages in 
 days in real time, a wallet with thousands of accounts on a public network (PAYE-E2 measured one on a local fakechain), a restore of a real backup into a
 running market with Phase 3 orders on a real chain (`scripts/test-backup-restore.sh` restores a real dump and checks its
 rows; the fakechain `Restore` leg simulates the database restore in SQL), and a deployment of any of it.
+
+## Node sync guard, chain pin and chain table (A-439)
+
+Phase 4 groundwork (war-room ruling P4-R3 to P4-R5), on the development branch and not released. Escrow still accepts
+regtest only (A-443 opens signet and testnet4); the guard also protects pooled Bitcoin payments now.
+
+- **Sync guard.** Bitcoin Core's `initialblockdownload` turns false once and stays false, so a node that lost its peers
+  reports itself synced while deposits sent since are invisible to it; a watcher trusting it would cancel a paid order
+  "payment window expired". A node now counts as not synced while it is in initial block download, its headers are
+  ahead of its blocks, or, on a public chain (anything but regtest), it has no peers (`getnetworkinfo`) or its tip block
+  is older than `BITCOIN_MAX_TIP_AGE` (default 2h, 30m to 24h). While it is not synced the escrow watcher's Bitcoin
+  pass reads no deposit, expires no order, flags nothing and builds, co-signs or broadcasts no settlement (the release
+  deadlines, which need no node, still apply), and the pooled Bitcoin pass is skipped as it is during initial block
+  download. The rule is stateless: nothing is stored, so a legitimately replaced chain never stalls it (A-147). One
+  log line per change and a line under *Payment providers* on `/admin` name the reason
+  ([operator guide](operator-guide.md#bitcoin-escrow-regtest-only)). A lone regtest node is exempt from the peer and
+  tip-age checks, and `getnetworkinfo` is called only on a public chain.
+- **Chain pin.** The database pins the escrow node's chain (`settings` key `escrow_btc_chain`: the chain name, plus the
+  `signet_challenge` on signet, since a private signet shares public signet's genesis block). A database never changes
+  chain once it holds an escrow: a node on another chain leaves escrow disabled, changes nothing and is named on
+  `/admin` with the pinned chain; a new chain needs a new database. While no escrow exists the pin follows the node; a
+  database from before the pin that holds escrows is pinned only when the node reports regtest. Two regtest nodes
+  cannot be told apart.
+- **Chain table.** One table maps each escrow chain to its segwit address prefix (regtest `bcrt`; signet and testnet4
+  `tb`; mainnet and testnet3 are not escrow chains), and every check of a settlement's output addresses reads it with
+  the escrow node's chain. The signet and testnet4 entries are exercised by unit tests only.
+
+How it was tested (simulated RPC and PostgreSQL, not chain evidence): `TestBitcoinNodeNotSynced`,
+`TestBitcoinMaxTipAgeSetting`, `TestEscrowAddressTable` (unit); `TestEscrowWatcherSkipsWhileNotSynced` (each condition,
+the two public-chain ones with the escrow put on signet by hand: no cancel, no spent-outside flag, no build, no deposit
+read, then the work on the next synced pass), `TestEscrowRegtestExemptFromPeerAndTipChecks`,
+`TestEscrowChainPinMismatchDisables`, `TestEscrowChainPinRules`, `TestBitcoinPooledGuardPeersAndTipAge`,
+`TestBitcoinPooledGuardRegtestExempt` and `TestBitcoinPooledNoPeersHoldsExpiry`. The real regtest legs of
+`scripts/test-escrow-regtest.sh` were run again against Core 31.1 with `getnetworkinfo` on the whitelist. Not tested: a
+real node that lost its peers or stalled on a public network.
 
 All escrow testing uses regtest, a local Monero fakechain and public test networks only. Mainnet stays an operator opt-in
 and is never used in development or tests.

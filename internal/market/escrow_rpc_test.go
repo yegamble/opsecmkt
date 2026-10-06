@@ -52,7 +52,8 @@ func TestEscrowRPCPinsParams(t *testing.T) {
 		method, path, params string
 		call                 func() error
 	}{
-		{"getblockchaininfo", "/", `[]`, func() error { _, err := e.chain(ctx); return err }},
+		{"getblockchaininfo", "/", `[]`, func() error { _, err := e.blockchainInfo(ctx); return err }},
+		{"getnetworkinfo", "/", `[]`, func() error { _, err := e.connections(ctx); return err }},
 		{"getrawchangeaddress", arb, `["bech32"]`, func() error { return e.readArbiter(ctx) }},
 		{"getaddressinfo", arb, `["bcrt1qarbiterchange000000000000000000000"]`, func() error { return e.readArbiter(ctx) }},
 		{"createpsbt", "/", `[[{"txid":"` + testCorePSBTTxID + `","vout":1}],[{"bcrt1qdest":0.00099},{"bcrt1qfee":0.00000546}],0,true]`, func() error {
@@ -249,10 +250,10 @@ func TestEscrowRPCErrorClasses(t *testing.T) {
 	}{
 		{"rpc error", rpcErr.url(""), "rpc:-5", func(e *escrowBTC) error { _, err := e.descriptorInfo(ctx, "x"); return err }},
 		{"bad reply", rpcErr.url(""), "bad-reply", func(e *escrowBTC) error { _, _, err := e.finalizePSBT(ctx, "x"); return err }},
-		{"wrong password", strings.Replace(rpcErr.url(""), ":p@", ":wrong@", 1), "credentials", func(e *escrowBTC) error { _, err := e.chain(ctx); return err }},
+		{"wrong password", strings.Replace(rpcErr.url(""), ":p@", ":wrong@", 1), "credentials", func(e *escrowBTC) error { _, err := e.blockchainInfo(ctx); return err }},
 		{"not whitelisted", "http://u:p@" + strings.TrimPrefix(forbidden.URL, "http://"), "forbidden", func(e *escrowBTC) error { _, err := e.arbiterSign(ctx, "x"); return err }},
-		{"timeout", "http://u:p@" + strings.TrimPrefix(hang.URL, "http://"), "timeout", func(e *escrowBTC) error { _, err := e.chain(ctx); return err }},
-		{"unreachable", down.url(""), "unreachable", func(e *escrowBTC) error { _, err := e.chain(ctx); return err }},
+		{"timeout", "http://u:p@" + strings.TrimPrefix(hang.URL, "http://"), "timeout", func(e *escrowBTC) error { _, err := e.blockchainInfo(ctx); return err }},
+		{"unreachable", down.url(""), "unreachable", func(e *escrowBTC) error { _, err := e.blockchainInfo(ctx); return err }},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

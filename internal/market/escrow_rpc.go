@@ -32,11 +32,13 @@ import (
 // a descriptor or a key (A-170, ES-10).
 
 // escrowRPCMethods is every method the adapter calls: the rpcwhitelist line the operator guide documents.
+// getnetworkinfo (read-only: the peer count for the sync guard, A-439) is called only on a public chain, so a
+// regtest whitelist written before it keeps working.
 var escrowRPCMethods = []string{
-	"getblockchaininfo", "getrawchangeaddress", "getaddressinfo", "createpsbt", "utxoupdatepsbt", "importdescriptors",
-	"getdescriptorinfo", "deriveaddresses", "gettxout", "keypoolrefill", "walletprocesspsbt", "descriptorprocesspsbt",
-	"combinepsbt", "finalizepsbt", "testmempoolaccept", "sendrawtransaction", "getwalletinfo", "listreceivedbyaddress",
-	"gettransaction", "listtransactions",
+	"getblockchaininfo", "getnetworkinfo", "getrawchangeaddress", "getaddressinfo", "createpsbt", "utxoupdatepsbt",
+	"importdescriptors", "getdescriptorinfo", "deriveaddresses", "gettxout", "keypoolrefill", "walletprocesspsbt",
+	"descriptorprocesspsbt", "combinepsbt", "finalizepsbt", "testmempoolaccept", "sendrawtransaction", "getwalletinfo",
+	"listreceivedbyaddress", "gettransaction", "listtransactions",
 }
 
 // escrowSighash is the only sighash type the market ever signs with (ES-2): a signature made with SIGHASH_NONE let
@@ -131,6 +133,9 @@ func escrowConfigFromEnv(getenv func(string) string) (escrowConfig, error) {
 		}
 		c.confirmations = n
 	}
+	if _, err := parseMaxTipAge(getenv("BITCOIN_MAX_TIP_AGE")); err != nil {
+		return c, err
+	}
 	return c, nil
 }
 
@@ -148,8 +153,11 @@ const (
 	escrowLogFixedFee     = "escrow: the market fee is paid to one fixed address (ESCROW_BTC_FEE_ADDRESS); allowed on test networks only"
 	escrowLogRefused      = "escrow: Bitcoin escrow disabled until the app is restarted: the escrow node is not on regtest, or it refused ESCROW_BTC_FEE_ADDRESS"
 	escrowLogUnrecorded   = "escrow: Bitcoin escrow disabled: its arbiter fingerprint could not be checked in the database"
+	escrowLogChain        = "escrow: Bitcoin escrow disabled: the escrow node is not on the chain this database's escrows are on (escrow_btc_chain); the admin page names both; see docs/operator-guide.md, \"Bitcoin escrow (regtest only)\""
 	escrowFingerprintPin  = "escrow_btc_arbiter_fingerprint" // settings key
+	escrowChainPin        = "escrow_btc_chain"               // settings key: escrowChainID of the node the database's escrows are on (A-439)
 	escrowFingerprintSize = 8
+	escrowChainPinLock    = 782497 // the transaction advisory lock pinEscrowChain takes (the watchers' are 782494 to 782496)
 )
 
 // escrowBTC is the escrow adapter; App.escrow is nil until ESCROW_BTC=on has passed every check (startEscrow).
@@ -166,6 +174,7 @@ type escrowBTC struct {
 	confirmations int64
 	feeRate       int64  // sat/vB, for every settlement this process builds
 	network       string // the node's chain (getblockchaininfo) as startEscrow read it; names the network in notes
+	chainID       string // escrowChainID of the node as startEscrow read it, equal to the pin; each watcher pass compares it
 }
 
 func newEscrowBTC(c escrowConfig) (*escrowBTC, error) {
@@ -209,26 +218,35 @@ var errEscrowFeeAddress = errors.New("refusing to start: ESCROW_BTC_FEE_ADDRESS 
 // startEscrow runs every escrow check once and, when all pass, enables escrow (a.escrow). It reports the state as
 // one of the fixed lines (escrowLogOn when enabled) with the error class that caused it (""), or an error: a refusal
 // (errEscrowNotRegtest, errEscrowFeeAddress) or a database failure. Nothing here comes from the node's text. The
-// guards are the same at startup and on a retry: the node must be on regtest, the arbiter fingerprint must match the
-// pinned one, and the watch-only wallet must hold no private keys.
+// guards are the same at startup and on a retry: the node must be on regtest and on the chain pinned for the
+// database's escrows (pinEscrowChain, before anything else is written), the arbiter fingerprint must match the pinned
+// one, and the watch-only wallet must hold no private keys.
 func (a *App) startEscrow(ctx context.Context) (state, class string, err error) {
 	e, err := newEscrowBTC(a.escrowCfg)
 	if err != nil {
 		return "", "", err
 	}
-	chain, err := e.chain(ctx)
+	a.escrowMismatch.Store(nil) // shown on /admin only while the latest attempt found the node on another chain
+	node, err := e.blockchainInfo(ctx)
 	if err != nil {
 		return escrowLogUnchecked, errorClassOf(err), nil
 	}
-	if chain != "regtest" {
+	if node.Chain != "regtest" {
 		return "", "", errEscrowNotRegtest
 	}
-	e.network = chain
+	e.network, e.chainID = node.Chain, escrowChainID(node.Chain, node.SignetChallenge)
+	pinned, ok, err := pinEscrowChain(ctx, a.db, e.chainID)
+	if err != nil {
+		return "", "", err
+	}
+	if !ok {
+		a.escrowMismatch.Store(&EscrowChainMismatch{Pinned: pinned, Reported: e.chainID})
+		return escrowLogChain, "", nil
+	}
 	if err = e.readArbiter(ctx); err != nil {
 		return escrowLogArbiter, errorClassOf(err), nil
 	}
-	ok, err := pinArbiterFingerprint(ctx, a.db, e.fingerprint)
-	if err != nil {
+	if ok, err = pinArbiterFingerprint(ctx, a.db, e.fingerprint); err != nil {
 		return "", "", err
 	}
 	if !ok {
@@ -307,6 +325,47 @@ func pinArbiterFingerprint(ctx context.Context, db *sql.DB, fp string) (bool, er
 	return pinned == fp, nil
 }
 
+// escrowChainID is the identity escrow pins for a node (P4-R4): its chain name, plus its signet_challenge on signet, so
+// a private signet (which shares public signet's genesis block) is not taken for another signet.
+func escrowChainID(chain, signetChallenge string) string {
+	if chain == "signet" {
+		return chain + ":" + signetChallenge
+	}
+	return chain
+}
+
+// pinEscrowChain checks id (escrowChainID of the escrow node) against the chain pinned in settings (escrowChainPin)
+// and reports the pinned value and whether escrow may use the node. While the database holds no Bitcoin escrow the pin
+// is written, or rewritten, to id: a database may change chain until it holds an escrow, never after (a new chain
+// needs a new database). A database that holds escrows and no pin (one from before A-439) is pinned when the node
+// reports regtest, the only chain escrow ran on before; on any other chain it is refused. A refusal writes nothing. One
+// transaction under escrowChainPinLock, so concurrent startups agree.
+func pinEscrowChain(ctx context.Context, db *sql.DB, id string) (pinned string, ok bool, err error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", false, err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)", escrowChainPinLock); err != nil {
+		return "", false, err
+	}
+	var held bool
+	if err = tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT value FROM settings WHERE key=$1),''),EXISTS (SELECT 1 FROM escrows WHERE coin='BTC')`,
+		escrowChainPin).Scan(&pinned, &held); err != nil {
+		return "", false, err
+	}
+	switch {
+	case pinned == id:
+		return pinned, true, nil
+	case held && (pinned != "" || id != "regtest"):
+		return pinned, false, nil
+	}
+	if _, err = tx.ExecContext(ctx, "INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT (key) DO UPDATE SET value=excluded.value", escrowChainPin, id); err != nil {
+		return "", false, err
+	}
+	return id, true, tx.Commit()
+}
+
 // escrowRPCError is a failed escrow RPC reduced to a fixed class: rpc:<code>, forbidden (HTTP 403: the method is
 // not on the user's rpcwhitelist), credentials (HTTP 401), timeout, unreachable or bad-reply. It never carries
 // Core's message.
@@ -354,13 +413,21 @@ func (e *escrowBTC) call(ctx context.Context, path, method string, params, out a
 	return classifyEscrowRPC(method, e.rpc.call(ctx, path, method, params, out))
 }
 
-// chain is getblockchaininfo's chain.
-func (e *escrowBTC) chain(ctx context.Context) (string, error) {
-	var info struct {
-		Chain string `json:"chain"`
-	}
+// blockchainInfo is getblockchaininfo: the chain, signet_challenge and what the sync guard reads (bitcoinNode;
+// Connections is not set).
+func (e *escrowBTC) blockchainInfo(ctx context.Context) (bitcoinNode, error) {
+	var info bitcoinNode
 	err := e.call(ctx, "", "getblockchaininfo", []any{}, &info)
-	return info.Chain, err
+	return info, err
+}
+
+// connections is getnetworkinfo's connections: the node's peer count, for the sync guard on a public chain.
+func (e *escrowBTC) connections(ctx context.Context) (int64, error) {
+	var info struct {
+		Connections int64 `json:"connections"`
+	}
+	err := e.call(ctx, "", "getnetworkinfo", []any{}, &info)
+	return info.Connections, err
 }
 
 // readArbiter reads the arbiter wallet's master fingerprint and BIP84 account key without any key export: a
@@ -860,7 +927,7 @@ func (e *escrowBTC) watchKeys(ctx context.Context, addr string) ([][]byte, error
 	}
 	// The reply must be about the address asked: keys that hash to another address's script (a misrouted or lying
 	// reply) are never reserved in its place (QA-P2e-1).
-	if want, err := regtestAddressScript(addr); err != nil || !bytes.Equal(spk, want) {
+	if want, err := escrowAddressScript(e.network, addr); err != nil || !bytes.Equal(spk, want) {
 		return nil, bad
 	}
 	if len(spk) != 34 || spk[0] != 0 || spk[1] != 32 {
