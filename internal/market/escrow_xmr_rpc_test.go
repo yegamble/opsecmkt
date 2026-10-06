@@ -530,7 +530,7 @@ func TestXMREscrowAccountZeroRefusedOffline(t *testing.T) {
 func TestXMREscrowNetworkCheck(t *testing.T) {
 	ctx := context.Background()
 	info := func(nettype string, mainnet bool, height int64) map[string]any {
-		return map[string]any{"nettype": nettype, "mainnet": mainnet, "stagenet": nettype == "stagenet", "testnet": nettype == "testnet", "height": height, "status": "OK"}
+		return map[string]any{"nettype": nettype, "mainnet": mainnet, "stagenet": nettype == "stagenet", "testnet": nettype == "testnet", "height": height, "synchronized": true, "status": "OK"}
 	}
 	cases := []struct {
 		name         string

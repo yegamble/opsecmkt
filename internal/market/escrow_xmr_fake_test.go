@@ -1,6 +1,7 @@
 package market
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -74,6 +75,7 @@ type fakeXMREscrow struct {
 	targetAhead         int64
 	peers               int64
 	offline, restricted bool
+	hardFork            int64 // hard_fork_info version; 0 is 16
 	tipAge              time.Duration
 	files               map[string]*fakeXMRWalletFile
 	open                *fakeXMRWalletFile // nil while no wallet is open
@@ -292,7 +294,7 @@ func (f *fakeXMREscrow) daemonMethod(method string) (any, int64, string) {
 	case "get_last_block_header":
 		return map[string]any{"block_header": map[string]any{"height": f.height - 1, "timestamp": time.Now().Add(-f.tipAge).Unix()}, "status": "OK"}, 0, ""
 	case "hard_fork_info":
-		return map[string]any{"version": 16, "enabled": true, "status": "OK"}, 0, ""
+		return map[string]any{"version": cmp.Or(f.hardFork, 16), "enabled": true, "status": "OK"}, 0, ""
 	}
 	return nil, -32601, "Method not found"
 }

@@ -1010,6 +1010,12 @@ func (r *xmrEscrowRPC) checkDaemon(ctx context.Context) (xmrDaemonInfo, error) {
 		return xmrDaemonInfo{}, err
 	}
 	if v < xmrMinHardFork {
+		if !info.Synchronized || info.TargetHeight > info.Height {
+			// A daemon still syncing reports the hard fork of the height it has reached (a stagenet node syncing from
+			// genesis reports version 1 for a long time): not refused but not checked yet, so Monero escrow stays
+			// disabled and the check is retried, as for an unreachable daemon (A-449).
+			return xmrDaemonInfo{}, &xmrRPCError{Service: "daemon", Method: "hard_fork_info", Class: "daemon-syncing"}
+		}
 		return xmrDaemonInfo{}, errXMRHardFork
 	}
 	return info, nil

@@ -250,8 +250,8 @@ func TestXMREscrowStartupStates(t *testing.T) {
 		{"stagenet without the stagenet flag", map[string]any{"nettype": "stagenet", "height": 120}, 16, 120, errXMRStartDaemon, errXMRDaemonNetwork},
 		{"stagenet with the mainnet flag", map[string]any{"nettype": "stagenet", "stagenet": true, "mainnet": true, "height": 120}, 16, 120, errXMRStartDaemon, errXMRDaemonNetwork},
 		{"no nettype", map[string]any{"height": 120}, 16, 120, errXMRStartDaemon, errXMRDaemonNetwork},
-		{"hard fork 15", map[string]any{"nettype": "fakechain", "height": 120}, 15, 120, errXMRStartDaemon, errXMRHardFork},
-		{"stagenet at hard fork 1", map[string]any{"nettype": "stagenet", "stagenet": true, "height": 120}, 1, 120, errXMRStartDaemon, errXMRHardFork},
+		{"hard fork 15", map[string]any{"nettype": "fakechain", "height": 120, "synchronized": true}, 15, 120, errXMRStartDaemon, errXMRHardFork},
+		{"synced stagenet at hard fork 1", map[string]any{"nettype": "stagenet", "stagenet": true, "height": 120, "synchronized": true}, 1, 120, errXMRStartDaemon, errXMRHardFork},
 		{"wallet 11 blocks behind", map[string]any{"nettype": "fakechain", "height": 120}, 16, 109, errXMRStartWallet, errXMRWalletLag},
 	}
 	for _, c := range refusals {

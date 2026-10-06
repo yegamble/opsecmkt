@@ -1145,7 +1145,10 @@ Monero escrows as to pooled payments. The refusal messages name the setting and 
 not what Monero escrow needs stops startup with a message that names the setting (for a node: "refusing to start:
 ESCROW_XMR=on runs only on a local Monero fakechain or on stagenet in this release, and the daemon at ESCROW_XMR_DAEMON_URL
 failed that check …", or the same for the wallet-rpc). The daemon must report nettype `fakechain` (with no network flag) or
-`stagenet` (with the stagenet flag) and a hard fork version of at least 16, and the escrow wallet-rpc must, after a refresh,
+`stagenet` (with the stagenet flag) and a hard fork version of at least 16 (a daemon still syncing reports the hard fork of
+the height it has reached, so a lower version is not refused while `get_info` says it is syncing: Monero escrow stays
+disabled with `… could not be checked at startup (hard_fork_info daemon-syncing)` and is checked again every poll, so a
+fresh stagenet node delays Monero escrow, not the market), and the escrow wallet-rpc must, after a refresh,
 be within 10 blocks of that daemon (so a wallet-rpc attached to another chain is refused). Before A-449 the daemon also had to
 be below height 1,000,000 (no fakechain gets there; every public network is past it): that heuristic is gone, and the network
 pin below tells networks apart instead. An escrow wallet-rpc whose open wallet is the pooled Monero wallet (the pooled

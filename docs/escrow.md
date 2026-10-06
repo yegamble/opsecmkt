@@ -789,7 +789,9 @@ recorded**: the evidence below is simulated RPC and an offline stagenet fork.
 
 - **Network check and address tags.** The escrow daemon must report nettype `fakechain` (no network flag set) or
   `stagenet` (the stagenet flag set), and a hard fork version of at least 16; mainnet, testnet and inconsistent flags are
-  refused. The address forms Monero escrow accepts follow the network it verified, never a configured one, and the two
+  refused. A daemon still syncing (synchronized false, or a target height above its height) is not refused for a lower
+  hard fork, which it reports for the height it has reached: Monero escrow stays disabled and is checked again every
+  pass, so a fresh stagenet node delays Monero escrow, not the market's startup. The address forms Monero escrow accepts follow the network it verified, never a configured one, and the two
   changed together: on stagenet the standard address (tag 24, `5…`) and subaddress (36, `7…`), on a fakechain the mainnet
   format it uses (18, `4…`; 42, `8…`); integrated addresses (19, 25) are refused as such, and every other tag as another
   network's. This holds for refund and claim addresses, `ESCROW_XMR_FEE_ADDRESS` (a fee address of the other network stops
