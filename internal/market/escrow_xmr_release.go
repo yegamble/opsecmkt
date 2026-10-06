@@ -11,7 +11,7 @@ import (
 )
 
 // The release of a Monero escrow order (WR-escrow Phase 3, slice X-e; P3-R7, the Phase 2 rules P2-R1 to P2-R4 mapped to
-// a custodial account: there are no party signatures). Behind ESCROW_XMR (off by default); fakechain only.
+// a custodial account: there are no party signatures). Behind ESCROW_XMR (off by default); fakechain or stagenet (A-449).
 //
 //  1. Digital claim (/escrow-xmr/claim): the vendor of a completed digital order, or of any order whose dispute was
 //     decided for the vendor with no release yet, gives a fresh Monero address and their password, as escrowClaimAction

@@ -6,10 +6,10 @@ mainnet unless it is configured** ([Mainnet](operator-guide.md#mainnet); the wal
 payout-recovery steps below use the same commands on a mainnet market, with real funds, but have been exercised
 on test networks only). Commands run from the repository directory on the Docker host, where `.env` lives.
 Per-order escrow is not part of this runbook, apart from its restore steps and the manual fakechain check in
-[section 9](#9-manual-monero-escrow-fakechain-check): Bitcoin escrow runs on regtest only and Monero escrow on a local
-Monero fakechain only, both are off by default (built and tested on those local chains, never run on a public test
-network; [per-order escrow](escrow.md)), so leave `ESCROW_BTC` and `ESCROW_XMR` off on a testnet4, signet, stagenet or
-testnet market. Payments there go through the pooled wallets below.
+[section 9](#9-manual-monero-escrow-fakechain-check) and [section 10](#10-monero-escrow-on-stagenet): Bitcoin escrow runs on regtest only and Monero escrow on a local
+Monero fakechain or, since A-449, stagenet; both are off by default (built and tested on local chains, never run on a public test
+network; [per-order escrow](escrow.md)), so leave `ESCROW_BTC` off on a testnet4 or signet market, and `ESCROW_XMR` off on a
+testnet market and on a stagenet market unless you are trying Monero escrow there (section 10). Payments otherwise go through the pooled wallets below.
 
 What the application does on its own, so you know what to expect while following these steps:
 
