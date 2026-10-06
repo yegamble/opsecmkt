@@ -137,9 +137,12 @@ func (a *App) escrowDecisionView(ctx context.Context, d *PageData, v *EscrowOrde
 		dv.Text += " An administrator may change it until its settlement has a final transaction."
 	}
 	// P2-R4: a live release older than the dispute is the one built when the order was shipped (a claim comes after).
-	var shipped bool
+	// A-437: a failed refund is the decision's: a changed decision supersedes only a built settlement (migration 078's
+	// settlements_built refuses a superseded row with no transaction).
+	var shipped, tooFew bool
 	if err = a.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM settlements s JOIN disputes d ON d.order_id=s.order_id WHERE s.order_id=$1
-		AND s.kind='release' AND s.state<>'superseded' AND s.created<d.created)`, o.ID).Scan(&shipped); err != nil {
+		AND s.kind='release' AND s.state<>'superseded' AND s.created<d.created),
+		EXISTS(SELECT 1 FROM settlements WHERE order_id=$1 AND kind='refund' AND state='failed' AND build_error=$2)`, o.ID, settleTooSmall).Scan(&shipped, &tooFew); err != nil {
 		return err
 	}
 	switch {
@@ -148,6 +151,9 @@ func (a *App) escrowDecisionView(ctx context.Context, d *PageData, v *EscrowOrde
 		v.NextStep = "The dispute was decided for the vendor: the release to the vendor built when the order was shipped pays the vendor; it is shown below. The release deadline no longer applies."
 	case outcome == "release":
 		v.NextStep = "The dispute was decided for the vendor: the vendor claims the escrowed coins from this page."
+	case tooFew:
+		// A-437: the refund's coins were left out for a stray refund (leaveOutTooFew); each deposit line says where it is.
+		v.NextStep = "The dispute was decided for the buyer, but the market could not build the refund: the coins in this escrow were too few to pay the network fee and an output of at least 0.0001 BTC. A stray refund returns them, together with any later deposit, to the buyer's refund address once together they can pay the network fee; each deposit below says where it stands."
 	default:
 		v.NextStep = "The dispute was decided for the buyer: the coins in this escrow go back to the buyer's refund address through the refund settlement below."
 	}

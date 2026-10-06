@@ -19,10 +19,22 @@ func (x *escrowEnv) escrowAddr(order string) string {
 	return agStrings(x.t, x.testEnv, "SELECT address FROM escrows WHERE order_id=$1", order)[0]
 }
 
-// A-435's guards act on a cancelled order only (QA REQUIRED-1). A dispute decided for the buyer whose refund fails
-// too-small keeps its deposit counted (A-437 decides what returns it): it is neither left out nor flagged, and no stray
-// refund is requested for it (leaveOutTooFew's cancelled guard). A deposit sent after that order closed is returned by
-// a stray refund: the refund's failure holds the coins a stray refund returns only on a cancelled order (strayHeldSQL).
+// A-435's guards as A-437 extends them (QA REQUIRED-1): a refund's too-small failure leaves its deposits out, and
+// holds the coins a stray refund returns, on an order whose coins go back to the buyer: cancelled
+// (TestEscrowTooSmallRefundReturned) or resolved with the dispute decided for the buyer, the live decision; never on
+// one whose coins are the vendor's, nor through a refund a changed decision superseded.
+//   - Decided for the buyer, the refund too few: its deposit is left out and flagged, and no stray refund is requested
+//     for it (A-437 changed this leg, which expected it counted, unflagged; TestEscrowTooSmallRefundResolved has the
+//     whole journey). A deposit sent after that order closed makes the coins worth more: a stray refund is requested.
+//   - Decided for the vendor, the release too few (it fails like a refund): its deposit stays counted and unflagged,
+//     the parties are told; a deposit Core reported as conflicted when the dispute was decided and mined since stays
+//     counted for the release (no A-428 note); a deposit after the close gets its stray refund, since a release's
+//     failure holds nothing (new leg).
+//   - Decided for the vendor, then for the buyer, then for the vendor again: a stray refund of a deposit after the
+//     close fails too-small and holds its coins; neither the refund the second decision requests (newer than that
+//     failure) nor, once the third decision supersedes it, that refund hides the failure, so the same coins are not
+//     tried again (new leg; a decision is changed only while its settlement is built, so a superseded refund never
+//     failed and left nothing out).
 func TestEscrowTooSmallRefundCancelledOnly(t *testing.T) {
 	x := newEscrowEnv(t)
 	_, admin := x.user("eadmin_"+randomToken()[:6], "admin")
@@ -40,12 +52,18 @@ func TestEscrowTooSmallRefundCancelledOnly(t *testing.T) {
 		}
 		return order
 	}
+	deposits := func(order string) []string {
+		return agStrings(t, x.testEnv, "SELECT amount||' '||escrow_left_out||' '||flagged FROM payments WHERE order_id=$1 ORDER BY amount", order)
+	}
+	strays := func(order string) []string {
+		return agStrings(t, x.testEnv, "SELECT state||' '||build_error||' '||COALESCE(input_total,0) FROM settlements WHERE order_id=$1 AND kind='stray_refund' ORDER BY id", order)
+	}
 
 	order := resolved("counted")
 	for range 2 {
 		x.poll()
 	}
-	if got := agStrings(t, x.testEnv, "SELECT amount||' '||escrow_left_out||' '||flagged FROM payments WHERE order_id=$1", order); !slices.Equal(got, []string{"5000 false false"}) {
+	if got := deposits(order); !slices.Equal(got, []string{"5000 true true"}) {
 		t.Fatalf("a resolved order's too-small refund: deposits %v; events %q", got, x.events(order))
 	}
 	if id, state := x.stray(order); id != 0 {
@@ -59,6 +77,77 @@ func TestEscrowTooSmallRefundCancelledOnly(t *testing.T) {
 	}
 	if id, _ := x.stray(order); id == 0 {
 		t.Fatalf("a deposit after a resolved order closed: no stray refund; events %q", x.events(order))
+	}
+
+	// Decided for the vendor: the release fails too-small and leaves everything counted.
+	order = x.draft()
+	addr := x.mustCheckout(order, regtestAddr("too few release"))
+	x.DB.Exec("UPDATE products SET delivery_content='' WHERE id=(SELECT product_id FROM orders WHERE id=$1)", order)
+	big := txidOf("release conflicted " + order)
+	x.core.deposit(addr, big, 0, 500000, -2)
+	x.fund(order, order, 3, 100000)
+	if w := x.do("POST", "/disputes", x.buyerSess, url.Values{"order_id": {order}, "reason": {"The content was never delivered to me at all."}}); w.Code != 303 {
+		t.Fatalf("release: dispute: %d %s", w.Code, w.Body.String())
+	}
+	if code, body := x.resolve(admin, x.disputeID(order), "release", testPassword); code != 303 {
+		t.Fatalf("release: resolve: %d %s", code, body)
+	}
+	x.DB.Exec("UPDATE payments SET amount=5000 WHERE order_id=$1 AND txid<>$2", order, big)
+	if code, body := x.claim(order, x.vendorSess, regtestAddr("too few release claim")); code != 303 {
+		t.Fatalf("release: claim: %d %s", code, body)
+	}
+	x.poll()
+	if _, kind, state, class := x.settlement(order); kind != "release" || state != "failed" || class != settleTooSmall {
+		t.Fatalf("release: %s %s %s", kind, state, class)
+	}
+	x.core.setConfs(big, 3)
+	for range 2 {
+		x.poll()
+	}
+	if got := deposits(order); !slices.Equal(got, []string{"5000 false false", "500000 false false"}) {
+		t.Fatalf("release: deposits %v; events %q", got, x.events(order))
+	}
+	if notes, buyer, staff := x.uncounted(order); notes+buyer+staff != 0 || agInt(x.testEnv, "SELECT count(*) FROM notifications WHERE user_id=$1 AND strpos(body,$2)>0 AND strpos(body,'could not be built')>0", x.vendor, shortID(order)) != 1 {
+		t.Fatalf("release: did-not-count notes %d, buyer %d, staff %d; events %q", notes, buyer, staff, x.events(order))
+	}
+	if id, state := x.stray(order); id != 0 {
+		t.Fatalf("release: stray refund %d %s", id, state)
+	}
+	x.core.deposit(addr, txidOf("release after close "+order), 0, 4000, 3)
+	x.poll()
+	if id, _ := x.stray(order); id == 0 {
+		t.Fatalf("release: a deposit after the close: no stray refund; events %q", x.events(order))
+	}
+
+	// A refund that is not the live decision: the decision is changed to a refund after a stray refund's too-small
+	// failure, and back to a release once that refund is built.
+	order, dispute := x.disputedEscrow(regtestAddr("too few changed"))
+	if code, body := x.resolve(admin, dispute, "release", testPassword); code != 303 {
+		t.Fatalf("changed: resolve: %d %s", code, body)
+	}
+	x.core.deposit(x.escrowAddr(order), txidOf("changed after close "+order), 0, 3000, 3)
+	x.poll()
+	if got := strays(order); !slices.Equal(got, []string{"failed " + settleTooSmall + " 3000"}) {
+		t.Fatalf("changed: the stray refund: %q", got)
+	}
+	live := func() []string {
+		return agStrings(t, x.testEnv, "SELECT kind||' '||state FROM settlements WHERE order_id=$1 AND kind IN ('release','refund') AND state<>'superseded'", order)
+	}
+	if code, body := x.changeDecision(admin, order, "refund", testPassword); code != 303 {
+		t.Fatalf("changed: to a refund: %d %s", code, body)
+	}
+	x.poll()
+	if got := live(); !slices.Equal(got, []string{"refund awaiting_signature"}) {
+		t.Fatalf("changed: the refund %q; stray refunds %q", got, strays(order))
+	}
+	if code, body := x.changeDecision(admin, order, "release", testPassword); code != 303 {
+		t.Fatalf("changed: back to a release: %d %s", code, body)
+	}
+	for range 3 {
+		x.poll()
+	}
+	if got := strays(order); len(live()) != 0 || !slices.Equal(got, []string{"failed " + settleTooSmall + " 3000"}) || !slices.Equal(deposits(order), []string{"3000 false true", "100000 false false"}) {
+		t.Fatalf("changed: live %q, stray refunds %q (the same coins tried again?), deposits %v; events %q", live(), got, deposits(order), x.events(order))
 	}
 }
 

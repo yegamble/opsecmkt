@@ -491,7 +491,7 @@ func (a *App) buildXMRSettlement(ctx context.Context, s *xmrSettleRow) error {
 		plan = stored.plan()
 	}
 	if plan.Outputs[0].Sats < floor {
-		return a.xmrSettleWaits(ctx, s, xmrTooSmall)
+		return a.xmrSettleTooSmall(ctx, s, deposits, pending)
 	}
 	dests := make([]xmrDestination, len(plan.Outputs))
 	for i, o := range plan.Outputs {
@@ -503,6 +503,9 @@ func (a *App) buildXMRSettlement(ctx context.Context, s *xmrSettleRow) error {
 	}
 	if class := checkXMRBuild(tx, plan.Outputs, keyImages, x.maxFee, floor); class != "" {
 		log.Printf("escrow: Monero escrow settlement of order %s: the wallet's transaction was discarded unrelayed: %s", shortID(s.OrderID), class)
+		if class == xmrTooSmall {
+			return a.xmrSettleTooSmall(ctx, s, deposits, pending)
+		}
 		return a.xmrSettleWaits(ctx, s, class)
 	}
 	if feeReplaced {
@@ -514,6 +517,69 @@ func (a *App) buildXMRSettlement(ctx context.Context, s *xmrSettleRow) error {
 	}
 	s.State, s.TxHash, s.Metadata, s.KeyImages, s.Wait = "built", tx.TxHash, tx.Metadata, keyImages, ""
 	return a.relayXMRStored(ctx, s)
+}
+
+// xmrSettleTooSmall handles settlement s, which claims deposits, whose coins are too few to pay the network fee and
+// leave the claimant the Monero floor (the plan, or the wallet's transaction after its fee). A release (the vendor's
+// coins), a stray refund (which a later deposit may let build, A-435), a re-request (which spends its stored key
+// images) and a refund while a deposit it would spend still confirms wait with the too-small class, as before. A refund
+// otherwise ends (A-437): waiting, it held its deposits for good while a stray refund of later deposits waited or paid
+// without them, so coins that together could be refunded stayed in the escrow account (xmrRefundTooFew).
+func (a *App) xmrSettleTooSmall(ctx context.Context, s *xmrSettleRow, deposits []xmrDeposit, pending bool) error {
+	if s.Kind != "refund" || s.Supersedes != 0 || pending {
+		return a.xmrSettleWaits(ctx, s, xmrTooSmall)
+	}
+	return a.xmrRefundTooFew(ctx, s, deposits)
+}
+
+// xmrRefundTooFew ends refund s, whose deposits are too few (requested -> failed, too-small; xmr_settlements_moves
+// allows it, and a failed row with no transaction is never re-requested), and leaves those deposits out and flags them
+// for the stray refund, in one transaction under the order row lock: one order note (staff told), and a notice to both
+// parties, as a Bitcoin refund's failure and leaveOutTooFew do. The stray refund (requested on the next pass, or
+// already waiting) returns them with any later deposit, and any deposit that did not count and is mined later
+// (xmrLeaveOutUncounted), once together they pay the fee; it waits rather than fails meanwhile, so nothing repeats.
+func (a *App) xmrRefundTooFew(ctx context.Context, s *xmrSettleRow, deposits []xmrDeposit) error {
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	o, err := scanOrder(tx.QueryRowContext(ctx, orderQuery+" WHERE o.id=$1 FOR UPDATE OF o", s.OrderID))
+	if err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, "UPDATE xmr_settlements SET state='failed',send_error=$2,updated=now() WHERE id=$1 AND state='requested'", s.ID, xmrTooSmall)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return nil
+	}
+	ids := make([]int64, len(deposits))
+	for i, d := range deposits {
+		ids[i] = d.ID
+	}
+	var n, sum int64
+	if err = tx.QueryRowContext(ctx, `WITH m AS (UPDATE payments SET escrow_left_out=true,flagged=true,updated=now() WHERE order_id=$1 AND id=ANY($2) AND xmr_settlement_id IS NULL
+			AND NOT after_close AND NOT escrow_left_out AND NOT spent_outside RETURNING amount)
+		SELECT count(*),COALESCE(sum(amount),0) FROM m`, s.OrderID, ids).Scan(&n, &sum); err != nil {
+		return err
+	}
+	refund := "its refund"
+	if o.State == stateResolved {
+		refund = "the refund its dispute decision requested"
+	}
+	note := fmt.Sprintf("%d deposit(s) (%s XMR, %s %s) to this order's Monero escrow are not spent by %s: the coins were too few to pay the network fee and an output of at least %s XMR, so the market could not send the refund, which ends. "+
+		"They stay in the escrow account; a stray refund returns them, together with any later deposit to this escrow, less the network fee, to the buyer's refund address given at checkout once together they can pay the network fee.",
+		n, amount(sum, 12), a.netTag(), xmrEscrowNetwork, refund, amount(minPayoutXMR, 12))
+	if err = a.flagOrder(ctx, tx, &o, note, "Order "+shortID(s.OrderID)+": "+note); err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	log.Printf("escrow: Monero escrow settlement of order %s failed: %s; its deposits are left out for a stray refund", shortID(s.OrderID), xmrTooSmall)
+	return nil
 }
 
 // xmrBuildRefused handles transfer's error for settlement s's plan (monero-wallet-rpc 0.18.5.1's codes). -17 (not
@@ -1132,15 +1198,17 @@ func (a *App) xmrLeaveOutTopUps(ctx context.Context, tx *sql.Tx, o *Order) error
 	return err
 }
 
-// xmrLeaveOutUncounted marks, for a cancelled Monero escrow order with no refund that spends or will spend its deposits
-// (none requested, or the one requested failed or was spent outside), every deposit that has reached the confirmation
-// threshold, that no settlement spends and that is neither after close nor left out as left out (A-424): one the wallet
-// read as conflicted (double_spend_seen) or no longer listed when the order was cancelled, so it did not count, mined
-// since. As xmrLeaveOutTopUps does, in tx under the order row lock: one order note, a notice to the buyer and to staff,
-// only for the deposits newly marked. The stray refund returns them to the buyer's refund address.
+// xmrLeaveOutUncounted marks, for a Monero escrow order whose coins go back to the buyer (coinsToBuyer: cancelled, or
+// resolved for the buyer, A-437) with no refund that spends or will spend its deposits (none requested, or the one
+// requested failed, too few included (xmrRefundTooFew), or was spent outside), every deposit that has reached the
+// confirmation threshold, that no settlement spends and that is neither after close nor left out as left out (A-424):
+// one the wallet read as conflicted (double_spend_seen) or no longer listed when the order was cancelled or its dispute
+// decided, so it did not count, mined since. As xmrLeaveOutTopUps does, in tx under the order row lock: one order note,
+// a notice to the buyer and to staff, only for the deposits newly marked. The stray refund returns them to the buyer's
+// refund address.
 func (a *App) xmrLeaveOutUncounted(ctx context.Context, tx *sql.Tx, o *Order, threshold int64) error {
-	if o.State != stateCancelled {
-		return nil
+	if back, err := coinsToBuyer(ctx, tx, o); err != nil || !back {
+		return err
 	}
 	var n, sum int64
 	if err := tx.QueryRowContext(ctx, `WITH m AS (UPDATE payments SET escrow_left_out=true,flagged=true,updated=now() WHERE order_id=$1 AND xmr_settlement_id IS NULL
@@ -1149,9 +1217,13 @@ func (a *App) xmrLeaveOutUncounted(ctx context.Context, tx *sql.Tx, o *Order, th
 		SELECT count(*),COALESCE(sum(amount),0) FROM m`, o.ID, threshold).Scan(&n, &sum); err != nil || n == 0 {
 		return err
 	}
-	note := fmt.Sprintf("%d deposit(s) (%s XMR, %s %s) to this order's Monero escrow did not count for the order when it was cancelled (the escrow wallet read them as conflicted, or no longer listed them), and no refund spends them. "+
+	when := "it was cancelled"
+	if o.State == stateResolved {
+		when = "its dispute was decided"
+	}
+	note := fmt.Sprintf("%d deposit(s) (%s XMR, %s %s) to this order's Monero escrow did not count for the order when %s (the escrow wallet read them as conflicted, or no longer listed them), and no refund spends them. "+
 		"They have confirmed since and stay in the escrow account; a stray refund returns them, less the network fee, to the buyer's refund address. Do not send more coins to this escrow.",
-		n, amount(sum, 12), a.netTag(), xmrEscrowNetwork)
+		n, amount(sum, 12), a.netTag(), xmrEscrowNetwork, when)
 	if err := a.flagOrder(ctx, tx, o, note, ""); err != nil {
 		return err
 	}
