@@ -777,5 +777,21 @@ read, then the work on the next synced pass), `TestEscrowRegtestExemptFromPeerAn
 `scripts/test-escrow-regtest.sh` were run again against Core 31.1 with `getnetworkinfo` on the whitelist. Not tested: a
 real node that lost its peers or stalled on a public network.
 
+## Per-order key derivation (A-453, shape (b) groundwork)
+
+Groundwork for per-order wallets (ruling P4-R2, owner decision 2026-10-05), on the development branch with no product
+caller: nothing in the market uses it yet, and escrows still take their child keys from Bitcoin Core. The Go code
+(`internal/market/escrow_bip32.go`, standard library `math/big` on secp256k1, no new dependency) derives the unhardened
+child `<i>` of a registered account key by BIP32 public derivation, refuses hardened indexes, moves to the next index
+when BIP32 calls a child invalid and reports the index it used, and serializes the child rooted (depth 0, parent
+fingerprint 0, child number 0) as a `tpub` or a SLIP-132 `Vpub`, so an order wallet holds no link to the account. A
+helper asks Core's `deriveaddresses` (already on the escrow user's whitelist) for the address from the account key at
+`<i>/0/0` and from the rooted key at `/0/0`, as `wpkh` for one key or the escrow's `wsh(sortedmulti(2,…))` for three,
+and refuses any mismatch. How it was tested: unit (BIP32 test vectors 1–3 and 5, a forced invalid child, the rooted
+round trip, `FuzzCKDPub`; the helper against a simulated node), and on a real local chain, Core 31.1 on regtest
+(`TestEscrowRegtestBIP32` in `scripts/test-escrow-regtest.sh`: indexes 2, 3, 17, 1000 and 2^31-1 for three wallets'
+BIP48 accounts agree with Core, and with Core's own derivation from each private root; a wrong index or a changed chain
+code is refused). Not tested: any wallet other than Bitcoin Core, and any public network.
+
 All escrow testing uses regtest, a local Monero fakechain and public test networks only. Mainnet stays an operator opt-in
 and is never used in development or tests.

@@ -13,7 +13,8 @@ import (
 
 // Escrow keys (WR-escrow ES-3, A-246 Phase 1). A party registers one extended public key with its key origin,
 // "[fingerprint/path]tpub…", parsed here strictly before any RPC sees it: base58check and the BIP32 serialization
-// are decoded in Go (stdlib only). Child keys are derived by Bitcoin Core (utxoupdatepsbt), never here.
+// are decoded in Go (stdlib only). Child keys of escrows are derived by Bitcoin Core (utxoupdatepsbt), never here; the
+// shape-(b) per-order derivation (escrow_bip32.go, no product caller yet) is cross-checked against Core.
 
 const base58Alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
