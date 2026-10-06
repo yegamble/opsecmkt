@@ -126,7 +126,11 @@ descriptor in your wallet is what detects that.
   market's signature-paste check refuses that signature anyway, because Electrum adds an entry for every key,
   the market's included. The refusal protects nothing that is stored: only the signer's own signatures are ever
   kept, whatever else a pasted copy carries (`TestEscrowPasteForeignFieldsInert`; `TestEscrowWalletFixtures`
-  checks the refusal on the signed files in `internal/market/testdata/escrow-wallets/`). Electrum's own seed type, what "Create a new seed" makes and the
+  checks the refusal on the signed files in `internal/market/testdata/escrow-wallets/`; those files come from the
+  script's `--update-fixtures` run at `cf6a8a0` with uncommitted changes, logged in
+  `artifacts/real-chain/a450-cf6a8a0fdbb4-dirty-fixtures-wallets.log`, and the clean evidence run at `52eb99f`
+  (`artifacts/real-chain/a450-52eb99f7aba5-wallets.log`) used different throwaway keys, so its log does not contain
+  them; both logs are local and gitignored). Electrum's own seed type, what "Create a new seed" makes and the
   default in Tails, cannot follow a per-order key path at all: Electrum fixes its multisig keys at `m/1'` and
   takes no path for that seed type (`from_seed` in Electrum's `keystore.py`; the script's `electrum-seed-type`
   leg records it).
