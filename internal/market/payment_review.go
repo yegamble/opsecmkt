@@ -25,14 +25,14 @@ func init() {
 // paymentFlagOpenRule is the one rule (QA462C) deciding whether a payment flag is open, as SQL over a payments row
 // whose alias is "@" (paymentFlagOpen substitutes it). The moderation desk lists a flag as open and offers its form
 // (loadPaymentReviews), the review handler records a disposition only on an open flag (recordPaymentReview), and a
-// late-deposit notice episode is held only by an open flag of a deposit not credited, below the floor or locked
-// (flagLateDeposits), so a flag that holds it is always one staff can record. A flag is open until staff record its disposition (A-31: no action or refunded by hand; one escalated
-// to an administrator stays open) while its deposit is a locked transfer, of a payout below the minimum automatic
-// payout (A-99), a credited deposit whose regression was announced and has not confirmed again (regress_notice), an
-// escrow deposit spent outside the market (P1-d1), or a deposit not credited that does not count for the order: a
-// pooled one (after settlement or after the close), or an escrow one recorded after the close or left out of its
-// settlement. An escrow deposit that counts for the order is not open, credited or not (QA462B-1): it is settled by
-// the order's release or refund, never by staff.
+// late-deposit notice episode is held only by an open flag of a deposit neither credited, nor below the floor, nor
+// locked (flagLateDeposits), so a flag that holds it is always one staff can record. A flag is open until staff record
+// its disposition (A-31: no action or refunded by hand; one escalated to an administrator stays open) while its
+// deposit is a locked transfer, of a payout below the minimum automatic payout (A-99), a credited deposit whose
+// regression was announced and has not confirmed again (regress_notice), an escrow deposit spent outside the market
+// (P1-d1), or a deposit not credited that does not count for the order: a pooled one (after settlement or after the
+// close), or an escrow one recorded after the close or left out of its settlement. An escrow deposit that counts for
+// the order is not open, credited or not (QA462B-1): it is settled by the order's release or refund, never by staff.
 const paymentFlagOpenRule = `@.flagged AND @.disposition IN ('','escalated') AND (@.locked OR @.below_floor OR @.regress_notice OR @.spent_outside
 	OR NOT @.credited AND (@.after_close OR @.escrow_left_out OR NOT EXISTS (SELECT 1 FROM escrows es WHERE es.order_id=@.order_id)))`
 
