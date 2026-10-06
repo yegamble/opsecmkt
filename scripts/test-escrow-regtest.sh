@@ -132,9 +132,10 @@
 # signer log or transcript line holds the seed or a tprv.
 #
 # A-440 legs (market key protection, P4-R6). TestEscrowRegtestPooled: the pooled RPC user, restricted to the rpcwhitelist
-# line below (docs/operator-guide.md, "The pooled RPC user"), is refused listdescriptors (true and false), dumpwallet and
-# backupwallet on the arbiter wallet with HTTP 403 while the operator user is not (a count, never printed); an App with
-# escrow and the pooled provider on the same node starts escrow (its startup self-check got Core's real 403), and the
+# line below (docs/operator-guide.md, "The pooled RPC user"), is refused listdescriptors (true and false), gethdkeys
+# (private true and false), walletprocesspsbt, dumpwallet and backupwallet on the arbiter wallet with HTTP 403 while the
+# operator user is not (a count, never printed; its walletprocesspsbt of an empty PSBT fails decoding, -22); an App with
+# escrow and the pooled provider on the same node starts escrow (its startup self-check got Core's real 403s), and the
 # pooled provider still works through every whitelisted method: the check reloads an unloaded pooled wallet
 # (loadwallet), a deposit address is issued, the deposit is credited by a watcher pass, and a payout is sent by the
 # watcher (validateaddress, sendtoaddress) and confirmed; restarted with the unrestricted operator user as the pooled
@@ -147,6 +148,14 @@
 # "now") co-signs a second claim the same way. Encryption to the operator's key (docs/testnet-runbook.md) happens off
 # the node and is not exercised here.
 #
+# A-471 leg (a payment to the arbiter wallet cannot disable escrow, TestEscrowRegtestArbiterDeposit): a regtest wallet pays
+# the wpkh address of an escrow's market child key (shown in the buyer's descriptor; the arbiter wallet owns it), so the
+# arbiter wallet has a transaction (txcount 1, one "receive"); a restart and a watcher retry's check both start escrow.
+# QA4W4A-1: three transactions of 2000 outputs each pay the same address; a restart reads only what is newer than the
+# checkpoint the last passing check left (now the tip) and escrow stays on, as after another restart. Control, behind
+# them: the operator spends from the arbiter wallet to its own change address (listtransactions lists no send for it)
+# and a restart leaves escrow disabled (not dedicated).
+#
 # A-441 leg (broadcast honesty, TestEscrowRegtestPrivateBroadcast): on a second regtest node started with -privatebroadcast
 # -proxy=127.0.0.1:9 -listen=0 (a proxy nobody answers; same users and whitelists), the Tor-mode gate reads real
 # getnetworkinfo answers (it lets the private node send, proxy set for IPv4 and IPv6 on Core 31.1, and holds the main
@@ -155,6 +164,15 @@
 # lists it), so the settlement stays broadcast; five blocks later nothing is reported, at six one staff notice and one
 # order note say it is queued or stuck and /admin lists it, and later passes do not repeat it. generateblock then mines the
 # stored transaction: one note clears the alert, the /admin line goes and it confirms.
+#
+# A-455 leg (a per-order wallet key's practice signature, TestEscrowRegtestPerOrderPractice; no escrow uses such a key
+# yet): a Core wallet's seed stands in for a BIP39 seed; its BIP48 account key is registered on a real App as a per-order
+# wallet key. From the practice page alone (the path, the two rooted cosigner Vpubs, the first address and the PSBT) the
+# operator builds the per-order practice wallet from the seed as a private descriptor (root/48h/1h/0h/2h/2147483647/0/0
+# with both cosigners at /0/0): Core derives the address the page shows and signs the PSBT with descriptorprocesspsbt,
+# and that signature activates the key (Core's finalizepsbt verifies it beside the server's throwaway signature;
+# testmempoolaccept reports missing-inputs). Refused first: the unsigned PSBT, the vendor's Core wallet holding the
+# account's shape-(a) range (it has no signature to give), and the per-order wallet's SIGHASH_NONE signature.
 #
 # Ruled Phase 1 legs and where they run: release (Settlement, Cosign: claim), refund (Settlement, Cosign), dispute
 # (Cosign), comma injection refused (Gate), NONE paste refused (PracticeSign, Settlement), forged market slot refused
@@ -181,7 +199,7 @@
 #     "-rpcauth=opsecmkt-signer:$ssalt\$$shash" -rpcwhitelistdefault=0 \
 #     -rpcwhitelist=opsecmkt-signer:decodepsbt,descriptorprocesspsbt,getdescriptorinfo \
 #     -rpcwhitelist=opsecmkt-pooled:getblockchaininfo,getwalletinfo,loadwallet,getnetworkinfo,getnewaddress,listreceivedbyaddress,gettransaction,sendtoaddress,validateaddress \
-#     -rpcwhitelist=opsecmkt-escrow:getblockchaininfo,getnetworkinfo,getrawchangeaddress,getaddressinfo,createpsbt,utxoupdatepsbt,importdescriptors,getdescriptorinfo,deriveaddresses,gettxout,keypoolrefill,walletprocesspsbt,descriptorprocesspsbt,combinepsbt,finalizepsbt,testmempoolaccept,sendrawtransaction,getwalletinfo,listreceivedbyaddress,gettransaction,listtransactions
+#     -rpcwhitelist=opsecmkt-escrow:getblockchaininfo,getnetworkinfo,getrawchangeaddress,getaddressinfo,createpsbt,utxoupdatepsbt,importdescriptors,getdescriptorinfo,deriveaddresses,gettxout,keypoolrefill,walletprocesspsbt,descriptorprocesspsbt,combinepsbt,finalizepsbt,testmempoolaccept,sendrawtransaction,getwalletinfo,listreceivedbyaddress,gettransaction,listtransactions,listsinceblock
 #   # the same command again as escrow-regtest-private, published on 127.0.0.1:18453, ending in:
 #   #   -privatebroadcast -proxy=127.0.0.1:9 -listen=0
 #   ESCROW_REGTEST_OPERATOR_RPC_URL=http://operator:operator-pass@127.0.0.1:18443 \
@@ -339,7 +357,7 @@ private_signet() {
   done
   say "node B ($b) synced from node A: height $height_b, $peers peer(s), initialblockdownload false"
 
-  local legs=(PracticeSign Funding Settlement Cosign Gate Bump Physical Deadline Reserve BIP32 Signer Pooled ArbiterRestore Isolated)
+  local legs=(PracticeSign Funding Settlement Cosign Gate Bump Physical Deadline Reserve BIP32 Signer Pooled ArbiterRestore ArbiterDeposit PerOrderPractice Isolated)
   local pattern
   pattern=$(IFS='|'; echo "${legs[*]}")
   set +e
@@ -433,12 +451,12 @@ log="${ESCROW_REGTEST_LOG:-artifacts/real-chain/test-escrow-regtest-$(date -u +%
 mkdir -p "$(dirname "$log")"
 echo "Bitcoin escrow regtest check; transcript: $log"
 set +e
-go test -count=1 -timeout 15m -run '^TestEscrowRegtest(PracticeSign|Funding|Settlement|Cosign|Recovery|Gate|Bump|Physical|Deadline|Reserve|Conflicted|BIP32|Signer|Pooled|ArbiterRestore|PrivateBroadcast)$' -v ./internal/market/ 2>&1 | tee "$log"
+go test -count=1 -timeout 15m -run '^TestEscrowRegtest(PracticeSign|Funding|Settlement|Cosign|Recovery|Gate|Bump|Physical|Deadline|Reserve|Conflicted|BIP32|Signer|Pooled|ArbiterRestore|ArbiterDeposit|PrivateBroadcast|PerOrderPractice)$' -v ./internal/market/ 2>&1 | tee "$log"
 status=${PIPESTATUS[0]}
 set -e
 # Each leg is reported from its own go test result line, so one failing leg never makes another read as failed.
 failed=0
-for leg in TestEscrowRegtestPracticeSign TestEscrowRegtestFunding TestEscrowRegtestSettlement TestEscrowRegtestCosign TestEscrowRegtestRecovery TestEscrowRegtestGate TestEscrowRegtestBump TestEscrowRegtestPhysical TestEscrowRegtestDeadline TestEscrowRegtestReserve TestEscrowRegtestConflicted TestEscrowRegtestBIP32 TestEscrowRegtestSigner TestEscrowRegtestPooled TestEscrowRegtestArbiterRestore TestEscrowRegtestPrivateBroadcast; do
+for leg in TestEscrowRegtestPracticeSign TestEscrowRegtestFunding TestEscrowRegtestSettlement TestEscrowRegtestCosign TestEscrowRegtestRecovery TestEscrowRegtestGate TestEscrowRegtestBump TestEscrowRegtestPhysical TestEscrowRegtestDeadline TestEscrowRegtestReserve TestEscrowRegtestConflicted TestEscrowRegtestBIP32 TestEscrowRegtestSigner TestEscrowRegtestPooled TestEscrowRegtestArbiterRestore TestEscrowRegtestArbiterDeposit TestEscrowRegtestPrivateBroadcast TestEscrowRegtestPerOrderPractice; do
   if grep -q -- "--- PASS: $leg " "$log"; then
     echo "PASS: $leg"
   elif grep -q -- "--- FAIL: $leg " "$log"; then
@@ -460,4 +478,4 @@ if [[ $status -ne 0 || $failed -ne 0 ]]; then
   echo "FAILED: go test exited $status; see $log" >&2
   exit 1
 fi
-echo "PASS: practice signing, escrow creation and funding, settlement building and party signing, co-signing, broadcast and confirmation, recovery and reconciliation, the Phase 1 gate's remaining adversarial legs, a same-recipient fee bump, a physical order's release signed by the buyer and the vendor with no arbiter signature, one released at its deadline with the vendor's signature co-signed by the market, no escrow key handed out again after a restore, a deposit conflicted at an unpaid cancellation and mined afterwards returned by a stray refund, the Go per-order key derivation agreeing with Core, the escrow signer co-signing a shape-(b) escrow and refusing what it must, the whitelisted pooled user refused the arbiter wallet's descriptors while pooled payments still work, and the arbiter wallet backed up, wiped, restored (restorewallet, then the importdescriptors fallback) and co-signing with its fingerprint pin unchanged, and a settlement queued by -privatebroadcast behind a dead proxy reported queued or stuck after 6 blocks and cleared once mined, on regtest; transcript in $log"
+echo "PASS: practice signing, escrow creation and funding, settlement building and party signing, co-signing, broadcast and confirmation, recovery and reconciliation, the Phase 1 gate's remaining adversarial legs, a same-recipient fee bump, a physical order's release signed by the buyer and the vendor with no arbiter signature, one released at its deadline with the vendor's signature co-signed by the market, no escrow key handed out again after a restore, a deposit conflicted at an unpaid cancellation and mined afterwards returned by a stray refund, the Go per-order key derivation agreeing with Core, the escrow signer co-signing a shape-(b) escrow and refusing what it must, the whitelisted pooled user refused the arbiter wallet's descriptors while pooled payments still work, and the arbiter wallet backed up, wiped, restored (restorewallet, then the importdescriptors fallback) and co-signing with its fingerprint pin unchanged, a payment to the arbiter wallet (and 6000 dust outputs) leaving escrow on while a spend from it disables escrow, and a settlement queued by -privatebroadcast behind a dead proxy reported queued or stuck after 6 blocks and cleared once mined, and a per-order wallet key's practice signed by Core from the seed and the practice page, on regtest; transcript in $log"

@@ -236,10 +236,11 @@ type PageData struct {
 	// it is ready to take a checkout (xmrEscrowReady). XMRCustody is xmrCustody (every page), so a template never
 	// retypes the owner's sentence (A-402); XMREscrowOrders: vendor desk, the viewer's Monero escrow orders that may hold
 	// coins, counted like EscrowOrders. XMREscrowNet: Monero escrow's network, "fakechain" or "stagenet"
-	// (App.xmrEscrowNetwork, A-449), so the notices name it.
-	XMREscrowOn, XMREscrowAvailable bool
-	XMRCustody, XMREscrowNet        string
-	XMREscrowOrders                 int
+	// (App.xmrEscrowNetwork, A-449), so the notices name it. XMREscrowNetKnown: that network was verified (escrowXMR.formNet
+	// is not ""), so /admin's Payment providers text never names a network no daemon was verified on (QA4W4B-1).
+	XMREscrowOn, XMREscrowAvailable, XMREscrowNetKnown bool
+	XMRCustody, XMREscrowNet                           string
+	XMREscrowOrders                                    int
 	// EscrowKey: /escrow-key and the /account status row, the viewer's Bitcoin escrow key; nil while ESCROW_BTC is off
 	// (escrow_account.go, WR-escrow Phase 1).
 	EscrowKey *EscrowKeyView
@@ -248,7 +249,7 @@ type PageData struct {
 	// EscrowNode: /admin while ESCROW_BTC is on and the escrow node is not synced or not on the pinned chain (A-439)
 	EscrowNode *EscrowNodeView
 	// XMREscrowNode: /admin while ESCROW_XMR is on and the escrow daemon is not synced or not on the pinned network
-	// (A-449; Mismatch names networks, not chains)
+	// (A-449; Mismatch names networks, not chains), or Monero escrow is not ready for another reason (NotReady, QA4W4B-1)
 	XMREscrowNode *EscrowNodeView
 	// EscrowSigner: /admin while ESCROW_SIGNER_SOCKET is set and the escrow signer is not ready (A-454)
 	EscrowSigner *EscrowSignerView
@@ -286,6 +287,17 @@ type PageData struct {
 	// VendorKeyUnusable (A-83): a physical listing's product and checkout pages, and its buyer's order page, when the
 	// vendor has no key that can receive encrypted messages (canReceiveEncrypted), so no shipping address can be sent.
 	VendorKeyUnusable bool
+	// PurchaseBlocks (A-444): a listing's product and checkout pages, each coin whose intake is escrow only while the
+	// listing cannot use its escrow (escrow_readiness.go), PurchaseBlocked the same by coin, and NoPurchase when every
+	// coin is blocked: the listing is not available for purchase.
+	PurchaseBlocks  []PurchaseBlock
+	PurchaseBlocked map[string]bool
+	NoPurchase      bool
+	// EscrowReadiness (A-444): /admin, the escrow-only readiness panel (escrow_readiness.go).
+	EscrowReadiness *EscrowReadinessView
+	// VendorEscrowKey (A-455, P4-R18): the product and vendor pages' vendor's Bitcoin escrow key type while ESCROW_BTC is
+	// on: "core", "per_order" or "none" (no active key); "" with escrow off.
+	VendorEscrowKey string
 	// noticeCode: the one-shot notice this render consumed (notice.go), for a loader that details it from the
 	// current state (/totp after a recovery-code sign-in); "" without one.
 	noticeCode string
@@ -427,9 +439,38 @@ type PaymentDeposit struct {
 	Confirmations int64
 	State         string
 }
+
+// PurchaseBlock (A-444) is why a listing cannot be bought in Currency while its intake is escrow only, and Fix what
+// its vendor can do (shown to the vendor only).
+type PurchaseBlock struct{ Currency, Reason, Fix string }
+
+// EscrowReadinessView is /admin's escrow-only readiness panel (A-444): per coin its intake and whether its escrow is
+// on, the active listings that cannot use escrow and the vendors with active listings but no active Bitcoin escrow
+// key. ListingCount and VendorCount are uncapped; Listings and Vendors hold at most Limit rows.
+type EscrowReadinessView struct {
+	Coins                     []ReadinessCoin
+	Listings                  []ReadinessListing
+	Vendors                   []ReadinessVendor
+	ListingCount, VendorCount int
+	Limit                     int
+}
+
+// ReadinessCoin: Intake is payment_intake_<COIN>; Pooled, the coin's pooled wallet is configured; NotReady, why the
+// coin's escrow, on, is not ready ("" when it is, QA4W4B-1).
+type ReadinessCoin struct {
+	Currency, Intake, NotReady string
+	EscrowOn, Pooled           bool
+}
+type ReadinessListing struct{ ID, Title, Vendor, Kind, Reason string }
+type ReadinessVendor struct {
+	Handle   string
+	Listings int
+}
+
 type ProviderStatus struct {
 	Currency, Network string
 	Enabled           bool
+	Configured        bool   // the pooled wallet is configured in this process, available or not (pooledConfigured)
 	Status            string // Enabled, Unavailable (retried), Refused, Disabled
 	Error             string
 	Confirmations     int
@@ -612,10 +653,12 @@ type EscrowChainMismatch struct {
 // broadcasts and the settlements queued or stuck.
 type EscrowNodeView struct {
 	NotSynced       string
+	NotReady        string // Monero escrow only: the state its startup checks left it in while not ready (escrowXMR.notReady), with Remedy
 	Remedy          string
 	Mismatch        *EscrowChainMismatch
 	PooledKey       string
 	PooledWhitelist string
+	ArbiterRead     string // why the arbiter wallet's entries are not read (QA4W4A-1): "waiting" while the read goes on, or the failure's class
 	TorHold         string
 	Stalled         []EscrowStallView
 	StallN          int // escrowStallBlocks
@@ -706,10 +749,17 @@ type EscrowKeyView struct {
 	ActiveAt        string // "" = inactive
 	HasEscrows      bool
 	Unreadable      bool // the stored key cannot be opened: APP_SECRET_KEY (or a legacy SETUP_TOKEN) changed
+	PerOrder        bool // layout per_order: a per-order wallet key (A-455); otherwise a Bitcoin Core key
 	PracticeOffered bool
 	Practice        string
 	PracticeError   string
-	NextChild       int64 // the child index (/0/<n>) the account's next escrow uses (escrowNextChildSQL)
-	RangeAdvice     bool  // NextChild passed escrowRangeAdvice: the page advises keypoolrefill (P2-R10)
-	KeypoolSize     int64 // the keypoolrefill size it advises: 1000 keys past NextChild
+	// A per-order wallet key's practice (A-455): the owner's key origin for the practice wallet, the two cosigner keys
+	// (rooted Vpubs) and the practice wallet's first receiving address, set with Practice.
+	PracticePath       string
+	PracticeDerivation string
+	PracticeCosigners  []string
+	PracticeAddress    string
+	NextChild          int64 // the child index (/0/<n>) the account's next escrow uses (escrowNextChildSQL)
+	RangeAdvice        bool  // NextChild passed escrowRangeAdvice: the page advises keypoolrefill (P2-R10)
+	KeypoolSize        int64 // the keypoolrefill size it advises: 1000 keys past NextChild
 }

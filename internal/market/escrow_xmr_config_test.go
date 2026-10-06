@@ -323,6 +323,40 @@ func TestXMREscrowStartupStates(t *testing.T) {
 	}
 }
 
+// TestXMREscrowNotReadyNamesEachState: while Monero escrow is configured but not ready, notReady names each fixed state
+// of its startup checks in words, with its class, and what to do; ready, it says nothing (QA4W4B-1). The refusal is the
+// one refuseEscrowXMR records. Unit test (no database).
+func TestXMREscrowNotReadyNamesEachState(t *testing.T) {
+	x := &escrowXMR{}
+	if s, r := x.notReady(); s != "its startup checks have not passed yet" || !strings.Contains(r, "server log") {
+		t.Fatalf("no state recorded: %q, %q", s, r)
+	}
+	for _, c := range []struct{ line, class, state, remedy string }{
+		{xmrLogPooledWait, "", "waiting for the pooled Monero wallet's first check", "Start the pooled monero-wallet-rpc, or correct MONERO_WALLET_RPC_URL"},
+		{xmrLogUnchecked, "get_info unreachable", "the escrow daemon or wallet-rpc could not be checked (get_info unreachable)", "ESCROW_XMR_WALLET_RPC_URL is running and reachable"},
+		{xmrLogNetwork, "", "the escrow daemon is not on the network this database's Monero escrows are on", "a new network needs a new database"},
+		{xmrLogSecret, "", "MONERO_WALLET_SECRET is not the secret this database was first started with", "Restore the original secret and restart the app"},
+		{xmrLogUnrecorded, "db-connection", "its secret verifier or seed key could not be checked in the database (db-connection)", "Check the database"},
+		{xmrLogOn, "stagenet", "its startup checks have not passed yet", "The server log names the state"},
+	} {
+		x.state.Store(&xmrState{c.line, c.class})
+		if s, r := x.notReady(); s != c.state || !strings.Contains(r, c.remedy) {
+			t.Errorf("%s: %q, %q", c.line, s, r)
+		}
+	}
+	x.state.Store(&xmrState{xmrLogUnchecked, "refresh unreachable"})
+	x.ready.Store(true)
+	if s, r := x.notReady(); s != "" || r != "" {
+		t.Fatalf("ready: %q, %q", s, r)
+	}
+	logs := captureLog(t)
+	x.refuseEscrowXMR(errXMRPooledWallet)
+	if s, r := x.notReady(); s != "refused until the app is restarted" || !strings.Contains(r, "Reason: "+errXMRPooledWallet.msg+".") || !strings.Contains(r, "restart the app") ||
+		strings.Count(logs.String(), xmrLogRefused) != 1 {
+		t.Fatalf("refused: %q, %q", s, r)
+	}
+}
+
 // TestXMREscrowRecheckIsSticky: after startup, the watcher's re-check (recheckEscrowXMRNetwork) disables Monero
 // escrow until a restart when a node answers but fails the network check, logs one fixed line, and contacts neither
 // node again; an unreachable node changes nothing. Unit test (no database).

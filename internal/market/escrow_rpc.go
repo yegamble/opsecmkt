@@ -36,12 +36,13 @@ import (
 // escrowRPCMethods is every method the adapter calls: the rpcwhitelist line the operator guide documents.
 // getnetworkinfo (read-only: the peer count for the sync guard, A-439, and the proxies and version for the Tor-mode
 // gate, A-441) is called only on a public chain or in APP_MODE=tor, so a clearnet regtest whitelist written before it
-// keeps working.
+// keeps working. listsinceblock (read-only) reads the arbiter wallet's entries for the start check (QA4W4A-1,
+// checkArbiterWallet).
 var escrowRPCMethods = []string{
 	"getblockchaininfo", "getnetworkinfo", "getrawchangeaddress", "getaddressinfo", "createpsbt", "utxoupdatepsbt",
 	"importdescriptors", "getdescriptorinfo", "deriveaddresses", "gettxout", "keypoolrefill", "walletprocesspsbt",
 	"descriptorprocesspsbt", "combinepsbt", "finalizepsbt", "testmempoolaccept", "sendrawtransaction", "getwalletinfo",
-	"listreceivedbyaddress", "gettransaction", "listtransactions",
+	"listreceivedbyaddress", "gettransaction", "listtransactions", "listsinceblock",
 }
 
 // escrowSighash is the only sighash type the market ever signs with (ES-2): a signature made with SIGHASH_NONE let
@@ -162,14 +163,17 @@ const (
 	escrowLogArbiter      = "escrow: Bitcoin escrow disabled: the arbiter wallet could not be read (is ESCROW_BTC_ARBITER_WALLET loaded, and a descriptor wallet with private keys?)"
 	escrowLogFingerprint  = "escrow: Bitcoin escrow disabled: the arbiter wallet's key fingerprint differs from the one pinned in this database; see docs/operator-guide.md, \"Bitcoin escrow (test networks only)\""
 	escrowLogWatch        = "escrow: Bitcoin escrow disabled: the watch-only wallet could not be read (is ESCROW_BTC_WATCH_WALLET loaded, and a descriptor wallet with private keys disabled?)"
-	escrowLogArbiterUse   = "escrow: Bitcoin escrow disabled: the arbiter wallet must be used for the escrow key only (an unencrypted descriptor wallet with private keys and no transactions); see docs/operator-guide.md, \"Bitcoin escrow (test networks only)\""
+	escrowLogArbiterUse   = "escrow: Bitcoin escrow disabled: the arbiter wallet must be used for the escrow key only (an unencrypted descriptor wallet with private keys that has never spent); see docs/operator-guide.md, \"Bitcoin escrow (test networks only)\""
+	escrowLogArbiterRead  = "escrow: Bitcoin escrow disabled: the arbiter wallet's transactions could not be read to check that it has never spent (is listsinceblock on the escrow user's rpcwhitelist, and the node answering?); the check is retried every poll; see docs/operator-guide.md, \"Bitcoin escrow (test networks only)\""
+	escrowLogArbiterWait  = "escrow: Bitcoin escrow off while the arbiter wallet is checked: reading its transactions takes longer than startup allows; the read goes on, and the escrow watcher starts escrow once it has passed"
 	escrowLogFixedFee     = "escrow: the market fee is paid to one fixed address (ESCROW_BTC_FEE_ADDRESS); allowed on test networks only"
 	escrowLogRefused      = "escrow: Bitcoin escrow disabled until the app is restarted: the escrow node is on a chain escrow does not run on (mainnet, testnet3 or another), or it refused ESCROW_BTC_FEE_ADDRESS"
 	escrowLogUnrecorded   = "escrow: Bitcoin escrow disabled: its arbiter fingerprint could not be checked in the database"
 	escrowLogChain        = "escrow: Bitcoin escrow disabled: the escrow node is not on the chain this database's escrows are on (escrow_btc_chain); the admin page names both; see docs/operator-guide.md, \"Bitcoin escrow (test networks only)\""
-	escrowLogPooledKey    = "escrow: Bitcoin escrow disabled: the pooled Bitcoin RPC user (BITCOIN_RPC_URL) was not refused listdescriptors on the arbiter wallet, so it may be able to export the market's escrow key; give that user the pooled rpcwhitelist line, or run escrow on a node of its own; see docs/operator-guide.md, \"The pooled RPC user\""
+	escrowLogPooledKey    = "escrow: Bitcoin escrow disabled: the pooled Bitcoin RPC user (BITCOIN_RPC_URL) was not refused listdescriptors, gethdkeys or walletprocesspsbt on the arbiter wallet, so it may be able to export or sign with the market's escrow key; give that user the pooled rpcwhitelist line, or run escrow on a node of its own; see docs/operator-guide.md, \"The pooled RPC user\""
 	escrowFingerprintPin  = "escrow_btc_arbiter_fingerprint" // settings key
 	escrowChainPin        = "escrow_btc_chain"               // settings key: escrowChainID of the node the database's escrows are on (A-439)
+	escrowArbiterChecked  = "escrow_btc_arbiter_checked"     // settings key: the arbiter wallet check's checkpoint (QA4W4A-1, arbiterCheckpoint)
 	escrowFingerprintSize = 8
 	escrowChainPinLock    = 782497 // the transaction advisory lock pinEscrowChain takes (the watchers' are 782494 to 782496)
 )
@@ -249,8 +253,9 @@ func (a *App) startEscrow(ctx context.Context) (state, class string, err error) 
 	if err != nil {
 		return "", "", err
 	}
-	a.escrowMismatch.Store(nil)  // shown on /admin only while the latest attempt found the node on another chain
-	a.escrowPooledKey.Store(nil) // likewise, while the latest attempt found the pooled user not refused (A-440)
+	a.escrowMismatch.Store(nil)    // shown on /admin only while the latest attempt found the node on another chain
+	a.escrowPooledKey.Store(nil)   // likewise, while the latest attempt found the pooled user not refused (A-440)
+	a.escrowArbiterRead.Store(nil) // likewise, while the latest attempt could not finish reading the arbiter wallet (QA4W4A-1)
 	node, err := e.blockchainInfo(ctx)
 	if err != nil {
 		a.notePinnedNet(ctx)
@@ -280,7 +285,7 @@ func (a *App) startEscrow(ctx context.Context) (state, class string, err error) 
 	}
 	if class := e.pooledKeyCheck(ctx, a.escrowCfg.pooledURL); class != "" {
 		a.escrowPooledKey.Store(&class)
-		return escrowLogPooledKey, "listdescriptors " + class, nil
+		return escrowLogPooledKey, class, nil
 	}
 	if err = e.readArbiter(ctx); err != nil {
 		return escrowLogArbiter, errorClassOf(err), nil
@@ -291,8 +296,8 @@ func (a *App) startEscrow(ctx context.Context) (state, class string, err error) 
 	if !ok {
 		return escrowLogFingerprint, "", nil
 	}
-	if err = e.checkArbiterWallet(ctx); err != nil {
-		return escrowLogArbiterUse, errorClassOf(err), nil
+	if state, class, err := a.checkArbiterWallet(ctx, e); state != "" || err != nil {
+		return state, class, err
 	}
 	if err = e.checkWatchWallet(ctx); err != nil {
 		return escrowLogWatch, errorClassOf(err), nil
@@ -314,10 +319,13 @@ func (a *App) startEscrow(ctx context.Context) (state, class string, err error) 
 
 // pooledKeyCheck is the market key protection self-check (P4-R6, A-440). rpcwhitelist is per user, not per wallet,
 // and Core selects the wallet by the URL path, so a pooled user allowed listdescriptors could call it with
-// private=true on the arbiter wallet's path and print the market's escrow key (probed on Core 31.1 regtest). Through
-// the pooled client (pooledURL, BITCOIN_RPC_URL) it calls listdescriptors with private=false, which exports nothing,
-// on that path, and reports "" when the pooled user is refused: HTTP 403 (the method is not on its rpcwhitelist) or
-// RPC -18 (no such wallet: the pooled node is another node). Anything else is the class escrow stays disabled with:
+// private=true on the arbiter wallet's path and print the market's escrow key (probed on Core 31.1 regtest); Core 31.1
+// also exports it with gethdkeys {"private":true} and signs with it through walletprocesspsbt (QA4W3-1). Through the
+// pooled client (pooledURL, BITCOIN_RPC_URL), on that path, it calls each of pooledKeyProbes in turn with arguments
+// that export and sign nothing (Core checks the whitelist, and then the wallet, before it reads them: an allowed
+// walletprocesspsbt answers -22 for the empty PSBT). It reports "" when every one is refused: HTTP 403 (the method is
+// not on the pooled user's rpcwhitelist) or RPC -18 (no such wallet: the pooled node is another node). Otherwise it
+// reports the first method that was not refused and the class escrow stays disabled with, as "<method> <class>":
 // "answered" for a success, otherwise the escrowRPCError class (credentials, timeout, rpc:<code>, ...), never Core's
 // text. With no pooled client configured there is nothing to check.
 func (e *escrowBTC) pooledKeyCheck(ctx context.Context, pooledURL string) string {
@@ -328,17 +336,29 @@ func (e *escrowBTC) pooledKeyCheck(ctx context.Context, pooledURL string) string
 	if err != nil {
 		return "bad-url"
 	}
-	err = classifyEscrowRPC("listdescriptors", rpc.call(ctx, e.arbiterWallet, "listdescriptors", []any{false}, nil))
-	var re *escrowRPCError
-	switch {
-	case err == nil:
-		return "answered"
-	case !errors.As(err, &re):
-		return errorCause(err)
-	case re.Class == "forbidden" || re.Class == "rpc:-18":
-		return ""
+	for _, p := range pooledKeyProbes {
+		err = classifyEscrowRPC(p.method, rpc.call(ctx, e.arbiterWallet, p.method, p.params, nil))
+		var re *escrowRPCError
+		switch {
+		case err == nil:
+			return p.method + " answered"
+		case !errors.As(err, &re):
+			return p.method + " " + errorCause(err)
+		case re.Class != "forbidden" && re.Class != "rpc:-18":
+			return p.method + " " + re.Class
+		}
 	}
-	return re.Class
+	return ""
+}
+
+// pooledKeyProbes are the calls pooledKeyCheck makes, in order: none exports a private key or signs anything.
+var pooledKeyProbes = []struct {
+	method string
+	params []any
+}{
+	{"listdescriptors", []any{false}},
+	{"gethdkeys", []any{map[string]any{"private": false}}},
+	{"walletprocesspsbt", []any{"", false}},
 }
 
 // logEscrowState logs a startEscrow state line, with its error class when there is one.
@@ -353,15 +373,43 @@ func logEscrowState(state, class string) {
 // escrowRetry is the escrow watcher's record of the last escrow state it logged, so a state is logged when it
 // changes, not on every pass.
 type escrowRetry struct {
-	last    string
-	refused bool // the node answered on another chain, or refused the fee address: no retry until a restart
+	last     string
+	refused  bool      // the node answered on another chain, or refused the fee address: no retry until a restart
+	pooledAt time.Time // when the pooled key self-check last ran while escrow was on (zero: not yet seen on)
 }
+
+// escrowPooledRecheck is how often the watcher runs the pooled key self-check again while escrow is on (QA4W3-8).
+const escrowPooledRecheck = 24 * time.Hour
 
 // retryEscrow runs startEscrow again for the escrow watcher while escrow is switched on but not enabled (A-316), as
 // refreshProviders retries a pooled provider. A refusal that would stop startup cannot stop a running market: it logs
-// one fixed line and ends the retries until a restart.
+// one fixed line and ends the retries until a restart. While escrow is on it runs the pooled key self-check again
+// (pooledKeyCheck) once escrowPooledRecheck has passed since the last one (QA4W3-8), so a pooled whitelist widened
+// after startup is found within a day: then escrow is disabled, as startEscrow would leave it (the key may be
+// exportable; disabling is the safer default), with the same line and admin alert, and retried like any other check.
 func (a *App) retryEscrow(ctx context.Context, r *escrowRetry) {
-	if r.refused || a.escrow.Load() != nil {
+	if r.refused {
+		return
+	}
+	if e := a.escrow.Load(); e != nil {
+		switch {
+		case r.pooledAt.IsZero(): // escrow came on at startup, which ran the self-check
+			r.pooledAt = time.Now()
+		case time.Since(r.pooledAt) >= escrowPooledRecheck:
+			pass, cancel := context.WithTimeout(ctx, watcherPassTimeout)
+			class := e.pooledKeyCheck(pass, a.escrowCfg.pooledURL)
+			cancel()
+			if ctx.Err() != nil {
+				return
+			}
+			r.pooledAt = time.Now()
+			if class != "" {
+				a.escrowPooledKey.Store(&class)
+				a.escrow.CompareAndSwap(e, nil)
+				logEscrowState(escrowLogPooledKey, class)
+				r.last = escrowLogPooledKey
+			}
+		}
 		return
 	}
 	pass, cancel := context.WithTimeout(ctx, watcherPassTimeout)
@@ -374,6 +422,9 @@ func (a *App) retryEscrow(ctx context.Context, r *escrowRetry) {
 		r.refused, state = true, escrowLogRefused
 	case err != nil:
 		state, class = escrowLogUnrecorded, errorCause(err)
+	}
+	if state == escrowLogOn {
+		r.pooledAt = time.Now() // startEscrow has just run the self-check
 	}
 	if state != r.last {
 		logEscrowState(state, class)
@@ -1081,27 +1132,200 @@ func (e *escrowBTC) arbiterOwns(ctx context.Context, addr string) (bool, error) 
 	return info.IsMine, err
 }
 
+// escrowArbiterReadTimeout bounds one read of the arbiter wallet's entries (arbiterSends). Core 31.1 answered
+// listsinceblock over 100,000 entries in about 5 s (71 MB) on a loaded regtest host. A variable only so tests can
+// shorten it.
+var escrowArbiterReadTimeout = 5 * time.Minute
+
 // checkArbiterWallet requires the arbiter wallet (getwalletinfo) to be a descriptor wallet with private keys, not
-// encrypted (the watcher co-signs without a passphrase) and used for nothing else: no transaction has ever paid or
-// spent from it (txcount 0). Escrow outputs never belong to it (the escrow descriptors are in the watch-only wallet),
-// so a transaction there means the wallet is also used as an ordinary wallet.
-func (e *escrowBTC) checkArbiterWallet(ctx context.Context) error {
+// encrypted (the watcher co-signs without a passphrase) and used for nothing else: it has never spent. Escrow outputs
+// never belong to it (the escrow descriptors are in the watch-only wallet) and the market never sends from it (it only
+// signs PSBTs it built), so a spend (an entry of category "send") means the wallet is also used as an ordinary wallet.
+// Coins paid to it prove nothing (A-471): anyone can pay the wpkh address of the market child key an order page's
+// descriptor shows, which the wallet owns. With txcount 0 there is nothing to read.
+//
+// QA4W4A-1: reading every entry on every start let mass dust to that address keep escrow off (100,000 entries took
+// listtransactions paging past startup's budget). So a passing read leaves a checkpoint (arbiterCheckpoint): the block
+// listsinceblock reported, for the wallet it read (its name and getwalletinfo birthtime). A later check of the same
+// wallet reads only what is newer than that block (and anything unconfirmed); with no checkpoint, one for another
+// wallet (a different name or birthtime: another wallet, or one rebuilt with importdescriptors), a wallet that reports
+// no birthtime, or a block the node does not know (-5: another node or chain), it reads everything, in one call. From
+// a block no longer in the active chain Core itself lists every entry from the fork point on. The read goes on in the
+// background (arbiterScan): when the caller's context ends first (startup's budget) escrow stays off with
+// escrowLogArbiterWait, and the next check of the same wallet from the same checkpoint (the escrow watcher's retry)
+// takes that read's answer instead of starting again. It reports the state line and class startEscrow returns ("" when
+// the wallet passes): escrowLogArbiterUse for a wallet that is not an arbiter's or has spent, escrowLogArbiterRead
+// when its entries could not be read (a timeout, an unreachable node, an RPC error: never taken as a pass, and never
+// reported as a wallet used for something else), or a database error.
+func (a *App) checkArbiterWallet(ctx context.Context, e *escrowBTC) (state, class string, err error) {
 	var info struct {
+		WalletName    string           `json:"walletname"`
 		Descriptors   bool             `json:"descriptors"`
 		PrivateKeys   bool             `json:"private_keys_enabled"`
 		TxCount       *int64           `json:"txcount"`
+		BirthTime     *int64           `json:"birthtime"`
 		UnlockedUntil *json.RawMessage `json:"unlocked_until"`
 	}
 	if err := e.call(ctx, e.arbiterWallet, "getwalletinfo", []any{}, &info); err != nil {
-		return err
+		return a.arbiterUnread(errorClassOf(err))
 	}
 	switch {
 	case !info.Descriptors || !info.PrivateKeys || info.TxCount == nil:
-		return &escrowRPCError{Method: "getwalletinfo", Class: "not-arbiter"}
+		return escrowLogArbiterUse, "getwalletinfo not-arbiter", nil
 	case info.UnlockedUntil != nil:
-		return &escrowRPCError{Method: "getwalletinfo", Class: "encrypted"}
-	case *info.TxCount != 0:
-		return &escrowRPCError{Method: "getwalletinfo", Class: "not-dedicated"}
+		return escrowLogArbiterUse, "getwalletinfo encrypted", nil
+	case *info.TxCount == 0:
+		return "", "", nil
 	}
-	return nil
+	var mark arbiterCheckpoint
+	if info.BirthTime != nil {
+		mark = arbiterCheckpoint{Wallet: info.WalletName, BirthTime: *info.BirthTime}
+	}
+	from := ""
+	var raw string
+	switch err := a.db.QueryRowContext(ctx, "SELECT value FROM settings WHERE key=$1", escrowArbiterChecked).Scan(&raw); {
+	case err == sql.ErrNoRows:
+	case err != nil:
+		return "", "", err
+	default:
+		var pinned arbiterCheckpoint
+		if info.BirthTime != nil && json.Unmarshal([]byte(raw), &pinned) == nil && pinned.Wallet == mark.Wallet && pinned.BirthTime == mark.BirthTime {
+			from = pinned.Block
+		}
+	}
+	scan := a.arbiterScan(e, fmt.Sprintf("%q %v %d %s", mark.Wallet, info.BirthTime != nil, mark.BirthTime, from), from)
+	select {
+	case <-scan.done:
+	case <-ctx.Done():
+		wait := "waiting"
+		a.escrowArbiterRead.Store(&wait)
+		return escrowLogArbiterWait, "", nil
+	}
+	a.escrowScanMu.Lock()
+	if a.escrowScan == scan {
+		a.escrowScan = nil // taken: the next check reads again
+	}
+	a.escrowScanMu.Unlock()
+	switch {
+	case scan.err != nil:
+		return a.arbiterUnread(errorClassOf(scan.err))
+	case scan.sent:
+		return escrowLogArbiterUse, "listsinceblock not-dedicated", nil
+	case info.BirthTime == nil:
+		return "", "", nil
+	}
+	mark.Block = scan.block
+	b, err := json.Marshal(mark)
+	if err != nil {
+		return "", "", err
+	}
+	// The read may have finished just as the caller's budget ran out: the checkpoint is still written.
+	write, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	_, err = a.db.ExecContext(write, "INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT (key) DO UPDATE SET value=excluded.value", escrowArbiterChecked, string(b))
+	return "", "", err
+}
+
+// arbiterCheckpoint is the settings value (escrowArbiterChecked, JSON) a passing arbiter wallet check leaves: the
+// wallet it read, by name and getwalletinfo birthtime (a wallet restored from its backup file keeps both; one rebuilt
+// with importdescriptors gets another birthtime, probed on Core 31.1), and the block listsinceblock reported.
+type arbiterCheckpoint struct {
+	Wallet    string `json:"wallet"`
+	BirthTime int64  `json:"birthtime"`
+	Block     string `json:"block"`
+}
+
+// arbiterUnread records why the arbiter wallet's entries could not be read, for /admin, and returns its state line.
+func (a *App) arbiterUnread(class string) (string, string, error) {
+	a.escrowArbiterRead.Store(&class)
+	return escrowLogArbiterRead, class, nil
+}
+
+// escrowArbiterScan is one read of the arbiter wallet's entries that outlives the check that started it (arbiterScan).
+type escrowArbiterScan struct {
+	key   string        // the wallet and the checkpoint block it reads from
+	done  chan struct{} // closed once block, sent and err are set
+	block string        // listsinceblock's lastblock
+	sent  bool          // an entry of category "send" was listed
+	err   error
+}
+
+// arbiterScan returns the read in progress (or finished and not yet taken) for key, or starts one: arbiterSends from
+// from, and when the node does not know that block (-5) from the start. It runs on its own context, bounded only by
+// escrowArbiterReadTimeout per call, so a check whose context ends first leaves it running for the next check.
+func (a *App) arbiterScan(e *escrowBTC, key, from string) *escrowArbiterScan {
+	a.escrowScanMu.Lock()
+	defer a.escrowScanMu.Unlock()
+	if s := a.escrowScan; s != nil && s.key == key {
+		return s
+	}
+	s := &escrowArbiterScan{key: key, done: make(chan struct{})}
+	a.escrowScan = s
+	go func() {
+		defer close(s.done)
+		s.block, s.sent, s.err = e.arbiterSends(context.Background(), from)
+		var re *escrowRPCError
+		if from != "" && errors.As(s.err, &re) && re.Class == "rpc:-5" {
+			s.block, s.sent, s.err = e.arbiterSends(context.Background(), "")
+		}
+	}()
+	return s
+}
+
+// arbiterSends reads the arbiter wallet's entries with listsinceblock: with from "" every entry; otherwise those in
+// blocks after from, and every unconfirmed or conflicted one. include_change is set, so a spend whose outputs all go to
+// the wallet's own change addresses is listed as a "send" too (listtransactions lists nothing for it; probed on Core
+// 31.1). It reports the lastblock Core answers (the tip as the wallet saw it: the next read's from) and whether any
+// entry is a "send". The answer is read as it arrives (callStream), never held whole: 100,000 entries are 71 MB.
+func (e *escrowBTC) arbiterSends(ctx context.Context, from string) (block string, sent bool, err error) {
+	err = e.rpc.callStream(ctx, escrowArbiterReadTimeout, e.arbiterWallet, "listsinceblock", []any{from, 1, true, false, true}, func(dec *json.Decoder) error {
+		if t, err := dec.Token(); err != nil || t == nil {
+			return err // null: Core's answer to an error
+		} else if t != json.Delim('{') {
+			return errors.New("not an object")
+		}
+		for dec.More() {
+			key, err := dec.Token()
+			if err != nil {
+				return err
+			}
+			switch key {
+			case "lastblock":
+				err = dec.Decode(&block)
+			case "transactions":
+				err = arbiterEntries(dec, &sent)
+			default:
+				var skip json.RawMessage
+				err = dec.Decode(&skip)
+			}
+			if err != nil {
+				return err
+			}
+		}
+		_, err := dec.Token()
+		return err
+	})
+	if err == nil && block == "" {
+		err = errors.New("bitcoin escrow RPC listsinceblock: unexpected result shape")
+	}
+	return block, sent, classifyEscrowRPC("listsinceblock", err)
+}
+
+// arbiterEntries reads listsinceblock's transactions list one entry at a time, setting *sent at an entry of category
+// "send".
+func arbiterEntries(dec *json.Decoder, sent *bool) error {
+	if t, err := dec.Token(); err != nil || t != json.Delim('[') {
+		return errors.New("not a list")
+	}
+	for dec.More() {
+		var l struct {
+			Category string `json:"category"`
+		}
+		if err := dec.Decode(&l); err != nil {
+			return err
+		}
+		*sent = *sent || l.Category == "send"
+	}
+	_, err := dec.Token()
+	return err
 }

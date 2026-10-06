@@ -7,12 +7,15 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"math/big"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
+
+	"opsecmkt/internal/btc"
 )
 
 // fakeEscrowCore is a scripted Bitcoin Core for escrow DB tests (simulated RPC, not chain evidence). It keeps
@@ -35,10 +38,14 @@ type fakeEscrowCore struct {
 	peers         int64
 	blocks        int64 // getblockchaininfo blocks (0 = 200)
 	arbiterDesc   string
-	arbiterCode   int    // JSON-RPC error for getrawchangeaddress (0 = none)
-	prevoutExists bool   // gettxout finds the practice outpoint
-	allowed       bool   // testmempoolaccept
-	throwawayDone bool   // descriptorprocesspsbt answers complete=true (a node that finalized on the server key alone)
+	arbiterCode   int  // JSON-RPC error for getrawchangeaddress (0 = none)
+	prevoutExists bool // gettxout finds the practice outpoint
+	allowed       bool // testmempoolaccept
+	throwawayDone bool // descriptorprocesspsbt answers complete=true (a node that finalized on the server key alone)
+	// A-455: an extended key with no origin ("tpub…/0/0", a rooted per-order cosigner, or a throwaway tprv followed by a
+	// path) derives by real BIP32 public derivation, as Core's does; ckdSkew flips one chain-code bit first (a node whose
+	// derivation disagrees with Go's).
+	ckdSkew       bool
 	beforeMempool func() // runs when testmempoolaccept is called: the last RPC of a practice check, before its update
 	reject        string
 	calls         []fakeCall
@@ -87,8 +94,12 @@ type fakeEscrowCore struct {
 	// inputs; gettransaction reports it with txConfs and conflicts.
 	arbiterShort     bool                // the arbiter's key range is short of the market child (getaddressinfo ismine false)
 	keypoolStuck     bool                // keypoolrefill does not extend the arbiter's key range
-	arbiterTxCount   int64               // getwalletinfo txcount of the arbiter wallet
+	arbiterTxs       []string            // the arbiter wallet's entry categories, oldest first, each in a block of its own (arbiterBlock); getwalletinfo txcount is their number (A-471)
+	arbiterListErr   int                 // JSON-RPC error for listtransactions and listsinceblock on the arbiter wallet (0 = none)
 	arbiterEncrypted bool                // getwalletinfo of the arbiter wallet has unlocked_until
+	arbiterBirth     int64               // getwalletinfo birthtime of the arbiter wallet (0 = not reported)
+	arbiterPad       int                 // bytes of label on each entry listsinceblock lists (a large answer)
+	beforeSince      func()              // runs when listsinceblock is called on the arbiter wallet, before it answers
 	marketSkew       func(string) string // edits walletprocesspsbt's answer
 	finalSkew        func(string) string // edits finalizepsbt's raw transaction
 	mempoolReject    string              // testmempoolaccept refuses a settlement transaction with this reason
@@ -204,7 +215,7 @@ type fakeCall struct {
 const fakeArbiterFP = "a1b2c3d4"
 
 func newFakeEscrowCore(t *testing.T) (*fakeEscrowCore, *payRPCServer) {
-	c := &fakeEscrowCore{t: t, chain: "regtest", arbiterFP: fakeArbiterFP, reject: "missing-inputs", spk: map[string][]byte{},
+	c := &fakeEscrowCore{t: t, chain: "regtest", arbiterFP: fakeArbiterFP, reject: "missing-inputs", spk: map[string][]byte{}, arbiterBirth: 1700000000,
 		watchInfo: map[string]any{"walletname": "opsecmkt-escrow-watch", "descriptors": true, "private_keys_enabled": false}}
 	c.arbiterDesc = "wpkh([" + fakeArbiterFP + "/84h/1h/0h]" + testBIP84Key[20:] + "/1/*)#fakechk0"
 	srv := newPayRPCServer(t, "escrowapp", "escrow-rpc-pass", false, c.handle)
@@ -218,6 +229,10 @@ func newFakeEscrowCore(t *testing.T) (*fakeEscrowCore, *payRPCServer) {
 	return c, srv
 }
 
+// arbiterBlock is the fake hash of the block holding the arbiter wallet's n-th entry (arbiterTxs[n-1]); arbiterBlock(0)
+// is a block before them all.
+func arbiterBlock(n int) string { return txidOf("arbiter block " + strconv.Itoa(n)) }
+
 func (c *fakeEscrowCore) methods() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -228,7 +243,50 @@ func (c *fakeEscrowCore) methods() []string {
 	return m
 }
 
-var fakeTprv = regexp.MustCompile(`tprv[1-9A-HJ-NP-Za-km-z]+`)
+var (
+	fakeTprv     = regexp.MustCompile(`tprv[1-9A-HJ-NP-Za-km-z]+`)
+	fakeTprvPath = regexp.MustCompile(`tprv[1-9A-HJ-NP-Za-km-z]+/?`)
+)
+
+// fakeRealTpub is the real public key (k·G, same chain code, depth 0) of a depth-0 tprv, as Core's getdescriptorinfo
+// writes it (A-455: the per-order practice signs with the throwaway key's child at the practice index).
+func fakeRealTpub(t *testing.T, tprv string) string {
+	raw, err := base58CheckDecode(tprv)
+	if err != nil || len(raw) != 78 || raw[4] != 0 || raw[45] != 0 {
+		t.Fatalf("fake core: not a depth-0 tprv")
+	}
+	k := bip32Key{PubKey: btc.Compress(btc.Mul(new(big.Int).SetBytes(raw[46:78]), btc.G))}
+	copy(k.ChainCode[:], raw[13:45])
+	return k.Serialize(versionTpub)
+}
+
+// fakeRealChild is Core's public derivation of "tpub…/a/b…" (no origin): the child key and its derivation value, the
+// key's own fingerprint followed by the steps (as Core writes an extended key without an origin).
+func (c *fakeEscrowCore) fakeRealChild(el string) (pub, deriv []byte) {
+	xpub, rest, _ := strings.Cut(el, "/")
+	k, err := parseBIP32Pub(xpub, versionTpub)
+	if err != nil {
+		c.t.Fatalf("fake core: extended key in %q: %v", el, err)
+	}
+	fp := k.Fingerprint()
+	deriv = slices.Clone(fp[:])
+	if c.ckdSkew {
+		k.ChainCode[0] ^= 1
+	}
+	if rest != "" {
+		steps, err := parseOriginPath("/" + rest)
+		if err != nil {
+			c.t.Fatalf("fake core: path in %q: %v", el, err)
+		}
+		for _, step := range steps {
+			if k, _, err = ckdPub(k, step); err != nil {
+				c.t.Fatalf("fake core: derivation in %q: %v", el, err)
+			}
+			deriv = binary.LittleEndian.AppendUint32(deriv, step)
+		}
+	}
+	return k.PubKey[:], deriv
+}
 
 func fakePubFromTprv(tprv string) []byte {
 	h := sha256.Sum256([]byte("pub:" + tprv))
@@ -345,7 +403,12 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 		if a, ok := strings.CutPrefix(desc, "addr("); ok && !strings.HasPrefix(a, escrowChains[c.chain]+"1") {
 			return nil, -5, "Address is not valid"
 		}
-		public := fakeTprv.ReplaceAllStringFunc(desc, func(k string) string { return "fakepub" + hex.EncodeToString(fakePubFromTprv(k)) })
+		public := fakeTprvPath.ReplaceAllStringFunc(desc, func(k string) string {
+			if tprv, ok := strings.CutSuffix(k, "/"); ok { // A-455: a throwaway key with a path keeps it, as its real tpub
+				return fakeRealTpub(c.t, tprv) + "/"
+			}
+			return "fakepub" + hex.EncodeToString(fakePubFromTprv(k))
+		})
 		sum, _ := descChecksum(public)
 		if c.infoSkew {
 			sum = "qqqqqqqq"
@@ -412,6 +475,11 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 			return nil, -8, "unexpected fake call"
 		}
 		pub := fakePubFromTprv(tprv)
+		if path := fakeTprvPath.FindString(descs[0]); strings.HasSuffix(path, "/") { // A-455: the throwaway key's child
+			el := descs[0][strings.Index(descs[0], tprv):]
+			el = el[:strings.IndexAny(el, ",)")]
+			pub, _ = c.fakeRealChild(fakeRealTpub(c.t, tprv) + strings.TrimPrefix(el, tprv))
+		}
 		out, err := pk.withInputField(0, append([]byte{0x02}, pub...), fakeSig(pub, pk.TxID(), 1))
 		if err != nil {
 			c.t.Errorf("fake descriptorprocesspsbt: %v", err)
@@ -531,7 +599,10 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 		return []map[string]any{{"success": true}}, 0, ""
 	case "getwalletinfo":
 		if wallet {
-			info := map[string]any{"walletname": "opsecmkt-arbiter", "descriptors": true, "private_keys_enabled": true, "txcount": c.arbiterTxCount}
+			info := map[string]any{"walletname": "opsecmkt-arbiter", "descriptors": true, "private_keys_enabled": true, "txcount": len(c.arbiterTxs)}
+			if c.arbiterBirth != 0 {
+				info["birthtime"] = c.arbiterBirth
+			}
 			if c.arbiterEncrypted {
 				info["unlocked_until"] = 0
 			}
@@ -579,7 +650,52 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 			}
 		}
 		return out, 0, ""
+	case "listsinceblock":
+		if !wallet {
+			return nil, -8, "unexpected fake wallet"
+		}
+		if c.beforeSince != nil {
+			c.mu.Unlock()
+			c.beforeSince()
+			c.mu.Lock()
+		}
+		if c.arbiterListErr != 0 {
+			return nil, c.arbiterListErr, "fake listsinceblock failure"
+		}
+		from := 0 // QA4W4A-1: entry i is in block arbiterBlock(i+1); the entries after a block, as Core lists them
+		if h := str(0); h != "" {
+			from = -1
+			for i := 0; i <= len(c.arbiterTxs); i++ {
+				if arbiterBlock(i) == h {
+					from = i
+				}
+			}
+			if from < 0 {
+				return nil, -5, "Block not found"
+			}
+		}
+		out := []map[string]any{}
+		for i, cat := range c.arbiterTxs[from:] {
+			out = append(out, map[string]any{"txid": txidOf("arbiter " + strconv.Itoa(from+i)), "category": cat, "amount": json.Number("0.00001"), "label": strings.Repeat("x", c.arbiterPad)})
+		}
+		return map[string]any{"transactions": out, "lastblock": arbiterBlock(len(c.arbiterTxs))}, 0, ""
 	case "listtransactions":
+		if wallet { // A-471: Core's paging: count entries after skipping the skip most recent, oldest first
+			if c.arbiterListErr != 0 {
+				return nil, c.arbiterListErr, "fake listtransactions failure"
+			}
+			var count, skip int
+			if len(p) > 2 {
+				json.Unmarshal(p[1], &count)
+				json.Unmarshal(p[2], &skip)
+			}
+			end := max(len(c.arbiterTxs)-skip, 0)
+			out := []map[string]any{}
+			for i, cat := range c.arbiterTxs[max(end-count, 0):end] {
+				out = append(out, map[string]any{"txid": txidOf("arbiter " + strconv.Itoa(i)), "category": cat, "amount": json.Number("0.00001")})
+			}
+			return out, 0, ""
+		}
 		if path != fakeWatchWallet {
 			return nil, -8, "unexpected fake wallet"
 		}
@@ -1001,6 +1117,8 @@ func (c *fakeEscrowCore) fakeKeyOf(el string) (pub, deriv []byte) {
 	case strings.HasPrefix(el, "fakepub"):
 		pub, _ := hex.DecodeString(el[len("fakepub"):])
 		return pub, pub[1:5]
+	case strings.HasPrefix(el, "tpub"): // A-455: an extended key with no origin, derived as Core derives it
+		return c.fakeRealChild(el)
 	}
 	pub, _ = hex.DecodeString(el)
 	return pub, nil

@@ -442,7 +442,9 @@ age -d -i operator-key.txt arbiter-descriptors.json.age |
   opcli -stdin -rpcwallet=opsecmkt-arbiter importdescriptors           # every entry must say "success": true
 ```
 
-`-stdin` keeps the descriptors off the command line, where other users of the machine could read them.
+`-stdin` keeps the descriptors off the command line, where other users of the machine could read them. A wallet rebuilt
+this way has another `birthtime`, so the app's next start reads it whole once to check it has never spent (the
+checkpoint in `escrow_btc_arbiter_checked` belongs to the old wallet); a `restorewallet` copy keeps the checkpoint.
 
 **Check the fingerprint pin.** Start the app. The arbiter wallet must have the fingerprint this database pinned at its
 first escrow start (`escrow_btc_arbiter_fingerprint` in `settings`): the log says "escrow: Bitcoin escrow on (test
@@ -1173,6 +1175,15 @@ daemon (as the bundled `monero` service serves) as synced with a peer and a fres
 peers. The commands are in the script's header comment; the transcript goes to `ESCROW_XMR_STAGENET_LOG` (default
 `artifacts/real-chain/test-escrow-xmr-stagenet-<UTC time>.log`, gitignored).
 
+**What the offline fork cannot prove (A-449 acceptance).** No funded Monero escrow leg can run on it: a stagenet built
+from genesis is at hard fork version 1, which Monero escrow refuses, and the fakechain legs mine with `generateblocks`,
+which monerod answers only on a fakechain (`--regtest`), so the fork has only the blocks its local miner finds. Funded
+Monero escrow on stagenet (a deposit seen, an order funded, a settlement built, relayed and confirmed) is therefore proven
+only by the owner's run on the public stagenet (A-447), and until that run is recorded nothing here is that evidence. The
+offline fork proves the stagenet address formats, the refusal of an old hard fork and the escrow and pooled sync guards
+against real daemons; the network pin is covered by the database tests against the simulated daemon
+(`TestXMREscrowNetworkPinMismatch`, `TestXMREscrowNetworkPinBackfillAndRepin`), not by the fork.
+
 ## 11. Bitcoin escrow on signet or testnet4
 
 Since A-443, Bitcoin escrow (`ESCROW_BTC=on`, off by default) may run on signet or testnet4 as well as on regtest;
@@ -1199,6 +1210,9 @@ place; the [operator guide](operator-guide.md#bitcoin-escrow-test-networks-only)
    or later; the stall alert reports one not seen after 6 blocks in every mode.
 6. Refund, claim and fee addresses are `tb1…` (or the test-network base58 forms); one given in capitals is stored in
    lower case.
+7. The arbiter wallet check (A-471, section 37 of UPGRADING) applies as on regtest: `listsinceblock` must be on the
+   escrow user's whitelist. Dust paid to the market's child keys is nearly free on these chains; the start check reads
+   only what is newer than its checkpoint, and `/admin` says when a long first read keeps escrow off while it goes on.
 
 What has run instead of a public network: `./scripts/test-escrow-regtest.sh --private-signet` (manual, not CI; Linux
 with Docker) starts two Core 31.1 nodes with `-signetchallenge=51` on a Docker network created with `--internal`, mines

@@ -91,6 +91,10 @@ func TestEscrowRPCPinsParams(t *testing.T) {
 		// P1-d1: reconciliation reads the watch-only wallet only: the spender of an escrow deposit and its address book.
 		{"listtransactions", fakeWatchWallet, `["*",100,0,true]`, func() error { _, err := e.walletSpenders(ctx, map[string]bool{"txw:1": true}); return err }},
 		{"listreceivedbyaddress", fakeWatchWallet, `[0,true,true]`, func() error { _, err := e.watchedAddresses(ctx); return err }},
+		// QA4W4A-1: the start check reads the arbiter wallet's entries (everything, or since a checkpoint block), with
+		// include_change.
+		{"listsinceblock", arb, `["",1,true,false,true]`, func() error { _, _, err := e.arbiterSends(ctx, ""); return err }},
+		{"listsinceblock", arb, `["` + arbiterBlock(0) + `",1,true,false,true]`, func() error { _, _, err := e.arbiterSends(ctx, arbiterBlock(0)); return err }},
 		// P1-d3 (A-359): whether the watch-only wallet already watches an escrow address the checkout composed.
 		{"getaddressinfo", fakeWatchWallet, `["bcrt1qcomposedescrow0000"]`, func() error { _, err := e.watchKnows(ctx, "bcrt1qcomposedescrow0000"); return err }},
 		// P2-e (A-366): the orphan sweep reads an orphan escrow address's keys from the same wallet.

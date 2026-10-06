@@ -118,6 +118,30 @@ class EscrowFixtureTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.core.test('/test/escrow/deposit', {'address': escrow_rpc.segwit_address(bytes(20)), 'sats': 1})
 
+    def test_rooted_keys_derive_by_bip32(self):
+        # A-455: an extended key with no origin derives as BIP32 says (test vector 1: m/0H's CKDpub child 1), and a
+        # rooted child at index i gives at /0/0 the key of the throwaway tprv along i/0/0, which the throwaway
+        # descriptor then signs: the per-order practice's cosigner served rooted and the server's signature agree.
+        tv1 = escrow_rpc.b58decode_check('xpub68Gmy5EdvgibQVfPdqkBBCHxA5htiqg55crXYuXoQRKfDBFA1WEjWgP6LHhwBZeNK1VTsfTFUHCdrfp1bgwQ9xv5ski8PX9rL2dZXvgGDnw')
+        want = escrow_rpc.b58decode_check('xpub6ASuArnXKPbfEwhqN6e3mwBcDTgzisQN1wXN9BJcM47sSikHjJf3UFHKkNAWbWMiGj7Wf5uMash7SyYq527Hqck2AxYysAA7xmALppuCkwQ')
+        self.assertEqual(escrow_rpc.ckd_pub(tv1[13:45], tv1[45:78], 1), (want[13:45], want[45:78]))
+        tprv = escrow_rpc.b58check(bytes.fromhex('04358394') + bytes(9) + escrow_rpc.sha256(b'chain') + b'\x00' + escrow_rpc.sha256(b'key'))
+        tpub = escrow_rpc.real_tpub(tprv)
+        raw = escrow_rpc.b58decode_check(tpub)
+        chain, pub = escrow_rpc.ckd_pub(raw[13:45], raw[45:78], 2147483647)
+        rooted = escrow_rpc.b58check(bytes.fromhex('043587cf') + bytes(9) + chain + pub)
+        key, deriv = escrow_rpc.real_child(rooted + '/0/0')
+        self.assertEqual(deriv[4:], bytes(8))
+        self.assertEqual(escrow_rpc.real_child(tpub + '/2147483647/0/0')[0], key)
+        desc = 'wsh(sortedmulti(2,%s/2147483647/0/0,%s/0/0,%s/0/0))' % (self.buyer, rooted, rooted)
+        sign = 'wsh(sortedmulti(2,%s/2147483647/0/0,%s/2147483647/0/0,%s/0/0))' % (self.buyer, tprv, rooted)
+        public = rpc(self.core, 'getdescriptorinfo', sign)['descriptor']
+        self.assertIn(tpub + '/2147483647/0/0', public)
+        self.assertEqual(rpc(self.core, 'deriveaddresses', public), rpc(self.core, 'deriveaddresses', desc + '#' + escrow_rpc.desc_checksum(desc)))
+        practice = rpc(self.core, 'createpsbt', [{'txid': '11' * 32, 'vout': 0}], [{self.core.test('/test/escrow/address', {})['address']: escrow_rpc.Decimal('0.0009')}], 0, True)
+        signed = escrow_rpc.PSBT.b64(rpc(self.core, 'descriptorprocesspsbt', practice, [sign], 'ALL', True, False)['psbt'])
+        self.assertEqual([k for k, _ in signed.sigs(0)], [key])
+
     def test_amounts_are_json_numbers_over_http(self):
         server = ThreadingHTTPServer(('127.0.0.1', 0), escrow_rpc.make_handler(self.core))
         threading.Thread(target=server.serve_forever, daemon=True).start()

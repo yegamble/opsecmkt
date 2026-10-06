@@ -66,6 +66,24 @@ export async function register(page: Page, handle: string, pass: string) {
   await pressSubmit(page, page.getByRole('button', { name: 'Create account' }));
   await expect(page.locator('.account-name')).toHaveText(handle);
 }
+// The market's administrator: sets the market up on a fresh database, or signs in when an earlier escrow journey did.
+export async function administrator(admin: Page) {
+  await admin.goto('/setup');
+  if (await admin.getByLabel('Setup token').count() > 0) {
+    await typeInto(admin, admin.getByLabel('Setup token'), 'e2e-escrow-local-setup-token-at-least-32-characters');
+    await typeInto(admin, admin.getByLabel('Handle', { exact: true }), 'escrow_admin');
+    await typeInto(admin, admin.getByLabel('Password', { exact: true }), password);
+    await pressSubmit(admin, admin.getByRole('button', { name: 'Initialize marketplace' }));
+    await expect(admin).toHaveURL(/\/admin\?welcome=1$/);
+    await pressSubmit(admin, admin.locator('.admin-auth').getByRole('button', { name: 'Turn CAPTCHA off' }));
+    return;
+  }
+  await admin.goto('/login');
+  await typeInto(admin, admin.getByLabel('Handle', { exact: true }), 'escrow_admin');
+  await typeInto(admin, admin.getByLabel('Password', { exact: true }), password);
+  await pressSubmit(admin, admin.getByRole('button', { name: 'Sign in' }));
+  await expect(admin.locator('.account-name')).toHaveText('escrow_admin');
+}
 // Registers the party's escrow key and activates it by signing the practice transaction (in the simulated wallet).
 export async function activateKey(page: Page, request: APIRequestContext, name: string, pass: string, info: TestInfo) {
   const { key } = await simPost(request, '/test/escrow/key', { name });

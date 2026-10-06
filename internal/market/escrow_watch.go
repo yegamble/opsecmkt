@@ -77,7 +77,8 @@ func init() {
 const escrowCompletedNote = "Completed on funding (Bitcoin escrow): the content was delivered. The vendor claims the escrowed coins from the order page."
 
 // escrowWatcher runs while ESCROW_BTC=on. Until escrow is enabled (its node was down at startup, say) each pass first
-// retries its checks (retryEscrow, A-316), so escrow starts without a restart once the node answers.
+// retries its checks (retryEscrow, A-316), so escrow starts without a restart once the node answers; while it is
+// enabled, retryEscrow runs the pooled key self-check again once a day (QA4W3-8).
 func escrowWatcher(ctx context.Context, a *App) {
 	if !a.escrowConfigured {
 		return
@@ -287,7 +288,8 @@ func (a *App) noteEscrowSync(why string) {
 
 // escrowNodeLoader shows on /admin, under Payment providers, why the Bitcoin escrow node is not used: the reason class
 // it is not synced for (with syncRemedy's advice when there is one), the pinned chain and the node's when
-// startEscrow refused it, or the pooled user's answer to the market key self-check (A-440); in APP_MODE=tor why the
+// startEscrow refused it, the pooled user's answer to the market key self-check (A-440), or why the arbiter wallet's
+// entries are not read (QA4W4A-1); in APP_MODE=tor why the
 // Tor-mode gate holds broadcasts; and the settlements queued or stuck (A-441, escrow_stall.go).
 func escrowNodeLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 	if !a.escrowConfigured || d.User == nil || d.User.Role != "admin" {
@@ -296,6 +298,9 @@ func escrowNodeLoader(ctx context.Context, a *App, _ *http.Request, d *PageData)
 	v := &EscrowNodeView{Mismatch: a.escrowMismatch.Load(), StallN: escrowStallBlocks}
 	if class := a.escrowPooledKey.Load(); class != nil {
 		v.PooledKey, v.PooledWhitelist = *class, strings.Join(pooledRPCMethods, ",")
+	}
+	if why := a.escrowArbiterRead.Load(); why != nil {
+		v.ArbiterRead = *why
 	}
 	if e := a.escrow.Load(); e != nil {
 		v.NotSynced, _ = a.escrowSync.Load().(string)
@@ -306,7 +311,7 @@ func escrowNodeLoader(ctx context.Context, a *App, _ *http.Request, d *PageData)
 	if v.Stalled, err = a.escrowStalls(ctx); err != nil {
 		return err
 	}
-	if v.NotSynced != "" || v.Mismatch != nil || v.PooledKey != "" || v.TorHold != "" || len(v.Stalled) > 0 {
+	if v.NotSynced != "" || v.Mismatch != nil || v.PooledKey != "" || v.ArbiterRead != "" || v.TorHold != "" || len(v.Stalled) > 0 {
 		d.EscrowNode = v
 	}
 	return nil

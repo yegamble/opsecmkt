@@ -11,6 +11,9 @@ import (
 	"log"
 	"math/big"
 	"slices"
+	"strconv"
+
+	"opsecmkt/internal/btc"
 )
 
 // Practice signing (WR-escrow ES-9). A registered escrow key stays inactive until its owner signs a practice PSBT
@@ -24,6 +27,14 @@ import (
 // Never the market's key. Its only input is a fabricated outpoint (a txid from a keyed hash) that gettxout confirms
 // does not exist, so the transaction can never be broadcast; testmempoolaccept confirms "missing-inputs".
 //
+// A per-order wallet key (layout per_order, shape (b): A-455, rulings P4-R2 and P4-R18) practises as its escrows will
+// work: the owner's wallet is built for one order from the account key's child at the reserved per-order index
+// escrowPracticeIndex (never used by an escrow: migration 088 refuses it for a party key), and the two other keys are
+// the /0/0 children of cosigner keys served rooted (depth 0, parent fingerprint 0, child 0; A-453's serializer): the
+// throwaway key's child at that index (the server signs with the throwaway key along that path) and an unsignable
+// key's. Go derives the cosigner keys; Core derives the same address from the throwaway key's own path, or nothing is
+// served (the P4-R2 cross-check). The owner's wallet signs its key at account/escrowPracticeIndex/0/0.
+//
 // Everything is derived from keyRoot, the account and the key's HMAC, so the same PSBT is rebuilt on every request
 // and nothing is stored but user_escrow_keys.active_at. Verifying a pasted copy: the parsed PSBT must be this
 // transaction, carry exactly one signature, from the owner's practice key, with sighash byte 0x01, and nothing
@@ -31,7 +42,8 @@ import (
 // finalizepsbt must complete (Core verifies both signatures while finalizing).
 
 const (
-	escrowPracticeSuffix = "/0/0" // the reserved practice child of every party key
+	escrowPracticeSuffix = "/0/0"    // the reserved practice child of every party key (layout core)
+	escrowPracticeIndex  = 1<<31 - 1 // the reserved per-order index of practice (layout per_order)
 	practicePrevSats     = 100_000
 	practiceOutSats      = 99_000
 	practiceMaxFeeRate   = 100 // sat/vB, testmempoolaccept's explicit maxfeerate
@@ -59,6 +71,13 @@ type practiceTx struct {
 	Blank    []byte // the unsignable key
 	signDesc string // private descriptor holding only the throwaway key, for descriptorprocesspsbt
 	prevTxID string
+
+	// A per-order wallet key's practice (layout per_order) also serves what the owner's practice wallet is built from.
+	PerOrder  bool
+	OwnPath   string    // the owner's key origin for the practice wallet: [fingerprint/account path/2147483647]
+	OwnDeriv  string    // its derivation path as a wallet asks for it: m/account path/2147483647
+	Cosigners [2]string // the throwaway and unsignable cosigner keys, rooted, as SLIP-132 Vpubs
+	Address   string    // the practice escrow address: for a per-order wallet key, its practice wallet's first receiving address
 }
 
 // practiceSeed is the per-key secret the practice material derives from: never stored.
@@ -78,17 +97,54 @@ func practiceHash(seed []byte, label string, i int) []byte {
 
 // throwawayTprv is a test-network extended private key (depth 0) from seed: the server's practice co-signer.
 func throwawayTprv(seed []byte) string {
+	k, chainCode := throwawayKey(seed)
+	raw := binary.BigEndian.AppendUint32(nil, 0x04358394)
+	raw = append(raw, make([]byte, 9)...) // depth 0, parent fingerprint 0, child 0
+	raw = append(raw, chainCode...)
+	raw = append(append(raw, 0), k...)
+	return base58CheckEncode(raw)
+}
+
+// throwawayKey is the throwaway key's private scalar and chain code.
+func throwawayKey(seed []byte) (k, chainCode []byte) {
 	for i := 0; ; i++ {
 		k := practiceHash(seed, "throwaway-key", i)
 		if n := new(big.Int).SetBytes(k); n.Sign() == 0 || n.Cmp(secpN) >= 0 {
 			continue
 		}
-		raw := binary.BigEndian.AppendUint32(nil, 0x04358394)
-		raw = append(raw, make([]byte, 9)...) // depth 0, parent fingerprint 0, child 0
-		raw = append(raw, practiceHash(seed, "throwaway-chaincode", i)...)
-		raw = append(append(raw, 0), k...)
-		return base58CheckEncode(raw)
+		return k, practiceHash(seed, "throwaway-chaincode", i)
 	}
+}
+
+// throwawayPub is the throwaway key's public side (depth 0): its key k·G with its chain code. Computed with math/big,
+// which is not constant time; the key guards nothing (it signs only a transaction that can never be broadcast).
+func throwawayPub(seed []byte) bip32Key {
+	k, chainCode := throwawayKey(seed)
+	pub := bip32Key{PubKey: btc.Compress(btc.Mul(new(big.Int).SetBytes(k), btc.G))}
+	copy(pub.ChainCode[:], chainCode)
+	return pub
+}
+
+// unsignableXPub is an extended public key whose key is unsignableKey: nobody knows the private key of it or of any
+// of its children (a child's private key is the parent's plus a known tweak).
+func unsignableXPub(seed []byte) bip32Key {
+	k := bip32Key{}
+	copy(k.PubKey[:], unsignableKey(seed))
+	copy(k.ChainCode[:], practiceHash(seed, "unsignable-chaincode", 0))
+	return k
+}
+
+// practiceCosigner is cosigner root's child at the practice index, served rooted (Rooted: depth 0, parent fingerprint
+// 0, child 0) to the owner's practice wallet, and that child's /0/0 child, the key the wallet's first address uses.
+func practiceCosigner(root bip32Key) (child, first bip32Key, err error) {
+	child, used, err := ckdPub(root, escrowPracticeIndex)
+	if err != nil || used != escrowPracticeIndex {
+		return child, first, errPracticeKeyShape // BIP32 calls that child invalid (probability about 2^-127)
+	}
+	if first, _, err = ckdPub(child, 0); err == nil {
+		first, _, err = ckdPub(first, 0)
+	}
+	return child, first, err
 }
 
 // unsignableKey is a compressed public key whose x coordinate is a hash: a point on the curve for which nobody
@@ -102,24 +158,34 @@ func unsignableKey(seed []byte) []byte {
 	}
 }
 
-// buildPractice builds the practice PSBT for key (see the file comment). Its only RPCs are getdescriptorinfo,
-// deriveaddresses, gettxout, createpsbt and utxoupdatepsbt; none touches a wallet.
-func (e *escrowBTC) buildPractice(ctx context.Context, key escrowKey, seed []byte) (*practiceTx, error) {
-	blank := unsignableKey(seed)
-	sign := "wsh(sortedmulti(2," + key.Expression() + escrowPracticeSuffix + "," + throwawayTprv(seed) + "," + hex.EncodeToString(blank) + "))"
-	public, err := e.descriptorInfo(ctx, sign)
-	if err != nil {
-		return nil, err
+// buildPractice builds the practice PSBT for key, of a per-order wallet key when perOrder (see the file comment). Its
+// only RPCs are getdescriptorinfo, deriveaddresses, gettxout, createpsbt and utxoupdatepsbt; none touches a wallet.
+func (e *escrowBTC) buildPractice(ctx context.Context, key escrowKey, seed []byte, perOrder bool) (*practiceTx, error) {
+	pt := &practiceTx{prevTxID: hex.EncodeToString(practiceHash(seed, "prevout", 0)), PerOrder: perOrder}
+	ownerPath := slices.Concat(key.Path, []uint32{0, 0})
+	var public string
+	var server []byte // the throwaway key in the script, as Go derives it (per_order)
+	var err error
+	if perOrder {
+		ownerPath = slices.Concat(key.Path, []uint32{escrowPracticeIndex, 0, 0})
+		if public, server, err = e.perOrderPracticeDescriptors(ctx, key, seed, pt); err != nil {
+			return nil, err
+		}
+	} else {
+		pt.Blank = unsignableKey(seed)
+		pt.signDesc = "wsh(sortedmulti(2," + key.Expression() + escrowPracticeSuffix + "," + throwawayTprv(seed) + "," + hex.EncodeToString(pt.Blank) + "))"
+		if public, err = e.descriptorInfo(ctx, pt.signDesc); err != nil {
+			return nil, err
+		}
+		addrs, err := e.deriveAddresses(ctx, public, -1)
+		if err != nil {
+			return nil, err
+		}
+		if len(addrs) != 1 {
+			return nil, &escrowRPCError{Method: "deriveaddresses", Class: "bad-reply"}
+		}
+		pt.Address = addrs[0]
 	}
-	addrs, err := e.deriveAddresses(ctx, public, -1)
-	if err != nil {
-		return nil, err
-	}
-	if len(addrs) != 1 {
-		return nil, &escrowRPCError{Method: "deriveaddresses", Class: "bad-reply"}
-	}
-	prev := practiceHash(seed, "prevout", 0)
-	pt := &practiceTx{Blank: blank, signDesc: sign, prevTxID: hex.EncodeToString(prev)}
 	if found, _, _, err := e.txOut(ctx, pt.prevTxID, 0); err != nil {
 		return nil, err
 	} else if found {
@@ -128,7 +194,7 @@ func (e *escrowBTC) buildPractice(ctx context.Context, key escrowKey, seed []byt
 	}
 	// The practice transaction pays the same escrow script back, less a fee: the owner's wallet shows one input
 	// and one output of the practice escrow.
-	unsigned, err := e.createPSBT(ctx, []escrowOutpoint{{TxID: pt.prevTxID, Vout: 0}}, []escrowPayment{{Address: addrs[0], Sats: practiceOutSats}})
+	unsigned, err := e.createPSBT(ctx, []escrowOutpoint{{TxID: pt.prevTxID, Vout: 0}}, []escrowPayment{{Address: pt.Address, Sats: practiceOutSats}})
 	if err != nil {
 		return nil, err
 	}
@@ -154,16 +220,63 @@ func (e *escrowBTC) buildPractice(ctx context.Context, key escrowKey, seed []byt
 		return nil, &escrowRPCError{Method: "utxoupdatepsbt", Class: "bad-reply"}
 	}
 	pt.PSBT, pt.TxID = served, final.TxID()
-	if pt.OwnerKey, pt.Server, err = practiceKeys(final.Inputs[0], key, blank); err != nil {
+	if pt.OwnerKey, pt.Server, err = practiceKeys(final.Inputs[0], key.Fingerprint, ownerPath, pt.Blank); err != nil {
 		return nil, err
+	}
+	if perOrder && !bytes.Equal(pt.Server, server) {
+		return nil, errPracticeKeyShape
 	}
 	return pt, nil
 }
 
+// perOrderPracticeDescriptors composes a per-order wallet key's practice escrow (see the file comment) and fills in
+// pt's practice-wallet material, its unsignable key and the private descriptor the throwaway key signs with. It
+// returns the public descriptor (with Core's checksum) and the throwaway key in the script. Core must derive one and
+// the same address from the rooted cosigner keys Go derived and from the throwaway key's own path (the signing
+// descriptor's public form); otherwise nothing is served (errPerOrderMismatch).
+func (e *escrowBTC) perOrderPracticeDescriptors(ctx context.Context, key escrowKey, seed []byte, pt *practiceTx) (string, []byte, error) {
+	throwaway, server, err := practiceCosigner(throwawayPub(seed))
+	if err != nil {
+		return "", nil, err
+	}
+	blank, blankFirst, err := practiceCosigner(unsignableXPub(seed))
+	if err != nil {
+		return "", nil, err
+	}
+	pt.Blank = blankFirst.PubKey[:]
+	index := "/" + strconv.FormatUint(escrowPracticeIndex, 10)
+	owner := key.Expression() + index + "/0/0"
+	pt.signDesc = "wsh(sortedmulti(2," + owner + "," + throwawayTprv(seed) + index + "/0/0," + blank.Rooted(versionTpub) + "/0/0))"
+	public, err := e.descriptorInfo(ctx, "wsh(sortedmulti(2,"+owner+","+throwaway.Rooted(versionTpub)+"/0/0,"+blank.Rooted(versionTpub)+"/0/0))")
+	if err != nil {
+		return "", nil, err
+	}
+	signPublic, err := e.descriptorInfo(ctx, pt.signDesc)
+	if err != nil {
+		return "", nil, err
+	}
+	fromRooted, err := e.deriveAddresses(ctx, public, -1)
+	if err != nil {
+		return "", nil, err
+	}
+	fromPath, err := e.deriveAddresses(ctx, signPublic, -1)
+	if err != nil {
+		return "", nil, err
+	}
+	if len(fromRooted) != 1 || !slices.Equal(fromRooted, fromPath) {
+		return "", nil, errPerOrderMismatch
+	}
+	pt.OwnPath, pt.OwnDeriv = "["+key.Fingerprint+key.PathText+index+"]", "m"+key.PathText+index
+	pt.Cosigners = [2]string{throwaway.Rooted(versionVpub), blank.Rooted(versionVpub)}
+	pt.Address = fromRooted[0]
+	return public, server.PubKey[:], nil
+}
+
 // practiceKeys reads the practice input's witness script, 2 <k1> <k2> <k3> 3 CHECKMULTISIG with three distinct
-// sorted compressed keys, and names them: the owner's (the derivation at key's origin + escrowPracticeSuffix), the
-// unsignable one and the throwaway key (the third).
-func practiceKeys(in psbtInput, key escrowKey, blank []byte) (owner, server []byte, err error) {
+// sorted compressed keys, and names them: the owner's (the derivation at fingerprint fp and ownerPath: the key's origin
+// followed by escrowPracticeSuffix, or by the practice index and /0/0 for a per-order wallet key), the unsignable one
+// and the throwaway key (the third).
+func practiceKeys(in psbtInput, fp string, ownerPath []uint32, blank []byte) (owner, server []byte, err error) {
 	ws := in.WitnessScript
 	if len(ws) != 105 || ws[0] != 0x52 || ws[1] != 33 || ws[35] != 33 || ws[69] != 33 || ws[103] != 0x53 || ws[104] != 0xae {
 		return nil, nil, errPracticeKeyShape
@@ -172,9 +285,8 @@ func practiceKeys(in psbtInput, key escrowKey, blank []byte) (owner, server []by
 	if !slices.IsSortedFunc(keys, bytes.Compare) || bytes.Equal(keys[0], keys[1]) || bytes.Equal(keys[1], keys[2]) {
 		return nil, nil, errPracticeKeyShape
 	}
-	want := slices.Concat(key.Path, []uint32{0, 0})
 	for _, d := range in.Derivations {
-		if hex.EncodeToString(d.Fingerprint[:]) == key.Fingerprint && slices.Equal(d.Path, want) {
+		if hex.EncodeToString(d.Fingerprint[:]) == fp && slices.Equal(d.Path, ownerPath) {
 			if owner != nil {
 				return nil, nil, errPracticeKeyShape
 			}

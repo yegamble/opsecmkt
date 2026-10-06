@@ -98,11 +98,12 @@ test('BTC and XMR: partial payment, intake pause, confirmation, fulfillment and 
     await fitsAt(buyer, `${currency} awaiting payment`);
     const address = (await buyer.locator('.payment-address .mono').innerText()).trim();
     await admin.goto('/admin');
-    const pause = admin.locator('form', { has: admin.getByRole('button', { name: `Pause new ${currency} payments` }) });
+    const pause = admin.locator('form', { has: admin.getByRole('button', { name: `Save new ${currency} payments` }) });
+    await pause.getByRole('radio', { name: /^Paused/ }).check();
     await pause.getByLabel('Current password', { exact: true }).fill(password);
     await pause.getByRole('button').click();
-    await expect(admin.getByRole('button', { name: `Enable new ${currency} payments` })).toBeVisible();
-    await expect(admin.getByRole('button', { name: `Pause new ${digital ? 'BTC' : 'XMR'} payments` })).toBeVisible();
+    await expect(admin.getByRole('heading', { name: `${currency} intake: Paused` })).toBeVisible();
+    await expect(admin.getByRole('heading', { name: `${digital ? 'BTC' : 'XMR'} intake: Enabled when wallet is available` })).toBeVisible();
     await second.goto(productURL);
     await second.getByRole('link', { name: 'Review order draft' }).click();
     await second.getByLabel('Reference currency').selectOption(currency);
@@ -123,7 +124,8 @@ test('BTC and XMR: partial payment, intake pause, confirmation, fulfillment and 
     await reloadUntil(buyer, async () => { await expect(buyer.locator('.page-head .badge')).toHaveText('Paid', { timeout: 500 }); });
     await fitsAt(buyer, `${currency} paid (buyer)`);
     // Existing addresses were monitored while intake was paused; now resume new requests.
-    const resume = admin.locator('form', { has: admin.getByRole('button', { name: `Enable new ${currency} payments` }) });
+    const resume = admin.locator('form', { has: admin.getByRole('button', { name: `Save new ${currency} payments` }) });
+    await resume.getByRole('radio', { name: /^On:/ }).check();
     await resume.getByLabel('Current password', { exact: true }).fill(password);
     await submit(admin, resume.getByRole('button'));
     await second.reload();

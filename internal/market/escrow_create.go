@@ -67,8 +67,12 @@ var (
 	errEscrowSelf       = fail(409, "You cannot buy your own listing with escrow: an escrow needs two parties' keys. Nothing was changed.")
 	errEscrowBuyerKey   = fail(409, "Activate your Bitcoin escrow key first: register it and sign its practice transaction on your escrow key page. Nothing was changed.")
 	errEscrowVendorKey  = fail(409, "The vendor has no active Bitcoin escrow key, so this order cannot use escrow. Nothing was changed.")
-	errEscrowBuild      = fail(503, "The escrow could not be created: the market's Bitcoin node did not confirm it. Nothing was changed; try again later.")
-	errEscrowKeyTaken   = fail(409, "The escrow could not be created: another escrow on this market already holds one of its keys. Nothing was changed. Try again; if the same refusal comes back, contact the market's staff.")
+	// A-455: until per-order escrows exist (A-456), a per-order wallet key never enters an escrow: a shape-(a) escrow
+	// would use its child /0/<i>, which the owner's per-order wallet cannot sign.
+	errEscrowBuyerPerOrder  = fail(409, "Your Bitcoin escrow key is for a per-order wallet, and escrows with per-order wallets are not available on this market yet. Nothing was changed.")
+	errEscrowVendorPerOrder = fail(409, "The vendor's Bitcoin escrow key is for a per-order wallet, and escrows with per-order wallets are not available on this market yet, so this order cannot use escrow. Nothing was changed.")
+	errEscrowBuild          = fail(503, "The escrow could not be created: the market's Bitcoin node did not confirm it. Nothing was changed; try again later.")
+	errEscrowKeyTaken       = fail(409, "The escrow could not be created: another escrow on this market already holds one of its keys. Nothing was changed. Try again; if the same refusal comes back, contact the market's staff.")
 	// errEscrowRestoring refuses escrow checkout while the restore gate is set (A-359): the restored database does not
 	// know the escrows created after its backup, so it could hand out their child keys again.
 	errEscrowRestoring = fail(503, "Bitcoin escrow is paused while this market restores its records from a backup. Nothing was charged and your order is still a draft; try again later.")
@@ -126,20 +130,20 @@ type escrowParty struct {
 // HMAC, so an APP_SECRET_KEY rotation never hands out a child key twice (chair's ruling (a) on QA25); the key rows
 // locked FOR UPDATE serialise it.
 func (a *App) escrowParties(ctx context.Context, tx *sql.Tx, o *Order) (buyer, vendor escrowParty, err error) {
-	rows, err := tx.QueryContext(ctx, `SELECT user_id,xpub_sealed,xpub_hmac,origin_fingerprint,origin_path,active_at IS NOT NULL FROM user_escrow_keys
+	rows, err := tx.QueryContext(ctx, `SELECT user_id,xpub_sealed,xpub_hmac,origin_fingerprint,origin_path,active_at IS NOT NULL,layout FROM user_escrow_keys
 		WHERE user_id IN ($1,$2) ORDER BY user_id FOR UPDATE`, o.BuyerID, o.VendorID)
 	if err != nil {
 		return buyer, vendor, err
 	}
 	type row struct {
-		sealed, hmac, fp, path string
-		active                 bool
+		sealed, hmac, fp, path, layout string
+		active                         bool
 	}
 	found := map[string]row{}
 	for rows.Next() {
 		var uid string
 		var r row
-		if err = rows.Scan(&uid, &r.sealed, &r.hmac, &r.fp, &r.path, &r.active); err != nil {
+		if err = rows.Scan(&uid, &r.sealed, &r.hmac, &r.fp, &r.path, &r.active, &r.layout); err != nil {
 			rows.Close()
 			return buyer, vendor, err
 		}
@@ -149,10 +153,13 @@ func (a *App) escrowParties(ctx context.Context, tx *sql.Tx, o *Order) (buyer, v
 	if err = rows.Err(); err != nil {
 		return buyer, vendor, err
 	}
-	party := func(uid, name string, refused error) (escrowParty, error) {
+	party := func(uid, name string, refused, perOrder error) (escrowParty, error) {
 		r, ok := found[uid]
 		if !ok || !r.active {
 			return escrowParty{}, refused
+		}
+		if r.layout != layoutCore {
+			return escrowParty{}, perOrder
 		}
 		xpub, err := a.open("escrow-xpub", r.sealed)
 		if err != nil {
@@ -176,10 +183,10 @@ func (a *App) escrowParties(ctx context.Context, tx *sql.Tx, o *Order) (buyer, v
 		}
 		return p, nil
 	}
-	if buyer, err = party(o.BuyerID, "buyer", errEscrowBuyerKey); err != nil {
+	if buyer, err = party(o.BuyerID, "buyer", errEscrowBuyerKey, errEscrowBuyerPerOrder); err != nil {
 		return buyer, vendor, err
 	}
-	vendor, err = party(o.VendorID, "vendor", errEscrowVendorKey)
+	vendor, err = party(o.VendorID, "vendor", errEscrowVendorKey, errEscrowVendorPerOrder)
 	return buyer, vendor, err
 }
 
@@ -247,7 +254,7 @@ func escrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	if open >= maxAwaitingPayment {
 		return actionResult{}, fail(409, "You already have "+strconv.Itoa(maxAwaitingPayment)+" orders awaiting payment. Pay or cancel one before requesting another payment address.")
 	}
-	if err = lockPaymentIntake(c, o.Currency); err != nil {
+	if err = lockPaymentIntake(c, o.Currency, kindEscrow); err != nil {
 		return actionResult{}, err
 	}
 	eligible, price, dispatchDays, err := escrowEligible(ctx, c.Tx, &o)

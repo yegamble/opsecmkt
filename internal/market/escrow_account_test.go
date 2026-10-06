@@ -341,11 +341,11 @@ func TestEscrowKeyRegisterWithTOTP(t *testing.T) {
 	for _, m := range regexp.MustCompile(`<input[^>]* name="([a-z]+)"`).FindAllStringSubmatch(form[1], -1) {
 		names[m[1]] = true
 	}
-	if !names["code"] || !names["password"] || !names["key"] || !names["csrf"] {
+	if !names["code"] || !names["password"] || !names["key"] || !names["csrf"] || !names["layout"] {
 		t.Fatalf("form fields %v", names)
 	}
 	code, _ := e.totpCodeFor(uid, 0)
-	f := url.Values{"key": {testBIP48Key}, "password": {testPassword}, "code": {code}}
+	f := url.Values{"key": {testBIP48Key}, "password": {testPassword}, "code": {code}, "layout": {"core"}} // layout: the checked radio (A-455)
 	for name := range names {
 		if f.Get(name) == "" && name != "csrf" && name != "dedicated" {
 			t.Fatalf("the form has a field %q this test does not fill", name)
@@ -739,7 +739,8 @@ func TestEscrowPracticeRefusedWithEscrows(t *testing.T) {
 }
 
 // The activation update is a compare-and-set on what the practice check used (QA-P1a-6, M8b and M5c): a key whose
-// stored origin changed, or that gained an escrow, while the node checked the paste is not activated.
+// stored origin or layout changed, or that gained an escrow, while the node checked the paste is not activated (A-455:
+// a Core practice signature never activates the same key re-registered as a per-order wallet key meanwhile).
 func TestEscrowPracticeKeyChangedDuringCheck(t *testing.T) {
 	e, core, _ := escrowTestApp(t)
 	for name, change := range map[string]func(uid string, escrowID int64) error{
@@ -749,6 +750,10 @@ func TestEscrowPracticeKeyChangedDuringCheck(t *testing.T) {
 		},
 		"origin path changed": func(uid string, _ int64) error {
 			_, err := e.DB.Exec("UPDATE user_escrow_keys SET origin_path='/48h/1h/1h/2h' WHERE user_id=$1", uid)
+			return err
+		},
+		"layout changed": func(uid string, _ int64) error {
+			_, err := e.DB.Exec("UPDATE user_escrow_keys SET layout='per_order' WHERE user_id=$1", uid)
 			return err
 		},
 		"escrow created": func(uid string, escrowID int64) error {

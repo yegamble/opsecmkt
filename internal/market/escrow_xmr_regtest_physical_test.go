@@ -56,15 +56,16 @@ func TestXMREscrowRegtestPhysical(t *testing.T) {
 		amounts[addr] = xmrListingPrice
 	}
 	tx := r.pay(amounts)
-	r.mine(10)
+	r.mineTo(tx, 10)
+	heights := r.synced()
 	r.mustPoll()
 	for i, l := range legs {
 		if r.state(l.order) != statePaid {
-			t.Fatalf("order %d after 10 blocks: %s; its deposits (confirmations credited): %v", i, r.state(l.order),
+			t.Fatalf("order %d at 10 confirmations (%s): %s; its deposits (confirmations credited): %v", i, heights, r.state(l.order),
 				agStrings(t, r.testEnv, "SELECT confirmations||' '||credited FROM payments WHERE order_id=$1", l.order))
 		}
 	}
-	t.Logf("transaction %s funded 4 physical Monero escrow orders; all paid after 10 blocks", tx)
+	t.Logf("transaction %s funded 4 physical Monero escrow orders; all paid at 10 confirmations (%s)", tx, heights)
 	for i := range legs[:3] {
 		legs[i].claim = r.funderAddress()
 		if code, body := r.xmrShip(legs[i].order, r.vendorSess, legs[i].claim, testPassword); code != 303 {

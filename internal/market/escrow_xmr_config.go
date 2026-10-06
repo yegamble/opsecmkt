@@ -48,12 +48,13 @@ var errXMRMainnetMarket = errors.New("refusing to start: ESCROW_XMR=on runs only
 // Fixed operator lines for Monero escrow's state at startup: nothing in them comes from a node. xmrLogOn is logged
 // with the verified network type as its class: "escrow: Monero escrow on (stagenet)".
 const (
-	xmrLogOn        = "escrow: Monero escrow on"
-	xmrLogNetwork   = "escrow: Monero escrow disabled: the escrow daemon is not on the network this database's Monero escrows are on (escrow_xmr_network); the admin page names both; see docs/operator-guide.md, \"Monero escrow\""
-	xmrLogUnchecked = "escrow: Monero escrow disabled: the escrow daemon or wallet-rpc could not be checked at startup"
-	xmrLogRefused   = "escrow: Monero escrow disabled until the app is restarted: " // + an xmrRefusal
-	xmrLogSecret    = "escrow: Monero escrow disabled: MONERO_WALLET_SECRET differs from the secret this database was first started with, so no escrow wallet can be opened or created with it; restore the original secret (docs/operator-guide.md, \"Monero escrow\")"
-	xmrLogSeedKey   = "escrow: Monero escrow wallet creation stopped: ESCROW_XMR_SEED_KEY is not the seed key pinned in this database; seeds are never re-sealed automatically. Restore the pinned key, or re-pin the new one as docs/operator-guide.md, \"Monero escrow\" describes"
+	xmrLogOn         = "escrow: Monero escrow on"
+	xmrLogNetwork    = "escrow: Monero escrow disabled: the escrow daemon is not on the network this database's Monero escrows are on (escrow_xmr_network); the admin page names both; see docs/operator-guide.md, \"Monero escrow\""
+	xmrLogUnchecked  = "escrow: Monero escrow disabled: the escrow daemon or wallet-rpc could not be checked at startup"
+	xmrLogPooledWait = "escrow: Monero escrow waiting: the pooled Monero wallet (MONERO_WALLET_RPC_URL) has not passed a check yet, so the wallet open in the escrow wallet-rpc cannot be compared with it; Monero escrow starts once it has (retried every pass)"
+	xmrLogRefused    = "escrow: Monero escrow disabled until the app is restarted: " // + an xmrRefusal
+	xmrLogSecret     = "escrow: Monero escrow disabled: MONERO_WALLET_SECRET differs from the secret this database was first started with, so no escrow wallet can be opened or created with it; restore the original secret (docs/operator-guide.md, \"Monero escrow\")"
+	xmrLogSeedKey    = "escrow: Monero escrow wallet creation stopped: ESCROW_XMR_SEED_KEY is not the seed key pinned in this database; seeds are never re-sealed automatically. Restore the pinned key, or re-pin the new one as docs/operator-guide.md, \"Monero escrow\" describes"
 )
 
 type escrowXMRConfig struct {
@@ -188,10 +189,11 @@ type escrowXMR struct {
 	startState    string           // the state line logged at startup
 	now           func() time.Time // the watcher's clock (escrow_xmr_watch.go); nil is time.Now. Tests move it
 
-	ready     atomic.Bool // the secret verifier matched and the network check passed: escrow wallets may be used
-	canCreate atomic.Bool // ESCROW_XMR_SEED_KEY is the pinned seed key: new wallets may be created and sealed
-	refused   atomic.Bool // the nodes failed the network check after startup (P3-R2): disabled until a restart
-	locked    sync.Map    // wallet names another wallet program has open, logged once while it lasts (escrow_xmr_watch.go)
+	state     atomic.Pointer[xmrState] // the latest startup check's state (initEscrowXMR, retryEscrowXMR, refuseEscrowXMR), for /admin (notReady)
+	ready     atomic.Bool              // the secret verifier matched and the network check passed: escrow wallets may be used
+	canCreate atomic.Bool              // ESCROW_XMR_SEED_KEY is the pinned seed key: new wallets may be created and sealed
+	refused   atomic.Bool              // the nodes failed the network check after startup (P3-R2): disabled until a restart
+	locked    sync.Map                 // wallet names another wallet program has open, logged once while it lasts (escrow_xmr_watch.go)
 
 	// The network pin and the sync guard (A-449), in memory only.
 	pinned   atomic.Value                        // string: the network pin as initEscrowXMR read it, for display before the daemon is verified
@@ -272,7 +274,51 @@ func (a *App) initEscrowXMR(ctx context.Context) error {
 		log.Print(xmrLogSeedKey)
 	}
 	a.escrowXMR.startState = state
+	a.escrowXMR.state.Store(&xmrState{state, class})
 	return nil
+}
+
+// xmrState is one of the fixed state lines of Monero escrow's startup checks with its error class ("" for none; for
+// xmrLogRefused, the refusal's fixed reason). Nothing in it comes from a node.
+type xmrState struct{ line, class string }
+
+// notReady says, while Monero escrow is configured but not ready, which fixed state its latest startup check left it in,
+// in plain words with the error class, and what the operator does about it ("" while ready). /admin shows both under
+// Payment providers (xmrEscrowNodeLoader) and the state in the escrow-only readiness panel (QA4W4B-1).
+func (x *escrowXMR) notReady() (state, remedy string) {
+	if x.ready.Load() {
+		return "", ""
+	}
+	s := x.state.Load()
+	if s == nil {
+		s = &xmrState{}
+	}
+	const retried = " The check is retried every poll; Monero escrow starts once it passes, without a restart."
+	withClass := func(words string) string {
+		if s.class != "" {
+			return words + " (" + s.class + ")"
+		}
+		return words
+	}
+	switch s.line {
+	case xmrLogPooledWait:
+		return "waiting for the pooled Monero wallet's first check",
+			"The pooled Monero wallet-rpc (MONERO_WALLET_RPC_URL) has not passed a check since the app started, so the wallet open in the escrow wallet-rpc cannot yet be compared with it, and Monero escrow makes no wallet call until it can. Start the pooled monero-wallet-rpc, or correct MONERO_WALLET_RPC_URL." + retried
+	case xmrLogUnchecked:
+		return withClass("the escrow daemon or wallet-rpc could not be checked"),
+			"Check that the monerod at ESCROW_XMR_DAEMON_URL is running and synced, and that the monero-wallet-rpc at ESCROW_XMR_WALLET_RPC_URL is running and reachable from the app." + retried
+	case xmrLogNetwork:
+		return "the escrow daemon is not on the network this database's Monero escrows are on",
+			"Point ESCROW_XMR_DAEMON_URL and the escrow wallet-rpc back at a daemon on that network; a new network needs a new database." + retried
+	case xmrLogSecret:
+		return "MONERO_WALLET_SECRET is not the secret this database was first started with",
+			"No escrow wallet can be opened or created with it. Restore the original secret and restart the app."
+	case xmrLogUnrecorded:
+		return withClass("its secret verifier or seed key could not be checked in the database"), "Check the database and its connection." + retried
+	case xmrLogRefused:
+		return "refused until the app is restarted", "Reason: " + s.class + ". Correct what it describes, then restart the app; nothing is retried until then."
+	}
+	return "its startup checks have not passed yet", "The server log names the state." + retried
 }
 
 // startEscrowXMR runs Monero escrow's checks once: the secret verifier (a mismatch stops here, before any node is
@@ -328,6 +374,11 @@ func (a *App) startEscrowXMR(ctx context.Context) (state, class string, err erro
 			return "", "", errXMRFeeNetwork
 		}
 	}
+	// The open wallet is compared with the pooled wallet's primary address, which the pooled provider reads at its first
+	// good check: until then Monero escrow waits, with no wallet call, rather than start uncompared (QA4W3-2).
+	if p := a.pooledMonero(); p != nil && p.primaryAddress() == "" {
+		return xmrLogPooledWait, "", nil
+	}
 	walletOpen, err := x.rpc.checkOpenWallet(ctx, info.Height)
 	switch {
 	case errors.As(err, &refusal):
@@ -352,12 +403,13 @@ func (a *App) startEscrowXMR(ctx context.Context) (state, class string, err erro
 var errXMRPooledWallet = &xmrRefusal{"the escrow wallet-rpc (ESCROW_XMR_WALLET_RPC_URL) has the pooled Monero wallet open: it is the pooled wallet-rpc (MONERO_WALLET_RPC_URL) under another address; Monero escrow needs a monero-wallet-rpc of its own", true}
 
 // pooledXMRWalletOpen reports whether the wallet open in the escrow wallet-rpc is the pooled Monero wallet: its
-// primary address is the one the pooled provider's last check read. It backs up sameRPCEndpoint now that both
+// primary address is the one the pooled provider's first good check read. It backs up sameRPCEndpoint now that both
 // wallet-rpcs may follow one stagenet daemon (A-449; before, the escrow's fakechain heights told them apart). Without
-// a pooled Monero provider, or before its first check, it answers false.
+// a pooled Monero provider it answers false; startEscrowXMR does not call it before the pooled provider's first good
+// check (QA4W3-2).
 func (a *App) pooledXMRWalletOpen(ctx context.Context) (bool, error) {
-	p, ok := a.provider("XMR").(*moneroProvider)
-	if !ok || p.primaryAddress() == "" {
+	p := a.pooledMonero()
+	if p == nil || p.primaryAddress() == "" {
 		return false, nil
 	}
 	open, err := a.escrowXMR.rpc.getAddress(ctx, 0, 0)
@@ -365,6 +417,21 @@ func (a *App) pooledXMRWalletOpen(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	return open == p.primaryAddress(), nil
+}
+
+// pooledMonero is the pooled Monero provider (MONERO_WALLET_RPC_URL), whether its checks pass or it is unavailable, or
+// nil when none is configured.
+func (a *App) pooledMonero() *moneroProvider {
+	a.payMu.RLock()
+	defer a.payMu.RUnlock()
+	if p, ok := a.payments["XMR"].(*moneroProvider); ok {
+		return p
+	}
+	if u := a.unavailable["XMR"]; u != nil {
+		p, _ := u.p.(*moneroProvider)
+		return p
+	}
+	return nil
 }
 
 // xmrNetworkPin is the settings key of the network type a database's Monero escrows are on (A-449, P4-R15).
@@ -447,6 +514,7 @@ func (a *App) recheckEscrowXMRNetwork(ctx context.Context) error {
 // refuseEscrowXMR disables Monero escrow until a restart after a node failed the network check, logging xmrLogRefused
 // with the fixed reason once.
 func (x *escrowXMR) refuseEscrowXMR(r *xmrRefusal) {
+	x.state.Store(&xmrState{xmrLogRefused, r.msg})
 	x.ready.Store(false)
 	if !x.refused.Swap(true) {
 		log.Print(xmrLogRefused + r.msg)
