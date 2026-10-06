@@ -18,6 +18,11 @@ import (
 // A-440 (P4-R6) real-chain legs (scripts/test-escrow-regtest.sh; CI's escrow-regtest job): the market key protection
 // on a Bitcoin Core regtest node.
 
+// regtestOperatorTimeout bounds one call the regtest legs make as the operator (their call helpers). QA4W5-7: under
+// rpcTimeout (10 s) a generatetoaddress, or a getwalletinfo just after blocks of thousands of dust outputs, failed legs
+// on a loaded host; the operator's own bitcoin-cli waits as long as Core takes.
+const regtestOperatorTimeout = 120 * time.Second
+
 // regtestOperator checks that every URL in urls reports the legs' chain (checkRealChain, before any wallet call) and
 // returns a helper that calls Core as the operator user (full rights, standing in for the operator's own bitcoin-cli),
 // and that user's client (for mustMine and matureFunds).
@@ -45,7 +50,7 @@ func regtestOperator(t *testing.T, opURL string, urls map[string]string) (func(w
 		if params == nil {
 			params = []any{}
 		}
-		if err := op.call(ctx, path, method, params, out); err != nil {
+		if err := op.callWithin(ctx, regtestOperatorTimeout, path, method, params, out); err != nil {
 			t.Fatalf("operator %s: %v", method, err)
 		}
 	}, op

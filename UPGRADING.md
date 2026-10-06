@@ -1234,6 +1234,21 @@ outlasted startup). So the first passing check reads the whole wallet once, in o
 off with "escrow: Bitcoin escrow off while the arbiter wallet is checked: …" until the escrow watcher finishes it. A
 different arbiter wallet, or one rebuilt with `importdescriptors`, is read whole again.
 
+One case the checkpoint misses: `importdescriptors` into the same arbiter wallet keeps its name and birthtime, so a
+descriptor whose keys have already spent brings in sends at or below the checkpoint block, which later checks do not
+read. **After importing any descriptor into the arbiter wallet**, delete the checkpoint so that the next start reads the
+whole wallet once, then restart the app:
+
+```sh
+docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d opsecmkt \
+  -c "DELETE FROM settings WHERE key='escrow_btc_arbiter_checked'"
+```
+
+It prints `DELETE 1`, or `DELETE 0` when there was no checkpoint. A stored checkpoint block that is not a block hash
+(64 hex characters) is treated as no checkpoint, and so is a block the node refuses as malformed (`-8`) or does not know
+(`-5`). The read refuses an answer with any one value (an entry, say) longer than 64 KiB as a read failure (`bad-reply`);
+Core's entries are about 700 bytes, and the answer as a whole is limited only by the read's timeout.
+
 What "never spent" cannot tell apart: `rpcwhitelist` allows methods, not wallets, so where the pooled payments share the
 escrow node, a pooled user allowed `sendtoaddress` can spend coins paid to the arbiter wallet by naming its path, and
 escrow then stays off from the next check (no key is exported). A node of escrow's own rules that out.

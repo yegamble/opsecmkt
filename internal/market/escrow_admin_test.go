@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -309,6 +311,10 @@ func TestEscrowArbiterReadOutlivesStartup(t *testing.T) {
 	x := newEscrowEnv(t)
 	logs := captureLog(t)
 	release := make(chan struct{})
+	// QA4W5-6: the held read is let go however the test ends, so a failed assertion fails the test at once instead of
+	// leaving the fake Core's handler (and the server's Close) waiting until -timeout.
+	free := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(free)
 	x.core.mu.Lock()
 	x.core.arbiterTxs, x.core.arbiterBirth = []string{"receive"}, 1700000700 // another wallet: no checkpoint for it
 	x.core.beforeSince = func() { <-release }
@@ -324,7 +330,7 @@ func TestEscrowArbiterReadOutlivesStartup(t *testing.T) {
 	if page := x.adminPage(); !strings.Contains(page, "Bitcoin escrow off while the arbiter wallet is checked.") {
 		t.Fatal("the admin page does not say the arbiter wallet is being checked")
 	}
-	close(release)
+	free()
 	retry := &escrowRetry{last: x.A.escrowStartState}
 	if x.A.retryEscrow(context.Background(), retry); x.A.escrow.Load() == nil || retry.last != escrowLogOn {
 		t.Fatalf("retry after the read finished: %q\n%s", retry.last, logs.String())
@@ -351,6 +357,122 @@ func TestEscrowArbiterReadOutlivesStartup(t *testing.T) {
 	}
 	if page := x.adminPage(); !strings.Contains(page, "the arbiter wallet's transactions could not be read (listsinceblock timeout)") {
 		t.Fatal("the admin page does not say the read failed")
+	}
+}
+
+// QA4W5-4: the reuse rules of a read of the arbiter wallet (arbiterScan). A read that a check has taken is gone: after
+// a read that failed (rpc:-1) and a node that then answers, the watcher's retry reads again and starts escrow, instead
+// of taking the old failure. A read is adopted only by a check of the same wallet from the same checkpoint: with the
+// birthtime changed while a read is held (another wallet, or one rebuilt), the retry starts a read of its own.
+func TestEscrowArbiterScanReuse(t *testing.T) {
+	x := newEscrowEnv(t)
+	logs := captureLog(t)
+	ctx := context.Background()
+	x.core.mu.Lock()
+	x.core.arbiterTxs, x.core.arbiterBirth, x.core.arbiterListErr = []string{"receive"}, 1700002000, -1
+	x.core.mu.Unlock()
+	x.restart()
+	if x.A.escrow.Load() != nil || x.A.escrowStartState != escrowLogArbiterRead || !strings.Contains(logs.String(), escrowLogArbiterRead+" (listsinceblock rpc:-1)") {
+		t.Fatalf("startup with a failing read: %q\n%s", x.A.escrowStartState, logs.String())
+	}
+	x.core.mu.Lock()
+	x.core.arbiterListErr = 0
+	x.core.mu.Unlock()
+	before := x.core.count("listsinceblock")
+	retry := &escrowRetry{last: x.A.escrowStartState}
+	if x.A.retryEscrow(ctx, retry); x.A.escrow.Load() == nil || retry.last != escrowLogOn {
+		t.Fatalf("retry after the failed read, the node answering again: %q\n%s", retry.last, logs.String())
+	}
+	if n := x.core.count("listsinceblock") - before; n != 1 {
+		t.Fatalf("the retry read %d times, want once (a taken read is not reused)", n)
+	}
+
+	// A read held past startup's budget, for the wallet of birthtime 1700002100; the next read is not held.
+	release := make(chan struct{})
+	free := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(free)
+	var held atomic.Bool
+	x.core.mu.Lock()
+	x.core.arbiterBirth = 1700002100 // no checkpoint for it: a full read
+	x.core.beforeSince = func() {
+		if held.CompareAndSwap(false, true) {
+			<-release
+		}
+	}
+	x.core.mu.Unlock()
+	saved := paymentStartupTimeout
+	paymentStartupTimeout = 2 * time.Second
+	t.Cleanup(func() { paymentStartupTimeout = saved })
+	before = x.core.count("listsinceblock")
+	x.restart()
+	if x.A.escrow.Load() != nil || x.A.escrowStartState != escrowLogArbiterWait || !held.Load() {
+		t.Fatalf("startup with a held read: %q\n%s", x.A.escrowStartState, logs.String())
+	}
+	x.core.mu.Lock()
+	x.core.arbiterBirth = 1700002200 // another wallet while the read is held
+	x.core.mu.Unlock()
+	pass, cancel := context.WithTimeout(ctx, 10*time.Second) // adopting the held read would wait here
+	defer cancel()
+	retry = &escrowRetry{last: x.A.escrowStartState}
+	if x.A.retryEscrow(pass, retry); x.A.escrow.Load() == nil || retry.last != escrowLogOn {
+		t.Fatalf("retry with the birthtime changed under a held read: %q\n%s", retry.last, logs.String())
+	}
+	if n := x.core.count("listsinceblock") - before; n != 2 {
+		t.Fatalf("listsinceblock called %d times, want 2 (the held read and the retry's own)", n)
+	}
+}
+
+// QA4W5-8: a checkpoint whose block is not a block hash (64 hex characters) is no checkpoint: the check reads the whole
+// wallet, in one call, and escrow starts, instead of sending Core a hash it refuses (-8) on every retry and staying off
+// for good. A block Core refuses as malformed (-8) is read past as an unknown one (-5) is: from the start.
+func TestEscrowArbiterBadCheckpointBlock(t *testing.T) {
+	x := newEscrowEnv(t)
+	logs := captureLog(t)
+	const arb = "/wallet/opsecmkt-arbiter"
+	full := `["",1,true,false,true]`
+	reads := func(from int) []string {
+		t.Helper()
+		x.core.mu.Lock()
+		defer x.core.mu.Unlock()
+		var all []string
+		for _, c := range x.core.calls[from:] {
+			if c.Method == "listsinceblock" && c.Path == arb {
+				all = append(all, string(c.Params))
+			}
+		}
+		return all
+	}
+	x.core.mu.Lock()
+	x.core.arbiterTxs, x.core.arbiterBirth = []string{"receive", "receive"}, 1700003000
+	x.core.mu.Unlock()
+	for _, block := range []string{"not-a-block-hash", strings.Repeat("g", 64), arbiterBlock(1)[:63], arbiterBlock(1) + "0"} {
+		if _, err := x.DB.Exec("INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT (key) DO UPDATE SET value=excluded.value", escrowArbiterChecked,
+			`{"wallet":"opsecmkt-arbiter","birthtime":1700003000,"block":"`+block+`"}`); err != nil {
+			t.Fatal(err)
+		}
+		x.core.mu.Lock()
+		from := len(x.core.calls)
+		x.core.mu.Unlock()
+		x.restart()
+		if x.A.escrow.Load() == nil || x.A.escrowStartState != escrowLogOn {
+			t.Fatalf("checkpoint block %q: %q\n%s", block, x.A.escrowStartState, logs.String())
+		}
+		if r := reads(from); !slices.Equal(r, []string{full}) {
+			t.Fatalf("checkpoint block %q: listsinceblock %v, want one call %s", block, r, full)
+		}
+	}
+
+	// -8 from Core for the block a check reads from: then everything, once.
+	x.core.mu.Lock()
+	from := len(x.core.calls)
+	x.core.mu.Unlock()
+	s := x.A.arbiterScan(x.A.escrow.Load(), "qa4w5-8", "zz")
+	<-s.done
+	if s.err != nil || s.sent || s.block != arbiterBlock(2) {
+		t.Fatalf("read from a block Core refuses as malformed: %v, sent %v, block %s", s.err, s.sent, s.block)
+	}
+	if r := reads(from); !slices.Equal(r, []string{`["zz",1,true,false,true]`, full}) {
+		t.Fatalf("read from a block Core refuses as malformed: listsinceblock %v", r)
 	}
 }
 

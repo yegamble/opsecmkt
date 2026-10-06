@@ -40,7 +40,7 @@ func TestEscrowRegtestPracticeSign(t *testing.T) {
 		if wallet != "" {
 			path = "/wallet/" + wallet
 		}
-		if err := op.call(ctx, path, method, params, out); err != nil {
+		if err := op.callWithin(ctx, regtestOperatorTimeout, path, method, params, out); err != nil {
 			t.Fatalf("operator %s: %v", method, err)
 		}
 	}
@@ -312,12 +312,12 @@ func skipOnPrivateSignet(t *testing.T, reason string) {
 // real proof of work: Core's default maxtries (1000000) returns [] without an error, and maxtries is one budget for
 // all of a call's blocks, so each call passes signetMaxTries and asks for the blocks still missing, and each must mine
 // at least one block and no more than it asked for: an empty answer is never taken as a block. A signet call may take
-// minutes (seconds per block), so it waits up to signetMineTimeout instead of rpcTimeout.
+// minutes (seconds per block), so it waits up to signetMineTimeout; a regtest call waits up to regtestOperatorTimeout (QA4W5-7).
 func mineBlocks(ctx context.Context, c *rpcClient, chain string, n int, addr string) ([]string, error) {
 	var mined []string
 	for len(mined) < n {
 		want := n - len(mined)
-		params, timeout := []any{want, addr}, rpcTimeout
+		params, timeout := []any{want, addr}, regtestOperatorTimeout
 		if chain == "signet" {
 			params, timeout = append(params, signetMaxTries), signetMineTimeout
 		}
@@ -358,7 +358,7 @@ func matureFunds(t *testing.T, ctx context.Context, c *rpcClient, addr string) {
 	}
 	miner := privateSignetMiner(t, ctx)
 	var txid string
-	if err := miner.call(ctx, "/wallet/"+privateSignetMinerWallet, "sendtoaddress", []any{addr, json.Number("5")}, &txid); err != nil {
+	if err := miner.callWithin(ctx, regtestOperatorTimeout, "/wallet/"+privateSignetMinerWallet, "sendtoaddress", []any{addr, json.Number("5")}, &txid); err != nil {
 		t.Fatalf("%s: the miner wallet's sendtoaddress: %v", privateSignetLabel, err)
 	}
 	waitInMempool(t, ctx, c, txid)

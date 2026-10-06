@@ -325,7 +325,7 @@ func TestEscrowRegtestIsolated(t *testing.T) {
 	if err := miner.call(ctx, wallet, "getnewaddress", []any{}, &minerAddr); err != nil {
 		t.Fatal(err)
 	}
-	if err := miner.call(ctx, wallet, "sendtoaddress", []any{addr, json.Number("0.001")}, &txid); err != nil {
+	if err := miner.callWithin(ctx, regtestOperatorTimeout, wallet, "sendtoaddress", []any{addr, json.Number("0.001")}, &txid); err != nil {
 		t.Fatal(err)
 	}
 	mustMine(t, ctx, miner, 1, minerAddr)

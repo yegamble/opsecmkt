@@ -826,7 +826,11 @@ escrow on a widened whitelist, logs once and starts it again once refused), `Tes
 from the checkpoint in one call; one spend behind 2000 more receives: off; another wallet or an unknown checkpoint block:
 read whole once; an answer beyond the 16 MiB reply limit: read as it arrives; an unreadable list: off with the
 read-failure line), `TestEscrowArbiterReadOutlivesStartup` (a read longer than startup allows: off with its own line and
-admin text, then on at the watcher's retry with no second read; a read that times out: the read-failure line); on Core
+admin text, then on at the watcher's retry with no second read; a read that times out: the read-failure line),
+`TestEscrowArbiterScanReuse` (QA4W5-4: a failed read is not reused by the retry; a held read is not adopted after the
+birthtime changes), `TestEscrowArbiterBadCheckpointBlock` (QA4W5-8: a checkpoint block that is not 64 hex characters
+counts as no checkpoint, one full read; a -8 answer falls back to a full read as -5 does) and `TestRPCCallStream` (QA4W5-2: 100,000 entries read; one 300 MiB entry
+or skipped key refused, the heap growing by under 64 MiB); on Core
 31.1 regtest `TestEscrowRegtestPooled` (the whitelisted pooled user refused
 `listdescriptors`, `gethdkeys` and `walletprocesspsbt`, escrow on beside a working pooled provider, an unrestricted user
 keeping escrow off), `TestEscrowRegtestArbiterRestore` (backup, wipe, `restorewallet` and the `importdescriptors`
