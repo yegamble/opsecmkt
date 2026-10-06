@@ -751,15 +751,16 @@ const paymentReviewLimit = 100
 
 // loadPaymentReviews lists deposits the payment watcher flagged for staff review (payments.flagged): every open
 // flag, oldest first and never capped, then the paymentReviewLimit most recently flagged others, with their
-// count. Whether a flag is open is the one rule paymentFlagOpenRule (QA462C), which the review handler and the
-// late-deposit notice episode read too: a locked transfer, a deposit of a payout below the minimum automatic payout
-// (A-99), a credited deposit whose regression was announced and has not confirmed again, an escrow deposit spent
-// outside the market, or a deposit not credited that does not count for the order (pooled, or an escrow one recorded
-// after the close or left out of its settlement), until staff record its disposition (an escalated one stays open).
-// An escrow deposit that counts for the order is not open, credited or not (QA462B-1). A disposed flag is not listed
-// (the order history and the audit log keep the disposition). The reason comes from the deposit's current
-// confirmations. The flag time is the latest watcher flag event for the deposit in order_events: flagOrder writes a
-// system note naming it (truncate(txid, 20)) and ending "Moderator review required.".
+// count. Whether a flag is open is the one rule paymentFlagOpenRule (QA462C), which the review handler reads too
+// (and only a flag it opens holds a late-deposit notice episode): a locked transfer, a deposit of a payout below the
+// minimum automatic payout (A-99), a credited deposit whose regression was announced and has not confirmed again, an
+// escrow deposit spent outside the market, or a deposit not credited that does not count for the order (pooled, or an
+// escrow one recorded after the close or left out of its settlement), until staff record its disposition (an
+// escalated one stays open). An escrow deposit that counts for the order is not open, credited or not (QA462B-1). A
+// disposed flag is not listed (the order history and the audit log keep the disposition). The reason comes from the
+// deposit's current confirmations, against the escrow's threshold for an escrow deposit. The flag time is the latest
+// watcher flag event for the deposit in order_events: flagOrder writes a system note naming it (truncate(txid, 20))
+// and ending "Moderator review required.".
 func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 	if d.User == nil || (d.User.Role != "moderator" && d.User.Role != "admin") {
 		return nil
@@ -800,6 +801,20 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 		v.Refundable, v.Escrow = !credited && !escrow, escrow
 		v.Amount, v.OrderState = amount(amt, currencyDecimals(v.Currency)), stateLabel(v.OrderState)
 		threshold := a.confirmationThreshold(v.Currency)
+		if escrow {
+			// An escrow deposit's own confirmation threshold, as its order page reads it (escrowOrder, xmrEscrowOrder),
+			// not the pooled wallet's (0 when no pooled provider is configured).
+			switch e := a.escrow.Load(); {
+			case v.Currency == "XMR" && a.escrowXMR != nil:
+				threshold = a.escrowXMR.confirmations
+			case v.Currency == "XMR":
+				threshold = xmrMinConfirmations
+			case e != nil:
+				threshold = e.confirmations
+			default:
+				threshold = 3
+			}
+		}
 		switch {
 		case outside:
 			// P1-d1: an escrow deposit no settlement of the market covered, spent by another transaction.

@@ -191,10 +191,11 @@ chain `regtest`; [operator guide](operator-guide.md#bitcoin-escrow-regtest-only)
   none of them (QA462C-2; they stay counted; the desk dates the flag from that note and offers no action on it). A
   counted deposit not credited at funding (still confirming or conflicted then) is not flagged, and its flag set by
   another check is not open: the desk offers no action on it, a review is refused (409) and it does not keep a
-  late-deposit notice episode open (QA462B, QA462C). One rule decides whether a payment flag is open, for the desk,
-  the review and that episode alike: a locked transfer, a deposit of a payout below the minimum, an announced
-  regression, a deposit spent outside the market, or a deposit that does not count (recorded after the close, or left
-  out of its settlement, listed as such), until staff record it. A stray
+  late-deposit notice episode open (QA462B, QA462C). One rule decides whether a payment flag is open, for the desk and
+  the review alike: a locked transfer, a deposit of a payout below the minimum, an announced regression, a deposit spent
+  outside the market, or a deposit that does not count (recorded after the close, or left out of its settlement, listed
+  as such), until staff record it; only such an open flag of a deposit not credited, below the minimum or locked holds
+  the late-deposit notice episode. A stray
   refund still being built when the refund fails (both in the same pass) adds those coins to its own: once it is built and spends them, the refund's failure holds nothing
   more (a coin of the refund's it leaves out, beyond the 50 largest or worth less than its own spending cost, gets one
   more try and is then held); if it fails too-small, the same coins fail a second time, at the grown value, and are then held. A stray

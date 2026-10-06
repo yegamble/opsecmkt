@@ -268,7 +268,7 @@ Each of these forms repeats the wallet check above in one line next to the check
 
 The watcher flags a deposit (`payments.flagged`): it writes a system note ending "Moderator review
 required." to the order history and notifies every moderator and administrator who is not suspended
-("Payment review needed for order <first 8 characters of the order ID>"). A locked transfer, a deposit after settlement or after the order closed, or the deposits of a payout below the minimum automatic payout are flagged once. Deposits after settlement or after the order closed are announced once per episode however many arrive: one order note per watcher pass names the deposits it flagged, but the buyer (the amount, no transaction ID; the vendor is not told) and each staff member are notified only when no flag of the order is open on the desk yet (any open flag below, not only a late one: not yet reviewed, or escalated to an administrator; see "Record the review" below). The buyer's order page shows each as "Arrived after the order closed — not paid out; market staff notified".
+("Payment review needed for order <first 8 characters of the order ID>"). A locked transfer, a deposit after settlement or after the order closed, or the deposits of a payout below the minimum automatic payout are flagged once. Deposits after settlement or after the order closed are announced once per episode however many arrive: one order note per watcher pass names the deposits it flagged, but the buyer (the amount, no transaction ID; the vendor is not told) and each staff member are notified only when no late flag of the order is open on the desk yet (a flag open below of a deposit not credited, below the minimum or locked: not yet reviewed, or escalated to an administrator; see "Record the review" below). The buyer's order page shows each as "Arrived after the order closed — not paid out; market staff notified".
 A credited deposit that falls back below the threshold (conflicted, missing, or at a lower depth after a
 reorg) is announced once per episode while the order is open or any of its payouts unsent (a release already sent with its overpayment return still unsent counts): the buyer and the vendor
 are notified too (staff who are party to the order get that notification instead of the review one), and if
@@ -280,7 +280,7 @@ transaction ID, reason and flag time (the latest flag note for that deposit). A 
 its review (below), while its deposit is a locked transfer, a deposit after settlement or after the order closed,
 or part of a payout below the minimum, or while a credited deposit's regression has not confirmed again (on an
 escrow order also a deposit spent outside the market or left out of its settlement; an escrow deposit that counts for
-the order is never open). The desk, *Record the review* and the late-deposit notice read this one rule (QA462C). The
+the order is never open). The desk and *Record the review* read this one rule, and only a flag it opens holds the late-deposit notice (QA462C). The
 reason is read from the deposit's current confirmations. A moderator or administrator who is not
 party to the order can open its page read-only: history with the flag note, the deposit ledger (while the currency's wallet is configured) and any payout. No buyer or
 vendor action is offered, the order actions refuse staff, and digital delivery content stays hidden unless

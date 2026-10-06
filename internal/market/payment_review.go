@@ -25,8 +25,8 @@ func init() {
 // paymentFlagOpenRule is the one rule (QA462C) deciding whether a payment flag is open, as SQL over a payments row
 // whose alias is "@" (paymentFlagOpen substitutes it). The moderation desk lists a flag as open and offers its form
 // (loadPaymentReviews), the review handler records a disposition only on an open flag (recordPaymentReview), and a
-// deposit after the close is announced again only when no flag of its order is open (flagLateDeposits), so the three
-// never disagree. A flag is open until staff record its disposition (A-31: no action or refunded by hand; one escalated
+// late-deposit notice episode is held only by an open flag of a deposit not credited, below the floor or locked
+// (flagLateDeposits), so a flag that holds it is always one staff can record. A flag is open until staff record its disposition (A-31: no action or refunded by hand; one escalated
 // to an administrator stays open) while its deposit is a locked transfer, of a payout below the minimum automatic
 // payout (A-99), a credited deposit whose regression was announced and has not confirmed again (regress_notice), an
 // escrow deposit spent outside the market (P1-d1), or a deposit not credited that does not count for the order: a
@@ -127,8 +127,9 @@ func recordPaymentReview(c *actionCtx, id int64, outcome, note, refundTxid strin
 		// never open, credited or not (QA462B-1).
 		return actionResult{}, fail(409, "This flag is not open: its escrow deposit counts for the order, so there is nothing to review. Nothing was changed.")
 	case !open:
-		// The open-flag rule: a credited deposit's flag is closed once it confirmed again (or was never a regression).
-		return actionResult{}, fail(409, "This flag is no longer open: its credited deposit confirmed again. Nothing was changed.")
+		// The open-flag rule: a credited deposit's flag is not open once a regression confirmed again, nor when it was
+		// never a regression (the flag of a release too few, A-461, only lets staff open the order).
+		return actionResult{}, fail(409, "This flag is not open: its deposit is credited toward the order, which settles it, and no announced regression of it is still open, so there is nothing to review. Nothing was changed.")
 	case outcome == "refunded" && credited:
 		return actionResult{}, fail(409, "This deposit is counted toward the order's payout, so it is settled through that payout and never refunded by hand (that could pay it twice). Nothing was changed.")
 	case outcome == "refunded" && o.Escrow:

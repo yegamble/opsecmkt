@@ -10,9 +10,10 @@ import (
 )
 
 // QA462C: one rule (paymentFlagOpen) decides whether a payment flag is open. For every kind of flag, open on the
-// moderation desk ⇔ the disposition form is shown ⇔ recording it answers 303 ⇔ flagLateDeposits reads it as an open
-// notice episode (so a new deposit after the close is not announced again while it is open); and the desk gives the
-// flag's reason.
+// moderation desk ⇔ the disposition form is shown ⇔ recording it answers 303, and the desk gives the flag's reason.
+// flagLateDeposits holds a notice episode open (a new deposit after the close is not announced again) exactly for an
+// open flag of a late type (not credited, not below the floor, not locked): every flag holding it is one staff can
+// record, and an open locked, below-floor, regressed or credited spent-outside flag never silences the notice.
 
 // flagCase is one flagged deposit: the payments columns set besides the defaults (5000, flagged, the order's output
 // index), the reason the desk gives, and whether its flag is open.
@@ -22,15 +23,18 @@ type flagCase struct {
 }
 
 // lateEpisodeOpen reports whether flagLateDeposits reads order's flags as an open notice episode: it records a new
-// confirmed deposit at addr after the order closed and runs flagLateDeposits, which tells the buyer only when no flag
-// of the order is open.
+// confirmed deposit at addr after the order closed and runs flagLateDeposits, which tells the buyer and the staff only
+// when no flag of the order holds the episode.
 func lateEpisodeOpen(t *testing.T, e *testEnv, order, cur, addr string, threshold int64) bool {
 	t.Helper()
 	ctx := context.Background()
 	told := func() int {
 		return agInt(e, "SELECT count(*) FROM notifications n JOIN orders o ON o.buyer_id=n.user_id WHERE o.id=$1 AND strpos(n.body,'Order '||left(o.id,8)||':')=1 AND strpos(n.body,'after the order closed')>0", order)
 	}
-	before := told()
+	staff := func() int {
+		return agInt(e, "SELECT count(*) FROM notifications n JOIN users u ON u.id=n.user_id WHERE u.role IN ('moderator','admin') AND strpos(n.body,'Payment review needed for order '||left($1::text,8))=1 AND (strpos(n.body,' after this order was ')>0 OR strpos(n.body,'after the order closed')>0)", order)
+	}
+	before, staffBefore := told(), staff()
 	agExec(e, "INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,after_close) VALUES($1,$2,$3,COALESCE((SELECT max(idx) FROM payments WHERE order_id=$1 AND currency='XMR'),0),$4,5000,$5,true)", order, cur, txidOf("episode probe "+order), addr, threshold)
 	tx, err := e.DB.BeginTx(ctx, nil)
 	if err != nil {
@@ -46,6 +50,9 @@ func lateEpisodeOpen(t *testing.T, e *testEnv, order, cur, addr string, threshol
 	}
 	if err = tx.Commit(); err != nil {
 		t.Fatal(err)
+	}
+	if (told() > before) != (staff() > staffBefore) {
+		t.Fatalf("the buyer was told %d times, the staff %d times", told()-before, staff()-staffBefore)
 	}
 	switch told() - before {
 	case 0:
@@ -72,8 +79,8 @@ func flagRow(desk, txid string) string {
 	return desk[lo : i+hi]
 }
 
-// checkFlagCase seeds c on order (a fresh one: the episode is the order's) and checks the desk, the episode and the
-// review against c.open.
+// checkFlagCase seeds c on order (a fresh one: the episode is the order's) and checks the desk and the review against
+// c.open, and the episode against c.open and the flag's late type.
 func checkFlagCase(t *testing.T, e *testEnv, page func(path, sess string) string, mod, order, cur, addr string, threshold int64, c flagCase) {
 	t.Helper()
 	txid := txidOf("flag matrix " + c.name + " " + order)
@@ -88,8 +95,13 @@ func checkFlagCase(t *testing.T, e *testEnv, page func(path, sess string) string
 	if row == "" || open != c.open || form != c.open || !strings.Contains(row, c.reason) {
 		t.Errorf("%s: open %v, form %v (want %v), want reason %q; row: %s", c.name, open, form, c.open, c.reason, row)
 	}
-	if episode := lateEpisodeOpen(t, e, order, cur, addr, threshold); episode != c.open {
-		t.Errorf("%s: flagLateDeposits reads the flag as open %v (want %v)", c.name, episode, c.open)
+	late := agInt(e, "SELECT count(*) FROM payments WHERE id=$1 AND NOT credited AND NOT below_floor AND NOT locked", id) == 1
+	episode := lateEpisodeOpen(t, e, order, cur, addr, threshold)
+	if episode != (c.open && late) {
+		t.Errorf("%s: flagLateDeposits reads the flag as holding the episode %v (want %v)", c.name, episode, c.open && late)
+	}
+	if episode && !open {
+		t.Errorf("%s: a flag the desk does not open holds the late-deposit episode", c.name)
 	}
 	want := 409
 	if c.open {
@@ -117,7 +129,8 @@ func TestPaymentReviewEscrowMatrix(t *testing.T) {
 			// QA462C-3: open on the desk, so recordable.
 			{"spent_outside_credited", "confirmations,credited,spent_outside,spent_by", "3,true,true,'" + spender + "'", "Escrow deposit spent by a transaction this market did not make", true},
 			{"locked_counted", "confirmations,locked", "3,true", "Open:</strong> Locked transfer (unlock time), not counted or paid out", true},
-			{"regressed_credited", "confirmations,credited,regress_notice", "0,true,true", "Open:</strong> Credited deposit below threshold (", true},
+			// The escrow's own confirmation threshold, not the pooled one (no pooled provider here).
+			{"regressed_credited", "confirmations,credited,regress_notice", "0,true,true", "Open:</strong> Credited deposit below threshold (0 of 3 confirmations)", true},
 			{"regressed_credited_conflicted", "confirmations,credited,regress_notice", "-1,true,true", "Open:</strong> Credited deposit conflicted or missing", true},
 			{"below_floor_counted", "confirmations,below_floor", "3,true", "Open:</strong> Below the minimum automatic payout, not paid out", true},
 			{"below_floor_credited", "confirmations,credited,below_floor", "3,true,true", "Open:</strong> Below the minimum automatic payout, not paid out", true},
@@ -140,6 +153,8 @@ func TestPaymentReviewEscrowMatrix(t *testing.T) {
 		for _, c := range []flagCase{
 			{"after_close", "confirmations,after_close", n + ",true", "Open:</strong> Deposit to an escrow after the order closed, not counted; a stray refund from the escrow returns it to the buyer", true},
 			{"left_out", "confirmations,escrow_left_out", n + ",true", "Open:</strong> Escrow deposit left out of its settlement, not counted", true},
+			{"regressed_credited", "confirmations,credited,regress_notice", "5,true,true", "Open:</strong> Credited deposit below threshold (5 of " + n + " confirmations)", true},
+			{"below_floor_counted", "confirmations,below_floor", n + ",true", "Open:</strong> Below the minimum automatic payout", true},
 			{"counted_uncredited", "confirmations", n, "Escrow deposit counted for the order, though not credited toward its funding", false},
 			{"credited_confirmed", "confirmations,credited", n + ",true", "Credited deposit confirmed again", false},
 		} {
@@ -334,7 +349,34 @@ func TestEscrowReleaseTooFewCreditedConflicted(t *testing.T) {
 	if row := deskRow(desk, funded); row == "" || strings.Contains(row, "Open:") || strings.Contains(desk, `name="payment_id"`) {
 		t.Fatalf("the credited deposit's flag on the desk: %s", row)
 	}
+	// A review posted anyway is refused without saying the deposit "confirmed again": it never regressed.
+	pid := agStrings(t, x.testEnv, "SELECT id::text FROM payments WHERE order_id=$1 AND txid=$2", order, funded)[0]
+	if w := x.do("POST", "/moderator/payment-review", mod, url.Values{"payment_id": {pid}, "outcome": {"no_action"}, "note": {"Nothing to do for this one."}, "password": {testPassword}}); w.Code != 409 ||
+		strings.Contains(w.Body.String(), "confirmed again") || !strings.Contains(w.Body.String(), "credited") {
+		t.Fatalf("a review of the credited deposit's flag: %d %s", w.Code, w.Body.String())
+	}
 	if got := agStrings(t, x.testEnv, "SELECT amount||' '||flagged||' '||credited FROM payments WHERE order_id=$1 ORDER BY amount", order); strings.Join(got, ",") != "2000 false false,100000 true true" {
 		t.Fatalf("the deposits: %q", got)
+	}
+}
+
+// QA462C chair ruling: an open locked flag and an open below-floor flag on a pooled order are open on the desk, yet a
+// later deposit after the close is announced to the buyer and the staff, by the watcher, as before QA462C.
+func TestLateDepositAnnouncedBesideOpenFlag(t *testing.T) {
+	p := newPayEnv(t)
+	for _, c := range []struct{ name, cols, vals string }{
+		{"locked", "confirmations,locked", "3,true"},
+		{"below_floor", "confirmations,below_floor", "3,true"},
+	} {
+		order, addr := p.newOrder(stateCompleted)
+		agExec(p.testEnv, "INSERT INTO payments(order_id,currency,txid,idx,address,amount,flagged,"+c.cols+") VALUES($1,'BTC',$2,0,$3,5000,true,"+c.vals+")", order, txidOf("beside open "+c.name+" "+order), addr)
+		p.fake.Deposit(addr, txidOf("beside open late "+c.name+" "+order), 0, 7000, 3)
+		p.poll()
+		buyer := p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND strpos(body,$2)=1 AND strpos(body,'after the order closed')>0", p.buyer.ID, "Order "+shortID(order)+":")
+		staff := p.count("SELECT count(*) FROM notifications n JOIN users u ON u.id=n.user_id WHERE u.role IN ('moderator','admin') AND strpos(n.body,$1)=1 AND strpos(n.body,' after this order was ')>0", "Payment review needed for order "+shortID(order))
+		if buyer != 1 || staff < 1 {
+			t.Errorf("%s: the deposit after the close beside an open %s flag: buyer told %d times, staff %d; rows %q", c.name, c.name, buyer, staff,
+				agStrings(t, p.testEnv, "SELECT amount||' flagged='||flagged||' after_close='||after_close||' confs='||confirmations FROM payments WHERE order_id=$1 ORDER BY id", order))
+		}
 	}
 }
