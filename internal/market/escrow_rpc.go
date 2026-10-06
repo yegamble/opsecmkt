@@ -64,8 +64,9 @@ type escrowConfig struct {
 // escrowConfigFromEnv reads ESCROW_BTC (on/off, blank = off), ESCROW_BTC_RPC_URL, ESCROW_BTC_ARBITER_WALLET
 // (default opsecmkt-arbiter), ESCROW_BTC_WATCH_WALLET (default opsecmkt-escrow-watch), ESCROW_BTC_FEE_BPS (0 to
 // 10000, default 0), ESCROW_BTC_FEE_ADDRESS (needed when the fee is above 0), ESCROW_BTC_FEE_RATE (the settlement
-// network fee rate in sat/vB, 1 to escrowMaxFeeRate, default escrowDefaultFeeRate) and PAYMENT_CONFIRMATIONS_BTC (1
-// to 1000, default 3). Nothing is contacted.
+// network fee rate in sat/vB, 1 to escrowMaxFeeRate, default escrowDefaultFeeRate), PAYMENT_CONFIRMATIONS_BTC (1
+// to 1000, default 3) and ESCROW_SIGNER_SOCKET (the escrow signer's socket, an absolute path; blank = none, A-454).
+// Nothing is contacted.
 func escrowConfigFromEnv(getenv func(string) string) (escrowConfig, error) {
 	var c escrowConfig
 	switch v := strings.TrimSpace(getenv("ESCROW_BTC")); v {
