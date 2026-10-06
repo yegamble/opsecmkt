@@ -1090,9 +1090,11 @@ with a server error (`settlements_built`, A-462) and the decision could not be c
 `settlements_built` with one that also accepts such a superseded row (no PSBT, transaction ID, network fee or signer;
 a failed row keeps the value and fee rate it failed at) and adds the trigger `settlements_supersede_keeps`: superseding
 a settlement never changes its build, destination or signer, so a built one keeps its whole PSBT and an unbuilt one
-never gains one. Every other rule of migrations 075 to 078 is unchanged, and no existing row is rewritten. It also
-adds `payments.escrow_too_few_by`, the refund whose too-small failure left a deposit out for a stray refund, set only
-with `escrow_left_out`: when a changed decision supersedes that refund, those deposits count for the order again.
+never gains one, and the trigger `settlements_never_rebuilding`: no settlement moves back to building (nothing in the
+market does). Every other rule of migrations 075 to 078 is unchanged, and no existing row is rewritten. It also adds
+`payments.escrow_too_few_by`, the refund whose too-small failure left a deposit out for a stray refund, set only with
+`escrow_left_out` and only to a refund of the deposit's own order (trigger `payments_too_few_refund`): when a changed
+decision supersedes that refund, those deposits count for the order again.
 Deposits a too-small refund left out before this migration on an order decided for the buyer (only a development build
 with A-437 and without this migration wrote them) do not name their refund, so a change of that decision leaves them
 for the stray refund to the buyer; an order whose refund failed so before A-437, with its deposits still counted, is

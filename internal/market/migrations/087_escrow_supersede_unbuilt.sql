@@ -32,10 +32,35 @@ END $$;
 CREATE TRIGGER settlements_supersede_keeps BEFORE UPDATE ON settlements FOR EACH ROW
   WHEN (NEW.state = 'superseded' AND OLD.state <> 'superseded') EXECUTE FUNCTION settlements_supersede_keeps();
 
--- The refund settlement whose too-small failure left a deposit out for a stray refund (leaveOutTooFew, A-435, A-437):
--- when a changed decision supersedes that refund, the deposits it left out count for the order again (the release
--- includes them), and no deposit left out for any other reason does. Set only together with escrow_left_out. Deposits
--- left out by such a failure before this migration have none (see UPGRADING.md).
+-- A settlement is building only from its request: it never moves back to building from any other state, so a built
+-- one is never stripped to "never built" (building, no PSBT) and then superseded as such in a second statement
+-- (QA462-4). Nothing moves a settlement to building; migration 077's settlements_moves governs only the moves out of a
+-- final transaction.
+CREATE FUNCTION settlements_never_rebuilding() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'settlements: settlement % cannot move from % back to building', OLD.id, OLD.state
+    USING ERRCODE = 'check_violation';
+END $$;
+CREATE TRIGGER settlements_never_rebuilding BEFORE UPDATE OF state ON settlements FOR EACH ROW
+  WHEN (NEW.state = 'building' AND OLD.state <> 'building') EXECUTE FUNCTION settlements_never_rebuilding();
+
+-- escrow_too_few_by names the refund settlement, of the deposit's own order, whose too-small failure left the deposit
+-- out for a stray refund (leaveOutTooFew, A-435, A-437): when a changed decision supersedes that refund, the deposits
+-- it left out count for the order again (the release includes them), and no deposit left out for any other reason
+-- does. Set only together with escrow_left_out; the trigger below refuses one naming a release, a stray refund or
+-- another order's settlement (QA462-5). Deposits left out by such a failure before this migration have none (see
+-- UPGRADING.md).
 ALTER TABLE payments
  ADD COLUMN escrow_too_few_by bigint REFERENCES settlements(id),
  ADD CONSTRAINT payments_too_few_left_out CHECK (escrow_too_few_by IS NULL OR escrow_left_out);
+
+CREATE FUNCTION payments_too_few_refund() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM settlements WHERE id = NEW.escrow_too_few_by AND order_id = NEW.order_id AND kind = 'refund') THEN
+    RAISE EXCEPTION 'payments: deposit % names settlement %, which is not a refund of its order', NEW.id, NEW.escrow_too_few_by
+      USING ERRCODE = 'check_violation';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER payments_too_few_refund BEFORE INSERT OR UPDATE OF escrow_too_few_by, order_id ON payments FOR EACH ROW
+  WHEN (NEW.escrow_too_few_by IS NOT NULL) EXECUTE FUNCTION payments_too_few_refund();

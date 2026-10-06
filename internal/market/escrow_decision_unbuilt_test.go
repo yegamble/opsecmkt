@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -115,7 +116,8 @@ func TestEscrowDecisionChangeUnbuilt(t *testing.T) {
 		t.Fatalf("A: the deposit mined since was left out for the buyer: notes %d, buyer %d, staff %d", n, b, s)
 	}
 	// The release tries both deposits; the vendor's output (the 10000-sat price less the fees; the rest goes back to
-	// the buyer) is below the floor, so it fails too-small in turn, and both stay counted for the vendor.
+	// the buyer) is below the floor, so it fails too-small in turn, and both stay counted for the vendor (flagged so
+	// staff can open the order, QA462-3).
 	if code, body := x.claim(order, x.vendorSess, regtestAddr("unbuilt claim A")); code != 303 {
 		t.Fatalf("A: claim: %d %s", code, strings.TrimSpace(body))
 	}
@@ -123,7 +125,7 @@ func TestEscrowDecisionChangeUnbuilt(t *testing.T) {
 	if got := x.decisionRows(order); !slices.Equal(got, []string{"refund superseded " + settleTooSmall + " 10000 false", "release failed " + settleTooSmall + " 510000 false"}) {
 		t.Fatalf("A: the release: %q", got)
 	}
-	if got := x.decisionDeposits(order); !slices.Equal(got, []string{"4000 true false false", "10000 false false false", "500000 false false false"}) {
+	if got := x.decisionDeposits(order); !slices.Equal(got, []string{"4000 true false false", "10000 true false false", "500000 true false false"}) {
 		t.Fatalf("A: after the release: deposits %q", got)
 	}
 
@@ -371,6 +373,7 @@ func TestEscrowMigration087SupersedeUnbuilt(t *testing.T) {
 	fid, _, _, _ := x.settlement(order2)
 	agExec(x.testEnv, "UPDATE settlements SET state='failed',build_error=$2,input_total=5000,fee_rate=2 WHERE id=$1", fid, settleTooSmall)
 	refused("superseding a failed settlement while dropping its value", "UPDATE settlements SET state='superseded',input_total=NULL WHERE id=$1", fid)
+	refused("a failed settlement back to building", "UPDATE settlements SET state='building' WHERE id=$1", fid)
 	if _, err := x.DB.Exec("UPDATE settlements SET state='superseded' WHERE id=$1", fid); err != nil {
 		t.Fatalf("failed -> superseded refused: %v", err)
 	}
@@ -394,6 +397,12 @@ func TestEscrowMigration087SupersedeUnbuilt(t *testing.T) {
 		"superseding a built settlement while changing its value":          "UPDATE settlements SET state='superseded',input_total=input_total+1 WHERE id=$1",
 		"superseding a built settlement while changing its destination":    "UPDATE settlements SET state='superseded',destination='" + regtestAddr("m87 other") + "' WHERE id=$1",
 		"superseding a built settlement while dropping its transaction ID": "UPDATE settlements SET state='superseded',txid=NULL WHERE id=$1",
+		"superseding a built settlement while giving it a signer":          "UPDATE settlements SET state='superseded',signer='buyer' WHERE id=$1",
+		"superseding a built settlement while changing its fee rate":       "UPDATE settlements SET state='superseded',fee_rate=fee_rate+1 WHERE id=$1",
+		"superseding a built settlement while changing its network fee":    "UPDATE settlements SET state='superseded',network_fee=network_fee+1 WHERE id=$1",
+		// QA462-4: never back to building, so a built row is not stripped to "never built" first and then superseded.
+		"a built settlement back to building, dropping its whole build": "UPDATE settlements SET state='building',psbt=NULL,txid=NULL,fee_rate=NULL,network_fee=NULL,input_total=NULL WHERE id=$1",
+		"a built settlement back to building":                           "UPDATE settlements SET state='building' WHERE id=$1",
 	} {
 		refused(what, q, bid)
 	}
@@ -416,5 +425,120 @@ func TestEscrowMigration087SupersedeUnbuilt(t *testing.T) {
 	refused("a second live release or refund", "INSERT INTO settlements(order_id,kind,destination) VALUES($1,'release',$2)", order2, regtestAddr("m87 second"))
 	if n := agInt(x.testEnv, "SELECT count(*) FROM settlements WHERE order_id=$1 AND kind IN ('release','refund')", order3); n != 1 {
 		t.Fatalf("order3: %d releases or refunds", n)
+	}
+
+	// escrow_too_few_by names a refund of the deposit's own order (QA462-5), only on a deposit left out.
+	id64 := func(q string, args ...any) int64 {
+		t.Helper()
+		var v int64
+		if err := x.DB.QueryRow(q, args...).Scan(&v); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+		return v
+	}
+	pid := id64("SELECT id FROM payments WHERE order_id=$1 LIMIT 1", order2)
+	rid := id64("SELECT id FROM settlements WHERE order_id=$1 AND kind='refund'", order2)
+	other := id64("INSERT INTO settlements(order_id,kind,destination) VALUES($1,'refund',$2) RETURNING id", order, regtestAddr("m87 other refund"))
+	for what, sid := range map[string]int64{
+		"a deposit naming a release of its order":        fid,
+		"a deposit naming a stray refund of its order":   id64("SELECT id FROM settlements WHERE order_id=$1 AND kind='stray_refund'", order2),
+		"a deposit naming another order's refund":        other,
+		"a deposit naming another order's built release": bid,
+	} {
+		refused(what, "UPDATE payments SET escrow_left_out=true,escrow_too_few_by=$2 WHERE id=$1", pid, sid)
+	}
+	refused("a deposit naming its order's refund while counted", "UPDATE payments SET escrow_too_few_by=$2 WHERE id=$1", pid, rid)
+	if _, err := x.DB.Exec("UPDATE payments SET escrow_left_out=true,escrow_too_few_by=$2 WHERE id=$1", pid, rid); err != nil {
+		t.Fatalf("a left-out deposit naming its order's refund refused: %v", err)
+	}
+	refused("a named deposit moved to another order", "UPDATE payments SET order_id=$2 WHERE id=$1", pid, order)
+}
+
+// A-462 with a stray refund (QA462): a changed decision counts again only the deposits the superseded refund's
+// too-small failure left out that no stray refund spends and that were not spent outside the market (countAgain).
+//   - Race (QA462-1): the decision changes while a stray refund of the left-out deposit and a deposit after the close is
+//     being built (between choosing its inputs and storing them). The change counts the deposit again, so the stray
+//     refund's store claims only deposits still eligible for a stray refund: its claim count breaks, it rolls back and
+//     the next pass builds it from the deposit after the close alone. The deposit counted again stays unspent for the
+//     release, as the change's note says.
+//   - Built (QA-a): a stray refund built from that deposit before the change keeps it; no counted-again note.
+//   - Spent outside (QA-b): a deposit the too-small refund left out and that another transaction spent stays left out;
+//     no counted-again note.
+func TestEscrowDecisionChangeStray(t *testing.T) {
+	x := newEscrowEnv(t)
+	_, admin := x.user("eadmin_"+randomToken()[:6], "admin")
+	again := func(order string) int {
+		return agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND strpos(note,'counted for the order again')>0", order)
+	}
+	spends := func(id int64) string {
+		return agStrings(t, x.testEnv, "SELECT COALESCE(string_agg(amount::text,',' ORDER BY amount),'') FROM payments WHERE settlement_id=$1", id)[0]
+	}
+
+	// Race.
+	order, dispute, addr, _ := x.smallDispute(regtestAddr("stray race"), 10000, 0)
+	x.decide(admin, dispute, "refund", 10000)
+	x.poll()
+	x.core.deposit(addr, txidOf("stray race after close "+order), 0, 50000, 3)
+	var once sync.Once
+	code := 0
+	x.core.beforeCreate = func() {
+		once.Do(func() { code, _ = x.changeDecision(admin, order, "release", testPassword) })
+	}
+	x.poll()
+	x.core.beforeCreate = nil
+	if code != 303 {
+		t.Fatalf("race: the change during the stray refund's build: %d", code)
+	}
+	if got := x.decisionDeposits(order); !slices.Equal(got, []string{"10000 false false false", "50000 true false false"}) {
+		t.Fatalf("race: after the build the change raced: deposits %q; events %q", got, x.events(order))
+	}
+	x.poll()
+	sid, state := x.stray(order)
+	if sid == 0 || state != "awaiting_signature" || spends(sid) != "50000" {
+		t.Fatalf("race: the stray refund %d %s spends %q; deposits %q; events %q", sid, state, spends(sid), x.decisionDeposits(order), x.events(order))
+	}
+	if got := x.decisionDeposits(order); !slices.Equal(got, []string{"10000 false false false", "50000 true false true"}) {
+		t.Fatalf("race: deposits %q", got)
+	}
+	built := agStrings(t, x.testEnv, "SELECT note FROM order_events WHERE order_id=$1 AND strpos(note,'Escrow settlement built (a stray refund to the buyer)')>0", order)
+	if again(order) != 1 || agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND note=$2", order, countedAgain(1, 10000)) != 1 ||
+		len(built) != 1 || !strings.Contains(built[0], "spends 0.0005 BTC from the escrow in 1 output(s)") {
+		t.Fatalf("race: notes %q", x.events(order))
+	}
+
+	// Built.
+	order, dispute, addr, _ = x.smallDispute(regtestAddr("stray built"), 10000, 0)
+	x.decide(admin, dispute, "refund", 10000)
+	x.poll()
+	x.core.deposit(addr, txidOf("stray built after close "+order), 0, 50000, 3)
+	x.poll()
+	sid, state = x.stray(order)
+	if sid == 0 || state != "awaiting_signature" || spends(sid) != "10000,50000" {
+		t.Fatalf("built: the stray refund %d %s spends %q; events %q", sid, state, spends(sid), x.events(order))
+	}
+	if code, body := x.changeDecision(admin, order, "release", testPassword); code != 303 {
+		t.Fatalf("built: change: %d %s", code, strings.TrimSpace(body))
+	}
+	if got := x.decisionDeposits(order); !slices.Equal(got, []string{"10000 true true true", "50000 true false true"}) || again(order) != 0 {
+		t.Fatalf("built: after the change: deposits %q, counted-again notes %d", got, again(order))
+	}
+	if id, st := x.stray(order); id != sid || st != "awaiting_signature" || spends(sid) != "10000,50000" {
+		t.Fatalf("built: after the change: stray refund %d %s spends %q", id, st, spends(id))
+	}
+
+	// Spent outside.
+	order, dispute, _, _ = x.smallDispute(regtestAddr("stray outside"), 10000, 0)
+	x.decide(admin, dispute, "refund", 10000)
+	x.poll()
+	x.coSpend(txidOf("small dispute tiny "+order), 0, 3)
+	x.poll()
+	if n := agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND spent_outside AND escrow_left_out", order); n != 1 {
+		t.Fatalf("outside: the deposit spent outside: %d; deposits %q; events %q", n, x.decisionDeposits(order), x.events(order))
+	}
+	if code, body := x.changeDecision(admin, order, "release", testPassword); code != 303 {
+		t.Fatalf("outside: change: %d %s", code, strings.TrimSpace(body))
+	}
+	if n := agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND spent_outside AND escrow_left_out AND flagged", order); n != 1 || again(order) != 0 {
+		t.Fatalf("outside: after the change: %d left out; deposits %q; counted-again notes %d", n, x.decisionDeposits(order), again(order))
 	}
 }

@@ -186,7 +186,8 @@ chain `regtest`; [operator guide](operator-guide.md#bitcoin-escrow-regtest-only)
   other coins was requested and built before the refund failed, and returned together with any deposit left out later,
   such as one that did not count at the cancellation or the decision and confirms since, once together they can pay
   the network fee. A release that fails so (a completed order, or one decided for the vendor) leaves its coins counted:
-  they are the vendor's; staff are told once (A-461). A stray refund still being built when the refund fails (both
+  they are the vendor's; staff are told once (A-461), and the deposits it tried are flagged so staff can open the
+  order, also one never disputed (they stay counted). A stray refund still being built when the refund fails (both
   in the same pass) adds those coins to its own: once it is built and spends them, the refund's failure holds nothing
   more (a coin of the refund's it leaves out, beyond the 50 largest or worth less than its own spending cost, gets one
   more try and is then held); if it fails too-small, the same coins fail a second time, at the grown value, and are then held. A stray
@@ -227,9 +228,12 @@ to a settlement's transaction once a party has signed it, and a deposit is claim
 transaction is ever broadcast, so a restart mid-send sends the same transaction again. A dispute decision is fixed
 once its settlement has a final transaction. Until then an administrator may change it, also while its settlement
 is still being built or after it failed (migration 087, A-462): the old settlement is superseded as it stands (the
-database refuses a superseded row that gains or loses a build), and when it was a refund whose too-small failure left
-its deposits out for a stray refund, those deposits count for the order again, so the vendor's release includes them
-and no stray refund returns them; deposits left out for any other reason stay for a stray refund. All of this is
+database refuses a superseded row that gains or loses a build, and any settlement moving back to building), and when
+it was a refund whose too-small failure left its deposits out for a stray refund, those deposits count for the order
+again, so the vendor's release includes them and no stray refund returns them (a stray refund being built from them
+at that moment claims only deposits still left out or sent after the close, so it is built again on the next pass
+without them); deposits left out for any other reason, or already spent by a built stray refund or outside the market,
+stay as they are. All of this is
 subject to the limits under *What it will not protect* above: a server taken over can show a substituted key, and the market key with one party's key can spend.
 
 **What Phase 1 does not do.** It runs on regtest only and has not run on a public test network or mainnet. It covers
@@ -245,7 +249,8 @@ them together from their own wallets. A reorganisation deeper than 100 blocks is
   `TestEscrowClaimBuildAndSign`, `TestEscrowPasteRefusals`, `TestEscrowRefundRoutes`, `TestEscrowSettlementRaces`,
   `TestEscrowCosignBroadcastConfirm`, `TestEscrowRawStoredBeforeBroadcast`, `TestEscrowBadSignatureReverts`,
   `TestEscrowBothPartiesSign`, `TestEscrowDisputeDecision`, `TestEscrowDecisionChangeUnbuilt`,
-  `TestEscrowMigration087SupersedeUnbuilt`, `TestEscrowStrayRefundAfterClose`,
+  `TestEscrowMigration087SupersedeUnbuilt`, `TestEscrowDecisionChangeStray`, `TestEscrowReleaseTooFewStaffOpen`,
+  `TestEscrowStrayRefundAfterClose`,
   `TestEscrowConflictedDepositThroughExpiry`, `TestEscrowUncountedDepositBounds`, `TestEscrowStrayRefundTooSmall`,
   `TestEscrowTooSmallRefundReturned`, `TestEscrowStrayStatusFollowsState`, `TestEscrowStrayRefundSkipsDust`,
   `TestEscrowRestoreGatePausesAndAdminRebroadcasts`, `TestEscrowCheckoutSkipsAddressTheWalletWatches`,
