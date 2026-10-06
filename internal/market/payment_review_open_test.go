@@ -12,8 +12,9 @@ import (
 // QA462C: one rule (paymentFlagOpen) decides whether a payment flag is open. For every kind of flag, open on the
 // moderation desk ⇔ the disposition form is shown ⇔ recording it answers 303, and the desk gives the flag's reason.
 // flagLateDeposits holds a notice episode open (a new deposit after the close is not announced again) exactly for an
-// open flag of a late type (not credited, not below the floor, not locked): every flag holding it is one staff can
-// record, and an open locked, below-floor, regressed or credited spent-outside flag never silences the notice.
+// open flag of a late type (not credited, not below the floor, not locked, not spent outside the market): every flag
+// holding it is one staff can record, and an open locked, below-floor, regressed or spent-outside flag never silences
+// the notice (QA462D-1).
 
 // flagCase is one flagged deposit: the payments columns set besides the defaults (5000, flagged, the order's output
 // index), the reason the desk gives, and whether its flag is open.
@@ -95,7 +96,7 @@ func checkFlagCase(t *testing.T, e *testEnv, page func(path, sess string) string
 	if row == "" || open != c.open || form != c.open || !strings.Contains(row, c.reason) {
 		t.Errorf("%s: open %v, form %v (want %v), want reason %q; row: %s", c.name, open, form, c.open, c.reason, row)
 	}
-	late := agInt(e, "SELECT count(*) FROM payments WHERE id=$1 AND NOT credited AND NOT below_floor AND NOT locked", id) == 1
+	late := agInt(e, "SELECT count(*) FROM payments WHERE id=$1 AND NOT credited AND NOT below_floor AND NOT locked AND NOT spent_outside", id) == 1
 	episode := lateEpisodeOpen(t, e, order, cur, addr, threshold)
 	if episode != (c.open && late) {
 		t.Errorf("%s: flagLateDeposits reads the flag as holding the episode %v (want %v)", c.name, episode, c.open && late)
@@ -124,6 +125,8 @@ func TestPaymentReviewEscrowMatrix(t *testing.T) {
 			{"after_close_conflicted", "confirmations,after_close", "-1,true", "Deposit to an escrow after the order closed, not counted; a stray refund from the escrow returns it to the buyer; now conflicted or missing", true},
 			// The NIT: a deposit left out of its settlement before the close is not one "after the order closed".
 			{"left_out", "confirmations,escrow_left_out", "3,true", "Open:</strong> Escrow deposit left out of its settlement, not counted; a stray refund from the escrow returns it to the buyer", true},
+			// QA462D-2: a credited deposit left out (a refund too few could not spend it) no longer counts: open.
+			{"left_out_credited", "confirmations,credited,escrow_left_out", "3,true,true", "Open:</strong> Escrow deposit left out of its settlement, not counted; a stray refund from the escrow returns it to the buyer", true},
 			{"left_out_after_close", "confirmations,after_close,escrow_left_out", "3,true,true", "Deposit to an escrow after the order closed, not counted", true},
 			{"spent_outside_uncredited", "confirmations,spent_outside,spent_by", "3,true,'" + spender + "'", "Escrow deposit spent by a transaction this market did not make, with no settlement of the market covering it (transaction " + spender + ")", true},
 			// QA462C-3: open on the desk, so recordable.
@@ -134,10 +137,14 @@ func TestPaymentReviewEscrowMatrix(t *testing.T) {
 			{"regressed_credited_conflicted", "confirmations,credited,regress_notice", "-1,true,true", "Open:</strong> Credited deposit conflicted or missing", true},
 			{"below_floor_counted", "confirmations,below_floor", "3,true", "Open:</strong> Below the minimum automatic payout, not paid out", true},
 			{"below_floor_credited", "confirmations,credited,below_floor", "3,true,true", "Open:</strong> Below the minimum automatic payout, not paid out", true},
+			// Open (below the floor) while it confirms: never "settles it".
+			{"below_floor_credited_confirming", "confirmations,credited,below_floor", "1,true,true", "Open:</strong> Credited deposit below threshold (1 of 3 confirmations)", true},
 			// QA462C-1: counted for the order, credited or not: not open anywhere.
 			{"counted_uncredited", "confirmations", "3", "Escrow deposit counted for the order, though not credited toward its funding (recorded before the order closed); no stray refund returns it", false},
 			{"counted_uncredited_conflicted", "confirmations", "-1", "counted for the order, though not credited toward its funding (recorded before the order closed); no stray refund returns it; now conflicted or missing", false},
-			{"credited_confirmed", "confirmations,credited", "3,true", "Credited deposit confirmed again (3 confirmations)", false},
+			// QA462D-3: a credited escrow flag that never regressed (a release too few, an external settlement).
+			{"credited_confirmed", "confirmations,credited", "3,true", "Escrow deposit counted for the order (credited toward its funding); the order's release or refund settles it", false},
+			{"credited_conflicted", "confirmations,credited", "-2,true", "Escrow deposit counted for the order (credited toward its funding); the order's release or refund settles it; now conflicted or missing", false},
 		} {
 			order := x.completed(regtestAddr("flag matrix "+c.name), 100000)
 			addr := agStrings(t, x.testEnv, "SELECT address FROM escrows WHERE order_id=$1", order)[0]
@@ -153,14 +160,30 @@ func TestPaymentReviewEscrowMatrix(t *testing.T) {
 		for _, c := range []flagCase{
 			{"after_close", "confirmations,after_close", n + ",true", "Open:</strong> Deposit to an escrow after the order closed, not counted; a stray refund from the escrow returns it to the buyer", true},
 			{"left_out", "confirmations,escrow_left_out", n + ",true", "Open:</strong> Escrow deposit left out of its settlement, not counted", true},
+			{"left_out_credited", "confirmations,credited,escrow_left_out", n + ",true,true", "Open:</strong> Escrow deposit left out of its settlement, not counted", true},
 			{"regressed_credited", "confirmations,credited,regress_notice", "5,true,true", "Open:</strong> Credited deposit below threshold (5 of " + n + " confirmations)", true},
 			{"below_floor_counted", "confirmations,below_floor", n + ",true", "Open:</strong> Below the minimum automatic payout", true},
 			{"counted_uncredited", "confirmations", n, "Escrow deposit counted for the order, though not credited toward its funding", false},
-			{"credited_confirmed", "confirmations,credited", n + ",true", "Credited deposit confirmed again", false},
+			{"credited_confirmed", "confirmations,credited", n + ",true", "Escrow deposit counted for the order (credited toward its funding); the order's release or refund settles it", false},
 		} {
 			order, addr, _ := x.completed()
 			checkFlagCase(t, x.testEnv, x.page, mod, order, "XMR", addr, threshold, c)
 		}
+	})
+	// QM1, QM2: escrow thresholds that differ from the fallbacks (3 for Bitcoin, xmrMinConfirmations for Monero).
+	t.Run("escrow thresholds", func(t *testing.T) {
+		x := newEscrowEnv(t)
+		_, mod := x.user("fmtmod_"+randomToken()[:6], "moderator")
+		order := x.completed(regtestAddr("flag matrix threshold"), 100000)
+		addr := agStrings(t, x.testEnv, "SELECT address FROM escrows WHERE order_id=$1", order)[0]
+		x.A.escrow.Load().confirmations = 4
+		checkFlagCase(t, x.testEnv, x.page, mod, order, "BTC", addr, 4, flagCase{"regressed_credited_4", "confirmations,credited,regress_notice", "2,true,true", "Open:</strong> Credited deposit below threshold (2 of 4 confirmations)", true})
+		m := newXMREscrowEnv(t)
+		m.mustPoll()
+		_, xmod := m.user("fmtxmod_"+randomToken()[:6], "moderator")
+		xorder, xaddr, _ := m.completed()
+		m.A.escrowXMR.confirmations = 12
+		checkFlagCase(t, m.testEnv, m.page, xmod, xorder, "XMR", xaddr, 12, flagCase{"regressed_credited_12", "confirmations,credited,regress_notice", "11,true,true", "Open:</strong> Credited deposit below threshold (11 of 12 confirmations)", true})
 	})
 	t.Run("pooled", func(t *testing.T) {
 		p := newPayEnv(t)
@@ -349,6 +372,10 @@ func TestEscrowReleaseTooFewCreditedConflicted(t *testing.T) {
 	if row := deskRow(desk, funded); row == "" || strings.Contains(row, "Open:") || strings.Contains(desk, `name="payment_id"`) {
 		t.Fatalf("the credited deposit's flag on the desk: %s", row)
 	}
+	// QA462D-4: the release's note names the deposit it flagged though it tried another, so the desk dates the flag.
+	if row := deskRow(desk, funded); !flaggedAt.MatchString(row) || strings.Contains(row, "confirmed again") {
+		t.Fatalf("the credited deposit's flag is not dated, or says it confirmed again: %s\nevents %q", row, x.events(order))
+	}
 	// A review posted anyway is refused without saying the deposit "confirmed again": it never regressed.
 	pid := agStrings(t, x.testEnv, "SELECT id::text FROM payments WHERE order_id=$1 AND txid=$2", order, funded)[0]
 	if w := x.do("POST", "/moderator/payment-review", mod, url.Values{"payment_id": {pid}, "outcome": {"no_action"}, "note": {"Nothing to do for this one."}, "password": {testPassword}}); w.Code != 409 ||
@@ -378,5 +405,66 @@ func TestLateDepositAnnouncedBesideOpenFlag(t *testing.T) {
 			t.Errorf("%s: the deposit after the close beside an open %s flag: buyer told %d times, staff %d; rows %q", c.name, c.name, buyer, staff,
 				agStrings(t, p.testEnv, "SELECT amount||' flagged='||flagged||' after_close='||after_close||' confs='||confirmations FROM payments WHERE order_id=$1 ORDER BY id", order))
 		}
+	}
+}
+
+// QA462D-1 (real path): a deposit still confirming at funding counts but is never credited; it confirms, then the
+// parties spend it together outside the market. Its spent-outside flag is open on the desk, yet the next deposit after
+// the close is announced to the buyer and the staff.
+func TestLateDepositAnnouncedBesideUncreditedOutsideSpend(t *testing.T) {
+	x := newEscrowEnv(t)
+	_, mod := x.user("esomod_"+randomToken()[:6], "moderator")
+	order := x.draft()
+	addr := x.mustCheckout(order, regtestAddr("outside uncredited"))
+	funded, pool := txidOf("outside uncredited funded "+order), txidOf("outside uncredited pool "+order)
+	x.core.deposit(addr, funded, 0, 100000, 3)
+	x.core.deposit(addr, pool, 0, 2000, 0)
+	x.poll()
+	if x.state(order) != stateCompleted {
+		t.Fatalf("order %s after funding", x.state(order))
+	}
+	x.core.setConfs(pool, 3)
+	x.poll()
+	x.coSpend(pool, 0, 1)
+	x.poll()
+	rows := func() []string {
+		return agStrings(t, x.testEnv, "SELECT amount||' credited='||credited||' flagged='||flagged||' after_close='||after_close||' outside='||spent_outside FROM payments WHERE order_id=$1 ORDER BY id", order)
+	}
+	if agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND txid=$2 AND spent_outside AND NOT credited AND flagged AND NOT after_close", order, pool) != 1 {
+		t.Fatalf("the spent-outside deposit: %q", rows())
+	}
+	if row := deskRow(x.page("/moderator", mod), pool); !strings.Contains(row, "<strong>Open:</strong> Escrow deposit spent by a transaction this market did not make") {
+		t.Fatalf("the spent-outside flag on the desk: %s", row)
+	}
+	x.core.deposit(addr, txidOf("outside uncredited late "+order), 0, 7000, 3)
+	x.poll()
+	if n := lateNotices(t, x.testEnv, order); n.buyer != 1 || n.staff < 1 {
+		t.Fatalf("the deposit after the close beside an uncredited spent-outside flag: buyer told %d times, staff %d; rows %q; events %q", n.buyer, n.staff, rows(), x.events(order))
+	}
+}
+
+// QA462D-1 (second trigger): a deposit after the close that another transaction spends in the pass that records it
+// is flagged as spent outside the market (findOutsideSpends, before settleEscrow), never announced as a late deposit;
+// its flag does not silence the next deposit after the close.
+func TestLateDepositAnnouncedAfterOutsideSpentLateDeposit(t *testing.T) {
+	x := newEscrowEnv(t)
+	x.user("eolmod_"+randomToken()[:6], "moderator")
+	order := x.completed(regtestAddr("outside late"), 100000)
+	addr := agStrings(t, x.testEnv, "SELECT address FROM escrows WHERE order_id=$1", order)[0]
+	gone := txidOf("outside late gone " + order)
+	x.core.deposit(addr, gone, 0, 7000, 3)
+	x.coSpend(gone, 0, 1)
+	x.poll()
+	rows := func() []string {
+		return agStrings(t, x.testEnv, "SELECT amount||' credited='||credited||' flagged='||flagged||' after_close='||after_close||' outside='||spent_outside FROM payments WHERE order_id=$1 ORDER BY id", order)
+	}
+	if agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND txid=$2 AND spent_outside AND after_close AND flagged", order, gone) != 1 {
+		t.Fatalf("the deposit spent outside the market: %q; events %q", rows(), x.events(order))
+	}
+	before := lateNotices(t, x.testEnv, order)
+	x.core.deposit(addr, txidOf("outside late next "+order), 0, 8000, 3)
+	x.poll()
+	if n := lateNotices(t, x.testEnv, order); n.buyer != before.buyer+1 || n.staff <= before.staff {
+		t.Fatalf("the next deposit after the close: buyer told %d then %d, staff %d then %d; rows %q; events %q", before.buyer, n.buyer, before.staff, n.staff, rows(), x.events(order))
 	}
 }

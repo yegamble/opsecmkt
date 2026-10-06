@@ -867,12 +867,35 @@ func (a *App) failSettlement(ctx context.Context, id int64, orderID, class strin
 		for i, in := range tried {
 			deposits[i] = "deposit " + truncate(in.TxID, 20) + " (" + amount(in.Sats, 8) + " BTC)"
 		}
-		if _, err = tx.ExecContext(ctx, "UPDATE payments SET flagged=true,updated=now() WHERE order_id=$1 AND credited AND NOT flagged", orderID); err != nil {
+		rows, err := tx.QueryContext(ctx, "UPDATE payments SET flagged=true,updated=now() WHERE order_id=$1 AND credited AND NOT flagged RETURNING txid,amount", orderID)
+		if err != nil {
 			return err
 		}
-		// The note names the deposits as the desk dates a flag from it (loadPaymentReviews, QA462B-2).
+		var flagged []string
+		for rows.Next() {
+			var txid string
+			var sats int64
+			if err = rows.Scan(&txid, &sats); err != nil {
+				rows.Close()
+				return err
+			}
+			if dep := "deposit " + truncate(txid, 20) + " (" + amount(sats, 8) + " BTC)"; !slices.Contains(deposits, dep) {
+				flagged = append(flagged, dep)
+			}
+		}
+		rows.Close()
+		if err = rows.Err(); err != nil {
+			return err
+		}
+		// The note names every deposit it flags, as the desk dates a flag from it (loadPaymentReviews, QA462B-2): those
+		// the release tried, and any other credited one (QA462D-4).
 		slices.Sort(deposits)
-		if err = a.flagOrder(ctx, tx, &o, "Escrow settlement not built: "+text+" The release tried to spend "+strings.Join(deposits, ", ")+". Moderator review required.", ""); err != nil {
+		slices.Sort(flagged)
+		note := "Escrow settlement not built: " + text + " The release tried to spend " + strings.Join(deposits, ", ") + "."
+		if len(flagged) > 0 {
+			note += " Also flagged so staff can open the order (credited, counted for the order): " + strings.Join(flagged, ", ") + "."
+		}
+		if err = a.flagOrder(ctx, tx, &o, note+" Moderator review required.", ""); err != nil {
 			return err
 		}
 	} else if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) SELECT id,state,state,NULL,$2 FROM orders WHERE id=$1", orderID, "Escrow settlement not built: "+text); err != nil {

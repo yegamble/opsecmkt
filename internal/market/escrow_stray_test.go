@@ -832,8 +832,9 @@ func TestEscrowTooSmallRefundReturned(t *testing.T) {
 	if notes, buyer, staff := told(); notes != 1 || buyer != 1 || staff == 0 {
 		t.Fatalf("told of the coins left out: notes %d, buyer %d, staff %d", notes, buyer, staff)
 	}
-	const note = "1 deposit (0.00005 BTC, TESTNET regtest) to this order's escrow is not spent by its refund: the market could not build the refund because the coins were too few to pay the network fee and an output of at least 0.0001 BTC. " +
-		"It stays in the escrow; a stray refund returns it, together with any later deposit to this escrow, less the network fee, to the buyer's refund address given at checkout once together they can pay the network fee."
+	note := "1 deposit (0.00005 BTC, TESTNET regtest) to this order's escrow is not spent by its refund: the market could not build the refund because the coins were too few to pay the network fee and an output of at least 0.0001 BTC. " +
+		"It stays in the escrow; a stray refund returns it, together with any later deposit to this escrow, less the network fee, to the buyer's refund address given at checkout once together they can pay the network fee. " +
+		"The deposits: deposit " + truncate(tiny, 20) + " (0.00005 BTC). Moderator review required."
 	if agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND note=$2", order, note) != 1 {
 		t.Fatalf("the note: %q", x.events(order))
 	}

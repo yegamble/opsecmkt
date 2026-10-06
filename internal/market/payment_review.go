@@ -26,15 +26,17 @@ func init() {
 // whose alias is "@" (paymentFlagOpen substitutes it). The moderation desk lists a flag as open and offers its form
 // (loadPaymentReviews), the review handler records a disposition only on an open flag (recordPaymentReview), and a
 // late-deposit notice episode is held only by an open flag of a deposit neither credited, nor below the floor, nor
-// locked (flagLateDeposits), so a flag that holds it is always one staff can record. A flag is open until staff record
-// its disposition (A-31: no action or refunded by hand; one escalated to an administrator stays open) while its
-// deposit is a locked transfer, of a payout below the minimum automatic payout (A-99), a credited deposit whose
-// regression was announced and has not confirmed again (regress_notice), an escrow deposit spent outside the market
-// (P1-d1), or a deposit not credited that does not count for the order: a pooled one (after settlement or after the
-// close), or an escrow one recorded after the close or left out of its settlement. An escrow deposit that counts for
-// the order is not open, credited or not (QA462B-1): it is settled by the order's release or refund, never by staff.
+// locked, nor spent outside the market (flagLateDeposits), so a flag that holds it is always one staff can record. A
+// flag is open until staff record its disposition (A-31: no action or refunded by hand; one escalated to an
+// administrator stays open) while its deposit is a locked transfer, of a payout below the minimum automatic payout
+// (A-99), a credited deposit whose regression was announced and has not confirmed again (regress_notice), an escrow
+// deposit spent outside the market (P1-d1), an escrow deposit left out of its settlement, credited or not (it no
+// longer counts: a stray refund returns it, QA462D-2), or a deposit not credited that does not count for the order: a
+// pooled one (after settlement or after the close), or an escrow one recorded after the close. An escrow deposit that
+// counts for the order is not open, credited or not (QA462B-1): it is settled by the order's release or refund, never
+// by staff.
 const paymentFlagOpenRule = `@.flagged AND @.disposition IN ('','escalated') AND (@.locked OR @.below_floor OR @.regress_notice OR @.spent_outside
-	OR NOT @.credited AND (@.after_close OR @.escrow_left_out OR NOT EXISTS (SELECT 1 FROM escrows es WHERE es.order_id=@.order_id)))`
+	OR @.escrow_left_out OR NOT @.credited AND (@.after_close OR NOT EXISTS (SELECT 1 FROM escrows es WHERE es.order_id=@.order_id)))`
 
 // paymentFlagOpen is paymentFlagOpenRule over the payments row aliased alias.
 func paymentFlagOpen(alias string) string { return strings.ReplaceAll(paymentFlagOpenRule, "@", alias) }
@@ -130,15 +132,16 @@ func recordPaymentReview(c *actionCtx, id int64, outcome, note, refundTxid strin
 		// The open-flag rule: a credited deposit's flag is not open once a regression confirmed again, nor when it was
 		// never a regression (the flag of a release too few, A-461, only lets staff open the order).
 		return actionResult{}, fail(409, "This flag is not open: its deposit is credited toward the order, which settles it, and no announced regression of it is still open, so there is nothing to review. Nothing was changed.")
-	case outcome == "refunded" && credited:
-		return actionResult{}, fail(409, "This deposit is counted toward the order's payout, so it is settled through that payout and never refunded by hand (that could pay it twice). Nothing was changed.")
 	case outcome == "refunded" && o.Escrow:
-		// A-330: an escrow deposit is in the order's escrow, never in a wallet staff could refund it from.
+		// A-330: an escrow deposit is in the order's escrow, never in a wallet staff could refund it from; a credited one
+		// left out of its settlement no longer counts for the order (QA462D-2), so this, not the payout, is the reason.
 		coin := "Bitcoin"
 		if o.Currency == "XMR" {
 			coin = "Monero"
 		}
 		return actionResult{}, fail(409, "This deposit is in the order's "+coin+" escrow, not in a market wallet, so it is never refunded by hand: a stray refund from the escrow returns it to the buyer's refund address. Record no action, or escalate. Nothing was changed.")
+	case outcome == "refunded" && credited:
+		return actionResult{}, fail(409, "This deposit is counted toward the order's payout, so it is settled through that payout and never refunded by hand (that could pay it twice). Nothing was changed.")
 	}
 	var admins []string
 	if outcome == "escalated" {

@@ -62,7 +62,7 @@ const decidedTooFew = "The dispute was decided for the buyer, but the market cou
 // left out on the next pass, with the same note.
 func TestEscrowTooSmallRefundResolved(t *testing.T) {
 	x := newEscrowEnv(t)
-	x.user("emod_"+randomToken()[:6], "moderator")
+	_, mod := x.user("emod_"+randomToken()[:6], "moderator")
 	_, admin := x.user("eadmin_"+randomToken()[:6], "admin")
 	refund := regtestAddr("too few decided")
 	order, dispute, _, big := x.smallDispute(refund, 10000, 500000)
@@ -102,10 +102,32 @@ func TestEscrowTooSmallRefundResolved(t *testing.T) {
 		agInt(x.testEnv, "SELECT count(DISTINCT n.user_id) FROM notifications n JOIN users u ON u.id=n.user_id WHERE u.role IN ('moderator','admin') AND strpos(n.body,$1)>0", "Payment review needed for order "+shortID(order)); staff < 2 || reviews != staff || reviewed != staff {
 		t.Fatalf("payment-review notices: %d to %d of %d staff; events %q", reviews, reviewed, staff, x.events(order))
 	}
-	const note = "1 deposit (0.0001 BTC, TESTNET regtest) to this order's escrow is not spent by the refund its dispute decision requested: the market could not build the refund because the coins were too few to pay the network fee and an output of at least 0.0001 BTC. " +
-		"It stays in the escrow; a stray refund returns it, together with any later deposit to this escrow, less the network fee, to the buyer's refund address given at checkout once together they can pay the network fee."
+	// noteOf is the order note on order's 0.0001 BTC deposit left out; it names the deposit (QA462D-4).
+	noteOf := func(order string) string {
+		tiny := agStrings(t, x.testEnv, "SELECT txid FROM payments WHERE order_id=$1 AND amount=10000", order)[0]
+		return "1 deposit (0.0001 BTC, TESTNET regtest) to this order's escrow is not spent by the refund its dispute decision requested: the market could not build the refund because the coins were too few to pay the network fee and an output of at least 0.0001 BTC. " +
+			"It stays in the escrow; a stray refund returns it, together with any later deposit to this escrow, less the network fee, to the buyer's refund address given at checkout once together they can pay the network fee. " +
+			"The deposits: deposit " + truncate(tiny, 20) + " (0.0001 BTC). Moderator review required."
+	}
+	tiny := agStrings(t, x.testEnv, "SELECT txid FROM payments WHERE order_id=$1 AND amount=10000", order)[0]
+	note := noteOf(order)
 	if agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND note=$2", order, note) != 1 {
 		t.Fatalf("the note: %q", x.events(order))
+	}
+	// QA462D-2, QA462D-4: the credited deposit left out no longer counts for the order: its flag is open, dated by the
+	// note naming it, with the left-out reason and a form, and staff can record it.
+	desk := html.UnescapeString(x.page("/moderator", mod))
+	pid := agStrings(t, x.testEnv, "SELECT id::text FROM payments WHERE order_id=$1 AND txid=$2", order, tiny)[0]
+	if row := deskRow(desk, tiny); !flaggedAt.MatchString(row) || !strings.Contains(row, "<strong>Open:</strong> Escrow deposit left out of its settlement") || !strings.Contains(desk, `name="payment_id" value="`+pid+`"`) {
+		t.Fatalf("the left-out credited deposit on the desk: %s", row)
+	}
+	// A refund by hand is refused because the coins are in the escrow, never as "counted toward the order's payout".
+	if w := x.do("POST", "/moderator/payment-review", mod, url.Values{"payment_id": {pid}, "outcome": {"refunded"}, "txid": {txidOf("by hand " + order)}, "amount": {"0.0001"}, "password": {testPassword}}); w.Code != 409 ||
+		!strings.Contains(w.Body.String(), "stray refund from the escrow") || strings.Contains(w.Body.String(), "counted toward") {
+		t.Fatalf("a refund by hand of the left-out credited deposit: %d %s", w.Code, w.Body.String())
+	}
+	if w := x.do("POST", "/moderator/payment-review", mod, url.Values{"payment_id": {pid}, "outcome": {"no_action"}, "note": {"A stray refund returns it."}, "password": {testPassword}}); w.Code != 303 {
+		t.Fatalf("a review of the left-out credited deposit: %d %s", w.Code, w.Body.String())
 	}
 	notes, buyer, vendor := all()
 	for range 3 {
@@ -179,7 +201,7 @@ func TestEscrowTooSmallRefundResolved(t *testing.T) {
 	if got := deposits(order); !slices.Equal(got, []string{"10000 true true false"}) {
 		t.Fatalf("upgraded: deposits %v", got)
 	}
-	if n, b, _ := told(order); n != n0+1 || b != b0+1 || agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND note=$2", order, note) != 2 {
+	if n, b, _ := told(order); n != n0+1 || b != b0+1 || agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND note=$2", order, noteOf(order)) != 2 {
 		t.Fatalf("upgraded: notes %d (were %d), buyer %d (was %d); events %q", n, n0, b, b0, x.events(order))
 	}
 	if notes, buyer, staff := x.uncounted(order); notes+buyer+staff != 0 {
