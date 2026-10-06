@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -32,6 +33,7 @@ const (
 	escrowSignerXPubPin        = "escrow_signer_xpub_hmac"   // settings key: escrowXPubHMAC of the signer's account key
 	escrowSignerInfoTimeout    = 10 * time.Second
 	escrowSignerSignTimeout    = 2 * time.Minute
+	escrowSignerMaxReply       = 4 << 20 // bytes of one reply line read from the signer
 
 	signerReady    = "ready"        // the signer answered with the pinned key (pinned now if it was the first contact)
 	signerWaiting  = "waiting"      // the signer did not answer
@@ -82,7 +84,10 @@ func (c *escrowSignerClient) roundTrip(ctx context.Context, timeout time.Duratio
 	if _, err = conn.Write(append(line, '\n')); err != nil {
 		return errSignerUnreachable
 	}
-	reply, err := bufio.NewReaderSize(conn, 64<<10).ReadBytes('\n')
+	reply, err := bufio.NewReaderSize(io.LimitReader(conn, escrowSignerMaxReply), 64<<10).ReadBytes('\n')
+	if err == io.EOF && len(reply) == escrowSignerMaxReply {
+		return &signerRefusal{signerBadReply} // a reply line longer than any PSBT the market builds
+	}
 	if err != nil {
 		return errSignerUnreachable
 	}

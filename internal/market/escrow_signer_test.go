@@ -282,6 +282,10 @@ func TestEscrowSignerBadReply(t *testing.T) {
 			f.raw = `{"version":2,"tpub":"` + f.key.Rooted(btc.VersionTpub) + `","fingerprint":"` + hex.EncodeToString(func() []byte { p := f.key.Fingerprint(); return p[:] }()) + `"}`
 		},
 		"not JSON": func(f *fakeSigner) { f.raw = `hello` },
+		"a valid reply padded past the reply limit": func(f *fakeSigner) {
+			fp := f.key.Fingerprint()
+			f.raw = `{"version":1,"tpub":"` + f.key.Rooted(btc.VersionTpub) + `","fingerprint":"` + hex.EncodeToString(fp[:]) + `"}` + strings.Repeat(" ", escrowSignerMaxReply)
+		},
 	} {
 		f.set(func(f *fakeSigner) { f.fp = ""; set(f) })
 		x.A.checkEscrowSigner(context.Background())
