@@ -216,7 +216,8 @@
 # header (node version, commit, the nodes' command line with credentials redacted, start and finish times); default
 # ESCROW_REGTEST_LOG artifacts/real-chain/test-escrow-private-signet-<UTC time>.log. Containers, their volumes and the
 # network are removed on exit (ESCROW_SIGNET_PREFIX names them, default escrow-private-signet; an existing one is
-# refused). Runtime is about 30-60 minutes on a loaded 4-core host, so it is not in CI.
+# refused). Runtime on a loaded 4-core host: about 25 minutes the first time (9 of them maturing node A's coins) and about
+# 20 with the cached datadir, so it is not in CI.
 set -euo pipefail
 
 private_signet() {

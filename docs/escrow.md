@@ -958,7 +958,9 @@ order. Not run there, with the reason the script prints: `Recovery` and `Conflic
 `invalidateblock`, `reconsiderblock` and `prioritisetransaction`) and `PrivateBroadcast` (a `-privatebroadcast` node
 and `generateblock`, which cannot find a signet block). That run is private signet, not public: it shows the signet
 code paths and the guard's peer check on a real Core, not public peers, fees, relay or reorganisations. Regtest mode,
-which CI runs, is unchanged.
+which CI runs, is unchanged. Recorded for commit `23106a2` (2026-10-06, transcripts kept locally under
+`artifacts/real-chain/`, gitignored): all 16 regtest legs passed, and on the private signet the 14 legs above passed
+(about 20 minutes from the cached datadir; the first run, maturing node A's coins, took about 25).
 
 ## Per-order key derivation (A-453, shape (b) groundwork)
 

@@ -24,7 +24,7 @@ var (
 )
 
 // Extended-key version bytes (BIP32 and SLIP-132). Only tpub and Vpub (a test-network P2WSH multisig key) are
-// accepted while escrow runs on regtest; every private version is "exposed".
+// accepted while escrow runs on test networks only (regtest, signet, testnet4); every private version is "exposed".
 const (
 	versionTpub = btc.VersionTpub
 	versionVpub = btc.VersionVpub // SLIP-132 multisig P2WSH, test networks

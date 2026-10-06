@@ -65,7 +65,7 @@ age -d -i "$AGE_IDENTITY" "$1" | client pg_restore --single-transaction --exit-o
 # broadcast" confirmation before an administrator releases or requeues such a payout. A payout held for an
 # account suspension keeps that text after the restore prefix, so its payout address check is not lost
 # (heldForSuspension in payments_admin.go). One new audit row (no user) records the gate and the counts; existing
-# audit rows are never changed. Bitcoin escrow settlements (ESCROW_BTC, regtest only) are never sent as payouts, but
+# audit rows are never changed. Bitcoin escrow settlements (ESCROW_BTC, test networks only) are never sent as payouts, but
 # a restored one with a stored final transaction (signed or broadcast) may also have been sent, or replaced, after the
 # backup: each is held with the same marker in settlements.send_error (restoredSettlementHold in
 # internal/market/escrow_recovery.go) until an administrator confirms its rebroadcast on the admin page, and the audit

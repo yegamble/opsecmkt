@@ -1166,8 +1166,9 @@ No migration, no new key. Only with `ESCROW_BTC=on`. Escrow now starts against a
 as `regtest`; mainnet and testnet3 are still refused, and `BITCOIN_CHAIN`, when set beside `ESCROW_BTC=on`, may now be
 `signet` or `testnet4` as well as `regtest`. A regtest market sees no change in behaviour: its chain pin stays
 `regtest`, and a database that holds escrows never moves to another chain (start a signet or testnet4 market on a new
-database). The startup refusal and the log lines read "test networks only" (for example "escrow: Bitcoin escrow on (test
-networks only)") where they said "regtest only"; a log filter matching the old text needs updating. The operator guide's
+database). The startup refusals now name the chains escrow runs on ("refusing to start: ESCROW_BTC=on runs only on
+regtest, signet or testnet4 …") and the log line reads "escrow: Bitcoin escrow on (test networks only)" where they said
+regtest only; a log filter matching the old text needs updating. The operator guide's
 section is now [Bitcoin escrow (test networks only)](docs/operator-guide.md#bitcoin-escrow-test-networks-only), and the
 [runbook](docs/testnet-runbook.md#11-bitcoin-escrow-on-signet-or-testnet4) lists what a signet or testnet4 market needs
 first. An escrow refund, claim, release or fee address given in capitals is now stored in lower case by the chain's
