@@ -9,10 +9,9 @@ import (
 )
 
 // A-331 (remainder): every escrow note, notice, status, validation error and audit text names the escrow node's chain
-// (escrowNetwork, read at startup), never a fixed "regtest". Phase 1 runs on regtest only, so the node and the enabled
-// escrow are put on signet here by hand (onSignet), paying signet addresses (netAddr: the chain table, A-439); a
-// representative text from each file is checked. The template's "Regtest only" headline stays as it is while escrow is
-// regtest-only. DB integration with the simulated Core.
+// (escrowNetwork, read at startup), never a fixed "regtest". The node and the enabled escrow are put on signet here by
+// hand (onSignet), paying signet addresses (netAddr: the chain table, A-439); a representative text from each file is
+// checked. The pages' copy on signet is TestEscrowPagesNameSignet's (A-443). DB integration with the simulated Core.
 func TestEscrowTextsNameTheNodesChain(t *testing.T) {
 	x := newEscrowEnv(t)
 	x.onSignet()
@@ -30,7 +29,7 @@ func TestEscrowTextsNameTheNodesChain(t *testing.T) {
 			t.Errorf("%s names regtest:\n%s", where, text)
 		}
 	}
-	// onPage checks a whole page, which also carries the template's fixed "Regtest only" copy.
+	// onPage checks a whole page.
 	onPage := func(where, page string, want ...string) {
 		t.Helper()
 		page = html.UnescapeString(page)

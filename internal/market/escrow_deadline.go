@@ -10,7 +10,7 @@ import (
 )
 
 // The two clocks of a physical escrow order (WR-escrow Phase 2, slice P2-c; P2-R3, P2-R5, P2-R9 and P2-R10's restore
-// recheck; owner decisions ES-11 and 2026-10-03). Behind ESCROW_BTC (off by default); regtest only.
+// recheck; owner decisions ES-11 and 2026-10-03). Behind ESCROW_BTC (off by default); test networks only.
 //
 //  1. Paid: escrows.ship_by is the paid time plus the escrow's dispatch window plus 48 hours (escrowTransitionHook).
 //     From then on the buyer may cancel the paid order (paid -> cancelled, buyer, escrow only); before it the cancel is

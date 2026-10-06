@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"html"
 	"net/http/httptest"
@@ -140,24 +139,6 @@ func TestEscrowOffByDefault(t *testing.T) {
 	}
 	if len(core.methods()) != 0 {
 		t.Fatalf("the node was called: %v", core.methods())
-	}
-}
-
-// With ESCROW_BTC=on a node on any chain but regtest stops startup with the fixed message, before any wallet call.
-func TestEscrowStartupRefusesNonRegtest(t *testing.T) {
-	for _, chain := range []string{"main", "test", "testnet4", "signet"} {
-		t.Run(chain, func(t *testing.T) {
-			core, srv := newFakeEscrowCore(t)
-			core.chain = chain
-			setEscrowEnv(t, srv.url(""))
-			_, _, err := startApp(t, "")
-			if !errors.Is(err, errEscrowNotRegtest) {
-				t.Fatalf("got %v", err)
-			}
-			if m := core.methods(); !slices.Equal(m, []string{"getblockchaininfo"}) {
-				t.Fatalf("calls before the refusal: %v", m)
-			}
-		})
 	}
 }
 
@@ -814,13 +795,13 @@ func TestEscrowPracticeKeyChangedDuringCheck(t *testing.T) {
 }
 
 // A mainnet market (a payment provider configured for mainnet) with ESCROW_BTC=on stops startup before any escrow
-// RPC, even with BITCOIN_CHAIN blank (QA-P1a-6, M4c): escrow runs on regtest only in this release.
+// RPC, even with BITCOIN_CHAIN blank (QA-P1a-6, M4c): escrow runs on test networks only.
 func TestEscrowStartupRefusesMainnetMarket(t *testing.T) {
 	core, srv := newFakeEscrowCore(t)
 	setEscrowEnv(t, srv.url(""))
 	withProviderFactory(t, func(context.Context) (PaymentProvider, error) { return liveFake{newFakeProvider("BTC", 3)}, nil })
 	a, _, err := startApp(t, "")
-	if err == nil || a != nil || !strings.Contains(err.Error(), "ESCROW_BTC=on runs only on regtest") || !strings.Contains(err.Error(), "mainnet") {
+	if err == nil || a != nil || !strings.Contains(err.Error(), "ESCROW_BTC=on runs only on test networks") || !strings.Contains(err.Error(), "mainnet") {
 		t.Fatalf("got %v", err)
 	}
 	if m := core.methods(); len(m) != 0 {

@@ -1,0 +1,4 @@
+{{/* A-443: Bitcoin escrow's chain in copy, from PageData.EscrowNet (App.escrowNetwork: regtest, signet or testnet4). Called with that string. */}}
+{{define "btc-escrow-net"}}{{if eq . "testnet4"}}testnet4, a public test network{{else if eq . "signet"}}signet, a test network{{else}}regtest, a local test chain{{end}}{{end}}
+{{define "btc-escrow-net-title"}}{{if eq . "testnet4"}}Testnet4{{else if eq . "signet"}}Signet{{else}}Regtest{{end}}{{end}}
+{{define "btc-escrow-net-badge"}}{{if eq . "testnet4"}}TESTNET4{{else if eq . "signet"}}SIGNET{{else}}REGTEST{{end}}{{end}}

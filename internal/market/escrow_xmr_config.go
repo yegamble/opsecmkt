@@ -29,7 +29,7 @@ const (
 	xmrMaxMaxFee     = 100_000_000_000 // piconero
 )
 
-// Startup refusals for escrow nodes that answer but fail the network check (P3-R2), as errEscrowNotRegtest does for
+// Startup refusals for escrow nodes that answer but fail the network check (P3-R2), as errEscrowChain does for
 // Bitcoin escrow. startupRefusal appends the fixed reason (an xmrRefusal); nothing in them comes from a node.
 var (
 	errXMRStartDaemon = errors.New("refusing to start: ESCROW_XMR=on runs only on a local Monero fakechain or on stagenet in this release, and the daemon at ESCROW_XMR_DAEMON_URL failed that check. Set ESCROW_XMR=off, or point it at a fakechain daemon (monerod --regtest) or a stagenet one (monerod --stagenet)")

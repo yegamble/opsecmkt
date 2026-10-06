@@ -5,11 +5,14 @@ payments with the compose deployment. **Test networks: these coins have no value
 mainnet unless it is configured** ([Mainnet](operator-guide.md#mainnet); the wallet, backup, restore and
 payout-recovery steps below use the same commands on a mainnet market, with real funds, but have been exercised
 on test networks only). Commands run from the repository directory on the Docker host, where `.env` lives.
-Per-order escrow is not part of this runbook, apart from its restore steps and the manual fakechain check in
-[section 9](#9-manual-monero-escrow-fakechain-check) and [section 10](#10-monero-escrow-on-stagenet): Bitcoin escrow runs on regtest only and Monero escrow on a local
-Monero fakechain or, since A-449, stagenet; both are off by default (built and tested on local chains, never run on a public test
-network; [per-order escrow](escrow.md)), so leave `ESCROW_BTC` off on a testnet4 or signet market, and `ESCROW_XMR` off on a
-testnet market and on a stagenet market unless you are trying Monero escrow there (section 10). Payments otherwise go through the pooled wallets below.
+Per-order escrow is not part of this runbook, apart from its restore steps, the manual fakechain check in
+[section 9](#9-manual-monero-escrow-fakechain-check), [section 10](#10-monero-escrow-on-stagenet) and
+[section 11](#11-bitcoin-escrow-on-signet-or-testnet4): Bitcoin escrow runs on regtest and, since A-443, on signet and
+testnet4, and Monero escrow on a local Monero fakechain or, since A-449, stagenet; both are off by default (built and
+tested on local chains, a private signet included; **no run on a public test network is recorded**;
+[per-order escrow](escrow.md)), so leave `ESCROW_BTC` off on a testnet4 or signet market unless you are trying Bitcoin
+escrow there (section 11), and `ESCROW_XMR` off on a testnet market and on a stagenet market unless you are trying
+Monero escrow there (section 10). Payments otherwise go through the pooled wallets below.
 
 What the application does on its own, so you know what to expect while following these steps:
 
@@ -387,8 +390,8 @@ pruned daemon (upstream documentation; not rehearsed here).
 
 ### Back up and restore the escrow arbiter and watch-only wallets
 
-Only for a market running [Bitcoin escrow](operator-guide.md#bitcoin-escrow-regtest-only) (regtest only in this
-release). Its node keeps two wallets that neither `scripts/backup.sh` nor the steps above copy: the arbiter wallet
+Only for a market running [Bitcoin escrow](operator-guide.md#bitcoin-escrow-test-networks-only) (regtest, signet or
+testnet4). Its node keeps two wallets that neither `scripts/backup.sh` nor the steps above copy: the arbiter wallet
 (`ESCROW_BTC_ARBITER_WALLET`, default `opsecmkt-arbiter`), whose seed is the market's escrow key, and the watch-only
 wallet (`ESCROW_BTC_WATCH_WALLET`, default `opsecmkt-escrow-watch`), which holds every escrow's public descriptor and
 address, labelled `escrow:<order ID>`. Never put either inside the database backup, `scripts/backup.sh`'s output or
@@ -397,7 +400,7 @@ escrowed coins (the buyer and the vendor can still sign together), but the marke
 co-sign a settlement only one party signed.
 
 Take the backups as the operator user. The app's escrow user is refused `backupwallet` and `listdescriptors`, as it
-should be (*The app's RPC user* in the operator guide). Below, `opcli` is `bitcoin-cli -regtest` with the operator
+should be (*The app's RPC user* in the operator guide). Below, `opcli` is `bitcoin-cli -regtest` (or `-signet`, `-testnet4`) with the operator
 user's credentials kept in a mode-600 file (for example `-conf=$HOME/.opsecmkt-operator-cli.conf` holding `rpcuser`
 and `rpcpassword`), and `NODE` runs a command on the node's machine (for a container: `docker exec -i <name>`).
 Encrypt each copy to the operator's key with `age` as it leaves the node, as `scripts/backup.sh` does for the
@@ -442,8 +445,8 @@ age -d -i operator-key.txt arbiter-descriptors.json.age |
 `-stdin` keeps the descriptors off the command line, where other users of the machine could read them.
 
 **Check the fingerprint pin.** Start the app. The arbiter wallet must have the fingerprint this database pinned at its
-first escrow start (`escrow_btc_arbiter_fingerprint` in `settings`): the log says "escrow: Bitcoin escrow on (regtest
-only)", not "… the arbiter wallet's key fingerprint differs from the one pinned in this database". To compare by hand
+first escrow start (`escrow_btc_arbiter_fingerprint` in `settings`): the log says "escrow: Bitcoin escrow on (test
+networks only)", not "… the arbiter wallet's key fingerprint differs from the one pinned in this database". To compare by hand
 first, `opcli -rpcwallet=opsecmkt-arbiter getaddressinfo "$(opcli -rpcwallet=opsecmkt-arbiter getrawchangeaddress bech32)"`
 shows the wallet's `hdmasterfingerprint`. A different fingerprint means a different key: find the right backup; never
 delete the pin to let another wallet in, since every open escrow needs the pinned key.
@@ -482,7 +485,7 @@ text behind the restore marker, so releasing it still needs the payout address c
 many payouts it held and how many failed payouts it marked, and adds one audit row recording the gate and those
 counts.
 
-On a market running [Bitcoin escrow](operator-guide.md#bitcoin-escrow-regtest-only) (regtest only), the gate also
+On a market running [Bitcoin escrow](operator-guide.md#bitcoin-escrow-test-networks-only) (test networks only), the gate also
 pauses escrow: the escrow watcher builds, co-signs and broadcasts no settlement while it is set, escrow checkout is
 refused ("Bitcoin escrow is paused while this market restores its records from a backup. Nothing was charged and
 your order is still a draft; try again later.", 503, the order stays a draft), and the script holds every restored
@@ -974,7 +977,7 @@ cleared) and rolls back.
 
 #### An orphan whose keys cannot be read: escrow checkout stays paused
 
-For a market running [Bitcoin escrow](operator-guide.md#bitcoin-escrow-regtest-only) (regtest only). After a restore
+For a market running [Bitcoin escrow](operator-guide.md#bitcoin-escrow-test-networks-only) (test networks only). After a restore
 by `scripts/restore.sh` (or the manual SQL in UPGRADING.md section 6) escrow checkout answers 503 ("Bitcoin escrow is
 paused until this market has checked its escrow wallet after restoring its records from a backup. …") until the escrow
 watcher's orphan sweep has read the keys of every address the watch-only wallet holds with no escrow row. If the node
@@ -1169,3 +1172,40 @@ stagenet tags and refused under the fakechain's, and that the escrow and pooled 
 daemon (as the bundled `monero` service serves) as synced with a peer and a fresh tip and an `--offline` one as having no
 peers. The commands are in the script's header comment; the transcript goes to `ESCROW_XMR_STAGENET_LOG` (default
 `artifacts/real-chain/test-escrow-xmr-stagenet-<UTC time>.log`, gitignored).
+
+## 11. Bitcoin escrow on signet or testnet4
+
+Since A-443, Bitcoin escrow (`ESCROW_BTC=on`, off by default) may run on signet or testnet4 as well as on regtest;
+mainnet and testnet3 stay refused. **No run on a public signet or testnet4 is recorded yet**: nothing in this
+repository is evidence that escrow works with a public network's peers, fees, relay or reorganisations. Try it only on
+a new database (a database never changes chain once it holds an escrow) and only with every precondition below in
+place; the [operator guide](operator-guide.md#bitcoin-escrow-test-networks-only) has the settings.
+
+1. The escrow node runs Bitcoin Core 31.1 (the sync guard reads `getblockchaininfo`'s tip `time`) on `-signet` or
+   `-testnet4`, synced, with peers. The app's escrow user has the whitelist line of *The app's RPC user*, which
+   includes `getnetworkinfo`: on these chains each escrow watcher pass reads the peer count, and a refused
+   `getnetworkinfo` fails the node check.
+2. The sync guard (A-439) holds every escrow pass while the node is in initial block download, its headers are ahead,
+   it has no peers or its tip is older than `BITCOIN_MAX_TIP_AGE` (default 2h): `/admin` then shows "Bitcoin escrow
+   node not synced: …". On testnet4 a block can take longer than 2h; raise `BITCOIN_MAX_TIP_AGE` (up to 24h) rather
+   than let the line come and go.
+3. The chain pin (A-439): the first start pins `signet:<challenge>` or `testnet4` in `escrow_btc_chain`; check the
+   value on `/admin` if the node is ever replaced.
+4. The market key self-check (A-440): with the pooled provider on the same node, its RPC user must be refused
+   `listdescriptors` on the arbiter wallet (the pooled whitelist line of the operator guide), or escrow stays off with
+   "escrow: Bitcoin escrow disabled: the pooled Bitcoin RPC user …"; or run escrow on a node of its own. Back up the
+   arbiter and watch-only wallets as [section 6](#back-up-and-restore-the-escrow-arbiter-and-watch-only-wallets) says.
+5. In `APP_MODE=tor` the broadcast gate (A-441) sends settlements only through a node with `-proxy` on Bitcoin Core 31.1
+   or later; the stall alert reports one not seen after 6 blocks in every mode.
+6. Refund, claim and fee addresses are `tb1…` (or the test-network base58 forms); one given in capitals is stored in
+   lower case.
+
+What has run instead of a public network: `./scripts/test-escrow-regtest.sh --private-signet` (manual, not CI; Linux
+with Docker) starts two Core 31.1 nodes with `-signetchallenge=51` on a Docker network created with `--internal`, mines
+node A's wallet to maturity (cached for later runs), and runs every escrow leg that needs no regtest-only RPC against
+node B, plus the isolated-node leg (node B leaves the network: an expired order is not cancelled; back on the network:
+its deposit is credited). It is private signet, not public: same code paths and the sync guard's peer and tip checks,
+but no public peers, fees or relay. The legs it does not run are listed, with the reason, in its output and in the
+script's header comment. Its transcript (default `artifacts/real-chain/test-escrow-private-signet-<UTC time>.log`,
+gitignored) starts with the node version, the commit, the nodes' command line with credentials redacted and the finish
+time, and every line carries "[private signet, not public]".

@@ -27,6 +27,7 @@ import (
 //   - generateblock mines the stored transaction directly (standing in for the network delivering it): the wallet sees
 //     it, the alert is cleared by one note and the /admin line goes; two blocks later it is confirmed.
 func TestEscrowRegtestPrivateBroadcast(t *testing.T) {
+	skipOnPrivateSignet(t, privateSignetSkipPrivate)
 	mainApp := os.Getenv("ESCROW_REGTEST_APP_RPC_URL")
 	appURL, opURL := os.Getenv("ESCROW_REGTEST_PRIVATE_APP_RPC_URL"), os.Getenv("ESCROW_REGTEST_PRIVATE_OPERATOR_RPC_URL")
 	if mainApp == "" || appURL == "" || opURL == "" {

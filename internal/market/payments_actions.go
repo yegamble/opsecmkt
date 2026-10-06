@@ -141,7 +141,7 @@ func paymentsGlobalLoader(_ context.Context, a *App, _ *http.Request, d *PageDat
 	d.PaymentsEnabled = len(nets) > 0
 	d.PaymentNetworks = strings.Join(nets, ", ")
 	d.LiveNetwork = a.live
-	d.EscrowOn, d.EscrowAvailable = a.escrowConfigured, a.escrow.Load() != nil
+	d.EscrowOn, d.EscrowAvailable, d.EscrowNet = a.escrowConfigured, a.escrow.Load() != nil, a.escrowNetwork()
 	d.DispatchOn = !physicalEscrowOff(a)
 	d.XMREscrowOn, d.XMREscrowAvailable, d.XMRCustody, d.XMREscrowNet = a.escrowXMR != nil, a.xmrEscrowReady(), xmrCustody, a.xmrEscrowNetwork()
 	return nil

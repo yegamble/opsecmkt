@@ -232,7 +232,7 @@ func TestXMREscrowStartupStates(t *testing.T) {
 	}
 	t.Setenv("ESCROW_XMR_SEED_KEY", keyPath)
 
-	// A node that answers but fails the network check stops startup with a fixed refusal (errEscrowNotRegtest's rule):
+	// A node that answers but fails the network check stops startup with a fixed refusal (errEscrowChain's rule):
 	// the daemon's line for the daemon checks, the wallet-rpc's line for the wallet height checks.
 	refusals := []struct {
 		name         string

@@ -55,7 +55,7 @@ var (
 	errKeyDepth      = &keyRefusal{"The origin path does not belong to this key. Copy the key and its origin together from your wallet."}
 	errKeySuffix     = &keyRefusal{"Nothing may follow the key except /0/*."}
 	errKeyInvalid    = &keyRefusal{"This is not a valid extended public key. Check that it was copied completely."}
-	errKeyMainnet    = &keyRefusal{"This is a mainnet key (xpub, zpub or similar). Escrow runs on regtest only on this market: export a test-network key (tpub)."}
+	errKeyMainnet    = &keyRefusal{"This is a mainnet key (xpub, zpub or similar). Escrow runs on test networks only on this market: export a test-network key (tpub)."}
 	errKeySingleSig  = &keyRefusal{"This key is marked for single-signature use (a upub or vpub). Export a plain tpub, or a multisig Vpub, from a wallet used only for this market."}
 	errKeyNested     = &keyRefusal{"This key is marked for nested SegWit multisig (a Upub). Export the native SegWit multisig key (m/48h/1h/0h/2h) as a tpub or Vpub."}
 	errKeyVersion    = &keyRefusal{"This is not a Bitcoin test-network extended public key."}

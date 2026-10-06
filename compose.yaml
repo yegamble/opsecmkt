@@ -44,8 +44,8 @@ services:
       BITCOIN_MAX_TIP_AGE: ${BITCOIN_MAX_TIP_AGE:-2h}
       MONERO_MAX_TIP_AGE: ${MONERO_MAX_TIP_AGE:-1h}
       AUDIT_SIGNING_KEY: ${AUDIT_SIGNING_KEY:-}
-      # Bitcoin escrow: regtest only, off unless ESCROW_BTC=on; blank values use the app defaults
-      # (docs/operator-guide.md#bitcoin-escrow-regtest-only).
+      # Bitcoin escrow: test networks only (regtest, signet, testnet4), off unless ESCROW_BTC=on; blank values use the app defaults
+      # (docs/operator-guide.md#bitcoin-escrow-test-networks-only).
       ESCROW_BTC: ${ESCROW_BTC:-}
       ESCROW_BTC_RPC_URL: ${ESCROW_BTC_RPC_URL:-}
       ESCROW_BTC_ARBITER_WALLET: ${ESCROW_BTC_ARBITER_WALLET:-}

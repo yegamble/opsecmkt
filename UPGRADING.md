@@ -864,7 +864,7 @@ escrow's pinned refund address and market-fee snapshot, `escrow_pubkeys`, `settl
 `escrow_market_index`), the column `payments.settlement_id`, and a trigger, `payouts_not_escrow`, that refuses a
 `payouts` row for an order that has an escrow (an escrow order is settled from its escrow, never by a pooled payout).
 The tables stay empty unless `ESCROW_BTC=on`, a regtest-only setting that is off by default ([operator
-guide](docs/operator-guide.md#bitcoin-escrow-regtest-only)), and the trigger changes nothing for pooled orders; nothing
+guide](docs/operator-guide.md#bitcoin-escrow-test-networks-only)), and the trigger changes nothing for pooled orders; nothing
 changes for users or payments. No action is needed. Rolling back past this release needs the pre-upgrade backup, as
 for every migration (section 5).
 
@@ -878,7 +878,7 @@ party's signature per input; the pasted PSBT is never stored), and two triggers:
 change to a settlement's transaction once a party has signed it, and `settlement_outputs_frozen` allows outputs to be
 written only while their settlement is being built. Like migration 074 it changes nothing unless `ESCROW_BTC=on`
 (regtest only, off by default); the new optional key `ESCROW_BTC_FEE_RATE` (sat/vB, default 2) sets the network fee
-rate of settlements ([operator guide](docs/operator-guide.md#bitcoin-escrow-regtest-only)). No action is needed.
+rate of settlements ([operator guide](docs/operator-guide.md#bitcoin-escrow-test-networks-only)). No action is needed.
 Rolling back past this release needs the pre-upgrade backup, as for every migration (section 5).
 
 ## 21. Bitcoin escrow co-signing, broadcast, dispute decisions and stray refunds (migration 076)
@@ -898,7 +898,7 @@ escrow disputes, and writes three `settings` keys when used: `escrow_btc_fee_bps
 market fee an administrator saves on `/admin`, which then overrides `ESCROW_BTC_FEE_BPS` and
 `ESCROW_BTC_FEE_ADDRESS`) and `escrow_btc_stray_check` (the daily stray-refund check). Escrow now also stays disabled
 unless the arbiter wallet is an unencrypted descriptor wallet with private keys and no transactions ([operator
-guide](docs/operator-guide.md#bitcoin-escrow-regtest-only)). No action is needed. Rolling back past this release needs
+guide](docs/operator-guide.md#bitcoin-escrow-test-networks-only)). No action is needed. Rolling back past this release needs
 the pre-upgrade backup, as for every migration (section 5): the earlier release refuses to start on a database that
 records migration 076.
 
@@ -921,7 +921,7 @@ market broadcasts it again. While the gate is set, escrow checkout is also refus
 a draft. The escrow RPC user's `rpcwhitelist` needs one more method, `listtransactions` (it reads the
 watch-only wallet only; the escrow watcher uses it to name the transaction that spent an escrow deposit): add it before
 upgrading, or that lookup is refused and such a deposit is flagged without the transaction ID ([operator
-guide](docs/operator-guide.md#bitcoin-escrow-regtest-only)). No other action is needed. Rolling back past this release
+guide](docs/operator-guide.md#bitcoin-escrow-test-networks-only)). No other action is needed. Rolling back past this release
 needs the pre-upgrade backup, as for every migration (section 5): the earlier release refuses to start on a database
 that records migration 077.
 
@@ -954,7 +954,7 @@ escrow columns, and the only visible effect is that a physical listing created o
 dispatch window (3 days unless its vendor gives another; the listing form shows the field only while escrow is on).
 With escrow on, this release also offers escrow checkout for physical listings, adds the administrator's release
 deadline length to `/admin` (setting `escrow_release_days`, default 14, 7 to 30 days; [operator
-guide](docs/operator-guide.md#bitcoin-escrow-regtest-only)) and a ship-by time and a release deadline to each physical
+guide](docs/operator-guide.md#bitcoin-escrow-test-networks-only)) and a ship-by time and a release deadline to each physical
 escrow order. A physical listing that exists before the upgrade has no dispatch window and takes no escrow checkout
 until its vendor saves it; a save stores the default of 3 days even while escrow is off (the field is then hidden),
 so once escrow is turned on such a listing takes escrow checkout with a 3-day window its vendor did not choose. A
@@ -1094,7 +1094,7 @@ later"): the guard needs Bitcoin Core 31.1 (the version the installer pins; earl
 node is unaffected. With `ESCROW_BTC=on` the escrow watcher applies the
 same rule, the app pins the escrow node's chain in `settings` (`escrow_btc_chain`; an existing regtest escrow database
 is pinned at the first start), and the escrow user's `rpcwhitelist` gains `getnetworkinfo`
-([operator guide](docs/operator-guide.md#bitcoin-escrow-regtest-only)); on regtest the app does not call it, so the old
+([operator guide](docs/operator-guide.md#bitcoin-escrow-test-networks-only)); on regtest the app does not call it, so the old
 whitelist keeps working, but add it. No action is needed otherwise.
 
 ## 33. Bitcoin escrow refuses a pooled RPC user that can read the arbiter wallet (A-440)
@@ -1105,7 +1105,7 @@ refused with HTTP 403 or the pooled node has no such wallet (another node). A po
 line on the escrow node (unrestricted under `rpcwhitelistdefault=0`, as the guide used to leave it) could export the
 market's escrow key, so escrow now stays disabled with "escrow: Bitcoin escrow disabled: the pooled Bitcoin RPC user
 (BITCOIN_RPC_URL) was not refused listdescriptors on the arbiter wallet, …" and a line on `/admin`. Before upgrading,
-give that user the pooled whitelist line of the [operator guide](docs/operator-guide.md#bitcoin-escrow-regtest-only)
+give that user the pooled whitelist line of the [operator guide](docs/operator-guide.md#bitcoin-escrow-test-networks-only)
 (*The pooled RPC user*) and restart bitcoind, or move escrow to a node of its own. The guide and the
 [runbook](docs/testnet-runbook.md#back-up-and-restore-the-escrow-arbiter-and-watch-only-wallets) now also describe the
 arbiter and watch-only wallet backup and restore. Pooled payments are unaffected.
@@ -1157,8 +1157,23 @@ order note and a "Payment review needed" notification) and is listed on `/admin`
 IPv4 and IPv6 on Bitcoin Core 31.1 or later; otherwise they wait, with a line on `/admin`. A Tor-mode market using escrow
 therefore needs `getnetworkinfo` on the escrow user's `rpcwhitelist` (it is called on regtest too in Tor mode) and the
 escrow node started with `-proxy=<Tor SOCKS address>`, never `-connect` or `-onlynet`
-([operator guide](docs/operator-guide.md#bitcoin-escrow-regtest-only), *Tor mode*). Clearnet mode and pooled payouts
+([operator guide](docs/operator-guide.md#bitcoin-escrow-test-networks-only), *Tor mode*). Clearnet mode and pooled payouts
 are unchanged.
+
+## 36. Bitcoin escrow on signet and testnet4 (A-443)
+
+No migration, no new key. Only with `ESCROW_BTC=on`. Escrow now starts against a node on `signet` or `testnet4` as well
+as `regtest`; mainnet and testnet3 are still refused, and `BITCOIN_CHAIN`, when set beside `ESCROW_BTC=on`, may now be
+`signet` or `testnet4` as well as `regtest`. A regtest market sees no change in behaviour: its chain pin stays
+`regtest`, and a database that holds escrows never moves to another chain (start a signet or testnet4 market on a new
+database). The startup refusal and the log lines read "test networks only" (for example "escrow: Bitcoin escrow on (test
+networks only)") where they said "regtest only"; a log filter matching the old text needs updating. The operator guide's
+section is now [Bitcoin escrow (test networks only)](docs/operator-guide.md#bitcoin-escrow-test-networks-only), and the
+[runbook](docs/testnet-runbook.md#11-bitcoin-escrow-on-signet-or-testnet4) lists what a signet or testnet4 market needs
+first. An escrow refund, claim, release or fee address given in capitals is now stored in lower case by the chain's
+prefix (`TB1…` on signet and testnet4, as `BCRT1…` already was on regtest). The escrow pages name the chain. **No run on
+public signet or testnet4 is recorded**: the real-chain legs ran on regtest and on a private signet
+(`scripts/test-escrow-regtest.sh --private-signet`).
 
 ## Appendix: new keys by hand
 

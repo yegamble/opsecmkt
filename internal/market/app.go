@@ -69,6 +69,7 @@ type App struct {
 	escrowSync      atomic.Value                        // string: the reason class the escrow watcher last found its node not synced for ("" or unset = synced)
 	escrowMismatch  atomic.Pointer[EscrowChainMismatch] // set while startEscrow refuses the node's chain against the escrow chain pin; nil = none
 	escrowPooledKey atomic.Pointer[string]              // set while startEscrow's pooled key self-check (A-440) got no refusal: the answer's class; nil = none
+	escrowNet       atomic.Pointer[string]              // the escrow chain escrowNetwork names while escrow is not enabled (A-443); nil = not known yet
 	// Broadcast honesty (A-441, escrow_stall.go), in memory only.
 	escrowTip     atomic.Int64 // the escrow node's tip height the last escrow watcher pass read (0 = none yet)
 	escrowUnseen  escrowUnseen // per broadcast settlement not seen by the watch-only wallet, the height it went unseen from

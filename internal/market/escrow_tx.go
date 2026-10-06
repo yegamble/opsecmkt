@@ -114,8 +114,8 @@ func parseSignedTx(raw []byte) (*signedTx, error) {
 
 // escrowChains is the one chain table of Bitcoin escrow (A-439, P4-R5): each chain escrow can run on, keyed by the
 // node's getblockchaininfo chain, and the human-readable part of its segwit addresses. Mainnet ("main") and testnet3
-// ("test") are not escrow chains (escrow hard-codes test-network key versions and coin type 1). startEscrow still
-// accepts regtest only in this release (A-443 opens signet and testnet4).
+// ("test") are not escrow chains (escrow hard-codes test-network key versions and coin type 1): startEscrow refuses a
+// node on any chain not in the table (errEscrowChain; A-443 opened signet and testnet4).
 var escrowChains = map[string]string{"regtest": "bcrt", "signet": "tb", "testnet4": "tb"}
 
 // escrowAddressScript is the scriptPubKey an address of chain pays: a bech32 (witness version 0: P2WPKH or P2WSH) or

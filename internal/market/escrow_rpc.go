@@ -22,12 +22,13 @@ import (
 // Bitcoin escrow (WR-escrow Phase 1, A-246): configuration, the startup checks and the Bitcoin Core RPC adapter
 // the escrow code uses. It is apart from the pooled adapter (payments_bitcoin.go) and shares only rpcClient.
 //
-// ESCROW_BTC=on (off by default) runs only against a regtest node in Phase 1. The app reaches Core as its own RPC
-// user, which the operator restricts with rpcwhitelist to the methods below (docs/operator-guide.md, "Bitcoin
-// escrow (regtest only)"). listdescriptors is deliberately not among them: rpcwhitelist allows or refuses a
-// method, not its arguments, and a user allowed listdescriptors can call it with private=true and export the
-// arbiter's private key (probed on Core 31.1 regtest). The arbiter's fingerprint is read with
-// getrawchangeaddress and getaddressinfo instead, which export nothing.
+// ESCROW_BTC=on (off by default) runs only against a node on regtest, signet or testnet4 (the chain table, escrowChains;
+// A-443 opened signet and testnet4 once the sync guard, the chain pin, the market key self-check and the Tor-mode gate
+// were in place). The app reaches Core as its own RPC user, which the operator restricts with rpcwhitelist to the
+// methods below (docs/operator-guide.md, "Bitcoin escrow (test networks only)"). listdescriptors is deliberately not
+// among them: rpcwhitelist allows or refuses a method, not its arguments, and a user allowed listdescriptors can call it
+// with private=true and export the arbiter's private key (probed on Core 31.1 regtest). The arbiter's fingerprint is
+// read with getrawchangeaddress and getaddressinfo instead, which export nothing.
 //
 // Every RPC error is reduced to a fixed class (escrowRPCError) before anyone logs it: Core's error text can quote
 // a descriptor or a key (A-170, ES-10).
@@ -77,18 +78,18 @@ func escrowConfigFromEnv(getenv func(string) string) (escrowConfig, error) {
 	case "on":
 		c.on = true
 	default:
-		return c, errors.New(`ESCROW_BTC must be "on" or "off" (blank means off); Bitcoin escrow runs on regtest only in this release`)
+		return c, errors.New(`ESCROW_BTC must be "on" or "off" (blank means off); Bitcoin escrow runs on test networks only (regtest, signet or testnet4)`)
 	}
 	c.rpcURL = strings.TrimSpace(getenv("ESCROW_BTC_RPC_URL"))
 	if c.rpcURL == "" {
-		return c, errors.New("ESCROW_BTC=on needs ESCROW_BTC_RPC_URL: the regtest Bitcoin Core RPC URL of the app's rpcwhitelist user (docs/operator-guide.md, \"Bitcoin escrow (regtest only)\")")
+		return c, errors.New("ESCROW_BTC=on needs ESCROW_BTC_RPC_URL: the Bitcoin Core RPC URL (regtest, signet or testnet4) of the app's rpcwhitelist user (docs/operator-guide.md, \"Bitcoin escrow (test networks only)\")")
 	}
 	c.arbiterWallet = strings.TrimSpace(getenv("ESCROW_BTC_ARBITER_WALLET"))
 	if c.arbiterWallet == "" {
 		c.arbiterWallet = "opsecmkt-arbiter"
 	}
-	if chain := strings.TrimSpace(getenv("BITCOIN_CHAIN")); chain != "" && chain != "regtest" {
-		return c, errors.New("refusing to start: ESCROW_BTC=on runs only on regtest in this release, and BITCOIN_CHAIN names another chain. Set ESCROW_BTC=off, or use regtest for both")
+	if chain := strings.TrimSpace(getenv("BITCOIN_CHAIN")); chain != "" && escrowChains[chain] == "" {
+		return c, errors.New("refusing to start: ESCROW_BTC=on runs only on regtest, signet or testnet4, and BITCOIN_CHAIN names mainnet or testnet3. Set ESCROW_BTC=off, or use one of those chains")
 	}
 	c.watchWallet = strings.TrimSpace(getenv("ESCROW_BTC_WATCH_WALLET"))
 	if c.watchWallet == "" {
@@ -118,8 +119,8 @@ func escrowConfigFromEnv(getenv func(string) string) (escrowConfig, error) {
 	}
 	if c.feeBps > 0 {
 		var ok bool
-		if c.feeAddress, ok = escrowAddressForm(getenv("ESCROW_BTC_FEE_ADDRESS")); !ok {
-			return c, errors.New("ESCROW_BTC_FEE_BPS above 0 needs ESCROW_BTC_FEE_ADDRESS: the regtest Bitcoin address the market fee is paid to")
+		if c.feeAddress, ok = escrowAddressForm("", getenv("ESCROW_BTC_FEE_ADDRESS")); !ok {
+			return c, errors.New("ESCROW_BTC_FEE_BPS above 0 needs ESCROW_BTC_FEE_ADDRESS: the Bitcoin address, on the escrow node's chain, the market fee is paid to")
 		}
 	}
 	c.feeRate = escrowDefaultFeeRate
@@ -150,21 +151,22 @@ func escrowConfigFromEnv(getenv func(string) string) (escrowConfig, error) {
 	return c, nil
 }
 
-// errEscrowNotRegtest is the fixed startup refusal for an escrow node on any chain but regtest.
-var errEscrowNotRegtest = errors.New("refusing to start: ESCROW_BTC=on runs only on regtest in this release (escrow is not verified on any public network), and the node at ESCROW_BTC_RPC_URL is not on regtest. Set ESCROW_BTC=off, or point ESCROW_BTC_RPC_URL at a regtest node")
+// errEscrowChain is the fixed startup refusal for an escrow node on a chain that is not in the chain table (escrowChains):
+// mainnet, testnet3 or any other.
+var errEscrowChain = errors.New("refusing to start: ESCROW_BTC=on runs only on regtest, signet or testnet4, and the node at ESCROW_BTC_RPC_URL reports another chain (mainnet and testnet3 are refused). Set ESCROW_BTC=off, or point ESCROW_BTC_RPC_URL at a node on one of those chains")
 
 // Fixed operator lines for an escrow that is switched on but not usable: nothing in them comes from the node.
 const (
-	escrowLogOn           = "escrow: Bitcoin escrow on (regtest only)"
+	escrowLogOn           = "escrow: Bitcoin escrow on (test networks only)"
 	escrowLogUnchecked    = "escrow: Bitcoin escrow disabled: the escrow node could not be checked at startup"
 	escrowLogArbiter      = "escrow: Bitcoin escrow disabled: the arbiter wallet could not be read (is ESCROW_BTC_ARBITER_WALLET loaded, and a descriptor wallet with private keys?)"
-	escrowLogFingerprint  = "escrow: Bitcoin escrow disabled: the arbiter wallet's key fingerprint differs from the one pinned in this database; see docs/operator-guide.md, \"Bitcoin escrow (regtest only)\""
+	escrowLogFingerprint  = "escrow: Bitcoin escrow disabled: the arbiter wallet's key fingerprint differs from the one pinned in this database; see docs/operator-guide.md, \"Bitcoin escrow (test networks only)\""
 	escrowLogWatch        = "escrow: Bitcoin escrow disabled: the watch-only wallet could not be read (is ESCROW_BTC_WATCH_WALLET loaded, and a descriptor wallet with private keys disabled?)"
-	escrowLogArbiterUse   = "escrow: Bitcoin escrow disabled: the arbiter wallet must be used for the escrow key only (an unencrypted descriptor wallet with private keys and no transactions); see docs/operator-guide.md, \"Bitcoin escrow (regtest only)\""
+	escrowLogArbiterUse   = "escrow: Bitcoin escrow disabled: the arbiter wallet must be used for the escrow key only (an unencrypted descriptor wallet with private keys and no transactions); see docs/operator-guide.md, \"Bitcoin escrow (test networks only)\""
 	escrowLogFixedFee     = "escrow: the market fee is paid to one fixed address (ESCROW_BTC_FEE_ADDRESS); allowed on test networks only"
-	escrowLogRefused      = "escrow: Bitcoin escrow disabled until the app is restarted: the escrow node is not on regtest, or it refused ESCROW_BTC_FEE_ADDRESS"
+	escrowLogRefused      = "escrow: Bitcoin escrow disabled until the app is restarted: the escrow node is on a chain escrow does not run on (mainnet, testnet3 or another), or it refused ESCROW_BTC_FEE_ADDRESS"
 	escrowLogUnrecorded   = "escrow: Bitcoin escrow disabled: its arbiter fingerprint could not be checked in the database"
-	escrowLogChain        = "escrow: Bitcoin escrow disabled: the escrow node is not on the chain this database's escrows are on (escrow_btc_chain); the admin page names both; see docs/operator-guide.md, \"Bitcoin escrow (regtest only)\""
+	escrowLogChain        = "escrow: Bitcoin escrow disabled: the escrow node is not on the chain this database's escrows are on (escrow_btc_chain); the admin page names both; see docs/operator-guide.md, \"Bitcoin escrow (test networks only)\""
 	escrowLogPooledKey    = "escrow: Bitcoin escrow disabled: the pooled Bitcoin RPC user (BITCOIN_RPC_URL) was not refused listdescriptors on the arbiter wallet, so it may be able to export the market's escrow key; give that user the pooled rpcwhitelist line, or run escrow on a node of its own; see docs/operator-guide.md, \"The pooled RPC user\""
 	escrowFingerprintPin  = "escrow_btc_arbiter_fingerprint" // settings key
 	escrowChainPin        = "escrow_btc_chain"               // settings key: escrowChainID of the node the database's escrows are on (A-439)
@@ -199,18 +201,22 @@ func newEscrowBTC(c escrowConfig) (*escrowBTC, error) {
 		confirmations: c.confirmations, feeRate: c.feeRate}, nil
 }
 
-// initEscrow runs in New after the payment providers. ESCROW_BTC=off does nothing. On, a node that answers on any
-// chain but regtest stops startup (errEscrowNotRegtest); an unreachable node, an unreadable arbiter wallet or a
+// initEscrow runs in New after the payment providers. ESCROW_BTC=off does nothing. On, a node that answers on a chain
+// escrow does not run on stops startup (errEscrowChain); an unreachable node, an unreadable arbiter wallet or a
 // fingerprint that differs from the pinned one leaves escrow disabled with one fixed line, and the market runs; the
 // escrow watcher then retries (retryEscrow).
 func (a *App) initEscrow(ctx context.Context) error {
 	cfg, err := escrowConfigFromEnv(os.Getenv)
-	if err != nil || !cfg.on {
+	if err != nil {
 		return err
+	}
+	if !cfg.on {
+		a.notePinnedNet(ctx) // escrow orders' pages are shown with ESCROW_BTC off too, naming their chain (A-443)
+		return nil
 	}
 	a.escrowConfigured = true
 	if a.live {
-		return errors.New("refusing to start: ESCROW_BTC=on runs only on regtest in this release, and this market is configured for mainnet")
+		return errors.New("refusing to start: ESCROW_BTC=on runs only on test networks (regtest, signet or testnet4), and this market is configured for mainnet")
 	}
 	if _, err = newEscrowBTC(cfg); err != nil {
 		return err
@@ -229,14 +235,15 @@ func (a *App) initEscrow(ctx context.Context) error {
 }
 
 // errEscrowFeeAddress is the fixed startup refusal for a fee address the escrow node does not accept.
-var errEscrowFeeAddress = errors.New("refusing to start: ESCROW_BTC_FEE_ADDRESS is not a valid address on the escrow node's chain (regtest)")
+var errEscrowFeeAddress = errors.New("refusing to start: ESCROW_BTC_FEE_ADDRESS is not a valid address on the escrow node's chain")
 
 // startEscrow runs every escrow check once and, when all pass, enables escrow (a.escrow). It reports the state as
 // one of the fixed lines (escrowLogOn when enabled) with the error class that caused it (""), or an error: a refusal
-// (errEscrowNotRegtest, errEscrowFeeAddress) or a database failure. Nothing here comes from the node's text. The
-// guards are the same at startup and on a retry: the node must be on regtest and on the chain pinned for the
-// database's escrows (pinEscrowChain, before anything else is written), the arbiter fingerprint must match the pinned
-// one, and the watch-only wallet must hold no private keys.
+// (errEscrowChain, errEscrowFeeAddress) or a database failure. Nothing here comes from the node's text. The
+// guards are the same at startup and on a retry: the node must be on a chain of the chain table (regtest, signet or
+// testnet4) and on the chain pinned for the database's escrows (pinEscrowChain, before anything else is written), the
+// arbiter fingerprint must match the pinned one, and the watch-only wallet must hold no private keys. The configured fee
+// address is lowered by the node's chain (escrowAddressForm) before the node checks it.
 func (a *App) startEscrow(ctx context.Context) (state, class string, err error) {
 	e, err := newEscrowBTC(a.escrowCfg)
 	if err != nil {
@@ -246,16 +253,27 @@ func (a *App) startEscrow(ctx context.Context) (state, class string, err error) 
 	a.escrowPooledKey.Store(nil) // likewise, while the latest attempt found the pooled user not refused (A-440)
 	node, err := e.blockchainInfo(ctx)
 	if err != nil {
+		a.notePinnedNet(ctx)
 		return escrowLogUnchecked, errorClassOf(err), nil
 	}
-	if node.Chain != "regtest" {
-		return "", "", errEscrowNotRegtest
+	if escrowChains[node.Chain] == "" {
+		return "", "", errEscrowChain
 	}
 	e.network, e.chainID = node.Chain, escrowChainID(node.Chain, node.SignetChallenge)
 	pinned, ok, err := pinEscrowChain(ctx, a.db, e.chainID)
 	if err != nil {
 		return "", "", err
 	}
+	// The chain escrowNetwork names while escrow is not enabled: the node's, unless the database's escrows are on another,
+	// the pinned one (none pinned: escrows from before the pin, which ran on regtest only).
+	net := node.Chain
+	if !ok {
+		net = "regtest"
+		if p, _, _ := strings.Cut(pinned, ":"); escrowChains[p] != "" {
+			net = p
+		}
+	}
+	a.escrowNet.Store(&net)
 	if !ok {
 		a.escrowMismatch.Store(&EscrowChainMismatch{Pinned: pinned, Reported: e.chainID})
 		return escrowLogChain, "", nil
@@ -280,6 +298,7 @@ func (a *App) startEscrow(ctx context.Context) (state, class string, err error) 
 		return escrowLogWatch, errorClassOf(err), nil
 	}
 	if e.feeAddress != "" {
+		e.feeAddress, _ = escrowAddressForm(e.network, e.feeAddress)
 		valid, err := e.validAddress(ctx, e.feeAddress)
 		if err != nil {
 			return escrowLogUnchecked, errorClassOf(err), nil
@@ -351,7 +370,7 @@ func (a *App) retryEscrow(ctx context.Context, r *escrowRetry) {
 	switch {
 	case ctx.Err() != nil:
 		return
-	case errors.Is(err, errEscrowNotRegtest), errors.Is(err, errEscrowFeeAddress):
+	case errors.Is(err, errEscrowChain), errors.Is(err, errEscrowFeeAddress):
 		r.refused, state = true, escrowLogRefused
 	case err != nil:
 		state, class = escrowLogUnrecorded, errorCause(err)
@@ -382,6 +401,22 @@ func escrowChainID(chain, signetChallenge string) string {
 		return chain + ":" + signetChallenge
 	}
 	return chain
+}
+
+// notePinnedNet sets the chain escrowNetwork names while escrow is not enabled (ESCROW_BTC off, or no escrow node has
+// answered yet in this process): the chain this database's escrows are pinned to (escrowChainPin), if any. A failed
+// read sets nothing.
+func (a *App) notePinnedNet(ctx context.Context) {
+	if a.db == nil || a.escrowNet.Load() != nil {
+		return
+	}
+	var pinned string
+	if a.db.QueryRowContext(ctx, "SELECT value FROM settings WHERE key=$1", escrowChainPin).Scan(&pinned) != nil {
+		return
+	}
+	if chain, _, _ := strings.Cut(pinned, ":"); escrowChains[chain] != "" {
+		a.escrowNet.Store(&chain)
+	}
 }
 
 // pinEscrowChain checks id (escrowChainID of the escrow node) against the chain pinned in settings (escrowChainPin)

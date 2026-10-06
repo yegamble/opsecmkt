@@ -12,7 +12,8 @@ import (
 // (simulated RPC, not chain evidence; scripts/test-escrow-regtest.sh has the real regtest legs).
 
 // onSignet makes the fake node a synced signet node (signet_challenge 51, 8 peers, a fresh tip) and the enabled escrow
-// one started on it, as A-443 will allow: startEscrow still refuses every chain but regtest in this slice.
+// one started on it, by hand, so a test can move escrows made on regtest to signet (a real restart refuses that: the
+// chain pin); signetEscrowEnv starts escrow on signet the real way (A-443).
 func (x *escrowEnv) onSignet() {
 	x.t.Helper()
 	x.core.mu.Lock()
@@ -257,6 +258,10 @@ func TestEscrowChainPinMismatchDisables(t *testing.T) {
 	if !strings.Contains(page, "Bitcoin escrow disabled: the escrow node reports chain regtest, but this database's escrows are on testnet4.") {
 		t.Fatalf("admin page:\n%s", page)
 	}
+	// A-443: while disabled, escrow's notes name the chain its escrows are on (the pin), not the node's.
+	if net := x.A.escrowNetwork(); net != "testnet4" {
+		t.Fatalf("escrow notes name %q while the node is on another chain", net)
+	}
 	retry := &escrowRetry{last: x.A.escrowStartState}
 	x.A.retryEscrow(context.Background(), retry)
 	x.A.retryEscrow(context.Background(), retry)
@@ -282,7 +287,7 @@ func TestEscrowChainPinMismatchDisables(t *testing.T) {
 	}
 }
 
-// The pin's rules, for the chains startEscrow does not yet accept (A-443 lifts the regtest-only refusal): a signet pin
+// The pin's rules on every escrow chain (A-443 opened signet and testnet4; TestEscrowStartupChains): a signet pin
 // includes signet_challenge, so a signet with another challenge is a mismatch; a database holding escrows and no pin is
 // pinned only when the node reports regtest; with no escrow the pin is written and may be rewritten.
 func TestEscrowChainPinRules(t *testing.T) {

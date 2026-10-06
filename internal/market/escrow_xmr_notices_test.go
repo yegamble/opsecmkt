@@ -75,7 +75,7 @@ func TestMoneroEscrowSiteCopyEveryCombination(t *testing.T) {
 		pooledBdg = `<span class="badge testnet">TESTNET payments (BTC fake) — no real funds</span>`
 		btcBdg    = `<span class="badge testnet">Bitcoin escrow only (regtest) — no real funds</span>`
 		xmrBdg    = `<span class="badge testnet">Monero escrow only (local fakechain) — no real funds</span>`
-		bothBdg   = `<span class="badge testnet">Bitcoin and Monero escrow only (local test chains) — no real funds</span>`
+		bothBdg   = `<span class="badge testnet">Bitcoin and Monero escrow only (test networks) — no real funds</span>`
 	)
 	for _, c := range []struct {
 		name             string

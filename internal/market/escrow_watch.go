@@ -53,11 +53,16 @@ const (
 		"' OR EXISTS (SELECT 1 FROM settlements s WHERE s.order_id=es.order_id AND s.state IN ('building','awaiting_signature','party_signed','signed','broadcast')))"
 )
 
-// escrowNetwork is the chain the escrow node reported at startup, for the network word in escrow notes ("regtest" in
-// Phase 1; also before escrow is enabled, when no node has been read).
+// escrowNetwork is the chain the escrow node reported at startup, for the network word in escrow notes (regtest, signet
+// or testnet4). While escrow is not enabled it is the chain the escrow node last reported in this process, else the
+// chain this database's escrows are pinned to (notePinnedNet, A-443), else "regtest" (no node has answered and nothing
+// is pinned: a market that has never run escrow).
 func (a *App) escrowNetwork() string {
 	if e := a.escrow.Load(); e != nil && e.network != "" {
 		return e.network
+	}
+	if net := a.escrowNet.Load(); net != nil {
+		return *net
 	}
 	return "regtest"
 }
@@ -103,7 +108,7 @@ func escrowWatcher(ctx context.Context, a *App) {
 }
 
 // escrowPollOnce runs one escrow watcher pass unless another process holds the escrow watcher lock. The node must
-// still report the chain escrow started on (regtest: startEscrow refuses any other) and be synced (bitcoinNode.notSynced,
+// still report the chain escrow started on (its escrowChainID, A-439) and be synced (bitcoinNode.notSynced,
 // A-439); an order whose address could not be read in this pass never expires in it. While escrow is not enabled, the
 // node check fails or the node is not synced, the pass applies only the release deadlines, which need no node
 // (escrow_deadline.go): no deposit is read, no order expires, nothing is flagged and no settlement is built, co-signed
@@ -133,7 +138,7 @@ func (a *App) escrowPollOnce(ctx context.Context) error {
 		case err != nil:
 			nodeErr = &watchError{label: "escrow", class: "node check failed: " + errorClassOf(err), err: err}
 		case escrowChainID(node.Chain, node.SignetChallenge) != e.chainID:
-			nodeErr = &watchError{label: "escrow", class: "node changed chain; pass skipped", err: errEscrowNotRegtest}
+			nodeErr = &watchError{label: "escrow", class: "node changed chain; pass skipped", err: errEscrowChain}
 		default:
 			why := node.notSynced(time.Now(), maxTipAge())
 			a.noteEscrowSync(why)

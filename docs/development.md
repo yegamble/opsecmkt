@@ -217,7 +217,7 @@ artifacts. Real-wallet network validation remains a separate runbook step.
 
 ### Bitcoin escrow paste journey (simulated escrow node)
 
-`tests/e2e/escrow-journey.spec.ts` drives Bitcoin escrow (regtest only, `ESCROW_BTC=on`;
+`tests/e2e/escrow-journey.spec.ts` drives Bitcoin escrow (a simulated regtest node, `ESCROW_BTC=on`;
 see [escrow](escrow.md)) through the real server and PostgreSQL in Chromium at 320 px with
 JavaScript disabled, every form by keyboard alone: two escrow keys registered and activated
 by practice signing, an escrow checkout funded and completed on funding (automatic delivery),

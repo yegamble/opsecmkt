@@ -136,5 +136,60 @@ class EscrowRegtestScriptTest(unittest.TestCase):
         self.assertNotRegex(head, r'-(connect|onlynet|addnode|seednode)=')
 
 
+class PrivateSignetModeTest(unittest.TestCase):
+    """A-443: --private-signet starts its own two signet nodes; checked here without Docker or a node (the real run is
+    manual: docs/testnet-runbook.md section 11)."""
+
+    def body(self):
+        text = SCRIPT.read_text()
+        return text[text.index('private_signet() {'):text.index('\ncase "${1:-}" in')]
+
+    def run_script(self, args, env_extra=None):
+        env = dict(os.environ, **(env_extra or {}))
+        env.pop('TEST_DATABASE_URL', None)
+        return subprocess.run(['bash', str(SCRIPT)] + args, env=env, capture_output=True, text=True, timeout=60)
+
+    def test_needs_a_database_and_refuses_unknown_arguments(self):
+        r = self.run_script(['--private-signet'])
+        self.assertEqual(r.returncode, 2)
+        self.assertIn('TEST_DATABASE_URL', r.stderr)
+        r = self.run_script(['--signet'])
+        self.assertEqual(r.returncode, 2)
+        self.assertIn('Usage', r.stderr)
+
+    def test_nodes_are_a_private_signet_with_no_route_off_the_host(self):
+        body = self.body()
+        self.assertIn('docker network create --internal', body)
+        self.assertIn('-chain=signet -signetchallenge=51 -dnsseed=0 -fixedseeds=0', body)
+        self.assertNotRegex(body, r'docker (run|create)[^\n]* -p ')  # no published port
+        self.assertNotRegex(body, r'-(onlynet|addnode|seednode)=')
+        # Node A makes no outbound connection; node B connects to node A only.
+        self.assertIn('-connect=0 -listen=1', body)
+        self.assertIn('"-connect=$a:38333" -listen=0', body)
+        # Both refuse anything but signet with challenge 51 before the legs run.
+        self.assertIn('\'"signet_challenge":"51"\'', body)
+        # Containers, their volumes and the network go on every exit.
+        self.assertIn("docker rm -f -v '$a' '$b'", body)
+        self.assertIn("docker network rm '$net'", body)
+
+    def test_runs_the_legs_without_regtest_only_rpcs_and_labels_everything(self):
+        body = self.body()
+        legs = body.split('local legs=(')[1].split(')')[0].split()
+        self.assertNotIn('Recovery', legs)
+        self.assertNotIn('Conflicted', legs)
+        self.assertNotIn('PrivateBroadcast', legs)
+        self.assertIn('Isolated', legs)
+        for leg in LEGS:
+            name = leg[len('TestEscrowRegtest'):]
+            if name not in legs:
+                self.assertIn('NOT RUN on the private signet: %s (' % leg, body)
+        self.assertIn('label="private signet, not public"', body)
+        self.assertIn('sed -u "s/^/[$label] /"', body)
+        # The header: node version, commit, redacted command line, finish time.
+        for want in ('# node version:', '# commit:', 'credentials redacted', '<redacted>', 'finished:'):
+            self.assertIn(want, body)
+        self.assertNotRegex(body, r'echo "# command line[^\n]*_pass')
+
+
 if __name__ == '__main__':
     unittest.main()
