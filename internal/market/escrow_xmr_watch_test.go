@@ -625,6 +625,30 @@ func TestXMREscrowRecheckAfterOpen(t *testing.T) {
 	}
 }
 
+// A-475: the daemon gains 100 blocks while the escrow wallet refreshes (a daemon catching up after downtime, a slow
+// pass, the browser journey's mine of 100): the wallet, synced to that daemon, is 100 blocks past the height read
+// before the refresh. Monero escrow stays on, the pass reads the wallet and funds the order; a wallet-rpc on another
+// daemon (100 blocks ahead of it on both readings) is still refused for good.
+func TestXMREscrowDaemonGainsBlocksDuringRefresh(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	order := x.draft(x.digital(x.vendor))
+	addr := x.mustCheckout(order)
+	x.fake.payAddress(addr, hex64("race"), xmrListingPrice, 12)
+	x.fake.hook("refresh", func() { x.fake.mine(100) })
+	x.mustPoll()
+	x.fake.hook("refresh", nil)
+	if x.A.escrowXMR.refused.Load() || !x.A.escrowXMR.ready.Load() || x.state(order) != stateCompleted {
+		t.Fatalf("daemon gained 100 blocks during the refresh: refused %v, ready %v, order %s", x.A.escrowXMR.refused.Load(), x.A.escrowXMR.ready.Load(), x.state(order))
+	}
+	x.mustPoll()
+
+	x.fake.edit(func(f *fakeXMREscrow) { f.walletLag = 100 })
+	if err := x.poll(); !errors.Is(err, errXMRWalletLag) || !x.A.escrowXMR.refused.Load() || x.A.escrowXMR.ready.Load() {
+		t.Fatalf("a wallet-rpc on another daemon: %v", err)
+	}
+}
+
 // A wallet-rpc that loses its open wallet mid-pass (-13) fails that wallet's read: nothing is marked missing and no
 // order expires; the next pass reads it again.
 func TestXMREscrowNotOpenMidPass(t *testing.T) {

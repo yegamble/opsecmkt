@@ -1021,17 +1021,34 @@ func (r *xmrEscrowRPC) checkDaemon(ctx context.Context) (xmrDaemonInfo, error) {
 	return info, nil
 }
 
-// checkWallet refreshes the open wallet and requires its height to be within 10 blocks of daemonHeight: a wallet-rpc
-// attached to another daemon is refused. The watcher runs it after each open_wallet.
+// checkWallet refreshes the open wallet and requires its height to be within 10 blocks of the daemon's
+// (checkWalletHeight): a wallet-rpc attached to another daemon is refused. The watcher runs it after each open_wallet.
 func (r *xmrEscrowRPC) checkWallet(ctx context.Context, daemonHeight int64) error {
 	if err := r.refresh(ctx); err != nil {
 		return err
 	}
+	return r.checkWalletHeight(ctx, daemonHeight)
+}
+
+// checkWalletHeight requires the refreshed wallet's height to be within 10 blocks of the daemon's. daemonHeight was
+// read before the refresh, which can take minutes (xmrWalletRefreshTimeout): a daemon that gained (or popped) more
+// than 10 blocks meanwhile leaves a wallet synced to it that far from daemonHeight. So a wallet more than 10 blocks
+// from daemonHeight is compared with the daemon's height read again (A-475), and refused only when it is more than 10
+// blocks from that too, ahead or behind. A failed second reading is the daemon's error, retried, never a refusal.
+func (r *xmrEscrowRPC) checkWalletHeight(ctx context.Context, daemonHeight int64) error {
 	h, err := r.height(ctx)
 	if err != nil {
 		return err
 	}
-	if h-daemonHeight > xmrMaxWalletLag || daemonHeight-h > xmrMaxWalletLag {
+	apart := func(d int64) bool { return h-d > xmrMaxWalletLag || d-h > xmrMaxWalletLag }
+	if !apart(daemonHeight) {
+		return nil
+	}
+	info, err := r.daemonInfo(ctx)
+	if err != nil {
+		return err
+	}
+	if apart(info.Height) {
 		return errXMRWalletLag
 	}
 	return nil
