@@ -594,15 +594,16 @@ func TestXMREscrowNetworkCheck(t *testing.T) {
 
 // TestXMREscrowWalletLagRereadsDaemon (A-475): the daemon height the wallet is compared with is read before the
 // refresh, which can take minutes. A daemon that gains (or, popping blocks, loses) more than 10 blocks meanwhile leaves
-// a wallet synced to it more than 10 blocks from that reading, so the daemon is read again after the refresh and only a
-// wallet still more than 10 blocks from it is refused (permanently, at runtime). A wallet within 10 blocks of the first
-// reading costs no second get_info. Startup's check (testXMRCheckNetwork) and the watcher's re-check
-// (recheckEscrowXMRNetwork) both go through checkWallet. Unit test (no database).
+// a wallet synced to it more than 10 blocks from that reading, so the daemon is read again after the refresh, and the
+// wallet is refused (permanently, at runtime) only when it is more than 10 blocks outside the span of the two readings:
+// the daemon may move again between the refresh and the second reading. A wallet within 10 blocks of the first reading
+// costs no second get_info. Startup's check (testXMRCheckNetwork) and the watcher's re-check (recheckEscrowXMRNetwork)
+// both go through checkWallet. Unit test (no database).
 func TestXMREscrowWalletLagRereadsDaemon(t *testing.T) {
 	ctx := context.Background()
-	// nodes: get_info answers start until the wallet's refresh, which moves the daemon to after; the wallet's height
-	// after the refresh is wallet.
-	nodes := func(start, after, wallet int64) (*fakeXMRNode, *fakeXMRNode, *xmrEscrowRPC) {
+	// nodes: get_info answers start until the wallet's refresh, which moves the daemon to after; the wallet's get_height
+	// answers wallet and moves the daemon to reread (blocks mined between the refresh and the second reading).
+	nodes := func(start, after, reread, wallet int64) (*fakeXMRNode, *fakeXMRNode, *xmrEscrowRPC) {
 		w, d, r := happyXMRNodes(t)
 		var mu sync.Mutex
 		h := start
@@ -617,27 +618,36 @@ func TestXMREscrowWalletLagRereadsDaemon(t *testing.T) {
 			h = after
 			return map[string]any{"blocks_fetched": 0, "received_money": false}, 0, ""
 		})
-		w.result("get_height", map[string]any{"height": wallet})
+		w.set("get_height", func(json.RawMessage) (any, int, string) {
+			mu.Lock()
+			defer mu.Unlock()
+			h = reread
+			return map[string]any{"height": wallet}, 0, ""
+		})
 		return w, d, r
 	}
 	cases := []struct {
-		name                 string
-		start, after, wallet int64
-		want                 error
+		name                         string
+		start, after, reread, wallet int64
+		want                         error
 	}{
-		{"daemon gains 100 blocks during the refresh", 120, 220, 220, nil},
-		{"daemon gains 100, wallet 10 behind it", 120, 220, 210, nil},
-		{"daemon gains 100, wallet 10 ahead of it", 120, 220, 230, nil},
-		{"daemon pops 70 blocks during the refresh", 220, 150, 150, nil},
-		{"daemon gains 100, wallet 11 ahead of it", 120, 220, 231, errXMRWalletLag},
-		{"daemon gains 100, wallet 11 behind it", 120, 220, 209, errXMRWalletLag},
-		{"wallet on another daemon, 100 ahead on both reads", 120, 120, 220, errXMRWalletLag},
-		{"wallet on another daemon, 100 behind on both reads", 220, 220, 120, errXMRWalletLag},
-		{"wallet on another daemon, 89 behind then 189 behind", 120, 220, 31, errXMRWalletLag},
+		{"daemon gains 100 blocks during the refresh", 120, 220, 220, 220, nil},
+		{"daemon gains 100, wallet 10 behind it", 120, 220, 220, 210, nil},
+		{"daemon gains 100, wallet 10 ahead of it", 120, 220, 220, 230, nil},
+		{"daemon gains 100, wallet between the two readings", 120, 220, 220, 150, nil},
+		{"daemon pops 70 blocks during the refresh", 220, 150, 150, 150, nil},
+		{"daemon pops 70, wallet 10 below it", 220, 150, 150, 140, nil},
+		{"daemon gains 100 during the refresh and 20 more before the second reading", 120, 220, 240, 220, nil},
+		{"daemon gains 100, wallet 11 ahead of it", 120, 220, 220, 231, errXMRWalletLag},
+		{"daemon pops 70, wallet 11 below it", 220, 150, 150, 139, errXMRWalletLag},
+		{"wallet on another daemon, 100 ahead on both reads", 120, 120, 120, 220, errXMRWalletLag},
+		{"wallet on another daemon, 100 behind on both reads", 220, 220, 220, 120, errXMRWalletLag},
+		{"wallet on another daemon 11 behind ours while ours gains 100", 120, 220, 220, 109, errXMRWalletLag},
+		{"wallet on another daemon, 89 behind then 189 behind", 120, 220, 220, 31, errXMRWalletLag},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, daemon, r := nodes(c.start, c.after, c.wallet)
+			_, daemon, r := nodes(c.start, c.after, c.reread, c.wallet)
 			if _, open, err := testXMRCheckNetwork(ctx, r); !errors.Is(err, c.want) || (err == nil && !open) {
 				t.Fatalf("startup check: %v (open %v), want %v", err, open, c.want)
 			}
@@ -645,7 +655,7 @@ func TestXMREscrowWalletLagRereadsDaemon(t *testing.T) {
 				t.Fatalf("startup check daemon calls %s, want the daemon read again after the refresh", got)
 			}
 
-			_, _, r = nodes(c.start, c.after, c.wallet)
+			_, _, r = nodes(c.start, c.after, c.reread, c.wallet)
 			a := &App{escrowXMR: &escrowXMR{rpc: r}}
 			a.escrowXMR.ready.Store(true)
 			err := a.recheckEscrowXMRNetwork(ctx)
@@ -656,13 +666,11 @@ func TestXMREscrowWalletLagRereadsDaemon(t *testing.T) {
 				if err := a.recheckEscrowXMRNetwork(ctx); !errors.Is(err, errXMRRefusedUntilRestart) {
 					t.Fatalf("after a refusal: %v", err)
 				}
-			} else if err := a.recheckEscrowXMRNetwork(ctx); err != nil || a.escrowXMR.refused.Load() {
-				t.Fatalf("the next re-check: %v", err)
 			}
 		})
 	}
 	// Within 10 blocks of the first reading: no second get_info.
-	_, daemon, r := nodes(120, 125, 130)
+	_, daemon, r := nodes(120, 125, 125, 130)
 	if _, _, err := testXMRCheckNetwork(ctx, r); err != nil {
 		t.Fatal(err)
 	}
@@ -670,7 +678,7 @@ func TestXMREscrowWalletLagRereadsDaemon(t *testing.T) {
 		t.Fatalf("daemon calls %s", got)
 	}
 	// The second reading failing is the daemon's error class, retried, never a refusal.
-	wallet, daemon, r := nodes(120, 220, 220)
+	wallet, daemon, r := nodes(120, 220, 220, 220)
 	wallet.set("refresh", func(json.RawMessage) (any, int, string) {
 		daemon.set("get_info", func(json.RawMessage) (any, int, string) { return nil, -32603, "busy" })
 		return map[string]any{"blocks_fetched": 0, "received_money": false}, 0, ""

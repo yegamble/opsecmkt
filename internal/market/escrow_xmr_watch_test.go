@@ -647,6 +647,18 @@ func TestXMREscrowDaemonGainsBlocksDuringRefresh(t *testing.T) {
 	if err := x.poll(); !errors.Is(err, errXMRWalletLag) || !x.A.escrowXMR.refused.Load() || x.A.escrowXMR.ready.Load() {
 		t.Fatalf("a wallet-rpc on another daemon: %v", err)
 	}
+
+	// A wallet-rpc on another daemon 11 blocks behind the height ours had before the refresh, while ours gains 100
+	// during it: below both readings, refused on that same pass.
+	y := newXMREscrowEnv(t)
+	y.mustPoll()
+	y.fake.hook("refresh", func() {
+		y.fake.mine(100)
+		y.fake.edit(func(f *fakeXMREscrow) { f.walletLag = -111 })
+	})
+	if err := y.poll(); !errors.Is(err, errXMRWalletLag) || !y.A.escrowXMR.refused.Load() || y.A.escrowXMR.ready.Load() {
+		t.Fatalf("a wallet-rpc on a daemon lagging ours by 11: %v", err)
+	}
 }
 
 // A wallet-rpc that loses its open wallet mid-pass (-13) fails that wallet's read: nothing is marked missing and no

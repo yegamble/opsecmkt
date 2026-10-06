@@ -866,8 +866,11 @@ recorded**: the evidence below is simulated RPC and an offline stagenet fork.
   downtime, a slow pass; the browser journey's `mine` of 100 blocks did it under load) left the wallet, correctly synced
   to it, more than 10 blocks ahead, and Monero escrow was disabled until a restart. A wallet more than 10 blocks from the
   first reading is now compared with the daemon's height read again (`get_info`), and refused, as before permanently,
-  only when it is more than 10 blocks from that too, ahead or behind; a failed second reading is retried, never a
-  refusal (`TestXMREscrowWalletLagRereadsDaemon`, unit; `TestXMREscrowDaemonGainsBlocksDuringRefresh`, database).
+  only when it is more than 10 blocks outside the span of the two readings (below the lower less 10, or above the
+  higher plus 10): the daemon may move again between the refresh and the second reading, and a height between its own
+  two readings is one it had meanwhile. A wallet-rpc on another daemon more than 10 blocks from both readings is
+  refused on the same pass; a failed second reading is retried, never a refusal
+  (`TestXMREscrowWalletLagRereadsDaemon`, unit; `TestXMREscrowDaemonGainsBlocksDuringRefresh`, database).
 - **Daemon sync guard.** The rule of the Bitcoin guard above, for Monero, shared with the pooled Monero check (which before
   read only `target_height`: A-439 found the hole): a daemon is not synced while `get_info` reports `synchronized` false or
   a `target_height` above its height, or, on a public network, it has no peers or its top block (`get_last_block_header`,
