@@ -12,7 +12,8 @@ import (
 
 // Escrow descriptors and child keys (WR-escrow ES-3, Phase 1 slice P1-b), checked in Go with the standard library
 // only: the BIP 380 descriptor checksum, the party child path, and the witness script Bitcoin Core fills in for an
-// escrow (escrow_create.go). Core derives every child key; nothing here does elliptic-curve arithmetic.
+// escrow (escrow_create.go). Core derives every child key; nothing here does elliptic-curve arithmetic (only
+// escrow_bip32.go does, for shape (b), behind a Core cross-check).
 
 const (
 	descInputCharset    = "0123456789()[],'/*abcdefgh@:$%{}IJKLMNOPQRSTUVWXYZ&+-.;<=>?!^_|~ijklmnopqrstuvwxyzABCDEFGH`#\"\\ "

@@ -1087,7 +1087,10 @@ A-428 leg (`TestEscrowRegtestConflicted`): a deposit replaced by a conflicting t
 `gettransaction` reports it with -1 confirmations and `listreceivedbyaddress` no longer lists it) does not count, so
 the order is cancelled unpaid at the end of its window; once `invalidateblock` removes the replacement's block and the
 deposit is mined after all, it is flagged once and returned by a stray refund the buyer's wallet signs, broadcast and
-confirmed to the refund address. In every leg the app runs inside the Go test against the real node, not as the server binary. A browser journey
+confirmed to the refund address. Its A-453 leg (`TestEscrowRegtestBIP32`, no product caller yet): the Go per-order key
+derivation of [per-order escrow](escrow.md#per-order-key-derivation-a-453-shape-b-groundwork) agrees with Core's
+`deriveaddresses` for three wallets' BIP48 accounts at several indexes, and a wrong index or a changed chain code is
+refused. In every leg the app runs inside the Go test against the real node, not as the server binary. A browser journey
 (`npm run test:e2e:escrow`, [development](development.md)) drives the escrow forms by keyboard in Chromium at 320 px
 with JavaScript off against the real server and a simulated escrow node; it is not chain evidence. Nothing about
 escrow has run on a public test network or mainnet, and the escrow pages have not been run in Firefox or WebKit.
