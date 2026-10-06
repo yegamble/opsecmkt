@@ -127,8 +127,9 @@ jobs:
           go-version-file: go.mod
           cache: true
       # The same node the script's header documents: an operator user with full rights (the buyer's and vendor's own
-      # nodes), the app's user restricted by rpcwhitelist to what docs/operator-guide.md lists and the escrow signer's
-      # user restricted to decodepsbt and descriptorprocesspsbt (A-454). The passwords are generated for this run,
+      # nodes), the app's user restricted by rpcwhitelist to what docs/operator-guide.md lists, the pooled user
+      # restricted to the pooled methods it lists (A-440) and the escrow signer's user restricted to decodepsbt and
+      # descriptorprocesspsbt (A-454). The passwords are generated for this run,
       # masked before they reach any output and handed to the next step only through GITHUB_ENV inside the URLs;
       # bitcoind learns them as salted HMACs (-rpcauth), so no password is on a command line or in the repository.
       # A second node with the same users (A-441) runs -privatebroadcast through a proxy nobody answers
@@ -136,11 +137,14 @@ jobs:
       - name: Start Bitcoin Core on regtest
         run: |
           whitelist=getblockchaininfo,getnetworkinfo,getrawchangeaddress,getaddressinfo,createpsbt,utxoupdatepsbt,importdescriptors,getdescriptorinfo,deriveaddresses,gettxout,keypoolrefill,walletprocesspsbt,descriptorprocesspsbt,combinepsbt,finalizepsbt,testmempoolaccept,sendrawtransaction,getwalletinfo,listreceivedbyaddress,gettransaction,listtransactions
+          pooled_whitelist=getblockchaininfo,getwalletinfo,loadwallet,getnetworkinfo,getnewaddress,listreceivedbyaddress,gettransaction,sendtoaddress,validateaddress
           operator_pass=$(openssl rand -hex 24)
           app_pass=$(openssl rand -hex 24)
+          pooled_pass=$(openssl rand -hex 24)
           signer_pass=$(openssl rand -hex 24)
           echo "::add-mask::$operator_pass"
           echo "::add-mask::$app_pass"
+          echo "::add-mask::$pooled_pass"
           echo "::add-mask::$signer_pass"
           rpcauth() { # rpcauth <user> <password>: user:salt$HMAC-SHA256(salt, password), the form bitcoind reads
             local salt hash
@@ -154,7 +158,8 @@ jobs:
             docker run -d --name "$name" -p "127.0.0.1:$port:18443" "$BITCOIN_IMAGE" \
               bitcoind -regtest -fallbackfee=0.0002 -server=1 -rpcbind=0.0.0.0 -rpcallowip=0.0.0.0/0 "$@" \
               "-rpcauth=$(rpcauth operator "$operator_pass")" "-rpcauth=$(rpcauth opsecmkt-escrow "$app_pass")" \
-              "-rpcauth=$(rpcauth opsecmkt-signer "$signer_pass")" -rpcwhitelistdefault=0 "-rpcwhitelist=opsecmkt-escrow:$whitelist" \
+              "-rpcauth=$(rpcauth opsecmkt-pooled "$pooled_pass")" "-rpcauth=$(rpcauth opsecmkt-signer "$signer_pass")" \
+              -rpcwhitelistdefault=0 "-rpcwhitelist=opsecmkt-escrow:$whitelist" "-rpcwhitelist=opsecmkt-pooled:$pooled_whitelist" \
               -rpcwhitelist=opsecmkt-signer:decodepsbt,descriptorprocesspsbt
           }
           node "$BITCOIN_CONTAINER" "$BITCOIN_RPC_PORT"
@@ -162,6 +167,7 @@ jobs:
           {
             echo "ESCROW_REGTEST_OPERATOR_RPC_URL=http://operator:$operator_pass@127.0.0.1:$BITCOIN_RPC_PORT"
             echo "ESCROW_REGTEST_APP_RPC_URL=http://opsecmkt-escrow:$app_pass@127.0.0.1:$BITCOIN_RPC_PORT"
+            echo "ESCROW_REGTEST_POOLED_RPC_URL=http://opsecmkt-pooled:$pooled_pass@127.0.0.1:$BITCOIN_RPC_PORT"
             echo "ESCROW_REGTEST_SIGNER_RPC_URL=http://opsecmkt-signer:$signer_pass@127.0.0.1:$BITCOIN_RPC_PORT"
             echo "ESCROW_REGTEST_PRIVATE_OPERATOR_RPC_URL=http://operator:$operator_pass@127.0.0.1:$BITCOIN_PRIVATE_RPC_PORT"
             echo "ESCROW_REGTEST_PRIVATE_APP_RPC_URL=http://opsecmkt-escrow:$app_pass@127.0.0.1:$BITCOIN_PRIVATE_RPC_PORT"
@@ -281,6 +287,10 @@ jobs:
           MIRROR: ${{ matrix.mirror }}
           DATABASE_URL: postgres://test:test@db/test
           SETUP_TOKEN: ci-validation-only-not-a-real-bootstrap-secret
+          # Compose refuses either Monero wallet-rpc's profile with a blank password (A-466;
+          # tests/test_compose_wallet_passwords.py checks the refusal).
+          MONERO_WALLET_RPC_PASSWORD: ci-validation-only
+          ESCROW_XMR_WALLET_RPC_PASSWORD: ci-validation-only
         run: |
           files=(-f compose.yaml -f "compose.$MODE.yaml" -f compose.nodes.yaml)
           profiles=(--profile bitcoin --profile monero --profile monero-wallet --profile escrow-signer)
@@ -298,6 +308,8 @@ jobs:
           files+=(-f compose.scanner.yaml)
           profiles+=(--profile scanner)
           docker compose "${files[@]}" "${profiles[@]}" config --quiet
+          # Monero escrow on stagenet (A-449): its own wallet-rpc service and the overlay mounting its seed key.
+          docker compose "${files[@]}" -f compose.escrow-xmr.yaml "${profiles[@]}" --profile monero-escrow-wallet config --quiet
           # `up --wait` needs a healthcheck on the app (its -healthcheck flag) and, in Tor mode, on each Tor service
           # (the onion hostname file exists).
           docker compose "${files[@]}" "${profiles[@]}" config --format json | python3 -c '

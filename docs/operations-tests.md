@@ -10,6 +10,8 @@ The installer tests cover the noninteractive `--local` shortcut, inherited-walle
 
 The connection tests mock process execution and check decoded credentials, IPv6 hosts, ports, supported TLS/query settings, rejected target overrides and null bytes, removal of inherited libpq settings, and errors that do not expose connection secrets. They also verify that PostgreSQL client arguments contain no URL or password.
 
+`tests/test_compose_wallet_passwords.py` (A-466) checks, with Docker Compose installed, that Compose refuses the `monero-wallet` and `monero-escrow-wallet` profiles while `MONERO_WALLET_RPC_PASSWORD` or `ESCROW_XMR_WALLET_RPC_PASSWORD` is blank or missing, renders each wallet's `--rpc-login` with its user and password once set, and needs neither password for installs whose profiles leave the wallets out; without Docker only its text checks run.
+
 Run the encrypted round-trip integration test against a **disposable PostgreSQL server**, using a role with `CREATEDB` permission:
 
 ```sh

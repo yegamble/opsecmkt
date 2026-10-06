@@ -14,7 +14,8 @@ SCRIPT = Path(__file__).resolve().parents[1] / 'scripts' / 'test-escrow-regtest.
 LEGS = ('TestEscrowRegtestPracticeSign', 'TestEscrowRegtestFunding', 'TestEscrowRegtestSettlement', 'TestEscrowRegtestCosign',
         'TestEscrowRegtestRecovery', 'TestEscrowRegtestGate', 'TestEscrowRegtestBump', 'TestEscrowRegtestPhysical',
         'TestEscrowRegtestDeadline', 'TestEscrowRegtestReserve', 'TestEscrowRegtestConflicted', 'TestEscrowRegtestBIP32',
-        'TestEscrowRegtestSigner', 'TestEscrowRegtestPrivateBroadcast')
+        'TestEscrowRegtestSigner', 'TestEscrowRegtestPooled', 'TestEscrowRegtestArbiterRestore',
+        'TestEscrowRegtestPrivateBroadcast')
 
 
 class FakeRegtest(BaseHTTPRequestHandler):
@@ -52,9 +53,9 @@ class EscrowRegtestScriptTest(unittest.TestCase):
             out.write_text(''.join(line + '\n' for line in output))
             env = dict(os.environ, PATH=tmp + os.pathsep + os.environ['PATH'], FAKE_GO_OUTPUT=str(out),
                        FAKE_GO_STATUS=str(status), ESCROW_REGTEST_OPERATOR_RPC_URL=self.url,
-                       ESCROW_REGTEST_APP_RPC_URL=self.url, ESCROW_REGTEST_SIGNER_RPC_URL=self.url,
-                       ESCROW_REGTEST_PRIVATE_OPERATOR_RPC_URL=self.url, ESCROW_REGTEST_PRIVATE_APP_RPC_URL=self.url,
-                       TEST_DATABASE_URL='postgres://unused/none',
+                       ESCROW_REGTEST_APP_RPC_URL=self.url, ESCROW_REGTEST_POOLED_RPC_URL=self.url,
+                       ESCROW_REGTEST_SIGNER_RPC_URL=self.url, ESCROW_REGTEST_PRIVATE_OPERATOR_RPC_URL=self.url,
+                       ESCROW_REGTEST_PRIVATE_APP_RPC_URL=self.url, TEST_DATABASE_URL='postgres://unused/none',
                        ESCROW_REGTEST_LOG=str(Path(tmp, 'transcript.log')))
             env.pop('NO_PROXY', None)
             r = subprocess.run(['bash', str(SCRIPT)], env=env, capture_output=True, text=True, timeout=60)
@@ -108,27 +109,18 @@ class EscrowRegtestScriptTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn('holds a serialized tprv', text)
 
-    def test_signer_url_is_required(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            env = dict(os.environ, ESCROW_REGTEST_OPERATOR_RPC_URL=self.url, ESCROW_REGTEST_APP_RPC_URL=self.url,
-                       ESCROW_REGTEST_PRIVATE_OPERATOR_RPC_URL=self.url, ESCROW_REGTEST_PRIVATE_APP_RPC_URL=self.url,
-                       TEST_DATABASE_URL='postgres://unused/none', ESCROW_REGTEST_LOG=str(Path(tmp, 't.log')))
-            env.pop('ESCROW_REGTEST_SIGNER_RPC_URL', None)
-            r = subprocess.run(['bash', str(SCRIPT)], env=env, capture_output=True, text=True, timeout=60)
-            self.assertEqual(r.returncode, 2)
-            self.assertIn('ESCROW_REGTEST_SIGNER_RPC_URL', r.stderr)
-
-    def test_private_node_urls_are_required(self):
-        # A-441: the private-broadcast leg needs its own node; without either URL the script refuses to start.
-        for missing in ('ESCROW_REGTEST_PRIVATE_OPERATOR_RPC_URL', 'ESCROW_REGTEST_PRIVATE_APP_RPC_URL'):
+    def test_signer_pooled_and_private_node_urls_are_required(self):
+        # A-440's pooled user, A-454's signer and A-441's private-broadcast node: without any one the script refuses to start.
+        for missing in ('ESCROW_REGTEST_SIGNER_RPC_URL', 'ESCROW_REGTEST_POOLED_RPC_URL',
+                        'ESCROW_REGTEST_PRIVATE_OPERATOR_RPC_URL', 'ESCROW_REGTEST_PRIVATE_APP_RPC_URL'):
             with tempfile.TemporaryDirectory() as tmp:
                 env = dict(os.environ, ESCROW_REGTEST_OPERATOR_RPC_URL=self.url, ESCROW_REGTEST_APP_RPC_URL=self.url,
-                           ESCROW_REGTEST_SIGNER_RPC_URL=self.url, ESCROW_REGTEST_PRIVATE_OPERATOR_RPC_URL=self.url,
-                           ESCROW_REGTEST_PRIVATE_APP_RPC_URL=self.url, TEST_DATABASE_URL='postgres://unused/none',
-                           ESCROW_REGTEST_LOG=str(Path(tmp, 't.log')))
+                           ESCROW_REGTEST_POOLED_RPC_URL=self.url, ESCROW_REGTEST_SIGNER_RPC_URL=self.url,
+                           ESCROW_REGTEST_PRIVATE_OPERATOR_RPC_URL=self.url, ESCROW_REGTEST_PRIVATE_APP_RPC_URL=self.url,
+                           TEST_DATABASE_URL='postgres://unused/none', ESCROW_REGTEST_LOG=str(Path(tmp, 't.log')))
                 env.pop(missing)
                 r = subprocess.run(['bash', str(SCRIPT)], env=env, capture_output=True, text=True, timeout=60)
-                self.assertEqual(r.returncode, 2)
+                self.assertEqual(r.returncode, 2, missing)
                 self.assertIn(missing, r.stderr)
 
     def test_documented_node_has_fallbackfee(self):
@@ -136,6 +128,9 @@ class EscrowRegtestScriptTest(unittest.TestCase):
         self.assertIn('bitcoind -regtest -fallbackfee=0.0002', head)
         # The escrow signer's own user, whitelisted to exactly what it calls (A-454).
         self.assertIn('-rpcwhitelist=opsecmkt-signer:decodepsbt,descriptorprocesspsbt', head)
+        # The pooled user, whitelisted to the pooled methods only (A-440; the Go test pins the list to the code).
+        self.assertIn('"-rpcauth=opsecmkt-pooled:', head)
+        self.assertRegex(head, r'-rpcwhitelist=opsecmkt-pooled:[a-z,]+ \\\n')
         # The A-441 node: private broadcast through a proxy nobody answers; never -connect or -onlynet, never public.
         self.assertIn('-privatebroadcast -proxy=127.0.0.1:9 -listen=0', head)
         self.assertNotRegex(head, r'-(connect|onlynet|addnode|seednode)=')

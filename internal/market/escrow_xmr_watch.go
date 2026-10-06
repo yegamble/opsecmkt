@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
@@ -85,9 +86,6 @@ const xmrReorgSafeDepth = 100
 // at the ceiling. A shallower reading (a reorganisation) is still stored.
 func xmrConfirmationsCeiling(threshold int64) int64 { return max(xmrReorgSafeDepth, threshold) }
 
-// xmrEscrowNetwork names Monero escrow's chain in notes ("TESTNET fakechain").
-const xmrEscrowNetwork = "fakechain"
-
 // xmrLeadTime: next month's wallet is created this long before the month starts (P3-R3, A-403).
 const xmrLeadTime = 7 * 24 * time.Hour
 
@@ -113,7 +111,10 @@ var (
 
 const xmrLogUnrecorded = "escrow: Monero escrow disabled: its secret verifier or seed key could not be checked in the database"
 
-func init() { registerBackground(xmrEscrowWatcher) }
+func init() {
+	registerBackground(xmrEscrowWatcher)
+	registerLoader("admin", xmrEscrowNodeLoader)
+}
 
 // xmrEscrowWatcher runs while ESCROW_XMR=on. Until Monero escrow is ready (a node unreachable at startup, say) each
 // pass first retries its startup checks (retryEscrowXMR), as the Bitcoin escrow watcher does (A-316).
@@ -228,6 +229,23 @@ func (a *App) xmrEscrowPollOnce(ctx context.Context) error {
 	if !x.ready.Load() {
 		return a.xmrDeadlines(ctx)
 	}
+	// The sync guard (A-449, monero_sync.go): while the daemon is not synced, or cannot be read, the pass applies only the
+	// deadlines: no wallet is opened, created or destroyed, no deposit read, no order funded or expired, no settlement
+	// built, relayed or followed. A daemon on another network than the one escrow started on disables it until a
+	// restart. A daemon that is not synced is not an error: its state is logged once per change (noteXMREscrowSync).
+	switch node, err := x.rpc.node(ctx); {
+	case err != nil:
+		return errors.Join(&watchError{label: "monero escrow", class: "daemon check failed: " + xmrErrorClass(err), err: err}, a.xmrDeadlines(ctx))
+	case node.NetType != x.rpc.nettype():
+		x.refuseEscrowXMR(errXMRNetworkMoved)
+		return a.xmrDeadlines(ctx)
+	default:
+		why := node.notSynced(time.Now(), moneroMaxTipAge())
+		a.noteXMREscrowSync(why)
+		if why != "" {
+			return a.xmrDeadlines(ctx)
+		}
+	}
 	var gate, sweep bool
 	if err = a.db.QueryRowContext(ctx, "SELECT "+restoreGateSQL+",EXISTS(SELECT 1 FROM settings WHERE key=$1 AND value='true')", xmrEscrowSweepKey).Scan(&gate, &sweep); err != nil {
 		return err
@@ -306,6 +324,36 @@ func (a *App) xmrEscrowPollOnce(ctx context.Context) error {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
+}
+
+// noteXMREscrowSync records why (a moneroNode reason class, "" when synced) as the Monero escrow daemon's sync state for
+// the admin page and logs one fixed line when it changes. In memory only: nothing is stored for the guard (A-449).
+func (a *App) noteXMREscrowSync(why string) {
+	prev, _ := a.escrowXMR.sync.Swap(why).(string)
+	switch {
+	case prev == why:
+	case why == "":
+		log.Print("escrow: Monero escrow daemon synced; Monero escrow watcher passes resumed")
+	default:
+		log.Printf("escrow: Monero escrow daemon not synced (%s); Monero escrow watcher passes skipped until it is", why)
+	}
+}
+
+// xmrEscrowNodeLoader shows on /admin, under Payment providers, why the Monero escrow daemon is not used: the reason
+// class it is not synced for, or the pinned network and the daemon's when startEscrowXMR refused it (A-449).
+func xmrEscrowNodeLoader(_ context.Context, a *App, _ *http.Request, d *PageData) error {
+	x := a.escrowXMR
+	if x == nil || d.User == nil || d.User.Role != "admin" {
+		return nil
+	}
+	v := &EscrowNodeView{Mismatch: x.mismatch.Load()}
+	if x.ready.Load() {
+		v.NotSynced, _ = x.sync.Load().(string)
+	}
+	if v.NotSynced != "" || v.Mismatch != nil {
+		d.XMREscrowNode = v
+	}
+	return nil
 }
 
 // monthStart is the first instant of t's month, UTC.
@@ -735,7 +783,7 @@ func (a *App) xmrFlagCollision(ctx context.Context, w xmrWalletRow, account int6
 		return err
 	}
 	note := fmt.Sprintf("%s %s Monero escrow deposit %s to wallet %s account %d was not recorded: the database refused it as another order's escrow account. Moderator review required.",
-		a.netTag(), xmrEscrowNetwork, truncate(txid, 20), w.name, account)
+		a.netTag(), a.xmrEscrowNetwork(), truncate(txid, 20), w.name, account)
 	var flagged bool
 	if err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM order_events WHERE order_id=$1 AND note=$2)", orderID, note).Scan(&flagged); err != nil || flagged {
 		return err
@@ -988,7 +1036,7 @@ func (a *App) settleXMREscrow(ctx context.Context, orderID string, walletRead bo
 		if _, err = tx.ExecContext(ctx, "UPDATE payments SET credited=true WHERE order_id=$1 AND confirmations>=$2 AND NOT locked", orderID, threshold); err != nil {
 			return err
 		}
-		note := fmt.Sprintf("%s %s escrow funded: %s XMR in %d deposit(s) with at least %d confirmations", a.netTag(), xmrEscrowNetwork, amount(sum, 12), n, threshold)
+		note := fmt.Sprintf("%s %s escrow funded: %s XMR in %d deposit(s) with at least %d confirmations", a.netTag(), a.xmrEscrowNetwork(), amount(sum, 12), n, threshold)
 		if _, err = a.transition(ctx, tx, orderID, stateAwaitingPayment, statePaid, nil, note); err != nil {
 			return err
 		}
@@ -1029,7 +1077,7 @@ func (a *App) settleXMREscrow(ctx context.Context, orderID string, walletRead bo
 		if _, err = a.transition(ctx, tx, orderID, stateAwaitingPayment, stateCancelled, nil, "payment window expired underpaid: "+what); err != nil {
 			return err
 		}
-		body := "Order " + shortID(orderID) + ": the payment window ended with " + what + " into its Monero escrow (" + a.netTag() + " " + xmrEscrowNetwork + "), so the order was cancelled. " +
+		body := "Order " + shortID(orderID) + ": the payment window ended with " + what + " into its Monero escrow (" + a.netTag() + " " + a.xmrEscrowNetwork() + "), so the order was cancelled. " +
 			"The market returns the escrowed coins, less the network fee, to the refund address you gave at checkout: it builds and sends the refund transaction from this order's escrow account."
 		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, body); err != nil {
 			return err
@@ -1045,7 +1093,7 @@ func (a *App) flagLockedXMR(ctx context.Context, tx *sql.Tx, o *Order) error {
 		return err
 	}
 	for _, txid := range locked {
-		note := fmt.Sprintf("%s %s Monero escrow deposit %s has an unlock time; locked transfer ignored: it is not counted toward payment and is never paid out automatically. Moderator review required.", a.netTag(), xmrEscrowNetwork, truncate(txid, 20))
+		note := fmt.Sprintf("%s %s Monero escrow deposit %s has an unlock time; locked transfer ignored: it is not counted toward payment and is never paid out automatically. Moderator review required.", a.netTag(), a.xmrEscrowNetwork(), truncate(txid, 20))
 		if err = a.flagOrder(ctx, tx, o, note, ""); err != nil {
 			return err
 		}

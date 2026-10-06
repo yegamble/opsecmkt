@@ -18,6 +18,14 @@ import (
 
 func init() { registerProvider(bitcoinFromEnv) }
 
+// pooledRPCMethods is every method the pooled adapter calls: the pooled user's rpcwhitelist line the operator guide
+// documents ("The pooled RPC user"). It holds no method that can export or copy a key: Core selects the wallet by the
+// URL path, so a pooled user allowed listdescriptors could print the escrow arbiter wallet's private key (A-440).
+var pooledRPCMethods = []string{
+	"getblockchaininfo", "getwalletinfo", "loadwallet", "getnetworkinfo", "getnewaddress", "listreceivedbyaddress",
+	"gettransaction", "sendtoaddress", "validateaddress",
+}
+
 // bitcoinChains maps each chain getblockchaininfo reports to its bech32 address prefix.
 var bitcoinChains = map[string]string{"test": "tb1", "testnet4": "tb1", "signet": "tb1", "regtest": "bcrt1", "main": "bc1"}
 

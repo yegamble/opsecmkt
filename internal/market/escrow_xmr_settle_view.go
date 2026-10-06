@@ -104,7 +104,7 @@ func (a *App) xmrSettlementStatus(s *XMRSettlementView, o *Order, outcome string
 	}
 	threshold := strconv.FormatInt(v.Threshold, 10)
 	why := xmrSettleWaitText(s.wait, s.kind, v.Threshold)
-	sent := "Sent to the " + xmrEscrowNetwork + " network: transaction " + s.TxHash + "."
+	sent := "Sent to the " + v.Net + " network: transaction " + s.TxHash + "."
 	switch s.state {
 	case "requested":
 		s.Status = "Requested: the market builds this transaction from this order's escrow account and sends it on its next pass. Reload in a minute."
@@ -141,7 +141,7 @@ func (a *App) xmrSettlementStatus(s *XMRSettlementView, o *Order, outcome string
 			s.Status += " " + why
 		}
 	case "confirmed":
-		s.Status, s.Confirmations = "Confirmed on the "+xmrEscrowNetwork+" network: transaction "+s.TxHash+".", "At least "+threshold+"; followed to "+strconv.Itoa(escrowReorgDepth)
+		s.Status, s.Confirmations = "Confirmed on the "+v.Net+" network: transaction "+s.TxHash+".", "At least "+threshold+"; followed to "+strconv.Itoa(escrowReorgDepth)
 		if s.reorgSafe {
 			s.Confirmations = "At least " + strconv.Itoa(escrowReorgDepth) + " (no longer followed)"
 		}

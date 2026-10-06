@@ -28,3 +28,6 @@ playwright-escrow-report/
 test-results-escrow/
 playwright-escrow-xmr-report/
 test-results-escrow-xmr/
+
+# Monero escrow seed key copied by the installer (compose.escrow-xmr.yaml mounts it): install-specific.
+/escrow-xmr-seed-key.asc

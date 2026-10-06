@@ -571,7 +571,7 @@ func (a *App) xmrRefundTooFew(ctx context.Context, s *xmrSettleRow, deposits []x
 	}
 	note := fmt.Sprintf("%d deposit(s) (%s XMR, %s %s) to this order's Monero escrow are not spent by %s: the coins were too few to pay the network fee and an output of at least %s XMR, so the market could not send the refund, which ends. "+
 		"They stay in the escrow account; a stray refund returns them, together with any later deposit to this escrow, less the network fee, to the buyer's refund address given at checkout once together they can pay the network fee.",
-		n, amount(sum, 12), a.netTag(), xmrEscrowNetwork, refund, amount(minPayoutXMR, 12))
+		n, amount(sum, 12), a.netTag(), a.xmrEscrowNetwork(), refund, amount(minPayoutXMR, 12))
 	if err = a.flagOrder(ctx, tx, &o, note, "Order "+shortID(s.OrderID)+": "+note); err != nil {
 		return err
 	}
@@ -880,11 +880,11 @@ func (a *App) markXMRRelayed(ctx context.Context, s *xmrSettleRow, seen bool) er
 		return nil
 	}
 	what := settlementKind(s.Kind)
-	note := "The Monero escrow settlement (" + what + ") was sent to the " + xmrEscrowNetwork + " network: transaction " + s.TxHash + ". The order page shows it and its confirmations."
+	note := "The Monero escrow settlement (" + what + ") was sent to the " + a.xmrEscrowNetwork() + " network: transaction " + s.TxHash + ". The order page shows it and its confirmations."
 	if seen {
-		note = "The Monero escrow settlement (" + what + ") is on the " + xmrEscrowNetwork + " network: the escrow daemon has its stored transaction " + s.TxHash + ", sent before the market recorded it. The order page shows it and its confirmations."
+		note = "The Monero escrow settlement (" + what + ") is on the " + a.xmrEscrowNetwork() + " network: the escrow daemon has its stored transaction " + s.TxHash + ", sent before the market recorded it. The order page shows it and its confirmations."
 	}
-	if err = settleNote(ctx, tx, s.OrderID, note, "its Monero escrow settlement ("+what+") was sent to the "+xmrEscrowNetwork+" network; the order page shows its transaction and its confirmations."); err != nil {
+	if err = settleNote(ctx, tx, s.OrderID, note, "its Monero escrow settlement ("+what+") was sent to the "+a.xmrEscrowNetwork()+" network; the order page shows its transaction and its confirmations."); err != nil {
 		return err
 	}
 	if err = tx.Commit(); err != nil {
@@ -959,8 +959,8 @@ func (a *App) confirmXMRSettlement(ctx context.Context, s *xmrSettleRow, confirm
 		return nil
 	}
 	what := settlementKind(s.Kind)
-	if err = settleNote(ctx, tx, s.OrderID, "The Monero escrow settlement ("+what+") is confirmed on the "+xmrEscrowNetwork+" network ("+strconv.FormatInt(confirmations, 10)+" confirmations).",
-		"its Monero escrow settlement ("+what+") is confirmed on the "+xmrEscrowNetwork+" network."); err != nil {
+	if err = settleNote(ctx, tx, s.OrderID, "The Monero escrow settlement ("+what+") is confirmed on the "+a.xmrEscrowNetwork()+" network ("+strconv.FormatInt(confirmations, 10)+" confirmations).",
+		"its Monero escrow settlement ("+what+") is confirmed on the "+a.xmrEscrowNetwork()+" network."); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -1002,8 +1002,8 @@ func (a *App) trackXMRConfirmed(ctx context.Context, s *xmrSettleRow) error {
 	if gate {
 		next = "The market does not send it again while it reconciles its records after a restore from a backup; it follows it until it is confirmed again."
 	}
-	note := "The transaction of the Monero escrow settlement (" + what + ") is no longer in the " + xmrEscrowNetwork + " chain: a reorganisation of the chain took it out of the block that confirmed it. It is the same transaction, back to waiting for confirmations. " + next
-	if err = settleNote(ctx, tx, s.OrderID, note, "its Monero escrow settlement ("+what+") is no longer confirmed after a reorganisation of the "+xmrEscrowNetwork+" chain; it is the same transaction, waiting for confirmations again."); err != nil {
+	note := "The transaction of the Monero escrow settlement (" + what + ") is no longer in the " + a.xmrEscrowNetwork() + " chain: a reorganisation of the chain took it out of the block that confirmed it. It is the same transaction, back to waiting for confirmations. " + next
+	if err = settleNote(ctx, tx, s.OrderID, note, "its Monero escrow settlement ("+what+") is no longer confirmed after a reorganisation of the "+a.xmrEscrowNetwork()+" chain; it is the same transaction, waiting for confirmations again."); err != nil {
 		return err
 	}
 	if err = tx.Commit(); err != nil {
@@ -1189,7 +1189,7 @@ func (a *App) xmrLeaveOutTopUps(ctx context.Context, tx *sql.Tx, o *Order) error
 	if n > 1 {
 		count = strconv.FormatInt(n, 10) + " deposits"
 	}
-	note := count + " (" + amount(sum, 12) + " XMR, " + a.netTag() + " " + xmrEscrowNetwork + ") arrived at this order's Monero escrow after " + what + " was built, so that settlement does not spend them. " +
+	note := count + " (" + amount(sum, 12) + " XMR, " + a.netTag() + " " + a.xmrEscrowNetwork() + ") arrived at this order's Monero escrow after " + what + " was built, so that settlement does not spend them. " +
 		"They stay in the escrow account; once the order is closed and they are confirmed, a stray refund returns them, less the network fee, to the buyer's refund address. Do not send more coins to this escrow."
 	if err = a.flagOrder(ctx, tx, o, note, ""); err != nil {
 		return err
@@ -1223,7 +1223,7 @@ func (a *App) xmrLeaveOutUncounted(ctx context.Context, tx *sql.Tx, o *Order, th
 	}
 	note := fmt.Sprintf("%d deposit(s) (%s XMR, %s %s) to this order's Monero escrow did not count for the order when %s (the escrow wallet read them as conflicted, or no longer listed them), and no refund spends them. "+
 		"They have confirmed since and stay in the escrow account; a stray refund returns them, less the network fee, to the buyer's refund address. Do not send more coins to this escrow.",
-		n, amount(sum, 12), a.netTag(), xmrEscrowNetwork, when)
+		n, amount(sum, 12), a.netTag(), a.xmrEscrowNetwork(), when)
 	if err := a.flagOrder(ctx, tx, o, note, ""); err != nil {
 		return err
 	}

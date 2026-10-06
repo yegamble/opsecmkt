@@ -40,6 +40,9 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 	if destroyed.Valid {
 		v.Unrecoverable = xmrAfterDestroyText(destroyed.Time)
 	}
+	if v.Net = xmrAddressNet(v.Address); v.Net == "" {
+		v.Net = a.xmrEscrowNetwork()
+	}
 	if d.OrderViewer == roleBuyer {
 		v.RefundAddress = refund
 	}
@@ -110,6 +113,10 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 	}
 	if v.Open {
 		v.CancelAfter = windowFrom.Add(expiryWindow()).UTC().Truncate(time.Minute).Format("2006-01-02 15:04 UTC")
+		// Past the window with no deposit waiting for confirmations, only a watcher pass that read the daemon cancels
+		// the order; until then (the daemon not synced or not readable, A-449) the page says the order stays open, as
+		// the Bitcoin page does (QA4W1-5).
+		v.WindowPassed = pending == 0 && time.Now().After(windowFrom.Add(expiryWindow()))
 	}
 	switch {
 	case o.State == stateAwaitingPayment && len(v.Deposits) == 0:
@@ -226,7 +233,8 @@ func (a *App) xmrEscrowCheckoutOffer(ctx context.Context, d *PageData) error {
 	if err != nil || !eligible {
 		return err
 	}
-	v := &XMREscrowCheckoutView{Physical: o.Kind == "physical", Custody: xmrCustody}
+	net := a.xmrEscrowNetwork()
+	v := &XMREscrowCheckoutView{Physical: o.Kind == "physical", Custody: xmrCustody, Net: net, Prefixes: xmrPrefixes(net)}
 	vendorCanEncrypt := true
 	if v.Physical {
 		if vendorCanEncrypt, err = userCanReceiveEncrypted(ctx, a.db, o.VendorID); err != nil {

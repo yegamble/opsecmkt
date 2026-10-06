@@ -232,9 +232,10 @@ type PageData struct {
 	// XMREscrowOn: ESCROW_XMR=on (every page), the site-wide notices describe Monero escrow (A-423); XMREscrowAvailable:
 	// it is ready to take a checkout (xmrEscrowReady). XMRCustody is xmrCustody (every page), so a template never
 	// retypes the owner's sentence (A-402); XMREscrowOrders: vendor desk, the viewer's Monero escrow orders that may hold
-	// coins, counted like EscrowOrders.
+	// coins, counted like EscrowOrders. XMREscrowNet: Monero escrow's network, "fakechain" or "stagenet"
+	// (App.xmrEscrowNetwork, A-449), so the notices name it.
 	XMREscrowOn, XMREscrowAvailable bool
-	XMRCustody                      string
+	XMRCustody, XMREscrowNet        string
 	XMREscrowOrders                 int
 	// EscrowKey: /escrow-key and the /account status row, the viewer's Bitcoin escrow key; nil while ESCROW_BTC is off
 	// (escrow_account.go, WR-escrow Phase 1).
@@ -243,6 +244,9 @@ type PageData struct {
 	EscrowFee *EscrowFeeView
 	// EscrowNode: /admin while ESCROW_BTC is on and the escrow node is not synced or not on the pinned chain (A-439)
 	EscrowNode *EscrowNodeView
+	// XMREscrowNode: /admin while ESCROW_XMR is on and the escrow daemon is not synced or not on the pinned network
+	// (A-449; Mismatch names networks, not chains)
+	XMREscrowNode *EscrowNodeView
 	// EscrowSigner: /admin while ESCROW_SIGNER_SOCKET is set and the escrow signer is not ready (A-454)
 	EscrowSigner *EscrowSignerView
 	// EscrowReleaseDays: /admin while ESCROW_BTC is on, the release deadline length in force and its form (escrow_release_admin.go)
@@ -599,15 +603,19 @@ type EscrowChainMismatch struct {
 }
 
 // EscrowNodeView is the line under Payment providers on /admin about the Bitcoin escrow node (escrow_watch.go): the
-// reason class it is not synced for and the remedy when the reason does not say it (syncRemedy), or the chain it was
-// refused for; and (A-441, escrow_stall.go) why the Tor-mode gate holds broadcasts and the settlements queued or stuck.
+// reason class it is not synced for and the remedy when the reason does not say it (syncRemedy), the chain it was
+// refused for, or the class of the answer the pooled user got to the market key self-check (PooledKey, A-440) with the
+// pooled rpcwhitelist methods it should be restricted to; and (A-441, escrow_stall.go) why the Tor-mode gate holds
+// broadcasts and the settlements queued or stuck.
 type EscrowNodeView struct {
-	NotSynced string
-	Remedy    string
-	Mismatch  *EscrowChainMismatch
-	TorHold   string
-	Stalled   []EscrowStallView
-	StallN    int // escrowStallBlocks
+	NotSynced       string
+	Remedy          string
+	Mismatch        *EscrowChainMismatch
+	PooledKey       string
+	PooledWhitelist string
+	TorHold         string
+	Stalled         []EscrowStallView
+	StallN          int // escrowStallBlocks
 }
 
 // EscrowStallView is a broadcast settlement whose transaction the watch-only wallet has not seen (escrow_stall.go): the
@@ -670,13 +678,19 @@ type XMREscrowOrderView struct {
 	Settlements []*XMRSettlementView
 	// Unrecoverable: set once the wallet that held its account was destroyed (ES-8, escrow_xmr_retain.go)
 	Unrecoverable string
+	// Net: the network of its escrow address, "fakechain" or "stagenet" (A-449)
+	Net string
+	// WindowPassed: Open, CancelAfter has passed and no deposit waits for confirmations: the watcher has not acted yet
+	// (its daemon not synced or not readable; A-449, as EscrowOrderView's QA4W1-5)
+	WindowPassed bool
 }
 
 // XMREscrowCheckoutView offers Monero escrow checkout on an XMR draft (escrow_xmr_create.go): Reason says why it cannot
-// be used now.
+// be used now; Net is Monero escrow's network and Prefixes the first characters of its addresses (A-449).
 type XMREscrowCheckoutView struct {
 	Reason, Custody string
 	Physical        bool
+	Net, Prefixes   string
 }
 
 // EscrowKeyView is the viewer's Bitcoin escrow key (escrow_account.go). Origin is the viewer's own key origin

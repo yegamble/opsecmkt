@@ -322,7 +322,7 @@ func TestXMREscrowPAYEE2(t *testing.T) {
 		t0 := pass
 		step("open_wallet", xmrWalletSlowTimeout, func() error { return r.openWallet(ctx, name, password) })
 		var h int64
-		step("get_info and hard_fork_info", rpcTimeout, func() (err error) { h, err = r.checkDaemon(ctx); return })
+		step("get_info and hard_fork_info", rpcTimeout, func() (err error) { info, err := r.checkDaemon(ctx); h = info.Height; return err })
 		step("refresh", xmrWalletRefreshTimeout, func() error { return r.refresh(ctx) })
 		step("get_height", rpcTimeout, func() error {
 			got, err := r.height(ctx)

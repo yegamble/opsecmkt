@@ -157,6 +157,8 @@ class ScannerComposeConfigTests(unittest.TestCase):
             arguments += ['--profile', profile]
         environment = {key: value for key, value in os.environ.items() if not key.startswith('COMPOSE_')}
         environment['DATABASE_URL'] = 'postgres://unused@db/unused'
+        # Compose refuses the monero-wallet profile without its password (A-466).
+        environment['MONERO_WALLET_RPC_PASSWORD'] = 'unused'
         result = subprocess.run(arguments + ['config', '--format', 'json'], cwd=REPOSITORY, env=environment,
                                 capture_output=True, text=True, check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
