@@ -133,7 +133,8 @@
 # escrow and the pooled provider on the same node starts escrow (its startup self-check got Core's real 403), and the
 # pooled provider still works through every whitelisted method: the check reloads an unloaded pooled wallet
 # (loadwallet), a deposit address is issued, the deposit is credited by a watcher pass, and a payout is sent by the
-# watcher (validateaddress, sendtoaddress) and confirmed. TestEscrowRegtestArbiterRestore: the arbiter wallet is backed up
+# watcher (validateaddress, sendtoaddress) and confirmed; restarted with the unrestricted operator user as the pooled
+# URL, the self-check gets an answer and escrow stays disabled. TestEscrowRegtestArbiterRestore: the arbiter wallet is backed up
 # as the operator user (backupwallet, height recorded; the private descriptors exported for the fallback, never
 # printed); a claim is built and signed by the vendor's Core wallet; the arbiter wallet is unloaded (the harness cannot
 # delete files inside the node, so it restores under a new name, as onto a fresh node) and a watcher pass co-signs
