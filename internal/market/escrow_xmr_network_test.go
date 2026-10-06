@@ -514,3 +514,33 @@ func TestMoneroPooledNoPeersHoldsExpiry(t *testing.T) {
 		t.Fatalf("expired order after a synced pass: %s", st)
 	}
 }
+
+// While the guard holds an expired order open (its payment window has passed, no deposit waits for confirmations, the
+// daemon is not synced), its page says the order stays open while the market waits for its Monero node, never that it
+// will be cancelled at a time already past (the Bitcoin page's QA4W1-5, for Monero).
+func TestXMREscrowWindowPassedWhileNotSynced(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	order := x.draft(x.product)
+	x.mustCheckout(order)
+	before := html.UnescapeString(x.page(orderPage(order), x.buyerSess))
+	if !strings.Contains(before, "If nothing has been received by ") || strings.Contains(before, "The payment window ended at") {
+		t.Fatalf("an order inside its window:\n%s", before)
+	}
+	agExec(x.testEnv, "UPDATE escrows SET created=now()-interval '3 days' WHERE order_id=$1", order)
+	x.fake.edit(func(f *fakeXMREscrow) { f.unsynced = true })
+	x.mustPoll()
+	if s := x.state(order); s != stateAwaitingPayment {
+		t.Fatalf("the guard did not hold the order: %s", s)
+	}
+	page := html.UnescapeString(x.page(orderPage(order), x.buyerSess))
+	want := "but the order stays open for now: the market is waiting for its Monero node before it checks this escrow again and acts on the payment window."
+	if !strings.Contains(page, "The payment window ended at ") || !strings.Contains(page, want) || strings.Contains(page, "If nothing has been received by ") {
+		t.Fatalf("an expired order held open:\n%s", page)
+	}
+	x.fake.edit(func(f *fakeXMREscrow) { f.unsynced = false })
+	x.mustPoll()
+	if s := x.state(order); s != stateCancelled {
+		t.Fatalf("after a synced pass: %s", s)
+	}
+}

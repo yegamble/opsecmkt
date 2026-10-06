@@ -655,6 +655,9 @@ type XMREscrowOrderView struct {
 	Unrecoverable string
 	// Net: the network of its escrow address, "fakechain" or "stagenet" (A-449)
 	Net string
+	// WindowPassed: Open, CancelAfter has passed and no deposit waits for confirmations: the watcher has not acted yet
+	// (its daemon not synced or not readable; A-449, as EscrowOrderView's QA4W1-5)
+	WindowPassed bool
 }
 
 // XMREscrowCheckoutView offers Monero escrow checkout on an XMR draft (escrow_xmr_create.go): Reason says why it cannot

@@ -813,6 +813,9 @@ recorded**: the evidence below is simulated RPC and an offline stagenet fork.
   serve) whatever its peers, so there the counts are not read and the tip's age covers a daemon cut off from the network.
   While the escrow daemon is not synced the Monero escrow pass opens no wallet, reads no deposit, funds or expires no order
   and builds, relays or follows no settlement (deadlines still apply); the pooled Monero pass is skipped as while syncing.
+  An order held open past its payment window that way (no deposit waiting for confirmations) says on its page that the
+  window ended and the order stays open while the market waits for its Monero node, not that it will be cancelled at a
+  time already past (as the Bitcoin page does, QA4W1-5; `TestXMREscrowWindowPassedWhileNotSynced`).
   Stateless; one log line per change and a line under *Payment providers*. A fakechain is exempt from the peer and tip-age
   checks and `get_last_block_header` is not called on it.
 - **Compose service (INFRA-11).** `compose.nodes.yaml` has a `monero-escrow-wallet` service: the escrow wallet-rpc on
