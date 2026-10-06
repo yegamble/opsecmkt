@@ -137,6 +137,8 @@ func TestPaymentReviewEscrowMatrix(t *testing.T) {
 			{"regressed_credited_conflicted", "confirmations,credited,regress_notice", "-1,true,true", "Open:</strong> Credited deposit conflicted or missing", true},
 			{"below_floor_counted", "confirmations,below_floor", "3,true", "Open:</strong> Below the minimum automatic payout, not paid out", true},
 			{"below_floor_credited", "confirmations,credited,below_floor", "3,true,true", "Open:</strong> Below the minimum automatic payout, not paid out", true},
+			// Open (below the floor) while it confirms: never "settles it".
+			{"below_floor_credited_confirming", "confirmations,credited,below_floor", "1,true,true", "Open:</strong> Credited deposit below threshold (1 of 3 confirmations)", true},
 			// QA462C-1: counted for the order, credited or not: not open anywhere.
 			{"counted_uncredited", "confirmations", "3", "Escrow deposit counted for the order, though not credited toward its funding (recorded before the order closed); no stray refund returns it", false},
 			{"counted_uncredited_conflicted", "confirmations", "-1", "counted for the order, though not credited toward its funding (recorded before the order closed); no stray refund returns it; now conflicted or missing", false},

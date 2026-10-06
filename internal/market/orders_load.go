@@ -855,9 +855,10 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 			if confs < 0 {
 				v.Reason += "; now conflicted or missing"
 			}
-		case escrow && !regressed:
+		case escrow && !regressed && !belowFloor:
 			// QA462D-3: a credited escrow deposit flagged with no regression (a release too few, A-461; an external
-			// settlement's deposits) counts for the order: its flag is not open, and it never "confirmed again".
+			// settlement's deposits) counts for the order: its flag is not open, and it never "confirmed again". One below
+			// the floor is open and keeps the reasons below while it confirms.
 			v.Reason = "Escrow deposit counted for the order (credited toward its funding); the order's release or refund settles it"
 			if confs < 0 {
 				v.Reason += "; now conflicted or missing"
