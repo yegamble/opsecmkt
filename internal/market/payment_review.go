@@ -47,22 +47,34 @@ const paymentFlagOpenRule = `@.flagged AND @.disposition IN ('','escalated') AND
 // payout (payoutBasis), never left out, and escrow deposits are never refunded by hand.
 const newFlagSQL = "flagged=true,disposition='',disposition_note='',disposed_at=NULL"
 
-// scanNamed reads rows of (txid, amount) of the deposits a write just flagged, in cur, and names each as
-// flagLateDeposits does, "deposit <truncate(txid, 20)> (<amount> <cur>)", sorted, so that a note naming them dates their
-// flags on the desk (loadPaymentReviews, QA462E-2); sum is their total. It closes rows.
+// depositName names a deposit in a flag note as flagLateDeposits does, "deposit <truncate(txid, 20)> (<amount> <cur>)",
+// so that the note dates its flag on the desk (loadPaymentReviews matches the truncated txid between spaces).
+func depositName(txid string, amt int64, cur string) string {
+	return "deposit " + truncate(txid, 20) + " (" + amount(amt, currencyDecimals(cur)) + " " + cur + ")"
+}
+
+// scanNamed reads rows of (txid, amount) of the deposits a write just flagged, in cur, and names each (depositName),
+// sorted, so that a note naming them dates their flags on the desk (QA462E-2); sum is their total. It closes rows.
 func scanNamed(rows *sql.Rows, cur string) (named []string, sum int64, err error) {
 	defer rows.Close()
-	dec := currencyDecimals(cur)
 	for rows.Next() {
 		var txid string
 		var amt int64
 		if err = rows.Scan(&txid, &amt); err != nil {
 			return nil, 0, err
 		}
-		named, sum = append(named, "deposit "+truncate(txid, 20)+" ("+amount(amt, dec)+" "+cur+")"), sum+amt
+		named, sum = append(named, depositName(txid, amt, cur)), sum+amt
 	}
 	slices.Sort(named)
 	return named, sum, rows.Err()
+}
+
+// namedSentence is the sentence of a flag note naming the deposits it flags (" The deposits: …."), or "" for none.
+func namedSentence(named []string) string {
+	if len(named) == 0 {
+		return ""
+	}
+	return " The deposits: " + strings.Join(named, ", ") + "."
 }
 
 // paymentFlagOpen is paymentFlagOpenRule over the payments row aliased alias.

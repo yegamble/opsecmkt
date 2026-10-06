@@ -1062,7 +1062,13 @@ func (a *App) markXMRExternal(ctx context.Context, s *xmrSettleRow) error {
 	if n, _ := res.RowsAffected(); n != 1 {
 		return nil
 	}
-	if _, err = tx.ExecContext(ctx, "UPDATE payments SET "+newFlagSQL+",updated=now() WHERE xmr_settlement_id=$1", s.ID); err != nil {
+	// The deposits it flags are named in the note, so the desk dates their flags by it (QA462F-1).
+	rows, err := tx.QueryContext(ctx, "UPDATE payments SET "+newFlagSQL+",updated=now() WHERE xmr_settlement_id=$1 RETURNING txid,amount", s.ID)
+	if err != nil {
+		return err
+	}
+	named, _, err := scanNamed(rows, "XMR")
+	if err != nil {
 		return err
 	}
 	o, err := scanOrder(tx.QueryRowContext(ctx, orderQuery+" WHERE o.id=$1", s.OrderID))
@@ -1071,7 +1077,7 @@ func (a *App) markXMRExternal(ctx context.Context, s *xmrSettleRow) error {
 	}
 	what := settlementKind(s.Kind)
 	note := "The coins of this order's Monero escrow settlement (" + what + ") were spent by a transaction this market did not make, so its stored transaction " + s.TxHash +
-		" can never confirm. The settlement is recorded as spent outside the market. Moderator review required."
+		" can never confirm. The settlement is recorded as spent outside the market." + namedSentence(named) + " Moderator review required."
 	if err = a.flagOrder(ctx, tx, &o, note, "Order "+shortID(s.OrderID)+": the coins of its Monero escrow settlement ("+what+") were spent by a transaction this market did not make. Market staff were notified."); err != nil {
 		return err
 	}
@@ -1099,7 +1105,13 @@ func (a *App) failXMRSettlement(ctx context.Context, s *xmrSettleRow, class stri
 	if n, _ := res.RowsAffected(); n != 1 {
 		return nil
 	}
-	if _, err = tx.ExecContext(ctx, "UPDATE payments SET "+newFlagSQL+",updated=now() WHERE xmr_settlement_id=$1", s.ID); err != nil {
+	// The deposits it flags are named in the note, so the desk dates their flags by it (QA462F-1).
+	rows, err := tx.QueryContext(ctx, "UPDATE payments SET "+newFlagSQL+",updated=now() WHERE xmr_settlement_id=$1 RETURNING txid,amount", s.ID)
+	if err != nil {
+		return err
+	}
+	named, _, err := scanNamed(rows, "XMR")
+	if err != nil {
 		return err
 	}
 	o, err := scanOrder(tx.QueryRowContext(ctx, orderQuery+" WHERE o.id=$1", s.OrderID))
@@ -1108,7 +1120,7 @@ func (a *App) failXMRSettlement(ctx context.Context, s *xmrSettleRow, class stri
 	}
 	what := settlementKind(s.Kind)
 	text := xmrSettleWaitText(class, s.Kind, a.escrowXMR.confirmations)
-	if err = a.flagOrder(ctx, tx, &o, "Monero escrow settlement "+strconv.FormatInt(s.ID, 10)+" ("+what+") failed: "+text+" Moderator review required.",
+	if err = a.flagOrder(ctx, tx, &o, "Monero escrow settlement "+strconv.FormatInt(s.ID, 10)+" ("+what+") failed: "+text+namedSentence(named)+" Moderator review required.",
 		"Order "+shortID(s.OrderID)+": its Monero escrow settlement ("+what+") was not sent. "+text); err != nil {
 		return err
 	}
