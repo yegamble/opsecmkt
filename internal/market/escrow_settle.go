@@ -853,20 +853,21 @@ func (a *App) failSettlement(ctx context.Context, id int64, orderID, class strin
 	}
 	if kind == "release" && class == settleTooSmall {
 		// A-461: the same note also tells staff, once, as a Monero release too few does (xmrSettleWaits): the vendor's
-		// coins stay in the escrow, counted, and an administrator may change a dispute's decision. The credited deposits
-		// it tried (the order was funded with them) are flagged so staff can open the order (staffReviewer), also one
-		// never disputed (QA462-3); they stay counted, and the desk offers no action on a credited deposit's flag
-		// (A-330). A counted deposit that is not credited (still confirming or conflicted at funding, mined since) is
-		// not flagged: the desk would otherwise read its flag as a deposit after the close (QA462B-1).
+		// coins stay in the escrow, counted, and an administrator may change a dispute's decision. The order's credited
+		// deposits (it was funded with them) are flagged so staff can open the order (staffReviewer), also one never
+		// disputed (QA462-3), even when the release tried none of them (the credited ones conflicted since, QA462C-2);
+		// they stay counted, and their flags are not open (paymentFlagOpenRule), so the desk offers no action on them
+		// (A-330). A counted deposit that is not credited (still confirming or conflicted at funding, mined since) is not
+		// flagged (QA462B-1).
 		o, err := scanOrder(tx.QueryRowContext(ctx, orderQuery+" WHERE o.id=$1", orderID))
 		if err != nil {
 			return err
 		}
-		ids, deposits := make([]int64, len(tried)), make([]string, len(tried))
+		deposits := make([]string, len(tried))
 		for i, in := range tried {
-			ids[i], deposits[i] = in.ID, "deposit "+truncate(in.TxID, 20)+" ("+amount(in.Sats, 8)+" BTC)"
+			deposits[i] = "deposit " + truncate(in.TxID, 20) + " (" + amount(in.Sats, 8) + " BTC)"
 		}
-		if _, err = tx.ExecContext(ctx, "UPDATE payments SET flagged=true,updated=now() WHERE order_id=$1 AND id=ANY($2) AND settlement_id IS NULL AND credited AND NOT flagged", orderID, ids); err != nil {
+		if _, err = tx.ExecContext(ctx, "UPDATE payments SET flagged=true,updated=now() WHERE order_id=$1 AND credited AND NOT flagged", orderID); err != nil {
 			return err
 		}
 		// The note names the deposits as the desk dates a flag from it (loadPaymentReviews, QA462B-2).

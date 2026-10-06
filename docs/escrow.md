@@ -187,9 +187,14 @@ chain `regtest`; [operator guide](operator-guide.md#bitcoin-escrow-regtest-only)
   such as one that did not count at the cancellation or the decision and confirms since, once together they can pay
   the network fee. A release that fails so (a completed order, or one decided for the vendor) leaves its coins counted:
   they are the vendor's; staff are told once (A-461), with an order note naming the deposits it tried, and the
-  credited ones are flagged so staff can open the order, also one never disputed (they stay counted; the desk dates
-  the flag from that note and offers no action on it). A counted deposit not credited at funding (still confirming or
-  conflicted then) is not flagged, and the desk offers no action on one flagged by another check (QA462B). A stray
+  order's credited deposits are flagged so staff can open the order, also one never disputed and also when it tried
+  none of them (QA462C-2; they stay counted; the desk dates the flag from that note and offers no action on it). A
+  counted deposit not credited at funding (still confirming or conflicted then) is not flagged, and its flag set by
+  another check is not open: the desk offers no action on it, a review is refused (409) and it does not keep a
+  late-deposit notice episode open (QA462B, QA462C). One rule decides whether a payment flag is open, for the desk,
+  the review and that episode alike: a locked transfer, a deposit of a payout below the minimum, an announced
+  regression, a deposit spent outside the market, or a deposit that does not count (recorded after the close, or left
+  out of its settlement, listed as such), until staff record it. A stray
   refund still being built when the refund fails (both in the same pass) adds those coins to its own: once it is built and spends them, the refund's failure holds nothing
   more (a coin of the refund's it leaves out, beyond the 50 largest or worth less than its own spending cost, gets one
   more try and is then held); if it fails too-small, the same coins fail a second time, at the grown value, and are then held. A stray
@@ -509,7 +514,9 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   absent) with `do_not_relay`, taking the network fee from the claimant's output alone. It then checks the wallet's
   answer: exactly the claimed outputs' key images, amounts as planned, a fee at most `ESCROW_XMR_MAX_FEE` and the
   claimant's output at least 0.001 XMR; otherwise the transaction is discarded unrelayed, the settlement waits and staff
-  are told. A checked transaction is **stored first** (its hash, metadata, blob, fee and key images) and only then relayed,
+  are told, with the deposits it could spend flagged so they can open the order; a deposit recorded after the order
+  closed is left to the late-deposit check, which flags it when it announces it to the buyer and staff, so a waiting
+  stray refund never silences that notice (QA462C-4). A checked transaction is **stored first** (its hash, metadata, blob, fee and key images) and only then relayed,
   with the stored metadata. After a restart or a lost answer the watcher looks the transaction up in the daemon and the
   wallet, and relays the same stored metadata again if neither has it: that spends the same key images, so it cannot pay
   twice. Nothing builds a replacement automatically. A relayed settlement is *confirmed* at the confirmation threshold and
