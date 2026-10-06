@@ -1404,7 +1404,13 @@ verified on: stagenet 5… and 7…, a fakechain 4… and 8… (it uses mainnet'
 reached leaves Monero escrow disabled with `escrow: Monero escrow disabled: the escrow daemon or wallet-rpc could not be
 checked at startup (<class>)` while the market runs; the escrow watcher checks again every `PAYMENT_POLL_INTERVAL` and logs
 `escrow: Monero escrow on (stagenet)` (or `(fakechain)`) when it passes. A line is logged when the state changes. A node that
-answers as another network after startup disables Monero escrow until the app is restarted. Two more lines mean the pins below have
+answers as another network after startup disables Monero escrow until the app is restarted. While Monero escrow is
+configured but not ready, for any of these reasons, `/admin` also shows an alert under *Payment providers* ("Monero escrow
+not ready: …") naming the state in words (waiting for the pooled Monero wallet's first check; the escrow daemon or
+wallet-rpc could not be checked, with its class; the secret mismatch below; a failed database check; refused until the
+app is restarted, with the reason) and what to do, the escrow-only readiness panel reads `XMR escrow: on (not ready: …)`,
+and *Payment providers* names no Monero escrow network until a daemon was verified on one; the alert goes once Monero
+escrow is ready (QA4W4B-1). Two more lines mean the pins below have
 refused: `escrow: Monero escrow disabled: MONERO_WALLET_SECRET differs from the secret this database was first started with
 …` (nothing is created or opened) and `escrow: Monero escrow wallet creation stopped: ESCROW_XMR_SEED_KEY is not the seed key
 pinned in this database …` (existing wallets are still read and their orders funded; no wallet is created).
@@ -1782,11 +1788,17 @@ What buyers and vendors see while a coin is escrow only:
 
 Rolling back: set the coin back to **On** (needs its pooled wallet configured) with the same form. Pooled payment
 requests are accepted again at once; escrow orders opened meanwhile carry on as escrow orders. Rolling back the binary
-instead is covered in UPGRADING.md (section 36): an older build reads escrow only as paused, for escrow checkouts too.
+instead is covered in UPGRADING.md (section 36): an older build reads escrow only as paused, for escrow checkouts too;
+for a coin with no pooled wallet configured, neither build's form can set it back to on, and that section gives the SQL
+step to run between stopping this build and starting the older one.
+
+While a coin's escrow is on but not ready (its node or wallet-rpc unreachable at startup, say), the readiness panel
+reads "on (not ready: …)" with the state, and for Monero escrow an alert under *Payment providers* names the state and
+what to do (QA4W4B-1). A checkout in that coin is refused until it is ready; listings keep their buy links meanwhile.
 
 How it was tested: `TestPaymentIntakeLockByKind`, `TestPaymentIntakeEscrowOnlyRefusesPooled`,
-`TestEscrowOnlyIntakeWithoutPooledWallet`, `TestXMREscrowCheckoutUnderEscrowOnly`, `TestEscrowReadinessPanelCounts` and
-`TestEscrowOnlyListingNotAvailable` (PostgreSQL with the fake pooled wallet and the simulated escrow nodes; simulated RPC,
+`TestEscrowOnlyIntakeWithoutPooledWallet`, `TestXMREscrowCheckoutUnderEscrowOnly`, `TestEscrowReadinessPanelCounts`,
+`TestEscrowOnlyListingNotAvailable`, `TestEscrowOnlyVendorKeyGateBTCOnly` and `TestXMREscrowOnlyIgnoresBTCKey` (PostgreSQL with the fake pooled wallet and the simulated escrow nodes; simulated RPC,
 not chain evidence), and `tests/e2e/db-escrow-cutover.spec.ts` (the form and the panel in Chromium at 320 px with
 JavaScript off, on a market with no pooled wallet and no escrow).
 

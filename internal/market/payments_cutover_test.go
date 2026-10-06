@@ -305,13 +305,21 @@ func TestEscrowReadinessPanelCounts(t *testing.T) {
 		}
 	}
 	for _, s := range []string{"no automatic delivery content", "no dispatch window", "service listing", "nokeyvendor_", "inactivevendor_",
-		"BTC escrow: on", "XMR escrow: off"} {
+		"BTC escrow: on · ", "XMR escrow: off · "} {
 		if !strings.Contains(panel, s) {
 			t.Fatalf("panel lacks %q", s)
 		}
 	}
 	if strings.Contains(panel, "archivedvendor_") || strings.Contains(panel, "/product?id="+gone) || strings.Contains(panel, "/product?id="+down) {
 		t.Fatal("the panel counts archived or taken-down listings")
+	}
+	// Bitcoin escrow on but not ready (its checks not passed): the line says so instead of a plain "on" (QA4W4B-1).
+	ready := x.A.escrow.Load()
+	x.A.escrow.Store(nil)
+	notReady := html.UnescapeString(x.page("/admin", admin))
+	x.A.escrow.Store(ready)
+	if !strings.Contains(notReady, "BTC escrow: on (not ready: its node or wallets have not passed the startup checks; the server log names which) · ") {
+		t.Fatal("the readiness panel says plain on while Bitcoin escrow is not ready")
 	}
 }
 
@@ -374,5 +382,73 @@ func TestEscrowOnlyListingNotAvailable(t *testing.T) {
 	op := html.UnescapeString(x.page("/order?id="+draft, x.buyerSess))
 	if !strings.Contains(op, "New payments use escrow only") || !strings.Contains(op, "no automatic delivery content") || strings.Contains(op, `action="/orders/pay"`) || strings.Contains(op, `action="/orders/escrow"`) {
 		t.Fatal("the draft page of an ineligible listing under escrow only does not say why it cannot be paid")
+	}
+}
+
+// The "no active Bitcoin escrow key" gate (QA4W4B-2) applies to BTC only, and only while BTC is escrow only: the
+// buyer reads the reason without the vendor's fix, the vendor reads the fix, a BTC draft is refused while an XMR one
+// (XMR intake on) is taken; with BTC intake on there is no gate; an inactive key counts as none, an active one lifts it.
+func TestEscrowOnlyVendorKeyGateBTCOnly(t *testing.T) {
+	x := newEscrowEnv(t)
+	nokey, nokeySess := x.user("gatenokey_"+randomToken()[:6], "vendor")
+	listing := x.autoListing(nokey) // escrow-eligible listing, vendor without any escrow key
+	buyHref := `href="/checkout?id=` + listing + `"`
+	agExec(x.testEnv, "UPDATE settings SET value='escrow' WHERE key='payment_intake_BTC'")
+	buyer := html.UnescapeString(x.page("/product?id="+listing, x.buyerSess))
+	if !strings.Contains(buyer, "Not available for purchase in BTC") || !strings.Contains(buyer, "no active Bitcoin escrow key") ||
+		strings.Contains(buyer, "Not available for purchase in XMR") || !strings.Contains(buyer, buyHref) {
+		t.Fatalf("buyer's view (BTC escrow only, XMR on):\n%s", buyer)
+	}
+	if strings.Contains(buyer, "Register your Bitcoin escrow key") {
+		t.Fatal("the buyer was shown the vendor's fix")
+	}
+	if v := html.UnescapeString(x.page("/product?id="+listing, nokeySess)); !strings.Contains(v, "Register your Bitcoin escrow key") {
+		t.Fatal("the vendor does not read the fix")
+	}
+	if w := x.do("POST", "/orders", x.buyerSess, url.Values{"product_id": {listing}, "currency": {"BTC"}}); w.Code != 409 ||
+		!strings.Contains(html.UnescapeString(w.Body.String()), "no active Bitcoin escrow key") {
+		t.Fatalf("BTC draft from a vendor without a key under BTC escrow only: %d", w.Code)
+	}
+	if w := x.do("POST", "/orders", x.buyerSess, url.Values{"product_id": {listing}, "currency": {"XMR"}}); w.Code != 303 {
+		t.Fatalf("XMR draft (XMR intake on) refused: %d %s", w.Code, w.Body.String())
+	}
+	// BTC intake on: no gate whatever the key.
+	agExec(x.testEnv, "UPDATE settings SET value='true' WHERE key='payment_intake_BTC'")
+	if w := x.do("POST", "/orders", x.buyerSess, url.Values{"product_id": {listing}, "currency": {"BTC"}}); w.Code != 303 {
+		t.Fatalf("BTC draft with intake on: %d", w.Code)
+	}
+	// An inactive key counts as none; an active one lifts the gate.
+	x.activeKey(nokey, altEscrowKey(t, testBIP48Key, "0badc0de", 3))
+	agExec(x.testEnv, "UPDATE user_escrow_keys SET active_at=NULL WHERE user_id=$1", nokey)
+	agExec(x.testEnv, "UPDATE settings SET value='escrow' WHERE key='payment_intake_BTC'")
+	if b := html.UnescapeString(x.page("/product?id="+listing, x.buyerSess)); !strings.Contains(b, "no active Bitcoin escrow key") {
+		t.Fatal("an inactive key lifted the gate")
+	}
+	agExec(x.testEnv, "UPDATE user_escrow_keys SET active_at=now() WHERE user_id=$1", nokey)
+	if b := html.UnescapeString(x.page("/product?id="+listing, x.buyerSess)); strings.Contains(b, "Not available for purchase") {
+		t.Fatal("an active key did not lift the gate")
+	}
+}
+
+// Monero escrow on, XMR escrow only, a vendor without any Bitcoin escrow key (QA4W4B-2): Monero escrow needs no vendor
+// key, so the listing stays purchasable in XMR and the escrow checkout succeeds.
+func TestXMREscrowOnlyIgnoresBTCKey(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	agExec(x.testEnv, "UPDATE settings SET value='escrow' WHERE key='payment_intake_XMR'")
+	x.mustPoll()
+	if n := agInt(x.testEnv, "SELECT count(*) FROM user_escrow_keys WHERE user_id=$1", x.vendor); n != 0 {
+		t.Fatalf("fixture: the vendor has %d escrow keys", n)
+	}
+	if page := html.UnescapeString(x.page("/product?id="+x.product, x.buyerSess)); strings.Contains(page, "Not available for purchase in XMR") {
+		t.Fatal("XMR blocked by the missing Bitcoin escrow key")
+	}
+	w := x.do("POST", "/orders", x.buyerSess, url.Values{"product_id": {x.product}, "currency": {"XMR"}})
+	if w.Code != 303 {
+		t.Fatalf("XMR draft under XMR escrow only refused: %d %s", w.Code, w.Body.String())
+	}
+	order := strings.TrimPrefix(w.Header().Get("Location"), "/order?id=")
+	x.mustCheckout(order)
+	if s := x.state(order); s != stateAwaitingPayment {
+		t.Fatalf("after the Monero escrow checkout: %s", s)
 	}
 }
