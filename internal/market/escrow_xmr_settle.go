@@ -660,8 +660,10 @@ func (a *App) xmrSettleWaits(ctx context.Context, s *xmrSettleRow, class string)
 			return err
 		}
 		// The deposits it would spend are flagged so staff can open the order (staffReviewer), as markXMRExternal
-		// does; an escrow deposit is never refunded by hand (A-330).
-		if _, err = tx.ExecContext(ctx, "UPDATE payments SET flagged=true,updated=now() WHERE order_id=$1 AND (xmr_settlement_id IS NULL OR xmr_settlement_id=$2) AND NOT flagged", s.OrderID, s.ID); err != nil {
+		// does; an escrow deposit is never refunded by hand (A-330). A deposit recorded after the order closed is left
+		// to flagLateDeposits, which announces it to the buyer and the staff when it flags it (QA462C-4): flagged here
+		// first, it would never be announced.
+		if _, err = tx.ExecContext(ctx, "UPDATE payments SET flagged=true,updated=now() WHERE order_id=$1 AND (xmr_settlement_id IS NULL OR xmr_settlement_id=$2) AND NOT flagged AND NOT after_close", s.OrderID, s.ID); err != nil {
 			return err
 		}
 		note := fmt.Sprintf("Monero escrow settlement %d (%s) not sent: %s Moderator review required.", s.ID, settlementKind(s.Kind), xmrSettleWaitText(class, s.Kind, a.escrowXMR.confirmations))
