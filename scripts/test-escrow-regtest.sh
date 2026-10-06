@@ -115,17 +115,18 @@
 # derivation from each private root along m/48h/1h/0h/2h/<index>/0/0 agrees; a rooted key checked at another index, or
 # with one chain-code byte changed, is refused.
 #
-# A-454 leg (shape (b) escrow signer, TestEscrowRegtestSigner; no order uses it yet): cmd/escrow-signer is built from this
-# tree, given a fresh seed in a temporary directory and started against the node as its own RPC user (whitelisted to
-# decodepsbt and descriptorprocesspsbt; the leg checks getblockchaininfo is refused); the App pins its fingerprint and key
-# HMAC at startup. A hand-built shape-(b) escrow (two Core wallets' BIP48 per-order keys, rooted, and the signer's
-# account/5/0/0) is funded, co-signed through the socket, signed by the buyer with Core, combined, finalized, accepted
-# by testmempoolaccept, broadcast and mined. Refused with nothing signed: an input the buyer signed SIGHASH_NONE,
-# another index, a script holding two of the signer's keys, and two escrows in one request. The seed is backed up to a
-# throwaway PGP key and restored; a signer from the restored seed gives the identical signature (break-glass
-# rehearsal). Restarted against a signer with another seed the App reports the pin mismatch (shape (a) stays on, the
-# pins unchanged); with the signer stopped, waiting. No database column, signer log or transcript line holds the seed
-# or a tprv.
+# A-454 leg (shape (b) escrow signer, TestEscrowRegtestSigner; no order uses it yet): cmd/escrow-signer is built from
+# this tree, given a fresh seed in a temporary directory and started against the node as its own RPC user (whitelisted
+# to decodepsbt, descriptorprocesspsbt and getdescriptorinfo; the leg checks getblockchaininfo is refused); its account
+# key, computed by Core from the account tprv (getdescriptorinfo), agrees with Core's derivation from the seed's master
+# key along m/48h/1h/0h/2h; the App pins its fingerprint and key HMAC at startup. A hand-built shape-(b) escrow (two
+# Core wallets' BIP48 per-order keys, rooted, and the signer's account/5/0/0) is funded, co-signed through the socket,
+# signed by the buyer with Core, combined, finalized, accepted by testmempoolaccept, broadcast and mined. Refused with
+# nothing signed: an input the buyer signed SIGHASH_NONE, another index, a script holding two of the signer's keys, and
+# two escrows in one request. The seed is backed up to a throwaway PGP key and restored; a signer from the restored seed
+# gives the identical signature (break-glass rehearsal). Restarted against a signer with another seed the App reports
+# the pin mismatch (shape (a) stays on, the pins unchanged); with the signer stopped, waiting. No database column,
+# signer log or transcript line holds the seed or a tprv.
 #
 # A-440 legs (market key protection, P4-R6). TestEscrowRegtestPooled: the pooled RPC user, restricted to the rpcwhitelist
 # line below (docs/operator-guide.md, "The pooled RPC user"), is refused listdescriptors (true and false), dumpwallet and
@@ -154,8 +155,8 @@
 # Needs a regtest node with four RPC users: an operator user with full rights (sets up the wallets, standing in
 # for the buyer's own node), the app's user restricted by rpcwhitelist exactly as docs/operator-guide.md
 # ("Bitcoin escrow (regtest only)") describes, the pooled user restricted to the pooled methods ("The pooled RPC
-# user") and the escrow signer's user restricted to decodepsbt and descriptorprocesspsbt ("Escrow signer"), plus a
-# disposable PostgreSQL database. For example:
+# user") and the escrow signer's user restricted to decodepsbt, descriptorprocesspsbt and getdescriptorinfo ("Escrow
+# signer"), plus a disposable PostgreSQL database. For example:
 #
 #   salt=$(openssl rand -hex 16); hash=$(printf %s app-pass | openssl dgst -sha256 -hmac "$salt" | cut -d' ' -f2)
 #   psalt=$(openssl rand -hex 16); phash=$(printf %s pooled-pass | openssl dgst -sha256 -hmac "$psalt" | cut -d' ' -f2)
@@ -164,7 +165,7 @@
 #     -server=1 -rpcbind=0.0.0.0 -rpcallowip=0.0.0.0/0 -rpcuser=operator -rpcpassword=operator-pass \
 #     "-rpcauth=opsecmkt-escrow:$salt\$$hash" "-rpcauth=opsecmkt-pooled:$psalt\$$phash" \
 #     "-rpcauth=opsecmkt-signer:$ssalt\$$shash" -rpcwhitelistdefault=0 \
-#     -rpcwhitelist=opsecmkt-signer:decodepsbt,descriptorprocesspsbt \
+#     -rpcwhitelist=opsecmkt-signer:decodepsbt,descriptorprocesspsbt,getdescriptorinfo \
 #     -rpcwhitelist=opsecmkt-pooled:getblockchaininfo,getwalletinfo,loadwallet,getnetworkinfo,getnewaddress,listreceivedbyaddress,gettransaction,sendtoaddress,validateaddress \
 #     -rpcwhitelist=opsecmkt-escrow:getblockchaininfo,getnetworkinfo,getrawchangeaddress,getaddressinfo,createpsbt,utxoupdatepsbt,importdescriptors,getdescriptorinfo,deriveaddresses,gettxout,keypoolrefill,walletprocesspsbt,descriptorprocesspsbt,combinepsbt,finalizepsbt,testmempoolaccept,sendrawtransaction,getwalletinfo,listreceivedbyaddress,gettransaction,listtransactions
 #   ESCROW_REGTEST_OPERATOR_RPC_URL=http://operator:operator-pass@127.0.0.1:18443 \

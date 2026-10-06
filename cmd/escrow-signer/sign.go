@@ -20,7 +20,7 @@ import (
 // witness script exactly 2 <three sorted distinct compressed keys> 3 CHECKMULTISIG, its witness_utxo paying
 // P2WSH(sha256(script)), no sighash type but ALL, and exactly one of the script's keys the signer's own at
 // account/index/0/k or account/index/1/k with k < 20. Core then signs through descriptorprocesspsbt with "ALL"
-// hard-coded, the escrow's own descriptor (the two other keys as hex, the signer's as the master tprv and path),
+// hard-coded, the escrow's own descriptor (the two other keys as hex, the signer's as the account tprv and path),
 // bip32derivs false and finalize false. Core signs every input whose PSBT witness script holds a key the descriptor
 // gives it (whatever the descriptor's script; probed on Core 31.1 regtest), which is why every input is checked here
 // first. Last, Core's result is decoded and compared with the request: it must differ only by one added partial
