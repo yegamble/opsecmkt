@@ -478,7 +478,7 @@ func (a *App) markOutsideSpend(ctx context.Context, orderID string, ids []int64,
 			by = s
 		}
 		var amt int64
-		err = tx.QueryRowContext(ctx, `UPDATE payments SET spent_outside=true,spent_by=$2,flagged=true,updated=now() WHERE id=$1 AND order_id=$3
+		err = tx.QueryRowContext(ctx, `UPDATE payments SET spent_outside=true,spent_by=$2,`+newFlagSQL+`,updated=now() WHERE id=$1 AND order_id=$3
 			AND settlement_id IS NULL AND NOT spent_outside RETURNING amount`, id, by, orderID).Scan(&amt)
 		if err == sql.ErrNoRows {
 			continue // claimed or marked meanwhile

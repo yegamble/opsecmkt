@@ -157,6 +157,13 @@ func TestEscrowTooSmallRefundResolved(t *testing.T) {
 	}) {
 		t.Fatalf("the deposit mined since: notes %d, buyer %d; events %q", n, b, x.events(order))
 	}
+	// QA462E-2: the note names it, so the desk dates its open flag; the buyer's notice asks nothing of staff.
+	if row := deskRow(html.UnescapeString(x.page("/moderator", mod)), big); !flaggedAt.MatchString(row) || !strings.Contains(row, "<strong>Open:</strong> Escrow deposit left out of its settlement") {
+		t.Fatalf("the deposit mined since on the desk: %s\nevents %q", row, x.events(order))
+	}
+	if agInt(x.testEnv, "SELECT count(*) FROM notifications WHERE user_id=$1 AND strpos(body,'Moderator review required')>0", x.buyer) != 0 {
+		t.Fatal("a buyer's notice asks for a moderator review")
+	}
 	sid, state := x.stray(order)
 	if state != "awaiting_signature" || agInt(x.testEnv, "SELECT count(*) FROM settlements WHERE id=$1 AND destination=$2", sid, refund) != 1 {
 		t.Fatalf("stray refund: %d %s; events %q", sid, state, x.events(order))

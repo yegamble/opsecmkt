@@ -3,6 +3,7 @@ package market
 import (
 	"database/sql"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -37,6 +38,32 @@ func init() {
 // by staff.
 const paymentFlagOpenRule = `@.flagged AND @.disposition IN ('','escalated') AND (@.locked OR @.below_floor OR @.regress_notice OR @.spent_outside
 	OR @.escrow_left_out OR NOT @.credited AND (@.after_close OR NOT EXISTS (SELECT 1 FROM escrows es WHERE es.order_id=@.order_id)))`
+
+// newFlagSQL sets a payments row's flag as a new one in an UPDATE: flagged with no recorded disposition (A-31), so the
+// review its "Moderator review required." note asks for is open on the desk and recordable (QA462E-1). The order
+// history and the audit log keep any earlier review. Every flag write uses it unless it touches only unflagged rows,
+// which never carry a disposition: a disposition is recorded only on a flagged row, and countAgain, the only write that
+// unflags one, clears it too. A deposit refunded by hand is never flagged again: it is pooled, never counted for a
+// payout (payoutBasis), never left out, and escrow deposits are never refunded by hand.
+const newFlagSQL = "flagged=true,disposition='',disposition_note='',disposed_at=NULL"
+
+// scanNamed reads rows of (txid, amount) of the deposits a write just flagged, in cur, and names each as
+// flagLateDeposits does, "deposit <truncate(txid, 20)> (<amount> <cur>)", sorted, so that a note naming them dates their
+// flags on the desk (loadPaymentReviews, QA462E-2); sum is their total. It closes rows.
+func scanNamed(rows *sql.Rows, cur string) (named []string, sum int64, err error) {
+	defer rows.Close()
+	dec := currencyDecimals(cur)
+	for rows.Next() {
+		var txid string
+		var amt int64
+		if err = rows.Scan(&txid, &amt); err != nil {
+			return nil, 0, err
+		}
+		named, sum = append(named, "deposit "+truncate(txid, 20)+" ("+amount(amt, dec)+" "+cur+")"), sum+amt
+	}
+	slices.Sort(named)
+	return named, sum, rows.Err()
+}
 
 // paymentFlagOpen is paymentFlagOpenRule over the payments row aliased alias.
 func paymentFlagOpen(alias string) string { return strings.ReplaceAll(paymentFlagOpenRule, "@", alias) }

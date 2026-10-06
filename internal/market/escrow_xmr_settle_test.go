@@ -383,6 +383,11 @@ func TestXMREscrowFeeCapAndFloor(t *testing.T) {
 	if x.settlement(sid).State != "requested" || x.waitClass(sid) != xmrTooSmall || x.fake.countOf("relay_tx") != 1 || x.staffFlags(small) != 1 {
 		t.Fatalf("below the floor: %s %q", x.settlement(sid).State, x.waitClass(sid))
 	}
+	// QA462E-3: the wait's note names the deposit it flags, so the desk dates the flag.
+	_, mod := x.user("fcmod_"+randomToken()[:6], "moderator")
+	if row := flagRow(html.UnescapeString(x.page("/moderator", mod)), hex64("small "+small)); !flaggedAt.MatchString(row) || !strings.Contains(row, "Escrow deposit counted for the order (credited toward its funding); the order's release or refund settles it") {
+		t.Fatalf("below the floor: the credited deposit on the desk: %s\nevents %q", row, x.events(small))
+	}
 }
 
 // checkXMRBuild, case by case.
