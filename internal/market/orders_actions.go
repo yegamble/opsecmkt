@@ -161,7 +161,7 @@ func payAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, fail(409, "You already have "+strconv.Itoa(maxAwaitingPayment)+" orders awaiting payment. Pay or cancel one before requesting another payment address.")
 		}
 	}
-	if err = lockPaymentIntake(c, o.Currency); err != nil {
+	if err = lockPaymentIntake(c, o.Currency, kindPooled); err != nil {
 		return actionResult{}, err
 	}
 	// A-216, A-232: a listing priced below its currency's payout floor (Bitcoin before A-99, Monero before A-232)

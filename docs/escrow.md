@@ -172,7 +172,7 @@ shipped phase has proven. The full rules and acceptance criteria are in the proj
 | Wallets | Electrum and Sparrow support (a signing test showed Electrum needs a different key layout) | Not started |
 | 2 | Physical orders: buyer-signed release, 14-day deadline, no-ship cancellation, fee bumps | Built and tested on regtest; not released; off by default (`ESCROW_BTC`, regtest only): see [Phase 2](#phase-2-bitcoin-escrow-for-physical-orders-on-regtest) for what it does, what it protects, what it does not do and the tests behind it. Not run on any public test network or on mainnet; only Bitcoin Core signing is supported |
 | 3 | Monero accounts in monthly escrow wallets | Built and tested on a local Monero fakechain (monerod `--regtest`); not released; off by default (`ESCROW_XMR`): see [Phase 3](#phase-3-monero-escrow-on-a-local-fakechain) for what it does, what it protects, what it does not protect and the tests behind it. Custodial: the market can move these coins. Since A-449 it also accepts stagenet ([below](#monero-escrow-on-stagenet-a-449)), checked on an offline stagenet fork only; not run on the public stagenet, testnet or mainnet; no Monero multisig |
-| 4 | Public test networks end to end, then escrow-only for new orders, then removal of the pooled wallet | Groundwork only: the Bitcoin node sync guard, the escrow chain pin and the chain table (A-439, [below](#node-sync-guard-chain-pin-and-chain-table-a-439)), the market key protection (A-440, [below](#market-key-protection-a-440)), Monero escrow on stagenet with its network pin and daemon sync guard (A-449, [below](#monero-escrow-on-stagenet-a-449)) and broadcast honesty (A-441, [below](#broadcast-honesty-a-441)) are on the development branch; Bitcoin escrow still accepts regtest only and nothing has run on a public test network |
+| 4 | Public test networks end to end, then escrow-only for new orders, then removal of the pooled wallet | Groundwork only: the Bitcoin node sync guard, the escrow chain pin and the chain table (A-439, [below](#node-sync-guard-chain-pin-and-chain-table-a-439)), the market key protection (A-440, [below](#market-key-protection-a-440)), Monero escrow on stagenet with its network pin and daemon sync guard (A-449, [below](#monero-escrow-on-stagenet-a-449)) and broadcast honesty (A-441, [below](#broadcast-honesty-a-441)) are on the development branch, and so is the escrow-only switch with its readiness panel (A-444, [below](#escrow-only-cutover-a-444)), which no market has used on a public network; Bitcoin escrow still accepts regtest only and nothing has run on a public test network |
 
 
 ## Phase 1: Bitcoin escrow on regtest
@@ -916,6 +916,24 @@ in `scripts/test-escrow-regtest.sh` against a second Core 31.1 regtest node star
 -proxy=127.0.0.1:9 -listen=0`: the gate on real `getnetworkinfo` answers (that node passes, the main node without a proxy
 holds), a co-signed claim queued and never in the mempool or the wallet, the alert at 6 blocks and not before or twice,
 and cleared once `generateblock` mined the stored transaction. Not tested: a node over real Tor, or a public network.
+
+## Escrow-only cutover (A-444)
+
+Phase 4 (war-room ruling P4-R8), on the development branch and not released. The per-coin intake setting gains a third
+value, `escrow` (*Escrow only* on `/admin`): escrow checkouts are admitted and pooled payment requests refused, both in
+`lockPaymentIntake` (which every checkout calls with the kind it would issue) and in the order state machine's draft to
+awaiting-payment step, so no other pooled path gets through. Paused still refuses both. The administrator's form offers
+escrow only and paused with no pooled wallet configured, keeps the password and the audit row, and is reversible. The
+pooled watcher keeps running while the pooled provider stays configured, so a pooled order opened before the switch is
+still credited and paid out. A readiness panel counts and lists the active listings that cannot use escrow
+(`escrowEligible`'s rule) and the vendors with active listings but no active Bitcoin escrow key; while a coin is escrow
+only such a listing stays visible with "not available for purchase" and the reason, offers no buy form in that coin and
+refuses a draft in it. An older build reads `escrow` as paused. Operator steps:
+[operator guide](operator-guide.md#cutting-over-to-escrow-only); upgrade notes: UPGRADING.md section 36.
+
+How it was tested: the Go tests and the browser spec listed in the operator guide (PostgreSQL with the fake pooled wallet
+and simulated escrow nodes; not chain evidence). Not tested: a cutover on any real chain or public network, and the
+removal of the pooled wallet that follows it (P4-R10, A-448).
 
 ## Per-order key derivation (A-453, shape (b) groundwork)
 

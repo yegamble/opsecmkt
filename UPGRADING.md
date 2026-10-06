@@ -1160,6 +1160,28 @@ escrow node started with `-proxy=<Tor SOCKS address>`, never `-connect` or `-onl
 ([operator guide](docs/operator-guide.md#bitcoin-escrow-regtest-only), *Tor mode*). Clearnet mode and pooled payouts
 are unchanged.
 
+## 36. Escrow-only payment intake and the readiness panel (A-444)
+
+No migration, no new key, nothing changes on upgrade. The per-currency intake setting (`payment_intake_BTC`,
+`payment_intake_XMR` in `settings`, migration 052) takes a third value, `escrow`: new orders in that coin can only use
+escrow checkout, and the pooled wallet issues no new payment address. The admin form under *New payment addresses* now
+offers **On**, **Escrow only** and **Paused** per coin (password, audited, reversible), and offers escrow only and
+paused even when that coin has no pooled wallet configured (On still needs one). A new *Escrow-only readiness* panel
+below it counts and lists the active listings that cannot use escrow and the vendors with no active Bitcoin escrow key.
+How to cut over and back: [operator guide](docs/operator-guide.md#cutting-over-to-escrow-only).
+
+Leave the pooled wallet configured after a cutover until the pooled orders still open are settled: the pooled watcher
+runs only while the provider is configured.
+
+Rolling back the binary while a coin is set to escrow only: a build that knows this database's migrations but predates
+A-444 refuses every intake value other than `true` (its `lockPaymentIntake` compares the value with `true`, and its
+escrow checkouts call the same check), so it treats that coin as **paused for pooled requests and escrow checkouts
+alike**. Its admin page still reads "Enabled when wallet is available" (with a *Pause* button when that coin's pooled
+wallet is configured) and its order page still offers *Request payment address*, which is refused with the paused
+message. Set the coin back to on (or paused) with
+that build's admin form, or before rolling back. A release older than this database's migrations does not start
+against it at all ([Rolling back](#5-rolling-back)).
+
 ## Appendix: new keys by hand
 
 `./scripts/install.sh upgrade` writes these for you. To add them yourself, use your editor (values in single
