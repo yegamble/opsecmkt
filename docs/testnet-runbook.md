@@ -281,7 +281,10 @@ its review (below), while its deposit is a locked transfer, a deposit after sett
 or part of a payout below the minimum, or while a credited deposit's regression has not confirmed again (on an
 escrow order also a deposit spent outside the market or left out of its settlement, credited or not; an escrow
 deposit that counts for the order is never open). The desk and *Record the review* read this one rule, and only a flag it opens holds the late-deposit notice (QA462C). The
-reason is read from the deposit's current confirmations. A moderator or administrator who is not
+reason is read from the deposit's current confirmations. A new event on a deposit whose review you already recorded
+(left out again after a changed decision, spent outside the market, its stray refund spent outside or refused, a
+payout below the minimum) flags it anew with no review: it is open again with *Record the review*, dated by the note
+of the new event, which names the deposit; the order history keeps the earlier review (QA462E-1, QA462F). A moderator or administrator who is not
 party to the order can open its page read-only: history with the flag note, the deposit ledger (while the currency's wallet is configured) and any payout. No buyer or
 vendor action is offered, the order actions refuse staff, and digital delivery content stays hidden unless
 the order is disputed.

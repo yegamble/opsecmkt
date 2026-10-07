@@ -471,22 +471,23 @@ func (a *App) markOutsideSpend(ctx context.Context, orderID string, ids []int64,
 		return err
 	}
 	var sum, n int64
-	var txids []string
+	var txids, named []string
 	for _, id := range ids {
 		var by any
 		if s := spenders[id]; s != "" {
 			by = s
 		}
 		var amt int64
+		var txid string
 		err = tx.QueryRowContext(ctx, `UPDATE payments SET spent_outside=true,spent_by=$2,`+newFlagSQL+`,updated=now() WHERE id=$1 AND order_id=$3
-			AND settlement_id IS NULL AND NOT spent_outside RETURNING amount`, id, by, orderID).Scan(&amt)
+			AND settlement_id IS NULL AND NOT spent_outside RETURNING txid,amount`, id, by, orderID).Scan(&txid, &amt)
 		if err == sql.ErrNoRows {
 			continue // claimed or marked meanwhile
 		}
 		if err != nil {
 			return err
 		}
-		sum, n = sum+amt, n+1
+		sum, n, named = sum+amt, n+1, append(named, depositName(txid, amt, "BTC"))
 		if s := spenders[id]; s != "" && !slices.Contains(txids, s) {
 			txids = append(txids, s)
 		}
@@ -498,8 +499,10 @@ func (a *App) markOutsideSpend(ctx context.Context, orderID string, ids []int64,
 	if len(txids) > 0 {
 		which = "transaction " + strings.Join(txids, ", ")
 	}
-	note := fmt.Sprintf("%d deposit(s) to this escrow (%s BTC) were spent by a transaction this market did not make (%s), with no settlement of the market covering them: those coins have left the escrow, and no settlement of the market will spend them. Moderator review required.",
-		n, amount(sum, 8), which)
+	// The note names the deposits, so the desk dates their flags by it (QA462F-1).
+	slices.Sort(named)
+	note := fmt.Sprintf("%d deposit(s) to this escrow (%s BTC) were spent by a transaction this market did not make (%s), with no settlement of the market covering them: those coins have left the escrow, and no settlement of the market will spend them.%s Moderator review required.",
+		n, amount(sum, 8), which, namedSentence(named))
 	if err = a.flagOrder(ctx, tx, &o, note, "Order "+shortID(orderID)+": coins at its escrow were spent by a transaction this market did not make. Market staff were notified."); err != nil {
 		return err
 	}

@@ -1088,19 +1088,35 @@ func (a *App) markExternal(ctx context.Context, id int64, orderID, spentBy strin
 	if _, err = tx.ExecContext(ctx, "UPDATE settlement_bumps SET state='broadcast',confirmed_at=NULL,updated=now() WHERE settlement_id=$1 AND state='confirmed'", id); err != nil {
 		return err
 	}
+	// The deposits it flags are named in the note, so the desk dates their flags by it (QA462F-1).
+	var named []string
 	if was == "building" {
 		for dep, s := range deposits {
 			var depBy any
 			if s != "" {
 				depBy = s
 			}
-			if _, err = tx.ExecContext(ctx, `UPDATE payments SET spent_outside=true,spent_by=$2,`+newFlagSQL+`,updated=now() WHERE id=$1 AND order_id=$3
-				AND settlement_id IS NULL AND NOT spent_outside`, dep, depBy, orderID); err != nil {
+			var txid string
+			var amt int64
+			err = tx.QueryRowContext(ctx, `UPDATE payments SET spent_outside=true,spent_by=$2,`+newFlagSQL+`,updated=now() WHERE id=$1 AND order_id=$3
+				AND settlement_id IS NULL AND NOT spent_outside RETURNING txid,amount`, dep, depBy, orderID).Scan(&txid, &amt)
+			if err == sql.ErrNoRows {
+				continue
+			}
+			if err != nil {
 				return err
 			}
+			named = append(named, depositName(txid, amt, "BTC"))
 		}
-	} else if _, err = tx.ExecContext(ctx, "UPDATE payments SET "+newFlagSQL+",updated=now() WHERE settlement_id=$1", id); err != nil {
-		return err
+		slices.Sort(named)
+	} else {
+		rows, err := tx.QueryContext(ctx, "UPDATE payments SET "+newFlagSQL+",updated=now() WHERE settlement_id=$1 RETURNING txid,amount", id)
+		if err != nil {
+			return err
+		}
+		if named, _, err = scanNamed(rows, "BTC"); err != nil {
+			return err
+		}
 	}
 	o, err := scanOrder(tx.QueryRowContext(ctx, orderQuery+" WHERE o.id=$1", orderID))
 	if err != nil {
@@ -1111,15 +1127,16 @@ func (a *App) markExternal(ctx context.Context, id int64, orderID, spentBy strin
 	if spentBy != "" {
 		which = "transaction " + spentBy
 	}
-	note := "The coins of this escrow's settlement (" + what + ") were spent by a transaction this market did not make. The settlement is recorded as spent outside the market and will not be sent. Moderator review required."
+	note := "The coins of this escrow's settlement (" + what + ") were spent by a transaction this market did not make. The settlement is recorded as spent outside the market and will not be sent."
 	switch was {
 	case "confirmed":
-		note = "The escrow settlement (" + what + ") was confirmed, but a reorganisation of the chain replaced it with a conflicting transaction this market did not make, which spent the escrow's coins instead. The settlement is recorded as spent outside the market. Moderator review required."
+		note = "The escrow settlement (" + what + ") was confirmed, but a reorganisation of the chain replaced it with a conflicting transaction this market did not make, which spent the escrow's coins instead. The settlement is recorded as spent outside the market."
 	case "building":
-		note = "An escrow deposit this settlement (" + what + ") was to spend was spent by a transaction this market did not make (" + which + "), so the market cannot build it. The settlement is recorded as spent outside the market, and no settlement of the market will spend that deposit. Moderator review required."
+		note = "An escrow deposit this settlement (" + what + ") was to spend was spent by a transaction this market did not make (" + which + "), so the market cannot build it. The settlement is recorded as spent outside the market, and no settlement of the market will spend that deposit."
 	case "awaiting_signature":
-		note = "An escrow deposit this settlement (" + what + ") spends was spent by a transaction this market did not make (" + which + ") before any party signed it, so the settlement can never be completed and no signature is asked for any more. The settlement is recorded as spent outside the market and will not be sent. Moderator review required."
+		note = "An escrow deposit this settlement (" + what + ") spends was spent by a transaction this market did not make (" + which + ") before any party signed it, so the settlement can never be completed and no signature is asked for any more. The settlement is recorded as spent outside the market and will not be sent."
 	}
+	note += namedSentence(named) + " Moderator review required."
 	if err = a.flagOrder(ctx, tx, &o, note, "Order "+shortID(orderID)+": the coins of its escrow settlement ("+what+") were spent by a transaction this market did not make. Market staff were notified."); err != nil {
 		return err
 	}
