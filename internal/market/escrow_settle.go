@@ -124,7 +124,7 @@ var (
 	// Refusals of a pasted settlement PSBT (ES-2): fixed text, never a quote of the paste.
 	errSettleOtherTx   = fail(400, "This is not the settlement transaction shown on this page. Download your copy again, check its outputs, sign it and paste the result. Nothing was changed.")
 	errSettleFinal     = fail(400, "The pasted PSBT is already finalized. Sign your copy without finalizing it (in Bitcoin Core: walletprocesspsbt with finalize false) and paste the result. Nothing was changed.")
-	errSettleMarketKey = fail(400, "The pasted PSBT carries an entry under the market's key. Sign only your own copy downloaded from this page, in the wallet that holds your escrow key, and paste it unchanged. Nothing was changed.")
+	errSettleMarketKey = fail(400, "The pasted PSBT carries a signature under the market's key. Sign only your own copy downloaded from this page, in the wallet that holds your escrow key, and paste it unchanged. Nothing was changed.")
 	errSettleOtherKey  = fail(400, "The pasted PSBT carries a signature from a key other than your escrow key for this order. Sign only in the wallet that holds the escrow key you registered. Nothing was changed.")
 	errSettleUnsigned  = fail(400, "The pasted PSBT does not carry your signature on every input. Sign your copy in the wallet that holds your escrow key and paste the result. Nothing was changed.")
 	errSettleSighash   = fail(400, "A signature uses a sighash type other than ALL. Sign with the default sighash type (ALL). Nothing was changed.")
@@ -565,7 +565,7 @@ func (a *App) buildSettlement(ctx context.Context, e *escrowBTC, id int64) error
 		return &escrowRPCError{Method: "utxoupdatepsbt", Class: "bad-reply"}
 	}
 	// Core writes a key-origin entry for each bare key too (its own fingerprint, an empty path). The stored copy has
-	// none, so a party's copy carries exactly one, its own, and a pasted entry under the market's key is always
+	// none, so a party's copy carries exactly one, its own, and a pasted signature under the market's key is always
 	// foreign (checkSettlementPaste).
 	raw, err := fp.withoutInputFields(func(_ int, key []byte) bool { return key[0] == 0x06 })
 	if err != nil {
@@ -958,10 +958,10 @@ func settlementCopy(stored string, k escrowKeyRow) (string, error) {
 }
 
 // checkSettlementPaste applies ES-2's checks to a pasted PSBT, before anything is stored: it is the stored
-// transaction (unsigned txid), nothing is finalized, nothing sits under the market's key (a signature or derivation
-// of its key, or a derivation from the arbiter fingerprint), every signature is the party's own and ends in
-// SIGHASH_ALL (as does any sighash-type field), and every input carries the party's signature. It returns the
-// party's signature on each input; nothing else of the paste is kept.
+// transaction (unsigned txid), nothing is finalized, no signature is under the market's key, every signature is the
+// party's own and ends in SIGHASH_ALL (as does any sighash-type field), and every input carries the party's signature.
+// It returns the party's signature on each input; nothing else of the paste is kept, which is why a derivation entry
+// (under the market's key or any other) is not refused (P4-R13, relaxed by A-456b for per-order wallets).
 func checkSettlementPaste(pasted, txid string, party, market escrowKeyRow) ([]psbtSig, error) {
 	p, err := decodePSBT(pasted)
 	if err != nil {
@@ -979,11 +979,8 @@ func checkSettlementPaste(pasted, txid string, party, market escrowKeyRow) ([]ps
 		if in.Finalized {
 			return nil, errSettleFinal
 		}
-		for _, d := range in.Derivations {
-			if bytes.Equal(d.PubKey, market.PubKey) || hex.EncodeToString(d.Fingerprint[:]) == market.Fingerprint {
-				return nil, errSettleMarketKey
-			}
-		}
+		// P4-R13, relaxed by A-456b: a derivation entry is never refused, the market key's included (Electrum and Sparrow
+		// write one for every key of a multisig): nothing of a paste but the party's signatures is kept, so it is inert.
 		for _, s := range in.PartialSigs {
 			if bytes.Equal(s.PubKey, market.PubKey) {
 				return nil, errSettleMarketKey

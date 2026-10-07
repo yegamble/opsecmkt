@@ -208,7 +208,7 @@ func TestEscrowBumpClaimantOnly(t *testing.T) {
 		"sighash NONE":            {walletSign(t, vcopy, vfp, 2), "sighash type other than ALL"},
 		"the buyer's signature":   {buyerSigned, "signature from a key other than your escrow key"},
 		"the settlement's own tx": {walletSign(t, parentCopy, vfp, 1), "not the settlement transaction shown on this page"},
-		"a market-key entry":      {withMarket, "entry under the market's key"},
+		"a market-key entry":      {withMarket, "signature under the market's key"},
 		"unsigned":                {vcopy, "does not carry your signature on every input"},
 	} {
 		if code, body := x.signBump(order, vsess, b.ID, c.paste); code != 400 || !strings.Contains(html.UnescapeString(body), c.want) {

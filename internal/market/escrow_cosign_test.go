@@ -794,14 +794,16 @@ func withGlobalField(t *testing.T, raw, key, value []byte) []byte {
 	return slices.Concat(raw[:end], field, raw[end:])
 }
 
-// P4-R13 (A-450): the ES-2 refusal of a derivation under the market's key is inert, because nothing of a paste but the
-// party's signatures is ever kept. The vendor pastes its copy carrying what a non-Core wallet adds (Electrum writes a
-// derivation for every key and may add global xpubs, scripts/test-escrow-wallets.sh): a derivation of the buyer's key
-// from a foreign fingerprint on every input (allowed today: only the market's key and fingerprint are refused), global
-// xpubs with origins, and a proprietary field, then its signature. It is accepted; settlement_signatures holds only
-// the vendor's signature per input; the stored PSBT is byte for byte unchanged; and the market co-signs its own copy
-// of the stored PSBT and combines it with the stored PSBT plus only those signatures, so none of the pasted fields
-// reaches the signer, the database or the broadcast.
+// P4-R13 (A-450; relaxed by A-456b): a derivation in a paste is inert, because nothing of a paste but the party's
+// signatures is ever kept, which is why the ES-2 refusal of a derivation under the market's key (or from its
+// fingerprint) was dropped when per-order wallets came. The vendor pastes its copy carrying what a non-Core wallet adds
+// (Electrum writes a derivation for every key and may add global xpubs, scripts/test-escrow-wallets.sh): a derivation
+// of the buyer's key from a foreign fingerprint and one of the market's key from the arbiter fingerprint on every
+// input, global xpubs with origins, and a proprietary field, then its signature. It is accepted; settlement_signatures
+// holds only the vendor's signature per input; the stored PSBT is byte for byte unchanged; and the market co-signs its
+// own copy of the stored PSBT and combines it with the stored PSBT plus only those signatures, so none of the pasted
+// fields reaches the signer, the database or the broadcast. A signature under the market's key is still refused
+// (TestEscrowPasteRefusals).
 func TestEscrowPasteForeignFieldsInert(t *testing.T) {
 	x := newEscrowEnv(t)
 	order, id := x.built(regtestAddr("refund-inert"), regtestAddr("claim-inert"), 60000, 40000)
@@ -819,9 +821,13 @@ func TestEscrowPasteForeignFieldsInert(t *testing.T) {
 	foreignFP := []byte{0x50, 0x60, 0x21, 0x2d}                        // a per-order xpub's own fingerprint, as Electrum writes for a cosigner
 	foreign := append(slices.Clone(foreignFP), 0, 0, 0, 0, 0, 0, 0, 0) // …/0/0
 	proprietary := []byte("\xfcA-450-foreign-field")
+	mpub, _ := hex.DecodeString(x.keyHex(order, "market"))
+	arbiterFP, _ := hex.DecodeString(x.A.escrow.Load().fingerprint)
+	marketDeriv := append(slices.Clone(arbiterFP), 0x56, 0xa4, 0x5b, 0x0b) // a derivation of the market's key, as Electrum writes one
 	raw := cp.Raw
 	for i := range cp.Inputs {
 		raw = addField(t, raw, i, append([]byte{0x06}, bpub...), foreign)
+		raw = addField(t, raw, i, append([]byte{0x06}, mpub...), marketDeriv)
 		raw = addField(t, raw, i, proprietary, []byte("kept-nowhere"))
 	}
 	xpub := func(depth byte, pub []byte, cc byte) []byte { // a BIP32 serialization (tpub version bytes)
@@ -865,7 +871,7 @@ func TestEscrowPasteForeignFieldsInert(t *testing.T) {
 	if err := x.DB.QueryRow("SELECT psbt FROM settlements WHERE id=$1", id).Scan(&after); err != nil || after != stored {
 		t.Fatalf("the stored PSBT changed with the paste (%v)", err)
 	}
-	pasted := [][]byte{foreignFP, proprietary, globals[0][0][1:], globals[1][0][1:]}
+	pasted := [][]byte{foreignFP, marketDeriv, proprietary, globals[0][0][1:], globals[1][0][1:]}
 	assertNowhereInDB(t, x.testEnv, paste)
 	for _, needle := range pasted {
 		assertNowhereInDB(t, x.testEnv, hex.EncodeToString(needle))

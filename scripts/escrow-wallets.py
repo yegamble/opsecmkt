@@ -15,7 +15,7 @@ Legs (each prints PASS or FAIL with its evidence):
                     broadcast and confirmed, and every final txid equals the unsigned one.
   electrum-seed-type Electrum's own seed type ("Create a new seed", segwit) restored as a multisig keystore derives at
                     m/1h, and keystore.from_seed takes no derivation: such a wallet cannot follow a per-order path.
-The ES-2 leg (today's paste check refusing the Electrum output) runs in Go from the files this writes (go test
+The ES-2 leg (the paste check accepting the Electrum output since A-456b relaxed P4-R13) runs in Go from the files this writes (go test
 -run TestEscrowWalletFixtures with ESCROW_WALLETS_FIXTURES set).
 
 Writes to ESCROW_WALLETS_OUT: the signed PSBTs (base64; regtest, throwaway keys, no seed or extended private key) and
@@ -384,7 +384,7 @@ def leg_electrum_shape_b(E):
         print('  variant %s: %s' % (name, text))
         write_fixture('electrum-shape-b-%s.psbt' % name, signed, wallet='Electrum 4.8.2', shape='b', variant=what,
                       party_pubkey=pk['buyer'].hex(), market_pubkey=pk['market'].hex(), market_fingerprint=fps['market'],
-                      txid=txid, want='refused')
+                      txid=txid, want='accepted')
         results.append(name)
     return ('Electrum (BIP39 root keystore at %s) signed variants %s; the market signed through descriptorprocesspsbt; '
             'each combined, finalized and passed testmempoolaccept, the last was broadcast and confirmed, txid %s unchanged') % (

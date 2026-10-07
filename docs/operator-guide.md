@@ -1152,8 +1152,9 @@ broadcast.
   own copy of the PSBT, with its key's origin and the other keys bare, in the page and as a download. Either party
   signs it in Bitcoin Core (`walletprocesspsbt` without finalizing, or the GUI's PSBT dialog) and pastes it back. The
   paste is refused, with nothing stored, unless it is the stored transaction (its unsigned transaction ID), it carries
-  that party's signature on every input and no other key's, it has no entry under the market's key, every signature
-  is `SIGHASH_ALL` and nothing is finalized. Only the party's signatures are kept, never the pasted PSBT; the
+  that party's signature on every input and no other key's, it has no signature under the market's key, every signature
+  is `SIGHASH_ALL` and nothing is finalized (a derivation entry for any key, the market's included, is ignored since
+  A-456b: Electrum and Sparrow write one for every key, and nothing but the signatures is kept). Only the party's signatures are kept, never the pasted PSBT; the
   settlement is then *signed by the buyer* (or vendor), the other party is notified, and the database refuses any
   change to its transaction from then on. The other party may sign it too; with both signatures the market does not
   sign. **A pasted signature's validity is not checked when it is pasted** (the server does not verify signatures):

@@ -1,5 +1,5 @@
 {
- "note": "Signed escrow settlement PSBTs from scripts/test-escrow-wallets.sh: regtest, throwaway keys, public keys only. These files come from its --update-fixtures run at cf6a8a0fdbb4 with uncommitted changes (QA4W1-6), logged in artifacts/real-chain/a450-cf6a8a0fdbb4-dirty-fixtures-wallets.log (gitignored, local). The clean evidence run at 52eb99f7aba5 (artifacts/real-chain/a450-52eb99f7aba5-wallets.log) used different throwaway keys, so its log does not contain these transactions or keys.",
+ "note": "Signed escrow settlement PSBTs from scripts/test-escrow-wallets.sh: regtest, throwaway keys, public keys only. Each entry's \"want\" was \"refused\" until A-456b relaxed the ES-2 derivation refusal (P4-R13) and is now \"accepted\"; the files are unchanged. These files come from its --update-fixtures run at cf6a8a0fdbb4 with uncommitted changes (QA4W1-6), logged in artifacts/real-chain/a450-cf6a8a0fdbb4-dirty-fixtures-wallets.log (gitignored, local). The clean evidence run at 52eb99f7aba5 (artifacts/real-chain/a450-52eb99f7aba5-wallets.log) used different throwaway keys, so its log does not contain these transactions or keys.",
  "generated_by": "scripts/test-escrow-wallets.sh at commit cf6a8a0fdbb4bb79d1a2056619778393f129fc99 (uncommitted changes under internal/ or scripts/)",
  "entries": [
   {
@@ -11,7 +11,7 @@
    "market_pubkey": "034109ca75196acd4226ebefb162575f32db00bde2acca25075d8b06f1dd6c4cbd",
    "market_fingerprint": "6fe05790",
    "txid": "c8949f321bca265bccd49a06cb99b8f11b39a6bca3cf7fc615028998a1aed8b4",
-   "want": "refused"
+   "want": "accepted"
   },
   {
    "file": "electrum-shape-b-own-origin.psbt",
@@ -22,7 +22,7 @@
    "market_pubkey": "034109ca75196acd4226ebefb162575f32db00bde2acca25075d8b06f1dd6c4cbd",
    "market_fingerprint": "6fe05790",
    "txid": "c8949f321bca265bccd49a06cb99b8f11b39a6bca3cf7fc615028998a1aed8b4",
-   "want": "refused"
+   "want": "accepted"
   },
   {
    "file": "electrum-shape-b-all-derivations-global-xpubs.psbt",
@@ -33,7 +33,7 @@
    "market_pubkey": "034109ca75196acd4226ebefb162575f32db00bde2acca25075d8b06f1dd6c4cbd",
    "market_fingerprint": "6fe05790",
    "txid": "c8949f321bca265bccd49a06cb99b8f11b39a6bca3cf7fc615028998a1aed8b4",
-   "want": "refused"
+   "want": "accepted"
   }
  ]
 }
