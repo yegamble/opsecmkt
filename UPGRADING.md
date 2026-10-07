@@ -1423,14 +1423,16 @@ staff record what was done about it, even if it was dealt with before; record th
 
 ## 44. Per-order Bitcoin escrows: creation and watching (migration 089, A-456a)
 
-Migration 089 runs at startup. On `escrow_pubkeys` it adds a check that a per-order derivation suffix (three or more
-steps) is exactly `/<i>/0/0`, every step unhardened and below 2^31, with `i` at least 2: migration 074 allowed steps of
-ten digits, so `/2147483648/0/0` (which names the hardened `/0h/0/0`) passed migration 088's checks. It lets the market's
-per-order key have an origin with no path (the escrow signer's rooted account key), and it adds the table
-`escrow_siblings` (each per-order escrow's sibling addresses). No release writes a per-order escrow key yet, so the check
-finds nothing to refuse; if it does, the migration stops before changing anything, the app does not start, and the log
-reads `migration 089: N escrow key row(s) in escrow_pubkeys have a per-order derivation suffix (such as …) that is not
-/<i>/0/0 with 2 <= i < 2^31 …`: restore the pre-upgrade backup (section 5) and report it to the project.
+Migration 089 runs at startup. On `escrow_pubkeys` it adds a check that every step of every escrow key's derivation
+suffix is unhardened and below 2^31, for every party, and that a per-order derivation suffix (three or more steps) is
+exactly `/<i>/0/0` with `2 <= i < 2^31-1` (never the practice index, for the market's key either): migration 074 allowed
+steps of ten digits, so `/2147483648/0/0` (which names the hardened `/0h/0/0`) passed migration 088's checks, as did a
+Bitcoin Core escrow key's `/0/2147483648`. It lets the market's per-order key have an origin with no path (the escrow
+signer's rooted account key), and it adds the table `escrow_siblings` (each per-order escrow's sibling addresses). No
+release writes such a key, so the check finds nothing to refuse; if it does, the migration stops before changing
+anything, the app does not start, and the log reads `migration 089: N escrow key row(s) in escrow_pubkeys have a
+derivation suffix (such as …) with a hardened step or a step of 2^31 or more …`: restore the pre-upgrade backup
+(section 5) and report it to the project.
 
 Only with `ESCROW_BTC=on`, checkout now picks the escrow's shape from both parties' active keys: two Bitcoin Core keys
 make the Bitcoin Core escrow as before; a buyer and a vendor whose keys are of different kinds now read "The vendor's
@@ -1441,7 +1443,11 @@ are built in this release but switched off in the code until the market can co-s
 of `scripts/restore.sh` and of the restore-protection SQL in section 6 now reads an account's highest escrow index in both
 shapes (`/0/<i>` and `/<i>/0/0`), one counter: if you keep a copy of that SQL, take the new one. The escrow RPC user's
 `rpcwhitelist` needs no new method (per-order escrows use `deriveaddresses` with a range, `getdescriptorinfo`,
-`importdescriptors` and `getaddressinfo`, all on it already), and there is no new key. Rolling back past this release
+`importdescriptors` and `getaddressinfo`, all on it already), and there is no new key. With an escrow signer pinned, the
+escrow key page now refuses a key that is the signer's own ("This key cannot be used here"). After restoring the
+watch-only wallet, restart the app: its first watcher pass imports each per-order escrow's descriptors and sibling
+addresses again ([testnet runbook](docs/testnet-runbook.md#back-up-and-restore-the-escrow-arbiter-and-watch-only-wallets)).
+Rolling back past this release
 needs the pre-upgrade backup, as for every migration (section 5): the earlier release refuses to start on a database
 that records migration 089.
 

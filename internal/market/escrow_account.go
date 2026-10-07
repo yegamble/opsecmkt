@@ -312,6 +312,12 @@ func escrowKeyAction(c *actionCtx) (actionResult, error) {
 	if k.Fingerprint == e.fingerprint { // the market's own arbiter key offered as a party key
 		return actionResult{}, fail(400, errKeyUnusable.Error())
 	}
+	// Nor the escrow signer's (QA5W3A-7), in either layout: its pinned fingerprint declared, or its key at any depth.
+	if signer, err := a.isSignerKey(c.Ctx(), a.db, k); err != nil {
+		return actionResult{}, err
+	} else if signer {
+		return actionResult{}, fail(400, errKeyUnusable.Error())
+	}
 	h := a.escrowKeyHMAC(k)
 	cur, err := loadEscrowKey(c.Ctx(), a.db, c.User.ID)
 	if err != nil {

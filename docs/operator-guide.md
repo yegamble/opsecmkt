@@ -1014,7 +1014,8 @@ ESCROW_BTC_RPC_URL='http://opsecmkt-escrow:…@127.0.0.1:38332' BITCOIN_RPC_URL=
 ```
 
 `--verify` passes when the escrow user answers `getblockchaininfo` on that chain and `getwalletinfo` on both wallets
-(private keys on the arbiter wallet only), and is refused `listdescriptors` and `gethdkeys` with HTTP 403. With
+(private keys on the arbiter wallet only), and is refused `listdescriptors` and `gethdkeys` with HTTP 403. A node that
+reports another chain, or none, is refused before any wallet call, as in set-up mode. With
 `BITCOIN_RPC_URL` set, it also checks that the pooled user answers `getblockchaininfo` and is refused `listdescriptors`,
 `gethdkeys` and `walletprocesspsbt` on the arbiter wallet's path, with HTTP 403 (or "wallet not found", RPC -18, when
 it is another node). That is the app's own start check (*The pooled RPC user*). The URLs reach `curl` on its standard

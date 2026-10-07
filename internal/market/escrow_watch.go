@@ -1,14 +1,18 @@
 package market
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -495,42 +499,39 @@ func (a *App) escrowSiblingAddresses(ctx context.Context, orders []string) ([][2
 	return out, rows.Err()
 }
 
-// ensureSiblingWatch checks, on the first watcher pass of a process, that the watch-only wallet still holds the sibling
-// addresses of every shape-(b) escrow (A-456a; checkout imports them with the escrow): getaddressinfo of each escrow's
-// last sibling, /1/9, which must carry the escrow's label. Where it does not (a watch-only wallet restored from a backup
-// older than the escrow, say), that escrow's 29 siblings are imported again as the labelled addr(…) descriptors checkout
-// imported (siblingImports), from its creation time, so a deposit made since is found; the stored addresses need no key,
-// so a party's later key change does not matter. Nothing is imported for an escrow the wallet holds so, and Core's import
-// of a descriptor it holds is idempotent anyway.
+// ensureSiblingWatch checks, on the first watcher pass of a process, that the watch-only wallet still holds what checkout
+// imported for every shape-(b) escrow (A-456a, QA5W3A-8): getaddressinfo of the escrow's address and of its last sibling,
+// /1/9, each of which must carry the escrow's label. Where one does not (a watch-only wallet restored from a backup older
+// than the escrow, say), the escrow's imports are made again, in checkout's order and from the escrow's creation time, so
+// a deposit made since is found (perOrderWatchImports): the escrow's own labelled bare-key descriptor, rebuilt from its
+// stored keys; the order wallet's two ranged descriptors, only where they can be rebuilt (each party's current account
+// key and the escrow signer's still derive the stored keys); and the 29 labelled sibling addresses, which need no key.
+// Without the ranged descriptors the siblings are watched (their deposits are seen) but Core reports them unsolvable,
+// and so they stay once imported first. Nothing is imported for an escrow the wallet holds so, and Core's import of a
+// descriptor it holds is idempotent anyway.
 func (a *App) ensureSiblingWatch(ctx context.Context, e *escrowBTC) error {
-	rows, err := a.db.QueryContext(ctx, `SELECT s.escrow_id,es.order_id,extract(epoch FROM es.created)::bigint,s.address,s.branch=1 AND s.idx=9
+	rows, err := a.db.QueryContext(ctx, `SELECT s.escrow_id,es.order_id,extract(epoch FROM es.created)::bigint,es.address,s.address,s.branch=1 AND s.idx=9
 		FROM escrow_siblings s JOIN escrows es ON es.id=s.escrow_id ORDER BY s.escrow_id,s.branch,s.idx`)
 	if err != nil {
 		return err
 	}
-	type escrowSiblings struct {
-		order   string
-		created int64
-		last    string
-		all     []string
-	}
 	var order []int64
-	byEscrow := map[int64]*escrowSiblings{}
+	byEscrow := map[int64]*perOrderWatch{}
 	for rows.Next() {
 		var id, created int64
-		var orderID, addr string
+		var orderID, escrowAddr, addr string
 		var last bool
-		if err = rows.Scan(&id, &orderID, &created, &addr, &last); err != nil {
+		if err = rows.Scan(&id, &orderID, &created, &escrowAddr, &addr, &last); err != nil {
 			rows.Close()
 			return err
 		}
 		s := byEscrow[id]
 		if s == nil {
-			s = &escrowSiblings{order: orderID, created: created}
+			s = &perOrderWatch{id: id, order: orderID, created: created, address: escrowAddr}
 			byEscrow[id] = s
 			order = append(order, id)
 		}
-		s.all = append(s.all, addr)
+		s.siblings = append(s.siblings, addr)
 		if last {
 			s.last = addr
 		}
@@ -539,26 +540,138 @@ func (a *App) ensureSiblingWatch(ctx context.Context, e *escrowBTC) error {
 	if err = rows.Err(); err != nil {
 		return err
 	}
-	repaired := 0
+	repaired, unranged := 0, 0
 	for _, id := range order {
 		s := byEscrow[id]
 		// Held and labelled: the label is what lists its deposits (siblingImports).
-		var info struct {
-			Labels []string `json:"labels"`
+		held := true
+		for _, addr := range []string{s.address, s.last} {
+			var info struct {
+				Labels []string `json:"labels"`
+			}
+			if err := e.call(ctx, e.watchWallet, "getaddressinfo", []any{addr}, &info); err != nil {
+				return &watchError{label: "escrow", class: "sibling check failed: " + errorClassOf(err), err: err}
+			}
+			held = held && slices.Contains(info.Labels, "escrow:"+s.order)
 		}
-		if err := e.call(ctx, e.watchWallet, "getaddressinfo", []any{s.last}, &info); err != nil {
-			return &watchError{label: "escrow", class: "sibling check failed: " + errorClassOf(err), err: err}
-		}
-		if slices.Contains(info.Labels, "escrow:"+s.order) {
+		if held {
 			continue
 		}
-		if err = e.importDescriptors(ctx, e.watchName, siblingImports(s.order, s.all, s.created)); err != nil {
+		imports, ranged, err := a.perOrderWatchImports(ctx, e, s)
+		if err != nil {
+			return err
+		}
+		if err = e.importDescriptors(ctx, e.watchName, imports); err != nil {
 			return &watchError{label: "escrow", class: "sibling import failed: " + errorClassOf(err), err: err}
 		}
 		repaired++
+		if !ranged {
+			unranged++
+		}
 	}
 	if repaired > 0 {
-		log.Printf("escrow: the watch-only wallet lacked the sibling addresses of %d per-order escrow(s); imported them again", repaired)
+		log.Printf("escrow: the watch-only wallet lacked %d per-order escrow(s); imported each escrow's address and sibling addresses again", repaired)
+	}
+	if unranged > 0 {
+		log.Printf("escrow: the order wallets' ranged descriptors of %d of them were not imported again (a party's escrow key changed, or the escrow signer did not answer with its pinned key): their sibling addresses are watched but not solvable in the watch-only wallet", unranged)
 	}
 	return nil
+}
+
+// perOrderWatch is one shape-(b) escrow as ensureSiblingWatch reads it: its row, address, creation time (UNIX) and
+// sibling addresses in checkout's order, the last being /1/9.
+type perOrderWatch struct {
+	id, created          int64
+	order, address, last string
+	siblings             []string
+}
+
+// perOrderWatchImports is what checkout imported for the shape-(b) escrow s (the bare-key descriptor, the two ranged
+// descriptors, the sibling addresses), rebuilt for the watch-only wallet's repair from the escrow's creation time, and
+// whether the ranged descriptors are among them. The bare-key descriptor is built from the stored keys, in checkout's
+// order (buyer, vendor, market), and only when their 2-of-3 is the escrow's address. The ranged descriptors need each
+// party's current account key and the escrow signer's pinned key (signerAccount) to derive, at the stored per-order
+// index, the very key the escrow stores (perOrderKeys); otherwise they are left out (ensureSiblingWatch logs how many
+// escrows were repaired so). Only a database failure is an error.
+func (a *App) perOrderWatchImports(ctx context.Context, e *escrowBTC, s *perOrderWatch) ([]escrowImport, bool, error) {
+	rows, err := a.db.QueryContext(ctx, "SELECT party,pubkey,COALESCE(user_id,''),derivation_suffix FROM escrow_pubkeys WHERE escrow_id=$1", s.id)
+	if err != nil {
+		return nil, false, err
+	}
+	type stored struct{ pubkey, user, suffix string }
+	keys := map[string]stored{}
+	for rows.Next() {
+		var party string
+		var k stored
+		if err = rows.Scan(&party, &k.pubkey, &k.user, &k.suffix); err != nil {
+			rows.Close()
+			return nil, false, err
+		}
+		keys[party] = k
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
+		return nil, false, err
+	}
+	parties := []string{"buyer", "vendor", "market"}
+	var imports []escrowImport
+	var raw [][]byte
+	for _, p := range parties {
+		if k, err := hex.DecodeString(keys[p].pubkey); err == nil && len(k) == 33 {
+			raw = append(raw, k)
+		}
+	}
+	sum := sha256.Sum256(sortedMultisigScript(raw...))
+	if spk, err := escrowAddressScript(e.network, s.address); len(raw) == 3 && err == nil && bytes.Equal(spk, append([]byte{0, 32}, sum[:]...)) {
+		bare := withChecksum("wsh(sortedmulti(2," + keys["buyer"].pubkey + "," + keys["vendor"].pubkey + "," + keys["market"].pubkey + "))")
+		imports = append(imports, escrowImport{Desc: bare, Timestamp: s.created, Label: "escrow:" + s.order})
+	} else {
+		log.Printf("escrow: per-order escrow of order %s: its stored keys do not give its address; its own descriptor was not imported again", shortID(s.order))
+	}
+	// The rooted per-order key of each party, as checkout derived it, or none.
+	rooted := func(p string, account escrowKey) (string, bool) {
+		steps, err := parseOriginPath(keys[p].suffix)
+		if err != nil || len(steps) != 3 {
+			return "", false
+		}
+		order, leaf, ok := perOrderKeys(account, steps[0])
+		return order.Rooted(versionTpub), ok && hex.EncodeToString(leaf.PubKey[:]) == keys[p].pubkey
+	}
+	var exprs []string
+	if signer, err := a.signerAccount(ctx, a.db); err == nil {
+		for _, p := range parties {
+			account := signer
+			if p != "market" {
+				var sealed, fp, path string
+				err := a.db.QueryRowContext(ctx, "SELECT xpub_sealed,origin_fingerprint,origin_path FROM user_escrow_keys WHERE user_id=$1", keys[p].user).Scan(&sealed, &fp, &path)
+				if err != nil && err != sql.ErrNoRows {
+					return nil, false, err
+				}
+				xpub, openErr := a.open("escrow-xpub", sealed)
+				if err != nil || openErr != nil {
+					break
+				}
+				if account, err = parseEscrowKey("[" + fp + path + "]" + xpub); err != nil {
+					break
+				}
+			}
+			r, ok := rooted(p, account)
+			if !ok {
+				break
+			}
+			exprs = append(exprs, r)
+		}
+	}
+	ranged := len(exprs) == 3
+	if ranged {
+		for branch, n := range []int{perOrderReceive, perOrderChange} {
+			var branchExprs []string
+			for _, r := range exprs {
+				branchExprs = append(branchExprs, r+"/"+strconv.Itoa(branch)+"/*")
+			}
+			desc := withChecksum("wsh(sortedmulti(2," + strings.Join(branchExprs, ",") + "))")
+			imports = append(imports, escrowImport{Desc: desc, Timestamp: s.created, Range: []int64{0, int64(n - 1)}})
+		}
+	}
+	return append(imports, siblingImports(s.order, s.siblings, s.created)...), ranged, nil
 }

@@ -428,9 +428,10 @@ func TestEscrowShapeBSiblingDeposits(t *testing.T) {
 }
 
 // The sibling coverage survives a restart and its re-import is idempotent: after a restart the first watcher pass asks
-// the watch-only wallet whether it holds each shape-(b) escrow's siblings and imports nothing when it does; a watch-only
-// wallet that lost them (restored from before the escrow) gets them again as labelled addr(…) descriptors from the escrow's
-// creation time, once; a sibling deposit is then routed as before.
+// the watch-only wallet whether it holds each shape-(b) escrow's address and siblings and imports nothing when it does; a
+// watch-only wallet that lost them (restored from before the escrow) gets the escrow's descriptor, the ranged ones and
+// the siblings as labelled addr(…) descriptors again from the escrow's creation time, once; a sibling deposit is then
+// routed as before.
 func TestEscrowShapeBRestartReimport(t *testing.T) {
 	x, _ := newPerOrderEnv(t)
 	x.mustCheckout(x.order, regtestAddr("restart-1"))
@@ -448,13 +449,15 @@ func TestEscrowShapeBRestartReimport(t *testing.T) {
 	x.restart()
 	x.poll()
 	reqs := x.core.importRequests()[n:]
-	if len(reqs) != 29 {
-		t.Fatalf("%d re-import requests, want the 29 sibling addresses", len(reqs))
+	if len(reqs) != 32 {
+		t.Fatalf("%d re-import requests, want the escrow's own descriptor, the two ranged ones and the 29 sibling addresses (QA5W3A-8)", len(reqs))
 	}
-	for _, r := range reqs {
+	for i, r := range reqs {
 		desc, _ := r["desc"].(string)
-		if !strings.HasPrefix(desc, "addr(") || r["label"] != "escrow:"+x.order || r["timestamp"] != float64(created) {
-			t.Fatalf("re-import %v", r)
+		_, ranged := r["range"]
+		if r["timestamp"] != float64(created) || i == 0 && (r["label"] != "escrow:"+x.order || strings.HasPrefix(desc, "addr(")) ||
+			(i == 1 || i == 2) != ranged || i > 2 && (!strings.HasPrefix(desc, "addr(") || r["label"] != "escrow:"+x.order) {
+			t.Fatalf("re-import %d: %v", i, r)
 		}
 	}
 	for _, s := range []struct{ branch, k int }{{0, 1}, {1, 9}} {
@@ -565,9 +568,11 @@ func TestEscrowShapeBNoServedKeyIsAncestor(t *testing.T) {
 	}
 }
 
-// Migration 089 (ADDENDUM QA4W5K-6, P4-R2): a per-order derivation suffix is exactly /<i>/0/0 with every step below 2^31
-// and 2 <= i: /2147483648/0/0 and /2147483649/0/0 (aliases of /0h/0/0 and /1h/0/0) and an i of 1 are refused for any
-// party; the market's origin may be a rooted signer key's (no path), a party's may not. The constraint is validated.
+// Migration 089 (ADDENDUM QA4W5K-6, P4-R2, QA5W3A-11): a per-order derivation suffix is exactly /<i>/0/0 with
+// 2 <= i < 2^31-1: /2147483648/0/0 and /2147483649/0/0 (aliases of /0h/0/0 and /1h/0/0), an i of 1 and, for the market
+// too, the practice index are refused; no step of a shape-(a) suffix is hardened or reaches 2^31 either (/0/2147483648,
+// /0/9999999999), for any party. The market's origin may be a rooted signer key's (no path), a party's may not. The
+// constraint is validated.
 func TestEscrowMigration089(t *testing.T) {
 	e := newTestApp(t)
 	a, _ := e.user("mig089_a", "buyer")
@@ -597,20 +602,25 @@ func TestEscrowMigration089(t *testing.T) {
 		{"buyer", acct, "/9999999999/0/0"}, {"buyer", acct, "/1/0/0"}, {"market", "", "/1/0/0"},
 		{"buyer", acct, "/2/0/1"}, {"buyer", acct, "/2/1/0"}, {"buyer", acct, "/2/0/0/0"}, {"buyer", acct, "/2h/0/0"}, {"buyer", acct, "/2/0/2147483648"},
 		{"buyer", "", "/2/0/0"}, {"market", "", "/0/7"}, // no origin path: only the market's per-order key
+		// QA5W3A-11: the market never takes the practice index; no step of any suffix, in either shape, reaches 2^31.
+		{"market", "", "/2147483647/0/0"},
+		{"buyer", acct, "/0/2147483648"}, {"vendor", acct, "/0/9999999999"}, {"market", "/84h/1h/0h", "/0/2147483648"}, {"market", "/84h/1h/0h", "/0/9999999999"},
+		{"buyer", acct, "/2147483648/7"}, {"buyer", acct, "/0/7h"}, {"market", "/84h/1h/0h", "/0h/7"},
 	} {
 		if try(c.party, c.origin, c.suffix) == nil {
 			t.Errorf("%s origin %q suffix %s accepted", c.party, c.origin, c.suffix)
 		}
 	}
 	for _, c := range []struct{ party, origin, suffix string }{
-		{"buyer", acct, "/2/0/0"}, {"vendor", acct, "/2147483646/0/0"}, {"market", "", "/2/0/0"}, {"market", "", "/2147483647/0/0"},
+		{"buyer", acct, "/2/0/0"}, {"vendor", acct, "/2147483646/0/0"}, {"market", "", "/2/0/0"}, {"market", "", "/2147483646/0/0"},
 		{"buyer", acct, "/0/1"}, {"market", "/84h/1h/0h", "/0/0"}, // shape (a)
+		{"vendor", acct, "/0/2147483647"}, {"market", "/84h/1h/0h", "/0/2147483647"},
 	} {
 		if err := try(c.party, c.origin, c.suffix); err != nil {
 			t.Errorf("%s origin %q suffix %s refused: %v", c.party, c.origin, c.suffix, err)
 		}
 	}
-	for _, name := range []string{"escrow_pubkeys_per_order_suffix", "escrow_pubkeys_origin_path"} {
+	for _, name := range []string{"escrow_pubkeys_suffix_steps", "escrow_pubkeys_origin_path"} {
 		var valid bool
 		if err := e.DB.QueryRow("SELECT convalidated FROM pg_constraint WHERE conname=$1 AND conrelid='escrow_pubkeys'::regclass", name).Scan(&valid); err != nil || !valid {
 			t.Errorf("constraint %s: validated=%v %v", name, valid, err)
@@ -618,8 +628,9 @@ func TestEscrowMigration089(t *testing.T) {
 	}
 }
 
-// Migration 089 on a database holding a per-order key row it refuses (a historical /2147483648/0/0): it stops with a
-// message naming the problem, records nothing and changes nothing; with the row gone it applies.
+// Migration 089 on a database holding an escrow key row it refuses (a historical /2147483648/0/0, a shape-(a)
+// /0/2147483648 or a market key at the practice index /2147483647/0/0, one at a time): it stops with a message naming
+// the row's suffix, records nothing and changes nothing; with the row gone it applies.
 func TestEscrowMigration089BadHistoricalRow(t *testing.T) {
 	db := schemaDB(t)
 	ctx := context.Background()
@@ -639,28 +650,41 @@ func TestEscrowMigration089BadHistoricalRow(t *testing.T) {
 		"INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock) VALUES('pd','uv','D','D','Hardware','Worldwide','digital',100000,1,5)",
 		"INSERT INTO orders(id,buyer_id,product_id,currency,amount,state) VALUES('o1','ub','pd','BTC',100000,'awaiting_payment')",
 		"INSERT INTO escrows(order_id,address,market_index,refund_address,fee_bps,fee_destination) VALUES('o1','bcrt1qbad089',nextval('escrow_market_index'),'bcrt1qbadr089',0,'')",
-		`INSERT INTO escrow_pubkeys(pubkey,escrow_id,party,user_id,key_hmac,origin_fingerprint,origin_path,derivation_suffix)
-			SELECT '02'||repeat('b8',32),id,'buyer','ub',repeat('a',64),'a1b2c3d4','/48h/1h/0h/2h','/2147483648/0/0' FROM escrows`,
 	} {
 		if _, err := db.Exec(q); err != nil {
 			t.Fatalf("%s: %v", q, err)
 		}
 	}
-	tx, err := db.Begin()
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = applyMigrations(ctx, tx, list)
-	tx.Rollback()
-	if err == nil || !strings.Contains(err.Error(), "migration 089") || !strings.Contains(err.Error(), "/2147483648/0/0") || !strings.Contains(err.Error(), "UPGRADING.md section 44") {
-		t.Fatalf("migration 089 over a bad row: %v", err)
-	}
-	var n int
-	if err = db.QueryRow("SELECT count(*) FROM schema_migrations WHERE version=89").Scan(&n); err != nil || n != 0 {
-		t.Fatalf("089 recorded: %d %v", n, err)
-	}
-	if _, err = db.Exec("DELETE FROM escrow_pubkeys"); err != nil {
-		t.Fatal(err)
+	// A per-order step of 2^31, a shape-(a) step of 2^31 (QA5W3A-11) and the market at the practice index (QA5W3A-11).
+	for _, bad := range []struct{ party, uid, hmac, origin, suffix string }{
+		{"buyer", "ub", strings.Repeat("a", 64), "/48h/1h/0h/2h", "/2147483648/0/0"},
+		{"vendor", "uv", strings.Repeat("b", 64), "/48h/1h/0h/2h", "/0/2147483648"},
+		{"market", "", "", "/84h/1h/0h", "/2147483647/0/0"}, // with a path: 074's origin rule, which 089 relaxes
+	} {
+		var uid, h any
+		if bad.uid != "" {
+			uid, h = bad.uid, bad.hmac
+		}
+		if _, err := db.Exec(`INSERT INTO escrow_pubkeys(pubkey,escrow_id,party,user_id,key_hmac,origin_fingerprint,origin_path,derivation_suffix)
+			SELECT '02'||repeat('b8',32),id,$1,$2,$3,'a1b2c3d4',$4,$5 FROM escrows`, bad.party, uid, h, bad.origin, bad.suffix); err != nil {
+			t.Fatalf("%s: %v", bad.suffix, err)
+		}
+		tx, err := db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = applyMigrations(ctx, tx, list)
+		tx.Rollback()
+		if err == nil || !strings.Contains(err.Error(), "migration 089") || !strings.Contains(err.Error(), "(such as "+bad.suffix+")") || !strings.Contains(err.Error(), "UPGRADING.md section 44") {
+			t.Fatalf("migration 089 over a bad row %s: %v", bad.suffix, err)
+		}
+		var n int
+		if err = db.QueryRow("SELECT count(*) FROM schema_migrations WHERE version=89").Scan(&n); err != nil || n != 0 {
+			t.Fatalf("089 recorded: %d %v", n, err)
+		}
+		if _, err = db.Exec("DELETE FROM escrow_pubkeys"); err != nil {
+			t.Fatal(err)
+		}
 	}
 	runInTx(t, db, func(tx *sql.Tx) error { return applyMigrations(ctx, tx, list) })
 }
