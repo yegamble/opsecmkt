@@ -96,7 +96,7 @@ Check the escrow node: its peers (<code>getconnectioncount</code>), and with <co
 </table>
 </div>{{else}}
 <p>None found.</p>{{end}}{{end}}
-{{with $.XMREscrowRecovery}}<h3 id="xmr-escrow-recovery">Monero escrow recovery and retention ({{$.XMREscrowNet}})</h3>{{with $.NoticeIn "xmr-escrow-recovery"}}
+{{with $.XMREscrowRecovery}}<h3 id="xmr-escrow-recovery">Monero escrow recovery and retention ({{template "payment-status:xmr-net" $}})</h3>{{with $.NoticeIn "xmr-escrow-recovery"}}
 <div class="alert" role="status">{{.}}</div>{{end}}{{if .Sweep}}
 <div class="alert" role="status"><strong>Monero escrow checkout is paused after a restore from backup</strong> until the Monero escrow watcher has looked for escrow wallets created after the backup and checked every escrow wallet; it reopens by itself once that check completes and the recovery lock is cleared.</div>{{end}}
 <p>A restore from backup holds every restored Monero escrow settlement with a stored transaction: the restored records may predate its relay, or a transaction that spent its coins. Check each one in the escrow daemon (<code>/get_transactions</code> of its transaction, <code>/is_key_image_spent</code> of its key images) and in the escrow wallet, then confirm it: the market relays the same stored transaction once, under the recovery lock too, and never builds it again. Each confirmation needs your password and is audited.</p>{{if not .On}}

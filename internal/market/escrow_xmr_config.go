@@ -231,6 +231,28 @@ func (a *App) xmrEscrowNetwork() string {
 	return a.escrowXMR.network()
 }
 
+// xmrEscrowNetKnown is the network Monero escrow was verified on or pinned to (escrowXMR.formNet), "" before that and
+// while ESCROW_XMR is off: copy that cannot name the network of a particular order says nothing instead of guessing
+// (A-472).
+func (a *App) xmrEscrowNetKnown() string {
+	if a.escrowXMR == nil {
+		return ""
+	}
+	return a.escrowXMR.formNet()
+}
+
+// xmrEscrowNetShort is the short name of the network in "(…)" in Go-built copy, the rule of the templates
+// payment-status:xmr-net and /admin: "network not verified yet", "Monero stagenet" or "local fakechain" (A-472).
+func (a *App) xmrEscrowNetShort() string {
+	switch a.xmrEscrowNetKnown() {
+	case "":
+		return "network not verified yet"
+	case "stagenet":
+		return "Monero stagenet"
+	}
+	return "local fakechain"
+}
+
 // initEscrowXMR runs in New after Bitcoin escrow. ESCROW_XMR=off does nothing. On, a configuration error, an
 // unusable seed key file, a mainnet market, or an escrow node that answers but fails the network check
 // (errXMRStartDaemon, errXMRStartWallet) stops startup. A changed secret, a changed seed key (wallet creation only),

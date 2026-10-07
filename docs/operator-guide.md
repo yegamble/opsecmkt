@@ -1787,7 +1787,7 @@ accounts, so without the sweep a deposit to a later account is not seen (the `Lo
 this for account 300). A restore not done by `scripts/restore.sh` or the SQL of [UPGRADING.md, section 6](../UPGRADING.md#6-backups-now-need-the-wallets-too)
 holds nothing.
 
-**Held settlements.** Under *Admin → Payment providers → Monero escrow recovery and retention (fakechain)*, each restored
+**Held settlements.** Under *Admin → Payment providers → Monero escrow recovery and retention (local fakechain, Monero stagenet or network not verified yet)*, each restored
 settlement with a stored transaction is listed with its order, kind, state and transaction hash. The restored records may
 predate its relay, or a transaction that spent its coins, so check it first in the escrow daemon and the escrow wallet, for
 example with the daemon's own RPC (a daemon started with a login needs `--digest -u USER:PASSWORD`):
@@ -1839,7 +1839,7 @@ file is gone and nothing is owed on it; that is refused while the restore gate o
 escrow wallet open in another wallet program** (for example `monero-wallet-cli` on the same files): a wallet "opened by another
 wallet program" keeps its state and its accounts, but the market cannot read its deposits or send its settlements until you
 close it there (logged once). **The market cannot reach the wallet volume, so the files stay until you delete them.**
-*Admin → Payment providers → Monero escrow recovery and retention (fakechain)* lists *Destroyed Monero escrow wallets* with
+*Admin → Payment providers → Monero escrow recovery and retention (local fakechain, Monero stagenet or network not verified yet)* lists *Destroyed Monero escrow wallets* with
 their two files, `NAME` and `NAME.keys`. Delete each pair from the escrow wallet volume:
 
 ```sh

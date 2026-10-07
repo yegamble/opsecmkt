@@ -2,6 +2,7 @@ package market
 
 import (
 	"html"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -125,10 +126,10 @@ func TestXMREscrowPagesNameNetwork(t *testing.T) {
 // Bitcoin escrow's chain on the same pages: each of regtest, signet and testnet4 is named, and testnet4, a public test
 // network, is not also called unverified on every public network.
 func TestEscrowCanaryAndNoticesNameChain(t *testing.T) {
-	for _, c := range []struct{ chain, challenge, runs, unavailable string }{
-		{"regtest", "", "It runs on regtest, a local test chain with no real funds, and is not verified on any public network.", "Bitcoin escrow on any public network"},
-		{"signet", "51", "It runs on signet, a test network with no real funds, and is not verified on any public network.", "Bitcoin escrow on any public network"},
-		{"testnet4", "", "It runs on testnet4, a public test network with no real funds, and has been tested only on local test chains, not yet on public testnet4.", "Bitcoin escrow verified on public testnet4"},
+	for _, c := range []struct{ chain, challenge, runs, unavailable, panel string }{
+		{"regtest", "", "It runs on regtest, a local test chain with no real funds, and is not verified on any public network.", "Bitcoin escrow on any public network", "Bitcoin escrow on this market runs on regtest, a local test chain, and has not been verified on any public network"},
+		{"signet", "51", "It runs on signet, a test network with no real funds, and is not verified on any public network.", "Bitcoin escrow on any public network", "Bitcoin escrow on this market runs on signet, a test network, and has not been verified on any public network"},
+		{"testnet4", "", "It runs on testnet4, a public test network with no real funds, and has been tested only on local test chains, not yet on public testnet4.", "Bitcoin escrow verified on public testnet4", "Bitcoin escrow on this market runs on testnet4, a public test network, and has been tested only on local test chains, not yet on public testnet4"},
 	} {
 		t.Run(c.chain, func(t *testing.T) {
 			x := newEscrowEnv(t)
@@ -157,6 +158,104 @@ func TestEscrowCanaryAndNoticesNameChain(t *testing.T) {
 			if dash := html.UnescapeString(x.page("/vendor-dashboard", x.vendorSess)); !strings.Contains(dash, "2-of-3 per order, "+c.chain) {
 				t.Errorf("vendor desk tile on %s:\n%s", c.chain, dash)
 			}
+			// The order panel's headline (order-escrow.html) says the same as the canary.
+			order, _ := x.built(x.netAddr("net-refund"), x.netAddr("net-claim"), 100000)
+			if page := html.UnescapeString(x.page("/order?id="+order, x.buyerSess)); !strings.Contains(page, c.panel) {
+				t.Errorf("order panel on %s lacks %q:\n%s", c.chain, c.panel, pageLine(page, "Bitcoin escrow on this market runs on"))
+			}
+		})
+	}
+}
+
+// forgetNetwork makes x's Monero escrow network unknown while its escrows stay: the pin is removed and the daemon is
+// syncing at hard fork 1 (never verified), then the market restarts: a database from before the pin (A-449).
+func (x *xmrEscrowEnv) forgetNetwork() {
+	x.t.Helper()
+	agExec(x.testEnv, "DELETE FROM settings WHERE key='escrow_xmr_network'")
+	x.fake.edit(func(f *fakeXMREscrow) { f.targetAhead, f.hardFork = 1_000_000, 1 })
+	x.restart()
+	if x.A.escrowXMR == nil || x.A.escrowXMR.formNet() != "" {
+		x.t.Fatalf("the network is still known after the pin was removed and the daemon left unverified")
+	}
+}
+
+// A-472: the dispute pages, the dispute preview and /admin's Monero escrow recovery heading name the network by the
+// same rule (a funded, disputed Monero escrow order); the amounts name it only once it is known.
+func TestXMREscrowDisputeAndAdminNameNetwork(t *testing.T) {
+	for _, c := range []struct {
+		name, net, amount string
+		edit              func(f *fakeXMREscrow)
+		forget            bool
+	}{
+		{"stagenet", "Monero stagenet", "0.5 stagenet XMR", onStagenet, false},
+		{"fakechain", "local fakechain", "0.5 fakechain XMR", nil, false},
+		{"unknown", "network not verified yet", "0.5 XMR", onStagenet, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			x := newXMREscrowEnvWith(t, c.edit)
+			x.mustPoll()
+			order, addr := x.freshCheckout(x.physical(x.vendor))
+			x.fake.payAddress(addr, hex64("paid "+order), xmrListingPrice, 10)
+			x.mustPoll()
+			if w := x.do("POST", "/disputes", x.sessOf(order, roleBuyer), url.Values{"order_id": {order}, "reason": {"The parcel never arrived at the address I sent."}}); w.Code != 303 {
+				t.Fatalf("dispute: %d %s", w.Code, w.Body.String())
+			}
+			if c.forget {
+				x.forgetNetwork()
+			}
+			_, mod := x.user("xmod_"+randomToken()[:6], "moderator")
+			_, admin := x.user("xadm_"+randomToken()[:6], "admin")
+			for _, p := range []struct{ name, path, sess, want string }{
+				{"moderator's refusal", "/disputes", mod, "Only an administrator decides a dispute on a Monero escrow order (" + c.net + "): the decision moves coins from the escrow."},
+				{"administrator's preview", "/disputes", admin, "This is a Monero escrow order (" + c.net + "): its coins are " + xmrCustody + "."},
+				{"administrator's amounts", "/disputes", admin, "the escrowed " + c.amount},
+				{"recovery heading", "/admin", admin, "Monero escrow recovery and retention (" + c.net + ")"},
+			} {
+				page := html.UnescapeString(x.page(p.path, p.sess))
+				if !strings.Contains(page, p.want) {
+					t.Errorf("%s lacks %q:\n%s", p.name, p.want, pageLine(page, "Monero escrow"))
+				}
+			}
+		})
+	}
+}
+
+// A-472: a Monero escrow order's panel names the network its escrow address was issued on (the address's tag, read
+// from the stored address), never the market's current or default one: the same after the network was forgotten
+// (a database from before the pin, its daemon unverified) and after Monero escrow was switched off.
+func TestXMREscrowOrderPanelNamesItsOwnNetwork(t *testing.T) {
+	const (
+		stage = "Monero escrow on this market runs on Monero stagenet, a public test network, and has been tested only on local test chains, not yet on the public stagenet"
+		fake  = "Monero escrow on this market runs on a Monero fakechain, a local test chain, and has not been verified on any public network"
+	)
+	for _, c := range []struct {
+		name, badge, want, gone string
+		edit                    func(f *fakeXMREscrow)
+	}{
+		{"stagenet", "STAGENET", stage, "fakechain", onStagenet},
+		{"fakechain", "FAKECHAIN", fake, "stagenet", nil},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			x := newXMREscrowEnvWith(t, c.edit)
+			x.mustPoll()
+			order, _ := x.freshCheckout(x.digital(x.vendor))
+			sess := x.sessOf(order, roleBuyer)
+			check := func(state string) {
+				t.Helper()
+				page := html.UnescapeString(x.page("/order?id="+order, sess))
+				if !strings.Contains(page, `<span class="badge testnet">`+c.badge+`</span>`) || !strings.Contains(page, c.want) {
+					t.Errorf("%s: the order panel does not name %s:\n%s", state, c.name, pageLine(page, "Monero escrow"))
+				}
+				if strings.Contains(strings.ToLower(page), c.gone) {
+					t.Errorf("%s: the order page names %s:\n%s", state, c.gone, pageLine(strings.ToLower(page), c.gone))
+				}
+			}
+			check("ready")
+			x.forgetNetwork()
+			check("network forgotten")
+			t.Setenv("ESCROW_XMR", "off")
+			x.restart()
+			check("switched off")
 		})
 	}
 }

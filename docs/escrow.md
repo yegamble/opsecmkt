@@ -895,8 +895,13 @@ recorded**: the evidence below is simulated RPC and an offline stagenet fork.
   on the public stagenet" and lists "Monero escrow verified on the public stagenet" as unavailable; "not verified on any
   public network" stays on a fakechain and while the network is unknown, where it is true. On Bitcoin testnet4 the canary
   says the same (tested only on local test chains, not yet on public testnet4); regtest and signet keep "not verified on
-  any public network". Copy only: `TestXMREscrowPagesNameNetwork`, `TestEscrowCanaryAndNoticesNameChain` (simulated RPC,
-  not evidence of a public run).
+  any public network". The same rule names the network in the dispute pages (the moderator's refusal and the
+  administrator's preview), `/admin`'s Monero escrow recovery heading and the Bitcoin order panel's headline (testnet4);
+  the dispute amounts say "0.5 stagenet XMR" or "0.5 fakechain XMR" once the network is known and plain "XMR" before.
+  A Monero escrow order's own panel names the network of its stored escrow address (its tag), not the market's current
+  one, so it stays right with Monero escrow off or its network forgotten. Copy only: `TestXMREscrowPagesNameNetwork`,
+  `TestXMREscrowDisputeAndAdminNameNetwork`, `TestXMREscrowOrderPanelNamesItsOwnNetwork`,
+  `TestEscrowCanaryAndNoticesNameChain` (simulated RPC, not evidence of a public run).
 - **Wallet height after a refresh, compared with a fresh daemon reading (A-475).** The daemon's height was read before
   the wallet's refresh, which can take minutes, so a daemon that gained more than 10 blocks meanwhile (catching up after
   downtime, a slow pass; the browser journey's `mine` of 100 blocks did it under load) left the wallet, correctly synced
