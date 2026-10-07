@@ -3,6 +3,7 @@ package market
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -124,10 +125,10 @@ func (x *xmrEscrowEnv) staffUsers() int {
 
 // QA5W2-1: a refund the wallet refuses for a reason that is not the fee (-16 tx not possible, -17 not enough money),
 // whose fee estimate fails on every other pass, is flagged on its second pass in a row without a build, whichever class
-// that pass records (the refusal, or the unavailable estimate), and staff are told once for the episode, however often
-// the class flips between those already flagged. Before, each estimate failure restarted the refusal's count and each
-// refusal restarted the estimate's, so it waited unflagged for good. With the estimate always answering, the refusal
-// keeps its own count (the control).
+// that pass records (the refusal, or the unavailable estimate), and staff are told once of each of the two, however
+// often the class flips between them (QA5W3B: once per distinct flagged class of the run, not once for the run).
+// Before, each estimate failure restarted the refusal's count and each refusal restarted the estimate's, so it waited
+// unflagged for good. With the estimate always answering, the refusal keeps its own count (the control).
 func TestXMREscrowRefundFeeEstimateIntermittent(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -162,9 +163,15 @@ func TestXMREscrowRefundFeeEstimateIntermittent(t *testing.T) {
 				if r.State != "requested" {
 					t.Fatalf("pass %d: the refund %+v", i, r)
 				}
-				// Not flagged on the first pass; flagged from the second, once.
+				// Not flagged on the first pass; flagged from the second, once for each distinct flagged class.
+				told := map[string]bool{}
+				for _, c := range got {
+					if xmrWaitFlagged(c) {
+						told[c] = true
+					}
+				}
 				flagged, notes, notices := xmrWaitFlagged(x.waitClass(r.ID)), x.flagNotes(order, r.ID), x.staffFlags(order)-flags0
-				if want := min(i, 1); flagged != (i > 0) || notes != want || notices != want*x.staffUsers() {
+				if want := len(told); flagged != (i > 0) || notes != want || notices != want*x.staffUsers() {
 					t.Fatalf("pass %d: classes %q, flagged %v, %d staff notes, %d staff notices (%d staff); events %q", i, got, flagged, notes, notices, x.staffUsers(), x.events(order))
 				}
 			}
@@ -175,9 +182,11 @@ func TestXMREscrowRefundFeeEstimateIntermittent(t *testing.T) {
 	}
 }
 
-// QA5W2 (NIT): a stray refund already waiting too small (flagged) is not flagged again because a restart lost the
-// in-memory record of its refusal while the fee estimate is down: it records the unavailable estimate, then too small
-// again once the estimate answers, and staff are told nothing new. The refund that ended too small is untouched.
+// QA5W2 (NIT): a stray refund already waiting too small (flagged) is not flagged too small again because a restart
+// lost the in-memory record of its refusal while the fee estimate is down: it records the unavailable estimate, then
+// too small again once the estimate answers. Staff are told of the unavailable estimate once, a class not yet told in
+// this run (QA5W3B: once per distinct flagged class, so the order page's "market staff were notified" holds for it),
+// and of too small nothing again. The refund that ended too small is untouched.
 func TestXMREscrowStrayRestartEstimateDown(t *testing.T) {
 	x := newXMREscrowEnv(t)
 	x.mustPoll()
@@ -203,7 +212,8 @@ func TestXMREscrowStrayRestartEstimateDown(t *testing.T) {
 		seq = append(seq, x.waitClass(stray.ID))
 	}
 	want := []string{xmrFeeEstimateUnavailable, xmrFeeEstimateUnavailable, xmrFeeEstimateUnavailable, xmrTooSmall, xmrTooSmall}
-	if !slices.Equal(seq, want) || x.staffFlags(order) != flags0 || x.flagNotes(order, stray.ID) != notes0 || len(x.events(order)) != events0 {
+	if !slices.Equal(seq, want) || x.staffFlags(order) != flags0+x.staffUsers() || x.flagNotes(order, stray.ID) != notes0+1 || len(x.events(order)) != events0+1 ||
+		x.classNotes(order, stray, xmrFeeEstimateUnavailable) != 1 || x.classNotes(order, stray, xmrTooSmall) != 1 {
 		t.Fatalf("classes %q (want %q); staff notices +%d, staff notes +%d, order events +%d: %q", seq, want, x.staffFlags(order)-flags0,
 			x.flagNotes(order, stray.ID)-notes0, len(x.events(order))-events0, x.events(order))
 	}
@@ -315,5 +325,182 @@ func TestXMREscrowFeeWaitRetentionRuns(t *testing.T) {
 	file, _ := x.fake.file(name)
 	if x.walletState(name) != "destroyed" || file.password == derived || x.fake.countOf("change_wallet_password") != changes+1 {
 		t.Fatalf("wallet %s, password changed %v, change_wallet_password +%d", x.walletState(name), file.password != derived, x.fake.countOf("change_wallet_password")-changes)
+	}
+}
+
+// classNotes counts the staff notes xmrSettleWaits wrote for settlement s flagging class.
+func (x *xmrEscrowEnv) classNotes(order string, s xmrSettlement, class string) int {
+	return agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND actor_id IS NULL AND strpos(note,$2)=1", order,
+		fmt.Sprintf("Monero escrow settlement %d (%s) not sent: %s", s.ID, settlementKind(s.Kind), xmrSettleWaitText(class, s.Kind, 10)))
+}
+
+// feeWaitPass is what the wallet answers transfer on one pass (code 0: the fake wallet's own handler), and whether the
+// fee estimate fails on it.
+type feeWaitPass struct {
+	code    int64
+	feeDown bool
+}
+
+// refusalPass runs one watcher pass with the wallet answering transfer as p says.
+func (x *xmrEscrowEnv) refusalPass(p feeWaitPass) {
+	x.t.Helper()
+	msg := map[int64]string{-16: "tx not possible", -17: "not enough money", -37: "not enough unlocked money"}[p.code]
+	if p.code != 0 {
+		defer x.refuseTransfer(p.code, msg)()
+	}
+	x.fake.edit(func(f *fakeXMREscrow) { f.feeErr = p.feeDown })
+	x.mustPoll()
+}
+
+// QA5W3B-3: a refund told "fee estimate unavailable" whose estimate then answers, while the wallet still refuses for a
+// reason that is not the fee, is a different diagnosis staff are told of too: -17 (the wallet sees fewer coins than it
+// listed, perhaps spent outside) is an outputs mismatch, -16 a refusing wallet, each with its own note and notice.
+// Before, the unavailable estimate's notice hid both for good.
+func TestXMREscrowFeeWaitThenDiagnosis(t *testing.T) {
+	for _, tc := range []struct {
+		code int64
+		then string
+	}{
+		{-17, xmrOutputsMismatch},
+		{-16, xmrWalletRefused + " rpc:-16"},
+	} {
+		t.Run(strconv.FormatInt(tc.code, 10), func(t *testing.T) {
+			x := newXMREscrowEnv(t)
+			x.mustPoll()
+			order, _, _ := x.refundOf(xmrListingPrice)
+			flags0 := x.staffFlags(order)
+			want := []string{xmrFeeEstimateWaiting, xmrFeeEstimateUnavailable, tc.then, tc.then, tc.then}
+			told := []int{0, 1, 2, 2, 2}
+			var got []string
+			for i, down := range []bool{true, true, false, false, false} {
+				x.refusalPass(feeWaitPass{tc.code, down})
+				r := x.settlementOf(order, "refund")
+				got = append(got, x.waitClass(r.ID))
+				if r.State != "requested" || x.flagNotes(order, r.ID) != told[i] || x.staffFlags(order)-flags0 != told[i]*x.staffUsers() {
+					t.Fatalf("pass %d: the refund %+v, classes %q, %d staff notes, %d staff notices (%d staff); events %q", i, r, got,
+						x.flagNotes(order, r.ID), x.staffFlags(order)-flags0, x.staffUsers(), x.events(order))
+				}
+			}
+			r := x.settlementOf(order, "refund")
+			if !slices.Equal(got, want) || x.classNotes(order, r, xmrFeeEstimateUnavailable) != 1 || x.classNotes(order, r, tc.then) != 1 {
+				t.Fatalf("classes %q (want %q); %d unavailable notes, %d %s notes; events %q", got, want,
+					x.classNotes(order, r, xmrFeeEstimateUnavailable), x.classNotes(order, r, tc.then), tc.then, x.events(order))
+			}
+		})
+	}
+}
+
+// QA5W3B-3: a stray refund whose fee estimate is down when it is first refused is told "fee estimate unavailable"; once
+// the estimate answers and finds its coins too few, staff are told that as well, once.
+func TestXMREscrowStrayUnavailableThenTooSmall(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	order, _, _ := x.refundOf(minPayoutXMR)
+	x.mustPoll()
+	if r := x.settlementOf(order, "refund"); r.State != "failed" || x.waitClass(r.ID) != xmrTooSmall {
+		t.Fatalf("the refund %+v %q", r, x.waitClass(r.ID))
+	}
+	flags0 := x.staffFlags(order)
+	want := []string{xmrFeeEstimateWaiting, xmrFeeEstimateUnavailable, xmrFeeEstimateUnavailable, xmrTooSmall, xmrTooSmall}
+	told := []int{0, 1, 1, 2, 2}
+	var got []string
+	for i, down := range []bool{true, true, true, false, false} {
+		x.refusalPass(feeWaitPass{0, down})
+		s := x.settlementOf(order, "stray_refund")
+		got = append(got, x.waitClass(s.ID))
+		if s.State != "requested" || x.flagNotes(order, s.ID) != told[i] || x.staffFlags(order)-flags0 != told[i]*x.staffUsers() {
+			t.Fatalf("pass %d: the stray refund %+v, classes %q, %d staff notes, %d staff notices (%d staff); events %q", i, s, got,
+				x.flagNotes(order, s.ID), x.staffFlags(order)-flags0, x.staffUsers(), x.events(order))
+		}
+	}
+	s := x.settlementOf(order, "stray_refund")
+	if !slices.Equal(got, want) || x.classNotes(order, s, xmrFeeEstimateUnavailable) != 1 || x.classNotes(order, s, xmrTooSmall) != 1 {
+		t.Fatalf("classes %q (want %q); %d unavailable notes, %d too-small notes; events %q", got, want,
+			x.classNotes(order, s, xmrFeeEstimateUnavailable), x.classNotes(order, s, xmrTooSmall), x.events(order))
+	}
+}
+
+// QA5W3B-4: a -37 (outputs-waiting, a wait never flagged) between failed estimates neither ends the run nor makes the
+// next flagged class news: over 10 passes staff are told once of each distinct flagged class, not on every second
+// pass. Before, the -16/-37 alternation notified each staff member on every unavailable pass.
+func TestXMREscrowFeeWaitMinus37Between(t *testing.T) {
+	refused := xmrWalletRefused + " rpc:-16"
+	for _, tc := range []struct {
+		name   string
+		cycle  []feeWaitPass
+		want   []string
+		tagged []string // the distinct flagged classes, each told once
+	}{
+		{"-16 estimate down, -37", []feeWaitPass{{-16, true}, {-37, true}},
+			[]string{xmrFeeEstimateWaiting, xmrWaitOutputs, xmrFeeEstimateUnavailable, xmrWaitOutputs, xmrFeeEstimateUnavailable,
+				xmrWaitOutputs, xmrFeeEstimateUnavailable, xmrWaitOutputs, xmrFeeEstimateUnavailable, xmrWaitOutputs},
+			[]string{xmrFeeEstimateUnavailable}},
+		{"-16 estimate down, -16 estimate up, -37", []feeWaitPass{{-16, true}, {-16, false}, {-37, false}},
+			[]string{xmrFeeEstimateWaiting, refused, xmrWaitOutputs, xmrFeeEstimateUnavailable, refused, xmrWaitOutputs,
+				xmrFeeEstimateUnavailable, refused, xmrWaitOutputs, xmrFeeEstimateUnavailable},
+			[]string{refused, xmrFeeEstimateUnavailable}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			x := newXMREscrowEnv(t)
+			x.mustPoll()
+			order, _, _ := x.refundOf(xmrListingPrice)
+			flags0 := x.staffFlags(order)
+			var got []string
+			told := map[string]bool{}
+			for i := range tc.want {
+				x.refusalPass(tc.cycle[i%len(tc.cycle)])
+				r := x.settlementOf(order, "refund")
+				class := x.waitClass(r.ID)
+				got = append(got, class)
+				if xmrWaitFlagged(class) {
+					told[class] = true
+				}
+				if r.State != "requested" || x.flagNotes(order, r.ID) != len(told) || x.staffFlags(order)-flags0 != len(told)*x.staffUsers() {
+					t.Fatalf("pass %d: the refund %+v, classes %q, %d staff notes, %d staff notices (%d staff); events %q", i, r, got,
+						x.flagNotes(order, r.ID), x.staffFlags(order)-flags0, x.staffUsers(), x.events(order))
+				}
+			}
+			r := x.settlementOf(order, "refund")
+			if !slices.Equal(got, tc.want) || len(told) != len(tc.tagged) {
+				t.Fatalf("classes %q, want %q; flagged %v", got, tc.want, told)
+			}
+			for _, class := range tc.tagged {
+				if n := x.classNotes(order, r, class); n != 1 {
+					t.Fatalf("%d %s notes, want 1; events %q", n, class, x.events(order))
+				}
+			}
+		})
+	}
+}
+
+// QA5W3B (chair, with QA5W2's restart case): what staff were told in a run is read from the order's notes, so a restart
+// mid-run re-announces nothing, whichever class the passes after it record.
+func TestXMREscrowFeeWaitRestartMidRun(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	order, _, _ := x.refundOf(xmrListingPrice)
+	refused := xmrWalletRefused + " rpc:-16"
+	for _, p := range []feeWaitPass{{-16, true}, {-16, false}, {-16, true}} {
+		x.refusalPass(p)
+	}
+	r := x.settlementOf(order, "refund")
+	if x.waitClass(r.ID) != xmrFeeEstimateUnavailable || x.classNotes(order, r, refused) != 1 || x.classNotes(order, r, xmrFeeEstimateUnavailable) != 1 {
+		t.Fatalf("before the restart: wait %q; events %q", x.waitClass(r.ID), x.events(order))
+	}
+	flags0, notes0 := x.staffFlags(order), x.flagNotes(order, r.ID)
+	x.restart()
+	var got []string
+	for _, p := range []feeWaitPass{{-16, false}, {-37, false}, {-16, true}, {-17, false}, {-16, false}, {-16, true}} {
+		x.refusalPass(p)
+		got = append(got, x.waitClass(r.ID))
+	}
+	want := []string{refused, xmrWaitOutputs, xmrFeeEstimateUnavailable, xmrOutputsMismatch, xmrWalletRefusing + " rpc:-16", xmrFeeEstimateUnavailable}
+	if !slices.Equal(got, want) || x.settlement(r.ID).State != "requested" {
+		t.Fatalf("after the restart: classes %q, want %q; the refund %+v", got, want, x.settlement(r.ID))
+	}
+	// The outputs mismatch is the run's one new class: told once; nothing already told is told again.
+	if x.flagNotes(order, r.ID) != notes0+1 || x.classNotes(order, r, xmrOutputsMismatch) != 1 || x.staffFlags(order) != flags0+x.staffUsers() {
+		t.Fatalf("after the restart: staff notes +%d, mismatch notes %d, staff notices +%d (%d staff); events %q", x.flagNotes(order, r.ID)-notes0,
+			x.classNotes(order, r, xmrOutputsMismatch), x.staffFlags(order)-flags0, x.staffUsers(), x.events(order))
 	}
 }

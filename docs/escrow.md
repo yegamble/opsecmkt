@@ -592,9 +592,14 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   pass fails the same way (`fee-estimate-unavailable`), and is tried again on each pass, while the wallet's pass goes
   on with its other orders, their payment windows and the wallet's retention (QA5W1-4). A failed estimate and a refusal
   count as one run of passes without a build: when the estimate fails only on some passes, the second pass in a row is
-  flagged as whichever class it records (the refusal, or the unavailable estimate), and staff are told once for that
-  run, not each time the class flips between those two; a stray refund already flagged too-small is not flagged again
-  when a restart makes it read a failing estimate (QA5W2-1). A stray refund waiting
+  flagged as whichever class it records (the refusal, or the unavailable estimate) (QA5W2-1). Within that run, which
+  ends only when the settlement is built or leaves its waiting state, staff are told once of each distinct flagged
+  class it records (the unavailable estimate, an outputs mismatch, a refusing wallet with its code, too few): a class
+  already told that recurs, after another class or a wait never flagged such as -37's `outputs-waiting`, is told
+  nothing new, while a different diagnosis is (the wallet seeing fewer coins than it listed, or refusing, once the
+  estimate answers; a stray refund's coins found too few). What was told is read from the settlement's own order notes,
+  so a restart re-announces nothing; a stray refund already flagged too-small that a restart makes read a failing
+  estimate is told of the unavailable estimate once, and not of too-small again (QA5W3B-3, QA5W3B-4). A stray refund waiting
   too-small that the wallet keeps refusing is logged once, and its fee is not read again while it claims the same
   outputs; `transfer` is still asked on each pass, so a later deposit that lets it build is seen (QA5W1-6). A release
   too few still waits, and its refusals keep their classes: the
