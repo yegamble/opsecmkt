@@ -553,7 +553,8 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   that confirmation through those refusals, so it is relayed again while the restore gate is still set. Stored metadata
   the wallet cannot parse (-27, which only a damaged record explains) fails the settlement at once, flagged once, and is
   never relayed again. When building, the wallet's -37 (the coins are not unlocked yet) only waits, never flagged; -17
-  (not enough money) waits once and is flagged if it persists. These are the codes `monero-wallet-rpc` 0.18.5.1 gave
+  (not enough money) waits once and is flagged if it persists, except for a refund whose coins are too few for the
+  network fee (below, A-467). These are the codes `monero-wallet-rpc` 0.18.5.1 gave
   when recorded (`tests/e2e/fixtures/xmr_rpc_shapes_0.18.5.1.json`).
 - **Refunds and strays.** A refund goes to the address pinned at checkout, with the network fee taken from the amount.
   A release pays the vendor's claim address the escrow less the market fee (fixed at checkout; a fee below 0.001 XMR is
@@ -571,7 +572,23 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   flagged, with one note and the parties and staff told, so the one stray refund returns them together with a later
   deposit, or one that did not count at the cancellation or the decision and has confirmed since, once together they
   pay the fee. Before, the refund waited for good while a later deposit's stray refund waited too or paid without its
-  coins (A-437). A release too few still waits: the coins are the vendor's. After a close, deposits are refunded automatically until the wallet is
+  coins (A-437). Coins at or below the network fee itself never reach that check: asked to take the fee from the
+  refund, `monero-wallet-rpc` 0.18.5.1 refuses to build it, with -17 (not enough money; 0.001 and 0.0015 XMR on a young
+  fakechain), -16 (tx not possible; 0.0018 XMR) or -46 (the output would be zero). Those codes also mean other things
+  (coins the wallet no longer sees as unlocked or confirmed, a wallet behind the chain), so on them, for a refund or a
+  stray refund, the market reads the fee the wallet would take, with calls that build nothing: the priority the wallet
+  uses for `transfer` at priority 0 (`get_default_fee_priority`; its -1 means priority 1), the weight it estimates for
+  the inputs claimed and two outputs (`estimate_tx_size_and_weight`, ring 16) and the escrow daemon's fee per byte at
+  that priority with its quantization mask (`get_fee_estimate`, on monerod's restricted RPC). The fee is wallet2's own
+  formula, weight times fee per byte rounded up to the mask; no margin is added, because wallet2's weight estimate is
+  already above the built transaction's (on the fakechain, A-467 probe: estimated 1536 for one input, built 1507, so
+  0.0018432 XMR against 0.0018084 XMR). When the refund less that fee is below 0.001 XMR, the refund is too few as
+  above (ended, or for a stray refund waiting, too-small), whatever the wallet's reason; otherwise the refusal keeps its
+  class (-17 waits once and is then an outputs mismatch, flagged; -16 and -46 a refusing wallet). The estimate only
+  decides among refusals: a refund the wallet builds is checked as before, and a refund classed too few by a slightly
+  high estimate is returned by the stray refund, which the wallet then builds. A fee estimate that fails records
+  nothing; the next pass tries again (A-467). A release too few still waits, and its refusals keep their classes: the
+  coins are the vendor's. After a close, deposits are refunded automatically until the wallet is
   destroyed; after that, the order page says Monero sent to its address since then cannot be recovered (ES-8).
 - **Confirm receipt and deadlines.** For a digital order the vendor claims the escrow with a fresh Monero address and their
   password once the order has completed on funding. For a physical order the vendor's *Mark as shipped* takes the claim
@@ -723,7 +740,7 @@ wallet takes an order again and no settlement is relayed until an administrator 
 - Real `monerod` and `monero-wallet-rpc` 0.18.5.1 on a local fakechain, run by hand, not in CI
   (`scripts/test-escrow-xmr-regtest.sh`, [runbook](testnet-runbook.md#9-manual-monero-escrow-fakechain-check); the app
   runs inside the Go test against the real daemon and wallet-rpc, and the script refuses any daemon that is not a
-  fakechain). Fourteen legs, each a Go test:
+  fakechain). Fifteen legs, each a Go test:
   1. `TestXMREscrowRegtestWallets`: the first pass creates the month's wallet, seals its seed (the seal decrypts, and a
      wallet restored from it at the stored restore height has the stored primary address), activates it and keeps its free
      accounts; account 0 holds nothing; the next month's wallet is created sealed ahead of its month and becomes active at
@@ -759,6 +776,10 @@ wallet takes an order again and no settlement is relayed until an administrator 
       answers 503.
   14. `TestXMREscrowRegtestDestroy`: a deposit on day 89 to a closed order's escrow is refunded; on day 91 the retained
       wallet is destroyed and `open_wallet` with the derived password is refused.
+  15. `TestXMREscrowRegtestRefundBelowFee` (A-467): refunds of 0.001, 0.0015 and 0.0018 XMR decided for the buyer are
+      refused by the wallet (-17, -17, -16: the coins are at or below the network fee); each ends too few on the
+      market's fee estimate, its deposit is left out, and the one stray refund returns it with a later deposit, relayed
+      and confirmed; no note says the outputs mismatched or the wallet refused.
 
   Every settlement the daemon holds is decoded (RingCT type 6, 16 ring members per input, a fee above zero, the stored one,
   within `ESCROW_XMR_MAX_FEE`). Each leg puts the watcher's clock in a month of its own, so the legs may run again against
@@ -931,7 +952,7 @@ again on a fakechain (`scripts/test-escrow-xmr-regtest.sh`), and on an **offline
 (`scripts/test-escrow-xmr-stagenet.sh`: stagenet daemons built from the genesis block with the local monerod 0.18.5.1
 image, peered only with each other on a Docker network with no route out, local mining at fixed difficulty) the legs such
 a chain can run. Built from genesis it is at hard fork version 1 (version 16 starts at height 1,151,720), so Monero escrow
-refuses to start on it, as it must, and none of the fourteen legs can run there; the stagenet legs show that refusal names
+refuses to start on it, as it must, and none of the fifteen legs can run there; the stagenet legs show that refusal names
 the hard fork, not the network; that a real stagenet wallet's primary address, subaddress and integrated address are read
 under the stagenet tags (the integrated one refused) and refused under the fakechain's, by the parser and by the adapter;
 and that the escrow and pooled sync guards read a restricted stagenet daemon with a peer and a fresh tip as synced and an

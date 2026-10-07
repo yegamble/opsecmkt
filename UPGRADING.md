@@ -1317,6 +1317,17 @@ prefix (`TB1…` on signet and testnet4, as `BCRT1…` already was on regtest). 
 public signet or testnet4 is recorded**: the real-chain legs ran on regtest and on a private signet
 (`scripts/test-escrow-regtest.sh --private-signet`).
 
+## 41. Monero escrow: refunds at or below the network fee end too few (A-467)
+
+No migration, no new key. Only with `ESCROW_XMR=on`. A Monero refund or stray refund whose coins are at or below the
+network fee is refused by `monero-wallet-rpc` (`transfer` answers -17, -16 or -46); the market now reads the fee the
+wallet would take (`get_default_fee_priority` and `estimate_tx_size_and_weight` on the escrow wallet-rpc,
+`get_fee_estimate` on the escrow daemon, which monerod's restricted RPC serves; nothing is built or sent) and treats such
+a refund as too few, as it already treated one the wallet built with less than 0.001 XMR left after the fee: the refund
+ends, its deposits are left out and the stray refund returns them with a later deposit. Before, it waited for good and
+staff were told of an "outputs mismatch" or a wallet that "keeps refusing" to build it. A refund waiting so when you
+upgrade ends on the next pass; its earlier order note stays. Releases are unchanged ([per-order escrow](docs/escrow.md)).
+
 ## Appendix: new keys by hand
 
 `./scripts/install.sh upgrade` writes these for you. To add them yourself, use your editor (values in single

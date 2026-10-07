@@ -60,6 +60,12 @@
 #     or opened, checkout answers 503.
 #   Destroy: a deposit on day 89 to a closed order's escrow is returned by a stray refund; on day 91 the retained wallet
 #     is destroyed (password replaced, seal wiped) and open_wallet with the derived password is refused.
+# A-467 leg (internal/market/escrow_xmr_regtest_below_fee_test.go):
+#   RefundBelowFee: orders of 0.001, 0.0015 and 0.0018 XMR decided for the buyer; the wallet refuses each refund (-17,
+#     -17, -16: coins at or below the network fee); the market's fee estimate (get_default_fee_priority,
+#     estimate_tx_size_and_weight, get_fee_estimate) classes each too few: failed too-small, its deposit left out with
+#     one note, the stray refund waiting too-small, no outputs-mismatch or refusing-wallet note; a later 0.005 XMR deposit
+#     lets that one stray refund return both deposits (relayed, decoded, confirmed).
 #
 # Needs a fakechain monerod and three monero-wallet-rpc instances attached to it (the App's escrow wallet-rpc, a funder
 # standing in for the buyer's wallet, and one used only to restore a sealed seed), plus a disposable PostgreSQL database.
@@ -122,14 +128,14 @@ log="${ESCROW_XMR_REGTEST_LOG:-artifacts/real-chain/test-escrow-xmr-regtest-$(da
 mkdir -p "$(dirname "$log")"
 echo "Monero escrow fakechain check (hard fork $version); transcript: $log"
 set +e
-go test -count=1 -timeout 45m -run '^TestXMREscrowRegtest(Wallets|Funding|TwoAccountsOneTx|Physical|RestartMidSend|RelayDropped|TopUp|Reorg|External|ReRequest|Restore|Lookahead|WrongSecret|Destroy)$' -v ./internal/market/ 2>&1 | tee "$log"
+go test -count=1 -timeout 45m -run '^TestXMREscrowRegtest(Wallets|Funding|TwoAccountsOneTx|Physical|RestartMidSend|RelayDropped|TopUp|Reorg|External|ReRequest|Restore|Lookahead|WrongSecret|Destroy|RefundBelowFee)$' -v ./internal/market/ 2>&1 | tee "$log"
 status=${PIPESTATUS[0]}
 set -e
 # Each leg is reported from its own go test result line, so one failing leg never makes another read as failed.
 failed=0
 for leg in TestXMREscrowRegtestWallets TestXMREscrowRegtestFunding TestXMREscrowRegtestTwoAccountsOneTx TestXMREscrowRegtestPhysical \
   TestXMREscrowRegtestRestartMidSend TestXMREscrowRegtestRelayDropped TestXMREscrowRegtestTopUp TestXMREscrowRegtestReorg TestXMREscrowRegtestExternal TestXMREscrowRegtestReRequest \
-  TestXMREscrowRegtestRestore TestXMREscrowRegtestLookahead TestXMREscrowRegtestWrongSecret TestXMREscrowRegtestDestroy; do
+  TestXMREscrowRegtestRestore TestXMREscrowRegtestLookahead TestXMREscrowRegtestWrongSecret TestXMREscrowRegtestDestroy TestXMREscrowRegtestRefundBelowFee; do
   if grep -q -- "--- PASS: $leg " "$log"; then
     echo "PASS: $leg"
   elif grep -q -- "--- FAIL: $leg " "$log"; then
@@ -147,4 +153,4 @@ if [[ $status -ne 0 || $failed -ne 0 ]]; then
   echo "FAILED: go test exited $status; see $log" >&2
   exit 1
 fi
-echo "PASS: Monero escrow wallets (creation, sealed seed restored to its primary address, slots, account 0 empty, monthly rotation), funding at 10 confirmations and not at 9, one transaction paying two escrow accounts, physical orders (no spending call before the outcome; after Confirm receipt, the deadline, a dispute for the buyer and a no-ship cancel, each settlement relayed and confirmed), and settlements (stored before relay, never rebuilt across a lost relay answer and restarts, a top-up left out and stray-refunded, relayed again after a reorganisation, an outside spend recorded external, a relay refused three times while monerod was stopped then failed, and its administrator's re-request spending the same key images to the same plan and confirmed; ring 16, rct type 6, fee within the cap), a restore (held release relayed once after confirmation, an orphan wallet found and sealed, free slots retired, a fresh wallet after it), the lookahead of a wallet missing an account, a changed secret refused, and a wallet destroyed after its retention with a day-89 deposit refunded first, on a local fakechain; transcript in $log"
+echo "PASS: Monero escrow wallets (creation, sealed seed restored to its primary address, slots, account 0 empty, monthly rotation), funding at 10 confirmations and not at 9, one transaction paying two escrow accounts, physical orders (no spending call before the outcome; after Confirm receipt, the deadline, a dispute for the buyer and a no-ship cancel, each settlement relayed and confirmed), and settlements (stored before relay, never rebuilt across a lost relay answer and restarts, a top-up left out and stray-refunded, relayed again after a reorganisation, an outside spend recorded external, a relay refused three times while monerod was stopped then failed, and its administrator's re-request spending the same key images to the same plan and confirmed; ring 16, rct type 6, fee within the cap), a restore (held release relayed once after confirmation, an orphan wallet found and sealed, free slots retired, a fresh wallet after it), the lookahead of a wallet missing an account, a changed secret refused, and a wallet destroyed after its retention with a day-89 deposit refunded first, and refunds of 0.001, 0.0015 and 0.0018 XMR the wallet refused as below the network fee ended too few and returned by one stray refund each with a later deposit, on a local fakechain; transcript in $log"

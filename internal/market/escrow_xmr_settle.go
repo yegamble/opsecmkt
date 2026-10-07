@@ -28,7 +28,9 @@ import (
 //     transfer with do_not_relay takes the network fee from the claimant's output alone. The reply is checked
 //     (checkXMRBuild): exactly the claimed key images, amounts_by_dest the plan less the fee on the claimant's output,
 //     the fee within ESCROW_XMR_MAX_FEE and the claimant's output at least the Monero floor; otherwise it is discarded
-//     unrelayed, the settlement stays requested and staff are told. Then, in one transaction, the outputs, the
+//     unrelayed, the settlement stays requested and staff are told (a refund too few ends instead: xmrSettleTooSmall).
+//     A refund the wallet refuses to build because its coins are at or below the network fee is too few as well
+//     (xmrRefundBelowFee, A-467). Then, in one transaction, the outputs, the
 //     transaction (hash, metadata, blob, fee, input total, key images) and the claim of each spent deposit
 //     (payments.xmr_settlement_id, compare-and-set) are stored.
 //  2. Relay (built -> relayed), only after the store, with the stored metadata, never while the restore gate is set or
@@ -499,6 +501,14 @@ func (a *App) buildXMRSettlement(ctx context.Context, s *xmrSettleRow) error {
 	}
 	tx, err := x.rpc.buildTransfer(ctx, s.Account, dests)
 	if err != nil {
+		few, ferr := a.xmrRefundBelowFee(ctx, s, plan, len(keyImages), floor, err)
+		if ferr != nil {
+			return ferr
+		}
+		if few {
+			log.Printf("escrow: Monero escrow settlement of order %s: the wallet refused to build it (%s) and its coins are too few for the network fee and the floor: %s", shortID(s.OrderID), xmrErrorClass(err), xmrTooSmall)
+			return a.xmrSettleTooSmall(ctx, s, deposits, pending)
+		}
 		return a.xmrBuildRefused(ctx, s, plan, err)
 	}
 	if class := checkXMRBuild(tx, plan.Outputs, keyImages, x.maxFee, floor); class != "" {
@@ -603,7 +613,32 @@ func (a *App) xmrRefundTooFew(ctx context.Context, s *xmrSettleRow, deposits []x
 	return nil
 }
 
-// xmrBuildRefused handles transfer's error for settlement s's plan (monero-wallet-rpc 0.18.5.1's codes). -17 (not
+// xmrRefundBelowFee reports whether transfer's refusal err of refund or stray refund s's plan, which spends nIn outputs,
+// is because the coins are too few for the network fee (A-467). monero-wallet-rpc 0.18.5.1, asked to take the fee from
+// the claimant's output, refuses coins at or below the fee before it builds anything: -17 (not enough money: below the
+// fee of a one-input transaction by its size), -16 (tx not possible: the claimant's output below the fee) or -46 (zero
+// amount: equal to it), so checkXMRBuild never sees them; on the fakechain the A-463 probe saw -17 at 0.001 and 0.0015
+// XMR and -16 at 0.0018 XMR. Those codes also mean other things (coins the wallet no longer sees as unlocked or
+// confirmed, a wallet behind the chain), so they are not trusted alone: the claimant's output less the fee the wallet
+// would take (estimateFee) is compared with the floor, as checkXMRBuild compares a build's. Below it the coins are too
+// few whatever the wallet's reason; at or above it the refusal keeps its class (xmrBuildRefused). A fee estimate that
+// fails is returned, so nothing is recorded and the next pass tries again. Releases are not compared: their coins are the
+// vendor's, and their refusals keep their classes.
+func (a *App) xmrRefundBelowFee(ctx context.Context, s *xmrSettleRow, plan settlePlan, nIn int, floor int64, err error) (bool, error) {
+	var re *xmrRPCError
+	if s.Kind != "refund" && s.Kind != "stray_refund" || !errors.As(err, &re) || re.Service != "wallet" || !strings.HasPrefix(re.Class, "rpc:") ||
+		re.Code != -16 && re.Code != -17 && re.Code != -46 {
+		return false, nil
+	}
+	fee, err := a.escrowXMR.rpc.estimateFee(ctx, nIn, len(plan.Outputs)+1)
+	if err != nil {
+		return false, err
+	}
+	return plan.Outputs[0].Sats-fee < floor, nil
+}
+
+// xmrBuildRefused handles transfer's error for settlement s's plan (monero-wallet-rpc 0.18.5.1's codes) that
+// xmrRefundBelowFee did not find too few. -17 (not
 // enough money: the wallet sees fewer spendable coins than it listed) is an outputs mismatch; -37 (not enough unlocked
 // money: they are not spendable yet, as after a reorganisation since incoming_transfers) a wait, never flagged; -2
 // (WRONG_ADDRESS) a definite refusal of a destination, named by asking validate_address about each output in turn; any
