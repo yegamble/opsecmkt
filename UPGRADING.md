@@ -1330,6 +1330,34 @@ upgrade ends on the next pass; its earlier order note stays. If the fee estimate
 flagged once if it fails again on the next pass; the wallet's other orders carry on. Releases are unchanged
 ([per-order escrow](docs/escrow.md)).
 
+## 42. Database encoding must be UTF8 (A-481)
+
+No migration, no new key. A database whose `SHOW server_encoding` is not `UTF8` (an external PostgreSQL created as
+`SQL_ASCII` or `LATIN1`, for example by a C-locale `initdb` without `-E UTF8`) now stops startup, before the first
+migration statement, with `the database encoding is ..., not UTF8` and nothing changed. Before, it ran with silent
+differences: on `SQL_ASCII` the image description limit of 250 counted bytes (250 "é" was refused there and
+accepted on UTF8), and case folding and sorting follow the database's encoding and locale. The bundled Compose
+PostgreSQL is initialised as UTF8 and is not affected, and a database already UTF8 needs nothing. Check yours with
+`psql "$DATABASE_URL" -c 'SHOW server_encoding'` before you upgrade. The app also now sends `client_encoding=UTF8` on
+every connection.
+
+To move a non-UTF8 database (the encoding cannot be changed in place; keep the old database until the new one has
+been checked):
+
+1. Stop the market (`docker compose stop app`) and take the encrypted backup with `./scripts/backup.sh`; for an
+   external database that is `BACKUP_DATABASE_URL=... AGE_RECIPIENT=... ./scripts/backup.sh`.
+2. Create a UTF8 database next to it, from `psql` as a role with `CREATEDB`:
+   `CREATE DATABASE opsecmkt_utf8 ENCODING 'UTF8' TEMPLATE template0;`
+3. Restore the backup into that empty database with `RESTORE_DATABASE_URL=... AGE_IDENTITY=... ./scripts/restore.sh
+   backups/market.dump.age` (the [restore procedure](docs/operator-guide.md#backups-and-recovery), including its
+   payout recovery gate and reconciliation, applies unchanged). `pg_restore` converts from the dump's encoding; it
+   stops, changing nothing, at text that is not valid in UTF8 and names the table. The app wrote UTF-8, but a
+   `LATIN1` database may hold non-ASCII text stored double-encoded: look at accounts and listings with accented
+   characters after the restore.
+4. Point `DATABASE_URL` (and `BACKUP_DATABASE_URL`) at the new database and start the app.
+
+Not changed: the signed audit export and every merged migration.
+
 ## Appendix: new keys by hand
 
 `./scripts/install.sh upgrade` writes these for you. To add them yourself, use your editor (values in single

@@ -49,7 +49,7 @@ if [[ -n ${RESTORE_INTERNAL_DATABASE:-} ]]; then
   exists=$(cd "$root_dir" && docker compose exec -T db psql -X -q -A -t -v ON_ERROR_STOP=1 -U opsecmkt -d postgres \
     -c "SELECT count(*) FROM pg_database WHERE datname = '$database'" </dev/null)
   if [[ $exists == 0 ]]; then
-    (cd "$root_dir" && docker compose exec -T db psql -X -q -v ON_ERROR_STOP=1 -U opsecmkt -d postgres -c "CREATE DATABASE \"$database\"" </dev/null)
+    (cd "$root_dir" && docker compose exec -T db psql -X -q -v ON_ERROR_STOP=1 -U opsecmkt -d postgres -c "CREATE DATABASE \"$database\" ENCODING 'UTF8' TEMPLATE template0" </dev/null)
     printf 'Created empty database %s.\n' "$database"
   fi
 fi

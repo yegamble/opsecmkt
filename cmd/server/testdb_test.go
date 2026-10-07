@@ -38,7 +38,7 @@ func runInOwnDatabase(m *testing.M) int {
 	b := make([]byte, 6)
 	rand.Read(b)
 	name := "opsecmkt_cmd_server_" + hex.EncodeToString(b)
-	if _, err := admin.Exec("CREATE DATABASE " + name); err != nil {
+	if _, err := admin.Exec("CREATE DATABASE " + name + " ENCODING 'UTF8' TEMPLATE template0"); err != nil {
 		log.Printf("cmd/server tests: no database of their own (%v); using TEST_DATABASE_URL's database, where their advisory locks can delay other packages' tests", err)
 		return m.Run()
 	}

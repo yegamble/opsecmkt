@@ -85,7 +85,7 @@ GOWORK=off CGO_ENABLED=0 go build -trimpath -o "$work/new-server" ./cmd/server
 
 echo 'Starting PostgreSQL 17'
 docker run -d --name "$db" -p 127.0.0.1::5432 -e POSTGRES_USER=upgrade -e POSTGRES_DB=opsecmkt \
-  -e POSTGRES_PASSWORD=upgrade-test-only postgres:17-alpine >/dev/null
+  -e POSTGRES_INITDB_ARGS=--encoding=UTF8 -e POSTGRES_PASSWORD=upgrade-test-only postgres:17-alpine >/dev/null
 # TCP only: the image's first-boot initialisation server listens on the Unix socket alone.
 for _ in {1..90}; do
   docker exec "$db" pg_isready -q -h 127.0.0.1 -U upgrade -d opsecmkt && break
