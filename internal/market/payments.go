@@ -1,6 +1,7 @@
 package market
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
@@ -97,9 +98,14 @@ type versionReporter interface {
 	WalletVersion() (text string, unverified bool)
 }
 
-// nodeStatus is what a provider's Check reports about its node and wallet.
+// nodeStatus is what a provider's Check reports about its node and wallet. Syncing is true while the node is not
+// synced; Why is the reason class when the check names one (Bitcoin: bitcoinNode.notSynced, A-439; Monero:
+// moneroNode.notSynced, A-449) and Remedy what the operator does about it when the reason's words do not say
+// (Bitcoin: syncRemedy, QA4W1-2; Monero names none).
 type nodeStatus struct {
 	Syncing bool
+	Why     string
+	Remedy  string
 	Tip     int64
 }
 
@@ -340,11 +346,14 @@ func (a *App) refreshProviders(ctx context.Context) (skip map[string]string, tip
 		if err != nil {
 			skip[cur] = u.err
 		} else if st.Syncing {
-			skip[cur] = syncingReason
+			skip[cur] = syncSkipReason(st.Why, st.Remedy)
 		} else if st.Tip > 0 {
 			tips[cur] = st.Tip
 		}
 		a.payMu.Unlock()
+		if err == nil {
+			a.logSyncChange(cur, st)
+		}
 	}
 	for cur, p := range ready {
 		if _, ok := p.(providerChecker); !ok {
@@ -367,12 +376,36 @@ func (a *App) refreshProviders(ctx context.Context) (skip map[string]string, tip
 			skip[cur] = "Wallet check failed; watcher pass skipped (no deposits read, no expiry, no payouts): " + truncate(err.Error(), 300)
 			why[cur] = "wallet check failed: " + watcherCause(err)
 		case st.Syncing:
-			skip[cur] = syncingReason
+			skip[cur] = syncSkipReason(st.Why, st.Remedy)
 		case st.Tip > 0:
 			tips[cur] = st.Tip
 		}
+		if err == nil {
+			a.logSyncChange(cur, st)
+		}
 	}
 	return skip, tips, why
+}
+
+// logSyncChange logs one fixed line when a currency's node goes from synced to not synced (naming the reason class)
+// or back, as its successful checks report it; the caller holds checkMu. The state lives in memory only (A-439).
+func (a *App) logSyncChange(cur string, st nodeStatus) {
+	why := ""
+	if st.Syncing {
+		why = cmp.Or(st.Why, "still syncing")
+	}
+	if a.syncLogged == nil {
+		a.syncLogged = map[string]string{}
+	}
+	if a.syncLogged[cur] == why {
+		return
+	}
+	a.syncLogged[cur] = why
+	if why == "" {
+		log.Printf("payments: %s node synced; watcher passes resumed", cur)
+		return
+	}
+	log.Printf("payments: %s node not synced (%s); watcher passes skipped until it is", cur, why)
 }
 
 // refusedClass is the log class of a provider the network guard refused; the node's own answer is only in
@@ -380,6 +413,24 @@ func (a *App) refreshProviders(ctx context.Context) (skip map[string]string, tip
 const refusedClass = "refused by the network guard (reason on the admin page)"
 
 const syncingReason = "Node is still syncing; watcher pass skipped (no deposits read, no expiry, no payouts) until it catches up."
+
+// notSyncedPrefix starts the reason a pass is skipped because the node is not synced for a reason other than initial
+// block download (A-439: no peers, a stale tip, headers ahead of blocks); like syncing, it is not reported as an error.
+const notSyncedPrefix = "Node is not synced"
+
+// syncSkipReason is the admin page's reason for a pass skipped while the node is not synced for why (a bitcoinNode or
+// moneroNode reason class, or "" when the check names none), followed by remedy when there is one: initial block
+// download, and a Monero target height above the height (A-449), keep syncingReason's words.
+func syncSkipReason(why, remedy string) string {
+	reason := notSyncedPrefix + " (" + why + "); watcher pass skipped (no deposits read, no expiry, no payouts) until it is."
+	if why == "" || why == notSyncedIBD || why == xmrNotSyncedTarget {
+		reason = syncingReason
+	}
+	if remedy != "" {
+		reason += " " + remedy
+	}
+	return reason
+}
 
 // tipBehindPrefix starts the reason a pass is skipped because the node's tip is below the highest tip recorded
 // for the currency (payment_status.tip_height); like syncing, it is not reported as an error.

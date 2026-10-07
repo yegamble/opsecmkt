@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -45,11 +46,11 @@ var xmrWalletSlowTimeout = 2 * time.Minute
 // one; the pass reads nothing from a wallet whose refresh failed. A variable so tests can shorten it.
 var xmrWalletRefreshTimeout = 8 * time.Minute
 
-// P3-R2: the escrow runs on a local fakechain only.
+// P3-R2, A-449 (P4-R15): the escrow runs on a local fakechain or on stagenet (xmrNets). Which network a database's
+// escrows are on is pinned in settings (escrow_xmr_network, pinXMRNetwork), not guessed from the height.
 const (
-	xmrMinHardFork  = 16        // CLSAG and Bulletproofs+, the rules monerod 0.18 enforces on mainnet
-	xmrMaxHeight    = 1_000_000 // no local fakechain gets near it; every public Monero network is past it
-	xmrMaxWalletLag = 10        // blocks between the wallet's height after a refresh and the daemon's
+	xmrMinHardFork  = 16 // CLSAG and Bulletproofs+, the rules monerod 0.18 enforces on mainnet
+	xmrMaxWalletLag = 10 // blocks between the wallet's height after a refresh and the daemon's
 )
 
 // xmrRefusal is a fixed refusal of the escrow nodes' network (P3-R2): it never carries anything the nodes sent.
@@ -62,18 +63,18 @@ type xmrRefusal struct {
 func (e *xmrRefusal) Error() string { return e.msg }
 
 var (
-	errXMRNotFakechain = &xmrRefusal{"the escrow daemon (ESCROW_XMR_DAEMON_URL) is not on a local fakechain (monerod --regtest); Monero escrow runs on a local fakechain only in this release", false}
-	errXMRHardFork     = &xmrRefusal{"the escrow daemon (ESCROW_XMR_DAEMON_URL) runs a hard fork version below 16; start monerod --regtest from release 0.18 or later", false}
-	errXMRDaemonHeight = &xmrRefusal{"the escrow daemon (ESCROW_XMR_DAEMON_URL) is at height 1,000,000 or more, which no local fakechain reaches; it is not a local fakechain", false}
-	errXMRWalletHeight = &xmrRefusal{"the escrow wallet-rpc (ESCROW_XMR_WALLET_RPC_URL) is at height 1,000,000 or more, which no local fakechain reaches; it is attached to another network", true}
-	errXMRWalletLag    = &xmrRefusal{"the escrow wallet-rpc (ESCROW_XMR_WALLET_RPC_URL) is more than 10 blocks from the escrow daemon after a refresh; it must use the daemon at ESCROW_XMR_DAEMON_URL (--daemon-address)", true}
+	errXMRDaemonNetwork = &xmrRefusal{"the escrow daemon (ESCROW_XMR_DAEMON_URL) is on neither a local fakechain (monerod --regtest) nor stagenet (monerod --stagenet); Monero escrow runs on those only in this release, never on mainnet or testnet", false}
+	errXMRHardFork      = &xmrRefusal{"the escrow daemon (ESCROW_XMR_DAEMON_URL) runs a hard fork version below 16; use monerod from release 0.18 or later on a fakechain, or on the public stagenet", false}
+	errXMRWalletLag     = &xmrRefusal{"the escrow wallet-rpc (ESCROW_XMR_WALLET_RPC_URL) is more than 10 blocks from the escrow daemon after a refresh; it must use the daemon at ESCROW_XMR_DAEMON_URL (--daemon-address)", true}
+	errXMRNetworkMoved  = &xmrRefusal{"the escrow daemon (ESCROW_XMR_DAEMON_URL) now reports another network than the one Monero escrow started on; restart the app once it is back on the network this database's escrows are on", false}
+	errXMRFeeNetwork    = &xmrRefusal{"ESCROW_XMR_FEE_ADDRESS is not an address of the network the escrow daemon is on (stagenet addresses start with 5 or 7, fakechain ones with 4 or 8); give the fee wallet's address on that network", false}
 )
 
 // Offline refusals: the request is never sent.
 var (
 	errXMRAccountIndex = errors.New("monero escrow: the account index must be an escrow account (1 to 4294967295); account 0 is the wallet's primary account and is never spent or read as an escrow")
 	errXMRWalletName   = errors.New("monero escrow: a wallet name must be escrow-YYYYMM-NN")
-	errXMRDestination  = errors.New("monero escrow: every destination needs a positive amount and a fakechain standard address or subaddress")
+	errXMRDestination  = errors.New("monero escrow: every destination needs a positive amount and a standard address or subaddress of the escrow's network")
 	errXMRHex          = errors.New("monero escrow: a transaction hash or key image must be 64 hexadecimal characters, and tx metadata non-empty hex")
 	errXMRLookahead    = errors.New("monero escrow: the subaddress lookahead must be positive")
 )
@@ -169,6 +170,16 @@ func xmrNotOpen(err error) bool {
 
 type xmrEscrowRPC struct {
 	wallet, daemon *rpcClient
+	// net is the network type (string) the escrow daemon was verified on (startEscrowXMR: checkDaemon and the network
+	// pin), unset until then. Every address the adapter or a form reads is parsed for it (parseXMRAddress), so before
+	// the network is verified no address parses.
+	net atomic.Value
+}
+
+// nettype is the verified network type, or "" before startEscrowXMR verified it.
+func (r *xmrEscrowRPC) nettype() string {
+	s, _ := r.net.Load().(string)
+	return s
 }
 
 // newXMREscrowRPC builds the adapter without contacting either node. Errors name the setting, never its value.
@@ -366,7 +377,7 @@ func (r *xmrEscrowRPC) createAccount(ctx context.Context) (int64, string, error)
 		return 0, "", err
 	}
 	idx, ok := xmrCount(res.Index)
-	if a, err := parseXMRAddress(res.Address); !ok || !xmrAccountOK(idx) || err != nil || a.Kind != xmrSubaddress {
+	if a, err := parseXMRAddress(res.Address, r.nettype()); !ok || !xmrAccountOK(idx) || err != nil || a.Kind != xmrSubaddress {
 		return 0, "", xmrBadReply("wallet", "create_account")
 	}
 	return idx, res.Address, nil
@@ -379,7 +390,7 @@ func (r *xmrEscrowRPC) primaryAddress(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if p, _ := parseXMRAddress(a); p.Kind != xmrStandard {
+	if p, _ := parseXMRAddress(a, r.nettype()); p.Kind != xmrStandard {
 		return "", xmrBadReply("wallet", "get_address")
 	}
 	return a, nil
@@ -394,7 +405,7 @@ func (r *xmrEscrowRPC) address(ctx context.Context, account, minor int64) (strin
 	if err != nil {
 		return "", err
 	}
-	if p, _ := parseXMRAddress(a); p.Kind != xmrSubaddress {
+	if p, _ := parseXMRAddress(a, r.nettype()); p.Kind != xmrSubaddress {
 		return "", xmrBadReply("wallet", "get_address")
 	}
 	return a, nil
@@ -702,7 +713,7 @@ func (r *xmrEscrowRPC) buildTransfer(ctx context.Context, account int64, dests [
 	}
 	list := make([]map[string]any, len(dests))
 	for i, d := range dests {
-		if _, err := parseXMRAddress(d.Address); err != nil || d.Amount <= 0 {
+		if _, err := parseXMRAddress(d.Address, r.nettype()); err != nil || d.Amount <= 0 {
 			return xmrBuiltTx{}, errXMRDestination
 		}
 		list[i] = map[string]any{"address": d.Address, "amount": d.Amount}
@@ -750,7 +761,7 @@ func (r *xmrEscrowRPC) buildTransfer(ctx context.Context, account int64, dests [
 // after transfer refused a destination (-2), to name which output it refused; parseXMRAddress checks the checksum
 // offline but not that the keys are curve points.
 func (r *xmrEscrowRPC) validAddress(ctx context.Context, addr string) (bool, error) {
-	if _, err := parseXMRAddress(addr); err != nil {
+	if _, err := parseXMRAddress(addr, r.nettype()); err != nil {
 		return false, nil
 	}
 	var res struct {
@@ -783,28 +794,77 @@ func (r *xmrEscrowRPC) relayTx(ctx context.Context, metadata string) (string, er
 
 // --- daemon ---
 
+// xmrDaemonInfo is get_info: the network type and flags checkDaemon reads, and the sync state the guard reads
+// (moneroNode; Connections is outgoing plus incoming, A-449).
 type xmrDaemonInfo struct {
 	NetType                    string
 	Mainnet, Stagenet, Testnet bool
-	Height                     int64
+	Height, TargetHeight       int64
+	Synchronized               bool
+	Offline, Restricted        bool
+	Connections                int64
 }
 
 func (r *xmrEscrowRPC) daemonInfo(ctx context.Context) (xmrDaemonInfo, error) {
 	var res struct {
-		NetType  string      `json:"nettype"`
-		Mainnet  bool        `json:"mainnet"`
-		Stagenet bool        `json:"stagenet"`
-		Testnet  bool        `json:"testnet"`
-		Height   json.Number `json:"height"`
+		NetType      string      `json:"nettype"`
+		Mainnet      bool        `json:"mainnet"`
+		Stagenet     bool        `json:"stagenet"`
+		Testnet      bool        `json:"testnet"`
+		Height       json.Number `json:"height"`
+		TargetHeight json.Number `json:"target_height"`
+		Synchronized bool        `json:"synchronized"`
+		Offline      bool        `json:"offline"`
+		Restricted   bool        `json:"restricted"`
+		Outgoing     json.Number `json:"outgoing_connections_count"`
+		Incoming     json.Number `json:"incoming_connections_count"`
 	}
 	if err := r.daemonCall(ctx, "get_info", nil, &res); err != nil {
 		return xmrDaemonInfo{}, err
 	}
 	h, ok := xmrCount(res.Height)
-	if !ok {
+	target, ok2 := xmrCount(orZero(res.TargetHeight))
+	out, ok3 := xmrCount(orZero(res.Outgoing))
+	in, ok4 := xmrCount(orZero(res.Incoming))
+	if !ok || !ok2 || !ok3 || !ok4 {
 		return xmrDaemonInfo{}, xmrBadReply("daemon", "get_info")
 	}
-	return xmrDaemonInfo{NetType: res.NetType, Mainnet: res.Mainnet, Stagenet: res.Stagenet, Testnet: res.Testnet, Height: h}, nil
+	return xmrDaemonInfo{NetType: res.NetType, Mainnet: res.Mainnet, Stagenet: res.Stagenet, Testnet: res.Testnet, Height: h, TargetHeight: target,
+		Synchronized: res.Synchronized, Offline: res.Offline, Restricted: res.Restricted, Connections: out + in}, nil
+}
+
+// tipTime is the escrow daemon's top block timestamp (get_last_block_header), for the sync guard on a public network
+// type (A-449). get_info carries no block time; get_last_block_header is read-only and on monerod's restricted RPC.
+func (r *xmrEscrowRPC) tipTime(ctx context.Context) (int64, error) {
+	var res struct {
+		Header struct {
+			Timestamp json.Number `json:"timestamp"`
+		} `json:"block_header"`
+	}
+	if err := r.daemonCall(ctx, "get_last_block_header", nil, &res); err != nil {
+		return 0, err
+	}
+	ts, ok := xmrCount(res.Header.Timestamp)
+	if !ok {
+		return 0, xmrBadReply("daemon", "get_last_block_header")
+	}
+	return ts, nil
+}
+
+// node reads what the sync guard needs (moneroNode): get_info, and on a public network type get_last_block_header.
+func (r *xmrEscrowRPC) node(ctx context.Context) (moneroNode, error) {
+	info, err := r.daemonInfo(ctx)
+	if err != nil {
+		return moneroNode{}, err
+	}
+	n := moneroNode{NetType: info.NetType, Synchronized: info.Synchronized, Height: info.Height, TargetHeight: info.TargetHeight,
+		Offline: info.Offline, Restricted: info.Restricted, Connections: info.Connections}
+	if n.NetType != "fakechain" {
+		if n.TipTime, err = r.tipTime(ctx); err != nil {
+			return moneroNode{}, err
+		}
+	}
+	return n, nil
 }
 
 func (r *xmrEscrowRPC) hardForkVersion(ctx context.Context) (int64, error) {
@@ -926,62 +986,81 @@ func (r *xmrEscrowRPC) keyImagesSpent(ctx context.Context, keyImages []string) (
 	return out, nil
 }
 
-// --- network check (P3-R2) ---
+// --- network check (P3-R2, A-449) ---
 
-// checkDaemon requires the escrow daemon to be a local fakechain: nettype fakechain with no public-network flag,
-// hard fork version at least 16 and a height below 1,000,000. It returns the daemon's height.
-func (r *xmrEscrowRPC) checkDaemon(ctx context.Context) (int64, error) {
+// checkDaemon requires the escrow daemon to be on a network type Monero escrow runs on (xmrNets): nettype fakechain
+// with no network flag set, or nettype stagenet with the stagenet flag alone (mainnet, testnet and anything else are
+// refused), and a hard fork version of at least 16. It returns get_info. Which of the two networks a database's
+// escrows are on is the network pin's to decide (pinXMRNetwork), not the height's.
+func (r *xmrEscrowRPC) checkDaemon(ctx context.Context) (xmrDaemonInfo, error) {
 	info, err := r.daemonInfo(ctx)
 	if err != nil {
-		return 0, err
+		return xmrDaemonInfo{}, err
 	}
-	if info.NetType != "fakechain" || info.Mainnet || info.Stagenet || info.Testnet {
-		return 0, errXMRNotFakechain
+	switch {
+	case info.Mainnet || info.Testnet:
+		return xmrDaemonInfo{}, errXMRDaemonNetwork
+	case info.NetType == "fakechain" && !info.Stagenet:
+	case info.NetType == "stagenet" && info.Stagenet:
+	default:
+		return xmrDaemonInfo{}, errXMRDaemonNetwork
 	}
 	v, err := r.hardForkVersion(ctx)
 	if err != nil {
-		return 0, err
+		return xmrDaemonInfo{}, err
 	}
 	if v < xmrMinHardFork {
-		return 0, errXMRHardFork
+		if !info.Synchronized || info.TargetHeight > info.Height {
+			// A daemon still syncing reports the hard fork of the height it has reached (a stagenet node syncing from
+			// genesis reports version 1 for a long time): not refused but not checked yet, so Monero escrow stays
+			// disabled and the check is retried, as for an unreachable daemon (A-449).
+			return xmrDaemonInfo{}, &xmrRPCError{Service: "daemon", Method: "hard_fork_info", Class: "daemon-syncing"}
+		}
+		return xmrDaemonInfo{}, errXMRHardFork
 	}
-	if info.Height >= xmrMaxHeight {
-		return 0, errXMRDaemonHeight
-	}
-	return info.Height, nil
+	return info, nil
 }
 
-// checkWallet refreshes the open wallet and requires its height to be below 1,000,000 and within 10 blocks of
-// daemonHeight: a wallet-rpc attached to another daemon is refused. The watcher runs it after each open_wallet.
+// checkWallet refreshes the open wallet and requires its height to be within 10 blocks of the daemon's
+// (checkWalletHeight): a wallet-rpc attached to another daemon is refused. The watcher runs it after each open_wallet.
 func (r *xmrEscrowRPC) checkWallet(ctx context.Context, daemonHeight int64) error {
 	if err := r.refresh(ctx); err != nil {
 		return err
 	}
+	return r.checkWalletHeight(ctx, daemonHeight)
+}
+
+// checkWalletHeight requires the refreshed wallet's height to be within 10 blocks of the daemon's. daemonHeight was
+// read before the refresh, which can take minutes (xmrWalletRefreshTimeout): a daemon that gained (or popped) more
+// than 10 blocks meanwhile leaves a wallet synced to it that far from daemonHeight. So a wallet more than 10 blocks
+// from daemonHeight is compared with the daemon's height read again (A-475), and refused only when it is more than 10
+// blocks outside the span of the two readings: the daemon may move again between the refresh and the second reading,
+// and a height between our daemon's own two readings is one it had meanwhile. A wallet on another daemon more than 10
+// blocks from both is refused on the same pass. A failed second reading is the daemon's error, retried, never a refusal.
+func (r *xmrEscrowRPC) checkWalletHeight(ctx context.Context, daemonHeight int64) error {
 	h, err := r.height(ctx)
 	if err != nil {
 		return err
 	}
-	if h >= xmrMaxHeight {
-		return errXMRWalletHeight
+	if h >= daemonHeight-xmrMaxWalletLag && h <= daemonHeight+xmrMaxWalletLag {
+		return nil
 	}
-	if h-daemonHeight > xmrMaxWalletLag || daemonHeight-h > xmrMaxWalletLag {
+	info, err := r.daemonInfo(ctx)
+	if err != nil {
+		return err
+	}
+	if h < min(daemonHeight, info.Height)-xmrMaxWalletLag || h > max(daemonHeight, info.Height)+xmrMaxWalletLag {
 		return errXMRWalletLag
 	}
 	return nil
 }
 
-// checkNetwork runs checkDaemon and, when the wallet-rpc has a wallet open, checkWallet. walletOpen is false when
-// it has none (-13): a fresh install has no escrow wallet yet, and the watcher checks each wallet it opens.
-func (r *xmrEscrowRPC) checkNetwork(ctx context.Context) (walletOpen bool, err error) {
-	h, err := r.checkDaemon(ctx)
-	if err != nil {
-		return false, err
-	}
-	if err = r.checkWallet(ctx, h); xmrNotOpen(err) {
+// checkOpenWallet is checkWallet when the wallet-rpc has a wallet open; walletOpen is false when it has none (-13): a
+// fresh install has no escrow wallet yet, and the watcher checks each wallet it opens. startEscrowXMR runs it after
+// checkDaemon and the network pin.
+func (r *xmrEscrowRPC) checkOpenWallet(ctx context.Context, daemonHeight int64) (walletOpen bool, err error) {
+	if err = r.checkWallet(ctx, daemonHeight); xmrNotOpen(err) {
 		return false, nil
 	}
-	if err != nil {
-		return false, err
-	}
-	return true, nil
+	return err == nil, err
 }

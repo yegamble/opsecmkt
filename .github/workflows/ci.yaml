@@ -92,6 +92,125 @@ jobs:
           name: go-escrow-coverage
           path: coverage-escrow.out
           retention-days: 14
+  # A-438 (P4-R11): the real-chain Bitcoin escrow legs. scripts/test-escrow-regtest.sh runs the app, inside go test,
+  # against a real Bitcoin Core 31.1 node on regtest (a local chain nobody else can reach) and a disposable PostgreSQL.
+  # bitcoind is started with docker run because a service container cannot take command arguments. Parallel to `go`,
+  # so the Go job's time is unchanged. No public network: the script refuses any node that is not on regtest.
+  escrow-regtest:
+    name: Bitcoin escrow on a real regtest node
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test-ci-only
+          POSTGRES_DB: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U test -d postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgres://test:test-ci-only@127.0.0.1:5432/postgres?sslmode=disable
+      BITCOIN_CONTAINER: escrow-regtest
+      BITCOIN_RPC_PORT: '18443'
+      BITCOIN_PRIVATE_CONTAINER: escrow-regtest-private
+      BITCOIN_PRIVATE_RPC_PORT: '18453'
+      BITCOIN_IMAGE: bitcoin/bitcoin:31.1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      # The same node the script's header documents: an operator user with full rights (the buyer's and vendor's own
+      # nodes), the app's user restricted by rpcwhitelist to what docs/operator-guide.md lists, the pooled user
+      # restricted to the pooled methods it lists (A-440) and the escrow signer's user restricted to decodepsbt,
+      # descriptorprocesspsbt and getdescriptorinfo (A-454, QA4W2-1). The passwords are generated for this run,
+      # masked before they reach any output and handed to the next step only through GITHUB_ENV inside the URLs;
+      # bitcoind learns them as salted HMACs (-rpcauth), so no password is on a command line or in the repository.
+      # A second node with the same users (A-441) runs -privatebroadcast through a proxy nobody answers
+      # (-proxy=127.0.0.1:9 inside its container) for the private-broadcast leg; the two nodes are not connected.
+      - name: Start Bitcoin Core on regtest
+        run: |
+          whitelist=getblockchaininfo,getnetworkinfo,getrawchangeaddress,getaddressinfo,createpsbt,utxoupdatepsbt,importdescriptors,getdescriptorinfo,deriveaddresses,gettxout,keypoolrefill,walletprocesspsbt,descriptorprocesspsbt,combinepsbt,finalizepsbt,testmempoolaccept,sendrawtransaction,getwalletinfo,listreceivedbyaddress,gettransaction,listtransactions,listsinceblock
+          pooled_whitelist=getblockchaininfo,getwalletinfo,loadwallet,getnetworkinfo,getnewaddress,listreceivedbyaddress,gettransaction,sendtoaddress,validateaddress
+          operator_pass=$(openssl rand -hex 24)
+          app_pass=$(openssl rand -hex 24)
+          pooled_pass=$(openssl rand -hex 24)
+          signer_pass=$(openssl rand -hex 24)
+          echo "::add-mask::$operator_pass"
+          echo "::add-mask::$app_pass"
+          echo "::add-mask::$pooled_pass"
+          echo "::add-mask::$signer_pass"
+          rpcauth() { # rpcauth <user> <password>: user:salt$HMAC-SHA256(salt, password), the form bitcoind reads
+            local salt hash
+            salt=$(openssl rand -hex 16)
+            hash=$(printf %s "$2" | openssl dgst -sha256 -hmac "$salt" | sed 's/^.* //')
+            printf '%s:%s$%s' "$1" "$salt" "$hash"
+          }
+          node() { # node <container> <port> [extra bitcoind arguments]
+            local name=$1 port=$2
+            shift 2
+            docker run -d --name "$name" -p "127.0.0.1:$port:18443" "$BITCOIN_IMAGE" \
+              bitcoind -regtest -fallbackfee=0.0002 -server=1 -rpcbind=0.0.0.0 -rpcallowip=0.0.0.0/0 "$@" \
+              "-rpcauth=$(rpcauth operator "$operator_pass")" "-rpcauth=$(rpcauth opsecmkt-escrow "$app_pass")" \
+              "-rpcauth=$(rpcauth opsecmkt-pooled "$pooled_pass")" "-rpcauth=$(rpcauth opsecmkt-signer "$signer_pass")" \
+              -rpcwhitelistdefault=0 "-rpcwhitelist=opsecmkt-escrow:$whitelist" "-rpcwhitelist=opsecmkt-pooled:$pooled_whitelist" \
+              -rpcwhitelist=opsecmkt-signer:decodepsbt,descriptorprocesspsbt,getdescriptorinfo
+          }
+          node "$BITCOIN_CONTAINER" "$BITCOIN_RPC_PORT"
+          node "$BITCOIN_PRIVATE_CONTAINER" "$BITCOIN_PRIVATE_RPC_PORT" -privatebroadcast -proxy=127.0.0.1:9 -listen=0
+          {
+            echo "ESCROW_REGTEST_OPERATOR_RPC_URL=http://operator:$operator_pass@127.0.0.1:$BITCOIN_RPC_PORT"
+            echo "ESCROW_REGTEST_APP_RPC_URL=http://opsecmkt-escrow:$app_pass@127.0.0.1:$BITCOIN_RPC_PORT"
+            echo "ESCROW_REGTEST_POOLED_RPC_URL=http://opsecmkt-pooled:$pooled_pass@127.0.0.1:$BITCOIN_RPC_PORT"
+            echo "ESCROW_REGTEST_SIGNER_RPC_URL=http://opsecmkt-signer:$signer_pass@127.0.0.1:$BITCOIN_RPC_PORT"
+            echo "ESCROW_REGTEST_PRIVATE_OPERATOR_RPC_URL=http://operator:$operator_pass@127.0.0.1:$BITCOIN_PRIVATE_RPC_PORT"
+            echo "ESCROW_REGTEST_PRIVATE_APP_RPC_URL=http://opsecmkt-escrow:$app_pass@127.0.0.1:$BITCOIN_PRIVATE_RPC_PORT"
+          } >> "$GITHUB_ENV"
+          for port in "$BITCOIN_RPC_PORT" "$BITCOIN_PRIVATE_RPC_PORT"; do
+            up=no
+            for _ in $(seq 60); do
+              if printf 'url = "http://operator:%s@127.0.0.1:%s"\n' "$operator_pass" "$port" |
+                curl -sS --max-time 5 --noproxy '*' -H 'Content-Type: application/json' --config - \
+                  --data '{"jsonrpc":"1.0","id":"ci","method":"getblockchaininfo","params":[]}' 2>/dev/null |
+                grep -q '"chain":"regtest"'; then
+                up=yes
+                break
+              fi
+              sleep 1
+            done
+            if [ "$up" != yes ]; then
+              echo "bitcoind on port $port did not answer on regtest within 60 seconds" >&2
+              docker logs --tail 50 "$BITCOIN_CONTAINER" >&2
+              docker logs --tail 50 "$BITCOIN_PRIVATE_CONTAINER" >&2
+              exit 1
+            fi
+          done
+      - name: Escrow legs on a real regtest node (scripts/test-escrow-regtest.sh)
+        run: bash scripts/test-escrow-regtest.sh
+        env:
+          ESCROW_REGTEST_LOG: ${{ runner.temp }}/escrow-regtest/transcript.log
+      - name: Collect the node's log
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/escrow-regtest"
+          docker logs "$BITCOIN_CONTAINER" > "$RUNNER_TEMP/escrow-regtest/bitcoind.log" 2>&1 || true
+          docker logs "$BITCOIN_PRIVATE_CONTAINER" > "$RUNNER_TEMP/escrow-regtest/bitcoind-private.log" 2>&1 || true
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: escrow-regtest-results
+          path: ${{ runner.temp }}/escrow-regtest/
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Remove the nodes and their volumes
+        if: always()
+        run: docker rm -f -v "$BITCOIN_CONTAINER" "$BITCOIN_PRIVATE_CONTAINER"
   operations:
     name: Operations and encrypted restore
     runs-on: ubuntu-24.04
@@ -168,9 +287,13 @@ jobs:
           MIRROR: ${{ matrix.mirror }}
           DATABASE_URL: postgres://test:test@db/test
           SETUP_TOKEN: ci-validation-only-not-a-real-bootstrap-secret
+          # Compose refuses either Monero wallet-rpc's profile with a blank password (A-466;
+          # tests/test_compose_wallet_passwords.py checks the refusal).
+          MONERO_WALLET_RPC_PASSWORD: ci-validation-only
+          ESCROW_XMR_WALLET_RPC_PASSWORD: ci-validation-only
         run: |
           files=(-f compose.yaml -f "compose.$MODE.yaml" -f compose.nodes.yaml)
-          profiles=(--profile bitcoin --profile monero --profile monero-wallet)
+          profiles=(--profile bitcoin --profile monero --profile monero-wallet --profile escrow-signer)
           if [ "$DATABASE" = internal ]; then
             files+=(-f compose.internal-db.yaml)
             profiles+=(--profile internal-db)
@@ -185,6 +308,8 @@ jobs:
           files+=(-f compose.scanner.yaml)
           profiles+=(--profile scanner)
           docker compose "${files[@]}" "${profiles[@]}" config --quiet
+          # Monero escrow on stagenet (A-449): its own wallet-rpc service and the overlay mounting its seed key.
+          docker compose "${files[@]}" -f compose.escrow-xmr.yaml "${profiles[@]}" --profile monero-escrow-wallet config --quiet
           # `up --wait` needs a healthcheck on the app (its -healthcheck flag) and, in Tor mode, on each Tor service
           # (the onion hostname file exists).
           docker compose "${files[@]}" "${profiles[@]}" config --format json | python3 -c '
@@ -211,7 +336,7 @@ jobs:
           # container whose cpus exceed the host CPU count, which would break 1-CPU hosts.
           limits = {"app": ("512m", 2, 512), "db": ("1g", 2, 256), "tor": ("256m", 1, 64), "tor-mirror": ("256m", 1, 64),
                     "bitcoin": ("2g", 2, 256), "monero": ("2g", 2, 512), "monero-wallet": ("512m", 1, 128),
-                    "clamd": ("3g", 2, 256)}
+                    "clamd": ("3g", 2, 256), "escrow-signer": ("128m", 1, 64)}
           logging = {"driver": sys.argv[1] or "json-file", "options": {"max-size": "10m", "max-file": "3"}}
           for name, service in sorted(services.items()):
               if name not in limits:
@@ -276,6 +401,34 @@ jobs:
           if not (re.fullmatch(r"\d+\.\d+\.\d+(-debian)?", tag) or (digest and "_base" not in tag)):
               sys.exit(f"clamd image must be one ClamAV release with signatures, not {image!r}")
           print("scanner:", image, "on the internal scanner network with", ", ".join(members))
+          '
+          # The escrow signer (A-454): its own user in the app's group, hardened, publishing nothing; its seed volume is
+          # mounted in it alone and its socket volume only in it and the app; the seed is never in any environment.
+          docker compose "${files[@]}" "${profiles[@]}" config --format json | python3 -c '
+          import json, sys
+          services = json.load(sys.stdin)["services"]
+          signer = services["escrow-signer"]
+          want = {"user": "65533:65532", "read_only": True, "cap_drop": ["ALL"], "security_opt": ["no-new-privileges:true"],
+                  "entrypoint": ["/app/escrow-signer"], "command": ["serve"], "profiles": ["escrow-signer"], "restart": "unless-stopped"}
+          for key, value in want.items():
+              if signer.get(key) != value:
+                  sys.exit(f"escrow-signer must have {key} {value!r}, got {signer.get(key)!r}")
+          if any(key in signer for key in ("ports", "expose", "network_mode")):
+              sys.exit("escrow-signer must publish nothing")
+          mounts = {name: sorted((v.get("source"), v["target"]) for v in service.get("volumes", []) if v.get("type") == "volume")
+                    for name, service in services.items()}
+          seed = sorted(name for name, m in mounts.items() if any(src == "escrow_signer_seed" for src, _ in m))
+          socket = sorted(name for name, m in mounts.items() if any(src == "escrow_signer_socket" for src, _ in m))
+          if seed != ["escrow-signer"] or socket != ["app", "escrow-signer"]:
+              sys.exit(f"the seed volume must be mounted only in escrow-signer and the socket volume only in it and app; got {seed!r}, {socket!r}")
+          allowed = {"app": {"ESCROW_SIGNER_SOCKET"}, "escrow-signer": {"ESCROW_SIGNER_SOCKET", "ESCROW_SIGNER_SEED_FILE", "ESCROW_SIGNER_RPC_URL"}}
+          for name, service in services.items():
+              for key in (service.get("environment") or {}):
+                  if key.startswith("ESCROW_SIGNER") and key not in allowed.get(name, set()):
+                      sys.exit(f"{name} must not take {key} (the signer seed is never in an environment; its RPC URL is for the signer only)")
+          if signer["environment"].get("ESCROW_SIGNER_SOCKET") != "/run/escrow-signer/signer.sock":
+              sys.exit("escrow-signer must listen on /run/escrow-signer/signer.sock")
+          print("escrow-signer: user", signer["user"], "seed volume in", seed, "socket volume in", socket)
           '
           # Local nodes are pruned by default; BITCOIN_PRUNE_MB=0 and a blank MONERO_PRUNE_FLAGS run full nodes.
           check_nodes() {
@@ -509,10 +662,74 @@ jobs:
             test-results-wallet/
           if-no-files-found: ignore
           retention-days: 14
+  browser-escrow:
+    name: Escrow browser journeys (simulated nodes, real application)
+    runs-on: ubuntu-24.04
+    # Two suites (each test allows 4 to 5 minutes), a cold `go run` build per server and a Chromium-only install.
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test-ci-only
+          POSTGRES_DB: e2e
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U test -d e2e"
+          --health-interval 5s --health-retries 20 --health-timeout 5s
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Install Chromium and system dependencies
+        run: |
+          # The runner prefers Azure's mirror, which took 22 minutes in a main run.
+          # Use its existing official Ubuntu archive/security fallbacks directly.
+          sudo sed -i '\|^http://azure\.archive\.ubuntu\.com/ubuntu/|d' /etc/apt/apt-mirrors.txt
+          npx playwright install --with-deps chromium
+      # Each suite owns a fresh database: both move clocks through SQL and the Bitcoin suites share one setup.
+      - name: Create the escrow databases
+        env:
+          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+        run: |
+          docker exec "$POSTGRES_CONTAINER" createdb -U test e2e_escrow
+          docker exec "$POSTGRES_CONTAINER" createdb -U test e2e_escrow_xmr
+      # Simulated escrow nodes (tests/e2e/fixtures): application integration evidence, not chain evidence.
+      - name: Bitcoin escrow journeys (simulated escrow node)
+        env:
+          E2E_ESCROW_DATABASE_URL: postgres://test:test-ci-only@127.0.0.1:5432/e2e_escrow?sslmode=disable
+        run: npm run test:e2e:escrow
+      - name: Monero escrow journey (simulated escrow wallet-rpc)
+        # Run even when the Bitcoin suite failed, so one run reports both.
+        if: ${{ !cancelled() }}
+        env:
+          E2E_ESCROW_XMR_DATABASE_URL: postgres://test:test-ci-only@127.0.0.1:5432/e2e_escrow_xmr?sslmode=disable
+        run: npm run test:e2e:escrow-xmr
+      - name: Preserve escrow browser reports and failure traces
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-escrow-results
+          path: |
+            playwright-escrow-report/
+            test-results-escrow/
+            playwright-escrow-xmr-report/
+            test-results-escrow-xmr/
+          if-no-files-found: ignore
+          retention-days: 14
   required:
     name: CI passed
     if: always()
-    needs: [go, go-escrow, operations, installer, upgrade, compose, container, tor-image, browser]
+    needs: [go, go-escrow, escrow-regtest, operations, installer, upgrade, compose, container, tor-image, browser, browser-escrow]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:

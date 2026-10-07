@@ -52,7 +52,8 @@ func TestEscrowRPCPinsParams(t *testing.T) {
 		method, path, params string
 		call                 func() error
 	}{
-		{"getblockchaininfo", "/", `[]`, func() error { _, err := e.chain(ctx); return err }},
+		{"getblockchaininfo", "/", `[]`, func() error { _, err := e.blockchainInfo(ctx); return err }},
+		{"getnetworkinfo", "/", `[]`, func() error { _, err := e.networkInfo(ctx); return err }},
 		{"getrawchangeaddress", arb, `["bech32"]`, func() error { return e.readArbiter(ctx) }},
 		{"getaddressinfo", arb, `["bcrt1qarbiterchange000000000000000000000"]`, func() error { return e.readArbiter(ctx) }},
 		{"createpsbt", "/", `[[{"txid":"` + testCorePSBTTxID + `","vout":1}],[{"bcrt1qdest":0.00099},{"bcrt1qfee":0.00000546}],0,true]`, func() error {
@@ -90,6 +91,10 @@ func TestEscrowRPCPinsParams(t *testing.T) {
 		// P1-d1: reconciliation reads the watch-only wallet only: the spender of an escrow deposit and its address book.
 		{"listtransactions", fakeWatchWallet, `["*",100,0,true]`, func() error { _, err := e.walletSpenders(ctx, map[string]bool{"txw:1": true}); return err }},
 		{"listreceivedbyaddress", fakeWatchWallet, `[0,true,true]`, func() error { _, err := e.watchedAddresses(ctx); return err }},
+		// QA4W4A-1: the start check reads the arbiter wallet's entries (everything, or since a checkpoint block), with
+		// include_change.
+		{"listsinceblock", arb, `["",1,true,false,true]`, func() error { _, _, err := e.arbiterSends(ctx, ""); return err }},
+		{"listsinceblock", arb, `["` + arbiterBlock(0) + `",1,true,false,true]`, func() error { _, _, err := e.arbiterSends(ctx, arbiterBlock(0)); return err }},
 		// P1-d3 (A-359): whether the watch-only wallet already watches an escrow address the checkout composed.
 		{"getaddressinfo", fakeWatchWallet, `["bcrt1qcomposedescrow0000"]`, func() error { _, err := e.watchKnows(ctx, "bcrt1qcomposedescrow0000"); return err }},
 		// P2-e (A-366): the orphan sweep reads an orphan escrow address's keys from the same wallet.
@@ -249,10 +254,10 @@ func TestEscrowRPCErrorClasses(t *testing.T) {
 	}{
 		{"rpc error", rpcErr.url(""), "rpc:-5", func(e *escrowBTC) error { _, err := e.descriptorInfo(ctx, "x"); return err }},
 		{"bad reply", rpcErr.url(""), "bad-reply", func(e *escrowBTC) error { _, _, err := e.finalizePSBT(ctx, "x"); return err }},
-		{"wrong password", strings.Replace(rpcErr.url(""), ":p@", ":wrong@", 1), "credentials", func(e *escrowBTC) error { _, err := e.chain(ctx); return err }},
+		{"wrong password", strings.Replace(rpcErr.url(""), ":p@", ":wrong@", 1), "credentials", func(e *escrowBTC) error { _, err := e.blockchainInfo(ctx); return err }},
 		{"not whitelisted", "http://u:p@" + strings.TrimPrefix(forbidden.URL, "http://"), "forbidden", func(e *escrowBTC) error { _, err := e.arbiterSign(ctx, "x"); return err }},
-		{"timeout", "http://u:p@" + strings.TrimPrefix(hang.URL, "http://"), "timeout", func(e *escrowBTC) error { _, err := e.chain(ctx); return err }},
-		{"unreachable", down.url(""), "unreachable", func(e *escrowBTC) error { _, err := e.chain(ctx); return err }},
+		{"timeout", "http://u:p@" + strings.TrimPrefix(hang.URL, "http://"), "timeout", func(e *escrowBTC) error { _, err := e.blockchainInfo(ctx); return err }},
+		{"unreachable", down.url(""), "unreachable", func(e *escrowBTC) error { _, err := e.blockchainInfo(ctx); return err }},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -292,7 +297,7 @@ func TestEscrowConfigFromEnv(t *testing.T) {
 	for name, getenv := range map[string]func(string) string{
 		"bad value":           env("ESCROW_BTC", "yes", "ESCROW_BTC_RPC_URL", "http://a:b@h:1"),
 		"no URL":              env("ESCROW_BTC", "on"),
-		"testnet4 chain":      env("ESCROW_BTC", "on", "ESCROW_BTC_RPC_URL", "http://a:b@h:1", "BITCOIN_CHAIN", "testnet4"),
+		"testnet3 chain":      env("ESCROW_BTC", "on", "ESCROW_BTC_RPC_URL", "http://a:b@h:1", "BITCOIN_CHAIN", "test"),
 		"mainnet chain":       env("ESCROW_BTC", "on", "ESCROW_BTC_RPC_URL", "http://a:b@h:1", "BITCOIN_CHAIN", "main"),
 		"pooled wallet":       env("ESCROW_BTC", "on", "ESCROW_BTC_RPC_URL", "http://a:b@h:1", "BITCOIN_RPC_URL", "http://x:y@h:2", "ESCROW_BTC_ARBITER_WALLET", "opsecmkt"),
 		"named pooled wallet": env("ESCROW_BTC", "on", "ESCROW_BTC_RPC_URL", "http://a:b@h:1", "BITCOIN_RPC_URL", "http://x:y@h:2", "BITCOIN_WALLET", "w", "ESCROW_BTC_ARBITER_WALLET", "w"),

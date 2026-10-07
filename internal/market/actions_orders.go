@@ -51,6 +51,10 @@ func orderDraftAction(c *actionCtx) (actionResult, error) {
 	if vendor == c.User.ID {
 		return actionResult{}, fail(400, "You cannot order your own listing")
 	}
+	// A-444: while the currency is escrow only, a listing that cannot use its escrow takes no draft in it.
+	if err = c.A.purchaseBlock(ctx, tx, f.Get("product_id"), currency); err != nil {
+		return actionResult{}, err
+	}
 	total := btc
 	if currency == "XMR" {
 		total = xmr

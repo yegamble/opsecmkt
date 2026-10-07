@@ -243,7 +243,7 @@ INSERT INTO disputes(id,order_id,reason) VALUES ('ops-dispute','ops-order-disput
 INSERT INTO audit_events(user_id,action) VALUES ('ops-admin','Restore drill: an audit row written before the backup');
 INSERT INTO images(id,owner_user_id,product_id,kind,\"full\",thumb,width,height) VALUES
  (repeat('a',32),'ops-vendor','ops-product','photo','\\xffd8ff','\\xffd8ff',1,1),(repeat('b',32),'ops-vendor',NULL,'avatar','\\xffd8ff','\\xffd8ff',1,1);"
-# Two Bitcoin escrow settlements with a stored final transaction (ESCROW_BTC, regtest only): one broadcast, which the
+# Two Bitcoin escrow settlements with a stored final transaction (ESCROW_BTC, test networks only): one broadcast, which the
 # restore holds until an administrator confirms its rebroadcast, and one confirmed, which it leaves alone.
 pg "$app_source_db" -q -c "
 INSERT INTO orders(id,buyer_id,product_id,currency,amount,state) VALUES

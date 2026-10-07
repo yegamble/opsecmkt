@@ -91,7 +91,7 @@ func (o *rpcOverride) wrap(next rpcHandler) rpcHandler {
 
 // newGapCore is newPayCore with an override in front of the scripted Bitcoin Core.
 func newGapCore(t *testing.T, chain string) (*payCore, *rpcOverride, *payRPCServer) {
-	c := &payCore{chain: chain, newAddr: "tb1qorderaddress000000000000000000000", walletLoaded: true, txs: map[string]map[string]any{}, invalid: map[string]bool{}}
+	c := &payCore{chain: chain, newAddr: "tb1qorderaddress000000000000000000000", walletLoaded: true, peers: 8, txs: map[string]map[string]any{}, invalid: map[string]bool{}}
 	o := newRPCOverride()
 	s := newPayRPCServer(t, "marketplace", "rpc-secret", false, o.wrap(c.handle))
 	o.releaseAtEnd(t)
@@ -100,7 +100,7 @@ func newGapCore(t *testing.T, chain string) (*payCore, *rpcOverride, *payRPCServ
 
 // newGapMonero is newPayMonero with an override in front of the scripted monero-wallet-rpc / monerod.
 func newGapMonero(t *testing.T) (*payMoneroWallet, *rpcOverride, *payRPCServer) {
-	m := &payMoneroWallet{primary: payStagenetPrimary, sub: payStagenetSub, open: true, nettype: "stagenet", valid: map[string]string{}}
+	m := &payMoneroWallet{primary: payStagenetPrimary, sub: payStagenetSub, open: true, nettype: "stagenet", peers: 8, valid: map[string]string{}}
 	o := newRPCOverride()
 	s := newPayRPCServer(t, "wallet", "wallet-secret", true, o.wrap(m.handle))
 	o.releaseAtEnd(t)
@@ -447,9 +447,10 @@ func TestGapMonerodGetInfoWithoutNettype(t *testing.T) {
 		refuse string // "" = accepted
 		sync   bool
 	}{
-		{"stagenet flag", map[string]any{"stagenet": true, "height": 10, "target_height": 0}, "", false},
-		{"stagenet flag syncing", map[string]any{"stagenet": true, "height": 10, "target_height": 20}, "", true},
-		{"no height fields", map[string]any{"stagenet": true}, "", false},
+		{"stagenet flag", map[string]any{"stagenet": true, "height": 10, "target_height": 0, "synchronized": true, "outgoing_connections_count": 8}, "", false},
+		{"stagenet flag syncing", map[string]any{"stagenet": true, "height": 10, "target_height": 20, "synchronized": true, "outgoing_connections_count": 8}, "", true},
+		{"stagenet flag, synchronized absent (A-449)", map[string]any{"stagenet": true, "height": 10, "target_height": 0, "outgoing_connections_count": 8}, "", true},
+		{"no height fields", map[string]any{"stagenet": true, "synchronized": true, "incoming_connections_count": 1}, "", false},
 		{"testnet flag vs stagenet wallet", map[string]any{"testnet": true}, "daemon is on testnet but the wallet is on stagenet", false},
 		{"no flags means mainnet", map[string]any{"height": 10}, `monero daemon network "mainnet" is not a test network`, false},
 		{"mainnet flag wins over nettype", map[string]any{"nettype": "stagenet", "mainnet": true}, `monero daemon network "mainnet" is not a test network`, false},

@@ -105,6 +105,7 @@ var notices = map[string]struct{ text, section, pages string }{
 	"staff-list":       {"Public staff list saved.", "staff-list", "admin"},
 	"intake-enabled":   {"New payment addresses enabled.", "payment-intake", "admin"},
 	"intake-paused":    {"New payment addresses paused.", "payment-intake", "admin"},
+	"intake-escrow":    {"New payments set to escrow only.", "payment-intake", "admin"},
 	"address-warning":  {"Issued-address warning dismissed.", "payment-intake", "admin"},
 	"payout-released":  {"Payout released.", "payouts", "admin"},
 	"payout-requeued":  {"Payout queued again.", "payouts", "admin"},

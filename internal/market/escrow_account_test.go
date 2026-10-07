@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"html"
 	"net/http/httptest"
@@ -25,17 +24,24 @@ func setEscrowEnv(t *testing.T, rpcURL string) {
 	t.Setenv("ESCROW_BTC_WATCH_WALLET", "")
 	t.Setenv("ESCROW_BTC_FEE_BPS", "")
 	t.Setenv("ESCROW_BTC_FEE_ADDRESS", "")
+	t.Setenv("ESCROW_SIGNER_SOCKET", "")
 	t.Setenv("PAYMENT_CONFIRMATIONS_BTC", "")
 	t.Setenv("PAYMENT_EXPIRY", "")
+	t.Setenv("BITCOIN_MAX_TIP_AGE", "")
 	t.Setenv("BITCOIN_RPC_URL", "")
 	t.Setenv("BITCOIN_CHAIN", "")
 	t.Setenv("MONERO_WALLET_RPC_URL", "")
 }
 
-func escrowTestApp(t *testing.T) (*testEnv, *fakeEscrowCore, *payRPCServer) {
+// escrowTestApp starts the test app with escrow on against a fake regtest node; env is extra name, value pairs set
+// after setEscrowEnv's (ESCROW_SIGNER_SOCKET, say).
+func escrowTestApp(t *testing.T, env ...string) (*testEnv, *fakeEscrowCore, *payRPCServer) {
 	t.Helper()
 	core, srv := newFakeEscrowCore(t)
 	setEscrowEnv(t, srv.url(""))
+	for i := 0; i+1 < len(env); i += 2 {
+		t.Setenv(env[i], env[i+1])
+	}
 	e := newTestApp(t)
 	if e.A.escrow.Load() == nil {
 		t.Fatal("escrow did not start against the fake regtest node")
@@ -133,24 +139,6 @@ func TestEscrowOffByDefault(t *testing.T) {
 	}
 	if len(core.methods()) != 0 {
 		t.Fatalf("the node was called: %v", core.methods())
-	}
-}
-
-// With ESCROW_BTC=on a node on any chain but regtest stops startup with the fixed message, before any wallet call.
-func TestEscrowStartupRefusesNonRegtest(t *testing.T) {
-	for _, chain := range []string{"main", "test", "testnet4", "signet"} {
-		t.Run(chain, func(t *testing.T) {
-			core, srv := newFakeEscrowCore(t)
-			core.chain = chain
-			setEscrowEnv(t, srv.url(""))
-			_, _, err := startApp(t, "")
-			if !errors.Is(err, errEscrowNotRegtest) {
-				t.Fatalf("got %v", err)
-			}
-			if m := core.methods(); !slices.Equal(m, []string{"getblockchaininfo"}) {
-				t.Fatalf("calls before the refusal: %v", m)
-			}
-		})
 	}
 }
 
@@ -353,11 +341,11 @@ func TestEscrowKeyRegisterWithTOTP(t *testing.T) {
 	for _, m := range regexp.MustCompile(`<input[^>]* name="([a-z]+)"`).FindAllStringSubmatch(form[1], -1) {
 		names[m[1]] = true
 	}
-	if !names["code"] || !names["password"] || !names["key"] || !names["csrf"] {
+	if !names["code"] || !names["password"] || !names["key"] || !names["csrf"] || !names["layout"] {
 		t.Fatalf("form fields %v", names)
 	}
 	code, _ := e.totpCodeFor(uid, 0)
-	f := url.Values{"key": {testBIP48Key}, "password": {testPassword}, "code": {code}}
+	f := url.Values{"key": {testBIP48Key}, "password": {testPassword}, "code": {code}, "layout": {"core"}} // layout: the checked radio (A-455)
 	for name := range names {
 		if f.Get(name) == "" && name != "csrf" && name != "dedicated" {
 			t.Fatalf("the form has a field %q this test does not fill", name)
@@ -751,7 +739,8 @@ func TestEscrowPracticeRefusedWithEscrows(t *testing.T) {
 }
 
 // The activation update is a compare-and-set on what the practice check used (QA-P1a-6, M8b and M5c): a key whose
-// stored origin changed, or that gained an escrow, while the node checked the paste is not activated.
+// stored origin or layout changed, or that gained an escrow, while the node checked the paste is not activated (A-455:
+// a Core practice signature never activates the same key re-registered as a per-order wallet key meanwhile).
 func TestEscrowPracticeKeyChangedDuringCheck(t *testing.T) {
 	e, core, _ := escrowTestApp(t)
 	for name, change := range map[string]func(uid string, escrowID int64) error{
@@ -761,6 +750,10 @@ func TestEscrowPracticeKeyChangedDuringCheck(t *testing.T) {
 		},
 		"origin path changed": func(uid string, _ int64) error {
 			_, err := e.DB.Exec("UPDATE user_escrow_keys SET origin_path='/48h/1h/1h/2h' WHERE user_id=$1", uid)
+			return err
+		},
+		"layout changed": func(uid string, _ int64) error {
+			_, err := e.DB.Exec("UPDATE user_escrow_keys SET layout='per_order' WHERE user_id=$1", uid)
 			return err
 		},
 		"escrow created": func(uid string, escrowID int64) error {
@@ -807,13 +800,13 @@ func TestEscrowPracticeKeyChangedDuringCheck(t *testing.T) {
 }
 
 // A mainnet market (a payment provider configured for mainnet) with ESCROW_BTC=on stops startup before any escrow
-// RPC, even with BITCOIN_CHAIN blank (QA-P1a-6, M4c): escrow runs on regtest only in this release.
+// RPC, even with BITCOIN_CHAIN blank (QA-P1a-6, M4c): escrow runs on test networks only.
 func TestEscrowStartupRefusesMainnetMarket(t *testing.T) {
 	core, srv := newFakeEscrowCore(t)
 	setEscrowEnv(t, srv.url(""))
 	withProviderFactory(t, func(context.Context) (PaymentProvider, error) { return liveFake{newFakeProvider("BTC", 3)}, nil })
 	a, _, err := startApp(t, "")
-	if err == nil || a != nil || !strings.Contains(err.Error(), "ESCROW_BTC=on runs only on regtest") || !strings.Contains(err.Error(), "mainnet") {
+	if err == nil || a != nil || !strings.Contains(err.Error(), "ESCROW_BTC=on runs only on test networks") || !strings.Contains(err.Error(), "mainnet") {
 		t.Fatalf("got %v", err)
 	}
 	if m := core.methods(); len(m) != 0 {

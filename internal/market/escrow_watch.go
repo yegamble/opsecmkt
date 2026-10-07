@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -28,9 +30,10 @@ import (
 // first recorded after an escrow order closed is flagged for payment review (flagLateDeposits); one that did not count
 // when the order was cancelled and has confirmed since is left out for the stray refund (leaveOutUncounted, A-428).
 //
-// While escrow is switched on but not enabled (its node was down at startup, say) the watcher retries the startup
-// checks each interval (retryEscrow) and does nothing else but apply the release deadlines, which need no node
-// (escrow_deadline.go): no deposit is read and no order expires until they pass.
+// While escrow is switched on but not enabled (its node was down at startup, or on another chain than the one pinned for
+// the database's escrows, say) the watcher retries the startup checks each interval (retryEscrow) and does nothing else
+// but apply the release deadlines, which need no node (escrow_deadline.go): no deposit is read and no order expires
+// until they pass. The same holds for each pass while the node is not synced (A-439, bitcoin_sync.go).
 
 const escrowWatcherLock = 782495 // the pooled watcher's is 782494
 
@@ -50,25 +53,40 @@ const (
 		"' OR EXISTS (SELECT 1 FROM settlements s WHERE s.order_id=es.order_id AND s.state IN ('building','awaiting_signature','party_signed','signed','broadcast')))"
 )
 
-// escrowNetwork is the chain the escrow node reported at startup, for the network word in escrow notes ("regtest" in
-// Phase 1; also before escrow is enabled, when no node has been read).
+// escrowNetwork is the chain the escrow node reported at startup, for the network word in escrow notes (regtest, signet
+// or testnet4). While escrow is not enabled it is the chain the escrow node last reported in this process, else the
+// chain this database's escrows are pinned to (notePinnedNet, A-443), else "regtest" (no node has answered and nothing
+// is pinned or held: a market that has never run escrow, which has no escrow to write a note about). Pages name a chain
+// only while escrowNetKnown.
 func (a *App) escrowNetwork() string {
 	if e := a.escrow.Load(); e != nil && e.network != "" {
 		return e.network
 	}
+	if net := a.escrowNet.Load(); net != nil {
+		return *net
+	}
 	return "regtest"
+}
+
+// escrowNetKnown reports whether escrowNetwork's chain is one an escrow node reported or this database's escrows are on
+// (QA4W6-8): not while a market that has never run escrow waits for its node's first answer. Until then PageData's
+// EscrowNet is "" and the pages say the chain is not verified yet, as Monero escrow's do (QA4W4B-1).
+func (a *App) escrowNetKnown() bool {
+	return a.escrow.Load() != nil || a.escrowNet.Load() != nil
 }
 
 func init() {
 	registerBackground(escrowWatcher)
 	registerTransitionHook(escrowTransitionHook)
+	registerLoader("admin", escrowNodeLoader)
 }
 
 // escrowCompletedNote is the order history note of the completion on funding.
 const escrowCompletedNote = "Completed on funding (Bitcoin escrow): the content was delivered. The vendor claims the escrowed coins from the order page."
 
 // escrowWatcher runs while ESCROW_BTC=on. Until escrow is enabled (its node was down at startup, say) each pass first
-// retries its checks (retryEscrow, A-316), so escrow starts without a restart once the node answers.
+// retries its checks (retryEscrow, A-316), so escrow starts without a restart once the node answers; while it is
+// enabled, retryEscrow runs the pooled key self-check again once a day (QA4W3-8).
 func escrowWatcher(ctx context.Context, a *App) {
 	if !a.escrowConfigured {
 		return
@@ -87,6 +105,7 @@ func escrowWatcher(ctx context.Context, a *App) {
 		case <-t.C:
 		}
 		a.retryEscrow(ctx, retry)
+		a.checkEscrowSigner(ctx) // A-454: its state and pins; a signer that does not answer is "waiting"
 		pass, cancel := context.WithTimeout(ctx, watcherPassTimeout)
 		err := a.escrowPollOnce(pass)
 		cancel()
@@ -98,20 +117,45 @@ func escrowWatcher(ctx context.Context, a *App) {
 }
 
 // escrowPollOnce runs one escrow watcher pass unless another process holds the escrow watcher lock. The node must
-// still report regtest; an order whose address could not be read in this pass never expires in it. While escrow is not
-// enabled, or the node check fails, the pass applies only the release deadlines, which need no node (escrow_deadline.go).
+// still report the chain escrow started on (its escrowChainID, A-439) and be synced (bitcoinNode.notSynced,
+// A-439); an order whose address could not be read in this pass never expires in it. While escrow is not enabled, the
+// node check fails or the node is not synced, the pass applies only the release deadlines, which need no node
+// (escrow_deadline.go): no deposit is read, no order expires, nothing is flagged and no settlement is built, co-signed
+// or broadcast. A node that is not synced is not an error: its state is logged once per change (noteEscrowSync). In
+// APP_MODE=tor the same node check evaluates the Tor-mode gate for the pass (torGate, A-441): while it holds, nothing is
+// sent, and everything else in the pass goes on.
 func (a *App) escrowPollOnce(ctx context.Context) error {
 	e := a.escrow.Load()
 	if a.db == nil || e == nil && !a.escrowConfigured {
 		return nil
 	}
 	var nodeErr error
+	notSynced := false
 	if e != nil {
-		switch chain, err := e.chain(ctx); {
+		node, err := e.blockchainInfo(ctx)
+		// getnetworkinfo, read at most once per pass: on a public chain for the sync guard (its failure fails the node
+		// check), and in APP_MODE=tor for the Tor-mode gate (its failure holds broadcasts, A-441).
+		var netInfo escrowNetInfo
+		var netErr error
+		if err == nil && (node.Chain != "regtest" || a.mode == "tor") {
+			netInfo, netErr = e.networkInfo(ctx)
+			if node.Chain != "regtest" {
+				node.Connections, err = netInfo.Connections, netErr
+			}
+		}
+		switch {
 		case err != nil:
 			nodeErr = &watchError{label: "escrow", class: "node check failed: " + errorClassOf(err), err: err}
-		case chain != "regtest":
-			nodeErr = &watchError{label: "escrow", class: "node is not on regtest; pass skipped", err: errEscrowNotRegtest}
+		case escrowChainID(node.Chain, node.SignetChallenge) != e.chainID:
+			nodeErr = &watchError{label: "escrow", class: "node changed chain; pass skipped", err: errEscrowChain}
+		default:
+			why := node.notSynced(time.Now(), maxTipAge())
+			a.noteEscrowSync(why)
+			notSynced = why != ""
+			a.escrowTip.Store(node.Blocks)
+			if a.mode == "tor" {
+				a.noteTorGate(torGate(netInfo, netErr))
+			}
 		}
 	}
 	conn, err := a.db.Conn(ctx)
@@ -130,7 +174,7 @@ func (a *App) escrowPollOnce(ctx context.Context) error {
 			conn.Raw(func(any) error { return driver.ErrBadConn })
 		}
 	}()
-	if e == nil || nodeErr != nil {
+	if e == nil || nodeErr != nil || notSynced {
 		return errors.Join(nodeErr, a.escrowDeadlines(ctx))
 	}
 	// Open escrow orders whatever their age, closed ones within escrowWatchedSQL's horizon (their ledger stays current
@@ -235,6 +279,53 @@ func (a *App) escrowPollOnce(ctx context.Context) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// noteEscrowSync records why (a bitcoinNode reason class, "" when synced) as the escrow node's sync state for the admin
+// page and logs one fixed line when it changes. In memory only: nothing is stored for the guard (A-439).
+func (a *App) noteEscrowSync(why string) {
+	prev, _ := a.escrowSync.Swap(why).(string)
+	switch {
+	case prev == why:
+	case why == "":
+		log.Print("escrow: Bitcoin escrow node synced; escrow watcher passes resumed")
+	default:
+		log.Printf("escrow: Bitcoin escrow node not synced (%s); escrow watcher passes skipped until it is", why)
+	}
+}
+
+// escrowNodeLoader shows on /admin, under Payment providers, why the Bitcoin escrow node is not used: the reason class
+// it is not synced for (with syncRemedy's advice when there is one), the pinned chain and the node's when
+// startEscrow refused it, the pooled user's answer to the market key self-check (A-440), or why the arbiter wallet's
+// entries are not read (QA4W4A-1); in APP_MODE=tor why the
+// Tor-mode gate holds broadcasts; and the settlements queued or stuck (A-441, escrow_stall.go).
+func escrowNodeLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
+	if !a.escrowConfigured || d.User == nil || d.User.Role != "admin" {
+		return nil
+	}
+	v := &EscrowNodeView{Mismatch: a.escrowMismatch.Load(), StallN: escrowStallBlocks}
+	if class := a.escrowPooledKey.Load(); class != nil {
+		v.PooledKey, v.PooledWhitelist = *class, strings.Join(pooledRPCMethods, ",")
+	}
+	if why := a.escrowArbiterRead.Load(); why != nil {
+		v.ArbiterRead = *why
+		if *why != "waiting" {
+			v.ArbiterNext = a.arbiterNextCheck() // A-479: the next read waits after a slow one
+		}
+	}
+	if e := a.escrow.Load(); e != nil {
+		v.NotSynced, _ = a.escrowSync.Load().(string)
+		v.Remedy = syncRemedy(e.network, v.NotSynced)
+		v.TorHold = a.broadcastHold()
+	}
+	var err error
+	if v.Stalled, err = a.escrowStalls(ctx); err != nil {
+		return err
+	}
+	if v.NotSynced != "" || v.Mismatch != nil || v.PooledKey != "" || v.ArbiterRead != "" || v.TorHold != "" || len(v.Stalled) > 0 {
+		d.EscrowNode = v
+	}
+	return nil
 }
 
 // settleEscrow applies the ledger to one escrow order in its own transaction: deposits its release or refund does not

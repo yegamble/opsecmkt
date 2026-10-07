@@ -26,6 +26,7 @@ import (
 //     stray refund to the refund address pinned at checkout is requested, signed by the buyer's wallet, co-signed by
 //     the market, broadcast and confirmed, with its output on chain (gettxout) the plan's.
 func TestEscrowRegtestConflicted(t *testing.T) {
+	skipOnPrivateSignet(t, privateSignetSkipReorg+"; it also uses prioritisetransaction")
 	appURL, opURL := os.Getenv("ESCROW_REGTEST_APP_RPC_URL"), os.Getenv("ESCROW_REGTEST_OPERATOR_RPC_URL")
 	if appURL == "" || opURL == "" {
 		t.Skip("set ESCROW_REGTEST_APP_RPC_URL and ESCROW_REGTEST_OPERATOR_RPC_URL (scripts/test-escrow-regtest.sh) to run against bitcoind -regtest")
@@ -56,7 +57,7 @@ func TestEscrowRegtestConflicted(t *testing.T) {
 		if params == nil {
 			params = []any{}
 		}
-		if err := op.call(ctx, path, method, params, out); err != nil {
+		if err := op.callWithin(ctx, regtestOperatorTimeout, path, method, params, out); err != nil {
 			t.Fatalf("operator %s: %v", method, err)
 		}
 	}

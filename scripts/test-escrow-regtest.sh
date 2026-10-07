@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
-# Manual Bitcoin escrow check on a real Bitcoin Core regtest node (WR-escrow Phase 1, A-246). Not run in CI.
-# REGTEST ONLY: it refuses any node that does not report chain "regtest", before any wallet call.
+# Bitcoin escrow check on a real Bitcoin Core regtest node (WR-escrow Phase 1, A-246). Run by hand, and in CI by the escrow-regtest
+# job (A-438, .github/workflows/ci.yaml, docs/ci-cd.md), which starts a node like the one below with generated passwords.
+# Two modes, never a public network:
+#   - regtest (the default; what CI runs): it refuses any node that does not report chain "regtest", before any wallet
+#     call. Everything below the private-signet paragraph describes this mode.
+#   - --private-signet (A-443; by hand, not in CI): see "Private-signet mode" at the end of this comment.
 #
 # Slice P1-a leg: a buyer's Core wallet holding a BIP48 account registers its tpub with origin on a real App,
 # fetches the practice PSBT, signs it with walletprocesspsbt and pastes it back; the key becomes active. Before
@@ -106,6 +110,73 @@
 # left out and flagged once (an order note, the buyer and staff told), and a stray refund to the refund address pinned
 # at checkout is requested, signed by the buyer's own wallet, co-signed, broadcast and confirmed (gettxout).
 #
+# A-453 leg (shape (b) per-order key derivation, TestEscrowRegtestBIP32; no product caller yet): three Core wallets each
+# hold a BIP48 account of their own seed; for per-order indexes 2, 3, 17, 1000 and 2^31-1 the Go derivation
+# (escrow_bip32.go) derives each account's child and serializes it rooted (depth 0, fingerprint 0, child 0); as the
+# app's whitelisted user, Core's deriveaddresses gives the same address from the account key at <index>/0/0 and from
+# the rooted key at /0/0, for each key (wpkh) and the three together (wsh(sortedmulti(2,…))), and the operator's
+# derivation from each private root along m/48h/1h/0h/2h/<index>/0/0 agrees; a rooted key checked at another index, or
+# with one chain-code byte changed, is refused.
+#
+# A-454 leg (shape (b) escrow signer, TestEscrowRegtestSigner; no order uses it yet): cmd/escrow-signer is built from
+# this tree, given a fresh seed in a temporary directory and started against the node as its own RPC user (whitelisted
+# to decodepsbt, descriptorprocesspsbt and getdescriptorinfo; the leg checks getblockchaininfo is refused); its account
+# key, computed by Core from the account tprv (getdescriptorinfo), agrees with Core's derivation from the seed's master
+# key along m/48h/1h/0h/2h; the App pins its fingerprint and key HMAC at startup. A hand-built shape-(b) escrow (two
+# Core wallets' BIP48 per-order keys, rooted, and the signer's account/5/0/0) is funded, co-signed through the socket,
+# signed by the buyer with Core, combined, finalized, accepted by testmempoolaccept, broadcast and mined. Refused with
+# nothing signed: an input the buyer signed SIGHASH_NONE, another index, a script holding two of the signer's keys, and
+# two escrows in one request. The seed is backed up to a throwaway PGP key and restored; a signer from the restored seed
+# gives the identical signature (break-glass rehearsal). Restarted against a signer with another seed the App reports
+# the pin mismatch (shape (a) stays on, the pins unchanged); with the signer stopped, waiting. No database column,
+# signer log or transcript line holds the seed or a tprv.
+#
+# A-440 legs (market key protection, P4-R6). TestEscrowRegtestPooled: the pooled RPC user, restricted to the rpcwhitelist
+# line below (docs/operator-guide.md, "The pooled RPC user"), is refused listdescriptors (true and false), gethdkeys
+# (private true and false), walletprocesspsbt, dumpwallet and backupwallet on the arbiter wallet with HTTP 403 while the
+# operator user is not (a count, never printed; its walletprocesspsbt of an empty PSBT fails decoding, -22); an App with
+# escrow and the pooled provider on the same node starts escrow (its startup self-check got Core's real 403s), and the
+# pooled provider still works through every whitelisted method: the check reloads an unloaded pooled wallet
+# (loadwallet), a deposit address is issued, the deposit is credited by a watcher pass, and a payout is sent by the
+# watcher (validateaddress, sendtoaddress) and confirmed; restarted with the unrestricted operator user as the pooled
+# URL, the self-check gets an answer and escrow stays disabled. TestEscrowRegtestArbiterRestore: the arbiter wallet is backed up
+# as the operator user (backupwallet, height recorded; the private descriptors exported for the fallback, never
+# printed); a claim is built and signed by the vendor's Core wallet; the arbiter wallet is unloaded (the harness cannot
+# delete files inside the node, so it restores under a new name, as onto a fresh node) and a watcher pass co-signs
+# nothing; restorewallet brings it back and, after a restart with the fingerprint pin unchanged, the watcher co-signs,
+# broadcasts and confirms the claim; a blank wallet given the exported descriptors with importdescriptors (timestamp
+# "now") co-signs a second claim the same way. Encryption to the operator's key (docs/testnet-runbook.md) happens off
+# the node and is not exercised here.
+#
+# A-471 leg (a payment to the arbiter wallet cannot disable escrow, TestEscrowRegtestArbiterDeposit): a regtest wallet pays
+# the wpkh address of an escrow's market child key (shown in the buyer's descriptor; the arbiter wallet owns it), so the
+# arbiter wallet has a transaction (txcount 1, one "receive"); a restart and a watcher retry's check both start escrow.
+# QA4W4A-1: three transactions of 2000 outputs each pay the same address; a restart reads only what is newer than the
+# checkpoint the last passing check left (now the tip) and escrow stays on, as after another restart. QA4W6-1: the payer
+# pays it again replaceably and bumps the fee 1100 times (Core lists every unconfirmed replacement, each entry naming all
+# the others in walletconflicts, about 82 MB from the checkpoint); a restart keeps escrow on, and once the last
+# replacement is mined (one entry of about 74 KB) so do two more restarts. Control, behind
+# them: the operator spends from the arbiter wallet to its own change address (listtransactions lists no send for it)
+# and a restart leaves escrow disabled (not dedicated).
+#
+# A-441 leg (broadcast honesty, TestEscrowRegtestPrivateBroadcast): on a second regtest node started with -privatebroadcast
+# -proxy=127.0.0.1:9 -listen=0 (a proxy nobody answers; same users and whitelists), the Tor-mode gate reads real
+# getnetworkinfo answers (it lets the private node send, proxy set for IPv4 and IPv6 on Core 31.1, and holds the main
+# node, no proxy). In APP_MODE=tor a funded escrow's claim, signed by the vendor's wallet, is co-signed and sent:
+# sendrawtransaction answers its txid but it never reaches the mempool or the watch-only wallet (getprivatebroadcastinfo
+# lists it), so the settlement stays broadcast; five blocks later nothing is reported, at six one staff notice and one
+# order note say it is queued or stuck and /admin lists it, and later passes do not repeat it. generateblock then mines the
+# stored transaction: one note clears the alert, the /admin line goes and it confirms.
+#
+# A-455 leg (a per-order wallet key's practice signature, TestEscrowRegtestPerOrderPractice; no escrow uses such a key
+# yet): a Core wallet's seed stands in for a BIP39 seed; its BIP48 account key is registered on a real App as a per-order
+# wallet key. From the practice page alone (the path, the two rooted cosigner Vpubs, the first address and the PSBT) the
+# operator builds the per-order practice wallet from the seed as a private descriptor (root/48h/1h/0h/2h/2147483647/0/0
+# with both cosigners at /0/0): Core derives the address the page shows and signs the PSBT with descriptorprocesspsbt,
+# and that signature activates the key (Core's finalizepsbt verifies it beside the server's throwaway signature;
+# testmempoolaccept reports missing-inputs). Refused first: the unsigned PSBT, the vendor's Core wallet holding the
+# account's shape-(a) range (it has no signature to give), and the per-order wallet's SIGHASH_NONE signature.
+#
 # Ruled Phase 1 legs and where they run: release (Settlement, Cosign: claim), refund (Settlement, Cosign), dispute
 # (Cosign), comma injection refused (Gate), NONE paste refused (PracticeSign, Settlement), forged market slot refused
 # (Gate), conflicting outcome refused (Gate), spent-outpoint build refused (Gate), restart mid-send rebroadcasts the
@@ -114,24 +185,249 @@
 # cap (Gate); also A-339, both-signed and stray refund (Cosign), A-344 and a plain reorg (Recovery), A-356 and A-359
 # (Gate); A-428, a deposit conflicted at an unpaid cancellation and mined afterwards (Conflicted).
 #
-# Needs a regtest node with two RPC users: an operator user with full rights (sets up the wallets, standing in
-# for the buyer's own node) and the app's user restricted by rpcwhitelist exactly as docs/operator-guide.md
-# ("Bitcoin escrow (regtest only)") describes, plus a disposable PostgreSQL database. For example:
+# Needs a regtest node with four RPC users: an operator user with full rights (sets up the wallets, standing in
+# for the buyer's own node), the app's user restricted by rpcwhitelist exactly as docs/operator-guide.md
+# ("Bitcoin escrow (test networks only)") describes, the pooled user restricted to the pooled methods ("The pooled RPC
+# user") and the escrow signer's user restricted to decodepsbt, descriptorprocesspsbt and getdescriptorinfo ("Escrow
+# signer"); a second node like it (the same four users) started with -privatebroadcast -proxy=127.0.0.1:9 -listen=0
+# for the A-441 leg (its own chain: the two nodes are not connected); and a disposable PostgreSQL database. For
+# example:
 #
 #   salt=$(openssl rand -hex 16); hash=$(printf %s app-pass | openssl dgst -sha256 -hmac "$salt" | cut -d' ' -f2)
+#   psalt=$(openssl rand -hex 16); phash=$(printf %s pooled-pass | openssl dgst -sha256 -hmac "$psalt" | cut -d' ' -f2)
+#   ssalt=$(openssl rand -hex 16); shash=$(printf %s signer-pass | openssl dgst -sha256 -hmac "$ssalt" | cut -d' ' -f2)
 #   docker run -d --name escrow-regtest -p 127.0.0.1:18443:18443 bitcoin/bitcoin:31.1 bitcoind -regtest -fallbackfee=0.0002 \
 #     -server=1 -rpcbind=0.0.0.0 -rpcallowip=0.0.0.0/0 -rpcuser=operator -rpcpassword=operator-pass \
-#     "-rpcauth=opsecmkt-escrow:$salt\$$hash" -rpcwhitelistdefault=0 \
-#     -rpcwhitelist=opsecmkt-escrow:getblockchaininfo,getrawchangeaddress,getaddressinfo,createpsbt,utxoupdatepsbt,importdescriptors,getdescriptorinfo,deriveaddresses,gettxout,keypoolrefill,walletprocesspsbt,descriptorprocesspsbt,combinepsbt,finalizepsbt,testmempoolaccept,sendrawtransaction,getwalletinfo,listreceivedbyaddress,gettransaction,listtransactions
+#     "-rpcauth=opsecmkt-escrow:$salt\$$hash" "-rpcauth=opsecmkt-pooled:$psalt\$$phash" \
+#     "-rpcauth=opsecmkt-signer:$ssalt\$$shash" -rpcwhitelistdefault=0 \
+#     -rpcwhitelist=opsecmkt-signer:decodepsbt,descriptorprocesspsbt,getdescriptorinfo \
+#     -rpcwhitelist=opsecmkt-pooled:getblockchaininfo,getwalletinfo,loadwallet,getnetworkinfo,getnewaddress,listreceivedbyaddress,gettransaction,sendtoaddress,validateaddress \
+#     -rpcwhitelist=opsecmkt-escrow:getblockchaininfo,getnetworkinfo,getrawchangeaddress,getaddressinfo,createpsbt,utxoupdatepsbt,importdescriptors,getdescriptorinfo,deriveaddresses,gettxout,keypoolrefill,walletprocesspsbt,descriptorprocesspsbt,combinepsbt,finalizepsbt,testmempoolaccept,sendrawtransaction,getwalletinfo,listreceivedbyaddress,gettransaction,listtransactions,listsinceblock
+#   # the same command again as escrow-regtest-private, published on 127.0.0.1:18453, ending in:
+#   #   -privatebroadcast -proxy=127.0.0.1:9 -listen=0
 #   ESCROW_REGTEST_OPERATOR_RPC_URL=http://operator:operator-pass@127.0.0.1:18443 \
 #   ESCROW_REGTEST_APP_RPC_URL=http://opsecmkt-escrow:app-pass@127.0.0.1:18443 \
+#   ESCROW_REGTEST_POOLED_RPC_URL=http://opsecmkt-pooled:pooled-pass@127.0.0.1:18443 \
+#   ESCROW_REGTEST_SIGNER_RPC_URL=http://opsecmkt-signer:signer-pass@127.0.0.1:18443 \
+#   ESCROW_REGTEST_PRIVATE_OPERATOR_RPC_URL=http://operator:operator-pass@127.0.0.1:18453 \
+#   ESCROW_REGTEST_PRIVATE_APP_RPC_URL=http://opsecmkt-escrow:app-pass@127.0.0.1:18453 \
 #   TEST_DATABASE_URL=postgres://…/a_disposable_database ./scripts/test-escrow-regtest.sh
 #
 # The transcript is written to ESCROW_REGTEST_LOG (default artifacts/real-chain/test-escrow-regtest-<UTC time>.log,
-# gitignored). URLs reach curl on stdin and are never printed.
+# gitignored). URLs reach curl on stdin and are never printed. A transcript holding a serialized tprv fails the run
+# (A-454: no leg prints private key material).
+#
+# Private-signet mode (A-443): ./scripts/test-escrow-regtest.sh --private-signet, with TEST_DATABASE_URL and Docker
+# (Linux: the host reaches the containers by their address on the network). It is private signet, not public. The
+# script starts two Bitcoin Core nodes itself (ESCROW_SIGNET_IMAGE, default bitcoin/bitcoin:31.1) with
+# -chain=signet -signetchallenge=51 (a block needs no signature, so Core's own generatetoaddress mines it; no fetched
+# code) on a Docker network created with --internal (no route off the host, no published port), with the same four RPC
+# users and whitelists as above and generated passwords: node A (the miner; no outbound connection, listening for node
+# B) and node B (the app's node; connecting to node A only, not listening), so node B has a peer, as the sync guard
+# requires on a public chain; neither uses DNS seeds or fixed seeds. Node A's
+# miner wallet is mined to maturity by TestEscrowPrivateSignetPrepare (generatetoaddress with maxtries 2000000000, each
+# call's block count checked: Core's default returns [] silently on signet), and its datadir is cached
+# (ESCROW_SIGNET_CACHE, default under artifacts/real-chain/private-signet-cache/) so a later run skips those minutes;
+# each run mines a fresh block on it. Every leg that needs no regtest-only RPC then runs against node B, a leg's
+# 101-block maturity replaced by a payment from node A's miner wallet (matureFunds), plus TestEscrowRegtestIsolated (node
+# B leaves the network: an expired order is not cancelled; back on the network: its deposit is credited). Not run, with
+# the reason printed: TestEscrowRegtestRecovery and TestEscrowRegtestConflicted (invalidateblock, reconsiderblock,
+# prioritisetransaction) and TestEscrowRegtestPrivateBroadcast (a -privatebroadcast node and generateblock, which cannot
+# find a signet block). Every transcript line carries "[private signet, not public]" and the transcript starts with a
+# header (node version, commit, the nodes' command line with credentials redacted, start and finish times); default
+# ESCROW_REGTEST_LOG artifacts/real-chain/test-escrow-private-signet-<UTC time>.log. Containers, their volumes and the
+# network are removed on exit (ESCROW_SIGNET_PREFIX names them, default escrow-private-signet; an existing one is
+# refused). Runtime on a loaded 4-core host: about 25 minutes the first time (9 of them maturing node A's coins) and about
+# 20 with the cached datadir, so it is not in CI.
 set -euo pipefail
 
-for v in ESCROW_REGTEST_OPERATOR_RPC_URL ESCROW_REGTEST_APP_RPC_URL TEST_DATABASE_URL; do
+private_signet() {
+  local label="private signet, not public"
+  [[ -n "${TEST_DATABASE_URL:-}" ]] || { echo "Set TEST_DATABASE_URL (see the comment at the top of this script)." >&2; exit 2; }
+  for c in docker curl go openssl git; do
+    command -v "$c" >/dev/null || { echo "$c is required" >&2; exit 2; }
+  done
+  cd "$(dirname "$0")/.."
+  local image="${ESCROW_SIGNET_IMAGE:-bitcoin/bitcoin:31.1}" prefix="${ESCROW_SIGNET_PREFIX:-escrow-private-signet}"
+  local net="$prefix-net" a="$prefix-a" b="$prefix-b"
+  local cache="${ESCROW_SIGNET_CACHE:-artifacts/real-chain/private-signet-cache/$(printf %s "$image" | tr -c 'A-Za-z0-9.' '-')-challenge51.tar}"
+  local log="${ESCROW_REGTEST_LOG:-artifacts/real-chain/test-escrow-private-signet-$(date -u +%Y%m%dT%H%M%SZ).log}"
+  local started body
+  started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  for n in "$a" "$b"; do
+    if docker container inspect "$n" >/dev/null 2>&1; then
+      echo "Refusing: a container named $n exists (remove it, or set ESCROW_SIGNET_PREFIX)." >&2
+      exit 2
+    fi
+  done
+  if docker network inspect "$net" >/dev/null 2>&1; then
+    echo "Refusing: a Docker network named $net exists (remove it, or set ESCROW_SIGNET_PREFIX)." >&2
+    exit 2
+  fi
+  mkdir -p "$(dirname "$log")" "$(dirname "$cache")"
+  body=$(mktemp)
+  # shellcheck disable=SC2064 # expand the names now
+  trap "docker rm -f -v '$a' '$b' >/dev/null 2>&1 || true; docker network rm '$net' >/dev/null 2>&1 || true; rm -f '$body' '$cache.part'" EXIT
+  say() { printf '[%s] %s\n' "$label" "$*" | tee -a "$body"; }
+
+  # The users' whitelists are the ones this script's header documents (TestEscrowWhitelistDocumented checks the escrow line).
+  local escrow_user=opsecmkt-escrow pooled_user=opsecmkt-pooled whitelist pooled_whitelist
+  whitelist=$(sed -n "s/^#  *-rpcwhitelist=$escrow_user:\([a-z,]*\)\$/\1/p" scripts/test-escrow-regtest.sh)
+  pooled_whitelist=$(sed -n "s/^#  *-rpcwhitelist=$pooled_user:\([a-z,]*\) .*/\1/p" scripts/test-escrow-regtest.sh)
+  [[ -n $whitelist && -n $pooled_whitelist ]] || { echo "the header's rpcwhitelist lines were not found" >&2; exit 2; }
+  local operator_pass app_pass pooled_pass signer_pass
+  operator_pass=$(openssl rand -hex 24) app_pass=$(openssl rand -hex 24) pooled_pass=$(openssl rand -hex 24) signer_pass=$(openssl rand -hex 24)
+  rpcauth() { # rpcauth <user> <password>: user:salt$HMAC-SHA256(salt, password), the form bitcoind reads
+    local salt hash
+    salt=$(openssl rand -hex 16)
+    hash=$(printf %s "$2" | openssl dgst -sha256 -hmac "$salt" | sed 's/^.* //')
+    printf '%s:%s$%s' "$1" "$salt" "$hash"
+  }
+  local common=(bitcoind -chain=signet -signetchallenge=51 -dnsseed=0 -fixedseeds=0 -fallbackfee=0.0002 -server=1
+    -rpcbind=0.0.0.0 -rpcallowip=0.0.0.0/0 -rpcport=38332 -port=38333 -rpcwhitelistdefault=0
+    "-rpcwhitelist=$escrow_user:$whitelist" "-rpcwhitelist=$pooled_user:$pooled_whitelist"
+    -rpcwhitelist=opsecmkt-signer:decodepsbt,descriptorprocesspsbt,getdescriptorinfo)
+  local users=("-rpcauth=$(rpcauth operator "$operator_pass")" "-rpcauth=$(rpcauth opsecmkt-escrow "$app_pass")"
+    "-rpcauth=$(rpcauth opsecmkt-pooled "$pooled_pass")" "-rpcauth=$(rpcauth opsecmkt-signer "$signer_pass")")
+  rpc() { # rpc <ip> <method> [params]: the operator's JSON-RPC answer; the URL reaches curl on stdin, never printed
+    printf 'url = "http://operator:%s@%s:38332/"\n' "$operator_pass" "$1" |
+      curl -sS --max-time 30 --noproxy '*' -H 'Content-Type: application/json' --config - \
+        --data "{\"jsonrpc\":\"1.0\",\"id\":\"signet\",\"method\":\"$2\",\"params\":${3:-[]}}" 2>/dev/null || true
+  }
+  ip_of() { docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$1"; }
+  field() { sed -n "s/.*\"$1\":\([^,}]*\).*/\1/p"; }
+  wait_signet() { # wait_signet <ip> <name>: until the node answers on signet with signet_challenge 51
+    local info
+    for _ in $(seq 120); do
+      info=$(rpc "$1" getblockchaininfo)
+      if grep -q '"chain":"signet"' <<<"$info" && grep -q '"signet_challenge":"51"' <<<"$info"; then
+        return 0
+      fi
+      sleep 1
+    done
+    echo "Refusing: $2 did not answer on the private signet (chain signet, signet_challenge 51) within 120 seconds." >&2
+    exit 1
+  }
+
+  docker network create --internal "$net" >/dev/null
+  docker create --name "$a" --network "$net" "$image" "${common[@]}" -connect=0 -listen=1 "${users[@]}" >/dev/null
+  local cached=no
+  if [[ -s "$cache" ]]; then
+    docker cp - "$a:/home/bitcoin" <"$cache"
+    cached=yes
+  fi
+  docker start "$a" >/dev/null
+  local ip_a ip_b
+  ip_a=$(ip_of "$a")
+  wait_signet "$ip_a" "node A"
+  say "node A ($a) up on the private signet; datadir from cache: $cached"
+  local miner_url="http://operator:$operator_pass@$ip_a:38332"
+  set +e
+  ESCROW_REGTEST_CHAIN=signet ESCROW_REGTEST_MINER_RPC_URL="$miner_url" go test -count=1 -timeout 30m \
+    -run '^TestEscrowPrivateSignetPrepare$' -v ./internal/market/ 2>&1 | sed -u "s/^/[$label] /" | tee -a "$body"
+  local prep=${PIPESTATUS[0]}
+  set -e
+  if [[ $prep -ne 0 ]] || ! grep -q -- "--- PASS: TestEscrowPrivateSignetPrepare " "$body"; then
+    echo "FAILED: node A's preparation (TestEscrowPrivateSignetPrepare); see $log" >&2
+    cp "$body" "$log"
+    exit 1
+  fi
+  if [[ $cached == no ]]; then
+    docker stop -t 120 "$a" >/dev/null
+    docker cp "$a:/home/bitcoin/.bitcoin" - >"$cache.part"
+    mv "$cache.part" "$cache"
+    docker start "$a" >/dev/null
+    wait_signet "$ip_a" "node A"
+    say "node A's datadir cached at $cache (a later run starts from it)"
+  fi
+  docker run -d --name "$b" --network "$net" "$image" "${common[@]}" "-connect=$a:38333" -listen=0 "${users[@]}" >/dev/null
+  ip_b=$(ip_of "$b")
+  wait_signet "$ip_b" "node B"
+  local height_a height_b peers ibd
+  for i in $(seq 180); do
+    height_a=$(rpc "$ip_a" getblockcount | field result)
+    height_b=$(rpc "$ip_b" getblockcount | field result)
+    peers=$(rpc "$ip_b" getconnectioncount | field result)
+    ibd=$(rpc "$ip_b" getblockchaininfo | field initialblockdownload)
+    if [[ -n $height_a && $height_a == "$height_b" && ${peers:-0} -gt 0 && $ibd == false ]]; then
+      break
+    fi
+    if [[ $i -eq 180 ]]; then
+      echo "FAILED: node B did not sync from node A within 180 seconds (heights $height_a/$height_b, peers $peers, IBD $ibd)" >&2
+      exit 1
+    fi
+    sleep 1
+  done
+  say "node B ($b) synced from node A: height $height_b, $peers peer(s), initialblockdownload false"
+
+  local legs=(PracticeSign Funding Settlement Cosign Gate Bump Physical Deadline Reserve BIP32 Signer Pooled ArbiterRestore ArbiterDeposit PerOrderPractice Isolated)
+  local pattern
+  pattern=$(IFS='|'; echo "${legs[*]}")
+  set +e
+  ESCROW_REGTEST_CHAIN=signet ESCROW_REGTEST_MINER_RPC_URL="$miner_url" \
+    ESCROW_REGTEST_OPERATOR_RPC_URL="http://operator:$operator_pass@$ip_b:38332" \
+    ESCROW_REGTEST_APP_RPC_URL="http://opsecmkt-escrow:$app_pass@$ip_b:38332" \
+    ESCROW_REGTEST_POOLED_RPC_URL="http://opsecmkt-pooled:$pooled_pass@$ip_b:38332" \
+    ESCROW_REGTEST_SIGNER_RPC_URL="http://opsecmkt-signer:$signer_pass@$ip_b:38332" \
+    go test -count=1 -timeout 120m -run "^TestEscrowRegtest($pattern)\$" -v ./internal/market/ 2>&1 | sed -u "s/^/[$label] /" | tee -a "$body"
+  local status=${PIPESTATUS[0]}
+  set -e
+  local failed=0 leg
+  for leg in "${legs[@]}"; do
+    leg=TestEscrowRegtest$leg
+    if grep -q -- "--- PASS: $leg " "$body"; then
+      say "PASS: $leg"
+    elif grep -q -- "--- FAIL: $leg " "$body"; then
+      say "FAILED: $leg"
+      failed=1
+    elif grep -q -- "--- SKIP: $leg " "$body"; then
+      say "SKIPPED: $leg (a skipped leg is not a pass)"
+      failed=1
+    else
+      say "NOT RUN: $leg (go test reported no result for it)"
+      failed=1
+    fi
+  done
+  say "NOT RUN on the private signet: TestEscrowRegtestRecovery (it fakes a reorganisation with invalidateblock and reconsiderblock, test-only RPCs this harness treats as regtest-only: on two connected nodes the invalidated block stays on node A, so what runs would be a split network, not the single-node reorganisation the leg is written for)"
+  say "NOT RUN on the private signet: TestEscrowRegtestConflicted (the same reorganisation, with invalidateblock, and prioritisetransaction to bring the conflicted deposit back)"
+  say "NOT RUN on the private signet: TestEscrowRegtestPrivateBroadcast (it needs a node started with -privatebroadcast behind a dead proxy and mines the queued transaction with generateblock, which takes no maxtries: Core's fixed 1000000 tries do not find a signet block)"
+  if grep -qE 'tprv[1-9A-HJ-NP-Za-km-z]{100,}' "$body"; then
+    say "FAILED: the transcript holds a serialized tprv (private key material)"
+    failed=1
+  fi
+  local version commit
+  version=$(rpc "$ip_a" getnetworkinfo | sed -n 's/.*"subversion":"\([^"]*\)".*/\1/p')
+  commit=$(git rev-parse HEAD)
+  if [[ -n $(git status --porcelain 2>/dev/null) ]]; then
+    commit="$commit (worktree has uncommitted changes)"
+  fi
+  {
+    echo "# Bitcoin escrow real-chain legs on a private signet: $label"
+    echo "# $label: signet_challenge 51 on Docker network $net (--internal: no route off this host); no public network was contacted"
+    echo "# node version: $version (image $image)"
+    echo "# commit: $commit"
+    echo "# command line (both nodes; credentials redacted): ${common[*]} -rpcauth=operator:<redacted> -rpcauth=opsecmkt-escrow:<redacted> -rpcauth=opsecmkt-pooled:<redacted> -rpcauth=opsecmkt-signer:<redacted>"
+    echo "#   node A: -connect=0 -listen=1 (the miner); node B: -connect=$a:38333 -listen=0 (the app's node)"
+    echo "# node A datadir from cache: $cached ($cache)"
+    echo "# started: $started  finished: $(date -u +%Y-%m-%dT%H:%M:%SZ)  go test exit: $status"
+    echo
+    cat "$body"
+  } >"$log"
+  if [[ $status -ne 0 || $failed -ne 0 ]]; then
+    echo "FAILED ($label): go test exited $status; see $log" >&2
+    exit 1
+  fi
+  echo "PASS ($label): ${#legs[@]} legs on a private signet (two nodes, signet_challenge 51), 3 regtest-only legs not run; transcript in $log"
+  exit 0
+}
+
+case "${1:-}" in
+  --private-signet) private_signet ;;
+  "") ;;
+  *) echo "Usage: $0 [--private-signet]" >&2; exit 2 ;;
+esac
+
+for v in ESCROW_REGTEST_OPERATOR_RPC_URL ESCROW_REGTEST_APP_RPC_URL ESCROW_REGTEST_POOLED_RPC_URL ESCROW_REGTEST_SIGNER_RPC_URL ESCROW_REGTEST_PRIVATE_OPERATOR_RPC_URL ESCROW_REGTEST_PRIVATE_APP_RPC_URL TEST_DATABASE_URL; do
   if [[ -z "${!v:-}" ]]; then
     echo "Set $v (see the comment at the top of this script)." >&2
     exit 2
@@ -146,7 +442,7 @@ chain_of() { # chain_of <url>: the chain getblockchaininfo reports, or nothing
     --data '{"jsonrpc":"1.0","id":"escrow","method":"getblockchaininfo","params":[]}' --config - 2>/dev/null |
     sed -n 's/.*"chain":"\([a-z0-9]*\)".*/\1/p' || true
 }
-for v in ESCROW_REGTEST_OPERATOR_RPC_URL ESCROW_REGTEST_APP_RPC_URL; do
+for v in ESCROW_REGTEST_OPERATOR_RPC_URL ESCROW_REGTEST_APP_RPC_URL ESCROW_REGTEST_POOLED_RPC_URL ESCROW_REGTEST_PRIVATE_OPERATOR_RPC_URL ESCROW_REGTEST_PRIVATE_APP_RPC_URL; do
   if [[ "$(chain_of "${!v}")" != regtest ]]; then
     echo "Refusing: the node at $v is not on regtest (or is unreachable)." >&2
     exit 1
@@ -158,12 +454,12 @@ log="${ESCROW_REGTEST_LOG:-artifacts/real-chain/test-escrow-regtest-$(date -u +%
 mkdir -p "$(dirname "$log")"
 echo "Bitcoin escrow regtest check; transcript: $log"
 set +e
-go test -count=1 -timeout 15m -run '^TestEscrowRegtest(PracticeSign|Funding|Settlement|Cosign|Recovery|Gate|Bump|Physical|Deadline|Reserve|Conflicted)$' -v ./internal/market/ 2>&1 | tee "$log"
+go test -count=1 -timeout 15m -run '^TestEscrowRegtest(PracticeSign|Funding|Settlement|Cosign|Recovery|Gate|Bump|Physical|Deadline|Reserve|Conflicted|BIP32|Signer|Pooled|ArbiterRestore|ArbiterDeposit|PrivateBroadcast|PerOrderPractice)$' -v ./internal/market/ 2>&1 | tee "$log"
 status=${PIPESTATUS[0]}
 set -e
 # Each leg is reported from its own go test result line, so one failing leg never makes another read as failed.
 failed=0
-for leg in TestEscrowRegtestPracticeSign TestEscrowRegtestFunding TestEscrowRegtestSettlement TestEscrowRegtestCosign TestEscrowRegtestRecovery TestEscrowRegtestGate TestEscrowRegtestBump TestEscrowRegtestPhysical TestEscrowRegtestDeadline TestEscrowRegtestReserve TestEscrowRegtestConflicted; do
+for leg in TestEscrowRegtestPracticeSign TestEscrowRegtestFunding TestEscrowRegtestSettlement TestEscrowRegtestCosign TestEscrowRegtestRecovery TestEscrowRegtestGate TestEscrowRegtestBump TestEscrowRegtestPhysical TestEscrowRegtestDeadline TestEscrowRegtestReserve TestEscrowRegtestConflicted TestEscrowRegtestBIP32 TestEscrowRegtestSigner TestEscrowRegtestPooled TestEscrowRegtestArbiterRestore TestEscrowRegtestArbiterDeposit TestEscrowRegtestPrivateBroadcast TestEscrowRegtestPerOrderPractice; do
   if grep -q -- "--- PASS: $leg " "$log"; then
     echo "PASS: $leg"
   elif grep -q -- "--- FAIL: $leg " "$log"; then
@@ -177,8 +473,12 @@ for leg in TestEscrowRegtestPracticeSign TestEscrowRegtestFunding TestEscrowRegt
     failed=1
   fi
 done
+if grep -qE 'tprv[1-9A-HJ-NP-Za-km-z]{100,}' "$log"; then
+  echo "FAILED: the transcript holds a serialized tprv (private key material); see $log" >&2
+  failed=1
+fi
 if [[ $status -ne 0 || $failed -ne 0 ]]; then
   echo "FAILED: go test exited $status; see $log" >&2
   exit 1
 fi
-echo "PASS: practice signing, escrow creation and funding, settlement building and party signing, co-signing, broadcast and confirmation, recovery and reconciliation, the Phase 1 gate's remaining adversarial legs, a same-recipient fee bump, a physical order's release signed by the buyer and the vendor with no arbiter signature, one released at its deadline with the vendor's signature co-signed by the market, no escrow key handed out again after a restore, and a deposit conflicted at an unpaid cancellation and mined afterwards returned by a stray refund, on regtest; transcript in $log"
+echo "PASS: practice signing, escrow creation and funding, settlement building and party signing, co-signing, broadcast and confirmation, recovery and reconciliation, the Phase 1 gate's remaining adversarial legs, a same-recipient fee bump, a physical order's release signed by the buyer and the vendor with no arbiter signature, one released at its deadline with the vendor's signature co-signed by the market, no escrow key handed out again after a restore, a deposit conflicted at an unpaid cancellation and mined afterwards returned by a stray refund, the Go per-order key derivation agreeing with Core, the escrow signer co-signing a shape-(b) escrow and refusing what it must, the whitelisted pooled user refused the arbiter wallet's descriptors while pooled payments still work, and the arbiter wallet backed up, wiped, restored (restorewallet, then the importdescriptors fallback) and co-signing with its fingerprint pin unchanged, a payment to the arbiter wallet (and 6000 dust outputs, and 1100 fee bumps of one payment) leaving escrow on while a spend from it disables escrow, and a settlement queued by -privatebroadcast behind a dead proxy reported queued or stuck after 6 blocks and cleared once mined, and a per-order wallet key's practice signed by Core from the seed and the practice page, on regtest; transcript in $log"

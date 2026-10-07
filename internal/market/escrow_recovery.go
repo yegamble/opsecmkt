@@ -532,7 +532,7 @@ func (a *App) reconcileOrphans(ctx context.Context, e *escrowBTC) error {
 	}
 	addrs := make([]string, 0, len(watched))
 	for _, w := range watched {
-		if _, ok := escrowAddressForm(w.Address); ok {
+		if _, ok := escrowAddressForm(e.network, w.Address); ok {
 			addrs = append(addrs, w.Address)
 		}
 	}

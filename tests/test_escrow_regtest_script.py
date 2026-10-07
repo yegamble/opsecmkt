@@ -13,7 +13,10 @@ import unittest
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts' / 'test-escrow-regtest.sh'
 LEGS = ('TestEscrowRegtestPracticeSign', 'TestEscrowRegtestFunding', 'TestEscrowRegtestSettlement', 'TestEscrowRegtestCosign',
         'TestEscrowRegtestRecovery', 'TestEscrowRegtestGate', 'TestEscrowRegtestBump', 'TestEscrowRegtestPhysical',
-        'TestEscrowRegtestDeadline', 'TestEscrowRegtestReserve', 'TestEscrowRegtestConflicted')
+        'TestEscrowRegtestDeadline', 'TestEscrowRegtestReserve', 'TestEscrowRegtestConflicted', 'TestEscrowRegtestBIP32',
+        'TestEscrowRegtestSigner', 'TestEscrowRegtestPooled', 'TestEscrowRegtestArbiterRestore',
+        'TestEscrowRegtestArbiterDeposit', 'TestEscrowRegtestPrivateBroadcast',
+        'TestEscrowRegtestPerOrderPractice')
 
 
 class FakeRegtest(BaseHTTPRequestHandler):
@@ -51,7 +54,9 @@ class EscrowRegtestScriptTest(unittest.TestCase):
             out.write_text(''.join(line + '\n' for line in output))
             env = dict(os.environ, PATH=tmp + os.pathsep + os.environ['PATH'], FAKE_GO_OUTPUT=str(out),
                        FAKE_GO_STATUS=str(status), ESCROW_REGTEST_OPERATOR_RPC_URL=self.url,
-                       ESCROW_REGTEST_APP_RPC_URL=self.url, TEST_DATABASE_URL='postgres://unused/none',
+                       ESCROW_REGTEST_APP_RPC_URL=self.url, ESCROW_REGTEST_POOLED_RPC_URL=self.url,
+                       ESCROW_REGTEST_SIGNER_RPC_URL=self.url, ESCROW_REGTEST_PRIVATE_OPERATOR_RPC_URL=self.url,
+                       ESCROW_REGTEST_PRIVATE_APP_RPC_URL=self.url, TEST_DATABASE_URL='postgres://unused/none',
                        ESCROW_REGTEST_LOG=str(Path(tmp, 'transcript.log')))
             env.pop('NO_PROXY', None)
             r = subprocess.run(['bash', str(SCRIPT)], env=env, capture_output=True, text=True, timeout=60)
@@ -99,9 +104,92 @@ class EscrowRegtestScriptTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn('go test exited 1', text)
 
+    def test_transcript_with_a_tprv_fails(self):
+        tprv = 'tprv8ZgxMBicQKsPd' + 'A' * 94  # shaped like a serialized test-network private key (not a real one)
+        code, text = self.run_script(['--- PASS: %s (1.0s)' % l for l in LEGS] + ['    leg.go:1: root ' + tprv, 'PASS'], 0)
+        self.assertEqual(code, 1)
+        self.assertIn('holds a serialized tprv', text)
+
+    def test_signer_pooled_and_private_node_urls_are_required(self):
+        # A-440's pooled user, A-454's signer and A-441's private-broadcast node: without any one the script refuses to start.
+        for missing in ('ESCROW_REGTEST_SIGNER_RPC_URL', 'ESCROW_REGTEST_POOLED_RPC_URL',
+                        'ESCROW_REGTEST_PRIVATE_OPERATOR_RPC_URL', 'ESCROW_REGTEST_PRIVATE_APP_RPC_URL'):
+            with tempfile.TemporaryDirectory() as tmp:
+                env = dict(os.environ, ESCROW_REGTEST_OPERATOR_RPC_URL=self.url, ESCROW_REGTEST_APP_RPC_URL=self.url,
+                           ESCROW_REGTEST_POOLED_RPC_URL=self.url, ESCROW_REGTEST_SIGNER_RPC_URL=self.url,
+                           ESCROW_REGTEST_PRIVATE_OPERATOR_RPC_URL=self.url, ESCROW_REGTEST_PRIVATE_APP_RPC_URL=self.url,
+                           TEST_DATABASE_URL='postgres://unused/none', ESCROW_REGTEST_LOG=str(Path(tmp, 't.log')))
+                env.pop(missing)
+                r = subprocess.run(['bash', str(SCRIPT)], env=env, capture_output=True, text=True, timeout=60)
+                self.assertEqual(r.returncode, 2, missing)
+                self.assertIn(missing, r.stderr)
+
     def test_documented_node_has_fallbackfee(self):
         head = SCRIPT.read_text().split('set -euo pipefail')[0]
         self.assertIn('bitcoind -regtest -fallbackfee=0.0002', head)
+        # The escrow signer's own user, whitelisted to exactly what it calls (A-454).
+        self.assertIn('-rpcwhitelist=opsecmkt-signer:decodepsbt,descriptorprocesspsbt,getdescriptorinfo \\\n', head)
+        # The pooled user, whitelisted to the pooled methods only (A-440; the Go test pins the list to the code).
+        self.assertIn('"-rpcauth=opsecmkt-pooled:', head)
+        self.assertRegex(head, r'-rpcwhitelist=opsecmkt-pooled:[a-z,]+ \\\n')
+        # The A-441 node: private broadcast through a proxy nobody answers; never -connect or -onlynet, never public.
+        self.assertIn('-privatebroadcast -proxy=127.0.0.1:9 -listen=0', head)
+        self.assertNotRegex(head, r'-(connect|onlynet|addnode|seednode)=')
+
+
+class PrivateSignetModeTest(unittest.TestCase):
+    """A-443: --private-signet starts its own two signet nodes; checked here without Docker or a node (the real run is
+    manual: docs/testnet-runbook.md section 11)."""
+
+    def body(self):
+        text = SCRIPT.read_text()
+        return text[text.index('private_signet() {'):text.index('\ncase "${1:-}" in')]
+
+    def run_script(self, args, env_extra=None):
+        env = dict(os.environ, **(env_extra or {}))
+        env.pop('TEST_DATABASE_URL', None)
+        return subprocess.run(['bash', str(SCRIPT)] + args, env=env, capture_output=True, text=True, timeout=60)
+
+    def test_needs_a_database_and_refuses_unknown_arguments(self):
+        r = self.run_script(['--private-signet'])
+        self.assertEqual(r.returncode, 2)
+        self.assertIn('TEST_DATABASE_URL', r.stderr)
+        r = self.run_script(['--signet'])
+        self.assertEqual(r.returncode, 2)
+        self.assertIn('Usage', r.stderr)
+
+    def test_nodes_are_a_private_signet_with_no_route_off_the_host(self):
+        body = self.body()
+        self.assertIn('docker network create --internal', body)
+        self.assertIn('-chain=signet -signetchallenge=51 -dnsseed=0 -fixedseeds=0', body)
+        self.assertNotRegex(body, r'docker (run|create)[^\n]* -p ')  # no published port
+        self.assertNotRegex(body, r'-(onlynet|addnode|seednode)=')
+        # Node A makes no outbound connection; node B connects to node A only.
+        self.assertIn('-connect=0 -listen=1', body)
+        self.assertIn('"-connect=$a:38333" -listen=0', body)
+        # Both refuse anything but signet with challenge 51 before the legs run.
+        self.assertIn('\'"signet_challenge":"51"\'', body)
+        # Containers, their volumes and the network go on every exit.
+        self.assertIn("docker rm -f -v '$a' '$b'", body)
+        self.assertIn("docker network rm '$net'", body)
+
+    def test_runs_the_legs_without_regtest_only_rpcs_and_labels_everything(self):
+        body = self.body()
+        legs = body.split('local legs=(')[1].split(')')[0].split()
+        self.assertNotIn('Recovery', legs)
+        self.assertNotIn('Conflicted', legs)
+        self.assertNotIn('PrivateBroadcast', legs)
+        self.assertIn('Isolated', legs)
+        for leg in LEGS:
+            name = leg[len('TestEscrowRegtest'):]
+            if name not in legs:
+                self.assertIn('NOT RUN on the private signet: %s (' % leg, body)
+        self.assertIn('label="private signet, not public"', body)
+        self.assertIn('sed -u "s/^/[$label] /"', body)
+        # The header: node version, commit, redacted command line, finish time.
+        for want in ('# node version:', '# commit:', 'credentials redacted', '<redacted>', 'finished:'):
+            self.assertIn(want, body)
+        self.assertNotRegex(body, r'echo "# command line[^\n]*_pass')
 
 
 if __name__ == '__main__':

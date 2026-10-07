@@ -128,11 +128,159 @@ func (c *rpcClient) callWithin(ctx context.Context, timeout time.Duration, path,
 	return nil
 }
 
+// callStream is callWithin for a result too large to hold (QA4W4A-1: Core's listsinceblock over a wallet of 100,000
+// entries answered 71 MB, beyond rpcMaxBody): read is handed the decoder at the start of "result" (numbers as
+// json.Number) and must consume exactly that value, null included (Core's answer to an error), as it arrives; the body
+// is never held whole, and only the timeout bounds it. Errors read as callWithin's do; a read cut short by the
+// timeout says "timed out". QA4W5-2, QA4W6-1: no single token may pass rpcStreamMaxValue bytes (valueBoundReader), so
+// a node that answers one huge string cannot make the decoder hold it; read walks a large value token by token
+// (skipValue), as callStream does for a key it does not use, so lists and objects of any size stream. The total is
+// still unbounded.
+func (c *rpcClient) callStream(ctx context.Context, timeout time.Duration, path, method string, params any, read func(*json.Decoder) error) error {
+	body, err := json.Marshal(map[string]any{"jsonrpc": c.version, "id": "opsecmkt", "method": method, "params": params})
+	if err != nil {
+		return err
+	}
+	return c.exchangeWith(ctx, timeout, path, method, body, func(ctx context.Context, resp *http.Response) error {
+		var rerr *struct {
+			Code    json.Number `json:"code"`
+			Message string      `json:"message"`
+		}
+		result := false
+		bound := &valueBoundReader{r: resp.Body}
+		dec := json.NewDecoder(bound)
+		bound.dec = dec
+		dec.UseNumber()
+		err := func() error {
+			if t, err := dec.Token(); err != nil || t != json.Delim('{') {
+				return errors.New("not an object")
+			}
+			for dec.More() {
+				key, err := dec.Token()
+				if err != nil {
+					return err
+				}
+				switch key {
+				case "result":
+					result, err = true, read(dec)
+				case "error":
+					err = dec.Decode(&rerr)
+				default:
+					err = skipValue(dec)
+				}
+				if err != nil {
+					return err
+				}
+			}
+			_, err := dec.Token()
+			return err
+		}()
+		switch {
+		case rerr != nil:
+			code, _ := rerr.Code.Int64()
+			return &rpcError{Method: c.name + " RPC " + method, Code: code, Message: truncate(rerr.Message, 200)}
+		case err != nil && ctx.Err() != nil:
+			return fmt.Errorf("%s RPC %s: reading response timed out", c.name, method)
+		case err != nil:
+			return fmt.Errorf("%s RPC %s: invalid response (HTTP %d)", c.name, method, resp.StatusCode)
+		case resp.StatusCode != http.StatusOK:
+			return fmt.Errorf("%s RPC %s: HTTP %d", c.name, method, resp.StatusCode)
+		case !result:
+			return fmt.Errorf("%s RPC %s: unexpected result shape", c.name, method)
+		}
+		return nil
+	})
+}
+
+// rpcStreamMaxValue bounds one JSON token of a streamed answer (callStream): a string (its quotes included), a number,
+// a literal. Callers walk large values token by token (skipValue, arbiterEntries), so a list or an object of any size
+// streams; only what a caller decodes whole (an RPC error object, listsinceblock's lastblock, an entry's category) is
+// bounded as a whole. QA4W6-1: Bitcoin Core's entries themselves can be large (an entry names every other replacement
+// of its transaction in walletconflicts, about 67 bytes each, so a payment its payer fee-bumped 1000 times passes
+// 64 KiB), while no token of Core's grows that way (the longest is a label, which the operator sets). A longer token is
+// refused as an invalid response (escrow's bad-reply), never held (QA4W5-2).
+const rpcStreamMaxValue = 64 << 10
+
+// valueBoundReader is callStream's body reader. json.Decoder holds a value whole while it reads it and does not move
+// its offset (InputOffset) past a value until the value is complete, so the bytes read past that offset are the value
+// in progress plus a little read-ahead: Read refuses to let them pass rpcStreamMaxValue+1. Go 1.27's encoding/json (on
+// JSON v2) leaves that offset at the end of the last token, before the ':' or ',' ahead of the next, so the +1 is that
+// separator: a token of rpcStreamMaxValue bytes passes and one byte more is refused (QA4W6-6), except that a token
+// opening its object or list (no separator) has one byte more. Every token moves the offset, so values walked token by
+// token (skipValue) stream whatever their size.
+type valueBoundReader struct {
+	r   io.Reader
+	dec *json.Decoder
+	n   int64 // bytes read so far
+}
+
+var errStreamValueTooLarge = errors.New("value too large")
+
+func (b *valueBoundReader) Read(p []byte) (int, error) {
+	room := rpcStreamMaxValue + 1 - (b.n - b.dec.InputOffset())
+	if room <= 0 {
+		return 0, errStreamValueTooLarge
+	}
+	if int64(len(p)) > room {
+		p = p[:room]
+	}
+	n, err := b.r.Read(p)
+	b.n += int64(n)
+	return n, err
+}
+
+// skipValue consumes the next value of dec token by token, so rpcStreamMaxValue bounds each of its tokens, not the
+// value (QA4W6-1).
+func skipValue(dec *json.Decoder) error {
+	depth := 0
+	for {
+		t, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		switch t {
+		case json.Delim('{'), json.Delim('['):
+			depth++
+		case json.Delim('}'), json.Delim(']'):
+			depth--
+		}
+		if depth == 0 {
+			return nil
+		}
+	}
+}
+
 // exchange posts body to endpoint+path within timeout (or the caller's earlier deadline), answering one Digest
 // challenge, and returns the response body (at most rpcMaxBody) with its HTTP status; method names the request in
 // errors. callWithin wraps it in JSON-RPC; monerod's other endpoints (/get_transactions) take plain JSON
 // (escrow_xmr_rpc.go).
 func (c *rpcClient) exchange(ctx context.Context, timeout time.Duration, path, method string, body []byte) ([]byte, int, error) {
+	var raw []byte
+	var status int
+	err := c.exchangeWith(ctx, timeout, path, method, body, func(ctx context.Context, resp *http.Response) error {
+		var err error
+		status = resp.StatusCode
+		if raw, err = io.ReadAll(io.LimitReader(resp.Body, rpcMaxBody+1)); err != nil {
+			msg := fmt.Sprintf("%s RPC %s: reading response failed", c.name, method)
+			if ctx.Err() != nil {
+				return errors.New(msg) // cut short by the timeout, not by the node
+			}
+			return &rpcDroppedError{errors.New(msg)}
+		}
+		if len(raw) > rpcMaxBody {
+			return fmt.Errorf("%s RPC %s: response too large", c.name, method)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	return raw, status, nil
+}
+
+// exchangeWith is exchange with the response handed to read (its body open, within the same timeout and Digest
+// session) instead of read whole: callStream reads an answer too large to hold as it arrives.
+func (c *rpcClient) exchangeWith(ctx context.Context, timeout time.Duration, path, method string, body []byte, read func(context.Context, *http.Response) error) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	if c.digest {
@@ -142,12 +290,12 @@ func (c *rpcClient) exchange(ctx context.Context, timeout time.Duration, path, m
 		case c.digestGate <- struct{}{}:
 			defer func() { <-c.digestGate }()
 		case <-ctx.Done():
-			return nil, 0, fmt.Errorf("%s RPC unreachable: timed out waiting for authentication session", c.name)
+			return fmt.Errorf("%s RPC unreachable: timed out waiting for authentication session", c.name)
 		}
 	}
 	resp, err := c.send(ctx, path, body)
 	if err != nil {
-		return nil, 0, err
+		return err
 	}
 	if resp.StatusCode == http.StatusUnauthorized && c.digest {
 		challenge := parseDigestChallenge(resp.Header.Values("WWW-Authenticate"))
@@ -156,37 +304,26 @@ func (c *rpcClient) exchange(ctx context.Context, timeout time.Duration, path, m
 		n, readErr := io.Copy(io.Discard, io.LimitReader(resp.Body, rpcMaxBody+1))
 		resp.Body.Close()
 		if readErr != nil {
-			return nil, 0, fmt.Errorf("%s RPC %s: reading authentication response failed", c.name, method)
+			return fmt.Errorf("%s RPC %s: reading authentication response failed", c.name, method)
 		}
 		if n > rpcMaxBody {
-			return nil, 0, fmt.Errorf("%s RPC %s: authentication response too large", c.name, method)
+			return fmt.Errorf("%s RPC %s: authentication response too large", c.name, method)
 		}
 		if challenge == nil {
-			return nil, 0, fmt.Errorf("%s RPC %s: authentication required", c.name, method)
+			return fmt.Errorf("%s RPC %s: authentication required", c.name, method)
 		}
 		c.mu.Lock()
 		c.challenge, c.nc = challenge, 0
 		c.mu.Unlock()
 		if resp, err = c.send(ctx, path, body); err != nil {
-			return nil, 0, err
+			return err
 		}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return nil, 0, fmt.Errorf("%s RPC %s: credentials rejected (HTTP %d)", c.name, method, resp.StatusCode)
+		return fmt.Errorf("%s RPC %s: credentials rejected (HTTP %d)", c.name, method, resp.StatusCode)
 	}
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, rpcMaxBody+1))
-	if err != nil {
-		msg := fmt.Sprintf("%s RPC %s: reading response failed", c.name, method)
-		if ctx.Err() != nil {
-			return nil, 0, errors.New(msg) // cut short by the timeout, not by the node
-		}
-		return nil, 0, &rpcDroppedError{errors.New(msg)}
-	}
-	if len(raw) > rpcMaxBody {
-		return nil, 0, fmt.Errorf("%s RPC %s: response too large", c.name, method)
-	}
-	return raw, resp.StatusCode, nil
+	return read(ctx, resp)
 }
 
 func (c *rpcClient) send(ctx context.Context, path string, body []byte) (*http.Response, error) {

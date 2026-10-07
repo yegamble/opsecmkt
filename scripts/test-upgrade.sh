@@ -257,6 +257,12 @@ done
 [[ $(sql -c "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname='settlements_built'") == *"'superseded'"* ]]
 [[ $(sql -c "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname='payments_too_few_left_out'") == 'CHECK (((escrow_too_few_by IS NULL) OR escrow_left_out))' ]]
 
+# The escrow key layout (migration 088): every key defaults to the Bitcoin Core layout, and a per-order derivation
+# suffix starting with /0 or /1 is refused by validated constraints while shape (a)'s /0/<i> is not affected.
+[[ $(sql -c "SELECT column_default || ':' || is_nullable FROM information_schema.columns WHERE table_name='user_escrow_keys' AND column_name='layout'") == "'core'::text:NO" ]]
+[[ $(sql -c "SELECT string_agg(conname || '=' || convalidated, ',' ORDER BY conname) FROM pg_constraint WHERE conname LIKE 'escrow_pubkeys_per_order_%'") == 'escrow_pubkeys_per_order_index=true,escrow_pubkeys_per_order_practice=true' ]]
+[[ $(sql -c "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname='escrow_pubkeys_per_order_index'") == *"'^/[01]h?(/[^/]+){2,}\$'"* ]]
+
 # Behaviour through the upgraded server: an alpha.1 password still signs in, the migrated draft is shown as
 # a draft, and ordering the same product and currency again returns that draft instead of a second one.
 # (Migration 010 turns the CAPTCHA on; switch it off as an operator would, so this script can sign in.)

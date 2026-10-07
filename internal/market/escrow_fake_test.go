@@ -7,12 +7,15 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"math/big"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
+
+	"opsecmkt/internal/btc"
 )
 
 // fakeEscrowCore is a scripted Bitcoin Core for escrow DB tests (simulated RPC, not chain evidence). It keeps
@@ -24,16 +27,44 @@ type fakeEscrowCore struct {
 	t  *testing.T
 	mu sync.Mutex
 
-	chain         string
-	arbiterFP     string
+	chain     string
+	arbiterFP string
+	// A-439: what the sync guard reads. getblockchaininfo reports ibd, headers (0 = blocks), tipTime (0 = omitted) and
+	// challenge (signet_challenge, omitted when ""); getnetworkinfo reports peers as connections.
+	ibd           bool
+	headers       int64
+	tipTime       int64
+	challenge     string
+	peers         int64
+	blocks        int64 // getblockchaininfo blocks (0 = 200)
 	arbiterDesc   string
-	arbiterCode   int    // JSON-RPC error for getrawchangeaddress (0 = none)
-	prevoutExists bool   // gettxout finds the practice outpoint
-	allowed       bool   // testmempoolaccept
-	throwawayDone bool   // descriptorprocesspsbt answers complete=true (a node that finalized on the server key alone)
+	arbiterCode   int  // JSON-RPC error for getrawchangeaddress (0 = none)
+	prevoutExists bool // gettxout finds the practice outpoint
+	allowed       bool // testmempoolaccept
+	throwawayDone bool // descriptorprocesspsbt answers complete=true (a node that finalized on the server key alone)
+	// A-455: an extended key with no origin ("tpub…/0/0", a rooted per-order cosigner, or a throwaway tprv followed by a
+	// path) derives by real BIP32 public derivation, as Core's does; ckdSkew flips one chain-code bit first (a node whose
+	// derivation disagrees with Go's).
+	ckdSkew       bool
 	beforeMempool func() // runs when testmempoolaccept is called: the last RPC of a practice check, before its update
 	reject        string
 	calls         []fakeCall
+
+	// QA4W1-1: getnetworkinfo fails with netInfoErr (a JSON-RPC error, 0 = none) or, with netInfoForbidden, HTTP 403 (a
+	// node whose rpcwhitelist lacks it).
+	netInfoErr       int
+	netInfoForbidden bool
+
+	// A-441: getnetworkinfo's version (0 = 310100) and, per network (ipv4, ipv6, onion, i2p, cjdns), its proxy ("" = none)
+	// and whether onion is reachable, as Core 31.1 reports them: -proxy sets the proxy of every network and makes onion
+	// reachable; -onion alone sets only onion's. With private set, sendrawtransaction answers the txid and keeps the
+	// transaction queued, as -privatebroadcast does with a dead proxy (probed on Core 31.1 regtest): it is not in the
+	// mempool, so gettransaction does not know it and its inputs stay unspent; a resend answers the txid again.
+	netVersion     int64
+	netProxy       map[string]string
+	onionReachable bool
+	private        bool
+	queued         map[string]string // txid -> raw transaction queued by a private broadcast
 
 	// Escrow P1-b: the watch-only wallet, its imports and the deposits it reports.
 	watchInfo    map[string]any      // getwalletinfo of the watch wallet (nil = not loaded, -18)
@@ -63,8 +94,12 @@ type fakeEscrowCore struct {
 	// inputs; gettransaction reports it with txConfs and conflicts.
 	arbiterShort     bool                // the arbiter's key range is short of the market child (getaddressinfo ismine false)
 	keypoolStuck     bool                // keypoolrefill does not extend the arbiter's key range
-	arbiterTxCount   int64               // getwalletinfo txcount of the arbiter wallet
+	arbiterTxs       []string            // the arbiter wallet's entry categories, oldest first, each in a block of its own (arbiterBlock); getwalletinfo txcount is their number (A-471)
+	arbiterListErr   int                 // JSON-RPC error for listtransactions and listsinceblock on the arbiter wallet (0 = none)
 	arbiterEncrypted bool                // getwalletinfo of the arbiter wallet has unlocked_until
+	arbiterBirth     int64               // getwalletinfo birthtime of the arbiter wallet (0 = not reported)
+	arbiterPad       int                 // bytes of label on each entry listsinceblock lists (a large answer)
+	beforeSince      func()              // runs when listsinceblock is called on the arbiter wallet, before it answers
 	marketSkew       func(string) string // edits walletprocesspsbt's answer
 	finalSkew        func(string) string // edits finalizepsbt's raw transaction
 	mempoolReject    string              // testmempoolaccept refuses a settlement transaction with this reason
@@ -180,11 +215,23 @@ type fakeCall struct {
 const fakeArbiterFP = "a1b2c3d4"
 
 func newFakeEscrowCore(t *testing.T) (*fakeEscrowCore, *payRPCServer) {
-	c := &fakeEscrowCore{t: t, chain: "regtest", arbiterFP: fakeArbiterFP, reject: "missing-inputs", spk: map[string][]byte{},
+	c := &fakeEscrowCore{t: t, chain: "regtest", arbiterFP: fakeArbiterFP, reject: "missing-inputs", spk: map[string][]byte{}, arbiterBirth: 1700000000,
 		watchInfo: map[string]any{"walletname": "opsecmkt-escrow-watch", "descriptors": true, "private_keys_enabled": false}}
 	c.arbiterDesc = "wpkh([" + fakeArbiterFP + "/84h/1h/0h]" + testBIP84Key[20:] + "/1/*)#fakechk0"
-	return c, newPayRPCServer(t, "escrowapp", "escrow-rpc-pass", false, c.handle)
+	srv := newPayRPCServer(t, "escrowapp", "escrow-rpc-pass", false, c.handle)
+	srv.mu.Lock()
+	srv.forbid = func(method string) bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return method == "getnetworkinfo" && c.netInfoForbidden
+	}
+	srv.mu.Unlock()
+	return c, srv
 }
+
+// arbiterBlock is the fake hash of the block holding the arbiter wallet's n-th entry (arbiterTxs[n-1]); arbiterBlock(0)
+// is a block before them all.
+func arbiterBlock(n int) string { return txidOf("arbiter block " + strconv.Itoa(n)) }
 
 func (c *fakeEscrowCore) methods() []string {
 	c.mu.Lock()
@@ -196,7 +243,50 @@ func (c *fakeEscrowCore) methods() []string {
 	return m
 }
 
-var fakeTprv = regexp.MustCompile(`tprv[1-9A-HJ-NP-Za-km-z]+`)
+var (
+	fakeTprv     = regexp.MustCompile(`tprv[1-9A-HJ-NP-Za-km-z]+`)
+	fakeTprvPath = regexp.MustCompile(`tprv[1-9A-HJ-NP-Za-km-z]+/?`)
+)
+
+// fakeRealTpub is the real public key (k·G, same chain code, depth 0) of a depth-0 tprv, as Core's getdescriptorinfo
+// writes it (A-455: the per-order practice signs with the throwaway key's child at the practice index).
+func fakeRealTpub(t *testing.T, tprv string) string {
+	raw, err := base58CheckDecode(tprv)
+	if err != nil || len(raw) != 78 || raw[4] != 0 || raw[45] != 0 {
+		t.Fatalf("fake core: not a depth-0 tprv")
+	}
+	k := bip32Key{PubKey: btc.Compress(btc.Mul(new(big.Int).SetBytes(raw[46:78]), btc.G))}
+	copy(k.ChainCode[:], raw[13:45])
+	return k.Serialize(versionTpub)
+}
+
+// fakeRealChild is Core's public derivation of "tpub…/a/b…" (no origin): the child key and its derivation value, the
+// key's own fingerprint followed by the steps (as Core writes an extended key without an origin).
+func (c *fakeEscrowCore) fakeRealChild(el string) (pub, deriv []byte) {
+	xpub, rest, _ := strings.Cut(el, "/")
+	k, err := parseBIP32Pub(xpub, versionTpub)
+	if err != nil {
+		c.t.Fatalf("fake core: extended key in %q: %v", el, err)
+	}
+	fp := k.Fingerprint()
+	deriv = slices.Clone(fp[:])
+	if c.ckdSkew {
+		k.ChainCode[0] ^= 1
+	}
+	if rest != "" {
+		steps, err := parseOriginPath("/" + rest)
+		if err != nil {
+			c.t.Fatalf("fake core: path in %q: %v", el, err)
+		}
+		for _, step := range steps {
+			if k, _, err = ckdPub(k, step); err != nil {
+				c.t.Fatalf("fake core: derivation in %q: %v", el, err)
+			}
+			deriv = binary.LittleEndian.AppendUint32(deriv, step)
+		}
+	}
+	return k.PubKey[:], deriv
+}
 
 func fakePubFromTprv(tprv string) []byte {
 	h := sha256.Sum256([]byte("pub:" + tprv))
@@ -239,7 +329,32 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 	wallet := path == "/wallet/opsecmkt-arbiter"
 	switch method {
 	case "getblockchaininfo":
-		return map[string]any{"chain": c.chain, "blocks": 200}, 0, ""
+		blocks := c.blocks
+		if blocks == 0 {
+			blocks = 200
+		}
+		info := map[string]any{"chain": c.chain, "blocks": blocks, "headers": max(c.headers, blocks), "initialblockdownload": c.ibd}
+		if c.tipTime != 0 {
+			info["time"] = c.tipTime
+		}
+		if c.challenge != "" {
+			info["signet_challenge"] = c.challenge
+		}
+		return info, 0, ""
+	case "getnetworkinfo":
+		if c.netInfoErr != 0 {
+			return nil, c.netInfoErr, "Method not found"
+		}
+		version := c.netVersion
+		if version == 0 {
+			version = 310100
+		}
+		var networks []map[string]any
+		for _, n := range []string{"ipv4", "ipv6", "onion", "i2p", "cjdns"} {
+			reachable := n == "ipv4" || n == "ipv6" || n == "onion" && c.onionReachable
+			networks = append(networks, map[string]any{"name": n, "limited": !reachable, "reachable": reachable, "proxy": c.netProxy[n], "proxy_randomize_credentials": c.netProxy[n] != ""})
+		}
+		return map[string]any{"version": version, "connections": c.peers, "networks": networks}, 0, ""
 	case "getrawchangeaddress":
 		if !wallet {
 			return nil, -18, "Requested wallet does not exist or is not loaded"
@@ -261,7 +376,7 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 			if len(labels) > 0 {
 				spk := c.spk[str(0)]
 				if spk == nil {
-					spk, _ = regtestAddressScript(str(0))
+					spk, _ = escrowAddressScript(c.chain, str(0))
 				}
 				info["scriptPubKey"] = hex.EncodeToString(spk)
 				if keys := c.watchPubkeys[str(0)]; keys != nil {
@@ -285,10 +400,15 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 		return map[string]any{"ismine": true, "hdmasterfingerprint": c.arbiterFP, "parent_desc": c.arbiterDesc}, 0, ""
 	case "getdescriptorinfo":
 		desc := str(0)
-		if a, ok := strings.CutPrefix(desc, "addr("); ok && !strings.HasPrefix(a, "bcrt1") {
+		if a, ok := strings.CutPrefix(desc, "addr("); ok && !strings.HasPrefix(a, escrowChains[c.chain]+"1") {
 			return nil, -5, "Address is not valid"
 		}
-		public := fakeTprv.ReplaceAllStringFunc(desc, func(k string) string { return "fakepub" + hex.EncodeToString(fakePubFromTprv(k)) })
+		public := fakeTprvPath.ReplaceAllStringFunc(desc, func(k string) string {
+			if tprv, ok := strings.CutSuffix(k, "/"); ok { // A-455: a throwaway key with a path keeps it, as its real tpub
+				return fakeRealTpub(c.t, tprv) + "/"
+			}
+			return "fakepub" + hex.EncodeToString(fakePubFromTprv(k))
+		})
 		sum, _ := descChecksum(public)
 		if c.infoSkew {
 			sum = "qqqqqqqq"
@@ -355,6 +475,11 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 			return nil, -8, "unexpected fake call"
 		}
 		pub := fakePubFromTprv(tprv)
+		if path := fakeTprvPath.FindString(descs[0]); strings.HasSuffix(path, "/") { // A-455: the throwaway key's child
+			el := descs[0][strings.Index(descs[0], tprv):]
+			el = el[:strings.IndexAny(el, ",)")]
+			pub, _ = c.fakeRealChild(fakeRealTpub(c.t, tprv) + strings.TrimPrefix(el, tprv))
+		}
 		out, err := pk.withInputField(0, append([]byte{0x02}, pub...), fakeSig(pub, pk.TxID(), 1))
 		if err != nil {
 			c.t.Errorf("fake descriptorprocesspsbt: %v", err)
@@ -474,7 +599,10 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 		return []map[string]any{{"success": true}}, 0, ""
 	case "getwalletinfo":
 		if wallet {
-			info := map[string]any{"walletname": "opsecmkt-arbiter", "descriptors": true, "private_keys_enabled": true, "txcount": c.arbiterTxCount}
+			info := map[string]any{"walletname": "opsecmkt-arbiter", "descriptors": true, "private_keys_enabled": true, "txcount": len(c.arbiterTxs)}
+			if c.arbiterBirth != 0 {
+				info["birthtime"] = c.arbiterBirth
+			}
 			if c.arbiterEncrypted {
 				info["unlocked_until"] = 0
 			}
@@ -522,7 +650,55 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 			}
 		}
 		return out, 0, ""
+	case "listsinceblock":
+		if !wallet {
+			return nil, -8, "unexpected fake wallet"
+		}
+		if c.beforeSince != nil {
+			c.mu.Unlock()
+			c.beforeSince()
+			c.mu.Lock()
+		}
+		if c.arbiterListErr != 0 {
+			return nil, c.arbiterListErr, "fake listsinceblock failure"
+		}
+		from := 0 // QA4W4A-1: entry i is in block arbiterBlock(i+1); the entries after a block, as Core lists them
+		if h := str(0); h != "" {
+			if _, err := hex.DecodeString(h); len(h) != 64 || err != nil { // Core's ParseHashV refuses it before any lookup
+				return nil, -8, "blockhash must be of length 64 (not " + strconv.Itoa(len(h)) + ", for '" + h + "')"
+			}
+			from = -1
+			for i := 0; i <= len(c.arbiterTxs); i++ {
+				if arbiterBlock(i) == h {
+					from = i
+				}
+			}
+			if from < 0 {
+				return nil, -5, "Block not found"
+			}
+		}
+		out := []map[string]any{}
+		for i, cat := range c.arbiterTxs[from:] {
+			out = append(out, map[string]any{"txid": txidOf("arbiter " + strconv.Itoa(from+i)), "category": cat, "amount": json.Number("0.00001"), "label": strings.Repeat("x", c.arbiterPad)})
+		}
+		return map[string]any{"transactions": out, "lastblock": arbiterBlock(len(c.arbiterTxs))}, 0, ""
 	case "listtransactions":
+		if wallet { // A-471: Core's paging: count entries after skipping the skip most recent, oldest first
+			if c.arbiterListErr != 0 {
+				return nil, c.arbiterListErr, "fake listtransactions failure"
+			}
+			var count, skip int
+			if len(p) > 2 {
+				json.Unmarshal(p[1], &count)
+				json.Unmarshal(p[2], &skip)
+			}
+			end := max(len(c.arbiterTxs)-skip, 0)
+			out := []map[string]any{}
+			for i, cat := range c.arbiterTxs[max(end-count, 0):end] {
+				out = append(out, map[string]any{"txid": txidOf("arbiter " + strconv.Itoa(i)), "category": cat, "amount": json.Number("0.00001")})
+			}
+			return out, 0, ""
+		}
 		if path != fakeWatchWallet {
 			return nil, -8, "unexpected fake wallet"
 		}
@@ -577,6 +753,13 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 			return "txid-broadcast", 0, "" // the adapter's params test sends a placeholder
 		}
 		txid := t.TxID()
+		if _, ok := c.broadcast[txid]; !ok && c.private {
+			if c.queued == nil {
+				c.queued = map[string]string{}
+			}
+			c.queued[txid] = str(0)
+			return txid, 0, ""
+		}
 		if _, ok := c.broadcast[txid]; ok {
 			if c.txConfs[txid] > 0 {
 				return nil, -27, "Transaction outputs already in utxo set"
@@ -815,7 +998,7 @@ func (c *fakeEscrowCore) createPSBT(p []json.RawMessage) string {
 				tx = append(append(tx, byte(len(spk))), spk...)
 				continue
 			}
-			if spk, err := regtestAddressScript(addr); err == nil { // P1-c2: a real address pays its own script
+			if spk, err := escrowAddressScript(c.chain, addr); err == nil { // P1-c2: a real address pays its own script
 				tx = append(append(tx, byte(len(spk))), spk...)
 				continue
 			}
@@ -937,6 +1120,8 @@ func (c *fakeEscrowCore) fakeKeyOf(el string) (pub, deriv []byte) {
 	case strings.HasPrefix(el, "fakepub"):
 		pub, _ := hex.DecodeString(el[len("fakepub"):])
 		return pub, pub[1:5]
+	case strings.HasPrefix(el, "tpub"): // A-455: an extended key with no origin, derived as Core derives it
+		return c.fakeRealChild(el)
 	}
 	pub, _ = hex.DecodeString(el)
 	return pub, nil

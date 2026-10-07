@@ -351,7 +351,7 @@ func xmrRebroadcastAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, err
 		}
 		audit := "Confirmed the relay of Monero escrow settlement " + strconv.FormatInt(id, 10) + " (" + settlementKind(kind) + ") of order " + shortID(orderID) +
-			" after a restore from backup: the administrator checked that its transaction was not already relayed or replaced (" + xmrEscrowNetwork + ")"
+			" after a restore from backup: the administrator checked that its transaction was not already relayed or replaced (" + c.A.xmrEscrowNetwork() + ")"
 		return actionResult{Redirect: "/admin", Notice: "escrow-xmr-relay", Audit: audit}, nil
 	})
 }
@@ -397,7 +397,7 @@ func xmrConfirmDestroyedAction(c *actionCtx) (actionResult, error) {
 		if _, err = c.Tx.ExecContext(ctx, "UPDATE xmr_escrow_wallets SET state='destroyed',seed_sealed=NULL,destroyed_at=$2,updated=now() WHERE id=$1 AND state='missing'", id, now); err != nil {
 			return actionResult{}, err
 		}
-		audit := "Confirmed the destruction of Monero escrow wallet " + name + ", missing and past its destruction date: the administrator checked that its files are gone and that nothing in it is owed; its sealed seed was wiped (" + xmrEscrowNetwork + ")"
+		audit := "Confirmed the destruction of Monero escrow wallet " + name + ", missing and past its destruction date: the administrator checked that its files are gone and that nothing in it is owed; its sealed seed was wiped (" + c.A.xmrEscrowNetwork() + ")"
 		return actionResult{Redirect: "/admin", Notice: "escrow-xmr-gone", Audit: audit}, nil
 	})
 }

@@ -56,7 +56,6 @@ var (
 	errXMREscrowKind      = fail(409, "Monero escrow is available only for digital listings with automatic delivery and for physical listings with a dispatch window. Nothing was changed.")
 	errXMREscrowCurrency  = fail(409, "Monero escrow is for Monero (XMR) orders only. Nothing was changed.")
 	errXMREscrowSelf      = fail(409, "You cannot buy your own listing. Nothing was changed.")
-	errXMRRefundMissing   = fail(400, "Enter a refund address: a Monero standard address or subaddress from your own wallet (95 characters, starting with 4 or 8 on this test chain), used for nothing else. A refund of this escrow is paid there, and it cannot be changed later. Nothing was changed.")
 	errXMRRefundEscrow    = fail(409, "That is an escrow address of this market, not an address of your own wallet. Give a fresh address from your own wallet. Nothing was changed.")
 	errXMRRefundWallet    = fail(409, "That is the address of one of this market's escrow wallets, not an address of your own wallet. Give a fresh address from your own wallet. Nothing was changed.")
 	errXMRRefundFee       = fail(409, "That is the market fee address, not an address of your own wallet. Give a fresh address from your own wallet. Nothing was changed.")
@@ -71,9 +70,9 @@ func xmrEscrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	}
 	refund := strings.TrimSpace(c.Form.Get("refund_address"))
 	if refund == "" {
-		return actionResult{}, errXMRRefundMissing
+		return actionResult{}, fail(400, "Enter a refund address: a Monero standard address or subaddress from your own wallet (95 characters, starting with "+xmrPrefixes(x.network())+" on this test network), used for nothing else. A refund of this escrow is paid there, and it cannot be changed later. Nothing was changed.")
 	}
-	if err := checkXMRFormAddress(refund); err != nil {
+	if err := checkXMRFormAddress(refund, x.formNet()); err != nil {
 		return actionResult{}, fail(400, "The refund address is refused: "+err.Error()+". Nothing was changed.")
 	}
 	o, err := partyOrder(c, c.Form.Get("order_id"))
@@ -116,7 +115,7 @@ func xmrEscrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	if open >= maxAwaitingPayment {
 		return actionResult{}, fail(409, "You already have "+strconv.Itoa(maxAwaitingPayment)+" orders awaiting payment. Pay or cancel one before requesting another payment address.")
 	}
-	if err = lockPaymentIntake(c, o.Currency); err != nil {
+	if err = lockPaymentIntake(c, o.Currency, kindEscrow); err != nil {
 		return actionResult{}, err
 	}
 	eligible, price, dispatchDays, err := escrowEligible(ctx, c.Tx, &o)
@@ -174,7 +173,7 @@ func xmrEscrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	if err != nil {
 		return actionResult{}, err
 	}
-	return actionResult{Redirect: orderPage(o.ID), Notice: "escrow-xmr-created", Audit: "Created Monero escrow (" + xmrEscrowNetwork + ") for order " + shortID(o.ID)}, nil
+	return actionResult{Redirect: orderPage(o.ID), Notice: "escrow-xmr-created", Audit: "Created Monero escrow (" + a.xmrEscrowNetwork() + ") for order " + shortID(o.ID)}, nil
 }
 
 // checkXMRRefund refuses a refund address this market already knows: an escrow or slot address, an escrow wallet's

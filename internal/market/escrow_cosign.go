@@ -248,7 +248,7 @@ const (
 // checkAndAccept re-checks a finalized transaction in Go (checkFinalTx), then asks the node with testmempoolaccept at
 // the rate cap. It never broadcasts.
 func (a *App) checkAndAccept(ctx context.Context, e *escrowBTC, b *settleBuild, rawHex string) (acceptVerdict, string, error) {
-	if class := checkFinalTx(rawHex, b.Stored, b.TxID, b.Outputs, b.InputTotal, b.NetworkFee); class != "" {
+	if class := checkFinalTx(e.network, rawHex, b.Stored, b.TxID, b.Outputs, b.InputTotal, b.NetworkFee); class != "" {
 		return acceptWait, class, nil
 	}
 	allowed, reject, err := e.testMempoolAccept(ctx, rawHex, escrowMaxFeeRate)
@@ -589,8 +589,12 @@ func (a *App) broadcastSettlements(ctx context.Context, e *escrowBTC) error {
 }
 
 // sendStored sends a settlement's stored raw transaction: true when the node has it (it answered its txid) or it is
-// already confirmed (-27).
-func sendStored(ctx context.Context, e *escrowBTC, rawHex, txid string) (bool, error) {
+// already confirmed (-27). While the Tor-mode gate holds broadcasts (broadcastHold, A-441) it sends nothing and answers
+// errBroadcastHeld; its callers check the gate first.
+func (a *App) sendStored(ctx context.Context, e *escrowBTC, rawHex, txid string) (bool, error) {
+	if a.broadcastHold() != "" {
+		return false, errBroadcastHeld
+	}
 	got, err := e.sendRawTransaction(ctx, rawHex, escrowMaxFeeRate)
 	var re *escrowRPCError
 	switch {
@@ -615,14 +619,16 @@ func (a *App) broadcastSettlement(ctx context.Context, e *escrowBTC, id int64) e
 	if err != nil {
 		return err
 	}
+	// While sending is paused, or the Tor-mode gate holds broadcasts (A-441), nothing is sent; a transaction the parties
+	// sent themselves is still recorded.
 	may, err := a.maySend(ctx, sendErr)
-	if err != nil || !may {
+	if err != nil || !may || a.broadcastHold() != "" {
 		if err == nil {
 			err = a.seenWhilePaused(ctx, e, id, orderID, kind, txid)
 		}
 		return err
 	}
-	sent, err := sendStored(ctx, e, rawHex, txid)
+	sent, err := a.sendStored(ctx, e, rawHex, txid)
 	if err != nil {
 		return err
 	}
@@ -669,7 +675,10 @@ func (a *App) broadcastSettlement(ctx context.Context, e *escrowBTC, id int64) e
 		"its escrow settlement ("+settlementKind(kind)+") was broadcast to the "+a.escrowNetwork()+" network; the order page shows its transaction and its confirmations."); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err = tx.Commit(); err == nil {
+		a.broadcastAt(id) // A-441: the stall alert counts blocks from here
+	}
+	return err
 }
 
 func firstTxID(ids []string) string {
@@ -708,13 +717,13 @@ func (a *App) trackBroadcast(ctx context.Context, e *escrowBTC, id int64) error 
 		own[at.TxID] = true
 	}
 	ws := make([]escrowWalletTx, len(attempts))
-	mined, inBlock, conflicted, pending, listed, outside := -1, false, false, false, false, ""
+	mined, inBlock, conflicted, pending, listed, outside, seen := -1, false, false, false, false, "", false
 	for i, at := range attempts {
 		w, err := e.walletTx(ctx, at.TxID)
 		if err != nil {
 			return err
 		}
-		ws[i] = w
+		ws[i], seen = w, seen || w.Found
 		switch {
 		case !w.Found:
 		case w.Confirmations >= e.confirmations:
@@ -738,6 +747,10 @@ func (a *App) trackBroadcast(ctx context.Context, e *escrowBTC, id int64) error 
 			pending = true
 		}
 	}
+	// A-441: none of them seen by the wallet for escrowStallBlocks blocks tells staff once; one seen clears that.
+	if err = a.noteBroadcastSeen(ctx, id, seen); err != nil {
+		return err
+	}
 	// A-382: a built fee bump with no stored final transaction whose transaction the wallet holds (the parties
 	// broadcast it, or a restore lost its final transaction) is checked and recorded as broadcast; it is then followed
 	// like any stored one.
@@ -753,11 +766,12 @@ func (a *App) trackBroadcast(ctx context.Context, e *escrowBTC, id int64) error 
 		}
 	}
 	// While a restore holds it, or the restore gate is set and no administrator confirmed it, it is followed but never
-	// sent again (escrow_recovery.go).
+	// sent again (escrow_recovery.go); so too while the Tor-mode gate holds broadcasts (A-441).
 	may, err := a.maySend(ctx, sendErr)
 	if err != nil {
 		return err
 	}
+	may = may && a.broadcastHold() == ""
 	switch {
 	case mined >= 0:
 		return a.confirmSettlement(ctx, id, orderID, kind, attempts[mined], ws[mined].Confirmations)
@@ -786,7 +800,7 @@ func (a *App) trackBroadcast(ctx context.Context, e *escrowBTC, id int64) error 
 			if !may || restoreHeld(at.SendErr) {
 				return nil
 			}
-			sent, err := sendStored(ctx, e, at.Raw, at.TxID)
+			sent, err := a.sendStored(ctx, e, at.Raw, at.TxID)
 			if err == nil {
 				err = a.attemptSent(ctx, id, orderID, kind, at, sent)
 			}
@@ -804,7 +818,7 @@ func (a *App) trackBroadcast(ctx context.Context, e *escrowBTC, id int64) error 
 	if !may || restoreHeld(at.SendErr) {
 		return nil
 	}
-	sent, err := sendStored(ctx, e, at.Raw, at.TxID)
+	sent, err := a.sendStored(ctx, e, at.Raw, at.TxID)
 	if err != nil {
 		return err
 	}
@@ -873,7 +887,7 @@ func (a *App) spentBeforeCosign(ctx context.Context, e *escrowBTC, b *settleBuil
 		}
 		return a.markExternal(ctx, b.ID, b.OrderID, by, nil)
 	}
-	if class := checkFinalTx(w.Hex, b.Stored, b.TxID, b.Outputs, b.InputTotal, b.NetworkFee); class != "" {
+	if class := checkFinalTx(e.network, w.Hex, b.Stored, b.TxID, b.Outputs, b.InputTotal, b.NetworkFee); class != "" {
 		// The stored txid, so the planned outputs, but a transaction that fails the market's checks: it is not recorded
 		// as the settlement's, nor called external; the order page and the log say it waits.
 		return a.settlementSendWaits(ctx, b.ID, b.OrderID, class)

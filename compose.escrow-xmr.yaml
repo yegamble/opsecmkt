@@ -1,0 +1,11 @@
+# Monero escrow on stagenet (A-449; docs/operator-guide.md#monero-escrow-fakechain-or-stagenet): mounts the armored
+# OpenPGP public key every escrow wallet's seed is sealed to, read-only, at the path ESCROW_XMR_SEED_KEY names inside
+# the app (the app container is read-only and has no volume for it otherwise). Include it only with ESCROW_XMR=on and
+# ESCROW_XMR_SEED_KEY=/etc/opsecmkt/escrow-xmr-seed-key.asc, together with the monero-escrow-wallet profile;
+# `./scripts/install.sh` with --monero-escrow yes sets all of them and copies the key the operator gives to
+# escrow-xmr-seed-key.asc beside this file. It is a public key (its private half stays offline with the operator), but
+# the seed key pin refuses any other, so keep this file with the install. It adds no service and opens no port.
+services:
+  app:
+    volumes:
+      - ./escrow-xmr-seed-key.asc:/etc/opsecmkt/escrow-xmr-seed-key.asc:ro

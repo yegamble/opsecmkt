@@ -26,7 +26,8 @@ export DATABASE_URL='postgres://opsecmkt:local-dev-only@127.0.0.1:55432/opsecmkt
 export SETUP_TOKEN="$(openssl rand -hex 32)"
 export ADDR='127.0.0.1:8080'
 export COOKIE_SECURE=false
-# Optional: must be clearnet (default) or tor, otherwise startup stops; it changes no behaviour.
+# Optional: must be clearnet (default) or tor, otherwise startup stops; tor also holds Bitcoin escrow broadcasts
+# unless the escrow node sends through a proxy (A-441, docs/operator-guide.md).
 export APP_MODE=clearnet
 # Keep local development independent of any configured wallets:
 unset BITCOIN_RPC_URL MONERO_RPC_URL MONERO_WALLET_RPC_URL
@@ -128,8 +129,18 @@ container. Run `createdb` once, then reuse this database across Go test runs:
 ```sh
 docker exec opsecmkt-dev-db createdb -U opsecmkt opsecmkt_test
 export TEST_DATABASE_URL='postgres://opsecmkt:local-dev-only@127.0.0.1:55432/opsecmkt_test?sslmode=disable'
-go test -race -count=1 -timeout 30m ./...
+go test -race -count=1 -timeout 30m -run '^(TestEscrow|TestXMR|FuzzEscrow)' ./...
+go test -race -count=1 -timeout 30m -skip '^(TestEscrow|TestXMR|FuzzEscrow)' ./...
 ```
+
+The two commands are CI's two Go jobs (see [CI and release delivery](ci-cd.md)): with the same pattern, one as `-run`
+and one as `-skip`, they run every test exactly once between them. Run them one after the other against the same
+database, or at the same time against two different databases (below). They replace the single
+`go test -race -count=1 -timeout 30m ./...`: `-timeout` is per package, and `internal/market` in one race process no
+longer finishes within 30 minutes on a loaded 4-CPU host (QA4W2-E1). Measured on 2026-10-06 on the shared 4-CPU
+development host with other suites running (load average 6 to 11), one after the other against one database: the
+`-run` half took 1021 s wall (`internal/market` 941 s) and the `-skip` half 958 s (`internal/market` 953 s,
+`cmd/server` 113 s).
 
 Tests create isolated schemas, apply migrations, create their own fixture users,
 listings and orders, then remove their schemas. When the test role has the CREATEDB privilege,
@@ -145,11 +156,9 @@ create a database of their own beside it (`opsecmkt_cmd_server_<random>`, droppe
 when they finish; without the CREATEDB privilege they use `TEST_DATABASE_URL`'s
 database and log that). A run that panics, times out or is killed leaves these
 databases behind: drop leftover `opsecmkt_cmd_server_*`, `opsecmkt_tmpl_*` and
-`opsecmkt_copy_*` databases that have no connections (no later run uses them). With a database the
-`internal/market` race run takes about 7–10 minutes, close to `go test`'s default
-10-minute timeout, so the command sets `-timeout 30m`. CI runs this suite as two parallel jobs split by test
-name (`-skip` and `-run` with `'^(TestEscrow|TestXMR|FuzzEscrow)'`; see [CI and release delivery](ci-cd.md)); to
-reproduce one half locally use that flag with the same pattern. Fake RPC tests cover payment behavior; they do not
+`opsecmkt_copy_*` databases that have no connections (no later run uses them). Each half of the
+`internal/market` race run takes longer than `go test`'s default 10-minute timeout on a busy host, so both commands
+set `-timeout 30m`. Fake RPC tests cover payment behavior; they do not
 prove live node integration. The manual Bitcoin check is
 [`scripts/regtest-smoke.sh`](../scripts/regtest-smoke.sh).
 
@@ -208,7 +217,7 @@ artifacts. Real-wallet network validation remains a separate runbook step.
 
 ### Bitcoin escrow paste journey (simulated escrow node)
 
-`tests/e2e/escrow-journey.spec.ts` drives Bitcoin escrow (regtest only, `ESCROW_BTC=on`;
+`tests/e2e/escrow-journey.spec.ts` drives Bitcoin escrow (a simulated regtest node, `ESCROW_BTC=on`;
 see [escrow](escrow.md)) through the real server and PostgreSQL in Chromium at 320 px with
 JavaScript disabled, every form by keyboard alone: two escrow keys registered and activated
 by practice signing, an escrow checkout funded and completed on funding (automatic delivery),
@@ -219,7 +228,9 @@ escrow node is **simulated**: `tests/e2e/fixtures/escrow_rpc.py`, served by
 `wallet-rpc.py --escrow-port`, answers the escrow adapter's PSBT methods with real PSBT and
 transaction bytes but its own fake signatures, and plays each party's wallet. It knows
 regtest only and refuses mainnet and other-network addresses and keys. This is not chain
-evidence; real Bitcoin Core legs are `scripts/test-escrow-regtest.sh`.
+evidence; real Bitcoin Core legs are `scripts/test-escrow-regtest.sh`, and
+`scripts/test-escrow-wallets.sh` checks which real wallets (Bitcoin Core, Electrum 4.8.2) sign the
+escrow transactions, by hand on a regtest node with no network.
 
 ```sh
 docker exec opsecmkt-dev-db createdb -U opsecmkt opsecmkt_escrow_e2e
@@ -227,6 +238,10 @@ export E2E_ESCROW_DATABASE_URL='postgres://opsecmkt:local-dev-only@127.0.0.1:554
 npm run test:e2e:escrow
 ```
 
+`tests/e2e/escrow-per-order-journey.spec.ts` (A-455) runs next on the same database: a vendor registers a
+per-order wallet key and signs its practice transaction (the simulated node derives rooted keys by real BIP32 public
+derivation), a buyer sees the vendor's key type on the listing and the vendor page, and the order page says a
+per-order wallet cannot take an escrow yet.
 `tests/e2e/escrow-physical-journey.spec.ts` runs after it on the same database and follows a
 physical escrow order (WR-escrow Phase 2): shipped with a claim address, signed by the vendor and
 the buyer, released at its deadline, a dispute that cancels the deadline, the buyer's no-ship
@@ -237,7 +252,9 @@ and ship-by clocks through SQL (with `psql` on `PATH`, using the connection in
 
 Use a fresh database for every run. It owns loopback ports 18090–18092, writes
 `playwright-escrow-report/` and `test-results-escrow/` (with one screenshot per order-page
-state), and is not part of `npm run test:e2e`. `python3 -m unittest tests.test_escrow_rpc_fixture`
+state), and is not part of `npm run test:e2e`. CI runs it, with the Monero suite below, in the
+`browser-escrow` job ("Escrow browser journeys (simulated nodes, real application)", A-474; see
+[CI and release delivery](ci-cd.md)). `python3 -m unittest tests.test_escrow_rpc_fixture`
 checks the simulator alone.
 
 ### Monero escrow journey (simulated escrow wallet-rpc)
@@ -274,7 +291,8 @@ npm run test:e2e:escrow-xmr
 Use a fresh database for every run; the test moves clocks and restore settings through SQL with
 `psql` on `PATH`. It owns loopback ports 18093–18097, writes `playwright-escrow-xmr-report/` and
 `test-results-escrow-xmr/` (one screenshot per order-page state), and is not part of
-`npm run test:e2e`.
+`npm run test:e2e`; the `browser-escrow` CI job runs it after the Bitcoin escrow suite, each on its
+own database.
 
 For actual local Bitcoin Core and Monero nodes, mined test coins and real wallet
 transactions, follow [isolated real-chain browser testing](local-chain-testing.md)
@@ -314,6 +332,7 @@ go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 
 [CI](../.github/workflows/ci.yaml) also validates Compose profiles, container startup,
 upgrades, encrypted backup/restore, dependencies and browser regressions with
-PostgreSQL. See [operations tests](operations-tests.md) for local rehearsals
+PostgreSQL (the `browser` job: preview, database and wallet journeys; the `browser-escrow` job:
+the Bitcoin and Monero escrow journeys). See [operations tests](operations-tests.md) for local rehearsals
 and [CI/release instructions](ci-cd.md). Version tags produce CI-gated
 draft release artifacts; they do not deploy a live instance.

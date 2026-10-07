@@ -75,7 +75,7 @@ func TestXMREscrowConfigFromEnv(t *testing.T) {
 		"fractional fee":                  {"ESCROW_XMR_FEE_BPS", "2.5"},
 		"fee without address":             {"ESCROW_XMR_FEE_BPS", "250"},
 		"testnet fee address":             {"ESCROW_XMR_FEE_BPS", "250", "ESCROW_XMR_FEE_ADDRESS", testXMRAddressWith(53, testXMRKey("s"), testXMRKey("v"), nil, false)},
-		"stagenet fee address":            {"ESCROW_XMR_FEE_BPS", "250", "ESCROW_XMR_FEE_ADDRESS", testXMRAddressWith(24, testXMRKey("s"), testXMRKey("v"), nil, false)},
+		"stagenet integrated fee address": {"ESCROW_XMR_FEE_BPS", "250", "ESCROW_XMR_FEE_ADDRESS", testXMRAddressWith(25, testXMRKey("s"), testXMRKey("v"), nil, false)}, // a stagenet fee address is checked against the daemon at startup (A-449)
 		"integrated fee address":          {"ESCROW_XMR_FEE_BPS", "250", "ESCROW_XMR_FEE_ADDRESS", testXMRAddressWith(19, testXMRKey("s"), testXMRKey("v"), nil, false)},
 		"fee address with a bad checksum": {"ESCROW_XMR_FEE_BPS", "250", "ESCROW_XMR_FEE_ADDRESS", testXMRAddressWith(18, testXMRKey("s"), testXMRKey("v"), nil, true)},
 		"fee address, off-curve key":      {"ESCROW_XMR_FEE_BPS", "250", "ESCROW_XMR_FEE_ADDRESS", testXMRAddressWith(18, testXMROffCurveKey(), testXMRKey("v"), nil, false)},
@@ -232,7 +232,7 @@ func TestXMREscrowStartupStates(t *testing.T) {
 	}
 	t.Setenv("ESCROW_XMR_SEED_KEY", keyPath)
 
-	// A node that answers but fails the network check stops startup with a fixed refusal (errEscrowNotRegtest's rule):
+	// A node that answers but fails the network check stops startup with a fixed refusal (errEscrowChain's rule):
 	// the daemon's line for the daemon checks, the wallet-rpc's line for the wallet height checks.
 	refusals := []struct {
 		name         string
@@ -241,12 +241,17 @@ func TestXMREscrowStartupStates(t *testing.T) {
 		walletHeight int64
 		want, reason error
 	}{
-		{"stagenet daemon", map[string]any{"nettype": "stagenet", "stagenet": true, "height": 120}, 16, 120, errXMRStartDaemon, errXMRNotFakechain},
-		{"mainnet daemon", map[string]any{"nettype": "mainnet", "mainnet": true, "height": 120}, 16, 120, errXMRStartDaemon, errXMRNotFakechain},
-		{"fakechain with the mainnet flag", map[string]any{"nettype": "fakechain", "mainnet": true, "height": 120}, 16, 120, errXMRStartDaemon, errXMRNotFakechain},
-		{"hard fork 15", map[string]any{"nettype": "fakechain", "height": 120}, 15, 120, errXMRStartDaemon, errXMRHardFork},
-		{"daemon height 1,000,000", map[string]any{"nettype": "fakechain", "height": 1_000_000}, 16, 1_000_000, errXMRStartDaemon, errXMRDaemonHeight},
-		{"wallet height 1,000,000", map[string]any{"nettype": "fakechain", "height": 999_995}, 16, 1_000_000, errXMRStartWallet, errXMRWalletHeight},
+		// A-449: stagenet is accepted (TestXMREscrowStagenetTags), and heights no longer tell networks apart
+		// (TestXMREscrowNoHeightHeuristic); mainnet, testnet and inconsistent flags are refused.
+		{"testnet daemon", map[string]any{"nettype": "testnet", "testnet": true, "height": 120}, 16, 120, errXMRStartDaemon, errXMRDaemonNetwork},
+		{"mainnet daemon", map[string]any{"nettype": "mainnet", "mainnet": true, "height": 120}, 16, 120, errXMRStartDaemon, errXMRDaemonNetwork},
+		{"fakechain with the mainnet flag", map[string]any{"nettype": "fakechain", "mainnet": true, "height": 120}, 16, 120, errXMRStartDaemon, errXMRDaemonNetwork},
+		{"fakechain with the stagenet flag", map[string]any{"nettype": "fakechain", "stagenet": true, "height": 120}, 16, 120, errXMRStartDaemon, errXMRDaemonNetwork},
+		{"stagenet without the stagenet flag", map[string]any{"nettype": "stagenet", "height": 120}, 16, 120, errXMRStartDaemon, errXMRDaemonNetwork},
+		{"stagenet with the mainnet flag", map[string]any{"nettype": "stagenet", "stagenet": true, "mainnet": true, "height": 120}, 16, 120, errXMRStartDaemon, errXMRDaemonNetwork},
+		{"no nettype", map[string]any{"height": 120}, 16, 120, errXMRStartDaemon, errXMRDaemonNetwork},
+		{"hard fork 15", map[string]any{"nettype": "fakechain", "height": 120, "synchronized": true}, 15, 120, errXMRStartDaemon, errXMRHardFork},
+		{"synced stagenet at hard fork 1", map[string]any{"nettype": "stagenet", "stagenet": true, "height": 120, "synchronized": true}, 1, 120, errXMRStartDaemon, errXMRHardFork},
 		{"wallet 11 blocks behind", map[string]any{"nettype": "fakechain", "height": 120}, 16, 109, errXMRStartWallet, errXMRWalletLag},
 	}
 	for _, c := range refusals {
@@ -318,6 +323,40 @@ func TestXMREscrowStartupStates(t *testing.T) {
 	}
 }
 
+// TestXMREscrowNotReadyNamesEachState: while Monero escrow is configured but not ready, notReady names each fixed state
+// of its startup checks in words, with its class, and what to do; ready, it says nothing (QA4W4B-1). The refusal is the
+// one refuseEscrowXMR records. Unit test (no database).
+func TestXMREscrowNotReadyNamesEachState(t *testing.T) {
+	x := &escrowXMR{}
+	if s, r := x.notReady(); s != "its startup checks have not passed yet" || !strings.Contains(r, "server log") {
+		t.Fatalf("no state recorded: %q, %q", s, r)
+	}
+	for _, c := range []struct{ line, class, state, remedy string }{
+		{xmrLogPooledWait, "", "waiting for the pooled Monero wallet's first check", "Start the pooled monero-wallet-rpc, or correct MONERO_WALLET_RPC_URL"},
+		{xmrLogUnchecked, "get_info unreachable", "the escrow daemon or wallet-rpc could not be checked (get_info unreachable)", "ESCROW_XMR_WALLET_RPC_URL is running and reachable"},
+		{xmrLogNetwork, "", "the escrow daemon is not on the network this database's Monero escrows are on", "a new network needs a new database"},
+		{xmrLogSecret, "", "MONERO_WALLET_SECRET is not the secret this database was first started with", "Restore the original secret and restart the app"},
+		{xmrLogUnrecorded, "db-connection", "its secret verifier or seed key could not be checked in the database (db-connection)", "Check the database"},
+		{xmrLogOn, "stagenet", "its startup checks have not passed yet", "The server log names the state"},
+	} {
+		x.state.Store(&xmrState{c.line, c.class})
+		if s, r := x.notReady(); s != c.state || !strings.Contains(r, c.remedy) {
+			t.Errorf("%s: %q, %q", c.line, s, r)
+		}
+	}
+	x.state.Store(&xmrState{xmrLogUnchecked, "refresh unreachable"})
+	x.ready.Store(true)
+	if s, r := x.notReady(); s != "" || r != "" {
+		t.Fatalf("ready: %q, %q", s, r)
+	}
+	logs := captureLog(t)
+	x.refuseEscrowXMR(errXMRPooledWallet)
+	if s, r := x.notReady(); s != "refused until the app is restarted" || !strings.Contains(r, "Reason: "+errXMRPooledWallet.msg+".") || !strings.Contains(r, "restart the app") ||
+		strings.Count(logs.String(), xmrLogRefused) != 1 {
+		t.Fatalf("refused: %q, %q", s, r)
+	}
+}
+
 // TestXMREscrowRecheckIsSticky: after startup, the watcher's re-check (recheckEscrowXMRNetwork) disables Monero
 // escrow until a restart when a node answers but fails the network check, logs one fixed line, and contacts neither
 // node again; an unreachable node changes nothing. Unit test (no database).
@@ -366,9 +405,16 @@ func TestXMREscrowRecheckIsSticky(t *testing.T) {
 
 	// A daemon refusal is sticky the same way; startup's refusals are never used at runtime.
 	b := &App{escrowXMR: &escrowXMR{rpc: r}}
+	daemon.result("get_info", map[string]any{"nettype": "mainnet", "mainnet": true, "height": 120})
+	if err := b.recheckEscrowXMRNetwork(ctx); !errors.Is(err, errXMRDaemonNetwork) || errors.Is(err, errXMRStartDaemon) || !b.escrowXMR.refused.Load() {
+		t.Fatalf("mainnet daemon: %v", err)
+	}
+	// A-449: a daemon that moved to the other escrow network (stagenet, escrow started on the fakechain) is refused the
+	// same way: the pin decides on the next start.
+	c := &App{escrowXMR: &escrowXMR{rpc: r}}
 	daemon.result("get_info", map[string]any{"nettype": "stagenet", "stagenet": true, "height": 120})
-	if err := b.recheckEscrowXMRNetwork(ctx); !errors.Is(err, errXMRNotFakechain) || errors.Is(err, errXMRStartDaemon) || !b.escrowXMR.refused.Load() {
-		t.Fatalf("stagenet daemon: %v", err)
+	if err := c.recheckEscrowXMRNetwork(ctx); !errors.Is(err, errXMRNetworkMoved) || !c.escrowXMR.refused.Load() {
+		t.Fatalf("stagenet daemon after a fakechain start: %v", err)
 	}
 	// The watcher's retry of the startup checks cannot undo a refusal either (it returns before the database).
 	if _, _, err := b.startEscrowXMR(ctx); !errors.Is(err, errXMRRefusedUntilRestart) || b.escrowXMR.ready.Load() {

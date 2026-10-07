@@ -14,9 +14,9 @@ import (
 // startup settings ESCROW_BTC_FEE_BPS and ESCROW_BTC_FEE_ADDRESS apply. Each escrow snapshots the fee and its
 // destination at checkout (escrows.fee_bps, fee_destination), so a change affects only later escrows.
 //
-// The destination is one fixed address, which is allowed only because escrow runs on regtest in this release: the
-// owner's decision (ES-5) requires a watch-only descriptor on a mainnet market, giving a fresh fee address per
-// settlement. That is not built; ESCROW_BTC refuses any chain but regtest.
+// The destination is one fixed address, which is allowed only because escrow runs on test networks only (regtest,
+// signet, testnet4): the owner's decision (ES-5) requires a watch-only descriptor on a mainnet market, giving a fresh
+// fee address per settlement. That is not built; ESCROW_BTC refuses mainnet and testnet3.
 
 const (
 	escrowFeeBpsSetting  = "escrow_btc_fee_bps"
@@ -52,8 +52,9 @@ func escrowFeeLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) 
 	}
 	v := &EscrowFeeView{Available: a.escrow.Load() != nil}
 	e := a.escrow.Load()
-	if e == nil {
-		e = &escrowBTC{feeBps: a.escrowCfg.feeBps, feeAddress: a.escrowCfg.feeAddress}
+	if e == nil { // the startup setting, lowered by the chain escrow names (escrowAddressForm) as startEscrow lowers it
+		addr, _ := escrowAddressForm(a.escrowNetwork(), a.escrowCfg.feeAddress)
+		e = &escrowBTC{feeBps: a.escrowCfg.feeBps, feeAddress: addr}
 	}
 	bps, addr, err := escrowFee(ctx, a.db, e)
 	if err != nil {
@@ -80,7 +81,7 @@ func escrowFeeAction(c *actionCtx) (actionResult, error) {
 	addr := ""
 	if bps > 0 {
 		var ok bool
-		if addr, ok = escrowAddressForm(c.Form.Get("fee_address")); !ok {
+		if addr, ok = escrowAddressForm(e.network, c.Form.Get("fee_address")); !ok {
 			return actionResult{}, fail(400, "Enter the "+c.A.escrowNetwork()+" Bitcoin address the market fee is paid to. Nothing was changed.")
 		}
 		valid, err := e.validAddress(c.Ctx(), addr)

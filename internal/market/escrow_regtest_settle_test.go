@@ -40,12 +40,7 @@ func TestEscrowRegtestSettlement(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, c := range map[string]*rpcClient{"operator": op, "app": app} {
-		var info struct {
-			Chain string `json:"chain"`
-		}
-		if err := c.call(ctx, "", "getblockchaininfo", []any{}, &info); err != nil || info.Chain != "regtest" {
-			t.Fatalf("refusing: the %s node URL is not on regtest (or is unreachable)", name)
-		}
+		checkRealChain(t, ctx, name, c)
 	}
 	call := func(wallet, method string, out any, params ...any) {
 		t.Helper()
@@ -56,7 +51,7 @@ func TestEscrowRegtestSettlement(t *testing.T) {
 		if params == nil {
 			params = []any{}
 		}
-		if err := op.call(ctx, path, method, params, out); err != nil {
+		if err := op.callWithin(ctx, regtestOperatorTimeout, path, method, params, out); err != nil {
 			t.Fatalf("operator %s: %v", method, err)
 		}
 	}
@@ -156,7 +151,7 @@ func TestEscrowRegtestSettlement(t *testing.T) {
 	t.Log("buyer and vendor keys registered from their own Core wallets and activated by practice signing")
 	var mineTo string
 	call(funder, "getnewaddress", &mineTo)
-	call("", "generatetoaddress", nil, 101, mineTo)
+	matureFunds(t, ctx, op, mineTo)
 
 	// escrowOrder checks out a new escrow order paying refund and funds it with btc from the funder wallet.
 	escrowOrder := func(refund, btc string) (order, addr, txid string) {
@@ -173,7 +168,7 @@ func TestEscrowRegtestSettlement(t *testing.T) {
 			t.Fatal(err)
 		}
 		call(funder, "sendtoaddress", &txid, addr, json.Number(btc))
-		call("", "generatetoaddress", nil, 3, mineTo)
+		mustMine(t, ctx, op, 3, mineTo)
 		if err := e.A.escrowPollOnce(ctx); err != nil {
 			t.Fatalf("watcher pass: %v", err)
 		}

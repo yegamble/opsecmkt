@@ -19,6 +19,12 @@ type payCore struct {
 	walletLoaded bool
 	walletGone   bool // loadwallet fails: the wallet was never created
 	ibd          bool // getblockchaininfo initialblockdownload
+	// A-439: a synced node by default. headersAhead is added to getblockchaininfo headers (blocks 100), tipAge is how
+	// old its tip time is, and peers is getnetworkinfo connections (8 from newPayCore).
+	headersAhead int64
+	tipAge       time.Duration
+	noTime       bool // getblockchaininfo omits time, as a Bitcoin Core too old for the sync guard (QA4W1-3)
+	peers        int64
 	received     []map[string]any
 	txs          map[string]map[string]any
 	invalid      map[string]bool
@@ -36,9 +42,13 @@ func (c *payCore) handle(path, method string, params json.RawMessage) (any, int,
 	}
 	switch method {
 	case "getblockchaininfo":
-		return map[string]any{"chain": c.chain, "blocks": 100, "initialblockdownload": c.ibd}, 0, ""
+		info := map[string]any{"chain": c.chain, "blocks": 100, "headers": 100 + c.headersAhead, "time": time.Now().Add(-c.tipAge).Unix(), "initialblockdownload": c.ibd}
+		if c.noTime {
+			delete(info, "time")
+		}
+		return info, 0, ""
 	case "getnetworkinfo":
-		return map[string]any{"version": 310100, "subversion": "/Satoshi:31.1.0/"}, 0, ""
+		return map[string]any{"version": 310100, "subversion": "/Satoshi:31.1.0/", "connections": c.peers}, 0, ""
 	case "loadwallet":
 		var p []string
 		json.Unmarshal(params, &p)
@@ -71,7 +81,7 @@ func (c *payCore) handle(path, method string, params json.RawMessage) (any, int,
 }
 
 func newPayCore(t *testing.T, chain string) (*payCore, *payRPCServer) {
-	c := &payCore{chain: chain, newAddr: "tb1qorderaddress000000000000000000000", walletLoaded: true, txs: map[string]map[string]any{}, invalid: map[string]bool{}}
+	c := &payCore{chain: chain, newAddr: "tb1qorderaddress000000000000000000000", walletLoaded: true, peers: 8, txs: map[string]map[string]any{}, invalid: map[string]bool{}}
 	return c, newPayRPCServer(t, "marketplace", "rpc-secret", false, c.handle)
 }
 

@@ -12,6 +12,7 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -21,22 +22,27 @@ import (
 // Bitcoin escrow (WR-escrow Phase 1, A-246): configuration, the startup checks and the Bitcoin Core RPC adapter
 // the escrow code uses. It is apart from the pooled adapter (payments_bitcoin.go) and shares only rpcClient.
 //
-// ESCROW_BTC=on (off by default) runs only against a regtest node in Phase 1. The app reaches Core as its own RPC
-// user, which the operator restricts with rpcwhitelist to the methods below (docs/operator-guide.md, "Bitcoin
-// escrow (regtest only)"). listdescriptors is deliberately not among them: rpcwhitelist allows or refuses a
-// method, not its arguments, and a user allowed listdescriptors can call it with private=true and export the
-// arbiter's private key (probed on Core 31.1 regtest). The arbiter's fingerprint is read with
-// getrawchangeaddress and getaddressinfo instead, which export nothing.
+// ESCROW_BTC=on (off by default) runs only against a node on regtest, signet or testnet4 (the chain table, escrowChains;
+// A-443 opened signet and testnet4 once the sync guard, the chain pin, the market key self-check and the Tor-mode gate
+// were in place). The app reaches Core as its own RPC user, which the operator restricts with rpcwhitelist to the
+// methods below (docs/operator-guide.md, "Bitcoin escrow (test networks only)"). listdescriptors is deliberately not
+// among them: rpcwhitelist allows or refuses a method, not its arguments, and a user allowed listdescriptors can call it
+// with private=true and export the arbiter's private key (probed on Core 31.1 regtest). The arbiter's fingerprint is
+// read with getrawchangeaddress and getaddressinfo instead, which export nothing.
 //
 // Every RPC error is reduced to a fixed class (escrowRPCError) before anyone logs it: Core's error text can quote
 // a descriptor or a key (A-170, ES-10).
 
 // escrowRPCMethods is every method the adapter calls: the rpcwhitelist line the operator guide documents.
+// getnetworkinfo (read-only: the peer count for the sync guard, A-439, and the proxies and version for the Tor-mode
+// gate, A-441) is called only on a public chain or in APP_MODE=tor, so a clearnet regtest whitelist written before it
+// keeps working. listsinceblock (read-only) reads the arbiter wallet's entries for the start check (QA4W4A-1,
+// checkArbiterWallet).
 var escrowRPCMethods = []string{
-	"getblockchaininfo", "getrawchangeaddress", "getaddressinfo", "createpsbt", "utxoupdatepsbt", "importdescriptors",
-	"getdescriptorinfo", "deriveaddresses", "gettxout", "keypoolrefill", "walletprocesspsbt", "descriptorprocesspsbt",
-	"combinepsbt", "finalizepsbt", "testmempoolaccept", "sendrawtransaction", "getwalletinfo", "listreceivedbyaddress",
-	"gettransaction", "listtransactions",
+	"getblockchaininfo", "getnetworkinfo", "getrawchangeaddress", "getaddressinfo", "createpsbt", "utxoupdatepsbt",
+	"importdescriptors", "getdescriptorinfo", "deriveaddresses", "gettxout", "keypoolrefill", "walletprocesspsbt",
+	"descriptorprocesspsbt", "combinepsbt", "finalizepsbt", "testmempoolaccept", "sendrawtransaction", "getwalletinfo",
+	"listreceivedbyaddress", "gettransaction", "listtransactions", "listsinceblock",
 }
 
 // escrowSighash is the only sighash type the market ever signs with (ES-2): a signature made with SIGHASH_NONE let
@@ -55,13 +61,16 @@ type escrowConfig struct {
 	feeAddress    string // where the market fee goes ("" when feeBps is 0); one fixed address, test networks only
 	confirmations int64  // PAYMENT_CONFIRMATIONS_BTC: confirmations before an escrow counts as funded
 	feeRate       int64  // ESCROW_BTC_FEE_RATE: the network fee rate of every settlement, in sat/vB (P1-c)
+	signerSocket  string // ESCROW_SIGNER_SOCKET (A-454): the escrow signer's Unix socket; "" = no signer
+	pooledURL     string // BITCOIN_RPC_URL: the pooled client the market key self-check goes through (A-440); "" = none
 }
 
 // escrowConfigFromEnv reads ESCROW_BTC (on/off, blank = off), ESCROW_BTC_RPC_URL, ESCROW_BTC_ARBITER_WALLET
 // (default opsecmkt-arbiter), ESCROW_BTC_WATCH_WALLET (default opsecmkt-escrow-watch), ESCROW_BTC_FEE_BPS (0 to
 // 10000, default 0), ESCROW_BTC_FEE_ADDRESS (needed when the fee is above 0), ESCROW_BTC_FEE_RATE (the settlement
-// network fee rate in sat/vB, 1 to escrowMaxFeeRate, default escrowDefaultFeeRate) and PAYMENT_CONFIRMATIONS_BTC (1
-// to 1000, default 3). Nothing is contacted.
+// network fee rate in sat/vB, 1 to escrowMaxFeeRate, default escrowDefaultFeeRate), PAYMENT_CONFIRMATIONS_BTC (1
+// to 1000, default 3) and ESCROW_SIGNER_SOCKET (the escrow signer's socket, an absolute path; blank = none, A-454).
+// Nothing is contacted.
 func escrowConfigFromEnv(getenv func(string) string) (escrowConfig, error) {
 	var c escrowConfig
 	switch v := strings.TrimSpace(getenv("ESCROW_BTC")); v {
@@ -70,18 +79,18 @@ func escrowConfigFromEnv(getenv func(string) string) (escrowConfig, error) {
 	case "on":
 		c.on = true
 	default:
-		return c, errors.New(`ESCROW_BTC must be "on" or "off" (blank means off); Bitcoin escrow runs on regtest only in this release`)
+		return c, errors.New(`ESCROW_BTC must be "on" or "off" (blank means off); Bitcoin escrow runs on test networks only (regtest, signet or testnet4)`)
 	}
 	c.rpcURL = strings.TrimSpace(getenv("ESCROW_BTC_RPC_URL"))
 	if c.rpcURL == "" {
-		return c, errors.New("ESCROW_BTC=on needs ESCROW_BTC_RPC_URL: the regtest Bitcoin Core RPC URL of the app's rpcwhitelist user (docs/operator-guide.md, \"Bitcoin escrow (regtest only)\")")
+		return c, errors.New("ESCROW_BTC=on needs ESCROW_BTC_RPC_URL: the Bitcoin Core RPC URL (regtest, signet or testnet4) of the app's rpcwhitelist user (docs/operator-guide.md, \"Bitcoin escrow (test networks only)\")")
 	}
 	c.arbiterWallet = strings.TrimSpace(getenv("ESCROW_BTC_ARBITER_WALLET"))
 	if c.arbiterWallet == "" {
 		c.arbiterWallet = "opsecmkt-arbiter"
 	}
-	if chain := strings.TrimSpace(getenv("BITCOIN_CHAIN")); chain != "" && chain != "regtest" {
-		return c, errors.New("refusing to start: ESCROW_BTC=on runs only on regtest in this release, and BITCOIN_CHAIN names another chain. Set ESCROW_BTC=off, or use regtest for both")
+	if chain := strings.TrimSpace(getenv("BITCOIN_CHAIN")); chain != "" && escrowChains[chain] == "" {
+		return c, errors.New("refusing to start: ESCROW_BTC=on runs only on regtest, signet or testnet4, and BITCOIN_CHAIN names mainnet or testnet3. Set ESCROW_BTC=off, or use one of those chains")
 	}
 	c.watchWallet = strings.TrimSpace(getenv("ESCROW_BTC_WATCH_WALLET"))
 	if c.watchWallet == "" {
@@ -90,7 +99,7 @@ func escrowConfigFromEnv(getenv func(string) string) (escrowConfig, error) {
 	if c.watchWallet == c.arbiterWallet {
 		return c, errors.New("ESCROW_BTC_WATCH_WALLET must name a watch-only wallet of its own, not the arbiter wallet ESCROW_BTC_ARBITER_WALLET")
 	}
-	if strings.TrimSpace(getenv("BITCOIN_RPC_URL")) != "" {
+	if c.pooledURL = strings.TrimSpace(getenv("BITCOIN_RPC_URL")); c.pooledURL != "" {
 		pooled := strings.TrimSpace(getenv("BITCOIN_WALLET"))
 		if pooled == "" {
 			pooled = "opsecmkt"
@@ -111,8 +120,8 @@ func escrowConfigFromEnv(getenv func(string) string) (escrowConfig, error) {
 	}
 	if c.feeBps > 0 {
 		var ok bool
-		if c.feeAddress, ok = escrowAddressForm(getenv("ESCROW_BTC_FEE_ADDRESS")); !ok {
-			return c, errors.New("ESCROW_BTC_FEE_BPS above 0 needs ESCROW_BTC_FEE_ADDRESS: the regtest Bitcoin address the market fee is paid to")
+		if c.feeAddress, ok = escrowAddressForm("", getenv("ESCROW_BTC_FEE_ADDRESS")); !ok {
+			return c, errors.New("ESCROW_BTC_FEE_BPS above 0 needs ESCROW_BTC_FEE_ADDRESS: the Bitcoin address, on the escrow node's chain, the market fee is paid to")
 		}
 	}
 	c.feeRate = escrowDefaultFeeRate
@@ -131,25 +140,42 @@ func escrowConfigFromEnv(getenv func(string) string) (escrowConfig, error) {
 		}
 		c.confirmations = n
 	}
+	if _, err := parseMaxTipAge(getenv("BITCOIN_MAX_TIP_AGE")); err != nil {
+		return c, err
+	}
+	if v := strings.TrimSpace(getenv("ESCROW_SIGNER_SOCKET")); v != "" {
+		if !filepath.IsAbs(v) {
+			return c, errors.New("ESCROW_SIGNER_SOCKET must be the absolute path of the escrow signer's Unix socket, as mounted in the app's container (docs/operator-guide.md, \"Escrow signer\")")
+		}
+		c.signerSocket = v
+	}
 	return c, nil
 }
 
-// errEscrowNotRegtest is the fixed startup refusal for an escrow node on any chain but regtest.
-var errEscrowNotRegtest = errors.New("refusing to start: ESCROW_BTC=on runs only on regtest in this release (escrow is not verified on any public network), and the node at ESCROW_BTC_RPC_URL is not on regtest. Set ESCROW_BTC=off, or point ESCROW_BTC_RPC_URL at a regtest node")
+// errEscrowChain is the fixed startup refusal for an escrow node on a chain that is not in the chain table (escrowChains):
+// mainnet, testnet3 or any other.
+var errEscrowChain = errors.New("refusing to start: ESCROW_BTC=on runs only on regtest, signet or testnet4, and the node at ESCROW_BTC_RPC_URL reports another chain (mainnet and testnet3 are refused). Set ESCROW_BTC=off, or point ESCROW_BTC_RPC_URL at a node on one of those chains")
 
 // Fixed operator lines for an escrow that is switched on but not usable: nothing in them comes from the node.
 const (
-	escrowLogOn           = "escrow: Bitcoin escrow on (regtest only)"
+	escrowLogOn           = "escrow: Bitcoin escrow on (test networks only)"
 	escrowLogUnchecked    = "escrow: Bitcoin escrow disabled: the escrow node could not be checked at startup"
 	escrowLogArbiter      = "escrow: Bitcoin escrow disabled: the arbiter wallet could not be read (is ESCROW_BTC_ARBITER_WALLET loaded, and a descriptor wallet with private keys?)"
-	escrowLogFingerprint  = "escrow: Bitcoin escrow disabled: the arbiter wallet's key fingerprint differs from the one pinned in this database; see docs/operator-guide.md, \"Bitcoin escrow (regtest only)\""
+	escrowLogFingerprint  = "escrow: Bitcoin escrow disabled: the arbiter wallet's key fingerprint differs from the one pinned in this database; see docs/operator-guide.md, \"Bitcoin escrow (test networks only)\""
 	escrowLogWatch        = "escrow: Bitcoin escrow disabled: the watch-only wallet could not be read (is ESCROW_BTC_WATCH_WALLET loaded, and a descriptor wallet with private keys disabled?)"
-	escrowLogArbiterUse   = "escrow: Bitcoin escrow disabled: the arbiter wallet must be used for the escrow key only (an unencrypted descriptor wallet with private keys and no transactions); see docs/operator-guide.md, \"Bitcoin escrow (regtest only)\""
+	escrowLogArbiterUse   = "escrow: Bitcoin escrow disabled: the arbiter wallet must be used for the escrow key only (an unencrypted descriptor wallet with private keys that has never spent); see docs/operator-guide.md, \"Bitcoin escrow (test networks only)\""
+	escrowLogArbiterRead  = "escrow: Bitcoin escrow disabled: the arbiter wallet's transactions could not be read to check that it has never spent (is listsinceblock on the escrow user's rpcwhitelist, and the node answering?); the read is retried every poll, or after a wait when it took 5 s or more or timed out (1 minute, doubling up to 1 hour; restarting the app reads at once); see docs/operator-guide.md, \"Bitcoin escrow (test networks only)\""
+	escrowLogArbiterWait  = "escrow: Bitcoin escrow off while the arbiter wallet is checked: reading its transactions takes longer than startup allows; the read goes on, and the escrow watcher starts escrow once it has passed"
 	escrowLogFixedFee     = "escrow: the market fee is paid to one fixed address (ESCROW_BTC_FEE_ADDRESS); allowed on test networks only"
-	escrowLogRefused      = "escrow: Bitcoin escrow disabled until the app is restarted: the escrow node is not on regtest, or it refused ESCROW_BTC_FEE_ADDRESS"
+	escrowLogRefused      = "escrow: Bitcoin escrow disabled until the app is restarted: the escrow node is on a chain escrow does not run on (mainnet, testnet3 or another), or it refused ESCROW_BTC_FEE_ADDRESS"
 	escrowLogUnrecorded   = "escrow: Bitcoin escrow disabled: its arbiter fingerprint could not be checked in the database"
+	escrowLogChain        = "escrow: Bitcoin escrow disabled: the escrow node is not on the chain this database's escrows are on (escrow_btc_chain); the admin page names both; see docs/operator-guide.md, \"Bitcoin escrow (test networks only)\""
+	escrowLogPooledKey    = "escrow: Bitcoin escrow disabled: the pooled Bitcoin RPC user (BITCOIN_RPC_URL) was not refused listdescriptors, gethdkeys or walletprocesspsbt on the arbiter wallet, so it may be able to export or sign with the market's escrow key; give that user the pooled rpcwhitelist line, or run escrow on a node of its own; see docs/operator-guide.md, \"The pooled RPC user\""
 	escrowFingerprintPin  = "escrow_btc_arbiter_fingerprint" // settings key
+	escrowChainPin        = "escrow_btc_chain"               // settings key: escrowChainID of the node the database's escrows are on (A-439)
+	escrowArbiterChecked  = "escrow_btc_arbiter_checked"     // settings key: the arbiter wallet check's checkpoint (QA4W4A-1, arbiterCheckpoint)
 	escrowFingerprintSize = 8
+	escrowChainPinLock    = 782497 // the transaction advisory lock pinEscrowChain takes (the watchers' are 782494 to 782496)
 )
 
 // escrowBTC is the escrow adapter; App.escrow is nil until ESCROW_BTC=on has passed every check (startEscrow).
@@ -166,6 +192,7 @@ type escrowBTC struct {
 	confirmations int64
 	feeRate       int64  // sat/vB, for every settlement this process builds
 	network       string // the node's chain (getblockchaininfo) as startEscrow read it; names the network in notes
+	chainID       string // escrowChainID of the node as startEscrow read it, equal to the pin; each watcher pass compares it
 }
 
 func newEscrowBTC(c escrowConfig) (*escrowBTC, error) {
@@ -178,18 +205,22 @@ func newEscrowBTC(c escrowConfig) (*escrowBTC, error) {
 		confirmations: c.confirmations, feeRate: c.feeRate}, nil
 }
 
-// initEscrow runs in New after the payment providers. ESCROW_BTC=off does nothing. On, a node that answers on any
-// chain but regtest stops startup (errEscrowNotRegtest); an unreachable node, an unreadable arbiter wallet or a
+// initEscrow runs in New after the payment providers. ESCROW_BTC=off does nothing. On, a node that answers on a chain
+// escrow does not run on stops startup (errEscrowChain); an unreachable node, an unreadable arbiter wallet or a
 // fingerprint that differs from the pinned one leaves escrow disabled with one fixed line, and the market runs; the
 // escrow watcher then retries (retryEscrow).
 func (a *App) initEscrow(ctx context.Context) error {
 	cfg, err := escrowConfigFromEnv(os.Getenv)
-	if err != nil || !cfg.on {
+	if err != nil {
 		return err
+	}
+	if !cfg.on {
+		a.notePinnedNet(ctx) // escrow orders' pages are shown with ESCROW_BTC off too, naming their chain (A-443)
+		return nil
 	}
 	a.escrowConfigured = true
 	if a.live {
-		return errors.New("refusing to start: ESCROW_BTC=on runs only on regtest in this release, and this market is configured for mainnet")
+		return errors.New("refusing to start: ESCROW_BTC=on runs only on test networks (regtest, signet or testnet4), and this market is configured for mainnet")
 	}
 	if _, err = newEscrowBTC(cfg); err != nil {
 		return err
@@ -199,48 +230,80 @@ func (a *App) initEscrow(ctx context.Context) error {
 	if err == nil {
 		logEscrowState(state, class)
 		a.escrowStartState = state
+		if cfg.signerSocket != "" {
+			a.escrowSigner = &escrowSignerClient{socket: cfg.signerSocket}
+			a.checkEscrowSigner(ctx) // a signer that does not answer is "waiting": startup goes on
+		}
 	}
 	return err
 }
 
 // errEscrowFeeAddress is the fixed startup refusal for a fee address the escrow node does not accept.
-var errEscrowFeeAddress = errors.New("refusing to start: ESCROW_BTC_FEE_ADDRESS is not a valid address on the escrow node's chain (regtest)")
+var errEscrowFeeAddress = errors.New("refusing to start: ESCROW_BTC_FEE_ADDRESS is not a valid address on the escrow node's chain")
 
 // startEscrow runs every escrow check once and, when all pass, enables escrow (a.escrow). It reports the state as
 // one of the fixed lines (escrowLogOn when enabled) with the error class that caused it (""), or an error: a refusal
-// (errEscrowNotRegtest, errEscrowFeeAddress) or a database failure. Nothing here comes from the node's text. The
-// guards are the same at startup and on a retry: the node must be on regtest, the arbiter fingerprint must match the
-// pinned one, and the watch-only wallet must hold no private keys.
+// (errEscrowChain, errEscrowFeeAddress) or a database failure. Nothing here comes from the node's text. The
+// guards are the same at startup and on a retry: the node must be on a chain of the chain table (regtest, signet or
+// testnet4) and on the chain pinned for the database's escrows (pinEscrowChain, before anything else is written), the
+// arbiter fingerprint must match the pinned one, and the watch-only wallet must hold no private keys. The configured fee
+// address is lowered by the node's chain (escrowAddressForm) before the node checks it.
 func (a *App) startEscrow(ctx context.Context) (state, class string, err error) {
 	e, err := newEscrowBTC(a.escrowCfg)
 	if err != nil {
 		return "", "", err
 	}
-	chain, err := e.chain(ctx)
+	a.escrowMismatch.Store(nil)    // shown on /admin only while the latest attempt found the node on another chain
+	a.escrowPooledKey.Store(nil)   // likewise, while the latest attempt found the pooled user not refused (A-440)
+	a.escrowArbiterRead.Store(nil) // likewise, while the latest attempt could not finish reading the arbiter wallet (QA4W4A-1)
+	node, err := e.blockchainInfo(ctx)
 	if err != nil {
+		a.notePinnedNet(ctx)
 		return escrowLogUnchecked, errorClassOf(err), nil
 	}
-	if chain != "regtest" {
-		return "", "", errEscrowNotRegtest
+	if escrowChains[node.Chain] == "" {
+		return "", "", errEscrowChain
 	}
-	e.network = chain
+	e.network, e.chainID = node.Chain, escrowChainID(node.Chain, node.SignetChallenge)
+	pinned, ok, err := pinEscrowChain(ctx, a.db, e.chainID)
+	if err != nil {
+		return "", "", err
+	}
+	// The chain escrowNetwork names while escrow is not enabled: the node's, unless the database's escrows are on another,
+	// the pinned one (none pinned: escrows from before the pin, which ran on regtest only).
+	net := node.Chain
+	if !ok {
+		net = "regtest"
+		if p, _, _ := strings.Cut(pinned, ":"); escrowChains[p] != "" {
+			net = p
+		}
+	}
+	a.escrowNet.Store(&net)
+	if !ok {
+		a.escrowMismatch.Store(&EscrowChainMismatch{Pinned: pinned, Reported: e.chainID})
+		return escrowLogChain, "", nil
+	}
+	if class := e.pooledKeyCheck(ctx, a.escrowCfg.pooledURL); class != "" {
+		a.escrowPooledKey.Store(&class)
+		return escrowLogPooledKey, class, nil
+	}
 	if err = e.readArbiter(ctx); err != nil {
 		return escrowLogArbiter, errorClassOf(err), nil
 	}
-	ok, err := pinArbiterFingerprint(ctx, a.db, e.fingerprint)
-	if err != nil {
+	if ok, err = pinArbiterFingerprint(ctx, a.db, e.fingerprint); err != nil {
 		return "", "", err
 	}
 	if !ok {
 		return escrowLogFingerprint, "", nil
 	}
-	if err = e.checkArbiterWallet(ctx); err != nil {
-		return escrowLogArbiterUse, errorClassOf(err), nil
+	if state, class, err := a.checkArbiterWallet(ctx, e); state != "" || err != nil {
+		return state, class, err
 	}
 	if err = e.checkWatchWallet(ctx); err != nil {
 		return escrowLogWatch, errorClassOf(err), nil
 	}
 	if e.feeAddress != "" {
+		e.feeAddress, _ = escrowAddressForm(e.network, e.feeAddress)
 		valid, err := e.validAddress(ctx, e.feeAddress)
 		if err != nil {
 			return escrowLogUnchecked, errorClassOf(err), nil
@@ -252,6 +315,50 @@ func (a *App) startEscrow(ctx context.Context) (state, class string, err error) 
 	}
 	a.escrow.Store(e)
 	return escrowLogOn, "", nil
+}
+
+// pooledKeyCheck is the market key protection self-check (P4-R6, A-440). rpcwhitelist is per user, not per wallet,
+// and Core selects the wallet by the URL path, so a pooled user allowed listdescriptors could call it with
+// private=true on the arbiter wallet's path and print the market's escrow key (probed on Core 31.1 regtest); Core 31.1
+// also exports it with gethdkeys {"private":true} and signs with it through walletprocesspsbt (QA4W3-1). Through the
+// pooled client (pooledURL, BITCOIN_RPC_URL), on that path, it calls each of pooledKeyProbes in turn with arguments
+// that export and sign nothing (Core checks the whitelist, and then the wallet, before it reads them: an allowed
+// walletprocesspsbt answers -22 for the empty PSBT). It reports "" when every one is refused: HTTP 403 (the method is
+// not on the pooled user's rpcwhitelist) or RPC -18 (no such wallet: the pooled node is another node). Otherwise it
+// reports the first method that was not refused and the class escrow stays disabled with, as "<method> <class>":
+// "answered" for a success, otherwise the escrowRPCError class (credentials, timeout, rpc:<code>, ...), never Core's
+// text. With no pooled client configured there is nothing to check.
+func (e *escrowBTC) pooledKeyCheck(ctx context.Context, pooledURL string) string {
+	if pooledURL == "" {
+		return ""
+	}
+	rpc, err := newRPCClient("bitcoin", pooledURL, "1.0", false)
+	if err != nil {
+		return "bad-url"
+	}
+	for _, p := range pooledKeyProbes {
+		err = classifyEscrowRPC(p.method, rpc.call(ctx, e.arbiterWallet, p.method, p.params, nil))
+		var re *escrowRPCError
+		switch {
+		case err == nil:
+			return p.method + " answered"
+		case !errors.As(err, &re):
+			return p.method + " " + errorCause(err)
+		case re.Class != "forbidden" && re.Class != "rpc:-18":
+			return p.method + " " + re.Class
+		}
+	}
+	return ""
+}
+
+// pooledKeyProbes are the calls pooledKeyCheck makes, in order: none exports a private key or signs anything.
+var pooledKeyProbes = []struct {
+	method string
+	params []any
+}{
+	{"listdescriptors", []any{false}},
+	{"gethdkeys", []any{map[string]any{"private": false}}},
+	{"walletprocesspsbt", []any{"", false}},
 }
 
 // logEscrowState logs a startEscrow state line, with its error class when there is one.
@@ -266,15 +373,44 @@ func logEscrowState(state, class string) {
 // escrowRetry is the escrow watcher's record of the last escrow state it logged, so a state is logged when it
 // changes, not on every pass.
 type escrowRetry struct {
-	last    string
-	refused bool // the node answered on another chain, or refused the fee address: no retry until a restart
+	last     string
+	refused  bool      // the node answered on another chain, or refused the fee address: no retry until a restart
+	pooledAt time.Time // when the pooled key self-check last ran while escrow was on (zero: not yet seen on)
 }
+
+// escrowPooledRecheck is how often the watcher runs the pooled key self-check again while escrow is on (QA4W3-8).
+const escrowPooledRecheck = 24 * time.Hour
 
 // retryEscrow runs startEscrow again for the escrow watcher while escrow is switched on but not enabled (A-316), as
 // refreshProviders retries a pooled provider. A refusal that would stop startup cannot stop a running market: it logs
-// one fixed line and ends the retries until a restart.
+// one fixed line and ends the retries until a restart. While escrow is on it runs the pooled key self-check again
+// (pooledKeyCheck) once escrowPooledRecheck has passed since the last one (QA4W3-8), so a pooled whitelist widened
+// after startup is found within a day: then escrow is disabled, as startEscrow would leave it (the key may be
+// exportable; disabling is the safer default), with the same line and admin alert, and retried like any other check.
+// Its read of the arbiter wallet's entries is paced after a slow one (A-479, checkArbiterWallet).
 func (a *App) retryEscrow(ctx context.Context, r *escrowRetry) {
-	if r.refused || a.escrow.Load() != nil {
+	if r.refused {
+		return
+	}
+	if e := a.escrow.Load(); e != nil {
+		switch {
+		case r.pooledAt.IsZero(): // escrow came on at startup, which ran the self-check
+			r.pooledAt = time.Now()
+		case time.Since(r.pooledAt) >= escrowPooledRecheck:
+			pass, cancel := context.WithTimeout(ctx, watcherPassTimeout)
+			class := e.pooledKeyCheck(pass, a.escrowCfg.pooledURL)
+			cancel()
+			if ctx.Err() != nil {
+				return
+			}
+			r.pooledAt = time.Now()
+			if class != "" {
+				a.escrowPooledKey.Store(&class)
+				a.escrow.CompareAndSwap(e, nil)
+				logEscrowState(escrowLogPooledKey, class)
+				r.last = escrowLogPooledKey
+			}
+		}
 		return
 	}
 	pass, cancel := context.WithTimeout(ctx, watcherPassTimeout)
@@ -283,10 +419,13 @@ func (a *App) retryEscrow(ctx context.Context, r *escrowRetry) {
 	switch {
 	case ctx.Err() != nil:
 		return
-	case errors.Is(err, errEscrowNotRegtest), errors.Is(err, errEscrowFeeAddress):
+	case errors.Is(err, errEscrowChain), errors.Is(err, errEscrowFeeAddress):
 		r.refused, state = true, escrowLogRefused
 	case err != nil:
 		state, class = escrowLogUnrecorded, errorCause(err)
+	}
+	if state == escrowLogOn {
+		r.pooledAt = time.Now() // startEscrow has just run the self-check
 	}
 	if state != r.last {
 		logEscrowState(state, class)
@@ -305,6 +444,69 @@ func pinArbiterFingerprint(ctx context.Context, db *sql.DB, fp string) (bool, er
 		return false, err
 	}
 	return pinned == fp, nil
+}
+
+// escrowChainID is the identity escrow pins for a node (P4-R4): its chain name, plus its signet_challenge on signet, so
+// a private signet (which shares public signet's genesis block) is not taken for another signet.
+func escrowChainID(chain, signetChallenge string) string {
+	if chain == "signet" {
+		return chain + ":" + signetChallenge
+	}
+	return chain
+}
+
+// notePinnedNet sets the chain escrowNetwork names while escrow is not enabled (ESCROW_BTC off, or no escrow node has
+// answered yet in this process): the chain this database's escrows are pinned to (escrowChainPin), if any, else regtest
+// when it holds Bitcoin escrows (from before the pin, when escrow ran on regtest only). A database with neither leaves
+// it unset, so pages say the chain is not verified yet (escrowNetKnown, QA4W6-8). A failed read sets nothing.
+func (a *App) notePinnedNet(ctx context.Context) {
+	if a.db == nil || a.escrowNet.Load() != nil {
+		return
+	}
+	var pinned string
+	var held bool
+	if a.db.QueryRowContext(ctx, `SELECT COALESCE((SELECT value FROM settings WHERE key=$1),''),EXISTS (SELECT 1 FROM escrows WHERE coin='BTC')`,
+		escrowChainPin).Scan(&pinned, &held) != nil {
+		return
+	}
+	if pinned == "" && held {
+		pinned = "regtest"
+	}
+	if chain, _, _ := strings.Cut(pinned, ":"); escrowChains[chain] != "" {
+		a.escrowNet.Store(&chain)
+	}
+}
+
+// pinEscrowChain checks id (escrowChainID of the escrow node) against the chain pinned in settings (escrowChainPin)
+// and reports the pinned value and whether escrow may use the node. While the database holds no Bitcoin escrow the pin
+// is written, or rewritten, to id: a database may change chain until it holds an escrow, never after (a new chain
+// needs a new database). A database that holds escrows and no pin (one from before A-439) is pinned when the node
+// reports regtest, the only chain escrow ran on before; on any other chain it is refused. A refusal writes nothing. One
+// transaction under escrowChainPinLock, so concurrent startups agree.
+func pinEscrowChain(ctx context.Context, db *sql.DB, id string) (pinned string, ok bool, err error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", false, err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)", escrowChainPinLock); err != nil {
+		return "", false, err
+	}
+	var held bool
+	if err = tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT value FROM settings WHERE key=$1),''),EXISTS (SELECT 1 FROM escrows WHERE coin='BTC')`,
+		escrowChainPin).Scan(&pinned, &held); err != nil {
+		return "", false, err
+	}
+	switch {
+	case pinned == id:
+		return pinned, true, nil
+	case held && (pinned != "" || id != "regtest"):
+		return pinned, false, nil
+	}
+	if _, err = tx.ExecContext(ctx, "INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT (key) DO UPDATE SET value=excluded.value", escrowChainPin, id); err != nil {
+		return "", false, err
+	}
+	return id, true, tx.Commit()
 }
 
 // escrowRPCError is a failed escrow RPC reduced to a fixed class: rpc:<code>, forbidden (HTTP 403: the method is
@@ -354,13 +556,20 @@ func (e *escrowBTC) call(ctx context.Context, path, method string, params, out a
 	return classifyEscrowRPC(method, e.rpc.call(ctx, path, method, params, out))
 }
 
-// chain is getblockchaininfo's chain.
-func (e *escrowBTC) chain(ctx context.Context) (string, error) {
-	var info struct {
-		Chain string `json:"chain"`
-	}
+// blockchainInfo is getblockchaininfo: the chain, signet_challenge and what the sync guard reads (bitcoinNode;
+// Connections is not set).
+func (e *escrowBTC) blockchainInfo(ctx context.Context) (bitcoinNode, error) {
+	var info bitcoinNode
 	err := e.call(ctx, "", "getblockchaininfo", []any{}, &info)
-	return info.Chain, err
+	return info, err
+}
+
+// networkInfo is getnetworkinfo: the node's peer count, for the sync guard on a public chain, and its version and
+// proxies, for the Tor-mode gate (A-441, escrow_stall.go).
+func (e *escrowBTC) networkInfo(ctx context.Context) (escrowNetInfo, error) {
+	var info escrowNetInfo
+	err := e.call(ctx, "", "getnetworkinfo", []any{}, &info)
+	return info, err
 }
 
 // readArbiter reads the arbiter wallet's master fingerprint and BIP84 account key without any key export: a
@@ -860,7 +1069,7 @@ func (e *escrowBTC) watchKeys(ctx context.Context, addr string) ([][]byte, error
 	}
 	// The reply must be about the address asked: keys that hash to another address's script (a misrouted or lying
 	// reply) are never reserved in its place (QA-P2e-1).
-	if want, err := regtestAddressScript(addr); err != nil || !bytes.Equal(spk, want) {
+	if want, err := escrowAddressScript(e.network, addr); err != nil || !bytes.Equal(spk, want) {
 		return nil, bad
 	}
 	if len(spk) != 34 || spk[0] != 0 || spk[1] != 32 {
@@ -930,27 +1139,325 @@ func (e *escrowBTC) arbiterOwns(ctx context.Context, addr string) (bool, error) 
 	return info.IsMine, err
 }
 
+// escrowArbiterReadTimeout bounds one read of the arbiter wallet's entries (arbiterSends). Core 31.1 answered
+// listsinceblock over 100,000 entries in about 5 s (71 MB) on a loaded regtest host. A variable only so tests can
+// shorten it.
+var escrowArbiterReadTimeout = 5 * time.Minute
+
+// The pacing of the arbiter wallet reads (A-479; paceArbiter). While a payer holds N fee bumps of a payment to the
+// market child's address unconfirmed, Core lists each replacement with all the others in its walletconflicts, so one
+// read carries about N² bytes and Core builds it in memory (QA4W6-1, Core 31.1 regtest: 1100 bumps 82 MB in 2.1 s; 3000
+// bumps 605 MB in 16 s, the node growing by about 1.5 GB per read). A read that takes escrowArbiterHeavy or longer, or
+// times out, makes the next read wait, whatever it found: escrowArbiterWaitMin, doubled after each such read up to
+// escrowArbiterWaitMax. A quicker read, pass or failure, costs the node little and paces nothing (QA4W7-2).
+const (
+	escrowArbiterHeavy   = 5 * time.Second
+	escrowArbiterWaitMin = time.Minute
+	escrowArbiterWaitMax = time.Hour
+)
+
+// arbiterPaceNow is the pacing's clock (when a read started and ended, when the next may start). A variable only so
+// tests can move it.
+var arbiterPaceNow = time.Now
+
 // checkArbiterWallet requires the arbiter wallet (getwalletinfo) to be a descriptor wallet with private keys, not
-// encrypted (the watcher co-signs without a passphrase) and used for nothing else: no transaction has ever paid or
-// spent from it (txcount 0). Escrow outputs never belong to it (the escrow descriptors are in the watch-only wallet),
-// so a transaction there means the wallet is also used as an ordinary wallet.
-func (e *escrowBTC) checkArbiterWallet(ctx context.Context) error {
+// encrypted (the watcher co-signs without a passphrase) and used for nothing else: it has never spent. Escrow outputs
+// never belong to it (the escrow descriptors are in the watch-only wallet) and the market never sends from it (it only
+// signs PSBTs it built), so a spend (an entry of category "send") means the wallet is also used as an ordinary wallet.
+// Coins paid to it prove nothing (A-471): anyone can pay the wpkh address of the market child key an order page's
+// descriptor shows, which the wallet owns. With txcount 0 there is nothing to read.
+//
+// QA4W4A-1: reading every entry on every start let mass dust to that address keep escrow off (100,000 entries took
+// listtransactions paging past startup's budget). So a passing read leaves a checkpoint (arbiterCheckpoint): the block
+// listsinceblock reported, for the wallet it read (its name and getwalletinfo birthtime). A later check of the same
+// wallet reads only what is newer than that block (and anything unconfirmed); with no checkpoint, one for another
+// wallet (a different name or birthtime: another wallet, or one rebuilt with importdescriptors), a wallet that reports
+// no birthtime, a block the node does not know (-5: another node or chain) or one that is not a block hash (QA4W5-8;
+// Core refuses it, -8), it reads everything, in one call. From a block no longer in the active chain Core itself lists
+// every entry from the fork point on. The read goes on in the background (arbiterScan): when the caller's context ends
+// first (startup's budget) escrow stays off with escrowLogArbiterWait, and the next check of the same wallet from the
+// same checkpoint (the escrow watcher's retry) takes that read's answer instead of starting again. It reports the state
+// line and class startEscrow returns ("" when the wallet passes): escrowLogArbiterUse for a wallet that is not an
+// arbiter's or has spent, escrowLogArbiterRead when its entries could not be read (a timeout, an unreachable node, an
+// RPC error: never taken as a pass, and never reported as a wallet used for something else), or a database error.
+// A-479: a read that takes escrowArbiterHeavy or longer, or times out, makes the next one wait (paceArbiter); a check
+// while that wait runs starts no read and takes what that read found (arbiterHeld): a pass as a pass, so the other start
+// checks go on (QA4W7-1). Startup's read is never held back: the wait is in memory, so a restart reads at once.
+func (a *App) checkArbiterWallet(ctx context.Context, e *escrowBTC) (state, class string, err error) {
 	var info struct {
+		WalletName    string           `json:"walletname"`
 		Descriptors   bool             `json:"descriptors"`
 		PrivateKeys   bool             `json:"private_keys_enabled"`
 		TxCount       *int64           `json:"txcount"`
+		BirthTime     *int64           `json:"birthtime"`
 		UnlockedUntil *json.RawMessage `json:"unlocked_until"`
 	}
 	if err := e.call(ctx, e.arbiterWallet, "getwalletinfo", []any{}, &info); err != nil {
-		return err
+		return a.arbiterUnread(errorClassOf(err))
 	}
 	switch {
 	case !info.Descriptors || !info.PrivateKeys || info.TxCount == nil:
-		return &escrowRPCError{Method: "getwalletinfo", Class: "not-arbiter"}
+		return escrowLogArbiterUse, "getwalletinfo not-arbiter", nil
 	case info.UnlockedUntil != nil:
-		return &escrowRPCError{Method: "getwalletinfo", Class: "encrypted"}
-	case *info.TxCount != 0:
-		return &escrowRPCError{Method: "getwalletinfo", Class: "not-dedicated"}
+		return escrowLogArbiterUse, "getwalletinfo encrypted", nil
+	case *info.TxCount == 0:
+		return "", "", nil
 	}
-	return nil
+	var mark arbiterCheckpoint
+	if info.BirthTime != nil {
+		mark = arbiterCheckpoint{Wallet: info.WalletName, BirthTime: *info.BirthTime}
+	}
+	from := ""
+	var raw string
+	switch err := a.db.QueryRowContext(ctx, "SELECT value FROM settings WHERE key=$1", escrowArbiterChecked).Scan(&raw); {
+	case err == sql.ErrNoRows:
+	case err != nil:
+		return "", "", err
+	default:
+		var pinned arbiterCheckpoint
+		// QA4W5-8: a block that is not a block hash (64 hex characters) is no checkpoint; Core would refuse it (-8) on
+		// every retry.
+		if info.BirthTime != nil && json.Unmarshal([]byte(raw), &pinned) == nil && pinned.Wallet == mark.Wallet && pinned.BirthTime == mark.BirthTime &&
+			xmrHex64(pinned.Block) {
+			from = pinned.Block
+		}
+	}
+	scan := a.arbiterScan(e, fmt.Sprintf("%q %v %d %s", mark.Wallet, info.BirthTime != nil, mark.BirthTime, from), from)
+	if scan == nil {
+		return a.arbiterHeld()
+	}
+	select {
+	case <-scan.done:
+	case <-ctx.Done():
+		wait := "waiting"
+		a.escrowArbiterRead.Store(&wait)
+		return escrowLogArbiterWait, "", nil
+	}
+	a.escrowScanMu.Lock()
+	if a.escrowScan == scan {
+		a.escrowScan = nil // taken: the next check reads again
+	}
+	a.paceArbiter(scan)
+	a.escrowScanMu.Unlock()
+	switch {
+	case scan.err != nil:
+		return a.arbiterUnread(errorClassOf(scan.err))
+	case scan.sent:
+		return escrowLogArbiterUse, "listsinceblock not-dedicated", nil
+	case info.BirthTime == nil:
+		return "", "", nil
+	}
+	mark.Block = scan.block
+	b, err := json.Marshal(mark)
+	if err != nil {
+		return "", "", err
+	}
+	// The read may have finished just as the caller's budget ran out: the checkpoint is still written.
+	write, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	_, err = a.db.ExecContext(write, "INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT (key) DO UPDATE SET value=excluded.value", escrowArbiterChecked, string(b))
+	return "", "", err
+}
+
+// arbiterCheckpoint is the settings value (escrowArbiterChecked, JSON) a passing arbiter wallet check leaves: the
+// wallet it read, by name and getwalletinfo birthtime (a wallet restored from its backup file keeps both; one rebuilt
+// with importdescriptors gets another birthtime, probed on Core 31.1), and the block listsinceblock reported.
+type arbiterCheckpoint struct {
+	Wallet    string `json:"wallet"`
+	BirthTime int64  `json:"birthtime"`
+	Block     string `json:"block"`
+}
+
+// arbiterUnread records why the arbiter wallet's entries could not be read, for /admin, and returns its state line.
+func (a *App) arbiterUnread(class string) (string, string, error) {
+	a.escrowArbiterRead.Store(&class)
+	return escrowLogArbiterRead, class, nil
+}
+
+// escrowArbiterScan is one read of the arbiter wallet's entries that outlives the check that started it (arbiterScan).
+type escrowArbiterScan struct {
+	key   string        // the wallet and the checkpoint block it reads from
+	done  chan struct{} // closed once block, sent and err are set
+	block string        // listsinceblock's lastblock
+	sent  bool          // an entry of category "send" was listed
+	err   error
+	took  time.Duration // how long the read took, on arbiterPaceNow (A-479)
+	end   time.Time     // when it ended, on arbiterPaceNow
+}
+
+// arbiterScan returns the read in progress (or finished and not yet taken) for key, or starts one: arbiterSends from
+// from, and when the node does not know that block (-5) or refuses it as malformed (-8, QA4W5-8) from the start. It
+// runs on its own context, bounded only by escrowArbiterReadTimeout per call, so a check whose context ends first
+// leaves it running for the next check. A read in progress is always adopted; a new one does not start while a
+// previous slow read's wait runs (A-479, paceArbiter): then it returns nil.
+func (a *App) arbiterScan(e *escrowBTC, key, from string) *escrowArbiterScan {
+	a.escrowScanMu.Lock()
+	defer a.escrowScanMu.Unlock()
+	if s := a.escrowScan; s != nil && s.key == key {
+		return s
+	}
+	now := arbiterPaceNow
+	if now().Before(a.escrowPace.next) {
+		return nil
+	}
+	s := &escrowArbiterScan{key: key, done: make(chan struct{})}
+	a.escrowScan = s
+	go func() {
+		defer close(s.done)
+		start := now()
+		s.block, s.sent, s.err = e.arbiterSends(context.Background(), from)
+		var re *escrowRPCError
+		if from != "" && errors.As(s.err, &re) && (re.Class == "rpc:-5" || re.Class == "rpc:-8") {
+			s.block, s.sent, s.err = e.arbiterSends(context.Background(), "")
+		}
+		s.end = now()
+		s.took = s.end.Sub(start)
+	}()
+	return s
+}
+
+// arbiterSends reads the arbiter wallet's entries with listsinceblock: with from "" every entry; otherwise those in
+// blocks after from, and every unconfirmed or conflicted one. include_change is set, so a spend whose outputs all go to
+// the wallet's own change addresses is listed as a "send" too (listtransactions lists nothing for it; probed on Core
+// 31.1). It reports the lastblock Core answers (the tip as the wallet saw it: the next read's from) and whether any
+// entry is a "send". The answer is read as it arrives (callStream), never held whole: 100,000 entries are 71 MB.
+func (e *escrowBTC) arbiterSends(ctx context.Context, from string) (block string, sent bool, err error) {
+	err = e.rpc.callStream(ctx, escrowArbiterReadTimeout, e.arbiterWallet, "listsinceblock", []any{from, 1, true, false, true}, func(dec *json.Decoder) error {
+		if t, err := dec.Token(); err != nil || t == nil {
+			return err // null: Core's answer to an error
+		} else if t != json.Delim('{') {
+			return errors.New("not an object")
+		}
+		for dec.More() {
+			key, err := dec.Token()
+			if err != nil {
+				return err
+			}
+			switch key {
+			case "lastblock":
+				err = dec.Decode(&block)
+			case "transactions":
+				err = arbiterEntries(dec, &sent)
+			default:
+				err = skipValue(dec)
+			}
+			if err != nil {
+				return err
+			}
+		}
+		_, err := dec.Token()
+		return err
+	})
+	if err == nil && block == "" {
+		err = errors.New("bitcoin escrow RPC listsinceblock: unexpected result shape")
+	}
+	return block, sent, classifyEscrowRPC("listsinceblock", err)
+}
+
+// arbiterEntries reads listsinceblock's transactions list one entry at a time, and each entry one key at a time,
+// setting *sent at an entry of category "send". Only category is decoded; every other value is skipped token by token
+// (skipValue), so an entry's walletconflicts, which names every other replacement of its transaction (a payment its
+// payer fee-bumped 1000 times lists about 67 KB of them, QA4W6-1), streams and rpcStreamMaxValue bounds each token, not
+// the entry.
+func arbiterEntries(dec *json.Decoder, sent *bool) error {
+	if t, err := dec.Token(); err != nil || t != json.Delim('[') {
+		return errors.New("not a list")
+	}
+	for dec.More() {
+		if t, err := dec.Token(); err != nil || t != json.Delim('{') {
+			return errors.New("not an object")
+		}
+		for dec.More() {
+			key, err := dec.Token()
+			if err != nil {
+				return err
+			}
+			if key == "category" {
+				var category string
+				err = dec.Decode(&category)
+				*sent = *sent || category == "send"
+			} else {
+				err = skipValue(dec)
+			}
+			if err != nil {
+				return err
+			}
+		}
+		if _, err := dec.Token(); err != nil {
+			return err
+		}
+	}
+	_, err := dec.Token()
+	return err
+}
+
+// escrowArbiterPace is when the next arbiter wallet read may start (A-479, paceArbiter).
+type escrowArbiterPace struct {
+	next time.Time          // no read starts before this; zero = none waits
+	wait time.Duration      // the latest wait; 0 = none since the last quick answer
+	last *escrowArbiterScan // the slow read that set it, whose answer a check takes while it waits
+}
+
+// paceArbiter sets when the next arbiter wallet read may start, from the read s a check has just taken (A-479). Only a
+// slow read is paced (QA4W7-2): one that took escrowArbiterHeavy or longer, or timed out (escrowArbiterReadTimeout),
+// whatever it found. It makes the next read wait from when s ended: escrowArbiterWaitMin, doubled after each slow read,
+// up to escrowArbiterWaitMax; s is kept, so a check while the wait runs takes what it found (arbiterHeld). One log line
+// names the wait. A quicker read, pass or failure, clears any wait: a failure that answers at once (a refused method, an
+// RPC error) costs the node nothing and is read again every poll. The caller holds escrowScanMu.
+func (a *App) paceArbiter(s *escrowArbiterScan) {
+	p := &a.escrowPace
+	var re *escrowRPCError
+	timedOut := errors.As(s.err, &re) && re.Class == "timeout"
+	if s.took < escrowArbiterHeavy && !timedOut {
+		*p = escrowArbiterPace{}
+		return
+	}
+	p.wait = min(max(2*p.wait, escrowArbiterWaitMin), escrowArbiterWaitMax)
+	p.next, p.last = s.end.Add(p.wait), s
+	what := "passed"
+	switch {
+	case s.err != nil:
+		what = "failed (" + errorClassOf(s.err) + ")"
+	case s.sent:
+		what = "found a spend"
+	}
+	log.Printf("escrow: the arbiter wallet's read took %s and %s; the next read waits about %s", s.took.Round(time.Second), what, aboutMinutes(p.wait))
+}
+
+// arbiterHeld is checkArbiterWallet's answer while a slow read's wait runs (A-479): what that read found. A read that
+// failed keeps the read-failure line and class; a spend keeps "used for the escrow key only"; a pass counts as a pass
+// (QA4W7-1), so startEscrow goes on to its other checks. That is no weaker than escrow running: a running escrow never
+// reads the arbiter wallet again, and the pass held is at most escrowArbiterWaitMax old.
+func (a *App) arbiterHeld() (state, class string, err error) {
+	a.escrowScanMu.Lock()
+	s := a.escrowPace.last
+	a.escrowScanMu.Unlock()
+	switch {
+	case s.err != nil:
+		return a.arbiterUnread(errorClassOf(s.err))
+	case s.sent:
+		return escrowLogArbiterUse, "listsinceblock not-dedicated", nil
+	}
+	return "", "", nil
+}
+
+// arbiterNextCheck is when the next arbiter wallet read may start, for /admin: aboutMinutes of the wait left, or ""
+// when none is left (the next poll reads).
+func (a *App) arbiterNextCheck() string {
+	a.escrowScanMu.Lock()
+	next := a.escrowPace.next
+	a.escrowScanMu.Unlock()
+	if left := next.Sub(arbiterPaceNow()); left > 0 {
+		return aboutMinutes(left)
+	}
+	return ""
+}
+
+// aboutMinutes is d in whole minutes, rounded up, at least one: "1 minute", "12 minutes".
+func aboutMinutes(d time.Duration) string {
+	n := max(int64((d+time.Minute-1)/time.Minute), 1)
+	if n == 1 {
+		return "1 minute"
+	}
+	return strconv.FormatInt(n, 10) + " minutes"
 }

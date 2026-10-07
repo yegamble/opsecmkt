@@ -4,10 +4,11 @@
 > **No release contains escrow, and the pooled wallet stays the default.** Every deposit sits in the
 > operator's pooled custodial wallet for its currency ([operator guide](operator-guide.md#payments),
 > [implementation status](implementation-status.md#p5-payments)) unless an operator switches on the escrow
-> phases built so far, which run **on regtest only** (Bitcoin) or **on a local Monero fakechain only** (a local
-> test chain whose coins have no value) and are **off by default** (`ESCROW_BTC`,
-> [operator guide](operator-guide.md#bitcoin-escrow-regtest-only); `ESCROW_XMR`,
-> [operator guide](operator-guide.md#monero-escrow-local-fakechain-only)). Those phases, Bitcoin escrow for digital
+> phases built so far, which run **on regtest, signet or testnet4 only** (Bitcoin) or **on a local Monero fakechain or
+> Monero stagenet only** (test networks whose coins have no value; no public signet, testnet4 or stagenet run is recorded)
+> and are **off by default**
+> (`ESCROW_BTC`, [operator guide](operator-guide.md#bitcoin-escrow-test-networks-only); `ESCROW_XMR`,
+> [operator guide](operator-guide.md#monero-escrow-fakechain-or-stagenet)). Those phases, Bitcoin escrow for digital
 > orders and for physical orders, and Monero escrow for both, are built and tested on the development
 > branch ([Phase 1](#phase-1-bitcoin-escrow-on-regtest), [Phase 2](#phase-2-bitcoin-escrow-for-physical-orders-on-regtest),
 > [Phase 3](#phase-3-monero-escrow-on-a-local-fakechain)); Monero escrow is **custodial**: the market can move its
@@ -119,6 +120,23 @@ descriptor in your wallet is what detects that.
   (the wallet built into Tails) could not, because it only signs multisig wallets built from every cosigner's
   extended key. The first Bitcoin phase supports Bitcoin Core. Electrum and Sparrow support will be designed and
   decided before escrow runs on any public test network; hardware wallets have not been tested.
+  `scripts/test-escrow-wallets.sh` repeats this check (real local chain plus a real Electrum, run by hand, not CI:
+  Bitcoin Core 31.1 on regtest with no network, Electrum 4.8.2 checked against its release signature and used
+  offline). A Bitcoin Core wallet signs the transaction the market serves today. An Electrum wallet restored from a
+  BIP39 seed at a key path made for one order signs a per-order layout that the market does not offer, and the
+  market's signature-paste check refuses that signature anyway, because Electrum adds an entry for every key,
+  the market's included. The refusal protects nothing that is stored: only the signer's own signatures are ever
+  kept, whatever else a pasted copy carries (`TestEscrowPasteForeignFieldsInert`; `TestEscrowWalletFixtures`
+  checks the refusal on the signed files in `internal/market/testdata/escrow-wallets/`; those files come from the
+  script's `--update-fixtures` run at `cf6a8a0` with uncommitted changes, logged in
+  `artifacts/real-chain/a450-cf6a8a0fdbb4-dirty-fixtures-wallets.log`, and the clean evidence run at `52eb99f`
+  (`artifacts/real-chain/a450-52eb99f7aba5-wallets.log`) used different throwaway keys, so its log does not contain
+  them; both logs are local and gitignored). Electrum's own seed type, what "Create a new seed" makes and the
+  default in Tails, cannot follow a per-order key path at all: Electrum fixes its multisig keys at `m/1'` and
+  takes no path for that seed type (`from_seed` in Electrum's `keystore.py`; the script's `electrum-seed-type`
+  leg records it). On the development branch a user can now register a per-order wallet key and sign its practice
+  transaction ([A-455](#per-order-key-layout-registration-and-practice-a-455-shape-b)); escrows with per-order
+  wallets are not built yet.
 
 ## Monero: one account per order
 
@@ -152,19 +170,19 @@ shipped phase has proven. The full rules and acceptance criteria are in the proj
 | Phase | Scope | Status |
 | --- | --- | --- |
 | 0 | Preparation in the current payment code: one settlement per order enforced by the database, a single settlement dispatcher, password confirmation for dispute decisions | Done on the development branch, not yet released; changes nothing for users except that resolving a dispute asks for the resolver's password |
-| Wallet check | Scripted signing test with Electrum and Bitcoin Core on regtest, before any escrow database change | Done on regtest: Core signs; Electrum cannot sign this layout |
-| 1 | Bitcoin escrow for digital orders on regtest, behind a setting that is off by default | Built and tested on regtest on the development branch, not released, behind `ESCROW_BTC` (off by default, regtest only): see [Phase 1](#phase-1-bitcoin-escrow-on-regtest) for what it does, what it protects and the tests behind it. Not run on any public test network or on mainnet; Electrum, Sparrow and hardware wallets are not supported |
-| Wallets | Electrum and Sparrow support (a signing test showed Electrum needs a different key layout) | Not started |
-| 2 | Physical orders: buyer-signed release, 14-day deadline, no-ship cancellation, fee bumps | Built and tested on regtest; not released; off by default (`ESCROW_BTC`, regtest only): see [Phase 2](#phase-2-bitcoin-escrow-for-physical-orders-on-regtest) for what it does, what it protects, what it does not do and the tests behind it. Not run on any public test network or on mainnet; only Bitcoin Core signing is supported |
-| 3 | Monero accounts in monthly escrow wallets | Built and tested on a local Monero fakechain (monerod `--regtest`); not released; off by default (`ESCROW_XMR`, fakechain only): see [Phase 3](#phase-3-monero-escrow-on-a-local-fakechain) for what it does, what it protects, what it does not protect and the tests behind it. Custodial: the market can move these coins. Not run on stagenet, a public test network or mainnet; no Monero multisig |
-| 4 | Public test networks end to end, then escrow-only for new orders, then removal of the pooled wallet | Not started |
+| Wallet check | Scripted signing test with Electrum and Bitcoin Core on regtest, before any escrow database change | Done on regtest: Core signs; Electrum cannot sign this layout. Repeatable with `scripts/test-escrow-wallets.sh` (real local chain plus a real Electrum, run by hand, not CI); Electrum's own seed type cannot follow a per-order key path |
+| 1 | Bitcoin escrow for digital orders on regtest, behind a setting that is off by default | Built and tested on regtest (and, since A-443, a private signet) on the development branch, not released, behind `ESCROW_BTC` (off by default; regtest, signet or testnet4): see [Phase 1](#phase-1-bitcoin-escrow-on-regtest) for what it does, what it protects and the tests behind it. Not run on any public test network or on mainnet; Electrum, Sparrow and hardware wallets are not supported |
+| Wallets | Electrum and Sparrow support (a signing test showed Electrum needs a different key layout) | In progress on the development branch: per-order key derivation (A-453), the escrow signer (A-454), and per-order wallet keys with their practice signature (A-455); no escrow uses a per-order wallet yet |
+| 2 | Physical orders: buyer-signed release, 14-day deadline, no-ship cancellation, fee bumps | Built and tested on regtest (and, since A-443, a private signet); not released; off by default (`ESCROW_BTC`; regtest, signet or testnet4): see [Phase 2](#phase-2-bitcoin-escrow-for-physical-orders-on-regtest) for what it does, what it protects, what it does not do and the tests behind it. Not run on any public test network or on mainnet; only Bitcoin Core signing is supported |
+| 3 | Monero accounts in monthly escrow wallets | Built and tested on a local Monero fakechain (monerod `--regtest`); not released; off by default (`ESCROW_XMR`): see [Phase 3](#phase-3-monero-escrow-on-a-local-fakechain) for what it does, what it protects, what it does not protect and the tests behind it. Custodial: the market can move these coins. Since A-449 it also accepts stagenet ([below](#monero-escrow-on-stagenet-a-449)), checked on an offline stagenet fork only; not run on the public stagenet, testnet or mainnet; no Monero multisig |
+| 4 | Public test networks end to end, then escrow-only for new orders, then removal of the pooled wallet | Under way: the Bitcoin node sync guard, the escrow chain pin and the chain table (A-439, [below](#node-sync-guard-chain-pin-and-chain-table-a-439)), the market key protection (A-440, [below](#market-key-protection-a-440)), Monero escrow on stagenet with its network pin and daemon sync guard (A-449, [below](#monero-escrow-on-stagenet-a-449)), broadcast honesty (A-441, [below](#broadcast-honesty-a-441)), the escrow-only switch with its readiness panel (A-444, [below](#escrow-only-cutover-a-444)), which no market has used on a public network, and Bitcoin escrow on signet and testnet4 with its private-signet legs (A-443, [below](#bitcoin-escrow-on-signet-and-testnet4-a-443)) are on the development branch; nothing has run on a public test network |
 
 
 ## Phase 1: Bitcoin escrow on regtest
 
 **Built and tested on regtest; not released; off by default.** The pooled wallet stays the default for every order
-and the only payment path for anything but regtest. With `ESCROW_BTC=on` (refused unless the escrow node reports
-chain `regtest`; [operator guide](operator-guide.md#bitcoin-escrow-regtest-only)) the development branch has:
+and the only payment path on a market without it. With `ESCROW_BTC=on` (refused unless the escrow node reports
+chain `regtest`, or since A-443 `signet` or `testnet4`; [operator guide](operator-guide.md#bitcoin-escrow-test-networks-only)) the development branch has:
 
 - escrow key registration (one `[fingerprint/path]tpub…` per account, parsed in Go before any RPC; commas, private
   keys and recovery words refused) and activation by signing a practice transaction that can never be broadcast;
@@ -247,7 +265,8 @@ without them); deposits left out for any other reason, or already spent by a bui
 stay as they are. All of this is
 subject to the limits under *What it will not protect* above: a server taken over can show a substituted key, and the market key with one party's key can spend.
 
-**What Phase 1 does not do.** It runs on regtest only and has not run on a public test network or mainnet. It covers
+**What Phase 1 does not do.** It was built and tested on regtest (and, since A-443, a private signet) and has not run
+on a public test network or mainnet. It covers
 digital orders with automatic delivery only (physical orders are Phase 2, Monero Phase 3). It supports Bitcoin Core
 signing only. When a settlement is recorded as spent outside the market, deposits of that escrow that are still
 unspent stay there: the market builds nothing more for them, staff are told, and the buyer and the vendor can move
@@ -270,7 +289,7 @@ them together from their own wallets. A reorganisation deeper than 100 blocks is
   `TestEscrowAwaitingSignatureOwnTransactionSeen`, `TestEscrowBuildingSpentOutside` and `TestEscrowMigration078WaitingSpent`.
 - JSON-RPC adapter tests against an `httptest` server: exact parameters, `"ALL"` pinned, the `rpcwhitelist` methods
   (`TestEscrowRPCPinsParams`, `TestEscrowRPCReconciliation`, `TestEscrowWatchKnowsReply`).
-- Real Bitcoin Core 31.1 on regtest, run by hand, not in CI (`scripts/test-escrow-regtest.sh`; the app runs inside
+- Real Bitcoin Core 31.1 on regtest, run by hand and in CI by the `escrow-regtest` job, [CI and release delivery](ci-cd.md) (`scripts/test-escrow-regtest.sh`; the app runs inside
   the Go test against the real node, and every party signature is made by that party's own Core wallet): practice
   signing with refused `SIGHASH_NONE` and forged pastes (`TestEscrowRegtestPracticeSign`); escrow creation and funding
   (`TestEscrowRegtestFunding`); building and party signing (`TestEscrowRegtestSettlement`); the claim at a market key
@@ -303,7 +322,7 @@ Chromium only; CI runs the preview pages in Firefox and WebKit), Electrum, Sparr
 
 **Built and tested on regtest; not released; off by default.** Phase 2 adds to Phase 1 and is switched on and off
 by the same setting. The pooled wallet stays the default for every order. With `ESCROW_BTC=on` (refused unless the
-escrow node reports chain `regtest`; [operator guide](operator-guide.md#bitcoin-escrow-regtest-only)) the
+escrow node reports chain `regtest`, or since A-443 `signet` or `testnet4`; [operator guide](operator-guide.md#bitcoin-escrow-test-networks-only)) the
 development branch has, for physical listings:
 
 - **Checkout.** A Bitcoin draft on a physical listing that has a dispatch window (1 to 30 whole days, 3 by default,
@@ -394,8 +413,8 @@ protect* above: a server taken over can show a substituted key, and the market k
 
 **What Phase 2 does not do.**
 
-- It runs on regtest only and has not run on a public test network or on mainnet. It supports Bitcoin Core signing
-  only. Monero is Phase 3.
+- It was built and tested on regtest (and, since A-443, a private signet) and has not run on a public test network or
+  on mainnet. It supports Bitcoin Core signing only. Monero is Phase 3.
 - **A buyer who neither signs nor disputes before the deadline loses the choice.** The window is 14 days by default
   (7 to 30 as the administrator sets it), and reminders reach the buyer only inside the market. A buyer who has
   signed cannot dispute, because the signature confirms receipt. Both follow from the owner's design (ES-11).
@@ -445,7 +464,7 @@ protect* above: a server taken over can show a substituted key, and the market k
   `TestEscrowRestoreIndexFloors`, `TestEscrowCheckoutWaitsForSweep`.
 - JSON-RPC adapter test against an `httptest` server: the orphan sweep's reading of `getaddressinfo`
   (`TestEscrowWatchKeysReply`).
-- Real Bitcoin Core 31.1 on regtest, run by hand, not in CI (`scripts/test-escrow-regtest.sh`; the app runs inside
+- Real Bitcoin Core 31.1 on regtest, run by hand and in CI by the `escrow-regtest` job, [CI and release delivery](ci-cd.md) (`scripts/test-escrow-regtest.sh`; the app runs inside
   the Go test against the real node, reaching it only as the `rpcwhitelist` user, and every party signature is made by
   that party's own Core wallet): `TestEscrowRegtestPhysical` (the release built at shipment, signed by both
   wallets, completed and broadcast with no arbiter signing call, then a release the parties broadcast
@@ -475,8 +494,9 @@ built in Phases 1 and 2 and is switched on and off by its own setting, `ESCROW_X
 default for every order. A *fakechain* is `monerod --regtest`, Monero's regtest and the counterpart of Phase 1's
 Bitcoin regtest: a local chain whose coins have no value. Its wallets use the mainnet address format, so on it a refund
 or claim address starts with 4 or 8. With `ESCROW_XMR=on` (refused when the market is configured for mainnet, and unless
-the escrow daemon reports nettype `fakechain`, a hard fork version of at least 16 and a height below 1,000,000, and the
-escrow wallet-rpc is within 10 blocks of that daemon; [operator guide](operator-guide.md#monero-escrow-local-fakechain-only))
+the escrow daemon reports nettype `fakechain` and a hard fork version of at least 16 and the escrow wallet-rpc is within 10
+blocks of that daemon; Phase 3 also required a height below 1,000,000, which A-449 replaced by a network pin when it added
+stagenet, [below](#monero-escrow-on-stagenet-a-449); [operator guide](operator-guide.md#monero-escrow-fakechain-or-stagenet))
 the development branch has, for digital listings with automatic delivery and for physical listings with a dispatch window:
 
 **The custody sentence.** Every Monero escrow page, notice and document says the same thing: the coins are *held by
@@ -627,8 +647,10 @@ wallet takes an order again and no settlement is relayed until an administrator 
   password it derives itself. The operator, and anyone who takes over the server or copies the wallet volume and
   `MONERO_WALLET_SECRET`, can spend every escrow's coins. Accounts keep orders apart and remove the pooled balance; they do
   not stop the operator. There is no Monero multisig and none is claimed.
-- **It is fakechain only.** It refuses a daemon that is not a local fakechain. It has not run on stagenet, testnet or
-  mainnet, so nothing is known about its behaviour on a real network, with real fees, ring members or reorganisations.
+- **It was built and tested on a fakechain.** Phase 3 refused every daemon but a local fakechain; A-449 admits stagenet
+  ([below](#monero-escrow-on-stagenet-a-449)), checked on an offline stagenet fork only. It has not run on the public
+  stagenet, testnet or mainnet, so nothing is known about its behaviour on a real network, with real fees, ring members or
+  reorganisations.
 - **Backups keep wallet copies until they expire.** A database dump holds each wallet's sealed seed (anyone with the
   OpenPGP private key can open it), and a backup of the escrow wallet volume holds its files. Destroying a wallet reaches
   neither: the dumps and volume copies taken before it stay as they are, and the operator decides how long they are kept.
@@ -642,7 +664,7 @@ wallet takes an order again and no settlement is relayed until an administrator 
   its backup, as with any restore. The 7-day lead means a wallet takes no order
   before a daily backup holds its seal, but only for a wallet created ahead of its month; a first run, or a wallet created
   after the market was down past a month's start, takes orders at once. This assumes a database backup at least daily
-  ([operator guide](operator-guide.md#monero-escrow-local-fakechain-only)).
+  ([operator guide](operator-guide.md#monero-escrow-fakechain-or-stagenet)).
 - **Monero dispute decisions are final.** A wrong decision cannot be undone from the market.
 - **A buyer who neither confirms receipt nor disputes before the deadline loses the choice**, as for Bitcoin escrow
   (ES-11), and an administrator decides disputes from what the parties write; it does not check that goods exist or
@@ -750,10 +772,400 @@ wallet takes an order again and no settlement is relayed until an administrator 
   restore that finds every funded account, and a watcher pass over 5 such wallets within the pass timeout. The numbers
   and their limits are in [verification](verification.md#monero-escrow-wallet-scale-paye-e2-war-room-a-429-p3-r12--2026-10-04).
 
-Not tested: stagenet, testnet and mainnet, Monero multisig, the escrow pages in Firefox or WebKit, deadlines of 7 to 30
+Not tested: the public stagenet (A-449's offline stagenet fork, [below](#monero-escrow-on-stagenet-a-449), cannot run these
+legs), testnet and mainnet, Monero multisig, the escrow pages in Firefox or WebKit, deadlines of 7 to 30
 days in real time, a wallet with thousands of accounts on a public network (PAYE-E2 measured one on a local fakechain), a restore of a real backup into a
 running market with Phase 3 orders on a real chain (`scripts/test-backup-restore.sh` restores a real dump and checks its
 rows; the fakechain `Restore` leg simulates the database restore in SQL), and a deployment of any of it.
 
-All escrow testing uses regtest, a local Monero fakechain and public test networks only. Mainnet stays an operator opt-in
-and is never used in development or tests.
+## Node sync guard, chain pin and chain table (A-439)
+
+Phase 4 groundwork (war-room ruling P4-R3 to P4-R5), on the development branch and not released. Escrow accepts
+regtest and, since A-443, signet and testnet4 ([below](#bitcoin-escrow-on-signet-and-testnet4-a-443)); the guard also
+protects pooled Bitcoin payments now.
+
+- **Sync guard.** Bitcoin Core's `initialblockdownload` turns false once and stays false, so a node that lost its peers
+  reports itself synced while deposits sent since are invisible to it; a watcher trusting it would cancel a paid order
+  "payment window expired". A node now counts as not synced while it is in initial block download, its headers are
+  ahead of its blocks, or, on a public chain (anything but regtest), it has no peers (`getnetworkinfo`) or its tip block
+  is older than `BITCOIN_MAX_TIP_AGE` (default 2h, 30m to 24h), or its `getblockchaininfo` has no tip `time` (reported
+  as "tip time unreadable": the guard needs Bitcoin Core 31.1, the version the installer pins; earlier versions
+  untested). While it is not synced the escrow watcher's Bitcoin
+  pass reads no deposit, expires no order, flags nothing and builds, co-signs or broadcasts no settlement (the release
+  deadlines, which need no node, still apply), and the pooled Bitcoin pass is skipped as it is during initial block
+  download. The rule is stateless: nothing is stored, so a legitimately replaced chain never stalls it (A-147). One
+  log line per change and a line under *Payment providers* on `/admin` name the reason
+  ([operator guide](operator-guide.md#bitcoin-escrow-test-networks-only)); on regtest the initial block download line adds
+  the remedy (mine one block, or restart bitcoind with a larger `-maxtipage`), since a regtest node has no peers to
+  sync from. Past its payment window, while the node is not synced, an open escrow order's page says the order stays
+  open while the market waits for its node, instead of a cancellation time already gone; with the node synced, in the
+  usual gap before the next watcher pass, it keeps the usual wording. A lone regtest node is exempt from the peer and
+  tip-age checks, and `getnetworkinfo` is called only on a public chain (or, since A-441, in `APP_MODE=tor`).
+- **Chain pin.** The database pins the escrow node's chain (`settings` key `escrow_btc_chain`: the chain name, plus the
+  `signet_challenge` on signet, since a private signet shares public signet's genesis block). A database never changes
+  chain once it holds an escrow: a node on another chain leaves escrow disabled, changes nothing and is named on
+  `/admin` with the pinned chain; a new chain needs a new database. While no escrow exists the pin follows the node; a
+  database from before the pin that holds escrows is pinned only when the node reports regtest. Two regtest nodes
+  cannot be told apart.
+- **Chain table.** One table maps each escrow chain to its segwit address prefix (regtest `bcrt`; signet and testnet4
+  `tb`; mainnet and testnet3 are not escrow chains), and every check of a settlement's output addresses reads it with
+  the escrow node's chain. The signet and testnet4 entries are exercised by unit tests only.
+
+How it was tested (simulated RPC and PostgreSQL, not chain evidence): `TestBitcoinNodeNotSynced`,
+`TestBitcoinMaxTipAgeSetting`, `TestEscrowAddressTable` (unit); `TestEscrowWatcherSkipsWhileNotSynced` (each condition,
+the public-chain ones with the escrow put on signet by hand, including a `getnetworkinfo` refused with HTTP 403 or
+error -32601 and a node omitting the tip time: no cancel, no spent-outside flag, no build, no deposit read, nothing written,
+the held order page, then the work on the next synced pass), `TestEscrowRegtestExemptFromPeerAndTipChecks`,
+`TestEscrowChainPinMismatchDisables`, `TestEscrowChainPinRules`, `TestBitcoinPooledGuardPeersAndTipAge`,
+`TestBitcoinPooledGuardRegtestExempt`, `TestBitcoinPooledRegtestIBDNamesRemedy` and
+`TestBitcoinPooledNoPeersHoldsExpiry`. The real regtest legs of
+`scripts/test-escrow-regtest.sh` were run again against Core 31.1 with `getnetworkinfo` on the whitelist. Not tested: a
+real node that lost its peers or stalled on a public network.
+
+## Market key protection (A-440)
+
+Phase 4 groundwork (war-room ruling P4-R6), on the development branch and not released. `rpcwhitelist` is per user,
+not per wallet, so a pooled RPC user on the escrow node that may call `listdescriptors` can print the arbiter wallet's
+private key (probed on Core 31.1 regtest), as can one that may call `gethdkeys` (`{"private":true}`), and one that may
+call `walletprocesspsbt` can sign with it (QA4W3-1). With `BITCOIN_RPC_URL` set, escrow starts only when the pooled user
+is refused each of `listdescriptors` (private=false), `gethdkeys` (private=false) and `walletprocesspsbt` (an empty PSBT,
+sign=false) on the arbiter wallet's path with HTTP 403, or that node has no such wallet; any other answer, error or
+timeout leaves escrow disabled with a fixed log line naming the method and a line on `/admin`, retried like the other
+escrow checks, and while escrow is on the watcher repeats the check daily and disables escrow on a failure (QA4W3-8).
+The arbiter wallet's dedication check counts only a spend from it, never coins paid to it (A-471: anyone can pay the
+market child key an order's descriptor shows); a passing check records a checkpoint (the block `listsinceblock`
+reported, for the wallet's name and birthtime), so later checks read only newer entries and mass payments to that key
+cannot keep escrow off by slowing the read (QA4W4A-1). The operator guide whitelists the pooled user to the nine methods the pooled adapter calls
+(*The pooled RPC user*; a Go test keeps the line equal to the list in code) or puts escrow on its own node, and states
+that escrow and the pooled wallet on one node share one failure domain; the
+[runbook](testnet-runbook.md#back-up-and-restore-the-escrow-arbiter-and-watch-only-wallets) backs up and restores the
+arbiter and watch-only wallets (operator user, encrypted to the operator's `age` key, height recorded,
+`importdescriptors` fallback, fingerprint pin check), never inside the database backup.
+
+How it was tested: `TestEscrowPooledKeyCheck` (simulated RPC and PostgreSQL: 403 and -18 from each method pass; an
+answer, error -4, HTTP 401 and a timeout of `listdescriptors`, a `gethdkeys` answer and an allowed `walletprocesspsbt`
+(-22) disable, with the log and admin lines; a retry starts escrow once the user is refused; the daily re-check disables
+escrow on a widened whitelist, logs once and starts it again once refused), `TestBitcoinPooledRPCMethods` and
+`TestEscrowArbiterWalletDedicated` (receives only: on, after one full `listsinceblock`; 5000 more receives: on, read
+from the checkpoint in one call; one spend behind 2000 more receives: off; another wallet or an unknown checkpoint block:
+read whole once; an answer beyond the 16 MiB reply limit: read as it arrives; an unreadable list: off with the
+read-failure line), `TestEscrowArbiterReadOutlivesStartup` (a read longer than startup allows: off with its own line and
+admin text, then on at the watcher's retry with no second read; a read that times out: the read-failure line),
+`TestEscrowArbiterScanReuse` (QA4W5-4: a failed read is not reused by the retry; a held read is not adopted after the
+birthtime changes), `TestEscrowArbiterBadCheckpointBlock` (QA4W5-8: a checkpoint block that is not 64 hex characters
+counts as no checkpoint, one full read; a -8 answer falls back to a full read as -5 does) and `TestRPCCallStream` (QA4W5-2: 100,000 entries read; one 300 MiB entry
+or skipped key refused, the heap growing by under 64 MiB); on Core
+31.1 regtest `TestEscrowRegtestPooled` (the whitelisted pooled user refused
+`listdescriptors`, `gethdkeys` and `walletprocesspsbt`, escrow on beside a working pooled provider, an unrestricted user
+keeping escrow off), `TestEscrowRegtestArbiterRestore` (backup, wipe, `restorewallet` and the `importdescriptors`
+fallback, each co-signing a claim with the fingerprint pin unchanged) and `TestEscrowRegtestArbiterDeposit` (a payment to
+an escrow's market child address leaves escrow on after a restart and a retry, and so do three more of 2000 outputs each
+across two restarts; a spend from the arbiter wallet to its own change address, behind them, turns it off). Not tested: the watch-only wallet's restore steps in the runbook, and any
+public network.
+
+## Monero escrow on stagenet (A-449)
+
+Phase 4 work (war-room ruling P4-R15, owner decision 2026-10-05), on the development branch and not released. Monero escrow
+(still off by default, still custodial) accepts stagenet as well as a local fakechain. **No run on the public stagenet is
+recorded**: the evidence below is simulated RPC and an offline stagenet fork.
+
+- **Network check and address tags.** The escrow daemon must report nettype `fakechain` (no network flag set) or
+  `stagenet` (the stagenet flag set), and a hard fork version of at least 16; mainnet, testnet and inconsistent flags are
+  refused. A daemon still syncing (synchronized false, or a target height above its height) is not refused for a lower
+  hard fork, which it reports for the height it has reached: Monero escrow stays disabled and is checked again every
+  pass, so a fresh stagenet node delays Monero escrow, not the market's startup. The address forms Monero escrow accepts follow the network it verified, never a configured one, and the two
+  changed together: on stagenet the standard address (tag 24, `5…`) and subaddress (36, `7…`), on a fakechain the mainnet
+  format it uses (18, `4…`; 42, `8…`); integrated addresses (19, 25) are refused as such, and every other tag as another
+  network's. This holds for refund and claim addresses, `ESCROW_XMR_FEE_ADDRESS` (a fee address of the other network stops
+  startup) and every address the escrow wallet-rpc returns (a stagenet wallet's reply is refused on a fakechain escrow and
+  the reverse). Before the network is verified no address parses; a vendor's claim while the daemon is unreachable uses the
+  network pin. The pooled Monero adapter is unchanged (it asks its own wallet).
+- **Network pin, replacing the height heuristic.** Phase 3 told a fakechain from a public network by the daemon's and the
+  wallet's height (below 1,000,000). That is gone: the database pins the escrow daemon's network (`settings` key
+  `escrow_xmr_network`). While the database holds no Monero escrow and no escrow wallet (a wallet's free accounts are
+  addresses of one network) the pin follows the daemon. Once it holds either, a daemon on the other network leaves Monero
+  escrow disabled, writes nothing, logs one fixed line and shows both networks under *Payment providers* on `/admin`; it
+  is retried every pass. A database from before the pin that holds Monero escrow state is pinned `fakechain` when the
+  daemon reports fakechain, and refused otherwise. The wallet-rpc must still be within 10 blocks of the daemon, and an
+  escrow wallet-rpc whose open wallet is the pooled one is refused at startup (both may now follow one stagenet daemon).
+- **Wallet height after a refresh, compared with a fresh daemon reading (A-475).** The daemon's height was read before
+  the wallet's refresh, which can take minutes, so a daemon that gained more than 10 blocks meanwhile (catching up after
+  downtime, a slow pass; the browser journey's `mine` of 100 blocks did it under load) left the wallet, correctly synced
+  to it, more than 10 blocks ahead, and Monero escrow was disabled until a restart. A wallet more than 10 blocks from the
+  first reading is now compared with the daemon's height read again (`get_info`), and refused, as before permanently,
+  only when it is more than 10 blocks outside the span of the two readings (below the lower less 10, or above the
+  higher plus 10): the daemon may move again between the refresh and the second reading, and a height between its own
+  two readings is one it had meanwhile. A wallet-rpc on another daemon more than 10 blocks from both readings is
+  refused on the same pass; a failed second reading is retried, never a refusal
+  (`TestXMREscrowWalletLagRereadsDaemon`, unit; `TestXMREscrowDaemonGainsBlocksDuringRefresh`, database).
+- **Daemon sync guard.** The rule of the Bitcoin guard above, for Monero, shared with the pooled Monero check (which before
+  read only `target_height`: A-439 found the hole): a daemon is not synced while `get_info` reports `synchronized` false or
+  a `target_height` above its height, or, on a public network, it has no peers or its top block (`get_last_block_header`,
+  the one RPC the app did not call before; get_info carries no block time) is older than `MONERO_MAX_TIP_AGE` (default 1h,
+  20m to 24h). "No peers" is `offline`, or no connections on an unrestricted RPC: monerod 0.18.5.1 reports both
+  connection counts as 0 on a restricted RPC (`--restricted-rpc`, as the bundled `monero` service and most remote nodes
+  serve) whatever its peers, so there the counts are not read and the tip's age covers a daemon cut off from the network.
+  While the escrow daemon is not synced the Monero escrow pass opens no wallet, reads no deposit, funds or expires no order
+  and builds, relays or follows no settlement (deadlines still apply); the pooled Monero pass is skipped as while syncing.
+  An order held open past its payment window that way (no deposit waiting for confirmations) says on its page that the
+  window ended and the order stays open while the market waits for its Monero node, not that it will be cancelled at a
+  time already past (as the Bitcoin page does, QA4W1-5; `TestXMREscrowWindowPassedWhileNotSynced`).
+  Stateless; one log line per change and a line under *Payment providers*. A fakechain is exempt from the peer and tip-age
+  checks and `get_last_block_header` is not called on it.
+- **Compose service (INFRA-11).** `compose.nodes.yaml` has a `monero-escrow-wallet` service: the escrow wallet-rpc on
+  stagenet, sharing the bundled `monero` daemon, in its own profile and volume with its own login password; the installer's
+  `--monero-escrow yes` (or its question beside the Monero questions) generates that password and `MONERO_WALLET_SECRET`,
+  asks for the seed key file and mounts it through `compose.escrow-xmr.yaml`
+  ([operator guide](operator-guide.md#monero-escrow-fakechain-or-stagenet)). Checked with `docker compose config` and the
+  installer's tests (a stub Docker); the service has not been started against a public stagenet daemon.
+
+How it was tested. Simulated RPC and PostgreSQL, not chain evidence: `TestXMRAddressTagsPerNettype`,
+`TestXMRAddressStagenetVectors` (real stagenet addresses from a disposable wallet and Monero's own test table),
+`TestMoneroNodeNotSynced`, `TestParseMoneroMaxTipAge` (unit); `TestXMREscrowStagenetTags` (a stagenet escrow's wallets,
+checkout, claim, notes and pages), `TestXMREscrowFakechainTags`, `TestXMREscrowFeeAddressFollowsNetwork`,
+`TestXMREscrowNetworkPinMismatch`, `TestXMREscrowNetworkPinBackfillAndRepin`, `TestXMREscrowNoHeightHeuristic`,
+`TestXMREscrowSkipsWhileNotSynced` (each condition, restricted RPC included: no wallet opened, no expiry, no funding, no
+build, then the work on the next synced pass at a lower height), `TestXMREscrowFakechainExemptFromPeerAndTipChecks`,
+`TestMoneroPooledGuardPeersAndTipAge`, `TestMoneroPooledNoPeersHoldsExpiry`. Real chains, manual: the fourteen Phase 3 legs
+again on a fakechain (`scripts/test-escrow-xmr-regtest.sh`), and on an **offline stagenet fork, not the public stagenet**
+(`scripts/test-escrow-xmr-stagenet.sh`: stagenet daemons built from the genesis block with the local monerod 0.18.5.1
+image, peered only with each other on a Docker network with no route out, local mining at fixed difficulty) the legs such
+a chain can run. Built from genesis it is at hard fork version 1 (version 16 starts at height 1,151,720), so Monero escrow
+refuses to start on it, as it must, and none of the fourteen legs can run there; the stagenet legs show that refusal names
+the hard fork, not the network; that a real stagenet wallet's primary address, subaddress and integrated address are read
+under the stagenet tags (the integrated one refused) and refused under the fakechain's, by the parser and by the adapter;
+and that the escrow and pooled sync guards read a restricted stagenet daemon with a peer and a fresh tip as synced and an
+`--offline` daemon as having no peers. No funded escrow leg can run on that fork (hard fork 1, and `generateblocks`, which
+the fakechain legs mine with, works only on a fakechain), so **funded Monero escrow on stagenet is proven only by the
+owner's public stagenet run (A-447)**, not recorded yet; the offline fork proves the stagenet address formats, the old-fork
+refusal and the sync guards, and the network pin rests on the simulated-daemon database tests above. Not tested: the
+public stagenet (its peers, fees, ring members, reorganisations and a funded escrow end to end), a daemon that loses its
+peers on a public network, and `ESCROW_XMR_MAX_FEE` against stagenet fees. On a restricted RPC a daemon cut off from its
+peers looks synced until its tip is older than `MONERO_MAX_TIP_AGE` (QA4W3-5, accepted and documented in the
+[operator guide](operator-guide.md#payments): a deposit made in that window is not seen, its order can be cancelled as
+unpaid, and the deposit is then returned by a stray refund, or by hand on a pooled order). Since QA4W3-2 Monero escrow waits until a configured
+pooled Monero wallet has passed one check, so the open-wallet comparison always has the pooled address
+(`TestXMREscrowRefusesPooledWalletOpen`); since QA4W3-3 an unreadable tip is tested as not synced on both paths
+(`TestXMREscrowSkipsWhileTipUnreadable`, `TestMoneroPooledGuardPeersAndTipAge`).
+
+## Broadcast honesty (A-441)
+
+Phase 4 groundwork (war-room ruling P4-R7 (a) and (b)), on the development branch and not released. Bitcoin Core 31.1's
+`-privatebroadcast` with a proxy that does not answer accepts `sendrawtransaction`, answers the transaction ID and keeps
+the transaction in a private queue: it never reaches the node's mempool, a resend is idempotent, and the market recorded
+it as broadcast (probed on Core 31.1 regtest by the A-255/A-249 council and again by this slice's real-chain leg).
+
+- **Stall alert, every mode.** A settlement in state broadcast none of whose transactions (its own and its fee bumps')
+  the watch-only wallet has seen 6 blocks after the broadcast tells staff once (an order note and a "Payment review
+  needed" notification to each moderator and administrator) and shows "queued or stuck: not seen by the network" on
+  `/admin` under *Payment providers* and to staff on the order page, until the wallet sees one: then one order note
+  clears it. Six blocks: a transaction the node accepted into its mempool is in the wallet at once and one sent
+  privately comes back from the network within minutes, so six (about an hour on a public test network, twice the
+  default confirmation threshold) is well past either and still within the hour. No settlement state is added
+  (migration 074's CHECK is unchanged); the settlement stays broadcast and its stored transaction is sent again on each
+  pass as before. Which alert is open is read from the two order notes; the height a transaction went unseen from is in
+  memory only, so a restart starts the count again (later, never twice). `getprivatebroadcastinfo` stays off the app's
+  whitelist and `abortprivatebroadcast` is never on it.
+- **Tor-mode gate.** With `APP_MODE=tor` only, the escrow watcher reads `getnetworkinfo` once per pass and sends a
+  settlement only while it shows a proxy for both IPv4 and IPv6 (what `-proxy` sets; `-onion` alone does not) and
+  Bitcoin Core 31.1 or later (version 310100); otherwise, or when `getnetworkinfo` fails, no `sendrawtransaction` is
+  issued and no settlement changes state, with one log line per change and an `/admin` line saying what to configure
+  (`-proxy=<Tor SOCKS address>`, never `-connect` or `-onlynet`). Onion `reachable` is not read: it reflects
+  configuration, not liveness. The gate checks configuration; the stall alert covers a proxy that is configured but
+  down. Pooled payouts are wallet sends and are never private. Clearnet mode is unchanged. See the
+  [operator guide](operator-guide.md#bitcoin-escrow-test-networks-only) (*Tor mode*, *Queued or stuck*).
+
+How it was tested: `TestEscrowBroadcastStallAlert`, `TestEscrowBroadcastStallSeenNeverAlerts` and
+`TestEscrowTorBroadcastGate` (simulated RPC and PostgreSQL, not chain evidence: not before 6 blocks however many passes
+run at one height, once, cleared on sighting, the resend unchanged; the gate per condition, including `-onion` only with
+onion reachable, Core 31.0, a failed or refused `getnetworkinfo`, and clearnet mode); `TestEscrowRegtestPrivateBroadcast`
+in `scripts/test-escrow-regtest.sh` against a second Core 31.1 regtest node started with `-privatebroadcast
+-proxy=127.0.0.1:9 -listen=0`: the gate on real `getnetworkinfo` answers (that node passes, the main node without a proxy
+holds), a co-signed claim queued and never in the mempool or the wallet, the alert at 6 blocks and not before or twice,
+and cleared once `generateblock` mined the stored transaction. Not tested: a node over real Tor, or a public network.
+
+## Bitcoin escrow on signet and testnet4 (A-443)
+
+Phase 4 (war-room ruling P4-R5), on the development branch and not released. With the sync guard, the chain pin and
+the chain table (A-439), the market key self-check (A-440) and broadcast honesty (A-441) in place, `ESCROW_BTC=on`
+accepts a node on `signet` or `testnet4` as well as `regtest`; mainnet (`main`) and testnet3 (`test`) are still refused
+at startup (escrow uses test-network key versions and coin type 1), and `BITCOIN_CHAIN`, when set beside it, must name
+one of the three. **No run on public signet or testnet4 is recorded**: the owner runs those (ledger items A-446 and
+A-447) on their own host.
+
+- **Chain table.** The chain decides the address prefix (`bcrt` on regtest, `tb` on signet and testnet4) for every
+  address escrow checks or pays. An address given in capitals is lowered by that prefix, so a `TB1…` refund, claim,
+  release or fee address is stored and paid as `tb1…` (QA4W1-4), as `BCRT1…` already was on regtest; another chain's
+  prefix is left as given and the node refuses it.
+- **Pages name the chain.** The order panel's headline and badge, the checkout offer, the escrow key page, the
+  transparency page, the footer and catalog notices, the vendor desk tile, the dispute form and `/admin` say signet or
+  testnet4 where they said regtest. While escrow is disabled they name the chain the node last reported, or the
+  database's pinned chain; a market that has never pinned one (and holds no Bitcoin escrow) whose node has not answered
+  yet names none and says "chain not verified yet" (QA4W6-8, `TestEscrowChainNotVerifiedAtFirstStart`).
+- **Preconditions on these chains** (the [runbook](testnet-runbook.md#11-bitcoin-escrow-on-signet-or-testnet4)): the
+  sync guard's peer and tip-age checks apply (`getnetworkinfo` must be on the escrow user's whitelist), the chain pin
+  includes the signet challenge, the pooled user must be refused the arbiter wallet, and in `APP_MODE=tor` broadcasts
+  wait for a proxied node. The arbiter wallet check (A-471, QA4W4A-1) applies unchanged: on signet and testnet4 a
+  payment to the market's child key costs almost nothing, so anyone can fill the arbiter wallet with dust; the start
+  check still reads only the entries newer than its checkpoint (streamed `listsinceblock`, `listsinceblock` on the
+  escrow user's whitelist), a read that fails or times out is not a pass, and only a spend from the wallet disables
+  escrow. The read's 64 KiB bound applies to each JSON token, never to an entry (QA4W6-1): Core lists every unconfirmed
+  fee bump of a payment to that key as an entry whose `walletconflicts` names all the others (1000 bumps: entries of
+  about 67 KB, an answer of about bumps² × 67 bytes), and the mined replacement keeps them all, so reading entries whole
+  kept escrow off for good after about 1000 bumps. The read now takes each entry key by key
+  (`TestEscrowArbiterEntriesStreamByToken`; the `ArbiterDeposit` leg's 1100 bumps on Core 31.1: 82 MB unconfirmed, then
+  one 74 KB entry once mined, escrow on throughout; 3000 bumps, measured once: 605 MB, read in 16 s, then one 202 KB
+  entry). The square-law volume lasts only while the replacements are unconfirmed: once one is mined Core lists the
+  others in no read. While it lasts it costs the node memory (about 1.5 GB per 605 MB answer; the operator guide's
+  arbiter wallet paragraph), and since A-479 the escrow watcher paces its retries' reads: after a read that takes 5 s or
+  more or times out, pass or failure, the next waits 1 minute, doubling to at most 1 hour, and a slow pass counts as a
+  pass meanwhile; a quicker read ends the waits, a quick failure is read again every poll, and a restart reads at once
+  (`TestEscrowArbiterReadPacing`, `TestEscrowArbiterQuickFailureNotPaced`,
+  `TestEscrowArbiterSlowPassThenLaterCheckFails`), so the market no longer adds such a read every poll. Nothing in that check depends on
+  the chain.
+
+How it was tested: DB integration with the simulated Core (`TestEscrowStartupChains`: mainnet and testnet3 refused
+before any wallet call, signet and testnet4 started, pinned and named, and named from the pin with the node down;
+`TestEscrowConfigChains`; `TestEscrowAddressFormChains`; `TestEscrowUppercaseAddressOnSignet`: capitalised refund,
+claim and fee addresses stored in lower case and a claim built, signed, broadcast and confirmed to one;
+`TestEscrowPagesNameSignet`). On a real local chain: `scripts/test-escrow-regtest.sh --private-signet` (manual, not
+CI) on two Bitcoin Core 31.1 nodes with `-signetchallenge=51` on a Docker network with no route off the host, node A
+mining with `generatetoaddress` (maxtries 2000000000, every call's block count checked) and node B the app's node with
+one peer. It runs the regtest legs that need no regtest-only RPC (`PracticeSign`, `Funding`, `Settlement`, `Cosign`,
+`Gate`, `Bump`, `Physical`, `Deadline`, `Reserve`, `BIP32`, `Signer`, `Pooled`, `ArbiterRestore`, `PerOrderPractice`
+and `ArbiterDeposit`, the arbiter wallet's dust leg: 6000 outputs of 1000 sat paid to an order's market child key, a
+restart that reads them from the checkpoint and keeps escrow on, 1100 fee bumps of one payment to that key with
+restarts before and after the last is mined, and a spend that disables it) and
+`TestEscrowRegtestIsolated`: node B leaves the network (`setnetworkactive false`), node A pays and mines an escrow
+deposit, the order's payment window is moved past, and a watcher pass cancels nothing (not synced: no peers, while
+Core's initial block download stays false); node B comes back and the next pass credits the deposit and completes the
+order. Not run there, with the reason the script prints: `Recovery` and `Conflicted` (they fake a reorganisation with
+`invalidateblock`, `reconsiderblock` and `prioritisetransaction`) and `PrivateBroadcast` (a `-privatebroadcast` node
+and `generateblock`, which cannot find a signet block). That run is private signet, not public: it shows the signet
+code paths and the guard's peer check on a real Core, not public peers, fees, relay or reorganisations. Regtest mode,
+which CI runs, is unchanged. Last recorded on 2026-10-07 at `afb14d7` (the QA4W6 fix round; transcripts kept locally
+under `artifacts/real-chain/`, gitignored): all 18 regtest legs passed (under 2 minutes), and on the private signet,
+started cold (node A's coins matured afresh), the 16 legs above passed in 8.5 minutes; in `ArbiterDeposit` there, 1100
+fee bumps of one payment made the arbiter wallet's answer 82 MB while unconfirmed and 74 KB once the last was mined,
+and escrow stayed on through every restart.
+
+## Escrow-only cutover (A-444)
+
+Phase 4 (war-room ruling P4-R8), on the development branch and not released. The per-coin intake setting gains a third
+value, `escrow` (*Escrow only* on `/admin`): escrow checkouts are admitted and pooled payment requests refused, both in
+`lockPaymentIntake` (which every checkout calls with the kind it would issue) and in the order state machine's draft to
+awaiting-payment step, so no other pooled path gets through. Paused still refuses both. The administrator's form offers
+escrow only and paused with no pooled wallet configured, keeps the password and the audit row, and is reversible. The
+pooled watcher keeps running while the pooled provider stays configured, so a pooled order opened before the switch is
+still credited and paid out. A readiness panel counts and lists the active listings that cannot use escrow
+(`escrowEligible`'s rule) and the vendors with active listings but no active Bitcoin escrow key; while a coin is escrow
+only such a listing stays visible with "not available for purchase" and the reason, offers no buy form in that coin and
+refuses a draft in it. An older build reads `escrow` as paused. Operator steps:
+[operator guide](operator-guide.md#cutting-over-to-escrow-only); upgrade notes: UPGRADING.md section 37.
+
+How it was tested: the Go tests and the browser spec listed in the operator guide (PostgreSQL with the fake pooled wallet
+and simulated escrow nodes; not chain evidence). Not tested: a cutover on any real chain or public network, and the
+removal of the pooled wallet that follows it (P4-R10, A-448).
+
+## Per-order key derivation (A-453, shape (b) groundwork)
+
+Groundwork for per-order wallets (ruling P4-R2, owner decision 2026-10-05), on the development branch with no product
+caller: nothing in the market uses it yet, and escrows still take their child keys from Bitcoin Core. The Go code
+(`internal/btc`, shared with the escrow signer since A-454, and `internal/market/escrow_bip32.go`; standard library
+`math/big` on secp256k1, no new dependency) derives the unhardened
+child `<i>` of a registered account key by BIP32 public derivation, refuses hardened indexes, moves to the next index
+when BIP32 calls a child invalid and reports the index it used, and serializes the child rooted (depth 0, parent
+fingerprint 0, child number 0) as a `tpub` or a SLIP-132 `Vpub`, so an order wallet holds no link to the account. A
+helper asks Core's `deriveaddresses` (already on the escrow user's whitelist) for the address from the account key at
+`<i>/0/0` and from the rooted key at `/0/0`, as `wpkh` for one key or the escrow's `wsh(sortedmulti(2,…))` for three,
+and refuses any mismatch. How it was tested: unit (BIP32 test vectors 1–3 and 5, a forced invalid child, the rooted
+round trip, `FuzzCKDPub`; the helper against a simulated node), and on a real local chain, Core 31.1 on regtest
+(`TestEscrowRegtestBIP32` in `scripts/test-escrow-regtest.sh`: indexes 2, 3, 17, 1000 and 2^31-1 for three wallets'
+BIP48 accounts agree with Core, and with Core's own derivation from each private root; a wrong index or a changed chain
+code is refused). Not tested: any wallet other than Bitcoin Core, and any public network.
+
+## Escrow signer (A-454, shape (b))
+
+The second piece of per-order wallets (ruling P4-R17), on the development branch with no product caller: no order uses
+it yet, and every escrow this release creates is still co-signed by the Core arbiter wallet. `cmd/escrow-signer` holds
+the market's key for per-order escrows in a fresh seed of its own (a mode-0400 file in its own volume, never in `.env`,
+the database or `scripts/backup.sh`'s output), listens only on a Unix socket the app's container mounts, and signs one
+escrow's PSBT per request through Core's `descriptorprocesspsbt` under its own RPC user (whitelisted to `decodepsbt`,
+`descriptorprocesspsbt` and `getdescriptorinfo`) with `ALL` hard-coded. It refuses, with nothing signed, any sighash but
+ALL, any input that is not the same `2 <three sorted keys> 3 CHECKMULTISIG` P2WSH escrow with a matching `witness_utxo`,
+a script without its key for the requested order index (`account/i/0/k` or `account/i/1/k`, k < 20) or with two of them,
+and any result from Core that differs from the request by more than one signature per input under its key. Go does no
+elliptic-curve arithmetic with its private key (internal/btc's point multiplication is not constant-time; QA4W2-1): from
+the seed it computes only the hardened private steps to the account `m/48h/1h/0h/2h` (HMAC-SHA512 and an addition mod n)
+and serializes the account key as a root. At every start Core's `getdescriptorinfo` of `wpkh(<account tprv>/0/*)` gives
+the account's public key (checked against Go's chain code); to sign, Core gets the account key and the per-order path
+inside the descriptor and derives the key itself. The seed's master key never leaves the process. The app pins the
+signer's fingerprint and an HMAC of its account key at first contact; a different key makes shape (b) unavailable and
+changes nothing else, and a signer that does not answer is "waiting". `escrow-signer backup` writes the seed encrypted
+to the operator's OpenPGP key and `restore` reads it back; the [operator guide](operator-guide.md#escrow-signer) covers
+set-up, the pins, backup, break-glass signing and the upgrade order. How it was tested: unit (BIP32 vectors through the
+private path; every refusal, the result check and the happy path against a simulated Core; the socket protocol; init,
+backup and restore), DB integration (the pins, a mismatch, a signer that is down, replies the app cannot use, against a
+simulated signer), and on a real local chain, Core 31.1 on regtest (`TestEscrowRegtestSigner` in
+`scripts/test-escrow-regtest.sh`: the account key Core computed agreeing with Core's own derivation from the seed's
+master key; a per-order escrow co-signed through the socket, signed by the buyer's Core wallet, broadcast and mined; the
+four refusals; backup, restore and an identical signature from the restored seed; a pin mismatch and a stopped signer;
+no seed or tprv in the database, the signers' logs or the transcript). Not tested: the Compose service running (checked
+with `docker compose config` only), break-glass signing on an offline node, any wallet other than Bitcoin Core, and any
+public network.
+
+## Per-order key layout, registration and practice (A-455, shape (b))
+
+The third piece of per-order wallets (rulings P4-R2 and P4-R18, owner decision 2026-10-05), on the development branch
+behind `ESCROW_BTC` (off by default, test networks only). No escrow uses a per-order wallet yet: a checkout where the buyer's
+or the vendor's active key is a per-order wallet key is refused with nothing written, and the order page says why
+(escrows with per-order wallets are A-456); a buyer is told to register a Bitcoin Core escrow key and linked to the
+escrow key page. While Bitcoin intake is escrow only (A-444), a listing whose vendor's active
+key is a per-order wallet key is therefore not available for purchase in BTC, with that reason, and the readiness panel
+on `/admin` counts and lists the vendor.
+
+- **Layout.** Each account still has one escrow key, now with a layout (`user_escrow_keys.layout`, migration 088):
+  `core`, a Bitcoin Core wallet whose escrows use the account key's child `/0/<i>` (every key registered before), or
+  `per_order`, a wallet made for each order from the account key's child `<i>`. The escrow key page asks which wallet
+  the key comes from. A per-order wallet key must be the BIP48 multisig account key (`m/48h/1h/<account>h/2h`, a `tpub`
+  or `Vpub`, parsed by the same strict parser). Registering the same key with the other layout is a change: the key is
+  inactive until the practice transaction of the new layout is signed. A key that is the key of existing escrows
+  cannot change layout. The page says plainly that Electrum's own seed type (Electrum's default, also on Tails) cannot
+  make per-order wallets: a BIP39 seed in Electrum, or Sparrow, is needed. The registration copy says that a per-order
+  key replaces the account's Bitcoin Core key, which until A-456 stops Bitcoin escrow buying and, for a vendor under
+  escrow-only intake, Bitcoin escrow sales; the pages carry that the steps have not yet been tried with a real Electrum
+  or Sparrow wallet (A-457, A-458), and the practice page tells the owner never to send coins to the practice wallet's
+  first receiving address. The database refuses an escrow key whose
+  suffix has three or more steps (a per-order key, `/<i>/0/0`) starting with 0 or 1, for any party, and a buyer's or
+  vendor's at the practice index 2^31-1; shape (a)'s two-step suffixes are not affected.
+- **Practice (ES-9) for a per-order wallet key.** The practice escrow is the 2-of-3 of the owner's key at the reserved
+  index (`account/2147483647/0/0`) and the `/0/0` children of two cosigner keys served rooted (depth 0, parent
+  fingerprint 0, child 0, as `Vpub`): the server's throwaway key's child at that index and an unsignable key's. Go
+  derives the cosigner keys; Core must derive the same address from the throwaway key's own path, or no practice is
+  served. The page shows the derivation path for the practice wallet, the two cosigner keys, its first receiving
+  address and the PSBT; the owner builds the practice wallet from the seed, checks the address, signs and pastes. Only
+  the owner's signature is taken from the paste (the practice check never read derivation entries, so the entries
+  Electrum writes for every key need no relaxation), and activation needs a signature from the registered key's
+  per-order practice key: a signature from its Core practice child (`/0/0`) is refused. Its made-up outpoint is
+  checked absent and `testmempoolaccept` must report missing-inputs, as for a Core key.
+- **Key type on the listing and the vendor page.** While Bitcoin escrow is on, a listing and a vendor's profile name
+  the vendor's active key type: Bitcoin Core, a per-order wallet, or none active.
+
+How it was tested: DB integration with a simulated node that derives rooted keys by real BIP32 public derivation
+(`TestEscrowKeyLayoutMigration`, `TestEscrowKeyLayoutRegistration`, `TestEscrowPerOrderPractice`,
+`TestEscrowPerOrderPracticeCrossCheck`, `TestEscrowKeyLayoutSwitchNeedsPractice`, `TestEscrowKeyWithEscrowsKeepsLayout`,
+`TestEscrowPracticeKeyChangedDuringCheck`, `TestEscrowPerOrderKeyNotUsedForCheckout`, `TestEscrowOnlyPerOrderVendorNotPurchasable`,
+`TestEscrowVendorKeyTypeShown`); a browser journey with JavaScript off at 320 px against the simulated node
+(`tests/e2e/escrow-per-order-journey.spec.ts`, `npm run test:e2e:escrow`; not chain evidence); and on a real local
+chain, Core 31.1 on regtest (`TestEscrowRegtestPerOrderPractice` in `scripts/test-escrow-regtest.sh`: from a Core
+wallet's seed standing in for a BIP39 seed and the practice page alone, the operator builds the per-order practice
+wallet as a private descriptor, Core derives the address shown and signs the PSBT, and the signature activates the key;
+the unsigned PSBT, the same seed's Core wallet holding the shape-(a) range and a SIGHASH_NONE signature are refused).
+Not tested: a real Electrum or Sparrow signing the practice (A-457 and A-458), hardware wallets, and any public network.
+
+Which chains escrow testing has used, all of them local and none public: Bitcoin regtest; a Bitcoin private signet
+(A-443: two Bitcoin Core nodes on one host with `signet_challenge` 51, private signet, not public); a local Monero
+fakechain; and an offline Monero stagenet fork (A-449: stagenet's genesis, peered with nothing public). No escrow leg
+has run on public signet, testnet4, testnet3 or the public Monero stagenet: the owner's public-network runs (ledger
+items A-446 and A-447) are not recorded yet. Mainnet stays an operator opt-in and is never used in development or
+tests.

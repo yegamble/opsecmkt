@@ -350,7 +350,7 @@ func escrowClaimAction(c *actionCtx) (actionResult, error) {
 	if e == nil {
 		return actionResult{}, errEscrowDown
 	}
-	dest, ok := escrowAddressForm(c.Form.Get("address"))
+	dest, ok := escrowAddressForm(e.network, c.Form.Get("address"))
 	if !ok {
 		return actionResult{}, errClaimAddress(c.A.escrowNetwork())
 	}
@@ -1312,6 +1312,12 @@ func (a *App) settlementView(ctx context.Context, d *PageData, v *EscrowOrderVie
 		s.Status = "Signed by " + by + ", checked and stored; the market broadcasts it on its next pass. Nothing has been sent yet." + pending
 	case "broadcast":
 		s.Status, s.TxID, s.RawTx = "Broadcast to the "+a.escrowNetwork()+" network: transaction "+txid+". Waiting for "+strconv.FormatInt(v.Threshold, 10)+" confirmations.", txid, raw
+		if d.OrderViewer == roleModerator {
+			// A-441: staff see a settlement queued or stuck (escrow_stall.go).
+			if err = a.db.QueryRowContext(ctx, "SELECT "+escrowStalledSQL+" FROM settlements s WHERE s.id=$1", id).Scan(&s.Stalled); err != nil {
+				return nil, err
+			}
+		}
 	case "confirmed":
 		s.Status, s.TxID, s.RawTx = "Confirmed on the "+a.escrowNetwork()+" network: transaction "+txid+".", txid, raw
 	case "external":

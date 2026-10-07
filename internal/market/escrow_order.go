@@ -168,6 +168,11 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 	}
 	if v.Open {
 		v.CancelAfter = windowFrom.Add(expiryWindow()).UTC().Truncate(time.Minute).Format("2006-01-02 15:04 UTC")
+		// QA4W1-5: past the window with no deposit waiting for confirmations, only a watcher pass that read the node
+		// cancels the order. While the watcher last found the node not synced (A-439's state) the page says the order
+		// stays open; in the usual gap before the next pass of a synced node it keeps the usual wording.
+		notSynced, _ := a.escrowSync.Load().(string)
+		v.WindowPassed = notSynced != "" && pending == 0 && time.Now().After(windowFrom.Add(expiryWindow()))
 	}
 	switch {
 	case o.State == stateAwaitingPayment && len(v.Deposits) == 0:
@@ -356,9 +361,11 @@ func (a *App) escrowCheckoutOffer(ctx context.Context, d *PageData) error {
 		return err
 	}
 	v := &EscrowCheckoutView{Physical: o.Kind == "physical"}
-	var buyerActive, vendorActive bool
+	var buyerActive, vendorActive, buyerPerOrder, vendorPerOrder bool
 	if err = a.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM user_escrow_keys WHERE user_id=$1 AND active_at IS NOT NULL),
-		EXISTS(SELECT 1 FROM user_escrow_keys WHERE user_id=$2 AND active_at IS NOT NULL)`, o.BuyerID, o.VendorID).Scan(&buyerActive, &vendorActive); err != nil {
+		EXISTS(SELECT 1 FROM user_escrow_keys WHERE user_id=$2 AND active_at IS NOT NULL),
+		EXISTS(SELECT 1 FROM user_escrow_keys WHERE user_id=$1 AND layout<>'core'),EXISTS(SELECT 1 FROM user_escrow_keys WHERE user_id=$2 AND layout<>'core')`,
+		o.BuyerID, o.VendorID).Scan(&buyerActive, &vendorActive, &buyerPerOrder, &vendorPerOrder); err != nil {
 		return err
 	}
 	vendorCanEncrypt := true
@@ -388,6 +395,10 @@ func (a *App) escrowCheckoutOffer(ctx context.Context, d *PageData) error {
 		v.Reason, v.KeyLink = "Activate your Bitcoin escrow key first: register it and sign its practice transaction.", true
 	case !vendorActive:
 		v.Reason = "The vendor has no active Bitcoin escrow key, so this order cannot use escrow."
+	case buyerPerOrder: // A-455: escrowParties refuses it the same way until per-order escrows exist (A-456)
+		v.Reason, v.KeyLink = strings.TrimSuffix(errEscrowBuyerPerOrder.Error(), " Nothing was changed.")+" Register a Bitcoin Core escrow key and sign its practice transaction to use escrow.", true
+	case vendorPerOrder:
+		v.Reason = strings.TrimSuffix(errEscrowVendorPerOrder.Error(), " Nothing was changed.")
 	case v.Physical && !vendorCanEncrypt:
 		v.Reason = noVendorKeyReason // A-83: the buyer could not send the vendor an encrypted shipping address
 	}

@@ -188,7 +188,7 @@ func (a *App) pollOnce(ctx context.Context) error {
 			ON CONFLICT(currency) DO UPDATE SET last_error=excluded.last_error`, cur, network, reason); err != nil {
 			errs = append(errs, err)
 		}
-		if reason != syncingReason && !strings.HasPrefix(reason, tipBehindPrefix) {
+		if !strings.HasPrefix(reason, syncingReason) && !strings.HasPrefix(reason, notSyncedPrefix) && !strings.HasPrefix(reason, tipBehindPrefix) {
 			class := "pass skipped"
 			if why[cur] != "" {
 				class += ": " + why[cur]
@@ -664,7 +664,7 @@ func (a *App) flagLateDeposits(ctx context.Context, tx *sql.Tx, o *Order, thresh
 		// An escrow deposit is at the order's escrow address, never in a wallet staff could refund from (QA31-3).
 		net, how := a.escrowNetwork(), "the market builds a stray refund returning it to your refund address, which you or the vendor sign on the order page"
 		if o.Currency == "XMR" { // a Monero escrow is custodial: the market alone builds and sends its stray refund (P3-R8)
-			net, how = xmrEscrowNetwork, "the market returns it, less the network fee, to your refund address by a stray refund from the escrow"
+			net, how = a.xmrEscrowNetwork(), "the market returns it, less the network fee, to your refund address by a stray refund from the escrow"
 		}
 		note = a.netTag() + " " + net + " " + strings.Join(deposits, ", ") + " arrived at this order's escrow address after the order closed; not counted, it is returned to the buyer's refund address by a stray refund from the escrow. Moderator review required."
 		body = "Order " + o.ID[:min(8, len(o.ID))] + ": " + amount(sum, dec) + " " + o.Currency + " (" + a.netTag() + " " + net + ") arrived at this order's escrow address after the order closed. It is not counted; " + how + ". Market staff were notified."

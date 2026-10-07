@@ -19,7 +19,7 @@ const (
 )
 
 // With ESCROW_BTC=on and no pooled provider, the footer, catalog, product, checkout and vendor dashboard say escrow
-// is on (regtest only), never that payments and escrow are not active, that multisig escrow is not configured or
+// is on (test networks only), never that payments and escrow are not active, that multisig escrow is not configured or
 // that no funds are held. A vendor with a funded escrow order is never told no funds are held, with ESCROW_BTC
 // switched off afterwards too.
 func TestEscrowSiteNoticesWithoutPooledProvider(t *testing.T) {

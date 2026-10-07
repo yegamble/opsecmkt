@@ -18,6 +18,14 @@ import (
 
 func init() { registerProvider(bitcoinFromEnv) }
 
+// pooledRPCMethods is every method the pooled adapter calls: the pooled user's rpcwhitelist line the operator guide
+// documents ("The pooled RPC user"). It holds no method that can export or copy a key: Core selects the wallet by the
+// URL path, so a pooled user allowed listdescriptors could print the escrow arbiter wallet's private key (A-440).
+var pooledRPCMethods = []string{
+	"getblockchaininfo", "getwalletinfo", "loadwallet", "getnetworkinfo", "getnewaddress", "listreceivedbyaddress",
+	"gettransaction", "sendtoaddress", "validateaddress",
+}
+
 // bitcoinChains maps each chain getblockchaininfo reports to its bech32 address prefix.
 var bitcoinChains = map[string]string{"test": "tb1", "testnet4": "tb1", "signet": "tb1", "regtest": "bcrt1", "main": "bc1"}
 
@@ -43,6 +51,9 @@ func bitcoinFromEnv(ctx context.Context) (PaymentProvider, error) {
 		return nil, err
 	}
 	if _, err := paymentExpiry(); err != nil {
+		return nil, err
+	}
+	if _, err := parseMaxTipAge(os.Getenv("BITCOIN_MAX_TIP_AGE")); err != nil {
 		return nil, err
 	}
 	confs, err := envConfirmations("PAYMENT_CONFIRMATIONS_BTC", 3)
@@ -84,12 +95,17 @@ func newBitcoinProvider(ctx context.Context, rawURL, wallet, wantChain string, c
 
 // Check refuses mainnet unless BITCOIN_CHAIN=main (and a chain that differs from BITCOIN_CHAIN or from the
 // chain seen before), loads the wallet when the node reports it is not loaded (after a node restart, for example) and reports
-// initialblockdownload as syncing and "blocks" as the tip (the height gettransaction counts confirmations from).
+// "blocks" as the tip (the height gettransaction counts confirmations from) and the node as syncing while it is not
+// synced (bitcoinNode.notSynced, A-439: initial block download, headers ahead of blocks, and on a public chain no
+// peers or a tip older than BITCOIN_MAX_TIP_AGE). A failed getnetworkinfo fails nothing, but on a public chain the
+// node then counts as not synced (its peer count is unknown).
 func (p *bitcoinProvider) Check(ctx context.Context) (nodeStatus, error) {
 	var info struct {
-		Chain  string      `json:"chain"`
-		IBD    bool        `json:"initialblockdownload"`
-		Blocks json.Number `json:"blocks"`
+		Chain   string      `json:"chain"`
+		IBD     bool        `json:"initialblockdownload"`
+		Blocks  json.Number `json:"blocks"`
+		Headers int64       `json:"headers"`
+		Time    int64       `json:"time"`
 	}
 	if err := p.rpc.call(ctx, "", "getblockchaininfo", nil, &info); err != nil {
 		return nodeStatus{}, fmt.Errorf("bitcoin node check failed: %w", err)
@@ -128,20 +144,28 @@ func (p *bitcoinProvider) Check(ctx context.Context) (nodeStatus, error) {
 	if err != nil {
 		return nodeStatus{}, fmt.Errorf("bitcoin wallet %q unavailable: %w", p.walletName, err)
 	}
+	peers, err := p.readNodeVersion(ctx)
+	if err != nil {
+		peers = -1 // unknown: on a public chain the node then counts as not synced
+	}
 	if p.chain == "" { // first success, before the provider is published to request handlers
 		p.chain, p.prefix = info.Chain, prefix
 	}
-	p.readNodeVersion(ctx)
-	return nodeStatus{Syncing: info.IBD, Tip: tip}, nil
+	node := bitcoinNode{Chain: info.Chain, IBD: info.IBD, Headers: info.Headers, Blocks: tip, Time: info.Time, Connections: peers}
+	why := node.notSynced(time.Now(), maxTipAge())
+	return nodeStatus{Syncing: why != "", Why: why, Remedy: syncRemedy(info.Chain, why), Tip: tip}, nil
 }
 
-// readNodeVersion records getnetworkinfo's version (10000*major + 100*minor + build) for the admin page. The
-// Bitcoin send classification does not depend on it (walletRejected), so a failed call fails nothing.
-func (p *bitcoinProvider) readNodeVersion(ctx context.Context) {
+// readNodeVersion records getnetworkinfo's version (10000*major + 100*minor + build) for the admin page and returns
+// its connections (the node's peer count, for the sync guard) with the call's error. The Bitcoin send classification
+// does not depend on the version (walletRejected), so a failed call fails nothing.
+func (p *bitcoinProvider) readNodeVersion(ctx context.Context) (int64, error) {
 	var ni struct {
-		Version json.Number `json:"version"`
+		Version     json.Number `json:"version"`
+		Connections int64       `json:"connections"`
 	}
-	err := p.rpc.call(ctx, "", "getnetworkinfo", nil, &ni)
+	callErr := p.rpc.call(ctx, "", "getnetworkinfo", nil, &ni)
+	err := callErr
 	var v int64
 	if err == nil {
 		if v, err = ni.Version.Int64(); err == nil && v <= 0 {
@@ -155,6 +179,7 @@ func (p *bitcoinProvider) readNodeVersion(ctx context.Context) {
 	p.mu.Lock()
 	p.nodeVersion = text
 	p.mu.Unlock()
+	return ni.Connections, callErr
 }
 
 // WalletVersion is the node version the last successful check read (versionReporter). It is never unverified:

@@ -6,10 +6,12 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // payRPCServer is an httptest JSON-RPC server for adapter tests: Basic or Digest (MD5, qop=auth) auth,
@@ -22,6 +24,7 @@ type payRPCServer struct {
 	down       atomic.Bool // drop every connection, as an unreachable or restarting node does
 
 	mu         sync.Mutex
+	forbid     func(method string) bool // answers HTTP 403 with no body for a method, as Core's rpcwhitelist refuses one
 	nonce      string
 	calls      []string
 	params     map[string]json.RawMessage
@@ -122,7 +125,12 @@ func (s *payRPCServer) serve(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.calls = append(s.calls, req.Method)
 	s.params[req.Method] = req.Params
+	forbid := s.forbid
 	s.mu.Unlock()
+	if forbid != nil && forbid(req.Method) {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
 	result, code, msg := s.handle(r.URL.Path, req.Method, req.Params)
 	resp := map[string]any{"id": req.ID}
 	if req.JSONRPC == "2.0" {
@@ -141,6 +149,155 @@ func (s *payRPCServer) serve(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	json.NewEncoder(w).Encode(resp)
+}
+
+// QA4W4A-1: callStream hands the result to its reader as the body arrives. Core writes "result" before "error", so an
+// RPC error reaches the reader as a null result first and is still reported as the rpcError (-5 here, as listsinceblock
+// answers an unknown block); an answer beyond rpcMaxBody is read whole; a body cut short by the timeout says "timed
+// out"; a 403 is "credentials rejected (HTTP 403)", as call reports it. QA4W5-2: the total stays unbounded (100,000
+// entries of about 710 bytes, 71 MB, as Core answered for a wallet that size, are read, and QA4W6-1: a skipped key
+// holding a list of 1.4 MB is walked token by token), but no one token may pass rpcStreamMaxValue: a string entry of
+// 300 MiB, or a skipped top-level string of 300 MiB, is refused as an invalid response
+// (escrow's bad-reply) while the heap grows by less than 64 MiB (unbounded, the decoder held about 1 GiB). The
+// 300 MiB bodies are written from one 1 MiB chunk, never built whole.
+func TestRPCCallStream(t *testing.T) {
+	const bigEntries = rpcMaxBody/1000 + 100
+	const manyEntries = 100000
+	entry := `"` + strings.Repeat("e", 707) + `"`
+	var mode atomic.Value
+	huge := func(w http.ResponseWriter, head, tail string) {
+		w.Write([]byte(head))
+		chunk := []byte(strings.Repeat("x", 1<<20))
+		for i := 0; i < 300; i++ {
+			if _, err := w.Write(chunk); err != nil {
+				return // the client gave up
+			}
+		}
+		w.Write([]byte(tail))
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch mode.Load() {
+		case "many": // 100,000 entries of 710 bytes, as Core's listsinceblock answered for a wallet that size
+			w.Write([]byte(`{"result":[`))
+			chunk := []byte(strings.Repeat(entry+",", 1000))
+			for i := 0; i < manyEntries/1000-1; i++ {
+				w.Write(chunk)
+			}
+			w.Write([]byte(strings.Repeat(entry+",", 999) + entry + `],"error":null,"id":"opsecmkt"}`))
+		case "huge-entry":
+			huge(w, `{"result":["`, `"],"error":null,"id":"opsecmkt"}`)
+		case "huge-key":
+			huge(w, `{"junk":"`, `","result":["a"],"error":null,"id":"opsecmkt"}`)
+		case "list-key": // QA4W6-1: a skipped key holding a list of 20,000 tokens (1.4 MB) streams, token by token
+			w.Write([]byte(`{"junk":[{"a":[` + strings.Repeat(`"`+strings.Repeat("c", 64)+`",`, 20000) + `null]}],"result":["a"],"error":null,"id":"opsecmkt"}`))
+		case "error":
+			w.WriteHeader(500)
+			w.Write([]byte(`{"result":null,"error":{"code":-5,"message":"Block not found"},"id":"opsecmkt"}`))
+		case "big": // rpcMaxBody/1000+100 strings of 1000 bytes: past the limit, in one write
+			w.Write([]byte(`{"result":[` + strings.Repeat(`"`+strings.Repeat("x", 998)+`",`, bigEntries-1) + `"x"],"error":null,"id":"opsecmkt"}`))
+		case "slow":
+			w.Write([]byte(`{"result":["a",`))
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+		case "forbidden":
+			w.WriteHeader(403)
+		}
+	}))
+	defer srv.Close()
+	c, err := newRPCClient("bitcoin escrow", srv.URL, "1.0", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	count := func(dec *json.Decoder) (n int, err error) {
+		tok, err := dec.Token()
+		if err != nil || tok == nil {
+			return 0, err
+		}
+		for dec.More() {
+			var s string
+			if err = dec.Decode(&s); err != nil {
+				return n, err
+			}
+			n++
+		}
+		_, err = dec.Token()
+		return n, err
+	}
+	var n int
+	read := func(dec *json.Decoder) (err error) { n, err = count(dec); return err }
+
+	mode.Store("error")
+	var re *rpcError
+	if err := c.callStream(ctx, time.Second, "/wallet/w", "listsinceblock", []any{"x"}, read); !errors.As(err, &re) || re.Code != -5 {
+		t.Fatalf("error answer: %v", err)
+	}
+	mode.Store("big")
+	if err := c.callStream(ctx, time.Minute, "/wallet/w", "listsinceblock", []any{""}, read); err != nil || n != bigEntries {
+		t.Fatalf("answer beyond rpcMaxBody: %d entries, %v", n, err)
+	}
+	mode.Store("many")
+	if err := c.callStream(ctx, time.Minute, "/wallet/w", "listsinceblock", []any{""}, read); err != nil || n != manyEntries {
+		t.Fatalf("100,000 entries: %d entries, %v", n, err)
+	}
+	mode.Store("list-key")
+	if err := c.callStream(ctx, time.Minute, "/wallet/w", "listsinceblock", []any{""}, read); err != nil || n != 1 {
+		t.Fatalf("a skipped key holding a 1.4 MB list: %d entries, %v", n, err)
+	}
+	for _, m := range []string{"huge-entry", "huge-key"} {
+		mode.Store(m)
+		var err error
+		grew := heapGrowth(func() { err = c.callStream(ctx, time.Minute, "/wallet/w", "listsinceblock", []any{""}, read) })
+		if err == nil || !strings.Contains(err.Error(), "invalid response") || grew >= 64<<20 {
+			t.Errorf("%s: %v, heap grew %d MiB", m, err, grew>>20)
+			continue
+		}
+		var ee *escrowRPCError
+		if !errors.As(classifyEscrowRPC("listsinceblock", err), &ee) || ee.Class != "bad-reply" {
+			t.Errorf("%s: not bad-reply: %v", m, ee)
+		}
+		t.Logf("%s: refused (%v), heap grew %d MiB", m, err, grew>>20)
+	}
+	mode.Store("slow")
+	if err := c.callStream(ctx, 300*time.Millisecond, "/wallet/w", "listsinceblock", []any{""}, read); err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("cut short by the timeout: %v", err)
+	}
+	mode.Store("forbidden")
+	if err := c.callStream(ctx, time.Second, "/wallet/w", "listsinceblock", []any{""}, read); err == nil || !strings.Contains(err.Error(), "(HTTP 403)") {
+		t.Fatalf("refused by the whitelist: %v", err)
+	}
+}
+
+// heapGrowth runs f and returns how far the heap in use rose above where it started, sampled every 2 ms.
+func heapGrowth(f func()) uint64 {
+	runtime.GC()
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	base := m.HeapInuse
+	var peak atomic.Uint64
+	stop, done := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			var m runtime.MemStats
+			runtime.ReadMemStats(&m)
+			if m.HeapInuse > peak.Load() {
+				peak.Store(m.HeapInuse)
+			}
+			select {
+			case <-stop:
+				return
+			case <-time.After(2 * time.Millisecond):
+			}
+		}
+	}()
+	f()
+	close(stop)
+	<-done
+	if peak.Load() < base {
+		return 0
+	}
+	return peak.Load() - base
 }
 
 func TestRPCBasicAuthNumbersAndErrors(t *testing.T) {

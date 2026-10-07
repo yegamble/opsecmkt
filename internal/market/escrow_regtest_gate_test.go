@@ -51,12 +51,7 @@ func TestEscrowRegtestGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, c := range map[string]*rpcClient{"operator": op, "app": app} {
-		var info struct {
-			Chain string `json:"chain"`
-		}
-		if err := c.call(ctx, "", "getblockchaininfo", []any{}, &info); err != nil || info.Chain != "regtest" {
-			t.Fatalf("refusing: the %s node URL is not on regtest (or is unreachable)", name)
-		}
+		checkRealChain(t, ctx, name, c)
 	}
 	call := func(wallet, method string, out any, params ...any) {
 		t.Helper()
@@ -67,7 +62,7 @@ func TestEscrowRegtestGate(t *testing.T) {
 		if params == nil {
 			params = []any{}
 		}
-		if err := op.call(ctx, path, method, params, out); err != nil {
+		if err := op.callWithin(ctx, regtestOperatorTimeout, path, method, params, out); err != nil {
 			t.Fatalf("operator %s: %v", method, err)
 		}
 	}
@@ -180,8 +175,8 @@ func TestEscrowRegtestGate(t *testing.T) {
 	vendor, vendorSess := activate("rg2_vendor", "vendor", vendorKey, vendorWallet)
 	_, admin := e.user("rg2_admin_"+s, "admin")
 	mineTo := newAddr()
-	call("", "generatetoaddress", nil, 101, mineTo)
-	mine := func(n int) { t.Helper(); call("", "generatetoaddress", nil, n, mineTo) }
+	matureFunds(t, ctx, op, mineTo)
+	mine := func(n int) { t.Helper(); mustMine(t, ctx, op, n, mineTo) }
 	poll := func() {
 		t.Helper()
 		if err := e.A.escrowPollOnce(ctx); err != nil {

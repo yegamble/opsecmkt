@@ -9,12 +9,12 @@ import (
 )
 
 // A-331 (remainder): every escrow note, notice, status, validation error and audit text names the escrow node's chain
-// (escrowNetwork, read at startup), never a fixed "regtest". Phase 1 runs on regtest only, so the chain is set to
-// signet here by hand; a representative text from each file is checked. The template's "Regtest only" headline and
-// regtestAddressScript stay as they are while escrow is regtest-only. DB integration with the simulated Core.
+// (escrowNetwork, read at startup), never a fixed "regtest". The node and the enabled escrow are put on signet here by
+// hand (onSignet), paying signet addresses (netAddr: the chain table, A-439); a representative text from each file is
+// checked. The pages' copy on signet is TestEscrowPagesNameSignet's (A-443). DB integration with the simulated Core.
 func TestEscrowTextsNameTheNodesChain(t *testing.T) {
 	x := newEscrowEnv(t)
-	x.A.escrow.Load().network = "signet"
+	x.onSignet()
 	_, admin := x.user("netadmin", "admin")
 	has := func(where, text string, want ...string) {
 		t.Helper()
@@ -29,7 +29,7 @@ func TestEscrowTextsNameTheNodesChain(t *testing.T) {
 			t.Errorf("%s names regtest:\n%s", where, text)
 		}
 	}
-	// onPage checks a whole page, which also carries the template's fixed "Regtest only" copy.
+	// onPage checks a whole page.
 	onPage := func(where, page string, want ...string) {
 		t.Helper()
 		page = html.UnescapeString(page)
@@ -46,13 +46,13 @@ func TestEscrowTextsNameTheNodesChain(t *testing.T) {
 	// escrow_create.go: the refund address error and the audit suffix.
 	w := x.do("POST", "/orders/escrow", x.buyerSess, url.Values{"order_id": {x.order}, "refund_address": {""}})
 	has("escrow checkout without a refund address", w.Body.String(), "a fresh signet Bitcoin address")
-	order, id := x.built(regtestAddr("refund-net"), regtestAddr("claim-net"), 100000)
+	order, id := x.built(x.netAddr("refund-net"), x.netAddr("claim-net"), 100000)
 	has("checkout audit", audit("Created Bitcoin escrow%"+shortID(order)+"%"), "Created Bitcoin escrow (signet) for order")
 	// escrow_watch.go: the funded note.
 	has("funded note", strings.Join(x.events(order), "\n"), "TESTNET signet escrow funded")
 	// escrow_settle.go: the claim audit, a claim validation error, the waiting and broadcast statuses, the sign audit.
 	has("claim audit", audit("Requested the escrow claim of order "+shortID(order)+"%"), "(signet)")
-	other := x.completed(regtestAddr("refund-net2"), 100000)
+	other := x.completed(x.netAddr("refund-net2"), 100000)
 	if code, body := x.claim(other, x.vendorSess, ""); code != 400 {
 		t.Fatalf("claim without an address: %d", code)
 	} else {
@@ -77,7 +77,7 @@ func TestEscrowTextsNameTheNodesChain(t *testing.T) {
 
 	// escrow_order.go: the cancel form's refund statement; escrow_watch.go: the window-end notice.
 	under := x.draft()
-	addr := x.mustCheckout(under, regtestAddr("refund-net3"))
+	addr := x.mustCheckout(under, x.netAddr("refund-net3"))
 	x.core.deposit(addr, txidOf("net-under"), 0, 40000, 5)
 	x.poll()
 	onPage("cancel form", x.page("/order?id="+under, x.buyerSess), "0.0004 signet BTC in this escrow")
@@ -88,7 +88,7 @@ func TestEscrowTextsNameTheNodesChain(t *testing.T) {
 		"(TESTNET signet)", "broadcasts it to the signet network")
 
 	// escrow_decision.go: the amount in the resolve form's statements.
-	disputed, _ := x.disputedEscrow(regtestAddr("refund-net4"))
+	disputed, _ := x.disputedEscrow(x.netAddr("refund-net4"))
 	o, err := scanOrder(x.DB.QueryRow(orderQuery+" WHERE o.id=$1", disputed))
 	if err != nil {
 		t.Fatal(err)
@@ -106,7 +106,7 @@ func TestEscrowTextsNameTheNodesChain(t *testing.T) {
 	// A-364: escrow_cosign.go's note of a settlement's own transaction found on the network (storeSeen) and its
 	// reorganisation note; escrow_recovery.go's note of a held settlement seen on the network (seenWhilePaused) and the
 	// administrator's rebroadcast audit.
-	seen, idSeen := x.built(regtestAddr("refund-net5"), regtestAddr("claim-net5"), 100000)
+	seen, idSeen := x.built(x.netAddr("refund-net5"), x.netAddr("claim-net5"), 100000)
 	x.signAs(seen, roleVendor, idSeen)
 	x.signAs(seen, roleBuyer, idSeen)
 	x.partiesBroadcast(idSeen, 1, x.storedSigs(idSeen, roleVendor), x.storedSigs(idSeen, roleBuyer))
@@ -119,8 +119,8 @@ func TestEscrowTextsNameTheNodesChain(t *testing.T) {
 	x.core.setTxConfs(x.settleByID(idReorg).TxID, 3, "") // confirmed again, so the next pass sends nothing for it
 	x.core.setTxConfs(x.settleByID(idSeen).TxID, 3, "")
 	x.poll()
-	held, idHeld := x.built(regtestAddr("refund-net7"), regtestAddr("claim-net7"), 100000)
-	confirmedHeld, idConfirmed := x.built(regtestAddr("refund-net8"), regtestAddr("claim-net8"), 100000)
+	held, idHeld := x.built(x.netAddr("refund-net7"), x.netAddr("claim-net7"), 100000)
+	confirmedHeld, idConfirmed := x.built(x.netAddr("refund-net8"), x.netAddr("claim-net8"), 100000)
 	x.signAs(held, roleVendor, idHeld)
 	x.signAs(confirmedHeld, roleVendor, idConfirmed)
 	x.A.escrowPollOnce(x.killAtSend()) // both co-signed and stored, neither broadcast

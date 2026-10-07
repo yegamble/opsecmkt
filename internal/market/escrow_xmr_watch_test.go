@@ -36,7 +36,17 @@ type xmrEscrowEnv struct {
 
 func newXMREscrowEnv(t *testing.T) *xmrEscrowEnv {
 	t.Helper()
+	return newXMREscrowEnvWith(t, nil)
+}
+
+// newXMREscrowEnvWith is newXMREscrowEnv with edit applied to the fake before the market starts (its daemon's network,
+// say: A-449).
+func newXMREscrowEnvWith(t *testing.T, edit func(f *fakeXMREscrow)) *xmrEscrowEnv {
+	t.Helper()
 	fake := newFakeXMREscrow(t)
+	if edit != nil {
+		edit(fake)
+	}
 	key, pub := testSeedKey(t, nil)
 	x := &xmrEscrowEnv{fake: fake, seedKey: key, keyPath: writeSeedKey(t, pub), now: time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)}
 	fake.setEnv(t, x.keyPath)
@@ -103,16 +113,25 @@ func (x *xmrEscrowEnv) freshCheckout(product string) (string, string) {
 	x.t.Helper()
 	buyer, sess := x.user("xb_"+randomToken()[:8], "buyer")
 	order := x.order(buyer, product, "XMR", stateDraft)
-	if w := x.checkout(sess, order, testXMRAddr("refund "+order, true)); w.Code != 303 {
+	if w := x.checkout(sess, order, testXMRAddrOn(x.refundNet(), "refund "+order, true)); w.Code != 303 {
 		x.t.Fatalf("checkout: %d %s", w.Code, w.Body.String())
 	}
 	return order, agStrings(x.t, x.testEnv, "SELECT address FROM escrows WHERE order_id=$1 AND coin='XMR'", order)[0]
 }
 
+// refundNet is the network type the helpers' refund addresses are of: the fake daemon's, or the fakechain for the
+// real-chain legs (escrow_xmr_regtest_test.go), which have no fake.
+func (x *xmrEscrowEnv) refundNet() string {
+	if x.fake == nil {
+		return "fakechain"
+	}
+	return x.fake.network()
+}
+
 // mustCheckout takes a Monero escrow for the buyer's draft order and returns its address.
 func (x *xmrEscrowEnv) mustCheckout(order string) string {
 	x.t.Helper()
-	if w := x.checkout(x.buyerSess, order, testXMRAddr("refund "+order, true)); w.Code != 303 {
+	if w := x.checkout(x.buyerSess, order, testXMRAddrOn(x.refundNet(), "refund "+order, true)); w.Code != 303 {
 		x.t.Fatalf("checkout: %d %s", w.Code, w.Body.String())
 	}
 	return agStrings(x.t, x.testEnv, "SELECT address FROM escrows WHERE order_id=$1 AND coin='XMR'", order)[0]
@@ -603,6 +622,42 @@ func TestXMREscrowRecheckAfterOpen(t *testing.T) {
 	x.poll()
 	if x.state(order) != stateAwaitingPayment || agInt(x.testEnv, "SELECT count(*) FROM payments") != 0 || !x.A.escrowXMR.refused.Load() {
 		t.Fatalf("a refused wallet-rpc was read: %s", x.state(order))
+	}
+}
+
+// A-475: the daemon gains 100 blocks while the escrow wallet refreshes (a daemon catching up after downtime, a slow
+// pass, the browser journey's mine of 100): the wallet, synced to that daemon, is 100 blocks past the height read
+// before the refresh. Monero escrow stays on, the pass reads the wallet and funds the order; a wallet-rpc on another
+// daemon (100 blocks ahead of it on both readings) is still refused for good.
+func TestXMREscrowDaemonGainsBlocksDuringRefresh(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	order := x.draft(x.digital(x.vendor))
+	addr := x.mustCheckout(order)
+	x.fake.payAddress(addr, hex64("race"), xmrListingPrice, 12)
+	x.fake.hook("refresh", func() { x.fake.mine(100) })
+	x.mustPoll()
+	x.fake.hook("refresh", nil)
+	if x.A.escrowXMR.refused.Load() || !x.A.escrowXMR.ready.Load() || x.state(order) != stateCompleted {
+		t.Fatalf("daemon gained 100 blocks during the refresh: refused %v, ready %v, order %s", x.A.escrowXMR.refused.Load(), x.A.escrowXMR.ready.Load(), x.state(order))
+	}
+	x.mustPoll()
+
+	x.fake.edit(func(f *fakeXMREscrow) { f.walletLag = 100 })
+	if err := x.poll(); !errors.Is(err, errXMRWalletLag) || !x.A.escrowXMR.refused.Load() || x.A.escrowXMR.ready.Load() {
+		t.Fatalf("a wallet-rpc on another daemon: %v", err)
+	}
+
+	// A wallet-rpc on another daemon 11 blocks behind the height ours had before the refresh, while ours gains 100
+	// during it: below both readings, refused on that same pass.
+	y := newXMREscrowEnv(t)
+	y.mustPoll()
+	y.fake.hook("refresh", func() {
+		y.fake.mine(100)
+		y.fake.edit(func(f *fakeXMREscrow) { f.walletLag = -111 })
+	})
+	if err := y.poll(); !errors.Is(err, errXMRWalletLag) || !y.A.escrowXMR.refused.Load() || y.A.escrowXMR.ready.Load() {
+		t.Fatalf("a wallet-rpc on a daemon lagging ours by 11: %v", err)
 	}
 }
 
