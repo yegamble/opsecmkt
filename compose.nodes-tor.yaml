@@ -1,0 +1,98 @@
+# Local nodes over Tor (A-442; docs/operator-guide.md#local-nodes-over-tor). Only with APP_MODE=tor, after
+# compose.tor.yaml and compose.nodes.yaml in COMPOSE_FILE (`./scripts/install.sh check` refuses it otherwise):
+#   COMPOSE_FILE=compose.yaml:compose.tor.yaml:compose.nodes.yaml:<database overlay>:compose.nodes-tor.yaml
+# It adds tor-socks, a Tor client of the nodes' own (deploy/torrc-socks: one SOCKS port, no onion service, no control
+# port; the onion container keeps SocksPort 0), and turns node_egress internal: bitcoind and monerod lose their direct
+# route out and reach peers only through tor-socks, which alone has an egress network (tor_socks_egress). The app is not
+# on node_egress and cannot reach tor-socks.
+# Bitcoin Core: -proxy sends every outbound peer connection (IPv4, IPv6, onion) through Tor, DNS seeds included (by
+# name, through the proxy); -privatebroadcast sends sendrawtransaction (escrow settlements) over short-lived Tor
+# connections only. Never -connect or -onlynet: they stall the node's sync. Pooled payouts (sendtoaddress) are never
+# private, whatever these flags (docs/operator-guide.md#mainnet).
+# monerod: --proxy as `monerod --help` documents it (an IP address, not a host name). UNVERIFIED: nothing here has run
+# monerod through Tor; treat Monero traffic as not private.
+# The two commands repeat compose.nodes.yaml's and add only the proxy flags (tests/test_tor_deploy.py checks that they
+# still match). The node network's subnet and tor-socks's address are pinned because deploy/torrc-socks names them and
+# monerod needs an address; if 10.199.42.0/28 is in use on the host, change it here and in deploy/torrc-socks together.
+# Same log rotation as compose.yaml (anchors do not cross files; CI checks every service has it).
+x-logging: &logging
+  driver: ${LOG_DRIVER:-json-file}
+  options:
+    max-size: 10m
+    max-file: '3'
+services:
+  tor-socks:
+    build:
+      context: deploy
+      dockerfile: Dockerfile.tor
+      # The onion container's pinned tor release (docs/operator-guide.md#tor-image).
+      args: [TOR_VERSION]
+    profiles: [bitcoin, monero]
+    restart: unless-stopped
+    entrypoint: [tor, -f, /etc/tor/torrc-socks]
+    networks:
+      node_egress:
+        ipv4_address: 10.199.42.2
+      tor_socks_egress:
+    volumes:
+      - ./deploy/torrc-socks:/etc/tor/torrc-socks:ro
+      # Tor's consensus cache and entry guards, kept across restarts (a new guard on every restart is worse for privacy).
+      - tor_socks_data:/var/lib/tor
+    # Healthy once the SOCKS port accepts connections; that is not proof Tor has built a circuit (the log says
+    # "Bootstrapped 100%").
+    healthcheck:
+      test: [CMD, bash, -c, 'exec 3<>/dev/tcp/10.199.42.2/9050']
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 256m
+    cpu_period: 100000
+    cpu_quota: 100000
+    pids_limit: 64
+    logging: *logging
+  bitcoin:
+    depends_on:
+      tor-socks:
+        condition: service_started
+    command:
+      - -chain=${BITCOIN_CHAIN:-testnet4}
+      - -datadir=/data
+      - -prune=${BITCOIN_PRUNE_MB:-2000}
+      - -server=1
+      - -printtoconsole=1
+      - -rpcbind=0.0.0.0
+      - -rpcport=8332
+      - -rpcallowip=172.16.0.0/12
+      - -rpcallowip=192.168.0.0/16
+      - -rpcuser=marketplace
+      - -rpcpassword=${BITCOIN_RPC_PASSWORD:-}
+      - -fallbackfee=0.0002
+      - -proxy=tor-socks:9050
+      - -privatebroadcast
+  monero:
+    depends_on:
+      tor-socks:
+        condition: service_started
+    command: >-
+      ${MONERO_NETWORK_FLAG---${MONERO_NETWORK:-stagenet}} --data-dir=/home/monero/.bitmonero --restricted-rpc
+      --rpc-restricted-bind-ip=0.0.0.0 --rpc-restricted-bind-port=18081 --confirm-external-bind
+      ${MONERO_PRUNE_FLAGS---prune-blockchain --sync-pruned-blocks} --proxy=10.199.42.2:9050
+volumes:
+  tor_socks_data:
+
+networks:
+  node_egress:
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.199.42.0/28
+          # The host's address on this network, which deploy/torrc-socks refuses. Explicit: given an ip_range and no
+          # gateway, Docker takes the range's first address, which the torrc would then accept.
+          gateway: 10.199.42.1
+          # Nodes get addresses from here, never tor-socks's or the gateway's.
+          ip_range: 10.199.42.8/29
+  tor_socks_egress:

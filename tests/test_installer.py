@@ -1523,6 +1523,23 @@ time.sleep(60)
         self.check_env(installed_env(APP_MODE='onion'), 'APP_MODE must be clearnet or tor')
         self.check_env(installed_env(COOKIE_SECURE='TRUE'), 'COOKIE_SECURE must be exactly true or false')
 
+    def test_check_takes_the_node_tor_overlay_only_after_tor_and_the_nodes(self):
+        # A-442: compose.nodes-tor.yaml replaces the node commands, so it must follow compose.nodes.yaml (listed
+        # before it, compose.nodes.yaml's commands would win and drop the proxy), and it is for Tor mode only.
+        base = 'compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.internal-db.yaml'
+        self.check_env(installed_env(COMPOSE_FILE=base + ':compose.nodes-tor.yaml',
+                                     COMPOSE_PROFILES='internal-db,bitcoin', BITCOIN_RPC_PASSWORD=hex_value(48, 'rpc')))
+        self.check_env(installed_env(COMPOSE_FILE='compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.nodes-tor.yaml:'
+                                                  'compose.internal-db.yaml'))
+        after = 'compose.nodes-tor.yaml must come after compose.nodes.yaml in COMPOSE_FILE'
+        self.check_env(installed_env(COMPOSE_FILE='compose.yaml:compose.tor.yaml:compose.nodes-tor.yaml:compose.nodes.yaml:'
+                                                  'compose.internal-db.yaml'), after)
+        self.check_env(installed_env(COMPOSE_FILE='compose.yaml:compose.tor.yaml:compose.internal-db.yaml:compose.nodes-tor.yaml'),
+                       after)
+        self.check_env(clearnet_env(COMPOSE_FILE='compose.yaml:compose.clearnet.yaml:compose.nodes.yaml:compose.internal-db.yaml:'
+                                                 'compose.nodes-tor.yaml'),
+                       'compose.nodes-tor.yaml (local nodes over Tor) needs APP_MODE=tor and compose.tor.yaml')
+
     def test_check_refuses_placeholders(self):
         self.check_env(installed_env(SETUP_TOKEN='REPLACE_WITH_AT_LEAST_32_RANDOM_CHARACTERS'),
                        'SETUP_TOKEN is still a placeholder value')
