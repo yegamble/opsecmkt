@@ -1215,7 +1215,14 @@ place; the [operator guide](operator-guide.md#bitcoin-escrow-test-networks-only)
    only what is newer than its checkpoint, and `/admin` says when a long first read keeps escrow off while it goes on.
    Fee bumps of a payment to those keys do not keep escrow off either (QA4W6-1): Core lists every unconfirmed
    replacement, and the check reads each entry key by key. A read grows with the square of the replacements only while
-   they are unconfirmed; once one is mined the next retry passes (the operator guide's arbiter wallet paragraph).
+   they are unconfirmed; once one is mined the next read passes (the operator guide's arbiter wallet paragraph).
+   **Public-network caveat:** on these chains fee bumps cost almost nothing, so anyone can repeat such a burst every
+   block, and while it lasts each read costs the escrow node memory (3000 bumps on Core 31.1: a 605 MB answer and
+   about 1.5 GB of the node's memory per read; a node capped at 5 GiB was killed by the third read in a row). The market
+   paces its own reads (A-479: after a read that fails or takes 5 s or more the next waits 1 minute, doubling to at
+   most 1 hour), so where reads failed during such a burst, escrow can stay off for up to an hour after it ends; restart
+   the app to check at once.
+   Before any public network, run escrow on a node of its own, never the pooled payments' node, with memory to spare.
 8. Fees (QA4W6-5). Every settlement is built at `ESCROW_BTC_FEE_RATE`, default 2 sat/vB, a whole number from 1 to 100
    read at startup (set it in `.env` and restart the app), and no settlement's network fee may exceed 0.001 BTC (one
    that would is not built until the rate is lowered). On testnet4 spam often lifts nodes' mempool minimum above

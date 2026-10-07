@@ -672,11 +672,14 @@ been done. Never switch it on for a market that takes real payments.
   holds thousands of replacements unconfirmed does each read grow with their square, and Core builds each answer in
   memory: 3000 bumps (measured once on Core 31.1 regtest) made a 605 MB answer, 15 to 18 s from Core and 16 s for the
   app's read, and Core's memory grew by about 1.5 GB per such answer without giving it back, so a node held to 5 GiB
-  (a Docker memory limit) was killed by the third read in a row. Give the escrow node memory to spare. A read that
-  fails or outlasts the 5-minute timeout below leaves escrow off ("could not be read", never "must be used for the
-  escrow key only") until a replacement is mined; then Core lists the others no more (3000 bumps: one 202 KB entry)
-  and the next retry passes on its own. Escrow checks the arbiter wallet at startup and on each retry while it is
-  off, not on every pass while it is on. Nothing needs doing but waiting for a block (on regtest, mine one);
+  (a Docker memory limit) was killed by the third read in a row. **Run escrow on a node of its own**, so that such a
+  burst cannot take the pooled payments down with it, and give that node memory to spare (each such read grew Core by
+  about 1.5 GB). A read that fails or outlasts the 5-minute timeout below leaves escrow off ("could not be read",
+  never "must be used for the escrow key only") until a replacement is mined; then Core lists the others no more (3000
+  bumps: one 202 KB entry) and the next read passes on its own, once the wait after a slow or failed read has passed
+  (*Reads are paced*, below; restarting the app reads at once). Escrow checks the arbiter wallet at startup and on
+  retries while it is off, not on every pass while it is on. Nothing needs doing but waiting for a block (on regtest,
+  mine one);
   `bitcoin-cli -rpcwallet=<arbiter wallet> getwalletinfo` shows the wallet's `txcount` meanwhile. Otherwise escrow is disabled with "escrow: Bitcoin escrow disabled:
   the arbiter wallet must be used for the escrow key only …". So that mass payments to that address cannot keep escrow
   off by making the read slow (QA4W4A-1: 100,000 entries took longer than startup allows when every start read them all),
@@ -708,8 +711,8 @@ been done. Never switch it on for a market that takes real payments.
   such as `listsinceblock` missing from the whitelist, or an answer with one string or other single JSON token longer
   than 64 KiB, which Core never writes: `bad-reply`) is never a pass: escrow stays disabled with "escrow:
   Bitcoin escrow disabled: the arbiter wallet's transactions could not be read …" (and an `/admin` line naming the
-  class), and the check is retried every poll. The answer as a whole has no size limit (100,000 entries are about
-  71 MB), only the read's 5-minute timeout. What the check cannot tell apart: `rpcwhitelist` allows methods, not wallets, so
+  class), and the check is retried after a wait (*Reads are paced*, below). The answer as a whole has no size limit
+  (100,000 entries are about 71 MB), only the read's 5-minute timeout. What the check cannot tell apart: `rpcwhitelist` allows methods, not wallets, so
   where the pooled payments share this node, a pooled user allowed `sendtoaddress` can spend coins paid to the arbiter
   wallet by naming its path, and that spend turns escrow off at the next check (no key is exported). Run escrow on a
   node of its own to rule that out. It cannot check which descriptors the wallet holds (`listdescriptors` is not on the
@@ -717,6 +720,29 @@ been done. Never switch it on for a market that takes real payments.
   child key is in the wallet's derived key range (`deriveaddresses` and `getaddressinfo`) and, when it is not,
   extends the range 1000 keys past the market index with `keypoolrefill` (checked on Core 31.1 regtest under the
   whitelist at index 2501); if it still is not, the settlement waits ("market-key-missing" in the log).
+
+  **Reads are paced (A-479).** The escrow watcher retries the checks every `PAYMENT_POLL_INTERVAL` (default 30 s)
+  while escrow is off, and before A-479 each retry read the arbiter wallet again: during a burst of 3000 fee bumps the
+  market itself asked the node every 30 s for a 605 MB answer that cost Core about 1.5 GB of memory, enough to get a
+  capped node killed, and the pooled payments with it where they share that node. Now a read that fails (a timeout, an unreachable
+  node, `bad-reply`, an RPC error) or takes 5 s or more, whatever it found, makes the next read wait: 1 minute after
+  the first, then 2, 4, 8, 16 and 32, and at most 1 hour, counted from when the read ended. A read that answers in under
+  5 s ends the waits; one that passes starts escrow as before. While a wait runs a retry still runs every other check,
+  but does not read the wallet, and reports what the last read found: after a failure the "could not be read" line and
+  its `/admin` alert stay, and the alert names the next check ("The next check is in about 4 minutes."); after a slow
+  pass escrow is on, so nothing reads the wallet until escrow goes off again (the daily pooled key self-check), and if
+  that happens within the wait, escrow stays off with "escrow: Bitcoin escrow off until the arbiter wallet's next
+  check: …" and `/admin` says "Bitcoin escrow off until the arbiter wallet's next check, in about N minutes". Each slow
+  or failed read logs one line, "escrow: the arbiter wallet's read failed (`<class>`); the next read waits about N
+  minutes" or "… read took 6s (5 s or more); …". A read already in progress (one that outlived startup) is still taken
+  over, never started twice. Startup's read is never held back: the wait is kept in memory only, so **restarting the
+  app reads at once**, which is the way to bring escrow back without waiting out the hour once a block has confirmed a
+  replacement. No setting changes this schedule. What it bounds is the market's own load on the node (at 3000 bumps,
+  one such read per wait at most instead of one per poll). It cannot keep anyone else from loading the node, and on a
+  public test network, where fee bumps cost almost nothing, a payer can repeat the burst every block: while the node
+  copes, reads still pass (slowly: 3000 bumps took 16 s) and escrow comes on as before; a node that runs short of
+  memory fails them, and escrow stays off until one passes. A node of escrow's own with memory to spare is what keeps such a
+  burst away from everything else.
 - `ESCROW_BTC_WATCH_WALLET` (default `opsecmkt-escrow-watch`): a descriptor wallet with private keys disabled into
   which the app imports each escrow's descriptor (public keys only) before it shows the escrow address, and from
   which the escrow watcher reads deposits. Create it once as the operator user

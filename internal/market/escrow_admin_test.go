@@ -361,9 +361,10 @@ func TestEscrowArbiterReadOutlivesStartup(t *testing.T) {
 }
 
 // QA4W5-4: the reuse rules of a read of the arbiter wallet (arbiterScan). A read that a check has taken is gone: after
-// a read that failed (rpc:-1) and a node that then answers, the watcher's retry reads again and starts escrow, instead
-// of taking the old failure. A read is adopted only by a check of the same wallet from the same checkpoint: with the
-// birthtime changed while a read is held (another wallet, or one rebuilt), the retry starts a read of its own.
+// a read that failed (rpc:-1) and a node that then answers, the watcher's retry (once the failure's wait has passed,
+// A-479) reads again and starts escrow, instead of taking the old failure. A read is adopted only by a check of the same
+// wallet from the same checkpoint: with the birthtime changed while a read is held (another wallet, or one rebuilt), the
+// retry starts a read of its own.
 func TestEscrowArbiterScanReuse(t *testing.T) {
 	x := newEscrowEnv(t)
 	logs := captureLog(t)
@@ -371,6 +372,7 @@ func TestEscrowArbiterScanReuse(t *testing.T) {
 	x.core.mu.Lock()
 	x.core.arbiterTxs, x.core.arbiterBirth, x.core.arbiterListErr = []string{"receive"}, 1700002000, -1
 	x.core.mu.Unlock()
+	advance := paceClock(t)
 	x.restart()
 	if x.A.escrow.Load() != nil || x.A.escrowStartState != escrowLogArbiterRead || !strings.Contains(logs.String(), escrowLogArbiterRead+" (listsinceblock rpc:-1)") {
 		t.Fatalf("startup with a failing read: %q\n%s", x.A.escrowStartState, logs.String())
@@ -378,6 +380,7 @@ func TestEscrowArbiterScanReuse(t *testing.T) {
 	x.core.mu.Lock()
 	x.core.arbiterListErr = 0
 	x.core.mu.Unlock()
+	advance(escrowArbiterWaitMin) // A-479: after a failed read the next waits a minute
 	before := x.core.count("listsinceblock")
 	retry := &escrowRetry{last: x.A.escrowStartState}
 	if x.A.retryEscrow(ctx, retry); x.A.escrow.Load() == nil || retry.last != escrowLogOn {

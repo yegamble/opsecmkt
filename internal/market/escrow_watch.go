@@ -309,6 +309,9 @@ func escrowNodeLoader(ctx context.Context, a *App, _ *http.Request, d *PageData)
 	}
 	if why := a.escrowArbiterRead.Load(); why != nil {
 		v.ArbiterRead = *why
+		if *why != "waiting" {
+			v.ArbiterNext = a.arbiterNextCheck() // A-479: the next read waits after a slow or failed one
+		}
 	}
 	if e := a.escrow.Load(); e != nil {
 		v.NotSynced, _ = a.escrowSync.Load().(string)
