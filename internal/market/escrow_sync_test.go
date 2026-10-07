@@ -2,6 +2,7 @@ package market
 
 import (
 	"context"
+	"errors"
 	"html"
 	"strings"
 	"testing"
@@ -335,5 +336,55 @@ func TestEscrowChainPinRules(t *testing.T) {
 	// The identity itself: chain name, plus signet_challenge on signet only.
 	if escrowChainID("signet", "51") != "signet:51" || escrowChainID("regtest", "51") != "regtest" {
 		t.Fatalf("chain IDs %q %q", escrowChainID("signet", "51"), escrowChainID("regtest", "51"))
+	}
+}
+
+// QA4W6-3: each watcher pass checks the node against the chain escrow started on, signet_challenge included
+// (escrowChainID, A-439), not the chain name alone. Escrow runs on a fake signet of challenge 51 with work waiting: an
+// unpaid order past its payment window (a pass cancels it), a claim requested and not built (a pass builds it) and a
+// claim the vendor signed (a pass co-signs and broadcasts it). The node then reports signet with challenge 5121ab
+// (another signet) while the app runs: the pass reports the chain change and cancels, builds, co-signs and sends
+// nothing. Back on challenge 51, the next pass does all three.
+func TestEscrowWatcherNoticesSignetChallengeChange(t *testing.T) {
+	x := signetEscrowEnv(t)
+	signed, sid := x.built(x.netAddr("challenge-refund-1"), x.netAddr("challenge-claim-1"), 100000)
+	unbuilt := x.completed(x.netAddr("challenge-refund-2"), 100000)
+	if code, body := x.claim(unbuilt, x.vendorSess, x.netAddr("challenge-claim-2")); code != 303 {
+		t.Fatalf("claim: %d %s", code, body)
+	}
+	x.signAs(signed, roleVendor, sid)
+	x.mustCheckout(x.order, x.netAddr("challenge-refund-3"))
+	x.DB.Exec("UPDATE escrows SET created=now()-interval '25 hours' WHERE order_id=$1", x.order)
+	_, _, state, _ := x.settlement(unbuilt)
+	if state != "building" || x.settleByID(sid).State != "party_signed" || x.state(x.order) != stateAwaitingPayment {
+		t.Fatalf("set-up: claim %s, signed claim %s, unpaid order %s", state, x.settleByID(sid).State, x.state(x.order))
+	}
+	x.core.mu.Lock()
+	x.core.challenge = "5121ab"
+	x.core.mu.Unlock()
+	before := len(x.core.methods())
+	err := x.A.escrowPollOnce(context.Background())
+	var we *watchError
+	if !errors.As(err, &we) || we.class != "node changed chain; pass skipped" {
+		t.Fatalf("pass on another signet: %v", err)
+	}
+	_, _, state, _ = x.settlement(unbuilt)
+	if state != "building" || x.settleByID(sid).State != "party_signed" || x.state(x.order) != stateAwaitingPayment {
+		t.Fatalf("pass on another signet acted: claim %s, signed claim %s, unpaid order %s", state, x.settleByID(sid).State, x.state(x.order))
+	}
+	for _, m := range x.core.methods()[before:] {
+		if m != "getblockchaininfo" && m != "getnetworkinfo" {
+			t.Fatalf("pass on another signet called %s", m)
+		}
+	}
+	x.core.mu.Lock()
+	x.core.challenge = "51"
+	x.core.mu.Unlock()
+	if err := x.A.escrowPollOnce(context.Background()); err != nil {
+		t.Fatalf("pass back on challenge 51: %v", err)
+	}
+	_, _, state, _ = x.settlement(unbuilt)
+	if state != "awaiting_signature" || x.settleByID(sid).State != "broadcast" || x.state(x.order) != stateCancelled {
+		t.Fatalf("pass back on challenge 51: claim %s, signed claim %s, unpaid order %s", state, x.settleByID(sid).State, x.state(x.order))
 	}
 }

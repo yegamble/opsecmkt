@@ -663,7 +663,21 @@ been done. Never switch it on for a market that takes real payments.
   The read sets `include_change`, so a spend whose outputs all go to the wallet's own change addresses counts too (it
   leaves no `send` entry in `listtransactions`; probed on Core 31.1). Coins paid to it do not count (A-471): every
   escrow order's descriptor shows the market's child key, whose address the arbiter wallet owns, so anyone can pay it;
-  such coins stay in the wallet and change nothing. Otherwise escrow is disabled with "escrow: Bitcoin escrow disabled:
+  such coins stay in the wallet and change nothing. Nor do its payer's fee bumps of such a payment (QA4W6-1): while
+  they are unconfirmed, Core lists every replacement as an entry whose `walletconflicts` names all the others, so 1000
+  bumps make entries of about 67 KB each and an answer of about bumps² × 67 bytes (1100 bumps: 82 MB, which the app
+  read in about 2 s on Core 31.1 regtest); once one replacement is mined, Core lists the others in no read again (full
+  or from the checkpoint, before or after a node restart), and the mined one keeps them all in its `walletconflicts`.
+  The check reads each entry key by key and decodes only `category`, so neither keeps escrow off. Only while a payer
+  holds thousands of replacements unconfirmed does each read grow with their square, and Core builds each answer in
+  memory: 3000 bumps (measured once on Core 31.1 regtest) made a 605 MB answer, 15 to 18 s from Core and 16 s for the
+  app's read, and Core's memory grew by about 1.5 GB per such answer without giving it back, so a node held to 5 GiB
+  (a Docker memory limit) was killed by the third read in a row. Give the escrow node memory to spare. A read that
+  fails or outlasts the 5-minute timeout below leaves escrow off ("could not be read", never "must be used for the
+  escrow key only") until a replacement is mined; then Core lists the others no more (3000 bumps: one 202 KB entry)
+  and the next retry passes on its own. Escrow checks the arbiter wallet at startup and on each retry while it is
+  off, not on every pass while it is on. Nothing needs doing but waiting for a block (on regtest, mine one);
+  `bitcoin-cli -rpcwallet=<arbiter wallet> getwalletinfo` shows the wallet's `txcount` meanwhile. Otherwise escrow is disabled with "escrow: Bitcoin escrow disabled:
   the arbiter wallet must be used for the escrow key only …". So that mass payments to that address cannot keep escrow
   off by making the read slow (QA4W4A-1: 100,000 entries took longer than startup allows when every start read them all),
   a passing check records a checkpoint in the database (`settings` key `escrow_btc_arbiter_checked`: the block
@@ -691,8 +705,8 @@ been done. Never switch it on for a market that takes real payments.
   When that read takes longer than startup allows, escrow stays off with "escrow: Bitcoin escrow
   off while the arbiter wallet is checked: …" and `/admin` says so; the read goes on, and the escrow watcher starts
   escrow once it has passed, without reading again. A read that fails (a timeout, an unreachable node, an RPC error
-  such as `listsinceblock` missing from the whitelist, or an answer with one entry or other single value longer than
-  64 KiB, where Core's entries are about 700 bytes: `bad-reply`) is never a pass: escrow stays disabled with "escrow:
+  such as `listsinceblock` missing from the whitelist, or an answer with one string or other single JSON token longer
+  than 64 KiB, which Core never writes: `bad-reply`) is never a pass: escrow stays disabled with "escrow:
   Bitcoin escrow disabled: the arbiter wallet's transactions could not be read …" (and an `/admin` line naming the
   class), and the check is retried every poll. The answer as a whole has no size limit (100,000 entries are about
   71 MB), only the read's 5-minute timeout. What the check cannot tell apart: `rpcwhitelist` allows methods, not wallets, so

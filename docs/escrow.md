@@ -976,7 +976,8 @@ A-447) on their own host.
 - **Pages name the chain.** The order panel's headline and badge, the checkout offer, the escrow key page, the
   transparency page, the footer and catalog notices, the vendor desk tile, the dispute form and `/admin` say signet or
   testnet4 where they said regtest. While escrow is disabled they name the chain the node last reported, or the
-  database's pinned chain.
+  database's pinned chain; a market that has never pinned one (and holds no Bitcoin escrow) whose node has not answered
+  yet names none and says "chain not verified yet" (QA4W6-8, `TestEscrowChainNotVerifiedAtFirstStart`).
 - **Preconditions on these chains** (the [runbook](testnet-runbook.md#11-bitcoin-escrow-on-signet-or-testnet4)): the
   sync guard's peer and tip-age checks apply (`getnetworkinfo` must be on the escrow user's whitelist), the chain pin
   includes the signet challenge, the pooled user must be refused the arbiter wallet, and in `APP_MODE=tor` broadcasts
@@ -984,7 +985,15 @@ A-447) on their own host.
   payment to the market's child key costs almost nothing, so anyone can fill the arbiter wallet with dust; the start
   check still reads only the entries newer than its checkpoint (streamed `listsinceblock`, `listsinceblock` on the
   escrow user's whitelist), a read that fails or times out is not a pass, and only a spend from the wallet disables
-  escrow. Nothing in that check depends on the chain.
+  escrow. The read's 64 KiB bound applies to each JSON token, never to an entry (QA4W6-1): Core lists every unconfirmed
+  fee bump of a payment to that key as an entry whose `walletconflicts` names all the others (1000 bumps: entries of
+  about 67 KB, an answer of about bumps² × 67 bytes), and the mined replacement keeps them all, so reading entries whole
+  kept escrow off for good after about 1000 bumps. The read now takes each entry key by key
+  (`TestEscrowArbiterEntriesStreamByToken`; the `ArbiterDeposit` leg's 1100 bumps on Core 31.1: 82 MB unconfirmed, then
+  one 74 KB entry once mined, escrow on throughout; 3000 bumps, measured once: 605 MB, read in 16 s, then one 202 KB
+  entry). The square-law volume lasts only while the replacements are unconfirmed: once one is mined Core lists the
+  others in no read. While it lasts it costs the node memory (about 1.5 GB per 605 MB answer; the operator guide's
+  arbiter wallet paragraph). Nothing in that check depends on the chain.
 
 How it was tested: DB integration with the simulated Core (`TestEscrowStartupChains`: mainnet and testnet3 refused
 before any wallet call, signet and testnet4 started, pinned and named, and named from the pin with the node down;
@@ -996,7 +1005,8 @@ mining with `generatetoaddress` (maxtries 2000000000, every call's block count c
 one peer. It runs the regtest legs that need no regtest-only RPC (`PracticeSign`, `Funding`, `Settlement`, `Cosign`,
 `Gate`, `Bump`, `Physical`, `Deadline`, `Reserve`, `BIP32`, `Signer`, `Pooled`, `ArbiterRestore`, `PerOrderPractice`
 and `ArbiterDeposit`, the arbiter wallet's dust leg: 6000 outputs of 1000 sat paid to an order's market child key, a
-restart that reads them from the checkpoint and keeps escrow on, and a spend that disables it) and
+restart that reads them from the checkpoint and keeps escrow on, 1100 fee bumps of one payment to that key with
+restarts before and after the last is mined, and a spend that disables it) and
 `TestEscrowRegtestIsolated`: node B leaves the network (`setnetworkactive false`), node A pays and mines an escrow
 deposit, the order's payment window is moved past, and a watcher pass cancels nothing (not synced: no peers, while
 Core's initial block download stays false); node B comes back and the next pass credits the deposit and completes the
@@ -1004,10 +1014,11 @@ order. Not run there, with the reason the script prints: `Recovery` and `Conflic
 `invalidateblock`, `reconsiderblock` and `prioritisetransaction`) and `PrivateBroadcast` (a `-privatebroadcast` node
 and `generateblock`, which cannot find a signet block). That run is private signet, not public: it shows the signet
 code paths and the guard's peer check on a real Core, not public peers, fees, relay or reorganisations. Regtest mode,
-which CI runs, is unchanged. Recorded on 2026-10-06 (transcripts kept locally under `artifacts/real-chain/`,
-gitignored): after the merge of the integration branch at `61f1c06`, all 18 regtest legs passed; on the private signet
-the 16 legs above passed at `9d2cb11` (22 minutes, 8 of them maturing node A's coins; in `ArbiterDeposit` the restart
-behind 6000 dust entries read them from the checkpoint and kept escrow on in about half a second).
+which CI runs, is unchanged. Last recorded on 2026-10-07 at `afb14d7` (the QA4W6 fix round; transcripts kept locally
+under `artifacts/real-chain/`, gitignored): all 18 regtest legs passed (under 2 minutes), and on the private signet,
+started cold (node A's coins matured afresh), the 16 legs above passed in 8.5 minutes; in `ArbiterDeposit` there, 1100
+fee bumps of one payment made the arbiter wallet's answer 82 MB while unconfirmed and 74 KB once the last was mined,
+and escrow stayed on through every restart.
 
 ## Escrow-only cutover (A-444)
 

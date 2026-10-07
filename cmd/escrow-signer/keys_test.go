@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -34,8 +35,14 @@ import (
 // closed. reflect is held to DeepEqual (MethodByName would call any *big.Int method by name), and an interface or type
 // constraint written in the package that *big.Int implements or satisfies may list only allowed *big.Int methods (a
 // local interface would otherwise carry Mul, ModInverse and Bit past the scan: its calls name the interface's methods,
-// not math/big's). Limit: a static scan cannot tell multi-precision arithmetic written in plain Go (limbs in a uint64
-// slice, say) from any other code; that is left to review of the diff.
+// not math/big's). QA4W6-2: a struct of the package may not embed big.Int (a struct embedding *big.Int with one local
+// method added implements such an interface while *big.Int does not), and interfaces are checked against every struct
+// that does as well. Limits: the scan is a review aid, not a proof. Add and Mod alone, both on the allow-list because
+// hardened CKDpriv needs them, are enough for all of modular arithmetic (a multiplication is a double-and-add of
+// additions mod p, an inverse is Fermat's a^(p-2) by square-and-multiply over those), so a local secp256k1 point
+// multiplication written with nothing but allowed calls passes the scan (QA4W6 mutant SQ). Nor can a static scan tell
+// multi-precision arithmetic written in plain Go (limbs in a uint64 slice, say) from any other code. Both are left to
+// review of the diff: any new arithmetic on a key in this package needs a reviewer's reason.
 func TestSignerNoPointMultiplication(t *testing.T) {
 	allowedImports := map[string]bool{"bufio": true, "bytes": true, "context": true, "crypto/hmac": true, "crypto/rand": true,
 		"crypto/sha256": true, "crypto/sha512": true, "encoding/base64": true, "encoding/binary": true, "encoding/hex": true,
@@ -137,15 +144,50 @@ func TestSignerNoPointMultiplication(t *testing.T) {
 	if bigInt == nil {
 		t.Fatal("the scan saw no use of big.Int")
 	}
+	// QA4W6-2: a struct of the package that embeds big.Int (value or pointer) carries big.Int's methods under its own
+	// name, and with one local method added implements an interface *big.Int does not (mutant SE), so every such struct
+	// is refused, and interfaces are checked against each struct type seen here as well as *big.Int.
+	impls := []types.Type{bigInt}
+	checkEmbed := func(pos token.Pos, typ types.Type) {
+		st, ok := typ.Underlying().(*types.Struct)
+		if !ok {
+			return
+		}
+		for i := 0; i < st.NumFields(); i++ {
+			f := st.Field(i)
+			ft := f.Type()
+			if p, ok := ft.(*types.Pointer); ok {
+				ft = p.Elem()
+			}
+			if f.Embedded() && types.Identical(types.NewPointer(ft), bigInt) {
+				impls = append(impls, typ, types.NewPointer(typ))
+				if !told[pos] {
+					told[pos] = true
+					t.Errorf("%s: a struct that embeds big.Int carries its methods past the signer's allow-list for math/big; name the field instead", fset.Position(pos))
+				}
+				return
+			}
+		}
+	}
+	for e, tv := range info.Types {
+		if tv.IsType() {
+			checkEmbed(e.Pos(), tv.Type)
+		}
+	}
+	for id, obj := range info.Defs {
+		if tn, ok := obj.(*types.TypeName); ok {
+			checkEmbed(id.Pos(), tn.Type())
+		}
+	}
 	checkIface := func(pos token.Pos, typ types.Type) {
 		iface, ok := typ.Underlying().(*types.Interface)
-		if !ok || iface.NumMethods() == 0 || told[pos] || !types.Implements(bigInt, iface) && !types.Satisfies(bigInt, iface) {
+		if !ok || iface.NumMethods() == 0 || told[pos] || !slices.ContainsFunc(impls, func(T types.Type) bool { return types.Implements(T, iface) || types.Satisfies(T, iface) }) {
 			return
 		}
 		for i := 0; i < iface.NumMethods(); i++ {
 			if name := iface.Method(i).Name(); !allowedBig[name] {
 				told[pos] = true
-				t.Errorf("%s: an interface or constraint that *big.Int implements lists %s, which is not on the signer's allow-list for math/big (its calls reach big.Int's %s)", fset.Position(pos), name, name)
+				t.Errorf("%s: an interface or constraint that *big.Int (or a struct embedding big.Int) implements lists %s, which is not on the signer's allow-list for math/big (its calls reach big.Int's %s)", fset.Position(pos), name, name)
 				return
 			}
 		}

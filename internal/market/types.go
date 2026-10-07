@@ -225,7 +225,8 @@ type PageData struct {
 	// EscrowOn: ESCROW_BTC=on (every page); EscrowAvailable: escrow passed its checks. EscrowOrders: vendor desk, the
 	// viewer's escrow orders that may hold coins (QA31-2): the site-wide notices never say no funds are held beside them.
 	// EscrowNet: Bitcoin escrow's chain, regtest, signet or testnet4 (App.escrowNetwork, A-443; every page), so the copy
-	// names it (partials/escrow-net.html).
+	// names it (partials/escrow-net.html); "" while it is not verified yet (App.escrowNetKnown, QA4W6-8), and the copy
+	// says so.
 	EscrowOn, EscrowAvailable bool
 	EscrowNet                 string
 	// DispatchOn: ESCROW_BTC or ESCROW_XMR on (every page): the listing forms offer the dispatch window, which both coins'
