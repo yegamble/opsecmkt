@@ -25,6 +25,7 @@ func init() {
 	registerLoader("disputes", loadDisputes)
 	registerLoader("moderator", loadDisputes)
 	registerLoader("moderator", loadPaymentReviews)
+	registerLoader("moderator", loadEscrowAlerts)
 
 	registerPreview("order", previewOrder)
 	registerPreview("product", previewReviews)
@@ -134,10 +135,41 @@ func staffReviewer(ctx context.Context, a *App, o *Order, u *User) (bool, error)
 //     them clears it.
 //
 // A new escrow notice through flagOrder either flags the deposits it concerns (as every other one does) or adds its
-// open state here.
+// open state here, and its reason to the moderation desk's list (loadEscrowAlerts).
 func escrowStaffAlert(order string) string {
 	return "EXISTS(SELECT 1 FROM settlements s WHERE s.order_id=" + order + " AND (s.state='broadcast' AND " + escrowStalledSQL +
 		" OR s.kind='release' AND s.state='failed' AND s.build_error='" + settleTooSmall + "'))"
+}
+
+// escrowAlertLimit bounds the moderation desk's list of escrow orders with an open staff alert.
+const escrowAlertLimit = 100
+
+// loadEscrowAlerts lists, on the moderation desk, the escrow orders with an open staff alert (escrowStaffAlert, the
+// rule that lets staff read them), each linked to its order page, so that a moderator can open one from the notice: a
+// notification names only a short order ID, and a stall flags no deposit, so the payment review list does not show it.
+// Nothing here is an action.
+func loadEscrowAlerts(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
+	if d.User == nil || (d.User.Role != "moderator" && d.User.Role != "admin") {
+		return nil
+	}
+	rows, err := a.db.QueryContext(ctx, `SELECT o.id,o.state,
+		EXISTS(SELECT 1 FROM settlements s WHERE s.order_id=o.id AND s.state='broadcast' AND `+escrowStalledSQL+`),
+		EXISTS(SELECT 1 FROM settlements s WHERE s.order_id=o.id AND s.kind='release' AND s.state='failed' AND s.build_error='`+settleTooSmall+`')
+		FROM orders o WHERE o.id IN (SELECT order_id FROM settlements WHERE state IN ('broadcast','failed')) AND `+escrowStaffAlert("o.id")+`
+		ORDER BY o.created,o.id LIMIT $1`, escrowAlertLimit)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var v EscrowAlertView
+		if err = rows.Scan(&v.ID, &v.State, &v.Stall, &v.TooFew); err != nil {
+			return err
+		}
+		v.State = stateLabel(v.State)
+		d.EscrowAlerts = append(d.EscrowAlerts, v)
+	}
+	return rows.Err()
 }
 
 // disputeVisible: the order is or was disputed, so a reviewer may also read its digital delivery.

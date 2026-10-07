@@ -30,6 +30,23 @@ func (x *escrowEnv) exec(query string, args ...any) {
 	}
 }
 
+// deskAlert is the moderation desk's escrow-alerts entry for order as sess sees it, or "" when it is not listed.
+func (x *escrowEnv) deskAlert(order, sess string) string {
+	x.t.Helper()
+	desk := x.page("/moderator", sess)
+	_, section, ok := strings.Cut(desk, `<section id="escrow-alerts"`)
+	if !ok {
+		return ""
+	}
+	section, _, _ = strings.Cut(section, "</section>")
+	_, entry, ok := strings.Cut(section, `<li><a class="text-link mono" href="/order?id=`+order+`">`)
+	if !ok {
+		return ""
+	}
+	entry, _, _ = strings.Cut(entry, "</li>")
+	return entry
+}
+
 // orderCodes is the status of GET /order?id=order for each session.
 func (x *escrowEnv) orderCodes(order string, sessions ...string) []int {
 	x.t.Helper()
@@ -72,8 +89,11 @@ func TestEscrowStallAlertStaffRead(t *testing.T) {
 	product := agStrings(t, x.testEnv, "SELECT product_id FROM orders WHERE id=$1", order)[0]
 	x.exec("UPDATE products SET archived=true WHERE id=$1", product)
 	listing := func(sess string) int { return x.do("GET", "/product?id="+product, sess, nil).Code }
-	if got := x.orderCodes(order, mod, admin); !slices.Equal(got, []int{404, 404}) || listing(mod) != 404 {
-		t.Fatalf("staff before any alert: %v, archived listing %d", got, listing(mod))
+	if got, l := x.orderCodes(order, mod, admin), listing(mod); !slices.Equal(got, []int{404, 404}) || l != 404 {
+		t.Fatalf("staff before any alert: %v, archived listing %d", got, l)
+	}
+	if e := x.deskAlert(order, mod); e != "" {
+		t.Fatalf("the desk lists an escrow alert before any: %s", e)
 	}
 	x.setBlocks(200 + escrowStallBlocks)
 	x.poll()
@@ -88,11 +108,17 @@ func TestEscrowStallAlertStaffRead(t *testing.T) {
 	if got := x.orderCodes(order, outsiders...); !slices.Equal(got, []int{404, 404, 404}) {
 		t.Fatalf("an unrelated user or a party of another order while the stall alert is open: %v", got)
 	}
-	if listing(mod) != 200 || listing(outsiders[0]) != 404 {
-		t.Fatalf("the archived listing while the stall alert is open: staff %d, unrelated %d", listing(mod), listing(outsiders[0]))
+	if l, u := listing(mod), listing(outsiders[0]); l != 200 || u != 404 {
+		t.Fatalf("the archived listing while the stall alert is open: staff %d, unrelated %d", l, u)
 	}
 	if got := x.orderCodes(order, x.buyerSess, x.vendorSess); !slices.Equal(got, []int{200, 200}) {
 		t.Fatalf("the parties: %v", got)
+	}
+	// The moderation desk lists it, linked, for a moderator and an administrator.
+	for _, sess := range []string{mod, admin} {
+		if e := x.deskAlert(order, sess); !strings.Contains(e, "a settlement queued or stuck, not seen by the network") || strings.Contains(e, "too few") {
+			t.Fatalf("the desk's escrow alert for the stall: %q", e)
+		}
 	}
 	// The /admin stall line links the order page.
 	if page := x.adminPage(); !strings.Contains(page, `href="/order?id=`+order+`"`) {
@@ -108,8 +134,11 @@ func TestEscrowStallAlertStaffRead(t *testing.T) {
 	if _, _, seen := x.stallNotices(order); seen != 1 {
 		t.Fatalf("the stall alert did not clear: %d seen notes", seen)
 	}
-	if got := x.orderCodes(order, mod, admin); !slices.Equal(got, []int{404, 404}) || listing(mod) != 404 {
-		t.Fatalf("staff after the stall alert cleared: %v, archived listing %d", got, listing(mod))
+	if got, l := x.orderCodes(order, mod, admin), listing(mod); !slices.Equal(got, []int{404, 404}) || l != 404 {
+		t.Fatalf("staff after the stall alert cleared: %v, archived listing %d", got, l)
+	}
+	if e := x.deskAlert(order, mod); e != "" {
+		t.Fatalf("the desk still lists the cleared stall: %s", e)
 	}
 	if got := x.orderCodes(order, x.buyerSess, x.vendorSess); !slices.Equal(got, []int{200, 200}) {
 		t.Fatalf("the parties after the alert cleared: %v", got)
@@ -171,6 +200,9 @@ func TestEscrowReleaseTooFewStaffAlertRead(t *testing.T) {
 		t.Fatalf("the desk's row for the flagged deposit: %s\n%s", row, desk)
 	}
 
+	if e := x.deskAlert(order, mod); !strings.Contains(e, "the release to the vendor could not be built, the coins are too few") || strings.Contains(e, "queued or stuck") {
+		t.Fatalf("the desk's escrow alert for the release too few: %q", e)
+	}
 	// The alert alone admits staff: with no deposit flagged, still 200 while the failed release stands.
 	x.exec("UPDATE payments SET flagged=false WHERE order_id=$1", order)
 	if got := x.orderCodes(order, mod, admin); !slices.Equal(got, []int{200, 200}) {
@@ -183,5 +215,21 @@ func TestEscrowReleaseTooFewStaffAlertRead(t *testing.T) {
 	x.exec("UPDATE settlements SET state='superseded' WHERE id=$1", sid)
 	if got := x.orderCodes(order, mod, admin); !slices.Equal(got, []int{404, 404}) {
 		t.Fatalf("staff after the failed release was superseded: %v", got)
+	}
+	if e := x.deskAlert(order, mod); e != "" {
+		t.Fatalf("the desk still lists the superseded release: %s", e)
+	}
+}
+
+// The order-note help on a Bitcoin escrow order names the open staff alert among the times staff read the order (A-470);
+// a pooled order's help does not mention escrow (TestEscrowLeavesPooledOrdersUnchanged).
+func TestEscrowNoteHelpNamesStaffAlert(t *testing.T) {
+	x := newEscrowEnv(t)
+	order := x.paidPhysical(regtestAddr("note help refund"), 100000)
+	page := x.page("/order?id="+order, x.vendorSess)
+	_, help, ok := strings.Cut(page, `id="note-help-cancelled">`)
+	if help, _, _ = strings.Cut(help, "</span>"); !ok ||
+		!strings.Contains(help, "moderators and administrators if the order is disputed, a payment on it is flagged or its escrow has an open staff alert, and the operator") {
+		t.Fatalf("the escrow order's note help: %q", help)
 	}
 }

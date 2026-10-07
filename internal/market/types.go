@@ -204,6 +204,9 @@ type PageData struct {
 	PaymentReviewsOpen  int
 	PaymentReviewOthers int
 	PaymentReviewLimit  int
+	// EscrowAlerts: moderator desk, escrow orders with an open staff alert (escrowStaffAlert, A-470), oldest first, at
+	// most escrowAlertLimit.
+	EscrowAlerts []EscrowAlertView
 
 	// P4 Inventory (uses Product.Archived)
 	Listing   *ListingView
@@ -674,6 +677,13 @@ type EscrowNodeView struct {
 // its transaction ID.
 type EscrowStallView struct {
 	ID, Order, What, TxID string
+}
+
+// EscrowAlertView is an escrow order with an open staff alert on the moderation desk: its ID, its state's label, and
+// which alerts are open (a settlement queued or stuck, a release too few).
+type EscrowAlertView struct {
+	ID, State     string
+	Stall, TooFew bool
 }
 
 // EscrowSignerView is the line under Payment providers on /admin about the escrow signer (escrow_signer.go): State is

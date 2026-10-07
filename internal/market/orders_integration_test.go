@@ -379,7 +379,7 @@ func TestPlaintextOrderFieldsWarnAgainstAddresses(t *testing.T) {
 			}
 		}
 	}
-	staff := "moderators and administrators if the order is disputed, a payment on it is flagged or its escrow has an open staff alert, and the operator and anyone with a backup"
+	staff := "moderators and administrators if the order is disputed or a payment on it is flagged, and the operator and anyone with a backup"
 
 	paid := w.e.order(w.buyerID, product, "BTC", statePaid)
 	vendor := w.page("/order?id="+paid, w.vendor, 200)
