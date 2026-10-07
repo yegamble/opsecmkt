@@ -895,18 +895,27 @@ func (c *fakeEscrowCore) importOne(path string, req map[string]any) map[string]a
 		to, _ := rng[1].(float64)
 		for k := int64(from); k <= int64(to); k++ {
 			at := strings.ReplaceAll(body, "*", strconv.FormatInt(k, 10))
-			addr := c.address(at)
+			m := fakeMulti.FindStringSubmatch(at + "#")
+			if m == nil {
+				hold(c.address(at))
+				continue
+			}
+			// The keys at index k, derived once (as address derives them, which is slow under -race), give the address.
+			var pubs [][]byte
+			var keys []string
+			for _, el := range m[1:] {
+				pub, _ := c.fakeKeyOf(el)
+				pubs, keys = append(pubs, pub), append(keys, hex.EncodeToString(pub))
+			}
+			h := sha256.Sum256(fakeMultiScript(pubs...))
+			addr := segwitAddress("bcrt", 0, h[:])
+			c.spk[addr] = append([]byte{0, 32}, h[:]...)
 			first := !c.watched[addr]
 			hold(addr)
-			// The keys at index k, in script order, unless an addr(…) import held the address first: Core 31.1 then keeps
-			// reporting it unsolvable (probed on regtest: an addr(…) imported before a ranged descriptor covering the same
-			// address stays solvable false; imported after it, or in the same call after it, the address is solvable).
-			if m := fakeMulti.FindStringSubmatch(at + "#"); m != nil && first {
-				var keys []string
-				for _, el := range m[1:] {
-					pub, _ := c.fakeKeyOf(el)
-					keys = append(keys, hex.EncodeToString(pub))
-				}
+			// The keys in script order, unless an addr(…) import held the address first: Core 31.1 then keeps reporting it
+			// unsolvable (probed on regtest: an addr(…) imported before a ranged descriptor covering the same address stays
+			// solvable false; imported after it, or in the same call after it, the address is solvable).
+			if first {
 				slices.Sort(keys)
 				if c.rangedPubkeys == nil {
 					c.rangedPubkeys = map[string][]string{}
