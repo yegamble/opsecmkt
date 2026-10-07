@@ -56,13 +56,14 @@ read_archive() {
 # (install.sh upgrade's automatic pre-upgrade backup, for one) is dumped as LATIN1, and pg_restore converts it into
 # a UTF8 database: the UTF-8 the market stored there comes out double-encoded and nothing fails. Only a UTF8 dump (a
 # UTF8 database) or a SQL_ASCII one (the bytes stored, unconverted) is restored; anything else is refused here, before
-# the confirmation and before anything is created or written. The decryption stopping early is expected (|| true).
-archive_encoding=$(age -d -i "$AGE_IDENTITY" "$1" | read_archive --file=- --use-list=/dev/null 2>/dev/null |
+# the confirmation and before anything is created or written. The decryption stopping early is expected (|| true); an
+# error of age, pg_restore or the URL parsing is shown above the refusal.
+archive_encoding=$(age -d -i "$AGE_IDENTITY" "$1" | read_archive --file=- --use-list=/dev/null |
   sed -n "s/^SET client_encoding = '\([A-Za-z0-9_]*\)';\$/\1/p" | head -n 1) || true
 case $archive_encoding in
   UTF8 | SQL_ASCII) ;;
   '')
-    echo 'Cannot read the database dump in this backup (a wrong AGE_IDENTITY, or a file that is not a backup made by scripts/backup.sh). Nothing was changed.' >&2
+    echo 'Cannot read the database dump in this backup (see the error above: a wrong AGE_IDENTITY, a file that is not a backup made by scripts/backup.sh, client tools older than the dump, or a destination URL that cannot be used). Nothing was changed.' >&2
     exit 1
     ;;
   *)

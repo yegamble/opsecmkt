@@ -3,7 +3,7 @@
 <a href="/orders">Orders</a> / {{.ID}}</div>
 <div class="page-head">
 <div>
-<div class="eyebrow">Order record · {{if eq $.OrderViewer "moderator"}}Moderator review (read-only){{else if eq .BuyerID $.User.ID}}you are the buyer{{else}}you are the vendor{{end}}</div>
+<div class="eyebrow">Order record · {{if eq $.OrderViewer "moderator"}}{{if or $.XMRSettlementForm $.XMRCollisionForm}}Staff review{{else}}Moderator review (read-only){{end}}{{else if eq .BuyerID $.User.ID}}you are the buyer{{else}}you are the vendor{{end}}</div>
 <h1>{{.Title}}</h1>
 <p class="mono">{{.ID}}</p>
 </div>

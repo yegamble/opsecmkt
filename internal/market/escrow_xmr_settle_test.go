@@ -1208,10 +1208,13 @@ func TestXMREscrowStaffHelpBesideAdminForm(t *testing.T) {
 			!strings.Contains(help, "nothing else can be changed from this page") || strings.Contains(help, "Nothing can be changed from this page") {
 			t.Fatalf("%s: the administrator's help beside the retry form: %q", stage, help)
 		}
+		if strings.Contains(admin, "Moderator review (read-only)") || !strings.Contains(admin, "Order record · Staff review") {
+			t.Fatalf("%s: the administrator's page is still labelled read-only beside the retry form", stage)
+		}
 		mod = html.UnescapeString(x.page("/order?id="+crasher, modSess))
 		help = staffHelp(mod)
 		if strings.Contains(mod, "/admin/escrow-xmr-retry-build") || !strings.Contains(help, "Nothing can be changed from this page") ||
-			strings.Contains(help, "#xmr-settlement-") || strings.Contains(help, "As an administrator") {
+			strings.Contains(help, "#xmr-settlement-") || strings.Contains(help, "As an administrator") || !strings.Contains(mod, "Moderator review (read-only)") {
 			t.Fatalf("%s: the moderator's help: %q", stage, help)
 		}
 		return admin, mod
