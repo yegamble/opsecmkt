@@ -81,7 +81,13 @@ func (a *App) xmrSettlementViews(ctx context.Context, d *PageData, v *XMREscrowO
 			s.ReRequest = admin
 		}
 		s.RetryBuild = admin && s.state == "requested" && s.wait == xmrBuildSetAside
-		if (s.ReRequest || s.RetryBuild) && d.Security == nil {
+		if !s.ReRequest && !s.RetryBuild {
+			continue
+		}
+		if d.XMRSettlementForm == 0 {
+			d.XMRSettlementForm = s.ID
+		}
+		if d.Security == nil {
 			if d.Security, _, _, err = a.securityView(ctx, d.User.ID); err != nil {
 				return nil, err
 			}

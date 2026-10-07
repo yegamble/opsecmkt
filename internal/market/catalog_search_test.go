@@ -244,11 +244,12 @@ func TestCatalogQueryCappedAt64Characters(t *testing.T) {
 	if !strings.Contains(body, `value="`+term+`"`) || strings.Contains(body, "ZZZZ") {
 		t.Error("search box does not echo the capped term")
 	}
-	// Invalid UTF-8 and NUL bytes are dropped, not sent to PostgreSQL (which would refuse them with a 500).
+	// Invalid UTF-8 and NUL bytes never reach PostgreSQL (which would refuse them with a 500): since QA5W4B-5 every
+	// GET whose query holds them is refused with 400 before the catalog reads it.
 	w = e.do("GET", "/?q=Cap%00%FFped&category=Hard%FFware&region=%00", "", nil)
-	e.check(w, 200)
-	if got := cardTitles(w.Body.String()); len(got) != 1 {
-		t.Errorf("cleaned search: %q", got)
+	e.check(w, 400)
+	if !strings.Contains(w.Body.String(), invalidQueryText) {
+		t.Errorf("refused search: %q", w.Body.String())
 	}
 }
 

@@ -117,10 +117,16 @@ func TestLogsContainNoSecrets(t *testing.T) {
 			}
 		}
 	}
-	// A page 500: the product page passes its id to PostgreSQL, which refuses a NUL byte (22021). (The catalog
-	// search drops NUL bytes and invalid UTF-8 from q, category and region since A-181.)
-	w := send("GET", "/product?id="+handle+"%00&q=query-secret", nil)
-	check(w, "page", "product", "22021")
+	// A page 500: the product page's query fails. A NUL byte in its id no longer reaches PostgreSQL (refused with 400
+	// since QA5W4B-5), so the products table is renamed away for this request (42P01, undefined table).
+	if _, err := e.DB.Exec("ALTER TABLE products RENAME TO products_gone"); err != nil {
+		t.Fatal(err)
+	}
+	w := send("GET", "/product?id="+handle+"&q=query-secret", nil)
+	check(w, "page", "product", "42P01")
+	if _, err := e.DB.Exec("ALTER TABLE products_gone RENAME TO products"); err != nil {
+		t.Fatal(err)
+	}
 	if strings.Contains(logs.String(), "/product") || strings.Contains(logs.String(), "id=") || strings.Contains(logs.String(), "q=") {
 		t.Fatalf("log contains the URL path or query: %q", logs.String())
 	}

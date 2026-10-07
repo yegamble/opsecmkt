@@ -7,16 +7,24 @@
 -- backup then fails to restore ("COPY failed for table ...: invalid byte sequence for encoding "UTF8""). This check
 -- reads each text, varchar and char column of every table outside the system schemas as the bytes stored
 -- (convert_to(..., 'SQL_ASCII') converts nothing) and asks PostgreSQL to verify them as UTF-8.
--- Each bad value is named by table, column, primary key and ctid, with its first 40 bytes escaped (\377 is the byte
--- 0xff); correct it with an UPDATE ... WHERE ctid = '...' while the market is stopped, then run this again.
+-- Each bad value is named by table, column and its row: the primary key as a condition to paste after WHERE (QA5W4B-4:
+-- a row's ctid changes when it is updated, so a row with two bad values needs its key), and the ctid for a table
+-- without one. Then whether it also holds valid multibyte UTF-8 (QA5W4B-3): if not, reading its bytes as LATIN1 is a
+-- safe correction; if so, that reading would double-encode the valid part ("Crème" would become "CrÃ¨me"), so type
+-- the text it should hold. Last, its first 40 bytes escaped (\377 is the byte 0xff). Correct each with an UPDATE while
+-- the market is stopped, then run this again.
 \set ON_ERROR_STOP on
 DO $check$
 DECLARE
   col record;
   r record;
   keys text;
+  key_condition text;
   shown_key text;
   shown_value text;
+  hint text;
+  raw bytea;
+  lead int;
   columns int := 0;
   bad int := 0;
 BEGIN
@@ -36,30 +44,55 @@ BEGIN
     EXCEPTION WHEN character_not_in_repertoire THEN
       NULL;
     END;
-    SELECT string_agg(format('%I', a.attname), ', ' ORDER BY k.ord) INTO keys
+    -- The primary key's columns, and an expression that writes the row's key as a condition: id = 'abc' AND n = '2'.
+    SELECT string_agg(format('%I', a.attname), ', ' ORDER BY k.ord),
+        string_agg(format('format(%L, %I::text)', format('%I = %%L', a.attname), a.attname), ' || '' AND '' || ' ORDER BY k.ord)
+      INTO keys, key_condition
     FROM pg_index i CROSS JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord)
     JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum
     WHERE i.indrelid = col.rel AND i.indisprimary;
     FOR r IN EXECUTE format('SELECT ctid::text AS loc, %s AS key, %I AS val FROM %I.%I WHERE %I IS NOT NULL',
-        CASE WHEN keys IS NULL THEN 'NULL::text' ELSE format('ROW(%s)::text', keys) END, col.attname, col.nspname, col.relname, col.attname)
+        coalesce(key_condition, 'NULL::text'), col.attname, col.nspname, col.relname, col.attname)
     LOOP
       BEGIN
         PERFORM convert(convert_to(r.val, 'SQL_ASCII'), 'UTF8', 'UTF8');
       EXCEPTION WHEN character_not_in_repertoire THEN
         bad := bad + 1;
-        -- In a UTF8 database bytes that are not UTF-8 cannot be shown, even escaped.
+        -- In a UTF8 database bytes that are not UTF-8 cannot be read, even escaped. A key that is not plain ASCII is
+        -- not shown either: escaped, it would no longer be the condition to paste.
         BEGIN
-          shown_key := encode(convert_to(coalesce(keys || ' = ' || r.key, '(no primary key)'), 'SQL_ASCII'), 'escape');
+          IF r.key IS NULL THEN
+            shown_key := '(no primary key: use the ctid)';
+          ELSIF encode(convert_to(r.key, 'SQL_ASCII'), 'escape') = r.key THEN
+            shown_key := 'where ' || r.key;
+          ELSE
+            shown_key := keys || ' (not shown: use the ctid)';
+          END IF;
         EXCEPTION WHEN character_not_in_repertoire THEN
-          shown_key := coalesce(keys, '(no primary key)') || ' (not shown)';
+          shown_key := keys || ' (not shown: use the ctid)';
         END;
         BEGIN
-          shown_value := encode(substring(convert_to(r.val, 'SQL_ASCII') FROM 1 FOR 40), 'escape');
+          raw := convert_to(r.val, 'SQL_ASCII');
+          shown_value := encode(substring(raw FROM 1 FOR 40), 'escape');
+          -- Valid multibyte UTF-8 anywhere in it: a lead byte (0xc2 to 0xf4) starting a sequence PostgreSQL accepts.
+          hint := 'no valid multibyte UTF-8 in it, so reading its bytes as LATIN1 is a safe correction';
+          FOR i IN 0 .. length(raw) - 1 LOOP
+            lead := get_byte(raw, i);
+            CONTINUE WHEN lead < 194 OR lead > 244;
+            BEGIN
+              PERFORM convert(substring(raw FROM i + 1 FOR CASE WHEN lead < 224 THEN 2 WHEN lead < 240 THEN 3 ELSE 4 END), 'UTF8', 'UTF8');
+              hint := 'it also holds valid multibyte UTF-8, which reading it as LATIN1 would double-encode: type the text it should hold';
+              EXIT;
+            EXCEPTION WHEN character_not_in_repertoire THEN
+              NULL;
+            END;
+          END LOOP;
         EXCEPTION WHEN character_not_in_repertoire THEN
           shown_value := '(not shown)';
+          hint := 'its bytes cannot be read in a UTF8 database: correct it in the old database';
         END;
-        RAISE NOTICE 'not valid UTF-8: table %.%, column %, row % (ctid %), starting: %',
-          col.nspname, col.relname, col.attname, shown_key, r.loc, shown_value;
+        RAISE NOTICE 'not valid UTF-8: table %.%, column %, row % (ctid %); %; starting: %',
+          col.nspname, col.relname, col.attname, shown_key, r.loc, hint, shown_value;
       END;
     END LOOP;
   END LOOP;

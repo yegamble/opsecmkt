@@ -53,10 +53,16 @@ func TestStartupRefusesNonUTF8Database(t *testing.T) {
 				a.Close()
 				t.Fatalf("New started on a %s database", encoding)
 			}
-			for _, want := range []string{encoding, "UTF8", "CREATE DATABASE", "ENCODING 'UTF8' TEMPLATE template0", "docs/operator-guide.md"} {
+			for _, want := range []string{encoding, "UTF8", "CREATE DATABASE", "ENCODING 'UTF8' TEMPLATE template0", "docs/operator-guide.md",
+				"UPGRADING.md section 42", "scripts/check-utf8.sql", "BACKUP_DUMP_ENCODING=SQL_ASCII"} {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("error does not mention %q: %v", want, err)
 				}
+			}
+			// QA5W4B-1: a plain pg_dump and pg_restore double-encodes a LATIN1 database and copies bytes that are not
+			// UTF-8 unchecked, the move section 42 calls unsafe.
+			if strings.Contains(err.Error(), "pg_dump and pg_restore") {
+				t.Errorf("error still advises a plain pg_dump and pg_restore: %v", err)
 			}
 			if strings.Contains(err.Error(), "password") || strings.Contains(err.Error(), "postgres://") {
 				t.Errorf("error leaks connection details: %v", err)

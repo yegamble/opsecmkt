@@ -454,6 +454,17 @@ func TestXMREscrowCollisionDisputedHelp(t *testing.T) {
 	mustContain(t, help, "market staff", `href="#refused-deposits"`, "Only an administrator decides this escrow dispute")
 	mustNotContain(t, help, "Nothing can be changed from this page")
 	mustNotContain(t, page, "The order page is read-only for market staff.")
+	// QA5W4B-7 (mutant MM): once the dispute is resolved, the moderator's help (its other branch) still names the open
+	// record's form, and the page still offers it.
+	agExec(x.testEnv, "UPDATE orders SET state='resolved' WHERE id=$1", order)
+	page = html.UnescapeString(x.page("/order?id="+order, mod))
+	if !strings.Contains(refusedSection(page), `action="/moderator/xmr-collision"`) {
+		t.Fatal("the resolved order shows staff no disposition form")
+	}
+	help = staffHelp(page)
+	mustContain(t, help, "a moderator.", `href="#refused-deposits"`, "nothing else can be changed from this page")
+	mustNotContain(t, help, "Nothing can be changed from this page")
+	agExec(x.testEnv, "UPDATE orders SET state='disputed' WHERE id=$1", order)
 	if code, loc := x.recordCollision(mod, id, "Refunded to the buyer by hand in the wallet."); code != 303 {
 		t.Fatalf("the disposition: %d %s", code, loc)
 	}
