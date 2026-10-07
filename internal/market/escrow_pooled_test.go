@@ -260,6 +260,8 @@ func TestBitcoinPooledRPCMethods(t *testing.T) {
 			return strings.Repeat("cd", 32), 0, ""
 		case "validateaddress":
 			return map[string]any{"isvalid": true}, 0, ""
+		case "getbalances":
+			return map[string]any{"mine": map[string]any{"trusted": json.Number("0.5"), "untrusted_pending": json.Number("0.00000000"), "immature": json.Number("0")}}, 0, ""
 		}
 		return nil, -32601, "Method not found"
 	})
@@ -279,6 +281,9 @@ func TestBitcoinPooledRPCMethods(t *testing.T) {
 	}
 	if !p.ValidAddress("bcrt1qpooledaddress000000000000000000000") {
 		t.Fatal("validateaddress")
+	}
+	if c, pend, err := p.Balance(ctx); err != nil || c != 50000000 || pend != 0 { // the drain panel's advisory balance (A-445)
+		t.Fatalf("getbalances %d %d %v", c, pend, err)
 	}
 	srv.mu.Lock()
 	called := slices.Clone(srv.calls)

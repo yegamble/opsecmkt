@@ -23,7 +23,7 @@ func init() { registerProvider(bitcoinFromEnv) }
 // URL path, so a pooled user allowed listdescriptors could print the escrow arbiter wallet's private key (A-440).
 var pooledRPCMethods = []string{
 	"getblockchaininfo", "getwalletinfo", "loadwallet", "getnetworkinfo", "getnewaddress", "listreceivedbyaddress",
-	"gettransaction", "sendtoaddress", "validateaddress",
+	"gettransaction", "sendtoaddress", "validateaddress", "getbalances",
 }
 
 // bitcoinChains maps each chain getblockchaininfo reports to its bech32 address prefix.
@@ -310,6 +310,28 @@ func (p *bitcoinProvider) Send(ctx context.Context, to string, amt int64) (strin
 // SendFeeFromAmount is Send: Bitcoin payouts always take the network fee from the amount sent.
 func (p *bitcoinProvider) SendFeeFromAmount(ctx context.Context, to string, amt int64) (string, error) {
 	return p.Send(ctx, to, amt)
+}
+
+// Balance reads the pooled wallet's getbalances (on the pooled user's rpcwhitelist since A-445): trusted is confirmed,
+// untrusted_pending and immature are pending.
+func (p *bitcoinProvider) Balance(ctx context.Context) (confirmed, pending int64, err error) {
+	var b struct {
+		Mine struct {
+			Trusted          json.Number `json:"trusted"`
+			UntrustedPending json.Number `json:"untrusted_pending"`
+			Immature         json.Number `json:"immature"`
+		} `json:"mine"`
+	}
+	if err = p.rpc.call(ctx, p.wallet, "getbalances", nil, &b); err != nil {
+		return 0, 0, err
+	}
+	var parts [3]int64
+	for i, n := range []json.Number{b.Mine.Trusted, b.Mine.UntrustedPending, b.Mine.Immature} {
+		if parts[i], err = walletBalance(string(n), 8); err != nil {
+			return 0, 0, errors.New("bitcoin getbalances: bad amount")
+		}
+	}
+	return parts[0], parts[1] + parts[2], nil
 }
 
 func (p *bitcoinProvider) ValidAddress(addr string) bool {

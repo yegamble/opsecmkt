@@ -339,7 +339,7 @@ Before changing a tag (default or `.env`):
 
 ### Local node pruning
 
-Local nodes are **pruned by default**; a full node is an explicit opt-in per coin. The application only needs a node's current state and its wallet: Bitcoin is used through `getblockchaininfo`, `validateaddress` and wallet RPCs (`getwalletinfo`, `loadwallet`, `getnewaddress`, `listreceivedbyaddress`, `gettransaction`, `sendtoaddress`), Monero through the daemon's `get_info` and `monero-wallet-rpc`. Nothing in it reads old blocks.
+Local nodes are **pruned by default**; a full node is an explicit opt-in per coin. The application only needs a node's current state and its wallet: Bitcoin is used through `getblockchaininfo`, `validateaddress` and wallet RPCs (`getwalletinfo`, `loadwallet`, `getnewaddress`, `listreceivedbyaddress`, `gettransaction`, `sendtoaddress`, and `getbalances` for the drain panel's advisory balance), Monero through the daemon's `get_info` and `monero-wallet-rpc`. Nothing in it reads old blocks.
 
 | `.env` key | Default | Full node |
 | --- | --- | --- |
@@ -616,7 +616,7 @@ Operational limits to accept before enabling payments:
 - Funded orders that are not yet completed, cancelled or resolved stay watched for as long as they are open. A deposit first seen after an order was funded is noted once in the order history and to the buyer and vendor; it is part of the order's settlement (a release with any excess returned to the buyer, or a refund) if it has the confirmation threshold when the order settles; otherwise it is not paid out automatically (see late deposits below).
 - Late deposits: every cancelled, completed or resolved order's address is watched until it is **30 days** old. A deposit recorded before a cancellation that refunded nothing is refunded to the buyer when it confirms (blocked until the buyer saves an address). Anything first seen after the order closed (a buyer topping up an underpaid order after the payment window cancelled and refunded it, a stray payment to an old address) and extra funds that confirm after the order's settlement was queued are **never paid out or refunded automatically**: they are flagged for payment review, and the buyer's order page shows them as "Arrived after the order closed — not paid out; market staff notified". The buyer is notified once per episode with the amount (not the transaction ID; the vendor is not told) and each moderator and administrator once, however many transactions arrive; return the funds by hand from the wallet and record it on the moderation desk (*Payment review → Record the review → refunded by hand*, or *no action* with a reason; a moderator may escalate to an administrator). The buyer's page then shows the outcome instead of "market staff notified", and a later deposit starts a new notice episode once no late flag of the order is open on the desk (an open locked transfer, payout below the minimum, credited deposit or escrow deposit spent outside the market does not hold the episode; a flag that holds it is always one staff can record, QA462C, QA462D-1) ([runbook](testnet-runbook.md#handle-a-payment-review-flag)). Deposits to older addresses are not seen by the watcher (unless the order still has a payout waiting to be sent or held, or changed in the last 24 hours); handle them by hand from the wallet. The watch set is therefore about 30 days of orders: each pass makes one Bitcoin `listreceivedbyaddress` per 200 addresses plus one `gettransaction` per deposit transaction to them (Monero: one `get_transfers` per 200 addresses); keep the node local.
 - Monero transfers with a non-zero `unlock_time` (locked transfers) are recorded and shown, but never counted toward payment or paid out. The order history notes "locked transfer ignored" once and moderators and the buyer are notified.
-- Recipients must save a payout address on their account page. Payouts wait ("blocked") until they do. Saving or removing a payout address needs the current password, plus an authenticator code when TOTP is enrolled, and notifies the account (naming the currency, not the address).
+- Recipients must save a payout address on their account page. Payouts wait ("blocked") until they do, or until an administrator who paid one by hand records it as sent ([Draining the pooled wallet](#draining-the-pooled-wallet)). Saving or removing a payout address needs the current password, plus an authenticator code when TOTP is enrolled, and notifies the account (naming the currency, not the address).
 - Saving a payout address never moves an unsent payout that already has one, since anyone with the account's password can save an address. The notification names the orders instead: "N unsent payout(s) still use your previous address (orders …); an administrator must confirm the change" for held payouts and definite failures, and separately those queued, being sent or possibly broadcast, which stay on the previous address. On *Payouts*, a held payout or a failure the wallet rejected before broadcast whose recipient has since saved a different address offers *Use the account's current address*: it shows both addresses and when the saved one last changed, needs your password and the "Current address checked" confirmation after you check the address with the account owner through a channel you trust, audits the old and new address, and changes only the destination (release or requeue it afterwards). A payout being sent, stuck in sending, with an unknown send outcome, or held or marked by a restore from backup is never moved; the server refuses it (409) ([runbook](testnet-runbook.md#5-recover-a-held-or-failed-payout)).
 
 `scripts/regtest-smoke.sh` is a manual check against a local `bitcoind -regtest` (`BITCOIN_REGTEST_RPC_URL=http://user:pass@127.0.0.1:18443`); see the [runbook](testnet-runbook.md#7-manual-regtest-check-bitcoin). It is not part of CI.
@@ -947,7 +947,7 @@ kept equal to this line by a Go test):
 
 ```ini
 rpcauth=opsecmkt-pooled:SALT$HASH
-rpcwhitelist=opsecmkt-pooled:getblockchaininfo,getwalletinfo,loadwallet,getnetworkinfo,getnewaddress,listreceivedbyaddress,gettransaction,sendtoaddress,validateaddress
+rpcwhitelist=opsecmkt-pooled:getblockchaininfo,getwalletinfo,loadwallet,getnetworkinfo,getnewaddress,listreceivedbyaddress,gettransaction,sendtoaddress,validateaddress,getbalances
 ```
 
 Use the user name your `BITCOIN_RPC_URL` carries (on the bundled Compose node it is `marketplace`, set with
@@ -2056,7 +2056,7 @@ Before switching a coin:
 3. Keep the pooled wallet configured (`BITCOIN_RPC_URL`, `MONERO_WALLET_RPC_URL`) after the switch, until every pooled
    order is settled and paid out. The pooled watcher, which credits deposits and sends payouts, runs only while its
    provider is configured; removing it strands orders that are still open. Pausing intake would not do instead: paused
-   also refuses escrow checkouts.
+   also refuses escrow checkouts. *Pooled wallet drain* on `/admin` lists what still needs it ([below](#draining-the-pooled-wallet)).
 
 What buyers and vendors see while a coin is escrow only:
 
@@ -2085,6 +2085,53 @@ How it was tested: `TestPaymentIntakeLockByKind`, `TestPaymentIntakeEscrowOnlyRe
 `TestEscrowOnlyListingNotAvailable`, `TestEscrowOnlyVendorKeyGateBTCOnly` and `TestXMREscrowOnlyIgnoresBTCKey` (PostgreSQL with the fake pooled wallet and the simulated escrow nodes; simulated RPC,
 not chain evidence), and `tests/e2e/db-escrow-cutover.spec.ts` (the form and the panel in Chromium at 320 px with
 JavaScript off, on a market with no pooled wallet and no escrow).
+
+#### Draining the pooled wallet
+
+A-445 (war-room ruling P4-R9), on the development branch and in no release; no drain has been run on a public network
+or a real chain. After a coin is escrow only, the pooled wallet still serves the pooled orders opened before the switch.
+A later release is planned to remove the pooled wallet's code (A-448) and to refuse a database for which the drain list is
+not empty. *Pooled wallet drain* on `/admin`, below *Escrow-only readiness*, shows that list read-only, as the
+database function `pooled_drain_blockers()` (migration 091) gives it: a count per kind, never capped, and the first 100
+of each kind, each linked to where it is resolved:
+
+| Kind | Listed while | Resolved by |
+|---|---|---|
+| Open pooled orders | an order without escrow is neither a draft nor cancelled, resolved or completed | its buyer and vendor, a dispute, or the watcher (an unpaid order expires) |
+| Payouts not sent | a payout is blocked, held, queued, sending or failed | the watcher, or *Payouts* on `/admin`: release, requeue, mark sent, or record a blocked one sent by hand (below) |
+| Flagged pooled payments without a recorded review | a pooled deposit's payment-review flag is open (the moderation desk's own rule) | recording the review on the moderation desk (no action, or refunded by hand); an escalated flag waits for an administrator |
+| Pooled deposit addresses still watched | the address of a closed pooled order is inside the watcher's horizon: 24 hours after the order closed or 30 days after the address was issued, whichever is later | time alone; a deposit to it before then is recorded and flagged for review, one after it is never read |
+| Restore reconciliation not finished | `payments_recovery_required` is `true` (a restore from backup) | reconciling the restore as the [runbook](testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts) says |
+| Issued-address warnings not dismissed | a coin's wallet handed out already-issued addresses and the warning under *Payment providers* is not dismissed | "Restore the wallets" in the runbook, then dismissing the warning |
+| Pooled history on mainnet | the market issued pooled addresses on mainnet | nothing in this release: no release has mainnet escrow, so a mainnet market cannot drop its pooled wallet |
+
+Dust sent to an old deposit address inside its horizon blocks the drain until staff record its review (*no action*
+with a reason, on the moderation desk); dust sent after the horizon is never read, so it never blocks.
+
+A blocked payout (its recipient never saved a payout address) is otherwise listed for ever. Pay it by hand from the
+pooled wallet, to an address the recipient gave you through a channel you trust, then record it on `/admin`: *Payouts*
+→ *Resolve payout* → *Record sent by hand*, with the wallet's transaction ID and your password. The market stores the ID
+in lower case, sends the recipient a notification naming it, writes the order history (without the ID) and an audit row
+naming the payout and the ID, and never sends that payout again. It does not check the ID against the chain. A queued
+payout, which the watcher may claim at any moment, and one being sent are never marked sent: such a request answers 409
+and changes nothing, as does a repeat.
+
+Below the list the panel shows each pooled wallet's balance as the wallet reports it (Bitcoin `getbalances`, Monero
+`get_balance` on account 0), as advice only: a balance cannot show what is still owed, and it can include coins sent to
+addresses the market no longer watches. The list decides, not the balance. A wallet that does not answer (or a pooled
+Bitcoin RPC user whose `rpcwhitelist` lacks `getbalances`) reads "balance unavailable", and the page is still served.
+**The market never sweeps the pooled wallet**: once the list is empty, move what is left in it yourself with the
+wallet's own tools, then keep the pooled wallet configured until you install the release that removes it.
+
+How it was tested: `TestPooledDrainOpenOrders`, `TestPooledDrainUnsentPayouts`,
+`TestPooledDrainFlaggedPaymentsFollowTheOpenFlagRule`, `TestPooledDrainWatchedAddressIsTheWatcherHorizon`,
+`TestPooledDrainDustBlocksUntilDisposedNeverAfterHorizon`, `TestPooledDrainRecoveryRequired`,
+`TestPooledDrainAddressCollisions`, `TestPooledDrainMainnetHistory`, `TestPooledDrainPanel`,
+`TestPooledDrainPanelBalanceUnavailable`, `TestPooledHandSettleBlockedPayout`,
+`TestPooledHandSettleRefusesWhatTheSenderMaySend`, `TestPooledHandSettleWaitsForTheRowLock` and
+`TestPooledHandSettleConcurrentOnce` (PostgreSQL with the fake pooled wallet and simulated wallet RPC; not chain
+evidence), a seeded stage of `scripts/test-upgrade.sh`, and `tests/e2e/db-pooled-drain.spec.ts` (the panel and the hand
+settlement in Chromium at 320 px and 1280 px with JavaScript off, on a market with no pooled wallet).
 
 ### Transparency
 

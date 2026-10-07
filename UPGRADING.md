@@ -1562,6 +1562,43 @@ has been tried with a per-order escrow (ledger items A-457 and A-458); see [per-
 escrow](docs/escrow.md#per-order-escrow-settlement-setup-and-upload-a-456b-shape-b). Rolling back past this release
 needs the pre-upgrade backup (section 5) once a per-order escrow exists: the earlier release cannot settle it.
 
+## 46. Pooled wallet drain gate and hand settlement of a blocked payout (migration 091, A-445)
+
+Migration 091 adds two read-only SQL functions and changes no table, column or row, so it needs no preparation. Like
+every migration it is one-way: a build that does not include it refuses to start on a database that records it
+([Rolling back](#5-rolling-back)).
+
+- `pooled_drain_blockers()` lists, one row per item, what still needs the pooled wallet: open pooled orders, payouts
+  not sent, flagged pooled deposits whose review is not recorded, pooled deposit addresses the watcher still reads, the
+  restore gate (`payments_recovery_required`), issued-address warnings not dismissed, and pooled history on mainnet. A
+  later release is planned to remove the pooled wallet's code and to refuse a database for which this list is not empty.
+- `pooled_watch_horizon()` is the pooled watcher's time rule for an address (24 hours after its order last changed state,
+  30 days after a closed order's address was issued), now read by both the watcher and the drain gate. The watcher reads
+  the same addresses as before.
+
+`/admin` shows the list read-only under *Pooled wallet drain*, below *Escrow-only readiness*, with a count per kind,
+the pooled balances as advice, and a sweep note: the market never sweeps the pooled wallet; once the list is empty, move
+what is left in it by hand. How to drain: [operator guide](docs/operator-guide.md#draining-the-pooled-wallet).
+
+**Bitcoin pooled RPC user.** The advisory balance is read with `getbalances`, which is now on the pooled adapter's
+method list. If you restricted the pooled user with `rpcwhitelist` (section 34), add `getbalances` to its line and
+restart bitcoind:
+
+```ini
+rpcwhitelist=opsecmkt-pooled:getblockchaininfo,getwalletinfo,loadwallet,getnetworkinfo,getnewaddress,listreceivedbyaddress,gettransaction,sendtoaddress,validateaddress,getbalances
+```
+
+Without it the panel reads "balance unavailable" and nothing else changes: the balance is advice and decides nothing.
+`getbalances` reads amounts only. The Monero balance is read with monero-wallet-rpc's `get_balance` (account 0).
+
+**Blocked payouts.** A payout blocked because its recipient never saved a payout address can now be recorded as sent by
+hand: under *Payouts*, *Resolve payout* → *Record sent by hand*, with the wallet's transaction ID (64 hexadecimal
+characters, stored in lower case) and your password, audited with the payout and the transaction ID. Pay it from the
+pooled wallet yourself first, to an address the recipient gave you through a channel you trust; the market does not
+check the transaction ID against the chain. It is then never sent, even if the recipient saves an address later. A
+queued payout or one being sent is never marked sent (409, nothing changed). No new payout state: it is recorded as
+`sent`.
+
 ## Appendix: new keys by hand
 
 `./scripts/install.sh upgrade` writes these for you. To add them yourself, use your editor (values in single

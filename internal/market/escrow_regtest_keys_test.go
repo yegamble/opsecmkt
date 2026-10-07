@@ -67,7 +67,8 @@ func regtestOperator(t *testing.T, opURL string, urls map[string]string) (func(w
 // pooled provider both configured
 // against that node, escrow starts (the startup self-check got Core's real HTTP 403), and the pooled provider still
 // works through every whitelisted method: the node check after an unloaded wallet (loadwallet), a deposit address, a
-// deposit credited by a watcher pass, an address check and a payout sent by the watcher, confirmed on chain.
+// deposit credited by a watcher pass, the wallet's balance (getbalances, A-445), an address check and a payout sent by
+// the watcher, confirmed on chain.
 func TestEscrowRegtestPooled(t *testing.T) {
 	appURL, opURL, pooledURL := os.Getenv("ESCROW_REGTEST_APP_RPC_URL"), os.Getenv("ESCROW_REGTEST_OPERATOR_RPC_URL"), os.Getenv("ESCROW_REGTEST_POOLED_RPC_URL")
 	if appURL == "" || opURL == "" || pooledURL == "" {
@@ -197,6 +198,12 @@ func TestEscrowRegtestPooled(t *testing.T) {
 		t.Fatalf("pooled order after its deposit confirmed: %s", state)
 	}
 	t.Logf("pooled order %s: deposit address from getnewaddress, %s credited by a watcher pass (listreceivedbyaddress, gettransaction) -> paid", shortID(order), deposit)
+	// A-445: the drain panel's advisory balance, read with getbalances through the whitelisted pooled user.
+	confirmed, pending, err := p.Balance(ctx)
+	if err != nil || confirmed+pending < 100000 {
+		t.Fatalf("pooled getbalances: %d confirmed, %d pending, %v", confirmed, pending, err)
+	}
+	t.Logf("pooled wallet balance through the pooled user (getbalances): %d sats confirmed, %d pending", confirmed, pending)
 
 	// Its payout, sent by the watcher from the pooled wallet as the whitelisted user, confirmed on chain.
 	var payTo string

@@ -318,6 +318,8 @@ type PageData struct {
 	NoPurchase      bool
 	// EscrowReadiness (A-444): /admin, the escrow-only readiness panel (escrow_readiness.go).
 	EscrowReadiness *EscrowReadinessView
+	// PooledDrain (A-445): /admin, the pooled wallet's drain panel (pooled_drain.go).
+	PooledDrain *PooledDrainView
 	// VendorEscrowKey (A-455, P4-R18): the product and vendor pages' vendor's Bitcoin escrow key type while ESCROW_BTC is
 	// on: "core", "per_order" or "none" (no active key); "" with escrow off.
 	VendorEscrowKey string
@@ -485,6 +487,34 @@ type ReadinessCoin struct {
 	EscrowOn, Pooled           bool
 }
 type ReadinessListing struct{ ID, Title, Vendor, Kind, Reason string }
+
+// PooledDrainView is /admin's pooled wallet drain panel (A-445): pooled_drain_blockers() per kind, in the panel's
+// order, with Total and each kind's Count uncapped and at most Limit Items per kind, and each pooled wallet's balance
+// as advice.
+type PooledDrainView struct {
+	Kinds    []*DrainKind
+	Total    int
+	Limit    int
+	Balances []DrainBalance
+}
+
+// DrainKind: Resolve says how blockers of the kind are resolved.
+type DrainKind struct {
+	Kind, Title, Resolve string
+	Count                int
+	Items                []DrainItem
+}
+
+// DrainItem is one blocker: Ref and Detail as the function gives them; Link where it is resolved ("" when nowhere this
+// administrator can open).
+type DrainItem struct{ Ref, Order, OrderShort, Currency, Detail, Link string }
+
+// DrainBalance: Configured, the coin's pooled wallet is configured; Available, its balance was read (Confirmed and
+// Pending, in coin units) from Network.
+type DrainBalance struct {
+	Currency, Network, Confirmed, Pending string
+	Configured, Available                 bool
+}
 type ReadinessVendor struct {
 	Handle   string
 	Listings int

@@ -176,7 +176,7 @@ shipped phase has proven. The full rules and acceptance criteria are in the proj
 | Wallets | Electrum and Sparrow support (a signing test showed Electrum needs a different key layout) | In progress on the development branch: per-order key derivation (A-453), the escrow signer (A-454), and per-order wallet keys with their practice signature (A-455); no escrow uses a per-order wallet yet |
 | 2 | Physical orders: buyer-signed release, 14-day deadline, no-ship cancellation, fee bumps | Built and tested on regtest (and, since A-443, a private signet); not released; off by default (`ESCROW_BTC`; regtest, signet or testnet4): see [Phase 2](#phase-2-bitcoin-escrow-for-physical-orders-on-regtest) for what it does, what it protects, what it does not do and the tests behind it. Not run on any public test network or on mainnet; only Bitcoin Core signing is supported |
 | 3 | Monero accounts in monthly escrow wallets | Built and tested on a local Monero fakechain (monerod `--regtest`); not released; off by default (`ESCROW_XMR`): see [Phase 3](#phase-3-monero-escrow-on-a-local-fakechain) for what it does, what it protects, what it does not protect and the tests behind it. Custodial: the market can move these coins. Since A-449 it also accepts stagenet ([below](#monero-escrow-on-stagenet-a-449)), checked on an offline stagenet fork only; not run on the public stagenet, testnet or mainnet; no Monero multisig |
-| 4 | Public test networks end to end, then escrow-only for new orders, then removal of the pooled wallet | Under way: the Bitcoin node sync guard, the escrow chain pin and the chain table (A-439, [below](#node-sync-guard-chain-pin-and-chain-table-a-439)), the market key protection (A-440, [below](#market-key-protection-a-440)), Monero escrow on stagenet with its network pin and daemon sync guard (A-449, [below](#monero-escrow-on-stagenet-a-449)), broadcast honesty (A-441, [below](#broadcast-honesty-a-441)), the escrow-only switch with its readiness panel (A-444, [below](#escrow-only-cutover-a-444)), which no market has used on a public network, and Bitcoin escrow on signet and testnet4 with its private-signet legs (A-443, [below](#bitcoin-escrow-on-signet-and-testnet4-a-443)) are on the development branch; nothing has run on a public test network |
+| 4 | Public test networks end to end, then escrow-only for new orders, then removal of the pooled wallet | Under way: the Bitcoin node sync guard, the escrow chain pin and the chain table (A-439, [below](#node-sync-guard-chain-pin-and-chain-table-a-439)), the market key protection (A-440, [below](#market-key-protection-a-440)), Monero escrow on stagenet with its network pin and daemon sync guard (A-449, [below](#monero-escrow-on-stagenet-a-449)), broadcast honesty (A-441, [below](#broadcast-honesty-a-441)), the escrow-only switch with its readiness panel (A-444, [below](#escrow-only-cutover-a-444)), which no market has used on a public network, the pooled wallet's drain gate and panel (A-445, [below](#pooled-wallet-drain-a-445)), which no market has drained, and Bitcoin escrow on signet and testnet4 with its private-signet legs (A-443, [below](#bitcoin-escrow-on-signet-and-testnet4-a-443)) are on the development branch; nothing has run on a public test network |
 
 
 ## Phase 1: Bitcoin escrow on regtest
@@ -1123,6 +1123,31 @@ refuses a draft in it. An older build reads `escrow` as paused. Operator steps:
 How it was tested: the Go tests and the browser spec listed in the operator guide (PostgreSQL with the fake pooled wallet
 and simulated escrow nodes; not chain evidence). Not tested: a cutover on any real chain or public network, and the
 removal of the pooled wallet that follows it (P4-R10, A-448).
+
+## Pooled wallet drain (A-445)
+
+Phase 4 (war-room ruling P4-R9, with ARCH-12), on the development branch and not released. Between a coin's cutover to
+escrow only and the release that removes the pooled wallet's code (P4-R10, A-448), the pooled wallet drains: the pooled
+orders opened before the switch settle and their payouts go out. Migration 091 adds `pooled_drain_blockers()`, a
+read-only (STABLE) SQL function listing, one row per item with a reference staff can act on, what still needs the pooled
+wallet: open pooled orders (no escrows row, neither a draft nor closed), payouts not sent (every payout is pooled), flagged
+pooled deposits whose review is open (the moderation desk's open-flag rule, so the existing disposition closes each one),
+pooled deposit addresses of closed orders inside the watch horizon, the restore gate, issued-address warnings not
+dismissed (migration 071) and pooled history on mainnet, which always blocks because no release has mainnet escrow. The
+horizon is `pooled_watch_horizon()`, which the pooled watcher itself now calls, so the gate and the watcher share one
+rule: a deposit inside it is recorded and blocks until its review is recorded; one after it is never read and never
+blocks. The removal release's refusing migration is planned to read this function; this release refuses nothing.
+
+`/admin` shows the list read-only (*Pooled wallet drain*), with each pooled wallet's balance as advice (Bitcoin
+`getbalances`, now on the pooled RPC user's method list; Monero `get_balance`) and the note that the market never sweeps:
+once the list is empty the operator moves what is left by hand. The list decides, not the balance. A blocked payout (no
+payout address) can be recorded as sent by hand with the wallet's transaction ID, password step-up and an audit row; a
+queued payout or one being sent never is. Operator steps: [operator guide](operator-guide.md#draining-the-pooled-wallet);
+upgrade notes: UPGRADING.md section 46.
+
+How it was tested: the Go tests, the seeded `scripts/test-upgrade.sh` stage and the browser spec listed in the operator
+guide (PostgreSQL with the fake pooled wallet and simulated wallet RPC; the `getbalances` answer's shape was recorded from
+Bitcoin Core 31.1 on regtest). Not tested: a drain of any real or public-network pooled wallet, and the removal release.
 
 ## Per-order key derivation (A-453, shape (b) groundwork)
 

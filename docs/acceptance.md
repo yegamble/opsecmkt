@@ -243,6 +243,19 @@ Not covered: the public stagenet, a funded Monero escrow on any stagenet (the of
 
 Not covered: a cutover on a real chain or public network, and the removal of the pooled wallet that follows it (A-448).
 
+### Pooled wallet drain (A-445; development branch)
+
+[Draining the pooled wallet](operator-guide.md#draining-the-pooled-wallet). None of these lines is ticked until its command and result are recorded in the evidence table. Tiers: DB integration with the fake pooled wallet and simulated wallet RPC, the upgrade script, and the browser DB spec.
+
+- [ ] `pooled_drain_blockers()` (migration 091) is STABLE and runs in a read-only transaction, and lists each kind while it applies and not once it is resolved: open pooled orders (not drafts, not escrow orders), payouts in every state but sent, flagged pooled deposits whose review is open by the moderation desk's own rule (escrow deposits and flags the desk cannot record are not listed), addresses of closed pooled orders inside the watch horizon, the restore gate, an undismissed issued-address warning, and mainnet pooled history (`TestPooledDrainFunctionIsStableAndReadOnly`, `TestPooledDrainOpenOrders`, `TestPooledDrainUnsentPayouts`, `TestPooledDrainFlaggedPaymentsFollowTheOpenFlagRule`, `TestPooledDrainMigrationCarriesTheOpenFlagRule`, `TestPooledDrainWatchedAddressIsTheWatcherHorizon`, `TestPooledDrainRecoveryRequired`, `TestPooledDrainAddressCollisions`, `TestPooledDrainMainnetHistory`).
+- [ ] The watch horizon is the watcher's own (`pooled_watch_horizon`, called by both): a deposit is recorded exactly at the addresses the function lists, a minute either side of each bound; dust inside the horizon blocks until its review is recorded, past the horizon too, and dust sent after it is never recorded and never blocks (`TestPooledDrainWatchedAddressIsTheWatcherHorizon`, `TestPooledDrainDustBlocksUntilDisposedNeverAfterHorizon`).
+- [ ] The `/admin` panel shows each kind's uncapped count and the first 100 of each, linked to where each is resolved, the pooled balances as advice ("balance unavailable", with the page served, when a wallet refuses or is down) and the sweep note; only administrators see it (`TestPooledDrainPanel`, `TestPooledDrainPanelBalanceUnavailable`, `TestPooledDrainPanelAdministratorOnly`, `TestPooledWalletBalanceAdapters`; real Core 31.1 regtest through the whitelisted pooled user: `TestEscrowRegtestPooled`).
+- [ ] A blocked payout is recorded as sent by hand with a 64-hex transaction ID stored in lower case, the password, an audit row naming the payout and the ID, an order note without it and the recipient's notification with it, and is never sent afterwards; a non-administrator (403), a wrong password (401) and a malformed ID (400) change nothing; a pending or sending payout, a repeat and all but one of concurrent submissions answer 409 and change nothing; a submission waits for a row lock held by an address save and then answers 409 (`TestPooledHandSettleBlockedPayout`, `TestPooledHandSettleRefusesWhatTheSenderMaySend`, `TestPooledHandSettleWaitsForTheRowLock`, `TestPooledHandSettleConcurrentOnce`).
+- [ ] An upgraded alpha.1 database lists nothing, then seeded blockers of every kind, then nothing once each is cleared (`scripts/test-upgrade.sh`).
+- [ ] The panel and the hand settlement work with JavaScript off at 320 px and 1280 px in Chromium: the denied path, a bad transaction ID, success, and the 409 repeat from a form loaded before it (`tests/e2e/db-pooled-drain.spec.ts`).
+
+Not covered: a drain of any real or public-network pooled wallet, and the removal release (A-448).
+
 ### P6 Transparency
 
 - [x] `/canary` shows exactly one of: no statement, verified (fingerprint and dates), or invalid with a reason (`TestCanaryView`, `TestCanaryIntegration`).

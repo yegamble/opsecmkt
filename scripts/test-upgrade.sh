@@ -300,6 +300,49 @@ PY
 [[ $(sql -c 'SELECT count(*) FROM orders') == 3 ]]
 stop_server
 
+# Migration 091 (A-445): pooled_drain_blockers() lists what still needs the pooled wallet, read-only (STABLE), and the
+# watcher's horizon is the shared pooled_watch_horizon. In one transaction, rolled back so the stages below see the
+# database as it was: on the upgraded alpha.1 data it lists nothing; seeded with a blocker of every kind (an open pooled
+# order, a blocked payout, an undisposed flagged deposit, an address inside the watch horizon, the restore gate, an
+# undismissed issued-address warning, mainnet history) it lists each; with each cleared as staff or the operator clear
+# it (closed and past the horizon, sent, disposed, gate cleared, warning dismissed, test-network history) nothing again.
+[[ $(sql -c "SELECT string_agg(proname || ':' || provolatile::text, ',' ORDER BY proname) FROM pg_proc WHERE proname IN ('pooled_drain_blockers','pooled_watch_horizon')") == 'pooled_drain_blockers:s,pooled_watch_horizon:s' ]]
+[[ $(sql -c 'SELECT count(*) FROM pooled_drain_blockers()') == 0 ]]
+drain=$(sql <<'SQL'
+BEGIN;
+UPDATE orders o SET state='paid' FROM users u WHERE u.id=o.buyer_id AND u.handle='alpha_buyer' AND o.currency='BTC';
+UPDATE orders o SET state='completed',updated=now() FROM users u WHERE u.id=o.buyer_id AND u.handle='alpha_buyer' AND o.currency='XMR';
+INSERT INTO payment_addresses(order_id,currency,address,provider) SELECT id,currency,'upgrade-drain-'||lower(currency),
+  CASE currency WHEN 'BTC' THEN 'btc-regtest' ELSE 'xmr-mainnet' END FROM orders WHERE state IN ('paid','completed');
+INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state)
+  SELECT o.id,'release',v.id,o.currency,o.amount,'','blocked' FROM orders o, users v WHERE o.state='completed' AND v.handle='alpha_vendor';
+INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,flagged,after_close)
+  SELECT id,currency,repeat('d',64),0,'upgrade-drain-xmr',1000,12,true,true FROM orders WHERE state='completed';
+INSERT INTO settings(key,value) VALUES ('payments_recovery_required','true')
+  ON CONFLICT (key) DO UPDATE SET value=excluded.value;
+INSERT INTO payment_status(currency,network,last_poll,last_error,address_collisions) VALUES ('BTC','regtest',NULL,'',2);
+SELECT string_agg(kind,',' ORDER BY kind) FROM pooled_drain_blockers();
+SELECT string_agg(b.kind||'='||CASE WHEN b.ref=o.id THEN 'order' WHEN b.ref=p.id::text THEN 'payout' WHEN b.ref=pm.id::text THEN 'payment' ELSE b.ref END||':'||b.detail,' ' ORDER BY b.kind)
+  FROM pooled_drain_blockers() b LEFT JOIN orders o ON o.id=b.ref LEFT JOIN payouts p ON p.id::text=b.ref AND b.kind='unsent_payout'
+  LEFT JOIN payments pm ON pm.id::text=b.ref AND b.kind='flagged_payment' WHERE b.kind<>'watched_address';
+SELECT ref FROM pooled_drain_blockers() WHERE kind='watched_address';
+UPDATE orders SET state='completed',updated=now()-interval '25 hours' WHERE state IN ('paid','completed');
+UPDATE payment_addresses SET created=now()-interval '31 days',provider=replace(provider,'xmr-mainnet','xmr-stagenet');
+UPDATE payouts SET state='sent',txid=repeat('a',64);
+UPDATE payments SET disposition='no_action',disposition_note='Dust; nothing to return.',disposed_at=now();
+UPDATE settings SET value='false' WHERE key='payments_recovery_required';
+UPDATE payment_status SET address_collisions=0;
+SELECT count(*) FROM pooled_drain_blockers();
+ROLLBACK;
+SQL
+)
+want_drain='address_collision,flagged_payment,mainnet_history,open_order,recovery_required,unsent_payout,watched_address
+address_collision=BTC:2 flagged_payment=payment:'"$(printf 'd%.0s' {1..64})"':0 mainnet_history=XMR:1 open_order=order:paid recovery_required=payments_recovery_required: unsent_payout=payout:release blocked
+upgrade-drain-xmr
+0'
+[[ $drain == "$want_drain" ]] || { printf 'pooled_drain_blockers() after the upgrade:\n%s\nwant:\n%s\n' "$drain" "$want_drain" >&2; exit 1; }
+[[ $(sql -c 'SELECT count(*) FROM pooled_drain_blockers()') == 0 && $(sql -c 'SELECT count(*) FROM payouts') == 0 ]]
+
 # A second start applies nothing new and keeps serving.
 applied=$(sql -c "SELECT string_agg(version || '@' || applied, ',' ORDER BY version) FROM schema_migrations")
 start_server restart "$work/new-server" "$root"
@@ -400,4 +443,4 @@ grep -q 'UPGRADING.md, section "Rolling back"' "$work/refused.log"
 sql -c 'DELETE FROM schema_migrations WHERE version=999'
 start_server roll-forward "$work/new-server" "$root"
 stop_server
-echo "Upgrade from $from_ref passed: health, every migration recorded once, orders migrated to draft, one draft per buyer/product/currency, data and sign-in preserved; an escrow key row migration 089 refuses stops startup with its message; a database from a newer release is refused at startup."
+echo "Upgrade from $from_ref passed: health, every migration recorded once, orders migrated to draft, one draft per buyer/product/currency, data and sign-in preserved; the pooled drain gate lists seeded blockers of every kind and then none; an escrow key row migration 089 refuses stops startup with its message; a database from a newer release is refused at startup."
