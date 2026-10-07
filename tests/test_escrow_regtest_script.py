@@ -16,7 +16,8 @@ LEGS = ('TestEscrowRegtestPracticeSign', 'TestEscrowRegtestFunding', 'TestEscrow
         'TestEscrowRegtestDeadline', 'TestEscrowRegtestReserve', 'TestEscrowRegtestConflicted', 'TestEscrowRegtestBIP32',
         'TestEscrowRegtestSigner', 'TestEscrowRegtestPooled', 'TestEscrowRegtestArbiterRestore',
         'TestEscrowRegtestArbiterDeposit', 'TestEscrowRegtestPrivateBroadcast',
-        'TestEscrowRegtestPerOrderPractice', 'TestEscrowRegtestPerOrderEscrow', 'TestEscrowRegtestShapeBRelease',
+        'TestEscrowRegtestPerOrderPractice', 'TestEscrowRegtestPerOrderEscrow', 'TestEscrowRegtestPerOrderRepair',
+        'TestEscrowRegtestShapeBRelease',
         'TestEscrowRegtestShapeBSiblingStray', 'TestEscrowRegtestSmoke')
 
 

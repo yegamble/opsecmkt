@@ -189,31 +189,25 @@ func TestEscrowShapeBSignerKeyAtCheckout(t *testing.T) {
 	}
 }
 
-// QA5W3A-3 (the orphan sweep after a restore) with QA5W3A-8 (the watch-only wallet's repair): a per-order escrow whose
-// watch-only wallet was restored from before it, repaired on the next start while the signer did not answer (so its
-// siblings came back as addr(…) imports only, unsolvable on Core), is then lost by a database restore. The sweep reserves
-// the escrow address's three keys, finds nothing to reserve at the unsolvable siblings, and finishes: the restore's
-// marker is cleared and a Bitcoin Core escrow can be created again. A second per-order escrow, lost with its ranged
-// descriptors in place (its siblings solvable), is swept too.
+// QA5W3A-3 (the orphan sweep after a restore), QA5W4A-2: a per-order escrow whose watch-only wallet was restored from
+// before it and given its own descriptor and its siblings again as addr(…) imports only (by hand, or by a repair before
+// QA5W4A-1; Core keeps the siblings unsolvable), is then lost by a database restore. The sweep reserves the escrow
+// address's three keys and counts the unsolvable siblings as read, since an orphan of their label gave its keys: the
+// restore's marker is cleared and a Bitcoin Core escrow can be created again. A second per-order escrow, lost with its
+// ranged descriptors in place (its siblings solvable), is swept too.
 func TestEscrowShapeBLostAfterWatchRestore(t *testing.T) {
-	x, f := newPerOrderEnv(t)
+	x, _ := newPerOrderEnv(t)
 	addr := x.mustCheckout(x.order, regtestAddr("lost-watch-1"))
 	lost := x.escrowPubkeys(x.order)
-	n := len(x.core.importRequests())
+	reqs := x.core.importRequests() // checkout's: the escrow's descriptor, the two ranged ones and the 29 siblings
 	x.core.forgetWatched()
-	f.set(func(f *fakeSigner) { f.raw = `{"error":"unavailable"}` })
-	x.restart()
-	x.poll()
-	f.set(func(f *fakeSigner) { f.raw = "" })
-	reqs := x.core.importRequests()[n:]
-	if len(reqs) != 30 || reqs[0]["label"] != "escrow:"+x.order || strings.HasPrefix(reqs[0]["desc"].(string), "addr(") {
-		t.Fatalf("repair without the signer: %d requests, want the escrow's own descriptor and its 29 siblings: %v", len(reqs), reqs)
-	}
-	for _, r := range reqs[1:] {
-		if !strings.HasPrefix(r["desc"].(string), "addr(") {
-			t.Fatalf("repair without the signer imported %v", r)
+	x.core.mu.Lock()
+	for i, r := range reqs {
+		if i != 1 && i != 2 {
+			x.core.importOne(fakeWatchWallet, r)
 		}
 	}
+	x.core.mu.Unlock()
 	last, called := x.marketCounter()
 	x.lose(last, called, x.order)
 	x.poll()
@@ -291,46 +285,27 @@ func TestEscrowShapeBWatchRestoredBeforeEscrow(t *testing.T) {
 	}
 }
 
-// QA5W3A-8: the ranged descriptors are rebuilt only from keys that still derive the escrow's stored keys. After the
-// vendor registered another key, a watch-only wallet restored from before the escrow gets the escrow's descriptor and
-// its 29 sibling addresses again, never ranged descriptors of the vendor's new key, and the log says so.
-func TestEscrowShapeBRepairKeyChanged(t *testing.T) {
-	logs := captureLog(t)
-	x, _ := newPerOrderEnv(t)
-	x.mustCheckout(x.order, regtestAddr("repair-key-changed"))
-	n := len(x.core.importRequests())
-	x.activeKey(x.vendor, altEscrowKey(t, x.vendorKey, "5eed5eed", 3))
-	x.core.forgetWatched()
-	x.restart()
-	x.poll()
-	reqs := x.core.importRequests()[n:]
-	if len(reqs) != 30 {
-		t.Fatalf("%d repair requests, want the escrow's descriptor and its 29 siblings: %v", len(reqs), reqs)
-	}
-	for _, r := range reqs {
-		if _, ranged := r["range"]; ranged {
-			t.Fatalf("a ranged descriptor was imported after the vendor's key changed: %v", r)
-		}
-	}
-	if !strings.Contains(logs.String(), "ranged descriptors of 1 of them were not imported again") {
-		t.Fatalf("log: %s", logs.String())
-	}
-}
+// QA5W3A-8's case of a vendor who registered another key is TestEscrowShapeBRepairAfterKeyChange since QA5W4A-5: the
+// ranged descriptors come from the order wallet keys stored at checkout.
 
-// QA5W3A-8: the repair checks both ends of checkout's import, the escrow's address (the first request) and its last
-// sibling (the last): a watch-only wallet that lacks either label gets the escrow's imports again.
+// QA5W3A-8, QA5W4A-1: the repair checks both ends of checkout's import, the escrow's address (the first request) and its
+// last sibling (the last): a watch-only wallet that lacks the escrow address's label gets the escrow's own descriptor
+// again, and one that lacks the last sibling's gets the two ranged descriptors and the 29 siblings again.
 func TestEscrowShapeBRepairEitherEnd(t *testing.T) {
 	x, _ := newPerOrderEnv(t)
 	addr := x.mustCheckout(x.order, regtestAddr("repair-either-end"))
-	for _, lost := range []string{addr, x.sibling(x.order, 1, 9)} {
+	for _, c := range []struct {
+		lost string
+		want int
+	}{{addr, 1}, {x.sibling(x.order, 1, 9), 31}} {
 		n := len(x.core.importRequests())
 		x.core.mu.Lock()
-		delete(x.core.labels, lost)
+		delete(x.core.labels, c.lost)
 		x.core.mu.Unlock()
 		x.restart()
 		x.poll()
-		if got := len(x.core.importRequests()) - n; got != 32 {
-			t.Fatalf("label of %s lost: %d repair requests, want 32", lost, got)
+		if got := len(x.core.importRequests()) - n; got != c.want {
+			t.Fatalf("label of %s lost: %d repair requests, want %d", c.lost, got, c.want)
 		}
 	}
 }

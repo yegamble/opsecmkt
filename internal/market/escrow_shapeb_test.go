@@ -104,8 +104,9 @@ func (x *escrowEnv) escrowRows(order string) map[string]shapeBRow {
 		if err = rows.Scan(&r.party, &r.suffix, &r.fp, &r.origin, &r.pubkey, &noXpub); err != nil {
 			x.t.Fatal(err)
 		}
-		if !noXpub {
-			x.t.Fatalf("%s: per_order_xpub stored", r.party)
+		// QA5W4A-5: the buyer's and the vendor's order wallet key is stored with a per-order key, and nothing else.
+		if perOrder := strings.Count(r.suffix, "/") == 3 && r.party != "market"; noXpub == perOrder {
+			x.t.Fatalf("%s %s: per_order_xpub stored %v", r.party, r.suffix, !noXpub)
 		}
 		out[r.party] = r
 	}
@@ -208,7 +209,8 @@ func TestEscrowShapeBOpenToUsers(t *testing.T) {
 
 // Shape (b): each party's key is its account key's child <i>/0/0 with i from the account's one shared counter (2 for a
 // fresh account, never 0 or 1), the market's the escrow signer's account key's child <m>/0/0 with m >= 2 from the market
-// counter; the address is the 2-of-3 of the keys Go derived; per_order_xpub stays NULL; the watch-only wallet imports
+// counter; the address is the 2-of-3 of the keys Go derived; per_order_xpub holds the buyer's and the vendor's order
+// wallet key (TestEscrowShapeBOrderXpubStored), the market's none; the watch-only wallet imports
 // the bare-key descriptor (labelled) and the per-order wallet's ranged descriptors /0/0..19 and /1/0..9 from the rooted
 // per-order keys only; the 29 sibling addresses stored are Go's. Two Bitcoin Core keys still make shape (a).
 func TestEscrowShapeBChosen(t *testing.T) {
@@ -633,7 +635,7 @@ func TestEscrowMigration089(t *testing.T) {
 			t.Errorf("%s origin %q suffix %s refused: %v", c.party, c.origin, c.suffix, err)
 		}
 	}
-	for _, name := range []string{"escrow_pubkeys_suffix_steps", "escrow_pubkeys_origin_path"} {
+	for _, name := range []string{"escrow_pubkeys_suffix_steps", "escrow_pubkeys_origin_path", "escrow_pubkeys_per_order_xpub"} {
 		var valid bool
 		if err := e.DB.QueryRow("SELECT convalidated FROM pg_constraint WHERE conname=$1 AND conrelid='escrow_pubkeys'::regclass", name).Scan(&valid); err != nil || !valid {
 			t.Errorf("constraint %s: validated=%v %v", name, valid, err)

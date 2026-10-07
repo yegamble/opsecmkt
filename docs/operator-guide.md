@@ -1449,7 +1449,10 @@ by the watch-only wallet and recorded left out. Its A-456b legs (`TestEscrowRegt
 `TestEscrowRegtestShapeBSiblingStray`, with the real [escrow signer](#escrow-signer) built from the tree): a per-order
 escrow's claim, signed by the vendor's order wallet and uploaded as a PSBT file, is co-signed by the signer, broadcast
 and confirmed; a deposit to a sibling address is returned by a stray refund spending that sibling's script, co-signed
-and confirmed ([per-order escrow](escrow.md#per-order-escrow-settlement-setup-and-upload-a-456b-shape-b)). In every leg the app runs inside the Go test against the real node, not as the server binary. A browser journey
+and confirmed ([per-order escrow](escrow.md#per-order-escrow-settlement-setup-and-upload-a-456b-shape-b)). Its QA5W4A leg (`TestEscrowRegtestPerOrderRepair`): the app restarted onto empty watch-only
+wallets standing in for restored ones repairs such an escrow, every address solvable and the deposits found, with the
+escrow signer up, after it was down (only the escrow's own descriptor until it answers) and after the vendor
+registered another key. In every leg the app runs inside the Go test against the real node, not as the server binary. A browser journey
 (`npm run test:e2e:escrow`, [development](development.md)) drives the escrow forms by keyboard in Chromium at 320 px
 with JavaScript off against the real server and a simulated escrow node; it is not chain evidence. Nothing about
 escrow has run on a public test network or mainnet, and the escrow pages have not been run in Firefox or WebKit.

@@ -106,21 +106,22 @@ func TestEscrowShapeBSetupPage(t *testing.T) {
 	}
 }
 
-// A party that registered another escrow key since checkout: its own path is still shown (it comes from the escrow), but
-// not the Sparrow descriptor, which needs the key the escrow was built with; the other party's page loses its cosigner
-// key and says why.
+// A party that registered another escrow key since checkout (QA5W4A-5): the order wallet keys stored at checkout still
+// give both setup pages in full, the party's own path and Sparrow descriptor and the other party's cosigner key, never
+// anything of the new key.
 func TestEscrowShapeBSetupKeyChanged(t *testing.T) {
-	x, _ := newPerOrderEnv(t)
+	x, f := newPerOrderEnv(t)
 	x.mustCheckout(x.order, regtestAddr("setup-changed"))
-	vendorOwn, _, _, _ := x.perOrderSetupWant(x.order, roleVendor, signerKey(t, 7))
+	vendorOwn, _, _, vendorSparrow := x.perOrderSetupWant(x.order, roleVendor, f.key)
+	_, _, buyerCosigners, buyerSparrow := x.perOrderSetupWant(x.order, roleBuyer, f.key)
 	x.activeKey(x.vendor, altEscrowKey(t, testBIP48Key, "c4a76e0d", 9))
 	agExec(x.testEnv, "UPDATE user_escrow_keys SET layout='per_order' WHERE user_id=$1", x.vendor)
 	page := html.UnescapeString(x.page("/escrow-setup?id="+x.order, x.vendorSess))
-	if !strings.Contains(page, vendorOwn) || strings.Contains(page, "wsh(sortedmulti(") || !strings.Contains(page, "no longer the one this escrow was built with") {
+	if !strings.Contains(page, vendorOwn) || !strings.Contains(page, vendorSparrow) || strings.Contains(page, "c4a76e0d") || strings.Contains(page, "no longer the one this escrow was built with") {
 		t.Fatalf("vendor's setup page after a key change:\n%s", page)
 	}
 	page = html.UnescapeString(x.page("/escrow-setup?id="+x.order, x.buyerSess))
-	if !strings.Contains(page, "The vendor's escrow key is no longer the one this escrow was built with") || strings.Contains(page, "Vpub") {
+	if !strings.Contains(page, buyerCosigners[0]) || !strings.Contains(page, buyerSparrow) || strings.Contains(page, "no longer the one this escrow was built with") {
 		t.Fatalf("buyer's setup page after the vendor's key change:\n%s", page)
 	}
 }

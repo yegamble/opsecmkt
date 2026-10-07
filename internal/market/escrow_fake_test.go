@@ -149,6 +149,12 @@ type fakeEscrowCore struct {
 	forgotten     map[string]bool
 	rangeSkew     func(body string, k int64, addr string) string
 
+	// QA5W4A-3: Core's rescan. While the watch wallet rescans (scanning: the operator's rescanblockchain; or an import
+	// running, from beforeImport to its answer), getwalletinfo reports scanning as {duration, progress} (false
+	// otherwise) and importdescriptors answers RPC_WALLET_ERROR "Wallet is currently rescanning" (-4), as Core 31.1 does;
+	// rescanRefuses gives that answer while getwalletinfo still reports false (a rescan that started between the two).
+	scanning, rescanRefuses, importing bool
+
 	// QA5W4-timing: every extended key fakeRealChild has parsed or derived, by ckdSkew, parent key and path, for the life
 	// of the fake. Public derivation in math/big is slow under -race, and a per-order checkout derives each order wallet's
 	// 30 indices for deriveaddresses and again for importdescriptors (a restart or restore imports them once more): with
@@ -674,10 +680,15 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 		if len(reqs) == 0 {
 			return nil, -8, "unexpected fake import"
 		}
+		if path == fakeWatchWallet && (c.scanning || c.rescanRefuses || c.importing) {
+			return nil, -4, "Wallet is currently rescanning. Abort existing rescan or wait."
+		}
 		if c.beforeImport != nil {
+			c.importing = true
 			c.mu.Unlock()
 			c.beforeImport()
 			c.mu.Lock()
+			c.importing = false
 		}
 		if c.importFail {
 			return []map[string]any{{"success": false, "error": map[string]any{"code": -4, "message": "fake import failure"}}}, 0, ""
@@ -701,7 +712,14 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 		if path != fakeWatchWallet || c.watchInfo == nil {
 			return nil, -18, "Requested wallet does not exist or is not loaded"
 		}
-		return c.watchInfo, 0, ""
+		info := map[string]any{"scanning": false}
+		if c.scanning || c.importing {
+			info["scanning"] = map[string]any{"duration": 1, "progress": 0.5}
+		}
+		for k, v := range c.watchInfo {
+			info[k] = v
+		}
+		return info, 0, ""
 	case "listreceivedbyaddress":
 		if path != fakeWatchWallet {
 			return nil, -8, "unexpected fake wallet"

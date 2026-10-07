@@ -190,6 +190,15 @@
 # the order wallet's siblings /0/1 and /1/9; the operator pays /0/1 and /1/3, 3 blocks are mined, and one watcher pass
 # records both deposits for the order, left out and not credited, the order still awaiting payment.
 #
+# QA5W4A leg (the watch-only wallet repair of a per-order escrow, TestEscrowRegtestPerOrderRepair): an
+# escrow like the A-456a leg's, funded at its address and at /0/1 and /1/3, then the app restarted
+# onto empty watch-only wallets standing in for ones restored from before the escrow. Signer up: one pass imports
+# everything again, every address held, labelled and solvable, the deposits found. Signer down: the pass waits with only
+# the escrow's own descriptor imported and no sibling; once the signer answers, the siblings are imported, solvable. The
+# vendor's key re-registered: the siblings still solvable (the order wallet keys stored at checkout). And Core's own
+# behaviour: an address an addr(…) import held first stays unsolvable after its bare or ranged descriptor is imported,
+# and the orphan sweep's read reports it unsolvable.
+#
 # A-456b legs (per-order escrows settled through the real escrow signer; cmd/escrow-signer is built from this tree with a
 # fresh seed and the signer's RPC user, and two Core wallets' seeds stand in for the parties' BIP39 seeds, a party's
 # order wallet played by Core's descriptorprocesspsbt with its private root at its per-order path). TestEscrowRegtestShapeBRelease:
@@ -386,7 +395,7 @@ private_signet() {
   done
   say "node B ($b) synced from node A: height $height_b, $peers peer(s), initialblockdownload false"
 
-  local legs=(PracticeSign Funding Settlement Cosign Gate Bump Physical Deadline Reserve BIP32 Signer Pooled ArbiterRestore ArbiterDeposit PerOrderPractice PerOrderEscrow ShapeBRelease ShapeBSiblingStray Smoke Isolated)
+  local legs=(PracticeSign Funding Settlement Cosign Gate Bump Physical Deadline Reserve BIP32 Signer Pooled ArbiterRestore ArbiterDeposit PerOrderPractice PerOrderEscrow PerOrderRepair ShapeBRelease ShapeBSiblingStray Smoke Isolated)
   local pattern
   pattern=$(IFS='|'; echo "${legs[*]}")
   set +e
@@ -480,12 +489,12 @@ log="${ESCROW_REGTEST_LOG:-artifacts/real-chain/test-escrow-regtest-$(date -u +%
 mkdir -p "$(dirname "$log")"
 echo "Bitcoin escrow regtest check; transcript: $log"
 set +e
-go test -count=1 -timeout 15m -run '^TestEscrowRegtest(PracticeSign|Funding|Settlement|Cosign|Recovery|Gate|Bump|Physical|Deadline|Reserve|Conflicted|BIP32|Signer|Pooled|ArbiterRestore|ArbiterDeposit|PrivateBroadcast|PerOrderPractice|PerOrderEscrow|ShapeBRelease|ShapeBSiblingStray|Smoke)$' -v ./internal/market/ 2>&1 | tee "$log"
+go test -count=1 -timeout 15m -run '^TestEscrowRegtest(PracticeSign|Funding|Settlement|Cosign|Recovery|Gate|Bump|Physical|Deadline|Reserve|Conflicted|BIP32|Signer|Pooled|ArbiterRestore|ArbiterDeposit|PrivateBroadcast|PerOrderPractice|PerOrderEscrow|PerOrderRepair|ShapeBRelease|ShapeBSiblingStray|Smoke)$' -v ./internal/market/ 2>&1 | tee "$log"
 status=${PIPESTATUS[0]}
 set -e
 # Each leg is reported from its own go test result line, so one failing leg never makes another read as failed.
 failed=0
-for leg in TestEscrowRegtestPracticeSign TestEscrowRegtestFunding TestEscrowRegtestSettlement TestEscrowRegtestCosign TestEscrowRegtestRecovery TestEscrowRegtestGate TestEscrowRegtestBump TestEscrowRegtestPhysical TestEscrowRegtestDeadline TestEscrowRegtestReserve TestEscrowRegtestConflicted TestEscrowRegtestBIP32 TestEscrowRegtestSigner TestEscrowRegtestPooled TestEscrowRegtestArbiterRestore TestEscrowRegtestArbiterDeposit TestEscrowRegtestPrivateBroadcast TestEscrowRegtestPerOrderPractice TestEscrowRegtestPerOrderEscrow TestEscrowRegtestShapeBRelease TestEscrowRegtestShapeBSiblingStray TestEscrowRegtestSmoke; do
+for leg in TestEscrowRegtestPracticeSign TestEscrowRegtestFunding TestEscrowRegtestSettlement TestEscrowRegtestCosign TestEscrowRegtestRecovery TestEscrowRegtestGate TestEscrowRegtestBump TestEscrowRegtestPhysical TestEscrowRegtestDeadline TestEscrowRegtestReserve TestEscrowRegtestConflicted TestEscrowRegtestBIP32 TestEscrowRegtestSigner TestEscrowRegtestPooled TestEscrowRegtestArbiterRestore TestEscrowRegtestArbiterDeposit TestEscrowRegtestPrivateBroadcast TestEscrowRegtestPerOrderPractice TestEscrowRegtestPerOrderEscrow TestEscrowRegtestPerOrderRepair TestEscrowRegtestShapeBRelease TestEscrowRegtestShapeBSiblingStray TestEscrowRegtestSmoke; do
   if grep -q -- "--- PASS: $leg " "$log"; then
     echo "PASS: $leg"
   elif grep -q -- "--- FAIL: $leg " "$log"; then
@@ -507,4 +516,4 @@ if [[ $status -ne 0 || $failed -ne 0 ]]; then
   echo "FAILED: go test exited $status; see $log" >&2
   exit 1
 fi
-echo "PASS: practice signing, escrow creation and funding, settlement building and party signing, co-signing, broadcast and confirmation, recovery and reconciliation, the Phase 1 gate's remaining adversarial legs, a same-recipient fee bump, a physical order's release signed by the buyer and the vendor with no arbiter signature, one released at its deadline with the vendor's signature co-signed by the market, no escrow key handed out again after a restore, a deposit conflicted at an unpaid cancellation and mined afterwards returned by a stray refund, the Go per-order key derivation agreeing with Core, the escrow signer co-signing a shape-(b) escrow and refusing what it must, the whitelisted pooled user refused the arbiter wallet's descriptors while pooled payments still work, and the arbiter wallet backed up, wiped, restored (restorewallet, then the importdescriptors fallback) and co-signing with its fingerprint pin unchanged, a payment to the arbiter wallet (and 6000 dust outputs, and 1100 fee bumps of one payment) leaving escrow on while a spend from it disables escrow, and a settlement queued by -privatebroadcast behind a dead proxy reported queued or stuck after 6 blocks and cleared once mined, a per-order wallet key's practice signed by Core from the seed and the practice page, a per-order escrow created with Go and Core agreeing on its address and its sibling deposits recorded left out, a per-order escrow's release uploaded as a PSBT file and co-signed by the real escrow signer, a sibling deposit returned by a stray refund spending the sibling's own script and co-signed by the signer, and the public-network smoke's legs (practice signing, one escrow claimed and one refunded, each confirmed), on regtest; transcript in $log"
+echo "PASS: practice signing, escrow creation and funding, settlement building and party signing, co-signing, broadcast and confirmation, recovery and reconciliation, the Phase 1 gate's remaining adversarial legs, a same-recipient fee bump, a physical order's release signed by the buyer and the vendor with no arbiter signature, one released at its deadline with the vendor's signature co-signed by the market, no escrow key handed out again after a restore, a deposit conflicted at an unpaid cancellation and mined afterwards returned by a stray refund, the Go per-order key derivation agreeing with Core, the escrow signer co-signing a shape-(b) escrow and refusing what it must, the whitelisted pooled user refused the arbiter wallet's descriptors while pooled payments still work, and the arbiter wallet backed up, wiped, restored (restorewallet, then the importdescriptors fallback) and co-signing with its fingerprint pin unchanged, a payment to the arbiter wallet (and 6000 dust outputs, and 1100 fee bumps of one payment) leaving escrow on while a spend from it disables escrow, and a settlement queued by -privatebroadcast behind a dead proxy reported queued or stuck after 6 blocks and cleared once mined, a per-order wallet key's practice signed by Core from the seed and the practice page, a per-order escrow created with Go and Core agreeing on its address and its sibling deposits recorded left out, its watch-only wallet repaired after a restore (with the signer up, down, and after a key change), a per-order escrow's release uploaded as a PSBT file and co-signed by the real escrow signer, a sibling deposit returned by a stray refund spending the sibling's own script and co-signed by the signer, and the public-network smoke's legs (practice signing, one escrow claimed and one refunded, each confirmed), on regtest; transcript in $log"

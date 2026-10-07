@@ -77,7 +77,9 @@ class FakeNode(BaseHTTPRequestHandler):
         wallet = self.path[len('/wallet/'):] if self.path.startswith('/wallet/') else ''
         result, error = None, None
         if method == 'getblockchaininfo':
-            result = {'chain': srv.chain, 'blocks': srv.height, 'headers': srv.height}
+            result = {'blocks': srv.height, 'headers': srv.height}
+            if srv.chain is not None:  # None: an HTTP 200 reply that names no chain
+                result['chain'] = srv.chain
             if srv.chain == 'signet':
                 result['signet_challenge'] = srv.challenge
         elif method == 'getnetworkinfo':
@@ -374,10 +376,12 @@ class SetupScriptTest(NodeCase):
 
     def test_verify_refuses_another_test_chain_or_none_before_any_wallet_call(self):
         """QA5W3A-9: as set-up mode does, --verify asks nothing more of a node on another test chain, or of one that
-        names no chain (its getblockchaininfo refused with HTTP 403, or no node answering at all)."""
+        names no chain (its getblockchaininfo refused with HTTP 403, an HTTP 200 reply without a chain field (QA5W4A P2),
+        or no node answering at all)."""
         env = {'ESCROW_BTC_RPC_URL': self.url('opsecmkt-escrow', 'x1'), 'BITCOIN_RPC_URL': self.url('opsecmkt-pooled', 'x2')}
         for name, node_chain, whitelist, url, why in (
                 ('another test chain', 'signet', None, None, "reports chain 'signet' (HTTP 200), not regtest"),
+                ('a reply naming no chain', None, None, None, "reports chain 'nothing' (HTTP 200), not regtest"),
                 ('getblockchaininfo refused', 'regtest', set(ESCROW_METHODS) - {'getblockchaininfo'}, None,
                  "reports chain 'nothing' (HTTP 403), not regtest"),
                 ('no node answering', 'regtest', None, 'http://opsecmkt-escrow:x1@127.0.0.1:9', "reports chain 'nothing'")):

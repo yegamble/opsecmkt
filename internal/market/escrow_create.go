@@ -55,9 +55,10 @@ import (
 // and the order wallet's sibling addresses /0/1..19 and /1/0..9, which are stored (escrow_siblings) and imported with the
 // escrow as two ranged descriptors of the rooted per-order keys, so a deposit to one is seen and returned by the stray
 // refund (escrow_watch.go), which spends a sibling's deposits with that sibling's own script (A-456b, siblingKeys).
-// per_order_xpub stays NULL: the per-order keys are derived again on demand. Since A-456b a pair of per-order keys gets a
-// per-order escrow whenever the escrow signer, which co-signs its settlements (escrow_cosign.go), answers with its pinned
-// key; A-456a's checkout switch is gone.
+// The buyer's and the vendor's order wallet keys (tpubs) are stored with their keys (per_order_xpub, QA5W4A-5), so
+// they are rebuilt (perOrderXpub) whatever key a party has registered since; the market's comes from the escrow signer.
+// Since A-456b a pair of per-order keys gets a per-order escrow whenever the escrow signer, which co-signs its
+// settlements (escrow_cosign.go), answers with its pinned key; A-456a's checkout switch is gone.
 
 func init() {
 	registerAction("/orders/escrow", actionSpec{OneAtATime: true, Off: escrowOff, Run: escrowCheckoutAction})
@@ -683,15 +684,25 @@ func insertEscrow(ctx context.Context, tx *sql.Tx, orderID, refund string, feeBp
 		return err
 	}
 	for _, p := range b.Parties {
-		var uid, h any
+		var uid, h, xpub any
 		if p.Party != "market" {
 			if checkEscrowOrigin(p.Key, p.Key.PathText, p.Suffix) != nil {
 				return errEscrowOrigin
 			}
 			uid, h = p.UserID, p.KeyHMAC
+			// Shape (b): the party's order wallet key (the ranged descriptors name it rooted), cross-checked with
+			// Core with them (checkPerOrderEscrow), and checked again here against the key stored beside it (QA5W4A-5).
+			if p.Layout == layoutPerOrder {
+				s := perOrderStored{Party: p.Party, PubKey: hex.EncodeToString(b.Keys[p.Party]), Suffix: p.Suffix,
+					Xpub: sql.NullString{String: p.Order.Serialize(versionTpub), Valid: true}}
+				if _, err := s.orderKey(nil); err != nil {
+					return errPerOrderMismatch
+				}
+				xpub = s.Xpub.String
+			}
 		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO escrow_pubkeys(pubkey,escrow_id,party,user_id,key_hmac,origin_fingerprint,origin_path,derivation_suffix)
-			VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, hex.EncodeToString(b.Keys[p.Party]), id, p.Party, uid, h, p.Key.Fingerprint, p.Key.PathText, p.Suffix); err != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO escrow_pubkeys(pubkey,escrow_id,party,user_id,key_hmac,origin_fingerprint,origin_path,derivation_suffix,per_order_xpub)
+			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, hex.EncodeToString(b.Keys[p.Party]), id, p.Party, uid, h, p.Key.Fingerprint, p.Key.PathText, p.Suffix, xpub); err != nil {
 			if errors.As(err, &pe) && pe.Code == "23505" {
 				// A child key another escrow already holds: a fixed line, never the database's text (which names the key).
 				log.Printf("escrow: escrow for order %s not built: a child key is already held by another escrow", shortID(orderID))
