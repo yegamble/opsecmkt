@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A-456a (shape (b) slice 4, first half; rulings P4-R2, P4-R17, P4-R18; ADDENDUM QA4W5K-6): checkout picks the escrow's
@@ -30,14 +31,29 @@ func setPerOrderEscrows(t *testing.T, on bool) {
 	t.Cleanup(func() { perOrderEscrows.Store(prev) })
 }
 
-// newPerOrderEnv is newEscrowEnv with a fake escrow signer, both parties' active keys per-order wallet keys and the
-// per-order switch on.
-func newPerOrderEnv(t *testing.T) (*escrowEnv, *fakeSigner) {
+// newShapeBEnv is newEscrowEnv with a fake escrow signer and the per-order switch on: how every shape-(b) test that
+// builds per-order escrows on the fake node starts. The fake derives each order wallet's keys in Go (math/big, slow under
+// -race on a loaded host), so its RPC calls get a generous rpcTimeout instead of the production 10 s, set before the app
+// starts and restored after it stops (a call inside a form post is still bounded by ServeHTTP's request deadline: what
+// keeps a checkout within it is the fake's derivation memo, ckdMemo). No test in this package uses t.Parallel
+// (testenv_test.go), so the package variable is safe to set; a test exercising a timeout sets its own smaller value
+// after this.
+func newShapeBEnv(t *testing.T) (*escrowEnv, *fakeSigner) {
 	t.Helper()
+	prev := rpcTimeout
+	rpcTimeout = 2 * time.Minute
+	t.Cleanup(func() { rpcTimeout = prev })
 	f := newFakeSigner(t, signerKey(t, 7))
 	x := signerApp(t, f.path)
-	agExec(x.testEnv, "UPDATE user_escrow_keys SET layout='per_order' WHERE user_id IN ($1,$2)", x.buyer, x.vendor)
 	setPerOrderEscrows(t, true)
+	return x, f
+}
+
+// newPerOrderEnv is newShapeBEnv with both parties' active keys per-order wallet keys.
+func newPerOrderEnv(t *testing.T) (*escrowEnv, *fakeSigner) {
+	t.Helper()
+	x, f := newShapeBEnv(t)
+	agExec(x.testEnv, "UPDATE user_escrow_keys SET layout='per_order' WHERE user_id IN ($1,$2)", x.buyer, x.vendor)
 	return x, f
 }
 
@@ -284,9 +300,7 @@ func TestEscrowShapeBChosen(t *testing.T) {
 // The one shared counter (P4-R2): an account's per-order index continues past the highest index its escrows used in
 // either shape, never below the floor a restore set, and never below 2.
 func TestEscrowShapeBSharedCounter(t *testing.T) {
-	f := newFakeSigner(t, signerKey(t, 7))
-	x := signerApp(t, f.path)
-	setPerOrderEscrows(t, true)
+	x, _ := newShapeBEnv(t)
 	for i := range 2 { // two shape-(a) escrows: /0/1 and /0/2
 		x.checkoutAside("shared-a-" + strconv.Itoa(i))
 	}
@@ -486,9 +500,7 @@ func TestEscrowShapeBRestartReimport(t *testing.T) {
 // section 6) reads an account's highest index in both shapes: after a per-order escrow at /3/0/0 (and shape-(a) ones at
 // /0/1 and /0/2) the account's next index is 3+1+50.
 func TestEscrowShapeBRestoreFloor(t *testing.T) {
-	f := newFakeSigner(t, signerKey(t, 7))
-	x := signerApp(t, f.path)
-	setPerOrderEscrows(t, true)
+	x, _ := newShapeBEnv(t)
 	for i := range 2 {
 		x.checkoutAside("floor-a-" + strconv.Itoa(i))
 	}
@@ -517,9 +529,7 @@ func TestEscrowShapeBRestoreFloor(t *testing.T) {
 // another key of the same origin: not of another escrow's key in either shape, nor of the account's receiving and change
 // branches (/0, /1) a Bitcoin Core wallet of the same account uses, nor of the practice key.
 func TestEscrowShapeBNoServedKeyIsAncestor(t *testing.T) {
-	f := newFakeSigner(t, signerKey(t, 7))
-	x := signerApp(t, f.path)
-	setPerOrderEscrows(t, true)
+	x, _ := newShapeBEnv(t)
 	for i := range 2 {
 		x.checkoutAside("anc-a-" + strconv.Itoa(i))
 	}
