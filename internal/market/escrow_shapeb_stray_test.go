@@ -114,9 +114,7 @@ func TestEscrowShapeBStrayOneScriptEach(t *testing.T) {
 	var addr string
 	x.DB.QueryRow("SELECT address FROM escrows WHERE order_id=$1", order).Scan(&addr)
 	sib := x.sibling(order, 1, 4)
-	x.core.deposit(sib, txidOf("sibtwo-sib"), 0, 40000, 6)
-	x.core.deposit(addr, txidOf("sibtwo-main"), 0, 50000, 6)
-	// The sibling's deposit is reported at another address for a while: the stray refund must not wait on it.
+	// The sibling's deposit, recorded first, is reported at another address for a while: its stray refund waits on it.
 	x.core.mu.Lock()
 	x.core.utxoSkew = func(out map[string]any) {
 		if sp, _ := out["scriptPubKey"].(map[string]any); sp["address"] == sib {
@@ -124,6 +122,14 @@ func TestEscrowShapeBStrayOneScriptEach(t *testing.T) {
 		}
 	}
 	x.core.mu.Unlock()
+	x.core.deposit(sib, txidOf("sibtwo-sib"), 0, 40000, 6)
+	x.poll()
+	x.poll()
+	if ids, _ := x.strayRefunds(order); len(ids) != 1 || x.settleByID(ids[0]).State != "building" {
+		t.Fatalf("stray refund of the sibling deposit alone: %v", ids)
+	}
+	// A deposit to the escrow address meanwhile: the same stray refund builds it, not waiting on the sibling's.
+	x.core.deposit(addr, txidOf("sibtwo-main"), 0, 50000, 6)
 	x.poll()
 	x.poll()
 	ids, states := x.strayRefunds(order)

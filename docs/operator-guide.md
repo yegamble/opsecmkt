@@ -1425,7 +1425,7 @@ deposit is mined after all, it is flagged once and returned by a stray refund th
 confirmed to the refund address. Its A-453 leg (`TestEscrowRegtestBIP32`, no product caller yet): the Go per-order key
 derivation of [per-order escrow](escrow.md#per-order-key-derivation-a-453-shape-b-groundwork) agrees with Core's
 `deriveaddresses` for three wallets' BIP48 accounts at several indexes, and a wrong index or a changed chain code is
-refused. Its A-454 leg (`TestEscrowRegtestSigner`, no order uses it yet; needs the signer's RPC user, below): the
+refused. Its A-454 leg (`TestEscrowRegtestSigner`; needs the signer's RPC user, below): the
 [escrow signer](#escrow-signer), built from the tree and started with a fresh seed, co-signs a hand-built per-order
 escrow through its socket, which the buyer's Core wallet signs too and which is broadcast and mined; it refuses a
 SIGHASH_NONE input, another index, two of its keys in one script and two escrows in one request; the seed is backed up,

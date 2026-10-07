@@ -20,7 +20,7 @@ import (
 
 // The escrow signer's client (A-454, ruling P4-R17). Per-order (shape (b)) escrows are co-signed by a dedicated signer,
 // cmd/escrow-signer, which holds the market's key for them and listens on a Unix socket (ESCROW_SIGNER_SOCKET); the app
-// never holds that key. No order uses shape (b) yet: the settlement flow calls sign from A-456. Until then the app only
+// never holds that key. The settlement flow calls sign since A-456b (signerCosign, escrow_cosign.go). The app also
 // checks the signer at startup and on every escrow watcher pass (checkEscrowSigner): it asks for the signer's account
 // key, pins its fingerprint and an HMAC of it at first contact, and reports one of four states. A key that differs from
 // the pinned one makes shape (b) unavailable (one fixed log line and an admin line; nothing else changes: shape (a)
@@ -127,7 +127,7 @@ func (c *escrowSignerClient) info(ctx context.Context) (escrowSignerInfo, error)
 
 // sign asks the signer to co-sign one escrow's PSBT (base64) as the market key of per-order index index, and returns
 // the signed PSBT. The signer refuses anything but exactly one 2-of-3 escrow holding its key for that index
-// (cmd/escrow-signer/sign.go). No caller yet (A-456).
+// (cmd/escrow-signer/sign.go). Its caller is signerCosign (escrow_cosign.go, A-456b).
 func (c *escrowSignerClient) sign(ctx context.Context, psbt string, index uint32) (string, error) {
 	var r struct {
 		PSBT string `json:"psbt"`

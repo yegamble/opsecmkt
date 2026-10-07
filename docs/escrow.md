@@ -1143,8 +1143,9 @@ code is refused). Not tested: any wallet other than Bitcoin Core, and any public
 
 ## Escrow signer (A-454, shape (b))
 
-The second piece of per-order wallets (ruling P4-R17), on the development branch with no product caller: no order uses
-it yet, and every escrow this release creates is still co-signed by the Core arbiter wallet. `cmd/escrow-signer` holds
+The second piece of per-order wallets (ruling P4-R17), on the development branch. When it was built no order used it;
+since A-456b it co-signs per-order escrows ([below](#per-order-escrow-settlement-setup-and-upload-a-456b-shape-b)), while
+the Core arbiter wallet co-signs Bitcoin Core escrows. `cmd/escrow-signer` holds
 the market's key for per-order escrows in a fresh seed of its own (a mode-0400 file in its own volume, never in `.env`,
 the database or `scripts/backup.sh`'s output), listens only on a Unix socket the app's container mounts, and signs one
 escrow's PSBT per request through Core's `descriptorprocesspsbt` under its own RPC user (whitelisted to `decodepsbt`,
