@@ -618,8 +618,6 @@ func TestEscrowPasteRefusals(t *testing.T) {
 		return addField(t, raw, i, append([]byte{0x02}, pub...), fakeSig(pub, txid, sh))
 	}
 	oneInput := sigOn(cp.Raw, 0, vpub, 1)
-	var market byte
-	market = 0x06
 	cases := []struct {
 		name, sess, psbt, want string
 	}{
@@ -630,8 +628,6 @@ func TestEscrowPasteRefusals(t *testing.T) {
 		{"the vendor's signature pasted by the buyer", x.buyerSess, good, "a key other than your escrow key"},
 		{"a second signer's signature added", x.vendorSess, encodePSBT(sigOn(gp.Raw, 1, bpub, 1)), "a key other than your escrow key"},
 		{"a market-key signature", x.vendorSess, encodePSBT(sigOn(gp.Raw, 0, mpub, 1)), "under the market's key"},
-		{"a market-key derivation (bare, as Core writes one)", x.vendorSess, encodePSBT(addField(t, gp.Raw, 1, append([]byte{market}, mpub...), mpub[1:5])), "under the market's key"},
-		{"a derivation from the arbiter fingerprint", x.vendorSess, encodePSBT(addField(t, gp.Raw, 0, append([]byte{market}, bpub...), append([]byte{0xa1, 0xb2, 0xc3, 0xd4}, 1, 0, 0, 0))), "under the market's key"},
 		{"SIGHASH_NONE", x.vendorSess, walletSign(t, vcopy, vk.Fingerprint, 0x02), "sighash type other than ALL"},
 		{"SIGHASH_ALL|ANYONECANPAY", x.vendorSess, walletSign(t, vcopy, vk.Fingerprint, 0x81), "sighash type other than ALL"},
 		{"one input SIGHASH_SINGLE", x.vendorSess, encodePSBT(sigOn(sigOn(cp.Raw, 0, vpub, 1), 1, vpub, 0x03)), "sighash type other than ALL"},
@@ -665,6 +661,44 @@ func TestEscrowPasteRefusals(t *testing.T) {
 	}
 	if code, body := x.sign(order, x.vendorSess, id, good); code != 303 {
 		t.Fatalf("the good paste after the refusals: %d %s", code, body)
+	}
+}
+
+// P4-R13 relaxed (A-456b): a derivation entry under the market's key, or from the market's fingerprint, no longer refuses
+// a paste. Electrum and Sparrow write a derivation for every key of a multisig (A-450's fixtures), and nothing of a
+// paste but the party's own signatures is ever kept, so such an entry is inert. Every signature rule stays: the
+// market-key signature, another key's signature, a sighash other than ALL and a finalized input are still refused
+// (TestEscrowPasteRefusals). The paste with both entries on every input is accepted, and only the vendor's signature
+// per input is stored.
+func TestEscrowPasteMarketDerivationAccepted(t *testing.T) {
+	x := newEscrowEnv(t)
+	order := x.completed(refundAddr, 60000, 40000) // two inputs
+	x.claim(order, x.vendorSess, claimAddr)
+	x.poll()
+	id, _, _, _ := x.settlement(order)
+	vk, _ := parseEscrowKey(x.vendorKey)
+	good, _ := decodePSBT(walletSign(t, x.partyCopy(order, x.vendorSess, id), vk.Fingerprint, 1))
+	vpub, _ := hex.DecodeString(x.keyHex(order, "vendor"))
+	bpub, _ := hex.DecodeString(x.keyHex(order, "buyer"))
+	mpub, _ := hex.DecodeString(x.keyHex(order, "market"))
+	arbiterFP, _ := hex.DecodeString(x.A.escrow.Load().fingerprint)
+	raw := good.Raw
+	for i := range good.Inputs {
+		raw = addField(t, raw, i, append([]byte{0x06}, mpub...), append(slices.Clone(arbiterFP), 0, 0, 0, 0, 7, 0, 0, 0)) // the market's key, at the arbiter fingerprint
+		raw = addField(t, raw, i, append([]byte{0x06}, bpub...), append(slices.Clone(arbiterFP), 0, 0, 0, 0, 1, 0, 0, 0)) // another key from the arbiter fingerprint
+	}
+	if code, body := x.sign(order, x.vendorSess, id, encodePSBT(raw)); code != 303 {
+		t.Fatalf("a paste with derivations under the market's key and fingerprint: %d %s", code, body)
+	}
+	var want []string
+	for _, in := range good.Inputs {
+		want = append(want, "vendor "+hex.EncodeToString(vpub)+" "+hex.EncodeToString(in.PartialSigs[0].Sig))
+	}
+	if got := agStrings(t, x.testEnv, "SELECT party||' '||pubkey||' '||signature FROM settlement_signatures WHERE settlement_id=$1 ORDER BY input_n", id); !slices.Equal(got, want) {
+		t.Fatalf("settlement_signatures %q, want only the vendor's %q", got, want)
+	}
+	if _, _, state, _ := x.settlement(order); state != "party_signed" {
+		t.Fatalf("state %s", state)
 	}
 }
 

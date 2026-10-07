@@ -20,7 +20,7 @@ import (
 
 // The escrow signer's client (A-454, ruling P4-R17). Per-order (shape (b)) escrows are co-signed by a dedicated signer,
 // cmd/escrow-signer, which holds the market's key for them and listens on a Unix socket (ESCROW_SIGNER_SOCKET); the app
-// never holds that key. No order uses shape (b) yet: the settlement flow calls sign from A-456. Until then the app only
+// never holds that key. The settlement flow calls sign since A-456b (signerCosign, escrow_cosign.go). The app also
 // checks the signer at startup and on every escrow watcher pass (checkEscrowSigner): it asks for the signer's account
 // key, pins its fingerprint and an HMAC of it at first contact, and reports one of four states. A key that differs from
 // the pinned one makes shape (b) unavailable (one fixed log line and an admin line; nothing else changes: shape (a)
@@ -127,7 +127,7 @@ func (c *escrowSignerClient) info(ctx context.Context) (escrowSignerInfo, error)
 
 // sign asks the signer to co-sign one escrow's PSBT (base64) as the market key of per-order index index, and returns
 // the signed PSBT. The signer refuses anything but exactly one 2-of-3 escrow holding its key for that index
-// (cmd/escrow-signer/sign.go). No caller yet (A-456).
+// (cmd/escrow-signer/sign.go). Its caller is signerCosign (escrow_cosign.go, A-456b).
 func (c *escrowSignerClient) sign(ctx context.Context, psbt string, index uint32) (string, error) {
 	var r struct {
 		PSBT string `json:"psbt"`
@@ -239,6 +239,21 @@ func (a *App) isSignerKey(ctx context.Context, q rowQuerier, k escrowKey) (bool,
 		return false, err
 	}
 	return fp != "" && k.Fingerprint == fp || mac != "" && mac == a.escrowXPubHMAC(k.ChainCode, k.PubKey), nil
+}
+
+// errPerOrderUnavailable is why no per-order (shape (b)) escrow is offered: perOrderAvailable is false.
+const errPerOrderUnavailable = "Escrows with per-order wallets need the market's escrow signer, which is not available on this market right now."
+
+// perOrderAvailable reports whether per-order (shape (b)) escrows are offered (A-456b): an escrow signer is configured,
+// which co-signs their settlements, and its latest check did not find a key other than the pinned one or a reply it
+// could not understand (P4-R17: shape (b) unavailable). A signer that did not answer the latest check is still offered:
+// checkout asks it again and refuses, nothing written, while it does not answer (errEscrowSigner).
+func (a *App) perOrderAvailable() bool {
+	if a.escrowSigner == nil {
+		return false
+	}
+	s := a.escrowSignerState()
+	return s != signerMismatch && s != signerBadReply
 }
 
 // escrowSignerState is the signer's state as the latest check found it ("" = no signer configured, or not checked).

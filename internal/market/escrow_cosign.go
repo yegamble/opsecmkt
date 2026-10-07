@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"log"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -52,6 +53,9 @@ const (
 	sendMarketKey = "market-key-missing" // the arbiter wallet did not sign the market's copy (its key range was short)
 	sendRejected  = "mempool-rejected"   // testmempoolaccept refused it for a reason other than a signature
 	sendBadReply  = "node-bad-reply"     // the node's PSBT or transaction was not the stored one
+	// A-456b: a per-order (shape (b)) escrow's co-signature through the escrow signer (signerCosign).
+	sendSignerWait    = "signer-waiting" // no signer configured, it did not answer, or its key differs from the pins or the escrow's
+	sendSignerRefused = "signer-refused" // the signer refused the request (its class is logged)
 )
 
 // escrowKeypoolAhead is how far past a market child index the arbiter wallet's key range is extended before it signs
@@ -171,7 +175,7 @@ func (a *App) loadSettleBuild(ctx context.Context, id int64, want string) (*sett
 	if b.Stored, err = decodePSBT(stored); err != nil || b.Stored.TxID() != b.TxID {
 		return nil, errors.New("escrow: the stored settlement PSBT does not match its txid")
 	}
-	if b.Keys, err = escrowKeys(ctx, a.db, b.OrderID); err != nil {
+	if b.Keys, err = a.settlementKeys(ctx, a.db, b.OrderID, id); err != nil {
 		return nil, err
 	}
 	rows, err := a.db.QueryContext(ctx, "SELECT role,address,sats FROM settlement_outputs WHERE settlement_id=$1 ORDER BY n", id)
@@ -324,22 +328,11 @@ func (a *App) cosignSettlement(ctx context.Context, e *escrowBTC, id int64) erro
 		// One of the two does not verify: the market co-signs with whichever one does (A-339).
 		candidates = append(candidates, b.Parties[1].Party)
 	}
-	if err = a.ensureArbiterKey(ctx, e, b); err != nil {
-		var re *escrowRPCError
-		if errors.As(err, &re) && re.Class == sendMarketKey {
-			return a.settlementSendWaits(ctx, id, b.OrderID, sendMarketKey)
-		}
-		return err
-	}
-	copyText, err := settlementCopy(encodePSBT(b.Stored.Raw), b.Keys["market"])
+	signed, class, err := a.marketSign(ctx, e, b)
 	if err != nil {
 		return err
 	}
-	signed, err := e.arbiterSign(ctx, copyText)
-	if err != nil {
-		return err
-	}
-	if class := checkMarketSigned(signed.PSBT, b); class != "" {
+	if class != "" {
 		return a.settlementSendWaits(ctx, id, b.OrderID, class)
 	}
 	var bad []string
@@ -349,7 +342,7 @@ func (a *App) cosignSettlement(ctx context.Context, e *escrowBTC, id int64) erro
 		if err != nil {
 			return err
 		}
-		combined, err := e.combinePSBT(ctx, []string{signed.PSBT, partyCopy})
+		combined, err := e.combinePSBT(ctx, []string{signed, partyCopy})
 		if err != nil {
 			return err
 		}
@@ -381,9 +374,84 @@ func (a *App) cosignSettlement(ctx context.Context, e *escrowBTC, id int64) erro
 	return a.revertSettlement(ctx, b, bad)
 }
 
-// checkMarketSigned checks the arbiter wallet's answer: the stored transaction, and on every input exactly one
-// signature, the market key's, ending in SIGHASH_ALL. A copy the arbiter did not sign (its key range did not reach the
-// market's child key) is sendMarketKey.
+// signerClassForm is the form of cmd/escrow-signer's fixed refusal classes (sighash, key-not-found, …).
+var signerClassForm = regexp.MustCompile(`^[a-z][a-z-]{0,31}$`)
+
+// isPerOrderKey reports whether an escrow key row is a per-order (shape (b)) key: a three-step suffix, /<i>/0/0 (or a
+// sibling's /<i>/<branch>/<k>), where a Bitcoin Core key has two, /0/<i>.
+func isPerOrderKey(k escrowKeyRow) bool { return strings.Count(k.Suffix, "/") == 3 }
+
+// marketSign has the market's key sign a settlement's (or fee bump's) stored PSBT and returns the market-signed PSBT,
+// checked (checkMarketSigned), or a class to wait with: nothing is stored, and the next pass tries again. A Bitcoin Core
+// escrow (shape (a)) is signed by the arbiter wallet, on the market's copy (ensureArbiterKey, arbiterSign); a per-order
+// escrow (shape (b)) by the escrow signer, on the stored PSBT itself (signerCosign, A-456b).
+func (a *App) marketSign(ctx context.Context, e *escrowBTC, b *settleBuild) (string, string, error) {
+	if isPerOrderKey(b.Keys["market"]) {
+		return a.signerCosign(ctx, b)
+	}
+	if err := a.ensureArbiterKey(ctx, e, b); err != nil {
+		var re *escrowRPCError
+		if errors.As(err, &re) && re.Class == sendMarketKey {
+			return "", sendMarketKey, nil
+		}
+		return "", "", err
+	}
+	copyText, err := settlementCopy(encodePSBT(b.Stored.Raw), b.Keys["market"])
+	if err != nil {
+		return "", "", err
+	}
+	signed, err := e.arbiterSign(ctx, copyText)
+	if err != nil {
+		return "", "", err
+	}
+	if class := checkMarketSigned(signed.PSBT, b); class != "" {
+		return "", class, nil
+	}
+	return signed.PSBT, "", nil
+}
+
+// signerCosign is a per-order escrow's co-signature through the escrow signer (A-456b, rulings P4-R2, P4-R17). The
+// signer's account key is asked for and checked against the pins in this database (signerAccount), and its fingerprint
+// must be the one the escrow's market key was built with. The request is the stored PSBT exactly as the build checked
+// it (each input's witness UTXO and witness script, no derivation, no sighash field, every input spending the one script
+// the build chose) with the escrow's market index: what cmd/escrow-signer's refusals allow, as it signs only one 2-of-3
+// escrow holding its key at that index's /0/k or /1/k. A signer that is not configured, does not answer, is not
+// understood, or whose key differs is sendSignerWait (P4-R17: a signer that is down makes settlements wait, nothing is
+// rebuilt); a refusal is sendSignerRefused, its fixed class logged. The answer is checked like the arbiter's.
+func (a *App) signerCosign(ctx context.Context, b *settleBuild) (string, string, error) {
+	k, err := a.signerAccount(ctx, a.db)
+	var refused *signerRefusal
+	switch {
+	case err == nil && k.Fingerprint != b.Keys["market"].Fingerprint:
+		log.Printf("escrow: settlement of order %s not co-signed: the escrow signer's key is not the one this escrow was built with", shortID(b.OrderID))
+		return "", sendSignerWait, nil
+	case err == nil:
+	case errors.Is(err, errSignerNone), errors.Is(err, errSignerUnreachable), errors.As(err, &refused):
+		return "", sendSignerWait, nil
+	default:
+		return "", "", err
+	}
+	signed, err := a.escrowSigner.sign(ctx, encodePSBT(b.Stored.Raw), uint32(b.MarketIndex))
+	switch {
+	case errors.As(err, &refused) && refused.Class != signerBadReply:
+		class := refused.Class
+		if !signerClassForm.MatchString(class) {
+			class = "unrecognised class" // the signer's classes are fixed words; anything else is not logged as given
+		}
+		log.Printf("escrow: settlement of order %s not co-signed: the escrow signer refused it (%s)", shortID(b.OrderID), class)
+		return "", sendSignerRefused, nil
+	case err != nil:
+		return "", sendSignerWait, nil
+	}
+	if class := checkMarketSigned(signed, b); class != "" {
+		return "", class, nil
+	}
+	return signed, "", nil
+}
+
+// checkMarketSigned checks the arbiter wallet's (or the escrow signer's) answer: the stored transaction, and on every
+// input exactly one signature, the market key's, ending in SIGHASH_ALL. A copy the arbiter did not sign (its key range
+// did not reach the market's child key) is sendMarketKey.
 func checkMarketSigned(b64 string, b *settleBuild) string {
 	p, err := decodePSBT(b64)
 	if err != nil || p.TxID() != b.TxID || len(p.Inputs) != len(b.Stored.Inputs) {

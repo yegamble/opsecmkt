@@ -142,6 +142,69 @@ class EscrowFixtureTest(unittest.TestCase):
         signed = escrow_rpc.PSBT.b64(rpc(self.core, 'descriptorprocesspsbt', practice, [sign], 'ALL', True, False)['psbt'])
         self.assertEqual([k for k, _ in signed.sigs(0)], [key])
 
+    def per_order(self, signer, i, m):
+        """A-456b: a per-order escrow at party index i and market index m, as checkout composes it from the account keys
+        (each derives by real BIP32 along i/0/0), and the same escrow from the rooted per-order keys."""
+        market = '[%s]%s' % (signer.fp, signer.tpub)
+        body = 'wsh(sortedmulti(2,%s/%d/0/0,%s/%d/0/0,%s/%d/0/0))' % (self.buyer, i, self.vendor, i, market, m)
+        rooted = []
+        for key, n in ((self.buyer, i), (self.vendor, i), (signer.tpub, m)):
+            raw = escrow_rpc.b58decode_check(key.split(']')[-1])
+            chain, pub = escrow_rpc.ckd_pub(raw[13:45], raw[45:78], n)
+            rooted.append(escrow_rpc.b58check(bytes.fromhex('043587cf') + bytes(9) + chain + pub))
+        return body, rooted
+
+    def test_per_order_escrow_and_siblings(self):
+        # A-456b: account keys at a per-order suffix derive by real BIP32, so the account-path and rooted descriptors
+        # agree; ranged descriptors derive one address per index and import without a label; addr(…) imports labelled.
+        signer = escrow_rpc.FakeSigner()
+        body, rooted = self.per_order(signer, 2, 5)
+        addr = rpc(self.core, 'deriveaddresses', body + '#' + escrow_rpc.desc_checksum(body))[0]
+        ranged = 'wsh(sortedmulti(2,%s/0/*,%s/0/*,%s/0/*))' % tuple(rooted)
+        addrs = rpc(self.core, 'deriveaddresses', ranged + '#' + escrow_rpc.desc_checksum(ranged), [0, 19])
+        self.assertEqual(len(addrs), 20)
+        self.assertEqual(addrs[0], addr)
+        with self.assertRaises(escrow_rpc.RPCError):
+            rpc(self.core, 'deriveaddresses', ranged + '#' + escrow_rpc.desc_checksum(ranged))
+        sib = 'addr(%s)' % addrs[3]
+        rpc(self.core, 'importdescriptors', [{'desc': ranged + '#' + escrow_rpc.desc_checksum(ranged), 'timestamp': 'now', 'range': [0, 19]},
+                                             {'desc': sib + '#' + escrow_rpc.desc_checksum(sib), 'timestamp': 'now', 'label': 'escrow:o2'}], path=W)
+        self.assertEqual(rpc(self.core, 'getaddressinfo', addrs[3], path=W)['labels'], ['escrow:o2'])
+        self.core.test('/test/escrow/deposit', {'address': addrs[3], 'sats': 1000})  # a sibling is a known address
+        with self.assertRaises(escrow_rpc.RPCError):
+            rpc(self.core, 'importdescriptors', [{'desc': ranged + '#' + escrow_rpc.desc_checksum(ranged), 'range': [0, 1], 'label': 'x'}], path=W)
+
+    def test_fake_signer(self):
+        # A-456b: the simulated escrow signer answers info with its rooted key and real fingerprint, signs a per-order
+        # escrow's input (or a sibling's) with its key at the requested index, and refuses as cmd/escrow-signer does.
+        signer = escrow_rpc.FakeSigner()
+        info = signer.handle(json.dumps({'version': 1, 'op': 'info'}))
+        raw = escrow_rpc.b58decode_check(info['tpub'])
+        self.assertEqual((raw[4], info['fingerprint']), (0, escrow_rpc.ripemd160(escrow_rpc.sha256(raw[45:78]))[:4].hex()))
+        body, rooted = self.per_order(signer, 2, 5)
+        desc = body + '#' + escrow_rpc.desc_checksum(body)
+        addr = rpc(self.core, 'deriveaddresses', desc)[0]
+        dep = self.core.test('/test/escrow/deposit', {'address': addr, 'sats': 100000})
+        out = self.core.test('/test/escrow/address', {})['address']
+        filled = escrow_rpc.PSBT.b64(rpc(self.core, 'utxoupdatepsbt', rpc(self.core, 'createpsbt', [{'txid': dep['txid'], 'vout': 0}], [{out: escrow_rpc.Decimal('0.00099')}], 0, True), [desc]))
+        filled.inputs[0] = [e for e in filled.inputs[0] if e[0][0] != 0x06]  # the stored copy has no derivation
+        stored = filled.encode()
+
+        def sign(psbt, index):
+            return signer.handle(json.dumps({'version': 1, 'op': 'sign', 'psbt': psbt, 'index': index}))
+        signed = sign(stored, 5)
+        mkey = escrow_rpc.real_child(rooted[2] + '/0/0')[0]
+        self.assertEqual([k for k, _ in escrow_rpc.PSBT.b64(signed['psbt']).sigs(0)], [mkey])
+        self.assertEqual(sign(stored, 6), {'error': 'key-not-found'})
+        self.assertEqual(sign(stored, 2**31), {'error': 'bad-index'})
+        none = escrow_rpc.PSBT.b64(stored)
+        none.add(0, b'\x03', escrow_rpc.struct.pack('<I', 2))
+        self.assertEqual(sign(none.encode(), 5), {'error': 'sighash'})
+        bare = escrow_rpc.PSBT.b64(stored)
+        bare.inputs[0] = [e for e in bare.inputs[0] if e[0] != b'\x05']
+        self.assertEqual(sign(bare.encode(), 5), {'error': 'not-escrow-script'})
+        self.assertEqual(signer.handle(json.dumps({'op': 'info'})), {'error': 'version'})
+
     def test_amounts_are_json_numbers_over_http(self):
         server = ThreadingHTTPServer(('127.0.0.1', 0), escrow_rpc.make_handler(self.core))
         threading.Thread(target=server.serve_forever, daemon=True).start()

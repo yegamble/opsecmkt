@@ -125,7 +125,6 @@ func TestEscrowRegtestPerOrderEscrow(t *testing.T) {
 	if e.A.escrow.Load() == nil || e.A.escrowSignerState() != signerReady {
 		t.Fatalf("escrow did not start against the regtest node (signer %q)", e.A.escrowSignerState())
 	}
-	setPerOrderEscrows(t, true)
 	buyer, buyerSess := e.user("regtest_b_buyer_"+s, "buyer")
 	vendor, _ := e.user("regtest_b_vendor_"+s, "vendor")
 	for uid, key := range map[string]string{buyer: buyerKey, vendor: vendorKey} {

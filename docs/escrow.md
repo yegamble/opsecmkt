@@ -123,20 +123,21 @@ descriptor in your wallet is what detects that.
   `scripts/test-escrow-wallets.sh` repeats this check (real local chain plus a real Electrum, run by hand, not CI:
   Bitcoin Core 31.1 on regtest with no network, Electrum 4.8.2 checked against its release signature and used
   offline). A Bitcoin Core wallet signs the transaction the market serves today. An Electrum wallet restored from a
-  BIP39 seed at a key path made for one order signs a per-order layout that the market does not offer, and the
-  market's signature-paste check refuses that signature anyway, because Electrum adds an entry for every key,
-  the market's included. The refusal protects nothing that is stored: only the signer's own signatures are ever
+  BIP39 seed at a key path made for one order signs the per-order layout (shape (b)). Electrum adds a derivation entry
+  for every key, the market's included, which the market's signature-paste check refused until A-456b dropped that
+  refusal (ruling P4-R13): it protected nothing that is stored, because only the signer's own signatures are ever
   kept, whatever else a pasted copy carries (`TestEscrowPasteForeignFieldsInert`; `TestEscrowWalletFixtures`
-  checks the refusal on the signed files in `internal/market/testdata/escrow-wallets/`; those files come from the
+  checks that the signed files in `internal/market/testdata/escrow-wallets/` are now accepted; those files come from the
   script's `--update-fixtures` run at `cf6a8a0` with uncommitted changes, logged in
   `artifacts/real-chain/a450-cf6a8a0fdbb4-dirty-fixtures-wallets.log`, and the clean evidence run at `52eb99f`
   (`artifacts/real-chain/a450-52eb99f7aba5-wallets.log`) used different throwaway keys, so its log does not contain
   them; both logs are local and gitignored). Electrum's own seed type, what "Create a new seed" makes and the
   default in Tails, cannot follow a per-order key path at all: Electrum fixes its multisig keys at `m/1'` and
   takes no path for that seed type (`from_seed` in Electrum's `keystore.py`; the script's `electrum-seed-type`
-  leg records it). On the development branch a user can now register a per-order wallet key and sign its practice
-  transaction ([A-455](#per-order-key-layout-registration-and-practice-a-455-shape-b)); escrows with per-order
-  wallets are not built yet.
+  leg records it). On the development branch a user can register a per-order wallet key and sign its practice
+  transaction ([A-455](#per-order-key-layout-registration-and-practice-a-455-shape-b)), and two such users get a
+  per-order escrow ([A-456b](#per-order-escrow-settlement-setup-and-upload-a-456b-shape-b)); no real Electrum or Sparrow
+  has signed one through the market yet (A-457, A-458).
 
 ## Monero: one account per order
 
@@ -1142,8 +1143,9 @@ code is refused). Not tested: any wallet other than Bitcoin Core, and any public
 
 ## Escrow signer (A-454, shape (b))
 
-The second piece of per-order wallets (ruling P4-R17), on the development branch with no product caller: no order uses
-it yet, and every escrow this release creates is still co-signed by the Core arbiter wallet. `cmd/escrow-signer` holds
+The second piece of per-order wallets (ruling P4-R17), on the development branch. When it was built no order used it;
+since A-456b it co-signs per-order escrows ([below](#per-order-escrow-settlement-setup-and-upload-a-456b-shape-b)), while
+the Core arbiter wallet co-signs Bitcoin Core escrows. `cmd/escrow-signer` holds
 the market's key for per-order escrows in a fresh seed of its own (a mode-0400 file in its own volume, never in `.env`,
 the database or `scripts/backup.sh`'s output), listens only on a Unix socket the app's container mounts, and signs one
 escrow's PSBT per request through Core's `descriptorprocesspsbt` under its own RPC user (whitelisted to `decodepsbt`,
@@ -1173,15 +1175,16 @@ public network.
 ## Per-order key layout, registration and practice (A-455, shape (b))
 
 The third piece of per-order wallets (rulings P4-R2 and P4-R18, owner decision 2026-10-05), on the development branch
-behind `ESCROW_BTC` (off by default, test networks only). No escrow uses a per-order wallet yet: a checkout where the buyer's
-or the vendor's active key is a per-order wallet key is refused with nothing written, and the order page says why. Since
-A-456a a buyer and a vendor whose keys are of different kinds are told so, with the vendor's key type ("The vendor's
-Bitcoin escrow key is for a per-order wallet and yours is for Bitcoin Core", or the reverse; ruling P4-R18), and a pair of
-per-order wallet keys still gets "escrows with per-order wallets are not available on this market yet" until A-456b
-([below](#per-order-escrow-creation-and-watching-a-456a-shape-b)); a buyer whose own key is the per-order one is told to
-register a Bitcoin Core escrow key and linked to the escrow key page. While Bitcoin intake is escrow only (A-444), a listing whose vendor's active
-key is a per-order wallet key is therefore not available for purchase in BTC, with that reason, and the readiness panel
-on `/admin` counts and lists the vendor.
+behind `ESCROW_BTC` (off by default, test networks only). When it was built no escrow used a per-order wallet: a checkout
+where the buyer's or the vendor's active key was a per-order wallet key was refused. Since A-456a a buyer and a vendor
+whose keys are of different kinds are told so, with the vendor's key type ("The vendor's Bitcoin escrow key is for a
+per-order wallet and yours is for Bitcoin Core", or the reverse; ruling P4-R18), and a buyer whose own key is the
+per-order one is told to register a Bitcoin Core escrow key and linked to the escrow key page. Since A-456b a pair of
+per-order wallet keys gets a per-order escrow while the market's escrow signer is available
+([below](#per-order-escrow-settlement-setup-and-upload-a-456b-shape-b)); without it the order page says "Escrows with
+per-order wallets need the market's escrow signer, which is not available on this market right now", and while Bitcoin
+intake is escrow only (A-444) a listing whose vendor's active key is a per-order wallet key is then not available for
+purchase in BTC, with that reason, and the readiness panel on `/admin` counts and lists the vendor.
 
 - **Layout.** Each account still has one escrow key, now with a layout (`user_escrow_keys.layout`, migration 088):
   `core`, a Bitcoin Core wallet whose escrows use the account key's child `/0/<i>` (every key registered before), or
@@ -1191,7 +1194,7 @@ on `/admin` counts and lists the vendor.
   inactive until the practice transaction of the new layout is signed. A key that is the key of existing escrows
   cannot change layout. The page says plainly that Electrum's own seed type (Electrum's default, also on Tails) cannot
   make per-order wallets: a BIP39 seed in Electrum, or Sparrow, is needed. The registration copy says that a per-order
-  key replaces the account's Bitcoin Core key, which until A-456 stops Bitcoin escrow buying and, for a vendor under
+  key replaces the account's Bitcoin Core key, which (since A-456b, with any account whose key is not a per-order one too) stops Bitcoin escrow buying and, for a vendor under
   escrow-only intake, Bitcoin escrow sales; the pages carry that the steps have not yet been tried with a real Electrum
   or Sparrow wallet (A-457, A-458), and the practice page tells the owner never to send coins to the practice wallet's
   first receiving address. The database refuses an escrow key whose
@@ -1224,14 +1227,14 @@ Not tested: a real Electrum or Sparrow signing the practice (A-457 and A-458), h
 
 ## Per-order escrow creation and watching (A-456a, shape (b))
 
-The first half of per-order escrows (rulings P4-R2, P4-R17 and P4-R18), on the development branch behind `ESCROW_BTC` and
-behind a switch in the code that is off: **no user can create a per-order escrow yet**, because nothing can sign its
-release until the market co-signs it through the escrow signer (A-456b, which also adds the party's setup page and the
-PSBT upload). What is built, and exercised by tests that turn the switch on:
+The first half of per-order escrows (rulings P4-R2, P4-R17 and P4-R18), on the development branch behind `ESCROW_BTC`. It
+was built behind a switch in the code that was off, because nothing could sign a per-order escrow's release until the
+market co-signed it through the escrow signer; A-456b ([below](#per-order-escrow-settlement-setup-and-upload-a-456b-shape-b))
+removed the switch. What A-456a built:
 
 - **Shape.** Checkout makes a Bitcoin Core escrow (shape (a)) when both parties' active keys are Bitcoin Core keys and a
   per-order escrow (shape (b)) when both are per-order wallet keys; a mixed pair is refused, naming the vendor's key type,
-  whatever the switch says.
+  whether or not a per-order escrow could be made.
 - **Keys.** Each party's key is the first receiving key (`/0/0`) of an order wallet built on the account key's child
   `<i>`: the escrow key's derivation suffix is `/<i>/0/0`. `i` comes from the account's one counter, shared with the
   Bitcoin Core escrows' `/0/<i>` (one more than the highest either used, never below a restore's floor), and is never 0
@@ -1295,10 +1298,89 @@ a simulated signer (`TestEscrowShapeBMixedPairRefused`, `TestEscrowShapeBSwitchO
 `scripts/test-escrow-regtest.sh`, the switch on in that test only: the escrow created through the checkout form, Core
 deriving its address and sibling `/0/1` from the parties' private roots as Go does, and deposits to `/0/1` and `/1/3`
 seen and recorded left out; its first run found that Core's `listreceivedbyaddress` lists only labelled addresses, so the
-siblings are also imported labelled). Not tested: signing, settling or refunding a per-order escrow (A-456b), the
+siblings are also imported labelled). Not tested in that slice: signing, settling or refunding a per-order escrow (A-456b tests them, below), the
 watch-only wallet repair and the orphan sweep of a lost per-order escrow on a real node (simulated only; Core's
 `getaddressinfo` answers for addresses held by `addr(…)` and by ranged descriptors were probed by hand on regtest), any
 wallet other than Bitcoin Core, and any public network.
+
+## Per-order escrow settlement, setup and upload (A-456b, shape (b))
+
+The second half of per-order escrows (rulings P4-R2, P4-R13, P4-R17 and P4-R18), on the development branch behind
+`ESCROW_BTC` (off by default, test networks only). A-456a's switch is gone: **a buyer and a vendor whose active escrow
+keys are both per-order wallet keys get a per-order escrow at checkout**, while the market's escrow signer is configured
+(`ESCROW_SIGNER_SOCKET`) and its latest check found its pinned key. Otherwise the order page says "Escrows with per-order
+wallets need the market's escrow signer, which is not available on this market right now", checkout is refused with
+nothing written and, under escrow-only Bitcoin intake, a per-order vendor's listings are not available in BTC. A mixed pair
+is still refused.
+
+- **The market co-signs through the escrow signer.** A per-order escrow's settlement (a claim, a refund, a stray refund)
+  and its fee bumps are co-signed by `cmd/escrow-signer` (A-454), never the Core arbiter wallet, which keeps Bitcoin Core
+  escrows. The signer's account key is asked for and checked against the pins first, and must be the one the escrow was
+  built with. The request is the stored PSBT exactly as the build checked it (each input's witness UTXO and witness
+  script, no derivation, no sighash field, one 2-of-3 script for every input) with the escrow's market index, which is
+  what the signer's refusals allow; the signer itself is unchanged and keeps every refusal. Its answer is checked as the
+  arbiter's is (exactly one signature per input, the market key's, SIGHASH_ALL), then combined, finalized, re-checked and
+  `testmempoolaccept`ed as before. A signer that is not reachable, refuses, or no longer matches leaves the settlement
+  signed by its party, with "The market's escrow signer could not co-sign it yet" on the order page and one log line
+  (`signer-waiting` or `signer-refused`, the refusal's fixed class logged); nothing is rebuilt and the next pass tries
+  again (P4-R17).
+- **Sibling deposits are returned (QA5W3A-2).** A-456a recorded a deposit to an order wallet's sibling address and
+  requested its stray refund, but the build waited for ever (the input was compared with the escrow address, and Core was
+  given only the escrow address's descriptor). A sibling's three keys are now derived in Go from each per-order extended
+  key (the parties' and the market's account child `<i>`; QA5W4A-5 stores them at checkout, a separate fix round; until
+  it is merged they are derived from the current keys as A-456a did) and must pay the sibling address checkout stored
+  after Core derived it. A stray refund spends the deposits of one address at a time, with that address's own witness
+  script: the signer signs one script per request, finding its key at `<m>/<branch>/<k>`. Addresses are tried in the
+  order of their first deposit; one whose deposits cannot be built now (too few for their fee, above the fee cap, not as
+  recorded on the node, or keys that cannot be derived) never holds up another's, and the next stray refund returns what
+  the last left. Each party's copy of a sibling's
+  stray refund names its own key at `/<i>/<branch>/<k>`, and the paste check, the co-signature and fee bumps use that
+  sibling's keys.
+- **The setup page.** `/escrow-setup?id=<order>`, linked from the order page, behind the same gate as
+  `/escrow-descriptor` and party-only: the order's buyer and vendor each see their own setup, and staff, strangers, the
+  other party's setup and a Bitcoin Core escrow get the unknown page. It shows the party's own key origin with the order's
+  per-order index (`[fingerprint/48h/1h/0h/2h/<i>]`) and the derivation path (`m/48h/1h/0h/2h/<i>`); the two cosigner
+  keys served rooted as SLIP-132 `Vpub`s (the other party's per-order key and the market's); the first receiving
+  address the order wallet must show, the escrow address; and a Sparrow output descriptor of the order wallet
+  (`wsh(sortedmulti(2,…/<0;1>/*))` with the party's key origin). The per-order keys are the ones QA5W4A-5's round
+  stores at checkout; until it is merged they are derived from the current keys, each shown only when its `/0/0` child
+  is the key the escrow stores, so a party who registered another escrow key since checkout keeps the path but gets no
+  descriptor, and when the other party did, or the signer is not reachable, the cosigner keys are not shown and the page
+  says why. The copy says: pay only to the escrow address, never to another address the order
+  wallet shows; Electrum can run with `--offline` (the order wallet only signs); delete the order wallet once the order's
+  escrow has settled (the seed makes it again); a wallet or signing device cannot check the other party's key. The page
+  and the order page carry that no real Electrum or Sparrow wallet has been tried; no hardware wallet is claimed (A-458
+  records none).
+- **The PSBT file upload.** The settlement sign form is a `multipart/form-data` form, no JavaScript, with a file field
+  beside the paste (fee bumps keep the paste). A binary PSBT file, as Electrum and Sparrow save one, is taken by its
+  magic bytes; a text file (the market's own download, signed) is read as base64. Every text part and a text file must
+  be valid UTF-8 without a NUL byte, as every form field must; the body is bounded (two PSBTs of at most 64 KB and the
+  small fields) and so is each field; a paste and a file together are refused; then every ES-2 check applies as to a
+  paste. Every other route still refuses a multipart body with a 415 page, unread.
+- **The ES-2 derivation refusal is relaxed (P4-R13).** A pasted or uploaded PSBT is no longer refused for a derivation
+  entry under the market's key or from its fingerprint (Electrum and Sparrow write one for every key; A-450's Electrum
+  fixtures are now accepted). Every signature rule stays: a signature under the market's key, another key's signature, a
+  sighash other than ALL, a finalized input and another transaction are refused, and only the party's signatures are
+  kept.
+
+How it was tested: DB integration with the simulated node and a fake signer that makes `cmd/escrow-signer`'s checks
+before it signs (`TestEscrowShapeBCosignedBySigner`, `TestEscrowShapeBSignerWaits`, `TestEscrowShapeBBumpCosignedBySigner`,
+`TestEscrowShapeBSiblingStrayRefund`, `TestEscrowShapeBStrayOneScriptEach`, `TestEscrowSettlementKeysOneScript`,
+`TestEscrowShapeBSetupPage`, `TestEscrowShapeBSetupKeyChanged`, `TestEscrowSignUpload`,
+`TestEscrowPasteMarketDerivationAccepted`, `TestEscrowPasteForeignFieldsInert`, `TestEscrowWalletFixtures`,
+`TestEscrowShapeBOpenToUsers`, `TestEscrowShapeBMixedPairRefused`, `TestEscrowOnlyPerOrderVendorNeedsSigner`);
+a browser journey with JavaScript off at
+320 px against the simulated node and a simulated signer (`tests/e2e/escrow-per-order-settle-journey.spec.ts`, `npm run
+test:e2e:escrow`: registration and practice for both parties, checkout, both setup pages, simulated funding, the claim
+signed and uploaded as a binary PSBT file, co-signed, confirmed; not chain evidence); and on a real local chain, Core 31.1
+on regtest and on a private signet with the real signer built from the tree (`TestEscrowRegtestShapeBRelease`: a
+per-order escrow created through checkout and paid, the vendor's claim signed by its order wallet, Core with the private
+root at the per-order path, uploaded as a binary PSBT file, co-signed by the signer, broadcast and confirmed, checked with
+`gettxout`; `TestEscrowRegtestShapeBSiblingStray`: a deposit to sibling `/0/3` returned by a stray refund with the
+sibling's own script, signed at the buyer's `/0/3` key, co-signed at the signer's, confirmed, checked with `gettxout`;
+no seed or tprv in the signer's log or the database). Not tested: a real Electrum, Sparrow or hardware wallet signing a
+per-order escrow (A-457, A-458), the Sparrow descriptor imported into Sparrow, a fee bump of a per-order escrow on a real
+node (simulated only), and any public network.
 
 Which chains escrow testing has used, all of them local and none public: Bitcoin regtest; a Bitcoin private signet
 (A-443: two Bitcoin Core nodes on one host with `signet_challenge` 51, private signet, not public); a local Monero

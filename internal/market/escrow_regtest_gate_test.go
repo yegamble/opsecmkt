@@ -322,7 +322,7 @@ func TestEscrowRegtestGate(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if code, body := pasteCode(orderF, vendorSess, idF, encodePSBT(forged)); code != 400 || !strings.Contains(body, "carries an entry under the market") {
+	if code, body := pasteCode(orderF, vendorSess, idF, encodePSBT(forged)); code != 400 || !strings.Contains(body, "carries a signature under the market") {
 		t.Fatalf("forged market slot: %d %s", code, body)
 	}
 	if _, st, _, _, _ := settlementOf(orderF, "release"); st != "awaiting_signature" || agInt(e, "SELECT count(*) FROM settlement_signatures WHERE settlement_id=$1", idF) != 0 {

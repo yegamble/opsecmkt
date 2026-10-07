@@ -281,6 +281,9 @@ type PageData struct {
 	// BTC draft on a listing that takes escrow, while ESCROW_BTC is on. Both nil otherwise.
 	Escrow         *EscrowOrderView
 	EscrowCheckout *EscrowCheckoutView
+	// EscrowSetup: /escrow-setup, a per-order escrow's order wallet setup for one of its two parties only (escrow_setup.go,
+	// A-456b); nil otherwise.
+	EscrowSetup *EscrowSetupView
 	// XMREscrow: order page of a Monero escrow order, its escrow (escrow_xmr_order.go); XMREscrowCheckout: order page of
 	// the buyer's XMR draft on a listing that takes escrow, while ESCROW_XMR is on. Both nil otherwise.
 	XMREscrow         *XMREscrowOrderView
@@ -602,7 +605,26 @@ type EscrowOrderView struct {
 	Deadline                                    *EscrowDeadlineView     // a shipped order's release deadline (escrow_deadline.go)
 	RangePath                                   string                  // the viewer's child key in this escrow, set only past escrowRangeAdvice: the page advises keypoolrefill (A-397)
 	KeypoolSize                                 int64                   // the keypoolrefill size it advises: 1000 keys past that child
+	PerOrder                                    bool                    // a per-order (shape (b)) escrow: its parties sign in an order wallet (escrow_setup.go, A-456b)
 }
+
+// EscrowSetupView is what one party of a per-order (shape (b)) escrow builds its order wallet from (escrow_setup.go,
+// A-456b): its own key's origin with the per-order index ([fingerprint/path/i]) and that path as a wallet asks for it
+// (m/path/i), the two cosigner keys served rooted (the other party's per-order key and the market's, as Vpubs), the first
+// receiving address the wallet must show (the escrow address) and a Sparrow output descriptor of the order wallet.
+// Unavailable says why the cosigner keys cannot be shown now; NoSparrow why the descriptor cannot (the reader's escrow
+// key is no longer the one this escrow was built with).
+type EscrowSetupView struct {
+	OrderID, Short, Own    string
+	OwnPath, OwnDerivation string
+	Cosigners              []EscrowCosignerView
+	Address                string
+	Sparrow                string
+	Unavailable, NoSparrow string
+}
+
+// EscrowCosignerView is one cosigner key on the setup page: whose it is and the key, rooted, as a Vpub.
+type EscrowCosignerView struct{ Who, Key string }
 
 // EscrowDeadlineView is a shipped escrow order's release deadline on its page (escrow_deadline.go, P2-R9): At in UTC,
 // Left the time left when the page loaded; Due once it has passed; Rechecked when a restore from backup moved it.

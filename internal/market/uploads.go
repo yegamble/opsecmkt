@@ -25,8 +25,10 @@ import (
 // A-186 (war room 2026-09-27, rulings C3, C5, C6 and D10): the only two routes that take a file. POST
 // /listings/photo (vendors and administrators; the listing's id in the form) adds a photo to a listing, and POST
 // /account/avatar (vendors, administrators and moderators — the owner's staff avatar decision; always the
-// actor's own) sets the actor's avatar, replacing any earlier one. Any other POST with a multipart body is
-// refused with a 415 page before its body is read (ServeHTTP); every other route keeps its 64 KiB form cap.
+// actor's own) sets the actor's avatar, replacing any earlier one. Besides them only the escrow sign form, POST
+// /escrow/sign, takes a multipart body, a signed PSBT file of at most 64 KB (A-456b, psbt_upload.go); any other POST
+// with a multipart body is refused with a 415 page before its body is read (ServeHTTP), and every other route keeps
+// its 64 KiB form cap.
 //
 // Order of work, each refusal a rendered HTML page (renderUploadPage), never text/plain:
 //
