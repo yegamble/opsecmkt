@@ -234,7 +234,7 @@ func (a *App) xmrEscrowCheckoutOffer(ctx context.Context, d *PageData) error {
 		return err
 	}
 	net := a.xmrEscrowNetwork()
-	v := &XMREscrowCheckoutView{Physical: o.Kind == "physical", Custody: xmrCustody, Net: net, Prefixes: xmrPrefixes(net)}
+	v := &XMREscrowCheckoutView{Physical: o.Kind == "physical", Custody: xmrCustody, Net: net, Prefixes: xmrPrefixes(net), NetKnown: a.xmrEscrowNetKnown() != ""}
 	vendorCanEncrypt := true
 	if v.Physical {
 		if vendorCanEncrypt, err = userCanReceiveEncrypted(ctx, a.db, o.VendorID); err != nil {

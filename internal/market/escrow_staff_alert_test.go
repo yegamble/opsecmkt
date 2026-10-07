@@ -1,6 +1,7 @@
 package market
 
 import (
+	"html"
 	"slices"
 	"strings"
 	"testing"
@@ -47,14 +48,28 @@ func (x *escrowEnv) deskAlert(order, sess string) string {
 	return entry
 }
 
-// orderCodes is the status of GET /order?id=order for each session.
+// orderCodes is the status of GET /order?id=order for each session. Each response's status and first 300 bytes are
+// logged with it (shown only when the test fails), so an unexpected status explains itself on a recurrence.
 func (x *escrowEnv) orderCodes(order string, sessions ...string) []int {
 	x.t.Helper()
 	var out []int
-	for _, s := range sessions {
-		out = append(out, x.do("GET", "/order?id="+order, s, nil).Code)
+	for i, s := range sessions {
+		w := x.do("GET", "/order?id="+order, s, nil)
+		body := w.Body.String()
+		x.t.Logf("GET /order?id=%s as session %d of %d: status %d, body starts %q", order, i+1, len(sessions), w.Code, body[:min(len(body), 300)])
+		out = append(out, w.Code)
 	}
 	return out
+}
+
+// staffHelp is the help line the order page shows staff who read it (order.html), or "" when it carries none.
+func staffHelp(page string) string {
+	_, help, ok := strings.Cut(html.UnescapeString(page), "You are viewing this order as ")
+	if !ok {
+		return ""
+	}
+	help, _, _ = strings.Cut(help, "</p>")
+	return help
 }
 
 // staffReadOnly fails when the order page staff are shown offers any form that changes something.
@@ -105,6 +120,21 @@ func TestEscrowStallAlertStaffRead(t *testing.T) {
 	}
 	x.staffReadOnly(order, mod)
 	x.staffReadOnly(order, admin)
+	// QA5W1-1: no deposit is flagged and no dispute is open, so only the alert admits staff: the page says so and links
+	// the desk's Escrow alerts, not the (empty) Payment review list.
+	for _, sess := range []string{mod, admin} {
+		help := staffHelp(x.page("/order?id="+order, sess))
+		for _, want := range []string{"because its escrow has an open staff alert", "a settlement queued or stuck, not seen by the network", `href="/moderator#escrow-alerts"`} {
+			if !strings.Contains(help, want) {
+				t.Fatalf("the staff help for the stall alert lacks %q: %q", want, help)
+			}
+		}
+		for _, no := range []string{"flagged", "payment-review", "too few"} {
+			if strings.Contains(help, no) {
+				t.Fatalf("the staff help for the stall alert says %q: %q", no, help)
+			}
+		}
+	}
 	if got := x.orderCodes(order, outsiders...); !slices.Equal(got, []int{404, 404, 404}) {
 		t.Fatalf("an unrelated user or a party of another order while the stall alert is open: %v", got)
 	}
@@ -142,6 +172,52 @@ func TestEscrowStallAlertStaffRead(t *testing.T) {
 	}
 	if got := x.orderCodes(order, x.buyerSess, x.vendorSess); !slices.Equal(got, []int{200, 200}) {
 		t.Fatalf("the parties after the alert cleared: %v", got)
+	}
+}
+
+// QA5W1-7: the stall alert also clears when the settlement leaves broadcast with no seen note written, as a settlement
+// confirmed or spent outside the market does (the escrow watcher need not write the seen note first): the alert is the
+// stall note while the settlement is in state broadcast, not the stall note alone. Staff lose the order and the desk
+// entry, for both ways out of broadcast.
+func TestEscrowStallAlertClearsWhenSettlementLeavesBroadcast(t *testing.T) {
+	for _, next := range []string{"confirmed", "external"} {
+		t.Run(next, func(t *testing.T) {
+			x := newEscrowEnv(t)
+			_, mod := x.user("stallleavemod_"+randomToken()[:6], "moderator")
+			_, admin := x.user("stallleaveadmin_"+randomToken()[:6], "admin")
+			order, id := x.built(regtestAddr("stall-leave-refund-"+next), regtestAddr("stall-leave-claim-"+next), 100000)
+			x.core.mu.Lock()
+			x.core.private = true
+			x.core.mu.Unlock()
+			x.setBlocks(200)
+			x.signAs(order, roleVendor, id)
+			x.poll()
+			x.setBlocks(200 + escrowStallBlocks)
+			x.poll()
+			if _, notes, seen := x.stallNotices(order); notes != 1 || seen != 0 {
+				t.Fatalf("the stall alert: %d stall notes, %d seen notes", notes, seen)
+			}
+			if n := agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND flagged", order); n != 0 {
+				t.Fatalf("%d flagged deposits: the test needs an order no flag opens", n)
+			}
+			if got := x.orderCodes(order, mod, admin); !slices.Equal(got, []int{200, 200}) {
+				t.Fatalf("staff while the stall alert is open: %v", got)
+			}
+			if e := x.deskAlert(order, mod); !strings.Contains(e, "a settlement queued or stuck") {
+				t.Fatalf("the desk lacks the open stall: %q", e)
+			}
+			// The settlement leaves broadcast; no seen note is written.
+			x.exec("UPDATE settlements SET state=$2::text, confirmed_at=CASE WHEN $2::text='confirmed' THEN now() END WHERE id=$1", id, next)
+			if _, _, seen := x.stallNotices(order); seen != 0 {
+				t.Fatalf("a seen note was written: %d", seen)
+			}
+			if got := x.orderCodes(order, mod, admin); !slices.Equal(got, []int{404, 404}) {
+				t.Fatalf("staff after the settlement became %s: %v", next, got)
+			}
+			if e := x.deskAlert(order, mod); e != "" {
+				t.Fatalf("the desk still lists the stall after the settlement became %s: %s", next, e)
+			}
+		})
 	}
 }
 
@@ -185,6 +261,10 @@ func TestEscrowReleaseTooFewStaffAlertRead(t *testing.T) {
 		t.Fatalf("staff after the release too few: %v", got)
 	}
 	x.staffReadOnly(order, mod)
+	// The deposits are flagged as well, so a flag admits staff: the help keeps the payment-review text.
+	if help := staffHelp(x.page("/order?id="+order, mod)); !strings.Contains(help, "because a payment on this order was flagged for review") || !strings.Contains(help, `href="/moderator#payment-review"`) || strings.Contains(help, "staff alert") {
+		t.Fatalf("the staff help with a flag open: %q", help)
+	}
 	if got := x.orderCodes(order, outsiders...); !slices.Equal(got, []int{404, 404, 404}) {
 		t.Fatalf("an unrelated user or a party of another order: %v", got)
 	}
@@ -207,6 +287,20 @@ func TestEscrowReleaseTooFewStaffAlertRead(t *testing.T) {
 	x.exec("UPDATE payments SET flagged=false WHERE order_id=$1", order)
 	if got := x.orderCodes(order, mod, admin); !slices.Equal(got, []int{200, 200}) {
 		t.Fatalf("staff with the alert open and no flag: %v", got)
+	}
+	// QA5W1-1: with only the alert admitting them, the help names the too-small release and links the Escrow alerts.
+	for _, sess := range []string{mod, admin} {
+		help := staffHelp(x.page("/order?id="+order, sess))
+		for _, want := range []string{"because its escrow has an open staff alert", "the release to the vendor could not be built, the coins are too few", `href="/moderator#escrow-alerts"`} {
+			if !strings.Contains(help, want) {
+				t.Fatalf("the staff help for the too-small release lacks %q: %q", want, help)
+			}
+		}
+		for _, no := range []string{"flagged", "payment-review", "queued or stuck"} {
+			if strings.Contains(help, no) {
+				t.Fatalf("the staff help for the too-small release says %q: %q", no, help)
+			}
+		}
 	}
 	if got := x.orderCodes(order, outsiders...); !slices.Equal(got, []int{404, 404, 404}) {
 		t.Fatalf("outsiders with the alert open and no flag: %v", got)
@@ -231,5 +325,48 @@ func TestEscrowNoteHelpNamesStaffAlert(t *testing.T) {
 	if help, _, _ = strings.Cut(help, "</span>"); !ok ||
 		!strings.Contains(help, "moderators and administrators if the order is disputed, a payment on it is flagged or its escrow has an open staff alert, and the operator") {
 		t.Fatalf("the escrow order's note help: %q", help)
+	}
+}
+
+// QA5W1-2: the desk's Escrow alerts list is newest first and says how many more it does not list, so that the alert a
+// notification just announced is never the one cut, and the cut is never silent. 101 open alerts (releases too few,
+// created a second apart): the newest 100 are listed, the oldest is not, and the count line reads "1 more"; at exactly
+// 100 there is no such line.
+func TestEscrowDeskAlertsNewestFirstAndCounted(t *testing.T) {
+	x := newEscrowEnv(t)
+	_, mod := x.user("deskover_"+randomToken()[:6], "moderator")
+	var orders []string
+	for i := 0; i < escrowAlertLimit+1; i++ {
+		o := x.testEnv.order(x.buyer, x.product, "BTC", stateCompleted)
+		x.exec("UPDATE orders SET created=now()+make_interval(secs => $2) WHERE id=$1", o, i)
+		x.exec("INSERT INTO settlements(order_id,kind,state,build_error) VALUES($1,'release','failed',$2)", o, settleTooSmall)
+		orders = append(orders, o)
+	}
+	section := func() string {
+		desk := x.page("/moderator", mod)
+		_, sec, _ := strings.Cut(desk, `<section id="escrow-alerts"`)
+		sec, _, _ = strings.Cut(sec, "</section>")
+		return sec
+	}
+	sec := section()
+	oldest, newest := orders[0], orders[len(orders)-1]
+	if n := strings.Count(sec, "<li>"); n != escrowAlertLimit {
+		t.Fatalf("%d alerts listed, want %d:\n%s", n, escrowAlertLimit, sec)
+	}
+	if !strings.Contains(sec, `href="/order?id=`+newest+`"`) || strings.Contains(sec, `href="/order?id=`+oldest+`"`) {
+		t.Fatalf("the newest alert listed = %v, the oldest = %v:\n%s", strings.Contains(sec, newest), strings.Contains(sec, oldest), sec)
+	}
+	if first := strings.Index(sec, `href="/order?id=`+newest+`"`); first > strings.Index(sec, `href="/order?id=`+orders[len(orders)-2]+`"`) {
+		t.Fatalf("the list is not newest first:\n%s", sec)
+	}
+	if !strings.Contains(sec, "1 more order has an open alert") {
+		t.Fatalf("the desk does not say how many alerts it leaves out:\n%s", sec)
+	}
+	// One alert clears (the oldest listed one is superseded, the end a changed dispute decision gives it): exactly 100 are
+	// open, all are listed, and no count line is left.
+	x.exec("UPDATE settlements SET state='superseded' WHERE order_id=$1", orders[1])
+	sec = section()
+	if n := strings.Count(sec, "<li>"); n != escrowAlertLimit || !strings.Contains(sec, `href="/order?id=`+oldest+`"`) || strings.Contains(sec, " more order") {
+		t.Fatalf("with exactly %d alerts open: %d listed, oldest listed %v:\n%s", escrowAlertLimit, n, strings.Contains(sec, oldest), sec)
 	}
 }

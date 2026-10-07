@@ -145,30 +145,34 @@ func escrowStaffAlert(order string) string {
 const escrowAlertLimit = 100
 
 // loadEscrowAlerts lists, on the moderation desk, the escrow orders with an open staff alert (escrowStaffAlert, the
-// rule that lets staff read them), each linked to its order page, so that a moderator can open one from the notice: a
-// notification names only a short order ID, and a stall flags no deposit, so the payment review list does not show it.
-// Nothing here is an action.
+// rule that lets staff read them), newest first, each linked to its order page, so that a moderator can open one from
+// the notice: a notification names only a short order ID, and a stall flags no deposit, so the payment review list does
+// not show it. Newest first, because the alert a notification just announced is the newest; when more than
+// escrowAlertLimit are open the desk says how many it leaves out (EscrowAlertsMore). Nothing here is an action.
 func loadEscrowAlerts(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 	if d.User == nil || (d.User.Role != "moderator" && d.User.Role != "admin") {
 		return nil
 	}
 	rows, err := a.db.QueryContext(ctx, `SELECT o.id,o.state,
 		EXISTS(SELECT 1 FROM settlements s WHERE s.order_id=o.id AND s.state='broadcast' AND `+escrowStalledSQL+`),
-		EXISTS(SELECT 1 FROM settlements s WHERE s.order_id=o.id AND s.kind='release' AND s.state='failed' AND s.build_error='`+settleTooSmall+`')
+		EXISTS(SELECT 1 FROM settlements s WHERE s.order_id=o.id AND s.kind='release' AND s.state='failed' AND s.build_error='`+settleTooSmall+`'),
+		count(*) OVER ()
 		FROM orders o WHERE o.id IN (SELECT order_id FROM settlements WHERE state IN ('broadcast','failed')) AND `+escrowStaffAlert("o.id")+`
-		ORDER BY o.created,o.id LIMIT $1`, escrowAlertLimit)
+		ORDER BY o.created DESC,o.id DESC LIMIT $1`, escrowAlertLimit)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
+	var total int
 	for rows.Next() {
 		var v EscrowAlertView
-		if err = rows.Scan(&v.ID, &v.State, &v.Stall, &v.TooFew); err != nil {
+		if err = rows.Scan(&v.ID, &v.State, &v.Stall, &v.TooFew, &total); err != nil {
 			return err
 		}
 		v.State = stateLabel(v.State)
 		d.EscrowAlerts = append(d.EscrowAlerts, v)
 	}
+	d.EscrowAlertsMore = max(0, total-len(d.EscrowAlerts))
 	return rows.Err()
 }
 
@@ -227,6 +231,19 @@ func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) 
 		d.OrderViewer = roleModerator
 	default:
 		return sql.ErrNoRows
+	}
+	if d.OrderViewer == roleModerator && !disputeVisible(o) {
+		// Staff read this order because a deposit is flagged or its escrow has an open staff alert. The help says which
+		// (QA5W1-1): a flag keeps the payment review text, and the alert alone names itself and links the desk's list.
+		var flagged, stall, tooFew bool
+		if err = a.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM payments WHERE order_id=$1 AND flagged),
+			EXISTS(SELECT 1 FROM settlements s WHERE s.order_id=$1 AND s.state='broadcast' AND `+escrowStalledSQL+`),
+			EXISTS(SELECT 1 FROM settlements s WHERE s.order_id=$1 AND s.kind='release' AND s.state='failed' AND s.build_error='`+settleTooSmall+`')`, o.ID).Scan(&flagged, &stall, &tooFew); err != nil {
+			return err
+		}
+		if !flagged && (stall || tooFew) {
+			d.StaffAlert = &EscrowAlertView{ID: o.ID, Stall: stall, TooFew: tooFew}
+		}
 	}
 	// A dispute decision carries the deciding staff member's avatar (A-189, owner decision 1(c)) when the desk
 	// route serves it to this viewer: its own predicate (imageDeskWhere, $2 viewer and $3 role) picks it, so the

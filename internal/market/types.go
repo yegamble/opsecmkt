@@ -204,9 +204,13 @@ type PageData struct {
 	PaymentReviewsOpen  int
 	PaymentReviewOthers int
 	PaymentReviewLimit  int
-	// EscrowAlerts: moderator desk, escrow orders with an open staff alert (escrowStaffAlert, A-470), oldest first, at
-	// most escrowAlertLimit.
-	EscrowAlerts []EscrowAlertView
+	// EscrowAlerts: moderator desk, escrow orders with an open staff alert (escrowStaffAlert, A-470), newest first, at
+	// most escrowAlertLimit; EscrowAlertsMore is how many more there are than it lists (QA5W1-2).
+	EscrowAlerts     []EscrowAlertView
+	EscrowAlertsMore int
+	// StaffAlert: order page, set when staff read the order only because its escrow has an open staff alert (no
+	// deposit flag, no dispute): which alerts are open, so the page names them (QA5W1-1).
+	StaffAlert *EscrowAlertView
 
 	// P4 Inventory (uses Product.Archived)
 	Listing   *ListingView
@@ -753,6 +757,7 @@ type XMREscrowCheckoutView struct {
 	Reason, Custody string
 	Physical        bool
 	Net, Prefixes   string
+	NetKnown        bool // the network was verified (App.xmrEscrowNetKnown): the copy names none before that (QA5W1-3)
 }
 
 // EscrowKeyView is the viewer's Bitcoin escrow key (escrow_account.go). Origin is the viewer's own key origin
