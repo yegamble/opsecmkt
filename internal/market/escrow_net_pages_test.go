@@ -68,7 +68,7 @@ func TestXMREscrowPagesNameNetwork(t *testing.T) {
 				f.nettype, f.peers, f.targetAhead, f.hardFork = "stagenet", 8, 1_000_000, 1
 			},
 			listed: "<li>Monero escrow (network not verified yet): an order in Monero",
-			runs:   "It runs on " + unknownOn + " with no real funds, and is not verified on any public network.",
+			runs:   "It runs on a Monero test network with no real funds, the market has not yet checked which, and nothing has run on a public network.",
 			badge:  "Monero escrow only (network not verified yet) — no real funds", on: unknownOn,
 			tile: "<strong>UNAVAILABLE</strong>", span: "One account per order on a network that is not verified yet; none of your orders uses it yet",
 			gone: []string{"fakechain", "stagenet", "tested only on local test chains"},
@@ -93,6 +93,10 @@ func TestXMREscrowPagesNameNetwork(t *testing.T) {
 				if strings.Contains(li, w) {
 					t.Errorf("canary's Monero line says %q:\n%s", w, li)
 				}
+			}
+			// QA5W1-8: the line says "not verified" once at most (the heading when the network is unknown), never twice.
+			if n := strings.Count(li, "not verified"); n > 1 {
+				t.Errorf("canary's Monero line says \"not verified\" %d times:\n%s", n, li)
 			}
 			// "Monero escrow on any public network" stays unavailable except on stagenet, which is one.
 			unavailable := pageLine(canary, "Mainnet payments (off unless")
@@ -256,6 +260,58 @@ func TestXMREscrowOrderPanelNamesItsOwnNetwork(t *testing.T) {
 			t.Setenv("ESCROW_XMR", "off")
 			x.restart()
 			check("switched off")
+		})
+	}
+}
+
+// QA5W1-3: the buyer's Monero escrow checkout offer names the network by the rule of payment-status:xmr-net: "network
+// not verified yet" until a daemon was verified (never the fakechain the unverified market defaults to), Monero
+// stagenet, or a local Monero fakechain.
+func TestXMREscrowCheckoutOfferNamesNetwork(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		edit    func(f *fakeXMREscrow)
+		heading string
+		text    string
+		gone    []string
+	}{
+		{
+			name: "stagenet", edit: onStagenet,
+			heading: "Or pay into a Monero escrow (test network only)",
+			text:    "Monero escrow on this market runs on Monero stagenet, a public test network, only.",
+			gone:    []string{"fakechain", "local test chain", "not verified yet"},
+		},
+		{
+			name: "fakechain", edit: nil,
+			heading: "Or pay into a Monero escrow (local test chain only)",
+			text:    "Monero escrow on this market runs on a local test chain (a Monero fakechain) only.",
+			gone:    []string{"stagenet", "not verified yet"},
+		},
+		{
+			// A stagenet daemon still syncing (hard fork 1) is never verified, and nothing is pinned: no network is known.
+			name: "unknown", edit: func(f *fakeXMREscrow) {
+				f.nettype, f.peers, f.targetAhead, f.hardFork = "stagenet", 8, 1_000_000, 1
+			},
+			heading: "Or pay into a Monero escrow (network not verified yet)",
+			text:    "Monero escrow on this market runs on a Monero test network that is not verified yet, with no real funds.",
+			gone:    []string{"fakechain", "stagenet", "local test chain", "test network only"},
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			x := newXMREscrowEnvWith(t, c.edit)
+			order := x.testEnv.order(x.buyer, x.product, "XMR", stateDraft)
+			page := html.UnescapeString(x.page("/order?id="+order, x.buyerSess))
+			offer := pageLine(page, "Or pay into a Monero escrow")
+			if !strings.Contains(page, "<h3 id=\"xmr-escrow-checkout-heading\">"+c.heading+"</h3>") || !strings.Contains(page, c.text) {
+				t.Errorf("the checkout offer lacks %q and %q:\n%s", c.heading, c.text, offer)
+			}
+			_, section, _ := strings.Cut(page, `aria-labelledby="xmr-escrow-checkout-heading"`)
+			section, _, _ = strings.Cut(section, "</section>")
+			for _, w := range c.gone {
+				if strings.Contains(section, w) {
+					t.Errorf("the checkout offer says %q:\n%s", w, section)
+				}
+			}
 		})
 	}
 }

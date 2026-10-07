@@ -914,7 +914,9 @@ recorded**: the evidence below is simulated RPC and an offline stagenet fork.
   daemon was verified or the pin was read, "Monero stagenet, a public test network" on stagenet, "a local Monero
   fakechain" on a fakechain. On stagenet the canary says Monero escrow "has been tested only on local test chains, not yet
   on the public stagenet" and lists "Monero escrow verified on the public stagenet" as unavailable; "not verified on any
-  public network" stays on a fakechain and while the network is unknown, where it is true. On Bitcoin testnet4 the canary
+  public network" stays on a fakechain; while the network is unknown the canary says the market has not yet checked
+  which test network it is and that nothing has run on a public network (QA5W1-8), and the buyer's Monero escrow checkout
+  offer says "network not verified yet", Monero stagenet or a local Monero fakechain by the same rule (QA5W1-3). On Bitcoin testnet4 the canary
   says the same (tested only on local test chains, not yet on public testnet4); regtest and signet keep "not verified on
   any public network". The same rule names the network in the dispute pages (the moderator's refusal and the
   administrator's preview), `/admin`'s Monero escrow recovery heading and the Bitcoin order panel's headline (testnet4);
