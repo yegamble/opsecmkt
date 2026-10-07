@@ -1229,8 +1229,9 @@ place; the [operator guide](operator-guide.md#bitcoin-escrow-test-networks-only)
    **Public-network caveat:** on these chains fee bumps cost almost nothing, so anyone can repeat such a burst every
    block, and while it lasts each read costs the escrow node memory (3000 bumps on Core 31.1: a 605 MB answer and
    about 1.5 GB of the node's memory per read; a node capped at 5 GiB was killed by the third read in a row). The market
-   paces its own reads (A-479: after a read that fails or takes 5 s or more the next waits 1 minute, doubling to at
-   most 1 hour), so where reads failed during such a burst, escrow can stay off for up to an hour after it ends; restart
+   paces its own reads (A-479: after a read that takes 5 s or more or times out, pass or failure, the next waits 1
+   minute, doubling to at most 1 hour; a slow pass counts as a pass meanwhile, and a quick failure is read again every
+   poll), so where slow reads failed during such a burst, escrow can stay off for up to an hour after it ends; restart
    the app to check at once.
    Before any public network, run escrow on a node of its own, never the pooled payments' node, with memory to spare.
 8. Fees (QA4W6-5). Every settlement is built at `ESCROW_BTC_FEE_RATE`, default 2 sat/vB, a whole number from 1 to 100

@@ -1017,9 +1017,11 @@ A-447) on their own host.
   one 74 KB entry once mined, escrow on throughout; 3000 bumps, measured once: 605 MB, read in 16 s, then one 202 KB
   entry). The square-law volume lasts only while the replacements are unconfirmed: once one is mined Core lists the
   others in no read. While it lasts it costs the node memory (about 1.5 GB per 605 MB answer; the operator guide's
-  arbiter wallet paragraph), and since A-479 the escrow watcher paces its retries' reads (after a read that fails or
-  takes 5 s or more, the next waits 1 minute, doubling to at most 1 hour; a restart reads at once;
-  `TestEscrowArbiterReadPacing`), so the market no longer adds such a read every poll. Nothing in that check depends on
+  arbiter wallet paragraph), and since A-479 the escrow watcher paces its retries' reads: after a read that takes 5 s or
+  more or times out, pass or failure, the next waits 1 minute, doubling to at most 1 hour, and a slow pass counts as a
+  pass meanwhile; a quicker read ends the waits, a quick failure is read again every poll, and a restart reads at once
+  (`TestEscrowArbiterReadPacing`, `TestEscrowArbiterQuickFailureNotPaced`,
+  `TestEscrowArbiterSlowPassThenLaterCheckFails`), so the market no longer adds such a read every poll. Nothing in that check depends on
   the chain.
 
 How it was tested: DB integration with the simulated Core (`TestEscrowStartupChains`: mainnet and testnet3 refused
