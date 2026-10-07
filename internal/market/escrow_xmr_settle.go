@@ -121,7 +121,7 @@ func xmrWaitFlagged(class string) bool {
 // counts (wallet-refusing or -refused, outputs-waiting or -mismatch) and coins too few (too-small, which a stray refund
 // waits with). An estimate that fails only on some passes would otherwise restart the refusal's count, and the refusal
 // the estimate's, so the refund would wait unflagged for good: the second pass in a row in these classes is flagged,
-// as whichever class it records.
+// as whichever class it records. Staff are told of each of its flagged classes once per run (xmrFlaggedBefore).
 func xmrFeeEpisode(class string) bool {
 	switch class {
 	case xmrFeeEstimateWaiting, xmrFeeEstimateUnavailable, xmrWaitOutputs, xmrOutputsMismatch, xmrTooSmall:
@@ -135,14 +135,30 @@ func xmrFeeEstimateWait(class string) bool {
 	return class == xmrFeeEstimateWaiting || class == xmrFeeEstimateUnavailable
 }
 
-// xmrFlaggedBefore reports whether staff were told already, when prev was recorded, of the run of passes that the
-// flagged class continues (QA5W2-1): both flagged, both xmrFeeEpisode classes, and one of them the unavailable
-// estimate. A refusal flagged, then the estimate failing on alternate passes, flips between them; a stray refund
-// flagged too few whose in-memory record a restart lost (xmrRefundBelowFee) records the unavailable estimate, then too
-// small again. Staff are told once for that run, not on each flip.
-func xmrFlaggedBefore(prev, class string) bool {
-	return xmrWaitFlagged(prev) && xmrWaitFlagged(class) && xmrFeeEpisode(prev) && xmrFeeEpisode(class) &&
-		(prev == xmrFeeEstimateUnavailable || class == xmrFeeEstimateUnavailable)
+// xmrFlaggedBefore reports whether staff were told already of the flagged class, an xmrFeeEpisode class, in the run
+// of passes without a build of requested settlement s (QA5W2-1, QA5W3B-3/-4). A requested settlement only moves
+// forward (xmr_settlements_moves), so its run is its whole time requested: the run ends with a build, or when it
+// leaves its waiting state. Staff are told once of each distinct flagged class of the run: a refusal flagged, then
+// the estimate failing on alternate passes, flips between two classes each told once; a class staff were told of
+// recurring after a wait never flagged (-37's outputs-waiting, a first failed estimate) is told nothing new; but a
+// different diagnosis (the wallet seeing fewer coins than it listed, or refusing, once the estimate answers; a stray
+// refund's coins found too few) is told, once. What was told is read from s's own flag notes (xmrSettleWaits writes
+// one per announcement, in tx, which holds s's row lock from its compare-and-set), so it survives a restart. Other
+// flagged classes are told whenever they are recorded anew, as before (an administrator's retry of a set-aside
+// build, for one, must be told again if it is set aside again).
+func (a *App) xmrFlaggedBefore(ctx context.Context, tx *sql.Tx, s *xmrSettleRow, class string) (bool, error) {
+	if !xmrWaitFlagged(class) || !xmrFeeEpisode(class) {
+		return false, nil
+	}
+	var told bool
+	err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM order_events WHERE order_id=$1 AND actor_id IS NULL AND strpos(note,$2)=1)",
+		s.OrderID, xmrFlagNotePrefix(s, class, a.escrowXMR.confirmations)).Scan(&told)
+	return told, err
+}
+
+// xmrFlagNotePrefix is how the order note xmrSettleWaits writes to flag class on settlement s begins.
+func xmrFlagNotePrefix(s *xmrSettleRow, class string, threshold int64) string {
+	return fmt.Sprintf("Monero escrow settlement %d (%s) not sent: %s", s.ID, settlementKind(s.Kind), xmrSettleWaitText(class, s.Kind, threshold))
 }
 
 // xmrSettleWaitText is what the order page says about the wait class of a settlement of kind.
@@ -776,7 +792,7 @@ func (a *App) xmrOutputsWait(ctx context.Context, s *xmrSettleRow) error {
 
 // xmrSettleWaits records why settlement s is not built or sent yet; it stays where it is and is tried again next
 // pass. A changed class is logged once, and a class in xmrWaitFlagged is flagged to staff once, with a fixed note,
-// unless it continues a run staff were told of already (xmrFlaggedBefore, QA5W2-1).
+// unless staff were told of it already in this run of passes without a build (xmrFlaggedBefore, QA5W2-1, QA5W3B).
 func (a *App) xmrSettleWaits(ctx context.Context, s *xmrSettleRow, class string) error {
 	if s.Wait == class {
 		return nil
@@ -793,7 +809,11 @@ func (a *App) xmrSettleWaits(ctx context.Context, s *xmrSettleRow, class string)
 	if n, _ := res.RowsAffected(); n != 1 {
 		return nil // recorded already (s was read before)
 	}
-	if xmrWaitFlagged(class) && !xmrFlaggedBefore(s.Wait, class) {
+	told, err := a.xmrFlaggedBefore(ctx, tx, s, class)
+	if err != nil {
+		return err
+	}
+	if xmrWaitFlagged(class) && !told {
 		o, err := scanOrder(tx.QueryRowContext(ctx, orderQuery+" WHERE o.id=$1 FOR UPDATE OF o", s.OrderID))
 		if err != nil {
 			return err
@@ -811,7 +831,7 @@ func (a *App) xmrSettleWaits(ctx context.Context, s *xmrSettleRow, class string)
 			return err
 		}
 		// The note names the deposits it flags, so the desk dates their flags (QA462E-3).
-		note := fmt.Sprintf("Monero escrow settlement %d (%s) not sent: %s", s.ID, settlementKind(s.Kind), xmrSettleWaitText(class, s.Kind, a.escrowXMR.confirmations))
+		note := xmrFlagNotePrefix(s, class, a.escrowXMR.confirmations)
 		if len(named) > 0 {
 			note += " Flagged so staff can open the order: " + strings.Join(named, ", ") + "."
 		}
