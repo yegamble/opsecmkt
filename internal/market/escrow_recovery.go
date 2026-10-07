@@ -369,7 +369,10 @@ func (a *App) spenderOf(ctx context.Context, e *escrowBTC, stored *psbtPacket) s
 // stops asking for a signature that can never complete. A physical order's release before the outcome (shipped or
 // disputed) still waits for a party's signature once one party signed, and the market never spends it either, so a
 // party-signed one is followed the same way (A-385): the parties may have combined the stored signature with one made
-// offline and broadcast it. It runs while the restore gate is set too: it only watches.
+// offline and broadcast it. One waiting for a signature whose per-order keys cannot be had (loadSettleBuild's KeysErr)
+// is followed the same way, from its stored PSBT, and logged with the fixed class per-order-key-unavailable on each pass
+// while its inputs are unspent; nothing is recorded on it (QA5W6-1). It runs while the restore gate is set too: it only
+// watches.
 func (a *App) trackAwaiting(ctx context.Context, e *escrowBTC) error {
 	return a.eachSettlement(ctx, "not followed", `SELECT s.id FROM settlements s JOIN orders o ON o.id=s.order_id WHERE s.state='awaiting_signature'
 		OR s.state='party_signed' AND s.kind='release' AND o.state IN ('shipped','disputed') ORDER BY s.id`, func(id int64) error {
@@ -383,8 +386,14 @@ func (a *App) trackAwaiting(ctx context.Context, e *escrowBTC) error {
 			return err
 		}
 		spent, err := a.inputsSpent(ctx, e, b.Stored)
-		if err != nil || !spent {
+		if err != nil {
 			return err
+		}
+		if !spent {
+			if b.KeysErr != nil {
+				log.Printf("escrow: settlement of order %s cannot be signed, its inputs are still watched: %s", shortID(b.OrderID), errorCause(b.KeysErr))
+			}
+			return nil
 		}
 		return a.spentBeforeCosign(ctx, e, b)
 	})

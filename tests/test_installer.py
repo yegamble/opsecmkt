@@ -1343,8 +1343,10 @@ time.sleep(60)
     def test_init_admin_password_not_utf8_refused_before_anything_is_written(self):
         # QA5W5B-7: -bootstrap-admin refuses a password that is not valid UTF-8, which the sign-in form could never send;
         # the installer refuses it up front, before .env is written or anything is started. LATIN1 "été" (a terminal
-        # set to LATIN1), an encoded surrogate and an overlong "/".
-        for bad in ('correct horse \udce9t\udce9 battery', 'surrogate \udced\udca0\udc80 battery', 'overlong \udcc0\udcaf battery'):
+        # set to LATIN1), an encoded surrogate and an overlong "/"; QA5W6-4 (mutant S6): the code point above U+10FFFF that
+        # \xf4 starts (U+110000) and a 4-byte sequence led by \xf5, which no UTF-8 holds.
+        for bad in ('correct horse \udce9t\udce9 battery', 'surrogate \udced\udca0\udc80 battery', 'overlong \udcc0\udcaf battery',
+                    'above U+10FFFF \udcf4\udc90\udc80\udc80 battery', 'F5 lead \udcf5\udc80\udc80\udc80 battery'):
             with self.subTest(bad=bad):
                 self.log.unlink(missing_ok=True)
                 result = self.run_installer([bad, bad], arguments=['--local', '--admin', 'first_admin'])

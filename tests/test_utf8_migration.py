@@ -47,7 +47,8 @@ class Section42Tests(unittest.TestCase):
             "convert_from(convert(convert_to(body, 'SQL_ASCII'), 'LATIN1', 'UTF8'), 'SQL_ASCII') WHERE id = '6f0c2a9e41d7'",
             "SET title = convert_from(convert_to('Crème brûlée', 'UTF8'), 'SQL_ASCII') WHERE id = '0d3e7b5a92c4'",
             'BACKUP_DUMP_ENCODING=SQL_ASCII BACKUP_DATABASE_URL="$OLD_DATABASE_URL" AGE_RECIPIENT=age1... ./scripts/backup.sh',
-            "CREATE DATABASE opsecmkt_latin1 ENCODING 'LATIN1' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0",
+            # QA5W6-3: through the maintenance database; opsecmkt_utf8 is created only in step 4.
+            "python3 scripts/postgres-tool.py MAINTENANCE_DATABASE_URL psql -c \"CREATE DATABASE opsecmkt_latin1 ENCODING 'LATIN1' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0\"",
             # QA5W5B-8: the URL's password reaches pg_restore in PGPASSWORD, never in its argv.
             "python3 scripts/postgres-tool.py LATIN1_DATABASE_URL pg_restore --dbname='' --no-owner --no-acl --exit-on-error",
             "CREATE DATABASE opsecmkt_utf8 ENCODING 'UTF8' TEMPLATE template0;",
@@ -83,6 +84,8 @@ class Section42Tests(unittest.TestCase):
             self.assertIn(claim, section)
         self.assertNotIn("WHERE ctid = '(0,1)';", section)
         self.assertNotIn('--dbname="$', section)
+        # QA5W6-3: NEW_DATABASE_URL names opsecmkt_utf8, which does not exist in step 3.
+        self.assertNotIn('postgres-tool.py NEW_DATABASE_URL', section)
         self.assertNotIn('Refusing: this backup holds its text in', section)
 
 
@@ -281,7 +284,10 @@ class LegTests(unittest.TestCase):
                        'e69db1e4baac20ff', '$type_it',
                        "reading its bytes as WIN1252, this database's encoding, is a safe correction",
                        "this database's encoding, EUC_JP, is multibyte",
-                       'restore "$work/latin1-again.dump.age" latin1_escape',
+                       # QA5W6-3: the way out runs as printed, before step 4 creates opsecmkt_utf8.
+                       'bash -euo pipefail -c "$escape_block"',
+                       'NEW_DATABASE_URL=$(url opsecmkt_utf8)',
+                       'restore "$work/latin1-again.dump.age" opsecmkt_utf8',
                        'if BACKUP_DUMP_ENCODING=LATIN1 backup',
                        'BACKUP_DUMP_ENCODING=SQL_ASCII backup latin1_old',
                        'BACKUP_DUMP_ENCODING=SQL_ASCII round_trip latin1_new',

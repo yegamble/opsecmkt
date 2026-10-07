@@ -1347,15 +1347,19 @@ is still refused.
   `testmempoolaccept`ed as before. A signer that is not reachable, refuses, or no longer matches leaves the settlement
   signed by its party, with "The market's escrow signer could not co-sign it yet" on the order page and one log line
   (`signer-waiting` or `signer-refused`, the refusal's fixed class logged); nothing is rebuilt and the next pass tries
-  again (P4-R17). The signer is asked only to co-sign (and for its key at checkout): every per-order key a page, a copy,
-  a paste or a build needs comes from what checkout stored (QA5W5A-1), so while the signer is down both parties' order
+  again (P4-R17). The market contacts the signer only at checkout (its account key, from which the market's order
+  wallet key is derived and stored), to co-sign, and in its health check (its account key, read at startup and on every
+  watcher pass and checked against the pins); every per-order key a page, a copy, a paste or a build needs comes from
+  what checkout stored, never from the signer (QA5W5A-1), so while the signer is down both parties' order
   pages, setup pages and copies are served and a party's signature is accepted, a sibling's stray refund included (QA5W5A
   found that a sibling's refund made the order page answer 500 then). Should a per-order key not be had (a row with no
   stored order wallet key, or stored data that does not give the address), no page, copy or form fails: the order page
   says "This transaction cannot be signed right now: the market cannot rebuild the keys of the address it spends from
   its records" and offers no copy, the copy and the sign forms answer 503 with that text, nothing stored, a party-signed
   settlement waits with `signer-waiting` and nothing rebuilt, and the log names the fixed class
-  `per-order-key-unavailable`.
+  `per-order-key-unavailable`. One nobody signed yet records nothing (no party signed, so nothing waits for the signer):
+  the watcher logs that class on each pass and still follows its inputs from the stored transaction, so a deposit spent
+  outside the market makes it external as usual (QA5W6-1).
 - **Sibling deposits are returned (QA5W3A-2).** A-456a recorded a deposit to an order wallet's sibling address and
   requested its stray refund, but the build waited for ever (the input was compared with the escrow address, and Core was
   given only the escrow address's descriptor). A sibling's three keys are now derived in Go from each per-order extended

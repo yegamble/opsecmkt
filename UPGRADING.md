@@ -1427,12 +1427,14 @@ new as the server are installed.
    database it was taken from (the first one the refusal names; `LATIN1` below), never the encoding its text was
    written in, which can be one no database can have (`SJIS`). There `pg_restore` turns the text back into the bytes
    that database stored, and you use it as the old database. Set `LATIN1_DATABASE_URL` to `NEW_DATABASE_URL` with the
-   database name `opsecmkt_latin1`; `scripts/postgres-tool.py` passes each URL's password to the tool in `PGPASSWORD`,
-   never on its command line, where other users of the host could read it:
+   database name `opsecmkt_latin1`, and `MAINTENANCE_DATABASE_URL` to it with the database name `postgres` (the
+   maintenance database PostgreSQL creates; `opsecmkt_utf8`, which `NEW_DATABASE_URL` names, does not exist until step
+   4, so nothing can connect to it yet); `scripts/postgres-tool.py` passes each URL's password to the tool in
+   `PGPASSWORD`, never on its command line, where other users of the host could read it:
 
    ```sh
-   export NEW_DATABASE_URL LATIN1_DATABASE_URL
-   python3 scripts/postgres-tool.py NEW_DATABASE_URL psql -c "CREATE DATABASE opsecmkt_latin1 ENCODING 'LATIN1' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0"
+   export MAINTENANCE_DATABASE_URL LATIN1_DATABASE_URL
+   python3 scripts/postgres-tool.py MAINTENANCE_DATABASE_URL psql -c "CREATE DATABASE opsecmkt_latin1 ENCODING 'LATIN1' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0"
    age -d -i "$AGE_IDENTITY" backups/pre-upgrade-20260101T000000Z.dump.age | python3 scripts/postgres-tool.py LATIN1_DATABASE_URL pg_restore --dbname='' --no-owner --no-acl --exit-on-error
    ```
 
@@ -1527,6 +1529,11 @@ Rolling back past this release
 needs the pre-upgrade backup, as for every migration (section 5): the earlier release refuses to start on a database
 that records migration 089.
 
+Development databases only: migration 089 was changed before it was released, and a migration that is recorded as
+applied is never run again, so a development database that applied an earlier phase-5 version of 089 keeps its
+earlier checks (one refused the market's stored per-order key, so per-order checkout fails there) and must be
+recreated. No released database has an earlier version of 089.
+
 ## 45. Per-order Bitcoin escrows: open to users, co-signed by the escrow signer (A-456b)
 
 No migration. Only with `ESCROW_BTC=on`, a buyer and a vendor whose active escrow keys are both per-order wallet keys now get a
@@ -1538,9 +1545,10 @@ wallets need the market's escrow signer, which is not available on this market r
 nothing written and, under escrow-only Bitcoin intake, a per-order vendor's listings are not available for purchase in
 BTC (the readiness panel on `/admin` lists the vendor). A signer that does not answer when a settlement waits for it
 leaves the settlement signed by its party, with "The market's escrow signer could not co-sign it yet" on the order page
-and one log line; the next pass tries again and nothing is rebuilt. The signer is asked only to co-sign and, at checkout,
-for its key: while it is down the order pages, setup pages and copies of per-order escrows are still served and the
-parties can still sign, a sibling address's stray refund included. Set up the signer first: see the [operator
+and one log line; the next pass tries again and nothing is rebuilt. No per-order key comes from the signer after
+checkout, which stores them: the market contacts it at checkout (for its key), to co-sign, and in its health check (its
+key, read at startup and on every watcher pass). While it is down the order pages, setup pages and copies of per-order
+escrows are still served and the parties can still sign, a sibling address's stray refund included. Set up the signer first: see the [operator
 guide](docs/operator-guide.md#escrow-signer). The signer's RPC user needs no new method. A deposit to one of a per-order
 escrow's sibling addresses is now returned by a stray refund spending that address's own script, co-signed by the
 signer.
