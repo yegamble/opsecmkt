@@ -16,10 +16,15 @@
 # also holds valid multibyte UTF-8) and the other two to be read as LATIN1; corrected as the section says, by the row's
 # key, both bad values of that one row in a single round, the check passes, the round trip restores and the server
 # starts on the new database.
+# The check's reach and readings (QA5W5B-2, -3, -6, -8), in small databases of their own: array elements, domains, a
+# composite key, names to quote and a 3-byte lead in SQL_ASCII; cp1252 text read as WIN1252 in a WIN1252 database; text
+# to be typed in an EUC_JP one.
 # LATIN1, "Crème brûlée — 東京 🔒": restore.sh refuses a backup taken as LATIN1 (it would restore every non-ASCII
-# character double-encoded) before changing anything; the section's way out for an operator with only that backup (a
-# temporary LATIN1 database, backed up again with BACKUP_DUMP_ENCODING=SQL_ASCII) restores it exactly, as the option
-# does from the old database, and the same option on the new UTF8 database changes nothing.
+# character double-encoded) before changing anything, and one taken as UTF8 with client_encoding UTF8 set for the
+# database (QA5W5B-1: its DATABASE entry records LATIN1); the section's way out for an operator with only such a backup
+# (a temporary LATIN1 database, backed up again with BACKUP_DUMP_ENCODING=SQL_ASCII) restores it exactly, as the option
+# does from the old database, and the same option on the new UTF8 database changes nothing. A UTF8 database dumped in
+# SJIS is refused with a way out through a UTF8 database.
 #
 # Needs Docker, Go, Python 3 and age. Nothing outside the container, a temporary directory and one loopback port is
 # touched.
@@ -148,7 +153,8 @@ title_hex=$(hex "$title")
 bad_hex=477265617420fffe2073656c6c6572  # "Great \xff\xfe seller"
 mixed_hex=4372c3a86d6520ff206272c3bb6cc3a965  # "Cr\xc3\xa8me \xff br\xc3\xbbl\xc3\xa9e": UTF-8 with a stray byte
 latin1_hex=e974e9  # "\xe9t\xe9": "été" written in LATIN1
-latin1_safe='no valid multibyte UTF-8 in it, so reading its bytes as LATIN1 is a safe correction'
+latin1_safe='no valid multibyte UTF-8 in it, so reading its bytes as LATIN1 is a safe correction, or as the single-byte encoding they were written in if that was another (a SQL_ASCII database does not record it; WIN1252, for one)'
+type_it='it also holds valid multibyte UTF-8, which reading it as LATIN1 would double-encode: type the text it should hold'
 # old_database NAME ENCODING BODY_HEX: a pre-A-481 market database: the seed's schema and rows byte for byte, then a
 # vendor, a buyer, a listing titled $title, a completed order and its review whose body has the bytes BODY_HEX.
 old_database() {
@@ -217,6 +223,61 @@ server_pid=$!
 wait_healthy || fail 'the server did not start on the new database'
 stop_server
 
+echo 'check-utf8.sql: arrays, domains, a composite key, names to quote, readings in WIN1252 and EUC_JP'
+# QA5W5B-2: an element of a text[] or of a domain over varchar[], and a domain over text, are read too, each array
+# element named by its subscript. QA5W5B-6: a composite key is written as a condition of all its columns, and a value
+# whose valid multibyte UTF-8 starts with a 3-byte lead ("東京 \xff") is to be typed. QA5W5B-8: a table and a column whose
+# names need quoting are printed quoted, so the UPDATE written from the line runs as printed.
+sql postgres -c "CREATE DATABASE probe_ascii ENCODING 'SQL_ASCII' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0"
+sql probe_ascii <<'SQL'
+CREATE DOMAIN memo_text AS text;
+CREATE DOMAIN label_list AS varchar(40)[];
+CREATE TABLE pairs(a text, b int, note text, PRIMARY KEY (a, b));
+CREATE TABLE tagged(id text PRIMARY KEY, tags text[], memo memo_text, labels label_list);
+CREATE TABLE "Odd Table"("Odd Col" text);
+INSERT INTO pairs VALUES ('x', 1, convert_from(decode('6f6bff', 'hex'), 'SQL_ASCII')), ('x', 2, 'fine');
+INSERT INTO tagged VALUES ('t1', ARRAY['fine', convert_from(decode('626164ff', 'hex'), 'SQL_ASCII')],
+  convert_from(decode('6d656d6ffe', 'hex'), 'SQL_ASCII'), ARRAY[convert_from(decode('e974e9', 'hex'), 'SQL_ASCII')]::label_list);
+INSERT INTO "Odd Table" VALUES (convert_from(decode('e69db1e4baac20ff', 'hex'), 'SQL_ASCII'));
+SQL
+if check probe_ascii; then fail 'check-utf8.sql passed bad array elements and domain values'; fi
+for line in "table public.pairs, column note, row where a = 'x' AND b = '1' (ctid (0,1)); $latin1_safe; starting: ok\\377" \
+    "table public.tagged, column tags[2], row where id = 't1' (ctid (0,1)); $latin1_safe; starting: bad\\377" \
+    "table public.tagged, column memo, row where id = 't1' (ctid (0,1)); $latin1_safe; starting: memo\\376" \
+    "table public.tagged, column labels[1], row where id = 't1' (ctid (0,1)); $latin1_safe; starting: \\351t\\351" \
+    "table public.\"Odd Table\", column \"Odd Col\", row (no primary key: use the ctid) (ctid (0,1)); $type_it; starting: \\346\\235\\261\\344\\272\\254 \\377"; do
+  grep -qF "not valid UTF-8: $line" "$work/check-probe_ascii.log" || fail "check-utf8.sql did not print: $line"
+done
+grep -q '5 stored text value(s) are not valid UTF-8' "$work/check-probe_ascii.log" || fail 'check-utf8.sql did not count the five bad values'
+# Corrected as section 42 says, each statement written from its line as printed.
+sql probe_ascii <<'SQL'
+UPDATE public.pairs SET note = convert_from(convert(convert_to(note, 'SQL_ASCII'), 'LATIN1', 'UTF8'), 'SQL_ASCII') WHERE a = 'x' AND b = '1';
+UPDATE public.tagged SET tags[2] = convert_from(convert(convert_to(tags[2], 'SQL_ASCII'), 'LATIN1', 'UTF8'), 'SQL_ASCII') WHERE id = 't1';
+UPDATE public.tagged SET memo = convert_from(convert(convert_to(memo, 'SQL_ASCII'), 'LATIN1', 'UTF8'), 'SQL_ASCII') WHERE id = 't1';
+UPDATE public.tagged SET labels[1] = convert_from(convert(convert_to(labels[1], 'SQL_ASCII'), 'LATIN1', 'UTF8'), 'SQL_ASCII') WHERE id = 't1';
+UPDATE public."Odd Table" SET "Odd Col" = convert_from(convert_to('東京 tea', 'UTF8'), 'SQL_ASCII') WHERE ctid = '(0,1)';
+SQL
+check probe_ascii || fail 'check-utf8.sql failed after the corrections of arrays and domains'
+[[ $(text_hex probe_ascii "SELECT tags[2] FROM tagged") == "$(hex 'badÿ')" && $(text_hex probe_ascii "SELECT labels[1] FROM tagged") == "$(hex 'été')" &&
+  $(text_hex probe_ascii 'SELECT "Odd Col" FROM "Odd Table"') == "$(hex '東京 tea')" ]] || fail 'the corrected array element, domain or typed value'
+# QA5W5B-3: in a WIN1252 database, text a WIN1252 client wrote ("“quote” € 5" in cp1252) is read as WIN1252, the
+# database's own encoding; read as LATIN1 its quotes and euro sign would become C1 control characters that pass the check.
+sql postgres -c "CREATE DATABASE win1252_old ENCODING 'WIN1252' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0"
+sql win1252_old -c "CREATE TABLE notes(id text PRIMARY KEY, body text)" \
+  -c "INSERT INTO notes VALUES ('n1', convert_from(decode('9371756f74659420802035', 'hex'), 'SQL_ASCII'))"
+if check win1252_old; then fail 'check-utf8.sql passed cp1252 bytes'; fi
+grep -qF "not valid UTF-8: table public.notes, column body, row where id = 'n1' (ctid (0,1)); no valid multibyte UTF-8 in it, so reading its bytes as WIN1252, this database's encoding, is a safe correction; starting: \\223quote\\224 \\200 5" \
+  "$work/check-win1252_old.log" || fail 'check-utf8.sql did not tell the cp1252 text to be read as WIN1252'
+sql win1252_old -c "UPDATE public.notes SET body = convert_from(convert(convert_to(body, 'SQL_ASCII'), 'WIN1252', 'UTF8'), 'SQL_ASCII') WHERE id = 'n1'"
+check win1252_old || fail 'check-utf8.sql failed after the WIN1252 correction'
+[[ $(text_hex win1252_old "SELECT body FROM notes") == "$(hex '“quote” € 5')" ]] || fail 'the WIN1252 correction'
+# In a database whose encoding is multibyte (EUC_JP), no reading of the bytes is called safe: the text is to be typed.
+sql postgres -c "CREATE DATABASE eucjp_old ENCODING 'EUC_JP' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0"
+sql eucjp_old -c "CREATE TABLE notes(id text PRIMARY KEY, body text)" -c "INSERT INTO notes VALUES ('n1', convert_from(decode('a4a2', 'hex'), 'SQL_ASCII'))"
+if check eucjp_old; then fail 'check-utf8.sql passed EUC-JP bytes'; fi
+grep -qF "not valid UTF-8: table public.notes, column body, row where id = 'n1' (ctid (0,1)); this database's encoding, EUC_JP, is multibyte, so no reading of its bytes is a safe correction: type the text it should hold; starting: \\244\\242" \
+  "$work/check-eucjp_old.log" || fail 'check-utf8.sql did not tell the EUC_JP text to be typed'
+
 echo 'LATIN1: UTF-8 text stored by the old market'
 old_database latin1_old LATIN1 "$title_hex"
 check latin1_old || fail 'check-utf8.sql failed on a LATIN1 database holding only UTF-8'
@@ -224,11 +285,42 @@ check latin1_old || fail 'check-utf8.sql failed on a LATIN1 database holding onl
 # every non-ASCII character: restore.sh refuses it before changing anything (QA5W4B-2).
 backup latin1_old "$work/latin1.dump.age"
 if restore "$work/latin1.dump.age" latin1_plain; then fail 'restore.sh restored a LATIN1 dump'; fi
-grep -q 'Refusing: this backup holds its text in LATIN1, as pg_dump writes a LATIN1 database backed up without BACKUP_DUMP_ENCODING=SQL_ASCII.' \
+grep -q 'Refusing: this backup was taken from a LATIN1 database and holds its text in LATIN1.' \
   "$work/restore-latin1_plain.log" || fail 'restore.sh did not explain the refusal of the LATIN1 dump'
 grep -q 'see UPGRADING.md, section 42.' "$work/restore-latin1_plain.log" || fail 'the refusal does not cite section 42'
 [[ $(sql latin1_plain -c "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public'") == 0 ]] ||
   fail 'the refused restore wrote to the database'
+# QA5W5B-1: with client_encoding UTF8 set for the database, its default backup is written in UTF8, converted from
+# LATIN1, and its script says SET client_encoding = 'UTF8'; its DATABASE entry still records ENCODING = 'LATIN1', and
+# restore.sh refuses it by that. The way out the refusal names, a temporary LATIN1 database, converts it back exactly.
+sql postgres -c "ALTER DATABASE latin1_old SET client_encoding = 'UTF8'"
+backup latin1_old "$work/latin1-set.dump.age"
+sql postgres -c "ALTER DATABASE latin1_old RESET client_encoding"
+if restore "$work/latin1-set.dump.age" latin1_set; then fail 'restore.sh restored a UTF8 dump of a LATIN1 database'; fi
+grep -q 'Refusing: this backup was taken from a LATIN1 database and holds its text in UTF8.' "$work/restore-latin1_set.log" ||
+  fail 'restore.sh did not name the LATIN1 database of the UTF8 dump'
+grep -q 'restore it into a temporary LATIN1 database' "$work/restore-latin1_set.log" || fail 'the refusal of the UTF8 dump does not name LATIN1'
+[[ $(sql latin1_set -c "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public'") == 0 ]] ||
+  fail 'the refused restore of the UTF8 dump wrote to the database'
+sql postgres -c "CREATE DATABASE latin1_set_tmp ENCODING 'LATIN1' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0"
+age -d -i "$work/identity" "$work/latin1-set.dump.age" | PATH="$work/bin:$PATH" TMP_DATABASE_URL=$(url latin1_set_tmp) \
+  python3 scripts/postgres-tool.py TMP_DATABASE_URL pg_restore --dbname='' --exit-on-error --no-owner --no-acl
+BACKUP_DUMP_ENCODING=SQL_ASCII backup latin1_set_tmp "$work/latin1-set-again.dump.age"
+restore "$work/latin1-set-again.dump.age" latin1_set_escape || fail 'restore.sh refused the backup of the temporary LATIN1 database (UTF8 dump)'
+for column in "title FROM products WHERE id='utf8product'" "body FROM reviews WHERE id='utf8review'"; do
+  [[ $(text_hex latin1_set_escape "SELECT $column") == "$title_hex" ]] || fail "LATIN1 dumped as UTF8, through a temporary LATIN1 database: $column"
+done
+# A UTF8 database whose client_encoding is SJIS is dumped in SJIS, in which no database can be created: the way out
+# names the database's own encoding, UTF8.
+sql postgres -c "CREATE DATABASE sjis_src ENCODING 'UTF8' TEMPLATE template0"
+sql sjis_src -c "CREATE TABLE notes(id text PRIMARY KEY, body text)" -c "INSERT INTO notes VALUES ('n1', 'plain')"
+sql postgres -c "ALTER DATABASE sjis_src SET client_encoding = 'SJIS'"
+backup sjis_src "$work/sjis.dump.age"
+if restore "$work/sjis.dump.age" sjis_new; then fail 'restore.sh restored an SJIS dump'; fi
+grep -q 'Refusing: this backup was taken from a UTF8 database and holds its text in SJIS.' "$work/restore-sjis_new.log" ||
+  fail 'restore.sh did not name the UTF8 database of the SJIS dump'
+grep -q 'restore it into a temporary UTF8 database' "$work/restore-sjis_new.log" || fail 'the refusal of the SJIS dump does not name UTF8'
+if grep -q 'temporary SJIS database' "$work/restore-sjis_new.log"; then fail 'the refusal advises an SJIS database'; fi
 # Section 42's way out for an operator who has only that backup: restore it into a temporary LATIN1 database (plain
 # pg_restore, which converts nothing between two LATIN1 ends), take that up as the old database (check, then back up
 # with BACKUP_DUMP_ENCODING=SQL_ASCII), and restore the new backup with restore.sh.

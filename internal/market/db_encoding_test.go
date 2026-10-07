@@ -53,7 +53,7 @@ func TestStartupRefusesNonUTF8Database(t *testing.T) {
 				a.Close()
 				t.Fatalf("New started on a %s database", encoding)
 			}
-			for _, want := range []string{encoding, "UTF8", "CREATE DATABASE", "ENCODING 'UTF8' TEMPLATE template0", "docs/operator-guide.md",
+			for _, want := range []string{encoding, "UTF8", "CREATE DATABASE opsecmkt_utf8 ENCODING 'UTF8' TEMPLATE template0", "docs/operator-guide.md",
 				"UPGRADING.md section 42", "scripts/check-utf8.sql", "BACKUP_DUMP_ENCODING=SQL_ASCII"} {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("error does not mention %q: %v", want, err)

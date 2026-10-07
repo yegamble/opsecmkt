@@ -53,10 +53,12 @@ func TestFlaggedOrderReadableByNotifiedStaff(t *testing.T) {
 	clean, cleanAddr := p.newOrder(stateAwaitingPayment)
 	p.paidByWatcher(clean, cleanAddr, longTxid("bb"))
 
+	// QA5W5B-8: each role's own label; an administrator offered no form is not called a moderator.
+	label := map[string]string{"moderator": "Moderator review (read-only)", "admin": "Administrator review (read-only)"}
 	for name, sess := range staff {
 		body := p.page("/order?id="+p.order, sess)
 		mustContain(t, body,
-			"Moderator review (read-only)",
+			label[name],
 			"is now conflicted or missing from the wallet", // flag note in the history
 			txid+":0", // deposit txid in full
 			"a payment on this order was flagged for review",
@@ -79,9 +81,9 @@ func TestFlaggedOrderReadableByNotifiedStaff(t *testing.T) {
 	awaiting, awaitingAddr := p.newOrder(stateAwaitingPayment)
 	p.fake.outputs = append(p.fake.outputs, Incoming{Address: awaitingAddr, TxID: longTxid("ab"), Amount: 5000, Confirmations: 3, Locked: true})
 	p.poll()
-	for _, sess := range staff {
+	for name, sess := range staff {
 		body := p.page("/order?id="+awaiting, sess)
-		mustContain(t, body, "Moderator review (read-only)", "has an unlock time", awaitingAddr, "Deposit address issued to the buyer")
+		mustContain(t, body, label[name], "has an unlock time", awaitingAddr, "Deposit address issued to the buyer")
 		mustNotContain(t, body, "top up only this remaining amount", `action="/orders/`)
 	}
 	mustContain(t, p.page("/moderator", modSess), "Locked transfer (unlock time)", longTxid("ab"))
@@ -117,9 +119,9 @@ func TestFlaggedOrderReadableByNotifiedStaff(t *testing.T) {
 	p.move(dOrder, statePaid, stateDelivered, p.vendor)
 	p.fake.SetConfirmations(dTx, -1)
 	p.poll()
-	for _, sess := range staff {
+	for name, sess := range staff {
 		body := p.page("/order?id="+dOrder, sess)
-		mustContain(t, body, "Moderator review (read-only)", "shown to moderators only if the order is disputed")
+		mustContain(t, body, label[name], "shown to moderators only if the order is disputed")
 		mustNotContain(t, body, "licence-key-FLAG-42", "Nothing has been delivered")
 	}
 	mustContain(t, p.page("/order?id="+dOrder, p.buyerSess), "licence-key-FLAG-42")

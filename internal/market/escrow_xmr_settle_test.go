@@ -1179,7 +1179,10 @@ func TestXMREscrowBuildSetAside(t *testing.T) {
 // can be changed from this page". With the form shown, the help names it, links to its settlement and says nothing else
 // can be changed; a moderator, who is never offered it, is still told nothing can be changed. Checked in each of the
 // help's three branches: no dispute (here a flagged deposit), an escrow dispute (with the line under the order's state)
-// and a dispute resolved.
+// and a dispute resolved. QA5W5B-4: the line under a closed order's state, "No further changes are possible.", is not
+// shown beside the form. QA5W5B-5: with two settlements offering forms the help links the newest (the panel lists
+// settlements newest first), and with a refused deposit's form too it names both. QA5W5B-8: an administrator offered
+// no form (Monero escrow off) is told so as an administrator, not as a moderator.
 func TestXMREscrowStaffHelpBesideAdminForm(t *testing.T) {
 	x := newXMREscrowEnv(t)
 	x.mustPoll()
@@ -1219,13 +1222,82 @@ func TestXMREscrowStaffHelpBesideAdminForm(t *testing.T) {
 		}
 		return admin, mod
 	}
-	check("flagged deposit")
+	// closedLine is the line under a closed order's state, or "" when the page shows none.
+	closedLine := func(page string) string {
+		_, line, ok := strings.Cut(page, `<p class="muted">This order is closed.`)
+		if !ok {
+			return ""
+		}
+		line, _, _ = strings.Cut(line, "</p>")
+		return "This order is closed." + line
+	}
+	const (
+		closedFinal   = "This order is closed. No further changes are possible."
+		closedRetry   = "This order is closed. An administrator can still build a Monero escrow settlement again or re-request it on this page."
+		closedRefused = "This order is closed. Staff can still record what was done about a refused deposit on this page."
+		closedBoth    = closedRefused + " An administrator can also build a Monero escrow settlement again or re-request it on this page."
+	)
+	closedLines := func(stage, admin, mod, wantAdmin, wantMod string) {
+		t.Helper()
+		if got := closedLine(admin); got != wantAdmin {
+			t.Fatalf("%s: the line under the closed order's state for the administrator: %q", stage, got)
+		}
+		if got := closedLine(mod); got != wantMod {
+			t.Fatalf("%s: the line under the closed order's state for the moderator: %q", stage, got)
+		}
+	}
+	// noForm: with Monero escrow off the administrator is offered no form, and is told so as an administrator.
+	noForm := func(stage string) {
+		t.Helper()
+		saved := x.A.escrowXMR
+		x.A.escrowXMR = nil
+		defer func() { x.A.escrowXMR = saved }()
+		admin := html.UnescapeString(x.page("/order?id="+crasher, adminSess))
+		help := staffHelp(admin)
+		if strings.Contains(admin, `method="post"`) || !strings.HasPrefix(help, "an administrator") || !strings.Contains(help, "Nothing can be changed from this page") ||
+			!strings.Contains(admin, "Order record · Administrator review (read-only)") || strings.Contains(admin, "Moderator review (read-only)") {
+			t.Fatalf("%s: the administrator offered no form: %q", stage, help)
+		}
+		if got := closedLine(admin); got != closedFinal {
+			t.Fatalf("%s: the line under the closed order's state for the administrator offered no form: %q", stage, got)
+		}
+	}
+	admin, mod := check("flagged deposit")
+	closedLines("flagged deposit", admin, mod, closedRetry, closedFinal)
+	noForm("flagged deposit")
 	agExec(x.testEnv, "UPDATE orders SET state='disputed' WHERE id=$1", crasher)
 	agExec(x.testEnv, "INSERT INTO disputes(id,order_id,reason) VALUES($1,$2,'The content was never delivered to me at all.')", randomToken(), crasher)
-	admin, mod := check("escrow dispute")
+	admin, mod = check("escrow dispute")
 	mustNotContain(t, admin, "The order page is read-only for market staff.")
 	mustContain(t, admin, "An administrator can also build a Monero escrow settlement again or re-request it on this page.")
 	mustContain(t, mod, "The order page is read-only for market staff.")
 	agExec(x.testEnv, "UPDATE orders SET state='resolved' WHERE id=$1", crasher)
-	check("dispute resolved")
+	admin, mod = check("dispute resolved")
+	closedLines("dispute resolved", admin, mod, closedRetry, closedFinal)
+	noForm("dispute resolved")
+
+	// A second settlement offering a form, newer than the first (here a stray refund set aside too): the panel lists it
+	// first, and the help links it, not the oldest.
+	var b int64
+	if err := x.DB.QueryRow("INSERT INTO xmr_settlements(order_id,kind,destination) VALUES($1,'stray_refund',$2) RETURNING id",
+		crasher, testXMRAddr("stray "+crasher, false)).Scan(&b); err != nil {
+		t.Fatal(err)
+	}
+	agExec(x.testEnv, "UPDATE xmr_settlements SET send_error=$2 WHERE id=$1", b, xmrBuildSetAside)
+	newest := `href="#xmr-settlement-` + strconv.FormatInt(b, 10) + `"`
+	admin = html.UnescapeString(x.page("/order?id="+crasher, adminSess))
+	if n := strings.Count(admin, `action="/admin/escrow-xmr-retry-build"`); n != 2 {
+		t.Fatalf("two set-aside settlements, %d retry forms", n)
+	}
+	if help := staffHelp(admin); !strings.Contains(help, newest) || strings.Contains(help, link) {
+		t.Fatalf("the help beside two forms does not link the newest settlement %d: %q", b, help)
+	}
+	// An open refused-deposit record too: the administrator's help names both forms, the moderator's only the record's.
+	agExec(x.testEnv, "INSERT INTO xmr_escrow_collisions(order_id,wallet_name,account,txid) VALUES($1,'escrow-help',7,$2)", crasher, hex64("help collision "+crasher))
+	admin = html.UnescapeString(x.page("/order?id="+crasher, adminSess))
+	mod = html.UnescapeString(x.page("/order?id="+crasher, modSess))
+	mustContain(t, staffHelp(admin), `Record what was done about each refused deposit under <a class="text-link" href="#refused-deposits">Refused Monero deposits</a>; as an administrator, also build a Monero escrow settlement again or re-request it under <a class="text-link" `+newest+`>Settlement `+strconv.FormatInt(b, 10)+`</a>; nothing else can be changed from this page`)
+	mustContain(t, staffHelp(mod), `href="#refused-deposits"`, "nothing else can be changed from this page")
+	mustNotContain(t, staffHelp(mod), "#xmr-settlement-", "As an administrator", "as an administrator")
+	closedLines("refused deposit and settlement", admin, mod, closedBoth, closedRefused)
 }

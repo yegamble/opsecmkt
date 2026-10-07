@@ -48,7 +48,8 @@ class Section42Tests(unittest.TestCase):
             "SET title = convert_from(convert_to('Crème brûlée', 'UTF8'), 'SQL_ASCII') WHERE id = '0d3e7b5a92c4'",
             'BACKUP_DUMP_ENCODING=SQL_ASCII BACKUP_DATABASE_URL="$OLD_DATABASE_URL" AGE_RECIPIENT=age1... ./scripts/backup.sh',
             "CREATE DATABASE opsecmkt_latin1 ENCODING 'LATIN1' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0",
-            'pg_restore --no-owner --no-acl --exit-on-error --dbname="$LATIN1_DATABASE_URL"',
+            # QA5W5B-8: the URL's password reaches pg_restore in PGPASSWORD, never in its argv.
+            "python3 scripts/postgres-tool.py LATIN1_DATABASE_URL pg_restore --dbname='' --no-owner --no-acl --exit-on-error",
             "CREATE DATABASE opsecmkt_utf8 ENCODING 'UTF8' TEMPLATE template0;",
             'RESTORE_DATABASE_URL="$NEW_DATABASE_URL" AGE_IDENTITY=... ./scripts/restore.sh backups/pre-utf8.dump.age',
             'BACKUP_DATABASE_URL="$NEW_DATABASE_URL" AGE_RECIPIENT=age1... ./scripts/backup.sh backups/utf8-check.dump.age',
@@ -71,13 +72,18 @@ class Section42Tests(unittest.TestCase):
                       'on a UTF8 database it changes nothing',
                       'scripts/test-utf8-migration.sh',
                       # QA5W4B-2 to -4: the restore refusal and its way out, the hint, the key.
-                      'Refusing: this backup holds its text in LATIN1',
+                      'Refusing: this backup was taken from a LATIN1 database and holds its text in LATIN1.',
+                      # QA5W5B-1 and -3: the database's own encoding, for the way out and for the reading.
+                      'never the encoding its text was written in',
+                      "In a `WIN1252` database the line names `WIN1252`",
                       'with `OLD_DATABASE_URL="$LATIN1_DATABASE_URL"`',
                       'Never start the market on it',
                       '*it also holds valid multibyte UTF-8*',
                       'Use the row\'s key, not its ctid'):
             self.assertIn(claim, section)
         self.assertNotIn("WHERE ctid = '(0,1)';", section)
+        self.assertNotIn('--dbname="$', section)
+        self.assertNotIn('Refusing: this backup holds its text in', section)
 
 
 class BackupDumpEncodingTests(unittest.TestCase):
@@ -112,41 +118,95 @@ class BackupDumpEncodingTests(unittest.TestCase):
         self.assertEqual(text.count('--no-acl ${dump_encoding[@]+"${dump_encoding[@]}"} | age'), 2)
 
 
-class RestoreArchiveEncodingTests(unittest.TestCase):
-    """QA5W4B-2: restore.sh reads the dump's client_encoding first and refuses any but UTF8 and SQL_ASCII before the
-    restore runs. Stand-ins: age prints the "backup" (here just the encoding name), pg_restore with an empty list prints
-    the SET client_encoding header for it and otherwise reports that the restore ran; psql must never run."""
+PG_RESTORE_STUB = r'''case " $* " in
+*" --use-list=/dev/null "*)
+  read -r client source
+  printf "SET client_encoding = '%s';\n" "$client"
+  case " $* " in *" --create "*) [ -z "$source" ] || printf "CREATE DATABASE market WITH TEMPLATE = template0 ENCODING = '%s' LOCALE_PROVIDER = libc LOCALE = 'C';\n" "$source";; esac;;
+*) cat >/dev/null; echo pg_restore ran >&2; exit 9;;
+esac'''
 
-    def run_restore(self, encoding):
+
+class RestoreArchiveEncodingTests(unittest.TestCase):
+    """QA5W4B-2, QA5W5B-1: restore.sh reads the dump's client_encoding and the encoding its DATABASE entry records for
+    the database it was taken from, and before the restore runs refuses every dump but one written in SQL_ASCII (the
+    bytes stored) or in UTF8 from a UTF8 or SQL_ASCII database. Stand-ins: age prints the "backup" (here "CLIENT
+    SOURCE", SOURCE empty for a dump without a DATABASE entry); pg_restore with an empty list prints the SET
+    client_encoding header for it and, with --create, the DATABASE entry's CREATE DATABASE, and otherwise reports that
+    the restore ran; psql must never run."""
+
+    def run_restore(self, encoding, source=None):
         with tempfile.TemporaryDirectory() as work:
             bin_dir = Path(work) / 'bin'
             bin_dir.mkdir()
-            stubs = {
-                'age': 'shift 3; cat "$1"',
-                'pg_restore': ('case " $* " in *" --use-list=/dev/null "*) printf "SET client_encoding = \'%s\';\\n" "$(cat)";;'
-                               ' *) cat >/dev/null; echo pg_restore ran >&2; exit 9;; esac'),
-                'psql': 'echo psql ran >&2; exit 9',
-            }
+            stubs = {'age': 'shift 3; cat "$1"', 'pg_restore': PG_RESTORE_STUB, 'psql': 'echo psql ran >&2; exit 9'}
             for tool, body in stubs.items():
                 (bin_dir / tool).write_text(f'#!/bin/sh\n{body}\n')
                 (bin_dir / tool).chmod(0o700)
             backup = Path(work) / 'market.dump.age'
-            backup.write_text(encoding)
+            backup.write_text(f'{encoding} {encoding if source is None else source}\n' if encoding else '')
             env = dict(os.environ, PATH=f'{bin_dir}:{os.environ["PATH"]}', AGE_IDENTITY=str(Path(work) / 'identity'),
                        RESTORE_DATABASE_URL='postgres://user@127.0.0.1:1/db')
             env.pop('RESTORE_INTERNAL_DATABASE', None)
             return subprocess.run(['bash', str(RESTORE), str(backup)], env=env, input='RESTORE\n', capture_output=True, text=True)
 
+    def assert_refused(self, result):
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('Nothing was changed.', result.stderr)
+        self.assertIn('see UPGRADING.md, section 42.', result.stderr)
+        self.assertNotIn('pg_restore ran', result.stderr)
+        self.assertNotIn('psql ran', result.stderr)
+
     def test_other_encodings_refused_before_anything_runs(self):
         for encoding in ('LATIN1', 'WIN1252', 'EUC_JP'):
             with self.subTest(encoding):
                 result = self.run_restore(encoding)
-                self.assertEqual(result.returncode, 1, result.stderr)
-                self.assertIn(f'Refusing: this backup holds its text in {encoding}', result.stderr)
-                self.assertIn('Nothing was changed.', result.stderr)
-                self.assertIn('see UPGRADING.md, section 42.', result.stderr)
-                self.assertNotIn('pg_restore ran', result.stderr)
-                self.assertNotIn('psql ran', result.stderr)
+                self.assert_refused(result)
+                self.assertIn(f'Refusing: this backup was taken from a {encoding} database and holds its text in {encoding}.', result.stderr)
+                self.assertIn('every non-ASCII character the market stored would be double-encoded', result.stderr)
+                self.assertIn(f'restore it into a temporary {encoding} database', result.stderr)
+
+    def test_utf8_dump_of_a_database_in_another_encoding_refused(self):
+        # QA5W5B-1: a LATIN1 database given ALTER DATABASE ... SET client_encoding='UTF8' is dumped as UTF8 by default,
+        # the market's UTF-8 bytes converted from LATIN1: restored, they would come out double-encoded. The refusal and
+        # its way out name the database's own encoding.
+        for source in ('LATIN1', 'WIN1252', 'EUC_JP'):
+            with self.subTest(source):
+                result = self.run_restore('UTF8', source)
+                self.assert_refused(result)
+                self.assertIn(f'Refusing: this backup was taken from a {source} database and holds its text in UTF8.', result.stderr)
+                self.assertIn('would be double-encoded', result.stderr)
+                self.assertIn(f'restore it into a temporary {source} database', result.stderr)
+                self.assertNotIn('temporary UTF8 database', result.stderr)
+
+    def test_client_only_encoding_advice_names_the_database_encoding(self):
+        # QA5W5B-1: a UTF8 database with client_encoding SJIS gives an SJIS dump. PostgreSQL creates no database in a
+        # client-only encoding, so the way out names the database's own encoding, never the dump's.
+        for client in ('SJIS', 'BIG5', 'GBK', 'UHC', 'GB18030', 'JOHAB'):
+            with self.subTest(client):
+                result = self.run_restore(client, 'UTF8')
+                self.assert_refused(result)
+                self.assertIn(f'Refusing: this backup was taken from a UTF8 database and holds its text in {client}.', result.stderr)
+                self.assertIn(f'{client} is an encoding for clients only', result.stderr)
+                self.assertIn('Back up the old database again with BACKUP_DUMP_ENCODING=SQL_ASCII', result.stderr)
+                self.assertIn('restore it into a temporary UTF8 database', result.stderr)
+                self.assertNotIn(f'temporary {client} database', result.stderr)
+                self.assertNotIn('double-encoded', result.stderr)
+
+    def test_dump_without_a_database_entry(self):
+        # Every dump pg_dump 11 or later writes, scripts/backup.sh's included, records its database's encoding. Without
+        # it a UTF8 dump cannot be told from a LATIN1 database's dumped as UTF8, so only SQL_ASCII (the bytes stored) is
+        # restored, and the advice names no database encoding.
+        for client in ('UTF8', 'LATIN1', 'SJIS'):
+            with self.subTest(client):
+                result = self.run_restore(client, '')
+                self.assert_refused(result)
+                self.assertIn(f'Refusing: this backup holds its text in {client} but does not record the encoding of the database it was taken from', result.stderr)
+                self.assertIn('Take a new backup of that database with scripts/backup.sh', result.stderr)
+                self.assertNotIn('temporary', result.stderr)
+        result = self.run_restore('SQL_ASCII', '')
+        self.assertNotIn('Refusing', result.stderr)
+        self.assertIn('pg_restore ran', result.stderr)
 
     def test_unreadable_dump_refused(self):
         result = self.run_restore('')
@@ -155,9 +215,10 @@ class RestoreArchiveEncodingTests(unittest.TestCase):
         self.assertNotIn('pg_restore ran', result.stderr)
 
     def test_utf8_and_sql_ascii_restored(self):
-        for encoding in ('UTF8', 'SQL_ASCII'):
-            with self.subTest(encoding):
-                result = self.run_restore(encoding)
+        for client, source in (('UTF8', 'UTF8'), ('UTF8', 'SQL_ASCII'), ('SQL_ASCII', 'SQL_ASCII'), ('SQL_ASCII', 'LATIN1'),
+                               ('SQL_ASCII', 'WIN1252'), ('SQL_ASCII', 'UTF8')):
+            with self.subTest(client=client, source=source):
+                result = self.run_restore(client, source)
                 self.assertNotIn('Refusing', result.stderr)
                 self.assertIn('pg_restore ran', result.stderr)
 
@@ -170,12 +231,19 @@ class CheckScriptTests(unittest.TestCase):
         self.assertIsNone(re.search(r'\b(INSERT|UPDATE|DELETE|ALTER|DROP|CREATE|TRUNCATE|GRANT)\b', code, re.I))
         self.assertIn("convert(convert_to(r.val, 'SQL_ASCII'), 'UTF8', 'UTF8')", code)
         self.assertIn('RAISE EXCEPTION', code)
-        # QA5W4B-3 and -4: each bad value says whether reading it as LATIN1 is safe, and names its row by its key.
-        self.assertIn('no valid multibyte UTF-8 in it, so reading its bytes as LATIN1 is a safe correction', code)
-        self.assertIn('it also holds valid multibyte UTF-8, which reading it as LATIN1 would double-encode: type the text it should hold', code)
+        # QA5W4B-3 and -4, QA5W5B-3: each bad value says whether reading it as the database's own single-byte encoding
+        # (LATIN1 for SQL_ASCII) is safe, and names its row by its key.
+        self.assertIn("no valid multibyte UTF-8 in it, so reading its bytes as %s, this database''s encoding, is a safe correction", code)
+        self.assertIn('it also holds valid multibyte UTF-8, which reading it as %s would double-encode: type the text it should hold', code)
+        self.assertIn("is multibyte, so no reading of its bytes is a safe correction: type the text it should hold", code)
+        self.assertIn("pg_encoding_max_length(pg_char_to_encoding(server_encoding)) = 1", code)
         self.assertIn("shown_key := 'where ' || r.key;", code)
         for typ in ("'text'::regtype", "'varchar'::regtype", "'bpchar'::regtype"):
             self.assertIn(typ, code)
+        # QA5W5B-2 and -8: arrays (by element) and domains are read; names are printed quoted as SQL needs.
+        self.assertIn("t.typcategory = 'A'", code)
+        self.assertIn("t.typtype = 'd'", code)
+        self.assertIn("format('%I.%I', col.nspname, col.relname), format('%I', col.attname) || r.pos", code)
 
 
 class LegTests(unittest.TestCase):
@@ -201,7 +269,18 @@ class LegTests(unittest.TestCase):
                        'check ascii_old || fail \'check-utf8.sql failed after one round of corrections\'',
                        "title='Crème brûlée — 東京 🔒'",
                        'if restore "$work/latin1.dump.age" latin1_plain; then fail',
-                       'Refusing: this backup holds its text in LATIN1',
+                       'Refusing: this backup was taken from a LATIN1 database and holds its text in LATIN1.',
+                       # QA5W5B-1 to -3, -6 and -8.
+                       "ALTER DATABASE latin1_old SET client_encoding = 'UTF8'",
+                       'if restore "$work/latin1-set.dump.age" latin1_set; then fail',
+                       'Refusing: this backup was taken from a LATIN1 database and holds its text in UTF8.',
+                       "ALTER DATABASE sjis_src SET client_encoding = 'SJIS'",
+                       "if grep -q 'temporary SJIS database'",
+                       "column tags[2]", "column labels[1]", "row where a = 'x' AND b = '1'",
+                       'table public.\\"Odd Table\\", column \\"Odd Col\\"',
+                       'e69db1e4baac20ff', '$type_it',
+                       "reading its bytes as WIN1252, this database's encoding, is a safe correction",
+                       "this database's encoding, EUC_JP, is multibyte",
                        'restore "$work/latin1-again.dump.age" latin1_escape',
                        'if BACKUP_DUMP_ENCODING=LATIN1 backup',
                        'BACKUP_DUMP_ENCODING=SQL_ASCII backup latin1_old',

@@ -428,7 +428,8 @@ print(value)
         process = subprocess.Popen(
             ['/bin/bash', str(self.root / 'scripts' / 'install.sh'), *(arguments or [])],
             cwd=self.root, env=env, stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            # surrogateescape: an answer can carry bytes that are not UTF-8 ('\udce9' is the byte 0xe9).
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='surrogateescape',
             start_new_session=True, preexec_fn=limit_file_size if file_size_limit else None,
         )
         try:
@@ -1338,6 +1339,34 @@ time.sleep(60)
                 self.assertFalse((self.root / '.env').exists())
                 self.assertEqual(self.generated_secrets(), [])
                 self.assertNotIn(PASSWORD, result.stdout + result.stderr)
+
+    def test_init_admin_password_not_utf8_refused_before_anything_is_written(self):
+        # QA5W5B-7: -bootstrap-admin refuses a password that is not valid UTF-8, which the sign-in form could never send;
+        # the installer refuses it up front, before .env is written or anything is started. LATIN1 "été" (a terminal
+        # set to LATIN1), an encoded surrogate and an overlong "/".
+        for bad in ('correct horse \udce9t\udce9 battery', 'surrogate \udced\udca0\udc80 battery', 'overlong \udcc0\udcaf battery'):
+            with self.subTest(bad=bad):
+                self.log.unlink(missing_ok=True)
+                result = self.run_installer([bad, bad], arguments=['--local', '--admin', 'first_admin'])
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn('The password is not valid UTF-8', result.stderr)
+                self.assertIn('nothing was written or started', result.stderr)
+                self.assertEqual(self.calls(), PREFLIGHT)
+                self.assertFalse((self.root / '.env').exists())
+                self.assertEqual(self.generated_secrets(), [])
+                self.assertFalse((self.state / 'bootstrap-stdin').exists())
+        # Valid multibyte UTF-8, of every length, is the password piped to the server.
+        good = 'Crème brûlée 東京 🔒'
+        result = self.run_installer([good, good], arguments=['--local', '--admin', 'first_admin'])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.state / 'bootstrap-stdin').read_text(encoding='utf-8'), good + '\n')
+        # bash's read drops a NUL byte, so none reaches the server: it receives the password without it.
+        (self.root / '.env').unlink()
+        self.log.unlink()
+        self.set_installed(False)
+        result = self.run_installer([PASSWORD.replace(' ', ' \0', 1)] * 2, arguments=['--local', '--admin', 'first_admin'])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.state / 'bootstrap-stdin').read_text(), PASSWORD + '\n')
 
     def test_init_admin_failure_keeps_the_token_path(self):
         result = self.run_installer([PASSWORD, PASSWORD], arguments=['--local', '--admin', 'first_admin'],
