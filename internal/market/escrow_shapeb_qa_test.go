@@ -317,6 +317,24 @@ func TestEscrowShapeBRepairKeyChanged(t *testing.T) {
 	}
 }
 
+// QA5W3A-8: the repair checks both ends of checkout's import, the escrow's address (the first request) and its last
+// sibling (the last): a watch-only wallet that lacks either label gets the escrow's imports again.
+func TestEscrowShapeBRepairEitherEnd(t *testing.T) {
+	x, _ := newPerOrderEnv(t)
+	addr := x.mustCheckout(x.order, regtestAddr("repair-either-end"))
+	for _, lost := range []string{addr, x.sibling(x.order, 1, 9)} {
+		n := len(x.core.importRequests())
+		x.core.mu.Lock()
+		delete(x.core.labels, lost)
+		x.core.mu.Unlock()
+		x.restart()
+		x.poll()
+		if got := len(x.core.importRequests()) - n; got != 32 {
+			t.Fatalf("label of %s lost: %d repair requests, want 32", lost, got)
+		}
+	}
+}
+
 // mapsEqualJSON compares two decoded JSON objects (import requests) by their JSON text.
 func mapsEqualJSON(a, b map[string]any) bool {
 	ja, errA := json.Marshal(a)

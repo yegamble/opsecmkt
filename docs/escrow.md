@@ -1284,7 +1284,7 @@ a simulated signer (`TestEscrowShapeBMixedPairRefused`, `TestEscrowShapeBSwitchO
 `TestEscrowShapeBSiblingNotClaimAddress`, `TestEscrowShapeBSiblingNotFeeAddress`,
 `TestEscrowSignerKeyRefusedAtRegistration`, `TestEscrowShapeBSignerKeyAtCheckout`,
 `TestEscrowShapeBLostAfterWatchRestore`, `TestEscrowShapeBWatchRestoredBeforeEscrow`,
-`TestEscrowShapeBRepairKeyChanged`; the simulated node reports solvability as Core 31.1 did when probed on regtest),
+`TestEscrowShapeBRepairKeyChanged`, `TestEscrowShapeBRepairEitherEnd`; the simulated node reports solvability as Core 31.1 did when probed on regtest),
 `scripts/test-upgrade.sh` (bad historical rows stop migration 089 with its message), and on a real local chain, Core
 31.1 on regtest and on a private signet (`TestEscrowRegtestPerOrderEscrow` in
 `scripts/test-escrow-regtest.sh`, the switch on in that test only: the escrow created through the checkout form, Core
