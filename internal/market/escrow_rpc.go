@@ -164,8 +164,7 @@ const (
 	escrowLogFingerprint  = "escrow: Bitcoin escrow disabled: the arbiter wallet's key fingerprint differs from the one pinned in this database; see docs/operator-guide.md, \"Bitcoin escrow (test networks only)\""
 	escrowLogWatch        = "escrow: Bitcoin escrow disabled: the watch-only wallet could not be read (is ESCROW_BTC_WATCH_WALLET loaded, and a descriptor wallet with private keys disabled?)"
 	escrowLogArbiterUse   = "escrow: Bitcoin escrow disabled: the arbiter wallet must be used for the escrow key only (an unencrypted descriptor wallet with private keys that has never spent); see docs/operator-guide.md, \"Bitcoin escrow (test networks only)\""
-	escrowLogArbiterRead  = "escrow: Bitcoin escrow disabled: the arbiter wallet's transactions could not be read to check that it has never spent (is listsinceblock on the escrow user's rpcwhitelist, and the node answering?); the read is retried after a wait (1 minute, doubling after each slow or failed read up to 1 hour; restarting the app reads at once); see docs/operator-guide.md, \"Bitcoin escrow (test networks only)\""
-	escrowLogArbiterPaced = "escrow: Bitcoin escrow off until the arbiter wallet's next check: its last read took 5 s or more, so the next waits (1 minute, doubling after each slow or failed read up to 1 hour; restarting the app reads at once); see docs/operator-guide.md, \"Bitcoin escrow (test networks only)\""
+	escrowLogArbiterRead  = "escrow: Bitcoin escrow disabled: the arbiter wallet's transactions could not be read to check that it has never spent (is listsinceblock on the escrow user's rpcwhitelist, and the node answering?); the read is retried every poll, or after a wait when it took 5 s or more or timed out (1 minute, doubling up to 1 hour; restarting the app reads at once); see docs/operator-guide.md, \"Bitcoin escrow (test networks only)\""
 	escrowLogArbiterWait  = "escrow: Bitcoin escrow off while the arbiter wallet is checked: reading its transactions takes longer than startup allows; the read goes on, and the escrow watcher starts escrow once it has passed"
 	escrowLogFixedFee     = "escrow: the market fee is paid to one fixed address (ESCROW_BTC_FEE_ADDRESS); allowed on test networks only"
 	escrowLogRefused      = "escrow: Bitcoin escrow disabled until the app is restarted: the escrow node is on a chain escrow does not run on (mainnet, testnet3 or another), or it refused ESCROW_BTC_FEE_ADDRESS"
@@ -388,7 +387,7 @@ const escrowPooledRecheck = 24 * time.Hour
 // (pooledKeyCheck) once escrowPooledRecheck has passed since the last one (QA4W3-8), so a pooled whitelist widened
 // after startup is found within a day: then escrow is disabled, as startEscrow would leave it (the key may be
 // exportable; disabling is the safer default), with the same line and admin alert, and retried like any other check.
-// Its read of the arbiter wallet's entries is paced after a slow or failed one (A-479, checkArbiterWallet).
+// Its read of the arbiter wallet's entries is paced after a slow one (A-479, checkArbiterWallet).
 func (a *App) retryEscrow(ctx context.Context, r *escrowRetry) {
 	if r.refused {
 		return
@@ -1148,8 +1147,9 @@ var escrowArbiterReadTimeout = 5 * time.Minute
 // The pacing of the arbiter wallet reads (A-479; paceArbiter). While a payer holds N fee bumps of a payment to the
 // market child's address unconfirmed, Core lists each replacement with all the others in its walletconflicts, so one
 // read carries about N² bytes and Core builds it in memory (QA4W6-1, Core 31.1 regtest: 1100 bumps 82 MB in 2.1 s; 3000
-// bumps 605 MB in 16 s, the node growing by about 1.5 GB per read). A read that fails, or answers in escrowArbiterHeavy
-// or longer, makes the next read wait: escrowArbiterWaitMin, doubled after each such read up to escrowArbiterWaitMax.
+// bumps 605 MB in 16 s, the node growing by about 1.5 GB per read). A read that takes escrowArbiterHeavy or longer, or
+// times out, makes the next read wait, whatever it found: escrowArbiterWaitMin, doubled after each such read up to
+// escrowArbiterWaitMax. A quicker read, pass or failure, costs the node little and paces nothing (QA4W7-2).
 const (
 	escrowArbiterHeavy   = 5 * time.Second
 	escrowArbiterWaitMin = time.Minute
@@ -1180,9 +1180,9 @@ var arbiterPaceNow = time.Now
 // line and class startEscrow returns ("" when the wallet passes): escrowLogArbiterUse for a wallet that is not an
 // arbiter's or has spent, escrowLogArbiterRead when its entries could not be read (a timeout, an unreachable node, an
 // RPC error: never taken as a pass, and never reported as a wallet used for something else), or a database error.
-// A-479: a read that fails, or takes escrowArbiterHeavy or longer, makes the next one wait (paceArbiter); a check while
-// that wait runs starts no read and reports what that read found (arbiterHeld). Startup's read is never held back: the
-// wait is in memory, so a restart reads at once.
+// A-479: a read that takes escrowArbiterHeavy or longer, or times out, makes the next one wait (paceArbiter); a check
+// while that wait runs starts no read and takes what that read found (arbiterHeld): a pass as a pass, so the other start
+// checks go on (QA4W7-1). Startup's read is never held back: the wait is in memory, so a restart reads at once.
 func (a *App) checkArbiterWallet(ctx context.Context, e *escrowBTC) (state, class string, err error) {
 	var info struct {
 		WalletName    string           `json:"walletname"`
@@ -1289,7 +1289,7 @@ type escrowArbiterScan struct {
 // from, and when the node does not know that block (-5) or refuses it as malformed (-8, QA4W5-8) from the start. It
 // runs on its own context, bounded only by escrowArbiterReadTimeout per call, so a check whose context ends first
 // leaves it running for the next check. A read in progress is always adopted; a new one does not start while a
-// previous read's wait runs (A-479, paceArbiter): then it returns nil.
+// previous slow read's wait runs (A-479, paceArbiter): then it returns nil.
 func (a *App) arbiterScan(e *escrowBTC, key, from string) *escrowArbiterScan {
 	a.escrowScanMu.Lock()
 	defer a.escrowScanMu.Unlock()
@@ -1395,32 +1395,39 @@ func arbiterEntries(dec *json.Decoder, sent *bool) error {
 type escrowArbiterPace struct {
 	next time.Time          // no read starts before this; zero = none waits
 	wait time.Duration      // the latest wait; 0 = none since the last quick answer
-	last *escrowArbiterScan // the read that set it, whose answer a check reports while it waits
+	last *escrowArbiterScan // the slow read that set it, whose answer a check takes while it waits
 }
 
-// paceArbiter sets when the next arbiter wallet read may start, from the read s a check has just taken (A-479). A quick
-// answer (under escrowArbiterHeavy) clears any wait. A read that failed, or answered in escrowArbiterHeavy or longer
-// (a pass, or a spend found), makes the next read wait from when s ended: escrowArbiterWaitMin, doubled after each such
-// read, up to escrowArbiterWaitMax; s is kept, so a check while the wait runs reports what it found (arbiterHeld). One
-// log line names the wait. The caller holds escrowScanMu.
+// paceArbiter sets when the next arbiter wallet read may start, from the read s a check has just taken (A-479). Only a
+// slow read is paced (QA4W7-2): one that took escrowArbiterHeavy or longer, or timed out (escrowArbiterReadTimeout),
+// whatever it found. It makes the next read wait from when s ended: escrowArbiterWaitMin, doubled after each slow read,
+// up to escrowArbiterWaitMax; s is kept, so a check while the wait runs takes what it found (arbiterHeld). One log line
+// names the wait. A quicker read, pass or failure, clears any wait: a failure that answers at once (a refused method, an
+// RPC error) costs the node nothing and is read again every poll. The caller holds escrowScanMu.
 func (a *App) paceArbiter(s *escrowArbiterScan) {
 	p := &a.escrowPace
-	if s.err == nil && s.took < escrowArbiterHeavy {
+	var re *escrowRPCError
+	timedOut := errors.As(s.err, &re) && re.Class == "timeout"
+	if s.took < escrowArbiterHeavy && !timedOut {
 		*p = escrowArbiterPace{}
 		return
 	}
 	p.wait = min(max(2*p.wait, escrowArbiterWaitMin), escrowArbiterWaitMax)
 	p.next, p.last = s.end.Add(p.wait), s
-	what := "took " + s.took.Round(time.Second).String() + " (5 s or more)"
-	if s.err != nil {
+	what := "passed"
+	switch {
+	case s.err != nil:
 		what = "failed (" + errorClassOf(s.err) + ")"
+	case s.sent:
+		what = "found a spend"
 	}
-	log.Printf("escrow: the arbiter wallet's read %s; the next read waits about %s", what, aboutMinutes(p.wait))
+	log.Printf("escrow: the arbiter wallet's read took %s and %s; the next read waits about %s", s.took.Round(time.Second), what, aboutMinutes(p.wait))
 }
 
-// arbiterHeld is checkArbiterWallet's answer while a read's wait runs (A-479): what that read found. A read that
-// failed keeps the read-failure line and class; a spend keeps "used for the escrow key only"; a pass cannot start escrow
-// (the wallet may have spent since), so it is escrowLogArbiterPaced, shown on /admin as "slow".
+// arbiterHeld is checkArbiterWallet's answer while a slow read's wait runs (A-479): what that read found. A read that
+// failed keeps the read-failure line and class; a spend keeps "used for the escrow key only"; a pass counts as a pass
+// (QA4W7-1), so startEscrow goes on to its other checks. That is no weaker than escrow running: a running escrow never
+// reads the arbiter wallet again, and the pass held is at most escrowArbiterWaitMax old.
 func (a *App) arbiterHeld() (state, class string, err error) {
 	a.escrowScanMu.Lock()
 	s := a.escrowPace.last
@@ -1431,9 +1438,7 @@ func (a *App) arbiterHeld() (state, class string, err error) {
 	case s.sent:
 		return escrowLogArbiterUse, "listsinceblock not-dedicated", nil
 	}
-	slow := "slow"
-	a.escrowArbiterRead.Store(&slow)
-	return escrowLogArbiterPaced, "", nil
+	return "", "", nil
 }
 
 // arbiterNextCheck is when the next arbiter wallet read may start, for /admin: aboutMinutes of the wait left, or ""
