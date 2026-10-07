@@ -52,6 +52,11 @@
   outline:3px solid var(--amber);
   outline-offset:2px
 }
+/* A-445: the drain panel's lists name addresses and transaction IDs; they wrap at 320 px. */
+.pooled-drain .mono {
+  overflow-wrap:anywhere;
+  word-break:break-all
+}
 .payment-deposits td.mono,.admin-payments td.mono {
   min-width:16ch;
   overflow-wrap:anywhere;

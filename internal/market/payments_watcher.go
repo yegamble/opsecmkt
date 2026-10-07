@@ -248,9 +248,10 @@ func (a *App) pollCurrency(ctx context.Context, p PaymentProvider) error {
 	// transaction per pass. The work per pass (every PAYMENT_POLL_INTERVAL, default 30 s) therefore grows with the
 	// number of orders of the last 30 days and the deposits to them (not measured at volume); a pass is bounded
 	// by watcherPassTimeout, and one cut short leaves the rest to the next.
+	// The time rule (24 hours after the order last changed state, 30 days after a closed order's address was issued) is
+	// pooled_watch_horizon (migration 091), which the drain gate, pooled_drain_blockers, reads too (A-445).
 	rows, err := a.db.QueryContext(ctx, `SELECT pa.address,pa.order_id FROM payment_addresses pa JOIN orders o ON o.id=pa.order_id
-		WHERE pa.currency=$1 AND (o.state IN ('awaiting_payment',`+fundedOpenStates+`) OR (o.state<>'draft' AND o.updated > now()-interval '24 hours')
-			OR (o.state IN ('cancelled','resolved','completed') AND pa.created > now()-interval '30 days')
+		WHERE pa.currency=$1 AND (o.state IN ('awaiting_payment',`+fundedOpenStates+`) OR pooled_watch_horizon(o.state,o.updated,pa.created)
 			OR EXISTS (SELECT 1 FROM payouts po WHERE po.order_id=o.id AND po.state IN ('pending','held')))
 		ORDER BY o.updated`, cur)
 	if err != nil {

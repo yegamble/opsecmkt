@@ -18,6 +18,10 @@ import (
 // one held for an account suspension needs an explicit confirmation that its payout address was checked.
 // Moving a held or definitely rejected payout to the recipient's current saved address (A-121) needs an explicit
 // confirmation that the administrator checked that address with the account owner; nothing is sent by the move.
+// A blocked payout (its recipient saved no payout address, so the watcher never sends it) can be recorded as sent by
+// hand with the wallet's transaction ID (A-445, ARCH-12: the pooled wallet's drain gate lists it until then); the
+// market does not check any recorded transaction ID against the chain. A pending payout, which the watcher may claim
+// at any moment, and a send under way are never marked sent: the state is read under the row lock and compared again.
 
 func init() {
 	registerAction("/admin/payout", actionSpec{Roles: []string{"admin"}, OwnTx: true, Run: adminPayoutAction})
@@ -223,16 +227,20 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 			" to the account's current address " + current + "; administrator checked the address with the account owner"
 	case "sent":
 		res, err = tx.ExecContext(ctx, `UPDATE payouts SET state='sent',txid=$2,error='',send_ambiguous=false,updated=now()
-			WHERE id=$1 AND (state IN ('failed','held') OR `+stuckSending+`)`, id, txid)
+			WHERE id=$1 AND (state IN ('failed','held','blocked') OR `+stuckSending+`)`, id, txid)
 		// The order history names no txid (both parties read it); the recipient's notification does (A-214).
 		note = c.A.netTag() + " payout of " + label + " recorded as sent by an administrator after wallet reconciliation."
 		audit = "Marked payout " + strconv.FormatInt(id, 10) + " (" + label + ", was " + state + ") sent with transaction " + txid + " for order " + short
+		if state == "blocked" {
+			note = c.A.netTag() + " payout of " + label + " recorded as sent by hand by an administrator: the recipient had saved no payout address. It will not be sent again."
+			audit += "; paid by hand (the recipient had no payout address); the market did not check the transaction on the chain"
+		}
 	}
 	if err != nil {
 		return actionResult{}, err
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
-		return actionResult{}, fail(409, "This payout is "+payoutStateLabel(state)+"; that action does not apply. Reload the admin page.")
+		return actionResult{}, fail(409, "This payout is "+payoutStateLabel(state)+"; that action does not apply. Nothing was changed. Reload the admin page.")
 	}
 	if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,$3,$4)", orderID, orderState, c.User.ID, note); err != nil {
 		return actionResult{}, err

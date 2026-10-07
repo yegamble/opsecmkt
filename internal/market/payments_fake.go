@@ -30,6 +30,9 @@ type fakeProvider struct {
 	checks                int
 	// height is the tip Check reports (0 = not reported).
 	height int64
+	// balance, pendingBalance and balanceErr are what Balance reports.
+	balance, pendingBalance int64
+	balanceErr              error
 }
 
 type fakeSend struct {
@@ -164,3 +167,10 @@ func (f *fakeProvider) valid(addr string) bool {
 }
 
 func (f *fakeProvider) ValidAddress(addr string) bool { return f.valid(addr) }
+
+// Balance reports the scripted wallet balance (balanceReporter).
+func (f *fakeProvider) Balance(context.Context) (int64, int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.balance, f.pendingBalance, f.balanceErr
+}
