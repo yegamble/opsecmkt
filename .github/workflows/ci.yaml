@@ -472,7 +472,8 @@ jobs:
           check_nodes pruned
           BITCOIN_PRUNE_MB=0 MONERO_PRUNE_FLAGS='' check_nodes full
           # Local nodes over Tor (A-442; tests/test_tor_deploy.py checks the rest): the proxy flags and never -connect
-          # or -onlynet; the node network is internal and holds only the nodes and tor-socks, which publishes nothing.
+          # or -onlynet; the node network is internal and holds only the nodes and tor-socks, which publishes nothing;
+          # every network of a node is internal. tests/test_ci_tor_socks.py checks that this block stays.
           if [ "$NODES_TOR" = on ]; then
             docker compose "${files[@]}" "${profiles[@]}" config --format json | python3 -c '
           import json, sys
@@ -487,6 +488,11 @@ jobs:
           if (members != ["bitcoin", "monero", "tor-socks"] or networks["node_egress"].get("internal") is not True
                   or sorted(socks["networks"]) != ["node_egress", "tor_socks_egress"] or "ports" in socks or "expose" in socks):
               sys.exit(f"node_egress must be internal and hold only bitcoin, monero and tor-socks, and tor-socks publish nothing; got {members!r}")
+          # Whatever other overlay is in the list, no network of a node may have a route out (only tor-socks has one).
+          routes = sorted(f"{name} on {network}" for name in ("bitcoin", "monero") for network in services[name]["networks"]
+                          if networks[network].get("internal") is not True)
+          if routes:
+              sys.exit(f"every network of bitcoin and monero must be internal, got {routes!r}")
           print("nodes over Tor:", bitcoin[-2:], monero[-1], "on internal node_egress with", ", ".join(members))
           '
           fi
