@@ -808,7 +808,15 @@ func TestEscrowRegtestArbiterDeposit(t *testing.T) {
 		}
 		return state, time.Since(start)
 	}
-	n0, _ := arbiterTxs()
+	txcount := func() int64 { // getwalletinfo only: listtransactions over the bloated entries passes rpcMaxBody
+		t.Helper()
+		var info struct {
+			TxCount int64 `json:"txcount"`
+		}
+		call(arbiter, "getwalletinfo", &info)
+		return info.TxCount
+	}
+	n0 := txcount()
 	var rbf struct {
 		TxID string `json:"txid"`
 	}
@@ -825,7 +833,7 @@ func TestEscrowRegtestArbiterDeposit(t *testing.T) {
 	// The arbiter wallet takes the mempool's notifications behind the bumps: wait until it lists every replacement.
 	var n1 int64
 	for end := time.Now().Add(3 * time.Minute); ; time.Sleep(time.Second) {
-		if n1, _ = arbiterTxs(); n1 >= n0+arbiterBumps+1 {
+		if n1 = txcount(); n1 >= n0+arbiterBumps+1 {
 			break
 		}
 		if time.Now().After(end) {
