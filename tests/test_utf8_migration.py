@@ -42,20 +42,27 @@ class Section42Tests(unittest.TestCase):
     def test_steps_in_order(self):
         section = flat(section_42())
         steps = [
+            # A-483: every client command takes its URL from an exported variable through postgres-tool.py.
+            "python3 scripts/postgres-tool.py DATABASE_URL psql -c 'SHOW server_encoding'",
             'docker compose stop app',
-            'psql "$OLD_DATABASE_URL" -X -f scripts/check-utf8.sql',
+            'python3 scripts/postgres-tool.py OLD_DATABASE_URL psql -X -f scripts/check-utf8.sql',
             "convert_from(convert(convert_to(body, 'SQL_ASCII'), 'LATIN1', 'UTF8'), 'SQL_ASCII') WHERE id = '6f0c2a9e41d7'",
+            # A-483: the tool strips PGCLIENTENCODING, so the typed text sets the client encoding in psql.
+            '`python3 scripts/postgres-tool.py OLD_DATABASE_URL psql` after the psql command `\\encoding UTF8`',
             "SET title = convert_from(convert_to('Crème brûlée', 'UTF8'), 'SQL_ASCII') WHERE id = '0d3e7b5a92c4'",
             'BACKUP_DUMP_ENCODING=SQL_ASCII BACKUP_DATABASE_URL="$OLD_DATABASE_URL" AGE_RECIPIENT=age1... ./scripts/backup.sh',
             # QA5W6-3: through the maintenance database; opsecmkt_utf8 is created only in step 4.
             "python3 scripts/postgres-tool.py MAINTENANCE_DATABASE_URL psql -c \"CREATE DATABASE opsecmkt_latin1 ENCODING 'LATIN1' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0\"",
             # QA5W5B-8: the URL's password reaches pg_restore in PGPASSWORD, never in its argv.
             "python3 scripts/postgres-tool.py LATIN1_DATABASE_URL pg_restore --dbname='' --no-owner --no-acl --exit-on-error",
-            "CREATE DATABASE opsecmkt_utf8 ENCODING 'UTF8' TEMPLATE template0;",
+            # A-483: step 4 connects to the maintenance database, the only one that exists at that moment.
+            "python3 scripts/postgres-tool.py MAINTENANCE_DATABASE_URL psql -c \"CREATE DATABASE opsecmkt_utf8 ENCODING 'UTF8' TEMPLATE template0\"",
             'RESTORE_DATABASE_URL="$NEW_DATABASE_URL" AGE_IDENTITY=... ./scripts/restore.sh backups/pre-utf8.dump.age',
             'BACKUP_DATABASE_URL="$NEW_DATABASE_URL" AGE_RECIPIENT=age1... ./scripts/backup.sh backups/utf8-check.dump.age',
+            'python3 scripts/postgres-tool.py NEW_DATABASE_URL psql -c "CREATE DATABASE opsecmkt_utf8_check ENCODING \'UTF8\' TEMPLATE template0"',
             'RESTORE_DATABASE_URL="$CHECK_DATABASE_URL" AGE_IDENTITY=... ./scripts/restore.sh backups/utf8-check.dump.age',
-            'DROP DATABASE opsecmkt_utf8_check',
+            'python3 scripts/postgres-tool.py NEW_DATABASE_URL psql -c "DROP DATABASE opsecmkt_utf8_check"',
+            'python3 scripts/postgres-tool.py NEW_DATABASE_URL psql -X -f scripts/check-utf8.sql',
             'Point `DATABASE_URL` (and `BACKUP_DATABASE_URL`) at the new database and start the app.',
         ]
         at = 0
@@ -84,9 +91,27 @@ class Section42Tests(unittest.TestCase):
             self.assertIn(claim, section)
         self.assertNotIn("WHERE ctid = '(0,1)';", section)
         self.assertNotIn('--dbname="$', section)
-        # QA5W6-3: NEW_DATABASE_URL names opsecmkt_utf8, which does not exist in step 3.
-        self.assertNotIn('postgres-tool.py NEW_DATABASE_URL', section)
+        # QA5W6-3: NEW_DATABASE_URL names opsecmkt_utf8, which does not exist in step 3 or before step 4 creates it.
+        self.assertNotIn('postgres-tool.py NEW_DATABASE_URL psql -c "CREATE DATABASE opsecmkt_utf8 ', section)
         self.assertNotIn('Refusing: this backup holds its text in', section)
+
+
+class NoUrlOnArgvTests(unittest.TestCase):
+    """A-483: a database URL on a command line, its password included, shows in the process list to every user of the
+    host. Every client command of section 42 gets its URL from an exported variable through scripts/postgres-tool.py."""
+
+    def test_no_client_command_takes_a_url_argument(self):
+        section = flat(section_42())
+        self.assertIsNone(re.search(r'\b(psql|pg_dump|pg_restore)\s+[\'"]?\$\{?\w*(URL|DATABASE)', section), 'a client command takes a URL argument')
+        self.assertNotIn('postgres://', section)
+
+    def test_every_tool_command_names_an_exported_variable(self):
+        section = section_42()
+        used = set(re.findall(r'postgres-tool\.py (\w+) (?:psql|pg_restore|pg_dump)\b', section))
+        self.assertEqual(used, {'DATABASE_URL', 'OLD_DATABASE_URL', 'NEW_DATABASE_URL', 'MAINTENANCE_DATABASE_URL', 'LATIN1_DATABASE_URL'})
+        for variable in used:
+            self.assertRegex(section, rf'export [A-Z_0-9 ]*\b{variable}\b', f'{variable} is not exported before it is used')
+        self.assertIn('in the process list', flat(section))
 
 
 class BackupDumpEncodingTests(unittest.TestCase):
@@ -287,10 +312,13 @@ class LegTests(unittest.TestCase):
                        # QA5W6-3: the way out runs as printed, before step 4 creates opsecmkt_utf8.
                        'bash -euo pipefail -c "$escape_block"',
                        'NEW_DATABASE_URL=$(url opsecmkt_utf8)',
-                       'restore "$work/latin1-again.dump.age" opsecmkt_utf8',
+                       'restore_into "$work/latin1-again.dump.age" opsecmkt_utf8',
                        'if BACKUP_DUMP_ENCODING=LATIN1 backup',
                        'BACKUP_DUMP_ENCODING=SQL_ASCII backup latin1_old',
                        'BACKUP_DUMP_ENCODING=SQL_ASCII round_trip latin1_new',
+                       # A-483: the section's own client commands run, not copies of them.
+                       'doc_command show_encoding', 'doc_command check_old', 'doc_command create_utf8', 'doc_command check_new',
+                       'doc_command type_in', 'doc_lines round_trip', 'status == 3',
                        'docker rm -f -v "$container"'):
             self.assertIn(needle, text)
 

@@ -1338,7 +1338,8 @@ migration statement, with `the database encoding is ..., not UTF8` and nothing c
 differences: on `SQL_ASCII` the image description limit of 250 counted bytes (250 "é" was refused there and
 accepted on UTF8), and case folding and sorting follow the database's encoding and locale. The bundled Compose
 PostgreSQL is initialised as UTF8 and is not affected, and a database already UTF8 needs nothing. Check yours with
-`psql "$DATABASE_URL" -c 'SHOW server_encoding'` before you upgrade. The app also now sends `client_encoding=UTF8` on
+`export DATABASE_URL` and then
+`python3 scripts/postgres-tool.py DATABASE_URL psql -c 'SHOW server_encoding'` before you upgrade. The app also now sends `client_encoding=UTF8` on
 every connection, and refuses a form field that is not valid UTF-8 or holds a NUL byte (400, "Invalid form: a field is
 not valid UTF-8 or contains a NUL character. Nothing was changed."), where it used to accept it on a non-UTF8 database
 and fail with a 500 on a UTF8 one. A page or image address (GET or HEAD) whose query string is not valid UTF-8 or holds
@@ -1354,10 +1355,13 @@ client encoding, so whatever the old database's encoding, the bytes it stored ar
 those bytes unchanged. `scripts/test-utf8-migration.sh` rehearses them on a `SQL_ASCII` and a `LATIN1` database, and
 the check's readings in a `WIN1252` and an `EUC_JP` one (CI operations job). In the commands, `OLD_DATABASE_URL` is the
 database the market uses now and `NEW_DATABASE_URL` the new one; run them where `psql`, `pg_dump` and `pg_restore` as
-new as the server are installed.
+new as the server are installed. Each `psql` command runs through `scripts/postgres-tool.py` with its URL variable
+exported first (`export OLD_DATABASE_URL NEW_DATABASE_URL`), which passes the URL's password in `PGPASSWORD` and not on
+the command line, where other users of the host can read it in the process list.
 
 1. Stop the market (`docker compose stop app`). It stays stopped until step 7, so nothing changes the data meanwhile.
-2. Check the old database for text that is not valid UTF-8: `psql "$OLD_DATABASE_URL" -X -f scripts/check-utf8.sql`.
+2. Check the old database for text that is not valid UTF-8:
+   `python3 scripts/postgres-tool.py OLD_DATABASE_URL psql -X -f scripts/check-utf8.sql`.
    Before this release nothing checked that form input was UTF-8, and a `SQL_ASCII` or `LATIN1` database stores any
    bytes, so a review, a message or a listing may hold some that are not UTF-8 (a review `Great \xff seller`; in a `LATIN1` database, also
    text another client wrote in `LATIN1`, such as `psql` with its default client encoding). Such bytes would pass the
@@ -1388,8 +1392,9 @@ new as the server are installed.
    - *it also holds valid multibyte UTF-8*: the value mixes UTF-8 with bytes that are not (a title
      `Cr\303\250me \377 br\303\273l\303\251e`), and reading it as `LATIN1` would double-encode its UTF-8 part ("Crème"
      would become "CrÃ¨me"). In a database whose own encoding is multibyte (`EUC_JP`, for one) the line says so, and
-     no reading of the bytes is safe either. Type the text it should hold instead, in `psql` started with
-     `PGCLIENTENCODING=UTF8` from a UTF-8 terminal:
+     no reading of the bytes is safe either. Type the text it should hold instead, from a UTF-8 terminal, in
+     `python3 scripts/postgres-tool.py OLD_DATABASE_URL psql` after the psql command `\encoding UTF8` (the tool lets
+     no `PGCLIENTENCODING` through):
 
      ```sql
      UPDATE public.products SET title = convert_from(convert_to('Crème brûlée', 'UTF8'), 'SQL_ASCII') WHERE id = '0d3e7b5a92c4';
@@ -1441,8 +1446,10 @@ new as the server are installed.
    Then run step 2 and this step with `OLD_DATABASE_URL="$LATIN1_DATABASE_URL"`, go on from step 4, and drop
    `opsecmkt_latin1` after step 6. Never start the market on it: this plain `pg_restore` applies none of `restore.sh`'s
    payout recovery protection, which step 5 applies to the backup taken of it.
-4. Create a UTF8 database next to it, from `psql` as a role with `CREATEDB`:
-   `CREATE DATABASE opsecmkt_utf8 ENCODING 'UTF8' TEMPLATE template0;`
+4. Create a UTF8 database next to it, as a role with `CREATEDB`. `opsecmkt_utf8` does not exist yet, so connect to the
+   maintenance database: `export MAINTENANCE_DATABASE_URL` (`NEW_DATABASE_URL` with the database name `postgres`, as in
+   step 3) and run
+   `python3 scripts/postgres-tool.py MAINTENANCE_DATABASE_URL psql -c "CREATE DATABASE opsecmkt_utf8 ENCODING 'UTF8' TEMPLATE template0"`
 5. Restore the backup into that empty database with `RESTORE_DATABASE_URL="$NEW_DATABASE_URL" AGE_IDENTITY=...
    ./scripts/restore.sh backups/pre-utf8.dump.age` (the [restore procedure](docs/operator-guide.md#backups-and-recovery),
    including its payout recovery gate and reconciliation, applies unchanged). `pg_restore` does not check the bytes of a
@@ -1451,16 +1458,17 @@ new as the server are installed.
 6. Before you switch, prove that the new database's own backup restores, into a scratch database you drop afterwards:
 
    ```sh
+   export NEW_DATABASE_URL
    BACKUP_DATABASE_URL="$NEW_DATABASE_URL" AGE_RECIPIENT=age1... ./scripts/backup.sh backups/utf8-check.dump.age
-   psql "$NEW_DATABASE_URL" -c "CREATE DATABASE opsecmkt_utf8_check ENCODING 'UTF8' TEMPLATE template0"
+   python3 scripts/postgres-tool.py NEW_DATABASE_URL psql -c "CREATE DATABASE opsecmkt_utf8_check ENCODING 'UTF8' TEMPLATE template0"
    RESTORE_DATABASE_URL="$CHECK_DATABASE_URL" AGE_IDENTITY=... ./scripts/restore.sh backups/utf8-check.dump.age
-   psql "$NEW_DATABASE_URL" -c "DROP DATABASE opsecmkt_utf8_check"
+   python3 scripts/postgres-tool.py NEW_DATABASE_URL psql -c "DROP DATABASE opsecmkt_utf8_check"
    ```
 
    (`CHECK_DATABASE_URL` is `NEW_DATABASE_URL` with the database name `opsecmkt_utf8_check`.) The restore must print
    `Restore completed.` If it stops with `COPY failed for table "<table>": ... invalid byte sequence for encoding
    "UTF8"` instead, the new database holds bytes that are not UTF-8 and its backups are useless: do not switch.
-   `psql "$NEW_DATABASE_URL" -X -f scripts/check-utf8.sql` names the rows; drop the new database, correct them in the
+   `python3 scripts/postgres-tool.py NEW_DATABASE_URL psql -X -f scripts/check-utf8.sql` names the rows; drop the new database, correct them in the
    old one (step 2) and start again from step 3. Then look at a few accounts and listings with accented characters.
 7. Point `DATABASE_URL` (and `BACKUP_DATABASE_URL`) at the new database and start the app.
 

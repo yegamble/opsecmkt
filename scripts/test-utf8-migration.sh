@@ -89,35 +89,116 @@ docker exec "$container" pg_isready -q -h 127.0.0.1 -U utf8 -d postgres
 pg_port=$(docker port "$container" 5432/tcp | head -n1 | sed 's/.*://')
 url() { printf 'postgres://utf8:utf8-test-only@127.0.0.1:%s/%s?sslmode=disable' "$pg_port" "$1"; }
 
-# The client tools backup.sh and restore.sh run (through scripts/postgres-tool.py, which passes the URL's credentials
-# and database in PG* variables): the same tool inside the container, against its own server.
+# The client tools backup.sh and restore.sh run, and section 42's own psql commands (through scripts/postgres-tool.py, which
+# passes the URL's credentials and database in PG* variables): the same tool inside the container, against its own
+# server. The container's /rehearsal holds scripts/check-utf8.sql and is the working directory, so that the section's
+# `-f scripts/check-utf8.sql` reads it as printed.
+docker exec "$container" mkdir -p /rehearsal/scripts
+docker cp scripts/check-utf8.sql "$container:/rehearsal/scripts/check-utf8.sql"
 mkdir "$work/bin"
 for tool in pg_dump pg_restore psql; do
-  printf '#!/usr/bin/env bash\nexec docker exec -i -e PGUSER -e PGPASSWORD -e PGDATABASE -e PGSSLMODE -e TZ %q %q -h 127.0.0.1 -p 5432 "$@"\n' \
+  printf '#!/usr/bin/env bash\nexec docker exec -i -w /rehearsal -e PGUSER -e PGPASSWORD -e PGDATABASE -e PGSSLMODE -e TZ %q %q -h 127.0.0.1 -p 5432 "$@"\n' \
     "$container" "$tool" > "$work/bin/$tool"
   chmod 700 "$work/bin/$tool"
 done
 age-keygen -o "$work/identity" 2> /dev/null
 recipient=$(age-keygen -y "$work/identity")
 
+# doc_command NAME: the command of UPGRADING.md section 42 that NAME stands for, as printed, so that the rehearsal runs the
+# documented text and cannot drift from it. Each is a client command that takes its database URL from an exported
+# variable through scripts/postgres-tool.py, never on its command line (A-483). Exactly one command must match.
+doc_command() {
+  python3 - "$1" UPGRADING.md <<'PY'
+import re, sys
+name, path = sys.argv[1:]
+text = open(path, encoding='utf-8').read()
+start = text.index('## 42. ')
+section = re.sub(r'\s+', ' ', re.sub(r'```.*?```', ' ', text[start:text.index('\n## 43. ', start)], flags=re.S))
+tool = 'python3 scripts/postgres-tool.py '
+wanted = {
+    'show_encoding': lambda c: c == tool + "DATABASE_URL psql -c 'SHOW server_encoding'",
+    'check_old': lambda c: c == tool + 'OLD_DATABASE_URL psql -X -f scripts/check-utf8.sql',
+    'check_new': lambda c: c == tool + 'NEW_DATABASE_URL psql -X -f scripts/check-utf8.sql',
+    'type_in': lambda c: c == tool + 'OLD_DATABASE_URL psql',
+    'create_utf8': lambda c: c.startswith(tool + 'MAINTENANCE_DATABASE_URL psql -c "CREATE DATABASE opsecmkt_utf8 '),
+}[name]
+found = [c for c in re.findall(r'`([^`]+)`', section) if wanted(c)]
+if len(found) != 1:
+    raise SystemExit(f'UPGRADING.md section 42: {len(found)} commands for {name}, expected one')
+print(found[0])
+PY
+}
+# doc_lines round_trip: the lines of section 42 step 6's shell block, one per line, without its export line.
+doc_lines() {
+  python3 - "$1" UPGRADING.md <<'PY'
+import re, sys
+name, path = sys.argv[1:]
+text = open(path, encoding='utf-8').read()
+start = text.index('## 42. ')
+section = text[start:text.index('\n## 43. ', start)]
+blocks = [b for b in re.findall(r'^ *```sh\n(.*?)^ *```', section, re.S | re.M) if 'opsecmkt_utf8_check' in b and 'DROP DATABASE' in b]
+if name != 'round_trip' or len(blocks) != 1:
+    raise SystemExit(f'UPGRADING.md section 42: {len(blocks)} shell blocks for {name}, expected one')
+print('\n'.join(line.strip() for line in blocks[0].splitlines() if line.strip() and not line.strip().startswith('export ')))
+PY
+}
+show_encoding_cmd=$(doc_command show_encoding)
+check_old_cmd=$(doc_command check_old)
+check_new_cmd=$(doc_command check_new)
+type_in_cmd=$(doc_command type_in)
+create_utf8_cmd=$(doc_command create_utf8)
+step6=()
+while IFS= read -r line; do step6+=("$line"); done < <(doc_lines round_trip)
+((${#step6[@]} == 4)) || fail "section 42 step 6 has ${#step6[@]} commands, expected 4"
+[[ ${step6[0]} == *scripts/backup.sh* && ${step6[1]} == *'CREATE DATABASE opsecmkt_utf8_check'* && ${step6[2]} == *scripts/restore.sh* &&
+  ${step6[3]} == *'DROP DATABASE opsecmkt_utf8_check'* ]] || fail "section 42 step 6 is no longer backup, create, restore, drop"
+
 # backup DATABASE FILE: scripts/backup.sh of DATABASE (BACKUP_DUMP_ENCODING passes through from the caller).
 backup() {
   PATH="$work/bin:$PATH" BACKUP_DATABASE_URL=$(url "$1") AGE_RECIPIENT=$recipient scripts/backup.sh "$2" > "$work/backup.log" 2>&1
 }
-# restore FILE DATABASE: creates DATABASE (UTF8, section 42 step 4) and runs scripts/restore.sh into it; its status.
-restore() {
-  sql postgres -c "CREATE DATABASE $2 ENCODING 'UTF8' TEMPLATE template0"
+# restore_into FILE DATABASE: scripts/restore.sh into the existing, empty DATABASE; its status.
+restore_into() {
   PATH="$work/bin:$PATH" RESTORE_DATABASE_URL=$(url "$2") AGE_IDENTITY="$work/identity" scripts/restore.sh "$1" <<< RESTORE > "$work/restore-$2.log" 2>&1
 }
-# check DATABASE: scripts/check-utf8.sql run by psql against DATABASE, as section 42 has the operator run it; its status.
+# restore FILE DATABASE: creates DATABASE (UTF8, section 42 step 4's statement) and restores FILE into it; its status.
+restore() {
+  sql postgres -c "CREATE DATABASE $2 ENCODING 'UTF8' TEMPLATE template0"
+  restore_into "$1" "$2"
+}
+# check DATABASE [VARIABLE]: section 42's check-utf8.sql command, as printed for OLD_DATABASE_URL (step 2, the default) or
+# for NEW_DATABASE_URL (step 6), with VARIABLE set to DATABASE's URL; its status (psql exits 3 on a bad value).
 check() {
-  PATH="$work/bin:$PATH" CHECK_DATABASE_URL=$(url "$1") python3 scripts/postgres-tool.py CHECK_DATABASE_URL psql -X \
-    < scripts/check-utf8.sql > "$work/check-$1.log" 2>&1
+  local command=$check_old_cmd variable=${2:-OLD_DATABASE_URL}
+  [[ $variable == NEW_DATABASE_URL ]] && command=$check_new_cmd
+  env "$variable=$(url "$1")" PATH="$work/bin:$PATH" bash -euo pipefail -c "$command" > "$work/check-$1.log" 2>&1
 }
-# round_trip DATABASE: section 42's check before the switch, a backup of DATABASE restored into a scratch database.
+# step6_command INDEX DATABASE DUMP: command INDEX of section 42 step 6 as printed (only the example's placeholders
+# filled in), with NEW_DATABASE_URL naming DATABASE and CHECK_DATABASE_URL the scratch database opsecmkt_utf8_check.
+step6_command() {
+  local line=${step6[$1]}
+  line=${line//'age1...'/$recipient}
+  line=${line//'AGE_IDENTITY=...'/AGE_IDENTITY=$work/identity}
+  line=${line//backups\/utf8-check.dump.age/$3}
+  [[ $line != *...* ]] || fail "placeholder left in: $line"
+  env NEW_DATABASE_URL="$(url "$2")" CHECK_DATABASE_URL="$(url opsecmkt_utf8_check)" PATH="$work/bin:$PATH" \
+    bash -euo pipefail -c "$line" <<< RESTORE
+}
+# round_trip DATABASE: section 42 step 6 up to its restore: a backup of DATABASE restored into the scratch database
+# opsecmkt_utf8_check, output in round-trip.log. On success the scratch database is left for the caller to read, then
+# end_round_trip; on failure it is dropped here.
 round_trip() {
-  backup "$1" "$work/$1-check.dump.age" && restore "$work/$1-check.dump.age" "$1_check"
+  local index
+  : > "$work/round-trip.log"
+  for index in 0 1 2; do
+    step6_command "$index" "$1" "$work/$1-check.dump.age" >> "$work/round-trip.log" 2>&1 || {
+      sql postgres -c 'DROP DATABASE IF EXISTS opsecmkt_utf8_check' >/dev/null 2>&1 || true
+      return 1
+    }
+  done
 }
+# end_round_trip DATABASE: step 6's last command, the drop of the scratch database.
+end_round_trip() { step6_command 3 "$1" "$work/$1-check.dump.age" >> "$work/round-trip.log" 2>&1; }
 # text_hex DATABASE QUERY: the stored bytes of the one text QUERY returns, in hexadecimal.
 text_hex() { sql "$1" -c "SELECT encode(convert_to(($2), 'SQL_ASCII'), 'hex')"; }
 
@@ -169,11 +250,15 @@ INSERT INTO orders(id,buyer_id,product_id,currency,amount,state) VALUES ('utf8or
 INSERT INTO reviews(id,order_id,product_id,buyer_id,rating,body) VALUES ('utf8review','utf8order','utf8product','utf8buyer',5,convert_from(decode(:'body','hex'),'SQL_ASCII'));
 SQL
   [[ $(sql "$1" -c 'SHOW server_encoding') == "$2" ]] || fail "$1 is not $2"
+  # The section's own command for it (before you upgrade), with DATABASE_URL exported: psql prints the encoding in a table.
+  [[ $(env DATABASE_URL="$(url "$1")" PATH="$work/bin:$PATH" bash -euo pipefail -c "$show_encoding_cmd" | grep -cw "$2") == 1 ]] ||
+    fail "section 42's SHOW server_encoding did not print $2 for $1"
 }
 
 echo 'SQL_ASCII: a review with bytes that are not UTF-8'
 old_database ascii_old SQL_ASCII "$bad_hex"
-if check ascii_old; then fail 'check-utf8.sql passed a SQL_ASCII database holding 0xff'; fi
+status=0; check ascii_old || status=$?
+[[ $status == 3 ]] || fail "check-utf8.sql exited $status on a SQL_ASCII database holding 0xff, not 3 (section 42 says psql exits 3)"
 grep -qF "not valid UTF-8: table public.reviews, column body, row where id = 'utf8review' (ctid (0,1)); $latin1_safe; starting: Great \\377\\376 seller" "$work/check-ascii_old.log" ||
   fail 'check-utf8.sql did not name the review'
 grep -q '1 stored text value(s) are not valid UTF-8' "$work/check-ascii_old.log" || fail 'check-utf8.sql did not count the bad value'
@@ -184,9 +269,9 @@ restore "$work/ascii.dump.age" ascii_new || fail 'restore.sh refused the SQL_ASC
 [[ $(sql ascii_new -c "SELECT octet_length(body) FROM reviews WHERE id='utf8review'") == 15 ]] || fail 'the restored review lost bytes'
 # ... and section 42's round trip is what stops the switch: the new database's own backup does not restore.
 if round_trip ascii_new; then fail 'the backup of a UTF8 database holding 0xff restored'; fi
-grep -q 'COPY failed for table "reviews": ERROR:  invalid byte sequence for encoding "UTF8": 0xff' "$work/restore-ascii_new_check.log" ||
+grep -q 'COPY failed for table "reviews": ERROR:  invalid byte sequence for encoding "UTF8": 0xff' "$work/round-trip.log" ||
   fail 'the round trip did not name the table'
-if check ascii_new; then fail 'check-utf8.sql passed a UTF8 database holding 0xff'; fi
+if check ascii_new NEW_DATABASE_URL; then fail 'check-utf8.sql passed a UTF8 database holding 0xff'; fi
 grep -qF "not valid UTF-8: table public.reviews, column body, row where id = 'utf8review' (ctid (0,1)); its bytes cannot be read in a UTF8 database: correct it in the old database" \
   "$work/check-ascii_new.log" || fail 'check-utf8.sql did not name the review in UTF8'
 # A listing whose title mixes UTF-8 with a stray byte and whose description is LATIN1: the check tells which reading is
@@ -205,17 +290,23 @@ grep -q '3 stored text value(s) are not valid UTF-8' "$work/check-ascii_old.log"
 # review and the description read as LATIN1, the title typed. Both values of the listing are corrected in this one
 # round (an UPDATE moves the row, so a second statement by its old ctid would change nothing).
 sql ascii_old -c "UPDATE public.reviews SET body = convert_from(convert(convert_to(body, 'SQL_ASCII'), 'LATIN1', 'UTF8'), 'SQL_ASCII') WHERE id = 'utf8review'"
-sql ascii_old -c "UPDATE public.products SET title = convert_from(convert_to('Crème brûlée', 'UTF8'), 'SQL_ASCII') WHERE id = 'utf8mixed'"
+# The typed title goes through the section's command, `\encoding UTF8` first (the tool lets no PGCLIENTENCODING through).
+env OLD_DATABASE_URL="$(url ascii_old)" PATH="$work/bin:$PATH" bash -euo pipefail -c "$type_in_cmd -X -q -v ON_ERROR_STOP=1" <<'SQL'
+\encoding UTF8
+UPDATE public.products SET title = convert_from(convert_to('Crème brûlée', 'UTF8'), 'SQL_ASCII') WHERE id = 'utf8mixed';
+SQL
 sql ascii_old -c "UPDATE public.products SET description = convert_from(convert(convert_to(description, 'SQL_ASCII'), 'LATIN1', 'UTF8'), 'SQL_ASCII') WHERE id = 'utf8mixed'"
 check ascii_old || fail 'check-utf8.sql failed after one round of corrections'
 grep -q 'Every value in the [0-9]* text column(s) is valid UTF-8.' "$work/check-ascii_old.log" || fail 'check-utf8.sql did not report success'
 BACKUP_DUMP_ENCODING=SQL_ASCII backup ascii_old "$work/ascii-fixed.dump.age"
 restore "$work/ascii-fixed.dump.age" ascii_fixed || fail 'restore.sh refused the corrected SQL_ASCII backup'
-check ascii_fixed || fail 'check-utf8.sql failed on the new database'
+check ascii_fixed NEW_DATABASE_URL || fail 'check-utf8.sql failed on the new database'
 round_trip ascii_fixed || fail 'the round trip of the corrected database failed'
 [[ $(text_hex ascii_fixed "SELECT title FROM products WHERE id='utf8product'") == "$title_hex" ]] || fail 'the SQL_ASCII title changed'
 [[ $(text_hex ascii_fixed "SELECT body FROM reviews WHERE id='utf8review'") == "$(hex 'Great ÿþ seller')" ]] || fail 'the corrected review'
-[[ $(text_hex ascii_fixed_check "SELECT body FROM reviews WHERE id='utf8review'") == "$(hex 'Great ÿþ seller')" ]] || fail 'the round trip changed the review'
+[[ $(text_hex opsecmkt_utf8_check "SELECT body FROM reviews WHERE id='utf8review'") == "$(hex 'Great ÿþ seller')" ]] || fail 'the round trip changed the review'
+end_round_trip ascii_fixed || fail 'step 6 could not drop its scratch database'
+[[ -z $(sql postgres -c "SELECT 1 FROM pg_database WHERE datname = 'opsecmkt_utf8_check'") ]] || fail 'step 6 left its scratch database'
 [[ $(text_hex ascii_fixed "SELECT title FROM products WHERE id='utf8mixed'") == "$(hex 'Crème brûlée')" ]] || fail 'the typed title'
 [[ $(text_hex ascii_fixed "SELECT description FROM products WHERE id='utf8mixed'") == "$(hex 'été')" ]] || fail 'the corrected description'
 (exec env -i PATH="$PATH" DATABASE_URL="$(url ascii_fixed)" SETUP_TOKEN=utf8-migration-test-token-only-0123456789 COOKIE_SECURE=false \
@@ -278,6 +369,17 @@ sql eucjp_old -c "CREATE TABLE notes(id text PRIMARY KEY, body text)" -c "INSERT
 if check eucjp_old; then fail 'check-utf8.sql passed EUC-JP bytes'; fi
 grep -qF "not valid UTF-8: table public.notes, column body, row where id = 'n1' (ctid (0,1)); this database's encoding, EUC_JP, is multibyte, so no reading of its bytes is a safe correction: type the text it should hold; starting: \\244\\242" \
   "$work/check-eucjp_old.log" || fail 'check-utf8.sql did not tell the EUC_JP text to be typed'
+# The typed text in a LATIN1 database goes through the section's command too: after `\encoding UTF8` the server converts
+# the client's UTF-8 to LATIN1, convert_to turns it back and the bytes stored are UTF-8.
+sql postgres -c "CREATE DATABASE probe_latin1 ENCODING 'LATIN1' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0"
+sql probe_latin1 -c "CREATE TABLE notes(id text PRIMARY KEY, body text)" -c "INSERT INTO notes VALUES ('n1', convert_from(decode('4372c3a86d6520ff', 'hex'), 'SQL_ASCII'))"
+if check probe_latin1; then fail 'check-utf8.sql passed a LATIN1 mixed value'; fi
+env OLD_DATABASE_URL="$(url probe_latin1)" PATH="$work/bin:$PATH" bash -euo pipefail -c "$type_in_cmd -X -q -v ON_ERROR_STOP=1" <<'SQL'
+\encoding UTF8
+UPDATE public.notes SET body = convert_from(convert_to('Crème brûlée', 'UTF8'), 'SQL_ASCII') WHERE id = 'n1';
+SQL
+check probe_latin1 || fail 'check-utf8.sql failed after the typed correction in LATIN1'
+[[ $(text_hex probe_latin1 "SELECT body FROM notes") == "$(hex 'Crème brûlée')" ]] || fail 'the typed text in a LATIN1 database'
 
 echo 'LATIN1: UTF-8 text stored by the old market'
 old_database latin1_old LATIN1 "$title_hex"
@@ -348,7 +450,11 @@ PATH="$work/bin:$PATH" NEW_DATABASE_URL=$(url opsecmkt_utf8) LATIN1_DATABASE_URL
 check opsecmkt_latin1 || fail 'check-utf8.sql failed on the temporary LATIN1 database'
 BACKUP_DUMP_ENCODING=SQL_ASCII backup opsecmkt_latin1 "$work/latin1-again.dump.age"
 # Steps 4 and 5: opsecmkt_utf8 created, the backup of the temporary database restored into it with restore.sh.
-restore "$work/latin1-again.dump.age" opsecmkt_utf8 || fail 'restore.sh refused the backup of the temporary LATIN1 database'
+# (Step 4 as printed, through the maintenance database; restore.sh is then run into the database it made.)
+env MAINTENANCE_DATABASE_URL="$(url postgres)" PATH="$work/bin:$PATH" bash -euo pipefail -c "$create_utf8_cmd" > "$work/create-utf8.log" 2>&1 ||
+  fail "section 42 step 4's command failed"
+[[ $(sql postgres -c "SELECT pg_encoding_to_char(encoding) FROM pg_database WHERE datname = 'opsecmkt_utf8'") == UTF8 ]] || fail 'step 4 did not create opsecmkt_utf8 as UTF8'
+restore_into "$work/latin1-again.dump.age" opsecmkt_utf8 || fail 'restore.sh refused the backup of the temporary LATIN1 database'
 sql postgres -c 'DROP DATABASE opsecmkt_latin1'
 for column in "title FROM products WHERE id='utf8product'" "body FROM reviews WHERE id='utf8review'"; do
   [[ $(text_hex opsecmkt_utf8 "SELECT $column") == "$title_hex" ]] || fail "LATIN1 through a temporary LATIN1 database: $column"
@@ -359,11 +465,12 @@ grep -q 'BACKUP_DUMP_ENCODING may only be SQL_ASCII' "$work/backup.log" || fail 
 [[ ! -e $work/refused.dump.age ]] || fail 'backup.sh wrote a refused backup'
 BACKUP_DUMP_ENCODING=SQL_ASCII backup latin1_old "$work/latin1-raw.dump.age"
 restore "$work/latin1-raw.dump.age" latin1_new || fail 'restore.sh refused the SQL_ASCII dump of LATIN1'
-check latin1_new || fail 'check-utf8.sql failed on the new database'
+check latin1_new NEW_DATABASE_URL || fail 'check-utf8.sql failed on the new database'
 for column in "title FROM products WHERE id='utf8product'" "body FROM reviews WHERE id='utf8review'"; do
   [[ $(text_hex latin1_new "SELECT $column") == "$title_hex" ]] || fail "LATIN1 with BACKUP_DUMP_ENCODING=SQL_ASCII: $column"
 done
 # The same option on the new UTF8 database is a no-op on text already right: its round trip keeps every byte.
 BACKUP_DUMP_ENCODING=SQL_ASCII round_trip latin1_new || fail 'the round trip of the LATIN1 move failed'
-[[ $(text_hex latin1_new_check "SELECT title FROM products WHERE id='utf8product'") == "$title_hex" ]] || fail 'BACKUP_DUMP_ENCODING=SQL_ASCII changed UTF8 text'
+[[ $(text_hex opsecmkt_utf8_check "SELECT title FROM products WHERE id='utf8product'") == "$title_hex" ]] || fail 'BACKUP_DUMP_ENCODING=SQL_ASCII changed UTF8 text'
+end_round_trip latin1_new || fail 'step 6 could not drop its scratch database'
 echo 'UTF-8 migration rehearsal passed'
