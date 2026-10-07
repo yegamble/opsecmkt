@@ -1404,8 +1404,8 @@ one; run them where `psql`, `pg_dump` and `pg_restore` as new as the server are 
    before it asks for confirmation or changes anything: `Refusing: this backup holds its text in LATIN1, as pg_dump
    writes a LATIN1 database backed up without BACKUP_DUMP_ENCODING=SQL_ASCII. ...`. If such a backup is all you have
    of the old database (`install.sh upgrade` takes its automatic `backups/pre-upgrade-*.dump.age` without the variable,
-   so for a `LATIN1` database it is one), restore it into a temporary database of its original encoding, where nothing
-   is converted, and use that as the old database:
+   so for a `LATIN1` database it is one), restore it into a temporary database of its original encoding (the one the
+   refusal names; `LATIN1` below), where nothing is converted, and use that as the old database:
 
    ```sh
    psql "$NEW_DATABASE_URL" -c "CREATE DATABASE opsecmkt_latin1 ENCODING 'LATIN1' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0"
