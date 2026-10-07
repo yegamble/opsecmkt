@@ -179,14 +179,36 @@ chain `regtest`; [operator guide](operator-guide.md#bitcoin-escrow-regtest-only)
   100 confirmations. A deposit that does not count when the payment window ends (Core reports it conflicted, or no
   longer lists it) does not keep the order open, so an order with nothing else is cancelled unpaid and no refund is
   requested; if that deposit confirms later and no refund spends it, it is left out, flagged, noted on the order with
-  the buyer and staff told, and returned to the buyer's refund address by a stray refund (A-428). A refund that could
-  not be built because the escrow's coins were too few keeps them in the escrow, as its note says; a deposit that did
-  not count (conflicted, or no longer listed) and confirms later on such an order is not returned automatically
-  either: it is not left out or flagged, staff are not told, and only the buyer and the vendor together can move it
-  from their own wallets (A-435). A stray refund that fails because its
-  coins are too few is noted and told once, and the order page says the coins are held and why; no other is requested
+  the buyer and staff told, and returned to the buyer's refund address by a stray refund (A-428). A refund that
+  cannot be built because the escrow's coins are too few, on a cancelled order (A-435) or one whose dispute was decided
+  for the buyer (A-437), leaves those coins out for a stray refund (left out, flagged, noted on the order with the
+  buyer and staff told); they are held, as a too-small stray refund's coins are (below), also when a stray refund of
+  other coins was requested and built before the refund failed, and returned together with any deposit left out later,
+  such as one that did not count at the cancellation or the decision and confirms since, once together they can pay
+  the network fee. A release that fails so (a completed order, or one decided for the vendor) leaves its coins counted:
+  they are the vendor's; staff are told once (A-461), with an order note naming the deposits it tried, and the
+  order's credited deposits are flagged so staff can open the order, also one never disputed and also when it tried
+  none of them (QA462C-2; they stay counted; the desk dates the flag from that note and offers no action on it). A
+  counted deposit not credited at funding (still confirming or conflicted then) is not flagged, and its flag set by
+  another check is not open: the desk offers no action on it, a review is refused (409) and it does not keep a
+  late-deposit notice episode open (QA462B, QA462C). One rule decides whether a payment flag is open, for the desk and
+  the review alike: a locked transfer, a deposit of a payout below the minimum, an announced regression, a deposit spent
+  outside the market, or a deposit that does not count (recorded after the close, or left out of its settlement,
+  credited or not, listed as such: QA462D-2), until staff record it; only such an open flag of a deposit neither
+  credited, nor below the minimum, nor locked, nor spent outside the market holds the late-deposit notice episode
+  (QA462D-1). A refund too few's note names the deposits it leaves out, and a release too few's every deposit it
+  flags, so the desk dates those flags (QA462D-4); the desk lists a credited escrow deposit that counts as settled by
+  the order's release or refund, never as one that "confirmed again" (QA462D-3). A stray
+  refund still being built when the refund fails (both in the same pass) adds those coins to its own: once it is built and spends them, the refund's failure holds nothing
+  more (a coin of the refund's it leaves out, beyond the 50 largest or worth less than its own spending cost, gets one
+  more try and is then held); if it fails too-small, the same coins fail a second time, at the grown value, and are then held. A stray
+  refund that fails because its coins are too few is noted and told once, and the order page says the coins are held and why; no other is requested
   until a further deposit makes the coins worth more or a lower `ESCROW_BTC_FEE_RATE` makes them cheaper to spend,
-  and the buyer's recovery request always gets one more build, whose failure is the answer (A-434);
+  and the buyer's recovery request always gets one more build, whose failure is the answer (A-434). A stray refund
+  leaves out of its build a deposit worth no more than its own spending cost at the current fee rate (105 vB times
+  the rate) while another remains; that deposit stays for a later stray refund (A-436). A cancelled order's status
+  follows its stray refund: held, awaiting signatures, broadcast or confirmed (A-435); on an order decided for the
+  buyer whose refund failed so, the next step says the refund could not be built and a stray refund returns the coins (A-437);
 - recovery and reconciliation: the restore gate pauses builds, co-signing, broadcasts and escrow checkout, and a
   restored stored transaction is broadcast again only after an administrator confirms it; every checkout first asks
   the watch-only wallet whether it already holds the escrow address it composed (an escrow created after the backup a
@@ -215,8 +237,15 @@ anything is stored, and the pasted PSBT is never kept. The database refuses a se
 to a settlement's transaction once a party has signed it, and a deposit is claimed by one settlement only
 (compare-and-set); only the stored final
 transaction is ever broadcast, so a restart mid-send sends the same transaction again. A dispute decision is fixed
-once its settlement has a final transaction. All of this is subject to the limits under *What it will not protect*
-above: a server taken over can show a substituted key, and the market key with one party's key can spend.
+once its settlement has a final transaction. Until then an administrator may change it, also while its settlement
+is still being built or after it failed (migration 087, A-462): the old settlement is superseded as it stands (the
+database refuses a superseded row that gains or loses a build, and any settlement moving back to building), and when
+it was a refund whose too-small failure left its deposits out for a stray refund, those deposits count for the order
+again, so the vendor's release includes them and no stray refund returns them (a stray refund being built from them
+at that moment claims only deposits still left out or sent after the close, so it is built again on the next pass
+without them); deposits left out for any other reason, or already spent by a built stray refund or outside the market,
+stay as they are. All of this is
+subject to the limits under *What it will not protect* above: a server taken over can show a substituted key, and the market key with one party's key can spend.
 
 **What Phase 1 does not do.** It runs on regtest only and has not run on a public test network or mainnet. It covers
 digital orders with automatic delivery only (physical orders are Phase 2, Monero Phase 3). It supports Bitcoin Core
@@ -230,8 +259,11 @@ them together from their own wallets. A reorganisation deeper than 100 blocks is
   refusal, for example `TestEscrowCheckoutCreatesEscrow`, `TestEscrowPracticeActivates`, `TestEscrowFundingCompletesOrder`,
   `TestEscrowClaimBuildAndSign`, `TestEscrowPasteRefusals`, `TestEscrowRefundRoutes`, `TestEscrowSettlementRaces`,
   `TestEscrowCosignBroadcastConfirm`, `TestEscrowRawStoredBeforeBroadcast`, `TestEscrowBadSignatureReverts`,
-  `TestEscrowBothPartiesSign`, `TestEscrowDisputeDecision`, `TestEscrowStrayRefundAfterClose`,
+  `TestEscrowBothPartiesSign`, `TestEscrowDisputeDecision`, `TestEscrowDecisionChangeUnbuilt`,
+  `TestEscrowMigration087SupersedeUnbuilt`, `TestEscrowDecisionChangeStray`, `TestEscrowReleaseTooFewStaffOpen`,
+  `TestEscrowStrayRefundAfterClose`,
   `TestEscrowConflictedDepositThroughExpiry`, `TestEscrowUncountedDepositBounds`, `TestEscrowStrayRefundTooSmall`,
+  `TestEscrowTooSmallRefundReturned`, `TestEscrowStrayStatusFollowsState`, `TestEscrowStrayRefundSkipsDust`,
   `TestEscrowRestoreGatePausesAndAdminRebroadcasts`, `TestEscrowCheckoutSkipsAddressTheWalletWatches`,
   `TestEscrowReorgRetracking`, `TestEscrowExternalSpend`,
   `TestEscrowOutsideSpendFlagged` and, for A-356, `TestEscrowAwaitingSignatureSpentOutside`,
@@ -486,7 +518,10 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   absent) with `do_not_relay`, taking the network fee from the claimant's output alone. It then checks the wallet's
   answer: exactly the claimed outputs' key images, amounts as planned, a fee at most `ESCROW_XMR_MAX_FEE` and the
   claimant's output at least 0.001 XMR; otherwise the transaction is discarded unrelayed, the settlement waits and staff
-  are told. A checked transaction is **stored first** (its hash, metadata, blob, fee and key images) and only then relayed,
+  are told, with the deposits it could spend flagged so they can open the order (the note names them, so the desk
+  dates the flags: QA462E-3); a deposit recorded after the order
+  closed is left to the late-deposit check, which flags it when it announces it to the buyer and staff, so a waiting
+  stray refund never silences that notice (QA462C-4). A checked transaction is **stored first** (its hash, metadata, blob, fee and key images) and only then relayed,
   with the stored metadata. After a restart or a lost answer the watcher looks the transaction up in the daemon and the
   wallet, and relays the same stored metadata again if neither has it: that spends the same key images, so it cannot pay
   twice. Nothing builds a replacement automatically. A relayed settlement is *confirmed* at the confirmation threshold and
@@ -507,7 +542,16 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   deposit still confirming then, or arriving after the build, is left out and returned to the buyer's refund address by a
   *stray refund* once the order has closed. So is a deposit that did not count when its order was cancelled (the wallet
   read it as a double spend, or no longer listed it) and has confirmed since, when no refund spends it: it is flagged
-  and the buyer told. After a close, deposits are refunded automatically until the wallet is
+  and the buyer told. The order page lists a left-out deposit on its own line, not counted as received, and a cancelled
+  order's status follows the stray refund that returns it: requested or built, sent, confirmed (A-435). A
+  stray refund whose coins are too few for the network fee and an output of at least 0.001 XMR stays requested,
+  staff told once (the status of a deposit that did not count then says the market cannot send it), and is built once
+  a further deposit makes the coins enough. A refund too few so, on a cancelled order or one decided for the buyer,
+  ends instead once no deposit it would spend is still confirming (failed, too-small): its deposits are left out and
+  flagged, with one note and the parties and staff told, so the one stray refund returns them together with a later
+  deposit, or one that did not count at the cancellation or the decision and has confirmed since, once together they
+  pay the fee. Before, the refund waited for good while a later deposit's stray refund waited too or paid without its
+  coins (A-437). A release too few still waits: the coins are the vendor's. After a close, deposits are refunded automatically until the wallet is
   destroyed; after that, the order page says Monero sent to its address since then cannot be recovered (ES-8).
 - **Confirm receipt and deadlines.** For a digital order the vendor claims the escrow with a fresh Monero address and their
   password once the order has completed on funding. For a physical order the vendor's *Mark as shipped* takes the claim
@@ -645,7 +689,7 @@ wallet takes an order again and no settlement is relayed until an administrator 
   `TestXMREscrowFeeCapAndFloor`, `TestXMREscrowReorgRelaysAgain`, `TestXMREscrowExternalSpend`,
   `TestXMREscrowReRequestGuards`, `TestXMREscrowReRequestWaitsForGate`, `TestXMREscrowRelayRefusalRetried`,
   `TestXMREscrowBuildSetAside`, `TestXMREscrowGatePauses`, `TestXMREscrowConflictedDepositThroughExpiry`,
-  `TestXMREscrowStraysPerWallet`. Releases, deadlines and
+  `TestXMREscrowStraysPerWallet`, `TestXMREscrowLeftOutDepositLine`, `TestXMREscrowStrayTooSmallOnce`. Releases, deadlines and
   disputes: `TestXMREscrowNoBuildBeforeOutcome`, `TestXMREscrowConfirmReceiptStepUp`, `TestXMREscrowShipStepUp`,
   `TestXMREscrowDeadlineWithBTCOff`, `TestXMREscrowDisputeSupersedes`, `TestXMREscrowNoShipCancel`,
   `TestXMREscrowRestoreExtendsDeadline`. Retention and restore: `TestXMREscrowDestroyPreconditions`,

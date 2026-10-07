@@ -66,7 +66,7 @@ func TestEscrowStrayRefundAfterClose(t *testing.T) {
 		t.Fatal("the buyer is not told of the stray refund")
 	}
 	page := x.page("/order?id="+order, x.buyerSess)
-	for _, want := range []string{"Recovery of coins sent after the order closed", "returned to the buyer&#39;s refund address by a stray refund", `action="/escrow/sign"`} {
+	for _, want := range []string{"Recovery of coins that do not count for the order: sent after it closed, left out of its settlement, or not counted when it was cancelled", "returned to the buyer&#39;s refund address by a stray refund", `action="/escrow/sign"`} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("buyer page lacks %q:\n%s", want, page)
 		}
@@ -356,8 +356,8 @@ func TestEscrowConflictedDepositThroughExpiry(t *testing.T) {
 }
 
 // A-428's bounds: the "did not count" path leaves out only a cancelled order's deposit that no refund spends or will
-// spend. A requested refund (still building) keeps the deposit and spends it; a refund that failed as too small keeps
-// its deposits; a built refund's deposit is left out once, by leaveOutTopUps; a completed or resolved order's deposit stays the order's (the vendor's claim spends it); a
+// spend. A requested refund (still building) keeps the deposit and spends it; a refund that failed as too small leaves
+// its own deposits out (A-435), never as uncounted; a built refund's deposit is left out once, by leaveOutTopUps; a completed or resolved order's deposit stays the order's (the vendor's claim spends it); a
 // deposit first recorded after the order closed is flagged by flagLateDeposits alone.
 func TestEscrowUncountedDepositBounds(t *testing.T) {
 	x := newEscrowEnv(t)
@@ -398,9 +398,9 @@ func TestEscrowUncountedDepositBounds(t *testing.T) {
 	}
 	untouched("a refund built", order, txidOf("conflicted "+order))
 
-	// A refund that failed because the coins are too few to pay its fee and output keeps them: they counted when the
-	// order was cancelled, and its note says they stay in the escrow. They are not called uncounted, and no stray
-	// refund (which would fail the same way on every pass) is requested.
+	// A refund that failed because the coins are too few to pay its fee and output: they counted when the order was
+	// cancelled, so they are not called uncounted. Since A-435 the failure leaves them out (leaveOutTooFew, its own
+	// note) and holds them, so no stray refund (which would fail the same way) is requested.
 	order = x.draft()
 	addr = x.mustCheckout(order, regtestAddr("bounds too small"))
 	x.core.deposit(addr, txidOf("tiny "+order), 0, 5000, 3)
@@ -411,7 +411,9 @@ func TestEscrowUncountedDepositBounds(t *testing.T) {
 	if _, _, state, class := x.settlement(order); state != "failed" || class != settleTooSmall {
 		t.Fatalf("a too-small refund: %s %s", state, class)
 	}
-	untouched("a too-small refund", order, txidOf("tiny "+order))
+	if notes, buyer, staff := x.uncounted(order); notes+buyer+staff != 0 || agInt(x.testEnv, "SELECT count(*) FROM payments WHERE txid=$1 AND escrow_left_out AND flagged", txidOf("tiny "+order)) != 1 {
+		t.Fatalf("a too-small refund's deposit: did-not-count notes %d, buyer %d, staff %d; events %q", notes, buyer, staff, x.events(order))
+	}
 	if id, _ := x.stray(order); id != 0 {
 		t.Fatal("a stray refund of a too-small refund's deposit")
 	}
@@ -767,5 +769,345 @@ func TestEscrowStrayRefundHeldRetry(t *testing.T) {
 		agInt(x.testEnv, "SELECT count(*) FROM escrows WHERE order_id=$1 AND recover_requested IS NOT NULL", order) != 0 ||
 		len(strays(order)) != 1 {
 		t.Fatalf("none left: the answer to the buyer's request; events %q", x.events(order))
+	}
+}
+
+// strayTail is what a cancelled order's status says once a stray refund returns its coins (A-435), after "It is" (a
+// deposit) or "The coins in this escrow are" (a refund that failed too-small), by the stray refund's state.
+func strayTail(state, it string) string {
+	switch state {
+	case "broadcast":
+		return "being returned to the buyer's refund address by the stray refund below, which is broadcast and waits for confirmations."
+	case "confirmed":
+		return "back at the buyer's refund address: the stray refund below that returned " + it + " is confirmed."
+	}
+	return "held at the escrow address until the stray refund below, which returns " + it + " to the buyer's refund address, is signed and broadcast."
+}
+
+// tooFewStatus begins the status of a cancelled order whose refund failed too-small (A-435).
+const tooFewStatus = "Cancelled; the market could not build the refund. The coins in this escrow are "
+
+// A-435 (QA428-1): a cancelled order's refund that fails because its coins are too few to pay the network fee and the
+// minimum output leaves them out in the same step (left out, flagged, one order note and one buyer notice, staff told)
+// so a stray refund can return them together with a deposit that confirms later. Until the coins grow, the fee rate
+// falls or the buyer asks, no stray refund is requested: the refund's failure holds them as a stray refund's would
+// (A-434), so the same coins fail no second time and nobody is told again. The buyer's request builds once. Here a
+// 500000-sat deposit conflicted at the cancellation is mined to 3 confirmations: it is left out (A-428) and the stray
+// refund returns both; the order's status follows that stray refund's state (requested, broadcast, confirmed).
+func TestEscrowTooSmallRefundReturned(t *testing.T) {
+	x := newEscrowEnv(t)
+	x.user("emod_"+randomToken()[:6], "moderator")
+	refund := regtestAddr("too few refund")
+	order := x.draft()
+	addr := x.mustCheckout(order, refund)
+	tiny, big := txidOf("too few tiny "+order), txidOf("too few big "+order)
+	x.core.deposit(addr, tiny, 0, 5000, 3)
+	x.core.deposit(addr, big, 0, 500000, -2)
+	x.poll()
+	if w := x.do("POST", "/orders/cancel", x.buyerSess, url.Values{"order_id": {order}, "from": {stateAwaitingPayment}, "amount_seen": {"5000"}, "payout_confirmed": {"confirmed"}}); w.Code != 303 {
+		t.Fatalf("cancel: %d %s", w.Code, w.Body.String())
+	}
+	x.poll()
+	if _, kind, state, class := x.settlement(order); kind != "refund" || state != "failed" || class != settleTooSmall {
+		t.Fatalf("the refund: %s %s %s", kind, state, class)
+	}
+	const counted = "not spent by its refund: the market could not build the refund because the coins were too few"
+	told := func() (notes, buyer, staff int) {
+		t.Helper()
+		notes = agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND strpos(note,$2)>0", order, counted)
+		buyer = agInt(x.testEnv, "SELECT count(*) FROM notifications WHERE user_id=$1 AND strpos(body,$2)>0 AND strpos(body,$3)>0", x.buyer, shortID(order), counted)
+		staff = agInt(x.testEnv, "SELECT count(*) FROM notifications n JOIN users u ON u.id=n.user_id WHERE u.role IN ('moderator','admin') AND strpos(n.body,$1)>0 AND strpos(n.body,$2)>0",
+			"Payment review needed for order "+shortID(order), counted)
+		return
+	}
+	all := func() (notes, buyer, vendor int) {
+		notes = agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1", order)
+		buyer = agInt(x.testEnv, "SELECT count(*) FROM notifications WHERE user_id=$1 AND strpos(body,$2)>0", x.buyer, shortID(order))
+		vendor = agInt(x.testEnv, "SELECT count(*) FROM notifications WHERE user_id=$1 AND strpos(body,$2)>0", x.vendor, shortID(order))
+		return
+	}
+	if got := agStrings(t, x.testEnv, "SELECT amount||' '||flagged||' '||escrow_left_out||' '||(settlement_id IS NOT NULL) FROM payments WHERE order_id=$1 ORDER BY amount", order); !slices.Equal(got, []string{"5000 true true false", "500000 false false false"}) {
+		t.Fatalf("after the refund failed: deposits %v", got)
+	}
+	if notes, buyer, staff := told(); notes != 1 || buyer != 1 || staff == 0 {
+		t.Fatalf("told of the coins left out: notes %d, buyer %d, staff %d", notes, buyer, staff)
+	}
+	note := "1 deposit (0.00005 BTC, TESTNET regtest) to this order's escrow is not spent by its refund: the market could not build the refund because the coins were too few to pay the network fee and an output of at least 0.0001 BTC. " +
+		"It stays in the escrow; a stray refund returns it, together with any later deposit to this escrow, less the network fee, to the buyer's refund address given at checkout once together they can pay the network fee. " +
+		"The deposits: deposit " + truncate(tiny, 20) + " (0.00005 BTC). Moderator review required."
+	if agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND note=$2", order, note) != 1 {
+		t.Fatalf("the note: %q", x.events(order))
+	}
+	notes, buyer, vendor := all()
+	for range 3 {
+		x.poll()
+	}
+	if id, _ := x.stray(order); id != 0 {
+		t.Fatalf("a stray refund of the same coins: %q", agStrings(t, x.testEnv, "SELECT state||' '||build_error FROM settlements WHERE order_id=$1 AND kind='stray_refund'", order))
+	}
+	if n, b, v := all(); n != notes || b != buyer || v != vendor {
+		t.Fatalf("over three passes: notes %d (was %d), buyer %d (was %d), vendor %d (was %d); events %q", n, notes, b, buyer, v, vendor, x.events(order))
+	}
+	page := html.UnescapeString(x.page("/order?id="+order, x.buyerSess))
+	for _, want := range []string{tooFewStatus + heldWant, "Left out — not counted for the order; " + heldWant} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("held page lacks %q:\n%s", want, page)
+		}
+	}
+	if strings.Contains(page, "through the refund settlement below") || strings.Contains(page, "did not count for the order") {
+		t.Fatalf("held page:\n%s", page)
+	}
+
+	// The buyer's request builds one stray refund, which fails the same way; no pass tries again.
+	if code, body := x.recover(order, x.buyerSess, testPassword); code != 303 {
+		t.Fatalf("recover: %d %s", code, body)
+	}
+	for range 3 {
+		x.poll()
+	}
+	if got := agStrings(t, x.testEnv, "SELECT state||' '||build_error||' '||COALESCE(input_total,0) FROM settlements WHERE order_id=$1 AND kind='stray_refund'", order); !slices.Equal(got, []string{"failed " + settleTooSmall + " 5000"}) {
+		t.Fatalf("after the buyer's request: stray refunds %q", got)
+	}
+	if !slices.ContainsFunc(x.events(order), func(e string) bool {
+		return strings.Contains(e, "At the buyer's request the market tries again: the refund could not be built because the coins were too few")
+	}) {
+		t.Fatalf("the request's note: %q", x.events(order))
+	}
+
+	// The conflicted deposit is mined: left out once (A-428), and the stray refund returns both.
+	x.core.setConfs(big, 3)
+	x.poll()
+	if n, b, _ := x.uncounted(order); n != 1 || b != 1 {
+		t.Fatalf("the deposit mined since: notes %d, buyer %d", n, b)
+	}
+	sid, state := x.stray(order)
+	if state != "awaiting_signature" || agInt(x.testEnv, "SELECT count(*) FROM settlements WHERE id=$1 AND destination=$2", sid, refund) != 1 {
+		t.Fatalf("stray refund: %d %s; events %q", sid, state, x.events(order))
+	}
+	if rows := agStrings(t, x.testEnv, "SELECT role||' '||address||' '||sats FROM settlement_outputs WHERE settlement_id=$1", sid); !slices.Equal(rows, []string{"claimant " + refund + " 504472"}) ||
+		agInt(x.testEnv, "SELECT count(*) FROM payments WHERE settlement_id=$1", sid) != 2 {
+		t.Fatalf("stray refund outputs %q", rows)
+	}
+	status := func(want string) {
+		t.Helper()
+		if page := html.UnescapeString(x.page("/order?id="+order, x.buyerSess)); !strings.Contains(page, want) || strings.Contains(page, heldWant) {
+			t.Fatalf("page lacks %q:\n%s", want, page)
+		}
+	}
+	status(tooFewStatus + strayTail("awaiting_signature", "them"))
+	x.signAs(order, roleBuyer, sid)
+	x.poll()
+	if r := x.settleByID(sid); r.State != "broadcast" {
+		t.Fatalf("stray refund after the buyer signed: %+v", r)
+	}
+	status(tooFewStatus + strayTail("broadcast", "them"))
+	x.core.setTxConfs(x.settleByID(sid).TxID, 3, "")
+	x.poll()
+	if r := x.settleByID(sid); r.State != "confirmed" {
+		t.Fatalf("stray refund once mined: %+v", r)
+	}
+	status(tooFewStatus + strayTail("confirmed", "them"))
+	x.poll()
+	if notes, buyer, _ := told(); notes != 1 || buyer != 1 || agInt(x.testEnv, "SELECT count(*) FROM settlements WHERE order_id=$1", order) != 3 {
+		t.Fatalf("told again (notes %d, buyer %d), or another settlement", notes, buyer)
+	}
+
+	// A refund built after its 24-hour wait without a deposit still confirming (A-342) fails too-small: the value it
+	// records is the confirmed coins it tried, not the deposit it left out, so once that deposit confirms the coins are
+	// worth more and the stray refund returns both.
+	order = x.draft()
+	addr = x.mustCheckout(order, regtestAddr("too few bounded"))
+	x.core.deposit(addr, txidOf("bounded tiny "+order), 0, 5000, 3)
+	x.core.deposit(addr, txidOf("bounded stuck "+order), 0, 50000, 1)
+	x.poll()
+	if w := x.do("POST", "/orders/cancel", x.buyerSess, url.Values{"order_id": {order}, "from": {stateAwaitingPayment}, "amount_seen": {"55000"}, "payout_confirmed": {"confirmed"}}); w.Code != 303 {
+		t.Fatalf("bounded: cancel: %d %s", w.Code, w.Body.String())
+	}
+	x.poll()
+	rid, _, _, _ := x.settlement(order)
+	x.DB.Exec("UPDATE settlements SET created=now()-interval '25 hours' WHERE id=$1", rid)
+	x.poll()
+	if got := agStrings(t, x.testEnv, "SELECT state||' '||build_error||' '||COALESCE(input_total,0) FROM settlements WHERE id=$1", rid); !slices.Equal(got, []string{"failed " + settleTooSmall + " 5000"}) {
+		t.Fatalf("bounded: the refund %q", got)
+	}
+	x.core.setConfs(txidOf("bounded stuck "+order), 3)
+	x.poll()
+	if sid, state := x.stray(order); state != "awaiting_signature" || agInt(x.testEnv, "SELECT count(*) FROM payments WHERE settlement_id=$1", sid) != 2 {
+		t.Fatalf("bounded: once the deposit left out confirmed: stray refund %d %s; events %q", sid, state, x.events(order))
+	}
+}
+
+// A-435 (QA428-5): a cancelled order's status follows its stray refund (requested or awaiting signatures, broadcast,
+// confirmed) instead of always saying the coins are held and returned: for a deposit after the order closed and for
+// one that did not count when it was cancelled (A-428). A later conflicted deposit changes nothing; a later deposit the
+// stray refund does not spend brings back the held wording.
+func TestEscrowStrayStatusFollowsState(t *testing.T) {
+	x := newEscrowEnv(t)
+	const afterClose = "Cancelled; a deposit arrived after the order closed. It is not counted and is "
+	const leftOut = "Cancelled; a deposit to this escrow did not count for the order. It is "
+	for _, c := range []struct {
+		what, status string
+		setup        func(order, addr, txid string)
+	}{
+		{"after close", afterClose, func(order, addr, txid string) {
+			if w := x.do("POST", "/orders/cancel", x.buyerSess, url.Values{"order_id": {order}, "from": {stateAwaitingPayment}}); w.Code != 303 {
+				t.Fatalf("cancel: %d %s", w.Code, w.Body.String())
+			}
+			x.core.deposit(addr, txid, 0, 30000, 1)
+			x.poll()
+			if page := html.UnescapeString(x.page("/order?id="+order, x.buyerSess)); !strings.Contains(page, afterClose+"held at the escrow address.") {
+				t.Fatalf("confirming: page:\n%s", page)
+			}
+			x.core.setConfs(txid, 3)
+		}},
+		{"did not count", leftOut, func(order, addr, txid string) {
+			x.core.deposit(addr, txid, 0, 30000, 0)
+			x.poll()
+			x.core.setConfs(txid, -2)
+			x.poll()
+			x.DB.Exec("UPDATE escrows SET created=now()-interval '25 hours' WHERE order_id=$1", order)
+			x.DB.Exec("UPDATE payments SET created=now()-interval '25 hours' WHERE order_id=$1", order)
+			x.poll()
+			if x.state(order) != stateCancelled {
+				t.Fatalf("at the end of the window: %s", x.state(order))
+			}
+			x.core.setConfs(txid, 3)
+		}},
+	} {
+		order := x.draft()
+		addr := x.mustCheckout(order, regtestAddr("status "+c.what))
+		txid := txidOf("status " + order)
+		c.setup(order, addr, txid)
+		status := func(want string) {
+			t.Helper()
+			if page := html.UnescapeString(x.page("/order?id="+order, x.buyerSess)); !strings.Contains(page, want) {
+				t.Fatalf("%s: page lacks %q:\n%s", c.what, want, page)
+			}
+		}
+		// Still building (here its fee rate is above the cap, so it waits): it claims its deposit only once built, and
+		// the page says it holds the coins until it is signed (QA NIT-3, mutant B5).
+		e := x.A.escrow.Load()
+		t.Cleanup(func() { e.feeRate = escrowDefaultFeeRate })
+		e.feeRate = escrowMaxFeeRate + 1
+		x.poll()
+		e.feeRate = escrowDefaultFeeRate
+		sid, state := x.stray(order)
+		if state != "building" {
+			t.Fatalf("%s: stray refund over the fee cap: %d %s", c.what, sid, state)
+		}
+		status(c.status + strayTail(state, "it"))
+		x.poll()
+		if sid, state = x.stray(order); state != "awaiting_signature" {
+			t.Fatalf("%s: stray refund %d %s", c.what, sid, state)
+		}
+		status(c.status + strayTail(state, "it"))
+		x.signAs(order, roleBuyer, sid)
+		x.poll()
+		status(c.status + strayTail("broadcast", "it"))
+		x.core.setTxConfs(x.settleByID(sid).TxID, 3, "")
+		x.poll()
+		status(c.status + strayTail("confirmed", "it"))
+		// A deposit more that the escrow node reports conflicted: not counted and not returnable, so it changes nothing
+		// (QA NIT-3, mutant B3).
+		x.core.deposit(addr, txidOf("status conflicted "+order), 0, 20000, -2)
+		x.poll()
+		if agInt(x.testEnv, "SELECT count(*) FROM payments WHERE txid=$1 AND after_close AND confirmations<0 AND settlement_id IS NULL", txidOf("status conflicted "+order)) != 1 {
+			t.Fatalf("%s: the conflicted deposit is not recorded", c.what)
+		}
+		status(c.status + strayTail("confirmed", "it"))
+		// A deposit more, still confirming: the stray refund does not spend it, so the page says it is held, as before.
+		x.core.deposit(addr, txidOf("status more "+order), 0, 20000, 1)
+		x.poll()
+		status(afterClose + "held at the escrow address.")
+		if page := html.UnescapeString(x.page("/order?id="+order, x.buyerSess)); strings.Contains(page, "stray refund below that returned") {
+			t.Fatalf("%s: a deposit more still says returned:\n%s", c.what, page)
+		}
+	}
+}
+
+// A-436: a stray refund leaves out of its build an input worth no more than its own spending cost at the current fee
+// rate (105 vB at 50 sat/vB: 5250 sats) while another input remains. A 5000-sat input beside an 18000-sat one made the
+// stray refund too-small at 50 sat/vB; it is built from the 18000 alone and the 5000 stays eligible. Alone, the 5000
+// fails too-small once (held); at a lower rate with more coins it is returned too. Every input uneconomic fails
+// too-small as before (never nothing-to-settle), and the value a failure records is every eligible deposit's, skipped
+// ones included, so the skip never looks like growth.
+func TestEscrowStrayRefundSkipsDust(t *testing.T) {
+	x := newEscrowEnv(t)
+	e := x.A.escrow.Load()
+	t.Cleanup(func() { e.feeRate = escrowDefaultFeeRate })
+	closed := func(name string) (order, addr, refund string) {
+		t.Helper()
+		refund = regtestAddr("dust " + name)
+		order = x.draft()
+		addr = x.mustCheckout(order, refund)
+		if w := x.do("POST", "/orders/cancel", x.buyerSess, url.Values{"order_id": {order}, "from": {stateAwaitingPayment}}); w.Code != 303 {
+			t.Fatalf("%s: cancel: %d %s", name, w.Code, w.Body.String())
+		}
+		return
+	}
+	strays := func(order string) []string {
+		return agStrings(t, x.testEnv, "SELECT state||' '||build_error||' '||COALESCE(input_total,0)||' '||COALESCE(fee_rate,0) FROM settlements WHERE order_id=$1 AND kind='stray_refund' ORDER BY id", order)
+	}
+	e.feeRate = 50
+
+	order, addr, refund := closed("beside")
+	dust, coin := txidOf("dust "+order), txidOf("coin "+order)
+	x.core.deposit(addr, dust, 0, 5000, 3)
+	x.core.deposit(addr, coin, 0, 18000, 3)
+	x.poll()
+	sid, state := x.stray(order)
+	if state != "awaiting_signature" {
+		t.Fatalf("dust beside a refundable input: stray refunds %q", strays(order))
+	}
+	if rows := agStrings(t, x.testEnv, "SELECT role||' '||address||' '||sats FROM settlement_outputs WHERE settlement_id=$1", sid); !slices.Equal(rows, []string{"claimant " + refund + " 10050"}) ||
+		agInt(x.testEnv, "SELECT count(*) FROM payments WHERE settlement_id=$1 AND txid=$2", sid, coin) != 1 ||
+		agInt(x.testEnv, "SELECT count(*) FROM payments WHERE settlement_id IS NULL AND txid=$1 AND after_close", dust) != 1 {
+		t.Fatalf("the stray refund spends only the refundable input: outputs %q", rows)
+	}
+	x.signAs(order, roleBuyer, sid)
+	x.poll()
+	x.core.setTxConfs(x.settleByID(sid).TxID, 3, "")
+	x.poll()
+	if r := x.settleByID(sid); r.State != "confirmed" {
+		t.Fatalf("the stray refund: %+v", r)
+	}
+	// The dust alone is too few: one failure, held.
+	for range 3 {
+		x.poll()
+	}
+	if got := strays(order); !slices.Equal(got, []string{"confirmed  18000 50", "failed " + settleTooSmall + " 5000 50"}) {
+		t.Fatalf("the dust alone: stray refunds %q", got)
+	}
+	// A lower rate and more coins: the dust pays for itself again and is returned with them.
+	e.feeRate = 2
+	x.core.deposit(addr, txidOf("more "+order), 0, 20000, 3)
+	x.poll()
+	sid, state = x.stray(order)
+	if rows := agStrings(t, x.testEnv, "SELECT role||' '||address||' '||sats FROM settlement_outputs WHERE settlement_id=$1", sid); state != "awaiting_signature" ||
+		!slices.Equal(rows, []string{"claimant " + refund + " 24472"}) || agInt(x.testEnv, "SELECT count(*) FROM payments WHERE settlement_id=$1 AND txid=$2", sid, dust) != 1 {
+		t.Fatalf("a lower rate and more coins: stray refunds %q, outputs %q", strays(order), rows)
+	}
+
+	// Every input uneconomic: too-small as before, with the value of both, once.
+	e.feeRate = 50
+	order, addr, _ = closed("all dust")
+	x.core.deposit(addr, txidOf("dust a "+order), 0, 5000, 3)
+	x.core.deposit(addr, txidOf("dust b "+order), 0, 4000, 3)
+	for range 4 {
+		x.poll()
+	}
+	if got := strays(order); !slices.Equal(got, []string{"failed " + settleTooSmall + " 9000 50"}) {
+		t.Fatalf("every input uneconomic: stray refunds %q", got)
+	}
+
+	// The rest too few once the dust is skipped: the failure records both, so no pass tries again.
+	order, addr, _ = closed("rest too few")
+	x.core.deposit(addr, txidOf("dust c "+order), 0, 5000, 3)
+	x.core.deposit(addr, txidOf("small "+order), 0, 6000, 3)
+	for range 4 {
+		x.poll()
+	}
+	if got := strays(order); !slices.Equal(got, []string{"failed " + settleTooSmall + " 11000 50"}) {
+		t.Fatalf("the rest too few: stray refunds %q", got)
 	}
 }

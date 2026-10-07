@@ -595,7 +595,7 @@ Operational limits to accept before enabling payments:
 - A credited deposit that later conflicts, disappears or drops below the confirmation threshold (a reorg) holds the order's unsent payout and, while the order is open or any of its payouts is unsent (including an overpayment return after the release was sent), is announced once per episode to the order history, the buyer, the vendor and every moderator and administrator not party to the order and not suspended; staff can then read the order and find it under *Payment review*. The payout resumes automatically once the deposit confirms again, however old the order, which ends the episode; a later regression is announced again. The order state is never reverted automatically. On *Payouts* such a held payout shows the deposit, its address and confirmations instead of a *Release* form.
 - A payout is sent only in a watcher pass that has just read its order's deposit address from the wallet, so a deposit reversed while the payout waited (blocked, held or failed, then released or requeued) is caught before the send. Orders with a payout waiting to be sent are watched whatever their age, so a released payout normally goes out on the next pass.
 - Funded orders that are not yet completed, cancelled or resolved stay watched for as long as they are open. A deposit first seen after an order was funded is noted once in the order history and to the buyer and vendor; it is part of the order's settlement (a release with any excess returned to the buyer, or a refund) if it has the confirmation threshold when the order settles; otherwise it is not paid out automatically (see late deposits below).
-- Late deposits: every cancelled, completed or resolved order's address is watched until it is **30 days** old. A deposit recorded before a cancellation that refunded nothing is refunded to the buyer when it confirms (blocked until the buyer saves an address). Anything first seen after the order closed (a buyer topping up an underpaid order after the payment window cancelled and refunded it, a stray payment to an old address) and extra funds that confirm after the order's settlement was queued are **never paid out or refunded automatically**: they are flagged for payment review, and the buyer's order page shows them as "Arrived after the order closed — not paid out; market staff notified". The buyer is notified once per episode with the amount (not the transaction ID; the vendor is not told) and each moderator and administrator once, however many transactions arrive; return the funds by hand from the wallet and record it on the moderation desk (*Payment review → Record the review → refunded by hand*, or *no action* with a reason; a moderator may escalate to an administrator). The buyer's page then shows the outcome instead of "market staff notified", and a later deposit starts a new notice episode ([runbook](testnet-runbook.md#handle-a-payment-review-flag)). Deposits to older addresses are not seen by the watcher (unless the order still has a payout waiting to be sent or held, or changed in the last 24 hours); handle them by hand from the wallet. The watch set is therefore about 30 days of orders: each pass makes one Bitcoin `listreceivedbyaddress` per 200 addresses plus one `gettransaction` per deposit transaction to them (Monero: one `get_transfers` per 200 addresses); keep the node local.
+- Late deposits: every cancelled, completed or resolved order's address is watched until it is **30 days** old. A deposit recorded before a cancellation that refunded nothing is refunded to the buyer when it confirms (blocked until the buyer saves an address). Anything first seen after the order closed (a buyer topping up an underpaid order after the payment window cancelled and refunded it, a stray payment to an old address) and extra funds that confirm after the order's settlement was queued are **never paid out or refunded automatically**: they are flagged for payment review, and the buyer's order page shows them as "Arrived after the order closed — not paid out; market staff notified". The buyer is notified once per episode with the amount (not the transaction ID; the vendor is not told) and each moderator and administrator once, however many transactions arrive; return the funds by hand from the wallet and record it on the moderation desk (*Payment review → Record the review → refunded by hand*, or *no action* with a reason; a moderator may escalate to an administrator). The buyer's page then shows the outcome instead of "market staff notified", and a later deposit starts a new notice episode once no late flag of the order is open on the desk (an open locked transfer, payout below the minimum, credited deposit or escrow deposit spent outside the market does not hold the episode; a flag that holds it is always one staff can record, QA462C, QA462D-1) ([runbook](testnet-runbook.md#handle-a-payment-review-flag)). Deposits to older addresses are not seen by the watcher (unless the order still has a payout waiting to be sent or held, or changed in the last 24 hours); handle them by hand from the wallet. The watch set is therefore about 30 days of orders: each pass makes one Bitcoin `listreceivedbyaddress` per 200 addresses plus one `gettransaction` per deposit transaction to them (Monero: one `get_transfers` per 200 addresses); keep the node local.
 - Monero transfers with a non-zero `unlock_time` (locked transfers) are recorded and shown, but never counted toward payment or paid out. The order history notes "locked transfer ignored" once and moderators and the buyer are notified.
 - Recipients must save a payout address on their account page. Payouts wait ("blocked") until they do. Saving or removing a payout address needs the current password, plus an authenticator code when TOTP is enrolled, and notifies the account (naming the currency, not the address).
 - Saving a payout address never moves an unsent payout that already has one, since anyone with the account's password can save an address. The notification names the orders instead: "N unsent payout(s) still use your previous address (orders …); an administrator must confirm the change" for held payouts and definite failures, and separately those queued, being sent or possibly broadcast, which stay on the previous address. On *Payouts*, a held payout or a failure the wallet rejected before broadcast whose recipient has since saved a different address offers *Use the account's current address*: it shows both addresses and when the saved one last changed, needs your password and the "Current address checked" confirmation after you check the address with the account owner through a channel you trust, audits the old and new address, and changes only the destination (release or requeue it afterwards). A payout being sent, stuck in sending, with an unknown send outcome, or held or marked by a restore from backup is never moved; the server refuses it (409) ([runbook](testnet-runbook.md#5-recover-a-held-or-failed-payout)).
@@ -676,8 +676,8 @@ has run on a public test network. Never switch it on for a market that takes rea
   pooled order is, and its refund requested; the buyer is told. A top-up within the window still completes it. A
   deposit Core reports as conflicted (negative confirmations), or no longer lists, does not count, so it does not keep
   the order open; if it confirms after the order was cancelled and no refund spends it, it is returned by a stray
-  refund (*Stray refunds* below; A-428), except on an order whose refund failed because the escrow's coins were too
-  few: there it stays in the escrow and is not returned automatically (see *Stray refunds*; A-435).
+  refund (*Stray refunds* below; A-428), on an order whose refund failed because the escrow's coins were too few
+  together with those coins (A-435; on an order decided for the buyer too, A-437).
 - **Fingerprint pin.** At the first start with escrow on, the app reads the arbiter wallet's master key fingerprint
   (from a fresh change address, with `getrawchangeaddress` and `getaddressinfo`) and pins it in the database
   (`settings` key `escrow_btc_arbiter_fingerprint`). If a later start finds another fingerprint, for example a
@@ -711,7 +711,16 @@ has run on a public test network. Never switch it on for a market that takes rea
   episode (not the vendor) and each moderator and administrator once. The order page's escrow status reads
   "Cancelled; a deposit arrived after the order closed …". The coins are not in the pooled wallet: the moderation
   desk does not offer *refunded by hand* for an escrow deposit (and refuses one, 409); record *no action* once the
-  stray refund has returned it, or escalate.
+  stray refund has returned it, or escalate. A deposit left out of its settlement before the close, credited or not (a
+  refund too few could not spend it, so it no longer counts: QA462D-2), is listed as "Escrow deposit left out of its
+  settlement", dated by the note naming it, and handled the same way; one spent outside the market is open and
+  recordable, credited or not, but its coins are gone and it does not hold the notice episode (QA462D-1). An escrow
+  deposit that counts for the order (credited, or recorded before the close and still confirming at funding) is never
+  open: the desk says the order's release or refund settles it, offers no form, refuses a review (409), and its flag
+  does not hold the notice episode open, so a later deposit after the close is announced again once staff recorded
+  every open late flag (QA462C).
+  On a Monero escrow a waiting settlement does not flag a deposit recorded after the close: it is flagged when it is
+  announced, so the buyer is told of it once even when the stray refund that returns it waits (QA462C-4).
 - **Site-wide notices.** With escrow on, the footer, catalog, listing and draft notices say Bitcoin escrow runs on
   regtest even when no pooled provider is configured, and the vendor desk's *Bitcoin escrow* tile counts the viewer's
   escrow orders that may hold coins (with `ESCROW_BTC` off too), so no page says escrow is inactive or no funds are
@@ -819,7 +828,10 @@ broadcast.
   "escrow: settlement of order … not built yet: <class>" once per change, never a key, address or PSBT. An escrow
   too small to pay the fee and an output of at least 0.0001 BTC fails ("not built"), with a note and a notice to both
   parties; its coins stay in the escrow, where the buyer and the vendor can move them together from their own
-  wallets.
+  wallets. A refund that fails so, on a cancelled order or one whose dispute was decided for the buyer, also leaves
+  those coins out for a stray refund (flagged, one note, the buyer and staff told; *Stray refunds* below, A-435,
+  A-437). A release that fails so (a completed order, or one decided for the vendor) leaves them counted: they are
+  the vendor's, and only the two parties are told.
 - *Signing.* Each party sees the expected outputs (address, amount and whom each pays, and the network fee) and its
   own copy of the PSBT, with its key's origin and the other keys bare, in the page and as a download. Either party
   signs it in Bitcoin Core (`walletprocesspsbt` without finalizing, or the GUI's PSBT dialog) and pastes it back. The
@@ -907,7 +919,22 @@ broadcast.
   (409) once both parties' signatures or the network have made it final. Until the settlement of the decision has a stored final transaction, an administrator who is not a party
   may change the decision on the order page (*Change the decision*, with a reason and their password): the
   settlement of the old decision is *superseded* (it and its signatures are kept as a record and never used; its
-  deposits are freed) and the new one requested; both parties are notified and the change is audited. Once the
+  deposits are freed) and the new one requested; both parties are notified and the change is audited. This holds
+  for a settlement never built too: one still being built (waiting for a deposit to confirm, or not yet tried) or one
+  that failed, for example because the coins were too few (migration 087, A-462). When the old decision was a refund
+  whose too-small failure left its deposits out for a stray refund, those deposits count for the order again (an
+  order note says so) and the vendor's release includes them; no stray refund returns them. Their flag and any review
+  recorded on it are cleared (the order history keeps the review): should a later change leave them out again, that is
+  a new, open flag to record (QA462E-1). Deposits left out for any
+  other reason (by the bounded wait, or one that did not count when the dispute was decided) stay for a stray refund
+  to the buyer. A release that fails because the coins are too few tells staff once ("Payment review needed", A-461),
+  as a refund that fails so does, with an order note naming the deposits it tried and any other credited deposit it
+  flags, and flags the order's credited deposits (those it was funded with, also when it tried none of them, QA462C-2),
+  so staff can open the order (also a completed order never disputed) and the moderation desk lists them, dated by that
+  note, after the open flags, as escrow deposits counted for the order with no action offered; a deposit it
+  tried that counts for the order but was not credited (still confirming, or conflicted, when the escrow was funded,
+  and mined since) is not flagged, and should another check flag one, the desk says it is counted for the order,
+  offers no action either and refuses a review (409). Its coins stay counted for the vendor until the decision is changed. Once the
   settlement is signed by the market (or both parties), broadcast, confirmed or spent outside the market, the
   decision is fixed (409).
 - *Stray refunds.* Escrows stay imported in the watch-only wallet with no age limit. Coins first recorded at an escrow
@@ -928,12 +955,25 @@ broadcast.
   they are too few to return after the network fee (A-434).
   Lowering `ESCROW_BTC_FEE_RATE` below the rate that failed, or the buyer's *Recover coins at this escrow* (one build
   per request, whatever the coins are worth), tries again; if that fails too it is noted and told like the first.
-  Not returned automatically (A-435): a deposit that did not count (conflicted, or no longer listed) on a cancelled
-  order whose refund failed because the escrow's coins were too few. It is not left out or flagged and staff are not
-  told; the order page lists it as a confirmed deposit, its status still points to the refund, whose line says the
-  coins stay in the escrow, and the buyer's *Recover coins at this escrow* reports that no coins were found. The
-  market cannot move it on its own (it holds one of the three keys): the buyer and the vendor can move the escrow's
-  coins together from their own wallets, as the refund's note says.
+  An order cancelled (A-435), or decided for the buyer (A-437), whose refund failed because the escrow's coins were
+  too few: the failure leaves those coins out (flagged once: an order note saying the refund could not be built because they were too few, the buyer
+  and staff told) and holds them as a failed stray refund's coins are held, so no stray refund of the same coins is
+  requested; the failure is the latest word on them also when a stray refund of other coins (a deposit after the
+  close) was requested and built while the refund still waited, so those coins fail too-small once. A stray refund
+  requested while the refund waited but still being built when the refund fails (both in the same pass) adds those
+  coins to its own: built, it returns them, and the refund's failure then holds nothing more (a later deposit gets its
+  own stray refund; a coin of the refund's it leaves out, beyond the 50 largest or worth less than its own spending
+  cost, gets one more try, failing too-small once if it is still too few, and is then held); failing too-small, it makes the same coins fail a second time, at the grown value, after which
+  they are held. A later deposit left out on that order (one that did not count at the cancellation or the decision
+  and has confirmed since, noted as above) makes them worth more: the next pass requests a stray refund of them all.
+  The order page reads "Cancelled; the market could not build the refund …", or on an order decided for the buyer
+  "The dispute was decided for the buyer, but the market could not build the refund …". On a database upgraded from
+  before A-435 (a cancelled order) or A-437 (decided for the buyer), the deposits of an order whose refund had already
+  failed so are left out, with the same note, by the first pass that reads its escrow (at the latest the daily
+  check). A stray refund leaves out of its build a deposit worth no more
+  than its own spending cost at the current fee rate (105 vB times `ESCROW_BTC_FEE_RATE`) while another deposit
+  remains; the deposit left out stays for a later stray refund (A-436). A cancelled order's status follows its stray
+  refund: held, awaiting signatures, broadcast, then confirmed.
 
 **Physical orders (Phase 2).** Everything above applies to physical listings too, with these additions. All of it is
 regtest only, behind `ESCROW_BTC`, and tested as [per-order escrow](escrow.md#phase-2-bitcoin-escrow-for-physical-orders-on-regtest)
@@ -1367,6 +1407,10 @@ the market (the order page says so); a destroyed wallet is never opened again.
   deposit the database refused as another order's account, coins at an account no order claimed or at account 0 (which the
   market never spends), a settlement whose build failed a check (the fee above `ESCROW_XMR_MAX_FEE`, a claimant output below
   0.001 XMR, a transaction that does not match its plan, an address mismatch) and a settlement spent outside the market.
+  A refund whose claimant output would be below 0.001 XMR (on a cancelled order or one decided for the buyer, with no
+  deposit it would spend still confirming) does not wait: it ends (failed, too-small) and its deposits are left out for
+  the stray refund, which returns them with any later deposit once together they pay the fee; the parties and staff
+  are told once (A-437). A refund already waiting so when you upgrade ends on the next pass.
 
 **Switching it off with orders open.** Setting `ESCROW_XMR` back to `off` moves no coins and closes no order, but it stops the
 Monero escrow watcher: deposits are not read, nothing is built or sent, and each order page says so. Release deadlines are

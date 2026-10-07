@@ -88,8 +88,11 @@ type EvidenceHolder struct {
 type DisputeEvidence struct{ Buyer, Vendor []EvidenceHolder }
 
 // PaymentReview is one deposit the payment watcher flagged for staff review (payments.flagged) with no recorded
-// disposition, or one escalated to an administrator (A-31). Open: a locked transfer, a late deposit or a deposit of
-// a payout below the minimum, or a credited deposit in an announced regression that has not confirmed again.
+// disposition, or one escalated to an administrator (A-31). Open (paymentFlagOpenRule): a locked transfer, a late
+// deposit or a deposit of a payout below the minimum, a credited deposit in an announced regression that has not
+// confirmed again, or an escrow deposit recorded after the order closed, left out of its settlement (credited or not)
+// or spent outside the market; an escrow deposit that counts for the order is never open (its release or refund
+// settles it). Reason names which, the escrow ones included (loadPaymentReviews).
 // ID is payments.id. Party: the viewer is the order's buyer or vendor. Form: the viewer may record the disposition
 // (open, not a party, and an administrator when Escalated). Refundable: not credited and not an escrow deposit, so
 // "refunded by hand" applies (A-330: an escrow deposit is returned by a stray refund). Escrow: an escrow order's deposit.

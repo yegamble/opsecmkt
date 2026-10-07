@@ -3,6 +3,7 @@ package market
 import (
 	"database/sql"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -21,6 +22,63 @@ func init() {
 	registerAction("/moderator/payment-review", actionSpec{Roles: []string{"moderator", "admin"}, OwnTx: true, Run: paymentReviewAction})
 	registerLoader("moderator", adminConfirmLoader)
 }
+
+// paymentFlagOpenRule is the one rule (QA462C) deciding whether a payment flag is open, as SQL over a payments row
+// whose alias is "@" (paymentFlagOpen substitutes it). The moderation desk lists a flag as open and offers its form
+// (loadPaymentReviews), the review handler records a disposition only on an open flag (recordPaymentReview), and a
+// late-deposit notice episode is held only by an open flag of a deposit neither credited, nor below the floor, nor
+// locked, nor spent outside the market (flagLateDeposits), so a flag that holds it is always one staff can record. A
+// flag is open until staff record its disposition (A-31: no action or refunded by hand; one escalated to an
+// administrator stays open) while its deposit is a locked transfer, of a payout below the minimum automatic payout
+// (A-99), a credited deposit whose regression was announced and has not confirmed again (regress_notice), an escrow
+// deposit spent outside the market (P1-d1), an escrow deposit left out of its settlement, credited or not (it no
+// longer counts: a stray refund returns it, QA462D-2), or a deposit not credited that does not count for the order: a
+// pooled one (after settlement or after the close), or an escrow one recorded after the close. An escrow deposit that
+// counts for the order is not open, credited or not (QA462B-1): it is settled by the order's release or refund, never
+// by staff.
+const paymentFlagOpenRule = `@.flagged AND @.disposition IN ('','escalated') AND (@.locked OR @.below_floor OR @.regress_notice OR @.spent_outside
+	OR @.escrow_left_out OR NOT @.credited AND (@.after_close OR NOT EXISTS (SELECT 1 FROM escrows es WHERE es.order_id=@.order_id)))`
+
+// newFlagSQL sets a payments row's flag as a new one in an UPDATE: flagged with no recorded disposition (A-31), so the
+// review its "Moderator review required." note asks for is open on the desk and recordable (QA462E-1). The order
+// history and the audit log keep any earlier review. Every flag write uses it unless it touches only unflagged rows,
+// which never carry a disposition: a disposition is recorded only on a flagged row, and countAgain, the only write that
+// unflags one, clears it too. A deposit refunded by hand is never flagged again: it is pooled, never counted for a
+// payout (payoutBasis), never left out, and escrow deposits are never refunded by hand.
+const newFlagSQL = "flagged=true,disposition='',disposition_note='',disposed_at=NULL"
+
+// depositName names a deposit in a flag note as flagLateDeposits does, "deposit <truncate(txid, 20)> (<amount> <cur>)",
+// so that the note dates its flag on the desk (loadPaymentReviews matches the truncated txid between spaces).
+func depositName(txid string, amt int64, cur string) string {
+	return "deposit " + truncate(txid, 20) + " (" + amount(amt, currencyDecimals(cur)) + " " + cur + ")"
+}
+
+// scanNamed reads rows of (txid, amount) of the deposits a write just flagged, in cur, and names each (depositName),
+// sorted, so that a note naming them dates their flags on the desk (QA462E-2); sum is their total. It closes rows.
+func scanNamed(rows *sql.Rows, cur string) (named []string, sum int64, err error) {
+	defer rows.Close()
+	for rows.Next() {
+		var txid string
+		var amt int64
+		if err = rows.Scan(&txid, &amt); err != nil {
+			return nil, 0, err
+		}
+		named, sum = append(named, depositName(txid, amt, cur)), sum+amt
+	}
+	slices.Sort(named)
+	return named, sum, rows.Err()
+}
+
+// namedSentence is the sentence of a flag note naming the deposits it flags (" The deposits: …."), or "" for none.
+func namedSentence(named []string) string {
+	if len(named) == 0 {
+		return ""
+	}
+	return " The deposits: " + strings.Join(named, ", ") + "."
+}
+
+// paymentFlagOpen is paymentFlagOpenRule over the payments row aliased alias.
+func paymentFlagOpen(alias string) string { return strings.ReplaceAll(paymentFlagOpenRule, "@", alias) }
 
 // reviewOutcomes names each disposition in order events, notifications and audit rows.
 var reviewOutcomes = map[string]string{"no_action": "no action", "refunded": "refunded to the buyer by hand", "escalated": "escalated to an administrator"}
@@ -95,9 +153,9 @@ func recordPaymentReview(c *actionCtx, id int64, outcome, note, refundTxid strin
 	}
 	var txid, disposition string
 	var idx, deposit int64
-	var credited, locked, regressed, belowFloor bool
-	if err = tx.QueryRowContext(ctx, "SELECT txid,idx,amount,credited,locked,regress_notice,below_floor,disposition FROM payments WHERE id=$1 AND order_id=$2 FOR UPDATE", id, o.ID).
-		Scan(&txid, &idx, &deposit, &credited, &locked, &regressed, &belowFloor, &disposition); err != nil {
+	var credited, open bool
+	if err = tx.QueryRowContext(ctx, "SELECT p.txid,p.idx,p.amount,p.credited,p.disposition,"+paymentFlagOpen("p")+" FROM payments p WHERE p.id=$1 AND p.order_id=$2 FOR UPDATE OF p", id, o.ID).
+		Scan(&txid, &idx, &deposit, &credited, &disposition, &open); err != nil {
 		return actionResult{}, err
 	}
 	switch {
@@ -105,18 +163,24 @@ func recordPaymentReview(c *actionCtx, id int64, outcome, note, refundTxid strin
 		return actionResult{}, fail(409, "This payment review was already recorded ("+reviewOutcomes[disposition]+"); see the order history. Nothing was changed.")
 	case disposition == "escalated" && c.User.Role != "admin":
 		return actionResult{}, fail(409, "This payment review was escalated to an administrator, who records the outcome. Nothing was changed.")
-	case !(locked || !credited || regressed || belowFloor):
-		// The desk's open-flag rule (loadPaymentReviews): a credited deposit that confirmed again closed its flag.
-		return actionResult{}, fail(409, "This flag is no longer open: its credited deposit confirmed again. Nothing was changed.")
-	case outcome == "refunded" && credited:
-		return actionResult{}, fail(409, "This deposit is counted toward the order's payout, so it is settled through that payout and never refunded by hand (that could pay it twice). Nothing was changed.")
+	case !open && !credited:
+		// The open-flag rule (paymentFlagOpenRule, as the desk reads it): an escrow deposit that counts for the order is
+		// never open, credited or not (QA462B-1).
+		return actionResult{}, fail(409, "This flag is not open: its escrow deposit counts for the order, so there is nothing to review. Nothing was changed.")
+	case !open:
+		// The open-flag rule: a credited deposit's flag is not open once a regression confirmed again, nor when it was
+		// never a regression (the flag of a release too few, A-461, only lets staff open the order).
+		return actionResult{}, fail(409, "This flag is not open: its deposit is credited toward the order, which settles it, and no announced regression of it is still open, so there is nothing to review. Nothing was changed.")
 	case outcome == "refunded" && o.Escrow:
-		// A-330: an escrow deposit is in the order's escrow, never in a wallet staff could refund it from.
+		// A-330: an escrow deposit is in the order's escrow, never in a wallet staff could refund it from; a credited one
+		// left out of its settlement no longer counts for the order (QA462D-2), so this, not the payout, is the reason.
 		coin := "Bitcoin"
 		if o.Currency == "XMR" {
 			coin = "Monero"
 		}
 		return actionResult{}, fail(409, "This deposit is in the order's "+coin+" escrow, not in a market wallet, so it is never refunded by hand: a stray refund from the escrow returns it to the buyer's refund address. Record no action, or escalate. Nothing was changed.")
+	case outcome == "refunded" && credited:
+		return actionResult{}, fail(409, "This deposit is counted toward the order's payout, so it is settled through that payout and never refunded by hand (that could pay it twice). Nothing was changed.")
 	}
 	var admins []string
 	if outcome == "escalated" {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"html"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -381,6 +382,11 @@ func TestXMREscrowFeeCapAndFloor(t *testing.T) {
 	x.mustPoll()
 	if x.settlement(sid).State != "requested" || x.waitClass(sid) != xmrTooSmall || x.fake.countOf("relay_tx") != 1 || x.staffFlags(small) != 1 {
 		t.Fatalf("below the floor: %s %q", x.settlement(sid).State, x.waitClass(sid))
+	}
+	// QA462E-3: the wait's note names the deposit it flags, so the desk dates the flag.
+	_, mod := x.user("fcmod_"+randomToken()[:6], "moderator")
+	if row := flagRow(html.UnescapeString(x.page("/moderator", mod)), hex64("small "+small)); !flaggedAt.MatchString(row) || !strings.Contains(row, "Escrow deposit counted for the order (credited toward its funding); the order's release or refund settles it") {
+		t.Fatalf("below the floor: the credited deposit on the desk: %s\nevents %q", row, x.events(small))
 	}
 }
 
@@ -826,6 +832,11 @@ func TestXMREscrowVendorDecisionNote(t *testing.T) {
 	}
 }
 
+// xmrPanelBanned finds Bitcoin wording, script or inline widths in a Monero settlement panel: the Bitcoin words as
+// whole words and "sign" at the start of one (sign, signed, signature, co-sign), so a base58 address or a transaction
+// hash, one word that starts with a digit, never matches by containing them (A-469).
+var xmrPanelBanned = regexp.MustCompile(`\b(?:Bitcoin|BTC|regtest|PSBT)\b|\bsign|<script|style=|width=`)
+
 // The settlement on the order page: its kind, state and transaction, each output in XMR to 12 decimals, the network
 // fee and the confirmations; an output's address only to the party it pays; no Bitcoin words, no script, no inline
 // widths (the Bitcoin settlement's 320 px-safe markup).
@@ -851,9 +862,9 @@ func TestXMREscrowSettlementPanel(t *testing.T) {
 	if strings.Contains(buyer, claim) || !strings.Contains(buyer, "(shown only to its recipient)") {
 		t.Fatalf("the buyer sees the vendor's claim address:\n%s", buyer)
 	}
-	for _, banned := range []string{"Bitcoin", "BTC", "regtest", "PSBT", "sign", "<script", "style=", "width="} {
-		if strings.Contains(vendor, banned) || strings.Contains(buyer, banned) {
-			t.Fatalf("the Monero settlement says %q", banned)
+	for _, p := range []string{vendor, buyer} {
+		if w := xmrPanelBanned.FindString(p); w != "" {
+			t.Fatalf("the Monero settlement says %q:\n%s", w, p)
 		}
 	}
 	x.fake.mine(100)
@@ -861,6 +872,28 @@ func TestXMREscrowSettlementPanel(t *testing.T) {
 	x.mustPoll()
 	if p := x.panel(order, vendorSess); !strings.Contains(p, "Confirmed on the fakechain network") || !strings.Contains(p, "At least 100 (no longer followed)") {
 		t.Fatalf("confirmed:\n%s", p)
+	}
+	// A-469: a base58 Monero address may contain "BTC" (or "sign"); that is no Bitcoin wording. This claim address
+	// does, deterministically.
+	o2, _, _ := x.completed()
+	btcLike := testXMRAddr("claim BTC 873", true)
+	if !strings.Contains(btcLike, "BTC") || xmrPanelBanned.MatchString(btcLike) {
+		t.Fatalf("the address does not contain BTC, or contains it as a word: %s", btcLike)
+	}
+	for _, w := range []string{"Bitcoin", "0.001 BTC", "BTC.", "the PSBT", "regtest", "sign it", "co-sign", "signed", "signatures", "<script>", `style="`, `width="`} {
+		if !xmrPanelBanned.MatchString("a " + w + " b") {
+			t.Fatalf("Bitcoin wording %q not caught", w)
+		}
+	}
+	var id2 int64
+	if err := x.DB.QueryRow("INSERT INTO xmr_settlements(order_id,kind,destination) VALUES($1,'release',$2) RETURNING id", o2, btcLike).Scan(&id2); err != nil {
+		t.Fatal(err)
+	}
+	x.mustPoll()
+	if p := x.panel(o2, x.sessOf(o2, roleVendor)); !strings.Contains(p, btcLike) || !strings.Contains(p, "Sent to the fakechain network") {
+		t.Fatalf("the panel with the address:\n%s", p)
+	} else if w := xmrPanelBanned.FindString(p); w != "" {
+		t.Fatalf("the Monero settlement paying %s says %q", btcLike, w)
 	}
 }
 
