@@ -25,6 +25,7 @@ func init() {
 	registerLoader("disputes", loadDisputes)
 	registerLoader("moderator", loadDisputes)
 	registerLoader("moderator", loadPaymentReviews)
+	registerLoader("moderator", loadEscrowAlerts)
 
 	registerPreview("order", previewOrder)
 	registerPreview("product", previewReviews)
@@ -106,8 +107,9 @@ func eventActor(handle string, system bool, actorID string, o *Order) string {
 }
 
 // staffReviewer: a moderator or administrator who is not party to the order may read it (never act on it
-// from the order page) once it is disputed, keep reading it after resolution, and read any order with a
-// payment flagged for review (payments.flagged, set by the watcher's flagOrder).
+// from the order page) once it is disputed, keep reading it after resolution, read any order with a
+// payment flagged for review (payments.flagged, set by the watcher's flagOrder), and read an escrow order
+// while it has an open staff alert (escrowStaffAlert, A-470). orderReadable is the same rule in SQL.
 func staffReviewer(ctx context.Context, a *App, o *Order, u *User) (bool, error) {
 	if u == nil || u.ID == o.BuyerID || u.ID == o.VendorID || (u.Role != "moderator" && u.Role != "admin") {
 		return false, nil
@@ -116,8 +118,58 @@ func staffReviewer(ctx context.Context, a *App, o *Order, u *User) (bool, error)
 		return true, nil
 	}
 	var flagged bool
-	err := a.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM payments WHERE order_id=$1 AND flagged)", o.ID).Scan(&flagged)
+	err := a.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM payments WHERE order_id=$1 AND flagged) OR "+escrowStaffAlert("$1"), o.ID).Scan(&flagged)
 	return flagged, err
+}
+
+// escrowStaffAlert is SQL that is true while the escrow order whose id is the SQL expression order has an open staff
+// alert (A-470): an escrow notice flagOrder sent to every moderator and administrator that has not cleared. Staff may
+// read the order (staffReviewer, orderReadable) while it is open, whether or not a deposit is flagged; no action is
+// offered for it. Each alert is read from the state that opens and clears it, never from a column of its own:
+//   - the broadcast stall (A-441, escrow_stall.go): a settlement in state broadcast whose latest stall or seen note is
+//     the stall note (escrowStalledSQL); it clears when the watch-only wallet sees the transaction (the seen note) or
+//     the settlement leaves broadcast (confirmed, or spent outside the market, which flags the deposits);
+//   - a release too few (A-461, failSettlement): a release that failed too-small, as long as it stands (state failed);
+//     it clears when the release is superseded (an administrator's changed dispute decision, escrow_decision.go). Its
+//     deposits are flagged as well (QA462-3), and those flags are never open (paymentFlagOpenRule), so no review of
+//     them clears it.
+//
+// A new escrow notice through flagOrder either flags the deposits it concerns (as every other one does) or adds its
+// open state here, and its reason to the moderation desk's list (loadEscrowAlerts).
+func escrowStaffAlert(order string) string {
+	return "EXISTS(SELECT 1 FROM settlements s WHERE s.order_id=" + order + " AND (s.state='broadcast' AND " + escrowStalledSQL +
+		" OR s.kind='release' AND s.state='failed' AND s.build_error='" + settleTooSmall + "'))"
+}
+
+// escrowAlertLimit bounds the moderation desk's list of escrow orders with an open staff alert.
+const escrowAlertLimit = 100
+
+// loadEscrowAlerts lists, on the moderation desk, the escrow orders with an open staff alert (escrowStaffAlert, the
+// rule that lets staff read them), each linked to its order page, so that a moderator can open one from the notice: a
+// notification names only a short order ID, and a stall flags no deposit, so the payment review list does not show it.
+// Nothing here is an action.
+func loadEscrowAlerts(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
+	if d.User == nil || (d.User.Role != "moderator" && d.User.Role != "admin") {
+		return nil
+	}
+	rows, err := a.db.QueryContext(ctx, `SELECT o.id,o.state,
+		EXISTS(SELECT 1 FROM settlements s WHERE s.order_id=o.id AND s.state='broadcast' AND `+escrowStalledSQL+`),
+		EXISTS(SELECT 1 FROM settlements s WHERE s.order_id=o.id AND s.kind='release' AND s.state='failed' AND s.build_error='`+settleTooSmall+`')
+		FROM orders o WHERE o.id IN (SELECT order_id FROM settlements WHERE state IN ('broadcast','failed')) AND `+escrowStaffAlert("o.id")+`
+		ORDER BY o.created,o.id LIMIT $1`, escrowAlertLimit)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var v EscrowAlertView
+		if err = rows.Scan(&v.ID, &v.State, &v.Stall, &v.TooFew); err != nil {
+			return err
+		}
+		v.State = stateLabel(v.State)
+		d.EscrowAlerts = append(d.EscrowAlerts, v)
+	}
+	return rows.Err()
 }
 
 // disputeVisible: the order is or was disputed, so a reviewer may also read its digital delivery.

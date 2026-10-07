@@ -156,9 +156,11 @@ func pageSlice(d *PageData, all []Product, raw string) []Product {
 
 // orderReadable is the order page's read rule over orders o joined to products p, for the viewer's id and role
 // (SQL placeholders): the buyer and the vendor, and a moderator or administrator while the order is disputed or
-// resolved or has a payment flagged for review. An archived listing's product page uses the same rule (A-164).
+// resolved, has a payment flagged for review or is an escrow order with an open staff alert (escrowStaffAlert, A-470).
+// An archived listing's product page uses the same rule (A-164).
 func orderReadable(viewer, role string) string {
-	return "(o.buyer_id=" + viewer + " OR p.vendor_id=" + viewer + " OR (" + role + " IN ('moderator','admin') AND (o.state IN ('disputed','resolved') OR EXISTS(SELECT 1 FROM payments pm WHERE pm.order_id=o.id AND pm.flagged))))"
+	return "(o.buyer_id=" + viewer + " OR p.vendor_id=" + viewer + " OR (" + role + " IN ('moderator','admin') AND (o.state IN ('disputed','resolved') OR EXISTS(SELECT 1 FROM payments pm WHERE pm.order_id=o.id AND pm.flagged) OR " +
+		escrowStaffAlert("o.id") + ")))"
 }
 
 // load fills generic page data, then runs registered loaders (routes.go).
@@ -279,13 +281,13 @@ func (a *App) load(r *http.Request, d *PageData) error {
 	if d.User != nil {
 		switch d.Page {
 		case "orders", "order", "disputes":
-			// No admin order list (A-127): staff see an order only while it is disputed or resolved or a payment
-			// on it is flagged (A-24, /canary#records).
+			// No admin order list (A-127): staff see an order only while it is disputed or resolved, a payment on it
+			// is flagged (A-24, /canary#records) or it is an escrow order with an open staff alert (A-470).
 			query := orderQuery + " WHERE (o.buyer_id=$1 OR p.vendor_id=$1)"
 			args := []any{d.User.ID}
 			if d.Page == "order" {
-				// Moderators and administrators may also open disputed or resolved orders, and orders with a payment
-				// flagged for review, read-only (orders_load.go).
+				// Moderators and administrators may also open disputed or resolved orders, orders with a payment
+				// flagged for review and escrow orders with an open staff alert, read-only (orders_load.go).
 				query = orderQuery + " WHERE " + orderReadable("$1", "$3") + " AND o.id=$2"
 				args = append(args, r.URL.Query().Get("id"), d.User.Role)
 			}

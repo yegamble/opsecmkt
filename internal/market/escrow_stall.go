@@ -21,7 +21,8 @@ import (
 //     bumps', settlementAttempts) the watch-only wallet has seen escrowStallBlocks blocks after it was broadcast raises
 //     one staff notice (flagOrder: an order note starting escrowStallMark and a notification to each moderator and
 //     administrator), and staff see a "queued or stuck: not seen by the network" line on /admin under Payment providers
-//     and on the order page, until the wallet sees one of them: then one order note starting escrowSeenMark clears it.
+//     (linking the order) and on the order page, which they may read while the alert is open (escrowStaffAlert, A-470),
+//     until the wallet sees one of them: then one order note starting escrowSeenMark clears it.
 //     No settlement state is added (migration 074's CHECK): the state stays broadcast and the stored transaction is
 //     sent again on each pass exactly as before. Which alert is open is read from those two notes (escrowStalledSQL);
 //     the height from which a transaction went unseen is kept in memory only, so after a restart the count starts again
@@ -144,7 +145,7 @@ func (a *App) escrowStalls(ctx context.Context) ([]EscrowStallView, error) {
 		if err = rows.Scan(&order, &kind, &v.TxID); err != nil {
 			return nil, err
 		}
-		v.Order, v.What = shortID(order), settlementKind(kind)
+		v.ID, v.Order, v.What = order, shortID(order), settlementKind(kind)
 		out = append(out, v)
 	}
 	return out, rows.Err()
