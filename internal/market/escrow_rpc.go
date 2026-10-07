@@ -1061,11 +1061,13 @@ func (e *escrowBTC) watchKnows(ctx context.Context, addr string) (bool, error) {
 // scriptPubKey (probed on regtest). The keys come from pubkeys, or else from desc, and are returned only when each is a
 // compressed key on the curve, they are distinct, and their 2-of-3 witness script hashes to the scriptPubKey, which
 // must be the asked address's own: so they are the address's own keys. An address the wallet does not hold (ismine false, labelled or not: the wallet has no
-// script to read keys from) and one that is not P2WSH (never an escrow) have none (nil, nil). Any other reply is a
-// bad-reply class, never read as "no keys".
+// script to read keys from), one that is not P2WSH (never an escrow) and one the wallet reports solvable false (held by
+// an addr(…) import only: a per-order escrow's sibling, QA5W3A-3) have none (nil, nil). Any other reply is a bad-reply
+// class, never read as "no keys".
 func (e *escrowBTC) watchKeys(ctx context.Context, addr string) ([][]byte, error) {
 	var info struct {
 		IsMine       *bool    `json:"ismine"`
+		Solvable     *bool    `json:"solvable"`
 		ScriptPubKey string   `json:"scriptPubKey"`
 		PubKeys      []string `json:"pubkeys"`
 		Desc         string   `json:"desc"`
@@ -1090,6 +1092,12 @@ func (e *escrowBTC) watchKeys(ctx context.Context, addr string) ([][]byte, error
 		return nil, bad
 	}
 	if len(spk) != 34 || spk[0] != 0 || spk[1] != 32 {
+		return nil, nil
+	}
+	// An address the wallet holds only by an addr(…) import (a per-order escrow's sibling, siblingImports) is solvable
+	// false, with no keys (probed on Core 31.1 regtest; also when a ranged descriptor covering it was imported after the
+	// addr(…)): there is nothing to reserve, since a sibling's keys are never an escrow's (QA5W3A-3).
+	if info.Solvable != nil && !*info.Solvable {
 		return nil, nil
 	}
 	texts, sorted := info.PubKeys, false

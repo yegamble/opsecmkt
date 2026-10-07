@@ -95,6 +95,9 @@ var (
 	errEscrowSigner              = fail(503, "The escrow could not be created: escrows with per-order wallets need the market's escrow signer, which is not available right now. Nothing was changed; try again later.")
 	errEscrowBuild               = fail(503, "The escrow could not be created: the market's Bitcoin node did not confirm it. Nothing was changed; try again later.")
 	errEscrowKeyTaken            = fail(409, "The escrow could not be created: another escrow on this market already holds one of its keys. Nothing was changed. Try again; if the same refusal comes back, contact the market's staff.")
+	// QA5W3A-7: a party key that is the escrow signer's own key (isSignerKey) never joins an escrow.
+	errEscrowBuyerSignerKey  = fail(409, "Your Bitcoin escrow key is the market's own escrow signer key, which can never be a party's key in an escrow. Register a key from your own wallet on your escrow key page. Nothing was changed.")
+	errEscrowVendorSignerKey = fail(409, "The vendor's Bitcoin escrow key is the market's own escrow signer key, which can never be a party's key in an escrow, so this order cannot use escrow. Nothing was changed.")
 	// errEscrowRestoring refuses escrow checkout while the restore gate is set (A-359): the restored database does not
 	// know the escrows created after its backup, so it could hand out their child keys again.
 	errEscrowRestoring = fail(503, "Bitcoin escrow is paused while this market restores its records from a backup. Nothing was charged and your order is still a draft; try again later.")
@@ -337,6 +340,18 @@ func escrowCheckoutAction(c *actionCtx) (actionResult, error) {
 			log.Printf("escrow: per-order escrow for order %s not built: escrow signer: %s", shortID(o.ID), errorClassOf(err))
 			return actionResult{}, errEscrowSigner
 		}
+		// A party key that is the signer's (registered before the signer's pins existed; isSignerKey refuses it at
+		// registration since QA5W3A-7) would give the signer's seed two of the three keys: refused, saying so.
+		signerMAC := a.escrowXPubHMAC(k.ChainCode, k.PubKey)
+		for _, p := range []escrowParty{buyer, vendor} {
+			if p.Key.Fingerprint == k.Fingerprint || a.escrowXPubHMAC(p.Key.ChainCode, p.Key.PubKey) == signerMAC {
+				log.Printf("escrow: per-order escrow for order %s not built: the %s's escrow key is the escrow signer's", shortID(o.ID), p.Party)
+				if p.Party == "buyer" {
+					return actionResult{}, errEscrowBuyerSignerKey
+				}
+				return actionResult{}, errEscrowVendorSignerKey
+			}
+		}
 		signer = &k
 	}
 	valid, err := e.validAddress(ctx, refund)
@@ -347,15 +362,16 @@ func escrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	if !valid {
 		return actionResult{}, errEscrowRefundInvalid(c.A.escrowNetwork())
 	}
-	// Never an address the market already used (ES-5): an escrow address, another escrow's refund address, a
-	// settlement destination (a vendor's claim), a fee destination snapshotted or configured, or a pooled deposit
-	// address.
+	// Never an address the market already used (ES-5): an escrow address or a per-order escrow's sibling address
+	// (QA5W3A-4), another escrow's refund address, a settlement destination (a vendor's claim), a fee destination
+	// snapshotted or configured, or a pooled deposit address.
 	feeBps, feeAddr, err := escrowFee(ctx, c.Tx, e)
 	if err != nil {
 		return actionResult{}, err
 	}
 	var used bool
 	if err = c.Tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM escrows WHERE address=$1 OR refund_address=$1 OR fee_destination=$1) OR $1=$2
+		OR EXISTS(SELECT 1 FROM escrow_siblings WHERE address=$1)
 		OR EXISTS(SELECT 1 FROM payment_addresses WHERE address=$1) OR EXISTS(SELECT 1 FROM settlements WHERE destination=$1)`, refund, feeAddr).Scan(&used); err != nil {
 		return actionResult{}, err
 	}

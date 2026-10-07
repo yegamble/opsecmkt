@@ -64,8 +64,8 @@ func releaseBeforeOutcome(kind, state string) bool {
 }
 
 // checkClaimAddress applies the claim action's checks to a vendor's claim address dest: never used on this market (an
-// escrow, refund or fee address, a payment address or another settlement's destination) and valid on the escrow node's
-// chain.
+// escrow address or a per-order escrow's sibling address, a refund or fee address, a payment address or another
+// settlement's destination) and valid on the escrow node's chain.
 func checkClaimAddress(c *actionCtx, e *escrowBTC, dest string) error {
 	ctx := c.Ctx()
 	_, feeAddr, err := escrowFee(ctx, c.Tx, e)
@@ -74,6 +74,7 @@ func checkClaimAddress(c *actionCtx, e *escrowBTC, dest string) error {
 	}
 	var used bool
 	if err = c.Tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM escrows WHERE address=$1 OR refund_address=$1 OR fee_destination=$1) OR $1=$2
+		OR EXISTS(SELECT 1 FROM escrow_siblings WHERE address=$1)
 		OR EXISTS(SELECT 1 FROM payment_addresses WHERE address=$1) OR EXISTS(SELECT 1 FROM settlements WHERE destination=$1)`, dest, feeAddr).Scan(&used); err != nil {
 		return err
 	}

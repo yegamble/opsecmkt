@@ -262,10 +262,11 @@ done
 [[ $(sql -c "SELECT column_default || ':' || is_nullable FROM information_schema.columns WHERE table_name='user_escrow_keys' AND column_name='layout'") == "'core'::text:NO" ]]
 [[ $(sql -c "SELECT string_agg(conname || '=' || convalidated, ',' ORDER BY conname) FROM pg_constraint WHERE conname IN ('escrow_pubkeys_per_order_index','escrow_pubkeys_per_order_practice')") == 'escrow_pubkeys_per_order_index=true,escrow_pubkeys_per_order_practice=true' ]]
 [[ $(sql -c "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname='escrow_pubkeys_per_order_index'") == *"'^/[01]h?(/[^/]+){2,}\$'"* ]]
-# Per-order escrows (migration 089, A-456a): a per-order suffix is exactly /<i>/0/0 with 2 <= i < 2^31, the market's
-# per-order key may have an origin with no path, and the sibling addresses have their table; both checks validated.
-[[ $(sql -c "SELECT string_agg(conname || '=' || convalidated, ',' ORDER BY conname) FROM pg_constraint WHERE conname IN ('escrow_pubkeys_per_order_suffix','escrow_pubkeys_origin_path','escrow_pubkeys_origin_path_check')") == 'escrow_pubkeys_origin_path=true,escrow_pubkeys_per_order_suffix=true' ]]
-[[ $(sql -c "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname='escrow_pubkeys_per_order_suffix'") == *'2147483647'* ]]
+# Per-order escrows (migration 089, A-456a, QA5W3A-11): every suffix step is unhardened and below 2^31 and a per-order
+# suffix is exactly /<i>/0/0 with 2 <= i < 2^31-1, the market's per-order key may have an origin with no path, and the
+# sibling addresses have their table; both checks validated.
+[[ $(sql -c "SELECT string_agg(conname || '=' || convalidated, ',' ORDER BY conname) FROM pg_constraint WHERE conname IN ('escrow_pubkeys_suffix_steps','escrow_pubkeys_origin_path','escrow_pubkeys_origin_path_check')") == 'escrow_pubkeys_origin_path=true,escrow_pubkeys_suffix_steps=true' ]]
+[[ $(sql -c "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname='escrow_pubkeys_suffix_steps'") == *'2147483646'*'2147483647'* ]]
 [[ $(sql -c "SELECT to_regclass('escrow_siblings') IS NOT NULL") == t ]]
 
 # Behaviour through the upgraded server: an alpha.1 password still signs in, the migrated draft is shown as
@@ -317,20 +318,23 @@ stop_server
 [[ $(sql -c "SELECT string_agg(order_id || ' ' || wallet_name || ' ' || account || ' ' || txid || ' ' || txid_truncated || ' ' || (disposed_at IS NULL) || ' ' || to_char(noted AT TIME ZONE 'UTC','YYYY-MM-DD HH24:MI'), ',') FROM xmr_escrow_collisions") == "$xmr_order escrow-202609-01 4 0123456789abcdef0123 true true 2026-09-01 10:00" ]]
 [[ $(sql -c "SELECT count(*) FROM schema_migrations WHERE version=90") == 1 ]]
 
-# Migration 089 (A-456a) over a bad historical row: the database is put back as 088 left it (089's table and checks
-# undone, its row in schema_migrations removed) holding a per-order escrow key row 089 refuses, /2147483648/0/0 (a step
-# of 2^31 names a hardened key). The current server must exit non-zero before serving, with 089's message naming the
-# row's suffix and UPGRADING.md section 44, recording and changing nothing; with the row gone it starts and applies 089.
+# Migration 089 (A-456a, QA5W3A-11) over bad historical rows: the database is put back as 088 left it (089's table and
+# checks undone, its row in schema_migrations removed) holding two escrow key rows 089 refuses: a shape-(a) buyer key
+# /0/2147483648 (a step of 2^31 names a hardened key) and a market per-order key at the practice index /2147483647/0/0.
+# The current server must exit non-zero before serving, with 089's message counting them, naming a suffix and
+# UPGRADING.md section 44, recording and changing nothing; with the rows gone it starts and applies 089.
 sql <<'SQL'
 BEGIN;
 DELETE FROM schema_migrations WHERE version=89;
 DROP TABLE escrow_siblings;
-ALTER TABLE escrow_pubkeys DROP CONSTRAINT escrow_pubkeys_per_order_suffix, DROP CONSTRAINT escrow_pubkeys_origin_path;
+ALTER TABLE escrow_pubkeys DROP CONSTRAINT escrow_pubkeys_suffix_steps, DROP CONSTRAINT escrow_pubkeys_origin_path;
 ALTER TABLE escrow_pubkeys ADD CONSTRAINT escrow_pubkeys_origin_path_check CHECK (origin_path ~ '^(/(0|[1-9][0-9]{0,9})h?){1,10}$');
 INSERT INTO escrows(order_id,address,market_index,refund_address,fee_bps,fee_destination)
   SELECT id,'bcrt1qupgradebad089',nextval('escrow_market_index'),'bcrt1qupgradebadrefund089',0,'' FROM orders WHERE currency='BTC' ORDER BY id LIMIT 1;
-INSERT INTO escrow_pubkeys(pubkey,escrow_id,party,origin_fingerprint,origin_path,derivation_suffix)
-  SELECT '02'||repeat('b8',32),id,'market','a1b2c3d4','/48h/1h/0h/2h','/2147483648/0/0' FROM escrows WHERE address='bcrt1qupgradebad089';
+INSERT INTO escrow_pubkeys(pubkey,escrow_id,party,user_id,key_hmac,origin_fingerprint,origin_path,derivation_suffix)
+  SELECT '02'||repeat('b8',32),e.id,'buyer',o.buyer_id,repeat('a',64),'a1b2c3d4','/48h/1h/0h/2h','/0/2147483648'
+    FROM escrows e JOIN orders o ON o.id=e.order_id WHERE e.address='bcrt1qupgradebad089'
+  UNION ALL SELECT '02'||repeat('b9',32),id,'market',NULL,NULL,'a1b2c3d4','/48h/1h/0h/2h','/2147483647/0/0' FROM escrows WHERE address='bcrt1qupgradebad089';
 COMMIT;
 SQL
 applied=$(sql -c "SELECT string_agg(version || '@' || applied, ',' ORDER BY version) FROM schema_migrations")
@@ -349,13 +353,13 @@ refused=0
 wait "$server_pid" || refused=$?
 server_pid=''
 ((refused != 0)) || { echo 'The current server exited 0 over an escrow key row migration 089 refuses' >&2; exit 1; }
-grep -q 'migration 089: 1 escrow key row(s) in escrow_pubkeys have a per-order derivation suffix (such as /2147483648/0/0)' "$work/refused-089.log"
+grep -q 'migration 089: 2 escrow key row(s) in escrow_pubkeys have a derivation suffix (such as /0/2147483648) with a hardened step or a step of 2^31 or more' "$work/refused-089.log"
 grep -q 'See UPGRADING.md section 44' "$work/refused-089.log"
 [[ $(sql -c "SELECT string_agg(version || '@' || applied, ',' ORDER BY version) FROM schema_migrations") == "$applied" ]]
-[[ $(sql -c "SELECT count(*) FROM pg_constraint WHERE conname='escrow_pubkeys_per_order_suffix'") == 0 && $(sql -c "SELECT to_regclass('escrow_siblings') IS NULL") == t ]]
+[[ $(sql -c "SELECT count(*) FROM pg_constraint WHERE conname='escrow_pubkeys_suffix_steps'") == 0 && $(sql -c "SELECT to_regclass('escrow_siblings') IS NULL") == t ]]
 sql <<'SQL'
 BEGIN;
-DELETE FROM escrow_pubkeys WHERE derivation_suffix='/2147483648/0/0';
+DELETE FROM escrow_pubkeys WHERE derivation_suffix IN ('/0/2147483648','/2147483647/0/0');
 ALTER TABLE escrows DISABLE TRIGGER escrows_not_deleted;
 DELETE FROM escrows WHERE address='bcrt1qupgradebad089';
 ALTER TABLE escrows ENABLE TRIGGER escrows_not_deleted;
@@ -364,7 +368,7 @@ SQL
 start_server after-089 "$work/new-server" "$root"
 stop_server
 [[ $(sql -c "SELECT count(*) FROM schema_migrations WHERE version=89 AND name='escrow_per_order'") == 1 ]]
-[[ $(sql -c "SELECT string_agg(conname || '=' || convalidated, ',' ORDER BY conname) FROM pg_constraint WHERE conname IN ('escrow_pubkeys_per_order_suffix','escrow_pubkeys_origin_path','escrow_pubkeys_origin_path_check')") == 'escrow_pubkeys_origin_path=true,escrow_pubkeys_per_order_suffix=true' ]]
+[[ $(sql -c "SELECT string_agg(conname || '=' || convalidated, ',' ORDER BY conname) FROM pg_constraint WHERE conname IN ('escrow_pubkeys_suffix_steps','escrow_pubkeys_origin_path','escrow_pubkeys_origin_path_check')") == 'escrow_pubkeys_origin_path=true,escrow_pubkeys_suffix_steps=true' ]]
 
 # Rollback rehearsal: to this server, a database that a newer release has migrated is one that records a
 # migration it does not include. It must exit non-zero before serving, name that migration, and change nothing.

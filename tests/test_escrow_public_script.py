@@ -372,8 +372,28 @@ class SetupScriptTest(NodeCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn('FAILED: escrow user: listdescriptors on opsecmkt-arbiter refused with HTTP 403', r.stderr)
 
+    def test_verify_refuses_another_test_chain_or_none_before_any_wallet_call(self):
+        """QA5W3A-9: as set-up mode does, --verify asks nothing more of a node on another test chain, or of one that
+        names no chain (its getblockchaininfo refused with HTTP 403, or no node answering at all)."""
+        env = {'ESCROW_BTC_RPC_URL': self.url('opsecmkt-escrow', 'x1'), 'BITCOIN_RPC_URL': self.url('opsecmkt-pooled', 'x2')}
+        for name, node_chain, whitelist, url, why in (
+                ('another test chain', 'signet', None, None, "reports chain 'signet' (HTTP 200), not regtest"),
+                ('getblockchaininfo refused', 'regtest', set(ESCROW_METHODS) - {'getblockchaininfo'}, None,
+                 "reports chain 'nothing' (HTTP 403), not regtest"),
+                ('no node answering', 'regtest', None, 'http://opsecmkt-escrow:x1@127.0.0.1:9', "reports chain 'nothing'")):
+            self.server.chain, self.server.calls = node_chain, []
+            self.server.whitelists['opsecmkt-escrow'] = whitelist or set(ESCROW_METHODS)
+            r = subprocess.run(['bash', str(SETUP), '--chain', 'regtest', '--verify'],
+                               env={**os.environ, **env, **({'ESCROW_BTC_RPC_URL': url} if url else {})},
+                               capture_output=True, text=True, timeout=60)
+            self.assertEqual(r.returncode, 1, (name, r.stdout, r.stderr))
+            self.assertIn('Refusing: the escrow node ' + why, r.stderr, name)
+            self.assertIn('nothing else was asked', r.stderr, name)
+            self.assertEqual([c for c in self.server.calls if c[2] != 'getblockchaininfo'], [], name)
+            self.assertNotIn('PASS', r.stdout, name)
 
-FAKE_GO = '''#!/usr/bin/env bash
+
+FAKE_GO ='''#!/usr/bin/env bash
 if [ "$1" = version ]; then echo "go version go1.27.1 linux/amd64"; exit 0; fi
 touch "$FAKE_GO_RAN"
 env > "$FAKE_GO_ENV"
@@ -606,7 +626,9 @@ class ManifestWriterTest(unittest.TestCase):
             self.assertFalse(exists, override)
 
     def test_refuses_a_transcript_holding_a_secret(self):
-        for leak in ('rpcauth=u:' + '1a' * 16 + '$' + '2b' * 32, 'passphrase=secret', 'x __cookie__ y'):
+        # The last: a URL carrying a password this run was never given (QA5W3A-10), so only the URL pattern can catch it.
+        for leak in ('rpcauth=u:' + '1a' * 16 + '$' + '2b' * 32, 'passphrase=secret', 'x __cookie__ y',
+                     'dialling http://operator:n0t-given-to-this-run@10.0.0.5:38332/ again'):
             r, m, exists = self.write(passing_output([leak]))
             self.assertEqual(r.returncode, 1, leak)
             self.assertIn('secret scan', r.stderr)

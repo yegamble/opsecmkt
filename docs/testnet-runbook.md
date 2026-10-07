@@ -466,9 +466,13 @@ delete the pin to let another wallet in, since every open escrow needs the pinne
 **Restore the watch-only wallet** the same way (`restorewallet opsecmkt-escrow-watch /tmp/escrow-watch.bak true`), then
 rescan from the height recorded with it (`opcli -rpcwallet=opsecmkt-escrow-watch rescanblockchain HEIGHT`; on a pruned
 node not below `pruneheight`). It holds no private key, but encrypt it anyway: its labels tie escrow addresses to
-orders. An escrow created after its backup is not in the restored wallet, and the app imports an escrow's descriptor
-only at checkout, so deposits to such an escrow are not seen until its descriptor is imported again by hand; this
-build has no tool for that and it is not rehearsed. Then follow the reconciliation below.
+orders. An escrow created after its backup is not in the restored wallet, and the app imports a Bitcoin Core escrow's
+descriptor only at checkout, so deposits to such an escrow are not seen until its descriptor is imported again by hand;
+this build has no tool for that and it is not rehearsed. A per-order escrow (A-456a) is the exception: on the first
+watcher pass after the app starts, the app imports again what that escrow's checkout imported, from the escrow's
+creation time (its own descriptor, its sibling addresses and, where they can still be rebuilt, the order wallet's ranged
+descriptors; [per-order escrow](escrow.md#per-order-escrow-creation-and-watching-a-456a-shape-b) says exactly what), so
+restart the app after restoring the watch-only wallet. Then follow the reconciliation below.
 
 Escrow and the pooled wallet on one node share one failure domain: losing that node needs both restores, and whoever
 controls it controls both wallets. Restrict the pooled RPC user or give escrow its own node
@@ -523,7 +527,8 @@ escrow address, which would link the two escrows on the chain (A-366). The scrip
 wallet after restoring its records from a backup. …", 503, the order stays a draft) until the escrow watcher's orphan
 sweep has run. While the setting is there the sweep runs on every watcher pass, gate or not: it reads the three public
 keys of every address the watch-only wallet holds with no escrow row (`getaddressinfo`) and reserves them
-(`escrow_reserved_keys`), and once it has read every one it removes the setting; if a read fails, the setting stays and
+(`escrow_reserved_keys`); an address Core reports unsolvable (a lost per-order escrow's sibling address held only as an
+address) has no keys to reserve and counts as read. Once it has read every one it removes the setting; if a read fails, the setting stays and
 the next pass tries again (the app logs "orphan sweep incomplete"). For a watch-only wallet restored from the same
 backup, which knows no lost escrow either, the script also moves every account's next escrow child index
 (`escrow_index_floors`) and the market's escrow key index 50 past the restored records. A checkout then skips any

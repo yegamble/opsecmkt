@@ -69,6 +69,7 @@ func TestEscrowKeyLayoutMigration(t *testing.T) {
 		{"buyer", "/0/0/0"}, {"buyer", "/1/0/0"}, {"vendor", "/0/7/0"}, {"vendor", "/1/0/0/0"}, {"buyer", "/0h/0/0"}, {"buyer", "/1h/0/0"},
 		{"market", "/0/0/0"}, {"market", "/1/0/0"}, // the market's per-order key follows the same rule (P4-R2)
 		{"buyer", "/2147483647/0/0"}, {"vendor", "/2147483647/0/0"}, // the reserved practice index (ES-9)
+		{"market", "/2147483647/0/0"}, // nor for the market's per-order key, since migration 089 (QA5W3A-11)
 	} {
 		if try(c.party, c.suffix) == nil {
 			t.Errorf("%s derivation suffix %s accepted", c.party, c.suffix)
@@ -76,7 +77,7 @@ func TestEscrowKeyLayoutMigration(t *testing.T) {
 	}
 	for _, c := range []struct{ party, suffix string }{
 		{"buyer", "/0/1"}, {"vendor", "/0/2501"}, {"market", "/0/0"}, {"market", "/0/7"}, // shape (a)
-		{"buyer", "/2/0/0"}, {"vendor", "/17/0/0"}, {"buyer", "/2147483646/0/0"}, {"market", "/2147483647/0/0"}, // shape (b)
+		{"buyer", "/2/0/0"}, {"vendor", "/17/0/0"}, {"buyer", "/2147483646/0/0"}, {"market", "/2147483646/0/0"}, // shape (b)
 	} {
 		if err := try(c.party, c.suffix); err != nil {
 			t.Errorf("%s derivation suffix %s refused: %v", c.party, c.suffix, err)

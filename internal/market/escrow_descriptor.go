@@ -43,7 +43,8 @@ var errEscrowOrigin = errors.New("escrow: party key origin or derivation suffix 
 //     whatever the two strings are.
 //   - shape (b) (A-456a, P4-R2): /<i>/0/0 with 2 <= i < 2^31-1. Never 0 or 1 (account/0 and account/1, the receiving and
 //     change branches, are ancestors of other keys) and never the per-order practice index 2^31-1 (escrowPracticeIndex).
-//     Migration 089 refuses the same rows (escrow_pubkeys_per_order_suffix, ADDENDUM QA4W5K-6).
+//     Migration 089 refuses the same rows (escrow_pubkeys_suffix_steps, ADDENDUM QA4W5K-6), and any suffix step that is
+//     hardened or reaches 2^31 (QA5W3A-11).
 func checkEscrowOrigin(key escrowKey, origin, suffix string) error {
 	if origin != key.PathText {
 		return errEscrowOrigin

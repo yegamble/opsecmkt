@@ -24,7 +24,8 @@
 #
 # --verify (after the restart) reads the two URLs from the environment (never from .env), sends each to curl on its
 # standard input (never printed) and checks what the app needs and what A-440 requires refused: the escrow user answers
-# getblockchaininfo on --chain and getwalletinfo on both wallets, and is refused (HTTP 403) listdescriptors and
+# getblockchaininfo on --chain (any other chain, or none, is refused before any wallet call, as in set-up mode) and
+# getwalletinfo on both wallets, and is refused (HTTP 403) listdescriptors and
 # gethdkeys; the pooled user answers getblockchaininfo and gets HTTP 403 (or "wallet not found" when it is another
 # node) for listdescriptors, gethdkeys and walletprocesspsbt on the arbiter wallet's path.
 #
@@ -100,8 +101,10 @@ if [[ $verify == yes ]]; then
   answer=$(rpc "$ESCROW_BTC_RPC_URL" "" getblockchaininfo '[]')
   got=$(sed '$d' <<<"$answer" | field chain)
   case "$got" in main|test) die "Refusing: the escrow node reports chain $got; Bitcoin escrow runs only on regtest, signet or testnet4." ;; esac
-  check "escrow user: getblockchaininfo answers chain $chain (got ${got:-no answer}, HTTP $(status_of "$answer"))" \
-    "$([[ $(status_of "$answer") == 200 && $got == "$chain" ]] && echo yes || echo no)"
+  # As set-up mode does, nothing else is asked of a node on another chain, or one that names none (QA5W3A-9).
+  [[ $(status_of "$answer") == 200 && $got == "$chain" ]] ||
+    die "Refusing: the escrow node reports chain '${got:-nothing}' (HTTP $(status_of "$answer")), not $chain; nothing else was asked."
+  check "escrow user: getblockchaininfo answers chain $chain" yes
   for w in "$arbiter" "$watch"; do
     answer=$(rpc "$ESCROW_BTC_RPC_URL" "/wallet/$w" getwalletinfo '[]')
     keys=$(sed '$d' <<<"$answer" | field private_keys_enabled)

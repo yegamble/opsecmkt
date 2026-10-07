@@ -225,6 +225,22 @@ func (a *App) signerAccount(ctx context.Context, q rowQuerier) (escrowKey, error
 	return escrowKey{Fingerprint: info.Fingerprint, XPub: info.Key.Rooted(btc.VersionTpub), ChainCode: info.Key.ChainCode, PubKey: info.Key.PubKey}, nil
 }
 
+// isSignerKey reports whether k is the escrow signer's pinned account key (QA5W3A-7): its declared origin fingerprint is
+// the signer's pinned fingerprint, or its HMAC computed as the pin's (escrowXPubHMAC of its chain code and public key) is
+// the pinned one, so the signer's key re-serialized at any depth under any fingerprint is caught. A party key that is
+// the signer's would put two of a per-order escrow's three keys in the signer's seed. Nothing pinned yet: false (the
+// checkout check, escrowCheckoutAction, covers a key registered before the signer's first contact). A key derived from
+// the signer's (a descendant) cannot be detected this way; the practice signature, which only the seed's holder could
+// make for such a key, is what stops it.
+func (a *App) isSignerKey(ctx context.Context, q rowQuerier, k escrowKey) (bool, error) {
+	var fp, mac string
+	if err := q.QueryRowContext(ctx, "SELECT COALESCE((SELECT value FROM settings WHERE key=$1),''),COALESCE((SELECT value FROM settings WHERE key=$2),'')",
+		escrowSignerFingerprintPin, escrowSignerXPubPin).Scan(&fp, &mac); err != nil {
+		return false, err
+	}
+	return fp != "" && k.Fingerprint == fp || mac != "" && mac == a.escrowXPubHMAC(k.ChainCode, k.PubKey), nil
+}
+
 // escrowSignerState is the signer's state as the latest check found it ("" = no signer configured, or not checked).
 func (a *App) escrowSignerState() string {
 	s, _ := a.escrowSignerStatus.Load().(string)

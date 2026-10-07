@@ -170,7 +170,7 @@ func TestEscrowRegtestPerOrderEscrow(t *testing.T) {
 		_, leaf := perOrderChild(t, k.key, k.i)
 		leaves = append(leaves, leaf.PubKey[:])
 	}
-	if spk, err := escrowAddressScript("regtest", addr); err != nil || !bytes.Equal(spk, p2wshScript(leaves...)) {
+	if spk, err := escrowAddressScript(realChainNet(), addr); err != nil || !bytes.Equal(spk, p2wshScript(leaves...)) {
 		t.Fatalf("Go's derivation does not give %s (%v)", addr, err)
 	}
 	t.Logf("Go and Core agree: %s = wsh(sortedmulti(2, buyer/48h/1h/0h/2h/2/0/0, vendor/48h/1h/0h/2h/2/0/0, signer/%d/0/0))", addr, m)
