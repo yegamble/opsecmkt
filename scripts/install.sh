@@ -256,6 +256,20 @@ compose_has() {
   return 1
 }
 
+# compose_after FILE EARLIER: COMPOSE_FILE lists EARLIER before FILE's first appearance (base names, as compose_has).
+compose_after() {
+  local file files earlier=false
+  files=$(env_value COMPOSE_FILE)
+  local IFS=':;'
+  for file in $files; do
+    file=${file//\\//}
+    file=${file##*/}
+    [[ $file != "$1" ]] || { $earlier; return; }
+    [[ $file != "$2" ]] || earlier=true
+  done
+  return 1
+}
+
 # url_host / url_password URL: the host and the userinfo password of a URL (nothing when absent).
 url_authority() {
   local rest=${1#*://}
@@ -501,6 +515,14 @@ run_check() {
       problems="$problems  - COMPOSE_FILE lists both compose.clearnet.yaml and compose.tor.yaml"$'\n'
     elif [[ $mode == clearnet || $mode == tor ]] && ! compose_has "compose.$mode.yaml"; then
       problems="$problems  - APP_MODE=$mode needs compose.$mode.yaml in COMPOSE_FILE"$'\n'
+    fi
+    # Local nodes over Tor (A-442): it replaces the node commands, so listed before compose.nodes.yaml it would lose.
+    if compose_has compose.nodes-tor.yaml; then
+      if [[ $mode != tor ]] || ! compose_has compose.tor.yaml; then
+        problems="$problems  - compose.nodes-tor.yaml (local nodes over Tor) needs APP_MODE=tor and compose.tor.yaml"$'\n'
+      fi
+      compose_after compose.nodes-tor.yaml compose.nodes.yaml ||
+        problems="$problems  - compose.nodes-tor.yaml must come after compose.nodes.yaml in COMPOSE_FILE"$'\n'
     fi
   fi
   profiles=$(env_value COMPOSE_PROFILES)

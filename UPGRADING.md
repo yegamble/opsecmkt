@@ -1570,6 +1570,18 @@ has been tried with a per-order escrow (ledger items A-457 and A-458); see [per-
 escrow](docs/escrow.md#per-order-escrow-settlement-setup-and-upload-a-456b-shape-b). Rolling back past this release
 needs the pre-upgrade backup (section 5) once a per-order escrow exists: the earlier release cannot settle it.
 
+## 47. Optional: local nodes over Tor (A-442)
+
+No migration, no new key, and nothing changes unless you add the new `compose.nodes-tor.yaml` to `COMPOSE_FILE`. With
+`APP_MODE=tor` and a local node, it gives the nodes a Tor client of their own (`tor-socks`, with its own
+`deploy/torrc-socks`), makes the `node_egress` network internal so `bitcoin` and `monero` reach peers only through it,
+and starts bitcoind with `-proxy=tor-socks:9050 -privatebroadcast`, which a Tor-mode market using Bitcoin escrow on the
+local node needs to pass the broadcast gate of section 36. monerod's proxy flag is unverified, and pooled payouts are
+never private. Add it after `compose.nodes.yaml`, run `./scripts/install.sh check` (it refuses the overlay in clearnet
+mode or before `compose.nodes.yaml`) and `docker compose up -d --build`, which recreated the `node_egress` network and
+restarted the nodes on it with Compose 5.1.1 (the guide says what to do if your Compose refuses). How it works, and exactly what it does and does not make private:
+[operator guide](docs/operator-guide.md#local-nodes-over-tor).
+
 ## Appendix: new keys by hand
 
 `./scripts/install.sh upgrade` writes these for you. To add them yourself, use your editor (values in single

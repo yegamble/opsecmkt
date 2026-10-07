@@ -4,7 +4,7 @@ import re
 import unittest
 
 REPOSITORY = Path(__file__).resolve().parents[1]
-COMPOSE_FILES = ('compose.yaml', 'compose.tor.yaml', 'compose.nodes.yaml', 'compose.scanner.yaml')
+COMPOSE_FILES = ('compose.yaml', 'compose.tor.yaml', 'compose.nodes.yaml', 'compose.scanner.yaml', 'compose.nodes-tor.yaml')
 # The operator picks the driver (LOG_DRIVER, default json-file); the rotation options suit json-file and local.
 LOGGING = """x-logging: &logging
   driver: ${LOG_DRIVER:-json-file}
