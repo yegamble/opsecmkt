@@ -1251,8 +1251,8 @@ It prints `DELETE 1`, or `DELETE 0` when there was no checkpoint. A stored check
 payment to the market child's address that its payer fee-bumped 1000 times makes Core list entries of about 67 KB,
 which builds before this fix refused at every check, keeping escrow off for good; after upgrading, the next check passes
 with no step), and the answer as a whole is limited only by the read's timeout. While such replacements are unconfirmed
-the answer grows with the square of their number (1100: 82 MB, read in about 2 s); once one is mined, Core lists the
-others no more.
+the answer grows with the square of their number (1100: 82 MB, read in about 2 s; 3000: 605 MB, 16 s, and about
+1.5 GB of the node's memory per read); once one is mined, Core lists the others no more.
 
 What "never spent" cannot tell apart: `rpcwhitelist` allows methods, not wallets, so where the pooled payments share the
 escrow node, a pooled user allowed `sendtoaddress` can spend coins paid to the arbiter wallet by naming its path, and

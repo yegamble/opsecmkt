@@ -669,11 +669,15 @@ been done. Never switch it on for a market that takes real payments.
   read in about 2 s on Core 31.1 regtest); once one replacement is mined, Core lists the others in no read again (full
   or from the checkpoint, before or after a node restart), and the mined one keeps them all in its `walletconflicts`.
   The check reads each entry key by key and decodes only `category`, so neither keeps escrow off. Only while a payer
-  holds thousands of replacements unconfirmed does each read grow with their square (not measured past 1100), built
-  by Core in memory; a read that then outlasts the 5-minute timeout below leaves escrow off ("could not be read",
-  never "must be used for the escrow key only") until a replacement is mined, after which the next retry passes on
-  its own. Nothing needs doing then but waiting for a block (on regtest, mine one); `bitcoin-cli -rpcwallet=<arbiter
-  wallet> getwalletinfo` shows the wallet's `txcount` meanwhile. Otherwise escrow is disabled with "escrow: Bitcoin escrow disabled:
+  holds thousands of replacements unconfirmed does each read grow with their square, and Core builds each answer in
+  memory: 3000 bumps (measured once on Core 31.1 regtest) made a 605 MB answer, 15 to 18 s from Core and 16 s for the
+  app's read, and Core's memory grew by about 1.5 GB per such answer without giving it back, so a node held to 5 GiB
+  (a Docker memory limit) was killed by the third read in a row. Give the escrow node memory to spare. A read that
+  fails or outlasts the 5-minute timeout below leaves escrow off ("could not be read", never "must be used for the
+  escrow key only") until a replacement is mined; then Core lists the others no more (3000 bumps: one 202 KB entry)
+  and the next retry passes on its own. Escrow checks the arbiter wallet at startup and on each retry while it is
+  off, not on every pass while it is on. Nothing needs doing but waiting for a block (on regtest, mine one);
+  `bitcoin-cli -rpcwallet=<arbiter wallet> getwalletinfo` shows the wallet's `txcount` meanwhile. Otherwise escrow is disabled with "escrow: Bitcoin escrow disabled:
   the arbiter wallet must be used for the escrow key only …". So that mass payments to that address cannot keep escrow
   off by making the read slow (QA4W4A-1: 100,000 entries took longer than startup allows when every start read them all),
   a passing check records a checkpoint in the database (`settings` key `escrow_btc_arbiter_checked`: the block
