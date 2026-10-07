@@ -635,7 +635,7 @@ func TestEscrowMigration089(t *testing.T) {
 			t.Errorf("%s origin %q suffix %s refused: %v", c.party, c.origin, c.suffix, err)
 		}
 	}
-	for _, name := range []string{"escrow_pubkeys_suffix_steps", "escrow_pubkeys_origin_path"} {
+	for _, name := range []string{"escrow_pubkeys_suffix_steps", "escrow_pubkeys_origin_path", "escrow_pubkeys_per_order_xpub"} {
 		var valid bool
 		if err := e.DB.QueryRow("SELECT convalidated FROM pg_constraint WHERE conname=$1 AND conrelid='escrow_pubkeys'::regclass", name).Scan(&valid); err != nil || !valid {
 			t.Errorf("constraint %s: validated=%v %v", name, valid, err)

@@ -264,8 +264,9 @@ done
 [[ $(sql -c "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname='escrow_pubkeys_per_order_index'") == *"'^/[01]h?(/[^/]+){2,}\$'"* ]]
 # Per-order escrows (migration 089, A-456a, QA5W3A-11): every suffix step is unhardened and below 2^31 and a per-order
 # suffix is exactly /<i>/0/0 with 2 <= i < 2^31-1, the market's per-order key may have an origin with no path, and the
-# sibling addresses have their table; both checks validated.
-[[ $(sql -c "SELECT string_agg(conname || '=' || convalidated, ',' ORDER BY conname) FROM pg_constraint WHERE conname IN ('escrow_pubkeys_suffix_steps','escrow_pubkeys_origin_path','escrow_pubkeys_origin_path_check')") == 'escrow_pubkeys_origin_path=true,escrow_pubkeys_suffix_steps=true' ]]
+# sibling addresses have their table, and per_order_xpub is only a buyer's or a vendor's per-order key's tpub (QA5W4A-5);
+# the checks validated.
+[[ $(sql -c "SELECT string_agg(conname || '=' || convalidated, ',' ORDER BY conname) FROM pg_constraint WHERE conname IN ('escrow_pubkeys_suffix_steps','escrow_pubkeys_origin_path','escrow_pubkeys_origin_path_check','escrow_pubkeys_per_order_xpub')") == 'escrow_pubkeys_origin_path=true,escrow_pubkeys_per_order_xpub=true,escrow_pubkeys_suffix_steps=true' ]]
 [[ $(sql -c "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname='escrow_pubkeys_suffix_steps'") == *'2147483646'*'2147483647'* ]]
 [[ $(sql -c "SELECT to_regclass('escrow_siblings') IS NOT NULL") == t ]]
 
@@ -327,7 +328,8 @@ sql <<'SQL'
 BEGIN;
 DELETE FROM schema_migrations WHERE version=89;
 DROP TABLE escrow_siblings;
-ALTER TABLE escrow_pubkeys DROP CONSTRAINT escrow_pubkeys_suffix_steps, DROP CONSTRAINT escrow_pubkeys_origin_path;
+ALTER TABLE escrow_pubkeys DROP CONSTRAINT escrow_pubkeys_suffix_steps, DROP CONSTRAINT escrow_pubkeys_origin_path,
+  DROP CONSTRAINT escrow_pubkeys_per_order_xpub;
 ALTER TABLE escrow_pubkeys ADD CONSTRAINT escrow_pubkeys_origin_path_check CHECK (origin_path ~ '^(/(0|[1-9][0-9]{0,9})h?){1,10}$');
 INSERT INTO escrows(order_id,address,market_index,refund_address,fee_bps,fee_destination)
   SELECT id,'bcrt1qupgradebad089',nextval('escrow_market_index'),'bcrt1qupgradebadrefund089',0,'' FROM orders WHERE currency='BTC' ORDER BY id LIMIT 1;
@@ -356,7 +358,7 @@ server_pid=''
 grep -q 'migration 089: 2 escrow key row(s) in escrow_pubkeys have a derivation suffix (such as /0/2147483648) with a hardened step or a step of 2^31 or more' "$work/refused-089.log"
 grep -q 'See UPGRADING.md section 44' "$work/refused-089.log"
 [[ $(sql -c "SELECT string_agg(version || '@' || applied, ',' ORDER BY version) FROM schema_migrations") == "$applied" ]]
-[[ $(sql -c "SELECT count(*) FROM pg_constraint WHERE conname='escrow_pubkeys_suffix_steps'") == 0 && $(sql -c "SELECT to_regclass('escrow_siblings') IS NULL") == t ]]
+[[ $(sql -c "SELECT count(*) FROM pg_constraint WHERE conname IN ('escrow_pubkeys_suffix_steps','escrow_pubkeys_per_order_xpub')") == 0 && $(sql -c "SELECT to_regclass('escrow_siblings') IS NULL") == t ]]
 sql <<'SQL'
 BEGIN;
 DELETE FROM escrow_pubkeys WHERE derivation_suffix IN ('/0/2147483648','/2147483647/0/0');
@@ -368,7 +370,7 @@ SQL
 start_server after-089 "$work/new-server" "$root"
 stop_server
 [[ $(sql -c "SELECT count(*) FROM schema_migrations WHERE version=89 AND name='escrow_per_order'") == 1 ]]
-[[ $(sql -c "SELECT string_agg(conname || '=' || convalidated, ',' ORDER BY conname) FROM pg_constraint WHERE conname IN ('escrow_pubkeys_suffix_steps','escrow_pubkeys_origin_path','escrow_pubkeys_origin_path_check')") == 'escrow_pubkeys_origin_path=true,escrow_pubkeys_suffix_steps=true' ]]
+[[ $(sql -c "SELECT string_agg(conname || '=' || convalidated, ',' ORDER BY conname) FROM pg_constraint WHERE conname IN ('escrow_pubkeys_suffix_steps','escrow_pubkeys_origin_path','escrow_pubkeys_origin_path_check','escrow_pubkeys_per_order_xpub')") == 'escrow_pubkeys_origin_path=true,escrow_pubkeys_per_order_xpub=true,escrow_pubkeys_suffix_steps=true' ]]
 
 # Rollback rehearsal: to this server, a database that a newer release has migrated is one that records a
 # migration it does not include. It must exit non-zero before serving, name that migration, and change nothing.
