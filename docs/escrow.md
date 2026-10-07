@@ -1005,7 +1005,8 @@ mining with `generatetoaddress` (maxtries 2000000000, every call's block count c
 one peer. It runs the regtest legs that need no regtest-only RPC (`PracticeSign`, `Funding`, `Settlement`, `Cosign`,
 `Gate`, `Bump`, `Physical`, `Deadline`, `Reserve`, `BIP32`, `Signer`, `Pooled`, `ArbiterRestore`, `PerOrderPractice`
 and `ArbiterDeposit`, the arbiter wallet's dust leg: 6000 outputs of 1000 sat paid to an order's market child key, a
-restart that reads them from the checkpoint and keeps escrow on, and a spend that disables it) and
+restart that reads them from the checkpoint and keeps escrow on, 1100 fee bumps of one payment to that key with
+restarts before and after the last is mined, and a spend that disables it) and
 `TestEscrowRegtestIsolated`: node B leaves the network (`setnetworkactive false`), node A pays and mines an escrow
 deposit, the order's payment window is moved past, and a watcher pass cancels nothing (not synced: no peers, while
 Core's initial block download stays false); node B comes back and the next pass credits the deposit and completes the
@@ -1013,10 +1014,11 @@ order. Not run there, with the reason the script prints: `Recovery` and `Conflic
 `invalidateblock`, `reconsiderblock` and `prioritisetransaction`) and `PrivateBroadcast` (a `-privatebroadcast` node
 and `generateblock`, which cannot find a signet block). That run is private signet, not public: it shows the signet
 code paths and the guard's peer check on a real Core, not public peers, fees, relay or reorganisations. Regtest mode,
-which CI runs, is unchanged. Recorded on 2026-10-06 (transcripts kept locally under `artifacts/real-chain/`,
-gitignored): after the merge of the integration branch at `61f1c06`, all 18 regtest legs passed; on the private signet
-the 16 legs above passed at `9d2cb11` (22 minutes, 8 of them maturing node A's coins; in `ArbiterDeposit` the restart
-behind 6000 dust entries read them from the checkpoint and kept escrow on in about half a second).
+which CI runs, is unchanged. Last recorded on 2026-10-07 at `afb14d7` (the QA4W6 fix round; transcripts kept locally
+under `artifacts/real-chain/`, gitignored): all 18 regtest legs passed (under 2 minutes), and on the private signet,
+started cold (node A's coins matured afresh), the 16 legs above passed in 8.5 minutes; in `ArbiterDeposit` there, 1100
+fee bumps of one payment made the arbiter wallet's answer 82 MB while unconfirmed and 74 KB once the last was mined,
+and escrow stayed on through every restart.
 
 ## Escrow-only cutover (A-444)
 
