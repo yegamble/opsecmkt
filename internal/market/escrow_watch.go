@@ -206,7 +206,25 @@ func (a *App) escrowPollOnce(ctx context.Context) error {
 	if err = rows.Err(); err != nil {
 		return err
 	}
+	// Shape (b) (A-456a): each order wallet's sibling addresses are read with its escrow's; a deposit there is recorded
+	// left out (upsertIncoming), never counted, and returned by the stray refund once the order is closed.
+	siblings, err := a.escrowSiblingAddresses(ctx, orders)
+	if err != nil {
+		return err
+	}
+	for _, s := range siblings {
+		orderOf[s[0]] = s[1]
+		addresses = append(addresses, s[0])
+	}
 	var errs []error
+	// Once per process, after a restart: the watch-only wallet must still hold every shape-(b) escrow's siblings.
+	if !a.escrowSiblingsChecked.Load() {
+		if err = a.ensureSiblingWatch(ctx, e); err != nil {
+			errs = append(errs, err)
+		} else {
+			a.escrowSiblingsChecked.Store(true)
+		}
+	}
 	unread := map[string]bool{}
 	for chunk := range slices.Chunk(addresses, 200) {
 		incoming, err := e.incoming(ctx, chunk)
@@ -370,13 +388,14 @@ func (a *App) settleEscrow(ctx context.Context, orderID string, walletRead bool)
 	if err = tx.QueryRowContext(ctx, "SELECT amount FROM orders WHERE id=$1", orderID).Scan(&total); err != nil {
 		return err
 	}
+	// A deposit left out never counts: before the order is paid that is only a shape-(b) sibling deposit (A-456a).
 	var sum int64
 	var n int
-	if err = tx.QueryRowContext(ctx, "SELECT COALESCE(sum(amount),0),count(*) FROM payments WHERE order_id=$1 AND confirmations>=$2 AND NOT locked AND NOT spent_outside", orderID, threshold).Scan(&sum, &n); err != nil {
+	if err = tx.QueryRowContext(ctx, "SELECT COALESCE(sum(amount),0),count(*) FROM payments WHERE order_id=$1 AND confirmations>=$2 AND NOT locked AND NOT spent_outside AND NOT escrow_left_out", orderID, threshold).Scan(&sum, &n); err != nil {
 		return err
 	}
 	if n > 0 && sum >= total {
-		if _, err = tx.ExecContext(ctx, "UPDATE payments SET credited=true WHERE order_id=$1 AND confirmations>=$2 AND NOT locked AND NOT spent_outside", orderID, threshold); err != nil {
+		if _, err = tx.ExecContext(ctx, "UPDATE payments SET credited=true WHERE order_id=$1 AND confirmations>=$2 AND NOT locked AND NOT spent_outside AND NOT escrow_left_out", orderID, threshold); err != nil {
 			return err
 		}
 		note := fmt.Sprintf("%s %s escrow funded: %s BTC in %d output(s) with at least %d confirmations", a.netTag(), a.escrowNetwork(), amount(sum, 8), n, threshold)
@@ -399,7 +418,7 @@ func (a *App) settleEscrow(ctx context.Context, orderID string, walletRead bool)
 	// latest deposit that counts.
 	var unpaid, underpaid bool
 	var received int64
-	if err = tx.QueryRowContext(ctx, `WITH d AS (SELECT amount,confirmations,created FROM payments WHERE order_id=$1 AND confirmations>=0 AND NOT locked)
+	if err = tx.QueryRowContext(ctx, `WITH d AS (SELECT amount,confirmations,created FROM payments WHERE order_id=$1 AND confirmations>=0 AND NOT locked AND NOT escrow_left_out)
 		SELECT es.created < now()-make_interval(secs => $2) AND NOT EXISTS (SELECT 1 FROM d),
 			es.created < now()-make_interval(secs => $2) AND EXISTS (SELECT 1 FROM d) AND NOT EXISTS (SELECT 1 FROM d WHERE confirmations<$3)
 				AND (SELECT max(created) FROM d) < now()-make_interval(secs => $2),
@@ -453,6 +472,93 @@ func escrowTransitionHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, fro
 			return err
 		}
 		o.State, o.Status = next.State, next.Status
+	}
+	return nil
+}
+
+// escrowSiblingAddresses is the sibling addresses of the shape-(b) escrows of orders (A-456a), each with its order.
+func (a *App) escrowSiblingAddresses(ctx context.Context, orders []string) ([][2]string, error) {
+	rows, err := a.db.QueryContext(ctx, `SELECT s.address,es.order_id FROM escrow_siblings s JOIN escrows es ON es.id=s.escrow_id
+		WHERE es.order_id=ANY($1) ORDER BY s.escrow_id,s.branch,s.idx`, orders)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out [][2]string
+	for rows.Next() {
+		var s [2]string
+		if err = rows.Scan(&s[0], &s[1]); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// ensureSiblingWatch checks, on the first watcher pass of a process, that the watch-only wallet still holds the sibling
+// addresses of every shape-(b) escrow (A-456a; checkout imports them with the escrow): getaddressinfo of each escrow's
+// last sibling, /1/9, which must carry the escrow's label. Where it does not (a watch-only wallet restored from a backup
+// older than the escrow, say), that escrow's 29 siblings are imported again as the labelled addr(…) descriptors checkout
+// imported (siblingImports), from its creation time, so a deposit made since is found; the stored addresses need no key,
+// so a party's later key change does not matter. Nothing is imported for an escrow the wallet holds so, and Core's import
+// of a descriptor it holds is idempotent anyway.
+func (a *App) ensureSiblingWatch(ctx context.Context, e *escrowBTC) error {
+	rows, err := a.db.QueryContext(ctx, `SELECT s.escrow_id,es.order_id,extract(epoch FROM es.created)::bigint,s.address,s.branch=1 AND s.idx=9
+		FROM escrow_siblings s JOIN escrows es ON es.id=s.escrow_id ORDER BY s.escrow_id,s.branch,s.idx`)
+	if err != nil {
+		return err
+	}
+	type escrowSiblings struct {
+		order   string
+		created int64
+		last    string
+		all     []string
+	}
+	var order []int64
+	byEscrow := map[int64]*escrowSiblings{}
+	for rows.Next() {
+		var id, created int64
+		var orderID, addr string
+		var last bool
+		if err = rows.Scan(&id, &orderID, &created, &addr, &last); err != nil {
+			rows.Close()
+			return err
+		}
+		s := byEscrow[id]
+		if s == nil {
+			s = &escrowSiblings{order: orderID, created: created}
+			byEscrow[id] = s
+			order = append(order, id)
+		}
+		s.all = append(s.all, addr)
+		if last {
+			s.last = addr
+		}
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	repaired := 0
+	for _, id := range order {
+		s := byEscrow[id]
+		// Held and labelled: the label is what lists its deposits (siblingImports).
+		var info struct {
+			Labels []string `json:"labels"`
+		}
+		if err := e.call(ctx, e.watchWallet, "getaddressinfo", []any{s.last}, &info); err != nil {
+			return &watchError{label: "escrow", class: "sibling check failed: " + errorClassOf(err), err: err}
+		}
+		if slices.Contains(info.Labels, "escrow:"+s.order) {
+			continue
+		}
+		if err = e.importDescriptors(ctx, e.watchName, siblingImports(s.order, s.all, s.created)); err != nil {
+			return &watchError{label: "escrow", class: "sibling import failed: " + errorClassOf(err), err: err}
+		}
+		repaired++
+	}
+	if repaired > 0 {
+		log.Printf("escrow: the watch-only wallet lacked the sibling addresses of %d per-order escrow(s); imported them again", repaired)
 	}
 	return nil
 }

@@ -16,7 +16,7 @@ LEGS = ('TestEscrowRegtestPracticeSign', 'TestEscrowRegtestFunding', 'TestEscrow
         'TestEscrowRegtestDeadline', 'TestEscrowRegtestReserve', 'TestEscrowRegtestConflicted', 'TestEscrowRegtestBIP32',
         'TestEscrowRegtestSigner', 'TestEscrowRegtestPooled', 'TestEscrowRegtestArbiterRestore',
         'TestEscrowRegtestArbiterDeposit', 'TestEscrowRegtestPrivateBroadcast',
-        'TestEscrowRegtestPerOrderPractice')
+        'TestEscrowRegtestPerOrderPractice', 'TestEscrowRegtestPerOrderEscrow')
 
 
 class FakeRegtest(BaseHTTPRequestHandler):

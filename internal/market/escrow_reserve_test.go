@@ -68,6 +68,7 @@ func forgetEscrow(t *testing.T, db *sql.DB, orderID string) {
 	for _, q := range []string{
 		"ALTER TABLE escrows DISABLE TRIGGER escrows_not_deleted",
 		"DELETE FROM escrow_pubkeys WHERE escrow_id IN (SELECT id FROM escrows WHERE order_id=$1)",
+		"DELETE FROM escrow_siblings WHERE escrow_id IN (SELECT id FROM escrows WHERE order_id=$1)", // shape (b), A-456a
 		"DELETE FROM escrows WHERE order_id=$1",
 		"ALTER TABLE escrows ENABLE TRIGGER escrows_not_deleted",
 	} {

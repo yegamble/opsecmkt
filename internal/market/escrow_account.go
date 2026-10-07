@@ -250,7 +250,11 @@ func escrowKeyLoader(ctx context.Context, a *App, r *http.Request, d *PageData) 
 		log.Print(errKeySealed)
 	}
 	if err == nil && v != nil && v.Registered {
-		if err = a.db.QueryRowContext(ctx, escrowNextChildSQL, d.User.ID).Scan(&v.NextChild); err != nil {
+		floor := 1 // the lowest index of the key's layout (escrowParties)
+		if v.PerOrder {
+			floor = 2
+		}
+		if err = a.db.QueryRowContext(ctx, escrowNextChildSQL, d.User.ID, floor).Scan(&v.NextChild); err != nil {
 			return err
 		}
 		v.RangeAdvice, v.KeypoolSize = !v.PerOrder && v.NextChild > escrowRangeAdvice, v.NextChild+1000 // Core wallets only

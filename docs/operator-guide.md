@@ -1336,7 +1336,11 @@ claim the same way; the encryption step of the runbook is not part of it. Its A-
 (`TestEscrowRegtestPerOrderPractice`, no escrow uses a per-order wallet yet): a per-order wallet key's practice
 transaction is signed by Core from the seed and what the practice page shows ([per-order
 escrow](escrow.md#per-order-key-layout-registration-and-practice-a-455-shape-b)), and the key is active; the same seed's
-Core wallet cannot sign it. In every leg the app runs inside the Go test against the real node, not as the server binary. A browser journey
+Core wallet cannot sign it. Its A-456a leg (`TestEscrowRegtestPerOrderEscrow`, with the per-order switch on in that
+test only; no user can create a per-order escrow yet): a per-order escrow is created through the checkout form, Core
+derives its address from the parties' private roots as Go does ([per-order
+escrow](escrow.md#per-order-escrow-creation-and-watching-a-456a-shape-b)), and deposits to two sibling addresses are seen
+by the watch-only wallet and recorded left out. In every leg the app runs inside the Go test against the real node, not as the server binary. A browser journey
 (`npm run test:e2e:escrow`, [development](development.md)) drives the escrow forms by keyboard in Chromium at 320 px
 with JavaScript off against the real server and a simulated escrow node; it is not chain evidence. Nothing about
 escrow has run on a public test network or mainnet, and the escrow pages have not been run in Firefox or WebKit.

@@ -747,19 +747,29 @@ func (e *escrowBTC) utxoUpdatePSBT(ctx context.Context, psbt string, descriptors
 	return out, err
 }
 
-// escrowImport is one importdescriptors request: a watch-only, inactive descriptor.
+// escrowImport is one importdescriptors request: a watch-only, inactive descriptor. A ranged descriptor (shape (b)'s
+// order wallet, A-456a) has its Range and no Label: Core refuses a label beside a range.
 type escrowImport struct {
 	Desc      string
 	Timestamp any // "now" or a UNIX time
 	Label     string
+	Range     []int64 // [from, to] of a ranged descriptor; nil otherwise
 }
 
 // importDescriptors imports watch-only descriptors into wallet (P1-b: the escrow watch-only wallet). Any request
-// that Core reports unsuccessful fails the call.
+// that Core reports unsuccessful fails the call. Core's import is idempotent: importing a descriptor the wallet holds
+// again changes nothing but its range and its timestamp's rescan.
 func (e *escrowBTC) importDescriptors(ctx context.Context, wallet string, reqs []escrowImport) error {
 	body := make([]map[string]any, 0, len(reqs))
 	for _, r := range reqs {
-		body = append(body, map[string]any{"desc": r.Desc, "timestamp": r.Timestamp, "active": false, "label": r.Label})
+		req := map[string]any{"desc": r.Desc, "timestamp": r.Timestamp, "active": false}
+		if r.Label != "" {
+			req["label"] = r.Label
+		}
+		if r.Range != nil {
+			req["range"] = r.Range
+		}
+		body = append(body, req)
 	}
 	var res []struct {
 		Success bool `json:"success"`
@@ -799,6 +809,13 @@ func (e *escrowBTC) deriveAddresses(ctx context.Context, desc string, index int6
 	}
 	var addrs []string
 	err := e.call(ctx, "", "deriveaddresses", params, &addrs)
+	return addrs, err
+}
+
+// deriveAddressRange is deriveaddresses of a ranged descriptor over the indices [from, to] (A-456a).
+func (e *escrowBTC) deriveAddressRange(ctx context.Context, desc string, from, to int64) ([]string, error) {
+	var addrs []string
+	err := e.call(ctx, "", "deriveaddresses", []any{desc, []int64{from, to}}, &addrs)
 	return addrs, err
 }
 

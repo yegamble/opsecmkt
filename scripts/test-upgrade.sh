@@ -260,8 +260,13 @@ done
 # The escrow key layout (migration 088): every key defaults to the Bitcoin Core layout, and a per-order derivation
 # suffix starting with /0 or /1 is refused by validated constraints while shape (a)'s /0/<i> is not affected.
 [[ $(sql -c "SELECT column_default || ':' || is_nullable FROM information_schema.columns WHERE table_name='user_escrow_keys' AND column_name='layout'") == "'core'::text:NO" ]]
-[[ $(sql -c "SELECT string_agg(conname || '=' || convalidated, ',' ORDER BY conname) FROM pg_constraint WHERE conname LIKE 'escrow_pubkeys_per_order_%'") == 'escrow_pubkeys_per_order_index=true,escrow_pubkeys_per_order_practice=true' ]]
+[[ $(sql -c "SELECT string_agg(conname || '=' || convalidated, ',' ORDER BY conname) FROM pg_constraint WHERE conname IN ('escrow_pubkeys_per_order_index','escrow_pubkeys_per_order_practice')") == 'escrow_pubkeys_per_order_index=true,escrow_pubkeys_per_order_practice=true' ]]
 [[ $(sql -c "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname='escrow_pubkeys_per_order_index'") == *"'^/[01]h?(/[^/]+){2,}\$'"* ]]
+# Per-order escrows (migration 089, A-456a): a per-order suffix is exactly /<i>/0/0 with 2 <= i < 2^31, the market's
+# per-order key may have an origin with no path, and the sibling addresses have their table; both checks validated.
+[[ $(sql -c "SELECT string_agg(conname || '=' || convalidated, ',' ORDER BY conname) FROM pg_constraint WHERE conname IN ('escrow_pubkeys_per_order_suffix','escrow_pubkeys_origin_path','escrow_pubkeys_origin_path_check')") == 'escrow_pubkeys_origin_path=true,escrow_pubkeys_per_order_suffix=true' ]]
+[[ $(sql -c "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname='escrow_pubkeys_per_order_suffix'") == *'2147483647'* ]]
+[[ $(sql -c "SELECT to_regclass('escrow_siblings') IS NOT NULL") == t ]]
 
 # Behaviour through the upgraded server: an alpha.1 password still signs in, the migrated draft is shown as
 # a draft, and ordering the same product and currency again returns that draft instead of a second one.
@@ -297,6 +302,55 @@ start_server restart "$work/new-server" "$root"
 stop_server
 [[ $(sql -c "SELECT string_agg(version || '@' || applied, ',' ORDER BY version) FROM schema_migrations") == "$applied" ]]
 
+# Migration 089 (A-456a) over a bad historical row: the database is put back as 088 left it (089's table and checks
+# undone, its row in schema_migrations removed) holding a per-order escrow key row 089 refuses, /2147483648/0/0 (a step
+# of 2^31 names a hardened key). The current server must exit non-zero before serving, with 089's message naming the
+# row's suffix and UPGRADING.md section 43, recording and changing nothing; with the row gone it starts and applies 089.
+sql <<'SQL'
+BEGIN;
+DELETE FROM schema_migrations WHERE version=89;
+DROP TABLE escrow_siblings;
+ALTER TABLE escrow_pubkeys DROP CONSTRAINT escrow_pubkeys_per_order_suffix, DROP CONSTRAINT escrow_pubkeys_origin_path;
+ALTER TABLE escrow_pubkeys ADD CONSTRAINT escrow_pubkeys_origin_path_check CHECK (origin_path ~ '^(/(0|[1-9][0-9]{0,9})h?){1,10}$');
+INSERT INTO escrows(order_id,address,market_index,refund_address,fee_bps,fee_destination)
+  SELECT id,'bcrt1qupgradebad089',nextval('escrow_market_index'),'bcrt1qupgradebadrefund089',0,'' FROM orders WHERE currency='BTC' ORDER BY id LIMIT 1;
+INSERT INTO escrow_pubkeys(pubkey,escrow_id,party,origin_fingerprint,origin_path,derivation_suffix)
+  SELECT '02'||repeat('b8',32),id,'market','a1b2c3d4','/48h/1h/0h/2h','/2147483648/0/0' FROM escrows WHERE address='bcrt1qupgradebad089';
+COMMIT;
+SQL
+applied=$(sql -c "SELECT string_agg(version || '@' || applied, ',' ORDER BY version) FROM schema_migrations")
+(cd "$root" && exec env -i PATH="$PATH" DATABASE_URL="$database_url" SETUP_TOKEN="$setup_token" \
+  COOKIE_SECURE=false ADDR="127.0.0.1:$app_port" "$work/new-server") > "$work/refused-089.log" 2>&1 &
+server_pid=$!
+for _ in {1..60}; do
+  kill -0 "$server_pid" 2>/dev/null || break
+  sleep 0.5
+done
+if kill -0 "$server_pid" 2>/dev/null; then
+  echo 'The current server kept running over an escrow key row migration 089 refuses' >&2
+  exit 1
+fi
+refused=0
+wait "$server_pid" || refused=$?
+server_pid=''
+((refused != 0)) || { echo 'The current server exited 0 over an escrow key row migration 089 refuses' >&2; exit 1; }
+grep -q 'migration 089: 1 escrow key row(s) in escrow_pubkeys have a per-order derivation suffix (such as /2147483648/0/0)' "$work/refused-089.log"
+grep -q 'See UPGRADING.md section 43' "$work/refused-089.log"
+[[ $(sql -c "SELECT string_agg(version || '@' || applied, ',' ORDER BY version) FROM schema_migrations") == "$applied" ]]
+[[ $(sql -c "SELECT count(*) FROM pg_constraint WHERE conname='escrow_pubkeys_per_order_suffix'") == 0 && $(sql -c "SELECT to_regclass('escrow_siblings') IS NULL") == t ]]
+sql <<'SQL'
+BEGIN;
+DELETE FROM escrow_pubkeys WHERE derivation_suffix='/2147483648/0/0';
+ALTER TABLE escrows DISABLE TRIGGER escrows_not_deleted;
+DELETE FROM escrows WHERE address='bcrt1qupgradebad089';
+ALTER TABLE escrows ENABLE TRIGGER escrows_not_deleted;
+COMMIT;
+SQL
+start_server after-089 "$work/new-server" "$root"
+stop_server
+[[ $(sql -c "SELECT count(*) FROM schema_migrations WHERE version=89 AND name='escrow_per_order'") == 1 ]]
+[[ $(sql -c "SELECT string_agg(conname || '=' || convalidated, ',' ORDER BY conname) FROM pg_constraint WHERE conname IN ('escrow_pubkeys_per_order_suffix','escrow_pubkeys_origin_path','escrow_pubkeys_origin_path_check')") == 'escrow_pubkeys_origin_path=true,escrow_pubkeys_per_order_suffix=true' ]]
+
 # Rollback rehearsal: to this server, a database that a newer release has migrated is one that records a
 # migration it does not include. It must exit non-zero before serving, name that migration, and change nothing.
 sql -c "INSERT INTO schema_migrations(version,name) VALUES (999,'from_a_newer_release')"
@@ -323,4 +377,4 @@ grep -q 'UPGRADING.md, section "Rolling back"' "$work/refused.log"
 sql -c 'DELETE FROM schema_migrations WHERE version=999'
 start_server roll-forward "$work/new-server" "$root"
 stop_server
-echo "Upgrade from $from_ref passed: health, every migration recorded once, orders migrated to draft, one draft per buyer/product/currency, data and sign-in preserved; a database from a newer release is refused at startup."
+echo "Upgrade from $from_ref passed: health, every migration recorded once, orders migrated to draft, one draft per buyer/product/currency, data and sign-in preserved; an escrow key row migration 089 refuses stops startup with its message; a database from a newer release is refused at startup."

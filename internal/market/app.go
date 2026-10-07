@@ -82,6 +82,9 @@ type App struct {
 	// The escrow signer (A-454, escrow_signer.go): nil without ESCROW_SIGNER_SOCKET; its state is in memory only.
 	escrowSigner       *escrowSignerClient
 	escrowSignerStatus atomic.Value // string: the state checkEscrowSigner last found (signerReady, signerWaiting, …)
+	// escrowSiblingsChecked: this process's escrow watcher has checked that the watch-only wallet holds every shape-(b)
+	// escrow's sibling addresses (ensureSiblingWatch, A-456a).
+	escrowSiblingsChecked atomic.Bool
 }
 
 // parseTemplates loads layout (web/templates/*.html), pages/<page>.html ("page:<page>") and partials/<hook>.html.
