@@ -1238,7 +1238,11 @@ PSBT upload). What is built, and exercised by tests that turn the switch on:
   or 1 (the receiving and change branches, ancestors of other keys) nor the practice index 2^31-1. The market's key is the
   escrow signer's account key's child `<m>/0/0`, `m` from the market's counter, skipping 0 and 1; the signer's key is read
   from the signer at checkout and must match the pins (no signer, or a different one: refused, try again later). The
-  rooted per-order keys are not stored (`per_order_xpub` stays empty); they are derived again on demand.
+  buyer's and the vendor's order wallet keys (the account key's child `<i>`, written rooted as a tpub) are stored at
+  checkout with their escrow keys (`per_order_xpub`, QA5W4A-5), each checked to give the stored `/0/0` key, so the
+  order wallet can be rebuilt after the party registers another key; the market's comes from the escrow signer. This adds
+  nothing the market did not already hold: each is derived from the party's registered public account key at an index
+  the database records, and the watch-only wallet already holds it in the escrow's ranged descriptors.
 - **Cross-check.** Go derives every key by BIP32 public derivation (A-453) and Bitcoin Core must agree before anything is
   stored: the three keys Core puts in the escrow script, the address from the account keys' paths and from the rooted
   per-order keys, and all 30 addresses of the order wallet that the escrow covers. On any disagreement the checkout gets
@@ -1254,19 +1258,27 @@ PSBT upload). What is built, and exercised by tests that turn the switch on:
   check does not list sibling addresses, and a sibling address is never accepted as a refund, claim or market fee
   address, as an escrow address is not (ES-5).
 - **Watch-only wallet repair.** On the first watcher pass after each start the market asks the watch-only wallet whether
-  it holds each per-order escrow's address and last sibling address (`/1/9`), each labelled with the escrow's order. For
-  an escrow where either is missing (a watch-only wallet restored from before the escrow) it imports again, in one call,
-  from the escrow's creation time and in checkout's order: the escrow's own labelled descriptor, rebuilt from its stored
-  keys (only when their 2-of-3 is the escrow's address); the order wallet's two ranged descriptors, only when both
-  parties' current escrow keys and the escrow signer (answering with its pinned key) still derive the escrow's stored
-  keys; and the 29 sibling addresses. Without the ranged descriptors (a party registered another key since, the signer
-  did not answer, or `APP_SECRET_KEY` changed) the siblings are watched and their deposits seen, but Core reports them
-  unsolvable, and they stay so even if the ranged descriptors are imported later (Core 31.1 keeps the first descriptor
-  that held an address); the app logs how many escrows were repaired so. The repair runs once per process: restart the
-  app after restoring the watch-only wallet. Bitcoin Core escrows are not repaired this way.
+  it holds each per-order escrow's address and last sibling address (`/1/9`), each labelled with the escrow's order, and
+  imports again what is missing (a watch-only wallet restored from before the escrow), from the escrow's creation time
+  and in checkout's order: for a missing address, the escrow's own labelled descriptor, rebuilt from its stored keys (only
+  when their 2-of-3 is the escrow's address); for a missing sibling, the order wallet's two ranged descriptors and then
+  the 29 sibling addresses, rebuilt from the buyer's and the vendor's stored order wallet keys and the escrow signer's
+  account key, each checked to give the escrow's stored keys. The siblings are never imported without their ranged
+  descriptors first: Core 31.1 keeps an address that an address-only import held first unsolvable for good, whatever is
+  imported later (QA5W4A-1). Every escrow being repaired goes into one import, so Core rescans the chain once, from the
+  earliest creation time, with up to two minutes for it (QA5W4A-3). The repair waits, and the next watcher pass tries
+  again, while the watch-only wallet is already rescanning (an operator's `rescanblockchain`, or an earlier repair's
+  import that Core is still running after the app stopped waiting for it: the app asks `getwalletinfo` first and never
+  starts a second rescan), and while the escrow signer does not answer: then only the escrows' own descriptors are
+  imported and the log reads "watch-only wallet repair waits for the escrow signer". A signer whose key differs from the
+  pins, or stored keys that do not give the escrow's, leave the siblings out (logged); the next start tries again. Restart
+  the app after restoring the watch-only wallet, with the escrow signer running. Bitcoin Core escrows are not repaired
+  this way.
 - **Orphan sweep.** After a database restore, a lost per-order escrow's address and siblings are orphans; the sweep
-  reserves the keys of the escrow's address, and a sibling address that Core reports unsolvable has no keys to reserve
-  (a sibling's keys are never an escrow's), so the sweep finishes and escrow checkout resumes.
+  reserves their keys. An orphan that Core reports unsolvable (held by an address-only import) has no keys to read: it
+  counts as read only as a lost per-order escrow's sibling, when another orphan with the same `escrow:<order ID>` label
+  gave its three keys, and otherwise the sweep stays incomplete and escrow checkout stays paused (QA5W4A-2), since that
+  escrow's keys could otherwise be handed out again.
 - **The escrow signer's key is never a party's.** Registration refuses, in either layout ("This key cannot be used
   here"), a key whose origin fingerprint is the escrow signer's pinned fingerprint, or whose HMAC computed as the pin's is
   the pinned one (the signer's key serialized at any depth); a key registered before the signer's pins existed is refused
@@ -1276,7 +1288,8 @@ PSBT upload). What is built, and exercised by tests that turn the switch on:
   party and both shapes (migration 074 allowed ten-digit steps, so `/2147483648/0/0`, the hardened `/0h/0/0`, passed
   migration 088, as did a shape-(a) `/0/2147483648`), and a per-order suffix that is not `/<i>/0/0` with
   `2 <= i < 2^31-1` (so the market never takes the practice index either); it lets the market's per-order key have an
-  origin with no path (the signer's rooted key), and adds `escrow_siblings`. The restore floor (`scripts/restore.sh`,
+  origin with no path (the signer's rooted key), allows `per_order_xpub` only on a buyer's or a vendor's per-order key
+  and only as a tpub, and adds `escrow_siblings`. The restore floor (`scripts/restore.sh`,
   UPGRADING.md section 6) reads an account's highest index in both shapes.
 
 How it was tested: DB integration with a simulated node that derives per-order keys by real BIP32 public derivation and
@@ -1289,16 +1302,22 @@ a simulated signer (`TestEscrowShapeBMixedPairRefused`, `TestEscrowShapeBSwitchO
 `TestEscrowShapeBSiblingNotClaimAddress`, `TestEscrowShapeBSiblingNotFeeAddress`,
 `TestEscrowSignerKeyRefusedAtRegistration`, `TestEscrowShapeBSignerKeyAtCheckout`,
 `TestEscrowShapeBLostAfterWatchRestore`, `TestEscrowShapeBWatchRestoredBeforeEscrow`,
-`TestEscrowShapeBRepairKeyChanged`, `TestEscrowShapeBRepairEitherEnd`; the simulated node reports solvability as Core 31.1 did when probed on regtest),
-`scripts/test-upgrade.sh` (bad historical rows stop migration 089 with its message), and on a real local chain, Core
-31.1 on regtest and on a private signet (`TestEscrowRegtestPerOrderEscrow` in
-`scripts/test-escrow-regtest.sh`, the switch on in that test only: the escrow created through the checkout form, Core
-deriving its address and sibling `/0/1` from the parties' private roots as Go does, and deposits to `/0/1` and `/1/3`
-seen and recorded left out; its first run found that Core's `listreceivedbyaddress` lists only labelled addresses, so the
-siblings are also imported labelled). Not tested: signing, settling or refunding a per-order escrow (A-456b), the
-watch-only wallet repair and the orphan sweep of a lost per-order escrow on a real node (simulated only; Core's
-`getaddressinfo` answers for addresses held by `addr(…)` and by ranged descriptors were probed by hand on regtest), any
-wallet other than Bitcoin Core, and any public network.
+`TestEscrowShapeBRepairEitherEnd`; after QA5W4A: `TestEscrowShapeBRepairWaitsForSigner`,
+`TestEscrowShapeBRepairSignerMismatch`, `TestEscrowShapeBRepairOneRescan`, `TestEscrowShapeBRepairWaitsForRescan`,
+`TestEscrowShapeBOrderXpubStored`, `TestEscrowShapeBRepairAfterKeyChange`, `TestEscrowShapeBRepairBareAddressCheck`,
+`TestEscrowSweepLoneUnsolvableOrphanKeepsGate`; the simulated node reports solvability, and refuses an import while it
+rescans, as Core 31.1 does), `scripts/test-upgrade.sh` (bad historical rows stop migration 089 with its message), and on a
+real local chain, Core 31.1 on regtest and on a private signet (`scripts/test-escrow-regtest.sh`, the switch on in those
+tests only): `TestEscrowRegtestPerOrderEscrow` (the escrow created through the checkout form, Core deriving its address
+and sibling `/0/1` from the parties' private roots as Go does, and deposits to `/0/1` and `/1/3` seen and recorded left
+out; its first run found that Core's `listreceivedbyaddress` lists only labelled addresses, so the siblings are also
+imported labelled) and `TestEscrowRegtestPerOrderRepair` (the watch-only wallet repair onto empty wallets standing in for
+ones restored from before the escrow: deposits made meanwhile found and every address solvable; with the signer down only
+the escrow's descriptor imported and the siblings imported, solvable, once it answers; after the vendor registers another
+key, the siblings still solvable; an address held by `addr(…)` first staying unsolvable after its descriptor is imported).
+Not tested: signing, settling or refunding a per-order escrow (A-456b), the orphan sweep of a lost per-order escrow on a
+real node (simulated only), a repair rescan longer than one call on a real node, any wallet other than Bitcoin Core, and
+any public network.
 
 Which chains escrow testing has used, all of them local and none public: Bitcoin regtest; a Bitcoin private signet
 (A-443: two Bitcoin Core nodes on one host with `signet_challenge` 51, private signet, not public); a local Monero

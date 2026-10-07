@@ -59,3 +59,12 @@ CREATE TABLE escrow_siblings (
  address text NOT NULL UNIQUE CHECK (address ~ '^[a-z0-9]{14,90}$'),
  PRIMARY KEY (escrow_id, branch, idx)
 );
+
+-- 4. per_order_xpub (074's optional per-order extended key, NULL until now) holds, for the buyer's and the vendor's key
+--    of a shape-(b) escrow only, the party's order wallet key: the account key's child <i>, written rooted as a tpub
+--    (public data the market already holds, derived at checkout and cross-checked with Core with the escrow's ranged
+--    descriptors), so the watch-only wallet's repair and the signing rebuild the order wallet whatever key the party has
+--    registered since (QA5W4A-5). The market's per-order key comes from the escrow signer and every other row stays NULL.
+ALTER TABLE escrow_pubkeys ADD CONSTRAINT escrow_pubkeys_per_order_xpub CHECK (per_order_xpub IS NULL
+  OR party <> 'market' AND derivation_suffix ~ '^/[1-9][0-9]{0,9}/0/0$' AND per_order_xpub ~ '^tpub[1-9A-HJ-NP-Za-km-z]{107}$') NOT VALID;
+ALTER TABLE escrow_pubkeys VALIDATE CONSTRAINT escrow_pubkeys_per_order_xpub;

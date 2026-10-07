@@ -1445,7 +1445,10 @@ Core wallet cannot sign it. Its A-456a leg (`TestEscrowRegtestPerOrderEscrow`, w
 test only; no user can create a per-order escrow yet): a per-order escrow is created through the checkout form, Core
 derives its address from the parties' private roots as Go does ([per-order
 escrow](escrow.md#per-order-escrow-creation-and-watching-a-456a-shape-b)), and deposits to two sibling addresses are seen
-by the watch-only wallet and recorded left out. In every leg the app runs inside the Go test against the real node, not as the server binary. A browser journey
+by the watch-only wallet and recorded left out. Its QA5W4A leg (`TestEscrowRegtestPerOrderRepair`, the switch on in that
+test only): the app restarted onto empty watch-only wallets standing in for restored ones repairs such an escrow, every
+address solvable and the deposits found, with the escrow signer up, after it was down (only the escrow's own
+descriptor until it answers) and after the vendor registered another key. In every leg the app runs inside the Go test against the real node, not as the server binary. A browser journey
 (`npm run test:e2e:escrow`, [development](development.md)) drives the escrow forms by keyboard in Chromium at 320 px
 with JavaScript off against the real server and a simulated escrow node; it is not chain evidence. Nothing about
 escrow has run on a public test network or mainnet, and the escrow pages have not been run in Firefox or WebKit.

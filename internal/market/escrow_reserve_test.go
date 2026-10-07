@@ -429,6 +429,7 @@ func TestEscrowWatchKeysReply(t *testing.T) {
 		{"not held", map[string]any{"ismine": false, "labels": []string{}, "scriptPubKey": coreWatchSPK}, nil, "", ""},
 		{"labelled, not held", map[string]any{"ismine": false, "labels": []string{"escrow:o2"}}, nil, "", ""},
 		{"held, not P2WSH", map[string]any{"ismine": true, "labels": []string{"x"}, "scriptPubKey": "0014" + strings.Repeat("ab", 20)}, nil, "", segwitAddress("bcrt", 0, wpkh)},
+		{"held by addr(…) only (QA5W4A-2)", map[string]any{"ismine": true, "solvable": false, "labels": []string{"escrow:o2"}, "scriptPubKey": coreWatchSPK}, nil, "getaddressinfo unsolvable", ""},
 		{"no ismine", without("ismine"), nil, "getaddressinfo bad-reply", ""},
 		{"no scriptPubKey", without("scriptPubKey"), nil, "getaddressinfo bad-reply", ""},
 		{"neither pubkeys nor desc", without("pubkeys", "desc"), nil, "getaddressinfo bad-reply", ""},

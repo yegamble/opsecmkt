@@ -543,8 +543,13 @@ func (a *App) reconcileOrphans(ctx context.Context, e *escrowBTC) error {
 	}
 	keys := map[string][][]byte{}
 	var sweepErr error
+	var unsolvable []string
 	for _, addr := range unswept {
 		k, err := e.watchKeys(ctx, addr)
+		if errors.Is(err, errWatchUnsolvable) {
+			unsolvable = append(unsolvable, addr)
+			continue
+		}
 		if err != nil {
 			sweepErr = &watchError{label: "escrow", class: "orphan sweep incomplete: " + errorClassOf(err), err: err}
 			continue
@@ -560,6 +565,36 @@ func (a *App) reconcileOrphans(ctx context.Context, e *escrowBTC) error {
 	known, err := collectStrings(ctx, tx, "SELECT address FROM escrows WHERE coin='BTC' AND address=ANY($1) UNION SELECT address FROM escrow_siblings WHERE address=ANY($1)", addrs)
 	if err != nil {
 		return err
+	}
+	// An orphan the wallet holds by an addr(…) import only has no keys to read. It counts as read only as a lost per-order
+	// escrow's sibling: another orphan with its escrow:<order ID> label gave three keys, in this pass or an earlier one
+	// (escrow_reserved_keys). Anything else, a Bitcoin Core escrow imported again by hand as addr(…) say, keeps the sweep
+	// open, since its keys could be handed out again (QA5W4A-2); re-importing it with its descriptor lets the sweep finish.
+	if len(unsolvable) > 0 {
+		labelOf := map[string]string{}
+		for _, w := range watched {
+			labelOf[w.Address] = w.Label
+		}
+		swept, err := collectStrings(ctx, tx, "SELECT DISTINCT address FROM escrow_reserved_keys WHERE address=ANY($1)", addrs)
+		if err != nil {
+			return err
+		}
+		for addr := range keys {
+			if len(keys[addr]) == 3 {
+				swept = append(swept, addr)
+			}
+		}
+		gave := map[string]bool{}
+		for _, addr := range swept {
+			if order := escrowOrderLabel(labelOf[addr]); order != "" {
+				gave[order] = true
+			}
+		}
+		for _, addr := range unsolvable {
+			if order := escrowOrderLabel(labelOf[addr]); order == "" || !gave[order] {
+				sweepErr = &watchError{label: "escrow", class: "orphan sweep incomplete: an address held without its keys (addr(…)) is no lost per-order escrow's sibling", err: errWatchUnsolvable}
+			}
+		}
 	}
 	// Never nil: a nil slice is sent as NULL, and NOT (address=ANY(NULL)) is NULL, so the DELETE below would keep every
 	// row once the wallet holds no orphan at all (A-358).

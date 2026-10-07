@@ -468,11 +468,22 @@ rescan from the height recorded with it (`opcli -rpcwallet=opsecmkt-escrow-watch
 node not below `pruneheight`). It holds no private key, but encrypt it anyway: its labels tie escrow addresses to
 orders. An escrow created after its backup is not in the restored wallet, and the app imports a Bitcoin Core escrow's
 descriptor only at checkout, so deposits to such an escrow are not seen until its descriptor is imported again by hand;
-this build has no tool for that and it is not rehearsed. A per-order escrow (A-456a) is the exception: on the first
-watcher pass after the app starts, the app imports again what that escrow's checkout imported, from the escrow's
-creation time (its own descriptor, its sibling addresses and, where they can still be rebuilt, the order wallet's ranged
-descriptors; [per-order escrow](escrow.md#per-order-escrow-creation-and-watching-a-456a-shape-b) says exactly what), so
-restart the app after restoring the watch-only wallet. Then follow the reconciliation below.
+this build has no tool for that and it is not rehearsed. Import it with the escrow's descriptor
+(`wsh(sortedmulti(2,<buyer key>,<vendor key>,<market key>))` with the three keys of its order, labelled
+`escrow:<order ID>`), never as `addr(<address>)`: Core 31.1 reports an address that an `addr(…)` import held first as
+unsolvable, with no keys, for good (importing the descriptor afterwards does not change it), and after a later database
+restore the orphan sweep cannot read such an escrow's keys, so escrow checkout stays paused (below) until the watch-only
+wallet is restored again and given the descriptor. A per-order escrow (A-456a) is the exception: on the first watcher
+pass after the app starts, the app imports again what the wallet lacks of that escrow's checkout imports, from the
+escrow's creation time, in one import for every such escrow ([per-order
+escrow](escrow.md#per-order-escrow-creation-and-watching-a-456a-shape-b) says exactly what), so restart the app after
+restoring the watch-only wallet, with the escrow signer running. If the signer does not answer, the app imports only
+each escrow's own descriptor and logs "watch-only wallet repair waits for the escrow signer" on every watcher pass; the
+sibling addresses, which need the signer's key for the order wallet's ranged descriptors, are imported once it answers,
+and deposits to them are not seen until then. While the wallet is rescanning (the `rescanblockchain` above, or a repair
+import that took longer than its two minutes) the app waits and imports nothing; the log reads "watch-only wallet repair
+waits". Core refuses every import while it rescans, so an escrow checkout meanwhile gets the "try again later" answer
+with nothing stored. Then follow the reconciliation below.
 
 Escrow and the pooled wallet on one node share one failure domain: losing that node needs both restores, and whoever
 controls it controls both wallets. Restrict the pooled RPC user or give escrow its own node
@@ -527,9 +538,11 @@ escrow address, which would link the two escrows on the chain (A-366). The scrip
 wallet after restoring its records from a backup. …", 503, the order stays a draft) until the escrow watcher's orphan
 sweep has run. While the setting is there the sweep runs on every watcher pass, gate or not: it reads the three public
 keys of every address the watch-only wallet holds with no escrow row (`getaddressinfo`) and reserves them
-(`escrow_reserved_keys`); an address Core reports unsolvable (a lost per-order escrow's sibling address held only as an
-address) has no keys to reserve and counts as read. Once it has read every one it removes the setting; if a read fails, the setting stays and
-the next pass tries again (the app logs "orphan sweep incomplete"). For a watch-only wallet restored from the same
+(`escrow_reserved_keys`). An address Core reports unsolvable (held by an `addr(…)` import only) has no keys to read: it
+counts as read only as a lost per-order escrow's sibling address, when another orphan with the same `escrow:<order ID>`
+label gave its three keys; any other (a Bitcoin Core escrow imported again by hand as `addr(…)`, above) keeps the sweep
+incomplete. Once it has read every one it removes the setting; if a read fails, the setting stays and the next pass
+tries again (the app logs "orphan sweep incomplete"). For a watch-only wallet restored from the same
 backup, which knows no lost escrow either, the script also moves every account's next escrow child index
 (`escrow_index_floors`) and the market's escrow key index 50 past the restored records. A checkout then skips any
 child key that an escrow on record holds or the sweep reserved, moving on only that party's index (or the market
@@ -1031,7 +1044,12 @@ lasts needs you to look at the orphan. The app has no other way to clear it.
    bytes) and `pubkeys` (or the `desc` of `wsh(multi(2,…))` or `wsh(sortedmulti(2,…))`) lists three distinct
    compressed keys whose 2-of-3 script hashes to it. An error answer (an unloaded wallet, a node still starting) is
    a node problem to fix first; the sweep then completes on its own. An answer that is complete but still not accepted
-   is the case this section is for.
+   is the case this section is for. An answer with `"solvable": false` and no keys is an address held by an `addr(…)`
+   import only (the log line ends "an address held without its keys (addr(…)) is no lost per-order escrow's sibling"):
+   the app accepts it only as a lost per-order escrow's sibling, whose escrow address (same label) gave its keys. If
+   it is an escrow imported by hand as `addr(…)`, Core keeps it unsolvable even after its descriptor is imported:
+   restore the watch-only wallet again, import the escrow's descriptor instead, and the sweep reads its keys; or, if
+   you hold that descriptor, take its three keys for step 3.
 3. When the answer shows the three keys, reserve them by hand, with the address they came from. Any key a lost escrow
    used is then never composed into a new escrow:
 
