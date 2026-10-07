@@ -211,6 +211,9 @@ type PageData struct {
 	// StaffAlert: order page, set when staff read the order only because its escrow has an open staff alert (no
 	// deposit flag, no dispute): which alerts are open, so the page names them (QA5W1-1).
 	StaffAlert *EscrowAlertView
+	// XMRCollisions: order page, for staff who are not parties only, the order's Monero escrow deposits refused as
+	// another order's escrow account (A-480), oldest first, each with its disposition or its form.
+	XMRCollisions []XMRCollisionView
 
 	// P4 Inventory (uses Product.Archived)
 	Listing   *ListingView
@@ -684,10 +687,25 @@ type EscrowStallView struct {
 }
 
 // EscrowAlertView is an escrow order with an open staff alert on the moderation desk: its ID, its state's label, and
-// which alerts are open (a settlement queued or stuck, a release too few).
+// which alerts are open (a settlement queued or stuck, a release too few, a Monero deposit refused as another order's
+// escrow account with no disposition recorded, A-480).
 type EscrowAlertView struct {
-	ID, State     string
-	Stall, TooFew bool
+	ID, State              string
+	Stall, TooFew, Refused bool
+}
+
+// XMRCollisionView is one record of a Monero escrow deposit refused as another order's escrow account (A-480), as staff
+// read it on the order page: TxID (the first 20 characters only when Truncated, a record backfilled from a note written
+// before migration 090), the wallet and account, when it was noted, and its disposition (Disposed, By, Note) once
+// recorded. Form: the viewer may record the disposition now (open, and the viewer is staff who is not a party).
+type XMRCollisionView struct {
+	ID              int64
+	TxID, Wallet    string
+	Account         int64
+	Truncated       bool
+	Noted, Disposed string
+	By, Note        string
+	Form            bool
 }
 
 // EscrowSignerView is the line under Payment providers on /admin about the escrow signer (escrow_signer.go): State is

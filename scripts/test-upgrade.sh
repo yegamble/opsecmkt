@@ -297,6 +297,21 @@ start_server restart "$work/new-server" "$root"
 stop_server
 [[ $(sql -c "SELECT string_agg(version || '@' || applied, ',' ORDER BY version) FROM schema_migrations") == "$applied" ]]
 
+# Migration 090 (A-480) on a database holding a refused-deposit note written before it: the database is put back to its
+# pre-090 state (090 only adds xmr_escrow_collisions), a watcher note of the old fixed form is written on the XMR draft,
+# and the server applies 090 again on start. The note becomes one open record with the transaction's first 20 hex
+# digits (txid_truncated), the wallet, the account and the note's time; a user's note quoting the form does not.
+xmr_order=$(sql -c "SELECT o.id FROM orders o JOIN users u ON u.id=o.buyer_id WHERE u.handle='alpha_buyer' AND o.currency='XMR'")
+refused_note="TESTNET stagenet Monero escrow deposit 0123456789abcdef0123… to wallet escrow-202609-01 account 4 was not recorded: the database refused it as another order's escrow account. Moderator review required."
+sql -c "DROP TABLE xmr_escrow_collisions; DELETE FROM schema_migrations WHERE version=90;
+  INSERT INTO order_events(order_id,from_state,to_state,actor_id,note,created) VALUES
+    ('$xmr_order','draft','draft',NULL,\$n\$$refused_note\$n\$,'2026-09-01 10:00+00'),
+    ('$xmr_order','draft','draft',(SELECT buyer_id FROM orders WHERE id='$xmr_order'),\$n\$$refused_note\$n\$,'2026-09-02 10:00+00')"
+start_server backfill "$work/new-server" "$root"
+stop_server
+[[ $(sql -c "SELECT string_agg(order_id || ' ' || wallet_name || ' ' || account || ' ' || txid || ' ' || txid_truncated || ' ' || (disposed_at IS NULL) || ' ' || to_char(noted AT TIME ZONE 'UTC','YYYY-MM-DD HH24:MI'), ',') FROM xmr_escrow_collisions") == "$xmr_order escrow-202609-01 4 0123456789abcdef0123 true true 2026-09-01 10:00" ]]
+[[ $(sql -c "SELECT count(*) FROM schema_migrations WHERE version=90") == 1 ]]
+
 # Rollback rehearsal: to this server, a database that a newer release has migrated is one that records a
 # migration it does not include. It must exit non-zero before serving, name that migration, and change nothing.
 sql -c "INSERT INTO schema_migrations(version,name) VALUES (999,'from_a_newer_release')"

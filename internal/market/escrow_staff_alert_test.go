@@ -150,6 +150,24 @@ func TestEscrowStallAlertStaffRead(t *testing.T) {
 			t.Fatalf("the desk's escrow alert for the stall: %q", e)
 		}
 	}
+	// QA5W2-3: the desk orders alerts by when each opened, a stall by its stall note, not by the order's age. A release too
+	// few recorded a minute before the stall note, on a newer order, is listed after it; one recorded a minute after, on an
+	// older order, before it. The stall note is dated an hour later first, so that no other time of the settlement (its
+	// creation or last update, seconds before the note) could order it the same way.
+	x.exec("UPDATE order_events SET created=created+interval '1 hour' WHERE order_id=$1 AND strpos(note,$2)=1", order, escrowStallMark)
+	stalled := agStrings(t, x.testEnv, "SELECT created::text FROM order_events WHERE order_id=$1 AND strpos(note,$2)=1 ORDER BY id DESC LIMIT 1", order, escrowStallMark)[0]
+	tooFew := func(created, updated string) string {
+		o := x.testEnv.order(x.buyer, x.product, "BTC", stateCompleted)
+		x.exec("UPDATE orders SET created=now()+$2::interval WHERE id=$1", o, created)
+		x.exec("INSERT INTO settlements(order_id,kind,state,build_error,updated) VALUES($1,'release','failed',$2,$3::timestamptz+$4::interval)", o, settleTooSmall, stalled, updated)
+		return o
+	}
+	before, after := tooFew("30 days", "-1 minute"), tooFew("-30 days", "1 minute")
+	desk := x.page("/moderator", mod)
+	if a, s, b := strings.Index(desk, `href="/order?id=`+after+`"`), strings.Index(desk, `href="/order?id=`+order+`"`), strings.Index(desk, `href="/order?id=`+before+`"`); a < 0 || s < a || b < s {
+		t.Fatalf("the desk's alerts are not ordered by when they opened (later release %d, stall %d, earlier release %d):\n%s", a, s, b, desk)
+	}
+	x.exec("UPDATE settlements SET state='superseded' WHERE order_id IN ($1,$2)", before, after)
 	// The /admin stall line links the order page.
 	if page := x.adminPage(); !strings.Contains(page, `href="/order?id=`+order+`"`) {
 		t.Fatalf("the admin stall line does not link the order:\n%s", page)
@@ -330,8 +348,8 @@ func TestEscrowNoteHelpNamesStaffAlert(t *testing.T) {
 
 // QA5W1-2: the desk's Escrow alerts list is newest first and says how many more it does not list, so that the alert a
 // notification just announced is never the one cut, and the cut is never silent. 101 open alerts (releases too few,
-// created a second apart): the newest 100 are listed, the oldest is not, and the count line reads "1 more"; at exactly
-// 100 there is no such line.
+// recorded a second apart): the newest 100 are listed, the oldest is not, and the count line reads "1 more"; at exactly
+// 100 there is no such line. Newest means the alert opened last, whatever the order's age (QA5W2-3).
 func TestEscrowDeskAlertsNewestFirstAndCounted(t *testing.T) {
 	x := newEscrowEnv(t)
 	_, mod := x.user("deskover_"+randomToken()[:6], "moderator")
@@ -339,7 +357,7 @@ func TestEscrowDeskAlertsNewestFirstAndCounted(t *testing.T) {
 	for i := 0; i < escrowAlertLimit+1; i++ {
 		o := x.testEnv.order(x.buyer, x.product, "BTC", stateCompleted)
 		x.exec("UPDATE orders SET created=now()+make_interval(secs => $2) WHERE id=$1", o, i)
-		x.exec("INSERT INTO settlements(order_id,kind,state,build_error) VALUES($1,'release','failed',$2)", o, settleTooSmall)
+		x.exec("INSERT INTO settlements(order_id,kind,state,build_error,updated) VALUES($1,'release','failed',$2,now()+make_interval(secs => $3))", o, settleTooSmall, i)
 		orders = append(orders, o)
 	}
 	section := func() string {
@@ -368,5 +386,17 @@ func TestEscrowDeskAlertsNewestFirstAndCounted(t *testing.T) {
 	sec = section()
 	if n := strings.Count(sec, "<li>"); n != escrowAlertLimit || !strings.Contains(sec, `href="/order?id=`+oldest+`"`) || strings.Contains(sec, " more order") {
 		t.Fatalf("with exactly %d alerts open: %d listed, oldest listed %v:\n%s", escrowAlertLimit, n, strings.Contains(sec, oldest), sec)
+	}
+	// QA5W2-3: newest by when the alert opened, not by the order's age. A 30-day-old order whose release too few is
+	// recorded last is listed first, and the alert opened first (on the oldest order here) is the one cut.
+	old := x.testEnv.order(x.buyer, x.product, "BTC", stateCompleted)
+	x.exec("UPDATE orders SET created=now()-interval '30 days' WHERE id=$1", old)
+	x.exec("INSERT INTO settlements(order_id,kind,state,build_error,updated) VALUES($1,'release','failed',$2,now()+interval '1 day')", old, settleTooSmall)
+	sec = section()
+	if i := strings.Index(sec, "<li>"); i < 0 || !strings.HasPrefix(sec[i:], `<li><a class="text-link mono" href="/order?id=`+old+`">`) {
+		t.Fatalf("the alert opened last, on a 30-day-old order, is not listed first:\n%s", sec)
+	}
+	if strings.Contains(sec, `href="/order?id=`+oldest+`"`) || !strings.Contains(sec, "1 more order has an open alert") {
+		t.Fatalf("the alert opened first is not the one cut, or the count is wrong:\n%s", sec)
 	}
 }

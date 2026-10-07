@@ -1358,6 +1358,27 @@ been checked):
 
 Not changed: the signed audit export and every merged migration.
 
+## 43. Monero escrow: refused deposits are recorded and cleared by staff (migration 090, A-480)
+
+No new key. Migration 090 adds the table `xmr_escrow_collisions`. A Monero escrow deposit the database refuses as
+another order's escrow account (`payments_xmr_escrow_idx`) is still never written to the ledger, and the order note and
+the one "Payment review needed" notification to staff are unchanged; the watcher now also records the deposit (order,
+wallet, account, transaction ID, when noted), once per order and transaction, and the record, not the note text, keeps
+the note and notification to once. While a record is open, moderators and administrators who are not parties may read
+the order, the moderation desk lists it under *Escrow alerts*, and the order page shows them a *Refused Monero
+deposits* section where one of them records what was done (see [operator guide](docs/operator-guide.md), moderation);
+that clears the alert. The parties see no change. The desk's *Escrow alerts* are now ordered by when each order's open
+alert opened rather than by the order's age (QA5W2-3).
+
+Notes written before the upgrade are backfilled: each system order note of the watcher's fixed form ("… Monero escrow
+deposit `<20 hex digits>`… to wallet … account … was not recorded: the database refused it as another order's escrow
+account. Moderator review required.") becomes one **open** record, noted at the note's time. The note named only the
+first 20 characters of the transaction ID, so that is all the record holds (`txid_truncated`); the order page shows it
+with an ellipsis. If the watcher meets the same deposit again it completes the transaction ID and writes nothing else
+(no second note or notification). So after the upgrade any such order already noted appears under *Escrow alerts* until
+staff record what was done about it, even if it was dealt with before; record that. Check for them with
+`SELECT order_id, txid FROM xmr_escrow_collisions WHERE disposed_at IS NULL;`. A market that never ran with `ESCROW_XMR=on` has none.
+
 ## Appendix: new keys by hand
 
 `./scripts/install.sh upgrade` writes these for you. To add them yourself, use your editor (values in single
