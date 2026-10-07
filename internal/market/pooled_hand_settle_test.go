@@ -153,11 +153,12 @@ func TestPooledHandSettleWaitsForTheRowLock(t *testing.T) {
 	}
 }
 
-// Concurrent submissions settle it once: one 303, the rest 409, one audit row.
+// Concurrent submissions settle it once: one 303, the rest 409, one audit row. Four at once, the password-hashing
+// slots (passwordWork): a fifth would be refused as busy (503) before reaching the payout.
 func TestPooledHandSettleConcurrentOnce(t *testing.T) {
 	p := newPayEnv(t)
 	order, id := p.blockedRelease("hand-race")
-	rs := agRace(6, func(i int) (int, string) {
+	rs := agRace(cap(passwordWork), func(i int) (int, string) {
 		return p.payoutAction(p.adminSess, id, "sent", strings.Repeat(string("0123456789"[i]), 64), testPassword)
 	})
 	tally := agTally(t, rs, 303, 409)
