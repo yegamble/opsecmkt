@@ -28,7 +28,8 @@ func xmrTooFewNote(n int, sum int64, decided bool, left string) string {
 // its deposits are left out (flagged; one note, the parties and the staff told), and the one stray refund, which waits
 // rather than fails, returns them with a later deposit once together they pay the fee.
 //   - Cancelled at the end of its payment window with 0.0005 XMR, below the floor before any fee (the plan refuses it);
-//     a deposit of 0.003 XMR after the close, which could be returned alone.
+//     a deposit of 0.004 XMR after the close, which could be returned alone (0.003 XMR, as before QA5W1-5, no longer
+//     pays two inputs' fee and the floor with it at the recorded weights).
 //   - A dispute decided for the buyer on a 0.002 XMR order: the wallet's transaction leaves less than the floor after
 //     its fee (the build's check refuses it); a deposit of 0.002 XMR the wallet read as conflicted when the dispute was
 //     decided, too few on its own, is mined since: it is left out (A-424, as on a cancelled order) and joins them.
@@ -108,11 +109,11 @@ func TestXMREscrowTooSmallRefundReturned(t *testing.T) {
 	}
 	x.mustPoll()
 	const waits = "Cancelled; the market could not send the refund because the coins were too few. The escrowed amount stays in the escrow account, because the coins there are too few to pay the network fee and an output of at least 0.001 XMR, so the market cannot send the stray refund below."
-	returned("cancelled", order, false, tiny, 3*minPayoutXMR, func() {
+	returned("cancelled", order, false, tiny, 4*minPayoutXMR, func() {
 		if panel := x.panel(order, bsess); !strings.Contains(panel, waits) {
 			t.Fatalf("cancelled: waiting: panel:\n%s", panel)
 		}
-	}, func() { x.fake.payAddress(addr, hex64("later "+order), 3*minPayoutXMR, 20) })
+	}, func() { x.fake.payAddress(addr, hex64("later "+order), 4*minPayoutXMR, 20) })
 	const sent = "Cancelled; the market could not send the refund because the coins were too few. The escrowed amount is being returned, less the network fee, to the buyer's refund address by the stray refund below, which is sent and waits for confirmations."
 	if panel := x.panel(order, bsess); !strings.Contains(panel, sent) || strings.Contains(panel, "did not count for the order. It") || strings.Contains(panel, "by a refund the market builds and sends") {
 		t.Fatalf("cancelled: panel:\n%s", panel)

@@ -1326,7 +1326,9 @@ wallet would take (`get_default_fee_priority` and `estimate_tx_size_and_weight` 
 a refund as too few, as it already treated one the wallet built with less than 0.001 XMR left after the fee: the refund
 ends, its deposits are left out and the stray refund returns them with a later deposit. Before, it waited for good and
 staff were told of an "outputs mismatch" or a wallet that "keeps refusing" to build it. A refund waiting so when you
-upgrade ends on the next pass; its earlier order note stays. Releases are unchanged ([per-order escrow](docs/escrow.md)).
+upgrade ends on the next pass; its earlier order note stays. If the fee estimate fails, that refund waits and is
+flagged once if it fails again on the next pass; the wallet's other orders carry on. Releases are unchanged
+([per-order escrow](docs/escrow.md)).
 
 ## Appendix: new keys by hand
 

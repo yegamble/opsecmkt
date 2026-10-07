@@ -194,6 +194,7 @@ type escrowXMR struct {
 	canCreate atomic.Bool              // ESCROW_XMR_SEED_KEY is the pinned seed key: new wallets may be created and sealed
 	refused   atomic.Bool              // the nodes failed the network check after startup (P3-R2): disabled until a restart
 	locked    sync.Map                 // wallet names another wallet program has open, logged once while it lasts (escrow_xmr_watch.go)
+	belowFee  sync.Map                 // settlement ID -> the refusal xmrRefundBelowFee last found too few (escrow_xmr_settle.go, QA5W1-6)
 
 	// The network pin and the sync guard (A-449), in memory only.
 	pinned   atomic.Value                        // string: the network pin as initEscrowXMR read it, for display before the daemon is verified

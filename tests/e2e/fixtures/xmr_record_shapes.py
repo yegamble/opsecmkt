@@ -141,6 +141,13 @@ class Recorder:
         self.rpc(w, 'create_account')
         acct1 = self.rpc(w, 'get_address', {'account_index': 1, 'address_index': [0]}, case='wallet get_address account 1')[0]['addresses'][0]['address']
         acct2 = self.rpc(w, 'get_address', {'account_index': 2, 'address_index': [0]})[0]['addresses'][0]['address']
+        # Accounts for refunds at and below the network fee (A-467, QA5W1-5), funded with the second deposit below: one
+        # output each of 0.001, 0.0015 and 0.0018 XMR, and one of 0.01 XMR for a destination exactly at the fee.
+        bands = {}
+        for label, amount in (('0.001', 1_000_000_000), ('0.0015', 1_500_000_000), ('0.0018', 1_800_000_000)):
+            created = self.rpc(w, 'create_account')[0]
+            bands[label] = (created['account_index'], created['address'], amount)
+        at_fee = self.rpc(w, 'create_account')[0]
         self.rpc(w, 'get_address', {'account_index': 99, 'address_index': [0]}, case='wallet get_address (account out of bound)', allow_error=True)
         self.rpc(w, 'get_address', {'account_index': 1, 'address_index': [5]}, case='wallet get_address (address out of bound)', allow_error=True)
         self.rpc(w, 'incoming_transfers', {'transfer_type': 'available', 'account_index': 1, 'verbose': True}, case='wallet incoming_transfers (none)')
@@ -160,7 +167,8 @@ class Recorder:
                                  'do_not_relay': True, 'get_tx_metadata': True, 'get_tx_hex': True}, case='wallet transfer (coins locked)', allow_error=True)
         self.mine(10, fund_addr)
         self.rpc(self.funder, 'refresh')
-        self.rpc(self.funder, 'transfer', {'destinations': [{'address': acct1, 'amount': 300_000_000_000}], 'account_index': 0, 'priority': 0, 'ring_size': 16})
+        self.rpc(self.funder, 'transfer', {'destinations': [{'address': acct1, 'amount': 300_000_000_000}, {'address': at_fee['address'], 'amount': 10_000_000_000}]
+                                           + [{'address': address, 'amount': amount} for _, address, amount in bands.values()], 'account_index': 0, 'priority': 0, 'ring_size': 16})
         self.mine(11, fund_addr)
         self.synced()
         self.rpc(w, 'get_accounts', case='wallet get_accounts')
@@ -204,6 +212,19 @@ class Recorder:
         self.redact[bad] = '<destination>'
         self.rpc(w, 'transfer', {**params, 'destinations': [{'address': bad, 'amount': 100_000_000}]}, case='wallet transfer (invalid destination)', allow_error=True)
         self.rpc(w, 'transfer', {**params, 'account_index': 99, 'destinations': [{'address': claimant, 'amount': 100_000_000}]}, case='wallet transfer (account out of bound)', allow_error=True)
+        # The read-only fee sources the adapter reads when a refund is refused (estimateFee, A-467), with its exact
+        # params, and the refusals of coins at or below the network fee (QA5W1-5): each band account's whole output with
+        # the fee taken from it, and a first destination exactly at the fee a build of the same output just took.
+        self.rpc(w, 'get_default_fee_priority', case='wallet get_default_fee_priority')
+        self.rpc(w, 'estimate_tx_size_and_weight', {'n_inputs': 1, 'n_outputs': 2, 'ring_size': 16, 'rct': True}, case='wallet estimate_tx_size_and_weight')
+        self.rpc(self.daemon, 'get_fee_estimate', {'grace_blocks': 10}, case='daemon get_fee_estimate')
+        for label, (index, _, amount) in bands.items():
+            self.rpc(w, 'transfer', {**params, 'account_index': index, 'destinations': [{'address': claimant, 'amount': amount}]},
+                     case='wallet transfer (below the fee: %s XMR)' % label, allow_error=True)
+        pair = [{'address': claimant, 'amount': 5_000_000_000}, {'address': fund_addr, 'amount': 4_000_000_000}]
+        first, _ = self.rpc(w, 'transfer', {**params, 'account_index': at_fee['account_index'], 'destinations': pair})
+        self.rpc(w, 'transfer', {**params, 'account_index': at_fee['account_index'], 'destinations': [{**pair[0], 'amount': first['fee']}, pair[1]]},
+                 case='wallet transfer (destination at the fee)', allow_error=True)
         self.rpc(w, 'validate_address', {'address': claimant, 'any_net_type': False}, case='wallet validate_address')
         self.rpc(w, 'validate_address', {'address': '4' + '1' * 94, 'any_net_type': False}, case='wallet validate_address (invalid)')
         self.rpc(w, 'refresh', case='wallet refresh')

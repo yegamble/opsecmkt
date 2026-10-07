@@ -23,7 +23,10 @@ of its subaddresses within the subaddress lookahead (50 accounts, 200 addresses 
 received output expands the wallet's accounts, an output is spent once a transaction with its key image is in the pool or
 a block, and unlocks at 10 confirmations. Several wallet files with passwords, one open at a time per wallet-rpc; freeze
 and thaw; transfer with do_not_relay, subtract_fee_from_outputs and amounts_by_dest, its fee from the measured weight
-model (0.0018744 XMR for one input and two outputs); relay_tx (idempotent; refused, -4, when another transaction spent a
+model (0.0018744 XMR for one input and two outputs), refusing coins at or below the fee taken from them as 0.18.5.1 does
+(-17 below a minimal fee, -16 below the fee, -46 at exactly the fee); the read-only fee sources the adapter reads for a
+refused refund (get_default_fee_priority, estimate_tx_size_and_weight, the daemon's get_fee_estimate) with the values
+measured on the fakechain; relay_tx (idempotent; refused, -4, when another transaction spent a
 key image); the daemon's /get_transactions (missed_tx, ring 16, RingCT type 6) and /is_key_image_spent. A transfer to an
 address whose keys pass check_key but have a small-order component makes the wallet-rpc go away with no answer and no
 wallet open, as 0.18.5.1 crashes (A-417).
@@ -303,14 +306,29 @@ COINBASE_REWARD = 17_592_186_044_415  # piconero: a fakechain block's reward nea
 COINBASE_UNLOCK = 60                   # blocks before a coinbase output can be spent (CRYPTONOTE_MINED_MONEY_UNLOCK_WINDOW)
 SPENDABLE_AGE = 10                     # confirmations before any other output can be spent
 FEE_PER_BYTE = 1_200_000               # piconero per byte of weight at priority 0 on a young fakechain (measured)
+# get_fee_estimate's fees per byte at priorities 1 to 4 and its quantization mask, as monerod 0.18.5.1 answered on a
+# young fakechain (A-467, QA5W1-5); transfer at priority 0 pays priority 1's (get_default_fee_priority answers 1).
+FEE_ESTIMATE = [FEE_PER_BYTE, 4_700_000, 19_000_000, 240_000_000]
+QUANTIZATION_MASK = 10_000
+# wallet2's early refusal (-17) of a transfer taking the fee from its destinations when the coins are below the fee of a
+# one-input, two-output transaction by its size (A-467): 0.001 and 0.0015 XMR are refused so, 0.0018 XMR is not.
+MIN_TX_SIZE = 1417
 START_HEIGHT = 150
 TIME0 = 1_791_000_000
 
 
 def tx_weight(n_in, n_out):
-    """The weight of a ring-16 CLSAG, Bulletproofs+ transaction: 1562 for one input and two outputs, 2166 for two inputs
-    and two outputs (measured on monerod 0.18.5.1), about 690 more per output past two."""
-    return 1562 + 604 * (n_in - 1) + 690 * (max(n_out, 2) - 2)
+    """The weight of a ring-16 CLSAG, Bulletproofs+ transaction: 1562 for one input and two outputs and 659 more per
+    input (2166 and 2825 for two and three inputs of a 1507-weight build, measured on monerod 0.18.5.1, QA5W1-5), about
+    690 more per output past two."""
+    return 1562 + 659 * (n_in - 1) + 690 * (max(n_out, 2) - 2)
+
+
+# estimate_tx_size_and_weight's weight and size for one input and one to four outputs (ring 16, RingCT), and what each
+# further input adds, as monero-wallet-rpc 0.18.5.1 answered on the fakechain (QA5W1-5).
+ESTIMATED_WEIGHT = {1: 1536, 2: 1536, 3: 2139, 4: 2218}
+ESTIMATED_SIZE = {1: 1536, 2: 1536, 3: 1679, 4: 1758}
+ESTIMATED_PER_INPUT = 679
 
 
 def tx_fee(n_in, n_out):
@@ -468,6 +486,9 @@ class Chain:
             if method == 'hard_fork_info':
                 return {'credits': 0, 'earliest_height': 1, 'enabled': True, 'state': 0, 'status': 'OK', 'threshold': 0, 'top_hash': '',
                         'untrusted': False, 'version': 16, 'votes': 0, 'voting': 16, 'window': 1}
+            if method == 'get_fee_estimate':
+                return {'credits': 0, 'fee': FEE_ESTIMATE[0], 'fees': list(FEE_ESTIMATE), 'quantization_mask': QUANTIZATION_MASK, 'status': 'OK',
+                        'top_hash': '', 'untrusted': False}
             if method == 'generateblocks':
                 n, address = p.get('amount_of_blocks'), p.get('wallet_address', '')
                 parsed = parse_address(address)
@@ -852,6 +873,17 @@ class WalletRPC:
     def m_thaw(self, p):
         return self._set_frozen(p, False)
 
+    def m_get_default_fee_priority(self, p):
+        return {'priority': 1}
+
+    def m_estimate_tx_size_and_weight(self, p):
+        n_in, n_out = p.get('n_inputs'), p.get('n_outputs')
+        if not isinstance(n_in, int) or n_in < 1 or n_out not in ESTIMATED_WEIGHT or p.get('ring_size') != 16 or p.get('rct') is not True:
+            # Only what was measured is modelled: ring 16, RingCT, one to four outputs (the adapter asks for two or three).
+            raise RPCError(-1, 'Failed to determine size and weight')
+        extra = ESTIMATED_PER_INPUT * (n_in - 1)
+        return {'size': ESTIMATED_SIZE[n_out] + extra, 'weight': ESTIMATED_WEIGHT[n_out] + extra}
+
     def m_validate_address(self, p):
         parsed = parse_address(p.get('address', ''))
         if parsed is None:
@@ -890,6 +922,8 @@ class WalletRPC:
             picked.append(o)
             have += o.amount
         need = want + (0 if subtract else tx_fee(max(len(picked), 1), len(dests) + 1))
+        if subtract:
+            need = max(need, MIN_TX_SIZE * FEE_PER_BYTE)  # wallet2's early refusal of coins below a minimal fee (A-467)
         if not picked or have < need:
             if sum(o.amount for o in mine) >= need:
                 raise RPCError(-37, 'not enough unlocked money')
@@ -904,8 +938,12 @@ class WalletRPC:
             share, rest = divmod(fee, len(subtract))
             for k, i in enumerate(subtract):
                 amounts[i] -= share + (rest if k == 0 else 0)
-            if any(a <= 0 for a in amounts):
-                raise RPCError(-4, 'transaction amount too small to pay the fee')  # not recorded from the real wallet
+            # A destination below its share of the fee is tx_not_possible (-16), one left nothing zero_amount (-46), as
+            # 0.18.5.1 answered on the fakechain at 0.0018 XMR and at exactly the fee (QA5W1-5).
+            if any(a < 0 for a in amounts):
+                raise RPCError(-16, 'tx not possible')
+            if any(a == 0 for a in amounts):
+                raise RPCError(-46, 'destination amount is zero')
         else:
             fee = tx_fee(len(picked), len(dests) + 1)
             change = have - want - fee
