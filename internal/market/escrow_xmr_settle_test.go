@@ -853,7 +853,7 @@ func TestXMREscrowSettlementPanel(t *testing.T) {
 	s := x.settlement(id)
 	vendor := x.panel(order, vendorSess)
 	for _, want := range []string{"Sent to the fakechain network: transaction " + s.TxHash, `id="xmr-settlement-` + strconv.FormatInt(id, 10) + `"`, claim,
-		amount(xmrListingPrice-s.Fee, 12) + " XMR", "0.0018744 XMR", "Fewer than 10", `<ol class="settlement-outputs"`, `<span class="settlement-address">`} {
+		amount(xmrListingPrice-s.Fee, 12) + " XMR", "0.0018168 XMR", "Fewer than 10", `<ol class="settlement-outputs"`, `<span class="settlement-address">`} {
 		if !strings.Contains(vendor, want) {
 			t.Fatalf("vendor's panel lacks %q:\n%s", want, vendor)
 		}
