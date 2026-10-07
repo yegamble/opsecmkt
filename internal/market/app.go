@@ -71,9 +71,10 @@ type App struct {
 	escrowPooledKey atomic.Pointer[string]              // set while startEscrow's pooled key self-check (A-440) got no refusal: the answer's class; nil = none
 	escrowNet       atomic.Pointer[string]              // the escrow chain escrowNetwork names while escrow is not enabled (A-443); nil = not known yet
 	// The arbiter wallet check (QA4W4A-1, checkArbiterWallet), in memory only; the checkpoint is in settings.
-	escrowArbiterRead atomic.Pointer[string] // set while startEscrow could not finish reading the arbiter wallet's entries: "waiting" (the read goes on) or the read failure's class; nil = none
-	escrowScanMu      sync.Mutex             // guards escrowScan
+	escrowArbiterRead atomic.Pointer[string] // set while startEscrow could not finish reading the arbiter wallet's entries: "waiting" (the read goes on), "slow" (a slow read's wait runs, A-479) or the read failure's class; nil = none
+	escrowScanMu      sync.Mutex             // guards escrowScan and escrowPace
 	escrowScan        *escrowArbiterScan     // the arbiter wallet read in progress, or finished and not yet taken (arbiterScan); nil = none
+	escrowPace        escrowArbiterPace      // when the next arbiter wallet read may start (A-479, paceArbiter); guarded by escrowScanMu
 	// Broadcast honesty (A-441, escrow_stall.go), in memory only.
 	escrowTip     atomic.Int64 // the escrow node's tip height the last escrow watcher pass read (0 = none yet)
 	escrowUnseen  escrowUnseen // per broadcast settlement not seen by the watch-only wallet, the height it went unseen from

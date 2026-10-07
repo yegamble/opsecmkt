@@ -1254,6 +1254,10 @@ with no step), and the answer as a whole is limited only by the read's timeout. 
 the answer grows with the square of their number (1100: 82 MB, read in about 2 s; 3000: 605 MB, 16 s, and about
 1.5 GB of the node's memory per read); once one is mined, Core lists the others no more.
 
+A-479 (no step, no new key): the escrow watcher's retries no longer read the arbiter wallet on every poll after a read
+that failed or took 5 s or more; the next read waits 1 minute, doubling after each such read up to 1 hour, a quick read
+ends the waits, and restarting the app reads at once (the operator guide's *Reads are paced*).
+
 What "never spent" cannot tell apart: `rpcwhitelist` allows methods, not wallets, so where the pooled payments share the
 escrow node, a pooled user allowed `sendtoaddress` can spend coins paid to the arbiter wallet by naming its path, and
 escrow then stays off from the next check (no key is exported). A node of escrow's own rules that out.
