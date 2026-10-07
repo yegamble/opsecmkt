@@ -883,7 +883,9 @@ been done. Never switch it on for a market that takes real payments.
   On a Monero escrow a waiting settlement does not flag a deposit recorded after the close: it is flagged when it is
   announced, so the buyer is told of it once even when the stray refund that returns it waits (QA462C-4).
 - **Site-wide notices.** With escrow on, the footer, catalog, listing and draft notices say which chain Bitcoin escrow
-  runs on (regtest, signet or testnet4) even when no pooled provider is configured, and the vendor desk's *Bitcoin escrow* tile counts the viewer's
+  runs on (regtest, signet or testnet4) even when no pooled provider is configured (and, with `ESCROW_XMR` on, which
+  network Monero escrow runs on: a local fakechain or Monero stagenet, "network not verified yet" until the daemon was
+  verified), and the vendor desk's *Bitcoin escrow* tile counts the viewer's
   escrow orders that may hold coins (with `ESCROW_BTC` off too), so no page says escrow is inactive or no funds are
   held while escrow orders exist. With escrow off and no escrow orders the pooled wording is unchanged.
 - **Compose** passes these variables from `.env` to the app container (`compose.yaml`; blank in `.env.example`, so
@@ -1787,7 +1789,7 @@ accounts, so without the sweep a deposit to a later account is not seen (the `Lo
 this for account 300). A restore not done by `scripts/restore.sh` or the SQL of [UPGRADING.md, section 6](../UPGRADING.md#6-backups-now-need-the-wallets-too)
 holds nothing.
 
-**Held settlements.** Under *Admin → Payment providers → Monero escrow recovery and retention (fakechain)*, each restored
+**Held settlements.** Under *Admin → Payment providers → Monero escrow recovery and retention (local fakechain, Monero stagenet or network not verified yet)*, each restored
 settlement with a stored transaction is listed with its order, kind, state and transaction hash. The restored records may
 predate its relay, or a transaction that spent its coins, so check it first in the escrow daemon and the escrow wallet, for
 example with the daemon's own RPC (a daemon started with a login needs `--digest -u USER:PASSWORD`):
@@ -1839,7 +1841,7 @@ file is gone and nothing is owed on it; that is refused while the restore gate o
 escrow wallet open in another wallet program** (for example `monero-wallet-cli` on the same files): a wallet "opened by another
 wallet program" keeps its state and its accounts, but the market cannot read its deposits or send its settlements until you
 close it there (logged once). **The market cannot reach the wallet volume, so the files stay until you delete them.**
-*Admin → Payment providers → Monero escrow recovery and retention (fakechain)* lists *Destroyed Monero escrow wallets* with
+*Admin → Payment providers → Monero escrow recovery and retention (local fakechain, Monero stagenet or network not verified yet)* lists *Destroyed Monero escrow wallets* with
 their two files, `NAME` and `NAME.keys`. Delete each pair from the escrow wallet volume:
 
 ```sh

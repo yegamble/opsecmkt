@@ -181,11 +181,14 @@ func (a *App) escrowDecisionView(ctx context.Context, d *PageData, v *EscrowOrde
 	return nil
 }
 
-// escrowAmount states n atomic units of o's escrow coin with its network: the Bitcoin escrow node's chain, or fakechain,
-// the only network Monero escrow runs on (P3-R2).
+// escrowAmount states n atomic units of o's escrow coin with its network: the Bitcoin escrow node's chain, or the
+// network Monero escrow was verified on (none named before one was, A-472: it said fakechain, wrong on stagenet).
 func (a *App) escrowAmount(o *Order, n int64) string {
 	if o.Currency == "XMR" {
-		return amount(n, currencyDecimals(o.Currency)) + " fakechain XMR"
+		if net := a.xmrEscrowNetKnown(); net != "" {
+			return amount(n, currencyDecimals(o.Currency)) + " " + net + " XMR"
+		}
+		return amount(n, currencyDecimals(o.Currency)) + " XMR"
 	}
 	return amount(n, currencyDecimals(o.Currency)) + " " + a.escrowNetwork() + " BTC"
 }

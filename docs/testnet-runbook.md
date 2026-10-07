@@ -541,7 +541,7 @@ was charged and your order is still a draft; try again later.", 503, the order s
 restored Monero settlement with a stored transaction, built or relayed (it prints how many, and the audit row counts them),
 retires every free escrow account, moves every active or sealed escrow wallet to closing so that no account of a restored
 wallet takes an order again, and sets `escrow_xmr_release_recheck` and `xmr_escrow_sweep_required`. Before step 8, check each
-held settlement listed under *Admin → Payment providers → Monero escrow recovery and retention (fakechain* or *stagenet)* in the escrow
+held settlement listed under *Admin → Payment providers → Monero escrow recovery and retention (local fakechain* or *Monero stagenet)* in the escrow
 daemon and the escrow wallet and confirm it there if it was not already relayed or replaced; the market then relays the same
 stored transaction once. Checkout stays refused ("Monero escrow is paused until this market has checked its escrow wallets
 after restoring its records from a backup. …") until the Monero escrow watcher's sweep has probed for escrow wallets created

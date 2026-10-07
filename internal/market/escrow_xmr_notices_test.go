@@ -133,7 +133,7 @@ func TestMoneroEscrowSiteCopyEveryCombination(t *testing.T) {
 					t.Errorf("%s does not say fakechain", path)
 				}
 			}
-			const notice = "A listing paid by Monero escrow pays into an account of its own, on a local fakechain with no real funds. The coins are " + xmrCustody + "."
+			const notice = "A listing paid by Monero escrow pays into an account of its own, on a local Monero fakechain with no real funds. The coins are " + xmrCustody + "."
 			for _, path := range []string{"/", product, checkout} {
 				if !strings.Contains(pages[path], notice) {
 					t.Errorf("%s lacks %q", path, notice)
@@ -186,8 +186,10 @@ func TestMoneroEscrowTileCountsOrders(t *testing.T) {
 	}
 	t.Setenv("ESCROW_XMR", "off")
 	x.restart()
+	// A-472: switched off, no daemon is verified, so the tile names no network (it said "fakechain" whatever the order's).
+	const heldOff = "1 Monero escrow order(s) may hold coins, " + xmrCustody
 	dash = x.page("/vendor-dashboard", x.vendorSess)
-	if !strings.Contains(dash, "<div class=\"eyebrow\">Monero escrow</div>\n<strong>OFF</strong>") || !strings.Contains(dash, held) || strings.Contains(dash, "No funds are held") {
+	if !strings.Contains(dash, "<div class=\"eyebrow\">Monero escrow</div>\n<strong>OFF</strong>") || !strings.Contains(dash, heldOff) || strings.Contains(dash, "No funds are held") {
 		t.Fatalf("vendor desk with Monero escrow off beside a funded order:\n%s", dash)
 	}
 	if body := x.page("/", x.buyerSess); !strings.Contains(body, `<span class="accent">Payments disabled</span>`) || strings.Contains(body, "Monero escrow") {
