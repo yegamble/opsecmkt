@@ -198,6 +198,33 @@ func (a *App) checkEscrowSigner(ctx context.Context) {
 	}
 }
 
+// errSignerNone is shape (b) with no escrow signer configured (ESCROW_SIGNER_SOCKET unset).
+var errSignerNone = errors.New("escrow signer: not configured")
+
+// signerAccount is the escrow signer's account key as a shape-(b) escrow's market key (A-456a): asked of the signer now
+// and checked against the pins in this database, read through q, which the signer's first contact wrote
+// (checkEscrowSigner). No signer configured, one that does not answer or is not understood, a database with no pins
+// yet and a key that differs from them are each an error: no per-order escrow is created then. The key is the
+// signer's rooted account key (depth 0) with its own fingerprint and no path.
+func (a *App) signerAccount(ctx context.Context, q rowQuerier) (escrowKey, error) {
+	if a.escrowSigner == nil {
+		return escrowKey{}, errSignerNone
+	}
+	info, err := a.escrowSigner.info(ctx)
+	if err != nil {
+		return escrowKey{}, err
+	}
+	var fp, mac string
+	if err = q.QueryRowContext(ctx, "SELECT COALESCE((SELECT value FROM settings WHERE key=$1),''),COALESCE((SELECT value FROM settings WHERE key=$2),'')",
+		escrowSignerFingerprintPin, escrowSignerXPubPin).Scan(&fp, &mac); err != nil {
+		return escrowKey{}, err
+	}
+	if fp == "" || fp != info.Fingerprint || mac != a.escrowXPubHMAC(info.Key.ChainCode, info.Key.PubKey) {
+		return escrowKey{}, &signerRefusal{signerMismatch}
+	}
+	return escrowKey{Fingerprint: info.Fingerprint, XPub: info.Key.Rooted(btc.VersionTpub), ChainCode: info.Key.ChainCode, PubKey: info.Key.PubKey}, nil
+}
+
 // escrowSignerState is the signer's state as the latest check found it ("" = no signer configured, or not checked).
 func (a *App) escrowSignerState() string {
 	s, _ := a.escrowSignerStatus.Load().(string)

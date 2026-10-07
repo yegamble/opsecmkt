@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -45,6 +46,23 @@ import (
 // watched but never shown (reconciliation lists such orphans, P1-d, and reserves their keys, P2-e). While the restore
 // gate is set, or after a restore until the orphan sweep has run (escrow_sweep_required), no escrow is created at all
 // (errEscrowRestoring, errEscrowSweep).
+//
+// The escrow's shape follows both parties' active keys (A-456a, rulings P4-R2, P4-R17, P4-R18): two Bitcoin Core keys make
+// shape (a), above; two per-order wallet keys make shape (b); a mixed pair is refused, naming the vendor's key type. In
+// shape (b) each party's key is the first receiving key (/0/0) of an order wallet built on the account key's child <i>,
+// with i >= 2 from the same per-account counter (escrowNextChildSQL), and the market's is the escrow signer's account
+// key's child <m>/0/0, m >= 2 from the market counter (cmd/escrow-signer signs only those). Go derives every key
+// (escrow_bip32.go) and Core must agree before anything is stored (checkPerOrderEscrow): the three keys, the address,
+// and the order wallet's sibling addresses /0/1..19 and /1/0..9, which are stored (escrow_siblings) and imported with the
+// escrow as two ranged descriptors of the rooted per-order keys, so a deposit to one is seen and returned by the stray
+// refund (escrow_watch.go). per_order_xpub stays NULL: the per-order keys are derived again on demand. Until A-456b the
+// per-order switch (perOrderEscrows) is off and a pair of per-order keys is still refused (errEscrowBuyerPerOrder).
+
+// perOrderEscrows admits shape-(b) escrows at checkout (A-456a). While it is off, the default, a checkout where both
+// parties' active keys are per-order wallet keys is refused with errEscrowBuyerPerOrder, as before A-456a: nothing can
+// sign such an escrow's release until the market co-signs it through the escrow signer (A-456b, which deletes this
+// switch). Only tests turn it on.
+var perOrderEscrows atomic.Bool
 
 func init() {
 	registerAction("/orders/escrow", actionSpec{OneAtATime: true, Off: escrowOff, Run: escrowCheckoutAction})
@@ -67,12 +85,16 @@ var (
 	errEscrowSelf       = fail(409, "You cannot buy your own listing with escrow: an escrow needs two parties' keys. Nothing was changed.")
 	errEscrowBuyerKey   = fail(409, "Activate your Bitcoin escrow key first: register it and sign its practice transaction on your escrow key page. Nothing was changed.")
 	errEscrowVendorKey  = fail(409, "The vendor has no active Bitcoin escrow key, so this order cannot use escrow. Nothing was changed.")
-	// A-455: until per-order escrows exist (A-456), a per-order wallet key never enters an escrow: a shape-(a) escrow
-	// would use its child /0/<i>, which the owner's per-order wallet cannot sign.
-	errEscrowBuyerPerOrder  = fail(409, "Your Bitcoin escrow key is for a per-order wallet, and escrows with per-order wallets are not available on this market yet. Nothing was changed.")
-	errEscrowVendorPerOrder = fail(409, "The vendor's Bitcoin escrow key is for a per-order wallet, and escrows with per-order wallets are not available on this market yet, so this order cannot use escrow. Nothing was changed.")
-	errEscrowBuild          = fail(503, "The escrow could not be created: the market's Bitcoin node did not confirm it. Nothing was changed; try again later.")
-	errEscrowKeyTaken       = fail(409, "The escrow could not be created: another escrow on this market already holds one of its keys. Nothing was changed. Try again; if the same refusal comes back, contact the market's staff.")
+	// A-455, A-456a: while the per-order switch is off (perOrderEscrows), a pair of per-order wallet keys never makes an
+	// escrow: nothing could sign its release yet (A-456b).
+	errEscrowBuyerPerOrder = fail(409, "Your Bitcoin escrow key is for a per-order wallet, and escrows with per-order wallets are not available on this market yet. Nothing was changed.")
+	// P4-R18: a Bitcoin Core wallet cannot sign a per-order key, nor a per-order wallet a Core child, so both parties'
+	// keys must be of one kind. The listing and the vendor's page show the vendor's (A-455).
+	errEscrowMixedVendorPerOrder = fail(409, "The vendor's Bitcoin escrow key is for a per-order wallet and yours is for Bitcoin Core. An escrow needs both keys to be of the same kind, so this order cannot use escrow. Nothing was changed.")
+	errEscrowMixedVendorCore     = fail(409, "The vendor's Bitcoin escrow key is for Bitcoin Core and yours is for a per-order wallet. An escrow needs both keys to be of the same kind, so this order cannot use escrow. Nothing was changed.")
+	errEscrowSigner              = fail(503, "The escrow could not be created: escrows with per-order wallets need the market's escrow signer, which is not available right now. Nothing was changed; try again later.")
+	errEscrowBuild               = fail(503, "The escrow could not be created: the market's Bitcoin node did not confirm it. Nothing was changed; try again later.")
+	errEscrowKeyTaken            = fail(409, "The escrow could not be created: another escrow on this market already holds one of its keys. Nothing was changed. Try again; if the same refusal comes back, contact the market's staff.")
 	// errEscrowRestoring refuses escrow checkout while the restore gate is set (A-359): the restored database does not
 	// know the escrows created after its backup, so it could hand out their child keys again.
 	errEscrowRestoring = fail(503, "Bitcoin escrow is paused while this market restores its records from a backup. Nothing was charged and your order is still a draft; try again later.")
@@ -117,18 +139,23 @@ func escrowAddressForm(chain, s string) (string, bool) {
 	return s, true
 }
 
-// escrowParty is one party key of an escrow being built: the account key, its owner and the child suffix used.
+// escrowParty is one party key of an escrow being built: the account key, its owner and the child suffix used. A
+// per-order (shape (b)) key also carries Go's derivation: the order wallet's key (the account key's child <Index>) and
+// its first receiving key (/0/0), the escrow's key.
 type escrowParty struct {
 	Party, UserID, KeyHMAC string
 	Key                    escrowKey
 	Suffix                 string
-	Index                  int64 // the child index in Suffix (/0/<Index>)
+	Index                  int64  // the child index in Suffix (/0/<Index>, or /<Index>/0/0 in shape (b))
+	Layout                 string // layoutCore (shape (a)) or layoutPerOrder (shape (b))
+	Order, Leaf            bip32Key
 }
 
 // escrowParties locks the buyer's and the vendor's key rows (in account order, so two checkouts never deadlock) and
 // returns each party's key with its next child suffix (escrowNextChildSQL). The count keys off the account, never the
 // HMAC, so an APP_SECRET_KEY rotation never hands out a child key twice (chair's ruling (a) on QA25); the key rows
-// locked FOR UPDATE serialise it.
+// locked FOR UPDATE serialise it. Both keys must have one layout (P4-R18): a mixed pair is refused naming the vendor's,
+// and a pair of per-order keys only while the per-order switch is off (perOrderEscrows).
 func (a *App) escrowParties(ctx context.Context, tx *sql.Tx, o *Order) (buyer, vendor escrowParty, err error) {
 	rows, err := tx.QueryContext(ctx, `SELECT user_id,xpub_sealed,xpub_hmac,origin_fingerprint,origin_path,active_at IS NOT NULL,layout FROM user_escrow_keys
 		WHERE user_id IN ($1,$2) ORDER BY user_id FOR UPDATE`, o.BuyerID, o.VendorID)
@@ -153,14 +180,28 @@ func (a *App) escrowParties(ctx context.Context, tx *sql.Tx, o *Order) (buyer, v
 	if err = rows.Err(); err != nil {
 		return buyer, vendor, err
 	}
-	party := func(uid, name string, refused, perOrder error) (escrowParty, error) {
-		r, ok := found[uid]
-		if !ok || !r.active {
-			return escrowParty{}, refused
-		}
-		if r.layout != layoutCore {
-			return escrowParty{}, perOrder
-		}
+	if r, ok := found[o.BuyerID]; !ok || !r.active {
+		return buyer, vendor, errEscrowBuyerKey
+	}
+	if r, ok := found[o.VendorID]; !ok || !r.active {
+		return buyer, vendor, errEscrowVendorKey
+	}
+	layout := found[o.BuyerID].layout
+	switch v := found[o.VendorID].layout; {
+	case v != layout && v == layoutPerOrder:
+		return buyer, vendor, errEscrowMixedVendorPerOrder
+	case v != layout:
+		return buyer, vendor, errEscrowMixedVendorCore
+	case layout == layoutPerOrder && !perOrderEscrows.Load():
+		return buyer, vendor, errEscrowBuyerPerOrder
+	}
+	// The one shared counter (P4-R2): never below 2 for a per-order key.
+	floor := int64(1)
+	if layout == layoutPerOrder {
+		floor = 2
+	}
+	party := func(uid, name string, refused error) (escrowParty, error) {
+		r := found[uid]
 		xpub, err := a.open("escrow-xpub", r.sealed)
 		if err != nil {
 			log.Print(errKeySealed)
@@ -174,28 +215,31 @@ func (a *App) escrowParties(ctx context.Context, tx *sql.Tx, o *Order) (buyer, v
 			return escrowParty{}, refused
 		}
 		var next int64
-		if err = tx.QueryRowContext(ctx, escrowNextChildSQL, uid).Scan(&next); err != nil {
+		if err = tx.QueryRowContext(ctx, escrowNextChildSQL, uid, floor).Scan(&next); err != nil {
 			return escrowParty{}, err
 		}
-		p := escrowParty{Party: name, UserID: uid, KeyHMAC: r.hmac, Key: key, Suffix: escrowChildSuffix(next), Index: next}
-		if checkEscrowOrigin(key, key.PathText, p.Suffix) != nil {
+		p := escrowParty{Party: name, UserID: uid, KeyHMAC: r.hmac, Key: key, Index: next - 1, Layout: layout}
+		if p.next() != nil {
 			return escrowParty{}, refused
 		}
 		return p, nil
 	}
-	if buyer, err = party(o.BuyerID, "buyer", errEscrowBuyerKey, errEscrowBuyerPerOrder); err != nil {
+	if buyer, err = party(o.BuyerID, "buyer", errEscrowBuyerKey); err != nil {
 		return buyer, vendor, err
 	}
-	vendor, err = party(o.VendorID, "vendor", errEscrowVendorKey, errEscrowVendorPerOrder)
+	vendor, err = party(o.VendorID, "vendor", errEscrowVendorKey)
 	return buyer, vendor, err
 }
 
-// escrowNextChildSQL is an account's next escrow child index ($1 the user ID): one more than the highest its escrows
-// used under any origin (A-314: a counter per origin restarted at /0/1 when a key's origin changed, a child key an
-// existing escrow already held), never below the floor a restore set (escrow_index_floors, P2-R10) and never below 1.
-const escrowNextChildSQL = `SELECT GREATEST(COALESCE(max(split_part(derivation_suffix,'/',3)::bigint),0)+1,
-	COALESCE((SELECT next_index FROM escrow_index_floors WHERE user_id=$1),1)) FROM escrow_pubkeys
-	WHERE user_id=$1 AND derivation_suffix ~ '^/0/[1-9][0-9]{0,9}$'`
+// escrowNextChildSQL is an account's next escrow child index ($1 the user ID, $2 the lowest index the layout takes: 1
+// for a Bitcoin Core key, 2 for a per-order wallet key): one more than the highest its escrows used under any origin
+// and in either shape (A-314: a counter per origin restarted at /0/1 when a key's origin changed, a child key an
+// existing escrow already held; P4-R2: one counter for /0/<i> and /<i>/0/0), never below the floor a restore set
+// (escrow_index_floors, P2-R10) and never below $2. scripts/restore.sh's floor reads the highest index the same way.
+const escrowNextChildSQL = `SELECT GREATEST(COALESCE(max(CASE WHEN derivation_suffix LIKE '/0/%' THEN split_part(derivation_suffix,'/',3)
+		ELSE split_part(derivation_suffix,'/',2) END::bigint),0)+1,
+	COALESCE((SELECT next_index FROM escrow_index_floors WHERE user_id=$1),1),$2::bigint) FROM escrow_pubkeys
+	WHERE user_id=$1 AND (derivation_suffix ~ '^/0/[1-9][0-9]{0,9}$' OR derivation_suffix ~ '^/[1-9][0-9]{0,9}/0/0$')`
 
 // escrowCheckoutAction: the buyer moves a draft to awaiting_payment into a new escrow (see the file comment). The
 // refusals that need no node come first and make no RPC.
@@ -285,6 +329,16 @@ func escrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	if err != nil {
 		return actionResult{}, err
 	}
+	// Shape (b): the market's key is the escrow signer's (P4-R17), read from the signer and checked against its pins.
+	var signer *escrowKey
+	if buyer.Layout == layoutPerOrder {
+		k, err := a.signerAccount(ctx, c.Tx)
+		if err != nil {
+			log.Printf("escrow: per-order escrow for order %s not built: escrow signer: %s", shortID(o.ID), errorClassOf(err))
+			return actionResult{}, errEscrowSigner
+		}
+		signer = &k
+	}
 	valid, err := e.validAddress(ctx, refund)
 	if err != nil {
 		log.Printf("escrow: refund address not checked: %s", errorClassOf(err))
@@ -319,15 +373,22 @@ func escrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	if err != nil {
 		return actionResult{}, err
 	}
-	built, err := a.buildUnwatchedEscrow(ctx, c.Tx, e, o.ID, sats, buyer, vendor)
+	built, err := a.buildUnwatchedEscrow(ctx, c.Tx, e, o.ID, sats, buyer, vendor, signer)
 	if err != nil {
 		return actionResult{}, err
 	}
 	if err = insertEscrow(ctx, c.Tx, o.ID, refund, feeBps, feeAddr, releaseDays, dispatchDays, built); err != nil {
 		return actionResult{}, err
 	}
-	// The import is the last step before commit: the address is shown only once the watch-only wallet watches it.
-	if err = e.importDescriptors(ctx, e.watchName, []escrowImport{{Desc: built.Descriptor, Timestamp: "now", Label: "escrow:" + o.ID}}); err != nil {
+	// The import is the last step before commit: the address is shown only once the watch-only wallet watches it (in
+	// shape (b), with the order wallet's ranged descriptors and each sibling address, labelled, in one call).
+	imports := append([]escrowImport{{Desc: built.Descriptor, Timestamp: "now", Label: "escrow:" + o.ID}}, built.Ranged...)
+	var siblings []string
+	for _, s := range built.Siblings {
+		siblings = append(siblings, s.Address)
+	}
+	imports = append(imports, siblingImports(o.ID, siblings, "now")...)
+	if err = e.importDescriptors(ctx, e.watchName, imports); err != nil {
 		log.Printf("escrow: escrow for order %s not imported: %s", shortID(o.ID), errorClassOf(err))
 		return actionResult{}, errEscrowBuild
 	}
@@ -352,16 +413,28 @@ func escrowCheckoutAction(c *actionCtx) (actionResult, error) {
 //
 // A skipped market index is never used again (a sequence); skipped party indices lie below the ones the escrow stores,
 // which the next escrow counts from. After the last try nothing is written or imported.
-func (a *App) buildUnwatchedEscrow(ctx context.Context, tx *sql.Tx, e *escrowBTC, orderID string, sats int64, buyer, vendor escrowParty) (*builtEscrow, error) {
-	var marketIndex int64
+//
+// With signer set the escrow is shape (b) (A-456a): the market's key is signer's child <m>/0/0, where the market index m
+// skips 0, 1 and the practice index 2^31-1 (and any index whose per-order keys BIP32 calls invalid), and Go's
+// derivation must agree with Core's (checkPerOrderEscrow) before anything else is asked.
+func (a *App) buildUnwatchedEscrow(ctx context.Context, tx *sql.Tx, e *escrowBTC, orderID string, sats int64, buyer, vendor escrowParty, signer *escrowKey) (*builtEscrow, error) {
+	var market escrowParty
 	nextMarket := true
 	for watched, reserved := 0, 0; ; {
 		if nextMarket {
-			if err := tx.QueryRowContext(ctx, "SELECT nextval('escrow_market_index')").Scan(&marketIndex); err != nil {
+			var err error
+			if market, err = nextMarketParty(ctx, tx, e, signer); err != nil {
 				return nil, err
 			}
 		}
-		built, err := e.buildEscrow(ctx, orderID, sats, buyer, vendor, marketIndex)
+		marketFP := e.fingerprint
+		if signer != nil {
+			marketFP = signer.Fingerprint
+		}
+		built, err := e.buildEscrowWith(ctx, orderID, sats, buyer, vendor, market, marketFP)
+		if err == nil && signer != nil {
+			err = e.checkPerOrderEscrow(ctx, built)
+		}
 		if err != nil {
 			log.Printf("escrow: escrow for order %s not built: %s", shortID(orderID), errorClassOf(err))
 			return nil, errEscrowBuild
@@ -408,14 +481,54 @@ func (a *App) buildUnwatchedEscrow(ctx context.Context, tx *sql.Tx, e *escrowBTC
 	}
 }
 
-// next moves the party to its next child index.
+// next moves the party to its next child index: for a per-order key, the next one whose order wallet key and first
+// receiving key BIP32 can derive (perOrderKeys; an invalid child has a probability of about 2^-127), with Go's
+// derivation of both.
 func (p *escrowParty) next() error {
-	p.Index++
-	p.Suffix = escrowChildSuffix(p.Index)
-	if checkEscrowOrigin(p.Key, p.Key.PathText, p.Suffix) != nil {
-		return errEscrowBuild
+	for {
+		p.Index++
+		p.Suffix = escrowChildSuffix(p.Index)
+		if p.Layout == layoutPerOrder {
+			p.Suffix = perOrderSuffix(p.Index)
+		}
+		if checkEscrowOrigin(p.Key, p.Key.PathText, p.Suffix) != nil {
+			return errEscrowBuild
+		}
+		if p.Layout != layoutPerOrder {
+			return nil
+		}
+		var ok bool
+		if p.Order, p.Leaf, ok = perOrderKeys(p.Key, uint32(p.Index)); ok {
+			return nil
+		}
+		log.Printf("escrow: per-order index %d of a %s key is not derivable (BIP32); using the next", p.Index, p.Party)
 	}
-	return nil
+}
+
+// nextMarketParty is the market's key for the next escrow at a fresh market index: in shape (a) (signer nil) the arbiter
+// key's child /0/<index>; in shape (b) the escrow signer's account key's child <index>/0/0, skipping the indices 0 and 1
+// (P4-R2), any whose keys BIP32 cannot derive, and refusing (errEscrowBuild) the practice index 2^31-1 and anything
+// beyond, which no unhardened step reaches.
+func nextMarketParty(ctx context.Context, tx *sql.Tx, e *escrowBTC, signer *escrowKey) (escrowParty, error) {
+	for {
+		var index int64
+		if err := tx.QueryRowContext(ctx, "SELECT nextval('escrow_market_index')").Scan(&index); err != nil {
+			return escrowParty{}, err
+		}
+		if signer == nil {
+			return escrowParty{Party: "market", Key: e.arbiterKey, Suffix: escrowChildSuffix(index), Index: index, Layout: layoutCore}, nil
+		}
+		if index >= escrowPracticeIndex {
+			log.Print("escrow: no per-order market index is left below the reserved practice index 2^31-1; per-order escrows cannot be created")
+			return escrowParty{}, errEscrowBuild
+		}
+		if index < 2 {
+			continue
+		}
+		if order, leaf, ok := perOrderKeys(*signer, uint32(index)); ok {
+			return escrowParty{Party: "market", Key: *signer, Suffix: perOrderSuffix(index), Index: index, Layout: layoutPerOrder, Order: order, Leaf: leaf}, nil
+		}
+	}
 }
 
 // heldEscrowKeys reports which parties' child keys of a built escrow an escrow on record holds or the orphan sweep
@@ -458,24 +571,34 @@ func escrowEligible(ctx context.Context, q rowQuerier, o *Order) (bool, int64, i
 }
 
 // builtEscrow is a checked escrow, not yet imported: its address, the bare-key descriptor with its checksum (what is
-// imported) and each party's child key with the party it belongs to.
+// imported) and each party's child key with the party it belongs to. A shape-(b) escrow also has the order wallet's
+// sibling addresses and the ranged descriptors that cover them (checkPerOrderEscrow), imported with it.
 type builtEscrow struct {
 	Address, Descriptor string
 	MarketIndex         int64
 	Parties             []escrowParty
 	Keys                map[string][]byte
+	Siblings            []escrowSibling
+	Ranged              []escrowImport
 }
 
-// buildEscrow composes and checks the escrow of one order (steps 2 to 4 of the file comment). Its RPCs are
-// deriveaddresses, createpsbt, utxoupdatepsbt, getdescriptorinfo and deriveaddresses; none touches a wallet.
+// buildEscrow composes and checks the shape-(a) escrow of one order with the arbiter key's child /0/<marketIndex>.
 func (e *escrowBTC) buildEscrow(ctx context.Context, orderID string, sats int64, buyer, vendor escrowParty, marketIndex int64) (*builtEscrow, error) {
-	market := escrowParty{Party: "market", Key: e.arbiterKey, Suffix: "/0/" + strconv.FormatInt(marketIndex, 10)}
+	market := escrowParty{Party: "market", Key: e.arbiterKey, Suffix: escrowChildSuffix(marketIndex), Index: marketIndex, Layout: layoutCore}
+	return e.buildEscrowWith(ctx, orderID, sats, buyer, vendor, market, e.fingerprint)
+}
+
+// buildEscrowWith composes and checks the escrow of one order (steps 2 to 4 of the file comment) from the parties' and
+// the market's keys; marketFP is the fingerprint the market's key derives from (the arbiter's, or in shape (b) the escrow
+// signer's). Its RPCs are deriveaddresses, createpsbt, utxoupdatepsbt, getdescriptorinfo and deriveaddresses; none
+// touches a wallet.
+func (e *escrowBTC) buildEscrowWith(ctx context.Context, orderID string, sats int64, buyer, vendor, market escrowParty, marketFP string) (*builtEscrow, error) {
 	parties := []escrowParty{buyer, vendor, market}
 	var exprs []string
 	var want []escrowExpectKey
 	for _, p := range parties {
 		steps, err := parseOriginPath(p.Suffix)
-		if err != nil || len(steps) != 2 {
+		if err != nil || len(steps) != 2 && len(steps) != 3 || len(steps) == 3 != (p.Layout == layoutPerOrder) {
 			return nil, errEscrowOrigin
 		}
 		exprs = append(exprs, p.Key.Expression()+p.Suffix)
@@ -515,7 +638,7 @@ func (e *escrowBTC) buildEscrow(ctx context.Context, orderID string, sats int64,
 	if err != nil || fp.TxID() != p.TxID() || len(fp.Inputs) != 1 {
 		return nil, &escrowRPCError{Method: "utxoupdatepsbt", Class: "bad-reply"}
 	}
-	keys, err := checkEscrowWitness(fp.Inputs[0], spk, e.fingerprint, want)
+	keys, err := checkEscrowWitness(fp.Inputs[0], spk, marketFP, want)
 	if err != nil {
 		return nil, err
 	}
@@ -534,7 +657,7 @@ func (e *escrowBTC) buildEscrow(ctx context.Context, orderID string, sats int64,
 	if !slices.Equal(bareAddrs, addrs) {
 		return nil, &escrowRPCError{Method: "deriveaddresses", Class: "address-mismatch"}
 	}
-	return &builtEscrow{Address: addrs[0], Descriptor: public, MarketIndex: marketIndex, Parties: parties, Keys: keys}, nil
+	return &builtEscrow{Address: addrs[0], Descriptor: public, MarketIndex: market.Index, Parties: parties, Keys: keys}, nil
 }
 
 // insertEscrow writes the escrow row (the pinned refund address, the fee snapshot and, for a physical order, the
@@ -569,6 +692,12 @@ func insertEscrow(ctx context.Context, tx *sql.Tx, orderID, refund string, feeBp
 				log.Printf("escrow: escrow for order %s not built: a child key is already held by another escrow", shortID(orderID))
 				return errEscrowKeyTaken
 			}
+			return err
+		}
+	}
+	// Shape (b): the order wallet's sibling addresses, which the watcher reads with the escrow's (A-456a).
+	for _, s := range b.Siblings {
+		if _, err = tx.ExecContext(ctx, "INSERT INTO escrow_siblings(escrow_id,branch,idx,address) VALUES($1,$2,$3,$4)", id, s.Branch, s.Index, s.Address); err != nil {
 			return err
 		}
 	}

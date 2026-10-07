@@ -242,8 +242,8 @@ npm run test:e2e:escrow
 
 `tests/e2e/escrow-per-order-journey.spec.ts` (A-455) runs next on the same database: a vendor registers a
 per-order wallet key and signs its practice transaction (the simulated node derives rooted keys by real BIP32 public
-derivation), a buyer sees the vendor's key type on the listing and the vendor page, and the order page says a
-per-order wallet cannot take an escrow yet.
+derivation), a buyer sees the vendor's key type on the listing and the vendor page, and the order page names the
+vendor's per-order wallet key beside the buyer's Bitcoin Core key (a mixed pair, refused since A-456a).
 `tests/e2e/escrow-physical-journey.spec.ts` runs after it on the same database and follows a
 physical escrow order (WR-escrow Phase 2): shipped with a claim address, signed by the vendor and
 the buyer, released at its deadline, a dispute that cancels the deadline, the buyer's no-ship

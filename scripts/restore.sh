@@ -80,7 +80,8 @@ age -d -i "$AGE_IDENTITY" "$1" | client pg_restore --single-transaction --exit-o
 # inside other escrow addresses (A-366): escrow_sweep_required makes escrow checkout wait until the escrow watcher's
 # orphan sweep has reserved the keys of every address its watch-only wallet holds with no escrow row (reconcileOrphans
 # in internal/market/escrow_recovery.go), and, for a watch-only wallet restored from the same backup, the escrow-key-margin
-# block moves each account's next escrow child index (escrow_index_floors) and the market's escrow key index 50 past the
+# block moves each account's next escrow child index (escrow_index_floors; one counter for the /0/<i> keys and the
+# per-order /<i>/0/0 ones, A-456a) and the market's escrow key index 50 past the
 # restored records (a database from before migration 083, development builds only, gets no margin). The block between
 # its markers is plain SQL: internal/market/escrow_reserve_test.go runs it as written here.
 # Monero escrow (ESCROW_XMR, local fakechain only; migrations 084 and 085) is held the same way: every restored Monero
@@ -111,9 +112,9 @@ SELECT to_regclass('escrow_index_floors') IS NOT NULL AS has_floors \gset
 \if :has_floors
 -- escrow-key-margin: begin
 INSERT INTO escrow_index_floors(user_id,next_index)
-SELECT k.user_id, GREATEST(COALESCE(max(split_part(p.derivation_suffix,'/',3)::bigint),0)+1, COALESCE(max(f.next_index),1))+50
+SELECT k.user_id, GREATEST(COALESCE(max(CASE WHEN p.derivation_suffix LIKE '/0/%' THEN split_part(p.derivation_suffix,'/',3) ELSE split_part(p.derivation_suffix,'/',2) END::bigint),0)+1, COALESCE(max(f.next_index),1))+50
 FROM user_escrow_keys k
-LEFT JOIN escrow_pubkeys p ON p.user_id=k.user_id AND p.derivation_suffix ~ '^/0/[1-9][0-9]{0,9}$'
+LEFT JOIN escrow_pubkeys p ON p.user_id=k.user_id AND (p.derivation_suffix ~ '^/0/[1-9][0-9]{0,9}$' OR p.derivation_suffix ~ '^/[1-9][0-9]{0,9}/0/0$')
 LEFT JOIN escrow_index_floors f ON f.user_id=k.user_id
 GROUP BY k.user_id
 ON CONFLICT (user_id) DO UPDATE SET next_index=EXCLUDED.next_index;

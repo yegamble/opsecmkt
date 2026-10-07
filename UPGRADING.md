@@ -394,9 +394,9 @@ WHERE state IN ('built','relayed');
 UPDATE xmr_escrow_slots SET state='retired', updated=now() WHERE state='free';
 UPDATE xmr_escrow_wallets SET state='closing', updated=now() WHERE state IN ('active','sealed');
 INSERT INTO escrow_index_floors(user_id,next_index)
-SELECT k.user_id, GREATEST(COALESCE(max(split_part(p.derivation_suffix,'/',3)::bigint),0)+1, COALESCE(max(f.next_index),1))+50
+SELECT k.user_id, GREATEST(COALESCE(max(CASE WHEN p.derivation_suffix LIKE '/0/%' THEN split_part(p.derivation_suffix,'/',3) ELSE split_part(p.derivation_suffix,'/',2) END::bigint),0)+1, COALESCE(max(f.next_index),1))+50
 FROM user_escrow_keys k
-LEFT JOIN escrow_pubkeys p ON p.user_id=k.user_id AND p.derivation_suffix ~ '^/0/[1-9][0-9]{0,9}$'
+LEFT JOIN escrow_pubkeys p ON p.user_id=k.user_id AND (p.derivation_suffix ~ '^/0/[1-9][0-9]{0,9}$' OR p.derivation_suffix ~ '^/[1-9][0-9]{0,9}/0/0$')
 LEFT JOIN escrow_index_floors f ON f.user_id=k.user_id
 GROUP BY k.user_id
 ON CONFLICT (user_id) DO UPDATE SET next_index=EXCLUDED.next_index;
@@ -1378,6 +1378,30 @@ with an ellipsis. If the watcher meets the same deposit again it completes the t
 (no second note or notification). So after the upgrade any such order already noted appears under *Escrow alerts* until
 staff record what was done about it, even if it was dealt with before; record that. Check for them with
 `SELECT order_id, txid FROM xmr_escrow_collisions WHERE disposed_at IS NULL;`. A market that never ran with `ESCROW_XMR=on` has none.
+
+## 44. Per-order Bitcoin escrows: creation and watching (migration 089, A-456a)
+
+Migration 089 runs at startup. On `escrow_pubkeys` it adds a check that a per-order derivation suffix (three or more
+steps) is exactly `/<i>/0/0`, every step unhardened and below 2^31, with `i` at least 2: migration 074 allowed steps of
+ten digits, so `/2147483648/0/0` (which names the hardened `/0h/0/0`) passed migration 088's checks. It lets the market's
+per-order key have an origin with no path (the escrow signer's rooted account key), and it adds the table
+`escrow_siblings` (each per-order escrow's sibling addresses). No release writes a per-order escrow key yet, so the check
+finds nothing to refuse; if it does, the migration stops before changing anything, the app does not start, and the log
+reads `migration 089: N escrow key row(s) in escrow_pubkeys have a per-order derivation suffix (such as …) that is not
+/<i>/0/0 with 2 <= i < 2^31 …`: restore the pre-upgrade backup (section 5) and report it to the project.
+
+Only with `ESCROW_BTC=on`, checkout now picks the escrow's shape from both parties' active keys: two Bitcoin Core keys
+make the Bitcoin Core escrow as before; a buyer and a vendor whose keys are of different kinds now read "The vendor's
+Bitcoin escrow key is for a per-order wallet and yours is for Bitcoin Core" (or the reverse) instead of the "not
+available on this market yet" refusal; two per-order wallet keys are still refused with that refusal. Per-order escrows
+are built in this release but switched off in the code until the market can co-sign them through the escrow signer
+(A-456b); see [per-order escrow](docs/escrow.md#per-order-escrow-creation-and-watching-a-456a-shape-b). The restore floor
+of `scripts/restore.sh` and of the restore-protection SQL in section 6 now reads an account's highest escrow index in both
+shapes (`/0/<i>` and `/<i>/0/0`), one counter: if you keep a copy of that SQL, take the new one. The escrow RPC user's
+`rpcwhitelist` needs no new method (per-order escrows use `deriveaddresses` with a range, `getdescriptorinfo`,
+`importdescriptors` and `getaddressinfo`, all on it already), and there is no new key. Rolling back past this release
+needs the pre-upgrade backup, as for every migration (section 5): the earlier release refuses to start on a database
+that records migration 089.
 
 ## Appendix: new keys by hand
 

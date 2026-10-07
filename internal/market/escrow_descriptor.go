@@ -30,21 +30,32 @@ var (
 // the practice child, ES-9).
 func escrowChildSuffix(index int64) string { return "/0/" + strconv.FormatInt(index, 10) }
 
+// perOrderSuffix is a party key's derivation suffix in its index-th per-order escrow (shape (b), A-456a): /<index>/0/0,
+// the first receiving key of the order wallet built on the account key's child <index>.
+func perOrderSuffix(index int64) string { return "/" + strconv.FormatInt(index, 10) + "/0/0" }
+
 var errEscrowOrigin = errors.New("escrow: party key origin or derivation suffix out of rule")
 
 // checkEscrowOrigin enforces the chair's ruling (b) on a party key of an escrow before it is used or stored:
 // escrow_pubkeys.origin_path is exactly the registered account origin (key.PathText, canonical) and
-// derivation_suffix is the child path below it, /0/<i> with 1 <= i < 2^31 (unhardened: a public key derives it). So
-// no split of origin and suffix can name the account's /0/0 practice child (ES-9), whatever the two strings are.
+// derivation_suffix is the child path below it, every step unhardened (a public key derives it) and below 2^31:
+//   - shape (a): /0/<i> with i >= 1. So no split of origin and suffix can name the account's /0/0 practice child (ES-9),
+//     whatever the two strings are.
+//   - shape (b) (A-456a, P4-R2): /<i>/0/0 with 2 <= i < 2^31-1. Never 0 or 1 (account/0 and account/1, the receiving and
+//     change branches, are ancestors of other keys) and never the per-order practice index 2^31-1 (escrowPracticeIndex).
+//     Migration 089 refuses the same rows (escrow_pubkeys_per_order_suffix, ADDENDUM QA4W5K-6).
 func checkEscrowOrigin(key escrowKey, origin, suffix string) error {
 	if origin != key.PathText {
 		return errEscrowOrigin
 	}
 	steps, err := parseOriginPath(suffix)
-	if err != nil || len(steps) != 2 || steps[0] != 0 || steps[1]&(1<<31) != 0 || formatOriginPath(steps) != suffix {
+	if err != nil || formatOriginPath(steps) != suffix || slices.ContainsFunc(steps, func(s uint32) bool { return s&(1<<31) != 0 }) {
 		return errEscrowOrigin
 	}
-	if slices.Equal(slices.Concat(key.Path, steps), slices.Concat(key.Path, []uint32{0, 0})) { // the practice child
+	switch {
+	case len(steps) == 2 && steps[0] == 0 && steps[1] != 0: // shape (a); /0/0 is the practice child
+	case len(steps) == 3 && steps[0] >= 2 && steps[0] != escrowPracticeIndex && steps[1] == 0 && steps[2] == 0: // shape (b)
+	default:
 		return errEscrowOrigin
 	}
 	return nil
