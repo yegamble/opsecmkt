@@ -1240,16 +1240,21 @@ removed the switch. What A-456a built:
   Bitcoin Core escrows' `/0/<i>` (one more than the highest either used, never below a restore's floor), and is never 0
   or 1 (the receiving and change branches, ancestors of other keys) nor the practice index 2^31-1. The market's key is the
   escrow signer's account key's child `<m>/0/0`, `m` from the market's counter, skipping 0 and 1; the signer's key is read
-  from the signer at checkout and must match the pins (no signer, or a different one: refused, try again later). The
-  buyer's and the vendor's order wallet keys (the account key's child `<i>`, as a tpub) are stored at
-  checkout with their escrow keys (`per_order_xpub`, QA5W4A-5), each checked to give the stored `/0/0` key, so the
-  order wallet can be rebuilt after the party registers another key; the market's comes from the escrow signer. This adds
-  nothing the market did not already hold: each is derived from the party's registered public account key at an index
-  the database records, and the watch-only wallet already holds its key, rooted, in the escrow's ranged descriptors.
+  from the signer at checkout and must match the pins (no signer, or a different one: refused, try again later). Every
+  order wallet key (the account key's child `<i>`, as a tpub) is stored at checkout with its escrow key
+  (`per_order_xpub`): the buyer's and the vendor's since QA5W4A-5, so the order wallet can be rebuilt after the party
+  registers another key, and the market's (the signer's account key's child `<m>`) since QA5W5A-1, checked to have the
+  pinned signer fingerprint and to be the child of the signer key read and checked at that checkout, so that nothing
+  but co-signing needs the signer afterwards. Each is checked to give the stored `/0/0` key. This adds nothing the market
+  did not already hold: each is derived from a registered (or the signer's pinned) public account key at an index the
+  database records, and the watch-only wallet already holds it, rooted, in the escrow's ranged descriptors.
 - **Cross-check.** Go derives every key by BIP32 public derivation (A-453) and Bitcoin Core must agree before anything is
   stored: the three keys Core puts in the escrow script, the address from the account keys' paths and from the rooted
   per-order keys, and all 30 addresses of the order wallet that the escrow covers. On any disagreement the checkout gets
-  "the market's Bitcoin node did not confirm it … try again later" and nothing is written or imported.
+  "the market's Bitcoin node did not confirm it … try again later" and nothing is written or imported. While the
+  watch-only wallet is rescanning, Core refuses the checkout's import (of either kind of escrow): the checkout reads "the
+  market's escrow wallet is rescanning the chain … try again in a few minutes", the order stays a draft and nothing is
+  written (QA5W5A-2); the repair below starts such a rescan after the watch-only wallet is restored.
 - **Watching.** With the escrow's own address (imported labelled, as in shape (a)), the watch-only wallet imports the
   order wallet's two ranged descriptors over the rooted per-order keys only, receiving `/0/0..19` and change `/1/0..9`,
   and each of the 29 sibling addresses labelled `escrow:<order ID>` (Core lists received coins only for labelled
@@ -1265,18 +1270,17 @@ removed the switch. What A-456a built:
   imports again what is missing (a watch-only wallet restored from before the escrow), from the escrow's creation time
   and in checkout's order: for a missing address, the escrow's own labelled descriptor, rebuilt from its stored keys (only
   when their 2-of-3 is the escrow's address); for a missing sibling, the order wallet's two ranged descriptors and then
-  the 29 sibling addresses, rebuilt from the buyer's and the vendor's stored order wallet keys and the escrow signer's
-  account key, each checked to give the escrow's stored keys. The siblings are never imported without their ranged
+  the 29 sibling addresses, rebuilt from the three order wallet keys stored at checkout (the market's too since
+  QA5W5A-1, so the escrow signer is not asked), each checked to give the escrow's stored keys. The siblings are never imported without their ranged
   descriptors first: Core 31.1 keeps an address that an address-only import held first unsolvable for good, whatever is
   imported later (QA5W4A-1). Every escrow being repaired goes into one import, so Core rescans the chain once, from the
   earliest creation time, with up to two minutes for it (QA5W4A-3). The repair waits, and the next watcher pass tries
   again, while the watch-only wallet is already rescanning (an operator's `rescanblockchain`, or an earlier repair's
   import that Core is still running after the app stopped waiting for it: the app asks `getwalletinfo` first and never
-  starts a second rescan), and while the escrow signer does not answer: then only the escrows' own descriptors are
-  imported and the log reads "watch-only wallet repair waits for the escrow signer". A signer whose key differs from the
-  pins, or stored keys that do not give the escrow's, leave the siblings out (logged); the next start tries again. Restart
-  the app after restoring the watch-only wallet, with the escrow signer running. Bitcoin Core escrows are not repaired
-  this way.
+  starts a second rescan). Stored keys that do not give the escrow's (or a market row with no stored order wallet key,
+  which no escrow created since QA5W5A-1 has) leave the siblings out (logged); the next start tries again. Until
+  QA5W5A-1 the repair waited for the escrow signer, whose key it needed for the market's part. Restart the app after
+  restoring the watch-only wallet. Bitcoin Core escrows are not repaired this way.
 - **Orphan sweep.** After a database restore, a lost per-order escrow's address and siblings are orphans; the sweep
   reserves their keys. An orphan that Core reports unsolvable (held by an address-only import) has no keys to read: it
   counts as read only as a lost per-order escrow's sibling, when another orphan with the same `escrow:<order ID>` label
@@ -1291,8 +1295,8 @@ removed the switch. What A-456a built:
   party and both shapes (migration 074 allowed ten-digit steps, so `/2147483648/0/0`, the hardened `/0h/0/0`, passed
   migration 088, as did a shape-(a) `/0/2147483648`), and a per-order suffix that is not `/<i>/0/0` with
   `2 <= i < 2^31-1` (so the market never takes the practice index either); it lets the market's per-order key have an
-  origin with no path (the signer's rooted key), allows `per_order_xpub` only on a buyer's or a vendor's per-order key
-  and only as a tpub, and adds `escrow_siblings`. The restore floor (`scripts/restore.sh`,
+  origin with no path (the signer's rooted key), allows `per_order_xpub` only on a per-order key (the buyer's, the
+  vendor's or, since QA5W5A-1, the market's) and only as a tpub, and adds `escrow_siblings`. The restore floor (`scripts/restore.sh`,
   UPGRADING.md section 6) reads an account's highest index in both shapes.
 
 How it was tested: DB integration with a simulated node that derives per-order keys by real BIP32 public derivation and
@@ -1305,19 +1309,20 @@ a simulated signer (`TestEscrowShapeBMixedPairRefused`, `TestEscrowShapeBSwitchO
 `TestEscrowShapeBSiblingNotClaimAddress`, `TestEscrowShapeBSiblingNotFeeAddress`,
 `TestEscrowSignerKeyRefusedAtRegistration`, `TestEscrowShapeBSignerKeyAtCheckout`,
 `TestEscrowShapeBLostAfterWatchRestore`, `TestEscrowShapeBWatchRestoredBeforeEscrow`,
-`TestEscrowShapeBRepairEitherEnd`; after QA5W4A: `TestEscrowShapeBRepairWaitsForSigner`,
-`TestEscrowShapeBRepairSignerMismatch`, `TestEscrowShapeBRepairOneRescan`, `TestEscrowShapeBRepairWaitsForRescan`,
+`TestEscrowShapeBRepairEitherEnd`; after QA5W4A: `TestEscrowShapeBRepairOneRescan`, `TestEscrowShapeBRepairWaitsForRescan`,
 `TestEscrowShapeBOrderXpubStored`, `TestEscrowShapeBRepairAfterKeyChange`, `TestEscrowShapeBRepairBareAddressCheck`,
-`TestEscrowSweepLoneUnsolvableOrphanKeepsGate`; the simulated node reports solvability, and refuses an import while it
+`TestEscrowSweepLoneUnsolvableOrphanKeepsGate`; after QA5W5A: `TestEscrowShapeBRepairSignerDown` (the signer down,
+answering garbage or with another key: one pass repairs everything), `TestEscrowShapeBRepairNoStoredMarketKey`,
+`TestEscrowCheckoutWhileRescanning`; the simulated node reports solvability, and refuses an import while it
 rescans, as Core 31.1 does), `scripts/test-upgrade.sh` (bad historical rows stop migration 089 with its message), and on a
 real local chain, Core 31.1 on regtest and on a private signet (`scripts/test-escrow-regtest.sh`):
 `TestEscrowRegtestPerOrderEscrow` (the escrow created through the checkout form, Core deriving its address
 and sibling `/0/1` from the parties' private roots as Go does, and deposits to `/0/1` and `/1/3` seen and recorded left
 out; its first run found that Core's `listreceivedbyaddress` lists only labelled addresses, so the siblings are also
 imported labelled) and `TestEscrowRegtestPerOrderRepair` (the watch-only wallet repair onto empty wallets standing in for
-ones restored from before the escrow: deposits made meanwhile found and every address solvable; with the signer down only
-the escrow's descriptor imported and the siblings imported, solvable, once it answers; after the vendor registers another
-key, the siblings still solvable; an address held by `addr(…)` first staying unsolvable after its descriptor is imported).
+ones restored from before the escrow: deposits made meanwhile found and every address solvable, with the signer up and,
+since QA5W5A-1, with it down; after the vendor registers another key, the siblings still solvable; Core deriving each
+stored order wallet key's `/0/0` as the account key's `/<i>/0/0`, the market's included; an address held by `addr(…)` first staying unsolvable after its descriptor is imported).
 Not tested in that slice: signing, settling or refunding a per-order escrow (A-456b tests them, below), the orphan sweep of a lost per-order escrow on a
 real node (simulated only), a repair rescan longer than one call on a real node, any wallet other than Bitcoin Core, and
 any public network.
@@ -1342,13 +1347,20 @@ is still refused.
   `testmempoolaccept`ed as before. A signer that is not reachable, refuses, or no longer matches leaves the settlement
   signed by its party, with "The market's escrow signer could not co-sign it yet" on the order page and one log line
   (`signer-waiting` or `signer-refused`, the refusal's fixed class logged); nothing is rebuilt and the next pass tries
-  again (P4-R17).
+  again (P4-R17). The signer is asked only to co-sign (and for its key at checkout): every per-order key a page, a copy,
+  a paste or a build needs comes from what checkout stored (QA5W5A-1), so while the signer is down both parties' order
+  pages, setup pages and copies are served and a party's signature is accepted, a sibling's stray refund included (QA5W5A
+  found that a sibling's refund made the order page answer 500 then). Should a per-order key not be had (a row with no
+  stored order wallet key, or stored data that does not give the address), no page, copy or form fails: the order page
+  says "This transaction cannot be signed right now: the market cannot rebuild the keys of the address it spends from
+  its records" and offers no copy, the copy and the sign forms answer 503 with that text, nothing stored, a party-signed
+  settlement waits with `signer-waiting` and nothing rebuilt, and the log names the fixed class
+  `per-order-key-unavailable`.
 - **Sibling deposits are returned (QA5W3A-2).** A-456a recorded a deposit to an order wallet's sibling address and
   requested its stray refund, but the build waited for ever (the input was compared with the escrow address, and Core was
   given only the escrow address's descriptor). A sibling's three keys are now derived in Go from each per-order extended
-  key (the parties' and the market's account child `<i>`; QA5W4A-5 stores them at checkout, a separate fix round; until
-  it is merged they are derived from the current keys as A-456a did) and must pay the sibling address checkout stored
-  after Core derived it. A stray refund spends the deposits of one address at a time, with that address's own witness
+  key (the parties' account child `<i>` and the signer's `<m>`, as checkout stored them: QA5W4A-5, the market's since
+  QA5W5A-1) and must pay the sibling address checkout stored after Core derived it. A stray refund spends the deposits of one address at a time, with that address's own witness
   script: the signer signs one script per request, finding its key at `<m>/<branch>/<k>`. Addresses are tried in the
   order of their first deposit; one whose deposits cannot be built now (too few for their fee, above the fee cap, not as
   recorded on the node, or keys that cannot be derived) never holds up another's, and the next stray refund returns what
@@ -1363,8 +1375,9 @@ is still refused.
   address the order wallet must show, the escrow address; and a Sparrow output descriptor of the order wallet
   (`wsh(sortedmulti(2,…/<0;1>/*))` with the party's key origin). The parties' per-order keys are the ones checkout stored
   (QA5W4A-5), each checked to give the key the escrow stores, so the page is the same after either party registers
-  another escrow key; the market's comes from the escrow signer, and while the signer is not reachable the cosigner keys
-  are not shown and the page says why. The copy says: pay only to the escrow address, never to another address the order
+  another escrow key; the market's is the one checkout stored too (QA5W5A-1), so the page is the same while the escrow
+  signer is down. Only a row with no stored order wallet key (none since QA5W5A-1) leaves a key out, and the page says
+  it cannot be read from the market's records. The copy says: pay only to the escrow address, never to another address the order
   wallet shows; Electrum can run with `--offline` (the order wallet only signs); delete the order wallet once the order's
   escrow has settled (the seed makes it again); a wallet or signing device cannot check the other party's key. The page
   and the order page carry that no real Electrum or Sparrow wallet has been tried; no hardware wallet is claimed (A-458
@@ -1372,8 +1385,9 @@ is still refused.
 - **The PSBT file upload.** The settlement sign form is a `multipart/form-data` form, no JavaScript, with a file field
   beside the paste (fee bumps keep the paste). A binary PSBT file, as Electrum and Sparrow save one, is taken by its
   magic bytes; a text file (the market's own download, signed) is read as base64. Every text part and a text file must
-  be valid UTF-8 without a NUL byte, as every form field must; the body is bounded (two PSBTs of at most 64 KB and the
-  small fields) and so is each field; a paste and a file together are refused; then every ES-2 check applies as to a
+  be valid UTF-8 without a NUL byte, as every form field must; the body, read before Origin and CSRF are checked as any
+  form's is, is bounded to one PSBT of at most 64 KB and the small fields (QA5W5A-5; no legitimate form carries two) and
+  so is each field; a paste and a file together are refused; then every ES-2 check applies as to a
   paste. Every other route still refuses a multipart body with a 415 page, unread.
 - **The ES-2 derivation refusal is relaxed (P4-R13).** A pasted or uploaded PSBT is no longer refused for a derivation
   entry under the market's key or from its fingerprint (Electrum and Sparrow write one for every key; A-450's Electrum
@@ -1386,7 +1400,11 @@ before it signs (`TestEscrowShapeBCosignedBySigner`, `TestEscrowShapeBSignerWait
 `TestEscrowShapeBSiblingStrayRefund`, `TestEscrowShapeBStrayOneScriptEach`, `TestEscrowSettlementKeysOneScript`,
 `TestEscrowShapeBSetupPage`, `TestEscrowShapeBSetupKeyChanged`, `TestEscrowSignUpload`,
 `TestEscrowPasteMarketDerivationAccepted`, `TestEscrowPasteForeignFieldsInert`, `TestEscrowWalletFixtures`,
-`TestEscrowShapeBOpenToUsers`, `TestEscrowShapeBMixedPairRefused`, `TestEscrowOnlyPerOrderVendorNeedsSigner`);
+`TestEscrowShapeBOpenToUsers`, `TestEscrowShapeBMixedPairRefused`, `TestEscrowOnlyPerOrderVendorNeedsSigner`; after
+QA5W5A: `TestEscrowShapeBSiblingStraySignerDown`, `TestEscrowShapeBPerOrderKeyUnavailable`, `TestEscrowShapeBMarketKeyCrossChecked`,
+`TestEscrowShapeBSiblingRowMismatch`, `TestEscrowShapeBStrayDustSiblingDoesNotHold`,
+`TestEscrowShapeBStraySignerDownEscrowAddressBuilds`, `TestEscrowShapeBSignerAnswerChecked`,
+`TestEscrowShapeBMarketFingerprintDiffers`, `TestEscrowShapeBSignerMismatchUnavailable`);
 a browser journey with JavaScript off at
 320 px against the simulated node and a simulated signer (`tests/e2e/escrow-per-order-settle-journey.spec.ts`, `npm run
 test:e2e:escrow`: registration and practice for both parties, checkout, both setup pages, simulated funding, the claim
@@ -1396,9 +1414,12 @@ per-order escrow created through checkout and paid, the vendor's claim signed by
 root at the per-order path, uploaded as a binary PSBT file, co-signed by the signer, broadcast and confirmed, checked with
 `gettxout`; `TestEscrowRegtestShapeBSiblingStray`: a deposit to sibling `/0/3` returned by a stray refund with the
 sibling's own script, signed at the buyer's `/0/3` key, co-signed at the signer's, confirmed, checked with `gettxout`;
-no seed or tprv in the signer's log or the database). Not tested: a real Electrum, Sparrow or hardware wallet signing a
-per-order escrow (A-457, A-458), the Sparrow descriptor imported into Sparrow, a fee bump of a per-order escrow on a real
-node (simulated only), and any public network.
+`TestEscrowRegtestShapeBSiblingStraySignerDown`: a sibling `/0/2` deposit's stray refund shown with the sign form on both
+order pages, downloaded and signed while the signer's socket is moved aside, signer-waiting with nothing rebuilt, then
+co-signed and confirmed once it is back; `TestEscrowRegtestShapeBBump`: the vendor's claim broadcast at 1 sat/vB, bumped
+to 5 sat/vB, the bump signed by the vendor's order wallet, co-signed by the signer, replacing the claim in the mempool
+and confirmed; no seed or tprv in the signer's log or the database). Not tested: a real Electrum, Sparrow or hardware wallet signing a
+per-order escrow (A-457, A-458), the Sparrow descriptor imported into Sparrow, and any public network.
 
 Which chains escrow testing has used, all of them local and none public: Bitcoin regtest; a Bitcoin private signet
 (A-443: two Bitcoin Core nodes on one host with `signet_challenge` 51, private signet, not public); a local Monero

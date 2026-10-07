@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"html"
 	"net/http/httptest"
 	"net/url"
 	"slices"
@@ -412,6 +413,33 @@ func TestEscrowCheckoutBuildFailureWritesNothing(t *testing.T) {
 	x.mustCheckout(x.order, "bcrt1qbuyerrefund00000000000000000000001")
 	if n := agInt(x.testEnv, "SELECT count(*) FROM escrows"); n != 1 {
 		t.Fatalf("%d escrows", n)
+	}
+}
+
+// QA5W5A-2: while the watch-only wallet is rescanning (an operator's rescanblockchain, or the watch-only wallet repair's
+// import after a restore, QA5W4A-3), Core refuses the checkout's import with RPC_WALLET_ERROR "currently rescanning":
+// checkout says so in its own words (not "the market's Bitcoin node did not confirm it"), in both shapes, the order stays
+// a draft and nothing is written; once the rescan is over the same checkout succeeds.
+func TestEscrowCheckoutWhileRescanning(t *testing.T) {
+	for _, shape := range []string{"core", "per_order"} {
+		t.Run(shape, func(t *testing.T) {
+			x, _ := newShapeBEnv(t)
+			agExec(x.testEnv, "UPDATE user_escrow_keys SET layout=$3 WHERE user_id IN ($1,$2)", x.buyer, x.vendor, shape)
+			x.core.mu.Lock()
+			x.core.rescanRefuses = true
+			x.core.mu.Unlock()
+			w := x.checkout(x.order, regtestAddr("rescan-"+shape))
+			body := html.UnescapeString(w.Body.String())
+			if w.Code != 503 || !strings.Contains(body, "the market's escrow wallet is rescanning") || !strings.Contains(body, "try again in a few minutes") ||
+				strings.Contains(body, "did not confirm it") {
+				t.Fatalf("checkout while the watch-only wallet rescans: %d %s", w.Code, body)
+			}
+			x.nothingWritten(x.order)
+			x.core.mu.Lock()
+			x.core.rescanRefuses = false
+			x.core.mu.Unlock()
+			x.mustCheckout(x.order, regtestAddr("rescan-"+shape))
+		})
 	}
 }
 

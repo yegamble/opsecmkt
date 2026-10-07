@@ -161,8 +161,9 @@ type settleBuild struct {
 
 // loadSettleBuild reads a settlement in state want (party_signed, or awaiting_signature for trackAwaiting, or
 // broadcast for a fee bump) of a closed order, or the release of a shipped (or disputed) one (settlementBuildable,
-// A-376), or nil when it is no longer in that state (or its kind does not fit the order's state and outcome). Only a
-// party-signed one is read with its party signatures. The market signs only what settlementFits allows.
+// A-376), or nil when it is no longer in that state (or its kind does not fit the order's state and outcome), or when
+// it is party-signed or awaiting a signature and its per-order keys cannot be had (signer-waiting recorded, QA5W5A-1).
+// Only a party-signed one is read with its party signatures. The market signs only what settlementFits allows.
 func (a *App) loadSettleBuild(ctx context.Context, id int64, want string) (*settleBuild, error) {
 	b := &settleBuild{ID: id}
 	var state, stored string
@@ -175,7 +176,14 @@ func (a *App) loadSettleBuild(ctx context.Context, id int64, want string) (*sett
 	if b.Stored, err = decodePSBT(stored); err != nil || b.Stored.TxID() != b.TxID {
 		return nil, errors.New("escrow: the stored settlement PSBT does not match its txid")
 	}
-	if b.Keys, err = a.settlementKeys(ctx, a.db, b.OrderID, id); err != nil {
+	b.Keys, err = a.settlementKeys(ctx, a.db, b.OrderID, id)
+	if errors.Is(err, errPerOrderXpub) && want != "broadcast" {
+		// QA5W5A-1: a per-order key that cannot be had is the signer-wait path (P4-R17): signer-waiting recorded, nothing
+		// rebuilt, the next pass reads it again. A broadcast settlement's send_error is its own (restore holds), so a fee
+		// bump's read returns the error, which errorCause names with a fixed class.
+		return nil, a.settlementSendWaits(ctx, id, b.OrderID, sendSignerWait)
+	}
+	if err != nil {
 		return nil, err
 	}
 	rows, err := a.db.QueryContext(ctx, "SELECT role,address,sats FROM settlement_outputs WHERE settlement_id=$1 ORDER BY n", id)

@@ -86,12 +86,20 @@ func TestEscrowShapeBSetupPage(t *testing.T) {
 	if w := x.do("GET", path, "", nil); w.Code != 303 || !strings.HasPrefix(w.Header().Get("Location"), "/login") {
 		t.Fatalf("signed out: %d %q", w.Code, w.Header().Get("Location"))
 	}
-	// The signer not answering: the page says the cosigner keys cannot be shown now, and shows none.
+	// The signer not answering (QA5W5A-1): the market's order wallet key is the one checkout stored, so the page is the
+	// same, the market's cosigner key and the Sparrow descriptor included.
 	f.stop()
 	page := html.UnescapeString(x.page(path, x.buyerSess))
 	_, _, cosigners, sparrow := x.perOrderSetupWant(x.order, roleBuyer, f.key)
-	if !strings.Contains(page, "escrow signer is not reachable") || strings.Contains(page, cosigners[1]) || strings.Contains(page, sparrow) {
+	if !strings.Contains(page, cosigners[0]) || !strings.Contains(page, cosigners[1]) || !strings.Contains(page, sparrow) {
 		t.Fatalf("setup page without the signer:\n%s", page)
+	}
+	// A market row with no stored order wallet key (none outside tests): the page says the market's key cannot be read
+	// from the market's records, and shows no cosigner key.
+	agExec(x.testEnv, "UPDATE escrow_pubkeys SET per_order_xpub=NULL WHERE party='market' AND escrow_id=(SELECT id FROM escrows WHERE order_id=$1)", x.order)
+	page = html.UnescapeString(x.page(path, x.buyerSess))
+	if !strings.Contains(page, "The market's cosigner key of this escrow cannot be read from the market's records") || strings.Contains(page, cosigners[0]) || strings.Contains(page, sparrow) {
+		t.Fatalf("setup page with no stored market key:\n%s", page)
 	}
 	f.start()
 	// A Bitcoin Core escrow has no setup page.

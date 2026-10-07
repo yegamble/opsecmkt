@@ -94,6 +94,9 @@ func TestEscrowSignUpload(t *testing.T) {
 		{"a NUL in a text file", ids(uploadPart{"psbt_file", "signed.txt", append([]byte(signed), 0)}), 400, invalidFormText},
 		{"an oversized file", ids(uploadPart{"psbt_file", "big.psbt", bytes.Repeat([]byte("A"), psbtMaxBase64+1)}), 413, "too large"},
 		{"an oversized body", ids(uploadPart{"psbt", "", bytes.Repeat([]byte("A"), psbtMaxBase64)}, uploadPart{"psbt_file", "big.psbt", bytes.Repeat([]byte("B"), psbtMaxBase64)}, uploadPart{"x", "", bytes.Repeat([]byte("C"), 20<<10)}), 413, "too large"},
+		// QA5W5A-5: the body, read before Origin, CSRF and admission, holds one PSBT and the small fields, never two.
+		{"two PSBTs of half the bound each", ids(uploadPart{"psbt", "", bytes.Repeat([]byte("A"), psbtMaxBase64/2+8<<10)}, uploadPart{"psbt_file", "big.psbt", bytes.Repeat([]byte("B"), psbtMaxBase64/2+8<<10)}), 413, "too large"},
+		{"one PSBT of the largest size", ids(uploadPart{"psbt", "", nil}, uploadPart{"psbt_file", "big.psbt", bytes.Repeat([]byte("A"), psbtMaxBase64)}), 400, "could not be read"},
 		{"an unknown field", ids(uploadPart{"psbt_file", "signed.psbt", raw}, uploadPart{"note", "", []byte("x")}), 400, "Invalid form"},
 		{"a field twice", ids(uploadPart{"psbt_file", "signed.psbt", raw}, uploadPart{"order_id", "", []byte(order)}), 400, "Invalid form"},
 		{"both a paste and a file", ids(uploadPart{"psbt", "", []byte(signed)}, uploadPart{"psbt_file", "signed.psbt", raw}), 400, "not both"},

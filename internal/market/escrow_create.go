@@ -55,8 +55,9 @@ import (
 // and the order wallet's sibling addresses /0/1..19 and /1/0..9, which are stored (escrow_siblings) and imported with the
 // escrow as two ranged descriptors of the rooted per-order keys, so a deposit to one is seen and returned by the stray
 // refund (escrow_watch.go), which spends a sibling's deposits with that sibling's own script (A-456b, siblingKeys).
-// The buyer's and the vendor's order wallet keys (tpubs) are stored with their keys (per_order_xpub, QA5W4A-5), so
-// they are rebuilt (perOrderXpub) whatever key a party has registered since; the market's comes from the escrow signer.
+// Every order wallet key (a tpub) is stored with its key (per_order_xpub: the buyer's and the vendor's since QA5W4A-5,
+// the market's since QA5W5A-1), so it is rebuilt (perOrderXpub) whatever key a party has registered since and without
+// the escrow signer, which is asked for its key at checkout and otherwise only to co-sign.
 // Since A-456b a pair of per-order keys gets a per-order escrow whenever the escrow signer, which co-signs its
 // settlements (escrow_cosign.go), answers with its pinned key; A-456a's checkout switch is gone.
 
@@ -99,6 +100,10 @@ var (
 	errEscrowSweep = fail(503, "Bitcoin escrow is paused until this market has checked its escrow wallet after restoring its records from a backup. Nothing was charged and your order is still a draft; try again later.")
 	// errEscrowWatched refuses a checkout whose every composed address the watch-only wallet already watches (A-359).
 	errEscrowWatched = fail(503, "The escrow could not be created: every escrow address the market composed for this order is already watched by its escrow wallet, which happens after the market restored its records from a backup. Nothing was charged and your order is still a draft; contact the market's staff.")
+	// errEscrowRescanning refuses a checkout whose import Core refused because the watch-only wallet is rescanning (an
+	// operator's rescanblockchain, or the watch-only wallet repair's import after a restore, QA5W4A-3): a wait, said as
+	// one (QA5W5A-2), not "the market's Bitcoin node did not confirm it".
+	errEscrowRescanning = fail(503, "The escrow could not be created: the market's escrow wallet is rescanning the chain. Nothing was changed and your order is still a draft; try again in a few minutes.")
 )
 
 // escrowWatchedTries bounds how many composed escrow addresses one checkout tries while the watch-only wallet already
@@ -396,6 +401,10 @@ func escrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	imports = append(imports, siblingImports(o.ID, siblings, "now")...)
 	if err = e.importDescriptors(ctx, e.watchName, imports); err != nil {
 		log.Printf("escrow: escrow for order %s not imported: %s", shortID(o.ID), errorClassOf(err))
+		var re *escrowRPCError
+		if errors.As(err, &re) && re.Class == escrowClassRescanning {
+			return actionResult{}, errEscrowRescanning // QA5W5A-2: a wait, not a node that disagreed
+		}
 		return actionResult{}, errEscrowBuild
 	}
 	return actionResult{Redirect: orderPage(o.ID), Notice: "escrow-created", Audit: "Created Bitcoin escrow (" + c.A.escrowNetwork() + ") for order " + shortID(o.ID)}, nil
@@ -690,16 +699,28 @@ func insertEscrow(ctx context.Context, tx *sql.Tx, orderID, refund string, feeBp
 				return errEscrowOrigin
 			}
 			uid, h = p.UserID, p.KeyHMAC
-			// Shape (b): the party's order wallet key (the ranged descriptors name it rooted), cross-checked with
-			// Core with them (checkPerOrderEscrow), and checked again here against the key stored beside it (QA5W4A-5).
-			if p.Layout == layoutPerOrder {
-				s := perOrderStored{Party: p.Party, PubKey: hex.EncodeToString(b.Keys[p.Party]), Suffix: p.Suffix,
-					Xpub: sql.NullString{String: p.Order.Serialize(versionTpub), Valid: true}}
-				if _, err := s.orderKey(nil); err != nil {
+		}
+		// Shape (b): each order wallet key (the ranged descriptors name it rooted), cross-checked with Core with them
+		// (checkPerOrderEscrow), and checked again here against the key stored beside it (QA5W4A-5). The market's
+		// (QA5W5A-1) must also come from the escrow signer's key that this checkout read and checked against the pins
+		// (signerAccount): its origin fingerprint is the pinned one, and it is that key's child <m>.
+		if p.Layout == layoutPerOrder {
+			if p.Party == "market" {
+				var pinned string
+				if err = tx.QueryRowContext(ctx, "SELECT COALESCE((SELECT value FROM settings WHERE key=$1),'')", escrowSignerFingerprintPin).Scan(&pinned); err != nil {
+					return err
+				}
+				order, used, err := deriveOrderKey(p.Key, uint32(p.Index))
+				if pinned == "" || p.Key.Fingerprint != pinned || err != nil || used != uint32(p.Index) || order.Serialize(versionTpub) != p.Order.Serialize(versionTpub) {
 					return errPerOrderMismatch
 				}
-				xpub = s.Xpub.String
 			}
+			s := perOrderStored{Party: p.Party, PubKey: hex.EncodeToString(b.Keys[p.Party]), Suffix: p.Suffix,
+				Xpub: sql.NullString{String: p.Order.Serialize(versionTpub), Valid: true}}
+			if _, err := s.orderKey(); err != nil {
+				return errPerOrderMismatch
+			}
+			xpub = s.Xpub.String
 		}
 		if _, err = tx.ExecContext(ctx, `INSERT INTO escrow_pubkeys(pubkey,escrow_id,party,user_id,key_hmac,origin_fingerprint,origin_path,derivation_suffix,per_order_xpub)
 			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, hex.EncodeToString(b.Keys[p.Party]), id, p.Party, uid, h, p.Key.Fingerprint, p.Key.PathText, p.Suffix, xpub); err != nil {

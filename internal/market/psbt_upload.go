@@ -28,9 +28,13 @@ var psbtUploadRoutes = map[string]bool{"/escrow/sign": true}
 
 const (
 	psbtFileField = "psbt_file"
-	// psbtUploadBodyLimit bounds the whole body: a paste and a file of at most psbtMaxBase64 bytes each (one of which the
-	// action refuses) and the small fields with the multipart framing around them.
-	psbtUploadBodyLimit = 2*psbtMaxBase64 + 16<<10
+	// psbtUploadBodyLimit bounds the whole body, which is read before Origin, CSRF and admission (as any form's body is):
+	// one PSBT of at most psbtMaxBase64 bytes, pasted or as a file (the action refuses both, so no legitimate form
+	// carries two), and the small fields, an empty paste beside a file included, with the multipart framing around them
+	// (QA5W5A-5). That is about as much as any other form's 64 KiB body, read at the same point; a first-part CSRF check,
+	// as uploads.go makes, would duplicate app.go's token check (with its anonymous-token fallback) and rely on the
+	// browser's part order.
+	psbtUploadBodyLimit = psbtMaxBase64 + 16<<10
 )
 
 // psbtUploadFields is each field the sign form's multipart body may carry, with the most bytes it may hold.

@@ -36,6 +36,10 @@ type fakeSigner struct {
 	// signed, or the request with one fake signature per input under its key; refused records each refusal class.
 	cosign  bool
 	refused []string
+	// QA5W5A-4: with tamper set, a cosign answer that passed the refusals is wrong in one way: "extra-sig" adds a
+	// signature under another key of the script, "none" signs with SIGHASH_NONE, "other-tx" answers for another
+	// transaction (the unsigned transaction's locktime changed).
+	tamper string
 }
 
 // cosignPSBT is the fake signer's answer to a sign request with cosign set, made as cmd/escrow-signer/sign.go makes it
@@ -92,15 +96,40 @@ func (f *fakeSigner) cosignPSBT(psbt string, index uint32) (string, string) {
 	if mine == nil {
 		return "", "key-not-found"
 	}
+	f.mu.Lock()
+	tamper := f.tamper
+	f.mu.Unlock()
+	sighash := byte(1)
+	if tamper == "none" {
+		sighash = 2
+	}
 	raw := p.Raw
 	for i := range p.Inputs {
 		next, err := parsePSBT(raw)
 		if err == nil {
-			raw, err = next.withInputField(i, append([]byte{0x02}, mine...), fakeSig(mine, p.TxID(), 1))
+			raw, err = next.withInputField(i, append([]byte{0x02}, mine...), fakeSig(mine, p.TxID(), sighash))
+		}
+		if other := script[2:35]; err == nil && tamper == "extra-sig" {
+			if bytes.Equal(other, mine) {
+				other = script[36:69]
+			}
+			if next, err = parsePSBT(raw); err == nil {
+				raw, err = next.withInputField(i, append([]byte{0x02}, other...), fakeSig(other, p.TxID(), 1))
+			}
 		}
 		if err != nil {
 			return "", "bad-psbt"
 		}
+	}
+	if tamper == "other-tx" {
+		// The global unsigned transaction is the first entry: 0x01 0x00 <compact size> <tx>; its last byte is the
+		// locktime's highest.
+		raw = bytes.Clone(raw)
+		n, at := int(raw[7]), 8
+		if raw[7] == 0xfd {
+			n, at = int(raw[8])|int(raw[9])<<8, 10
+		}
+		raw[at+n-1] ^= 0x01
 	}
 	return encodePSBT(raw), ""
 }

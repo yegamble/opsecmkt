@@ -1446,13 +1446,15 @@ Core wallet cannot sign it. Its A-456a leg (`TestEscrowRegtestPerOrderEscrow`): 
 the checkout form, Core derives its address from the parties' private roots as Go does ([per-order
 escrow](escrow.md#per-order-escrow-creation-and-watching-a-456a-shape-b)), and deposits to two sibling addresses are seen
 by the watch-only wallet and recorded left out. Its A-456b legs (`TestEscrowRegtestShapeBRelease`,
-`TestEscrowRegtestShapeBSiblingStray`, with the real [escrow signer](#escrow-signer) built from the tree): a per-order
-escrow's claim, signed by the vendor's order wallet and uploaded as a PSBT file, is co-signed by the signer, broadcast
-and confirmed; a deposit to a sibling address is returned by a stray refund spending that sibling's script, co-signed
-and confirmed ([per-order escrow](escrow.md#per-order-escrow-settlement-setup-and-upload-a-456b-shape-b)). Its QA5W4A leg (`TestEscrowRegtestPerOrderRepair`): the app restarted onto empty watch-only
-wallets standing in for restored ones repairs such an escrow, every address solvable and the deposits found, with the
-escrow signer up, after it was down (only the escrow's own descriptor until it answers) and after the vendor
-registered another key. In every leg the app runs inside the Go test against the real node, not as the server binary. A browser journey
+`TestEscrowRegtestShapeBSiblingStray`, `TestEscrowRegtestShapeBSiblingStraySignerDown`, `TestEscrowRegtestShapeBBump`,
+with the real [escrow signer](#escrow-signer) built from the tree): a per-order escrow's claim, signed by the vendor's
+order wallet and uploaded as a PSBT file, is co-signed by the signer, broadcast and confirmed; a deposit to a sibling
+address is returned by a stray refund spending that sibling's script, co-signed and confirmed, and one is shown,
+downloaded and signed while the signer is down, waiting only for the co-signature; a claim is fee-bumped and the bump
+co-signed and confirmed ([per-order escrow](escrow.md#per-order-escrow-settlement-setup-and-upload-a-456b-shape-b)). Its
+QA5W4A leg (`TestEscrowRegtestPerOrderRepair`): the app restarted onto empty watch-only wallets standing in for restored
+ones repairs such an escrow, every address solvable and the deposits found, with the escrow signer up, with it down (the
+order wallet keys, the market's included, are the ones stored at checkout) and after the vendor registered another key. In every leg the app runs inside the Go test against the real node, not as the server binary. A browser journey
 (`npm run test:e2e:escrow`, [development](development.md)) drives the escrow forms by keyboard in Chromium at 320 px
 with JavaScript off against the real server and a simulated escrow node; it is not chain evidence. Nothing about
 escrow has run on a public test network or mainnet, and the escrow pages have not been run in Firefox or WebKit.
@@ -1566,7 +1568,8 @@ the key (keyed from `APP_SECRET_KEY`, as registered escrow keys are) in `setting
   was built with):
   `DELETE FROM settings WHERE key IN ('escrow_signer_fingerprint','escrow_signer_xpub_hmac')`.
 - A signer that does not answer: "escrow: escrow signer not reachable at ESCROW_SIGNER_SOCKET; anything that needs it
-  waits (nothing is rebuilt)". Start the service; the next pass finds it.
+  waits (nothing is rebuilt)". Start the service; the next pass finds it. Only new per-order checkouts and the market's
+  co-signature need it: order pages, setup pages, copies and the parties' signatures go on (QA5W5A-1).
 - A reply the app does not understand, such as another protocol version: "escrow: shape (b) unavailable: the escrow
   signer's reply was not understood …".
 

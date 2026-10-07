@@ -17,9 +17,9 @@ import (
 // sibling addresses, then the app restarted onto empty watch-only wallets standing in for ones restored from a backup
 // older than the escrow. Signer up: one watcher pass imports everything again (the app asks getwalletinfo first and
 // makes one import), every address is held, labelled and solvable, and the deposits made meanwhile are found. Signer down
-// (QA5W4A-1): the pass waits and imports only the escrow's own descriptor, no sibling; once the signer answers, the next
-// pass imports the ranged descriptors and the siblings, solvable. Vendor's key re-registered (QA5W4A-5): the siblings are
-// still solvable, rebuilt from the order wallet keys stored at checkout. Finally Core's own behaviour behind QA5W4A-1 and
+// (QA5W5A-1, where QA5W4A-1 made the repair wait): the market's order wallet key is stored at checkout with the parties',
+// so one pass imports everything just the same, the siblings solvable. Vendor's key re-registered (QA5W4A-5): the
+// siblings are still solvable, rebuilt from the order wallet keys stored at checkout. Finally Core's own behaviour behind QA5W4A-1 and
 // -2: an address an addr(…) import held first stays unsolvable after its descriptor (bare or ranged) is imported, and the
 // app's orphan-sweep read (watchKeys) reports it unsolvable. The App reaches Core only as the rpcwhitelist user; no
 // private key is logged.
@@ -159,24 +159,26 @@ func TestEscrowRegtestPerOrderRepair(t *testing.T) {
 		t.Fatal(err)
 	}
 	xpubs := agStrings(t, e, "SELECT p.party||' '||coalesce(p.per_order_xpub,'-') FROM escrow_pubkeys p JOIN escrows es ON es.id=p.escrow_id WHERE es.order_id=$1 ORDER BY p.party", order)
+	marketIndex := agInt64(t, e, "SELECT market_index FROM escrows WHERE order_id=$1", order)
 	for _, r := range xpubs {
 		party, xpub, _ := strings.Cut(r, " ")
-		if party == "market" && xpub != "-" || party != "market" && !strings.HasPrefix(xpub, "tpub") {
+		if !strings.HasPrefix(xpub, "tpub") {
 			t.Fatalf("per_order_xpub of the %s: %q", party, xpub)
 		}
-		// Core derives the escrow's stored key from the stored order wallet key.
-		if party != "market" {
-			var got []string
-			call("", "deriveaddresses", &got, withSum("wpkh("+xpub+"/0/0)"))
-			var want []string
-			key := map[string]string{"buyer": buyerKey, "vendor": vendorKey}[party]
-			call("", "deriveaddresses", &want, withSum("wpkh("+key+"/2/0/0)"))
-			if len(got) != 1 || got[0] != want[0] {
-				t.Fatalf("Core derives %v from the %s's stored order wallet key at /0/0 and %v from the account key at /2/0/0", got, party, want)
-			}
+		// Core derives the escrow's stored key from the stored order wallet key (the market's, QA5W5A-1, from the
+		// signer's rooted account key at <m>/0/0).
+		key, path := map[string]string{"buyer": buyerKey, "vendor": vendorKey}[party], "/2/0/0"
+		if party == "market" {
+			key, path = f.key.Rooted(versionTpub), "/"+strconv.FormatInt(marketIndex, 10)+"/0/0"
+		}
+		var got, want []string
+		call("", "deriveaddresses", &got, withSum("wpkh("+xpub+"/0/0)"))
+		call("", "deriveaddresses", &want, withSum("wpkh("+key+path+")"))
+		if len(got) != 1 || len(want) != 1 || got[0] != want[0] {
+			t.Fatalf("Core derives %v from the %s's stored order wallet key at /0/0 and %v from the account key at %s", got, party, want, path)
 		}
 	}
-	t.Logf("checkout: escrow %s; per_order_xpub stored for the buyer and the vendor (Core derives /0/0 of each as the account key's /2/0/0), none for the market", addr)
+	t.Logf("checkout: escrow %s; per_order_xpub stored for the buyer, the vendor and the market (Core derives /0/0 of each as the account key's /<i>/0/0)", addr)
 	sibling := func(branch, k int) string {
 		t.Helper()
 		got := agStrings(t, e, "SELECT s.address FROM escrow_siblings s JOIN escrows es ON es.id=s.escrow_id WHERE es.order_id=$1 AND s.branch=$2 AND s.idx=$3", order, branch, k)
@@ -245,29 +247,17 @@ func TestEscrowRegtestPerOrderRepair(t *testing.T) {
 		t.Errorf("payments %v, want the escrow deposit and two sibling deposits", rows)
 	}
 
-	// Signer down (QA5W4A-1): the escrow's own descriptor only, and a wait; the siblings once the signer answers.
+	// Signer down (QA5W5A-1): the market's order wallet key is the stored one, so one pass repairs everything as above.
 	signerDown(f, true)
 	onto(restored["down"])
-	err = e.A.escrowPollOnce(ctx)
-	if err == nil || !strings.Contains(watcherCause(err), "waits for the escrow signer") || e.A.escrowSiblingsChecked.Load() {
+	if err := e.A.escrowPollOnce(ctx); err != nil || !e.A.escrowSiblingsChecked.Load() {
 		t.Fatalf("pass with the signer down: %v", err)
 	}
-	if i := info(restored["down"], addr); !i.IsMine || !i.Solvable || len(i.Labels) != 1 {
-		t.Errorf("signer down: the escrow address is not held again: %+v", i)
-	}
-	for name, a := range map[string]string{"/0/1": s01, "/1/9": s19} {
-		if i := info(restored["down"], a); i.IsMine || len(i.Labels) != 0 {
-			t.Errorf("signer down: sibling %s imported: %+v", name, i)
-		}
-	}
-	t.Logf("signer down: %s; the escrow address held, no sibling imported", watcherCause(err))
-	signerDown(f, false)
-	if err := e.A.escrowPollOnce(ctx); err != nil || !e.A.escrowSiblingsChecked.Load() {
-		t.Fatalf("pass once the signer answered: %v", err)
-	}
-	for name, a := range map[string]string{"/0/1": s01, "/1/9": s19} {
+	for name, a := range map[string]string{"escrow": addr, "/0/1": s01, "/1/3": s13, "/1/9": s19} {
 		held(restored["down"], name, a)
 	}
+	t.Logf("signer down: one pass repaired the escrow address and every sibling, solvable")
+	signerDown(f, false)
 
 	// The vendor registers another key (QA5W4A-5): the order wallet is rebuilt from what checkout stored.
 	storeKey(vendor, altEscrowKey(t, vendorKey, "5eed5eed", 3), "UPDATE user_escrow_keys SET xpub_sealed=$2,xpub_hmac=$3,origin_fingerprint=$4,origin_path=$5 WHERE user_id=$1")

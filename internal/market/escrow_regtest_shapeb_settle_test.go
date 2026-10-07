@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -28,7 +29,7 @@ import (
 // practice are their own leg). A party's order wallet is played by Core: descriptorprocesspsbt with the party's private
 // root along its per-order path for the escrow's script (the other two keys as hex), on the copy the party downloads.
 
-// shapeBChain is the set-up both legs share.
+// shapeBChain is the set-up the legs share.
 type shapeBChain struct {
 	t                     *testing.T
 	ctx                   context.Context
@@ -429,5 +430,170 @@ func TestEscrowRegtestShapeBSiblingStray(t *testing.T) {
 	}
 	t.Logf("the buyer's order wallet signed its copy at its /0/3 key; pasted -> 303, party_signed")
 	c.settled(id, "stray refund of the sibling deposit")
+	c.noSecrets()
+}
+
+// TestEscrowRegtestShapeBSiblingStraySignerDown: QA5W5A-1 on a real node with the real signer (from QA5W5A's probe).
+// After a per-order escrow's order completed, the funder pays sibling /0/2 and the watcher builds its stray refund; then
+// the escrow signer goes away (its socket moved aside, so nothing listens there). Both parties' order pages are served
+// with the sign form, the buyer's copy downloads, the buyer's order wallet signs it and the paste is accepted
+// (party_signed), and a watcher pass records signer-waiting and rebuilds nothing: the market's order wallet key is the
+// one checkout stored, so only the co-signature needs the signer. With the socket back the next pass co-signs it through
+// the signer; it is broadcast, confirmed and checked with gettxout.
+func TestEscrowRegtestShapeBSiblingStraySignerDown(t *testing.T) {
+	c := newShapeBChain(t, "qa5w5a-sdown")
+	order, _ := c.paidEscrow()
+	var sib string
+	if err := c.e.DB.QueryRow("SELECT s.address FROM escrow_siblings s JOIN escrows es ON es.id=s.escrow_id WHERE es.order_id=$1 AND s.branch=0 AND s.idx=2", order).Scan(&sib); err != nil {
+		t.Fatal(err)
+	}
+	var txid string
+	c.call(c.funder, "sendtoaddress", &txid, sib, json.Number("0.0003"))
+	mustMine(t, c.ctx, c.op, int(c.e.A.escrow.Load().confirmations), c.mine)
+	c.pass()
+	c.pass()
+	var id int64
+	var state, stored string
+	if err := c.e.DB.QueryRow("SELECT id,state,COALESCE(psbt,'') FROM settlements WHERE order_id=$1 AND kind='stray_refund'", order).Scan(&id, &state, &stored); err != nil || state != "awaiting_signature" {
+		t.Fatalf("stray refund of the sibling deposit: %s %v", state, err)
+	}
+	t.Logf("sibling /0/2 %s paid 0.0003 BTC (%s); its stray refund built, awaiting a signature", sib, txid)
+	socket := c.e.A.escrowSigner.socket
+	if err := os.Rename(socket, socket+".off"); err != nil {
+		t.Fatal(err)
+	}
+	back := func() {
+		if _, err := os.Stat(socket + ".off"); err == nil {
+			os.Rename(socket+".off", socket)
+		}
+	}
+	t.Cleanup(back)
+	if conn, err := net.Dial("unix", socket); err == nil {
+		conn.Close()
+		t.Fatal("the escrow signer still answers on its socket")
+	}
+	for name, sess := range map[string]string{"buyer": c.buyerSess, "vendor": c.vendorSess} {
+		w := c.e.do("GET", "/order?id="+order, sess, nil)
+		if form := strings.Contains(w.Body.String(), `action="/escrow/sign"`); w.Code != 200 || !form {
+			t.Fatalf("signer away: the %s's order page: %d, sign form %v", name, w.Code, form)
+		}
+	}
+	signed := c.partySign(order, id, roleBuyer) // downloads the buyer's copy (200)
+	if w := c.e.do("POST", "/escrow/sign", c.buyerSess, url.Values{"order_id": {order}, "settlement_id": {strconv.FormatInt(id, 10)}, "psbt": {signed}}); w.Code != 303 {
+		t.Fatalf("signer away: the buyer signs: %d %s", w.Code, w.Body.String())
+	}
+	c.pass()
+	var sendErr, now string
+	var final bool
+	if err := c.e.DB.QueryRow("SELECT state,send_error,psbt,raw_tx IS NOT NULL FROM settlements WHERE id=$1", id).Scan(&state, &sendErr, &now, &final); err != nil {
+		t.Fatal(err)
+	}
+	if state != "party_signed" || sendErr != sendSignerWait || now != stored || final {
+		t.Fatalf("signer away after a pass: %s (send_error %q, rebuilt %v, final %v)", state, sendErr, now != stored, final)
+	}
+	t.Logf("signer away (its socket moved aside): both order pages 200 with the sign form, the buyer's copy 200, the paste 303 -> party_signed; a watcher pass: %s, nothing rebuilt", sendErr)
+	back()
+	c.settled(id, "stray refund after the signer came back")
+	c.noSecrets()
+}
+
+// TestEscrowRegtestShapeBBump: a per-order escrow's fee bump on a real node with the real signer (from QA5W5A's probe).
+// The vendor's claim is broadcast at 1 sat/vB; the vendor requests a bump to 5 sat/vB; the watcher builds it; the
+// vendor's order wallet (Core, the vendor's private root at its per-order path) signs its bump copy and pastes it; the
+// next pass co-signs it through the signer at the escrow's market index and broadcasts it in place of the claim (the bump
+// in the mempool, the claim gone from it); it confirms and the settlement is confirmed.
+func TestEscrowRegtestShapeBBump(t *testing.T) {
+	t.Setenv("ESCROW_BTC_FEE_RATE", "1")
+	c := newShapeBChain(t, "qa5w5a-bump")
+	order, _ := c.paidEscrow()
+	var claimTo string
+	c.call(c.funder, "getnewaddress", &claimTo)
+	if w := c.e.do("POST", "/escrow/claim", c.vendorSess, url.Values{"order_id": {order}, "address": {claimTo}, "password": {testPassword}}); w.Code != 303 {
+		t.Fatalf("claim: %d %s", w.Code, w.Body.String())
+	}
+	c.pass()
+	var id int64
+	if err := c.e.DB.QueryRow("SELECT id FROM settlements WHERE order_id=$1 AND kind='release'", order).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	sid := strconv.FormatInt(id, 10)
+	signed := c.partySign(order, id, roleVendor)
+	if w := c.e.do("POST", "/escrow/sign", c.vendorSess, url.Values{"order_id": {order}, "settlement_id": {sid}, "psbt": {signed}}); w.Code != 303 {
+		t.Fatalf("sign: %d %s", w.Code, w.Body.String())
+	}
+	c.pass()
+	var state, parent string
+	if err := c.e.DB.QueryRow("SELECT state,COALESCE(txid,'') FROM settlements WHERE id=$1", id).Scan(&state, &parent); err != nil || state != "broadcast" {
+		t.Fatalf("claim: %s %v", state, err)
+	}
+	mempool := func() []string {
+		var m []string
+		c.call("", "getrawmempool", &m)
+		return m
+	}
+	if !slices.Contains(mempool(), parent) {
+		t.Fatalf("claim %s is not in the mempool", parent)
+	}
+	t.Logf("claim %s co-signed by the signer and broadcast at 1 sat/vB", parent)
+	if w := c.e.do("POST", "/escrow/bump", c.vendorSess, url.Values{"order_id": {order}, "settlement_id": {sid}, "fee_rate": {"5"}, "password": {testPassword}}); w.Code != 303 {
+		t.Fatalf("bump: %d %s", w.Code, w.Body.String())
+	}
+	c.pass()
+	var bid int64
+	var btx string
+	if err := c.e.DB.QueryRow("SELECT id,txid FROM settlement_bumps WHERE settlement_id=$1 AND state='awaiting_signature'", id).Scan(&bid, &btx); err != nil {
+		t.Fatalf("bump not built: %v", err)
+	}
+	w := c.e.do("GET", "/escrow-psbt?id="+order+"&s="+sid+"&b="+strconv.FormatInt(bid, 10), c.vendorSess, nil)
+	if w.Code != 200 {
+		t.Fatalf("the vendor's bump copy: %d", w.Code)
+	}
+	keys, err := c.e.A.settlementKeys(c.ctx, c.e.DB, order, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var exprs []string
+	for _, p := range []string{roleBuyer, roleVendor, "market"} {
+		if p == roleVendor {
+			exprs = append(exprs, c.vendorRoot+"/48h/1h/0h/2h"+keys[p].Suffix)
+		} else {
+			exprs = append(exprs, hex.EncodeToString(keys[p].PubKey))
+		}
+	}
+	var res struct {
+		PSBT     string `json:"psbt"`
+		Complete bool   `json:"complete"`
+	}
+	c.call("", "descriptorprocesspsbt", &res, strings.TrimSpace(w.Body.String()), []string{withChecksum("wsh(sortedmulti(2," + strings.Join(exprs, ",") + "))")}, "ALL", false, false)
+	if res.Complete {
+		t.Fatal("the vendor's order wallet completed the bump alone")
+	}
+	if w := c.e.do("POST", "/escrow/bump-sign", c.vendorSess, url.Values{"order_id": {order}, "bump_id": {strconv.FormatInt(bid, 10)}, "psbt": {res.PSBT}}); w.Code != 303 {
+		t.Fatalf("bump-sign: %d %s", w.Code, w.Body.String())
+	}
+	c.pass()
+	var bstate, cosigned, sendErr string
+	if err := c.e.DB.QueryRow("SELECT state,COALESCE(cosigned,''),send_error FROM settlement_bumps WHERE id=$1", bid).Scan(&bstate, &cosigned, &sendErr); err != nil {
+		t.Fatal(err)
+	}
+	m := mempool()
+	if bstate != "broadcast" || cosigned != "market" || !slices.Contains(m, btx) || slices.Contains(m, parent) {
+		b, _ := os.ReadFile(c.signerLog)
+		t.Fatalf("bump %s: %s cosigned %q send_error %q; in the mempool %v, the claim still there %v; signer log:\n%s", btx, bstate, cosigned, sendErr, slices.Contains(m, btx), slices.Contains(m, parent), b)
+	}
+	t.Logf("bump %s at 5 sat/vB signed by the vendor's order wallet, co-signed by the signer (cosigned=market) and broadcast; it replaced claim %s in the mempool", btx, parent)
+	mustMine(t, c.ctx, c.op, int(c.e.A.escrow.Load().confirmations), c.mine)
+	c.pass()
+	if err := c.e.DB.QueryRow("SELECT state FROM settlements WHERE id=$1", id).Scan(&state); err != nil || state != "confirmed" {
+		t.Fatalf("after the confirmations: %s %v", state, err)
+	}
+	var out struct {
+		Confirmations int64 `json:"confirmations"`
+	}
+	c.call("", "gettxout", &out, btx, 0, false)
+	if out.Confirmations < c.e.A.escrow.Load().confirmations {
+		t.Fatalf("gettxout %s:0: %d confirmations", btx, out.Confirmations)
+	}
+	t.Logf("after %d blocks: settlement confirmed; gettxout %s:0 has %d confirmations", c.e.A.escrow.Load().confirmations, btx, out.Confirmations)
 	c.noSecrets()
 }

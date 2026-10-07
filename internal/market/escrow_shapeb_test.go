@@ -104,8 +104,9 @@ func (x *escrowEnv) escrowRows(order string) map[string]shapeBRow {
 		if err = rows.Scan(&r.party, &r.suffix, &r.fp, &r.origin, &r.pubkey, &noXpub); err != nil {
 			x.t.Fatal(err)
 		}
-		// QA5W4A-5: the buyer's and the vendor's order wallet key is stored with a per-order key, and nothing else.
-		if perOrder := strings.Count(r.suffix, "/") == 3 && r.party != "market"; noXpub == perOrder {
+		// QA5W4A-5, QA5W5A-1: every per-order key's order wallet key is stored with it (the market's too), and nothing
+		// else has one.
+		if perOrder := strings.Count(r.suffix, "/") == 3; noXpub == perOrder {
 			x.t.Fatalf("%s %s: per_order_xpub stored %v", r.party, r.suffix, !noXpub)
 		}
 		out[r.party] = r
