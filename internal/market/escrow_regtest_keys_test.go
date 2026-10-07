@@ -1,11 +1,15 @@
 package market
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"slices"
@@ -506,7 +510,10 @@ func TestEscrowRegtestArbiterRestore(t *testing.T) {
 // wallet's txcount is then 1, its one listtransactions entry a "receive"); a restart starts escrow, and so does a
 // watcher retry's check. QA4W4A-1: three transactions of 2000 outputs each then pay the same address (6000 entries); a
 // restart reads only what is newer than the last passing check's block (the checkpoint, now the tip) and escrow stays
-// on, and so does another restart. Control, behind the dust: the operator spends the first payment from the arbiter
+// on, and so does another restart. QA4W6-1: the funder pays the same address replaceably and bumps the fee 1100 times;
+// once the arbiter wallet lists every replacement (about 82 MB from the checkpoint), a restart keeps escrow on; once the
+// last one is mined (one entry of about 74 KB, its walletconflicts naming the others), a restart keeps it on and moves
+// the checkpoint to the tip, and so does the next. Control, behind the dust: the operator spends the first payment from the arbiter
 // wallet to the wallet's own change address (createrawtransaction and signrawtransactionwithwallet as the operator
 // user; listtransactions lists no send for it, listsinceblock with include_change does), and a restart leaves escrow
 // disabled as not dedicated. What "never spent" can and cannot see: the check reads the wallet's own entries, so a
@@ -752,6 +759,106 @@ func TestEscrowRegtestArbiterDeposit(t *testing.T) {
 	}
 	t.Logf("dust: %d transactions of %d outputs (1000 sat) to %s, mined (txids %v; arbiter txcount %d); a restart read them from the checkpoint block %s and kept escrow on in %s (checkpoint now the tip %s, birthtime %d); another restart (nothing newer) in %s",
 		dustTxs, dustOuts, marketAddr[0], dustIDs, n, before.Block, took.Round(time.Millisecond), tip, checked.BirthTime, time.Since(restarted).Round(time.Millisecond))
+
+	// QA4W6-1: a payer's fee bumps. The funder pays the market child's address again, replaceable, and bumps the fee
+	// arbiterBumps times (bumpfee in its own wallet; the arbiter wallet takes no part). While they are unconfirmed, Core
+	// 31.1 lists every replacement as an arbiter entry whose walletconflicts names all the others (each entry about 67
+	// bytes per bump, the answer about bumps² × 67 bytes, 82 MB here), from any checkpoint. Once the last replacement is
+	// mined, the replaced ones are listed by no read, full or from a checkpoint, before or after a node restart (measured
+	// on Core 31.1), and the mined one keeps all the others in its walletconflicts: one entry past 64 KiB, which before
+	// QA4W6-1 was refused (bad-reply) on every read, so escrow stayed off for good. Here: once the arbiter wallet lists
+	// every replacement, a restart keeps escrow on (or waiting on the read, then on), never "has spent"; once the last one
+	// is mined, a restart keeps it on and moves the checkpoint to the tip, and so does the next.
+	const arbiterBumps = 1100
+	answer := func(from string) (int64, time.Duration) { // the size of the arbiter wallet's listsinceblock answer, as the operator
+		t.Helper()
+		body, _ := json.Marshal(map[string]any{"jsonrpc": "1.0", "id": "a471", "method": "listsinceblock", "params": []any{from, 1, true, false, true}})
+		start := time.Now()
+		resp, err := http.Post(strings.TrimSuffix(opURL, "/")+"/wallet/"+arbiter, "application/json", bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("listsinceblock as the operator: %v", err)
+		}
+		defer resp.Body.Close()
+		n, err := io.Copy(io.Discard, resp.Body)
+		if err != nil || resp.StatusCode != 200 {
+			t.Fatalf("listsinceblock as the operator: HTTP %d, %v", resp.StatusCode, err)
+		}
+		return n, time.Since(start)
+	}
+	checkpoint := func() string {
+		t.Helper()
+		var c arbiterCheckpoint
+		if v := agStrings(t, e, "SELECT value FROM settings WHERE key=$1", escrowArbiterChecked); len(v) != 1 || json.Unmarshal([]byte(v[0]), &c) != nil {
+			t.Fatalf("checkpoint %v", v)
+		}
+		return c.Block
+	}
+	// restartOn restarts the App and requires escrow on: a check whose read outlives startup is "waiting" and the watcher's
+	// retry takes the read's answer; "has spent" (not dedicated), a read failure or any other state fails the leg.
+	restartOn := func(what string) (string, time.Duration) {
+		t.Helper()
+		start := time.Now()
+		e.restart()
+		state := e.A.escrowStartState
+		if e.A.escrow.Load() == nil && state == escrowLogArbiterWait {
+			e.A.retryEscrow(ctx, &escrowRetry{last: state})
+		}
+		if e.A.escrow.Load() == nil {
+			t.Fatalf("escrow after a restart %s: %q (arbiter read %v)", what, state, e.A.escrowArbiterRead.Load())
+		}
+		return state, time.Since(start)
+	}
+	n0, _ := arbiterTxs()
+	var rbf struct {
+		TxID string `json:"txid"`
+	}
+	call(funder, "send", &rbf, map[string]any{marketAddr[0]: json.Number("0.0001")}, nil, "unset", 1, map[string]any{"replaceable": true})
+	bumped, bumpStart := rbf.TxID, time.Now()
+	for range arbiterBumps {
+		var b struct {
+			TxID string `json:"txid"`
+		}
+		call(funder, "bumpfee", &b, bumped)
+		bumped = b.TxID
+	}
+	bumpTook := time.Since(bumpStart)
+	// The arbiter wallet takes the mempool's notifications behind the bumps: wait until it lists every replacement.
+	var n1 int64
+	for end := time.Now().Add(3 * time.Minute); ; time.Sleep(time.Second) {
+		if n1, _ = arbiterTxs(); n1 >= n0+arbiterBumps+1 {
+			break
+		}
+		if time.Now().After(end) {
+			t.Fatalf("the arbiter wallet lists %d transactions, want %d", n1, n0+arbiterBumps+1)
+		}
+	}
+	from := checkpoint()
+	unconfirmed, read := answer(from)
+	state, took := restartOn(fmt.Sprintf("behind %d unconfirmed replacements", arbiterBumps))
+	t.Logf("QA4W6-1 bumps: the funder paid %s replaceably (txid %s) and bumped it %d times in %s (last %s); arbiter txcount %d; unconfirmed, the arbiter wallet's listsinceblock from the checkpoint %s answers %d bytes in %s; a restart: %q, escrow on in %s",
+		marketAddr[0], rbf.TxID, arbiterBumps, bumpTook.Round(time.Second), bumped, n1, from, unconfirmed, read.Round(time.Millisecond), state, took.Round(time.Millisecond))
+	mustMine(t, ctx, op, 1, mineTo)
+	var tx struct {
+		Confirmations int64 `json:"confirmations"`
+	}
+	call(arbiter, "gettransaction", &tx, bumped, true)
+	if tx.Confirmations != 1 {
+		t.Fatalf("the last replacement %s: %d confirmations", bumped, tx.Confirmations)
+	}
+	from = checkpoint()
+	mined, read := answer(from)
+	state, took = restartOn("once the last replacement is mined")
+	call("", "getbestblockhash", &tip)
+	if c := checkpoint(); c != tip {
+		t.Fatalf("checkpoint after the bumps were mined %s, want the tip %s", c, tip)
+	}
+	after, readAfter := answer(tip)
+	state2, took2 := restartOn("with the checkpoint past the mined replacement")
+	t.Logf("QA4W6-1 bumps mined (1 confirmation): listsinceblock from the checkpoint %s answers %d bytes in %s (the mined replacement alone, its walletconflicts naming the %d others); a restart: %q, escrow on in %s, checkpoint now the tip %s; from it %d bytes in %s, and the next restart: %q, escrow on in %s",
+		from, mined, read.Round(time.Millisecond), arbiterBumps, state, took.Round(time.Millisecond), tip, after, readAfter.Round(time.Millisecond), state2, took2.Round(time.Millisecond))
+	if mined <= rpcStreamMaxValue || mined >= unconfirmed/100 || after >= 1024 {
+		t.Fatalf("answers of %d bytes unconfirmed, %d once mined (want one entry past 64 KiB, the replaced ones gone), %d from the tip", unconfirmed, mined, after)
+	}
 
 	// Control, behind the dust: a spend from the arbiter wallet, which only its keys (the operator) can make, still
 	// disables escrow, even one whose only output goes to the wallet's own change address (listtransactions lists no

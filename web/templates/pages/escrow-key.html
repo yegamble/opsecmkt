@@ -2,7 +2,7 @@
 {{define "page:escrow-key"}}{{template "header" .}}
 <div class="page-head">
 <div>
-<div class="eyebrow">Bitcoin escrow · {{.EscrowNet}} only</div>
+<div class="eyebrow">Bitcoin escrow · {{template "btc-escrow-only" .EscrowNet}}</div>
 <h1>Escrow key<span class="accent">.</span></h1>
 <p>The public key your wallet signs Bitcoin escrow with. This market holds none of your private keys.</p>
 </div>{{with .EscrowKey}}{{if .ActiveAt}}<span class="badge green">Active</span>{{else if .Registered}}<span class="badge neutral">Inactive</span>{{end}}{{end}}</div>

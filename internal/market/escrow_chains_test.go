@@ -224,3 +224,55 @@ func TestEscrowPagesNameSignet(t *testing.T) {
 		}
 	}
 }
+
+// QA4W6-8: a market that has never pinned an escrow chain and whose escrow node does not answer at its first start
+// (a signet or testnet4 install whose node is still starting, say) names no chain: every page that describes Bitcoin
+// escrow says "chain not verified yet", never "regtest, a local test chain", as Monero escrow's network is not named
+// before a daemon was verified (QA4W4B-1). Once the node answers, the pages name its chain. A database holding escrows
+// and no pin (from before A-439, when escrow ran on regtest only) still names regtest with the node down.
+func TestEscrowChainNotVerifiedAtFirstStart(t *testing.T) {
+	x := newEscrowEnv(t)
+	x.DB.Exec("DELETE FROM settings WHERE key=$1", escrowChainPin) // as before the first start: nothing pinned, no escrow
+	srvDown(x, true)
+	x.restart()
+	if x.A.escrow.Load() != nil || !x.A.escrowConfigured {
+		t.Fatal("escrow enabled with its node down")
+	}
+	_, admin := x.user("unverifiedadmin", "admin")
+	pages := []struct{ name, path, sess, want string }{
+		{"footer", "/", "", "2-of-3 Bitcoin escrow on a test network (chain not verified yet)"},
+		{"checkout offer", "/order?id=" + x.order, x.buyerSess, "Or pay into a Bitcoin escrow (chain not verified yet)"},
+		{"escrow key", "/escrow-key", x.buyerSess, "Bitcoin escrow · chain not verified yet"},
+		{"transparency", "/canary", "", "Bitcoin escrow (chain not verified yet)"},
+		{"vendor desk", "/vendor-dashboard", x.vendorSess, "2-of-3 per order, chain not verified yet"},
+		{"administration", "/admin", admin, "Bitcoin escrow orders (chain not verified yet)"},
+	}
+	for _, p := range pages {
+		page := html.UnescapeString(x.page(p.path, p.sess))
+		if !strings.Contains(page, p.want) {
+			t.Errorf("%s with the node unanswered lacks %q:\n%s", p.name, p.want, page)
+		}
+		if i := strings.Index(strings.ToLower(page), "regtest"); i >= 0 {
+			t.Errorf("%s names regtest before the node answered: …%s…", p.name, page[max(0, i-200):min(len(page), i+100)])
+		}
+	}
+	srvDown(x, false)
+	x.A.retryEscrow(context.Background(), &escrowRetry{last: x.A.escrowStartState})
+	if x.A.escrow.Load() == nil {
+		t.Fatal("escrow did not start once the node answered")
+	}
+	for _, p := range pages {
+		if page := html.UnescapeString(x.page(p.path, p.sess)); strings.Contains(page, "not verified yet") || !strings.Contains(page, "regtest") {
+			t.Errorf("%s once the node answered on regtest: names it %v, says not verified %v", p.name, strings.Contains(page, "regtest"), strings.Contains(page, "not verified yet"))
+		}
+	}
+	// Escrows and no pin, the node down: regtest, the only chain such a database's escrows ran on.
+	x.mustCheckout(x.order, regtestAddr("unverified-refund"))
+	x.DB.Exec("DELETE FROM settings WHERE key=$1", escrowChainPin)
+	srvDown(x, true)
+	x.restart()
+	if page := html.UnescapeString(x.page("/order?id="+x.order, x.buyerSess)); x.A.escrowNetwork() != "regtest" ||
+		!strings.Contains(page, "Bitcoin escrow on this market runs on regtest, a local test chain") || strings.Contains(page, "not verified yet") {
+		t.Fatalf("an unpinned database holding escrows, node down: network %q, page:\n%s", x.A.escrowNetwork(), page)
+	}
+}

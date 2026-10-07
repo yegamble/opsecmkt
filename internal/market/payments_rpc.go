@@ -132,8 +132,10 @@ func (c *rpcClient) callWithin(ctx context.Context, timeout time.Duration, path,
 // entries answered 71 MB, beyond rpcMaxBody): read is handed the decoder at the start of "result" (numbers as
 // json.Number) and must consume exactly that value, null included (Core's answer to an error), as it arrives; the body
 // is never held whole, and only the timeout bounds it. Errors read as callWithin's do; a read cut short by the
-// timeout says "timed out". QA4W5-2: no single value may pass rpcStreamMaxValue bytes (valueBoundReader), so a node
-// that answers one huge entry or one huge unknown key cannot make the decoder hold it; the total is still unbounded.
+// timeout says "timed out". QA4W5-2, QA4W6-1: no single token may pass rpcStreamMaxValue bytes (valueBoundReader), so
+// a node that answers one huge string cannot make the decoder hold it; read walks a large value token by token
+// (skipValue), as callStream does for a key it does not use, so lists and objects of any size stream. The total is
+// still unbounded.
 func (c *rpcClient) callStream(ctx context.Context, timeout time.Duration, path, method string, params any, read func(*json.Decoder) error) error {
 	body, err := json.Marshal(map[string]any{"jsonrpc": c.version, "id": "opsecmkt", "method": method, "params": params})
 	if err != nil {
@@ -164,8 +166,7 @@ func (c *rpcClient) callStream(ctx context.Context, timeout time.Duration, path,
 				case "error":
 					err = dec.Decode(&rerr)
 				default:
-					var skip json.RawMessage
-					err = dec.Decode(&skip)
+					err = skipValue(dec)
 				}
 				if err != nil {
 					return err
@@ -191,15 +192,22 @@ func (c *rpcClient) callStream(ctx context.Context, timeout time.Duration, path,
 	})
 }
 
-// rpcStreamMaxValue bounds one value of a streamed answer (callStream): an entry of listsinceblock's transactions, a
-// skipped key's value, a string token. Bitcoin Core's entries are about 700 bytes (QA4W4A-1, Core 31.1), so 64 KiB is
-// generous; a longer value is refused as an invalid response (escrow's bad-reply), never held.
+// rpcStreamMaxValue bounds one JSON token of a streamed answer (callStream): a string (its quotes included), a number,
+// a literal. Callers walk large values token by token (skipValue, arbiterEntries), so a list or an object of any size
+// streams; only what a caller decodes whole (an RPC error object, listsinceblock's lastblock, an entry's category) is
+// bounded as a whole. QA4W6-1: Bitcoin Core's entries themselves can be large (an entry names every other replacement
+// of its transaction in walletconflicts, about 67 bytes each, so a payment its payer fee-bumped 1000 times passes
+// 64 KiB), while no token of Core's grows that way (the longest is a label, which the operator sets). A longer token is
+// refused as an invalid response (escrow's bad-reply), never held (QA4W5-2).
 const rpcStreamMaxValue = 64 << 10
 
 // valueBoundReader is callStream's body reader. json.Decoder holds a value whole while it reads it and does not move
 // its offset (InputOffset) past a value until the value is complete, so the bytes read past that offset are the value
-// in progress plus a little read-ahead: Read refuses to let them pass rpcStreamMaxValue. Opening a list or an object
-// (Token) moves the offset, so a list of any length streams.
+// in progress plus a little read-ahead: Read refuses to let them pass rpcStreamMaxValue+1. Go 1.27's encoding/json (on
+// JSON v2) leaves that offset at the end of the last token, before the ':' or ',' ahead of the next, so the +1 is that
+// separator: a token of rpcStreamMaxValue bytes passes and one byte more is refused (QA4W6-6), except that a token
+// opening its object or list (no separator) has one byte more. Every token moves the offset, so values walked token by
+// token (skipValue) stream whatever their size.
 type valueBoundReader struct {
 	r   io.Reader
 	dec *json.Decoder
@@ -209,7 +217,7 @@ type valueBoundReader struct {
 var errStreamValueTooLarge = errors.New("value too large")
 
 func (b *valueBoundReader) Read(p []byte) (int, error) {
-	room := rpcStreamMaxValue - (b.n - b.dec.InputOffset())
+	room := rpcStreamMaxValue + 1 - (b.n - b.dec.InputOffset())
 	if room <= 0 {
 		return 0, errStreamValueTooLarge
 	}
@@ -219,6 +227,27 @@ func (b *valueBoundReader) Read(p []byte) (int, error) {
 	n, err := b.r.Read(p)
 	b.n += int64(n)
 	return n, err
+}
+
+// skipValue consumes the next value of dec token by token, so rpcStreamMaxValue bounds each of its tokens, not the
+// value (QA4W6-1).
+func skipValue(dec *json.Decoder) error {
+	depth := 0
+	for {
+		t, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		switch t {
+		case json.Delim('{'), json.Delim('['):
+			depth++
+		case json.Delim('}'), json.Delim(']'):
+			depth--
+		}
+		if depth == 0 {
+			return nil
+		}
+	}
 }
 
 // exchange posts body to endpoint+path within timeout (or the caller's earlier deadline), answering one Digest

@@ -138,9 +138,9 @@ func TestEscrowBothSignedStatusSaysTheMarketDoesNotSign(t *testing.T) {
 // co-signs, and both parties' signatures, which the market broadcasts without signing.
 func TestEscrowStatementsCoverBothPaths(t *testing.T) {
 	for file, want := range map[string][]string{
-		"web/templates/partials/payment-status.html": {"the market co-signs it and broadcasts it to the {{$.EscrowNet}} network; when both have signed it, the market does not sign it and broadcasts what they signed"},
-		"web/templates/partials/order-escrow.html":   {"the market co-signs it and broadcasts it to the {{$.EscrowNet}} network; when both have signed it, the market does not sign it and broadcasts what they signed"},
-		"web/templates/pages/order.html":             {"the market then co-signs it and broadcasts it to the {{$.EscrowNet}} network (when both sign it, the market does not sign it and broadcasts what they signed)"},
+		"web/templates/partials/payment-status.html": {"the market co-signs it and broadcasts it to the {{template \"btc-escrow-network\" $.EscrowNet}}; when both have signed it, the market does not sign it and broadcasts what they signed"},
+		"web/templates/partials/order-escrow.html":   {"the market co-signs it and broadcasts it to the {{template \"btc-escrow-network\" $.EscrowNet}}; when both have signed it, the market does not sign it and broadcasts what they signed"},
+		"web/templates/pages/order.html":             {"the market then co-signs it and broadcasts it to the {{template \"btc-escrow-network\" $.EscrowNet}} (when both sign it, the market does not sign it and broadcasts what they signed)"},
 		"web/templates/partials/disputes-list.html":  {"which the buyer or the vendor signs and the market co-signs (when both sign it, the market does not sign it and broadcasts what they signed)"},
 		"docs/implementation-status.md":              {"a party signs, and the market then co-signs and broadcasts (when both parties sign it, the market broadcasts it without signing)"},
 		"docs/operator-guide.md":                     {"which the market then co-signs and broadcasts (when both sign it, the market broadcasts it without signing)"},

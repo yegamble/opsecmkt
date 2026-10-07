@@ -455,15 +455,21 @@ func escrowChainID(chain, signetChallenge string) string {
 }
 
 // notePinnedNet sets the chain escrowNetwork names while escrow is not enabled (ESCROW_BTC off, or no escrow node has
-// answered yet in this process): the chain this database's escrows are pinned to (escrowChainPin), if any. A failed
-// read sets nothing.
+// answered yet in this process): the chain this database's escrows are pinned to (escrowChainPin), if any, else regtest
+// when it holds Bitcoin escrows (from before the pin, when escrow ran on regtest only). A database with neither leaves
+// it unset, so pages say the chain is not verified yet (escrowNetKnown, QA4W6-8). A failed read sets nothing.
 func (a *App) notePinnedNet(ctx context.Context) {
 	if a.db == nil || a.escrowNet.Load() != nil {
 		return
 	}
 	var pinned string
-	if a.db.QueryRowContext(ctx, "SELECT value FROM settings WHERE key=$1", escrowChainPin).Scan(&pinned) != nil {
+	var held bool
+	if a.db.QueryRowContext(ctx, `SELECT COALESCE((SELECT value FROM settings WHERE key=$1),''),EXISTS (SELECT 1 FROM escrows WHERE coin='BTC')`,
+		escrowChainPin).Scan(&pinned, &held) != nil {
 		return
+	}
+	if pinned == "" && held {
+		pinned = "regtest"
 	}
 	if chain, _, _ := strings.Cut(pinned, ":"); escrowChains[chain] != "" {
 		a.escrowNet.Store(&chain)
@@ -1299,8 +1305,7 @@ func (e *escrowBTC) arbiterSends(ctx context.Context, from string) (block string
 			case "transactions":
 				err = arbiterEntries(dec, &sent)
 			default:
-				var skip json.RawMessage
-				err = dec.Decode(&skip)
+				err = skipValue(dec)
 			}
 			if err != nil {
 				return err
@@ -1315,20 +1320,38 @@ func (e *escrowBTC) arbiterSends(ctx context.Context, from string) (block string
 	return block, sent, classifyEscrowRPC("listsinceblock", err)
 }
 
-// arbiterEntries reads listsinceblock's transactions list one entry at a time, setting *sent at an entry of category
-// "send".
+// arbiterEntries reads listsinceblock's transactions list one entry at a time, and each entry one key at a time,
+// setting *sent at an entry of category "send". Only category is decoded; every other value is skipped token by token
+// (skipValue), so an entry's walletconflicts, which names every other replacement of its transaction (a payment its
+// payer fee-bumped 1000 times lists about 67 KB of them, QA4W6-1), streams and rpcStreamMaxValue bounds each token, not
+// the entry.
 func arbiterEntries(dec *json.Decoder, sent *bool) error {
 	if t, err := dec.Token(); err != nil || t != json.Delim('[') {
 		return errors.New("not a list")
 	}
 	for dec.More() {
-		var l struct {
-			Category string `json:"category"`
+		if t, err := dec.Token(); err != nil || t != json.Delim('{') {
+			return errors.New("not an object")
 		}
-		if err := dec.Decode(&l); err != nil {
+		for dec.More() {
+			key, err := dec.Token()
+			if err != nil {
+				return err
+			}
+			if key == "category" {
+				var category string
+				err = dec.Decode(&category)
+				*sent = *sent || category == "send"
+			} else {
+				err = skipValue(dec)
+			}
+			if err != nil {
+				return err
+			}
+		}
+		if _, err := dec.Token(); err != nil {
 			return err
 		}
-		*sent = *sent || l.Category == "send"
 	}
 	_, err := dec.Token()
 	return err

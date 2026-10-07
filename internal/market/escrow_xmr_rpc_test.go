@@ -637,6 +637,7 @@ func TestXMREscrowWalletLagRereadsDaemon(t *testing.T) {
 		{"daemon gains 100, wallet between the two readings", 120, 220, 220, 150, nil},
 		{"daemon pops 70 blocks during the refresh", 220, 150, 150, 150, nil},
 		{"daemon pops 70, wallet 10 below it", 220, 150, 150, 140, nil},
+		{"daemon pops 70, wallet between the two readings", 220, 150, 150, 170, nil}, // QA4W6-4: the upper bound is the first reading's
 		{"daemon gains 100 during the refresh and 20 more before the second reading", 120, 220, 240, 220, nil},
 		{"daemon gains 100, wallet 11 ahead of it", 120, 220, 220, 231, errXMRWalletLag},
 		{"daemon pops 70, wallet 11 below it", 220, 150, 150, 139, errXMRWalletLag},

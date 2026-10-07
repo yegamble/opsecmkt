@@ -152,7 +152,10 @@
 # the wpkh address of an escrow's market child key (shown in the buyer's descriptor; the arbiter wallet owns it), so the
 # arbiter wallet has a transaction (txcount 1, one "receive"); a restart and a watcher retry's check both start escrow.
 # QA4W4A-1: three transactions of 2000 outputs each pay the same address; a restart reads only what is newer than the
-# checkpoint the last passing check left (now the tip) and escrow stays on, as after another restart. Control, behind
+# checkpoint the last passing check left (now the tip) and escrow stays on, as after another restart. QA4W6-1: the payer
+# pays it again replaceably and bumps the fee 1100 times (Core lists every unconfirmed replacement, each entry naming all
+# the others in walletconflicts, about 82 MB from the checkpoint); a restart keeps escrow on, and once the last
+# replacement is mined (one entry of about 74 KB) so do two more restarts. Control, behind
 # them: the operator spends from the arbiter wallet to its own change address (listtransactions lists no send for it)
 # and a restart leaves escrow disabled (not dedicated).
 #

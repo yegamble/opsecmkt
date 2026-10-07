@@ -155,8 +155,9 @@ func (s *payRPCServer) serve(w http.ResponseWriter, r *http.Request) {
 // RPC error reaches the reader as a null result first and is still reported as the rpcError (-5 here, as listsinceblock
 // answers an unknown block); an answer beyond rpcMaxBody is read whole; a body cut short by the timeout says "timed
 // out"; a 403 is "credentials rejected (HTTP 403)", as call reports it. QA4W5-2: the total stays unbounded (100,000
-// entries of about 710 bytes, 71 MB, as Core answered for a wallet that size, are read), but no one value may pass
-// rpcStreamMaxValue: an entry of 300 MiB, or a skipped top-level value of 300 MiB, is refused as an invalid response
+// entries of about 710 bytes, 71 MB, as Core answered for a wallet that size, are read, and QA4W6-1: a skipped key
+// holding a list of 1.4 MB is walked token by token), but no one token may pass rpcStreamMaxValue: a string entry of
+// 300 MiB, or a skipped top-level string of 300 MiB, is refused as an invalid response
 // (escrow's bad-reply) while the heap grows by less than 64 MiB (unbounded, the decoder held about 1 GiB). The
 // 300 MiB bodies are written from one 1 MiB chunk, never built whole.
 func TestRPCCallStream(t *testing.T) {
@@ -187,6 +188,8 @@ func TestRPCCallStream(t *testing.T) {
 			huge(w, `{"result":["`, `"],"error":null,"id":"opsecmkt"}`)
 		case "huge-key":
 			huge(w, `{"junk":"`, `","result":["a"],"error":null,"id":"opsecmkt"}`)
+		case "list-key": // QA4W6-1: a skipped key holding a list of 20,000 tokens (1.4 MB) streams, token by token
+			w.Write([]byte(`{"junk":[{"a":[` + strings.Repeat(`"`+strings.Repeat("c", 64)+`",`, 20000) + `null]}],"result":["a"],"error":null,"id":"opsecmkt"}`))
 		case "error":
 			w.WriteHeader(500)
 			w.Write([]byte(`{"result":null,"error":{"code":-5,"message":"Block not found"},"id":"opsecmkt"}`))
@@ -236,6 +239,10 @@ func TestRPCCallStream(t *testing.T) {
 	mode.Store("many")
 	if err := c.callStream(ctx, time.Minute, "/wallet/w", "listsinceblock", []any{""}, read); err != nil || n != manyEntries {
 		t.Fatalf("100,000 entries: %d entries, %v", n, err)
+	}
+	mode.Store("list-key")
+	if err := c.callStream(ctx, time.Minute, "/wallet/w", "listsinceblock", []any{""}, read); err != nil || n != 1 {
+		t.Fatalf("a skipped key holding a 1.4 MB list: %d entries, %v", n, err)
 	}
 	for _, m := range []string{"huge-entry", "huge-key"} {
 		mode.Store(m)

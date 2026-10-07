@@ -1213,6 +1213,24 @@ place; the [operator guide](operator-guide.md#bitcoin-escrow-test-networks-only)
 7. The arbiter wallet check (A-471, section 37 of UPGRADING) applies as on regtest: `listsinceblock` must be on the
    escrow user's whitelist. Dust paid to the market's child keys is nearly free on these chains; the start check reads
    only what is newer than its checkpoint, and `/admin` says when a long first read keeps escrow off while it goes on.
+   Fee bumps of a payment to those keys do not keep escrow off either (QA4W6-1): Core lists every unconfirmed
+   replacement, and the check reads each entry key by key. A read grows with the square of the replacements only while
+   they are unconfirmed; once one is mined the next retry passes (the operator guide's arbiter wallet paragraph).
+8. Fees (QA4W6-5). Every settlement is built at `ESCROW_BTC_FEE_RATE`, default 2 sat/vB, a whole number from 1 to 100
+   read at startup (set it in `.env` and restart the app), and no settlement's network fee may exceed 0.001 BTC (one
+   that would is not built until the rate is lowered). On testnet4 spam often lifts nodes' mempool minimum above
+   2 sat/vB: before escrow orders settle, read `mempoolminfee` from `bitcoin-cli -testnet4 getmempoolinfo` (in BTC/kvB:
+   0.00002 is 2 sat/vB) and set the rate above it, keeping it well below 100 (the A-388 note under
+   `ESCROW_BTC_FEE_RATE` in the operator guide). A settlement already built keeps its rate: its transaction cannot
+   change once a party has signed it. While the node's `testmempoolaccept` refuses it, the market does not broadcast it;
+   it waits ("escrow: settlement of order … not sent yet: mempool-rejected" in the log, "The market's Bitcoin node did
+   not accept the transaction yet." on the order page) and is tried again on every pass. A fee bump cannot help before
+   then: the claimant can ask for one only while the settlement is broadcast and unconfirmed. The remedy is to wait
+   until the node's mempool minimum falls to the settlement's rate (the watcher then broadcasts it unchanged, and the
+   claimant may bump it from the order page if it is slow to confirm), or for the buyer and the vendor to move the
+   escrow together from their own wallets. A larger `-maxmempool` on the escrow node (default 300 MB) lowers that
+   node's own minimum, since it evicts less, but peers with smaller mempools may not relay the transaction until
+   theirs falls too.
 
 What has run instead of a public network: `./scripts/test-escrow-regtest.sh --private-signet` (manual, not CI; Linux
 with Docker) starts two Core 31.1 nodes with `-signetchallenge=51` on a Docker network created with `--internal`, mines

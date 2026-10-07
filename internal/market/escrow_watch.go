@@ -56,7 +56,8 @@ const (
 // escrowNetwork is the chain the escrow node reported at startup, for the network word in escrow notes (regtest, signet
 // or testnet4). While escrow is not enabled it is the chain the escrow node last reported in this process, else the
 // chain this database's escrows are pinned to (notePinnedNet, A-443), else "regtest" (no node has answered and nothing
-// is pinned: a market that has never run escrow).
+// is pinned or held: a market that has never run escrow, which has no escrow to write a note about). Pages name a chain
+// only while escrowNetKnown.
 func (a *App) escrowNetwork() string {
 	if e := a.escrow.Load(); e != nil && e.network != "" {
 		return e.network
@@ -65,6 +66,13 @@ func (a *App) escrowNetwork() string {
 		return *net
 	}
 	return "regtest"
+}
+
+// escrowNetKnown reports whether escrowNetwork's chain is one an escrow node reported or this database's escrows are on
+// (QA4W6-8): not while a market that has never run escrow waits for its node's first answer. Until then PageData's
+// EscrowNet is "" and the pages say the chain is not verified yet, as Monero escrow's do (QA4W4B-1).
+func (a *App) escrowNetKnown() bool {
+	return a.escrow.Load() != nil || a.escrowNet.Load() != nil
 }
 
 func init() {

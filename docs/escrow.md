@@ -976,7 +976,8 @@ A-447) on their own host.
 - **Pages name the chain.** The order panel's headline and badge, the checkout offer, the escrow key page, the
   transparency page, the footer and catalog notices, the vendor desk tile, the dispute form and `/admin` say signet or
   testnet4 where they said regtest. While escrow is disabled they name the chain the node last reported, or the
-  database's pinned chain.
+  database's pinned chain; a market that has never pinned one (and holds no Bitcoin escrow) whose node has not answered
+  yet names none and says "chain not verified yet" (QA4W6-8, `TestEscrowChainNotVerifiedAtFirstStart`).
 - **Preconditions on these chains** (the [runbook](testnet-runbook.md#11-bitcoin-escrow-on-signet-or-testnet4)): the
   sync guard's peer and tip-age checks apply (`getnetworkinfo` must be on the escrow user's whitelist), the chain pin
   includes the signet challenge, the pooled user must be refused the arbiter wallet, and in `APP_MODE=tor` broadcasts
@@ -984,7 +985,13 @@ A-447) on their own host.
   payment to the market's child key costs almost nothing, so anyone can fill the arbiter wallet with dust; the start
   check still reads only the entries newer than its checkpoint (streamed `listsinceblock`, `listsinceblock` on the
   escrow user's whitelist), a read that fails or times out is not a pass, and only a spend from the wallet disables
-  escrow. Nothing in that check depends on the chain.
+  escrow. The read's 64 KiB bound applies to each JSON token, never to an entry (QA4W6-1): Core lists every unconfirmed
+  fee bump of a payment to that key as an entry whose `walletconflicts` names all the others (1000 bumps: entries of
+  about 67 KB, an answer of about bumps² × 67 bytes), and the mined replacement keeps them all, so reading entries whole
+  kept escrow off for good after about 1000 bumps. The read now takes each entry key by key
+  (`TestEscrowArbiterEntriesStreamByToken`; the `ArbiterDeposit` leg's 1100 bumps on Core 31.1: 82 MB unconfirmed, then
+  one 74 KB entry once mined, escrow on throughout). The square-law volume lasts only while the replacements are
+  unconfirmed: once one is mined Core lists the others in no read. Nothing in that check depends on the chain.
 
 How it was tested: DB integration with the simulated Core (`TestEscrowStartupChains`: mainnet and testnet3 refused
 before any wallet call, signet and testnet4 started, pinned and named, and named from the pin with the node down;
