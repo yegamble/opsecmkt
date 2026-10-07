@@ -488,7 +488,7 @@ The party who did not open a dispute can put one reply on record from the order 
 
 Resolving as a refund returns the whole counted amount to the buyer; resolving as a release pays the vendor the price and returns any excess worth sending to the buyer (see [overpayments](#payments)). A refund or return larger than the price waits for an administrator's review; the payment watcher sends the rest automatically. The resolve form states each outcome's amount, recipient, difference from the price and the recipient's payout state, and needs a ticked confirmation and the resolver's current password (and authenticator code when enrolled); if another deposit is counted after the form was shown, resolving is refused with 409 and the moderator reviews the new amount. Completing an order and a vendor's cancel of a paid order work the same way.
 
-Moderators and administrators open the order page of a disputed (or resolved) order they are not party to, read-only, from the moderation desk; buyer and vendor actions stay unavailable to them. Roles are assigned under *Admin → Assign an account role* by entering the account's handle (exact, case-sensitive; the list there shows only the 100 newest accounts). Changing a vendor's role to buyer or moderator archives their active listings in the same audited transaction and blocks new drafts and payment requests on them; existing orders continue.
+Moderators and administrators open the order page of a disputed (or resolved) order they are not party to, read-only, from the moderation desk; buyer and vendor actions stay unavailable to them. They may also read, the same way, an order with a deposit flagged for payment review, and an escrow order while it has an open staff alert (A-470): a Bitcoin settlement queued or stuck (until the network sees it) or a Bitcoin release too small to build (while it stands). Opening it offers no action and changes nothing; once the alert clears, the order is 404 to them again unless another of these rules admits them. An open stall is linked from *Payment providers* on `/admin`; a release too small is listed, with its deposits, on the moderation desk. Roles are assigned under *Admin → Assign an account role* by entering the account's handle (exact, case-sensitive; the list there shows only the 100 newest accounts). Changing a vendor's role to buyer or moderator archives their active listings in the same audited transaction and blocks new drafts and payment requests on them; existing orders continue.
 
 Reviews are published as soon as the buyer writes them. To take one down (for example text that names or locates a vendor), sign in as an administrator, open the listing or the vendor's page, open *Hide this review* under it and confirm with your password (and authenticator code when enrolled). The review is kept but leaves both public pages and their rating; the buyer and vendor still see it on the order, and administrators see it labelled with *Restore this review*. Both actions are audited without the review text and the reviewer is notified. Migration 031 adds `reviews.hidden_at`.
 
@@ -1079,8 +1079,9 @@ broadcast.
   notification to each moderator and administrator, and the log says "escrow: settlement of order … queued or stuck,
   not seen by the network after 6 blocks; staff notified". `/admin` lists it under *Payment providers* ("Bitcoin escrow
   settlements queued or stuck: not seen by the network.", with the order and the transaction ID) and the order page, as
-  staff reading the order see it, carries a staff line (staff can open an order only while it is or was disputed or
-  has a flagged deposit; otherwise the `/admin` list is where they see it). The settlement stays broadcast (no new
+  staff reading the order see it, carries a staff line. While the alert is open any moderator or administrator who is
+  not a party may read the order page, read-only (A-470; the `/admin` line links it), and when it clears that access
+  ends unless the order is or was disputed or has a flagged deposit. The settlement stays broadcast (no new
   state), and the market keeps sending the same stored transaction on each pass as before. When the wallet sees the transaction, one order
   note ("Seen by the network: …") clears the alert and the lines go. Blocks are counted from the broadcast, in memory:
   after a restart the count starts again at the first pass, so the notice can come up to 6 blocks later, and never
@@ -1158,7 +1159,8 @@ broadcast.
   to the buyer. A release that fails because the coins are too few tells staff once ("Payment review needed", A-461),
   as a refund that fails so does, with an order note naming the deposits it tried and any other credited deposit it
   flags, and flags the order's credited deposits (those it was funded with, also when it tried none of them, QA462C-2),
-  so staff can open the order (also a completed order never disputed) and the moderation desk lists them, dated by that
+  so staff can open the order (also a completed order never disputed; the failed release itself admits them while it
+  stands, A-470) and the moderation desk lists them, dated by that
   note, after the open flags, as escrow deposits counted for the order with no action offered; a deposit it
   tried that counts for the order but was not credited (still confirming, or conflicted, when the escrow was funded,
   and mined since) is not flagged, and should another check flag one, the desk says it is counted for the order,

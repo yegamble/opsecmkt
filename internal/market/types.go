@@ -670,9 +670,10 @@ type EscrowNodeView struct {
 }
 
 // EscrowStallView is a broadcast settlement whose transaction the watch-only wallet has not seen (escrow_stall.go): the
-// order's short ID, what the settlement pays and its transaction ID.
+// order's ID (the order page opens for staff while the alert is open, A-470) and short ID, what the settlement pays and
+// its transaction ID.
 type EscrowStallView struct {
-	Order, What, TxID string
+	ID, Order, What, TxID string
 }
 
 // EscrowSignerView is the line under Payment providers on /admin about the escrow signer (escrow_signer.go): State is
