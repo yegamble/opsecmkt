@@ -60,8 +60,9 @@ read_archive() {
 # upgrade's automatic pre-upgrade backup, for one) is dumped as LATIN1, or as UTF8 converted from LATIN1 once
 # client_encoding is UTF8, and either restored into a UTF8 database double-encodes every non-ASCII character with
 # nothing failing. So only a SQL_ASCII dump (the bytes stored) is restored from any database, and a UTF8 dump only from a
-# UTF8 or SQL_ASCII one (nothing converted). pg_dump 11 and later record the DATABASE entry in every dump; without it a
-# UTF8 dump of a UTF8 database cannot be told from one converted from LATIN1, so only SQL_ASCII is restored then.
+# UTF8 or SQL_ASCII one (nothing converted). Every whole-database dump has the DATABASE entry (pg_dump 11 and later write it
+# even with --table or --data-only); without it a UTF8 dump of a UTF8 database cannot be told from one converted from
+# LATIN1, so only SQL_ASCII is restored then.
 # Anything else is refused here, before the confirmation and before anything is created or written. The decryption
 # stopping early is expected (|| true); an error of age, pg_restore or the URL parsing is shown above the refusal.
 archive_head=$(age -d -i "$AGE_IDENTITY" "$1" | read_archive --file=- --create --use-list=/dev/null) || true
@@ -71,7 +72,7 @@ if [[ -z $archive_encoding ]]; then
   echo 'Cannot read the database dump in this backup (see the error above: a wrong AGE_IDENTITY, a file that is not a backup made by scripts/backup.sh, client tools older than the dump, or a destination URL that cannot be used). Nothing was changed.' >&2
   exit 1
 elif [[ $archive_encoding != SQL_ASCII && -z $source_encoding ]]; then
-  printf 'Refusing: this backup holds its text in %s but does not record the encoding of the database it was taken from, as every dump of pg_dump 11 or later does (it was not made by scripts/backup.sh). Restored into a UTF8 database, its non-ASCII text could come out double-encoded, and nothing here can tell. Nothing was changed. Take a new backup of that database with scripts/backup.sh (with BACKUP_DUMP_ENCODING=SQL_ASCII if the database is not UTF8) and restore that: see UPGRADING.md, section 42.\n' \
+  printf 'Refusing: this backup holds its text in %s but does not record the encoding of the database it was taken from, as every whole-database dump does (scripts/backup.sh makes only those). Restored into a UTF8 database, its non-ASCII text could come out double-encoded, and nothing here can tell. Nothing was changed. Take a new backup of that database with scripts/backup.sh (with BACKUP_DUMP_ENCODING=SQL_ASCII if the database is not UTF8) and restore that: see UPGRADING.md, section 42.\n' \
     "$archive_encoding" >&2
   exit 1
 elif [[ $archive_encoding != SQL_ASCII && ! ($archive_encoding == UTF8 && ($source_encoding == UTF8 || $source_encoding == SQL_ASCII)) ]]; then

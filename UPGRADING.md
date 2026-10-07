@@ -1352,8 +1352,9 @@ To move a non-UTF8 database: the encoding cannot be changed in place, so the dat
 Keep the old database until the new one has passed step 6. The market before A-481 sent PostgreSQL UTF-8 text and no
 client encoding, so whatever the old database's encoding, the bytes it stored are the UTF-8 it was sent; the steps copy
 those bytes unchanged. `scripts/test-utf8-migration.sh` rehearses them on a `SQL_ASCII` and a `LATIN1` database, and
-the check's readings in a `WIN1252` and an `EUC_JP` one (CI operations job). In the commands, `OLD_DATABASE_URL` is the database the market uses now and `NEW_DATABASE_URL` the new
-one; run them where `psql`, `pg_dump` and `pg_restore` as new as the server are installed.
+the check's readings in a `WIN1252` and an `EUC_JP` one (CI operations job). In the commands, `OLD_DATABASE_URL` is the
+database the market uses now and `NEW_DATABASE_URL` the new one; run them where `psql`, `pg_dump` and `pg_restore` as
+new as the server are installed.
 
 1. Stop the market (`docker compose stop app`). It stays stopped until step 7, so nothing changes the data meanwhile.
 2. Check the old database for text that is not valid UTF-8: `psql "$OLD_DATABASE_URL" -X -f scripts/check-utf8.sql`.
@@ -1381,7 +1382,8 @@ one; run them where `psql`, `pg_dump` and `pg_restore` as new as the server are 
 
      Put the encoding the line names in place of `'LATIN1'`. In a `WIN1252` database the line names `WIN1252`: read as
      `LATIN1`, text a Windows client wrote there ("“quote” €") would turn into invisible control characters, and the
-     check would pass on them.
+     check would pass on them. A byte the encoding does not define (0x81 in `WIN1252`, for one) stops the update with
+     `... has no equivalent in encoding "UTF8"`: type the text it should hold then, as below.
 
    - *it also holds valid multibyte UTF-8*: the value mixes UTF-8 with bytes that are not (a title
      `Cr\303\250me \377 br\303\273l\303\251e`), and reading it as `LATIN1` would double-encode its UTF-8 part ("Crème"
@@ -1434,10 +1436,9 @@ one; run them where `psql`, `pg_dump` and `pg_restore` as new as the server are 
    age -d -i "$AGE_IDENTITY" backups/pre-upgrade-20260101T000000Z.dump.age | python3 scripts/postgres-tool.py LATIN1_DATABASE_URL pg_restore --dbname='' --no-owner --no-acl --exit-on-error
    ```
 
-   Then run step 2 and this
-   step with `OLD_DATABASE_URL="$LATIN1_DATABASE_URL"`, go on from step 4, and drop `opsecmkt_latin1` after step 6.
-   Never start the market on it: this plain `pg_restore` applies none of `restore.sh`'s payout recovery protection,
-   which step 5 applies to the backup taken of it.
+   Then run step 2 and this step with `OLD_DATABASE_URL="$LATIN1_DATABASE_URL"`, go on from step 4, and drop
+   `opsecmkt_latin1` after step 6. Never start the market on it: this plain `pg_restore` applies none of `restore.sh`'s
+   payout recovery protection, which step 5 applies to the backup taken of it.
 4. Create a UTF8 database next to it, from `psql` as a role with `CREATEDB`:
    `CREATE DATABASE opsecmkt_utf8 ENCODING 'UTF8' TEMPLATE template0;`
 5. Restore the backup into that empty database with `RESTORE_DATABASE_URL="$NEW_DATABASE_URL" AGE_IDENTITY=...
