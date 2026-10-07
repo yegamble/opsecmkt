@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"log"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -373,6 +374,9 @@ func (a *App) cosignSettlement(ctx context.Context, e *escrowBTC, id int64) erro
 	return a.revertSettlement(ctx, b, bad)
 }
 
+// signerClassForm is the form of cmd/escrow-signer's fixed refusal classes (sighash, key-not-found, …).
+var signerClassForm = regexp.MustCompile(`^[a-z][a-z-]{0,31}$`)
+
 // isPerOrderKey reports whether an escrow key row is a per-order (shape (b)) key: a three-step suffix, /<i>/0/0 (or a
 // sibling's /<i>/<branch>/<k>), where a Bitcoin Core key has two, /0/<i>.
 func isPerOrderKey(k escrowKeyRow) bool { return strings.Count(k.Suffix, "/") == 3 }
@@ -430,7 +434,11 @@ func (a *App) signerCosign(ctx context.Context, b *settleBuild) (string, string,
 	signed, err := a.escrowSigner.sign(ctx, encodePSBT(b.Stored.Raw), uint32(b.MarketIndex))
 	switch {
 	case errors.As(err, &refused) && refused.Class != signerBadReply:
-		log.Printf("escrow: settlement of order %s not co-signed: the escrow signer refused it (%s)", shortID(b.OrderID), refused.Class)
+		class := refused.Class
+		if !signerClassForm.MatchString(class) {
+			class = "unrecognised class" // the signer's classes are fixed words; anything else is not logged as given
+		}
+		log.Printf("escrow: settlement of order %s not co-signed: the escrow signer refused it (%s)", shortID(b.OrderID), class)
 		return "", sendSignerRefused, nil
 	case err != nil:
 		return "", sendSignerWait, nil
