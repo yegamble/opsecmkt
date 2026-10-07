@@ -464,6 +464,9 @@ func TestXMREscrowCollisionDisputedHelp(t *testing.T) {
 	help = staffHelp(page)
 	mustContain(t, help, "a moderator.", `href="#refused-deposits"`, "nothing else can be changed from this page")
 	mustNotContain(t, help, "Nothing can be changed from this page")
+	// QA5W5B-4: nor does the line under the closed order's state say no change is possible beside that form.
+	mustContain(t, page, `<p class="muted">This order is closed. Staff can still record what was done about a refused deposit on this page.</p>`)
+	mustNotContain(t, page, "No further changes are possible.")
 	agExec(x.testEnv, "UPDATE orders SET state='disputed' WHERE id=$1", order)
 	if code, loc := x.recordCollision(mod, id, "Refunded to the buyer by hand in the wallet."); code != 303 {
 		t.Fatalf("the disposition: %d %s", code, loc)

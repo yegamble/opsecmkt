@@ -929,6 +929,13 @@ cmd_init() {
     local bytes
     bytes=$(LC_ALL=C; printf '%s' "${#password1}")
     ((bytes >= 12 && bytes <= 72)) || die 'Use a password of 12-72 bytes; nothing was written or started.'
+    # QA5W5B-7: -bootstrap-admin refuses a password that is not valid UTF-8 (typed in a terminal set to LATIN1, for one),
+    # which the sign-in form could never send; refused here, before .env is written or anything started. The pattern is
+    # well-formed UTF-8 byte by byte (RFC 3629: no overlong form, surrogate or code point above U+10FFFF), matched in the
+    # C locale. It admits no NUL byte, and none can arrive: bash's read drops it.
+    local utf8_text=$'^([\x01-\x7f]|[\xc2-\xdf][\x80-\xbf]|\xe0[\xa0-\xbf][\x80-\xbf]|[\xe1-\xec\xee\xef][\x80-\xbf][\x80-\xbf]|\xed[\x80-\x9f][\x80-\xbf]|\xf0[\x90-\xbf][\x80-\xbf][\x80-\xbf]|[\xf1-\xf3][\x80-\xbf][\x80-\xbf][\x80-\xbf]|\xf4[\x80-\x8f][\x80-\xbf][\x80-\xbf])*$'
+    (LC_ALL=C; [[ $password1 =~ $utf8_text ]]) ||
+      die 'The password is not valid UTF-8 (is the terminal set to another encoding, such as LATIN1?); nothing was written or started.'
     password2=''
   fi
 
