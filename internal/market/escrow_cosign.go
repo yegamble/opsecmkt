@@ -156,14 +156,17 @@ type settleBuild struct {
 	MarketIndex            int64
 	Outputs                []settleOutput
 	Keys                   map[string]escrowKeyRow
+	KeysErr                error       // awaiting_signature only: why its per-order keys cannot be had (Keys is nil then)
 	Parties                []partySigs // the parties with a signature on every input, the first signer first
 }
 
 // loadSettleBuild reads a settlement in state want (party_signed, or awaiting_signature for trackAwaiting, or
 // broadcast for a fee bump) of a closed order, or the release of a shipped (or disputed) one (settlementBuildable,
 // A-376), or nil when it is no longer in that state (or its kind does not fit the order's state and outcome), or when
-// it is party-signed or awaiting a signature and its per-order keys cannot be had (signer-waiting recorded, QA5W5A-1).
-// Only a party-signed one is read with its party signatures. The market signs only what settlementFits allows.
+// it is party-signed and its per-order keys cannot be had (signer-waiting recorded, QA5W5A-1). One awaiting a signature
+// whose keys cannot be had is read without them, KeysErr set: nobody signed it, so nothing waits for the signer, and
+// trackAwaiting still follows its inputs, which needs no keys (QA5W6-1). Only a party-signed one is read with its party
+// signatures. The market signs only what settlementFits allows.
 func (a *App) loadSettleBuild(ctx context.Context, id int64, want string) (*settleBuild, error) {
 	b := &settleBuild{ID: id}
 	var state, stored string
@@ -177,13 +180,15 @@ func (a *App) loadSettleBuild(ctx context.Context, id int64, want string) (*sett
 		return nil, errors.New("escrow: the stored settlement PSBT does not match its txid")
 	}
 	b.Keys, err = a.settlementKeys(ctx, a.db, b.OrderID, id)
-	if errors.Is(err, errPerOrderXpub) && want != "broadcast" {
+	switch {
+	case errors.Is(err, errPerOrderXpub) && want == "party_signed":
 		// QA5W5A-1: a per-order key that cannot be had is the signer-wait path (P4-R17): signer-waiting recorded, nothing
 		// rebuilt, the next pass reads it again. A broadcast settlement's send_error is its own (restore holds), so a fee
 		// bump's read returns the error, which errorCause names with a fixed class.
 		return nil, a.settlementSendWaits(ctx, id, b.OrderID, sendSignerWait)
-	}
-	if err != nil {
+	case errors.Is(err, errPerOrderXpub) && want == "awaiting_signature":
+		b.KeysErr, err = err, nil // QA5W6-1: nothing recorded; trackAwaiting logs the class and still follows its inputs
+	case err != nil:
 		return nil, err
 	}
 	rows, err := a.db.QueryContext(ctx, "SELECT role,address,sats FROM settlement_outputs WHERE settlement_id=$1 ORDER BY n", id)

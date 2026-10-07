@@ -117,9 +117,10 @@ func TestEscrowShapeBPerOrderKeyUnavailable(t *testing.T) {
 			t.Fatalf("order page with the market's key missing:\n%s", page)
 		}
 	}
+	// QA5W6-2 (mutant M10): the fixed refusal, not the generic 503 page.
 	w := x.do("GET", "/escrow-psbt?id="+order+"&s="+strconv.FormatInt(id, 10), x.vendorSess, nil)
-	if w.Code != 503 {
-		t.Fatalf("the vendor's copy with the market's key missing: %d", w.Code)
+	if w.Code != 503 || strings.TrimSpace(w.Body.String()) != settleKeysUnavailable {
+		t.Fatalf("the vendor's copy with the market's key missing: %d %q", w.Code, w.Body.String())
 	}
 	// The keys are read before the paste is: whatever is pasted, the refusal is the same.
 	code, body := x.sign(order, x.vendorSess, id, psbt)
@@ -131,6 +132,77 @@ func TestEscrowShapeBPerOrderKeyUnavailable(t *testing.T) {
 	}
 	if page := html.UnescapeString(x.page("/escrow-setup?id="+order, x.buyerSess)); !strings.Contains(page, "The market's cosigner key of this escrow cannot be read from the market's records") {
 		t.Fatalf("setup page with the market's key missing:\n%s", page)
+	}
+	if strings.Contains(logs.String(), "*errors.") {
+		t.Fatalf("a Go type name logged as a class:\n%s", logs.String())
+	}
+}
+
+// QA5W6-1: a sibling stray refund nobody signed yet whose keys cannot be had (the market row with no stored order wallet
+// key) records nothing (no signer-waiting: no party signed, so nothing waits for the signer), the log names the fixed
+// class per-order-key-unavailable, and its deposit is still followed from the stored PSBT (gettxout needs no keys): spent
+// outside the market, the settlement is external as usual, with no send_error. No sign request is made.
+func TestEscrowShapeBAwaitingKeysUnavailableTracked(t *testing.T) {
+	logs := captureLog(t)
+	x, f := newPerOrderEnv(t)
+	order, id := x.siblingStray("awnokey", 2)
+	agExec(x.testEnv, "UPDATE escrow_pubkeys SET per_order_xpub=NULL WHERE party='market' AND escrow_id=(SELECT id FROM escrows WHERE order_id=$1)", order)
+	n := len(f.signRequests())
+	x.poll()
+	if r := x.settleByID(id); r.State != "awaiting_signature" || r.Error != "" {
+		t.Fatalf("awaiting a signature with the market's key missing, after a pass: %+v, want awaiting_signature with no send_error", r)
+	}
+	if !strings.Contains(logs.String(), "per-order-key-unavailable") {
+		t.Fatalf("the watcher did not log the fixed class per-order-key-unavailable:\n%s", logs.String())
+	}
+	x.core.spend(txidOf("awnokey"), 0)
+	x.poll()
+	r := x.settleByID(id)
+	if r.State != "external" || r.Error != "" {
+		t.Fatalf("deposit spent outside the market with the market's key missing: %+v, want external with no send_error", r)
+	}
+	if got := len(f.signRequests()) - n; got != 0 {
+		t.Fatalf("%d sign requests for a settlement nobody signed", got)
+	}
+	if strings.Contains(logs.String(), "*errors.") || strings.Contains(logs.String(), sendSignerWait) {
+		t.Fatalf("a Go type name or signer-waiting logged:\n%s", logs.String())
+	}
+}
+
+// QA5W6-2 (mutants M7, M8 and M10): a sibling stray refund's fee bump whose keys cannot be had (the market row with no
+// stored order wallet key, after the bump was built): the buyer's order page is served with the reason and no bump sign
+// form (never a 500), the bump copy is refused 503 with the fixed text, the bump sign form 503 with that text and nothing
+// stored, and another order's claim keeps moving in the same watcher pass.
+func TestEscrowShapeBBumpKeysUnavailable(t *testing.T) {
+	logs := captureLog(t)
+	x, _ := newPerOrderEnv(t)
+	order, id := x.siblingStray("bumpnokey", 2)
+	x.signAs(order, roleBuyer, id)
+	x.poll()
+	if r := x.settleByID(id); r.State != "broadcast" {
+		t.Fatalf("the stray refund with the signer up: %+v, want broadcast", r)
+	}
+	b := x.mustBump(order, x.buyerSess, id, "5")
+	agExec(x.testEnv, "UPDATE escrow_pubkeys SET per_order_xpub=NULL WHERE party='market' AND escrow_id=(SELECT id FROM escrows WHERE order_id=$1)", order)
+	w := x.do("GET", "/order?id="+order, x.buyerSess, nil)
+	page := html.UnescapeString(w.Body.String())
+	if w.Code != 200 || strings.Contains(page, `action="/escrow/bump-sign"`) || !strings.Contains(page, keysUnavailableText) {
+		t.Fatalf("order page with a fee bump whose keys cannot be had: %d\n%s", w.Code, page)
+	}
+	if code, body := x.bumpCopy(order, x.buyerSess, id, b.ID); code != 503 || body != settleKeysUnavailable {
+		t.Fatalf("the bump copy with the market's key missing: %d %q", code, body)
+	}
+	if code, body := x.signBump(order, x.buyerSess, b.ID, "cHNidP8="); code != 503 || !strings.Contains(html.UnescapeString(body), keysUnavailableText) {
+		t.Fatalf("the bump sign form with the market's key missing: %d %s", code, body)
+	}
+	if n := agInt(x.testEnv, "SELECT count(*) FROM settlement_bump_signatures WHERE bump_id=$1", b.ID); n != 0 {
+		t.Fatalf("%d bump signatures stored", n)
+	}
+	other, oid := x.built(regtestAddr("bumpnokey-o-refund"), regtestAddr("bumpnokey-o-claim"), 100000)
+	x.signAs(other, roleVendor, oid)
+	x.poll()
+	if r := x.settleByID(oid); r.State != "broadcast" {
+		t.Fatalf("another order's claim in the same pass: %+v, want broadcast", r)
 	}
 	if strings.Contains(logs.String(), "*errors.") {
 		t.Fatalf("a Go type name logged as a class:\n%s", logs.String())

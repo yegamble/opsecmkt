@@ -22,7 +22,8 @@
 # LATIN1, "Crème brûlée — 東京 🔒": restore.sh refuses a backup taken as LATIN1 (it would restore every non-ASCII
 # character double-encoded) before changing anything, and one taken as UTF8 with client_encoding UTF8 set for the
 # database (QA5W5B-1: its DATABASE entry records LATIN1); the section's way out for an operator with only such a backup
-# (a temporary LATIN1 database, backed up again with BACKUP_DUMP_ENCODING=SQL_ASCII) restores it exactly, as the option
+# (a temporary LATIN1 database, backed up again with BACKUP_DUMP_ENCODING=SQL_ASCII; the section's own shell block, run
+# as printed in step 3, before step 4 creates the database NEW_DATABASE_URL names: QA5W6-3) restores it exactly, as the option
 # does from the old database, and the same option on the new UTF8 database changes nothing. A UTF8 database dumped in
 # SJIS is refused with a way out through a UTF8 database.
 #
@@ -323,15 +324,34 @@ grep -q 'restore it into a temporary UTF8 database' "$work/restore-sjis_new.log"
 if grep -q 'temporary SJIS database' "$work/restore-sjis_new.log"; then fail 'the refusal advises an SJIS database'; fi
 # Section 42's way out for an operator who has only that backup: restore it into a temporary LATIN1 database (plain
 # pg_restore, which converts nothing between two LATIN1 ends), take that up as the old database (check, then back up
-# with BACKUP_DUMP_ENCODING=SQL_ASCII), and restore the new backup with restore.sh.
-sql postgres -c "CREATE DATABASE latin1_tmp ENCODING 'LATIN1' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0"
-age -d -i "$work/identity" "$work/latin1.dump.age" | PATH="$work/bin:$PATH" TMP_DATABASE_URL=$(url latin1_tmp) \
-  python3 scripts/postgres-tool.py TMP_DATABASE_URL pg_restore --dbname='' --exit-on-error --no-owner --no-acl
-check latin1_tmp || fail 'check-utf8.sql failed on the temporary LATIN1 database'
-BACKUP_DUMP_ENCODING=SQL_ASCII backup latin1_tmp "$work/latin1-again.dump.age"
-restore "$work/latin1-again.dump.age" latin1_escape || fail 'restore.sh refused the backup of the temporary LATIN1 database'
+# with BACKUP_DUMP_ENCODING=SQL_ASCII), and restore the new backup with restore.sh. QA5W6-3: the section's shell block
+# runs as printed (only the example backup's name replaced), with the URLs the section has the operator set, in the
+# section's order: in step 3, before step 4 creates opsecmkt_utf8, which NEW_DATABASE_URL names.
+placeholder=backups/pre-upgrade-20260101T000000Z.dump.age
+escape_block=$(python3 - UPGRADING.md <<'PY'
+import re, sys
+text = open(sys.argv[1], encoding='utf-8').read()
+start = text.index('## 42. ')
+section = text[start:text.index('\n## 43. ', start)]
+blocks = [b for b in re.findall(r'^ *```sh\n(.*?)^ *```', section, re.S | re.M) if 'opsecmkt_latin1' in b]
+if len(blocks) != 1:
+    raise SystemExit(f'UPGRADING.md section 42: {len(blocks)} shell blocks name opsecmkt_latin1, expected one')
+print('\n'.join(line.strip() for line in blocks[0].splitlines()))
+PY
+)
+[[ $escape_block == *"$placeholder"* ]] || fail "section 42's way out no longer names $placeholder"
+escape_block=${escape_block//"$placeholder"/"$work/latin1.dump.age"}
+[[ -z $(sql postgres -c "SELECT 1 FROM pg_database WHERE datname IN ('opsecmkt_utf8', 'opsecmkt_latin1')") ]] || fail 'opsecmkt_utf8 or opsecmkt_latin1 exists before step 3'
+PATH="$work/bin:$PATH" NEW_DATABASE_URL=$(url opsecmkt_utf8) LATIN1_DATABASE_URL=$(url opsecmkt_latin1) MAINTENANCE_DATABASE_URL=$(url postgres) \
+  AGE_IDENTITY="$work/identity" bash -euo pipefail -c "$escape_block" > "$work/escape.log" 2>&1 ||
+  fail "section 42's way out, run as printed before step 4, failed"
+check opsecmkt_latin1 || fail 'check-utf8.sql failed on the temporary LATIN1 database'
+BACKUP_DUMP_ENCODING=SQL_ASCII backup opsecmkt_latin1 "$work/latin1-again.dump.age"
+# Steps 4 and 5: opsecmkt_utf8 created, the backup of the temporary database restored into it with restore.sh.
+restore "$work/latin1-again.dump.age" opsecmkt_utf8 || fail 'restore.sh refused the backup of the temporary LATIN1 database'
+sql postgres -c 'DROP DATABASE opsecmkt_latin1'
 for column in "title FROM products WHERE id='utf8product'" "body FROM reviews WHERE id='utf8review'"; do
-  [[ $(text_hex latin1_escape "SELECT $column") == "$title_hex" ]] || fail "LATIN1 through a temporary LATIN1 database: $column"
+  [[ $(text_hex opsecmkt_utf8 "SELECT $column") == "$title_hex" ]] || fail "LATIN1 through a temporary LATIN1 database: $column"
 done
 # BACKUP_DUMP_ENCODING=SQL_ASCII restores it exactly, and refuses any other value.
 if BACKUP_DUMP_ENCODING=LATIN1 backup latin1_old "$work/refused.dump.age"; then fail 'backup.sh took BACKUP_DUMP_ENCODING=LATIN1'; fi
