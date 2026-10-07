@@ -505,9 +505,9 @@ func (a *App) escrowSiblingAddresses(ctx context.Context, orders []string) ([][2
 // after the order wallet's two ranged descriptors; each must carry the escrow's label. What the wallet lacks (a
 // watch-only wallet restored from a backup older than the escrow, say) is imported again, in checkout's order and from
 // the escrow's creation time, so a deposit made since is found (perOrderWatchImports): the bare-key descriptor, rebuilt
-// from the stored keys; and the two ranged descriptors followed by the 29 sibling addresses, rebuilt from the buyer's and
-// the vendor's order wallet keys stored at checkout and the escrow signer's account key, each checked against the stored
-// keys. The siblings are never imported without the ranged descriptors before them: Core 31.1 keeps reporting an address
+// from the stored keys; and the two ranged descriptors followed by the 29 sibling addresses, rebuilt from the three order
+// wallet keys stored at checkout (the market's since QA5W5A-1, so the escrow signer is never asked), each checked against
+// the stored keys. The siblings are never imported without the ranged descriptors before them: Core 31.1 keeps reporting an address
 // an addr(…) import held first unsolvable, whatever is imported after it (QA5W4A-1).
 //
 // Every escrow's imports go in one importdescriptors call, so Core rescans once, from the earliest creation time, within
@@ -515,9 +515,7 @@ func (a *App) escrowSiblingAddresses(ctx context.Context, orders []string) ([][2
 // that outlived its call, or the operator's rescanblockchain): Core refuses an import then, and no second rescan is ever
 // started on top of one. The check is done (nil) once the wallet holds everything, or what it lacks cannot be rebuilt
 // from what is stored (logged; the next start tries again). It is not done, and the next pass checks again, while the
-// wallet is rescanning, when the import timed out or was refused as rescanning (a wait), and while the escrow signer
-// does not answer (or answers what this build does not understand): then only the bare-key descriptors are imported and
-// the siblings wait for the signer. A signer whose key differs from the pins cannot rebuild the market's key.
+// wallet is rescanning, and when the import timed out or was refused as rescanning (a wait).
 func (a *App) ensureSiblingWatch(ctx context.Context, e *escrowBTC) error {
 	rows, err := a.db.QueryContext(ctx, `SELECT s.escrow_id,es.order_id,extract(epoch FROM es.created)::bigint,es.address,s.address,s.branch=1 AND s.idx=9
 		FROM escrow_siblings s JOIN escrows es ON es.id=s.escrow_id ORDER BY s.escrow_id,s.branch,s.idx`)
@@ -579,22 +577,10 @@ func (a *App) ensureSiblingWatch(ctx context.Context, e *escrowBTC) error {
 	} else if scanning {
 		return &watchError{label: "escrow", class: "watch-only wallet repair waits: the wallet is rescanning", err: errRepairRescanning}
 	}
-	// The escrow signer's account key, for the market's part of the ranged descriptors: asked once, only when needed.
-	var signer *escrowKey
-	var signerErr error
-	if slices.ContainsFunc(need, func(s *perOrderWatch) bool { return !s.siblingsHeld }) {
-		if k, err := a.signerAccount(ctx, a.db); err == nil {
-			signer = &k
-		} else {
-			signerErr = err
-		}
-	}
-	var refused *signerRefusal
-	waitSigner := signerErr != nil && !(errors.As(signerErr, &refused) && refused.Class == signerMismatch)
 	var imports []escrowImport
-	repaired, waiting, unbuilt := 0, 0, 0
+	repaired, unbuilt := 0, 0
 	for _, s := range need {
-		bare, ranged, err := a.perOrderWatchImports(ctx, e, s, signer)
+		bare, ranged, err := a.perOrderWatchImports(ctx, e, s)
 		if err != nil {
 			return err
 		}
@@ -603,8 +589,6 @@ func (a *App) ensureSiblingWatch(ctx context.Context, e *escrowBTC) error {
 		case s.siblingsHeld:
 		case ranged != nil:
 			imports = append(imports, ranged...)
-		case waitSigner:
-			waiting++
 		default:
 			unbuilt++
 		}
@@ -623,10 +607,7 @@ func (a *App) ensureSiblingWatch(ctx context.Context, e *escrowBTC) error {
 		log.Printf("escrow: the watch-only wallet lacked what %d per-order escrow(s) imported; imported it again in one import from the earliest escrow's creation time", repaired)
 	}
 	if unbuilt > 0 {
-		log.Printf("escrow: the sibling addresses of %d per-order escrow(s) were not imported again: their order wallets cannot be rebuilt from the stored keys and the escrow signer's pinned key; deposits to them are not seen until a start that can", unbuilt)
-	}
-	if waiting > 0 {
-		return &watchError{label: "escrow", class: "watch-only wallet repair waits for the escrow signer: the sibling addresses of " + strconv.Itoa(waiting) + " per-order escrow(s) are not watched yet", err: signerErr}
+		log.Printf("escrow: the sibling addresses of %d per-order escrow(s) were not imported again: their order wallets cannot be rebuilt from the stored keys; deposits to them are not seen until a start that can", unbuilt)
 	}
 	return nil
 }
@@ -648,10 +629,10 @@ type perOrderWatch struct {
 // its repair from the escrow's creation time: bare, the escrow's own bare-key descriptor (unless held), built from the
 // stored keys in checkout's order (buyer, vendor, market) and only when their 2-of-3 is the escrow's address; and ranged,
 // the order wallet's two ranged descriptors followed by the sibling addresses (unless held), built only when each party's
-// order wallet key can be rebuilt and gives its stored key (perOrderStored.orderKey: the buyer's and the vendor's from
-// per_order_xpub, the market's from signer, which is nil when the escrow signer gave no key), else nil. Only a database
+// order wallet key can be rebuilt and gives its stored key (perOrderStored.orderKey: from per_order_xpub, which checkout
+// stores for every party, the market's since QA5W5A-1; the escrow signer is never asked), else nil. Only a database
 // failure is an error.
-func (a *App) perOrderWatchImports(ctx context.Context, e *escrowBTC, s *perOrderWatch, signer *escrowKey) (bare, ranged []escrowImport, err error) {
+func (a *App) perOrderWatchImports(ctx context.Context, e *escrowBTC, s *perOrderWatch) (bare, ranged []escrowImport, err error) {
 	rows, err := a.db.QueryContext(ctx, "SELECT party,pubkey,derivation_suffix,per_order_xpub FROM escrow_pubkeys WHERE escrow_id=$1", s.id)
 	if err != nil {
 		return nil, nil, err
@@ -685,12 +666,12 @@ func (a *App) perOrderWatchImports(ctx context.Context, e *escrowBTC, s *perOrde
 			log.Printf("escrow: per-order escrow of order %s: its stored keys do not give its address; its own descriptor was not imported again", shortID(s.order))
 		}
 	}
-	if s.siblingsHeld || signer == nil {
+	if s.siblingsHeld {
 		return bare, nil, nil
 	}
 	var exprs []string
 	for _, p := range parties {
-		order, err := keys[p].orderKey(signer)
+		order, err := keys[p].orderKey()
 		if err != nil {
 			return bare, nil, nil
 		}

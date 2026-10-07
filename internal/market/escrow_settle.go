@@ -120,6 +120,9 @@ var (
 	errSettleNotReady   = fail(409, "This settlement is not waiting for a signature (it is still being built, or it was already signed). Reload the page. Nothing was changed.")
 	errSettleSigned     = fail(409, "You already signed this settlement. Reload the page. Nothing was changed.")
 	errSettleNone       = fail(404, "Settlement not found")
+	// QA5W5A-1: a per-order escrow key (perOrderXpub, siblingKeys) that cannot be had refuses the sign forms with this,
+	// never a 500; the order page says settleKeysUnavailable instead of offering a copy.
+	errSettleKeys = fail(503, settleKeysUnavailable+" Nothing was changed.")
 
 	// Refusals of a pasted settlement PSBT (ES-2): fixed text, never a quote of the paste.
 	errSettleOtherTx   = fail(400, "This is not the settlement transaction shown on this page. Download your copy again, check its outputs, sign it and paste the result. Nothing was changed.")
@@ -130,6 +133,10 @@ var (
 	errSettleSighash   = fail(400, "A signature uses a sighash type other than ALL. Sign with the default sighash type (ALL). Nothing was changed.")
 	errSettleBoth      = fail(400, "Paste the signed PSBT or upload its file, not both. Nothing was changed.")
 )
+
+// settleKeysUnavailable is what the order page says of a per-order escrow's settlement (or fee bump) whose keys cannot be
+// rebuilt from the stored order wallet keys (errPerOrderXpub): no copy is offered to sign.
+const settleKeysUnavailable = "This transaction cannot be signed right now: the market cannot rebuild the keys of the address it spends from its records. Nothing has been sent; market staff should check it."
 
 // settleOutput is one output of a settlement plan.
 type settleOutput struct {
@@ -240,9 +247,10 @@ func escrowKeys(ctx context.Context, q rowsQuerier, orderID string) (map[string]
 }
 
 // siblingKeys is the three keys of a per-order escrow's sibling address /branch/idx (A-456b, QA5W3A-2): each party's
-// key and the market's at /<i>/branch/idx, derived in Go from its per-order extended key (perOrderXpub; QA5W4A-5 stores
-// it at checkout), with the origin of its key in the escrow (base, escrowKeys) and that suffix. Their 2-of-3 must pay
-// address, the sibling as checkout stored it once Core had derived it from the same keys; otherwise errPerOrderXpub.
+// key and the market's at /<i>/branch/idx, derived in Go from its per-order extended key (perOrderXpub, as checkout
+// stored it: QA5W4A-5, the market's since QA5W5A-1, so the escrow signer is never asked), with the origin of its key in
+// the escrow (base, escrowKeys) and that suffix. Their 2-of-3 must pay address, the sibling as checkout stored it once
+// Core had derived it from the same keys; otherwise errPerOrderXpub.
 func (a *App) siblingKeys(ctx context.Context, base map[string]escrowKeyRow, escrowID int64, branch, idx int, address string) (map[string]escrowKeyRow, error) {
 	out := map[string]escrowKeyRow{}
 	var leaves [][]byte
@@ -613,9 +621,9 @@ type strayGroup struct {
 }
 
 // strayGroups splits a stray refund's deposits by the address they were paid to, each address in the order of its
-// first deposit, with the keys of its script: the escrow address's (escrowKeys) or a per-order escrow's sibling's, which
-// checkout stored (siblingKeyRows, A-456b). A deposit at an address that is neither (none is recorded so) is left out
-// and logged.
+// first deposit, with the keys of its script: the escrow address's (escrowKeys) or a per-order escrow's sibling's, derived
+// from the order wallet keys checkout stored (siblingKeys, A-456b). A deposit at an address that is neither (none is
+// recorded so) is left out and logged.
 func (a *App) strayGroups(ctx context.Context, r settleReq, keys map[string]escrowKeyRow, escrowAddr string, ins []settleInput) ([]strayGroup, error) {
 	var groups []strayGroup
 	at := map[string]int{}
@@ -637,8 +645,8 @@ func (a *App) strayGroups(ctx context.Context, r settleReq, keys map[string]escr
 					at[in.Address] = -1
 					continue
 				case errors.Is(err, errPerOrderXpub):
-					// Its keys cannot be had now (the stub's on-demand derivation: a key re-registered, or the signer not
-					// answering); its deposits wait, and never hold up another address's.
+					// Its keys cannot be had (a row with no stored order wallet key, or stored data that does not give the
+					// sibling's address); its deposits wait, and never hold up another address's.
 					log.Printf("escrow: stray refund of order %s: a sibling address's keys cannot be derived now; its deposits wait", shortID(r.orderID))
 					at[in.Address] = -1
 					continue
@@ -1259,6 +1267,10 @@ func escrowSignAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, errSignDisputed
 	}
 	keys, err := c.A.settlementKeys(ctx, c.Tx, o.ID, sid)
+	if errors.Is(err, errPerOrderXpub) {
+		log.Printf("escrow: settlement of order %s not signed: %s", shortID(o.ID), errorCause(err))
+		return actionResult{}, errSettleKeys
+	}
 	if err != nil {
 		return actionResult{}, err
 	}
@@ -1368,6 +1380,12 @@ func escrowPSBTDownload(a *App, w http.ResponseWriter, r *http.Request, u *User)
 		if keys, err = a.settlementKeys(ctx, a.db, o.ID, sid); err == nil {
 			copyText, err = settlementCopy(stored, keys[reader])
 		}
+	}
+	if errors.Is(err, errPerOrderXpub) {
+		// QA5W5A-1: a fixed refusal, never a 500 (the order page offers no copy then either).
+		log.Printf("escrow: settlement copy of order %s not served: %s", shortID(o.ID), errorCause(err))
+		http.Error(w, settleKeysUnavailable, http.StatusServiceUnavailable)
+		return
 	}
 	if err != nil {
 		serverError(w, r, 503, "Service unavailable", errorCause(err))
@@ -1577,13 +1595,17 @@ func (a *App) settlementView(ctx context.Context, d *PageData, v *EscrowOrderVie
 	canSign := (state == "awaiting_signature" || state == "party_signed" && !readerSigned) && !(s.PartiesOnly && d.Order.State == stateDisputed && d.OrderViewer == roleBuyer)
 	if canSign && (d.OrderViewer == roleBuyer || d.OrderViewer == roleVendor) && a.escrowConfigured {
 		keys, err := a.settlementKeys(ctx, a.db, d.Order.ID, id)
-		if err != nil {
+		switch {
+		case errors.Is(err, errPerOrderXpub):
+			s.Status += " " + settleKeysUnavailable // QA5W5A-1: the page is served, saying why no copy is offered
+		case err != nil:
 			return nil, err
+		default:
+			if s.PSBT, err = settlementCopy(stored, keys[d.OrderViewer]); err != nil {
+				return nil, err
+			}
+			s.CanSign, s.SignToo = true, state == "party_signed"
 		}
-		if s.PSBT, err = settlementCopy(stored, keys[d.OrderViewer]); err != nil {
-			return nil, err
-		}
-		s.CanSign, s.SignToo = true, state == "party_signed"
 	}
 	if s.PartiesOnly && d.Order.State == stateShipped {
 		v.PartiesOnly = true

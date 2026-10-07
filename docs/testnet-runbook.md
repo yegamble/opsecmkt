@@ -477,13 +477,13 @@ wallet is restored again and given the descriptor. A per-order escrow (A-456a) i
 pass after the app starts, the app imports again what the wallet lacks of that escrow's checkout imports, from the
 escrow's creation time, in one import for every such escrow ([per-order
 escrow](escrow.md#per-order-escrow-creation-and-watching-a-456a-shape-b) says exactly what), so restart the app after
-restoring the watch-only wallet, with the escrow signer running. If the signer does not answer, the app imports only
-each escrow's own descriptor and logs "watch-only wallet repair waits for the escrow signer" on every watcher pass; the
-sibling addresses, which need the signer's key for the order wallet's ranged descriptors, are imported once it answers,
-and deposits to them are not seen until then. While the wallet is rescanning (the `rescanblockchain` above, or a repair
-import that took longer than its two minutes) the app waits and imports nothing; the log reads "watch-only wallet repair
-waits". Core refuses every import while it rescans, so an escrow checkout meanwhile gets the "try again later" answer
-with nothing stored. Then follow the reconciliation below.
+restoring the watch-only wallet. The repair rebuilds every order wallet from the keys stored at checkout, the market's
+included (QA5W5A-1), so it does not need the escrow signer. While the wallet is rescanning (the `rescanblockchain` above,
+the repair's own import, which rescans from the earliest per-order escrow's creation, or a repair import that took longer
+than its two minutes) the app waits and imports nothing; the log reads "watch-only wallet repair waits". Core refuses
+every import while it rescans, so an escrow checkout (of either kind) meanwhile is refused with "the market's escrow
+wallet is rescanning the chain … try again in a few minutes", the order still a draft and nothing stored (QA5W5A-2):
+after a restore, expect that for as long as the rescan takes. Then follow the reconciliation below.
 
 Escrow and the pooled wallet on one node share one failure domain: losing that node needs both restores, and whoever
 controls it controls both wallets. Restrict the pooled RPC user or give escrow its own node

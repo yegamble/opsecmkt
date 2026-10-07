@@ -488,6 +488,10 @@ func escrowBumpSignAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, errBumpNotReady
 	}
 	keys, err := c.A.settlementKeys(ctx, c.Tx, o.ID, sid) // a sibling stray refund's bump: the sibling's keys (A-456b)
+	if errors.Is(err, errPerOrderXpub) {
+		log.Printf("escrow: fee bump of order %s not signed: %s", shortID(o.ID), errorCause(err))
+		return actionResult{}, errSettleKeys // QA5W5A-1: never a 500
+	}
 	if err != nil {
 		return actionResult{}, err
 	}
@@ -1155,13 +1159,17 @@ func (a *App) bumpView(ctx context.Context, d *PageData, v *EscrowOrderView, s *
 		canSign := bstate == "awaiting_signature" && reader == claimant || bstate == "party_signed" && reader == otherParty(claimant) && !readerSigned && signer == claimant
 		if canSign && (reader == roleBuyer || reader == roleVendor) && a.escrowConfigured && state == "broadcast" {
 			keys, err := a.settlementKeys(ctx, a.db, d.Order.ID, id)
-			if err != nil {
+			switch {
+			case errors.Is(err, errPerOrderXpub):
+				bv.Status += " " + settleKeysUnavailable // QA5W5A-1: served, saying why no copy is offered
+			case err != nil:
 				return err
+			default:
+				if bv.PSBT, err = settlementCopy(psbt, keys[reader]); err != nil {
+					return err
+				}
+				bv.CanSign, bv.SignToo = true, bstate == "party_signed"
 			}
-			if bv.PSBT, err = settlementCopy(psbt, keys[reader]); err != nil {
-				return err
-			}
-			bv.CanSign, bv.SignToo = true, bstate == "party_signed"
 		}
 		s.Bumps = append(s.Bumps, bv)
 	}

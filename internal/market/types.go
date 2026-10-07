@@ -615,8 +615,8 @@ type EscrowOrderView struct {
 // A-456b): its own key's origin with the per-order index ([fingerprint/path/i]) and that path as a wallet asks for it
 // (m/path/i), the two cosigner keys served rooted (the other party's per-order key and the market's, as Vpubs), the first
 // receiving address the wallet must show (the escrow address) and a Sparrow output descriptor of the order wallet.
-// Unavailable says why the cosigner keys cannot be shown now; NoSparrow why the descriptor cannot (the reader's escrow
-// key is no longer the one this escrow was built with).
+// Unavailable says why the cosigner keys cannot be shown; NoSparrow why the descriptor cannot (a stored order wallet key
+// cannot be read: a row from before it was stored, QA5W4A-5 and QA5W5A-1).
 type EscrowSetupView struct {
 	OrderID, Short, Own    string
 	OwnPath, OwnDerivation string

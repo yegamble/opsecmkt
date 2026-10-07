@@ -1492,10 +1492,12 @@ suffix is unhardened and below 2^31, for every party, and that a per-order deriv
 exactly `/<i>/0/0` with `2 <= i < 2^31-1` (never the practice index, for the market's key either): migration 074 allowed
 steps of ten digits, so `/2147483648/0/0` (which names the hardened `/0h/0/0`) passed migration 088's checks, as did a
 Bitcoin Core escrow key's `/0/2147483648`. It lets the market's per-order key have an origin with no path (the escrow
-signer's rooted account key), it allows the column `per_order_xpub` only on a buyer's or a vendor's per-order key and
-only as a tpub (per-order checkout stores there the party's order wallet key, the account key's child `<i>`: public
-data the market already holds, derived from the party's registered account key and already in the watch-only wallet's
-descriptors, kept so the order wallet can be rebuilt after the party registers another key), and it adds the table
+signer's rooted account key), it allows the column `per_order_xpub` only on a per-order key (the buyer's, the
+vendor's or the market's) and only as a tpub (per-order checkout stores there each order wallet key, the account key's
+child `<i>`, the market's being the escrow signer's account key's child `<m>`: public data the market already holds,
+derived from a registered or the signer's pinned account key and already in the watch-only wallet's descriptors, kept so
+the order wallet can be rebuilt after a party registers another key, and without asking the escrow signer), and it adds
+the table
 `escrow_siblings` (each per-order escrow's sibling addresses). No release writes such a key or value, so the checks find
 nothing to refuse; if it does, the migration stops before changing
 anything, the app does not start, and the log reads `migration 089: N escrow key row(s) in escrow_pubkeys have a
@@ -1513,12 +1515,13 @@ shapes (`/0/<i>` and `/<i>/0/0`), one counter: if you keep a copy of that SQL, t
 `rpcwhitelist` needs no new method (per-order escrows use `deriveaddresses` with a range, `getdescriptorinfo`,
 `importdescriptors`, `getaddressinfo` and `getwalletinfo`, all on it already), and there is no new key. With an escrow
 signer pinned, the escrow key page now refuses a key that is the signer's own ("This key cannot be used here"). After
-restoring the watch-only wallet, restart the app with the escrow signer running: its first watcher pass imports what the
-wallet lacks of each per-order escrow again, in one import that rescans from the earliest escrow's creation (up to two
-minutes; it waits while the wallet is already rescanning, as after `rescanblockchain`). If the signer is not answering,
-it imports only each escrow's own descriptor, logs "watch-only wallet repair waits for the escrow signer" on every pass,
-and imports the sibling addresses with the order wallet's ranged descriptors once the signer answers; deposits to a
-sibling address are not seen until then
+restoring the watch-only wallet, restart the app: its first watcher pass imports what the wallet lacks of each per-order
+escrow again, rebuilt from the keys stored at checkout (the escrow signer is not needed), in one import that rescans
+from the earliest escrow's creation (up to two minutes; it waits while the wallet is already rescanning, as after
+`rescanblockchain`). While the watch-only wallet rescans, Core refuses the import an escrow checkout makes, of either
+kind: the buyer reads "The escrow could not be created: the market's escrow wallet is rescanning the chain. Nothing was
+changed and your order is still a draft; try again in a few minutes", and nothing is written. Expect that after
+restoring the watch-only wallet, for as long as the repair's rescan (or your `rescanblockchain`) runs
 ([testnet runbook](docs/testnet-runbook.md#back-up-and-restore-the-escrow-arbiter-and-watch-only-wallets)).
 Rolling back past this release
 needs the pre-upgrade backup, as for every migration (section 5): the earlier release refuses to start on a database
@@ -1535,7 +1538,9 @@ wallets need the market's escrow signer, which is not available on this market r
 nothing written and, under escrow-only Bitcoin intake, a per-order vendor's listings are not available for purchase in
 BTC (the readiness panel on `/admin` lists the vendor). A signer that does not answer when a settlement waits for it
 leaves the settlement signed by its party, with "The market's escrow signer could not co-sign it yet" on the order page
-and one log line; the next pass tries again and nothing is rebuilt. Set up the signer first: see the [operator
+and one log line; the next pass tries again and nothing is rebuilt. The signer is asked only to co-sign and, at checkout,
+for its key: while it is down the order pages, setup pages and copies of per-order escrows are still served and the
+parties can still sign, a sibling address's stray refund included. Set up the signer first: see the [operator
 guide](docs/operator-guide.md#escrow-signer). The signer's RPC user needs no new method. A deposit to one of a per-order
 escrow's sibling addresses is now returned by a stray refund spending that address's own script, co-signed by the
 signer.

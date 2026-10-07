@@ -632,22 +632,27 @@ func (a *App) flagLateDeposits(ctx context.Context, tx *sql.Tx, o *Order, thresh
 		return err
 	}
 	rows, err := tx.QueryContext(ctx, `UPDATE payments SET flagged=true WHERE order_id=$1 AND NOT credited AND NOT flagged AND NOT locked
-		AND confirmations>=$2 AND ($3 OR after_close) RETURNING txid,amount`, o.ID, threshold, paidOut)
+		AND confirmations>=$2 AND ($3 OR after_close) RETURNING txid,amount,EXISTS(SELECT 1 FROM escrow_siblings s WHERE s.address=payments.address)`, o.ID, threshold, paidOut)
 	if err != nil {
 		return err
 	}
 	dec := currencyDecimals(o.Currency)
 	var deposits []string
 	var sum int64
+	atSiblings := 0 // QA5W5A-6: a deposit to a per-order escrow's sibling address is not at its escrow address
 	for rows.Next() {
 		var txid string
 		var amt int64
-		if err = rows.Scan(&txid, &amt); err != nil {
+		var atSibling bool
+		if err = rows.Scan(&txid, &amt, &atSibling); err != nil {
 			rows.Close()
 			return err
 		}
 		deposits = append(deposits, "deposit "+truncate(txid, 20)+" ("+amount(amt, dec)+" "+o.Currency+")")
 		sum += amt
+		if atSibling {
+			atSiblings++
+		}
 	}
 	rows.Close()
 	if err = rows.Err(); err != nil || len(deposits) == 0 {
@@ -669,8 +674,15 @@ func (a *App) flagLateDeposits(ctx context.Context, tx *sql.Tx, o *Order, thresh
 		if o.Currency == "XMR" { // a Monero escrow is custodial: the market alone builds and sends its stray refund (P3-R8)
 			net, how = a.xmrEscrowNetwork(), "the market returns it, less the network fee, to your refund address by a stray refund from the escrow"
 		}
-		note = a.netTag() + " " + net + " " + strings.Join(deposits, ", ") + " arrived at this order's escrow address after the order closed; not counted, it is returned to the buyer's refund address by a stray refund from the escrow. Moderator review required."
-		body = "Order " + o.ID[:min(8, len(o.ID))] + ": " + amount(sum, dec) + " " + o.Currency + " (" + a.netTag() + " " + net + ") arrived at this order's escrow address after the order closed. It is not counted; " + how + ". Market staff were notified."
+		where := "this order's escrow address"
+		switch {
+		case atSiblings == len(deposits):
+			where = "an address of this order's wallet other than its escrow address"
+		case atSiblings > 0:
+			where = "this order's escrow address and another address of this order's wallet"
+		}
+		note = a.netTag() + " " + net + " " + strings.Join(deposits, ", ") + " arrived at " + where + " after the order closed; not counted, it is returned to the buyer's refund address by a stray refund from the escrow. Moderator review required."
+		body = "Order " + o.ID[:min(8, len(o.ID))] + ": " + amount(sum, dec) + " " + o.Currency + " (" + a.netTag() + " " + net + ") arrived at " + where + " after the order closed. It is not counted; " + how + ". Market staff were notified."
 	}
 	if episode {
 		_, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, o.State, note)

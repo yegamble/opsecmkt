@@ -264,10 +264,12 @@ done
 [[ $(sql -c "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname='escrow_pubkeys_per_order_index'") == *"'^/[01]h?(/[^/]+){2,}\$'"* ]]
 # Per-order escrows (migration 089, A-456a, QA5W3A-11): every suffix step is unhardened and below 2^31 and a per-order
 # suffix is exactly /<i>/0/0 with 2 <= i < 2^31-1, the market's per-order key may have an origin with no path, and the
-# sibling addresses have their table, and per_order_xpub is only a buyer's or a vendor's per-order key's tpub (QA5W4A-5);
-# the checks validated.
+# sibling addresses have their table, and per_order_xpub is only a per-order key's tpub, the market's included
+# (QA5W4A-5, QA5W5A-1); the checks validated.
 [[ $(sql -c "SELECT string_agg(conname || '=' || convalidated, ',' ORDER BY conname) FROM pg_constraint WHERE conname IN ('escrow_pubkeys_suffix_steps','escrow_pubkeys_origin_path','escrow_pubkeys_origin_path_check','escrow_pubkeys_per_order_xpub')") == 'escrow_pubkeys_origin_path=true,escrow_pubkeys_per_order_xpub=true,escrow_pubkeys_suffix_steps=true' ]]
 [[ $(sql -c "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname='escrow_pubkeys_suffix_steps'") == *'2147483646'*'2147483647'* ]]
+xpub_check=$(sql -c "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname='escrow_pubkeys_per_order_xpub'")
+[[ $xpub_check == *'/0/0$'*'^tpub'* && $xpub_check != *market* ]]
 [[ $(sql -c "SELECT to_regclass('escrow_siblings') IS NOT NULL") == t ]]
 
 # Behaviour through the upgraded server: an alpha.1 password still signs in, the migrated draft is shown as

@@ -63,10 +63,11 @@ func escrowSetupLoader(ctx context.Context, a *App, r *http.Request, d *PageData
 		return err
 	}
 	d.EscrowSetup, d.Title = v, "Order wallet for order "+v.Short
-	// Each per-order key (perOrderXpub; QA5W4A-5 stores them at checkout): the other party's and the market's are the
-	// cosigners, the reader's own goes into the Sparrow descriptor.
+	// Each per-order key (perOrderXpub): checkout stores all three (QA5W4A-5, the market's since QA5W5A-1), so the page
+	// is the same whatever key a party registered since and whether or not the escrow signer answers. The other party's
+	// and the market's are the cosigners, the reader's own goes into the Sparrow descriptor. Only a row with no stored
+	// key (or one that does not give the stored key) leaves one out, saying so.
 	order := map[string]bip32Key{}
-	var refused *signerRefusal
 	for _, party := range []string{other, "market", reader} {
 		k, err := a.perOrderXpub(ctx, escrowID, party)
 		switch {
@@ -76,13 +77,9 @@ func escrowSetupLoader(ctx context.Context, a *App, r *http.Request, d *PageData
 		case !errors.Is(err, errPerOrderXpub):
 			return err
 		case party == reader:
-			v.NoSparrow = "Your escrow key is no longer the one this escrow was built with, so no Sparrow descriptor can be given here. Build the order wallet from the seed of the key you registered then, with the path and the cosigner keys above."
-		case party == "market" && (errors.Is(err, errSignerNone) || errors.Is(err, errSignerUnreachable) || errors.As(err, &refused)):
-			v.Unavailable = "The market's escrow signer is not reachable right now, so the market's cosigner key cannot be shown. Try again later."
-		case party == "market":
-			v.Unavailable = "The market's escrow signer key is not the one this escrow was built with, so the market's cosigner key cannot be shown here. Contact the market's staff."
+			v.NoSparrow = "Your order wallet key for this escrow cannot be read from the market's records, so no Sparrow descriptor can be given here. Build the order wallet from the seed of the key you registered when you ordered, with the path and the cosigner keys above, and tell the market's staff."
 		default:
-			v.Unavailable = "The " + other + "'s escrow key is no longer the one this escrow was built with, so its cosigner key cannot be shown here. Contact the market's staff; the escrow, its address and its keys are unchanged."
+			v.Unavailable = "The " + map[string]string{roleBuyer: "buyer's", roleVendor: "vendor's", "market": "market's"}[party] + " cosigner key of this escrow cannot be read from the market's records, so it cannot be shown here. Contact the market's staff; the escrow, its address and its keys are unchanged."
 		}
 		if v.Unavailable != "" {
 			return nil
