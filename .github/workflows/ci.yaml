@@ -263,6 +263,9 @@ jobs:
       # The default deployment: its db service publishes no port, so backup and restore run inside it.
       - name: Encrypted backup and restore through the internal-db Compose service
         run: bash scripts/test-internal-db-restore.sh
+      # UPGRADING.md section 42 (A-481, QA5W3B-1 and -2) on a SQL_ASCII and a LATIN1 database, in its own container.
+      - name: Moving a non-UTF8 database to UTF8
+        run: bash scripts/test-utf8-migration.sh
   compose:
     name: Compose (${{ matrix.mode }}, ${{ matrix.database }}, mirror=${{ matrix.mirror }})
     runs-on: ubuntu-24.04

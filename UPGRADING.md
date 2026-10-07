@@ -1339,24 +1339,66 @@ differences: on `SQL_ASCII` the image description limit of 250 counted bytes (25
 accepted on UTF8), and case folding and sorting follow the database's encoding and locale. The bundled Compose
 PostgreSQL is initialised as UTF8 and is not affected, and a database already UTF8 needs nothing. Check yours with
 `psql "$DATABASE_URL" -c 'SHOW server_encoding'` before you upgrade. The app also now sends `client_encoding=UTF8` on
-every connection.
+every connection, and refuses a form field that is not valid UTF-8 or holds a NUL byte (400, "Invalid form: a field is
+not valid UTF-8 or contains a NUL character. Nothing was changed."), where it used to accept it on a non-UTF8 database
+and fail with a 500 on a UTF8 one.
 
-To move a non-UTF8 database (the encoding cannot be changed in place; keep the old database until the new one has
-been checked):
+To move a non-UTF8 database: the encoding cannot be changed in place, so the data is copied into a new UTF8 database.
+Keep the old database until the new one has passed step 6. The market before A-481 sent PostgreSQL UTF-8 text and no
+client encoding, so whatever the old database's encoding, the bytes it stored are the UTF-8 it was sent; the steps copy
+those bytes unchanged. `scripts/test-utf8-migration.sh` rehearses them on a `SQL_ASCII` and a `LATIN1` database (CI
+operations job). In the commands, `OLD_DATABASE_URL` is the database the market uses now and `NEW_DATABASE_URL` the new
+one; run them where `psql`, `pg_dump` and `pg_restore` as new as the server are installed.
 
-1. Stop the market (`docker compose stop app`) and take the encrypted backup with `./scripts/backup.sh`; for an
-   external database that is `BACKUP_DATABASE_URL=... AGE_RECIPIENT=... ./scripts/backup.sh`.
-2. Create a UTF8 database next to it, from `psql` as a role with `CREATEDB`:
+1. Stop the market (`docker compose stop app`). It stays stopped until step 7, so nothing changes the data meanwhile.
+2. Check the old database for text that is not valid UTF-8: `psql "$OLD_DATABASE_URL" -X -f scripts/check-utf8.sql`.
+   Before this release nothing checked that form input was UTF-8, and a `SQL_ASCII` or `LATIN1` database stores any
+   bytes, so a review, a message or a listing may hold some that are not UTF-8 (a review `Great \xff seller`; in a `LATIN1` database, also
+   text another client wrote in `LATIN1`, such as `psql` with its default client encoding). Such bytes would pass the
+   restore into the new database unchanged, and every backup of that database would then fail to restore (`COPY failed
+   for table "reviews": invalid byte sequence for encoding "UTF8": 0xff`). For each such value the check prints a line
+   `not valid UTF-8: table public.reviews, column body, row id = (...) (ctid (0,1)), starting: Great \377 seller`
+   (`\377` is the byte 0xff) and it ends with an error (psql exits 3). Correct each value in the old database, with the
+   text it should hold or by reading its bytes as `LATIN1`, one statement per line the check printed (its table, column
+   and ctid):
+
+   ```sql
+   UPDATE public.reviews SET body = convert_from(convert(convert_to(body, 'SQL_ASCII'), 'LATIN1', 'UTF8'), 'SQL_ASCII') WHERE ctid = '(0,1)';
+   ```
+
+   Run the check again until it prints `Every value in the N text column(s) is valid UTF-8.` If a table refuses the
+   update (escrow settlement records are frozen by triggers), stop and report it to the project. A correction to a row
+   of `audit_events` changes what the signed audit export shows for it: note what you changed.
+3. Take the encrypted backup with `BACKUP_DUMP_ENCODING=SQL_ASCII`:
+   `BACKUP_DUMP_ENCODING=SQL_ASCII BACKUP_DATABASE_URL="$OLD_DATABASE_URL" AGE_RECIPIENT=age1... ./scripts/backup.sh
+   backups/pre-utf8.dump.age`. With it the dump holds every text as the bytes stored. Without it, a `LATIN1` database is
+   dumped as `LATIN1` and converted to UTF8 on restore, so **every non-ASCII character will be double-encoded** in the
+   new database ("Crème" becomes "CrÃ¨me"); a `SQL_ASCII` database is dumped unconverted either way. Use the variable
+   for this move only: `backup.sh` accepts no other value, and on a UTF8 database it changes nothing.
+4. Create a UTF8 database next to it, from `psql` as a role with `CREATEDB`:
    `CREATE DATABASE opsecmkt_utf8 ENCODING 'UTF8' TEMPLATE template0;`
-3. Restore the backup into that empty database with `RESTORE_DATABASE_URL=... AGE_IDENTITY=... ./scripts/restore.sh
-   backups/market.dump.age` (the [restore procedure](docs/operator-guide.md#backups-and-recovery), including its
-   payout recovery gate and reconciliation, applies unchanged). `pg_restore` converts from the dump's encoding; it
-   stops, changing nothing, at text that is not valid in UTF8 and names the table. The app wrote UTF-8, but a
-   `LATIN1` database may hold non-ASCII text stored double-encoded: look at accounts and listings with accented
-   characters after the restore.
-4. Point `DATABASE_URL` (and `BACKUP_DATABASE_URL`) at the new database and start the app.
+5. Restore the backup into that empty database with `RESTORE_DATABASE_URL="$NEW_DATABASE_URL" AGE_IDENTITY=...
+   ./scripts/restore.sh backups/pre-utf8.dump.age` (the [restore procedure](docs/operator-guide.md#backups-and-recovery),
+   including its payout recovery gate and reconciliation, applies unchanged). `pg_restore` does not check the bytes of a
+   dump taken unconverted: it does not stop at bytes that are not UTF-8, so a clean step 2 and step 6 are what prove
+   the text.
+6. Before you switch, prove that the new database's own backup restores, into a scratch database you drop afterwards:
 
-Not changed: the signed audit export and every merged migration.
+   ```sh
+   BACKUP_DATABASE_URL="$NEW_DATABASE_URL" AGE_RECIPIENT=age1... ./scripts/backup.sh backups/utf8-check.dump.age
+   psql "$NEW_DATABASE_URL" -c "CREATE DATABASE opsecmkt_utf8_check ENCODING 'UTF8' TEMPLATE template0"
+   RESTORE_DATABASE_URL="$CHECK_DATABASE_URL" AGE_IDENTITY=... ./scripts/restore.sh backups/utf8-check.dump.age
+   psql "$NEW_DATABASE_URL" -c "DROP DATABASE opsecmkt_utf8_check"
+   ```
+
+   (`CHECK_DATABASE_URL` is `NEW_DATABASE_URL` with the database name `opsecmkt_utf8_check`.) The restore must print
+   `Restore completed.` If it stops with `COPY failed for table "<table>": ... invalid byte sequence for encoding
+   "UTF8"` instead, the new database holds bytes that are not UTF-8 and its backups are useless: do not switch.
+   `psql "$NEW_DATABASE_URL" -X -f scripts/check-utf8.sql` names the rows; drop the new database, correct them in the
+   old one (step 2) and start again from step 3. Then look at a few accounts and listings with accented characters.
+7. Point `DATABASE_URL` (and `BACKUP_DATABASE_URL`) at the new database and start the app.
+
+Not changed: every merged migration, and the signed audit export (but for a row corrected in step 2).
 
 ## 43. Monero escrow: refused deposits are recorded and cleared by staff (migration 090, A-480)
 

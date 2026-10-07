@@ -266,15 +266,15 @@ func TestDemotionArchiveIsNotATakedown(t *testing.T) {
 	}
 }
 
-// PR #27 NIT-1: PostgreSQL refuses a NUL byte in text, so a takedown reason carrying one gets the reason's 400,
-// before the password is checked, not a 500 from the update.
+// PR #27 NIT-1: PostgreSQL refuses a NUL byte in text, so a takedown reason carrying one gets a 400 before the
+// password is checked, not a 500 from the update; since QA5W3B-5 it is the form's own refusal, before the handler.
 func TestAdminTakedownReasonWithNULRefused(t *testing.T) {
 	e := newTestApp(t)
 	_, admin := e.user("td_nul_admin", "admin")
 	vendorID, _ := e.user("td_nul_vendor", "vendor")
 	p := e.product(vendorID, "physical")
 	take := takedownForm(t, e.body("GET", "/listing-edit?id="+p, admin, nil, 200), "takedown", p)
-	agExpect(e, "/admin/listing", admin, withField(take, "reason", "Counterfeit \x00 goods in this listing."), 400, "10–500 characters")
+	agExpect(e, "/admin/listing", admin, withField(take, "reason", "Counterfeit \x00 goods in this listing."), 400, invalidTextMsg)
 	if archived, reason := takenDown(e, p); archived || reason != "" {
 		t.Fatalf("after a NUL reason: archived=%v reason=%q", archived, reason)
 	}

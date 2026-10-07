@@ -3,6 +3,7 @@ package market
 import (
 	"context"
 	"database/sql"
+	"html"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -430,4 +431,35 @@ func TestXMREscrowMigration090Backfill(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("backfilled records:\n got %q\nwant %q", got, want)
 	}
+}
+
+// QA5W3B-6: on a disputed escrow order the staff help says nothing can be changed from the page only when it shows no
+// Refused Monero deposits form; while a record is open it names that form as the one thing staff change there.
+func TestXMREscrowCollisionDisputedHelp(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	_, mod := x.user("colldisp_"+randomToken()[:6], "moderator")
+	order := x.draft(x.digital(x.vendor))
+	addr := x.mustCheckout(order)
+	x.fake.payAddress(addr, hex64("refused disputed "+order), xmrListingPrice, 10)
+	x.refusePass(order)
+	id := agStrings(t, x.testEnv, "SELECT id::text FROM xmr_escrow_collisions WHERE order_id=$1", order)[0]
+	agExec(x.testEnv, "UPDATE orders SET state='disputed' WHERE id=$1", order)
+	agExec(x.testEnv, "INSERT INTO disputes(id,order_id,reason) VALUES($1,$2,'The content was never delivered to me at all.')", randomToken(), order)
+	page := html.UnescapeString(x.page("/order?id="+order, mod))
+	if !strings.Contains(refusedSection(page), `action="/moderator/xmr-collision"`) {
+		t.Fatal("the disputed order shows staff no disposition form")
+	}
+	help := staffHelp(page)
+	mustContain(t, help, "market staff", `href="#refused-deposits"`, "Only an administrator decides this escrow dispute")
+	mustNotContain(t, help, "Nothing can be changed from this page")
+	mustNotContain(t, page, "The order page is read-only for market staff.")
+	if code, loc := x.recordCollision(mod, id, "Refunded to the buyer by hand in the wallet."); code != 303 {
+		t.Fatalf("the disposition: %d %s", code, loc)
+	}
+	page = html.UnescapeString(x.page("/order?id="+order, mod))
+	mustNotContain(t, refusedSection(page), `method="post"`)
+	mustContain(t, staffHelp(page), "Nothing can be changed from this page")
+	mustNotContain(t, staffHelp(page), `href="#refused-deposits"`)
+	mustContain(t, page, "The order page is read-only for market staff.")
 }

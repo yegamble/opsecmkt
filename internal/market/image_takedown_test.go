@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // A-190 (war room 2026-09-27, ruling D4, owner decision 1): moderators and administrators take down listing photos
@@ -190,7 +191,11 @@ func TestImageTakedownRefusalsMatchUnknownID(t *testing.T) {
 	for _, reason := range []string{"", "too short", "   short   ", strings.Repeat("x", 501), "\xff\xfe invalid utf-8 reason"} {
 		for _, id := range []string{hiddenPhoto.id, randomToken()[:32]} {
 			w := e.takeDown(admin, id, reason)
-			if w.Code != 400 || !strings.Contains(w.Body.String(), "10–500 characters") {
+			want := "10–500 characters"
+			if !utf8.ValidString(reason) {
+				want = invalidTextMsg // refused where the form is parsed (QA5W3B-5)
+			}
+			if w.Code != 400 || !strings.Contains(w.Body.String(), want) {
 				t.Fatalf("reason %q: %d %q", reason, w.Code, w.Body.String())
 			}
 		}
@@ -594,15 +599,15 @@ func TestModeratorTakesDownOnlyVendorImages(t *testing.T) {
 	e.check(e.takeDown(moderator, vendorPhoto.id, imageTakedownReason), 303)
 }
 
-// PR #27 NIT-1: PostgreSQL refuses a NUL byte in text, so a reason carrying one gets the reason's 400 before
-// anything is written, not a 500 from the insert.
+// PR #27 NIT-1: PostgreSQL refuses a NUL byte in text, so a reason carrying one gets a 400 before anything is
+// written, not a 500 from the insert; since QA5W3B-5 it is the form's own refusal, before the handler runs.
 func TestImageTakedownReasonWithNULRefused(t *testing.T) {
 	e := newTestApp(t)
 	vendorID, _ := e.user("td_nul_vendor", "vendor")
 	_, moderator := e.user("td_nul_moderator", "moderator")
 	photo := e.image(vendorID, e.product(vendorID, "physical"), "photo")
 	w := e.takeDown(moderator, photo.id, "A reason with a \x00 NUL byte in it.")
-	if w.Code != 400 || !strings.Contains(w.Body.String(), "10–500 characters") || e.imageRows(photo.id) != 1 {
+	if w.Code != 400 || !strings.Contains(w.Body.String(), invalidTextMsg) || e.imageRows(photo.id) != 1 {
 		t.Fatalf("NUL in the reason: %d %q, %d rows", w.Code, w.Body.String(), e.imageRows(photo.id))
 	}
 }
