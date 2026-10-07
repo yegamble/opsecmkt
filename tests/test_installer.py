@@ -1536,9 +1536,21 @@ time.sleep(60)
                                                   'compose.internal-db.yaml'), after)
         self.check_env(installed_env(COMPOSE_FILE='compose.yaml:compose.tor.yaml:compose.internal-db.yaml:compose.nodes-tor.yaml'),
                        after)
+        tor_only = 'compose.nodes-tor.yaml (local nodes over Tor) needs APP_MODE=tor and compose.tor.yaml'
         self.check_env(clearnet_env(COMPOSE_FILE='compose.yaml:compose.clearnet.yaml:compose.nodes.yaml:compose.internal-db.yaml:'
-                                                 'compose.nodes-tor.yaml'),
-                       'compose.nodes-tor.yaml (local nodes over Tor) needs APP_MODE=tor and compose.tor.yaml')
+                                                 'compose.nodes-tor.yaml'), tor_only)
+        # Each half of the Tor rule on its own (the APP_MODE rule above refuses these too, for its own reason).
+        self.check_env(installed_env(COMPOSE_FILE='compose.yaml:compose.nodes.yaml:compose.internal-db.yaml:compose.nodes-tor.yaml'),
+                       tor_only)
+        self.check_env(clearnet_env(COMPOSE_FILE='compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.internal-db.yaml:'
+                                                 'compose.nodes-tor.yaml'), tor_only)
+        # Paths and separators as Compose takes them: by base name, split on ':' and ';' (A-485 NIT-2).
+        self.check_env(installed_env(COMPOSE_FILE='compose.yaml:compose.tor.yaml:./compose.nodes.yaml:compose.internal-db.yaml:'
+                                                  './compose.nodes-tor.yaml'))
+        self.check_env(installed_env(COMPOSE_FILE='compose.yaml;compose.tor.yaml;compose.nodes.yaml;compose.internal-db.yaml;'
+                                                  'compose.nodes-tor.yaml'))
+        self.check_env(installed_env(COMPOSE_FILE='compose.yaml;compose.tor.yaml;./compose.nodes-tor.yaml;compose.nodes.yaml;'
+                                                  'compose.internal-db.yaml'), after)
 
     def test_check_refuses_placeholders(self):
         self.check_env(installed_env(SETUP_TOKEN='REPLACE_WITH_AT_LEAST_32_RANDOM_CHARACTERS'),
