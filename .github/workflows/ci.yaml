@@ -615,6 +615,22 @@ jobs:
             'HiddenServiceMaxStreams 32' 'HiddenServiceMaxStreamsCloseCircuit 1'; do
             grep -qxF "$line" <<< "$config" || { echo "tor did not load: $line" >&2; exit 1; }
           done
+      # A-442: compose.nodes-tor.yaml runs this image as tor-socks with its own deploy/torrc-socks, a read-only root and a
+      # fresh data volume (whose ownership comes from the image). --verify-config also checks that tor can use the data
+      # directory as the image's user. Nothing else parses torrc-socks with the pinned tor.
+      - name: Nodes' Tor client configuration (deploy/torrc-socks)
+        run: |
+          tor=(docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges:true
+            -v "$PWD/deploy/torrc-socks:/etc/tor/torrc-socks:ro" -v /var/lib/tor --entrypoint tor opsecmkt-tor:ci
+            -f /etc/tor/torrc-socks)
+          "${tor[@]}" --verify-config
+          config=$("${tor[@]}" --dump-config short)
+          echo "$config"
+          for line in 'SocksPort 10.199.42.2:9050' 'SocksPolicy reject 10.199.42.1' 'SocksPolicy accept 10.199.42.0/28' \
+            'SocksPolicy reject *' 'ControlPort 0' 'DataDirectory /var/lib/tor'; do
+            grep -qxF "$line" <<< "$config" || { echo "tor did not load: $line" >&2; exit 1; }
+          done
+          if grep -q '^HiddenService' <<< "$config"; then echo 'torrc-socks must run no onion service' >&2; exit 1; fi
       # compose.tor.yaml's healthcheck passes once Tor has written its onion address. Tor does that at startup,
       # before it reaches the network; `up --wait` and scripts/install.sh rely on it.
       - name: Onion address written offline (the Tor healthcheck)
