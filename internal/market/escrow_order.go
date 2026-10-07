@@ -402,14 +402,13 @@ func (a *App) escrowCheckoutOffer(ctx context.Context, d *PageData) error {
 	case !vendorActive:
 		v.Reason = "The vendor has no active Bitcoin escrow key, so this order cannot use escrow."
 	// P4-R18, as escrowParties refuses them: a mixed pair, naming the vendor's key type (a buyer can register a key of
-	// the vendor's kind: a Bitcoin Core key always, a per-order one once per-order escrows are on), and a pair of
-	// per-order keys while the per-order switch is off (A-456b turns them on).
+	// the vendor's kind). A pair of per-order keys needs the escrow signer, which co-signs their escrow (A-456b).
 	case vendorPerOrder && !buyerPerOrder:
-		v.Reason, v.KeyLink = strings.TrimSuffix(errEscrowMixedVendorPerOrder.Error(), " Nothing was changed."), perOrderEscrows.Load()
+		v.Reason, v.KeyLink = strings.TrimSuffix(errEscrowMixedVendorPerOrder.Error(), " Nothing was changed."), a.perOrderAvailable()
 	case buyerPerOrder && !vendorPerOrder:
 		v.Reason, v.KeyLink = strings.TrimSuffix(errEscrowMixedVendorCore.Error(), " Nothing was changed.")+" Register a Bitcoin Core escrow key and sign its practice transaction to use escrow.", true
-	case buyerPerOrder && !perOrderEscrows.Load():
-		v.Reason, v.KeyLink = strings.TrimSuffix(errEscrowBuyerPerOrder.Error(), " Nothing was changed.")+" Register a Bitcoin Core escrow key and sign its practice transaction to use escrow.", true
+	case buyerPerOrder && !a.perOrderAvailable():
+		v.Reason = errPerOrderUnavailable
 	case v.Physical && !vendorCanEncrypt:
 		v.Reason = noVendorKeyReason // A-83: the buyer could not send the vendor an encrypted shipping address
 	}

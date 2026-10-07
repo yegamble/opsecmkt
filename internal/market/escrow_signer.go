@@ -241,6 +241,21 @@ func (a *App) isSignerKey(ctx context.Context, q rowQuerier, k escrowKey) (bool,
 	return fp != "" && k.Fingerprint == fp || mac != "" && mac == a.escrowXPubHMAC(k.ChainCode, k.PubKey), nil
 }
 
+// errPerOrderUnavailable is why no per-order (shape (b)) escrow is offered: perOrderAvailable is false.
+const errPerOrderUnavailable = "Escrows with per-order wallets need the market's escrow signer, which is not available on this market right now."
+
+// perOrderAvailable reports whether per-order (shape (b)) escrows are offered (A-456b): an escrow signer is configured,
+// which co-signs their settlements, and its latest check did not find a key other than the pinned one or a reply it
+// could not understand (P4-R17: shape (b) unavailable). A signer that did not answer the latest check is still offered:
+// checkout asks it again and refuses, nothing written, while it does not answer (errEscrowSigner).
+func (a *App) perOrderAvailable() bool {
+	if a.escrowSigner == nil {
+		return false
+	}
+	s := a.escrowSignerState()
+	return s != signerMismatch && s != signerBadReply
+}
+
 // escrowSignerState is the signer's state as the latest check found it ("" = no signer configured, or not checked).
 func (a *App) escrowSignerState() string {
 	s, _ := a.escrowSignerStatus.Load().(string)
