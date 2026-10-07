@@ -154,6 +154,13 @@ type fakeEscrowCore struct {
 	// otherwise) and importdescriptors answers RPC_WALLET_ERROR "Wallet is currently rescanning" (-4), as Core 31.1 does;
 	// rescanRefuses gives that answer while getwalletinfo still reports false (a rescan that started between the two).
 	scanning, rescanRefuses, importing bool
+
+	// QA5W4-timing: every extended key fakeRealChild has parsed or derived, by ckdSkew, parent key and path, for the life
+	// of the fake. Public derivation in math/big is slow under -race, and a per-order checkout derives each order wallet's
+	// 30 indices for deriveaddresses and again for importdescriptors (a restart or restore imports them once more): with
+	// the memo only the first derivation of a key costs anything. ckdMu, not mu, guards it: tests call address without mu.
+	ckdMu   sync.Mutex
+	ckdMemo map[string]bip32Key
 }
 
 // forgetWatched makes the watch wallet forget every address its imports added (bare-key, ranged and addr(…) alike) with
@@ -308,31 +315,60 @@ func fakeRealTpub(t *testing.T, tprv string) string {
 }
 
 // fakeRealChild is Core's public derivation of "tpub…/a/b…" (no origin): the child key and its derivation value, the
-// key's own fingerprint followed by the steps (as Core writes an extended key without an origin).
+// key's own fingerprint followed by the steps (as Core writes an extended key without an origin). Each key on the way is
+// computed once per fake (ckdMemo).
 func (c *fakeEscrowCore) fakeRealChild(el string) (pub, deriv []byte) {
 	xpub, rest, _ := strings.Cut(el, "/")
-	k, err := parseBIP32Pub(xpub, versionTpub)
-	if err != nil {
-		c.t.Fatalf("fake core: extended key in %q: %v", el, err)
-	}
-	fp := k.Fingerprint()
+	memo := strconv.FormatBool(c.ckdSkew) + " " + xpub
+	k := c.memoKey(memo, func() bip32Key {
+		k, err := parseBIP32Pub(xpub, versionTpub)
+		if err != nil {
+			c.t.Fatalf("fake core: extended key in %q: %v", el, err)
+		}
+		if c.ckdSkew {
+			k.ChainCode[0] ^= 1
+		}
+		return k
+	})
+	fp := k.Fingerprint() // the skew changes only the chain code: this is still the key's own fingerprint
 	deriv = slices.Clone(fp[:])
-	if c.ckdSkew {
-		k.ChainCode[0] ^= 1
-	}
 	if rest != "" {
 		steps, err := parseOriginPath("/" + rest)
 		if err != nil {
 			c.t.Fatalf("fake core: path in %q: %v", el, err)
 		}
 		for _, step := range steps {
-			if k, _, err = ckdPub(k, step); err != nil {
-				c.t.Fatalf("fake core: derivation in %q: %v", el, err)
-			}
+			memo += "/" + strconv.FormatUint(uint64(step), 10)
+			parent := k
+			k = c.memoKey(memo, func() bip32Key {
+				child, _, err := ckdPub(parent, step)
+				if err != nil {
+					c.t.Fatalf("fake core: derivation in %q: %v", el, err)
+				}
+				return child
+			})
 			deriv = binary.LittleEndian.AppendUint32(deriv, step)
 		}
 	}
 	return k.PubKey[:], deriv
+}
+
+// memoKey is the key ckdMemo holds at memo, computed by derive the first time.
+func (c *fakeEscrowCore) memoKey(memo string, derive func() bip32Key) bip32Key {
+	c.ckdMu.Lock()
+	k, ok := c.ckdMemo[memo]
+	c.ckdMu.Unlock()
+	if ok {
+		return k
+	}
+	k = derive() // outside ckdMu: a concurrent caller may derive the same key as well, with the same result
+	c.ckdMu.Lock()
+	defer c.ckdMu.Unlock()
+	if c.ckdMemo == nil {
+		c.ckdMemo = map[string]bip32Key{}
+	}
+	c.ckdMemo[memo] = k
+	return k
 }
 
 func fakePubFromTprv(tprv string) []byte {

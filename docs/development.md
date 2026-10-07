@@ -244,6 +244,10 @@ npm run test:e2e:escrow
 per-order wallet key and signs its practice transaction (the simulated node derives rooted keys by real BIP32 public
 derivation), a buyer sees the vendor's key type on the listing and the vendor page, and the order page names the
 vendor's per-order wallet key beside the buyer's Bitcoin Core key (a mixed pair, refused since A-456a).
+`tests/e2e/escrow-per-order-settle-journey.spec.ts` (A-456b) follows: both parties register per-order wallet keys and
+sign their practice, the buyer pays into a per-order escrow, each party reads its own order wallet setup page, the escrow
+is funded, and the vendor's claim is signed and uploaded as a binary PSBT file, co-signed through a simulated escrow
+signer (`wallet-rpc.py --signer-socket`, a Unix socket named by the config for its run) and confirmed.
 `tests/e2e/escrow-physical-journey.spec.ts` runs after it on the same database and follows a
 physical escrow order (WR-escrow Phase 2): shipped with a claim address, signed by the vendor and
 the buyer, released at its deadline, a dispute that cancels the deadline, the buyer's no-ship

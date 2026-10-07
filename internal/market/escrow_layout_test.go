@@ -500,10 +500,18 @@ func TestEscrowPerOrderKeyNotUsedForCheckout(t *testing.T) {
 	}
 }
 
-// A-444 with A-455: while BTC intake is escrow only, a listing whose vendor's only active key is a per-order wallet key
-// cannot be bought in BTC (no escrow can be made with it until A-456): the product page says why without the
-// vendor's fix, a BTC draft is refused, and the readiness panel counts and lists the vendor.
-func TestEscrowOnlyPerOrderVendorNotPurchasable(t *testing.T) {
+// A-444 with A-455 and A-456b: while BTC intake is escrow only, a listing whose vendor's only active key is a per-order
+// wallet key cannot be bought in BTC on a market with no escrow signer (no per-order escrow can be co-signed): the
+// product page says why without the vendor's fix, a BTC draft is refused, and the readiness panel counts and lists the
+// vendor. With an escrow signer it can be bought.
+func TestEscrowOnlyPerOrderVendorNeedsSigner(t *testing.T) {
+	s := signerApp(t, newFakeSigner(t, signerKey(t, 7)).path)
+	agExec(s.testEnv, "UPDATE user_escrow_keys SET layout='per_order' WHERE user_id=$1", s.vendor)
+	agExec(s.testEnv, "UPDATE settings SET value='escrow' WHERE key='payment_intake_BTC'")
+	if b := html.UnescapeString(s.page("/product?id="+s.product, s.buyerSess)); strings.Contains(b, "Not available for purchase") {
+		t.Fatalf("a per-order vendor with an escrow signer:\n%s", b)
+	}
+
 	x := newEscrowEnv(t)
 	_, admin := x.user("po_ready_admin_"+randomToken()[:6], "admin")
 	agExec(x.testEnv, "UPDATE user_escrow_keys SET layout='per_order' WHERE user_id=$1", x.vendor)

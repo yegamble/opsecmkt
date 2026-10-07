@@ -266,7 +266,7 @@ func TestEscrowShapeBRepairWaitsForRescan(t *testing.T) {
 	}
 }
 
-// QA5W4A-5: checkout stores the buyer's and the vendor's order wallet key (the account key's child <i>, rooted) beside
+// QA5W4A-5: checkout stores the buyer's and the vendor's order wallet key (the account key's child <i>, as a tpub) beside
 // their keys, and none for the market; perOrderXpub gives each party's order wallet key, the market's from the escrow
 // signer, and refuses a stored key that does not give the escrow's. Migration 089 allows per_order_xpub only on a
 // buyer's or a vendor's per-order key, as a tpub.
@@ -283,30 +283,30 @@ func TestEscrowShapeBOrderXpubStored(t *testing.T) {
 		}
 		child, _ := perOrderChild(t, want, i)
 		stored := agStrings(t, x.testEnv, "SELECT coalesce(per_order_xpub,'-') FROM escrow_pubkeys WHERE escrow_id=$1 AND party=$2", id, party)
-		if wantStored := child.Rooted(versionTpub); party == "market" && stored[0] != "-" || party != "market" && stored[0] != wantStored {
+		if wantStored := child.Serialize(versionTpub); party == "market" && stored[0] != "-" || party != "market" && stored[0] != wantStored {
 			t.Fatalf("%s per_order_xpub %q, want %q", party, stored[0], wantStored)
 		}
-		got, err := x.A.perOrderXpub(ctx, x.DB, id, party)
-		if err != nil || got.Rooted(versionTpub) != child.Rooted(versionTpub) {
+		got, err := x.A.perOrderXpub(ctx, id, party)
+		if err != nil || got.Serialize(versionTpub) != child.Serialize(versionTpub) {
 			t.Fatalf("perOrderXpub %s: %v", party, err)
 		}
 	}
 	other, _ := perOrderChild(t, accountKey(t, x.buyerKey), 3)
 	agExec(x.testEnv, "UPDATE escrow_pubkeys SET per_order_xpub=$2 WHERE escrow_id=$1 AND party='vendor'", id, other.Rooted(versionTpub))
-	if _, err := x.A.perOrderXpub(ctx, x.DB, id, "vendor"); !errors.Is(err, errPerOrderStored) {
+	if _, err := x.A.perOrderXpub(ctx, id, "vendor"); !errors.Is(err, errPerOrderXpub) {
 		t.Fatalf("a stored order wallet key that does not give the stored key: %v", err)
 	}
-	if _, err := x.A.perOrderXpub(ctx, x.DB, id+1000, "buyer"); !errors.Is(err, errPerOrderStored) {
+	if _, err := x.A.perOrderXpub(ctx, id+1000, "buyer"); !errors.Is(err, errPerOrderXpub) {
 		t.Fatalf("no such escrow: %v", err)
 	}
 	signerDown(f, true)
-	if _, err := x.A.perOrderXpub(ctx, x.DB, id, "market"); !errors.Is(err, errSignerUnreachable) {
+	if _, err := x.A.perOrderXpub(ctx, id, "market"); !errors.Is(err, errSignerUnreachable) {
 		t.Fatalf("market key with the signer down: %v", err)
 	}
 	signerDown(f, false)
 	f.set(func(f *fakeSigner) { f.key = signerKey(t, 8) })
 	var refused *signerRefusal
-	if _, err := x.A.perOrderXpub(ctx, x.DB, id, "market"); !errors.As(err, &refused) || refused.Class != signerMismatch {
+	if _, err := x.A.perOrderXpub(ctx, id, "market"); !errors.As(err, &refused) || refused.Class != signerMismatch {
 		t.Fatalf("market key with a signer whose key differs from the pins: %v", err)
 	}
 	for _, c := range []struct{ party, xpub string }{

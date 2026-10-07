@@ -84,10 +84,10 @@ func perOrderAt(branchKey bip32Key, k uint32) (bip32Key, bool) {
 	return leaf, err == nil && used == k
 }
 
-// errPerOrderStored is a party of a shape-(b) escrow whose order wallet key cannot be rebuilt from what is stored: no
-// per_order_xpub (the market's row, a row from before QA5W4A-5, or no such party), or one whose /0/0 child is not the
-// stored key.
-var errPerOrderStored = errors.New("escrow: no stored per-order key gives this escrow's key")
+// errPerOrderXpub is a party of a shape-(b) escrow whose order wallet key cannot be had: nothing stored gives it (no
+// per_order_xpub, as on a row from before QA5W4A-5, or one whose /0/0 child is not the stored key; no such party), or,
+// for the market, the escrow signer did not answer with its pinned key (perOrderXpub joins the signer's error to it).
+var errPerOrderXpub = errors.New("escrow: the per-order extended key of this escrow key cannot be had")
 
 // perOrderStored is one party's escrow_pubkeys row of a shape-(b) escrow: its stored key (the order wallet's /0/0),
 // derivation suffix (/<i>/0/0) and, for the buyer and the vendor, the order wallet key checkout stored (QA5W4A-5).
@@ -96,56 +96,57 @@ type perOrderStored struct {
 	Xpub                  sql.NullString
 }
 
-// orderKey is the party's order wallet key (its account key's child <i>, rooted), checked: its /0/0 child must be the
+// orderKey is the party's order wallet key (its account key's child <i>), checked: its /0/0 child must be the
 // stored key. The buyer's and the vendor's is the per_order_xpub checkout stored, never their current account key, which
 // a key registered since gives no more (QA5W4A-5); the market's is the escrow signer's account key's child <i>, so
 // signer must be the signer's pinned account key (signerAccount) and nil leaves the market's key unbuilt.
 func (s perOrderStored) orderKey(signer *escrowKey) (bip32Key, error) {
 	steps, err := parseOriginPath(s.Suffix)
 	if err != nil || len(steps) != 3 {
-		return bip32Key{}, errPerOrderStored
+		return bip32Key{}, errPerOrderXpub
 	}
 	var order bip32Key
 	switch {
 	case s.Party == "market" && signer != nil:
 		var ok bool
 		if order, _, ok = perOrderKeys(*signer, steps[0]); !ok {
-			return bip32Key{}, errPerOrderStored
+			return bip32Key{}, errPerOrderXpub
 		}
 	case s.Party != "market" && s.Xpub.Valid:
-		if order, err = parseBIP32Pub(s.Xpub.String, versionTpub); err != nil || order.Depth != 0 {
-			return bip32Key{}, errPerOrderStored
+		if order, err = parseBIP32Pub(s.Xpub.String, versionTpub); err != nil {
+			return bip32Key{}, errPerOrderXpub
 		}
 	default:
-		return bip32Key{}, errPerOrderStored
+		return bip32Key{}, errPerOrderXpub
 	}
 	if leaf, ok := perOrderSibling(order, 0, 0); !ok || hex.EncodeToString(leaf.PubKey[:]) != s.PubKey {
-		return bip32Key{}, errPerOrderStored
+		return bip32Key{}, errPerOrderXpub
 	}
 	return order, nil
 }
 
-// perOrderXpub is the order wallet key of party ("buyer", "vendor" or "market") in the shape-(b) escrow escrowID, read
-// through q and checked against the stored key (perOrderStored.orderKey): the buyer's and the vendor's from what checkout
-// stored, the market's from the escrow signer (signerAccount, whose error, a signer that is down or one whose key differs
-// from the pins, is returned as it is). Its branch keys and sibling keys are perOrderBranch and perOrderAt of it; served
-// to a wallet or a descriptor it is written rooted (Rooted(versionTpub)), as checkout imported it. errPerOrderStored: no
-// such party, or nothing stored gives its key.
-func (a *App) perOrderXpub(ctx context.Context, q rowQuerier, escrowID int64, party string) (bip32Key, error) {
+// perOrderXpub is the order wallet key (the per-order extended public key, the account key's child <i>) of party
+// ("buyer", "vendor" or "market") in the shape-(b) escrow escrowID, checked against the stored key
+// (perOrderStored.orderKey): the buyer's and the vendor's from what checkout stored (QA5W4A-5), whatever key the party has
+// registered since; the market's from the escrow signer's pinned account key (signerAccount, whose error, a signer that is
+// down or one whose key differs from the pins, is joined to errPerOrderXpub). Its branch and sibling keys are
+// perOrderBranch and perOrderAt (or perOrderSibling) of it; a cosigner's is served rooted (Rooted), as checkout imported
+// it. A database failure is returned as is.
+func (a *App) perOrderXpub(ctx context.Context, escrowID int64, party string) (bip32Key, error) {
 	s := perOrderStored{Party: party}
-	err := q.QueryRowContext(ctx, "SELECT pubkey,derivation_suffix,per_order_xpub FROM escrow_pubkeys WHERE escrow_id=$1 AND party=$2",
+	err := a.db.QueryRowContext(ctx, "SELECT pubkey,derivation_suffix,per_order_xpub FROM escrow_pubkeys WHERE escrow_id=$1 AND party=$2",
 		escrowID, party).Scan(&s.PubKey, &s.Suffix, &s.Xpub)
 	if err == sql.ErrNoRows {
-		return bip32Key{}, errPerOrderStored
+		return bip32Key{}, errPerOrderXpub
 	}
 	if err != nil {
 		return bip32Key{}, err
 	}
 	var signer *escrowKey
 	if party == "market" {
-		k, err := a.signerAccount(ctx, q)
+		k, err := a.signerAccount(ctx, a.db)
 		if err != nil {
-			return bip32Key{}, err
+			return bip32Key{}, errors.Join(errPerOrderXpub, err)
 		}
 		signer = &k
 	}

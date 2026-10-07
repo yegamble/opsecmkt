@@ -4,18 +4,19 @@ import (
 	"bytes"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
 
-// A-450 (ruling P4-R13): today's ES-2 paste check on settlement PSBTs signed by real wallets on regtest, the files
-// scripts/test-escrow-wallets.sh writes (Electrum 4.8.2 offline, Bitcoin Core 31.1; throwaway keys, public data only).
-// Electrum writes a derivation for every key of the multisig, the market's included, so checkSettlementPaste refuses
-// every Electrum signature "under the market's key"; with those entries removed the same paste passes, so that entry
-// is the only reason. When a slice admits a non-Core wallet and relaxes the refusal (P4-R2), this test flips on purpose.
+// A-450 (ruling P4-R13; flipped by A-456b): the ES-2 paste check on settlement PSBTs signed by real wallets on regtest,
+// the files scripts/test-escrow-wallets.sh writes (Electrum 4.8.2 offline, Bitcoin Core 31.1; throwaway keys, public
+// data only). Electrum writes a derivation for every key of the multisig, the market's included, which the check
+// refused "under the market's key" until A-456b relaxed that refusal for per-order wallets (P4-R2, P4-R13): every
+// Electrum signature is now accepted, with that entry in it, and only the party's signatures are taken. Every signature
+// rule stays (TestEscrowPasteRefusals).
 // The committed files are testdata/escrow-wallets; the script points ESCROW_WALLETS_FIXTURES at the files of its run.
 
 type walletFixture struct {
@@ -49,8 +50,8 @@ func TestEscrowWalletFixtures(t *testing.T) {
 	for _, f := range manifest.Entries {
 		if strings.HasPrefix(f.Wallet, "Electrum") {
 			electrum++
-			if f.Want != "refused" {
-				t.Errorf("%s: want %q; today's check refuses every Electrum signature (relaxing it is P4-R2's slice)", f.File, f.Want)
+			if f.Want != "accepted" {
+				t.Errorf("%s: want %q; since A-456b relaxed the derivation refusal (P4-R13) the check accepts every Electrum signature", f.File, f.Want)
 			}
 		}
 		t.Run(f.File, func(t *testing.T) {
@@ -76,25 +77,14 @@ func TestEscrowWalletFixtures(t *testing.T) {
 					t.Fatalf("%s (shape %s, %s) refused: %v", f.Wallet, f.Shape, f.Variant, err)
 				}
 				t.Logf("%s, shape (%s), %s: accepted by today's ES-2 check", f.Wallet, f.Shape, f.Variant)
-			case "refused":
-				if !errors.Is(err, errSettleMarketKey) {
-					t.Fatalf("%s (shape %s, %s): %v, want today's refusal %q", f.Wallet, f.Shape, f.Variant, err, errSettleMarketKey)
-				}
-				t.Logf("%s, shape (%s), %s: refused by today's ES-2 check: %s", f.Wallet, f.Shape, f.Variant, err)
 				if strings.HasPrefix(f.Wallet, "Electrum") {
+					// What A-450 found and P4-R13 relaxed: Electrum writes a derivation for every key, the market's
+					// included, and the paste is accepted with it (only the party's signatures are kept).
 					for i, in := range p.Inputs {
-						if len(in.Derivations) != 3 {
-							t.Fatalf("input %d: %d derivations, Electrum writes one per key", i, len(in.Derivations))
+						if len(in.Derivations) != 3 || !slices.ContainsFunc(in.Derivations, func(d psbtDerivation) bool { return bytes.Equal(d.PubKey, market.PubKey) }) {
+							t.Fatalf("input %d: %d derivations; Electrum writes one per key, the market's included", i, len(in.Derivations))
 						}
 					}
-				}
-				// The derivations under the market's key are the only reason: without them the paste passes.
-				raw, err := p.withoutInputFields(func(_ int, key []byte) bool { return key[0] == 0x06 && bytes.Equal(key[1:], market.PubKey) })
-				if err != nil {
-					t.Fatal(err)
-				}
-				if sigs, err = checkSettlementPaste(encodePSBT(raw), f.TxID, party, market); err != nil {
-					t.Fatalf("without the market-key derivations: %v", err)
 				}
 			default:
 				t.Fatalf("want %q", f.Want)

@@ -21,6 +21,7 @@ GET /test/escrow/state returns the deposits and broadcast transactions.
 """
 import base64
 from decimal import Decimal
+import functools
 import hashlib
 import hmac
 import json
@@ -84,14 +85,45 @@ def ec_add(a, b):
     return (x, (m * (a[0] - x) - a[1]) % P)
 
 
+def _jac_double(p):
+    x, y, z = p
+    if y == 0:
+        return (0, 1, 0)
+    s = 4 * x * y * y % P
+    m = 3 * x * x % P
+    x3 = (m * m - 2 * s) % P
+    return (x3, (m * (s - x3) - 8 * pow(y, 4, P)) % P, 2 * y * z % P)
+
+
+def _jac_add(p, q):
+    if p[2] == 0:
+        return q
+    if q[2] == 0:
+        return p
+    z1z1, z2z2 = p[2] * p[2] % P, q[2] * q[2] % P
+    u1, u2 = p[0] * z2z2 % P, q[0] * z1z1 % P
+    s1, s2 = p[1] * q[2] * z2z2 % P, q[1] * p[2] * z1z1 % P
+    if u1 == u2:
+        return _jac_double(p) if s1 == s2 else (0, 1, 0)
+    h, r = (u2 - u1) % P, (s2 - s1) % P
+    h2 = h * h % P
+    h3 = h * h2 % P
+    x3 = (r * r - h3 - 2 * u1 * h2) % P
+    return (x3, (r * (u1 * h2 - x3) - s1 * h3) % P, h * p[2] * q[2] % P)
+
+
 def ec_mul(k, pt):
-    out = None
+    """k·pt in Jacobian coordinates (one inversion at the end: the A-456b journey derives many per-order keys)."""
+    out, acc = (0, 1, 0), (pt[0], pt[1], 1)
     while k:
         if k & 1:
-            out = ec_add(out, pt)
-        pt = ec_add(pt, pt)
+            out = _jac_add(out, acc)
+        acc = _jac_double(acc)
         k >>= 1
-    return out
+    if out[2] == 0:
+        return None
+    zi = pow(out[2], P - 2, P)
+    return (out[0] * zi * zi % P, out[1] * zi * zi * zi % P)
 
 
 def compress(pt):
@@ -106,15 +138,53 @@ def decompress(pub):
     return (x, y)
 
 
+def ripemd160(data):
+    """RIPEMD-160 in pure Python, for a Python whose OpenSSL lacks it (OpenSSL 3.0 before 3.0.7 moved it to the legacy
+    provider): the app checks the escrow signer's fingerprint (A-456b), so HASH160 must be real."""
+    def rol(x, n):
+        return ((x << n) | (x >> (32 - n))) & 0xffffffff
+    f = [lambda x, y, z: x ^ y ^ z, lambda x, y, z: (x & y) | (~x & z), lambda x, y, z: (x | ~y) ^ z,
+         lambda x, y, z: (x & z) | (y & ~z), lambda x, y, z: x ^ (y | ~z)]
+    k1 = [0x00000000, 0x5A827999, 0x6ED9EBA1, 0x8F1BBCDC, 0xA953FD4E]
+    k2 = [0x50A28BE6, 0x5C4DD124, 0x6D703EF3, 0x7A6D76E9, 0x00000000]
+    r1 = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 7, 4, 13, 1, 10, 6, 15, 3, 12, 0, 9, 5, 2, 14, 11, 8,
+          3, 10, 14, 4, 9, 15, 8, 1, 2, 7, 0, 6, 13, 11, 5, 12, 1, 9, 11, 10, 0, 8, 12, 4, 13, 3, 7, 15, 14, 5, 6, 2,
+          4, 0, 5, 9, 7, 12, 2, 10, 14, 1, 3, 8, 11, 6, 15, 13]
+    r2 = [5, 14, 7, 0, 9, 2, 11, 4, 13, 6, 15, 8, 1, 10, 3, 12, 6, 11, 3, 7, 0, 13, 5, 10, 14, 15, 8, 12, 4, 9, 1, 2,
+          15, 5, 1, 3, 7, 14, 6, 9, 11, 8, 12, 2, 10, 0, 4, 13, 8, 6, 4, 1, 3, 11, 15, 0, 5, 12, 2, 13, 9, 7, 10, 14,
+          12, 15, 10, 4, 1, 5, 8, 7, 6, 2, 13, 14, 0, 3, 9, 11]
+    s1 = [11, 14, 15, 12, 5, 8, 7, 9, 11, 13, 14, 15, 6, 7, 9, 8, 7, 6, 8, 13, 11, 9, 7, 15, 7, 12, 15, 9, 11, 7, 13, 12,
+          11, 13, 6, 7, 14, 9, 13, 15, 14, 8, 13, 6, 5, 12, 7, 5, 11, 12, 14, 15, 14, 15, 9, 8, 9, 14, 5, 6, 8, 6, 5, 12,
+          9, 15, 5, 11, 6, 8, 13, 12, 5, 12, 13, 14, 11, 8, 5, 6]
+    s2 = [8, 9, 9, 11, 13, 15, 15, 5, 7, 7, 8, 11, 14, 14, 12, 6, 9, 13, 15, 7, 12, 8, 9, 11, 7, 7, 12, 7, 6, 15, 13, 11,
+          9, 7, 15, 11, 8, 6, 6, 14, 12, 13, 5, 14, 13, 13, 7, 5, 15, 5, 8, 11, 14, 14, 6, 14, 6, 9, 12, 9, 12, 5, 15, 8,
+          8, 5, 12, 9, 12, 5, 14, 6, 8, 13, 6, 5, 15, 13, 11, 11]
+    h = [0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0]
+    msg = data + b'\x80' + b'\x00' * ((55 - len(data)) % 64) + struct.pack('<Q', len(data) * 8)
+    for off in range(0, len(msg), 64):
+        x = struct.unpack('<16I', msg[off:off + 64])
+        al, bl, cl, dl, el = h
+        ar, br, cr, dr, er = h
+        for j in range(80):
+            r = j // 16
+            t = (rol((al + (f[r](bl, cl, dl) & 0xffffffff) + x[r1[j]] + k1[r]) & 0xffffffff, s1[j]) + el) & 0xffffffff
+            al, el, dl, cl, bl = el, dl, rol(cl, 10), bl, t
+            t = (rol((ar + (f[4 - r](br, cr, dr) & 0xffffffff) + x[r2[j]] + k2[r]) & 0xffffffff, s2[j]) + er) & 0xffffffff
+            ar, er, dr, cr, br = er, dr, rol(cr, 10), br, t
+        h = [(h[1] + cl + dr) & 0xffffffff, (h[2] + dl + er) & 0xffffffff, (h[3] + el + ar) & 0xffffffff,
+             (h[4] + al + br) & 0xffffffff, (h[0] + bl + cr) & 0xffffffff]
+    return struct.pack('<5I', *h)
+
+
 def fingerprint(pub):
-    """BIP32's key fingerprint (HASH160). Where this Python lacks RIPEMD-160, a stand-in: the app never checks a
-    cosigner's fingerprint, only the owner's (which is the registered origin's)."""
+    """BIP32's key fingerprint: the first four bytes of HASH160 (RIPEMD-160 of SHA-256)."""
     try:
         return hashlib.new('ripemd160', sha256(pub)).digest()[:4]
     except ValueError:
-        return sha256(b'fingerprint' + pub)[:4]
+        return ripemd160(sha256(pub))[:4]
 
 
+@functools.lru_cache(maxsize=4096)  # A-456b: the same per-order keys are derived for checkout, its imports and settlements
 def ckd_pub(chain, pub, i):
     """BIP32 CKDpub of (chain code, compressed key) at unhardened index i (an invalid child is not handled: 2^-127)."""
     mac = hmac.new(chain, pub + struct.pack('>I', i), hashlib.sha512).digest()
@@ -465,7 +535,10 @@ class EscrowCore:
             for s in [s for s in (path + '/' + suffix).split('/') if s]:
                 hard = s.endswith(('h', "'"))
                 steps.append(int(s.rstrip("h'")) | (0x80000000 if hard else 0))
-            return point('child:' + rest), bytes.fromhex(fp) + b''.join(struct.pack('<I', s) for s in steps)
+            deriv = bytes.fromhex(fp) + b''.join(struct.pack('<I', s) for s in steps)
+            if rest.count('/') >= 3:  # A-456b: a per-order key (/<i>/0/0 or a sibling) derives as Core derives it
+                return real_child(rest)[0], deriv
+            return point('child:' + rest), deriv
         if el.startswith('tpub'):  # A-455: an extended key with no origin, derived as Core derives it
             return real_child(el)
         if el.startswith('fakepub'):
@@ -480,6 +553,9 @@ class EscrowCore:
         return TPRV.sub(lambda m: 'fakepub' + point('pub:' + m.group(0)).hex(), desc)
 
     def derive(self, body):
+        if body.startswith('addr(') and body.endswith(')'):  # A-456b: a sibling address imported labelled
+            address_script(body[5:-1])
+            return body[5:-1]
         m = MULTI.match(body)
         if m:
             ws = multi_script([self.key_of(el)[0] for el in m.groups()])
@@ -552,12 +628,26 @@ class EscrowCore:
             raise RPCError(-5, 'Missing checksum')
         if chk != desc_checksum(body):
             raise RPCError(-5, 'Provided checksum does not match computed checksum')
+        rng = p[1] if len(p) > 1 else None
+        if ('*' in body) != bool(rng):
+            raise RPCError(-8, 'Range should (only) be specified for a ranged descriptor')
+        if rng:  # A-456b: a per-order wallet's ranged descriptor, one address per index
+            return [self.derive(body.replace('*', str(k))) for k in range(rng[0], rng[1] + 1)]
         return [self.derive(body)]
 
     def rpc_importdescriptors(self, path, p):
         out = []
         for req in p[0]:
             body = req['desc'].partition('#')[0]
+            if req.get('range'):  # A-456b: the order wallet's ranged descriptors (Core refuses a label beside a range)
+                if req.get('label'):
+                    raise RPCError(-8, 'Ranged descriptors should not have a label')
+                for k in range(req['range'][0], req['range'][1] + 1):
+                    self.derive(body.replace('*', str(k)))
+                if path == WATCH_WALLET:
+                    self.imports.append(req['desc'])
+                out.append({'success': True})
+                continue
             addr = self.derive(body)
             if path == WATCH_WALLET:
                 self.imports.append(req['desc'])
@@ -800,6 +890,104 @@ class EscrowCore:
     def state(self):
         with self.lock:
             return {'deposits': self.deposits, 'sent': self.sent, 'imports': self.imports}
+
+
+class FakeSigner:
+    """The market's escrow signer (cmd/escrow-signer, A-454) SIMULATED for the per-order journey (A-456b): its socket
+    protocol (one JSON line each way), a rooted account key whose per-order keys derive by real BIP32 public derivation,
+    and cmd/escrow-signer's refusals, made before it signs (sighash, the 2-of-3 script, witness_utxo, one script per
+    request, exactly one of its keys at index/0/k or index/1/k with k < 20). Its "signature" is fake_sig, which only this
+    simulated node accepts. Not chain evidence: scripts/test-escrow-regtest.sh runs the real signer."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.chain = sha256(b'e2e-escrow-signer-chain')
+        self.pub = point('e2e-escrow-signer-account')
+        self.tpub = b58check(bytes.fromhex('043587cf') + bytes(9) + self.chain + self.pub)
+        self.fp = fingerprint(self.pub).hex()
+        self.requests = []
+
+    def keys(self, index):
+        chain, pub = ckd_pub(self.chain, self.pub, index)
+        out = set()
+        for branch in (0, 1):
+            bc, bp = ckd_pub(chain, pub, branch)
+            for k in range(20):
+                out.add(ckd_pub(bc, bp, k)[1])
+        return out
+
+    def sign(self, psbt, index):
+        try:
+            ps = PSBT.b64(psbt)
+        except (ValueError, IndexError, struct.error, StopIteration):
+            return {'error': 'bad-psbt'}
+        if not ps.ins:
+            return {'error': 'bad-psbt'}
+        script = None
+        for i in range(len(ps.ins)):
+            sh = ps.get(i, b'\x03')
+            if sh is not None and sh != struct.pack('<I', 1):
+                return {'error': 'sighash'}
+            ws = ps.get(i, b'\x05')
+            if ws is None or len(ws) != 105 or ws[0] != 0x52 or ws[103:] != b'\x53\xae' or not ws[1] == ws[35] == ws[69] == 33:
+                return {'error': 'not-escrow-script'}
+            keys = [ws[2:35], ws[36:69], ws[70:103]]
+            if not keys[0] < keys[1] < keys[2] or not all(on_curve(k) for k in keys):
+                return {'error': 'not-escrow-script'}
+            u = ps.get(i, b'\x01')
+            if u is None or u[9:] != b'\x00\x20' + sha256(ws):
+                return {'error': 'witness-utxo'}
+            if script is None:
+                script = ws
+            elif ws != script:
+                return {'error': 'mixed-scripts'}
+        ours = self.keys(index)
+        mine = [k for k in (script[2:35], script[36:69], script[70:103]) if k in ours]
+        if not mine:
+            return {'error': 'key-not-found'}
+        if len(mine) > 1:
+            return {'error': 'two-signer-keys'}
+        for i in range(len(ps.ins)):
+            ps.add(i, b'\x02' + mine[0], fake_sig(mine[0], ps.txid(), 1))
+        return {'psbt': ps.encode()}
+
+    def handle(self, line):
+        try:
+            req = json.loads(line)
+        except ValueError:
+            return {'error': 'malformed'}
+        with self.lock:
+            self.requests.append({k: v for k, v in req.items() if k != 'psbt'})
+        if not isinstance(req, dict) or req.get('version') != 1:
+            return {'error': 'version'}
+        if req.get('op') == 'info':
+            return {'version': 1, 'tpub': self.tpub, 'fingerprint': self.fp}
+        if req.get('op') == 'sign':
+            index = req.get('index')
+            if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < 2**31:
+                return {'error': 'bad-index'}
+            return self.sign(req.get('psbt', ''), index)
+        return {'error': 'unknown-op'}
+
+
+def serve_signer(path, signer):
+    """Serves signer on the Unix socket path (a stale socket left there is removed), in a daemon thread."""
+    import os
+    import socketserver
+
+    class Handler(socketserver.StreamRequestHandler):
+        def handle(self):
+            for line in self.rfile:
+                if line.strip():
+                    self.wfile.write(json.dumps(signer.handle(line)).encode() + b'\n')
+                    self.wfile.flush()
+
+    if os.path.exists(path):
+        os.remove(path)
+    server = socketserver.ThreadingUnixStreamServer(path, Handler)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
 
 
 def reply(handler, result, status=200):

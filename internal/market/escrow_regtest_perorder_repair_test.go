@@ -13,7 +13,7 @@ import (
 
 // TestEscrowRegtestPerOrderRepair is the real-chain leg of the watch-only wallet repair of per-order (shape (b)) escrows
 // after QA5W4A (scripts/test-escrow-regtest.sh; not run in CI), from QA5W4A's probe: a shape-(b) escrow created through
-// the checkout form against Bitcoin Core (the per-order switch on for this test only), funded at its address and at two
+// the checkout form against Bitcoin Core, funded at its address and at two
 // sibling addresses, then the app restarted onto empty watch-only wallets standing in for ones restored from a backup
 // older than the escrow. Signer up: one watcher pass imports everything again (the app asks getwalletinfo first and
 // makes one import), every address is held, labelled and solvable, and the deposits made meanwhile are found. Signer down
@@ -132,7 +132,6 @@ func TestEscrowRegtestPerOrderRepair(t *testing.T) {
 	if e.A.escrow.Load() == nil || e.A.escrowSignerState() != signerReady {
 		t.Fatalf("escrow did not start against the node (signer %q)", e.A.escrowSignerState())
 	}
-	setPerOrderEscrows(t, true)
 	buyer, buyerSess := e.user("po_repair_b_"+s, "buyer")
 	vendor, _ := e.user("po_repair_v_"+s, "vendor")
 	storeKey := func(uid, key, sql string) {
@@ -306,7 +305,7 @@ func TestEscrowRegtestPerOrderRepair(t *testing.T) {
 			xv = xpub
 		}
 	}
-	market, err := e.A.perOrderXpub(ctx, e.DB, agInt64(t, e, "SELECT id FROM escrows WHERE order_id=$1", order), "market")
+	market, err := e.A.perOrderXpub(ctx, agInt64(t, e, "SELECT id FROM escrows WHERE order_id=$1", order), "market")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -61,7 +61,7 @@ CREATE TABLE escrow_siblings (
 );
 
 -- 4. per_order_xpub (074's optional per-order extended key, NULL until now) holds, for the buyer's and the vendor's key
---    of a shape-(b) escrow only, the party's order wallet key: the account key's child <i>, written rooted as a tpub
+--    of a shape-(b) escrow only, the party's order wallet key: the account key's child <i>, serialized as a tpub
 --    (public data the market already holds, derived at checkout and cross-checked with Core with the escrow's ranged
 --    descriptors), so the watch-only wallet's repair and the signing rebuild the order wallet whatever key the party has
 --    registered since (QA5W4A-5). The market's per-order key comes from the escrow signer and every other row stays NULL.

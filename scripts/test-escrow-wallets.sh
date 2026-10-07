@@ -14,8 +14,9 @@
 #                        (bare cosigners; own origin only; every derivation with rooted global xpubs); the market signs
 #                        through Core descriptorprocesspsbt; combine, finalize, testmempoolaccept and broadcast succeed
 #                        and every final txid equals the unsigned one
-#   es2-refuses-electrum today's ES-2 paste check (Go, checkSettlementPaste, go test -run TestEscrowWalletFixtures on
-#                        this run's files) refuses every Electrum signature, accepts the Core one; the text is logged
+#   es2-accepts-electrum the ES-2 paste check (Go, checkSettlementPaste, go test -run TestEscrowWalletFixtures on
+#                        this run's files) accepts every Electrum signature and the Core one (A-456b relaxed its
+#                        derivation refusal, P4-R13; until then it refused the Electrum ones); the text is logged
 #   electrum-seed-type   Electrum's own seed type derives multisig keys at m/1h and keystore.from_seed takes no path
 #
 # Needs docker (the bitcoin/bitcoin:31.1 image), curl, gpg, python3 (with venv and a C compiler for libsecp256k1), go,
@@ -45,7 +46,7 @@ ELECTRUM_KEY_URL="https://raw.githubusercontent.com/spesmilo/electrum/$ELECTRUM_
 SOURCE_PINS=(setuptools==80.9.0 electrum-ecc==0.0.8)
 WHEEL_PINS=(pycparser==2.23 cffi==2.0.0 cryptography==46.0.7)
 CORE_IMAGE=bitcoin/bitcoin:31.1
-LEGS=(core-shape-a electrum-shape-b es2-refuses-electrum electrum-seed-type)
+LEGS=(core-shape-a electrum-shape-b es2-accepts-electrum electrum-seed-type)
 
 cmdline="$*"
 update=0
@@ -201,15 +202,15 @@ run env PIP_NO_INDEX=1 TMPDIR="$work/tmp" ESCROW_WALLETS_CONTAINER="$container" 
   ESCROW_WALLETS_ELECTRUM_VERSION="$ELECTRUM_VERSION" ESCROW_WALLETS_OUT="$work/out" ESCROW_WALLETS_COMMIT="$commit" \
   "$work/venv/bin/python" scripts/escrow-wallets.py
 py=$?
-say "== es2-refuses-electrum (Go: checkSettlementPaste on this run's files)"
+say "== es2-accepts-electrum (Go: checkSettlementPaste on this run's files)"
 run env GOPROXY=off ESCROW_WALLETS_FIXTURES="$work/out" go test -count=1 -run '^TestEscrowWalletFixtures$' -v ./internal/market/
 gostatus=$?
 set -e
 if [[ $gostatus -eq 0 ]] && grep -q -- '--- PASS: TestEscrowWalletFixtures ' "$body" && grep -q 'core-shape-a.psbt' "$work/out/manifest.json" &&
-  [[ "$(grep -c 'refused by today.s ES-2 check' "$body")" -ge 3 ]]; then
-  say "PASS: es2-refuses-electrum: today's ES-2 check refuses every Electrum signature (text above) and accepts the Core one"
+  [[ "$(grep -c 'accepted by today.s ES-2 check' "$body")" -ge 4 ]]; then
+  say "PASS: es2-accepts-electrum: the ES-2 check accepts every Electrum signature (text above) and the Core one"
 else
-  say "FAIL: es2-refuses-electrum (go test exited $gostatus)"
+  say "FAIL: es2-accepts-electrum (go test exited $gostatus)"
 fi
 
 if [[ $update -eq 1 && $py -eq 0 && $gostatus -eq 0 ]]; then

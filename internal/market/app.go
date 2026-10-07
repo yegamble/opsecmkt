@@ -488,7 +488,8 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			a.serveUpload(w, r.WithContext(context.WithValue(context.WithValue(base, sessionKey{}, token), anonKey{}, anon)), route, session, token)
 			return
 		}
-		if isMultipart(r) {
+		// The sign form's signed PSBT file (A-456b) is the one other multipart post; it is read below.
+		if isMultipart(r) && !psbtUploadRoutes[r.URL.Path] {
 			a.refuseMultipartElsewhere(w, r, token)
 			return
 		}
@@ -496,22 +497,32 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Read-only preview. Start with PostgreSQL to save changes.", 403)
 			return
 		}
-		// The body is read first (at most 64 KiB) and its fields counted before it is parsed: parsing runs before
-		// any slot, on as many connections as the listener admits, and a body of thousands of distinct empty
-		// fields cost about 3.7 MB of allocation to parse. No form has more than maxFormFields (PR #15 re-review).
-		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 65536))
-		if err != nil || bytes.Count(body, []byte("&")) >= maxFormFields {
-			http.Error(w, "Invalid or oversized form", 400)
-			return
-		}
-		r.Body = io.NopCloser(bytes.NewReader(body))
-		if err := r.ParseForm(); err != nil {
-			http.Error(w, "Invalid or oversized form", 400)
-			return
+		if isMultipart(r) {
+			// Its five known fields, bounded, become the form; every check below applies to them (psbt_upload.go).
+			form, code, msg := readPSBTUploadForm(w, r)
+			if form == nil {
+				http.Error(w, msg, code)
+				return
+			}
+			r.Form, r.PostForm = form, form
+		} else {
+			// The body is read first (at most 64 KiB) and its fields counted before it is parsed: parsing runs before
+			// any slot, on as many connections as the listener admits, and a body of thousands of distinct empty
+			// fields cost about 3.7 MB of allocation to parse. No form has more than maxFormFields (PR #15 re-review).
+			body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 65536))
+			if err != nil || bytes.Count(body, []byte("&")) >= maxFormFields {
+				http.Error(w, "Invalid or oversized form", 400)
+				return
+			}
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			if err := r.ParseForm(); err != nil {
+				http.Error(w, "Invalid or oversized form", 400)
+				return
+			}
 		}
 		// No handler meets text the database would refuse: on a UTF8 database invalid UTF-8 or a NUL byte made the
 		// write fail with a 500, after a confirmation had accepted the password (QA5W3B-5). The upload routes check
-		// their text parts themselves (uploads.go readForm).
+		// their text parts themselves (uploads.go readForm), and so does the sign form's multipart reader.
 		if !formTextValid(r.Form) {
 			http.Error(w, invalidFormText, 400)
 			return

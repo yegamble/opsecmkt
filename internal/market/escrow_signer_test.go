@@ -2,7 +2,9 @@ package market
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -30,6 +32,77 @@ type fakeSigner struct {
 	raw      string // a canned reply line for every request ("" = answer properly)
 	refuse   string // a refusal class for sign
 	requests []map[string]any
+	// A-456b: with cosign set, sign answers as cmd/escrow-signer does (cosign): its refusals, checked before anything is
+	// signed, or the request with one fake signature per input under its key; refused records each refusal class.
+	cosign  bool
+	refused []string
+}
+
+// cosignPSBT is the fake signer's answer to a sign request with cosign set, made as cmd/escrow-signer/sign.go makes it
+// before Core signs: every input's sighash type unset or ALL; its witness script exactly 2 <three sorted distinct
+// compressed keys on the curve> 3 CHECKMULTISIG; its witness_utxo paying P2WSH of that script; one script for every
+// input (one escrow per request); and exactly one of the script's keys the signer's own at index/0/k or index/1/k with
+// k < 20. The signature is fakeSig under that key with SIGHASH_ALL, which the fake escrow node's finalizepsbt accepts.
+// It answers "" and the refusal class otherwise.
+func (f *fakeSigner) cosignPSBT(psbt string, index uint32) (string, string) {
+	p, err := decodePSBT(psbt)
+	if err != nil || len(p.Inputs) == 0 {
+		return "", "bad-psbt"
+	}
+	var script []byte
+	for _, in := range p.Inputs {
+		if in.HasSighashType && in.SighashType != 1 {
+			return "", "sighash"
+		}
+		ws := in.WitnessScript
+		if len(ws) != 105 || ws[0] != 0x52 || ws[103] != 0x53 || ws[104] != 0xae || ws[1] != 33 || ws[35] != 33 || ws[69] != 33 ||
+			bytes.Compare(ws[2:35], ws[36:69]) >= 0 || bytes.Compare(ws[36:69], ws[70:103]) >= 0 || !onCurve(ws[2:35]) || !onCurve(ws[36:69]) || !onCurve(ws[70:103]) {
+			return "", "not-escrow-script"
+		}
+		sum := sha256.Sum256(ws)
+		if in.WitnessUTXO == nil || !bytes.Equal(in.WitnessUTXO.Script, append([]byte{0, 32}, sum[:]...)) {
+			return "", "witness-utxo"
+		}
+		if script == nil {
+			script = ws
+		} else if !bytes.Equal(ws, script) {
+			return "", "mixed-scripts"
+		}
+	}
+	ours := map[string]bool{}
+	if order, used, err := btc.CKDPub(f.key, index); err == nil && used == index {
+		for chain := uint32(0); chain < 2; chain++ {
+			c, _, err := btc.CKDPub(order, chain)
+			for k := uint32(0); err == nil && k < 20; k++ {
+				if leaf, used, err := btc.CKDPub(c, k); err == nil && used == k {
+					ours[string(leaf.PubKey[:])] = true
+				}
+			}
+		}
+	}
+	var mine []byte
+	for i := 0; i < 3; i++ {
+		if k := script[2+34*i : 35+34*i]; ours[string(k)] {
+			if mine != nil {
+				return "", "two-signer-keys"
+			}
+			mine = k
+		}
+	}
+	if mine == nil {
+		return "", "key-not-found"
+	}
+	raw := p.Raw
+	for i := range p.Inputs {
+		next, err := parsePSBT(raw)
+		if err == nil {
+			raw, err = next.withInputField(i, append([]byte{0x02}, mine...), fakeSig(mine, p.TxID(), 1))
+		}
+		if err != nil {
+			return "", "bad-psbt"
+		}
+	}
+	return encodePSBT(raw), ""
 }
 
 // signerKey is a rooted account key standing in for a signer's, distinct per n.
@@ -95,7 +168,7 @@ func (f *fakeSigner) serve(c net.Conn) {
 		json.Unmarshal(line, &req)
 		f.mu.Lock()
 		f.requests = append(f.requests, req)
-		raw, refuse, key, fp := f.raw, f.refuse, f.key, f.fp
+		raw, refuse, key, fp, cosign := f.raw, f.refuse, f.key, f.fp, f.cosign
 		f.mu.Unlock()
 		if raw != "" {
 			c.Write([]byte(raw + "\n"))
@@ -110,9 +183,21 @@ func (f *fakeSigner) serve(c net.Conn) {
 			}
 			reply = map[string]any{"version": 1, "tpub": key.Rooted(btc.VersionTpub), "fingerprint": fp}
 		case "sign":
-			if refuse != "" {
+			psbt, _ := req["psbt"].(string)
+			index, _ := req["index"].(float64)
+			switch {
+			case refuse != "":
 				reply = map[string]any{"error": refuse}
-			} else {
+			case cosign:
+				signed, class := f.cosignPSBT(psbt, uint32(index))
+				reply = map[string]any{"psbt": signed}
+				if class != "" {
+					reply = map[string]any{"error": class}
+					f.mu.Lock()
+					f.refused = append(f.refused, class)
+					f.mu.Unlock()
+				}
+			default:
 				reply = map[string]any{"psbt": "signed:" + req["psbt"].(string)}
 			}
 		}

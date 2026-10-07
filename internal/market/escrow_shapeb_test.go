@@ -12,32 +12,40 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A-456a (shape (b) slice 4, first half; rulings P4-R2, P4-R17, P4-R18; ADDENDUM QA4W5K-6): checkout picks the escrow's
 // shape from both parties' active keys, refuses a mixed pair, takes a per-order index i >= 2 from the account's one
 // shared counter, derives every per-order key in Go and cross-checks it with Core before anything is stored, imports
 // the per-order wallet's ranged descriptors into the watch-only wallet and routes a deposit to a sibling address to the
-// stray refund. Until A-456b, the per-order switch (perOrderEscrows) is off and users are still refused. DB integration
-// with the simulated Core of escrow_fake_test.go (real BIP32 public derivation for per-order keys) and the fake signer
-// of escrow_signer_test.go: simulated RPC, not chain evidence (scripts/test-escrow-regtest.sh has the real Core leg).
+// stray refund. (A-456b removed the checkout switch A-456a kept off.) DB integration with the simulated Core of
+// escrow_fake_test.go (real BIP32 public derivation for per-order keys) and the fake signer of escrow_signer_test.go:
+// simulated RPC, not chain evidence (scripts/test-escrow-regtest.sh has the real Core leg).
 
-// setPerOrderEscrows sets the per-order switch for one test.
-func setPerOrderEscrows(t *testing.T, on bool) {
+// newShapeBEnv is newEscrowEnv with a fake escrow signer co-signing as cmd/escrow-signer does: how every shape-(b) test
+// that builds per-order escrows on the fake node starts. The fake derives each order wallet's keys in Go (math/big,
+// slow under -race on a loaded host), so its RPC calls get a generous rpcTimeout instead of the production 10 s, set
+// before the app starts and restored after it stops (a call inside a form post is still bounded by ServeHTTP's request
+// deadline: what keeps a checkout within it is the fake's derivation memo, ckdMemo). No test in this package uses
+// t.Parallel (testenv_test.go), so the package variable is safe to set; a test exercising a timeout sets its own
+// smaller value after this.
+func newShapeBEnv(t *testing.T) (*escrowEnv, *fakeSigner) {
 	t.Helper()
-	prev := perOrderEscrows.Load()
-	perOrderEscrows.Store(on)
-	t.Cleanup(func() { perOrderEscrows.Store(prev) })
+	prev := rpcTimeout
+	rpcTimeout = 2 * time.Minute
+	t.Cleanup(func() { rpcTimeout = prev })
+	f := newFakeSigner(t, signerKey(t, 7))
+	f.cosign = true // A-456b: it co-signs as cmd/escrow-signer does, refusing what that signer refuses
+	x := signerApp(t, f.path)
+	return x, f
 }
 
-// newPerOrderEnv is newEscrowEnv with a fake escrow signer, both parties' active keys per-order wallet keys and the
-// per-order switch on.
+// newPerOrderEnv is newShapeBEnv with both parties' active keys per-order wallet keys.
 func newPerOrderEnv(t *testing.T) (*escrowEnv, *fakeSigner) {
 	t.Helper()
-	f := newFakeSigner(t, signerKey(t, 7))
-	x := signerApp(t, f.path)
+	x, f := newShapeBEnv(t)
 	agExec(x.testEnv, "UPDATE user_escrow_keys SET layout='per_order' WHERE user_id IN ($1,$2)", x.buyer, x.vendor)
-	setPerOrderEscrows(t, true)
 	return x, f
 }
 
@@ -132,8 +140,8 @@ func (x *escrowEnv) sibling(order string, branch, k int) string {
 
 // P4-R18: an escrow is shape (b) only when both parties' active keys are per-order wallet keys and shape (a) only when
 // both are Bitcoin Core keys. A mixed pair is refused, both ways, with a plain message naming the vendor's key type (as
-// the listing shows it), on the order page and at checkout, with nothing written and no node call, whether the
-// per-order switch is on or off.
+// the listing shows it), on the order page and at checkout, with nothing written and no node call, whether an escrow
+// signer is configured (per-order escrows offered, A-456b) or not.
 func TestEscrowShapeBMixedPairRefused(t *testing.T) {
 	for _, c := range []struct {
 		name, perOrder, want string
@@ -141,10 +149,14 @@ func TestEscrowShapeBMixedPairRefused(t *testing.T) {
 		{"vendor per-order, buyer Core", "vendor", "The vendor's Bitcoin escrow key is for a per-order wallet and yours is for Bitcoin Core"},
 		{"vendor Core, buyer per-order", "buyer", "The vendor's Bitcoin escrow key is for Bitcoin Core and yours is for a per-order wallet"},
 	} {
-		for _, on := range []bool{false, true} {
-			t.Run(c.name+" switch "+strconv.FormatBool(on), func(t *testing.T) {
-				x := newEscrowEnv(t)
-				setPerOrderEscrows(t, on)
+		for _, signer := range []bool{false, true} {
+			t.Run(c.name+" signer "+strconv.FormatBool(signer), func(t *testing.T) {
+				var x *escrowEnv
+				if signer {
+					x = signerApp(t, newFakeSigner(t, signerKey(t, 7)).path)
+				} else {
+					x = newEscrowEnv(t)
+				}
 				uid := map[string]string{"buyer": x.buyer, "vendor": x.vendor}[c.perOrder]
 				agExec(x.testEnv, "UPDATE user_escrow_keys SET layout='per_order' WHERE user_id=$1", uid)
 				page := html.UnescapeString(x.page("/order?id="+x.order, x.buyerSess))
@@ -164,27 +176,35 @@ func TestEscrowShapeBMixedPairRefused(t *testing.T) {
 	}
 }
 
-// Until A-456b, the per-order switch is off: both parties' keys per-order wallet keys are still refused, with the
-// existing "not available on this market yet" answer, at checkout and on the order page, nothing written.
-func TestEscrowShapeBSwitchOffRefuses(t *testing.T) {
-	if perOrderEscrows.Load() {
-		t.Fatal("the per-order switch defaults to on: a user could create an escrow nothing can sign the release of")
-	}
-	x := newEscrowEnv(t)
+// A-456b removed A-456a's per-order switch: a buyer and a vendor whose active keys are both per-order wallet keys are
+// offered escrow and get a per-order escrow, now that the market co-signs its settlements through the escrow signer
+// (TestEscrowShapeBCosignedBySigner). Without an escrow signer configured, no per-order escrow is offered or created:
+// nothing could co-sign it (and, under escrow-only intake, TestEscrowOnlyPerOrderVendorNeedsSigner).
+func TestEscrowShapeBOpenToUsers(t *testing.T) {
+	f := newFakeSigner(t, signerKey(t, 7))
+	x := signerApp(t, f.path)
 	agExec(x.testEnv, "UPDATE user_escrow_keys SET layout='per_order' WHERE user_id IN ($1,$2)", x.buyer, x.vendor)
-	const want = "Your Bitcoin escrow key is for a per-order wallet, and escrows with per-order wallets are not available on this market yet."
 	page := html.UnescapeString(x.page("/order?id="+x.order, x.buyerSess))
+	if !strings.Contains(page, "Pay into an escrow</button>") || strings.Contains(page, "not available on this market") {
+		t.Fatalf("order page with two per-order keys does not offer escrow:\n%s", page)
+	}
+	x.mustCheckout(x.order, regtestAddr("open-1"))
+	if rows := x.escrowRows(x.order); rows["market"].suffix != "/"+strconv.FormatInt(x.marketIndex(x.order), 10)+"/0/0" {
+		t.Fatalf("not a per-order escrow: %+v", rows)
+	}
+
+	n := newEscrowEnv(t) // no ESCROW_SIGNER_SOCKET
+	agExec(n.testEnv, "UPDATE user_escrow_keys SET layout='per_order' WHERE user_id IN ($1,$2)", n.buyer, n.vendor)
+	const want = "Escrows with per-order wallets need the market's escrow signer, which is not available on this market right now."
+	page = html.UnescapeString(n.page("/order?id="+n.order, n.buyerSess))
 	if !strings.Contains(page, want) || strings.Contains(page, "Pay into an escrow</button>") {
-		t.Fatalf("order page offers a per-order escrow with the switch off:\n%s", page)
+		t.Fatalf("order page without a signer:\n%s", page)
 	}
-	w := x.checkout(x.order, regtestAddr("switchoff"))
-	if body := html.UnescapeString(w.Body.String()); w.Code != 409 || !strings.Contains(body, want) {
-		t.Fatalf("checkout with the switch off: %d %s", w.Code, body)
+	w := n.checkout(n.order, regtestAddr("open-nosigner"))
+	if body := html.UnescapeString(w.Body.String()); w.Code != 503 || !strings.Contains(body, "escrow signer") {
+		t.Fatalf("checkout without a signer: %d %s", w.Code, body)
 	}
-	x.nothingWritten(x.order)
-	if n := x.core.count("createpsbt") + x.core.count("importdescriptors"); n != 0 {
-		t.Fatalf("%d node calls", n)
-	}
+	n.nothingWritten(n.order)
 }
 
 // Shape (b): each party's key is its account key's child <i>/0/0 with i from the account's one shared counter (2 for a
@@ -286,9 +306,7 @@ func TestEscrowShapeBChosen(t *testing.T) {
 // The one shared counter (P4-R2): an account's per-order index continues past the highest index its escrows used in
 // either shape, never below the floor a restore set, and never below 2.
 func TestEscrowShapeBSharedCounter(t *testing.T) {
-	f := newFakeSigner(t, signerKey(t, 7))
-	x := signerApp(t, f.path)
-	setPerOrderEscrows(t, true)
+	x, _ := newShapeBEnv(t)
 	for i := range 2 { // two shape-(a) escrows: /0/1 and /0/2
 		x.checkoutAside("shared-a-" + strconv.Itoa(i))
 	}
@@ -367,7 +385,6 @@ func TestEscrowShapeBCrossCheckMismatch(t *testing.T) {
 // Shape (b) needs the escrow signer: with none configured the checkout is refused with a plain retry answer.
 func TestEscrowShapeBNeedsSigner(t *testing.T) {
 	x := newEscrowEnv(t)
-	setPerOrderEscrows(t, true)
 	agExec(x.testEnv, "UPDATE user_escrow_keys SET layout='per_order' WHERE user_id IN ($1,$2)", x.buyer, x.vendor)
 	w := x.checkout(x.order, regtestAddr("nosigner"))
 	if body := html.UnescapeString(w.Body.String()); w.Code != 503 || !strings.Contains(body, "escrow signer") || !strings.Contains(body, "try again later") {
@@ -488,9 +505,7 @@ func TestEscrowShapeBRestartReimport(t *testing.T) {
 // section 6) reads an account's highest index in both shapes: after a per-order escrow at /3/0/0 (and shape-(a) ones at
 // /0/1 and /0/2) the account's next index is 3+1+50.
 func TestEscrowShapeBRestoreFloor(t *testing.T) {
-	f := newFakeSigner(t, signerKey(t, 7))
-	x := signerApp(t, f.path)
-	setPerOrderEscrows(t, true)
+	x, _ := newShapeBEnv(t)
 	for i := range 2 {
 		x.checkoutAside("floor-a-" + strconv.Itoa(i))
 	}
@@ -519,9 +534,7 @@ func TestEscrowShapeBRestoreFloor(t *testing.T) {
 // another key of the same origin: not of another escrow's key in either shape, nor of the account's receiving and change
 // branches (/0, /1) a Bitcoin Core wallet of the same account uses, nor of the practice key.
 func TestEscrowShapeBNoServedKeyIsAncestor(t *testing.T) {
-	f := newFakeSigner(t, signerKey(t, 7))
-	x := signerApp(t, f.path)
-	setPerOrderEscrows(t, true)
+	x, _ := newShapeBEnv(t)
 	for i := range 2 {
 		x.checkoutAside("anc-a-" + strconv.Itoa(i))
 	}

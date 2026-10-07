@@ -11,7 +11,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -55,16 +54,11 @@ import (
 // (escrow_bip32.go) and Core must agree before anything is stored (checkPerOrderEscrow): the three keys, the address,
 // and the order wallet's sibling addresses /0/1..19 and /1/0..9, which are stored (escrow_siblings) and imported with the
 // escrow as two ranged descriptors of the rooted per-order keys, so a deposit to one is seen and returned by the stray
-// refund (escrow_watch.go). The buyer's and the vendor's order wallet keys (rooted) are stored with their keys
-// (per_order_xpub, QA5W4A-5), so they are rebuilt (perOrderXpub) whatever key a party has registered since; the market's
-// comes from the escrow signer. Until A-456b the
-// per-order switch (perOrderEscrows) is off and a pair of per-order keys is still refused (errEscrowBuyerPerOrder).
-
-// perOrderEscrows admits shape-(b) escrows at checkout (A-456a). While it is off, the default, a checkout where both
-// parties' active keys are per-order wallet keys is refused with errEscrowBuyerPerOrder, as before A-456a: nothing can
-// sign such an escrow's release until the market co-signs it through the escrow signer (A-456b, which deletes this
-// switch). Only tests turn it on.
-var perOrderEscrows atomic.Bool
+// refund (escrow_watch.go), which spends a sibling's deposits with that sibling's own script (A-456b, siblingKeys).
+// The buyer's and the vendor's order wallet keys (tpubs) are stored with their keys (per_order_xpub, QA5W4A-5), so
+// they are rebuilt (perOrderXpub) whatever key a party has registered since; the market's comes from the escrow signer.
+// Since A-456b a pair of per-order keys gets a per-order escrow whenever the escrow signer, which co-signs its
+// settlements (escrow_cosign.go), answers with its pinned key; A-456a's checkout switch is gone.
 
 func init() {
 	registerAction("/orders/escrow", actionSpec{OneAtATime: true, Off: escrowOff, Run: escrowCheckoutAction})
@@ -87,9 +81,6 @@ var (
 	errEscrowSelf       = fail(409, "You cannot buy your own listing with escrow: an escrow needs two parties' keys. Nothing was changed.")
 	errEscrowBuyerKey   = fail(409, "Activate your Bitcoin escrow key first: register it and sign its practice transaction on your escrow key page. Nothing was changed.")
 	errEscrowVendorKey  = fail(409, "The vendor has no active Bitcoin escrow key, so this order cannot use escrow. Nothing was changed.")
-	// A-455, A-456a: while the per-order switch is off (perOrderEscrows), a pair of per-order wallet keys never makes an
-	// escrow: nothing could sign its release yet (A-456b).
-	errEscrowBuyerPerOrder = fail(409, "Your Bitcoin escrow key is for a per-order wallet, and escrows with per-order wallets are not available on this market yet. Nothing was changed.")
 	// P4-R18: a Bitcoin Core wallet cannot sign a per-order key, nor a per-order wallet a Core child, so both parties'
 	// keys must be of one kind. The listing and the vendor's page show the vendor's (A-455).
 	errEscrowMixedVendorPerOrder = fail(409, "The vendor's Bitcoin escrow key is for a per-order wallet and yours is for Bitcoin Core. An escrow needs both keys to be of the same kind, so this order cannot use escrow. Nothing was changed.")
@@ -159,8 +150,7 @@ type escrowParty struct {
 // escrowParties locks the buyer's and the vendor's key rows (in account order, so two checkouts never deadlock) and
 // returns each party's key with its next child suffix (escrowNextChildSQL). The count keys off the account, never the
 // HMAC, so an APP_SECRET_KEY rotation never hands out a child key twice (chair's ruling (a) on QA25); the key rows
-// locked FOR UPDATE serialise it. Both keys must have one layout (P4-R18): a mixed pair is refused naming the vendor's,
-// and a pair of per-order keys only while the per-order switch is off (perOrderEscrows).
+// locked FOR UPDATE serialise it. Both keys must have one layout (P4-R18): a mixed pair is refused naming the vendor's.
 func (a *App) escrowParties(ctx context.Context, tx *sql.Tx, o *Order) (buyer, vendor escrowParty, err error) {
 	rows, err := tx.QueryContext(ctx, `SELECT user_id,xpub_sealed,xpub_hmac,origin_fingerprint,origin_path,active_at IS NOT NULL,layout FROM user_escrow_keys
 		WHERE user_id IN ($1,$2) ORDER BY user_id FOR UPDATE`, o.BuyerID, o.VendorID)
@@ -197,8 +187,6 @@ func (a *App) escrowParties(ctx context.Context, tx *sql.Tx, o *Order) (buyer, v
 		return buyer, vendor, errEscrowMixedVendorPerOrder
 	case v != layout:
 		return buyer, vendor, errEscrowMixedVendorCore
-	case layout == layoutPerOrder && !perOrderEscrows.Load():
-		return buyer, vendor, errEscrowBuyerPerOrder
 	}
 	// The one shared counter (P4-R2): never below 2 for a per-order key.
 	floor := int64(1)
@@ -702,11 +690,11 @@ func insertEscrow(ctx context.Context, tx *sql.Tx, orderID, refund string, feeBp
 				return errEscrowOrigin
 			}
 			uid, h = p.UserID, p.KeyHMAC
-			// Shape (b): the party's order wallet key, rooted as the ranged descriptors name it and cross-checked with
+			// Shape (b): the party's order wallet key (the ranged descriptors name it rooted), cross-checked with
 			// Core with them (checkPerOrderEscrow), and checked again here against the key stored beside it (QA5W4A-5).
 			if p.Layout == layoutPerOrder {
 				s := perOrderStored{Party: p.Party, PubKey: hex.EncodeToString(b.Keys[p.Party]), Suffix: p.Suffix,
-					Xpub: sql.NullString{String: p.Order.Rooted(versionTpub), Valid: true}}
+					Xpub: sql.NullString{String: p.Order.Serialize(versionTpub), Valid: true}}
 				if _, err := s.orderKey(nil); err != nil {
 					return errPerOrderMismatch
 				}

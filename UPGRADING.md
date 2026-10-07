@@ -1460,6 +1460,31 @@ Rolling back past this release
 needs the pre-upgrade backup, as for every migration (section 5): the earlier release refuses to start on a database
 that records migration 089.
 
+## 45. Per-order Bitcoin escrows: open to users, co-signed by the escrow signer (A-456b)
+
+No migration. Only with `ESCROW_BTC=on`, a buyer and a vendor whose active escrow keys are both per-order wallet keys now get a
+per-order escrow at checkout, and the market co-signs its settlements and fee bumps through the escrow signer
+(`cmd/escrow-signer`), never the Core arbiter wallet, which keeps Bitcoin Core escrows. Per-order escrows are offered only
+while `ESCROW_SIGNER_SOCKET` names a signer whose account key matches the pins: with no signer configured, or a signer
+whose key differs (`escrow_signer_fingerprint`, `escrow_signer_xpub_hmac`), the order page says "Escrows with per-order
+wallets need the market's escrow signer, which is not available on this market right now", checkout is refused with
+nothing written and, under escrow-only Bitcoin intake, a per-order vendor's listings are not available for purchase in
+BTC (the readiness panel on `/admin` lists the vendor). A signer that does not answer when a settlement waits for it
+leaves the settlement signed by its party, with "The market's escrow signer could not co-sign it yet" on the order page
+and one log line; the next pass tries again and nothing is rebuilt. Set up the signer first: see the [operator
+guide](docs/operator-guide.md#escrow-signer). The signer's RPC user needs no new method. A deposit to one of a per-order
+escrow's sibling addresses is now returned by a stray refund spending that address's own script, co-signed by the
+signer.
+
+Also new for both parties of a per-order escrow: an order wallet setup page (`/escrow-setup?id=<order>`, linked from the
+order page, never shown to staff or the other party), and the settlement sign form takes the signed PSBT as a file (at
+most 64 KB) beside the paste; it is now a `multipart/form-data` form, the only one besides photo and avatar uploads. A
+pasted or uploaded PSBT is no longer refused for a derivation entry under the market's key (Electrum and Sparrow write
+one for every key); a signature under the market's key is still refused. No real Electrum, Sparrow or hardware wallet
+has been tried with a per-order escrow (ledger items A-457 and A-458); see [per-order
+escrow](docs/escrow.md#per-order-escrow-settlement-setup-and-upload-a-456b-shape-b). Rolling back past this release
+needs the pre-upgrade backup (section 5) once a per-order escrow exists: the earlier release cannot settle it.
+
 ## Appendix: new keys by hand
 
 `./scripts/install.sh upgrade` writes these for you. To add them yourself, use your editor (values in single
