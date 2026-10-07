@@ -97,7 +97,7 @@ func requireUTF8Database(ctx context.Context, db *sql.DB) error {
 		return errors.New("database encoding check failed: " + connectErrorClass(err))
 	}
 	if encoding != "UTF8" {
-		return fmt.Errorf("the database encoding is %s, not UTF8 (SHOW server_encoding); the market needs character semantics for length limits, handles, case and sorting, so it will not start. Nothing was changed. To move the data, follow UPGRADING.md section 42: check the old database with scripts/check-utf8.sql, back it up with BACKUP_DUMP_ENCODING=SQL_ASCII scripts/backup.sh, restore that backup with scripts/restore.sh into a database created with CREATE DATABASE opsecmkt ENCODING 'UTF8' TEMPLATE template0, prove that database's own backup restores, and point DATABASE_URL at it; any other copy can double-encode accented text or carry bytes that are not UTF-8 (see \"External PostgreSQL\" in docs/operator-guide.md)", encoding)
+		return fmt.Errorf("the database encoding is %s, not UTF8 (SHOW server_encoding); the market needs character semantics for length limits, handles, case and sorting, so it will not start. Nothing was changed. To move the data, follow UPGRADING.md section 42: check the old database with scripts/check-utf8.sql, back it up with BACKUP_DUMP_ENCODING=SQL_ASCII scripts/backup.sh, restore that backup with scripts/restore.sh into a new database created with CREATE DATABASE opsecmkt_utf8 ENCODING 'UTF8' TEMPLATE template0 (beside the old one, which keeps its name until the switch), prove that database's own backup restores, and point DATABASE_URL at it; any other copy can double-encode accented text or carry bytes that are not UTF-8 (see \"External PostgreSQL\" in docs/operator-guide.md)", encoding)
 	}
 	return nil
 }

@@ -273,7 +273,7 @@ This automates database recovery and upgrade checks; it does not test backup sch
 
 Requires Docker, Go, Python 3 and age; no host PostgreSQL client (the client tools run inside the container, through
 wrappers put first on `PATH`). `UTF8_MIGRATION_CONTAINER` names the container. It rehearses [UPGRADING.md section
-42](../UPGRADING.md#42-database-encoding-must-be-utf8-a-481) (A-481; QA5W3B-1 and -2, QA5W4B-2 to -4) with `scripts/check-utf8.sql`,
+42](../UPGRADING.md#42-database-encoding-must-be-utf8-a-481) (A-481; QA5W3B-1 and -2, QA5W4B-2 to -4, QA5W5B-1 to -3, -6 and -8) with `scripts/check-utf8.sql`,
 `scripts/backup.sh` and `scripts/restore.sh`:
 
 1. Starts a disposable `postgres:17-alpine` container on a random loopback port; the server built from this checkout
@@ -288,10 +288,19 @@ wrappers put first on `PATH`). `UTF8_MIGRATION_CONTAINER` names the container. I
    values of that listing in the same round, the check passes, the round trip restores, the first listing's title is
    byte for byte as written, the review reads `Great ÿþ seller`, the second listing `Crème brûlée` and `été`, and the
    server starts on the new database.
-3. `LATIN1`, `Crème brûlée — 東京 🔒`: `restore.sh` refuses a backup taken as `LATIN1` (its restore would
-   double-encode every non-ASCII character) with a message citing section 42, leaving the new database empty; the
-   section's way out for that backup (a plain `pg_restore` into a temporary `LATIN1` database, checked and backed up
-   again with `BACKUP_DUMP_ENCODING=SQL_ASCII`, then `restore.sh`) restores it exactly; `BACKUP_DUMP_ENCODING=LATIN1`
+3. The check's reach and readings: in a `SQL_ASCII` database, bad bytes in a `text[]` element, a domain over `text`
+   and an element of a domain over `varchar[]` are each named (an element by its subscript, `tags[2]`), a composite
+   key is written `a = 'x' AND b = '1'`, a table and column whose names need quoting are printed quoted, and
+   `東京 \xff` is to be typed; corrected by the printed statements, the check passes. In a `WIN1252` database
+   `\x93quote\x94 \x80 5` is to be read as `WIN1252` and comes out `“quote” € 5`; in an `EUC_JP` one the text is to be
+   typed.
+4. `LATIN1`, `Crème brûlée — 東京 🔒`: `restore.sh` refuses a backup taken as `LATIN1` (its restore would
+   double-encode every non-ASCII character) with a message naming the database's encoding and citing section 42,
+   leaving the new database empty, and so a backup taken as `UTF8` with `client_encoding` set to `UTF8` for the
+   database (its DATABASE entry still records `LATIN1`); the section's way out for either backup (a plain `pg_restore`
+   into a temporary `LATIN1` database, backed up again with `BACKUP_DUMP_ENCODING=SQL_ASCII`, then `restore.sh`)
+   restores it exactly. A UTF8 database dumped in `SJIS` is refused with a way out through a `UTF8` database, never an
+   `SJIS` one. `BACKUP_DUMP_ENCODING=LATIN1`
    is refused with no file written; with `BACKUP_DUMP_ENCODING=SQL_ASCII` the old database restores exactly, and the
    same option's round trip of the new UTF8 database changes no byte.
 
