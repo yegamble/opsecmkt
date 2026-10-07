@@ -711,9 +711,11 @@ func insertEscrow(ctx context.Context, tx *sql.Tx, orderID, refund string, feeBp
 			return err
 		}
 	}
-	// Shape (b): the order wallet's sibling addresses, which the watcher reads with the escrow's (A-456a).
+	// Shape (b): the order wallet's sibling addresses, which the watcher reads with the escrow's (A-456a), and each one's
+	// three keys, which its stray refund spends with (A-456b).
 	for _, s := range b.Siblings {
-		if _, err = tx.ExecContext(ctx, "INSERT INTO escrow_siblings(escrow_id,branch,idx,address) VALUES($1,$2,$3,$4)", id, s.Branch, s.Index, s.Address); err != nil {
+		if _, err = tx.ExecContext(ctx, "INSERT INTO escrow_siblings(escrow_id,branch,idx,address,buyer_pubkey,vendor_pubkey,market_pubkey) VALUES($1,$2,$3,$4,$5,$6,$7)",
+			id, s.Branch, s.Index, s.Address, hex.EncodeToString(s.Keys["buyer"]), hex.EncodeToString(s.Keys["vendor"]), hex.EncodeToString(s.Keys["market"])); err != nil {
 			return err
 		}
 	}

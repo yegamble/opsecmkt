@@ -268,6 +268,9 @@ done
 [[ $(sql -c "SELECT string_agg(conname || '=' || convalidated, ',' ORDER BY conname) FROM pg_constraint WHERE conname IN ('escrow_pubkeys_suffix_steps','escrow_pubkeys_origin_path','escrow_pubkeys_origin_path_check')") == 'escrow_pubkeys_origin_path=true,escrow_pubkeys_suffix_steps=true' ]]
 [[ $(sql -c "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname='escrow_pubkeys_suffix_steps'") == *'2147483646'*'2147483647'* ]]
 [[ $(sql -c "SELECT to_regclass('escrow_siblings') IS NOT NULL") == t ]]
+# Each sibling address's three keys (migration 091, A-456b): required columns and the distinct-keys check.
+[[ $(sql -c "SELECT string_agg(column_name || ':' || is_nullable, ',' ORDER BY column_name) FROM information_schema.columns WHERE table_name='escrow_siblings' AND column_name LIKE '%pubkey'") == 'buyer_pubkey:NO,market_pubkey:NO,vendor_pubkey:NO' ]]
+[[ $(sql -c "SELECT count(*) FROM pg_constraint WHERE conname='escrow_siblings_distinct_keys' AND convalidated") == 1 ]]
 
 # Behaviour through the upgraded server: an alpha.1 password still signs in, the migrated draft is shown as
 # a draft, and ordering the same product and currency again returns that draft instead of a second one.
@@ -319,13 +322,14 @@ stop_server
 [[ $(sql -c "SELECT count(*) FROM schema_migrations WHERE version=90") == 1 ]]
 
 # Migration 089 (A-456a, QA5W3A-11) over bad historical rows: the database is put back as 088 left it (089's table and
-# checks undone, its row in schema_migrations removed) holding two escrow key rows 089 refuses: a shape-(a) buyer key
-# /0/2147483648 (a step of 2^31 names a hardened key) and a market per-order key at the practice index /2147483647/0/0.
-# The current server must exit non-zero before serving, with 089's message counting them, naming a suffix and
-# UPGRADING.md section 44, recording and changing nothing; with the rows gone it starts and applies 089.
+# checks undone, its row in schema_migrations removed, and 091's, which adds to that table) holding two escrow key rows
+# 089 refuses: a shape-(a) buyer key /0/2147483648 (a step of 2^31 names a hardened key) and a market per-order key at
+# the practice index /2147483647/0/0. The current server must exit non-zero before serving, with 089's message counting
+# them, naming a suffix and UPGRADING.md section 44, recording and changing nothing; with the rows gone it starts and
+# applies 089 and 091.
 sql <<'SQL'
 BEGIN;
-DELETE FROM schema_migrations WHERE version=89;
+DELETE FROM schema_migrations WHERE version IN (89,91);
 DROP TABLE escrow_siblings;
 ALTER TABLE escrow_pubkeys DROP CONSTRAINT escrow_pubkeys_suffix_steps, DROP CONSTRAINT escrow_pubkeys_origin_path;
 ALTER TABLE escrow_pubkeys ADD CONSTRAINT escrow_pubkeys_origin_path_check CHECK (origin_path ~ '^(/(0|[1-9][0-9]{0,9})h?){1,10}$');
@@ -369,6 +373,54 @@ start_server after-089 "$work/new-server" "$root"
 stop_server
 [[ $(sql -c "SELECT count(*) FROM schema_migrations WHERE version=89 AND name='escrow_per_order'") == 1 ]]
 [[ $(sql -c "SELECT string_agg(conname || '=' || convalidated, ',' ORDER BY conname) FROM pg_constraint WHERE conname IN ('escrow_pubkeys_suffix_steps','escrow_pubkeys_origin_path','escrow_pubkeys_origin_path_check')") == 'escrow_pubkeys_origin_path=true,escrow_pubkeys_suffix_steps=true' ]]
+[[ $(sql -c "SELECT count(*) FROM schema_migrations WHERE version=91 AND name='escrow_sibling_keys'") == 1 ]]
+
+# Migration 091 (A-456b) over sibling rows without keys (only a test or development database has them: no release
+# created a per-order escrow before it): the database is put back as 090 left it (091's columns and check dropped, its
+# row removed) holding a sibling address row of a test escrow. The current server must exit non-zero before serving,
+# with 091's message counting the row and naming UPGRADING.md section 45, recording and changing nothing; with the row
+# gone it starts and applies 091.
+sql <<'SQL'
+BEGIN;
+DELETE FROM schema_migrations WHERE version=91;
+ALTER TABLE escrow_siblings DROP CONSTRAINT escrow_siblings_distinct_keys, DROP COLUMN buyer_pubkey, DROP COLUMN vendor_pubkey, DROP COLUMN market_pubkey;
+INSERT INTO escrows(order_id,address,market_index,refund_address,fee_bps,fee_destination)
+  SELECT id,'bcrt1qupgradesib091',nextval('escrow_market_index'),'bcrt1qupgradesibrefund091',0,'' FROM orders WHERE currency='BTC' ORDER BY id LIMIT 1;
+INSERT INTO escrow_siblings(escrow_id,branch,idx,address) SELECT id,0,1,'bcrt1qupgradesibling091' FROM escrows WHERE address='bcrt1qupgradesib091';
+COMMIT;
+SQL
+applied=$(sql -c "SELECT string_agg(version || '@' || applied, ',' ORDER BY version) FROM schema_migrations")
+(cd "$root" && exec env -i PATH="$PATH" DATABASE_URL="$database_url" SETUP_TOKEN="$setup_token" \
+  COOKIE_SECURE=false ADDR="127.0.0.1:$app_port" "$work/new-server") > "$work/refused-091.log" 2>&1 &
+server_pid=$!
+for _ in {1..60}; do
+  kill -0 "$server_pid" 2>/dev/null || break
+  sleep 0.5
+done
+if kill -0 "$server_pid" 2>/dev/null; then
+  echo 'The current server kept running over a sibling row migration 091 refuses' >&2
+  exit 1
+fi
+refused=0
+wait "$server_pid" || refused=$?
+server_pid=''
+((refused != 0)) || { echo 'The current server exited 0 over a sibling row migration 091 refuses' >&2; exit 1; }
+grep -q 'migration 091: escrow_siblings holds 1 sibling address row(s) without their keys' "$work/refused-091.log"
+grep -q 'See UPGRADING.md section 45' "$work/refused-091.log"
+[[ $(sql -c "SELECT string_agg(version || '@' || applied, ',' ORDER BY version) FROM schema_migrations") == "$applied" ]]
+[[ $(sql -c "SELECT count(*) FROM information_schema.columns WHERE table_name='escrow_siblings' AND column_name LIKE '%pubkey'") == 0 ]]
+sql <<'SQL'
+BEGIN;
+DELETE FROM escrow_siblings WHERE address='bcrt1qupgradesibling091';
+ALTER TABLE escrows DISABLE TRIGGER escrows_not_deleted;
+DELETE FROM escrows WHERE address='bcrt1qupgradesib091';
+ALTER TABLE escrows ENABLE TRIGGER escrows_not_deleted;
+COMMIT;
+SQL
+start_server after-091 "$work/new-server" "$root"
+stop_server
+[[ $(sql -c "SELECT count(*) FROM schema_migrations WHERE version=91 AND name='escrow_sibling_keys'") == 1 ]]
+[[ $(sql -c "SELECT string_agg(column_name || ':' || is_nullable, ',' ORDER BY column_name) FROM information_schema.columns WHERE table_name='escrow_siblings' AND column_name LIKE '%pubkey'") == 'buyer_pubkey:NO,market_pubkey:NO,vendor_pubkey:NO' ]]
 
 # Rollback rehearsal: to this server, a database that a newer release has migrated is one that records a
 # migration it does not include. It must exit non-zero before serving, name that migration, and change nothing.

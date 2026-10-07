@@ -238,6 +238,62 @@ func escrowKeys(ctx context.Context, q rowsQuerier, orderID string) (map[string]
 	return keys, nil
 }
 
+// siblingKeyRows is the three keys of a per-order escrow's sibling address /branch/idx (A-456b, QA5W3A-2): each party's
+// key and the market's with the origin of its key in the escrow (base, escrowKeys) and the suffix /<i>/branch/idx in
+// place of /<i>/0/0, and the public keys checkout stored for that sibling (pubs, by party; escrow_siblings).
+func siblingKeyRows(base map[string]escrowKeyRow, branch, idx int, pubs map[string]string) (map[string]escrowKeyRow, error) {
+	out := map[string]escrowKeyRow{}
+	for party, k := range base {
+		steps, err := parseOriginPath(k.Suffix)
+		pub, perr := hex.DecodeString(pubs[party])
+		if err != nil || len(steps) != 3 || perr != nil || len(pub) != 33 {
+			return nil, errors.New("escrow: a sibling's stored keys do not fit its escrow")
+		}
+		k.Suffix, k.PubKey = "/"+strconv.FormatUint(uint64(steps[0]), 10)+"/"+strconv.Itoa(branch)+"/"+strconv.Itoa(idx), pub
+		out[party] = k
+	}
+	return out, nil
+}
+
+// settlementKeys is the three keys of the script settlement sid of order spends (A-456b): the escrow's own (escrowKeys)
+// or, for a stray refund of deposits to a per-order escrow's sibling address, that sibling's (siblingKeyRows). Every
+// deposit a settlement claims is at one address, the one script its build chose (buildStray); a settlement claiming
+// deposits at two is refused. A settlement that claims none yet (still being built) has the escrow's keys.
+func settlementKeys(ctx context.Context, q rowsQuerier, orderID string, sid int64) (map[string]escrowKeyRow, error) {
+	keys, err := escrowKeys(ctx, q, orderID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := q.QueryContext(ctx, `SELECT DISTINCT p.address,s.branch,s.idx,COALESCE(s.buyer_pubkey,''),COALESCE(s.vendor_pubkey,''),COALESCE(s.market_pubkey,'')
+		FROM payments p LEFT JOIN escrow_siblings s ON s.address=p.address AND s.escrow_id=(SELECT id FROM escrows WHERE order_id=p.order_id AND coin='BTC')
+		WHERE p.settlement_id=$1 AND p.order_id=$2`, sid, orderID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	n := 0
+	var branch, idx sql.NullInt64
+	pubs := map[string]string{}
+	for rows.Next() {
+		var addr, b, v, m string
+		if err = rows.Scan(&addr, &branch, &idx, &b, &v, &m); err != nil {
+			return nil, err
+		}
+		pubs["buyer"], pubs["vendor"], pubs["market"] = b, v, m
+		n++
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	switch {
+	case n > 1:
+		return nil, errors.New("escrow: a settlement claims deposits at more than one address")
+	case n == 0 || !branch.Valid:
+		return keys, nil
+	}
+	return siblingKeyRows(keys, int(branch.Int64), int(idx.Int64), pubs)
+}
+
 // escrowSettleTerminal is settleTerminal for an escrow order (ES-1). A cancelled order holding coins, or one whose
 // dispute was decided for the buyer, gets its refund requested (state building, to the pinned refund address); a
 // completed one, or one decided for the vendor, waits for the vendor's claim (escrow_decision.go). The settlement
@@ -395,6 +451,7 @@ type settleInput struct {
 	Vout          uint32
 	Sats          int64
 	Confirmations int64
+	Address       string // the escrow address, or a per-order escrow's sibling address (A-456a)
 }
 
 // buildSettlements builds every settlement in state building (the escrow watcher, once per pass).
@@ -425,20 +482,28 @@ func (a *App) buildSettlements(ctx context.Context, e *escrowBTC) error {
 	return errors.Join(errs...)
 }
 
+// settleReq is a settlement being built, as buildSettlement read it.
+type settleReq struct {
+	id                                             int64
+	orderID, kind, dest, refund, feeDest, buildErr string
+	price, feeBps                                  int64
+}
+
 // buildSettlement builds one settlement (step 2 of the file comment). The RPCs run outside any transaction; the
 // result is stored by compare-and-set, so of two builds of one settlement one stores and the other changes nothing.
 func (a *App) buildSettlement(ctx context.Context, e *escrowBTC, id int64) error {
-	var orderID, kind, state, dest, escrowAddr, refund, feeDest, orderState, outcome, buildErr string
-	var price, feeBps int64
+	r := settleReq{id: id}
+	var state, escrowAddr, orderState, outcome string
 	var bounded bool
 	err := a.db.QueryRowContext(ctx, `SELECT s.order_id,s.kind,s.state,COALESCE(s.destination,''),es.address,es.refund_address,es.fee_bps,es.fee_destination,o.amount,o.state,
 		s.created < now()-make_interval(secs => $2),`+disputeOutcomeSQL+`,s.build_error
 		FROM settlements s JOIN escrows es ON es.order_id=s.order_id AND es.coin='BTC' JOIN orders o ON o.id=s.order_id WHERE s.id=$1`, id, escrowBuildWaitMax.Seconds()).Scan(
-		&orderID, &kind, &state, &dest, &escrowAddr, &refund, &feeBps, &feeDest, &price, &orderState, &bounded, &outcome, &buildErr)
+		&r.orderID, &r.kind, &state, &r.dest, &escrowAddr, &r.refund, &r.feeBps, &r.feeDest, &r.price, &orderState, &bounded, &outcome, &r.buildErr)
 	if err != nil || state != "building" {
 		return err
 	}
-	if dest == "" || !settlementBuildable(kind, orderState, outcome) {
+	orderID, kind := r.orderID, r.kind
+	if r.dest == "" || !settlementBuildable(kind, orderState, outcome) {
 		return errors.New("escrow: the settlement does not fit its order's state or dispute decision")
 	}
 	keys, err := escrowKeys(ctx, a.db, orderID)
@@ -447,10 +512,10 @@ func (a *App) buildSettlement(ctx context.Context, e *escrowBTC, id int64) error
 	}
 	// A claim or refund spends the outputs that count (recorded before the order closed, not left out by a bounded
 	// build); a stray refund spends the confirmed others (escrow_stray.go).
-	query := `SELECT id,txid,idx,amount,confirmations FROM payments p WHERE order_id=$1 AND confirmations>=0 AND NOT locked AND NOT after_close AND NOT escrow_left_out
+	query := `SELECT id,txid,idx,amount,confirmations,address FROM payments p WHERE order_id=$1 AND confirmations>=0 AND NOT locked AND NOT after_close AND NOT escrow_left_out
 		AND NOT spent_outside AND settlement_id IS NULL AND $2::bigint>0 ORDER BY created,id`
 	if kind == "stray_refund" {
-		query = `SELECT id,txid,idx,amount,confirmations FROM payments p WHERE order_id=$1 AND ` + strayEligibleSQL + ` ORDER BY created,id`
+		query = `SELECT id,txid,idx,amount,confirmations,address FROM payments p WHERE order_id=$1 AND ` + strayEligibleSQL + ` ORDER BY created,id`
 	}
 	rows, err := a.db.QueryContext(ctx, query, orderID, e.confirmations)
 	if err != nil {
@@ -460,7 +525,7 @@ func (a *App) buildSettlement(ctx context.Context, e *escrowBTC, id int64) error
 	for rows.Next() {
 		var in settleInput
 		var idx int64
-		if err = rows.Scan(&in.ID, &in.TxID, &idx, &in.Sats, &in.Confirmations); err != nil {
+		if err = rows.Scan(&in.ID, &in.TxID, &idx, &in.Sats, &in.Confirmations, &in.Address); err != nil {
 			rows.Close()
 			return err
 		}
@@ -478,30 +543,20 @@ func (a *App) buildSettlement(ctx context.Context, e *escrowBTC, id int64) error
 	unconfirmed := slices.ContainsFunc(ins, func(in settleInput) bool { return in.Confirmations < e.confirmations })
 	var left []settleInput
 	// could is the value of every confirmed deposit it could spend (for a stray refund, all of strayEligibleSQL's, also
-	// beyond the 50 it spends), recorded with the fee rate if it fails too-small: strayHeldSQL compares them with what a
-	// stray refund could spend now and the current rate (A-434; a cancelled order's refund too, A-435, whose deposits
-	// still confirming a bounded build leaves out: once confirmed they are worth more).
+	// beyond the 50 it spends and at every address), recorded with the fee rate if it fails too-small: strayHeldSQL
+	// compares them with what a stray refund could spend now and the current rate (A-434; a cancelled order's refund
+	// too, A-435, whose deposits still confirming a bounded build leaves out: once confirmed they are worth more).
 	var could int64
 	for _, in := range ins {
 		if in.Confirmations >= e.confirmations {
 			could += in.Sats
 		}
 	}
-	if kind == "stray_refund" {
-		// A-436: an input worth no more than its own spending cost at the current rate (one 2-of-3 P2WSH input's size
-		// bound times the rate) only takes from the refund, so it is left out of the build while another input remains;
-		// it stays eligible for a later stray refund. could still counts it, so a skip never looks like growth. With
-		// every input uneconomic the build keeps them all and fails too-small, as before.
-		if kept := slices.DeleteFunc(slices.Clone(ins), func(in settleInput) bool { return in.Sats <= settleInputVB*e.feeRate }); len(kept) > 0 {
-			ins = kept
-		}
-	}
 	switch {
 	case len(ins) == 0:
 		return a.failSettlement(ctx, id, orderID, settleNothing, 0, 0, nil)
-	case kind == "stray_refund" && len(ins) > escrowMaxInputs:
-		ins, _ = boundedInputs(ins, e.confirmations) // the 50 largest; the rest wait for the next stray refund
 	case kind == "stray_refund":
+		return a.buildStray(ctx, e, r, keys, escrowAddr, ins, could)
 	case !bounded && len(ins) > escrowMaxInputs:
 		return a.settlementWaits(ctx, id, orderID, settleTooMany)
 	case !bounded && unconfirmed:
@@ -516,26 +571,153 @@ func (a *App) buildSettlement(ctx context.Context, e *escrowBTC, id int64) error
 	for _, in := range ins {
 		total += in.Sats
 	}
-	plan, refused := planSettlement(kind, len(ins), total, price, feeBps, feeDest, dest, refund, e.feeRate, payoutFloor("BTC", kind))
+	plan, refused := planSettlement(kind, len(ins), total, r.price, r.feeBps, r.feeDest, r.dest, r.refund, e.feeRate, payoutFloor("BTC", kind))
 	switch refused {
 	case settleTooSmall:
 		return a.failSettlement(ctx, id, orderID, refused, could, e.feeRate, ins, left...)
 	case settleFeeCap:
 		return a.settlementWaits(ctx, id, orderID, refused)
 	}
-	// Each input as the node sees it now: unspent (not even by a transaction in its mempool), confirmed, and the
-	// output the ledger recorded (value and escrow address).
+	class, err := a.buildPlanned(ctx, e, r, keys, escrowAddr, ins, left, total, plan)
+	switch {
+	case err != nil:
+		return err
+	case class == settleSpent:
+		return a.buildInputSpent(ctx, e, id, orderID, r.buildErr, ins)
+	case class != "":
+		return a.settlementWaits(ctx, id, orderID, class)
+	}
+	return nil
+}
+
+// strayGroup is the deposits of a stray refund at one address, with that address's three keys.
+type strayGroup struct {
+	address string
+	keys    map[string]escrowKeyRow
+	ins     []settleInput
+}
+
+// strayGroups splits a stray refund's deposits by the address they were paid to, each address in the order of its
+// first deposit, with the keys of its script: the escrow address's (escrowKeys) or a per-order escrow's sibling's, which
+// checkout stored (siblingKeyRows, A-456b). A deposit at an address that is neither (none is recorded so) is left out
+// and logged.
+func (a *App) strayGroups(ctx context.Context, r settleReq, keys map[string]escrowKeyRow, escrowAddr string, ins []settleInput) ([]strayGroup, error) {
+	var groups []strayGroup
+	at := map[string]int{}
+	for _, in := range ins {
+		i, ok := at[in.Address]
+		if !ok {
+			g := strayGroup{address: in.Address, keys: keys}
+			if in.Address != escrowAddr {
+				var branch, idx int
+				pubs := map[string]string{}
+				var b, v, m string
+				err := a.db.QueryRowContext(ctx, `SELECT s.branch,s.idx,s.buyer_pubkey,s.vendor_pubkey,s.market_pubkey FROM escrow_siblings s JOIN escrows es ON es.id=s.escrow_id
+					WHERE es.order_id=$1 AND es.coin='BTC' AND s.address=$2`, r.orderID, in.Address).Scan(&branch, &idx, &b, &v, &m)
+				if err == sql.ErrNoRows {
+					log.Printf("escrow: stray refund of order %s: a deposit is at an address that is neither the escrow's nor one of its siblings; left out", shortID(r.orderID))
+					at[in.Address] = -1
+					continue
+				}
+				if err != nil {
+					return nil, err
+				}
+				pubs["buyer"], pubs["vendor"], pubs["market"] = b, v, m
+				if g.keys, err = siblingKeyRows(keys, branch, idx, pubs); err != nil {
+					return nil, err
+				}
+			}
+			i = len(groups)
+			at[in.Address] = i
+			groups = append(groups, g)
+		}
+		if i >= 0 {
+			groups[i].ins = append(groups[i].ins, in)
+		}
+	}
+	return groups, nil
+}
+
+// buildStray builds a stray refund (A-456b, QA5W3A-2): it spends the deposits of one address only, so every input has
+// the one 2-of-3 script the escrow signer co-signs per request, the escrow's own or a sibling's. The addresses are tried
+// in the order of their first deposit and the first that builds is the refund; the others' deposits stay eligible for
+// the next stray refund (one is open per order at a time, migration 076). An address whose deposits cannot be built now
+// (too few to pay their fee, above the fee cap, or not confirmed or not as recorded on the node) never holds up
+// another's: only when none builds does the refund wait, or fail too-small with could, the value of every deposit it
+// could spend, so the coins are held as before (strayHeldSQL). Within an address, A-436's uneconomic inputs are left out
+// while another remains, and at most escrowMaxInputs of the largest are spent.
+func (a *App) buildStray(ctx context.Context, e *escrowBTC, r settleReq, keys map[string]escrowKeyRow, escrowAddr string, all []settleInput, could int64) error {
+	groups, err := a.strayGroups(ctx, r, keys, escrowAddr, all)
+	if err != nil {
+		return err
+	}
+	wait := ""
+	feeCap := false
+	for _, g := range groups {
+		ins := g.ins
+		// A-436: an input worth no more than its own spending cost at the current rate (one 2-of-3 P2WSH input's size
+		// bound times the rate) only takes from the refund, so it is left out of the build while another input remains;
+		// it stays eligible for a later stray refund. could still counts it, so a skip never looks like growth. With
+		// every input uneconomic the build keeps them all and fails too-small, as before.
+		if kept := slices.DeleteFunc(slices.Clone(ins), func(in settleInput) bool { return in.Sats <= settleInputVB*e.feeRate }); len(kept) > 0 {
+			ins = kept
+		}
+		if len(ins) > escrowMaxInputs {
+			ins, _ = boundedInputs(ins, e.confirmations) // the 50 largest; the rest wait for the next stray refund
+		}
+		var total int64
+		for _, in := range ins {
+			total += in.Sats
+		}
+		plan, refused := planSettlement(r.kind, len(ins), total, r.price, r.feeBps, r.feeDest, r.dest, r.refund, e.feeRate, payoutFloor("BTC", r.kind))
+		switch refused {
+		case settleTooSmall:
+			continue
+		case settleFeeCap:
+			feeCap = true
+			continue
+		}
+		class, err := a.buildPlanned(ctx, e, r, g.keys, g.address, ins, nil, total, plan)
+		switch {
+		case err != nil:
+			return err
+		case class == settleSpent:
+			return a.buildInputSpent(ctx, e, r.id, r.orderID, r.buildErr, ins)
+		case class != "":
+			if wait == "" {
+				wait = class
+			}
+			continue
+		}
+		return nil
+	}
+	switch {
+	case wait != "":
+		return a.settlementWaits(ctx, r.id, r.orderID, wait)
+	case feeCap:
+		return a.settlementWaits(ctx, r.id, r.orderID, settleFeeCap)
+	case len(groups) == 0:
+		return a.settlementWaits(ctx, r.id, r.orderID, settleMismatch)
+	}
+	return a.failSettlement(ctx, r.id, r.orderID, settleTooSmall, could, e.feeRate, all)
+}
+
+// buildPlanned builds a planned settlement spending ins, all paid to address, whose script the keys give, and stores
+// it (storeSettlement). It answers a class instead when the node does not report an input as the ledger recorded it:
+// settleSpent (no longer unspent, even by a transaction in its mempool), settleUnconfirmed or settleMismatch (another
+// value or address); nothing is stored then.
+func (a *App) buildPlanned(ctx context.Context, e *escrowBTC, r settleReq, keys map[string]escrowKeyRow, address string, ins, left []settleInput, total int64, plan settlePlan) (string, error) {
 	for _, in := range ins {
 		u, err := e.utxo(ctx, in.TxID, in.Vout)
 		switch {
 		case err != nil:
-			return err
+			return "", err
 		case !u.Found:
-			return a.buildInputSpent(ctx, e, id, orderID, buildErr, ins)
+			return settleSpent, nil
 		case u.Confirmations < e.confirmations:
-			return a.settlementWaits(ctx, id, orderID, settleUnconfirmed)
-		case u.Sats != in.Sats || u.Address != escrowAddr:
-			return a.settlementWaits(ctx, id, orderID, settleMismatch)
+			return settleUnconfirmed, nil
+		case u.Sats != in.Sats || u.Address != address:
+			return settleMismatch, nil
 		}
 	}
 	outpoints := make([]escrowOutpoint, len(ins))
@@ -548,34 +730,35 @@ func (a *App) buildSettlement(ctx context.Context, e *escrowBTC, id int64) error
 	}
 	unsigned, err := e.createPSBT(ctx, outpoints, payments)
 	if err != nil {
-		return err
+		return "", err
 	}
 	up, err := decodePSBT(unsigned)
 	if err != nil || !settlementTxMatches(up, ins, plan) {
-		return &escrowRPCError{Method: "createpsbt", Class: "bad-reply"}
+		return "", &escrowRPCError{Method: "createpsbt", Class: "bad-reply"}
 	}
+	// The script of the address the inputs pay (A-456b: a sibling's for a stray refund of a sibling's deposits).
 	ws := sortedMultisigScript(keys["buyer"].PubKey, keys["vendor"].PubKey, keys["market"].PubKey)
 	bare := withChecksum("wsh(sortedmulti(2," + hex.EncodeToString(keys["buyer"].PubKey) + "," + hex.EncodeToString(keys["vendor"].PubKey) + "," + hex.EncodeToString(keys["market"].PubKey) + "))")
 	filled, err := e.utxoUpdatePSBT(ctx, unsigned, []string{bare})
 	if err != nil {
-		return err
+		return "", err
 	}
 	fp, err := decodePSBT(filled)
 	if err != nil || fp.TxID() != up.TxID() || !settlementTxMatches(fp, ins, plan) || !settlementInputsFilled(fp, ins, ws) {
-		return &escrowRPCError{Method: "utxoupdatepsbt", Class: "bad-reply"}
+		return "", &escrowRPCError{Method: "utxoupdatepsbt", Class: "bad-reply"}
 	}
 	// Core writes a key-origin entry for each bare key too (its own fingerprint, an empty path). The stored copy has
 	// none, so a party's copy carries exactly one, its own, and a pasted signature under the market's key is always
 	// foreign (checkSettlementPaste).
 	raw, err := fp.withoutInputFields(func(_ int, key []byte) bool { return key[0] == 0x06 })
 	if err != nil {
-		return err
+		return "", err
 	}
 	pristine, err := parsePSBT(raw)
 	if err != nil || pristine.TxID() != fp.TxID() || slices.ContainsFunc(pristine.Inputs, func(in psbtInput) bool { return len(in.Derivations) > 0 }) {
-		return &escrowRPCError{Method: "utxoupdatepsbt", Class: "bad-reply"}
+		return "", &escrowRPCError{Method: "utxoupdatepsbt", Class: "bad-reply"}
 	}
-	return a.storeSettlement(ctx, id, orderID, kind, encodePSBT(raw), fp.TxID(), total, e.feeRate, plan, ins, left)
+	return "", a.storeSettlement(ctx, r.id, r.orderID, r.kind, encodePSBT(raw), fp.TxID(), total, e.feeRate, plan, ins, left)
 }
 
 // buildInputSpent handles a build input that is no longer unspent. The first time, the build waits (settleSpent, the
@@ -1048,7 +1231,7 @@ func escrowSignAction(c *actionCtx) (actionResult, error) {
 		// P2-R2: the buyer's signature confirms receipt; while the order is disputed the decision settles it instead.
 		return actionResult{}, errSignDisputed
 	}
-	keys, err := escrowKeys(ctx, c.Tx, o.ID)
+	keys, err := settlementKeys(ctx, c.Tx, o.ID, sid)
 	if err != nil {
 		return actionResult{}, err
 	}
@@ -1155,7 +1338,7 @@ func escrowPSBTDownload(a *App, w http.ResponseWriter, r *http.Request, u *User)
 	var copyText string
 	if err == nil {
 		var keys map[string]escrowKeyRow
-		if keys, err = escrowKeys(ctx, a.db, o.ID); err == nil {
+		if keys, err = settlementKeys(ctx, a.db, o.ID, sid); err == nil {
 			copyText, err = settlementCopy(stored, keys[reader])
 		}
 	}
@@ -1366,7 +1549,7 @@ func (a *App) settlementView(ctx context.Context, d *PageData, v *EscrowOrderVie
 	// The buyer of a disputed order does not sign its release (escrowSignAction): the decision settles it.
 	canSign := (state == "awaiting_signature" || state == "party_signed" && !readerSigned) && !(s.PartiesOnly && d.Order.State == stateDisputed && d.OrderViewer == roleBuyer)
 	if canSign && (d.OrderViewer == roleBuyer || d.OrderViewer == roleVendor) && a.escrowConfigured {
-		keys, err := escrowKeys(ctx, a.db, d.Order.ID)
+		keys, err := settlementKeys(ctx, a.db, d.Order.ID, id)
 		if err != nil {
 			return nil, err
 		}

@@ -174,7 +174,7 @@ func (a *App) loadSettleBuild(ctx context.Context, id int64, want string) (*sett
 	if b.Stored, err = decodePSBT(stored); err != nil || b.Stored.TxID() != b.TxID {
 		return nil, errors.New("escrow: the stored settlement PSBT does not match its txid")
 	}
-	if b.Keys, err = escrowKeys(ctx, a.db, b.OrderID); err != nil {
+	if b.Keys, err = settlementKeys(ctx, a.db, b.OrderID, id); err != nil {
 		return nil, err
 	}
 	rows, err := a.db.QueryContext(ctx, "SELECT role,address,sats FROM settlement_outputs WHERE settlement_id=$1 ORDER BY n", id)
