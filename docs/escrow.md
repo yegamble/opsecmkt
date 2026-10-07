@@ -1033,8 +1033,12 @@ Phase 4 (war-room ruling P4-R5), on the development branch and not released. Wit
 the chain table (A-439), the market key self-check (A-440) and broadcast honesty (A-441) in place, `ESCROW_BTC=on`
 accepts a node on `signet` or `testnet4` as well as `regtest`; mainnet (`main`) and testnet3 (`test`) are still refused
 at startup (escrow uses test-network key versions and coin type 1), and `BITCOIN_CHAIN`, when set beside it, must name
-one of the three. **No run on public signet or testnet4 is recorded**: the owner runs those (ledger items A-446 and
-A-447) on their own host.
+one of the three. **No run on public signet or testnet4 is recorded**: the owner runs those (ledger item A-447) on
+their own host with the operator package of A-446: `scripts/escrow-node-setup.sh` sets up the node and
+`scripts/test-escrow-public.sh` runs the smoke (practice signing, one escrow claimed and one refunded, each confirmed)
+and writes its record under `docs/evidence/public-testnet/`
+([operator guide](operator-guide.md#escrow-node-set-up-and-the-public-network-smoke)). The smoke's legs have run on
+regtest only (`TestEscrowRegtestSmoke`).
 
 - **Chain table.** The chain decides the address prefix (`bcrt` on regtest, `tb` on signet and testnet4) for every
   address escrow checks or pays. An address given in capitals is lowered by that prefix, so a `TB1…` refund, claim,
@@ -1210,5 +1214,5 @@ Which chains escrow testing has used, all of them local and none public: Bitcoin
 (A-443: two Bitcoin Core nodes on one host with `signet_challenge` 51, private signet, not public); a local Monero
 fakechain; and an offline Monero stagenet fork (A-449: stagenet's genesis, peered with nothing public). No escrow leg
 has run on public signet, testnet4, testnet3 or the public Monero stagenet: the owner's public-network runs (ledger
-items A-446 and A-447) are not recorded yet. Mainnet stays an operator opt-in and is never used in development or
+item A-447, with A-446's `scripts/test-escrow-public.sh`) are not recorded yet. Mainnet stays an operator opt-in and is never used in development or
 tests.
