@@ -114,11 +114,13 @@ fi
 grep -q 'Cancelled' "$work/cancel.log"
 [[ $(sql postgres "$databases") == opsecmkt ]]
 
-# A wrong identity restores nothing.
+# A wrong identity restores nothing, and creates nothing: the dump's encoding is read first (QA5W4B-2), before the
+# confirmation and the new database.
 if AGE_IDENTITY="$work/wrong-identity" RESTORE_INTERNAL_DATABASE=opsecmkt_wrong_key restore "$work/backup.dump.age" <<< RESTORE > "$work/wrong-key.log" 2>&1; then
   echo 'Restore accepted the wrong identity' >&2; exit 1
 fi
-[[ $(sql opsecmkt_wrong_key "SELECT count(*) FROM pg_tables WHERE schemaname = 'public'") == 0 ]]
+grep -q 'Cannot read the database dump in this backup' "$work/wrong-key.log"
+[[ $(sql postgres "$databases") == opsecmkt ]]
 
 # Side-by-side rollback target: a new database next to the live one, created by the script.
 RESTORE_INTERNAL_DATABASE=opsecmkt_restored restore "$work/backup.dump.age" <<< RESTORE > "$work/restore.log"

@@ -1341,7 +1341,11 @@ PostgreSQL is initialised as UTF8 and is not affected, and a database already UT
 `psql "$DATABASE_URL" -c 'SHOW server_encoding'` before you upgrade. The app also now sends `client_encoding=UTF8` on
 every connection, and refuses a form field that is not valid UTF-8 or holds a NUL byte (400, "Invalid form: a field is
 not valid UTF-8 or contains a NUL character. Nothing was changed."), where it used to accept it on a non-UTF8 database
-and fail with a 500 on a UTF8 one.
+and fail with a 500 on a UTF8 one. A page or image address (GET or HEAD) whose query string is not valid UTF-8 or holds
+a NUL byte is refused the same way (400, "Invalid address: a query parameter is not valid UTF-8 or contains a NUL
+character."), where `/product?id=%ff` answered 500 and the catalog search dropped the bytes. The administrator
+password tools (`-bootstrap-admin`, `-reset-admin-password` and `install.sh --admin`) refuse a password that is not
+valid UTF-8 or holds a NUL byte (typed in a terminal set to `LATIN1`, for one), which the sign-in form could never send.
 
 To move a non-UTF8 database: the encoding cannot be changed in place, so the data is copied into a new UTF8 database.
 Keep the old database until the new one has passed step 6. The market before A-481 sent PostgreSQL UTF-8 text and no
@@ -1357,14 +1361,34 @@ one; run them where `psql`, `pg_dump` and `pg_restore` as new as the server are 
    text another client wrote in `LATIN1`, such as `psql` with its default client encoding). Such bytes would pass the
    restore into the new database unchanged, and every backup of that database would then fail to restore (`COPY failed
    for table "reviews": invalid byte sequence for encoding "UTF8": 0xff`). For each such value the check prints a line
-   `not valid UTF-8: table public.reviews, column body, row id = (...) (ctid (0,1)), starting: Great \377 seller`
-   (`\377` is the byte 0xff) and it ends with an error (psql exits 3). Correct each value in the old database, with the
-   text it should hold or by reading its bytes as `LATIN1`, one statement per line the check printed (its table, column
-   and ctid):
+   `not valid UTF-8: table public.reviews, column body, row where id = '6f0c2a9e41d7' (ctid (0,1)); no valid multibyte
+   UTF-8 in it, so reading its bytes as LATIN1 is a safe correction; starting: Great \377 seller` (`\377` is the byte
+   0xff) and it ends with an error (psql exits 3). Correct each value in the old database, one statement per line the
+   check printed, with its table, its column and the condition after `row where` (the row's primary key):
 
-   ```sql
-   UPDATE public.reviews SET body = convert_from(convert(convert_to(body, 'SQL_ASCII'), 'LATIN1', 'UTF8'), 'SQL_ASCII') WHERE ctid = '(0,1)';
-   ```
+   - *no valid multibyte UTF-8 in it*: read its bytes as `LATIN1` (the byte 0xff becomes "ÿ"):
+
+     ```sql
+     UPDATE public.reviews SET body = convert_from(convert(convert_to(body, 'SQL_ASCII'), 'LATIN1', 'UTF8'), 'SQL_ASCII') WHERE id = '6f0c2a9e41d7';
+     ```
+
+   - *it also holds valid multibyte UTF-8*: the value mixes UTF-8 with bytes that are not (a title
+     `Cr\303\250me \377 br\303\273l\303\251e`), and reading it as `LATIN1` would double-encode its UTF-8 part ("Crème"
+     would become "CrÃ¨me"). Type the text it should hold instead, in `psql` started with `PGCLIENTENCODING=UTF8` from
+     a UTF-8 terminal:
+
+     ```sql
+     UPDATE public.products SET title = convert_from(convert_to('Crème brûlée', 'UTF8'), 'SQL_ASCII') WHERE id = '0d3e7b5a92c4';
+     ```
+
+     This stores the text as UTF-8 in a `SQL_ASCII` and in a `LATIN1` database alike. A `LATIN1` database refuses a
+     character `LATIN1` lacks (`character with byte sequence ... has no equivalent in encoding "LATIN1"`): there, give
+     the text's UTF-8 in hexadecimal instead, `convert_from(decode('e69db1e4baac', 'hex'), 'SQL_ASCII')` for "東京".
+
+   Use the row's key, not its ctid: an update moves the row, so a second bad value of the same row, named by the ctid
+   the check printed before, would be left as it was. Only a row of a table without a primary key (the line says `use
+   the ctid`, as it does for a key that is not plain ASCII) is corrected `WHERE ctid = '(0,1)'`, and then one statement
+   per such row before you run the check again.
 
    Run the check again until it prints `Every value in the N text column(s) is valid UTF-8.` If a table refuses the
    update (escrow settlement records are frozen by triggers), stop and report it to the project. A correction to a row
@@ -1375,6 +1399,23 @@ one; run them where `psql`, `pg_dump` and `pg_restore` as new as the server are 
    dumped as `LATIN1` and converted to UTF8 on restore, so **every non-ASCII character will be double-encoded** in the
    new database ("Crème" becomes "CrÃ¨me"); a `SQL_ASCII` database is dumped unconverted either way. Use the variable
    for this move only: `backup.sh` accepts no other value, and on a UTF8 database it changes nothing.
+
+   `scripts/restore.sh` therefore refuses a backup whose text was written in any encoding but `UTF8` or `SQL_ASCII`,
+   before it asks for confirmation or changes anything: `Refusing: this backup holds its text in LATIN1, as pg_dump
+   writes a LATIN1 database backed up without BACKUP_DUMP_ENCODING=SQL_ASCII. ...`. If such a backup is all you have
+   of the old database (`install.sh upgrade` takes its automatic `backups/pre-upgrade-*.dump.age` without the variable,
+   so for a `LATIN1` database it is one), restore it into a temporary database of its original encoding (the one the
+   refusal names; `LATIN1` below), where nothing is converted, and use that as the old database:
+
+   ```sh
+   psql "$NEW_DATABASE_URL" -c "CREATE DATABASE opsecmkt_latin1 ENCODING 'LATIN1' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0"
+   age -d -i "$AGE_IDENTITY" backups/pre-upgrade-20260101T000000Z.dump.age | pg_restore --no-owner --no-acl --exit-on-error --dbname="$LATIN1_DATABASE_URL"
+   ```
+
+   (`LATIN1_DATABASE_URL` is `NEW_DATABASE_URL` with the database name `opsecmkt_latin1`.) Then run step 2 and this
+   step with `OLD_DATABASE_URL="$LATIN1_DATABASE_URL"`, go on from step 4, and drop `opsecmkt_latin1` after step 6.
+   Never start the market on it: this plain `pg_restore` applies none of `restore.sh`'s payout recovery protection,
+   which step 5 applies to the backup taken of it.
 4. Create a UTF8 database next to it, from `psql` as a role with `CREATEDB`:
    `CREATE DATABASE opsecmkt_utf8 ENCODING 'UTF8' TEMPLATE template0;`
 5. Restore the backup into that empty database with `RESTORE_DATABASE_URL="$NEW_DATABASE_URL" AGE_IDENTITY=...

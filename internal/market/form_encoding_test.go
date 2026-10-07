@@ -1,7 +1,11 @@
 package market
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"slices"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -12,6 +16,83 @@ import (
 
 const invalidTextMsg = "not valid UTF-8 or contains a NUL character"
 
+// QA5W4B-5: a GET or HEAD whose query string holds a name or value that is not valid UTF-8 or holds a NUL byte is
+// refused with 400 in ServeHTTP, before any page, raw route or image route reads it. Before, the loaders passed it to
+// PostgreSQL, which refused it (SQLSTATE 22021): anonymous /product?id=%ff answered 500. Every page and raw route is
+// asked, by every role, with each such value in every common parameter and in all of them at once: no 5xx, and every
+// query-string case is the 400. The image routes take their id from the path, which this check does not read: they
+// must not answer 5xx either.
+func TestGetRefusesInvalidQueryText(t *testing.T) {
+	e := newTestApp(t)
+	_, admin := e.user("getq_admin", "admin")
+	vendorID, vendor := e.user("getq_vendor", "vendor")
+	buyerID, buyer := e.user("getq_buyer", "buyer")
+	_, mod := e.user("getq_mod", "moderator")
+	e.order(buyerID, e.product(vendorID, "physical"), "BTC", "paid")
+	var paths []string
+	for p := range pages {
+		paths = append(paths, "/"+p)
+	}
+	for p := range raws {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	params := []string{"id", "q", "category", "region", "currency", "page", "to", "next", "s", "b", "upto", "practice", "scanner", "sig"}
+	sessions := map[string]string{"anon": "", "admin": admin, "vendor": vendor, "buyer": buyer, "moderator": mod}
+	send := func(method, target, session string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, target, nil)
+		if session != "" {
+			r.AddCookie(&http.Cookie{Name: "session", Value: session})
+		}
+		w := httptest.NewRecorder()
+		e.A.ServeHTTP(w, r)
+		return w
+	}
+	fivexx, other := 0, 0
+	for _, v := range []string{"%ff", "%00", "a%c3", "%c0%80"} {
+		var all, queries []string
+		for _, p := range params {
+			all = append(all, p+"="+v)
+			queries = append(queries, p+"="+v)
+		}
+		queries = append(queries, strings.Join(all, "&"), v+"=1", "id=1&"+v)
+		for _, path := range paths {
+			for role, session := range sessions {
+				for _, q := range queries {
+					for _, method := range []string{"GET", "HEAD"} {
+						w := send(method, path+"?"+q, session)
+						switch {
+						case w.Code >= 500:
+							fivexx++
+							t.Errorf("%s %s?%s as %s: %d %q", method, path, q, role, w.Code, w.Body.String())
+						case w.Code != 400 || method == "GET" && w.Body.String() != invalidQueryText+"\n":
+							other++
+							if other <= 10 {
+								t.Errorf("%s %s?%s as %s: %d %q, want 400 %q", method, path, q, role, w.Code, w.Body.String(), invalidQueryText)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	for _, path := range []string{"/img/%ff", "/img/%00", "/desk/img/%ff", "/desk/img/%00", "/img/a%c3-t"} {
+		for role, session := range sessions {
+			if w := send("GET", path, session); w.Code >= 500 {
+				fivexx++
+				t.Errorf("GET %s as %s: %d %q", path, role, w.Code, w.Body.String())
+			}
+		}
+	}
+	if fivexx != 0 || other != 0 {
+		t.Fatalf("%d answers 5xx, %d query-string cases not the 400", fivexx, other)
+	}
+	// Valid UTF-8 in a query still reaches the page.
+	if w := send("GET", "/?q="+url.QueryEscape("Crème 東京"), ""); w.Code != 200 {
+		t.Fatalf("a valid query: %d %q", w.Code, w.Body.String())
+	}
+}
+
 // The buyer's review (orders_actions.go reviewAction) of a completed order: neither value reaches the handler.
 func TestFormRefusesInvalidTextReview(t *testing.T) {
 	w := newOrderWorld(t)
@@ -21,6 +102,13 @@ func TestFormRefusesInvalidTextReview(t *testing.T) {
 		if n := w.count("SELECT count(*) FROM reviews WHERE order_id=$1", done); n != 0 {
 			t.Fatalf("%s: %d reviews written", name, n)
 		}
+	}
+	// QA5W4B-8: a field name that is not UTF-8, and a query string on the post (ParseForm merges it into r.Form,
+	// which handlers read through FormValue), are refused alike.
+	w.expect("/reviews", w.buyer, form("order_id", done, "rating", "5", "body", "Great seller", "\xff", "1"), 400, invalidTextMsg)
+	w.expect("/reviews?x=%ff", w.buyer, form("order_id", done, "rating", "5", "body", "Great seller"), 400, invalidTextMsg)
+	if n := w.count("SELECT count(*) FROM reviews WHERE order_id=$1", done); n != 0 {
+		t.Fatalf("a bad field name or query string: %d reviews written", n)
 	}
 	// Valid text in the same form is saved, so nothing else refused it.
 	w.expect("/reviews", w.buyer, form("order_id", done, "rating", "5", "body", "Great seller, é and 東京."), 303, "")

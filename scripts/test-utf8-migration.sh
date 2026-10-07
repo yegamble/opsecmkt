@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# UPGRADING.md section 42 rehearsed (A-481; QA5W3B-1 and -2): a SQL_ASCII and a LATIN1 database written by the market
+# UPGRADING.md section 42 rehearsed (A-481; QA5W3B-1 and -2, QA5W4B-2 to -4): a SQL_ASCII and a LATIN1 database written by the market
 # before A-481 are moved into UTF8 with scripts/check-utf8.sql, scripts/backup.sh and scripts/restore.sh, as the section
 # tells the operator.
 #
@@ -11,10 +11,15 @@
 #
 # SQL_ASCII, a review "Great \xff\xfe seller" (the review form did not check UTF-8): check-utf8.sql names the row and
 # fails; backup and restore alone succeed, but the new database's own backup does not restore and names the table, so
-# the round trip of section 42 stops the switch; once the row is corrected as the section says, the check passes, the
-# round trip restores and the server starts on the new database.
-# LATIN1, "Crème brûlée — 東京 🔒": a backup taken as LATIN1 restores every non-ASCII character double-encoded; with
-# BACKUP_DUMP_ENCODING=SQL_ASCII it restores exactly, and the same option on the new UTF8 database changes nothing.
+# the round trip of section 42 stops the switch. A listing is added whose title mixes UTF-8 with a stray byte ("Cr\xc3\xa8me
+# \xff br\xc3\xbbl\xc3\xa9e") and whose description is LATIN1 ("\xe9t\xe9"): the check tells the title to be typed (it
+# also holds valid multibyte UTF-8) and the other two to be read as LATIN1; corrected as the section says, by the row's
+# key, both bad values of that one row in a single round, the check passes, the round trip restores and the server
+# starts on the new database.
+# LATIN1, "Crème brûlée — 東京 🔒": restore.sh refuses a backup taken as LATIN1 (it would restore every non-ASCII
+# character double-encoded) before changing anything; the section's way out for an operator with only that backup (a
+# temporary LATIN1 database, backed up again with BACKUP_DUMP_ENCODING=SQL_ASCII) restores it exactly, as the option
+# does from the old database, and the same option on the new UTF8 database changes nothing.
 #
 # Needs Docker, Go, Python 3 and age. Nothing outside the container, a temporary directory and one loopback port is
 # touched.
@@ -140,9 +145,10 @@ stop_server
 
 title='Crème brûlée — 東京 🔒'
 title_hex=$(hex "$title")
-# What a LATIN1 dump makes of it: each UTF-8 byte read as a LATIN1 character and written again in UTF-8.
-double_hex=$(python3 -c 'import sys; print(sys.argv[1].encode().decode("latin-1").encode().hex())' "$title")
 bad_hex=477265617420fffe2073656c6c6572  # "Great \xff\xfe seller"
+mixed_hex=4372c3a86d6520ff206272c3bb6cc3a965  # "Cr\xc3\xa8me \xff br\xc3\xbbl\xc3\xa9e": UTF-8 with a stray byte
+latin1_hex=e974e9  # "\xe9t\xe9": "été" written in LATIN1
+latin1_safe='no valid multibyte UTF-8 in it, so reading its bytes as LATIN1 is a safe correction'
 # old_database NAME ENCODING BODY_HEX: a pre-A-481 market database: the seed's schema and rows byte for byte, then a
 # vendor, a buyer, a listing titled $title, a completed order and its review whose body has the bytes BODY_HEX.
 old_database() {
@@ -161,7 +167,7 @@ SQL
 echo 'SQL_ASCII: a review with bytes that are not UTF-8'
 old_database ascii_old SQL_ASCII "$bad_hex"
 if check ascii_old; then fail 'check-utf8.sql passed a SQL_ASCII database holding 0xff'; fi
-grep -q 'not valid UTF-8: table public.reviews, column body, row id = (utf8review) (ctid (0,1)), starting: Great \\377\\376 seller' "$work/check-ascii_old.log" ||
+grep -qF "not valid UTF-8: table public.reviews, column body, row where id = 'utf8review' (ctid (0,1)); $latin1_safe; starting: Great \\377\\376 seller" "$work/check-ascii_old.log" ||
   fail 'check-utf8.sql did not name the review'
 grep -q '1 stored text value(s) are not valid UTF-8' "$work/check-ascii_old.log" || fail 'check-utf8.sql did not count the bad value'
 # Restored without the check, the bytes reach the new database silently ...
@@ -174,10 +180,27 @@ if round_trip ascii_new; then fail 'the backup of a UTF8 database holding 0xff r
 grep -q 'COPY failed for table "reviews": ERROR:  invalid byte sequence for encoding "UTF8": 0xff' "$work/restore-ascii_new_check.log" ||
   fail 'the round trip did not name the table'
 if check ascii_new; then fail 'check-utf8.sql passed a UTF8 database holding 0xff'; fi
-grep -q 'not valid UTF-8: table public.reviews, column body, row id = (utf8review)' "$work/check-ascii_new.log" || fail 'check-utf8.sql did not name the review in UTF8'
-# Corrected on the old database as section 42 says (the bytes read as LATIN1), the check passes and the move succeeds.
-sql ascii_old -c "UPDATE public.reviews SET body = convert_from(convert(convert_to(body, 'SQL_ASCII'), 'LATIN1', 'UTF8'), 'SQL_ASCII') WHERE ctid = '(0,1)'"
-check ascii_old || fail 'check-utf8.sql failed after the correction'
+grep -qF "not valid UTF-8: table public.reviews, column body, row where id = 'utf8review' (ctid (0,1)); its bytes cannot be read in a UTF8 database: correct it in the old database" \
+  "$work/check-ascii_new.log" || fail 'check-utf8.sql did not name the review in UTF8'
+# A listing whose title mixes UTF-8 with a stray byte and whose description is LATIN1: the check tells which reading is
+# safe (QA5W4B-3) and names the row by its key (QA5W4B-4).
+sql ascii_old -v title="$mixed_hex" -v description="$latin1_hex" <<'SQL'
+INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock)
+  VALUES ('utf8mixed','utf8vendor',convert_from(decode(:'title','hex'),'SQL_ASCII'),convert_from(decode(:'description','hex'),'SQL_ASCII'),'Hardware','Worldwide','digital',100000,1,5);
+SQL
+if check ascii_old; then fail 'check-utf8.sql passed the mixed listing'; fi
+grep -q "not valid UTF-8: table public.products, column title, row where id = 'utf8mixed' (ctid ([0-9]*,[0-9]*)); it also holds valid multibyte UTF-8, which reading it as LATIN1 would double-encode: type the text it should hold; starting: Cr\\\\303\\\\250me \\\\377 br" \
+  "$work/check-ascii_old.log" || fail 'check-utf8.sql did not tell the mixed title to be typed'
+grep -q "not valid UTF-8: table public.products, column description, row where id = 'utf8mixed' (ctid ([0-9]*,[0-9]*)); $latin1_safe; starting: \\\\351t\\\\351" \
+  "$work/check-ascii_old.log" || fail 'check-utf8.sql did not tell the LATIN1 description to be read as LATIN1'
+grep -q '3 stored text value(s) are not valid UTF-8' "$work/check-ascii_old.log" || fail 'check-utf8.sql did not count the three bad values'
+# Corrected on the old database as section 42 says, one statement per line the check printed, with the row's key: the
+# review and the description read as LATIN1, the title typed. Both values of the listing are corrected in this one
+# round (an UPDATE moves the row, so a second statement by its old ctid would change nothing).
+sql ascii_old -c "UPDATE public.reviews SET body = convert_from(convert(convert_to(body, 'SQL_ASCII'), 'LATIN1', 'UTF8'), 'SQL_ASCII') WHERE id = 'utf8review'"
+sql ascii_old -c "UPDATE public.products SET title = convert_from(convert_to('Crème brûlée', 'UTF8'), 'SQL_ASCII') WHERE id = 'utf8mixed'"
+sql ascii_old -c "UPDATE public.products SET description = convert_from(convert(convert_to(description, 'SQL_ASCII'), 'LATIN1', 'UTF8'), 'SQL_ASCII') WHERE id = 'utf8mixed'"
+check ascii_old || fail 'check-utf8.sql failed after one round of corrections'
 grep -q 'Every value in the [0-9]* text column(s) is valid UTF-8.' "$work/check-ascii_old.log" || fail 'check-utf8.sql did not report success'
 BACKUP_DUMP_ENCODING=SQL_ASCII backup ascii_old "$work/ascii-fixed.dump.age"
 restore "$work/ascii-fixed.dump.age" ascii_fixed || fail 'restore.sh refused the corrected SQL_ASCII backup'
@@ -186,6 +209,8 @@ round_trip ascii_fixed || fail 'the round trip of the corrected database failed'
 [[ $(text_hex ascii_fixed "SELECT title FROM products WHERE id='utf8product'") == "$title_hex" ]] || fail 'the SQL_ASCII title changed'
 [[ $(text_hex ascii_fixed "SELECT body FROM reviews WHERE id='utf8review'") == "$(hex 'Great ÿþ seller')" ]] || fail 'the corrected review'
 [[ $(text_hex ascii_fixed_check "SELECT body FROM reviews WHERE id='utf8review'") == "$(hex 'Great ÿþ seller')" ]] || fail 'the round trip changed the review'
+[[ $(text_hex ascii_fixed "SELECT title FROM products WHERE id='utf8mixed'") == "$(hex 'Crème brûlée')" ]] || fail 'the typed title'
+[[ $(text_hex ascii_fixed "SELECT description FROM products WHERE id='utf8mixed'") == "$(hex 'été')" ]] || fail 'the corrected description'
 (exec env -i PATH="$PATH" DATABASE_URL="$(url ascii_fixed)" SETUP_TOKEN=utf8-migration-test-token-only-0123456789 COOKIE_SECURE=false \
   ADDR="127.0.0.1:$app_port" "$work/server") > "$work/server-ascii.log" 2>&1 &
 server_pid=$!
@@ -195,10 +220,27 @@ stop_server
 echo 'LATIN1: UTF-8 text stored by the old market'
 old_database latin1_old LATIN1 "$title_hex"
 check latin1_old || fail 'check-utf8.sql failed on a LATIN1 database holding only UTF-8'
-# Taken as LATIN1 (the default), every non-ASCII character comes out double-encoded.
+# Taken as LATIN1 (the default, as install.sh upgrade's automatic backup takes it), its restore would double-encode
+# every non-ASCII character: restore.sh refuses it before changing anything (QA5W4B-2).
 backup latin1_old "$work/latin1.dump.age"
-restore "$work/latin1.dump.age" latin1_plain || fail 'restore.sh refused the LATIN1 backup'
-[[ $(text_hex latin1_plain "SELECT title FROM products WHERE id='utf8product'") == "$double_hex" ]] || fail 'the LATIN1 dump was not double-encoded'
+if restore "$work/latin1.dump.age" latin1_plain; then fail 'restore.sh restored a LATIN1 dump'; fi
+grep -q 'Refusing: this backup holds its text in LATIN1, as pg_dump writes a LATIN1 database backed up without BACKUP_DUMP_ENCODING=SQL_ASCII.' \
+  "$work/restore-latin1_plain.log" || fail 'restore.sh did not explain the refusal of the LATIN1 dump'
+grep -q 'see UPGRADING.md, section 42.' "$work/restore-latin1_plain.log" || fail 'the refusal does not cite section 42'
+[[ $(sql latin1_plain -c "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public'") == 0 ]] ||
+  fail 'the refused restore wrote to the database'
+# Section 42's way out for an operator who has only that backup: restore it into a temporary LATIN1 database (plain
+# pg_restore, which converts nothing between two LATIN1 ends), take that up as the old database (check, then back up
+# with BACKUP_DUMP_ENCODING=SQL_ASCII), and restore the new backup with restore.sh.
+sql postgres -c "CREATE DATABASE latin1_tmp ENCODING 'LATIN1' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0"
+age -d -i "$work/identity" "$work/latin1.dump.age" | PATH="$work/bin:$PATH" TMP_DATABASE_URL=$(url latin1_tmp) \
+  python3 scripts/postgres-tool.py TMP_DATABASE_URL pg_restore --dbname='' --exit-on-error --no-owner --no-acl
+check latin1_tmp || fail 'check-utf8.sql failed on the temporary LATIN1 database'
+BACKUP_DUMP_ENCODING=SQL_ASCII backup latin1_tmp "$work/latin1-again.dump.age"
+restore "$work/latin1-again.dump.age" latin1_escape || fail 'restore.sh refused the backup of the temporary LATIN1 database'
+for column in "title FROM products WHERE id='utf8product'" "body FROM reviews WHERE id='utf8review'"; do
+  [[ $(text_hex latin1_escape "SELECT $column") == "$title_hex" ]] || fail "LATIN1 through a temporary LATIN1 database: $column"
+done
 # BACKUP_DUMP_ENCODING=SQL_ASCII restores it exactly, and refuses any other value.
 if BACKUP_DUMP_ENCODING=LATIN1 backup latin1_old "$work/refused.dump.age"; then fail 'backup.sh took BACKUP_DUMP_ENCODING=LATIN1'; fi
 grep -q 'BACKUP_DUMP_ENCODING may only be SQL_ASCII' "$work/backup.log" || fail 'backup.sh did not explain the refusal'
