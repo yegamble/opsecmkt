@@ -753,29 +753,19 @@ func (a *App) cosignBump(ctx context.Context, e *escrowBTC, sid int64) error {
 		// The two do not verify together: the market co-signs with the claimant's alone, and the other party's goes.
 		discard = []string{b.Parties[1].Party}
 	}
-	if err = a.ensureArbiterKey(ctx, e, b.settleBuild); err != nil {
-		var re *escrowRPCError
-		if errors.As(err, &re) && re.Class == sendMarketKey {
-			return a.bumpSendWaits(ctx, b.BumpID, b.OrderID, sendMarketKey)
-		}
-		return err
-	}
-	copyText, err := settlementCopy(encodePSBT(b.Stored.Raw), b.Keys["market"])
+	// The arbiter wallet signs a Bitcoin Core escrow's bump, the escrow signer a per-order escrow's (marketSign, A-456b).
+	signed, class, err := a.marketSign(ctx, e, b.settleBuild)
 	if err != nil {
 		return err
 	}
-	signed, err := e.arbiterSign(ctx, copyText)
-	if err != nil {
-		return err
-	}
-	if class := checkMarketSigned(signed.PSBT, b.settleBuild); class != "" {
+	if class != "" {
 		return a.bumpSendWaits(ctx, b.BumpID, b.OrderID, class)
 	}
 	claimantCopy, err := withPartySigs(b.Stored, claimant)
 	if err != nil {
 		return err
 	}
-	combined, err := e.combinePSBT(ctx, []string{signed.PSBT, claimantCopy})
+	combined, err := e.combinePSBT(ctx, []string{signed, claimantCopy})
 	if err != nil {
 		return err
 	}

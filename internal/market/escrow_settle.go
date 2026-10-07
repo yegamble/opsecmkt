@@ -1207,6 +1207,8 @@ func settleSendText(class string) string {
 		return ""
 	case sendMarketKey:
 		return "The market's escrow key could not sign it yet."
+	case sendSignerWait, sendSignerRefused:
+		return "The market's escrow signer could not co-sign it yet."
 	case sendRejected:
 		return "The market's Bitcoin node did not accept the transaction yet."
 	case sendRebroadcastOK, sendRebroadcastSent:

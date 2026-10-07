@@ -35,6 +35,7 @@ func setPerOrderEscrows(t *testing.T, on bool) {
 func newPerOrderEnv(t *testing.T) (*escrowEnv, *fakeSigner) {
 	t.Helper()
 	f := newFakeSigner(t, signerKey(t, 7))
+	f.cosign = true // A-456b: it co-signs as cmd/escrow-signer does, refusing what that signer refuses
 	x := signerApp(t, f.path)
 	agExec(x.testEnv, "UPDATE user_escrow_keys SET layout='per_order' WHERE user_id IN ($1,$2)", x.buyer, x.vendor)
 	setPerOrderEscrows(t, true)
