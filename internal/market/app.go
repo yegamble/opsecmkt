@@ -265,8 +265,9 @@ func setRuntimeParam(p map[string]string, k, v string) {
 	p[k] = v
 }
 
-// OpenDB opens the database in dsn with TimeZone pinned to UTC on every connection (a startup parameter, which
-// outranks database and role defaults), so displayed times never follow or reveal the server's zone. The
+// OpenDB opens the database in dsn with TimeZone pinned to UTC and client_encoding to UTF8 on every connection
+// (startup parameters, which outrank database and role defaults), so displayed times never follow or reveal
+// the server's zone. The
 // application pool, its migrations and the -bootstrap-admin, -reset-admin-password, -reset-admin-factors,
 // -set-role and -status commands all open the database here; only the application pool passes WithAppTimeouts.
 func OpenDB(dsn string, opts ...DBOption) (*sql.DB, error) {
@@ -275,6 +276,10 @@ func OpenDB(dsn string, opts ...DBOption) (*sql.DB, error) {
 		return nil, errors.New("database configuration invalid")
 	}
 	setRuntimeParam(cfg.RuntimeParams, "timezone", "UTC")
+	// pgx sends no client_encoding, so a session would use the database's own encoding (or the role's setting).
+	// Text crosses the wire as UTF-8 only if the session says so (A-481); startup separately refuses a
+	// database that is not UTF8.
+	setRuntimeParam(cfg.RuntimeParams, "client_encoding", "UTF8")
 	for _, o := range opts {
 		o(cfg.RuntimeParams)
 	}

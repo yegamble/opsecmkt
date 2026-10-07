@@ -84,7 +84,25 @@ func connectErrorClass(err error) string {
 	return "check DATABASE_URL and service health"
 }
 
-// prepareDatabase checks the connection, then applies the baseline and migrations in one transaction under
+// requireUTF8Database refuses a database whose server_encoding is not UTF8 (A-481). The constraints (the image
+// description's length <= 250 counts bytes on SQL_ASCII, so 250 "é" is refused there and accepted on UTF8),
+// handle rules, case folding and sorting all assume character semantics, so there is no warn-and-continue. It
+// runs before the first migration statement, so a refused database is left exactly as it was found.
+func requireUTF8Database(ctx context.Context, db *sql.DB) error {
+	var encoding string
+	if err := db.QueryRowContext(ctx, "SHOW server_encoding").Scan(&encoding); err != nil {
+		if ctx.Err() != nil {
+			return err
+		}
+		return errors.New("database encoding check failed: " + connectErrorClass(err))
+	}
+	if encoding != "UTF8" {
+		return fmt.Errorf("the database encoding is %s, not UTF8 (SHOW server_encoding); the market needs character semantics for length limits, handles, case and sorting, so it will not start. Nothing was changed. Create a database with CREATE DATABASE opsecmkt ENCODING 'UTF8' TEMPLATE template0, restore the data into it with pg_dump and pg_restore and point DATABASE_URL at it; see \"External PostgreSQL\" in docs/operator-guide.md and UPGRADING.md", encoding)
+	}
+	return nil
+}
+
+// prepareDatabase checks the connection and the database encoding, then applies the baseline and migrations in one transaction under
 // the startup advisory lock (shared with first-run setup). A failure or timeout leaves nothing applied.
 func prepareDatabase(ctx context.Context, db *sql.DB, t startupTimeouts) error {
 	connectCtx, cancel := context.WithTimeout(ctx, t.connect)
@@ -94,6 +112,12 @@ func prepareDatabase(ctx context.Context, db *sql.DB, t startupTimeouts) error {
 			return fmt.Errorf("database connection timed out after %s; check DATABASE_URL and service health, or raise DATABASE_CONNECT_TIMEOUT", t.connect)
 		}
 		return errors.New("database connection failed: " + connectErrorClass(err))
+	}
+	if err := requireUTF8Database(connectCtx, db); err != nil {
+		if timedOut(ctx, connectCtx) {
+			return fmt.Errorf("database connection timed out after %s; check DATABASE_URL and service health, or raise DATABASE_CONNECT_TIMEOUT", t.connect)
+		}
+		return err
 	}
 	// The transaction outlives each phase context, so it is bound to ctx; the phases bound its statements.
 	tx, err := db.BeginTx(ctx, nil)

@@ -57,6 +57,14 @@ server {
 
 Configure DNS, firewall and the certificate issuer for your domain. A proxy in another container needs a private shared network instead of this host-loopback configuration. Never expose the database or node RPC ports.
 
+**External PostgreSQL and the database encoding.** The database must be UTF8. Startup checks `SHOW server_encoding` before it runs the first migration and, for any other encoding (`SQL_ASCII`, `LATIN1`), exits with `the database encoding is SQL_ASCII, not UTF8 ...` and changes nothing. The length limits (for example the 250-character image description), handle rules, case folding and sorting all assume characters; on `SQL_ASCII` a limit counts bytes, so 250 "é" is refused there and accepted on UTF8. The internal PostgreSQL of the Compose files is initialised with `--encoding=UTF8`. On an external server create the database like this (from `psql` as a role with `CREATEDB`; `TEMPLATE template0` is what lets you choose an encoding the server's default differs from):
+
+```sql
+CREATE DATABASE opsecmkt ENCODING 'UTF8' TEMPLATE template0;
+```
+
+Check an existing database with `psql "$DATABASE_URL" -c 'SHOW server_encoding'` (it must print `UTF8`), or `SELECT datname, pg_encoding_to_char(encoding) FROM pg_database;` for all of them. The encoding of a database cannot be changed in place: to move a non-UTF8 one, follow [UPGRADING.md section 42](../UPGRADING.md#42-database-encoding-must-be-utf8-a-481). Every connection the app opens also sends `client_encoding=UTF8`, overriding the database and role defaults and any `client_encoding` in `DATABASE_URL`.
+
 **External PostgreSQL and time zones.** Every database connection the app opens (the web app, its migrations, `-bootstrap-admin`, `-reset-admin-password`, `-reset-admin-factors` and `-set-role`) sets `TimeZone=UTC` itself, overriding the server, database and role defaults and any `TimeZone` in `DATABASE_URL`. An external or host PostgreSQL left on local time therefore needs no change: pages show every time in UTC, labelled " UTC", and do not reveal the server's UTC offset. Other clients, such as `psql` or the backup scripts, still use the server's own zone.
 
 For onion service deployment run `./scripts/install.sh init --tor` (or choose `tor` in the installer). The base and Tor Compose files publish **no host ports**; Tor connects to `app:8080` on the private Docker network. The installer prints the onion address, and `./scripts/install.sh status` shows it later. By hand:
