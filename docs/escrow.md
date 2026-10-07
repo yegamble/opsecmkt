@@ -590,7 +590,11 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   high estimate is returned by the stray refund, which the wallet then builds. A fee estimate that fails never classes
   the refund too few: it waits on that settlement alone (`fee-estimate-waiting`), is flagged to staff once if the next
   pass fails the same way (`fee-estimate-unavailable`), and is tried again on each pass, while the wallet's pass goes
-  on with its other orders, their payment windows and the wallet's retention (QA5W1-4). A stray refund waiting
+  on with its other orders, their payment windows and the wallet's retention (QA5W1-4). A failed estimate and a refusal
+  count as one run of passes without a build: when the estimate fails only on some passes, the second pass in a row is
+  flagged as whichever class it records (the refusal, or the unavailable estimate), and staff are told once for that
+  run, not each time the class flips between those two; a stray refund already flagged too-small is not flagged again
+  when a restart makes it read a failing estimate (QA5W2-1). A stray refund waiting
   too-small that the wallet keeps refusing is logged once, and its fee is not read again while it claims the same
   outputs; `transfer` is still asked on each pass, so a later deposit that lets it build is seen (QA5W1-6). A release
   too few still waits, and its refusals keep their classes: the

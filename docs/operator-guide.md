@@ -1887,7 +1887,9 @@ the market (the order page says so); a destroyed wallet is never opened again.
   before when the refusal persists. A refund already flagged "outputs mismatch" or "keeps refusing" for this reason when
   you upgrade ends too few on the next pass (its earlier order note stays). If the fee estimate fails (for example a
   daemon RPC that does not serve `get_fee_estimate`), that refund waits, staff are told once if it fails again on the
-  next pass, and the market tries again on each pass; the wallet's other orders carry on (QA5W1-4).
+  next pass, and the market tries again on each pass; the wallet's other orders carry on (QA5W1-4). An estimate that
+  fails only on alternate passes, with the wallet refusing on the others, is flagged on the second pass all the same,
+  and staff are told once for the run (QA5W2-1).
 
 **Switching it off with orders open.** Setting `ESCROW_XMR` back to `off` moves no coins and closes no order, but it stops the
 Monero escrow watcher: deposits are not read, nothing is built or sent, and each order page says so. Release deadlines are

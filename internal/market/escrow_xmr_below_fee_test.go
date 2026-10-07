@@ -359,10 +359,10 @@ func TestXMREscrowEstimateFee(t *testing.T) {
 	if _, err = r.estimateFee(ctx, 0, 2); err != errXMRDestination {
 		t.Errorf("no input: %v", err)
 	}
-	// The fake's builds take the recorded weights too (QA5W1-5): 1562 bytes for one input and two outputs, 659 more per
-	// input, at 1.2e6 piconero per byte; the estimate above is wallet2's (1536, 679 more per input).
+	// The fake's builds take the measured weights too (QA5W2-4): 1514 bytes for one input and two outputs, 666 more per
+	// input, at 1.2e6 piconero per byte, each below the estimate above, which is wallet2's (1536, 679 more per input).
 	r.net.Store("fakechain") // as startEscrowXMR leaves it once the daemon is verified (A-449)
-	for nIn, want := range map[int]int64{1: 1874400000, 2: 2665200000, 3: 3456000000} {
+	for nIn, want := range map[int]int64{1: 1816800000, 2: 2616000000, 3: 3415200000} {
 		account, addr, err := r.createAccount(ctx)
 		if err != nil {
 			t.Fatal(err)
@@ -371,8 +371,8 @@ func TestXMREscrowEstimateFee(t *testing.T) {
 			f.payAddress(addr, hex64("weight "+strconv.Itoa(nIn)+" "+strconv.Itoa(i)), 1_000_000_000_000, 12)
 		}
 		tx, err := r.buildTransfer(ctx, account, []xmrDestination{{testXMRAddr("weight claimant", true), int64(nIn) * 1_000_000_000_000}})
-		if err != nil || tx.Fee != want || len(tx.SpentKeyImages) != nIn {
-			t.Errorf("%d input(s): fee %d from %d inputs (%v), want %d", nIn, tx.Fee, len(tx.SpentKeyImages), err, want)
+		if err != nil || tx.Fee != want || len(tx.SpentKeyImages) != nIn || tx.Fee > xmrFeeEstimate(nIn, 1) {
+			t.Errorf("%d input(s): fee %d from %d inputs (%v), want %d, at most the estimate %d", nIn, tx.Fee, len(tx.SpentKeyImages), err, want, xmrFeeEstimate(nIn, 1))
 		}
 	}
 }

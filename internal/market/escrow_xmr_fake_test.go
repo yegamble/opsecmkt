@@ -112,12 +112,14 @@ type fakeXMRTx struct {
 	Height               int64 // the block it was mined in; 0 while in the pool
 }
 
-// fakeXMRFee is the network fee of a transaction with nIn inputs and nOut outputs (change included) at priority 1: about
-// what a young fakechain charges (0.0018744 XMR for one input and two outputs, weight 1562, chair probe and the QA5W1-5
-// recording on monerod 0.18.5.1), and 659 bytes of weight more per input (0.0007908 XMR: a refund of weight 1507 with
-// one input weighed 2166 with two and 2825 with three on the fakechain, QA5W1-5).
+// fakeXMRFee is the network fee of a transaction with nIn inputs and nOut outputs (change included) at priority 1, as
+// real monero-wallet-rpc 0.18.5.1 builds it on a young fakechain at 1.2e6 piconero per byte of weight: 1514 bytes for
+// one input and two outputs (0.0018168 XMR) and 666 more per input (2180 for two, 2846 for three), the heaviest of the
+// do_not_relay builds QA5W2 measured (one input 1507 to 1514, two 2175 and 2180, three 2846; fees of 0.0018084 to
+// 0.0018156 XMR in the real-chain legs), so a build stays below wallet2's estimate (fakeXMRWeight: 1536, 2215, 2894)
+// as it does there and as estimateFee relies on (QA5W2-4; the chair probe's 1562 was heavier than the estimate).
 func fakeXMRFee(nIn, nOut int) int64 {
-	return 1874400000 + 659*fakeXMRFeePerByte[0]*int64(nIn-1) + 100000000*int64(max(nOut-2, 0))
+	return (1514+666*int64(nIn-1))*fakeXMRFeePerByte[0] + 100000000*int64(max(nOut-2, 0))
 }
 
 // fakeXMRFeePerByte is the fake daemon's get_fee_estimate fees, piconero per byte of weight at priorities 1 to 4, and
@@ -130,7 +132,7 @@ const fakeXMRMask = 10000
 // fakeXMRWeight and fakeXMRSize are the weight and size estimate_tx_size_and_weight gives for nIn inputs and nOut
 // outputs (1 to 4; ring 16, RingCT), as monero-wallet-rpc 0.18.5.1 answered on the fakechain (QA5W1-5): 1536 for one
 // input and one or two outputs, 2139 and 2218 for three and four, and 679 more per input. wallet2 estimates above
-// what it builds there (1507 for one input), though the fake's builds keep the chair probe's 1562 (fakeXMRFee).
+// what it builds there, and so do the fake's builds (fakeXMRFee: 1514 for one input).
 // fakeXMRMinSize is the size of one input and two outputs, from which wallet2 refuses a transfer early (-17) when the
 // account's coins are below it times the fee per byte (A-467).
 var (
