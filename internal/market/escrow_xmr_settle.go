@@ -700,9 +700,10 @@ func (a *App) xmrRefundBelowFee(ctx context.Context, s *xmrSettleRow, plan settl
 // xmrFeeEstimateFailed records that the fee estimate xmrRefundBelowFee needed for settlement s failed with err
 // (QA5W1-4), on s alone: xmrFeeEstimateWaiting the first time, xmrFeeEstimateUnavailable (flagged once) when the
 // previous pass recorded a class of the same run (xmrFeeEpisode, QA5W2-1: the estimate failed, the wallet refused, or
-// the coins were found too few, as a stray refund flagged too small is after a restart). The wallet's pass goes on with its other orders (their payment windows, the wallet's
-// retention) and s is tried again on the next pass. Only a cancelled pass and a wallet-rpc that lost its open wallet
-// (-13; the next pass opens it again) are returned, as xmrBuildRefused returns them.
+// the coins were found too few, as a stray refund flagged too small is after a restart). The wallet's pass goes on
+// with its other orders (their payment windows, the wallet's retention) and s is tried again on the next pass. Only a
+// cancelled pass and a wallet-rpc that lost its open wallet (-13; the next pass opens it again) are returned, as
+// xmrBuildRefused returns them.
 func (a *App) xmrFeeEstimateFailed(ctx context.Context, s *xmrSettleRow, err error) error {
 	if ctx.Err() != nil || xmrNotOpen(err) {
 		return err
@@ -723,9 +724,8 @@ func (a *App) xmrFeeEstimateFailed(ctx context.Context, s *xmrSettleRow, err err
 // money: they are not spendable yet, as after a reorganisation since incoming_transfers) a wait, never flagged; -2
 // (WRONG_ADDRESS) a definite refusal of a destination, named by asking validate_address about each output in turn; any
 // other answer of the wallet a refusal recorded with its code alone, flagged when it persists (or follows a failed fee
-// estimate, QA5W2-1). A connection that ended
-// after the whole request was sent (the wallet-rpc went away while it built) is xmrBuildDropped, then
-// xmrBuildSetAside. Any other transport error (refused, timeout, credentials, a reply that is not one) is returned and
+// estimate, QA5W2-1). A connection that ended after the whole request was sent (the wallet-rpc went away while it
+// built) is xmrBuildDropped, then xmrBuildSetAside. Any other transport error (refused, timeout, credentials, a reply that is not one) is returned and
 // retried on the next pass, unflagged and not counted.
 func (a *App) xmrBuildRefused(ctx context.Context, s *xmrSettleRow, plan settlePlan, err error) error {
 	var re *xmrRPCError

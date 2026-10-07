@@ -235,14 +235,16 @@ func TestXMREscrowRefundFeeEstimateNotOpen(t *testing.T) {
 	if err = x.poll(); !errors.As(err, &re) || re.Code != -13 || x.waitClass(r.ID) != xmrFeeEstimateWaiting || x.staffFlags(order) != flags || len(x.events(order)) != events {
 		t.Fatalf("-13 while waiting: pass %v, wait %q, staff notices +%d, events +%d", err, x.waitClass(r.ID), x.staffFlags(order)-flags, len(x.events(order))-events)
 	}
-	// A pass cancelled during the estimate returns the cancellation and records nothing.
+	// A pass cancelled during the estimate returns the cancellation and records nothing, nor logs a failed estimate.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	logs := captureLog(t)
 	x.fake.hook("estimate_tx_size_and_weight", cancel)
 	err = x.A.xmrEscrowPollOnce(ctx)
 	x.fake.hook("estimate_tx_size_and_weight", nil)
-	if !errors.Is(err, context.Canceled) || x.waitClass(r.ID) != xmrFeeEstimateWaiting || x.staffFlags(order) != flags || len(x.events(order)) != events {
-		t.Fatalf("cancelled: pass %v, wait %q, staff notices +%d, events +%d", err, x.waitClass(r.ID), x.staffFlags(order)-flags, len(x.events(order))-events)
+	if !errors.Is(err, context.Canceled) || x.waitClass(r.ID) != xmrFeeEstimateWaiting || x.staffFlags(order) != flags || len(x.events(order)) != events ||
+		strings.Contains(logs.String(), "the network fee estimate failed") {
+		t.Fatalf("cancelled: pass %v, wait %q, staff notices +%d, events +%d; log:\n%s", err, x.waitClass(r.ID), x.staffFlags(order)-flags, len(x.events(order))-events, logs.String())
 	}
 	// The estimate answering on the next pass: too few, as A-467 ends it.
 	x.mustPoll()
