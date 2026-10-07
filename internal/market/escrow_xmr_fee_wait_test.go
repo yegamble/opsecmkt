@@ -504,3 +504,49 @@ func TestXMREscrowFeeWaitRestartMidRun(t *testing.T) {
 			x.classNotes(order, r, xmrOutputsMismatch), x.staffFlags(order)-flags0, x.staffUsers(), x.events(order))
 	}
 }
+
+// QA5W4B-9: what staff were told is read per settlement. A refund told "fee estimate unavailable" that ends too small
+// leaves its coins to a stray refund (another settlement, its own run); when that stray refund's estimate fails
+// after a restart, staff are told of it once, although the order's notes already hold the same class for the refund.
+// A lookup that ignored the settlement ID would hide it for good (mutant MH).
+func TestXMREscrowUnavailableAcrossSettlements(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	x.fake.edit(func(f *fakeXMREscrow) { f.feeErr = true })
+	order, _, _ := x.refundOf(minPayoutXMR)
+	flags0 := x.staffFlags(order)
+	var got []string
+	var told []int
+	record := func(kind string) {
+		got = append(got, kind+":"+x.waitClass(x.settlementOf(order, kind).ID))
+		told = append(told, (x.staffFlags(order)-flags0)/x.staffUsers())
+	}
+	for i := 0; i < 3; i++ {
+		x.mustPoll()
+		record("refund")
+	}
+	x.fake.edit(func(f *fakeXMREscrow) { f.feeErr = false })
+	for i := 0; i < 3; i++ {
+		x.mustPoll()
+	}
+	record("refund")
+	record("stray_refund")
+	x.restart()
+	x.fake.edit(func(f *fakeXMREscrow) { f.feeErr = true })
+	for i := 0; i < 3; i++ {
+		x.mustPoll()
+		record("stray_refund")
+	}
+	wantGot := []string{"refund:" + xmrFeeEstimateWaiting, "refund:" + xmrFeeEstimateUnavailable, "refund:" + xmrFeeEstimateUnavailable,
+		"refund:" + xmrTooSmall, "stray_refund:" + xmrTooSmall, "stray_refund:" + xmrFeeEstimateUnavailable,
+		"stray_refund:" + xmrFeeEstimateUnavailable, "stray_refund:" + xmrFeeEstimateUnavailable}
+	// Notices in staff-member units: the refund's unavailable estimate, its too small and the stray refund's too
+	// small, then the stray refund's unavailable estimate, once.
+	wantTold := []int{0, 1, 1, 3, 3, 4, 4, 4}
+	refund, stray := x.settlementOf(order, "refund"), x.settlementOf(order, "stray_refund")
+	if !slices.Equal(got, wantGot) || !slices.Equal(told, wantTold) || x.classNotes(order, refund, xmrFeeEstimateUnavailable) != 1 ||
+		x.classNotes(order, stray, xmrFeeEstimateUnavailable) != 1 {
+		t.Fatalf("classes %q (want %q), staff told %v (want %v); unavailable notes: refund %d, stray refund %d; events %q", got, wantGot, told, wantTold,
+			x.classNotes(order, refund, xmrFeeEstimateUnavailable), x.classNotes(order, stray, xmrFeeEstimateUnavailable), x.events(order))
+	}
+}

@@ -42,6 +42,35 @@ client() {
     (cd "$root_dir" && docker compose exec -T db "$tool" --username=opsecmkt --dbname="$database" "$@")
   fi
 }
+# read_archive ARGS...: pg_restore ARGS on the archive given on stdin, connecting to no database, in UTC (see the
+# backup time below), where the destination's client tools run.
+read_archive() {
+  if [[ -n ${RESTORE_DATABASE_URL:-} ]]; then
+    TZ=UTC python3 "$script_dir/postgres-tool.py" RESTORE_DATABASE_URL pg_restore "$@"
+  else
+    (cd "$root_dir" && docker compose exec -T -e TZ=UTC db pg_restore "$@")
+  fi
+}
+# QA5W4B-2: the encoding the dump's text was written in, from the SET client_encoding its script starts with (an empty
+# list selects no entry, so only that header is read). A LATIN1 database backed up without BACKUP_DUMP_ENCODING=SQL_ASCII
+# (install.sh upgrade's automatic pre-upgrade backup, for one) is dumped as LATIN1, and pg_restore converts it into
+# a UTF8 database: the UTF-8 the market stored there comes out double-encoded and nothing fails. Only a UTF8 dump (a
+# UTF8 database) or a SQL_ASCII one (the bytes stored, unconverted) is restored; anything else is refused here, before
+# the confirmation and before anything is created or written. The decryption stopping early is expected (|| true).
+archive_encoding=$(age -d -i "$AGE_IDENTITY" "$1" | read_archive --file=- --use-list=/dev/null 2>/dev/null |
+  sed -n "s/^SET client_encoding = '\([A-Za-z0-9_]*\)';\$/\1/p" | head -n 1) || true
+case $archive_encoding in
+  UTF8 | SQL_ASCII) ;;
+  '')
+    echo 'Cannot read the database dump in this backup (a wrong AGE_IDENTITY, or a file that is not a backup made by scripts/backup.sh). Nothing was changed.' >&2
+    exit 1
+    ;;
+  *)
+    printf 'Refusing: this backup holds its text in %s, as pg_dump writes a %s database backed up without BACKUP_DUMP_ENCODING=SQL_ASCII. Restored into a UTF8 database, every non-ASCII character the market stored would be double-encoded. Nothing was changed. Restore it into a temporary %s database, back that up again with BACKUP_DUMP_ENCODING=SQL_ASCII and restore the new backup: see UPGRADING.md, section 42.\n' \
+      "$archive_encoding" "$archive_encoding" "$archive_encoding" >&2
+    exit 1
+    ;;
+esac
 read -r -p "Restore into $destination? Type RESTORE: " confirmation
 [[ $confirmation == RESTORE ]] || { echo 'Cancelled'; exit 1; }
 if [[ -n ${RESTORE_INTERNAL_DATABASE:-} ]]; then
@@ -220,15 +249,8 @@ echo 'Application databases now require payout recovery reconciliation. All outb
 # photo and avatar the backup had, including those removed since. The backup time is the dump's own creation time
 # from its table of contents (pg_restore --list reads only the start of the archive; the decryption stopping early
 # is expected, hence || true). The dump holds it as wall-clock fields of the zone pg_dump ran in, which
-# scripts/backup.sh sets to UTC, and pg_restore labels them with its own zone, so it runs in UTC too.
-list_archive() {
-  if [[ -n ${RESTORE_DATABASE_URL:-} ]]; then
-    TZ=UTC python3 "$script_dir/postgres-tool.py" RESTORE_DATABASE_URL pg_restore --list
-  else
-    (cd "$root_dir" && docker compose exec -T -e TZ=UTC db pg_restore --list)
-  fi
-}
-backup_time=$(age -d -i "$AGE_IDENTITY" "$1" 2>/dev/null | list_archive 2>/dev/null | sed -n 's/^;[[:space:]]*Archive created at //p' | head -n 1) || true
+# scripts/backup.sh sets to UTC, and pg_restore labels them with its own zone, so it runs in UTC too (read_archive).
+backup_time=$(age -d -i "$AGE_IDENTITY" "$1" 2>/dev/null | read_archive --list 2>/dev/null | sed -n 's/^;[[:space:]]*Archive created at //p' | head -n 1) || true
 printf '%s images restored from a backup taken %s; photo and avatar removals made after that time are undone — check /moderator Recent photos and remove them again\n' "$images" "${backup_time:-at an unknown time}"
 echo 'Restore completed. Validate the new database before switching application traffic.'
 if [[ -n ${RESTORE_INTERNAL_DATABASE:-} ]]; then

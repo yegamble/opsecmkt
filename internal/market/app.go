@@ -410,6 +410,12 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", 405)
 		return
 	}
+	// No page, raw route or image route meets query text the database would refuse: the loaders passed it to
+	// PostgreSQL, so /product?id=%ff answered 500 (QA5W4B-5). A post's query string is in r.Form, checked below.
+	if r.Method != "POST" && !formTextValid(r.URL.Query()) {
+		http.Error(w, invalidQueryText, 400)
+		return
+	}
 	// Admission control (admission.go): a page finding its class full is refused here with 503, before any
 	// database work; a form post takes its slot in a.post, once its body has been read and checked and its
 	// session looked up.
@@ -684,6 +690,9 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // invalidFormText refuses a form whose text formTextValid rejects.
 const invalidFormText = "Invalid form: a field is not valid UTF-8 or contains a NUL character. Nothing was changed."
+
+// invalidQueryText refuses a GET or HEAD whose query string formTextValid rejects (QA5W4B-5).
+const invalidQueryText = "Invalid address: a query parameter is not valid UTF-8 or contains a NUL character."
 
 // formTextValid reports whether every name and value in form is valid UTF-8 without a NUL byte, as PostgreSQL's
 // UTF8 text must be.

@@ -217,6 +217,9 @@ type PageData struct {
 	// XMRCollisionForm: one of XMRCollisions is open, so the page shows its disposition form (the staff help then
 	// names it as the one thing staff change on the page, QA5W3B-6).
 	XMRCollisionForm bool
+	// XMRSettlementForm: order page, the newest Monero escrow settlement shown with an administrator's form (re-request
+	// or build again, escrow_xmr_settle_view.go), 0 for none; the staff help then names and links it (QA5W4B-7).
+	XMRSettlementForm int64
 
 	// P4 Inventory (uses Product.Archived)
 	Listing   *ListingView

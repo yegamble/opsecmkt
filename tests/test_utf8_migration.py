@@ -20,6 +20,7 @@ REPOSITORY = Path(__file__).resolve().parents[1]
 LEG = REPOSITORY / 'scripts' / 'test-utf8-migration.sh'
 CHECK = REPOSITORY / 'scripts' / 'check-utf8.sql'
 BACKUP = REPOSITORY / 'scripts' / 'backup.sh'
+RESTORE = REPOSITORY / 'scripts' / 'restore.sh'
 
 
 def section_42():
@@ -43,8 +44,11 @@ class Section42Tests(unittest.TestCase):
         steps = [
             'docker compose stop app',
             'psql "$OLD_DATABASE_URL" -X -f scripts/check-utf8.sql',
-            "convert_from(convert(convert_to(body, 'SQL_ASCII'), 'LATIN1', 'UTF8'), 'SQL_ASCII') WHERE ctid = '(0,1)'",
+            "convert_from(convert(convert_to(body, 'SQL_ASCII'), 'LATIN1', 'UTF8'), 'SQL_ASCII') WHERE id = '6f0c2a9e41d7'",
+            "SET title = convert_from(convert_to('Crème brûlée', 'UTF8'), 'SQL_ASCII') WHERE id = '0d3e7b5a92c4'",
             'BACKUP_DUMP_ENCODING=SQL_ASCII BACKUP_DATABASE_URL="$OLD_DATABASE_URL" AGE_RECIPIENT=age1... ./scripts/backup.sh',
+            "CREATE DATABASE opsecmkt_latin1 ENCODING 'LATIN1' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0",
+            'pg_restore --no-owner --no-acl --exit-on-error --dbname="$LATIN1_DATABASE_URL"',
             "CREATE DATABASE opsecmkt_utf8 ENCODING 'UTF8' TEMPLATE template0;",
             'RESTORE_DATABASE_URL="$NEW_DATABASE_URL" AGE_IDENTITY=... ./scripts/restore.sh backups/pre-utf8.dump.age',
             'BACKUP_DATABASE_URL="$NEW_DATABASE_URL" AGE_RECIPIENT=age1... ./scripts/backup.sh backups/utf8-check.dump.age',
@@ -65,8 +69,15 @@ class Section42Tests(unittest.TestCase):
                       'COPY failed for table "<table>": ... invalid byte sequence for encoding "UTF8"',
                       'do not switch',
                       'on a UTF8 database it changes nothing',
-                      'scripts/test-utf8-migration.sh'):
+                      'scripts/test-utf8-migration.sh',
+                      # QA5W4B-2 to -4: the restore refusal and its way out, the hint, the key.
+                      'Refusing: this backup holds its text in LATIN1',
+                      'with `OLD_DATABASE_URL="$LATIN1_DATABASE_URL"`',
+                      'Never start the market on it',
+                      '*it also holds valid multibyte UTF-8*',
+                      'Use the row\'s key, not its ctid'):
             self.assertIn(claim, section)
+        self.assertNotIn("WHERE ctid = '(0,1)';", section)
 
 
 class BackupDumpEncodingTests(unittest.TestCase):
@@ -101,6 +112,56 @@ class BackupDumpEncodingTests(unittest.TestCase):
         self.assertEqual(text.count('--no-acl ${dump_encoding[@]+"${dump_encoding[@]}"} | age'), 2)
 
 
+class RestoreArchiveEncodingTests(unittest.TestCase):
+    """QA5W4B-2: restore.sh reads the dump's client_encoding first and refuses any but UTF8 and SQL_ASCII before the
+    restore runs. Stand-ins: age prints the "backup" (here just the encoding name), pg_restore with an empty list prints
+    the SET client_encoding header for it and otherwise reports that the restore ran; psql must never run."""
+
+    def run_restore(self, encoding):
+        with tempfile.TemporaryDirectory() as work:
+            bin_dir = Path(work) / 'bin'
+            bin_dir.mkdir()
+            stubs = {
+                'age': 'shift 3; cat "$1"',
+                'pg_restore': ('case " $* " in *" --use-list=/dev/null "*) printf "SET client_encoding = \'%s\';\\n" "$(cat)";;'
+                               ' *) cat >/dev/null; echo pg_restore ran >&2; exit 9;; esac'),
+                'psql': 'echo psql ran >&2; exit 9',
+            }
+            for tool, body in stubs.items():
+                (bin_dir / tool).write_text(f'#!/bin/sh\n{body}\n')
+                (bin_dir / tool).chmod(0o700)
+            backup = Path(work) / 'market.dump.age'
+            backup.write_text(encoding)
+            env = dict(os.environ, PATH=f'{bin_dir}:{os.environ["PATH"]}', AGE_IDENTITY=str(Path(work) / 'identity'),
+                       RESTORE_DATABASE_URL='postgres://user@127.0.0.1:1/db')
+            env.pop('RESTORE_INTERNAL_DATABASE', None)
+            return subprocess.run(['bash', str(RESTORE), str(backup)], env=env, input='RESTORE\n', capture_output=True, text=True)
+
+    def test_other_encodings_refused_before_anything_runs(self):
+        for encoding in ('LATIN1', 'WIN1252', 'EUC_JP'):
+            with self.subTest(encoding):
+                result = self.run_restore(encoding)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn(f'Refusing: this backup holds its text in {encoding}', result.stderr)
+                self.assertIn('Nothing was changed.', result.stderr)
+                self.assertIn('see UPGRADING.md, section 42.', result.stderr)
+                self.assertNotIn('pg_restore ran', result.stderr)
+                self.assertNotIn('psql ran', result.stderr)
+
+    def test_unreadable_dump_refused(self):
+        result = self.run_restore('')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('Cannot read the database dump in this backup', result.stderr)
+        self.assertNotIn('pg_restore ran', result.stderr)
+
+    def test_utf8_and_sql_ascii_restored(self):
+        for encoding in ('UTF8', 'SQL_ASCII'):
+            with self.subTest(encoding):
+                result = self.run_restore(encoding)
+                self.assertNotIn('Refusing', result.stderr)
+                self.assertIn('pg_restore ran', result.stderr)
+
+
 class CheckScriptTests(unittest.TestCase):
     def test_read_only_and_stops_psql(self):
         text = CHECK.read_text()
@@ -109,6 +170,10 @@ class CheckScriptTests(unittest.TestCase):
         self.assertIsNone(re.search(r'\b(INSERT|UPDATE|DELETE|ALTER|DROP|CREATE|TRUNCATE|GRANT)\b', code, re.I))
         self.assertIn("convert(convert_to(r.val, 'SQL_ASCII'), 'UTF8', 'UTF8')", code)
         self.assertIn('RAISE EXCEPTION', code)
+        # QA5W4B-3 and -4: each bad value says whether reading it as LATIN1 is safe, and names its row by its key.
+        self.assertIn('no valid multibyte UTF-8 in it, so reading its bytes as LATIN1 is a safe correction', code)
+        self.assertIn('it also holds valid multibyte UTF-8, which reading it as LATIN1 would double-encode: type the text it should hold', code)
+        self.assertIn("shown_key := 'where ' || r.key;", code)
         for typ in ("'text'::regtype", "'varchar'::regtype", "'bpchar'::regtype"):
             self.assertIn(typ, code)
 
@@ -130,9 +195,14 @@ class LegTests(unittest.TestCase):
                        "if check ascii_old; then fail",
                        'COPY failed for table "reviews": ERROR:  invalid byte sequence for encoding "UTF8": 0xff',
                        "if round_trip ascii_new; then fail",
-                       "WHERE ctid = '(0,1)'",
+                       "WHERE id = 'utf8mixed'",
+                       'mixed_hex=4372c3a86d6520ff206272c3bb6cc3a965',
+                       'it also holds valid multibyte UTF-8, which reading it as LATIN1 would double-encode',
+                       'check ascii_old || fail \'check-utf8.sql failed after one round of corrections\'',
                        "title='Crème brûlée — 東京 🔒'",
-                       '== "$double_hex" ]]',
+                       'if restore "$work/latin1.dump.age" latin1_plain; then fail',
+                       'Refusing: this backup holds its text in LATIN1',
+                       'restore "$work/latin1-again.dump.age" latin1_escape',
                        'if BACKUP_DUMP_ENCODING=LATIN1 backup',
                        'BACKUP_DUMP_ENCODING=SQL_ASCII backup latin1_old',
                        'BACKUP_DUMP_ENCODING=SQL_ASCII round_trip latin1_new',

@@ -13,10 +13,15 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 )
 
 // errNotTerminal reports that stdin is not an interactive terminal (a pipe, file or /dev/null).
 var errNotTerminal = errors.New("stdin is not a terminal")
+
+// invalidPasswordText refuses a new password that is not valid UTF-8 or holds a NUL byte (QA5W4B-6): the sign-in form
+// refuses such text (400, ServeHTTP), so it could never be used. A terminal set to LATIN1 sends "ö" as one byte 0xf6.
+const invalidPasswordText = "the password is not valid UTF-8 or contains a NUL character, so it could never be typed into the sign-in form; set the terminal to UTF-8 (or pipe the password as UTF-8) and try again; nothing was changed"
 
 // resetAdminPassword is the -reset-admin-password break-glass: it reads the new password from stdin, connects
 // with DATABASE_URL and resets that administrator's password (market.ResetAdminPassword). It starts no HTTP
@@ -89,7 +94,8 @@ func withHostDB(ctx context.Context, dsn string, fn func(context.Context, *sql.D
 
 // readNewPassword reads the new password from in. On a terminal (hide succeeds) it turns off echo, prompts on
 // prompt and asks twice; from a pipe or file it reads exactly one line (trailing newline optional). The
-// password is taken byte for byte apart from the line ending; the length rule is applied by the caller.
+// password is taken byte for byte apart from the line ending, and refused unless it is valid UTF-8 without a NUL
+// byte (invalidPasswordText); the length rule is applied by the caller.
 func readNewPassword(in io.Reader, prompt io.Writer, handle string, hide func() (func(), error)) (string, error) {
 	restore, err := hide()
 	if errors.Is(err, errNotTerminal) {
@@ -104,6 +110,9 @@ func readNewPassword(in io.Reader, prompt io.Writer, handle string, hide func() 
 		line = strings.TrimSuffix(line, "\r")
 		if line == "" {
 			return "", errors.New("no password on stdin")
+		}
+		if !passwordTextValid(line) {
+			return "", errors.New(invalidPasswordText)
 		}
 		return line, nil
 	}
@@ -132,5 +141,13 @@ func readNewPassword(in io.Reader, prompt io.Writer, handle string, hide func() 
 	if first != again {
 		return "", errors.New("the passwords do not match; nothing was changed")
 	}
+	if !passwordTextValid(first) {
+		return "", errors.New(invalidPasswordText)
+	}
 	return first, nil
+}
+
+// passwordTextValid reports whether password is valid UTF-8 without a NUL byte, as every form field must be.
+func passwordTextValid(password string) bool {
+	return utf8.ValidString(password) && !strings.ContainsRune(password, 0)
 }

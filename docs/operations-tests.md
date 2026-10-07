@@ -273,7 +273,7 @@ This automates database recovery and upgrade checks; it does not test backup sch
 
 Requires Docker, Go, Python 3 and age; no host PostgreSQL client (the client tools run inside the container, through
 wrappers put first on `PATH`). `UTF8_MIGRATION_CONTAINER` names the container. It rehearses [UPGRADING.md section
-42](../UPGRADING.md#42-database-encoding-must-be-utf8-a-481) (A-481; QA5W3B-1 and -2) with `scripts/check-utf8.sql`,
+42](../UPGRADING.md#42-database-encoding-must-be-utf8-a-481) (A-481; QA5W3B-1 and -2, QA5W4B-2 to -4) with `scripts/check-utf8.sql`,
 `scripts/backup.sh` and `scripts/restore.sh`:
 
 1. Starts a disposable `postgres:17-alpine` container on a random loopback port; the server built from this checkout
@@ -281,12 +281,19 @@ wrappers put first on `PATH`). `UTF8_MIGRATION_CONTAINER` names the container. I
    database, with a listing, an order and a review added as UTF-8 bytes, as the market before A-481 stored them.
 2. `SQL_ASCII`, a review `Great \xff\xfe seller`: `check-utf8.sql` names the table, column, key and ctid and exits 3; a
    plain backup and restore succeed, but the new database's own backup fails to restore with `COPY failed for table
-   "reviews": ... 0xff` (the round trip of step 6), and the check fails on the new database too. After the section's
-   correction the check passes, the round trip restores, the listing's title is byte for byte as written, the review
-   reads `Great ÿþ seller` and the server starts on the new database.
-3. `LATIN1`, `Crème brûlée — 東京 🔒`: a backup taken as `LATIN1` restores it double-encoded, byte for byte as
-   predicted; `BACKUP_DUMP_ENCODING=LATIN1` is refused with no file written; with `BACKUP_DUMP_ENCODING=SQL_ASCII` it
-   restores exactly, and the same option's round trip of the new UTF8 database changes no byte.
+   "reviews": ... 0xff` (the round trip of step 6), and the check fails on the new database too. A second listing is
+   added whose title mixes UTF-8 with a stray byte (`Cr\xc3\xa8me \xff br\xc3\xbbl\xc3\xa9e`) and whose description is
+   `LATIN1` (`\xe9t\xe9`): the check names three values by their row's key, tells the title to be typed (it also holds
+   valid multibyte UTF-8) and the other two to be read as `LATIN1`. After the section's corrections, by key, both
+   values of that listing in the same round, the check passes, the round trip restores, the first listing's title is
+   byte for byte as written, the review reads `Great ÿþ seller`, the second listing `Crème brûlée` and `été`, and the
+   server starts on the new database.
+3. `LATIN1`, `Crème brûlée — 東京 🔒`: `restore.sh` refuses a backup taken as `LATIN1` (its restore would
+   double-encode every non-ASCII character) with a message citing section 42, leaving the new database empty; the
+   section's way out for that backup (a plain `pg_restore` into a temporary `LATIN1` database, checked and backed up
+   again with `BACKUP_DUMP_ENCODING=SQL_ASCII`, then `restore.sh`) restores it exactly; `BACKUP_DUMP_ENCODING=LATIN1`
+   is refused with no file written; with `BACKUP_DUMP_ENCODING=SQL_ASCII` the old database restores exactly, and the
+   same option's round trip of the new UTF8 database changes no byte.
 
 The container and temporary directory are always removed; on failure the logs are printed. CI runs it in the
 operations job.

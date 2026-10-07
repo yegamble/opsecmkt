@@ -1173,3 +1173,56 @@ func TestXMREscrowBuildSetAside(t *testing.T) {
 		}
 	}
 }
+
+// QA5W4B-7: the staff help on the order page is true beside an administrator's settlement form. An administrator
+// offered "Build settlement N again" (or a re-request) was told "You are viewing this order as a moderator ... Nothing
+// can be changed from this page". With the form shown, the help names it, links to its settlement and says nothing else
+// can be changed; a moderator, who is never offered it, is still told nothing can be changed. Checked in each of the
+// help's three branches: no dispute (here a flagged deposit), an escrow dispute (with the line under the order's state)
+// and a dispute resolved.
+func TestXMREscrowStaffHelpBesideAdminForm(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	crasher, _, _ := x.completed()
+	other, _, _ := x.completed()
+	x.completed()
+	a, claim := x.release(crasher)
+	x.release(other)
+	x.fake.edit(func(f *fakeXMREscrow) { f.crash[claim] = true })
+	for i := 0; i < 2; i++ {
+		_ = x.poll() // the build crashes the wallet-rpc twice: set aside
+	}
+	x.mustPoll()
+	if x.waitClass(a) != xmrBuildSetAside {
+		t.Fatalf("settlement %d is not set aside: %q", a, x.waitClass(a))
+	}
+	_, adminSess := x.user("helpadmin_"+randomToken()[:6], "admin")
+	_, modSess := x.user("helpmod_"+randomToken()[:6], "moderator")
+	link := `href="#xmr-settlement-` + strconv.FormatInt(a, 10) + `"`
+	check := func(stage string) (admin, mod string) {
+		t.Helper()
+		admin = html.UnescapeString(x.page("/order?id="+crasher, adminSess))
+		help := staffHelp(admin)
+		if !strings.Contains(admin, `action="/admin/escrow-xmr-retry-build"`) || strings.HasPrefix(help, "a moderator") ||
+			!strings.Contains(help, "As an administrator") || !strings.Contains(help, link) ||
+			!strings.Contains(help, "nothing else can be changed from this page") || strings.Contains(help, "Nothing can be changed from this page") {
+			t.Fatalf("%s: the administrator's help beside the retry form: %q", stage, help)
+		}
+		mod = html.UnescapeString(x.page("/order?id="+crasher, modSess))
+		help = staffHelp(mod)
+		if strings.Contains(mod, "/admin/escrow-xmr-retry-build") || !strings.Contains(help, "Nothing can be changed from this page") ||
+			strings.Contains(help, "#xmr-settlement-") || strings.Contains(help, "As an administrator") {
+			t.Fatalf("%s: the moderator's help: %q", stage, help)
+		}
+		return admin, mod
+	}
+	check("flagged deposit")
+	agExec(x.testEnv, "UPDATE orders SET state='disputed' WHERE id=$1", crasher)
+	agExec(x.testEnv, "INSERT INTO disputes(id,order_id,reason) VALUES($1,$2,'The content was never delivered to me at all.')", randomToken(), crasher)
+	admin, mod := check("escrow dispute")
+	mustNotContain(t, admin, "The order page is read-only for market staff.")
+	mustContain(t, admin, "An administrator can also build a Monero escrow settlement again or re-request it on this page.")
+	mustContain(t, mod, "The order page is read-only for market staff.")
+	agExec(x.testEnv, "UPDATE orders SET state='resolved' WHERE id=$1", crasher)
+	check("dispute resolved")
+}
