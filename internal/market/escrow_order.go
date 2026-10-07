@@ -81,6 +81,12 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 		return err
 	}
 	v.Descriptor = desc
+	// A-456b: a per-order escrow's parties sign in an order wallet, made from its setup page (escrow_setup.go).
+	var marketSuffix string
+	if err = a.db.QueryRowContext(ctx, "SELECT ep.derivation_suffix FROM escrow_pubkeys ep JOIN escrows es ON es.id=ep.escrow_id WHERE es.order_id=$1 AND es.coin='BTC' AND ep.party='market'", o.ID).Scan(&marketSuffix); err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	v.PerOrder = isPerOrderKey(escrowKeyRow{Suffix: marketSuffix})
 	if v.Own != "" {
 		// A party signs on this page, so the keypoolrefill advice of /escrow-key is repeated here when this escrow's
 		// child key lies past escrowRangeAdvice: past its descriptor range a Core wallet cannot sign (P2-R10, A-397).

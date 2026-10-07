@@ -128,6 +128,7 @@ var (
 	errSettleOtherKey  = fail(400, "The pasted PSBT carries a signature from a key other than your escrow key for this order. Sign only in the wallet that holds the escrow key you registered. Nothing was changed.")
 	errSettleUnsigned  = fail(400, "The pasted PSBT does not carry your signature on every input. Sign your copy in the wallet that holds your escrow key and paste the result. Nothing was changed.")
 	errSettleSighash   = fail(400, "A signature uses a sighash type other than ALL. Sign with the default sighash type (ALL). Nothing was changed.")
+	errSettleBoth      = fail(400, "Paste the signed PSBT or upload its file, not both. Nothing was changed.")
 )
 
 // settleOutput is one output of a settlement plan.
@@ -1193,6 +1194,14 @@ func checkSettlementPaste(pasted, txid string, party, market escrowKeyRow) ([]ps
 // full before anything is written and never stored: only the party's signature on each input is kept.
 func escrowSignAction(c *actionCtx) (actionResult, error) {
 	ctx := c.Ctx()
+	// A-456b: the signed PSBT is pasted or uploaded as a file (psbt_upload.go), never both.
+	pasted, file := strings.TrimSpace(c.Form.Get("psbt")), strings.TrimSpace(c.Form.Get(psbtFileField))
+	switch {
+	case pasted != "" && file != "":
+		return actionResult{}, errSettleBoth
+	case file != "":
+		pasted = file
+	}
 	// A-386: the order row first, as the dispute action takes it, so a buyer's signature and the buyer's dispute never
 	// both take effect.
 	o, err := partyOrderLocked(c, c.Form.Get("order_id"))
@@ -1239,7 +1248,7 @@ func escrowSignAction(c *actionCtx) (actionResult, error) {
 	if err != nil || sp.TxID() != txid {
 		return actionResult{}, errors.New("escrow: the stored settlement PSBT does not match its txid")
 	}
-	sigs, err := checkSettlementPaste(c.Form.Get("psbt"), txid, keys[party], keys["market"])
+	sigs, err := checkSettlementPaste(pasted, txid, keys[party], keys["market"])
 	if err != nil {
 		return actionResult{}, err
 	}
