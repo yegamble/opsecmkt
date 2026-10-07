@@ -574,7 +574,8 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   pay the fee. Before, the refund waited for good while a later deposit's stray refund waited too or paid without its
   coins (A-437). Coins at or below the network fee itself never reach that check: asked to take the fee from the
   refund, `monero-wallet-rpc` 0.18.5.1 refuses to build it, with -17 (not enough money; 0.001 and 0.0015 XMR on a young
-  fakechain), -16 (tx not possible; 0.0018 XMR) or -46 (the output would be zero). Those codes also mean other things
+  fakechain), -16 (tx not possible; 0.0018 XMR) or -46 (destination amount is zero: exactly at the fee); each code was
+  recorded from the real wallet at those amounts (`xmr_rpc_shapes_0.18.5.1.json`, QA5W1-5). Those codes also mean other things
   (coins the wallet no longer sees as unlocked or confirmed, a wallet behind the chain), so on them, for a refund or a
   stray refund, the market reads the fee the wallet would take, with calls that build nothing: the priority the wallet
   uses for `transfer` at priority 0 (`get_default_fee_priority`; its -1 means priority 1), the weight it estimates for
@@ -586,8 +587,13 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   above (ended, or for a stray refund waiting, too-small), whatever the wallet's reason; otherwise the refusal keeps its
   class (-17 waits once and is then an outputs mismatch, flagged; -16 and -46 a refusing wallet). The estimate only
   decides among refusals: a refund the wallet builds is checked as before, and a refund classed too few by a slightly
-  high estimate is returned by the stray refund, which the wallet then builds. A fee estimate that fails records
-  nothing; the next pass tries again (A-467). A release too few still waits, and its refusals keep their classes: the
+  high estimate is returned by the stray refund, which the wallet then builds. A fee estimate that fails never classes
+  the refund too few: it waits on that settlement alone (`fee-estimate-waiting`), is flagged to staff once if the next
+  pass fails the same way (`fee-estimate-unavailable`), and is tried again on each pass, while the wallet's pass goes
+  on with its other orders, their payment windows and the wallet's retention (QA5W1-4). A stray refund waiting
+  too-small that the wallet keeps refusing is logged once, and its fee is not read again while it claims the same
+  outputs; `transfer` is still asked on each pass, so a later deposit that lets it build is seen (QA5W1-6). A release
+  too few still waits, and its refusals keep their classes: the
   coins are the vendor's. After a close, deposits are refunded automatically until the wallet is
   destroyed; after that, the order page says Monero sent to its address since then cannot be recovered (ES-8).
 - **Confirm receipt and deadlines.** For a digital order the vendor claims the escrow with a fresh Monero address and their

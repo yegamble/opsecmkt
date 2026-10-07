@@ -43,9 +43,9 @@ import (
 // do not cover them, as for an account the wallet does not have; -37 not enough unlocked money when they cover them
 // only with locked ones), takes the network fee (fakeXMRFee, at the priority get_default_fee_priority gives) from
 // destination 0 alone when subtract_fee_from_outputs is [0], refusing as wallet2 does coins too few for that fee (A-467:
-// -17 below the fee of a one-input transaction by size, -16 when destination 0 is below the fee, -46 when it equals it;
-// estimate_tx_size_and_weight and the daemon's get_fee_estimate give the weight and fees per byte that make up that
-// fee) (an address in invalid is refused, -2, as validate_address says; a
+// -17 below the fee of a one-input transaction by size, -16 when destination 0 is below the fee, -46 when it equals it,
+// each recorded from 0.18.5.1; estimate_tx_size_and_weight and the daemon's get_fee_estimate give the recorded weight
+// estimates and fees per byte) (an address in invalid is refused, -2, as validate_address says; a
 // transfer to one in crash crashes the wallet-rpc, fakeXMRCrash), and with do_not_relay only builds: the transaction is
 // kept by its metadata and nothing is spent. relay_tx puts a built transaction in the daemon's pool and marks its
 // outputs spent; relaying it again answers the same hash (idempotent, as monerod 0.18.5.1 does), one whose key images
@@ -113,9 +113,11 @@ type fakeXMRTx struct {
 }
 
 // fakeXMRFee is the network fee of a transaction with nIn inputs and nOut outputs (change included) at priority 1: about
-// what a young fakechain charges (0.0018744 XMR for one input and two outputs, chair probe on monerod 0.18.5.1).
+// what a young fakechain charges (0.0018744 XMR for one input and two outputs, weight 1562, chair probe and the QA5W1-5
+// recording on monerod 0.18.5.1), and 659 bytes of weight more per input (0.0007908 XMR: a refund of weight 1507 with
+// one input weighed 2166 with two and 2825 with three on the fakechain, QA5W1-5).
 func fakeXMRFee(nIn, nOut int) int64 {
-	return 1874400000 + 300000000*int64(nIn-1) + 100000000*int64(max(nOut-2, 0))
+	return 1874400000 + 659*fakeXMRFeePerByte[0]*int64(nIn-1) + 100000000*int64(max(nOut-2, 0))
 }
 
 // fakeXMRFeePerByte is the fake daemon's get_fee_estimate fees, piconero per byte of weight at priorities 1 to 4, and
@@ -125,12 +127,20 @@ var fakeXMRFeePerByte = [4]int64{1200000, 4700000, 19000000, 240000000}
 
 const fakeXMRMask = 10000
 
-// fakeXMRWeight is the weight estimate_tx_size_and_weight gives for nIn inputs and nOut outputs: the weight whose fee
-// at priority 1 is fakeXMRFee, rounded up. fakeXMRMinSize is the size of one input and two outputs, from which wallet2
-// refuses a transfer early (-17) when the account's coins are below it times the fee per byte (A-467).
-func fakeXMRWeight(nIn, nOut int) int64 {
-	return (fakeXMRFee(nIn, max(nOut, 2)) + fakeXMRFeePerByte[0] - 1) / fakeXMRFeePerByte[0]
-}
+// fakeXMRWeight and fakeXMRSize are the weight and size estimate_tx_size_and_weight gives for nIn inputs and nOut
+// outputs (1 to 4; ring 16, RingCT), as monero-wallet-rpc 0.18.5.1 answered on the fakechain (QA5W1-5): 1536 for one
+// input and one or two outputs, 2139 and 2218 for three and four, and 679 more per input. wallet2 estimates above
+// what it builds there (1507 for one input), though the fake's builds keep the chair probe's 1562 (fakeXMRFee).
+// fakeXMRMinSize is the size of one input and two outputs, from which wallet2 refuses a transfer early (-17) when the
+// account's coins are below it times the fee per byte (A-467).
+var (
+	fakeXMRWeights = map[int]int64{1: 1536, 2: 1536, 3: 2139, 4: 2218}
+	fakeXMRSizes   = map[int]int64{1: 1536, 2: 1536, 3: 1679, 4: 1758}
+)
+
+func fakeXMRWeight(nIn, nOut int) int64 { return fakeXMRWeights[nOut] + 679*int64(nIn-1) }
+
+func fakeXMRSize(nIn, nOut int) int64 { return fakeXMRSizes[nOut] + 679*int64(nIn-1) }
 
 const fakeXMRMinSize = 1417
 
@@ -700,11 +710,10 @@ var fakeXMRWalletMethods = map[string]func(f *fakeXMREscrow, params json.RawMess
 			RCT      bool `json:"rct"`
 		}
 		json.Unmarshal(p, &q)
-		if q.Inputs <= 0 || q.Outputs < 0 || q.RingSize != 16 || !q.RCT {
-			return nil, -1, "Failed to determine size and weight"
+		if q.Inputs <= 0 || fakeXMRWeights[q.Outputs] == 0 || q.RingSize != 16 || !q.RCT {
+			return nil, -1, "Failed to determine size and weight" // only the recorded shapes: 1 to 4 outputs
 		}
-		w := fakeXMRWeight(q.Inputs, q.Outputs)
-		return map[string]any{"size": w - 50, "weight": w}, 0, ""
+		return map[string]any{"size": fakeXMRSize(q.Inputs, q.Outputs), "weight": fakeXMRWeight(q.Inputs, q.Outputs)}, 0, ""
 	},
 	"validate_address": func(f *fakeXMREscrow, p json.RawMessage) (any, int64, string) {
 		var q struct {
@@ -1048,6 +1057,17 @@ func TestFakeXMREscrowErrorCodes(t *testing.T) {
 	}
 	f.payAddress(youngAddr, hex64("young deposit"), 1_000_000_000_000, 3)
 	f.payAddress(oldAddr, hex64("old deposit"), 1_000_000_000_000, 12)
+	// A-467, QA5W1-5: accounts holding 0.001, 0.0015 and 0.0018 XMR, and one with 0.01 XMR, refunded with the fee taken
+	// from the first destination, as xmr_record_shapes.py refunds them on the fakechain.
+	belowFee := map[int64]int64{}
+	for _, amt := range []int64{1_000_000_000, 1_500_000_000, 1_800_000_000, 10_000_000_000} {
+		account, addr, err := r.createAccount(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.payAddress(addr, hex64("below fee deposit "+strconv.FormatInt(amt, 10)), amt, 12)
+		belowFee[amt] = account
+	}
 	pay := func(amount int64) []xmrDestination { return []xmrDestination{{testXMRAddr("claimant", true), amount}} }
 	built, err := r.buildTransfer(ctx, old, pay(500_000_000_000))
 	if err != nil {
@@ -1055,6 +1075,17 @@ func TestFakeXMREscrowErrorCodes(t *testing.T) {
 	}
 	f.spendOutside(built.SpentKeyImages...)
 	build := func(account, amount int64) error { _, err := r.buildTransfer(ctx, account, pay(amount)); return err }
+	pair := func(first int64) []xmrDestination {
+		return []xmrDestination{{testXMRAddr("claimant", true), first}, {testXMRAddr("buyer return", true), 4_000_000_000}}
+	}
+	atFee := func() error { // a first destination exactly at the fee a build of the same outputs took
+		first, err := r.buildTransfer(ctx, belowFee[10_000_000_000], pair(5_000_000_000))
+		if err != nil {
+			return err
+		}
+		_, err = r.buildTransfer(ctx, belowFee[10_000_000_000], pair(first.Fee))
+		return err
+	}
 	relay := func(metadata string) error { _, err := r.relayTx(ctx, metadata); return err }
 	address := func(account int64) error { _, err := r.address(ctx, account, 0); return err }
 	cases := []struct {
@@ -1062,11 +1093,15 @@ func TestFakeXMREscrowErrorCodes(t *testing.T) {
 		err  error
 	}{
 		{"wallet create_wallet (exists)", r.createWallet(ctx, name, "pw")},
-		{"wallet get_address (account out of bound)", address(old + 1)},
+		{"wallet get_address (account out of bound)", address(belowFee[10_000_000_000] + 1)},
 		{"wallet freeze (unknown key image)", r.freeze(ctx, hex64("unknown key image"))},
-		{"wallet transfer (account out of bound)", build(old+1, 100_000_000_000)},
+		{"wallet transfer (account out of bound)", build(belowFee[10_000_000_000]+1, 100_000_000_000)},
 		{"wallet transfer (coins locked)", build(young, 100_000_000_000)},
 		{"wallet transfer (not enough money)", build(young, 2_000_000_000_000)},
+		{"wallet transfer (below the fee: 0.001 XMR)", build(belowFee[1_000_000_000], 1_000_000_000)},
+		{"wallet transfer (below the fee: 0.0015 XMR)", build(belowFee[1_500_000_000], 1_500_000_000)},
+		{"wallet transfer (below the fee: 0.0018 XMR)", build(belowFee[1_800_000_000], 1_800_000_000)},
+		{"wallet transfer (destination at the fee)", atFee()},
 		{"wallet relay_tx (bad metadata)", relay(hex.EncodeToString([]byte("not tx metadata")))},
 		{"wallet relay_tx (refused: key images spent)", relay(built.Metadata)},
 		{"wallet set_subaddress_lookahead (wrong password)", r.setSubaddressLookahead(ctx, "not pw", 50, 1)},

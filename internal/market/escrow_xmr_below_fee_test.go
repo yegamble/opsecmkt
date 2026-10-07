@@ -5,7 +5,6 @@ import (
 	"errors"
 	"slices"
 	"strconv"
-	"strings"
 	"testing"
 )
 
@@ -262,15 +261,14 @@ func TestXMREscrowRefundBelowFeePriority(t *testing.T) {
 		t.Fatalf("at priority 2: the refund %+v wait %q", r, x.waitClass(r.ID))
 	}
 
-	// The daemon's estimate fails: nothing is recorded; then it answers, and at priority 1 (the wallet's -1) the
-	// 0.0015 XMR refund is too few.
+	// The daemon's estimate fails: the refund waits for it, never too few on a guess (QA5W1-4,
+	// TestXMREscrowRefundFeeEstimateUnavailable); then it answers, and at priority 1 (the wallet's -1) the 0.0015 XMR
+	// refund is too few.
 	x.fake.edit(func(f *fakeXMREscrow) { f.priority, f.priorityErr = 0, true })
 	order, _, _ = x.refundOf(1500000000)
 	x.fake.edit(func(f *fakeXMREscrow) { f.feeErr = true })
-	if err := x.poll(); err == nil || !strings.Contains(err.Error(), "get_fee_estimate") {
-		t.Fatalf("a failing fee estimate: the pass answers %v", err)
-	}
-	if r := x.settlementOf(order, "refund"); r.State != "requested" || x.waitClass(r.ID) != "" {
+	x.mustPoll()
+	if r := x.settlementOf(order, "refund"); r.State != "requested" || x.waitClass(r.ID) != xmrFeeEstimateWaiting {
 		t.Fatalf("a failing fee estimate: the refund %+v wait %q", r, x.waitClass(r.ID))
 	}
 	x.fake.edit(func(f *fakeXMREscrow) { f.feeErr = false })
@@ -321,7 +319,7 @@ func TestXMREscrowEstimateFee(t *testing.T) {
 		nIn, priority int
 		priorityErr   bool
 		want          int64
-	}{{1, 1, false, 1874400000}, {2, 1, false, 2174400000}, {1, 2, false, 7341400000}, {1, 3, true, 1874400000}} {
+	}{{1, 1, false, 1843200000}, {2, 1, false, 2658000000}, {1, 2, false, 7219200000}, {1, 3, true, 1843200000}} { // recorded weights 1536 and 2215 (QA5W1-5)
 		f.edit(func(f *fakeXMREscrow) { f.priority, f.priorityErr = c.priority, c.priorityErr })
 		if got, err := r.estimateFee(ctx, c.nIn, 2); err != nil || got != c.want || got != xmrFeeEstimate(c.nIn, map[bool]int{false: c.priority, true: 1}[c.priorityErr]) {
 			t.Errorf("%d inputs at priority %d (error %v): %d %v, want %d", c.nIn, c.priority, c.priorityErr, got, err, c.want)
@@ -360,6 +358,22 @@ func TestXMREscrowEstimateFee(t *testing.T) {
 	f.handle("get_default_fee_priority", fakeXMRWalletMethods["get_default_fee_priority"])
 	if _, err = r.estimateFee(ctx, 0, 2); err != errXMRDestination {
 		t.Errorf("no input: %v", err)
+	}
+	// The fake's builds take the recorded weights too (QA5W1-5): 1562 bytes for one input and two outputs, 659 more per
+	// input, at 1.2e6 piconero per byte; the estimate above is wallet2's (1536, 679 more per input).
+	r.net.Store("fakechain") // as startEscrowXMR leaves it once the daemon is verified (A-449)
+	for nIn, want := range map[int]int64{1: 1874400000, 2: 2665200000, 3: 3456000000} {
+		account, addr, err := r.createAccount(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := range nIn {
+			f.payAddress(addr, hex64("weight "+strconv.Itoa(nIn)+" "+strconv.Itoa(i)), 1_000_000_000_000, 12)
+		}
+		tx, err := r.buildTransfer(ctx, account, []xmrDestination{{testXMRAddr("weight claimant", true), int64(nIn) * 1_000_000_000_000}})
+		if err != nil || tx.Fee != want || len(tx.SpentKeyImages) != nIn {
+			t.Errorf("%d input(s): fee %d from %d inputs (%v), want %d", nIn, tx.Fee, len(tx.SpentKeyImages), err, want)
+		}
 	}
 }
 

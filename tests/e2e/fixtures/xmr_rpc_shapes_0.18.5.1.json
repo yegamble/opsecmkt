@@ -272,6 +272,23 @@
     "untrusted": "boolean"
    }
   },
+  "daemon get_fee_estimate": {
+   "method": "get_fee_estimate",
+   "params": [
+    "grace_blocks"
+   ],
+   "result": {
+    "credits": "integer",
+    "fee": "integer",
+    "fees": [
+     "integer"
+    ],
+    "quantization_mask": "integer",
+    "status": "string",
+    "top_hash": "string",
+    "untrusted": "boolean"
+   }
+  },
   "daemon get_info": {
    "method": "get_info",
    "params": [],
@@ -408,6 +425,19 @@
     "password"
    ]
   },
+  "wallet estimate_tx_size_and_weight": {
+   "method": "estimate_tx_size_and_weight",
+   "params": [
+    "n_inputs",
+    "n_outputs",
+    "rct",
+    "ring_size"
+   ],
+   "result": {
+    "size": "integer",
+    "weight": "integer"
+   }
+  },
   "wallet freeze": {
    "method": "freeze",
    "params": [
@@ -525,6 +555,13 @@
     ],
     "time_to_unlock": "integer",
     "unlocked_balance": "integer"
+   }
+  },
+  "wallet get_default_fee_priority": {
+   "method": "get_default_fee_priority",
+   "params": [],
+   "result": {
+    "priority": "integer"
    }
   },
   "wallet get_height": {
@@ -1247,10 +1284,74 @@
     "subtract_fee_from_outputs"
    ]
   },
+  "wallet transfer (below the fee: 0.001 XMR)": {
+   "error": {
+    "code": -17,
+    "message": "not enough money"
+   },
+   "method": "transfer",
+   "params": [
+    "account_index",
+    "destinations",
+    "do_not_relay",
+    "get_tx_hex",
+    "get_tx_metadata",
+    "priority",
+    "subtract_fee_from_outputs"
+   ]
+  },
+  "wallet transfer (below the fee: 0.0015 XMR)": {
+   "error": {
+    "code": -17,
+    "message": "not enough money"
+   },
+   "method": "transfer",
+   "params": [
+    "account_index",
+    "destinations",
+    "do_not_relay",
+    "get_tx_hex",
+    "get_tx_metadata",
+    "priority",
+    "subtract_fee_from_outputs"
+   ]
+  },
+  "wallet transfer (below the fee: 0.0018 XMR)": {
+   "error": {
+    "code": -16,
+    "message": "tx not possible"
+   },
+   "method": "transfer",
+   "params": [
+    "account_index",
+    "destinations",
+    "do_not_relay",
+    "get_tx_hex",
+    "get_tx_metadata",
+    "priority",
+    "subtract_fee_from_outputs"
+   ]
+  },
   "wallet transfer (coins locked)": {
    "error": {
     "code": -37,
     "message": "not enough unlocked money"
+   },
+   "method": "transfer",
+   "params": [
+    "account_index",
+    "destinations",
+    "do_not_relay",
+    "get_tx_hex",
+    "get_tx_metadata",
+    "priority",
+    "subtract_fee_from_outputs"
+   ]
+  },
+  "wallet transfer (destination at the fee)": {
+   "error": {
+    "code": -46,
+    "message": "destination amount is zero"
    },
    "method": "transfer",
    "params": [
