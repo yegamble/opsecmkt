@@ -1442,11 +1442,14 @@ claim the same way; the encryption step of the runbook is not part of it. Its A-
 (`TestEscrowRegtestPerOrderPractice`, no escrow uses a per-order wallet yet): a per-order wallet key's practice
 transaction is signed by Core from the seed and what the practice page shows ([per-order
 escrow](escrow.md#per-order-key-layout-registration-and-practice-a-455-shape-b)), and the key is active; the same seed's
-Core wallet cannot sign it. Its A-456a leg (`TestEscrowRegtestPerOrderEscrow`, with the per-order switch on in that
-test only; no user can create a per-order escrow yet): a per-order escrow is created through the checkout form, Core
-derives its address from the parties' private roots as Go does ([per-order
+Core wallet cannot sign it. Its A-456a leg (`TestEscrowRegtestPerOrderEscrow`): a per-order escrow is created through
+the checkout form, Core derives its address from the parties' private roots as Go does ([per-order
 escrow](escrow.md#per-order-escrow-creation-and-watching-a-456a-shape-b)), and deposits to two sibling addresses are seen
-by the watch-only wallet and recorded left out. In every leg the app runs inside the Go test against the real node, not as the server binary. A browser journey
+by the watch-only wallet and recorded left out. Its A-456b legs (`TestEscrowRegtestShapeBRelease`,
+`TestEscrowRegtestShapeBSiblingStray`, with the real [escrow signer](#escrow-signer) built from the tree): a per-order
+escrow's claim, signed by the vendor's order wallet and uploaded as a PSBT file, is co-signed by the signer, broadcast
+and confirmed; a deposit to a sibling address is returned by a stray refund spending that sibling's script, co-signed
+and confirmed ([per-order escrow](escrow.md#per-order-escrow-settlement-setup-and-upload-a-456b-shape-b)). In every leg the app runs inside the Go test against the real node, not as the server binary. A browser journey
 (`npm run test:e2e:escrow`, [development](development.md)) drives the escrow forms by keyboard in Chromium at 320 px
 with JavaScript off against the real server and a simulated escrow node; it is not chain evidence. Nothing about
 escrow has run on a public test network or mainnet, and the escrow pages have not been run in Firefox or WebKit.
@@ -1468,12 +1471,19 @@ simulated node too and moves the clock through SQL; it is not chain evidence.
 
 #### Escrow signer
 
-**Development branch, test networks only, and no order uses it yet.** Per-order (shape (b)) Bitcoin escrows, being built
-for wallets that cannot sign with a key Bitcoin Core derives from the market's account (ruling P4-R2; see
-[per-order escrow](escrow.md#escrow-signer-a-454-shape-b)), need a market key that is not in the Core arbiter wallet.
-The escrow signer, `/app/escrow-signer` in the app's image (`cmd/escrow-signer`), holds that key. Until the
-settlement flow uses it (a later slice), the app only checks it and pins it, as below; nothing else depends on it, and
-the Core arbiter wallet above stays the market's key for every escrow this release creates.
+**Development branch, test networks only.** Per-order (shape (b)) Bitcoin escrows, for wallets that cannot sign with a
+key Bitcoin Core derives from the market's account (ruling P4-R2; see
+[per-order escrow](escrow.md#per-order-escrow-settlement-setup-and-upload-a-456b-shape-b)), need a market key that is not
+in the Core arbiter wallet. The escrow signer, `/app/escrow-signer` in the app's image (`cmd/escrow-signer`), holds that
+key. Since A-456b it co-signs every per-order escrow's settlements and fee bumps: the app sends it the stored PSBT and
+the escrow's per-order market index, after checking its account key against the pins and the escrow's market key. The
+Core arbiter wallet above stays the market's key for Bitcoin Core escrows. Per-order escrows are offered only while
+`ESCROW_SIGNER_SOCKET` is set and the signer's key matches the pins: without a signer, two users with per-order wallet
+keys are told "Escrows with per-order wallets need the market's escrow signer, which is not available on this market
+right now" and, under escrow-only Bitcoin intake, a per-order vendor's listings are not available in BTC (listed in the
+readiness panel on `/admin`). A settlement waiting for the signer logs "escrow: settlement of order … not sent yet:
+signer-waiting" (or `signer-refused`, after one line naming the signer's refusal class) and its order page says "The
+market's escrow signer could not co-sign it yet"; it is tried again on every pass and never rebuilt.
 
 What it does and refuses (ruling P4-R17):
 
@@ -1547,8 +1557,10 @@ the key (keyed from `APP_SECRET_KEY`, as registered escrow keys are) in `setting
   from the one pinned in this database …". Nothing else changes: escrow with the Core arbiter wallet stays on, and the
   pins and every order stay as they are. Check that `ESCROW_SIGNER_SOCKET` reaches the signer whose seed this market
   pinned (compare `escrow-signer info` with the pinned fingerprint), or restore that seed from its backup. Rotating
-  `APP_SECRET_KEY` changes the HMAC, so the right signer then reads as a mismatch too. Only while no per-order escrow
-  exists (none in this release) may an administrator delete the two rows to pin another signer:
+  `APP_SECRET_KEY` changes the HMAC, so the right signer then reads as a mismatch too. While the key differs, no
+  per-order escrow is offered and per-order settlements wait. Only while no per-order escrow exists may an
+  administrator delete the two rows to pin another signer (a per-order escrow can be co-signed only by the signer it
+  was built with):
   `DELETE FROM settings WHERE key IN ('escrow_signer_fingerprint','escrow_signer_xpub_hmac')`.
 - A signer that does not answer: "escrow: escrow signer not reachable at ESCROW_SIGNER_SOCKET; anything that needs it
   waits (nothing is rebuilt)". Start the service; the next pass finds it.
