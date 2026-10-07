@@ -756,6 +756,66 @@ func (r *xmrEscrowRPC) buildTransfer(ctx context.Context, account int64, dests [
 	return tx, nil
 }
 
+// estimateFee is the network fee monero-wallet-rpc 0.18.5.1 would take for a transaction spending nIn outputs to nOut
+// outputs (change included) when transfer is asked at priority 0, from read-only calls that build nothing (A-467): the
+// priority transfer adjusts 0 to (get_default_fee_priority: 1, or 2 under a pool backlog or full blocks; its -1 means
+// adjust_priority fell back to 0, which transfer pays at priority 1's fee), the weight wallet2 estimates for that shape
+// (estimate_tx_size_and_weight, ring 16, RingCT) and the escrow daemon's fee per byte at that priority with its
+// quantization mask (get_fee_estimate, 10 grace blocks, as wallet2 asks it; on monerod's restricted RPC). The fee is
+// wallet2's calculate_fee_from_weight: weight times the fee per byte, rounded up to the mask. wallet2 estimates the
+// weight from above, so this is at least the fee of the transaction it builds, never far above it.
+func (r *xmrEscrowRPC) estimateFee(ctx context.Context, nIn, nOut int) (int64, error) {
+	if nIn < 1 || nOut < 1 {
+		return 0, errXMRDestination
+	}
+	priority := int64(1)
+	var pr struct {
+		Priority json.Number `json:"priority"`
+	}
+	if err := r.walletCall(ctx, "get_default_fee_priority", nil, &pr); err != nil {
+		var re *xmrRPCError
+		if !errors.As(err, &re) || re.Code != -1 {
+			return 0, err
+		}
+	} else if p, ok := xmrCount(pr.Priority); ok && p >= 1 && p <= 4 {
+		priority = p
+	} else {
+		return 0, xmrBadReply("wallet", "get_default_fee_priority")
+	}
+	var sw struct {
+		Weight json.Number `json:"weight"`
+	}
+	if err := r.walletCall(ctx, "estimate_tx_size_and_weight", map[string]any{"n_inputs": nIn, "n_outputs": nOut, "ring_size": 16, "rct": true}, &sw); err != nil {
+		return 0, err
+	}
+	weight, ok := xmrCount(sw.Weight)
+	if !ok || weight < 1 || weight > 1<<24 {
+		return 0, xmrBadReply("wallet", "estimate_tx_size_and_weight")
+	}
+	var fe struct {
+		Fees []json.Number `json:"fees"`
+		Mask json.Number   `json:"quantization_mask"`
+	}
+	if err := r.daemonCall(ctx, "get_fee_estimate", map[string]any{"grace_blocks": 10}, &fe); err != nil {
+		return 0, err
+	}
+	mask, ok := xmrCount(fe.Mask)
+	if !ok || mask < 1 || mask > 1<<40 || int64(len(fe.Fees)) < priority {
+		return 0, xmrBadReply("daemon", "get_fee_estimate")
+	}
+	perByte, ok := xmrCount(fe.Fees[priority-1])
+	if !ok || perByte < 1 || perByte > 1<<36 {
+		return 0, xmrBadReply("daemon", "get_fee_estimate")
+	}
+	return xmrFeeFromWeight(weight, perByte, mask), nil
+}
+
+// xmrFeeFromWeight is wallet2's calculate_fee_from_weight: weight times perByte, rounded up to a multiple of mask. The
+// callers bound weight below 2^24, perByte below 2^36 and mask below 2^40, so nothing overflows.
+func xmrFeeFromWeight(weight, perByte, mask int64) int64 {
+	return (weight*perByte + mask - 1) / mask * mask
+}
+
 // validAddress asks the open wallet whether addr is a destination it can pay (validate_address on the wallet's own
 // network type): a standard address or subaddress whose checksum and keys are valid. The settlement builder asks only
 // after transfer refused a destination (-2), to name which output it refused; parseXMRAddress checks the checksum

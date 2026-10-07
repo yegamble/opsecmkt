@@ -302,7 +302,7 @@ stagenet fork; it does not claim public-testnet validation.
 ### Monero escrow on a local fakechain (real monerod and monero-wallet-rpc)
 
 Monero escrow (WR-escrow Phase 3, `ESCROW_XMR=on`, custodial, off by default; see [escrow](escrow.md#phase-3-monero-escrow-on-a-local-fakechain))
-has fourteen legs that run the real server code (a Go test per leg, with its own App and Monero escrow watcher) against a real
+has fifteen legs that run the real server code (a Go test per leg, with its own App and Monero escrow watcher) against a real
 `monerod --regtest` and three real `monero-wallet-rpc` 0.18.5.1 instances: `scripts/test-escrow-xmr-regtest.sh`. It is manual
 and not part of CI, refuses any daemon that is not a fakechain with hard fork 16 or later before any wallet call, and needs a
 disposable PostgreSQL database in `TEST_DATABASE_URL` (the legs create their own databases from it, as the other database

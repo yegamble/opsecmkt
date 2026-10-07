@@ -1115,7 +1115,7 @@ it is separate from the simulated-wallet suite and from public testnet validatio
 
 ## 9. Manual Monero escrow fakechain check
 
-`scripts/test-escrow-xmr-regtest.sh` runs the fourteen legs of Monero escrow ([per-order escrow](escrow.md#phase-3-monero-escrow-on-a-local-fakechain))
+`scripts/test-escrow-xmr-regtest.sh` runs the fifteen legs of Monero escrow ([per-order escrow](escrow.md#phase-3-monero-escrow-on-a-local-fakechain))
 against a real `monerod --regtest` and real `monero-wallet-rpc` 0.18.5.1. It is not part of CI. **It is for a local
 fakechain only**: it refuses any daemon that does not report nettype `fakechain` with hard fork version 16 or later before any
 wallet call, and each Go leg checks the same again. It needs Docker for the nodes, Go, `curl` and a disposable PostgreSQL
@@ -1178,7 +1178,7 @@ can run: stagenet daemons built from the genesis block with the local monerod 0.
 on a Docker network with no route out, mining locally at fixed difficulty, plus one `--offline` daemon and a stagenet
 wallet-rpc. It refuses any daemon that is not stagenet below height 10,000 (the public stagenet is past 1,900,000). Such a
 chain is at hard fork version 1 (version 2 starts at height 32,000, 16 at 1,151,720), so Monero escrow refuses to start on
-it, as it must; the fourteen fakechain legs of section 9 need escrow to start and cannot run on it. The script's legs show
+it, as it must; the fifteen fakechain legs of section 9 need escrow to start and cannot run on it. The script's legs show
 that refusal names the hard fork rather than the network, that a real stagenet wallet's addresses are accepted under the
 stagenet tags and refused under the fakechain's, and that the escrow and pooled sync guards read a restricted stagenet
 daemon (as the bundled `monero` service serves) as synced with a peer and a fresh tip and an `--offline` one as having no

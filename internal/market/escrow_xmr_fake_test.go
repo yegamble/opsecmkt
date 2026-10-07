@@ -41,8 +41,11 @@ import (
 // and thaw set the flag (a key image the wallet does not have is -1). transfer from one account spends unfrozen unlocked
 // outputs, newest first, until the destinations are covered (-17 not enough money when the account's unfrozen outputs
 // do not cover them, as for an account the wallet does not have; -37 not enough unlocked money when they cover them
-// only with locked ones), takes the network fee (fakeXMRFee) from destination 0
-// alone when subtract_fee_from_outputs is [0] (an address in invalid is refused, -2, as validate_address says; a
+// only with locked ones), takes the network fee (fakeXMRFee, at the priority get_default_fee_priority gives) from
+// destination 0 alone when subtract_fee_from_outputs is [0], refusing as wallet2 does coins too few for that fee (A-467:
+// -17 below the fee of a one-input transaction by size, -16 when destination 0 is below the fee, -46 when it equals it;
+// estimate_tx_size_and_weight and the daemon's get_fee_estimate give the weight and fees per byte that make up that
+// fee) (an address in invalid is refused, -2, as validate_address says; a
 // transfer to one in crash crashes the wallet-rpc, fakeXMRCrash), and with do_not_relay only builds: the transaction is
 // kept by its metadata and nothing is spent. relay_tx puts a built transaction in the daemon's pool and marks its
 // outputs spent; relaying it again answers the same hash (idempotent, as monerod 0.18.5.1 does), one whose key images
@@ -91,6 +94,12 @@ type fakeXMREscrow struct {
 	transferLie func(res map[string]any)
 	invalid     map[string]bool // addresses whose keys are not curve points: transfer refuses them (-2), validate_address says invalid
 	crash       map[string]bool // addresses a transfer to which crashes the wallet-rpc (fakeXMRCrash)
+	// priority is the fee priority transfer at priority 0 uses (get_default_fee_priority; 0 is 1), and priorityErr makes
+	// get_default_fee_priority answer -1, as 0.18.5.1 does when its adjust_priority falls back to 0 (transfer then pays
+	// priority 1's fee). feeErr makes the daemon's get_fee_estimate fail (A-467).
+	priority    int
+	priorityErr bool
+	feeErr      bool
 }
 
 // fakeXMRTx is a settlement transaction transfer built, or one spendOutside made.
@@ -103,11 +112,27 @@ type fakeXMRTx struct {
 	Height               int64 // the block it was mined in; 0 while in the pool
 }
 
-// fakeXMRFee is the network fee of a transaction with nIn inputs and nOut outputs (change included): about what a young
-// fakechain charges (0.0018744 XMR for one input and two outputs, chair probe on monerod 0.18.5.1).
+// fakeXMRFee is the network fee of a transaction with nIn inputs and nOut outputs (change included) at priority 1: about
+// what a young fakechain charges (0.0018744 XMR for one input and two outputs, chair probe on monerod 0.18.5.1).
 func fakeXMRFee(nIn, nOut int) int64 {
 	return 1874400000 + 300000000*int64(nIn-1) + 100000000*int64(max(nOut-2, 0))
 }
+
+// fakeXMRFeePerByte is the fake daemon's get_fee_estimate fees, piconero per byte of weight at priorities 1 to 4, and
+// fakeXMRMask its quantization_mask: what monerod 0.18.5.1 answered on a young fakechain (A-467 probe, height 113). A
+// transaction built at priority p pays fakeXMRFee times fees[p-1]/fees[0].
+var fakeXMRFeePerByte = [4]int64{1200000, 4700000, 19000000, 240000000}
+
+const fakeXMRMask = 10000
+
+// fakeXMRWeight is the weight estimate_tx_size_and_weight gives for nIn inputs and nOut outputs: the weight whose fee
+// at priority 1 is fakeXMRFee, rounded up. fakeXMRMinSize is the size of one input and two outputs, from which wallet2
+// refuses a transfer early (-17) when the account's coins are below it times the fee per byte (A-467).
+func fakeXMRWeight(nIn, nOut int) int64 {
+	return (fakeXMRFee(nIn, max(nOut, 2)) + fakeXMRFeePerByte[0] - 1) / fakeXMRFeePerByte[0]
+}
+
+const fakeXMRMinSize = 1417
 
 // fakeXMRWalletFile is one wallet file of the fake wallet-rpc.
 type fakeXMRWalletFile struct {
@@ -299,6 +324,11 @@ func (f *fakeXMREscrow) daemonMethod(method string) (any, int64, string) {
 		return map[string]any{"block_header": map[string]any{"height": f.height - 1, "timestamp": time.Now().Add(-f.tipAge).Unix()}, "status": "OK"}, 0, ""
 	case "hard_fork_info":
 		return map[string]any{"version": cmp.Or(f.hardFork, 16), "enabled": true, "status": "OK"}, 0, ""
+	case "get_fee_estimate":
+		if f.feeErr {
+			return nil, -5, "Internal error"
+		}
+		return map[string]any{"fee": fakeXMRFeePerByte[0], "fees": fakeXMRFeePerByte[:], "quantization_mask": fakeXMRMask, "status": "OK"}, 0, ""
 	}
 	return nil, -32601, "Method not found"
 }
@@ -594,6 +624,14 @@ var fakeXMRWalletMethods = map[string]func(f *fakeXMREscrow, params json.RawMess
 		for _, d := range q.Destinations {
 			want += d.Amount
 		}
+		// wallet2's fee at the priority it adjusts 0 to, and its early refusal (A-467): with the fee taken from the
+		// destinations, coins below the fee of a one-input, two-output transaction by its size are -17 (-37 when only
+		// their unlocked part is below it), before any output is picked.
+		perByte := fakeXMRFeePerByte[max(f.priority, 1)-1]
+		minFee := int64(0)
+		if len(q.SubtractFee) > 0 {
+			minFee = fakeXMRMinSize * perByte
+		}
 		var spend []*fakeXMRTransfer
 		for _, t := range slices.Backward(f.open.transfers) { // the newest first: an output left unfrozen is spent
 			if t.Account != q.Account || t.SpentBy != "" || t.Frozen || t.Pool || t.DoubleSpend {
@@ -605,15 +643,26 @@ var fakeXMRWalletMethods = map[string]func(f *fakeXMREscrow, params json.RawMess
 			}
 		}
 		switch {
-		case balance < want:
+		case balance < want || balance < minFee:
 			return nil, -17, "not enough money"
-		case have < want:
+		case have < want || have < minFee:
 			return nil, -37, "not enough unlocked money"
+		}
+		fee := fakeXMRFee(len(spend), max(len(q.Destinations)+1, 2)) * perByte / fakeXMRFeePerByte[0]
+		if slices.Equal(q.SubtractFee, []int{0}) {
+			// wallet2 refuses a destination that cannot pay the fee (tx_not_possible, -16) or would be left nothing
+			// (zero_amount, -46), as 0.18.5.1 did on the fakechain (A-467).
+			switch {
+			case q.Destinations[0].Amount < fee:
+				return nil, -16, "tx not possible"
+			case q.Destinations[0].Amount == fee:
+				return nil, -46, "destination amount is zero"
+			}
 		}
 		f.seq++
 		hash := hex64("fake settlement tx " + strconv.Itoa(f.seq))
 		tx := &fakeXMRTx{Hash: hash, Metadata: hex.EncodeToString([]byte("metadata " + hash)), Blob: hex.EncodeToString([]byte("blob " + hash)),
-			Wallet: f.open.name, Account: q.Account, Fee: fakeXMRFee(len(spend), max(len(q.Destinations)+1, 2))}
+			Wallet: f.open.name, Account: q.Account, Fee: fee}
 		for _, t := range spend {
 			tx.KeyImages = append(tx.KeyImages, f.keyImage(t))
 		}
@@ -636,6 +685,26 @@ var fakeXMRWalletMethods = map[string]func(f *fakeXMREscrow, params json.RawMess
 			f.relay(tx)
 		}
 		return res, 0, ""
+	},
+	"get_default_fee_priority": func(f *fakeXMREscrow, p json.RawMessage) (any, int64, string) {
+		if f.priorityErr {
+			return nil, -1, "Failed to get adjusted fee priority"
+		}
+		return map[string]any{"priority": max(f.priority, 1)}, 0, ""
+	},
+	"estimate_tx_size_and_weight": func(f *fakeXMREscrow, p json.RawMessage) (any, int64, string) {
+		var q struct {
+			Inputs   int  `json:"n_inputs"`
+			Outputs  int  `json:"n_outputs"`
+			RingSize int  `json:"ring_size"`
+			RCT      bool `json:"rct"`
+		}
+		json.Unmarshal(p, &q)
+		if q.Inputs <= 0 || q.Outputs < 0 || q.RingSize != 16 || !q.RCT {
+			return nil, -1, "Failed to determine size and weight"
+		}
+		w := fakeXMRWeight(q.Inputs, q.Outputs)
+		return map[string]any{"size": w - 50, "weight": w}, 0, ""
 	},
 	"validate_address": func(f *fakeXMREscrow, p json.RawMessage) (any, int64, string) {
 		var q struct {
