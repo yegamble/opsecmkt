@@ -888,6 +888,15 @@ recorded**: the evidence below is simulated RPC and an offline stagenet fork.
   is retried every pass. A database from before the pin that holds Monero escrow state is pinned `fakechain` when the
   daemon reports fakechain, and refused otherwise. The wallet-rpc must still be within 10 blocks of the daemon, and an
   escrow wallet-rpc whose open wallet is the pooled one is refused at startup (both may now follow one stagenet daemon).
+- **Public pages name the verified network (A-472).** The transparency page (`/canary`), the footer, catalog, listing and
+  draft notices and the vendor desk tile name the network by the rule `/admin` uses: "network not verified yet" until a
+  daemon was verified or the pin was read, "Monero stagenet, a public test network" on stagenet, "a local Monero
+  fakechain" on a fakechain. On stagenet the canary says Monero escrow "has been tested only on local test chains, not yet
+  on the public stagenet" and lists "Monero escrow verified on the public stagenet" as unavailable; "not verified on any
+  public network" stays on a fakechain and while the network is unknown, where it is true. On Bitcoin testnet4 the canary
+  says the same (tested only on local test chains, not yet on public testnet4); regtest and signet keep "not verified on
+  any public network". Copy only: `TestXMREscrowPagesNameNetwork`, `TestEscrowCanaryAndNoticesNameChain` (simulated RPC,
+  not evidence of a public run).
 - **Wallet height after a refresh, compared with a fresh daemon reading (A-475).** The daemon's height was read before
   the wallet's refresh, which can take minutes, so a daemon that gained more than 10 blocks meanwhile (catching up after
   downtime, a slow pass; the browser journey's `mine` of 100 blocks did it under load) left the wallet, correctly synced
