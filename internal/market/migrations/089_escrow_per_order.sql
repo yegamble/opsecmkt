@@ -2,7 +2,7 @@
 -- Bitcoin escrows: each party's key is the first receiving key of an order wallet built on the party's account key's
 -- child <i> (derivation suffix /<i>/0/0), and the market's is the escrow signer's account key's child <m>/0/0. Nothing
 -- writes a shape-(b) row while the application's per-order switch is off, which it is until A-456b; shape (a) rows
--- (/0/<i>) are not affected. See UPGRADING.md section 43.
+-- (/0/<i>) are not affected. See UPGRADING.md section 44.
 
 -- 1. A per-order derivation suffix (three or more steps) is exactly /<i>/0/0, every step unhardened and below 2^31, with
 --    2 <= i <= 2^31-1. Migration 074 allows steps of up to ten digits, so /2147483648/0/0 and /2147483649/0/0 (which
@@ -22,7 +22,7 @@ BEGIN
     WHEN derivation_suffix ~ '^/[1-9][0-9]{0,9}/0/0$' THEN split_part(derivation_suffix, '/', 2)::bigint BETWEEN 2 AND 2147483647
     ELSE false END;
   IF n > 0 THEN
-    RAISE EXCEPTION 'migration 089: % escrow key row(s) in escrow_pubkeys have a per-order derivation suffix (such as %) that is not /<i>/0/0 with 2 <= i < 2^31; a step of 2147483648 or more names a hardened key. No release writes such a row: restore the pre-upgrade backup or ask the project. See UPGRADING.md section 43. Nothing was changed.', n, example
+    RAISE EXCEPTION 'migration 089: % escrow key row(s) in escrow_pubkeys have a per-order derivation suffix (such as %) that is not /<i>/0/0 with 2 <= i < 2^31; a step of 2147483648 or more names a hardened key. No release writes such a row: restore the pre-upgrade backup or ask the project. See UPGRADING.md section 44. Nothing was changed.', n, example
       USING ERRCODE = 'check_violation';
   END IF;
 END $$;

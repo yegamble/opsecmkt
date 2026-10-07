@@ -652,7 +652,7 @@ func TestEscrowMigration089BadHistoricalRow(t *testing.T) {
 	}
 	err = applyMigrations(ctx, tx, list)
 	tx.Rollback()
-	if err == nil || !strings.Contains(err.Error(), "migration 089") || !strings.Contains(err.Error(), "/2147483648/0/0") || !strings.Contains(err.Error(), "UPGRADING.md section 43") {
+	if err == nil || !strings.Contains(err.Error(), "migration 089") || !strings.Contains(err.Error(), "/2147483648/0/0") || !strings.Contains(err.Error(), "UPGRADING.md section 44") {
 		t.Fatalf("migration 089 over a bad row: %v", err)
 	}
 	var n int

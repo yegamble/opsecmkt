@@ -305,7 +305,7 @@ stop_server
 # Migration 089 (A-456a) over a bad historical row: the database is put back as 088 left it (089's table and checks
 # undone, its row in schema_migrations removed) holding a per-order escrow key row 089 refuses, /2147483648/0/0 (a step
 # of 2^31 names a hardened key). The current server must exit non-zero before serving, with 089's message naming the
-# row's suffix and UPGRADING.md section 43, recording and changing nothing; with the row gone it starts and applies 089.
+# row's suffix and UPGRADING.md section 44, recording and changing nothing; with the row gone it starts and applies 089.
 sql <<'SQL'
 BEGIN;
 DELETE FROM schema_migrations WHERE version=89;
@@ -335,7 +335,7 @@ wait "$server_pid" || refused=$?
 server_pid=''
 ((refused != 0)) || { echo 'The current server exited 0 over an escrow key row migration 089 refuses' >&2; exit 1; }
 grep -q 'migration 089: 1 escrow key row(s) in escrow_pubkeys have a per-order derivation suffix (such as /2147483648/0/0)' "$work/refused-089.log"
-grep -q 'See UPGRADING.md section 43' "$work/refused-089.log"
+grep -q 'See UPGRADING.md section 44' "$work/refused-089.log"
 [[ $(sql -c "SELECT string_agg(version || '@' || applied, ',' ORDER BY version) FROM schema_migrations") == "$applied" ]]
 [[ $(sql -c "SELECT count(*) FROM pg_constraint WHERE conname='escrow_pubkeys_per_order_suffix'") == 0 && $(sql -c "SELECT to_regclass('escrow_siblings') IS NULL") == t ]]
 sql <<'SQL'

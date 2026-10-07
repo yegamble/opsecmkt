@@ -1330,7 +1330,7 @@ upgrade ends on the next pass; its earlier order note stays. If the fee estimate
 flagged once if it fails again on the next pass; the wallet's other orders carry on. Releases are unchanged
 ([per-order escrow](docs/escrow.md)).
 
-## 43. Per-order Bitcoin escrows: creation and watching (migration 089, A-456a)
+## 44. Per-order Bitcoin escrows: creation and watching (migration 089, A-456a)
 
 Migration 089 runs at startup. On `escrow_pubkeys` it adds a check that a per-order derivation suffix (three or more
 steps) is exactly `/<i>/0/0`, every step unhardened and below 2^31, with `i` at least 2: migration 074 allowed steps of
