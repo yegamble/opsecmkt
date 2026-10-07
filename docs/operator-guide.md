@@ -325,6 +325,7 @@ Before changing a tag (default or `.env`):
 2. Bitcoin: check that `sendtoaddress` still stores the transaction in the wallet before submitting it and returns the txid, not an error, when relay fails (`src/wallet/rpc/spend.cpp`, `CWallet::CommitTransaction` in `src/wallet/wallet.cpp`), and update the `walletRejected` comment.
 3. Change the tag in `compose.nodes.yaml`, `.env.example` and `scripts/install.sh` in the same commit. `tests/test_installer.py` fails if the three disagree, if a default is `latest`, or if the versions named in the `payments_watcher.go` comments or `moneroVerifiedWalletRelease` do not match the tags.
 4. Run the payment tests (`TEST_DATABASE_URL=<dedicated test database> go test -race -count=1 -timeout 30m ./...` and `E2E_WALLET_DATABASE_URL=<fresh database> npm run test:e2e:wallet`, both against simulated wallets) and, preferably, the [local-chain journey](local-chain-testing.md) against the new images.
+5. Bitcoin escrow (A-446): set up a regtest node from the new image with `scripts/escrow-node-setup.sh --chain regtest` and check it with `--verify` (the whitelists still answer what the app calls and Core still refuses the pooled user `listdescriptors`, `gethdkeys` and `walletprocesspsbt` with HTTP 403), run `scripts/test-escrow-regtest.sh` against it (and `--private-signet` with `ESCROW_SIGNET_IMAGE` set to the new image), and, before the new version backs any public-network claim, run `scripts/test-escrow-public.sh` with `ESCROW_PUBLIC_NODE_IMAGE` naming it and commit the record it writes ([Escrow node set-up and the public-network smoke](#escrow-node-set-up-and-the-public-network-smoke)).
 
 **Runtime wallet check.** monero-wallet-rpc does not report its release. Its `get_version` answers the version of its RPC interface as one number, `(major<<16)|minor`, and whether it is a release build; v0.18.5.1 reports 1.31 (65567) from a release build (`WALLET_RPC_VERSION` in [`src/wallet/wallet_rpc_server_commands_defs.h`](https://github.com/monero-project/monero/blob/v0.18.5.1/src/wallet/wallet_rpc_server_commands_defs.h); v0.18.5.0 reports 1.30, v0.18.4.1 to v0.18.4.5 report 1.29). The application reads `get_version` at startup and at the start of every watcher pass. While the answer is anything but 1.31 from a release build, the call fails, or the last check failed before reading it, every Monero send failure is recorded as possibly broadcast (so requeueing it needs the wallet confirmation), and the *Payment providers* panel of `/admin` says "XMR wallet version not verified", names the version the wallet reported and points here; that payouts take the fee from the amount sent is then unverified too. The panel's *Version* column also shows the Bitcoin Core version from `getnetworkinfo`; the Bitcoin rule does not depend on it. The RPC version changes only when the wallet's RPC changes, not with every release, so a later release with an unchanged RPC reports 1.31 and is not detected. With a wallet version nobody has verified (a newer tag, a `latest` left in `.env`, or your own image), **treat every Monero send failure as possibly broadcast** even if the panel shows no warning: check the wallet as for an ambiguous failure ([runbook step 5](testnet-runbook.md#5-recover-a-held-or-failed-payout)) before requeueing a failed XMR payout.
 
@@ -926,7 +927,8 @@ leaves a user with no `rpcwhitelist` line unrestricted: keep that for the operat
 app connects as its own line (the pooled user below included). With `rpcwhitelistdefault` unset instead, Core gives every
 user without its own line an empty list once any `rpcwhitelist` is set: the operator user could then call nothing.
 Make SALT and HASH with Core's `share/rpcauth/rpcauth.py`, or as
-the comment in `scripts/test-escrow-regtest.sh` shows.
+the comment in `scripts/test-escrow-regtest.sh` shows, or let `scripts/escrow-node-setup.sh` generate them with these
+lines ([below](#escrow-node-set-up-and-the-public-network-smoke)).
 
 **The pooled RPC user.** `rpcwhitelist` is per user, not per wallet: Core picks the wallet from the URL path
 (`/wallet/<name>`), so any user allowed `listdescriptors` can call it with `private=true` on the arbiter wallet and
@@ -962,6 +964,100 @@ startup then disables escrow, with the same line and `/admin` alert, until the c
 only warning, because the market key may then be exportable. Another pooled node that happens to hold a
 wallet with the arbiter wallet's name also answers, and keeps escrow off until its pooled user is whitelisted too. Without
 `BITCOIN_RPC_URL` there is nothing to check. Checked on Core 31.1 regtest by `TestEscrowRegtestPooled` (below).
+
+##### Escrow node set-up and the public-network smoke
+
+Two scripts make up the operator package for an escrow node (A-446). Neither reads `.env`, and neither writes a
+password to a file or a log.
+
+**`scripts/escrow-node-setup.sh`** sets up the escrow node on `regtest`, `signet` or `testnet4` (`--chain`; `main`,
+`mainnet`, `test` and `testnet3` are refused, as the app refuses them). It reaches the node only through your own
+`bitcoin-cli` (`--cli`, default `bitcoin-cli`; the script adds `-chain=<chain>`), so your cookie or operator credentials
+stay where `bitcoin-cli` finds them. For the bundled image, use for example
+`--cli 'docker exec -u bitcoin <container> bitcoin-cli'`. It:
+
+1. refuses unless the node reports the chain you named, and on signet prints the `signet_challenge` and whether it is
+   public signet's;
+2. creates the arbiter wallet (`ESCROW_BTC_ARBITER_WALLET`, default `opsecmkt-arbiter`: a descriptor wallet with
+   private keys) and the watch-only wallet (`ESCROW_BTC_WATCH_WALLET`, default `opsecmkt-escrow-watch`: private keys
+   disabled, blank), both loaded at every node start. A wallet that already exists is never overwritten: it is loaded
+   if needed and kept only when it has the right kind (an encrypted arbiter wallet, one without private keys, or a
+   watch-only wallet with private keys is refused);
+3. prints the arbiter wallet's master key fingerprint, read as the app reads it (`getrawchangeaddress`,
+   `getaddressinfo`). Record it with the wallet's backup
+   ([runbook](testnet-runbook.md#back-up-and-restore-the-escrow-arbiter-and-watch-only-wallets)); the app pins it at
+   its first start;
+4. generates the escrow user's password, and the pooled user's (`--pooled-user`, default `opsecmkt-pooled`; `--no-pooled`
+   when the pooled payments use another node), on this host with `openssl`. It then prints them once, on standard
+   output, as part of the lines you need: the `bitcoin.conf` lines (each user's `rpcauth`, `rpcwhitelistdefault=0`, and
+   each user's `rpcwhitelist`: exactly the two lines above, which tests keep equal to the adapters' method lists) and the
+   `.env` lines (`ESCROW_BTC_RPC_URL=http://<escrow user>:<password>@<--rpc-host, default bitcoin>:<port>`, the wallet
+   names, and `BITCOIN_RPC_URL` for the pooled user). The port is 18443 on regtest, 38332 on signet and 48332 on
+   testnet4, unless you give `--rpc-port`. Progress and the fingerprint go to standard error. Nothing is shown for a node
+   that failed a check.
+
+Copy the lines and add the `bitcoin.conf` ones to the escrow node's configuration, at top level or under `[<chain>]`.
+Restart `bitcoind`, then check the node with the two URLs in the environment (exported for this one command, never read
+from `.env`):
+
+```sh
+ESCROW_BTC_RPC_URL='http://opsecmkt-escrow:…@127.0.0.1:38332' BITCOIN_RPC_URL='http://opsecmkt-pooled:…@127.0.0.1:38332' \
+  scripts/escrow-node-setup.sh --chain signet --verify
+```
+
+`--verify` passes when the escrow user answers `getblockchaininfo` on that chain and `getwalletinfo` on both wallets
+(private keys on the arbiter wallet only), and is refused `listdescriptors` and `gethdkeys` with HTTP 403. With
+`BITCOIN_RPC_URL` set, it also checks that the pooled user answers `getblockchaininfo` and is refused `listdescriptors`,
+`gethdkeys` and `walletprocesspsbt` on the arbiter wallet's path, with HTTP 403 (or "wallet not found", RPC -18, when
+it is another node). That is the app's own start check (*The pooled RPC user*). The URLs reach `curl` on its standard
+input and are never printed. A command typed with a password on it can stay in your shell history: clear the line
+afterwards, or set the variables from a file only you can read. Checked on a local Bitcoin Core 31.1 regtest container:
+set-up, restart, `--verify`, then the app logged "escrow: Bitcoin escrow on (test networks only)". The script has not
+been run against signet or testnet4 here.
+
+**`scripts/test-escrow-public.sh`** is the public-network smoke (P4-R16), the owner's run (A-447). Run it by hand,
+never in CI, on public signet or testnet4 only. Before anything else touches the node, it refuses regtest, mainnet,
+testnet3 and a private signet: a node on signet counts as public signet only when it reports public signet's
+`signet_challenge`, Bitcoin Core's default, `512103ad5e…52ae`. The Go test refuses them again. It runs three legs from
+this checkout (`TestEscrowPublicSmoke`) against your node, on a disposable PostgreSQL database:
+
+- **practice-sign**: a buyer's and a vendor's Core wallets register their keys and sign the practice transaction;
+- **claim**: one escrow, funded at the price, is claimed by the vendor and followed to confirmation;
+- **refund**: one escrow, funded short of the price, is cancelled by the buyer and refunded.
+
+The run makes its own wallets on the node (`escrow-smoke-<random>-…`, unloaded afterwards), never the market's. It pays
+the escrows from `ESCROW_PUBLIC_FUNDING_WALLET`, a wallet on that node with at least 0.0016 test coins from a faucet,
+and every settlement pays back to that wallet. Settings, all from the environment:
+
+- `ESCROW_PUBLIC_OPERATOR_RPC_URL` and `ESCROW_PUBLIC_APP_RPC_URL`: the operator user and the escrow user;
+- `ESCROW_PUBLIC_NODE_IMAGE`: the image the node runs; its digest from `docker image inspect` goes in the record;
+- `TEST_DATABASE_URL`: a disposable database, never a market's;
+- `ESCROW_PUBLIC_CONFIRMATIONS` (1 to 100, default 1): the confirmations funding and settlements wait for;
+- `ESCROW_PUBLIC_FEE_RATE` (sat/vB, 1 to 100, default 2): the rate of the funding sends and of every settlement. On
+  testnet4, set it above the node's `mempoolminfee`;
+- `ESCROW_PUBLIC_WAIT_MINUTES` (10 to 1440, default 240): how long each of the two waits for confirmations may take;
+- `BITCOIN_MAX_TIP_AGE` and `APP_MODE`: passed to the app as they are set.
+
+The checkout must be clean, because the record names the commit that ran. When every leg passed, the script writes
+`docs/evidence/public-testnet/<UTC date>-<commit, 12 hex>/<chain>/` for you to commit. It holds `manifest.json` and
+`transcript.log`. The manifest records:
+
+- the full commit, start and finish times;
+- the chain and its `signet_challenge`;
+- the node's version, image and image digest, and the Go version;
+- the confirmations and the fee rate;
+- the start and end heights;
+- each leg's result and its txids (funding and settlement for the claim and the refund);
+- the transcript's sha256.
+
+A record is never overwritten. Before anything is written there, the transcript, then the record, must pass a secret
+scan: no password from the URLs it was given, no `rpcpassword` or `rpcauth` line, no salt$hash, no wallet passphrase,
+no cookie, no URL carrying a password, and no serialized or WIF private key. A failed, skipped or incomplete run writes
+no record; its transcript stays under `artifacts/real-chain/` (gitignored).
+
+What was checked here: the refusals, the manifest and the secret scan, offline with a fake node
+(`tests/test_escrow_public_script.py`), and the legs' body on Bitcoin Core 31.1 regtest (`TestEscrowRegtestSmoke` in
+`scripts/test-escrow-regtest.sh`). **No public run is recorded yet.**
 
 **What users see.** With `ESCROW_BTC` off, `/escrow-key` does not exist: it answers 404 like any unknown page,
 signed in or not. With it on, `/account` gains a *Bitcoin escrow key* row linking to `/escrow-key`. There a user registers

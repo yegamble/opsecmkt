@@ -1259,3 +1259,12 @@ but no public peers, fees or relay. The legs it does not run are listed, with th
 script's header comment. Its transcript (default `artifacts/real-chain/test-escrow-private-signet-<UTC time>.log`,
 gitignored) starts with the node version, the commit, the nodes' command line with credentials redacted and the finish
 time, and every line carries "[private signet, not public]".
+
+**The public run (A-446, A-447).** Set up the escrow node with `scripts/escrow-node-setup.sh --chain signet` (or
+`testnet4`). It creates the arbiter and watch-only wallets and prints the fingerprint, the `bitcoin.conf` lines and the
+`ESCROW_BTC_RPC_URL` line once. Check the node with `--verify` after the restart. Then run `scripts/test-escrow-public.sh`
+from a clean checkout: practice signing, one escrow claimed and one refunded, each followed to
+`ESCROW_PUBLIC_CONFIRMATIONS`. It refuses regtest, mainnet, testnet3 and a private signet, and when every leg passed it
+writes the record to commit under `docs/evidence/public-testnet/`. Settings and what the record holds:
+[Escrow node set-up and the public-network smoke](operator-guide.md#escrow-node-set-up-and-the-public-network-smoke).
+Until such a record is committed, no public run exists.
