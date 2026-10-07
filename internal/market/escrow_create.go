@@ -54,7 +54,7 @@ import (
 // (escrow_bip32.go) and Core must agree before anything is stored (checkPerOrderEscrow): the three keys, the address,
 // and the order wallet's sibling addresses /0/1..19 and /1/0..9, which are stored (escrow_siblings) and imported with the
 // escrow as two ranged descriptors of the rooted per-order keys, so a deposit to one is seen and returned by the stray
-// refund (escrow_watch.go); each sibling's three keys are stored with it, which its stray refund spends with (A-456b).
+// refund (escrow_watch.go), which spends a sibling's deposits with that sibling's own script (A-456b, siblingKeys).
 // per_order_xpub stays NULL: the per-order keys are derived again on demand. Since A-456b a pair of per-order keys gets a
 // per-order escrow whenever the escrow signer, which co-signs its settlements (escrow_cosign.go), answers with its pinned
 // key; A-456a's checkout switch is gone.
@@ -700,11 +700,9 @@ func insertEscrow(ctx context.Context, tx *sql.Tx, orderID, refund string, feeBp
 			return err
 		}
 	}
-	// Shape (b): the order wallet's sibling addresses, which the watcher reads with the escrow's (A-456a), and each one's
-	// three keys, which its stray refund spends with (A-456b).
+	// Shape (b): the order wallet's sibling addresses, which the watcher reads with the escrow's (A-456a).
 	for _, s := range b.Siblings {
-		if _, err = tx.ExecContext(ctx, "INSERT INTO escrow_siblings(escrow_id,branch,idx,address,buyer_pubkey,vendor_pubkey,market_pubkey) VALUES($1,$2,$3,$4,$5,$6,$7)",
-			id, s.Branch, s.Index, s.Address, hex.EncodeToString(s.Keys["buyer"]), hex.EncodeToString(s.Keys["vendor"]), hex.EncodeToString(s.Keys["market"])); err != nil {
+		if _, err = tx.ExecContext(ctx, "INSERT INTO escrow_siblings(escrow_id,branch,idx,address) VALUES($1,$2,$3,$4)", id, s.Branch, s.Index, s.Address); err != nil {
 			return err
 		}
 	}

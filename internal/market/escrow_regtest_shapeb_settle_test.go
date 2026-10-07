@@ -252,7 +252,7 @@ func (c *shapeBChain) partySign(order string, id int64, party string) string {
 	if w.Code != 200 {
 		c.t.Fatalf("%s's copy: %d", party, w.Code)
 	}
-	keys, err := settlementKeys(c.ctx, c.e.DB, order, id)
+	keys, err := c.e.A.settlementKeys(c.ctx, c.e.DB, order, id)
 	if err != nil {
 		c.t.Fatal(err)
 	}
@@ -405,7 +405,7 @@ func TestEscrowRegtestShapeBSiblingStray(t *testing.T) {
 		c.e.DB.QueryRow("SELECT build_error FROM settlements WHERE order_id=$1 AND kind='stray_refund'", order).Scan(&class)
 		t.Fatalf("stray refund of the sibling deposit: %s (%s) %v", state, class, err)
 	}
-	keys, err := settlementKeys(c.ctx, c.e.DB, order, id)
+	keys, err := c.e.A.settlementKeys(c.ctx, c.e.DB, order, id)
 	if err != nil {
 		t.Fatal(err)
 	}

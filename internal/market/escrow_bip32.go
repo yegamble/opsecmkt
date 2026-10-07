@@ -73,13 +73,10 @@ const (
 	perOrderChange  = 10
 )
 
-// escrowSibling is one sibling address of a shape-(b) escrow's order wallet: /Branch/Index (escrow_siblings), with its
-// three keys by party (each party's per-order key and the signer's at /Branch/Index), which its stray refund spends with
-// (A-456b, migration 091).
+// escrowSibling is one sibling address of a shape-(b) escrow's order wallet: /Branch/Index (escrow_siblings).
 type escrowSibling struct {
 	Branch, Index int
 	Address       string
-	Keys          map[string][]byte
 }
 
 // siblingImports is one labelled addr(…) import per sibling address of order's shape-(b) escrow, with the escrow's own
@@ -129,14 +126,12 @@ func (e *escrowBTC) checkPerOrderEscrow(ctx context.Context, b *builtEscrow) err
 		}
 		for k, addr := range addrs {
 			var leaves [][]byte
-			keys := map[string][]byte{}
 			for _, p := range b.Parties {
 				leaf, ok := perOrderSibling(p.Order, uint32(branch), uint32(k))
 				if !ok {
 					return errPerOrderMismatch
 				}
 				leaves = append(leaves, leaf.PubKey[:])
-				keys[p.Party] = bytes.Clone(leaf.PubKey[:])
 			}
 			sum := sha256.Sum256(sortedMultisigScript(leaves...))
 			if spk, err := escrowAddressScript(e.network, addr); err != nil || !bytes.Equal(spk, append([]byte{0, 32}, sum[:]...)) {
@@ -148,7 +143,7 @@ func (e *escrowBTC) checkPerOrderEscrow(ctx context.Context, b *builtEscrow) err
 				}
 				continue
 			}
-			b.Siblings = append(b.Siblings, escrowSibling{Branch: branch, Index: k, Address: addr, Keys: keys})
+			b.Siblings = append(b.Siblings, escrowSibling{Branch: branch, Index: k, Address: addr})
 		}
 		b.Ranged = append(b.Ranged, escrowImport{Desc: desc, Timestamp: "now", Range: []int64{0, int64(n - 1)}})
 	}

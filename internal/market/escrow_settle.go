@@ -239,50 +239,64 @@ func escrowKeys(ctx context.Context, q rowsQuerier, orderID string) (map[string]
 	return keys, nil
 }
 
-// siblingKeyRows is the three keys of a per-order escrow's sibling address /branch/idx (A-456b, QA5W3A-2): each party's
-// key and the market's with the origin of its key in the escrow (base, escrowKeys) and the suffix /<i>/branch/idx in
-// place of /<i>/0/0, and the public keys checkout stored for that sibling (pubs, by party; escrow_siblings).
-func siblingKeyRows(base map[string]escrowKeyRow, branch, idx int, pubs map[string]string) (map[string]escrowKeyRow, error) {
+// siblingKeys is the three keys of a per-order escrow's sibling address /branch/idx (A-456b, QA5W3A-2): each party's
+// key and the market's at /<i>/branch/idx, derived in Go from its per-order extended key (perOrderXpub; QA5W4A-5 stores
+// it at checkout), with the origin of its key in the escrow (base, escrowKeys) and that suffix. Their 2-of-3 must pay
+// address, the sibling as checkout stored it once Core had derived it from the same keys; otherwise errPerOrderXpub.
+func (a *App) siblingKeys(ctx context.Context, base map[string]escrowKeyRow, escrowID int64, branch, idx int, address string) (map[string]escrowKeyRow, error) {
 	out := map[string]escrowKeyRow{}
-	for party, k := range base {
+	var leaves [][]byte
+	for _, party := range []string{roleBuyer, roleVendor, "market"} {
+		k := base[party]
 		steps, err := parseOriginPath(k.Suffix)
-		pub, perr := hex.DecodeString(pubs[party])
-		if err != nil || len(steps) != 3 || perr != nil || len(pub) != 33 {
-			return nil, errors.New("escrow: a sibling's stored keys do not fit its escrow")
+		if err != nil || len(steps) != 3 {
+			return nil, errPerOrderXpub
 		}
-		k.Suffix, k.PubKey = "/"+strconv.FormatUint(uint64(steps[0]), 10)+"/"+strconv.Itoa(branch)+"/"+strconv.Itoa(idx), pub
+		order, err := a.perOrderXpub(ctx, escrowID, party)
+		if err != nil {
+			return nil, err
+		}
+		leaf, ok := perOrderSibling(order, uint32(branch), uint32(idx))
+		if !ok {
+			return nil, errPerOrderXpub
+		}
+		k.Suffix, k.PubKey = "/"+strconv.FormatUint(uint64(steps[0]), 10)+"/"+strconv.Itoa(branch)+"/"+strconv.Itoa(idx), bytes.Clone(leaf.PubKey[:])
 		out[party] = k
+		leaves = append(leaves, k.PubKey)
+	}
+	sum := sha256.Sum256(sortedMultisigScript(leaves...))
+	if spk, err := escrowAddressScript(a.escrowNetwork(), address); err != nil || !bytes.Equal(spk, append([]byte{0, 32}, sum[:]...)) {
+		return nil, errPerOrderXpub
 	}
 	return out, nil
 }
 
 // settlementKeys is the three keys of the script settlement sid of order spends (A-456b): the escrow's own (escrowKeys)
-// or, for a stray refund of deposits to a per-order escrow's sibling address, that sibling's (siblingKeyRows). Every
+// or, for a stray refund of deposits to a per-order escrow's sibling address, that sibling's (siblingKeys). Every
 // deposit a settlement claims is at one address, the one script its build chose (buildStray); a settlement claiming
 // deposits at two is refused. A settlement that claims none yet (still being built) has the escrow's keys.
-func settlementKeys(ctx context.Context, q rowsQuerier, orderID string, sid int64) (map[string]escrowKeyRow, error) {
+func (a *App) settlementKeys(ctx context.Context, q rowsQuerier, orderID string, sid int64) (map[string]escrowKeyRow, error) {
 	keys, err := escrowKeys(ctx, q, orderID)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := q.QueryContext(ctx, `SELECT DISTINCT p.address,s.branch,s.idx,COALESCE(s.buyer_pubkey,''),COALESCE(s.vendor_pubkey,''),COALESCE(s.market_pubkey,'')
+	rows, err := q.QueryContext(ctx, `SELECT DISTINCT p.address,s.branch,s.idx,s.escrow_id
 		FROM payments p LEFT JOIN escrow_siblings s ON s.address=p.address AND s.escrow_id=(SELECT id FROM escrows WHERE order_id=p.order_id AND coin='BTC')
 		WHERE p.settlement_id=$1 AND p.order_id=$2`, sid, orderID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	n := 0
-	var branch, idx sql.NullInt64
-	pubs := map[string]string{}
+	var addr string
+	var branch, idx, escrowID sql.NullInt64
 	for rows.Next() {
-		var addr, b, v, m string
-		if err = rows.Scan(&addr, &branch, &idx, &b, &v, &m); err != nil {
+		if err = rows.Scan(&addr, &branch, &idx, &escrowID); err != nil {
+			rows.Close()
 			return nil, err
 		}
-		pubs["buyer"], pubs["vendor"], pubs["market"] = b, v, m
 		n++
 	}
+	rows.Close()
 	if err = rows.Err(); err != nil {
 		return nil, err
 	}
@@ -292,7 +306,7 @@ func settlementKeys(ctx context.Context, q rowsQuerier, orderID string, sid int6
 	case n == 0 || !branch.Valid:
 		return keys, nil
 	}
-	return siblingKeyRows(keys, int(branch.Int64), int(idx.Int64), pubs)
+	return a.siblingKeys(ctx, keys, escrowID.Int64, int(branch.Int64), int(idx.Int64), addr)
 }
 
 // escrowSettleTerminal is settleTerminal for an escrow order (ES-1). A cancelled order holding coins, or one whose
@@ -611,20 +625,24 @@ func (a *App) strayGroups(ctx context.Context, r settleReq, keys map[string]escr
 			g := strayGroup{address: in.Address, keys: keys}
 			if in.Address != escrowAddr {
 				var branch, idx int
-				pubs := map[string]string{}
-				var b, v, m string
-				err := a.db.QueryRowContext(ctx, `SELECT s.branch,s.idx,s.buyer_pubkey,s.vendor_pubkey,s.market_pubkey FROM escrow_siblings s JOIN escrows es ON es.id=s.escrow_id
-					WHERE es.order_id=$1 AND es.coin='BTC' AND s.address=$2`, r.orderID, in.Address).Scan(&branch, &idx, &b, &v, &m)
-				if err == sql.ErrNoRows {
+				var escrowID int64
+				err := a.db.QueryRowContext(ctx, `SELECT s.branch,s.idx,s.escrow_id FROM escrow_siblings s JOIN escrows es ON es.id=s.escrow_id
+					WHERE es.order_id=$1 AND es.coin='BTC' AND s.address=$2`, r.orderID, in.Address).Scan(&branch, &idx, &escrowID)
+				if err == nil {
+					g.keys, err = a.siblingKeys(ctx, keys, escrowID, branch, idx, in.Address)
+				}
+				switch {
+				case err == sql.ErrNoRows:
 					log.Printf("escrow: stray refund of order %s: a deposit is at an address that is neither the escrow's nor one of its siblings; left out", shortID(r.orderID))
 					at[in.Address] = -1
 					continue
-				}
-				if err != nil {
-					return nil, err
-				}
-				pubs["buyer"], pubs["vendor"], pubs["market"] = b, v, m
-				if g.keys, err = siblingKeyRows(keys, branch, idx, pubs); err != nil {
+				case errors.Is(err, errPerOrderXpub):
+					// Its keys cannot be had now (the stub's on-demand derivation: a key re-registered, or the signer not
+					// answering); its deposits wait, and never hold up another address's.
+					log.Printf("escrow: stray refund of order %s: a sibling address's keys cannot be derived now; its deposits wait", shortID(r.orderID))
+					at[in.Address] = -1
+					continue
+				case err != nil:
 					return nil, err
 				}
 			}
@@ -1240,7 +1258,7 @@ func escrowSignAction(c *actionCtx) (actionResult, error) {
 		// P2-R2: the buyer's signature confirms receipt; while the order is disputed the decision settles it instead.
 		return actionResult{}, errSignDisputed
 	}
-	keys, err := settlementKeys(ctx, c.Tx, o.ID, sid)
+	keys, err := c.A.settlementKeys(ctx, c.Tx, o.ID, sid)
 	if err != nil {
 		return actionResult{}, err
 	}
@@ -1347,7 +1365,7 @@ func escrowPSBTDownload(a *App, w http.ResponseWriter, r *http.Request, u *User)
 	var copyText string
 	if err == nil {
 		var keys map[string]escrowKeyRow
-		if keys, err = settlementKeys(ctx, a.db, o.ID, sid); err == nil {
+		if keys, err = a.settlementKeys(ctx, a.db, o.ID, sid); err == nil {
 			copyText, err = settlementCopy(stored, keys[reader])
 		}
 	}
@@ -1558,7 +1576,7 @@ func (a *App) settlementView(ctx context.Context, d *PageData, v *EscrowOrderVie
 	// The buyer of a disputed order does not sign its release (escrowSignAction): the decision settles it.
 	canSign := (state == "awaiting_signature" || state == "party_signed" && !readerSigned) && !(s.PartiesOnly && d.Order.State == stateDisputed && d.OrderViewer == roleBuyer)
 	if canSign && (d.OrderViewer == roleBuyer || d.OrderViewer == roleVendor) && a.escrowConfigured {
-		keys, err := settlementKeys(ctx, a.db, d.Order.ID, id)
+		keys, err := a.settlementKeys(ctx, a.db, d.Order.ID, id)
 		if err != nil {
 			return nil, err
 		}

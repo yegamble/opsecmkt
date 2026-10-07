@@ -487,7 +487,7 @@ func escrowBumpSignAction(c *actionCtx) (actionResult, error) {
 	case state != "awaiting_signature" && !second:
 		return actionResult{}, errBumpNotReady
 	}
-	keys, err := settlementKeys(ctx, c.Tx, o.ID, sid) // a sibling stray refund's bump: the sibling's keys (A-456b)
+	keys, err := c.A.settlementKeys(ctx, c.Tx, o.ID, sid) // a sibling stray refund's bump: the sibling's keys (A-456b)
 	if err != nil {
 		return actionResult{}, err
 	}
@@ -1154,7 +1154,7 @@ func (a *App) bumpView(ctx context.Context, d *PageData, v *EscrowOrderView, s *
 		reader := d.OrderViewer
 		canSign := bstate == "awaiting_signature" && reader == claimant || bstate == "party_signed" && reader == otherParty(claimant) && !readerSigned && signer == claimant
 		if canSign && (reader == roleBuyer || reader == roleVendor) && a.escrowConfigured && state == "broadcast" {
-			keys, err := settlementKeys(ctx, a.db, d.Order.ID, id)
+			keys, err := a.settlementKeys(ctx, a.db, d.Order.ID, id)
 			if err != nil {
 				return err
 			}

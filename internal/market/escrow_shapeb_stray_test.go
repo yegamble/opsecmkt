@@ -3,7 +3,6 @@ package market
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/hex"
 	"slices"
 	"strconv"
@@ -13,12 +12,13 @@ import (
 
 // A-456b, QA5W3A-2 (rulings P4-R2, P4-R17): a deposit to a per-order escrow's sibling address (/0/k or /1/k of the order
 // wallet) is returned by a stray refund that can be built, signed, co-signed and broadcast. The sibling's three keys are
-// stored at checkout (escrow_siblings, migration 091), each a Go derivation Core agreed with; the stray refund spends the
-// deposits of one address at a time (the signer signs one 2-of-3 script per request), with that sibling's witness
-// script; each party's copy names its own sibling key's path (/<i>/<branch>/<k>), and the signer co-signs at the
-// escrow's market index, finding its key at /<m>/<branch>/<k>. Deposits to another address are returned by the next
-// stray refund, and an address whose deposits cannot be built now never holds up another's. DB integration with the
-// simulated node and the fake signer: not chain evidence (TestEscrowRegtestShapeBSiblingStray has the real Core leg).
+// derived in Go from each one's per-order extended key (perOrderXpub; QA5W4A-5) and must pay the stored sibling address;
+// the stray refund spends the deposits of one address at a time (the signer signs one 2-of-3 script per request), with
+// that sibling's witness script; each party's copy names its own sibling key's path (/<i>/<branch>/<k>), and the signer
+// co-signs at the escrow's market index, finding its key at /<m>/<branch>/<k>. Deposits to another address are returned
+// by the next stray refund, and an address whose deposits cannot be built now never holds up another's. DB integration
+// with the simulated node and the fake signer: not chain evidence (TestEscrowRegtestShapeBSiblingStray has the real Core
+// leg).
 
 // siblingKeysGo is Go's derivation of the three keys of order's sibling /branch/k: each party's account key's child
 // <i>/branch/k and the signer's <m>/branch/k, by party.
@@ -60,10 +60,6 @@ func TestEscrowShapeBSiblingStrayRefund(t *testing.T) {
 	order := x.completed(regtestAddr("sibstray-refund"), 100000)
 	sib := x.sibling(order, 0, 3)
 	want := x.siblingKeysGo(order, f.key, 0, 3)
-	if got := agStrings(t, x.testEnv, "SELECT s.buyer_pubkey||' '||s.vendor_pubkey||' '||s.market_pubkey FROM escrow_siblings s JOIN escrows e ON e.id=s.escrow_id WHERE e.order_id=$1 AND s.branch=0 AND s.idx=3", order); len(got) != 1 ||
-		got[0] != hex.EncodeToString(want["buyer"])+" "+hex.EncodeToString(want["vendor"])+" "+hex.EncodeToString(want["market"]) {
-		t.Fatalf("stored sibling keys %v, want Go's derivation", got)
-	}
 	x.core.deposit(sib, txidOf("sibstray"), 1, 30000, 6)
 	x.poll() // recorded and the stray refund requested
 	x.poll() // built
@@ -173,81 +169,16 @@ func TestEscrowSettlementKeysOneScript(t *testing.T) {
 		t.Fatal(err)
 	}
 	agExec(x.testEnv, "UPDATE payments SET settlement_id=$1 WHERE order_id=$2", sid, order)
-	if _, err := settlementKeys(context.Background(), x.DB, order, sid); err == nil || !strings.Contains(err.Error(), "more than one") {
+	if _, err := x.A.settlementKeys(context.Background(), x.DB, order, sid); err == nil || !strings.Contains(err.Error(), "more than one") {
 		t.Fatalf("a settlement spending two scripts: %v", err)
 	}
 	agExec(x.testEnv, "UPDATE payments SET settlement_id=NULL WHERE order_id=$1 AND address<>(SELECT address FROM escrows WHERE order_id=$1)", order)
-	keys, err := settlementKeys(context.Background(), x.DB, order, sid)
+	keys, err := x.A.settlementKeys(context.Background(), x.DB, order, sid)
 	if err != nil || keys["market"].Suffix != "/"+strconv.FormatInt(x.marketIndex(order), 10)+"/0/0" {
 		t.Fatalf("the escrow address's keys: %v %+v", err, keys["market"])
 	}
 	agExec(x.testEnv, "UPDATE payments SET settlement_id=CASE WHEN address=(SELECT address FROM escrows WHERE order_id=$2) THEN NULL ELSE $1::bigint END WHERE order_id=$2", sid, order)
-	if keys, err = settlementKeys(context.Background(), x.DB, order, sid); err != nil || keys["market"].Suffix != "/"+strconv.FormatInt(x.marketIndex(order), 10)+"/0/2" {
+	if keys, err = x.A.settlementKeys(context.Background(), x.DB, order, sid); err != nil || keys["market"].Suffix != "/"+strconv.FormatInt(x.marketIndex(order), 10)+"/0/2" {
 		t.Fatalf("the sibling's keys: %v %+v", err, keys["market"])
-	}
-}
-
-// Migration 091 (A-456b) on a database whose escrow_siblings holds rows without their keys (only a test or development
-// database can: no release created a per-order escrow before it): it stops with its message naming UPGRADING.md section
-// 45, records nothing and changes nothing; with the rows gone it applies, and a sibling row then needs three distinct
-// compressed public keys.
-func TestEscrowMigration091(t *testing.T) {
-	db := schemaDB(t)
-	ctx := context.Background()
-	list, err := loadMigrations(migrationFiles)
-	if err != nil {
-		t.Fatal(err)
-	}
-	upTo090 := slices.DeleteFunc(slices.Clone(list), func(m migration) bool { return m.Version >= 91 })
-	runInTx(t, db, func(tx *sql.Tx) error {
-		if _, err := tx.Exec(schema); err != nil {
-			return err
-		}
-		return applyMigrations(ctx, tx, upTo090)
-	})
-	for _, q := range []string{
-		"INSERT INTO users(id,handle,password_hash,role) VALUES('ub','up_buyer','x','buyer'),('uv','up_vendor','x','vendor')",
-		"INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock) VALUES('pd','uv','D','D','Hardware','Worldwide','digital',100000,1,5)",
-		"INSERT INTO orders(id,buyer_id,product_id,currency,amount,state) VALUES('o1','ub','pd','BTC',100000,'awaiting_payment')",
-		"INSERT INTO escrows(order_id,address,market_index,refund_address,fee_bps,fee_destination) VALUES('o1','bcrt1qsib091',nextval('escrow_market_index'),'bcrt1qsibr091',0,'')",
-		"INSERT INTO escrow_siblings(escrow_id,branch,idx,address) SELECT id,0,1,'bcrt1qsibling091a' FROM escrows",
-		"INSERT INTO escrow_siblings(escrow_id,branch,idx,address) SELECT id,1,0,'bcrt1qsibling091b' FROM escrows",
-	} {
-		if _, err := db.Exec(q); err != nil {
-			t.Fatalf("%s: %v", q, err)
-		}
-	}
-	tx, err := db.Begin()
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = applyMigrations(ctx, tx, list)
-	tx.Rollback()
-	if err == nil || !strings.Contains(err.Error(), "migration 091: escrow_siblings holds 2 sibling address row(s) without their keys") || !strings.Contains(err.Error(), "UPGRADING.md section 45") {
-		t.Fatalf("migration 091 over keyless sibling rows: %v", err)
-	}
-	var n int
-	if err = db.QueryRow("SELECT count(*) FROM schema_migrations WHERE version=91").Scan(&n); err != nil || n != 0 {
-		t.Fatalf("091 recorded: %d %v", n, err)
-	}
-	if _, err = db.Exec("DELETE FROM escrow_siblings"); err != nil {
-		t.Fatal(err)
-	}
-	runInTx(t, db, func(tx *sql.Tx) error { return applyMigrations(ctx, tx, list) })
-	k := func(b byte) string { return "02" + strings.Repeat(hex.EncodeToString([]byte{b}), 32) }
-	try := func(b, v, m string) error {
-		_, err := db.Exec("INSERT INTO escrow_siblings(escrow_id,branch,idx,address,buyer_pubkey,vendor_pubkey,market_pubkey) SELECT id,0,2,'bcrt1qsibling091c',$1,$2,$3 FROM escrows", b, v, m)
-		return err
-	}
-	for _, bad := range [][3]string{{k(1), k(1), k(3)}, {k(1), k(2), k(2)}, {k(1), k(2), "04" + strings.Repeat("aa", 32)}, {k(1), k(2), strings.ToUpper(k(0xab))}, {k(1), k(2), k(3)[:64]}} {
-		if try(bad[0], bad[1], bad[2]) == nil {
-			t.Fatalf("sibling keys %v accepted", bad)
-		}
-	}
-	if _, err = db.Exec("INSERT INTO escrow_siblings(escrow_id,branch,idx,address) SELECT id,0,2,'bcrt1qsibling091c' FROM escrows"); err == nil {
-		t.Fatal("a sibling row without keys accepted after 091")
-	}
-	if err = try(k(1), k(2), k(3)); err != nil {
-		t.Fatalf("three distinct keys refused: %v", err)
 	}
 }
