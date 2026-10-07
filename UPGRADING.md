@@ -1427,10 +1427,10 @@ new as the server are installed.
    database it was taken from (the first one the refusal names; `LATIN1` below), never the encoding its text was
    written in, which can be one no database can have (`SJIS`). There `pg_restore` turns the text back into the bytes
    that database stored, and you use it as the old database. Set `LATIN1_DATABASE_URL` to `NEW_DATABASE_URL` with the
-   database name `opsecmkt_latin1`, and `MAINTENANCE_DATABASE_URL` to it with the database name `postgres` (the
-   maintenance database PostgreSQL creates; `opsecmkt_utf8`, which `NEW_DATABASE_URL` names, does not exist until step
-   4, so nothing can connect to it yet); `scripts/postgres-tool.py` passes each URL's password to the tool in
-   `PGPASSWORD`, never on its command line, where other users of the host could read it:
+   database name `opsecmkt_latin1`, and `MAINTENANCE_DATABASE_URL` to `NEW_DATABASE_URL` with the database name
+   `postgres` (the maintenance database PostgreSQL creates; `opsecmkt_utf8`, which `NEW_DATABASE_URL` names, does not
+   exist until step 4, so nothing can connect to it yet); `scripts/postgres-tool.py` passes each URL's password to the
+   tool in `PGPASSWORD`, never on its command line, where other users of the host could read it:
 
    ```sh
    export MAINTENANCE_DATABASE_URL LATIN1_DATABASE_URL
@@ -1548,8 +1548,8 @@ leaves the settlement signed by its party, with "The market's escrow signer coul
 and one log line; the next pass tries again and nothing is rebuilt. No per-order key comes from the signer after
 checkout, which stores them: the market contacts it at checkout (for its key), to co-sign, and in its health check (its
 key, read at startup and on every watcher pass). While it is down the order pages, setup pages and copies of per-order
-escrows are still served and the parties can still sign, a sibling address's stray refund included. Set up the signer first: see the [operator
-guide](docs/operator-guide.md#escrow-signer). The signer's RPC user needs no new method. A deposit to one of a per-order
+escrows are still served and the parties can still sign, a sibling address's stray refund included. Set up the signer
+first: see the [operator guide](docs/operator-guide.md#escrow-signer). The signer's RPC user needs no new method. A deposit to one of a per-order
 escrow's sibling addresses is now returned by a stray refund spending that address's own script, co-signed by the
 signer.
 
