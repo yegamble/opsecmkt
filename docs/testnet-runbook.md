@@ -282,7 +282,7 @@ Each of these forms repeats the wallet check above in one line next to the check
 
 The watcher flags a deposit (`payments.flagged`): it writes a system note ending "Moderator review
 required." to the order history and notifies every moderator and administrator who is not suspended
-("Payment review needed for order <first 8 characters of the order ID>"). A locked transfer, a deposit after settlement or after the order closed, or the deposits of a payout below the minimum automatic payout are flagged once. Deposits after settlement or after the order closed are announced once per episode however many arrive: one order note per watcher pass names the deposits it flagged, but the buyer (the amount, no transaction ID; the vendor is not told) and each staff member are notified only when the order has no such flag open yet (not yet reviewed, or escalated to an administrator; see "Record the review" below). The buyer's order page shows each as "Arrived after the order closed — not paid out; market staff notified".
+("Payment review needed for order <first 8 characters of the order ID>"). A locked transfer, a deposit after settlement or after the order closed, or the deposits of a payout below the minimum automatic payout are flagged once. Deposits after settlement or after the order closed are announced once per episode however many arrive: one order note per watcher pass names the deposits it flagged, but the buyer (the amount, no transaction ID; the vendor is not told) and each staff member are notified only when no late flag of the order is open on the desk yet (a flag open below of a deposit neither credited, nor below the minimum, nor locked, nor spent outside the market: not yet reviewed, or escalated to an administrator; see "Record the review" below). The buyer's order page shows each as "Arrived after the order closed — not paid out; market staff notified".
 A credited deposit that falls back below the threshold (conflicted, missing, or at a lower depth after a
 reorg) is announced once per episode while the order is open or any of its payouts unsent (a release already sent with its overpayment return still unsent counts): the buyer and the vendor
 are notified too (staff who are party to the order get that notification instead of the review one), and if
@@ -292,8 +292,13 @@ behind the highest tip recorded (a restarted node catching up). Open **Moderatio
 recently flagged others with their count, each with the full order ID linking to the order, amount, full
 transaction ID, reason and flag time (the latest flag note for that deposit). A flag is open, until staff record
 its review (below), while its deposit is a locked transfer, a deposit after settlement or after the order closed,
-or part of a payout below the minimum, or while a credited deposit's regression has not confirmed again; the
-reason is read from the deposit's current confirmations. A moderator or administrator who is not
+or part of a payout below the minimum, or while a credited deposit's regression has not confirmed again (on an
+escrow order also a deposit spent outside the market or left out of its settlement, credited or not; an escrow
+deposit that counts for the order is never open). The desk and *Record the review* read this one rule, and only a flag it opens holds the late-deposit notice (QA462C). The
+reason is read from the deposit's current confirmations. A new event on a deposit whose review you already recorded
+(left out again after a changed decision, spent outside the market, its stray refund spent outside or refused, a
+payout below the minimum) flags it anew with no review: it is open again with *Record the review*, dated by the note
+of the new event, which names the deposit; the order history keeps the earlier review (QA462E-1, QA462F). A moderator or administrator who is not
 party to the order can open its page read-only: history with the flag note, the deposit ledger (while the currency's wallet is configured) and any payout. No buyer or
 vendor action is offered, the order actions refuse staff, and digital delivery content stays hidden unless
 the order is disputed.
@@ -305,6 +310,11 @@ the order is disputed.
 | Credited deposit confirmed again (N confirmations) | The flagged regression ended: the deposit reached the threshold again. Listed after the open flags. | The watcher lifted its own hold; a pending payout is sent on the next pass that reads the order. Nothing to do. |
 | Locked transfer (unlock time) | A Monero transfer with a non-zero `unlock_time`. | Never counted toward payment or paid out. The buyer was told to send an ordinary transfer. |
 | Deposit after settlement or after the order closed, not paid out | Extra funds confirmed after the order's settlement (its release and any return, or its refund) was queued (completed or resolved orders, or a cancellation that already queued a refund), or funds first seen after the order was cancelled, completed or resolved (for example a top-up after an underpaid order was cancelled at the end of the payment window). | Not paid out or refunded: an order is settled once, and anything sent after it closed is never refunded automatically. The buyer was told the amount arrived after the order closed and was not paid out. |
+| Deposit to an escrow after the order closed, not counted; a stray refund from the escrow returns it to the buyer | Coins sent to a closed escrow order's address. | Flagged and announced to the buyer and staff once per episode; never refunded by hand (it is not in a market wallet): the stray refund returns it. Record *no action* once it is returned, or escalate. |
+| Escrow deposit left out of its settlement, not counted; a stray refund from the escrow returns it to the buyer | A deposit the order's release or refund does not spend: a top-up after it was built, one that did not count when the order was cancelled or decided, or one a refund too few could not spend (credited or not). | Flagged with an order note naming it; the stray refund returns it. Record *no action* once it is returned, or escalate. |
+| Escrow deposit spent by a transaction this market did not make, … | Another transaction spent the escrow deposit (the parties signing together, or a key compromise). | Flagged with notices to the parties and staff; the coins are gone from the escrow. Record what you found. It does not hold the late-deposit notice episode. |
+| Escrow deposit counted for the order (credited toward its funding); the order's release or refund settles it | A credited escrow deposit flagged only so staff can open the order (a release too few, A-461; a settlement spent outside the market). Not open. | Nothing to record: the order's release or refund settles it. |
+| Escrow deposit counted for the order, though not credited toward its funding … | A deposit recorded before the order closed but still confirming at funding, flagged by another check. Not open. | Nothing to record: it counts for the order. |
 | Below the minimum automatic payout, not paid out | The order's release or refund counted less than the minimum automatic payout: 0.0001 BTC for any Bitcoin payout (the network fee is taken from the amount, so a smaller one can never be sent), 0.001 XMR for any Monero payout (the fee is taken from the amount, so a smaller one is not worth sending). Usually a stray deposit to a cancelled order's address. | No payout row was queued; the order kept its final state. The buyer and the vendor were told it was not sent. A deposit recorded before the order closed that confirms later and lifts the sum to the minimum is paid out with it and closes the flag; one first seen after the order closed is not counted (previous row). Otherwise see step 4 below. |
 
 What staff can do:
@@ -1210,7 +1220,7 @@ place; the [operator guide](operator-guide.md#bitcoin-escrow-test-networks-only)
    or later; the stall alert reports one not seen after 6 blocks in every mode.
 6. Refund, claim and fee addresses are `tb1…` (or the test-network base58 forms); one given in capitals is stored in
    lower case.
-7. The arbiter wallet check (A-471, section 37 of UPGRADING) applies as on regtest: `listsinceblock` must be on the
+7. The arbiter wallet check (A-471, section 38 of UPGRADING) applies as on regtest: `listsinceblock` must be on the
    escrow user's whitelist. Dust paid to the market's child keys is nearly free on these chains; the start check reads
    only what is newer than its checkpoint, and `/admin` says when a long first read keeps escrow off while it goes on.
    Fee bumps of a payment to those keys do not keep escrow off either (QA4W6-1): Core lists every unconfirmed

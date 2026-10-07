@@ -428,7 +428,7 @@ func (a *App) queuePayout(ctx context.Context, tx *sql.Tx, o *Order, part payout
 // moderator and administrator not party to the order. The deposits stay as they were (credited or not) and the
 // order keeps its terminal state.
 func (a *App) flagBelowFloor(ctx context.Context, tx *sql.Tx, o *Order, kind, who, below string, ids []int64, sum int64) error {
-	rows, err := tx.QueryContext(ctx, "UPDATE payments SET flagged=true,below_floor=true WHERE id=ANY($1) AND NOT below_floor RETURNING txid,amount", ids)
+	rows, err := tx.QueryContext(ctx, "UPDATE payments SET "+newFlagSQL+",below_floor=true WHERE id=ANY($1) AND NOT below_floor RETURNING txid,amount", ids)
 	if err != nil {
 		return err
 	}

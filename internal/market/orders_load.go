@@ -751,27 +751,33 @@ const paymentReviewLimit = 100
 
 // loadPaymentReviews lists deposits the payment watcher flagged for staff review (payments.flagged): every open
 // flag, oldest first and never capped, then the paymentReviewLimit most recently flagged others, with their
-// count. A flag is open until staff record its disposition (A-31: no action or refunded by hand; one escalated to
-// an administrator stays open) while it is a locked transfer, a late deposit or a deposit of a payout below the
-// minimum automatic payout (payments.below_floor, A-99), or a credited deposit whose regression was announced and
-// has not confirmed again (payments.regress_notice). A disposed flag is not listed (the order history and the
-// audit log keep the disposition). The reason comes from the deposit's current confirmations. The flag time is the latest watcher flag event for the deposit in order_events: flagOrder writes a system note naming it
-// (truncate(txid, 20)) and ending "Moderator review required.".
+// count. Whether a flag is open is the one rule paymentFlagOpenRule (QA462C), which the review handler reads too
+// (and only a flag it opens holds a late-deposit notice episode): a locked transfer, a deposit of a payout below the
+// minimum automatic payout (A-99), a credited deposit whose regression was announced and has not confirmed again, an
+// escrow deposit spent outside the market, or a deposit not credited that does not count for the order (pooled, or an
+// escrow one recorded after the close or left out of its settlement), until staff record its disposition (an
+// escalated one stays open). An escrow deposit that counts for the order is not open, credited or not (QA462B-1). A
+// disposed flag is not listed (the order history and the audit log keep the disposition). The reason comes from the
+// deposit's current confirmations, against the escrow's threshold for an escrow deposit. The flag time is the latest
+// watcher flag event for the deposit in order_events: flagOrder writes a system note naming it (truncate(txid, 20))
+// and ending "Moderator review required.".
 func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 	if d.User == nil || (d.User.Role != "moderator" && d.User.Role != "admin") {
 		return nil
 	}
 	rows, err := a.db.QueryContext(ctx, `WITH v AS (SELECT pm.id,pm.order_id,o.state,pr.id AS product_id,pr.title,pm.currency,pm.amount,pm.txid,pm.idx,pm.credited,pm.locked,pm.confirmations,
-			pm.regress_notice,pm.below_floor,(pm.locked OR NOT pm.credited OR pm.regress_notice OR pm.below_floor OR pm.spent_outside) AS open,f.at,
+			pm.regress_notice,pm.below_floor,`+paymentFlagOpen("pm")+` AS open,f.at,
 			pm.disposition='escalated' AS escalated,COALESCE(to_char(pm.disposed_at,'YYYY-MM-DD'),'') AS disposed,(o.buyer_id=$2 OR pr.vendor_id=$2) AS party,
-			EXISTS(SELECT 1 FROM escrows es WHERE es.order_id=pm.order_id) AS escrow,pm.spent_outside,COALESCE(pm.spent_by,'') AS spent_by
+			c.escrow,pm.spent_outside,COALESCE(pm.spent_by,'') AS spent_by,c.counted,pm.escrow_left_out AND NOT pm.after_close AS left_out
 		FROM payments pm JOIN orders o ON o.id=pm.order_id JOIN products pr ON pr.id=o.product_id
+		CROSS JOIN LATERAL (SELECT e.escrow,e.escrow AND NOT pm.after_close AND NOT pm.escrow_left_out AND NOT pm.spent_outside AS counted
+			FROM (SELECT EXISTS(SELECT 1 FROM escrows es WHERE es.order_id=pm.order_id) AS escrow) e) c
 		LEFT JOIN LATERAL (SELECT max(e.created) AS at FROM order_events e WHERE e.order_id=pm.order_id AND e.actor_id IS NULL
 			AND e.note LIKE '%Moderator review required.%'
 			AND strpos(e.note, ' '||CASE WHEN length(pm.txid)<=20 THEN pm.txid ELSE left(pm.txid,20)||'…' END||' ')>0) f ON true
 		WHERE pm.flagged AND pm.disposition IN ('','escalated'))
 		SELECT id,order_id,state,product_id,title,currency,amount,txid,idx,credited,locked,confirmations,regress_notice,below_floor,open,COALESCE(to_char(at,'YYYY-MM-DD HH24:MI "UTC"'),''),
-			escalated,disposed,party,escrow,spent_outside,spent_by,(SELECT count(*) FROM v WHERE NOT open)
+			escalated,disposed,party,escrow,spent_outside,spent_by,counted,left_out,(SELECT count(*) FROM v WHERE NOT open)
 		FROM (SELECT * FROM v WHERE open UNION ALL (SELECT * FROM v WHERE NOT open ORDER BY at DESC NULLS LAST,id DESC LIMIT $1)) s
 		ORDER BY open DESC,CASE WHEN open THEN at END ASC NULLS FIRST,CASE WHEN open THEN id END,at DESC NULLS LAST,id DESC`, paymentReviewLimit, d.User.ID)
 	if err != nil {
@@ -781,10 +787,10 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 	for rows.Next() {
 		var v PaymentReview
 		var amt, confs int64
-		var credited, locked, regressed, belowFloor, escrow, outside bool
+		var credited, locked, regressed, belowFloor, escrow, outside, counted, leftOut bool
 		var disposed, spentBy string
 		if err = rows.Scan(&v.ID, &v.OrderID, &v.OrderState, &v.ProductID, &v.Title, &v.Currency, &amt, &v.TxID, &v.Index, &credited, &locked, &confs, &regressed, &belowFloor, &v.Open, &v.Flagged,
-			&v.Escalated, &disposed, &v.Party, &escrow, &outside, &spentBy, &d.PaymentReviewOthers); err != nil {
+			&v.Escalated, &disposed, &v.Party, &escrow, &outside, &spentBy, &counted, &leftOut, &d.PaymentReviewOthers); err != nil {
 			return err
 		}
 		// The disposition form (paymentReviewAction): open flags of orders the viewer is not party to; an escalated
@@ -795,6 +801,20 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 		v.Refundable, v.Escrow = !credited && !escrow, escrow
 		v.Amount, v.OrderState = amount(amt, currencyDecimals(v.Currency)), stateLabel(v.OrderState)
 		threshold := a.confirmationThreshold(v.Currency)
+		if escrow {
+			// An escrow deposit's own confirmation threshold, as its order page reads it (escrowOrder, xmrEscrowOrder),
+			// not the pooled wallet's (0 when no pooled provider is configured).
+			switch e := a.escrow.Load(); {
+			case v.Currency == "XMR" && a.escrowXMR != nil:
+				threshold = a.escrowXMR.confirmations
+			case v.Currency == "XMR":
+				threshold = xmrMinConfirmations
+			case e != nil:
+				threshold = e.confirmations
+			default:
+				threshold = 3
+			}
+		}
 		switch {
 		case outside:
 			// P1-d1: an escrow deposit no settlement of the market covered, spent by another transaction.
@@ -809,6 +829,22 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 			if confs < 0 {
 				v.Reason += "; now conflicted or missing"
 			}
+		case !credited && counted:
+			// QA462B-1: an escrow deposit recorded before the order closed but not credited at funding (still
+			// confirming, or conflicted and mined since) counts for the order, as a credited one does: its flag is not
+			// open and the desk offers no action on it (A-330).
+			v.Reason = "Escrow deposit counted for the order, though not credited toward its funding (recorded before the order closed); no stray refund returns it"
+			if confs < 0 {
+				v.Reason += "; now conflicted or missing"
+			}
+		case escrow && leftOut:
+			// Left out of its settlement before the close (a top-up after it was built, one that did not count when the
+			// order was cancelled, one a refund too few could not spend, credited or not: QA462D-2): not a deposit after
+			// the close, and no longer counted.
+			v.Reason = "Escrow deposit left out of its settlement, not counted; a stray refund from the escrow returns it to the buyer"
+			if confs < 0 {
+				v.Reason += "; now conflicted or missing"
+			}
 		case !credited && escrow:
 			v.Reason = "Deposit to an escrow after the order closed, not counted; a stray refund from the escrow returns it to the buyer"
 			if confs < 0 {
@@ -818,6 +854,16 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 			v.Reason = "Deposit after settlement or after the order closed, not paid out"
 			if confs < 0 {
 				v.Reason += "; now conflicted or missing"
+			}
+		case escrow && !regressed && !belowFloor:
+			// QA462D-3: a credited escrow deposit flagged with no regression (a release too few, A-461; an external
+			// settlement's deposits) counts for the order: its flag is not open, and it never "confirmed again". One below
+			// the floor is open and keeps the reasons below while it confirms.
+			v.Reason = "Escrow deposit counted for the order (credited toward its funding); the order's release or refund settles it"
+			if confs < 0 {
+				v.Reason += "; now conflicted or missing"
+			} else if confs < threshold {
+				v.Reason += fmt.Sprintf("; now %d of %d confirmations", confs, threshold)
 			}
 		case confs < 0:
 			v.Reason = "Credited deposit conflicted or missing"

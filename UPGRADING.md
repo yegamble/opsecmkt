@@ -897,7 +897,7 @@ by default). With escrow on, this release also co-signs and broadcasts settlemen
 escrow disputes, and writes three `settings` keys when used: `escrow_btc_fee_bps` and `escrow_btc_fee_address` (the
 market fee an administrator saves on `/admin`, which then overrides `ESCROW_BTC_FEE_BPS` and
 `ESCROW_BTC_FEE_ADDRESS`) and `escrow_btc_stray_check` (the daily stray-refund check). Escrow now also stays disabled
-unless the arbiter wallet is an unencrypted descriptor wallet with private keys that has never spent (A-471, section 37; [operator
+unless the arbiter wallet is an unencrypted descriptor wallet with private keys that has never spent (A-471, section 38; [operator
 guide](docs/operator-guide.md#bitcoin-escrow-test-networks-only)). No action is needed. Rolling back past this release needs
 the pre-upgrade backup, as for every migration (section 5): the earlier release refuses to start on a database that
 records migration 076.
@@ -1082,7 +1082,28 @@ restored from is recorded missing, not destroyed again, unless that backup alrea
 pre-upgrade backup, as for every migration (section 5): the earlier release refuses to start on a database that records
 migration 086.
 
-## 32. Bitcoin node sync guard and the escrow chain pin (A-439)
+## 32. Bitcoin escrow: changing a decision whose settlement was never built (migration 087)
+
+Migration 087 runs at startup. It lets a Bitcoin escrow release or refund that was never built (still building, or
+failed, with no PSBT) be superseded when an administrator changes the dispute decision; before it, that change failed
+with a server error (`settlements_built`, A-462) and the decision could not be changed at all. It replaces the check
+`settlements_built` with one that also accepts such a superseded row (no PSBT, transaction ID, network fee or signer;
+a failed row keeps the value and fee rate it failed at) and adds the trigger `settlements_supersede_keeps`: superseding
+a settlement never changes its build, destination or signer, so a built one keeps its whole PSBT and an unbuilt one
+never gains one, and the trigger `settlements_never_rebuilding`: no settlement moves back to building (nothing in the
+market does). Every other rule of migrations 075 to 078 is unchanged, and no existing row is rewritten. It also adds
+`payments.escrow_too_few_by`, the refund whose too-small failure left a deposit out for a stray refund, set only with
+`escrow_left_out` and only to a refund of the deposit's own order (trigger `payments_too_few_refund`): when a changed
+decision supersedes that refund, those deposits count for the order again.
+Deposits a too-small refund left out before this migration on an order decided for the buyer (only a development build
+with A-437 and without this migration wrote them) do not name their refund, so a change of that decision leaves them
+for the stray refund to the buyer; an order whose refund failed so before A-437, with its deposits still counted, is
+handled by the next escrow pass, which names the refund. Like the earlier escrow migrations it changes nothing unless
+`ESCROW_BTC=on` (regtest only, off by default). No action is needed. Rolling back past this release needs the
+pre-upgrade backup, as for every migration (section 5): the earlier release refuses to start on a database that
+records migration 087.
+
+## 33. Bitcoin node sync guard and the escrow chain pin (A-439)
 
 No migration. The pooled Bitcoin watcher now also skips its pass while the node's headers are ahead of its blocks and,
 on a public test network, while the node has no peers or its tip block is older than the new optional key
@@ -1097,7 +1118,7 @@ is pinned at the first start), and the escrow user's `rpcwhitelist` gains `getne
 ([operator guide](docs/operator-guide.md#bitcoin-escrow-test-networks-only)); on regtest the app does not call it, so the old
 whitelist keeps working, but add it. No action is needed otherwise.
 
-## 33. Bitcoin escrow refuses a pooled RPC user that can read the arbiter wallet (A-440)
+## 34. Bitcoin escrow refuses a pooled RPC user that can read the arbiter wallet (A-440)
 
 No migration. Only with `ESCROW_BTC=on` and `BITCOIN_RPC_URL` set: at startup and on each retry escrow calls
 `listdescriptors` (private=false), `gethdkeys` (private=false) and `walletprocesspsbt` (an empty PSBT, sign=false) on the
@@ -1113,7 +1134,7 @@ give that user the pooled whitelist line of the [operator guide](docs/operator-g
 [runbook](docs/testnet-runbook.md#back-up-and-restore-the-escrow-arbiter-and-watch-only-wallets) now also describe the
 arbiter and watch-only wallet backup and restore. Pooled payments are unaffected.
 
-## 34. Monero daemon sync guard, Monero escrow on stagenet and its network pin (A-449)
+## 35. Monero daemon sync guard, Monero escrow on stagenet and its network pin (A-449)
 
 No migration. With `MONERO_RPC_URL` set, the pooled Monero watcher now also skips its pass while the daemon reports
 `synchronized` false, has no peers (`offline`, or no connections on an unrestricted RPC) or its top block is older than
@@ -1162,7 +1183,7 @@ upgrading, set it (`openssl rand -hex 24`) in `.env` and as the password in `MON
 (`http://marketplace:PASSWORD@monero-wallet:18083`). `./scripts/install.sh check` names the missing key. An install
 without these profiles needs neither key.
 
-## 35. Bitcoin escrow broadcast honesty and the Tor-mode gate (A-441)
+## 36. Bitcoin escrow broadcast honesty and the Tor-mode gate (A-441)
 
 No migration, no new key. Only with `ESCROW_BTC=on`. A settlement recorded broadcast whose transaction the escrow
 watch-only wallet has not seen 6 blocks later now tells staff once ("Queued or stuck: not seen by the network", an
@@ -1174,7 +1195,7 @@ escrow node started with `-proxy=<Tor SOCKS address>`, never `-connect` or `-onl
 ([operator guide](docs/operator-guide.md#bitcoin-escrow-test-networks-only), *Tor mode*). Clearnet mode and pooled payouts
 are unchanged.
 
-## 36. Escrow-only payment intake and the readiness panel (A-444)
+## 37. Escrow-only payment intake and the readiness panel (A-444)
 
 No migration, no new key, nothing changes on upgrade. The per-currency intake setting (`payment_intake_BTC`,
 `payment_intake_XMR` in `settings`, migration 052) takes a third value, `escrow`: new orders in that coin can only use
@@ -1210,7 +1231,7 @@ For Monero use `payment_intake_XMR`. It prints `UPDATE 1` for a coin that was es
 (`settings` has two columns, `key` and `value`). Coming back to this build later, set the coin to **Escrow only** again with its form. A release older than
 this database's migrations does not start against it at all ([Rolling back](#5-rolling-back)).
 
-## 37. Bitcoin escrow: a payment to the arbiter wallet no longer disables escrow (A-471)
+## 38. Bitcoin escrow: a payment to the arbiter wallet no longer disables escrow (A-471)
 
 No migration, no new key. Only with `ESCROW_BTC=on`. **Action: add `listsinceblock` to the escrow user's
 `rpcwhitelist`** (the line in the [operator guide](docs/operator-guide.md#bitcoin-escrow-test-networks-only) ends
@@ -1262,7 +1283,7 @@ What "never spent" cannot tell apart: `rpcwhitelist` allows methods, not wallets
 escrow node, a pooled user allowed `sendtoaddress` can spend coins paid to the arbiter wallet by naming its path, and
 escrow then stays off from the next check (no key is exported). A node of escrow's own rules that out.
 
-## 38. Bitcoin escrow key layout (migration 088, A-455)
+## 39. Bitcoin escrow key layout (migration 088, A-455)
 
 Migration 088 runs at startup. It adds `user_escrow_keys.layout`, `core` (a Bitcoin Core wallet, as every key so far)
 or `per_order` (a per-order wallet: Electrum with a BIP39 seed, or Sparrow), with `core` as the default, so every
@@ -1274,12 +1295,12 @@ writes a suffix of three steps, so validation finds nothing to refuse. With `ESC
 lets a user register a per-order wallet key (the BIP48 multisig account key, `m/48h/1h/0h/2h`) and sign its practice
 transaction in a per-order practice wallet, and listings and vendor profiles show the vendor's key type. Escrows with
 per-order wallets are not built yet: a checkout where either party's active key is a per-order wallet key is refused
-with nothing written, and while BTC intake is escrow only (section 36) such a vendor's listings are not available for
+with nothing written, and while BTC intake is escrow only (section 37) such a vendor's listings are not available for
 purchase in BTC and the readiness panel lists the vendor ([per-order escrow](docs/escrow.md#per-order-key-layout-registration-and-practice-a-455-shape-b)).
 No action is needed at upgrade. Rolling back past this release needs the pre-upgrade backup, as for every migration
 (section 5): the earlier release refuses to start on a database that records migration 088.
 
-## 39. Bitcoin escrow on signet and testnet4 (A-443)
+## 40. Bitcoin escrow on signet and testnet4 (A-443)
 
 No migration, no new key. Only with `ESCROW_BTC=on`. Escrow now starts against a node on `signet` or `testnet4` as well
 as `regtest`; mainnet and testnet3 are still refused, and `BITCOIN_CHAIN`, when set beside `ESCROW_BTC=on`, may now be
@@ -1307,12 +1328,12 @@ quotes, as the installer writes them). Blank values keep a feature off.
 | `BITCOIN_WALLET` | Wallet name, default `opsecmkt`. |
 | `MONERO_NETWORK` | Blank, `stagenet` or `testnet`; `mainnet` configures mainnet (a local node also needs `MONERO_NETWORK_FLAG=`). |
 | `MONERO_WALLET_RPC_URL` | monero-wallet-rpc URL with credentials, for example `http://marketplace:PASSWORD@monero-wallet:18083`. Blank keeps Monero payments off. A daemon URL alone (`MONERO_RPC_URL`, which alpha.1 wrote) does **not** enable them. |
-| `MONERO_WALLET_RPC_PASSWORD` | For the local `monero-wallet` service only: `openssl rand -hex 24` output, the same value as the password in `MONERO_WALLET_RPC_URL`. Compose refuses the `monero-wallet` profile without it (section 34). |
+| `MONERO_WALLET_RPC_PASSWORD` | For the local `monero-wallet` service only: `openssl rand -hex 24` output, the same value as the password in `MONERO_WALLET_RPC_URL`. Compose refuses the `monero-wallet` profile without it (section 35). |
 | `PAYMENT_CONFIRMATIONS_BTC` / `PAYMENT_CONFIRMATIONS_XMR` | Defaults 3 and 10. |
 | `PAYMENT_POLL_INTERVAL` / `PAYMENT_EXPIRY` | Defaults `30s` and `24h`. |
-| `BITCOIN_MAX_TIP_AGE` | Default `2h` (30m to 24h): a public-network Bitcoin node whose tip is older counts as not synced (section 32). |
-| `MONERO_MAX_TIP_AGE` | Default `1h` (20m to 24h): a public-network Monero daemon whose top block is older counts as not synced (section 34). |
-| `ESCROW_XMR_WALLET_RPC_PASSWORD` | Only for the `monero-escrow-wallet` service (Monero escrow on stagenet): `openssl rand -hex 24` output, the same value as the password in `ESCROW_XMR_WALLET_RPC_URL` (section 34). Blank, Compose refuses the `monero-escrow-wallet` profile. |
+| `BITCOIN_MAX_TIP_AGE` | Default `2h` (30m to 24h): a public-network Bitcoin node whose tip is older counts as not synced (section 33). |
+| `MONERO_MAX_TIP_AGE` | Default `1h` (20m to 24h): a public-network Monero daemon whose top block is older counts as not synced (section 35). |
+| `ESCROW_XMR_WALLET_RPC_PASSWORD` | Only for the `monero-escrow-wallet` service (Monero escrow on stagenet): `openssl rand -hex 24` output, the same value as the password in `ESCROW_XMR_WALLET_RPC_URL` (section 35). Blank, Compose refuses the `monero-escrow-wallet` profile. |
 | `BITCOIN_PRUNE_MB` / `MONERO_PRUNE_FLAGS` | Local nodes only. Absent keys mean **pruned** (`2000` and `'--prune-blockchain --sync-pruned-blocks'`); `BITCOIN_PRUNE_MB='0'` and `MONERO_PRUNE_FLAGS=''` keep a full node. Read [section 7](#7-local-nodes-are-now-pruned) before deploying if you run a local node. |
 | `BITCOIN_IMAGE` / `MONERO_IMAGE` / `MONERO_WALLET_IMAGE` | Local nodes only. Absent keys mean the pinned release images the payout code was verified against; the images alpha.1 made you choose stay in use until you remove or change them (`upgrade` pins the default images left on `latest`). Read [section 8](#8-node-images-are-pinned-to-release-tags). |
 | `COMPOSE_PROJECT_NAME` | Not needed: absent means `opsecmkt`, which is what your containers and volumes are named after. Never set another value on this install, or Compose starts it on new, empty volumes. A second checkout on the same host needs its own name; see [Backups and recovery](docs/operator-guide.md#backups-and-recovery). |

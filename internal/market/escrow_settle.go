@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -658,7 +659,8 @@ func settlementInputsFilled(p *psbtPacket, ins []settleInput, ws []byte) bool {
 
 // storeSettlement stores a built settlement: its outputs, the PSBT and txid (building -> awaiting_signature by
 // compare-and-set), each input's payments row claimed by compare-and-set, an order note and a notice to both parties.
-// A lost race (another build stored first, or an output already claimed) changes nothing.
+// A lost race (another build stored first, an output already claimed, or a stray refund's input counted for the order
+// again meanwhile) changes nothing.
 func (a *App) storeSettlement(ctx context.Context, id int64, orderID, kind, psbt, txid string, total, rate int64, plan settlePlan, ins, left []settleInput) error {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -687,7 +689,13 @@ func (a *App) storeSettlement(ctx context.Context, id int64, orderID, kind, psbt
 	for i, in := range ins {
 		claimed[i] = in.ID
 	}
-	res, err = tx.ExecContext(ctx, "UPDATE payments SET settlement_id=$1,updated=now() WHERE order_id=$2 AND id=ANY($3) AND settlement_id IS NULL", id, orderID, claimed)
+	// A stray refund claims only deposits still eligible for one (after the close or left out, strayEligibleSQL): a
+	// changed decision may have counted one for the order again since its build chose it (countAgain, QA462-1).
+	claim := "UPDATE payments SET settlement_id=$1,updated=now() WHERE order_id=$2 AND id=ANY($3) AND settlement_id IS NULL"
+	if kind == "stray_refund" {
+		claim += " AND (after_close OR escrow_left_out)"
+	}
+	res, err = tx.ExecContext(ctx, claim, id, orderID, claimed)
 	if err != nil {
 		return err
 	}
@@ -823,7 +831,8 @@ func (a *App) settlementWaits(ctx context.Context, id int64, orderID, class stri
 // row), which a stray refund that failed too-small is compared with before another is requested (strayHeldSQL, A-434).
 // A refund that fails too-small on an order cancelled or resolved for the buyer leaves out tried, the deposits it could
 // not spend (leaveOutTooFew, A-435, A-437), and its failure holds them as a stray refund's would; a release's deposits
-// stay counted.
+// stay counted, and its too-small failure also tells staff (A-461), flagging the credited deposits it tried so staff
+// can open the order (QA462-3, QA462B-1).
 func (a *App) failSettlement(ctx context.Context, id int64, orderID, class string, could, rate int64, tried []settleInput, left ...settleInput) error {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -838,11 +847,58 @@ func (a *App) failSettlement(ctx context.Context, id int64, orderID, class strin
 		return nil
 	}
 	text := settleErrorText(class, 0)
-	if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) SELECT id,state,state,NULL,$2 FROM orders WHERE id=$1", orderID, "Escrow settlement not built: "+text); err != nil {
-		return err
-	}
 	var buyer, vendor, kind string
 	if err = tx.QueryRowContext(ctx, "SELECT o.buyer_id,p.vendor_id,s.kind FROM orders o JOIN products p ON p.id=o.product_id JOIN settlements s ON s.order_id=o.id WHERE s.id=$1", id).Scan(&buyer, &vendor, &kind); err != nil {
+		return err
+	}
+	if kind == "release" && class == settleTooSmall {
+		// A-461: the same note also tells staff, once, as a Monero release too few does (xmrSettleWaits): the vendor's
+		// coins stay in the escrow, counted, and an administrator may change a dispute's decision. The order's credited
+		// deposits (it was funded with them) are flagged so staff can open the order (staffReviewer), also one never
+		// disputed (QA462-3), even when the release tried none of them (the credited ones conflicted since, QA462C-2);
+		// they stay counted, and their flags are not open (paymentFlagOpenRule), so the desk offers no action on them
+		// (A-330). A counted deposit that is not credited (still confirming or conflicted at funding, mined since) is not
+		// flagged (QA462B-1).
+		o, err := scanOrder(tx.QueryRowContext(ctx, orderQuery+" WHERE o.id=$1", orderID))
+		if err != nil {
+			return err
+		}
+		deposits := make([]string, len(tried))
+		for i, in := range tried {
+			deposits[i] = "deposit " + truncate(in.TxID, 20) + " (" + amount(in.Sats, 8) + " BTC)"
+		}
+		rows, err := tx.QueryContext(ctx, "UPDATE payments SET flagged=true,updated=now() WHERE order_id=$1 AND credited AND NOT flagged RETURNING txid,amount", orderID)
+		if err != nil {
+			return err
+		}
+		var flagged []string
+		for rows.Next() {
+			var txid string
+			var sats int64
+			if err = rows.Scan(&txid, &sats); err != nil {
+				rows.Close()
+				return err
+			}
+			if dep := "deposit " + truncate(txid, 20) + " (" + amount(sats, 8) + " BTC)"; !slices.Contains(deposits, dep) {
+				flagged = append(flagged, dep)
+			}
+		}
+		rows.Close()
+		if err = rows.Err(); err != nil {
+			return err
+		}
+		// The note names every deposit it flags, as the desk dates a flag from it (loadPaymentReviews, QA462B-2): those
+		// the release tried, and any other credited one (QA462D-4).
+		slices.Sort(deposits)
+		slices.Sort(flagged)
+		note := "Escrow settlement not built: " + text + " The release tried to spend " + strings.Join(deposits, ", ") + "."
+		if len(flagged) > 0 {
+			note += " Also flagged so staff can open the order (credited, counted for the order): " + strings.Join(flagged, ", ") + "."
+		}
+		if err = a.flagOrder(ctx, tx, &o, note+" Moderator review required.", ""); err != nil {
+			return err
+		}
+	} else if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) SELECT id,state,state,NULL,$2 FROM orders WHERE id=$1", orderID, "Escrow settlement not built: "+text); err != nil {
 		return err
 	}
 	for _, uid := range []string{buyer, vendor} {
@@ -858,7 +914,7 @@ func (a *App) failSettlement(ctx context.Context, id int64, orderID, class strin
 		if err != nil {
 			return err
 		}
-		if err = a.leaveOutTooFew(ctx, tx, &o, tried); err != nil {
+		if err = a.leaveOutTooFew(ctx, tx, &o, id, tried); err != nil {
 			return err
 		}
 	}

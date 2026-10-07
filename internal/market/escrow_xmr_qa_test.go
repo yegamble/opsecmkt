@@ -468,6 +468,15 @@ func TestXMREscrowLeftOutDepositLine(t *testing.T) {
 	if !strings.Contains(panel, line) || !strings.Contains(panel, confirmed("0.5")) || !strings.Contains(panel, "Funded and completed") {
 		t.Fatalf("a top-up left out: panel:\n%s", panel)
 	}
+	// QA462E-2: the note names the top-up (xmrLeaveOutTopUps), so the desk dates its open flag.
+	_, mod := x.user("ldmod_"+randomToken()[:6], "moderator")
+	if row := flagRow(html.UnescapeString(x.page("/moderator", mod)), hex64("top-up "+order)); !flaggedAt.MatchString(row) || !strings.Contains(row, "<strong>Open:</strong> Escrow deposit left out of its settlement") {
+		t.Fatalf("a top-up left out: the desk row: %s\nevents %q", row, x.events(order))
+	}
+	// The buyer's notice of the top-up names it but asks nothing of staff (QA462F, FM18).
+	if b := agStrings(t, x.testEnv, "SELECT n.body FROM notifications n JOIN orders o ON o.buyer_id=n.user_id WHERE o.id=$1 AND strpos(n.body,'was built, so that settlement does not spend them')>0", order); len(b) != 1 || strings.Contains(b[0], "Moderator review required") {
+		t.Fatalf("a top-up left out: the buyer's notices %q", b)
+	}
 
 	// A deposit left out while the order is still open says it is returned once the order is closed (QA NIT-3, mutant
 	// C3). No Monero build leaves a deposit out before its order closes today, so the row is set here.

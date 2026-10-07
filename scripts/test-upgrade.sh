@@ -247,6 +247,16 @@ fi
 grep -q 'has a return but no release' "$work/return-release.out"
 [[ $(sql -c 'SELECT count(*) FROM payouts') == 0 ]]
 
+# Bitcoin escrow, migration 087 (A-462): a never-built release or refund may be superseded as it stands (the check
+# settlements_built and the trigger settlements_supersede_keeps), no settlement moves back to building
+# (settlements_never_rebuilding), and a deposit names the refund of its own order whose too-small failure left it out
+# only while it is left out (payments_too_few_refund).
+for trigger in settlements_supersede_keeps settlements_never_rebuilding payments_too_few_refund; do
+  [[ $(sql -c "SELECT count(*) FROM pg_trigger WHERE tgname='$trigger' AND NOT tgisinternal") == 1 ]]
+done
+[[ $(sql -c "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname='settlements_built'") == *"'superseded'"* ]]
+[[ $(sql -c "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname='payments_too_few_left_out'") == 'CHECK (((escrow_too_few_by IS NULL) OR escrow_left_out))' ]]
+
 # The escrow key layout (migration 088): every key defaults to the Bitcoin Core layout, and a per-order derivation
 # suffix starting with /0 or /1 is refused by validated constraints while shape (a)'s /0/<i> is not affected.
 [[ $(sql -c "SELECT column_default || ':' || is_nullable FROM information_schema.columns WHERE table_name='user_escrow_keys' AND column_name='layout'") == "'core'::text:NO" ]]

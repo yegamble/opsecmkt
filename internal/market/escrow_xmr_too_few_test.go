@@ -13,14 +13,15 @@ import (
 // refunded stay in the escrow account for good. Simulated wallet-rpc and monerod (escrow_xmr_fake_test.go).
 
 // xmrTooFewNote is the order note on n deposits worth sum piconero that a Monero refund could not send because they
-// were too few (A-437); decided says whether the refund was a dispute decision's.
-func xmrTooFewNote(n int, sum int64, decided bool) string {
+// were too few (A-437); decided says whether the refund was a dispute decision's; left names them (QA462D-4).
+func xmrTooFewNote(n int, sum int64, decided bool, left string) string {
 	refund := "its refund"
 	if decided {
 		refund = "the refund its dispute decision requested"
 	}
 	return strconv.Itoa(n) + " deposit(s) (" + amount(sum, 12) + " XMR, TESTNET fakechain) to this order's Monero escrow are not spent by " + refund + ": the coins were too few to pay the network fee and an output of at least 0.001 XMR, so the market could not send the refund, which ends. " +
-		"They stay in the escrow account; a stray refund returns them, together with any later deposit to this escrow, less the network fee, to the buyer's refund address given at checkout once together they can pay the network fee."
+		"They stay in the escrow account; a stray refund returns them, together with any later deposit to this escrow, less the network fee, to the buyer's refund address given at checkout once together they can pay the network fee. " +
+		"The deposits: " + left + ". Moderator review required."
 }
 
 // A-437 (the Monero probe, reproduced on 44c7ab4): the refund that waits too-small ends instead (failed, too-small),
@@ -33,7 +34,7 @@ func xmrTooFewNote(n int, sum int64, decided bool) string {
 //     decided, too few on its own, is mined since: it is left out (A-424, as on a cancelled order) and joins them.
 func TestXMREscrowTooSmallRefundReturned(t *testing.T) {
 	x := newXMREscrowEnv(t)
-	x.user("xmod_"+randomToken()[:6], "moderator")
+	_, mod := x.user("xmod_"+randomToken()[:6], "moderator")
 	x.mustPoll()
 	refundOf := func(order string) string {
 		return agStrings(t, x.testEnv, "SELECT refund_address FROM escrows WHERE order_id=$1", order)[0]
@@ -41,8 +42,17 @@ func TestXMREscrowTooSmallRefundReturned(t *testing.T) {
 	deposits := func(order string) []string {
 		return agStrings(t, x.testEnv, "SELECT amount||' '||flagged||' '||escrow_left_out||' '||after_close||' '||COALESCE(xmr_settlement_id,0) FROM payments WHERE order_id=$1 AND confirmations>=0 ORDER BY id", order)
 	}
+	// tooFew lists the notes on one deposit of order worth sum left out, one per such deposit of the order (the note
+	// names it; a deposit that did not count may have the same amount).
+	tooFew := func(order string, decided bool, sum int64) []string {
+		var out []string
+		for _, txid := range agStrings(t, x.testEnv, "SELECT txid FROM payments WHERE order_id=$1 AND NOT after_close AND amount=$2", order, sum) {
+			out = append(out, xmrTooFewNote(1, sum, decided, "deposit "+truncate(txid, 20)+" ("+amount(sum, 12)+" XMR)"))
+		}
+		return out
+	}
 	notes := func(order string, decided bool, sum int64) int {
-		return agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND note=$2", order, xmrTooFewNote(1, sum, decided))
+		return agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND note=ANY($2)", order, tooFew(order, decided, sum))
 	}
 	told := func(uid, order string) int {
 		return agInt(x.testEnv, "SELECT count(*) FROM notifications WHERE user_id=$1 AND strpos(body,$2)>0 AND strpos(body,'not spent by')>0", uid, shortID(order))
@@ -60,7 +70,7 @@ func TestXMREscrowTooSmallRefundReturned(t *testing.T) {
 			t.Fatalf("%s: deposits %v", what, got)
 		}
 		if notes(order, decided, tiny) != 1 || told(buyer, order) != 1 || told(x.vendor, order) != 1 ||
-			agInt(x.testEnv, "SELECT count(*) FROM notifications n JOIN users u ON u.id=n.user_id WHERE u.role IN ('moderator','admin') AND strpos(n.body,$1)>0", "Payment review needed for order "+shortID(order)+": "+xmrTooFewNote(1, tiny, decided)) == 0 {
+			agInt(x.testEnv, "SELECT count(*) FROM notifications n JOIN users u ON u.id=n.user_id WHERE u.role IN ('moderator','admin') AND n.body=ANY(SELECT 'Payment review needed for order '||$1||': '||unnest($2::text[]))", shortID(order), tooFew(order, decided, tiny)) == 0 {
 			t.Fatalf("%s: told: notes %d, buyer %d, vendor %d; events %q", what, notes(order, decided, tiny), told(buyer, order), told(x.vendor, order), x.events(order))
 		}
 		// The stray refund of the coins left out waits: they are too few on their own.
@@ -132,8 +142,50 @@ func TestXMREscrowTooSmallRefundReturned(t *testing.T) {
 		// Mined after all: it did not count when the dispute was decided, so it is left out (A-424) and joins the stray refund.
 		x.fake.setTransfer(conflicted, func(t *fakeXMRTransfer) { t.DoubleSpend, t.Confs, t.Pool = false, 20, false })
 	})
-	if n := agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND strpos(note,'did not count for the order when its dispute was decided')>0", order); n != 1 {
-		t.Fatalf("decided: %d did-not-count notes; events %q", n, x.events(order))
+	// A-464 (QA437-3): exactly one did-not-count note, on the conflicted deposit alone (1 deposit, 0.002 XMR): the
+	// deposit the refund too few left out already is not counted in it again.
+	uncounted := "1 deposit(s) (" + amount(2000000000, 12) + " XMR, TESTNET fakechain) to this order's Monero escrow did not count for the order when its dispute was decided (the escrow wallet read them as conflicted, or no longer listed them), and no refund spends them. " +
+		"They have confirmed since and stay in the escrow account; a stray refund returns them, less the network fee, to the buyer's refund address. Do not send more coins to this escrow. " +
+		"The deposits: deposit " + truncate(conflicted, 20) + " (" + amount(2000000000, 12) + " XMR). Moderator review required."
+	if n, exact := agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND strpos(note,'did not count for the order when its dispute was decided')>0", order),
+		agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND note=$2", order, uncounted); n != 1 || exact != 1 {
+		t.Fatalf("decided: %d did-not-count notes, %d exactly as expected; events %q", n, exact, x.events(order))
+	}
+	// QA462E-2: the note names the deposit, so the desk dates its flag (the stray refund spends it: not open).
+	if row := flagRow(x.page("/moderator", mod), conflicted); !flaggedAt.MatchString(row) {
+		t.Fatalf("decided: the deposit mined since on the desk: %s", row)
+	}
+	// QA462E-5: the request to staff is in the order note and the staff notice only, never in a party's notice.
+	if n := agInt(x.testEnv, "SELECT count(*) FROM notifications n JOIN users u ON u.id=n.user_id WHERE u.role NOT IN ('moderator','admin') AND strpos(n.body,'Moderator review required')>0"); n != 0 {
+		t.Fatalf("%d party notices ask for a moderator review", n)
+	}
+}
+
+// A-464 (QA437-4): the Monero decision line says the coins were too few only for a refund that ended too few. A refund
+// decided for the buyer that failed for another reason (here nothing to settle: the wallet reads the deposit as
+// conflicted before the refund is built, so no deposit counts) gets the ordinary line, never the too-few one.
+func TestXMREscrowDecidedRefundFailedOtherwise(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	p := x.physical(x.vendor)
+	agExec(x.testEnv, "UPDATE products SET xmr=2000000000 WHERE id=$1", p)
+	order, addr := x.freshCheckout(p)
+	paid := hex64("decided nothing " + order)
+	x.fake.payAddress(addr, paid, 2000000000, 10)
+	x.mustPoll()
+	if x.state(order) != statePaid {
+		t.Fatalf("funded order %s", x.state(order))
+	}
+	x.disputeAndResolve(order, "refund")
+	x.fake.setTransfer(paid, func(t *fakeXMRTransfer) { t.DoubleSpend = true })
+	x.mustPoll()
+	x.mustPoll()
+	if r := x.settlementOf(order, "refund"); r.State != "failed" || x.waitClass(r.ID) != xmrNothing {
+		t.Fatalf("the refund %+v wait %q; settlements %v; events %q", r, x.waitClass(r.ID), x.xmrSettlements(order), x.events(order))
+	}
+	panel := x.panel(order, x.sessOf(order, roleBuyer))
+	if strings.Contains(panel, "too few") || !strings.Contains(panel, "The dispute was decided for the buyer: the coins in this escrow go back to the buyer's refund address by a refund the market builds and sends.") {
+		t.Fatalf("the decision line of a refund that failed with nothing to settle:\n%s", panel)
 	}
 }
 

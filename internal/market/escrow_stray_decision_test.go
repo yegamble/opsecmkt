@@ -62,7 +62,7 @@ const decidedTooFew = "The dispute was decided for the buyer, but the market cou
 // left out on the next pass, with the same note.
 func TestEscrowTooSmallRefundResolved(t *testing.T) {
 	x := newEscrowEnv(t)
-	x.user("emod_"+randomToken()[:6], "moderator")
+	_, mod := x.user("emod_"+randomToken()[:6], "moderator")
 	_, admin := x.user("eadmin_"+randomToken()[:6], "admin")
 	refund := regtestAddr("too few decided")
 	order, dispute, _, big := x.smallDispute(refund, 10000, 500000)
@@ -95,10 +95,39 @@ func TestEscrowTooSmallRefundResolved(t *testing.T) {
 	if notes, buyer, staff := told(order); notes != 1 || buyer != 1 || staff == 0 {
 		t.Fatalf("told of the coins left out: notes %d, buyer %d, staff %d; events %q", notes, buyer, staff, x.events(order))
 	}
-	const note = "1 deposit (0.0001 BTC, TESTNET regtest) to this order's escrow is not spent by the refund its dispute decision requested: the market could not build the refund because the coins were too few to pay the network fee and an output of at least 0.0001 BTC. " +
-		"It stays in the escrow; a stray refund returns it, together with any later deposit to this escrow, less the network fee, to the buyer's refund address given at checkout once together they can pay the network fee."
+	// Exactly one payment-review notice per staff member, the one on the coins left out: a refund's too-small failure
+	// itself does not tell staff (only a release's does, A-461; QA462-2).
+	if staff, reviews, reviewed := agInt(x.testEnv, "SELECT count(*) FROM users WHERE role IN ('moderator','admin') AND suspended_at IS NULL"),
+		agInt(x.testEnv, "SELECT count(*) FROM notifications WHERE strpos(body,$1)>0", "Payment review needed for order "+shortID(order)),
+		agInt(x.testEnv, "SELECT count(DISTINCT n.user_id) FROM notifications n JOIN users u ON u.id=n.user_id WHERE u.role IN ('moderator','admin') AND strpos(n.body,$1)>0", "Payment review needed for order "+shortID(order)); staff < 2 || reviews != staff || reviewed != staff {
+		t.Fatalf("payment-review notices: %d to %d of %d staff; events %q", reviews, reviewed, staff, x.events(order))
+	}
+	// noteOf is the order note on order's 0.0001 BTC deposit left out; it names the deposit (QA462D-4).
+	noteOf := func(order string) string {
+		tiny := agStrings(t, x.testEnv, "SELECT txid FROM payments WHERE order_id=$1 AND amount=10000", order)[0]
+		return "1 deposit (0.0001 BTC, TESTNET regtest) to this order's escrow is not spent by the refund its dispute decision requested: the market could not build the refund because the coins were too few to pay the network fee and an output of at least 0.0001 BTC. " +
+			"It stays in the escrow; a stray refund returns it, together with any later deposit to this escrow, less the network fee, to the buyer's refund address given at checkout once together they can pay the network fee. " +
+			"The deposits: deposit " + truncate(tiny, 20) + " (0.0001 BTC). Moderator review required."
+	}
+	tiny := agStrings(t, x.testEnv, "SELECT txid FROM payments WHERE order_id=$1 AND amount=10000", order)[0]
+	note := noteOf(order)
 	if agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND note=$2", order, note) != 1 {
 		t.Fatalf("the note: %q", x.events(order))
+	}
+	// QA462D-2, QA462D-4: the credited deposit left out no longer counts for the order: its flag is open, dated by the
+	// note naming it, with the left-out reason and a form, and staff can record it.
+	desk := html.UnescapeString(x.page("/moderator", mod))
+	pid := agStrings(t, x.testEnv, "SELECT id::text FROM payments WHERE order_id=$1 AND txid=$2", order, tiny)[0]
+	if row := deskRow(desk, tiny); !flaggedAt.MatchString(row) || !strings.Contains(row, "<strong>Open:</strong> Escrow deposit left out of its settlement") || !strings.Contains(desk, `name="payment_id" value="`+pid+`"`) {
+		t.Fatalf("the left-out credited deposit on the desk: %s", row)
+	}
+	// A refund by hand is refused because the coins are in the escrow, never as "counted toward the order's payout".
+	if w := x.do("POST", "/moderator/payment-review", mod, url.Values{"payment_id": {pid}, "outcome": {"refunded"}, "txid": {txidOf("by hand " + order)}, "amount": {"0.0001"}, "password": {testPassword}}); w.Code != 409 ||
+		!strings.Contains(w.Body.String(), "stray refund from the escrow") || strings.Contains(w.Body.String(), "counted toward") {
+		t.Fatalf("a refund by hand of the left-out credited deposit: %d %s", w.Code, w.Body.String())
+	}
+	if w := x.do("POST", "/moderator/payment-review", mod, url.Values{"payment_id": {pid}, "outcome": {"no_action"}, "note": {"A stray refund returns it."}, "password": {testPassword}}); w.Code != 303 {
+		t.Fatalf("a review of the left-out credited deposit: %d %s", w.Code, w.Body.String())
 	}
 	notes, buyer, vendor := all()
 	for range 3 {
@@ -127,6 +156,13 @@ func TestEscrowTooSmallRefundResolved(t *testing.T) {
 		return strings.Contains(e, "when the dispute was decided or while its refund was being built")
 	}) {
 		t.Fatalf("the deposit mined since: notes %d, buyer %d; events %q", n, b, x.events(order))
+	}
+	// QA462E-2: the note names it, so the desk dates its open flag; the buyer's notice asks nothing of staff.
+	if row := deskRow(html.UnescapeString(x.page("/moderator", mod)), big); !flaggedAt.MatchString(row) || !strings.Contains(row, "<strong>Open:</strong> Escrow deposit left out of its settlement") {
+		t.Fatalf("the deposit mined since on the desk: %s\nevents %q", row, x.events(order))
+	}
+	if agInt(x.testEnv, "SELECT count(*) FROM notifications WHERE user_id=$1 AND strpos(body,'Moderator review required')>0", x.buyer) != 0 {
+		t.Fatal("a buyer's notice asks for a moderator review")
 	}
 	sid, state := x.stray(order)
 	if state != "awaiting_signature" || agInt(x.testEnv, "SELECT count(*) FROM settlements WHERE id=$1 AND destination=$2", sid, refund) != 1 {
@@ -164,7 +200,7 @@ func TestEscrowTooSmallRefundResolved(t *testing.T) {
 	order, dispute, _, _ = x.smallDispute(regtestAddr("too few decided upgraded"), 10000, 0)
 	x.decide(admin, dispute, "refund", 10000)
 	x.poll()
-	x.DB.Exec("UPDATE payments SET escrow_left_out=false,flagged=false WHERE order_id=$1", order)
+	x.DB.Exec("UPDATE payments SET escrow_left_out=false,flagged=false,escrow_too_few_by=NULL WHERE order_id=$1", order)
 	n0, b0, _ := told(order)
 	for range 3 {
 		x.poll()
@@ -172,7 +208,7 @@ func TestEscrowTooSmallRefundResolved(t *testing.T) {
 	if got := deposits(order); !slices.Equal(got, []string{"10000 true true false"}) {
 		t.Fatalf("upgraded: deposits %v", got)
 	}
-	if n, b, _ := told(order); n != n0+1 || b != b0+1 || agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND note=$2", order, note) != 2 {
+	if n, b, _ := told(order); n != n0+1 || b != b0+1 || agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND note=$2", order, noteOf(order)) != 2 {
 		t.Fatalf("upgraded: notes %d (were %d), buyer %d (was %d); events %q", n, n0, b, b0, x.events(order))
 	}
 	if notes, buyer, staff := x.uncounted(order); notes+buyer+staff != 0 {
@@ -180,5 +216,27 @@ func TestEscrowTooSmallRefundResolved(t *testing.T) {
 	}
 	if id, state := x.stray(order); id != 0 {
 		t.Fatalf("upgraded: stray refund %d %s", id, state)
+	}
+}
+
+// A-464 (QA437-4): the decision line says the coins were too few only for a refund that failed too-small. A refund
+// decided for the buyer that failed for another reason (here nothing to settle: Core reports the deposit as conflicted
+// before the refund is built, so no deposit counts) gets the ordinary line, never the too-few one.
+func TestEscrowDecidedRefundFailedOtherwise(t *testing.T) {
+	x := newEscrowEnv(t)
+	_, admin := x.user("eadmin_"+randomToken()[:6], "admin")
+	order, dispute, _, _ := x.smallDispute(regtestAddr("decided nothing"), 100000, 0)
+	x.decide(admin, dispute, "refund", 100000)
+	x.core.setConfs(txidOf("small dispute tiny "+order), -2)
+	x.poll()
+	if _, kind, state, class := x.settlement(order); kind != "refund" || state != "failed" || class != settleNothing {
+		t.Fatalf("the refund: %s %s %s; events %q", kind, state, class, x.events(order))
+	}
+	for _, sess := range []string{x.buyerSess, admin} {
+		page := html.UnescapeString(x.page("/order?id="+order, sess))
+		if strings.Contains(page, decidedTooFew) || strings.Contains(page, "too few") ||
+			!strings.Contains(page, "The dispute was decided for the buyer: the coins in this escrow go back to the buyer's refund address through the refund settlement below.") {
+			t.Fatalf("the decision line of a refund that failed with nothing to settle:\n%s", page)
+		}
 	}
 }

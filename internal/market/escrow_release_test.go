@@ -456,6 +456,13 @@ func TestEscrowTopUpWhileShipped(t *testing.T) {
 	if agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND escrow_left_out AND txid=$2", order, txidOf("topup-shipped")) != 1 {
 		t.Fatal("the top-up while shipped was not left out")
 	}
+	// QA462E-2: the note names the top-up, so the desk dates its open flag; the buyer's notice asks nothing of staff.
+	if row := deskRow(x.page("/moderator", modSess), txidOf("topup-shipped")); !flaggedAt.MatchString(row) || !strings.Contains(row, "<strong>Open:</strong> Escrow deposit left out of its settlement") {
+		t.Fatalf("the left-out top-up on the desk: %s\nevents %q", row, x.events(order))
+	}
+	if agInt(x.testEnv, "SELECT count(*) FROM notifications WHERE user_id=$1 AND strpos(body,'Moderator review required')>0", x.buyer) != 0 {
+		t.Fatal("the buyer's notice of the top-up asks for a moderator review")
+	}
 	if n := agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE '%after its release to the vendor was built%'", order); n != 1 {
 		t.Fatalf("%d notes", n)
 	}

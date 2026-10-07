@@ -845,7 +845,7 @@ func TestXMREscrowMigration084Upgrade(t *testing.T) {
 		var out []string
 		for _, q := range []string{
 			"SELECT to_jsonb(es) - 'coin' - 'xmr_slot_id' FROM escrows es ORDER BY id",
-			"SELECT to_jsonb(p) - 'xmr_settlement_id' FROM payments p ORDER BY id",
+			"SELECT to_jsonb(p) - 'xmr_settlement_id' - 'escrow_too_few_by' FROM payments p ORDER BY id", // the columns 084 and 087 add
 			"SELECT to_jsonb(t) FROM settlements t ORDER BY id",
 			"SELECT to_jsonb(t) FROM settlement_outputs t ORDER BY settlement_id,n",
 			"SELECT to_jsonb(t) FROM settlement_bumps t ORDER BY id",

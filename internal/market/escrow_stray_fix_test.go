@@ -3,6 +3,7 @@ package market
 import (
 	"html"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -26,15 +27,14 @@ func (x *escrowEnv) escrowAddr(order string) string {
 //   - Decided for the buyer, the refund too few: its deposit is left out and flagged, and no stray refund is requested
 //     for it (A-437 changed this leg, which expected it counted, unflagged; TestEscrowTooSmallRefundResolved has the
 //     whole journey). A deposit sent after that order closed makes the coins worth more: a stray refund is requested.
-//   - Decided for the vendor, the release too few (it fails like a refund): its deposit stays counted and unflagged,
-//     the parties are told; a deposit Core reported as conflicted when the dispute was decided and mined since stays
+//   - Decided for the vendor, the release too few (it fails like a refund): its deposit stays counted (flagged so
+//     staff can open the order, QA462-3), the parties are told, and staff once (A-461); a deposit Core reported as conflicted when the dispute was decided and mined since stays
 //     counted for the release (no A-428 note); a deposit after the close gets its stray refund, since a release's
 //     failure holds nothing (new leg).
 //   - Decided for the vendor, then for the buyer, then for the vendor again: a stray refund of a deposit after the
 //     close fails too-small and holds its coins; neither the refund the second decision requests (newer than that
 //     failure) nor, once the third decision supersedes it, that refund hides the failure, so the same coins are not
-//     tried again (new leg; a decision is changed only while its settlement is built, so a superseded refund never
-//     failed and left nothing out).
+//     tried again (new leg; a refund that failed and was then superseded is TestEscrowDecisionChangeUnbuilt's, A-462).
 func TestEscrowTooSmallRefundCancelledOnly(t *testing.T) {
 	x := newEscrowEnv(t)
 	_, admin := x.user("eadmin_"+randomToken()[:6], "admin")
@@ -104,7 +104,8 @@ func TestEscrowTooSmallRefundCancelledOnly(t *testing.T) {
 	for range 2 {
 		x.poll()
 	}
-	if got := deposits(order); !slices.Equal(got, []string{"5000 false false", "500000 false false"}) {
+	// Counted (not left out); the deposit the release tried is flagged so staff can open the order (QA462-3).
+	if got := deposits(order); !slices.Equal(got, []string{"5000 false true", "500000 false false"}) {
 		t.Fatalf("release: deposits %v; events %q", got, x.events(order))
 	}
 	if notes, buyer, staff := x.uncounted(order); notes+buyer+staff != 0 || agInt(x.testEnv, "SELECT count(*) FROM notifications WHERE user_id=$1 AND strpos(body,$2)>0 AND strpos(body,'could not be built')>0", x.vendor, shortID(order)) != 1 {
@@ -112,6 +113,15 @@ func TestEscrowTooSmallRefundCancelledOnly(t *testing.T) {
 	}
 	if id, state := x.stray(order); id != 0 {
 		t.Fatalf("release: stray refund %d %s", id, state)
+	}
+	// A-461: staff are told once, with the note (one), as a Monero release too few is; it names the deposit the
+	// release tried, so the desk dates its flag (QA462B-2).
+	tooFew := "Escrow settlement not built: " + settleErrorText(settleTooSmall, 0) + " The release tried to spend deposit " + truncate(txidOf(order), 20) + " (0.00005 BTC). Moderator review required."
+	if staff, told, notes := agInt(x.testEnv, "SELECT count(*) FROM users WHERE role IN ('moderator','admin') AND suspended_at IS NULL"),
+		agInt(x.testEnv, "SELECT count(*) FROM notifications n JOIN users u ON u.id=n.user_id WHERE u.role IN ('moderator','admin') AND n.body=$1", "Payment review needed for order "+shortID(order)+": "+tooFew),
+		agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND note=$2", order, tooFew); staff == 0 || told != staff || notes != 1 ||
+		agInt(x.testEnv, "SELECT count(*) FROM notifications n JOIN users u ON u.id=n.user_id WHERE u.role NOT IN ('moderator','admin') AND strpos(n.body,'Payment review needed')>0") != 0 {
+		t.Fatalf("release: staff %d told %d times, %d notes; events %q", staff, told, notes, x.events(order))
 	}
 	x.core.deposit(addr, txidOf("release after close "+order), 0, 4000, 3)
 	x.poll()
@@ -349,7 +359,7 @@ func TestEscrowTooSmallRefundUpgraded(t *testing.T) {
 		t.Fatalf("the refund: %s %s", state, class)
 	}
 	// The rows as a database from before A-435 has them: the refund failed too-small and its deposit still counts.
-	x.DB.Exec("UPDATE payments SET escrow_left_out=false,flagged=false WHERE order_id=$1", order)
+	x.DB.Exec("UPDATE payments SET escrow_left_out=false,flagged=false,escrow_too_few_by=NULL WHERE order_id=$1", order)
 	const counted = "not spent by its refund: the market could not build the refund because the coins were too few"
 	told := func() (notes, buyer, staff int) {
 		t.Helper()
@@ -412,7 +422,7 @@ func TestEscrowTooSmallRefundUpgraded(t *testing.T) {
 	if _, _, state, class := x.settlement(order); state != "failed" || class != settleTooSmall {
 		t.Fatalf("bounded: the refund: %s %s", state, class)
 	}
-	x.DB.Exec("UPDATE payments SET escrow_left_out=false,flagged=false WHERE txid=$1", tiny)
+	x.DB.Exec("UPDATE payments SET escrow_left_out=false,flagged=false,escrow_too_few_by=NULL WHERE txid=$1", tiny)
 	n0, b0, _ = told()
 	x.poll()
 	if got := deposits(); !slices.Equal(got, []string{"5000 true true", "50000 true false"}) {
@@ -490,4 +500,101 @@ func TestEscrowDustSkipBounds(t *testing.T) {
 			t.Fatalf("%s: the skipped input is not still eligible", c.what)
 		}
 	}
+}
+
+// QA462-3 (open question c of A-461): a completed order, never disputed, whose release fails too-small. Staff are told
+// once, and the credited deposits the release tried are flagged, as a Monero release too few is (xmrSettleWaits), so a
+// moderator or an administrator can open the order and it is listed on the moderation desk, dated by the release's
+// note (QA462B-2); the flag changes neither the deposits' counting (still counted, for the release) nor what a release
+// spends, and the desk offers no action on it (a credited deposit's flag is not open, A-330). QA462B-1: a deposit
+// recorded before the order closed but still confirming when the escrow was funded is counted (the release tries it)
+// but never credited; it is not flagged, and should another path flag it, the desk says it counts for the order and
+// offers no action on it (never "after the order closed").
+func TestEscrowReleaseTooFewStaffOpen(t *testing.T) {
+	x := newEscrowEnv(t)
+	_, mod := x.user("emod_"+randomToken()[:6], "moderator")
+	_, admin := x.user("eadmin_"+randomToken()[:6], "admin")
+	order := x.draft()
+	addr := x.mustCheckout(order, regtestAddr("release too few completed"))
+	funded, confirming := txidOf("release too few funded "+order), txidOf("release too few confirming "+order)
+	x.core.deposit(addr, funded, 0, 100000, 3)
+	x.core.deposit(addr, confirming, 0, 2000, 0)
+	x.poll()
+	if x.state(order) != stateCompleted {
+		t.Fatalf("order %s after funding", x.state(order))
+	}
+	x.core.setConfs(confirming, 3)
+	x.poll()
+	x.DB.Exec("UPDATE payments SET amount=3000 WHERE order_id=$1 AND amount=100000", order)
+	if code, body := x.claim(order, x.vendorSess, regtestAddr("release too few completed claim")); code != 303 {
+		t.Fatalf("claim: %d %s", code, body)
+	}
+	x.poll()
+	x.poll()
+	// The release tries both deposits (5000 sats), as before the flag.
+	if id, kind, state, class := x.settlement(order); kind != "release" || state != "failed" || class != settleTooSmall ||
+		agInt(x.testEnv, "SELECT count(*) FROM settlements WHERE id=$1 AND input_total=5000", id) != 1 {
+		t.Fatalf("the release: %s %s %s; settlements %q", kind, state, class, x.decisionRows(order))
+	}
+	staff := agInt(x.testEnv, "SELECT count(*) FROM users WHERE role IN ('moderator','admin') AND suspended_at IS NULL")
+	if told := agInt(x.testEnv, "SELECT count(*) FROM notifications n JOIN users u ON u.id=n.user_id WHERE u.role IN ('moderator','admin') AND strpos(n.body,$1)>0",
+		"Payment review needed for order "+shortID(order)); staff < 2 || told != staff {
+		t.Fatalf("staff told %d times for %d staff", told, staff)
+	}
+	for _, sess := range []string{mod, admin} {
+		if w := x.do("GET", "/order?id="+order, sess, nil); w.Code != 200 {
+			t.Fatalf("staff GET /order: %d", w.Code)
+		}
+	}
+	desk := x.page("/moderator", mod)
+	if !strings.Contains(desk, order) {
+		t.Fatalf("the moderation desk does not list the order:\n%s", desk)
+	}
+	if strings.Contains(desk, `name="payment_id"`) || strings.Contains(desk, "after the order closed") || strings.Contains(desk, confirming) {
+		t.Fatalf("the moderation desk offers an action on a counted deposit, says one came after the order closed, or lists the uncredited one:\n%s", desk)
+	}
+	// QA462B-2: the flag is dated by the release's note (it names the deposit), so it is neither "Not recorded" nor
+	// sorted last among the other flags (the first dropped from the desk's cap).
+	if row := deskRow(desk, funded); !flaggedAt.MatchString(row) {
+		t.Fatalf("the flag time is not shown: %s\nevents %q", row, x.events(order))
+	}
+	// QA462D-3: the deposit never regressed, so the desk never says it "confirmed again".
+	if row := deskRow(desk, funded); strings.Contains(row, "confirmed again") || !strings.Contains(row, "settles it") {
+		t.Fatalf("the credited deposit's reason: %s", row)
+	}
+	if got := agStrings(t, x.testEnv, "SELECT amount||' '||flagged||' '||escrow_left_out||' '||credited||' '||(settlement_id IS NOT NULL) FROM payments WHERE order_id=$1 ORDER BY amount", order); !slices.Equal(got, []string{"2000 false false false false", "3000 true false true false"}) {
+		t.Fatalf("the deposits: %q", got)
+	}
+	if id, st := x.stray(order); id != 0 {
+		t.Fatalf("a stray refund %d %s of the vendor's coins", id, st)
+	}
+	// Another path flagging the counted, uncredited deposit (as a settlement spent outside the market flags every
+	// deposit it spent) gets the desk's counted reason, no form and no open flag; a review posted anyway is refused.
+	x.DB.Exec("UPDATE payments SET flagged=true WHERE order_id=$1 AND txid=$2", order, confirming)
+	desk = x.page("/moderator", mod)
+	if row := deskRow(desk, confirming); !strings.Contains(row, "counted for the order") || strings.Contains(row, "Open:") ||
+		strings.Contains(desk, `name="payment_id"`) || strings.Contains(desk, "after the order closed") {
+		t.Fatalf("the counted, uncredited deposit's flag on the desk: %s\n%s", row, desk)
+	}
+	pid := agStrings(t, x.testEnv, "SELECT id::text FROM payments WHERE order_id=$1 AND txid=$2", order, confirming)[0]
+	if w := x.do("POST", "/moderator/payment-review", mod, url.Values{"payment_id": {pid}, "outcome": {"no_action"}, "note": {"Nothing to do for this one."}, "password": {testPassword}}); w.Code != 409 ||
+		agInt(x.testEnv, "SELECT count(*) FROM payments WHERE id=$1 AND disposition=''", pid) != 1 {
+		t.Fatalf("a review of the counted deposit: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// flaggedAt is a dated flag on the moderation desk's payment-review list (not "Not recorded").
+var flaggedAt = regexp.MustCompile(`^<tr class="payment-review-row">\s*<td>\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC</td>`)
+
+// deskRow is the moderation desk's payment-review row of output 0 of txid, or "" when it is not listed.
+func deskRow(desk, txid string) string {
+	i := strings.Index(desk, txid+":0")
+	if i < 0 {
+		return ""
+	}
+	lo, hi := strings.LastIndex(desk[:i], `<tr class="payment-review-row">`), strings.Index(desk[i:], "</tr>")
+	if lo < 0 || hi < 0 {
+		return ""
+	}
+	return desk[lo : i+hi]
 }
