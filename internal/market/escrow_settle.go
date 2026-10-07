@@ -248,8 +248,9 @@ func escrowKeys(ctx context.Context, q rowsQuerier, orderID string) (map[string]
 
 // siblingKeys is the three keys of a per-order escrow's sibling address /branch/idx (A-456b, QA5W3A-2): each party's
 // key and the market's at /<i>/branch/idx, derived in Go from its per-order extended key (perOrderXpub, as checkout
-// stored it: QA5W4A-5, the market's since QA5W5A-1, so the escrow signer is never asked), with the origin of its key in the escrow (base, escrowKeys) and that suffix. Their 2-of-3 must pay
-// address, the sibling as checkout stored it once Core had derived it from the same keys; otherwise errPerOrderXpub.
+// stored it: QA5W4A-5, the market's since QA5W5A-1, so the escrow signer is never asked), with the origin of its key in
+// the escrow (base, escrowKeys) and that suffix. Their 2-of-3 must pay address, the sibling as checkout stored it once
+// Core had derived it from the same keys; otherwise errPerOrderXpub.
 func (a *App) siblingKeys(ctx context.Context, base map[string]escrowKeyRow, escrowID int64, branch, idx int, address string) (map[string]escrowKeyRow, error) {
 	out := map[string]escrowKeyRow{}
 	var leaves [][]byte
