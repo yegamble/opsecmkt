@@ -81,6 +81,7 @@ var notices = map[string]struct{ text, section, pages string }{
 	"dispute-reply":    {"Reply added to the dispute.", "", ""},
 	"dispute-resolved": {"Dispute resolved.", "", ""},
 	"payment-review":   {"Payment review recorded.", "payment-review", "moderator"},
+	"xmr-collision":    {"Recorded what was done about the refused Monero deposit.", "", ""},
 	// Listings
 	"listing-created":    {"Listing created. Add photos here.", "photos", "listing-edit"},
 	"listing-saved":      {"Listing saved.", "", ""},

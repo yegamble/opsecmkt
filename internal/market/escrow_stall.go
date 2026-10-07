@@ -54,6 +54,11 @@ const (
 const escrowStalledSQL = `COALESCE((SELECT strpos(e.note,'` + escrowStallMark + `')=1 FROM order_events e WHERE e.order_id=s.order_id AND strpos(e.note,s.txid)>0
 	AND (strpos(e.note,'` + escrowStallMark + `')=1 OR strpos(e.note,'` + escrowSeenMark + `')=1) ORDER BY e.id DESC LIMIT 1),false)`
 
+// escrowStallOpenedSQL is when the stall alert of the settlements row s opened: the time of its latest stall note (while
+// escrowStalledSQL holds, that note is the latest of its two notes). NULL when it has none.
+const escrowStallOpenedSQL = `(SELECT e.created FROM order_events e WHERE e.order_id=s.order_id AND strpos(e.note,s.txid)>0
+	AND strpos(e.note,'` + escrowStallMark + `')=1 ORDER BY e.id DESC LIMIT 1)`
+
 // escrowUnseen is, per broadcast settlement whose transaction the watch-only wallet has not seen, the tip height from
 // which it went unseen (in memory only; see the file comment).
 type escrowUnseen struct {

@@ -774,8 +774,12 @@ func (a *App) xmrRecordTransfers(ctx context.Context, w xmrWalletRow, slots map[
 }
 
 // xmrFlagCollision flags a deposit the database refused as another order's escrow account (payments_xmr_escrow_idx):
-// the order the watcher read it for gets a fixed note and the staff a notification, once (the same note is not written
-// twice), and the operator a fixed log line. Nothing is written to the ledger for it.
+// the order the watcher read it for gets a record (xmr_escrow_collisions, A-480), a fixed note and the staff a
+// notification, and the operator a fixed log line, once per order and transaction: the record decides it, not the note
+// text (a deposit met again on a later pass finds its record and writes nothing, whatever its disposition). A record
+// migration 090 backfilled from an earlier note holds the transaction ID's first 20 characters only; the same deposit
+// met again completes it and writes nothing else. While the record is open, the order has an escrow staff alert
+// (escrowStaffAlert). Nothing is written to the ledger for it.
 func (a *App) xmrFlagCollision(ctx context.Context, w xmrWalletRow, account int64, orderID, txid string) error {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -786,12 +790,24 @@ func (a *App) xmrFlagCollision(ctx context.Context, w xmrWalletRow, account int6
 	if err != nil {
 		return err
 	}
-	note := fmt.Sprintf("%s %s Monero escrow deposit %s to wallet %s account %d was not recorded: the database refused it as another order's escrow account. Moderator review required.",
-		a.netTag(), a.xmrEscrowNetwork(), truncate(txid, 20), w.name, account)
-	var flagged bool
-	if err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM order_events WHERE order_id=$1 AND note=$2)", orderID, note).Scan(&flagged); err != nil || flagged {
+	if len(txid) > 20 {
+		res, err := tx.ExecContext(ctx, "UPDATE xmr_escrow_collisions SET txid=$3,txid_truncated=false WHERE order_id=$1 AND txid_truncated AND txid=$2", orderID, txid[:20], txid)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			return tx.Commit()
+		}
+	}
+	res, err := tx.ExecContext(ctx, "INSERT INTO xmr_escrow_collisions(order_id,wallet_name,account,txid) VALUES($1,$2,$3,$4) ON CONFLICT (order_id,txid) DO NOTHING", orderID, w.name, account, txid)
+	if err != nil {
 		return err
 	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil
+	}
+	note := fmt.Sprintf("%s %s Monero escrow deposit %s to wallet %s account %d was not recorded: the database refused it as another order's escrow account. Moderator review required.",
+		a.netTag(), a.xmrEscrowNetwork(), truncate(txid, 20), w.name, account)
 	if err = a.flagOrder(ctx, tx, &o, note, ""); err != nil {
 		return err
 	}
