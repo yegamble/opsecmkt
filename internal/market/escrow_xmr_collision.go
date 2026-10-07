@@ -115,7 +115,7 @@ func loadXMRCollisions(ctx context.Context, a *App, r *http.Request, d *PageData
 	if err = rows.Err(); err != nil {
 		return err
 	}
-	if form {
+	if d.XMRCollisionForm = form; form {
 		return adminConfirmLoader(ctx, a, r, d)
 	}
 	return nil

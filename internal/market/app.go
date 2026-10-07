@@ -26,6 +26,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 )
 
 //go:embed schema.sql
@@ -508,6 +509,13 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Invalid or oversized form", 400)
 			return
 		}
+		// No handler meets text the database would refuse: on a UTF8 database invalid UTF-8 or a NUL byte made the
+		// write fail with a 500, after a confirmation had accepted the password (QA5W3B-5). The upload routes check
+		// their text parts themselves (uploads.go readForm).
+		if !formTextValid(r.Form) {
+			http.Error(w, invalidFormText, 400)
+			return
+		}
 		if msg := postOriginError(r); msg != "" {
 			http.Error(w, msg, 403)
 			return
@@ -672,6 +680,26 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	objectTitle(&d)
 	a.render(w, r, d)
+}
+
+// invalidFormText refuses a form whose text formTextValid rejects.
+const invalidFormText = "Invalid form: a field is not valid UTF-8 or contains a NUL character. Nothing was changed."
+
+// formTextValid reports whether every name and value in form is valid UTF-8 without a NUL byte, as PostgreSQL's
+// UTF8 text must be.
+func formTextValid(form url.Values) bool {
+	ok := func(s string) bool { return utf8.ValidString(s) && !strings.ContainsRune(s, 0) }
+	for k, vs := range form {
+		if !ok(k) {
+			return false
+		}
+		for _, v := range vs {
+			if !ok(v) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // postOriginError returns the refusal of a form post whose Origin names another host or whose Sec-Fetch-Site says

@@ -214,6 +214,9 @@ type PageData struct {
 	// XMRCollisions: order page, for staff who are not parties only, the order's Monero escrow deposits refused as
 	// another order's escrow account (A-480), oldest first, each with its disposition or its form.
 	XMRCollisions []XMRCollisionView
+	// XMRCollisionForm: one of XMRCollisions is open, so the page shows its disposition form (the staff help then
+	// names it as the one thing staff change on the page, QA5W3B-6).
+	XMRCollisionForm bool
 
 	// P4 Inventory (uses Product.Archived)
 	Listing   *ListingView

@@ -50,6 +50,15 @@ elif [[ -z ${BACKUP_DATABASE_URL:-} ]]; then
     exit 1
   }
 fi
+# BACKUP_DUMP_ENCODING=SQL_ASCII is only for moving a database that is not UTF8 into a UTF8 one (UPGRADING.md, section
+# 42): pg_dump then writes each text as the bytes stored, converting nothing. The market before A-481 stored UTF-8 bytes
+# whatever the database's encoding, so a LATIN1 database dumped as LATIN1 comes out double-encoded in UTF8.
+dump_encoding=()
+case ${BACKUP_DUMP_ENCODING:-} in
+  '') ;;
+  SQL_ASCII) dump_encoding=(--encoding=SQL_ASCII) ;;
+  *) echo 'BACKUP_DUMP_ENCODING may only be SQL_ASCII, and only to move a database that is not UTF8 (UPGRADING.md, section 42).' >&2; exit 1 ;;
+esac
 mkdir -p "$(dirname "$output")"
 temporary=$(mktemp "${output}.tmp.XXXXXX")
 trap 'rm -f "$temporary"' EXIT
@@ -58,12 +67,12 @@ if [[ -n ${BACKUP_DATABASE_URL:-} ]]; then
   command -v python3 >/dev/null || { echo 'Python 3 is required for external connection URL parsing.' >&2; exit 1; }
   # TZ=UTC here and below: a custom-format dump records its creation time as wall-clock fields of pg_dump's zone,
   # and restore.sh reads them back as UTC.
-  TZ=UTC python3 scripts/postgres-tool.py BACKUP_DATABASE_URL pg_dump --format=custom --no-owner --no-acl | age -r "$AGE_RECIPIENT" > "$temporary"
+  TZ=UTC python3 scripts/postgres-tool.py BACKUP_DATABASE_URL pg_dump --format=custom --no-owner --no-acl ${dump_encoding[@]+"${dump_encoding[@]}"} | age -r "$AGE_RECIPIENT" > "$temporary"
   database=$(url_database "$BACKUP_DATABASE_URL")
   # A database name is not a credential; show it when it is printable as it stands.
   if [[ $database =~ ^[A-Za-z0-9_-]{1,63}$ ]]; then dumped="database $database (BACKUP_DATABASE_URL)"; else dumped='the BACKUP_DATABASE_URL database'; fi
 else
-  docker compose exec -T -e TZ=UTC db pg_dump -U opsecmkt -d "$database" --format=custom --no-owner --no-acl | age -r "$AGE_RECIPIENT" > "$temporary"
+  docker compose exec -T -e TZ=UTC db pg_dump -U opsecmkt -d "$database" --format=custom --no-owner --no-acl ${dump_encoding[@]+"${dump_encoding[@]}"} | age -r "$AGE_RECIPIENT" > "$temporary"
   dumped="internal database $database"
 fi
 mv "$temporary" "$output"

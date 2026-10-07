@@ -265,6 +265,32 @@ Servers run with an empty environment apart from their database URL, setup token
 
 This automates database recovery and upgrade checks; it does not test backup scheduling, off-host storage retention or a full production disaster-recovery procedure. Tor identity recovery is covered separately, offline ([above](#documented-env-and-onion-identity-backup-and-restore)).
 
+## Moving a non-UTF8 database to UTF8
+
+```sh
+./scripts/test-utf8-migration.sh
+```
+
+Requires Docker, Go, Python 3 and age; no host PostgreSQL client (the client tools run inside the container, through
+wrappers put first on `PATH`). `UTF8_MIGRATION_CONTAINER` names the container. It rehearses [UPGRADING.md section
+42](../UPGRADING.md#42-database-encoding-must-be-utf8-a-481) (A-481; QA5W3B-1 and -2) with `scripts/check-utf8.sql`,
+`scripts/backup.sh` and `scripts/restore.sh`:
+
+1. Starts a disposable `postgres:17-alpine` container on a random loopback port; the server built from this checkout
+   migrates a UTF8 seed database, whose schema and rows are copied byte for byte into a `SQL_ASCII` and a `LATIN1`
+   database, with a listing, an order and a review added as UTF-8 bytes, as the market before A-481 stored them.
+2. `SQL_ASCII`, a review `Great \xff\xfe seller`: `check-utf8.sql` names the table, column, key and ctid and exits 3; a
+   plain backup and restore succeed, but the new database's own backup fails to restore with `COPY failed for table
+   "reviews": ... 0xff` (the round trip of step 6), and the check fails on the new database too. After the section's
+   correction the check passes, the round trip restores, the listing's title is byte for byte as written, the review
+   reads `Great ÿþ seller` and the server starts on the new database.
+3. `LATIN1`, `Crème brûlée — 東京 🔒`: a backup taken as `LATIN1` restores it double-encoded, byte for byte as
+   predicted; `BACKUP_DUMP_ENCODING=LATIN1` is refused with no file written; with `BACKUP_DUMP_ENCODING=SQL_ASCII` it
+   restores exactly, and the same option's round trip of the new UTF8 database changes no byte.
+
+The container and temporary directory are always removed; on failure the logs are printed. CI runs it in the
+operations job.
+
 ## Real Bitcoin and Monero local chains
 
 [Local-chain testing](local-chain-testing.md) documents signature verification,
