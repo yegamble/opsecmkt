@@ -133,6 +133,7 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 	short := orderID[:min(8, len(orderID))]
 	var res sql.Result
 	var note, audit string
+	var sharedPayout int64
 	// Every payout is sent with the network fee taken from its amount (A-232): a release, requeue or move states
 	// the amount with the fee sentence the other payout notes carry (A-250, A-270). Mark sent records a payout
 	// already paid and says nothing about the fee.
@@ -287,11 +288,35 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 		case state == "sent":
 			return actionResult{}, fail(409, "This payout is already recorded as sent (by the market's wallet, or by an administrator), so a payment you made by hand would be a second payment. Reconcile with the recipient. Nothing was changed.")
 		}
+		// A-217: a hand transaction can legitimately pay several payouts (sendmany), but reusing an ID
+		// must name the other recorded payout and be confirmed explicitly. Serialize manual records for
+		// this ID so two concurrent first uses cannot both bypass the duplicate check. Try-lock avoids
+		// holding the account/payout rows while waiting on another administrator's request.
+		var admitted bool
+		if err = tx.QueryRowContext(ctx, "SELECT pg_try_advisory_xact_lock(hashtextextended('payout-txid:' || $1, 0))", txid).Scan(&admitted); err != nil {
+			return actionResult{}, err
+		}
+		if !admitted {
+			return actionResult{}, fail(503, errBusyMsg)
+		}
+		err = tx.QueryRowContext(ctx, "SELECT id FROM payouts WHERE txid<>'' AND lower(txid)=$1 AND id<>$2 ORDER BY id LIMIT 1", txid, id).Scan(&sharedPayout)
+		if err != nil && err != sql.ErrNoRows {
+			return actionResult{}, err
+		}
+		if sharedPayout != 0 {
+			other, parseErr := strconv.ParseInt(c.Form.Get("shared_payout_id"), 10, 64)
+			if parseErr != nil || other != sharedPayout || c.Form.Get("shared_txid") != "confirmed" {
+				return actionResult{}, fail(409, "This transaction ID is already recorded for payout "+strconv.FormatInt(sharedPayout, 10)+". Check that the wallet transaction pays this payout too. If it pays both, enter that other payout number and confirm that this transaction also pays it. Nothing was changed.")
+			}
+		}
 		res, err = tx.ExecContext(ctx, `UPDATE payouts SET state='sent',txid=$2,error='',send_ambiguous=false,updated=now()
 			WHERE id=$1 AND (state IN ('failed','held','blocked') OR `+stuckSending+`)`, id, txid)
 		// The order history names no txid (both parties read it); the recipient's notification does (A-214).
 		note = c.A.netTag() + " payout of " + label + " recorded as sent by an administrator after wallet reconciliation."
 		audit = "Marked payout " + strconv.FormatInt(id, 10) + " (" + label + ", was " + state + ") sent with transaction " + txid + " for order " + short
+		if sharedPayout != 0 {
+			audit += "; administrator confirmed this transaction also pays payout " + strconv.FormatInt(sharedPayout, 10)
+		}
 		if state == "blocked" || heldForHand(state, payoutErr) {
 			why := "the recipient had saved no payout address"
 			if address != "" {

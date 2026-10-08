@@ -359,6 +359,9 @@ payment reviews): in the Action cell they widened the scrolling table, so at 320
 <label>Wallet transaction ID<input name="txid" required minlength="64" maxlength="64" pattern="[0-9a-fA-F]{64}" spellcheck="false" autocomplete="off">
 </label>
 <p class="help">The market does not check the transaction ID against the chain: it records the ID you enter, and the recipient is sent it.</p>
+<p class="help">If the ID is already recorded for another payout, the market names that payout and asks you to confirm that this transaction pays both. After checking the wallet, enter the other payout number below and tick the confirmation. Leave these fields empty for a transaction used only for this payout.</p>
+<label>Other payout number (only after a reused-ID warning)<input type="number" name="shared_payout_id" min="1" step="1"></label>
+<label class="check"><input type="checkbox" name="shared_txid" value="confirmed"> This transaction also pays the other payout number entered above; I checked both payments in the wallet</label>
 {{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button type="submit">{{if or (eq .State "blocked") .HandHold}}Record sent by hand{{else}}Mark sent{{end}}</button>
 </form>
