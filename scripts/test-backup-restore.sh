@@ -101,6 +101,7 @@ backup="$work/backup.dump.age"
 scripts/backup.sh "$backup" > "$work/backup.log"
 # The success line names the database dumped, never the URL or its password.
 grep -q "of database $source_db (BACKUP_DATABASE_URL) saved to" "$work/backup.log"
+grep -Eq 'client: pg_dump \(PostgreSQL\) [0-9]' "$work/backup.log"
 if grep -q -e '://' "$work/backup.log"; then echo 'backup.sh printed the connection URL' >&2; exit 1; fi
 [[ -s $backup ]] || { echo 'Backup is empty' >&2; exit 1; }
 python3 - "$backup" <<'PY_CHECK'

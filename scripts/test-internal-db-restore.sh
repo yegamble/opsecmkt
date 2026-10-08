@@ -16,7 +16,7 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/opsecmkt-internal-restore.XXXXXX")
 root="$work/deploy"
 mkdir -p "$root/scripts"
 cp compose.yaml compose.internal-db.yaml "$root/"
-cp scripts/backup.sh scripts/restore.sh scripts/postgres-tool.py "$root/scripts/"
+cp scripts/backup.sh scripts/restore.sh scripts/postgres-tool.py scripts/postgres-policy.py "$root/scripts/"
 suffix=$(python3 -c 'import secrets; print(secrets.token_hex(6))')
 project="opsecmkt-restore-test-$suffix"
 password=$(python3 -c 'import secrets; print(secrets.token_hex(16))')

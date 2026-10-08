@@ -51,6 +51,13 @@ read_archive() {
     (cd "$root_dir" && docker compose exec -T -e TZ=UTC db pg_restore "$@")
   fi
 }
+selected_pg_restore_version() {
+  if [[ -n ${RESTORE_DATABASE_URL:-} ]]; then
+    python3 "$script_dir/postgres-tool.py" RESTORE_DATABASE_URL pg_restore --version
+  else
+    (cd "$root_dir" && docker compose exec -T db pg_restore --version)
+  fi
+}
 # QA5W4B-2, QA5W5B-1: the encoding the dump's text was written in, from the SET client_encoding its script starts with,
 # and the encoding of the database it was taken from, from its DATABASE entry's CREATE DATABASE (--create prints that
 # entry whatever the list selects; the empty list selects nothing else, so only the start of the archive is read).
@@ -88,6 +95,19 @@ elif [[ $archive_encoding != SQL_ASCII && ! ($archive_encoding == UTF8 && ($sour
   esac
   printf 'Refusing: this backup was taken from a %s database and holds its text in %s. pg_dump writes text in the database'"'"'s encoding, or in a client_encoding set for the database, for the role or by PGCLIENTENCODING, unless BACKUP_DUMP_ENCODING=SQL_ASCII is used. %s Nothing was changed. Back up the old database again with BACKUP_DUMP_ENCODING=SQL_ASCII and restore that backup; if this backup is all you have, restore it into a temporary %s database, back that up with BACKUP_DUMP_ENCODING=SQL_ASCII and restore the new backup: see UPGRADING.md, section 42.\n' \
     "$source_encoding" "$archive_encoding" "$effect" "$source_encoding" >&2
+  exit 1
+fi
+# Custom archives record the pg_dump client that produced them. Refuse an older
+# or unrecognized restore client before the operator confirms or any database is
+# created/changed. Do not print raw archive headers or connection configuration.
+dump_client_version=$(age -d -i "$AGE_IDENTITY" "$1" 2>/dev/null | read_archive --list 2>/dev/null |
+  sed -n '/^;[[:space:]]*Dumped by pg_dump version:/ { s/^;[[:space:]]*Dumped by pg_dump version:[[:space:]]*//; p; q; }') || true
+restore_client_version=$(selected_pg_restore_version) || {
+  echo 'Cannot determine the selected pg_restore version; nothing was changed.' >&2; exit 1; }
+if [[ -z $dump_client_version ]] || ! python3 "$script_dir/postgres-policy.py" compatible "$dump_client_version" "$restore_client_version"; then
+  if [[ -z $dump_client_version ]]; then
+    echo 'Cannot determine which pg_dump version created this archive; nothing was changed.' >&2
+  fi
   exit 1
 fi
 read -r -p "Restore into $destination? Type RESTORE: " confirmation
