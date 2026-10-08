@@ -275,8 +275,8 @@ func TestPooledHandHoldRefusals(t *testing.T) {
 	}
 	for _, st := range []string{"pending", "failed", "sent"} {
 		agExec(p.testEnv, "UPDATE payouts SET state=$2,address='fake-testnet-vendor',error='' WHERE id=$1::bigint", id, st)
-		if code, _ := p.holdPayout(p.adminSess, id, handNote); code != 409 {
-			t.Fatalf("hold of a %s payout: %d", st, code)
+		if code, body := p.holdPayout(p.adminSess, id, handNote); code != 409 || !strings.Contains(body, "Only a blocked payout (its recipient saved no payout address) can be held to be paid by hand") {
+			t.Fatalf("hold of a %s payout: %d %s", st, code, body)
 		}
 		if got, _, _, _ := p.payout(order); got != st || p.count("SELECT count(*) FROM audit_events") != audits {
 			t.Fatalf("hold of a %s payout changed it", st)
