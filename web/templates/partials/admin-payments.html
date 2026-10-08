@@ -302,7 +302,7 @@ Check the escrow node: its peers (<code>getconnectioncount</code>), and with <co
 </table>
 </div>{{/* A-281: the resolve forms sit under the table, full width, each linked from its row (as A-275 did for
 payment reviews): in the Action cell they widened the scrolling table, so at 320 px they lay off-screen. */}}{{range .Payouts}}{{$p := .}}{{if or (eq .State "pending") (eq .State "blocked") (eq .State "held") (eq .State "failed") (and (eq .State "sending") .Attention)}}
-<details class="payout-actions" id="resolve-payout-{{.ID}}">
+<details class="payout-actions" id="resolve-payout-{{.ID}}"{{with $.WalletEvidence}}{{if eq .PayoutID $p.ID}} open{{end}}{{end}}>
 <summary>Resolve payout {{.ID}}: {{.Kind}} {{.Amount}} {{.Currency}} to {{.Recipient}}, order {{.OrderShort}}</summary>
 <p class="help"><a class="text-link" href="/admin?wallet_evidence={{.ID}}#resolve-payout-{{.ID}}">Read recent pooled-wallet entries for this payout address</a>. This is display-only advice; an address match may be another payment. Wallet history may be incomplete after a rescan, and no match never proves no send. Check the wallet as the recovery steps below require.</p>
 {{with $.WalletEvidence}}{{if eq .PayoutID $p.ID}}<div class="notice" role="status" aria-label="Pooled wallet evidence for payout {{.PayoutID}}">

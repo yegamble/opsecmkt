@@ -29,9 +29,19 @@ func TestPayoutWalletEvidenceIsAdminOnDemandAndAdvisory(t *testing.T) {
 		VALUES($1,'release',$2,'BTC',100000,$3,'held') RETURNING id`, order, vendor, address).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
+	otherOrder := e.order(buyer, e.product(vendor, "physical"), "BTC", stateCompleted)
+	var otherID int64
+	if err := e.DB.QueryRow(`INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state)
+		VALUES($1,'release',$2,'BTC',200000,'tb1qotherdestination00000000000000000','held') RETURNING id`, otherOrder, vendor).Scan(&otherID); err != nil {
+		t.Fatal(err)
+	}
 	path := "/admin?wallet_evidence=" + strconv.FormatInt(id, 10)
+	selectedDisclosure := `<details class="payout-actions" id="resolve-payout-` + strconv.FormatInt(id, 10) + `" open>`
+	otherDisclosure := `<details class="payout-actions" id="resolve-payout-` + strconv.FormatInt(otherID, 10) + `" open>`
 	if page := e.do("GET", "/admin", adminSession, nil); page.Code != 200 || rpc.called("listtransactions") != 0 {
 		t.Fatalf("ordinary admin page read wallet: status=%d calls=%d", page.Code, rpc.called("listtransactions"))
+	} else if strings.Contains(page.Body.String(), selectedDisclosure) || strings.Contains(page.Body.String(), otherDisclosure) {
+		t.Fatal("ordinary admin page opened a payout recovery disclosure")
 	}
 	for _, session := range []string{buyerSession, modSession} {
 		if page := e.do("GET", path, session, nil); page.Code != 403 || rpc.called("listtransactions") != 0 {
@@ -60,6 +70,9 @@ func TestPayoutWalletEvidenceIsAdminOnDemandAndAdvisory(t *testing.T) {
 		t.Fatalf("selected wallet read: status=%d calls=%d body=%s", page.Code, rpc.called("listtransactions"), page.Body.String())
 	}
 	body := page.Body.String()
+	if !strings.Contains(body, selectedDisclosure) || strings.Contains(body, otherDisclosure) {
+		t.Fatal("selected wallet evidence did not open only its own payout recovery disclosure")
+	}
 	mustContain(t, body, match, "0.00099 BTC", "Unconfirmed", "Limited wallet read", "May be incomplete after a rescan", "none is proven to be this payout")
 	mustNotContain(t, body, other, recv, "private wallet note", "not-a-txid", strings.Repeat("9", 64), strings.Repeat("8", 64))
 	var state string
