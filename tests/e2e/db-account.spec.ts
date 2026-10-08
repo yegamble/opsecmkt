@@ -24,6 +24,13 @@ test('register, draft, removed XMPP field and session boundaries', async ({ page
   expect((await page.goto('/admin'))?.status()).toBe(403);
   await page.goto('/account');
   await expect(page.getByLabel('XMPP address')).toHaveCount(0);
+  const signOutForm = page.locator('form[action="/logout"]');
+  await expect(signOutForm).toBeVisible();
+  await expect(signOutForm.locator('input[name="csrf"]')).toHaveValue(/.+/);
+  expect(await signOutForm.evaluate(form => {
+    const sessions = document.querySelector('#sessions');
+    return !!sessions && !!(form.compareDocumentPosition(sessions) & Node.DOCUMENT_POSITION_FOLLOWING);
+  })).toBeTruthy();
   await submitAndLoad(page, page.getByRole('button', { name: 'Sign out', exact: true }));
   await page.goto('/account');
   await expect(page).toHaveURL(/\/login\?next=%2Faccount$/);
@@ -54,6 +61,7 @@ test('register, draft, removed XMPP field and session boundaries', async ({ page
   // A-157: both sessions are listed with their start time; each browser sees its own marked.
   await page.reload();
   const sessions = page.getByRole('region', { name: 'Sessions' });
+  await expect(sessions.getByRole('button', { name: 'Sign out everywhere' })).toBeVisible();
   await expect(sessions.locator('.session-count')).toHaveText('2 active sessions');
   await expect(sessions.locator('.session-row')).toHaveCount(2);
   await expect(sessions.locator('.session-row', { hasText: 'This session' })).toHaveCount(1);

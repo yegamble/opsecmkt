@@ -353,13 +353,14 @@ test('a refund waiting for a payout address tells its recipient what to do and i
     await expect(row).toContainText('Refund of 0.001 BTC');
     await expect(row).toContainText('Waiting for your payout address');
     await expect(row).toContainText('None yet');
+    await expect(row.locator('td').nth(1)).toHaveText(/#\d+/);
     // A-220(b): the recipient can read the status column at phone width without horizontal scrolling.
     const originalViewport = refundee.viewportSize()!;
     await refundee.setViewportSize({ width: 320, height: originalViewport.height });
     await waitForStyles(refundee);
     const tableSize = await unsent.locator('table').evaluate(table => ({ client: table.clientWidth, scroll: table.scrollWidth }));
     expect(tableSize.scroll, 'unsent payout table at 320px').toBeLessThanOrEqual(tableSize.client + 1);
-    const statusBox = await row.locator('td').nth(3).boundingBox();
+    const statusBox = await row.locator('td').nth(4).boundingBox();
     expect(statusBox, 'status cell exists at 320px').not.toBeNull();
     expect(statusBox!.x, 'status cell starts within the viewport at 320px').toBeGreaterThanOrEqual(0);
     expect(statusBox!.x + statusBox!.width, 'status cell is visible at 320px').toBeLessThanOrEqual(320);

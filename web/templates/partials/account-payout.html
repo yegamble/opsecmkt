@@ -7,12 +7,13 @@
 <h2>Payout addresses</h2>
 {{if .Blocked}}<div class="alert" role="status">{{.Blocked}} payout(s) are waiting for a payout address.</div>{{end}}
 {{if .Unsent}}<h3 id="unsent-payouts">Payouts to you not sent yet</h3>
-<p class="help">Every release or refund to you that has not been sent, oldest first: why it waits and what happens next. The destination is shown only to you. Each is sent with the network fee taken from its amount.</p>
+<p class="help">Every release or refund to you that has not been sent, oldest first: why it waits and what happens next. Give staff its payout ID if you ask about one. The destination is shown only to you. Each is sent with the network fee taken from its amount.</p>
 <div class="table-wrap" tabindex="0" role="region" aria-labelledby="unsent-payouts">
 <table>
 <thead>
 <tr>
 <th scope="col">Order</th>
+<th scope="col">Payout ID</th>
 <th scope="col">Payout</th>
 <th scope="col">Destination</th>
 <th scope="col">Status</th>
@@ -21,6 +22,7 @@
 </thead>
 <tbody>{{range .Unsent}}<tr>
 <td><a class="text-link mono" href="/order?id={{.OrderID}}">{{.OrderShort}}</a></td>
+<td class="mono payout-id">#{{.ID}}</td>
 <td>{{if eq .Kind "release"}}Release{{else if eq .Kind "return"}}Return of overpayment{{else}}Refund{{end}} of {{.Amount}} {{.Currency}} {{if $.LiveNetwork}}<span class="badge live">MAINNET</span>{{else}}<span class="badge testnet">TESTNET{{with .Network}} {{.}}{{end}}</span>{{end}}</td>
 <td>{{if .Address}}<span class="mono">{{.Address}}</span> {{if $.LiveNetwork}}<span class="badge live">MAINNET</span>{{else}}<span class="badge testnet">TESTNET{{with .Network}} {{.}}{{end}}</span>{{end}}{{else}}None yet{{end}}</td>
 <td>{{.Status}}</td>

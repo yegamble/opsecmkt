@@ -182,6 +182,29 @@ func TestAccountListsActiveSessions(t *testing.T) {
 	}
 }
 
+func TestAccountSignOutIsNearTopAndKeepsItsCSRF(t *testing.T) {
+	e := newTestApp(t)
+	_, session := e.user("a129_signout", "buyer")
+	w := e.do("GET", "/account", session, nil)
+	e.check(w, 200)
+	body := w.Body.String()
+	logout := strings.Index(body, `action="/logout"`)
+	sessions := strings.Index(body, `id="sessions"`)
+	revoke := strings.Index(body, `action="/revoke-sessions"`)
+	if logout < 0 || sessions < 0 || revoke < 0 || logout >= sessions || sessions >= revoke {
+		t.Fatalf("ordinary sign-out is not near the top and separate from all-sessions revoke: logout=%d sessions=%d revoke=%d", logout, sessions, revoke)
+	}
+	formStart := strings.LastIndex(body[:logout], "<form")
+	formEnd := strings.Index(body[logout:], "</form>")
+	if formStart < 0 || formEnd < 0 {
+		t.Fatal("ordinary sign-out form is incomplete")
+	}
+	form := body[formStart : logout+formEnd]
+	if !strings.Contains(form, `method="post"`) || !strings.Contains(form, `name="csrf" value="`+e.A.csrf(session)+`"`) || !strings.Contains(form, `>Sign out</button>`) {
+		t.Fatalf("ordinary sign-out lost POST, CSRF or button: %s", form)
+	}
+}
+
 // A-157: a password change ends every sign-in in progress, including one whose old password was checked just
 // before the change committed and that reaches /challenge (or, without a factor, its session) only afterwards.
 func TestPasswordChangeEndsSignInCheckedBeforeIt(t *testing.T) {

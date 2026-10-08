@@ -5,7 +5,10 @@
 <h1>Your account<span class="accent">.</span>
 </h1>
 <p>Manage your public key. <a class="text-link" href="/canary#records">What this server keeps</a></p>
-</div>{{if .User}}<span class="badge neutral">{{.User.Role}}</span>{{end}}</div>{{with .User}}<div class="grid-two">
+</div>{{if .User}}<span class="badge neutral">{{.User.Role}}</span>{{end}}</div>{{with .User}}<form class="account-signout" method="post" action="/logout">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<button type="submit">Sign out</button>
+</form><div class="grid-two">
 <div class="account-main">
 <section class="panel">
 <h2>Public profile</h2>
@@ -85,10 +88,6 @@
 </ul>{{if gt $n (len $.Sessions)}}
 <p class="help session-more">Listed: this session and the newest others, {{len $.Sessions}} of {{$n}}.</p>{{end}}
 <p class="help">The market records only when each session started and when it ends (12 hours later) — not your IP address, device or browser. Changing your password starts a new session in this browser.</p>
-<form method="post" action="/logout">
-<input type="hidden" name="csrf" value="{{$.CSRF}}">
-<button type="submit">Sign out</button>
-</form>
 <form class="stack session-revoke" method="post" action="/revoke-sessions">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <p class="help">Signing out everywhere ends every session for your account, on all devices, including this one, and every sign-in still waiting for its second step.</p>

@@ -467,7 +467,7 @@ func recipientPayout(orderID, kind, cur, network, amt, address, state, payoutErr
 
 // unsentPayouts lists every payout to userID that is not sent, oldest first and uncapped (A-120).
 func unsentPayouts(ctx context.Context, a *App, userID string) ([]RecipientPayout, error) {
-	rows, err := a.db.QueryContext(ctx, "SELECT order_id,kind,currency,amount,address,state,error,send_ambiguous,"+stuckSending+","+conflictedDeposit+
+	rows, err := a.db.QueryContext(ctx, "SELECT id,order_id,kind,currency,amount,address,state,error,send_ambiguous,"+stuckSending+","+conflictedDeposit+
 		" FROM payouts WHERE user_id=$1 AND state<>'sent' ORDER BY id", userID)
 	if err != nil {
 		return nil, err
@@ -476,15 +476,18 @@ func unsentPayouts(ctx context.Context, a *App, userID string) ([]RecipientPayou
 	var out []RecipientPayout
 	for rows.Next() {
 		var order, kind, cur, address, state, payoutErr, network string
+		var payoutID int64
 		var amt int64
 		var ambiguous, stuck, conflicted bool
-		if err = rows.Scan(&order, &kind, &cur, &amt, &address, &state, &payoutErr, &ambiguous, &stuck, &conflicted); err != nil {
+		if err = rows.Scan(&payoutID, &order, &kind, &cur, &amt, &address, &state, &payoutErr, &ambiguous, &stuck, &conflicted); err != nil {
 			return nil, err
 		}
 		if p := a.provider(cur); p != nil {
 			network = p.Network()
 		}
-		out = append(out, recipientPayout(order, kind, cur, network, amount(amt, currencyDecimals(cur)), address, state, payoutErr, ambiguous, stuck, conflicted))
+		payout := recipientPayout(order, kind, cur, network, amount(amt, currencyDecimals(cur)), address, state, payoutErr, ambiguous, stuck, conflicted)
+		payout.ID = payoutID
+		out = append(out, payout)
 	}
 	return out, rows.Err()
 }

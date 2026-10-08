@@ -560,6 +560,7 @@ type PayoutView struct {
 // recipientPayout from the payout's state and hold; the wallet's error text is never shown. Address is the
 // payout's destination ("" while none is set), shown to its recipient only.
 type RecipientPayout struct {
+	ID                                                   int64 // stable payout ID shown only on its recipient's account page
 	OrderID, OrderShort, Kind, Currency, Amount, Network string
 	Address, Status, NextStep                            string
 }

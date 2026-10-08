@@ -84,6 +84,8 @@ func TestRecipientSeesEveryUnsentPayout(t *testing.T) {
 
 	page := html.UnescapeString(p.page("/account", p.vendorSess))
 	list := unsentList(t, page)
+	definitePayoutID := p.str("SELECT id::text FROM payouts WHERE order_id=$1", definite)
+	mustContain(t, list, `<th scope="col">Payout ID</th>`, `<td class="mono payout-id">#`+definitePayoutID+`</td>`)
 	if n := strings.Count(list, `href="/order?id=`); n != len(oldest)+len(newer) {
 		t.Fatalf("unsent payouts listed: %d, want %d", n, len(oldest)+len(newer))
 	}
@@ -125,6 +127,9 @@ func TestRecipientSeesEveryUnsentPayout(t *testing.T) {
 	if n := strings.Count(buyerList, `href="/order?id=`); n != 1 || !strings.Contains(unsentRow(buyerList, refund), "fake-testnet-buyer-refund") {
 		t.Fatalf("buyer's unsent payouts: %s", buyerList)
 	}
+	mustNotContain(t, buyerList, `<td class="mono payout-id">#`+definitePayoutID+`</td>`)
+	otherPartyOrder := html.UnescapeString(p.page("/order?id="+definite, p.buyerSess))
+	mustNotContain(t, otherPartyOrder, "payout-id", "Payout ID")
 	mustContain(t, buyerList, "Refund")
 	mustNotContain(t, buyerList, "fake-testnet-vendor-dest")
 
