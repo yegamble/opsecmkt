@@ -51,6 +51,7 @@
 <p class="help" id="xmr-escrow-ship-help">Once you have sent the goods, give a fresh Monero address from your own wallet (a standard address or subaddress, 95 characters), used for nothing else. Marking the order shipped requests the release to you of the coins in this escrow{{if .Fee}}, less the market fee,{{end}} less the network fee, paid to this address; any amount paid above the price goes back to the buyer's refund address. Nothing is built or sent before the buyer confirms receipt or the release deadline passes. The address cannot be changed afterwards; integrated addresses and addresses this market already used are refused.</p>
 <form class="stack" method="post" action="/escrow-xmr/ship">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/escrow-xmr/ship"}}">
 <input type="hidden" name="order_id" value="{{$.Order.ID}}">
 <label>Claim address<input name="address" required minlength="95" maxlength="110" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="xmr-escrow-ship-help">
 </label>
@@ -63,6 +64,7 @@
 <p class="help" id="xmr-escrow-confirm-help">Confirm receipt only once the goods have arrived. Confirming receipt completes the order and releases the coins in this escrow to the vendor: the market builds the release to the address the vendor gave and sends it. This cannot be undone, and the order can then no longer be disputed. If the goods did not arrive, open a dispute instead.</p>
 <form class="stack" method="post" action="/escrow-xmr/confirm" aria-describedby="xmr-escrow-confirm-help">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/escrow-xmr/confirm"}}">
 <input type="hidden" name="order_id" value="{{$.Order.ID}}">
 {{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button class="primary" type="submit">Confirm receipt</button>
@@ -73,6 +75,7 @@
 <p class="help" id="xmr-escrow-claim-help">Give a fresh Monero address from your own wallet (a standard address or subaddress, 95 characters), used for nothing else. The market builds a transaction from this order's escrow account paying it the coins in this escrow{{if .Fee}}, less the market fee,{{end}} less the network fee, and sends it; any amount paid above the price goes back to the buyer's refund address. The address cannot be changed once the claim is requested; integrated addresses and addresses this market already used are refused.</p>
 <form class="stack" method="post" action="/escrow-xmr/claim">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/escrow-xmr/claim"}}">
 <input type="hidden" name="order_id" value="{{$.Order.ID}}">
 <label>Claim address<input name="address" required minlength="95" maxlength="110" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="xmr-escrow-claim-help">
 </label>

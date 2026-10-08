@@ -31,9 +31,12 @@ import (
 // No step makes an RPC: addresses are parsed offline (checkXMRFormAddress).
 
 func init() {
-	registerAction("/escrow-xmr/claim", actionSpec{OwnTx: true, OneAtATime: true, Off: escrowXMROff, Run: xmrEscrowClaimAction})
-	registerAction("/escrow-xmr/ship", actionSpec{OwnTx: true, OneAtATime: true, Off: escrowXMROff, Run: xmrEscrowShipAction})
-	registerAction("/escrow-xmr/confirm", actionSpec{OwnTx: true, OneAtATime: true, Off: escrowXMROff, Run: xmrConfirmReceiptAction})
+	registerAction("/escrow-xmr/claim", actionSpec{Roles: escrowPartyRoles, OwnTx: true, OneAtATime: true, Off: escrowXMROff,
+		ConfirmedFormNonce: true, ReceiptAuthorize: xmrClaimReceiptAuthorize, Run: xmrEscrowClaimAction})
+	registerAction("/escrow-xmr/ship", actionSpec{Roles: escrowPartyRoles, OwnTx: true, OneAtATime: true, Off: escrowXMROff,
+		ConfirmedFormNonce: true, ReceiptAuthorize: xmrShipReceiptAuthorize, Run: xmrEscrowShipAction})
+	registerAction("/escrow-xmr/confirm", actionSpec{Roles: escrowPartyRoles, OwnTx: true, OneAtATime: true, Off: escrowXMROff,
+		ConfirmedFormNonce: true, ReceiptAuthorize: xmrConfirmReceiptAuthorize, Run: xmrConfirmReceiptAction})
 }
 
 // A-405: the pooled ship and Complete forms and a moderator's resolve refuse a Monero escrow order with Monero wording
@@ -99,11 +102,11 @@ func insertXMRRelease(c *actionCtx, orderID, dest string) error {
 
 // xmrEscrowClaimAction: the vendor requests the release of a completed Monero escrow order (step 1 of the file comment).
 func xmrEscrowClaimAction(c *actionCtx) (actionResult, error) {
-	dest, err := xmrClaimForm(c)
-	if err != nil {
-		return actionResult{}, err
-	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
+		dest, err := xmrClaimForm(c)
+		if err != nil {
+			return actionResult{}, err
+		}
 		ctx := c.Ctx()
 		o, err := partyOrder(c, c.Form.Get("order_id"))
 		if err != nil {
@@ -137,11 +140,11 @@ func xmrEscrowClaimAction(c *actionCtx) (actionResult, error) {
 
 // xmrEscrowShipAction: the vendor of a paid physical Monero escrow order marks it shipped (step 2 of the file comment).
 func xmrEscrowShipAction(c *actionCtx) (actionResult, error) {
-	dest, err := xmrClaimForm(c)
-	if err != nil {
-		return actionResult{}, err
-	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
+		dest, err := xmrClaimForm(c)
+		if err != nil {
+			return actionResult{}, err
+		}
 		ctx := c.Ctx()
 		o, err := partyOrder(c, c.Form.Get("order_id"))
 		switch {

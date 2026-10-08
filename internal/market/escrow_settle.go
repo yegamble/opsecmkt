@@ -43,7 +43,8 @@ import (
 //     transaction once a party has signed (migration 075).
 
 func init() {
-	registerAction("/escrow/claim", actionSpec{OwnTx: true, OneAtATime: true, Off: escrowOff, Run: escrowClaimAction})
+	registerAction("/escrow/claim", actionSpec{Roles: escrowPartyRoles, OwnTx: true, OneAtATime: true, Off: escrowOff,
+		ConfirmedFormNonce: true, ReceiptAuthorize: btcClaimReceiptAuthorize, Run: escrowClaimAction})
 	registerAction("/escrow/sign", actionSpec{FormNonce: true, Off: escrowOff, Run: escrowSignAction})
 	registerAction("/escrow/hardware-sign", actionSpec{FormNonce: true, Off: escrowOff, Run: escrowSignAction})
 	registerRaw("/escrow-psbt", escrowPSBTDownload)
@@ -428,15 +429,15 @@ func (a *App) escrowSettleTerminal(ctx context.Context, tx *sql.Tx, o *Order) er
 // fresh address, taken now and never at signing), confirmed with their password (and authenticator code when
 // enrolled). The escrow watcher builds the transaction (buildSettlements).
 func escrowClaimAction(c *actionCtx) (actionResult, error) {
-	e := c.A.escrow.Load()
-	if e == nil {
-		return actionResult{}, errEscrowDown
-	}
-	dest, ok := escrowAddressForm(e.network, c.Form.Get("address"))
-	if !ok {
-		return actionResult{}, errClaimAddress(c.A.escrowNetwork())
-	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
+		e := c.A.escrow.Load()
+		if e == nil {
+			return actionResult{}, errEscrowDown
+		}
+		dest, ok := escrowAddressForm(e.network, c.Form.Get("address"))
+		if !ok {
+			return actionResult{}, errClaimAddress(c.A.escrowNetwork())
+		}
 		ctx := c.Ctx()
 		o, err := partyOrder(c, c.Form.Get("order_id"))
 		if err != nil {

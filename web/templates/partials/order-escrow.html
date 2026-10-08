@@ -95,6 +95,7 @@
 <p class="help" id="escrow-claim-help">Give a fresh {{template "btc-escrow-address" $.EscrowNet}} from your own wallet, used for nothing else. The market builds a transaction paying it the coins in this escrow{{if .Fee}}, less the market fee,{{end}} less the network fee; any amount paid above the price goes back to the buyer's refund address. You then check the transaction's outputs and sign it in your own wallet. The address cannot be changed once the claim is requested, and an address this market already used is refused.</p>
 <form class="stack" method="post" action="/escrow/claim">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/escrow/claim"}}">
 <input type="hidden" name="order_id" value="{{$.Order.ID}}">
 <label>Claim address<input name="address" required minlength="14" maxlength="90" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="escrow-claim-help">
 </label>
