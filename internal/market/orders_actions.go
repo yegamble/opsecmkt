@@ -414,5 +414,8 @@ func reviewAction(c *actionCtx) (actionResult, error) {
 	if n, _ := res.RowsAffected(); n != 1 {
 		return actionResult{}, fail(409, "You already reviewed this order")
 	}
+	if _, err = insertNotification(c.Ctx(), c.Tx, o.VendorID, "A new review was posted on order "+shortID(o.ID)+". Read it on the order page.", o.ID); err != nil {
+		return actionResult{}, err
+	}
 	return actionResult{Redirect: orderPage(o.ID), Notice: "review-saved", Audit: "Reviewed order " + shortID(o.ID)}, nil
 }

@@ -338,11 +338,12 @@ type PageData struct {
 	Uploads *UploadsView
 
 	// Contacts (contacts.go): counterparty PGP keys, message recipient prefill, unread notifications
-	Contacts            []ContactKey // vendor page: the vendor; order page: the other party (both for a reviewer); messages: the ?to recipient
-	StaffContacts       []ContactKey // disputed order: independent moderators and administrators
-	MessageTo           string       // messages page: validated ?to handle for the recipient field
-	OrderViewer         string       // order page: "buyer", "vendor" or "moderator" (read-only dispute review)
-	UnreadNotifications int          // signed-in users, every page
+	Contacts              []ContactKey // vendor page: the vendor; order page: the other party (both for a reviewer); messages: the ?to recipient
+	StaffContacts         []ContactKey // disputed order: independent moderators and administrators
+	MessageTo             string       // messages page: validated ?to handle for the recipient field
+	OrderViewer           string       // order page: "buyer", "vendor" or "moderator" (read-only dispute review)
+	OrderSuspendedParties []string     // current buyer/vendor suspension status; never the administrator's reason
+	UnreadNotifications   int          // signed-in users, every page
 	// VendorKeyUnusable (A-83/A-225): a physical listing's product and checkout pages, and its buyer's order page, when
 	// the vendor has no key that can receive encrypted messages (canReceiveEncrypted); on a paid physical order it
 	// also tells the vendor to update their key before buyers send shipping addresses.
