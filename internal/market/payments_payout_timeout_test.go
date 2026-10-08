@@ -154,7 +154,7 @@ func TestMoneroTransferErrorClassification(t *testing.T) {
 		code     int
 		definite bool
 	}{
-		{-2, true}, {-16, true}, {-17, true}, {-18, true}, {-19, true}, {-20, true}, {-37, true},
+		{-2, true}, {-16, true}, {-17, true}, {-18, true}, {-19, true}, {-20, true}, {-37, true}, {-46, true},
 		{-38, false}, {-4, false}, {-1, false}, {-3, false}, {-13, false}, {-32601, false},
 	} {
 		ov.fail("transfer", c.code, "wallet error")

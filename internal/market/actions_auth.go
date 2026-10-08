@@ -691,13 +691,18 @@ func challengeLoader(ctx context.Context, a *App, r *http.Request, d *PageData) 
 	if pending == "" {
 		return nil
 	}
-	var userID string
-	err := a.db.QueryRowContext(ctx, "SELECT user_id FROM pending_logins WHERE token_hash=$1 AND expires>now()", digest(pending)).Scan(&userID)
+	var userID, next string
+	var unexpired bool
+	err := a.db.QueryRowContext(ctx, "SELECT user_id,next,expires>now() FROM pending_logins WHERE token_hash=$1", digest(pending)).Scan(&userID, &next, &unexpired)
 	if err == sql.ErrNoRows {
 		return nil
 	}
 	if err != nil {
 		return err
+	}
+	d.Next = a.signInNext(next)
+	if !unexpired {
+		return nil
 	}
 	names, err := a.enrolledFactors(ctx, userID)
 	if err != nil {
