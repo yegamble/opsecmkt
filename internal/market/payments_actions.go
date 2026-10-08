@@ -11,7 +11,7 @@ import (
 )
 
 func init() {
-	registerAction("/account/payout", actionSpec{OwnTx: true, Run: payoutAddressAction})
+	registerAction("/account/payout", actionSpec{Roles: []string{"buyer", "vendor", "moderator", "admin"}, OwnTx: true, ConfirmedFormNonce: true, Run: payoutAddressAction})
 	registerLoader("*", paymentsGlobalLoader)
 	registerLoader("order", paymentsOrderLoader)
 	registerLoader("account", paymentsAccountLoader)
@@ -29,16 +29,20 @@ func payoutAddressAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, fail(400, "Choose BTC or XMR")
 	}
 	addr := strings.TrimSpace(c.Form.Get("address"))
-	p := c.A.provider(cur)
-	if addr != "" {
-		if p == nil {
-			return actionResult{}, fail(409, cur+" payments are not configured on this market, so a payout address cannot be saved.")
+	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
+		// Provider state can change after the first successful save. Keep it inside the
+		// receipt callback so an exact replay returns its saved result while offline.
+		p := c.A.provider(cur)
+		if addr != "" {
+			if p == nil {
+				return actionResult{}, fail(409, cur+" payments are not configured on this market, so a payout address cannot be saved.")
+			}
+			if len(addr) > 128 || !p.ValidAddress(addr) {
+				return actionResult{}, fail(400, payoutAddressHint(cur, p.Network()))
+			}
 		}
-		if len(addr) > 128 || !p.ValidAddress(addr) {
-			return actionResult{}, fail(400, payoutAddressHint(cur, p.Network()))
-		}
-	}
-	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) { return savePayoutAddress(c, cur, addr, p) })
+		return savePayoutAddress(c, cur, addr, p)
+	})
 }
 
 func savePayoutAddress(c *actionCtx, cur, addr string, p PaymentProvider) (actionResult, error) {

@@ -576,6 +576,8 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 		if errors.As(err, &unknown) {
 			msg := "Change outcome unknown: it may have been saved. Reload the relevant page and check the recorded state before taking further action."
 			switch r.URL.Path {
+			case "/account/payout":
+				msg = "Payout address outcome unknown: it may have been saved. Check the saved address and payout states on your account page before starting another form. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/admin/review":
 				msg = "Review change outcome unknown: it may have been saved. Check the review on the product or vendor page before starting another form. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/admin/listing":

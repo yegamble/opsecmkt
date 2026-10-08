@@ -34,6 +34,7 @@
 {{if and $.Security $.Security.TOTPEnabled}}<p class="help">Lost your authenticator? If you have a recovery code, <a class="text-link" href="/totp">use it to turn off TOTP</a>, then return here to change your payout address.</p>{{end}}
 {{if .BTCNetwork}}<form class="stack" method="post" action="/account/payout">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/account/payout"}}">
 <input type="hidden" name="currency" value="BTC">
 <label>Bitcoin payout address {{if $.LiveNetwork}}<span class="badge live">MAINNET</span>{{else}}<span class="badge testnet">TESTNET {{.BTCNetwork}}</span>{{end}}<input name="address" value="{{.BTC}}" maxlength="128" spellcheck="false" autocomplete="off">
 </label>
@@ -41,6 +42,7 @@
 <button type="submit">Save BTC address</button>
 </form>{{else}}<p>Bitcoin payouts are unavailable: no BTC provider is configured.{{if .BTC}} A previously saved address is kept but unused.{{end}}</p>{{if .BTC}}<form class="stack" method="post" action="/account/payout">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/account/payout"}}">
 <input type="hidden" name="currency" value="BTC">
 <input type="hidden" name="address" value="">
 {{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
@@ -48,6 +50,7 @@
 </form>{{end}}{{end}}
 {{if .XMRNetwork}}<form class="stack" method="post" action="/account/payout">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/account/payout"}}">
 <input type="hidden" name="currency" value="XMR">
 <label>Monero payout address {{if $.LiveNetwork}}<span class="badge live">MAINNET</span>{{else}}<span class="badge testnet">TESTNET {{.XMRNetwork}}</span>{{end}}<input name="address" value="{{.XMR}}" maxlength="128" spellcheck="false" autocomplete="off">
 </label>
@@ -55,6 +58,7 @@
 <button type="submit">Save XMR address</button>
 </form>{{else}}<p>Monero payouts are unavailable: no XMR provider is configured.{{if .XMR}} A previously saved address is kept but unused.{{end}}</p>{{if .XMR}}<form class="stack" method="post" action="/account/payout">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/account/payout"}}">
 <input type="hidden" name="currency" value="XMR">
 <input type="hidden" name="address" value="">
 {{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
