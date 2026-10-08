@@ -26,6 +26,17 @@ func loadStaffAttention(ctx context.Context, a *App, _ *http.Request, d *PageDat
 	}
 	// The session's role can be stale after a role change or suspension. The count query rechecks it in the same
 	// statement snapshot as the counts, so a changed or suspended account receives no counters.
+	// This navigation query is small at execution time but structurally complex. PostgreSQL's JIT compilation
+	// otherwise costs hundreds of milliseconds on each request, even with empty queues. Keep it off for this
+	// read transaction only; no connection-wide or operator setting is changed.
+	tx, err := a.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, "SET LOCAL jit=off"); err != nil {
+		return err
+	}
 	var v StaffAttention
 	query := `SELECT
 	 (SELECT count(*) FROM disputes d JOIN orders o ON o.id=d.order_id JOIN products pr ON pr.id=o.product_id
@@ -38,11 +49,14 @@ func loadStaffAttention(ctx context.Context, a *App, _ *http.Request, d *PageDat
 	  WHERE ` + escrowStaffAlertCandidates("o.id") + ` AND ` + escrowStaffAlert("o.id") + ` AND o.buyer_id<>$1 AND pr.vendor_id<>$1),
 	 (SELECT count(*) FROM payouts p WHERE $2='admin' AND ` + payoutNeedsAttention("p") + `)
 	FROM users WHERE id=$1 AND role=$2 AND role IN ('moderator','admin') AND suspended_at IS NULL`
-	err := a.db.QueryRowContext(ctx, query, d.User.ID, d.User.Role).Scan(&v.Disputes, &v.PaymentReviews, &v.EscrowAlerts, &v.Payouts)
+	err = tx.QueryRowContext(ctx, query, d.User.ID, d.User.Role).Scan(&v.Disputes, &v.PaymentReviews, &v.EscrowAlerts, &v.Payouts)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil
 		}
+		return err
+	}
+	if err = tx.Commit(); err != nil {
 		return err
 	}
 	d.StaffAttention = &v

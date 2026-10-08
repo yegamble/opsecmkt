@@ -135,3 +135,27 @@ func TestStaffAttentionZeroEscrowAlertDoesNotLinkToMissingSection(t *testing.T) 
 		t.Fatalf("zero-alert link does not lead to a present target: status=%d", w.Code)
 	}
 }
+
+// The navigation counter may disable JIT locally, but a borrowed pool connection must retain its original
+// setting afterward, including when an obsolete staff identity yields no row.
+func TestStaffAttentionKeepsConnectionJITSetting(t *testing.T) {
+	e := newTestApp(t)
+	id, _ := e.user("jit_attention_admin", "admin")
+	e.DB.SetMaxOpenConns(1)
+	if _, err := e.DB.Exec("SET jit=on"); err != nil {
+		t.Fatal(err)
+	}
+	for _, role := range []string{"admin", "moderator"} {
+		d := &PageData{User: &User{ID: id, Role: role}}
+		if err := loadStaffAttention(t.Context(), e.A, nil, d); err != nil {
+			t.Fatal(err)
+		}
+		var after string
+		if err := e.DB.QueryRow("SHOW jit").Scan(&after); err != nil || after != "on" {
+			t.Fatalf("connection JIT changed: %q %v", after, err)
+		}
+		if (role == "admin") != (d.StaffAttention != nil) {
+			t.Fatalf("stale role counted: %#v", d.StaffAttention)
+		}
+	}
+}
