@@ -183,6 +183,7 @@ type PageData struct {
 	// (User.Suspended says when); the suspend/restore form itself takes any handle.
 	SuspendedAccounts []User
 	SignInRefusals    []SignInRefusal
+	RecentSignIns     []Event // account only: latest five successful sign-ins, including legacy audit rows.
 	// RoleHandle, RoleChoice, ResetHandle, SuspendHandle and SuspendChoice: admin page re-rendered after a
 	// handle matched no account, keeping what was typed into the role, second-factor reset or suspension form.
 	RoleHandle, RoleChoice, ResetHandle, SuspendHandle, SuspendChoice string

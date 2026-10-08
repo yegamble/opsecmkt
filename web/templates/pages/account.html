@@ -71,6 +71,14 @@
 </dl>
 <p>Use a unique password. Never share private keys or recovery phrases.</p>
 </div>{{template "account-security:panel" $}}{{template "account-payout:panel" $}}
+<section class="panel" aria-labelledby="account-sign-ins">
+<h2 id="account-sign-ins">Last five sign-ins</h2>
+<ol class="order-timeline">{{range $.RecentSignIns}}<li>
+<span class="order-when">{{.Created}}</span>
+<span>{{.Action}}</span>
+</li>{{else}}<li>No sign-ins recorded yet.</li>{{end}}</ol>
+<p class="help">Successful sign-ins recorded for your account, newest first. Older records may not name the verification method.</p>
+</section>
 <section class="panel" aria-labelledby="account-activity">
 <h2 id="account-activity">Recent activity</h2>
 <ol class="order-timeline">{{range $.Events}}<li>
