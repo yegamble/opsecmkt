@@ -489,7 +489,7 @@ func (a *App) orderPayouts(ctx context.Context, d *PageData) error {
 	if required, _ := parseAmount(o.Amount, dec); sum > required {
 		// The split the complete form states (payoutStatement): a return (maybe held), or the excess kept.
 		parts := splitPayout("release", o, sum, required)
-		v := &OverpaidView{Excess: amount(sum-required, dec) + " " + o.Currency, Kept: len(parts) == 1}
+		v := &OverpaidView{Excess: amount(sum-required, dec) + " " + o.Currency, Kept: len(parts) == 1, BelowFloor: belowFloor(o.Currency, "release", sum)}
 		switch {
 		case v.Kept && parts[0].large: // a legacy price below the release floor (A-216)
 			v.Held, v.Reason = true, subFloorPriceExcess(o.Currency)

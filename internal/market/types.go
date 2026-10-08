@@ -402,10 +402,11 @@ type PayoutPreview struct {
 // states (splitPayout, A-215). Excess: "0.009 BTC". Kept: it goes to the vendor with the release, for Reason
 // (below the minimum automatic payout, or a legacy price below the release floor, A-216). Held: larger than the
 // price, so an administrator reviews its return (or, when Kept, the release) first. NoAddress: buyer's view of a
-// return only, no payout address saved in the order's currency.
+// return only, no payout address saved in the order's currency. BelowFloor: the whole amount is too small to
+// send automatically.
 type OverpaidView struct {
-	Excess, Reason        string
-	Kept, Held, NoAddress bool
+	Excess, Reason, BelowFloor string
+	Kept, Held, NoAddress      bool
 }
 type DeliveryView struct{ Content, Created string }
 type Review struct {
