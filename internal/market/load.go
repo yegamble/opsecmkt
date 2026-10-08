@@ -204,8 +204,9 @@ func pageSlice(d *PageData, all []Product, raw string) []Product {
 }
 
 // orderReadable is the order page's read rule over orders o joined to products p, for the viewer's id and role
-// (SQL placeholders): the buyer and the vendor, and a moderator or administrator while the order is disputed or
-// resolved, has a payment flagged for review or is an escrow order with an open staff alert (escrowStaffAlert, A-470).
+// (SQL placeholders): the buyer and the vendor, and a moderator or administrator once a dispute record exists
+// (including after concession), while a payment is flagged for review, or while an escrow staff alert is open
+// (escrowStaffAlert, A-470).
 // An archived listing's product page uses the same rule (A-164).
 func orderReadable(viewer, role string) string {
 	return "(o.buyer_id=" + viewer + " OR p.vendor_id=" + viewer + " OR (" + role + " IN ('moderator','admin') AND (EXISTS(SELECT 1 FROM disputes d WHERE d.order_id=o.id) OR EXISTS(SELECT 1 FROM payments pm WHERE pm.order_id=o.id AND pm.flagged) OR " +

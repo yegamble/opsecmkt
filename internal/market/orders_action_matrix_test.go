@@ -311,6 +311,15 @@ func TestOrderGetStaffAccessAcrossStatesAndFlags(t *testing.T) {
 					t.Errorf("GET order as %s: state=%s flagged=%v got %d want %d", actor.name, state, flagged, response.Code, want)
 				}
 			}
+			if !flagged && (state == stateDisputed || state == stateResolved) {
+				// A state label alone is not a staff-read reason: A-166 requires the dispute record.
+				e.mustExec("DELETE FROM disputes WHERE order_id=$1", orderID)
+				for _, actor := range actors {
+					if response := e.do("GET", "/order?id="+orderID, actor.session, nil); response.Code != 404 {
+						t.Errorf("rowless order as %s: state=%s got %d want 404", actor.name, state, response.Code)
+					}
+				}
+			}
 		}
 	}
 }
