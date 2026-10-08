@@ -43,15 +43,23 @@ class TorNetworkAddressTests(unittest.TestCase):
                 app_backend_ipv4(network_with(address), APP_ID, NETWORK_ID)
 
     def test_does_not_treat_a_prefix_as_the_container_identity(self):
-        with self.assertRaisesRegex(ValueError, "not attached"):
+        with self.assertRaisesRegex(ValueError, "canonical full app container ID"):
             app_backend_ipv4(network_with(), APP_ID[:12], NETWORK_ID)
+
+    def test_missing_endpoint_diagnostic_has_only_bounded_identity_fields(self):
+        with self.assertRaisesRegex(
+            ValueError,
+            rf"container_id={'c' * 64} container_id_length=64 network_id={NETWORK_ID} endpoint_ids={APP_ID},{'b' * 64}",
+        ):
+            app_backend_ipv4(network_with(), "c" * 64, NETWORK_ID)
 
     def test_rehearsal_wires_network_inspection_without_weakening_isolation_checks(self):
         script = (REPOSITORY / "scripts" / "test-tor-upgrade-rollback.sh").read_text()
         self.assertIn(".HostConfig.PortBindings", script)
         self.assertIn("assert set(service_networks) == {\"backend\"}", script)
         self.assertIn('backend.get("internal") is True', script)
-        self.assertIn("docker network inspect --format '{{json .}}'", script)
+        self.assertIn("docker inspect --format '{{.Id}}' \"$compose_container\"", script)
+        self.assertIn("docker network inspect --verbose --format '{{json .}}'", script)
         self.assertIn('scripts/tor_network_address.py', script)
         self.assertNotIn('network["IPAddress"]', script)
 

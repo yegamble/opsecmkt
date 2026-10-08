@@ -11,6 +11,8 @@ from typing import Any
 
 def app_backend_ipv4(network: dict[str, Any], container_id: str, expected_network_id: str) -> str:
     """Return the exact container endpoint's private IPv4 address or refuse the rehearsal."""
+    if len(container_id) != 64 or any(ch not in "0123456789abcdefABCDEF" for ch in container_id):
+        raise ValueError("Docker did not return a canonical full app container ID")
     if not expected_network_id or network.get("Id") != expected_network_id:
         raise ValueError("Docker network inspect returned a different network identity")
     if network.get("Internal") is not True:
@@ -21,7 +23,12 @@ def app_backend_ipv4(network: dict[str, Any], container_id: str, expected_networ
         raise ValueError("Docker network inspect did not return its attached containers")
     endpoint = containers.get(container_id)
     if not isinstance(endpoint, dict):
-        raise ValueError("The app container is not attached to its backend network")
+        endpoint_ids = ",".join(str(key) for key in list(containers)[:8]) or "<none>"
+        raise ValueError(
+            "The app container is not attached to its backend network "
+            f"(container_id={container_id} container_id_length={len(container_id)} "
+            f"network_id={expected_network_id} endpoint_ids={endpoint_ids})"
+        )
 
     endpoint_address = endpoint.get("IPv4Address")
     if not isinstance(endpoint_address, str) or not endpoint_address:

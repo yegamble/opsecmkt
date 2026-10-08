@@ -137,9 +137,13 @@ tor_identity_hash() {
 }
 
 refresh_base() {
-  local container bindings app_networks network_id network_info app_ip
-  container=$(compose ps -q app)
-  [[ -n $container ]] || { echo 'The app service has no running container' >&2; return 1; }
+  local compose_container container bindings app_networks network_id network_info app_ip
+  compose_container=$(compose ps -q app)
+  [[ -n $compose_container ]] || { echo 'The app service has no running container' >&2; return 1; }
+  # Compose returns the service's ID; resolve it so network endpoint lookup always
+  # uses Docker's canonical full container ID, independent of display formatting.
+  container=$(docker inspect --format '{{.Id}}' "$compose_container")
+  [[ -n $container ]] || { echo 'Docker did not return the app container identity' >&2; return 1; }
   bindings=$(docker inspect --format '{{json .HostConfig.PortBindings}}' "$container")
   [[ $bindings == null || $bindings == '{}' ]] || {
     echo 'The offline rehearsal unexpectedly published an app port on the host' >&2; return 1; }
@@ -161,7 +165,9 @@ network_id = network.get("NetworkID")
 assert isinstance(network_id, str) and network_id, "app runtime backend network has no Docker network ID"
 print(network_id)
 ' "$app_networks")
-  network_info=$(docker network inspect --format '{{json .}}' "$network_id")
+  # NetworkInspect's verbose option requests the detailed endpoint diagnostics
+  # needed for its Containers map on supported Docker Engine versions.
+  network_info=$(docker network inspect --verbose --format '{{json .}}' "$network_id")
   app_ip=$(printf '%s\n' "$network_info" | python3 "$root/scripts/tor_network_address.py" "$container" "$network_id")
   base="http://$app_ip:8080"
 }
