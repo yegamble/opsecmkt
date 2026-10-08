@@ -37,8 +37,8 @@ func validateListing(f url.Values) (listingInput, error) {
 	btc, e1 := parseAmount(f.Get("price_btc"), 8)
 	xmr, e2 := parseAmount(f.Get("price_xmr"), 12)
 	stock, e3 := strconv.Atoi(f.Get("stock"))
-	in := listingInput{Title: strings.TrimSpace(f.Get("title")), Description: strings.TrimSpace(f.Get("description")), Category: f.Get("category"), Region: f.Get("region"), Kind: f.Get("kind"), DeliveryContent: f.Get("delivery_content"), BTC: btc, XMR: xmr, Stock: stock}
-	if e1 != nil || e2 != nil || e3 != nil || stock < 0 || stock > 1000000 || len(in.Title) < 3 || len(in.Title) > 140 || len(in.Description) > 10000 || (in.Kind != "digital" && in.Kind != "physical") || (in.Category != "Hardware" && in.Category != "Digital" && in.Category != "Services") || len(in.Region) < 2 || len(in.Region) > 80 {
+	in := listingInput{Title: normalizedFormText(f.Get("title")), Description: normalizedFormText(f.Get("description")), Category: f.Get("category"), Region: f.Get("region"), Kind: f.Get("kind"), DeliveryContent: f.Get("delivery_content"), BTC: btc, XMR: xmr, Stock: stock}
+	if e1 != nil || e2 != nil || e3 != nil || stock < 0 || stock > 1000000 || !textLength(in.Title, 3, 140) || !textLength(in.Description, 0, 10000) || (in.Kind != "digital" && in.Kind != "physical") || (in.Category != "Hardware" && in.Category != "Digital" && in.Category != "Services") || !textLength(in.Region, 2, 80) {
 		return listingInput{}, fail(400, "Invalid listing. Check price precision, stock, category, and required fields.")
 	}
 	// A payout below its currency's floor is never sent (A-99, A-232), so no order may be priced below it.

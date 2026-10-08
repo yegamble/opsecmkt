@@ -3,7 +3,6 @@ package market
 import (
 	"context"
 	"database/sql"
-	"strings"
 )
 
 // Dispute decisions on escrow orders (WR-escrow Phase 1, slice P1-c2; ES-4, plan P1-c). A buyer or vendor may dispute
@@ -53,8 +52,8 @@ func escrowDecisionAction(c *actionCtx) (actionResult, error) {
 	if !ok {
 		return actionResult{}, errDecisionOutcome
 	}
-	reason := strings.TrimSpace(c.Form.Get("reason"))
-	if len(reason) < 20 || len(reason) > 5000 {
+	reason := normalizedFormText(c.Form.Get("reason"))
+	if !textLength(reason, 20, 5000) {
 		return actionResult{}, errDecisionReason
 	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {

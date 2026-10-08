@@ -4,8 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"net/http"
-	"strings"
-	"unicode/utf8"
 )
 
 func init() {
@@ -107,8 +105,8 @@ func subFloorListingForProduct(ctx context.Context, q rowQuerier, productID, cur
 // disputeAction opens a dispute by moving a paid, shipped or delivered order to disputed (P3).
 func disputeAction(c *actionCtx) (actionResult, error) {
 	ctx, f, tx := c.Ctx(), c.Form, c.Tx
-	reason := strings.TrimSpace(f.Get("reason"))
-	if len(reason) < 20 || len(reason) > 5000 {
+	reason := normalizedFormText(f.Get("reason"))
+	if !textLength(reason, 20, 5000) {
 		return actionResult{}, fail(400, "Describe the issue in 20–5000 characters")
 	}
 	// A-386: the order row first, as the sign action takes it, so the check below sees a buyer's signature committed
@@ -157,8 +155,8 @@ func disputeAction(c *actionCtx) (actionResult, error) {
 // second reply, or a resolution, waits and then sees this one (or the resolution) and is refused with 409.
 func disputeReplyAction(c *actionCtx) (actionResult, error) {
 	ctx, tx := c.Ctx(), c.Tx
-	reply := strings.TrimSpace(c.Form.Get("reply"))
-	if n := utf8.RuneCountInString(reply); n < 20 || n > 5000 {
+	reply := normalizedFormText(c.Form.Get("reply"))
+	if !textLength(reply, 20, 5000) {
 		return actionResult{}, fail(400, "Write your reply in 20–5000 characters. Nothing was changed.")
 	}
 	o, err := partyOrder(c, c.Form.Get("order_id"))
@@ -275,8 +273,8 @@ func resolveAction(c *actionCtx) (actionResult, error) {
 	if !ok {
 		return actionResult{}, fail(400, "Choose an outcome: release to vendor or refund to buyer")
 	}
-	resolution := strings.TrimSpace(c.Form.Get("resolution"))
-	if len(resolution) < 20 || len(resolution) > 5000 {
+	resolution := normalizedFormText(c.Form.Get("resolution"))
+	if !textLength(resolution, 20, 5000) {
 		return actionResult{}, fail(400, "Provide a decision of 20–5000 characters")
 	}
 	seen, err := payoutConfirmation(c)

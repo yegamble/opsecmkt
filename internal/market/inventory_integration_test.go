@@ -222,6 +222,26 @@ func TestListingKindLockedWhileOrdersOpen(t *testing.T) {
 	e.check(e.do("POST", "/listings/update", s, inventoryForm(p, map[string]string{"kind": "digital"})), 303)
 }
 
+func TestUnfundedDraftDoesNotLockListingKind(t *testing.T) {
+	e := newTestApp(t)
+	owner, session := e.user("draft_kind_vendor", "vendor")
+	buyer, _ := e.user("draft_kind_buyer", "buyer")
+	p := e.product(owner, "physical")
+	draft := e.order(buyer, p, "BTC", stateDraft)
+	e.check(e.do("POST", "/listings/update", session, inventoryForm(p, map[string]string{"kind": "digital"})), 303)
+	if agStr(e, "SELECT state FROM orders WHERE id=$1", draft) != stateDraft || agInt(e, "SELECT stock FROM products WHERE id=$1", p) != 5 {
+		t.Fatal("editing fulfillment changed a draft or reserved stock")
+	}
+	// A historical anomalous draft that has a payment record retains the conservative guard.
+	if _, err := e.DB.Exec("INSERT INTO payment_addresses(order_id,currency,address,provider) VALUES($1,'BTC','draft-kind-test-address','btc-test')", draft); err != nil {
+		t.Fatal(err)
+	}
+	e.check(e.do("POST", "/listings/update", session, inventoryForm(p, map[string]string{"kind": "physical"})), 409)
+	if agStr(e, "SELECT kind FROM products WHERE id=$1", p) != "digital" {
+		t.Fatal("payment-record draft did not retain the fulfillment guard")
+	}
+}
+
 func TestLegacyServiceListingRequiresExplicitSupportedKind(t *testing.T) {
 	e := newTestApp(t)
 	owner, s := e.user("legacy_service_owner", "vendor")

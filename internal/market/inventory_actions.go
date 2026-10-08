@@ -61,8 +61,12 @@ func listingAudit(action string, c *actionCtx, l managedListing) string {
 	return s
 }
 
-// openOrdersSQL counts orders that still depend on the listing's fulfillment type.
-const openOrdersSQL = `SELECT count(*) FROM orders WHERE product_id=$1 AND state NOT IN ('completed','resolved','cancelled')`
+// openOrdersSQL counts orders that still depend on the listing's fulfillment type. A fund-free draft
+// is repriced and revalidated at checkout, so it must not let an abandoned checkout freeze the listing.
+// Keep the guard for an anomalous historical draft with a payment address, deposit or escrow record.
+const openOrdersSQL = `SELECT count(*) FROM orders o WHERE product_id=$1 AND state NOT IN ('completed','resolved','cancelled')
+ AND (state<>'draft' OR EXISTS(SELECT 1 FROM payment_addresses a WHERE a.order_id=o.id)
+ OR EXISTS(SELECT 1 FROM payments pm WHERE pm.order_id=o.id) OR EXISTS(SELECT 1 FROM escrows es WHERE es.order_id=o.id))`
 
 func listingUpdateAction(c *actionCtx) (actionResult, error) {
 	ctx := c.Ctx()
