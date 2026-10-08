@@ -37,7 +37,7 @@
 <form class="stack" method="post" action="/admin">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
 <input type="hidden" name="action" value="role">
-<label>Account handle<input name="handle" value="{{.RoleHandle}}" required minlength="3" maxlength="32" pattern="[a-zA-Z0-9_]{3,32}" autocomplete="off" autocapitalize="none" spellcheck="false"{{if .RoleHandle}} aria-invalid="true"{{end}}>
+<label>Account handle<input name="handle" value="{{.RoleHandle}}" required minlength="3" maxlength="32" pattern="[a-zA-Z0-9_]{3,32}" title="3–32 letters, digits or underscores" autocomplete="off" autocapitalize="none" spellcheck="false"{{if .RoleHandle}} aria-invalid="true"{{end}}>
 </label>
 <label>Role<select name="role">
 <option value="buyer">Buyer</option>
@@ -70,7 +70,7 @@
 <p class="help">Account is the account each event is recorded on. A change an administrator makes to another account is recorded on both: the administrator's row names the account, and the account's row says an administrator made it.</p>
 <form class="inline-form" method="get" action="/admin" aria-label="Filter audit events by account">
 <label for="audit-handle">Exact account handle</label>
-<input id="audit-handle" name="audit_handle" value="{{.AuditHandle}}" maxlength="32" autocomplete="off" autocapitalize="none" spellcheck="false">
+<input id="audit-handle" name="audit_handle" value="{{.AuditHandle}}" maxlength="32" pattern="[a-zA-Z0-9_]{3,32}" title="3–32 letters, digits or underscores; leave empty for all accounts" autocomplete="off" autocapitalize="none" spellcheck="false">
 <button type="submit">Filter audit</button>
 {{if .AuditHandle}}<a class="text-link" href="/admin#audit-trail">Clear filter</a>{{end}}
 </form>
