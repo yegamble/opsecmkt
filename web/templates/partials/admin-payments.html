@@ -35,6 +35,7 @@ Check the escrow node: its peers (<code>getconnectioncount</code>), and with <co
 <p>In force: <strong>{{.Days}} days</strong>. For a shipped physical escrow order, the number of days the buyer has to sign the release or open a dispute before the market may co-sign the vendor's claim. Each escrow keeps the length in force when it was placed.</p>
 <form class="stack" method="post" action="/admin/escrow-release-days">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/escrow-release-days"}}">
 <label>Release deadline (whole days, {{.Min}} to {{.Max}})<input type="number" name="release_days" required min="{{.Min}}" max="{{.Max}}" inputmode="numeric" value="{{.Days}}" aria-describedby="escrow-release-days-help"></label>
 <span class="help" id="escrow-release-days-help">Applies to escrow orders placed from now on; existing orders keep theirs.</span>
 {{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
@@ -176,6 +177,7 @@ Check the escrow node: its peers (<code>getconnectioncount</code>), and with <co
 <h4>{{.Currency}} intake: {{if eq $v "false"}}Paused{{else if eq $v "escrow"}}Escrow only{{else if eq $v "true"}}{{if .Configured}}Enabled when wallet is available{{else}}On, but no pooled wallet is configured{{end}}{{else}}Paused (unknown value){{end}}</h4>
 <form class="stack" method="post" action="/admin/payment-intake">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/payment-intake"}}">
 <input type="hidden" name="currency" value="{{.Currency}}">
 <fieldset>
 <legend>New {{.Currency}} payments</legend>{{if .Configured}}

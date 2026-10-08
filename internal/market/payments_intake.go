@@ -6,7 +6,7 @@ import (
 )
 
 func init() {
-	registerAction("/admin/payment-intake", actionSpec{Roles: []string{"admin"}, OwnTx: true, Run: paymentIntakeAction})
+	registerAction("/admin/payment-intake", actionSpec{Roles: []string{"admin"}, OwnTx: true, ConfirmedFormNonce: true, Run: paymentIntakeAction})
 	registerLoader("order", paymentIntakeOrderLoader)
 }
 
