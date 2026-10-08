@@ -91,9 +91,10 @@ type actionResult struct {
 }
 
 type actionSpec struct {
-	Public bool     // allow anonymous; skips the write:<user> rate limit
-	Roles  []string // required user roles (implies signed in)
-	OwnTx  bool     // Run opens its own transactions (e.g. bcrypt before any tx); c.Tx is nil, Audit is written without a tx
+	Public    bool     // allow anonymous; skips the write:<user> rate limit
+	Roles     []string // required user roles (implies signed in)
+	OwnTx     bool     // Run opens its own transactions (e.g. bcrypt before any tx); c.Tx is nil, Audit is written without a tx
+	FormNonce bool     // this normal-transaction form records a successful submission and replays its original 303
 	// Precheck, when set, runs in ServeHTTP after the CSRF check and before the session lookup and the post
 	// slot: a check of the form alone (no database), so a flood of posts it refuses holds no slot (A-178).
 	// Run must still make the same checks; it is also called without Precheck (tests call post directly).
@@ -139,6 +140,9 @@ var actions = map[string]actionSpec{}
 func registerAction(path string, s actionSpec) {
 	if _, dup := actions[path]; dup {
 		panic("duplicate action " + path)
+	}
+	if s.FormNonce && (s.OwnTx || s.Public) {
+		panic("form nonce requires an authenticated shared-transaction action: " + path)
 	}
 	actions[path] = s
 }
@@ -515,6 +519,7 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 	// before any role-gated staff change. OwnTx actions use confirmedTx or their own
 	// locked recheck; keeping this first avoids target-row/actor-row lock inversions.
 	var res actionResult
+	var repeated bool
 	var err error
 	if c.Tx != nil && u != nil && len(spec.Roles) > 0 && (u.Role == "admin" || u.Role == "moderator") {
 		var role string
@@ -524,7 +529,10 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 			err = errAccountChanged
 		}
 	}
-	if err == nil {
+	if err == nil && spec.FormNonce {
+		res, repeated, err = claimFormSubmission(c)
+	}
+	if err == nil && !repeated {
 		res, err = spec.Run(c)
 	}
 	var he *httpError
@@ -563,7 +571,7 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 		serverError(w, r, 500, "Unable to save changes", errorCause(err))
 		return
 	}
-	if res.Audit != "" {
+	if res.Audit != "" && !repeated {
 		var uid any
 		if res.AuditUserID != "" {
 			uid = res.AuditUserID
@@ -586,17 +594,27 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 			return
 		}
 	}
+	if res.Redirect == "" {
+		res.Redirect = "/"
+	}
+	if spec.FormNonce && !repeated {
+		if err = finishFormSubmission(c, res); err != nil {
+			writeDBFailure(w, r, err)
+			return
+		}
+	}
 	if c.Tx != nil {
 		if err = c.Tx.Commit(); err != nil {
+			if spec.FormNonce {
+				serverError(w, r, 500, "Submission outcome unknown: it may have been saved. Check the resulting listing, message or order before starting a new form. If the original form is still open, resubmit it unchanged to retrieve the result.", errorCause(err))
+				return
+			}
 			serverError(w, r, 500, "Unable to save changes", errorCause(err))
 			return
 		}
 	}
 	if res.AfterCommit != nil {
 		res.AfterCommit(w)
-	}
-	if res.Redirect == "" {
-		res.Redirect = "/"
 	}
 	if res.Notice != "" && u != nil {
 		res.Redirect = a.setNotice(w, res.Notice, res.Redirect)

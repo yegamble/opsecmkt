@@ -23,6 +23,7 @@
 {{if and .MessageTo (not .Contacts)}}<p role="status">No other account found for this handle. Check the recipient’s handle and try again.</p>{{end}}
 <form class="stack" method="post" action="/messages">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/messages"}}">
 <label>Recipient handle<input name="recipient" value="{{.MessageTo}}" required maxlength="32" autocomplete="off" placeholder="vendor_handle">
 </label>{{range .Contacts}}{{template "contact-key" .}}{{end}}
 <label>PGP encrypted message<textarea name="body" required maxlength="65536" rows="9" spellcheck="false" placeholder="-----BEGIN PGP MESSAGE-----">

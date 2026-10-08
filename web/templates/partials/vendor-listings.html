@@ -12,6 +12,7 @@
 <summary class="accent mono">+ Publish a new listing</summary>
 <form class="stack" method="post" action="/listings">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/listings"}}">
 <label>Listing title<input name="title" required minlength="3" maxlength="140">
 </label>
 <label>Description<textarea name="description" required maxlength="10000">

@@ -20,10 +20,10 @@ const (
 
 func init() {
 	registerAction("/orders/pay", actionSpec{OneAtATime: true, Run: payAction})
-	registerAction("/orders/cancel", actionSpec{Run: cancelAction})
-	registerAction("/orders/ship", actionSpec{Run: shipAction})
-	registerAction("/orders/deliver", actionSpec{Run: deliverAction})
-	registerAction("/orders/complete", actionSpec{Run: completeAction})
+	registerAction("/orders/cancel", actionSpec{FormNonce: true, Run: cancelAction})
+	registerAction("/orders/ship", actionSpec{FormNonce: true, Run: shipAction})
+	registerAction("/orders/deliver", actionSpec{FormNonce: true, Run: deliverAction})
+	registerAction("/orders/complete", actionSpec{FormNonce: true, Run: completeAction})
 	registerAction("/reviews", actionSpec{Run: reviewAction})
 }
 
@@ -262,7 +262,8 @@ func hasDeposits(ctx context.Context, q rowQuerier, orderID string) (bool, error
 	return ok, err
 }
 
-// cancelAction takes the state the viewer saw ("from") so a stale or repeated form is a 409, not a new move.
+// cancelAction takes the state the viewer saw ("from") so a stale or newly submitted form is a 409, not a
+// new move. routes.post replays the original 303 for the exact successful form nonce before reaching here.
 // Cancelling a paid order refunds every counted deposit, so it needs the payout confirmation; so does
 // cancelling an order awaiting payment once a deposit has arrived (an underpayment is refunded).
 func cancelAction(c *actionCtx) (actionResult, error) {

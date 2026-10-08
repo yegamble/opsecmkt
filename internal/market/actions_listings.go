@@ -8,7 +8,7 @@ import (
 )
 
 func init() {
-	registerAction("/listings", actionSpec{Roles: []string{"vendor", "admin"}, Run: listingAction})
+	registerAction("/listings", actionSpec{Roles: []string{"vendor", "admin"}, FormNonce: true, Run: listingAction})
 }
 
 // maxDeliveryContent matches the manual delivery limit (characters).

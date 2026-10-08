@@ -93,7 +93,7 @@ type App struct {
 
 // parseTemplates loads layout (web/templates/*.html), pages/<page>.html ("page:<page>") and partials/<hook>.html.
 func parseTemplates() (*template.Template, error) {
-	t := template.New("")
+	t := template.New("").Funcs(template.FuncMap{"formNonce": formNonceFor})
 	for _, pattern := range []string{"web/templates/*.html", "web/templates/pages/*.html", "web/templates/partials/*.html"} {
 		var err error
 		if t, err = t.ParseGlob(pattern); err != nil {

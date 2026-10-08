@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -217,9 +218,14 @@ func (e *testEnv) restart() {
 func (e *testEnv) do(method, path, token string, form url.Values, extra ...*http.Cookie) *httptest.ResponseRecorder {
 	if form == nil {
 		form = url.Values{}
+	} else {
+		form = maps.Clone(form) // each call represents a newly rendered form unless it supplies its nonce
 	}
 	if method == "POST" {
 		form.Set("csrf", e.A.csrf(token))
+		if spec, ok := actions[path]; ok && spec.FormNonce && !form.Has(formNonceField) {
+			form.Set(formNonceField, formNonceFor(path))
+		}
 	}
 	r := httptest.NewRequest(method, path, strings.NewReader(form.Encode()))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
