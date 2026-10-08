@@ -32,11 +32,13 @@
 <h2>Order summary</h2>{{if $.VendorKeyUnusable}}
 <p class="order-unavailable" role="note">
 <strong>No usable key.</strong> {{.Vendor}} has no usable encryption key, so you could not send a shipping address. You can save a draft, but payment stays unavailable until they add one.</p>{{end}}{{with $.VendorSuspensionReason}}<p class="order-unavailable" role="note">{{.}}</p>{{end}}{{template "purchase-blocks" $}}{{if not $.NoPurchase}}
+{{if .BTCOrderUnavailable}}<p class="order-unavailable" role="note">{{.BTCOrderUnavailable}}</p>{{end}}{{if .XMROrderUnavailable}}<p class="order-unavailable" role="note">{{.XMROrderUnavailable}}</p>{{end}}
+{{if or (and (not .BTCOrderUnavailable) (not (index $.PurchaseBlocked "BTC"))) (and (not .XMROrderUnavailable) (not (index $.PurchaseBlocked "XMR")))}
 <form class="stack" method="post" action="/orders">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="product_id" value="{{.ID}}">
-<label>Reference currency<select name="currency">{{if not (index $.PurchaseBlocked "BTC")}}
-<option value="BTC">{{.PriceBTC}} BTC{{if eq (index $.Settings "payment_intake_BTC") "false"}} — new payments paused{{else if eq (index $.Settings "payment_intake_BTC") "escrow"}} — escrow only{{end}}</option>{{end}}{{if not (index $.PurchaseBlocked "XMR")}}
+<label>Reference currency<select name="currency">{{if and (not .BTCOrderUnavailable) (not (index $.PurchaseBlocked "BTC"))}}
+<option value="BTC">{{.PriceBTC}} BTC{{if eq (index $.Settings "payment_intake_BTC") "false"}} — new payments paused{{else if eq (index $.Settings "payment_intake_BTC") "escrow"}} — escrow only{{end}}</option>{{end}}{{if and (not .XMROrderUnavailable) (not (index $.PurchaseBlocked "XMR"))}}
 <option value="XMR">{{.PriceXMR}} XMR{{if eq (index $.Settings "payment_intake_XMR") "false"}} — new payments paused{{else if eq (index $.Settings "payment_intake_XMR") "escrow"}} — escrow only{{end}}</option>{{end}}
 </select>
 </label>
@@ -44,7 +46,7 @@
 {{if or (eq (index $.Settings "payment_intake_BTC") "escrow") (eq (index $.Settings "payment_intake_XMR") "escrow")}}<p class="help">A currency marked escrow only is paid through escrow checkout on the order page, not a payment address from the market's wallet.</p>{{end}}
 {{if or (eq (index $.Settings "payment_intake_BTC") "false") (eq (index $.Settings "payment_intake_XMR") "false")}}<p class="help">Currencies marked paused can still be saved as unfunded drafts. New payment addresses are unavailable until the administrator enables them; existing deposits and payouts continue.</p>{{end}}
 <button class="primary" type="submit">Create unfunded draft <span class="action-icon">↗</span></button>
-</form>{{end}}
+</form>{{else}}<p class="order-unavailable" role="note">Neither BTC nor XMR is available for this listing. Review the currency and escrow reasons above.</p>{{end}}{{end}}
 </section>
 </div>{{end}}
 {{template "footer" .}}{{end}}

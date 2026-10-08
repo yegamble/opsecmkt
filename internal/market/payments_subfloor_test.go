@@ -94,6 +94,61 @@ func TestLegacySubFloorListingRefusesBTCOrder(t *testing.T) {
 	}
 }
 
+func TestLegacySubFloorProductCheckoutAndDraftPagesGateCurrencies(t *testing.T) {
+	p := newPayEnv(t)
+	p.legacySubFloor()
+	p.A.payments["XMR"] = newFakeProvider("XMR", 10)
+	if _, err := p.DB.Exec("UPDATE products SET xmr=$1 WHERE id=$2", payoutFloor("XMR", "release")-1, p.productID); err != nil {
+		t.Fatal(err)
+	}
+	product := func() string {
+		return html.UnescapeString(p.body("GET", "/product?id="+p.productID, p.buyerSess, nil, 200))
+	}
+	checkout := func() string {
+		return html.UnescapeString(p.body("GET", "/checkout?id="+p.productID, p.buyerSess, nil, 200))
+	}
+	page := product()
+	mustContain(t, page, "cannot be ordered in BTC", "cannot be ordered in XMR")
+	mustNotContain(t, page, "Review order draft")
+	page = checkout()
+	mustContain(t, page, "cannot be ordered in BTC", "cannot be ordered in XMR", "Neither BTC nor XMR is available")
+	mustNotContain(t, page, `<option value="BTC">`, `<option value="XMR">`, `action="/orders"`)
+
+	btcDraft := p.testEnv.order(p.buyer.ID, p.productID, "BTC", stateDraft)
+	xmrDraft := p.testEnv.order(p.buyer.ID, p.productID, "XMR", stateDraft)
+	for _, order := range []string{btcDraft, xmrDraft} {
+		page = html.UnescapeString(p.body("GET", "/order?id="+order, p.buyerSess, nil, 200))
+		mustContain(t, page, "Unavailable.", "below the minimum automatic payout")
+		mustNotContain(t, page, `action="/orders/pay"`)
+	}
+
+	// Once XMR meets its floor, the BTC warning points to it and checkout offers only XMR.
+	if _, err := p.DB.Exec("UPDATE products SET xmr=$1 WHERE id=$2", payoutFloor("XMR", "release"), p.productID); err != nil {
+		t.Fatal(err)
+	}
+	page = product()
+	mustContain(t, page, "below the minimum automatic payout", "Order in XMR")
+	page = checkout()
+	mustContain(t, page, `<option value="XMR">`)
+	mustNotContain(t, page, `<option value="BTC">`)
+	page = html.UnescapeString(p.body("GET", "/order?id="+btcDraft, p.buyerSess, nil, 200))
+	mustContain(t, page, "cannot be ordered in BTC", "Order in XMR")
+	mustNotContain(t, page, `action="/orders/pay"`)
+
+	// The XMR refusal is symmetric when only BTC is above its floor.
+	if _, err := p.DB.Exec("UPDATE products SET btc=$1,xmr=$2 WHERE id=$3", payoutFloor("BTC", "release"), payoutFloor("XMR", "release")-1, p.productID); err != nil {
+		t.Fatal(err)
+	}
+	page = product()
+	mustContain(t, page, "cannot be ordered in XMR", "Order in BTC")
+	page = checkout()
+	mustContain(t, page, `<option value="BTC">`)
+	mustNotContain(t, page, `<option value="XMR">`)
+	page = html.UnescapeString(p.body("GET", "/order?id="+xmrDraft, p.buyerSess, nil, 200))
+	mustContain(t, page, "cannot be ordered in XMR", "Order in BTC")
+	mustNotContain(t, page, `action="/orders/pay"`)
+}
+
 // An overpayment more than the price of a legacy sub-floor order is held for an administrator as one release;
 // the parties are told the price is the cause, and the complete form states the same outcome.
 func TestSubFloorPriceOverpaymentIsHeld(t *testing.T) {

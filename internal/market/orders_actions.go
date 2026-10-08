@@ -207,12 +207,16 @@ func payAction(c *actionCtx) (actionResult, error) {
 		if c.A.provider(o.Currency) == nil {
 			return actionResult{}, fail(409, "Payment unavailable for "+o.Currency)
 		}
-		var price int64
-		if err = c.Tx.QueryRowContext(ctx, "SELECT CASE WHEN $2='XMR' THEN xmr ELSE btc END FROM products WHERE id=$1", o.ProductID, o.Currency).Scan(&price); err != nil {
+		var btc, xmr int64
+		if err = c.Tx.QueryRowContext(ctx, "SELECT btc,xmr FROM products WHERE id=$1", o.ProductID).Scan(&btc, &xmr); err != nil {
 			return actionResult{}, err
 		}
+		price, otherPrice := btc, xmr
+		if o.Currency == "XMR" {
+			price, otherPrice = xmr, btc
+		}
 		if price < payoutFloor(o.Currency, "release") {
-			return actionResult{}, fail(400, subFloorListing(o.Currency))
+			return actionResult{}, fail(400, subFloorListing(o.Currency, otherPrice))
 		}
 		if o.Kind == "physical" {
 			if ok, err := userCanReceiveEncrypted(ctx, c.Tx, o.VendorID); err != nil {
