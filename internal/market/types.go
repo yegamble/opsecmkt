@@ -122,6 +122,10 @@ type PageData struct {
 	Preview                                                                   bool
 	// Paging: catalog and vendor page, the page shown of the matching listings (A-181, A-189, load.go).
 	Paging *CatalogPaging
+	// ActivityPaging: signed-in user's orders, messages or notifications (A-16, load.go).
+	ActivityPaging *ActivityPaging
+	// AdminUsersPaging: the admin role form's newest-account picker (A-16, load.go).
+	AdminUsersPaging *ActivityPaging
 	// UploadBack and UploadBackLabel: the refusal page of an upload (A-186, uploads.go) links back here.
 	UploadBack, UploadBackLabel string
 	// ImageStorage: admin page, stored photos and avatars against IMAGE_STORAGE_LIMIT_MB (uploads.go).

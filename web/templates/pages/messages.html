@@ -46,6 +46,7 @@
 <h2>No messages yet</h2>
 <p>Your sent and received encrypted messages will appear here.</p>
 </div>{{end}}</div>
+{{with .ActivityPaging}}{{if gt .Pages 1}}<p class="help">Showing {{.First}}–{{.Last}} of {{.Total}} messages.</p><nav class="pagination" aria-label="Message pages">{{if .PrevURL}}<a href="{{.PrevURL}}" rel="prev" aria-label="Previous page, page {{.PrevPage}} of {{.Pages}}">← Previous</a>{{end}}<span class="current" aria-current="page">Page {{.Page}} of {{.Pages}}</span>{{if .NextURL}}<a href="{{.NextURL}}" rel="next" aria-label="Next page, page {{.NextPage}} of {{.Pages}}">Next →</a>{{end}}</nav>{{end}}{{end}}
 <p class="help pgp-status-note">Status comes from inspecting OpenPGP packets: “to recipient’s key” means the message names a key ID from the public key the recipient had saved when it was sent. The server cannot decrypt messages and cannot confirm their contents. “Recipient unknown” means the recipient has no usable key saved, the recipient IDs are hidden, or the message is passphrase-encrypted.</p>
 </section>
 </div>

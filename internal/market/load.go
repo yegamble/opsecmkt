@@ -14,11 +14,50 @@ import (
 // A-181 (with A-16 catalog paging, A-60 PA-8): the catalog on / is searched with a capped, literal term and
 // served 25 listings a page, each card showing an excerpt; the product page keeps the full description.
 const (
-	searchMaxRunes  = 64  // characters of q kept, as the search boxes' maxlength counts them; so at most 256 bytes
-	filterMaxBytes  = 80  // category and region filters (a listing region is at most 80 bytes)
-	catalogPageSize = 25  // listings per catalog page
-	excerptRunes    = 300 // characters of description on a listing card, including the trailing "…"
+	searchMaxRunes   = 64  // characters of q kept, as the search boxes' maxlength counts them; so at most 256 bytes
+	filterMaxBytes   = 80  // category and region filters (a listing region is at most 80 bytes)
+	catalogPageSize  = 25  // listings per catalog page
+	excerptRunes     = 300 // characters of description on a listing card, including the trailing "…"
+	activityPageSize = 50  // rows per page on the signed-in user's orders, messages and notifications
 )
+
+// activityPaging is the signed-in user's history position. The count and row query share the same visibility
+// predicate; links contain only this user's page and, for messages, the validated recipient prefill.
+func activityPaging(path string, total int, raw string, extra url.Values) *ActivityPaging {
+	return activityPagingWithKey(path, "page", total, raw, extra)
+}
+
+func activityPagingWithKey(path, pageKey string, total int, raw string, extra url.Values) *ActivityPaging {
+	p := &ActivityPaging{Page: 1, Total: total, Pages: max(1, (total+activityPageSize-1)/activityPageSize)}
+	if n, err := strconv.Atoi(raw); err == nil && n > 1 {
+		p.Page = min(n, p.Pages)
+	} else if errors.Is(err, strconv.ErrRange) && !strings.HasPrefix(raw, "-") {
+		p.Page = p.Pages
+	}
+	if total > 0 {
+		p.First, p.Last = (p.Page-1)*activityPageSize+1, min(p.Page*activityPageSize, total)
+	}
+	link := func(n int) string {
+		v := maps.Clone(extra)
+		if v == nil {
+			v = url.Values{}
+		}
+		if n > 1 {
+			v.Set(pageKey, strconv.Itoa(n))
+		}
+		if encoded := v.Encode(); encoded != "" {
+			return path + "?" + encoded
+		}
+		return path
+	}
+	if p.Page > 1 {
+		p.PrevURL = link(p.Page - 1)
+	}
+	if p.Page < p.Pages {
+		p.NextURL = link(p.Page + 1)
+	}
+	return p
+}
 
 // cleanParam drops NUL bytes and invalid UTF-8 (PostgreSQL refuses both, which would be a 500), trims
 // surrounding space and cuts s to at most limit bytes without splitting a character.
@@ -84,6 +123,16 @@ type CatalogPaging struct {
 	Page, Pages, Total, First, Last int
 	PrevURL, NextURL                string
 }
+
+// ActivityPaging is one page of the signed-in user's activity history.
+type ActivityPaging struct {
+	Page, Pages, Total, First, Last int
+	PrevURL, NextURL                string
+}
+
+func (p ActivityPaging) PrevPage() int { return p.Page - 1 }
+func (p ActivityPaging) NextPage() int { return p.Page + 1 }
+func (p ActivityPaging) Offset() int   { return (p.Page - 1) * activityPageSize }
 
 // Offset is the number of listings before this page.
 func (p CatalogPaging) Offset() int { return (p.Page - 1) * catalogPageSize }
@@ -300,8 +349,16 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			if d.Page == "disputes" {
 				// Only disputable orders, and every one of them: an old shipped order must stay selectable.
 				query += " AND o.state IN ('paid','shipped','delivered') ORDER BY o.created DESC"
+			} else if d.Page == "orders" {
+				var total int
+				if err = a.db.QueryRowContext(ctx, "SELECT count(*) FROM orders o JOIN products p ON p.id=o.product_id WHERE o.buyer_id=$1 OR p.vendor_id=$1", d.User.ID).Scan(&total); err != nil {
+					return err
+				}
+				d.ActivityPaging = activityPaging("/orders", total, r.URL.Query().Get("page"), nil)
+				query += " ORDER BY o.created DESC,o.id DESC LIMIT $2 OFFSET $3"
+				args = append(args, activityPageSize, d.ActivityPaging.Offset())
 			} else {
-				query += " ORDER BY o.created DESC LIMIT 100"
+				query += " ORDER BY o.created DESC,o.id DESC LIMIT 1"
 			}
 			rows, err = a.db.QueryContext(ctx, query, args...)
 			if err != nil {
@@ -328,7 +385,12 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			}
 		}
 		if d.Page == "messages" {
-			rows, err = a.db.QueryContext(ctx, `SELECT m.id,s.handle,t.handle,m.body,to_char(m.created,'YYYY-MM-DD HH24:MI "UTC"') FROM messages m JOIN users s ON s.id=m.sender_id JOIN users t ON t.id=m.recipient_id WHERE m.sender_id=$1 OR m.recipient_id=$1 ORDER BY m.created DESC LIMIT 100`, d.User.ID)
+			var total int
+			if err = a.db.QueryRowContext(ctx, `SELECT count(*) FROM messages WHERE sender_id=$1 OR recipient_id=$1`, d.User.ID).Scan(&total); err != nil {
+				return err
+			}
+			d.ActivityPaging = activityPaging("/messages", total, r.URL.Query().Get("page"), nil)
+			rows, err = a.db.QueryContext(ctx, `SELECT m.id,s.handle,t.handle,m.body,to_char(m.created,'YYYY-MM-DD HH24:MI "UTC"') FROM messages m JOIN users s ON s.id=m.sender_id JOIN users t ON t.id=m.recipient_id WHERE m.sender_id=$1 OR m.recipient_id=$1 ORDER BY m.created DESC,m.id DESC LIMIT $2 OFFSET $3`, d.User.ID, activityPageSize, d.ActivityPaging.Offset())
 			if err != nil {
 				return err
 			}
@@ -347,7 +409,12 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			}
 		}
 		if d.Page == "notifications" {
-			rows, err = a.db.QueryContext(ctx, `SELECT id,body,to_char(created,'YYYY-MM-DD HH24:MI "UTC"'),is_read FROM notifications WHERE user_id=$1 ORDER BY created DESC LIMIT 100`, d.User.ID)
+			var total int
+			if err = a.db.QueryRowContext(ctx, `SELECT count(*) FROM notifications WHERE user_id=$1`, d.User.ID).Scan(&total); err != nil {
+				return err
+			}
+			d.ActivityPaging = activityPaging("/notifications", total, r.URL.Query().Get("page"), nil)
+			rows, err = a.db.QueryContext(ctx, `SELECT id,body,to_char(created,'YYYY-MM-DD HH24:MI "UTC"'),is_read FROM notifications WHERE user_id=$1 ORDER BY created DESC,id DESC LIMIT $2 OFFSET $3`, d.User.ID, activityPageSize, d.ActivityPaging.Offset())
 			if err != nil {
 				return err
 			}
@@ -369,7 +436,12 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			}
 		}
 		if d.Page == "admin" {
-			rows, err = a.db.QueryContext(ctx, "SELECT id,handle,role,pgp,xmpp FROM users ORDER BY created DESC LIMIT 100")
+			var total int
+			if err = a.db.QueryRowContext(ctx, "SELECT count(*) FROM users").Scan(&total); err != nil {
+				return err
+			}
+			d.AdminUsersPaging = activityPagingWithKey("/admin", "users_page", total, r.URL.Query().Get("users_page"), nil)
+			rows, err = a.db.QueryContext(ctx, "SELECT id,handle,role,pgp,xmpp FROM users ORDER BY created DESC,id DESC LIMIT $1 OFFSET $2", activityPageSize, d.AdminUsersPaging.Offset())
 			if err != nil {
 				return err
 			}
@@ -413,7 +485,18 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			}
 		}
 	}
-	return runLoaders(ctx, a, r, d)
+	if err := runLoaders(ctx, a, r, d); err != nil {
+		return err
+	}
+	// Recipient prefill is validated by its page loader, so carry it into links only after that validation ran.
+	if d.Page == "messages" && d.ActivityPaging != nil {
+		extra := url.Values{}
+		if d.MessageTo != "" {
+			extra.Set("to", d.MessageTo)
+		}
+		d.ActivityPaging = activityPaging("/messages", d.ActivityPaging.Total, r.URL.Query().Get("page"), extra)
+	}
+	return nil
 }
 
 func previewData(page string) PageData {
