@@ -67,7 +67,7 @@ func TestConcessionPooledRefundReleaseReceiptAndViews(t *testing.T) {
 				t.Fatal("exact concession replay changed redirect")
 			}
 			oneShot(t, p.testEnv, sess, first, orderPage(p.order)+"#order-dispute", "dispute-conceded",
-				"Dispute conceded. Check the order and payout or escrow settlement below.", "", 1, orderPage(p.order))
+				"Dispute conceded. Check the order and payout or escrow settlement below.", "", 2, orderPage(p.order))
 			if p.state(p.order) != wantState || p.count("SELECT stock FROM products WHERE id=$1", p.productID) != stock ||
 				p.count("SELECT count(*) FROM disputes WHERE id=$1 AND status=$2 AND outcome=$3", dispute, wantStatus, outcome) != 1 {
 				t.Fatal("concession changed wrong state, status, outcome or stock")
