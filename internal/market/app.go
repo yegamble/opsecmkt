@@ -516,7 +516,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		token = anon
 	}
-	r = r.WithContext(context.WithValue(context.WithValue(ctx, sessionKey{}, token), anonKey{}, anon))
+	r = r.WithContext(context.WithValue(context.WithValue(context.WithValue(ctx, sessionKey{}, token), anonKey{}, anon), rotationSessionKey{}, session))
 	ctx = r.Context()
 	if r.Method == "POST" {
 		// Everything here reads no database and holds no slot: a post takes its slot in a.post, after its
@@ -584,8 +584,8 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// a token derived from `anon`, and this same-site POST now sends both cookies. Serve it as the
 			// anonymous request the form was rendered for: never as the signed-in user, so the anon token
 			// grants nothing an anonymous visitor lacks, while that page's sign-in form and CAPTCHA work.
-			// Origin and Sec-Fetch-Site are checked above either way. A sign-in served this way replaces
-			// the `session` cookie; the previous session row lapses at expiry or with revoke-sessions.
+			// Origin and Sec-Fetch-Site are checked above either way. Successful sign-in
+			// rotates the original session cookie retained separately for that purpose; a refusal leaves it live.
 			if anon == "" || anon == token || subtle.ConstantTimeCompare(sent, []byte(a.csrf(anon))) != 1 {
 				http.Error(w, "Form expired. Reload and try again.", 403)
 				return

@@ -89,6 +89,13 @@ type actionCtx struct {
 
 func (c *actionCtx) Ctx() context.Context { return c.R.Context() }
 
+func rotationSession(c *actionCtx) string {
+	if old, ok := c.R.Context().Value(rotationSessionKey{}).(string); ok {
+		return old
+	}
+	return c.Token // action contexts built directly by tests keep their existing semantics
+}
+
 type actionResult struct {
 	Redirect    string // default "/"
 	Audit       string // recorded in audit_events in the same transaction when non-empty
@@ -447,6 +454,10 @@ func factorByName(name string) factorProvider {
 type sessionKey struct{}
 
 type anonKey struct{}
+
+// rotationSessionKey retains the original session cookie even if a matching anonymous CSRF
+// token makes this request anonymous. Only successful sign-in may revoke that session.
+type rotationSessionKey struct{}
 
 // sessionToken returns this request's token: the `session` cookie value, or else the pre-login `anon`
 // cookie value (including one issued by this response). CSRF and CAPTCHA are bound to it.

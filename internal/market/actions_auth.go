@@ -619,7 +619,7 @@ func authAction(c *actionCtx) (actionResult, error) {
 	if err = tx.Commit(); err != nil {
 		return actionResult{}, fail(500, "Unable to save account")
 	}
-	if err = a.login(ctx, w, id, c.Token, string(hash)); err != nil {
+	if err = a.login(ctx, w, id, rotationSession(c), string(hash)); err != nil {
 		return actionResult{}, fail(500, "Account created; sign in to continue")
 	}
 	if path == "/setup" {
@@ -671,7 +671,7 @@ func (a *App) soleAdminRecovery(c *actionCtx, id, checkedHash, code, next string
 			return actionResult{}, fail(500, "Unable to sign in")
 		}
 	}
-	token, err := a.startSession(ctx, tx, id, c.Token, "password and TOTP", digest(checkedHash))
+	token, err := a.startSession(ctx, tx, id, rotationSession(c), "password and TOTP", digest(checkedHash))
 	if err != nil {
 		var he *httpError
 		if errors.As(err, &he) {
@@ -803,7 +803,7 @@ func (a *App) secondFactor(c *actionCtx, userID, passwordHash, next string) (act
 	}
 	if len(names) == 0 {
 		var he *httpError
-		if err = a.login(ctx, c.W, userID, c.Token, passwordHash); errors.As(err, &he) { // suspended or password changed
+		if err = a.login(ctx, c.W, userID, rotationSession(c), passwordHash); errors.As(err, &he) { // suspended or password changed
 			return actionResult{}, err
 		} else if err != nil {
 			return actionResult{}, fail(500, "Unable to sign in")
@@ -871,7 +871,7 @@ func challengeAction(c *actionCtx) (actionResult, error) {
 	if _, err = c.Tx.ExecContext(ctx, "DELETE FROM pending_logins WHERE token_hash=$1 OR expires<now()", digest(pending)); err != nil {
 		return actionResult{}, err
 	}
-	token, err := a.startSession(ctx, c.Tx, userID, c.Token, "password and "+method, checked.String)
+	token, err := a.startSession(ctx, c.Tx, userID, rotationSession(c), "password and "+method, checked.String)
 	if err != nil {
 		return actionResult{}, err
 	}

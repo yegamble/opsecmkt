@@ -1092,6 +1092,37 @@ func TestAnonymousLandingFormPostsWhileSignedIn(t *testing.T) {
 	e.check(a48Do(e, "GET", "/account", nil, map[string]string{"session": fresh, "anon": anon}), 200)
 }
 
+// A-65: an anonymous form submitted with both cookies remains anonymous for authorization,
+// but a successful sign-in rotates the original browser session. Refused sign-ins must not
+// revoke it; the old token comes only from the cookie, never a submitted form field.
+func TestAnonymousCSRFSignInRotatesOriginalSessionOnlyOnSuccess(t *testing.T) {
+	e := newTestApp(t)
+	id, old := e.user("landing_rotation", "buyer")
+	anon := randomToken()
+	both := map[string]string{"session": old, "anon": anon}
+	form := url.Values{"csrf": {e.A.csrf(anon)}, "handle": {"landing_rotation"}, "password": {"wrong-password"}, "old_session": {randomToken()}}
+	e.check(a48Do(e, "POST", "/login", form, both), 401)
+	if agInt(e, "SELECT count(*) FROM sessions WHERE token_hash=$1 AND user_id=$2", digest(old), id) != 1 {
+		t.Fatal("refused sign-in revoked the original session")
+	}
+	// A session-derived CSRF token follows the ordinary path; an anon-derived token
+	// still cannot authorize a protected action with the otherwise valid session cookie.
+	e.check(a48Do(e, "POST", "/account", url.Values{"csrf": {e.A.csrf(anon)}}, both), 401)
+	if agInt(e, "SELECT count(*) FROM sessions WHERE token_hash=$1 AND user_id=$2", digest(old), id) != 1 {
+		t.Fatal("anonymous protected-action refusal revoked the original session")
+	}
+	form.Set("password", testPassword)
+	w := a48Do(e, "POST", "/login", form, both)
+	e.check(w, 303)
+	fresh := e.session(w)
+	if fresh == old || agInt(e, "SELECT count(*) FROM sessions WHERE token_hash=$1 AND user_id=$2", digest(fresh), id) != 1 {
+		t.Fatal("successful anonymous-form sign-in did not create a fresh session")
+	}
+	if agInt(e, "SELECT count(*) FROM sessions WHERE token_hash=$1", digest(old)) != 0 {
+		t.Fatal("successful anonymous-form sign-in left the prior browser session active")
+	}
+}
+
 // A-48: a browser with no cookies gets only the pre-login cookie; registering with it sets the session,
 // and a pre-upgrade anonymous `session` cookie still backs CSRF until sign-in replaces it.
 func TestPreLoginCookieSeparateFromSession(t *testing.T) {
