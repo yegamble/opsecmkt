@@ -25,6 +25,17 @@ The setup token opens `/setup` once. After setup, `status`, `add-mirror` and `up
 
 Commands that change `.env` (`init`, `setup-token --new`, `add-mirror`, `add-scanner`, `upgrade`, and `status` when it removes the token) hold the lock directory `.env.lock` while they run, so two of them cannot overwrite each other's changes; a second one refuses with a message (`status` only leaves the token). If a killed run left the lock behind, remove it with `rmdir .env.lock`. The installer switches off shell tracing, so `SHELLOPTS=xtrace` cannot print its secrets.
 
+### Recover after a failed first install
+
+`init` writes `.env` before pulling or starting the services. If a pinned image cannot be pulled or a service does not become healthy, the installer leaves `.env` and the data in place; a second `init` correctly refuses to overwrite that configuration. Keep this `.env`: it contains the secrets and Compose project settings for this installation. Check the startup error with `docker compose ps` and `docker compose logs`, correct the affected pinned image or service/profile settings in `.env` if needed, then run:
+
+```sh
+./scripts/install.sh check
+docker compose up -d --build --wait
+```
+
+Run the Compose command from this checkout, with the same `.env`; it retries startup without generating new secrets or selecting a new project. Do not remove `.env` to get past the `init` refusal, and do not remove volumes: they may already contain this installation's database or wallet data. If the failure was a temporary registry or network problem, fix or wait for that cause and repeat the check and `up` command.
+
 ## Clearnet and onion deployment
 
 For clearnet production, keep `COOKIE_SECURE=true` and terminate HTTPS with a reverse proxy on the same host. The app is published only on host loopback, at `127.0.0.1:${APP_PORT}` (`APP_PORT` in `.env`, default `8080`; inside its container the app always listens on 8080). A minimal host-installed Caddy configuration for the default port is below. If you chose another `APP_PORT`, use that port instead of 8080:
