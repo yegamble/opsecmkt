@@ -105,6 +105,10 @@ type PaymentReview struct {
 }
 type Event struct{ Handle, Action, Created string } // Handle: account the audit row is recorded on ("" = system)
 
+// SignInRefusal is a current, in-memory handle lockout on this application instance.
+// It is visible only on the administrator's sign-in protection panel.
+type SignInRefusal struct{ Handle, Until string }
+
 type PageData struct {
 	ServerStarted string
 	SchemaVersion int
@@ -178,6 +182,7 @@ type PageData struct {
 	// SuspendedAccounts: admin page, up to 100 suspended accounts, most recently suspended first
 	// (User.Suspended says when); the suspend/restore form itself takes any handle.
 	SuspendedAccounts []User
+	SignInRefusals    []SignInRefusal
 	// RoleHandle, RoleChoice, ResetHandle, SuspendHandle and SuspendChoice: admin page re-rendered after a
 	// handle matched no account, keeping what was typed into the role, second-factor reset or suspension form.
 	RoleHandle, RoleChoice, ResetHandle, SuspendHandle, SuspendChoice string
