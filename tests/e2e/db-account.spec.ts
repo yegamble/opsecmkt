@@ -3,7 +3,7 @@ import { FIXTURE_LISTING, uniqueHandle } from './db-fixtures';
 import { submitAndLoad } from './db-helpers';
 
 // Uses the listing published by db-setup.spec.ts and registers its own buyer.
-test('register, draft, profile persistence and session boundaries', async ({ page, browser, baseURL }) => {
+test('register, draft, removed XMPP field and session boundaries', async ({ page, browser, baseURL }) => {
   const handle = uniqueHandle('buyer');
   const password = 'browser-buyer-password-123';
   await page.goto('/register');
@@ -39,7 +39,7 @@ test('register, draft, profile persistence and session boundaries', async ({ pag
   await expect(page.getByLabel('XMPP address')).toHaveCount(0);
   const activity = page.getByRole('region', { name: 'Recent activity' });
   await expect(activity).toContainText('Signed in');
-  await expect(activity).toContainText('Updated profile');
+  await expect(activity).not.toContainText('Updated profile');
   await expect(activity).toContainText('Account created: buyer');
 
   // "Sign out everywhere" ends this session and one opened in a separate browser context.

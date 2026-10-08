@@ -66,7 +66,25 @@ class Handler(BaseHTTPRequestHandler):
         elif method == 'getwalletinfo': result = {'walletname':'opsecmkt'}
         elif method == 'getnetworkinfo': result = {'version':310100,'subversion':'/Satoshi:31.1.0/'}
         elif method == 'get_version': result = dict(wallet_version)
-        elif method == 'get_address': result = {'address':'5'+'a'*94}
+        elif method == 'get_address':
+            # Check asks only for the account's primary address. Incoming asks for a batch of account-0
+            # address indices and must get the exact issued XMR subaddresses back; BTC fixture entries in
+            # the shared map are not Monero wallet addresses.
+            primary = '5'+'a'*94
+            if 'address_index' not in params:
+                result = {'address':primary}
+            elif params.get('account_index', 0) != 0:
+                return self.reply({'jsonrpc':'2.0','id':data.get('id'),'error':{'code':-14,'message':'account index is out of bound'}})
+            else:
+                by_index = {index:address for address,index in addresses.items() if address.startswith('7')}
+                requested = params['address_index']
+                entries = []
+                for index in requested:
+                    address = primary if index == 0 else by_index.get(index)
+                    if address is None:
+                        return self.reply({'jsonrpc':'2.0','id':data.get('id'),'error':{'code':-15,'message':'address index is out of bound'}})
+                    entries.append({'address':address,'address_index':index})
+                result = {'address':primary,'addresses':entries}
         elif method == 'get_height': result = {'height':100}
         # A synced stagenet daemon with peers and a fresh top block (the pooled Monero sync guard, A-449).
         elif method == 'get_info': result = {'nettype':'stagenet','stagenet':True,'height':100,'target_height':100,'synchronized':True,'outgoing_connections_count':8,'incoming_connections_count':0}
