@@ -163,6 +163,15 @@ func (a *App) pollOnce(ctx context.Context) error {
 	}()
 	var errs []error
 	ready := a.providers()
+	// Only configured providers are observed. Intake policy does not enter this health signal.
+	// A configured provider refused by its network guard is still failing even if it waits for restart.
+	episodeBad := map[string]bool{}
+	for cur := range ready {
+		_, episodeBad[cur] = skip[cur]
+	}
+	for cur := range skip {
+		episodeBad[cur] = true
+	}
 	// A node whose tip is below the highest tip recorded for its currency and network (restarted from an older
 	// state, or a wallet rescanning after a restore) is treated as syncing: deposits it has not caught up with
 	// would otherwise be recorded as missing or back below the threshold and announced as regressions. A
@@ -221,8 +230,16 @@ func (a *App) pollOnce(ctx context.Context) error {
 			}
 		}
 		if err != nil {
+			episodeBad[cur] = true
 			errs = append(errs, &watchError{label: cur, err: err})
 		}
+	}
+	// The tip high-water comparison can add a skip after the initial provider checks.
+	for cur := range skip {
+		episodeBad[cur] = true
+	}
+	for cur, bad := range episodeBad {
+		a.noteProviderEpisode(ctx, "pooled_"+cur, bad)
 	}
 	return errors.Join(errs...)
 }

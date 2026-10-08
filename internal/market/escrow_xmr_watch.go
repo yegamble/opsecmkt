@@ -204,7 +204,7 @@ type xmrSlotRow struct {
 }
 
 // xmrEscrowPollOnce runs one Monero escrow pass unless another process holds its lock (see the file comment).
-func (a *App) xmrEscrowPollOnce(ctx context.Context) error {
+func (a *App) xmrEscrowPollOnce(ctx context.Context) (outcome error) {
 	x := a.escrowXMR
 	if a.db == nil || x == nil {
 		return nil
@@ -224,6 +224,10 @@ func (a *App) xmrEscrowPollOnce(ctx context.Context) error {
 		if _, err := conn.ExecContext(uctx, "SELECT pg_advisory_unlock($1)", xmrEscrowWatcherLock); err != nil {
 			conn.Raw(func(any) error { return driver.ErrBadConn })
 		}
+	}()
+	providerSynced, providerUnread := false, false
+	defer func() {
+		a.noteProviderEpisode(ctx, "escrow_XMR", !x.ready.Load() || !providerSynced || providerUnread || outcome != nil)
 	}()
 	// Monero escrow configured but not ready (its node unreachable, or refused): no wallet is touched, but the deadlines,
 	// which make no RPC, still apply, as escrowPollOnce applies Bitcoin escrow's when its node check fails (P3-R7).
@@ -246,6 +250,7 @@ func (a *App) xmrEscrowPollOnce(ctx context.Context) error {
 		if why != "" {
 			return a.xmrDeadlines(ctx)
 		}
+		providerSynced = true
 	}
 	var gate, sweep bool
 	if err = a.db.QueryRowContext(ctx, "SELECT "+restoreGateSQL+",EXISTS(SELECT 1 FROM settings WHERE key=$1 AND value='true')", xmrEscrowSweepKey).Scan(&gate, &sweep); err != nil {
@@ -291,7 +296,9 @@ func (a *App) xmrEscrowPollOnce(ctx context.Context) error {
 			var checked bool
 			checked, err = a.xmrWalletPass(ctx, w, now, paused, sweep, touched)
 			swept, read[w.id] = swept && checked, err == nil
+			providerUnread = providerUnread || !checked
 		case xmrOpenRefusal(err) == xmrOpenLocked:
+			providerUnread = true
 			// Another wallet program has its file open (an operator inspecting it, say): it waits, keeps its state and its
 			// slots, and is tried again on the next pass (A-421). Logged once while it lasts.
 			swept, err = false, nil
@@ -299,6 +306,7 @@ func (a *App) xmrEscrowPollOnce(ctx context.Context) error {
 				log.Printf("escrow: Monero escrow wallet %s is opened by another wallet program; not read until it is closed there", w.name)
 			}
 		case xmrWalletDenied(err):
+			providerUnread = true
 			// It did not open: recorded missing, or destroyed again on its own wrong-password refusal outside a restore when
 			// the market itself began destroying it (escrow_xmr_retain.go); checked, but never read.
 			if err = a.xmrWalletUnopenable(ctx, w, now, xmrOpenRefusal(err) == xmrOpenPassword && !paused); err != nil {
@@ -306,6 +314,7 @@ func (a *App) xmrEscrowPollOnce(ctx context.Context) error {
 			}
 		default:
 			swept = false
+			providerUnread = true
 		}
 		if err != nil {
 			errs = append(errs, &watchError{label: "monero escrow wallet " + w.name, class: xmrErrorClass(err), err: err})

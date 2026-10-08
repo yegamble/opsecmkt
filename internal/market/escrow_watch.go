@@ -128,7 +128,7 @@ func escrowWatcher(ctx context.Context, a *App) {
 // or broadcast. A node that is not synced is not an error: its state is logged once per change (noteEscrowSync). In
 // APP_MODE=tor the same node check evaluates the Tor-mode gate for the pass (torGate, A-441): while it holds, nothing is
 // sent, and everything else in the pass goes on.
-func (a *App) escrowPollOnce(ctx context.Context) error {
+func (a *App) escrowPollOnce(ctx context.Context) (outcome error) {
 	e := a.escrow.Load()
 	if a.db == nil || e == nil && !a.escrowConfigured {
 		return nil
@@ -195,6 +195,9 @@ func (a *App) escrowPollOnce(ctx context.Context) error {
 		if _, err := conn.ExecContext(uctx, "SELECT pg_advisory_unlock($1)", escrowWatcherLock); err != nil {
 			conn.Raw(func(any) error { return driver.ErrBadConn })
 		}
+	}()
+	defer func() {
+		a.noteProviderEpisode(ctx, "escrow_BTC", e == nil || nodeErr != nil || notSynced || outcome != nil)
 	}()
 	if e == nil || nodeErr != nil || notSynced {
 		return errors.Join(nodeErr, a.escrowDeadlines(ctx))
