@@ -81,6 +81,10 @@ type actionCtx struct {
 	// ConfirmedFormNonce is set only for an opted-in OwnTx action whose confirmedTx
 	// transaction owns both its mutation and the durable submission receipt.
 	ConfirmedFormNonce bool
+	// ReceiptAuthorize rechecks route-specific eligibility before a confirmed receipt
+	// can be claimed or replayed. It must be read-only and must not require the
+	// original transaction's pre-change state.
+	ReceiptAuthorize func(*actionCtx) error
 }
 
 func (c *actionCtx) Ctx() context.Context { return c.R.Context() }
@@ -94,11 +98,12 @@ type actionResult struct {
 }
 
 type actionSpec struct {
-	Public             bool     // allow anonymous; skips the write:<user> rate limit
-	Roles              []string // required user roles (implies signed in)
-	OwnTx              bool     // Run opens its own transactions (e.g. bcrypt before any tx); c.Tx is nil, Audit is written without a tx
-	FormNonce          bool     // this normal-transaction form records a successful submission and replays its original 303
-	ConfirmedFormNonce bool     // this confirmed OwnTx form records its receipt in confirmedTx's transaction
+	Public             bool                   // allow anonymous; skips the write:<user> rate limit
+	Roles              []string               // required user roles (implies signed in)
+	OwnTx              bool                   // Run opens its own transactions (e.g. bcrypt before any tx); c.Tx is nil, Audit is written without a tx
+	FormNonce          bool                   // this normal-transaction form records a successful submission and replays its original 303
+	ConfirmedFormNonce bool                   // this confirmed OwnTx form records its receipt in confirmedTx's transaction
+	ReceiptAuthorize   func(*actionCtx) error // optional current eligibility check before a confirmed claim/replay
 	// Precheck, when set, runs in ServeHTTP after the CSRF check and before the session lookup and the post
 	// slot: a check of the form alone (no database), so a flood of posts it refuses holds no slot (A-178).
 	// Run must still make the same checks; it is also called without Precheck (tests call post directly).
@@ -150,6 +155,9 @@ func registerAction(path string, s actionSpec) {
 	}
 	if s.ConfirmedFormNonce && (!s.OwnTx || s.Public || s.FormNonce || len(s.Roles) == 0) {
 		panic("confirmed form nonce requires a role-gated authenticated OwnTx action: " + path)
+	}
+	if s.ReceiptAuthorize != nil && !s.ConfirmedFormNonce {
+		panic("receipt authorization requires a confirmed form nonce: " + path)
 	}
 	actions[path] = s
 }
@@ -515,7 +523,8 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 	}
 	defer release()
 	ctx := r.Context()
-	c := &actionCtx{A: a, W: w, R: r, User: u, Token: token, Form: r.PostForm, ConfirmedFormNonce: spec.ConfirmedFormNonce}
+	c := &actionCtx{A: a, W: w, R: r, User: u, Token: token, Form: r.PostForm,
+		ConfirmedFormNonce: spec.ConfirmedFormNonce, ReceiptAuthorize: spec.ReceiptAuthorize}
 	if !spec.OwnTx {
 		tx, err := a.db.BeginTx(ctx, nil)
 		if err != nil {
@@ -569,6 +578,8 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 			switch r.URL.Path {
 			case "/admin/payout":
 				msg = "Payout outcome unknown: it may have been saved. Reload the admin page and check the payout state and audit trail before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
+			case "/resolve":
+				msg = "Resolution outcome unknown: it may have been saved. Check the dispute, order and payout state before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/totp/disable", "/totp/activate", "/totp/recovery":
 				msg = "Authenticator change outcome unknown: it may have been saved. Reload your authenticator settings and check their state before taking further action."
 			}

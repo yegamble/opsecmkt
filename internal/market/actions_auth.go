@@ -311,6 +311,11 @@ func confirmedTxWith(c *actionCtx, opts *confirmation, run func(c *actionCtx) (a
 		if err != nil {
 			return actionResult{}, err
 		}
+		if c.ReceiptAuthorize != nil {
+			if err = c.ReceiptAuthorize(c); err != nil {
+				return actionResult{}, err
+			}
+		}
 		var repeated bool
 		var saved actionResult
 		saved, repeated, err = claimFormSubmission(c)

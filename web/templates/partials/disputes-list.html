@@ -31,6 +31,7 @@ an archived listing opens by the order page's rule (A-164). */}}
 <strong>Unavailable.</strong> This order is not in the Disputed state, so no outcome can be recorded.</p>{{else if and $o.Escrow (ne $.User.Role "admin")}}<p class="order-unavailable" role="note">
 <strong>Unavailable.</strong> Only an administrator decides a dispute on a {{if eq $o.Currency "XMR"}}Monero escrow order ({{template "payment-status:xmr-net" $}}){{else}}Bitcoin escrow order ({{template "btc-escrow-chain" $.EscrowNet}}){{end}}: the decision moves coins from the escrow.</p>{{else}}<form class="stack" method="post" action="/resolve">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/resolve"}}">
 <input type="hidden" name="id" value="{{.ID}}">
 <input type="hidden" name="reply_seen" value="{{if .Reply}}1{{else}}0{{end}}">{{$p := index $.DisputePayouts .ID}}
 <p class="help" role="note">{{if .Reply}}The {{.ReplyRole}} replied; the reply is shown above.{{else if .Opener}}The {{.Responder}} has not replied; only the {{.Opener}}’s account is on record.{{else}}Who opened this dispute is not recorded, and neither party can reply.{{end}} {{if and $ev (or $ev.Buyer $ev.Vendor)}}Before deciding, ask each staff member listed under Encrypted evidence holders what the evidence they hold shows: you cannot read it.{{else}}Neither party has messaged a current moderator or administrator since this dispute opened, nor one recorded as removed from staff after being messaged.{{end}}</p>

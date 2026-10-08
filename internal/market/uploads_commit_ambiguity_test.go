@@ -82,6 +82,16 @@ type lostCommitConn struct {
 	lost *atomic.Bool
 }
 
+// Preserve pgx's argument conversion when the lost-acknowledgment fixture wraps
+// its connection. Resolution payouts pass []int64 payment IDs to PostgreSQL;
+// database/sql would reject the slice before Commit if this interface were hidden.
+func (c *lostCommitConn) CheckNamedValue(v *driver.NamedValue) error {
+	if checker, ok := c.Conn.(driver.NamedValueChecker); ok {
+		return checker.CheckNamedValue(v)
+	}
+	return driver.ErrSkip
+}
+
 func (c *lostCommitConn) Begin() (driver.Tx, error) {
 	tx, err := c.Conn.Begin()
 	if err != nil {

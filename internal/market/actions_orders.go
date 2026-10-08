@@ -12,7 +12,8 @@ func init() {
 	registerAction("/orders", actionSpec{FormNonce: true, Run: orderDraftAction})
 	registerAction("/disputes", actionSpec{FormNonce: true, Run: disputeAction})
 	registerAction("/disputes/reply", actionSpec{FormNonce: true, Run: disputeReplyAction})
-	registerAction("/resolve", actionSpec{Roles: []string{"moderator", "admin"}, OwnTx: true, Run: resolveAction})
+	registerAction("/resolve", actionSpec{Roles: []string{"moderator", "admin"}, OwnTx: true,
+		ConfirmedFormNonce: true, ReceiptAuthorize: resolveReceiptAuthorize, Run: resolveAction})
 	registerLoader("disputes", resolveConfirmLoader)
 }
 
@@ -230,6 +231,37 @@ func notifyDisputeStaff(c *actionCtx, o *Order) error {
 const noResolverNote = "No independent resolver was available: every moderator and administrator is a party to this order. An administrator must assign a moderator who is not a party to resolve this dispute."
 
 var disputeOutcomes = map[string]string{"release": "Resolved — release to vendor", "refund": "Resolved — refund to buyer"}
+
+// resolveReceiptAuthorize checks only eligibility that must still hold when a
+// successful /resolve form is replayed. It does not require an Open dispute or
+// disputed order: both have changed precisely because the first request
+// committed. The new request still takes the existing state checks in
+// resolveAction. This read takes no dispute/order/product row locks, avoiding
+// an inversion with escrow decision's order-then-dispute lock order.
+func resolveReceiptAuthorize(c *actionCtx) error {
+	var buyerID, vendorID, currency string
+	var escrow bool
+	err := c.Tx.QueryRowContext(c.Ctx(), `SELECT o.buyer_id,p.vendor_id,o.currency,
+		EXISTS(SELECT 1 FROM escrows e WHERE e.order_id=o.id)
+		FROM disputes d JOIN orders o ON o.id=d.order_id
+		JOIN products p ON p.id=o.product_id WHERE d.id=$1`, c.Form.Get("id")).Scan(&buyerID, &vendorID, &currency, &escrow)
+	if err == sql.ErrNoRows {
+		return fail(409, "Open dispute not found")
+	}
+	if err != nil {
+		return err
+	}
+	if escrow && c.User.Role != "admin" {
+		if currency == "XMR" {
+			return errXMREscrowResolveAdmin
+		}
+		return errEscrowResolveAdmin
+	}
+	if c.User.ID == buyerID || c.User.ID == vendorID {
+		return errForbidden
+	}
+	return nil
+}
 
 // resolveAction records the outcome, then moves disputed -> resolved as moderator (P3). The outcome is
 // written first so transition hooks (payouts) read it in the same transaction. A moderator who is a party
