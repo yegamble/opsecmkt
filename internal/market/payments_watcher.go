@@ -508,7 +508,23 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 		if err = a.flagOrder(ctx, tx, &o, note, ""); err != nil {
 			return err
 		}
-		body := "Order " + orderID[:min(8, len(orderID))] + ": locked transfer ignored. Deposit " + truncate(txid, 20) + " has an unlock time and does not count toward payment; send an ordinary transfer (" + a.netTag() + ")."
+		body := "Order " + orderID[:min(8, len(orderID))] + ": locked transfer ignored. Deposit " + truncate(txid, 20) + " has an unlock time and does not count toward payment."
+		if o.State == stateAwaitingPayment {
+			var seen int64
+			if err = tx.QueryRowContext(ctx, `SELECT COALESCE(sum(amount),0) FROM payments
+				WHERE order_id=$1 AND NOT locked AND NOT after_close AND disposition<>'refunded' AND confirmations>=0`, orderID).Scan(&seen); err != nil {
+				return err
+			}
+			required, parseErr := parseAmount(o.Amount, currencyDecimals(o.Currency))
+			if parseErr != nil {
+				return parseErr
+			}
+			if seen < required {
+				body += " The order still needs funding; send an ordinary transfer (" + a.netTag() + ") for the remaining amount."
+			} else {
+				body += " The required amount has been seen; do not send another payment and wait for confirmation."
+			}
+		}
 		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, body); err != nil {
 			return err
 		}

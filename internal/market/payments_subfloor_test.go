@@ -94,6 +94,34 @@ func TestLegacySubFloorListingRefusesBTCOrder(t *testing.T) {
 	}
 }
 
+func TestLegacySubFloorCopyOffersOnlyUsableAlternateCurrency(t *testing.T) {
+	p := newPayEnv(t)
+	p.legacySubFloor()
+	if _, err := p.DB.Exec("UPDATE products SET xmr=$1 WHERE id=$2", payoutFloor("XMR", "release")-1, p.productID); err != nil {
+		t.Fatal(err)
+	}
+	for _, currency := range []string{"BTC", "XMR"} {
+		w := p.do("POST", "/orders", p.buyerSess, url.Values{"product_id": {p.productID}, "currency": {currency}})
+		if w.Code != 400 {
+			t.Fatalf("%s draft status=%d, want 400", currency, w.Code)
+		}
+		body := html.UnescapeString(w.Body.String())
+		mustContain(t, body, "cannot be ordered in "+currency, "Ask the vendor to raise the")
+		other := "BTC"
+		if currency == "BTC" {
+			other = "XMR"
+		}
+		mustNotContain(t, body, "Order in "+other)
+	}
+	if _, err := p.DB.Exec("UPDATE products SET xmr=$1 WHERE id=$2", payoutFloor("XMR", "release"), p.productID); err != nil {
+		t.Fatal(err)
+	}
+	w := p.do("POST", "/orders", p.buyerSess, url.Values{"product_id": {p.productID}, "currency": {"BTC"}})
+	if w.Code != 400 || !strings.Contains(html.UnescapeString(w.Body.String()), "Order in XMR, or ask the vendor") {
+		t.Fatalf("BTC draft with usable XMR alternate: status=%d body=%q", w.Code, w.Body.String())
+	}
+}
+
 // An overpayment more than the price of a legacy sub-floor order is held for an administrator as one release;
 // the parties are told the price is the cause, and the complete form states the same outcome.
 func TestSubFloorPriceOverpaymentIsHeld(t *testing.T) {
@@ -146,6 +174,9 @@ func TestSubFloorPriceOverpaymentIsHeld(t *testing.T) {
 	}
 	// The existing large-hold release path: refused without the review, sent once after it.
 	id := p.payoutID(p.order)
+	adminPage := html.UnescapeString(p.body("GET", "/admin", p.adminSess, nil, 200))
+	mustContain(t, adminPage, "This is a release to the vendor, not a refund.", "there is no separate buyer-return payout", "send it manually from the pooled wallet", "Mark sent only for this vendor release and its transaction ID")
+	mustNotContain(t, adminPage, "This refund is larger", "this payment is a genuine mistake and may be returned")
 	release := url.Values{"payout_id": {id}, "op": {"release"}, "password": {testPassword}}
 	if w := p.do("POST", "/admin/payout", p.adminSess, release); w.Code != 409 || !strings.Contains(w.Body.String(), "larger than the order price") {
 		t.Fatalf("release without review: %d", w.Code)

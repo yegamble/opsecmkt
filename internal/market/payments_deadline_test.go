@@ -11,7 +11,7 @@ import (
 // its expiry query (settleOrder): the later of the address's issue time and the latest deposit that counts (not
 // conflicted, not locked), plus PAYMENT_EXPIRY. System and moderator moves tell the parties why.
 
-const cancellationSentence = ", it can be cancelled; a new deposit moves this time; anything sent after cancellation is not refunded automatically."
+const cancellationSentence = ", it can be cancelled; this time moves when the wallet observes a new deposit, which may be later than when it was sent; anything sent after cancellation is not refunded automatically."
 
 func cancelAfter(t time.Time) string {
 	return "If the order is still unpaid or short at " + t.UTC().Truncate(time.Minute).Format("2006-01-02 15:04") + " UTC" + cancellationSentence

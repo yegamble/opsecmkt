@@ -429,12 +429,41 @@ func TestMoneroLockedTransfersAreNotCredited(t *testing.T) {
 	if n := p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE '%locked transfer ignored%'", p.buyer.ID); n != 1 {
 		t.Fatalf("buyer locked notifications: %d", n)
 	}
+	lockedNotice := p.str("SELECT body FROM notifications WHERE user_id=$1 AND body LIKE '%locked transfer ignored%'", p.buyer.ID)
+	if !strings.Contains(lockedNotice, "The order still needs funding; send an ordinary transfer") {
+		t.Fatalf("short awaiting order lacks relevant funding instruction: %q", lockedNotice)
+	}
 	if body := p.page("/order?id="+p.order, p.buyerSess); !strings.Contains(body, "Locked transfer — not counted") {
 		t.Fatal("order page does not show the locked transfer")
 	}
 	p.move(p.order, stateAwaitingPayment, stateCancelled, p.buyer)
 	if n := p.count("SELECT count(*) FROM payouts WHERE order_id=$1", p.order); n != 0 {
 		t.Fatal("locked transfer refunded automatically")
+	}
+	waiting := newPayEnv(t)
+	waiting.fake.Deposit(waiting.addr, "tx-confirming-enough", 0, 100000, 1)
+	waiting.fake.mu.Lock()
+	waiting.fake.outputs = append(waiting.fake.outputs, Incoming{Address: waiting.addr, TxID: "tx-locked-confirming", Amount: 100000, Confirmations: 5, Locked: true})
+	waiting.fake.mu.Unlock()
+	waiting.poll()
+	if waiting.state(waiting.order) != stateAwaitingPayment {
+		t.Fatal("confirming full amount moved the order before reaching threshold")
+	}
+	waitingNotice := waiting.str("SELECT body FROM notifications WHERE user_id=$1 AND body LIKE '%locked transfer ignored%'", waiting.buyer.ID)
+	if !strings.Contains(waitingNotice, "The required amount has been seen; do not send another payment") || strings.Contains(waitingNotice, "send an ordinary transfer") {
+		t.Fatalf("confirming full amount notice asks for another payment: %q", waitingNotice)
+	}
+	for _, state := range []string{statePaid, stateCancelled} {
+		closed := newPayEnv(t)
+		order, addr := closed.newOrder(state)
+		closed.fake.mu.Lock()
+		closed.fake.outputs = append(closed.fake.outputs, Incoming{Address: addr, TxID: "tx-locked-no-topup", Amount: 100000, Confirmations: 5, Locked: true})
+		closed.fake.mu.Unlock()
+		closed.poll()
+		notice := closed.str("SELECT body FROM notifications WHERE user_id=$1 AND body LIKE '%locked transfer ignored%'", closed.buyer.ID)
+		if !strings.Contains(notice, "locked transfer ignored") || strings.Contains(notice, "send an ordinary transfer") || strings.Contains(notice, "order still needs funding") {
+			t.Fatalf("%s order locked-transfer notice has a stale funding instruction: %q", state, notice)
+		}
 	}
 }
 
