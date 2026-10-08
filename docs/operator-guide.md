@@ -877,14 +877,16 @@ been done. Never switch it on for a market that takes real payments.
   the order open; if it confirms after the order was cancelled and no refund spends it, it is returned by a stray
   refund (*Stray refunds* below; A-428), on an order whose refund failed because the escrow's coins were too few
   together with those coins (A-435; on an order decided for the buyer too, A-437).
-- **Fingerprint pin.** At the first start with escrow on, the app reads the arbiter wallet's master key fingerprint
-  (from a fresh change address, with `getrawchangeaddress` and `getaddressinfo`) and pins it in the database
-  (`settings` key `escrow_btc_arbiter_fingerprint`). If a later start finds another fingerprint, for example a
-  different wallet under that name, escrow is disabled with "escrow: Bitcoin escrow disabled: the arbiter wallet's
-  key fingerprint differs from the one pinned in this database". Load the right wallet; the watcher's next retry
-  enables escrow (or restart). On a regtest market where you mean to replace the arbiter key, delete that settings
-  row first, and only while no escrow exists (`SELECT count(*) FROM escrows` is 0): every escrow holds a child of
-  the arbiter key, and with another key the market can never co-sign for it. Neither the fingerprint nor any key is ever logged.
+- **Arbiter key pin.** At the first start with escrow on, the app reads the arbiter wallet's master key fingerprint
+  and BIP84 account key (from a fresh change address, with `getrawchangeaddress` and `getaddressinfo`). It pins the
+  fingerprint in `settings` (`escrow_btc_arbiter_fingerprint`) and a key-rooted HMAC of the account key's chain code
+  and public key (`escrow_btc_arbiter_xpub_hmac`); the account key itself is not stored. On an older database that
+  has only the fingerprint pin, the first upgraded start records the HMAC only when the observed fingerprint matches
+  that existing pin. A later fingerprint change, or a different account key with the same fingerprint, disables
+  escrow with a fixed operator line. Load the right wallet; the watcher's next retry enables escrow (or restart).
+  On a regtest market where you mean to replace the arbiter key, delete both settings rows first, and only while no
+  escrow exists (`SELECT count(*) FROM escrows` is 0): every escrow holds a child of the arbiter key, and with another
+  key the market can never co-sign for it. Neither the fingerprint, account key, nor HMAC is ever logged.
 - **Switching escrow off with escrow orders open.** Setting `ESCROW_BTC` back to `off` (or escrow being disabled
   because its node is down) moves no coins and closes no order, but it stops the escrow watcher: an open escrow
   order is not cancelled when its payment window ends, and deposits to its escrow are not recorded, so it is not

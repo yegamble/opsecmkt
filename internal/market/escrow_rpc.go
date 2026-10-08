@@ -174,12 +174,14 @@ const (
 	escrowLogArbiterUse   = "escrow: Bitcoin escrow disabled: the arbiter wallet must be used for the escrow key only (an unencrypted descriptor wallet with private keys that has never spent); see docs/operator-guide.md, \"Bitcoin escrow (test networks only)\""
 	escrowLogArbiterRead  = "escrow: Bitcoin escrow disabled: the arbiter wallet's transactions could not be read to check that it has never spent (is listsinceblock on the escrow user's rpcwhitelist, and the node answering?); the read is retried every poll, or after a wait when it took 5 s or more or timed out (1 minute, doubling up to 1 hour; restarting the app reads at once); see docs/operator-guide.md, \"Bitcoin escrow (test networks only)\""
 	escrowLogArbiterWait  = "escrow: Bitcoin escrow off while the arbiter wallet is checked: reading its transactions takes longer than startup allows; the read goes on, and the escrow watcher starts escrow once it has passed"
+	escrowLogArbiterKey   = "escrow: Bitcoin escrow disabled: the arbiter account key differs from the one pinned in this database; see docs/operator-guide.md, \"Bitcoin escrow (test networks only)\""
 	escrowLogFixedFee     = "escrow: the market fee is paid to one fixed address (ESCROW_BTC_FEE_ADDRESS); allowed on test networks only"
 	escrowLogRefused      = "escrow: Bitcoin escrow disabled until the app is restarted: the escrow node is on a chain escrow does not run on (mainnet, testnet3 or another), or it refused ESCROW_BTC_FEE_ADDRESS"
 	escrowLogUnrecorded   = "escrow: Bitcoin escrow disabled: its arbiter fingerprint could not be checked in the database"
 	escrowLogChain        = "escrow: Bitcoin escrow disabled: the escrow node is not on the chain this database's escrows are on (escrow_btc_chain); the admin page names both; see docs/operator-guide.md, \"Bitcoin escrow (test networks only)\""
 	escrowLogPooledKey    = "escrow: Bitcoin escrow disabled: the pooled Bitcoin RPC user (BITCOIN_RPC_URL) was not refused listdescriptors, gethdkeys or walletprocesspsbt on the arbiter wallet, so it may be able to export or sign with the market's escrow key; give that user the pooled rpcwhitelist line, or run escrow on a node of its own; see docs/operator-guide.md, \"The pooled RPC user\""
 	escrowFingerprintPin  = "escrow_btc_arbiter_fingerprint" // settings key
+	escrowArbiterKeyPin   = "escrow_btc_arbiter_xpub_hmac"   // settings key: HMAC of the account chain code and public key
 	escrowChainPin        = "escrow_btc_chain"               // settings key: escrowChainID of the node the database's escrows are on (A-439)
 	escrowArbiterChecked  = "escrow_btc_arbiter_checked"     // settings key: the arbiter wallet check's checkpoint (QA4W4A-1, arbiterCheckpoint)
 	escrowFingerprintSize = 8
@@ -303,6 +305,12 @@ func (a *App) startEscrow(ctx context.Context) (state, class string, err error) 
 	}
 	if !ok {
 		return escrowLogFingerprint, "", nil
+	}
+	if ok, err = pinArbiterKeyHMAC(ctx, a.db, e.fingerprint, a.escrowXPubHMAC(e.arbiterKey.ChainCode, e.arbiterKey.PubKey)); err != nil {
+		return "", "", err
+	}
+	if !ok {
+		return escrowLogArbiterKey, "", nil
 	}
 	if state, class, err := a.checkArbiterWallet(ctx, e); state != "" || err != nil {
 		return state, class, err
@@ -452,6 +460,22 @@ func pinArbiterFingerprint(ctx context.Context, db *sql.DB, fp string) (bool, er
 		return false, err
 	}
 	return pinned == fp, nil
+}
+
+// pinArbiterKeyHMAC records the arbiter account key's chain code and public key the first time the already-pinned
+// fingerprint matches. It never changes either pin: on a legacy database, the current key is backfilled only when its
+// fingerprint agrees with the value recorded before this check was introduced.
+func pinArbiterKeyHMAC(ctx context.Context, db *sql.DB, fp, mac string) (bool, error) {
+	if _, err := db.ExecContext(ctx, `INSERT INTO settings(key,value)
+		SELECT $1,$2 WHERE EXISTS(SELECT 1 FROM settings WHERE key=$3 AND value=$4)
+		ON CONFLICT (key) DO NOTHING`, escrowArbiterKeyPin, mac, escrowFingerprintPin, fp); err != nil {
+		return false, err
+	}
+	var pinned string
+	if err := db.QueryRowContext(ctx, "SELECT COALESCE((SELECT value FROM settings WHERE key=$1),'')", escrowArbiterKeyPin).Scan(&pinned); err != nil {
+		return false, err
+	}
+	return pinned != "" && pinned == mac, nil
 }
 
 // escrowChainID is the identity escrow pins for a node (P4-R4): its chain name, plus its signet_challenge on signet, so
