@@ -582,7 +582,7 @@ jobs:
   upgrade:
     name: Upgrade from v0.1.0-alpha.1
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -593,6 +593,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Install age for the encrypted upgrade and restore rehearsal
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends age
       - name: Migrate a populated alpha.1 database on PostgreSQL 17 with the current server
         run: bash scripts/test-upgrade.sh
   tor-image:

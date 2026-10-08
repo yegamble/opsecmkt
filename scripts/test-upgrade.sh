@@ -5,15 +5,16 @@
 # populates it through alpha.1's own HTTP forms (admin, vendor, buyers, a listing, BTC/XMR order drafts with
 # the old status text, an armored message), stops it, then boots the server built from this checkout against
 # the same database and checks the migrated data and behaviour, then that it refuses to start on a database
-# recording a migration it does not include (rollback rehearsal). Needs Docker, Go, Git (with the tag fetched)
-# and Python 3. Nothing outside the container, a temporary directory and two loopback ports is touched.
+# recording a migration it does not include, then performs a disposable Tor-mode deployment upgrade and
+# side-by-side restore. Needs Docker, Go, Git (with the tag fetched), Python 3 and age. Only temporary deployment
+# files, project-owned containers/volumes and loopback ports are used.
 set -euo pipefail
 umask 077
 unset COMPOSE_PROFILES COMPOSE_FILE
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
 from_ref=${UPGRADE_FROM_REF:-v0.1.0-alpha.1}
-for dependency in docker go git python3; do
+for dependency in docker go git python3 age age-keygen; do
   command -v "$dependency" >/dev/null || { echo "Missing dependency: $dependency" >&2; exit 1; }
 done
 git rev-parse --verify --quiet "${from_ref}^{commit}" >/dev/null || {
@@ -461,4 +462,8 @@ grep -q 'UPGRADING.md, section "Rolling back"' "$work/refused.log"
 sql -c 'DELETE FROM schema_migrations WHERE version=999'
 start_server roll-forward "$work/new-server" "$root"
 stop_server
+# Exercise the supported deployment upgrade and side-by-side restore flow in one disposable Tor-mode Compose
+# directory. Its overlay binds the app only to loopback and puts Tor on an internal network; it makes no claim
+# that a Tor circuit or public onion service was established.
+bash scripts/test-tor-upgrade-rollback.sh "$from_ref"
 echo "Upgrade from $from_ref passed: health, every migration recorded once, orders migrated to draft, one draft per buyer/product/currency, data and sign-in preserved; the pooled drain gate lists seeded blockers of every kind and then none; an escrow key row migration 089 refuses stops startup with its message; a database from a newer release is refused at startup."
