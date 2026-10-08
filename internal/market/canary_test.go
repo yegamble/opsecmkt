@@ -58,7 +58,7 @@ func TestCanaryView(t *testing.T) {
 	if !v.Verified || v.Error != "" || v.Statement != statement || v.SignedAt != "2026-01-02 04:34 UTC" || v.Posted != "2026-01-02 23:00 UTC" {
 		t.Fatalf("valid canary: %+v", v)
 	}
-	if v.Fingerprint != groupFingerprint(fp) || strings.ReplaceAll(v.Fingerprint, " ", "") != fp || v.Clearsigned != signed || v.OperatorKey != operatorPub {
+	if v.Fingerprint != groupFingerprint(fp) || strings.ReplaceAll(v.Fingerprint, " ", "") != fp || v.Clearsigned != signed || v.OperatorKey != strings.TrimSpace(operatorPub) {
 		t.Fatalf("fingerprint/raw text: %+v", v)
 	}
 	// Browsers submit textarea content with CRLF line endings.
@@ -114,5 +114,37 @@ func TestPreviewCanaryIsRealAndLabelled(t *testing.T) {
 	v := previewCanary()
 	if !v.Verified || !strings.HasPrefix(v.Statement, "PREVIEW SAMPLE") || v.Fingerprint == "" {
 		t.Fatalf("preview canary: %+v", v)
+	}
+}
+
+// A-201: previously stored photo/private packets must never be published with the canary key.
+// Stripping must keep its fingerprint and real statement verification; unpublishable keys show no key.
+func TestCanaryStripsLegacyOperatorKeyPackets(t *testing.T) {
+	key, photo, plain := testPhotoIDKey(t, "legacy_operator")
+	signed := canarySign(t, key, "Operator statement.", time.Now())
+	_, fp, canonical, err := parseCanonicalPublicKey(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	variants := testPhotoIDVariants(t, key)
+	variants["original photo"] = photoIDVariant{armored: photo}
+	for name, variant := range variants {
+		t.Run(name, func(t *testing.T) {
+			v := canaryView(variant.armored, signed, time.Now())
+			if !v.Verified || v.OperatorKey != canonical || v.Fingerprint != groupFingerprint(fp) {
+				t.Fatalf("legacy operator key leaked packets or lost verification: %+v", v)
+			}
+			if _, photos, other := keyExtraPackets(v.OperatorKey); photos != 0 || other != 0 {
+				t.Fatalf("published key has %d photo and %d extra packets", photos, other)
+			}
+		})
+	}
+	for name, armored := range testSplitKeyVariants(t, key) {
+		t.Run(name, func(t *testing.T) {
+			v := canaryView(armored, signed, time.Now())
+			if v.OperatorKey != "" || v.Verified || v.KeyError == "" || v.Error == "" || v.Clearsigned != signed {
+				t.Fatalf("unpublishable operator key leaked or masked invalid statement: %+v", v)
+			}
+		})
 	}
 }

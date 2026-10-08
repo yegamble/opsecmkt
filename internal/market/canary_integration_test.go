@@ -121,3 +121,68 @@ func TestCanaryIntegration(t *testing.T) {
 		t.Fatal("database tampering not detected")
 	}
 }
+
+// A-201: refuse photo IDs and other unpublishable packets at the operator-key endpoint,
+// without changing settings/audits. Legacy rows still serve a usable, stripped public key.
+func TestOperatorKeyPacketPrivacy(t *testing.T) {
+	e := newTestApp(t)
+	adminID, admin := e.user("operator_privacy_admin", "admin")
+	key, photo, plain := testPhotoIDKey(t, "operator_packet_privacy")
+	_, fp, canonical, err := parseCanonicalPublicKey(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.check(e.do("POST", "/admin/operator-key", admin, url.Values{"operator_key": {plain}}), 303)
+	type row struct {
+		key, fp string
+		audits  int
+	}
+	state := func() (r row) {
+		t.Helper()
+		if err := e.DB.QueryRow(`SELECT
+   (SELECT value FROM settings WHERE key='operator_pgp_key'),
+   (SELECT value FROM settings WHERE key='operator_pgp_fingerprint'),
+   (SELECT count(*) FROM audit_events WHERE user_id=$1)`, adminID).Scan(&r.key, &r.fp, &r.audits); err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	before := state()
+	if before.key != canonical || before.fp != fp {
+		t.Fatalf("operator key not canonical: %+v", before)
+	}
+	variants := testPhotoIDVariants(t, key)
+	variants["original photo"] = photoIDVariant{armored: photo}
+	signed := canarySign(t, key, "Operator statement.", time.Now())
+	for name, variant := range variants {
+		t.Run(name, func(t *testing.T) {
+			w := e.do("POST", "/admin/operator-key", admin, url.Values{"operator_key": {variant.armored}})
+			if w.Code != 400 || !strings.Contains(w.Body.String(), "Operator key rejected:") {
+				t.Fatalf("photo/private operator key accepted: %d", w.Code)
+			}
+			if after := state(); after != before {
+				t.Fatalf("rejected operator key changed settings/audit: %+v -> %+v", before, after)
+			}
+		})
+	}
+	// Simulate a pre-refusal database row. Public and administrator views show only allowed packets.
+	e.mustExec("UPDATE settings SET value=$1 WHERE key='operator_pgp_key'", photo)
+	e.check(e.do("POST", "/admin/canary", admin, url.Values{"canary": {signed}}), 303)
+	for _, path := range []string{"/canary", "/admin"} {
+		session := ""
+		if path == "/admin" {
+			session = admin
+		}
+		page := e.body("GET", path, session, nil, 200)
+		keys := shownKeys(t, page)
+		if len(keys) == 0 {
+			t.Fatalf("%s omitted the usable operator public key", path)
+		}
+		for _, packets := range keys {
+			if packets != armorPackets(t, canonical) {
+				t.Fatalf("%s published a legacy operator photo ID", path)
+			}
+		}
+		mustContain(t, page, "Signature verified", groupFingerprint(fp))
+	}
+}

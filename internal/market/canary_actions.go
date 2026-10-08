@@ -57,11 +57,16 @@ func operatorKeyAction(c *actionCtx) (actionResult, error) {
 	if armored == "" || len(armored) > 65536 {
 		return actionResult{}, fail(400, "Paste the operator's armored PGP public key")
 	}
-	_, fp, err := parsePublicKey(armored)
+	if _, photos, other := keyExtraPackets(armored); photos > 0 {
+		return actionResult{}, fail(400, "Operator key rejected: it contains a photo ID; remove it before publishing the public key")
+	} else if other > 0 {
+		return actionResult{}, fail(400, "Operator key rejected: it contains an OpenPGP packet type this market does not publish")
+	}
+	_, fp, canonical, err := parseCanonicalPublicKey(armored)
 	if err != nil {
 		return actionResult{}, fail(400, "Operator key rejected: "+err.Error())
 	}
-	if err = setSetting(c, settingOperatorKey, armored); err != nil {
+	if err = setSetting(c, settingOperatorKey, canonical); err != nil {
 		return actionResult{}, err
 	}
 	if err = setSetting(c, settingOperatorFingerprint, fp); err != nil {
