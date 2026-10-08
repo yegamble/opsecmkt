@@ -224,12 +224,12 @@ func TestPooledDrainFlaggedPaymentsFollowTheOpenFlagRule(t *testing.T) {
 // The migration carries the open-flag rule verbatim (it cannot call Go): a change to paymentFlagOpenRule needs a new
 // migration redefining pooled_drain_blockers, and this test says so.
 func TestPooledDrainMigrationCarriesTheOpenFlagRule(t *testing.T) {
-	b, err := fs.ReadFile(migrationFiles, "migrations/091_pooled_drain_blockers.sql")
+	b, err := fs.ReadFile(migrationFiles, "migrations/092_pooled_stalled_review.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(b), paymentFlagOpen("pm")) {
-		t.Fatal("migration 091's flagged_payment rule is not paymentFlagOpen(\"pm\"): redefine pooled_drain_blockers in a new migration")
+		t.Fatal("latest drain migration's flagged_payment rule is not paymentFlagOpen(\"pm\"): redefine pooled_drain_blockers in a new migration")
 	}
 }
 
@@ -393,7 +393,7 @@ func TestPooledDrainPendingDepositFlaggedOnConfirmation(t *testing.T) {
 		t.Fatalf("inside the horizon: %s", r)
 	}
 	wantRows(t, "inside the horizon", listedKinds(t, p.testEnv), "watched_address")
-	if d := p.str("SELECT detail FROM pooled_drain_blockers() WHERE kind='watched_address'"); !strings.HasSuffix(d, ", and after that while recorded deposit pending-late:0 awaits confirmation") {
+	if d := p.str("SELECT detail FROM pooled_drain_blockers() WHERE kind='watched_address'"); !strings.HasSuffix(d, ", and after that while recorded deposit pending-late:0 awaits confirmation or staff review 14 days after the later of the horizon and first observation") {
 		t.Fatalf("detail inside the horizon: %q", d)
 	}
 
@@ -405,7 +405,7 @@ func TestPooledDrainPendingDepositFlaggedOnConfirmation(t *testing.T) {
 		t.Fatalf("past the horizon, the watcher did not read the deposit: %s", r)
 	}
 	wantRows(t, "past the horizon, pending", drainRows(t, p.testEnv, "watched_address"),
-		p.addr+"|"+p.order+"|BTC|until recorded deposit pending-late:0 confirms (it is then flagged for review) or leaves the wallet; its watch horizon ended "+
+		p.addr+"|"+p.order+"|BTC|until recorded deposit pending-late:0 confirms, leaves the wallet, or reaches staff review 14 days after the later of the horizon and first observation; its watch horizon ended "+
 			p.str("SELECT to_char((updated+interval '24 hours') AT TIME ZONE 'UTC','YYYY-MM-DD HH24:MI \"UTC\"') FROM orders WHERE id=$1", p.order))
 
 	// It confirms: flagged for review (kind 3) and no longer a watched address; the desk disposition clears it.
@@ -458,6 +458,15 @@ func TestPooledDrainPendingDepositEndsWhenTheWalletDropsIt(t *testing.T) {
 		}
 	}
 	wantRows(t, "ended", listedKinds(t, p.testEnv))
+	// Crossing the later review deadline cannot revive a missing or conflicted deposit.
+	agExec(p.testEnv, "UPDATE orders SET updated=now()-interval '40 days'")
+	agExec(p.testEnv, "UPDATE payment_addresses SET created=now()-interval '50 days'")
+	agExec(p.testEnv, "UPDATE payments SET created=now()-interval '50 days'")
+	p.poll()
+	wantRows(t, "ended after review deadline", listedKinds(t, p.testEnv))
+	if n := p.count("SELECT count(*) FROM payments WHERE flagged"); n != 0 {
+		t.Fatalf("negative-confirmation deposits raised %d reviews", n)
+	}
 	// Not read any more: neither reappearing nor confirming is recorded.
 	p.fake.Deposit(p.addr, "drop-me", 0, 40000, 6)
 	p.fake.SetConfirmations("conflict-me", 6)
@@ -548,15 +557,15 @@ func TestPooledDrainWatcherPredicateEquivalence(t *testing.T) {
 // pooled_drain_blockers, and pooled_pending_deposit (which only names the deposit in the detail) agrees with it on every
 // recorded state, another currency's row at the same address included.
 func TestPooledDrainPendingRuleShared(t *testing.T) {
-	b, err := fs.ReadFile(migrationFiles, "migrations/091_pooled_drain_blockers.sql")
+	b, err := fs.ReadFile(migrationFiles, "migrations/092_pooled_stalled_review.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(b), "     AND "+pendingDepositSQL) {
-		t.Fatal("migration 091's pending rule is not pendingDepositSQL: redefine pooled_drain_blockers in a new migration")
+		t.Fatal("latest drain migration's pending rule is not pendingDepositSQL: redefine pooled_drain_blockers in a new migration")
 	}
 	if strings.Contains(string(b), "pooled_pending_deposit(pa.currency, pa.address) IS NOT NULL") {
-		t.Fatal("migration 091 selects rows by the function call instead of the inline rule")
+		t.Fatal("latest drain migration selects rows by the function call instead of the inline rule")
 	}
 	f := newDrainFixture(t)
 	type dep struct {
