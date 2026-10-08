@@ -19,7 +19,7 @@ const (
 )
 
 func init() {
-	registerAction("/orders/pay", actionSpec{OneAtATime: true, Run: payAction})
+	registerAction("/orders/pay", actionSpec{OneAtATime: true, FormNonce: true, Run: payAction})
 	registerAction("/orders/cancel", actionSpec{FormNonce: true, Run: cancelAction})
 	registerAction("/orders/ship", actionSpec{FormNonce: true, Run: shipAction})
 	registerAction("/orders/deliver", actionSpec{FormNonce: true, Run: deliverAction})

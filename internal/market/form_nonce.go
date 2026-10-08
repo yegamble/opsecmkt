@@ -42,7 +42,10 @@ var errFormNonceMismatch = fail(409, "This form was already used for a different
 
 // claimFormSubmission inserts the claim before the action does any work. PostgreSQL's unique key makes a
 // concurrent same-nonce request wait for the first transaction: after a rollback it can run, and after a
-// commit it reads the original success. No failed action leaves a claim behind.
+// commit it reads the original success. OneAtATime actions still refuse in-flight repeats before opening a
+// database transaction; retrying the unchanged form after the first finishes reads its receipt. No failed
+// action leaves a claim behind. A receipt proves one committed market action, not that an external wallet
+// skipped address generation before a rolled-back transaction.
 func claimFormSubmission(c *actionCtx) (actionResult, bool, error) {
 	nonce := c.Form.Get(formNonceField)
 	if !formNoncePattern.MatchString(nonce) || len(c.Form[formNonceField]) != 1 {

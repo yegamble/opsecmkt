@@ -491,7 +491,11 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 		done, ok := a.enterOneAtATime(r.URL.Path, u.ID)
 		if !ok {
 			w.Header().Set("Retry-After", busyRetryAfter)
-			http.Error(w, "Your previous request is still being processed. Wait a few seconds, then reload the page to see its result.", http.StatusTooManyRequests)
+			msg := "Your previous request is still being processed. Wait a few seconds, then reload the page to see its result."
+			if spec.FormNonce {
+				msg = "Your previous request is still being processed. Wait a few seconds, then check its result. If the original form is still open, resubmit it unchanged to retrieve the result."
+			}
+			http.Error(w, msg, http.StatusTooManyRequests)
 			return
 		}
 		defer done()
