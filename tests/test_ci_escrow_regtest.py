@@ -73,6 +73,16 @@ class EscrowRegtestJobTest(unittest.TestCase):
         self.assertNotRegex(block, r'http://\w+:[^$@%\s]+@')  # an RPC URL with a literal password
         self.assertNotIn('set -x', block)
 
+    def test_local_compose_rpc_auth_proof_reuses_the_pinned_core_image(self):
+        block = job_block(WORKFLOW, JOB)
+        proof = 'run: python3 scripts/test-bitcoin-rpcauth.py'
+        self.assertIn(proof, block)
+        self.assertLess(block.index('node "$BITCOIN_CONTAINER" "$BITCOIN_RPC_PORT"'), block.index(proof))
+        self.assertLess(block.index(proof), block.index('run: bash scripts/test-escrow-regtest.sh'))
+        script = (REPOSITORY / 'scripts' / 'test-bitcoin-rpcauth.py').read_text()
+        self.assertIn("IMAGE = 'bitcoin/bitcoin:31.1'", script)
+        self.assertIn("['up', '-d', '--no-build', '--pull', 'never'", script)
+
     def test_node_is_published_on_loopback_only(self):
         block = job_block(WORKFLOW, JOB)
         # Both nodes are started by one docker run line (node()), published on loopback only.

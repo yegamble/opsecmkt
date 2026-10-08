@@ -68,8 +68,7 @@ services:
       - -rpcport=8332
       - -rpcallowip=172.16.0.0/12
       - -rpcallowip=192.168.0.0/16
-      - -rpcuser=marketplace
-      - -rpcpassword=${BITCOIN_RPC_PASSWORD:-}
+      - -rpcauth=${BITCOIN_RPC_AUTH:-}
       - -fallbackfee=0.0002
       - -proxy=tor-socks:9050
       - -privatebroadcast

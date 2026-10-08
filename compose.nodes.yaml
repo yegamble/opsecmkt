@@ -8,8 +8,9 @@
 # name it. monerod and monero-wallet-rpc have no --mainnet flag (mainnet is their default), so a mainnet .env
 # also sets MONERO_NETWORK_FLAG= (blank) to drop the flag. RPC ports are pinned so the installer's URLs do not
 # depend on the chain.
-# RPC credentials come from .env (the installer generates them). Without BITCOIN_RPC_PASSWORD bitcoind falls
-# back to cookie authentication, so nothing on the network (including the app) can use its RPC. Compose refuses
+# The installer keeps the Bitcoin RPC password in private .env for the app URL and puts only its salted HMAC
+# verifier in bitcoind's -rpcauth argument. Compose refuses a bitcoin-profile service with blank
+# BITCOIN_RPC_AUTH; otherwise an unset verifier would leave only cookie authentication. Compose also refuses
 # to create or start monero-wallet without MONERO_WALLET_RPC_PASSWORD, and monero-escrow-wallet without
 # ESCROW_XMR_WALLET_RPC_PASSWORD (A-466): every command with that service's profile active stops with "env file
 # .../<KEY>-is-blank not found" (see their env_file). An install whose COMPOSE_PROFILES leaves a wallet out needs
@@ -44,12 +45,15 @@ services:
       - -rpcport=8332
       - -rpcallowip=172.16.0.0/12
       - -rpcallowip=192.168.0.0/16
-      - -rpcuser=marketplace
-      - -rpcpassword=${BITCOIN_RPC_PASSWORD:-}
+      - -rpcauth=${BITCOIN_RPC_AUTH:-}
       # Test networks often have too little fee data for estimation; without a fallback fee every payout
       # would fail. 0.0002 BTC/kvB (20 sat/vB) is deliberately generous so test payouts confirm; on mainnet a
       # synced node estimates its own fee and uses this only when it cannot.
       - -fallbackfee=0.0002
+    # Compose interpolates even inactive profiles, so an unconditional ${VAR:?} would break external-node
+    # installs. This missing-file gate is evaluated only when the bitcoin profile starts (as for monero-wallet).
+    env_file:
+      - BITCOIN_RPC_AUTH-is-blank${BITCOIN_RPC_AUTH:+/../../../../../../../../../../../../../../../../../../../../../../../../../../../../../../../../dev/null}
     volumes: [bitcoin_data:/data]
     # Sized for a pruned test-network node: its database cache and mempool (at most 300 MB by default) plus
     # headroom for the initial sync (docs/operator-guide.md#resource-limits-and-log-rotation).

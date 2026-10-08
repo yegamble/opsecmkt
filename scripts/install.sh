@@ -47,7 +47,7 @@ env_keys='DATABASE_URL POSTGRES_PASSWORD APP_SECRET_KEY SETUP_TOKEN APP_MODE COO
 DATABASE_CONNECT_TIMEOUT MIGRATION_LOCK_TIMEOUT MIGRATION_TIMEOUT COMPOSE_PROJECT_NAME COMPOSE_FILE COMPOSE_PROFILES
 BITCOIN_RPC_URL BITCOIN_WALLET BITCOIN_CHAIN PAYMENT_CONFIRMATIONS_BTC MONERO_RPC_URL MONERO_WALLET_RPC_URL
 MONERO_NETWORK PAYMENT_CONFIRMATIONS_XMR PAYMENT_POLL_INTERVAL PAYMENT_EXPIRY BITCOIN_MAX_TIP_AGE MONERO_MAX_TIP_AGE AUDIT_SIGNING_KEY BITCOIN_IMAGE
-MONERO_IMAGE MONERO_WALLET_IMAGE BITCOIN_PRUNE_MB MONERO_PRUNE_FLAGS BITCOIN_RPC_PASSWORD MONERO_WALLET_RPC_PASSWORD
+MONERO_IMAGE MONERO_WALLET_IMAGE BITCOIN_PRUNE_MB MONERO_PRUNE_FLAGS BITCOIN_RPC_PASSWORD BITCOIN_RPC_AUTH MONERO_WALLET_RPC_PASSWORD
 CLAMD_ADDRESS CLAMAV_IMAGE SCANNER_MAX_SIGNATURE_AGE_DAYS IMAGE_STORAGE_LIMIT_MB ESCROW_BTC ESCROW_BTC_RPC_URL
 ESCROW_BTC_ARBITER_WALLET ESCROW_BTC_WATCH_WALLET ESCROW_BTC_FEE_BPS ESCROW_BTC_FEE_ADDRESS ESCROW_BTC_FEE_RATE
 ESCROW_XMR ESCROW_XMR_WALLET_RPC_URL ESCROW_XMR_DAEMON_URL ESCROW_XMR_FEE_BPS ESCROW_XMR_FEE_ADDRESS ESCROW_XMR_SLOTS
@@ -478,12 +478,27 @@ retire_setup_token() {
   echo 'Removed SETUP_TOKEN from .env: setup is complete, so it grants nothing now.'
 }
 
+# Bitcoin Core's rpcauth verifier: a random salt and HMAC of the existing private RPC password. The password
+# goes through stdin, never an external program argument; only the salt appears in openssl's argv. Supplying a
+# salt verifies an existing .env entry without changing it. Core's share/rpcauth/rpcauth.py uses this format.
+bitcoin_rpcauth() {
+  local password=$1 salt=${2:-} hash
+  if [[ -z $salt ]]; then
+    salt=$(openssl rand -hex 16) || return 1
+  fi
+  [[ $salt =~ ^[0-9a-f]{32}$ ]] || return 1
+  hash=$(printf '%s' "$password" | openssl dgst -sha256 -hmac "$salt" | sed 's/^.* //') || return 1
+  [[ $hash =~ ^[0-9a-f]{64}$ ]] || return 1
+  printf 'marketplace:%s$%s' "$salt" "$hash"
+}
+
 # ---- check ------------------------------------------------------------------------------------------------
 
 # run_check: the app's startup refusals (D8) plus what only the host can see. Messages name keys, never values.
 run_check() {
   local problems='' warnings='' key value problem mode secure files profiles database host project listing
-  local entry entry_project entry_dir foreign='' moved='' elsewhere=''
+  local entry entry_project entry_dir foreign='' moved='' elsewhere='' rpc_password rpc_auth salt expected_auth
+  local rpc_auth_pattern='^marketplace:[0-9a-f]{32}\$[0-9a-f]{64}$'
   for key in APP_SECRET_KEY SETUP_TOKEN; do
     value=$(env_value "$key")
     [[ -n $value ]] || continue
@@ -543,8 +558,25 @@ run_check() {
   if has_item "$profiles" mirror && [[ $mode != tor ]]; then
     problems="$problems  - COMPOSE_PROFILES includes mirror, which needs APP_MODE=tor"$'\n'
   fi
-  if has_item "$profiles" bitcoin && [[ -z $(env_value BITCOIN_RPC_PASSWORD) ]]; then
-    problems="$problems  - the local Bitcoin node (bitcoin profile) needs BITCOIN_RPC_PASSWORD"$'\n'
+  if has_item "$profiles" bitcoin; then
+    rpc_password=$(env_value BITCOIN_RPC_PASSWORD)
+    rpc_auth=$(env_value BITCOIN_RPC_AUTH)
+    if [[ -z $rpc_password ]]; then
+      problems="$problems  - the local Bitcoin node (bitcoin profile) needs BITCOIN_RPC_PASSWORD"$'\n'
+    fi
+    if [[ -z $rpc_auth ]]; then
+      problems="$problems  - the local Bitcoin node (bitcoin profile) needs BITCOIN_RPC_AUTH; run upgrade or generate a verifier from the existing password"$'\n'
+    elif ! [[ $rpc_auth =~ $rpc_auth_pattern ]]; then
+      problems="$problems  - BITCOIN_RPC_AUTH must be a marketplace salted HMAC verifier; do not place the password in it"$'\n'
+    elif [[ -n $rpc_password ]]; then
+      salt=${rpc_auth#marketplace:}
+      salt=${salt%%\$*}
+      expected_auth=$(bitcoin_rpcauth "$rpc_password" "$salt") ||
+        die 'Could not check the local Bitcoin RPC verifier; nothing was started.'
+      if [[ $rpc_auth != "$expected_auth" ]]; then
+        problems="$problems  - BITCOIN_RPC_AUTH does not match BITCOIN_RPC_PASSWORD; repair the verifier before starting the local node"$'\n'
+      fi
+    fi
   fi
   if has_item "$profiles" monero-wallet && [[ -z $(env_value MONERO_WALLET_RPC_PASSWORD) ]]; then
     problems="$problems  - the local Monero wallet (monero-wallet profile) needs MONERO_WALLET_RPC_PASSWORD"$'\n'
@@ -972,7 +1004,7 @@ cmd_init() {
   fi
 
   # Secrets and the configuration.
-  local password app_key setup_token audit_key rpc_password wallet_password profiles='' external_egress=false secure=true
+  local password app_key setup_token audit_key rpc_password rpc_auth wallet_password profiles='' external_egress=false secure=true
   local external_database=false
   local compose_files="compose.yaml:compose.${mode}.yaml:compose.nodes.yaml"
   password=$(secret 24) || exit 1
@@ -981,7 +1013,10 @@ cmd_init() {
   setup_token=$(secret 32) || exit 1
   # Ed25519 seed for signed audit exports.
   audit_key=$(secret 32) || exit 1
-  if [[ $btc_choice == local ]]; then rpc_password=$(secret 24) || exit 1; fi
+  if [[ $btc_choice == local ]]; then
+    rpc_password=$(secret 24) || exit 1
+    rpc_auth=$(bitcoin_rpcauth "$rpc_password") || die 'Could not generate the Bitcoin RPC verifier; nothing was written or started.'
+  fi
   if [[ $xmr_choice == local ]]; then wallet_password=$(secret 24) || exit 1; fi
   local escrow_wallet_password='' wallet_secret=''
   if [[ $xmr_escrow == yes ]]; then
@@ -1027,6 +1062,7 @@ cmd_init() {
       put BITCOIN_IMAGE "$btc_image"
       # A local node never runs without a generated RPC password (secret exits otherwise).
       put BITCOIN_RPC_PASSWORD "$rpc_password"
+      put BITCOIN_RPC_AUTH "$rpc_auth"
       put BITCOIN_RPC_URL "http://marketplace:${rpc_password}@bitcoin:8332"
       if [[ $btc_prune_mb == 0 ]]; then
         echo 'Full node: BITCOIN keeps every block, about 28 GB on signet or 33 GB on testnet4 today (upstream estimates, growing), with the same first sync. BITCOIN_PRUNE_MB=0 in .env; see docs/operator-guide.md#local-node-pruning to change it later.'
@@ -1500,6 +1536,7 @@ cmd_upgrade() {
   fi
   database_url=''
   local project listing entry candidates='' count stamp copy changes='' key value default mode files profiles token database host egress
+  local auth_profiles bitcoin_auth_to_add=''
   # The project whose volumes hold this install: COMPOSE_PROJECT_NAME, else the one its containers were created
   # under from this directory, else the caller's COMPOSE_PROJECT_NAME or Compose's default.
   if ! env_get COMPOSE_PROJECT_NAME >/dev/null; then
@@ -1537,6 +1574,20 @@ cmd_upgrade() {
   cat .env > "$copy" && chmod 600 "$copy" || die "Could not copy .env to $copy (is the disk full?); nothing was changed."
   temporaries=${temporaries% "$copy"}
 
+  # Decide whether an old install has a local Bitcoin profile before changing .env. Legacy installs infer the
+  # profile from the app URL. A failed salt/HMAC operation leaves every current setting untouched.
+  auth_profiles=$(env_value COMPOSE_PROFILES)
+  if ! env_get COMPOSE_PROFILES >/dev/null && [[ $(url_host "$(env_value BITCOIN_RPC_URL)") == bitcoin ]]; then
+    auth_profiles="${auth_profiles:+$auth_profiles,}bitcoin"
+  fi
+  if has_item "$auth_profiles" bitcoin && [[ -z $(env_value BITCOIN_RPC_AUTH) ]]; then
+    value=$(env_value BITCOIN_RPC_PASSWORD)
+    [[ -n $value ]] || die 'The local Bitcoin node needs BITCOIN_RPC_PASSWORD; nothing was changed or restarted.'
+    bitcoin_auth_to_add=$(bitcoin_rpcauth "$value") ||
+      die 'Could not generate the local Bitcoin RPC verifier; nothing was changed or restarted.'
+    value=''
+  fi
+
   if ! env_get COMPOSE_PROJECT_NAME >/dev/null; then
     env_set COMPOSE_PROJECT_NAME "$project"
     changes="$changes  added COMPOSE_PROJECT_NAME ($project, the project its containers and volumes use)"$'\n'
@@ -1568,6 +1619,13 @@ cmd_upgrade() {
     changes="$changes  added COMPOSE_PROFILES (from the database and node URLs)"$'\n'
   fi
   profiles=$(env_value COMPOSE_PROFILES)
+  # Old local-node installs have only the private password and URL. Add its verifier after profile inference,
+  # without rotating either value; an existing mismatched verifier is left untouched and check refuses startup.
+  if [[ -n $bitcoin_auth_to_add ]]; then
+    env_set BITCOIN_RPC_AUTH "$bitcoin_auth_to_add"
+    changes="$changes  added BITCOIN_RPC_AUTH for the existing local Bitcoin password (password and RPC URL unchanged)"$'\n'
+    bitcoin_auth_to_add=''
+  fi
   if [[ -z $files ]] && ! env_get COMPOSE_FILE >/dev/null; then
     files="compose.yaml:compose.$mode.yaml:compose.nodes.yaml"
     if has_item "$profiles" internal-db; then files="$files:compose.internal-db.yaml"; fi

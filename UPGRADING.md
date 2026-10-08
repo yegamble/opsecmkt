@@ -1707,6 +1707,38 @@ Migration 100 creates the short-lived receipt table used to return the original 
 
 Migration 101 stores a fixed provider key, outage/recovery episode timestamps and per-administrator delivery receipts so a sustained provider alert is sent once per episode across restarts and concurrent watchers. It does not store provider error text, credentials or wallet addresses. Startup applies it transactionally with the other pending migrations; use the normal encrypted pre-upgrade backup and rollback procedure.
 
+## 54. Local Bitcoin RPC uses a salted verifier (A-144)
+
+The local `bitcoin` Compose service no longer puts its RPC password in the container command line. It takes
+`BITCOIN_RPC_AUTH=marketplace:SALT$HMAC` from private `.env` as Bitcoin Core's `-rpcauth` verifier. The app still
+uses the **same** private `BITCOIN_RPC_PASSWORD` in `BITCOIN_RPC_URL` for HTTP Basic authentication. The verifier
+cannot authenticate on its own, but a weak manually selected password can be guessed from it offline; use the
+installer's random password. External Bitcoin RPC configurations and disabled local profiles need no verifier.
+
+For an existing local-node install, use the normal backed-up `./scripts/install.sh upgrade`: after saving the prior
+`.env`, it derives a fresh salted verifier from the **existing** password and adds `BITCOIN_RPC_AUTH` before
+recreating the node. It does not rotate the password, change the app URL or touch the Bitcoin wallet volume.
+The previous `.env` copy is mode 0600 for rollback. A second upgrade leaves the verifier unchanged. An existing
+mismatched or malformed verifier is never silently replaced: `./scripts/install.sh check` refuses startup with
+its key name. Repair it from the current private password, then check again; if you changed the password,
+update `BITCOIN_RPC_URL` to the same value as well. Do not put the password on a command line or in a log.
+
+For a manually maintained `.env` with the local `bitcoin` profile, set `BITCOIN_RPC_AUTH` to a Bitcoin Core
+`rpcauth` verifier for user `marketplace` and the password in `BITCOIN_RPC_PASSWORD`; the format is
+`marketplace:<32 lowercase hex salt>$<64 lowercase hex HMAC-SHA256(salt, password)>`. Use a private editor
+and host OpenSSL with the password on standard input, as the checked helper inside `scripts/install.sh` does;
+then run `./scripts/install.sh check` before starting the profile. The check
+verifies the HMAC without printing either value. Compose refuses to create the local `bitcoin` service when
+`BITCOIN_RPC_AUTH` is blank, while inactive profiles continue to render normally.
+
+For a repeatable disposable check on a Docker host with the pinned image cached, run
+`python3 scripts/test-bitcoin-rpcauth.py`. It creates only its own internal-network regtest project, checks the
+runtime argument and correct/wrong authentication, and removes that project's container and volume. A
+run of that saved script on 2026-10-08 passed against Core 31.1: one literal `$` in the actual `-rpcauth`
+argument, no password in node arguments, correct-password RPC success, explicit wrong-password authentication
+rejection, and the node remained healthy. Its owned project and volume were removed; no public node or wallet was
+involved. CI runs the same script after its pinned Core image is cached in the `escrow-regtest` job.
+
 ## Appendix: new keys by hand
 
 `./scripts/install.sh upgrade` writes these for you. To add them yourself, use your editor (values in single
@@ -1717,6 +1749,7 @@ quotes, as the installer writes them). Blank values keep a feature off.
 | `AUDIT_SIGNING_KEY` | `openssl rand -hex 32` output. Enables signed audit exports; back it up with `.env`. |
 | `BITCOIN_CHAIN` | Leave blank to accept whichever test chain the node reports, or `testnet4` / `signet` / `regtest`. `main` configures mainnet (real funds; [operator guide](docs/operator-guide.md#mainnet)); mainnet is refused otherwise. See step 3 before setting it for a local node. |
 | `BITCOIN_WALLET` | Wallet name, default `opsecmkt`. |
+| `BITCOIN_RPC_AUTH` | Local `bitcoin` profile only: salted Core `rpcauth` verifier for user `marketplace` and the existing `BITCOIN_RPC_PASSWORD` (section 54). `upgrade` adds it for existing local-node installs; `check` refuses a missing or mismatched value. |
 | `MONERO_NETWORK` | Blank, `stagenet` or `testnet`; `mainnet` configures mainnet (a local node also needs `MONERO_NETWORK_FLAG=`). |
 | `MONERO_WALLET_RPC_URL` | monero-wallet-rpc URL with credentials, for example `http://marketplace:PASSWORD@monero-wallet:18083`. Blank keeps Monero payments off. A daemon URL alone (`MONERO_RPC_URL`, which alpha.1 wrote) does **not** enable them. |
 | `MONERO_WALLET_RPC_PASSWORD` | For the local `monero-wallet` service only: `openssl rand -hex 24` output, the same value as the password in `MONERO_WALLET_RPC_URL`. Compose refuses the `monero-wallet` profile without it (section 35). |

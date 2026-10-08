@@ -50,7 +50,8 @@ Docker from the default image or a reviewed image you supply), `external` or `di
 to 8 GB (signet), and the first sync of either coin takes hours. Sizes, full nodes and the wallet-restore
 trade-off: [Local node pruning](operator-guide.md#local-node-pruning). For local nodes it writes:
 
-- `BITCOIN_RPC_PASSWORD` and `BITCOIN_RPC_URL=http://marketplace:<password>@bitcoin:8332`, `BITCOIN_CHAIN=testnet4`,
+- `BITCOIN_RPC_PASSWORD`, its salted `BITCOIN_RPC_AUTH` verifier, and
+  `BITCOIN_RPC_URL=http://marketplace:<password>@bitcoin:8332`, `BITCOIN_CHAIN=testnet4`,
   `BITCOIN_PRUNE_MB=2000` (`0` for a full node);
 - `MONERO_WALLET_RPC_PASSWORD`, `MONERO_WALLET_RPC_URL=http://marketplace:<password>@monero-wallet:18083`
   (the `monero-wallet` service runs with `--rpc-login marketplace:<password>`; the app answers its HTTP
@@ -77,8 +78,9 @@ Wait for the nodes to sync before expecting deposits to be seen (`docker compose
 
 ## 2. Create the Bitcoin wallet
 
-The compose service runs `bitcoind -chain=${BITCOIN_CHAIN:-testnet4} -datadir=/data -prune=${BITCOIN_PRUNE_MB:-2000}
--rpcport=8332 -rpcuser=marketplace -rpcpassword=...`. `bitcoin-cli` inside the container must be told the same port and user, otherwise it looks
+The Compose service runs `bitcoind` with the selected chain, data directory, pruning setting, RPC port 8332
+and a salted `-rpcauth` verifier for user `marketplace`; its command line contains no RPC password. `bitcoin-cli`
+inside the container must be told the same port and user, otherwise it looks
 for the chain's default port (48332 on testnet4) and a cookie file that does not exist. The password is fed
 on standard input (`-stdinrpcpass`) so it does not appear in process arguments:
 

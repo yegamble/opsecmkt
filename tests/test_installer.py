@@ -1,5 +1,6 @@
 """Exercise installer decisions in disposable directories with no real Docker."""
 import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -29,7 +30,7 @@ STATUS = 'compose exec -T app /app/server -status'
 PROBE = 'compose run --rm -T --no-deps app -status'
 # Keys whose values are secrets: upgrade never invents them and no command prints them.
 SECRET_KEYS = ('DATABASE_URL', 'POSTGRES_PASSWORD', 'APP_SECRET_KEY', 'SETUP_TOKEN', 'AUDIT_SIGNING_KEY',
-               'BITCOIN_RPC_PASSWORD', 'MONERO_WALLET_RPC_PASSWORD', 'MONERO_WALLET_SECRET', 'ESCROW_XMR_WALLET_RPC_PASSWORD')
+               'BITCOIN_RPC_PASSWORD', 'BITCOIN_RPC_AUTH', 'MONERO_WALLET_RPC_PASSWORD', 'MONERO_WALLET_SECRET', 'ESCROW_XMR_WALLET_RPC_PASSWORD')
 PASSWORD = 'correct horse battery staple'
 # The malware scanner (A-184): what clamdscan --version prints once clamd answers, and the calls it takes.
 CLAMD_VERSION = 'ClamAV 1.5.4/28130/Mon Sep 21 06:24:29 2026'
@@ -130,6 +131,11 @@ def hex_value(length=64, seed='x'):
     return value[:length]
 
 
+def bitcoin_rpcauth(password, salt='0123456789abcdef0123456789abcdef'):
+    digest = hmac.new(salt.encode(), password.encode(), hashlib.sha256).hexdigest()
+    return f'marketplace:{salt}${digest}'
+
+
 def env_text(values):
     return ''.join(f"{key}='{value}'\n" for key, value in values.items())
 
@@ -153,6 +159,9 @@ def installed_env(**overrides):
         'COMPOSE_PROFILES': 'internal-db',
     }
     values.update(overrides)
+    if ('bitcoin' in (values.get('COMPOSE_PROFILES') or '').split(',') and values.get('BITCOIN_RPC_PASSWORD')
+            and 'BITCOIN_RPC_AUTH' not in overrides):
+        values['BITCOIN_RPC_AUTH'] = bitcoin_rpcauth(values['BITCOIN_RPC_PASSWORD'])
     return {key: value for key, value in values.items() if value is not None}
 
 
@@ -370,16 +379,32 @@ sys.exit('Unexpected docker command')
 ''')
         self.stub('openssl', '''
 import hashlib
+import hmac
 import os
 from pathlib import Path
 import sys
 ''' + LIFT_FILE_SIZE_LIMIT + '''
-assert sys.argv[1:3] == ['rand', '-hex']
+if sys.argv[1:3] == ['dgst', '-sha256']:
+    assert len(sys.argv) == 5 and sys.argv[3] == '-hmac', sys.argv
+    if os.environ.get('INSTALLER_TEST_OPENSSL_BAD_DGST') == 'fail':
+        sys.exit(1)
+    if os.environ.get('INSTALLER_TEST_OPENSSL_BAD_DGST') == 'malformed':
+        print('SHA2-256(stdin)= not-a-hash')
+        sys.exit(0)
+    print('SHA2-256(stdin)= ' + hmac.new(sys.argv[4].encode(), sys.stdin.buffer.read(), hashlib.sha256).hexdigest())
+    sys.exit(0)
+assert sys.argv[1:3] == ['rand', '-hex'], sys.argv
 counter = Path(os.environ['INSTALLER_TEST_LOG'] + '.openssl')
 call = int(counter.read_text()) + 1 if counter.exists() else 1
 counter.write_text(str(call))
 if str(call) == os.environ.get('INSTALLER_TEST_OPENSSL_EMPTY_CALL'):
     sys.exit(1)  # generation failure: no output
+if sys.argv[3] == '16' and os.environ.get('INSTALLER_TEST_OPENSSL_BAD_SALT'):
+    bad = os.environ['INSTALLER_TEST_OPENSSL_BAD_SALT']
+    if bad == 'fail':
+        sys.exit(1)
+    print('' if bad == 'empty' else 'not-hex')
+    sys.exit(0)
 # Distinct, random-looking values: the installer's check applies the app's secret rules to them.
 value = ''
 while len(value) < 2 * int(sys.argv[3]):
@@ -590,6 +615,9 @@ time.sleep(60)
         self.assertEqual(config['MONERO_PRUNE_FLAGS'], PRUNED_MONERO_FLAGS)
         self.assertEqual(config['BITCOIN_RPC_URL'],
                          'http://marketplace:' + config['BITCOIN_RPC_PASSWORD'] + '@bitcoin:8332')
+        self.assertRegex(config['BITCOIN_RPC_AUTH'], r'^marketplace:[0-9a-f]{32}\$[0-9a-f]{64}$')
+        self.assertEqual(config['BITCOIN_RPC_AUTH'], bitcoin_rpcauth(
+            config['BITCOIN_RPC_PASSWORD'], config['BITCOIN_RPC_AUTH'].split(':', 1)[1].split('$', 1)[0]))
         self.assertEqual(config['MONERO_WALLET_RPC_URL'],
                          'http://marketplace:' + config['MONERO_WALLET_RPC_PASSWORD'] + '@monero-wallet:18083')
         self.assertNotIn('compose.external-egress.yaml', config['COMPOSE_FILE'])
@@ -818,6 +846,9 @@ time.sleep(60)
         self.assertEqual(len(config['BITCOIN_RPC_PASSWORD']), 48)
         self.assertEqual(config['BITCOIN_RPC_URL'],
                          'http://marketplace:' + config['BITCOIN_RPC_PASSWORD'] + '@bitcoin:8332')
+        self.assertRegex(config['BITCOIN_RPC_AUTH'], r'^marketplace:[0-9a-f]{32}\$[0-9a-f]{64}$')
+        self.assertEqual(config['BITCOIN_RPC_AUTH'], bitcoin_rpcauth(
+            config['BITCOIN_RPC_PASSWORD'], config['BITCOIN_RPC_AUTH'].split(':', 1)[1].split('$', 1)[0]))
         self.assertEqual(config['BITCOIN_CHAIN'], 'testnet4')
         self.assertEqual(config['MONERO_NETWORK'], 'stagenet')
         self.assertEqual(config['MONERO_RPC_URL'], 'http://monero:18081')
@@ -827,6 +858,21 @@ time.sleep(60)
                          'http://marketplace:' + config['MONERO_WALLET_RPC_PASSWORD'] + '@monero-wallet:18083')
         self.assert_no_secret_printed(result, config, allow_token=True)
         self.assertNotIn('compose.external-egress.yaml', config['COMPOSE_FILE'])
+
+    def test_local_bitcoin_verifier_crypto_failure_leaves_no_install(self):
+        for key, value in (('INSTALLER_TEST_OPENSSL_BAD_SALT', 'fail'),
+                           ('INSTALLER_TEST_OPENSSL_BAD_SALT', 'empty'),
+                           ('INSTALLER_TEST_OPENSSL_BAD_SALT', 'malformed'),
+                           ('INSTALLER_TEST_OPENSSL_BAD_DGST', 'fail'),
+                           ('INSTALLER_TEST_OPENSSL_BAD_DGST', 'malformed')):
+            with self.subTest(key=key, value=value):
+                self.log.unlink(missing_ok=True)
+                result = self.run_installer([''] * 12, extra_env={key: value})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('Could not generate the Bitcoin RPC verifier', result.stderr)
+                self.assertFalse((self.root / '.env').exists())
+                self.assertEqual(list(self.root.glob('.env.install.*')), [])
+                self.assertFalse(any('compose up' in call for call in self.calls()))
 
     def test_local_node_rejects_incomplete_or_malformed_image_before_compose(self):
         for image in ('@sha256', 'vendor/node@sha256:deadbeef', 'vendor/node:'):
@@ -1593,6 +1639,24 @@ time.sleep(60)
         self.check_env(installed_env(BITCOIN_IMAGE='registry.example:5000/node@sha256:' + 'a' * 64))
         self.check_env(installed_env(BITCOIN_IMAGE='bitcoin/bitcoin:31.1'))
 
+    def test_check_local_bitcoin_verifier_and_inactive_external_profile(self):
+        password = hex_value(48, 'rpc')
+        local = installed_env(COMPOSE_PROFILES='internal-db,bitcoin', BITCOIN_RPC_PASSWORD=password,
+                              BITCOIN_RPC_URL=f'http://marketplace:{password}@bitcoin:8332')
+        self.check_env(local)
+        self.check_env({**local, 'BITCOIN_RPC_AUTH': ''}, 'needs BITCOIN_RPC_AUTH')
+        self.check_env({**local, 'BITCOIN_RPC_AUTH': password}, 'must be a marketplace salted HMAC verifier')
+        self.check_env({**local, 'BITCOIN_RPC_AUTH': bitcoin_rpcauth('wrong')},
+                       'does not match BITCOIN_RPC_PASSWORD')
+        original = self.write_env(local)
+        result = self.command('check', extra_env={'INSTALLER_TEST_OPENSSL_BAD_DGST': 'fail'})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Could not check the local Bitcoin RPC verifier', result.stderr)
+        self.assertEqual((self.root / '.env').read_bytes(), original)
+        # An external node or disabled bitcoin profile requires no local verifier.
+        self.check_env(installed_env(BITCOIN_RPC_URL='https://rpc.example.test', BITCOIN_RPC_AUTH=None))
+        self.check_env(clearnet_env(BITCOIN_RPC_AUTH=None))
+
     def test_check_refuses_postgres_password_mismatch(self):
         self.check_env(installed_env(POSTGRES_PASSWORD=hex_value(48, 'other')), 'POSTGRES_PASSWORD differs')
         self.check_env(installed_env(DATABASE_URL='postgres://market@database.example/market'),
@@ -1896,6 +1960,65 @@ time.sleep(60)
         self.assertIn('backup failed', result.stderr)
         self.assertEqual((self.root / '.env').read_bytes(), original)
         self.assertEqual(self.pre_upgrade_copies(), [])
+
+    def test_upgrade_adds_local_bitcoin_verifier_without_password_rotation(self):
+        password = hex_value(48, 'old-rpc')
+        url = f'http://marketplace:{password}@bitcoin:8332'
+        legacy = installed_env(COMPOSE_PROFILES=None, BITCOIN_RPC_PASSWORD=password, BITCOIN_RPC_URL=url,
+                               BITCOIN_RPC_AUTH=None)
+        self.write_env(legacy)
+        result = self.upgrade()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        config = self.config()
+        self.assertIn('bitcoin', config['COMPOSE_PROFILES'].split(','))
+        self.assertEqual(config['BITCOIN_RPC_PASSWORD'], password)
+        self.assertEqual(config['BITCOIN_RPC_URL'], url)
+        salt = config['BITCOIN_RPC_AUTH'].split(':', 1)[1].split('$', 1)[0]
+        self.assertEqual(config['BITCOIN_RPC_AUTH'], bitcoin_rpcauth(password, salt))
+        self.assertEqual(stat.S_IMODE((self.root / '.env').stat().st_mode), 0o600)
+        self.assertIn('added BITCOIN_RPC_AUTH', result.stdout)
+        self.assert_no_secret_printed(result, config)
+        first = (self.root / '.env').read_bytes()
+        result = self.upgrade()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.root / '.env').read_bytes(), first)
+        self.assertEqual(self.config()['BITCOIN_RPC_AUTH'], config['BITCOIN_RPC_AUTH'])
+        # A manually changed password with stale verifier is refused without auto-rotation or node restart.
+        stale = {**config, 'BITCOIN_RPC_PASSWORD': hex_value(48, 'new-rpc')}
+        original = self.write_env(stale)
+        result = self.upgrade()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('does not match BITCOIN_RPC_PASSWORD', result.stderr)
+        self.assertEqual((self.root / '.env').read_bytes(), original)
+        self.assertNotIn(UP, self.calls())
+        self.assert_no_secret_printed(result, stale)
+
+    def test_upgrade_repairs_blank_local_verifier_and_failed_crypto_preserves_env(self):
+        password = hex_value(48, 'old-rpc')
+        url = f'http://marketplace:{password}@bitcoin:8332'
+        base = installed_env(COMPOSE_PROFILES='internal-db,bitcoin', BITCOIN_RPC_PASSWORD=password,
+                             BITCOIN_RPC_URL=url, BITCOIN_RPC_AUTH='')
+        for key, value in (('INSTALLER_TEST_OPENSSL_BAD_SALT', 'empty'),
+                           ('INSTALLER_TEST_OPENSSL_BAD_SALT', 'malformed'),
+                           ('INSTALLER_TEST_OPENSSL_BAD_DGST', 'fail'),
+                           ('INSTALLER_TEST_OPENSSL_BAD_DGST', 'malformed')):
+            with self.subTest(key=key, value=value):
+                original = self.write_env(base)
+                result = self.upgrade(extra_env={key: value})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('Could not generate the local Bitcoin RPC verifier', result.stderr)
+                self.assertEqual((self.root / '.env').read_bytes(), original)
+                self.assertNotIn(UP, self.calls())
+                self.assert_no_secret_printed(result, base)
+        self.write_env(base)
+        result = self.upgrade()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        config = self.config()
+        self.assertEqual(config['BITCOIN_RPC_PASSWORD'], password)
+        self.assertEqual(config['BITCOIN_RPC_URL'], url)
+        self.assertEqual(config['BITCOIN_RPC_AUTH'], bitcoin_rpcauth(
+            password, config['BITCOIN_RPC_AUTH'].split(':', 1)[1].split('$', 1)[0]))
+        self.assert_no_secret_printed(result, config)
 
     def test_upgrade_writes_pre_upgrade_copy_0600(self):
         original = self.write_env(alpha_env(), mode=0o644)
@@ -2290,7 +2413,8 @@ time.sleep(60)
                 environment = {key: value for key, value in os.environ.items() if not key.startswith('COMPOSE_')}
                 # Compose refuses the monero-wallet profile without its password (A-466).
                 environment.update(COMPOSE_FILE=files, COMPOSE_PROFILES='internal-db,scanner,bitcoin,monero,monero-wallet',
-                                   DATABASE_URL='postgres://unused@db/unused', MONERO_WALLET_RPC_PASSWORD='unused')
+                                   DATABASE_URL='postgres://unused@db/unused', MONERO_WALLET_RPC_PASSWORD='unused',
+                                   BITCOIN_RPC_AUTH=bitcoin_rpcauth('unused'))
                 rendered = subprocess.run(['docker', 'compose', '--env-file', os.devnull, 'config'], cwd=REPOSITORY,
                                           env=environment, capture_output=True, text=True, check=True).stdout
                 values = scanner_env(COMPOSE_FILE=files)

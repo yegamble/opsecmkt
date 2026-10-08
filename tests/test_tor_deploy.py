@@ -198,7 +198,7 @@ def compose_available():
     return subprocess.run(['docker', 'compose', 'version'], capture_output=True).returncode == 0
 
 
-def compose_config(*files, profiles=('bitcoin', 'monero'), interpolate=True):
+def compose_config(*files, profiles=('bitcoin', 'monero'), interpolate=True, bitcoin_rpc_auth=True):
     """`docker compose config` as parsed JSON, reading no .env and no COMPOSE_*, BITCOIN_* or MONERO_* variable;
     interpolate=False keeps every ${...} as written (--no-interpolate)."""
     arguments = ['docker', 'compose', '--env-file', os.devnull, '-p', 'opsecmkt-nodes-tor-test']
@@ -209,6 +209,8 @@ def compose_config(*files, profiles=('bitcoin', 'monero'), interpolate=True):
     environment = {key: value for key, value in os.environ.items()
                    if not key.startswith(('COMPOSE_', 'BITCOIN_', 'MONERO_'))}
     environment['DATABASE_URL'] = 'postgres://unused@db/unused'
+    if bitcoin_rpc_auth:
+        environment['BITCOIN_RPC_AUTH'] = ('marketplace:' + '01' * 16 + '$' + 'ab' * 32)
     command = ['config', '--format', 'json'] + ([] if interpolate else ['--no-interpolate'])
     result = subprocess.run(arguments + command, cwd=REPOSITORY, env=environment,
                             capture_output=True, text=True, check=False, timeout=60)
@@ -296,10 +298,49 @@ class NodesTorComposeTests(unittest.TestCase):
                          [f'reject {gateway}', f'accept {subnet}', 'reject *'])
         self.assertIn(f'/dev/tcp/{address}/9050', ' '.join(self.socks['healthcheck']['test']))
 
+    def test_bitcoin_verifier_gate_is_profile_scoped(self):
+        # Compose must still render external/disabled-node installs with no local verifier. A bitcoin-profile
+        # service with no verifier fails before it could start with cookie-only RPC.
+        for files in (('compose.yaml', 'compose.clearnet.yaml', 'compose.nodes.yaml'),
+                      (*BASE_FILES, NODES_TOR)):
+            with self.subTest(files=files):
+                compose_config(*files, profiles=(), bitcoin_rpc_auth=False)
+                with self.assertRaisesRegex(AssertionError, 'BITCOIN_RPC_AUTH-is-blank'):
+                    compose_config(*files, profiles=('bitcoin',), bitcoin_rpc_auth=False)
+
+    def test_private_dotenv_verifier_config_escapes_dollar_without_password(self):
+        verifier = 'marketplace:' + '01' * 16 + '$' + 'ab' * 32
+        password = 'disposable-test-password'
+        with tempfile.TemporaryDirectory(prefix='opsecmkt-rpcauth-compose-') as directory:
+            dotenv = Path(directory) / '.env'
+            dotenv.write_text(f"DATABASE_URL='postgres://unused@db/unused'\n"
+                              f"BITCOIN_RPC_PASSWORD='{password}'\n"
+                              f"BITCOIN_RPC_AUTH='{verifier}'\n"
+                              f"BITCOIN_RPC_URL='http://marketplace:{password}@bitcoin:8332'\n")
+            for files in (('compose.yaml', 'compose.clearnet.yaml', 'compose.nodes.yaml'),
+                          (*BASE_FILES, NODES_TOR)):
+                with self.subTest(files=files):
+                    arguments = ['docker', 'compose', '--env-file', str(dotenv), '-p', 'opsecmkt-rpcauth-test']
+                    for name in files:
+                        arguments += ['-f', name]
+                    arguments += ['--profile', 'bitcoin', 'config', '--format', 'json']
+                    environment = {key: value for key, value in os.environ.items()
+                                   if not key.startswith(('COMPOSE_', 'BITCOIN_', 'MONERO_', 'DATABASE_URL'))}
+                    result = subprocess.run(arguments, cwd=REPOSITORY, env=environment,
+                                            capture_output=True, text=True, check=True)
+                    command = json.loads(result.stdout)['services']['bitcoin']['command']
+                    # Compose config re-escapes a literal dollar as $$ in its reusable rendered model.
+                    # The input .env still has one $, and the node process must be checked on a real launch.
+                    self.assertIn('-rpcauth=' + verifier.replace('$', '$$'), command)
+                    self.assertFalse(any(password in argument for argument in command))
+                    self.assertFalse(any(argument.startswith(('-rpcuser=', '-rpcpassword=')) for argument in command))
+
     def test_bitcoind_sends_through_tor_socks(self):
         base, nodes = self.base['services']['bitcoin']['command'], self.services['bitcoin']['command']
         self.assertEqual(nodes, base + BITCOIN_FLAGS,
                          "the overlay repeats compose.nodes.yaml's command and adds exactly the two flags")
+        self.assertEqual(len([arg for arg in nodes if arg.startswith('-rpcauth=marketplace:')]), 1)
+        self.assertFalse(any(arg.startswith(('-rpcuser=', '-rpcpassword=')) for arg in nodes))
         for argument in nodes:
             self.assertIsNone(re.match(r'-(no)?(connect|onlynet|onion|listenonion|seednode|addnode)\b', argument),
                               f'{argument}: never -connect or -onlynet; -proxy alone covers every network')

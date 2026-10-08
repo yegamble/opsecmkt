@@ -191,6 +191,10 @@ jobs:
               exit 1
             fi
           done
+      # A-144: the image above is already cached. A separate owned Compose project with internal-only networks
+      # proves the local-node rpcauth argument and successful/refused credentials; it pulls no other image.
+      - name: Local Bitcoin Compose RPC verifier on isolated regtest (A-144)
+        run: python3 scripts/test-bitcoin-rpcauth.py
       - name: Escrow legs on a real regtest node (scripts/test-escrow-regtest.sh)
         run: bash scripts/test-escrow-regtest.sh
         env:

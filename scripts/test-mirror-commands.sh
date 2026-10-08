@@ -23,7 +23,7 @@ done
 docker compose version >/dev/null
 # Only the temporary .env written below may configure Compose.
 unset COMPOSE_FILE COMPOSE_PROFILES COMPOSE_PROJECT_NAME COMPOSE_ENV_FILES DATABASE_URL SETUP_TOKEN POSTGRES_PASSWORD \
-  APP_MODE COOKIE_SECURE APP_PORT
+  APP_MODE COOKIE_SECURE APP_PORT BITCOIN_RPC_PASSWORD BITCOIN_RPC_AUTH
 work=$(mktemp -d "${TMPDIR:-/tmp}/opsecmkt-mirror-commands.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 cp compose*.yaml Dockerfile "$work/"
@@ -95,12 +95,17 @@ resolve() {
 }
 # write_env PROFILES: the installer's .env keys for this install ($url, $files) with COMPOSE_PROFILES=PROFILES.
 write_env() {
+  local bitcoin_password bitcoin_salt bitcoin_hash
+  bitcoin_password=$(openssl rand -hex 24)
+  bitcoin_salt=$(openssl rand -hex 16)
+  bitcoin_hash=$(printf '%s' "$bitcoin_password" | openssl dgst -sha256 -hmac "$bitcoin_salt" | sed 's/^.* //')
   cat > "$work/.env" <<ENV
 DATABASE_URL='$url'
 POSTGRES_PASSWORD='mirror-check'
 APP_SECRET_KEY='$(openssl rand -hex 32)'
 SETUP_TOKEN='$(openssl rand -hex 32)'
-BITCOIN_RPC_PASSWORD='$(openssl rand -hex 24)'
+BITCOIN_RPC_PASSWORD='$bitcoin_password'
+BITCOIN_RPC_AUTH='marketplace:$bitcoin_salt\$$bitcoin_hash'
 MONERO_WALLET_RPC_PASSWORD='$(openssl rand -hex 24)'
 APP_MODE='tor'
 COOKIE_SECURE='false'
