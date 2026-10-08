@@ -36,9 +36,10 @@
 {{with .AuditExport}}{{if .Available}}<p><span class="badge green">Available</span></p>
 <p>Ed25519 public key (also published on /canary): <span class="fingerprint mono">{{.PublicKey}}</span></p>
 {{if .UpTo}}<form class="stack" method="get" action="/admin/audit-export">
+<label>Include events after id<input name="from" type="number" min="0" max="{{.UpTo}}" value="0" required></label>
 <label>Include events up to id<input name="upto" type="number" min="1" max="{{.UpTo}}" value="{{.UpTo}}" required>
 </label>
-<p class="help">The same range always produces byte-identical export and signature files. Verify offline with <span class="mono">verify-audit -pub {{.PublicKey}} export.jsonl export.sig</span>. The signature proves origin from this server's key only; whoever controls the server can also sign an altered history. A download cut short (a dropped connection or Tor circuit) leaves a partial file that fails verification with "sha256 does not match"; download the same range again. Large exports over Tor can take minutes: the server allows 20 seconds plus one second per 32 KB. The server sends one export at a time; if it is busy, wait for that download to finish before retrying. Limited to 10 downloads per 10 minutes.</p>
+<p class="help">The lower ID is excluded and the upper ID is included. Leave the lower ID at 0 for all history up to the upper ID. Adjacent ranges concatenate to the whole export. The same range always produces byte-identical export and signature files. Verify offline with <span class="mono">verify-audit -pub {{.PublicKey}} export.jsonl export.sig</span>. The signature proves origin from this server's key only; whoever controls the server can also sign an altered history. A download cut short (a dropped connection or Tor circuit) leaves a partial file that fails verification with "sha256 does not match"; download the same range again. Large exports over Tor can take minutes: the server allows 20 seconds plus one second per 32 KB. The server sends one export at a time; if it is busy, wait for that download to finish before retrying. Limited to 10 downloads per 10 minutes.</p>
 <div class="actions">
 <button type="submit">Download export (.jsonl)</button>
 <button type="submit" name="sig" value="1">Download signature (.sig)</button>
