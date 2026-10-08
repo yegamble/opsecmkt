@@ -1,9 +1,11 @@
 package market
 
 import (
+	"context"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 // An administrator can suspend a compromised or abusive account and later restore it (A-27): suspension ends
@@ -199,5 +201,85 @@ func TestSuspendedAccountCannotCompleteSignIn(t *testing.T) {
 	}
 	if agUserSessions(e, id) != 1 { // only the fixture session e.user created
 		t.Fatal("a session was created for a suspended account")
+	}
+}
+
+// A-108: a sign-in that reaches startSession while suspension is deleting existing sessions must wait on the
+// account row, then observe the committed suspension. Without startSession's FOR SHARE, the password login reads
+// the old visible row, inserts a new session after the suspension's DELETE, and leaves it valid after commit.
+func TestSuspendDuringSignInLeavesNoSession(t *testing.T) {
+	e := newTestApp(t)
+	id, _ := e.user("a108_susp_race", "buyer")
+
+	suspension, err := e.DB.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer suspension.Rollback()
+	var suspensionPID int
+	if err = suspension.QueryRow("SELECT pg_backend_pid() FROM users WHERE id=$1 FOR NO KEY UPDATE", id).Scan(&suspensionPID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = suspension.Exec("UPDATE users SET suspended_at=now() WHERE id=$1", id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = suspension.Exec("DELETE FROM sessions WHERE user_id=$1", id); err != nil {
+		t.Fatal(err)
+	}
+
+	type loginResult struct {
+		code    int
+		body    string
+		session string
+	}
+	finished := make(chan loginResult, 1)
+	go func() {
+		w := e.do("POST", "/login", randomToken(), form("handle", "a108_susp_race", "password", testPassword))
+		finished <- loginResult{code: w.Code, body: strings.TrimSpace(w.Body.String()), session: e.cookie(w, "session")}
+	}()
+
+	// Observe the specific PostgreSQL row-lock wait or the competing login's completion. The transaction is only
+	// released after this evidence, so the test does not depend on scheduling sleeps to create the race.
+	var early *loginResult
+	deadline := time.NewTimer(10 * time.Second)
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer deadline.Stop()
+	defer tick.Stop()
+	blocked := false
+	for !blocked && early == nil {
+		blocked = agInt(e, `SELECT count(*) FROM pg_stat_activity
+			WHERE datname=current_database() AND wait_event_type='Lock'
+			AND $1=ANY(pg_blocking_pids(pid))
+			AND query LIKE 'SELECT suspended_at IS NOT NULL,password_hash FROM users WHERE id=$1 FOR SHARE%'`, suspensionPID) > 0
+		if blocked {
+			break
+		}
+		select {
+		case result := <-finished:
+			early = &result
+		case <-tick.C:
+		case <-deadline.C:
+			t.Fatal("sign-in neither waited for suspension's account lock nor finished")
+		}
+	}
+
+	if err = suspension.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	var result loginResult
+	if early != nil {
+		result = *early
+	} else {
+		select {
+		case result = <-finished:
+		case <-time.After(10 * time.Second):
+			t.Fatal("sign-in did not finish after suspension committed")
+		}
+	}
+	if result.code != 403 || result.body != suspendedMsg || result.session != "" {
+		t.Fatalf("sign-in during suspension: status=%d body=%q session-cookie=%t blocked-on-row=%t", result.code, result.body, result.session != "", blocked)
+	}
+	if n := agUserSessions(e, id); n != 0 {
+		t.Fatalf("suspension left %d session(s) after sign-in completed", n)
 	}
 }
