@@ -1609,9 +1609,10 @@ to pay by hand*, a staff reason of 10–500 characters and your password, audite
 recipient saves an address), pay it from the pooled wallet to an address the recipient gave you through a channel you
 trust, then record it (*Record sent by hand*, the wallet's transaction ID, 64 hexadecimal characters stored in lower
 case, and your password, audited with the payout and the transaction ID). The market does not check the transaction
-ID against the chain, and never sends a recorded payout. A queued payout, one being sent or one already sent is never
-marked sent: the refusal (409, nothing changed) says that the market queued, is sending or sent it itself, so a payment
-made by hand would be a second one. Releasing a hand hold needs the confirmation that nobody paid it by hand. No new
+ID against the chain, and never sends a recorded payout. A queued payout can now be held through the same form, but
+the watcher may claim it first. Wait for the successful hold and reload the page before paying by hand. A queued
+payout must be held before recording a hand payment; one being sent or already sent cannot be held or recorded.
+The refusal (409, nothing changed) means paying by hand could pay it twice. Releasing a hand hold needs the confirmation that nobody paid it by hand. No new
 payout state: a hold is `held` (its reason starts "Held to be paid by hand:"), a recorded payout `sent`. An account
 suspension and a restore from backup hold such a payout again and keep that reason after their own, so releasing it
 then needs their check as well (the payout-address check, or the wallet check); `scripts/restore.sh` and the manual
@@ -1639,6 +1640,23 @@ never private. Add it after `compose.nodes.yaml`, run `./scripts/install.sh chec
 mode or before `compose.nodes.yaml`) and `docker compose up -d --build`, which recreated the `node_egress` network and
 restarted the nodes on it with Compose 5.1.1 (the guide says what to do if your Compose refuses). How it works, and exactly what it does and does not make private:
 [operator guide](docs/operator-guide.md#local-nodes-over-tor).
+
+## 48. Stalled pooled deposits reach staff review (A-487)
+
+Migration 092 updates the drain panel's explanation; it does not move funds or change its blocker predicates.
+For a terminal pooled order, an uncredited deposit still reported by the wallet below its confirmation threshold
+is flagged for staff review 14 days after the later of its normal watch horizon and its first recorded observation.
+The horizon is the later of 24 hours after the order closed and 30 days after its address was created. A wallet read
+failure never starts this review from stale confirmations. A deposit the wallet has dropped or reports conflicted
+is not flagged by this rule.
+
+An open review replaces the extra address watch on the drain list. Staff must record a disposition on the moderation
+desk; the flag never credits the deposit or queues a payment. The desk shows its confirmations and tells staff to
+verify confirmation in the wallet before paying by hand. Confirmed, uncredited deposits belonging to legacy resolved
+disputes with an empty settlement outcome also reach this review when the wallet is readable.
+
+No new configuration is needed. Pooled-wallet removal remains gated on an empty real drain list and the public-network
+operator evidence; this migration does not remove pooled writers.
 
 ## Appendix: new keys by hand
 

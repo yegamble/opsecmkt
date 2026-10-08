@@ -65,7 +65,11 @@ func TestPooledDrainStalledDepositReview(t *testing.T) {
 			}
 			wantRows(t, "staff review replaces watch", listedKinds(t, p.testEnv), "flagged_payment")
 			wantRows(t, "review blocker", drainRows(t, p.testEnv, "flagged_payment"), fmt.Sprintf("%s|%s|%s|%s:0", paymentID, order, cur, txid))
-			mustContain(t, p.page("/moderator", p.adminSess), txid+":0", `name="payment_id" value="`+paymentID+`"`)
+			desk := p.page("/moderator", p.adminSess)
+			mustContain(t, desk, txid+":0", `name="payment_id" value="`+paymentID+`"`,
+				fmt.Sprintf("Deposit still confirming (1 of %d confirmations)", wallet.Confirmations()),
+				"verify confirmation in the wallet before paying by hand")
+			mustNotContain(t, desk, "Not recorded")
 			if p.allReviewNotices(order) <= before {
 				t.Fatal("staff were not notified of the stalled payment")
 			}
