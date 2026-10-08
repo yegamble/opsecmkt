@@ -1040,6 +1040,7 @@ var moneroPreSubmitCodes = map[int64]bool{
 	-19: true, // NOT_ENOUGH_OUTS_TO_MIX: not_enough_outs_to_mix (:3819)
 	-20: true, // ZERO_DESTINATION: validate_transfer (:1099) or zero_destination (:3794)
 	-37: true, // NOT_ENOUGH_UNLOCKED_MONEY: not_enough_unlocked_money (:3804)
+	-46: true, // ZERO_AMOUNT: transfer amount equals the fee; rejected before commit_tx
 }
 
 // recordPayout moves a claimed payout from sending to state. ambiguous marks a failure whose broadcast is

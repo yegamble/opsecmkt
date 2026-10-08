@@ -56,7 +56,8 @@ func TestSignInReturnTargets(t *testing.T) {
 		t.Fatal(`/login?next=/orders does not say "Sign in to see Orders."`)
 	}
 	page = e.body("GET", "/register?next="+url.QueryEscape(checkout), randomToken(), nil, 200)
-	if !strings.Contains(page, `<input type="hidden" name="next" value="`+checkout+`">`) || !strings.Contains(page, `href="/login?next=`+escapedCheckout+`"`) {
+	if !strings.Contains(page, `<input type="hidden" name="next" value="`+checkout+`">`) || !strings.Contains(page, `href="/login?next=`+escapedCheckout+`"`) ||
+		!strings.Contains(page, `<a href="/login?next=`+escapedCheckout+`">Sign in</a>`) {
 		t.Fatalf("/register does not carry next:\n%s", page)
 	}
 
@@ -207,6 +208,22 @@ func TestSignInReturnThroughChallenge(t *testing.T) {
 			t.Fatalf("PGP challenge landed on %q, want %q", loc, checkout)
 		}
 	})
+}
+
+func TestExpiredChallengeSignInKeepsReturnTarget(t *testing.T) {
+	e := newTestApp(t)
+	id, _ := e.user("a258_expired", "buyer")
+	p := agPending(e, id)
+	agExec(e, "UPDATE pending_logins SET next=$1,expires=now()-interval '1 second' WHERE token_hash=$2", "/orders", digest(p.Value))
+	body := e.body("GET", "/challenge", randomToken(), nil, 200, p)
+	if !strings.Contains(body, `<a class="button" href="/login?next=%2Forders">Sign in</a>`) || strings.Contains(body, `value="totp"`) {
+		t.Fatalf("expired challenge did not preserve its safe target or still offered verification:\n%s", body)
+	}
+	agExec(e, "UPDATE pending_logins SET next=$1 WHERE token_hash=$2", "//evil.test", digest(p.Value))
+	body = e.body("GET", "/challenge", randomToken(), nil, 200, p)
+	if !strings.Contains(body, `<a class="button" href="/login">Sign in</a>`) || strings.Contains(body, "evil.test") {
+		t.Fatalf("expired challenge carried an unsafe target:\n%s", body)
+	}
 }
 
 // A-269: with the CAPTCHA on, a wrong answer on /login or /register re-renders the form from the POST; it keeps the
