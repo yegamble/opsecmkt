@@ -126,7 +126,7 @@ write_manifest() {
     'M_STARTED|^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
     'M_FINISHED|^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
     'M_CHAIN|^(signet|testnet4)$'
-    'M_CHALLENGE|^([0-9a-f]{2,400})?$'
+    'M_CHALLENGE|^([0-9a-f][0-9a-f]+)?$'
     'M_NODE_VERSION|^[A-Za-z0-9.:/()_ -]{1,80}$'
     'M_NODE_IMAGE|^[A-Za-z0-9./:@_-]{1,200}$'
     'M_NODE_DIGEST|^[A-Za-z0-9./:_-]{1,200}@sha256:[0-9a-f]{64}$'
@@ -141,6 +141,9 @@ write_manifest() {
     v=${!name-}
     [[ $v =~ $re ]] || { echo "manifest: $name has an unexpected form; nothing written" >&2; return 1; }
   done
+  # BSD regex engines cap counted repetitions at 255. The byte pattern above
+  # and this length check preserve the bound on macOS as well as Linux.
+  (( ${#M_CHALLENGE} <= 400 )) || { echo "manifest: M_CHALLENGE has an unexpected form; nothing written" >&2; return 1; }
   local why
   why=$(chain_refusal "$M_CHAIN" "$M_CHALLENGE")
   [[ -z $why ]] || { echo "manifest: refusing chain $M_CHAIN: $why; nothing written" >&2; return 1; }

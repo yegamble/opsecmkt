@@ -629,6 +629,20 @@ class ManifestWriterTest(unittest.TestCase):
             self.assertEqual(r.returncode, 1, override)
             self.assertFalse(exists, override)
 
+    def test_challenge_length_bound_on_testnet4(self):
+        # macOS's regex engine rejects counted repetitions above 255 even
+        # with Bash 5. Validate bytes and length separately without relaxing
+        # the original 400-character manifest bound.
+        for challenge in ('', 'aa', 'ab' * 200):
+            r, m, exists = self.write(passing_output(), M_CHAIN='testnet4', M_CHALLENGE=challenge)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertTrue(exists)
+            self.assertEqual(m['signet_challenge'], challenge)
+        for challenge in ('a', 'a' * 401, 'az', 'aa\n'):
+            r, m, exists = self.write(passing_output(), M_CHAIN='testnet4', M_CHALLENGE=challenge)
+            self.assertEqual(r.returncode, 1, challenge)
+            self.assertFalse(exists)
+
     def test_refuses_a_transcript_holding_a_secret(self):
         # The last: a URL carrying a password this run was never given (QA5W3A-10), so only the URL pattern can catch it.
         for leak in ('rpcauth=u:' + '1a' * 16 + '$' + '2b' * 32, 'passphrase=secret', 'x __cookie__ y',
