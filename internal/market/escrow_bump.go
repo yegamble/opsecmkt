@@ -413,7 +413,7 @@ func escrowBumpAction(c *actionCtx) (actionResult, error) {
 		if _, err = c.Tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,$3,$4)", o.ID, o.State, c.User.ID, note); err != nil {
 			return actionResult{}, err
 		}
-		if _, err = c.Tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), counterparty, "Order "+shortID(o.ID)+": "+note); err != nil {
+		if _, err = insertNotification(ctx, c.Tx, counterparty, "Order "+shortID(o.ID)+": "+note, o.ID); err != nil {
 			return actionResult{}, err
 		}
 		return actionResult{Redirect: orderPage(o.ID) + settlementAnchor(kind, sid), Notice: "escrow-bump",
@@ -543,7 +543,7 @@ func escrowBumpSignAction(c *actionCtx) (actionResult, error) {
 	if party == roleBuyer {
 		counterparty = o.VendorID
 	}
-	if _, err = c.Tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), counterparty, "Order "+shortID(o.ID)+": "+what); err != nil {
+	if _, err = insertNotification(ctx, c.Tx, counterparty, "Order "+shortID(o.ID)+": "+what, o.ID); err != nil {
 		return actionResult{}, err
 	}
 	return res, nil

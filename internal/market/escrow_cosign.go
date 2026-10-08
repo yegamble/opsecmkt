@@ -545,7 +545,7 @@ func settleNote(ctx context.Context, tx *sql.Tx, orderID, note, body string) err
 		return nil
 	}
 	for _, uid := range []string{buyer, vendor} {
-		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), uid, "Order "+shortID(orderID)+": "+body); err != nil {
+		if _, err = insertNotification(ctx, tx, uid, "Order "+shortID(orderID)+": "+body, orderID); err != nil {
 			return err
 		}
 	}

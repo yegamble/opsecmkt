@@ -294,7 +294,7 @@ func adminReviewAction(c *actionCtx) (actionResult, error) {
 		if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", buyerID, "Review of order "+short+" "+target+" by administrator "+c.User.Handle); err != nil {
 			return actionResult{}, err
 		}
-		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), buyerID, note); err != nil {
+		if _, err = insertNotification(ctx, tx, buyerID, note, orderID); err != nil {
 			return actionResult{}, err
 		}
 		back := "/product?id=" + productID

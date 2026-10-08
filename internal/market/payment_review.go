@@ -273,14 +273,14 @@ func recordPaymentReview(c *actionCtx, id int64, outcome, note, refundTxid strin
 	if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,$3,$4)", o.ID, o.State, c.User.ID, event); err != nil {
 		return actionResult{}, err
 	}
-	if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, body); err != nil {
+	if _, err = insertNotification(ctx, tx, o.BuyerID, body, o.ID); err != nil {
 		return actionResult{}, err
 	}
 	if credited && regressNotice {
 		// Give the vendor an inbox signal without putting the deposit or refund transaction identity, amount, or staff
 		// note in that notification.
 		vendorBody := "Order " + short + ": market staff recorded a payment review (" + reviewOutcomes[outcome] + "). See the order history."
-		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.VendorID, vendorBody); err != nil {
+		if _, err = insertNotification(ctx, tx, o.VendorID, vendorBody, o.ID); err != nil {
 			return actionResult{}, err
 		}
 	}
@@ -289,7 +289,7 @@ func recordPaymentReview(c *actionCtx, id int64, outcome, note, refundTxid strin
 		if note != "" {
 			msg += " Moderator's note: " + note
 		}
-		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), uid, msg); err != nil {
+		if _, err = insertNotification(ctx, tx, uid, msg, o.ID); err != nil {
 			return actionResult{}, err
 		}
 	}

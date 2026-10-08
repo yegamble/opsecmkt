@@ -944,7 +944,7 @@ func (a *App) storeSettlement(ctx context.Context, id int64, orderID, kind, psbt
 		}
 	}
 	for _, uid := range []string{buyer, vendor} {
-		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), uid, body); err != nil {
+		if _, err = insertNotification(ctx, tx, uid, body, orderID); err != nil {
 			return err
 		}
 	}
@@ -999,7 +999,7 @@ func leaveOut(ctx context.Context, tx *sql.Tx, orderID, kind, buyer, verb string
 	if _, err := tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) SELECT id,state,state,NULL,$2 FROM orders WHERE id=$1", orderID, note); err != nil {
 		return err
 	}
-	_, err := tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), buyer, "Order "+shortID(orderID)+": "+note)
+	_, err := insertNotification(ctx, tx, buyer, "Order "+shortID(orderID)+": "+note, orderID)
 	return err
 }
 
@@ -1126,7 +1126,7 @@ func (a *App) failSettlement(ctx context.Context, id int64, orderID, class strin
 		return err
 	}
 	for _, uid := range []string{buyer, vendor} {
-		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), uid, "Order "+shortID(orderID)+": its escrow settlement could not be built. "+text); err != nil {
+		if _, err = insertNotification(ctx, tx, uid, "Order "+shortID(orderID)+": its escrow settlement could not be built. "+text, orderID); err != nil {
 			return err
 		}
 	}
@@ -1345,8 +1345,7 @@ func escrowSignAction(c *actionCtx) (actionResult, error) {
 	if party == roleBuyer {
 		counterparty = o.VendorID
 	}
-	if _, err = c.Tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), counterparty,
-		"Order "+shortID(o.ID)+": "+what+notSent); err != nil {
+	if _, err = insertNotification(ctx, c.Tx, counterparty, "Order "+shortID(o.ID)+": "+what+notSent, o.ID); err != nil {
 		return actionResult{}, err
 	}
 	return res, nil

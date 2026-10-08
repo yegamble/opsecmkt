@@ -1,0 +1,42 @@
+package market
+
+import (
+	"net/url"
+	"strings"
+	"testing"
+)
+
+func TestOrderNotificationsLinkOnlyTheirExplicitOrder(t *testing.T) {
+	e := newTestApp(t)
+	vendorID, vendor := e.user("notice_link_vendor", "vendor")
+	buyerID, buyer := e.user("notice_link_buyer", "buyer")
+	strangerID, _ := e.user("notice_link_stranger", "buyer")
+	product := e.product(vendorID, "physical")
+	order := e.order(buyerID, product, "BTC", statePaid)
+
+	page := e.do("GET", orderPage(order), vendor, nil)
+	e.check(page, 200)
+	nonce := renderedFormNonce(t, page.Body.String(), "/orders/ship")
+	e.check(e.do("POST", "/orders/ship", vendor, url.Values{"order_id": {order}, formNonceField: {nonce}}), 303)
+	if got := agStr(e, "SELECT COALESCE(order_id,'') FROM notifications WHERE user_id=$1 ORDER BY created DESC,id DESC LIMIT 1", buyerID); got != order {
+		t.Fatalf("state-change notice order_id=%q, want %q", got, order)
+	}
+
+	strangerOrder := e.order(strangerID, product, "BTC", statePaid)
+	if _, err := e.DB.Exec(`INSERT INTO notifications(id,user_id,body) VALUES('a37-legacy-no-order',$1,'Legacy notice stays unlinked')`, buyerID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.DB.Exec(`INSERT INTO notifications(id,user_id,body,order_id) VALUES('a37-private-order',$1,'Private order notice',$2)`, strangerID, strangerOrder); err != nil {
+		t.Fatal(err)
+	}
+	body := e.body("GET", "/notifications", buyer, nil, 200)
+	if !strings.Contains(body, `href="/order?id=`+order+`"`) || strings.Contains(body, "Legacy notice stays unlinked") || strings.Contains(body, strangerOrder) {
+		t.Fatalf("notification page links/leaks incorrect order data:\n%s", body)
+	}
+	if got := e.do("GET", orderPage(strangerOrder), buyer, nil).Code; got != 404 {
+		t.Fatalf("notification association widened order access: got %d", got)
+	}
+	if got := agStr(e, "SELECT COALESCE(order_id,'') FROM notifications WHERE id='a37-legacy-no-order'"); got != "" {
+		t.Fatalf("legacy notice acquired an order association: %q", got)
+	}
+}

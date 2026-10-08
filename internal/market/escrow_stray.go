@@ -208,7 +208,7 @@ func (a *App) requestStray(ctx context.Context, threshold, rate int64, orderID s
 		if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", orderID, state, note); err != nil {
 			return err
 		}
-		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), buyer, "Order "+shortID(orderID)+": "+body); err != nil {
+		if _, err = insertNotification(ctx, tx, buyer, "Order "+shortID(orderID)+": "+body, orderID); err != nil {
 			return err
 		}
 	}

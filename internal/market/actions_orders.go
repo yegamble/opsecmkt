@@ -116,7 +116,7 @@ func disputeAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, err
 	}
 	if o.State != statePaid && o.State != stateShipped && o.State != stateDelivered {
-		return actionResult{}, fail(409, "Only paid, shipped, or delivered orders can be disputed. Draft orders contain no funds.")
+		return actionResult{}, fail(409, "This order cannot be disputed from its current state. Disputes can be opened only for paid, shipped, or delivered orders.")
 	}
 	if o.Escrow && o.BuyerID == c.User.ID {
 		// P2-R2: the buyer's signature on the release to the vendor confirms receipt and ends the buyer's right to dispute.
@@ -219,7 +219,7 @@ func notifyDisputeStaff(c *actionCtx, o *Order) error {
 		body = "Dispute opened on order " + shortID(o.ID) + " needs an unsuspended moderator who is not a party to resolve it; no independent resolver was available when it opened."
 	}
 	for _, uid := range staff {
-		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), uid, body); err != nil {
+		if _, err = insertNotification(ctx, tx, uid, body, o.ID); err != nil {
 			return err
 		}
 	}

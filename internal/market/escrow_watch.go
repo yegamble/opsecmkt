@@ -480,7 +480,7 @@ func (a *App) settleEscrow(ctx context.Context, orderID string, walletRead bool)
 		}
 		body := "Order " + shortID(orderID) + ": the payment window ended with " + what + " into its escrow (" + a.netTag() + " " + a.escrowNetwork() + "), so the order was cancelled. " +
 			"The market builds a refund of the escrowed coins, less the network fee, to the refund address you gave at checkout; you or the vendor then sign it on the order page. " + a.settleNotSent()
-		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, body); err != nil {
+		if _, err = insertNotification(ctx, tx, o.BuyerID, body, o.ID); err != nil {
 			return err
 		}
 	}

@@ -149,7 +149,7 @@ func (a *App) xmrRemindOne(ctx context.Context, orderID string) error {
 		{buyer, "Order " + shortID(orderID) + ": Reminder — you have until " + until + " to use Confirm receipt on the order page if the goods have arrived, or to open a dispute if they have not. If you do neither, the order completes at that time and the market releases the coins in this Monero escrow to the vendor; a dispute can no longer be opened after it."},
 		{vendor, "Order " + shortID(orderID) + ": the buyer has until " + until + " to confirm receipt or open a dispute. If the buyer does neither, the order completes at that time and the market releases the coins in this Monero escrow to you."},
 	} {
-		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), n[0], n[1]); err != nil {
+		if _, err = insertNotification(ctx, tx, n[0], n[1], orderID); err != nil {
 			return err
 		}
 	}
@@ -205,7 +205,7 @@ func (a *App) xmrRecheckReleaseDeadlines(ctx context.Context) error {
 		}
 		body := "Order " + shortID(id) + ": this market restored its records from a backup, and the release deadline of this order had passed, so it was moved to " + until +
 			". Use Confirm receipt on the order page if the goods have arrived, or open a dispute before then if they have not. If you do neither, the order completes at that time and the market releases the coins in this Monero escrow to the vendor."
-		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), buyer, body); err != nil {
+		if _, err = insertNotification(ctx, tx, buyer, body, id); err != nil {
 			return err
 		}
 	}

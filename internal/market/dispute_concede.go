@@ -115,8 +115,8 @@ func notifyConcededStaff(ctx context.Context, tx *sql.Tx, orderID, status string
 		}
 	}
 	for _, uid := range staff {
-		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), uid,
-			"Dispute on order "+shortID(orderID)+" is now "+status+". It no longer needs a resolution; review the order history."); err != nil {
+		if _, err = insertNotification(ctx, tx, uid,
+			"Dispute on order "+shortID(orderID)+" is now "+status+". It no longer needs a resolution; review the order history.", orderID); err != nil {
 			return err
 		}
 	}

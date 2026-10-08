@@ -283,7 +283,7 @@ func (a *App) enqueuePayout(ctx context.Context, tx *sql.Tx, o *Order) error {
 			body = "Order " + o.ID[:min(8, len(o.ID))] + ": the " + a.netTag() + " release of " + amount(sum, dec) + " " + o.Currency + " to the vendor includes " + priceDifference(sum, required, o.Currency) + "; " + subFloorPriceExcess(o.Currency) + ", so an administrator reviews the release before it is sent; the network fee is taken from the release."
 		}
 		for _, uid := range []string{o.BuyerID, o.VendorID} {
-			if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), uid, body); err != nil {
+			if _, err = insertNotification(ctx, tx, uid, body, o.ID); err != nil {
 				return err
 			}
 		}
@@ -415,7 +415,7 @@ func (a *App) queuePayout(ctx context.Context, tx *sql.Tx, o *Order, part payout
 		body = "Order " + short + ": " + label + " you paid over the price is being returned to your saved " + o.Currency + " payout address; the network fee is taken from it."
 	}
 	if body != "" {
-		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), part.recipient, body); err != nil {
+		if _, err = insertNotification(ctx, tx, part.recipient, body, o.ID); err != nil {
 			return err
 		}
 	}
@@ -431,7 +431,7 @@ func (a *App) queuePayout(ctx context.Context, tx *sql.Tx, o *Order, part payout
 			if len(admins) > 1 && (uid == o.BuyerID || uid == o.VendorID) {
 				continue
 			}
-			if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), uid, body); err != nil {
+			if _, err = insertNotification(ctx, tx, uid, body, o.ID); err != nil {
 				return err
 			}
 		}

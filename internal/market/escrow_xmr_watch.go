@@ -1109,7 +1109,7 @@ func (a *App) settleXMREscrow(ctx context.Context, orderID string, walletRead bo
 		}
 		body := "Order " + shortID(orderID) + ": the payment window ended with " + what + " into its Monero escrow (" + a.netTag() + " " + a.xmrEscrowNetwork() + "), so the order was cancelled. " +
 			"The market returns the escrowed coins, less the network fee, to the refund address you gave at checkout: it builds and sends the refund transaction from this order's escrow account."
-		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, body); err != nil {
+		if _, err = insertNotification(ctx, tx, o.BuyerID, body, o.ID); err != nil {
 			return err
 		}
 	}
@@ -1131,7 +1131,7 @@ func (a *App) flagLockedXMR(ctx context.Context, tx *sql.Tx, o *Order) error {
 		if o.State == stateAwaitingPayment {
 			body += " Send an ordinary transfer to the escrow address."
 		}
-		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, body); err != nil {
+		if _, err = insertNotification(ctx, tx, o.BuyerID, body, o.ID); err != nil {
 			return err
 		}
 	}

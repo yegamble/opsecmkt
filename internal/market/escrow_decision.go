@@ -115,7 +115,7 @@ func escrowDecisionAction(c *actionCtx) (actionResult, error) {
 		}
 		body := "Order " + shortID(o.ID) + ": its dispute decision was changed to " + decisionText(outcome) + "; the order page shows the settlement that pays it."
 		for _, uid := range []string{o.BuyerID, o.VendorID} {
-			if _, err = c.Tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), uid, body); err != nil {
+			if _, err = insertNotification(ctx, c.Tx, uid, body, o.ID); err != nil {
 				return actionResult{}, err
 			}
 		}

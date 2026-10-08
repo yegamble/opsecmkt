@@ -266,7 +266,7 @@ func (a *App) leaveOutTopUps(ctx context.Context, tx *sql.Tx, o *Order) error {
 	if err = a.flagOrder(ctx, tx, o, note+" Moderator review required.", ""); err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, "Order "+shortID(o.ID)+": "+note)
+	_, err = insertNotification(ctx, tx, o.BuyerID, "Order "+shortID(o.ID)+": "+note, o.ID)
 	return err
 }
 
@@ -340,7 +340,7 @@ func (a *App) leaveOutUncounted(ctx context.Context, tx *sql.Tx, o *Order, thres
 	if err = a.flagOrder(ctx, tx, o, note+" Moderator review required.", ""); err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, "Order "+shortID(o.ID)+": "+note)
+	_, err = insertNotification(ctx, tx, o.BuyerID, "Order "+shortID(o.ID)+": "+note, o.ID)
 	return err
 }
 
@@ -390,7 +390,7 @@ func (a *App) leaveOutTooFew(ctx context.Context, tx *sql.Tx, o *Order, refund i
 	if err = a.flagOrder(ctx, tx, o, note+" Moderator review required.", ""); err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, "Order "+shortID(o.ID)+": "+note)
+	_, err = insertNotification(ctx, tx, o.BuyerID, "Order "+shortID(o.ID)+": "+note, o.ID)
 	return err
 }
 

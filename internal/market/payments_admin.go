@@ -372,7 +372,7 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 		return actionResult{}, err
 	}
 	if op == "sent" {
-		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), recipient, "Order "+short+": "+note+" Transaction ID: "+txid); err != nil {
+		if _, err = insertNotification(ctx, tx, recipient, "Order "+short+": "+note+" Transaction ID: "+txid, orderID); err != nil {
 			return actionResult{}, err
 		}
 	}
@@ -380,7 +380,7 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 		// The recipient hears that the destination changed (the address itself is not repeated), as for their own saves.
 		body := "Order " + short + ": an administrator moved your unsent " + c.A.netTag() + " payout of " + label + " to your current " + cur +
 			" payout address after checking it with you; nothing was sent and its status is unchanged." + feeTaken + " If you did not confirm this, contact the market staff."
-		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), recipient, body); err != nil {
+		if _, err = insertNotification(ctx, tx, recipient, body, orderID); err != nil {
 			return actionResult{}, err
 		}
 	}

@@ -52,8 +52,8 @@ type Message struct {
 	RecipientExtraKeysSet bool
 }
 type Notification struct {
-	ID, Body, Created string
-	Read              bool
+	ID, Body, Created, OrderID string
+	Read                       bool
 }
 
 // StaffContactView is the administrator's staff contact (A-119, staff_contact.go): Text as saved, shown escaped;

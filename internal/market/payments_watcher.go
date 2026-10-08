@@ -507,7 +507,7 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 				}
 				body := fmt.Sprintf("Order %s: the payment window ended with %s of %s %s received, so the order was cancelled. %s Anything sent to this order's address after the cancellation is not refunded automatically.",
 					orderID[:min(8, len(orderID))], amount(received, dec), amount(total, dec), o.Currency, what)
-				if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, body); err != nil {
+				if _, err = insertNotification(ctx, tx, o.BuyerID, body, o.ID); err != nil {
 					return err
 				}
 			}
@@ -543,7 +543,7 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 				body += " The required amount has been seen; do not send another payment and wait for confirmation."
 			}
 		}
-		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, body); err != nil {
+		if _, err = insertNotification(ctx, tx, o.BuyerID, body, o.ID); err != nil {
 			return err
 		}
 	}
@@ -582,7 +582,7 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 						return err
 					}
 				}
-				if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), uid, body); err != nil {
+				if _, err = insertNotification(ctx, tx, uid, body, o.ID); err != nil {
 					return err
 				}
 			}
@@ -665,7 +665,7 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 		if !queued && paidOut && o.State == stateCancelled {
 			// The cancellation found nothing to refund, so these funds confirmed afterwards.
 			body := "Order " + orderID[:min(8, len(orderID))] + ": a " + a.netTag() + " deposit confirmed after this order was cancelled and is being refunded to you (blocked until you save a " + o.Currency + " payout address, if you have none)."
-			if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, body); err != nil {
+			if _, err = insertNotification(ctx, tx, o.BuyerID, body, o.ID); err != nil {
 				return err
 			}
 		}
@@ -779,7 +779,7 @@ func (a *App) flagLateDeposits(ctx context.Context, tx *sql.Tx, o *Order, thresh
 		}
 	}
 	if !episode {
-		_, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, body)
+		_, err = insertNotification(ctx, tx, o.BuyerID, body, o.ID)
 	}
 	return err
 }
@@ -835,7 +835,7 @@ func (a *App) flagStalledPooledDeposits(ctx context.Context, tx *sql.Tx, o *Orde
 	}
 	if len(deposits) > 0 && !episode {
 		body := "Order " + o.ID[:min(8, len(o.ID))] + ": a " + o.Currency + " deposit at its pooled address is still unconfirmed 14 days after the watch horizon ended. It was not paid out. Market staff were notified and will review it."
-		_, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, body)
+		_, err = insertNotification(ctx, tx, o.BuyerID, body, o.ID)
 	}
 	return err
 }
@@ -904,7 +904,7 @@ func (a *App) flagOrder(ctx context.Context, tx *sql.Tx, o *Order, note, party s
 					return err
 				}
 			}
-			if _, err := tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), uid, body); err != nil {
+			if _, err := insertNotification(ctx, tx, uid, body, o.ID); err != nil {
 				return err
 			}
 		}
@@ -915,7 +915,7 @@ func (a *App) flagOrder(ctx context.Context, tx *sql.Tx, o *Order, note, party s
 	}
 	body := "Payment review needed for order " + o.ID[:min(8, len(o.ID))] + ": " + note
 	for _, uid := range staff {
-		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), uid, body); err != nil {
+		if _, err = insertNotification(ctx, tx, uid, body, o.ID); err != nil {
 			return err
 		}
 	}
@@ -1126,7 +1126,7 @@ func (a *App) recordPayout(ctx context.Context, id int64, orderID, recipient, st
 	if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", orderID, orderState, note); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), recipient, "Order "+orderID[:min(8, len(orderID))]+": "+notice); err != nil {
+	if _, err = insertNotification(ctx, tx, recipient, "Order "+orderID[:min(8, len(orderID))]+": "+notice, orderID); err != nil {
 		return err
 	}
 	if state == "failed" {
@@ -1135,7 +1135,7 @@ func (a *App) recordPayout(ctx context.Context, id int64, orderID, recipient, st
 			return err
 		}
 		for _, uid := range staff {
-			if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), uid, "Payout failed for order "+orderID[:min(8, len(orderID))]+"; see the admin payouts panel."); err != nil {
+			if _, err = insertNotification(ctx, tx, uid, "Payout failed for order "+orderID[:min(8, len(orderID))]+"; see the admin payouts panel.", orderID); err != nil {
 				return err
 			}
 		}

@@ -247,7 +247,7 @@ func (a *App) transition(ctx context.Context, tx *sql.Tx, orderID, from, to stri
 		if from == stateDraft && to == stateCancelled && uid == o.VendorID {
 			continue
 		}
-		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), uid, body); err != nil {
+		if _, err = insertNotification(ctx, tx, uid, body, orderID); err != nil {
 			return nil, err
 		}
 	}
