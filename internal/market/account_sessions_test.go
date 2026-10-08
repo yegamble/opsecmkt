@@ -209,6 +209,37 @@ func TestPasswordChangeEndsSignInCheckedBeforeIt(t *testing.T) {
 	agExec(e, "UPDATE users SET totp_last_step=0 WHERE id=$1", id)
 	e.check(e.do("POST", "/challenge", intruder, url.Values{"method": {"totp"}, "code": {agTOTPNow(key)}}, fresh), 303)
 
+	// Migration 013 added password_digest nullable so legacy pending rows survive upgrades. A valid second factor
+	// cannot turn one of those rows into a session: without the password hash checked at /login, the challenge has
+	// no proof that the password still matches the account.
+	legacy := randomToken()
+	agExec(e, "INSERT INTO pending_logins(token_hash,user_id,expires) VALUES($1,$2,now()+interval '10 minutes')", digest(legacy), id)
+	agExec(e, "UPDATE users SET totp_last_step=0 WHERE id=$1", id)
+	beforeSessions := agUserSessions(e, id)
+	beforeAudits := agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1", id)
+	beforeNotices := agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1", id)
+	var beforeStep int64
+	if err := e.DB.QueryRow("SELECT totp_last_step FROM users WHERE id=$1", id).Scan(&beforeStep); err != nil {
+		t.Fatal(err)
+	}
+	agExpect(e, "/challenge", intruder, url.Values{"method": {"totp"}, "code": {agTOTPNow(key)}}, 401, "Sign-in verification expired", &http.Cookie{Name: "pending", Value: legacy})
+	if agUserSessions(e, id) != beforeSessions {
+		t.Fatal("legacy pending sign-in created a session")
+	}
+	if agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1", id) != beforeAudits || agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1", id) != beforeNotices {
+		t.Fatal("legacy pending sign-in wrote an audit event or notification")
+	}
+	if agInt(e, "SELECT count(*) FROM pending_logins WHERE token_hash=$1", digest(legacy)) != 1 {
+		t.Fatal("refused legacy pending sign-in changed its pending row")
+	}
+	var afterStep int64
+	if err := e.DB.QueryRow("SELECT totp_last_step FROM users WHERE id=$1", id).Scan(&afterStep); err != nil {
+		t.Fatal(err)
+	}
+	if afterStep != beforeStep {
+		t.Fatalf("refused legacy pending sign-in consumed TOTP step: before=%d after=%d", beforeStep, afterStep)
+	}
+
 	// Without a second factor the session itself is refused when the password changed after it was checked.
 	noFactor, _ := e.user("a157_nofactor", "buyer")
 	stale := passwordHash(e, noFactor)

@@ -1403,6 +1403,15 @@ refresh_scanner() {
   printf 'Signatures now:    %s\n' "$after"
 }
 
+# scanner_config_changed: compare the config currently in clamd with the bind-mounted file in this checkout.
+# Compose does not hash bind-mounted file contents, so an upgrade must explicitly recreate clamd when they differ.
+# If the old container cannot be read (for example, it is restarting after a bad config), treat that as a mismatch:
+# recreating it is the safe way to apply the checked-in config. No config contents are printed.
+scanner_config_changed() {
+  docker compose exec -T clamd cat /etc/clamav/clamd.conf 2>/dev/null | cmp -s - deploy/clamd.conf || return 0
+  return 1
+}
+
 cmd_add_scanner() {
   [[ $# -eq 0 ]] || usage
   require_env
@@ -1642,6 +1651,11 @@ cmd_upgrade() {
   fi
   # The scanner's signatures age with its image: every upgrade refreshes them (never turns the scanner on).
   if has_item "$(env_value COMPOSE_PROFILES)" scanner; then
+    if scanner_config_changed; then
+      echo 'The malware scanner configuration changed (or the running config could not be read); recreating clamd.'
+      docker compose up -d --force-recreate clamd ||
+        echo 'warning: clamd could not be recreated to apply its configuration; photo uploads may remain unavailable. Inspect docker compose logs clamd.' >&2
+    fi
     refresh_scanner || printf '%s\n' 'warning: the malware scanner signatures were not refreshed (see above); the upgrade itself is complete.' \
       'Run ./scripts/install.sh refresh-scanner once the cause is fixed.' >&2
   fi

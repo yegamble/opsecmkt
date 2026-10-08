@@ -34,6 +34,7 @@ PASSWORD = 'correct horse battery staple'
 # The malware scanner (A-184): what clamdscan --version prints once clamd answers, and the calls it takes.
 CLAMD_VERSION = 'ClamAV 1.5.4/28130/Mon Sep 21 06:24:29 2026'
 CLAMD_READ = 'compose exec -T clamd clamdscan --version'
+CLAMD_CONFIG_READ = 'compose exec -T clamd cat /etc/clamav/clamd.conf'
 MEMORY = 'info --format {{.MemTotal}}'
 CHECK_SCANNER = [*CHECK, 'compose config']
 # With the scanner on, `up --wait` names every service but clamd, which is then started without waiting: its
@@ -255,6 +256,8 @@ if args == ['compose', 'config', '--quiet']:
     assert Path('.env').is_file(), 'Configuration must exist before validation'
     sys.exit(42 if flag('INSTALLER_TEST_BAD_CONFIG') else 0)
 if args[:2] == ['compose', 'up']:
+    if args == ['compose', 'up', '-d', '--force-recreate', 'clamd'] and flag('INSTALLER_TEST_CLAMD_RECREATE_FAIL'):
+        sys.exit('Error response from daemon: clamd recreate failed')
     # A clamd that never becomes healthy fails `up --wait` whenever that wait includes it: named, or no service
     # named (every service of the active profiles).
     named = [arg for arg in args[2:] if not arg.startswith('-')]
@@ -356,6 +359,12 @@ if args == ['compose', 'exec', '-T', 'clamd', 'clamdscan', '--version']:
         sys.exit(0)
     version = state / 'clamd-version'
     print(version.read_text() if version.exists() else os.environ['INSTALLER_TEST_CLAMD_VERSION'])
+    sys.exit(0)
+if args == ['compose', 'exec', '-T', 'clamd', 'cat', '/etc/clamav/clamd.conf']:
+    if flag('INSTALLER_TEST_CLAMD_CONFIG_READ_FAIL'):
+        sys.exit('service "clamd" is not running')
+    config = os.environ.get('INSTALLER_TEST_CLAMD_CONFIG')
+    sys.stdout.write(config if config is not None else Path('deploy/clamd.conf').read_text())
     sys.exit(0)
 sys.exit('Unexpected docker command')
 ''')
@@ -2340,6 +2349,41 @@ time.sleep(60)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('scanner signatures were not refreshed', result.stderr)
         self.assertIn('./scripts/install.sh refresh-scanner', result.stderr)
+        self.assertIn('Upgrade complete', result.stdout)
+
+    def test_upgrade_recreates_clamd_when_config_changed(self):
+        self.write_env(scanner_env())
+        self.set_installed(False)
+        old_config = (self.root / 'deploy' / 'clamd.conf').read_text().replace('SelfCheck 600', 'SelfCheck 300')
+        result = self.upgrade(extra_env={'INSTALLER_TEST_CLAMD_CONFIG': old_config})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls()
+        config_check = calls.index(CLAMD_CONFIG_READ)
+        force_recreate = calls.index('compose up -d --force-recreate clamd')
+        pull = calls.index('compose pull clamd')
+        self.assertLess(config_check, force_recreate)
+        self.assertLess(force_recreate, pull)
+        self.assertIn('configuration changed', result.stdout)
+        self.assertNotIn('SelfCheck 300', result.stdout + result.stderr)
+
+    def test_upgrade_does_not_force_recreate_clamd_when_config_matches(self):
+        self.write_env(scanner_env())
+        self.set_installed(False)
+        result = self.upgrade()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls()
+        self.assertIn(CLAMD_CONFIG_READ, calls)
+        self.assertNotIn('compose up -d --force-recreate clamd', calls)
+
+    def test_upgrade_continues_if_clamd_config_recreate_fails(self):
+        self.write_env(scanner_env())
+        self.set_installed(False)
+        old_config = (self.root / 'deploy' / 'clamd.conf').read_text().replace('SelfCheck 600', 'SelfCheck 300')
+        result = self.upgrade(extra_env={'INSTALLER_TEST_CLAMD_CONFIG': old_config,
+                                         'INSTALLER_TEST_CLAMD_RECREATE_FAIL': '1'})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('warning: clamd could not be recreated to apply its configuration', result.stderr)
+        self.assertIn('compose pull clamd', self.calls())
         self.assertIn('Upgrade complete', result.stdout)
 
     def test_status_prints_scanner(self):
