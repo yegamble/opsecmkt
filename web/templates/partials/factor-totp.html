@@ -4,7 +4,7 @@
 <form class="stack" method="post" action="/challenge{{with .Next}}?next={{. | urlquery}}{{end}}">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
 <input type="hidden" name="method" value="totp">
-<label>6-digit code<input name="code" required inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" autocomplete="one-time-code" spellcheck="false">
+<label>6-digit code<input name="code" required inputmode="numeric" pattern="[0-9]{6}" title="Enter the 6-digit code from your authenticator app." minlength="6" maxlength="6" autocomplete="one-time-code" spellcheck="false">
 </label>
 <button class="primary" type="submit">Verify code <span class="action-icon">↗</span></button>
 </form>

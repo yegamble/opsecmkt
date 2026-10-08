@@ -4,7 +4,7 @@
 <strong>{{with .Inventory}}{{.Active}}{{else}}{{len .Products}}{{end}}</strong>
 <span>{{with .Inventory}}Active{{if .Archived}} · {{.Archived}} archived{{end}}{{else}}Your inventory{{end}}</span>
 </div>{{end}}
-{{define "vendor-listings:delivery-help"}}<p class="help" id="delivery-help">Optional, digital listings only. Released to the buyer automatically once their payment is confirmed. <strong>Stored unencrypted on the server</strong>: operators and anyone with database access can read it. Leave empty to deliver manually.</p>
+{{define "vendor-listings:delivery-help"}}<p class="help" id="delivery-help">Optional, digital listings only. When a payment provider is configured for the order's currency, every buyer whose payment is confirmed receives exactly the text saved here. <strong>Stored unencrypted on the server</strong>: operators and anyone with database access can read it. Leave empty to deliver manually.</p>
 {{if .}}<p class="help">Payment confirmation is configured for {{.}}; orders in other currencies are not delivered automatically.</p>{{else}}<div class="notice inventory-unavailable">
 <p><strong>Automatic delivery requires a payment provider.</strong> None is configured, so saved content is not released to anyone until payments are enabled.</p>
 </div>{{end}}{{end}}

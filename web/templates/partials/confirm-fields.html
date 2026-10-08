@@ -2,5 +2,5 @@
 Call with a bool: true when TOTP is enrolled, which adds the authenticator code field. */}}
 {{define "confirm-fields"}}<label>Current password<input type="password" name="password" required maxlength="72" autocomplete="current-password">
 </label>{{if .}}
-<label>Authenticator code<input name="code" required inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" autocomplete="one-time-code">
+<label>Authenticator code<input name="code" required inputmode="numeric" pattern="[0-9]{6}" title="Enter the 6-digit code from your authenticator app." minlength="6" maxlength="6" autocomplete="one-time-code">
 </label>{{end}}{{end}}

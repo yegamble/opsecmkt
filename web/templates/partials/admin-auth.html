@@ -28,7 +28,7 @@
 <p>For a user who lost their authenticator and recovery codes, or their PGP private key. This turns off TOTP (deleting its secret and recovery codes) and PGP sign-in verification; their saved PGP key and its verification stay. They are signed out everywhere, notified, and sign in next with their password only.</p>
 <form class="stack" method="post" action="/admin/reset-factors">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
-<label>Account handle<input name="handle" value="{{.ResetHandle}}" required minlength="3" maxlength="32" pattern="[a-zA-Z0-9_]{3,32}" autocomplete="off" autocapitalize="none" spellcheck="false"{{if .ResetHandle}} aria-invalid="true"{{end}}>
+<label>Account handle<input name="handle" value="{{.ResetHandle}}" required minlength="3" maxlength="32" pattern="[a-zA-Z0-9_]{3,32}" title="Use 3 to 32 letters, numbers, or underscores." autocomplete="off" autocapitalize="none" spellcheck="false"{{if .ResetHandle}} aria-invalid="true"{{end}}>
 </label>
 {{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <span class="help">Enter the handle exactly (it is case-sensitive). Confirm with your own password{{if and $.Security $.Security.TOTPEnabled}} and authenticator code{{end}}. Check the request really comes from the account holder first: anyone who knows their password can then sign in.</span>
@@ -50,7 +50,7 @@
 <p>Contains a compromised or abusive account. Suspending signs it out everywhere, cancels any sign-in in progress and refuses new sign-ins until you restore it. Its role, listings and orders stay as they are. Orders waiting on this account stop until it is restored; the other party can still complete, cancel where allowed, or open a dispute. A suspended moderator does not resolve disputes, is not notified of them or of payment reviews and is not offered as a dispute contact. The account is notified and both accounts record the change.</p>
 <form class="stack" method="post" action="/admin/suspend">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
-<label>Account handle<input name="handle" value="{{.SuspendHandle}}" required minlength="3" maxlength="32" pattern="[a-zA-Z0-9_]{3,32}" autocomplete="off" autocapitalize="none" spellcheck="false"{{if .SuspendHandle}} aria-invalid="true"{{end}}>
+<label>Account handle<input name="handle" value="{{.SuspendHandle}}" required minlength="3" maxlength="32" pattern="[a-zA-Z0-9_]{3,32}" title="Use 3 to 32 letters, numbers, or underscores." autocomplete="off" autocapitalize="none" spellcheck="false"{{if .SuspendHandle}} aria-invalid="true"{{end}}>
 </label>
 <fieldset>
 <legend>Action</legend>

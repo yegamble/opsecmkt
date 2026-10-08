@@ -70,7 +70,7 @@
 <h2>2. Confirm a code</h2>
 <form class="stack" method="post" action="/totp/activate">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
-<label>6-digit code from your app<input name="code" required inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" autocomplete="one-time-code">
+<label>6-digit code from your app<input name="code" required inputmode="numeric" pattern="[0-9]{6}" title="Enter the 6-digit code from your authenticator app." minlength="6" maxlength="6" autocomplete="one-time-code">
 </label>
 {{template "confirm-fields" false}}
 <span class="help">Adding a sign-in method needs your current password, so someone using only your session cannot lock you out.</span>

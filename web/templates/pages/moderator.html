@@ -53,7 +53,7 @@
 <input type="hidden" name="payment_id" value="{{.ID}}">
 <input type="hidden" name="outcome" value="refunded">
 <p class="help">Record a refund to the buyer that was already sent from the market wallet by hand; the market sends nothing and queues no payout. The buyer sees the transaction ID; the vendor does not.</p>
-<label>Refund transaction ID<input name="txid" required minlength="64" maxlength="64" pattern="[0-9a-fA-F]{64}" spellcheck="false" autocomplete="off">
+<label>Refund transaction ID<input name="txid" required minlength="64" maxlength="64" pattern="[0-9a-fA-F]{64}" title="Enter the 64-character hexadecimal transaction ID from the wallet." spellcheck="false" autocomplete="off">
 </label>
 <label>Amount refunded ({{.Currency}}, at most {{.Amount}})<input name="amount" required inputmode="decimal" maxlength="32" autocomplete="off">
 </label>

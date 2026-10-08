@@ -16,7 +16,7 @@
 <section class="panel">
 <h2>Compose a message</h2>
 <form class="stack" method="get" action="/messages" aria-label="Find recipient key">
-<label>Find a recipient<input name="to" value="{{.MessageTo}}" required minlength="3" maxlength="32" pattern="[a-zA-Z0-9_]{3,32}" autocomplete="off" placeholder="vendor_or_staff_handle"></label>
+<label>Find a recipient<input name="to" value="{{.MessageTo}}" required minlength="3" maxlength="32" pattern="[a-zA-Z0-9_]{3,32}" title="Use the recipient's handle: 3 to 32 letters, numbers, or underscores." autocomplete="off" placeholder="vendor_or_staff_handle"></label>
 <button type="submit">Load recipient’s public key</button>
 </form>
 <p class="help">First load the recipient’s key, confirm its fingerprint, then encrypt in your trusted PGP application. Loading a key reloads this page; do it before composing.</p>
