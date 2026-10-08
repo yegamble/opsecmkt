@@ -1473,3 +1473,22 @@ fakechain; and an offline Monero stagenet fork (A-449: stagenet's genesis, peere
 has run on public signet, testnet4, testnet3 or the public Monero stagenet: the owner's public-network runs (ledger
 item A-447, with A-446's `scripts/test-escrow-public.sh`) are not recorded yet. Mainnet stays an operator opt-in and is never used in development or
 tests.
+
+### Sparrow and hardware-wallet evidence (A-458)
+
+No Sparrow or physical-device result has been recorded. A-459's hardware download and upload are implemented,
+but their database tests do not establish device compatibility. Record each actual wallet/device combination
+below after running it against an isolated, funded test-network escrow. Retain the transcript and the public
+transaction IDs; keep seeds, private keys and wallet passwords out of the evidence.
+
+| Wallet / device model | Wallet version / device firmware | Network and date | Rooted cosigners and descriptor import | Address matches / registration limits / path warning | Ordinary versus hardware PSBT acceptance | Signing-screen amount, fee and destination | Practice, release and sibling-refund result | Evidence |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Sparrow | Unrun | Unrun | Unrun | Unrun | Unrun | Unrun | Unrun | None |
+| Physical device | Unrun | Unrun | Unrun | Unrun | Unrun | Unrun | Unrun | None |
+
+Import the party-only setup page's order descriptor and compare the first address with the escrow address before
+funding. Record whether the wallet accepts the rooted cosigners and the full per-order path, including any warning
+or registration limit. Try the ordinary PSBT and the hardware copy separately to establish whether that combination
+requires `non_witness_utxo`. Record what the device actually displays when signing, then upload through the matching
+form, confirm the release and the sibling refund on the test chain, and retain any refusal verbatim after removing
+secrets. A signing device cannot authenticate the other party's key. Claim compatibility only for a recorded row.
